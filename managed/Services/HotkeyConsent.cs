@@ -121,7 +121,10 @@ internal static unsafe class HotkeyConsent
         if (answered == null) return;
         if (result == 1)
         {
-            HotkeyStore.Grant(answered, _log!);
+            // Record consent under this server's token (minting one if the server presented none),
+            // then hand the token + consented keys back so the server can present it next login.
+            string token = HotkeyStore.Grant(answered, _log!);
+            SendGrantToken(token);
         }
         else
         {
@@ -139,6 +142,15 @@ internal static unsafe class HotkeyConsent
         string csv = string.Join(",", keys);
         if (csv.Length == 0) return;
         ClientApi.SendAscii(HotkeyProtocol.RevokeMajor, HotkeyProtocol.RevokeMinor, csv);
+    }
+
+    // Hand the server the consent receipt: the token this server's consent is stored under, plus the
+    // keys the player actually consented to. The server persists the token per player and presents it
+    // back on the next login (PresentToken) to restore consent without re-prompting.
+    private static void SendGrantToken(string tokenHex)
+    {
+        string csv = string.Join(",", HotkeyStore.Armed);
+        ClientApi.SendAscii(HotkeyProtocol.GrantTokenMajor, HotkeyProtocol.GrantTokenMinor, $"{tokenHex};{csv}");
     }
 
     private static string Describe(HashSet<int> keys)

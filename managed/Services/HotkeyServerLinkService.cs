@@ -48,11 +48,17 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         // known-good pointer instead of resolving g_pAppManager (which segfaulted on this build).
         ClientApi.LiveMessage = self;
 
-        if (size >= 3 && data[0] == FrameMarker
-            && data[1] == HotkeyProtocol.ArmSetMajor && data[2] == HotkeyProtocol.ArmSetMinor)
+        if (size >= 3 && data[0] == FrameMarker && data[1] == HotkeyProtocol.ArmSetMajor)  // 0x36: our device major
         {
-            HandleArmSet(data, size);
-            return 1;   // consume: this message is ours, the stock client should not see it
+            switch (data[2])
+            {
+                case HotkeyProtocol.PresentTokenMinor:   // restore this server's prior consent (sent before ArmSet)
+                    HandlePresentToken(data, size);
+                    return 1;                            // consume: ours, the stock client must not see it
+                case HotkeyProtocol.ArmSetMinor:
+                    HandleArmSet(data, size);
+                    return 1;
+            }
         }
         return _inboundOrig != null ? _inboundOrig(self, data, size) : 1;
     }
@@ -95,20 +101,33 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         return (false, retained.Count == current.Count ? null : retained, additions);
     }
 
+    // The server presents the token it was granted last time (payload = hex). Recognised -> the
+    // active armed set becomes that server's consented keys, so the ArmSet that follows produces no
+    // additions and no re-prompt. Unrecognised / empty -> armed set stays empty, awaiting consent.
+    private static void HandlePresentToken(byte* data, uint size)
+    {
+        string tok = AsciiPayload(data, size);
+        if (tok.Length == 0) { HotkeyStore.BeginSession(); return; }   // server holds no token -> nothing to restore
+        HotkeyStore.Activate(tok, _log!);
+    }
+
     private static HashSet<int> Parse(byte* data, uint size)
     {
         var set = new HashSet<int>();
-        if (size > 3)
-        {
-            int len = (int)size - 3;
-            var bytes = new byte[len];
-            Marshal.Copy((IntPtr)(data + 3), bytes, 0, len);
-            string csv = System.Text.Encoding.ASCII.GetString(bytes);
-            foreach (string part in csv.Split(new[] { ',', ';', ' ', '\n', '\r', '\t' },
-                                              StringSplitOptions.RemoveEmptyEntries))
-                if (int.TryParse(part, out int vk)) set.Add(vk);
-        }
+        foreach (string part in AsciiPayload(data, size).Split(new[] { ',', ';', ' ', '\n', '\r', '\t' },
+                                                               StringSplitOptions.RemoveEmptyEntries))
+            if (int.TryParse(part, out int vk)) set.Add(vk);
         return set;
+    }
+
+    // The ASCII payload after the 3-byte ['P'][major][minor] header, trimmed.
+    private static string AsciiPayload(byte* data, uint size)
+    {
+        if (size <= 3) return "";
+        int len = (int)size - 3;
+        var bytes = new byte[len];
+        Marshal.Copy((IntPtr)(data + 3), bytes, 0, len);
+        return System.Text.Encoding.ASCII.GetString(bytes).Trim();
     }
 
     // One runnable check on the security-critical bits: additions never sneak through, the

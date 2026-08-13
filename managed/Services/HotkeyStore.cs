@@ -1,31 +1,45 @@
+using System.Security.Cryptography;
 using Sowx.Framework;
 
 namespace Sowx.Services;
 
-// The consent list and its persistence. The client does NOT map keys to toolbar
-// slots -- it does not know the server's toolbar layout. It only "arms" a set of
-// keys the player consents to have sent; the server decides what each does.
+// The consent list and its persistence -- scoped PER SERVER by a client-minted token.
 //
-// The armed set is normally chosen in the server-authored NUI and pushed to us
-// (HotkeyServerLinkService), then cached in a client-side file. That file is also
-// a manual override the player may edit, and it is loaded on startup so armed keys
-// work before the NUI is ever opened. Either way it is the effective consent: only
-// keys in this set are ever observed or sent (see HotkeyInputService).
+// Consent is a capability, not a global switch. When the player consents to a server's keys,
+// the client mints a random token, records {token -> keys} here, and hands the token to that
+// server (HotkeyConsent -> GrantToken). On a later login the server proves prior consent by
+// presenting that token back (PresentToken); the client looks it up and restores exactly that
+// server's consented keys. A server that was never granted a token -- including a malicious one
+// replaying another server's key list -- has nothing to present, so the armed set stays EMPTY
+// and every key it asks for becomes a fresh consent prompt. One server can never inherit another's
+// consent, because it never held the other's token.
 //
-//   ~/.config/sowx-hotkeys.cfg   one SDL keycode (SDLK) per line (# starts a comment)
+// Therefore the effective armed set is per session: empty at startup and on every login until a
+// recognised token is presented (Activate). Only keys in the active set are ever observed or sent
+// (see HotkeyInputService).
+//
+//   ~/.config/sowx-hotkeys.cfg   sectioned, player-editable:
+//     [token=<hex>]      one 32-char hex token per server
+//     112                one SDL keycode (SDLK) per line under it (# starts a comment)
 //   (SDLK is what HandleWMKeyDownMessage delivers -- NOT Windows VK: f = 102 not 70,
 //    F1 = 1073741882; digits 48..57 coincide with VK, letters/F-keys do not.)
 //
-// Static, not DI: the hot key handler is a static [UnmanagedCallersOnly] and reads
-// Armed directly. Load()/Save() republish an immutable snapshot atomically.
+// Static, not DI: the hot key handler is a static [UnmanagedCallersOnly] and reads Armed directly.
+// Swaps publish an immutable snapshot atomically.
 public static class HotkeyStore
 {
+    // The ACTIVE server's consented keys, or empty when no recognised token is active. Read on the
+    // hot path; swapped atomically (readers see old or new, both immutable).
     public static volatile HashSet<int> Armed = new();
 
-    // Bumped on every change to Armed. The client-native manager (HotkeyManagerService) reads this
-    // once per frame and rebuilds its baked key labels only when it changes -- so the render hot path
-    // never allocates for an unchanged set.
+    // Bumped on every change to Armed. HotkeyManagerService reads this once per frame and rebuilds
+    // its baked key labels only when it changes, so the render hot path never allocates unchanged.
     public static volatile int Version;
+
+    // tokenHex -> that server's consented keys. Loaded from the cfg; the active set is one of these.
+    private static readonly Dictionary<string, HashSet<int>> _sections = new();
+    // The token presented by the current server this session, or null if none/unrecognised-and-unconsented.
+    private static string? _activeToken;
 
     public static string Path =>
         System.IO.Path.Combine(
@@ -33,10 +47,13 @@ public static class HotkeyStore
 
     public static void Load(ExtenderLog log)
     {
-        var set = new HashSet<int>();
+        _sections.Clear();
+        int legacy = 0;
         try
         {
             if (File.Exists(Path))
+            {
+                HashSet<int>? cur = null;   // null until the first [token=] header
                 foreach (string raw in File.ReadAllLines(Path))
                 {
                     string line = raw;
@@ -44,45 +61,126 @@ public static class HotkeyStore
                     if (hash >= 0) line = line[..hash];
                     line = line.Trim();
                     if (line.Length == 0) continue;
-                    if (int.TryParse(line, out int vk)) set.Add(vk);
+
+                    if (line.StartsWith("[token=") && line.EndsWith("]"))
+                    {
+                        string tok = line[7..^1].Trim().ToLowerInvariant();
+                        cur = tok.Length > 0 ? (_sections[tok] = new HashSet<int>()) : null;
+                    }
+                    else if (int.TryParse(line, out int vk))
+                    {
+                        if (cur != null) cur.Add(vk);
+                        else legacy++;   // a bare keycode before any token section == old global format
+                    }
                 }
+            }
         }
         catch (Exception e) { log.Info($"HotkeyStore: load failed: {e.Message}"); }
 
-        Armed = set;   // atomic publish; readers see old or new, both immutable
+        // Startup publishes EMPTY -- nothing is armed until a login presents a recognised token.
+        _activeToken = null;
+        Armed = new HashSet<int>();
         Version++;
-        log.Info($"HotkeyStore: {set.Count} key(s) armed (SDLK: {string.Join(",", set)}), from {Path}");
+
+        if (legacy > 0)
+            log.Info($"HotkeyStore: dropped {legacy} legacy global armed key(s) -- consent is now per-server; " +
+                     "reconnect to each server to re-consent (they re-push their key set on login)");
+        log.Info($"HotkeyStore: {_sections.Count} server section(s) loaded from {Path}; none active until a token is presented");
     }
 
-    // Add player-consented keys to the armed set and persist. Atomic publish of a fresh
-    // immutable snapshot. Only ever called after an explicit OK in the consent modal.
-    public static void Grant(HashSet<int> keys, ExtenderLog log)
+    // A new login: forget the previous server's active consent. Armed goes empty until this server
+    // presents a token we recognise. Fail-closed -- the default posture is "nothing armed".
+    public static void BeginSession()
     {
-        var next = new HashSet<int>(Armed);
-        next.UnionWith(keys);
-        Armed = next;
+        _activeToken = null;
+        Armed = new HashSet<int>();
+        Version++;
+    }
+
+    // The server presented `tokenHex` (proof of prior consent). If we recognise it, restore that
+    // server's consented keys; otherwise the token becomes the active one to consent UNDER (so a
+    // subsequent Grant is stored against the server's own token, stable across the player's machines)
+    // but arms nothing yet. Returns true if the token was already known (consent restored silently).
+    public static bool Activate(string tokenHex, ExtenderLog log)
+    {
+        string tok = tokenHex.Trim().ToLowerInvariant();
+        _activeToken = tok;
+        bool known = _sections.TryGetValue(tok, out HashSet<int>? keys);
+        Armed = known ? new HashSet<int>(keys!) : new HashSet<int>();
+        Version++;
+        log.Info(known
+            ? $"HotkeyStore: token recognised -- restored {Armed.Count} consented key(s)"
+            : "HotkeyStore: token not recognised -- armed set empty, awaiting fresh consent");
+        return known;
+    }
+
+    // Add player-consented keys to the ACTIVE server's set and persist. Only ever called after an
+    // explicit OK in the consent modal. If the server presented no token this session, mint one now
+    // so the consent has a receipt to hand back. Returns the active token (the caller sends it to the
+    // server so the server can present it next time).
+    public static string Grant(HashSet<int> keys, ExtenderLog log)
+    {
+        if (_activeToken == null)
+        {
+            _activeToken = Mint();
+            log.Info("HotkeyStore: no server token this session -- minted a fresh consent token");
+        }
+        if (!_sections.TryGetValue(_activeToken, out HashSet<int>? set))
+            set = _sections[_activeToken] = new HashSet<int>();
+        set.UnionWith(keys);
+
+        Armed = new HashSet<int>(set);
         Version++;
         Save(log);
-        log.Info($"HotkeyStore: player armed {keys.Count} new key(s); {next.Count} total");
+        log.Info($"HotkeyStore: player armed {keys.Count} new key(s) for this server; {set.Count} total");
+        return _activeToken;
     }
 
-    // Replace the armed set wholesale and persist. Used for silent removals (shrinking
-    // the capture surface needs no consent) and the client-native manager's unbind/revoke-all.
+    // Replace the ACTIVE server's set wholesale and persist. Used for silent removals (shrinking the
+    // capture surface needs no consent) and the manager's unbind/revoke-all. No active token -> no-op.
     public static void Set(HashSet<int> keys, ExtenderLog log)
     {
-        Armed = keys;
+        if (_activeToken == null) return;
+        _sections[_activeToken] = new HashSet<int>(keys);
+        Armed = new HashSet<int>(keys);
         Version++;
         Save(log);
+    }
+
+    // A fresh, crypto-random 128-bit token as 32 lowercase hex chars.
+    private static string Mint() => Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+
+    // One runnable check on the leak-critical invariant: a token the client never granted must
+    // restore NOTHING (so a malicious server presenting a random/stolen-format token can't arm keys
+    // without consent), and the default posture is empty. Run once at startup; ends fail-closed.
+    public static void SelfCheck(ExtenderLog log)
+    {
+        string ghost = new string('f', 32);                       // a token no server was ever granted
+        bool unknownEmpty = !Activate(ghost, log) && Armed.Count == 0;   // unknown -> empty
+        BeginSession();                                           // reset to the real startup posture
+        bool freshEmpty = Armed.Count == 0 && _activeToken == null;
+        bool tokenOk = Mint().Length == 32;
+        log.Info(unknownEmpty && freshEmpty && tokenOk
+            ? "HotkeyStore: fail-closed self-check passed"
+            : "HotkeyStore: FAIL-CLOSED SELF-CHECK FAILED -- consent default is unsafe");
     }
 
     public static void Save(ExtenderLog log)
     {
         try
         {
-            var snapshot = Armed;
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-            var lines = new List<string> { "# sowx hotkeys -- armed keys (one SDL keycode per line)" };
-            foreach (int code in snapshot) lines.Add(code.ToString());
+            var lines = new List<string>
+            {
+                "# sowx hotkeys -- per-server consent. One [token=<hex>] section per server;",
+                "# one SDL keycode per line under it. Deleting a section revokes that server's consent.",
+            };
+            foreach (var (tok, keys) in _sections)
+            {
+                lines.Add("");
+                lines.Add($"[token={tok}]");
+                foreach (int code in keys) lines.Add(code.ToString());
+            }
             File.WriteAllLines(Path, lines);
         }
         catch (Exception e) { log.Info($"HotkeyStore: save failed: {e.Message}"); }

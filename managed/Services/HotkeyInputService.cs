@@ -79,6 +79,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     public void Initialize()
     {
         HotkeyStore.Load(_log!);
+        HotkeyStore.SelfCheck(_log!);   // fail-closed default is security-critical; verify at startup
         _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);   // stable address; deref live for the current ctx
 
         _keyOrig    = (delegate* unmanaged<uint, uint, int>)_hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
