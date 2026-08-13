@@ -20,4 +20,10 @@ internal static class HotkeyProtocol
     public const byte KeyPressMajor = 0x36, KeyPressMinor = 0x40;
     public const byte OpenUiMajor   = 0x36, OpenUiMinor   = 0x41;
     public const byte ArmSetMajor   = 0x36, ArmSetMinor   = 0x42;
+
+    // Mouse buttons ride the same KeyPress channel as keys: SDL button index N is
+    // encoded as MouseBase + N. Bit 28 keeps these clear of every SDLK (ASCII < 128,
+    // scancode mask is bit 30), so a mouse code never aliases a key. This constant
+    // MUST match sow-codebase HotkeyProtocol.MouseBase byte for byte.
+    public const int MouseBase = 1 << 28;
 }

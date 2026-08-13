@@ -73,6 +73,11 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     // SDL event: type at +0x0, keysym.sym at +0x14 (both proven from WinMessageHandler).
     private const uint SdlKeyUp = 0x301;
     private const int SdlEvSymOff = 0x14;
+    // SDL_MouseButtonEvent: type at +0x0, button (Uint8) at +0x10. Mouse buttons come
+    // through the same WinMessageHandler pump as KEYUP -- no extra hook needed.
+    private const uint SdlMouseDown = 0x401;
+    private const uint SdlMouseUp   = 0x402;
+    private const int SdlEvButtonOff = 0x10;
 
     private static delegate* unmanaged<uint, uint, int> _keyOrig;
     private static delegate* unmanaged<IntPtr, int> _winMsgOrig;
@@ -116,21 +121,25 @@ public sealed unsafe class HotkeyInputService : IExtenderService
             _log?.Info($"[keydiag] key={key} armed={HotkeyStore.Armed.Contains((int)key)} " +
                        $"focused={_focused} typing={_typing} nui={NuiEditFocused()}");
 
-        // 1 consent + 2 auto-repeat: only the up->down transition of an armed key counts.
-        // _down.Add returns false if the key was already held (i.e. this is a repeat).
-        bool firstPress = HotkeyStore.Armed.Contains((int)key) && _down.Add((int)key);
-
-        if (firstPress && _focused && !_typing && !NuiEditFocused())           // 3,4
-        {
-            long now = Environment.TickCount64;                                 // 5. debounce
-            _lastSent.TryGetValue((int)key, out long last);
-            if (now - last >= DebounceMs)
-            {
-                _lastSent[(int)key] = now;
-                Send((int)key);                                                // 6. send the keycode
-            }
-        }
+        Fire((int)key);
         return _keyOrig != null ? _keyOrig(key, flags) : 0;                    // never consume the key
+    }
+
+    // The gate pipeline, shared by keys and mouse buttons. `code` is the wire code
+    // (SDLK for keys, MouseBase + button for mouse -- disjoint ranges, so one _down/
+    // _lastSent map serves both). Sends at most one packet. The up->down transition
+    // (_down) disables holding; the per-code debounce rate-limits. Steps 1-6 as above.
+    private static void Fire(int code)
+    {
+        // 1 consent + 2 no-repeat: only the up->down transition of an armed code counts.
+        // _down.Add returns false if already held (a key repeat, or a stray extra down).
+        if (!(HotkeyStore.Armed.Contains(code) && _down.Add(code))) return;
+        if (!_focused || _typing || NuiEditFocused()) return;                  // 3,4 focus + typing
+        long now = Environment.TickCount64;                                    // 5 debounce
+        _lastSent.TryGetValue(code, out long last);
+        if (now - last < DebounceMs) return;
+        _lastSent[code] = now;
+        Send(code);                                                           // 6 send the code
     }
 
     // KEYUP arrives here (not at HandleWMKeyDownMessage): clear the key's "held" mark
@@ -138,14 +147,27 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     [UnmanagedCallersOnly]
     private static int OnWinMessage(IntPtr ev)
     {
-        if (ev != IntPtr.Zero && *(uint*)ev == SdlKeyUp)
-            _down.Remove(*(int*)(ev + SdlEvSymOff));
+        if (ev != IntPtr.Zero)
+        {
+            switch (*(uint*)ev)
+            {
+                case SdlKeyUp:                                                  // key released
+                    _down.Remove(*(int*)(ev + SdlEvSymOff));
+                    break;
+                case SdlMouseDown:                                             // mouse press: same path as a key
+                    Fire(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff));
+                    break;
+                case SdlMouseUp:                                              // mouse release: clear the held mark
+                    _down.Remove(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff));
+                    break;
+            }
+        }
         return _winMsgOrig != null ? _winMsgOrig(ev) : 0;
     }
 
     private static void Send(int code)
     {
-        _log?.Info($"HotkeyInput: sending SDLK {code} to server");   // diag: confirm client emits the right code
+        _log?.Info($"HotkeyInput: sending code {code} to server");   // diag: confirm client emits the right code (SDLK, or MouseBase+button)
         ClientApi.SendAscii(HotkeyProtocol.KeyPressMajor, HotkeyProtocol.KeyPressMinor, code.ToString());
     }
 
