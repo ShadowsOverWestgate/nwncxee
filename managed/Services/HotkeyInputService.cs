@@ -26,7 +26,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     // Per-key rate limit: the same hotkey may fire at most once per this interval.
     // It is keyed by keycode (_lastSent below), so different hotkeys never throttle
     // each other -- 1,2,3 pressed in quick succession all fire.
-    private const long DebounceMs = 500;
+    private const long DebounceMs = 250;
 
     // These two are free functions in the shared engine, so Beamdog's Windows build
     // exports them by name -- they run on both platforms. The MSVC name (YAH..) shows
