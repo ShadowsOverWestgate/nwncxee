@@ -23,9 +23,12 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         _hooks = hooks;
     }
 
-    // A server that asks to track an implausible number of keys is refused wholesale --
-    // no toolbar layout binds this many. ponytail: bump if a real layout ever needs more.
-    private const int MaxArmed = 16;
+    // A server that asks to track an implausible number of keys is refused wholesale -- the only
+    // job of the cap is to bound a pathological payload (a giant consent modal / parse), NOT to
+    // limit the player: additions already require consent, so nothing arms silently. The real
+    // ceiling is one key per toolbar button, and the offered allow-list is ~80 keys, so 256 is
+    // generous headroom over any real layout. ponytail: raise further only if that ever changes.
+    private const int MaxArmed = 256;
 
     public void Initialize()
     {
