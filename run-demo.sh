@@ -9,7 +9,7 @@ B="$PWD/build"
 rm -f /tmp/sowx.log
 
 echo ">> launching /usr/bin/true with the extender preloaded..."
-SOWX_MANAGED="$B/sowx_managed.so" LD_PRELOAD="$B/libsowx.so" /usr/bin/true
+SOWX_MANAGED="$B/sowx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" /usr/bin/true
 
 echo
 echo ">> /tmp/sowx.log (written from C#):"

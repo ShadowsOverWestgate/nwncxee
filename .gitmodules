@@ -1,0 +1,3 @@
+[submodule "third_party/funchook"]
+	path = third_party/funchook
+	url = https://github.com/kubo/funchook.git

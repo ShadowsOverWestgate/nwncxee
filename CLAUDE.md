@@ -10,19 +10,61 @@ This is the **client** (`nwmain`), not the server. Server hooking lives in
 
 ## Build & run
 
-    ./build.sh        # needs: .NET 10 SDK, clang/gcc, ld.lld, zlib
-    ./run-demo.sh     # proves C# runs inside a foreign process (no game needed)
-    ./launch-nwn.sh   # launch the real client with the extender preloaded
-    ./sym.sh <pat>    # search the client's demangled symbols -- "what do I hook"
+    ./build.sh          # needs: .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake
+    ./run-demo.sh       # boots the framework in /usr/bin/true (no game needed)
+    ./launch-nwn.sh     # launch the real client with the extender preloaded
+    ./sym.sh [-m] <pat> # search client symbols; -m = mangled (for Install)
+
+First build clones+builds the funchook submodule (git submodule --init).
 
 ## Architecture
 
-    LD_PRELOAD libsowx.so  (native/bootstrap.c: constructor fires on load)
-      -> dlopen sowx_managed.so  (managed/: C# NativeAOT shared lib)
-      -> call C# export SowxInit()  ([UnmanagedCallersOnly] == C fn pointer)
+Load path (the "hard work", you never touch it):
 
-The bootstrap is the *only* native code. Real features = funchook installs hooks
-whose targets are C# `[UnmanagedCallersOnly]` exports.
+    LD_PRELOAD libsowx.so  (native/bootstrap.c: constructor fires on load)
+      -> dlopen sowx_managed.so  (C# NativeAOT shared lib)
+      -> SowxInit()  ->  ServiceHost.Run()
+                           - build DI container
+                           - discover every IExtenderService
+                           - construct (constructor DI) + Initialize() each
+                           - HookService.Commit() installs all hooks at once
+
+Navigation:
+
+    managed/
+      Entry.cs                 [UnmanagedCallersOnly] SowxInit -> ServiceHost.Run()
+      Framework/               the plumbing -- rarely edited
+        IExtenderService.cs      the one contract you implement
+        ServiceHost.cs           DI + discovery + lifecycle
+        HookService.cs           funchook wrapper: Install(symbol, handler) / Commit()
+        ExtenderLog.cs           inject this for logging
+      Services/                business logic -- this is where you work
+        HeartbeatService.cs      minimal DI example
+        FrameTapService.cs       full example: DI + a real hook
+    native/bootstrap.c         the only native code
+    third_party/funchook       hooking engine (git submodule)
+
+## Adding a service (the whole contributor workflow)
+
+Drop a class in `managed/Services/`. It is discovered and wired automatically --
+no registration:
+
+    public sealed class MyService : IExtenderService
+    {
+        private readonly ExtenderLog _log;
+        private readonly HookService _hooks;               // ask for what you need
+        public MyService(ExtenderLog log, HookService hooks) { _log = log; _hooks = hooks; }
+
+        public void Initialize()
+        {
+            // find the symbol:  ./sym.sh -m CNWSMessage::Handle...
+            // handler is a pointer to an [UnmanagedCallersOnly] static whose
+            // signature matches the target's ABI (member fns take `this` first).
+        }
+    }
+
+See `FrameTapService` for the hook + trampoline mechanics. Everything else --
+loading, DI, install ordering -- is done for you.
 
 ## Hard rules
 
@@ -53,6 +95,9 @@ Renders via OpenGL/GLX/X11 (SDL is static -- symbols appear, no `libSDL` in ldd)
 
 ## Status
 
+Framework works end-to-end under NativeAOT (DI + discovery + funchook install
+all verified via `run-demo.sh`). `FrameTapService` proves a live hook -- run
+`./launch-nwn.sh` and watch for "first frame presented -- hook is LIVE".
+
 Linux only. Windows = proxy DLL or rename-launcher; macOS = `DYLD_INSERT_LIBRARIES`,
 blocked by the notarized app's hardened runtime until re-signed (do last).
-No hooks yet -- next step is funchook + one named function.
