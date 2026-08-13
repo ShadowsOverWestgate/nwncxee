@@ -83,8 +83,8 @@ loading, DI, install ordering -- is done for you.
 ## The binary is your map
 
 `~/gry/steam/Neverwinter Nights/bin/linux-x86/nwmain-linux` is an
-**unstripped** ELF (~40k demangled symbols). Ghidra project:
-`~/ghidra/nwn-linux.rep`. You hook by name, no offset hunting. Known hook points:
+**unstripped** ELF (~24k dynamically-exported functions). You hook by name, no
+offset hunting. Known hook points:
 
 - `CNWSMessage::HandlePlayerToServerMessage(unsigned int, uchar*, uint)` -- client->server
   send path (packet feature). `HandlePlayerToServerDevice` is the device/metrics channel.
@@ -92,6 +92,38 @@ loading, DI, install ordering -- is done for you.
 - `./sym.sh CNWS...` / `./sym.sh Render` to find more.
 
 Renders via OpenGL/GLX/X11 (SDL is static -- symbols appear, no `libSDL` in ldd).
+
+## Reverse engineering (Ghidra)
+
+Two tools, two jobs:
+
+- **`./sym.sh` (nm)** -- fast path for *addresses and signatures*. "What's the
+  symbol? Does it exist? What's its ABI?" This is enough for most hooks.
+- **Ghidra** -- for *logic and layout*: decompiled function bodies, struct field
+  offsets, call graphs, xrefs. Reach for it when you need to know what a function
+  *does* or where a field sits in a struct (raw-pointer reads).
+
+The client is already imported and analyzed:
+
+- Project: `~/ghidra/nwn-linux.rep`  (client / `nwmain`; the *only* Ghidra project)
+- GUI: `ghidra`   Headless/scripted: `/opt/ghidra/support/analyzeHeadless`
+- There is no checked-in decompiled C++ dump -- the binary + this project are the
+  source of truth. State uncertainty from decompilation honestly; confirm against
+  runtime behavior when it matters.
+
+## Sibling repos
+
+- **`~/repos/sow-codebase`** -- the SoW **server** extender (Anvil + native hooks
+  via `NativeHookRegistry`). Your reference for: the *server end* of any custom
+  packet (where the payload is received/ignored), hooking semantics
+  (Before/After/SkipOriginal), and shared engine knowledge -- `CNWSMessage` and
+  friends are the *same classes* on client and server, so its struct/field notes
+  transfer. Do NOT copy its hook mechanism; the client uses funchook. Its
+  `AGENTS.md`/`DOCTRINE.md` are server law, not ours.
+- **`~/repos/sow-topdata`** -- shaders (`.shd`), 2DA, TLK as data. The
+  graphics-via-data path: anything shaders can express ships here, no extender.
+- `.claude/skills/` -- ported server skills (hooking, threading, native
+  conventions) with a README on what adapts to the client.
 
 ## Status
 
