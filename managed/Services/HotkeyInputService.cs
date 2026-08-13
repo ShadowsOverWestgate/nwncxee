@@ -28,8 +28,17 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     // each other -- 1,2,3 pressed in quick succession all fire.
     private const long DebounceMs = 1000;
 
-    private const string KeySym    = "_Z22HandleWMKeyDownMessagejj";
-    private const string WinMsgSym = "_Z17WinMessageHandlerP9SDL_Event";                 // for KEYUP
+    // These two are free functions in the shared engine, so Beamdog's Windows build
+    // exports them by name -- they run on both platforms. The MSVC name (YAH..) shows
+    // both return int; our delegates below return int to match (Linux ignored the
+    // return, which worked by luck but is wrong ABI).
+    private const string KeySym       = "_Z22HandleWMKeyDownMessagejj";
+    private const string KeySymWin    = "?HandleWMKeyDownMessage@@YAHII@Z";
+    private const string WinMsgSym    = "_Z17WinMessageHandlerP9SDL_Event";              // for KEYUP
+    private const string WinMsgSymWin = "?WinMessageHandler@@YAHPEATSDL_Event@@@Z";
+    // The rest hook client-only classes (CClientExoApp/CGuiInGame/CGuiInGameChatPrompt)
+    // that Windows does NOT name-export -- Linux-only until an RVA path exists; they
+    // skip with a log line on Windows (see HookService.Install overload).
     private const string GainSym   = "_ZN13CClientExoApp11OnGainFocusEv";
     private const string LostSym   = "_ZN13CClientExoApp11OnLostFocusEv";
     private const string ChatOnSym = "_ZN10CGuiInGame18SetFocusChatPromptEv";           // chat opened by key
@@ -65,8 +74,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private const uint SdlKeyUp = 0x301;
     private const int SdlEvSymOff = 0x14;
 
-    private static delegate* unmanaged<uint, uint, void> _keyOrig;
-    private static delegate* unmanaged<IntPtr, void> _winMsgOrig;
+    private static delegate* unmanaged<uint, uint, int> _keyOrig;
+    private static delegate* unmanaged<IntPtr, int> _winMsgOrig;
     private static delegate* unmanaged<IntPtr, void> _gainOrig, _lostOrig, _chatOnOrig, _clickOrig, _enterOrig, _escOrig, _loseOrig;
 
     private readonly HookService _hooks;
@@ -82,8 +91,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         HotkeyStore.Load(_log!);
         _nuklearGlobal = Native.Sym(NuiSym);   // stable address; deref live for the current ctx
 
-        _keyOrig    = (delegate* unmanaged<uint, uint, void>)_hooks.Install(KeySym,    (IntPtr)(delegate* unmanaged<uint, uint, void>)&OnKeyDown);
-        _winMsgOrig = (delegate* unmanaged<IntPtr, void>)_hooks.Install(WinMsgSym, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnWinMessage);
+        _keyOrig    = (delegate* unmanaged<uint, uint, int>)_hooks.Install(KeySym,    KeySymWin,    (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
+        _winMsgOrig = (delegate* unmanaged<IntPtr, int>)_hooks.Install(WinMsgSym, WinMsgSymWin, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
         _gainOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(GainSym,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
         _lostOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(LostSym,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
         _chatOnOrig = (delegate* unmanaged<IntPtr, void>)_hooks.Install(ChatOnSym, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatOn);
@@ -101,7 +110,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_KEYDIAG"));
 
     [UnmanagedCallersOnly]
-    private static void OnKeyDown(uint key, uint flags)
+    private static int OnKeyDown(uint key, uint flags)
     {
         if (_keyDiag)
             _log?.Info($"[keydiag] key={key} armed={HotkeyStore.Armed.Contains((int)key)} " +
@@ -121,17 +130,17 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                 Send((int)key);                                                // 6. send the keycode
             }
         }
-        if (_keyOrig != null) _keyOrig(key, flags);                            // never consume the key
+        return _keyOrig != null ? _keyOrig(key, flags) : 0;                    // never consume the key
     }
 
     // KEYUP arrives here (not at HandleWMKeyDownMessage): clear the key's "held" mark
     // so the next genuine press can fire again. We only observe; original does the work.
     [UnmanagedCallersOnly]
-    private static void OnWinMessage(IntPtr ev)
+    private static int OnWinMessage(IntPtr ev)
     {
         if (ev != IntPtr.Zero && *(uint*)ev == SdlKeyUp)
             _down.Remove(*(int*)(ev + SdlEvSymOff));
-        if (_winMsgOrig != null) _winMsgOrig(ev);
+        return _winMsgOrig != null ? _winMsgOrig(ev) : 0;
     }
 
     private static void Send(int code)

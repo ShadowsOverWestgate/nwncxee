@@ -14,10 +14,14 @@ namespace Sowx.Services;
 public sealed unsafe class FrameTapService : IExtenderService
 {
     // GLRender::SwapBuffers(SDL_Window*)   -- ./sym.sh -m GLRender::SwapBuffers
-    private const string Symbol = "_ZN8GLRender11SwapBuffersEP10SDL_Window";
+    // The Windows MSVC name says `CA` (static) + one arg (SDL_Window*): there is NO
+    // `this`. On Linux the Itanium name hides that; a spare 2nd arg was forwarded as
+    // garbage and ignored, which happened to work. The correct signature is one arg.
+    private const string Symbol    = "_ZN8GLRender11SwapBuffersEP10SDL_Window";
+    private const string SymbolWin = "?SwapBuffers@GLRender@@CAXPEAUSDL_Window@@@Z";
 
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, IntPtr, void> _original;
+    private static delegate* unmanaged<IntPtr, void> _original;
     private static bool _announced;
 
     private readonly HookService _hooks;
@@ -31,19 +35,19 @@ public sealed unsafe class FrameTapService : IExtenderService
     public void Initialize()
     {
         IntPtr trampoline = _hooks.Install(
-            Symbol,
-            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnSwapBuffers);
-        _original = (delegate* unmanaged<IntPtr, IntPtr, void>)trampoline;
+            Symbol, SymbolWin,
+            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwapBuffers);
+        _original = (delegate* unmanaged<IntPtr, void>)trampoline;
     }
 
     [UnmanagedCallersOnly]
-    private static void OnSwapBuffers(IntPtr self, IntPtr window)
+    private static void OnSwapBuffers(IntPtr window)
     {
         if (!_announced)
         {
             _announced = true;
             _log?.Info("FrameTapService: first frame presented -- hook is LIVE");
         }
-        if (_original != null) _original(self, window); // let the game render
+        if (_original != null) _original(window); // let the game render
     }
 }

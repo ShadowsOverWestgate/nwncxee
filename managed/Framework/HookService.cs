@@ -29,6 +29,24 @@ public sealed class HookService : IDisposable
         _fh = funchook_create();
     }
 
+    // Platform-aware overload. Same function, two mangling schemes: `linux` is the
+    // Itanium name (./sym.sh -m), `windows` the MSVC name (objdump -x nwmain.exe).
+    // A null `windows` means the function is not name-exported on Windows -- Beamdog's
+    // PE exports are opt-in and omit the client-only GUI/message classes (CNWCMessage,
+    // CGuiInGame*, COptionsPanel, CClientExoApp GUI). Those hooks skip with a log line
+    // until an address (RVA/pattern) path is added; the extender is optional by design,
+    // so a logged no-op on Windows is acceptable degradation, not a crash.
+    public IntPtr Install(string linux, string? windows, IntPtr handler)
+    {
+        string? sym = OperatingSystem.IsWindows() ? windows : linux;
+        if (sym is null)
+        {
+            _log.Info($"hook: no windows symbol for {linux}; skipping (not name-exported)");
+            return IntPtr.Zero;
+        }
+        return Install(sym, handler);
+    }
+
     // Returns a pointer to the trampoline (the original function) -- cast it to a
     // matching delegate* to call through. IntPtr.Zero means the hook was not set.
     public IntPtr Install(string mangledSymbol, IntPtr handler)

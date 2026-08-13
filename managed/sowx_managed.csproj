@@ -8,7 +8,9 @@
     <PublishAot>true</PublishAot>
     <NativeLib>Shared</NativeLib>
     <AssemblyName>sowx_managed</AssemblyName>
-    <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
+    <!-- CI overrides with `dotnet publish -r win-x64`; NativeAOT needs a Windows
+         toolchain to emit the .dll, so the Windows leg runs on a Windows runner. -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">linux-x64</RuntimeIdentifier>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
