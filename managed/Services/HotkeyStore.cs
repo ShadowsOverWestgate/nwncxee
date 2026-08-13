@@ -22,6 +22,11 @@ public static class HotkeyStore
 {
     public static volatile HashSet<int> Armed = new();
 
+    // Bumped on every change to Armed. The client-native manager (HotkeyManagerService) reads this
+    // once per frame and rebuilds its baked key labels only when it changes -- so the render hot path
+    // never allocates for an unchanged set.
+    public static volatile int Version;
+
     public static string Path =>
         System.IO.Path.Combine(
             Environment.GetEnvironmentVariable("HOME") ?? "/tmp", ".config", "sowx-hotkeys.cfg");
@@ -45,7 +50,29 @@ public static class HotkeyStore
         catch (Exception e) { log.Info($"HotkeyStore: load failed: {e.Message}"); }
 
         Armed = set;   // atomic publish; readers see old or new, both immutable
+        Version++;
         log.Info($"HotkeyStore: {set.Count} key(s) armed (SDLK: {string.Join(",", set)}), from {Path}");
+    }
+
+    // Add player-consented keys to the armed set and persist. Atomic publish of a fresh
+    // immutable snapshot. Only ever called after an explicit OK in the consent modal.
+    public static void Grant(HashSet<int> keys, ExtenderLog log)
+    {
+        var next = new HashSet<int>(Armed);
+        next.UnionWith(keys);
+        Armed = next;
+        Version++;
+        Save(log);
+        log.Info($"HotkeyStore: player armed {keys.Count} new key(s); {next.Count} total");
+    }
+
+    // Replace the armed set wholesale and persist. Used for silent removals (shrinking
+    // the capture surface needs no consent) and the client-native manager's unbind/revoke-all.
+    public static void Set(HashSet<int> keys, ExtenderLog log)
+    {
+        Armed = keys;
+        Version++;
+        Save(log);
     }
 
     public static void Save(ExtenderLog log)

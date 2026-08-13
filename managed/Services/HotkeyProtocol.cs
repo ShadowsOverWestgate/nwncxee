@@ -12,6 +12,8 @@ namespace Sowx.Services;
 //   client -> server
 //     KeyPress : an armed key was pressed.   payload = ASCII decimal VK, e.g. "112"
 //     OpenUi   : player asked for the UI.    payload = none
+//     Revoke   : player unbound/denied keys. payload = ASCII CSV of VKs, e.g. "112,113"
+//                (server forgets the binding, so it stops re-pushing them)
 //   server -> client
 //     ArmSet   : here is the armed set.      payload = ASCII CSV of VKs, e.g. "112,113"
 //                (empty payload = arm nothing)
@@ -20,6 +22,9 @@ internal static class HotkeyProtocol
     public const byte KeyPressMajor = 0x36, KeyPressMinor = 0x40;
     public const byte OpenUiMajor   = 0x36, OpenUiMinor   = 0x41;
     public const byte ArmSetMajor   = 0x36, ArmSetMinor   = 0x42;
+    // Revoke (client -> server): the player unbound / denied these keys. payload = ASCII CSV of
+    // keycodes, e.g. "112,113". The server forgets the binding so it stops pushing them back.
+    public const byte RevokeMajor   = 0x36, RevokeMinor   = 0x43;
 
     // Mouse buttons ride the same KeyPress channel as keys: SDL button index N is
     // encoded as MouseBase + N. Bit 28 keeps these clear of every SDLK (ASCII < 128,

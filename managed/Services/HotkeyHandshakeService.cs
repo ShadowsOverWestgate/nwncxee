@@ -45,7 +45,12 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
         // `msg` is the live CNWCMessage; cache it for outbound sends (see ClientApi.LiveMessage).
         ClientApi.LiveMessage = msg;
         uint r = _loginOrig != null ? _loginOrig(msg, subcmd) : 1;
-        if (subcmd == 5) Advertise(msg);   // 5 = login accepted / entering game
+        if (subcmd == 5)
+        {
+            HotkeyConsent.Reset();          // a fresh session must not inherit a half-answered prompt
+            HotkeyManagerService.Close();   // nor a manager window left open across a disconnect
+            Advertise(msg);                 // 5 = login accepted / entering game
+        }
         return r;
     }
 

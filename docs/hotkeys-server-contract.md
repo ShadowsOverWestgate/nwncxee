@@ -57,9 +57,20 @@ Server reads these to know the extender is present and the client's current set.
 - major/minor: `ArmSetMajor/Minor`, payload = **ASCII CSV of SDLK codes**, e.g.
   `"102,1073741882"` (f, F1) (empty payload = arm nothing).
 - Sent whenever the player changes their selection in the NUI (and optionally on
-  enter, to restore the vault-persisted set). The client replaces its armed set,
-  caches it, and begins/stops capturing those keys immediately.
+  enter, to restore the vault-persisted set). The client computes the delta:
+  **removals** (armed now, not in the new set) apply silently; **additions** raise
+  the client-owned consent modal and only arm on the player's OK.
 - Only send this to clients that advertised `sowx_enabled = 1`.
+
+### 5. Revoke (client -> server) -- forget these keys
+
+- major/minor: `RevokeMajor/Minor` (`0x36 / 0x43`), payload = **ASCII CSV of SDLK
+  codes**, e.g. `"102,1073741882"`.
+- Sent when the player **denies** the consent modal (so the server does not keep the
+  binding and re-push/re-prompt it every login) or unbinds from a client-side review.
+- Server response: drop those keys from the character's map (unbinding whatever
+  toolbar/metamagic slot they pointed at) and re-push the shrunk ArmSet. A revoke for
+  an unbound key is a no-op.
 
 ## Keycodes (SDLK, not Windows VK)
 
@@ -102,4 +113,5 @@ click  -> client OpenUi ------------------------------------->  server NuiCreate
 NUI    <- player arms keys -> server persists (vault) -------->  server ArmSet (msg 4)
        -> client caches set, starts capturing those keys
 press  -> client KeyPress (armed, gated, debounced) --------->  server maps -> action (msg 3)
+deny   -> client Revoke ------------------------------------->  server forgets binding (msg 5)
 ```

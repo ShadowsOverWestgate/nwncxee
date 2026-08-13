@@ -40,13 +40,33 @@ internal static unsafe class SymbolMap
     // options panel (repurposed Save-Character button)
     public const string PostAttachmentInitialize = "_ZN13COptionsPanel24PostAttachmentInitializeEv";
     public const string HandleSaveCharButton     = "_ZN13COptionsPanel20HandleSaveCharButtonEv";
+    public const string OptionsHandleXButton     = "_ZN13COptionsPanel13HandleXButtonEv";   // closes the options menu (what Resume calls)
     // misc engine helpers
     public const string GetNWCMessage = "_ZN13CClientExoApp13GetNWCMessageEv";
     public const string SetText       = "_ZN20CAuroraStringWrapper7SetTextEj";
     public const string ExoStringInit = "_ZN10CExoString17InitFromCharArrayEPKcj";
     public const string ExoStringDtor = "_ZN10CExoStringD1Ev";
+    // consent modal -- the native yes/no panel (CPanelOkCancel, as used by the quit
+    // dialog) plus the pieces to spawn it and gate on being in-game. The four engine
+    // symbols below are name-exported on both platforms; operator new is not on Windows
+    // (static CRT), so it resolves by RVA -- see the _win table.
+    public const string OperatorNew     = "_Znwm";                                     // Linux: libstdc++ operator new(size_t); Windows: the game's own by RVA
+    public const string OkCancelCtor    = "_ZN14CPanelOkCancelC1Ev";
+    public const string OkCancelActivate= "_ZN14CPanelOkCancel8ActivateE10CExoStringjj"; // (CExoString msg, uint ok, uint cancel)
+    public const string SdlGetKeyName   = "SDL_GetKeyName";
+    // client-native manager: a window injected into the client's own nuklear pass. We hook the
+    // per-frame nk_sdl_render (it does nk_convert then nk_clear, so we add our window just before
+    // it) and drive it with the stock nuklear immediate-mode API. All C symbols, Linux-only for now.
+    public const string NkSdlRender        = "nk_sdl_render";
+    public const string NkBegin            = "nk_begin";
+    public const string NkEnd              = "nk_end";
+    public const string NkLayoutRowDynamic = "nk_layout_row_dynamic";
+    public const string NkLabel            = "nk_label";
+    public const string NkButtonLabel      = "nk_button_label";
+    public const string NkWindowIsClosed   = "nk_window_is_closed";
     // data globals
     public const string AppManager = "g_pAppManager";
+    public const string GuiMan     = "g_pGuiMan";
     public const string Nuklear    = "g_pNuklear";
 
     // PE TimeDateStamp of the nwmain.exe the RVAs were read from (build 26c6e573).
@@ -86,6 +106,7 @@ internal static unsafe class SymbolMap
         [GetNWCMessage]               = At(0x6abf90),
         [PostAttachmentInitialize]    = At(0x830b50),
         [HandleSaveCharButton]        = At(0x82fb60),
+        [OptionsHandleXButton]        = default,   // client GUI, no Windows anchor yet: skip (menu just stays open)
         [SetFocusChatPrompt]          = At(0x6fae30),
         [ChatHandleEnter]             = At(0x87b0d0),
         [ChatHandleEsc]               = At(0x87b390),
@@ -97,6 +118,31 @@ internal static unsafe class SymbolMap
         [OnGainFocus] = default,   // empty focus stub, indirect dispatch
         [OnLostFocus] = default,   // empty focus stub
         [Nuklear]     = default,   // NUI edit-focus probe (client global)
+
+        // consent modal -- the native yes/no panel. These four ARE name-exported on Windows
+        // (verified in nwmain.exe's export table, build 0x68e408bc) -- resolve by MSVC name
+        // like the shared-engine class methods.
+        [OkCancelCtor]    = Nm("??0CPanelOkCancel@@QEAA@XZ"),
+        [OkCancelActivate]= Nm("?Activate@CPanelOkCancel@@QEAAXVCExoString@@II@Z"),
+        [GuiMan]          = Nm("?g_pGuiMan@@3PEAVCGuiMan@@EA"),
+        [SdlGetKeyName]   = Nm("SDL_GetKeyName"),
+        // nwmain.exe statically links the CRT, so operator new/delete are internal (not exported,
+        // no CRT DLL imported). The panel's deleting dtor frees via the game's own operator delete,
+        // so we MUST allocate from the game's own operator new -- a cross-heap alloc would corrupt
+        // on free. Resolve it by RVA (build-locked). It's the scalar operator new(size_t): a
+        // _malloc_base + _callnewh(new_handler) loop, VS2017/2019 release. With this + the four
+        // exports above + the build lock, the consent modal runs on Windows.
+        [OperatorNew]     = At(0xc10324),
+
+        // client-native manager (nuklear) -- no Windows anchor yet: skip + log, so the manager
+        // (and its hook) simply do not exist on Windows, same fail-closed posture as the modal.
+        [NkSdlRender]        = default,
+        [NkBegin]            = default,
+        [NkEnd]              = default,
+        [NkLayoutRowDynamic] = default,
+        [NkLabel]            = default,
+        [NkButtonLabel]      = default,
+        [NkWindowIsClosed]   = default,
     };
 
     // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the
