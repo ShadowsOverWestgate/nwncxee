@@ -64,6 +64,15 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private const uint SdlMouseUp   = 0x402;
     private const int SdlEvButtonOff = 0x10;
 
+    // SDL_Keymod bits (SDL_keycode.h). Ctrl/Shift take both sides; Alt is LALT ONLY --
+    // RALT is AltGr (used for accented chars, and on Windows AltGr = LCTRL+RALT), so
+    // binding it as a modifier would hijack normal typing. ponytail: expose RAlt only
+    // if someone genuinely wants an AltGr chord.
+    private const int KmodShift = 0x0003;   // LSHIFT | RSHIFT
+    private const int KmodCtrl  = 0x00C0;   // LCTRL | RCTRL
+    private const int KmodLAlt  = 0x0100;   // LALT only
+    private static delegate* unmanaged<int> _modState;   // SDL_GetModState()
+
     private static delegate* unmanaged<uint, uint, int> _keyOrig;
     private static delegate* unmanaged<IntPtr, int> _winMsgOrig;
     private static delegate* unmanaged<IntPtr, void> _gainOrig, _lostOrig, _chatOnOrig, _clickOrig, _enterOrig, _escOrig, _loseOrig;
@@ -81,6 +90,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         HotkeyStore.Load(_log!);
         HotkeyStore.SelfCheck(_log!);   // fail-closed default is security-critical; verify at startup
         _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);   // stable address; deref live for the current ctx
+        _modState = (delegate* unmanaged<int>)Native.Sym(SymbolMap.SdlGetModState);   // live modifier state at capture
 
         _keyOrig    = (delegate* unmanaged<uint, uint, int>)_hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
         _winMsgOrig = (delegate* unmanaged<IntPtr, int>)_hooks.Install(SymbolMap.WinMessageHandler,     (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
@@ -107,8 +117,22 @@ public sealed unsafe class HotkeyInputService : IExtenderService
             _log?.Info($"[keydiag] key={key} armed={HotkeyStore.Armed.Contains((int)key)} " +
                        $"focused={_focused} typing={_typing} nui={NuiEditFocused()}");
 
-        Fire((int)key);
+        Fire((int)key | Mods());
         return _keyOrig != null ? _keyOrig(key, flags) : 0;                    // never consume the key
+    }
+
+    // The Ctrl/Shift/Alt bits currently held, in HotkeyProtocol.Mod* encoding -- OR'd onto the
+    // base code so a combo (Ctrl+F) matches its own armed entry and nothing else. Reads SDL's live
+    // modifier state on the event thread; no allocation.
+    private static int Mods()
+    {
+        if (_modState == null) return 0;
+        int m = _modState();
+        int bits = 0;
+        if ((m & KmodCtrl)  != 0) bits |= HotkeyProtocol.ModCtrl;
+        if ((m & KmodShift) != 0) bits |= HotkeyProtocol.ModShift;
+        if ((m & KmodLAlt)  != 0) bits |= HotkeyProtocol.ModAlt;
+        return bits;
     }
 
     // The gate pipeline, shared by keys and mouse buttons. `code` is the wire code
@@ -119,7 +143,10 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     {
         // 1 consent + 2 no-repeat: only the up->down transition of an armed code counts.
         // _down.Add returns false if already held (a key repeat, or a stray extra down).
-        if (!(HotkeyStore.Armed.Contains(code) && _down.Add(code))) return;
+        // Track "held" by the BASE key (modifier bits stripped): KEYUP/mouse-up deliver the
+        // raw sym/button with no modifier state, so the release must clear the same key it set.
+        int baseCode = code & ~HotkeyProtocol.ModMask;
+        if (!(HotkeyStore.Armed.Contains(code) && _down.Add(baseCode))) return;
         if (!_focused || _typing || NuiEditFocused()) return;                  // 3,4 focus + typing
         long now = Environment.TickCount64;                                    // 5 debounce
         _lastSent.TryGetValue(code, out long last);
@@ -141,7 +168,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                     _down.Remove(*(int*)(ev + SdlEvSymOff));
                     break;
                 case SdlMouseDown:                                             // mouse press: same path as a key
-                    Fire(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff));
+                    Fire(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff) | Mods());
                     break;
                 case SdlMouseUp:                                              // mouse release: clear the held mark
                     _down.Remove(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff));

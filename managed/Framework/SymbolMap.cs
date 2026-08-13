@@ -54,6 +54,7 @@ internal static unsafe class SymbolMap
     public const string OkCancelCtor    = "_ZN14CPanelOkCancelC1Ev";
     public const string OkCancelActivate= "_ZN14CPanelOkCancel8ActivateE10CExoStringjj"; // (CExoString msg, uint ok, uint cancel)
     public const string SdlGetKeyName   = "SDL_GetKeyName";
+    public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
     // client-native manager: a window injected into the client's own nuklear pass. We hook the
     // per-frame nk_sdl_render (it does nk_convert then nk_clear, so we add our window just before
     // it) and drive it with the stock nuklear immediate-mode API. All C symbols, Linux-only for now.
@@ -126,6 +127,7 @@ internal static unsafe class SymbolMap
         [OkCancelActivate]= Nm("?Activate@CPanelOkCancel@@QEAAXVCExoString@@II@Z"),
         [GuiMan]          = Nm("?g_pGuiMan@@3PEAVCGuiMan@@EA"),
         [SdlGetKeyName]   = Nm("SDL_GetKeyName"),
+        [SdlGetModState]  = Nm("SDL_GetModState"),
         // nwmain.exe statically links the CRT, so operator new/delete are internal (not exported,
         // no CRT DLL imported). The panel's deleting dtor frees via the game's own operator delete,
         // so we MUST allocate from the game's own operator new -- a cross-heap alloc would corrupt

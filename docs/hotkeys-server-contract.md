@@ -120,6 +120,19 @@ range) do not -- so a "VK" value like `70` for F will silently never match.
 The number is opaque to the server: display key names, but store/echo whatever
 SDLK the client sent. Full list: SDL's `SDL_keycode.h` (`SDLK_*`).
 
+### Modifiers (Ctrl/Shift/Alt)
+
+A combo is the base SDLK with a modifier high bit OR'd in: `ModCtrl = 1 << 25`,
+`ModShift = 1 << 26`, `ModAlt = 1 << 27` (bits 25-27 are free of every base -- ASCII
+keys use bits 0-6, scancode keys add bit 30, mouse uses bit 28). So `Ctrl+F` is
+`ModCtrl | 102`. Matching is **exact** -- `Ctrl+F` and `F` are different codes and never
+fire each other. The code is opaque on the wire as always: the client reads live modifier
+state (`SDL_GetModState`) at capture and encodes the same bits, then matches against the
+armed set; the server offers three picker checkboxes and OR's the chosen bits into the
+keycode at bind time. Alt uses **left-Alt only** (`KMOD_LALT`); right-Alt is AltGr, which
+is needed for accented typing and which Windows synthesizes as Ctrl+Alt. Both repos'
+`HotkeyProtocol` must agree on the three constants.
+
 ### Confirmed failure mode (runtime-verified)
 
 If the server's key table uses VK codes, the client receives them, arms them

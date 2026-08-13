@@ -169,6 +169,18 @@ internal static unsafe class HotkeyConsent
     // F-key/arrow gets mislabelled "Mouse". Shared with HotkeyManagerService's list.
     internal static string KeyName(int code)
     {
+        // Modifiers are high bits (ModMask); strip them, name the base key, prefix the combo.
+        // The consent prompt is a security surface -- it MUST read "Ctrl+F", not "key ?", so the
+        // player knows what they are allowing.
+        int mods = code & HotkeyProtocol.ModMask;
+        if (mods != 0)
+        {
+            string prefix = "";
+            if ((mods & HotkeyProtocol.ModCtrl) != 0) prefix += "Ctrl+";
+            if ((mods & HotkeyProtocol.ModShift) != 0) prefix += "Shift+";
+            if ((mods & HotkeyProtocol.ModAlt) != 0) prefix += "Alt+";
+            return prefix + KeyName(code & ~HotkeyProtocol.ModMask);
+        }
         if (code >= HotkeyProtocol.MouseBase && code <= HotkeyProtocol.MouseBase + 0xFF)
         {
             int btn = code - HotkeyProtocol.MouseBase;   // SDL button index

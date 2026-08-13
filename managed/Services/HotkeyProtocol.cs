@@ -42,4 +42,14 @@ internal static class HotkeyProtocol
     // scancode mask is bit 30), so a mouse code never aliases a key. This constant
     // MUST match sow-codebase HotkeyProtocol.MouseBase byte for byte.
     public const int MouseBase = 1 << 28;
+
+    // Modifier bits OR'd onto a base code (SDLK or MouseBase+button) to make a combo
+    // like Ctrl+F a distinct opaque code. Bits 25/26/27 are free of every base: ASCII
+    // keys use bits 0-6, scancode keys add bit 30, mouse uses bit 28. Matching is EXACT
+    // -- Ctrl+F (ModCtrl|102) is a different code than F (102), so one never fires the
+    // other. These MUST match sow-codebase HotkeyProtocol byte for byte.
+    public const int ModCtrl  = 1 << 25;
+    public const int ModShift = 1 << 26;
+    public const int ModAlt   = 1 << 27;
+    public const int ModMask  = ModCtrl | ModShift | ModAlt;
 }
