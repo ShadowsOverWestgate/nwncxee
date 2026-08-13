@@ -11,34 +11,54 @@ Client extender (this repo, done):
 - Options-menu "Hotkeys" button (repurposed SaveCharButton).
 - Runtime capture: a pressed **armed** key -> a packet to the server, gated on
   window focus + "not typing in chat", debounced 250 ms.
-- Handshake: advertises extender presence + the armed set on login.
-- Persists/caches the armed set client-side (`~/.config/sowx-hotkeys.cfg`).
+- Handshake: advertises extender **presence only** (`sowx_enabled`) on login. It does
+  **not** advertise the armed set -- consent is per-server (see below), so telling every
+  server the keys to harvest was a leak. The server re-pushes its set via ArmSet.
+- Persists consent **per server**, scoped by a client-minted token
+  (`~/.config/sowx-hotkeys.cfg`, one `[token=<hex>]` section per server).
 
-Server (sow-codebase, to build):
+Server (sow-codebase, done):
 - Builds the arming **NUI** (it knows the toolbar/ability layout to show).
 - Owns the key -> toolbar-action **mapping** (the client never sees it).
-- Persists the armed set per character (server vault).
-- Pushes the armed set to the client when it changes.
+- Persists the armed set **and the consent token** per character (server vault).
+- Presents the token on login (PresentToken) and pushes the armed set to the client.
 
-## The four messages
+## Per-server consent (the token model)
 
-Opcodes below are **placeholders** in `managed/Services/HotkeyProtocol.cs`
-(`0x36 / 0x40..0x42`). Pick real ones the server already routes and match them on
-both ends. All custom payloads are **ASCII text** (no endianness).
+Consent is a **capability**, not a global switch. It is scoped to the server that
+holds a secret the client gave it, so one server can never inherit another's consent.
 
-### 1. Handshake (client -> server) -- device advertisement, already implemented
+- On the **first** consent for a server (the player OKs the client-owned modal), the
+  client mints a random 128-bit token, records `{token -> keys}` locally, and hands the
+  token + consented keys to the server (**GrantToken**). The server stores the token per
+  character, alongside the bindings.
+- On **every later login**, the server presents that token back (**PresentToken**)
+  **before** ArmSet. The client looks it up: recognised -> restore that server's
+  consented keys silently; unrecognised/absent -> the armed set stays **empty**.
+- A malicious server that was never granted a token can present none, so the client's
+  armed set stays empty and every key its ArmSet asks for becomes a fresh consent
+  prompt. Replaying another server's key list gains it nothing -- it lacks that
+  server's token, so nothing is silently restored. This is why a per-session ArmSet
+  alone was insufficient and the token is required.
+
+**Ordering matters:** send PresentToken *before* ArmSet on login. Otherwise the client
+plans the ArmSet against an empty armed set and re-prompts the player every login.
+
+## The messages
+
+Opcodes are **final** in `managed/Services/HotkeyProtocol.cs` (device major `0x36`,
+minors `0x40..0x45`). All custom payloads are **ASCII text** (no endianness).
+
+### 1. Handshake (client -> server) -- device advertisement
 
 On login accepted, the client advertises via the stock device channel
 (`SendPlayerToServerDeviceAdvertiseProperty`, major `0x36` / minor `1`). The server
-stores each as `player.propertyMap[lowercased name] = int` (on `CNWSPlayer`,
-offset `0xe0`). Properties:
+stores it as `player.propertyMap[lowercased name] = int` (on `CNWSPlayer`, offset `0xe0`):
 
 - `sowx_enabled = 1`      -- the extender is present; only now offer the feature.
-- `sowx_hk_count = N`     -- number of armed keys the client already had cached.
-- `sowx_hk_<i> = vk`      -- each armed SDLK code, `i` in `0..N-1`. **Read by count**
-  (the map only ever inserts -- a shorter re-advertise leaves stale higher indices).
 
-Server reads these to know the extender is present and the client's current set.
+The client advertises **only** presence -- never the armed key list (that was the old
+global-consent leak). The server owns the bindings and re-pushes them via ArmSet.
 
 ### 2. OpenUi (client -> server) -- "player clicked Hotkeys"
 
@@ -57,9 +77,36 @@ Server reads these to know the extender is present and the client's current set.
 - major/minor: `ArmSetMajor/Minor`, payload = **ASCII CSV of SDLK codes**, e.g.
   `"102,1073741882"` (f, F1) (empty payload = arm nothing).
 - Sent whenever the player changes their selection in the NUI (and optionally on
-  enter, to restore the vault-persisted set). The client replaces its armed set,
-  caches it, and begins/stops capturing those keys immediately.
+  enter, to restore the vault-persisted set). The client computes the delta:
+  **removals** (armed now, not in the new set) apply silently; **additions** raise
+  the client-owned consent modal and only arm on the player's OK.
 - Only send this to clients that advertised `sowx_enabled = 1`.
+
+### 5. Revoke (client -> server) -- forget these keys
+
+- major/minor: `RevokeMajor/Minor` (`0x36 / 0x43`), payload = **ASCII CSV of SDLK
+  codes**, e.g. `"102,1073741882"`.
+- Sent when the player **denies** the consent modal (so the server does not keep the
+  binding and re-push/re-prompt it every login) or unbinds from a client-side review.
+- Server response: drop those keys from the character's map (unbinding whatever
+  toolbar/metamagic slot they pointed at) and re-push the shrunk ArmSet. A revoke for
+  an unbound key is a no-op.
+
+### 6. PresentToken (server -> client) -- proof of prior consent
+
+- major/minor: `0x36 / 0x44`, payload = **the token hex** the client granted last time
+  (e.g. `"a1b2...d6"`). Empty payload = "I hold no token".
+- Sent on login **before** ArmSet, only to clients that advertised `sowx_enabled = 1`.
+- Client response: recognised token -> restore that server's consented keys (no prompt);
+  unrecognised/empty -> armed set stays empty, awaiting fresh consent.
+
+### 7. GrantToken (client -> server) -- consent receipt
+
+- major/minor: `0x36 / 0x45`, payload = **`"<tokenhex>;<CSV of consented keys>"`**.
+- Sent right after the player OKs the consent modal. The server reads the leading hex
+  run (up to the `;`) and stores it per character as that character's consent token, to
+  present back on the next login. Storing it is idempotent (re-sending the same token is
+  a no-op).
 
 ## Keycodes (SDLK, not Windows VK)
 
@@ -72,6 +119,19 @@ Digits coincide with VK; letters (lowercase) and F-keys (SDL's `0x40000000`
 range) do not -- so a "VK" value like `70` for F will silently never match.
 The number is opaque to the server: display key names, but store/echo whatever
 SDLK the client sent. Full list: SDL's `SDL_keycode.h` (`SDLK_*`).
+
+### Modifiers (Ctrl/Shift/Alt)
+
+A combo is the base SDLK with a modifier high bit OR'd in: `ModCtrl = 1 << 25`,
+`ModShift = 1 << 26`, `ModAlt = 1 << 27` (bits 25-27 are free of every base -- ASCII
+keys use bits 0-6, scancode keys add bit 30, mouse uses bit 28). So `Ctrl+F` is
+`ModCtrl | 102`. Matching is **exact** -- `Ctrl+F` and `F` are different codes and never
+fire each other. The code is opaque on the wire as always: the client reads live modifier
+state (`SDL_GetModState`) at capture and encodes the same bits, then matches against the
+armed set; the server offers three picker checkboxes and OR's the chosen bits into the
+keycode at bind time. Alt uses **left-Alt only** (`KMOD_LALT`); right-Alt is AltGr, which
+is needed for accented typing and which Windows synthesizes as Ctrl+Alt. Both repos'
+`HotkeyProtocol` must agree on the three constants.
 
 ### Confirmed failure mode (runtime-verified)
 
@@ -97,9 +157,19 @@ Better than converting: define the server's key list in SDLK from the start
 ## Flow
 
 ```
-login  -> client advertises sowx_enabled + cached armed set   (msg 1)
-click  -> client OpenUi ------------------------------------->  server NuiCreate
-NUI    <- player arms keys -> server persists (vault) -------->  server ArmSet (msg 4)
-       -> client caches set, starts capturing those keys
-press  -> client KeyPress (armed, gated, debounced) --------->  server maps -> action (msg 3)
+login   -> client advertises sowx_enabled (presence only)      (msg 1)
+        <- server PresentToken (its stored token, or empty)     (msg 6)  [before ArmSet]
+        <- server ArmSet (the character's bound keys)           (msg 4)
+           known token -> keys restored, no prompt
+           new/unknown -> additions raise the consent modal
+OK      -> client mints token, records {token->keys},
+           GrantToken "<hex>;<csv>" -------------------------->  server stores token   (msg 7)
+click   -> client OpenUi ------------------------------------->  server NuiCreate
+NUI     <- player arms keys -> server persists (vault) ------->  server ArmSet          (msg 4)
+press   -> client KeyPress (armed, gated, debounced) -------->  server maps -> action   (msg 3)
+deny    -> client Revoke ------------------------------------->  server forgets binding (msg 5)
 ```
+
+A different or malicious server holds no token for this player: it presents none, the
+client's armed set stays empty, and its ArmSet is all-additions -> a consent prompt. It
+cannot inherit the consent the player gave another server.

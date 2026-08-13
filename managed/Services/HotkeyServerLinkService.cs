@@ -23,8 +23,17 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         _hooks = hooks;
     }
 
+    // A server that asks to track an implausible number of keys is refused wholesale -- the only
+    // job of the cap is to bound a pathological payload (a giant consent modal / parse), NOT to
+    // limit the player: additions already require consent, so nothing arms silently. The real
+    // ceiling is one key per toolbar button, and the offered allow-list is ~80 keys, so 256 is
+    // generous headroom over any real layout. ponytail: raise further only if that ever changes.
+    private const int MaxArmed = 256;
+
     public void Initialize()
     {
+        HotkeyConsent.Init(_log!);
+        SelfCheck();   // the fail-closed consent policy is security-critical; verify it at startup
         _inboundOrig = (delegate* unmanaged<IntPtr, byte*, uint, uint>)_hooks.Install(
             SymbolMap.HandleServerToPlayerMessage, (IntPtr)(delegate* unmanaged<IntPtr, byte*, uint, uint>)&OnInbound);
     }
@@ -42,32 +51,107 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         // known-good pointer instead of resolving g_pAppManager (which segfaulted on this build).
         ClientApi.LiveMessage = self;
 
-        if (size >= 3 && data[0] == FrameMarker
-            && data[1] == HotkeyProtocol.ArmSetMajor && data[2] == HotkeyProtocol.ArmSetMinor)
+        if (size >= 3 && data[0] == FrameMarker && data[1] == HotkeyProtocol.ArmSetMajor)  // 0x36: our device major
         {
-            HandleArmSet(data, size);
-            return 1;   // consume: this message is ours, the stock client should not see it
+            switch (data[2])
+            {
+                case HotkeyProtocol.PresentTokenMinor:   // restore this server's prior consent (sent before ArmSet)
+                    HandlePresentToken(data, size);
+                    return 1;                            // consume: ours, the stock client must not see it
+                case HotkeyProtocol.ArmSetMinor:
+                    HandleArmSet(data, size);
+                    return 1;
+            }
         }
         return _inboundOrig != null ? _inboundOrig(self, data, size) : 1;
     }
 
     // payload (after the 'P' marker + 2 opcode bytes) = ASCII CSV of VK codes, e.g. "112,113,114".
+    // The set is a PROPOSAL, not an order: the server owns what a key does, the player owns
+    // whether it may be tracked. Removals (shrinking capture) apply silently; additions
+    // (growing capture) require an explicit OK in the client-owned consent modal.
     private static void HandleArmSet(byte* data, uint size)
     {
-        var set = new HashSet<int>();
-        if (size > 3)
+        var proposed = Parse(data, size);
+
+        var (rejected, retained, additions) = Plan(HotkeyStore.Armed, proposed, MaxArmed);
+        if (rejected)
         {
-            int len = (int)size - 3;
-            var bytes = new byte[len];
-            Marshal.Copy((IntPtr)(data + 3), bytes, 0, len);
-            string csv = System.Text.Encoding.ASCII.GetString(bytes);
-            foreach (string part in csv.Split(new[] { ',', ';', ' ', '\n', '\r', '\t' },
-                                              StringSplitOptions.RemoveEmptyEntries))
-                if (int.TryParse(part, out int vk)) set.Add(vk);
+            _log?.Info($"ServerLink: refusing oversized arm set ({proposed.Count} > {MaxArmed})");
+            return;
         }
 
-        HotkeyStore.Armed = set;
-        HotkeyStore.Save(_log!);
-        _log?.Info($"ServerLink: server armed {set.Count} key(s)");
+        if (retained != null)                       // some keys were removed -- apply now, no consent needed
+            HotkeyStore.Set(retained, _log!);
+        if (additions.Count > 0)                    // new keys -- ask the player before arming any of them
+            HotkeyConsent.Prompt(additions);
+    }
+
+    // Pure consent policy, isolated so SelfCheck can prove the fail-closed defaults:
+    //   rejected  -> proposal exceeds the cap; arm nothing.
+    //   retained  -> the survivors after silent removals (null when nothing was removed).
+    //   additions -> keys the server wants that aren't armed yet; these need consent.
+    private static (bool rejected, HashSet<int>? retained, HashSet<int> additions) Plan(
+        HashSet<int> current, HashSet<int> proposed, int cap)
+    {
+        if (proposed.Count > cap) return (true, null, new HashSet<int>());
+
+        var retained = new HashSet<int>(current);
+        retained.IntersectWith(proposed);           // current minus anything no longer proposed
+        var additions = new HashSet<int>(proposed);
+        additions.ExceptWith(current);              // proposed minus what's already armed
+
+        return (false, retained.Count == current.Count ? null : retained, additions);
+    }
+
+    // The server presents the token it was granted last time (payload = hex). Recognised -> the
+    // active armed set becomes that server's consented keys, so the ArmSet that follows produces no
+    // additions and no re-prompt. Unrecognised / empty -> armed set stays empty, awaiting consent.
+    private static void HandlePresentToken(byte* data, uint size)
+    {
+        string tok = AsciiPayload(data, size);
+        if (tok.Length == 0) { HotkeyStore.BeginSession(); return; }   // server holds no token -> nothing to restore
+        HotkeyStore.Activate(tok, _log!);
+    }
+
+    private static HashSet<int> Parse(byte* data, uint size)
+    {
+        var set = new HashSet<int>();
+        foreach (string part in AsciiPayload(data, size).Split(new[] { ',', ';', ' ', '\n', '\r', '\t' },
+                                                               StringSplitOptions.RemoveEmptyEntries))
+            if (int.TryParse(part, out int vk)) set.Add(vk);
+        return set;
+    }
+
+    // The ASCII payload after the 3-byte ['P'][major][minor] header, trimmed.
+    private static string AsciiPayload(byte* data, uint size)
+    {
+        if (size <= 3) return "";
+        int len = (int)size - 3;
+        var bytes = new byte[len];
+        Marshal.Copy((IntPtr)(data + 3), bytes, 0, len);
+        return System.Text.Encoding.ASCII.GetString(bytes).Trim();
+    }
+
+    // One runnable check on the security-critical bits: additions never sneak through, the
+    // cap rejects wholesale, and a pure add never reports a removal. Logs loudly if broken.
+    private static void SelfCheck()
+    {
+        var cur = new HashSet<int> { 1, 2, 3 };
+
+        // pure addition: 4 must land in additions, nothing retained/removed
+        var (r1, ret1, add1) = Plan(cur, new HashSet<int> { 1, 2, 3, 4 }, MaxArmed);
+        bool ok = !r1 && ret1 == null && add1.SetEquals(new HashSet<int> { 4 });
+
+        // removal + addition: 3 dropped silently (retained = {1,2}), 9 needs consent
+        var (r2, ret2, add2) = Plan(cur, new HashSet<int> { 1, 2, 9 }, MaxArmed);
+        ok &= !r2 && ret2 != null && ret2.SetEquals(new HashSet<int> { 1, 2 }) && add2.SetEquals(new HashSet<int> { 9 });
+
+        // over cap: reject wholesale, arm nothing
+        var (r3, _, add3) = Plan(cur, new HashSet<int> { 1, 2, 3, 4, 5 }, 4);
+        ok &= r3 && add3.Count == 0;
+
+        _log?.Info(ok ? "ServerLink: consent policy self-check passed"
+                      : "ServerLink: CONSENT POLICY SELF-CHECK FAILED -- arming logic is unsafe");
     }
 }

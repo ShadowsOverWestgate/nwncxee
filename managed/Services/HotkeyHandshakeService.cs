@@ -5,19 +5,20 @@ namespace Sowx.Services;
 
 // Announces the extender to the server on login, using NWN:EE's own capability
 // channel -- CNWCMessage::SendPlayerToServerDeviceAdvertiseProperty(name, value).
-// Each property is a (string, int) pair the server stores per-player. A vanilla
-// client never advertises our keys, so the server simply lacks them -> treated as
-// un-extended. Additive, optional, no packet-format hacking.
+// A vanilla client never advertises, so the server simply treats it as un-extended.
+// Additive, optional, no packet-format hacking.
 //
 // We advertise on HandleServerToPlayerLogin(subcmd == 5) -- login accepted, the
-// server holds our CNWSPlayer, the link is up. `this` there IS the CNWCMessage, so
-// we advertise straight through it.
+// server holds our CNWSPlayer, the link is up. `this` there IS the CNWCMessage.
 //
-// Encoding (count-based -- the server handler only ever inserts, never removes, so
-// a shorter re-advertise must be read by count, not by prefix scan):
-//   SOWX_ENABLED  = 1
-//   SOWX_HK_COUNT = N
-//   SOWX_HK_<i>   = vk        (the armed keycode; the server owns the mapping)
+// We advertise ONLY that the extender is present:
+//   SOWX_ENABLED = 1
+// We deliberately do NOT advertise the armed key list. Consent is per-server under the
+// token model (see HotkeyStore): a fresh session starts with an EMPTY armed set, and the
+// server proves prior consent by presenting the token the client gave it (PresentToken),
+// which the client looks up to restore that server's consented keys. Advertising the key
+// list here was the old global-consent leak -- it told every server, trusted or not, the
+// exact keys to harvest. The server owns its bindings and re-pushes them via ArmSet.
 public sealed unsafe class HotkeyHandshakeService : IExtenderService
 {
     private static ExtenderLog? _log;
@@ -45,22 +46,24 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
         // `msg` is the live CNWCMessage; cache it for outbound sends (see ClientApi.LiveMessage).
         ClientApi.LiveMessage = msg;
         uint r = _loginOrig != null ? _loginOrig(msg, subcmd) : 1;
-        if (subcmd == 5) Advertise(msg);   // 5 = login accepted / entering game
+        if (subcmd == 5)
+        {
+            // Fresh session: drop any prior server's active consent (empty armed set) and clear
+            // half-answered prompts / stale manager windows. The server now proves consent by
+            // presenting its token; nothing is armed until it does and the token is recognised.
+            HotkeyStore.BeginSession();
+            HotkeyConsent.Reset();
+            HotkeyManagerService.Close();
+            Advertise(msg);                 // 5 = login accepted / entering game
+        }
         return r;
     }
 
     private static void Advertise(IntPtr msg)
     {
         if (_advertise == null) return;
-        var armed = HotkeyStore.Armed;
-
         Adv(msg, "SOWX_ENABLED", 1);
-        Adv(msg, "SOWX_HK_COUNT", armed.Count);
-        int i = 0;
-        foreach (int vk in armed)
-            Adv(msg, $"SOWX_HK_{i++}", vk);
-
-        _log?.Info($"Handshake: advertised extender + {armed.Count} armed key(s)");
+        _log?.Info("Handshake: advertised extender (no key list -- consent is per-server via token)");
     }
 
     private static void Adv(IntPtr msg, string name, int value)
