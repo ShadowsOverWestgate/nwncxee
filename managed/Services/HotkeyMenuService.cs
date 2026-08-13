@@ -22,10 +22,6 @@ public sealed unsafe class HotkeyMenuService : IExtenderService
     // (from PostAttachmentInitialize: SetText((this + 0x4b0), 0x19a0)).
     private const int SaveCharTextOffset = 0x4b0;
 
-    private const string PostSym = "_ZN13COptionsPanel24PostAttachmentInitializeEv";
-    private const string SaveSym = "_ZN13COptionsPanel20HandleSaveCharButtonEv";
-    private const string TextSym = "_ZN20CAuroraStringWrapper7SetTextEj";
-
     private static ExtenderLog? _log;
     private static delegate* unmanaged<IntPtr, void> _postOrig;
     private static delegate* unmanaged<IntPtr, void> _saveOrig;   // unused (we replace), kept for symmetry
@@ -41,11 +37,11 @@ public sealed unsafe class HotkeyMenuService : IExtenderService
 
     public void Initialize()
     {
-        _setText = (delegate* unmanaged<IntPtr, uint, void>)Native.Sym(TextSym);
+        _setText = (delegate* unmanaged<IntPtr, uint, void>)Native.Sym(SymbolMap.SetText);
         _postOrig = (delegate* unmanaged<IntPtr, void>)_hooks.Install(
-            PostSym, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPostAttach);
+            SymbolMap.PostAttachmentInitialize, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPostAttach);
         _saveOrig = (delegate* unmanaged<IntPtr, void>)_hooks.Install(
-            SaveSym, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnHotkeysButton);
+            SymbolMap.HandleSaveCharButton, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnHotkeysButton);
     }
 
     [UnmanagedCallersOnly]

@@ -28,24 +28,10 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     // each other -- 1,2,3 pressed in quick succession all fire.
     private const long DebounceMs = 250;
 
-    // These two are free functions in the shared engine, so Beamdog's Windows build
-    // exports them by name -- they run on both platforms. The MSVC name (YAH..) shows
-    // both return int; our delegates below return int to match (Linux ignored the
-    // return, which worked by luck but is wrong ABI).
-    private const string KeySym       = "_Z22HandleWMKeyDownMessagejj";
-    private const string KeySymWin    = "?HandleWMKeyDownMessage@@YAHII@Z";
-    private const string WinMsgSym    = "_Z17WinMessageHandlerP9SDL_Event";              // for KEYUP
-    private const string WinMsgSymWin = "?WinMessageHandler@@YAHPEATSDL_Event@@@Z";
-    // The rest hook client-only classes (CClientExoApp/CGuiInGame/CGuiInGameChatPrompt)
-    // that Windows does NOT name-export -- Linux-only until an RVA path exists; they
-    // skip with a log line on Windows (see HookService.Install overload).
-    private const string GainSym   = "_ZN13CClientExoApp11OnGainFocusEv";
-    private const string LostSym   = "_ZN13CClientExoApp11OnLostFocusEv";
-    private const string ChatOnSym = "_ZN10CGuiInGame18SetFocusChatPromptEv";           // chat opened by key
-    private const string ClickSym  = "_ZN20CGuiInGameChatPrompt24HandleLMouseDownGuiEventEv"; // chat clicked into
-    private const string EnterSym  = "_ZN20CGuiInGameChatPrompt11HandleEnterEv";
-    private const string EscSym    = "_ZN20CGuiInGameChatPrompt9HandleEscEv";
-    private const string LoseSym   = "_ZN20CGuiInGameChatPrompt41HandleLoseKeyboardFocusLMouseDownGuiEventEv";
+    // All hook targets live in SymbolMap (the Linux name + its Windows resolution).
+    // HandleWMKeyDown/WinMessageHandler are shared-engine free functions, exported on
+    // both platforms; the rest are client-only classes that resolve by RVA on Windows,
+    // except the two CClientExoApp focus stubs, which skip there (no anchor).
 
     // NUI (nuklear) keyboard-focus probe. NUI runs on its own SDL event pump
     // (nk_sdl_process_events) parallel to the classic key handler, so an armed key
@@ -59,7 +45,6 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     // begin/end pass, i.e. exactly when we read here, so we must use ->active (0x6730).
     // ponytail: hard-coded struct offsets from this build's binary; if a client
     // update shifts them, re-derive from nk_window_has_focus (./sym.sh nk_window_has_focus).
-    private const string NuiSym = "g_pNuklear";
     private const int NkActiveWindowOff = 0x6730;
     private const int NkWinEditActiveOff = 0x18c;
 
@@ -94,17 +79,17 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     public void Initialize()
     {
         HotkeyStore.Load(_log!);
-        _nuklearGlobal = Native.Sym(NuiSym);   // stable address; deref live for the current ctx
+        _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);   // stable address; deref live for the current ctx
 
-        _keyOrig    = (delegate* unmanaged<uint, uint, int>)_hooks.Install(KeySym,    KeySymWin,    (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
-        _winMsgOrig = (delegate* unmanaged<IntPtr, int>)_hooks.Install(WinMsgSym, WinMsgSymWin, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
-        _gainOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(GainSym,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
-        _lostOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(LostSym,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
-        _chatOnOrig = (delegate* unmanaged<IntPtr, void>)_hooks.Install(ChatOnSym, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatOn);
-        _clickOrig  = (delegate* unmanaged<IntPtr, void>)_hooks.Install(ClickSym,  (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatClick);
-        _enterOrig  = (delegate* unmanaged<IntPtr, void>)_hooks.Install(EnterSym,  (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEnter);
-        _escOrig    = (delegate* unmanaged<IntPtr, void>)_hooks.Install(EscSym,    (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEsc);
-        _loseOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(LoseSym,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatLose);
+        _keyOrig    = (delegate* unmanaged<uint, uint, int>)_hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
+        _winMsgOrig = (delegate* unmanaged<IntPtr, int>)_hooks.Install(SymbolMap.WinMessageHandler,     (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
+        _gainOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.OnGainFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
+        _lostOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.OnLostFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
+        _chatOnOrig = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.SetFocusChatPrompt,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatOn);
+        _clickOrig  = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.ChatHandleLMouseDown, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatClick);
+        _enterOrig  = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.ChatHandleEnter,      (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEnter);
+        _escOrig    = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.ChatHandleEsc,        (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEsc);
+        _loseOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.ChatHandleLoseFocus,  (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatLose);
     }
 
     // Opt-in raw-key probe for debugging the keycode space. OFF unless SOWX_KEYDIAG

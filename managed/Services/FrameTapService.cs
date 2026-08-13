@@ -13,13 +13,10 @@ namespace Sowx.Services;
 // static surface tiny.
 public sealed unsafe class FrameTapService : IExtenderService
 {
-    // GLRender::SwapBuffers(SDL_Window*)   -- ./sym.sh -m GLRender::SwapBuffers
-    // The Windows MSVC name says `CA` (static) + one arg (SDL_Window*): there is NO
-    // `this`. On Linux the Itanium name hides that; a spare 2nd arg was forwarded as
-    // garbage and ignored, which happened to work. The correct signature is one arg.
-    private const string Symbol    = "_ZN8GLRender11SwapBuffersEP10SDL_Window";
-    private const string SymbolWin = "?SwapBuffers@GLRender@@CAXPEAUSDL_Window@@@Z";
-
+    // GLRender::SwapBuffers(SDL_Window*) -- static (no `this`) + one arg. The MSVC name
+    // in SymbolMap proved it (`CA` = static member); on Linux the Itanium name hides
+    // that and a spare 2nd arg was forwarded as garbage and ignored, which happened to
+    // work. One arg is correct.
     private static ExtenderLog? _log;
     private static delegate* unmanaged<IntPtr, void> _original;
     private static bool _announced;
@@ -35,8 +32,7 @@ public sealed unsafe class FrameTapService : IExtenderService
     public void Initialize()
     {
         IntPtr trampoline = _hooks.Install(
-            Symbol, SymbolWin,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwapBuffers);
+            SymbolMap.SwapBuffers, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwapBuffers);
         _original = (delegate* unmanaged<IntPtr, void>)trampoline;
     }
 

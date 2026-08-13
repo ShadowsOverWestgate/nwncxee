@@ -7,11 +7,11 @@ namespace Sowx.Services;
 //   msg = CClientExoApp::GetNWCMessage(*g_pAppManager)
 public static unsafe class ClientApi
 {
-    private static readonly IntPtr AppMgr = Native.Sym("g_pAppManager");
+    private static readonly IntPtr AppMgr = Native.Sym(SymbolMap.AppManager);
     private static readonly delegate* unmanaged<IntPtr, IntPtr> GetMsg =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym("_ZN13CClientExoApp13GetNWCMessageEv");
+        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetNWCMessage);
     private static readonly delegate* unmanaged<IntPtr, byte, byte, byte*, uint, void> SendMsg =
-        (delegate* unmanaged<IntPtr, byte, byte, byte*, uint, void>)Native.Sym("_ZN11CNWCMessage25SendPlayerToServerMessageEhhPhj");
+        (delegate* unmanaged<IntPtr, byte, byte, byte*, uint, void>)Native.Sym(SymbolMap.SendPlayerToServerMessage);
 
     // A live CNWCMessage* captured from a hook that is handed one (the inbound message hook's `self`,
     // or the login hook's `this`). Preferred over resolving GetNWCMessage(*g_pAppManager): the hook

@@ -12,8 +12,6 @@ namespace Sowx.Services;
 // every other message passes straight through to the original.
 public sealed unsafe class HotkeyServerLinkService : IExtenderService
 {
-    private const string InboundSym = "_ZN11CNWCMessage27HandleServerToPlayerMessageEPhj";
-
     private static ExtenderLog? _log;
     private static delegate* unmanaged<IntPtr, byte*, uint, uint> _inboundOrig;
 
@@ -28,7 +26,7 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
     public void Initialize()
     {
         _inboundOrig = (delegate* unmanaged<IntPtr, byte*, uint, uint>)_hooks.Install(
-            InboundSym, (IntPtr)(delegate* unmanaged<IntPtr, byte*, uint, uint>)&OnInbound);
+            SymbolMap.HandleServerToPlayerMessage, (IntPtr)(delegate* unmanaged<IntPtr, byte*, uint, uint>)&OnInbound);
     }
 
     // The engine frames every server->client message as ['P'][major][minor][payload...]; the stock

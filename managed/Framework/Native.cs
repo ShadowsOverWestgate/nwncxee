@@ -10,11 +10,11 @@ namespace Sowx.Framework;
 //   ./sym.sh -m <name>   gives the mangled symbol to pass here.
 public static unsafe class Native
 {
-    private static readonly IntPtr Main = NativeLibrary.GetMainProgramHandle();
-
-    // Address of a mangled symbol (function or data), or Zero if absent.
-    public static IntPtr Sym(string mangled) =>
-        NativeLibrary.TryGetExport(Main, mangled, out IntPtr p) ? p : IntPtr.Zero;
+    // Address of a symbol (function or data), or Zero if absent. Pass the LINUX
+    // mangled name; SymbolMap maps it to the running client (name or build-locked
+    // RVA on Windows, the same name on Linux). Unresolved -> Zero, so callers that
+    // null-check degrade gracefully on a client that doesn't expose the symbol.
+    public static IntPtr Sym(string linux) => SymbolMap.Resolve(linux, null);
 
     // A client global that holds a pointer (e.g. g_pAppManager): returns *symbol.
     public static IntPtr PtrGlobal(string mangled)
@@ -24,9 +24,9 @@ public static unsafe class Native
     }
 
     private static readonly delegate* unmanaged<IntPtr, byte*, uint, void> _exoInit =
-        (delegate* unmanaged<IntPtr, byte*, uint, void>)Sym("_ZN10CExoString17InitFromCharArrayEPKcj");
+        (delegate* unmanaged<IntPtr, byte*, uint, void>)Sym(SymbolMap.ExoStringInit);
     private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
-        (delegate* unmanaged<IntPtr, void>)Sym("_ZN10CExoStringD1Ev");
+        (delegate* unmanaged<IntPtr, void>)Sym(SymbolMap.ExoStringDtor);
 
     // Build a CExoString on the native heap from a C# string. The layout is opaque
     // to us: we zero an over-sized buffer (so the client sees a null internal

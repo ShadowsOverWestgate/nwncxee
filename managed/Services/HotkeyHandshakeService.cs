@@ -20,9 +20,6 @@ namespace Sowx.Services;
 //   SOWX_HK_<i>   = vk        (the armed keycode; the server owns the mapping)
 public sealed unsafe class HotkeyHandshakeService : IExtenderService
 {
-    private const string LoginSym = "_ZN11CNWCMessage25HandleServerToPlayerLoginEh";
-    private const string AdvSym   = "_ZN11CNWCMessage41SendPlayerToServerDeviceAdvertisePropertyERK10CExoStringi";
-
     private static ExtenderLog? _log;
     private static delegate* unmanaged<IntPtr, byte, uint> _loginOrig;
     private static delegate* unmanaged<IntPtr, IntPtr, int, void> _advertise;
@@ -37,9 +34,9 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
 
     public void Initialize()
     {
-        _advertise = (delegate* unmanaged<IntPtr, IntPtr, int, void>)Native.Sym(AdvSym);
+        _advertise = (delegate* unmanaged<IntPtr, IntPtr, int, void>)Native.Sym(SymbolMap.SendDeviceAdvertiseProperty);
         _loginOrig = (delegate* unmanaged<IntPtr, byte, uint>)_hooks.Install(
-            LoginSym, (IntPtr)(delegate* unmanaged<IntPtr, byte, uint>)&OnLogin);
+            SymbolMap.HandleServerToPlayerLogin, (IntPtr)(delegate* unmanaged<IntPtr, byte, uint>)&OnLogin);
     }
 
     [UnmanagedCallersOnly]
