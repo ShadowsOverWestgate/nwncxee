@@ -1,0 +1,16 @@
+# sowx hotkeys -- armed keys.  Copy to  ~/.config/sowx-hotkeys.cfg
+#
+# One VK-style keycode per line. These are the keys you consent to have sent to
+# the server when pressed. The server decides what each key does (the client does
+# not map keys to actions -- it only "arms" them).
+#
+# This file IS your consent: ONLY keys listed here are ever observed or sent.
+# Presses are rate-limited to one every 250 ms, and never sent while the game is
+# unfocused or you are typing in chat.
+#
+# Common VK codes:
+#     F1..F12 = 112..123     0..9 = 48..57     A..Z = 65..90
+
+112    # F1
+113    # F2
+114    # F3
