@@ -1,16 +1,24 @@
 # sowx hotkeys -- armed keys.  Copy to  ~/.config/sowx-hotkeys.cfg
 #
-# One VK-style keycode per line. These are the keys you consent to have sent to
+# One SDL keycode (SDLK) per line. These are the keys you consent to have sent to
 # the server when pressed. The server decides what each key does (the client does
 # not map keys to actions -- it only "arms" them).
 #
+# SDLK is what the client's key handler actually delivers -- NOT Windows VK codes.
+# The two differ: letters are lowercase ASCII (f = 102, not 70), and function keys
+# live in SDL's 0x40000000 range. Digits happen to be identical in both, which is
+# why bare-number keys "just worked" before this was pinned down.
+#
 # This file IS your consent: ONLY keys listed here are ever observed or sent.
 # Presses are rate-limited to one every 250 ms, and never sent while the game is
-# unfocused or you are typing in chat.
+# unfocused or you are typing in chat / a NUI text field.
 #
-# Common VK codes:
-#     F1..F12 = 112..123     0..9 = 48..57     A..Z = 65..90
+# Common SDLK codes:
+#     a..z = 97..122   (e.g. f = 102)      0..9 = 48..57
+#     F1 = 1073741882 ... F12 = 1073741893 (F1 + n-1)
+#     Space = 32   Return = 13   Tab = 9   Backquote(`) = 96
+#   Full list: SDL_keycode.h (SDLK_*), or ./sym.sh has nothing -- these are SDL's.
 
-112    # F1
-113    # F2
-114    # F3
+102             # f
+1073741882      # F1
+1073741883      # F2

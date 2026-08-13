@@ -12,8 +12,9 @@ namespace Sowx.Services;
 // work before the NUI is ever opened. Either way it is the effective consent: only
 // keys in this set are ever observed or sent (see HotkeyInputService).
 //
-//   ~/.config/sowx-hotkeys.cfg   one VK-style keycode per line (# starts a comment)
-//   (e.g. F1 = 112 ... F12 = 123)
+//   ~/.config/sowx-hotkeys.cfg   one SDL keycode (SDLK) per line (# starts a comment)
+//   (SDLK is what HandleWMKeyDownMessage delivers -- NOT Windows VK: f = 102 not 70,
+//    F1 = 1073741882; digits 48..57 coincide with VK, letters/F-keys do not.)
 //
 // Static, not DI: the hot key handler is a static [UnmanagedCallersOnly] and reads
 // Armed directly. Load()/Save() republish an immutable snapshot atomically.
@@ -44,7 +45,7 @@ public static class HotkeyStore
         catch (Exception e) { log.Info($"HotkeyStore: load failed: {e.Message}"); }
 
         Armed = set;   // atomic publish; readers see old or new, both immutable
-        log.Info($"HotkeyStore: {set.Count} key(s) armed, from {Path}");
+        log.Info($"HotkeyStore: {set.Count} key(s) armed (SDLK: {string.Join(",", set)}), from {Path}");
     }
 
     public static void Save(ExtenderLog log)
@@ -53,8 +54,8 @@ public static class HotkeyStore
         {
             var snapshot = Armed;
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-            var lines = new List<string> { "# sowx hotkeys -- armed keys (one VK code per line)" };
-            foreach (int vk in snapshot) lines.Add(vk.ToString());
+            var lines = new List<string> { "# sowx hotkeys -- armed keys (one SDL keycode per line)" };
+            foreach (int code in snapshot) lines.Add(code.ToString());
             File.WriteAllLines(Path, lines);
         }
         catch (Exception e) { log.Info($"HotkeyStore: save failed: {e.Message}"); }
