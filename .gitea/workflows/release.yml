@@ -42,7 +42,8 @@ jobs:
       - name: Build + package
         run: |
           nix shell nixpkgs#dotnet-sdk_10 nixpkgs#cmake nixpkgs#gnumake nixpkgs#clang \
-            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc --command bash -c '
+            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#gnutar nixpkgs#gzip \
+            nixpkgs#coreutils --command bash -c '
               set -euo pipefail
               ./build.sh
               rm -rf dist && mkdir -p dist
@@ -63,7 +64,7 @@ jobs:
           REPO: ${{ github.repository }}
           SERVER: ${{ github.server_url }}
         run: |
-          nix shell nixpkgs#curl --command bash -c '
+          nix shell nixpkgs#curl nixpkgs#coreutils nixpkgs#gnugrep --command bash -c '
             set -euo pipefail
             api="${SERVER}/api/v1/repos/${REPO}"
             auth="Authorization: token ${TOKEN}"
