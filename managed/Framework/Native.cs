@@ -3,34 +3,30 @@ using System.Text;
 
 namespace Sowx.Framework;
 
-// Thin bridge to the client's own functions and data. The binary is unstripped
-// and (near-)fully dynamically exported, so we resolve engine symbols by mangled
-// name -- the same mechanism HookService uses for hook targets -- and either call
-// them through a matching delegate* or read globals through them.
-//   ./sym.sh -m <name>   gives the mangled symbol to pass here.
+/// <summary>
+/// Thin bridge to the client's own functions and data. The binary is unstripped and
+/// (near-)fully exported, so we resolve engine symbols by mangled name and either call
+/// them through a matching delegate* or read globals through them.
+/// </summary>
 public static unsafe class Native
 {
-    // Address of a symbol (function or data), or Zero if absent. Pass the LINUX
-    // mangled name; SymbolMap maps it to the running client (name or build-locked
-    // RVA on Windows, the same name on Linux). Unresolved -> Zero, so callers that
-    // null-check degrade gracefully on a client that doesn't expose the symbol.
+    /// <summary>
+    /// Address of a symbol (function or data), or Zero if absent. Pass the LINUX mangled
+    /// name; SymbolMap maps it to the running client. Unresolved -> Zero, so callers that
+    /// null-check degrade gracefully on a client that doesn't expose the symbol.
+    /// </summary>
     public static IntPtr Sym(string linux) => SymbolMap.Resolve(linux, null);
-
-    // A client global that holds a pointer (e.g. g_pAppManager): returns *symbol.
-    public static IntPtr PtrGlobal(string mangled)
-    {
-        IntPtr a = Sym(mangled);
-        return a == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)a;
-    }
 
     private static readonly delegate* unmanaged<IntPtr, byte*, uint, void> _exoInit =
         (delegate* unmanaged<IntPtr, byte*, uint, void>)Sym(SymbolMap.ExoStringInit);
     private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
         (delegate* unmanaged<IntPtr, void>)Sym(SymbolMap.ExoStringDtor);
 
-    // Build a CExoString on the native heap from a C# string. The layout is opaque
-    // to us: we zero an over-sized buffer (so the client sees a null internal
-    // pointer) and let its own InitFromCharArray populate it. Caller MUST FreeExoString.
+    /// <summary>
+    /// Build a CExoString on the native heap from a C# string. The layout is opaque: we
+    /// zero an over-sized buffer and let the client's own InitFromCharArray populate it.
+    /// Caller MUST <see cref="FreeExoString"/>.
+    /// </summary>
     public static IntPtr NewExoString(string s)
     {
         IntPtr exo = Marshal.AllocHGlobal(32);              // > sizeof(CExoString); zeroed below

@@ -3,53 +3,41 @@ using Sowx.Framework;
 
 namespace Sowx.Services;
 
-// Receives the armed-key set from the server. The arming UI is a server-authored
-// NUI (sow-codebase owns the toolbar layout and builds many NUIs); when the player
-// arms keys there, the server sends the resulting set here. We update the consent
-// set and cache it locally so armed keys work immediately and survive a restart.
-//
-// Hooks the client's inbound dispatcher and intercepts only our ArmSet opcode --
-// every other message passes straight through to the original.
+/// <summary>
+/// Receives the armed-key set from the server (a server-authored NUI arms keys; the server
+/// sends the result here). Hooks the client's inbound dispatcher and intercepts only our
+/// ArmSet/PresentToken opcodes -- every other message passes straight through.
+/// </summary>
 public sealed unsafe class HotkeyServerLinkService : IExtenderService
 {
     private static ExtenderLog? _log;
     private static delegate* unmanaged<IntPtr, byte*, uint, uint> _inboundOrig;
 
-    private readonly HookService _hooks;
-
-    public HotkeyServerLinkService(ExtenderLog log, HookService hooks)
-    {
-        _log = log;
-        _hooks = hooks;
-    }
-
-    // A server that asks to track an implausible number of keys is refused wholesale -- the only
-    // job of the cap is to bound a pathological payload (a giant consent modal / parse), NOT to
-    // limit the player: additions already require consent, so nothing arms silently. The real
-    // ceiling is one key per toolbar button, and the offered allow-list is ~80 keys, so 256 is
-    // generous headroom over any real layout. ponytail: raise further only if that ever changes.
+    /// <summary>
+    /// A server asking to track an implausible number of keys is refused wholesale, to bound a
+    /// pathological payload -- NOT to limit the player (additions require consent regardless). The
+    /// real ceiling is one key per toolbar button (~80 offered), so 256 is generous headroom.
+    /// </summary>
     private const int MaxArmed = 256;
 
-    public void Initialize()
+    public void Initialize(ExtenderLog log, HookService hooks)
     {
+        _log = log;
         HotkeyConsent.Init(_log!);
         SelfCheck();   // the fail-closed consent policy is security-critical; verify it at startup
-        _inboundOrig = (delegate* unmanaged<IntPtr, byte*, uint, uint>)_hooks.Install(
+        _inboundOrig = (delegate* unmanaged<IntPtr, byte*, uint, uint>)hooks.Install(
             SymbolMap.HandleServerToPlayerMessage, (IntPtr)(delegate* unmanaged<IntPtr, byte*, uint, uint>)&OnInbound);
     }
 
-    // The engine frames every server->client message as ['P'][major][minor][payload...]; the stock
-    // CNWCMessage::HandleServerToPlayerMessage gates on data[0]=='P' and reads the major/minor at [1]/[2]
-    // (decomp-verified: it asserts nBufferSize>=3 and its own debug labels name data[1]=nMajor,
-    // data[2]=nMinor). So we match past the 'P' marker, not from data[0].
+    // The engine frames every server->client message as ['P'][major][minor][payload...]
+    // (decomp-verified: HandleServerToPlayerMessage gates on data[0]=='P', reads major/minor at
+    // [1]/[2]). So we match past the 'P' marker, not from data[0].
     private const byte FrameMarker = (byte)'P';
 
     [UnmanagedCallersOnly]
     private static uint OnInbound(IntPtr self, byte* data, uint size)
     {
-        // `self` IS the live CNWCMessage the engine uses; cache it so outbound sends go through a
-        // known-good pointer instead of resolving g_pAppManager (which segfaulted on this build).
-        ClientApi.LiveMessage = self;
+        ClientApi.LiveMessage = self;   // the live CNWCMessage; cache for outbound sends (g_pAppManager segfaults here)
 
         if (size >= 3 && data[0] == FrameMarker && data[1] == HotkeyProtocol.ArmSetMajor)  // 0x36: our device major
         {
@@ -66,10 +54,10 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         return _inboundOrig != null ? _inboundOrig(self, data, size) : 1;
     }
 
-    // payload (after the 'P' marker + 2 opcode bytes) = ASCII CSV of VK codes, e.g. "112,113,114".
-    // The set is a PROPOSAL, not an order: the server owns what a key does, the player owns
-    // whether it may be tracked. Removals (shrinking capture) apply silently; additions
-    // (growing capture) require an explicit OK in the client-owned consent modal.
+    /// <summary>
+    /// Apply a proposed armed set. The set is a PROPOSAL: removals (shrinking capture) apply
+    /// silently; additions (growing capture) require an explicit OK in the client-owned consent modal.
+    /// </summary>
     private static void HandleArmSet(byte* data, uint size)
     {
         var proposed = Parse(data, size);
@@ -87,10 +75,11 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
             HotkeyConsent.Prompt(additions);
     }
 
-    // Pure consent policy, isolated so SelfCheck can prove the fail-closed defaults:
-    //   rejected  -> proposal exceeds the cap; arm nothing.
-    //   retained  -> the survivors after silent removals (null when nothing was removed).
-    //   additions -> keys the server wants that aren't armed yet; these need consent.
+    /// <summary>
+    /// Pure consent policy, isolated so <see cref="SelfCheck"/> can prove the fail-closed defaults.
+    /// rejected = over cap (arm nothing); retained = survivors after silent removals (null if none
+    /// removed); additions = proposed keys not yet armed (these need consent).
+    /// </summary>
     private static (bool rejected, HashSet<int>? retained, HashSet<int> additions) Plan(
         HashSet<int> current, HashSet<int> proposed, int cap)
     {
@@ -104,9 +93,11 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         return (false, retained.Count == current.Count ? null : retained, additions);
     }
 
-    // The server presents the token it was granted last time (payload = hex). Recognised -> the
-    // active armed set becomes that server's consented keys, so the ArmSet that follows produces no
-    // additions and no re-prompt. Unrecognised / empty -> armed set stays empty, awaiting consent.
+    /// <summary>
+    /// The server presents the token it was granted last time (payload = hex). Recognised -> the
+    /// armed set becomes that server's consented keys, so the following ArmSet produces no additions
+    /// and no re-prompt. Unrecognised / empty -> armed set stays empty, awaiting consent.
+    /// </summary>
     private static void HandlePresentToken(byte* data, uint size)
     {
         string tok = AsciiPayload(data, size);
@@ -123,7 +114,7 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         return set;
     }
 
-    // The ASCII payload after the 3-byte ['P'][major][minor] header, trimmed.
+    /// <summary>The ASCII payload after the 3-byte ['P'][major][minor] header, trimmed.</summary>
     private static string AsciiPayload(byte* data, uint size)
     {
         if (size <= 3) return "";
@@ -133,8 +124,10 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         return System.Text.Encoding.ASCII.GetString(bytes).Trim();
     }
 
-    // One runnable check on the security-critical bits: additions never sneak through, the
-    // cap rejects wholesale, and a pure add never reports a removal. Logs loudly if broken.
+    /// <summary>
+    /// One runnable check on the security-critical bits: additions never sneak through, the cap
+    /// rejects wholesale, and a pure add never reports a removal. Logs loudly if broken.
+    /// </summary>
     private static void SelfCheck()
     {
         var cur = new HashSet<int> { 1, 2, 3 };

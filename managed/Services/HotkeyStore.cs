@@ -3,37 +3,26 @@ using Sowx.Framework;
 
 namespace Sowx.Services;
 
-// The consent list and its persistence -- scoped PER SERVER by a client-minted token.
-//
-// Consent is a capability, not a global switch. When the player consents to a server's keys,
-// the client mints a random token, records {token -> keys} here, and hands the token to that
-// server (HotkeyConsent -> GrantToken). On a later login the server proves prior consent by
-// presenting that token back (PresentToken); the client looks it up and restores exactly that
-// server's consented keys. A server that was never granted a token -- including a malicious one
-// replaying another server's key list -- has nothing to present, so the armed set stays EMPTY
-// and every key it asks for becomes a fresh consent prompt. One server can never inherit another's
-// consent, because it never held the other's token.
-//
-// Therefore the effective armed set is per session: empty at startup and on every login until a
-// recognised token is presented (Activate). Only keys in the active set are ever observed or sent
-// (see HotkeyInputService).
-//
-//   ~/.config/sowx-hotkeys.cfg   sectioned, player-editable:
-//     [token=<hex>]      one 32-char hex token per server
-//     112                one SDL keycode (SDLK) per line under it (# starts a comment)
-//   (SDLK is what HandleWMKeyDownMessage delivers -- NOT Windows VK: f = 102 not 70,
-//    F1 = 1073741882; digits 48..57 coincide with VK, letters/F-keys do not.)
-//
-// Static, not DI: the hot key handler is a static [UnmanagedCallersOnly] and reads Armed directly.
-// Swaps publish an immutable snapshot atomically.
+/// <summary>
+/// The consent list and its persistence -- scoped PER SERVER by a client-minted token. Consent is a
+/// capability, not a global switch: on consent the client mints a random token, records {token ->
+/// keys}, and hands the token to that server. On a later login the server proves prior consent by
+/// presenting that token back; the client looks it up and restores exactly that server's keys. A
+/// server that was never granted a token (including one replaying another's key list) has nothing to
+/// present, so the armed set stays EMPTY and every key becomes a fresh consent prompt.
+/// </summary>
+/// <remarks>
+/// Effective armed set is per session: empty at startup and every login until a recognised token is
+/// presented. Cfg at ~/.config/sowx-hotkeys.cfg -- [token=&lt;hex&gt;] sections, one SDL keycode per
+/// line (SDLK, NOT Windows VK: f=102 not 70, F1=1073741882). Static, not DI: the hot key handler
+/// reads Armed directly; swaps publish an immutable snapshot atomically.
+/// </remarks>
 public static class HotkeyStore
 {
-    // The ACTIVE server's consented keys, or empty when no recognised token is active. Read on the
-    // hot path; swapped atomically (readers see old or new, both immutable).
+    /// <summary>The ACTIVE server's consented keys, or empty when no recognised token is active. Read on the hot path; swapped atomically.</summary>
     public static volatile HashSet<int> Armed = new();
 
-    // Bumped on every change to Armed. HotkeyManagerService reads this once per frame and rebuilds
-    // its baked key labels only when it changes, so the render hot path never allocates unchanged.
+    /// <summary>Bumped on every change to Armed, so HotkeyManagerService rebakes its labels only when it changes.</summary>
     public static volatile int Version;
 
     // tokenHex -> that server's consented keys. Loaded from the cfg; the active set is one of these.
@@ -88,8 +77,7 @@ public static class HotkeyStore
         log.Info($"HotkeyStore: {_sections.Count} server section(s) loaded from {Path}; none active until a token is presented");
     }
 
-    // A new login: forget the previous server's active consent. Armed goes empty until this server
-    // presents a token we recognise. Fail-closed -- the default posture is "nothing armed".
+    /// <summary>A new login: forget the previous server's consent. Armed goes empty (fail-closed) until a recognised token is presented.</summary>
     public static void BeginSession()
     {
         _activeToken = null;
@@ -97,10 +85,11 @@ public static class HotkeyStore
         Version++;
     }
 
-    // The server presented `tokenHex` (proof of prior consent). If we recognise it, restore that
-    // server's consented keys; otherwise the token becomes the active one to consent UNDER (so a
-    // subsequent Grant is stored against the server's own token, stable across the player's machines)
-    // but arms nothing yet. Returns true if the token was already known (consent restored silently).
+    /// <summary>
+    /// The server presented `tokenHex` (proof of prior consent). If recognised, restore that server's
+    /// consented keys; otherwise the token becomes the active one to consent UNDER (so a later Grant is
+    /// stored against the server's own token) but arms nothing yet. Returns true if already known.
+    /// </summary>
     public static bool Activate(string tokenHex, ExtenderLog log)
     {
         string tok = tokenHex.Trim().ToLowerInvariant();
@@ -114,10 +103,11 @@ public static class HotkeyStore
         return known;
     }
 
-    // Add player-consented keys to the ACTIVE server's set and persist. Only ever called after an
-    // explicit OK in the consent modal. If the server presented no token this session, mint one now
-    // so the consent has a receipt to hand back. Returns the active token (the caller sends it to the
-    // server so the server can present it next time).
+    /// <summary>
+    /// Add player-consented keys to the ACTIVE server's set and persist. Only called after an explicit
+    /// OK in the consent modal. If the server presented no token this session, mint one so the consent
+    /// has a receipt to hand back. Returns the active token (the caller sends it to the server).
+    /// </summary>
     public static string Grant(HashSet<int> keys, ExtenderLog log)
     {
         if (_activeToken == null)
@@ -136,8 +126,10 @@ public static class HotkeyStore
         return _activeToken;
     }
 
-    // Replace the ACTIVE server's set wholesale and persist. Used for silent removals (shrinking the
-    // capture surface needs no consent) and the manager's unbind/revoke-all. No active token -> no-op.
+    /// <summary>
+    /// Replace the ACTIVE server's set wholesale and persist. Used for silent removals and the
+    /// manager's unbind/revoke-all. No active token -> no-op.
+    /// </summary>
     public static void Set(HashSet<int> keys, ExtenderLog log)
     {
         if (_activeToken == null) return;
@@ -147,12 +139,14 @@ public static class HotkeyStore
         Save(log);
     }
 
-    // A fresh, crypto-random 128-bit token as 32 lowercase hex chars.
+    /// <summary>A fresh, crypto-random 128-bit token as 32 lowercase hex chars.</summary>
     private static string Mint() => Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
-    // One runnable check on the leak-critical invariant: a token the client never granted must
-    // restore NOTHING (so a malicious server presenting a random/stolen-format token can't arm keys
-    // without consent), and the default posture is empty. Run once at startup; ends fail-closed.
+    /// <summary>
+    /// One runnable check on the leak-critical invariant: a token the client never granted must restore
+    /// NOTHING (so a malicious server presenting a random token can't arm keys), and the default posture
+    /// is empty. Run once at startup; ends fail-closed.
+    /// </summary>
     public static void SelfCheck(ExtenderLog log)
     {
         string ghost = new string('f', 32);                       // a token no server was ever granted

@@ -24,9 +24,8 @@ Load path (the "hard work", you never touch it):
     LD_PRELOAD libsowx.so  (native/bootstrap.c: constructor fires on load)
       -> dlopen sowx_managed.so  (C# NativeAOT shared lib)
       -> SowxInit()  ->  ServiceHost.Run()
-                           - build DI container
-                           - discover every IExtenderService
-                           - construct (constructor DI) + Initialize() each
+                           - discover every IExtenderService (reflection, sorted by name)
+                           - construct each + Initialize(log, hooks)
                            - HookService.Commit() installs all hooks at once
 
 Navigation:
@@ -35,12 +34,11 @@ Navigation:
       Entry.cs                 [UnmanagedCallersOnly] SowxInit -> ServiceHost.Run()
       Framework/               the plumbing -- rarely edited
         IExtenderService.cs      the one contract you implement
-        ServiceHost.cs           DI + discovery + lifecycle
+        ServiceHost.cs           discovery + lifecycle
         HookService.cs           funchook wrapper: Install(symbol, handler) / Commit()
         ExtenderLog.cs           inject this for logging
       Services/                business logic -- this is where you work
-        HeartbeatService.cs      minimal DI example
-        FrameTapService.cs       full example: DI + a real hook
+        FrameTapService.cs       example: a real hook + trampoline
     native/bootstrap.c         the only native code
     third_party/funchook       hooking engine (git submodule)
 
@@ -51,20 +49,31 @@ no registration:
 
     public sealed class MyService : IExtenderService
     {
-        private readonly ExtenderLog _log;
-        private readonly HookService _hooks;               // ask for what you need
-        public MyService(ExtenderLog log, HookService hooks) { _log = log; _hooks = hooks; }
+        // [UnmanagedCallersOnly] handlers must be static, so hooked services keep
+        // their state static and stash `log` in a static field in Initialize.
+        private static ExtenderLog? _log;
 
-        public void Initialize()
+        public void Initialize(ExtenderLog log, HookService hooks)
         {
+            _log = log;
             // find the symbol:  ./sym.sh -m CNWSMessage::Handle...
             // handler is a pointer to an [UnmanagedCallersOnly] static whose
             // signature matches the target's ABI (member fns take `this` first).
+            hooks.Install(SymbolMap.Something, /* &OnSomething */ default);
         }
     }
 
 See `FrameTapService` for the hook + trampoline mechanics. Everything else --
-loading, DI, install ordering -- is done for you.
+loading, discovery, install ordering -- is done for you.
+
+## Comment rule
+
+Every declaration that needs explaining gets a concise XML `<summary>` (one--three
+lines). No prose banners. Inside method bodies, no comments EXCEPT a single terse
+line where omitting it is a footgun -- a magic offset/opcode, a non-obvious ABI
+requirement, or an ordering hazard. Prefer promoting a magic number to a named
+`const` with an XML doc over an inline comment. `ponytail:` markers are allowed and
+name a known ceiling + its upgrade path.
 
 ## Hard rules
 

@@ -3,37 +3,26 @@ using Sowx.Framework;
 
 namespace Sowx.Services;
 
-// Client-owned consent gate. A server ArmSet that ADDS keys never arms them silently;
-// it raises the engine's own native yes/no modal -- CPanelOkCancel, the same panel the
-// "quit to main menu" dialog uses. The modal is drawn and owned by the client, so a
-// malicious server can neither forge it nor auto-confirm it. Only an OK click arms the
-// keys; Esc/Cancel/close all deny. This is the difference between "trust the server" and
-// "the server cannot": the server proposes semantics, the player authorises capture.
-//
-// Mechanism, mirrored from the engine's own spawn path (decomp-verified on both platforms --
-// Linux COptionsPanel::HandleQuitClick, Windows the equivalent ExitButton handler):
-//   p = operator new(sizeof); CPanelOkCancel::CPanelOkCancel(p);
-//   p+0x80 = context;  p+0x88 = on-close callback;  (Linux also zeroes p+0x90)
-//   CPanelOkCancel::Activate(msg, OK_STRREF, CANCEL_STRREF);
-// On close the engine walks CGuiPanel::Deactivate -> the panel's OnDeactivate vtable slot
-// -> callback(context, result); result==1 is OK, anything else is deny (Esc routes through
-// Cancel, so it lands here as a deny for free). The panel then self-frees via its deleting
-// destructor -> operator delete(p); we allocate with the matching operator new (the game's
-// own on Windows -- static CRT -- so the free lands on the same heap) and never touch p after
-// handing it to Activate. The callback fields sit at the same offsets under both ABIs; only
-// the struct size differs (0x3a0 Itanium / 0x360 MSVC) and Linux's extra +0x90=0 write.
-//
-// The message CExoString is passed by value: Itanium destroys it in the caller (we free it
-// after Activate returns); MSVC destroys it in the callee (Activate frees + zeroes it, so our
-// later dtor sees a null buffer -> a no-op, not a double-free). FreeExoString is correct either
-// way -- see Native.NewExoString.
-//
-// Cold path: proposals arrive on the inbound-network hook and the answer on a GUI click,
-// both on the main thread -- allocation is fine and there is no cross-thread race on _pending.
+/// <summary>
+/// Client-owned consent gate. A server ArmSet that ADDS keys raises the engine's own native
+/// yes/no modal (CPanelOkCancel, as used by "quit to main menu"). The modal is drawn and owned
+/// by the client, so a malicious server can neither forge nor auto-confirm it -- only an OK click
+/// arms the keys; Esc/Cancel/close all deny.
+/// </summary>
+/// <remarks>
+/// Spawn mirrors the engine's own path (decomp-verified both platforms): operator new; ctor;
+/// p+0x80=context, p+0x88=on-close callback (Linux also zeroes p+0x90); Activate(msg, OK, CANCEL).
+/// On close the engine calls callback(context, result); 1 = OK, anything else = deny. The panel then
+/// self-frees via its deleting dtor -> operator delete, so we allocate from the matching operator new
+/// (the game's own on Windows -- static CRT) or the free lands on the wrong heap. The message
+/// CExoString is by value: Itanium frees it in the caller, MSVC in the callee; FreeExoString is
+/// correct either way (see Native.NewExoString). Cold path -- both proposal and answer arrive on the
+/// main thread, so no race on _pending.
+/// </remarks>
 internal static unsafe class HotkeyConsent
 {
-    // sizeof(CPanelOkCancel): 0x3a0 under Itanium, 0x360 under MSVC (both from the operator new
-    // arg in the engine's own spawn path). Wrong size = the ctor/dtor touch out-of-bounds bytes.
+    // sizeof(CPanelOkCancel): 0x3a0 Itanium / 0x360 MSVC (from the operator new arg in the engine's
+    // own spawn path). Wrong size = the ctor/dtor touch out-of-bounds bytes.
     private static readonly int PanelSize = OperatingSystem.IsWindows() ? 0x360 : 0x3a0;
     private const int CtxOff = 0x80, CbOff = 0x88, PadOff = 0x90;
     // OK / Cancel button label strrefs -- the exact pair HandleQuitClick passes to Activate.
@@ -64,13 +53,14 @@ internal static unsafe class HotkeyConsent
             _log?.Info("HotkeyConsent: native modal unavailable on this client -- new binds will be refused");
     }
 
-    // A fresh session must not inherit a half-answered prompt. Called on login; fail-closed
-    // -- any pending (unconfirmed) keys are dropped, never armed.
+    /// <summary>Called on login; fail-closed -- any pending (unconfirmed) keys are dropped, never armed.</summary>
     public static void Reset() => _pending = null;
 
-    // Ask the player to consent to arming `additions`. Returns true only if the modal was
-    // actually shown. Every false path -- missing symbol, not in-game, a prompt already open
-    // -- means "not armed"; the caller must not arm on false.
+    /// <summary>
+    /// Ask the player to consent to arming `additions`. Returns true only if the modal was shown.
+    /// Every false path (missing symbol, not in-game, a prompt already open) means "not armed"; the
+    /// caller must not arm on false.
+    /// </summary>
     public static bool Prompt(HashSet<int> additions)
     {
         if (!_ready || additions.Count == 0) return false;
@@ -90,8 +80,7 @@ internal static unsafe class HotkeyConsent
         _ctor(panel);
         *(IntPtr*)(panel + CtxOff) = panel;              // benign non-null context; our callback ignores it
         *(IntPtr*)(panel + CbOff)  = (IntPtr)(delegate* unmanaged<IntPtr, int, void>)&OnAnswer;
-        // Linux HandleQuitClick zeroes +0x90; the MSVC spawn path doesn't (the ctor leaves it safe,
-        // as its own shipping code proves). Mirror each platform's real code -- don't write blind.
+        // Mirror each platform's real code: Linux HandleQuitClick zeroes +0x90; the MSVC path doesn't.
         if (!OperatingSystem.IsWindows())
             *(IntPtr*)(panel + PadOff) = IntPtr.Zero;
 
@@ -104,15 +93,15 @@ internal static unsafe class HotkeyConsent
         return true;
     }
 
-    // Is the GUI manager up? g_pGuiMan is the exact global CGuiModalPanel::Activate itself
-    // uses, so non-null == safe to attach a modal. We only READ its value (never deref it
-    // as an object), so a wrong resolution can't fault -- unlike the g_pAppManager path,
-    // which segfaults on this build (see ClientApi). Null before the GUI loads -> we refuse.
+    /// <summary>
+    /// Is the GUI manager up? g_pGuiMan is the exact global CGuiModalPanel::Activate uses, so non-null
+    /// == safe to attach a modal. We only READ its value (never deref as an object), so a wrong
+    /// resolution can't fault -- unlike the g_pAppManager path, which segfaults on this build.
+    /// </summary>
     private static bool GuiReady() => *(IntPtr*)_guiManSym != IntPtr.Zero;
 
-    // The engine's on-close callback: result 1 = OK, anything else = deny. Clear _pending
-    // FIRST -- the panel self-frees right after this returns, and a new proposal must be
-    // able to prompt again.
+    // The engine's on-close callback: 1 = OK, anything else = deny. Clear _pending FIRST -- the panel
+    // self-frees right after this returns, and a new proposal must be able to prompt again.
     [UnmanagedCallersOnly]
     private static void OnAnswer(IntPtr context, int result)
     {
@@ -121,22 +110,21 @@ internal static unsafe class HotkeyConsent
         if (answered == null) return;
         if (result == 1)
         {
-            // Record consent under this server's token (minting one if the server presented none),
-            // then hand the token + consented keys back so the server can present it next login.
+            // Record consent under this server's token (minting one if none), then hand the token +
+            // consented keys back so the server can present it next login.
             string token = HotkeyStore.Grant(answered, _log!);
             SendGrantToken(token);
         }
         else
         {
-            // Deny -> tell the server to forget the binding, or it re-pushes these every login
-            // and re-prompts forever. This is the client revoking consent it never granted.
+            // Deny -> tell the server to forget the binding, or it re-pushes these every login and
+            // re-prompts forever. The client revoking consent it never granted.
             Revoke(answered);
             _log?.Info("HotkeyConsent: player declined; revoked on the server");
         }
     }
 
-    // Send a Revoke for `keys` so the server drops the binding (unbinds the toolbar/metamagic
-    // slot's key). Used by deny above and by any client-initiated unbind.
+    /// <summary>Send a Revoke for `keys` so the server drops the binding. Used by deny and by client-initiated unbind.</summary>
     public static void Revoke(IEnumerable<int> keys)
     {
         string csv = string.Join(",", keys);
@@ -144,9 +132,8 @@ internal static unsafe class HotkeyConsent
         ClientApi.SendAscii(HotkeyProtocol.RevokeMajor, HotkeyProtocol.RevokeMinor, csv);
     }
 
-    // Hand the server the consent receipt: the token this server's consent is stored under, plus the
-    // keys the player actually consented to. The server persists the token per player and presents it
-    // back on the next login (PresentToken) to restore consent without re-prompting.
+    // Hand the server the consent receipt: the token this consent is stored under + the consented
+    // keys. The server persists it per player and presents it back next login (PresentToken).
     private static void SendGrantToken(string tokenHex)
     {
         string csv = string.Join(",", HotkeyStore.Armed);
@@ -162,16 +149,13 @@ internal static unsafe class HotkeyConsent
              + "\n\nAllow?";
     }
 
-    // Human-readable label. Armed codes are SDL keycodes (SDLK), which SDL_GetKeyName maps
-    // straight to "F", "F1", etc.; mouse codes (MouseBase + button) are ours, so we name them.
-    // The mouse range is only [MouseBase, MouseBase+0xFF] (button is a byte) -- SDLK scancode
-    // keys sit at 0x40000000+ (bit 30), which is also >= MouseBase, so bound the range or every
-    // F-key/arrow gets mislabelled "Mouse". Shared with HotkeyManagerService's list.
+    /// <summary>
+    /// Human-readable label. SDLK codes go through SDL_GetKeyName; mouse codes (MouseBase + button)
+    /// and modifier prefixes are ours. The consent prompt is a security surface -- it MUST read
+    /// "Ctrl+F", not "key ?", so the player knows what they are allowing.
+    /// </summary>
     internal static string KeyName(int code)
     {
-        // Modifiers are high bits (ModMask); strip them, name the base key, prefix the combo.
-        // The consent prompt is a security surface -- it MUST read "Ctrl+F", not "key ?", so the
-        // player knows what they are allowing.
         int mods = code & HotkeyProtocol.ModMask;
         if (mods != 0)
         {
@@ -181,6 +165,8 @@ internal static unsafe class HotkeyConsent
             if ((mods & HotkeyProtocol.ModAlt) != 0) prefix += "Alt+";
             return prefix + KeyName(code & ~HotkeyProtocol.ModMask);
         }
+        // Bound the mouse range: button is a byte, but SDLK scancode keys (bit 30) are also >= MouseBase,
+        // so an unbounded check would mislabel every F-key/arrow "Mouse".
         if (code >= HotkeyProtocol.MouseBase && code <= HotkeyProtocol.MouseBase + 0xFF)
         {
             int btn = code - HotkeyProtocol.MouseBase;   // SDL button index

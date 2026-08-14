@@ -2,14 +2,11 @@ using System.Runtime.InteropServices;
 
 namespace Sowx.Framework;
 
-// Wraps funchook. A service calls Install("<linux mangled symbol>", handler) in its
-// Initialize(); the host calls Commit() once, after all services are up.
-//
-// Pass the LINUX (Itanium) mangled name -- `./sym.sh -m <name>`. SymbolMap turns it
-// into the right target for the running client: on Linux the same name (the ELF
-// exports everything), on Windows the exported MSVC name or a build-locked RVA, or a
-// logged skip when the client doesn't expose it. `handler` must point to an
-// [UnmanagedCallersOnly] static whose signature matches the target's ABI.
+/// <summary>
+/// Wraps funchook. A service calls <see cref="Install"/> in its Initialize; the host
+/// calls <see cref="Commit"/> once, after all services are up. Pass the LINUX (Itanium)
+/// mangled name (<c>./sym.sh -m &lt;name&gt;</c>); SymbolMap maps it to the running client.
+/// </summary>
 public sealed class HookService : IDisposable
 {
     private const string Lib = "funchook";
@@ -30,9 +27,11 @@ public sealed class HookService : IDisposable
         _fh = funchook_create();
     }
 
-    // Returns a pointer to the trampoline (the original function) -- cast it to a
-    // matching delegate* to call through. IntPtr.Zero means the hook was not set
-    // (symbol unresolved on this platform -- SymbolMap already logged why).
+    /// <summary>
+    /// Hooks <paramref name="linux"/> with <paramref name="handler"/> (a pointer to an
+    /// [UnmanagedCallersOnly] static matching the target ABI). Returns the trampoline
+    /// (the original) to call through, or Zero if the symbol didn't resolve on this platform.
+    /// </summary>
     public IntPtr Install(string linux, IntPtr handler)
     {
         IntPtr target = SymbolMap.Resolve(linux, _log);
@@ -49,6 +48,7 @@ public sealed class HookService : IDisposable
         return target;
     }
 
+    /// <summary>Installs every prepared hook at once. Idempotent.</summary>
     public void Commit()
     {
         if (_committed) return;

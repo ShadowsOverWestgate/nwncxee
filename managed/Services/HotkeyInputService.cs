@@ -3,48 +3,29 @@ using Sowx.Framework;
 
 namespace Sowx.Services;
 
-// The runtime pipeline: a bound key press -> a debounced packet to the server's
-// toolbar system, gated on window focus and "not typing". This is a cold (input)
-// hook, so it may allocate -- no NativeAOT GC concern here.
-//
-// Order per keydown; the first failing gate drops the event silently:
-//   1. consent filter  -- unregistered keys return immediately, never inspected
-//   2. auto-repeat gate -- only the first press counts; holding fires nothing more
-//   3. focus gate      -- window must have focus
-//   4. typing gate     -- chat prompt not focused AND no NUI text field focused
-//   5. debounce        -- >= 1 s since THIS key last fired (per-key, not global)
-//   6. send            -- one action packet, carrying the toolbar slot
-// The original key handler is always called -- we observe, we don't consume.
-//
-// Auto-repeat: a held key emits KEYDOWN over and over. We remember which armed keys
-// are physically down (_down) and only act on the transition up->down; the key is
-// cleared on its SDL KEYUP (via a WinMessageHandler hook -- HandleWMKeyDownMessage
-// never sees key-ups) and on focus loss (so a release swallowed while unfocused
-// cannot wedge a key "down" forever).
+/// <summary>
+/// The runtime pipeline: a bound key press -> a debounced packet to the server's toolbar
+/// system, gated on window focus and "not typing". Cold (input) hook, so it may allocate.
+/// </summary>
+/// <remarks>
+/// Order per keydown, first failing gate drops the event silently: (1) consent filter,
+/// (2) auto-repeat gate (only the up->down transition), (3) focus, (4) typing (chat prompt
+/// or NUI edit box), (5) per-key debounce, (6) send. The original handler always runs -- we
+/// observe, we don't consume. Held keys are cleared on SDL KEYUP and on focus loss.
+/// </remarks>
 public sealed unsafe class HotkeyInputService : IExtenderService
 {
-    // Per-key rate limit: the same hotkey may fire at most once per this interval.
-    // It is keyed by keycode (_lastSent below), so different hotkeys never throttle
-    // each other -- 1,2,3 pressed in quick succession all fire.
+    /// <summary>Per-key rate limit (keyed by code, so different hotkeys never throttle each other).</summary>
     private const long DebounceMs = 250;
 
-    // All hook targets live in SymbolMap (the Linux name + its Windows resolution).
-    // HandleWMKeyDown/WinMessageHandler are shared-engine free functions, exported on
-    // both platforms; the rest are client-only classes that resolve by RVA on Windows,
-    // except the two CClientExoApp focus stubs, which skip there (no anchor).
-
-    // NUI (nuklear) keyboard-focus probe. NUI runs on its own SDL event pump
-    // (nk_sdl_process_events) parallel to the classic key handler, so an armed key
-    // pressed while typing in a NUI text field still reaches us -- we must gate it
-    // out too. g_pNuklear holds the live nk_context*; the offsets come from the
-    // client's own nuklear (verified against nk_window_has_focus / nk_edit_focus):
-    //   ctx + 0x6730 -> ctx->active            (the FOCUSED window*, persists between
-    //                                           frames; 0 if none)
-    //   win + 0x18c  -> win->edit.active (int)  (nonzero while an edit box has focus)
-    // NB: ctx->current (0x6738) is the *rendering* window -- it is null outside the
-    // begin/end pass, i.e. exactly when we read here, so we must use ->active (0x6730).
-    // ponytail: hard-coded struct offsets from this build's binary; if a client
-    // update shifts them, re-derive from nk_window_has_focus (./sym.sh nk_window_has_focus).
+    // NUI keyboard-focus probe. NUI runs its own SDL event pump parallel to the classic key
+    // handler, so an armed key pressed while typing in a NUI text field still reaches us. Offsets
+    // verified against nk_window_has_focus / nk_edit_focus:
+    //   ctx + 0x6730 -> ctx->active (FOCUSED window*, persists between frames; 0 if none)
+    //   win + 0x18c  -> win->edit.active (nonzero while an edit box has focus)
+    // NB: ctx->current (0x6738) is the *rendering* window -- null when we read here, so use ->active.
+    // ponytail: hard-coded offsets from this build; re-derive from nk_window_has_focus if a client
+    // update shifts them.
     private const int NkActiveWindowOff = 0x6730;
     private const int NkWinEditActiveOff = 0x18c;
 
@@ -55,19 +36,17 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private static readonly Dictionary<int, long> _lastSent = new();
     private static readonly HashSet<int> _down = new();   // armed keys currently held (repeat gate)
 
-    // SDL event: type at +0x0, keysym.sym at +0x14 (both proven from WinMessageHandler).
+    // SDL event: type at +0x0, keysym.sym at +0x14, mouse button (Uint8) at +0x10 (from
+    // WinMessageHandler). Mouse buttons come through the same pump as KEYUP -- no extra hook.
     private const uint SdlKeyUp = 0x301;
     private const int SdlEvSymOff = 0x14;
-    // SDL_MouseButtonEvent: type at +0x0, button (Uint8) at +0x10. Mouse buttons come
-    // through the same WinMessageHandler pump as KEYUP -- no extra hook needed.
     private const uint SdlMouseDown = 0x401;
     private const uint SdlMouseUp   = 0x402;
     private const int SdlEvButtonOff = 0x10;
 
-    // SDL_Keymod bits (SDL_keycode.h). Ctrl/Shift take both sides; Alt is LALT ONLY --
-    // RALT is AltGr (used for accented chars, and on Windows AltGr = LCTRL+RALT), so
-    // binding it as a modifier would hijack normal typing. ponytail: expose RAlt only
-    // if someone genuinely wants an AltGr chord.
+    // SDL_Keymod bits. Ctrl/Shift take both sides; Alt is LALT ONLY -- RALT is AltGr (accented
+    // chars; on Windows AltGr = LCTRL+RALT), so binding it would hijack normal typing.
+    // ponytail: expose RAlt only if someone genuinely wants an AltGr chord.
     private const int KmodShift = 0x0003;   // LSHIFT | RSHIFT
     private const int KmodCtrl  = 0x00C0;   // LCTRL | RCTRL
     private const int KmodLAlt  = 0x0100;   // LALT only
@@ -77,36 +56,27 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private static delegate* unmanaged<IntPtr, int> _winMsgOrig;
     private static delegate* unmanaged<IntPtr, void> _gainOrig, _lostOrig, _chatOnOrig, _clickOrig, _enterOrig, _escOrig, _loseOrig;
 
-    private readonly HookService _hooks;
-
-    public HotkeyInputService(ExtenderLog log, HookService hooks)
+    public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _hooks = hooks;
-    }
-
-    public void Initialize()
-    {
         HotkeyStore.Load(_log!);
         HotkeyStore.SelfCheck(_log!);   // fail-closed default is security-critical; verify at startup
         _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);   // stable address; deref live for the current ctx
         _modState = (delegate* unmanaged<int>)Native.Sym(SymbolMap.SdlGetModState);   // live modifier state at capture
 
-        _keyOrig    = (delegate* unmanaged<uint, uint, int>)_hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
-        _winMsgOrig = (delegate* unmanaged<IntPtr, int>)_hooks.Install(SymbolMap.WinMessageHandler,     (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
-        _gainOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.OnGainFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
-        _lostOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.OnLostFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
-        _chatOnOrig = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.SetFocusChatPrompt,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatOn);
-        _clickOrig  = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.ChatHandleLMouseDown, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatClick);
-        _enterOrig  = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.ChatHandleEnter,      (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEnter);
-        _escOrig    = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.ChatHandleEsc,        (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEsc);
-        _loseOrig   = (delegate* unmanaged<IntPtr, void>)_hooks.Install(SymbolMap.ChatHandleLoseFocus,  (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatLose);
+        _keyOrig    = (delegate* unmanaged<uint, uint, int>)hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
+        _winMsgOrig = (delegate* unmanaged<IntPtr, int>)hooks.Install(SymbolMap.WinMessageHandler,     (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
+        _gainOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnGainFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
+        _lostOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnLostFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
+        _chatOnOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.SetFocusChatPrompt,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatOn);
+        _clickOrig  = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleLMouseDown, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatClick);
+        _enterOrig  = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleEnter,      (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEnter);
+        _escOrig    = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleEsc,        (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEsc);
+        _loseOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleLoseFocus,  (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatLose);
     }
 
-    // Opt-in raw-key probe for debugging the keycode space. OFF unless SOWX_KEYDIAG
-    // is set in the environment -- this logs every keydown, so it is deliberately not
-    // a default (the whole point of the feature is to NOT be a keylogger). Run once
-    // with it on, press the key you want, read the exact code + armed/gate state.
+    // Opt-in raw-key probe (SOWX_KEYDIAG). OFF by default -- it logs every keydown, so the whole
+    // point of the feature (not being a keylogger) forbids it as a default.
     private static readonly bool _keyDiag =
         !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_KEYDIAG"));
 
@@ -121,9 +91,10 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         return _keyOrig != null ? _keyOrig(key, flags) : 0;                    // never consume the key
     }
 
-    // The Ctrl/Shift/Alt bits currently held, in HotkeyProtocol.Mod* encoding -- OR'd onto the
-    // base code so a combo (Ctrl+F) matches its own armed entry and nothing else. Reads SDL's live
-    // modifier state on the event thread; no allocation.
+    /// <summary>
+    /// The Ctrl/Shift/Alt bits currently held, in HotkeyProtocol.Mod* encoding, OR'd onto the base
+    /// code so a combo (Ctrl+F) matches its own armed entry and nothing else. No allocation.
+    /// </summary>
     private static int Mods()
     {
         if (_modState == null) return 0;
@@ -135,16 +106,16 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         return bits;
     }
 
-    // The gate pipeline, shared by keys and mouse buttons. `code` is the wire code
-    // (SDLK for keys, MouseBase + button for mouse -- disjoint ranges, so one _down/
-    // _lastSent map serves both). Sends at most one packet. The up->down transition
-    // (_down) disables holding; the per-code debounce rate-limits. Steps 1-6 as above.
+    /// <summary>
+    /// The gate pipeline, shared by keys and mouse buttons. `code` is the wire code (SDLK, or
+    /// MouseBase + button -- disjoint ranges, so one _down/_lastSent map serves both). Sends at most
+    /// one packet.
+    /// </summary>
     private static void Fire(int code)
     {
-        // 1 consent + 2 no-repeat: only the up->down transition of an armed code counts.
-        // _down.Add returns false if already held (a key repeat, or a stray extra down).
-        // Track "held" by the BASE key (modifier bits stripped): KEYUP/mouse-up deliver the
-        // raw sym/button with no modifier state, so the release must clear the same key it set.
+        // 1 consent + 2 no-repeat: only the up->down transition of an armed code counts. Track "held"
+        // by the BASE key (modifier bits stripped): KEYUP/mouse-up carry no modifier state, so the
+        // release must clear the same key it set.
         int baseCode = code & ~HotkeyProtocol.ModMask;
         if (!(HotkeyStore.Armed.Contains(code) && _down.Add(baseCode))) return;
         if (!_focused || _typing || NuiEditFocused()) return;                  // 3,4 focus + typing
@@ -152,11 +123,11 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         _lastSent.TryGetValue(code, out long last);
         if (now - last < DebounceMs) return;
         _lastSent[code] = now;
-        Send(code);                                                           // 6 send the code
+        Send(code);                                                            // 6 send the code
     }
 
-    // KEYUP arrives here (not at HandleWMKeyDownMessage): clear the key's "held" mark
-    // so the next genuine press can fire again. We only observe; original does the work.
+    // KEYUP arrives here (not at HandleWMKeyDownMessage): clear the key's "held" mark. We only
+    // observe; original does the work.
     [UnmanagedCallersOnly]
     private static int OnWinMessage(IntPtr ev)
     {
@@ -180,13 +151,14 @@ public sealed unsafe class HotkeyInputService : IExtenderService
 
     private static void Send(int code)
     {
-        _log?.Info($"HotkeyInput: sending code {code} to server");   // diag: confirm client emits the right code (SDLK, or MouseBase+button)
+        _log?.Info($"HotkeyInput: sending code {code} to server");
         ClientApi.SendAscii(HotkeyProtocol.KeyPressMajor, HotkeyProtocol.KeyPressMinor, code.ToString());
     }
 
-    // True while a NUI text field holds keyboard focus (see the offset notes above).
-    // Reads only; safe on the input thread. Any null link -> "not typing", so a
-    // missing/uninitialised NUI never blocks hotkeys.
+    /// <summary>
+    /// True while a NUI text field holds keyboard focus. Reads only; safe on the input thread. Any
+    /// null link -> "not typing", so a missing/uninitialised NUI never blocks hotkeys.
+    /// </summary>
     private static bool NuiEditFocused()
     {
         if (_nuklearGlobal == IntPtr.Zero) return false;
@@ -201,10 +173,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     [UnmanagedCallersOnly] private static void OnGain(IntPtr self) { _focused = true;  if (_gainOrig != null) _gainOrig(self); }
     [UnmanagedCallersOnly] private static void OnLost(IntPtr self) { _focused = false; _down.Clear(); if (_lostOrig != null) _lostOrig(self); }
 
-    // Typing gate: two entries (chat opened by key, or clicked into), three exits
-    // (Enter/Esc/click-away) -- each resumes its own original. Covers the chat
-    // prompt; other edit boxes (rare in-game) are not tracked -- ponytail: add
-    // them if a real one shows up.
+    // Typing gate: two entries (chat opened by key, or clicked into), three exits (Enter/Esc/
+    // click-away). Other edit boxes (rare in-game) are not tracked. ponytail: add them if a real one shows up.
     [UnmanagedCallersOnly] private static void OnChatOn(IntPtr self)   { _typing = true;  if (_chatOnOrig != null) _chatOnOrig(self); }
     [UnmanagedCallersOnly] private static void OnChatClick(IntPtr self){ _typing = true;  if (_clickOrig  != null) _clickOrig(self); }
     [UnmanagedCallersOnly] private static void OnChatEnter(IntPtr self){ _typing = false; if (_enterOrig  != null) _enterOrig(self); }

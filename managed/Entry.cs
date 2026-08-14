@@ -5,8 +5,7 @@ namespace Sowx;
 
 public static class Entry
 {
-    // The native bootstrap calls this once, on load. All it does is start the
-    // service host -- everything else lives in services.
+    /// <summary>Native bootstrap calls this once on load; it just starts the host.</summary>
     [UnmanagedCallersOnly(EntryPoint = "SowxInit")]
     public static void SowxInit() => ServiceHost.Run();
 }

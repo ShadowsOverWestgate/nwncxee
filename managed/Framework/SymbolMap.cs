@@ -2,20 +2,14 @@ using System.Runtime.InteropServices;
 
 namespace Sowx.Framework;
 
-// The one place that knows a symbol's identity and how it resolves per platform.
-// Each engine symbol we hook or call is a `public const` Linux (Itanium) mangled
-// name here; services and Native/ClientApi reference SymbolMap.<Name> rather than
-// holding their own copy, so every mangled string is written exactly once. The
-// table below pairs that name with its Windows resolution.
-//
-// The Linux client exports everything by name; the Windows client (opt-in PE
-// exports) name-exports only shared-engine classes, so client GUI/message classes
-// resolve by RVA (address = module base + RVA) instead. HookService.Install and
-// Native.Sym both go through Resolve(), so this file is the whole platform surface.
-//
-// RVAs were derived from the Windows client stamped WindowsBuildStamp via Ghidra
-// string/xref/immediate/decompile matching against the Linux binary. Provenance and
-// the regen recipe: docs/windows-symbols.md.
+/// <summary>
+/// The one place that knows a symbol's identity and how it resolves per platform. Each
+/// engine symbol is a <c>public const</c> Linux (Itanium) mangled name; the table pairs
+/// it with its Windows resolution. Linux exports everything by name; Windows name-exports
+/// only shared-engine classes, so client GUI/message classes resolve by build-locked RVA.
+/// Both HookService.Install and Native.Sym go through <see cref="Resolve"/>, so this file
+/// is the whole platform surface. RVA provenance / regen recipe: docs/windows-symbols.md.
+/// </summary>
 internal static unsafe class SymbolMap
 {
     // ---- symbol identity: the Linux mangled name of everything we resolve ----
@@ -46,18 +40,15 @@ internal static unsafe class SymbolMap
     public const string SetText       = "_ZN20CAuroraStringWrapper7SetTextEj";
     public const string ExoStringInit = "_ZN10CExoString17InitFromCharArrayEPKcj";
     public const string ExoStringDtor = "_ZN10CExoStringD1Ev";
-    // consent modal -- the native yes/no panel (CPanelOkCancel, as used by the quit
-    // dialog) plus the pieces to spawn it and gate on being in-game. The four engine
-    // symbols below are name-exported on both platforms; operator new is not on Windows
-    // (static CRT), so it resolves by RVA -- see the _win table.
+    // consent modal (CPanelOkCancel, as used by the quit dialog). All name-exported on both
+    // platforms except operator new (static CRT on Windows -> RVA; see the _win table).
     public const string OperatorNew     = "_Znwm";                                     // Linux: libstdc++ operator new(size_t); Windows: the game's own by RVA
     public const string OkCancelCtor    = "_ZN14CPanelOkCancelC1Ev";
     public const string OkCancelActivate= "_ZN14CPanelOkCancel8ActivateE10CExoStringjj"; // (CExoString msg, uint ok, uint cancel)
     public const string SdlGetKeyName   = "SDL_GetKeyName";
     public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
-    // client-native manager: a window injected into the client's own nuklear pass. We hook the
-    // per-frame nk_sdl_render (it does nk_convert then nk_clear, so we add our window just before
-    // it) and drive it with the stock nuklear immediate-mode API. All C symbols, Linux-only for now.
+    // client-native manager: a window injected into the client's own nuklear pass via the
+    // per-frame nk_sdl_render hook. All C symbols, Linux-only for now.
     public const string NkSdlRender        = "nk_sdl_render";
     public const string NkBegin            = "nk_begin";
     public const string NkEnd              = "nk_end";
@@ -70,9 +61,10 @@ internal static unsafe class SymbolMap
     public const string GuiMan     = "g_pGuiMan";
     public const string Nuklear    = "g_pNuklear";
 
-    // PE TimeDateStamp of the nwmain.exe the RVAs were read from (build 26c6e573).
-    // A client patch shifts addresses; RVA hooks are refused unless the loaded exe
-    // matches this (see BuildMatches) -- fail loud, never hook a wrong address.
+    /// <summary>
+    /// PE TimeDateStamp of the nwmain.exe the RVAs were read from. A client patch shifts
+    /// addresses; RVA hooks are refused unless the loaded exe matches this (see BuildMatches).
+    /// </summary>
     public const uint WindowsBuildStamp = 0x68e408bc;
 
     // Windows resolution for a symbol. Exactly one path applies:
@@ -84,9 +76,7 @@ internal static unsafe class SymbolMap
     private static Win Nm(string msvc) => new(msvc, 0);
     private static Win At(int rva) => new(null, rva);
 
-    // Linux name -> Windows resolution. Keyed by the consts above, so a name lives
-    // in exactly one place. If the client doesn't recognise a passed name it isn't
-    // in here at all; Resolve treats that as "skip" too.
+    /// <summary>Linux name -> Windows resolution. A name not in here is treated as "skip" too.</summary>
     private static readonly Dictionary<string, Win> _win = new()
     {
         // --- exported on Windows (shared engine): resolve by MSVC name ---
@@ -120,24 +110,18 @@ internal static unsafe class SymbolMap
         [OnLostFocus] = default,   // empty focus stub
         [Nuklear]     = default,   // NUI edit-focus probe (client global)
 
-        // consent modal -- the native yes/no panel. These four ARE name-exported on Windows
-        // (verified in nwmain.exe's export table, build 0x68e408bc) -- resolve by MSVC name
-        // like the shared-engine class methods.
+        // consent modal -- name-exported on Windows (verified in nwmain.exe's export table).
         [OkCancelCtor]    = Nm("??0CPanelOkCancel@@QEAA@XZ"),
         [OkCancelActivate]= Nm("?Activate@CPanelOkCancel@@QEAAXVCExoString@@II@Z"),
         [GuiMan]          = Nm("?g_pGuiMan@@3PEAVCGuiMan@@EA"),
         [SdlGetKeyName]   = Nm("SDL_GetKeyName"),
         [SdlGetModState]  = Nm("SDL_GetModState"),
-        // nwmain.exe statically links the CRT, so operator new/delete are internal (not exported,
-        // no CRT DLL imported). The panel's deleting dtor frees via the game's own operator delete,
-        // so we MUST allocate from the game's own operator new -- a cross-heap alloc would corrupt
-        // on free. Resolve it by RVA (build-locked). It's the scalar operator new(size_t): a
-        // _malloc_base + _callnewh(new_handler) loop, VS2017/2019 release. With this + the four
-        // exports above + the build lock, the consent modal runs on Windows.
+        // Footgun: nwmain.exe statically links the CRT, so the panel frees via the game's own
+        // operator delete -- allocate from the game's own operator new (build-locked RVA) or the
+        // cross-heap free corrupts. Scalar operator new(size_t), VS2017/2019 release.
         [OperatorNew]     = At(0xc10324),
 
-        // client-native manager (nuklear) -- no Windows anchor yet: skip + log, so the manager
-        // (and its hook) simply do not exist on Windows, same fail-closed posture as the modal.
+        // client-native manager (nuklear) -- no Windows anchor yet: skip + log (manager absent on Windows).
         [NkSdlRender]        = default,
         [NkBegin]            = default,
         [NkEnd]              = default,
@@ -147,14 +131,15 @@ internal static unsafe class SymbolMap
         [NkWindowIsClosed]   = default,
     };
 
-    // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the
-    // static 0x140000000 from the file.
+    // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the static file base.
     private static readonly IntPtr Base = NativeLibrary.GetMainProgramHandle();
     private static bool? _buildOk;
 
-    // Resolve a Linux mangled symbol to an absolute address for the running client.
-    // Linux: resolve the Itanium name directly. Windows: consult the table (name
-    // export, or build-locked RVA, or skip). Zero = unresolved (already logged).
+    /// <summary>
+    /// Resolve a Linux mangled symbol to an absolute address for the running client.
+    /// Linux: the Itanium name directly. Windows: name export, build-locked RVA, or skip.
+    /// Zero = unresolved (already logged).
+    /// </summary>
     public static IntPtr Resolve(string linux, ExtenderLog? log)
     {
         if (!OperatingSystem.IsWindows())
@@ -174,8 +159,10 @@ internal static unsafe class SymbolMap
         return BuildMatches(log) ? Base + w.Rva : IntPtr.Zero;   // RVA path is build-locked
     }
 
-    // The loaded module's PE COFF TimeDateStamp must equal WindowsBuildStamp, else the
-    // RVAs address a different build. Checked once; on mismatch all RVA hooks skip.
+    /// <summary>
+    /// The loaded module's PE TimeDateStamp must equal <see cref="WindowsBuildStamp"/>, else the
+    /// RVAs address a different build. Checked once; on mismatch all RVA hooks skip.
+    /// </summary>
     private static bool BuildMatches(ExtenderLog? log)
     {
         if (_buildOk is bool cached) return cached;

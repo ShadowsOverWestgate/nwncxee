@@ -3,37 +3,27 @@ using Sowx.Framework;
 
 namespace Sowx.Services;
 
-// The full pattern in one file: constructor DI (log + hooks), install one hook,
-// call the original through the trampoline. Hooks the client's frame present and
-// announces the first frame -- run it against the real client and you see the
-// line appear, then the game keeps rendering normally.
-//
-// [UnmanagedCallersOnly] handlers must be static, so anything they touch is
-// static too. That is the one ergonomic tax of C#-in-a-native-callback; keep the
-// static surface tiny.
+/// <summary>
+/// The full pattern in one file: install one hook, call the original through the
+/// trampoline. Hooks the frame present and announces the first frame. Groundwork for
+/// graphics-pipeline work.
+/// </summary>
+/// <remarks>
+/// [UnmanagedCallersOnly] handlers must be static, so anything they touch is static too.
+/// That is the one ergonomic tax of C#-in-a-native-callback; keep the static surface tiny.
+/// </remarks>
 public sealed unsafe class FrameTapService : IExtenderService
 {
-    // GLRender::SwapBuffers(SDL_Window*) -- static (no `this`) + one arg. The MSVC name
-    // in SymbolMap proved it (`CA` = static member); on Linux the Itanium name hides
-    // that and a spare 2nd arg was forwarded as garbage and ignored, which happened to
-    // work. One arg is correct.
+    // GLRender::SwapBuffers(SDL_Window*) -- static (no `this`) + one arg (MSVC `CA` proved it).
     private static ExtenderLog? _log;
     private static delegate* unmanaged<IntPtr, void> _original;
     private static bool _announced;
 
-    private readonly HookService _hooks;
-
-    public FrameTapService(ExtenderLog log, HookService hooks) // service <- framework DI
+    public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _hooks = hooks;
-    }
-
-    public void Initialize()
-    {
-        IntPtr trampoline = _hooks.Install(
+        _original = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.SwapBuffers, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwapBuffers);
-        _original = (delegate* unmanaged<IntPtr, void>)trampoline;
     }
 
     [UnmanagedCallersOnly]

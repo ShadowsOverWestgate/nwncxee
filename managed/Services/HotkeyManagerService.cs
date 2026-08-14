@@ -3,22 +3,19 @@ using Sowx.Framework;
 
 namespace Sowx.Services;
 
-// The client-native hotkey manager: a window drawn entirely by the extender, listing every armed
-// key with a per-key Unbind, a Revoke-all, and a passthrough to the server's binding UI. It exists
-// so the player owns their capture surface without depending on the server -- unbinding here removes
-// the key locally AND sends a Revoke (the server forgets the binding). A server that ignores Revoke
-// only turns the key back into an *addition*, which hits the consent modal, whose deny re-revokes:
-// the loop closes on the client's terms.
-//
-// How it draws: NWN:EE's own UI (NUI) is nuklear. We hook the per-frame nk_sdl_render -- which does
-// nk_convert then nk_clear -- and inject our window's immediate-mode calls *just before* the
-// original, so our commands are converted (drawn) this frame and cleared for the next. While open we
-// rebuild the window every frame (immediate mode); stop, and nk_clear reaps it. This reuses the
-// client's live nuklear context, input, and GL backend -- no UI of our own.
-//
-// Hot-path discipline (this runs on the render/main thread every frame): the draw path allocates
-// NOTHING. Every string is pre-baked into unmanaged memory; the key list is rebuilt only when
-// HotkeyStore.Version changes (a cold event). See CLAUDE.md "hot hooks allocate nothing".
+/// <summary>
+/// The client-native hotkey manager: a window drawn by the extender listing every armed key
+/// with a per-key Unbind, a Revoke-all, and a passthrough to the server's binding UI. Unbinding
+/// removes the key locally AND sends a Revoke, so the player owns their capture surface without
+/// depending on the server.
+/// </summary>
+/// <remarks>
+/// Draws by hooking the per-frame nk_sdl_render (which does nk_convert then nk_clear) and injecting
+/// our window's immediate-mode calls just before it, reusing the client's live nuklear context.
+/// Hot-path discipline (render/main thread every frame): the draw path allocates NOTHING -- every
+/// string is pre-baked into unmanaged memory, and the key list is rebuilt only on HotkeyStore.Version
+/// change (cold). See CLAUDE.md "hot hooks allocate nothing".
+/// </remarks>
 public sealed unsafe class HotkeyManagerService : IExtenderService
 {
     private const int NkCurrentOff = 0x6738;                 // nk_context->current: non-null mid-build
@@ -26,9 +23,8 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
     private const uint NkTextLeft = 0x11;                    // NK_TEXT_ALIGN_LEFT | NK_TEXT_ALIGN_MIDDLE
     private const long ConfirmMs = 3000;                     // window to click Revoke-all a second time
 
-    // nk_rect is passed BY VALUE (two SSE eightbytes: x,y in xmm0, w,h in xmm1). The struct layout
-    // and declaration-order delegate must match the C ABI exactly, or the integer args shift and
-    // nuklear dereferences garbage as the context.
+    // nk_rect is passed BY VALUE (x,y in xmm0, w,h in xmm1). Layout + declaration-order delegate must
+    // match the C ABI exactly, or the integer args shift and nuklear derefs garbage as the context.
     [StructLayout(LayoutKind.Sequential)]
     private struct NkRect { public float X, Y, W, H; }
 
@@ -53,16 +49,9 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
     private static int* _keyCodes;                          // _count entries
     private static int _bakedVersion = -1;
 
-    private readonly HookService _hooks;
-
-    public HotkeyManagerService(ExtenderLog log, HookService hooks)
+    public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _hooks = hooks;
-    }
-
-    public void Initialize()
-    {
         _nkGlobal = Native.Sym(SymbolMap.Nuklear);
         _begin    = (delegate* unmanaged<IntPtr, byte*, NkRect, uint, int>)Native.Sym(SymbolMap.NkBegin);
         _end      = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.NkEnd);
@@ -71,7 +60,7 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
         _button   = (delegate* unmanaged<IntPtr, byte*, int>)Native.Sym(SymbolMap.NkButtonLabel);
         _isClosed = (delegate* unmanaged<IntPtr, byte*, int>)Native.Sym(SymbolMap.NkWindowIsClosed);
 
-        _renderOrig = (delegate* unmanaged<float, void>)_hooks.Install(
+        _renderOrig = (delegate* unmanaged<float, void>)hooks.Install(
             SymbolMap.NkSdlRender, (IntPtr)(delegate* unmanaged<float, void>)&OnNkRender);
 
         _ready = _nkGlobal != IntPtr.Zero && _begin != null && _end != null && _row != null
@@ -89,9 +78,10 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
 
     public static bool IsReady => _ready;
 
-    // Toggle from the Options "Hotkeys" button. Returns true if it handled the click; false means
-    // the manager can't run (caller should fall back to opening the server UI so the button is never
-    // dead).
+    /// <summary>
+    /// Toggle from the Options "Hotkeys" button. Returns false if the manager can't run (caller then
+    /// falls back to opening the server UI so the button is never dead).
+    /// </summary>
     public static bool Toggle()
     {
         if (!_ready) return false;
@@ -100,10 +90,9 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
         return true;
     }
 
-    // Close on login: a manager left open across a disconnect must not linger into a fresh session.
+    /// <summary>Close on login: a manager left open across a disconnect must not linger into a fresh session.</summary>
     public static void Close() { _open = false; _confirmDeadline = 0; }
 
-    // The hook: inject our window just before the original converts+clears the frame.
     [UnmanagedCallersOnly]
     private static void OnNkRender(float aa)
     {
@@ -115,9 +104,9 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
     {
         IntPtr ctx = *(IntPtr*)_nkGlobal;
         if (ctx == IntPtr.Zero) return;
-        // Trap: nk_begin returns 0 WITHOUT pushing a window if another is mid-build (ctx->current
-        // set) -- an unconditional nk_end would then close someone else's window. Pre-check here and
-        // skip the whole frame; once past it, nk_begin is guaranteed to push, so nk_end is safe.
+        // Trap: nk_begin returns 0 WITHOUT pushing a window if another is mid-build (ctx->current set)
+        // -- an unconditional nk_end would then close someone else's window. Skip the frame; once past
+        // this, nk_begin is guaranteed to push, so nk_end is safe.
         if (*(IntPtr*)(ctx + NkCurrentOff) != IntPtr.Zero) return;
 
         EnsureBaked();
@@ -149,9 +138,9 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
         }
         _end(ctx);
 
-        // Window's own [x] closes it. NB: nk_window_is_closed returns 1 for "not found" too, so this
-        // MUST stay after nk_begin pushed the window this frame (the pre-guard above guarantees it) --
-        // moving it earlier would read "closed" and self-close the manager every frame.
+        // Window's own [x] closes it. nk_window_is_closed returns 1 for "not found" too, so this MUST
+        // stay after nk_begin pushed the window this frame (the pre-guard guarantees it) -- moving it
+        // earlier reads "closed" and self-closes the manager every frame.
         if (_isClosed(ctx, _title) != 0) { Close(); return; }
 
         // Act now (cold: at most one per click).
@@ -186,11 +175,11 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
         _confirmDeadline = 0;
     }
 
-    // Passthrough to the server's binding NUI (the same OpenUi the Hotkeys button used to send).
+    /// <summary>Passthrough to the server's binding NUI (the same OpenUi the Hotkeys button used to send).</summary>
     private static void BindMore() =>
         ClientApi.Send(HotkeyProtocol.OpenUiMajor, HotkeyProtocol.OpenUiMinor, null, 0);
 
-    // Rebuild the baked key list only when the armed set changed. Cold path -- allocation here is fine.
+    /// <summary>Rebuild the baked key list only when the armed set changed. Cold path -- allocation is fine.</summary>
     private static void EnsureBaked()
     {
         int v = HotkeyStore.Version;

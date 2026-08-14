@@ -2,9 +2,10 @@ using Sowx.Framework;
 
 namespace Sowx.Services;
 
-// Small shared bridge to the client's message object, so services don't each
-// re-resolve the send plumbing. The live CNWCMessage hangs off the app manager:
-//   msg = CClientExoApp::GetNWCMessage(*g_pAppManager)
+/// <summary>
+/// Small shared bridge to the client's message object, so services don't each re-resolve
+/// the send plumbing.
+/// </summary>
 public static unsafe class ClientApi
 {
     private static readonly IntPtr AppMgr = Native.Sym(SymbolMap.AppManager);
@@ -13,10 +14,11 @@ public static unsafe class ClientApi
     private static readonly delegate* unmanaged<IntPtr, byte, byte, byte*, uint, void> SendMsg =
         (delegate* unmanaged<IntPtr, byte, byte, byte*, uint, void>)Native.Sym(SymbolMap.SendPlayerToServerMessage);
 
-    // A live CNWCMessage* captured from a hook that is handed one (the inbound message hook's `self`,
-    // or the login hook's `this`). Preferred over resolving GetNWCMessage(*g_pAppManager): the hook
-    // pointer is exactly the object the engine itself uses, so there is no symbol/offset guesswork.
-    // The g_pAppManager path stays as a fallback for the (unlikely) case nothing has populated this.
+    /// <summary>
+    /// A live CNWCMessage* captured from a hook that is handed one (inbound `self` / login `this`).
+    /// Preferred over resolving GetNWCMessage(*g_pAppManager) -- exactly the engine's own object, no
+    /// symbol/offset guesswork. The g_pAppManager path (which segfaulted on this build) is fallback only.
+    /// </summary>
     public static IntPtr LiveMessage;
 
     public static IntPtr Message()
@@ -33,12 +35,11 @@ public static unsafe class ClientApi
         if (msg != IntPtr.Zero && SendMsg != null) SendMsg(msg, major, minor, payload, len);
     }
 
-    // Convenience: send an ASCII payload.
-    // CNWCMessage::SendPlayerToServerMessage reserves the first 3 bytes of the buffer for its own
-    // ['p'][major][minor] header (decomp-verified) and transmits the whole `len`. So we reserve 3
-    // bytes up front, put the ASCII at offset 3, and pass 3 + payload as the length. Handing it the
-    // raw payload lets the engine overwrite the first 3 bytes and send a truncated, minor-less runt
-    // the server cannot route (this is why armed keypresses never reached the server).
+    /// <summary>
+    /// Send an ASCII payload. Footgun: SendPlayerToServerMessage reserves the first 3 bytes for its
+    /// own ['p'][major][minor] header and transmits the whole len, so we reserve 3 bytes up front and
+    /// put the ASCII at offset 3 -- handing it the raw payload sends a minor-less runt the server drops.
+    /// </summary>
     public static void SendAscii(byte major, byte minor, string payload)
     {
         byte[] ascii = System.Text.Encoding.ASCII.GetBytes(payload);

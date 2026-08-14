@@ -1,8 +1,11 @@
 namespace Sowx.Framework;
 
-// Implement this and the host discovers, constructs (with constructor DI), and
-// initializes it automatically. This is the only contract a contributor needs.
+/// <summary>
+/// Implement this and the host discovers, constructs, and initializes it
+/// automatically. The only contract a contributor needs.
+/// </summary>
 public interface IExtenderService
 {
-    void Initialize();
+    /// <summary>Wire hooks and state here. Runs once, before hooks are committed.</summary>
+    void Initialize(ExtenderLog log, HookService hooks);
 }

@@ -1,53 +1,34 @@
 namespace Sowx.Services;
 
-// The wire contract between this client extender and the SoW server (sow-codebase).
-// ALL opcodes here are PLACEHOLDERS -- they must be agreed with, and matched by,
-// the server end. Reuse existing majors the server already routes; the server only
-// ever sends the server->client message to clients that advertised SOWX_ENABLED
-// (see HotkeyHandshakeService), so vanilla clients are never affected.
-//
-// Payloads are ASCII text on purpose -- no endianness to get wrong across repos,
-// and trivially debuggable.
-//
-//   client -> server
-//     KeyPress   : an armed key was pressed.   payload = ASCII decimal VK, e.g. "112"
-//     OpenUi     : player asked for the UI.    payload = none
-//     Revoke     : player unbound/denied keys. payload = ASCII CSV of VKs, e.g. "112,113"
-//                  (server forgets the binding, so it stops re-pushing them)
-//     GrantToken : consent receipt.            payload = "<tokenhex>;<CSV of VKs>"
-//                  (after the player consents, the client mints a token and hands it here; the
-//                   server stores it per player and presents it back on the next login)
-//   server -> client
-//     ArmSet       : here is the armed set.    payload = ASCII CSV of VKs, e.g. "112,113"
-//                    (empty payload = arm nothing)
-//     PresentToken : proof of prior consent.   payload = "<tokenhex>"
-//                    (the token the client gave last time; the client looks it up to restore that
-//                     server's consented keys. A server that holds no token can present none, so it
-//                     cannot restore -- and thus cannot inherit -- consent it was never granted.)
+/// <summary>
+/// The wire contract between this client extender and the SoW server (sow-codebase).
+/// ALL opcodes are PLACEHOLDERS -- they must be agreed with, and matched by, the server.
+/// Payloads are ASCII on purpose (no endianness, trivially debuggable).
+/// </summary>
+/// <remarks>
+/// client -> server: KeyPress (VK), OpenUi (none), Revoke (CSV of VKs),
+/// GrantToken ("&lt;hex&gt;;&lt;CSV&gt;"). server -> client: ArmSet (CSV of VKs),
+/// PresentToken (hex proof of prior consent -- a server holding no token can restore none,
+/// so it cannot inherit consent it was never granted).
+/// </remarks>
 internal static class HotkeyProtocol
 {
     public const byte KeyPressMajor = 0x36, KeyPressMinor = 0x40;
     public const byte OpenUiMajor   = 0x36, OpenUiMinor   = 0x41;
     public const byte ArmSetMajor   = 0x36, ArmSetMinor   = 0x42;
-    // Revoke (client -> server): the player unbound / denied these keys. payload = ASCII CSV of
-    // keycodes, e.g. "112,113". The server forgets the binding so it stops pushing them back.
     public const byte RevokeMajor   = 0x36, RevokeMinor   = 0x43;
-    // PresentToken (server -> client): the consent token the client granted last time. payload = hex.
     public const byte PresentTokenMajor = 0x36, PresentTokenMinor = 0x44;
-    // GrantToken (client -> server): consent receipt after the player OKs. payload = "<hex>;<CSV>".
     public const byte GrantTokenMajor   = 0x36, GrantTokenMinor   = 0x45;
 
-    // Mouse buttons ride the same KeyPress channel as keys: SDL button index N is
-    // encoded as MouseBase + N. Bit 28 keeps these clear of every SDLK (ASCII < 128,
-    // scancode mask is bit 30), so a mouse code never aliases a key. This constant
-    // MUST match sow-codebase HotkeyProtocol.MouseBase byte for byte.
+    /// <summary>
+    /// Mouse button N rides the KeyPress channel as MouseBase + N. Bit 28 keeps these clear
+    /// of every SDLK (ASCII &lt; 128, scancode mask bit 30). MUST match sow-codebase byte for byte.
+    /// </summary>
     public const int MouseBase = 1 << 28;
 
-    // Modifier bits OR'd onto a base code (SDLK or MouseBase+button) to make a combo
-    // like Ctrl+F a distinct opaque code. Bits 25/26/27 are free of every base: ASCII
-    // keys use bits 0-6, scancode keys add bit 30, mouse uses bit 28. Matching is EXACT
-    // -- Ctrl+F (ModCtrl|102) is a different code than F (102), so one never fires the
-    // other. These MUST match sow-codebase HotkeyProtocol byte for byte.
+    // Modifier bits OR'd onto a base code to make a combo (Ctrl+F) a distinct opaque code.
+    // Bits 25/26/27 are free of every base (ASCII 0-6, scancode +30, mouse +28). Matching is
+    // EXACT -- Ctrl+F never fires F. MUST match sow-codebase byte for byte.
     public const int ModCtrl  = 1 << 25;
     public const int ModShift = 1 << 26;
     public const int ModAlt   = 1 << 27;

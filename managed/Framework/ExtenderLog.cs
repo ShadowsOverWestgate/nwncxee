@@ -1,6 +1,6 @@
 namespace Sowx.Framework;
 
-// Inject this instead of reimplementing logging. Writes stderr + /tmp/sowx.log.
+/// <summary>Injected logger. Writes stderr + /tmp/sowx.log.</summary>
 public sealed class ExtenderLog
 {
     public void Info(string message)
