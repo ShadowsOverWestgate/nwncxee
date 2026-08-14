@@ -8,6 +8,16 @@ ignored, so an un-extended client loses nothing.
 This is the **client** (`nwmain`), not the server. Server hooking lives in
 `sow-codebase`; do not conflate the two.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live on the self-hosted Gitea at `git.westgate.pw` via the `tea` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily). See `docs/agents/domain.md`.
+
 ## Build & run
 
     ./build.sh          # needs: .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake
@@ -137,8 +147,10 @@ The client is already imported and analyzed:
 ## Status
 
 Framework works end-to-end under NativeAOT (DI + discovery + funchook install
-all verified via `run-demo.sh`). `FrameTapService` proves a live hook -- run
-`./launch-nwn.sh` and watch for "first frame presented -- hook is LIVE".
+all verified via `run-demo.sh`). A live hook proves out on `./launch-nwn.sh` --
+watch for "first frame presented -- hook is LIVE" (now emitted by `ChatService`,
+which owns the `SwapBuffers` present for the native chatbox; `FrameTapService`
+is the minimal example of the pattern and stands down while the chatbox owns it).
 
 Linux only. Windows = proxy DLL or rename-launcher; macOS = `DYLD_INSERT_LIBRARIES`,
 blocked by the notarized app's hardened runtime until re-signed (do last).

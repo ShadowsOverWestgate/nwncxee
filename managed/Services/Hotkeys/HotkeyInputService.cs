@@ -1,7 +1,8 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
+using Sowx.Services.Chat;
 
-namespace Sowx.Services;
+namespace Sowx.Services.Hotkeys;
 
 /// <summary>
 /// The runtime pipeline: a bound key press -> a debounced packet to the server's toolbar
@@ -9,9 +10,11 @@ namespace Sowx.Services;
 /// </summary>
 /// <remarks>
 /// Order per keydown, first failing gate drops the event silently: (1) consent filter,
-/// (2) auto-repeat gate (only the up->down transition), (3) focus, (4) typing (chat prompt
-/// or NUI edit box), (5) per-key debounce, (6) send. The original handler always runs -- we
-/// observe, we don't consume. Held keys are cleared on SDL KEYUP and on focus loss.
+/// (2) auto-repeat gate (only the up->down transition), (3) focus, (4) typing
+/// (<see cref="ChatService.IsTyping"/> -- the C# chatbox owns the keyboard, or a NUI edit box
+/// holds focus), (5) per-key debounce, (6) send. The original handler otherwise always runs --
+/// we observe, we don't consume -- EXCEPT while the chatbox is typing, where we route the key
+/// to its edit line and consume it. Held keys are cleared on SDL KEYUP and on focus loss.
 /// </remarks>
 public sealed unsafe class HotkeyInputService : IExtenderService
 {
@@ -31,7 +34,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
 
     private static ExtenderLog? _log;
     private static bool _focused = true;   // OS delivers keys only when focused, but gate anyway
-    private static bool _typing;
+    private static bool _typing;           // observer-mode vanilla-chat typing flag (own-input mode uses ChatService.IsTyping)
     private static IntPtr _nuklearGlobal;  // address of g_pNuklear (resolved once)
     private static readonly Dictionary<int, long> _lastSent = new();
     private static readonly HashSet<int> _down = new();   // armed keys currently held (repeat gate)
@@ -39,10 +42,20 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     // SDL event: type at +0x0, keysym.sym at +0x14, mouse button (Uint8) at +0x10 (from
     // WinMessageHandler). Mouse buttons come through the same pump as KEYUP -- no extra hook.
     private const uint SdlKeyUp = 0x301;
+    // SDL_TEXTINPUT: finished UTF-8 codepoints. Null-terminated string (SDL_TextInputEvent.text)
+    // at ev + 0xC -- full Unicode, unlike the engine's lossy 8-bit HandleWMCharMessage (bypassed).
+    private const uint SdlTextInput = 0x303;
+    private const int SdlEvTextOff = 0xC;
     private const int SdlEvSymOff = 0x14;
+    private const uint SdlMouseMotion = 0x400;
     private const uint SdlMouseDown = 0x401;
     private const uint SdlMouseUp   = 0x402;
+    private const uint SdlMouseWheel = 0x403;
     private const int SdlEvButtonOff = 0x10;
+    // SDL button/motion events: x@0x14, y@0x18 (Sint32). Wheel event: y@0x14 (Sint32, +=up/into history).
+    private const int SdlEvMouseXOff = 0x14;
+    private const int SdlEvMouseYOff = 0x18;
+    private const int SdlEvWheelYOff = 0x14;
 
     // SDL_Keymod bits. Ctrl/Shift take both sides; Alt is LALT ONLY -- RALT is AltGr (accented
     // chars; on Windows AltGr = LCTRL+RALT), so binding it would hijack normal typing.
@@ -54,7 +67,9 @@ public sealed unsafe class HotkeyInputService : IExtenderService
 
     private static delegate* unmanaged<uint, uint, int> _keyOrig;
     private static delegate* unmanaged<IntPtr, int> _winMsgOrig;
-    private static delegate* unmanaged<IntPtr, void> _gainOrig, _lostOrig, _chatOnOrig, _clickOrig, _enterOrig, _escOrig, _loseOrig;
+    private static delegate* unmanaged<IntPtr, void> _gainOrig, _lostOrig;
+    // Observer-mode chat-focus trampolines (default mode only; unused when ChatService owns input).
+    private static delegate* unmanaged<IntPtr, void> _chatOnOrig, _clickOrig, _enterOrig, _escOrig, _loseOrig;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
@@ -68,11 +83,18 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         _winMsgOrig = (delegate* unmanaged<IntPtr, int>)hooks.Install(SymbolMap.WinMessageHandler,     (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
         _gainOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnGainFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
         _lostOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnLostFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
-        _chatOnOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.SetFocusChatPrompt,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatOn);
-        _clickOrig  = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleLMouseDown, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatClick);
-        _enterOrig  = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleEnter,      (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEnter);
-        _escOrig    = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleEsc,        (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEsc);
-        _loseOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleLoseFocus,  (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatLose);
+        // Chat typing gate. By default ChatService owns input: it SKIPS the chat-focus openers (suppressing
+        // vanilla) and drives ChatService.IsTyping, so we must NOT also install them (funchook single-hooks).
+        // Under SOWX_LOCKCHAT (ChatService stood down, OwnInput false) we observe those same hooks (forward to
+        // trampoline) to track _typing, so vanilla chat keeps working and hotkeys still suppress while typing.
+        if (!ChatService.OwnInput)
+        {
+            _chatOnOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.SetFocusChatPrompt,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatOn);
+            _clickOrig  = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleLMouseDown, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatClick);
+            _enterOrig  = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleEnter,      (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEnter);
+            _escOrig    = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleEsc,        (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEsc);
+            _loseOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleLoseFocus,  (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatLose);
+        }
     }
 
     // Opt-in raw-key probe (SOWX_KEYDIAG). OFF by default -- it logs every keydown, so the whole
@@ -85,7 +107,15 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     {
         if (_keyDiag)
             _log?.Info($"[keydiag] key={key} armed={HotkeyStore.Armed.Contains((int)key)} " +
-                       $"focused={_focused} typing={_typing} nui={NuiEditFocused()}");
+                       $"focused={_focused} typing={_typing || ChatService.IsTyping} nui={NuiEditFocused()}");
+
+        // Chatbox owns the keyboard: route the key to its edit line and CONSUME it. Calling the
+        // original on Enter would re-enter SetFocusChatPrompt and reopen the box we just closed.
+        if (ChatService.IsTyping)
+        {
+            ChatService.RouteKey(key, _modState != null ? _modState() : 0);
+            return 0;
+        }
 
         Fire((int)key | Mods());
         return _keyOrig != null ? _keyOrig(key, flags) : 0;                    // never consume the key
@@ -118,7 +148,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // release must clear the same key it set.
         int baseCode = code & ~HotkeyProtocol.ModMask;
         if (!(HotkeyStore.Armed.Contains(code) && _down.Add(baseCode))) return;
-        if (!_focused || _typing || NuiEditFocused()) return;                  // 3,4 focus + typing
+        if (!_focused || _typing || ChatService.IsTyping || NuiEditFocused()) return;  // 3,4 focus + typing (vanilla or own)
         long now = Environment.TickCount64;                                    // 5 debounce
         _lastSent.TryGetValue(code, out long last);
         if (now - last < DebounceMs) return;
@@ -138,11 +168,28 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                 case SdlKeyUp:                                                  // key released
                     _down.Remove(*(int*)(ev + SdlEvSymOff));
                     break;
-                case SdlMouseDown:                                             // mouse press: same path as a key
+                case SdlTextInput:                                             // finished UTF-8 -> chat edit line
+                    if (ChatService.IsTyping) ChatService.InsertUtf8(ev + SdlEvTextOff);
+                    break;
+                case SdlMouseMotion:                                            // chatbox drag/resize eats motion mid-drag
+                    if (ChatService.OnMouseMotion(*(int*)(ev + SdlEvMouseXOff), *(int*)(ev + SdlEvMouseYOff)))
+                        return 0;
+                    break;
+                case SdlMouseDown:                                             // chatbox first, else mouse-as-hotkey
+                    if (ChatService.OnMouseButton(true, *(byte*)(ev + SdlEvButtonOff),
+                                                  *(int*)(ev + SdlEvMouseXOff), *(int*)(ev + SdlEvMouseYOff)))
+                        return 0;                                              // clicked the box: don't hit the world
                     Fire(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff) | Mods());
                     break;
-                case SdlMouseUp:                                              // mouse release: clear the held mark
+                case SdlMouseUp:                                              // chatbox release, else clear held mark
+                    if (ChatService.OnMouseButton(false, *(byte*)(ev + SdlEvButtonOff),
+                                                  *(int*)(ev + SdlEvMouseXOff), *(int*)(ev + SdlEvMouseYOff)))
+                        return 0;
                     _down.Remove(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff));
+                    break;
+                case SdlMouseWheel:                                            // scrollback when the pointer is over the box
+                    if (ChatService.OnMouseWheel(*(int*)(ev + SdlEvWheelYOff)))
+                        return 0;
                     break;
             }
         }
@@ -170,11 +217,14 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     }
 
     // Focus gate.
-    [UnmanagedCallersOnly] private static void OnGain(IntPtr self) { _focused = true;  if (_gainOrig != null) _gainOrig(self); }
-    [UnmanagedCallersOnly] private static void OnLost(IntPtr self) { _focused = false; _down.Clear(); if (_lostOrig != null) _lostOrig(self); }
+    // self is CClientExoApp* -- cache it so ChatService can walk to the live in-game GUI (its visibility
+    // gate). A process-lifetime singleton, so capturing on either focus edge is enough.
+    [UnmanagedCallersOnly] private static void OnGain(IntPtr self) { _focused = true;  ClientApi.LiveExoApp = self; if (_gainOrig != null) _gainOrig(self); }
+    [UnmanagedCallersOnly] private static void OnLost(IntPtr self) { _focused = false; ClientApi.LiveExoApp = self; _down.Clear(); if (_lostOrig != null) _lostOrig(self); }
 
-    // Typing gate: two entries (chat opened by key, or clicked into), three exits (Enter/Esc/
-    // click-away). Other edit boxes (rare in-game) are not tracked. ponytail: add them if a real one shows up.
+    // Observer-mode typing gate (default; not installed when ChatService owns input). Two entries
+    // (chat opened by key, or clicked into), three exits (Enter/Esc/click-away). We forward to the
+    // trampoline -- vanilla chat runs normally; we only track _typing to suppress hotkeys.
     [UnmanagedCallersOnly] private static void OnChatOn(IntPtr self)   { _typing = true;  if (_chatOnOrig != null) _chatOnOrig(self); }
     [UnmanagedCallersOnly] private static void OnChatClick(IntPtr self){ _typing = true;  if (_clickOrig  != null) _clickOrig(self); }
     [UnmanagedCallersOnly] private static void OnChatEnter(IntPtr self){ _typing = false; if (_enterOrig  != null) _enterOrig(self); }

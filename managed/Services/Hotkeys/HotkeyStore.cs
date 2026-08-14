@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using Sowx.Framework;
 
-namespace Sowx.Services;
+namespace Sowx.Services.Hotkeys;
 
 /// <summary>
 /// The consent list and its persistence -- scoped PER SERVER by a client-minted token. Consent is a

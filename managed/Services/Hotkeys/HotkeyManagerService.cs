@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 
-namespace Sowx.Services;
+namespace Sowx.Services.Hotkeys;
 
 /// <summary>
 /// The client-native hotkey manager: a window drawn by the extender listing every armed key

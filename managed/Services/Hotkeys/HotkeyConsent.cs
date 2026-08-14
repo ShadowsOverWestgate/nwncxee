@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 
-namespace Sowx.Services;
+namespace Sowx.Services.Hotkeys;
 
 /// <summary>
 /// Client-owned consent gate. A server ArmSet that ADDS keys raises the engine's own native

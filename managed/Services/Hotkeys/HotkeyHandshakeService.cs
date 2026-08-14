@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 
-namespace Sowx.Services;
+namespace Sowx.Services.Hotkeys;
 
 /// <summary>
 /// Announces the extender to the server on login via NWN:EE's own capability channel

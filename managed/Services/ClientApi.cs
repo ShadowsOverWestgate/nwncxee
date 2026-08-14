@@ -21,6 +21,11 @@ public static unsafe class ClientApi
     /// </summary>
     public static IntPtr LiveMessage;
 
+    /// <summary>A live CClientExoApp* captured from the focus hooks (their `this`). A process-lifetime
+    /// singleton, so one capture holds; lets services walk to the live in-game GUI without the flaky
+    /// g_pAppManager global.</summary>
+    public static IntPtr LiveExoApp;
+
     public static IntPtr Message()
     {
         if (LiveMessage != IntPtr.Zero) return LiveMessage;

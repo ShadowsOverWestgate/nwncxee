@@ -35,6 +35,32 @@ internal static unsafe class SymbolMap
     public const string PostAttachmentInitialize = "_ZN13COptionsPanel24PostAttachmentInitializeEv";
     public const string HandleSaveCharButton     = "_ZN13COptionsPanel20HandleSaveCharButtonEv";
     public const string OptionsHandleXButton     = "_ZN13COptionsPanel13HandleXButtonEv";   // closes the options menu (what Resume calls)
+    // chat-render probe (#14) -- Linux-only throwaway; no Windows anchors (skip + log there).
+    public const string AppendToMsgBuffer   = "_ZN10CGuiInGame17AppendToMsgBufferE10CExoStringjji7CResRef"; // inbound tap
+    public const string SetPriMsgFilter     = "_ZN10CGuiInGame25SetPrimaryMsgWindowFilterEj";               // force backlog replay
+    public const string ViewportSetViewport = "_ZN12CGuiViewport11SetViewportEiiii";                        // arbitrary-width test
+    public const string ChatDoFullScreen    = "_ZN20CGuiInGameChatWindow12DoFullScreenEi";                  // 720 preset width
+    public const string ChatDoSplitScreen   = "_ZN20CGuiInGameChatWindow13DoSplitScreenEi";                 // 360 preset width
+    // chat-render suppression (#23): SkipOriginal these so vanilla draws nothing. AppendToChatBuffer stops
+    // new lines reaching the docked windows' text model; SetFilter stops any filter/split re-rendering the
+    // backlog (and both births of CReplyButton). The by-value CExoString param is freed by the CALLER
+    // (AppendToMsgBuffer, kept running) -- verified in the disasm -- so skipping is data- and leak-safe.
+    public const string AppendToChatBuffer  = "_ZN20CGuiInGameChatWindow18AppendToChatBufferE10CExoStringjji7CResRef";
+    public const string ChatWindowSetFilter = "_ZN20CGuiInGameChatWindow9SetFilterEjPP17CGuiInGameMessagej";
+    // ...and the chrome: SkipOriginal Show on the docked window + input prompt so they never activate into
+    // the render tree (Show pairs with Activate, Hide with Deactivate). The gate reads module-presence, not
+    // the window's IsVisible flag, so keeping the window un-shown doesn't hide our own box.
+    public const string ChatWindowShow      = "_ZN20CGuiInGameChatWindow4ShowEv";
+    public const string ChatPromptShow      = "_ZN20CGuiInGameChatPrompt4ShowEv";
+    public const string SendChatTalk        = "_ZN11CNWCMessage27SendPlayerToServerChat_TalkE10CExoString"; // outbound verify
+    // outbound send parity (#22): the other five channel senders. All major 0x09; minor per §4.3.
+    // Talk/Shout/Whisper/Party/DM take (this, CExoString); Tell takes (this, uint playerId, CExoString).
+    public const string SendChatShout   = "_ZN11CNWCMessage28SendPlayerToServerChat_ShoutE10CExoString";        // minor 0x02
+    public const string SendChatWhisper = "_ZN11CNWCMessage30SendPlayerToServerChat_WhisperE10CExoString";      // minor 0x03
+    public const string SendChatTell    = "_ZN11CNWCMessage27SendPlayerToServerChat_TellEj10CExoString";        // minor 0x04, (uint playerId)
+    public const string SendChatParty   = "_ZN11CNWCMessage28SendPlayerToServerChat_PartyE10CExoString";        // minor 0x06
+    public const string SendChatDM      = "_ZN11CNWCMessage36SendPlayerToServerChat_DungeonMasterE10CExoString"; // minor 0x0e
+
     // misc engine helpers
     public const string GetNWCMessage = "_ZN13CClientExoApp13GetNWCMessageEv";
     public const string SetText       = "_ZN20CAuroraStringWrapper7SetTextEj";
@@ -48,8 +74,9 @@ internal static unsafe class SymbolMap
     public const string SdlGetKeyName   = "SDL_GetKeyName";
     public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
     // client-native manager: a window injected into the client's own nuklear pass via the
-    // per-frame nk_sdl_render hook. All C symbols, Linux-only for now.
-    public const string NkSdlRender        = "nk_sdl_render";
+    // per-frame nk_sdl_render hook. Core nk_* are plain C; the SDL glue is C++-linkage on this
+    // build (mangled), so nk_sdl_render must use its mangled name or the hook never installs.
+    public const string NkSdlRender        = "_Z13nk_sdl_renderf";
     public const string NkBegin            = "nk_begin";
     public const string NkEnd              = "nk_end";
     public const string NkLayoutRowDynamic = "nk_layout_row_dynamic";
@@ -60,6 +87,32 @@ internal static unsafe class SymbolMap
     public const string AppManager = "g_pAppManager";
     public const string GuiMan     = "g_pGuiMan";
     public const string Nuklear    = "g_pNuklear";
+
+    // ---- owned-render text (chatbox slice #19). Linux-only throwaway rig; no Windows anchors
+    //      (Resolve returns Zero + logs on Windows, so the feature degrades gracefully there). ----
+    // stb_truetype: the client statically links stb and exports every entry point as extern "C".
+    public const string StbttInitFont              = "stbtt_InitFont";
+    public const string StbttScaleForPixelHeight   = "stbtt_ScaleForPixelHeight";
+    public const string StbttGetFontVMetrics       = "stbtt_GetFontVMetrics";
+    public const string StbttGetCodepointHMetrics  = "stbtt_GetCodepointHMetrics";
+    public const string StbttGetCodepointBitmapBox = "stbtt_GetCodepointBitmapBox";
+    public const string StbttMakeCodepointBitmap   = "stbtt_MakeCodepointBitmap";
+    // The client runs an OpenGL 3.3 CORE context (verified: SDL_GL_SetAttribute PROFILE_MASK=CORE),
+    // so the owned draw is shader+VAO+VBO. Modern GL (>=1.3) resolves through this exported SDL entry.
+    public const string SdlGlGetProcAddress = "SDL_GL_GetProcAddress";
+    // RenderInterface blend/depth wrappers (static; args in edi/esi, no `this`). We route only these
+    // through the engine so its enable-cache stays in sync; matrices are ours (software stack -> shader
+    // uniforms in the engine, useless for a raw draw). Immediates read from PrintStringScreenPos (0x4351f0).
+    public const string RiEnable       = "_ZN15RenderInterface6EnableEN6Aurora17AuroraEnableEnumsE";
+    public const string RiDisable      = "_ZN15RenderInterface7DisableEN6Aurora17AuroraEnableEnumsE";
+    public const string RiSetBlendFunc = "_ZN15RenderInterface12SetBlendFuncEN6Aurora16AuroraBlendModesES1_";
+
+    // Aurora texture manager: get a portrait as an engine-resident GL texture. AurTextureGet(name,
+    // NULL, NULL, NULL, 0, false) loads/caches a CAurTexture*; AurTextureGetTID(tex) returns its GL
+    // texture id (0 until the engine's RefreshTextures pass uploads it). Chat portraits (#26) bind it
+    // directly -- no decode, no upload. See ConvertPortrait for the H/L/M/S/T size suffixes.
+    public const string AurTextureGet    = "_Z13AurTextureGetPKcP11CAurTextureS0_Piib";
+    public const string AurTextureGetTID = "_Z16AurTextureGetTIDP11CAurTexture";
 
     /// <summary>
     /// PE TimeDateStamp of the nwmain.exe the RVAs were read from. A client patch shifts
@@ -106,6 +159,28 @@ internal static unsafe class SymbolMap
 
         // --- no Windows anchor: skip + log. These gate edge cases the OS already
         //     covers; losing them degrades gracefully (see docs/windows-symbols.md). ---
+        // chat-render probe (#14): Linux-only, no Windows anchors -> skip + log.
+        [AppendToMsgBuffer]   = default,
+        [SetPriMsgFilter]     = default,
+        [ViewportSetViewport] = default,
+        [ChatDoFullScreen]    = default,
+        [ChatDoSplitScreen]   = default,
+        // chat suppression (#23): client GUI, Linux-only for now -> skip + log on Windows.
+        [AppendToChatBuffer]  = default,
+        [ChatWindowSetFilter] = default,
+        [ChatWindowShow]      = default,
+        [ChatPromptShow]      = default,
+        [SendChatTalk]        = default,
+        // outbound send parity (#22): Linux-only like the other chat senders -> skip + log on Windows.
+        [SendChatShout]   = default,
+        [SendChatWhisper] = default,
+        [SendChatTell]    = default,
+        [SendChatParty]   = default,
+        [SendChatDM]      = default,
+        // chat portraits (#26): Aurora texture manager, Linux-only anchors -> skip + log on Windows.
+        [AurTextureGet]    = default,
+        [AurTextureGetTID] = default,
+
         [OnGainFocus] = default,   // empty focus stub, indirect dispatch
         [OnLostFocus] = default,   // empty focus stub
         [Nuklear]     = default,   // NUI edit-focus probe (client global)
@@ -176,4 +251,23 @@ internal static unsafe class SymbolMap
         _buildOk = ok;
         return ok;
     }
+
+    // ---- chat edit control (build slice #20): focus suppression, keyboard-mode gate, SDL
+    //      text-input + clipboard. Linux-only for now: no _win entries, so each skips-with-log
+    //      on Windows (correct -- the native chatbox is a Linux slice). ----
+    /// <summary>CGuiInGame::ShowChatPrompt() -- a chat opener we skip to suppress vanilla focus.</summary>
+    public const string ShowChatPrompt = "_ZN10CGuiInGame14ShowChatPromptEv";
+    /// <summary>CGuiInGame::PrepChatPromptForTellToPlayer(CNWCPlayer*) -- (this, player) chat opener; skipped.</summary>
+    public const string PrepChatPromptForTell = "_ZN10CGuiInGame29PrepChatPromptForTellToPlayerEP10CNWCPlayer";
+    /// <summary>CExoInput* global; deref for the instance to drive KeyboardModeOn/Off.</summary>
+    public const string ExoInput = "g_pExoInput";
+    /// <summary>CExoInput::KeyboardModeOn() -- engine gameplay-key gate on (text entry).</summary>
+    public const string KeyboardModeOn = "_ZN9CExoInput14KeyboardModeOnEv";
+    /// <summary>CExoInput::KeyboardModeOff() -- gameplay-key gate off (resume movement).</summary>
+    public const string KeyboardModeOff = "_ZN9CExoInput15KeyboardModeOffEv";
+    public const string SdlStartTextInput   = "SDL_StartTextInput";
+    public const string SdlStopTextInput    = "SDL_StopTextInput";
+    public const string SdlGetClipboardText = "SDL_GetClipboardText";
+    public const string SdlSetClipboardText = "SDL_SetClipboardText";
+    public const string SdlFree             = "SDL_free";
 }

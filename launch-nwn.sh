@@ -25,4 +25,4 @@ if [ ! -t 1 ] && [ -z "$SOWX_SPAWNED" ]; then
 fi
 
 cd "$(dirname "$GAME_BIN")"
-env SOWX_MANAGED="$B/sowx_managed.so" SOWX_KEYDIAG=1 LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" "./$(basename "$GAME_BIN")" "$@"
+env SOWX_MANAGED="$B/sowx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" "./$(basename "$GAME_BIN")" "$@"

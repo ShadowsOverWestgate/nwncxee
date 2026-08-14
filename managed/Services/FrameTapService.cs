@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
+using Sowx.Services.Chat;
 
 namespace Sowx.Services;
 
@@ -22,6 +23,13 @@ public sealed unsafe class FrameTapService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        // Stand down whenever a real renderer owns SwapBuffers -- funchook can't double-hook it.
+        // ChatService owns the frame present on the default path (slice #21); ChatProbeService owns it
+        // when armed. Between them SwapBuffers is always owned, so this teaching example no longer
+        // installs -- kept as the minimal hook-pattern reference, and it resumes as proof-of-life if the
+        // chatbox render is ever removed.
+        if (ChatService.OwnsFramePresent || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_CHATPROBE")))
+            return;
         _original = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.SwapBuffers, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwapBuffers);
     }

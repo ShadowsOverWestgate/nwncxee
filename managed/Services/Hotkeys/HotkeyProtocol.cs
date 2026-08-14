@@ -1,4 +1,4 @@
-namespace Sowx.Services;
+namespace Sowx.Services.Hotkeys;
 
 /// <summary>
 /// The wire contract between this client extender and the SoW server (sow-codebase).
