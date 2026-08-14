@@ -1,0 +1,33 @@
+# Pull-request validation: build the extender and prove it loads C# into a
+# foreign process (run-demo.sh, no game needed). There is no unit-test project
+# yet, so the build + load smoke IS the gate. Releases are tag-gated elsewhere.
+name: ci
+
+on:
+  pull_request:
+
+permissions: read-all
+
+# One run per ref: a new push obsoletes the run on the old head, so cancel it
+# and free the runner slot for the run that can still matter.
+concurrency:
+  group: ci-${{ gitea.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: nix-docker
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive # funchook pulls diStorm3 as a nested submodule
+
+      - name: Build + load smoke
+        run: |
+          nix shell nixpkgs#dotnet-sdk_10 nixpkgs#cmake nixpkgs#gnumake nixpkgs#clang \
+            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc --command bash -c '
+              set -euo pipefail
+              ./build.sh
+              ./run-demo.sh
+            '

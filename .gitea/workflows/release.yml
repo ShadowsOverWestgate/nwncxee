@@ -1,0 +1,82 @@
+# A v* tag builds the Linux extender and attaches it (+ SHA256SUMS) to its
+# Gitea release. Tag-gated, never on PR (AGENTS.md CI law).
+#
+# Windows is NOT built here: NativeAOT cannot cross-compile (Microsoft Learn)
+# and there is no Windows runner (sow-platform gitea-runner.nix has none). Build
+# version.dll by hand with build.ps1 on a Windows box and attach it to the same
+# release. Record the client build stamp (SymbolMap.WindowsBuildStamp) in the
+# release body: the Windows artifact is pinned to one client build.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  code: read
+  releases: write
+
+# The shared runner runs 2 jobs at once; serialize releases explicitly and
+# never cancel mid-run.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: nix-docker
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          submodules: recursive # funchook pulls diStorm3 as a nested submodule
+
+      - name: Validate tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] \
+            || { printf "unsupported release tag: %s\n" "$TAG" >&2; exit 1; }
+
+      - name: Build + package
+        run: |
+          nix shell nixpkgs#dotnet-sdk_10 nixpkgs#cmake nixpkgs#gnumake nixpkgs#clang \
+            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc --command bash -c '
+              set -euo pipefail
+              ./build.sh
+              rm -rf dist && mkdir -p dist
+              # Keep the build/ prefix: launch-nwn.sh expects the .so files in
+              # ./build next to it, so the player unpacks and runs launch-nwn.sh.
+              # -h follows symlinks: CMake gives libfunchook.so a SOVERSION, so
+              # the bare name is a symlink chain; archive the real file.
+              tar czhf dist/sowx-linux-x64.tar.gz \
+                launch-nwn.sh \
+                build/libsowx.so build/sowx_managed.so build/libfunchook.so
+              ( cd dist && sha256sum sowx-linux-x64.tar.gz > SHA256SUMS )
+            '
+
+      - name: Upload to Gitea release
+        env:
+          TOKEN: ${{ secrets.GITEA_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          nix shell nixpkgs#curl --command bash -c '
+            set -euo pipefail
+            api="${SERVER}/api/v1/repos/${REPO}"
+            auth="Authorization: token ${TOKEN}"
+            # Create the release (ignore "already exists"), then read its id.
+            curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
+              "${api}/releases" \
+              -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\"}" || true
+            id="$(curl -fsS -H "$auth" "${api}/releases/tags/${TAG}" \
+              | grep -o "\"id\":[0-9]*" | head -1 | cut -d: -f2)"
+            for f in dist/*; do
+              echo "uploading $(basename "$f")"
+              curl -fsS -X POST -H "$auth" \
+                -F "attachment=@${f}" \
+                "${api}/releases/${id}/assets?name=$(basename "$f")"
+            done
+          '
