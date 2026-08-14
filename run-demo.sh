@@ -4,18 +4,19 @@
 # (`true` is a shell builtin, so it spawns no process to preload into.)
 set -e
 cd "$(dirname "$0")"
-B="$PWD/build"
+B="$PWD/sow-client-extender"
 
 [ -f "$B/libsowx.so" ] || { echo "run ./build.sh first"; exit 1; }
-rm -f /tmp/sowx.log
+LOG="${HOME:-/tmp}/sowx.log"   # ExtenderLog writes here (see ExtenderLog.cs)
+rm -f "$LOG"
 
 echo ">> launching /usr/bin/env with the extender preloaded..."
 SOWX_MANAGED="$B/sowx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" /usr/bin/env >/dev/null
 
 echo
-echo ">> /tmp/sowx.log (written from C#):"
-cat /tmp/sowx.log
+echo ">> $LOG (written from C#):"
+cat "$LOG"
 
 echo
-echo "Attach to the real client the same way:"
-echo "  SOWX_MANAGED=$B/sowx_managed.so LD_PRELOAD=$B/libsowx.so ~/nwmain-linux"
+echo "Attach to the real client with the launcher:"
+echo "  NWN_BIN=/path/to/bin/linux-x86/nwmain-linux $B/sowx-launch"

@@ -18,5 +18,17 @@ dotnet publish managed/sowx_managed.csproj -c Release -o build >/dev/null
 echo ">> building native bootstrap (libsowx.so)..."
 cc -shared -fPIC -O2 -o build/libsowx.so native/bootstrap.c -ldl
 
+echo ">> staging runtime dir (sow-client-extender/)..."
+# One ready-to-run/ship folder: the wrapper loads the .so files beside it.
+# cp -L on libfunchook resolves the SOVERSION symlink to a real file named
+# libfunchook.so -- DllImport("funchook") needs that exact name.
+OUT=sow-client-extender
+rm -rf "$OUT" && mkdir -p "$OUT"
+cp -a build/libsowx.so build/sowx_managed.so "$OUT/"
+cp -aL build/libfunchook.so "$OUT/libfunchook.so"
+cp packaging/sowx-launch "$OUT/sowx-launch"
+cp packaging/README.txt "$OUT/README.txt"
+chmod +x "$OUT/sowx-launch"
+
 echo ">> artifacts:"
-ls -1 build/libsowx.so build/sowx_managed.so build/libfunchook.so
+ls -1 "$OUT"

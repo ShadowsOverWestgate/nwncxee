@@ -21,9 +21,12 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily)
 ## Build & run
 
     ./build.sh          # needs: .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake
-    ./run-demo.sh       # boots the framework in /usr/bin/true (no game needed)
-    ./launch-nwn.sh     # launch the real client with the extender preloaded
+    ./run-demo.sh       # boots the framework in /usr/bin/env (no game needed)
     ./sym.sh [-m] <pat> # search client symbols; -m = mangled (for Install)
+
+`build.sh` stages a runtime folder `sow-client-extender/` (launcher + 3 `.so`).
+Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./sow-client-extender/sowx-launch`
+(Steam: put `"<abs>/sowx-launch" %command%` in the game Launch Options.)
 
 First build clones+builds the funchook submodule (git submodule --init).
 
@@ -147,7 +150,7 @@ The client is already imported and analyzed:
 ## Status
 
 Framework works end-to-end under NativeAOT (DI + discovery + funchook install
-all verified via `run-demo.sh`). A live hook proves out on `./launch-nwn.sh` --
+all verified via `run-demo.sh`). A live hook proves out via `sowx-launch` --
 watch for "first frame presented -- hook is LIVE" (now emitted by `ChatService`,
 which owns the `SwapBuffers` present for the native chatbox; `FrameTapService`
 is the minimal example of the pattern and stands down while the chatbox owns it).

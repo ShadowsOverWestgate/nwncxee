@@ -17,8 +17,20 @@ namespace Sowx.Services.Chat.Render;
 /// </summary>
 public static unsafe class TextRenderer
 {
-    /// <summary>ponytail: font path + pixel height hardcoded for v1. Ceiling: config / per-server choice.</summary>
-    private const string FontPath = "/usr/share/fonts/TTF/DejaVuSans.ttf";
+    /// <summary>Font search order, first existing wins. DejaVu preferred (covers our four ranges incl.
+    /// Cyrillic); Liberation/FreeSans are the near-universal Linux fallbacks. The Steam Linux Runtime
+    /// (Steam Deck) ships the Debian-style truetype/dejavu path, not the Arch-style TTF one.
+    /// ponytail: fixed list; a fontconfig query is the ceiling if a distro ships none of these.</summary>
+    private static readonly string[] FontCandidates =
+    {
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",                         // Arch
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",            // Debian/Ubuntu + Steam runtime
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",                     // Fedora
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/gnu-free/FreeSans.ttf",
+    };
     private const float FontPx = 18f;
     private const int AtlasSize = 512;
     private const int Floats = VertexBatch.Floats;   // x,y,u,v,r,g,b,a
@@ -76,8 +88,10 @@ public static unsafe class TextRenderer
     {
         _log = log;
         if (_atlas != null) return;   // idempotent: probe and ChatService may both call
-        if (!File.Exists(FontPath)) { log.Info($"TextRenderer: font not found: {FontPath}"); return; }
-        byte[] font = File.ReadAllBytes(FontPath);
+        string? fontPath = Array.Find(FontCandidates, File.Exists);
+        if (fontPath == null) { log.Info($"TextRenderer: no font found (tried {FontCandidates.Length} paths)"); return; }
+        log.Info($"TextRenderer: using font {fontPath}");
+        byte[] font = File.ReadAllBytes(fontPath);
         _atlas = GlyphAtlas.Bake(font, FontPx, Ranges, AtlasSize, log);
         log.Info(_atlas != null ? "TextRenderer: atlas ready" : "TextRenderer: atlas bake unavailable");
     }

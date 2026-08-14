@@ -93,7 +93,7 @@ public sealed unsafe class ChatService : IExtenderService
             (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef16, void>)&OnAppend);
         log.Info(_tapOrig != null
             ? "ChatService: inbound tap installed (AppendToMsgBuffer)"
-            : "ChatService: inbound tap not installed (symbol unresolved -- expected under run-demo)");
+            : "ChatService: inbound tap not installed (Install returned Zero: symbol unresolved or already hooked)");
     }
 
     [UnmanagedCallersOnly]
@@ -269,7 +269,7 @@ public sealed unsafe class ChatService : IExtenderService
             SymbolMap.SwapBuffers, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwap);
         log.Info(_swapOrig != null
             ? "ChatService: window render installed (SwapBuffers)"
-            : "ChatService: window render not installed (symbol unresolved -- expected under run-demo)");
+            : "ChatService: window render not installed (Install returned Zero: symbol unresolved or already hooked)");
         Rebuild();   // show the empty box immediately, before any chat arrives
     }
 

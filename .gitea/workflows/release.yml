@@ -47,13 +47,10 @@ jobs:
               set -euo pipefail
               ./build.sh
               rm -rf dist && mkdir -p dist
-              # Keep the build/ prefix: launch-nwn.sh expects the .so files in
-              # ./build next to it, so the player unpacks and runs launch-nwn.sh.
-              # -h follows symlinks: CMake gives libfunchook.so a SOVERSION, so
-              # the bare name is a symlink chain; archive the real file.
-              tar czhf dist/sowx-linux-x64.tar.gz \
-                launch-nwn.sh \
-                build/libsowx.so build/sowx_managed.so build/libfunchook.so
+              # build.sh stages a ready-to-run sow-client-extender/ folder (the
+              # wrapper + the 3 .so files, symlinks already resolved). Ship that
+              # whole folder so the player unpacks and runs sowx-launch.
+              tar czf dist/sowx-linux-x64.tar.gz sow-client-extender
               ( cd dist && sha256sum sowx-linux-x64.tar.gz > SHA256SUMS )
             '
 

@@ -1,0 +1,49 @@
+#!/usr/bin/env sh
+# SoW client extender launcher. Lives next to the .so files it loads.
+#
+# Two ways to run:
+#   Steam  -- Launch Options (quote it; the game path has a space):
+#               "/abs/path/to/sowx-launch" %command%
+#             Steam hands us the real game command as our arguments; we add the
+#             extender to the environment, then exec that command unchanged.
+#   Manual -- run with no game arguments and set NWN_BIN=/path/to/nwmain-linux.
+#
+# Why an absolute LD_PRELOAD via a symlink:
+#   NWN runs inside the Steam Linux Runtime (a container). The container FORWARDS
+#   LD_PRELOAD but RESETS LD_LIBRARY_PATH, so a bare soname cannot be resolved
+#   inside it -- the preload is silently ignored and the extender never loads.
+#   An absolute path works, but the client dir is "Neverwinter Nights" -- it has
+#   a space, and ld.so splits LD_PRELOAD on spaces. So we point a space-free
+#   symlink under $HOME (also visible in the container) at our dir and preload
+#   through that. Belt and suspenders: the managed side resolves libfunchook.so
+#   by absolute path too, so no LD_LIBRARY_PATH is needed anywhere.
+#
+# Why PREPEND, never replace:
+#   The runtime already set LD_PRELOAD to its own overlay. We prepend our entry.
+#   Replacing it strips the overlay and the game misbehaves.
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$DIR/libsowx.so" ] || { echo "libsowx.so not found next to this launcher ($DIR)" >&2; exit 1; }
+
+# Space-free absolute path the container can resolve. Fall back to DIR if we
+# cannot make the symlink (e.g. no $HOME) -- fine when DIR itself has no space.
+# ponytail: assumes $HOME has no space (true for ~every Linux home). If it does,
+# the symlink path inherits it and LD_PRELOAD re-hits the split -- ceiling: mint
+# the link under a fixed space-free root like /tmp/sowx-$UID if that ever bites.
+LINK="${XDG_DATA_HOME:-$HOME/.local/share}/sowx"
+mkdir -p "$(dirname "$LINK")" 2>/dev/null || true
+ln -sfn "$DIR" "$LINK" 2>/dev/null || LINK="$DIR"
+
+export LD_PRELOAD="$LINK/libsowx.so${LD_PRELOAD:+ $LD_PRELOAD}"
+export SOWX_MANAGED="$LINK/sowx_managed.so"
+
+# Steam mode: it handed us the real command as our arguments.
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
+# Manual mode: launch the client ourselves.
+GAME_BIN="${NWN_BIN:?set NWN_BIN=/path/to/nwmain-linux, or launch via Steam Launch Options}"
+[ -f "$GAME_BIN" ] || { echo "client not found: $GAME_BIN" >&2; exit 1; }
+cd "$(dirname "$GAME_BIN")"
+exec "./$(basename "$GAME_BIN")"
