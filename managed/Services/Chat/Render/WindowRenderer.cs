@@ -52,6 +52,10 @@ public static class WindowRenderer
     private static readonly ILineComponent[] Pipeline = { new TimestampComponent(), new MessageBodyComponent() };
 
     private const uint GripRgb = 0xB8C0CC;
+    private const uint GearRgb = 0xB8C0CC, GearActiveRgb = 0xEAF0F8;
+    /// <summary>Options-panel checkbox: outer frame + the fill drawn when the option is on.</summary>
+    private const float CheckSize = 12f;
+    private static readonly (float r, float g, float b, float a) CheckFrame = (0.55f, 0.55f, 0.55f, 1f);
 
     /// <summary>Portrait width:height. The engine's own portrait pipeline (ConvertPortrait) crops every
     /// portrait to this ratio (0.64 -&gt; taller than wide), so a gutter icon drawn at it is undistorted.</summary>
@@ -108,7 +112,10 @@ public static class WindowRenderer
         // neighbours. Suppressed while the dropdown is open (it draws last over the body; a live icon after it
         // would punch through the open list). The gutter is reserved on resref, before the texture resolves, so
         // the icon appears a frame later WITHOUT the text reflowing.
-        bool portraitsOn = (win.Toggles & ChatToggle.Portrait) != 0 && !(showFooter && win.ChannelListOpen);
+        // Portraits draw in a second pass over everything, so suppress them under any panel that overlays the
+        // body (channel list, gear options) -- else a portrait line punches through the open panel.
+        bool portraitsOn = (win.Toggles & ChatToggle.Portrait) != 0
+                           && !(showFooter && win.ChannelListOpen) && !win.OptionsOpen;
         float portraitW = lh;                       // gutter-width icon...
         float portraitH = lh / PortraitAspect;      // ...grown tall to the real portrait shape (~1.56 rows)
         float gutter = portraitW + ChatWindow.Pad;
@@ -184,7 +191,9 @@ public static class WindowRenderer
         if (contentH > bh)
         {
             float sbx = bx + bw - ChatWindow.ScrollbarW;
-            b.Rect(sbx, by, bx + bw, by + bh, SbTrack.r, SbTrack.g, SbTrack.b, SbTrack.a);
+            // Track stops one grip above the body bottom to match the hit zone (ChatWindow.SbTrackH): keeps
+            // the thumb clear of the resize-grip corner.
+            b.Rect(sbx, by, bx + bw, by + bh - ChatWindow.ResizeGrip, SbTrack.r, SbTrack.g, SbTrack.b, SbTrack.a);
             if (win.ThumbRect(out float tt, out float th))
                 b.Rect(sbx, tt, bx + bw, tt + th, SbThumb.r, SbThumb.g, SbThumb.b, SbThumb.a);
         }
@@ -205,6 +214,15 @@ public static class WindowRenderer
             GripLine(b, cx, cy, 16f, gr, gg, gb);
         }
 
+        // Gear icon (top-right of the tab bar): shown on hover, or while its panel is open (so it survives the
+        // pointer wandering off mid-interaction). A single ⚙ glyph, brighter when the panel is open.
+        if (showGrip || win.OptionsOpen)
+        {
+            uint gc = win.OptionsOpen ? GearActiveRgb : GearRgb;
+            DrawString(b, atlas, "⚙", win.X + win.W - ChatWindow.GearW + 4f,
+                       win.Y + descentGap + glyphBaseline, gc, win.X + win.W);
+        }
+
         // Channel dropdown list (open): stacked upward over the body, so it draws LAST = on top.
         if (showFooter && win.ChannelListOpen)
         {
@@ -217,6 +235,25 @@ public static class WindowRenderer
                 b.Rect(win.X, top, win.X + ChatWindow.DropdownW, top + fh, bg.r, bg.g, bg.b, 0.98f);
                 DrawString(b, atlas, ch.ToString(), win.X + ChatWindow.Pad,
                            top + descentGap + glyphBaseline, TabTextRgb, win.X + ChatWindow.DropdownW - 2);
+            }
+        }
+
+        // Gear options panel (open): a checkbox row per option, dropped from the gear over the body -- drawn
+        // LAST so it sits on top of everything.
+        if (win.OptionsOpen)
+        {
+            float px = win.OptPanelX, ptop = win.OptPanelTop, pw = ChatWindow.OptPanelW, rh = ChatWindow.OptRowH;
+            var opts = ChatWindow.Options;
+            b.Rect(px, ptop, px + pw, ptop + rh * opts.Length, Footer.r, Footer.g, Footer.b, 0.98f);
+            for (int i = 0; i < opts.Length; i++)
+            {
+                float top = ptop + i * rh;
+                float cbx = px + ChatWindow.Pad, cby = top + (rh - CheckSize) / 2f;
+                b.Rect(cbx, cby, cbx + CheckSize, cby + CheckSize, CheckFrame.r, CheckFrame.g, CheckFrame.b, CheckFrame.a);
+                var fill = (win.Toggles & opts[i].Bit) != 0 ? TabActive : Footer;   // checked = accent, else hollow (panel bg)
+                b.Rect(cbx + 1, cby + 1, cbx + CheckSize - 1, cby + CheckSize - 1, fill.r, fill.g, fill.b, 1f);
+                DrawString(b, atlas, opts[i].Label, cbx + CheckSize + ChatWindow.Pad,
+                           top + descentGap + glyphBaseline, TabTextRgb, px + pw - 2);
             }
         }
 
@@ -263,6 +300,12 @@ public static class WindowRenderer
         var tLine = new ChatLine(1u, "", 0, "", new[] { new ColorRun("plain", 1, 1, 1) }, System.DateTime.UtcNow, "plain");
         E(System.Math.Abs(MeasureBlock(win, pLine, atlas) - phh) < 1e-3, "MeasureBlock pads a portrait line to the portrait height");
         E(System.Math.Abs(MeasureBlock(win, tLine, atlas) - atlas.LineHeight) < 1e-3, "MeasureBlock of a one-row line is one line high");
+
+        // Options panel open -> portraits suppressed (they draw over everything and would punch through it).
+        win.OptionsOpen = true;
+        E(Build(win, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Portraits.Count == 0,
+          "options panel open suppresses portraits");
+        win.OptionsOpen = false;
 
         // Toggle off -> no icons even when a resref is present.
         win.Toggles &= ~ChatToggle.Portrait;

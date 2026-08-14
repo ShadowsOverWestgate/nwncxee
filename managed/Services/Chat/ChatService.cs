@@ -46,6 +46,7 @@ public sealed unsafe class ChatService : IExtenderService
         ChatWindow.SelfCheck(log);     // slice #21 drag/resize/tab/scroll proof (off-device)
         WindowRenderer.SelfCheck(log); // #26 portrait-gutter emission proof (off-device)
         ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
+        TextRenderer.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
         if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla chat intact; FrameTapService takes the frame
         {
             log.Info("ChatService: SOWX_LOCKCHAT set -- standing down, vanilla chat left intact");
@@ -111,6 +112,14 @@ public sealed unsafe class ChatService : IExtenderService
             _store.Append(line);
 
             long n = ++_ingestCount;
+            // One-shot thread-model probe (#33 follow-up): is ingest really a separate thread from the frame
+            // present? If ingest tid == swap tid the "cold network thread" comments are wrong and the store
+            // races don't exist. Compare the two [chatthread] lines in a live sowx.log.
+            if (n == 1)
+            {
+                int itid = Environment.CurrentManagedThreadId;
+                _log?.Info($"[chatthread] ingest tid={itid} swap tid={_swapTid} same={(itid == _swapTid)}");
+            }
             if (n == 1 || n % LogEveryNth == 0)
                 _log?.Info($"[chat] ingest #{n} ch=0x{channel:x} pid={playerId} portrait={portraitRef} " +
                            $"runs={line.ColorRuns.Length} text={raw}");
@@ -173,8 +182,8 @@ public sealed unsafe class ChatService : IExtenderService
     // a state transition (rare, not per-frame).
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
     private const int ExoAppInternalOff = 0x8, InGameGuiOff = 0x90, ChatWindowOff = 0x8,
-                      ChatVisibleOff = 0xc68, OptionsPanelOpenOff = 0x604;
-    private static (IntPtr win, int vis, bool opt) _gateSig;
+                      ChatVisibleOff = 0xc68, OptionsPanelOpenOff = 0x604, GuiToggledOffOff = 0x3d4;
+    private static (IntPtr win, int vis, bool opt, bool hud) _gateSig;
 
     private static bool InGame()
     {
@@ -185,25 +194,27 @@ public sealed unsafe class ChatService : IExtenderService
         IntPtr win = gui != IntPtr.Zero ? *(IntPtr*)(gui + ChatWindowOff) : IntPtr.Zero;
         int vis = win != IntPtr.Zero ? *(int*)(win + ChatVisibleOff) : 0;   // Show-suppressed -> stays 0; logged only
         bool opt = intern != IntPtr.Zero && *(int*)(intern + OptionsPanelOpenOff) != 0;   // ESC/game menu up
-        bool show = win != IntPtr.Zero && !opt;   // in a module, no full-screen options menu
+        // H key hides all HUD: CGuiInGame::ToggleOff sets gui+0x3d4=1, UnToggleOff clears it (verified in disasm).
+        bool hud = gui != IntPtr.Zero && *(int*)(gui + GuiToggledOffOff) != 0;
+        bool show = win != IntPtr.Zero && !opt && !hud;   // in a module, no options menu, HUD not toggled off
 
-        var sig = (win, vis, opt);
+        var sig = (win, vis, opt, hud);
         if (sig != _gateSig)
         {
             // Relog/disconnect (chat window went null after being live) resets the send channel to Talk
             // (#25: slash-switched channel persists across messages, but NOT across relogs).
-            if (win == IntPtr.Zero && _gateSig.win != IntPtr.Zero && _window != null)
-                _window.SendChannel = Channel.Talk;
+            if (win == IntPtr.Zero && _gateSig.win != IntPtr.Zero)
+                ResetSession();   // module unloaded (clean exit or disconnect): drop cached engine ptrs + stale state (#33)
             _gateSig = sig;
-            _log?.Info($"[chatgate] win=0x{win:x} vis={vis} opt={opt} -> show={show}");
+            _log?.Info($"[chatgate] win=0x{win:x} vis={vis} opt={opt} hud={hud} -> show={show}");
         }
         return show;
     }
 
     /// <summary>Saved window rect. ponytail: one flat file of four numbers; a full layout store (per
-    /// tab, multi-window) is the ceiling.</summary>
-    private static readonly string LayoutPath = System.IO.Path.Combine(
-        Environment.GetEnvironmentVariable("HOME") ?? "/tmp", ".config", "sowx-chat.cfg");
+    /// tab, multi-window) is the ceiling. A property, not a cached field: our loader runs pre-main, so
+    /// the engine user dir isn't resolvable at type-init -- resolve live (LoadRect/SaveRect are post-main).</summary>
+    private static string LayoutPath => Native.ConfigPath("sowx-chat.cfg");
     private static string _savedRect = "";
 
     private static void LoadRect(ChatWindow win)
@@ -220,6 +231,7 @@ public sealed unsafe class ChatService : IExtenderService
                 win.X = x; win.Y = y;
                 win.W = w < ChatWindow.MinW ? ChatWindow.MinW : w;
                 win.H = h < ChatWindow.MinH ? ChatWindow.MinH : h;
+                if (p.Length >= 5 && uint.TryParse(p[4], out uint tg)) win.Toggles = tg;   // restore gear options
                 _savedRect = RectStr(win);
             }
         }
@@ -240,7 +252,7 @@ public sealed unsafe class ChatService : IExtenderService
     }
 
     private static string RectStr(ChatWindow w) =>
-        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{w.X} {w.Y} {w.W} {w.H}");
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{w.X} {w.Y} {w.W} {w.H} {w.Toggles}");
 
     /// <summary>Slice #21: bake the atlas, build the window, observe ingest, and own SwapBuffers so the
     /// box renders on a plain launch (no env vars) -- unless the probe owns the frame hook.</summary>
@@ -262,7 +274,9 @@ public sealed unsafe class ChatService : IExtenderService
             new Tab("All",  0xffffffff),
             new Tab("Talk", 1u << 1),
         });
-        LoadRect(_window);                    // restore the last saved position/size
+        // Rect restore is deferred to the first frame (see OnSwap): Initialize runs pre-main, so the
+        // engine user dir -- where the cfg lives -- isn't resolvable here yet and LoadRect would read
+        // the ~/.config fallback instead of the real path.
         _store.AddObserver(OnIngest);  // new line -> slide-in/hold + rebuild (cold network thread)
 
         _swapOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
@@ -274,11 +288,20 @@ public sealed unsafe class ChatService : IExtenderService
     }
 
     private static bool _frameAnnounced;
+    private static int _swapTid;   // managed thread id of the frame-present thread (thread-model probe, #33 follow-up)
 
     [UnmanagedCallersOnly]
     private static void OnSwap(IntPtr window)
     {
-        if (!_frameAnnounced) { _frameAnnounced = true; _log?.Info("ChatService: first frame presented -- hook is LIVE"); }
+        if (!_frameAnnounced)
+        {
+            _frameAnnounced = true;
+            _swapTid = Environment.CurrentManagedThreadId;
+            _log?.Info($"ChatService: first frame presented -- hook is LIVE [chatthread] swap tid={_swapTid}");
+            _log?.Info($"ChatService: cfg dir = {Native.UserDirectory() ?? "(engine dir unresolved -> ~/.config fallback)"}");
+            LoadRect(_window);   // restore now, not in Initialize: that runs pre-main so the engine user dir was unresolved
+            Rebuild();           // re-layout for the restored width
+        }
         if (InGame()) TextRenderer.Draw();            // only when the vanilla chat would show; hot, zero-alloc
         if (_swapOrig != null) _swapOrig(window);     // present
     }
@@ -348,6 +371,31 @@ public sealed unsafe class ChatService : IExtenderService
         TextRenderer.Publish(frame);
     }
 
+    /// <summary>Reset all per-session state at a module boundary (#33), fanned in from the gate's
+    /// window-drop-to-zero edge (which fires on clean exit and disconnect alike). Crash-critical clear first:
+    /// the engine frees its portrait textures when a module unloads, so a cached <c>CAurTexture*</c> would
+    /// dangle into the next session and crash when bound (confirmed via core dump). Then the cosmetic clears
+    /// so the new session starts visually clean -- no prior lines, no half-open edit/scroll/panel state.
+    /// Idempotent and zero-alloc, so it's safe to fire from the (hot) gate read on the transition frame.</summary>
+    private static void ResetSession()
+    {
+        TextRenderer.ClearSessionState();   // crash-critical: freed engine textures must not carry over
+        // ponytail: racing a late-arriving ingest (disconnect teardown) can leave <=1 stale line; indices
+        // stay in-bounds so it's memory-safe, just cosmetic. Add a lock only if the [chatthread] log proves
+        // ingest really runs on a separate thread.
+        _store.Clear();                     // cosmetic: no prior session's lines leak in
+        Edit.Clear();
+        IsTyping = false;
+        KeyboardMode(false);                // drop any keyboard capture left from the old session
+        if (_window != null)
+        {
+            _window.SendChannel = Channel.Talk;
+            _window.OptionsOpen = false;
+            _window.ChannelListOpen = false;
+            foreach (Tab t in _window.Tabs) t.ScrollPx = 0f;
+        }
+    }
+
     /// <summary>Pointer press/release. Returns true when it lands on the window (the WM shell then
     /// consumes it, so it doesn't fall through to the 3D world). Called from HotkeyInputService.</summary>
     public static bool OnMouseButton(bool down, int button, int x, int y)
@@ -409,7 +457,6 @@ public sealed unsafe class ChatService : IExtenderService
         _kbOn      = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOn);
         _kbOff     = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOff);
         _startText = (delegate* unmanaged<void>)Native.Sym(SymbolMap.SdlStartTextInput);
-        _stopText  = (delegate* unmanaged<void>)Native.Sym(SymbolMap.SdlStopTextInput);
         _getClip   = (delegate* unmanaged<IntPtr>)Native.Sym(SymbolMap.SdlGetClipboardText);
         _setClip   = (delegate* unmanaged<byte*, int>)Native.Sym(SymbolMap.SdlSetClipboardText);
         _sdlFree   = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.SdlFree);
@@ -436,7 +483,7 @@ public sealed unsafe class ChatService : IExtenderService
 
     private static IntPtr _exoInput;                          // &g_pExoInput (CExoInput**)
     private static delegate* unmanaged<IntPtr, void> _kbOn, _kbOff, _sdlFree;
-    private static delegate* unmanaged<void> _startText, _stopText;
+    private static delegate* unmanaged<void> _startText;
     private static delegate* unmanaged<IntPtr> _getClip;
     private static delegate* unmanaged<byte*, int> _setClip;
 
@@ -492,7 +539,9 @@ public sealed unsafe class ChatService : IExtenderService
         }
         else Edit.Clear();
         IsTyping = false;
-        if (_stopText != null) _stopText();
+        // Do NOT SDL_StopTextInput: the engine leaves text input globally on (it never toggles it) and the
+        // debug console + other text fields depend on TEXTINPUT events firing. KeyboardModeOff below is the
+        // real gate that stops chars reaching us. Stopping SDL text input here breaks the console.
         KeyboardMode(false);
         Rebuild();   // hide the footer edit line
     }

@@ -13,7 +13,8 @@ namespace Sowx.Services.Hotkeys;
 /// </summary>
 /// <remarks>
 /// Effective armed set is per session: empty at startup and every login until a recognised token is
-/// presented. Cfg at ~/.config/sowx-hotkeys.cfg -- [token=&lt;hex&gt;] sections, one SDL keycode per
+/// presented. Cfg is sowx-hotkeys.cfg in the client's user directory (see <see cref="Path"/>) --
+/// [token=&lt;hex&gt;] sections, one SDL keycode per
 /// line (SDLK, NOT Windows VK: f=102 not 70, F1=1073741882). Static, not DI: the hot key handler
 /// reads Armed directly; swaps publish an immutable snapshot atomically.
 /// </remarks>
@@ -30,9 +31,22 @@ public static class HotkeyStore
     // The token presented by the current server this session, or null if none/unrecognised-and-unconsented.
     private static string? _activeToken;
 
-    public static string Path =>
-        System.IO.Path.Combine(
-            Environment.GetEnvironmentVariable("HOME") ?? "/tmp", ".config", "sowx-hotkeys.cfg");
+    public static string Path => Native.ConfigPath("sowx-hotkeys.cfg");
+
+    private static bool _loaded;
+
+    /// <summary>
+    /// Load the cfg on first real use, not at Initialize: our loader runs pre-main, so the engine user
+    /// dir (where the cfg lives) isn't resolvable yet -- loading then would read the wrong path and latch
+    /// it. Deferred to the first login-path call (Activate/Grant/Set), all post-main. Latches only once
+    /// the dir resolves, so a pre-main/headless call stays retryable.
+    /// </summary>
+    private static void EnsureLoaded(ExtenderLog log)
+    {
+        if (_loaded || Native.UserDirectory() == null) return;
+        Load(log);
+        _loaded = true;
+    }
 
     public static void Load(ExtenderLog log)
     {
@@ -92,6 +106,7 @@ public static class HotkeyStore
     /// </summary>
     public static bool Activate(string tokenHex, ExtenderLog log)
     {
+        EnsureLoaded(log);
         string tok = tokenHex.Trim().ToLowerInvariant();
         _activeToken = tok;
         bool known = _sections.TryGetValue(tok, out HashSet<int>? keys);
@@ -110,6 +125,7 @@ public static class HotkeyStore
     /// </summary>
     public static string Grant(HashSet<int> keys, ExtenderLog log)
     {
+        EnsureLoaded(log);
         if (_activeToken == null)
         {
             _activeToken = Mint();
@@ -132,6 +148,7 @@ public static class HotkeyStore
     /// </summary>
     public static void Set(HashSet<int> keys, ExtenderLog log)
     {
+        EnsureLoaded(log);
         if (_activeToken == null) return;
         _sections[_activeToken] = new HashSet<int>(keys);
         Armed = new HashSet<int>(keys);

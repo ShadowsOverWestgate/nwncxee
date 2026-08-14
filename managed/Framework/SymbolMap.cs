@@ -87,6 +87,8 @@ internal static unsafe class SymbolMap
     public const string AppManager = "g_pAppManager";
     public const string GuiMan     = "g_pGuiMan";
     public const string Nuklear    = "g_pNuklear";
+    /// <summary>CExoBase* global; deref for the instance whose CExoString@0x38 is the resolved user directory.</summary>
+    public const string ExoBase    = "g_pExoBase";
 
     // ---- owned-render text (chatbox slice #19). Linux-only throwaway rig; no Windows anchors
     //      (Resolve returns Zero + logs on Windows, so the feature degrades gracefully there). ----
@@ -140,6 +142,7 @@ internal static unsafe class SymbolMap
         [ExoStringInit]     = Nm("?InitFromCharArray@CExoString@@AEAAAEAV1@PEBDI@Z"),
         [ExoStringDtor]     = Nm("??1CExoString@@QEAA@XZ"),
         [AppManager]        = Nm("?g_pAppManager@@3PEAVCAppManager@@EA"),
+        [ExoBase]           = Nm("?g_pExoBase@@3PEAVCExoBase@@EA"),   // userdir CExoString@0x38 identical on both builds
 
         // --- not exported (client GUI / CNWCMessage / COptionsPanel): Windows RVA,
         //     build 0x68e408bc. See docs/windows-symbols.md for how each was anchored. ---
@@ -191,6 +194,10 @@ internal static unsafe class SymbolMap
         [GuiMan]          = Nm("?g_pGuiMan@@3PEAVCGuiMan@@EA"),
         [SdlGetKeyName]   = Nm("SDL_GetKeyName"),
         [SdlGetModState]  = Nm("SDL_GetModState"),
+        // hotkey suppression while any vanilla text field captures keys (console etc.) -- shared-engine
+        // CExoInput, name-exported on Windows. (Chat also uses ExoInput but stays Linux-only for now.)
+        [ExoInput]        = Nm("?g_pExoInput@@3PEAVCExoInput@@EA"),
+        [GetKeyboardMode] = Nm("?GetKeyboardMode@CExoInput@@QEAAHXZ"),
         // Footgun: nwmain.exe statically links the CRT, so the panel frees via the game's own
         // operator delete -- allocate from the game's own operator new (build-locked RVA) or the
         // cross-heap free corrupts. Scalar operator new(size_t), VS2017/2019 release.
@@ -253,8 +260,9 @@ internal static unsafe class SymbolMap
     }
 
     // ---- chat edit control (build slice #20): focus suppression, keyboard-mode gate, SDL
-    //      text-input + clipboard. Linux-only for now: no _win entries, so each skips-with-log
-    //      on Windows (correct -- the native chatbox is a Linux slice). ----
+    //      text-input + clipboard. Chatbox-specific symbols are Linux-only (no _win entries -> skip-with-log
+    //      on Windows). EXCEPTIONS: ExoInput + GetKeyboardMode carry _win mappings -- the hotkey
+    //      keyboard-mode gate (cross-platform) reads them, and both are name-exported on Windows. ----
     /// <summary>CGuiInGame::ShowChatPrompt() -- a chat opener we skip to suppress vanilla focus.</summary>
     public const string ShowChatPrompt = "_ZN10CGuiInGame14ShowChatPromptEv";
     /// <summary>CGuiInGame::PrepChatPromptForTellToPlayer(CNWCPlayer*) -- (this, player) chat opener; skipped.</summary>
@@ -265,8 +273,10 @@ internal static unsafe class SymbolMap
     public const string KeyboardModeOn = "_ZN9CExoInput14KeyboardModeOnEv";
     /// <summary>CExoInput::KeyboardModeOff() -- gameplay-key gate off (resume movement).</summary>
     public const string KeyboardModeOff = "_ZN9CExoInput15KeyboardModeOffEv";
+    /// <summary>CExoInput::GetKeyboardMode() -- nonzero while the engine is capturing text (chat, console,
+    /// any vanilla edit field); the signal to suppress gameplay hotkeys.</summary>
+    public const string GetKeyboardMode = "_ZN9CExoInput15GetKeyboardModeEv";
     public const string SdlStartTextInput   = "SDL_StartTextInput";
-    public const string SdlStopTextInput    = "SDL_StopTextInput";
     public const string SdlGetClipboardText = "SDL_GetClipboardText";
     public const string SdlSetClipboardText = "SDL_SetClipboardText";
     public const string SdlFree             = "SDL_free";

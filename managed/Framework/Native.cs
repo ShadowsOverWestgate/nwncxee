@@ -48,4 +48,42 @@ public static unsafe class Native
         if (_exoDtor != null) _exoDtor(exo);                // frees the internal buffer
         Marshal.FreeHGlobal(exo);
     }
+
+    private static readonly IntPtr _exoBaseSym = Sym(SymbolMap.ExoBase);
+    private static string? _userDir;
+
+    /// <summary>Offset of the user-directory CExoString within CExoBase. Verified identical on the Linux
+    /// and Windows builds (CExoBase::CExoBase stores the ctor arg via InitFromCharArray at this+0x38).</summary>
+    private const int ExoBaseUserDirOffset = 0x38;
+
+    /// <summary>
+    /// The client's own resolved user directory (e.g. <c>~/.local/share/Neverwinter Nights</c>) --
+    /// whatever <c>SetUpUserDirectory</c> produced, so it honours <c>-userdirectory</c>, per-OS rules and
+    /// the <c>.N</c> instance suffix for free. Read live from <c>g_pExoBase -> CExoString@0x38</c>; null
+    /// before the engine sets that up (our loader runs pre-main) or headless (run-demo has no g_pExoBase).
+    /// Cached on first success; the engine char* is copied out immediately, never held (cf. #33).
+    /// </summary>
+    public static string? UserDirectory()
+    {
+        if (_userDir != null) return _userDir;
+        if (_exoBaseSym == IntPtr.Zero) return null;
+        IntPtr exoBase = *(IntPtr*)_exoBaseSym;             // g_pExoBase's value: the CExoBase*
+        if (exoBase == IntPtr.Zero) return null;            // not constructed yet (pre-main)
+        byte* p = *(byte**)(exoBase + ExoBaseUserDirOffset);
+        string s = p == null ? "" : Marshal.PtrToStringUTF8((IntPtr)p) ?? "";
+        if (s.Length == 0) return null;
+        _userDir = s;
+        return s;
+    }
+
+    /// <summary>
+    /// Absolute path for a sowx config file in the client's user directory (next to nwn.ini/settings.tml).
+    /// Falls back to the legacy <c>~/.config</c> only when the engine dir is unresolvable (pre-main /
+    /// headless run-demo), which keeps run-demo writable and is exactly the old behaviour.
+    /// </summary>
+    public static string ConfigPath(string fileName) =>
+        System.IO.Path.Combine(
+            UserDirectory()
+                ?? System.IO.Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", ".config"),
+            fileName);
 }

@@ -15,7 +15,7 @@ Client extender (this repo, done):
   **not** advertise the armed set -- consent is per-server (see below), so telling every
   server the keys to harvest was a leak. The server re-pushes its set via ArmSet.
 - Persists consent **per server**, scoped by a client-minted token
-  (`~/.config/sowx-hotkeys.cfg`, one `[token=<hex>]` section per server).
+  (`sowx-hotkeys.cfg` in the client's NWN user directory, one `[token=<hex>]` section per server).
 
 Server (sow-codebase, done):
 - Builds the arming **NUI** (it knows the toolbar/ability layout to show).

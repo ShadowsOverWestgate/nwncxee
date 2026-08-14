@@ -36,6 +36,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private static bool _focused = true;   // OS delivers keys only when focused, but gate anyway
     private static bool _typing;           // observer-mode vanilla-chat typing flag (own-input mode uses ChatService.IsTyping)
     private static IntPtr _nuklearGlobal;  // address of g_pNuklear (resolved once)
+    private static IntPtr _exoInputGlobal; // address of g_pExoInput (deref live for the instance)
+    private static delegate* unmanaged<IntPtr, int> _getKbMode;   // CExoInput::GetKeyboardMode
     private static readonly Dictionary<int, long> _lastSent = new();
     private static readonly HashSet<int> _down = new();   // armed keys currently held (repeat gate)
 
@@ -74,9 +76,12 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        HotkeyStore.Load(_log!);
+        // No HotkeyStore.Load here: our loader runs pre-main, so the engine user dir (where the cfg lives)
+        // isn't resolvable yet. The store lazy-loads on the first login-path call. SelfCheck is in-memory.
         HotkeyStore.SelfCheck(_log!);   // fail-closed default is security-critical; verify at startup
         _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);   // stable address; deref live for the current ctx
+        _exoInputGlobal = Native.Sym(SymbolMap.ExoInput); // deref live for the CExoInput instance
+        _getKbMode = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.GetKeyboardMode);
         _modState = (delegate* unmanaged<int>)Native.Sym(SymbolMap.SdlGetModState);   // live modifier state at capture
 
         _keyOrig    = (delegate* unmanaged<uint, uint, int>)hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
@@ -148,7 +153,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // release must clear the same key it set.
         int baseCode = code & ~HotkeyProtocol.ModMask;
         if (!(HotkeyStore.Armed.Contains(code) && _down.Add(baseCode))) return;
-        if (!_focused || _typing || ChatService.IsTyping || NuiEditFocused()) return;  // 3,4 focus + typing (vanilla or own)
+        if (!_focused || _typing || ChatService.IsTyping || NuiEditFocused() || KeyboardModeActive()) return;  // 3,4 focus + typing (vanilla/own/console)
         long now = Environment.TickCount64;                                    // 5 debounce
         _lastSent.TryGetValue(code, out long last);
         if (now - last < DebounceMs) return;
@@ -214,6 +219,16 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         IntPtr win = *(IntPtr*)(ctx + NkActiveWindowOff);       // ctx->active window
         if (win == IntPtr.Zero) return false;
         return *(int*)(win + NkWinEditActiveOff) != 0;          // win->edit.active
+    }
+
+    /// <summary>True while the engine is capturing text (the debug console, or any vanilla edit field):
+    /// CExoInput keyboard mode is ON. The general "not gameplay input" gate -- covers the console, which sets
+    /// no chat/NUI flag of ours. Any null link -> false, so a missing CExoInput never blocks hotkeys.</summary>
+    private static bool KeyboardModeActive()
+    {
+        if (_exoInputGlobal == IntPtr.Zero || _getKbMode == null) return false;
+        IntPtr inst = *(IntPtr*)_exoInputGlobal;   // g_pExoInput may be null early in-game
+        return inst != IntPtr.Zero && _getKbMode(inst) != 0;
     }
 
     // Focus gate.

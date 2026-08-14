@@ -35,6 +35,15 @@ public sealed class ChatStore
     /// <summary>Number of lines currently retained.</summary>
     public int Count => _size;
 
+    /// <summary>Drop all retained lines (a session boundary -- #33). Zero-alloc; drops the ChatLine refs so
+    /// the GC can reclaim the prior session's lines.</summary>
+    public void Clear()
+    {
+        Array.Clear(_ring, 0, _ring.Length);
+        _next = 0;
+        _size = 0;
+    }
+
     /// <summary>How many retained lines match a tab filter (for clamping the scroll offset to the top).</summary>
     public int CountMatching(uint channelMask, uint? playerId)
     {
@@ -127,6 +136,10 @@ public sealed class ChatStore
         int ns = s2.View(0xffffffff, null, buf, skip: 1);
         ok &= ns == 3 && buf[0].RawText == "c";          // "d" (newest) skipped
         ok &= s2.View(0xffffffff, null, buf, skip: 4) == 0;  // past the oldest
+
+        // Clear drops the whole backlog (session boundary, #33).
+        s2.Clear();
+        ok &= s2.Count == 0 && s2.View(0xffffffff, null, buf) == 0;
 
         log.Info(ok ? "ChatStore.SelfCheck: passed" : "ChatStore.SelfCheck: FAILED");
     }

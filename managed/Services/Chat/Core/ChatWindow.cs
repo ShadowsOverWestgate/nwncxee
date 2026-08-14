@@ -48,6 +48,15 @@ public sealed class ChatWindow
     /// <summary>True while the channel dropdown list is expanded (over the body). Set by hit-testing.</summary>
     public bool ChannelListOpen;
 
+    /// <summary>True while the gear options panel is open (over the body, top-right). Set by hit-testing.</summary>
+    public bool OptionsOpen;
+
+    /// <summary>Render options the gear panel edits, as (toggle bit, label). Data-driven: a new option is one
+    /// entry. <see cref="ChatToggle.MessageBody"/> is deliberately excluded -- a checkbox that blanks all chat
+    /// is a trap.</summary>
+    public static readonly (uint Bit, string Label)[] Options =
+        { (ChatToggle.Timestamp, "Timestamps"), (ChatToggle.Portrait, "Portraits") };
+
     /// <summary>The shell sets this each rebuild = own-input && typing. The input strip + dropdown only
     /// exist (render + hit-test) while it's true.</summary>
     public bool FooterVisible;
@@ -72,6 +81,10 @@ public sealed class ChatWindow
     public const float DropdownW = 92f;   // channel selector at the strip's left edge
     public const float Pad = 6f;
     public const float ResizeGrip = 14f;
+    /// <summary>Gear icon hit box: a square at the tab bar's right edge.</summary>
+    public const float GearW = TabBarH;
+    /// <summary>Gear options panel: width and per-row height.</summary>
+    public const float OptPanelW = 150f, OptRowH = 22f;
     public const float MinW = 200f, MinH = 120f;
     /// <summary>Scrollbar track width (px): a thin gutter at the body's right edge.</summary>
     public const float ScrollbarW = 8f;
@@ -85,24 +98,28 @@ public sealed class ChatWindow
     /// <summary>How far the content can scroll up before the oldest line reaches the top (0 when it all fits).</summary>
     public float MaxScroll => ContentH > ViewH ? ContentH - ViewH : 0f;
 
-    /// <summary>Thumb height (px), floored at <see cref="SbMinThumb"/>. Only meaningful when the content
-    /// overflows the body.</summary>
+    /// <summary>Scrollbar track height: the body minus the bottom <see cref="ResizeGrip"/>, so the thumb
+    /// never enters the resize-grip corner (they used to overlap and steal each other's clicks).</summary>
+    private float SbTrackH => System.Math.Max(0f, ViewH - ResizeGrip);
+
+    /// <summary>Thumb height (px), proportional to the (grip-reserved) track and floored at
+    /// <see cref="SbMinThumb"/>. Only meaningful when the content overflows the body.</summary>
     private float ThumbHeight()
     {
-        float h = ViewH * ViewH / ContentH;
+        float h = SbTrackH * ViewH / ContentH;
         return h < SbMinThumb ? SbMinThumb : h;
     }
 
     /// <summary>Thumb rect (<paramref name="top"/>, <paramref name="height"/>) in screen px, or false when
-    /// nothing scrolls (content fits). Sits at the bottom (newest) at ScrollPx 0 and rises to the top as
-    /// ScrollPx approaches <see cref="MaxScroll"/>.</summary>
+    /// nothing scrolls (content fits). Sits at the track bottom (newest, just above the resize grip) at
+    /// ScrollPx 0 and rises to the top as ScrollPx approaches <see cref="MaxScroll"/>.</summary>
     public bool ThumbRect(out float top, out float height)
     {
         top = 0f; height = 0f;
         if (ContentH <= ViewH || ViewH <= 0f) return false;
         height = ThumbHeight();
         float frac = MaxScroll > 0f ? Active.ScrollPx / MaxScroll : 0f;   // 0 = newest/bottom, 1 = oldest/top
-        top = Y + TabBarH + (1f - frac) * (ViewH - height);
+        top = Y + TabBarH + (1f - frac) * (SbTrackH - height);
         return true;
     }
 
@@ -156,6 +173,25 @@ public sealed class ChatWindow
     public bool OverResizeGrip(float mx, float my)
         => mx >= X + W - ResizeGrip && mx <= X + W && my >= Y + H - ResizeGrip && my <= Y + H;
 
+    /// <summary>True when the pointer is over the gear icon (top-right of the tab bar).</summary>
+    public bool OverGear(float mx, float my)
+        => mx >= X + W - GearW && mx <= X + W && my >= Y && my <= Y + TabBarH;
+
+    /// <summary>Options panel origin (drops down from the gear, right-aligned to the window).</summary>
+    public float OptPanelX => X + W - OptPanelW;
+    public float OptPanelTop => Y + TabBarH;
+    /// <summary>Option row under the pointer while the panel is open, or -1.</summary>
+    public int OptionRowAt(float mx, float my)
+    {
+        if (mx < OptPanelX || mx > X + W) return -1;
+        for (int i = 0; i < Options.Length; i++)
+        {
+            float top = OptPanelTop + i * OptRowH;
+            if (my >= top && my < top + OptRowH) return i;
+        }
+        return -1;
+    }
+
     /// <summary>Tab index under the pointer in the tab bar, or -1 (bar background = the move handle).</summary>
     private int TabAt(float mx, float my)
     {
@@ -170,6 +206,18 @@ public sealed class ChatWindow
     /// </summary>
     public bool MouseDown(float mx, float my)
     {
+        // Gear options panel (over the body, top-right): handled first so its rows win. Mirrors the channel
+        // list -- a row click flips that option, any other click just dismisses; either way consumes.
+        if (OptionsOpen)
+        {
+            int row = OptionRowAt(mx, my);
+            if (row >= 0) Toggles ^= Options[row].Bit;
+            OptionsOpen = false;
+            _pressConsumed = true;
+            return true;
+        }
+        if (OverGear(mx, my)) { OptionsOpen = true; ChannelListOpen = false; _pressConsumed = true; return true; }
+
         // Pop-out strip + channel dropdown (below the frame, so outside Contains) -- only while typing.
         if (FooterVisible)
         {
@@ -188,8 +236,8 @@ public sealed class ChatWindow
 
         if (!Contains(mx, my)) { _pressConsumed = false; return false; }
         _pressConsumed = true;
-        // Thumb before the resize grip: the two overlap in the bottom-right (the 8px scrollbar column runs
-        // into the 14px grip), and a bottom-pinned thumb must stay grabbable there.
+        // Scrollbar track stops one ResizeGrip above the bottom (see SbTrackH), so thumb and grip no longer
+        // share the bottom-right corner -- both stay grabbable regardless of test order.
         if (OverScrollThumb(mx, my)) { _grab = Grab.Scroll; _gy = my; _gsp = Active.ScrollPx; return true; }
         if (OverResizeGrip(mx, my)) { _grab = Grab.Resize; _gx = mx; _gy = my; _gw = W; _gh = H; return true; }
         int tab = TabAt(mx, my);
@@ -214,7 +262,7 @@ public sealed class ChatWindow
                 // toward newest -> ScrollPx down). Incremental deltas would accumulate error past the clamp.
                 if (ThumbRect(out _, out float th))
                 {
-                    float travel = ViewH - th;
+                    float travel = SbTrackH - th;
                     if (travel > 0f)
                     {
                         float sp = _gsp - (my - _gy) * MaxScroll / travel;
@@ -292,16 +340,24 @@ public sealed class ChatWindow
         win.ScrollByPx(50f); E(win.Active.ScrollPx == 50f, "scroll up by pixels");
         win.ScrollByPx(-80f); E(win.Active.ScrollPx == 0f, "scroll clamps at bottom");
 
-        // scrollbar thumb: geometry + absolute-anchor drag (against renderer-written ContentH/ViewH).
-        win.ContentH = 900f; win.ViewH = 300f;   // 3x overflow -> thumb ~1/3 the track, MaxScroll 600
+        // scrollbar thumb: geometry + absolute-anchor drag (against renderer-written ContentH/ViewH). ViewH
+        // is the real body height (frame minus tab bar) so the thumb/resize-grip separation is exercised.
+        win.ViewH = win.H - TabBarH; win.ContentH = win.ViewH * 3f;   // 3x overflow, MaxScroll = 2*ViewH
         win.Active.ScrollPx = 0f;
         E(win.ThumbRect(out float tt0, out float th0), "thumb shown when content overflows");
-        E(System.Math.Abs(th0 - 100f) < 0.5f, "thumb height = view*view/content");
-        E(System.Math.Abs(tt0 - (win.Y + TabBarH + (win.ViewH - th0))) < 0.5f, "thumb pinned to bottom at newest");
-        float travel = win.ViewH - th0;
-        E(win.MouseDown(win.X + win.W - 3, tt0 + 2), "down on thumb grabs the scrollbar");
+        // Bug fix: at ScrollPx 0 (bottom-pinned) the thumb must clear the resize grip -- they used to share
+        // the bottom-right corner and steal each other's clicks.
+        E(tt0 + th0 <= win.Y + win.H - ResizeGrip + 0.5f, "bottom-pinned thumb clears the resize grip");
+        E(win.MouseDown(win.X + win.W - 3, win.Y + win.H - 3), "grip-corner press consumed");
+        E(!win.ScrollDragging, "grip-corner press is a resize, not a scroll");
+        win.MouseUp(0, 0);
+        // absolute-anchor drag: grab the thumb, drag up the full track travel -> oldest.
+        win.Active.ScrollPx = 0f;
+        E(win.ThumbRect(out float tt1, out float th1), "thumb still shown");
+        float travel = win.SbTrackH - th1;
+        E(win.MouseDown(win.X + win.W - 3, tt1 + 2), "down on thumb grabs the scrollbar");
         E(win.ScrollDragging, "scroll-dragging after thumb grab");
-        win.MouseMove(win.X + win.W - 3, tt0 + 2 - travel);   // drag up the full travel -> oldest
+        win.MouseMove(win.X + win.W - 3, tt1 + 2 - travel);
         E(System.Math.Abs(win.Active.ScrollPx - win.MaxScroll) < 0.5f, "drag up maps to MaxScroll (oldest)");
         win.MouseUp(0, 0);
         win.ContentH = 100f; win.ViewH = 300f;   // content fits -> no thumb, no divide blow-up
@@ -322,6 +378,19 @@ public sealed class ChatWindow
         win.MouseDown(win.X + win.W - 5, win.Y + win.H - 5); E(!win.ChannelListOpen, "click-off dismisses");
         E(win.SendChannel == Channel.Whisper, "channel unchanged on dismiss");
         win.FooterVisible = false;
+
+        // gear options panel: gear opens it; a row click flips exactly that bit + closes; a click-off closes
+        // without changing anything.
+        win.ActiveTab = 0;
+        uint tg0 = win.Toggles;
+        E(win.MouseDown(win.X + win.W - 2, win.Y + 2), "gear click consumes");
+        E(win.OptionsOpen, "gear opens options panel");
+        E(win.MouseDown(win.OptPanelX + 5, win.OptPanelTop + 2), "option row click consumes");
+        E(!win.OptionsOpen && win.Toggles == (tg0 ^ ChatToggle.Timestamp), "row 0 flips the Timestamp bit + closes");
+        win.MouseDown(win.X + win.W - 2, win.Y + 2); E(win.OptionsOpen, "gear reopens");
+        uint tg1 = win.Toggles;
+        win.MouseDown(win.X + 5, win.Y + win.H - 5);
+        E(!win.OptionsOpen && win.Toggles == tg1, "click-off closes panel, options unchanged");
 
         // a press outside the window is not consumed
         E(!win.MouseDown(-10, -10), "outside press ignored");

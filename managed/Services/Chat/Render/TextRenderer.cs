@@ -43,6 +43,8 @@ public static unsafe class TextRenderer
         (0x00A0, 0x00FF),   // Latin-1 Supplement (accented Latin, ß, etc.)
         (0x0100, 0x017F),   // Latin Extended-A (Ć, œ, ...)
         (0x0400, 0x04FF),   // Cyrillic
+        (0x25BE, 0x25BE),   // ▾ channel-dropdown arrow
+        (0x2699, 0x2699),   // ⚙ gear (chat options)
     };
 
     private static ExtenderLog? _log;
@@ -68,13 +70,10 @@ public static unsafe class TextRenderer
     private static bool _texUp, _vaoUp, _progUp;
 
     // Portrait pass (#26): its own RGBA program + VAO/VBO (a second buffer so the text VBO's
-    // upload-if-changed cache stays valid), and a resref -> engine texture (CAurTexture*) cache.
+    // upload-if-changed cache stays valid). The engine CAurTexture* is NEVER cached -- see ResolveTid (#33).
     private static uint _progRgb, _pvao, _pvbo;
     private static int _uProjRgb, _uTexRgb;
     private static bool _progRgbUp, _pvaoUp;
-    /// <summary>resref -> CAurTexture* (never released: bounded by unique speakers per session).
-    /// ponytail: no eviction; a per-session LRU is the ceiling if a marathon session's speaker set grows huge.</summary>
-    private static readonly Dictionary<string, IntPtr> _texCache = new();
     private static bool _portraitDrew;   // one-shot: log the first portrait that actually binds a live TID
 
     private static readonly delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet =
@@ -356,10 +355,11 @@ public static unsafe class TextRenderer
         if (!_pvaoUp) SetupPortraitVao();
         if (k > MaxPortraitsPerFrame) { _log?.Info($"[chat] portrait cap hit ({k}>{MaxPortraitsPerFrame})"); k = MaxPortraitsPerFrame; }
 
-        // Resolve every TID and build all geometry FIRST. AurTextureGet (cache-miss path) can touch GL
-        // and rebind ARRAY_BUFFER, so it must never run between our BindBuffer and BufferData -- keep all
-        // resolves ahead of the single upload below. ponytail: a first-seen resref allocates once here
-        // (engine texture + one diag log); steady state (cache hit -> a TID read) is zero-alloc.
+        // Resolve every TID and build all geometry FIRST. AurTextureGet's create path (first load of a
+        // resref) can touch GL and rebind ARRAY_BUFFER, so it must never run between our BindBuffer and
+        // BufferData -- keep all resolves ahead of the single upload below. Steady state is a per-frame
+        // resman lookup returning a borrowed pointer (verified: no AddRef, no GL on the hit path) + a TID
+        // read; zero GC alloc on our side. We never cache the pointer -- see ResolveTid (#33).
         int* tids = stackalloc int[k];
         float* verts = stackalloc float[Floats * 6 * k];
         int drawn = 0;
@@ -390,31 +390,61 @@ public static unsafe class TextRenderer
         if (!_portraitDrew) { _portraitDrew = true; _log?.Info($"[chat] portrait first-draw tid={tids[0]} ({drawn} shown)"); }
     }
 
-    /// <summary>resref -&gt; live GL texture id, or 0 if not yet uploaded / unresolvable. Resolves (and
-    /// caches) the engine <c>CAurTexture*</c> once per resref; re-reads the TID every frame so an engine
-    /// texture rebuild never leaves us binding a stale name.</summary>
+    /// <summary>resref -&gt; live GL texture id, or 0 if not yet uploaded / unresolvable. Re-fetches the
+    /// engine <c>CAurTexture*</c> from the resman EVERY frame and NEVER caches it (#33): the engine frees
+    /// and reloads its portrait textures on area transitions and module unloads, so any stored pointer
+    /// dangles and crashes when bound (confirmed via core dump: cached ptr -> AurTextureGetTID -> jump into
+    /// freed heap). AurTextureGet is a resref-keyed lookup that returns the current live (borrowed) pointer,
+    /// so asking it per frame is the only way to never hold a stale one. Zero GC alloc on our side
+    /// (stackalloc name; engine owns the texture).</summary>
     private static int ResolveTid(string resref)
     {
-        if (!_texCache.TryGetValue(resref, out IntPtr tex))
-        {
-            tex = ResolveTexture(resref);
-            _texCache[resref] = tex;
-            _log?.Info($"[chat] portrait resolve '{resref}' -> tex 0x{(long)tex:x}");
-        }
-        // A non-null texture whose TID is still 0 is simply "not uploaded yet" -- re-read every frame, so a
-        // portrait still streaming in appears once ready. AurTextureGet only returns Zero for an empty name
-        // (guarded: hasPortrait requires a non-empty resref), so the Zero branch is effectively unreachable.
+        IntPtr tex = ResolveTexture(resref);
+        // A non-null texture whose TID is still 0 is simply "not uploaded yet"; a portrait still streaming
+        // in appears once ready. AurTextureGet only returns Zero for an empty name (guarded upstream:
+        // hasPortrait requires a non-empty resref), so the Zero branch is effectively unreachable.
         return tex == IntPtr.Zero ? 0 : _aurTid(tex);
+    }
+
+    /// <summary>Cosmetic reset at a session (module) boundary: re-arm the one-shot first-portrait log for the
+    /// next session. Crash-safety no longer lives here -- the portrait pointer is never cached (see ResolveTid,
+    /// #33), so nothing engine-owned survives a boundary to drop. Does NOT touch GL objects that outlive a
+    /// session (atlas, programs, VAOs/VBOs). Cold, zero-alloc.</summary>
+    public static void ClearSessionState()
+    {
+        _portraitDrew = false;   // let the next session log its first live portrait again
+    }
+
+    /// <summary>Self-check for the resref -&gt; C-string marshalling that feeds AurTextureGet: truncation at 16
+    /// bytes and NUL-termination (a missing NUL would walk past the name into stack garbage). Headless.</summary>
+    public static void SelfCheck(ExtenderLog log)
+    {
+        Span<byte> buf = stackalloc byte[17];
+        bool ok = true;
+        ok &= FillCName("0123456789abcdef", buf) == 17 && buf[16] == 0 && buf[0] == (byte)'0' && buf[15] == (byte)'f';
+        ok &= FillCName("0123456789abcdefEXTRA", buf) == 17 && buf[16] == 0 && buf[15] == (byte)'f';   // over-length truncates
+        ok &= FillCName("po_hu_0", buf) == 8 && buf[7] == 0 && buf[0] == (byte)'p';                    // short name NUL-terminates in place
+        ok &= FillCName("", buf) == 1 && buf[0] == 0;                                                  // empty -> lone NUL
+        log.Info(ok ? "TextRenderer.SelfCheck: passed"
+                    : "TextRenderer.SelfCheck: FAILED (resref C-string marshalling)");
     }
 
     private static IntPtr ResolveTexture(string resref)
     {
-        // resref is null-padded ASCII, <=16 bytes; hand AurTextureGet a null-terminated C string.
-        Span<byte> name = stackalloc byte[17];
-        int n = 0;
-        foreach (char c in resref) { if (n >= 16) break; name[n++] = (byte)c; }
-        name[n] = 0;
+        Span<byte> name = stackalloc byte[17];   // 16 resref bytes + NUL
+        FillCName(resref, name);
         fixed (byte* p = name) return _aurGet(p, IntPtr.Zero, null, null, 0, 0);
+    }
+
+    /// <summary>Write <paramref name="resref"/> into <paramref name="dest"/> (>= 17 bytes) as a
+    /// null-terminated C string: copy up to 16 ASCII bytes, then a NUL. The engine resref is null-padded
+    /// ASCII, max 16 bytes. Returns bytes written including the NUL.</summary>
+    private static int FillCName(string resref, Span<byte> dest)
+    {
+        int n = 0;
+        foreach (char c in resref) { if (n >= 16) break; dest[n++] = (byte)c; }
+        dest[n] = 0;
+        return n + 1;
     }
 
     /// <summary>Fraction of a portrait texture that is real image, from the engine's own ConvertPortrait
