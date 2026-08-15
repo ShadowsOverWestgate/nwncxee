@@ -22,6 +22,10 @@ public sealed unsafe class ChatService : IExtenderService
     /// Only ever set true in own-input mode (<see cref="OwnInput"/>).</summary>
     public static volatile bool IsTyping;
 
+    /// <summary>The keyboard is wanted by chat typing OR an inline settings-field edit. HotkeyInputService
+    /// routes keys/text into ChatService and suppresses gameplay hotkeys whenever this is true.</summary>
+    public static bool WantsKey => IsTyping || _settings.Editing;
+
     /// <summary>Chat opt-OUT (#23, the extender-optional guarantee): <c>SOWX_LOCKCHAT=1</c> stands the
     /// whole chatbox down -- no tap, render, input capture, or suppression -- so vanilla chat runs
     /// untouched. <see cref="Initialize"/> early-returns on it.</summary>
@@ -44,9 +48,13 @@ public sealed unsafe class ChatService : IExtenderService
     {
         _log = log;
         ChatWindow.SelfCheck(log);     // slice #21 drag/resize/tab/scroll proof (off-device)
+        SettingsWindow.SelfCheck(log); // settings window open/toggle/close/ownership proof (off-device)
         WindowRenderer.SelfCheck(log); // #26 portrait-gutter emission proof (off-device)
         ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
+        ChatConfig.SelfCheck(log);     // config round-trip + legacy-file migration proof (off-device)
         TextRenderer.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
+        // The settings picker resolves a colour's current value (override-or-default) through the renderer.
+        SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
         if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla chat intact; FrameTapService takes the frame
         {
             log.Info("ChatService: SOWX_LOCKCHAT set -- standing down, vanilla chat left intact");
@@ -108,7 +116,7 @@ public sealed unsafe class ChatService : IExtenderService
             string portraitRef = hasPortrait != 0 ? ResRef(portrait) : "";
             // ponytail: senderName left "" -- the tap doesn't carry it; it is inline in raw. Extract in a later slice.
             var line = new ChatLine(channel, "", playerId, portraitRef,
-                ColorRunParser.Parse(raw), DateTime.UtcNow, raw);
+                ColorRunParser.Parse(raw), DateTime.UtcNow, raw, GameNow());   // game time captured now (immutable line)
             _store.Append(line);
 
             long n = ++_ingestCount;
@@ -159,6 +167,11 @@ public sealed unsafe class ChatService : IExtenderService
     /// <summary>The v1 chatbox. ponytail: one window, fixed default rect (not persisted -- a saved
     /// layout is the ceiling). Placed off vanilla's bottom-left so both are visible until #23 suppresses.</summary>
     private static ChatWindow? _window;
+
+    /// <summary>The chat settings window (opened from the gear icon), replacing the old inline gear dropdown so
+    /// the option list can grow. Edits <see cref="ChatWindow.Toggles"/>; holds no option state of its own.</summary>
+    private static readonly SettingsWindow _settings = new();
+
     private static delegate* unmanaged<IntPtr, void> _swapOrig;
     private static volatile int _lastMx, _lastMy;   // latest pointer pos, for wheel hit-testing
     private static bool _mdiag;                      // one-shot: log first click coords + rect
@@ -211,48 +224,117 @@ public sealed unsafe class ChatService : IExtenderService
         return show;
     }
 
-    /// <summary>Saved window rect. ponytail: one flat file of four numbers; a full layout store (per
-    /// tab, multi-window) is the ceiling. A property, not a cached field: our loader runs pre-main, so
-    /// the engine user dir isn't resolvable at type-init -- resolve live (LoadRect/SaveRect are post-main).</summary>
-    private static string LayoutPath => Native.ConfigPath("sowx-chat.cfg");
-    private static string _savedRect = "";
+    // In-game game clock (chat game-time timestamps). The server syncs ONLY the game HOUR to the client, into
+    // CNWCModule+0x16c (verified: the free-running CWorldTimer is never anchored to module time, which is why
+    // reading it showed a wrong hour). CClientExoApp::GetModule(app) fetches the module off the same
+    // *g_pAppManager chain the gate walks. minute/second aren't on the wire, so we anchor real-time to each
+    // hour edge (PollGameClock, per frame) and interpolate a sub-hour minute at ingest.
+    private static readonly delegate* unmanaged<IntPtr, IntPtr> _getModule =
+        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
+    private const int ModuleHourOff = 0x16c;            // CNWCModule: server-synced game hour (u32, 0..23)
+    private const int ModuleMinutesPerHourOff = 0x15c;  // CNWCModule: real minutes per game hour (byte, module setting)
 
-    private static void LoadRect(ChatWindow win)
+    private static int _gmHour = -1;    // last polled server game hour (0..23); -1 = none seen -> local fallback
+    private static long _gmHourMs;      // TickCount64 when _gmHour last changed (sub-hour interpolation anchor)
+    private static int _gmMph = 2;      // module MinutesPerHour (real minutes per game hour); 2 = engine default
+
+    /// <summary>The client CNWCModule (server-synced state), or Zero off a module (main menu / run-demo). All
+    /// guarded pointer reads off *g_pAppManager, then CClientExoApp::GetModule(app).</summary>
+    private static IntPtr GameModule()
     {
-        try
-        {
-            if (!File.Exists(LayoutPath)) return;
-            string[] p = File.ReadAllText(LayoutPath).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            if (p.Length < 4) return;
-            var ci = System.Globalization.CultureInfo.InvariantCulture;
-            if (float.TryParse(p[0], ci, out float x) && float.TryParse(p[1], ci, out float y)
-                && float.TryParse(p[2], ci, out float w) && float.TryParse(p[3], ci, out float h))
-            {
-                win.X = x; win.Y = y;
-                win.W = w < ChatWindow.MinW ? ChatWindow.MinW : w;
-                win.H = h < ChatWindow.MinH ? ChatWindow.MinH : h;
-                if (p.Length >= 5 && uint.TryParse(p[4], out uint tg)) win.Toggles = tg;   // restore gear options
-                _savedRect = RectStr(win);
-            }
-        }
-        catch (Exception e) { _log?.Info($"[chat] layout load failed: {e.Message}"); }
+        if (_appMgr == IntPtr.Zero || _getModule == null) return IntPtr.Zero;
+        IntPtr mgr = *(IntPtr*)_appMgr; if (mgr == IntPtr.Zero) return IntPtr.Zero;
+        IntPtr app = *(IntPtr*)mgr;     if (app == IntPtr.Zero) return IntPtr.Zero;
+        return _getModule(app);
     }
 
-    private static void SaveRect(ChatWindow win)
+    /// <summary>Track the server-synced game hour each frame so ingest can interpolate a sub-hour minute. Hot,
+    /// zero-alloc: pointer reads + one call. Resets to "unseen" off a module. An out-of-range hour (e.g. a
+    /// wrong offset, or the field still zero pre-first-update reading as a valid midnight) is treated as unseen.</summary>
+    private static void PollGameClock()
     {
-        string cur = RectStr(win);
-        if (cur == _savedRect) return;   // only write when the rect actually changed
-        _savedRect = cur;
+        IntPtr module = GameModule();
+        if (module == IntPtr.Zero) { _gmHour = -1; return; }
+        int hour = *(int*)(module + ModuleHourOff);
+        if ((uint)hour > 23u) { _gmHour = -1; return; }   // guards a bad offset -> local fallback
+        int mph = *(byte*)(module + ModuleMinutesPerHourOff);
+        _gmMph = mph > 0 ? mph : 2;
+        if (hour != _gmHour) { _gmHour = hour; _gmHourMs = Environment.TickCount64; }   // hour edge -> re-anchor
+    }
+
+    /// <summary>Current in-game time, or an invalid <see cref="GameStamp"/> (-> the caller uses local) before
+    /// any server hour is seen. The HOUR is authoritative (server-synced); the minute/second are extrapolated
+    /// from real time since the hour edge and self-correct at each rollover. Cold (ingest). ponytail: the wire
+    /// carries only the hour, so minute/second are an estimate -- they drift/pin under pause/timestop (the
+    /// engine's own lighting interpolator has the same limit); HH-only is the fallback if this reads wrong live.</summary>
+    private static GameStamp GameNow()
+    {
+        int hour = _gmHour;
+        if (hour < 0) return default;
+        long hourLenMs = (long)_gmMph * 60000L;
+        if (hourLenMs <= 0) return new GameStamp(hour, 0, 0);
+        double frac = (Environment.TickCount64 - _gmHourMs) / (double)hourLenMs;
+        if (frac < 0) frac = 0; else if (frac > 1) frac = 1;   // clamp into the hour (pause / just-past-rollover slop)
+        int minute = (int)(frac * 60); if (minute > 59) minute = 59;
+        int second = (int)(frac * 3600) % 60;
+        return new GameStamp(hour, minute, second);
+    }
+
+    /// <summary>Persisted chat config file (rect, toggles, colours, anim, input side, timestamp). Key=value,
+    /// migrates the legacy positional rect on read (see <see cref="ChatConfig"/>). A property, not cached:
+    /// the loader runs post-main so the engine user dir resolves (Initialize runs pre-main).</summary>
+    private static string LayoutPath => Native.ConfigPath("sowx-chat.cfg");
+    private static ChatConfig _config = new();
+    private static string _savedText = "";
+
+    /// <summary>Restore the config from disk and apply it to the window (rect/toggles/input side) + the
+    /// render/anim/timestamp subsystems. Deferred to the first frame (engine user dir unresolved pre-main).</summary>
+    private static void LoadConfig(ChatWindow win)
+    {
+        try { if (File.Exists(LayoutPath)) _config = ChatConfig.Parse(File.ReadAllText(LayoutPath)); }
+        catch (Exception e) { _log?.Info($"[chat] config load failed: {e.Message}"); }
+        if (_config.W >= ChatWindow.MinW && _config.H >= ChatWindow.MinH)   // 0 = unset -> keep the built-in rect
+        { win.X = _config.X; win.Y = _config.Y; win.W = _config.W; win.H = _config.H; }
+        win.Toggles = _config.Toggles;
+        win.InputOnTop = _config.InputOnTop;
+        ApplyConfig();
+        _savedText = _config.ToText();
+    }
+
+    /// <summary>Push the config-owned settings (palette, animation knobs, timestamp style) onto the subsystems
+    /// that read them from the hot path. Window-owned settings (toggles, input side) already live on the window.</summary>
+    private static void ApplyConfig()
+    {
+        WindowRenderer.ApplyPalette(_config);
+        WindowRenderer.TextOutline = _config.Outline;
+        // Bake the atlas and scale the chrome off the SAME effective px, so the whole box tracks font size and
+        // the game's UI scale together (chrome grows with the text -> no clipping). effectivePx is clamped to the
+        // atlas ceiling and Metrics.Scale is derived from that same value, so chrome and text never disagree.
+        float fontPx = System.Math.Clamp(_config.FontPx, TextRenderer.MinFontPx, TextRenderer.MaxFontPx);
+        float effectivePx = System.Math.Clamp(fontPx * Metrics.GameUiScale, TextRenderer.MinFontPx, TextRenderer.AtlasMaxPx);
+        Metrics.Scale = effectivePx / Metrics.DesignFontPx;
+        TextRenderer.SetFont(effectivePx);   // re-bakes the atlas if the size changed (cold; debounced)
+        ChatAnim.Configure(_config.AnimEnabled, _config.HoldSec, _config.FadeSec, _config.TauMs);
+        TimestampComponent.Format = _config.TimeFormat;
+        TimestampComponent.Source = _config.TimeSource;
+    }
+
+    /// <summary>Pull the window-owned fields into the config and write the file iff it changed. Called on a
+    /// settings interaction's release and after a move/resize.</summary>
+    private static void SaveConfig(ChatWindow win)
+    {
+        _config.X = win.X; _config.Y = win.Y; _config.W = win.W; _config.H = win.H;
+        _config.Toggles = win.Toggles; _config.InputOnTop = win.InputOnTop;
+        string text = _config.ToText();
+        if (text == _savedText) return;   // only write when something actually changed
+        _savedText = text;
         try
         {
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(LayoutPath)!);
-            File.WriteAllText(LayoutPath, cur);
+            File.WriteAllText(LayoutPath, text);
         }
-        catch (Exception e) { _log?.Info($"[chat] layout save failed: {e.Message}"); }
+        catch (Exception e) { _log?.Info($"[chat] config save failed: {e.Message}"); }
     }
-
-    private static string RectStr(ChatWindow w) =>
-        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{w.X} {w.Y} {w.W} {w.H} {w.Toggles}");
 
     /// <summary>Slice #21: bake the atlas, build the window, observe ingest, and own SwapBuffers so the
     /// box renders on a plain launch (no env vars) -- unless the probe owns the frame hook.</summary>
@@ -275,7 +357,7 @@ public sealed unsafe class ChatService : IExtenderService
             new Tab("Talk", 1u << 1),
         });
         // Rect restore is deferred to the first frame (see OnSwap): Initialize runs pre-main, so the
-        // engine user dir -- where the cfg lives -- isn't resolvable here yet and LoadRect would read
+        // engine user dir -- where the cfg lives -- isn't resolvable here yet and LoadConfig would read
         // the ~/.config fallback instead of the real path.
         _store.AddObserver(OnIngest);  // new line -> slide-in/hold + rebuild (cold network thread)
 
@@ -299,11 +381,27 @@ public sealed unsafe class ChatService : IExtenderService
             _swapTid = Environment.CurrentManagedThreadId;
             _log?.Info($"ChatService: first frame presented -- hook is LIVE [chatthread] swap tid={_swapTid}");
             _log?.Info($"ChatService: cfg dir = {Native.UserDirectory() ?? "(engine dir unresolved -> ~/.config fallback)"}");
-            LoadRect(_window);   // restore now, not in Initialize: that runs pre-main so the engine user dir was unresolved
-            Rebuild();           // re-layout for the restored width
+            if (_window != null) LoadConfig(_window);   // restore now: Initialize runs pre-main, user dir unresolved there
+            Rebuild();           // re-layout for the restored width + applied config
         }
-        if (InGame()) TextRenderer.Draw();            // only when the vanilla chat would show; hot, zero-alloc
+        if (InGame()) { SyncUiScale(); PollGameClock(); TextRenderer.Draw(); }   // hot; SyncUiScale is a float read + branch
         if (_swapOrig != null) _swapOrig(window);     // present
+    }
+
+    /// <summary>Track the engine's live GUI scale (CAurora::GetGUIScale) so the chatbox scales with the game's
+    /// UI-scaling option. A cheap float read every frame; the re-bake + relayout only fire on the rare frame the
+    /// scale actually changes (resolution change / options slider) -- like the first-frame bootstrap, not per
+    /// frame -- so the hot present stays zero-alloc in the steady state.</summary>
+    private static void SyncUiScale()
+    {
+        if (_getGuiScale == null) return;
+        float s = _getGuiScale();
+        if (s < 1f) s = 1f;   // engine floors at 1.0; guards an early 0 read before CAurora computes it
+        if (System.Math.Abs(s - Metrics.GameUiScale) < 0.001f) return;
+        Metrics.GameUiScale = s;
+        ApplyConfig();          // recompute Metrics.Scale + re-bake the atlas at the new effective px
+        _window?.ClampToMin();  // a rect restored before this sync can be under the newly-scaled minimum
+        Rebuild();              // re-lay the chrome at the new scale
     }
 
     /// <summary>Slice #23: neutralize vanilla chat so only our box draws. Two SkipOriginal groups:
@@ -361,11 +459,15 @@ public sealed unsafe class ChatService : IExtenderService
         ChatWindow? win = _window;
         GlyphAtlas? atlas = TextRenderer.Atlas;
         if (win == null || atlas == null) return;   // run-demo: no atlas -> nothing to draw
+        // NB: do NOT lay out the settings panel here. Rebuild runs on the ingest thread too, and Layout mutates
+        // the shared Rows list -- a Clear racing EmitSettings' iterate is a hard crash. The panel is modal and
+        // its geometry depends only on input-thread state (rect/toggles/config), which OpenAt/MouseDown lay out;
+        // this draw just reads the last published snapshot.
         bool footer = IsTyping;          // window always has a send channel (the dropdown)
         win.FooterVisible = IsTyping;                  // gate the strip/dropdown hit-testing to match the draw
         // Only read the (mutable) edit line when a footer will render it -- avoids racing a concurrent
         // keystroke's StringBuilder on the ingest/render thread.
-        RenderFrame frame = WindowRenderer.Build(win, _store, atlas, footer,
+        RenderFrame frame = WindowRenderer.Build(win, _settings, _store, atlas, footer,
                                                   footer ? Edit.Text : "", footer ? Edit.Cursor : 0, _pointerInWindow,
                                                   footer ? Edit.Selection : null);
         TextRenderer.Publish(frame);
@@ -380,6 +482,7 @@ public sealed unsafe class ChatService : IExtenderService
     private static void ResetSession()
     {
         TextRenderer.ClearSessionState();   // crash-critical: freed engine textures must not carry over
+        _gmHour = -1;                        // drop the game clock: the next module re-anchors it
         // ponytail: racing a late-arriving ingest (disconnect teardown) can leave <=1 stale line; indices
         // stay in-bounds so it's memory-safe, just cosmetic. Add a lock only if the [chatthread] log proves
         // ingest really runs on a separate thread.
@@ -387,10 +490,10 @@ public sealed unsafe class ChatService : IExtenderService
         Edit.Clear();
         IsTyping = false;
         KeyboardMode(false);                // drop any keyboard capture left from the old session
+        _settings.Reset();                  // close + drop any half-owned press so no stray up gets eaten next session
         if (_window != null)
         {
             _window.SendChannel = Channel.Talk;
-            _window.OptionsOpen = false;
             _window.ChannelListOpen = false;
             foreach (Tab t in _window.Tabs) t.ScrollPx = 0f;
         }
@@ -407,10 +510,25 @@ public sealed unsafe class ChatService : IExtenderService
             _mdiag = true;
             _log?.Info($"[chat] first click ({x},{y}) rect=({win.X},{win.Y},{win.W},{win.H})");
         }
-        bool consumed = down ? win.MouseDown(x, y) : win.MouseUp(x, y);
-        if (!down && consumed) SaveRect(win);   // a move/resize (or click) ended -> persist if the rect changed
-        if (consumed) Rebuild();
-        return consumed;
+        // Settings window owns the click pair while open; the gear icon opens it (and closes any dropdown).
+        // OpenAt/MouseDown mark the press consumed, so MouseUp eats the paired up (no orphan button-up).
+        if (down)
+        {
+            if (_settings.Open) { bool cs = _settings.MouseDown(x, y, win, _config); ApplyConfig(); SyncFieldKeyboard(); Rebuild(); return cs; }
+            if (win.OverGear(x, y))
+            {
+                win.ChannelListOpen = false;
+                _settings.OpenAt(win, _config, TextRenderer.ViewportW, TextRenderer.ViewportH);
+                Rebuild(); return true;
+            }
+            bool cd = win.MouseDown(x, y);
+            if (cd) Rebuild();
+            return cd;
+        }
+        if (_settings.MouseUp()) { SaveConfig(win); Rebuild(); return true; }   // settings owned the press -> persist the change
+        bool cu = win.MouseUp(x, y);
+        if (cu) { SaveConfig(win); Rebuild(); }   // a move/resize (or click) ended -> persist if anything changed
+        return cu;
     }
 
     /// <summary>Pointer motion. Consumed (true) only while dragging/resizing; also tracks the hover grip.</summary>
@@ -419,6 +537,13 @@ public sealed unsafe class ChatService : IExtenderService
         _lastMx = x; _lastMy = y;
         ChatWindow? win = _window;
         if (win == null || !InGame()) return false;   // inert on the menu (box hidden)
+        // Settings panel is modal: swallow all motion while it's open (matches the wheel), so the window chrome
+        // under it doesn't track the pointer. A slider drag additionally live-previews + rebuilds.
+        if (_settings.Open)
+        {
+            if (_settings.MouseMove(x, y, win, _config)) { ApplyConfig(); Rebuild(); }
+            return true;
+        }
         bool consumed = win.MouseMove(x, y);
         if (win.ScrollDragging) ChatAnim.MarkScroll();   // scrubbing the thumb resets the fade (no slide -- tracks 1:1)
         bool inWin = win.Contains(x, y) || win.Dragging;   // keep the grip up mid-drag even if the pointer strays
@@ -435,7 +560,9 @@ public sealed unsafe class ChatService : IExtenderService
     public static bool OnMouseWheel(int dy)
     {
         ChatWindow? win = _window;
-        if (win == null || !InGame() || !win.Contains(_lastMx, _lastMy)) return false;
+        if (win == null || !InGame()) return false;
+        if (_settings.Open) return true;   // modal: swallow the notch anywhere (incl. panel overhang), never scroll behind it
+        if (!win.Contains(_lastMx, _lastMy)) return false;
         GlyphAtlas? atlas = TextRenderer.Atlas;
         if (atlas == null) return true;   // consumed, but nothing to scroll before the atlas bakes
         float before = win.Active.ScrollPx;
@@ -456,6 +583,8 @@ public sealed unsafe class ChatService : IExtenderService
         _exoInput  = Native.Sym(SymbolMap.ExoInput);                  // address of g_pExoInput; deref at open
         _kbOn      = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOn);
         _kbOff     = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOff);
+        _turnOffModal = (delegate* unmanaged<void>)Native.Sym(SymbolMap.TurnOffKeyboardModal);
+        _getGuiScale = (delegate* unmanaged<float>)Native.Sym(SymbolMap.GetGuiScale);
         _startText = (delegate* unmanaged<void>)Native.Sym(SymbolMap.SdlStartTextInput);
         _getClip   = (delegate* unmanaged<IntPtr>)Native.Sym(SymbolMap.SdlGetClipboardText);
         _setClip   = (delegate* unmanaged<byte*, int>)Native.Sym(SymbolMap.SdlSetClipboardText);
@@ -483,7 +612,8 @@ public sealed unsafe class ChatService : IExtenderService
 
     private static IntPtr _exoInput;                          // &g_pExoInput (CExoInput**)
     private static delegate* unmanaged<IntPtr, void> _kbOn, _kbOff, _sdlFree;
-    private static delegate* unmanaged<void> _startText;
+    private static delegate* unmanaged<void> _startText, _turnOffModal;
+    private static delegate* unmanaged<float> _getGuiScale;   // CAurora::GetGUIScale -> live GUI-scale multiplier
     private static delegate* unmanaged<IntPtr> _getClip;
     private static delegate* unmanaged<byte*, int> _setClip;
 
@@ -582,6 +712,8 @@ public sealed unsafe class ChatService : IExtenderService
         byte* p = (byte*)text;
         int n = 0;
         while (n < SdlTextMax && p[n] != 0) n++;
+        if (_settings.Editing)   // typed chars go to the focused settings value box, not the chat line
+        { _settings.EditInsert(Encoding.UTF8.GetString(p, n)); Rebuild(); return; }
         Edit.InsertUtf8(new ReadOnlySpan<byte>(p, n));
         Rebuild();   // reflect the new text in the footer
     }
@@ -589,6 +721,21 @@ public sealed unsafe class ChatService : IExtenderService
     /// <summary>Dispatch a control/nav key to the edit line while the box owns the keyboard.</summary>
     public static void RouteKey(uint key, int mods)
     {
+        // A settings value box owns the keyboard first (before the chat ctrl block, or Ctrl+V would hit chat).
+        if (_settings.Editing)
+        {
+            switch (key)
+            {
+                case KeyReturn:    _settings.CommitEdit(_config); break;
+                case KeyEsc:       _settings.CancelEdit(); break;
+                case KeyBackspace: _settings.EditBackspace(); break;
+                // other keys (nav/ctrl) are ignored while typing a number
+            }
+            ApplyConfig();
+            if (_window != null) SaveConfig(_window);   // a keyboard commit has no paired mouse-up to persist on
+            SyncFieldKeyboard(); Rebuild();
+            return;
+        }
         bool shift = (mods & KmodShift) != 0;
         bool ctrl  = (mods & KmodCtrl) != 0;
         if (ctrl)
@@ -646,13 +793,35 @@ public sealed unsafe class ChatService : IExtenderService
         Rebuild();   // Ctrl+V early-returns from RouteKey before its trailing Rebuild -> redraw the footer here
     }
 
-    /// <summary>Drive the engine's own gameplay-key gate (vanilla set it inside the focus path we skip).</summary>
+    /// <summary>Sync the engine keyboard-capture gate with a settings field edit: take the keyboard (so
+    /// TEXTINPUT/keydown reach us and gameplay keys are gated) while a value box is being typed, release it
+    /// when neither a field nor chat wants it. Called after any settings interaction that may start/end an edit.</summary>
+    private static void SyncFieldKeyboard()
+    {
+        if (_settings.Editing) { KeyboardMode(true); if (_startText != null) _startText(); }
+        else if (!IsTyping) KeyboardMode(false);
+    }
+
+    /// <summary>Drive the engine's own gameplay-key gate (vanilla set it inside the focus path we skip). On the
+    /// off-&gt;on edge only, also run vanilla's TurnOffKeyboardModal -- the step CGuiEdit::SetFocus does right
+    /// after KeyboardModeOn -- which clears the WASD drive latch and sends AbortDriveControl. Without it a keyup
+    /// gated mid-walk leaves UpdateDriveMode re-sending DriveControl every frame, so the player sticks moving
+    /// (#34). Edge-gated so a settings-field re-sync doesn't re-hilite/rebuild the HUD on every control key.</summary>
     private static void KeyboardMode(bool on)
     {
         if (_exoInput == IntPtr.Zero) return;
         IntPtr inst = *(IntPtr*)_exoInput;   // g_pExoInput may be null early in-game
         if (inst == IntPtr.Zero) return;
-        if (on) { if (_kbOn != null) _kbOn(inst); }
+        if (on)
+        {
+            if (_kbOn != null) _kbOn(inst);
+            // TurnOffKeyboardModal double-derefs g_pAppManager unguarded -> gate on a live app manager.
+            if (!_kbHeld && _turnOffModal != null && _appMgr != IntPtr.Zero && *(IntPtr*)_appMgr != IntPtr.Zero)
+                _turnOffModal();
+        }
         else if (_kbOff != null) _kbOff(inst);
+        _kbHeld = on;
     }
+
+    private static bool _kbHeld;   // our view of the keyboard-capture gate; edges drive the modal reset above
 }

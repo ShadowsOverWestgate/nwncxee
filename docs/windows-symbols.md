@@ -56,6 +56,7 @@ deriving anything — required, or the RVAs point into a different build.
 | `CGuiInGameChatPrompt::HandleEsc` | `0x87b390` | caller of LoseFocus, 4 callees, no GetText |
 | `CGuiInGameChatPrompt::HandleLMouseDownGuiEvent` | `0x87b450` | Notify event enum **1** (matches Linux) |
 | `CGuiInGameChatPrompt::HandleLoseKeyboardFocusLMouseDownGuiEvent` | `0x87b4b0` | Notify event enum **2** (matches Linux) |
+| `TurnOffKeyboardModal()` | `0x6e5d80` | decompile of `CGuiEdit::SetFocus` (exported): the call right after `CExoInput::KeyboardModeOn`; body reads `*(*g_pAppManager+8)`, resets modal keys, clears the WASD drive latch + sends `AbortDriveControl` (#34) |
 | `operator new(size_t)` (consent modal alloc) | `0xc10324` | `_malloc_base` + `_callnewh` loop (VS2017/2019 release); the exact allocator the ExitButton `CPanelOkCancel` spawn calls |
 
 **By name — client-native features (verified in the `0x68e408bc` export table):**
@@ -65,6 +66,7 @@ deriving anything — required, or the RVAs point into a different build.
 | `CPanelOkCancel::CPanelOkCancel()` | `??0CPanelOkCancel@@QEAA@XZ` |
 | `CPanelOkCancel::Activate(CExoString,uint,uint)` | `?Activate@CPanelOkCancel@@QEAAXVCExoString@@II@Z` |
 | `g_pGuiMan` (data) | `?g_pGuiMan@@3PEAVCGuiMan@@EA` |
+| `CAurora::GetGUIScale()` → float (GUI-scale multiplier) | `?GetGUIScale@CAurora@@SAMXZ` (export ord. 8543) |
 | `SDL_GetKeyName` | `SDL_GetKeyName` |
 
 ## Consent modal — PORTED to Windows (decomp-verified, build `0x68e408bc`)

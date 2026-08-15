@@ -114,9 +114,9 @@ public sealed unsafe class HotkeyInputService : IExtenderService
             _log?.Info($"[keydiag] key={key} armed={HotkeyStore.Armed.Contains((int)key)} " +
                        $"focused={_focused} typing={_typing || ChatService.IsTyping} nui={NuiEditFocused()}");
 
-        // Chatbox owns the keyboard: route the key to its edit line and CONSUME it. Calling the
-        // original on Enter would re-enter SetFocusChatPrompt and reopen the box we just closed.
-        if (ChatService.IsTyping)
+        // Chatbox owns the keyboard: route the key to its edit line (or a settings value box) and CONSUME it.
+        // Calling the original on Enter would re-enter SetFocusChatPrompt and reopen the box we just closed.
+        if (ChatService.WantsKey)
         {
             ChatService.RouteKey(key, _modState != null ? _modState() : 0);
             return 0;
@@ -153,7 +153,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // release must clear the same key it set.
         int baseCode = code & ~HotkeyProtocol.ModMask;
         if (!(HotkeyStore.Armed.Contains(code) && _down.Add(baseCode))) return;
-        if (!_focused || _typing || ChatService.IsTyping || NuiEditFocused() || KeyboardModeActive()) return;  // 3,4 focus + typing (vanilla/own/console)
+        if (!_focused || _typing || ChatService.WantsKey || NuiEditFocused() || KeyboardModeActive()) return;  // 3,4 focus + typing (vanilla/own/console/settings field)
         long now = Environment.TickCount64;                                    // 5 debounce
         _lastSent.TryGetValue(code, out long last);
         if (now - last < DebounceMs) return;
@@ -173,8 +173,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                 case SdlKeyUp:                                                  // key released
                     _down.Remove(*(int*)(ev + SdlEvSymOff));
                     break;
-                case SdlTextInput:                                             // finished UTF-8 -> chat edit line
-                    if (ChatService.IsTyping) ChatService.InsertUtf8(ev + SdlEvTextOff);
+                case SdlTextInput:                                             // finished UTF-8 -> chat edit line / settings field
+                    if (ChatService.WantsKey) ChatService.InsertUtf8(ev + SdlEvTextOff);
                     break;
                 case SdlMouseMotion:                                            // chatbox drag/resize eats motion mid-drag
                     if (ChatService.OnMouseMotion(*(int*)(ev + SdlEvMouseXOff), *(int*)(ev + SdlEvMouseYOff)))

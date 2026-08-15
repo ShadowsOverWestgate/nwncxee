@@ -83,6 +83,12 @@ internal static unsafe class SymbolMap
     public const string NkLabel            = "nk_label";
     public const string NkButtonLabel      = "nk_button_label";
     public const string NkWindowIsClosed   = "nk_window_is_closed";
+    // in-game game clock (chat game-time timestamps). The SERVER-synced module time lives on CNWCModule
+    // (hour at +0x16c); CClientExoApp::GetModule(app) fetches it off the same *g_pAppManager chain the
+    // in-game gate walks. NOT CWorldTimer -- that's a free-running local clock never anchored to server time.
+    // Linux-only (no _win entry -> skip on Windows).
+    public const string GetModule         = "_ZN13CClientExoApp9GetModuleEv";
+
     // data globals
     public const string AppManager = "g_pAppManager";
     public const string GuiMan     = "g_pGuiMan";
@@ -159,6 +165,7 @@ internal static unsafe class SymbolMap
         [ChatHandleEsc]               = At(0x87b390),
         [ChatHandleLMouseDown]        = At(0x87b450),   // Notify event enum 1
         [ChatHandleLoseFocus]         = At(0x87b4b0),   // Notify event enum 2
+        [TurnOffKeyboardModal]        = At(0x6e5d80),   // anchored via CGuiEdit::SetFocus (call after KeyboardModeOn)
 
         // --- no Windows anchor: skip + log. These gate edge cases the OS already
         //     covers; losing them degrades gracefully (see docs/windows-symbols.md). ---
@@ -192,6 +199,8 @@ internal static unsafe class SymbolMap
         [OkCancelCtor]    = Nm("??0CPanelOkCancel@@QEAA@XZ"),
         [OkCancelActivate]= Nm("?Activate@CPanelOkCancel@@QEAAXVCExoString@@II@Z"),
         [GuiMan]          = Nm("?g_pGuiMan@@3PEAVCGuiMan@@EA"),
+        [GetGuiScale]     = Nm("?GetGUIScale@CAurora@@SAMXZ"),   // CAurora shared-engine class -> name-exported
+
         [SdlGetKeyName]   = Nm("SDL_GetKeyName"),
         [SdlGetModState]  = Nm("SDL_GetModState"),
         // hotkey suppression while any vanilla text field captures keys (console etc.) -- shared-engine
@@ -276,6 +285,15 @@ internal static unsafe class SymbolMap
     /// <summary>CExoInput::GetKeyboardMode() -- nonzero while the engine is capturing text (chat, console,
     /// any vanilla edit field); the signal to suppress gameplay hotkeys.</summary>
     public const string GetKeyboardMode = "_ZN9CExoInput15GetKeyboardModeEv";
+    /// <summary>CAurora::GetGUIScale() -- static float accessor for the engine's live GUI-scale multiplier
+    /// (floor 1.0; changes with resolution / the options slider). We fold it into the chatbox scale so our
+    /// overlay tracks the game's UI scaling. Name-exported on Windows (CAurora is a shared-engine class).</summary>
+    public const string GetGuiScale = "_ZN7CAurora11GetGUIScaleEv";
+    /// <summary>TurnOffKeyboardModal() -- the free function vanilla runs from CGuiEdit::SetFocus right after
+    /// KeyboardModeOn: resets modal keys, clears the WASD drive-mode latch, and sends AbortDriveControl so the
+    /// server stops too. We SkipOriginal the vanilla focus path, so we must call it ourselves or movement
+    /// sticks when chat grabs the keyboard mid-walk (#34). Takes no args -- it walks g_pAppManager itself.</summary>
+    public const string TurnOffKeyboardModal = "_Z20TurnOffKeyboardModalv";
     public const string SdlStartTextInput   = "SDL_StartTextInput";
     public const string SdlGetClipboardText = "SDL_GetClipboardText";
     public const string SdlSetClipboardText = "SDL_SetClipboardText";

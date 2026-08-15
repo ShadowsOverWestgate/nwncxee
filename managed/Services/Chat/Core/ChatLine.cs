@@ -2,6 +2,16 @@ using System;
 
 namespace Sowx.Services.Chat.Core;
 
+/// <summary>The in-game world clock captured when a line was ingested. <see cref="Valid"/> is false when the
+/// world timer wasn't up (e.g. main menu) -- the timestamp then falls back to local. Captured at ingest, not
+/// read at render, so a line keeps the game time it arrived at (matching <see cref="ChatLine"/>'s immutability).</summary>
+public readonly struct GameStamp
+{
+    public readonly bool Valid;
+    public readonly int Hour, Minute, Second;
+    public GameStamp(int hour, int minute, int second) { Valid = true; Hour = hour; Minute = minute; Second = second; }
+}
+
 /// <summary>
 /// One ingested chat line. A <c>class</c> (not struct): ingest is a cold network-thread path where
 /// per-line allocation is fine, and reference identity lets the ring alias entries cheaply.
@@ -16,10 +26,12 @@ public sealed class ChatLine
     public string PortraitResref { get; }
     public ColorRun[] ColorRuns { get; }
     public DateTime Timestamp { get; }
+    /// <summary>In-game world time at ingest (for the Game timestamp source); default/invalid = use local.</summary>
+    public GameStamp GameTime { get; }
     public string RawText { get; }
 
     public ChatLine(uint channel, string senderName, uint playerId, string portraitResref,
-                    ColorRun[] colorRuns, DateTime timestamp, string rawText)
+                    ColorRun[] colorRuns, DateTime timestamp, string rawText, GameStamp gameTime = default)
     {
         Channel = channel;
         SenderName = senderName;
@@ -27,6 +39,7 @@ public sealed class ChatLine
         PortraitResref = portraitResref;
         ColorRuns = colorRuns;
         Timestamp = timestamp;
+        GameTime = gameTime;
         RawText = rawText;
     }
 }

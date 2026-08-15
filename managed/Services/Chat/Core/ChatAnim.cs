@@ -21,15 +21,28 @@ namespace Sowx.Services.Chat.Core;
 /// </summary>
 public static class ChatAnim
 {
-    /// <summary>Seconds a line stays fully opaque before it begins to fade. ponytail: fixed feel; a
-    /// per-user timeout is the ceiling.</summary>
-    public const double HoldSec = 60.0;
+    /// <summary>Master toggle (settings window). When false, lines never fade and slides/scrolls snap
+    /// instantly -- the box holds still. Mirrored from <see cref="ChatConfig.AnimEnabled"/> at load/change.</summary>
+    public static bool Enabled = true;
+
+    /// <summary>Seconds a line stays fully opaque before it begins to fade. Configurable; default feel.</summary>
+    public static double HoldSec = 60.0;
     /// <summary>Seconds the fade ramp takes (opaque -&gt; gone) once <see cref="HoldSec"/> passes.</summary>
-    public const double FadeSec = 6.0;
+    public static double FadeSec = 6.0;
 
     /// <summary>Residual decay time constant (seconds): the e-folding time of the slide/scroll ease.
-    /// ~70ms reads as a quick, soft settle. ponytail: one knob for the whole animation's snappiness.</summary>
-    private const double Tau = 0.07;
+    /// ~70ms reads as a quick, soft settle. One knob for the whole animation's snappiness.</summary>
+    private static double Tau = 0.07;
+
+    /// <summary>Mirror the (cold) config knobs onto these (hot-read) statics. Called on load and on any
+    /// change; never read a config object from the draw path.</summary>
+    public static void Configure(bool enabled, float holdSec, float fadeSec, float tauMs)
+    {
+        Enabled = enabled;
+        HoldSec = holdSec;
+        FadeSec = fadeSec;
+        Tau = tauMs / 1000.0 <= 0 ? 0.001 : tauMs / 1000.0;   // guard: a zero tau would divide-by-zero the decay
+    }
     /// <summary>Below this many pixels the residual is snapped to 0 (ends the animation cleanly).</summary>
     private const float SnapPx = 0.5f;
 
@@ -64,6 +77,7 @@ public static class ChatAnim
     /// per frame in the hot draw; exponential decay keeps it frame-rate independent.</summary>
     public static float Tick(long nowMs)
     {
+        if (!Enabled) { Residual = 0f; _lastTickMs = nowMs; return 0f; }   // animations off: no slide/scroll ease
         if (!_primed) { _primed = true; _lastTickMs = nowMs; return Residual; }
         double dt = (nowMs - _lastTickMs) / 1000.0;
         _lastTickMs = nowMs;
@@ -79,6 +93,7 @@ public static class ChatAnim
     /// given the shared <paramref name="lastScroll"/>. 1 while fresh, 0 once fully faded.</summary>
     public static float FadeAlpha(DateTime now, DateTime ts, DateTime lastScroll)
     {
+        if (!Enabled) return 1f;   // animations off: lines never fade
         DateTime from = ts > lastScroll ? ts : lastScroll;   // scroll resets the clock for every line
         double age = (now - from).TotalSeconds;
         if (age <= HoldSec) return 1f;
@@ -110,6 +125,13 @@ public static class ChatAnim
         E(a < 100f && a > 20f, "residual decays after ~tau");
         float b = Tick(1070 + 1000);   // long dt collapses under the snap threshold
         E(b == 0f, "residual snaps to 0");
+
+        // Master toggle off: no fade, slides snap.
+        Enabled = false;
+        E(FadeAlpha(t0.AddSeconds(HoldSec + FadeSec + 1), t0, never) == 1f, "disabled: fully faded line stays opaque");
+        Residual = 100f; _primed = false; _lastTickMs = 0; Tick(1000);
+        E(Residual == 0f, "disabled: residual snaps instantly");
+        Enabled = true;
         Residual = 0f; _primed = false; _lastTickMs = 0; LastScroll = DateTime.MinValue;   // leave state clean
 
         log.Info(ok ? "ChatAnim.SelfCheck: passed" : "ChatAnim.SelfCheck: FAILED");

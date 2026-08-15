@@ -48,18 +48,19 @@ public sealed class ChatWindow
     /// <summary>True while the channel dropdown list is expanded (over the body). Set by hit-testing.</summary>
     public bool ChannelListOpen;
 
-    /// <summary>True while the gear options panel is open (over the body, top-right). Set by hit-testing.</summary>
-    public bool OptionsOpen;
-
-    /// <summary>Render options the gear panel edits, as (toggle bit, label). Data-driven: a new option is one
-    /// entry. <see cref="ChatToggle.MessageBody"/> is deliberately excluded -- a checkbox that blanks all chat
-    /// is a trap.</summary>
+    /// <summary>Render options the settings window edits, as (toggle bit, label). Data-driven: a new option is
+    /// one entry -- the window grows to fit. <see cref="ChatToggle.MessageBody"/> is deliberately excluded -- a
+    /// checkbox that blanks all chat is a trap.</summary>
     public static readonly (uint Bit, string Label)[] Options =
         { (ChatToggle.Timestamp, "Timestamps"), (ChatToggle.Portrait, "Portraits") };
 
     /// <summary>The shell sets this each rebuild = own-input && typing. The input strip + dropdown only
     /// exist (render + hit-test) while it's true.</summary>
     public bool FooterVisible;
+
+    /// <summary>Put the input strip above the window instead of below it (settings window). Flips
+    /// <see cref="StripTop"/> and the channel-list stack direction; the renderer + hit-tests follow.</summary>
+    public bool InputOnTop;
 
     /// <summary>Wrapped input-line count (>=1). The renderer measures the word-wrap and sets this so the
     /// strip (which grows downward one <see cref="FooterH"/> per row) hit-tests at its true height.</summary>
@@ -74,22 +75,23 @@ public sealed class ChatWindow
     public static readonly Channel[] SendChannels =
         { Channel.Talk, Channel.Shout, Channel.Whisper, Channel.Tell, Channel.Party, Channel.DM };
 
-    // Layout metrics (pixels). ponytail: fixed for v1; a skin/theme is the ceiling.
-    public const float TabBarH = 22f;
-    public const float TabW = 74f;
-    public const float FooterH = 22f;
-    public const float DropdownW = 92f;   // channel selector at the strip's left edge
-    public const float Pad = 6f;
-    public const float ResizeGrip = 14f;
-    /// <summary>Gear icon hit box: a square at the tab bar's right edge.</summary>
-    public const float GearW = TabBarH;
-    /// <summary>Gear options panel: width and per-row height.</summary>
-    public const float OptPanelW = 150f, OptRowH = 22f;
-    public const float MinW = 200f, MinH = 120f;
+    // Layout metrics: design pixels at Metrics.Scale==1, multiplied by the live scale so the chrome tracks the
+    // font size + game UI scale in lockstep (no clipping at larger sizes). ponytail: no per-metric tuning; one
+    // uniform scale keeps every text-to-chrome ratio fixed, which is all the clipping fix needs.
+    public static float TabBarH => 22f * Metrics.Scale;
+    public static float TabW => 74f * Metrics.Scale;
+    public static float FooterH => 22f * Metrics.Scale;
+    public static float DropdownW => 92f * Metrics.Scale;   // channel selector at the strip's left edge
+    public static float Pad => 6f * Metrics.Scale;
+    public static float ResizeGrip => 14f * Metrics.Scale;
+    /// <summary>Gear icon hit box: a square at the tab bar's right edge (opens the settings window).</summary>
+    public static float GearW => TabBarH;
+    public static float MinW => 200f * Metrics.Scale;
+    public static float MinH => 120f * Metrics.Scale;
     /// <summary>Scrollbar track width (px): a thin gutter at the body's right edge.</summary>
-    public const float ScrollbarW = 8f;
+    public static float ScrollbarW => 8f * Metrics.Scale;
     /// <summary>Smallest thumb, so it stays grabbable when the history is very long.</summary>
-    public const float SbMinThumb = 24f;
+    public static float SbMinThumb => 24f * Metrics.Scale;
 
     /// <summary>Total laid-out content height and the body (viewport) height, written by
     /// <see cref="WindowRenderer.Build"/> each rebuild so the scrollbar hit-test and thumb-drag map against
@@ -130,20 +132,24 @@ public sealed class ChatWindow
         return mx >= X + W - ScrollbarW && mx <= X + W && my >= top && my <= top + h;
     }
 
-    /// <summary>The pop-out input strip below the frame: <c>[X, Y+H, W, FooterH]</c> (#25). Only live while
-    /// <see cref="FooterVisible"/>.</summary>
-    public float StripTop => Y + H;
-    /// <summary>The dropdown button (closed state) at the strip's left.</summary>
+    /// <summary>Top y of the input strip (#25). Below the frame by default; above it (top grows up as the
+    /// input wraps) when <see cref="InputOnTop"/>. Only live while <see cref="FooterVisible"/>.</summary>
+    public float StripTop => InputOnTop ? Y - FooterHeight : Y + H;
+    /// <summary>The dropdown button (closed state) on the strip's top row (where the renderer draws it).</summary>
     public bool OverDropdownButton(float mx, float my)
         => mx >= X && mx < X + DropdownW && my >= StripTop && my < StripTop + FooterH;
-    /// <summary>Channel-list item under the pointer while open, or -1. Items stack upward from the strip
-    /// over the body, one <see cref="FooterH"/> tall each.</summary>
+    /// <summary>Top y of channel-list item <paramref name="i"/>. The list stacks over the body (away from the
+    /// world): up from the strip's top when the strip is below the frame, down from the frame top when above.
+    /// ponytail: in above-mode with a multi-row (wrapped) input the list anchors to the frame, not the button
+    /// row; the button sits at the strip top. Fine for the common single-row input; revisit if multi-row lands.</summary>
+    public float ChannelItemTop(int i) => InputOnTop ? Y + FooterH * i : StripTop - FooterH * (i + 1);
+    /// <summary>Channel-list item under the pointer while open, or -1.</summary>
     public int ChannelItemAt(float mx, float my)
     {
         if (mx < X || mx >= X + DropdownW) return -1;
         for (int i = 0; i < SendChannels.Length; i++)
         {
-            float top = StripTop - FooterH * (i + 1);
+            float top = ChannelItemTop(i);
             if (my >= top && my < top + FooterH) return i;
         }
         return -1;
@@ -170,27 +176,17 @@ public sealed class ChatWindow
     public bool Contains(float mx, float my) => mx >= X && mx <= X + W && my >= Y && my <= Y + H;
 
     /// <summary>True when the pointer is over the bottom-right resize grip (also the hover-handle zone).</summary>
+    /// <summary>Grow the rect to the current scaled minimum. Called when Metrics.Scale changes so a rect saved
+    /// at a smaller scale (or restored before the UI scale synced) can't leave the chrome overflowing its box.</summary>
+    public void ClampToMin() { if (W < MinW) W = MinW; if (H < MinH) H = MinH; }
+
     public bool OverResizeGrip(float mx, float my)
         => mx >= X + W - ResizeGrip && mx <= X + W && my >= Y + H - ResizeGrip && my <= Y + H;
 
-    /// <summary>True when the pointer is over the gear icon (top-right of the tab bar).</summary>
+    /// <summary>True when the pointer is over the gear icon (top-right of the tab bar). The shell opens the
+    /// settings window on a press here; ChatWindow itself no longer owns any options state.</summary>
     public bool OverGear(float mx, float my)
         => mx >= X + W - GearW && mx <= X + W && my >= Y && my <= Y + TabBarH;
-
-    /// <summary>Options panel origin (drops down from the gear, right-aligned to the window).</summary>
-    public float OptPanelX => X + W - OptPanelW;
-    public float OptPanelTop => Y + TabBarH;
-    /// <summary>Option row under the pointer while the panel is open, or -1.</summary>
-    public int OptionRowAt(float mx, float my)
-    {
-        if (mx < OptPanelX || mx > X + W) return -1;
-        for (int i = 0; i < Options.Length; i++)
-        {
-            float top = OptPanelTop + i * OptRowH;
-            if (my >= top && my < top + OptRowH) return i;
-        }
-        return -1;
-    }
 
     /// <summary>Tab index under the pointer in the tab bar, or -1 (bar background = the move handle).</summary>
     private int TabAt(float mx, float my)
@@ -206,17 +202,8 @@ public sealed class ChatWindow
     /// </summary>
     public bool MouseDown(float mx, float my)
     {
-        // Gear options panel (over the body, top-right): handled first so its rows win. Mirrors the channel
-        // list -- a row click flips that option, any other click just dismisses; either way consumes.
-        if (OptionsOpen)
-        {
-            int row = OptionRowAt(mx, my);
-            if (row >= 0) Toggles ^= Options[row].Bit;
-            OptionsOpen = false;
-            _pressConsumed = true;
-            return true;
-        }
-        if (OverGear(mx, my)) { OptionsOpen = true; ChannelListOpen = false; _pressConsumed = true; return true; }
+        // The gear icon (opens the settings window) is claimed by the shell before this runs -- see
+        // ChatService.OnMouseButton. ChatWindow owns no options state now.
 
         // Pop-out strip + channel dropdown (below the frame, so outside Contains) -- only while typing.
         if (FooterVisible)
@@ -377,20 +364,22 @@ public sealed class ChatWindow
         win.MouseDown(win.X + 5, sy + 5); E(win.ChannelListOpen, "reopen");
         win.MouseDown(win.X + win.W - 5, win.Y + win.H - 5); E(!win.ChannelListOpen, "click-off dismisses");
         E(win.SendChannel == Channel.Whisper, "channel unchanged on dismiss");
-        win.FooterVisible = false;
 
-        // gear options panel: gear opens it; a row click flips exactly that bit + closes; a click-off closes
-        // without changing anything.
+        // Input-on-top: the strip sits just above the frame; the button is at StripTop, the list stacks
+        // DOWNWARD from the frame top over the body (the opposite of below-mode).
+        win.SendChannel = Channel.Talk; win.InputOnTop = true; win.FooterRows = 1;
+        float syT = win.StripTop;
+        E(System.Math.Abs(syT - (win.Y - FooterH)) < 0.001f, "above-mode strip sits one row above the frame");
+        E(win.MouseDown(win.X + 5, syT + 5), "above: dropdown button consumes");
+        E(win.ChannelListOpen, "above: dropdown opens");
+        float item2YT = win.ChannelItemTop(2) + 2;             // Whisper, stacked downward
+        E(win.MouseDown(win.X + 5, item2YT), "above: list item consumes");
+        E(!win.ChannelListOpen && win.SendChannel == Channel.Whisper, "above: item selected + list closed");
+        win.InputOnTop = false;
+        win.FooterVisible = false;
         win.ActiveTab = 0;
-        uint tg0 = win.Toggles;
-        E(win.MouseDown(win.X + win.W - 2, win.Y + 2), "gear click consumes");
-        E(win.OptionsOpen, "gear opens options panel");
-        E(win.MouseDown(win.OptPanelX + 5, win.OptPanelTop + 2), "option row click consumes");
-        E(!win.OptionsOpen && win.Toggles == (tg0 ^ ChatToggle.Timestamp), "row 0 flips the Timestamp bit + closes");
-        win.MouseDown(win.X + win.W - 2, win.Y + 2); E(win.OptionsOpen, "gear reopens");
-        uint tg1 = win.Toggles;
-        win.MouseDown(win.X + 5, win.Y + win.H - 5);
-        E(!win.OptionsOpen && win.Toggles == tg1, "click-off closes panel, options unchanged");
+
+        // Gear/options moved to SettingsWindow (its own SelfCheck); the gear press is claimed by the shell.
 
         // a press outside the window is not consumed
         E(!win.MouseDown(-10, -10), "outside press ignored");
@@ -398,6 +387,14 @@ public sealed class ChatWindow
         // a release whose press missed the window is NOT consumed (the engine owns that button pair)
         win.MouseDown(win.X - 50, win.Y - 50);
         E(!win.MouseUp(win.X + 5, win.Y + 5), "release after outside press not consumed");
+
+        // Scale invariance (#font-clip): chrome must track Metrics.Scale so text never outgrows its box. If a
+        // metric is ever reverted to a bare const this catches it. Save/restore -- self-checks run at Scale 1.
+        float s0 = Metrics.Scale;
+        float h1 = TabBarH; Metrics.Scale = 2f;
+        E(System.Math.Abs(TabBarH - 2f * h1) < 1e-3f && System.Math.Abs(FooterH - 2f * 22f) < 1e-3f
+          && System.Math.Abs(GearW - TabBarH) < 1e-3f, "tab/footer/gear scale with Metrics.Scale");
+        Metrics.Scale = s0;
 
         log.Info(ok ? "ChatWindow.SelfCheck: passed" : "ChatWindow.SelfCheck: FAILED");
     }

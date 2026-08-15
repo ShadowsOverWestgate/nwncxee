@@ -49,10 +49,16 @@ public static unsafe class TextRenderer
 
     private static ExtenderLog? _log;
     private static GlyphAtlas? _atlas;
+    private static byte[]? _fontBytes;         // kept so a settings change can re-bake at a new size
+    private static float _bakedPx;             // glyph height the current atlas was baked at
     private static bool _diagged;              // one-shot: log GL error + viewport on the first drawn frame
 
     /// <summary>The baked atlas (null until <see cref="Init"/>, or when stbtt is absent under run-demo).</summary>
     public static GlyphAtlas? Atlas => _atlas;
+
+    /// <summary>Last swap-time viewport (px), published each hot frame for cold consumers (the settings window
+    /// clamps itself on-screen with these). 0 until the first frame draws.</summary>
+    public static volatile int ViewportW, ViewportH;
     public static bool Ready => _atlas != null;
 
     /// <summary>A published, immutable frame: the built <see cref="RenderFrame"/> plus a per-frame
@@ -67,7 +73,9 @@ public static unsafe class TextRenderer
     // GL objects (created lazily on the first drawn frame; no context exists at init).
     private static uint _prog, _vao, _vbo, _tex;
     private static int _uProj, _uTex, _drawCount;
-    private static bool _texUp, _vaoUp, _progUp;
+    // _texUp is volatile: a cold SetFont clears it to force the hot Draw to re-upload the re-baked atlas.
+    private static volatile bool _texUp;
+    private static bool _vaoUp, _progUp;
 
     // Portrait pass (#26): its own RGBA program + VAO/VBO (a second buffer so the text VBO's
     // upload-if-changed cache stays valid). The engine CAurTexture* is NEVER cached -- see ResolveTid (#33).
@@ -90,9 +98,39 @@ public static unsafe class TextRenderer
         string? fontPath = Array.Find(FontCandidates, File.Exists);
         if (fontPath == null) { log.Info($"TextRenderer: no font found (tried {FontCandidates.Length} paths)"); return; }
         log.Info($"TextRenderer: using font {fontPath}");
-        byte[] font = File.ReadAllBytes(fontPath);
-        _atlas = GlyphAtlas.Bake(font, FontPx, Ranges, AtlasSize, log);
+        _fontBytes = File.ReadAllBytes(fontPath);
+        _bakedPx = FontPx;
+        _atlas = GlyphAtlas.Bake(_fontBytes, FontPx, Ranges, AtlasSize, log);
         log.Info(_atlas != null ? "TextRenderer: atlas ready" : "TextRenderer: atlas bake unavailable");
+    }
+
+    /// <summary>Smallest glyph height the picker offers, and the largest the *slider* offers.</summary>
+    public const float MinFontPx = 10f, MaxFontPx = 32f;
+    /// <summary>Atlas-bake ceiling. Above the slider max so the game's UI scale can push the effective px past
+    /// 32 (effective = font * GUIScale) without the slider itself going that high; caps the atlas size.</summary>
+    public const float AtlasMaxPx = 96f;
+
+    /// <summary>Atlas side for a glyph height: glyph area scales with px², so the side scales with px. Round up
+    /// to a 128 multiple, floored at the built-in <see cref="AtlasSize"/> (GL3.3 core allows NPOT, but a tidy
+    /// multiple keeps the bitmap cache-friendly).</summary>
+    private static int AtlasSizeFor(float px)
+    {
+        int s = ((int)(AtlasSize * px / FontPx) + 127) / 128 * 128;
+        return s < AtlasSize ? AtlasSize : s;
+    }
+
+    /// <summary>Re-bake the atlas at a new glyph height (cold, on a settings change) and flag the GL texture
+    /// for re-upload next frame. No-op when unchanged (debounced for sub-pixel slider drags) or headless.
+    /// Swaps the atlas reference atomically; the caller re-publishes the frame so its UVs/metrics match.</summary>
+    public static void SetFont(float px)
+    {
+        if (_fontBytes == null || _log == null) return;
+        px = px < MinFontPx ? MinFontPx : px > AtlasMaxPx ? AtlasMaxPx : px;   // effective px (font * UI scale)
+        if (System.Math.Abs(px - _bakedPx) < 0.5f) return;   // integer-ish sizes: ignore sub-pixel churn
+        GlyphAtlas? baked = GlyphAtlas.Bake(_fontBytes, px, Ranges, AtlasSizeFor(px), _log);
+        if (baked == null) return;
+        _atlas = baked; _bakedPx = px;
+        _texUp = false;   // the hot Draw uploads the new atlas bitmap on the next frame
     }
 
     /// <summary>Publish the frame to draw next (cold). Allocates the scratch buffer here so the hot draw
@@ -232,6 +270,7 @@ public static unsafe class TextRenderer
 
                 int* vp = stackalloc int[4];
                 Gl.GetIntegerv(Gl.VIEWPORT, vp);
+                ViewportW = vp[2]; ViewportH = vp[3];   // publish for cold consumers (settings-window on-screen clamp)
                 float* m = stackalloc float[16];
                 Ortho(m, vp[2], vp[3]);   // full swap-time viewport; y-down pixel coords
 
@@ -575,8 +614,9 @@ public static unsafe class TextRenderer
 
     private static void UploadTexture()
     {
-        if (_atlas == null) return;
-        uint t; Gl.GenTextures(1, &t); _tex = t;
+        GlyphAtlas? a = _atlas;   // snapshot: a cold SetFont swap must not pair one atlas's Pixels with another's W/H
+        if (a == null) return;
+        if (_tex == 0) { uint t; Gl.GenTextures(1, &t); _tex = t; }   // create once; a re-bake respecifies the same id (no leak)
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, _tex);
         Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 1);
@@ -584,10 +624,10 @@ public static unsafe class TextRenderer
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        fixed (byte* px = _atlas.Pixels)
-            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.R8, _atlas.Width, _atlas.Height, 0, Gl.RED, Gl.UNSIGNED_BYTE, px);
+        fixed (byte* px = a.Pixels)
+            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.R8, a.Width, a.Height, 0, Gl.RED, Gl.UNSIGNED_BYTE, px);
         _texUp = true;
-        _log?.Info($"TextRenderer: atlas uploaded as GL tex {_tex}");
+        _log?.Info($"TextRenderer: atlas uploaded as GL tex {_tex} ({a.Width}x{a.Height})");
     }
 
     private static void SetupVao()
