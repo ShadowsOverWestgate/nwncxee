@@ -112,7 +112,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     {
         if (_keyDiag)
             _log?.Info($"[keydiag] key={key} armed={HotkeyStore.Armed.Contains((int)key)} " +
-                       $"focused={_focused} typing={_typing || ChatService.IsTyping} nui={NuiEditFocused()}");
+                       $"focused={_focused} typing={_typing || ChatService.IsTyping} nui={NuiEditFocused()} dialog={DialogOpen()}");
 
         // Chatbox owns the keyboard: route the key to its edit line (or a settings value box) and CONSUME it.
         // Calling the original on Enter would re-enter SetFocusChatPrompt and reopen the box we just closed.
@@ -153,7 +153,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // release must clear the same key it set.
         int baseCode = code & ~HotkeyProtocol.ModMask;
         if (!(HotkeyStore.Armed.Contains(code) && _down.Add(baseCode))) return;
-        if (!_focused || _typing || ChatService.WantsKey || NuiEditFocused() || KeyboardModeActive()) return;  // 3,4 focus + typing (vanilla/own/console/settings field)
+        if (!_focused || _typing || ChatService.WantsKey || NuiEditFocused() || KeyboardModeActive() || DialogOpen()) return;  // 3,4 focus + typing + dialog
         long now = Environment.TickCount64;                                    // 5 debounce
         _lastSent.TryGetValue(code, out long last);
         if (now - last < DebounceMs) return;
@@ -219,6 +219,24 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         IntPtr win = *(IntPtr*)(ctx + NkActiveWindowOff);       // ctx->active window
         if (win == IntPtr.Zero) return false;
         return *(int*)(win + NkWinEditActiveOff) != 0;          // win->edit.active
+    }
+
+    // CGuiInGame dialog pointer offset (from HandleDialogNumKey decompilation: this+0x70).
+    private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
+    private const int ExoAppInternalOff = 0x8, InGameGuiOff = 0x90, DialogPanelOff = 0x70;
+
+    /// <summary>True while an NPC conversation dialog is open: *(gui+0x70) is non-null.</summary>
+    private static bool DialogOpen()
+    {
+        if (_appMgr == IntPtr.Zero) return false;
+        IntPtr mgr = *(IntPtr*)_appMgr;
+        if (mgr == IntPtr.Zero) return false;
+        IntPtr app = *(IntPtr*)mgr;
+        if (app == IntPtr.Zero) return false;
+        IntPtr intern = *(IntPtr*)(app + ExoAppInternalOff);
+        if (intern == IntPtr.Zero) return false;
+        IntPtr gui = *(IntPtr*)(intern + InGameGuiOff);
+        return gui != IntPtr.Zero && *(IntPtr*)(gui + DialogPanelOff) != IntPtr.Zero;
     }
 
     /// <summary>True while the engine is capturing text (the debug console, or any vanilla edit field):

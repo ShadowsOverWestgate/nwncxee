@@ -27,6 +27,14 @@ public sealed class RenderFrame
     public int BodyStart, BodyEnd;    // vertex indices bounding the animated body slice
     public float Bx, By, Bw, Bh;      // body rect (px, y-down) -- the scissor for the body draw
     public bool Scrolled;             // active tab scrolled up (ScrollPx != 0): freeze the fade -- reading history
+    public bool ApplyResidual;       // true for the focused window (slide/scroll ease); others snap content in
+    // Per-window animation settings (carried here so the hot draw reads frame-local values, not shared statics).
+    public bool AnimEnabled;
+    public double HoldSec, FadeSec;
+    public float TauMs;
+    public System.DateTime LastScroll;
+    /// <summary>Vertex range for unread-tab blink borders (start..end indices). Alpha is modulated at draw time.</summary>
+    public int BlinkStart, BlinkEnd;
 }
 
 /// <summary>
@@ -38,18 +46,27 @@ public sealed class RenderFrame
 /// </summary>
 public static class WindowRenderer
 {
-    // Chrome colours (r,g,b,a). Themeable ones are refreshed from ChatConfig by ApplyPalette; the rest are
-    // fixed (not surfaced in the settings UI). Text is a uint RGB. Defaults live in Defaults (RGBA8, one
-    // source of truth for both the render fields and the picker UI).
-    private static (float r, float g, float b, float a) Bg, TabBar, TabActive, Footer, SelBg;
-    private static uint TabTextRgb;
+    /// <summary>Per-window resolved palette, threaded through Build → EmitInputStrip/EmitSettings.</summary>
+    private struct Pal
+    {
+        public (float r, float g, float b, float a) Bg, TabBar, TabActive, Footer, SelBg;
+        public uint TabTextRgb;
+    }
+
+    /// <summary>Per-thread reusable scratch for the ring walk (#53).</summary>
+    [System.ThreadStatic] private static ChatLine[]? _ringScratch;
+    private static ChatLine[] RingScratch() => _ringScratch ??= new ChatLine[ChatStore.Capacity];
+
+    /// <summary>Per-thread pooled VertexBatch + rune/colour lists (#53 finding #4). The internal
+    /// <c>List&lt;float&gt;</c> keeps its capacity across rebuilds, avoiding per-build heap churn.
+    /// Portraits/spans/blockH escape into published frames and must NOT be pooled.</summary>
+    [System.ThreadStatic] private static VertexBatch? _batchScratch;
+    [System.ThreadStatic] private static List<Rune>? _runesScratch;
+    [System.ThreadStatic] private static List<uint>? _colsScratch;
+
     private static readonly (float r, float g, float b, float a) SbTrack = (0.04f, 0.05f, 0.07f, 0.55f);
     private const uint CaretRgb = 0xE8E8E8, EditRgb = 0xF0F0F0;
 
-    /// <summary>Draw a 1px dark halo behind body glyphs (readability over the 3D world). Mirrored from the
-    /// (cold) config by the shell. ponytail: 8-way offset copies in the cold batch; an SDF/shader outline is
-    /// the ceiling if the vertex count ever bites.</summary>
-    public static bool TextOutline;
     /// <summary>8-way (±1px) offsets for the outline halo, as flat (dx,dy) pairs.</summary>
     private static readonly float[] OutlineOffsets = { -1, -1, 0, -1, 1, -1, -1, 0, 1, 0, -1, 1, 0, 1, 1, 1 };
 
@@ -64,24 +81,20 @@ public static class WindowRenderer
     private static (float r, float g, float b, float a) Unpack(uint rgba)
         => (((rgba >> 24) & 0xFF) / 255f, ((rgba >> 16) & 0xFF) / 255f, ((rgba >> 8) & 0xFF) / 255f, (rgba & 0xFF) / 255f);
 
-    /// <summary>The effective colour for a key (RGBA8): the config override, else the default.</summary>
-    public static uint CurrentColor(ChatConfig cfg, string key)
-        => cfg.Colors.TryGetValue(key, out uint v) ? v : Defaults[key];
+    /// <summary>The effective colour for a key (RGBA8): the per-window override, else the default.</summary>
+    public static uint CurrentColor(ChatWindow win, string key)
+        => win.Colors.TryGetValue(key, out uint v) ? v : Defaults[key];
 
-    /// <summary>Refresh the render palette from the (cold) config. Called on load and on any colour change;
-    /// the draw path only ever reads the resolved fields, never the config.</summary>
-    public static void ApplyPalette(ChatConfig cfg)
+    private static Pal ResolvePalette(ChatWindow win) => new()
     {
-        Bg = Unpack(CurrentColor(cfg, ChatColor.Background));
-        TabBar = Unpack(CurrentColor(cfg, ChatColor.Header));
-        TabActive = Unpack(CurrentColor(cfg, ChatColor.Accent));
-        Footer = Unpack(CurrentColor(cfg, ChatColor.Input));
-        SelBg = Unpack(CurrentColor(cfg, ChatColor.Selection));
-        TabTextRgb = CurrentColor(cfg, ChatColor.Text) >> 8;   // text draws opaque RGB; the picker omits Text's A (see ChatColor.Editable)
-    }
+        Bg = Unpack(CurrentColor(win, ChatColor.Background)),
+        TabBar = Unpack(CurrentColor(win, ChatColor.Header)),
+        TabActive = Unpack(CurrentColor(win, ChatColor.Accent)),
+        Footer = Unpack(CurrentColor(win, ChatColor.Input)),
+        SelBg = Unpack(CurrentColor(win, ChatColor.Selection)),
+        TabTextRgb = CurrentColor(win, ChatColor.Text) >> 8,
+    };
 
-    // Palette starts at defaults so the renderer is valid before the shell loads a config.
-    static WindowRenderer() => ApplyPalette(new ChatConfig());
 
     /// <summary>The render pipeline: components run in array order; the window's toggle bitset selects which.</summary>
     private static readonly ILineComponent[] Pipeline = { new TimestampComponent(), new MessageBodyComponent() };
@@ -100,6 +113,7 @@ public static class WindowRenderer
     /// portrait (in the chrome batch) so its outer <see cref="PortraitFrameW"/> px show as a ring.</summary>
     private const float PortraitFrameW = 1f;
     private static readonly (float r, float g, float b, float a) PortraitFrame = (0.58f, 0.58f, 0.58f, 1f);
+    private static readonly (float r, float g, float b, float a) PortraitFrameHover = (1f, 1f, 1f, 1f);
 
     /// <summary>Vertical gap between messages -- breathing room, and it keeps adjacent portrait frames from
     /// touching (which read as one continuous outline). ponytail: fixed; a density setting is the ceiling.</summary>
@@ -110,30 +124,72 @@ public static class WindowRenderer
     public const float BottomPad = 4f;
 
     /// <summary>Assemble a chatbox frame. <paramref name="showFooter"/> draws the edit line (own-input,
-    /// typing, and the tab has a send channel); <paramref name="showGrip"/> draws the corner resize grip.
-    /// Returns the verts, the body slice bounds, and the per-line spans the animated draw needs.</summary>
+    /// typing, and the tab has a send channel); <paramref name="showGrip"/> draws the corner resize grip.</summary>
     public static RenderFrame Build(ChatWindow win, SettingsWindow settings, ChatStore store, GlyphAtlas atlas,
                                     bool showFooter, string editText, int caret, bool showGrip,
                                     (int start, int end)? selection = null)
     {
-        var b = new VertexBatch(atlas.SolidU, atlas.SolidV);
+        var p = ResolvePalette(win);
+        bool outline = win.Outline;
+
+        VertexBatch b = _batchScratch ??= new VertexBatch(0, 0);
+        b.Reset(atlas.SolidU, atlas.SolidV);
         var portraits = new List<PortraitQuad>();
+        var hits = new List<PortraitHit>();
         var spans = new List<LineSpanVerts>();
         float lh = atlas.LineHeight;
-        float glyphBaseline = atlas.Ascent;             // baseline drop from a row's top
+        float glyphBaseline = atlas.Ascent;
         float descentGap = lh - atlas.Ascent;
 
-        // Panel + tab bar.
-        b.Rect(win.X, win.Y, win.X + win.W, win.Y + win.H, Bg.r, Bg.g, Bg.b, Bg.a);
-        b.Rect(win.X, win.Y, win.X + win.W, win.Y + ChatWindow.TabBarH, TabBar.r, TabBar.g, TabBar.b, TabBar.a);
-        for (int i = 0; i < win.Tabs.Length; i++)
+        var tabs = win.Tabs;
+        int activeTab = win.ActiveTab;
+        if ((uint)activeTab >= (uint)tabs.Count) activeTab = 0;
+        Tab active = tabs[activeTab];
+
+        // Panel + tab bar. The tab bar hides when auto-hide is on and the pointer is outside the window
+        // (and the settings panel is closed), leaving just the background in the header band.
+        // Unread ephemeral tabs force the header visible so the blink is seen.
+        b.Rect(win.X, win.Y, win.X + win.W, win.Y + win.H, p.Bg.r, p.Bg.g, p.Bg.b, p.Bg.a);
+        bool hasUnread = false;
+        for (int i = 0; i < tabs.Count; i++) if (tabs[i].Unread && tabs[i].Ephemeral) { hasUnread = true; break; }
+        int blinkStart = 0, blinkEnd = 0;
+        bool showHeader = !win.AutoHideHeader || showGrip || settings.Open || hasUnread;
+        if (showHeader)
         {
-            float tx = win.X + i * ChatWindow.TabW;
-            if (i == win.ActiveTab)
-                b.Rect(tx, win.Y, tx + ChatWindow.TabW, win.Y + ChatWindow.TabBarH,
-                       TabActive.r, TabActive.g, TabActive.b, TabActive.a);
-            DrawString(b, atlas, win.Tabs[i].Label, tx + ChatWindow.Pad,
-                       win.Y + descentGap + glyphBaseline, TabTextRgb, tx + ChatWindow.TabW - ChatWindow.Pad);
+            b.Rect(win.X, win.Y, win.X + win.W, win.Y + ChatWindow.TabBarH, p.TabBar.r, p.TabBar.g, p.TabBar.b, p.TabBar.a);
+            float tabW = win.TabWFor(tabs.Count);
+            for (int i = 0; i < tabs.Count; i++)
+            {
+                float tx = win.X + i * tabW;
+                if (i == activeTab)
+                    b.Rect(tx, win.Y, tx + tabW, win.Y + ChatWindow.TabBarH,
+                           p.TabActive.r, p.TabActive.g, p.TabActive.b, p.TabActive.a);
+                bool eph = tabs[i].Ephemeral;
+                // Unread ephemeral tab: gold border, alpha modulated at draw time for blink.
+                if (eph && tabs[i].Unread)
+                {
+                    if (blinkStart == 0) blinkStart = b.VertexCount;
+                    const float bdr = 1.5f;
+                    b.Rect(tx, win.Y, tx + tabW, win.Y + bdr, 0.85f, 0.70f, 0.20f, 1f);
+                    b.Rect(tx, win.Y + ChatWindow.TabBarH - bdr, tx + tabW, win.Y + ChatWindow.TabBarH, 0.85f, 0.70f, 0.20f, 1f);
+                    b.Rect(tx, win.Y, tx + bdr, win.Y + ChatWindow.TabBarH, 0.85f, 0.70f, 0.20f, 1f);
+                    b.Rect(tx + tabW - bdr, win.Y, tx + tabW, win.Y + ChatWindow.TabBarH, 0.85f, 0.70f, 0.20f, 1f);
+                    blinkEnd = b.VertexCount;
+                }
+                bool closeX = eph && tabs.Count > 1;
+                float btns = (closeX ? ChatWindow.TabBtnW : 0f) + (eph ? ChatWindow.TabBtnW : 0f);
+                float labelClip = tx + tabW - ChatWindow.Pad - btns;
+                DrawString(b, atlas, tabs[i].Label, tx + ChatWindow.Pad,
+                           win.Y + descentGap + glyphBaseline, p.TabTextRgb, labelClip);
+                if (eph)
+                {
+                    float pinX = tx + tabW - btns;
+                    DrawString(b, atlas, "▪", pinX, win.Y + descentGap + glyphBaseline, GearRgb, pinX + ChatWindow.TabBtnW);
+                    if (closeX)
+                        DrawString(b, atlas, "×", tx + tabW - ChatWindow.TabBtnW,
+                                   win.Y + descentGap + glyphBaseline, p.TabTextRgb, tx + tabW);
+                }
+            }
         }
 
         // Body: one pixel-scrolled column. ScrollPx (px up from the content bottom) drives the layout, so
@@ -160,33 +216,49 @@ public static class WindowRenderer
         // text width stays stable, so lines don't reflow the moment history grows past one screen.
         float maxTextW = bw - 2 * ChatWindow.Pad - ChatWindow.ScrollbarW;
 
-        int matches = store.CountMatching(win.Active.ChannelMask, win.Active.PlayerId);
-        var all = new ChatLine[matches];
-        int nAll = store.View(win.Active.ChannelMask, win.Active.PlayerId, all);   // newest-first, every match
-        var runes = new List<Rune>();
-        var cols = new List<uint>();
+        // Snapshot the store version BEFORE the ring walk: a concurrent Append between View and this read
+        // would pair the new version with stale blockH, giving a persistent false hit. Reading first means
+        // a mid-build Append stores the old version → next build misses → self-heals in one frame.
+        int storeVer = store.Version;
+        ChatLine[] all = RingScratch();
+        int nAll = store.View(active.ChannelMask, active.PlayerId, all);   // newest-first, every match
+        List<Rune> runes = _runesScratch ??= new List<Rune>();
+        List<uint> cols = _colsScratch ??= new List<uint>();
 
         // Pass 1: wrap every match to a block height; sum -> contentH (a gap between messages).
-        // ponytail: re-wraps the whole (<=512-line) backlog each cold rebuild, even per keystroke. Cheap at
-        // this cap; cache by (line, width) keyed on a store version if a deeper backlog ever makes it show.
-        var blockH = new float[nAll];
-        float contentH = 0f;
-        for (int li = 0; li < nAll; li++)
+        // Cached per window: the wrap is stable as long as width, content, and text-affecting settings
+        // haven't changed, so a move drag (only X/Y change) skips the entire 512-line pass.
+        LayoutCache? lc = win.WrapCache;
+        float[] blockH;
+        float contentH;
+        if (lc != null && lc.Hit(maxTextW, active.ChannelMask, active.PlayerId, win.Toggles,
+                storeVer, (int)win.TimeFormat, (int)win.TimeSource, atlas, nAll))
         {
-            bool hasP = BuildRunes(win, all[li], portraitsOn, runes, cols);
-            float indent = hasP ? gutter : 0f;
-            List<TextWrapper.LineSpan> wr = TextWrapper.WrapRunes(runes, maxTextW - indent, atlas.AdvanceOf);
-            blockH[li] = hasP ? System.Math.Max(wr.Count * lh, portraitH) : wr.Count * lh;
-            contentH += blockH[li];
+            blockH = lc.BlockH;
+            contentH = lc.ContentH;
         }
-        if (nAll > 1) contentH += (nAll - 1) * MsgGap;
-        contentH += BottomPad;   // the same breathing room at the top when fully scrolled up (symmetric to the
-                                 // newest); folded into contentH so maxScroll/clamp/thumb all stay consistent
+        else
+        {
+            blockH = new float[nAll];
+            contentH = 0f;
+            for (int li = 0; li < nAll; li++)
+            {
+                bool hasP = BuildRunes(win, all[li], portraitsOn, runes, cols);
+                float indent = hasP ? gutter : 0f;
+                List<TextWrapper.LineSpan> wr = TextWrapper.WrapRunes(runes, maxTextW - indent, atlas.AdvanceOfCached);
+                blockH[li] = hasP ? System.Math.Max(wr.Count * lh, portraitH) : wr.Count * lh;
+                contentH += blockH[li];
+            }
+            if (nAll > 1) contentH += (nAll - 1) * MsgGap;
+            contentH += BottomPad;
+            win.WrapCache = new LayoutCache(blockH, contentH, nAll, maxTextW, active.ChannelMask,
+                active.PlayerId, win.Toggles, storeVer, (int)win.TimeFormat, (int)win.TimeSource, atlas);
+        }
 
         // Clamp the scroll to the measured content, then hand the metrics to the window (scrollbar + drag map).
         float maxScroll = contentH - bh > 0f ? contentH - bh : 0f;
-        if (win.Active.ScrollPx > maxScroll) win.Active.ScrollPx = maxScroll;
-        if (win.Active.ScrollPx < 0f) win.Active.ScrollPx = 0f;
+        if (active.ScrollPx > maxScroll) active.ScrollPx = maxScroll;
+        if (active.ScrollPx < 0f) active.ScrollPx = 0f;
         win.ContentH = contentH; win.ViewH = bh;
 
         // Pass 2: place from the bottom (newest block's bottom = body bottom, pushed down by ScrollPx) and emit
@@ -195,7 +267,7 @@ public static class WindowRenderer
         // cap, so a bounded residual can never expose an un-emitted block. The body scissor clips it all.
         float easeMargin = ChatAnim.MaxResidualPx;
         int bodyStart = b.VertexCount;   // the animated (fade/slide/scroll) slice starts here
-        float rowBottom = by + bh - BottomPad + win.Active.ScrollPx;
+        float rowBottom = by + bh - BottomPad + active.ScrollPx;
         for (int li = 0; li < nAll; li++)
         {
             float top = rowBottom - blockH[li];
@@ -204,16 +276,30 @@ public static class WindowRenderer
                 int spanStart = b.VertexCount;   // this line's verts (rows + portrait frame) -> one fade unit
                 bool hasPortrait = BuildRunes(win, all[li], portraitsOn, runes, cols);
                 float indent = hasPortrait ? gutter : 0f;
-                float rowX = bx + ChatWindow.Pad + indent;
-                List<TextWrapper.LineSpan> wraps = TextWrapper.WrapRunes(runes, maxTextW - indent, atlas.AdvanceOf);
-                for (int w = 0; w < wraps.Count; w++)   // emit every row; the scissor clips the ones off-edge
-                    EmitRow(b, atlas, runes, cols, wraps[w], rowX, top + w * lh + glyphBaseline);
+                float availW = maxTextW - indent;
+                bool gutterRight = hasPortrait && win.Align == TextAlign.Right;
+                float rowX = bx + ChatWindow.Pad + (gutterRight ? 0f : indent);
+                List<TextWrapper.LineSpan> wraps = TextWrapper.WrapRunes(runes, availW, atlas.AdvanceOfCached);
+                for (int w = 0; w < wraps.Count; w++)
+                {
+                    var span = wraps[w];
+                    AlignRow(win.Align, atlas, runes, span, availW, w == wraps.Count - 1,
+                             out float xOff, out float spaceExtra);
+                    EmitRow(b, atlas, runes, cols, span, rowX + xOff, top + w * lh + glyphBaseline, outline, spaceExtra);
+                }
                 if (hasPortrait)
                 {
-                    float px = bx + ChatWindow.Pad, py = top;
+                    float px = gutterRight
+                        ? bx + ChatWindow.Pad + maxTextW - portraitW
+                        : bx + ChatWindow.Pad;
+                    float py = top;
+                    bool hovered = win.HoveredPortrait == hits.Count;
+                    var fc = hovered ? PortraitFrameHover : PortraitFrame;
                     b.Rect(px - PortraitFrameW, py - PortraitFrameW, px + portraitW + PortraitFrameW, py + portraitH + PortraitFrameW,
-                           PortraitFrame.r, PortraitFrame.g, PortraitFrame.b, PortraitFrame.a);   // frame behind; portrait covers the centre
+                           fc.r, fc.g, fc.b, fc.a);
                     portraits.Add(new PortraitQuad(px, py, portraitW, portraitH, all[li].PortraitResref, all[li].Timestamp));
+                    hits.Add(new PortraitHit(px - PortraitFrameW, py - PortraitFrameW,
+                        portraitW + 2 * PortraitFrameW, portraitH + 2 * PortraitFrameW, all[li].PlayerId));
                 }
                 if (b.VertexCount > spanStart) spans.Add(new LineSpanVerts(spanStart, b.VertexCount, all[li].Timestamp));
             }
@@ -231,19 +317,19 @@ public static class WindowRenderer
             float sbx = bx + bw - ChatWindow.ScrollbarW;
             // Track stops one grip above the body bottom to match the hit zone (ChatWindow.SbTrackH): keeps
             // the thumb clear of the resize-grip corner.
-            b.Rect(sbx, by, bx + bw, by + bh - ChatWindow.ResizeGrip, SbTrack.r, SbTrack.g, SbTrack.b, SbTrack.a);
+            b.Rect(sbx, by, bx + bw, by + bh - ChatWindow.ResizeGrip, SbTrack.r, SbTrack.g, SbTrack.b, SbTrack.a);   // fixed chrome, not themeable
             if (win.ThumbRect(out float tt, out float th))
-                b.Rect(sbx, tt, bx + bw, tt + th, TabActive.r, TabActive.g, TabActive.b, TabActive.a);   // Accent
+                b.Rect(sbx, tt, bx + bw, tt + th, p.TabActive.r, p.TabActive.g, p.TabActive.b, p.TabActive.a);
         }
 
         // Pop-out input strip: below the frame (#25), a channel dropdown at its left + a word-wrapped edit
         // line that grows the strip DOWNWARD one FooterH per wrapped row (so long input never clips).
         if (showFooter)
-            EmitInputStrip(b, atlas, win, editText, caret, selection, descentGap + glyphBaseline);
+            EmitInputStrip(b, atlas, win, editText, caret, selection, descentGap + glyphBaseline, p);
 
         // Resize grip: three nested parallel diagonal lines in the bottom-right corner (the classic
         // "gripper"), shown while the pointer is over the window.
-        if (showGrip)
+        if (showGrip && !win.Locked)
         {
             float gr = ((GripRgb >> 16) & 0xFF) / 255f, gg = ((GripRgb >> 8) & 0xFF) / 255f, gb = (GripRgb & 0xFF) / 255f;
             float cx = win.X + win.W - 3f, cy = win.Y + win.H - 3f;   // inset so the outer line clears the border
@@ -252,41 +338,72 @@ public static class WindowRenderer
             GripLine(b, cx, cy, 16f, gr, gg, gb);
         }
 
-        // Gear icon (top-right of the tab bar): shown on hover, or while the settings window is open (so it
-        // survives the pointer wandering off mid-interaction). A single ⚙ glyph, brighter while open.
+        // Tab-bar button group (#41): [+] [⚙] [×] at the right edge, shown on hover (or settings open).
         if (showGrip || settings.Open)
         {
+            float btnW = ChatWindow.GearW;
+            float btnsW = win.ButtonsW;
+            // + (new window) — leftmost button
+            DrawString(b, atlas, "+", win.X + win.W - btnsW + 4f,
+                       win.Y + descentGap + glyphBaseline, GearRgb, win.X + win.W - btnsW + btnW);
+            // ⚙ (settings) — second from right (or rightmost when close is hidden)
+            float gearLeft = win.ShowClose ? win.X + win.W - 2f * btnW : win.X + win.W - btnW;
             uint gc = settings.Open ? GearActiveRgb : GearRgb;
-            DrawString(b, atlas, "⚙", win.X + win.W - ChatWindow.GearW + 4f,
-                       win.Y + descentGap + glyphBaseline, gc, win.X + win.W);
+            DrawString(b, atlas, "⚙", gearLeft + 4f,
+                       win.Y + descentGap + glyphBaseline, gc, gearLeft + btnW);
+            // × (close window) — rightmost, hidden for Main and locked windows
+            if (win.ShowClose)
+                DrawString(b, atlas, "×", win.X + win.W - btnW + 4f,
+                           win.Y + descentGap + glyphBaseline, GearRgb, win.X + win.W);
         }
 
         // Channel dropdown list (open): stacked over the body (away from the strip), so it draws LAST = on top.
         if (showFooter && win.ChannelListOpen)
         {
             float fh = ChatWindow.FooterH;
+            int row = 0;
             for (int i = 0; i < ChatWindow.SendChannels.Length; i++)
             {
                 Channel ch = ChatWindow.SendChannels[i];
-                float top = win.ChannelItemTop(i);
-                var bg = ch == win.SendChannel ? TabActive : TabBar;
-                b.Rect(win.X, top, win.X + ChatWindow.DropdownW, top + fh, bg.r, bg.g, bg.b, 0.98f);
+                if (!win.CanSelect(ch)) continue;
+                float top = win.ChannelItemTop(row);
+                var dbg = ch == win.SendChannel ? p.TabActive : p.TabBar;
+                b.Rect(win.X, top, win.X + ChatWindow.DropdownW, top + fh, dbg.r, dbg.g, dbg.b, 0.98f);
                 DrawString(b, atlas, ch.ToString(), win.X + ChatWindow.Pad,
-                           top + descentGap + glyphBaseline, TabTextRgb, win.X + ChatWindow.DropdownW - 2);
+                           top + descentGap + glyphBaseline, p.TabTextRgb, win.X + ChatWindow.DropdownW - 2);
+                row++;
             }
         }
 
         // Settings window (open): a titled floating panel with a checkbox row per option, drawn LAST so it
         // sits on top of everything. It grows with the option list (the point of it over the gear dropdown).
         if (settings.Open)
-            EmitSettings(b, atlas, settings, descentGap + glyphBaseline);
+            EmitSettings(b, atlas, settings, descentGap + glyphBaseline, p);
+
+        win.PortraitHits = hits.Count > 0 ? hits.ToArray() : System.Array.Empty<PortraitHit>();
 
         return new RenderFrame
         {
             Verts = b.ToArray(), Count = b.VertexCount, Portraits = portraits, Spans = spans,
             BodyStart = bodyStart, BodyEnd = bodyEnd, Bx = bx, By = by, Bw = bw, Bh = bh,
-            Scrolled = win.Active.ScrollPx != 0f,
+            Scrolled = active.ScrollPx != 0f,
+            LastScroll = win.LastScroll,
+            BlinkStart = blinkStart, BlinkEnd = blinkEnd,
         };
+    }
+
+    /// <summary>A chrome-only frame for the ghost tab floating at the pointer during a tab drag (#42).
+    /// Draws on top of everything (appended as the last frame in the publish array).</summary>
+    public static RenderFrame BuildGhostTab(GlyphAtlas atlas, ChatWindow paletteWin,
+                                            float x, float y, float w, string label)
+    {
+        var p = ResolvePalette(paletteWin);
+        var b = new VertexBatch(atlas.SolidU, atlas.SolidV);
+        float h = ChatWindow.TabBarH;
+        b.Rect(x, y, x + w, y + h, p.TabActive.r, p.TabActive.g, p.TabActive.b, p.TabActive.a * 0.6f);
+        DrawString(b, atlas, label, x + ChatWindow.Pad, y + atlas.LineHeight, p.TabTextRgb, x + w - ChatWindow.Pad);
+        int vc = b.VertexCount;
+        return new RenderFrame { Verts = b.ToArray(), Count = vc, BodyStart = vc, BodyEnd = vc };
     }
 
     /// <summary>Off-device proof of the portrait-gutter emission: an icon quad is produced for a line that
@@ -333,10 +450,54 @@ public static class WindowRenderer
           "settings window open does not suppress portraits");
         settings.Open = false;
 
+        // Right-aligned: portrait flips to the right edge of the text area.
+        win.Align = TextAlign.Right;
+        var rPortraits = Build(win, settings, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Portraits;
+        if (rPortraits.Count == 1)
+        {
+            float mtw = win.W - 2 * ChatWindow.Pad - ChatWindow.ScrollbarW;
+            E(System.Math.Abs(rPortraits[0].X - (ChatWindow.Pad + mtw - atlas.LineHeight)) < 0.1f,
+              "right-aligned portrait sits at the right edge");
+        }
+        win.Align = TextAlign.Left;
+
         // Toggle off -> no icons even when a resref is present.
         win.Toggles &= ~ChatToggle.Portrait;
         var off = Build(win, settings, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Portraits;
         E(off.Count == 0, "portrait toggle off suppresses the icon");
+
+        // AlignRow: right, center, justify offsets. Stub atlas has zero advance, so lineW=0, slack=avail.
+        {
+            var ar = new List<Rune>();
+            foreach (Rune ru in "ab cd".EnumerateRunes()) ar.Add(ru);
+            var sp = new TextWrapper.LineSpan(0, ar.Count);
+            float avail = 100f;
+            AlignRow(TextAlign.Left, atlas, ar, sp, avail, false, out float xL, out float seL);
+            E(xL == 0f && seL == 0f, "AlignRow Left: no offset");
+            AlignRow(TextAlign.Right, atlas, ar, sp, avail, false, out float xR, out float seR);
+            E(System.Math.Abs(xR - avail) < 0.1f && seR == 0f, "AlignRow Right: full slack offset");
+            AlignRow(TextAlign.Center, atlas, ar, sp, avail, false, out float xC, out float seC);
+            E(System.Math.Abs(xC - avail * 0.5f) < 0.1f && seC == 0f, "AlignRow Center: half slack offset");
+            AlignRow(TextAlign.Justify, atlas, ar, sp, avail, false, out float xJ, out float seJ);
+            E(xJ == 0f && System.Math.Abs(seJ - avail) < 0.1f, "AlignRow Justify: slack spread across 1 space");
+            AlignRow(TextAlign.Justify, atlas, ar, sp, avail, true, out float xJL, out float seJL);
+            E(xJL == 0f && seJL == 0f, "AlignRow Justify last row: falls back to left");
+        }
+
+        // Layout cache (#53): second build with unchanged content is a cache hit; verts match cold build.
+        win.Toggles = ChatToggle.Timestamp | ChatToggle.MessageBody | ChatToggle.Portrait;
+        win.WrapCache = null;
+        var cold = Build(win, settings, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false);
+        E(win.WrapCache != null, "first build populates the wrap cache");
+        var lcRef = win.WrapCache;
+        var cached = Build(win, settings, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false);
+        E(ReferenceEquals(win.WrapCache, lcRef), "second build reuses the cache (not a silent miss)");
+        E(cold.Count == cached.Count, "cache-hit build produces the same vertex count");
+        E(cold.Verts.Length == cached.Verts.Length, "cache-hit build produces same-length verts");
+        bool vertsMatch = true;
+        for (int vi = 0; vi < cold.Verts.Length && vertsMatch; vi++)
+            vertsMatch = System.Math.Abs(cold.Verts[vi] - cached.Verts[vi]) < 1e-3f;
+        E(vertsMatch, "cache-hit verts match cold-build verts");
 
         log.Info(ok ? "WindowRenderer.SelfCheck: passed" : "WindowRenderer.SelfCheck: FAILED");
     }
@@ -361,11 +522,11 @@ public static class WindowRenderer
         bool portraitsOn = (win.Toggles & ChatToggle.Portrait) != 0;
         win.BodyRect(out _, out _, out float bw, out _);
         float maxTextW = bw - 2 * ChatWindow.Pad - ChatWindow.ScrollbarW;
-        var runes = new List<Rune>();
-        var cols = new List<uint>();
+        List<Rune> runes = _runesScratch ??= new List<Rune>();
+        List<uint> cols = _colsScratch ??= new List<uint>();
         bool hasP = BuildRunes(win, line, portraitsOn, runes, cols);
         float indent = hasP ? atlas.LineHeight + ChatWindow.Pad : 0f;
-        float textH = TextWrapper.WrapRunes(runes, maxTextW - indent, atlas.AdvanceOf).Count * atlas.LineHeight;
+        float textH = TextWrapper.WrapRunes(runes, maxTextW - indent, atlas.AdvanceOfCached).Count * atlas.LineHeight;
         return hasP ? System.Math.Max(textH, atlas.LineHeight / PortraitAspect) : textH;
     }
 
@@ -375,13 +536,34 @@ public static class WindowRenderer
     {
         runes.Clear(); cols.Clear();
         for (int c = 0; c < Pipeline.Length; c++)
-            if ((win.Toggles & Pipeline[c].Bit) != 0) Pipeline[c].Contribute(line, runes, cols);
+            if ((win.Toggles & Pipeline[c].Bit) != 0) Pipeline[c].Contribute(win, line, runes, cols);
         return portraitsOn && !string.IsNullOrEmpty(line.PortraitResref);
+    }
+
+    /// <summary>Compute the x-offset and per-space extra width for a text alignment mode.</summary>
+    internal static void AlignRow(TextAlign align, GlyphAtlas atlas, List<Rune> runes,
+                                  TextWrapper.LineSpan span, float availW, bool lastRow,
+                                  out float xOff, out float spaceExtra)
+    {
+        xOff = 0f; spaceExtra = 0f;
+        if (align == TextAlign.Left) return;
+        float lineW = MeasureRunes(atlas, runes, span.Start, span.End, 0f);
+        float slack = availW - lineW;
+        if (slack <= 0f) return;
+        if (align == TextAlign.Right) { xOff = slack; return; }
+        if (align == TextAlign.Center) { xOff = slack * 0.5f; return; }
+        // Justify: distribute slack across spaces; fall back to left on the last row or when no spaces.
+        if (lastRow) return;
+        int spaces = 0;
+        for (int k = span.Start; k < span.End; k++)
+            if (runes[k].Value == ' ') spaces++;
+        if (spaces > 0) spaceExtra = slack / spaces;
     }
 
     /// <summary>Lay one wrapped row (a span into <paramref name="runes"/>) with per-rune colour.</summary>
     private static void EmitRow(VertexBatch b, GlyphAtlas atlas, List<Rune> runes, List<uint> cols,
-                                TextWrapper.LineSpan span, float startX, float baseline)
+                                TextWrapper.LineSpan span, float startX, float baseline,
+                                bool outline = false, float spaceExtra = 0f)
     {
         float penX = startX;
         for (int k = span.Start; k < span.End; k++)
@@ -389,11 +571,12 @@ public static class WindowRenderer
             Rune r = runes[k];
             if (!atlas.TryGet(r.Value, out Glyph g)) { penX += atlas.AdvanceOf(r); continue; }
             uint c = cols[k];
-            if (TextOutline)
+            if (outline)
                 for (int o = 0; o < OutlineOffsets.Length; o += 2)
-                    b.Glyph(g, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1], 0f, 0f, 0f, 1f);   // dark halo behind
+                    b.Glyph(g, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1], 0f, 0f, 0f, 1f);
             b.Glyph(g, penX, baseline, ((c >> 16) & 0xFF) / 255f, ((c >> 8) & 0xFF) / 255f, (c & 0xFF) / 255f, 1f);
             penX += g.Advance;
+            if (r.Value == ' ') penX += spaceExtra;
         }
     }
 
@@ -402,24 +585,25 @@ public static class WindowRenderer
     /// Caret and selection are mapped from UTF-16 indices into wrapped rune rows. <paramref name="baseDrop"/>
     /// is the baseline offset from a row's top.</summary>
     private static void EmitInputStrip(VertexBatch b, GlyphAtlas atlas, ChatWindow win, string editText,
-                                       int caret, (int start, int end)? selection, float baseDrop)
+                                       int caret, (int start, int end)? selection, float baseDrop, Pal p)
     {
         float fh = ChatWindow.FooterH;
         float startX = win.X + ChatWindow.DropdownW + ChatWindow.Pad;   // edit line begins right of the dropdown
         float editW = win.X + win.W - ChatWindow.Pad - startX;          // wrap width for the input text
 
-        var runes = new List<Rune>(editText.Length);
+        List<Rune> runes = _runesScratch ??= new List<Rune>();
+        runes.Clear();
         foreach (Rune r in editText.EnumerateRunes()) runes.Add(r);
-        List<TextWrapper.LineSpan> wraps = TextWrapper.WrapRunes(runes, editW, atlas.AdvanceOf);
+        List<TextWrapper.LineSpan> wraps = TextWrapper.WrapRunes(runes, editW, atlas.AdvanceOfCached);
         if (wraps.Count == 0) wraps.Add(new TextWrapper.LineSpan(0, 0));   // always at least one (empty) row
         int rows = wraps.Count;
         win.FooterRows = rows;   // set BEFORE reading StripTop: in above-mode StripTop depends on FooterHeight
         float fy = win.StripTop;
 
         // Strip background over all rows; dropdown button on the top row only.
-        b.Rect(win.X, fy, win.X + win.W, fy + fh * rows, Footer.r, Footer.g, Footer.b, Footer.a);
-        b.Rect(win.X, fy, win.X + ChatWindow.DropdownW, fy + fh, TabBar.r, TabBar.g, TabBar.b, TabBar.a);
-        DrawString(b, atlas, win.SendChannel + " ▾", win.X + ChatWindow.Pad, fy + baseDrop, TabTextRgb,
+        b.Rect(win.X, fy, win.X + win.W, fy + fh * rows, p.Footer.r, p.Footer.g, p.Footer.b, p.Footer.a);
+        b.Rect(win.X, fy, win.X + ChatWindow.DropdownW, fy + fh, p.TabBar.r, p.TabBar.g, p.TabBar.b, p.TabBar.a);
+        DrawString(b, atlas, win.SendChannel + " ▾", win.X + ChatWindow.Pad, fy + baseDrop, p.TabTextRgb,
                    win.X + ChatWindow.DropdownW - 2);
 
         int caretR = RuneIndex(runes, caret);
@@ -435,7 +619,7 @@ public static class WindowRenderer
                 int rs = System.Math.Max(selA, span.Start), re = System.Math.Min(selB, span.End);
                 float x0 = MeasureRunes(atlas, runes, span.Start, rs, startX);
                 float x1 = MeasureRunes(atlas, runes, span.Start, re, startX);
-                b.Rect(x0, ry + 3, x1, ry + fh - 3, SelBg.r, SelBg.g, SelBg.b, SelBg.a);
+                b.Rect(x0, ry + 3, x1, ry + fh - 3, p.SelBg.r, p.SelBg.g, p.SelBg.b, p.SelBg.a);
             }
             EmitRunes(b, atlas, runes, span, startX, ry + baseDrop, EditRgb);
 
@@ -456,15 +640,14 @@ public static class WindowRenderer
     /// <see cref="SettingsWindow"/> laid out -- checkboxes, cycle buttons, sliders, and expandable RGBA colour
     /// pickers. Anchored + sized by the window; drawn last so it sits over everything. Reads the rows' current
     /// values (the core already resolved them from the config), so it never touches the config itself.</summary>
-    private static void EmitSettings(VertexBatch b, GlyphAtlas atlas, SettingsWindow s, float baseDrop)
+    private static void EmitSettings(VertexBatch b, GlyphAtlas atlas, SettingsWindow s, float baseDrop, Pal p)
     {
         float x = s.X, y = s.Y, w = s.W;
-        float vpad = (SettingsWindow.RowH - atlas.LineHeight) / 2f;   // vertically centre a label in its row
+        float vpad = (SettingsWindow.RowH - atlas.LineHeight) / 2f;
 
-        // Panel body + title bar (opaque: it's a floating window that can sit over portraits/chat).
-        b.Rect(x, y, x + w, y + s.H, Footer.r, Footer.g, Footer.b, 1f);
-        b.Rect(x, y, x + w, y + SettingsWindow.TitleH, TabBar.r, TabBar.g, TabBar.b, 1f);
-        DrawString(b, atlas, "Settings", x + SettingsWindow.Pad, y + baseDrop, TabTextRgb, x + w - SettingsWindow.CloseW);
+        b.Rect(x, y, x + w, y + s.H, p.Footer.r, p.Footer.g, p.Footer.b, 1f);
+        b.Rect(x, y, x + w, y + SettingsWindow.TitleH, p.TabBar.r, p.TabBar.g, p.TabBar.b, 1f);
+        DrawString(b, atlas, "Settings", x + SettingsWindow.Pad, y + baseDrop, p.TabTextRgb, x + w - SettingsWindow.CloseW);
         DrawString(b, atlas, "×", x + w - SettingsWindow.CloseW + 5f, y + baseDrop, GearRgb, x + w);
 
         foreach (SetRow r in s.Rows)
@@ -472,7 +655,7 @@ public static class WindowRenderer
             float labelX = x + SettingsWindow.Pad + (r.Channel >= 0 ? SettingsWindow.ChannelIndent : 0f);
             float labelClip = r.Kind == SetKind.Toggle ? x + w - SettingsWindow.CheckSize - SettingsWindow.Pad
                                                         : x + w * SettingsWindow.ControlX - 2f;
-            DrawString(b, atlas, r.Label, labelX, r.Top + baseDrop + vpad, TabTextRgb, labelClip);
+            DrawString(b, atlas, r.Label, labelX, r.Top + baseDrop + vpad, p.TabTextRgb, labelClip);
 
             switch (r.Kind)
             {
@@ -481,15 +664,21 @@ public static class WindowRenderer
                     float cs = SettingsWindow.CheckSize;
                     float cbx = x + w - SettingsWindow.Pad - cs, cby = r.Top + (SettingsWindow.RowH - cs) / 2f;
                     b.Rect(cbx, cby, cbx + cs, cby + cs, CheckFrame.r, CheckFrame.g, CheckFrame.b, CheckFrame.a);
-                    var fill = r.On ? TabActive : Footer;
+                    var fill = r.On ? p.TabActive : p.Footer;
                     b.Rect(cbx + 1, cby + 1, cbx + cs - 1, cby + cs - 1, fill.r, fill.g, fill.b, 1f);
                     break;
                 }
                 case SetKind.Cycle:
                 {
                     float bx0 = x + w * SettingsWindow.ControlX, bx1 = x + w - SettingsWindow.Pad;
-                    b.Rect(bx0, r.Top + 3, bx1, r.Top + SettingsWindow.RowH - 3, TabBar.r, TabBar.g, TabBar.b, TabBar.a);
-                    DrawString(b, atlas, r.Value, bx0 + 4f, r.Top + baseDrop + vpad, TabTextRgb, bx1 - 2f);
+                    bool editing = s.EditingRow(r);
+                    var cbg = editing ? p.TabActive : p.TabBar;
+                    b.Rect(bx0, r.Top + 3, bx1, r.Top + SettingsWindow.RowH - 3, cbg.r, cbg.g, cbg.b, cbg.a);
+                    string ctext = editing ? s.EditText : r.Value;
+                    float cend = DrawString(b, atlas, ctext, bx0 + 4f, r.Top + baseDrop + vpad, p.TabTextRgb, bx1 - 2f);
+                    if (editing)
+                        b.Rect(cend, r.Top + 5f, cend + 1.5f, r.Top + SettingsWindow.RowH - 5f,
+                               ((CaretRgb >> 16) & 0xFF) / 255f, ((CaretRgb >> 8) & 0xFF) / 255f, (CaretRgb & 0xFF) / 255f, 1f);
                     break;
                 }
                 case SetKind.Slider:
@@ -497,16 +686,15 @@ public static class WindowRenderer
                     s.SliderTrack(r, out float sx0, out float sx1, out float cy);
                     b.Rect(sx0, cy - 2f, sx1, cy + 2f, SbTrack.r, SbTrack.g, SbTrack.b, SbTrack.a);
                     float knob = sx0 + r.Norm * (sx1 - sx0);
-                    b.Rect(sx0, cy - 2f, knob, cy + 2f, TabActive.r, TabActive.g, TabActive.b, TabActive.a);
+                    b.Rect(sx0, cy - 2f, knob, cy + 2f, p.TabActive.r, p.TabActive.g, p.TabActive.b, p.TabActive.a);
                     b.Rect(knob - 2f, r.Top + 4f, knob + 2f, r.Top + SettingsWindow.RowH - 4f,
                            ((GripRgb >> 16) & 0xFF) / 255f, ((GripRgb >> 8) & 0xFF) / 255f, (GripRgb & 0xFF) / 255f, 1f);
-                    // Value box: the current number, or the live edit buffer + a caret while it's being typed.
                     s.ValueBox(r, out float vx0, out float vx1, out float vy0, out float vy1);
                     bool editing = s.EditingRow(r);
-                    var vbg = editing ? TabActive : TabBar;
+                    var vbg = editing ? p.TabActive : p.TabBar;
                     b.Rect(vx0, vy0, vx1, vy1, vbg.r, vbg.g, vbg.b, vbg.a);
                     string vtext = editing ? s.EditText : SettingsWindow.FormatValue(r);
-                    float vend = DrawString(b, atlas, vtext, vx0 + 3f, r.Top + baseDrop + vpad, TabTextRgb, vx1 - 2f);
+                    float vend = DrawString(b, atlas, vtext, vx0 + 3f, r.Top + baseDrop + vpad, p.TabTextRgb, vx1 - 2f);
                     if (editing)
                         b.Rect(vend, vy0 + 2f, vend + 1.5f, vy1 - 2f,
                                ((CaretRgb >> 16) & 0xFF) / 255f, ((CaretRgb >> 8) & 0xFF) / 255f, (CaretRgb & 0xFF) / 255f, 1f);
@@ -521,6 +709,8 @@ public static class WindowRenderer
                            ((r.Rgba >> 8) & 0xFF) / 255f, (r.Rgba & 0xFF) / 255f);
                     break;
                 }
+                case SetKind.Button:
+                    break;   // label already drawn above; no control widget
             }
         }
     }
@@ -581,7 +771,7 @@ public static class WindowRenderer
 public interface ILineComponent
 {
     uint Bit { get; }
-    void Contribute(ChatLine line, List<Rune> runes, List<uint> cols);
+    void Contribute(ChatWindow win, ChatLine line, List<Rune> runes, List<uint> cols);
 }
 
 /// <summary>Prepend a grey timestamp to the line, in the configured <see cref="TsFormat"/> and from the
@@ -591,23 +781,21 @@ public sealed class TimestampComponent : ILineComponent
 {
     private const uint Grey = 0x8A8A8A;
 
-    /// <summary>Mirror of the config timestamp style; set by the shell on load/change, never read from config.</summary>
-    public static TsFormat Format = TsFormat.HourMin;
-    public static TsSource Source = TsSource.Local;
-
     public uint Bit => ChatToggle.Timestamp;
 
-    public void Contribute(ChatLine line, List<Rune> runes, List<uint> cols)
+    public void Contribute(ChatWindow win, ChatLine line, List<Rune> runes, List<uint> cols)
     {
         string txt;
-        if (Source == TsSource.Game && line.GameTime.Valid)
-            txt = Stamp(line.GameTime.Hour, line.GameTime.Minute, line.GameTime.Second);
-        else { System.DateTime lt = line.Timestamp.ToLocalTime(); txt = Stamp(lt.Hour, lt.Minute, lt.Second); }
+        TsSource src = win.TimeSource;
+        TsFormat fmt = win.TimeFormat;
+        if (src == TsSource.Game && line.GameTime.Valid)
+            txt = Stamp(line.GameTime.Hour, line.GameTime.Minute, line.GameTime.Second, fmt);
+        else { System.DateTime lt = line.Timestamp.ToLocalTime(); txt = Stamp(lt.Hour, lt.Minute, lt.Second, fmt); }
         foreach (Rune r in txt.EnumerateRunes()) { runes.Add(r); cols.Add(Grey); }
     }
 
     /// <summary>Format one h/m/s (24-hour inputs) into the current preset, e.g. <c>[09:07] </c>.</summary>
-    internal static string Stamp(int h, int m, int s) => Format switch
+    internal static string Stamp(int h, int m, int s, TsFormat fmt) => fmt switch
     {
         TsFormat.HourMinSec => $"[{h:D2}:{m:D2}:{s:D2}] ",
         TsFormat.Hour12 => $"[{(h % 12 == 0 ? 12 : h % 12)}:{m:D2} {(h < 12 ? "AM" : "PM")}] ",
@@ -621,7 +809,7 @@ public sealed class TimestampComponent : ILineComponent
 public sealed class MessageBodyComponent : ILineComponent
 {
     public uint Bit => ChatToggle.MessageBody;
-    public void Contribute(ChatLine line, List<Rune> runes, List<uint> cols)
+    public void Contribute(ChatWindow win, ChatLine line, List<Rune> runes, List<uint> cols)
     {
         foreach (ColorRun run in line.ColorRuns)
         {

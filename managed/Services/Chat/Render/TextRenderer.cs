@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using Sowx.Framework;
@@ -43,6 +44,7 @@ public static unsafe class TextRenderer
         (0x00A0, 0x00FF),   // Latin-1 Supplement (accented Latin, ß, etc.)
         (0x0100, 0x017F),   // Latin Extended-A (Ć, œ, ...)
         (0x0400, 0x04FF),   // Cyrillic
+        (0x25AA, 0x25AA),   // ▪ tab pin/keep button (#46)
         (0x25BE, 0x25BE),   // ▾ channel-dropdown arrow
         (0x2699, 0x2699),   // ⚙ gear (chat options)
     };
@@ -61,14 +63,24 @@ public static unsafe class TextRenderer
     public static volatile int ViewportW, ViewportH;
     public static bool Ready => _atlas != null;
 
-    /// <summary>A published, immutable frame: the built <see cref="RenderFrame"/> plus a per-frame
+    /// <summary>A published frame: the built <see cref="RenderFrame"/> plus a per-frame
     /// <see cref="Scratch"/> buffer (same length, allocated cold at publish). The hot draw copies the base
     /// verts into scratch and applies the fade/slide there, so it allocates nothing and a concurrent
-    /// <see cref="Publish"/> can never hand the animator a half-built array.</summary>
-    private sealed record Frame(RenderFrame Rf, float[] Scratch);
-    private static volatile Frame? _frame;
-    private static Frame? _uploaded;   // last frame pushed to the VBO (reference identity)
-    private static bool _settledScratch;   // did the last settled upload use the alpha'd scratch (vs pristine verts)?
+    /// <see cref="Publish"/> can never hand the animator a half-built array.
+    /// <see cref="Settled"/>/<see cref="OpaqueCount"/> track the settled-frame cache (#53): when all span
+    /// alphas are stable (0 or 1) and residual is 0, Scratch holds the correct data from the last ApplyAnim
+    /// and subsequent draws skip the copy+fade walk.</summary>
+    private sealed class Frame
+    {
+        public readonly RenderFrame Rf;
+        public readonly float[] Scratch;
+        public bool Settled;
+        public int OpaqueCount;
+        public Frame(RenderFrame rf, float[] scratch) { Rf = rf; Scratch = scratch; }
+    }
+    /// <summary>All published frames (one per chat window, #41). Volatile-swapped atomically by
+    /// <see cref="Publish(RenderFrame[])"/>; the hot <see cref="Draw"/> iterates the snapshot.</summary>
+    private static volatile Frame[] _frames = Array.Empty<Frame>();
 
     // GL objects (created lazily on the first drawn frame; no context exists at init).
     private static uint _prog, _vao, _vbo, _tex;
@@ -131,19 +143,52 @@ public static unsafe class TextRenderer
         if (baked == null) return;
         _atlas = baked; _bakedPx = px;
         _texUp = false;   // the hot Draw uploads the new atlas bitmap on the next frame
+        _attrVerts = null; // invalidate cached attribution overlay
     }
 
-    /// <summary>Publish the frame to draw next (cold). Allocates the scratch buffer here so the hot draw
-    /// never does. Pass null to draw nothing.</summary>
+    /// <summary>Publish frames for all chat windows (#41). Reuses the <see cref="Frame"/> wrapper (and its
+    /// Scratch buffer + Settled state) when the <see cref="RenderFrame"/> is reference-equal to a prior
+    /// publish, so a focusedOnly/dirty rebuild avoids LOH scratch allocations for unchanged windows (#53).
+    /// Changed frames recycle an old scratch buffer when one is large enough (each claimed at most once),
+    /// always wrapped in a fresh <see cref="Frame"/> (Settled=false) so the hot draw never tears Rf+Scratch.</summary>
+    public static void Publish(RenderFrame[] rfs)
+    {
+        Frame[] old = _frames;
+        var arr = new Frame[rfs.Length];
+        for (int i = 0; i < rfs.Length; i++)
+        {
+            Frame? reuse = null;
+            for (int j = 0; j < old.Length; j++)
+                if (ReferenceEquals(old[j].Rf, rfs[i])) { reuse = old[j]; break; }
+            if (reuse != null) { arr[i] = reuse; continue; }
+            // Recycle an unclaimed scratch buffer from the previous publish if large enough.
+            float[]? scratch = null;
+            int need = rfs[i].Verts.Length;
+            for (int j = 0; j < old.Length; j++)
+            {
+                if (old[j].Scratch.Length >= need)
+                {
+                    bool claimed = false;
+                    for (int k = 0; k < i; k++)
+                        if (ReferenceEquals(arr[k].Scratch, old[j].Scratch)) { claimed = true; break; }
+                    if (!claimed) { scratch = old[j].Scratch; break; }
+                }
+            }
+            arr[i] = new Frame(rfs[i], scratch ?? new float[need]);
+        }
+        _frames = arr;
+    }
+
+    /// <summary>Single-frame convenience (probe demo, backward compat).</summary>
     public static void Publish(RenderFrame? rf)
-        => _frame = rf == null ? null : new Frame(rf, new float[rf.Verts.Length]);
+        => _frames = rf == null ? Array.Empty<Frame>() : new[] { new Frame(rf, new float[rf.Verts.Length]) };
 
     /// <summary>Chrome-only convenience (the probe demo): draw a flat batch, no body/animation.</summary>
     public static void Publish(float[] verts, int vertCount)
         => Publish(new RenderFrame { Verts = verts, Count = vertCount, BodyStart = vertCount, BodyEnd = vertCount });
 
     /// <summary>Clear the drawn batch (e.g. probe demo off).</summary>
-    public static void Clear() => _frame = null;
+    public static void Clear() => _frames = Array.Empty<Frame>();
 
     // ---- demo (probe rig: `~sowx text`) -------------------------------------------------------
 
@@ -171,7 +216,7 @@ public static unsafe class TextRenderer
         var batch = new VertexBatch(atlas.SolidU, atlas.SolidV);
 
         const float maxWidth = 320f, startX = 60f, startY = 200f;
-        List<TextWrapper.LineSpan> lines = TextWrapper.WrapRunes(runes, maxWidth, atlas.AdvanceOf);
+        List<TextWrapper.LineSpan> lines = TextWrapper.WrapRunes(runes, maxWidth, atlas.AdvanceOfCached);
         for (int li = 0; li < lines.Count; li++)
         {
             float baseline = startY + (li + 1) * atlas.LineHeight, penX = startX;
@@ -210,24 +255,22 @@ public static unsafe class TextRenderer
 
     // ---- draw ---------------------------------------------------------------------------------
 
-    /// <summary>Hot: draw the published frame through the owned GL3 program. Applies the fade/slide/scroll
-    /// (map #13) into a per-frame scratch buffer when anything is animating; otherwise draws the static
-    /// batch exactly as before (upload-if-changed). Zero-alloc in every path.</summary>
+    /// <summary>Hot: draw all published frames (one per chat window, #41) through the owned GL3 program.
+    /// Applies the fade/slide/scroll (map #13) per frame; the slide residual only moves the focused window's
+    /// body (<see cref="RenderFrame.ApplyResidual"/>). One GL state save/restore wraps all windows; the VBO
+    /// is re-specified per window (N<=4, tiny buffers — negligible bus cost). Zero-alloc in every path.</summary>
     public static void Draw()
     {
-        Frame? f = _frame;
-        if (f == null || f.Rf.Count == 0 || _atlas == null || _log == null) return;
-        if (!Gl.Init(_log)) return;   // resolves pointers only; changes no GL state (and latches failure)
+        Frame[] frames = _frames;
+        if (frames.Length == 0 || _atlas == null || _log == null) return;
+        if (!Gl.Init(_log)) return;
 
-        RenderFrame rf = f.Rf;
-        float residual = ChatAnim.Tick(Environment.TickCount64);   // advance the slide/scroll ease once per frame
-        DateTime now = DateTime.UtcNow, ls = ChatAnim.LastScroll;
-        (bool midFade, bool anyFaded) = ScanFade(rf, now, ls);
-        bool dynamic = residual != 0f || midFade;   // content changes this frame -> rebuild+upload scratch
+        float focusTau = 70f;
+        for (int i = 0; i < frames.Length; i++)
+            if (frames[i].Rf.ApplyResidual) { focusTau = frames[i].Rf.TauMs; break; }
+        float globalResidual = ChatAnim.Tick(Environment.TickCount64, focusTau);
+        DateTime now = DateTime.UtcNow;
 
-        // Snapshot engine GL state BEFORE any of our binds -- incl. the one-time inits below, which
-        // clobber unit-0 texture / VAO / array-buffer bindings the engine caches. The final restore
-        // is the ONLY exit for these.
         int* save = stackalloc int[5];
         Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &save[0]);
         Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &save[1]);
@@ -240,56 +283,66 @@ public static unsafe class TextRenderer
         {
             if (!_texUp) UploadTexture();
             if (!_vaoUp) SetupVao();
-            _drawCount = rf.Count;
-            if (dynamic)
-            {
-                ApplyAnim(f, residual, now, ls);   // verts -> scratch, with y+=residual and a*=fade per line
-                UploadBuffer(f.Scratch);
-                _uploaded = null;                  // moving/ramping; re-settle to a one-shot upload once it stops
-            }
-            // Settled: upload once. Fully-faded lines need the alpha'd scratch; a fresh frame the pristine
-            // verts. Both fade crossings pass through the mid-ramp window above (dynamic), so this cache --
-            // keyed on frame identity + the faded flag -- can never present stale content.
-            else if (f != _uploaded || _settledScratch != anyFaded)
-            {
-                if (anyFaded) { ApplyAnim(f, 0f, now, ls); UploadBuffer(f.Scratch); }
-                else UploadBuffer(rf.Verts);
-                _uploaded = f; _settledScratch = anyFaded;
-            }
 
-            if (_drawCount > 0)
-            {
-                // Force the raster bracket: the UI pass can leave scissor-test on (clipping us to a stale
-                // widget rect), cull-face on (our y-down quads wind CW->back-facing after the ortho y-flip),
-                // or depth-test on. Snapshot each and restore, so the engine's GL-state cache stays consistent.
-                byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
-                byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
-                int* sbox = stackalloc int[4]; Gl.GetIntegerv(Gl.SCISSOR_BOX, sbox);   // body draw sets its own box
-                Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
-                Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
+            byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
+            byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
+            int* sbox = stackalloc int[4]; Gl.GetIntegerv(Gl.SCISSOR_BOX, sbox);
+            Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
+            Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
-                int* vp = stackalloc int[4];
-                Gl.GetIntegerv(Gl.VIEWPORT, vp);
-                ViewportW = vp[2]; ViewportH = vp[3];   // publish for cold consumers (settings-window on-screen clamp)
-                float* m = stackalloc float[16];
-                Ortho(m, vp[2], vp[3]);   // full swap-time viewport; y-down pixel coords
+            int* vp = stackalloc int[4];
+            Gl.GetIntegerv(Gl.VIEWPORT, vp);
+            ViewportW = vp[2]; ViewportH = vp[3];
+            float* m = stackalloc float[16];
+            Ortho(m, vp[2], vp[3]);
+
+            for (int i = 0; i < frames.Length; i++)
+            {
+                Frame f = frames[i];
+                RenderFrame rf = f.Rf;
+                if (rf.Count == 0) continue;
+
+                float residual = rf.ApplyResidual ? globalResidual : 0f;
+                DateTime ls = rf.LastScroll;
+                bool stable = IsStable(rf, residual, now, ls, out int opaque);
+                int uploadLen = rf.Verts.Length;
+                if (stable && f.Settled && opaque == f.OpaqueCount)
+                {
+                    // ponytail: settled — Scratch has correct data from the last ApplyAnim.
+                    // Single-frame: VBO still holds it; multi-frame: re-upload (shared VBO).
+                    if (frames.Length > 1) UploadBuffer(f.Scratch, uploadLen);
+                }
+                else if (stable)
+                {
+                    ApplyAnim(f, residual, now, ls);
+                    UploadBuffer(f.Scratch, uploadLen);
+                    f.Settled = true;
+                    f.OpaqueCount = opaque;
+                }
+                else
+                {
+                    f.Settled = false;
+                    ApplyAnim(f, residual, now, ls);
+                    UploadBuffer(f.Scratch, uploadLen);
+                }
+                _drawCount = rf.Count;
 
                 if (!_diagged)
                 {
-                    while (Gl.GetError() != 0) { }   // drain the engine's accumulated errors first
+                    while (Gl.GetError() != 0) { }
                     _diagged = true;
                     DrawFrame(f, m, vp, residual, now, ls);
                     _log?.Info($"TextRenderer: draw verts={_drawCount} viewport={vp[2]}x{vp[3]} " +
                                $"was[depth={sDepth} blend={sBlend} cull={sCull} scissor={sScissor}] glErr=0x{Gl.GetError():x}");
                 }
                 else DrawFrame(f, m, vp, residual, now, ls);
-
-                if (sDepth != 0) Gl.Enable(Gl.DEPTH_TEST);
-                if (sCull != 0) Gl.Enable(Gl.CULL_FACE);
-                Gl.Scissor(sbox[0], sbox[1], sbox[2], sbox[3]);   // restore the engine's clip rect
-                if (sScissor != 0) Gl.Enable(Gl.SCISSOR_TEST); else Gl.Disable(Gl.SCISSOR_TEST);
-                if (sBlend == 0) Gl.Disable(Gl.BLEND);
             }
+
+            if (sDepth != 0) Gl.Enable(Gl.DEPTH_TEST);
+            if (sCull != 0) Gl.Enable(Gl.CULL_FACE);
+            Gl.Scissor(sbox[0], sbox[1], sbox[2], sbox[3]);
+            if (sScissor != 0) Gl.Enable(Gl.SCISSOR_TEST); else Gl.Disable(Gl.SCISSOR_TEST);
+            if (sBlend == 0) Gl.Disable(Gl.BLEND);
         }
 
         Gl.BindVertexArray((uint)save[1]);
@@ -299,23 +352,24 @@ public static unsafe class TextRenderer
         Gl.UseProgram((uint)save[0]);
     }
 
-    /// <summary>Scan the visible lines' fade in one pass. <c>mid</c> = some line is mid-ramp (alpha strictly
-    /// in (0,1)), so the body is still changing and must re-upload every frame -- checked across ALL spans,
-    /// since a newer line can ramp while the oldest is already fully faded. <c>faded</c> = the oldest line
-    /// (largest age; spans are newest-first, so it's the last) is below full opacity, so a settled upload
-    /// needs the alpha'd scratch rather than the pristine verts. Cheap: a handful of visible spans, no alloc.</summary>
-    private static (bool mid, bool faded) ScanFade(RenderFrame rf, DateTime now, DateTime ls)
+    /// <summary>True when the frame's animation output is stable: residual is 0, no blink, and every span's
+    /// fade alpha is exactly 0 or 1 (not mid-transition). A stable frame's Scratch won't change across draws,
+    /// so ApplyAnim can be skipped. <paramref name="opaqueCount"/> tracks how many spans are at alpha 1 — a
+    /// scroll resets the per-window <c>ls</c> and flips faded spans back to opaque, changing this count.</summary>
+    private static bool IsStable(RenderFrame rf, float residual, DateTime now, DateTime ls, out int opaqueCount)
     {
-        if (rf.Scrolled) return (false, false);   // reading history: fade frozen, so nothing is mid/faded
-        int n = rf.Spans.Count;
-        if (n == 0) return (false, false);
-        bool mid = false;
-        for (int i = 0; i < n; i++)
+        opaqueCount = 0;
+        if (residual != 0f) return false;
+        if (rf.BlinkEnd > rf.BlinkStart) return false;
+        if (rf.Scrolled || !rf.AnimEnabled) { opaqueCount = rf.Spans.Count; return true; }
+        List<LineSpanVerts> spans = rf.Spans;
+        for (int i = 0; i < spans.Count; i++)
         {
-            float a = ChatAnim.FadeAlpha(now, rf.Spans[i].Ts, ls);
-            if (a > 0f && a < 1f) { mid = true; break; }
+            float a = ChatAnim.FadeAlpha(now, spans[i].Ts, ls, true, rf.HoldSec, rf.FadeSec);
+            if (a > 0f && a < 1f) return false;
+            if (a >= 1f) opaqueCount++;
         }
-        return (mid, ChatAnim.FadeAlpha(now, rf.Spans[n - 1].Ts, ls) < 1f);
+        return true;
     }
 
     /// <summary>Copy the base verts into scratch, then per body line add the shared slide/scroll residual
@@ -328,9 +382,16 @@ public static unsafe class TextRenderer
         for (int i = 0; i < spans.Count; i++)
         {
             LineSpanVerts s = spans[i];
-            float a = f.Rf.Scrolled ? 1f : ChatAnim.FadeAlpha(now, s.Ts, ls);
+            float a = f.Rf.Scrolled ? 1f : ChatAnim.FadeAlpha(now, s.Ts, ls, f.Rf.AnimEnabled, f.Rf.HoldSec, f.Rf.FadeSec);
             int st = s.Start * Floats, en = s.End * Floats;
             for (int v = st; v < en; v += Floats) { dst[v + 1] += residual; dst[v + 7] *= a; }
+        }
+        // Blink: modulate unread-tab border alpha (500ms period, on 300ms / dim 200ms).
+        if (f.Rf.BlinkEnd > f.Rf.BlinkStart)
+        {
+            float ba = (Environment.TickCount64 % 500) < 300 ? 0.85f : 0.20f;
+            int bs = f.Rf.BlinkStart * Floats, be = f.Rf.BlinkEnd * Floats;
+            for (int v = bs; v < be; v += Floats) dst[v + 7] *= ba;
         }
     }
 
@@ -354,7 +415,7 @@ public static unsafe class TextRenderer
             Gl.Scissor(sx, sy, sw, sh);
             Gl.Enable(Gl.SCISSOR_TEST);
             if (bodyVerts > 0) Gl.DrawArrays(Gl.TRIANGLES, rf.BodyStart, bodyVerts);
-            DrawPortraits(rf.Portraits, proj, residual, now, ls, rf.Scrolled);
+            DrawPortraits(rf.Portraits, proj, residual, now, ls, rf.Scrolled, rf.AnimEnabled, rf.HoldSec, rf.FadeSec);
             Gl.Disable(Gl.SCISSOR_TEST);
         }
 
@@ -386,7 +447,8 @@ public static unsafe class TextRenderer
     private const int MaxPortraitsPerFrame = 64;
 
     private static void DrawPortraits(IReadOnlyList<PortraitQuad> quads, float* proj,
-                                      float residual, DateTime now, DateTime ls, bool scrolled)
+                                      float residual, DateTime now, DateTime ls, bool scrolled,
+                                      bool animEnabled, double holdSec, double fadeSec)
     {
         int k = quads.Count;
         if (k == 0 || _aurGet == null || _aurTid == null) return;
@@ -404,7 +466,7 @@ public static unsafe class TextRenderer
         int drawn = 0;
         for (int i = 0; i < k; i++)
         {
-            float a = scrolled ? 1f : ChatAnim.FadeAlpha(now, quads[i].Ts, ls);   // portrait fades with its line (frozen while reading history)
+            float a = scrolled ? 1f : ChatAnim.FadeAlpha(now, quads[i].Ts, ls, animEnabled, holdSec, fadeSec);
             if (a <= 0f) continue;                                 // fully faded -> skip
             int tid = ResolveTid(quads[i].Resref);
             if (tid == 0) continue;   // not uploaded yet, or unresolvable -> skip this frame
@@ -649,9 +711,114 @@ public static unsafe class TextRenderer
         _vaoUp = true;
     }
 
-    private static void UploadBuffer(float[] b)
+    /// <summary>Upload <paramref name="count"/> floats from <paramref name="b"/> to the shared VBO.
+    /// Count is the active vert data (Rf.Verts.Length), not the buffer length (which may be larger after
+    /// scratch recycling).</summary>
+    private static void UploadBuffer(float[] b, int count)
     {
         Gl.BindBuffer(Gl.ARRAY_BUFFER, _vbo);
-        fixed (float* p = b) Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)(b.Length * sizeof(float)), p, Gl.DYNAMIC_DRAW);
+        fixed (float* p = b) Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)(count * sizeof(float)), p, Gl.DYNAMIC_DRAW);
+    }
+
+    // ---- attribution overlay (main menu only) -------------------------------------------------
+
+    private static float[]? _attrVerts;
+    private static int _attrCount;
+
+    /// <summary>Draw the attribution text in the top-left corner (main menu only). Lazily builds and caches
+    /// the vertex data; shares the text shader program, VAO, VBO, and atlas texture with <see cref="Draw"/>.
+    /// Called from the SwapBuffers hook when not in-game.</summary>
+    public static void DrawOverlay()
+    {
+        if (_atlas == null || _log == null) return;
+        if (!Gl.Init(_log)) return;
+        if (_attrVerts == null) BuildAttribution();
+        if (_attrCount == 0) return;
+
+        int* save = stackalloc int[5];
+        Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &save[0]);
+        Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &save[1]);
+        Gl.GetIntegerv(Gl.ARRAY_BUFFER_BINDING, &save[2]);
+        Gl.GetIntegerv(Gl.ACTIVE_TEXTURE, &save[3]);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &save[4]);
+
+        if (EnsureProgram())
+        {
+            if (!_texUp) UploadTexture();
+            if (!_vaoUp) SetupVao();
+
+            byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
+            byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
+            Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
+            Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
+
+            int* vp = stackalloc int[4];
+            Gl.GetIntegerv(Gl.VIEWPORT, vp);
+            ViewportW = vp[2]; ViewportH = vp[3];
+            float* m = stackalloc float[16];
+            Ortho(m, vp[2], vp[3]);
+
+            BindText(m);
+            // LINEAR smooths the synthetic-italic shear (NEAREST creates hard stairstepping).
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+            Gl.BindBuffer(Gl.ARRAY_BUFFER, _vbo);
+            fixed (float* p = _attrVerts)
+                Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)(_attrVerts.Length * sizeof(float)), p, Gl.DYNAMIC_DRAW);
+            Gl.DrawArrays(Gl.TRIANGLES, 0, _attrCount);
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
+
+            // Overlay re-specifies the shared VBO; invalidate the settled-frame cache so Draw()
+            // re-uploads on the next in-game frame instead of reading stale attribution data.
+            Frame[] frames = _frames;
+            for (int i = 0; i < frames.Length; i++) frames[i].Settled = false;
+
+            if (sDepth != 0) Gl.Enable(Gl.DEPTH_TEST);
+            if (sCull != 0) Gl.Enable(Gl.CULL_FACE);
+            if (sScissor != 0) Gl.Enable(Gl.SCISSOR_TEST); else Gl.Disable(Gl.SCISSOR_TEST);
+            if (sBlend == 0) Gl.Disable(Gl.BLEND);
+        }
+
+        Gl.BindVertexArray((uint)save[1]);
+        Gl.BindBuffer(Gl.ARRAY_BUFFER, (uint)save[2]);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)save[4]);
+        Gl.ActiveTexture((uint)save[3]);
+        Gl.UseProgram((uint)save[0]);
+    }
+
+    private static void BuildAttribution()
+    {
+        GlyphAtlas atlas = _atlas!;
+        string version = typeof(TextRenderer).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion ?? "dev";
+        int plus = version.IndexOf('+');
+        if (plus >= 0) version = version.Substring(0, plus);
+
+        string prefix = $"SoW Client Extender {version}. ";
+        const string italic = "Wonderbringer, let it turn true.";
+
+        var batch = new VertexBatch(atlas.SolidU, atlas.SolidV);
+        float penX = 10f, baseline = atlas.LineHeight + 2f;
+        const float a = 0.7f;
+
+        foreach (Rune r in prefix.EnumerateRunes())
+        {
+            if (!atlas.TryGet(r.Value, out Glyph g)) { penX += atlas.AdvanceOf(r); continue; }
+            batch.Glyph(g, penX, baseline, 1f, 1f, 1f, a);
+            penX += g.Advance;
+        }
+        // ponytail: gold = (1, 0.82, 0); synthetic italic via vertex shear
+        foreach (Rune r in italic.EnumerateRunes())
+        {
+            if (!atlas.TryGet(r.Value, out Glyph g)) { penX += atlas.AdvanceOf(r); continue; }
+            batch.GlyphItalic(g, penX, baseline, 1f, 0.82f, 0f, a);
+            penX += g.Advance;
+        }
+
+        _attrVerts = batch.ToArray();
+        _attrCount = batch.VertexCount;
     }
 }

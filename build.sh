@@ -13,7 +13,9 @@ if [ ! -f build/libfunchook.so ]; then
 fi
 
 echo ">> building managed lib (C# NativeAOT -> sowx_managed.so)..."
-dotnet publish managed/sowx_managed.csproj -c Release -o build >/dev/null
+SOWX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
+dotnet publish managed/sowx_managed.csproj -c Release -o build \
+  -p:InformationalVersion="$SOWX_VERSION" >/dev/null
 
 echo ">> building native bootstrap (libsowx.so)..."
 cc -shared -fPIC -O2 -o build/libsowx.so native/bootstrap.c -ldl

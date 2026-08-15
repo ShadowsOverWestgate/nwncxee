@@ -54,12 +54,16 @@ internal static unsafe class SymbolMap
     public const string ChatPromptShow      = "_ZN20CGuiInGameChatPrompt4ShowEv";
     public const string SendChatTalk        = "_ZN11CNWCMessage27SendPlayerToServerChat_TalkE10CExoString"; // outbound verify
     // outbound send parity (#22): the other five channel senders. All major 0x09; minor per §4.3.
-    // Talk/Shout/Whisper/Party/DM take (this, CExoString); Tell takes (this, uint playerId, CExoString).
+    // Talk/Shout/Whisper/Party/DM take (this, CExoString); TellName takes (this, const CExoString&, const CExoString&).
     public const string SendChatShout   = "_ZN11CNWCMessage28SendPlayerToServerChat_ShoutE10CExoString";        // minor 0x02
     public const string SendChatWhisper = "_ZN11CNWCMessage30SendPlayerToServerChat_WhisperE10CExoString";      // minor 0x03
-    public const string SendChatTell    = "_ZN11CNWCMessage27SendPlayerToServerChat_TellEj10CExoString";        // minor 0x04, (uint playerId)
+    public const string SendChatTell    = "_ZN11CNWCMessage31SendPlayerToServerChat_TellNameERK10CExoStringS2_"; // minor 0x04, (name, text)
     public const string SendChatParty   = "_ZN11CNWCMessage28SendPlayerToServerChat_PartyE10CExoString";        // minor 0x06
     public const string SendChatDM      = "_ZN11CNWCMessage36SendPlayerToServerChat_DungeonMasterE10CExoString"; // minor 0x0e
+
+    /// <summary>CClientExoApp::GetPlayerByPlayerName(CExoString) -> CNWCPlayer* or null.
+    /// Name→player roster lookup for Tell-pinned tabs (#45, ADR 0002).</summary>
+    public const string GetPlayerByPlayerName = "_ZN13CClientExoApp21GetPlayerByPlayerNameE10CExoString";
 
     // misc engine helpers
     public const string GetNWCMessage = "_ZN13CClientExoApp13GetNWCMessageEv";
@@ -190,6 +194,8 @@ internal static unsafe class SymbolMap
         // chat portraits (#26): Aurora texture manager, Linux-only anchors -> skip + log on Windows.
         [AurTextureGet]    = default,
         [AurTextureGetTID] = default,
+        // Tell-pinned tab roster (#45): Linux-only for now -> skip + log on Windows.
+        [GetPlayerByPlayerName] = default,
 
         [OnGainFocus] = default,   // empty focus stub, indirect dispatch
         [OnLostFocus] = default,   // empty focus stub

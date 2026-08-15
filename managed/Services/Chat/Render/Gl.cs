@@ -23,7 +23,7 @@ public static unsafe class Gl
     public const uint R8 = 0x8229, RED = 0x1903;
     public const uint TEXTURE_MIN_FILTER = 0x2801, TEXTURE_MAG_FILTER = 0x2800;
     public const uint TEXTURE_WRAP_S = 0x2802, TEXTURE_WRAP_T = 0x2803;
-    public const int  NEAREST = 0x2600, CLAMP_TO_EDGE = 0x812F;
+    public const int  NEAREST = 0x2600, LINEAR = 0x2601, CLAMP_TO_EDGE = 0x812F;
     public const uint UNPACK_ALIGNMENT = 0x0CF5;
     // glGetIntegerv pnames for save/restore.
     public const uint VIEWPORT = 0x0BA2, CURRENT_PROGRAM = 0x8B8D, VERTEX_ARRAY_BINDING = 0x85B5;

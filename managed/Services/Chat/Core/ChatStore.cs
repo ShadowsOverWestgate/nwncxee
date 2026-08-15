@@ -18,7 +18,12 @@ public sealed class ChatStore
     private readonly ChatLine[] _ring = new ChatLine[Capacity];
     private int _next;   // next write slot
     private int _size;   // valid entries, <= Capacity
+    private volatile int _version;
     private readonly List<Action<ChatLine>> _observers = new();
+
+    /// <summary>Monotonic content version, bumped on every <see cref="Append"/> and <see cref="Clear"/>.
+    /// The layout cache keys on this to detect stale wrap results.</summary>
+    public int Version => _version;
 
     /// <summary>Register an ingest observer, invoked (in add order) for every <see cref="Append"/>.</summary>
     public void AddObserver(Action<ChatLine> observer) => _observers.Add(observer);
@@ -29,6 +34,7 @@ public sealed class ChatStore
         _ring[_next] = line;
         _next = (_next + 1) % Capacity;
         if (_size < Capacity) _size++;
+        _version++;
         for (int i = 0; i < _observers.Count; i++) _observers[i](line);
     }
 
@@ -42,20 +48,7 @@ public sealed class ChatStore
         Array.Clear(_ring, 0, _ring.Length);
         _next = 0;
         _size = 0;
-    }
-
-    /// <summary>How many retained lines match a tab filter (for clamping the scroll offset to the top).</summary>
-    public int CountMatching(uint channelMask, uint? playerId)
-    {
-        int m = 0;
-        for (int i = 0; i < _size; i++)
-        {
-            ChatLine line = _ring[(_next - 1 - i + Capacity * 2) % Capacity];
-            if ((channelMask & (1u << (int)(line.Channel & 31))) == 0) continue;
-            if (playerId.HasValue && line.PlayerId != playerId.Value) continue;
-            m++;
-        }
-        return m;
+        _version++;
     }
 
     /// <summary>
@@ -82,8 +75,7 @@ public sealed class ChatStore
             if (idx < 0) idx += Capacity;
             ChatLine line = _ring[idx];
 
-            // ponytail: channels assumed < 32 (they are small engine enums); mask is 1u<<channel.
-            if ((channelMask & (1u << (int)(line.Channel & 31))) == 0) continue;
+            if ((channelMask & line.Channel) == 0) continue;
             if (playerId.HasValue && line.PlayerId != playerId.Value) continue;
 
             if (skipped < skip) { skipped++; continue; }
@@ -116,21 +108,18 @@ public sealed class ChatStore
         ok &= buf[0].RawText == "line" + (total - 1);   // newest first
         ok &= buf[Capacity - 1].RawText == "line" + (total - Capacity); // oldest surviving = line5 (0..4 overwritten)
 
-        // Channel filter: mix channel 1 and channel 2, ask only for channel 2.
+        // Channel filter: mix TALK (0x01) and SHOUT (0x04), ask only for SHOUT.
         var s2 = new ChatStore();
-        s2.Append(Line(1u, 10, "a"));
-        s2.Append(Line(2u, 11, "b"));
-        s2.Append(Line(1u, 12, "c"));
-        s2.Append(Line(2u, 13, "d"));
-        int n2 = s2.View(1u << 2, null, buf);           // bit for channel 2 only
+        s2.Append(Line(0x01, 10, "a"));
+        s2.Append(Line(0x04, 11, "b"));
+        s2.Append(Line(0x01, 12, "c"));
+        s2.Append(Line(0x04, 13, "d"));
+        int n2 = s2.View(0x04, null, buf);               // SHOUT flag only
         ok &= n2 == 2 && buf[0].RawText == "d" && buf[1].RawText == "b";
 
         // PlayerId filter narrows within a channel mask.
         int np = s2.View(0xffffffff, 12u, buf);
         ok &= np == 1 && buf[0].RawText == "c";
-
-        // Match counts (used to clamp the scroll offset to the top).
-        ok &= s2.CountMatching(0xffffffff, null) == 4 && s2.CountMatching(1u << 2, null) == 2;
 
         // Scroll offset skips the newest N matches; over-scroll returns 0 (caller clamps).
         int ns = s2.View(0xffffffff, null, buf, skip: 1);

@@ -9,12 +9,13 @@ namespace Sowx.Services.Chat.Core;
 /// </summary>
 public static class ChatCommands
 {
-    /// <summary>Map a leading <c>/token</c> to a send channel and the remaining message. <c>"/s hi"</c> -&gt;
-    /// <c>(Shout, "hi")</c>; <c>"/s"</c> -&gt; <c>(Shout, "")</c>; <c>"hi"</c> or an unknown <c>/x</c> -&gt;
-    /// <c>(null, &lt;original&gt;)</c>.</summary>
-    public static (Channel? channel, string rest) Parse(string text)
+    /// <summary>Map a leading <c>/token</c> to a send channel, an optional quoted tell target, and the
+    /// remaining message. <c>/t "Alice" hi</c> → <c>(Tell, "Alice", "hi")</c>;
+    /// <c>/s hi</c> → <c>(Shout, null, "hi")</c>; plain text → <c>(null, null, original)</c>.</summary>
+    // ponytail: quoted target only (matches the portrait-click prefill); unquoted target is the ceiling
+    public static (Channel? channel, string? tellTarget, string rest) Parse(string text)
     {
-        if (string.IsNullOrEmpty(text) || text[0] != '/') return (null, text);
+        if (string.IsNullOrEmpty(text) || text[0] != '/') return (null, null, text);
         int sp = text.IndexOfAny(Whitespace);
         string token = (sp < 0 ? text.Substring(1) : text.Substring(1, sp - 1)).ToLowerInvariant();
         Channel? ch = token switch
@@ -27,9 +28,19 @@ public static class ChatCommands
             "tk" or "talk"                        => Channel.Talk,
             _                                     => null,
         };
-        if (ch is null) return (null, text);                       // unknown slash: send verbatim
+        if (ch is null) return (null, null, text);
         string rest = sp < 0 ? "" : text.Substring(sp + 1).TrimStart();
-        return (ch, rest);
+        if (ch == Channel.Tell && rest.Length > 1 && rest[0] == '"')
+        {
+            int close = rest.IndexOf('"', 1);
+            if (close > 1)
+            {
+                string target = rest.Substring(1, close - 1);
+                string msg = close + 1 < rest.Length ? rest.Substring(close + 1).TrimStart() : "";
+                return (ch, target, msg);
+            }
+        }
+        return (ch, null, rest);
     }
 
     private static readonly char[] Whitespace = { ' ', '\t' };
@@ -40,14 +51,21 @@ public static class ChatCommands
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"ChatCommands.SelfCheck FAIL: {w}"); } }
 
-        E(Parse("/s hi") == (Channel.Shout, "hi"), "shout with message");
-        E(Parse("/s") == (Channel.Shout, ""), "bare switch, no message");
-        E(Parse("/W  Hello") == (Channel.Whisper, "Hello"), "case-insensitive + trimmed rest");
-        E(Parse("/party lets go") == (Channel.Party, "lets go"), "long alias");
-        E(Parse("/dm secret") == (Channel.DM, "secret"), "dm");
-        E(Parse("hello") == (null, "hello"), "plain text untouched");
-        E(Parse("/unknown x") == (null, "/unknown x"), "unknown slash sent verbatim");
-        E(Parse("") == (null, ""), "empty");
+        E(Parse("/s hi") == (Channel.Shout, null, "hi"), "shout with message");
+        E(Parse("/s") == (Channel.Shout, null, ""), "bare switch, no message");
+        E(Parse("/W  Hello") == (Channel.Whisper, null, "Hello"), "case-insensitive + trimmed rest");
+        E(Parse("/party lets go") == (Channel.Party, null, "lets go"), "long alias");
+        E(Parse("/dm secret") == (Channel.DM, null, "secret"), "dm");
+        E(Parse("hello") == (null, null, "hello"), "plain text untouched");
+        E(Parse("/unknown x") == (null, null, "/unknown x"), "unknown slash sent verbatim");
+        E(Parse("") == (null, null, ""), "empty");
+
+        // Tell with quoted target
+        E(Parse("/t \"Alice\" hi") == (Channel.Tell, "Alice", "hi"), "tell with quoted target");
+        E(Parse("/tp \"Bob\"") == (Channel.Tell, "Bob", ""), "tell target, no message");
+        E(Parse("/tell \"A B\" hey") == (Channel.Tell, "A B", "hey"), "tell target with space");
+        E(Parse("/t hi") == (Channel.Tell, null, "hi"), "tell without quotes = no target");
+        E(Parse("/t \"\" hi") == (Channel.Tell, null, "\"\" hi"), "empty quotes = no target (close at 1, not >1)");
 
         log.Info(ok ? "ChatCommands.SelfCheck PASS" : "ChatCommands.SelfCheck had FAILURES");
     }

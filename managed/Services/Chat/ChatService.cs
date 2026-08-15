@@ -48,12 +48,14 @@ public sealed unsafe class ChatService : IExtenderService
     {
         _log = log;
         ChatWindow.SelfCheck(log);     // slice #21 drag/resize/tab/scroll proof (off-device)
+        ChatLayout.SelfCheck(log);     // #37 Main-undeletable / always->=1-tab / add-close window proof (off-device)
         SettingsWindow.SelfCheck(log); // settings window open/toggle/close/ownership proof (off-device)
+        TellTarget.SelfCheck(log);     // #45 tell tab send-decision proof (off-device)
+        TellRouter.SelfCheck(log);     // #46 tell auto-open routing proof (off-device)
         WindowRenderer.SelfCheck(log); // #26 portrait-gutter emission proof (off-device)
         ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
         ChatConfig.SelfCheck(log);     // config round-trip + legacy-file migration proof (off-device)
         TextRenderer.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
-        // The settings picker resolves a colour's current value (override-or-default) through the renderer.
         SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
         if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla chat intact; FrameTapService takes the frame
         {
@@ -164,18 +166,104 @@ public sealed unsafe class ChatService : IExtenderService
 
     // ---- slice #21: window + owned render -----------------------------------------------------
 
-    /// <summary>The v1 chatbox. ponytail: one window, fixed default rect (not persisted -- a saved
-    /// layout is the ceiling). Placed off vanilla's bottom-left so both are visible until #23 suppresses.</summary>
-    private static ChatWindow? _window;
+    /// <summary>The chat window layout (#37/#41): the ordered window list ChatService drives for draw,
+    /// input, and persistence. Index 0 is the undeletable Main; <see cref="ChatLayout.FocusedIndex"/>
+    /// tracks which window owns the keyboard + input strip.</summary>
+    private static ChatLayout? _layout;
+
+    /// <summary>The focused chat window (owns keyboard + input strip, #41). Falls back to Main.</summary>
+    private static ChatWindow? _focused => _layout?.Focused;
 
     /// <summary>The chat settings window (opened from the gear icon), replacing the old inline gear dropdown so
     /// the option list can grow. Edits <see cref="ChatWindow.Toggles"/>; holds no option state of its own.</summary>
     private static readonly SettingsWindow _settings = new();
 
+    /// <summary>Name→live PlayerId resolver for Tell-pinned tabs (#45). Null until the shell wires a real
+    /// roster-backed implementation; pinned tabs silently drop sends while null (safe degradation).</summary>
+    private static IPlayerResolver? _playerResolver;
+
+    /// <summary>Native player roster resolver: calls CClientExoApp::GetPlayerByPlayerName, reads the
+    /// player ID at CNWCPlayer+0x8. Cold (send path only).</summary>
+    // ponytail: exact-case match (engine strcmp); own roster walk (+0x38/+0x40) with case-folding if players trip
+    private sealed class NativePlayerResolver : IPlayerResolver
+    {
+        private readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _getByName;
+
+        // CNWCPlayer field offsets (verified via Ghidra decompilation).
+        // +0x48 = the network player ID used by SendChatTell and CNetLayer::GetPlayerInfo.
+        // +0x8  = the internal list-lookup ID (what AppendToMsgBuffer passes as playerId).
+        // +0x10 = player name (char*), +0x18 = name length.
+        private const int NetPlayerIdOff = 0x48;
+        private const int IngestPlayerIdOff = 0x8;
+        private const int PlayerNameOff = 0x10;
+        private const int PlayerNameLenOff = 0x18;
+
+        public NativePlayerResolver(delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByName)
+            => _getByName = getByName;
+
+        private IntPtr App()
+        {
+            IntPtr app = ClientApi.LiveExoApp;
+            if (app != IntPtr.Zero) return app;
+            if (_appMgr == IntPtr.Zero) return IntPtr.Zero;
+            IntPtr mgr = *(IntPtr*)_appMgr;
+            return mgr != IntPtr.Zero ? *(IntPtr*)mgr : IntPtr.Zero;
+        }
+
+        public uint? Resolve(string name)
+        {
+            if (_getByName == null) return null;
+            IntPtr app = App();
+            if (app == IntPtr.Zero) return null;
+            IntPtr exo = Native.NewExoString(name);
+            try
+            {
+                IntPtr player = _getByName(app, exo);
+                if (player == IntPtr.Zero) return null;
+                return *(uint*)(player + NetPlayerIdOff);
+            }
+            finally { Native.FreeExoString(exo); }
+        }
+
+        // CClientExoAppInternal offsets for the player list (from GetPlayerByPlayerName_internal decompilation).
+        private const int InternalOff = 0x8;
+        private const int ListPtrOff = 0x38;
+        private const int ListCountOff = 0x40;
+
+        /// <summary>Read the player name for an ingest PlayerId (+0x8), or null if the player is gone.</summary>
+        public string? NameOf(uint playerId)
+        {
+            IntPtr app = App();
+            if (app == IntPtr.Zero) return null;
+            IntPtr intern = *(IntPtr*)(app + InternalOff);
+            if (intern == IntPtr.Zero) return null;
+            IntPtr listBase = *(IntPtr*)(intern + ListPtrOff);
+            int count = *(int*)(intern + ListCountOff);
+            if (listBase == IntPtr.Zero || count <= 0 || count > 64) return null;
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr player = *(IntPtr*)(listBase + i * 8);
+                if (player == IntPtr.Zero) continue;
+                if (*(uint*)(player + IngestPlayerIdOff) != playerId) continue;
+                IntPtr buf = *(IntPtr*)(player + PlayerNameOff);
+                if (buf == IntPtr.Zero) return null;
+                uint len = *(uint*)(player + PlayerNameLenOff);
+                if (len == 0 || len > 128) return null;
+                var sb = new StringBuilder((int)len);
+                for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
+                return sb.ToString();
+            }
+            return null;
+        }
+    }
+    /// <summary>Always-closed stub passed to non-focused window builds so EmitSettings doesn't duplicate.</summary>
+    private static readonly SettingsWindow _closedSettings = new();
+
     private static delegate* unmanaged<IntPtr, void> _swapOrig;
     private static volatile int _lastMx, _lastMy;   // latest pointer pos, for wheel hit-testing
     private static bool _mdiag;                      // one-shot: log first click coords + rect
-    private static bool _pointerInWindow;            // pointer over the window -> draw the resize grip
+    private static int _hoverIndex = -1;             // window under the pointer (-1 = none), for grip visibility
+    private static bool _anyTabDrag;                 // true while any window has an active tab drag (#42)
 
     // In-game gate: draw the box when a module is loaded and no full-screen options menu is up. The walk is
     // verified against the disassembly of GetInGameGui and IsVisible -- every offset and the 4-byte width:
@@ -287,46 +375,111 @@ public sealed unsafe class ChatService : IExtenderService
     private static ChatConfig _config = new();
     private static string _savedText = "";
 
-    /// <summary>Restore the config from disk and apply it to the window (rect/toggles/input side) + the
-    /// render/anim/timestamp subsystems. Deferred to the first frame (engine user dir unresolved pre-main).</summary>
-    private static void LoadConfig(ChatWindow win)
+    /// <summary>Restore the config from disk and apply it to all windows (rect/toggles/input side/send
+    /// channel/tabs) + the render/anim/timestamp subsystems. Creates additional windows from the config
+    /// up to the cap. Deferred to first frame (engine user dir unresolved pre-main).</summary>
+    private static void LoadConfig()
     {
+        if (_layout == null) return;
         try { if (File.Exists(LayoutPath)) _config = ChatConfig.Parse(File.ReadAllText(LayoutPath)); }
         catch (Exception e) { _log?.Info($"[chat] config load failed: {e.Message}"); }
-        if (_config.W >= ChatWindow.MinW && _config.H >= ChatWindow.MinH)   // 0 = unset -> keep the built-in rect
-        { win.X = _config.X; win.Y = _config.Y; win.W = _config.W; win.H = _config.H; }
-        win.Toggles = _config.Toggles;
-        win.InputOnTop = _config.InputOnTop;
+        for (int i = 0; i < _config.Windows.Count && i < ChatLayout.MaxWindows; i++)
+        {
+            var wc = _config.Windows[i];
+            ChatWindow win;
+            if (i < _layout.Count)
+            {
+                win = _layout.Windows[i];
+            }
+            else
+            {
+                // Only create additional windows for config entries with a real rect (skip gap-filled defaults).
+                if (wc.W < ChatWindow.MinW || wc.H < ChatWindow.MinH) continue;
+                win = new ChatWindow(wc.X, wc.Y,
+                    System.Math.Max(wc.W, ChatWindow.MinW), System.Math.Max(wc.H, ChatWindow.MinH),
+                    new[] { new Tab("All", 0xffffffff) });
+                if (_layout.AddWindow(win) == null) break;
+            }
+            if (wc.W >= ChatWindow.MinW && wc.H >= ChatWindow.MinH)
+            { win.X = wc.X; win.Y = wc.Y; win.W = wc.W; win.H = wc.H; }
+            win.Toggles = wc.Toggles;
+            win.InputOnTop = wc.InputOnTop;
+            if (wc.SendChannel >= 0 && wc.SendChannel <= 5) win.SendChannel = (Channel)wc.SendChannel;
+            if (wc.AnimEnabled is bool ae) win.AnimEnabled = ae;
+            if (wc.HoldSec is float hs) win.HoldSec = hs;
+            if (wc.FadeSec is float fs) win.FadeSec = fs;
+            if (wc.TauMs is float tm) win.TauMs = tm;
+            if (wc.Outline is bool ol) win.Outline = ol;
+            if (wc.TimeFormat is int tf) win.TimeFormat = (TsFormat)tf;
+            if (wc.TimeSource is int ts) win.TimeSource = (TsSource)ts;
+            if (wc.Align is int al && al >= 0 && al <= 3) win.Align = (TextAlign)al;
+            if (wc.AutoHideHeader is bool ahh) win.AutoHideHeader = ahh;
+            if (wc.Locked is bool lk) win.Locked = lk;
+            if (wc.TellsHere is bool th) win.TellsHere = th;
+            foreach (var kv in wc.Colors) win.Colors[kv.Key] = kv.Value;
+            if (wc.Tabs.Count > 0)
+            {
+                var tabs = new Tab[wc.Tabs.Count];
+                for (int j = 0; j < wc.Tabs.Count; j++)
+                    tabs[j] = new Tab(wc.Tabs[j].Label, wc.Tabs[j].Mask) { PinnedName = wc.Tabs[j].Pin, Kept = wc.Tabs[j].Kept };
+                win.SetTabs(tabs);
+            }
+        }
         ApplyConfig();
         _savedText = _config.ToText();
     }
 
-    /// <summary>Push the config-owned settings (palette, animation knobs, timestamp style) onto the subsystems
-    /// that read them from the hot path. Window-owned settings (toggles, input side) already live on the window.</summary>
+    /// <summary>Push the global font setting onto the atlas + chrome scale. Per-window settings (palette,
+    /// outline, anim, timestamps) live on <see cref="ChatWindow"/> and are resolved per-build.</summary>
     private static void ApplyConfig()
     {
-        WindowRenderer.ApplyPalette(_config);
-        WindowRenderer.TextOutline = _config.Outline;
-        // Bake the atlas and scale the chrome off the SAME effective px, so the whole box tracks font size and
-        // the game's UI scale together (chrome grows with the text -> no clipping). effectivePx is clamped to the
-        // atlas ceiling and Metrics.Scale is derived from that same value, so chrome and text never disagree.
         float fontPx = System.Math.Clamp(_config.FontPx, TextRenderer.MinFontPx, TextRenderer.MaxFontPx);
         float effectivePx = System.Math.Clamp(fontPx * Metrics.GameUiScale, TextRenderer.MinFontPx, TextRenderer.AtlasMaxPx);
         Metrics.Scale = effectivePx / Metrics.DesignFontPx;
-        TextRenderer.SetFont(effectivePx);   // re-bakes the atlas if the size changed (cold; debounced)
-        ChatAnim.Configure(_config.AnimEnabled, _config.HoldSec, _config.FadeSec, _config.TauMs);
-        TimestampComponent.Format = _config.TimeFormat;
-        TimestampComponent.Source = _config.TimeSource;
+        TextRenderer.SetFont(effectivePx);
     }
 
-    /// <summary>Pull the window-owned fields into the config and write the file iff it changed. Called on a
-    /// settings interaction's release and after a move/resize.</summary>
-    private static void SaveConfig(ChatWindow win)
+    /// <summary>Sync all window-owned fields into the config (truncating stale window entries from a prior
+    /// close) and write the file iff it changed. AC4: ephemeral (auto-created, unkept) tabs are excluded;
+    /// a non-Main window whose tabs are ALL ephemeral is dropped entirely.</summary>
+    private static void SaveConfig()
     {
-        _config.X = win.X; _config.Y = win.Y; _config.W = win.W; _config.H = win.H;
-        _config.Toggles = win.Toggles; _config.InputOnTop = win.InputOnTop;
+        if (_layout == null) return;
+        _config.Windows.Clear();
+        ChatWindow[] wins = _layout.Windows;
+        for (int i = 0; i < wins.Length; i++)
+        {
+            ChatWindow win = wins[i];
+            // AC4: skip non-Main windows where every tab is ephemeral (no kept content).
+            if (i > 0)
+            {
+                bool allEph = true;
+                var tabs = win.Tabs;
+                for (int j = 0; j < tabs.Count; j++) if (!tabs[j].Ephemeral) { allEph = false; break; }
+                if (allEph) continue;
+            }
+            var wc = new WindowConfig();
+            wc.X = win.X; wc.Y = win.Y; wc.W = win.W; wc.H = win.H;
+            wc.Toggles = win.Toggles; wc.InputOnTop = win.InputOnTop;
+            wc.SendChannel = (int)win.SendChannel;
+            wc.AnimEnabled = win.AnimEnabled; wc.HoldSec = win.HoldSec;
+            wc.FadeSec = win.FadeSec; wc.TauMs = win.TauMs;
+            wc.Outline = win.Outline;
+            wc.TimeFormat = (int)win.TimeFormat; wc.TimeSource = (int)win.TimeSource;
+            wc.Align = (int)win.Align;
+            wc.AutoHideHeader = win.AutoHideHeader;
+            wc.Locked = win.Locked;
+            wc.TellsHere = win.TellsHere;
+            foreach (var kv in win.Colors) wc.Colors[kv.Key] = kv.Value;
+            for (int j = 0; j < win.Tabs.Count; j++)
+            {
+                if (win.Tabs[j].Ephemeral) continue; // AC4: unkept tabs excluded
+                wc.Tabs.Add((win.Tabs[j].Label, win.Tabs[j].ChannelMask, win.Tabs[j].PinnedName, win.Tabs[j].Kept));
+            }
+            _config.Windows.Add(wc);
+        }
         string text = _config.ToText();
-        if (text == _savedText) return;   // only write when something actually changed
+        if (text == _savedText) return;
         _savedText = text;
         try
         {
@@ -348,14 +501,12 @@ public sealed unsafe class ChatService : IExtenderService
         }
 
         TextRenderer.Init(log);   // cold atlas bake (null under run-demo: stbtt absent -> render no-ops)
-        // Tabs are pure receive-filters now (#25); the send channel is the dropdown (window-level). ponytail:
-        // real per-channel receive masks wait on the [inferred] inbound channel values (research §2.2 fog),
-        // so keep All + Talk -- 1<<1 is the one confirmed value.
-        _window = new ChatWindow(60, 40, 520, 300, new[]
-        {
+        // Tabs are pure receive-filters now (#25); the send channel is the dropdown (window-level).
+        // Default is a single All tab; the player adds per-channel tabs via the settings window (#39).
+        _layout = new ChatLayout(new ChatWindow(60, 40, 520, 300,
+        [
             new Tab("All",  0xffffffff),
-            new Tab("Talk", 1u << 1),
-        });
+        ]));
         // Rect restore is deferred to the first frame (see OnSwap): Initialize runs pre-main, so the
         // engine user dir -- where the cfg lives -- isn't resolvable here yet and LoadConfig would read
         // the ~/.config fallback instead of the real path.
@@ -381,10 +532,11 @@ public sealed unsafe class ChatService : IExtenderService
             _swapTid = Environment.CurrentManagedThreadId;
             _log?.Info($"ChatService: first frame presented -- hook is LIVE [chatthread] swap tid={_swapTid}");
             _log?.Info($"ChatService: cfg dir = {Native.UserDirectory() ?? "(engine dir unresolved -> ~/.config fallback)"}");
-            if (_window != null) LoadConfig(_window);   // restore now: Initialize runs pre-main, user dir unresolved there
+            LoadConfig();   // restore now: Initialize runs pre-main, user dir unresolved there
             Rebuild();           // re-layout for the restored width + applied config
         }
-        if (InGame()) { SyncUiScale(); PollGameClock(); TextRenderer.Draw(); }   // hot; SyncUiScale is a float read + branch
+        if (InGame()) { SyncUiScale(); PollGameClock(); TextRenderer.Draw(); }
+        else if (_gateSig.win == IntPtr.Zero) TextRenderer.DrawOverlay();
         if (_swapOrig != null) _swapOrig(window);     // present
     }
 
@@ -399,8 +551,13 @@ public sealed unsafe class ChatService : IExtenderService
         if (s < 1f) s = 1f;   // engine floors at 1.0; guards an early 0 read before CAurora computes it
         if (System.Math.Abs(s - Metrics.GameUiScale) < 0.001f) return;
         Metrics.GameUiScale = s;
-        ApplyConfig();          // recompute Metrics.Scale + re-bake the atlas at the new effective px
-        _window?.ClampToMin();  // a rect restored before this sync can be under the newly-scaled minimum
+        ApplyConfig();
+        if (_layout != null)
+        {
+            ChatWindow[] wins = _layout.Windows;
+            for (int i = 0; i < wins.Length; i++) wins[i].ClampToMin();
+        }
+        DirtyAll();
         Rebuild();              // re-lay the chrome at the new scale
     }
 
@@ -431,46 +588,173 @@ public sealed unsafe class ChatService : IExtenderService
     // in case a caller consumes it. One handler serves every single-`this` suppression target.
     [UnmanagedCallersOnly] private static long OnSuppressed(IntPtr self) => 0;
 
-    /// <summary>New line ingested: react by the appended line's own laid-out height (block + gap), then
-    /// publish ONCE. Pinned to the bottom (reading live): slide the fresh block up into view (map #13).
-    /// Scrolled up (reading history): push ScrollPx by the same amount so the visible lines hold still. A
-    /// line filtered out of the active tab changes nothing, so it neither slides nor jiggles the view.
-    /// Measuring just the one line (not a whole-backlog delta) makes the compensation exact even under ring
-    /// eviction -- the read position tracks the bottom-anchored growth, not the net content change. Cold
-    /// (network thread).</summary>
+    /// <summary>New line ingested: auto-open Tell routing (#46), then compensate every window whose active
+    /// tab matches (scroll hold / slide-in), then publish ONCE. Cold (network thread).</summary>
     private static void OnIngest(ChatLine line)
     {
-        ChatWindow? win = _window;
         GlyphAtlas? atlas = TextRenderer.Atlas;
-        if (win == null || atlas == null) { Rebuild(); return; }   // run-demo: no atlas -> just publish
-        if (win.Active.Matches(line))
+        if (_layout == null || atlas == null) { Rebuild(); return; }
+
+        // #46: route incoming Tells before the scroll-compensation loop so a new tab is visible on rebuild.
+        // ponytail: races the input thread's AddTab/AddWindow; atomic array swap keeps it memory-safe.
+        if ((line.Channel & 0x002) != 0)
+            RouteIncomingTell(line);
+
+        ChatWindow[] wins = _layout.Windows;   // snapshot: concurrent add/close swaps the array
+        int fi = _layout.FocusedIndex;
+        for (int i = 0; i < wins.Length; i++)
         {
-            float grow = WindowRenderer.MeasureBlock(win, line, atlas) + WindowRenderer.MsgGap;
-            if (win.Active.ScrollPx == 0f) ChatAnim.AddResidual(grow);   // pinned: slide the new block in
-            else win.Active.ScrollPx += grow;                            // scrolled up: hold the read position
+            Tab active = wins[i].Active;
+            if (!active.Matches(line)) continue;
+            wins[i].Dirty = true;
+            float grow = WindowRenderer.MeasureBlock(wins[i], line, atlas) + WindowRenderer.MsgGap;
+            if (active.ScrollPx == 0f && i == fi && wins[i].AnimEnabled) ChatAnim.AddResidual(grow);
+            else if (active.ScrollPx != 0f) active.ScrollPx += grow;
+
+            // Mark non-active ephemeral tabs that match this line as unread.
+            var tabs = wins[i].Tabs;
+            int at = wins[i].ActiveTab;
+            for (int ti = 0; ti < tabs.Count; ti++)
+                if (ti != at && tabs[ti].Ephemeral && tabs[ti].Matches(line))
+                    tabs[ti].Unread = true;
         }
-        Rebuild();   // single publish; ScrollPx already adjusted, so no intermediate stale-offset frame
+        Rebuild();
     }
 
-    /// <summary>Rebuild the vertex batch from the current window + store + edit state and publish it.
-    /// Cold (ingest / input / resize threads); the hot <see cref="OnSwap"/> only draws what's published.</summary>
+    /// <summary>Auto-open routing for an incoming Tell (#46). Creates a tab or window per the config;
+    /// never steals keyboard focus (no FocusedIndex change on ingest).</summary>
+    private static void RouteIncomingTell(ChatLine line)
+    {
+        if (_layout == null) return;
+        string? name = _playerResolver?.NameOf(line.PlayerId);
+        if (name == null) return;
+
+        var decision = TellRouter.Route(_config.TellOpen, _layout.Windows, _layout.FocusedIndex, name);
+        switch (decision.Action)
+        {
+            case TellRoute.Exists:
+            {
+                // ponytail: refresh the stale connection-scoped PlayerId so the filter stays live after relog.
+                ChatWindow[] wins = _layout.Windows;
+                if ((uint)decision.WindowIndex < (uint)wins.Length)
+                {
+                    var tabs = wins[decision.WindowIndex].Tabs;
+                    if ((uint)decision.TabIndex < (uint)tabs.Count)
+                        tabs[decision.TabIndex].PlayerId = line.PlayerId;
+                }
+                break;
+            }
+            case TellRoute.NewTab:
+            {
+                ChatWindow[] wins = _layout.Windows;
+                if ((uint)decision.WindowIndex < (uint)wins.Length)
+                {
+                    var tab = new Tab($"Tell:{name}", 0x002, line.PlayerId) { PinnedName = name };
+                    wins[decision.WindowIndex].AddTab(tab);
+                    wins[decision.WindowIndex].Dirty = true;
+                    _log?.Info($"[chat] tell auto-open: new tab '{name}' (pid={line.PlayerId}) in window {decision.WindowIndex}");
+                }
+                break;
+            }
+            case TellRoute.NewWindow:
+            {
+                ChatWindow main = _layout.Main;
+                float offset = _layout.Count * 30f;
+                var tab = new Tab($"Tell:{name}", 0x002, line.PlayerId) { PinnedName = name };
+                var win = new ChatWindow(main.X + offset, main.Y + offset, main.W, main.H, new[] { tab });
+                if (_layout.AddWindow(win) != null)
+                    _log?.Info($"[chat] tell auto-open: new window for '{name}' (pid={line.PlayerId})");
+                else
+                {
+                    ChatWindow[] wins = _layout.Windows;
+                    int fi = _layout.FocusedIndex;
+                    if ((uint)fi < (uint)wins.Length) { wins[fi].AddTab(tab); wins[fi].Dirty = true; }
+                    _log?.Info($"[chat] tell auto-open: window cap, tab fallback for '{name}'");
+                }
+                break;
+            }
+        }
+    }
+
+    /// <summary>Per-window last-built frame cache. Keyed on the window reference so an add/close can't
+    /// serve a stale frame for a different window.</summary>
+    // ponytail: torn two-ref tuple read is a one-frame cosmetic (documented tolerance); volatile struct is the ceiling
+    private static (ChatWindow? win, RenderFrame? frame)[] _lastBuilt =
+        new (ChatWindow?, RenderFrame?)[ChatLayout.MaxWindows];
+
+    /// <summary>Mark every window dirty (config change, UI-scale change, session reset).</summary>
+    private static void DirtyAll()
+    {
+        if (_layout == null) return;
+        ChatWindow[] wins = _layout.Windows;
+        for (int i = 0; i < wins.Length; i++) wins[i].Dirty = true;
+    }
+
+    /// <summary>Rebuild vertex batches for all windows and publish them. Only the focused window gets the
+    /// input strip, settings panel, and slide residual (#41). Non-focused windows whose
+    /// <see cref="ChatWindow.Dirty"/> flag is false reuse their last-built frame, skipping the build +
+    /// LOH scratch alloc (#53). The focused window is always rebuilt (it owns drag chrome, grip, strip).</summary>
     private static void Rebuild()
     {
-        ChatWindow? win = _window;
         GlyphAtlas? atlas = TextRenderer.Atlas;
-        if (win == null || atlas == null) return;   // run-demo: no atlas -> nothing to draw
-        // NB: do NOT lay out the settings panel here. Rebuild runs on the ingest thread too, and Layout mutates
-        // the shared Rows list -- a Clear racing EmitSettings' iterate is a hard crash. The panel is modal and
-        // its geometry depends only on input-thread state (rect/toggles/config), which OpenAt/MouseDown lay out;
-        // this draw just reads the last published snapshot.
-        bool footer = IsTyping;          // window always has a send channel (the dropdown)
-        win.FooterVisible = IsTyping;                  // gate the strip/dropdown hit-testing to match the draw
-        // Only read the (mutable) edit line when a footer will render it -- avoids racing a concurrent
-        // keystroke's StringBuilder on the ingest/render thread.
-        RenderFrame frame = WindowRenderer.Build(win, _settings, _store, atlas, footer,
-                                                  footer ? Edit.Text : "", footer ? Edit.Cursor : 0, _pointerInWindow,
-                                                  footer ? Edit.Selection : null);
-        TextRenderer.Publish(frame);
+        if (_layout == null || atlas == null) return;
+        ChatWindow[] wins = _layout.Windows;   // snapshot
+        int n = wins.Length;
+        // Ghost tab: find the source window (if any) to append a floating ghost frame (#42).
+        int dragSrc = -1;
+        for (int i = 0; i < n; i++) if (wins[i].TabDragActive) { dragSrc = i; break; }
+        var frames = new RenderFrame[n + (dragSrc >= 0 ? 1 : 0)];
+        int fi = _layout.FocusedIndex;
+        if ((uint)fi >= (uint)n) fi = 0;
+        // Build non-focused windows first, focused last, so the focused window draws on top.
+        int slot = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (i == fi) continue;
+            // Clean + cached: reuse the last-built frame.
+            if (!wins[i].Dirty && i < _lastBuilt.Length
+                && _lastBuilt[i].win == wins[i] && _lastBuilt[i].frame != null)
+            {
+                frames[slot++] = _lastBuilt[i].frame!;
+            }
+            else
+            {
+                wins[i].Dirty = false;
+                var rf = BuildOneWindow(wins[i], false, atlas, i);
+                if (i < _lastBuilt.Length) _lastBuilt[i] = (wins[i], rf);
+                frames[slot++] = rf;
+            }
+        }
+        {
+            wins[fi].Dirty = false;
+            var rf = BuildOneWindow(wins[fi], true, atlas, fi);
+            if (fi < _lastBuilt.Length) _lastBuilt[fi] = (wins[fi], rf);
+            frames[slot++] = rf;
+        }
+        if (dragSrc >= 0)
+        {
+            ChatWindow src = wins[dragSrc];
+            float gw = src.TabW;
+            frames[slot] = WindowRenderer.BuildGhostTab(atlas, src,
+                _lastMx - gw * 0.5f, _lastMy - ChatWindow.TabBarH * 0.5f, gw, src.Active.Label);
+        }
+        TextRenderer.Publish(frames);
+    }
+
+    private static RenderFrame BuildOneWindow(ChatWindow win, bool focused, GlyphAtlas atlas, int winIndex)
+    {
+        bool footer = focused && IsTyping && win.HasSendable;
+        win.FooterVisible = footer;
+        bool grip = (winIndex == _hoverIndex) || win.Dragging || _anyTabDrag;
+        var frame = WindowRenderer.Build(win, focused ? _settings : _closedSettings, _store, atlas,
+            footer, footer ? Edit.Text : "", footer ? Edit.Cursor : 0, grip,
+            footer ? Edit.Selection : null);
+        frame.ApplyResidual = focused && win.AnimEnabled;
+        frame.AnimEnabled = win.AnimEnabled;
+        frame.HoldSec = win.HoldSec;
+        frame.FadeSec = win.FadeSec;
+        frame.TauMs = win.TauMs;
+        return frame;
     }
 
     /// <summary>Reset all per-session state at a module boundary (#33), fanned in from the gate's
@@ -491,86 +775,354 @@ public sealed unsafe class ChatService : IExtenderService
         IsTyping = false;
         KeyboardMode(false);                // drop any keyboard capture left from the old session
         _settings.Reset();                  // close + drop any half-owned press so no stray up gets eaten next session
-        if (_window != null)
+        if (_layout != null)
         {
-            _window.SendChannel = Channel.Talk;
-            _window.ChannelListOpen = false;
-            foreach (Tab t in _window.Tabs) t.ScrollPx = 0f;
+            ChatWindow[] wins = _layout.Windows;
+            for (int wi = 0; wi < wins.Length; wi++)
+            {
+                ChatWindow w = wins[wi];
+                w.SendChannel = Channel.Talk;
+                w.ClampSendChannel();
+                w.ChannelListOpen = false;
+                w.Dirty = true;
+                w.LastScroll = System.DateTime.MinValue;
+                var wt = w.Tabs; for (int ti = 0; ti < wt.Count; ti++) wt[ti].ScrollPx = 0f;
+            }
         }
     }
 
-    /// <summary>Pointer press/release. Returns true when it lands on the window (the WM shell then
-    /// consumes it, so it doesn't fall through to the 3D world). Called from HotkeyInputService.</summary>
+    /// <summary>Pointer press/release. Returns true when it lands on any chat window (the WM shell then
+    /// consumes it, so it doesn't fall through to the 3D world). Focused window is checked first (it owns
+    /// the popped-out strip/dropdown outside its frame rect); then other windows in reverse draw order (#41).
+    /// Called from HotkeyInputService.</summary>
     public static bool OnMouseButton(bool down, int button, int x, int y)
     {
-        ChatWindow? win = _window;
-        if (win == null || !InGame() || button != 1) return false;   // left only; inert on the menu (box hidden)
+        if (_layout == null || !InGame() || button != 1) return false;
+        ChatWindow? fwin = _focused;
+        if (fwin == null) return false;
         if (down && !_mdiag)
         {
             _mdiag = true;
-            _log?.Info($"[chat] first click ({x},{y}) rect=({win.X},{win.Y},{win.W},{win.H})");
+            _log?.Info($"[chat] first click ({x},{y}) windows={_layout.Count}");
         }
-        // Settings window owns the click pair while open; the gear icon opens it (and closes any dropdown).
-        // OpenAt/MouseDown mark the press consumed, so MouseUp eats the paired up (no orphan button-up).
         if (down)
         {
-            if (_settings.Open) { bool cs = _settings.MouseDown(x, y, win, _config); ApplyConfig(); SyncFieldKeyboard(); Rebuild(); return cs; }
-            if (win.OverGear(x, y))
+            // Settings window is modal and owned by the focused window.
+            if (_settings.Open)
             {
-                win.ChannelListOpen = false;
-                _settings.OpenAt(win, _config, TextRenderer.ViewportW, TextRenderer.ViewportH);
-                Rebuild(); return true;
+                bool cs = _settings.MouseDown(x, y, fwin, _config);
+                if (_settings.CopyRequested >= 0)
+                {
+                    int src = _settings.CopyRequested;
+                    _settings.CopyRequested = -1;
+                    ChatWindow[] wins = _layout.Windows;
+                    if ((uint)src < (uint)wins.Length)
+                    {
+                        fwin.CopySettingsFrom(wins[src]);
+                        _settings.Layout(fwin, _config);
+                    }
+                }
+                // #46: TellsHere exclusivity — clear all other windows when one turns it on.
+                if (_settings.TellsHereChanged)
+                {
+                    _settings.TellsHereChanged = false;
+                    ChatWindow[] wins = _layout.Windows;
+                    for (int i = 0; i < wins.Length; i++)
+                        if (wins[i] != fwin) wins[i].TellsHere = false;
+                }
+                ApplyConfig(); DirtyAll(); SyncFieldKeyboard();
+                if (IsTyping && !fwin.HasSendable) CloseChat(false);
+                Rebuild(); return cs;
             }
-            bool cd = win.MouseDown(x, y);
-            if (cd) Rebuild();
-            return cd;
+            // Check focused first (owns the strip/dropdown that extends outside the frame).
+            if (DownOnWindow(_layout.FocusedIndex, x, y)) return true;
+            // Then check other windows in reverse draw order (last drawn = topmost).
+            for (int i = _layout.Count - 1; i >= 0; i--)
+            {
+                if (i == _layout.FocusedIndex) continue;
+                if (_layout.Windows[i].Contains(x, y))
+                {
+                    _layout.FocusedIndex = i;
+                    if (DownOnWindow(i, x, y)) return true;
+                    Rebuild();
+                    return true;
+                }
+            }
+            return false;
         }
-        if (_settings.MouseUp()) { SaveConfig(win); Rebuild(); return true; }   // settings owned the press -> persist the change
-        bool cu = win.MouseUp(x, y);
-        if (cu) { SaveConfig(win); Rebuild(); }   // a move/resize (or click) ended -> persist if anything changed
-        return cu;
+        // Up: settings first, then tab-drag cross-window drop (#42), then generic grabs.
+        if (_settings.MouseUp()) { SaveConfig(); Rebuild(); return true; }
+        // Cross-window tab drop: resolve before MouseUp clears the grab state.
+        for (int i = 0; i < _layout.Count; i++)
+        {
+            ChatWindow src = _layout.Windows[i];
+            if (!src.TabDragActive) continue;
+            // Scan other windows in reverse draw order for a drop target.
+            for (int j = _layout.Count - 1; j >= 0; j--)
+            {
+                if (j == i) continue;
+                int dp = _layout.Windows[j].TabBarDropIndex(x, y);
+                if (dp < 0) continue;
+                if (_layout.TransferTab(i, src.ActiveTab, j, dp))
+                {
+                    _layout.FocusedIndex = j;
+                    _layout.Windows[j].ActiveTab = dp;
+                    _layout.Windows[j].ClampSendChannel();
+                    if (IsTyping && !_layout.Windows[j].HasSendable) CloseChat(false);
+                }
+                break;
+            }
+            src.MouseUp(x, y);
+            src.Dirty = true;
+            SaveConfig(); Rebuild();
+            return true;
+        }
+        for (int i = 0; i < _layout.Count; i++)
+        {
+            bool cu = _layout.Windows[i].MouseUp(x, y);
+            if (cu) { SaveConfig(); Rebuild(); return true; }
+        }
+        return false;
     }
 
-    /// <summary>Pointer motion. Consumed (true) only while dragging/resizing; also tracks the hover grip.</summary>
+    /// <summary>Press dispatch on a single window: button group ([+] [×] [⚙]) then ChatWindow.MouseDown.
+    /// Focuses and returns true if consumed.</summary>
+    private static bool DownOnWindow(int index, int x, int y)
+    {
+        ChatWindow win = _layout!.Windows[index];
+        if (win.OverNewWin(x, y))
+        {
+            CreateWindow();
+            return true;
+        }
+        if (win.OverCloseWin(x, y))
+        {
+            if (IsTyping) CloseChat(false);
+            _layout.CloseWindow(index);
+            SaveConfig();
+            _log?.Info($"[chat] window {index} closed (button)");
+            Rebuild(); return true;
+        }
+        if (win.OverGear(x, y))
+        {
+            _layout.FocusedIndex = index;
+            win.ChannelListOpen = false;
+            _settings.OpenAt(win, _config, TextRenderer.ViewportW, TextRenderer.ViewportH,
+                             winIndex: index, winCount: _layout.Count);
+            Rebuild(); return true;
+        }
+        // Portrait click: intercept before ChatWindow.MouseDown (which would consume it as a body no-op).
+        if (TryPortraitClick(win, index, x, y)) return true;
+        bool cd = win.MouseDown(x, y);
+        if (cd)
+        {
+            _layout.FocusedIndex = index;
+            if (IsTyping && !win.HasSendable) CloseChat(false);
+            Rebuild();
+        }
+        return cd;
+    }
+
+    /// <summary>Portrait click → tell flow: resolve the portrait's PlayerId to a player name, then
+    /// prefill <c>/t "Name" </c> into the chat input (same as vanilla's PrepChatPromptForTellToPlayer).
+    /// Returns true if the click landed on a portrait and was consumed.</summary>
+    private static bool TryPortraitClick(ChatWindow win, int winIndex, int x, int y)
+    {
+        PortraitHit[] ph = win.PortraitHits;
+        for (int i = 0; i < ph.Length; i++)
+        {
+            var h = ph[i];
+            if (x >= h.X && x < h.X + h.W && y >= h.Y && y < h.Y + h.H)
+            {
+                string? name = _playerResolver?.NameOf(h.PlayerId);
+                if (name != null)
+                {
+                    _layout!.FocusedIndex = winIndex;
+                    StartTellTo(name, h.PlayerId);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Open the chat input targeting <paramref name="name"/>. When Tell routing is Off, falls back
+    /// to pre-filling <c>/t "name" </c>. Otherwise navigates to the existing pinned tab or creates one (#46).
+    /// <paramref name="playerId"/> filters the tab to that player's messages.</summary>
+    private static void StartTellTo(string name, uint playerId)
+    {
+        if (_layout == null) return;
+        if (_config.TellOpen == TellAutoOpen.Off)
+        {
+            Open();
+            string cmd = $"/t \"{name}\" ";
+            byte[] utf8 = Encoding.UTF8.GetBytes(cmd);
+            Edit.InsertUtf8(utf8);
+            Rebuild();
+            return;
+        }
+        // Route: find or create a pinned tab, switch to it, set channel to Tell, open input.
+        var decision = TellRouter.Route(_config.TellOpen, _layout.Windows, _layout.FocusedIndex, name);
+        switch (decision.Action)
+        {
+            case TellRoute.Exists:
+            {
+                ChatWindow win = _layout.Windows[decision.WindowIndex];
+                var tabs = win.Tabs;
+                for (int j = 0; j < tabs.Count; j++)
+                    if (tabs[j].PinnedName == name) { win.ActiveTab = j; break; }
+                _layout.FocusedIndex = decision.WindowIndex;
+                win.SendChannel = Channel.Tell;
+                break;
+            }
+            case TellRoute.NewTab:
+            {
+                ChatWindow win = _layout.Windows[decision.WindowIndex];
+                win.AddTab(new Tab($"Tell:{name}", 0x002, playerId) { PinnedName = name });
+                win.ActiveTab = win.Tabs.Count - 1;
+                _layout.FocusedIndex = decision.WindowIndex;
+                win.SendChannel = Channel.Tell;
+                break;
+            }
+            case TellRoute.NewWindow:
+            {
+                ChatWindow main = _layout.Main;
+                float offset = _layout.Count * 30f;
+                var tab = new Tab($"Tell:{name}", 0x002, playerId) { PinnedName = name };
+                var win = new ChatWindow(main.X + offset, main.Y + offset, main.W, main.H, new[] { tab });
+                if (_layout.AddWindow(win) != null)
+                {
+                    _layout.FocusedIndex = _layout.Count - 1;
+                    win.SendChannel = Channel.Tell;
+                }
+                break;
+            }
+            default:
+                return;
+        }
+        Open();
+        SaveConfig();
+        Rebuild();
+    }
+
+    /// <summary>Create a new chat window, offset from Main, and focus it.</summary>
+    private static void CreateWindow()
+    {
+        if (_layout == null) return;
+        ChatWindow main = _layout.Main;
+        float offset = _layout.Count * 30f;
+        var win = new ChatWindow(main.X + offset, main.Y + offset, main.W, main.H,
+            new[] { new Tab("All", 0xffffffff) });
+        if (_layout.AddWindow(win) == null)
+        {
+            _log?.Info("[chat] new window: cap reached");
+            return;
+        }
+        _layout.FocusedIndex = _layout.Count - 1;
+        SaveConfig();
+        _log?.Info($"[chat] window {_layout.Count - 1} created");
+        Rebuild();
+    }
+
+    /// <summary>Pointer motion. Consumed (true) only while dragging/resizing; also tracks hover grips.
+    /// Only rebuilds when a drag is active or the hover target changes (avoids a full re-wrap on every
+    /// mouse-poll event).</summary>
     public static bool OnMouseMotion(int x, int y)
     {
         _lastMx = x; _lastMy = y;
-        ChatWindow? win = _window;
-        if (win == null || !InGame()) return false;   // inert on the menu (box hidden)
-        // Settings panel is modal: swallow all motion while it's open (matches the wheel), so the window chrome
-        // under it doesn't track the pointer. A slider drag additionally live-previews + rebuilds.
-        if (_settings.Open)
+        if (_layout == null || !InGame()) return false;
+        if (_settings.Open && _focused != null)
         {
-            if (_settings.MouseMove(x, y, win, _config)) { ApplyConfig(); Rebuild(); }
+            if (_settings.MouseMove(x, y, _focused, _config))
+            {
+                if (_settings.Moving)
+                    _focused.Dirty = true;
+                else
+                { ApplyConfig(); DirtyAll(); }
+                Rebuild();
+            }
             return true;
         }
-        bool consumed = win.MouseMove(x, y);
-        if (win.ScrollDragging) ChatAnim.MarkScroll();   // scrubbing the thumb resets the fade (no slide -- tracks 1:1)
-        bool inWin = win.Contains(x, y) || win.Dragging;   // keep the grip up mid-drag even if the pointer strays
-        if (consumed || inWin != _pointerInWindow) { _pointerInWindow = inWin; Rebuild(); }
+        ChatWindow[] wins = _layout.Windows;
+        bool consumed = false;
+        for (int i = 0; i < wins.Length; i++)
+        {
+            if (wins[i].MouseMove(x, y)) consumed = true;
+            if (wins[i].ScrollDragging) wins[i].LastScroll = System.DateTime.UtcNow;
+        }
+        // Topmost window under the pointer (reverse draw order = focused last = checked first).
+        // During a tab drag, don't let the source's Dragging pin the hover -- the pointer may be over
+        // a target window whose header must stay visible for the drop (#42).
+        int newHover = -1;
+        int fi = _layout.FocusedIndex;
+        bool tabDrag = false;
+        for (int i = 0; i < wins.Length; i++) if (wins[i].TabDragActive) { tabDrag = true; break; }
+        _anyTabDrag = tabDrag;
+        bool fiDrag = (uint)fi < (uint)wins.Length && wins[fi].Dragging && !wins[fi].TabDragActive;
+        if ((uint)fi < (uint)wins.Length && (wins[fi].Contains(x, y) || fiDrag)) newHover = fi;
+        else for (int i = wins.Length - 1; i >= 0; i--)
+            if (wins[i].Contains(x, y) || (wins[i].Dragging && !wins[i].TabDragActive)) { newHover = i; break; }
+        // Portrait hover: hit-test the topmost window's portrait rects for a highlight.
+        int oldPortraitHover = -1;
+        int newPortraitHover = -1;
+        if (newHover >= 0 && (uint)newHover < (uint)wins.Length)
+        {
+            oldPortraitHover = wins[newHover].HoveredPortrait;
+            PortraitHit[] ph = wins[newHover].PortraitHits;
+            for (int i = 0; i < ph.Length; i++)
+            {
+                var h = ph[i];
+                if (x >= h.X && x < h.X + h.W && y >= h.Y && y < h.Y + h.H) { newPortraitHover = i; break; }
+            }
+            wins[newHover].HoveredPortrait = newPortraitHover;
+        }
+        // Clear hover on the window we left (if different).
+        if (_hoverIndex >= 0 && _hoverIndex != newHover && (uint)_hoverIndex < (uint)wins.Length)
+            wins[_hoverIndex].HoveredPortrait = -1;
+        bool hoverChanged = newHover != _hoverIndex || newPortraitHover != oldPortraitHover;
+        if (consumed || hoverChanged)
+        {
+            // Mark the windows that actually changed dirty.
+            if (consumed) wins[fi].Dirty = true;   // the dragging window IS focused (press focuses before grab)
+            if (hoverChanged)
+            {
+                if (newHover >= 0 && (uint)newHover < (uint)wins.Length) wins[newHover].Dirty = true;
+                if (_hoverIndex >= 0 && (uint)_hoverIndex < (uint)wins.Length) wins[_hoverIndex].Dirty = true;
+            }
+            if (tabDrag) DirtyAll();   // tab drag needs all headers for drop targets
+            _hoverIndex = newHover;
+            Rebuild();
+        }
         return consumed;
     }
 
     /// <summary>Lines a wheel notch scrolls.</summary>
     private const float WheelLines = 3f;
 
-    /// <summary>Wheel notch. Consumed (and scrolls) only when the pointer is over the window. Scrolling
-    /// resets the fade clock (the messages reappear) and eases the smooth-scroll residual by the pixels the
-    /// rebuild actually applied -- so a wheel at either end (nothing applied) doesn't rubber-band.</summary>
+    /// <summary>Wheel notch. Consumed (and scrolls) only when the pointer is over a chat window. Routes
+    /// to the hovered window (not necessarily focused). Scrolling on the focused window eases the residual;
+    /// on others it snaps.</summary>
     public static bool OnMouseWheel(int dy)
     {
-        ChatWindow? win = _window;
-        if (win == null || !InGame()) return false;
-        if (_settings.Open) return true;   // modal: swallow the notch anywhere (incl. panel overhang), never scroll behind it
-        if (!win.Contains(_lastMx, _lastMy)) return false;
+        if (_layout == null || !InGame()) return false;
+        if (_settings.Open) return true;
+        // Find the topmost window under the pointer (focused draws last = checked first).
+        ChatWindow[] wins = _layout.Windows;
+        ChatWindow? hit = null; int hitIdx = -1;
+        int fi = _layout.FocusedIndex;
+        if ((uint)fi < (uint)wins.Length && wins[fi].Contains(_lastMx, _lastMy)) { hit = wins[fi]; hitIdx = fi; }
+        else for (int i = wins.Length - 1; i >= 0; i--)
+            if (wins[i].Contains(_lastMx, _lastMy)) { hit = wins[i]; hitIdx = i; break; }
+        if (hit == null) return false;
         GlyphAtlas? atlas = TextRenderer.Atlas;
-        if (atlas == null) return true;   // consumed, but nothing to scroll before the atlas bakes
-        float before = win.Active.ScrollPx;
-        win.ScrollByPx(dy * WheelLines * atlas.LineHeight);
-        Rebuild();   // Build clamps ScrollPx to [0, contentH-bh]; read back the applied delta
-        float applied = win.Active.ScrollPx - before;
-        ChatAnim.MarkScroll();
-        if (applied != 0f) ChatAnim.AddResidual(-applied);   // ease the body from its pre-wheel position
+        if (atlas == null) return true;
+        float before = hit.Active.ScrollPx;
+        hit.ScrollByPx(dy * WheelLines * atlas.LineHeight);
+        hit.Dirty = true;
+        Rebuild();
+        float applied = hit.Active.ScrollPx - before;
+        hit.LastScroll = System.DateTime.UtcNow;
+        if (applied != 0f && hitIdx == _layout.FocusedIndex) ChatAnim.AddResidual(-applied);
         return true;
     }
 
@@ -597,7 +1149,14 @@ public sealed unsafe class ChatService : IExtenderService
         _sendWhisper = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatWhisper);
         _sendParty   = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatParty);
         _sendDM      = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatDM);
-        _sendTell    = (delegate* unmanaged<IntPtr, uint, IntPtr, void>)Native.Sym(SymbolMap.SendChatTell);
+        _sendTell    = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatTell);
+
+        var getByName = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.GetPlayerByPlayerName);
+        if (getByName != null)
+        {
+            _playerResolver = new NativePlayerResolver(getByName);
+            log.Info("ChatService: player roster resolver installed (GetPlayerByPlayerName)");
+        }
 
         // Own the three chat openers with skip-original handlers: install the hook but never call
         // through the trampoline, so the vanilla focus slot stays null and never grabs the keyboard.
@@ -620,7 +1179,7 @@ public sealed unsafe class ChatService : IExtenderService
     // Chat senders (#22). Talk/Shout/Whisper/Party/DM: (this CNWCMessage*, CExoString*). Tell also
     // takes the target playerId: (this, uint playerId, CExoString*).
     private static delegate* unmanaged<IntPtr, IntPtr, void> _sendTalk, _sendShout, _sendWhisper, _sendParty, _sendDM;
-    private static delegate* unmanaged<IntPtr, uint, IntPtr, void> _sendTell;
+    private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, void> _sendTell;
 
     // SDL_Keymod bits (match HotkeyInputService): Ctrl/Shift both sides.
     private const int KmodShift = 0x0003;
@@ -640,14 +1199,24 @@ public sealed unsafe class ChatService : IExtenderService
     [UnmanagedCallersOnly] private static void OnOpenShow(IntPtr self) => Open();
     [UnmanagedCallersOnly] private static void OnOpenTell(IntPtr self, IntPtr player) => Open();
 
-    /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys.</summary>
+    /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the
+    /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does.</summary>
     private static void Open()
     {
+        if (_layout == null) return;
+        ChatWindow target = _layout.Focused;
+        if (!target.HasSendable)
+        {
+            target = _layout.Main;
+            _layout.FocusedIndex = 0;
+            if (_settings.Open) _settings.Reset();
+        }
+        if (!target.HasSendable) return;
         IsTyping = true;
         Edit.Clear();
-        if (_startText != null) _startText();   // vanilla started it inside the focus path we skip
+        if (_startText != null) _startText();
         KeyboardMode(true);
-        Rebuild();   // show the (now-open) footer edit line
+        Rebuild();
     }
 
     /// <summary>
@@ -658,13 +1227,23 @@ public sealed unsafe class ChatService : IExtenderService
     {
         if (submit)
         {
-            string text = Edit.Submit();   // pushes history + clears the line; returns what was typed
-            ChatWindow? win = _window;
-            if (win != null && !string.IsNullOrEmpty(text))
+            string text = Edit.Submit();
+            if (!string.IsNullOrEmpty(text) && TryWindowCommand(text))
+            { /* handled — don't send */ }
+            else if (_layout?.Focused is ChatWindow win && !string.IsNullOrEmpty(text))
             {
-                var (switchTo, rest) = ChatCommands.Parse(text);   // "/s hi" -> switch to Shout, send "hi"
-                if (switchTo is Channel nc) win.SendChannel = nc;  // persists across messages (dropdown reflects it)
-                if (!string.IsNullOrEmpty(rest)) Send(win.SendChannel, null, rest);
+                var (switchTo, tellTarget, rest) = ChatCommands.Parse(text);
+                if (switchTo is Channel nc) win.SendChannel = nc;
+                if (!string.IsNullOrEmpty(rest))
+                {
+                    string? tellName = null;
+                    if (win.SendChannel == Channel.Tell)
+                    {
+                        tellName = TellTarget.ResolveName(win.Active, tellTarget, _playerResolver);
+                        _log?.Info($"[chat] tell resolve: target=\"{tellTarget}\" pin=\"{win.Active.PinnedName}\" name={tellName ?? "(null)"}");
+                    }
+                    Send(win.SendChannel, tellName, rest);
+                }
             }
         }
         else Edit.Clear();
@@ -673,7 +1252,31 @@ public sealed unsafe class ChatService : IExtenderService
         // debug console + other text fields depend on TEXTINPUT events firing. KeyboardModeOff below is the
         // real gate that stops chars reaching us. Stopping SDL text input here breaks the console.
         KeyboardMode(false);
-        Rebuild();   // hide the footer edit line
+        Rebuild();
+    }
+
+    /// <summary>Window management slash commands (#41). Returns true if the text was handled.</summary>
+    private static bool TryWindowCommand(string text)
+    {
+        if (text.Length < 2 || text[0] != '/') return false;
+        string cmd = text.Trim().ToLowerInvariant();
+        if (cmd == "/newwin" || cmd == "/nw")
+        {
+            CreateWindow();
+            return true;
+        }
+        if (cmd == "/closewin" || cmd == "/cw")
+        {
+            if (_layout == null) return true;
+            int idx = _layout.FocusedIndex;
+            if (_layout.CloseWindow(idx))
+            {
+                SaveConfig();
+                _log?.Info($"[chat] /closewin: window {idx} closed");
+            }
+            return true;
+        }
+        return false;
     }
 
     /// <summary>Route submitted text to the server on <paramref name="ch"/> via the vanilla
@@ -681,7 +1284,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// Cold (input thread) so allocation is fine. The callee copies the CExoString; we own + free it.</summary>
     // ponytail: no content is logged (repo's no-keylog stance) -- the send echoes back through the
     // inbound tap, which logs the delivered line, so a live run still proves each channel end-to-end.
-    private static void Send(Channel ch, uint? playerId, string text)
+    private static void Send(Channel ch, string? tellName, string text)
     {
         IntPtr msg = ClientApi.Message();
         if (msg == IntPtr.Zero) { _log?.Info($"[chat] send dropped (ch={ch}): no live CNWCMessage yet"); return; }
@@ -696,8 +1299,14 @@ public sealed unsafe class ChatService : IExtenderService
                 case Channel.Party   when _sendParty   != null: _sendParty(msg, exo); break;
                 case Channel.DM      when _sendDM      != null: _sendDM(msg, exo); break;
                 case Channel.Tell:
-                    if (playerId is uint pid && _sendTell != null) _sendTell(msg, pid, exo);
-                    else _log?.Info("[chat] tell dropped: tab carries no target playerId");   // never reroute to Talk
+                    if (tellName != null && _sendTell != null)
+                    {
+                        IntPtr nameExo = Native.NewExoString(tellName);
+                        _log?.Info($"[chat] tell SENDING via TellName: msg=0x{msg:x} name=0x{nameExo:x} text=0x{exo:x} fn=0x{(long)_sendTell:x}");
+                        try { _sendTell(msg, nameExo, exo); }
+                        finally { Native.FreeExoString(nameExo); }
+                    }
+                    else _log?.Info($"[chat] tell dropped: tellName={tellName} sendTell={(long)_sendTell:x}");
                     break;
                 default: _log?.Info($"[chat] send dropped (ch={ch}): sender symbol unresolved"); break;
             }
@@ -726,13 +1335,13 @@ public sealed unsafe class ChatService : IExtenderService
         {
             switch (key)
             {
-                case KeyReturn:    _settings.CommitEdit(_config); break;
+                case KeyReturn:    _settings.CommitEdit(_focused, _config); break;
                 case KeyEsc:       _settings.CancelEdit(); break;
                 case KeyBackspace: _settings.EditBackspace(); break;
                 // other keys (nav/ctrl) are ignored while typing a number
             }
-            ApplyConfig();
-            if (_window != null) SaveConfig(_window);   // a keyboard commit has no paired mouse-up to persist on
+            ApplyConfig(); DirtyAll();
+            SaveConfig();   // a keyboard commit has no paired mouse-up to persist on
             SyncFieldKeyboard(); Rebuild();
             return;
         }
