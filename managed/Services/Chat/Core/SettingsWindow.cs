@@ -11,6 +11,7 @@ public enum SetAct
     CycleFmt, CycleSrc, CycleAlign, CycleTellOpen, CycleBgMode, ColorSwatch, ColorChannel,
     TabExpand, TabAdd, TabRemove, TabLabel, TabPin, TabChannel,
     CopyFrom,
+    CycleGridSize,
 }
 
 /// <summary>The visual kind of a row (how the renderer draws it).</summary>

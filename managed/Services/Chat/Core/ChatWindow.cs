@@ -58,6 +58,17 @@ public sealed class ChatWindow
 {
     public float X, Y, W, H;
 
+    /// <summary>Grid snap: pitch in px (0 = off), and the anchor center for each axis. Set by
+    /// <see cref="Quickbar.QuickbarService.Tick"/> each frame from the live config + viewport.</summary>
+    public static float SnapPx, SnapCX, SnapCY;
+    private static float SnapX(float v) => SnapCX + (float)System.Math.Round((v - SnapCX) / SnapPx) * SnapPx;
+    private static float SnapY(float v) => SnapCY + (float)System.Math.Round((v - SnapCY) / SnapPx) * SnapPx;
+
+    /// <summary>Edge snap: magnet threshold in px (0 = off) and viewport bounds. Set by
+    /// <see cref="Quickbar.QuickbarService.Tick"/> each frame.</summary>
+    public static float EdgeThresh, EdgeVpW, EdgeVpH;
+    internal const float EdgeMagnet = 12f;
+
     /// <summary>This window's tabs, swapped atomically so the ingest thread (which reads <see cref="Active"/>
     /// and iterates <see cref="Tabs"/> during <c>Rebuild</c>) always sees a consistent snapshot even while the
     /// input thread adds/removes tabs. The &gt;=1-tab invariant is enforced by the mutation methods.</summary>
@@ -539,10 +550,33 @@ public sealed class ChatWindow
     {
         switch (_grab)
         {
-            case Grab.Move: X = mx - _gx; Y = my - _gy; return true;
+            case Grab.Move:
+                X = mx - _gx; Y = my - _gy;
+                if (SnapPx > 0) { X = SnapX(X); Y = SnapY(Y); }
+                if (EdgeThresh > 0)
+                {
+                    if (System.Math.Abs(X) < EdgeThresh) X = 0;
+                    else if (System.Math.Abs(X + W - EdgeVpW) < EdgeThresh) X = EdgeVpW - W;
+                    if (System.Math.Abs(Y) < EdgeThresh) Y = 0;
+                    else if (System.Math.Abs(Y + H - EdgeVpH) < EdgeThresh) Y = EdgeVpH - H;
+                }
+                return true;
             case Grab.Resize:
-                W = System.Math.Max(MinW, _gw + (mx - _gx));
-                H = System.Math.Max(MinH, _gh + (my - _gy));
+                if (SnapPx > 0)
+                {
+                    W = System.Math.Max(MinW, SnapX(X + _gw + (mx - _gx)) - X);
+                    H = System.Math.Max(MinH, SnapY(Y + _gh + (my - _gy)) - Y);
+                }
+                else
+                {
+                    W = System.Math.Max(MinW, _gw + (mx - _gx));
+                    H = System.Math.Max(MinH, _gh + (my - _gy));
+                }
+                if (EdgeThresh > 0)
+                {
+                    if (System.Math.Abs(X + W - EdgeVpW) < EdgeThresh) W = EdgeVpW - X;
+                    if (System.Math.Abs(Y + H - EdgeVpH) < EdgeThresh) H = EdgeVpH - Y;
+                }
                 return true;
             case Grab.TabHold:
             {
@@ -888,6 +922,61 @@ public sealed class ChatWindow
         E(lw.ScrollDragging, "locked: scroll still works");
         lw.MouseUp(0, 0);
         lw.ContentH = 0f; lw.ViewH = 0f;
+
+        // Grid snap: move snaps X/Y, resize snaps the edge, MinW beats snap, off = free.
+        float spOld = SnapPx; float cxOld = SnapCX, cyOld = SnapCY;
+        SnapPx = 50; SnapCX = 0; SnapCY = 0;
+        var gs = new ChatWindow(0, 0, 400, 300, tabs);
+        gs.MouseDown(250, 5);                    // move handle (past 2 tabs at 120px each)
+        gs.MouseMove(297, 28);                   // raw X=47 → snap 50; raw Y=23 → snap 0
+        E(gs.X == 50 && gs.Y == 0, "grid snap: move snaps X/Y");
+        gs.MouseUp(0, 0);
+        var gs2 = new ChatWindow(50, 0, 400, 300, tabs);
+        gs2.MouseDown(gs2.X + gs2.W - 2, gs2.Y + gs2.H - 2);   // resize grip
+        gs2.MouseMove(gs2.X + gs2.W - 2 + 27, gs2.Y + gs2.H - 2 + 13); // right=477→500 W=450; bottom=313→300 H=300
+        E(gs2.W == 450 && gs2.H == 300, "grid snap: resize snaps the edge");
+        gs2.MouseUp(0, 0);
+        var gsm = new ChatWindow(0, 0, MinW, MinH, tabs);
+        gsm.MouseDown(MinW - 2, MinH - 2);
+        gsm.MouseMove(-500, -500);
+        E(gsm.W == MinW && gsm.H == MinH, "grid snap: MinW/MinH wins over snap");
+        gsm.MouseUp(0, 0);
+        SnapPx = 0;
+        var gf = new ChatWindow(0, 0, 400, 300, tabs);
+        gf.MouseDown(250, 5);
+        gf.MouseMove(297, 28);
+        E(gf.X == 47 && gf.Y == 23, "grid off: free drag");
+        gf.MouseUp(0, 0);
+        SnapPx = spOld; SnapCX = cxOld; SnapCY = cyOld;
+
+        // Edge snap: move near edge snaps to edge, resize right/bottom snaps to viewport.
+        float etOld = EdgeThresh, evwOld = EdgeVpW, evhOld = EdgeVpH;
+        EdgeThresh = EdgeMagnet; EdgeVpW = 1920; EdgeVpH = 1080;
+        SnapPx = 0;
+        var em = new ChatWindow(0, 0, 400, 300, tabs);
+        em.MouseDown(250, 5);
+        em.MouseMove(255, 13);   // raw X=5, Y=8 → both < 12, snap to 0,0
+        E(em.X == 0 && em.Y == 0, "edge snap: move near top-left snaps to 0,0");
+        em.MouseUp(0, 0);
+        var em2 = new ChatWindow(0, 0, 400, 300, tabs);
+        em2.MouseDown(250, 5);
+        em2.MouseMove(1770, 788);   // raw X=1520, right=1920 exact; raw Y=783, bot=1083 ~1080
+        E(em2.X == 1920 - 400, "edge snap: move near right snaps to vpW-W");
+        E(em2.Y == 1080 - 300, "edge snap: move near bottom snaps to vpH-H");
+        em2.MouseUp(0, 0);
+        var er = new ChatWindow(100, 100, 400, 300, tabs);
+        er.MouseDown(er.X + er.W - 2, er.Y + er.H - 2);
+        er.MouseMove(er.X + er.W - 2 + (1920 - 100 - 400 - 5), er.Y + er.H - 2 + (1080 - 100 - 300 - 8));
+        E(er.W == 1920 - 100, "edge snap: resize right edge snaps to vpW");
+        E(er.H == 1080 - 100, "edge snap: resize bottom edge snaps to vpH");
+        er.MouseUp(0, 0);
+        EdgeThresh = 0;
+        var ef = new ChatWindow(0, 0, 400, 300, tabs);
+        ef.MouseDown(250, 5);
+        ef.MouseMove(255, 13);
+        E(ef.X == 5 && ef.Y == 8, "edge off: free drag");
+        ef.MouseUp(0, 0);
+        EdgeThresh = etOld; EdgeVpW = evwOld; EdgeVpH = evhOld;
 
         // Ephemeral (#46): Tell-only tab is structurally ephemeral.
         var ew = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff), new Tab("Tell:X", 0x002) });

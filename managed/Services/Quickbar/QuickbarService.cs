@@ -124,6 +124,28 @@ public sealed unsafe class QuickbarService : IExtenderService
 
         ApplyCompass();
 
+        if (_config.GridOn && _config.GridPx > 0)
+        {
+            Chat.Core.ChatWindow.SnapPx = _config.GridPx;
+            Chat.Core.ChatWindow.SnapCX = vpW / 2f;
+            Chat.Core.ChatWindow.SnapCY = vpH / 2f;
+        }
+        else
+        {
+            Chat.Core.ChatWindow.SnapPx = 0;
+        }
+
+        if (_config.EdgeSnap && vpW > 0)
+        {
+            Chat.Core.ChatWindow.EdgeThresh = Chat.Core.ChatWindow.EdgeMagnet;
+            Chat.Core.ChatWindow.EdgeVpW = vpW;
+            Chat.Core.ChatWindow.EdgeVpH = vpH;
+        }
+        else
+        {
+            Chat.Core.ChatWindow.EdgeThresh = 0;
+        }
+
         if (_dirty) { RebuildChrome(); ChatService.RequestRebuild(); }
     }
 
@@ -134,6 +156,8 @@ public sealed unsafe class QuickbarService : IExtenderService
         _settings.Reset();
         _compassApplied = false;
         _extraFrames = Array.Empty<RenderFrame>();
+        Chat.Core.ChatWindow.SnapPx = 0;
+        Chat.Core.ChatWindow.EdgeThresh = 0;
     }
 
     /// <summary>True while the quickbar settings panel is open.</summary>
@@ -231,6 +255,22 @@ public sealed unsafe class QuickbarService : IExtenderService
                 b.Rect(0f, qY, qX, (float)vpH, barR, barG, barB, barA);
             if (qX + qW < vpW)
                 b.Rect(qX + qW, qY, (float)vpW, (float)vpH, barR, barG, barB, barA);
+        }
+
+        if (_config.GridOn && _config.GridPx > 0)
+        {
+            int gp = _config.GridPx;
+            float cx = vpW / 2f, cy = vpH / 2f;
+            for (float lx = cx % gp; lx < vpW; lx += gp)
+            {
+                bool ctr = System.Math.Abs(lx - cx) < 1f;
+                b.Rect(lx, 0, lx + 1, vpH, ctr ? 0.8f : 0f, 0f, 0f, ctr ? 0.4f : 0.3f);
+            }
+            for (float ly = cy % gp; ly < vpH; ly += gp)
+            {
+                bool ctr = System.Math.Abs(ly - cy) < 1f;
+                b.Rect(0, ly, vpW, ly + 1, ctr ? 0.8f : 0f, 0f, 0f, ctr ? 0.4f : 0.3f);
+            }
         }
 
         int vc = b.VertexCount;

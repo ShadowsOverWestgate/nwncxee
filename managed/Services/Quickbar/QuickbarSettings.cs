@@ -36,7 +36,15 @@ public sealed class QuickbarSettings
     { x1 = X + W - Pad; x0 = x1 - 36f; y0 = r.Top + 3f; y1 = r.Top + RowH - 3f; }
 
     // Bit discriminators for ToggleBit rows.
-    private const uint BitBars = 1, BitHidden = 2, BitCompass = 3;
+    private const uint BitBars = 1, BitHidden = 2, BitCompass = 3, BitGrid = 4, BitEdge = 5;
+
+    private static readonly int[] GridSizes = { 25, 50, 75, 100, 150, 200 };
+    private static int NextGridSize(int cur)
+    {
+        for (int i = 0; i < GridSizes.Length; i++)
+            if (GridSizes[i] == cur) return GridSizes[(i + 1) % GridSizes.Length];
+        return GridSizes[0];
+    }
 
     /// <summary>Rebuild the row list from the live config.</summary>
     public void Layout(QuickbarConfig cfg)
@@ -62,6 +70,22 @@ public sealed class QuickbarSettings
 
         rows.Add(new SetRow { Kind = SetKind.Toggle, Act = SetAct.ToggleBit, Label = "Hide compass",
             On = cfg.CompassHidden, Top = y, Height = RowH, Bit = BitCompass });
+        y += RowH;
+
+        rows.Add(new SetRow { Kind = SetKind.Toggle, Act = SetAct.ToggleBit, Label = "Snap grid",
+            On = cfg.GridOn, Top = y, Height = RowH, Bit = BitGrid });
+        y += RowH;
+
+        if (cfg.GridOn)
+        {
+            rows.Add(new SetRow { Kind = SetKind.Cycle, Act = SetAct.CycleGridSize, Label = "Grid size",
+                Value = cfg.GridPx.ToString(System.Globalization.CultureInfo.InvariantCulture) + " px",
+                Top = y, Height = RowH });
+            y += RowH;
+        }
+
+        rows.Add(new SetRow { Kind = SetKind.Toggle, Act = SetAct.ToggleBit, Label = "Edge snap",
+            On = cfg.EdgeSnap, Top = y, Height = RowH, Bit = BitEdge });
         y += RowH;
 
         _h = (y - Y) + Pad;
@@ -112,7 +136,12 @@ public sealed class QuickbarSettings
                     case BitBars: cfg.Bars = !cfg.Bars; break;
                     case BitHidden: cfg.Hidden = !cfg.Hidden; break;
                     case BitCompass: cfg.CompassHidden = !cfg.CompassHidden; break;
+                    case BitGrid: cfg.GridOn = !cfg.GridOn; break;
+                    case BitEdge: cfg.EdgeSnap = !cfg.EdgeSnap; break;
                 }
+                break;
+            case SetAct.CycleGridSize:
+                cfg.GridPx = NextGridSize(cfg.GridPx);
                 break;
         }
         Layout(cfg);
@@ -149,7 +178,7 @@ public sealed class QuickbarSettings
         var cfg = new QuickbarConfig();
         var s = new QuickbarSettings();
         s.OpenAt(1280, 800, cfg);
-        E(s.Open && s.Rows.Count == 4, "opens with 4 rows");
+        E(s.Open && s.Rows.Count == 6, "opens with 6 rows (grid off hides size)");
         E(s.MouseUp(), "up after open is consumed");
 
         // Cycle align: Left(0)->Center(1)->Right(2)->Left(0)
@@ -188,6 +217,28 @@ public sealed class QuickbarSettings
         s.OpenAt(1280, 800, cfg); s.MouseUp();
         s.MouseDown(s.X + 5, s.Y + s.H + 40, cfg);
         E(!s.Open, "click-off closes");
+
+        // Grid toggle + size cycle
+        cfg.GridOn = false; cfg.GridPx = 50;
+        s.OpenAt(1280, 800, cfg); s.MouseUp();
+        SetRow grid = s.Rows.Find(r => r.Bit == BitGrid)!;
+        s.MouseDown(s.X + 5, grid.Top + 2, cfg);
+        E(cfg.GridOn, "grid toggled on");
+        E(s.Rows.Count == 7, "grid on shows size cycle row");
+        SetRow gsz = s.Rows.Find(r => r.Act == SetAct.CycleGridSize)!;
+        s.MouseDown(s.X + 5, gsz.Top + 2, cfg);
+        E(cfg.GridPx == 75, "grid size cycles 50 -> 75");
+        s.MouseDown(s.X + 5, s.Rows.Find(r => r.Bit == BitGrid)!.Top + 2, cfg);
+        E(!cfg.GridOn, "grid toggled off");
+        E(s.Rows.Find(r => r.Act == SetAct.CycleGridSize) == null, "grid off hides size row");
+
+        // Edge snap toggle (default on)
+        cfg.EdgeSnap = true;
+        s.OpenAt(1280, 800, cfg); s.MouseUp();
+        SetRow edge = s.Rows.Find(r => r.Bit == BitEdge)!;
+        E(edge.On, "edge snap default on");
+        s.MouseDown(s.X + 5, edge.Top + 2, cfg);
+        E(!cfg.EdgeSnap, "edge snap toggled off");
 
         s.Reset();
         log.Info(ok ? "QuickbarSettings.SelfCheck: passed" : "QuickbarSettings.SelfCheck: FAILED");

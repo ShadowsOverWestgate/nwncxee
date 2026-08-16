@@ -13,9 +13,13 @@ public sealed class QuickbarConfig
     public bool Bars = true;
     public bool Hidden;
     public bool CompassHidden;
+    public bool GridOn;
+    public int GridPx = 50;
+    public bool EdgeSnap = true;
 
     public string ToText() =>
-        $"align={(int)Align}\nbars={(Bars ? 1 : 0)}\nhidden={(Hidden ? 1 : 0)}\ncompass={(CompassHidden ? 1 : 0)}\n";
+        $"align={(int)Align}\nbars={(Bars ? 1 : 0)}\nhidden={(Hidden ? 1 : 0)}\ncompass={(CompassHidden ? 1 : 0)}\n" +
+        $"grid={(GridOn ? 1 : 0)}\ngridpx={GridPx}\nedgesnap={(EdgeSnap ? 1 : 0)}\n";
 
     public static QuickbarConfig Parse(string text)
     {
@@ -41,6 +45,15 @@ public sealed class QuickbarConfig
                 case "compass":
                     if (int.TryParse(val, out int c)) cfg.CompassHidden = c != 0;
                     break;
+                case "grid":
+                    if (int.TryParse(val, out int g)) cfg.GridOn = g != 0;
+                    break;
+                case "gridpx":
+                    if (int.TryParse(val, out int gp) && gp >= 10 && gp <= 500) cfg.GridPx = gp;
+                    break;
+                case "edgesnap":
+                    if (int.TryParse(val, out int es)) cfg.EdgeSnap = es != 0;
+                    break;
             }
         }
         return cfg;
@@ -51,19 +64,25 @@ public sealed class QuickbarConfig
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"QuickbarConfig.SelfCheck FAIL: {w}"); } }
 
-        var cfg = new QuickbarConfig { Align = QbarAlign.Right, Bars = false, Hidden = true, CompassHidden = true };
+        var cfg = new QuickbarConfig { Align = QbarAlign.Right, Bars = false, Hidden = true, CompassHidden = true, GridOn = true, GridPx = 75, EdgeSnap = false };
         string text = cfg.ToText();
         var rt = Parse(text);
         E(rt.Align == QbarAlign.Right, "align round-trips");
         E(!rt.Bars, "bars round-trips");
         E(rt.Hidden, "hidden round-trips");
         E(rt.CompassHidden, "compass round-trips");
+        E(rt.GridOn, "grid round-trips");
+        E(rt.GridPx == 75, "gridpx round-trips");
+        E(!rt.EdgeSnap, "edgesnap round-trips (off)");
 
         var def = Parse("");
         E(def.Align == QbarAlign.Center, "default align is Center");
         E(def.Bars, "default bars is true");
         E(!def.Hidden, "default hidden is false");
         E(!def.CompassHidden, "default compass is false");
+        E(!def.GridOn, "default grid is false");
+        E(def.GridPx == 50, "default gridpx is 50");
+        E(def.EdgeSnap, "default edgesnap is true");
 
         log.Info(ok ? "QuickbarConfig.SelfCheck: passed" : "QuickbarConfig.SelfCheck: FAILED");
     }
