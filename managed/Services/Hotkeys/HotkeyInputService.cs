@@ -176,22 +176,37 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                 case SdlTextInput:                                             // finished UTF-8 -> chat edit line / settings field
                     if (ChatService.WantsKey) ChatService.InsertUtf8(ev + SdlEvTextOff);
                     break;
-                case SdlMouseMotion:                                            // chatbox drag/resize eats motion mid-drag
-                    if (ChatService.OnMouseMotion(*(int*)(ev + SdlEvMouseXOff), *(int*)(ev + SdlEvMouseYOff)))
+                case SdlMouseMotion:
+                {
+                    int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    if (Quickbar.QuickbarService.OnMouseMotion(mx, my))
+                        return 0;
+                    if (ChatService.OnMouseMotion(mx, my))
                         return 0;
                     break;
-                case SdlMouseDown:                                             // chatbox first, else mouse-as-hotkey
-                    if (ChatService.OnMouseButton(true, *(byte*)(ev + SdlEvButtonOff),
-                                                  *(int*)(ev + SdlEvMouseXOff), *(int*)(ev + SdlEvMouseYOff)))
-                        return 0;                                              // clicked the box: don't hit the world
-                    Fire(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff) | Mods());
-                    break;
-                case SdlMouseUp:                                              // chatbox release, else clear held mark
-                    if (ChatService.OnMouseButton(false, *(byte*)(ev + SdlEvButtonOff),
-                                                  *(int*)(ev + SdlEvMouseXOff), *(int*)(ev + SdlEvMouseYOff)))
+                }
+                case SdlMouseDown:
+                {
+                    byte btn = *(byte*)(ev + SdlEvButtonOff);
+                    int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    if (Quickbar.QuickbarService.OnMouseButton(true, btn, mx, my))
                         return 0;
-                    _down.Remove(HotkeyProtocol.MouseBase + *(byte*)(ev + SdlEvButtonOff));
+                    if (ChatService.OnMouseButton(true, btn, mx, my))
+                        return 0;
+                    Fire(HotkeyProtocol.MouseBase + btn | Mods());
                     break;
+                }
+                case SdlMouseUp:
+                {
+                    byte btn = *(byte*)(ev + SdlEvButtonOff);
+                    int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    if (Quickbar.QuickbarService.OnMouseButton(false, btn, mx, my))
+                        return 0;
+                    if (ChatService.OnMouseButton(false, btn, mx, my))
+                        return 0;
+                    _down.Remove(HotkeyProtocol.MouseBase + btn);
+                    break;
+                }
                 case SdlMouseWheel:                                            // scrollback when the pointer is over the box
                     if (ChatService.OnMouseWheel(*(int*)(ev + SdlEvWheelYOff)))
                         return 0;

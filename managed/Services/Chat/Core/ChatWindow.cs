@@ -40,11 +40,12 @@ public sealed class Tab
     public Tab(string label, uint channelMask, uint? playerId = null)
     { Label = label; ChannelMask = channelMask; PlayerId = playerId; }
 
-    /// <summary>Does a line show in this tab? The channel value from the ingest hook IS the
-    /// GUIINGAME_MESSAGE_* flag (already a bit), so the mask test is a direct AND.</summary>
+    /// <summary>Does a line show in this tab? Includes outbound Tell echoes whose recipient matches
+    /// <see cref="PinnedName"/> (two-sided conversation).</summary>
     public bool Matches(ChatLine line)
         => (ChannelMask & line.Channel) != 0
-           && (!PlayerId.HasValue || line.PlayerId == PlayerId.Value);
+           && (!PlayerId.HasValue || line.PlayerId == PlayerId.Value
+               || (PinnedName.Length > 0 && line.TellRecipient == PinnedName));
 }
 
 /// <summary>
@@ -96,6 +97,8 @@ public sealed class ChatWindow
     public TsSource TimeSource = TsSource.Local;
     /// <summary>Per-window message body text alignment.</summary>
     public TextAlign Align = TextAlign.Left;
+    /// <summary>Per-window background fill style (solid, gradient, stripes).</summary>
+    public BgMode BgMode = BgMode.Solid;
     /// <summary>Hide the tab bar when the pointer is not over the window.</summary>
     public bool AutoHideHeader = true;
     /// <summary>When true, the window cannot be moved, resized, or have its tabs dragged (#43).</summary>
@@ -400,6 +403,25 @@ public sealed class ChatWindow
 
     public bool Contains(float mx, float my) => mx >= X && mx <= X + W && my >= Y && my <= Y + H;
 
+    /// <summary>Full UI hit-test: frame + input strip + open channel dropdown.</summary>
+    public bool HitTestFull(float mx, float my)
+    {
+        if (Contains(mx, my)) return true;
+        if (!FooterVisible) return false;
+        if (mx >= X && mx < X + W && my >= StripTop && my < StripTop + FooterHeight) return true;
+        if (ChannelListOpen)
+        {
+            int rows = 0;
+            foreach (Channel ch in SendChannels) if (CanSelect(ch)) rows++;
+            for (int i = 0; i < rows; i++)
+            {
+                float top = ChannelItemTop(i);
+                if (mx >= X && mx < X + DropdownW && my >= top && my < top + FooterH) return true;
+            }
+        }
+        return false;
+    }
+
     /// <summary>True when the pointer is over the bottom-right resize grip (also the hover-handle zone).</summary>
     /// <summary>Grow the rect to the current scaled minimum. Called when Metrics.Scale changes so a rect saved
     /// at a smaller scale (or restored before the UI scale synced) can't leave the chrome overflowing its box.</summary>
@@ -578,10 +600,12 @@ public sealed class ChatWindow
     }
 
     /// <summary>Body rectangle: everything between the tab bar and the frame's bottom. Since #25 the input
-    /// strip pops out <em>below</em> the frame, so the body keeps its full height whether or not it shows.</summary>
-    public void BodyRect(out float bx, out float by, out float bw, out float bh)
+    /// strip pops out <em>below</em> the frame, so the body keeps its full height whether or not it shows.
+    /// When <paramref name="headerVisible"/> is false the body expands upward into the header band.</summary>
+    public void BodyRect(out float bx, out float by, out float bw, out float bh, bool headerVisible = true)
     {
-        bx = X; by = Y + TabBarH; bw = W; bh = H - TabBarH;
+        float top = headerVisible ? TabBarH : 0f;
+        bx = X; by = Y + top; bw = W; bh = H - top;
     }
 
     /// <summary>Copy all per-window settings (look, not identity) from <paramref name="src"/>. Tabs and rect
@@ -598,6 +622,7 @@ public sealed class ChatWindow
         Outline = src.Outline;
         TimeFormat = src.TimeFormat; TimeSource = src.TimeSource;
         Align = src.Align;
+        BgMode = src.BgMode;
         AutoHideHeader = src.AutoHideHeader;
     }
 
@@ -825,6 +850,7 @@ public sealed class ChatWindow
         src.HoldSec = 99f; src.FadeSec = 11f; src.TauMs = 200f; src.Outline = true;
         src.TimeFormat = TsFormat.HourMinSec; src.TimeSource = TsSource.Game;
         src.Align = TextAlign.Right;
+        src.BgMode = BgMode.StripesH;
         src.AutoHideHeader = false;
         src.Colors["bg"] = 0x112233ffu;
         var dst = new ChatWindow(50, 50, 300, 200, new[] { new Tab("Combat", 0x010) });
@@ -833,6 +859,7 @@ public sealed class ChatWindow
         E(dst.HoldSec == 99f && dst.FadeSec == 11f && dst.TauMs == 200f, "copy: hold/fade/tau");
         E(dst.Outline && dst.TimeFormat == TsFormat.HourMinSec && dst.TimeSource == TsSource.Game, "copy: outline+ts");
         E(dst.Align == TextAlign.Right, "copy: align");
+        E(dst.BgMode == BgMode.StripesH, "copy: bgmode");
         E(!dst.AutoHideHeader, "copy: autoHideHeader");
         E(dst.Colors.ContainsKey("bg") && dst.Colors["bg"] == 0x112233ffu, "copy: colour override copied");
         // Deep copy: mutating the source after copy must not affect the destination.
@@ -907,23 +934,26 @@ internal sealed class LayoutCache
     public readonly float MaxTextW;
     public readonly uint TabMask;
     public readonly uint? TabPlayerId;
+    public readonly string PinnedName;
     public readonly uint Toggles;
     public readonly int StoreVer, TimeFormat, TimeSource;
     public readonly object AtlasRef;
 
     public LayoutCache(float[] blockH, float contentH, int count, float maxTextW, uint tabMask,
-                       uint? tabPlayerId, uint toggles, int storeVer, int timeFormat, int timeSource, object atlasRef)
+                       uint? tabPlayerId, string pinnedName, uint toggles, int storeVer, int timeFormat,
+                       int timeSource, object atlasRef)
     {
         BlockH = blockH; ContentH = contentH; Count = count; MaxTextW = maxTextW;
-        TabMask = tabMask; TabPlayerId = tabPlayerId; Toggles = toggles;
+        TabMask = tabMask; TabPlayerId = tabPlayerId; PinnedName = pinnedName; Toggles = toggles;
         StoreVer = storeVer; TimeFormat = timeFormat; TimeSource = timeSource; AtlasRef = atlasRef;
     }
 
-    public bool Hit(float maxTextW, uint tabMask, uint? tabPlayerId, uint toggles,
+    public bool Hit(float maxTextW, uint tabMask, uint? tabPlayerId, string pinnedName, uint toggles,
                     int storeVer, int timeFormat, int timeSource, object atlasRef, int count)
         => Count == count && MaxTextW == maxTextW && TabMask == tabMask
-           && TabPlayerId == tabPlayerId && Toggles == toggles && StoreVer == storeVer
-           && TimeFormat == timeFormat && TimeSource == timeSource && AtlasRef == atlasRef;
+           && TabPlayerId == tabPlayerId && PinnedName == pinnedName && Toggles == toggles
+           && StoreVer == storeVer && TimeFormat == timeFormat && TimeSource == timeSource
+           && AtlasRef == atlasRef;
 }
 
 /// <summary>Render-component toggle bits (see the render pipeline in WindowRenderer).</summary>

@@ -57,17 +57,19 @@ public sealed class ChatStore
     /// <paramref name="channelMask"/> and (when <paramref name="playerId"/> is given) its player id equals it.
     /// Zero-alloc: the only "slice" is the caller-owned <paramref name="dest"/>.
     /// </summary>
-    public int View(uint channelMask, uint? playerId, ChatLine[] dest) => View(channelMask, playerId, dest, 0);
+    public int View(uint channelMask, uint? playerId, ChatLine[] dest, string? tellPinName = null)
+        => View(channelMask, playerId, dest, 0, tellPinName);
 
     /// <summary>
-    /// As <see cref="View(uint,uint?,ChatLine[])"/>, but first skips the <paramref name="skip"/> newest
-    /// matching lines -- the scrollback offset (scroll unit = one matching line). Returns 0 when the
-    /// offset lands past the oldest match, so the caller can detect over-scroll and clamp back.
+    /// As <see cref="View(uint,uint?,ChatLine[],string?)"/>, but first skips the <paramref name="skip"/>
+    /// newest matching lines -- the scrollback offset. When <paramref name="tellPinName"/> is set, outbound
+    /// Tell echoes whose <see cref="ChatLine.TellRecipient"/> matches are included alongside the playerId
+    /// filter (two-sided conversation).
     /// </summary>
-    public int View(uint channelMask, uint? playerId, ChatLine[] dest, int skip)
+    public int View(uint channelMask, uint? playerId, ChatLine[] dest, int skip, string? tellPinName = null)
     {
         int n = 0, skipped = 0;
-        // walk backward from the newest valid entry
+        bool hasPin = tellPinName != null && tellPinName.Length > 0;
         for (int seen = 0; seen < _size && n < dest.Length; seen++)
         {
             int idx = _next - 1 - seen;
@@ -76,7 +78,9 @@ public sealed class ChatStore
             ChatLine line = _ring[idx];
 
             if ((channelMask & line.Channel) == 0) continue;
-            if (playerId.HasValue && line.PlayerId != playerId.Value) continue;
+            if (playerId.HasValue && line.PlayerId != playerId.Value
+                && !(hasPin && line.TellRecipient == tellPinName))
+                continue;
 
             if (skipped < skip) { skipped++; continue; }
             dest[n++] = line;
@@ -130,9 +134,25 @@ public sealed class ChatStore
         s2.Clear();
         ok &= s2.Count == 0 && s2.View(0xffffffff, null, buf) == 0;
 
+        // Two-sided Tell conversation: tellPinName includes outbound echoes whose TellRecipient matches.
+        var s3 = new ChatStore();
+        s3.Append(Line(0x002, 42, "from-alice"));                              // incoming from Alice (pid=42)
+        s3.Append(Line(0x002, 1, "to-alice", tellRecip: "Alice"));             // outbound echo TO Alice (pid=1=you)
+        s3.Append(Line(0x002, 99, "from-bob"));                                // incoming from Bob (pid=99)
+        s3.Append(Line(0x002, 1, "to-bob", tellRecip: "Bob"));                 // outbound echo TO Bob (pid=1=you)
+        // View with pid=42 (Alice) + tellPinName="Alice": gets incoming from Alice + outbound to Alice.
+        int nt = s3.View(0x002, 42u, buf, "Alice");
+        ok &= nt == 2 && buf[0].RawText == "to-alice" && buf[1].RawText == "from-alice";
+        // Without tellPinName: only incoming from Alice (old behavior).
+        int nt2 = s3.View(0x002, 42u, buf);
+        ok &= nt2 == 1 && buf[0].RawText == "from-alice";
+        // Bob's outbound echo doesn't leak into Alice's view.
+        int nt3 = s3.View(0x002, 42u, buf, "Alice");
+        ok &= nt3 == 2;  // still only 2 (from-alice + to-alice), not to-bob
+
         log.Info(ok ? "ChatStore.SelfCheck: passed" : "ChatStore.SelfCheck: FAILED");
     }
 
-    private static ChatLine Line(uint channel, uint playerId, string raw) =>
-        new ChatLine(channel, "", playerId, "", Array.Empty<ColorRun>(), DateTime.UtcNow, raw);
+    private static ChatLine Line(uint channel, uint playerId, string raw, string tellRecip = "") =>
+        new ChatLine(channel, "", playerId, "", Array.Empty<ColorRun>(), DateTime.UtcNow, raw, default, tellRecip);
 }

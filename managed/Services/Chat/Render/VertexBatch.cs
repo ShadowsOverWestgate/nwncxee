@@ -30,6 +30,16 @@ public sealed class VertexBatch
     public void Rect(float x0, float y0, float x1, float y1, float r, float g, float b, float a)
         => Quad(x0, y0, x1, y1, _su, _sv, _su, _sv, r, g, b, a);
 
+    /// <summary>Per-corner coloured rect: the GPU interpolates between the four corners. Corners are
+    /// top-left, top-right, bottom-right, bottom-left (matching the winding order of <see cref="Rect"/>).</summary>
+    public void GradientRect(float x0, float y0, float x1, float y1,
+        (float r, float g, float b, float a) tl, (float r, float g, float b, float a) tr,
+        (float r, float g, float b, float a) br, (float r, float g, float b, float a) bl)
+    {
+        V(x0,y0, _su,_sv, tl.r,tl.g,tl.b,tl.a); V(x1,y0, _su,_sv, tr.r,tr.g,tr.b,tr.a); V(x1,y1, _su,_sv, br.r,br.g,br.b,br.a);
+        V(x0,y0, _su,_sv, tl.r,tl.g,tl.b,tl.a); V(x1,y1, _su,_sv, br.r,br.g,br.b,br.a); V(x0,y1, _su,_sv, bl.r,bl.g,bl.b,bl.a);
+    }
+
     /// <summary>One baked glyph at pen <paramref name="penX"/>/<paramref name="baseline"/> (empty glyphs skipped).</summary>
     public void Glyph(in Glyph gl, float penX, float baseline, float r, float g, float b, float a)
     {

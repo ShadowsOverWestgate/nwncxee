@@ -65,6 +65,17 @@ internal static unsafe class SymbolMap
     /// Name→player roster lookup for Tell-pinned tabs (#45, ADR 0002).</summary>
     public const string GetPlayerByPlayerName = "_ZN13CClientExoApp21GetPlayerByPlayerNameE10CExoString";
 
+    // cursor override
+    public const string UpdateMouseCursorAppearance = "_ZN21CClientExoAppInternal27UpdateMouseCursorAppearanceEi";
+    public const string SetMouseCursor = "_ZN25CCachedMouseCursorManager14SetMouseCursorEiiiii";
+
+    // quickbar positioning
+    public const string QuickbarReposition = "_ZN14CPanelQuickBar10RepositionEv";
+    public const string SetPositionScreen  = "_ZN9CGuiPanel17SetPositionScreenEii";
+    // compass hide/show (CGuiInGame methods, take `this`)
+    public const string HideCompass = "_ZN10CGuiInGame11HideCompassEv";
+    public const string ShowCompass = "_ZN10CGuiInGame11ShowCompassEv";
+
     // misc engine helpers
     public const string GetNWCMessage = "_ZN13CClientExoApp13GetNWCMessageEv";
     public const string SetText       = "_ZN20CAuroraStringWrapper7SetTextEj";
@@ -77,6 +88,7 @@ internal static unsafe class SymbolMap
     public const string OkCancelActivate= "_ZN14CPanelOkCancel8ActivateE10CExoStringjj"; // (CExoString msg, uint ok, uint cancel)
     public const string SdlGetKeyName   = "SDL_GetKeyName";
     public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
+    public const string SdlGetMouseState = "SDL_GetMouseState";
     // client-native manager: a window injected into the client's own nuklear pass via the
     // per-frame nk_sdl_render hook. Core nk_* are plain C; the SDL glue is C++-linkage on this
     // build (mangled), so nk_sdl_render must use its mangled name or the hook never installs.
@@ -218,6 +230,16 @@ internal static unsafe class SymbolMap
         // cross-heap free corrupts. Scalar operator new(size_t), VS2017/2019 release.
         [OperatorNew]     = At(0xc10324),
 
+        // cursor override: client-internal, no Windows anchor yet -> skip + log.
+        [UpdateMouseCursorAppearance] = default,
+        [SetMouseCursor] = default,
+
+        // quickbar / compass: client GUI, no Windows anchor yet -> skip + log.
+        [QuickbarReposition] = default,
+        [SetPositionScreen]  = default,
+        [HideCompass]        = default,
+        [ShowCompass]         = default,
+
         // client-native manager (nuklear) -- no Windows anchor yet: skip + log (manager absent on Windows).
         [NkSdlRender]        = default,
         [NkBegin]            = default,
@@ -237,10 +259,26 @@ internal static unsafe class SymbolMap
     /// Linux: the Itanium name directly. Windows: name export, build-locked RVA, or skip.
     /// Zero = unresolved (already logged).
     /// </summary>
+    [DllImport("libdl.so.2", EntryPoint = "dlsym")]
+    private static extern IntPtr Dlsym(IntPtr handle, [MarshalAs(UnmanagedType.LPStr)] string symbol);
+    [DllImport("libdl.so.2", EntryPoint = "dlopen")]
+    private static extern IntPtr Dlopen(IntPtr path, int flags);
+
     public static IntPtr Resolve(string linux, ExtenderLog? log)
     {
         if (!OperatingSystem.IsWindows())
-            return NativeLibrary.TryGetExport(Base, linux, out IntPtr p) ? p : IntPtr.Zero;
+        {
+            if (NativeLibrary.TryGetExport(Base, linux, out IntPtr p)) return p;
+            // ponytail: TryGetExport misses symbols under NativeAOT + LD_PRELOAD; dlsym(NULL) searches
+            // the global scope. macOS needs "libdl.dylib" — cross that bridge when hardened-runtime unblocks.
+            IntPtr alt = Dlsym(Dlopen(IntPtr.Zero, 1), linux);
+            if (alt != IntPtr.Zero)
+            {
+                log?.Info($"resolve: TryGetExport missed {linux}, dlsym hit");
+                return alt;
+            }
+            return IntPtr.Zero;
+        }
 
         if (!_win.TryGetValue(linux, out Win w) || (w.Name is null && w.Rva == 0))
         {

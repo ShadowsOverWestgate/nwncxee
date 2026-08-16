@@ -116,9 +116,12 @@ public sealed unsafe class ChatService : IExtenderService
         {
             string raw = ReadExo(text);
             string portraitRef = hasPortrait != 0 ? ResRef(portrait) : "";
-            // ponytail: senderName left "" -- the tap doesn't carry it; it is inline in raw. Extract in a later slice.
+            // Outbound Tell echoes: tag with the recipient so pinned tabs show both sides.
+            string tellRecip = (channel & 0x002) != 0 && _playerResolver?.LocalIngestId() == playerId
+                ? ParseTellRecipient(raw) : "";
+            // ponytail: senderName "" -- the tap doesn't carry it (inline in raw). SenderName component is the ceiling.
             var line = new ChatLine(channel, "", playerId, portraitRef,
-                ColorRunParser.Parse(raw), DateTime.UtcNow, raw, GameNow());   // game time captured now (immutable line)
+                ColorRunParser.Parse(raw), DateTime.UtcNow, raw, GameNow(), tellRecip);
             _store.Append(line);
 
             long n = ++_ingestCount;
@@ -162,6 +165,32 @@ public sealed unsafe class ChatService : IExtenderService
         int n = 0;
         while (n < 16 && b[n] != 0) n++;
         return Encoding.ASCII.GetString(b.Slice(0, n));
+    }
+
+    /// <summary>Extract the recipient name from an outbound Tell echo. The engine formats these as
+    /// <c>[Tell] [To Name]: text</c> (with embedded color codes); returns "" if the pattern is absent.</summary>
+    private static string ParseTellRecipient(string raw)
+    {
+        int idx = raw.IndexOf("[To ", StringComparison.Ordinal);
+        if (idx < 0) return "";
+        int nameStart = idx + 4;
+        int nameEnd = raw.IndexOf(']', nameStart);
+        return nameEnd > nameStart ? StripColorTags(raw.Substring(nameStart, nameEnd - nameStart)) : "";
+    }
+
+    /// <summary>Strip Aurora inline color tags (<c>&lt;cRGB&gt;</c> / <c>&lt;/c&gt;</c>) from a string.</summary>
+    private static string StripColorTags(string s)
+    {
+        if (s.IndexOf('<') < 0) return s;
+        var sb = new StringBuilder(s.Length);
+        int i = 0;
+        while (i < s.Length)
+        {
+            if (i + 5 < s.Length && s[i] == '<' && s[i + 1] == 'c' && s[i + 5] == '>') { i += 6; continue; }
+            if (i + 3 < s.Length && s[i] == '<' && s[i + 1] == '/' && s[i + 2] == 'c' && s[i + 3] == '>') { i += 4; continue; }
+            sb.Append(s[i]); i++;
+        }
+        return sb.ToString();
     }
 
     // ---- slice #21: window + owned render -----------------------------------------------------
@@ -229,6 +258,9 @@ public sealed unsafe class ChatService : IExtenderService
         private const int InternalOff = 0x8;
         private const int ListPtrOff = 0x38;
         private const int ListCountOff = 0x40;
+        // Local-player identification (from GetPlayerCreatureId + GetPlayerByGameObjectID disasm).
+        private const int LocalCreatureIdOff = 0x48;   // CClientExoAppInternal: game object ID of your creature
+        private const int PlayerCreatureIdOff = 0x34;   // CNWCPlayer: creature object ID per player entry
 
         /// <summary>Read the player name for an ingest PlayerId (+0x8), or null if the player is gone.</summary>
         public string? NameOf(uint playerId)
@@ -252,6 +284,29 @@ public sealed unsafe class ChatService : IExtenderService
                 var sb = new StringBuilder((int)len);
                 for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
                 return sb.ToString();
+            }
+            return null;
+        }
+
+        /// <summary>The local player's ingest-space playerId. Walks the player list matching the local
+        /// creature's object ID (CClientExoAppInternal+0x48 → CNWCPlayer+0x34). Cold (Tell ingest only).</summary>
+        public uint? LocalIngestId()
+        {
+            IntPtr app = App();
+            if (app == IntPtr.Zero) return null;
+            IntPtr intern = *(IntPtr*)(app + InternalOff);
+            if (intern == IntPtr.Zero) return null;
+            uint localObj = *(uint*)(intern + LocalCreatureIdOff);
+            if (localObj == 0) return null;
+            IntPtr listBase = *(IntPtr*)(intern + ListPtrOff);
+            int count = *(int*)(intern + ListCountOff);
+            if (listBase == IntPtr.Zero || count <= 0 || count > 64) return null;
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr player = *(IntPtr*)(listBase + i * 8);
+                if (player == IntPtr.Zero) continue;
+                if (*(uint*)(player + PlayerCreatureIdOff) == localObj)
+                    return *(uint*)(player + IngestPlayerIdOff);
             }
             return null;
         }
@@ -413,6 +468,7 @@ public sealed unsafe class ChatService : IExtenderService
             if (wc.TimeFormat is int tf) win.TimeFormat = (TsFormat)tf;
             if (wc.TimeSource is int ts) win.TimeSource = (TsSource)ts;
             if (wc.Align is int al && al >= 0 && al <= 3) win.Align = (TextAlign)al;
+            if (wc.BgMode is int bgm && bgm >= 0 && bgm <= 9) win.BgMode = (BgMode)bgm;
             if (wc.AutoHideHeader is bool ahh) win.AutoHideHeader = ahh;
             if (wc.Locked is bool lk) win.Locked = lk;
             if (wc.TellsHere is bool th) win.TellsHere = th;
@@ -467,6 +523,7 @@ public sealed unsafe class ChatService : IExtenderService
             wc.Outline = win.Outline;
             wc.TimeFormat = (int)win.TimeFormat; wc.TimeSource = (int)win.TimeSource;
             wc.Align = (int)win.Align;
+            wc.BgMode = (int)win.BgMode;
             wc.AutoHideHeader = win.AutoHideHeader;
             wc.Locked = win.Locked;
             wc.TellsHere = win.TellsHere;
@@ -535,8 +592,8 @@ public sealed unsafe class ChatService : IExtenderService
             LoadConfig();   // restore now: Initialize runs pre-main, user dir unresolved there
             Rebuild();           // re-layout for the restored width + applied config
         }
-        if (InGame()) { SyncUiScale(); PollGameClock(); TextRenderer.Draw(); }
-        else if (_gateSig.win == IntPtr.Zero) TextRenderer.DrawOverlay();
+        if (InGame()) { SyncUiScale(); PollGameClock(); Quickbar.QuickbarService.Tick(Metrics.GameUiScale); TextRenderer.Draw(); }
+        else { Quickbar.QuickbarService.Sleep(); if (_gateSig.win == IntPtr.Zero) TextRenderer.DrawOverlay(); }
         if (_swapOrig != null) _swapOrig(window);     // present
     }
 
@@ -626,8 +683,12 @@ public sealed unsafe class ChatService : IExtenderService
     private static void RouteIncomingTell(ChatLine line)
     {
         if (_layout == null) return;
+        // Outbound echoes carry the local player's ingest ID — skip so they don't spawn phantom tabs.
+        if (_playerResolver?.LocalIngestId() == line.PlayerId)
+        { _log?.Info($"[chat] tell echo skipped pid={line.PlayerId}"); return; }
         string? name = _playerResolver?.NameOf(line.PlayerId);
-        if (name == null) return;
+        if (name == null)
+        { _log?.Info($"[chat] tell route: unresolvable pid=0x{line.PlayerId:x}"); return; }
 
         var decision = TellRouter.Route(_config.TellOpen, _layout.Windows, _layout.FocusedIndex, name);
         switch (decision.Action)
@@ -649,7 +710,7 @@ public sealed unsafe class ChatService : IExtenderService
                 ChatWindow[] wins = _layout.Windows;
                 if ((uint)decision.WindowIndex < (uint)wins.Length)
                 {
-                    var tab = new Tab($"Tell:{name}", 0x002, line.PlayerId) { PinnedName = name };
+                    var tab = new Tab($"T:{name}", 0x002, line.PlayerId) { PinnedName = name };
                     wins[decision.WindowIndex].AddTab(tab);
                     wins[decision.WindowIndex].Dirty = true;
                     _log?.Info($"[chat] tell auto-open: new tab '{name}' (pid={line.PlayerId}) in window {decision.WindowIndex}");
@@ -660,7 +721,7 @@ public sealed unsafe class ChatService : IExtenderService
             {
                 ChatWindow main = _layout.Main;
                 float offset = _layout.Count * 30f;
-                var tab = new Tab($"Tell:{name}", 0x002, line.PlayerId) { PinnedName = name };
+                var tab = new Tab($"T:{name}", 0x002, line.PlayerId) { PinnedName = name };
                 var win = new ChatWindow(main.X + offset, main.Y + offset, main.W, main.H, new[] { tab });
                 if (_layout.AddWindow(win) != null)
                     _log?.Info($"[chat] tell auto-open: new window for '{name}' (pid={line.PlayerId})");
@@ -675,6 +736,10 @@ public sealed unsafe class ChatService : IExtenderService
             }
         }
     }
+
+    /// <summary>Trigger a rebuild from outside ChatService (e.g. QuickbarService after a chrome change).
+    /// Safe to call from the swap thread (same threading model as <see cref="SyncUiScale"/>).</summary>
+    internal static void RequestRebuild() => Rebuild();
 
     /// <summary>Per-window last-built frame cache. Keyed on the window reference so an add/close can't
     /// serve a stale frame for a different window.</summary>
@@ -738,7 +803,22 @@ public sealed unsafe class ChatService : IExtenderService
             frames[slot] = WindowRenderer.BuildGhostTab(atlas, src,
                 _lastMx - gw * 0.5f, _lastMy - ChatWindow.TabBarH * 0.5f, gw, src.Active.Label);
         }
-        TextRenderer.Publish(frames);
+        // Quickbar chrome: band/borders/cog drawn first (under chat), settings panel drawn last (on top).
+        RenderFrame[] qbExtra = Quickbar.QuickbarService.ExtraFrames;
+        int chatCount = slot + (dragSrc >= 0 ? 1 : 0);
+        if (qbExtra.Length > 0)
+        {
+            var all = new RenderFrame[1 + chatCount + (qbExtra.Length > 1 ? 1 : 0)];
+            int ai = 0;
+            all[ai++] = qbExtra[0];
+            for (int i = 0; i < chatCount; i++) all[ai++] = frames[i];
+            if (qbExtra.Length > 1) all[ai++] = qbExtra[1];
+            TextRenderer.Publish(all);
+        }
+        else
+        {
+            TextRenderer.Publish(frames);
+        }
     }
 
     private static RenderFrame BuildOneWindow(ChatWindow win, bool focused, GlyphAtlas atlas, int winIndex)
@@ -978,7 +1058,7 @@ public sealed unsafe class ChatService : IExtenderService
             case TellRoute.NewTab:
             {
                 ChatWindow win = _layout.Windows[decision.WindowIndex];
-                win.AddTab(new Tab($"Tell:{name}", 0x002, playerId) { PinnedName = name });
+                win.AddTab(new Tab($"T:{name}", 0x002, playerId) { PinnedName = name });
                 win.ActiveTab = win.Tabs.Count - 1;
                 _layout.FocusedIndex = decision.WindowIndex;
                 win.SendChannel = Channel.Tell;
@@ -988,7 +1068,7 @@ public sealed unsafe class ChatService : IExtenderService
             {
                 ChatWindow main = _layout.Main;
                 float offset = _layout.Count * 30f;
-                var tab = new Tab($"Tell:{name}", 0x002, playerId) { PinnedName = name };
+                var tab = new Tab($"T:{name}", 0x002, playerId) { PinnedName = name };
                 var win = new ChatWindow(main.X + offset, main.Y + offset, main.W, main.H, new[] { tab });
                 if (_layout.AddWindow(win) != null)
                 {
@@ -1126,6 +1206,19 @@ public sealed unsafe class ChatService : IExtenderService
         return true;
     }
 
+    /// <summary>True when (<paramref name="x"/>, <paramref name="y"/>) is over any chat UI element:
+    /// window frames, input strips, open channel dropdowns, or the settings panel.</summary>
+    public static bool MouseOverUi(int x, int y)
+    {
+        if (_layout == null || !InGame()) return false;
+        if (_settings.Open && _settings.Contains(x, y)) return true;
+        ChatWindow[] wins = _layout.Windows;
+        for (int i = 0; i < wins.Length; i++)
+            if (wins[i].HitTestFull(x, y)) return true;
+        return false;
+    }
+
+
     /// <summary>Slice #20: EditBuffer + IsTyping + focus suppression. Filled by build slice 3.</summary>
     private static void InitEditControl(ExtenderLog log, HookService hooks)
     {
@@ -1197,7 +1290,24 @@ public sealed unsafe class ChatService : IExtenderService
     // Skip-original openers: never call the trampoline (suppress vanilla focus), just take the keyboard.
     [UnmanagedCallersOnly] private static void OnOpenFocus(IntPtr self) => Open();
     [UnmanagedCallersOnly] private static void OnOpenShow(IntPtr self) => Open();
-    [UnmanagedCallersOnly] private static void OnOpenTell(IntPtr self, IntPtr player) => Open();
+    [UnmanagedCallersOnly] private static void OnOpenTell(IntPtr self, IntPtr player)
+    {
+        if (player != IntPtr.Zero)
+        {
+            IntPtr buf = *(IntPtr*)(player + 0x10);
+            uint len = *(uint*)(player + 0x18);
+            if (buf != IntPtr.Zero && len > 0 && len <= 128)
+            {
+                var sb = new StringBuilder((int)len);
+                for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
+                string name = sb.ToString();
+                uint ingestId = *(uint*)(player + 0x8);
+                StartTellTo(name, ingestId);
+                return;
+            }
+        }
+        Open();
+    }
 
     /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the
     /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does.</summary>
@@ -1242,6 +1352,7 @@ public sealed unsafe class ChatService : IExtenderService
                         tellName = TellTarget.ResolveName(win.Active, tellTarget, _playerResolver);
                         _log?.Info($"[chat] tell resolve: target=\"{tellTarget}\" pin=\"{win.Active.PinnedName}\" name={tellName ?? "(null)"}");
                     }
+                    _log?.Info($"[chat] submit: ch={win.SendChannel} fi={_layout!.FocusedIndex} tab={win.ActiveTab} pin=\"{win.Active.PinnedName}\" tell={tellName ?? "-"}");
                     Send(win.SendChannel, tellName, rest);
                 }
             }
@@ -1274,6 +1385,16 @@ public sealed unsafe class ChatService : IExtenderService
                 SaveConfig();
                 _log?.Info($"[chat] /closewin: window {idx} closed");
             }
+            return true;
+        }
+        if (cmd == "/settings")
+        {
+            Quickbar.QuickbarService.ToggleSettings();
+            return true;
+        }
+        if (cmd == "/compass")
+        {
+            Quickbar.QuickbarService.ToggleCompass();
             return true;
         }
         return false;

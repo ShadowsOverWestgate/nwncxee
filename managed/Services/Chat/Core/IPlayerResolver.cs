@@ -10,4 +10,8 @@ public interface IPlayerResolver
     /// <summary>PlayerId → player name, or null when the id is stale / unknown. Used by portrait
     /// click-to-tell to recover the name from a ChatLine's connection-scoped id.</summary>
     string? NameOf(uint playerId) => null;
+
+    /// <summary>The local player's ingest-space playerId, or null off-module / pre-load. Used to
+    /// distinguish outbound Tell echoes (which carry your own id) from genuine incoming Tells.</summary>
+    uint? LocalIngestId() => null;
 }

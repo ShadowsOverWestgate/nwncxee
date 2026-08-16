@@ -8,7 +8,7 @@ namespace Sowx.Services.Chat.Core;
 public enum SetAct
 {
     ToggleBit, InputTop, AutoHideHdr, LockWin, TellsHere, AnimOn, SliderHold, SliderFade, SliderTau, SliderFont, OutlineOn,
-    CycleFmt, CycleSrc, CycleAlign, CycleTellOpen, ColorSwatch, ColorChannel,
+    CycleFmt, CycleSrc, CycleAlign, CycleTellOpen, CycleBgMode, ColorSwatch, ColorChannel,
     TabExpand, TabAdd, TabRemove, TabLabel, TabPin, TabChannel,
     CopyFrom,
 }
@@ -176,6 +176,18 @@ public sealed class SettingsWindow
             if (_expanded == key)
                 for (int ch = 0; ch < (alpha ? 4 : 3); ch++)
                     y = AddChannel(rows, y, key, ch, ChannelByte(rgba, ch));
+            if (key == ChatColor.Background)
+            {
+                y = AddCycle(rows, y, SetAct.CycleBgMode, "Bg style", BgModeText(win.BgMode));
+                if (win.BgMode != BgMode.Solid)
+                {
+                    uint bg2 = ColorOf(win, ChatColor.Background2);
+                    y = AddSwatch(rows, y, "Background 2", ChatColor.Background2, bg2);
+                    if (_expanded == ChatColor.Background2)
+                        for (int ch = 0; ch < 4; ch++)
+                            y = AddChannel(rows, y, ChatColor.Background2, ch, ChannelByte(bg2, ch));
+                }
+            }
         }
 
         // Tab section (#39): one header per tab, expandable to label + channel toggles + remove.
@@ -277,7 +289,7 @@ public sealed class SettingsWindow
     public bool OverClose(float mx, float my)
         => mx >= X + W - CloseW && mx <= X + W && my >= Y && my <= Y + TitleH;
 
-    private bool Contains(float mx, float my) => mx >= X && mx <= X + W && my >= Y && my <= Y + H;
+    internal bool Contains(float mx, float my) => mx >= X && mx <= X + W && my >= Y && my <= Y + H;
 
     private SetRow? RowAt(float mx, float my)
     {
@@ -312,6 +324,7 @@ public sealed class SettingsWindow
             case SetAct.CycleFmt: win.TimeFormat = (TsFormat)(((int)win.TimeFormat + 1) % 3); break;
             case SetAct.CycleSrc: win.TimeSource = (TsSource)(((int)win.TimeSource + 1) % 2); break;
             case SetAct.CycleAlign: win.Align = (TextAlign)(((int)win.Align + 1) % 4); break;
+            case SetAct.CycleBgMode: win.BgMode = (BgMode)(((int)win.BgMode + 1) % 10); break;
             case SetAct.ColorSwatch: _expanded = _expanded == row.Key ? "" : row.Key; break;
             case SetAct.TabExpand:
             {
@@ -553,6 +566,12 @@ public sealed class SettingsWindow
     private static string FormatText(TsFormat f) => f switch
     { TsFormat.HourMinSec => "HH:mm:ss", TsFormat.Hour12 => "h:mm tt", _ => "HH:mm" };
 
+    private static string BgModeText(BgMode m) => m switch
+    { BgMode.GradientV => "Grad V", BgMode.GradientH => "Grad H", BgMode.GradientD => "Grad D",
+      BgMode.StripesH => "Stripe H", BgMode.StripesV => "Stripe V",
+      BgMode.GradientBox => "Box", BgMode.GradientCircle => "Radial",
+      BgMode.Conic => "Conic", BgMode.Conic4 => "Conic 4", _ => "Solid" };
+
     private static string TellOpenText(TellAutoOpen m) => m switch
     { TellAutoOpen.NewTab => "New tab", TellAutoOpen.NewWindow => "New window", _ => "Off" };
 
@@ -783,6 +802,25 @@ public sealed class SettingsWindow
         // Single window: no copy row.
         s.OpenAt(win, cfg, 0, 0, winIndex: 0, winCount: 1); s.MouseUp();
         E(s.Rows.Find(r => r.Act == SetAct.CopyFrom) == null, "no copy row when only one window");
+        s.Reset();
+
+        // ---- BgMode cycle + conditional bg2 swatch ----
+        E(win.BgMode == BgMode.Solid, "pre: BgMode starts Solid");
+        s.OpenAt(win, cfg, 0, 0); s.MouseUp();
+        SetRow bgmRow = s.Rows.Find(r => r.Act == SetAct.CycleBgMode)!;
+        E(bgmRow != null, "BgMode cycle row present");
+        E(s.Rows.Find(r => r.Act == SetAct.ColorSwatch && r.Key == ChatColor.Background2) == null,
+          "bg2 swatch hidden when Solid");
+        s.MouseDown(s.X + 5, bgmRow.Top + 2, win, cfg); s.MouseUp();
+        E(win.BgMode == BgMode.GradientV, "BgMode cycle advances to GradientV");
+        E(s.Rows.Find(r => r.Act == SetAct.ColorSwatch && r.Key == ChatColor.Background2) != null,
+          "bg2 swatch shown when non-Solid");
+        for (int ci2 = 0; ci2 < 9; ci2++)
+        {
+            bgmRow = s.Rows.Find(r => r.Act == SetAct.CycleBgMode)!;
+            s.MouseDown(s.X + 5, bgmRow.Top + 2, win, cfg); s.MouseUp();
+        }
+        E(win.BgMode == BgMode.Solid, "BgMode cycle wraps to Solid");
         s.Reset();
 
         log.Info(ok ? "SettingsWindow.SelfCheck: passed" : "SettingsWindow.SelfCheck: FAILED");

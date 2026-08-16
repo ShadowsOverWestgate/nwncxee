@@ -29,9 +29,13 @@ public sealed class ChatLine
     /// <summary>In-game world time at ingest (for the Game timestamp source); default/invalid = use local.</summary>
     public GameStamp GameTime { get; }
     public string RawText { get; }
+    /// <summary>For outbound Tell echoes: the recipient's name parsed from the "[To Name]" prefix.
+    /// Empty for incoming Tells and all other channels. Enables two-sided conversation tabs.</summary>
+    public string TellRecipient { get; }
 
     public ChatLine(uint channel, string senderName, uint playerId, string portraitResref,
-                    ColorRun[] colorRuns, DateTime timestamp, string rawText, GameStamp gameTime = default)
+                    ColorRun[] colorRuns, DateTime timestamp, string rawText, GameStamp gameTime = default,
+                    string tellRecipient = "")
     {
         Channel = channel;
         SenderName = senderName;
@@ -41,5 +45,6 @@ public sealed class ChatLine
         Timestamp = timestamp;
         GameTime = gameTime;
         RawText = rawText;
+        TellRecipient = tellRecipient;
     }
 }

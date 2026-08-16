@@ -20,6 +20,11 @@ public enum TextAlign { Left, Right, Center, Justify }
 /// <summary>What happens when a Tell arrives from a player without an existing pinned tab (#46).</summary>
 public enum TellAutoOpen { Off, NewTab, NewWindow }
 
+/// <summary>Background fill style for a chat window. Solid = single colour; gradient and stripe modes
+/// blend or alternate the primary (<see cref="ChatColor.Background"/>) and secondary
+/// (<see cref="ChatColor.Background2"/>) colours.</summary>
+public enum BgMode { Solid, GradientV, GradientH, GradientD, StripesH, StripesV, GradientBox, GradientCircle, Conic, Conic4 }
+
 /// <summary>Stable keys for the user-themeable chrome colours. Values live in the config as RGBA8
 /// (<c>0xRRGGBBAA</c>) overrides; the defaults + the mapping onto individual widgets live in
 /// <see cref="Render.WindowRenderer"/> (the look is a render concern). Only these are surfaced in the
@@ -28,6 +33,7 @@ public enum TellAutoOpen { Off, NewTab, NewWindow }
 public static class ChatColor
 {
     public const string Background = "bg";
+    public const string Background2 = "bg2";
     public const string Header = "header";
     public const string Accent = "accent";
     public const string Input = "input";
@@ -61,6 +67,7 @@ public sealed class WindowConfig
     public bool? Outline;
     public int? TimeFormat, TimeSource;
     public int? Align;
+    public int? BgMode;
     public bool? AutoHideHeader;
     public bool? Locked;
     public bool? TellsHere;
@@ -122,6 +129,7 @@ public sealed class ChatConfig
             if (w.TimeFormat is int tf) sb.Append(ci, $"w{wi}.tsfmt={tf}\n");
             if (w.TimeSource is int ts) sb.Append(ci, $"w{wi}.tssrc={ts}\n");
             if (w.Align is int al) sb.Append(ci, $"w{wi}.align={al}\n");
+            if (w.BgMode is int bgm) sb.Append(ci, $"w{wi}.bgmode={bgm}\n");
             if (w.AutoHideHeader is bool ahh) sb.Append(ci, $"w{wi}.autohide={(ahh ? 1 : 0)}\n");
             if (w.Locked is bool lk) sb.Append(ci, $"w{wi}.locked={(lk ? 1 : 0)}\n");
             if (w.TellsHere is bool th) sb.Append(ci, $"w{wi}.tellshere={(th ? 1 : 0)}\n");
@@ -270,6 +278,7 @@ public sealed class ChatConfig
             case "tsfmt": if (int.TryParse(val, out int f)) w.TimeFormat = f; return;
             case "tssrc": if (int.TryParse(val, out int s)) w.TimeSource = s; return;
             case "align": if (int.TryParse(val, out int a)) w.Align = a; return;
+            case "bgmode": if (int.TryParse(val, out int bgm) && bgm >= 0 && bgm <= 9) w.BgMode = bgm; return;
             case "autohide": w.AutoHideHeader = val != "0"; return;
             case "locked": w.Locked = val != "0"; return;
             case "tellshere": w.TellsHere = val != "0"; return;
@@ -307,6 +316,7 @@ public sealed class ChatConfig
         w0.AnimEnabled = false; w0.HoldSec = 42f; w0.FadeSec = 3f; w0.TauMs = 90f;
         w0.Outline = true; w0.TimeFormat = (int)TsFormat.Hour12; w0.TimeSource = (int)TsSource.Game;
         w0.Align = (int)TextAlign.Center;
+        w0.BgMode = (int)BgMode.GradientV;
         w0.AutoHideHeader = false;
         w0.Locked = true;
         w0.TellsHere = true;
@@ -327,6 +337,7 @@ public sealed class ChatConfig
         E(bw0.Outline == true, "per-window outline round-trips");
         E(bw0.TimeFormat == (int)TsFormat.Hour12 && bw0.TimeSource == (int)TsSource.Game, "per-window ts round-trips");
         E(bw0.Align == (int)TextAlign.Center, "per-window align round-trips");
+        E(bw0.BgMode == (int)BgMode.GradientV, "per-window bgmode round-trips");
         E(bw0.AutoHideHeader == false, "per-window autohide round-trips");
         E(bw0.Locked == true, "per-window locked round-trips");
         E(bw0.TellsHere == true, "per-window tellshere round-trips");
@@ -343,6 +354,7 @@ public sealed class ChatConfig
         E(b2.Windows[0].AnimEnabled == null, "unset anim stays null after round-trip");
         E(b2.Windows[0].HoldSec == null, "unset hold stays null after round-trip");
         E(b2.Windows[0].Locked == null, "unset locked stays null after round-trip");
+        E(b2.Windows[0].BgMode == null, "unset bgmode stays null after round-trip");
         E(b2.Windows[0].TellsHere == null, "unset tellshere stays null after round-trip");
 
         // TellAutoOpen defaults to Off when absent.

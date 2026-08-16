@@ -21,13 +21,12 @@ public static class TellTarget
     }
 
     /// <summary>Same precedence as <see cref="Resolve"/> but returns the effective player name
-    /// (for name-based send) or null if the player is offline/absent.</summary>
+    /// (for name-based send). No client-side presence gate: the server validates the name,
+    /// so stale tabs and cross-area players are not silently dropped.</summary>
     public static string? ResolveName(Tab tab, string? typedName, IPlayerResolver? roster)
     {
-        string? name = !string.IsNullOrEmpty(typedName) ? typedName
+        return !string.IsNullOrEmpty(typedName) ? typedName
             : tab.PinnedName.Length > 0 ? tab.PinnedName : null;
-        if (name == null || roster?.Resolve(name) == null) return null;
-        return name;
     }
 
     /// <summary>Off-device proof of the three AC cases + edge cases.</summary>
@@ -78,10 +77,10 @@ public static class TellTarget
         var emptyPin = new Tab("Tell", 0x002) { PinnedName = "" };
         E(Resolve(emptyPin, null, roster) == null, "empty pin = unpinned");
 
-        // ResolveName: same precedence but returns the name string
+        // ResolveName: same precedence, no client-side presence gate (server validates)
         E(ResolveName(pinned, null, roster) == "Alice", "ResolveName pinned online");
         E(ResolveName(pinned, "Bob", roster) == "Bob", "ResolveName typed beats pin");
-        E(ResolveName(offline, null, roster) == null, "ResolveName offline drops");
+        E(ResolveName(offline, null, roster) == "Eve", "ResolveName offline still returns name");
         E(ResolveName(unpinned, null, roster) == null, "ResolveName unpinned no target");
 
         log.Info(ok ? "TellTarget.SelfCheck: passed" : "TellTarget.SelfCheck: FAILED");

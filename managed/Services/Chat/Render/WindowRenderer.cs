@@ -49,7 +49,7 @@ public static class WindowRenderer
     /// <summary>Per-window resolved palette, threaded through Build → EmitInputStrip/EmitSettings.</summary>
     private struct Pal
     {
-        public (float r, float g, float b, float a) Bg, TabBar, TabActive, Footer, SelBg;
+        public (float r, float g, float b, float a) Bg, Bg2, TabBar, TabActive, Footer, SelBg;
         public uint TabTextRgb;
     }
 
@@ -74,7 +74,8 @@ public static class WindowRenderer
     /// for both the render fields (via <see cref="ApplyPalette"/>) and the picker UI (via <see cref="CurrentColor"/>).</summary>
     public static readonly Dictionary<string, uint> Defaults = new()
     {
-        [ChatColor.Background] = 0x0d0f17bd, [ChatColor.Header] = 0x1a1f29d9, [ChatColor.Accent] = 0x335785f2,
+        [ChatColor.Background] = 0x0d0f17bd, [ChatColor.Background2] = 0x192040bd,
+        [ChatColor.Header] = 0x1a1f29d9, [ChatColor.Accent] = 0x335785f2,
         [ChatColor.Input] = 0x050508e6, [ChatColor.Selection] = 0x38669eb3, [ChatColor.Text] = 0xd8dee9ff,
     };
 
@@ -88,6 +89,7 @@ public static class WindowRenderer
     private static Pal ResolvePalette(ChatWindow win) => new()
     {
         Bg = Unpack(CurrentColor(win, ChatColor.Background)),
+        Bg2 = Unpack(CurrentColor(win, ChatColor.Background2)),
         TabBar = Unpack(CurrentColor(win, ChatColor.Header)),
         TabActive = Unpack(CurrentColor(win, ChatColor.Accent)),
         Footer = Unpack(CurrentColor(win, ChatColor.Input)),
@@ -149,7 +151,7 @@ public static class WindowRenderer
         // Panel + tab bar. The tab bar hides when auto-hide is on and the pointer is outside the window
         // (and the settings panel is closed), leaving just the background in the header band.
         // Unread ephemeral tabs force the header visible so the blink is seen.
-        b.Rect(win.X, win.Y, win.X + win.W, win.Y + win.H, p.Bg.r, p.Bg.g, p.Bg.b, p.Bg.a);
+        EmitBackground(b, win, p.Bg, p.Bg2);
         bool hasUnread = false;
         for (int i = 0; i < tabs.Count; i++) if (tabs[i].Unread && tabs[i].Ephemeral) { hasUnread = true; break; }
         int blinkStart = 0, blinkEnd = 0;
@@ -197,18 +199,13 @@ public static class WindowRenderer
         // emitted and clipped by the body scissor. Two passes: pass 1 measures EVERY match to get the content
         // height -- needed to clamp the scroll and size the scrollbar BEFORE placing, so an over-scroll can't
         // leave a stale gap-at-top frame -- then pass 2 re-wraps only the blocks that intersect the viewport.
-        win.BodyRect(out float bx, out float by, out float bw, out float bh);
+        win.BodyRect(out float bx, out float by, out float bw, out float bh, showHeader);
         // Portraits keep the engine's portrait aspect (taller than wide) in a left gutter, only on lines with a
         // resref. A portrait line is one BLOCK, its height padded up to the portrait so it never overlaps its
-        // neighbours. Suppressed while the dropdown is open (it draws last over the body; a live icon after it
-        // would punch through the open list). The gutter is reserved on resref, before the texture resolves, so
-        // the icon appears a frame later WITHOUT the text reflowing.
-        // Portraits draw in a second pass over the body (before the tail chrome). The channel dropdown draws
-        // INTO the body region, so suppress portraits under it -- else a portrait punches through the list. The
-        // settings panel is a tail-drawn floating window (opaque, movable, usually off the body), so it covers
-        // portraits normally; don't suppress them for it (they'd vanish even when the panel sits elsewhere).
-        bool portraitsOn = (win.Toggles & ChatToggle.Portrait) != 0
-                           && !(showFooter && win.ChannelListOpen);
+        // neighbours. The gutter is reserved on resref, before the texture resolves, so the icon appears a
+        // frame later WITHOUT the text reflowing. Portraits draw in a second pass over the body (before the
+        // tail chrome); the settings panel is tail-drawn so it naturally covers them.
+        bool portraitsOn = (win.Toggles & ChatToggle.Portrait) != 0;
         float portraitW = lh;                       // gutter-width icon...
         float portraitH = lh / PortraitAspect;      // ...grown tall to the real portrait shape (~1.56 rows)
         float gutter = portraitW + ChatWindow.Pad;
@@ -221,7 +218,8 @@ public static class WindowRenderer
         // a mid-build Append stores the old version → next build misses → self-heals in one frame.
         int storeVer = store.Version;
         ChatLine[] all = RingScratch();
-        int nAll = store.View(active.ChannelMask, active.PlayerId, all);   // newest-first, every match
+        string? pin = active.PinnedName.Length > 0 ? active.PinnedName : null;
+        int nAll = store.View(active.ChannelMask, active.PlayerId, all, pin);
         List<Rune> runes = _runesScratch ??= new List<Rune>();
         List<uint> cols = _colsScratch ??= new List<uint>();
 
@@ -231,8 +229,8 @@ public static class WindowRenderer
         LayoutCache? lc = win.WrapCache;
         float[] blockH;
         float contentH;
-        if (lc != null && lc.Hit(maxTextW, active.ChannelMask, active.PlayerId, win.Toggles,
-                storeVer, (int)win.TimeFormat, (int)win.TimeSource, atlas, nAll))
+        if (lc != null && lc.Hit(maxTextW, active.ChannelMask, active.PlayerId, active.PinnedName,
+                win.Toggles, storeVer, (int)win.TimeFormat, (int)win.TimeSource, atlas, nAll))
         {
             blockH = lc.BlockH;
             contentH = lc.ContentH;
@@ -246,13 +244,13 @@ public static class WindowRenderer
                 bool hasP = BuildRunes(win, all[li], portraitsOn, runes, cols);
                 float indent = hasP ? gutter : 0f;
                 List<TextWrapper.LineSpan> wr = TextWrapper.WrapRunes(runes, maxTextW - indent, atlas.AdvanceOfCached);
-                blockH[li] = hasP ? System.Math.Max(wr.Count * lh, portraitH) : wr.Count * lh;
+                blockH[li] = hasP ? System.Math.Max(wr.Count * lh, descentGap + portraitH) : wr.Count * lh;
                 contentH += blockH[li];
             }
             if (nAll > 1) contentH += (nAll - 1) * MsgGap;
             contentH += BottomPad;
             win.WrapCache = new LayoutCache(blockH, contentH, nAll, maxTextW, active.ChannelMask,
-                active.PlayerId, win.Toggles, storeVer, (int)win.TimeFormat, (int)win.TimeSource, atlas);
+                active.PlayerId, active.PinnedName, win.Toggles, storeVer, (int)win.TimeFormat, (int)win.TimeSource, atlas);
         }
 
         // Clamp the scroll to the measured content, then hand the metrics to the window (scrollbar + drag map).
@@ -292,7 +290,7 @@ public static class WindowRenderer
                     float px = gutterRight
                         ? bx + ChatWindow.Pad + maxTextW - portraitW
                         : bx + ChatWindow.Pad;
-                    float py = top;
+                    float py = top + descentGap;
                     bool hovered = win.HoveredPortrait == hits.Count;
                     var fc = hovered ? PortraitFrameHover : PortraitFrame;
                     b.Rect(px - PortraitFrameW, py - PortraitFrameW, px + portraitW + PortraitFrameW, py + portraitH + PortraitFrameW,
@@ -499,6 +497,33 @@ public static class WindowRenderer
             vertsMatch = System.Math.Abs(cold.Verts[vi] - cached.Verts[vi]) < 1e-3f;
         E(vertsMatch, "cache-hit verts match cold-build verts");
 
+        // GradientRect corner mapping: 4 distinct colours → verify the winding order.
+        {
+            var gb = new VertexBatch(0, 0);
+            var tl = (1f, 0f, 0f, 1f); var tr = (0f, 1f, 0f, 1f);
+            var br = (0f, 0f, 1f, 1f); var bl = (1f, 1f, 0f, 1f);
+            gb.GradientRect(0, 0, 10, 10, tl, tr, br, bl);
+            float[] gv = gb.ToArray();
+            E(gb.VertexCount == 6, "GradientRect emits 6 vertices");
+            E(gv[4] == 1f && gv[5] == 0f, "V0 carries TL colour");
+            E(gv[12] == 0f && gv[13] == 1f, "V1 carries TR colour");
+            E(gv[20] == 0f && gv[21] == 0f && gv[22] == 1f, "V2 carries BR colour");
+            E(gv[44] == 1f && gv[45] == 1f && gv[46] == 0f, "V5 carries BL colour");
+        }
+
+        // BgMode.StripesH emits StripeCount rects instead of 1 solid.
+        {
+            var sw = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) });
+            var ss = new SettingsWindow();
+            int solidVerts = Build(sw, ss, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Count;
+            sw.BgMode = BgMode.StripesH; sw.WrapCache = null;
+            int stripeVerts = Build(sw, ss, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Count;
+            E(stripeVerts - solidVerts == (StripeCount - 1) * 6, "StripesH adds (StripeCount-1)*6 verts over solid");
+            sw.BgMode = BgMode.GradientBox; sw.WrapCache = null;
+            int boxVerts = Build(sw, ss, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Count;
+            E(boxVerts - solidVerts == (RadialGrid * RadialGrid - 1) * 6, "GradientBox grid adds (N*N-1)*6 verts over solid");
+        }
+
         log.Info(ok ? "WindowRenderer.SelfCheck: passed" : "WindowRenderer.SelfCheck: FAILED");
     }
 
@@ -512,6 +537,117 @@ public static class WindowRenderer
             b.Rect(x, y - 2f, x + 2f, y, r, g, bl, 0.5f);
         }
     }
+
+    /// <summary>Emit the window background according to its <see cref="BgMode"/>: solid, gradient (GPU-
+    /// interpolated per-corner colours), or stripes (alternating rects).</summary>
+    private static void EmitBackground(VertexBatch b, ChatWindow win,
+        (float r, float g, float b, float a) c1, (float r, float g, float b, float a) c2)
+    {
+        float x0 = win.X, y0 = win.Y, x1 = win.X + win.W, y1 = win.Y + win.H;
+        switch (win.BgMode)
+        {
+            case BgMode.GradientV:
+                b.GradientRect(x0, y0, x1, y1, c1, c1, c2, c2); break;
+            case BgMode.GradientH:
+                b.GradientRect(x0, y0, x1, y1, c1, c2, c2, c1); break;
+            case BgMode.GradientD:
+                var mid = LerpColor(c1, c2);
+                b.GradientRect(x0, y0, x1, y1, c1, mid, c2, mid); break;
+            case BgMode.StripesH:
+                EmitStripes(b, x0, y0, x1, y1, c1, c2, horizontal: true); break;
+            case BgMode.StripesV:
+                EmitStripes(b, x0, y0, x1, y1, c1, c2, horizontal: false); break;
+            case BgMode.GradientBox:
+                EmitGridGradient(b, x0, y0, x1, y1, c1, c2, GridDist.Box); break;
+            case BgMode.GradientCircle:
+                EmitGridGradient(b, x0, y0, x1, y1, c1, c2, GridDist.Circle); break;
+            case BgMode.Conic:
+                EmitGridGradient(b, x0, y0, x1, y1, c1, c2, GridDist.Conic2); break;
+            case BgMode.Conic4:
+                EmitGridGradient(b, x0, y0, x1, y1, c1, c2, GridDist.Conic4); break;
+            default:
+                b.Rect(x0, y0, x1, y1, c1.r, c1.g, c1.b, c1.a); break;
+        }
+    }
+
+    // ponytail: fixed 10 bands; a stripe-width setting is the ceiling
+    private const int StripeCount = 10;
+
+    private static void EmitStripes(VertexBatch b, float x0, float y0, float x1, float y1,
+        (float r, float g, float b, float a) c1, (float r, float g, float b, float a) c2, bool horizontal)
+    {
+        for (int i = 0; i < StripeCount; i++)
+        {
+            var c = i % 2 == 0 ? c1 : c2;
+            if (horizontal)
+            {
+                float sh = (y1 - y0) / StripeCount;
+                b.Rect(x0, y0 + i * sh, x1, y0 + (i + 1) * sh, c.r, c.g, c.b, c.a);
+            }
+            else
+            {
+                float sw = (x1 - x0) / StripeCount;
+                b.Rect(x0 + i * sw, y0, x0 + (i + 1) * sw, y1, c.r, c.g, c.b, c.a);
+            }
+        }
+    }
+
+    private enum GridDist { Box, Circle, Conic2, Conic4 }
+
+    // ponytail: 10×10 grid; finer resolution is the ceiling
+    private const int RadialGrid = 10;
+
+    /// <summary>Emit an NxN grid of quads with per-vertex colours computed from a distance/angle function.
+    /// Box/Circle use distance from centre; Conic uses angle. Edge colour = c1, centre colour = c2.</summary>
+    private static void EmitGridGradient(VertexBatch b, float x0, float y0, float x1, float y1,
+        (float r, float g, float b, float a) c1, (float r, float g, float b, float a) c2, GridDist dist)
+    {
+        const int N = RadialGrid;
+        float w = x1 - x0, h = y1 - y0;
+        for (int row = 0; row < N; row++)
+            for (int col = 0; col < N; col++)
+                b.GradientRect(
+                    x0 + col * w / N, y0 + row * h / N,
+                    x0 + (col + 1) * w / N, y0 + (row + 1) * h / N,
+                    GridColor(col, row, N, c1, c2, dist),
+                    GridColor(col + 1, row, N, c1, c2, dist),
+                    GridColor(col + 1, row + 1, N, c1, c2, dist),
+                    GridColor(col, row + 1, N, c1, c2, dist));
+    }
+
+    private static (float r, float g, float b, float a) GridColor(int col, int row, int n,
+        (float r, float g, float b, float a) edge, (float r, float g, float b, float a) center, GridDist dist)
+    {
+        float sx = 2f * col / n - 1f, sy = 2f * row / n - 1f;
+        float t;
+        switch (dist)
+        {
+            case GridDist.Circle:
+                t = (float)System.Math.Sqrt(sx * sx + sy * sy);
+                if (t > 1f) t = 1f;
+                break;
+            case GridDist.Conic2:
+            {
+                float a = (float)System.Math.Atan2(sy, sx);
+                t = 1f - (float)System.Math.Abs(System.Math.Cos(a));
+                break;
+            }
+            case GridDist.Conic4:
+            {
+                float a = (float)System.Math.Atan2(sy, sx);
+                t = 1f - (float)System.Math.Abs(System.Math.Cos(2.0 * a));
+                break;
+            }
+            default: // Box
+                t = System.Math.Max(System.Math.Abs(sx), System.Math.Abs(sy));
+                break;
+        }
+        return LerpColor(center, edge, t);
+    }
+
+    private static (float r, float g, float b, float a) LerpColor(
+        (float r, float g, float b, float a) a, (float r, float g, float b, float a) b, float t = 0.5f)
+        => (a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t);
 
     /// <summary>Laid-out block height (px) of one message -- the same wrap + portrait padding a body block
     /// gets in <see cref="Build"/>. The ingest path uses it to slide/compensate by the exact new-line height
