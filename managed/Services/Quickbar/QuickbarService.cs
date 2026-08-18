@@ -3,6 +3,7 @@ using Sowx.Framework;
 using Sowx.Services.Chat;
 using Sowx.Services.Chat.Core;
 using Sowx.Services.Chat.Render;
+using Sowx.Ui;
 
 namespace Sowx.Services.Quickbar;
 
@@ -70,7 +71,22 @@ public sealed unsafe class QuickbarService : IExtenderService
         _setPosScreen = (delegate* unmanaged<IntPtr, int, int, void>)Native.Sym(SymbolMap.SetPositionScreen);
         _hideCompass = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.HideCompass);
         _showCompass = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ShowCompass);
+
+        // Register a framework Window so the input layer routes mouse events to the settings panel (#64). The
+        // quickbar draws through ChatService's frame list (no DrawContent here); it only needs input + a hit-test
+        // override (its panel is the only clickable region, and only while open). Skipped under LOCKCHAT, where
+        // the framework input layer is down and the quickbar is inert (Tick never runs).
+        if (UiHostService.OwnsFramePresent)
+            _window = new Window(0, 0, 0, 0)
+            {
+                Focusable = false,
+                OnMouseButton = OnMouseButton,
+                OnMouseMotion = OnMouseMotion,
+                HitTestOverride = (px, py) => MouseOverUi((int)px, (int)py),
+            };
     }
+
+    private static Window? _window;
 
     private static delegate* unmanaged<IntPtr, int, int, void> _setPosScreen;
 
@@ -162,6 +178,18 @@ public sealed unsafe class QuickbarService : IExtenderService
 
     /// <summary>True while the quickbar settings panel is open.</summary>
     public static bool SettingsOpen => _settings.Open;
+
+    /// <summary>The quickbar button-bar rect (bottom-centered/aligned 800x36), for window snapping. False when
+    /// hidden or the viewport isn't known yet. The quickbar itself never drags -- it is only ever an obstacle.</summary>
+    public static bool SnapRectOut(out (float X, float Y, float W, float H) r)
+    {
+        int vpW = _vpW, vpH = _vpH;
+        if (_config.Hidden || vpW <= 0 || vpH <= 0) { r = default; return false; }
+        float qW = QuickbarModelW, qH = QuickbarBaseH;
+        float qX = _config.Align switch { QbarAlign.Left => 0f, QbarAlign.Right => vpW - qW, _ => (vpW - qW) / 2f };
+        r = (qX, vpH - qH, qW, qH);
+        return true;
+    }
 
     /// <summary>Toggle compass visibility (called from <c>/compass</c> chat command).</summary>
     public static void ToggleCompass()

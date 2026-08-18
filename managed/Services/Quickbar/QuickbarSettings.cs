@@ -1,5 +1,6 @@
 using Sowx.Framework;
 using Sowx.Services.Chat.Core;
+using Sowx.Ui;
 
 namespace Sowx.Services.Quickbar;
 

@@ -64,3 +64,48 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   in the Core behind the shell.
 - **Extender-optional** — a stock client plays vanilla; the extender only ever reuses
   existing wire opcodes, so an un-extended client loses nothing.
+
+## UI framework
+
+- **UI framework** (`Sowx.Ui`) — the shared layer every windowed feature builds on. Owns
+  the frame present, the render toolkit, input/focus arbitration, and the cursor. A
+  feature supplies **content**; the framework supplies everything a window needs but
+  shouldn't reinvent. Formerly all of this lived under the **Chatbox**; Chat is now just
+  one consumer among several.
+- **Frame host** — the single owner of the frame present (`SwapBuffers`), the in-game
+  gate, and UI-scale sync. Drives every registered **Window** once per frame. (Was
+  Chat's `OnSwap` roll-call.)
+- **Window** (framework) — a retained UI window the framework owns: rect, z-order,
+  focus, drag/resize, hit-regions, cursor, and input dispatch. A service fills only its
+  **content**; the shared behaviour is done for it. Chat's tabs/tells and Dialog's panel
+  are *content* inside such a window, not windows of their own making.
+- **Chrome vs content** — *chrome* is the shared, framework-owned window behaviour
+  (frame, drag/resize, focus, cursor, input routing); *content* is the service-specific
+  interior (chat lines, dialog rows). The split between them is the framework's core seam.
+  (Distinct from the Chatbox **Chrome** term, which is chat's shared per-window *look*.)
+- **Selectable text** — an opt-in capability of the framework's text layer: any content
+  can mark its text select-and-copyable. Lifted from the Dialog service.
+- **Cursor (as UI concern)** — the pointer shape is a byproduct of the per-frame
+  hit-test: whichever Window hit-region is under the pointer names the cursor. No
+  separate cursor subsystem. Absorbs the former `CursorService`.
+- **Golden regression gate** — the Chat service is the reference the migration must not
+  regress: the most-polished consumer, carrying live-verified fixes (AurTexture lifetime,
+  drive-latch, keybind gating). Its look, feel, and fixes survive the extraction
+  byte-for-byte; other consumers may shift to adopt the unified behaviour.
+- **Focus** — the one **Window** that owns the keyboard at a time, across every service.
+  Acquired per the **focus mode**: *click-to-focus* (default) or *hover-to-focus* (opt-in,
+  user-configured).
+- **Input precedence** — the fixed order the **frame host** resolves every input event:
+  (1) the focused Window's content, (2) registered **input consumers** (chords),
+  (3) engine gameplay keybinds. Each layer consumes the event or passes it down. A global
+  hotkey fires only when no window wants the key.
+- **Input consumer** — a service that registers to receive input at a defined priority
+  *without* owning a Window (e.g. the Hotkeys service's chords). A Window, by contrast,
+  receives input by being focused or hit-tested.
+- **Keyboard-owned gate** — the single framework signal that some UI owns the keyboard;
+  while set, engine gameplay keybinds are suppressed. The drive-latch and keybind-dispatch
+  fixes live here once, for all consumers.
+- **Capability flags** — per-Window switches (`Focusable`, `Draggable`, `Resizable`,
+  default on) that let one Window type cover docked bars and read-only panels without a
+  second abstraction. A non-focusable Window is skipped by focus hit-testing but still
+  drawn and still drives the cursor.

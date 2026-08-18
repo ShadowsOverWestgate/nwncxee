@@ -90,6 +90,7 @@ name a known ceiling + its upgrade path.
 
 ## Hard rules
 
+- **NEVER GUESS.** Always verify with a Ghidra decompilation.
 - **Hook with funchook, NOT NativeHookRegistry.** The ported `sow-hooking` skill
   describes the server's registry, which does not exist here. Take its RE mindset
   and Before/After/SkipOriginal semantics, not its C# API.
@@ -151,9 +152,13 @@ The client is already imported and analyzed:
 
 Framework works end-to-end under NativeAOT (DI + discovery + funchook install
 all verified via `run-demo.sh`). A live hook proves out via `sowx-launch` --
-watch for "first frame presented -- hook is LIVE" (now emitted by `ChatService`,
-which owns the `SwapBuffers` present for the native chatbox; `FrameTapService`
-is the minimal example of the pattern and stands down while the chatbox owns it).
+watch for "first frame presented -- hook is LIVE" (now emitted by `UiHostService`
+in `managed/Ui/`, the frame host that owns the `SwapBuffers` present, computes the
+in-game gate + UI-scale sync, and drives the `UiHost` window registry's draw
+roll-call each frame; #62). Chat renders as one registered `Window` whose
+content-draw slot runs the chatbox; `FrameTapService` is the minimal hook-pattern
+example and stands down while the framework owns the frame (resumes under
+`SOWX_LOCKCHAT`).
 
 Linux only. Windows = proxy DLL or rename-launcher; macOS = `DYLD_INSERT_LIBRARIES`,
 blocked by the notarized app's hardened runtime until re-signed (do last).

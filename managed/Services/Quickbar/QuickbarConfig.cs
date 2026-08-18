@@ -2,9 +2,6 @@ using Sowx.Framework;
 
 namespace Sowx.Services.Quickbar;
 
-/// <summary>Quickbar alignment preset.</summary>
-public enum QbarAlign { Left, Center, Right }
-
 /// <summary>Persisted quickbar/HUD settings: alignment, bars toggle, hide toggles. Flat key=value in
 /// <c>sowx-quickbar.cfg</c>, stored in the engine's user directory (next to nwn.ini).</summary>
 public sealed class QuickbarConfig

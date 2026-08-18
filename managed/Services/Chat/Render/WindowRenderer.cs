@@ -1,45 +1,13 @@
 using System.Collections.Generic;
 using System.Text;
 using Sowx.Services.Chat.Core;
+using Sowx.Ui;
 
 namespace Sowx.Services.Chat.Render;
 
-/// <summary>A speaker-portrait draw request: a pixel rect, the resref to load it from, and the line's
-/// message time (so the portrait fades with its text). Emitted cold by <see cref="WindowRenderer"/>
-/// (strings + floats only, no native refs); the GL side (<see cref="TextRenderer"/>) resolves the resref
-/// to an engine-resident texture and draws it in a second pass (#26), applying the fade+slide (map #13).</summary>
-public readonly record struct PortraitQuad(float X, float Y, float W, float H, string Resref, System.DateTime Ts);
-
-/// <summary>The vertex range [<see cref="Start"/>,<see cref="End"/>) (vertex indices) of one visible chat
-/// line's body geometry, plus its message time. The draw walks these to apply the per-line fade and the
-/// shared slide/scroll residual (map #13).</summary>
-public readonly record struct LineSpanVerts(int Start, int End, System.DateTime Ts);
-
-/// <summary>One built chatbox frame: the interleaved verts + the metadata the animated draw needs. The
-/// body slice [<see cref="BodyStart"/>,<see cref="BodyEnd"/>) is the only part that fades/slides and is
-/// clipped to the body rect; everything outside it is static chrome. Built cold, drawn hot.</summary>
-public sealed class RenderFrame
-{
-    public float[] Verts = System.Array.Empty<float>();
-    public int Count;
-    public List<PortraitQuad> Portraits = new();
-    public List<LineSpanVerts> Spans = new();
-    public int BodyStart, BodyEnd;    // vertex indices bounding the animated body slice
-    public float Bx, By, Bw, Bh;      // body rect (px, y-down) -- the scissor for the body draw
-    public bool Scrolled;             // active tab scrolled up (ScrollPx != 0): freeze the fade -- reading history
-    public bool ApplyResidual;       // true for the focused window (slide/scroll ease); others snap content in
-    // Per-window animation settings (carried here so the hot draw reads frame-local values, not shared statics).
-    public bool AnimEnabled;
-    public double HoldSec, FadeSec;
-    public float TauMs;
-    public System.DateTime LastScroll;
-    /// <summary>Vertex range for unread-tab blink borders (start..end indices). Alpha is modulated at draw time.</summary>
-    public int BlinkStart, BlinkEnd;
-}
-
 /// <summary>
 /// Builds one <see cref="VertexBatch"/> for a <see cref="ChatWindow"/> each time something changes
-/// (ingest / input / resize -- all cold threads), which <see cref="TextRenderer.Publish"/> then draws.
+/// (ingest / input / resize -- all cold threads), which <see cref="ChatRenderer.Publish(RenderFrame[])"/> then draws.
 /// The message body is assembled through an ordered array of stateless line components gated by the
 /// window's toggle bitset (architecture #17): a new visual feature = a new component + a new bit.
 /// Only the rows that fit the body are walked/wrapped, so a rebuild is cheap even per keystroke.
@@ -281,7 +249,7 @@ public static class WindowRenderer
                 for (int w = 0; w < wraps.Count; w++)
                 {
                     var span = wraps[w];
-                    AlignRow(win.Align, atlas, runes, span, availW, w == wraps.Count - 1,
+                    RowAlign.Compute(win.Align, atlas, runes, span, availW, w == wraps.Count - 1,
                              out float xOff, out float spaceExtra);
                     EmitRow(b, atlas, runes, cols, span, rowX + xOff, top + w * lh + glyphBaseline, outline, spaceExtra);
                 }
@@ -464,23 +432,7 @@ public static class WindowRenderer
         var off = Build(win, settings, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Portraits;
         E(off.Count == 0, "portrait toggle off suppresses the icon");
 
-        // AlignRow: right, center, justify offsets. Stub atlas has zero advance, so lineW=0, slack=avail.
-        {
-            var ar = new List<Rune>();
-            foreach (Rune ru in "ab cd".EnumerateRunes()) ar.Add(ru);
-            var sp = new TextWrapper.LineSpan(0, ar.Count);
-            float avail = 100f;
-            AlignRow(TextAlign.Left, atlas, ar, sp, avail, false, out float xL, out float seL);
-            E(xL == 0f && seL == 0f, "AlignRow Left: no offset");
-            AlignRow(TextAlign.Right, atlas, ar, sp, avail, false, out float xR, out float seR);
-            E(System.Math.Abs(xR - avail) < 0.1f && seR == 0f, "AlignRow Right: full slack offset");
-            AlignRow(TextAlign.Center, atlas, ar, sp, avail, false, out float xC, out float seC);
-            E(System.Math.Abs(xC - avail * 0.5f) < 0.1f && seC == 0f, "AlignRow Center: half slack offset");
-            AlignRow(TextAlign.Justify, atlas, ar, sp, avail, false, out float xJ, out float seJ);
-            E(xJ == 0f && System.Math.Abs(seJ - avail) < 0.1f, "AlignRow Justify: slack spread across 1 space");
-            AlignRow(TextAlign.Justify, atlas, ar, sp, avail, true, out float xJL, out float seJL);
-            E(xJL == 0f && seJL == 0f, "AlignRow Justify last row: falls back to left");
-        }
+        // Row alignment moved to RowAlign (its own SelfCheck).
 
         // Layout cache (#53): second build with unchanged content is a cache hit; verts match cold build.
         win.Toggles = ChatToggle.Timestamp | ChatToggle.MessageBody | ChatToggle.Portrait;
@@ -676,26 +628,6 @@ public static class WindowRenderer
         return portraitsOn && !string.IsNullOrEmpty(line.PortraitResref);
     }
 
-    /// <summary>Compute the x-offset and per-space extra width for a text alignment mode.</summary>
-    internal static void AlignRow(TextAlign align, GlyphAtlas atlas, List<Rune> runes,
-                                  TextWrapper.LineSpan span, float availW, bool lastRow,
-                                  out float xOff, out float spaceExtra)
-    {
-        xOff = 0f; spaceExtra = 0f;
-        if (align == TextAlign.Left) return;
-        float lineW = MeasureRunes(atlas, runes, span.Start, span.End, 0f);
-        float slack = availW - lineW;
-        if (slack <= 0f) return;
-        if (align == TextAlign.Right) { xOff = slack; return; }
-        if (align == TextAlign.Center) { xOff = slack * 0.5f; return; }
-        // Justify: distribute slack across spaces; fall back to left on the last row or when no spaces.
-        if (lastRow) return;
-        int spaces = 0;
-        for (int k = span.Start; k < span.End; k++)
-            if (runes[k].Value == ' ') spaces++;
-        if (spaces > 0) spaceExtra = slack / spaces;
-    }
-
     /// <summary>Lay one wrapped row (a span into <paramref name="runes"/>) with per-rune colour.</summary>
     private static void EmitRow(VertexBatch b, GlyphAtlas atlas, List<Rune> runes, List<uint> cols,
                                 TextWrapper.LineSpan span, float startX, float baseline,
@@ -753,8 +685,8 @@ public static class WindowRenderer
             if (selA >= 0 && selB > span.Start && selA < span.End)
             {
                 int rs = System.Math.Max(selA, span.Start), re = System.Math.Min(selB, span.End);
-                float x0 = MeasureRunes(atlas, runes, span.Start, rs, startX);
-                float x1 = MeasureRunes(atlas, runes, span.Start, re, startX);
+                float x0 = RowAlign.Measure(atlas, runes, span.Start, rs, startX);
+                float x1 = RowAlign.Measure(atlas, runes, span.Start, re, startX);
                 b.Rect(x0, ry + 3, x1, ry + fh - 3, p.SelBg.r, p.SelBg.g, p.SelBg.b, p.SelBg.a);
             }
             EmitRunes(b, atlas, runes, span, startX, ry + baseDrop, EditRgb);
@@ -765,7 +697,7 @@ public static class WindowRenderer
                         && !(caretR == span.End && w < rows - 1 && wraps[w + 1].Start == span.End);
             if (here)
             {
-                float cx = MeasureRunes(atlas, runes, span.Start, caretR, startX);
+                float cx = RowAlign.Measure(atlas, runes, span.Start, caretR, startX);
                 b.Rect(cx, ry + 3, cx + 2, ry + fh - 3,
                        ((CaretRgb >> 16) & 0xFF) / 255f, ((CaretRgb >> 8) & 0xFF) / 255f, (CaretRgb & 0xFF) / 255f, 1f);
             }
@@ -860,13 +792,6 @@ public static class WindowRenderer
     }
 
     /// <summary>Pen X after runes <paramref name="from"/>..<paramref name="to"/>, emitting nothing.</summary>
-    private static float MeasureRunes(GlyphAtlas atlas, List<Rune> runes, int from, int to, float startX)
-    {
-        float x = startX;
-        for (int k = from; k < to; k++) x += atlas.TryGet(runes[k].Value, out Glyph g) ? g.Advance : atlas.AdvanceOf(runes[k]);
-        return x;
-    }
-
     /// <summary>Draw one wrapped rune span in a single colour.</summary>
     private static void EmitRunes(VertexBatch b, GlyphAtlas atlas, List<Rune> runes, TextWrapper.LineSpan span,
                                   float startX, float baseline, uint rgb)
@@ -902,55 +827,3 @@ public static class WindowRenderer
     }
 }
 
-/// <summary>A stateless render component: contributes glyphs+colours for one line when its
-/// <see cref="Bit"/> is set in the window's toggle bitset. Extensibility bought with structure.</summary>
-public interface ILineComponent
-{
-    uint Bit { get; }
-    void Contribute(ChatWindow win, ChatLine line, List<Rune> runes, List<uint> cols);
-}
-
-/// <summary>Prepend a grey timestamp to the line, in the configured <see cref="TsFormat"/> and from the
-/// configured <see cref="TsSource"/> (game time falls back to local when the line carries none). The style
-/// is mirrored onto statics from the (cold) config so this stays a cheap, allocation-light hot component.</summary>
-public sealed class TimestampComponent : ILineComponent
-{
-    private const uint Grey = 0x8A8A8A;
-
-    public uint Bit => ChatToggle.Timestamp;
-
-    public void Contribute(ChatWindow win, ChatLine line, List<Rune> runes, List<uint> cols)
-    {
-        string txt;
-        TsSource src = win.TimeSource;
-        TsFormat fmt = win.TimeFormat;
-        if (src == TsSource.Game && line.GameTime.Valid)
-            txt = Stamp(line.GameTime.Hour, line.GameTime.Minute, line.GameTime.Second, fmt);
-        else { System.DateTime lt = line.Timestamp.ToLocalTime(); txt = Stamp(lt.Hour, lt.Minute, lt.Second, fmt); }
-        foreach (Rune r in txt.EnumerateRunes()) { runes.Add(r); cols.Add(Grey); }
-    }
-
-    /// <summary>Format one h/m/s (24-hour inputs) into the current preset, e.g. <c>[09:07] </c>.</summary>
-    internal static string Stamp(int h, int m, int s, TsFormat fmt) => fmt switch
-    {
-        TsFormat.HourMinSec => $"[{h:D2}:{m:D2}:{s:D2}] ",
-        TsFormat.Hour12 => $"[{(h % 12 == 0 ? 12 : h % 12)}:{m:D2} {(h < 12 ? "AM" : "PM")}] ",
-        _ => $"[{h:D2}:{m:D2}] ",
-    };
-}
-
-/// <summary>The message text itself, each colour run in its parsed RGB.</summary>
-// ponytail: SenderName is the next text component -- it's "" per #18's deferral (the tap doesn't carry
-// it). Portrait is not a text component: it's a texture, emitted as a PortraitQuad in the gutter (#26).
-public sealed class MessageBodyComponent : ILineComponent
-{
-    public uint Bit => ChatToggle.MessageBody;
-    public void Contribute(ChatWindow win, ChatLine line, List<Rune> runes, List<uint> cols)
-    {
-        foreach (ColorRun run in line.ColorRuns)
-        {
-            uint rgb = ((uint)(run.R * 255f) << 16) | ((uint)(run.G * 255f) << 8) | (uint)(run.B * 255f);
-            foreach (Rune r in run.Text.EnumerateRunes()) { runes.Add(r); cols.Add(rgb); }
-        }
-    }
-}

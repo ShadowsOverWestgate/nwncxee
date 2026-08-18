@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Services.Chat;
+using Sowx.Services.Dialog;
+using Sowx.Ui;
 
 namespace Sowx.Services.Hotkeys;
 
@@ -43,6 +45,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
 
     // SDL event: type at +0x0, keysym.sym at +0x14, mouse button (Uint8) at +0x10 (from
     // WinMessageHandler). Mouse buttons come through the same pump as KEYUP -- no extra hook.
+    private const uint SdlKeyDown = 0x300;
     private const uint SdlKeyUp = 0x301;
     // SDL_TEXTINPUT: finished UTF-8 codepoints. Null-terminated string (SDL_TextInputEvent.text)
     // at ev + 0xC -- full Unicode, unlike the engine's lossy 8-bit HandleWMCharMessage (bypassed).
@@ -79,6 +82,20 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // No HotkeyStore.Load here: our loader runs pre-main, so the engine user dir (where the cfg lives)
         // isn't resolvable yet. The store lazy-loads on the first login-path call. SelfCheck is in-memory.
         HotkeyStore.SelfCheck(_log!);   // fail-closed default is security-critical; verify at startup
+
+        // Default (#64): the framework input layer owns raw capture. Hotkeys become a chord consumer at tier 2 --
+        // fired only when no window consumed the key and the chord gate is clear (the arbiter's job now). Install
+        // no raw hooks.
+        if (UiHostService.OwnsFramePresent)
+        {
+            UiHost.AddChordConsumer(new Consumer());
+            log.Info("HotkeyInputService: registered as a chord consumer (framework owns raw capture)");
+            return;
+        }
+
+        // SOWX_LOCKCHAT below: the framework input layer stood down (single-hooks would otherwise conflict), so
+        // own the raw hooks ourselves -- hotkey capture + the vanilla-chat typing observer -- exactly as before.
+        // This is the one path that keeps hotkeys live when the whole UI framework is disabled.
         _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);   // stable address; deref live for the current ctx
         _exoInputGlobal = Native.Sym(SymbolMap.ExoInput); // deref live for the CExoInput instance
         _getKbMode = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.GetKeyboardMode);
@@ -122,6 +139,10 @@ public sealed unsafe class HotkeyInputService : IExtenderService
             return 0;
         }
 
+        // NPC dialog is modal: 1-9 pick a reply, ESC closes. Consume so the digits don't fire hotkeys and
+        // ESC doesn't open the options menu over the conversation. After chat typing, so typing still wins.
+        if (DialogService.IsOpen && DialogService.HandleKey(key, _modState != null ? _modState() : 0)) return 0;
+
         Fire((int)key | Mods());
         return _keyOrig != null ? _keyOrig(key, flags) : 0;                    // never consume the key
     }
@@ -130,15 +151,48 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     /// The Ctrl/Shift/Alt bits currently held, in HotkeyProtocol.Mod* encoding, OR'd onto the base
     /// code so a combo (Ctrl+F) matches its own armed entry and nothing else. No allocation.
     /// </summary>
-    private static int Mods()
+    private static int Mods() => _modState != null ? ModsFrom(_modState()) : 0;
+
+    /// <summary>Map a raw SDL_Keymod bitset to the HotkeyProtocol.Mod* wire encoding.</summary>
+    private static int ModsFrom(int m)
     {
-        if (_modState == null) return 0;
-        int m = _modState();
         int bits = 0;
         if ((m & KmodCtrl)  != 0) bits |= HotkeyProtocol.ModCtrl;
         if ((m & KmodShift) != 0) bits |= HotkeyProtocol.ModShift;
         if ((m & KmodLAlt)  != 0) bits |= HotkeyProtocol.ModAlt;
         return bits;
+    }
+
+    /// <summary>The chord-consumer face of hotkeys (#64, default path). The framework input layer owns raw
+    /// capture, precedence, the auto-repeat gate, and every environmental gate; this consumer only maps a
+    /// fallen-through key/button to its wire code and does the consent + debounce + send. Tier 2: below a
+    /// window's focused content, above the engine's gameplay keybinds.</summary>
+    private sealed class Consumer : IChordConsumer
+    {
+        public int Priority => 2;
+
+        /// <summary>Arbiter query (#61): true when some armed code shares this base key.</summary>
+        public bool WantsKey(int key)
+        {
+            foreach (int code in HotkeyStore.Armed)
+                if ((code & ~HotkeyProtocol.ModMask) == key) return true;
+            return false;
+        }
+
+        public void Fire(uint key, int sdlMods) => Emit((int)key | ModsFrom(sdlMods));
+        public void FireMouse(int button, int sdlMods) => Emit(HotkeyProtocol.MouseBase + button | ModsFrom(sdlMods));
+    }
+
+    /// <summary>Consent (armed) + per-key debounce + send. The repeat gate and env gates are the framework's;
+    /// this is the shared send tail used by the consumer path.</summary>
+    private static void Emit(int code)
+    {
+        if (!HotkeyStore.Armed.Contains(code)) return;
+        long now = Environment.TickCount64;
+        _lastSent.TryGetValue(code, out long last);
+        if (now - last < DebounceMs) return;
+        _lastSent[code] = now;
+        Send(code);
     }
 
     /// <summary>
@@ -153,7 +207,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // release must clear the same key it set.
         int baseCode = code & ~HotkeyProtocol.ModMask;
         if (!(HotkeyStore.Armed.Contains(code) && _down.Add(baseCode))) return;
-        if (!_focused || _typing || ChatService.WantsKey || NuiEditFocused() || KeyboardModeActive() || DialogOpen()) return;  // 3,4 focus + typing + dialog
+        if (!_focused || _typing || ChatService.WantsKey || NuiEditFocused() || KeyboardModeActive()
+            || DialogOpen() || DialogService.IsOpen) return;  // 3,4 focus + typing + dialog (ours or vanilla)
         long now = Environment.TickCount64;                                    // 5 debounce
         _lastSent.TryGetValue(code, out long last);
         if (now - last < DebounceMs) return;
@@ -170,6 +225,18 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         {
             switch (*(uint*)ev)
             {
+                case SdlKeyDown:
+                    // Our dialog is modal for the keys it uses (reply digits, ESC, Ctrl+C copy). The engine queues
+                    // gameplay keybinds from CExoInput::AddEvent -- run unconditionally by the original for EVERY
+                    // SDL_KEYDOWN, matched by scancode with NO modifier check -- so Ctrl+C matches the plain 'C'
+                    // binding and opens the character sheet a frame later. HandleWMKeyDownMessage (where OnKeyDown
+                    // consumes) runs AFTER that and cannot stop it. So swallow the keydown HERE, before the original
+                    // sees it, whenever the dialog consumes the key. Keyups still pass through (inert for keybinds
+                    // -> no stuck-key). Chat is left alone: it suppresses keybinds via KeyboardModeOn already.
+                    if (DialogService.IsOpen && !ChatService.WantsKey
+                        && DialogService.HandleKey(*(uint*)(ev + SdlEvSymOff), _modState != null ? _modState() : 0))
+                        return 0;
+                    break;
                 case SdlKeyUp:                                                  // key released
                     _down.Remove(*(int*)(ev + SdlEvSymOff));
                     break;
@@ -179,6 +246,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                 case SdlMouseMotion:
                 {
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    if (DialogService.OnMouseMotion(mx, my))   // consumes only mid-drag / settings-modal; else hover
+                        return 0;
                     if (Quickbar.QuickbarService.OnMouseMotion(mx, my))
                         return 0;
                     if (ChatService.OnMouseMotion(mx, my))
@@ -189,6 +258,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                 {
                     byte btn = *(byte*)(ev + SdlEvButtonOff);
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    if (DialogService.OnMouseButton(true, btn, mx, my))   // modal: dialog wins the click
+                        return 0;
                     if (Quickbar.QuickbarService.OnMouseButton(true, btn, mx, my))
                         return 0;
                     if (ChatService.OnMouseButton(true, btn, mx, my))
@@ -200,6 +271,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                 {
                     byte btn = *(byte*)(ev + SdlEvButtonOff);
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    if (DialogService.OnMouseButton(false, btn, mx, my))
+                        return 0;
                     if (Quickbar.QuickbarService.OnMouseButton(false, btn, mx, my))
                         return 0;
                     if (ChatService.OnMouseButton(false, btn, mx, my))
@@ -208,6 +281,8 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                     break;
                 }
                 case SdlMouseWheel:                                            // scrollback when the pointer is over the box
+                    if (DialogService.OnMouseWheel(*(int*)(ev + SdlEvWheelYOff)))   // modal: dialog scrolls first
+                        return 0;
                     if (ChatService.OnMouseWheel(*(int*)(ev + SdlEvWheelYOff)))
                         return 0;
                     break;

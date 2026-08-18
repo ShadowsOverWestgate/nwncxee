@@ -7,7 +7,7 @@ so `tea` auto-detects the repo and login (`westgate` / user `xtul`).
 
 ## Conventions
 
-- **Create an issue**: `tea issues create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
+- **Create an issue**: `tea issues create --title "..." --description "..."`. Use a heredoc for multi-line bodies.
 - **Read an issue**: `tea issues <index>` (detail view). Add `tea comments <index>` for the thread.
 - **List issues**: `tea issues list --state open --fields index,title,labels,assignees` (add `--labels <name>` to filter).
 - **Comment**: `tea comments <index> "..."`

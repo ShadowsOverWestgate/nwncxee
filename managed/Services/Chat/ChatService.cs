@@ -3,6 +3,7 @@ using System.Text;
 using Sowx.Framework;
 using Sowx.Services.Chat.Core;
 using Sowx.Services.Chat.Render;
+using Sowx.Ui;
 
 namespace Sowx.Services.Chat;
 
@@ -37,13 +38,6 @@ public sealed unsafe class ChatService : IExtenderService
     /// typing still gates gameplay hotkeys. The single pivot both services read.</summary>
     public static bool OwnInput => !Locked;
 
-    /// <summary>True when ChatService owns the SwapBuffers frame present (the default path). False under
-    /// <c>SOWX_LOCKCHAT</c> (stood down) or the probe (which claims that hook itself). FrameTapService reads
-    /// this to resume its proof-of-life present when nothing else owns the frame -- funchook single-hooks a
-    /// symbol, so exactly one owner of SwapBuffers may install.</summary>
-    public static bool OwnsFramePresent =>
-        !Locked && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_CHATPROBE"));
-
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
@@ -53,6 +47,7 @@ public sealed unsafe class ChatService : IExtenderService
         TellTarget.SelfCheck(log);     // #45 tell tab send-decision proof (off-device)
         TellRouter.SelfCheck(log);     // #46 tell auto-open routing proof (off-device)
         WindowRenderer.SelfCheck(log); // #26 portrait-gutter emission proof (off-device)
+        RowAlign.SelfCheck(log);       // shared row alignment/justify primitive proof (off-device)
         ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
         ChatConfig.SelfCheck(log);     // config round-trip + legacy-file migration proof (off-device)
         TextRenderer.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
@@ -91,14 +86,6 @@ public sealed unsafe class ChatService : IExtenderService
         ColorRunParser.SelfCheck(log);
         ChatStore.SelfCheck(log);
 
-        // GATE: funchook single-hooks a symbol; ChatProbeService claims AppendToMsgBuffer when armed.
-        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_CHATPROBE")))
-        {
-            // ponytail: probe owns the tap while armed; the two unify in slice 4 when store->render wires up
-            log.Info("ChatService: message core deferred to ChatProbeService (SOWX_CHATPROBE set)");
-            return;
-        }
-
         _tapOrig = (delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef16, void>)hooks.Install(
             SymbolMap.AppendToMsgBuffer,
             (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef16, void>)&OnAppend);
@@ -122,6 +109,9 @@ public sealed unsafe class ChatService : IExtenderService
             // ponytail: senderName "" -- the tap doesn't carry it (inline in raw). SenderName component is the ceiling.
             var line = new ChatLine(channel, "", playerId, portraitRef,
                 ColorRunParser.Parse(raw), DateTime.UtcNow, raw, GameNow(), tellRecip);
+            // Tells are rare + this path is cold: log every one unconditionally (throttle covers the rest).
+            if ((channel & 0x002) != 0)
+                _log?.Info($"[chat] tell ingest: pid={playerId} local={_playerResolver?.LocalIngestId()} recip=\"{tellRecip}\" raw={raw}");
             _store.Append(line);
 
             long n = ++_ingestCount;
@@ -211,24 +201,26 @@ public sealed unsafe class ChatService : IExtenderService
     /// roster-backed implementation; pinned tabs silently drop sends while null (safe degradation).</summary>
     private static IPlayerResolver? _playerResolver;
 
-    /// <summary>Native player roster resolver: calls CClientExoApp::GetPlayerByPlayerName, reads the
-    /// player ID at CNWCPlayer+0x8. Cold (send path only).</summary>
+    /// <summary>Native player roster resolver: CClientExoApp::GetPlayerByCreatureName first (pinned tab
+    /// names are character names), then GetPlayerByPlayerName; reads the player ID at CNWCPlayer+0x8.
+    /// Cold (send path only).</summary>
     // ponytail: exact-case match (engine strcmp); own roster walk (+0x38/+0x40) with case-folding if players trip
     private sealed class NativePlayerResolver : IPlayerResolver
     {
         private readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _getByName;
+        private readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _getByCreatureName;
 
         // CNWCPlayer field offsets (verified via Ghidra decompilation).
-        // +0x48 = the network player ID used by SendChatTell and CNetLayer::GetPlayerInfo.
-        // +0x8  = the internal list-lookup ID (what AppendToMsgBuffer passes as playerId).
+        // +0x8  = the player ID: what vanilla ParseChatString reads (-1 = invalid) and passes to
+        //         SendPlayerToServerChat_Tell, and what AppendToMsgBuffer passes as playerId.
         // +0x10 = player name (char*), +0x18 = name length.
-        private const int NetPlayerIdOff = 0x48;
         private const int IngestPlayerIdOff = 0x8;
         private const int PlayerNameOff = 0x10;
         private const int PlayerNameLenOff = 0x18;
 
-        public NativePlayerResolver(delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByName)
-            => _getByName = getByName;
+        public NativePlayerResolver(delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByName,
+                                    delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByCreatureName)
+        { _getByName = getByName; _getByCreatureName = getByCreatureName; }
 
         private IntPtr App()
         {
@@ -241,15 +233,17 @@ public sealed unsafe class ChatService : IExtenderService
 
         public uint? Resolve(string name)
         {
-            if (_getByName == null) return null;
             IntPtr app = App();
             if (app == IntPtr.Zero) return null;
             IntPtr exo = Native.NewExoString(name);
             try
             {
-                IntPtr player = _getByName(app, exo);
+                IntPtr player = IntPtr.Zero;
+                if (_getByCreatureName != null) player = _getByCreatureName(app, exo);
+                if (player == IntPtr.Zero && _getByName != null) player = _getByName(app, exo);
                 if (player == IntPtr.Zero) return null;
-                return *(uint*)(player + NetPlayerIdOff);
+                uint id = *(uint*)(player + IngestPlayerIdOff);
+                return id == 0xffffffff ? null : id;
             }
             finally { Native.FreeExoString(exo); }
         }
@@ -314,58 +308,14 @@ public sealed unsafe class ChatService : IExtenderService
     /// <summary>Always-closed stub passed to non-focused window builds so EmitSettings doesn't duplicate.</summary>
     private static readonly SettingsWindow _closedSettings = new();
 
-    private static delegate* unmanaged<IntPtr, void> _swapOrig;
     private static volatile int _lastMx, _lastMy;   // latest pointer pos, for wheel hit-testing
     private static bool _mdiag;                      // one-shot: log first click coords + rect
     private static int _hoverIndex = -1;             // window under the pointer (-1 = none), for grip visibility
     private static bool _anyTabDrag;                 // true while any window has an active tab drag (#42)
 
-    // In-game gate: draw the box when a module is loaded and no full-screen options menu is up. The walk is
-    // verified against the disassembly of GetInGameGui and IsVisible -- every offset and the 4-byte width:
-    //   mgr  = *g_pAppManager           (CAppManager*)
-    //   app  = *mgr                     (CClientExoApp* at CAppManager+0)
-    //   gui  = *(*(app+0x8)+0x90)       (CClientExoApp::GetInGameGui -- persists, non-null even on the menu)
-    //   win  = *(gui+0x8)               (CGuiInGame's chat window -- NULL until a module loads = the in-area signal)
-    //   vis  = *(int*)(win+0xc68)       (CGuiInGameChatWindow::IsVisible -- logged only; see below)
-    //   opt  = *(int*)(intern+0x604)    (CClientExoApp::SetOptionsPanelOpen flag -- 1 while the ESC menu is up)
-    //   show = win != null && opt == 0
-    // NB: #23 SkipOriginals CGuiInGameChatWindow::Show, so the vanilla window never activates and `vis`
-    // (0xc68) stays 0 -- we can no longer gate on it (that's why it's dropped from `show`, kept only in the
-    // [chatgate] log to confirm the Show-suppression took). Module presence + no-ESC-menu is the in-area
-    // signal now; the minor cost is the box also shows while the player would have toggled vanilla chat off
-    // (moot once we own chat). A null `win` is the main-menu case (no module) => hidden. Hot (every
-    // SwapBuffers) and zero-alloc: all pointer reads, guarded at each hop; the [chatgate] log fires only on
-    // a state transition (rare, not per-frame).
+    // *g_pAppManager, for the game clock (below) and the Tell player resolver. The in-game gate that used to
+    // walk this chain now lives in UiHostService (#62); chat reads UiHost.InGame / UiHost.InModule instead.
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    private const int ExoAppInternalOff = 0x8, InGameGuiOff = 0x90, ChatWindowOff = 0x8,
-                      ChatVisibleOff = 0xc68, OptionsPanelOpenOff = 0x604, GuiToggledOffOff = 0x3d4;
-    private static (IntPtr win, int vis, bool opt, bool hud) _gateSig;
-
-    private static bool InGame()
-    {
-        IntPtr mgr = _appMgr != IntPtr.Zero ? *(IntPtr*)_appMgr : IntPtr.Zero;
-        IntPtr app = mgr != IntPtr.Zero ? *(IntPtr*)mgr : IntPtr.Zero;
-        IntPtr intern = app != IntPtr.Zero ? *(IntPtr*)(app + ExoAppInternalOff) : IntPtr.Zero;
-        IntPtr gui = intern != IntPtr.Zero ? *(IntPtr*)(intern + InGameGuiOff) : IntPtr.Zero;
-        IntPtr win = gui != IntPtr.Zero ? *(IntPtr*)(gui + ChatWindowOff) : IntPtr.Zero;
-        int vis = win != IntPtr.Zero ? *(int*)(win + ChatVisibleOff) : 0;   // Show-suppressed -> stays 0; logged only
-        bool opt = intern != IntPtr.Zero && *(int*)(intern + OptionsPanelOpenOff) != 0;   // ESC/game menu up
-        // H key hides all HUD: CGuiInGame::ToggleOff sets gui+0x3d4=1, UnToggleOff clears it (verified in disasm).
-        bool hud = gui != IntPtr.Zero && *(int*)(gui + GuiToggledOffOff) != 0;
-        bool show = win != IntPtr.Zero && !opt && !hud;   // in a module, no options menu, HUD not toggled off
-
-        var sig = (win, vis, opt, hud);
-        if (sig != _gateSig)
-        {
-            // Relog/disconnect (chat window went null after being live) resets the send channel to Talk
-            // (#25: slash-switched channel persists across messages, but NOT across relogs).
-            if (win == IntPtr.Zero && _gateSig.win != IntPtr.Zero)
-                ResetSession();   // module unloaded (clean exit or disconnect): drop cached engine ptrs + stale state (#33)
-            _gateSig = sig;
-            _log?.Info($"[chatgate] win=0x{win:x} vis={vis} opt={opt} hud={hud} -> show={show}");
-        }
-        return show;
-    }
 
     // In-game game clock (chat game-time timestamps). The server syncs ONLY the game HOUR to the client, into
     // CNWCModule+0x16c (verified: the free-running CWorldTimer is never anchored to module time, which is why
@@ -495,6 +445,24 @@ public sealed unsafe class ChatService : IExtenderService
         TextRenderer.SetFont(effectivePx);
     }
 
+    /// <summary>The global (shared-atlas) font pixel height. Read by the dialog settings panel, which surfaces
+    /// the same value the chat settings edit -- there is one atlas, so font size is not per-UI.</summary>
+    public static float GlobalFontPx => _config.FontPx;
+
+    /// <summary>Set the global font size + re-bake the atlas and relayout (mirrors the chat font slider's
+    /// per-motion path). Does NOT persist -- the caller saves on drag end, matching chat's save-on-mouse-up.</summary>
+    public static void SetGlobalFontPx(float px)
+    {
+        float c = System.Math.Clamp(px, TextRenderer.MinFontPx, TextRenderer.MaxFontPx);
+        if (c == _config.FontPx) return;
+        _config.FontPx = c;
+        ApplyConfig(); DirtyAll(); Rebuild();
+    }
+
+    /// <summary>Persist the chat config now (used by the dialog settings panel after its font slider, since the
+    /// font lives in the chat config -- one shared atlas). No-op write when nothing changed (text compare).</summary>
+    public static void SaveConfigNow() => SaveConfig();
+
     /// <summary>Sync all window-owned fields into the config (truncating stale window entries from a prior
     /// close) and write the file iff it changed. AC4: ephemeral (auto-created, unkept) tabs are excluded;
     /// a non-Main window whose tabs are ALL ephemeral is dropped entirely.</summary>
@@ -547,13 +515,14 @@ public sealed unsafe class ChatService : IExtenderService
     }
 
     /// <summary>Slice #21: bake the atlas, build the window, observe ingest, and own SwapBuffers so the
-    /// box renders on a plain launch (no env vars) -- unless the probe owns the frame hook.</summary>
+    /// box renders on a plain launch (no env vars) -- unless stood down under <c>SOWX_LOCKCHAT</c>.</summary>
     private static void InitRender(ExtenderLog log, HookService hooks)
     {
-        // GATE: funchook single-hooks SwapBuffers; ChatProbeService claims it (and the tap) when armed.
-        if (!OwnsFramePresent)
+        // GATE: SOWX_LOCKCHAT stands the chat content down (UiHostService also skips its frame hook, so nothing
+        // double-hooks SwapBuffers and FrameTapService resumes the proof-of-life present).
+        if (Locked)
         {
-            log.Info("ChatService: render deferred to ChatProbeService (SOWX_CHATPROBE set)");
+            log.Info("ChatService: render stood down (SOWX_LOCKCHAT set)");
             return;
         }
 
@@ -564,58 +533,87 @@ public sealed unsafe class ChatService : IExtenderService
         [
             new Tab("All",  0xffffffff),
         ]));
-        // Rect restore is deferred to the first frame (see OnSwap): Initialize runs pre-main, so the
+        // Rect restore is deferred to the first frame (see OnFrame): Initialize runs pre-main, so the
         // engine user dir -- where the cfg lives -- isn't resolvable here yet and LoadConfig would read
         // the ~/.config fallback instead of the real path.
         _store.AddObserver(OnIngest);  // new line -> slide-in/hold + rebuild (cold network thread)
 
-        _swapOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.SwapBuffers, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwap);
-        log.Info(_swapOrig != null
-            ? "ChatService: window render installed (SwapBuffers)"
-            : "ChatService: window render not installed (Install returned Zero: symbol unresolved or already hooked)");
+        // Register the framework Window whose content IS the whole chatbox (#62/#64). UiHostService drives
+        // DrawContent once per frame in z-order; the framework input layer (UiInputService) routes captured
+        // input through the window's delegates. The chatbox owns many sub-windows internally (ChatLayout), so it
+        // stays one framework Window with a hit-test override (its UI extends outside any single rect -- popped-out
+        // strips, dropdowns) and self-manages focus; WantsKeyboard is driven via KeyboardMode -> RequestKeyboard.
+        _uiWindow = new Window(0, 0, 0, 0)
+        {
+            Focusable = false,
+            DrawContent = OnFrame,
+            OnMouseButton = OnMouseButton,
+            OnMouseMotion = OnMouseMotion,
+            OnMouseWheel = OnMouseWheel,
+            OnKey = OnChatKey,
+            OnText = InsertUtf8,
+            HitTestOverride = (px, py) => MouseOverUi((int)px, (int)py),
+        };
+        log.Info("ChatService: registered as a framework Window (content-draw + routed input)");
         Rebuild();   // show the empty box immediately, before any chat arrives
     }
 
-    private static bool _frameAnnounced;
-    private static int _swapTid;   // managed thread id of the frame-present thread (thread-model probe, #33 follow-up)
+    private static Window? _uiWindow;
+    private static bool _booted;                  // first-frame config-restore bootstrap done
+    private static int _swapTid;                  // managed thread id of the frame-present thread (probe, #33)
+    private static bool _wasInModule;             // last frame's UiHost.InModule, for the module-unload edge
+    private static float _appliedUiScale = 1f;    // GameUiScale we last re-baked/relaid at (scale-change edge)
 
-    [UnmanagedCallersOnly]
-    private static void OnSwap(IntPtr window)
+    /// <summary>The chat window's per-frame content draw (invoked by UiHostService via <see cref="UiHost.DrawFrame"/>).
+    /// Runs the first-frame config restore once, reacts to the host-published gate + UI-scale edges, then draws
+    /// the box in-game (or the attribution overlay on the main menu). Hot + zero-alloc in the steady state: the
+    /// bootstrap, session reset, and scale re-bake are all edge-gated (rare). Draws through ChatRenderer, which
+    /// keeps chat's live-verified cold->hot frame hand-off internally.</summary>
+    private static void OnFrame()
     {
-        if (!_frameAnnounced)
+        if (!_booted)
         {
-            _frameAnnounced = true;
+            _booted = true;
             _swapTid = Environment.CurrentManagedThreadId;
-            _log?.Info($"ChatService: first frame presented -- hook is LIVE [chatthread] swap tid={_swapTid}");
+            _log?.Info($"ChatService: first content draw [chatthread] swap tid={_swapTid}");
             _log?.Info($"ChatService: cfg dir = {Native.UserDirectory() ?? "(engine dir unresolved -> ~/.config fallback)"}");
             LoadConfig();   // restore now: Initialize runs pre-main, user dir unresolved there
+            Dialog.DialogService.LoadConfigDeferred();   // same story for the dialog window's config
             Rebuild();           // re-layout for the restored width + applied config
         }
-        if (InGame()) { SyncUiScale(); PollGameClock(); Quickbar.QuickbarService.Tick(Metrics.GameUiScale); TextRenderer.Draw(); }
-        else { Quickbar.QuickbarService.Sleep(); if (_gateSig.win == IntPtr.Zero) TextRenderer.DrawOverlay(); }
-        if (_swapOrig != null) _swapOrig(window);     // present
-    }
+        // Module-unload edge (was inside the old InGame() gate): drop cached engine ptrs + stale state (#33).
+        // It now fires once per frame on the render thread instead of possibly on the input thread; ResetSession
+        // is documented idempotent and zero-alloc, so the move is safe.
+        bool inModule = UiHost.InModule;
+        if (_wasInModule && !inModule) ResetSession();
+        _wasInModule = inModule;
 
-    /// <summary>Track the engine's live GUI scale (CAurora::GetGUIScale) so the chatbox scales with the game's
-    /// UI-scaling option. A cheap float read every frame; the re-bake + relayout only fire on the rare frame the
-    /// scale actually changes (resolution change / options slider) -- like the first-frame bootstrap, not per
-    /// frame -- so the hot present stays zero-alloc in the steady state.</summary>
-    private static void SyncUiScale()
-    {
-        if (_getGuiScale == null) return;
-        float s = _getGuiScale();
-        if (s < 1f) s = 1f;   // engine floors at 1.0; guards an early 0 read before CAurora computes it
-        if (System.Math.Abs(s - Metrics.GameUiScale) < 0.001f) return;
-        Metrics.GameUiScale = s;
-        ApplyConfig();
-        if (_layout != null)
+        if (UiHost.InGame)
         {
-            ChatWindow[] wins = _layout.Windows;
-            for (int i = 0; i < wins.Length; i++) wins[i].ClampToMin();
+            // UI-scale change edge (was SyncUiScale's reaction; UiHostService already published Metrics.GameUiScale).
+            if (System.Math.Abs(Metrics.GameUiScale - _appliedUiScale) >= 0.001f)
+            {
+                _appliedUiScale = Metrics.GameUiScale;
+                ApplyConfig();
+                if (_layout != null)
+                {
+                    ChatWindow[] wins = _layout.Windows;
+                    for (int i = 0; i < wins.Length; i++) wins[i].ClampToMin();
+                }
+                DirtyAll();
+                Rebuild();   // re-lay the chrome at the new scale
+            }
+            PollGameClock();
+            Quickbar.QuickbarService.Tick(Metrics.GameUiScale);
+            ChatRenderer.Draw();
+            // Dialog draws itself now: it registers its own framework Window and UiHostService's z-order roll-call
+            // invokes its content-draw after ours (#63). No cross-call from here.
         }
-        DirtyAll();
-        Rebuild();              // re-lay the chrome at the new scale
+        else
+        {
+            Quickbar.QuickbarService.Sleep();
+            if (!inModule) ChatRenderer.DrawOverlay();   // main menu (no module): the attribution overlay
+        }
     }
 
     /// <summary>Slice #23: neutralize vanilla chat so only our box draws. Two SkipOriginal groups:
@@ -630,7 +628,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// (leaves vanilla drawing as its backdrop); never reached under SOWX_LOCKCHAT.</summary>
     private static void InitSuppression(ExtenderLog log, HookService hooks)
     {
-        if (!OwnsFramePresent) return;   // probe owns the frame -> leave vanilla chat drawing underneath
+        if (Locked) return;   // SOWX_LOCKCHAT: leave vanilla chat drawing untouched (framework stood down)
         var skip = (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnSuppressed;
         _ = hooks.Install(SymbolMap.AppendToChatBuffer,  skip);   // text: new lines
         _ = hooks.Install(SymbolMap.ChatWindowSetFilter, skip);   // text: backlog re-render + reply buttons
@@ -683,7 +681,9 @@ public sealed unsafe class ChatService : IExtenderService
     private static void RouteIncomingTell(ChatLine line)
     {
         if (_layout == null) return;
-        // Outbound echoes carry the local player's ingest ID — skip so they don't spawn phantom tabs.
+        // Any line carrying the local player's ingest ID is our own outbound tell echo -- skip routing so it
+        // never spawns a phantom tab. Gating on the "[To ]" echo format instead would misfire on servers/locales
+        // whose echo lacks that prefix; a genuine self-tell not auto-opening a tab is a non-loss.
         if (_playerResolver?.LocalIngestId() == line.PlayerId)
         { _log?.Info($"[chat] tell echo skipped pid={line.PlayerId}"); return; }
         string? name = _playerResolver?.NameOf(line.PlayerId);
@@ -691,6 +691,7 @@ public sealed unsafe class ChatService : IExtenderService
         { _log?.Info($"[chat] tell route: unresolvable pid=0x{line.PlayerId:x}"); return; }
 
         var decision = TellRouter.Route(_config.TellOpen, _layout.Windows, _layout.FocusedIndex, name);
+        _log?.Info($"[chat] tell route: name=\"{name}\" mode={_config.TellOpen} -> {decision.Action} w={decision.WindowIndex} t={decision.TabIndex}");
         switch (decision.Action)
         {
             case TellRoute.Exists:
@@ -738,8 +739,22 @@ public sealed unsafe class ChatService : IExtenderService
     }
 
     /// <summary>Trigger a rebuild from outside ChatService (e.g. QuickbarService after a chrome change).
-    /// Safe to call from the swap thread (same threading model as <see cref="SyncUiScale"/>).</summary>
+    /// Safe to call from the swap thread (same threading model as <see cref="OnFrame"/>).</summary>
     internal static void RequestRebuild() => Rebuild();
+
+    /// <summary>Collects the screen rects of the other live extender windows for window-to-window snapping.
+    /// Called once at drag-start on the input thread; only one window drags at a time (one mouse), so a single
+    /// snapshot is sufficient. <paramref name="excludeChat"/> drops the dragged chat window by identity.</summary>
+    public static (float X, float Y, float W, float H)[] GatherSnapRects(ChatWindow? excludeChat, bool includeDialog)
+    {
+        var list = new System.Collections.Generic.List<(float, float, float, float)>(6);
+        ChatWindow[] wins = _layout?.Windows ?? System.Array.Empty<ChatWindow>();
+        foreach (ChatWindow w in wins)
+            if (!ReferenceEquals(w, excludeChat)) list.Add((w.X, w.Y, w.W, w.H));
+        if (Quickbar.QuickbarService.SnapRectOut(out var q)) list.Add(q);
+        if (includeDialog && Dialog.DialogService.SnapRectOut(out var d)) list.Add(d);
+        return list.ToArray();
+    }
 
     /// <summary>Per-window last-built frame cache. Keyed on the window reference so an add/close can't
     /// serve a stale frame for a different window.</summary>
@@ -813,11 +828,11 @@ public sealed unsafe class ChatService : IExtenderService
             all[ai++] = qbExtra[0];
             for (int i = 0; i < chatCount; i++) all[ai++] = frames[i];
             if (qbExtra.Length > 1) all[ai++] = qbExtra[1];
-            TextRenderer.Publish(all);
+            ChatRenderer.Publish(all);
         }
         else
         {
-            TextRenderer.Publish(frames);
+            ChatRenderer.Publish(frames);
         }
     }
 
@@ -845,7 +860,8 @@ public sealed unsafe class ChatService : IExtenderService
     /// Idempotent and zero-alloc, so it's safe to fire from the (hot) gate read on the transition frame.</summary>
     private static void ResetSession()
     {
-        TextRenderer.ClearSessionState();   // crash-critical: freed engine textures must not carry over
+        ChatRenderer.ClearSessionState();   // crash-critical: freed engine textures must not carry over
+        Dialog.DialogService.Close();       // drop any dialog left open by a mid-conversation disconnect
         _gmHour = -1;                        // drop the game clock: the next module re-anchors it
         // ponytail: racing a late-arriving ingest (disconnect teardown) can leave <=1 stale line; indices
         // stay in-bounds so it's memory-safe, just cosmetic. Add a lock only if the [chatthread] log proves
@@ -874,10 +890,10 @@ public sealed unsafe class ChatService : IExtenderService
     /// <summary>Pointer press/release. Returns true when it lands on any chat window (the WM shell then
     /// consumes it, so it doesn't fall through to the 3D world). Focused window is checked first (it owns
     /// the popped-out strip/dropdown outside its frame rect); then other windows in reverse draw order (#41).
-    /// Called from HotkeyInputService.</summary>
+    /// Wired as this service's framework Window mouse-button delegate (#64).</summary>
     public static bool OnMouseButton(bool down, int button, int x, int y)
     {
-        if (_layout == null || !InGame() || button != 1) return false;
+        if (_layout == null || !UiHost.InGame || button != 1) return false;
         ChatWindow? fwin = _focused;
         if (fwin == null) return false;
         if (down && !_mdiag)
@@ -1029,14 +1045,16 @@ public sealed unsafe class ChatService : IExtenderService
     /// <summary>Open the chat input targeting <paramref name="name"/>. When Tell routing is Off, falls back
     /// to pre-filling <c>/t "name" </c>. Otherwise navigates to the existing pinned tab or creates one (#46).
     /// <paramref name="playerId"/> filters the tab to that player's messages.</summary>
-    private static void StartTellTo(string name, uint playerId)
+    private static void StartTellTo(string name, uint? playerId)
     {
         if (_layout == null) return;
         if (_config.TellOpen == TellAutoOpen.Off)
         {
             Open();
             string cmd = $"/t \"{name}\" ";
-            byte[] utf8 = Encoding.UTF8.GetBytes(cmd);
+            // name was read Latin1 (char == source byte); Latin1.GetBytes recovers the original UTF-8
+            // bytes. UTF8.GetBytes would double-encode a non-ASCII name into the command.
+            byte[] utf8 = Encoding.Latin1.GetBytes(cmd);
             Edit.InsertUtf8(utf8);
             Rebuild();
             return;
@@ -1110,7 +1128,7 @@ public sealed unsafe class ChatService : IExtenderService
     public static bool OnMouseMotion(int x, int y)
     {
         _lastMx = x; _lastMy = y;
-        if (_layout == null || !InGame()) return false;
+        if (_layout == null || !UiHost.InGame) return false;
         if (_settings.Open && _focused != null)
         {
             if (_settings.MouseMove(x, y, _focused, _config))
@@ -1184,7 +1202,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// on others it snaps.</summary>
     public static bool OnMouseWheel(int dy)
     {
-        if (_layout == null || !InGame()) return false;
+        if (_layout == null || !UiHost.InGame) return false;
         if (_settings.Open) return true;
         // Find the topmost window under the pointer (focused draws last = checked first).
         ChatWindow[] wins = _layout.Windows;
@@ -1210,7 +1228,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// window frames, input strips, open channel dropdowns, or the settings panel.</summary>
     public static bool MouseOverUi(int x, int y)
     {
-        if (_layout == null || !InGame()) return false;
+        if (_layout == null || !UiHost.InGame) return false;
         if (_settings.Open && _settings.Contains(x, y)) return true;
         ChatWindow[] wins = _layout.Windows;
         for (int i = 0; i < wins.Length; i++)
@@ -1225,11 +1243,6 @@ public sealed unsafe class ChatService : IExtenderService
         EditBuffer.SelfCheck(log);     // off-device proof; surfaces in run-demo's sowx log
         ChatCommands.SelfCheck(log);   // slash-command grammar (#25)
 
-        _exoInput  = Native.Sym(SymbolMap.ExoInput);                  // address of g_pExoInput; deref at open
-        _kbOn      = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOn);
-        _kbOff     = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOff);
-        _turnOffModal = (delegate* unmanaged<void>)Native.Sym(SymbolMap.TurnOffKeyboardModal);
-        _getGuiScale = (delegate* unmanaged<float>)Native.Sym(SymbolMap.GetGuiScale);
         _startText = (delegate* unmanaged<void>)Native.Sym(SymbolMap.SdlStartTextInput);
         _getClip   = (delegate* unmanaged<IntPtr>)Native.Sym(SymbolMap.SdlGetClipboardText);
         _setClip   = (delegate* unmanaged<byte*, int>)Native.Sym(SymbolMap.SdlSetClipboardText);
@@ -1243,12 +1256,14 @@ public sealed unsafe class ChatService : IExtenderService
         _sendParty   = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatParty);
         _sendDM      = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatDM);
         _sendTell    = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatTell);
+        _sendTellId  = (delegate* unmanaged<IntPtr, uint, IntPtr, void>)Native.Sym(SymbolMap.SendChatTellId);
 
         var getByName = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.GetPlayerByPlayerName);
-        if (getByName != null)
+        var getByCreature = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.GetPlayerByCreatureName);
+        if (getByName != null || getByCreature != null)
         {
-            _playerResolver = new NativePlayerResolver(getByName);
-            log.Info("ChatService: player roster resolver installed (GetPlayerByPlayerName)");
+            _playerResolver = new NativePlayerResolver(getByName, getByCreature);
+            log.Info("ChatService: player roster resolver installed (creature-name first, player-name fallback)");
         }
 
         // Own the three chat openers with skip-original handlers: install the hook but never call
@@ -1257,15 +1272,14 @@ public sealed unsafe class ChatService : IExtenderService
         _ = hooks.Install(SymbolMap.SetFocusChatPrompt, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnOpenFocus);
         _ = hooks.Install(SymbolMap.ShowChatPrompt,     (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnOpenShow);
         _ = hooks.Install(SymbolMap.PrepChatPromptForTell, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnOpenTell);
+        _ = hooks.Install(SymbolMap.ChatPromptSetFocus, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnOpenSetFocus);
     }
 
     /// <summary>The one chat input line; the native shell drives it, all logic is in Core.</summary>
     public static readonly EditBuffer Edit = new();
 
-    private static IntPtr _exoInput;                          // &g_pExoInput (CExoInput**)
-    private static delegate* unmanaged<IntPtr, void> _kbOn, _kbOff, _sdlFree;
-    private static delegate* unmanaged<void> _startText, _turnOffModal;
-    private static delegate* unmanaged<float> _getGuiScale;   // CAurora::GetGUIScale -> live GUI-scale multiplier
+    private static delegate* unmanaged<IntPtr, void> _sdlFree;
+    private static delegate* unmanaged<void> _startText;
     private static delegate* unmanaged<IntPtr> _getClip;
     private static delegate* unmanaged<byte*, int> _setClip;
 
@@ -1273,6 +1287,7 @@ public sealed unsafe class ChatService : IExtenderService
     // takes the target playerId: (this, uint playerId, CExoString*).
     private static delegate* unmanaged<IntPtr, IntPtr, void> _sendTalk, _sendShout, _sendWhisper, _sendParty, _sendDM;
     private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, void> _sendTell;
+    private static delegate* unmanaged<IntPtr, uint, IntPtr, void> _sendTellId;
 
     // SDL_Keymod bits (match HotkeyInputService): Ctrl/Shift both sides.
     private const int KmodShift = 0x0003;
@@ -1309,6 +1324,39 @@ public sealed unsafe class ChatService : IExtenderService
         Open();
     }
 
+    /// <summary>Skip-original CGuiInGameChatPrompt::SetFocus(CExoString): the player-list "Tell Player"
+    /// button (and friends) open the vanilla prompt with a prefill. '/t "Name" ' / '/tp "Name" ' route
+    /// into the Tell-tab flow; any other prefill opens the box with the text inserted.</summary>
+    [UnmanagedCallersOnly] private static void OnOpenSetFocus(IntPtr self, IntPtr exo)
+    {
+        string text = "";
+        if (exo != IntPtr.Zero)
+        {
+            IntPtr buf = *(IntPtr*)exo;
+            uint len = *(uint*)(exo + 0x8);
+            if (buf != IntPtr.Zero && len > 0 && len <= 256)
+            {
+                var sb = new StringBuilder((int)len);
+                for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
+                text = sb.ToString();
+            }
+        }
+        var (ch, tellTarget, _) = ChatCommands.Parse(text.TrimEnd());
+        if (ch == Channel.Tell && !string.IsNullOrEmpty(tellTarget))
+        {
+            StartTellTo(tellTarget!, _playerResolver?.Resolve(tellTarget!));
+            return;
+        }
+        Open();
+        if (text.Length > 0 && IsTyping)
+        {
+            // text was read Latin1 (char == source byte), so Latin1.GetBytes recovers the original
+            // UTF-8 bytes; UTF8.GetBytes here would re-encode and double-encode any multibyte name.
+            Edit.InsertUtf8(Encoding.Latin1.GetBytes(text));
+            Rebuild();
+        }
+    }
+
     /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the
     /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does.</summary>
     private static void Open()
@@ -1343,6 +1391,7 @@ public sealed unsafe class ChatService : IExtenderService
             else if (_layout?.Focused is ChatWindow win && !string.IsNullOrEmpty(text))
             {
                 var (switchTo, tellTarget, rest) = ChatCommands.Parse(text);
+                Channel prev = win.SendChannel;
                 if (switchTo is Channel nc) win.SendChannel = nc;
                 if (!string.IsNullOrEmpty(rest))
                 {
@@ -1355,6 +1404,10 @@ public sealed unsafe class ChatService : IExtenderService
                     _log?.Info($"[chat] submit: ch={win.SendChannel} fi={_layout!.FocusedIndex} tab={win.ActiveTab} pin=\"{win.Active.PinnedName}\" tell={tellName ?? "-"}");
                     Send(win.SendChannel, tellName, rest);
                 }
+                // Tell is ephemeral on unpinned tabs (each send names its target), so a /t switch never
+                // sticks there; pinned Tell tabs are dedicated to one target and keep it.
+                if (win.SendChannel == Channel.Tell && win.Active.PinnedName.Length == 0)
+                    win.SendChannel = prev == Channel.Tell ? Channel.Talk : prev;
             }
         }
         else Edit.Clear();
@@ -1420,14 +1473,23 @@ public sealed unsafe class ChatService : IExtenderService
                 case Channel.Party   when _sendParty   != null: _sendParty(msg, exo); break;
                 case Channel.DM      when _sendDM      != null: _sendDM(msg, exo); break;
                 case Channel.Tell:
-                    if (tellName != null && _sendTell != null)
+                    if (tellName == null) { _log?.Info("[chat] tell dropped: no target name"); break; }
+                    // Vanilla /t path: resolve client-side to the playerId (CNWCPlayer+0x8) and send the
+                    // id-based form. The name-based TellName form is resolved server-side by FIRST name
+                    // only, so full character names always miss -- keep it only as a fallback.
+                    if (_playerResolver?.Resolve(tellName) is uint pid && _sendTellId != null)
+                    {
+                        _log?.Info($"[chat] tell SENDING via id: name=\"{tellName}\" pid={pid}");
+                        _sendTellId(msg, pid, exo);
+                    }
+                    else if (_sendTell != null)
                     {
                         IntPtr nameExo = Native.NewExoString(tellName);
-                        _log?.Info($"[chat] tell SENDING via TellName: msg=0x{msg:x} name=0x{nameExo:x} text=0x{exo:x} fn=0x{(long)_sendTell:x}");
+                        _log?.Info($"[chat] tell SENDING via TellName fallback: name=\"{tellName}\"");
                         try { _sendTell(msg, nameExo, exo); }
                         finally { Native.FreeExoString(nameExo); }
                     }
-                    else _log?.Info($"[chat] tell dropped: tellName={tellName} sendTell={(long)_sendTell:x}");
+                    else _log?.Info($"[chat] tell dropped: sender symbols unresolved");
                     break;
                 default: _log?.Info($"[chat] send dropped (ch={ch}): sender symbol unresolved"); break;
             }
@@ -1446,6 +1508,16 @@ public sealed unsafe class ChatService : IExtenderService
         { _settings.EditInsert(Encoding.UTF8.GetString(p, n)); Rebuild(); return; }
         Edit.InsertUtf8(new ReadOnlySpan<byte>(p, n));
         Rebuild();   // reflect the new text in the footer
+    }
+
+    /// <summary>The framework key delegate (#64): route the key to the edit line only while chat owns the
+    /// keyboard (typing or editing a settings field), consuming it; otherwise decline so it falls to gameplay.
+    /// The arbiter routes here first via the keyboard-owner path when <see cref="WantsKey"/> is set.</summary>
+    private static bool OnChatKey(uint key, int mods)
+    {
+        if (!WantsKey) return false;
+        RouteKey(key, mods);
+        return true;
     }
 
     /// <summary>Dispatch a control/nav key to the edit line while the box owns the keyboard.</summary>
@@ -1532,26 +1604,11 @@ public sealed unsafe class ChatService : IExtenderService
         else if (!IsTyping) KeyboardMode(false);
     }
 
-    /// <summary>Drive the engine's own gameplay-key gate (vanilla set it inside the focus path we skip). On the
-    /// off-&gt;on edge only, also run vanilla's TurnOffKeyboardModal -- the step CGuiEdit::SetFocus does right
-    /// after KeyboardModeOn -- which clears the WASD drive latch and sends AbortDriveControl. Without it a keyup
-    /// gated mid-walk leaves UpdateDriveMode re-sending DriveControl every frame, so the player sticks moving
-    /// (#34). Edge-gated so a settings-field re-sync doesn't re-hilite/rebuild the HUD on every control key.</summary>
+    /// <summary>Take/release the keyboard by asserting this window's keyboard ownership on the arbiter, which
+    /// drives the centralized engine gate (KeyboardModeOn/Off + the #34 drive-latch reset) once for all
+    /// consumers (#64). The gate logic itself moved to <c>UiInputService</c>; chat now only declares intent.</summary>
     private static void KeyboardMode(bool on)
     {
-        if (_exoInput == IntPtr.Zero) return;
-        IntPtr inst = *(IntPtr*)_exoInput;   // g_pExoInput may be null early in-game
-        if (inst == IntPtr.Zero) return;
-        if (on)
-        {
-            if (_kbOn != null) _kbOn(inst);
-            // TurnOffKeyboardModal double-derefs g_pAppManager unguarded -> gate on a live app manager.
-            if (!_kbHeld && _turnOffModal != null && _appMgr != IntPtr.Zero && *(IntPtr*)_appMgr != IntPtr.Zero)
-                _turnOffModal();
-        }
-        else if (_kbOff != null) _kbOff(inst);
-        _kbHeld = on;
+        if (_uiWindow != null) UiHost.RequestKeyboard(_uiWindow, on);
     }
-
-    private static bool _kbHeld;   // our view of the keyboard-capture gate; edges drive the modal reset above
 }
