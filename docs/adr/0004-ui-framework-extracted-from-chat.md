@@ -39,3 +39,15 @@ to the unified behaviour.
   user-visible stutter.
 - A true input-blocking **modal** is deliberately deferred behind a capability flag until a
   consumer needs it.
+
+## Amendment (2026-08-24) — the frame-lifecycle roll-call
+
+This ADR replaced Chat's `OnSwap` roll-call for **windows**, but a second hardcoded roll-call for
+**frame lifecycle** survived beside it: `UiHostService.OnSwap` names five concrete service types in
+nine calls (lines 31, 64, 67-69, 77-81) across `Services.Render` and `Services.Perf`. That is the
+same framework-depends-on-service inversion this ADR rejected in its Considered Options when it
+declined to delegate input capture to `HotkeyInputService`.
+
+The rule stands; only its application was incomplete. ADR 0014 finishes it with a frame-participant
+registry that services join at `Initialize`, mirroring the window registry. The per-frame zero-alloc
+invariant above is preserved — the participant lists are built at init and walked by index.

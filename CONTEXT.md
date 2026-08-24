@@ -118,9 +118,25 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Cache classification** — a caster is cached or re-baked based on whether its
   transform/pose changed since its last bake, not on a static/dynamic *kind*. A tile is
   simply a caster that never moves; a creature is one that changes every frame.
-- **sowx shader resource** — a `sowx_*.shd` loaded through the engine's resman like any
-  game data (hak/override/NWSync can replace it), with an embedded extender fallback when
-  absent. Distinct from vanilla shaders, which sowx never modifies.
+- **Embedded stage** — the GLSL for an owned pass, compiled into the extender as a C# `const string`.
+  This is the shader that ships: it travels with the renderer it agrees with, so the per-draw record,
+  the uniform blocks and the clip expression can never disagree with the CPU side. Every overridable
+  stage has one.
+- **Shader override** — a `sowx_*.shd` a *user* places where the engine's resman will serve it
+  (`development/`, `override/`, a hak), replacing that stage's **embedded stage** at load. A
+  first-class customization surface — sowx ships defaults and lets them be replaced — and explicitly
+  **not** a delivery channel: no content repo ever ships one, because a shipped copy is a second copy
+  of a contract that lives in C#. Refused by the stage guards when it breaks that contract; a refused
+  or uncompilable override falls back to the embedded stage with a log line.
+- **Shader dump** — the current **embedded stages** written out as editable `.shd` files, one per
+  overridable resref, into the client's user directory. The starting point for a **shader override**,
+  and current by construction because it dumps what is compiled in. Distinct from vanilla shaders,
+  which sowx never modifies.
+- **Tuning knob** — a runtime-adjustable value the extender exposes, in exactly one of three kinds: a
+  **chat command** (tunable while looking at its effect — look, debug visualisation, per-pass
+  toggles), a **config setting** (must be decided before the first frame, or describes the machine
+  rather than the look), or *deleted* (a bisect switch whose ticket has closed). Environment
+  variables are not a kind; a knob with no kind does not ship.
 - **Render mode** — which renderer draws the 3D scene: the *owned* mode (SowxRender) or the
   *vanilla* mode (the engine's own path). Both ship permanently; a device that cannot run the
   owned mode still runs every other extender feature. The mode is whole-scene — never a
