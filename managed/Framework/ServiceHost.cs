@@ -16,6 +16,12 @@ public static class ServiceHost
     public static void Run()
     {
         var log = new ExtenderLog();
+        // Which build produced the lines below. build.sh already stamps this from `git describe`, and a log
+        // that does not say it is a log you cannot act on: half a debugging round trip is spent establishing
+        // whether the run even contains the fix being discussed.
+        log.Info("sowx build " + (Assembly.GetExecutingAssembly()
+                     .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?
+                     .InformationalVersion ?? "unknown"));
         var hooks = new HookService(log);
 
         // OrderBy(Name): Assembly.GetTypes() order is not stable across builds/runtimes,
@@ -29,6 +35,10 @@ public static class ServiceHost
             .ToList();
 
         log.Info($"host: {all.Count} service(s) discovered");
+        // Shared engine accessors, before any service can reach for one. AurTex is the only real init-time
+        // dependency in this host so far -- four services call it and none of them owns it.
+        AurTex.Attach(log);
+        AurTex.SelfCheck(log);
         foreach (IExtenderService service in all)
         {
             try { service.Initialize(log, hooks); }

@@ -13,11 +13,24 @@ public static unsafe class Gl
 {
     // GLenum constants used by the text path.
     public const uint TEXTURE_2D = 0x0DE1, BLEND = 0x0BE2, DEPTH_TEST = 0x0B71;
+    /// <summary>glGetTexLevelParameteriv queries: the level's internal format, and its alpha channel width.</summary>
+    public const uint TEXTURE_INTERNAL_FORMAT = 0x1003, TEXTURE_ALPHA_SIZE = 0x805F;
+    public const uint TEXTURE_WIDTH = 0x1000, TEXTURE_HEIGHT = 0x1001;
     public const uint CULL_FACE = 0x0B44, SCISSOR_TEST = 0x0C11;
+    /// <summary>#125: GL_DEPTH_CLAMP. The owned sky replays a dome the engine drew under its OWN projection
+    /// (far 1000.0) beneath the world's, so it can cross the world far plane; clamping keeps the far-plane
+    /// fragments rather than letting them clip into a hole at the horizon.</summary>
+    public const uint DEPTH_CLAMP = 0x864F;
     public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303;
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
+    public const uint BYTE = 0x1400;
     public const uint ARRAY_BUFFER = 0x8892, STATIC_DRAW = 0x88E4, DYNAMIC_DRAW = 0x88E8;
     public const uint VERTEX_SHADER = 0x8B31, FRAGMENT_SHADER = 0x8B30;
+    /// <summary>#147: the tessellation pair, and the primitive mode that feeds them. GL 4.0+, so core on the
+    /// 4.6 context the owned pass already requires -- water is the one class whose geometry is coarse enough
+    /// to need subdividing and cheap enough to afford it.</summary>
+    public const uint TESS_CONTROL_SHADER = 0x8E88, TESS_EVALUATION_SHADER = 0x8E87;
+    public const uint PATCHES = 0x000E, PATCH_VERTICES = 0x8E72, MAX_TESS_GEN_LEVEL = 0x8E7E;
     public const uint COMPILE_STATUS = 0x8B81, LINK_STATUS = 0x8B82;
     public const uint TEXTURE0 = 0x84C0;
     public const uint R8 = 0x8229, RED = 0x1903;
@@ -27,6 +40,12 @@ public static unsafe class Gl
     // Cube map (shadow cubes, #65 slice 6). Faces are POSITIVE_X + 0..5 (+X,-X,+Y,-Y,+Z,-Z).
     public const uint TEXTURE_CUBE_MAP = 0x8513, TEXTURE_CUBE_MAP_POSITIVE_X = 0x8515, TEXTURE_BINDING_CUBE_MAP = 0x8514;
     public const uint TEXTURE_2D_ARRAY = 0x8C1A, TEXTURE_BINDING_2D_ARRAY = 0x8C1D, SAMPLER_BINDING = 0x8919;
+    /// <summary>Cube map array (GL 4.0) -- the local-light shadow cubes (#95). Layer 6*cube + face, so
+    /// <c>glFramebufferTextureLayer</c> addresses one face. <c>TEXTURE_CUBE_MAP_SEAMLESS</c> is a global
+    /// enable, not a texture parameter: it makes filtering blend across face borders, which is what removes
+    /// the seam the interim cubes fought with an over-scanned face frustum.</summary>
+    public const uint TEXTURE_CUBE_MAP_ARRAY = 0x9009, TEXTURE_BINDING_CUBE_MAP_ARRAY = 0x900A,
+                      TEXTURE_CUBE_MAP_SEAMLESS = 0x884F;
     public const uint UNPACK_ALIGNMENT = 0x0CF5;
     // glGetIntegerv pnames for save/restore.
     public const uint VIEWPORT = 0x0BA2, CURRENT_PROGRAM = 0x8B8D, VERTEX_ARRAY_BINDING = 0x85B5;
@@ -35,9 +54,83 @@ public static unsafe class Gl
     public const uint FRAMEBUFFER_BINDING = 0x8CA6, DEPTH_WRITEMASK = 0x0B72, DEPTH_FUNC = 0x0B74, DEPTH_RANGE = 0x0B70;
     // FBO / depth-pass (shadow map, #65 slice 3).
     public const uint FRAMEBUFFER = 0x8D40, DEPTH_ATTACHMENT = 0x8D00, FRAMEBUFFER_COMPLETE = 0x8CD5;
+    // owned world draw (#81): engine-VAO attribute harvest + engine-FBO mirroring in the 4.6 context.
+    public const uint ELEMENT_ARRAY_BUFFER = 0x8893, ELEMENT_ARRAY_BUFFER_BINDING = 0x8895;
+    public const uint VERTEX_ATTRIB_ARRAY_ENABLED = 0x8622, VERTEX_ATTRIB_ARRAY_SIZE = 0x8623,
+                      VERTEX_ATTRIB_ARRAY_STRIDE = 0x8624, VERTEX_ATTRIB_ARRAY_TYPE = 0x8625,
+                      VERTEX_ATTRIB_ARRAY_NORMALIZED = 0x886A, VERTEX_ATTRIB_ARRAY_BUFFER_BINDING = 0x889F,
+                      VERTEX_ATTRIB_ARRAY_POINTER = 0x8645;
+    public const uint COLOR_ATTACHMENT0 = 0x8CE0, FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE = 0x8CD0,
+                      FRAMEBUFFER_ATTACHMENT_OBJECT_NAME = 0x8CD1, RENDERBUFFER = 0x8D41,
+                      ATTACHMENT_TEXTURE = 0x1702, FRAMEBUFFER_SRGB = 0x8DB9;
     public const uint DEPTH_COMPONENT = 0x1902, DEPTH_COMPONENT24 = 0x81A6, DEPTH_COMPONENT16 = 0x81A5, UNSIGNED_INT = 0x1405;
-    public const uint DEPTH_BUFFER_BIT = 0x0100, LEQUAL = 0x0203, NONE = 0;
+    public const uint DEPTH_BUFFER_BIT = 0x0100, COLOR_BUFFER_BIT = 0x4000, LESS = 0x0201, LEQUAL = 0x0203, NONE = 0;
+    /// <summary>#132: the current clear colour, as glGetFloatv reads it back -- the engine's own value, so
+    /// the owned HDR target starts from what the engine cleared to instead of from a guess.</summary>
+    public const uint COLOR_CLEAR_VALUE = 0x0C22;
+    /// <summary>#129: the depth-attachment probe the owned framebuffer copy sizes itself from. A blit of
+    /// DEPTH_BUFFER_BIT needs the two attachments to agree on format, so the copy allocates from what the
+    /// engine's own attachment reports rather than assuming 24-bit. DEPTH (0x1801) is the attachment POINT
+    /// the query takes for the default framebuffer, where DEPTH_ATTACHMENT is not a legal name.</summary>
+    public const uint FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE = 0x8216, FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE = 0x8217,
+                      DEPTH = 0x1801, STENCIL = 0x1802, STENCIL_ATTACHMENT = 0x8D20;
+    public const uint DEPTH_COMPONENT32F = 0x8CAC, DEPTH24_STENCIL8 = 0x88F0, DEPTH_STENCIL = 0x84F9,
+                      UNSIGNED_INT_24_8 = 0x84FA, DEPTH_STENCIL_ATTACHMENT = 0x821A, STENCIL_BUFFER_BIT = 0x0400,
+                      DEPTH_COMPONENT32 = 0x81A7, DEPTH32F_STENCIL8 = 0x8CAD,
+                      FLOAT_32_UNSIGNED_INT_24_8_REV = 0x8DAD, UNSIGNED_SHORT = 0x1403,
+                      RENDERBUFFER_INTERNAL_FORMAT = 0x8D44;
+    /// <summary>#121's IBL probe: a half-float colour cube, mip-filtered by roughness. RGBA16F because the
+    /// probe stores LINEAR radiance -- an 8-bit target would band the sky and clip anything a torch overbrights.
+    /// <c>TEXTURE_MAX_LEVEL</c> caps the chain glGenerateMipmap builds, which is also the LOD the shader's
+    /// roughness maps onto.</summary>
+    public const uint RGBA16F = 0x881A, RGBA = 0x1908, HALF_FLOAT = 0x140B, TEXTURE_MAX_LEVEL = 0x813D;
+    public const int LINEAR_MIPMAP_LINEAR = 0x2703, LINEAR_MIPMAP_NEAREST = 0x2701;
+    /// <summary>#139's HDR resolve: the split read/draw binding points glBlitFramebuffer works between, and
+    /// the level clamps that keep a bloom chain's read level out of the range the draw level is attached in
+    /// (sampling a level of a texture another level of which is the current attachment is only defined while
+    /// BASE/MAX_LEVEL exclude it).</summary>
+    public const uint READ_FRAMEBUFFER = 0x8CA8, DRAW_FRAMEBUFFER = 0x8CA9;
+    public const uint TEXTURE_BASE_LEVEL = 0x813C;
+    /// <summary>Additive blend factors, for the bloom chain's upsample accumulation.</summary>
+    public const uint ZERO = 0, ONE = 1;
+    /// <summary>Non-multisample completeness codes, told apart so the HDR target can say WHY it stood down --
+    /// a multisampled engine attachment beside a single-sample colour texture is the expected refusal.</summary>
+    public const uint FRAMEBUFFER_INCOMPLETE_MULTISAMPLE = 0x8D56;
+    /// <summary>#127 grass softening. <c>TEXTURE_MAX_ANISOTROPY</c> is core since 4.6 (same value as the old
+    /// EXT), and <c>MAX_TEXTURE_MAX_ANISOTROPY</c> is the driver's ceiling to clamp against.
+    /// <c>TEXTURE_LOD_BIAS</c> is sampler state, so it can be set per-draw through a sampler object without
+    /// touching the engine's own texture parameters.</summary>
+    public const uint TEXTURE_MAX_ANISOTROPY = 0x84FE, MAX_TEXTURE_MAX_ANISOTROPY = 0x84FF,
+                      TEXTURE_LOD_BIAS = 0x8501;
+    /// <summary>Sample count of the bound draw framebuffer. 1 (or 0) means alpha-to-coverage has nothing to
+    /// modulate and the owned grass pass falls back to dithering its cutout edge.</summary>
+    public const uint SAMPLES = 0x80A9;
+    /// <summary>#127: the grass displacement field's format -- RG the signed XY push, B the press-down.</summary>
+    public const uint RGBA8 = 0x8058;
+    /// <summary>#127: alpha-to-coverage -- the fragment's alpha becomes a COVERAGE MASK over the target's
+    /// samples. Each sample is still written whole or not at all, so it is antialiasing without ever
+    /// producing a partially transparent depth-writing fragment. Inert where SAMPLES is 1.</summary>
+    public const uint SAMPLE_ALPHA_TO_COVERAGE = 0x809E;
     public const uint TEXTURE_COMPARE_MODE = 0x884C, TEXTURE_COMPARE_FUNC = 0x884D, COMPARE_REF_TO_TEXTURE = 0x884E;
+    // clustered forward+ on the owned path (#83): compute dispatch, SSBOs and the GPU timer for the
+    // cluster-build budget. All 4.6-core, so they exist only inside the #80 share-listed context.
+    public const uint COMPUTE_SHADER = 0x91B9, SHADER_STORAGE_BUFFER = 0x90D2;
+    public const uint SHADER_STORAGE_BARRIER_BIT = 0x2000;
+    /// <summary>Sample counts of an existing attachment: renderbuffer (glGetRenderbufferParameteriv) and
+    /// multisample texture (glGetTexLevelParameteriv on TEXTURE_2D_MULTISAMPLE).</summary>
+    public const uint NUM_EXTENSIONS = 0x821D, EXTENSIONS = 0x1F03;
+    public const uint RENDERBUFFER_SAMPLES = 0x8CAB, TEXTURE_SAMPLES = 0x9106, TEXTURE_2D_MULTISAMPLE = 0x9100, RENDERBUFFER_BINDING = 0x8CA7;
+    public const uint TIME_ELAPSED = 0x88BF, QUERY_RESULT = 0x8866, QUERY_RESULT_AVAILABLE = 0x8867;
+    /// <summary>glBeginQuery target counting fragments that passed depth+stencil (#119): the overdraw meter
+    /// for the owned colour pass. Not ANY_SAMPLES_PASSED -- that one is boolean and answers a different
+    /// question.</summary>
+    public const uint SAMPLES_PASSED = 0x8914;
+    // #93 multidraw-indirect from persistent-mapped storage. The MAP_* bits are glBufferStorage flags AND
+    // glMapBufferRange flags: the map's set must be a subset of the storage's or the map fails.
+    public const uint DRAW_INDIRECT_BUFFER = 0x8F3F;
+    public const uint MAP_WRITE_BIT = 0x0002, MAP_PERSISTENT_BIT = 0x0040, MAP_COHERENT_BIT = 0x0080;
+    public const uint SYNC_GPU_COMMANDS_COMPLETE = 0x9117, SYNC_FLUSH_COMMANDS_BIT = 0x0001;
+    public const uint ALREADY_SIGNALED = 0x911A, CONDITION_SATISFIED = 0x911C;
 
     public static delegate* unmanaged<uint, int*, void> GetIntegerv;
     public static delegate* unmanaged<uint, byte> IsEnabled;   // GLboolean glIsEnabled(GLenum)
@@ -48,7 +141,21 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> TexImage2D;
     public static delegate* unmanaged<uint, uint, int, void> TexParameteri;
     public static delegate* unmanaged<uint, uint, int*, void> GetTexParameteriv;
+    /// <summary>Per-LEVEL texture state -- the internal format and channel sizes. The one way to ask a
+    /// texture whether it actually carries alpha, which no engine-side opacity flag answers reliably.</summary>
+    public static delegate* unmanaged<uint, int, uint, int*, void> GetTexLevelParameteriv;
+    /// <summary>glGetRenderbufferParameteriv (GL 3.0): target, pname, out. #129 reads
+    /// RENDERBUFFER_INTERNAL_FORMAT off the engine's depth attachment -- a depth BLIT requires the two
+    /// formats to be identical, and the attachment's bit widths do not distinguish a packed D24S8 from a
+    /// plain D24.</summary>
+    public static delegate* unmanaged<uint, uint, int*, void> GetRenderbufferParameteriv;
+    /// <summary>glGetTexImage: decompresses a level through the driver's own decode path, which is the
+    /// only way to ask what the SAMPLER returns rather than what the format declares.</summary>
+    public static delegate* unmanaged<uint, int, uint, uint, void*, void> GetTexImage;
     public static delegate* unmanaged<uint, int, void> PixelStorei;
+    /// <summary>glPatchParameteri: how many vertices make one patch. Three -- the owned pass feeds the
+    /// engine's own triangle index buffer straight through as patches.</summary>
+    public static delegate* unmanaged<uint, int, void> PatchParameteri;
     public static delegate* unmanaged<uint, IntPtr, void*, uint, void> BufferData;
     public static delegate* unmanaged<uint, int, uint, byte, int, void*, void> VertexAttribPointer;
     public static delegate* unmanaged<uint, void> EnableVertexAttribArray;
@@ -68,6 +175,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, uint*, void> GenSamplers;
     public static delegate* unmanaged<uint, uint, void> BindSampler;
     public static delegate* unmanaged<uint, uint, int, void> SamplerParameteri;
+    public static delegate* unmanaged<uint, uint, float, void> SamplerParameterf;
     public static delegate* unmanaged<uint, int, float*, void> GetUniformfv;
     public static delegate* unmanaged<uint, int, int*, void> GetUniformiv;
     public static delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, int, void*, void> GetTextureSubImage;
@@ -82,6 +190,20 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, int, float*, void> Uniform1fv;   // (loc, count, ptr) -- per-slot floats
     public static delegate* unmanaged<int, int, int*, void> Uniform1iv;     // (loc, count, ptr) -- per-slot ints
     public static delegate* unmanaged<int, int, float*, void> Uniform3fv;   // (loc, count, ptr) -- per-slot vec3
+    public static delegate* unmanaged<int, int, float*, void> Uniform4fv;   // (loc, count, ptr) -- per-slot vec4
+    // Owned-program cloning (ADR 0007 phase 3): enumerate + mirror engine-program uniforms.
+    public static delegate* unmanaged<int, int, float*, void> Uniform2fv;
+    public static delegate* unmanaged<int, int, int*, void> Uniform2iv, Uniform3iv, Uniform4iv;
+    public static delegate* unmanaged<int, int, byte, float*, void> UniformMatrix2fv, UniformMatrix3fv;
+    /// <summary>glGetActiveUniform: prog, index, bufSize, length*, size*, type*, name* -- uniform enumeration.</summary>
+    public static delegate* unmanaged<uint, uint, int, int*, int*, uint*, byte*, void> GetActiveUniform;
+    // Lighting UBO (ADR 0007 modern path): one std140 block shared by every owned program.
+    public static delegate* unmanaged<uint, IntPtr, IntPtr, void*, void> BufferSubData;
+    public static delegate* unmanaged<uint, uint, uint, void> BindBufferBase;
+    public static delegate* unmanaged<uint, byte*, uint> GetUniformBlockIndex;
+    public static delegate* unmanaged<uint, uint, uint, void> UniformBlockBinding;
+    public static delegate* unmanaged<uint, uint, byte*, void> BindAttribLocation;
+    public static delegate* unmanaged<uint, int, int*, byte*, void> GetProgramInfoLog;
     // FBO / depth-pass entry points (#65 slice 3).
     public static delegate* unmanaged<int, uint*, void> GenFramebuffers, DeleteFramebuffers;
     public static delegate* unmanaged<uint, uint, void> BindFramebuffer;
@@ -92,8 +214,20 @@ public static unsafe class Gl
     /// <summary>glTexImage3D: target, level, internalFormat, w, h, depth, border, format, type, data.</summary>
     public static delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void> TexImage3D;
     public static delegate* unmanaged<uint, uint> CheckFramebufferStatus;
+    /// <summary>glBlitFramebuffer (GL 3.0): srcX0,srcY0,srcX1,srcY1, dstX0,dstY0,dstX1,dstY1, mask, filter.
+    /// Colour blits convert format (RGBA8 -&gt; RGBA16F is legal); depth blits do NOT, which is why #139's
+    /// HDR target shares the engine's depth attachment rather than copying it.</summary>
+    public static delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void> BlitFramebuffer;
+    /// <summary>glGenerateMipmap: builds the whole chain from level 0 on the bound texture. The probe's
+    /// roughness blur IS this chain (#121).</summary>
+    public static delegate* unmanaged<uint, void> GenerateMipmap;
+    public static delegate* unmanaged<float, float, float, float, void> ClearColor;
     public static delegate* unmanaged<uint, void> DrawBuffer, ReadBuffer, DepthFunc, Clear;
+    /// <summary>glReadPixels: x, y, w, h, format, type, out. Stalls the pipeline -- diagnostic paths only
+    /// (#129's SOWX_WATERDIAG reads the framebuffer copy back once to settle what is actually in it).</summary>
+    public static delegate* unmanaged<int, int, int, int, uint, uint, void*, void> ReadPixels;
     public static delegate* unmanaged<byte, void> DepthMask;
+    public static delegate* unmanaged<byte, byte, byte, byte, void> ColorMask;
     public static delegate* unmanaged<double, void> ClearDepth;
     public static delegate* unmanaged<double, double, void> DepthRange;
     public static delegate* unmanaged<uint, float*, void> GetFloatv;
@@ -102,6 +236,61 @@ public static unsafe class Gl
     /// <summary>glCopyImageSubData (GL 4.3 / ARB_copy_image): srcName, srcTarget, srcLevel, sx, sy, sz,
     /// dstName, dstTarget, dstLevel, dx, dy, dz, w, h, depth. Null on drivers without it -- callers fall back.</summary>
     public static delegate* unmanaged<uint, uint, int, int, int, int, uint, uint, int, int, int, int, int, int, int, void> CopyImageSubData;
+    /// <summary>glMultiDrawElementsBaseVertex (GL 3.2 core): mode, counts*, type, indices**, drawcount,
+    /// basevertex*. One call submits a whole batch group (ADR 0006 phase 1). Null on ancient drivers.</summary>
+    public static delegate* unmanaged<uint, int*, uint, void**, int, int*, void> MultiDrawElementsBaseVertex;
+
+    // owned world draw (#81)
+    public static delegate* unmanaged<uint, uint, int*, void> GetVertexAttribiv;
+    public static delegate* unmanaged<uint, uint, void**, void> GetVertexAttribPointerv;
+    public static delegate* unmanaged<uint, uint, uint, int*, void> GetFramebufferAttachmentParameteriv;
+    public static delegate* unmanaged<uint, uint, uint, uint, void> FramebufferRenderbuffer;
+    /// <summary>glBindRenderbuffer (GL 3.0): target, name. Only ever used to ask a renderbuffer its own
+    /// internal format (#129's depth-copy probe); the binding is restored to 0 immediately.</summary>
+    public static delegate* unmanaged<uint, uint, void> BindRenderbuffer;
+    /// <summary>glBindTextureUnit (GL 4.5 DSA): unit, texture. One call where ActiveTexture+BindTexture+
+    /// ActiveTexture was three -- the owned colour pass changes texture state ~4000 times a frame (#151).</summary>
+    public static delegate* unmanaged<uint, uint, void> BindTextureUnit;
+    /// <summary>ARB_bindless_texture: texture -> 64-bit handle, and residency. Presence of the extension is
+    /// checked by string (GLX hands back non-null pointers for unsupported extensions).</summary>
+    public static delegate* unmanaged<uint, ulong> GetTextureHandleARB;
+    public static delegate* unmanaged<ulong, void> MakeTextureHandleResidentARB;
+    /// <summary>glGetStringi (GL 3.0): pname, index -- the core-profile extension enumeration.</summary>
+    public static delegate* unmanaged<uint, uint, byte*> GetStringi;
+    public static delegate* unmanaged<int, uint*, void> DeleteVertexArrays;
+    public static delegate* unmanaged<uint, void> DeleteProgram;
+    // #83 clustered forward+
+    public static delegate* unmanaged<uint, uint, uint, void> DispatchCompute;
+    public static delegate* unmanaged<uint, void> MemoryBarrier;
+    public static delegate* unmanaged<uint, IntPtr, IntPtr, void*, void> GetBufferSubData;
+    public static delegate* unmanaged<int, uint*, void> GenQueries;
+    public static delegate* unmanaged<uint, uint, void> BeginQuery;
+    public static delegate* unmanaged<uint, void> EndQuery;
+    public static delegate* unmanaged<uint, uint, int*, void> GetQueryObjectiv;
+    public static delegate* unmanaged<uint, uint, ulong*, void> GetQueryObjectui64v;
+    public static delegate* unmanaged<int, int, int, int, void> Uniform3i;
+    // #93 owned caster submission. All 4.6-core, so they exist only inside the #80 share-listed context;
+    // every one is null-checked before the path arms.
+    /// <summary>glBufferStorage (GL 4.4): target, size, data, flags. Immutable store -- the only way to get
+    /// a mapping that survives use, which is what "persistent-mapped" means.</summary>
+    public static delegate* unmanaged<uint, IntPtr, void*, uint, void> BufferStorage;
+    /// <summary>glMapBufferRange (GL 3.0): target, offset, length, access. Returns the client pointer.</summary>
+    public static delegate* unmanaged<uint, IntPtr, IntPtr, uint, void*> MapBufferRange;
+    /// <summary>glMultiDrawElementsIndirect (GL 4.3): mode, type, indirect (byte offset into the bound
+    /// DRAW_INDIRECT_BUFFER), drawcount, stride (0 = tightly packed).</summary>
+    public static delegate* unmanaged<uint, uint, void*, int, int, void> MultiDrawElementsIndirect;
+    /// <summary>glVertexAttribDivisor (GL 3.3): index, divisor. 1 = the attribute advances once per
+    /// INSTANCE rather than per vertex, which is what makes an instance stream an instance stream.</summary>
+    public static delegate* unmanaged<uint, uint, void> VertexAttribDivisor;
+    /// <summary>glDrawArraysInstancedBaseInstance (GL 4.2): mode, first, count, instancecount, baseinstance.
+    /// The base-instance form is the one #127 needs: every grass patch is a contiguous run inside ONE
+    /// instance buffer, so a patch draws by naming its offset instead of rebinding a pointer. Note
+    /// <c>gl_InstanceID</c> does NOT include the base -- divisor-1 vertex attributes do, which is why the
+    /// per-blade data is an attribute stream and not an SSBO indexed by the id.</summary>
+    public static delegate* unmanaged<uint, int, int, int, uint, void> DrawArraysInstancedBaseInstance;
+    public static delegate* unmanaged<uint, uint, IntPtr> FenceSync;
+    public static delegate* unmanaged<IntPtr, uint, ulong, uint> ClientWaitSync;
+    public static delegate* unmanaged<IntPtr, void> DeleteSync;
 
     private static delegate* unmanaged<byte*, IntPtr> _getProc;
     private static bool _ready, _failed;
@@ -116,6 +305,10 @@ public static unsafe class Gl
         if (_getProc == null) { log.Info("Gl: SDL_GL_GetProcAddress unresolved"); _failed = true; return false; }
 
         GetIntegerv = (delegate* unmanaged<uint, int*, void>)P("glGetIntegerv");
+        GetTexLevelParameteriv = (delegate* unmanaged<uint, int, uint, int*, void>)P("glGetTexLevelParameteriv");
+        GetRenderbufferParameteriv =
+            (delegate* unmanaged<uint, uint, int*, void>)P("glGetRenderbufferParameteriv");
+        GetTexImage = (delegate* unmanaged<uint, int, uint, uint, void*, void>)P("glGetTexImage");
         IsEnabled = (delegate* unmanaged<uint, byte>)P("glIsEnabled");
         GetError = (delegate* unmanaged<uint>)P("glGetError");
         Enable = (delegate* unmanaged<uint, void>)P("glEnable");
@@ -132,6 +325,7 @@ public static unsafe class Gl
         TexImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void>)P("glTexImage2D");
         TexParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glTexParameteri");
         GetTexParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetTexParameteriv");
+        PatchParameteri = (delegate* unmanaged<uint, int, void>)P("glPatchParameteri");
         PixelStorei = (delegate* unmanaged<uint, int, void>)P("glPixelStorei");
         BufferData = (delegate* unmanaged<uint, IntPtr, void*, uint, void>)P("glBufferData");
         VertexAttribPointer = (delegate* unmanaged<uint, int, uint, byte, int, void*, void>)P("glVertexAttribPointer");
@@ -152,6 +346,7 @@ public static unsafe class Gl
         GenSamplers = (delegate* unmanaged<int, uint*, void>)P("glGenSamplers");
         BindSampler = (delegate* unmanaged<uint, uint, void>)P("glBindSampler");
         SamplerParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glSamplerParameteri");
+        SamplerParameterf = (delegate* unmanaged<uint, uint, float, void>)P("glSamplerParameterf");
         GetUniformfv = (delegate* unmanaged<uint, int, float*, void>)P("glGetUniformfv");
         GetUniformiv = (delegate* unmanaged<uint, int, int*, void>)P("glGetUniformiv");
         GetTextureSubImage = (delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, int, void*, void>)P("glGetTextureSubImage");
@@ -160,12 +355,26 @@ public static unsafe class Gl
         LinkProgram = (delegate* unmanaged<uint, void>)P("glLinkProgram");
         GetUniformLocation = (delegate* unmanaged<uint, byte*, int>)P("glGetUniformLocation");
         UniformMatrix4fv = (delegate* unmanaged<int, int, byte, float*, void>)P("glUniformMatrix4fv");
+        Uniform2fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform2fv");
+        Uniform2iv = (delegate* unmanaged<int, int, int*, void>)P("glUniform2iv");
+        Uniform3iv = (delegate* unmanaged<int, int, int*, void>)P("glUniform3iv");
+        Uniform4iv = (delegate* unmanaged<int, int, int*, void>)P("glUniform4iv");
+        UniformMatrix2fv = (delegate* unmanaged<int, int, byte, float*, void>)P("glUniformMatrix2fv");
+        UniformMatrix3fv = (delegate* unmanaged<int, int, byte, float*, void>)P("glUniformMatrix3fv");
+        GetActiveUniform = (delegate* unmanaged<uint, uint, int, int*, int*, uint*, byte*, void>)P("glGetActiveUniform");
+        BindAttribLocation = (delegate* unmanaged<uint, uint, byte*, void>)P("glBindAttribLocation");
+        GetProgramInfoLog = (delegate* unmanaged<uint, int, int*, byte*, void>)P("glGetProgramInfoLog");
+        BufferSubData = (delegate* unmanaged<uint, IntPtr, IntPtr, void*, void>)P("glBufferSubData");
+        BindBufferBase = (delegate* unmanaged<uint, uint, uint, void>)P("glBindBufferBase");
+        GetUniformBlockIndex = (delegate* unmanaged<uint, byte*, uint>)P("glGetUniformBlockIndex");
+        UniformBlockBinding = (delegate* unmanaged<uint, uint, uint, void>)P("glUniformBlockBinding");
         Uniform1i = (delegate* unmanaged<int, int, void>)P("glUniform1i");
         Uniform1f = (delegate* unmanaged<int, float, void>)P("glUniform1f");
         Uniform2f = (delegate* unmanaged<int, float, float, void>)P("glUniform2f");
         Uniform1fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform1fv");
         Uniform1iv = (delegate* unmanaged<int, int, int*, void>)P("glUniform1iv");
         Uniform3fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform3fv");
+        Uniform4fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform4fv");
         GenFramebuffers = (delegate* unmanaged<int, uint*, void>)P("glGenFramebuffers");
         DeleteFramebuffers = (delegate* unmanaged<int, uint*, void>)P("glDeleteFramebuffers");
         BindFramebuffer = (delegate* unmanaged<uint, uint, void>)P("glBindFramebuffer");
@@ -173,20 +382,56 @@ public static unsafe class Gl
         FramebufferTextureLayer = (delegate* unmanaged<uint, uint, uint, int, int, void>)P("glFramebufferTextureLayer");
         TexImage3D = (delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void>)P("glTexImage3D");
         CheckFramebufferStatus = (delegate* unmanaged<uint, uint>)P("glCheckFramebufferStatus");
+        BlitFramebuffer =
+            (delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void>)P("glBlitFramebuffer");
+        GenerateMipmap = (delegate* unmanaged<uint, void>)P("glGenerateMipmap");
+        ClearColor = (delegate* unmanaged<float, float, float, float, void>)P("glClearColor");
         DrawBuffer = (delegate* unmanaged<uint, void>)P("glDrawBuffer");
         ReadBuffer = (delegate* unmanaged<uint, void>)P("glReadBuffer");
+        ReadPixels = (delegate* unmanaged<int, int, int, int, uint, uint, void*, void>)P("glReadPixels");
         DepthFunc = (delegate* unmanaged<uint, void>)P("glDepthFunc");
         Clear = (delegate* unmanaged<uint, void>)P("glClear");
         DepthMask = (delegate* unmanaged<byte, void>)P("glDepthMask");
+        ColorMask = (delegate* unmanaged<byte, byte, byte, byte, void>)P("glColorMask");
         ClearDepth = (delegate* unmanaged<double, void>)P("glClearDepth");
         DepthRange = (delegate* unmanaged<double, double, void>)P("glDepthRange");
         GetFloatv = (delegate* unmanaged<uint, float*, void>)P("glGetFloatv");
         Viewport = (delegate* unmanaged<int, int, int, int, void>)P("glViewport");
         DeleteTextures = (delegate* unmanaged<int, uint*, void>)P("glDeleteTextures");
         CopyImageSubData = (delegate* unmanaged<uint, uint, int, int, int, int, uint, uint, int, int, int, int, int, int, int, void>)P("glCopyImageSubData");
+        MultiDrawElementsBaseVertex = (delegate* unmanaged<uint, int*, uint, void**, int, int*, void>)P("glMultiDrawElementsBaseVertex");
+        GetVertexAttribiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetVertexAttribiv");
+        GetVertexAttribPointerv = (delegate* unmanaged<uint, uint, void**, void>)P("glGetVertexAttribPointerv");
+        GetFramebufferAttachmentParameteriv = (delegate* unmanaged<uint, uint, uint, int*, void>)P("glGetFramebufferAttachmentParameteriv");
+        FramebufferRenderbuffer = (delegate* unmanaged<uint, uint, uint, uint, void>)P("glFramebufferRenderbuffer");
+        BindRenderbuffer = (delegate* unmanaged<uint, uint, void>)P("glBindRenderbuffer");
+        BindTextureUnit = (delegate* unmanaged<uint, uint, void>)P("glBindTextureUnit");
+        GetTextureHandleARB = (delegate* unmanaged<uint, ulong>)P("glGetTextureHandleARB");
+        MakeTextureHandleResidentARB = (delegate* unmanaged<ulong, void>)P("glMakeTextureHandleResidentARB");
+        GetStringi = (delegate* unmanaged<uint, uint, byte*>)P("glGetStringi");
+        DeleteVertexArrays = (delegate* unmanaged<int, uint*, void>)P("glDeleteVertexArrays");
+        DeleteProgram = (delegate* unmanaged<uint, void>)P("glDeleteProgram");
+        DispatchCompute = (delegate* unmanaged<uint, uint, uint, void>)P("glDispatchCompute");
+        MemoryBarrier = (delegate* unmanaged<uint, void>)P("glMemoryBarrier");
+        GetBufferSubData = (delegate* unmanaged<uint, IntPtr, IntPtr, void*, void>)P("glGetBufferSubData");
+        GenQueries = (delegate* unmanaged<int, uint*, void>)P("glGenQueries");
+        BeginQuery = (delegate* unmanaged<uint, uint, void>)P("glBeginQuery");
+        EndQuery = (delegate* unmanaged<uint, void>)P("glEndQuery");
+        GetQueryObjectiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetQueryObjectiv");
+        GetQueryObjectui64v = (delegate* unmanaged<uint, uint, ulong*, void>)P("glGetQueryObjectui64v");
+        Uniform3i = (delegate* unmanaged<int, int, int, int, void>)P("glUniform3i");
+        BufferStorage = (delegate* unmanaged<uint, IntPtr, void*, uint, void>)P("glBufferStorage");
+        MapBufferRange = (delegate* unmanaged<uint, IntPtr, IntPtr, uint, void*>)P("glMapBufferRange");
+        MultiDrawElementsIndirect = (delegate* unmanaged<uint, uint, void*, int, int, void>)P("glMultiDrawElementsIndirect");
+        VertexAttribDivisor = (delegate* unmanaged<uint, uint, void>)P("glVertexAttribDivisor");
+        DrawArraysInstancedBaseInstance =
+            (delegate* unmanaged<uint, int, int, int, uint, void>)P("glDrawArraysInstancedBaseInstance");
+        FenceSync = (delegate* unmanaged<uint, uint, IntPtr>)P("glFenceSync");
+        ClientWaitSync = (delegate* unmanaged<IntPtr, uint, ulong, uint>)P("glClientWaitSync");
+        DeleteSync = (delegate* unmanaged<IntPtr, void>)P("glDeleteSync");
 
         // FBO procs are NOT in this gate: text/chat rendering must not regress if a client lacks them.
-        // ShadowMapService null-checks GenFramebuffers/FramebufferTexture2D itself before using the FBO path.
+        // ShadowFeedService null-checks GenFramebuffers/FramebufferTexture2D itself before using the FBO path.
         _ready = CreateProgram != null && GenVertexArrays != null && BufferData != null && DrawArrays != null;
         if (!_ready) { log.Info("Gl: a required GL 3.x proc was missing"); _failed = true; }
         return _ready;

@@ -98,8 +98,6 @@ public static unsafe class TextRenderer
 
     internal static readonly delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet =
         (delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr>)Native.Sym(SymbolMap.AurTextureGet);
-    internal static readonly delegate* unmanaged<IntPtr, int> _aurTid =
-        (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.AurTextureGetTID);
 
     /// <summary>Cold init: load the font, bake the atlas (incl. its solid-white chrome texel). GL state
     /// is driven directly at draw time (snapshot/restore), so nothing to resolve here.</summary>
@@ -172,7 +170,7 @@ public static unsafe class TextRenderer
         // A non-null texture whose TID is still 0 is simply "not uploaded yet"; a portrait still streaming
         // in appears once ready. AurTextureGet only returns Zero for an empty name (guarded upstream:
         // hasPortrait requires a non-empty resref), so the Zero branch is effectively unreachable.
-        return tex == IntPtr.Zero ? 0 : _aurTid(tex);
+        return Sowx.Framework.AurTex.Tid(tex);
     }
 
     /// <summary>Self-check for the resref -&gt; C-string marshalling that feeds AurTextureGet: truncation at 16
@@ -464,7 +462,7 @@ public static unsafe class TextRenderer
                                     bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
         if (string.IsNullOrEmpty(resref) || _atlas == null || _log == null || alpha <= 0f) return;
-        if (_aurGet == null || _aurTid == null) return;
+        if (_aurGet == null || !Sowx.Framework.AurTex.Ready) return;
         if (!Gl.Init(_log)) return;
         if (!EnsurePortraitProgram()) return;
         int tid = ResolveTid(resref);

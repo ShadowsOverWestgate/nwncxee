@@ -1,6 +1,10 @@
 # 0005 — Lighting reimplementation: extender-owned light set over the engine's stencil-era prioritizer
 
-Status: proposed (Ghidra session 2026-08-18; #65 follow-up)
+Status: phase 1 (the tier-1 light registry) live and load-bearing for the owned pass. Phase 2
+(neutralizing the engine's per-draw light binding so receiver shaders own point lighting) was
+**retired** by #87 — LightingService is deleted and the engine's staging lighting is untouched
+vanilla again; lighting is owned only inside SowxRender's own pass (ADR 0009 M1).
+(Ghidra session 2026-08-18; #65 follow-up)
 
 ## The engine pipeline (Ghidra-verified, nm addresses; Ghidra view = +0x100000)
 

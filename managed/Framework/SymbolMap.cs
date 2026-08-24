@@ -181,7 +181,10 @@ internal static unsafe class SymbolMap
     public const string RiSetBlendFunc = "_ZN15RenderInterface12SetBlendFuncEN6Aurora16AuroraBlendModesES1_";
     /// <summary>RenderInterface::IsEnabled(AuroraEnableEnums) @0x45cf30 -- read an Aurora render cap's cached
     /// enable bit. Cap 3 = GL_CULL_FACE (verified: GLRender::Enable(3) -&gt; glEnable(0xb44)). Used to save/
-    /// restore cull around the two-sided shadow depth pass.</summary>
+    /// restore cull around the two-sided shadow depth pass.
+    /// <para>Cap 5 = LIGHTING, and it is the modern renderer's lit predicate: <c>PartTriMesh::MatStatic</c>
+    /// (@0x450560) sends flat white instead of the material ambient/diffuse/emissive when it reads false, and
+    /// <c>RenderFlat</c> (@0x450eb0) drops the cap around a <c>mat+0x98</c> material.</para></summary>
     public const string RiIsEnabled    = "_ZN15RenderInterface9IsEnabledEN6Aurora17AuroraEnableEnumsE";
 
     // ---- shadow replacement (#65). Linux-only; no _win entries -> skip-with-log on Windows. ----
@@ -214,16 +217,243 @@ internal static unsafe class SymbolMap
     public const string SetViewTransform = "_ZN15RenderInterface16SetViewTransformER6VectorR10Quaternion";
 
     // ---- shadow-map caster re-drive (#65 slice 3b). The frame slot + the geometry submission. ----
-    /// <summary>Scene::RenderShadows(int mode, bool clear) @ 0x46afd0 -- the render-thread shadow pass. Hooked
-    /// call-through purely as the depth-pass frame slot: its <c>this</c> (rdi) is the live <c>Scene*</c> (no
-    /// Scene global exists) and GL/camera transforms are current here. ABI: <c>(Scene* /*rdi*/, int mode /*esi*/,
-    /// bool clear /*dl*/)</c>.</summary>
-    public const string RenderShadows = "_ZN5Scene13RenderShadowsEib";
     /// <summary>Scene::RenderDrawBucket(int bucketId) @ 0x46d060 -- draws one geometry bucket (the whole
     /// iterate+SetModelMatrix+RenderVertexData loop, DrawBucketManager @Scene+0x208). Ids 1..8 (RenderSinglePass);
     /// bucket 1 = opaque casters. Called directly to render casters into our depth FBO. ABI: <c>(Scene* /*rdi*/,
     /// int bucketId /*esi*/)</c>.</summary>
     public const string RenderDrawBucket = "_ZN5Scene16RenderDrawBucketEi";
+    /// <summary>Scene::RenderSinglePass() @0x46e5f0 -- one whole per-view colour pass (buckets 0..8, sky,
+    /// lights); runs for the main view AND each reflection subframe, with view/proj already on the matrix
+    /// stacks at entry. The M1 tracer (#81) hooks it to run the owned opaque block before buckets 0/1.</summary>
+    public const string RenderSinglePass = "_ZN5Scene16RenderSinglePassEv";
+    /// <summary>Scene::FadeDoors() @0x467990 -- vtable slot 0x260, the LAST engine call inside
+    /// <c>Scene::RenderSinglePass</c> before <c>RenderDrawBucket(0)</c>. #132's frame anchor.
+    /// <para>Why here and not at RenderSinglePass entry, which is what spec #114 asks for: RSP's first act is
+    /// <c>Camera::InitializeFrameBufferResources</c> @0x4a6fd0, and its steady-state path (the size compare at
+    /// +0x240 falls through to +0xed) is <c>SetRenderSubframeTarget(0)</c> then <c>Clear(7)</c> -- EVERY frame,
+    /// not only on resize. So at literal entry the world FBO is neither bound nor cleared, and a resolve
+    /// written there is wiped by that clear; deferring the resolve past it costs a second colour bracket,
+    /// which ADR 0011 does not have. Anchoring after the clear makes the problem disappear rather than need
+    /// suppressing. The two Scene vcalls between the clear and bucket 0 are <c>DoFog</c> (slot 0x280) and this
+    /// one, and both write state the owned pass reads -- scene fog (#124) and the per-tile fade factor -- so
+    /// the anchor sits after them rather than before. Unconditional in the decompile, and reached only
+    /// through the vtable, so no other caller exists to gate against.</para></summary>
+    public const string FadeDoors = "_ZN5Scene9FadeDoorsEv";
+    /// <summary>GLRender's matrix-stack array <c>m_aurMtxStack</c> @0x19e2f60, indexed by AuroraTransStates
+    /// (PROJECTION=0, VIEW=1, ...), stride 0x58 per stack: a std::vector&lt;Matrix4x4&gt; (0x18 bytes of
+    /// pointers) then the TOP matrix as row-major float[16] at +0x18 (Ghidra GLRender::PushMatrix /
+    /// PopMatrix / aurMatrixStack::SetIdentity). Data symbol -- read the tops, never write.</summary>
+    public const string MAurMtxStack = "m_aurMtxStack";
+    /// <summary>GLRender::RenderVertexData(VertexDataObject*, uint item, AuroraPrimitiveTypes, uint size,
+    /// uint offset) @0x4d0570 -- the single GL draw-submit funnel (glDrawElementsBaseVertex for indexed VDO
+    /// modes 1/2, glDrawArrays otherwise; picks + sets the program from VDO attributes first). Static member:
+    /// first arg IS the VDO, no <c>this</c>. Hooked by DrawStatsService (ADR 0006 phase 0) for the per-frame
+    /// draw histogram.</summary>
+    public const string GlRenderVertexData = "_ZN8GLRender16RenderVertexDataEP16VertexDataObjectjN6Aurora20AuroraPrimitiveTypesEjj";
+    // ---- static-geometry batching (ADR 0006 phase 1), Linux-only -> BatchService stands down on Windows ----
+    /// <summary>PartTriMesh::Draw() @0x4513d0 -- the per-part draw entry the bucket loop calls (via the
+    /// item's Render vtable slot). BatchService's skip/record point. ABI: <c>(PartTriMesh* /*rdi*/)</c>.</summary>
+    public const string PartTriMeshDraw = "_ZN11PartTriMesh4DrawEv";
+    /// <summary>#137: PartSkin::Draw() @0x4830b0 -- the TRUE skinmesh's draw entry (a cloak, a robe, a
+    /// tail). It never enters <see cref="PartTriMeshDraw"/>: it calls <c>RenderSkinned</c> @0x482c70, which
+    /// gathers the bone chain and hands <c>ExecuteSkinGPU</c> @0x482800 a pose to write into
+    /// <see cref="GlRenderBones"/> before ending in the same <c>RenderFlat</c>/<c>RenderEnvironmentMapped</c>
+    /// pair every rigid part uses. So this is the second capture point the part table needs, and calling the
+    /// trampoline with the funnel swallowed is how the owned pass gets a live pose without a draw.
+    /// ABI: <c>(PartSkin* /*rdi*/)</c>.</summary>
+    public const string PartSkinDraw = "_ZN8PartSkin4DrawEv";
+    /// <summary>#125: Scene::RenderSkyBoxes() @0x466910 -- the whole per-area skybox draw, called from
+    /// RenderSinglePass between buckets 0 and 1. Three gobs (current, cross-fading, skyfade) rendered under
+    /// their own projection with the depth mask off. Hooked to open the owned pass's capture window and to
+    /// colour-mask the engine's copy once the owned pass draws it at its graph slot.</summary>
+    public const string RenderSkyBoxes = "_ZN5Scene14RenderSkyBoxesEv";
+
+    // ---- #130: the beam site. Beams are NOT walked by Scene::RenderDrawBucket -- Scene::RenderBeams
+    //      @0x46aba0 (vt+0x1d8) walks DRAW BUCKET 15 with its own program and its own state, right after
+    //      bucket 4, and it is the last content class in the pass before particles.
+    /// <summary>#130: Scene::RenderBeams() @0x46aba0 -- the volumetric light-beam pass. Gated on the
+    /// <c>enablebeams</c> global; picks the first scene light with range >= 1000 (the sun/moon) and extrudes
+    /// every bucket-15 item away from it through <c>vs_beamvol</c>/<c>fs_beamvol</c>, additive
+    /// <c>(SRC_ALPHA, ONE)</c> with the depth mask off. Hooked to open the owned pass's capture window and to
+    /// colour-mask the engine's copy once the owned pass draws it at its graph slot.
+    /// ABI: <c>(Scene* /*rdi*/)</c>.</summary>
+    public const string RenderBeams = "_ZN5Scene11RenderBeamsEv";
+    /// <summary>#130: PartBeam::Draw() @0x450120 -- the whole of it is
+    /// <c>RenderVertexData(part+0xa0, part+0xa8, 4, 0xffffffff)</c>, so it is both the per-beam capture point
+    /// and the identity the owned replay keys on. It is NOT <c>PartTriMesh::Draw</c>, so BatchService's part
+    /// hook never sees a beam. ABI: <c>(PartBeam* /*rdi*/)</c>.</summary>
+    public const string PartBeamDraw = "_ZN8PartBeam4DrawEv";
+    /// <summary>Global <c>enablebeams</c> @0x18aa18c (int, 1 by default) -- the flag
+    /// <c>Scene::RenderBeams</c> gates its whole body on. The owned pass honours it: beams off means the
+    /// owned draw does nothing AND does not suppress.</summary>
+    public const string EnableBeams = "enablebeams";
+    /// <summary>Global <c>projectionalpha</c> @0x18aa188 (float, 0.2) -- the alpha
+    /// <c>Scene::RenderBeams</c> homogenizes onto a white RGB and pushes as <c>globalColor</c>. Read live so
+    /// the console variable keeps meaning what it says.</summary>
+    public const string ProjectionAlpha = "projectionalpha";
+
+    // ---- #131: the emitter site. Particles are NOT draw-bucket residents either -- Scene::DoEmitterBucket
+    //      @0x476f00 (step 28, dead last in Scene::RenderSinglePass) animates each emitter, depth-sorts the
+    //      visible ones back-to-front, then calls each one's own render pointer, which funnels into
+    //      PartEmitter::RenderEmitter. There is no bindable buffer: the vertex build is CPU-side into one
+    //      SHARED VertexStreamDataObject, committed and drawn once per emitter.
+    /// <summary>#131: PartEmitter::RenderEmitter() @0x4ad4c0 -- the whole per-emitter draw. Builds 6 verts
+    /// per particle (colour u32, position vec3, uv vec2 -- 24-byte stride) into the shared stream object,
+    /// <c>glBufferSubData</c>s the whole range and issues one <c>glDrawArrays(GL_TRIANGLES, 0, 6N)</c>.
+    /// <c>RenderStandard</c>/<c>RenderLinked</c>/<c>RenderMotionBlurred</c> are one-line wrappers that all
+    /// funnel here; <c>RenderNothing</c> bypasses it, which is correct. Hooked as both the capture point and
+    /// the per-emitter suppression point. ABI: <c>(PartEmitter* /*rdi*/)</c>.</summary>
+    public const string RenderEmitter = "_ZN11PartEmitter13RenderEmitterEv";
+    /// <summary>#131: PartEmitter::~PartEmitter() @0x4af890 (D1 and D2 share the address; the deleting D0
+    /// @0x4afa60 tail-calls it, and every emitter subclass's dtor reaches it). #145's lesson applied to
+    /// emitters: the owned replay reads a live Particle array off the emitter one frame after the capture,
+    /// so the one event that says a captured emitter is GONE has to evict it.
+    /// ABI: <c>(PartEmitter* /*rdi*/)</c>.</summary>
+    public const string PartEmitterDtor = "_ZN11PartEmitterD2Ev";
+    /// <summary>#131: PartEmitter::GetTileAlpha() @0x4ac300 -- one of the two factors the engine folds into
+    /// every particle's alpha. Called rather than reproduced. ABI: <c>(PartEmitter* /*rdi*/) -&gt; float</c>.
+    /// </summary>
+    public const string EmitterGetTileAlpha = "_ZN11PartEmitter12GetTileAlphaEv";
+    /// <summary>#131: PartEmitter::GetGobAlpha() @0x4ac2d0 -- the other one. Same treatment.
+    /// ABI: <c>(PartEmitter* /*rdi*/) -&gt; float</c>.</summary>
+    public const string EmitterGetGobAlpha = "_ZN11PartEmitter11GetGobAlphaEv";
+    /// <summary>#131: MdlNodeEmitter::IsSplat() @0x4ab070 -- the model flag that turns an emitter's quads
+    /// into ground splats: the billboard basis comes off the particle's own splat normal, size stops
+    /// interpolating, and the softness term is suppressed.
+    /// ABI: <c>(MdlNodeEmitter* /*rdi*/) -&gt; bool</c>.</summary>
+    public const string EmitterIsSplat = "_ZN14MdlNodeEmitter7IsSplatEv";
+    /// <summary>#131: MdlNodeEmitter::IsTinted() @0x4aafc0 -- the flag that runs the emitter's start/end
+    /// colours through the scene lighting at its own position before interpolation.
+    /// ABI: <c>(MdlNodeEmitter* /*rdi*/) -&gt; bool</c>.</summary>
+    public const string EmitterIsTinted = "_ZN14MdlNodeEmitter8IsTintedEv";
+    /// <summary>#131: LightManager::GetEmitterLighting(Vector, List&lt;PartLight*&gt;*) @0x4c1970 -- the tint
+    /// lookup, one call per tinted emitter per frame.
+    /// <para>ABI, read off the call site at 0x4af130 rather than off the decompiler (Ghidra renders the
+
+    /// <c>xmm0</c> (x, y) + <c>xmm1</c> (z), the light list in <c>rdi</c>, a zero int in <c>esi</c>, and the
+    /// result comes back the same way it went in -- <c>xmm0</c> (r, g) + <c>xmm1</c> (b). That is exactly
+    /// SysV's classification of a 12-byte three-float struct, so a plain sequential struct of three floats
+    /// matches it on both ends.</para></summary>
+    public const string GetEmitterLighting = "_ZN12LightManager18GetEmitterLightingE6VectorP4ListIP9PartLightE";
+    /// <summary>#131: the <c>currentscene</c> global @0x19ab950 -- <c>RenderEmitter</c> reads the light list
+    /// for the tint at <c>*currentscene + 0x158</c>. Read live at build time for the same reason
+    /// <see cref="Beams"/> reads its own Scene: an area transition frees the list.</summary>
+    public const string CurrentScene = "currentscene";
+    /// <summary>#148: CAurTexture::BindInUnit(unsigned int, int) @0x48e1e0 -- the engine's OWN texture bind,
+    /// and the reason a raw <c>glBindTexture</c> of <c>AurTextureGetTID</c>'s answer is not equivalent.
+    /// <para>It resolves the object TWICE before taking an id: vtable+0x18 hands back a REFERENCED texture
+    /// (read straight off <c>this+0x18</c> when that slot is the stock <c>GetReferencedTexture</c>), and
+    /// vtable+0x10 resolves that in turn. Only then does it call <c>AurTextureGetTID</c> -- on the resolved
+    /// object, not on the one the Material handed out. It also passes vtable+0x20's flag to
+    /// <c>AurTextureBindTIDInUnit</c> and ticks the texture's animation controller, neither of which a raw
+    /// bind does.</para>
+    /// <para>Call it rather than reproducing it: the chain is three virtuals and a NULL-texture sentinel
+    /// check, and every one of them is a place for a reproduction to drift.
+    /// ABI: <c>(CAurTexture* /*rdi*/, uint unit /*esi*/, int frame /*edx*/)</c>; the engine passes -1 for
+    /// the frame, meaning "whatever the controller says".</para></summary>
+    public const string AurTextureBindInUnit = "_ZN11CAurTexture10BindInUnitEji";
+    // ---- #127: the grass site. Grass is NOT a draw-bucket resident -- Scene::RenderSinglePass calls
+    //      Scene::DoBinBucket @0x474c50 (vt+0x1c0) under the engine's own Tracy scope "Grass", between the
+    //      sky and RenderDynamicGeometry. That placement, plus a depth mask it never sets and a distance
+    //      fade pushed through the alpha channel the 0.2 cutout reads, IS #106's punch-through.
+    /// <summary>Scene::DoBinBucket() @0x474c50 -- the whole grass draw: the per-frame CPU wind rewrite over
+    /// EVERY bin in the area, an optional bin sort, then one RenderVertexData per (bin, material) triangle
+    /// list with no frustum culling. Skipped outright on the passes the owned grass drew, which is what
+    /// retires the wind rewrite as well as the draw. ABI: <c>(Scene* /*rdi*/)</c>.</summary>
+    public const string DoBinBucket = "_ZN5Scene11DoBinBucketEv";
+    /// <summary>Scene::ReloadGrass() @0x469540 -- rebuilds every bin from the tile BSP (area load, grass
+    /// option change, a server grass override). Every CAurTriangleBin and CAurTriangleList the owned pass
+    /// captured is freed here, so it is the one signal that invalidates the whole capture.
+    /// ABI: <c>(Scene* /*rdi*/)</c>.</summary>
+    public const string ReloadGrass = "_ZN5Scene11ReloadGrassEv";
+    /// <summary>Global <c>binbucket</c> @0x19abbc0 -- the BSP visibility walk's active-bin list. The
+    /// symbol's address IS the list: <c>CAurTriangleBin**</c> at +0, count at +8. Rebuilt per frame, so a
+    /// bin that stops appearing has simply gone out of view (or been freed) and needs no other liveness
+    /// test.</summary>
+    public const string BinBucket = "binbucket";
+    /// <summary>Global <c>g_GrassInfo</c> @0x19acc90 -- <c>List&lt;CAurGrassInfo&gt;</c>: element pointer at
+    /// +0, count at +8. One 0x54-byte record per grass material (name, density, height, diffuse, ambient,
+    /// four atlas probabilities). Filled from the tileset's <c>.set</c> and from per-area / server
+    /// overrides.</summary>
+    public const string GrassInfo = "g_GrassInfo";
+    /// <summary>Scene::m_fGrassFarRenderDistance @0x18aa1b4 -- the SQUARED far radius, and the player's own
+    /// "Grass Far Render Distance" option (clamped to [900, 30000], i.e. 30..173 world units). The owned
+    /// pass dithers to zero exactly at it, so the player's knob still means what it says.</summary>
+    public const string GrassFarDistance = "_ZN5Scene25m_fGrassFarRenderDistanceE";
+    /// <summary>CAurTriangleBin::m_fNearRadiusSquared @0x18aa3b0 -- squared radius inside which vanilla grass
+    /// is at full alpha (225 = 15 units). The owned pass reuses it as the near edge of the dither ramp.</summary>
+    public const string GrassNearRadius = "_ZN15CAurTriangleBin20m_fNearRadiusSquaredE";
+    /// <summary>Scene::m_bGrassIsEnabled @0x19ab970 -- the player's "Grass Mode" option, and the flag
+    /// <c>DoBinBucket</c> gates its whole body on. The owned pass honours it: grass off means the owned
+    /// draw does nothing AND does not suppress, so the option keeps meaning what it says.</summary>
+    public const string GrassEnabled = "_ZN5Scene17m_bGrassIsEnabledE";
+    /// <summary>#134: <c>PartDanglyMesh</c>'s vtable. Not a hook -- an identity. A dangly part reaches the
+    /// <c>PartTriMesh::Draw</c> hook (its own Draw @0x451b89 calls straight into it) and must be told apart
+    /// from a rigid one, which no field on the part answers. The Itanium ABI stores the address of the
+    /// vtable's function-pointer area, 0x10 past the symbol, in the object's first word.</summary>
+    public const string PartDanglyMeshVtbl = "_ZTV14PartDanglyMesh";
+    /// <summary>RenderInterface::SetCanDissolve(int) @0x45ccd0 -- the bucket loop sets this per item from
+    /// Camera::GetCanKeyholeDissolve right before the item renders; latched to know each part's dissolve
+    /// state without re-calling the camera test.</summary>
+    public const string RiSetCanDissolve = "_ZN15RenderInterface14SetCanDissolveEi";
+    /// <summary>Material::HasEnvMap @0x43d1a0-ish -- env-mapped parts take RenderEnvironmentMapped, not
+    /// RenderFlat; excluded from batching.</summary>
+    public const string MatHasEnvMap = "_ZN8Material9HasEnvMapEv";
+    /// <summary>Material::HasBumpyShinyMap -- bumpy-shiny parts take RenderBumpyShiny; excluded.</summary>
+    public const string MatHasBumpyShinyMap = "_ZN8Material16HasBumpyShinyMapEv";
+    /// <summary>PartTriMesh::GetRenderHint() @0x43ce90 -- RenderFlat feeds this to SetRenderHint per draw
+    /// (program selection input); part of the batch group key.</summary>
+    public const string PartGetRenderHint = "_ZN11PartTriMesh13GetRenderHintEv";
+    /// <summary>Material::GetTexture(int) @0x4c5810 -- texture slot i (SharedMaterial override at
+    /// mat+0xd0 wins, else own slot at mat+i*0x10). Batch group key = material CONTENT (each part owns
+    /// its Material instance, so pointer identity shatters groups to size 1).</summary>
+    public const string MatGetTexture = "_ZN8Material10GetTextureEi";
+    /// <summary>Part::~Part() @0x437720 (D1 and D2 share the address) -- the BASE destructor every part
+    /// class tail-jumps to: PartSkin and PartDanglyMesh jump to PartTriMesh::~PartTriMesh, which jumps here
+    /// with <c>this</c> unchanged (verified in the disassembly, no thunk adjust). #145: the one event that
+    /// says a recorded part is GONE. Without it the part table holds the pointer until something happens to
+    /// notice, and the owned pass chases it into freed memory.</summary>
+    public const string PartDtor = "_ZN4PartD2Ev";
+    /// <summary>VertexDataObject::Repack() @0x45c270 -- compacts tombstoned items (RemoveItem only zeroes
+    /// sizes), MOVING the surviving items' indices and offsets. Triggered by AddItem on fragmentation, so
+    /// streaming fires it mid-play; every batch member of that VDO must recapture its item.</summary>
+    public const string VdoRepack = "_ZN16VertexDataObject6RepackEv";
+    /// <summary>GLRender::SetVertexDataObject(VertexDataObject*) @0x4cff30 -- binds (lazily creating) the
+    /// VDO's VAO + element buffer and updates the engine's current-VDO cache. The owned caster path (ADR 0008)
+    /// binds engine geometry through this so the cache never desyncs; null unbinds to the default VAO.</summary>
+    public const string GlSetVertexDataObject = "_ZN8GLRender19SetVertexDataObjectEP16VertexDataObject";
+    /// <summary>primTypeTranslationTable @0x12f50e0 (R) -- AuroraPrimitiveTypes -> GLenum table indexed by
+    /// the prim id RenderVertexData receives.</summary>
+    public const string PrimTypeTranslationTable = "primTypeTranslationTable";
+    /// <summary>GLRender::m_bones @0x19e1f60 (B) -- the static 64 x mat4 bone array (4KB) the skinning shader
+    /// runs on. <c>GLRender::SetBoneMatrix</c> @0x4cbbb0 runs each matrix through
+    /// <c>Transpose(const Matrix4x4&amp;)</c> @0x5b5570 before storing it, and <c>GLRender::SetUniforms</c>
+    /// @0x4ccbf0 then uploads the array with <c>glUniformMatrix4fv(loc, 64, transpose=0, m_bones)</c> -- so
+    /// what SITS in m_bones is already in the column-major order GLSL wants, and a raw memcpy of it into an
+    /// std430 <c>mat4[]</c> is byte-identical to what the engine feeds its own shader. The transpose is the
+    /// engine's business, not ours: we copy the stored bytes and multiply in the same order its shader does.
+    /// Snapshotted per skinned part draw by #96.</summary>
+    public const string GlRenderBones = "_ZN8GLRender7m_bonesE";
+    /// <summary>GLRender::m_shaderExposedRuntimeData @0x19e1ea0 (B) -- the struct <c>GLRender::SetUniforms</c>
+    /// @0x4ccbf0 uploads the "what is the world doing right now" uniforms straight out of. Field offsets read
+    /// off the pairing of <c>ConnectShaderData</c> (name -&gt; PROG_FIXED location slot) with SetUniforms
+    /// (location slot -&gt; field): <c>worldtimerTimeOfDay</c> int at +0x18, <c>areaGlobalWind</c> vec3 at
+    /// +0x28, <c>areaFlags</c> int at +0x3c, <c>playerPosition</c> vec3 at +0x4c, <c>cameraPosition</c> vec3
+    /// at +0x64. Reading it is what lets #123's feature switches be the engine's own values rather than a
+    /// reconstruction -- and the camera here is the SCENE's, not the last pass's (the
+    /// <c>ShadowInputs.CameraPos</c> hazard) because the engine sets it once per frame for its own shaders.</summary>
+    public const string GlShaderRuntimeData = "_ZN8GLRender26m_shaderExposedRuntimeDataE";
+    /// <summary>GLRender::m_fog @0x19ad160 (B) -- the area's fog block, read by <c>GLRender::SetUniforms</c>
+    /// @0x4ccbf0 to build the engine's own <c>fogParams</c>/<c>fogColor</c>: +0x00 start, +0x04 end,
+    /// +0x08 colour (vec4, DISPLAY space -- the stock shader lerps toward it after the encode), +0x18 the
+    /// enable flag. <c>fogParams.w</c> is not stored -- SetUniforms computes <c>1/(end - start)</c>.</summary>
+    public const string GlFog = "_ZN8GLRender5m_fogE";
+    /// <summary>GLRender::m_globalShaderConstantsf @0x19af8a0 (B) -- the float side of the engine's global
+    /// shader constants. [21] and [22] are the two keyhole diameters; SetUniforms uploads the MIN of the pair
+    /// as <c>keyholeDiameterMin</c> and the MAX as <c>keyholeDiameterMax</c>, so the pair is unordered in
+    /// storage and composed at upload. [23] is <c>keyholeMinZOffset</c>, which the generation of
+    /// <c>inc_keyhole.shd</c> this client runs never reads.</summary>
+    public const string GlGlobalShaderConstantsF = "_ZN8GLRender24m_globalShaderConstantsfE";
     /// <summary>RenderInterface::SetMatrixMode(AuroraTransStates) @0x45cd50 -- selects the matrix stack the
     /// subsequent LoadMatrixIdentity/MultMatrix/SetOrtho/SetPerspective operate on. Enum: PROJECTION=0, VIEW=1
     /// (from Camera::RenderScene's <c>xor edi,edi</c> before SetPerspective, and SetViewTransform's edi=1).</summary>
@@ -257,14 +487,39 @@ internal static unsafe class SymbolMap
     /// <summary>DrawBucketManager::GetNextItem(int bucket, int phase) @0x47be90 -- advance the same iterator;
     /// item is <c>*ret</c> (null = done). Pairs with <see cref="BucketGetFirstItem"/>.</summary>
     public const string BucketGetNextItem = "_ZN17DrawBucketManager11GetNextItemEii";
+    /// <summary>DrawBucketManager::HasItemsOfType(int itemType) @0x47bef0 -- does this bucket hold anything,
+    /// in any of its three phases? Two call sites, BOTH inside <c>Scene::RenderSinglePass</c> @0x46e5f0
+    /// (verified by xref): one gates the framebuffer-sampling block (type 5) and one the water block
+    /// (type 6). Each block is a <c>Camera::CopyRenderSubframe</c> followed by the bucket walk, so answering
+    /// "no" for type 6 removes the engine's water copy AND its walk together -- which is what makes #129's
+    /// one-copy claim structural rather than a second suppression to keep in step.
+    /// <para>The manager itself is <c>Scene+0x208</c>, and its buckets are a flat array: item type
+    /// <c>t</c>, phase <c>p</c> lives at <c>mgr + (t*3 + p)*0x10</c> as {<c>Part** items</c> @+0,
+    /// <c>int count</c> @+8} (<c>GetDrawBucketByItemType</c> @0x47bd60 / <c>GetNextItem</c> @0x47be90). Read
+    /// directly rather than through the iterator pair: those mutate the manager's own cursor at +0x300, and
+    /// the engine is walking with it.</para></summary>
+    public const string BucketHasItemsOfType = "_ZN17DrawBucketManager14HasItemsOfTypeEi";
+    /// <summary>Global <c>g_nEnableBumpyWater</c> @0x19ace10 (B) -- the int
+    /// <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 ANDs with <c>Material::HasBumpyShinyMap</c> before
+    /// routing a part to draw bucket 6. Data symbol; read, never write.</summary>
+    public const string EnableBumpyWater = "g_nEnableBumpyWater";
     /// <summary>RenderInterface::SetModelMatrix(const Matrix4x4&amp;) @0x45d150 -- the cache-coherent front door
     /// (forwards to GLRender::SetModelMatrix). The lean bucket walker uses this per kept caster.</summary>
     public const string RiSetModelMatrix = "_ZN15RenderInterface14SetModelMatrixERK9Matrix4x4";
-    /// <summary>LightManager::GetShadowLights(int) @0x5c2910 -- builds the engine's camera-prioritized shadow
-    /// set. Hooked CALL-THROUGH to capture <c>this</c> while it is guaranteed alive (inside RenderShadows) and
-    /// walk the MASTER light list at <c>this+0x10</c> (data) / <c>+0x18</c> (count) -- the area-wide superset
-    /// SetupLightsForThisPositionAndRadius filters from -- so cube ownership is deterministic, not camera-picked.</summary>
-    public const string LmGetShadowLights = "_ZN12LightManager15GetShadowLightsEi";
+    /// <summary>Global shader param scalar getter -- param 0x12 is the light-radius multiplier
+    /// GetLightAdjustedRadius applies (adjR = range * intensity * overbright * this).</summary>
+    public const string RiGetGlobalShaderParamf = "_ZN15RenderInterface21GetGlobalShaderParamfEN6Aurora23AurGlobalShaderParamf_tE";
+    /// <summary>Global shader param INTEGER getter -- param 0 is the gamma pipeline, the engine's own gate on
+    /// the colour-space round trip (it becomes <c>#define GAMMA_CORRECTION %d</c> in every shader preamble,
+    /// and <c>ApplyColorSpace</c>/<c>RevertColorSpace</c> in inc_common.shd are identity when it is 0).
+    /// #132's resolve reads it so the one remaining encode is gated where the per-shader encodes never
+    /// were.</summary>
+    public const string RiGetGlobalShaderParami = "_ZN15RenderInterface21GetGlobalShaderParamiEN6Aurora23AurGlobalShaderParami_tE";
+    /// <summary>GetLightAdjustedRadius(PartLight const*) @0x4c0c10 -- the engine's own lit radius:
+    /// <c>range * intensity</c>, times the max colour channel when that exceeds 1, times the global radius
+    /// multiplier (param 0x12). Returns the raw range unchanged for a directional light (range &gt;= 1000).
+    /// Called rather than re-derived. ABI: <c>(PartLight* /*rdi*/) -&gt; float /*xmm0*/</c>.</summary>
+    public const string GetLightAdjustedRadius = "_Z22GetLightAdjustedRadiusPK9PartLight";
     /// <summary>GLRender::m_nCurrentMatrix @0x19e30d0 -- the selected matrix-stack index; saved/restored around
     /// the pass so we leave the engine's active matrix mode as we found it. Data symbol (read/write int).</summary>
     public const string MCurrentMatrix = "_ZN8GLRender16m_nCurrentMatrixE";
@@ -274,13 +529,6 @@ internal static unsafe class SymbolMap
     /// <summary>RenderInterface::SetPerspectiveTransform(fovy,aspect,near,far doubles) @0x45d0e0 -- the camera
     /// projection; used to restore it after the light depth pass. Called from Camera::RenderScene @0x4a7db1.</summary>
     public const string SetPerspectiveTransform = "_ZN15RenderInterface23SetPerspectiveTransformEdddd";
-    /// <summary>GLRender::LoadShader(PROG_FIXED&amp;, const char* vs, const char* fs, bool, const char*) @0x4d3770
-    /// -- links a scene shader program. STATIC. Hooked call-through to discover receiver programs: after it runs,
-    /// the GL program id is at <c>PROG_FIXED+0x64</c> (`__glewCreateProgram` result); the name args identify it.
-    /// ABI: <c>(PROG_FIXED* /*rdi*/, char* /*rsi*/, char* /*rdx*/, bool /*cl*/, char* /*r8*/)</c>.</summary>
-    public const string LoadShader = "_ZN8GLRender10LoadShaderERNS_10PROG_FIXEDEPKcS3_bS3_";
-    /// <summary>Byte offset of the linked GL program id inside PROG_FIXED (from LoadShader disasm).</summary>
-    public const int ProgFixedProgramId = 0x64;
 
     // ---- shadow-map caster completeness (#65 slice 3c). The camera-frustum cull is inlined in the BSP
     //      descent (no per-object hook); the reference mod's proven fix re-walks the BSP in a sphere around
@@ -292,6 +540,12 @@ internal static unsafe class SymbolMap
     /// re-submit off-screen tileset casters, which the next <c>AddPartsToDrawBuckets</c> then transfers into
     /// the DrawBucketManager (type 0) + matrix-sets for free. Free fn: <c>(Scene* /*rdi*/)</c>.</summary>
     public const string ManageSceneBSP = "_Z14ManageSceneBSPP5Scene";
+    /// <summary>Scene::AddPartsToDrawBuckets() @0x4751d0 -- transfers this frame's collected mesh buckets into
+    /// the DrawBucketManager. Runs in <c>Scene::Render</c> after <c>ManageSceneBSP</c> and BEFORE the virtual
+    /// render dispatch (vtbl+0x218, which contains RenderShadows + the bucket draws) -- so its return is the
+    /// one deterministic per-frame point where the buckets are complete and nothing has drawn yet (ADR 0007
+    /// phase 1: all extender passes fire here, never on engine cadence). Member fn: <c>(Scene* this)</c>.</summary>
+    public const string AddPartsToDrawBuckets = "_ZN5Scene21AddPartsToDrawBucketsEv";
     /// <summary>AddPartToMeshBuckets(PartTriMesh*) @0x47f450 -- the engine's own caster submit: pushes a tile
     /// part into the global <c>meshbuckets[textureTID]</c> + <c>meshshadowbucket</c>. Our BSP re-walk callback
     /// calls it exactly as the engine's <c>ProcessTriMeshParts</c> does. NO dedup (caller's job); it also
@@ -349,7 +603,10 @@ internal static unsafe class SymbolMap
     //      path. ManageSceneBSP itself walks this exact chain every frame, so it is valid whenever our call-through
     //      hook has run. All Ghidra-verified; Linux-only (skip on Windows). ----
     /// <summary>Global <c>CurrentCamera</c> (@0x19acbb0, in .dynsym) -- the symbol's 8 bytes hold a live
-    /// <c>CAurCamera*</c> (or 0).</summary>
+    /// <c>CAurCamera*</c> (or 0).
+    /// <para>#131 also reads the orientation QUATERNION at <c>*CurrentCamera + 0xbc</c>, stored
+    /// (w, x, y, z) -- <c>PartEmitter::RenderEmitter</c> builds every billboard basis out of it.</para>
+    /// </summary>
     public const string CurrentCamera = "CurrentCamera";
     /// <summary>CAurCamera -&gt; current behavior host (<c>CurrentCamera[0x8b]</c> == +0x458), a <c>CAurBehavior*</c>;
     /// its vtable+<see cref="BehaviorAsFollowVtbl"/> is <c>AsBehaviorCameraFollow()</c>.</summary>
@@ -375,6 +632,21 @@ internal static unsafe class SymbolMap
     public const int GobPartTree = 0x90;
     /// <summary>Gob -&gt; world position (float x@+0xa8, y@+0xac, z@+0xb0). Read for the sphere test.</summary>
     public const int GobPosition = 0xa8;
+    /// <summary>#127: Gob -&gt; its cached bounding box, min at +0x160 and max at +0x16c. <c>Gob::GetBoundingBox</c>
+    /// @0x436ee0 is a plain read of exactly these two, no recompute. Only the EXTENT is used (the pair's
+    /// space -- model or world -- is not established, and the extent is the same either way); it is centred
+    /// on <see cref="GobPosition"/>, which is unambiguously world.</summary>
+    public const int GobBoxMin = 0x160, GobBoxMax = 0x16c;
+    /// <summary>#127: Gob -&gt; the MdlNode <c>Gob::SetAsCharacter</c> writes through (gob+0x68), and the byte
+    /// it writes: <c>node+0x8e = 4</c>. The only positive "this gob is a creature" mark found in the client.
+    /// Used to keep creatures OUT of the grass cull -- they bend grass, they do not erase it.</summary>
+    public const int NodeCharacterKind = 0x8e, NodeCharacterValue = 4;
+    /// <summary>#127: a Part's child array (+0x38) and its count (+0x40), and the vtable slot (+0x60) that
+    /// yields the part's <c>PartTriMesh*</c> or null. Straight out of <c>Gob::ContainsNonSolids</c> @0x43f250
+    /// and <c>Gob::ContainsWater</c> @0x43f2f0, which walk exactly this shape. <see cref="PartTriMeshLive"/>
+    /// is the byte ContainsNonSolids gates the trimesh on before testing its opacity.</summary>
+    public const int PartChildren = 0x38, PartChildCount = 0x40, PartAsTriMeshVtbl = 0x60,
+                     PartTriMeshLive = 0x96;
     /// <summary>Gob -&gt; cached "in view volume" byte (<c>Gob::IsInViewVolume</c> returns exactly this). Fresh
     /// after orig ManageSceneBSP ran; we append only <c>== 0</c> gobs (the engine already added the visible ones,
     /// so this avoids a double-add). Read raw -- do NOT hook the devirt-guarded IsInViewVolume.</summary>
@@ -395,6 +667,28 @@ internal static unsafe class SymbolMap
     // directly -- no decode, no upload. See ConvertPortrait for the H/L/M/S/T size suffixes.
     public const string AurTextureGet    = "_Z13AurTextureGetPKcP11CAurTextureS0_Piib";
     public const string AurTextureGetTID = "_Z16AurTextureGetTIDP11CAurTexture";
+    /// <summary>The two texture vtables, which is the whole of "is this pointer still a texture" --
+    /// see <see cref="AurTex"/>. Data symbols, never called: what is read is the value a live object's
+    /// first word holds, i.e. the symbol plus the Itanium ABI's 0x10.</summary>
+    public const string AurTextureVtbl = "_ZTV11CAurTexture";
+    public const string AurTextureBasicVtbl = "_ZTV16CAurTextureBasic";
+
+    // Resource manager: read a resource's bytes the way the engine's own CResHelper does (#92, owned-pipeline
+    // .shd overrides). Sequence, from CResHelper<CResSHD,2069>::SetResRef / ClearResHelper:
+    //   Exists -> GetResObject -> (null? engine operator new(0x60) + CRes::CRes + SetResObject) -> Demand
+    //   -> read CRes+0x20 (data) / CRes+0x30 (size) -> Release + ReleaseResObject.
+    // SetResObject seeds the object refcount at 1, so both paths release exactly once.
+    public const string ExoResMan          = "g_pExoResMan";
+    public const string ResManExists       = "_ZN10CExoResMan6ExistsERK7CResReftPj";
+    public const string ResManGetResObject = "_ZN10CExoResMan12GetResObjectERK7CResReft";
+    public const string ResManSetResObject = "_ZN10CExoResMan12SetResObjectERK7CResReftP4CRes";
+    public const string ResManDemand       = "_ZN10CExoResMan6DemandEP4CRes";
+    public const string ResManRelease      = "_ZN10CExoResMan7ReleaseEP4CRes";
+    public const string ResManReleaseObj   = "_ZN10CExoResMan16ReleaseResObjectEP4CResb";
+    public const string CResCtor           = "_ZN4CResC1Ev";
+    /// <summary>libstdc++ <c>operator new(size_t)</c>: the CRes we hand the resman is freed by the engine's
+    /// own delete, so it must come from the engine's allocator. Linux shares one heap, so this is that.</summary>
+    public const string CxxOperatorNew     = "_Znwm";
 
     /// <summary>
     /// PE TimeDateStamp of the nwmain.exe the RVAs were read from. A client patch shifts
@@ -475,6 +769,8 @@ internal static unsafe class SymbolMap
         // chat portraits (#26): Aurora texture manager, Linux-only anchors -> skip + log on Windows.
         [AurTextureGet]    = default,
         [AurTextureGetTID] = default,
+        [AurTextureVtbl]   = default,
+        [AurTextureBasicVtbl] = default,
         // Tell-pinned tab roster (#45): Linux-only for now -> skip + log on Windows.
         [GetPlayerByPlayerName]   = default,
         [GetPlayerByCreatureName] = default,
@@ -529,8 +825,10 @@ internal static unsafe class SymbolMap
         [SetLightGL]               = default,
         [SetViewTransform]         = default,
         // shadow-map caster re-drive (#65 slice 3b): Linux-only -> skip + log on Windows.
-        [RenderShadows]            = default,
         [RenderDrawBucket]         = default,
+        [RenderSinglePass]         = default,
+        [FadeDoors]                = default,
+        [MAurMtxStack]             = default,
         [SetMatrixMode]            = default,
         [LoadMatrixIdentity]       = default,
         [MultMatrix]               = default,
@@ -540,17 +838,33 @@ internal static unsafe class SymbolMap
         [SetModelMatrix]           = default,
         [RenderVertexData]         = default,
         [BucketGetFirstItem]       = default,
-        [LmGetShadowLights]        = default,
+        [RiGetGlobalShaderParamf]  = default,
+        [RiGetGlobalShaderParami]  = default,
+        [GetLightAdjustedRadius]   = default,
+        [RiIsEnabled]              = default,
         [BucketGetNextItem]        = default,
         [RiSetModelMatrix]         = default,
         [MCurrentMatrix]           = default,
         [SetOrthoTransform]        = default,
         [SetPerspectiveTransform]  = default,
         [GetCanKeyholeDissolve]    = default,
-        [LoadShader]               = default,
         [GetPlayerCreature]        = default,
         // caster completeness (#65 slice 3c): BSP sphere re-walk, Linux-only -> skip + log on Windows.
         [ManageSceneBSP]           = default,
+        [AddPartsToDrawBuckets]    = default,
+        // owned grass (#127): Scene grass path + its globals, Linux-only -> skip + log on Windows.
+        [DoBinBucket]              = default,
+        [ReloadGrass]              = default,
+        [BinBucket]                = default,
+        [GrassInfo]                = default,
+        [GrassFarDistance]         = default,
+        [GrassNearRadius]          = default,
+        [GrassEnabled]             = default,
+        // owned beams (#130): Scene::RenderBeams + PartBeam::Draw + their globals, Linux-only.
+        [RenderBeams]              = default,
+        [PartBeamDraw]             = default,
+        [EnableBeams]              = default,
+        [ProjectionAlpha]          = default,
         [AddPartToMeshBuckets]     = default,
         [BSPTraverseSphere]        = default,
         [PartGetIsOpaque]          = default,
@@ -559,6 +873,37 @@ internal static unsafe class SymbolMap
         [GobBucketAdd]             = default,
         // camera-follow anchor (#65): the camera-independent PC position, Linux-only -> skip + log on Windows.
         [CurrentCamera]            = default,
+        // static-geometry batching (ADR 0006), Linux-only -> BatchService stands down on Windows.
+        [GlRenderVertexData]       = default,
+        [PartTriMeshDraw]          = default,
+        [PartSkinDraw]             = default,
+        [PartDanglyMeshVtbl]       = default,
+        [RiSetCanDissolve]         = default,
+        [MatHasEnvMap]             = default,
+        [MatHasBumpyShinyMap]      = default,
+        [BucketHasItemsOfType]     = default,
+        [EnableBumpyWater]         = default,
+        [PartGetRenderHint]        = default,
+        [PrimTypeTranslationTable] = default,
+        [MatGetTexture]            = default,
+        [VdoRepack]                = default,
+        [PartDtor]                 = default,
+        // owned particles (#131): the emitter site + the engine helpers the vertex build calls rather than
+        // reproduces. Linux-only -> the class stands down and particles stay vanilla on Windows.
+        [RenderEmitter]            = default,
+        [PartEmitterDtor]          = default,
+        [EmitterGetTileAlpha]      = default,
+        [EmitterGetGobAlpha]       = default,
+        [EmitterIsSplat]           = default,
+        [EmitterIsTinted]          = default,
+        [GetEmitterLighting]       = default,
+        [CurrentScene]             = default,
+        [AurTextureBindInUnit]     = default,
+        // owned caster path (ADR 0008), Linux-only -> falls back to the engine walk on Windows.
+        [GlSetVertexDataObject]    = default,
+        [GlRenderBones]            = default,
+        [GlFog]                    = default,
+        [GlGlobalShaderConstantsF] = default,
     };
 
     // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the static file base.

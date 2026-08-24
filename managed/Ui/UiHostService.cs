@@ -28,6 +28,7 @@ public sealed unsafe class UiHostService : IExtenderService
     {
         _log = log;
         UiHost.SelfCheck(log);   // #61 arbiter + #62 draw roll-call proof (off-device)
+        Sowx.Services.Render.RenderMode.SelfCheck(log);   // #86 latch semantics (off-device)
         if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla rendering intact; FrameTapService takes the frame
         {
             log.Info("UiHostService: SOWX_LOCKCHAT set -- framework stood down, vanilla rendering left intact");
@@ -56,10 +57,60 @@ public sealed unsafe class UiHostService : IExtenderService
             _announced = true;
             _log?.Info("UiHostService: first frame presented -- hook is LIVE");
         }
+        LatchRenderMode();
         RefreshGate();
         if (UiHost.InGame) SyncUiScale();
         UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
+        Sowx.Services.Render.GlContextService.OnFrame();     // #80 4.6-context bracket; near-free when disabled
         if (_swapOrig != null) _swapOrig(window); // present
+        FrameStats();
+        Sowx.Services.Perf.DrawStatsService.EndFrame();
+        Sowx.Services.Perf.BatchService.EndFrame();
+        Sowx.Services.Render.OwnedDrawService.EndFrame();    // #82 ownership lifecycle tick
+    }
+
+    /// <summary>#86: the ONE place the vanilla toggle takes effect. The present sits between scene frames, so
+    /// a flip applied here is frame-atomic -- the next frame is wholly owned or wholly vanilla. Edge work runs
+    /// only on a transition (rapid toggling collapses into it).</summary>
+    private static void LatchRenderMode()
+    {
+        if (!Sowx.Services.Render.RenderMode.Latch()) return;
+        bool owned = Sowx.Services.Render.RenderMode.Owned;
+        // The wipe must land before OwnedDrawService's EndFrame sees the new TableGen at the bottom of this present.
+        Sowx.Services.Perf.BatchService.OnRenderModeEdge(owned);
+        Sowx.Services.Render.OwnedDrawService.OnRenderModeEdge(owned);
+        _log?.Info(owned
+            ? "[rendermode] OWNED -- SowxRender colour pass, shadow pipeline and batching live"
+            : "[rendermode] VANILLA -- all owned rendering off, engine renders everything (/vanilla to toggle)");
+    }
+
+    private static long _fsLast, _fsSum, _fsMax;
+    private static int _fsN, _fsOver7, _fsOver17;
+
+    /// <summary>Present-to-present frame stats, logged once per ~900 frames: avg/max ms plus counts over the
+    /// 144Hz (6.9ms) and 60Hz (16.7ms) budgets. The one number the perf work kept lacking -- cube/depth pass
+    /// times exist but nothing tied them to what the player actually experiences. Hot path: one timestamp,
+    /// four adds; the log line is the only cold part.</summary>
+    private static void FrameStats()
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (_fsLast != 0 && UiHost.InModule)
+        {
+            long dt = now - _fsLast;
+            _fsSum += dt; _fsN++;
+            if (dt > _fsMax) _fsMax = dt;
+            float ms = dt * 1000f / System.Diagnostics.Stopwatch.Frequency;
+            if (ms > 6.9f) _fsOver7++;
+            if (ms > 16.7f) _fsOver17++;
+            if (_fsN >= 900)
+            {
+                float avg = _fsSum * 1000f / System.Diagnostics.Stopwatch.Frequency / _fsN;
+                float max = _fsMax * 1000f / System.Diagnostics.Stopwatch.Frequency;
+                _log?.Info($"UiHostService: [frame] avg {avg:F2}ms ({1000f / avg:F0}fps) max {max:F1}ms, >6.9ms {_fsOver7}/{_fsN}, >16.7ms {_fsOver17}/{_fsN}");
+                _fsSum = 0; _fsN = 0; _fsMax = 0; _fsOver7 = 0; _fsOver17 = 0;
+            }
+        }
+        _fsLast = now;
     }
 
     // In-game gate: draw when a module is loaded and no full-screen options menu / hidden HUD is up. The walk is

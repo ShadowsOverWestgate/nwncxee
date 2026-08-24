@@ -3,3 +3,5 @@ sow-client-extender/
 dist/
 bin/
 obj/
+build-managed.log
+__pycache__/

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using Sowx.Framework;
@@ -554,7 +555,8 @@ public sealed unsafe class ChatService : IExtenderService
             OnText = InsertUtf8,
             HitTestOverride = (px, py) => MouseOverUi((int)px, (int)py),
         };
-        log.Info("ChatService: registered as a framework Window (content-draw + routed input)");
+        UiHost.AddChordConsumer(new Sowx.Services.Chords.SlashChord());   // "/" opens a command line
+        log.Info("ChatService: registered as a framework Window (content-draw + routed input), \"/\" opens a command line");
         Rebuild();   // show the empty box immediately, before any chat arrives
     }
 
@@ -1357,6 +1359,26 @@ public sealed unsafe class ChatService : IExtenderService
         }
     }
 
+    /// <summary>One-shot: swallow the SDL_TEXTINPUT that the very keypress which OPENED chat still delivers.
+    /// <para>Starting text input mid-keypress does not retract the character -- SDL hands it to the freshly
+    /// opened line as well, so inserting the prefix ourselves produced "//". We keep the explicit insert (the
+    /// prefix is then guaranteed regardless of whether SDL delivers) and drop the echo here.</para>
+    /// <para>ponytail: cleared by the first text event either way, so at worst a prefix SDL never echoed costs
+    /// the next identical character. Track the opening keypress properly if that is ever observed.</para></summary>
+    private static byte _eatEcho;
+
+    /// <summary>Open chat with <paramref name="prefix"/> already typed. Used by the "/" chord to start a
+    /// command line. No-op when chat is already typing, or when no window has a sendable channel.</summary>
+    internal static void OpenWith(char prefix)
+    {
+        if (IsTyping) return;
+        Open();
+        if (!IsTyping) return;             // Open() refuses when no window has a sendable channel
+        Edit.InsertUtf8(new[] { (byte)prefix });
+        _eatEcho = (byte)prefix;
+        Rebuild();
+    }
+
     /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the
     /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does.</summary>
     private static void Open()
@@ -1383,6 +1405,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// </summary>
     public static void CloseChat(bool submit)
     {
+        _eatEcho = 0;
         if (submit)
         {
             string text = Edit.Submit();
@@ -1445,12 +1468,120 @@ public sealed unsafe class ChatService : IExtenderService
             Quickbar.QuickbarService.ToggleSettings();
             return true;
         }
+        if (cmd == "/fps")
+        {
+            Perf.FpsOverlayService.Toggle();
+            return true;
+        }
+        if (cmd == "/vanilla")
+        {
+            // The flip is applied at the next frame edge (#86); the render thread logs the transition.
+            Sowx.Services.Render.RenderMode.Toggle();
+            return true;
+        }
         if (cmd == "/compass")
         {
             Quickbar.QuickbarService.ToggleCompass();
             return true;
         }
+        if (cmd == "/light" || cmd.StartsWith("/light "))
+        {
+            Light(cmd);
+            return true;
+        }
+        if (cmd == "/grass" || cmd.StartsWith("/grass "))
+        {
+            Grass(cmd);
+            return true;
+        }
+        if (cmd == "/post" || cmd.StartsWith("/post "))
+        {
+            Post(cmd);
+            return true;
+        }
         return false;
+    }
+
+    /// <summary>Live light tuning: <c>/light</c> reports, <c>/light &lt;key&gt; &lt;value&gt;</c> sets,
+    /// <c>/light reset</c> restores the values the session launched with. Keys: gain, radius, falloff,
+    /// ambient, sun, overbright.
+    /// <para>Lighting is a taste judgement made while LOOKING at a scene, so the knobs have to move without a
+    /// restart -- the env vars only set the boot values. Each set is one float; the render thread picks it up
+    /// on the next upload.</para></summary>
+    private static void Light(string cmd)
+    {
+        string[] a = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (a.Length == 1) { EchoLocal($"[light] {Sowx.Services.Render.OwnedLights.Describe()}"); return; }
+        if (a.Length == 2 && a[1] == "reset")
+        {
+            Sowx.Services.Render.OwnedLights.ResetTuning();
+            EchoLocal($"[light] reset -> {Sowx.Services.Render.OwnedLights.Describe()}");
+            return;
+        }
+        if (a.Length != 3 || !float.TryParse(a[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float v)
+            || v < 0f)
+        {
+            EchoLocal("[light] usage: /light | /light <gain|radius|falloff|ambient|sun|overbright|wrap|wrapndl|shadowsoft|shadownear|hot|hotsize> <value> | /light reset");
+            return;
+        }
+        float old = Sowx.Services.Render.OwnedLights.Tune(a[1], v);
+        EchoLocal(float.IsNaN(old)
+            ? $"[light] unknown knob \"{a[1]}\" -- try gain, radius, falloff, ambient, sun, overbright, wrap, wrapndl, shadowsoft, shadownear, hot or hotsize"
+            : $"[light] {a[1]} {v:F2} (was {old:F2}) -> {Sowx.Services.Render.OwnedLights.Describe()}");
+    }
+
+    /// <summary>Live grass tuning (#127): <c>/grass</c> reports, <c>/grass &lt;key&gt; &lt;value&gt;</c> sets.
+    /// Keys: density, wind, windspeed. Density is the acceptance criterion, not a convenience -- vanilla bakes
+    /// it into the VDOs at area load and gives the player no knob at all, so the owned field re-scatters on
+    /// the next frame instead.</summary>
+    private static void Grass(string cmd)
+    {
+        string[] a = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (a.Length == 1) { EchoLocal($"[grass] {Sowx.Services.Render.GrassField.Describe()}"); return; }
+        if (a.Length != 3 || !float.TryParse(a[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float v)
+            || v < 0f)
+        {
+            EchoLocal("[grass] usage: /grass | /grass <density|wind|windspeed|soften|aniso|edge|push|pushradius|pushextent|cull|cullshrink|cullmax> <value>");
+            return;
+        }
+        float old = Sowx.Services.Render.GrassField.Tune(a[1], v);
+        EchoLocal(float.IsNaN(old)
+            ? $"[grass] unknown knob \"{a[1]}\" -- try density, wind, windspeed, soften, aniso, edge, push, pushradius, pushextent, cull, cullshrink or cullmax"
+            : $"[grass] {a[1]} {v:F3} (was {old:F3}) -> {Sowx.Services.Render.GrassField.Describe()}");
+    }
+
+    /// <summary>Live post-chain tuning (#139): <c>/post</c> reports, <c>/post &lt;key&gt; &lt;value&gt;</c>
+    /// sets, <c>/post reset</c> restores what the session launched with. Keys: hdr (0/1), bloom, threshold,
+    /// knee, tonemap (0 off, 1 shoulder, 2 aces), tmknee, softclip.
+    /// <para>Dials rather than constants because every one of them is a taste call, and the same reason
+    /// <c>/light</c> exists: they were dialled in live, standing in the scene they change.</para></summary>
+    private static void Post(string cmd)
+    {
+        string[] a = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (a.Length == 1) { EchoLocal($"[post] {Sowx.Services.Render.PostChain.Describe()}"); return; }
+        if (a.Length == 2 && a[1] == "reset")
+        {
+            Sowx.Services.Render.PostChain.ResetTuning();
+            EchoLocal($"[post] reset -> {Sowx.Services.Render.PostChain.Describe()}");
+            return;
+        }
+        if (a.Length != 3 || !float.TryParse(a[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float v)
+            || v < 0f)
+        {
+            EchoLocal("[post] usage: /post | /post <hdr|bloom|threshold|knee|tonemap|tmknee|softclip> <value> | /post reset");
+            return;
+        }
+        float old = Sowx.Services.Render.PostChain.Tune(a[1], v);
+        EchoLocal(float.IsNaN(old)
+            ? $"[post] unknown knob \"{a[1]}\" -- try hdr, bloom, threshold, knee, tonemap, tmknee or softclip"
+            : $"[post] {a[1]} {v:F3} (was {old:F3}) -> {Sowx.Services.Render.PostChain.Describe()}");
+    }
+
+    /// <summary>Put a line in the local chat store without touching the wire -- command feedback the player
+    /// can read while standing in the scene they are tuning. Talk channel so it lands in the default tab.</summary>
+    private static void EchoLocal(string text)
+    {
+        _store.Append(new ChatLine(0x001, "", 0, "", ColorRunParser.Parse(text), DateTime.UtcNow, text, GameNow()));
     }
 
     /// <summary>Route submitted text to the server on <paramref name="ch"/> via the vanilla
@@ -1504,6 +1635,12 @@ public sealed unsafe class ChatService : IExtenderService
         byte* p = (byte*)text;
         int n = 0;
         while (n < SdlTextMax && p[n] != 0) n++;
+        if (_eatEcho != 0)
+        {
+            byte echo = _eatEcho;
+            _eatEcho = 0;
+            if (n == 1 && p[0] == echo) return;   // the opening keypress's own character, already inserted
+        }
         if (_settings.Editing)   // typed chars go to the focused settings value box, not the chat line
         { _settings.EditInsert(Encoding.UTF8.GetString(p, n)); Rebuild(); return; }
         Edit.InsertUtf8(new ReadOnlySpan<byte>(p, n));

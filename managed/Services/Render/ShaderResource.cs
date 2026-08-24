@@ -1,0 +1,91 @@
+using System;
+using System.Globalization;
+using System.Text;
+using Sowx.Framework;
+
+namespace Sowx.Services.Render;
+
+/// <summary>Content-overridable GLSL (#92): the owned pipeline asks for each of its shaders by
+/// <c>sowx_*</c> resref and gets whatever a hak, <c>override/</c> or NWSync supplies -- or null, which
+/// means the caller builds from its embedded default. Cold by construction: a program builds once per
+/// session, so the string this allocates never lands in a frame.</summary>
+internal static unsafe class ShaderResource
+{
+    /// <summary>Resource type of a .shd, read off the client's own <c>CResHelper&lt;CResSHD, 2069&gt;</c>.</summary>
+    private const ushort ResTypeShd = 2069;
+    /// <summary>sizeof(CRes): what <c>CExoResMan::Get</c> passes to operator new before <c>CRes::CRes</c>.</summary>
+    private const int SizeOfCRes = 0x60;
+    /// <summary>CRes::GetData / CRes::GetSize field offsets. A serviced .shd is the raw file bytes --
+    /// <c>CResSHD::OnResourceServiced</c> only mirrors these two into its own pair.</summary>
+    private const int CResData = 0x20, CResSize = 0x30;
+    /// <summary>A CResRef is 16 bytes of null-padded ASCII; longer names cannot address a resource.</summary>
+    internal const int ResRefBytes = 16;
+
+    private static readonly IntPtr _resManSym = Native.Sym(SymbolMap.ExoResMan);
+    private static readonly delegate* unmanaged<IntPtr, byte*, ushort, uint*, int> _exists =
+        (delegate* unmanaged<IntPtr, byte*, ushort, uint*, int>)Native.Sym(SymbolMap.ResManExists);
+    private static readonly delegate* unmanaged<IntPtr, byte*, ushort, IntPtr> _getResObject =
+        (delegate* unmanaged<IntPtr, byte*, ushort, IntPtr>)Native.Sym(SymbolMap.ResManGetResObject);
+    private static readonly delegate* unmanaged<IntPtr, byte*, ushort, IntPtr, void> _setResObject =
+        (delegate* unmanaged<IntPtr, byte*, ushort, IntPtr, void>)Native.Sym(SymbolMap.ResManSetResObject);
+    private static readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _demand =
+        (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.ResManDemand);
+    private static readonly delegate* unmanaged<IntPtr, IntPtr, ulong> _release =
+        (delegate* unmanaged<IntPtr, IntPtr, ulong>)Native.Sym(SymbolMap.ResManRelease);
+    private static readonly delegate* unmanaged<IntPtr, IntPtr, byte, int> _releaseObj =
+        (delegate* unmanaged<IntPtr, IntPtr, byte, int>)Native.Sym(SymbolMap.ResManReleaseObj);
+    private static readonly delegate* unmanaged<IntPtr, void> _cresCtor =
+        (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.CResCtor);
+    private static readonly delegate* unmanaged<IntPtr, IntPtr> _operatorNew =
+        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.CxxOperatorNew);
+
+    /// <summary>The GLSL a content author supplied for <paramref name="resref"/>, or null when nothing in
+    /// the resource chain provides it (the common case: everyone runs the embedded defaults).</summary>
+    internal static string? Override(string resref, ExtenderLog? log)
+    {
+        if (_resManSym == IntPtr.Zero || _exists == null || _getResObject == null || _setResObject == null
+            || _demand == null || _release == null || _releaseObj == null || _cresCtor == null
+            || _operatorNew == null || resref.Length > ResRefBytes) return null;
+        IntPtr resMan = *(IntPtr*)_resManSym;
+        if (resMan == IntPtr.Zero) return null;
+
+        byte* rr = stackalloc byte[ResRefBytes];
+        for (int i = 0; i < ResRefBytes; i++) rr[i] = i < resref.Length ? (byte)resref[i] : (byte)0;
+        if (_exists(resMan, rr, ResTypeShd, null) == 0) return null;   // size out-param is null-checked there
+
+        IntPtr res = _getResObject(resMan, rr, ResTypeShd);
+        if (res == IntPtr.Zero)
+        {
+            // First ask for this resource: no CRes exists yet, so make one exactly as CResHelper does.
+            res = _operatorNew((IntPtr)SizeOfCRes);
+            if (res == IntPtr.Zero) return null;
+            _cresCtor(res);
+            _setResObject(resMan, rr, ResTypeShd, res);   // seeds the refcount at 1, like GetResObject's bump
+        }
+        _demand(resMan, res);
+
+        byte* data = *(byte**)(res + CResData);
+        int size = *(int*)(res + CResSize);
+        // A BOM ahead of #version is a compile error, and an editor on Windows writes one without asking.
+        string? text = data != null && size > 0 ? Encoding.UTF8.GetString(data, size).TrimStart('\uFEFF') : null;
+
+        _release(resMan, res);
+        // Second arg is ReleaseResObject's "do not queue for freeing"; CResHelper::ClearResHelper passes
+        // exactly this predicate -- GetData() == 0, i.e. nothing was ever serviced, so there is nothing to free.
+        _releaseObj(resMan, res, data == null ? (byte)1 : (byte)0);
+
+        if (text != null) log?.Info($"shader override: {resref}.shd from resman ({size} bytes)");
+        return text;
+    }
+
+    /// <summary>Expand the sizing tokens an owned-pipeline source may carry, so a shipped .shd tracks the
+    /// CPU-side constants rather than freezing a copy of them: <c>$CAP$</c> lights per cluster (the CPU sizes
+    /// the index SSBO from it), <c>$GROUP$</c> compute workgroup size, <c>$SRGB$</c> the engine's sRGB
+    /// exponent. <see cref="GlProgram"/> applies it to every stage it compiles, embedded or overridden, so
+    /// both read the same.</summary>
+    internal static string Tokens(string src) => src
+        .Replace("$CAP$", OwnedLights.ClusterCap.ToString())
+        .Replace("$GROUP$", OwnedLights.GroupSize.ToString())
+        .Replace("$SRGB$", OwnedLights.SrgbGamma.ToString("0.0#", CultureInfo.InvariantCulture))
+        .Replace("$BAND$", OwnedLights.ShadeBandGlsl);
+}

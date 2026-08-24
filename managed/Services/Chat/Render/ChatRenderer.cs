@@ -343,7 +343,7 @@ public static unsafe class ChatRenderer
                                       bool animEnabled, double holdSec, double fadeSec)
     {
         int k = quads.Count;
-        if (k == 0 || TextRenderer._aurGet == null || TextRenderer._aurTid == null) return;
+        if (k == 0 || TextRenderer._aurGet == null || !Sowx.Framework.AurTex.Ready) return;
         if (!TextRenderer.EnsurePortraitProgram()) return;
         if (!TextRenderer._pvaoUp) TextRenderer.SetupPortraitVao();
         if (k > MaxPortraitsPerFrame) { _log?.Info($"[chat] portrait cap hit ({k}>{MaxPortraitsPerFrame})"); k = MaxPortraitsPerFrame; }

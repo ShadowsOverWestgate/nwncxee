@@ -48,7 +48,8 @@ Navigation:
       Framework/               the plumbing -- rarely edited
         IExtenderService.cs      the one contract you implement
         ServiceHost.cs           discovery + lifecycle
-        HookService.cs           funchook wrapper: Install(symbol, handler) / Commit()
+        HookService.cs           funchook wrapper: Install(symbol, handler) / Commit();
+                                 Chain(symbol, handler, priority) for shared symbols (#88)
         ExtenderLog.cs           inject this for logging
       Services/                business logic -- this is where you work
         FrameTapService.cs       example: a real hook + trampoline

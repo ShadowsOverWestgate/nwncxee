@@ -26,7 +26,7 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
     private static ExtenderLog? _log;
 
     private static delegate* unmanaged<IntPtr, IntPtr, void> _viewOrig;
-    private static delegate* unmanaged<IntPtr, int, float, void> _lightOrig;
+    private static bool _armed;
     private static delegate* unmanaged<double, double, double, double, void> _perspOrig;
 
     private static bool _camLogged, _sunLogged, _perspLogged;
@@ -47,8 +47,9 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
 
         _viewOrig = (delegate* unmanaged<IntPtr, IntPtr, void>)hooks.Install(
             SymbolMap.SetViewTransform, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnSetViewTransform);
-        _lightOrig = (delegate* unmanaged<IntPtr, int, float, void>)hooks.Install(
-            SymbolMap.SetLightGL, (IntPtr)(delegate* unmanaged<IntPtr, int, float, void>)&OnSetLightGL);
+        _lightSlot = hooks.Chain(SymbolMap.SetLightGL,   // shared symbol (#81/#88)
+            (IntPtr)(delegate* unmanaged<IntPtr, int, float, void>)&OnSetLightGL, LightPriority);
+        _armed = true;
         _perspOrig = (delegate* unmanaged<double, double, double, double, void>)hooks.Install(
             SymbolMap.SetPerspectiveTransform,
             (IntPtr)(delegate* unmanaged<double, double, double, double, void>)&OnSetPerspective);
@@ -59,7 +60,7 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnSetViewTransform(IntPtr pos, IntPtr rot)
     {
-        if (UiHost.InModule && !ShadowInputs.InDepthPass && pos != IntPtr.Zero && rot != IntPtr.Zero)
+        if (UiHost.InModule && pos != IntPtr.Zero && rot != IntPtr.Zero)
         {
             float* v = (float*)pos;
             float* q = (float*)rot;
@@ -79,12 +80,13 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnSetPerspective(double fovy, double aspect, double near, double far)
     {
-        if (UiHost.InModule && !ShadowInputs.InDepthPass)
+        if (UiHost.InModule)
         {
             ShadowInputs.CamFovy = (float)fovy;
             ShadowInputs.CamAspect = (float)aspect;
             ShadowInputs.CamNear = (float)near;
             ShadowInputs.CamFar = (float)far;
+            if ((float)far > ShadowInputs.FarMaxThisFrame) ShadowInputs.FarMaxThisFrame = (float)far;
             ShadowInputs.HasPerspective = true;
             if (!_perspLogged)
             {
@@ -95,10 +97,18 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
         if (_perspOrig != null) _perspOrig(fovy, aspect, near, far);
     }
 
+    /// <summary>Chain priority on SetLightGL: pure observer, order among observers is irrelevant.</summary>
+    private const int LightPriority = 50;
+    private static IntPtr* _lightSlot;
+
+    /// <summary>Post-call observer: the engine's bind runs first, we only read the light.</summary>
     [UnmanagedCallersOnly]
     private static void OnSetLightGL(IntPtr light, int idx, float scale)
     {
-        if (UiHost.InModule && light != IntPtr.Zero)
+        var next = (delegate* unmanaged<IntPtr, int, float, void>)*_lightSlot;
+        if (next != null) next(light, idx, scale);
+
+        if (_armed && UiHost.InModule && light != IntPtr.Zero)
         {
             byte* p = (byte*)light;
             int type = *(int*)(p + LightType);
@@ -124,6 +134,7 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
                                $"{(dir.Z < DownwardZ ? "accepted" : "REJECTED (not downward)")}");
                 }
             }
+            if (idx == -1) CaptureAreaTerm(p, type, scale);
             if (_lightsLogged < LightLogCount)
             {
                 _lightsLogged++;
@@ -133,6 +144,35 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
                            $"dirpos@0xac=({dp[0]:F3},{dp[1]:F3},{dp[2]:F3}) col@0x64=({col[0]:F3},{col[1]:F3},{col[2]:F3})");
             }
         }
-        if (_lightOrig != null) _lightOrig(light, idx, scale);
+    }
+
+    /// <summary>sRGB -&gt; linear exponent: <c>RenderInterface::GetColorSpaceFromSRGB</c> is
+    /// <c>powf(c, 2.2)</c> per channel (identity at 0 and 1), and the engine runs the area colours through it
+    /// before the uniform. The owned pass shades in linear, so the snapshot stores the converted value; the
+    /// owned shader's <c>SowxLinear</c> is the same curve, from the same constant.</summary>
+    private const float SrgbGamma = Render.OwnedLights.SrgbGamma;
+
+    /// <summary>#83: mirror <c>SetLightGL</c>'s index -1 path (Ghidra @0x4c0e60) into <see cref="ShadowInputs"/>
+    /// so the owned pass has the engine's own area terms. type != 0 -&gt; SetAreaAmbientLight(colour * fade);
+    /// type == 0 -&gt; SetAreaDiffuseLight(colour * fade, normalize(+0xac)), the world-space surface-&gt;light
+    /// direction. Colours are linearized here, matching the engine's own sRGB conversion.</summary>
+    private static void CaptureAreaTerm(byte* p, int type, float fade)
+    {
+        float* c = (float*)(p + LightColor);
+        var col = new Vector3(MathF.Pow(MathF.Max(c[0] * fade, 0f), SrgbGamma),
+                              MathF.Pow(MathF.Max(c[1] * fade, 0f), SrgbGamma),
+                              MathF.Pow(MathF.Max(c[2] * fade, 0f), SrgbGamma));
+        if (type != 0)
+        {
+            ShadowInputs.AreaAmbient = col;
+            ShadowInputs.HasAreaAmbient = true;
+            return;
+        }
+        float* d = (float*)(p + LightDirPos);
+        var dir = new Vector3(d[0], d[1], d[2]);
+        if (dir.LengthSquared() <= 1e-8f) return;
+        ShadowInputs.AreaDiffuse = col;
+        ShadowInputs.AreaDiffuseDir = Vector3.Normalize(dir);
+        ShadowInputs.HasAreaDiffuse = true;
     }
 }

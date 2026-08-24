@@ -14,8 +14,12 @@ fi
 
 echo ">> building managed lib (C# NativeAOT -> sowx_managed.so)..."
 SOWX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
-dotnet publish managed/sowx_managed.csproj -c Release -o build \
-  -p:InformationalVersion="$SOWX_VERSION" >/dev/null
+# Quiet on success, but NEVER swallow a failure: discarding stderr here once hid a compile error behind a
+# stale staged .so, and run-demo.sh happily booted the old build.
+if ! dotnet publish managed/sowx_managed.csproj -c Release -o build \
+     -p:InformationalVersion="$SOWX_VERSION" > build-managed.log 2>&1; then
+  echo ">> managed build FAILED:"; grep -E "error|rror" build-managed.log | head -20; exit 1
+fi
 
 echo ">> building native bootstrap (libsowx.so)..."
 cc -shared -fPIC -O2 -o build/libsowx.so native/bootstrap.c -ldl
