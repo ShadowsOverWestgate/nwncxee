@@ -78,12 +78,30 @@ public static unsafe class Native
 
     /// <summary>
     /// Absolute path for a sowx config file in the client's user directory (next to nwn.ini/settings.tml).
-    /// Falls back to the legacy <c>~/.config</c> only when the engine dir is unresolvable (pre-main /
-    /// headless run-demo), which keeps run-demo writable and is exactly the old behaviour.
+    /// Falls back to <see cref="DefaultUserDirectory"/> when the engine dir is unresolvable -- pre-main, or
+    /// headless under run-demo.
     /// </summary>
     public static string ConfigPath(string fileName) =>
-        System.IO.Path.Combine(
-            UserDirectory()
-                ?? System.IO.Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", ".config"),
-            fileName);
+        System.IO.Path.Combine(UserDirectory() ?? DefaultUserDirectory(), fileName);
+
+    /// <summary>
+    /// Where the client would put its user directory with no <c>-userdirectory</c> override: SDL's pref path,
+    /// <c>$XDG_DATA_HOME</c> or <c>~/.local/share</c>, plus the app name. Read off the client binary's own SDL
+    /// block (<c>/.local/share/</c>, <c>XDG_DATA_HOME</c>, "neither XDG_DATA_HOME nor HOME environment is set")
+    /// rather than assumed, so it agrees with <see cref="UserDirectory"/> in the ordinary case.
+    /// </summary>
+    /// <remarks>
+    /// This is the pre-main answer, and boot config (ADR 0013 bucket 2) is read through it -- before the
+    /// engine exists there is nothing else to ask. ponytail: a client launched with <c>-userdirectory</c>
+    /// keeps its per-feature cfgs there (those load after the engine answers) while boot settings would be
+    /// read from here; parsing the launch line or nwn.ini is the upgrade path if anyone actually runs one.
+    /// </remarks>
+    public static string DefaultUserDirectory()
+    {
+        string? xdg = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        string data = string.IsNullOrEmpty(xdg)
+            ? System.IO.Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", ".local", "share")
+            : xdg;
+        return System.IO.Path.Combine(data, "Neverwinter Nights");
+    }
 }

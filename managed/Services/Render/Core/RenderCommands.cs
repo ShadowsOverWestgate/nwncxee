@@ -14,9 +14,14 @@ internal static class RenderCommands
 {
     private static ExtenderLog? _log;
 
-    private const string LightKeys = "gain|radius|falloff|ambient|sun|overbright|wrap|wrapndl|shadowsoft|shadownear|hot|hotsize";
-    private const string GrassKeys = "density|wind|windspeed|soften|aniso|edge|push|pushradius|pushextent|cull|cullshrink|cullmax";
-    private const string PostKeys = "hdr|bloom|threshold|knee|tonemap|tmknee|softclip";
+    private const string LightKeys = "gain|radius|falloff|ambient|sun|overbright|wrap|wrapndl|shadowsoft|shadownear|hot|hotsize|shadeband";
+    private const string GrassKeys = "on|density|wind|windspeed|soften|aniso|edge|push|pushradius|pushextent|cull|cullshrink|cullmax";
+    private const string ParticleKeys = "on|diag|soft|lit|viz|grid|guard";
+    // hdr is NOT here: it stands the whole owned frame down, which is a boot decision (config hdr=0).
+    private const string PostKeys = "bloom|threshold|knee|tonemap|tmknee|softclip";
+    private const string DrawKeys = "light|prepass|lodpx|viz|aotest|csmbias";
+    private const string WaterKeys = "on|tint|wave|ssr|foam|wind|speed|diag";
+    private const string ProbeKeys = "on|gain|areawide";
 
     /// <summary>Called once from <see cref="OwnedDrawService"/>'s Initialize, before any early return.</summary>
     internal static void Register(ExtenderLog log)
@@ -31,11 +36,23 @@ internal static class RenderCommands
         });
         r.Register("/light", "report or tune the owned lighting knobs; /light reset restores boot values",
                    a => Tune("light", LightKeys, 2, a));
-        r.Register("/grass", "report or tune the owned grass field",
+        r.Register("/grass", "report or tune the owned grass field; /grass reset restores boot values",
                    a => Tune("grass", GrassKeys, 3, a));
+        r.Register("/particles", "report or tune the owned particle pass; /particles on 1 arms it",
+                   a => Tune("particles", ParticleKeys, 0, a));
         r.Register("/post", "report or tune the post chain; /post reset restores boot values",
                    a => Tune("post", PostKeys, 3, a));
+        r.Register("/draw", "report or tune the owned world pass (#179); /draw reset restores boot values",
+                   a => Tune("draw", DrawKeys, 2, a));
+        r.Register("/water", "report or tune the owned water; /water reset restores boot values",
+                   a => Tune("water", WaterKeys, 2, a));
+        r.Register("/probe", "report or tune the environment probe; /probe reset restores boot values",
+                   a => Tune("probe", ProbeKeys, 2, a));
         r.Register("/dumpshaders", "write every overridable shader stage to the dump directory", DumpShaders);
+        // #182: a per-pass on/off is one flag and one line -- it needs neither the float dial nor a
+        // Describe/Tune slot, and both passes stay armed so the flip lands on the next frame.
+        r.Register("/sky", "toggle the owned sky pass", _ => SkyBox.Toggle());
+        r.Register("/beams", "toggle the owned light-beam pass", _ => Beams.Toggle());
     }
 
     /// <summary>One tuning command, for every tunable pass (#175). <c>/x</c> reports, <c>/x &lt;key&gt;
@@ -58,8 +75,7 @@ internal static class RenderCommands
             p.Reset();
             return $"[{name}] reset -> {p.Describe()}";
         }
-        if (a.Length != 2 || !float.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float v)
-            || v < 0f)
+        if (a.Length != 2 || !TuneValue(a[0], a[1], out float v) || v < 0f)
             return $"[{name}] usage: /{name} | /{name} <{keys}> <value>{reset}";
 
         float old = p.Tune(a[0], v);
@@ -67,6 +83,21 @@ internal static class RenderCommands
             ? $"[{name}] unknown knob \"{a[0]}\" -- try {keys.Replace('|', ',').Replace(",", ", ")}"
             : $"[{name}] {a[0]} {v.ToString("F" + decimals, CultureInfo.InvariantCulture)} " +
               $"(was {old.ToString("F" + decimals, CultureInfo.InvariantCulture)}) -> {p.Describe()}";
+    }
+
+    /// <summary>The value token, as the float every <see cref="PassLifecycle.Tune"/> takes. One key is not a
+    /// magnitude -- the tonemap is a named operator -- so its three names are accepted alongside the indices
+    /// they stand for, and nothing else inherits the words.</summary>
+    private static bool TuneValue(string key, string token, out float v)
+    {
+        if (key == "tonemap")
+            switch (token)
+            {
+                case "off": v = 0f; return true;
+                case "shoulder": v = 1f; return true;
+                case "aces": v = 2f; return true;
+            }
+        return float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
     }
 
     /// <summary>#160: write every overridable stage to <c>&lt;user directory&gt;/sowx_shader_dump/</c> as an

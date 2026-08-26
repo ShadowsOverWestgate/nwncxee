@@ -1,26 +1,26 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Perf;
 
 /// <summary>
-/// ADR 0006 phase 0: per-frame draw-path histogram. Opt-in via <c>SOWX_DRAWSTATS=1</c> (off = no hooks,
-/// zero cost). Call-through hooks on <c>GLRender::RenderVertexData</c> (every GL draw the engine submits)
+/// ADR 0006 phase 0: per-frame draw-path histogram. Opt-in via <c>drawhooks=stats</c> in <c>sowx.cfg</c> (off = no
+/// hooks, zero cost). Config and not a chat command (ADR 0013): it and <c>BatchService</c> hook the same
+/// symbols, so which of them arms is decided once, at install, and cannot be flipped mid-session.
+/// <para>Call-through hooks on <c>GLRender::RenderVertexData</c> (every GL draw the engine submits)
 /// and <c>Scene::RenderDrawBucket</c> (to attribute draws to bucket ids). Aggregates draws by
 /// (VDO, GL program) -- the upper bound on batch groupability; texture/param splits are phase-1's to
-/// measure -- and logs a summary + top groups every ~900 presented frames.
+/// measure -- and logs a summary + top groups every ~900 presented frames.</para>
 /// <para>Hot while enabled (~2k fires/frame): fixed-size open-address tables, no allocation; the log line
 /// is the only cold part.</para>
 /// </summary>
 public sealed unsafe class DrawStatsService : IExtenderService
 {
-    /// <summary>VDO field offsets (Ghidra AddItem/RenderVertexData @0x45ca70/0x4d0570): +0x14 = mode
-    /// (1 = indexed static -> glDrawElementsBaseVertex), +0x58 = element item table ({offset,size} pairs).</summary>
-    private const int VdoMode = 0x14, VdoElemItems = 0x58;
     private const int Groups = 512, Pairs = 8192, LogEvery = 900;
 
-    /// <summary>True when SOWX_DRAWSTATS=1 armed the hooks (read by UiHostService's frame tick).</summary>
+    /// <summary>True when <c>drawhooks=stats</c> armed the hooks (read by the frame tick).</summary>
     public static bool Enabled;
 
     private static ExtenderLog? _log;
@@ -47,7 +47,8 @@ public sealed unsafe class DrawStatsService : IExtenderService
         // #170: ahead of the stand-down -- the host called EndFrame every frame regardless, and EndFrame
         // guards itself on Enabled. Registering after the return would silently change that.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 0, EndFrame, "DrawStatsService.endFrame", log);
-        if (Environment.GetEnvironmentVariable("SOWX_DRAWSTATS") != "1") return;
+        if (Settings.Text(Render.BatchService.DrawModeKey, Render.BatchService.DrawModeBatch)
+            != Render.BatchService.DrawModeStats) return;
         _log = log;
         // Chained, not Install()ed: RenderVertexData has several subscribers (#88). Lowest priority --
         // we only count what actually reached the GPU.

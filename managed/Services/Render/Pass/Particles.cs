@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -88,11 +89,11 @@ internal static unsafe class Particles
 
     // ---- Material, for #148's emissive parameter. Same records OwnedDrawService.ReadMaterial walks. ----
 
-    /// <summary>The SharedMaterial override, and the two <c>List&lt;MaterialParameter&gt;</c> the .mtr's
+    /// <summary>The two <c>List&lt;MaterialParameter&gt;</c> the .mtr's
     /// declared values reach. Shared first, instance second, so a per-part override still wins -- the
     /// instance list is only SIZED to the shared count and carries defaults until something overrides.
     /// </summary>
-    private const int MatShared = 0xd0, MatParams = 0x118, MatParamCount = 0x120,
+    private const int MatParams = 0x118, MatParamCount = 0x120,
                       SharedParams = 0x1d0, SharedParamCount = 0x1d8;
     /// <summary>MaterialParameter: name at +0, value at +0x44, type at +0x5c (0 = float), component count at
     /// +0x60 as a ushort, 100 bytes a record.</summary>
@@ -206,7 +207,7 @@ internal static unsafe class Particles
     /// at full strength over the top, so it reads through the smoke. Every additive-behind-blended pair --
     /// a glow behind a dust cloud, a spell effect behind a fog emitter -- brightens by that difference.
     /// #126 sanctions picking an order rather than reproducing one, so this is a decision, not a defect; but
-    /// it is the thing to look for in a comparison shot, and <c>SOWX_PARTBATCH=0</c> turns it off (see
+    /// it is the thing to look for in a comparison shot, and the config key <c>partbatch=0</c> turns it off (see
     /// <see cref="_batch"/>) so the two can be held side by side.</para></summary>
     private const int ClsPunch = 0, ClsBlend = 1, ClsAdd = 2, ClsCount = 3;
 
@@ -300,7 +301,15 @@ internal static unsafe class Particles
     private static IntPtr* _currentScene, _currentCamera;
     private static byte* _stacks;
 
+    /// <summary><see cref="_off"/> is the RESOLUTION latch -- a helper, a global or a hook that did not
+    /// come up, so this client cannot run the owned pass at all. It is not the user toggle (<see cref="_on"/>)
+    /// and <c>/particles on 1</c> must never clear it.</summary>
     private static bool _off, _failed;
+    /// <summary>The per-pass toggle, live behind <c>/particles on 0|1</c>. Default ON, matching what
+    /// <c>SOWX_PARTICLES</c> unset did -- #183's bar is that the default frame is unchanged, and the pass
+    /// was armed on a plain launch. The stray-rays bug is still open; <c>/particles on 0</c> is now the way
+    /// to compare against vanilla in the same session rather than a relaunch.</summary>
+    private static bool _on = BootOn;
     private static uint _prog, _vao, _vbo;
     private static int _locView = -1, _locProj = -1, _locTex = -1, _locCut = -1,
                        _locFog = -1, _locFogColor = -1, _locAdditive = -1,
@@ -321,20 +330,20 @@ internal static unsafe class Particles
     // it and only the split says which.
     private static int _decFade, _decEmpty, _decShader, _decTex, _decFull, _reclaimed, _softPasses,
                        _emissive, _litGroups;
-    /// <summary>SOWX_PARTDIAG=1: a per-pass census of what the owned pass actually built, by render type,
+    /// <summary><c>/particles diag 1</c>: a per-pass census of what the owned pass actually built, by render type,
     /// blend class and model flag. It exists because live-verifying this class means knowing which of the
     /// seven billboard bases a scene exercised, and no amount of looking at a fire tells you that.</summary>
     private static bool _diag;
-    /// <summary>SOWX_PARTBATCH=0: draw all three classes in the engine's own capture order, merging only
+    /// <summary>Config <c>partbatch=0</c>: draw all three classes in the engine's own capture order, merging only
     /// ADJACENT runs. That gives up most of the batching -- the cross-screen gather is what turns twenty
     /// torches into one draw -- and in exchange the only remaining departure from vanilla's order is
     /// punch-through-first, which is provably free. The dial exists so the additive-over-blended difference
     /// can be A/B'd on the same scene rather than argued about.</summary>
     private static bool _batch = true;
-    /// <summary>SOWX_PARTSOFT=0: no depth snapshot and no fade, i.e. vanilla's hard intersections. The dial
+    /// <summary><c>/particles soft 0</c>: no depth snapshot and no fade, i.e. vanilla's hard intersections. The dial
     /// exists because the copy is the only per-frame GL cost this class adds that is not a draw.</summary>
     private static bool _soft = true;
-    /// <summary>SOWX_PARTLIT=0: no clustered lighting on particles, i.e. the vanilla behaviour where the
+    /// <summary><c>/particles lit 0</c>: no clustered lighting on particles, i.e. the vanilla behaviour where the
     /// only light a particle ever sees is the per-emitter CPU tint.
     /// <para>ponytail: the lighting runs PER FRAGMENT, on the grass template. Particles are fill-heavy by
     /// nature, so the named ceiling is a screen filled with smoke paying a cluster walk per layer. The
@@ -343,13 +352,13 @@ internal static unsafe class Particles
     /// available in a vertex stage, so that move is a shader change and not a call-site one. Measure before
     /// paying for it.</para></summary>
     private static bool _lit = true;
-    /// <summary>SOWX_PARTVIZ: draw the pass's own GEOMETRY instead of its content. 1 tints every quad by its
+    /// <summary><c>/particles viz</c>: draw the pass's own GEOMETRY instead of its content. 1 tints every quad by its
     /// render type (see <see cref="TypeNames"/>) so a defect can be attributed to one billboard basis
     /// without guessing which emitter it came from; 2 drops the texture entirely and draws flat, which is
     /// the only way to see the quads as quads -- a sliver, a fold or a seam is invisible under a soft smoke
     /// texture and obvious without one.</summary>
     private static int _viz;
-    /// <summary>SOWX_PARTSAMP=0: sample the diffuse through whatever state the texture OBJECT happens to
+    /// <summary>Config <c>partsamp=0</c> (the default): sample the diffuse through whatever state the texture OBJECT happens to
     /// carry, which is what this pass did before.
     /// <para>The engine never binds a particle texture raw. <c>Material::BindAllStandardTextures</c> @0x4c6e30
     /// runs <c>CheckTextureControllers</c> and then calls the texture's OWN vtable slot +0x108 to bind it,
@@ -361,16 +370,20 @@ internal static unsafe class Particles
     /// this draw alone, where writing them onto the texture would change how the engine's own passes sample
     /// it. Same tool and same reasoning as <see cref="GrassField"/>'s pair.</para></summary>
     private static bool _ownSampler;
-    /// <summary>SOWX_PARTGRID=0: ignore the emitter's UV atlas and sample the whole texture, 0..1, per quad.
-    /// <para>It exists as a BISECT, not as a feature. Every emitter on screen animates through an atlas (the
+    /// <summary><c>/particles grid 0</c>: ignore the emitter's UV atlas and sample the whole texture, 0..1,
+    /// per quad.
+    /// <para><b>Live bisect for the OPEN stray-rays bug -- keep until that closes.</b> Not a leftover from a
+    /// fixed ticket and not a feature. Every emitter on screen animates through an atlas (the
     /// census reports uvgrid on all of them), so the stray rays are either in the artwork this pass binds or
     /// in the cell this pass picks out of it -- and those two need very different fixes. With the grid off,
     /// rays that persist are in the texture and rays that vanish are in the UV maths. Nothing else
     /// distinguishes them: the geometry, the vertex colour and the blend state have all been checked against
     /// the disassembly and match.</para></summary>
     private static bool _useGrid = true;
-    /// <summary>SOWX_PARTGUARD=0: sample the atlas exactly as the engine's arithmetic says to, with no
-    /// containment. Only useful for reproducing the artifact the guards exist to make impossible.</summary>
+    /// <summary><c>/particles guard 0</c>: sample the atlas exactly as the engine's arithmetic says to, with
+    /// no containment, reproducing the artifact the guards exist to make impossible.
+    /// <para><b>Live bisect for the OPEN stray-rays bug -- keep until that closes</b>, for the same reason as
+    /// <see cref="_useGrid"/>: it is one half of the pair that separates a UV fault from an artwork one.</para></summary>
     private static bool _guard = true;
     /// <summary>How far inside its own cell a quad's UV range is pulled, as a fraction of the cell.
     /// <para>An atlas cell has no border. Bilinear filtering at its edge reaches into the NEIGHBOURING cell,
@@ -411,22 +424,11 @@ internal static unsafe class Particles
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _off = Environment.GetEnvironmentVariable("SOWX_PARTICLES") == "0";
-        _diag = Environment.GetEnvironmentVariable("SOWX_PARTDIAG") == "1";
-        _batch = Environment.GetEnvironmentVariable("SOWX_PARTBATCH") != "0";
-        _soft = Environment.GetEnvironmentVariable("SOWX_PARTSOFT") != "0";
-        _lit = Environment.GetEnvironmentVariable("SOWX_PARTLIT") != "0";
-        if (int.TryParse(Environment.GetEnvironmentVariable("SOWX_PARTVIZ"), out int pv) && pv >= 0) _viz = pv;
-        _ownSampler = Environment.GetEnvironmentVariable("SOWX_PARTSAMP") == "1";
-        _useGrid = Environment.GetEnvironmentVariable("SOWX_PARTGRID") != "0";
-        _guard = Environment.GetEnvironmentVariable("SOWX_PARTGUARD") != "0";
-        if (_viz != 0)
-            log.Info($"Particles: SOWX_PARTVIZ={_viz} -- " + (_viz == 1
-                ? "quads tinted by render type (" + string.Join(", ", TypeNames) + ", in that colour order: "
-                  + "red, green, blue, yellow, magenta, cyan, white)"
-                : "quads drawn FLAT, no texture -- geometry only"));
+        // ADR 0013 bucket 2: submission strategy and the sampler object are boot decisions -- the batcher
+        // shapes every group the pass builds and the sampler is a GL object this class owns.
+        _batch = Settings.Bool("partbatch", true);
+        _ownSampler = Settings.Bool("partsamp", false);
         SceneDepth.Attach(log);
-        if (_off) { log.Info("Particles: SOWX_PARTICLES=0 -- emitters stay vanilla"); return; }
 
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
         _bindInUnit = (delegate* unmanaged<IntPtr, uint, int, void>)Native.Sym(SymbolMap.AurTextureBindInUnit);
@@ -458,7 +460,7 @@ internal static unsafe class Particles
             log.Info("Particles: PartEmitter::RenderEmitter / ~PartEmitter did not hook -- emitters stay vanilla");
             return;
         }
-        log.Info("Particles: armed -- emitter vertex build owned and batched (SOWX_PARTICLES=0 disables)");
+        log.Info($"Particles: armed and {(_on ? "ON" : "IDLE")} -- {Describe()} (/particles on 1 arms it)");
     }
 
     /// <summary>The vanilla site, once per emitter per frame, in the engine's own sorted order. Two jobs:
@@ -468,7 +470,7 @@ internal static unsafe class Particles
     private static void OnRenderEmitter(IntPtr em)
     {
         if (_origRender == null) return;
-        if (_off || em == IntPtr.Zero) { _origRender(em); return; }
+        if (_off || !_on || em == IntPtr.Zero) { _origRender(em); return; }
 
         // A GUI 3D panel drives the same Scene virtuals as the world (#106/#125). Emitters reached from one
         // belong to that panel's Scene, and replaying them into the world frame would draw an inventory
@@ -547,7 +549,7 @@ internal static unsafe class Particles
                               bool lightingOn)
     {
         _frame++;
-        if (_off || _failed || _orderN == 0 || Gl.DrawArrays == null) return;
+        if (_off || !_on || _failed || _orderN == 0 || Gl.DrawArrays == null) return;
         if (!EnsureProgram()) return;
 
         IntPtr cam = *_currentCamera;
@@ -776,7 +778,7 @@ internal static unsafe class Particles
     {
         int g = 0, at = 0;
         _drawN = 0;
-        // SOWX_PARTBATCH=0 walks the capture order ONCE, merging only adjacent runs -- so the three classes
+        // partbatch=0 walks the capture order ONCE, merging only adjacent runs -- so the three classes
         // interleave exactly as the engine sorted them and the additive-over-blended reorder is genuinely
         // gone. Splitting by class here regardless of the dial would have left that reorder in place and
         // made the A/B answer "no change" to a question it never asked.
@@ -980,7 +982,7 @@ internal static unsafe class Particles
         }
 
         // The render type, carried per vertex in the one byte the packed normal leaves spare. It costs
-        // nothing when SOWX_PARTVIZ is off and it is the difference between "particles are wrong" and
+        // nothing when the viz dial is off and it is the difference between "particles are wrong" and
         // "Motion_Blur is wrong", which are questions of very different size.
         sbyte vizType = (sbyte)type;
         IntPtr* parts = *(IntPtr**)(em + EmParts);
@@ -1311,7 +1313,7 @@ internal static unsafe class Particles
         // The sampler UNITS, once, at link time rather than per pass. uSunShadow and uLocalShadow are a
         // sampler2DArrayShadow and a samplerCubeArrayShadow; leaving them at their default unit 0 puts three
         // different sampler types on one unit, which GL 4.6 makes an INVALID_OPERATION that discards the
-        // whole draw. The per-pass uploads set them too -- but only inside `if (lit)`, so SOWX_PARTLIT=0
+        // whole draw. The per-pass uploads set them too -- but only inside `if (lit)`, so `/particles lit 0`
         // would otherwise mean "no particles at all" on a strict driver rather than "unlit particles".
         Gl.UseProgram(_prog);
         Gl.Uniform1i(_lSunTex, (int)OwnedDrawService.SunUnit);
@@ -1401,6 +1403,55 @@ internal static unsafe class Particles
         _stageVerts = 0;
     }
 
+    // ---- live tuning (/particles) ------------------------------------------------------------
+
+    /// <summary>Boot values for <see cref="ResetTuning"/>, i.e. what a plain launch used to give.</summary>
+    private const bool BootOn = true, BootDiag = false, BootSoft = true, BootLit = true,
+                       BootGrid = true, BootGuard = true;
+    private const int BootViz = 0;
+
+    /// <summary>One line for the <c>/particles</c> echo and the arm-time log.</summary>
+    internal static string Describe()
+        => $"{(_off ? "UNAVAILABLE" : _on ? "on" : "off")} soft {(_soft ? 1 : 0)} lit {(_lit ? 1 : 0)} " +
+           $"viz {_viz} grid {(_useGrid ? 1 : 0)} guard {(_guard ? 1 : 0)} diag {(_diag ? 1 : 0)} " +
+           $"(batch {(_batch ? 1 : 0)}, sampler {(_ownSampler ? "owned" : "inherited")} -- both config keys)";
+
+    /// <summary>Live dial behind <c>/particles &lt;key&gt; &lt;value&gt;</c>, old value back, NaN for an
+    /// unknown key. <c>on</c> is the per-pass toggle and CANNOT clear <see cref="_off"/>: a client where the
+    /// pass never resolved stays vanilla whatever the player types.</summary>
+    internal static float Tune(string key, float v)
+    {
+        float old;
+        bool on = v > 0f;
+        switch (key)
+        {
+            case "on": old = _on ? 1f : 0f; _on = on; break;
+            case "diag": old = _diag ? 1f : 0f; _diag = on; break;
+            case "soft": old = _soft ? 1f : 0f; _soft = on; break;
+            case "lit": old = _lit ? 1f : 0f; _lit = on; break;
+            case "viz":
+                old = _viz; _viz = (int)v;
+                if (_viz == 1)
+                    _log?.Info("Particles: viz 1 tints by render type -- "
+                               + string.Join(", ", TypeNames) + ", in that colour order: "
+                               + "red, green, blue, yellow, magenta, cyan, white");
+                break;
+            case "grid": old = _useGrid ? 1f : 0f; _useGrid = on; break;
+            case "guard": old = _guard ? 1f : 0f; _guard = on; break;
+            default: return float.NaN;
+        }
+        _log?.Info($"Particles: /particles {key} {v:F0} (was {old:F0}) -> {Describe()}");
+        return old;
+    }
+
+    /// <summary>Every dial back to its boot value, the toggle included.</summary>
+    internal static void ResetTuning()
+    {
+        _on = BootOn; _diag = BootDiag; _soft = BootSoft; _lit = BootLit;
+        _viz = BootViz; _useGrid = BootGrid; _guard = BootGuard;
+        _log?.Info($"Particles: /particles reset -> {Describe()}");
+    }
+
     internal static void ResetPeriod()
     {
         _captured = 0; _declined = 0; _emitters = 0; _groups = 0; _foreign = 0; _suppressed = 0;
@@ -1414,22 +1465,23 @@ internal static unsafe class Particles
     /// <summary>AC 4's number: emitters owned against draws issued. Vanilla's ratio is 1:1 by construction --
     /// it depth-sorts emitters individually and cannot merge two -- so anything above 1.0 here is a
     /// draw-call reduction the engine could not have made.</summary>
-    internal static string Stats() => _off ? "particles vanilla (SOWX_PARTICLES=0 or unavailable)"
+    internal static string Stats() => _off ? "particles vanilla (owned pass unavailable)"
+        : !_on ? "particles vanilla (/particles on 0)"
         : $"particles {_tabN} emitters, {_emitters} owned in {_groups} draws"
           + (_emitters == 0 ? "" : $" ({(float)_emitters / MathF.Max(1, _groups):F1}x batched)")
           + $", {_suppressed} engine draws suppressed"
           + (_declined == 0 ? "" : $", {_declined} declined ({_decFade} fading, {_decEmpty} empty, " +
                                     $"{_decShader} custom shader, {_decTex} no texture, {_decFull} table full)")
-          + (!_soft ? ", soft OFF (SOWX_PARTSOFT=0)"
+          + (!_soft ? ", soft OFF"
                     : $", {_softPasses} passes softened" + (SceneDepth.Ready || _softPasses > 0 ? "" : " (NO DEPTH COPY)"))
-          + (!_lit ? ", unlit (SOWX_PARTLIT=0)" : $", {_litGroups} lit draws")
+          + (!_lit ? ", unlit" : $", {_litGroups} lit draws")
           + (_emissive == 0 ? "" : $", {_emissive} emissive")
           + (_reclaimed == 0 ? "" : $", {_reclaimed} table slots reclaimed from unwalked emitters")
           + (_overflow == 0 ? "" : $", {_overflow} passes OVERFLOWED (group or vertex cap)")
           + (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped")
           + Census();
 
-    /// <summary>SOWX_PARTDIAG=1 only: which of the seven billboard bases and which blend classes this period
+    /// <summary><c>/particles diag 1</c> only: which of the seven billboard bases and which blend classes this period
     /// actually exercised. A zero against a render type is the useful reading -- it says that base is
     /// UNTESTED, not that it works.</summary>
     private static string Census()
@@ -1576,6 +1628,21 @@ internal static unsafe class Particles
         E(ClsPunch < ClsBlend && ClsBlend < ClsAdd,
           "punch-through draws FIRST: it writes depth, so the blended classes get to test against it");
 
+        // ---- the toggle (#180). Two flags on purpose: the chat toggle must not be able to arm a client
+        // where the pass never resolved, and collapsing them back into one would draw from unresolved
+        // pointers.
+        bool on0 = _on, off0 = _off;
+        ResetTuning();
+        E(_on, "the particle pass boots ON, as a plain launch did before the knob triage");
+        E(Describe().Contains("grid") && Describe().Contains("guard"),
+          "the bisect dials for the open bug are still reachable and reported");
+        E(float.IsNaN(Tune("nosuch", 1f)), "an unknown knob is refused rather than silently taken");
+        E(Tune("on", 0f) == 1f && !_on, "the toggle sets, and reports its old value");
+        _off = true;
+        Tune("on", 1f);
+        E(_off, "arming from chat cannot clear the resolution latch");
+        _off = off0; _on = on0;
+
         log.Info(ok ? "Particles.SelfCheck: passed" : "Particles.SelfCheck: FAILED");
     }
 
@@ -1659,7 +1726,7 @@ internal static unsafe class Particles
         // #148: the light rig's own terms. Everything else the walk needs -- the cluster buffers, the cube
         // array, the cascades, the falloff shape -- is declared by the libraries composed in below, so this
         // is only the area's three.
-        uniform int uViz;           // SOWX_PARTVIZ: 1 = tint by render type, 2 = flat, no texture
+        uniform int uViz;           // /particles viz: 1 = tint by render type, 2 = flat, no texture
         uniform int uLit;           // 0 = this draw is self-illuminated (additive, punch-through) or unlit
         uniform vec3 uAreaAmbient;
         uniform vec3 uAreaDiffuse;

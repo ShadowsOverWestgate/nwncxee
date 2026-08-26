@@ -40,7 +40,7 @@ update it. Each file opens with a short header naming the constraints that stage
 and pointing back here.
 
 There is also a headless trigger for offline work: put `dumpshaders=1` in
-`sowx-render.cfg` in the same directory, and the dump runs at startup.
+`sowx.cfg` in the same directory, and the dump runs at startup.
 
 ### The workflow
 

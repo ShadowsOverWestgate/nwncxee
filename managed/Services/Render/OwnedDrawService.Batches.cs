@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -98,11 +99,11 @@ public sealed unsafe partial class OwnedDrawService
     /// <para>#128: pointer identity ONLY. An instance's live shading state used to be folded in here, which
     /// was the wrong place twice over -- a false answer left the part in the OPAQUE run at alpha 1 (drawn
     /// wrong, not handed back) and the staging walk never re-asked. It is a skip of its own now, in
-    /// <see cref="BuildBatches"/>.</para></summary>
-    /// <summary>#145: ...and the entry must still be a LIVE recording of this part before any of that is
+    /// <see cref="BuildBatches"/>.</para>
+    /// <para>#145: ...and the entry must still be a LIVE recording of this part before any of that is
     /// read. The three compares below are reads of the part itself, which is only sound while the part
     /// exists -- a destroyed one can keep every field long enough to pass them, and then the gob chase in
-    /// <see cref="LiveAlpha"/> walks a freelist word. <c>Part::~Part</c> is what makes this answer no.</summary>
+    /// <see cref="LiveAlpha"/> walks a freelist word. <c>Part::~Part</c> is what makes this answer no.</para></summary>
     private static bool IdentityOk(int i, IntPtr tri)
         => BatchService.EntryLive(_oEntry[i], tri)
            && *(IntPtr*)(tri + PartNode) == _oNode[i] && *(IntPtr*)(tri + PartMaterial) == _oMat[i]
@@ -140,7 +141,7 @@ public sealed unsafe partial class OwnedDrawService
 
     /// <summary>The part's own alpha multiplier (part+0xa0), live: it is animated state, not enrollment
     /// state.</summary>
-    private static float PartAlpha(IntPtr tri) => *(float*)(tri + PartAlphaOff);
+    private static float PartAlpha(IntPtr tri) => *(float*)(tri + SceneLayout.PartAlpha);
 
     /// <summary>#128: this frame's whole alpha multiplier for a part -- its own animated alpha, the fade
     /// factor of the tile it stands on, and the instance's two multiplies. Every term is read live and none
@@ -239,7 +240,7 @@ public sealed unsafe partial class OwnedDrawService
             // TILES are exempt too (TileData* at part+0x98, the CheckFadePlane discriminator): a small tile
             // part is a patch of ground or wall, and culling it is a HOLE in a surface. Free-standing
             // clutter -- placeables, gobs, decor, everything with no tile record -- pops out at a couple of
-            // pixels, which is the artifact-free half of the trade. This is what makes SOWX_LOD_PX safe to
+            // pixels, which is the artifact-free half of the trade. This is what makes /draw lodpx safe to
             // raise: the tileset shell of the area stays whole at any threshold.
             if (_lodPx > 0f && cls != (int)OwnedClass.Water && _oR[i] > 0f
                 && *(IntPtr*)(tri + PartTile) == IntPtr.Zero)

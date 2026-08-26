@@ -20,7 +20,7 @@ public sealed unsafe partial class OwnedDrawService
     /// the moment the components differ in sign. Faithful there, wrong here.</para></summary>
     /// <summary>#147: the RAW engine wind magnitude alongside the metres/second the sea state is fed. The
     /// conversion (<see cref="FrameSnapshot.WindScale"/>) is an admitted guess, and this line is how it gets
-    /// calibrated -- read it in an area whose weather you know and set SOWX_WATER_WIND from it.</summary>
+    /// calibrated -- read it in an area whose weather you know and set /water wind from it.</summary>
     internal static string DescribeWind()
     {
         var w = AreaWind();

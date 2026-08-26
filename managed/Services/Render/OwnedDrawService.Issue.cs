@@ -66,7 +66,7 @@ public sealed unsafe partial class OwnedDrawService
     /// matrix, texture rotation and material colours that used to be per-part uniforms.</summary>
     private static void IssueBatches(int from, int groups, float* vpRaw, int* viewport, float near, float far)
     {
-        // A probe capture must not carry the debug viz through: SOWX_LIGHTVIZ would bake flat cyan (or a
+        // A probe capture must not carry the debug viz through: /draw viz would bake flat cyan (or a
         // cluster heat map) into the cube and leave it there for every frame that samples it afterwards.
         int viz = _capturing ? 0 : _lightViz;
         // Which program is bound, -1 for neither yet. In the opaque range this switches once (lit batches

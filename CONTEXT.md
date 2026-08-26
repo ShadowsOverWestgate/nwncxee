@@ -55,7 +55,7 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Typing state** (`IsTyping`) — whether the chatbox owns the keyboard. While true,
   gameplay hotkeys are suppressed and keys route to the edit control.
 - **Suppression set** — the engine hooks skipped so the extender's chatbox replaces
-  the vanilla one; reversible via the `SOWX_LOCKCHAT` opt-out.
+  the vanilla one; reversible via the `lockchat=1` opt-out in `sowx.cfg`.
 
 ## Framework
 

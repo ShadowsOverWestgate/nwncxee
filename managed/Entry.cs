@@ -16,7 +16,10 @@ public static class Entry
     /// <summary>
     /// Resolve <c>libfunchook.so</c> by absolute path, next to sowx_managed.so.
     /// Inside the Steam Linux Runtime container LD_LIBRARY_PATH is reset, so a
-    /// bare-soname DllImport would not find it; SOWX_MANAGED gives us the dir.
+    /// bare-soname DllImport would not find it; <c>SOWX_MANAGED</c> gives us the dir.
+    /// <para>The one environment read ADR 0013 exempts. The native bootstrap sets and reads it before any
+    /// managed code exists, so no config file can reach that moment -- it is the launcher's handshake with
+    /// the loader, not a tuning knob.</para>
     /// </summary>
     private static void ResolveNativeDepsBesideUs()
     {

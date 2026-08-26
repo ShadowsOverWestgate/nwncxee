@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -41,7 +42,6 @@ internal static unsafe class SkyBox
     /// <summary>The alpha multiplier <c>PartTriMesh::Mat</c> reads off the instance, and the field
     /// <c>RenderSkyBoxes</c> writes the cross-fade into. Same offset <c>BatchService.GobAlpha</c> names.</summary>
     private const int GobAlpha = 0x108;
-    private const int PartNode = 0x88, PartMaterial = 0x58, PartGob = 0x50;
     /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1), stride 0x58, top at
     /// +0x18 -- <c>RenderSkyBoxes</c> itself calls <c>SetMatrixMode(2)</c> before the gob draws.</summary>
     private const int ModeModel = 2, StackStride = 0x58, StackTop = 0x18;
@@ -83,6 +83,11 @@ internal static unsafe class SkyBox
     private static int _frame, _drawnGen = -1, _masked, _captured, _foreign;
     private static long _revoked;
     private static bool _off;
+    /// <summary>The player's own switch (<c>/sky</c>, ADR 0013 bucket 1). Distinct from <see cref="_off"/>,
+    /// which means "this session cannot own the sky at all": the hook is armed either way, so the toggle is
+    /// live rather than a relaunch. Volatile -- written from the command dispatch on the input thread, read
+    /// in the capture window on the render thread.</summary>
+    private static volatile bool _disabled;
 
     /// <summary>True between the hook's entry and exit: <c>BatchService.OnPartDraw</c> routes sky parts here
     /// instead of into the general part table. They must stay out of it -- their transform changes every
@@ -97,9 +102,8 @@ internal static unsafe class SkyBox
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _off = Environment.GetEnvironmentVariable("SOWX_SKY") == "0";
         _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
-        if (_off || _stacks == null) return;
+        if (_stacks == null) { _off = true; return; }
         _orig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.RenderSkyBoxes, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRenderSkyBoxes);
         if (_orig == null) { _off = true; log.Info("SkyBox: Scene::RenderSkyBoxes did not hook -- the sky stays vanilla"); }
@@ -118,6 +122,15 @@ internal static unsafe class SkyBox
         // Nothing below may run for one: the Forget/latch pair would wipe the captured table every frame an
         // inventory is open, and the sky would be permanently vanilla with no counter saying why.
         if (!OwnedDrawService.IsWorldScene(scene)) { _orig(scene); _foreign++; return; }
+        // /sky off: idle, never uninstalled. The table is dropped on the first such frame so the owned pass
+        // has nothing to stage -- Fresh() is a sighting window, and _frame stops advancing here.
+        if (_disabled)
+        {
+            if (_count != 0 || Scene != IntPtr.Zero) Forget();
+            InWindow = false;
+            _orig(scene);
+            return;
+        }
         // A new world Scene is a new sky population: the old gobs are freed and their entries would sit dead
         // in the table forever, filling it after a handful of area transitions and starving the real ones.
         if (scene != Scene) Forget();
@@ -252,6 +265,15 @@ internal static unsafe class SkyBox
     /// colour-masks itself for exactly that generation.</summary>
     internal static void MarkDrawn(int gen) => _drawnGen = gen;
 
+    /// <summary>The <c>/sky</c> body: flip the owned sky and say where it landed. Cold (input thread); the
+    /// render thread picks the flag up in its next capture window.</summary>
+    internal static string Toggle()
+    {
+        if (_off || _orig == null) return "[sky] unavailable this session -- the sky stays vanilla";
+        _disabled = !_disabled;
+        return $"[sky] owned sky {(_disabled ? "off -- the engine draws it" : "on")}";
+    }
+
     /// <summary>Every captured identity is void: the parts belong to gobs the area unload freed.</summary>
     internal static void Forget()
     {
@@ -264,7 +286,7 @@ internal static unsafe class SkyBox
     /// a healthy "masked" long after the sky stopped being drawn, which is the opposite of the question.</summary>
     internal static void ResetPeriod() { _masked = 0; _captured = 0; _foreign = 0; }
 
-    internal static string Stats() => $"sky {_count} parts, {_captured} captured, {_masked} masked" +
+    internal static string Stats() => _disabled ? "sky off (/sky)" : $"sky {_count} parts, {_captured} captured, {_masked} masked" +
         $", dtor-revoked={_revoked}" +
         (Unported() == 0 ? "" : $", {Unported()} LEFT VANILLA (custom sky shader not ported to the owned pass)") +
         (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped");

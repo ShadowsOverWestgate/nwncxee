@@ -27,14 +27,14 @@ public sealed unsafe class ChatService : IExtenderService
     /// routes keys/text into ChatService and suppresses gameplay hotkeys whenever this is true.</summary>
     public static bool WantsKey => IsTyping || _settings.Editing;
 
-    /// <summary>Chat opt-OUT (#23, the extender-optional guarantee): <c>SOWX_LOCKCHAT=1</c> stands the
-    /// whole chatbox down -- no tap, render, input capture, or suppression -- so vanilla chat runs
-    /// untouched. <see cref="Initialize"/> early-returns on it.</summary>
-    public static bool Locked =>
-        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_LOCKCHAT"));
+    /// <summary>Chat opt-OUT (#23, the extender-optional guarantee): <c>lockchat=1</c> in <c>sowx.cfg</c>
+    /// stands the whole chatbox down -- no tap, render, input capture, or suppression -- so vanilla chat runs
+    /// untouched. <see cref="Initialize"/> early-returns on it. One knob, one reader: the framework gate owns
+    /// the value (#182).</summary>
+    public static bool Locked => GameGate.Locked;
 
     /// <summary>ChatService owns chat input and suppresses vanilla chat (the default). False under
-    /// <c>SOWX_LOCKCHAT</c>, where HotkeyInputService instead observes the vanilla chat-focus hooks so
+    /// <c>lockchat</c>, where HotkeyInputService instead observes the vanilla chat-focus hooks so
     /// typing still gates gameplay hotkeys. The single pivot both services read.</summary>
     public static bool OwnInput => !Locked;
 
@@ -52,9 +52,9 @@ public sealed unsafe class ChatService : IExtenderService
         ChatConfig.SelfCheck(log);     // config round-trip + legacy-file migration proof (off-device)
         TextRig.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
         SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
-        if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla chat intact
+        if (Locked)   // lockchat: install nothing -> vanilla chat intact
         {
-            log.Info("ChatService: SOWX_LOCKCHAT set -- standing down, vanilla chat left intact");
+            log.Info("ChatService: lockchat set -- standing down, vanilla chat left intact");
             return;
         }
         InitMessageCore(log, hooks);   // build slice #18
@@ -508,14 +508,14 @@ public sealed unsafe class ChatService : IExtenderService
     }
 
     /// <summary>Slice #21: bake the atlas, build the window, observe ingest, and own SwapBuffers so the
-    /// box renders on a plain launch (no env vars) -- unless stood down under <c>SOWX_LOCKCHAT</c>.</summary>
+    /// box renders on a plain launch -- unless stood down under <c>lockchat</c>.</summary>
     private static void InitRender(ExtenderLog log, HookService hooks)
     {
-        // GATE: SOWX_LOCKCHAT stands the chat content down (UiHostService also skips its frame hook, so nothing
+        // GATE: lockchat stands the chat content down (UiHostService also skips its frame hook, so nothing
         // double-hooks SwapBuffers).
         if (Locked)
         {
-            log.Info("ChatService: render stood down (SOWX_LOCKCHAT set)");
+            log.Info("ChatService: render stood down (lockchat set)");
             return;
         }
 
@@ -643,10 +643,10 @@ public sealed unsafe class ChatService : IExtenderService
     /// We do NOT call Hide: it clears the window's IsVisible flag (win+0xc68), and rather than mirror that
     /// flag <see cref="InGame"/> now gates on module-presence, so an un-shown vanilla window doesn't blank
     /// our box. Input-side openers are skipped in <see cref="InitEditControl"/>. Skipped under the probe
-    /// (leaves vanilla drawing as its backdrop); never reached under SOWX_LOCKCHAT.</summary>
+    /// (leaves vanilla drawing as its backdrop); never reached under <c>lockchat</c>.</summary>
     private static void InitSuppression(ExtenderLog log, HookService hooks)
     {
-        if (Locked) return;   // SOWX_LOCKCHAT: leave vanilla chat drawing untouched (framework stood down)
+        if (Locked) return;   // lockchat: leave vanilla chat drawing untouched (framework stood down)
         var skip = (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnSuppressed;
         _ = hooks.Install(SymbolMap.AppendToChatBuffer,  skip);   // text: new lines
         _ = hooks.Install(SymbolMap.ChatWindowSetFilter, skip);   // text: backlog re-render + reply buttons

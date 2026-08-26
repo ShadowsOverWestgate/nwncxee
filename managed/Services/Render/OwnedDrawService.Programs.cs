@@ -82,7 +82,7 @@ public sealed unsafe partial class OwnedDrawService
         Gl.Uniform1i(_watProbe, (int)EnvProbe.ProbeUnit);
         Gl.Uniform1i(_watFbColor, (int)FrameSnapshot.ColorUnit);
         Gl.Uniform1i(_watFbDepth, (int)FrameSnapshot.DepthUnit);
-        _log?.Info("OwnedDrawService: water program ready (SOWX_WATER=0 disables) -- " + FrameSnapshot.Describe());
+        _log?.Info("OwnedDrawService: water program ready (/water on 0 disables) -- " + FrameSnapshot.Describe());
         return true;
     }
 
@@ -104,8 +104,27 @@ public sealed unsafe partial class OwnedDrawService
         return GlProgram.Graphics(vs, fs, _log, $"OwnedDrawService {what} program (embedded)");
     }
 
+    /// <summary>#179: consume a pending relink request. Called at the top of the program ensure, i.e. inside
+    /// the owned 4.6 bracket -- the only place a GL name may be deleted. Dropping the handles is the whole
+    /// mechanism: every Ensure below rebuilds from source when its handle is zero.</summary>
+    private static void TakeProgramRebuild()
+    {
+        if (!_rebuildPrograms) return;
+        _rebuildPrograms = false;
+        // Only the stages that bake $BAND$ in. The fullbright and depth stages carry no lighting at all, so
+        // relinking them would be a hitch that changes nothing.
+        bool any = false;
+        if (_progLit46 != 0) { Gl.DeleteProgram(_progLit46); _progLit46 = 0; any = true; }
+        if (_progWater != 0) { Gl.DeleteProgram(_progWater); _progWater = 0; any = true; }
+        // Nothing built yet means nothing to relink -- OwnedLights.SelfCheck drives the shadeband dial at
+        // boot, so the flag is pending on the first frame of every session. The line must report a player
+        // action, not that one.
+        if (any) _log?.Info("OwnedDrawService: relinking the lit and water stages -- a compile-time dial moved");
+    }
+
     private static bool EnsureProgram()
     {
+        TakeProgramRebuild();
         if (_prog46 == 0 && !_progFailed)
         {
             uint prog = GlProgram.Graphics(ShdFullbrightVs, ShaderStages.Source(ShdFullbrightVs),
@@ -176,7 +195,7 @@ public sealed unsafe partial class OwnedDrawService
             _depthKeyBase = GlProgram.Loc(keyProg, "uDrawBase");
             _depthKeyFeat = FeatLocs(keyProg);
         }
-        _log?.Info("OwnedDrawService: depth prepass ready (SOWX_DEPTHPREPASS=0 disables)" +
+        _log?.Info("OwnedDrawService: depth prepass ready (/draw prepass 0 disables)" +
                    (keyProg != 0 ? "" : " -- WITHOUT the keyhole stage, so dissolving batches stay out of it"));
         return true;
     }
@@ -191,9 +210,11 @@ public sealed unsafe partial class OwnedDrawService
         if (!_bindlessProbed)
         {
             _bindlessProbed = true;
-            _bindless = Environment.GetEnvironmentVariable("SOWX_BINDLESS") != "0" && HasBindless();
+            // Config bucket (ADR 0013): a capability gate that decides the lit stage's BUFFER LAYOUT, so it
+            // is settled before the program is assembled and cannot be a command.
+            _bindless = Settings.Bool("bindless", true) && HasBindless();
             _log?.Info(_bindless
-                ? "OwnedDrawService: ARB_bindless_texture armed -- lit batches merge across textures (SOWX_BINDLESS=0 reverts)"
+                ? "OwnedDrawService: ARB_bindless_texture armed -- lit batches merge across textures (bindless=0 in sowx.cfg reverts)"
                 : "OwnedDrawService: bindless texturing unavailable or vetoed -- per-batch texture binds");
         }
         string litFs = ShaderStages.Source(ShdLitFs);
@@ -250,7 +271,7 @@ public sealed unsafe partial class OwnedDrawService
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers
         // of different types pointing at one image unit: the draw raises INVALID_OPERATION and is dropped.
         // The fresh path alone is not enough, because a session that never renders a map (an interior start,
-        // SOWX_CUBE_COUNT=0) never reaches it, and then EVERY owned lit batch silently vanishes.
+        // cube_count=0) never reaches it, and then EVERY owned lit batch silently vanishes.
         Gl.UseProgram(prog);
         Gl.Uniform1i(_litSunTex, (int)SunUnit);
         Gl.Uniform1i(_litCubeTex, (int)CubeUnit);

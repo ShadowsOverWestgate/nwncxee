@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -12,7 +13,7 @@ namespace Sowx.Services.Render;
 /// an owned shadow cube. So the engine's own shadows return by themselves wherever the replacement is not on
 /// screen -- a disarmed pass, a vanilla-latched frame, an interior with no sun, a torch past the cube budget --
 /// and the two never both darken the same surface.
-/// <c>SOWX_NOSHADOWS</c> overrides it: <c>0</c> leaves vanilla wholly alone, <c>1</c> is the unconditional
+/// The <c>noshadows</c> config setting overrides it: <c>0</c> leaves vanilla wholly alone, <c>1</c> is the unconditional
 /// <b>selective</b> mode (sun/moon suppressed, point-light stencil volumes kept), <c>2</c> the unconditional
 /// <b>full kill</b>. Both overrides are kept for A/B.</para>
 /// Every mode leaves <c>Scene::RenderShadows</c> itself untouched so it keeps managing all
@@ -41,10 +42,9 @@ public sealed unsafe class ShadowService : IExtenderService
     /// range (<c>PartLight+0x70</c>) exceeds this is the sun/moon; its stencil is suppressed in
     /// selective mode (the shadow map owns it). Matches CameraCapture's discriminator.</summary>
     private const float DirectionalRange = 1000f;
-    private const int LightRange = 0x70;         // PartLight range field.
     private const int SceneCurrentLight = 0x50;  // Scene's "current shadow light" slot, set per-light by RenderShadows.
 
-    /// <summary><c>SOWX_NOSHADOWS</c>: 0 = never suppress (pure vanilla stencil), 1 = always suppress the
+    /// <summary>Config <c>noshadows</c>: 0 = never suppress (pure vanilla stencil), 1 = always suppress the
     /// sun/moon and keep point-light stencils, 2 = full kill, <see cref="ModeAuto"/> = the default -- suppress
     /// each half exactly while the owned replacement for it is on screen.</summary>
     private static int _mode = ModeAuto;
@@ -77,11 +77,12 @@ public sealed unsafe class ShadowService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         // Default AUTO since #97: M2 re-owns shadow receiving, so this seam is live again -- but keyed on
-        // whether the owned maps are actually on screen, never on a bare flag. SOWX_NOSHADOWS=0 opts out
+        // whether the owned maps are actually on screen, never on a bare flag. noshadows=0 opts out
         // entirely, 1/2 remain the unconditional A/B overrides.
-        string? mode = Environment.GetEnvironmentVariable("SOWX_NOSHADOWS");
-        _mode = mode switch { "0" => 0, "1" => 1, "2" => 2, _ => ModeAuto };
-        if (_mode == 0) { log.Info("ShadowService: SOWX_NOSHADOWS=0 -- vanilla stencil shadows left untouched"); return; }
+        // Config, not a command: 0 skips the hook install outright, and a mode change is a different set of
+        // engine draws being suppressed -- a boot decision on both counts.
+        _mode = Settings.Int("noshadows", ModeAuto, 0, ModeAuto);
+        if (_mode == 0) { log.Info("ShadowService: noshadows=0 -- vanilla stencil shadows left untouched"); return; }
 
         int hooked = 0;
         // Static/directional environment stencil: suppressed in BOTH modes (the map replaces sun/moon
@@ -111,7 +112,7 @@ public sealed unsafe class ShadowService : IExtenderService
             2 => "FULL KILL (all stencil shadows suppressed)",
             _ => "AUTO (each half suppressed only while the owned map replacing it is fresh)",
         };
-        string via = _mode == ModeAuto ? "default" : $"SOWX_NOSHADOWS={mode}";
+        string via = _mode == ModeAuto ? "default" : $"noshadows={_mode}";
         log.Info(hooked == ShadowDraws ? $"ShadowService: {via} -- {what} (5/5 draws hooked)"
             : hooked > 0 ? $"ShadowService: {via} -- PARTIAL ({hooked}/{ShadowDraws} draws hooked); some shadows will render wrong"
             : $"ShadowService: {via} but no shadow symbol resolved -- disabled (headless/non-client?)");

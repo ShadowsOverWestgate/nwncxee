@@ -19,9 +19,9 @@ public sealed unsafe class UiHostService : IExtenderService
         _log = log;
         UiHost.SelfCheck(log);   // #61 arbiter + #62 draw roll-call proof (off-device)
         SettingsPanel.SelfCheck(log);   // #166 shared settings panel: hit-test, drag, edit buffer (off-device)
-        if (GameGate.Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla rendering intact
+        if (GameGate.Locked)   // lockchat: install nothing -> vanilla rendering intact
         {
-            log.Info("UiHostService: SOWX_LOCKCHAT set -- framework stood down, vanilla rendering left intact");
+            log.Info("UiHostService: lockchat set -- framework stood down, vanilla rendering left intact");
             return;
         }
         _getGuiScale = (delegate* unmanaged<float>)Native.Sym(SymbolMap.GetGuiScale);

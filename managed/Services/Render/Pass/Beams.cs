@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -37,11 +38,9 @@ internal static unsafe class Beams
     /// <summary>Scene's shadow-light list, the one <c>RenderBeams</c> scans for the beam direction:
     /// <c>PartLight**</c> at +0x60, count at +0x68.</summary>
     private const int SceneLights = 0x60, SceneLightCount = 0x68;
-    /// <summary>PartLight fields <c>RenderBeams</c>'s scan reads: range at +0x70, a live flag at +0x74, a
-    /// discriminant that must be zero at +0x80, and the direction vector at +0xac. The direction is +0xac and
-    /// NOT the +0x64 one <c>SetLightGL</c> uses -- <c>BSPCreateStaticProjections</c> bakes the volumes
-    /// against +0xac too, so reading the other pair extrudes them the wrong way.</summary>
-    private const int LightRange = 0x70, LightLive = 0x74, LightKind = 0x80, LightDir = 0xac;
+    /// <summary>The PartLight live flag at +0x74 -- the one field of the light <c>RenderBeams</c>'s scan
+    /// reads that no other walker does. Range, kind and direction are shared, in <see cref="SceneLayout"/>.</summary>
+    private const int LightLive = 0x74;
     /// <summary>The range above which a light is the sun/moon (<c>_DAT_013f04a8</c> = 1000.0f, the same
     /// number <c>ShadowService.DirectionalRange</c> carries). Beams are extruded from the FIRST scene light
     /// that clears it, which is what makes them sun shafts rather than per-lamp volumes.</summary>
@@ -63,11 +62,6 @@ internal static unsafe class Beams
     /// <summary>Fallback alpha when <c>projectionalpha</c> does not resolve -- the value the engine's own
     /// initialiser writes.</summary>
     private const float DefaultAlpha = 0.2f;
-    /// <summary>VDO layout (Ghidra <c>AddItem</c>/<c>RenderVertexData</c>): +0xc VAO id, +0x14 mode
-    /// (1 = indexed static), vertex item table {offset,size} at +0x48 (count +0x50), element item table at
-    /// +0x58 (count +0x60).</summary>
-    private const int VdoVao = 0xc, VdoMode = 0x14, VdoVertItems = 0x48, VdoVertCount = 0x50,
-                      VdoElemItems = 0x58, VdoElemCount = 0x60;
     private const uint GlUnsignedShort = 0x1403;
     /// <summary>The engine attribute locations a beam VDO carries, from <c>GLRender::ConnectShaderData</c>'s
     /// bind table @0x4ce8e0: <c>vPos</c> at 0 and <c>fProjectionFrontal</c> at 10. That pair is why beams
@@ -118,6 +112,10 @@ internal static unsafe class Beams
     private static float* _alpha;
     private static uint* _primTable;
     private static bool _off, _failed;
+    /// <summary>The player's own switch (<c>/beams</c>, ADR 0013 bucket 1). Distinct from <see cref="_off"/>,
+    /// which means the session cannot own beams at all: the hooks arm either way, so the toggle is live.
+    /// Volatile -- written from the command dispatch, read in the capture window on the render thread.</summary>
+    private static volatile bool _disabled;
     private static uint _prog;
     private static int _locModel = -1, _locView = -1, _locProj = -1, _locSrc = -1, _locZClip = -1, _locColor = -1;
     private static int _frame, _drawnGen = -1, _masked, _captured, _foreign, _refused, _drawn, _standdown;
@@ -138,12 +136,10 @@ internal static unsafe class Beams
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _off = Environment.GetEnvironmentVariable("SOWX_BEAMS") == "0";
         _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _enable = (int*)Native.Sym(SymbolMap.EnableBeams);
         _alpha = (float*)Native.Sym(SymbolMap.ProjectionAlpha);
-        if (_off) { log.Info("Beams: SOWX_BEAMS=0 -- light beams stay vanilla"); return; }
         if (_stacks == null || _primTable == null)
         { _off = true; log.Info("Beams: matrix stack or prim table unresolved -- light beams stay vanilla"); return; }
         _origRender = (delegate* unmanaged<IntPtr, void>)hooks.Install(
@@ -152,7 +148,7 @@ internal static unsafe class Beams
             SymbolMap.PartBeamDraw, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPartBeamDraw);
         if (_origRender == null || _origDraw == null)
         { _off = true; log.Info("Beams: Scene::RenderBeams / PartBeam::Draw did not hook -- light beams stay vanilla"); }
-        else log.Info("Beams: armed -- bucket-15 volumes replayed at the owned additive slot (SOWX_BEAMS=0 disables)");
+        else log.Info("Beams: armed -- bucket-15 volumes replayed at the owned additive slot (/beams toggles)");
     }
 
     /// <summary>The vanilla site. Same shape as <see cref="SkyBox.OnRenderSkyBoxes"/>: let the engine run its
@@ -165,6 +161,15 @@ internal static unsafe class Beams
         // A GUI 3D panel drives the same Scene virtuals as the world (#106/#125), and RenderSinglePass calls
         // this unconditionally -- so an open inventory reaches here every frame with its own Scene.
         if (!OwnedDrawService.IsWorldScene(scene)) { _origRender(scene); _foreign++; return; }
+        // /beams off: idle, never uninstalled. The table goes on the first such frame -- Fresh() is a
+        // sighting window and _frame stops advancing here, so a kept table would replay stale volumes.
+        if (_disabled)
+        {
+            if (_count != 0) Forget();
+            _inWindow = false;
+            _origRender(scene);
+            return;
+        }
         if (scene != _scene) Forget();
         _scene = scene;
         bool ours = OwnedDrawService.DrewThisPass;
@@ -290,7 +295,7 @@ internal static unsafe class Beams
     /// <see cref="OwnedDrawService"/>'s additive arm hands over and the probe capture after it needs.</para></summary>
     internal static void Draw(Matrix4x4* view, Matrix4x4* proj)
     {
-        if (_off || _failed || _count == 0 || Gl.MultiDrawElementsBaseVertex == null) return;
+        if (_disabled || _off || _failed || _count == 0 || Gl.MultiDrawElementsBaseVertex == null) return;
         // The player's own switch, honoured the way grass honours "Grass Mode": beams off means the owned
         // pass draws nothing AND suppresses nothing, so the console variable keeps meaning what it says.
         if (_enable != null && *_enable == 0) return;
@@ -422,10 +427,19 @@ internal static unsafe class Beams
         _vdoCount = 0;
     }
 
+    /// <summary>The <c>/beams</c> body: flip the owned beam pass and say where it landed. Cold (input
+    /// thread); the render thread picks the flag up in its next capture window.</summary>
+    internal static string Toggle()
+    {
+        if (_off || _origRender == null) return "[beams] unavailable this session -- light beams stay vanilla";
+        _disabled = !_disabled;
+        return $"[beams] owned beams {(_disabled ? "off -- the engine draws them" : "on")}";
+    }
+
     internal static void ResetPeriod()
     { _masked = 0; _captured = 0; _foreign = 0; _refused = 0; _drawn = 0; _standdown = 0; }
 
-    internal static string Stats() => _off ? "beams vanilla (SOWX_BEAMS=0 or unavailable)"
+    internal static string Stats() => _disabled ? "beams off (/beams)" : _off ? "beams vanilla (unavailable)"
         : $"beams {_count} parts, {_captured} captured, {_drawn} drawn, {_masked} masked"
           + (_refused == 0 ? "" : $", {_refused} REFUSED (unindexed VDO, no attribute pair, or table full)")
           + (_standdown == 0 ? "" : $", {_standdown} passes HANDED BACK whole (owned {_count} of {_lastSeen} walked)")

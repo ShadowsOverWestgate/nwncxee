@@ -224,7 +224,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<float, float, float, float, void> ClearColor;
     public static delegate* unmanaged<uint, void> DrawBuffer, ReadBuffer, DepthFunc, Clear;
     /// <summary>glReadPixels: x, y, w, h, format, type, out. Stalls the pipeline -- diagnostic paths only
-    /// (#129's SOWX_WATERDIAG reads the framebuffer copy back once to settle what is actually in it).</summary>
+    /// (#129's /water diag reads the framebuffer copy back once to settle what is actually in it).</summary>
     public static delegate* unmanaged<int, int, int, int, uint, uint, void*, void> ReadPixels;
     public static delegate* unmanaged<byte, void> DepthMask;
     public static delegate* unmanaged<byte, byte, byte, byte, void> ColorMask;

@@ -618,7 +618,7 @@ internal static unsafe class SymbolMap
     /// <para>#131 also reads the orientation QUATERNION at <c>*CurrentCamera + 0xbc</c>, stored
     /// (w, x, y, z) -- <c>PartEmitter::RenderEmitter</c> builds every billboard basis out of it.</para>
     /// <para>This SUPERSEDED the Scene "shadow gob" at Scene+0x58 as the anchor: that field's setter is
-    /// inlined in the vanilla shadow path, so it reads NULL under <c>SOWX_NOSHADOWS</c> (live-confirmed).</para>
+    /// inlined in the vanilla shadow path, so it reads NULL under <c>noshadows</c> (live-confirmed).</para>
     /// </summary>
     public const string CurrentCamera = "CurrentCamera";
 

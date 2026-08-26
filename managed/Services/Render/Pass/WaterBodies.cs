@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using Sowx.Framework;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -60,9 +61,6 @@ internal static unsafe class WaterBodies
     private static int _degenerate;
     private static ExtenderLog? _log;
 
-    /// <summary>Object-space bbox on PartTriMesh, the pair <see cref="CasterPass"/> reads for skinned
-    /// caster radii (part+0x64 / part+0x70).</summary>
-    private const int PartBboxMin = 0x64, PartBboxMax = 0x70;
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
@@ -97,7 +95,7 @@ internal static unsafe class WaterBodies
             return;
         }
 
-        Matrix4x4 m = *(Matrix4x4*)(node + OwnedDrawService.NodeMatrix);
+        Matrix4x4 m = *(Matrix4x4*)(node + NodeMatrix);
         float* bn = (float*)(part + PartBboxMin);
         float* bx = (float*)(part + PartBboxMax);
         // Measured live: a good many water parts carry a DEGENERATE object bbox (min == max), and the ones

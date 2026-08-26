@@ -76,14 +76,14 @@ internal static unsafe class PostChain
     private static delegate* unmanaged<uint, int> _gammaParam;
     private const uint GammaParam = 0;
 
-    // Dials. Tuned live through /post; the boot values come from the environment.
+    // Dials. Tuned live through /post; the values here ARE the boot values (ADR 0013 bucket 1).
     private static float _bloom = 0.06f, _threshold = 1f, _knee = 0.5f, _tmKnee = 0.8f;
     /// <summary>Output dither, in LSBs of the 8-bit target the resolve writes into. 1.0 is the correct
     /// value and not a taste setting: one LSB of triangular-PDF noise is exactly what decorrelates the
     /// quantisation step, and it is the difference between a smooth gradient and a set of contour bands.
     /// 0 disables it, which is only useful for showing what it fixes.</summary>
     private static float _dither = 1f;
-    /// <summary>SOWX_POSTVIZ / <c>/post viz</c>: show one STAGE of the chain instead of the finished frame,
+    /// <summary><c>/post viz</c>: show one STAGE of the chain instead of the finished frame,
     /// so "is this artifact in the bloom, in the frame the bloom was made from, or in the tonemap?" is a
     /// look rather than an argument. 0 = off, 1 = the bloom contribution alone, 2 = the HDR colour alone
     /// (no bloom, no tonemap), 3 = the bloom contribution amplified 20x, which is what makes faint
@@ -100,30 +100,20 @@ internal static unsafe class PostChain
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _on = Environment.GetEnvironmentVariable("SOWX_HDR") != "0";
-        _bloom = Tunables.Float("SOWX_BLOOM", _bloom);
-        _threshold = Tunables.Float("SOWX_BLOOM_THRESHOLD", _threshold);
-        _knee = Tunables.Float("SOWX_BLOOM_KNEE", _knee);
-        _tmKnee = Tunables.Float("SOWX_TONEMAP_KNEE", _tmKnee);
-        _dither = Tunables.Float("SOWX_DITHER", _dither);
-        // #152: deliberately NOT read from the environment any more. A forgotten SOWX_POSTVIZ=1 in the
-        // Steam launch options booted every session into the bloom-debug view until the user typed
-        // /post viz 0 -- a debug visualization is a live request (/post viz N), never a boot state.
-        _mode = Environment.GetEnvironmentVariable("SOWX_TONEMAP") switch
-        {
-            "off" => Off, "aces" => Aces, "shoulder" => Shoulder, _ => _mode,
-        };
+        // The one boot decision in this class: since #132 there is no owned frame without the resolve, so
+        // hdr=0 is not a look toggle but a stand-down of the whole owned frame -- config, not a /post key.
+        _on = Settings.Bool("hdr", true);
+        // #152 is the precedent this whole policy generalises (ADR 0013): a debug visualization is a live
+        // request, never a boot state -- a forgotten viz setting booted every session into the bloom-debug
+        // view until the user typed /post viz 0. Every look dial below is now the same shape.
         _bootBloom = _bloom; _bootThreshold = _threshold; _bootKnee = _knee;
         _bootTmKnee = _tmKnee; _bootMode = _mode; _bootDither = _dither;
         _gammaParam = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
         if (_gammaParam == null)
             log.Info("PostChain: RenderInterface::GetGlobalShaderParami unresolved -- the resolve encodes "
                    + "unconditionally, which is what this client measures anyway (#102)");
-        log.Info(_on ? $"PostChain: armed -- {Describe()}; env SOWX_HDR=0 stands the OWNED FRAME down to "
-                     + "vanilla (since #132 there is no owned frame without the resolve), "
-                     + "SOWX_BLOOM/_THRESHOLD/_KNEE, SOWX_TONEMAP(off|shoulder|aces)/_KNEE set the boot "
-                     + "values, /post retunes them live"
-                     : "PostChain: SOWX_HDR=0 -- the owned frame stands down; the world renders vanilla");
+        log.Info(_on ? $"PostChain: armed -- {Describe()}; /post retunes every dial live"
+                     : "PostChain: config hdr=0 -- the owned frame stands down; the world renders vanilla");
     }
 
 
@@ -140,7 +130,8 @@ internal static unsafe class PostChain
         float old;
         switch (key)
         {
-            case "hdr":       old = _on ? 1f : 0f; _on = v > 0f; break;
+            // No "hdr" key: it stands the whole owned frame down rather than changing a look, so it is a
+            // boot setting (config hdr=0) and Describe reports it read-only.
             case "bloom":     old = _bloom; _bloom = v; break;
             case "threshold": old = _threshold; _threshold = v; break;
             case "knee":      old = _knee; _knee = v; break;
@@ -189,7 +180,7 @@ internal static unsafe class PostChain
     /// answer, and it is re-asked per pass, so flipping the setting back recovers.</para></summary>
     internal static bool Precheck(int engFbo, int depthName, int* viewport)
     {
-        // SOWX_HDR=0 is a deliberate setting and Attach already said so; it is not a refusal to report.
+        // config hdr=0 is a deliberate setting and Attach already said so; it is not a refusal to report.
         if (!_on || _down.Failed) return false;
         // An offset viewport would break the resolve's 1:1 UV mapping, and the default framebuffer's depth
         // cannot be an FBO attachment at all. Both are refusals, not workarounds.
@@ -363,7 +354,7 @@ internal static unsafe class PostChain
     {
         int n = Resolves;
         Resolves = 0;
-        if (!_on) return "off (SOWX_HDR=0)";
+        if (!_on) return "off (config hdr=0)";
         return n == 0 ? $"NOT RESOLVING ({(_down.Reason.Length == 0 ? "never reached the pass" : _down.Reason)})"
                       : $"{(float)n / MathF.Max(frames, 1):F2} resolves/frame at {_w}x{_h}, {_levels}-level bloom";
     }
@@ -684,7 +675,10 @@ internal static unsafe class PostChain
         try
         {
             E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
-            foreach (string key in new[] { "hdr", "bloom", "threshold", "knee", "tonemap", "tmknee",
+            // hdr is CONFIG, not a /post key: it stands the whole owned frame down, which is a boot
+            // decision. A Tune that still accepted it would be a live half-stand-down.
+            E(float.IsNaN(Tune("hdr", 0f)), "hdr is not tunable; it is the boot setting");
+            foreach (string key in new[] { "bloom", "threshold", "knee", "tonemap", "tmknee",
                                           "dither", "viz" })
                 E(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
             E(Describe().Contains("bloom") && Describe().Contains("tonemap") && Describe().Contains("dither"),

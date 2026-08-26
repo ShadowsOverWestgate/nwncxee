@@ -28,7 +28,8 @@ namespace Sowx.Services.Render;
 internal static unsafe class EnvProbe
 {
     /// <summary>Face resolution. Small on purpose -- this is an irradiance-ish source, not a mirror, and the
-    /// whole cube is one 6 x 128^2 RGBA16F allocation (~0.8MB with mips). SOWX_PROBE_SIZE overrides.</summary>
+    /// whole cube is one 6 x 128^2 RGBA16F allocation (~0.8MB with mips). Config <c>probe_size</c> overrides:
+    /// it sizes an allocation, so it is a boot setting rather than a <c>/probe</c> key.</summary>
     internal static int Size { get; private set; } = 128;
     /// <summary>Levels in the mip chain: roughness 1 maps onto the last one.</summary>
     internal static int Mips { get; private set; }
@@ -73,12 +74,12 @@ internal static unsafe class EnvProbe
     private static ExtenderLog? _log;
     private static float _far = 500f;
 
-    /// <summary>SOWX_PROBE_GAIN: how much presence the ambient-specular term gets over the engine's own
+    /// <summary><c>/probe gain</c>: how much presence the ambient-specular term gets over the engine's own
     /// weighting. 1.0 IS the engine's weighting, and higher is a deliberate departure -- the term multiplies
     /// the light already arriving at the fragment, so raising it far past 1 puts the wet-stone look back.</summary>
     internal static float Gain { get; private set; } = 1f;
 
-    /// <summary>SOWX_PROBE_AREAWIDE=1: also feed the probe to parts whose material declares NO env map, in
+    /// <summary><c>/probe areawide 1</c>: also feed the probe to parts whose material declares NO env map, in
     /// areas that set one on the Scene (<c>scene+0x1e8</c>) -- which is where <c>RenderFlat</c> binds the
     /// scene's env map to the sampler, so it is the vanilla-faithful reading of the term.
     /// <para>OFF by default, on live evidence: the engine's authored spheremap is a dim texel that reads as
@@ -87,16 +88,80 @@ internal static unsafe class EnvProbe
     /// case the reflection is actually for: a material that declares an env map (81% of weapon models).</para></summary>
     internal static bool AreaWide { get; private set; }
 
+    private static float _bootGain;
+    private static bool _bootAreaWide;
+
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _on = Environment.GetEnvironmentVariable("SOWX_PROBE") != "0";
-        if (int.TryParse(Environment.GetEnvironmentVariable("SOWX_PROBE_SIZE"), out int s) && s >= 16 && s <= 1024)
-            Size = s;
-        Gain = Tunables.Float("SOWX_PROBE_GAIN", Gain);
-        if (Gain < 0f) Gain = 0f;
-        AreaWide = Environment.GetEnvironmentVariable("SOWX_PROBE_AREAWIDE") == "1";
-        if (!_on) log.Info("EnvProbe: SOWX_PROBE=0 -- no IBL probe, owned parts get no ambient specular");
+        Size = Settings.Int("probe_size", Size, 16, 1024);
+        _bootGain = Gain; _bootAreaWide = AreaWide;
+    }
+
+    internal static string Describe()
+        => $"probe {(_on ? "on" : "off")}  gain {Gain:F2}  areawide {(AreaWide ? 1 : 0)}  " +
+           $"size {Size}px  captures {Captures}";
+
+    /// <summary>Live tuning behind <c>/probe</c>; returns the old value, NaN for an unknown key. Same
+    /// no-lock reasoning as <see cref="PostChain.Tune"/>: independent values, written from the input thread,
+    /// re-read per capture. <c>on</c> gates <see cref="Wanted"/>, which is re-asked every frame, so the probe
+    /// idles rather than un-arming and a re-arm captures at the next edge.</summary>
+    internal static float Tune(string key, float v)
+    {
+        float old;
+        switch (key)
+        {
+            case "on":       old = _on ? 1f : 0f; _on = v > 0f; break;
+            case "gain":     old = Gain; Gain = v; break;
+            case "areawide": old = AreaWide ? 1f : 0f; AreaWide = v > 0f; break;
+            default: return float.NaN;
+        }
+        _log?.Info($"EnvProbe: /probe {key} {v:F2} (was {old:F2}) -> {Describe()}");
+        return old;
+    }
+
+    /// <summary>Put every <c>/probe</c> dial back to its boot value. Size is not among them: it is the cube's
+    /// allocation, and the config file owns it.</summary>
+    internal static void ResetTuning()
+    {
+        _on = true; Gain = _bootGain; AreaWide = _bootAreaWide;
+        _log?.Info($"EnvProbe: /probe reset -> {Describe()}");
+    }
+
+    /// <summary>Off-device (run-demo.sh): the dial table is reachable, an unknown key is reported, and every
+    /// knob the check drove is restored -- a missed one ships its test value as the boot value.</summary>
+    internal static void SelfCheck(ExtenderLog log)
+    {
+        ExtenderLog? quiet = _log; _log = null;
+        bool ok = true;
+        void E(bool c, string w) { if (!c) { ok = false; log.Info($"EnvProbe.SelfCheck FAIL: {w}"); } }
+
+        float gain = Gain; bool wide = AreaWide, on = _on;
+        try
+        {
+            E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
+            foreach (string key in new[] { "on", "gain", "areawide" })
+                E(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
+            E(float.IsNaN(Tune("size", 256f)),
+              "size is NOT tunable: it allocates the cube, so it is the config setting probe_size");
+            E(Tune("on", 0f) == 1f && !_on, "/probe on 0 idles the probe rather than un-arming it");
+            float boot = _bootGain; _bootGain = 0.25f;
+            ResetTuning();
+            E(Gain == 0.25f && _on, "reset honours the BOOT value and re-arms");
+            _bootGain = boot;
+        }
+        finally
+        {
+            // Driven through Tune, so the knobs stamped come from the KEY TABLE rather than from a list
+            // written beside the restore -- an assertion built from the restore's own list passes whatever
+            // that list forgets. Describe prints every knob, so a missed one surfaces as its own sentinel.
+            const float Sentinel = -12345f;
+            foreach (string key in new[] { "on", "gain", "areawide" }) Tune(key, Sentinel);
+            Gain = gain; AreaWide = wide; _on = on;
+            E(!Describe().Contains("-12345"), "the check restores every knob it drove");
+            _log = quiet;
+        }
+        log.Info(ok ? "EnvProbe.SelfCheck: passed" : "EnvProbe.SelfCheck: FAILED");
     }
 
     /// <summary>Is a capture due? True only on the edges that change what the probe should contain: never

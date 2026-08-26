@@ -16,7 +16,7 @@ namespace Sowx.Ui;
 /// CursorService: over any window's UI → the walk cursor).
 /// </summary>
 /// <remarks>
-/// Stands down under <c>SOWX_LOCKCHAT</c> (<see cref="GameGate.OwnsFramePresent"/> false): installs no
+/// Stands down under <c>lockchat</c> (<see cref="GameGate.OwnsFramePresent"/> false): installs no
 /// hooks and leaves <see cref="UiHost.KeyboardGate"/> null, so vanilla input is untouched and
 /// <c>HotkeyInputService</c> keeps its own raw capture for that path. State is static (the
 /// <c>[UnmanagedCallersOnly]</c> handlers demand it); the input hooks are cold, so they may allocate.
@@ -59,9 +59,9 @@ public sealed unsafe class UiInputService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        if (!GameGate.OwnsFramePresent)   // SOWX_LOCKCHAT: framework stands down; HotkeyInputService owns capture
+        if (!GameGate.OwnsFramePresent)   // lockchat: framework stands down; HotkeyInputService owns capture
         {
-            log.Info("UiInputService: SOWX_LOCKCHAT set -- input capture left to the legacy path");
+            log.Info("UiInputService: lockchat set -- input capture left to the legacy path");
             return;
         }
 
@@ -125,17 +125,18 @@ public sealed unsafe class UiInputService : IExtenderService
 
     private static int RawMods() => _modState != null ? _modState() : 0;
 
-    // Opt-in raw-key probe (SOWX_KEYDIAG). OFF by default -- it logs every keydown, so the whole point of the
-    // feature (not being a keylogger) forbids it as a default. Reports the framework-level gates now.
-    private static readonly bool _keyDiag =
-        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_KEYDIAG"));
+    /// <summary>Raw-key probe, reporting the framework-level gates. OFF by default -- it logs every keydown,
+    /// so the whole point of the feature (not being a keylogger) forbids it as a default. Flipped by
+    /// <c>/keydiag</c>, which <c>HotkeyInputService</c> owns; volatile because the command runs on the input
+    /// thread and the pump reads it on its own.</summary>
+    internal static volatile bool KeyDiag;
 
     // ---- key path: HandleWMKeyDownMessage --------------------------------------------------------
     [UnmanagedCallersOnly]
     private static int OnKeyDown(uint key, uint flags)
     {
         int mods = RawMods();
-        if (_keyDiag)
+        if (KeyDiag)
             _log?.Info($"[keydiag] key={key} focused={_focused} owner={UiHost.AnyKeyboardOwner} " +
                        $"suppress={UiHost.AnySuppressChords} nui={NuiEditFocused()} kbmode={KeyboardModeActive()} natdlg={NativeDialogOpen()}");
         // Precedence: a window (keyboard owner or selective modal) eats it -> don't run the engine original.

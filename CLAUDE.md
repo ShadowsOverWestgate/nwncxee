@@ -30,6 +30,18 @@ Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./sow-client-extender/so
 
 First build clones+builds the funchook submodule (git submodule --init).
 
+## Tuning knobs (ADR 0013)
+
+There are no `SOWX_*` environment variables. Every knob is either a **chat command**
+(`/light`, `/grass`, `/post`, `/draw`, `/water`, `/probe`, `/shadow`, `/particles`,
+`/sky`, `/beams`, `/fps`, `/keydiag`, `/vanilla`) or a **config setting** in
+`sowx.cfg`, in the client's user directory beside `nwn.ini` and the per-feature
+cfgs -- capability gates, buffer sizes, arming decisions. `/knobs` prints both,
+and the exact path it read. Adding a knob means picking one of the two; there is no third place to put it.
+
+The one exemption is `SOWX_MANAGED`, which the native bootstrap reads before any
+managed code exists.
+
 ## Architecture
 
 Load path (the "hard work", you never touch it):
@@ -158,7 +170,7 @@ in `managed/Ui/`, the frame host that owns the `SwapBuffers` present, computes t
 in-game gate + UI-scale sync, and drives the `UiHost` window registry's draw
 roll-call each frame; #62). Chat renders as one registered `Window` whose
 content-draw slot runs the chatbox. The minimal hook-pattern example now lives in
-`docs/hook-pattern.md` (#158); under the `SOWX_LOCKCHAT` opt-out nothing hooks the
+`docs/hook-pattern.md` (#158); under the `lockchat=1` opt-out nothing hooks the
 present at all and the client renders vanilla.
 
 Linux only. Windows = proxy DLL or rename-launcher; macOS = `DYLD_INSERT_LIBRARIES`,

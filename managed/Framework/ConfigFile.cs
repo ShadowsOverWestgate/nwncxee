@@ -11,8 +11,9 @@ namespace Sowx.Framework;
 /// <remarks>
 /// The deferral rule, encoded structurally so a new caller cannot forget it: our loader runs BEFORE the
 /// engine's entry point, so <see cref="Native.UserDirectory"/> is null then and the config path would latch
-/// the <c>~/.config</c> fallback. <see cref="Load"/> therefore returns false and does nothing at all until the
-/// user dir resolves -- a no-op that stays retryable -- and latches exactly once when it does. Call it from a
+/// the pre-main fallback rather than whatever the engine resolved. <see cref="Load"/> therefore returns
+/// false and does nothing at all until the user dir resolves -- a no-op that stays retryable -- and latches
+/// exactly once when it does. Call it from a
 /// site that runs repeatedly (a frame, a cursor update); never from Initialize. For the same reason the
 /// resolved path is NEVER cached: only the file name is stored, and <see cref="Path"/> resolves per use.
 /// </remarks>

@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -30,37 +31,26 @@ namespace Sowx.Services.Render;
 /// <see cref="_pOwnOnly"/> flag that keeps them out of this service's own submits. Lifetime: entries are keyed by part+node+material pointer identity; a mismatch kills the entry
 /// (recycled pointer), and submits never dereference a part -- only our own copies + the live VDO tables --
 /// so freed parts simply stop being seen (members must have drawn within the last 2 frames to be included).</para>
-/// <para><c>SOWX_BATCH=0</c> kill switch. Stands down under <c>SOWX_DRAWSTATS=1</c> (both hook the same
+/// <para>Armed by <c>drawhooks=batch</c> in <c>sowx.cfg</c>, the default; <c>drawhooks=stats</c> hands the draw hooks to
+/// <c>DrawStatsService</c> and <c>drawhooks=off</c> disables both (#182 -- one mode, because both hook the same
 /// symbols; drawstats also wants the vanilla draw stream). Hot and alloc-free throughout.</para>
 /// </summary>
 public sealed unsafe class BatchService : IExtenderService
 {
-    /// <summary>Part field offsets (Ghidra RenderDrawBucket/PartTriMesh::Draw @0x46d060/0x4513d0):
-    /// material at part+0x58, TileData* at part+0x98 (Ghidra CheckFadePlane @0x47bf30), and
-    /// <see cref="PartNode"/> -- which is NOT a node.
-    /// <para>#134 named it: part+0x88 is the part's <c>VertexPrimitive</c>. The vtables prove it (live
-    /// capture, resolved against nm: <c>_ZTV19VertexPrimitiveFlat</c> for a TriMesh part,
-    /// <c>_ZTV21VertexPrimitiveDangly</c> for a dangly one), and so does its +0x10, which is the back-pointer
-    /// to the part itself -- <c>n10 == part</c> on all 12000 draws of a two-run census. The name stays
-    /// because it is threaded through three services; what it holds does not change.</para></summary>
-    private const int PartNode = 0x88, PartMaterial = 0x58, PartTile = 0x98;
-    /// <summary>Texture-rotation angle (degrees, float) at part+0xb0 (Ghidra PartTriMesh::RotateTexture
-    /// @0x44fff0): TransformTextureMatrix pushes it before every draw -- NWN's tile-texture 0/90/180/270
-    /// anti-repetition scheme. Part of the group key (raw bits), else a batch renders every member under
-    /// the first member's rotation.</summary>
-    private const int PartTexRotate = 0xb0;
-    /// <summary>Material layout (Ghidra GetTexture/GetEnvMapTID @0x4c5810/0x4c5c40): texture slots at
-    /// mat+i*0x10, SharedMaterial override at +0xd0, blend-disable flag RenderFlat reads at +0x98.</summary>
-    private const int MatShared = 0xd0, MatBlendFlag = 0x98;
+    /// <summary>#182: the ONE key that says who owns the draw hooks. <c>batch</c> (default) = this service,
+    /// <c>stats</c> = <c>DrawStatsService</c>'s histogram, anything else = neither. It is one mode rather than
+    /// two booleans because the two arm the same symbols and cannot coexist; and it is config rather than a
+    /// command because both decide what installs, which only happens once.</summary>
+    internal const string DrawModeKey = "drawhooks", DrawModeBatch = "batch", DrawModeStats = "stats";
+
+    /// <summary>The blend-disable flag <c>RenderFlat</c> reads at mat+0x98 (Ghidra
+    /// GetTexture/GetEnvMapTID @0x4c5810/0x4c5c40; texture slots sit at mat+i*0x10).</summary>
+    private const int MatBlendFlag = 0x98;
     /// <summary>#126: the material's blend pair -- source factor at +0x90, destination at +0x94, both
     /// <c>Aurora::AuroraBlendModes</c> (Ghidra <c>Material::SetBlendingMode</c> @0x4c5c50 does
     /// <c>SetBlendFunc(*(mat+0x90), *(mat+0x94))</c>). <c>dst == 2</c> is <c>GL_ONE</c>, which is the
     /// engine's own additive test and the one pair it turns the depth mask off for.</summary>
     private const int MatSrcBlend = 0x90, MatDstBlend = 0x94, BlendOne = 2;
-    /// <summary>#126: the part's own alpha multiplier, the first term of
-    /// <c>PartTriMesh::GetIsOpaque</c> @0x43cee0 -- and the one <c>RenderDrawBucket</c> folds the tile's
-    /// fade factor into for the length of a bucket-8 draw.</summary>
-    private const int PartAlpha = 0xa0;
     /// <summary>#126: the three <c>.mtr</c> keywords on the SharedMaterial that steer bucket membership
     /// (<c>SharedMaterial::ParseField</c> @0x4c6760): <c>transparency</c> at +0x1f0, <c>sample_framebuffer</c>
     /// at +0x1f4 (1 = bucket 5, 2 = water) and <c>volumetric</c> at +0x1f8.</summary>
@@ -95,9 +85,6 @@ public sealed unsafe class BatchService : IExtenderService
     /// <see cref="SharedVsName"/> (SharedMaterial::ParseField @0x4c6760 writes +0x188/+0x199/+0x1aa for
     /// VS/FS/GS). A material can name a fragment shader and no vertex shader.</summary>
     private const int SharedFsName = 0x199;
-    /// <summary>Gob (the per-instance modifier block PartTriMesh::Mat reads: alpha/colour/selfIllum
-    /// multipliers and the env-map override at gob+0x480). Non-null = engine-drawn, never ownable (#72).</summary>
-    private const int PartGob = 0x50;
     /// <summary>Tile-fade state and factor (the TileData* hangs off <see cref="PartTile"/>). #124 corrected
     /// both: the factor is at +0x70, NOT +0x8c below it -- <c>TileData::TileData</c> @0x43f050 inits three
     /// separate floats to 1.0 and the original RE picked the wrong one, so this test was permanently false.
@@ -113,9 +100,6 @@ public sealed unsafe class BatchService : IExtenderService
     /// FADE_NOT_CHECKED 4) leave the part in the opaque buckets, and the factor alone is not enough: a tile
     /// entering FADE still reads 1.0 for its first frame.</summary>
     private const int TileStateFade = 1;
-    /// <summary>VDO layout (Ghidra AddItem/RenderVertexData): +0x14 mode (1 = indexed static), vertex item
-    /// table {offset,size} at +0x48 (count +0x50), element item table at +0x58 (count +0x60).</summary>
-    private const int VdoMode = 0x14, VdoVertItems = 0x48, VdoVertCount = 0x50, VdoElemItems = 0x58, VdoElemCount = 0x60;
     private const uint GlUnsignedShort = 0x1403;
     /// <summary>Recorded-part capacity, and with <c>MaxGroups</c> the reason the renderer can hold a whole
     /// object-dense area rather than the first 4096 parts of one. 262144 parts + 262144 groups is 70MB of
@@ -144,9 +128,6 @@ public sealed unsafe class BatchService : IExtenderService
     /// <summary>Bucket-item vtable slot the RenderDrawBucket loop devirts to get the PartTriMesh from the
     /// bucket's Part (Ghidra @0x56d118: <c>(**(code**)(*part+0x60))(part)</c>).</summary>
     private const int PartVtblGetTriMesh = 0x60;
-    /// <summary>Model matrix the bucket loop feeds to SetModelMatrix for matrix-path parts (node+0x18,
-    /// Ghidra RenderDrawBucket). Bit-identical matrix = same placeable transform -> groupable (phase 2).</summary>
-    private const int NodeMatrix = 0x18;
 
     private static ExtenderLog? _log;
     private static bool _active;
@@ -169,18 +150,18 @@ public sealed unsafe class BatchService : IExtenderService
 
     /// <summary>#126 triage: one-shot census of every part the ENGINE draws in one world pass -- which
     /// bucket it was captured in, why ownership passed it over, and what its diffuse texture actually is.
-    /// Armed by <c>SOWX_DUMPFRAME=1</c>, fires on the next world bucket-0 entry and disarms. Cold by
+    /// Armed by <c>dumpframe</c> in <c>sowx.cfg</c>, fires on the next world bucket-0 entry and disarms. Cold by
     /// construction (it only ever runs on the one frame) and allocating is fine there.</summary>
     private static int _dumpAt = -1, _dumpLeft;
-    /// <summary>SOWX_DUMPTEX: log only parts whose diffuse texture name contains this, one frame's worth at a
+    /// <summary><c>dumptex</c> (sowx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
     /// time, for as long as it takes the camera to find them.</summary>
     private static string? _dumpTex;
     private static int _dumpTexFrame = -1, _dumpTexRows;
-    /// <summary>Census sampling for SOWX_DUMPTEX: every Nth frame, up to M matching parts of it.</summary>
+    /// <summary>Census sampling for <c>dumptex</c>: every Nth frame, up to M matching parts of it.</summary>
     private const int DumpTexEvery = 120, DumpTexRows = 16, DumpAllRows = 200;
-    /// <summary>SOWX_DUMPTEX=* -- census every engine-drawn part of the sampled frame, not one texture's.</summary>
+    /// <summary><c>dumptex=*</c> -- census every engine-drawn part of the sampled frame, not one texture's.</summary>
     private static bool _dumpAll;
-    /// <summary>Table slot of the part SOWX_DUMPTEX last matched, published by the census for enrollment to
+    /// <summary>Table slot of the part <c>dumptex</c> last matched, published by the census for enrollment to
     /// recognise without dereferencing anything. -1 until the camera finds it.</summary>
     private static int _watchEntry = -1;
 
@@ -256,7 +237,7 @@ public sealed unsafe class BatchService : IExtenderService
     /// <summary>Ownership-enrollment scan bound (the part table is open-addressed, so it is scanned whole).</summary>
     internal static int EntryCount => MaxParts;
     /// <summary>False = no capture tables, so the owned world pass has nothing to enroll from. It reports
-    /// this rather than sitting at zero silently: SOWX_BATCH=0 otherwise disables the owned pass too.</summary>
+    /// this rather than sitting at zero silently: drawhooks=off otherwise disables the owned pass too.</summary>
     internal static bool Active => _active;
 
     /// <summary>Armed AND the frame latched owned (#86). The two hot funnels read this, so a vanilla frame
@@ -332,9 +313,9 @@ public sealed unsafe class BatchService : IExtenderService
         // #170: ahead of every stand-down, as the host's unconditional call was. Priority pins it AFTER
         // DrawStats and BEFORE OwnedDraw -- alphabetical service discovery gives the wrong order on its own.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 10, EndFrame, "BatchService.endFrame", log);
-        if (Environment.GetEnvironmentVariable("SOWX_BATCH") == "0") return;
-        if (Environment.GetEnvironmentVariable("SOWX_DRAWSTATS") == "1")
-        { log.Info("BatchService: standing down (SOWX_DRAWSTATS diagnostics own the draw hooks)"); return; }
+        string mode = Settings.Text(DrawModeKey, DrawModeBatch);
+        if (mode != DrawModeBatch)
+        { log.Info($"BatchService: standing down (sowx.cfg drawhooks={mode})"); return; }
 
         _isOpaque = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.PartGetIsOpaque);
         _hasEnvMap = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.MatHasEnvMap);
@@ -344,12 +325,13 @@ public sealed unsafe class BatchService : IExtenderService
         _danglyVtbl = dv == IntPtr.Zero ? IntPtr.Zero : dv + 0x10;
         // #126: warm-up in PRESENTS, not "the next pass" -- the first census fired on the freshest possible
         // table and read as enrollment lag rather than steady state, which is the opposite of the question.
-        string? dumpAt = System.Environment.GetEnvironmentVariable("SOWX_DUMPFRAME");
-        _dumpAt = dumpAt == null ? -1 : int.TryParse(dumpAt, out int df) && df > 1 ? df : 300;
+        string dumpAt = Settings.Text("dumpframe", "");
+        _dumpAt = dumpAt.Length == 0 ? -1 : int.TryParse(dumpAt, out int df) && df > 1 ? df : 300;
         // #134: aim the census at a texture instead of at a moment. Five rolls in a row fired while the
         // camera was somewhere else, because "300 frames after the table settled" is not "standing at the
         // thing we are debugging" and no warm-up rule can make it so.
-        _dumpTex = System.Environment.GetEnvironmentVariable("SOWX_DUMPTEX");
+        _dumpTex = Settings.Text("dumptex", "");
+        if (_dumpTex.Length == 0) _dumpTex = null;
         _dumpAll = _dumpTex == "*";
         if (_dumpTex != null) _dumpAt = _dumpAt < 0 ? 0 : _dumpAt;
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
@@ -391,7 +373,7 @@ public sealed unsafe class BatchService : IExtenderService
         _active = _origPartDraw != null && _drawSlot != null && _origBucket != null && _origFirstItem != null
                   && _repackSlot != null && _origPartDtor != null;
         log.Info(_active
-            ? "BatchService: static-geometry batching armed (SOWX_BATCH=0 disables; [batch] every 900 frames)"
+            ? "BatchService: static-geometry batching armed (sowx.cfg drawhooks=off disables; [batch] every 900 frames)"
             : _origPartDtor == null
               // #145: deliberate. Without the death notice, every liveness test left is an inference, and
               // the one the owned pass used walked a freed part into a freelist word.
@@ -1190,7 +1172,7 @@ public sealed unsafe class BatchService : IExtenderService
     /// Cold: one call per table slot per enrollment.</summary>
     internal static bool TryOwnCandidate(int e, ref Render.OwnedCandidate c)
     {
-        // #134: SOWX_DUMPTEX follows its texture into ENROLLMENT too. The census runs inside the bucket walk
+        // #134: dumptex follows its texture into ENROLLMENT too. The census runs inside the bucket walk
         // and enrollment runs before it, so an entry can be ownable at one and refused at the other -- which
         // is exactly the shape of "ownable-but-not-enrolled every frame while the counters report nothing
         // refused". One line per matching entry per enrollment, and enrollment is every 60 frames.
@@ -1227,7 +1209,7 @@ public sealed unsafe class BatchService : IExtenderService
         return true;
     }
 
-    /// <summary>#134: entries whose diffuse matched SOWX_DUMPTEX at the last enrollment. A POPULATION, not a
+    /// <summary>#134: entries whose diffuse matched <c>dumptex</c> at the last enrollment. A POPULATION, not a
     /// specimen: following one part answered "is this part owned" four rolls running while the question was
     /// "how much of what I am looking at is".</summary>
     internal static readonly bool[] WatchTex = new bool[MaxParts];

@@ -133,7 +133,7 @@ public sealed unsafe partial class OwnedDrawService
     private static readonly int[] _hTid = new int[1 << HandleHashBits];
     private static readonly ulong[] _hVal = new ulong[1 << HandleHashBits];
     /// <summary>#153: is the bindless path live? Extension present, entry points resolved, not vetoed by
-    /// SOWX_BINDLESS=0, and the LIT program's actual sources carry the handle block. When false everything
+    /// bindless=0, and the LIT program's actual sources carry the handle block. When false everything
     /// draws exactly as before -- per-batch texture binds.</summary>
     private static bool _bindless;
     private static bool _bindlessProbed;
@@ -194,7 +194,7 @@ public sealed unsafe partial class OwnedDrawService
     /// <see cref="BatchService.ForceSkinPose"/> returns true -- it is ONE array shared by every skinned
     /// draw in the frame, so it holds the last part posed and nothing else.</summary>
     private static float* _bones;
-    /// <summary>#137 armed: the bone array resolved and <c>SOWX_OWNSKIN</c> not 0. False leaves the skinmesh
+    /// <summary>#137 armed: the bone array resolved and <c>ownskin</c> not 0. False leaves the skinmesh
     /// class exactly where #128 left it -- refused at enrollment, drawn by the engine.</summary>
     private static bool _skinning;
     private static long _skinDrawn, _skinNoPose, _skinSlotOverflow;

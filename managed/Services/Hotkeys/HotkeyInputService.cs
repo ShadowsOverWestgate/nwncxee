@@ -82,6 +82,10 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // No HotkeyStore.Load here: our loader runs pre-main, so the engine user dir (where the cfg lives)
         // isn't resolvable yet. The store lazy-loads on the first login-path call. SelfCheck is in-memory.
         HotkeyStore.SelfCheck(_log!);   // fail-closed default is security-critical; verify at startup
+        // Registered ahead of every stand-down below: the probe covers both key paths, and the path taken is
+        // exactly what a session opening it wants to find out.
+        CommandRegistry.Global.Register("/keydiag", "toggle raw-key diagnostics (logs every keydown)",
+                                        _ => ToggleKeyDiag());
 
         // Default (#64): the framework input layer owns raw capture. Hotkeys become a chord consumer at tier 2 --
         // fired only when no window consumed the key and the chord gate is clear (the arbiter's job now). Install
@@ -93,7 +97,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
             return;
         }
 
-        // SOWX_LOCKCHAT below: the framework input layer stood down (single-hooks would otherwise conflict), so
+        // lockchat below: the framework input layer stood down (single-hooks would otherwise conflict), so
         // own the raw hooks ourselves -- hotkey capture + the vanilla-chat typing observer -- exactly as before.
         // This is the one path that keeps hotkeys live when the whole UI framework is disabled.
         _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);   // stable address; deref live for the current ctx
@@ -107,7 +111,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         _lostOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnLostFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
         // Chat typing gate. By default ChatService owns input: it SKIPS the chat-focus openers (suppressing
         // vanilla) and drives ChatService.IsTyping, so we must NOT also install them (funchook single-hooks).
-        // Under SOWX_LOCKCHAT (ChatService stood down, OwnInput false) we observe those same hooks (forward to
+        // Under lockchat (ChatService stood down, OwnInput false) we observe those same hooks (forward to
         // trampoline) to track _typing, so vanilla chat keeps working and hotkeys still suppress while typing.
         if (!ChatService.OwnInput)
         {
@@ -119,10 +123,20 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         }
     }
 
-    // Opt-in raw-key probe (SOWX_KEYDIAG). OFF by default -- it logs every keydown, so the whole
-    // point of the feature (not being a keylogger) forbids it as a default.
-    private static readonly bool _keyDiag =
-        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_KEYDIAG"));
+    /// <summary>Raw-key probe on the hotkey path. OFF by default -- it logs every keydown, so the whole
+    /// point of the feature (not being a keylogger) forbids it as a default. Volatile: <c>/keydiag</c> writes
+    /// it from the command dispatch, this reads it in the key pump.</summary>
+    private static volatile bool _keyDiag;
+
+    /// <summary>The <c>/keydiag</c> body (#182, ADR 0013 bucket 1): one switch over BOTH raw-key probes --
+    /// this service's and the UI input pump's -- because a diagnostic that only covers half the key path
+    /// answers half the question it is opened for.</summary>
+    private static string ToggleKeyDiag()
+    {
+        _keyDiag = !_keyDiag;
+        Sowx.Ui.UiInputService.KeyDiag = _keyDiag;
+        return $"[keydiag] raw-key logging {(_keyDiag ? "ON -- every keydown is logged" : "off")}";
+    }
 
     [UnmanagedCallersOnly]
     private static int OnKeyDown(uint key, uint flags)

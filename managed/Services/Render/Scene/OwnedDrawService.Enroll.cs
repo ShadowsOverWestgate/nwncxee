@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -220,7 +221,7 @@ public sealed unsafe partial class OwnedDrawService
         if (!BatchService.Active)
         {
             if (_enrollDiagLeft-- > 0)
-                _log?.Info("OwnedDrawService: BatchService inactive (SOWX_BATCH=0 or hooks unavailable) -- " +
+                _log?.Info("OwnedDrawService: BatchService inactive (drawhooks != batch or hooks unavailable) -- " +
                            "the owned pass enrolls from its capture tables, so nothing can be owned");
             return;
         }

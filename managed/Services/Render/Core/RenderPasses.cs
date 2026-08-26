@@ -28,6 +28,8 @@ internal static class RenderPasses
             ContextLost = FrameSnapshot.Forget,
             Stats = FrameSnapshot.Stats,
             Describe = FrameSnapshot.Describe,
+            Tune = FrameSnapshot.Tune,
+            Reset = FrameSnapshot.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -57,6 +59,7 @@ internal static class RenderPasses
             Stats = _ => GrassField.Stats(),
             Describe = GrassField.Describe,
             Tune = GrassField.Tune,
+            Reset = GrassField.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -75,6 +78,9 @@ internal static class RenderPasses
             ContextLost = Particles.ContextLost,
             Revoke = Particles.Forget,
             Stats = _ => Particles.Stats(),
+            Describe = Particles.Describe,
+            Tune = Particles.Tune,
+            Reset = Particles.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -98,7 +104,11 @@ internal static class RenderPasses
         {
             Name = "probe",
             Attach = EnvProbe.Attach,
+            SelfCheck = EnvProbe.SelfCheck,
             ContextLost = EnvProbe.Forget,
+            Describe = EnvProbe.Describe,
+            Tune = EnvProbe.Tune,
+            Reset = EnvProbe.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -110,6 +120,17 @@ internal static class RenderPasses
             Describe = PostChain.Describe,
             Tune = PostChain.Tune,
             Reset = PostChain.ResetTuning,
+        }, log);
+        // #179: the owned world pass's own dials, so /draw reaches them through the one command
+        // implementation. No Attach/Install/ContextLost slots -- OwnedDrawService IS the service that drives
+        // this walk, and it owns those edges directly.
+        r.Register(new PassLifecycle
+        {
+            Name = "draw",
+            SelfCheck = OwnedDrawService.TuneSelfCheck,
+            Describe = OwnedDrawService.DescribeTuning,
+            Tune = OwnedDrawService.Tune,
+            Reset = OwnedDrawService.ResetTuning,
         }, log);
         // CasterPass is deliberately NOT here yet. It runs in the SHADOW bracket, installs through its own
         // service, and its stand-down is a latched Disarm rather than a context edge -- so it does not fit

@@ -19,8 +19,10 @@ namespace Sowx.Services.Render;
 /// runs before the engine's residual walk, and under #139 it holds LINEAR HDR while glass draws into the
 /// display-space target after the resolve. "Exactly one copy" therefore means one OWNED copy and zero engine
 /// water copies; the bucket-5 one goes when the class does.</para>
-/// <para>SOWX_WATER=0 stands the whole thing down: no copy, no owned water program, and
-/// <see cref="BatchService"/> leaves bucket 6 to the engine exactly as before #129.</para>
+/// <para><c>/water on 0</c> stands the whole thing down: no copy, no owned water program, and
+/// <see cref="BatchService"/> leaves bucket 6 to the engine exactly as before #129. Every look dial here is
+/// a <c>/water</c> key (ADR 0013 bucket 1); the one boot decision is the tessellation segment count, which
+/// is geometry rather than look and lives in the config file.</para>
 /// </summary>
 internal static unsafe class FrameSnapshot
 {
@@ -29,7 +31,8 @@ internal static unsafe class FrameSnapshot
     /// and the #139 resolve (10/11) use, even though those are other programs.</summary>
     internal const uint ColorUnit = 13, DepthUnit = 14;
 
-    /// <summary>SOWX_WATER=0 stands the class down for the session.</summary>
+    /// <summary><c>/water on 0</c> stands the class down; <c>/water on 1</c> brings it back at the next
+    /// pass. Armed and idling rather than un-installed, so the toggle is live either way.</summary>
     internal static bool On { get; private set; } = true;
 
     /// <summary>The class can still work in this context: switched on, and nothing permanent has gone wrong.
@@ -56,25 +59,26 @@ internal static unsafe class FrameSnapshot
     private static uint _depFormat, _depMask;
     private static bool _hdr;
     private static readonly StandDown _down = new("FrameSnapshot");
-    /// <summary>SOWX_WATERDIAG readbacks left. A few rather than one: the first copy of a session can land
-    /// before the area has anything in it, and one all-black reading proves nothing.</summary>
-    private const int DiagCopies = 4;
+    /// <summary>Diagnostic readbacks still owed, as <c>/water diag &lt;n&gt;</c> asked for. A BUDGET, not a
+    /// boolean -- it counts down, and a session that never reaches the water pass keeps owing them. Ask for a
+    /// few rather than one: the first copy after the request can land before the area has anything in it, and
+    /// one all-black reading proves nothing.</summary>
     private static int _diagLeft;
     private static ExtenderLog? _log;
 
-    /// <summary>SOWX_WATER_TINT: metres of water the refracted colour survives (Beer-Lambert e-fold). Small
+    /// <summary><c>/water tint</c>: metres of water the refracted colour survives (Beer-Lambert e-fold). Small
     /// = murky harbour, large = clear tropical shallows.</summary>
     internal static float Tint { get; private set; } = 3f;
-    /// <summary>SOWX_WATER_WAVE: ripple amplitude multiplier. 0 = a mirror-flat plane, which is also the
+    /// <summary><c>/water wave</c>: ripple amplitude multiplier. 0 = a mirror-flat plane, which is also the
     /// cleanest way to tell a reflection bug from a normal-perturbation one.</summary>
     internal static float Wave { get; private set; } = 1f;
-    /// <summary>SOWX_WATER_SSR: how much of the reflection the screen-space march is allowed to supply where
+    /// <summary><c>/water ssr</c>: how much of the reflection the screen-space march is allowed to supply where
     /// it hits. 0 leaves the probe serving the whole reflection, which is the "is SSR the problem" switch.</summary>
     internal static float Ssr { get; private set; } = 1f;
-    /// <summary>#147 SOWX_WATER_FOAM: foam coverage multiplier. 0 removes both the whitecaps and the shore
+    /// <summary>#147 <c>/water foam</c>: foam coverage multiplier. 0 removes both the whitecaps and the shore
     /// wash, which is how you tell a foam bug from a wave bug.</summary>
     internal static float Foam { get; private set; } = 1f;
-    /// <summary>#147 SOWX_WATER_WIND: engine wind units per metre/second. <c>areaGlobalWind</c> is a world
+    /// <summary>#147 <c>/water wind</c>: engine wind units per metre/second. <c>areaGlobalWind</c> is a world
     /// vector with no documented scale -- the stock wind shaders only ever feed its magnitude into an
     /// arbitrary sway, so nothing in the engine pins it to a physical speed. The sea-state growth law DOES
     /// need m/s, so the conversion is a named dial rather than a constant buried in the shader, and the
@@ -85,7 +89,9 @@ internal static unsafe class FrameSnapshot
     /// coast at 8 m/s (a fresh breeze, Beaufort 5, whitecaps just starting) and a sheltered interior at half
     /// a metre per second. The previous 12 put that harbour in a 24 m/s storm.</para></summary>
     internal static float WindScale { get; private set; } = 4f;
-    /// <summary>#147 SOWX_WATER_TESS: triangle edges per wavelength the tessellator aims for. Six carries a
+    /// <summary>#147 config <c>water_tess</c>: triangle edges per wavelength the tessellator aims for. A
+    /// boot setting rather than a <c>/water</c> key because it sizes the GEOMETRY the patch generates, not
+    /// the look of it. Six carries a
     /// sine visibly; below four a swell reads as a faceted ridge. 0 stands displacement down altogether and
     /// leaves the fragment-side normal doing all the work, which is the pre-tessellation look and the way to
     /// tell a displacement bug from a shading one.</summary>
@@ -100,7 +106,7 @@ internal static unsafe class FrameSnapshot
     /// run at whatever that multiple happens to be. Monotone and never multiplied by anything live, which is
     /// the other half of the phase-jump rule.</summary>
     internal static float WaveTime => (float)_clock.Elapsed.TotalSeconds * Speed;
-    /// <summary>#147 SOWX_WATER_SPEED: how fast the field runs against real time. Deep-water dispersion says
+    /// <summary>#147 <c>/water speed</c>: how fast the field runs against real time. Deep-water dispersion says
     /// a 10 m wave travels at 4 m/s and that IS the physics -- but NWN's world units are not metres (a tile
     /// is ten units and a person is two), so the honest statement is that the scene's scale and the wave
     /// model's disagree, and this is where the disagreement is absorbed. Halved by observation: at 1.0 the
@@ -108,24 +114,54 @@ internal static unsafe class FrameSnapshot
     internal static float Speed { get; private set; } = 0.5f;
     private static readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
 
+    private static float _bootTint, _bootWave, _bootSsr, _bootFoam, _bootWind, _bootSpeed;
+
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        On = Environment.GetEnvironmentVariable("SOWX_WATER") != "0";
-        Tint = Tunables.Float("SOWX_WATER_TINT", Tint);
-        Wave = Tunables.Float("SOWX_WATER_WAVE", Wave);
-        Ssr = Tunables.Float("SOWX_WATER_SSR", Ssr);
-        Foam = Tunables.Float("SOWX_WATER_FOAM", Foam);
-        WindScale = Tunables.Float("SOWX_WATER_WIND", WindScale);
-        TessSegments = Tunables.Float("SOWX_WATER_TESS", TessSegments);
-        Speed = Tunables.Float("SOWX_WATER_SPEED", Speed);
-        if (Environment.GetEnvironmentVariable("SOWX_WATERDIAG") == "1") _diagLeft = DiagCopies;
+        TessSegments = Settings.Float("water_tess", TessSegments, 0f, 64f);
+        _bootTint = Tint; _bootWave = Wave; _bootSsr = Ssr;
+        _bootFoam = Foam; _bootWind = WindScale; _bootSpeed = Speed;
     }
-
 
     internal static string Describe()
         => $"water {(On ? "on" : "off")}  tint {Tint:F2}  wave {Wave:F2}  ssr {Ssr:F2}  foam {Foam:F2}" +
-           $"  wind x{WindScale:F1}  speed {Speed:F2}  tess {TessSegments:F0}/wave max {TessMax:F0}";
+           $"  wind x{WindScale:F1}  speed {Speed:F2}  tess {TessSegments:F0}/wave max {TessMax:F0}" +
+           (_diagLeft > 0 ? $"  DIAG {_diagLeft} left" : "");
+
+    /// <summary>Live tuning behind <c>/water</c>; returns the old value, NaN for an unknown key. Same
+    /// no-lock reasoning as <see cref="PostChain.Tune"/>: independent floats, written from the input
+    /// thread, re-read per pass.</summary>
+    internal static float Tune(string key, float v)
+    {
+        float old;
+        switch (key)
+        {
+            case "on":    old = On ? 1f : 0f; On = v > 0f; break;
+            case "tint":  old = Tint; Tint = v; break;
+            case "wave":  old = Wave; Wave = v; break;
+            case "ssr":   old = Ssr; Ssr = v; break;
+            case "foam":  old = Foam; Foam = v; break;
+            case "wind":  old = WindScale; WindScale = v; break;
+            case "speed": old = Speed; Speed = v; break;
+            // A budget of readbacks, not a switch: v is how many copies to diagnose from here.
+            case "diag":  old = _diagLeft; _diagLeft = v > 0f ? (int)v : 0; break;
+            default: return float.NaN;
+        }
+        _log?.Info($"FrameSnapshot: /water {key} {v:F2} (was {old:F2}) -> {Describe()}");
+        return old;
+    }
+
+    /// <summary>Put every <c>/water</c> dial back to its boot value. The diagnostic budget has no boot value
+    /// and never should -- a readback is a live request, so reset spends none.</summary>
+    internal static void ResetTuning()
+    {
+        On = true;
+        Tint = _bootTint; Wave = _bootWave; Ssr = _bootSsr;
+        Foam = _bootFoam; WindScale = _bootWind; Speed = _bootSpeed;
+        _diagLeft = 0;
+        _log?.Info($"FrameSnapshot: /water reset -> {Describe()}");
+    }
 
     /// <summary>Clamp the tessellation ceiling to what the driver will actually generate. GL guarantees at
     /// least 64, so this is a formality -- but a level above the limit is an error, not a clamp.</summary>
@@ -200,7 +236,7 @@ internal static unsafe class FrameSnapshot
         return true;
     }
 
-    /// <summary>SOWX_WATERDIAG=1: read one pixel back out of BOTH framebuffers and say what is actually in
+    /// <summary><c>/water diag &lt;n&gt;</c>: read one pixel back out of BOTH framebuffers and say what is actually in
     /// them. Costs a full pipeline stall, so it runs a handful of times per session and never otherwise.
     /// <para>This exists because every cheaper signal about the copy is ambiguous. A raw depth texel displayed
     /// as grey saturates to white for any real geometry (depth is nonlinear -- almost everything sits above
@@ -282,7 +318,7 @@ internal static unsafe class FrameSnapshot
             return Fail($"the copy framebuffer is incomplete (0x{status:x})");
         }
         _log?.Info($"FrameSnapshot: framebuffer copy {w}x{h}, colour {(hdr ? "RGBA16F" : "RGBA8")}, " +
-                   $"depth 0x{_depFormat:x} -- one copy per frame, SOWX_WATER=0 disables");
+                   $"depth 0x{_depFormat:x} -- one copy per frame, /water on 0 disables");
         return true;
     }
 
@@ -360,6 +396,45 @@ internal static unsafe class FrameSnapshot
     internal static string Stats(int frames)
         => $"water: {Copies} copies, {Refusals} refused" + (frames > 0 ? $" over {frames} frames" : "");
 
+    /// <summary>The <c>/water</c> dial table, off-device: every key reachable, an unknown key reported, and
+    /// -- the one that bites -- every knob the check drove restored. A knob left at its test value ships as
+    /// the boot value, which is exactly how <c>/post viz</c> once booted every session into a debug view.</summary>
+    private static void CheckTuning(Action<bool, string> e)
+    {
+        ExtenderLog? quiet = _log; _log = null;
+        float tint = Tint, wave = Wave, ssr = Ssr, foam = Foam, wind = WindScale, speed = Speed;
+        bool on = On; int diag = _diagLeft;
+        try
+        {
+            e(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
+            foreach (string key in new[] { "on", "tint", "wave", "ssr", "foam", "wind", "speed", "diag" })
+                e(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
+            e(_diagLeft == 1, "diag is a BUDGET: the value set is the number of readbacks owed");
+            e(Describe().Contains("DIAG"), "...and Describe says how many are left while any are");
+            e(Tune("on", 0f) == 1f && !On && !Usable,
+              "/water on 0 stands the class down without touching the stand-down latch");
+            float boot = _bootTint; _bootTint = 0.25f;
+            ResetTuning();
+            e(Tint == 0.25f, "reset honours the BOOT value, not the hardcoded default");
+            e(On && _diagLeft == 0, "reset re-arms the class and spends no diagnostic readbacks");
+            _bootTint = boot;
+        }
+        finally
+        {
+            // Driven through Tune, so the knobs stamped come from the KEY TABLE rather than from a list
+            // written beside the restore -- an assertion built from the restore's own list passes whatever
+            // that list forgets, which is how /post viz shipped its test value as a boot value. Describe
+            // prints every knob, so a missed one surfaces as its own sentinel.
+            const float Sentinel = -12345f;
+            foreach (string key in new[] { "on", "tint", "wave", "ssr", "foam", "wind", "speed" })
+                Tune(key, Sentinel);
+            Tint = tint; Wave = wave; Ssr = ssr; Foam = foam; WindScale = wind; Speed = speed;
+            On = on; _diagLeft = diag;
+            e(!Describe().Contains("-12345"), "the check restores EVERY knob it drove");
+            _log = quiet;
+        }
+    }
+
     /// <summary>Off-device (run-demo.sh): the stage's own contracts, the ones a GPU would only report as a
     /// wrong-looking sea. Two are structural -- water reads the copy the pass list takes immediately before
     /// it, and the probe is what the reflection falls back to -- and both are text checks on the source that
@@ -368,6 +443,8 @@ internal static unsafe class FrameSnapshot
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"FrameSnapshot.SelfCheck FAIL: {w}"); } }
+
+        CheckTuning(E);
 
         string fs = Fs;
         E(fs.Contains("uniform sampler2D uFbColor") && fs.Contains("uniform sampler2D uFbDepth"),
@@ -503,7 +580,7 @@ internal static unsafe class FrameSnapshot
             SowxSeaState(fetch, bodySize, d.dif.w, hs, lp);
             lp = min(lp, bodyMin * 0.6);
             // Water this flat has no shape to resolve, whatever its wavelength -- a millpond is one triangle.
-            // SOWX_WATER_TESS=0 lands here too, which is how displacement is stood down whole.
+            // A water_tess of 0 lands here too, which is how displacement is stood down whole.
             float seg = (hs < 0.02 || uTessDials.x < 0.5) ? 1e6 : lp / uTessDials.x;
 
             gl_TessLevelOuter[0] = SowxEdgeLevel(tcWorld[1], tcWorld[2], seg, uTessDials.y);
@@ -764,7 +841,7 @@ internal static unsafe class FrameSnapshot
         uniform int uSceneEnv;
         uniform int uCapture;
         uniform float uAlphaCut;
-        // SOWX_WATER_TINT / _WAVE / _SSR / _FOAM: (e-fold depth in metres, wave amplitude scale,
+        // The /water tint, wave, ssr and foam dials: (e-fold depth in metres, wave amplitude scale,
         // screen-space reflection weight, foam scale).
         uniform vec4 uWaterDials;
         out vec4 frag;
@@ -891,7 +968,7 @@ internal static unsafe class FrameSnapshot
         void main()
         {
             SowxDraw d = uDraw[vDraw];
-            // SOWX_LIGHTVIZ 4 is the coverage view: cyan is owned-lit and magenta owned-fullbright, so
+            // /draw viz 4 is the coverage view: cyan is owned-lit and magenta owned-fullbright, so
             // water takes BLUE -- the whole question that view answers is "which renderer drew this", and a
             // water surface sharing the lit colour would hide the class that is hardest to tell apart.
             if (uViz == 4) { frag = vec4(0.0, 0.0, 1.0, 1.0); return; }

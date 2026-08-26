@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -47,7 +48,7 @@ namespace Sowx.Services.Render;
 /// so the iterator's existing <c>Find</c> serves both. The table is rebuilt wholesale at a frame boundary
 /// (enrollment, every <see cref="EnrollEvery"/> frames, before the owned block) -- that is the frame-atomic
 /// swap. The only mid-frame mutation is revocation, which is safe in both directions because suppression is
-/// gated on the per-pass draw generation. <c>SOWX_OWNDRAW=0</c> kill switch. Hot path allocates nothing.</para>
+/// gated on the per-pass draw generation. <c>/vanilla</c> is the kill switch. Hot path allocates nothing.</para>
 /// <para>#128: CREATURES join it, and they arrive by relaxing two things rather than by a new path. The
 /// engine draws them from <c>Scene::RenderDynamicGeometry</c> -- buckets 2 and 3, but through the same
 /// <c>RenderDrawBucket</c> the capture already brackets -- so what actually kept them out was BatchService's
@@ -134,21 +135,6 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// <summary>aurMatrixStack layout (Ghidra GLRender::PushMatrix/PopMatrix/aurMatrixStack::SetIdentity):
     /// stride 0x58 per stack, top matrix (row-major float[16]) at +0x18. Modes: PROJECTION=0, VIEW=1.</summary>
     internal const int StackStride = 0x58, StackTop = 0x18, ModeProjection = 0, ModeView = 1;
-    /// <summary>VDO layout (Ghidra RenderVertexData/SetVertexDataObject): +0xc VAO id, vertex item table
-    /// {offset,size} at +0x48 (count +0x50), element item table at +0x58 (count +0x60).</summary>
-    internal const int VdoVao = 0xc, VdoVertItems = 0x48, VdoVertCount = 0x50, VdoElemItems = 0x58, VdoElemCount = 0x60;
-    /// <summary>Part field offsets (BatchService, Ghidra RenderDrawBucket/PartTriMesh::Draw).</summary>
-    internal const int PartNode = 0x88, PartMaterial = 0x58, PartTexRotate = 0xb0, PartTile = 0x98;
-    /// <summary>#126: the part's LOCAL bounding box, min at +0x64 and max at +0x70 -- the pair
-    /// <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 hands to <c>BoxAbovePlane</c>, and the same one
-    /// <c>SceneInputs</c>/<c>CasterPass</c> cull against. Its centre is the blended sort key.</summary>
-    internal const int PartBboxMin = 0x64, PartBboxMax = 0x70;
-    /// <summary>#126: the part's own alpha multiplier (<c>PartTriMesh::GetIsOpaque</c>'s first term). Read
-    /// live: it is animated state.</summary>
-    internal const int PartAlphaOff = 0xa0;
-    /// <summary>Model matrix at MdlNode+0x18 -- RenderDrawBucket @0x46d060 passes exactly that address to
-    /// RenderInterface::SetModelMatrix, and only for matrix-class parts (node+0x80 &amp; 0x1e).</summary>
-    internal const int NodeMatrix = 0x18, NodeFlags = 0x80;
     /// <summary>The part's MdlNode (part+0x8) and its material colours, from Ghidra
     /// <c>PartTriMesh::MatStatic</c> @0x450560, which calls <c>SetMaterialv(prop 1, node+0xf4)</c>,
     /// <c>SetMaterialv(prop 2, node+0xe8)</c> and <c>SetMaterialv(prop 3, part+0x7c)</c>. Prop 3 takes the
@@ -176,9 +162,6 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// <summary>A parameter list longer than this is not a .mtr, it is a bad pointer -- refuse it rather than
     /// walk off into the heap. Real materials declare a handful.</summary>
     internal const int MaxParams = 64;
-    /// <summary>SharedMaterial override on the Material (Ghidra <c>Material::GetTexture</c> @0x4c5810): its
-    /// own eleven texture slots at shared+0xd8+i*0x10 win over the Material's own three.</summary>
-    internal const int MatShared = 0xd0;
     /// <summary>The SharedMaterial's own parameter list -- the one the .mtr's <c>parameter float &lt;Name&gt;
     /// &lt;value&gt;</c> lines are parsed onto. Ghidra <c>Material::SetMaterialParam</c> @0x4c5d70 walks
     /// <c>*(shared+0x1d0)</c> for <c>*(int*)(shared+0x1d8)</c> records of the same 100-byte layout.</summary>
@@ -276,8 +259,8 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// <summary>The depth prepass could not build (or glColorMask is missing) -- latched, and the colour pass
     /// simply shades every fragment as it did before #119.</summary>
     private static bool _depthFailed;
-    /// <summary>SOWX_DEPTHPREPASS=0: skip the prepass, which is the A/B for its own acceptance number.</summary>
-    private static bool _depthPrepass = true;
+    /// <summary><c>/draw prepass 0</c>: skip the prepass, which is the A/B for its own acceptance number.</summary>
+    private static bool _depthPrepass = DefPrepass;
     /// <summary>Every owned vertex stage that ran carries <see cref="ClipExpr"/> under an invariant
     /// qualifier. False = a #92 override rewrote one, and the prepass cannot re-test its depth.</summary>
     private static bool _vsDepthSafe = true;
@@ -309,7 +292,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// origin until it does.</summary>
     internal static Vector3 PlayerPos =>
         _runtime == null ? default : *(Vector3*)(_runtime + RtPlayerPos);
-    /// <summary>SOWX_LIGHTVIZ. 1..3 and 6 attribute a dim (or a too-shiny) frame to a lighting TERM instead
+    /// <summary><c>/draw viz N</c>. 1..3 and 6 attribute a dim (or a too-shiny) frame to a lighting TERM instead
     /// of guessing from the composite; 5 is the local-cube term alone; 4 is the coverage map -- owned draws
     /// paint flat (cyan lit / magenta fullbright) and everything still textured is geometry the engine's own
     /// GL 3.3 walk drew, which no other signal makes visible. Each mode is documented where it branches, in
@@ -327,13 +310,13 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// <summary>Highest mode <see cref="_lightViz"/> accepts. Raise it when a stage adds one, or the new
     /// mode is silently discarded at the parse.</summary>
     internal const int LightVizMax = 21;
-    private static int _lightViz;
-    /// <summary>SOWX_AOTEST=1: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
+    private static int _lightViz = DefViz;
+    /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
     /// frame looks WRONG on purpose (the diffuse's red channel is not an occlusion map); what it proves is
     /// that a material which does declare one will be sampled. No shipped content uses texture7 yet, so
     /// without this there is nothing to point the feature at.</summary>
-    private static bool _aoTest;
+    private static bool _aoTest = DefAoTest;
     private static int _locViz = -1;
     /// <summary>#121: this draw is going into the <see cref="EnvProbe"/> cube, not onto the screen. The lit
     /// and water stages read it, so a capture never samples the probe -- which is currently an attachment of
@@ -354,8 +337,8 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// forever while the iterator keeps suppressing parts.</summary>
     private static bool _batchUnavailable;
     private static bool _mirrorBad;
-    /// <summary>SOWX_OWNLIGHT=0 forces every owned part back to the #82 fullbright variant (the lighting A/B).</summary>
-    private static bool _lighting = true;
+    /// <summary><c>/draw light 0</c> forces every owned part back to the #82 fullbright variant (the lighting A/B).</summary>
+    private static bool _lighting = DefLighting;
     /// <summary>RenderInterface::IsEnabled -- queried for cap 5 (LIGHTING) once per owned pass.</summary>
     private static delegate* unmanaged<int, byte> _isEnabled;
     /// <summary>The AuroraEnableEnums value for lighting. <c>MatStatic</c>/<c>RenderFlat</c> both branch on
@@ -396,7 +379,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// <summary>#134: a small budget of watched-part draw-side lines, so following one part through the owned
     /// loop costs a handful of log lines rather than one per frame forever.</summary>
     private static int _watchDrawLeft = 20;
-    /// <summary>#134: how much of the SOWX_DUMPTEX population we enrolled, and how much of it we actually
+    /// <summary>#134: how much of the <c>dumptex</c> population we enrolled, and how much of it we actually
     /// submit each frame. The gap between them, and between both and the engine's own draw count, is the
     /// only honest answer to "is that thing on screen ours".</summary>
     private static int _watchEnrolled;
@@ -445,7 +428,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     private static bool _takeOverflow, _ambientFallbackLogged, _loggedOnce;
     private static uint _clusterOverflow;
     /// <summary>#119 measurement: prepass GPU time, and the fragments the COLOUR pass actually shaded.
-    /// samples/screen-pixel is the overdraw figure, and its move with SOWX_DEPTHPREPASS is what the prepass
+    /// samples/screen-pixel is the overdraw figure, and its move with <c>/draw prepass</c> is what the prepass
     /// is worth -- both are period averages on the [owned] line.</summary>
     /// <summary>...and the shading pass's own GPU time. Frame time cannot answer "is the prepass worth it"
     /// on a vsync-capped display -- both modes sit on the cap and the saving becomes headroom -- so the A/B
@@ -458,8 +441,8 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// <summary>#152 colour LOD: a part whose bbox projects to fewer PIXELS than this is skipped -- and
     /// STAMPED, so the engine does not draw it either: sub-pixel geometry is nobody's to render. The classic
     /// LOD trade NWN never had; a whole-area camera is full of parts a fraction of a pixel tall.
-    /// <c>SOWX_LOD_PX</c> overrides (0 disables); raise toward 2-3 for aggressive distance thinning.</summary>
-    private static float _lodPx = 1.0f;
+    /// <c>/draw lodpx</c> tunes it (0 disables); raise toward 2-3 for aggressive distance thinning.</summary>
+    private static float _lodPx = DefLodPx;
     /// <summary>Projection scale for the LOD test: <c>proj.M22 * viewportH / 2</c> -- world radius over
     /// distance times this = radius in pixels. Captured per pass beside the eye.</summary>
     private static float _lodScale;
@@ -562,7 +545,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         FrameRegistry.Global.Register(FramePhase.PostPresent, 20, EndFrame, "OwnedDrawService.endFrame", log);
         // #175: the whole pass roll-call, in one walk over one declared table. Attach is ahead of every check
         // because #129's asserts that the ownable-bucket list AGREES with whether owned water can draw -- and
-        // SOWX_WATER=0 is exactly the case where it must, so water's knobs have to be read first.
+        // /water on 0 is exactly the case where it must, so water's knobs have to be read first.
         RenderPasses.Register(log);
         PassRegistry.SelfCheck(log);
         PassRegistry.Global.Attach(log);
@@ -579,8 +562,11 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         // Every pass's own check. Advisory by convention -- the checks that GATE arming are the contract ones
         // below, which the passes do not own.
         PassRegistry.Global.RunSelfChecks(log);
-        if (Environment.GetEnvironmentVariable("SOWX_OWNDRAW") == "0" || GameGate.Locked)
-        { log.Info("OwnedDrawService: stood down (SOWX_OWNDRAW=0 or SOWX_LOCKCHAT)"); return; }
+        // #179: SOWX_OWNDRAW is gone rather than moved -- /vanilla was already the same switch, only better
+        // (a frame edge, no relaunch, and it stands the shadow and batching sides down too). The service now
+        // arms unconditionally and idles behind RenderMode.Owned, which every owned-render site already reads.
+        if (GameGate.Locked)
+        { log.Info("OwnedDrawService: stood down (lockchat)"); return; }
         // never arm on a broken contract: the misrender either predicts must not ship
         if (!SortSelfCheck(log) || !ShaderContract.SelfCheck(log)) return;
         // #128: same rule. A wrong gob offset draws a creature at the wrong alpha and a leaky refused-gob set
@@ -619,23 +605,13 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
             SymbolMap.FadeDoors, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnFadeDoors);
         _repackSlot = hooks.Chain(SymbolMap.VdoRepack,   // shared symbol: batcher + owned-cast invalidate too (#88)
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepackHook, RepackPriority);
-        _lighting = Environment.GetEnvironmentVariable("SOWX_OWNLIGHT") != "0";
-        _depthPrepass = Environment.GetEnvironmentVariable("SOWX_DEPTHPREPASS") != "0";
-        if (float.TryParse(Environment.GetEnvironmentVariable("SOWX_LOD_PX"), System.Globalization.NumberStyles.Float,
-                           System.Globalization.CultureInfo.InvariantCulture, out float lp) && lp >= 0f) _lodPx = lp;
-        // The ceiling is a REAL gate, not a formality: a value past it leaves _lightViz at 0 and the mode
-        // does nothing at all, with no line to say so. It has to move with every mode added -- #129's water
-        // views (9..13) were added without it and read as "LIGHTVIZ does not work".
-        if (int.TryParse(Environment.GetEnvironmentVariable("SOWX_LIGHTVIZ"), out int viz)
-            && viz >= 0 && viz <= LightVizMax)
-            _lightViz = viz;
-        else if (Environment.GetEnvironmentVariable("SOWX_LIGHTVIZ") != null)
-            log.Info($"OwnedDrawService: SOWX_LIGHTVIZ must be 0..{LightVizMax} -- ignored, no viz mode is on");
-        _aoTest = Environment.GetEnvironmentVariable("SOWX_AOTEST") == "1";
-        _sunWorldBias = Tunables.Float("SOWX_CSM_BIAS", _sunWorldBias);
+        // #179: the six look/debug dials above are /draw's, not the environment's -- the code defaults ARE
+        // the boot values and nothing here reads a knob for them any more.
         // #137: the skinmesh class. Two independent things must hold -- the engine's bone array must resolve
         // (nothing to copy without it) and the class must have a capture hook, which BatchService reports.
-        _skinning = Environment.GetEnvironmentVariable("SOWX_OWNSKIN") != "0";
+        // Config bucket (ADR 0013): a capability gate that decides what the vertex stages are BUILT from, so
+        // it cannot move mid-session and is not a command.
+        _skinning = Settings.Bool("ownskin", true);
         if (_skinning)
         {
             _bones = (float*)Native.Sym(SymbolMap.GlRenderBones);
@@ -648,14 +624,104 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         // replaces. Everything above this line has already returned in that case.
         PassRegistry.Global.Install(log, hooks);
         _armed = _origRsp != null && _origFade != null;
-        if (_armed && !_lighting) log.Info("OwnedDrawService: SOWX_OWNLIGHT=0 -- owned parts stay fullbright (#82 behaviour)");
-        if (_armed && !_depthPrepass) log.Info("OwnedDrawService: SOWX_DEPTHPREPASS=0 -- no depth prepass, the colour pass shades every fragment");
         if (_armed) log.Info(_skinning
-            ? "OwnedDrawService: #137 skinmeshes owned -- posed per frame off GLRender::m_bones (SOWX_OWNSKIN=0 disables)"
+            ? "OwnedDrawService: #137 skinmeshes owned -- posed per frame off GLRender::m_bones (ownskin=0 in sowx.cfg disables)"
             : "OwnedDrawService: skinmeshes stay engine-drawn (cloaks, robes, tails)");
+        if (_armed) log.Info($"OwnedDrawService: /draw {DescribeTuning()}");
         log.Info(_armed
-            ? "OwnedDrawService: armed -- owned world pass at the #132 frame anchor, Scene::FadeDoors (SOWX_OWNDRAW=0 disables)"
+            ? "OwnedDrawService: armed -- owned world pass at the #132 frame anchor, Scene::FadeDoors (/vanilla disables)"
             : $"OwnedDrawService: {(_origRsp == null ? "RenderSinglePass" : "Scene::FadeDoors")} hook failed -- owned world pass unavailable");
+    }
+
+    /// <summary>#179: the boot values <c>/draw reset</c> returns to. Consts rather than a captured snapshot,
+    /// because with the env reads gone the code default IS the boot value -- and a const cannot drift from
+    /// the field initialiser the way a hand-copied literal did.</summary>
+    private const bool DefLighting = true, DefPrepass = true, DefAoTest = false;
+    private const float DefLodPx = 1.0f, DefSunBias = 0.06f;
+    private const int DefViz = 0;
+
+    /// <summary>The owned pass's live dials, for the <c>/draw</c> echo and the arm-time line.</summary>
+    internal static string DescribeTuning() =>
+        $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  lodpx {_lodPx:F2}  " +
+        $"viz {_lightViz}/{LightVizMax}  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}";
+
+    /// <summary>Live tuning setter behind <c>/draw</c>. Returns the old value, or NaN for an unknown key.
+    /// <para>Same threading argument as <c>/light</c>: each dial is an independent field written from the
+    /// input thread and read by the render thread on its next pass, so a frame that catches one changed and
+    /// one not is one frame of a value the user is dragging anyway. Booleans are set as 0/1.</para>
+    /// <para>The viz ceiling is a REAL gate, not a formality: a value past it used to leave the mode at 0
+    /// doing nothing, with no line to say so -- #129's water views (9..13) read as "LIGHTVIZ is broken" for
+    /// exactly that reason. Clamped rather than refused, so the echo reports what is actually running.</para></summary>
+    internal static float Tune(string key, float v)
+    {
+        float old;
+        switch (key)
+        {
+            case "light":    old = _lighting ? 1f : 0f; _lighting = v != 0f; break;
+            case "prepass":  old = _depthPrepass ? 1f : 0f; _depthPrepass = v != 0f; break;
+            case "lodpx":    old = _lodPx; _lodPx = v; break;
+            case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
+            case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
+            case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
+            default: return float.NaN;
+        }
+        _log?.Info($"OwnedDrawService: /draw {key} {v:F2} (was {old:F2}) -> {DescribeTuning()}");
+        return old;
+    }
+
+    /// <summary>Put every <c>/draw</c> dial back to the value this session booted with.</summary>
+    internal static void ResetTuning()
+    {
+        _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
+        _lodPx = DefLodPx; _sunWorldBias = DefSunBias; _lightViz = DefViz;
+        _log?.Info($"OwnedDrawService: /draw reset -> {DescribeTuning()}");
+    }
+
+    /// <summary>#179: an owned program must be relinked before a compile-time constant it bakes in
+    /// (<c>$BAND$</c>) can be seen. Set from the input thread, consumed inside the 4.6 bracket by
+    /// <see cref="TakeProgramRebuild"/> -- deleting a GL name from the chat thread would be a delete on the
+    /// wrong context.</summary>
+    private static volatile bool _rebuildPrograms;
+
+    /// <summary>Ask for a relink at the next owned pass. Cold: one chat command.</summary>
+    internal static void RequestProgramRebuild() => _rebuildPrograms = true;
+
+    /// <summary>Headless check of the <c>/draw</c> contract: every documented key is reachable, an unknown one
+    /// is reported rather than silently ignored, the viz ceiling clamps instead of no-opping, and reset
+    /// returns the boot values. Restores whatever it touched -- it runs before the first frame, so a dial left
+    /// at 3 would be a debug view nobody asked for.</summary>
+    internal static void TuneSelfCheck(ExtenderLog log)
+    {
+        ExtenderLog? quiet = _log; _log = null;
+        bool ok = float.IsNaN(Tune("nope", 1f));
+        void E(bool c, string w) { if (!c) { ok = false; log.Info($"OwnedDrawService.TuneSelfCheck FAIL: {w}"); } }
+
+        bool li = _lighting, dp = _depthPrepass, ao = _aoTest;
+        float lx = _lodPx, cb = _sunWorldBias;
+        int vz = _lightViz;
+
+        foreach (string key in new[] { "light", "prepass", "lodpx", "viz", "aotest", "csmbias" })
+            E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
+        E(_lighting && _depthPrepass && _aoTest && _lodPx == 1f && _sunWorldBias == 1f && _lightViz == 1,
+          "every key lands on its own field");
+        E(Tune("light", 0f) == 1f && !_lighting, "a boolean dial takes 0 and reports its old value as 1");
+        E(Tune("viz", LightVizMax + 5f) == 1f && _lightViz == LightVizMax,
+          "a viz mode past the ceiling clamps to it rather than silently doing nothing");
+        E(Tune("viz", -3f) == LightVizMax && _lightViz == 0, "...and a negative one clamps to off");
+
+        ResetTuning();
+        E(_lighting == DefLighting && _depthPrepass == DefPrepass && _aoTest == DefAoTest
+          && _lodPx == DefLodPx && _sunWorldBias == DefSunBias && _lightViz == DefViz,
+          "reset returns every dial to its boot value");
+        E(DescribeTuning().Contains("light") && DescribeTuning().Contains("prepass")
+          && DescribeTuning().Contains("lodpx") && DescribeTuning().Contains("viz")
+          && DescribeTuning().Contains("aotest") && DescribeTuning().Contains("csmbias"),
+          "the echo names every key the command accepts");
+
+        _lighting = li; _depthPrepass = dp; _aoTest = ao; _lodPx = lx; _sunWorldBias = cb; _lightViz = vz;
+        _log = quiet;
+        log.Info(ok ? "OwnedDrawService.TuneSelfCheck: passed"
+                    : "OwnedDrawService.TuneSelfCheck: FAILED -- the /draw knob table drifted from its keys");
     }
 
     /// <summary>#132's anchor site. After-original: <c>Scene::FadeDoors</c> is engine bookkeeping the owned
@@ -989,8 +1055,8 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
                    PassRegistry.Global.Stats(_frames) + ", " +
                    $"enrolls={_enrolls} revokes={_revokes}; " +
                    // #119: the prepass's own cost, and what it bought. samples/px is the overdraw figure --
-                   // run the same scene with SOWX_DEPTHPREPASS=0 and the difference IS the pass's worth.
-                   (!_depthPrepass ? "prepass OFF (SOWX_DEPTHPREPASS=0)"
+                   // run the same scene with /draw prepass 0 and the difference IS the pass's worth.
+                   (!_depthPrepass ? "prepass OFF (/draw prepass 1 restores it)"
                     : _progDepth == 0 ? "prepass unavailable"
                     : $"prepass {(float)_prepassDraws / _frames:F0} draws/frame" +
                       (_prepassKeyed == 0 ? "" : $" ({(float)_prepassKeyed / _frames:F0} of them dissolving, keyhole stage)") +
@@ -1000,7 +1066,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
                        ? $", shaded {_qSamples.Avg / 1e6:F2}M samples/frame over {_lastPixels / 1e6f:F2}Mpx " +
                          $"(overdraw x{_qSamples.Avg / _lastPixels:F2})"
                        : "") +
-                   $", LOD skipped {_lodSkipped / (float)Math.Max(_frames, 1):F0} sub-pixel draws/frame (SOWX_LOD_PX={_lodPx})" +
+                   $", LOD skipped {_lodSkipped / (float)Math.Max(_frames, 1):F0} sub-pixel draws/frame (/draw lodpx {_lodPx})" +
                    (_qColour.Measured ? $", colour passes {_qColour.Avg / 1e6:F3}ms (opaque+blended+additive)" : "") +
                    (_qParticles.Measured || _qWater.Measured || _qPost.Measured
                        ? $", gpu split: particles {_qParticles.Avg / 1e6:F3} / water {_qWater.Avg / 1e6:F3} / " +
@@ -1011,7 +1077,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
                    // Which parts the probe reaches: with no area env map it is the env-mapped materials
                    // alone, which is what vanilla binds a texture for.
                    $" {(_sceneEnv && EnvProbe.AreaWide ? "area-wide" : "env-mapped parts only")}" +
-                   (_sceneEnv && !EnvProbe.AreaWide ? " (area declares one; SOWX_PROBE_AREAWIDE=1 honours it)" : "") + "; " +
+                   (_sceneEnv && !EnvProbe.AreaWide ? " (area declares one; /probe areawide 1 honours it)" : "") + "; " +
                    OwnedLights.Diag(_clusterOverflow) +
                    // The coverage question -- "what is the engine still drawing, and why?" -- was only
                    // answerable from the one-shot enroll diag, which a healthy session prints once at startup
@@ -1110,7 +1176,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
                        _litSceneEnv = -1;
     /// <summary>Shadow depth bias in WORLD units, sent per cascade as a fraction of that cascade's published
     /// depth range so it stays a constant world distance whatever the fit. Small because the receiver's normal
-    /// offset carries most of the acne fight; SOWX_CSM_BIAS tunes it.</summary>
-    private static float _sunWorldBias = 0.06f;
+    /// offset carries most of the acne fight; <c>/draw csmbias</c> tunes it.</summary>
+    private static float _sunWorldBias = DefSunBias;
 
 }

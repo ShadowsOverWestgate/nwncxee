@@ -14,7 +14,8 @@ namespace Sowx.Graphics;
 /// engine context, server-wait, drain again -- 2 switches/frame, proving zero GL errors and no state
 /// leakage in live play. Per #70: buffers/fences share, VAOs do not -- own 4.6-side VAOs are the
 /// tracer-draw ticket's job, done inside the bracket via <see cref="Available"/>/<see cref="Context"/>.
-/// <para>Opt-out: <c>SOWX_GL46=0</c>. Hot path allocates nothing (cached fn pointers, GL fence objects
+/// <para>Opt-out: <c>gl46=0</c> in <c>sowx.cfg</c> (ADR 0013 bucket 2 -- the capability gate is
+/// decided before the context is probed). Hot path allocates nothing (cached fn pointers, GL fence objects
 /// only); the ~900-frame stats line is the sole cold part.</para>
 /// </summary>
 public sealed unsafe class GlContextService : IExtenderService
@@ -50,9 +51,9 @@ public sealed unsafe class GlContextService : IExtenderService
         _log = log;
         // #170: the 4.6-context bracket wraps the present, so it is the LAST pre-present participant.
         FrameRegistry.Global.Register(FramePhase.PrePresent, 10, OnFrame, "GlContextService.bracket", log);
-        _disabled = Environment.GetEnvironmentVariable("SOWX_GL46") == "0" || GameGate.Locked;
+        _disabled = !Settings.Bool("gl46", true) || GameGate.Locked;
         log.Info(_disabled
-            ? "GlContextService: stood down (SOWX_GL46=0 or SOWX_LOCKCHAT)"
+            ? "GlContextService: stood down (gl46=0 or lockchat in sowx.cfg)"
             : "GlContextService: armed -- 4.6 share-listed context on first presented frame");
     }
 

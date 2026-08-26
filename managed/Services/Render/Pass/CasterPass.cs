@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Services.Render;
 using Sowx.Graphics;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -39,7 +40,8 @@ namespace Sowx.Services.Render;
 /// engine's skinning. No engine replay either way, and a part not seen this frame simply has no record -- its
 /// shadow blinks rather than lying about where it is.</para></para>
 /// <para>Gated on <see cref="RenderMode.Owned"/> so the vanilla toggle reverts it frame-atomically.
-/// <c>SOWX_CASTERS=0</c> kill switch (<c>SOWX_SKINCAST=0</c> for the skinned half alone). The frame path
+/// The <c>casters=0</c> config setting is the kill switch (<c>skincast=0</c> for the skinned half alone), and
+/// <c>/shadow</c> carries the look knobs. The frame path
 /// allocates nothing.</para>
 /// </summary>
 public sealed unsafe class CasterPass : IExtenderService
@@ -122,13 +124,15 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>Cascade ceiling. The receiver's <c>uSunVp</c> array is sized from this, so raising it means
     /// raising both -- <see cref="SelfCheck"/> pins them together.</summary>
     internal const int MaxCascades = 4;
-    /// <summary>Cascades rendered per frame (<c>SOWX_CSM_CASCADES</c>).</summary>
+    /// <summary>Cascades rendered per frame (config <c>csm_cascades</c>).</summary>
     private static int _cascades = 4;
-    /// <summary>Per-cascade face size in texels (<c>SOWX_CSM_SIZE</c>).</summary>
+    /// <summary>Per-cascade face size in texels (config <c>csm_size</c>).</summary>
     private static int _mapSize = 2048;
-    /// <summary>World units the outermost cascade reaches (<c>SOWX_CSM_DIST</c>). Sun shadow cost is bound by
+    /// <summary>World units the outermost cascade reaches (<c>/shadow dist</c>). Sun shadow cost is bound by
     /// this and nothing else: the fit follows the player, so an area ten times the size costs the same.</summary>
-    private static float _maxDist = 120f;
+    private static float _maxDist = MaxDistBoot;
+    /// <summary>Boot value of <see cref="_maxDist"/>, and what <c>/shadow reset</c> restores.</summary>
+    private const float MaxDistBoot = 120f;
 
     /// <summary>The depth array holding the cascades (0 = none yet). Read by the owned colour pass, in the
     /// same 4.6 context, on the frame after the render.</summary>
@@ -146,18 +150,18 @@ public sealed unsafe class CasterPass : IExtenderService
     /// into the device units its comparison runs in.</summary>
     internal static readonly float[] CascadeRange = new float[MaxCascades];
     /// <summary>Local-light cube ceiling: how long the receiver's <c>uLocalLight</c> array is, and the most
-    /// <c>SOWX_CUBE_COUNT</c> may ask for. Raising it costs uniform slots only -- the cube array itself is
+    /// <c>cube_count</c> may ask for. Raising it costs uniform slots only -- the cube array itself is
     /// sized from the CONFIGURED count, so an unused ceiling is free.</summary>
     internal const int MaxCubes = 64;
-    /// <summary>Local lights that get a shadow cube (<c>SOWX_CUBE_COUNT</c>, 0 = off) and the per-face size
-    /// (<c>SOWX_CUBE_SIZE</c>). The interim system's receiver could not go past 32 lights at all because it
+    /// <summary>Local lights that get a shadow cube (config <c>cube_count</c>, 0 = off) and the per-face size
+    /// (config <c>cube_size</c>). The interim system's receiver could not go past 32 lights at all because it
     /// unrolled a sampler per slot, and a cube ARRAY has no such ceiling -- the cost is VRAM and nothing else.
     /// <para>#151 raised the default from 8 to 24: a torch-lit street routinely declares 60+ shadow-casting
     /// lights, and at 8 the budget's membership churned as the player walked, which is what read as shadows
     /// popping in and out. 24 cubes at 512px is ~300MB of DEPTH_COMPONENT24 across the live array and its
     /// bake mirror. It only became affordable once the slot stopped being the light's RANK -- a still cube
     /// costs its mover pass and nothing else, so the count that matters for CPU is how many lights MOVE, not
-    /// how many have a slot. Lower <c>SOWX_CUBE_COUNT</c> (or <c>SOWX_CUBE_SIZE</c>) on a small card.</para></summary>
+    /// how many have a slot. Lower <c>cube_count</c> (or <c>cube_size</c>) on a small card.</para></summary>
     private static int _cubeLights = 32, _cubeSize = 512;
     /// <summary>Near plane shared by every cube face. Bigger is better depth precision; it also means a
     /// caster closer to the light than this is not recorded, so it stays small.</summary>
@@ -172,10 +176,12 @@ public sealed unsafe class CasterPass : IExtenderService
     /// alias in and out as the fit shifts -- so this trades nothing visible for most of a far cascade's
     /// population: cascade 3 covers the whole area with ~12cm texels, and the small props that dominate a
     /// dense area's caster count vanish from exactly the views where they were noise. Per-VIEW, so cascade 0
-    /// (1,5cm texels) still bakes everything near the player. <c>SOWX_SHADOW_LOD</c> overrides; 0 disables.</summary>
+    /// (1,5cm texels) still bakes everything near the player. <c>/shadow lod</c> sets it; 0 disables.</summary>
     /// <summary>#152: default 0 = OFF at the user's request (parked for the M4 revisit) -- turn on with
-    /// SOWX_SHADOW_LOD=2.</summary>
-    private static float _lodTexels = 0f;
+    /// <c>/shadow lod 2</c>.</summary>
+    private static float _lodTexels = LodBoot;
+    /// <summary>Boot value of <see cref="_lodTexels"/>, and what <c>/shadow reset</c> restores.</summary>
+    private const float LodBoot = 0f;
     /// <summary>#151: per sun-cascade dirty RECT -- the texel-space bounds the mover pass last drew into.
     /// A composite restores only the union of last frame's rect and this frame's from the cache, instead of
     /// the whole 2048^2 layer: movers cluster around the PC, so the copy shrinks from 16MB to however much
@@ -252,14 +258,6 @@ public sealed unsafe class CasterPass : IExtenderService
     /// radius, so cascade 0 admits casters within 15u of the light axis and 135u along it.</para></summary>
     private static float FitMargin() => _maxDist;
 
-    /// <summary>Part field offsets: the bucket node at part+0x88 and its model matrix at node+0x18 (Ghidra
-    /// RenderDrawBucket @0x46d060, the same pair BatchService reads), and the part's bbox at part+0x64/+0x70
-    /// (SceneInputs's owned-cast collect reads these two for its own cull).</summary>
-    private const int PartNode = 0x88, PartMaterial = 0x58, NodeMatrix = 0x18,
-                      PartBboxMin = 0x64, PartBboxMax = 0x70;
-    /// <summary>VDO layout (Ghidra RenderVertexData/SetVertexDataObject): +0xc VAO id, vertex item table
-    /// {offset,size} at +0x48 (count +0x50), element item table at +0x58 (count +0x60).</summary>
-    private const int VdoVao = 0xc, VdoVertItems = 0x48, VdoVertCount = 0x50, VdoElemItems = 0x58, VdoElemCount = 0x60;
     /// <summary>Engine attribute location of the position stream, fixed for every engine program
     /// (GLRender::ConnectShaderData's bind table). A depth draw needs nothing else.</summary>
     private const uint EngPos = 0, LocPos = 0;
@@ -558,18 +556,16 @@ public sealed unsafe class CasterPass : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        if (Environment.GetEnvironmentVariable("SOWX_CASTERS") == "0" || GameGate.Locked)
-        { log.Info("CasterPass: stood down (SOWX_CASTERS=0 or SOWX_LOCKCHAT)"); return; }
+        if (!Settings.Bool("casters", true) || GameGate.Locked)
+        { log.Info("CasterPass: stood down (casters=0 or lockchat)"); return; }
         if (!SelfCheck(log)) return;
 
-        if (int.TryParse(Environment.GetEnvironmentVariable("SOWX_CSM_SIZE"), out int ms) && ms >= 256 && ms <= 8192) _mapSize = ms;
-        if (int.TryParse(Environment.GetEnvironmentVariable("SOWX_CSM_CASCADES"), out int cc) && cc >= 1 && cc <= MaxCascades) _cascades = cc;
-        _maxDist = Tunables.Float("SOWX_CSM_DIST", _maxDist);
-        if (_maxDist < 1f) _maxDist = 1f;
-        if (int.TryParse(Environment.GetEnvironmentVariable("SOWX_CUBE_COUNT"), out int cn) && cn >= 0 && cn <= MaxCubes) _cubeLights = cn;
-        if (float.TryParse(Environment.GetEnvironmentVariable("SOWX_SHADOW_LOD"), System.Globalization.NumberStyles.Float,
-                           System.Globalization.CultureInfo.InvariantCulture, out float lod) && lod >= 0f) _lodTexels = lod;
-        if (int.TryParse(Environment.GetEnvironmentVariable("SOWX_CUBE_SIZE"), out int cs) && cs >= 64 && cs <= 2048) _cubeSize = cs;
+        // Config bucket (ADR 0013): every one of these sizes an allocation or gates the arming, so it is a
+        // boot decision. The look knobs -- cascade distance and the LOD threshold -- are /shadow's.
+        _mapSize = Settings.Int("csm_size", _mapSize, 256, 8192);
+        _cascades = Settings.Int("csm_cascades", _cascades, 1, MaxCascades);
+        _cubeLights = Settings.Int("cube_count", _cubeLights, 0, MaxCubes);
+        _cubeSize = Settings.Int("cube_size", _cubeSize, 64, 2048);
 
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
@@ -585,7 +581,7 @@ public sealed unsafe class CasterPass : IExtenderService
         if (_repackSlot == null)
         { log.Info("CasterPass: could not chain VdoRepack -- refusing to arm on stale index ranges"); return; }
 
-        _skinned = Environment.GetEnvironmentVariable("SOWX_SKINCAST") != "0";
+        _skinned = Settings.Bool("skincast", true);
         if (_skinned)
         {
             _bones = (float*)Native.Sym(SymbolMap.GlRenderBones);
@@ -595,11 +591,39 @@ public sealed unsafe class CasterPass : IExtenderService
 
         _armed = true;
         log.Info($"CasterPass: armed -- owned multidraw-indirect caster submission into a {_cascades}x{_mapSize}" +
-                 $" sun cascade array out to {_maxDist:F0}u (SOWX_CSM_CASCADES/SOWX_CSM_SIZE/SOWX_CSM_DIST)" +
-                 $" and {_cubeLights}x{_cubeSize} local-light shadow cubes (SOWX_CUBE_COUNT/SOWX_CUBE_SIZE)" +
-                 (_skinned ? $", skinned casters posed from per-frame bone snapshots (SOWX_SKINCAST=0 disables)" : "") +
-                 "; needs BatchService's capture tables, so SOWX_BATCH=0 leaves it with nothing to enroll");
+                 $" sun cascade array out to {_maxDist:F0}u (config csm_cascades/csm_size, /shadow dist)" +
+                 $" and {_cubeLights}x{_cubeSize} local-light shadow cubes (config cube_count/cube_size)" +
+                 (_skinned ? ", skinned casters posed from per-frame bone snapshots (config skincast=0 disables)" : "") +
+                 "; needs BatchService's capture tables, so a disarmed batcher leaves it with nothing to enroll");
     }
+
+    /// <summary>The caster pass's live dials, for <c>/shadow</c> (ADR 0013 bucket 1). Both are look
+    /// judgements made while walking around -- the cascade reach and the sub-texel cull that trades far-away
+    /// detail for bake time -- and neither reallocates anything, which is what keeps them out of the config
+    /// file next to the map sizes.</summary>
+    internal static string Describe()
+        => $"dist {_maxDist:F0} lod {_lodTexels:F1} ({_cascades}x{_mapSize} cascades, {_cubeLights}x{_cubeSize} cubes)";
+
+    /// <summary>Set one dial, returning its old value; NaN when the key is not ours, which is how the
+    /// dispatcher knows to try the scene feed's dials instead.</summary>
+    internal static float Tune(string key, float v)
+    {
+        switch (key)
+        {
+            case "dist":
+                float od = _maxDist;
+                _maxDist = MathF.Max(v, 1f);
+                return od;
+            case "lod":
+                float ol = _lodTexels;
+                _lodTexels = MathF.Max(v, 0f);
+                return ol;
+            default: return float.NaN;
+        }
+    }
+
+    /// <summary>Back to the boot values.</summary>
+    internal static void ResetTuning() { _maxDist = MaxDistBoot; _lodTexels = LodBoot; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -744,8 +768,6 @@ public sealed unsafe class CasterPass : IExtenderService
         _ownedInstanceCasts++;
     }
 
-    /// <summary>VDO layout field the skinned capture re-reads: +0x14 mode (1 = indexed static).</summary>
-    private const int VdoMode = 0x14;
 
     /// <summary>Resolve a VDO item's index range, live out of the item tables. Every consumer re-reads it
     /// rather than caching it because <c>Repack()</c> MOVES items, and a stale index range does not read as an
@@ -1308,7 +1330,7 @@ public sealed unsafe class CasterPass : IExtenderService
                    (_skinNoSlot > 0 ? $", {_skinNoSlot} skinned draws refused a VDO slot (table reserved for rigid casters)" : "") +
                    (_skinDropped > 0 ? $", {_skinDropped} skinned draws dropped for want of a bone region" : "") +
                    (_boneStalls > 0 ? $" ({_boneStalls} frames of it on a bone-ring fence timeout)" : "") +
-                   $", LOD dropped {_lodCulled / (float)MathF.Max(_frames, 1):F0} sub-texel casters/frame (SOWX_SHADOW_LOD={_lodTexels}), " +
+                   $", LOD dropped {_lodCulled / (float)MathF.Max(_frames, 1):F0} sub-texel casters/frame (/shadow lod {_lodTexels}), " +
                    (_degenSum > 0 ? $"{_degenSum} DEGENERATE collects held back from the caches, " : "") +
                    $"{_ownedInstanceCasts / (float)MathF.Max(_frames, 1):F0} owned instance parts recast/frame, " +
                    $"{_cubeSkips / MathF.Max(_frames, 1):F1} cube faces skipped clean/frame, " +
@@ -1400,7 +1422,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <see cref="WalkRadius"/> for static geometry, plus an off-screen gob append for movers. #101 verified
     /// live that this holds -- no pop-in on approach, and rotating on the spot does not change which objects
     /// cast.
-    /// <para>ponytail: the gob append is still capped at <c>SOWX_SHADOWNEARRADIUS</c> (25u), a radius named
+    /// <para>ponytail: the gob append is still capped at <c>/shadow nearradius</c> (25u), a radius named
     /// and sized for the interim two-map scheme's near map, which the #98 cutover deleted. Static geometry
     /// reaches the full 120u; an off-screen MOVER past 25u casts into no cascade. Raise it if a distant
     /// creature is ever seen not casting -- it costs gobs appended per frame, which is why it is not simply

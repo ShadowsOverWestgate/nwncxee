@@ -8,7 +8,8 @@ namespace Sowx.Services.Perf;
 /// <summary>
 /// #79 (map #68, spec #77 M1): always-available on-screen FPS + frame-time readout -- the measurement
 /// instrument for every M1 A/B gate. One small top-right window drawn through the shared batch rig.
-/// Toggled at runtime by the <c>/fps</c> chat command; starts visible under <c>SOWX_FPS=1</c>.
+/// Toggled at runtime by the <c>/fps</c> chat command, which is the whole surface (#182): it starts
+/// hidden every session.
 /// <para>Hot path (every in-game frame) allocates nothing: dt accumulation is four longs; the text +
 /// vertex bake runs every <see cref="UpdateEvery"/> frames and writes into preallocated arrays.</para>
 /// </summary>
@@ -34,11 +35,10 @@ public sealed class FpsOverlayService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _visible = Environment.GetEnvironmentVariable("SOWX_FPS") == "1";
         CommandRegistry.Global.Register("/fps", "toggle the FPS overlay", _ => { Toggle(); return null; });
         if (GameGate.Locked) return;
         new Window(0, 0, 0, 0) { Focusable = false, DrawContent = Draw };
-        log.Info($"FpsOverlayService: registered (visible={_visible}; toggle with /fps)");
+        log.Info("FpsOverlayService: registered (hidden; toggle with /fps)");
     }
 
     /// <summary>Runtime toggle, wired to the <c>/fps</c> chat command (cold, input thread).</summary>

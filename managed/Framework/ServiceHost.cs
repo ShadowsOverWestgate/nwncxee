@@ -23,6 +23,10 @@ public static class ServiceHost
                      .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?
                      .InformationalVersion ?? "unknown"));
         var hooks = new HookService(log);
+        // ADR 0013 bucket 2, and this is as early as it goes: ahead of DISCOVERY, not just ahead of
+        // Initialize. Constructing a service runs its type initializer, and GameGate latches `lockchat` in
+        // one -- so a load after this line would pin the opt-out to its default and no-op it silently.
+        Settings.Load(log);
 
         // OrderBy(Name): Assembly.GetTypes() order is not stable across builds/runtimes,
         // so sort for deterministic init order. Replace with an explicit list if a real
@@ -45,6 +49,8 @@ public static class ServiceHost
         // caller inherits the rule rather than re-deriving it. Run()'s caller IS pre-main, so the gate's
         // "not yet" branch is the one under test here.
         ConfigFile.SelfCheck(log);
+        Settings.SelfCheck(log);   // #183: parse degrade, range rejection, and that /knobs lists only real keys
+        KnobSurface.Register();
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
         foreach (IExtenderService service in all)
         {

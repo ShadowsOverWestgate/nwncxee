@@ -1,12 +1,13 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
 /// <summary>
 /// Slice 2/3 of the shadow-map replacement (#65): continuously captures the pipeline's live inputs
-/// into <see cref="FrameInputs"/> for the renderer, and (under <c>SOWX_SHADOWDIAG=1</c>) logs a
+/// into <see cref="FrameInputs"/> for the renderer, and (under <c>/shadow diag 1</c>) logs a
 /// one-time human-readable dump. Hooks the camera view set and the light push, both **call-through**
 /// (observe, not replace). Always runs <see cref="ShadowMath.SelfCheck"/> (headless-safe).
 /// </summary>
@@ -32,8 +33,9 @@ public sealed unsafe class CameraCapture : IExtenderService
     private static int _lightsLogged;
     private const int LightLogCount = 6;
 
-    // PartLight field offsets read by SetLightGL (verified by disasm, research doc §6.4 + slice-2 diag).
-    private const int LightColor = 0x64, LightRange = 0x70, LightType = 0x80, LightDirPos = 0xac;
+    // The PartLight colour SetLightGL reads (verified by disasm, research doc §6.4 + slice-2 diag); the
+    // range/kind/direction triple it reads alongside is shared, in SceneLayout.
+    private const int LightColor = 0x64;
     private const float DirectionalRange = 1000f;   // sun/moon carry range ~100000 (infinite); points ~10.
     private const float DownwardZ = -0.05f;          // accept only clearly downward-travelling light (Z-up world).
 
@@ -42,7 +44,7 @@ public sealed unsafe class CameraCapture : IExtenderService
         _log = log;
         ShadowMath.SelfCheck(log);   // pure math, runs headless
 
-        if (Environment.GetEnvironmentVariable("SOWX_SHADOWS") == "0") return;   // one kill switch for the pipeline
+        if (!Settings.Bool("shadows", true)) return;   // one kill switch for the pipeline
 
         _viewOrig = (delegate* unmanaged<IntPtr, IntPtr, void>)hooks.Install(
             SymbolMap.SetViewTransform, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnSetViewTransform);
@@ -66,7 +68,7 @@ public sealed unsafe class CameraCapture : IExtenderService
             FrameInputs.CameraPos = new Vector3(v[0], v[1], v[2]);
             FrameInputs.CameraRot = new Quaternion(q[0], q[1], q[2], q[3]);
             FrameInputs.HasCamera = true;
-            if (!_camLogged)
+            if (SceneInputs.Diag && !_camLogged)
             {
                 _camLogged = true;
                 _log?.Info($"[shadowdiag] camera pos=({v[0]:F2},{v[1]:F2},{v[2]:F2}) " +
@@ -87,7 +89,7 @@ public sealed unsafe class CameraCapture : IExtenderService
             FrameInputs.CamFar = (float)far;
             if ((float)far > FrameInputs.FarMaxThisFrame) FrameInputs.FarMaxThisFrame = (float)far;
             FrameInputs.HasPerspective = true;
-            if (!_perspLogged)
+            if (SceneInputs.Diag && !_perspLogged)
             {
                 _perspLogged = true;
                 _log?.Info($"[shadowdiag] perspective fovy={fovy:F1} aspect={aspect:F3} near={near:F2} far={far:F1}");
@@ -110,11 +112,11 @@ public sealed unsafe class CameraCapture : IExtenderService
         if (_armed && GameGate.InModule && light != IntPtr.Zero)
         {
             byte* p = (byte*)light;
-            int type = *(int*)(p + LightType);
+            int type = *(int*)(p + LightKind);
             float range = *(float*)(p + LightRange);
             if (idx == -1 && type == 0 && range > DirectionalRange)   // the directional diffuse light = the sun
             {
-                float* d = (float*)(p + LightDirPos);
+                float* d = (float*)(p + LightDir);
                 // +0xac is the direction TO the light (the sun/moon high in the sky, Z-up +); the light
                 // TRAVELS the opposite way, so negate to get the travel direction the shadow map renders along.
                 Vector3 dir = new(-d[0], -d[1], -d[2]);
@@ -126,7 +128,7 @@ public sealed unsafe class CameraCapture : IExtenderService
                     FrameInputs.SunDir = dir;
                     FrameInputs.HasSun = true;
                 }
-                if (!_sunLogged)
+                if (SceneInputs.Diag && !_sunLogged)
                 {
                     _sunLogged = true;
                     _log?.Info($"[shadowdiag] SUN dir@0xac=({dir.X:F3},{dir.Y:F3},{dir.Z:F3}) range={range:F0} " +
@@ -134,10 +136,10 @@ public sealed unsafe class CameraCapture : IExtenderService
                 }
             }
             if (idx == -1) CaptureAreaTerm(p, type, scale);
-            if (_lightsLogged < LightLogCount)
+            if (SceneInputs.Diag && _lightsLogged < LightLogCount)
             {
                 _lightsLogged++;
-                float* dp = (float*)(p + LightDirPos);
+                float* dp = (float*)(p + LightDir);
                 float* col = (float*)(p + LightColor);
                 _log?.Info($"[shadowdiag] light#{_lightsLogged} idx={idx} type={type} range={range:F0} " +
                            $"dirpos@0xac=({dp[0]:F3},{dp[1]:F3},{dp[2]:F3}) col@0x64=({col[0]:F3},{col[1]:F3},{col[2]:F3})");
@@ -167,7 +169,7 @@ public sealed unsafe class CameraCapture : IExtenderService
             FrameInputs.HasAreaAmbient = true;
             return;
         }
-        float* d = (float*)(p + LightDirPos);
+        float* d = (float*)(p + LightDir);
         var dir = new Vector3(d[0], d[1], d[2]);
         if (dir.LengthSquared() <= 1e-8f) return;
         FrameInputs.AreaDiffuse = col;

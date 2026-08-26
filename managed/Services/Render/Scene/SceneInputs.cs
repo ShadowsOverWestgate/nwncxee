@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
+using static Sowx.Services.Render.SceneLayout;
 
 namespace Sowx.Services.Render;
 
@@ -23,17 +24,19 @@ namespace Sowx.Services.Render;
 /// <para>All of it runs in the one deterministic per-frame slot (ADR 0007 phase 1:
 /// <c>Scene::AddPartsToDrawBuckets</c>, after ManageSceneBSP and before any draw), and none of it touches
 /// GL -- it is also where this service drives <see cref="CasterPass.OnPassSlot"/> (#118), so the world casters
-/// bake ahead of the colour pass that samples them. <c>SOWX_SHADOWS=0</c> stands the whole thing down, which
+/// bake ahead of the colour pass that samples them. The <c>shadows=0</c> config setting stands the whole thing down, which
 /// since #118 also means CasterPass never ticks -- without this feed it had nothing to bake.</para>
 /// </summary>
 /// <remarks>
 /// Light identities are POINTERS the engine frees on area and module boundaries -- they are compared,
 /// never dereferenced outside the walk that read them. Hot: the walk runs once a frame and allocates
-/// nothing (the diagnostics under SOWX_TORCHDIAG/SOWX_LIGHTDIAG do allocate log strings, deliberately).
+/// nothing (the <c>/shadow torchdiag</c> and <c>/shadow lightdiag</c> traces do allocate log strings,
+/// deliberately -- they are off by default).
 /// </remarks>
 public sealed unsafe class SceneInputs : IExtenderService
 {
-    private static float _focusDist = 24f; // SOWX_SHADOWFOCUSDIST; march the map centre ahead of the camera
+    /// <summary>How far ahead of the camera the map centre marches (<c>/shadow focusdist</c>).</summary>
+    private static float _focusDist = FocusDistBoot;
     private static ExtenderLog? _log;
     private static bool _enabled, _diag;
 
@@ -44,8 +47,8 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary>Radius of the off-screen GOB append: dynamic casters this far from the focus are pushed into
     /// the draw buckets even when the camera culled them, so they can still cast. Kept tight -- a creature
-    /// far enough out to need the outer cascades casts a shadow nobody looks at. SOWX_SHADOWNEARRADIUS.</summary>
-    private static float _gobAppendRadius = 25f;
+    /// far enough out to need the outer cascades casts a shadow nobody looks at. <c>/shadow nearradius</c>.</summary>
+    private static float _gobAppendRadius = NearRadiusBoot;
 
     // Caster completeness (slice 3c): re-walk the scene BSP in a sphere around the player and re-submit the
     // casters the camera frustum culled, so the depth map is camera-independent. ManageSceneBSP hook runs the
@@ -56,7 +59,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static delegate* unmanaged<IntPtr, byte> _partGetIsOpaque;
     private static int _rewalkParts;    // caster parts submitted this frame (diagnostic)
     private static bool _rewalkLogged;
-    private static bool _rewalkOn = true;   // SOWX_SHADOWNOREWALK=1 disables (falls back to camera-culled set)
+    private static bool _rewalkOn = true;   // config shadow_rewalk=0 disables (falls back to camera-culled set)
 
     // Dynamic gob casters (slice 3d): the engine's ManageSceneBSP adds ONLY camera-visible gobs (gob+0x1b) to
     // the global gobbucket. We append off-screen in-sphere gobs there so movable objects (placeables, creatures)
@@ -72,10 +75,8 @@ public sealed unsafe class SceneInputs : IExtenderService
     // faces into one cube ARRAY, and the receiver samples them as a samplerCubeArrayShadow. What is left here is
     // the light WALK that feeds it -- the LightManager master list, the BSP re-walk that carries off-screen
     // casters into the draw buckets, the shared shadow focus and the area's interior flag.
-    private static bool _gobsOn = true;   // SOWX_SHADOWNOGOBS=1 disables (tile casters only)
+    private static bool _gobsOn = true;   // config shadow_gobs=0 disables (tile casters only)
 
-    /// <summary>PartTriMesh world-space bbox min/max (float3 @+0x64/+0x70).</summary>
-    private const int PartBboxMin = 0x64, PartBboxMax = 0x70;
 
     // ---- the BSP sphere re-walk's struct layout (#65 slice 3c), all Ghidra-verified against ManageSceneBSP ----
     /// <summary>BSPNode -&gt; nodedata* (the node contents / tile model). Null on empty internal nodes.</summary>
@@ -126,7 +127,9 @@ public sealed unsafe class SceneInputs : IExtenderService
     // One map centre per presented frame, shared by the re-walk and published as FrameInputs.Focus for
     // CasterPass's cascade fit. Player-anchored when the controlled creature is reachable, else the
     // camera-ground focus -- but ONE value per frame either way.
-    private static float _cubeWalkRadius = 40f;       // SOWX_SHADOWCUBEWALK -- BSP re-walk radius on ordinary frames (enough for the local cubes' casters; the wide walk that fills the sun cascades runs on enrollment frames only)
+    /// <summary>BSP re-walk radius on ordinary frames (<c>/shadow cubewalk</c>): enough for the local cubes'
+    /// casters; the wide walk that fills the sun cascades runs on enrollment frames only.</summary>
+    private static float _cubeWalkRadius = CubeWalkBoot;
     // Interior areas have no sun, so nothing directional is worth rendering there -- the flag is published for
     // CasterPass, which skips its cascades on it. The point-light cubes are independent and keep running.
     // Verified via Ghidra: current area = *(CClientExoApp::GetModule(*g_pAppManager) + 0xf8) (the engine's own
@@ -138,8 +141,18 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static IntPtr _appMgr;                    // &g_pAppManager (deref per use)
     private static delegate* unmanaged<IntPtr, IntPtr> _getModule;
     private static bool _interiorLogged;              // log interior/exterior transitions
-    /// <summary>SOWX_SHADOWTRACE=1: per-frame trace of the light walk -- allocates log strings; diagnosis only.</summary>
+    /// <summary><c>/shadow trace 1</c>: periodic trace of the light walk -- allocates log strings; diagnosis only.</summary>
     private static bool _trace;
+    /// <summary>Boot values of the <c>/shadow</c> dials -- the code defaults now that the env overrides are
+    /// gone (ADR 0013), and what <c>/shadow reset</c> restores.</summary>
+    private const float FocusDistBoot = 24f, NearRadiusBoot = 25f, CubeWalkBoot = 40f;
+    /// <summary>Boot value of <see cref="_lightCullMode"/> (see it for what the modes mean).</summary>
+    private const int LightCullBoot = 1;
+
+    /// <summary>The one-time <c>[shadowdiag]</c> capture dumps, off by default. Read by
+    /// <see cref="CameraCapture"/>, whose dumps this flag has always claimed to gate.</summary>
+    internal static bool Diag => _diag;
+
     private static bool _passDoneThisFrame, _interiorDecided;
     private static bool _haveFocus;
     private static Vector3 _focus;
@@ -150,29 +163,24 @@ public sealed unsafe class SceneInputs : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        // Default ON: SOWX_SHADOWS=0 is the one kill switch for the whole replacement pipeline (this,
-        // CameraCapture, and ShadowService's vanilla suppression). SOWX_SHADOWDIAG=1 now only
-        // adds the periodic perf/diagnostic logging.
-        _enabled = Environment.GetEnvironmentVariable("SOWX_SHADOWS") != "0";
-        _diag = Environment.GetEnvironmentVariable("SOWX_SHADOWDIAG") == "1";
+        // Registered ahead of the stand-down, exactly as RenderCommands does: a session with the feed off
+        // should still answer /shadow with "off" rather than not know the command.
+        CommandRegistry.Global.Register("/shadow",
+            "report or tune the shadow feed and caster; /shadow reset restores boot values", ShadowCommand);
+
+        // Config bucket (ADR 0013): this arms the feed's hooks, so it is a boot decision. Everything the
+        // walk merely LOOKS at -- radii, cull mode, the diagnostics -- is /shadow's.
+        _enabled = Settings.Bool("shadows", true);
         if (!_enabled) return;
 
-        if (float.TryParse(Environment.GetEnvironmentVariable("SOWX_SHADOWNEARRADIUS"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float nr) && nr > 1f) _gobAppendRadius = nr;
-        if (float.TryParse(Environment.GetEnvironmentVariable("SOWX_SHADOWFOCUSDIST"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float fd) && fd >= 0f) _focusDist = fd;
-
-        if (int.TryParse(Environment.GetEnvironmentVariable("SOWX_LIGHTCULL"), out int lcm) && lcm >= 0 && lcm <= 2) _lightCullMode = lcm;
-        _lightDiag = Environment.GetEnvironmentVariable("SOWX_LIGHTDIAG") == "1";
-        _trace = Environment.GetEnvironmentVariable("SOWX_SHADOWTRACE") == "1";
         _appMgr = Native.Sym(SymbolMap.AppManager);
         _getModule = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
-        if (float.TryParse(Environment.GetEnvironmentVariable("SOWX_SHADOWCUBEWALK"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float cw) && cw >= 1f) _cubeWalkRadius = cw;
-
         _getGspF = (delegate* unmanaged<uint, float>)Native.Sym(SymbolMap.RiGetGlobalShaderParamf);
         _getAdjRadius = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.GetLightAdjustedRadius);
 
         // Caster completeness (slice 3c): hook ManageSceneBSP (call-through) to re-walk the BSP sphere and
         // re-submit off-screen casters; resolve the submit + traversal + opacity primitives.
-        _rewalkOn = Environment.GetEnvironmentVariable("SOWX_SHADOWNOREWALK") != "1";
+        _rewalkOn = Settings.Bool("shadow_rewalk", true);
         _origManageSceneBSP = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.ManageSceneBSP, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnManageSceneBSP);
         _origAddPartsToDrawBuckets = (delegate* unmanaged<IntPtr, void>)hooks.Install(
@@ -182,29 +190,93 @@ public sealed unsafe class SceneInputs : IExtenderService
         _partGetIsOpaque = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.PartGetIsOpaque);
 
         // Dynamic gob casters (slice 3d): the global gobbucket + its Add, appended from the same hook.
-        _gobsOn = Environment.GetEnvironmentVariable("SOWX_SHADOWNOGOBS") != "1";
+        _gobsOn = Settings.Bool("shadow_gobs", true);
         _gobBucket = Native.Sym(SymbolMap.GobBucket);
         _gobBucketAdd = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GobBucketAdd);
 
         // Camera-follow anchor: the real PC position, camera- and shadow-path-independent (Scene+0x58 reads null
-        // under SOWX_NOSHADOWS). CurrentCamera is a global pointer slot -- store its address, deref per frame.
+        // under the vanilla-stencil full kill). CurrentCamera is a global pointer slot -- store its address, deref per frame.
         _currentCamera = Native.Sym(SymbolMap.CurrentCamera);
 
         // The per-presented-frame edge. Was a zero-size UiHost Window abused as a draw slot (#169); #170 gives
         // it the real thing. Priority 0: it ran inside the window roll-call, i.e. before the #80 context bracket.
         FrameRegistry.Global.Register(FramePhase.PrePresent, 0, Draw, "SceneInputs.frameEdge", log);
         log.Info($"SceneInputs: light walk + caster re-walk armed, feeding CasterPass " +
-                 $"(SOWX_SHADOWS=0 disables) " +
+                 $"(config shadows=0 disables) " +
                  $"(rewalk={(_rewalkOn ? (_origManageSceneBSP != null && _bspTraverseSphere != null && _addPartToMeshBuckets != null ? "ok" : "MISS") : "off")}, " +
                  $"gobs={(_gobsOn ? (_gobBucket != IntPtr.Zero && _gobBucketAdd != null ? "ok" : "MISS") : "off")})");
-        // Every SOWX_* env var actually set: the locale fix made dot-decimal floats parse for the first time,
-        // so stale experiment vars in a launch script can silently reshape the maps -- surface them all.
-        var sb = new System.Text.StringBuilder();
-        foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
-            if (e.Key is string k && k.StartsWith("SOWX_", StringComparison.Ordinal)) sb.Append($" {k}={e.Value}");
-        log.Info(sb.Length > 0 ? $"SceneInputs: env overrides:{sb}" : "SceneInputs: env overrides: none");
-        log.Info($"SceneInputs: effective config: gobRadius={_gobAppendRadius:F0} walk={_cubeWalkRadius:F0} " +
-                 $"lightCull={_lightCullMode} focusDist={_focusDist:F0} (map sizing lives in CasterPass now)");
+        log.Info($"SceneInputs: effective tuning: {Describe()}");
+    }
+
+    /// <summary>Keys <c>/shadow</c> accepts. The first two are <see cref="CasterPass"/>'s, the rest this
+    /// feed's -- one command over the whole shadow path, because a player tuning it is looking at one thing.</summary>
+    private const string ShadowKeys = "dist|lod|nearradius|focusdist|cubewalk|lightcull|diag|lightdiag|torchdiag|trace";
+
+    /// <summary>ADR 0013 bucket 1, in the shape <c>RenderCommands.Tune</c> established: <c>/shadow</c> reports,
+    /// <c>/shadow &lt;key&gt; &lt;value&gt;</c> sets, <c>/shadow reset</c> restores the boot values. Every one
+    /// of these is judged while walking around -- a cull radius against pop-in, a diagnostic at the spot where
+    /// the bug happens -- which is exactly why none of them is a config setting.</summary>
+    private static string? ShadowCommand(string args)
+    {
+        string[] a = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (a.Length == 0) return $"[shadow] {Describe()}";
+        if (a.Length == 1 && a[0] == "reset")
+        {
+            ResetTuning();
+            CasterPass.ResetTuning();
+            return $"[shadow] reset -> {Describe()}";
+        }
+        if (a.Length != 2 || !float.TryParse(a[1], System.Globalization.NumberStyles.Float,
+                                             System.Globalization.CultureInfo.InvariantCulture, out float v)
+            || v < 0f)
+            return $"[shadow] usage: /shadow | /shadow <{ShadowKeys}> <value> | /shadow reset";
+
+        float old = Tune(a[0], v);
+        if (float.IsNaN(old)) old = CasterPass.Tune(a[0], v);
+        return float.IsNaN(old)
+            ? $"[shadow] unknown knob \"{a[0]}\" -- try {ShadowKeys.Replace('|', ' ')}"
+            : $"[shadow] {a[0]} {F(v)} (was {F(old)}) -> {Describe()}";
+    }
+
+    /// <summary>The live tuning state, feed and caster on one line.</summary>
+    internal static string Describe()
+        => $"feed {(_enabled ? "on" : "off")} nearradius {_gobAppendRadius:F0} focusdist {_focusDist:F0} " +
+           $"cubewalk {_cubeWalkRadius:F0} lightcull {_lightCullMode} " +
+           $"diag {B(_diag)}{B(_lightDiag)}{B(_torchDiag)}{B(_trace)} | {CasterPass.Describe()}";
+
+    private static char B(bool f) => f ? '1' : '0';
+
+    /// <summary>Echo a set value in the same invariant form <c>/shadow</c> ACCEPTS, so a reported number can
+    /// be typed straight back in on a comma-decimal desktop.</summary>
+    private static string F(float v) => v.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Set one of this feed's dials, returning its old value; NaN when the key is not ours, which is
+    /// how <see cref="ShadowCommand"/> knows to offer it to <see cref="CasterPass"/>.</summary>
+    private static float Tune(string key, float v)
+    {
+        float old;
+        switch (key)
+        {
+            case "nearradius": old = _gobAppendRadius; _gobAppendRadius = MathF.Max(v, 1f); return old;
+            case "focusdist": old = _focusDist; _focusDist = v; return old;
+            case "cubewalk": old = _cubeWalkRadius; _cubeWalkRadius = MathF.Max(v, 1f); return old;
+            case "lightcull": old = _lightCullMode; _lightCullMode = (int)MathF.Min(v, 2f); return old;
+            case "diag": old = _diag ? 1f : 0f; _diag = v != 0f; return old;
+            case "lightdiag": old = _lightDiag ? 1f : 0f; _lightDiag = v != 0f; return old;
+            case "torchdiag": old = _torchDiag ? 1f : 0f; _torchDiag = v != 0f; return old;
+            case "trace": old = _trace ? 1f : 0f; _trace = v != 0f; return old;
+            default: return float.NaN;
+        }
+    }
+
+    /// <summary>Back to the boot values -- diagnostics off, radii as shipped.</summary>
+    private static void ResetTuning()
+    {
+        _gobAppendRadius = NearRadiusBoot;
+        _focusDist = FocusDistBoot;
+        _cubeWalkRadius = CubeWalkBoot;
+        _lightCullMode = LightCullBoot;
+        _diag = _lightDiag = _torchDiag = _trace = false;
     }
 
     private static delegate* unmanaged<IntPtr, void> _origAddPartsToDrawBuckets;
@@ -264,16 +336,12 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static delegate* unmanaged<IntPtr, float> _getAdjRadius;
     private static int _walkDiagTick;
 
-    /// <summary>Light-cull mode (SOWX_LIGHTCULL): 0 = keep every area light, 1 = camera-distance
+    /// <summary>Light-cull mode (<c>/shadow lightcull</c>): 0 = keep every area light, 1 = camera-distance
     /// only (default), 2 = camera-frustum sphere test (opt-in until live-proven -- the first frustum cut
     /// used the unverified view quaternion and blacked out every light off the torch). Shrinks the
     /// per-fragment owned-loop light set.</summary>
-    private static int _lightCullMode = 1;
+    private static int _lightCullMode = LightCullBoot;
 
-    /// <summary>Per-frame cap on slot-bound (PCF-evaluated) area lights (SOWX_SHADOWEDLIGHTS, 0 = uncapped).
-    /// RenderDoc (#67) measured the main pass fill-bound on per-fragment PCF fixed cost x overlapping lights;
-    /// past the K lights nearest the camera a shadow covers few on-screen pixels, so the rest are unslotted --
-    /// they stay lit, they just get no cube.</summary>
     /// <summary>Radius slack on the frustum test: covers the mirrored reflection-subframe camera and one
     /// frame of camera-turn latency without re-introducing pop.</summary>
     private const float FrustumCullSlack = 1.25f;
@@ -309,7 +377,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // idempotent, so restarting it at its own top is the same reset with no ordering to get wrong.
         FrameInputs.BeginAreaLights();
         FrameInputs.ResetLocalLights();
-        bool walkDiag = ++_walkDiagTick >= 900;   // ~15s at 60fps (one walk/frame): dump raw filter fields near the camera
+        bool walkDiag = _trace && ++_walkDiagTick >= 900;   // ~15s at 60fps (one walk/frame): dump raw filter fields near the camera
         if (walkDiag) _walkDiagTick = 0;
         for (int i = 0; i < count; i++)
         {
@@ -423,7 +491,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         FrameInputs.LightsWithCube = bound;
     }
 
-    // ---- SOWX_TORCHDIAG: the carried-torch "shuts off" investigation ----
+    // ---- /shadow torchdiag: the carried-torch "shuts off" investigation ----
     // The symptom (a light that dies, or collapses to a small pool, in specific expensive spots) has at
     // least four candidate mechanisms that look alike on screen: the wrong attenuation CLASS (the
     // documented "2.6m pool"), a cull rejection, the snapshot/receiver ordering dropping it past a cap, or
@@ -431,7 +499,9 @@ public sealed unsafe class SceneInputs : IExtenderService
     // and every verdict on the same line -- so one capture at a good spot and one at a bad spot names the
     // mechanism instead of narrowing it.
 
-    private static readonly bool _torchDiag = Environment.GetEnvironmentVariable("SOWX_TORCHDIAG") == "1";
+    /// <summary><c>/shadow torchdiag 1</c>: settable at runtime, because the interesting spot is found by
+    /// walking to it -- a boot-time flag meant relaunching in the wrong place.</summary>
+    private static bool _torchDiag;
     private static int _torchTick;
     /// <summary>Nearest-so-far distance^2 this walk. MUST start at +inf, not the default 0, or the first
     /// walk's comparison rejects every light.</summary>
@@ -516,7 +586,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // pass accumulates every RenderShadows fire into one light-space map, so every scene's buckets must carry
         // the sphere set. The engine clears the buckets per populate; extra parts in a reflection render are
         // off-its-frustum -> GPU-clipped, harmless. One shared per-frame focus so the sphere aligns with the map.
-        // Tile and gob augmentation are independently gated (SOWX_SHADOWNOREWALK / SOWX_SHADOWNOGOBS) for clean
+        // Tile and gob augmentation are independently gated (config shadow_rewalk / shadow_gobs) for clean
         // attribution.
 
         Vector3 center = ShadowFocus();
@@ -685,7 +755,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary>The PC's world position via the camera-follow behavior's target -- camera-INDEPENDENT (the follow
     /// target doesn't move when the camera orbits) and independent of the vanilla shadow path (unlike Scene+0x58,
-    /// which reads null under SOWX_NOSHADOWS). Replicates ManageSceneBSP's own per-frame chain: CurrentCamera ->
+    /// which reads null under the vanilla-stencil full kill). Replicates ManageSceneBSP's own per-frame chain: CurrentCamera ->
     /// +0x458 host -> AsBehaviorCameraFollow() (vtable+0x48, pure this-or-null) -> target object (+0x20) -> world
     /// pos (+0xa8). Every deref is guarded exactly as the engine guards it; returns null for a non-follow camera
     /// (free-cam/cutscene) so the caller falls back. Safe after the original ManageSceneBSP ran this frame -- it

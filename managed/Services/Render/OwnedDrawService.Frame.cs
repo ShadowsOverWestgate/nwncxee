@@ -125,7 +125,7 @@ public sealed unsafe partial class OwnedDrawService
             // ...and on the LIGHT RIG, for a reason the class check cannot supply: the water stage calls
             // SowxClusteredLight unconditionally, and the cluster buffers are only meaningful once THIS
             // pass's build has run. BuildBatches skips lit batches on !lightingOn, but a water batch is
-            // keyed on its class rather than on _gLit, so without this term SOWX_OWNLIGHT=0 (or a failed
+            // keyed on its class rather than on _gLit, so without this term /draw light 0 (or a failed
             // lit program, or a build that refused) would leave the water program reading undefined
             // BufferData contents -- an unbounded per-fragment light loop, not a dim sea.
             _waterArmed = FrameSnapshot.Usable && lightingOn && EnsureWaterProgram();

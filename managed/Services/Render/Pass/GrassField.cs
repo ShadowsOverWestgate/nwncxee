@@ -24,7 +24,7 @@ namespace Sowx.Services.Render;
 /// <para>The geometry SOURCE is still the engine's. <c>CAurTriangleList</c> holds the tile faces that carry a
 /// grass material in world space, plus the per-face blade count the tileset's <c>GrassDensity</c> produced;
 /// this class reads those and does its own scatter at its own density. Placement is therefore the tileset's
-/// -- grass is never hand-placed -- while the DENSITY is a client dial (<c>SOWX_GRASS_DENSITY</c>) applied to
+/// -- grass is never hand-placed -- while the DENSITY is a client dial (<c>/grass density</c>) applied to
 /// the authored per-face ratios rather than replacing them.</para>
 /// <para>The engine still builds its own bins and VDOs at area load, untouched: that is what keeps ADR 0010's
 /// vanilla render mode whole. Flip to vanilla (or stand the owned pass down) and <c>DoBinBucket</c> runs
@@ -140,7 +140,21 @@ internal static unsafe class GrassField
     private static delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet;
     private static byte* _binBucket, _grassInfo, _grassEnabled, _gobBucket;
     private static float* _farDist, _nearRadius;
+    /// <summary>Boot values for <see cref="ResetTuning"/> -- what <c>/grass reset</c> restores. These ARE
+    /// the code defaults now that the dials are chat commands (ADR 0013): there is no earlier value to
+    /// capture, so the constants are the single source for both the field initialisers and the reset.</summary>
+    private const float BootDensity = 2f, BootWind = 1f, BootWindSpeed = 0.001f,
+                        BootSoften = 0f, BootAniso = 8f, BootEdge = 1f,
+                        BootPush = 0.15f, BootPushRadius = 1f, BootPushExtent = 64f,
+                        BootCull = 1f, BootCullShrink = 0.8f, BootCullMax = 0f;
+
+    /// <summary>The RESOLUTION latch: a grass global, the texture loader or a hook that did not come up, so
+    /// this client cannot run the owned pass at all. Separate from <see cref="_on"/> on purpose --
+    /// <c>/grass on 1</c> must never re-enable a pass that could not arm.</summary>
     private static bool _off;
+    /// <summary>The per-pass toggle, live behind <c>/grass on 0|1</c>. On by default: the owned field is the
+    /// shipped look, and turning it off hands grass back to the engine's own path for a comparison.</summary>
+    private static bool _on = true;
     private static readonly StandDown _down = new("GrassField");
 
     /// <summary>Baked patches. <see cref="Patch.List"/> is an IDENTITY, never dereferenced outside the frame
@@ -180,24 +194,29 @@ internal static unsafe class GrassField
     /// <see cref="Draw"/>. The tables it clears are the render thread's, so the flag is the handoff --
     /// clearing them where the command runs would race a live bake.</summary>
     private static volatile bool _rebake;
-    private static float _density = 2f, _windGain = 1f, _windSpeed = 0.001f;
+    /// <summary>Scatter and sway dials (live: <c>/grass density|wind|windspeed</c>).
+    /// <para>ponytail: the sway RATE is a dial rather than a derivation. uTimeOfDay is the engine's own
+    /// worldtimerTimeOfDay int and the stock wind shaders divide it by five-digit constants that are
+    /// themselves per-material .mtr parameters -- there is no one right divisor to inherit. 0.001 reads as a
+    /// light breeze if the field is milliseconds; <c>/grass windspeed</c> is the knob if it is not.</para></summary>
+    private static float _density = BootDensity, _windGain = BootWind, _windSpeed = BootWindSpeed;
     /// <summary>Softening dials (live: <c>/grass soften|aniso|edge</c>). <c>_lodBias</c> is a mip bias on the
     /// diffuse -- the literal blur knob, and the one to reach for LAST because a positive bias on a 2x2 atlas
     /// starts averaging neighbouring blade variants together. <c>_aniso</c> is the one that actually earns its
     /// keep here: grass is looked at edge-on, which is precisely the case isotropic filtering handles worst.
     /// <c>_edge</c> widens the analytic cutout ramp beyond its natural one-pixel width.</summary>
-    private static float _lodBias, _aniso = 8f, _edge = 1f;
+    private static float _lodBias = BootSoften, _aniso = BootAniso, _edge = BootEdge;
     private static bool _samplerDirty = true;
     /// <summary>Displacement dials (live: <c>/grass push|pushradius|pushextent</c>). <c>_pushGain</c> 0
     /// disables the whole field, including its rebuild and upload.</summary>
     /// <para>Retuned after the first live look: at gain 1 a blade was flung a full blade-height sideways and
     /// pressed flat, which read as a blast crater rather than parted grass.</para>
-    private static float _pushGain = 0.15f, _pushRadius = 1f, _pushExtent = 64f;
+    private static float _pushGain = BootPush, _pushRadius = BootPushRadius, _pushExtent = BootPushExtent;
     /// <summary>Object culling: <c>_cull</c> 0 disables it, <c>_cullShrink</c> scales the footprint the gob's
     /// own bounding-box extent gives (below 1 so grass fringes an object rather than stopping at a hard
     /// line), and <c>_cullMax</c> caps the half-extent in world units (0 = uncapped) for the one case the
     /// gob box handles badly -- a tree, whose box is its CANOPY while only its trunk touches the ground.</summary>
-    private static float _cull = 1f, _cullShrink = 0.8f, _cullMax;
+    private static float _cull = BootCull, _cullShrink = BootCullShrink, _cullMax = BootCullMax;
 
     // period counters
     private static int _frames, _draws, _visible, _culled, _baked, _refused, _disabled;
@@ -227,25 +246,6 @@ internal static unsafe class GrassField
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _off = Environment.GetEnvironmentVariable("SOWX_GRASS") == "0";
-        if (_off) { log.Info("GrassField: SOWX_GRASS=0 -- grass stays on the engine's own path"); return; }
-        _density = MathF.Max(Tunables.Float("SOWX_GRASS_DENSITY", _density), 0f);
-        _windGain = Tunables.Float("SOWX_GRASS_WIND", _windGain);
-        // ponytail: the sway RATE is a dial rather than a derivation. uTimeOfDay is the engine's own
-        // worldtimerTimeOfDay int and the stock wind shaders divide it by five-digit constants that are
-        // themselves per-material .mtr parameters -- there is no one right divisor to inherit. 0.001 reads
-        // as a light breeze if the field is milliseconds; SOWX_GRASS_WINDSPEED is the knob if it is not.
-        _windSpeed = Tunables.Float("SOWX_GRASS_WINDSPEED", _windSpeed);
-        _pushGain = Tunables.Float("SOWX_GRASS_PUSH", _pushGain);
-        _pushRadius = Tunables.Float("SOWX_GRASS_PUSH_RADIUS", _pushRadius);
-        _pushExtent = Tunables.Float("SOWX_GRASS_PUSH_EXTENT", _pushExtent);
-        _cull = Tunables.Float("SOWX_GRASS_CULL", _cull);
-        _cullShrink = Tunables.Float("SOWX_GRASS_CULL_SHRINK", _cullShrink);
-        _cullMax = Tunables.Float("SOWX_GRASS_CULL_MAX", _cullMax);
-        _lodBias = Tunables.Float("SOWX_GRASS_SOFTEN", _lodBias);
-        _aniso = Tunables.Float("SOWX_GRASS_ANISO", _aniso);
-        _edge = Tunables.Float("SOWX_GRASS_EDGE", _edge);
-
         _binBucket = (byte*)Native.Sym(SymbolMap.BinBucket);
         _grassInfo = (byte*)Native.Sym(SymbolMap.GrassInfo);
         _grassEnabled = (byte*)Native.Sym(SymbolMap.GrassEnabled);
@@ -277,8 +277,7 @@ internal static unsafe class GrassField
             log.Info("GrassField: the grass hooks did not install -- grass stays vanilla");
             return;
         }
-        log.Info($"GrassField: armed -- owned instanced grass at density x{_density:0.##} " +
-                 "(SOWX_GRASS=0 disables, SOWX_GRASS_DENSITY dials it)");
+        log.Info($"GrassField: armed -- owned instanced grass, {Describe()} (/grass tunes it)");
     }
 
     /// <summary>The vanilla grass site. Skipped outright on a pass the owned grass already drew -- which
@@ -341,7 +340,9 @@ internal static unsafe class GrassField
     /// number per frame), then every patch sighted this frame is culled, sorted and issued.</summary>
     internal static void Draw(Matrix4x4* vp, int* viewport, float near, float far, bool lightingOn)
     {
-        if (_off || _down.Failed || _binBucket == null) return;
+        // Toggle-off returns WITHOUT stamping the generation: the class goes back to the ENGINE, which is
+        // the opposite of the density-0 branch below (nobody draws it, and the stamp is what keeps it that way).
+        if (_off || !_on || _down.Failed || _binBucket == null) return;
         if (*_grassEnabled == 0) return;      // the player's "Grass Mode" option: off means off, both paths
         if (Gl.DrawArraysInstancedBaseInstance == null || Gl.VertexAttribDivisor == null)
         { _down.Fail(_log, "no instanced-draw entry point", "grass stays vanilla"); return; }
@@ -1254,7 +1255,7 @@ internal static unsafe class GrassField
 
     /// <summary>One line for the <c>/grass</c> echo and the arm-time log.</summary>
     internal static string Describe()
-        => $"density x{_density:0.##} wind x{_windGain:0.##} windspeed {_windSpeed:0.####} " +
+        => $"{(_off ? "UNAVAILABLE" : _on ? "on" : "off")} density x{_density:0.##} wind x{_windGain:0.##} windspeed {_windSpeed:0.####} " +
            $"soften {_lodBias:0.##} aniso {_appliedAniso:0.#}x edge {_edge:0.##} " +
            $"push x{_pushGain:0.##} r{_pushRadius:0.##} over {_pushExtent:0.#}u " +
            $"cull {(_cull > 0f ? $"on shrink {_cullShrink:0.##}" + (_cullMax > 0f ? $" max {_cullMax:0.#}u" : "") : "off")} " +
@@ -1272,6 +1273,8 @@ internal static unsafe class GrassField
         float old;
         switch (key)
         {
+            // The toggle cannot clear _off: a client whose grass globals never resolved stays vanilla.
+            case "on": old = _on ? 1f : 0f; _on = v > 0f; break;
             case "density": old = _density; _density = v; _rebake = true; break;
             case "wind": old = _windGain; _windGain = v; break;
             case "windspeed": old = _windSpeed; _windSpeed = v; break;
@@ -1290,6 +1293,20 @@ internal static unsafe class GrassField
         return old;
     }
 
+    /// <summary>Every dial back to its boot value, the toggle included. The two side effects are not
+    /// optional: density owns the resident scatter and the sampler dials own two sampler objects, so a reset
+    /// that skipped them would report values the frame is not drawing with.</summary>
+    internal static void ResetTuning()
+    {
+        _on = true;
+        _density = BootDensity; _windGain = BootWind; _windSpeed = BootWindSpeed;
+        _lodBias = BootSoften; _aniso = BootAniso; _edge = BootEdge;
+        _pushGain = BootPush; _pushRadius = BootPushRadius; _pushExtent = BootPushExtent;
+        _cull = BootCull; _cullShrink = BootCullShrink; _cullMax = BootCullMax;
+        _rebake = true; _samplerDirty = true;
+        _log?.Info($"GrassField: /grass reset -> {Describe()}");
+    }
+
     // ---- diagnostics -------------------------------------------------------------------------
 
     internal static void ResetPeriod()
@@ -1297,7 +1314,8 @@ internal static unsafe class GrassField
 
     internal static string Stats()
     {
-        if (_off) return "grass vanilla (SOWX_GRASS=0)";
+        if (_off) return "grass vanilla (owned pass unavailable)";
+        if (!_on) return "grass vanilla (/grass on 0)";
         if (_down.Failed) return "grass VANILLA (owned program unavailable)";
         if (_frames == 0) return "grass idle";
         return $"grass {_patchCount} patches / {_instCount} blades resident, " +
@@ -1307,7 +1325,7 @@ internal static unsafe class GrassField
                // "0 blades" and "the area has no grass" read identically without it.
                (_refused == 0 ? "" : $", {_refused} LISTS REFUSED (no faces, no height, or a material index " +
                                      "past the live grass-info count)") +
-               (_capped ? $", INSTANCE CAP HIT ({MaxInstances}) -- lower SOWX_GRASS_DENSITY" : "") +
+               (_capped ? $", INSTANCE CAP HIT ({MaxInstances}) -- lower /grass density" : "") +
                (_patchCapped ? $", PATCH CAP HIT ({MaxPatches}) -- the rest of the area has no grass" : "") +
                // The two facts that decide how the cutout edge is resolved, and neither is visible anywhere
                // else: with no MSAA the edge is dithered rather than coverage-resolved, and a texture with
@@ -1408,6 +1426,22 @@ internal static unsafe class GrassField
         Clear();
         CullRect(f, cx, cy, 0f, 3f);
         E(A(64, 64) == 0, "a degenerate footprint culls nothing rather than dividing by it");
+
+        // ---- the toggle (#180). _off is the resolution latch and _on is the player's dial; they are two
+        // flags on purpose, because /grass on 1 on a client whose grass globals never came up would run the
+        // pass over null pointers.
+        bool on0 = _on, off0 = _off;
+        float dens0 = _density;
+        _density = 99f;
+        ResetTuning();
+        E(_density == BootDensity && _on, "reset restores the boot density and leaves the pass on");
+        E(_rebake && _samplerDirty, "reset re-bakes the field and rebuilds the samplers, not just the numbers");
+        E(Tune("on", 0f) == 1f && !_on, "the toggle sets, and reports its old value");
+        E(Stats().Contains("vanilla"), "with the toggle off the pass reports itself as vanilla");
+        _off = true;
+        Tune("on", 1f);
+        E(_off, "arming from chat cannot clear the resolution latch");
+        _off = off0; _on = on0; _density = dens0;
 
         log.Info(ok ? "GrassField.SelfCheck: passed" : "GrassField.SelfCheck: FAILED");
     }
