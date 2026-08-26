@@ -98,14 +98,7 @@ public sealed class ChatConfig
             return c;
         }
 
-        foreach (string raw in text.Split('\n'))
-        {
-            string line = raw.Trim();
-            int eq = line.IndexOf('=');
-            if (eq <= 0) continue;
-            string key = line.Substring(0, eq), val = line.Substring(eq + 1);
-            c.Apply(key, val);
-        }
+        ConfigFile.ForEachPair(text, c.Apply);
         return c;
     }
 

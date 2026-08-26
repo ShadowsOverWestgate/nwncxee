@@ -1,6 +1,6 @@
 using Sowx.Framework;
 
-namespace Sowx.Ui;
+namespace Sowx.Graphics;
 
 /// <summary>
 /// Minimal OpenGL 3.3-core entry points for the owned text draw. The client requests a CORE

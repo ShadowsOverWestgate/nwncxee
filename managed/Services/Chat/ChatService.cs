@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using Sowx.Framework;
@@ -315,7 +314,7 @@ public sealed unsafe class ChatService : IExtenderService
     private static bool _anyTabDrag;                 // true while any window has an active tab drag (#42)
 
     // *g_pAppManager, for the game clock (below) and the Tell player resolver. The in-game gate that used to
-    // walk this chain now lives in UiHostService (#62); chat reads UiHost.InGame / UiHost.InModule instead.
+    // walk this chain now lives in UiHostService (#62); chat reads GameGate.InGame / GameGate.InModule instead.
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
 
     // In-game game clock (chat game-time timestamps). The server syncs ONLY the game HOUR to the client, into
@@ -375,20 +374,18 @@ public sealed unsafe class ChatService : IExtenderService
     }
 
     /// <summary>Persisted chat config file (rect, toggles, colours, anim, input side, timestamp). Key=value,
-    /// migrates the legacy positional rect on read (see <see cref="ChatConfig"/>). A property, not cached:
-    /// the loader runs post-main so the engine user dir resolves (Initialize runs pre-main).</summary>
-    private static string LayoutPath => Native.ConfigPath("sowx-chat.cfg");
+    /// migrates the legacy positional rect on read (see <see cref="ChatConfig"/>).</summary>
+    private static readonly ConfigFile _file = new("sowx-chat.cfg");
     private static ChatConfig _config = new();
-    private static string _savedText = "";
 
     /// <summary>Restore the config from disk and apply it to all windows (rect/toggles/input side/send
     /// channel/tabs) + the render/anim/timestamp subsystems. Creates additional windows from the config
-    /// up to the cap. Deferred to first frame (engine user dir unresolved pre-main).</summary>
-    private static void LoadConfig()
+    /// up to the cap. Returns false until <see cref="ConfigFile"/>'s deferral gate opens (pre-main), so the
+    /// frame path may call it every frame until it takes.</summary>
+    private static bool LoadConfig()
     {
-        if (_layout == null) return;
-        try { if (File.Exists(LayoutPath)) _config = ChatConfig.Parse(File.ReadAllText(LayoutPath)); }
-        catch (Exception e) { _log?.Info($"[chat] config load failed: {e.Message}"); }
+        if (_layout == null) return false;
+        if (!_file.Load(_log, ApplyText)) return false;
         for (int i = 0; i < _config.Windows.Count && i < ChatLayout.MaxWindows; i++)
         {
             var wc = _config.Windows[i];
@@ -433,8 +430,11 @@ public sealed unsafe class ChatService : IExtenderService
             }
         }
         ApplyConfig();
-        _savedText = _config.ToText();
+        _file.Baseline(_config.ToText());
+        return true;
     }
+
+    private static void ApplyText(string text) => _config = ChatConfig.Parse(text);
 
     /// <summary>Push the global font setting onto the atlas + chrome scale. Per-window settings (palette,
     /// outline, anim, timestamps) live on <see cref="ChatWindow"/> and are resolved per-build.</summary>
@@ -504,15 +504,7 @@ public sealed unsafe class ChatService : IExtenderService
             }
             _config.Windows.Add(wc);
         }
-        string text = _config.ToText();
-        if (text == _savedText) return;
-        _savedText = text;
-        try
-        {
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(LayoutPath)!);
-            File.WriteAllText(LayoutPath, text);
-        }
-        catch (Exception e) { _log?.Info($"[chat] config save failed: {e.Message}"); }
+        _file.Save(_config.ToText(), _log);
     }
 
     /// <summary>Slice #21: bake the atlas, build the window, observe ingest, and own SwapBuffers so the
@@ -563,7 +555,7 @@ public sealed unsafe class ChatService : IExtenderService
     private static Window? _uiWindow;
     private static bool _booted;                  // first-frame config-restore bootstrap done
     private static int _swapTid;                  // managed thread id of the frame-present thread (probe, #33)
-    private static bool _wasInModule;             // last frame's UiHost.InModule, for the module-unload edge
+    private static bool _wasInModule;             // last frame's GameGate.InModule, for the module-unload edge
     private static float _appliedUiScale = 1f;    // GameUiScale we last re-baked/relaid at (scale-change edge)
 
     /// <summary>The chord-consumer face of chat: an unmodified "/" that has fallen past every window opens the
@@ -601,18 +593,20 @@ public sealed unsafe class ChatService : IExtenderService
             _swapTid = Environment.CurrentManagedThreadId;
             _log?.Info($"ChatService: first content draw [chatthread] swap tid={_swapTid}");
             _log?.Info($"ChatService: cfg dir = {Native.UserDirectory() ?? "(engine dir unresolved -> ~/.config fallback)"}");
-            LoadConfig();   // restore now: Initialize runs pre-main, user dir unresolved there
-            Dialog.DialogService.LoadConfigDeferred();   // same story for the dialog window's config
-            Rebuild();           // re-layout for the restored width + applied config
+            Rebuild();   // re-layout for the live viewport width, config or not
         }
+        // Config restore is gated, not booted-keyed: ConfigFile.Load is a retryable no-op until the engine
+        // user dir resolves, and latches once. Both loads are cheap bool reads after that.
+        if (LoadConfig()) Rebuild();   // re-layout for the restored width + applied config
+        Dialog.DialogService.LoadConfigDeferred();   // same story for the dialog window's config
         // Module-unload edge (was inside the old InGame() gate): drop cached engine ptrs + stale state (#33).
         // It now fires once per frame on the render thread instead of possibly on the input thread; ResetSession
         // is documented idempotent and zero-alloc, so the move is safe.
-        bool inModule = UiHost.InModule;
+        bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) ResetSession();
         _wasInModule = inModule;
 
-        if (UiHost.InGame)
+        if (GameGate.InGame)
         {
             // UI-scale change edge (was SyncUiScale's reaction; UiHostService already published Metrics.GameUiScale).
             if (System.Math.Abs(Metrics.GameUiScale - _appliedUiScale) >= 0.001f)
@@ -917,7 +911,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// Wired as this service's framework Window mouse-button delegate (#64).</summary>
     public static bool OnMouseButton(bool down, int button, int x, int y)
     {
-        if (_layout == null || !UiHost.InGame || button != 1) return false;
+        if (_layout == null || !GameGate.InGame || button != 1) return false;
         ChatWindow? fwin = _focused;
         if (fwin == null) return false;
         if (down && !_mdiag)
@@ -1152,7 +1146,7 @@ public sealed unsafe class ChatService : IExtenderService
     public static bool OnMouseMotion(int x, int y)
     {
         _lastMx = x; _lastMy = y;
-        if (_layout == null || !UiHost.InGame) return false;
+        if (_layout == null || !GameGate.InGame) return false;
         if (_settings.Open && _focused != null)
         {
             if (_settings.MouseMove(x, y, _focused, _config))
@@ -1226,7 +1220,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// on others it snaps.</summary>
     public static bool OnMouseWheel(int dy)
     {
-        if (_layout == null || !UiHost.InGame) return false;
+        if (_layout == null || !GameGate.InGame) return false;
         if (_settings.Open) return true;
         // Find the topmost window under the pointer (focused draws last = checked first).
         ChatWindow[] wins = _layout.Windows;
@@ -1252,7 +1246,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// window frames, input strips, open channel dropdowns, or the settings panel.</summary>
     public static bool MouseOverUi(int x, int y)
     {
-        if (_layout == null || !UiHost.InGame) return false;
+        if (_layout == null || !GameGate.InGame) return false;
         if (_settings.Open && _settings.Contains(x, y)) return true;
         ChatWindow[] wins = _layout.Windows;
         for (int i = 0; i < wins.Length; i++)
@@ -1266,6 +1260,7 @@ public sealed unsafe class ChatService : IExtenderService
     {
         EditBuffer.SelfCheck(log);     // off-device proof; surfaces in run-demo's sowx log
         ChatCommands.SelfCheck(log);   // slash-command grammar (#25)
+        RegisterCommands();            // #165: chat's own commands go on the shared registry like anyone's
 
         _startText = (delegate* unmanaged<void>)Native.Sym(SymbolMap.SdlStartTextInput);
         _getClip   = (delegate* unmanaged<IntPtr>)Native.Sym(SymbolMap.SdlGetClipboardText);
@@ -1431,8 +1426,12 @@ public sealed unsafe class ChatService : IExtenderService
         if (submit)
         {
             string text = Edit.Submit();
-            if (!string.IsNullOrEmpty(text) && TryWindowCommand(text))
-            { /* handled — don't send */ }
+            if (!string.IsNullOrEmpty(text) && CommandRegistry.Global.TryDispatch(text, out string? reply))
+            {
+                // Handled by whichever service registered it -- don't send. The chat service's only remaining
+                // job is putting the handler's answer, if any, in front of the player.
+                if (reply != null) EchoLocal(reply);
+            }
             else if (_layout?.Focused is ChatWindow win && !string.IsNullOrEmpty(text))
             {
                 var (switchTo, tellTarget, rest) = ChatCommands.Parse(text);
@@ -1464,157 +1463,23 @@ public sealed unsafe class ChatService : IExtenderService
         Rebuild();
     }
 
-    /// <summary>Window management slash commands (#41). Returns true if the text was handled.</summary>
-    private static bool TryWindowCommand(string text)
+    /// <summary>Register the chat service's own window-management commands (#41) into the shared registry
+    /// (#165). Every other command on the surface belongs to the service that implements it.</summary>
+    private static void RegisterCommands()
     {
-        if (text.Length < 2 || text[0] != '/') return false;
-        string cmd = text.Trim().ToLowerInvariant();
-        if (cmd == "/newwin" || cmd == "/nw")
+        var r = CommandRegistry.Global;
+        r.Register("/newwin", "open a new chat window", _ => { CreateWindow(); return null; }, "/nw");
+        r.Register("/closewin", "close the focused chat window", _ =>
         {
-            CreateWindow();
-            return true;
-        }
-        if (cmd == "/closewin" || cmd == "/cw")
-        {
-            if (_layout == null) return true;
+            if (_layout == null) return null;
             int idx = _layout.FocusedIndex;
             if (_layout.CloseWindow(idx))
             {
                 SaveConfig();
                 _log?.Info($"[chat] /closewin: window {idx} closed");
             }
-            return true;
-        }
-        if (cmd == "/settings")
-        {
-            Quickbar.QuickbarService.ToggleSettings();
-            return true;
-        }
-        if (cmd == "/fps")
-        {
-            Perf.FpsOverlayService.Toggle();
-            return true;
-        }
-        if (cmd == "/vanilla")
-        {
-            // The flip is applied at the next frame edge (#86); the render thread logs the transition.
-            Sowx.Services.Render.RenderMode.Toggle();
-            return true;
-        }
-        if (cmd == "/compass")
-        {
-            Quickbar.QuickbarService.ToggleCompass();
-            return true;
-        }
-        if (cmd == "/light" || cmd.StartsWith("/light "))
-        {
-            Light(cmd);
-            return true;
-        }
-        if (cmd == "/grass" || cmd.StartsWith("/grass "))
-        {
-            Grass(cmd);
-            return true;
-        }
-        if (cmd == "/post" || cmd.StartsWith("/post "))
-        {
-            Post(cmd);
-            return true;
-        }
-        if (cmd == "/dumpshaders")
-        {
-            DumpShaders();
-            return true;
-        }
-        return false;
-    }
-
-    /// <summary>Live light tuning: <c>/light</c> reports, <c>/light &lt;key&gt; &lt;value&gt;</c> sets,
-    /// <c>/light reset</c> restores the values the session launched with. Keys: gain, radius, falloff,
-    /// ambient, sun, overbright.
-    /// <para>Lighting is a taste judgement made while LOOKING at a scene, so the knobs have to move without a
-    /// restart -- the env vars only set the boot values. Each set is one float; the render thread picks it up
-    /// on the next upload.</para></summary>
-    private static void Light(string cmd)
-    {
-        string[] a = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (a.Length == 1) { EchoLocal($"[light] {Sowx.Services.Render.OwnedLights.Describe()}"); return; }
-        if (a.Length == 2 && a[1] == "reset")
-        {
-            Sowx.Services.Render.OwnedLights.ResetTuning();
-            EchoLocal($"[light] reset -> {Sowx.Services.Render.OwnedLights.Describe()}");
-            return;
-        }
-        if (a.Length != 3 || !float.TryParse(a[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float v)
-            || v < 0f)
-        {
-            EchoLocal("[light] usage: /light | /light <gain|radius|falloff|ambient|sun|overbright|wrap|wrapndl|shadowsoft|shadownear|hot|hotsize> <value> | /light reset");
-            return;
-        }
-        float old = Sowx.Services.Render.OwnedLights.Tune(a[1], v);
-        EchoLocal(float.IsNaN(old)
-            ? $"[light] unknown knob \"{a[1]}\" -- try gain, radius, falloff, ambient, sun, overbright, wrap, wrapndl, shadowsoft, shadownear, hot or hotsize"
-            : $"[light] {a[1]} {v:F2} (was {old:F2}) -> {Sowx.Services.Render.OwnedLights.Describe()}");
-    }
-
-    /// <summary>Live grass tuning (#127): <c>/grass</c> reports, <c>/grass &lt;key&gt; &lt;value&gt;</c> sets.
-    /// Keys: density, wind, windspeed. Density is the acceptance criterion, not a convenience -- vanilla bakes
-    /// it into the VDOs at area load and gives the player no knob at all, so the owned field re-scatters on
-    /// the next frame instead.</summary>
-    private static void Grass(string cmd)
-    {
-        string[] a = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (a.Length == 1) { EchoLocal($"[grass] {Sowx.Services.Render.GrassField.Describe()}"); return; }
-        if (a.Length != 3 || !float.TryParse(a[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float v)
-            || v < 0f)
-        {
-            EchoLocal("[grass] usage: /grass | /grass <density|wind|windspeed|soften|aniso|edge|push|pushradius|pushextent|cull|cullshrink|cullmax> <value>");
-            return;
-        }
-        float old = Sowx.Services.Render.GrassField.Tune(a[1], v);
-        EchoLocal(float.IsNaN(old)
-            ? $"[grass] unknown knob \"{a[1]}\" -- try density, wind, windspeed, soften, aniso, edge, push, pushradius, pushextent, cull, cullshrink or cullmax"
-            : $"[grass] {a[1]} {v:F3} (was {old:F3}) -> {Sowx.Services.Render.GrassField.Describe()}");
-    }
-
-    /// <summary>Live post-chain tuning (#139): <c>/post</c> reports, <c>/post &lt;key&gt; &lt;value&gt;</c>
-    /// sets, <c>/post reset</c> restores what the session launched with. Keys: hdr (0/1), bloom, threshold,
-    /// knee, tonemap (0 off, 1 shoulder, 2 aces), tmknee, softclip.
-    /// <para>Dials rather than constants because every one of them is a taste call, and the same reason
-    /// <c>/light</c> exists: they were dialled in live, standing in the scene they change.</para></summary>
-    private static void Post(string cmd)
-    {
-        string[] a = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (a.Length == 1) { EchoLocal($"[post] {Sowx.Services.Render.PostChain.Describe()}"); return; }
-        if (a.Length == 2 && a[1] == "reset")
-        {
-            Sowx.Services.Render.PostChain.ResetTuning();
-            EchoLocal($"[post] reset -> {Sowx.Services.Render.PostChain.Describe()}");
-            return;
-        }
-        if (a.Length != 3 || !float.TryParse(a[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float v)
-            || v < 0f)
-        {
-            EchoLocal("[post] usage: /post | /post <hdr|bloom|threshold|knee|tonemap|tmknee|softclip> <value> | /post reset");
-            return;
-        }
-        float old = Sowx.Services.Render.PostChain.Tune(a[1], v);
-        EchoLocal(float.IsNaN(old)
-            ? $"[post] unknown knob \"{a[1]}\" -- try hdr, bloom, threshold, knee, tonemap, tmknee or softclip"
-            : $"[post] {a[1]} {v:F3} (was {old:F3}) -> {Sowx.Services.Render.PostChain.Describe()}");
-    }
-
-    /// <summary>#160: write every overridable stage to <c>&lt;user directory&gt;/sowx_shader_dump/</c> as an
-    /// editable .shd, plus the bindless variant of the lit stage. Dumping what is compiled in is what makes
-    /// the starting point current by construction (ADR 0012); the sizing tokens stay unexpanded, because the
-    /// extender expands them on load for an override exactly as for the embedded default.</summary>
-    private static void DumpShaders()
-    {
-        string dir = Sowx.Services.Render.ShaderStages.DumpDir;
-        int n = Sowx.Services.Render.ShaderStages.Dump(dir, _log);
-        EchoLocal(n < 0
-            ? $"[shaders] dump to {dir} failed -- see the log"
-            : $"[shaders] {n} stages written to {dir}");
+            return null;
+        }, "/cw");
     }
 
     /// <summary>Put a line in the local chat store without touching the wire -- command feedback the player

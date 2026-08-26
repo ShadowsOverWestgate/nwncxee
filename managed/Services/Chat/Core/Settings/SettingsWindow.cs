@@ -5,81 +5,50 @@ using Sowx.Ui;
 namespace Sowx.Services.Chat.Core;
 
 /// <summary>
-/// The chat settings window: a scrolling-free floating panel of typed rows (checkboxes, cycle buttons,
-/// sliders, and expandable RGBA colour pickers) that edits the <see cref="ChatWindow"/> toggles and the
-/// <see cref="ChatConfig"/>. Pure -- pixels in, hit-tests + value edits out, no native refs -- so it
-/// self-checks off-device. Opened from the gear icon; anchored over the chat window and clamped on-screen
-/// (the shell passes the last-known viewport). ponytail: fixed anchor, no drag, no scroll; a scroll pane is
-/// the ceiling once the option list can exceed the viewport height.
+/// The chat settings window: the chat-side consumer of the shared <see cref="SettingsPanel"/>. It owns the
+/// content only -- which rows exist (checkboxes, cycle buttons, sliders, expandable RGBA colour pickers, tab
+/// editing, "copy from window") and what each press does to the <see cref="ChatWindow"/> / <see cref="ChatConfig"/>.
+/// The panel owns everything else: position, drag-by-title, the close-button hit, the metrics, the row list,
+/// hit-test-to-row, the inline text buffer, and the draw. Pure -- pixels in, hit-tests + value edits out, no
+/// native refs -- so it self-checks off-device. ponytail: no scroll pane; a scroll pane is the ceiling once the
+/// option list can exceed the viewport height.
 /// </summary>
 public sealed class SettingsWindow
 {
-    public float X, Y;
-    /// <summary>Panel width. Scales with the font/UI so the label|control split (<see cref="ControlX"/>) and the
-    /// value boxes keep their proportions -- labels and values don't run past their column when the font grows.</summary>
-    public float W => 264f * Metrics.Scale;
-    public bool Open;
-    private bool _pressConsumed;
-    // The slider being dragged (mouse-down..up), a live row in the current Rows list. Layout() only runs on the
-    // input thread (never from the ingest-thread Rebuild), and no Layout runs mid-drag -- MouseDown re-resolves
-    // _grab into the freshly published list right after its Layout, and MouseMove doesn't re-lay -- so this
-    // reference stays a drawn row for the whole drag, and its Norm/Rgba update in place track the pointer live.
-    private SetRow? _grab;
-    private bool _moving;          // dragging the panel by its title bar
-    private float _mgx, _mgy;      // move-grab anchor: pointer offset from (X,Y) at grab
+    /// <summary>Design-px panel width. Scales with the font/UI so the label|control split and the value boxes
+    /// keep their proportions -- labels and values don't run past their column when the font grows.</summary>
+    private const float PanelW = 264f;
+
+    /// <summary>The shared panel this window's rows are drawn and hit-tested by (the renderer calls
+    /// <see cref="SettingsPanel.Emit"/> on it).</summary>
+    public readonly SettingsPanel Panel;
+
+    // The model the panel's callbacks edit. Stashed at each public entry point because the shell passes the live
+    // window/config per call; a null window means "no model" and the callbacks no-op (the shell's focused window
+    // can be gone by the time a key commits an edit).
+    private ChatWindow? _win;
+    private ChatConfig? _cfg;
+
     private string _expanded = "";// colour key whose RGBA channels are shown, or ""
     private int _expandedTab = -1; // tab index whose channels are shown, or -1
-    // Inline numeric text entry (click a slider's value box to type an exact value). _editRow is a live row in
-    // the current Rows list; like _grab it's re-resolved after MouseDown's Layout and dropped if the row vanishes.
-    private SetRow? _editRow;
-    private string _editText = "";
-    private bool _editLabel;       // true = editing a tab label (broad char set), false = numeric (digits only)
 
-    // Pixel metrics scale with Metrics.Scale (font size + game UI scale) so labels/values/title don't clip when
-    // the font grows; ControlX stays a const -- it's a width fraction, not a pixel length.
-    public static float TitleH => 22f * Metrics.Scale;
-    public static float RowH => 24f * Metrics.Scale;
-    public static float Pad => 8f * Metrics.Scale;
-    public static float CheckSize => 14f * Metrics.Scale;
-    public static float CloseW => TitleH;
-    /// <summary>Colour swatch box drawn at the right edge of a swatch row.</summary>
-    public static float SwatchW => 34f * Metrics.Scale;
-    /// <summary>Left inset of the control (slider track / cycle value / swatch) -- labels sit left of it.</summary>
-    public const float ControlX = 0.42f;
-    /// <summary>Extra left indent of a colour channel sub-row.</summary>
-    public static float ChannelIndent => 12f * Metrics.Scale;
-    /// <summary>Numeric value box at a slider row's right edge (click to type an exact value).</summary>
-    public static float ValueW => 36f * Metrics.Scale;
-
-    /// <summary>The laid-out rows; the renderer draws these, hit-testing reads them. <see cref="Layout"/> swap-
-    /// publishes a fresh list (never mutates in place), so a reader on another thread (ingest-thread Rebuild ->
-    /// EmitSettings) iterates a stable snapshot instead of racing a Clear -- the lock-free pattern the store uses.</summary>
-    private volatile List<SetRow> _rows = new();
-    public List<SetRow> Rows => _rows;
-    // ponytail: X/Y/W/_h are plain fields read by the (cold) draw while Layout writes them; a torn read is a
-    // one-frame cosmetic panel-geometry glitch, memory-safe -- the same tolerance the store's ring read carries.
-    private float _h = TitleH + Pad;
-    /// <summary>Total panel height (title + laid-out rows + pad). Grows with the option list.</summary>
-    public float H => _h;
-
-    /// <summary>Slider track span + centre-y for a row (shared by draw + hit-test so they always agree). The
-    /// track stops short of the right-edge value box.</summary>
-    public void SliderTrack(SetRow r, out float x0, out float x1, out float cy)
+    public SettingsWindow()
     {
-        float indent = r.Channel >= 0 ? ChannelIndent : 0f;
-        x0 = X + W * ControlX + indent;
-        x1 = X + W - Pad - ValueW - 4f;
-        cy = r.Top + RowH * 0.5f;
+        Panel = new SettingsPanel(PanelW)
+        {
+            Relayout = () => { if (_win != null && _cfg != null) Layout(_win, _cfg); },
+            RowPressed = OnRowPressed,
+            ApplyValue = OnApplyValue,
+            CommitLabel = OnCommitLabel,
+        };
     }
 
-    /// <summary>The slider value box rect (right edge of the row). Draw + hit-test share it.</summary>
-    public void ValueBox(SetRow r, out float x0, out float x1, out float y0, out float y1)
-    {
-        x1 = X + W - Pad; x0 = x1 - ValueW;
-        y0 = r.Top + 3f; y1 = r.Top + RowH - 3f;
-    }
-    private bool OverValueBox(SetRow r, float mx, float my)
-    { ValueBox(r, out float x0, out float x1, out float y0, out float y1); return mx >= x0 && mx <= x1 && my >= y0 && my <= y1; }
+    public float X { get => Panel.X; set => Panel.X = value; }
+    public float Y { get => Panel.Y; set => Panel.Y = value; }
+    public float W => Panel.W;
+    public float H => Panel.H;
+    public bool Open { get => Panel.Open; set => Panel.Open = value; }
+    public List<SetRow> Rows => Panel.Rows;
 
     /// <summary>Number of chat windows (snapshot), used to show "Copy from Window N" rows. Set by the shell
     /// before <see cref="Layout"/> (the panel is modal, so window count can't change while it's open).</summary>
@@ -87,13 +56,22 @@ public sealed class SettingsWindow
     /// <summary>Index of the window this panel is editing (0 = Main). Set by the shell on open.</summary>
     public int WindowIndex;
 
+    /// <summary>Index of the source window for a pending "Copy from" action, or -1. The shell reads + clears
+    /// this after MouseDown to perform the actual copy (it owns the window list, which Layout doesn't).</summary>
+    public int CopyRequested = -1;
+
+    /// <summary>Set true when the user just turned TellsHere on. The shell reads + clears this to enforce
+    /// exclusivity (clear TellsHere on all other windows — the panel only sees one window).</summary>
+    public bool TellsHereChanged;
+
     /// <summary>Rebuild the row list + panel height from the live window + config, publishing a fresh list.
     /// Input-thread only (open + each settings interaction); the ingest-thread Rebuild never calls it, so the
     /// list it builds is single-writer and only ever read cross-thread as a whole snapshot.</summary>
     public void Layout(ChatWindow win, ChatConfig cfg)
     {
+        _win = win; _cfg = cfg;
         var rows = new List<SetRow>();
-        float y = Y + TitleH;
+        float y = Panel.ContentTop;
 
         // Render toggles (the window's option bits).
         foreach (var (bit, label) in ChatWindow.Options)
@@ -187,9 +165,10 @@ public sealed class SettingsWindow
             y += RowH;
         }
 
-        _h = (y - Y) + Pad;
-        _rows = rows;
+        Panel.Publish(rows, y);
     }
+
+    private static float RowH => SettingsPanel.RowH;
 
     /// <summary>Resolve a per-window colour to its current RGBA8 (override or default). Set by the shell so
     /// the pure core doesn't reach into the renderer for defaults.</summary>
@@ -226,7 +205,7 @@ public sealed class SettingsWindow
     public void OpenAt(ChatWindow win, ChatConfig cfg, float vpW, float vpH,
                        int winIndex = 0, int winCount = 1)
     {
-        Open = true; _pressConsumed = true; _grab = null; _moving = false; _editRow = null; _editText = ""; _editLabel = false;
+        Panel.BeginOpen();
         WindowIndex = winIndex; WindowCount = winCount;
         Layout(win, cfg);
         if (vpW > 0f && vpH > 0f) { X = (vpW - W) / 2f; Y = (vpH - H) / 2f; }
@@ -236,31 +215,29 @@ public sealed class SettingsWindow
         Layout(win, cfg);
     }
 
-    public bool OverClose(float mx, float my)
-        => mx >= X + W - CloseW && mx <= X + W && my >= Y && my <= Y + TitleH;
+    public bool OverClose(float mx, float my) => Panel.OverClose(mx, my);
 
-    internal bool Contains(float mx, float my) => mx >= X && mx <= X + W && my >= Y && my <= Y + H;
+    internal bool Contains(float mx, float my) => Panel.Contains(mx, my);
 
-    private SetRow? RowAt(float mx, float my)
-    {
-        if (mx < X || mx > X + W) return null;
-        foreach (SetRow r in Rows)
-            if (my >= r.Top && my < r.Top + r.Height) return r;
-        return null;
-    }
+    public void SliderTrack(SetRow r, out float x0, out float x1, out float cy) => Panel.SliderTrack(r, out x0, out x1, out cy);
+
+    public void ValueBox(SetRow r, out float x0, out float x1, out float y0, out float y1)
+        => Panel.ValueBox(r, out x0, out x1, out y0, out y1);
 
     /// <summary>Pointer press while open. Always consumed. Mutates the window/config per the hit row; a slider
     /// hit starts a drag (see <see cref="MouseMove"/>). Close button or a click-off closes.</summary>
     public bool MouseDown(float mx, float my, ChatWindow win, ChatConfig cfg)
     {
-        _pressConsumed = true; _grab = null; _moving = false;
-        if (_editRow != null) CommitEdit(win, cfg);   // any press ends an in-progress field edit (commit-on-focus-loss)
-        if (OverClose(mx, my)) { Open = false; return true; }
-        // Title bar (above the first row) is the move handle -- drag the panel anywhere on-screen.
-        if (my < Y + TitleH) { _moving = true; _mgx = mx - X; _mgy = my - Y; return true; }
-        SetRow? row = RowAt(mx, my);
-        if (row == null) { if (!Contains(mx, my)) Open = false; return true; }
+        _win = win; _cfg = cfg;
+        return Panel.MouseDown(mx, my);
+    }
 
+    /// <summary>A press on a non-slider row: mutate the window/config. Slider rows never reach here -- the panel
+    /// owns the track drag and the value box.</summary>
+    private void OnRowPressed(SetRow row)
+    {
+        ChatWindow? win = _win; ChatConfig? cfg = _cfg;
+        if (win == null || cfg == null) return;
         switch (row.Act)
         {
             case SetAct.ToggleBit: win.Toggles ^= row.Bit; break;
@@ -296,7 +273,7 @@ public sealed class SettingsWindow
             case SetAct.TabLabel:
             case SetAct.TabPin:
             {
-                BeginLabelEdit(row);
+                Panel.BeginLabelEdit(row);
                 break;
             }
             case SetAct.TabChannel:
@@ -316,60 +293,26 @@ public sealed class SettingsWindow
                 CopyRequested = src;
                 break;
             }
-            case SetAct.SliderHold: case SetAct.SliderFade: case SetAct.SliderTau: case SetAct.SliderFont: case SetAct.ColorChannel:
-                if (OverValueBox(row, mx, my)) { BeginEdit(row); break; }
-                SliderTrack(row, out float sx0, out float sx1, out float _);
-                if (mx >= sx0 && mx <= sx1) { _grab = row; SetSliderFromX(row, mx, win, cfg); }
-                break;
         }
-        Layout(win, cfg);   // reflect the change (e.g. anim toggle shows/hides its sliders) for the next frame
-        // Layout published a fresh list; re-resolve the grabbed/edited slider into it so the drawn knob + value
-        // box (not a detached row) track the interaction. A vanished row (Find null) ends the grab/edit cleanly.
-        if (_grab != null) _grab = _rows.Find(r => r.Act == _grab.Act && r.Key == _grab.Key && r.Channel == _grab.Channel);
-        if (_editRow != null) _editRow = _rows.Find(r => r.Act == _editRow.Act && r.Key == _editRow.Key && r.Channel == _editRow.Channel);
-        return true;
     }
 
-    /// <summary>Index of the source window for a pending "Copy from" action, or -1. The shell reads + clears
-    /// this after MouseDown to perform the actual copy (it owns the window list, which Layout doesn't).</summary>
-    public int CopyRequested = -1;
-
-    /// <summary>Set true when the user just turned TellsHere on. The shell reads + clears this to enforce
-    /// exclusivity (clear TellsHere on all other windows — the panel only sees one window).</summary>
-    public bool TellsHereChanged;
-
     /// <summary>True while the panel is being dragged by its title bar (not a slider grab).</summary>
-    public bool Moving => _moving;
+    public bool Moving => Panel.Moving;
 
     /// <summary>Pointer motion while a slider or the title bar is grabbed. A title-bar move translates
     /// row positions in place without a full <see cref="Layout"/> (#53).</summary>
     public bool MouseMove(float mx, float my, ChatWindow win, ChatConfig cfg)
     {
-        if (_moving)
-        {
-            float oldY = Y;
-            X = mx - _mgx; Y = my - _mgy;
-            float dy = Y - oldY;
-            var rows = _rows;
-            for (int i = 0; i < rows.Count; i++) rows[i].Top += dy;
-            return true;
-        }
-        if (_grab == null) return false;
-        SetSliderFromX(_grab, mx, win, cfg);
-        return true;
-    }
-
-    private void SetSliderFromX(SetRow r, float mx, ChatWindow win, ChatConfig cfg)
-    {
-        SliderTrack(r, out float x0, out float x1, out float _);
-        float norm = x1 > x0 ? Clamp01((mx - x0) / (x1 - x0)) : 0f;
-        ApplyValue(r, r.Act == SetAct.ColorChannel ? norm * 255f : r.Min + norm * (r.Max - r.Min), win, cfg);
+        _win = win; _cfg = cfg;
+        return Panel.MouseMove(mx, my);
     }
 
     /// <summary>Write a raw value onto the window (per-window settings) or config (font, which is global) for a
     /// slider/channel row and mirror it back onto the row's draw state so the knob/value box track the pointer.</summary>
-    private void ApplyValue(SetRow r, float v, ChatWindow win, ChatConfig cfg)
+    private void OnApplyValue(SetRow r, float v)
     {
+        ChatWindow? win = _win; ChatConfig? cfg = _cfg;
+        if (win == null || cfg == null) return;
         if (r.Act == SetAct.ColorChannel)
         {
             int b = (int)(v + 0.5f); b = b < 0 ? 0 : b > 255 ? 255 : b;
@@ -377,7 +320,7 @@ public sealed class SettingsWindow
             win.Colors[r.Key] = WithChannel(cur, r.Channel, b);
             r.Rgba = win.Colors[r.Key];
             r.Norm = b / 255f;
-            foreach (SetRow sw in _rows)
+            foreach (SetRow sw in Panel.Rows)
                 if (sw.Act == SetAct.ColorSwatch && sw.Key == r.Key) sw.Rgba = win.Colors[r.Key];
         }
         else
@@ -394,58 +337,37 @@ public sealed class SettingsWindow
         }
     }
 
-    // ---- inline numeric text entry ------------------------------------------------------------
+    // ---- inline text entry ---------------------------------------------------------------------
 
     /// <summary>True while a slider value box is being typed into (the shell routes keys/text here).</summary>
-    public bool Editing => _editRow != null;
+    public bool Editing => Panel.Editing;
     /// <summary>Is <paramref name="r"/> the row being text-edited? (the renderer shows the buffer + a caret).</summary>
-    public bool EditingRow(SetRow r) => ReferenceEquals(_editRow, r);
+    public bool EditingRow(SetRow r) => Panel.EditingRow(r);
     /// <summary>The in-progress edit buffer (renderer draws it in the active value box).</summary>
-    public string EditText => _editText;
-
-    // Seeds an empty buffer (type the exact value); the value box shows the caret, the knob still marks the old
-    // position. Committing empty/unparseable text keeps the old value.
-    private void BeginEdit(SetRow r) { _editRow = r; _editText = ""; _editLabel = false; _grab = null; }
-
-    private void BeginLabelEdit(SetRow r) { _editRow = r; _editText = ""; _editLabel = true; _grab = null; }
+    public string EditText => Panel.EditText;
 
     private static int ParseTabKey(string key)
         => int.TryParse(key, System.Globalization.NumberStyles.None,
                          System.Globalization.CultureInfo.InvariantCulture, out int i) ? i : -1;
 
-    /// <summary>Append typed characters. Label mode accepts printable chars (capped at 24); numeric mode
-    /// accepts digits/dot/sign (capped at 8).</summary>
-    public void EditInsert(string s)
-    {
-        if (_editRow == null) return;
-        if (_editLabel)
-        {
-            foreach (char c in s)
-                if (_editText.Length < 32 && c >= ' ' && c != '\n' && c != '\r')
-                    _editText += c;
-        }
-        else
-        {
-            foreach (char c in s)
-                if (_editText.Length < 8 && ((c >= '0' && c <= '9') || c == '.' || c == '-'))
-                    _editText += c;
-        }
-    }
+    /// <summary>Append typed characters (the panel filters them by edit mode).</summary>
+    public void EditInsert(string s) => Panel.EditInsert(s);
 
-    public void EditBackspace()
-    { if (_editRow != null && _editText.Length > 0) _editText = _editText.Substring(0, _editText.Length - 1); }
+    public void EditBackspace() => Panel.EditBackspace();
 
-    /// <summary>Commit the typed value. Label mode writes the trimmed text to the tab (empty keeps old);
-    /// pin mode writes (empty clears the pin — that's the only unpin affordance); numeric mode parses +
-    /// clamps via <see cref="ApplyValue"/>.</summary>
+    /// <summary>Commit the typed value; the panel routes free text here and parses numeric text itself.</summary>
     public void CommitEdit(ChatWindow? win, ChatConfig cfg)
     {
-        SetRow? r = _editRow;
-        string t = _editText;
-        bool label = _editLabel;
-        _editRow = null; _editText = ""; _editLabel = false;
-        if (r == null) return;
-        if (label && r.Act == SetAct.TabPin)
+        _win = win; _cfg = cfg;
+        Panel.CommitEdit();
+    }
+
+    /// <summary>Commit a tab label or tell pin. A label writes the trimmed text to the tab (empty keeps old);
+    /// a pin writes it too (empty clears the pin — that's the only unpin affordance).</summary>
+    private void OnCommitLabel(SetRow r, string t)
+    {
+        ChatWindow? win = _win;
+        if (r.Act == SetAct.TabPin)
         {
             string trimmed = t.Trim();
             if (win != null)
@@ -459,7 +381,7 @@ public sealed class SettingsWindow
                 }
             }
         }
-        else if (label)
+        else
         {
             string trimmed = t.Trim();
             if (trimmed.Length > 0 && win != null)
@@ -470,40 +392,23 @@ public sealed class SettingsWindow
 
                     win.Tabs[ti].Label = trimmed;
                     r.Value = trimmed;
-                    foreach (SetRow hdr in _rows)
+                    foreach (SetRow hdr in Panel.Rows)
                         if (hdr.Act == SetAct.TabExpand && hdr.Key == r.Key) hdr.Value = trimmed;
                 }
             }
         }
-        else if (float.TryParse(t, System.Globalization.NumberStyles.Float,
-                                System.Globalization.CultureInfo.InvariantCulture, out float v) && win != null)
-            ApplyValue(r, v, win, cfg);
     }
 
-    public void CancelEdit() { _editRow = null; _editText = ""; _editLabel = false; }
-
-    /// <summary>The current numeric value of a slider/channel row, formatted for the value box.</summary>
-    public static string FormatValue(SetRow r)
-    {
-        float v = r.Act == SetAct.ColorChannel ? r.Norm * 255f : r.Min + r.Norm * (r.Max - r.Min);
-        return r.Act == SetAct.ColorChannel
-            ? ((int)(v + 0.5f)).ToString(System.Globalization.CultureInfo.InvariantCulture)
-            : v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
-    }
+    public void CancelEdit() => Panel.CancelEdit();
 
     /// <summary>Pointer release. Consumed iff we owned the press. Ends any slide drag.</summary>
-    public bool MouseUp()
-    {
-        bool c = _pressConsumed;
-        _pressConsumed = false; _grab = null; _moving = false;
-        return c;
-    }
+    public bool MouseUp() => Panel.MouseUp();
 
     /// <summary>True while a slider or the panel itself is being dragged.</summary>
-    public bool Dragging => _grab != null || _moving;
+    public bool Dragging => Panel.Dragging;
 
     /// <summary>Force-close at a session boundary, clearing any half-owned press, drag, or field edit.</summary>
-    public void Reset() { Open = false; _pressConsumed = false; _grab = null; _moving = false; _editRow = null; _editText = ""; _editLabel = false; _expanded = ""; _expandedTab = -1; TellsHereChanged = false; }
+    public void Reset() { Panel.Reset(); _expanded = ""; _expandedTab = -1; TellsHereChanged = false; }
 
     private static float Clamp01(float v) => v < 0f ? 0f : v > 1f ? 1f : v;
     private static int ChannelByte(uint rgba, int ch) => (int)((rgba >> (24 - ch * 8)) & 0xFF);

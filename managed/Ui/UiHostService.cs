@@ -4,32 +4,22 @@ using Sowx.Framework;
 
 namespace Sowx.Ui;
 
-/// <summary>The framework's frame owner (ADR 0004, spec #62). Owns the single <c>SwapBuffers</c> present,
-/// computes the in-game gate and syncs the game UI scale once per frame, then drives the <see cref="UiHost"/>
-/// window registry's draw roll-call in z-order. Each service supplies its window's <see cref="Window.DrawContent"/>;
+/// <summary>The framework's frame owner (ADR 0004, spec #62; ADR 0014 amendment, #170). Owns the single
+/// <c>SwapBuffers</c> present, computes the in-game gate and syncs the game UI scale once per frame, then drives
+/// two registries and nothing else: the <see cref="UiHost"/> window roll-call in z-order, and the
+/// <see cref="FrameRegistry"/> phase walks around it. It names no service. Each service supplies its window's <see cref="Window.DrawContent"/>;
 /// the host never touches any service's rendering. Was Chat's <c>OnSwap</c> roll-call. Raw input capture is the
 /// sibling <c>UiInputService</c>'s job (#64); this service owns only the frame present.</summary>
 public sealed unsafe class UiHostService : IExtenderService
 {
     private static ExtenderLog? _log;
 
-    /// <summary>Framework opt-OUT (#23, the extender-optional guarantee): <c>SOWX_LOCKCHAT=1</c> stands the whole
-    /// UI framework down -- the host installs no frame hook, so nothing owns the present and vanilla rendering
-    /// is untouched. The single env pivot every UI service reads.</summary>
-    public static bool Locked =>
-        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_LOCKCHAT"));
-
-    /// <summary>True when the framework owns the <c>SwapBuffers</c> present (the default path). False under
-    /// <c>SOWX_LOCKCHAT</c>. Frame-present-coupled services (Dialog and friends) read this: funchook single-hooks
-    /// a symbol, so exactly one owner of SwapBuffers may install.</summary>
-    public static bool OwnsFramePresent => !Locked;
-
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
         UiHost.SelfCheck(log);   // #61 arbiter + #62 draw roll-call proof (off-device)
-        Sowx.Services.Render.RenderMode.SelfCheck(log);   // #86 latch semantics (off-device)
-        if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla rendering intact
+        SettingsPanel.SelfCheck(log);   // #166 shared settings panel: hit-test, drag, edit buffer (off-device)
+        if (GameGate.Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla rendering intact
         {
             log.Info("UiHostService: SOWX_LOCKCHAT set -- framework stood down, vanilla rendering left intact");
             return;
@@ -57,31 +47,14 @@ public sealed unsafe class UiHostService : IExtenderService
             _announced = true;
             _log?.Info("UiHostService: first frame presented -- hook is LIVE");
         }
-        LatchRenderMode();
+        FrameRegistry.Global.Run(FramePhase.Start);
         RefreshGate();
-        if (UiHost.InGame) SyncUiScale();
+        if (GameGate.InGame) SyncUiScale();
         UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
-        Sowx.Services.Render.GlContextService.OnFrame();     // #80 4.6-context bracket; near-free when disabled
+        FrameRegistry.Global.Run(FramePhase.PrePresent);
         if (_swapOrig != null) _swapOrig(window); // present
         FrameStats();
-        Sowx.Services.Perf.DrawStatsService.EndFrame();
-        Sowx.Services.Perf.BatchService.EndFrame();
-        Sowx.Services.Render.OwnedDrawService.EndFrame();    // #82 ownership lifecycle tick
-    }
-
-    /// <summary>#86: the ONE place the vanilla toggle takes effect. The present sits between scene frames, so
-    /// a flip applied here is frame-atomic -- the next frame is wholly owned or wholly vanilla. Edge work runs
-    /// only on a transition (rapid toggling collapses into it).</summary>
-    private static void LatchRenderMode()
-    {
-        if (!Sowx.Services.Render.RenderMode.Latch()) return;
-        bool owned = Sowx.Services.Render.RenderMode.Owned;
-        // The wipe must land before OwnedDrawService's EndFrame sees the new TableGen at the bottom of this present.
-        Sowx.Services.Perf.BatchService.OnRenderModeEdge(owned);
-        Sowx.Services.Render.OwnedDrawService.OnRenderModeEdge(owned);
-        _log?.Info(owned
-            ? "[rendermode] OWNED -- SowxRender colour pass, shadow pipeline and batching live"
-            : "[rendermode] VANILLA -- all owned rendering off, engine renders everything (/vanilla to toggle)");
+        FrameRegistry.Global.Run(FramePhase.PostPresent);
     }
 
     private static long _fsLast, _fsSum, _fsMax;
@@ -94,7 +67,7 @@ public sealed unsafe class UiHostService : IExtenderService
     private static void FrameStats()
     {
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
-        if (_fsLast != 0 && UiHost.InModule)
+        if (_fsLast != 0 && GameGate.InModule)
         {
             long dt = now - _fsLast;
             _fsSum += dt; _fsN++;
@@ -130,7 +103,7 @@ public sealed unsafe class UiHostService : IExtenderService
                       OptionsPanelOpenOff = 0x604, GuiToggledOffOff = 0x3d4;
     private static (IntPtr win, bool opt, bool hud) _gateSig;
 
-    /// <summary>Recompute the gate and publish it onto <see cref="UiHost.InGame"/> / <see cref="UiHost.InModule"/>.
+    /// <summary>Recompute the gate and publish it onto <see cref="GameGate.InGame"/> / <see cref="GameGate.InModule"/>.
     /// Hot, zero-alloc: guarded pointer reads at each hop; log only on transition. The module-unload edge and
     /// scale reaction are the content's to observe (chat resets its session on the InModule true->false edge).</summary>
     private static void RefreshGate()
@@ -144,8 +117,8 @@ public sealed unsafe class UiHostService : IExtenderService
         bool hud = gui != IntPtr.Zero && *(int*)(gui + GuiToggledOffOff) != 0;            // H: HUD toggled off
         bool show = win != IntPtr.Zero && !opt && !hud;
 
-        UiHost.InModule = win != IntPtr.Zero;
-        UiHost.InGame = show;
+        GameGate.InModule = win != IntPtr.Zero;
+        GameGate.InGame = show;
 
         var sig = (win, opt, hud);
         if (sig != _gateSig)

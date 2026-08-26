@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using Sowx.Ui;
+using Sowx.Graphics;
 
 namespace Sowx.Services.Perf;
 
@@ -44,6 +44,9 @@ public sealed unsafe class DrawStatsService : IExtenderService
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
+        // #170: ahead of the stand-down -- the host called EndFrame every frame regardless, and EndFrame
+        // guards itself on Enabled. Registering after the return would silently change that.
+        FrameRegistry.Global.Register(FramePhase.PostPresent, 0, EndFrame, "DrawStatsService.endFrame", log);
         if (Environment.GetEnvironmentVariable("SOWX_DRAWSTATS") != "1") return;
         _log = log;
         // Chained, not Install()ed: RenderVertexData has several subscribers (#88). Lowest priority --

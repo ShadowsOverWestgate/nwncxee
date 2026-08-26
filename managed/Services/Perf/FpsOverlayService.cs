@@ -1,6 +1,6 @@
 using System;
 using Sowx.Framework;
-using Sowx.Ui;
+using Sowx.Ui;      // a genuine UI client: draws through the text rig and registers a UiHost window
 
 namespace Sowx.Services.Perf;
 
@@ -34,7 +34,8 @@ public sealed class FpsOverlayService : IExtenderService
     {
         _log = log;
         _visible = Environment.GetEnvironmentVariable("SOWX_FPS") == "1";
-        if (UiHostService.Locked) return;
+        CommandRegistry.Global.Register("/fps", "toggle the FPS overlay", _ => { Toggle(); return null; });
+        if (GameGate.Locked) return;
         new Window(0, 0, 0, 0) { Focusable = false, DrawContent = Draw };
         log.Info($"FpsOverlayService: registered (visible={_visible}; toggle with /fps)");
     }
@@ -51,7 +52,7 @@ public sealed class FpsOverlayService : IExtenderService
     /// <see cref="UpdateEvery"/> frames re-bakes "FPS nnn  n.nn ms" into the persistent vertex buffer.</summary>
     private static void Draw()
     {
-        if (!_visible || !UiHost.InGame) { _last = 0; return; }
+        if (!_visible || !GameGate.InGame) { _last = 0; return; }
         long now = System.Diagnostics.Stopwatch.GetTimestamp();
         if (_last != 0)
         {

@@ -30,7 +30,7 @@ internal static class DepthResource
     internal static unsafe void Publish(int type, int name, int* viewport, int gen)
     {
         Name = (uint)name;
-        IsTexture = type != (int)Sowx.Ui.Gl.RENDERBUFFER && name != 0;
+        IsTexture = type != (int)Sowx.Graphics.Gl.RENDERBUFFER && name != 0;
         FilledX = viewport[0]; FilledY = viewport[1];
         FilledWidth = viewport[2]; FilledHeight = viewport[3];
         Gen = gen;

@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using Sowx.Ui;
 
 namespace Sowx.Services.Shadow;
 
@@ -41,7 +40,7 @@ public sealed unsafe class ShadowFeedService : IExtenderService
     /// <summary>The one "we own shadows this frame" predicate: armed, in a module, and the frame latched
     /// owned (#86). No GL term any more -- this service stopped touching GL when the maps moved to
     /// CasterPass, and a dead flag in here would read as a live safety gate that can no longer fire.</summary>
-    private static bool Owns => _enabled && UiHost.InModule && Render.RenderMode.Owned;
+    private static bool Owns => _enabled && GameGate.InModule && Render.RenderMode.Owned;
 
     /// <summary>Radius of the off-screen GOB append: dynamic casters this far from the focus are pushed into
     /// the draw buckets even when the camera culled them, so they can still cast. Kept tight -- a creature
@@ -191,8 +190,9 @@ public sealed unsafe class ShadowFeedService : IExtenderService
         // under SOWX_NOSHADOWS). CurrentCamera is a global pointer slot -- store its address, deref per frame.
         _currentCamera = Native.Sym(SymbolMap.CurrentCamera);
 
-        // The per-presented-frame edge: a passive window with no input, just a draw slot in the roll-call.
-        _ = new Window(0, 0, 0, 0) { Focusable = false, DrawContent = Draw };
+        // The per-presented-frame edge. Was a zero-size UiHost Window abused as a draw slot (#169); #170 gives
+        // it the real thing. Priority 0: it ran inside the window roll-call, i.e. before the #80 context bracket.
+        FrameRegistry.Global.Register(FramePhase.PrePresent, 0, Draw, "ShadowFeedService.frameEdge", log);
         log.Info($"ShadowFeedService: light walk + caster re-walk armed, feeding CasterPass " +
                  $"(SOWX_SHADOWS=0 disables) " +
                  $"(rewalk={(_rewalkOn ? (_origManageSceneBSP != null && _bspTraverseSphere != null && _addPartToMeshBuckets != null ? "ok" : "MISS") : "off")}, " +
@@ -291,7 +291,7 @@ public sealed unsafe class ShadowFeedService : IExtenderService
     /// pointers are only read inside this call, never retained.</summary>
     private static void WalkMasterList(IntPtr self)
     {
-        if (self == IntPtr.Zero || !UiHost.InModule) return;
+        if (self == IntPtr.Zero || !GameGate.InModule) return;
         int count = *(int*)((byte*)self + LmMasterCount);
         IntPtr data = *(IntPtr*)((byte*)self + LmMasterData);
         if (data == IntPtr.Zero) return;

@@ -1,6 +1,6 @@
 using System;
 using Sowx.Framework;
-using Sowx.Ui;
+using Sowx.Graphics;
 
 namespace Sowx.Services.Render;
 
@@ -136,9 +136,9 @@ internal static unsafe class WaterPass
     /// least 64, so this is a formality -- but a level above the limit is an error, not a clamp.</summary>
     internal static void ClampTess()
     {
-        if (Ui.Gl.GetIntegerv == null) return;
+        if (Graphics.Gl.GetIntegerv == null) return;
         int max = 0;
-        Ui.Gl.GetIntegerv(Ui.Gl.MAX_TESS_GEN_LEVEL, &max);
+        Graphics.Gl.GetIntegerv(Graphics.Gl.MAX_TESS_GEN_LEVEL, &max);
         if (max > 0 && TessMax > max) TessMax = max;
     }
 

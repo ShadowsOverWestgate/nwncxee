@@ -34,6 +34,32 @@ public static class RenderMode
         return true;
     }
 
+    /// <summary>#86: the ONE place the vanilla toggle takes effect, run from the frame present's Start phase.
+    /// The present sits between scene frames, so a flip applied here is frame-atomic -- the next frame is wholly
+    /// owned or wholly vanilla. Edge work runs only on a transition (rapid toggling collapses into it).</summary>
+    internal static void OnFrameStart()
+    {
+        if (!Latch()) return;
+        bool owned = _owned;
+        // The wipe must land before OwnedDrawService's EndFrame sees the new TableGen at the bottom of this present.
+        Sowx.Services.Perf.BatchService.OnRenderModeEdge(owned);
+        OwnedDrawService.OnRenderModeEdge(owned);
+        _log?.Info(owned
+            ? "[rendermode] OWNED -- SowxRender colour pass, shadow pipeline and batching live"
+            : "[rendermode] VANILLA -- all owned rendering off, engine renders everything (/vanilla to toggle)");
+    }
+
+    private static ExtenderLog? _log;
+
+    /// <summary>Join the frame and self-check. Called from <c>OwnedDrawService.Initialize</c>, which owns the
+    /// owned-render pass this latch arms.</summary>
+    internal static void Arm(ExtenderLog log)
+    {
+        _log = log;
+        SelfCheck(log);   // #86 latch semantics (off-device)
+        FrameRegistry.Global.Register(FramePhase.Start, 0, OnFrameStart, "RenderMode.latch", log);
+    }
+
     /// <summary>Latch semantics, off-device: a request never takes effect before the next <see cref="Latch"/>,
     /// and a request that nets out inside one frame produces no edge.</summary>
     public static void SelfCheck(ExtenderLog log)

@@ -50,12 +50,8 @@ public sealed class DialogConfig
     {
         var c = new DialogConfig();
         var ci = CultureInfo.InvariantCulture;
-        foreach (string raw in text.Split('\n'))
+        ConfigFile.ForEachPair(text, (key, val) =>
         {
-            string line = raw.Trim();
-            int eq = line.IndexOf('=');
-            if (eq <= 0) continue;
-            string key = line.Substring(0, eq), val = line.Substring(eq + 1);
             switch (key)
             {
                 case "x": if (float.TryParse(val, ci, out float x)) { c.X = x; c.Placed = true; } break;
@@ -68,7 +64,7 @@ public sealed class DialogConfig
                 case "fadeout": if (float.TryParse(val, ci, out float fo)) c.FadeOutMs = fo; break;
                 case "justify": c.Justify = val != "0"; break;
             }
-        }
+        });
         return c;
     }
 

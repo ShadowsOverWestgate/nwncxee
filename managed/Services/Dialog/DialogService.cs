@@ -83,7 +83,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static readonly DialogSettings _settings = new();
     private static volatile DialogFrame? _settingsFrame;
     private static DialogConfig _cfg = new();
-    private static string _savedText = "";
+    private static readonly ConfigFile _file = new("sowx-dialog.cfg");
 
     // ---- grab / pointer (input thread) ----
     private enum Grab { None, Move, Resize, Scroll, SelectText }
@@ -135,7 +135,7 @@ public sealed unsafe class DialogService : IExtenderService
         DialogSettings.SelfCheck(log);
         DialogConfig.SelfCheck(log);
 
-        if (!UiHostService.OwnsFramePresent)
+        if (!GameGate.OwnsFramePresent)
         {
             log.Info("DialogService: standing down (framework not owning frame present); vanilla dialog intact");
             return;
@@ -176,16 +176,11 @@ public sealed unsafe class DialogService : IExtenderService
             : "DialogService: hooks attempted but reply sender unresolved (run-demo / non-Linux) -- render only");
     }
 
-    /// <summary>Deferred config load (Initialize runs pre-main; the engine user dir is unresolved there).
-    /// ChatService calls this on the first presented frame, where it restores its own config.</summary>
+    /// <summary>Deferred config load: <see cref="ConfigFile"/>'s gate keeps this a no-op until the engine user
+    /// dir resolves (Initialize runs pre-main), then latches once. ChatService calls it every frame.</summary>
     public static void LoadConfigDeferred()
     {
-        try
-        {
-            string p = Native.ConfigPath("sowx-dialog.cfg");
-            if (File.Exists(p)) _cfg = DialogConfig.Parse(File.ReadAllText(p));
-        }
-        catch (Exception e) { _log?.Info($"[dialog] config load failed: {e.Message}"); }
+        if (!_file.Load(_log, ApplyText)) return;
         _locked = _cfg.Locked;
         _animEnabled = _cfg.AnimEnabled;
         _fadeInMs = _cfg.FadeInMs;
@@ -519,11 +514,10 @@ public sealed unsafe class DialogService : IExtenderService
         _fadeOutMs = _settings.FadeOutMs;
         _maxBodyH = System.Math.Max(MinMaxBodyH, _settings.MaxBodyH);
         _justify = _settings.Justify;
-        // Apply the (global) font whenever it differs -- covers slider drag AND a typed commit (whose LastChange
-        // may be overwritten by a follow-up press). SetGlobalFontPx no-ops when unchanged.
+        // Apply the (global) font whenever it differs -- covers slider drag AND a typed commit.
+        // SetGlobalFontPx no-ops when unchanged.
         if (System.Math.Abs(_settings.FontPx - ChatService.GlobalFontPx) > 0.01f)
             ChatService.SetGlobalFontPx(_settings.FontPx);
-        _settings.LastChange = DialogSettings.Act.None;
         BuildSettings();
         Rebuild();
     }
@@ -760,7 +754,7 @@ public sealed unsafe class DialogService : IExtenderService
         // Keep the chord-withhold flag in lockstep with the modal gate each frame (the close paths clear _visible
         // off the render thread); the synchronous set on open covers the first-key race before this runs.
         if (_window != null) _window.SuppressChords = _visible;
-        if (!UiHost.InGame) return;
+        if (!GameGate.InGame) return;
         DialogFrame? f = _frame;
         if (f == null) return;
         GlyphAtlas? atlas = TextRenderer.Atlas;
@@ -872,7 +866,6 @@ public sealed unsafe class DialogService : IExtenderService
     private static readonly (float r, float g, float b, float a) TrackBgCol = (0.10f, 0.13f, 0.18f, 0.7f);
     private static readonly (float r, float g, float b, float a) KnobCol = (0.42f, 0.54f, 0.72f, 0.95f);
     private static readonly (float r, float g, float b, float a) GripCol = (0.40f, 0.50f, 0.64f, 0.8f);
-    private static readonly (float r, float g, float b, float a) TrackCol = (0.28f, 0.34f, 0.44f, 0.9f);
     private const uint NpcRgb = 0xF2F2F2, ReplyRgb = 0xE0E4EA, ReplyHoverRgb = 0xFFFFFF;
     private const uint NumRgb = 0xFFD200, DimRgb = 0x7A7E86;
     private const uint GearRgb = 0xB8C0CC, NameRgb = 0xEAF0F8;
@@ -1013,53 +1006,18 @@ public sealed unsafe class DialogService : IExtenderService
         };
     }
 
-    /// <summary>Cold: build the settings-panel batch from the (already laid-out) rows. Reuses the DialogFrame
-    /// container (only ContentVerts/ContentCount) drawn at full alpha over the faded dialog.</summary>
+    /// <summary>Cold: build the settings-panel batch by handing the shared <see cref="SettingsPanel"/> the
+    /// dialog palette. Reuses the DialogFrame container (only ContentVerts/ContentCount) drawn at full alpha
+    /// over the faded dialog.</summary>
     private static void BuildSettings()
     {
         if (!_settings.Open) { _settingsFrame = null; return; }
         GlyphAtlas? atlas = TextRenderer.Atlas;
         if (atlas == null) { _settingsFrame = null; return; }
 
-        var s = _settings;
-        float lh = atlas.LineHeight;
-        float x = s.X, y = s.Y, w = s.W, h = s.H;
-        float titleH = DialogSettings.TitleH, pad = DialogSettings.Pad, rowH = DialogSettings.RowH;
-
         var b = new VertexBatch(atlas.SolidU, atlas.SolidV);
-        b.Rect(x, y, x + w, y + h, BgCol.r, BgCol.g, BgCol.b, 0.98f);
-        Border(b, x, y, w, h);
-        b.Rect(x, y, x + w, y + titleH, HeaderCol.r, HeaderCol.g, HeaderCol.b, HeaderCol.a);
-        DrawPlain(b, atlas, "Dialog settings", x + pad, y + (titleH - lh) * 0.5f + atlas.Ascent, NameRgb);
-        DrawPlain(b, atlas, "×", x + w - DialogSettings.CloseW * 0.62f,
-                  y + (titleH - lh) * 0.5f + atlas.Ascent, GearRgb);
-
-        float rowTextDY = (rowH - lh) * 0.5f + atlas.Ascent;
-        foreach (DialogSettings.Row r in s.Rows)
-        {
-            DrawPlain(b, atlas, r.Label, x + pad, r.Top + rowTextDY, ReplyRgb);
-            if (!r.Slider)
-            {
-                float cs = DialogSettings.CheckSize;
-                float cx = x + w * DialogSettings.ControlX, cyy = r.Top + (rowH - cs) * 0.5f;
-                Border(b, cx, cyy, cs, cs);
-                if (r.On) b.Rect(cx + 3f, cyy + 3f, cx + cs - 3f, cyy + cs - 3f, KnobCol.r, KnobCol.g, KnobCol.b, KnobCol.a);
-            }
-            else
-            {
-                s.SliderTrack(r, out float x0, out float x1, out float cyy);
-                b.Rect(x0, cyy - 1f, x1, cyy + 1f, TrackCol.r, TrackCol.g, TrackCol.b, TrackCol.a);
-                float kx = x0 + r.Norm * (x1 - x0);
-                b.Rect(kx - 3f, cyy - 6f, kx + 3f, cyy + 6f, KnobCol.r, KnobCol.g, KnobCol.b, KnobCol.a);
-                // Value box (click to type an exact value); shows the edit buffer + a caret while editing.
-                s.ValueBox(r, out float vx0, out float vx1, out float vy0, out float vy1);
-                bool editing = s.EditingRow(r);
-                b.Rect(vx0, vy0, vx1, vy1, TrackBgCol.r, TrackBgCol.g, TrackBgCol.b, editing ? 1f : TrackBgCol.a);
-                Border(b, vx0, vy0, vx1 - vx0, vy1 - vy0);
-                string vtext = editing ? s.EditText + "|" : r.Value;
-                DrawPlainClipped(b, atlas, vtext, vx0 + 3f, r.Top + rowTextDY, editing ? NameRgb : GearRgb, vx1 - 2f);
-            }
-        }
+        _settings.Panel.Emit(b, atlas, atlas.LineHeight, new SettingsPanel.Palette
+        { Body = BgCol, TitleBar = HeaderCol, Active = KnobCol, TextRgb = ReplyRgb });
         _settingsFrame = new DialogFrame { ContentVerts = b.ToArray(), ContentCount = b.VertexCount };
     }
 
@@ -1157,14 +1115,6 @@ public sealed unsafe class DialogService : IExtenderService
         }
     }
 
-    private static void Border(VertexBatch b, float x, float y, float w, float h)
-    {
-        var c = BorderCol;
-        b.Rect(x, y, x + w, y + BorderW, c.r, c.g, c.b, c.a);
-        b.Rect(x, y + h - BorderW, x + w, y + h, c.r, c.g, c.b, c.a);
-        b.Rect(x, y, x + BorderW, y + h, c.r, c.g, c.b, c.a);
-        b.Rect(x + w - BorderW, y, x + w, y + h, c.r, c.g, c.b, c.a);
-    }
 
     // ---- persistence --------------------------------------------------------------------------
 
@@ -1177,17 +1127,10 @@ public sealed unsafe class DialogService : IExtenderService
         _cfg.MaxBodyH = _maxBodyH;
         _cfg.Justify = _justify;
         if (_placed) { _cfg.Placed = true; _cfg.X = _winX; _cfg.Y = _winY; _cfg.W = _winW; }
-        string text = _cfg.ToText();
-        if (text == _savedText) return;
-        _savedText = text;
-        try
-        {
-            string p = Native.ConfigPath("sowx-dialog.cfg");
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(p)!);
-            File.WriteAllText(p, text);
-        }
-        catch (Exception e) { _log?.Info($"[dialog] config save failed: {e.Message}"); }
+        _file.Save(_cfg.ToText(), _log);
     }
+
+    private static void ApplyText(string text) => _cfg = DialogConfig.Parse(text);
 
     // ---- helpers ------------------------------------------------------------------------------
 

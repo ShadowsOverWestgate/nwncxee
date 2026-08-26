@@ -86,7 +86,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // Default (#64): the framework input layer owns raw capture. Hotkeys become a chord consumer at tier 2 --
         // fired only when no window consumed the key and the chord gate is clear (the arbiter's job now). Install
         // no raw hooks.
-        if (UiHostService.OwnsFramePresent)
+        if (GameGate.OwnsFramePresent)
         {
             UiHost.AddChordConsumer(new Consumer());
             log.Info("HotkeyInputService: registered as a chord consumer (framework owns raw capture)");

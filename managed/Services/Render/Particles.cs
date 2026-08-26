@@ -3,7 +3,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using Sowx.Ui;
+using Sowx.Graphics;
 
 namespace Sowx.Services.Render;
 

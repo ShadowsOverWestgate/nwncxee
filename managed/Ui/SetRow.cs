@@ -1,7 +1,8 @@
-namespace Sowx.Services.Chat.Core;
+namespace Sowx.Ui;
 
 /// <summary>One laid-out settings row: its kind, action, label, computed geometry, and the current value the
-/// renderer reads. Built by <see cref="SettingsWindow.Layout"/> from the live window+config each rebuild.</summary>
+/// renderer reads. Built by the consumer's layout pass and published to <see cref="SettingsPanel"/>, which
+/// hit-tests and draws them but never interprets <see cref="Act"/> (that is the consumer's vocabulary).</summary>
 public sealed class SetRow
 {
     public SetKind Kind;

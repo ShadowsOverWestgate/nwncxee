@@ -39,12 +39,24 @@ public static class ServiceHost
         // dependency in this host so far -- four services call it and none of them owns it.
         AurTex.Attach(log);
         AurTex.SelfCheck(log);
+        CommandRegistry.Global.Log = log;
+        CommandRegistry.SelfCheck(log);   // #165: registration/dispatch/enumeration proof, off-device
+        // #164: the shared config module's line walker + deferral gate. Proven at the host, so a sixth
+        // caller inherits the rule rather than re-deriving it. Run()'s caller IS pre-main, so the gate's
+        // "not yet" branch is the one under test here.
+        ConfigFile.SelfCheck(log);
+        FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
         foreach (IExtenderService service in all)
         {
             try { service.Initialize(log, hooks); }
             catch (Exception e) { log.Info($"host: {service.GetType().Name} init threw: {e.Message}"); }
         }
 
+        // #170: the frame walk must be immutable before the present hook can fire. Sealing here is the
+        // happens-before -- a registration after this point is refused, not silently dropped.
+        FrameRegistry.Global.Seal();
+        foreach (FramePhase p in new[] { FramePhase.Start, FramePhase.PrePresent, FramePhase.PostPresent })
+            log.Info($"host: frame {p} -> {string.Join(", ", FrameRegistry.Global.Names(p))}");
         hooks.Commit();
     }
 }

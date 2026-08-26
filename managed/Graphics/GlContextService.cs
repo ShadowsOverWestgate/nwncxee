@@ -1,9 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using Sowx.Ui;
 
-namespace Sowx.Services.Render;
+
+namespace Sowx.Graphics;
 
 /// <summary>
 /// #80 (map #68, spec #77 M1): owns the share-listed GL 4.6 core context on the engine's drawable --
@@ -48,7 +48,9 @@ public sealed unsafe class GlContextService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _disabled = Environment.GetEnvironmentVariable("SOWX_GL46") == "0" || UiHostService.Locked;
+        // #170: the 4.6-context bracket wraps the present, so it is the LAST pre-present participant.
+        FrameRegistry.Global.Register(FramePhase.PrePresent, 10, OnFrame, "GlContextService.bracket", log);
+        _disabled = Environment.GetEnvironmentVariable("SOWX_GL46") == "0" || GameGate.Locked;
         log.Info(_disabled
             ? "GlContextService: stood down (SOWX_GL46=0 or SOWX_LOCKCHAT)"
             : "GlContextService: armed -- 4.6 share-listed context on first presented frame");

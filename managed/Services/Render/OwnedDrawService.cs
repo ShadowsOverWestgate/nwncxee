@@ -3,7 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Services.Shadow;
-using Sowx.Ui;
+using Sowx.Graphics;
 
 namespace Sowx.Services.Render;
 
@@ -775,6 +775,13 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        // #165: ahead of every stand-down and every check below -- /vanilla is the escape hatch for a
+        // misrendering session, so it must exist even in a session whose renderer never armed.
+        RenderCommands.Register(log);
+        // #170: both ahead of every stand-down, matching the host's unconditional calls. The latch must
+        // outlive a renderer that never armed -- /vanilla is the escape hatch it drives.
+        RenderMode.Arm(log);
+        FrameRegistry.Global.Register(FramePhase.PostPresent, 20, EndFrame, "OwnedDrawService.endFrame", log);
         // #129: ahead of the checks, because SelfCheck asserts that the ownable-bucket list AGREES with
         // whether owned water can draw -- and SOWX_WATER=0 is exactly the case where it must.
         WaterPass.Attach(log);
@@ -793,7 +800,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
         ShaderStages.DumpIfConfigured(log);
         Beams.SelfCheck(log);
         Particles.SelfCheck(log);
-        if (Environment.GetEnvironmentVariable("SOWX_OWNDRAW") == "0" || UiHostService.Locked)
+        if (Environment.GetEnvironmentVariable("SOWX_OWNDRAW") == "0" || GameGate.Locked)
         { log.Info("OwnedDrawService: stood down (SOWX_OWNDRAW=0 or SOWX_LOCKCHAT)"); return; }
         if (!SelfCheck(log)) return;   // never arm on a broken contract: the misrender it predicts must not ship
         // #128: same rule. A wrong gob offset draws a creature at the wrong alpha and a leaky refused-gob set
@@ -895,7 +902,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     {
         PassGen++;   // unconditionally: a stale generation would keep the iterator skipping parts nobody draws
         bool world = IsWorldScene(scene);
-        if (world && _armed && RenderMode.Owned && GlContextService.Available && UiHost.InModule)
+        if (world && _armed && RenderMode.Owned && GlContextService.Available && GameGate.InModule)
         {
             // saturating, never wrapping: an unchecked ++ past int.MaxValue lands on int.MinValue and the
             // threshold is then unreachable for 2^31 passes -- i.e. enrollment silently never runs
@@ -988,7 +995,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
         if (scene != _enrollScene) { if (!_inColourPass) _foreignBuckets++; return; }
         if (!_inColourPass) return;
         if (_drawnPass == PassGen) return;
-        if (!GlContextService.Available || !UiHost.InModule) return;
+        if (!GlContextService.Available || !GameGate.InModule) return;
         _drawnPass = PassGen;
         // Engine context, before the bracket: harvesting a VDO's attribute formats is a read of the ENGINE's
         // VAO (see VdoSlot), so it cannot happen on the 4.6 side.
@@ -1136,7 +1143,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
         { RevokeAll("4.6 context lost"); OwnedLights.Forget(); EnvProbe.Forget(); PostChain.Forget();
           WaterPass.Forget(); _progWater = 0; _waterFailed = false;
           DepthResource.Revoke(); SceneDepth.Forget(); Particles.ContextLost(); }
-        bool inModule = UiHost.InModule;
+        bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) RevokeAll("module unload");
         _wasInModule = inModule;
         if (_tableGen != Perf.BatchService.TableGen) { RevokeAll("part table wiped"); _tableGen = Perf.BatchService.TableGen; }

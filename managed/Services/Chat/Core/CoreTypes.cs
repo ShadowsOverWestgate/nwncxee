@@ -31,8 +31,5 @@ public enum TsSource { Local, Game }
 /// (<see cref="ChatColor.Background2"/>) colours.</summary>
 public enum BgMode { Solid, GradientV, GradientH, GradientD, StripesH, StripesV, GradientBox, GradientCircle, Conic, Conic4 }
 
-/// <summary>The visual kind of a settings row (how the renderer draws it).</summary>
-public enum SetKind { Toggle, Cycle, Slider, Swatch, Button }
-
 /// <summary>A clickable portrait rect in screen pixels, carrying the line's PlayerId for tell targeting.</summary>
 public readonly record struct PortraitHit(float X, float Y, float W, float H, uint PlayerId);

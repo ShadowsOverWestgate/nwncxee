@@ -14,7 +14,8 @@ namespace Sowx.Services.Chat.Render;
 /// </summary>
 public static class WindowRenderer
 {
-    /// <summary>Per-window resolved palette, threaded through Build → EmitInputStrip/EmitSettings.</summary>
+    /// <summary>Per-window resolved palette, threaded through Build → EmitInputStrip and mapped onto
+    /// <see cref="SettingsPanel.Palette"/> for the settings panel's draw.</summary>
     private struct Pal
     {
         public (float r, float g, float b, float a) Bg, Bg2, TabBar, TabActive, Footer, SelBg;
@@ -71,9 +72,6 @@ public static class WindowRenderer
 
     private const uint GripRgb = 0xB8C0CC;
     private const uint GearRgb = 0xB8C0CC, GearActiveRgb = 0xEAF0F8;
-    /// <summary>Options-panel checkbox: outer frame + the fill drawn when the option is on.</summary>
-    private const float CheckSize = 12f;
-    private static readonly (float r, float g, float b, float a) CheckFrame = (0.55f, 0.55f, 0.55f, 1f);
 
     /// <summary>Portrait width:height. The engine's own portrait pipeline (ConvertPortrait) crops every
     /// portrait to this ratio (0.64 -&gt; taller than wide), so a gutter icon drawn at it is undistorted.</summary>
@@ -344,7 +342,8 @@ public static class WindowRenderer
         // Settings window (open): a titled floating panel with a checkbox row per option, drawn LAST so it
         // sits on top of everything. It grows with the option list (the point of it over the gear dropdown).
         if (settings.Open)
-            EmitSettings(b, atlas, settings, descentGap + glyphBaseline, p);
+            settings.Panel.Emit(b, atlas, descentGap + glyphBaseline, new SettingsPanel.Palette
+            { Body = p.Footer, TitleBar = p.TabBar, Active = p.TabActive, TextRgb = p.TabTextRgb });
 
         win.PortraitHits = hits.Count > 0 ? hits.ToArray() : System.Array.Empty<PortraitHit>();
 
@@ -700,85 +699,6 @@ public static class WindowRenderer
                 float cx = RowAlign.Measure(atlas, runes, span.Start, caretR, startX);
                 b.Rect(cx, ry + 3, cx + 2, ry + fh - 3,
                        ((CaretRgb >> 16) & 0xFF) / 255f, ((CaretRgb >> 8) & 0xFF) / 255f, (CaretRgb & 0xFF) / 255f, 1f);
-            }
-        }
-    }
-
-    /// <summary>The settings window: a title bar ("Settings" + a × close button) over the typed rows the
-    /// <see cref="SettingsWindow"/> laid out -- checkboxes, cycle buttons, sliders, and expandable RGBA colour
-    /// pickers. Anchored + sized by the window; drawn last so it sits over everything. Reads the rows' current
-    /// values (the core already resolved them from the config), so it never touches the config itself.</summary>
-    private static void EmitSettings(VertexBatch b, GlyphAtlas atlas, SettingsWindow s, float baseDrop, Pal p)
-    {
-        float x = s.X, y = s.Y, w = s.W;
-        float vpad = (SettingsWindow.RowH - atlas.LineHeight) / 2f;
-
-        b.Rect(x, y, x + w, y + s.H, p.Footer.r, p.Footer.g, p.Footer.b, 1f);
-        b.Rect(x, y, x + w, y + SettingsWindow.TitleH, p.TabBar.r, p.TabBar.g, p.TabBar.b, 1f);
-        DrawString(b, atlas, "Settings", x + SettingsWindow.Pad, y + baseDrop, p.TabTextRgb, x + w - SettingsWindow.CloseW);
-        DrawString(b, atlas, "×", x + w - SettingsWindow.CloseW + 5f, y + baseDrop, GearRgb, x + w);
-
-        foreach (SetRow r in s.Rows)
-        {
-            float labelX = x + SettingsWindow.Pad + (r.Channel >= 0 ? SettingsWindow.ChannelIndent : 0f);
-            float labelClip = r.Kind == SetKind.Toggle ? x + w - SettingsWindow.CheckSize - SettingsWindow.Pad
-                                                        : x + w * SettingsWindow.ControlX - 2f;
-            DrawString(b, atlas, r.Label, labelX, r.Top + baseDrop + vpad, p.TabTextRgb, labelClip);
-
-            switch (r.Kind)
-            {
-                case SetKind.Toggle:
-                {
-                    float cs = SettingsWindow.CheckSize;
-                    float cbx = x + w - SettingsWindow.Pad - cs, cby = r.Top + (SettingsWindow.RowH - cs) / 2f;
-                    b.Rect(cbx, cby, cbx + cs, cby + cs, CheckFrame.r, CheckFrame.g, CheckFrame.b, CheckFrame.a);
-                    var fill = r.On ? p.TabActive : p.Footer;
-                    b.Rect(cbx + 1, cby + 1, cbx + cs - 1, cby + cs - 1, fill.r, fill.g, fill.b, 1f);
-                    break;
-                }
-                case SetKind.Cycle:
-                {
-                    float bx0 = x + w * SettingsWindow.ControlX, bx1 = x + w - SettingsWindow.Pad;
-                    bool editing = s.EditingRow(r);
-                    var cbg = editing ? p.TabActive : p.TabBar;
-                    b.Rect(bx0, r.Top + 3, bx1, r.Top + SettingsWindow.RowH - 3, cbg.r, cbg.g, cbg.b, cbg.a);
-                    string ctext = editing ? s.EditText : r.Value;
-                    float cend = DrawString(b, atlas, ctext, bx0 + 4f, r.Top + baseDrop + vpad, p.TabTextRgb, bx1 - 2f);
-                    if (editing)
-                        b.Rect(cend, r.Top + 5f, cend + 1.5f, r.Top + SettingsWindow.RowH - 5f,
-                               ((CaretRgb >> 16) & 0xFF) / 255f, ((CaretRgb >> 8) & 0xFF) / 255f, (CaretRgb & 0xFF) / 255f, 1f);
-                    break;
-                }
-                case SetKind.Slider:
-                {
-                    s.SliderTrack(r, out float sx0, out float sx1, out float cy);
-                    b.Rect(sx0, cy - 2f, sx1, cy + 2f, SbTrack.r, SbTrack.g, SbTrack.b, SbTrack.a);
-                    float knob = sx0 + r.Norm * (sx1 - sx0);
-                    b.Rect(sx0, cy - 2f, knob, cy + 2f, p.TabActive.r, p.TabActive.g, p.TabActive.b, p.TabActive.a);
-                    b.Rect(knob - 2f, r.Top + 4f, knob + 2f, r.Top + SettingsWindow.RowH - 4f,
-                           ((GripRgb >> 16) & 0xFF) / 255f, ((GripRgb >> 8) & 0xFF) / 255f, (GripRgb & 0xFF) / 255f, 1f);
-                    s.ValueBox(r, out float vx0, out float vx1, out float vy0, out float vy1);
-                    bool editing = s.EditingRow(r);
-                    var vbg = editing ? p.TabActive : p.TabBar;
-                    b.Rect(vx0, vy0, vx1, vy1, vbg.r, vbg.g, vbg.b, vbg.a);
-                    string vtext = editing ? s.EditText : SettingsWindow.FormatValue(r);
-                    float vend = DrawString(b, atlas, vtext, vx0 + 3f, r.Top + baseDrop + vpad, p.TabTextRgb, vx1 - 2f);
-                    if (editing)
-                        b.Rect(vend, vy0 + 2f, vend + 1.5f, vy1 - 2f,
-                               ((CaretRgb >> 16) & 0xFF) / 255f, ((CaretRgb >> 8) & 0xFF) / 255f, (CaretRgb & 0xFF) / 255f, 1f);
-                    break;
-                }
-                case SetKind.Swatch:
-                {
-                    float px0 = x + w - SettingsWindow.Pad - SettingsWindow.SwatchW, px1 = x + w - SettingsWindow.Pad;
-                    float py0 = r.Top + 3f, py1 = r.Top + SettingsWindow.RowH - 3f;
-                    b.Rect(px0 - 1f, py0 - 1f, px1 + 1f, py1 + 1f, CheckFrame.r, CheckFrame.g, CheckFrame.b, CheckFrame.a);
-                    b.Rect(px0, py0, px1, py1, ((r.Rgba >> 24) & 0xFF) / 255f, ((r.Rgba >> 16) & 0xFF) / 255f,
-                           ((r.Rgba >> 8) & 0xFF) / 255f, (r.Rgba & 0xFF) / 255f);
-                    break;
-                }
-                case SetKind.Button:
-                    break;   // label already drawn above; no control widget
             }
         }
     }

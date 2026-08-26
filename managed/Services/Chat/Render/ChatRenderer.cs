@@ -4,6 +4,7 @@ using System.Text;
 using Sowx.Framework;
 using Sowx.Services.Chat.Core;
 using Sowx.Ui;
+using Sowx.Graphics;
 
 namespace Sowx.Services.Chat.Render;
 

@@ -1,8 +1,8 @@
 using System;
 using Sowx.Framework;
-using Sowx.Ui;
+using Sowx.Services.Render;   // ShaderResource: override lookup + $TOKEN$ expansion, both content/render concerns
 
-namespace Sowx.Services.Render;
+namespace Sowx.Graphics;
 
 /// <summary>Shader-object plumbing shared by the owned pass's programs (#83): compile, link, uniform lookup.
 /// Alloc-free apart from the log strings on the failure paths, which are cold by construction -- a program

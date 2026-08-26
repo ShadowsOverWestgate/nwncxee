@@ -1,7 +1,6 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Services.Chat;
-using Sowx.Services.Chat.Core;
 using Sowx.Services.Chat.Render;
 using Sowx.Ui;
 
@@ -35,8 +34,7 @@ public sealed unsafe class QuickbarService : IExtenderService
 
     private static QuickbarConfig _config = new();
     private static readonly QuickbarSettings _settings = new();
-    private static string _savedText = "";
-    private static string ConfigPath => Native.ConfigPath("sowx-quickbar.cfg");
+    private static readonly ConfigFile _file = new("sowx-quickbar.cfg");
 
     private static volatile int _vpW, _vpH;
     private static float _guiScale = 1f;
@@ -60,6 +58,9 @@ public sealed unsafe class QuickbarService : IExtenderService
         _log = log;
         QuickbarConfig.SelfCheck(log);
         QuickbarSettings.SelfCheck(log);
+        CommandRegistry.Global.Register("/settings", "toggle the quickbar settings panel",
+            _ => { ToggleSettings(); return null; });
+        CommandRegistry.Global.Register("/compass", "toggle the compass", _ => { ToggleCompass(); return null; });
 
         IntPtr tramp = hooks.Install(
             SymbolMap.QuickbarReposition,
@@ -76,7 +77,7 @@ public sealed unsafe class QuickbarService : IExtenderService
         // quickbar draws through ChatService's frame list (no DrawContent here); it only needs input + a hit-test
         // override (its panel is the only clickable region, and only while open). Skipped under LOCKCHAT, where
         // the framework input layer is down and the quickbar is inert (Tick never runs).
-        if (UiHostService.OwnsFramePresent)
+        if (GameGate.OwnsFramePresent)
             _window = new Window(0, 0, 0, 0)
             {
                 Focusable = false,
@@ -216,27 +217,19 @@ public sealed unsafe class QuickbarService : IExtenderService
         ChatService.RequestRebuild();
     }
 
+    /// <summary>Restore the settings. A no-op that stays retryable until <see cref="ConfigFile"/>'s deferral
+    /// gate opens (our loader runs pre-main), so the callers below just keep asking.</summary>
     private static void LoadConfig()
     {
+        if (!_file.Load(_log, ApplyText)) return;
         _configLoaded = true;
-        try { if (System.IO.File.Exists(ConfigPath)) _config = QuickbarConfig.Parse(System.IO.File.ReadAllText(ConfigPath)); }
-        catch (Exception e) { _log?.Info($"QuickbarService: config load failed: {e.Message}"); }
-        _savedText = _config.ToText();
+        _file.Baseline(_config.ToText());   // a load must not provoke a write of what is already on disk
         _dirty = true;
     }
 
-    private static void SaveConfig()
-    {
-        string text = _config.ToText();
-        if (text == _savedText) return;
-        _savedText = text;
-        try
-        {
-            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(ConfigPath)!);
-            System.IO.File.WriteAllText(ConfigPath, text);
-        }
-        catch (Exception e) { _log?.Info($"QuickbarService: config save failed: {e.Message}"); }
-    }
+    private static void ApplyText(string text) => _config = QuickbarConfig.Parse(text);
+
+    private static void SaveConfig() => _file.Save(_config.ToText(), _log);
 
     /// <summary>Apply compass visibility to the engine. Edge-triggered: only calls Hide/Show when the
     /// state changes (not every frame).</summary>
@@ -319,66 +312,18 @@ public sealed unsafe class QuickbarService : IExtenderService
         }
     }
 
+    /// <summary>Hand the open panel to the shared <see cref="SettingsPanel"/> draw, in the quickbar's chrome
+    /// colours.</summary>
     private static void EmitSettingsPanel(VertexBatch b, GlyphAtlas atlas)
     {
-        float x = _settings.X, y = _settings.Y, w = _settings.W;
-        float vpad = (QuickbarSettings.RowH - atlas.LineHeight) / 2f;
-        float baseDrop = atlas.LineHeight - atlas.Ascent + atlas.Ascent;
-
-        const float bgR = 0.02f, bgG = 0.02f, bgB = 0.03f;
-        const float tbR = 0.10f, tbG = 0.12f, tbB = 0.16f;
-        b.Rect(x, y, x + w, y + _settings.H, bgR, bgG, bgB, 1f);
-        b.Rect(x, y, x + w, y + QuickbarSettings.TitleH, tbR, tbG, tbB, 1f);
-        DrawString(b, atlas, "Settings", x + QuickbarSettings.Pad, y + baseDrop, 0xd8dee9u,
-                   x + w - QuickbarSettings.CloseW);
-        DrawString(b, atlas, "×", x + w - QuickbarSettings.CloseW + 5f, y + baseDrop, 0xB8C0CCu, x + w);
-
-        const float acR = 0.20f, acG = 0.34f, acB = 0.52f, acA = 0.95f;
-        const float ftR = 0.02f, ftG = 0.02f, ftB = 0.03f;
-        const float cfR = 0.55f, cfG = 0.55f, cfB = 0.55f, cfA = 1f;
-
-        foreach (SetRow r in _settings.Rows)
+        float baseDrop = atlas.LineHeight;
+        _settings.Panel.Emit(b, atlas, baseDrop, new SettingsPanel.Palette
         {
-            DrawString(b, atlas, r.Label, x + QuickbarSettings.Pad, r.Top + baseDrop + vpad,
-                       0xd8dee9u, x + w * 0.42f - 2f);
-
-            switch (r.Kind)
-            {
-                case SetKind.Toggle:
-                {
-                    float cs = SettingsWindow.CheckSize;
-                    float cbx = x + w - QuickbarSettings.Pad - cs;
-                    float cby = r.Top + (QuickbarSettings.RowH - cs) / 2f;
-                    b.Rect(cbx, cby, cbx + cs, cby + cs, cfR, cfG, cfB, cfA);
-                    if (r.On)
-                        b.Rect(cbx + 1, cby + 1, cbx + cs - 1, cby + cs - 1, acR, acG, acB, acA);
-                    else
-                        b.Rect(cbx + 1, cby + 1, cbx + cs - 1, cby + cs - 1, ftR, ftG, ftB, 1f);
-                    break;
-                }
-                case SetKind.Cycle:
-                {
-                    float bx0 = x + w * 0.42f, bx1 = x + w - QuickbarSettings.Pad;
-                    b.Rect(bx0, r.Top + 3, bx1, r.Top + QuickbarSettings.RowH - 3, tbR, tbG, tbB, 1f);
-                    DrawString(b, atlas, r.Value, bx0 + 4f, r.Top + baseDrop + vpad, 0xd8dee9u, bx1 - 2f);
-                    break;
-                }
-            }
-        }
-    }
-
-    private static float DrawString(VertexBatch b, GlyphAtlas atlas, string s, float startX, float baseline,
-                                    uint rgb, float clipX)
-    {
-        float r = ((rgb >> 16) & 0xFF) / 255f, g = ((rgb >> 8) & 0xFF) / 255f, bl = (rgb & 0xFF) / 255f;
-        float penX = startX;
-        foreach (System.Text.Rune ru in s.EnumerateRunes())
-        {
-            if (penX >= clipX) break;
-            if (atlas.TryGet(ru.Value, out Glyph gl)) { b.Glyph(gl, penX, baseline, r, g, bl, 1f); penX += gl.Advance; }
-            else penX += atlas.AdvanceOf(ru);
-        }
-        return penX;
+            Body = (0.02f, 0.02f, 0.03f, 1f),
+            TitleBar = (0.10f, 0.12f, 0.16f, 1f),
+            Active = (0.20f, 0.34f, 0.52f, 0.95f),
+            TextRgb = 0xd8dee9u,
+        });
     }
 
     // ---- input (settings panel only — no cog, opened by /qbar command) ----

@@ -21,13 +21,8 @@ public sealed class QuickbarConfig
     public static QuickbarConfig Parse(string text)
     {
         var cfg = new QuickbarConfig();
-        foreach (string raw in text.Split('\n'))
+        ConfigFile.ForEachPair(text, (key, val) =>
         {
-            string line = raw.Trim();
-            int eq = line.IndexOf('=');
-            if (eq < 1) continue;
-            string key = line.Substring(0, eq).Trim();
-            string val = line.Substring(eq + 1).Trim();
             switch (key)
             {
                 case "align":
@@ -52,7 +47,7 @@ public sealed class QuickbarConfig
                     if (int.TryParse(val, out int es)) cfg.EdgeSnap = es != 0;
                     break;
             }
-        }
+        });
         return cfg;
     }
 

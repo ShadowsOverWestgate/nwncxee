@@ -1,7 +1,6 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using Sowx.Ui;
 
 namespace Sowx.Services.Shadow;
 
@@ -18,7 +17,7 @@ namespace Sowx.Services.Shadow;
 /// <para>The sun (directional diffuse light) is <c>idx==-1 &amp;&amp; type@0x80==0 &amp;&amp;
 /// range@0x70 huge</c>; its direction is the normalized Vector at <c>PartLight+0xac</c> (<c>+0x64</c>
 /// is the colour). Capture is continuous and alloc-free (pure struct stores) -- sun and camera move
-/// every frame; the one-time formatted log is diag-only. Captures gate on <see cref="UiHost.InModule"/>
+/// every frame; the one-time formatted log is diag-only. Captures gate on <see cref="GameGate.InModule"/>
 /// so the main-menu 3D vista doesn't seed them.</para>
 /// </remarks>
 public sealed unsafe class ShadowCaptureService : IExtenderService
@@ -60,7 +59,7 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnSetViewTransform(IntPtr pos, IntPtr rot)
     {
-        if (UiHost.InModule && pos != IntPtr.Zero && rot != IntPtr.Zero)
+        if (GameGate.InModule && pos != IntPtr.Zero && rot != IntPtr.Zero)
         {
             float* v = (float*)pos;
             float* q = (float*)rot;
@@ -80,7 +79,7 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnSetPerspective(double fovy, double aspect, double near, double far)
     {
-        if (UiHost.InModule)
+        if (GameGate.InModule)
         {
             ShadowInputs.CamFovy = (float)fovy;
             ShadowInputs.CamAspect = (float)aspect;
@@ -108,7 +107,7 @@ public sealed unsafe class ShadowCaptureService : IExtenderService
         var next = (delegate* unmanaged<IntPtr, int, float, void>)*_lightSlot;
         if (next != null) next(light, idx, scale);
 
-        if (_armed && UiHost.InModule && light != IntPtr.Zero)
+        if (_armed && GameGate.InModule && light != IntPtr.Zero)
         {
             byte* p = (byte*)light;
             int type = *(int*)(p + LightType);

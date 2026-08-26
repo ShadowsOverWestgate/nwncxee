@@ -79,3 +79,22 @@ decision happens to serve:
   ownership census, an engine bucket gate, and the batcher that kept the name.
 - The `Ui/` docs that name Chat (`Metrics`, `VertexBatch`, `TextRenderer`) are stale by two refactors
   and get rewritten as their files move.
+
+## Implementation note (#169, 2026-08-26)
+
+The GL module ships as `Graphics/` / `namespace Sowx.Graphics`, not `Gl/` / `Sowx.Gl`. The sketched name
+does not compile: from any namespace nested under `Sowx`, the bare identifier `Gl` binds to the *namespace*
+`Sowx.Gl` before any type or `using`, so every one of the ~2,000 `Gl.*` call sites fails with CS0234.
+Enclosing-namespace members also outrank alias directives, so a `global using Gl = Sowx.Gl.Gl;` does not
+rescue it. Both were verified against the compiler. Renaming the class instead would have meant rewriting
+every call site, which this decision explicitly defers to the later renaming pass.
+
+The session gates land as `Framework/GameGate`, which also took `Locked` / `OwnsFramePresent` off
+`UiHostService` — the `SOWX_LOCKCHAT` pivot is read by render, shadow and perf code and was the last
+`UiHostService` reference outside `Ui/`.
+
+Two `using Sowx.Ui` imports survive outside `Ui/`, both named in place: `Perf/FpsOverlayService` is a genuine
+UI client (it draws through the text rig and registers a window), and `Shadow/ShadowFeedService` registers a
+zero-size `Window` purely to get a per-frame draw slot — #170's participant registry is what removes that one.
+`ShaderResource` stays in `Render/`: `GlProgram` reaches it for override lookup and `$TOKEN$` expansion, and
+both are content/render concerns rather than platform ones, so the GLX/WGL seam is unaffected.

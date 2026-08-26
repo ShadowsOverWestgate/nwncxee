@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using Sowx.Ui;
+using Sowx.Graphics;
 
 namespace Sowx.Services.Perf;
 
@@ -322,6 +322,9 @@ public sealed unsafe class BatchService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        // #170: ahead of every stand-down, as the host's unconditional call was. Priority pins it AFTER
+        // DrawStats and BEFORE OwnedDraw -- alphabetical service discovery gives the wrong order on its own.
+        FrameRegistry.Global.Register(FramePhase.PostPresent, 10, EndFrame, "BatchService.endFrame", log);
         if (Environment.GetEnvironmentVariable("SOWX_BATCH") == "0") return;
         if (Environment.GetEnvironmentVariable("SOWX_DRAWSTATS") == "1")
         { log.Info("BatchService: standing down (SOWX_DRAWSTATS diagnostics own the draw hooks)"); return; }
@@ -2090,7 +2093,7 @@ public sealed unsafe class BatchService : IExtenderService
             if (Gl.MultiDrawElementsBaseVertex == null) { _active = false; _log.Info("BatchService: glMultiDrawElementsBaseVertex missing -- batching off"); return; }
         }
         // module-unload edge: every part/VDO dies with the module -- drop all recorded identity
-        bool inModule = UiHost.InModule;
+        bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) WipeTables("module unloaded");
         // ...and entering one restarts the settle clock too: the table is empty either way, but an area load
         // is where the frames that matter to the census actually begin.
@@ -2145,15 +2148,15 @@ public sealed unsafe class BatchService : IExtenderService
     /// file's own header have each been wrong once in this investigation; the uploaded format is neither.</summary>
     private static string TexFormat(int tid)
     {
-        if (tid <= 0 || Ui.Gl.GetTexLevelParameteriv == null) return "fmt=?";
-        int saved; Ui.Gl.GetIntegerv(Ui.Gl.TEXTURE_BINDING_2D, &saved);
-        Ui.Gl.BindTexture(Ui.Gl.TEXTURE_2D, (uint)tid);
+        if (tid <= 0 || Graphics.Gl.GetTexLevelParameteriv == null) return "fmt=?";
+        int saved; Graphics.Gl.GetIntegerv(Graphics.Gl.TEXTURE_BINDING_2D, &saved);
+        Graphics.Gl.BindTexture(Graphics.Gl.TEXTURE_2D, (uint)tid);
         int fmt = 0, asize = 0, w = 0, h = 0;
-        Ui.Gl.GetTexLevelParameteriv(Ui.Gl.TEXTURE_2D, 0, Ui.Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
-        Ui.Gl.GetTexLevelParameteriv(Ui.Gl.TEXTURE_2D, 0, Ui.Gl.TEXTURE_ALPHA_SIZE, &asize);
-        Ui.Gl.GetTexLevelParameteriv(Ui.Gl.TEXTURE_2D, 0, Ui.Gl.TEXTURE_WIDTH, &w);
-        Ui.Gl.GetTexLevelParameteriv(Ui.Gl.TEXTURE_2D, 0, Ui.Gl.TEXTURE_HEIGHT, &h);
-        Ui.Gl.BindTexture(Ui.Gl.TEXTURE_2D, (uint)saved);
+        Graphics.Gl.GetTexLevelParameteriv(Graphics.Gl.TEXTURE_2D, 0, Graphics.Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
+        Graphics.Gl.GetTexLevelParameteriv(Graphics.Gl.TEXTURE_2D, 0, Graphics.Gl.TEXTURE_ALPHA_SIZE, &asize);
+        Graphics.Gl.GetTexLevelParameteriv(Graphics.Gl.TEXTURE_2D, 0, Graphics.Gl.TEXTURE_WIDTH, &w);
+        Graphics.Gl.GetTexLevelParameteriv(Graphics.Gl.TEXTURE_2D, 0, Graphics.Gl.TEXTURE_HEIGHT, &h);
+        Graphics.Gl.BindTexture(Graphics.Gl.TEXTURE_2D, (uint)saved);
         return $"fmt=0x{fmt:x} asize={asize} {w}x{h}";
     }
 
@@ -2198,31 +2201,31 @@ public sealed unsafe class BatchService : IExtenderService
     /// wrong colour" becomes a number that can be compared between two areas.</summary>
     private static string TexTopMip(int tid)
     {
-        if (tid <= 0 || Ui.Gl.GetTexImage == null || Ui.Gl.GetTexParameteriv == null) return "top=?";
-        int saved; Ui.Gl.GetIntegerv(Ui.Gl.TEXTURE_BINDING_2D, &saved);
-        Ui.Gl.BindTexture(Ui.Gl.TEXTURE_2D, (uint)tid);
+        if (tid <= 0 || Graphics.Gl.GetTexImage == null || Graphics.Gl.GetTexParameteriv == null) return "top=?";
+        int saved; Graphics.Gl.GetIntegerv(Graphics.Gl.TEXTURE_BINDING_2D, &saved);
+        Graphics.Gl.BindTexture(Graphics.Gl.TEXTURE_2D, (uint)tid);
         int maxLevel = 0;
-        Ui.Gl.GetTexParameteriv(Ui.Gl.TEXTURE_2D, Ui.Gl.TEXTURE_MAX_LEVEL, &maxLevel);
+        Graphics.Gl.GetTexParameteriv(Graphics.Gl.TEXTURE_2D, Graphics.Gl.TEXTURE_MAX_LEVEL, &maxLevel);
         int lod = maxLevel < 20 ? maxLevel : 20, w = 0, h = 0;
         // ...and MAX_LEVEL is only a cap: the chain may be shorter than it claims. Walk down to a level that
         // actually has storage, which is where the sampler lands too.
         for (; lod > 0; lod--)
         {
-            Ui.Gl.GetTexLevelParameteriv(Ui.Gl.TEXTURE_2D, lod, Ui.Gl.TEXTURE_WIDTH, &w);
-            Ui.Gl.GetTexLevelParameteriv(Ui.Gl.TEXTURE_2D, lod, Ui.Gl.TEXTURE_HEIGHT, &h);
+            Graphics.Gl.GetTexLevelParameteriv(Graphics.Gl.TEXTURE_2D, lod, Graphics.Gl.TEXTURE_WIDTH, &w);
+            Graphics.Gl.GetTexLevelParameteriv(Graphics.Gl.TEXTURE_2D, lod, Graphics.Gl.TEXTURE_HEIGHT, &h);
             if (w > 0 && h > 0) break;
         }
         if (lod == 0)
         {
-            Ui.Gl.GetTexLevelParameteriv(Ui.Gl.TEXTURE_2D, 0, Ui.Gl.TEXTURE_WIDTH, &w);
-            Ui.Gl.GetTexLevelParameteriv(Ui.Gl.TEXTURE_2D, 0, Ui.Gl.TEXTURE_HEIGHT, &h);
+            Graphics.Gl.GetTexLevelParameteriv(Graphics.Gl.TEXTURE_2D, 0, Graphics.Gl.TEXTURE_WIDTH, &w);
+            Graphics.Gl.GetTexLevelParameteriv(Graphics.Gl.TEXTURE_2D, 0, Graphics.Gl.TEXTURE_HEIGHT, &h);
         }
         // Only the small end is read back: a level-0 readback of a 256x256 diffuse is a pipeline stall for a
         // diagnostic, and any level big enough to cost that is not the one the shader lands on anyway.
-        if (w <= 0 || h <= 0 || w * h > 64) { Ui.Gl.BindTexture(Ui.Gl.TEXTURE_2D, (uint)saved); return $"top=L{lod} {w}x{h} (not read)"; }
+        if (w <= 0 || h <= 0 || w * h > 64) { Graphics.Gl.BindTexture(Graphics.Gl.TEXTURE_2D, (uint)saved); return $"top=L{lod} {w}x{h} (not read)"; }
         byte* px = stackalloc byte[64 * 4];
-        Ui.Gl.GetTexImage(Ui.Gl.TEXTURE_2D, lod, Ui.Gl.RGBA, Ui.Gl.UNSIGNED_BYTE, px);
-        Ui.Gl.BindTexture(Ui.Gl.TEXTURE_2D, (uint)saved);
+        Graphics.Gl.GetTexImage(Graphics.Gl.TEXTURE_2D, lod, Graphics.Gl.RGBA, Graphics.Gl.UNSIGNED_BYTE, px);
+        Graphics.Gl.BindTexture(Graphics.Gl.TEXTURE_2D, (uint)saved);
         int r = 0, g = 0, b = 0, a = 0, n = w * h;
         for (int i = 0; i < n; i++) { r += px[i * 4]; g += px[i * 4 + 1]; b += px[i * 4 + 2]; a += px[i * 4 + 3]; }
         return $"top=L{lod}/{maxLevel} {w}x{h} rgba({r / n},{g / n},{b / n},{a / n})";

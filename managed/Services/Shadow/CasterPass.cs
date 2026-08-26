@@ -3,7 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Services.Render;
-using Sowx.Ui;
+using Sowx.Graphics;
 
 namespace Sowx.Services.Shadow;
 
@@ -241,7 +241,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// _sinceEnroll every frame -- so the walk runs at its widest sixty times a second on exactly the
     /// hardware that gets no shadows out of it.</para></summary>
     internal static bool WantsWideWalk =>
-        _armed && !_disarmed && RenderMode.Owned && UiHost.InModule && GlContextService.Available
+        _armed && !_disarmed && RenderMode.Owned && GameGate.InModule && GlContextService.Available
         && _sinceEnroll >= EnrollEvery - 1;
     /// <summary>How far the caster walk must reach to fill the outermost cascade.</summary>
     internal static float WalkRadius => _maxDist;
@@ -572,7 +572,7 @@ public sealed unsafe class CasterPass : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        if (Environment.GetEnvironmentVariable("SOWX_CASTERS") == "0" || UiHostService.Locked)
+        if (Environment.GetEnvironmentVariable("SOWX_CASTERS") == "0" || GameGate.Locked)
         { log.Info("CasterPass: stood down (SOWX_CASTERS=0 or SOWX_LOCKCHAT)"); return; }
         if (!SelfCheck(log)) return;
 
@@ -958,7 +958,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // AFTER the period line, which reports it: zeroing the timing ahead of Lifecycle made every period
         // line read 0.00 ms, since the frame's own measurement lands further down.
         LastShadowMs = 0f;
-        if (!RenderMode.Owned || !UiHost.InModule || !GlContextService.Available) return;
+        if (!RenderMode.Owned || !GameGate.InModule || !GlContextService.Available) return;
         if (_sinceEnroll < EnrollEvery) _sinceEnroll++; else Enroll();
         if (_casterCount == 0 && _skinLive == 0) return;
 
@@ -1298,7 +1298,7 @@ public sealed unsafe class CasterPass : IExtenderService
     private static void Lifecycle()
     {
         if (!GlContextService.Available) Release("4.6 context lost");
-        bool inModule = UiHost.InModule;
+        bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) Release("module unload");
         _wasInModule = inModule;
         if (_tableGen != Perf.BatchService.TableGen)

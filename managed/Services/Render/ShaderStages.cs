@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using Sowx.Framework;
 using Sowx.Services.Shadow;
+using Sowx.Graphics;
 
 namespace Sowx.Services.Render;
 
@@ -19,8 +20,7 @@ internal static class ShaderStages
     internal static string DumpDir => Native.ConfigPath("sowx_shader_dump");
 
     /// <summary>Config file carrying the headless dump trigger. Bucket 2 of ADR 0013: it has to be decided
-    /// before the first frame, so it cannot be a chat command. One key=value line, parsed here until #164's
-    /// shared config module exists.</summary>
+    /// before the first frame, so it cannot be a chat command. One key=value line.</summary>
     private const string CfgFile = "sowx-render.cfg";
 
     internal const string Banner = """
@@ -148,20 +148,14 @@ internal static class ShaderStages
     /// out of reach of the offline checker -- can be compiled without a live client.</summary>
     internal static void DumpIfConfigured(ExtenderLog? log)
     {
-        try
-        {
-            string p = Native.ConfigPath(CfgFile);
-            if (!File.Exists(p)) return;
-            foreach (string raw in File.ReadAllLines(p))
-            {
-                int eq = raw.IndexOf('=');
-                if (eq <= 0 || !raw.AsSpan(0, eq).Trim().SequenceEqual("dumpshaders")) continue;
-                ReadOnlySpan<char> v = raw.AsSpan(eq + 1).Trim();
-                if (v.SequenceEqual("1") || v.SequenceEqual("true")) Dump(DumpDir, log);
-                return;
-            }
-        }
-        catch (Exception e) { log?.Info($"ShaderStages: {CfgFile} unreadable -- {e.Message}"); }
+        // ReadTextNow, not ConfigFile.Load: this is the one config read that must NOT take #164's deferral
+        // gate. It runs at Initialize (pre-main) because ADR 0013 requires the decision before the first
+        // frame, so waiting for the engine user dir would mean never dumping. Path is the ~/.config fallback,
+        // matching DumpDir, which resolves at the same moment.
+        bool dump = false;
+        ConfigFile.ForEachPair(ConfigFile.ReadTextNow(CfgFile, log),
+            (k, v) => { if (k == "dumpshaders") dump = v is "1" or "true"; });
+        if (dump) Dump(DumpDir, log);
     }
 
     /// <summary>Every resref composes to something, and a header claiming the per-draw record is on a stage

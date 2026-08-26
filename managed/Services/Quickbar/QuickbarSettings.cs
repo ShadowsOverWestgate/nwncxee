@@ -1,40 +1,42 @@
 using Sowx.Framework;
-using Sowx.Services.Chat.Core;
 using Sowx.Ui;
 
 namespace Sowx.Services.Quickbar;
 
-/// <summary>Quickbar settings window: a small floating panel opened by <c>/qbar</c>. Position cycle,
-/// bars toggle, hide quickbar, hide compass. Reuses the same <see cref="SetRow"/>/<see cref="SetKind"/>
-/// vocabulary as the chatbox settings window — different content, identical rendering strategy.</summary>
+/// <summary>The quickbar-side consumer of the shared <see cref="SettingsPanel"/>: a small floating panel opened
+/// by <c>/settings</c>. It owns the content only -- position cycle, black bars, hide quickbar, hide compass,
+/// snap grid (+ size) and edge snap -- and what each press does to the <see cref="QuickbarConfig"/>. The panel
+/// owns position, drag-by-title, the close hit, the metrics, the row list, hit-test-to-row and the draw.
+/// ponytail: no sliders and no inline entry here, so <see cref="SettingsPanel.ApplyValue"/> /
+/// <see cref="SettingsPanel.CommitLabel"/> stay unwired -- wire them if a numeric quickbar option ever lands.</summary>
 public sealed class QuickbarSettings
 {
-    public float X, Y;
-    public float W => 220f * Metrics.Scale;
-    public bool Open;
-    private bool _pressConsumed;
-    private bool _moving;
-    private float _mgx, _mgy;
+    /// <summary>Design-px panel width, before <see cref="Metrics.Scale"/>.</summary>
+    private const float PanelW = 220f;
 
-    public static float TitleH => 22f * Metrics.Scale;
-    public static float RowH => 24f * Metrics.Scale;
-    public static float Pad => 8f * Metrics.Scale;
-    public static float CloseW => TitleH;
+    /// <summary>The shared panel this window's rows are drawn and hit-tested by (the renderer calls
+    /// <see cref="SettingsPanel.Emit"/> on it).</summary>
+    public readonly SettingsPanel Panel;
 
-    private volatile List<SetRow> _rows = new();
-    public List<SetRow> Rows => _rows;
-    private float _h = TitleH + Pad;
-    public float H => _h;
+    // The model the panel's callbacks edit. Stashed at each public entry point because the service passes the
+    // live config per call; a null config means "no model" and the callbacks no-op.
+    private QuickbarConfig? _cfg;
 
-    public bool Editing => false;
-    public bool EditingRow(SetRow r) => false;
-    public string EditText => "";
+    public QuickbarSettings()
+    {
+        Panel = new SettingsPanel(PanelW)
+        {
+            Relayout = () => { if (_cfg != null) Layout(_cfg); },
+            RowPressed = OnRowPressed,
+        };
+    }
 
-    public void SliderTrack(SetRow r, out float x0, out float x1, out float cy)
-    { x0 = X + W * 0.42f; x1 = X + W - Pad - 36f; cy = r.Top + RowH * 0.5f; }
-
-    public void ValueBox(SetRow r, out float x0, out float x1, out float y0, out float y1)
-    { x1 = X + W - Pad; x0 = x1 - 36f; y0 = r.Top + 3f; y1 = r.Top + RowH - 3f; }
+    public float X { get => Panel.X; set => Panel.X = value; }
+    public float Y { get => Panel.Y; set => Panel.Y = value; }
+    public float W => Panel.W;
+    public float H => Panel.H;
+    public bool Open => Panel.Open;
+    public List<SetRow> Rows => Panel.Rows;
 
     // Bit discriminators for ToggleBit rows.
     private const uint BitBars = 1, BitHidden = 2, BitCompass = 3, BitGrid = 4, BitEdge = 5;
@@ -47,11 +49,14 @@ public sealed class QuickbarSettings
         return GridSizes[0];
     }
 
-    /// <summary>Rebuild the row list from the live config.</summary>
+    private static float RowH => SettingsPanel.RowH;
+
+    /// <summary>Rebuild the row list from the live config, publishing a fresh list to the panel.</summary>
     public void Layout(QuickbarConfig cfg)
     {
+        _cfg = cfg;
         var rows = new List<SetRow>();
-        float y = Y + TitleH;
+        float y = Panel.ContentTop;
 
         string alignText = cfg.Align switch
         {
@@ -89,14 +94,13 @@ public sealed class QuickbarSettings
             On = cfg.EdgeSnap, Top = y, Height = RowH, Bit = BitEdge });
         y += RowH;
 
-        _h = (y - Y) + Pad;
-        _rows = rows;
+        Panel.Publish(rows, y);
     }
 
     /// <summary>Open the panel centred in a <paramref name="vpW"/>×<paramref name="vpH"/> viewport.</summary>
     public void OpenAt(float vpW, float vpH, QuickbarConfig cfg)
     {
-        Open = true; _pressConsumed = true; _moving = false;
+        Panel.BeginOpen();
         Layout(cfg);
         X = (vpW - W) / 2f; Y = (vpH - H) / 2f;
         if (X < 0f) X = 0f;
@@ -104,28 +108,23 @@ public sealed class QuickbarSettings
         Layout(cfg);
     }
 
-    public bool OverClose(float mx, float my)
-        => mx >= X + W - CloseW && mx <= X + W && my >= Y && my <= Y + TitleH;
+    public bool OverClose(float mx, float my) => Panel.OverClose(mx, my);
 
-    internal bool Contains(float mx, float my) => mx >= X && mx <= X + W && my >= Y && my <= Y + H;
-
-    private SetRow? RowAt(float mx, float my)
-    {
-        if (mx < X || mx > X + W) return null;
-        foreach (SetRow r in Rows)
-            if (my >= r.Top && my < r.Top + r.Height) return r;
-        return null;
-    }
+    internal bool Contains(float mx, float my) => Panel.Contains(mx, my);
 
     /// <summary>Pointer press. Returns true when consumed.</summary>
     public bool MouseDown(float mx, float my, QuickbarConfig cfg)
     {
-        _pressConsumed = true; _moving = false;
-        if (OverClose(mx, my)) { Open = false; return true; }
-        if (my < Y + TitleH) { _moving = true; _mgx = mx - X; _mgy = my - Y; return true; }
-        SetRow? row = RowAt(mx, my);
-        if (row == null) { if (!Contains(mx, my)) Open = false; return true; }
+        _cfg = cfg;
+        return Panel.MouseDown(mx, my);
+    }
 
+    /// <summary>A press on a row: mutate the config. The panel relayouts right after, so a grid-size row
+    /// appearing/vanishing shows next frame.</summary>
+    private void OnRowPressed(SetRow row)
+    {
+        QuickbarConfig? cfg = _cfg;
+        if (cfg == null) return;
         switch (row.Act)
         {
             case SetAct.CycleAlign:
@@ -145,31 +144,15 @@ public sealed class QuickbarSettings
                 cfg.GridPx = NextGridSize(cfg.GridPx);
                 break;
         }
-        Layout(cfg);
-        return true;
     }
 
-    public bool MouseMove(float mx, float my)
-    {
-        if (!_moving) return false;
-        float oldY = Y;
-        X = mx - _mgx; Y = my - _mgy;
-        float dy = Y - oldY;
-        var rows = _rows;
-        for (int i = 0; i < rows.Count; i++) rows[i].Top += dy;
-        return true;
-    }
+    public bool MouseMove(float mx, float my) => Panel.MouseMove(mx, my);
 
-    public bool MouseUp()
-    {
-        bool c = _pressConsumed;
-        _pressConsumed = false; _moving = false;
-        return c;
-    }
+    public bool MouseUp() => Panel.MouseUp();
 
-    public bool Moving => _moving;
+    public bool Moving => Panel.Moving;
 
-    public void Reset() { Open = false; _pressConsumed = false; _moving = false; }
+    public void Reset() { Panel.Reset(); }
 
     public static void SelfCheck(ExtenderLog log)
     {
@@ -181,6 +164,12 @@ public sealed class QuickbarSettings
         s.OpenAt(1280, 800, cfg);
         E(s.Open && s.Rows.Count == 6, "opens with 6 rows (grid off hides size)");
         E(s.MouseUp(), "up after open is consumed");
+
+        // The panel owns the geometry now: width from the design width, height from the published layout.
+        E(System.Math.Abs(s.W - PanelW * Metrics.Scale) < 0.01f, "panel width is the design width, scaled");
+        E(System.Math.Abs(s.H - (SettingsPanel.TitleH + 6f * RowH + SettingsPanel.Pad)) < 0.01f,
+          "panel height = title + 6 rows + pad");
+        E(ReferenceEquals(s.Rows, s.Panel.Rows), "the rows the service draws are the panel's published rows");
 
         // Cycle align: Left(0)->Center(1)->Right(2)->Left(0)
         cfg.Align = QbarAlign.Left;
@@ -219,13 +208,25 @@ public sealed class QuickbarSettings
         s.MouseDown(s.X + 5, s.Y + s.H + 40, cfg);
         E(!s.Open, "click-off closes");
 
+        // Title drag: the panel moves and takes its rows with it, and no config bit flips on the way.
+        s.OpenAt(1280, 800, cfg); s.MouseUp();
+        float px = s.X, py = s.Y, topBefore = s.Rows[0].Top;
+        bool barsBefore = cfg.Bars;
+        E(s.MouseDown(s.X + s.W / 2f, s.Y + 2f, cfg) && s.Moving, "title-bar press latches a move");
+        s.MouseMove(s.X + s.W / 2f + 40f, s.Y + 2f + 25f);
+        E(System.Math.Abs(s.X - (px + 40f)) < 0.5f && System.Math.Abs(s.Y - (py + 25f)) < 0.5f,
+          "panel drags by the title bar");
+        E(System.Math.Abs(s.Rows[0].Top - (topBefore + 25f)) < 0.5f, "rows follow the panel move");
+        E(cfg.Bars == barsBefore, "a title drag edits no config");
+        E(s.MouseUp() && !s.Moving, "panel move release consumed + ends the drag");
+
         // Grid toggle + size cycle
         cfg.GridOn = false; cfg.GridPx = 50;
         s.OpenAt(1280, 800, cfg); s.MouseUp();
         SetRow grid = s.Rows.Find(r => r.Bit == BitGrid)!;
         s.MouseDown(s.X + 5, grid.Top + 2, cfg);
         E(cfg.GridOn, "grid toggled on");
-        E(s.Rows.Count == 7, "grid on shows size cycle row");
+        E(s.Rows.Count == 7, "grid on shows size cycle row (the press relayouts)");
         SetRow gsz = s.Rows.Find(r => r.Act == SetAct.CycleGridSize)!;
         s.MouseDown(s.X + 5, gsz.Top + 2, cfg);
         E(cfg.GridPx == 75, "grid size cycles 50 -> 75");
@@ -242,6 +243,7 @@ public sealed class QuickbarSettings
         E(!cfg.EdgeSnap, "edge snap toggled off");
 
         s.Reset();
+        E(!s.Open && !s.Moving && !s.MouseUp(), "Reset closes and drops press/drag ownership");
         log.Info(ok ? "QuickbarSettings.SelfCheck: passed" : "QuickbarSettings.SelfCheck: FAILED");
     }
 }

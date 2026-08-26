@@ -16,7 +16,7 @@ namespace Sowx.Ui;
 /// CursorService: over any window's UI → the walk cursor).
 /// </summary>
 /// <remarks>
-/// Stands down under <c>SOWX_LOCKCHAT</c> (<see cref="UiHostService.OwnsFramePresent"/> false): installs no
+/// Stands down under <c>SOWX_LOCKCHAT</c> (<see cref="GameGate.OwnsFramePresent"/> false): installs no
 /// hooks and leaves <see cref="UiHost.KeyboardGate"/> null, so vanilla input is untouched and
 /// <c>HotkeyInputService</c> keeps its own raw capture for that path. State is static (the
 /// <c>[UnmanagedCallersOnly]</c> handlers demand it); the input hooks are cold, so they may allocate.
@@ -59,7 +59,7 @@ public sealed unsafe class UiInputService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        if (!UiHostService.OwnsFramePresent)   // SOWX_LOCKCHAT: framework stands down; HotkeyInputService owns capture
+        if (!GameGate.OwnsFramePresent)   // SOWX_LOCKCHAT: framework stands down; HotkeyInputService owns capture
         {
             log.Info("UiInputService: SOWX_LOCKCHAT set -- input capture left to the legacy path");
             return;
@@ -216,32 +216,24 @@ public sealed unsafe class UiInputService : IExtenderService
     // ---- cursor fold (was CursorService) --------------------------------------------------------
     private static bool _forceDefault, _prevOverUi, _cursorFoldActive;
 
-    // Focus-mode pref (AC #6): loaded lazily on the first cursor update -- Initialize runs pre-main, where the
-    // engine user dir (holding the cfg) is unresolved, exactly like the chat/dialog deferred config load.
-    private static bool _prefsLoaded;
+    /// <summary>Focus-mode pref (AC #6), restored on the first cursor update that <see cref="ConfigFile"/>'s
+    /// deferral gate lets through -- Initialize runs pre-main, where the engine user dir is unresolved.</summary>
+    private static readonly ConfigFile _prefs = new("sowx-ui.cfg");
     private static void LoadPrefs()
     {
-        _prefsLoaded = true;
-        try
-        {
-            string p = Native.ConfigPath("sowx-ui.cfg");
-            if (!File.Exists(p)) return;
-            foreach (string raw in File.ReadAllLines(p))
-            {
-                int eq = raw.IndexOf('=');
-                if (eq <= 0) continue;
-                if (raw.AsSpan(0, eq).Trim().SequenceEqual("hoverToFocus"))
-                    UiHost.HoverToFocus = raw.AsSpan(eq + 1).Trim() is var v && (v.SequenceEqual("1") || v.SequenceEqual("true"));
-            }
-            _log?.Info($"[ui] prefs: hoverToFocus={UiHost.HoverToFocus}");
-        }
-        catch (Exception e) { _log?.Info($"[ui] prefs load failed: {e.Message}"); }
+        if (!_prefs.Load(_log, ApplyPrefs)) return;
+        _log?.Info($"[ui] prefs: hoverToFocus={UiHost.HoverToFocus}");
     }
+
+    private static void ApplyPrefs(string text) => ConfigFile.ForEachPair(text, (k, v) =>
+    {
+        if (k == "hoverToFocus") UiHost.HoverToFocus = v is "1" or "true";
+    });
 
     [UnmanagedCallersOnly]
     private static void OnUpdateCursor(IntPtr @this, int param1)
     {
-        if (!_prefsLoaded) LoadPrefs();
+        LoadPrefs();   // gated + latched inside; a no-op after the first success
         if (!_cursorFoldActive)   // forcing half absent -> forward untouched, do no hit-test work
         {
             if (_origUpdateCursor != null) _origUpdateCursor(@this, param1);

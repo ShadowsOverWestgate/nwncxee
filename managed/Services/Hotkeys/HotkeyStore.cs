@@ -36,14 +36,13 @@ public static class HotkeyStore
     private static bool _loaded;
 
     /// <summary>
-    /// Load the cfg on first real use, not at Initialize: our loader runs pre-main, so the engine user
-    /// dir (where the cfg lives) isn't resolvable yet -- loading then would read the wrong path and latch
-    /// it. Deferred to the first login-path call (Activate/Grant/Set), all post-main. Latches only once
-    /// the dir resolves, so a pre-main/headless call stays retryable.
+    /// Load the cfg on first real use, gated by <see cref="ConfigFile.Ready"/> -- the one place the pre-main
+    /// deferral rule lives (#164). This file's own reader stays hand-rolled: the format is sectioned
+    /// (<c>[token=..]</c> headers), not the flat key=value the shared walker covers.
     /// </summary>
     private static void EnsureLoaded(ExtenderLog log)
     {
-        if (_loaded || Native.UserDirectory() == null) return;
+        if (_loaded || !ConfigFile.Ready) return;
         Load(log);
         _loaded = true;
     }

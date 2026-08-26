@@ -64,16 +64,6 @@ public static class UiHost
     /// <summary>The single window that owns focus -- the candidate keyboard owner. Null when nothing is focused.</summary>
     public static Window? Focused { get; private set; }
 
-    /// <summary>The in-game gate, computed once per frame by the frame host (<c>UiHostService</c>): true when a
-    /// module is loaded and no full-screen menu / hidden-HUD is up. Content draws read it to branch (chat draws
-    /// its box only in-game). Volatile: written on the render thread, read by input-thread callers.</summary>
-    public static volatile bool InGame;
-
-    /// <summary>Whether a module is loaded at all (the gate's chat-window pointer is non-null). Distinct from
-    /// <see cref="InGame"/>: true even while the ESC menu is up. False = main menu. Content uses the
-    /// true->false edge as the module-unload signal (session reset) and the false state to draw menu overlays.</summary>
-    public static volatile bool InModule;
-
     /// <summary>The keyboard-owned gate: true only when the focused window is asserting keyboard ownership.
     /// Focus alone does NOT set it -- a focused-but-idle window still lets gameplay keys through.</summary>
     public static bool KeyboardOwned => Focused is { WantsKeyboard: true };
