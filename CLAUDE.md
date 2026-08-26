@@ -8,6 +8,14 @@ ignored, so an un-extended client loses nothing.
 This is the **client** (`nwmain`), not the server. Server hooking lives in
 `sow-codebase`; do not conflate the two.
 
+The OpenGL 4.6 renderer is called **Alloy** (`managed/Alloy/`, namespace
+`Sowx.Alloy`) -- one of the family: Anvil on the server backend, Crucible the
+module builder, Alloy the renderer. "Alloy" is the term for what it draws, and
+**vanilla** is the contrast: an Alloy part is one Alloy submits, a vanilla one is
+one the engine draws. Sowx stays the product name (`sowx.cfg`, `sowx_managed.so`,
+and the `sowx_*.shd` stage names, which are the override contract with
+`sow-topdata` and do NOT get renamed).
+
 ## Agent skills
 
 ### Issue tracker
@@ -64,6 +72,7 @@ Navigation:
                                  Chain(symbol, handler, priority) for shared symbols (#88)
         ExtenderLog.cs           inject this for logging
       Services/                business logic -- this is where you work
+      Alloy/                   the renderer (#198). Core/ Scene/ Pass/ under namespace Sowx.Alloy
     docs/hook-pattern.md       example: a real hook + trampoline
     native/bootstrap.c         the only native code
     third_party/funchook       hooking engine (git submodule)

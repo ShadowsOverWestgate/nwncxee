@@ -1,7 +1,7 @@
 using System;
 using Sowx.Framework;
 using Sowx.Ui;      // a genuine UI client: draws through the text rig and registers a UiHost window
-using Sowx.Services.Render;
+using Sowx.Alloy;
 
 namespace Sowx.Services.Perf;
 
@@ -85,12 +85,12 @@ public sealed class FpsOverlayService : IExtenderService
         Append("FPS "); AppendNum(fps, 0);
         Append("  "); AppendNum(avgMs, 1); Append(" ms");
         Append("  max "); AppendNum(maxMs, 1);
-        // #83 acceptance: the owned path's clustered light rig has to show its GPU cost and its light count
+        // #83 acceptance: the Alloy path's clustered light rig has to show its GPU cost and its light count
         // where the frame budget is read, not only in the period log.
-        if (OwnedLights.LastLightCount > 0)
+        if (AlloyLights.LastLightCount > 0)
         {
-            Append("  L"); AppendNum(OwnedLights.LastLightCount, 0);
-            Append(" cl "); AppendNum(OwnedLights.LastBuildMs, 2); Append(" ms");
+            Append("  L"); AppendNum(AlloyLights.LastLightCount, 0);
+            Append(" cl "); AppendNum(AlloyLights.LastBuildMs, 2); Append(" ms");
         }
         // #187: every view is a bake, so "sh n" is views baked this frame -- the number the removal's cost is
         // read off. The ms is CPU submission only (see CasterPass.LastShadowMs).

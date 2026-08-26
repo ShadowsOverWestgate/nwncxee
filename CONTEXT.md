@@ -110,15 +110,15 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   second abstraction. A non-focusable Window is skipped by focus hit-testing but still
   drawn and still drives the cursor.
 
-## Rendering (SowxRender)
+## Rendering (Alloy)
 
-- **Owned** vs **staged** — a scene part is *owned* when SowxRender draws it (engine
+- **Owned** vs **staged** — a scene part is *owned* when Alloy draws it (engine
   submission suppressed for it) and *staged* when the engine still draws it during the
   migration. Every part is drawn every frame by exactly one owner, never both, never neither.
 - **Cache classification** — a caster is cached or re-baked based on whether its
   transform/pose changed since its last bake, not on a static/dynamic *kind*. A tile is
   simply a caster that never moves; a creature is one that changes every frame.
-- **Embedded stage** — the GLSL for an owned pass, compiled into the extender as a C# `const string`.
+- **Embedded stage** — the GLSL for an Alloy pass, compiled into the extender as a C# `const string`.
   This is the shader that ships: it travels with the renderer it agrees with, so the per-draw record,
   the uniform blocks and the clip expression can never disagree with the CPU side. Every overridable
   stage has one.
@@ -137,15 +137,15 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   toggles), a **config setting** (must be decided before the first frame, or describes the machine
   rather than the look), or *deleted* (a bisect switch whose ticket has closed). Environment
   variables are not a kind; a knob with no kind does not ship.
-- **Render mode** — which renderer draws the 3D scene: the *owned* mode (SowxRender) or the
+- **Render mode** — which renderer draws the 3D scene: the *owned* mode (Alloy) or the
   *vanilla* mode (the engine's own path). Both ship permanently; a device that cannot run the
-  owned mode still runs every other extender feature. The mode is whole-scene — never a
+  Alloy mode still runs every other extender feature. The mode is whole-scene — never a
   per-class mixture — and switching it is frame-atomic.
 - **Permanent engine resident** — a responsibility the engine keeps for good, not one staged
   back to it during a migration: the 2D UI, resource loading, simulation state, and
   animation/bone state. Rendering is not on the list. The rule that draws the line is *the
   engine simulates, we draw* — a class whose motion the engine computes can still have its
-  geometry submitted by SowxRender.
+  geometry submitted by Alloy.
 - **Class-granular ownership** — the unit at which a content class may be *owned* or *staged*.
   Opaque classes may stage part-by-part; classes whose draw order is load-bearing (transparent,
   additive, fade, water) are all-owned-or-none, because a half-owned class has no coherent
@@ -163,10 +163,10 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   must run *before* anything is drawn fire: after `Scene::AddPartsToDrawBuckets`, buckets complete,
   nothing drawn. Chosen because it executes every frame in every zone, unlike the engine's own
   shadow cadence. The light walk and the world-caster shadow bakes live here.
-- **Frame anchor** — the point the owned frame's draw work fires from. Distinct from the **pass
+- **Frame anchor** — the point the Alloy frame's draw work fires from. Distinct from the **pass
   slot**: the anchor is where we *draw*, the pass slot is where we *prepare*. An anchor must fire
   unconditionally once per scene render; whether it also supplies usable engine frame state
-  (viewport, framebuffer, matrices) is a separate property, and the one the owned pipeline sheds as
+  (viewport, framebuffer, matrices) is a separate property, and the one the Alloy pipeline sheds as
   it matures. Since #132 it is `Scene::FadeDoors`, after-original — the last engine call inside
   `Scene::RenderSinglePass` before the first bucket walk, and after the clear the engine's own frame
   setup does. It cannot be RSP *entry*: the world FBO is bound and cleared inside RSP, so a resolve
@@ -176,16 +176,16 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   is genuine alpha: it draws after, sorted back-to-front, and never writes depth. The split is what
   makes a missing sort harmless for the majority of content and makes alpha-blended geometry
   incapable of occluding what it does not draw.
-- **Resolve stage** — the single fullscreen pass that encodes the linear owned frame to display
+- **Resolve stage** — the single fullscreen pass that encodes the linear Alloy frame to display
   space at the end of the frame. Distinct from a *post stack*: the resolve is a colour-space
-  correction that makes owned blending mathematically right, not a place for tonemapping, exposure,
+  correction that makes Alloy blending mathematically right, not a place for tonemapping, exposure,
   or bloom — those plug in later, at the same point.
-- **Replacement class** — a content class the owned frame reimplements rather than reproduces: the engine's
-  own path is left untouched and simply not called, and the owned one is built to the technique the class
+- **Replacement class** — a content class the Alloy frame reimplements rather than reproduces: the engine's
+  own path is left untouched and simply not called, and the Alloy one is built to the technique the class
   should have had. Distinct from *owned*, which only says who submits the same geometry. Grass (#127) is the
   first: its punch-through is not fixed, it is made structurally impossible, because nothing in the owned
   class is ever semi-transparent and depth-writing at once.
-- **Patch** — the owned grass unit of culling and drawing: one engine triangle list (a bin's faces sharing one
+- **Patch** — the Alloy grass unit of culling and drawing: one engine triangle list (a bin's faces sharing one
   grass material) scattered into a contiguous run of blade instances. Frustum- and distance-culled whole,
   drawn as one instanced call.
 - **Screen-door fade** — fading geometry out by discarding a growing share of its fragments against a
@@ -193,5 +193,5 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   cannot introduce a blended fragment — which is what lets a fading class keep writing depth.
 - **Bracket** — one entry into the owned GL context and back (fence, flush, two `glXMakeCurrent`,
   error drain). Every bracket is a GPU pipeline bubble, so the count per frame is a **budget**, not
-  an implementation detail: owned passes are grouped to fit inside existing brackets rather than
+  an implementation detail: Alloy passes are grouped to fit inside existing brackets rather than
   taking their own.

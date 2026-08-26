@@ -23,7 +23,7 @@ public struct VertexStream
 }
 
 /// <summary>
-/// Reading an engine VAO's attribute formats and replaying them into an owned one. Both owning passes did
+/// Reading an engine VAO's attribute formats and replaying them into an Alloy one. Both owning passes did
 /// this line-for-line identically, differing only in which optional streams they bothered with (#174).
 /// </summary>
 public static unsafe class VertexArrays
@@ -53,7 +53,7 @@ public static unsafe class VertexArrays
     public static bool Enabled(uint loc)
     { int en = 0; Gl.GetVertexAttribiv(loc, Gl.VERTEX_ATTRIB_ARRAY_ENABLED, &en); return en != 0; }
 
-    /// <summary>Replay one stream into the CURRENTLY BOUND owned VAO at <paramref name="loc"/>. Clobbers the
+    /// <summary>Replay one stream into the CURRENTLY BOUND Alloy VAO at <paramref name="loc"/>. Clobbers the
     /// ARRAY_BUFFER binding, which is expected: the caller is inside its own VAO build.</summary>
     public static void Bind(uint loc, in VertexStream s)
     {

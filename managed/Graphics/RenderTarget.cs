@@ -1,7 +1,7 @@
 namespace Sowx.Graphics;
 
 /// <summary>
-/// Allocating the textures an owned pass renders to or copies into (#174). Three passes wrote this out
+/// Allocating the textures an Alloy pass renders to or copies into (#174). Three passes wrote this out
 /// longhand, and the depth half -- the internal-format-to-(format, type) table -- was byte-identical in two
 /// of them.
 /// </summary>

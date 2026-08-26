@@ -31,10 +31,10 @@ work routed through the engine's per-part path. The fix is to stop asking the en
   (attr bit 4 → `glVertexAttribPointer(0, 3, GL_FLOAT, ...)`). `VDO+0x14` mode (1 = indexed
   static), item tables `{offset,size}` at `+0x48` (vertex) / `+0x58` (element).
 - `GLRender::SetVertexDataObject` binds (lazily creating) the VAO + element buffer and keeps the
-  engine's current-VDO cache consistent — the owned path binds through it, never raw.
+  engine's current-VDO cache consistent — the Alloy path binds through it, never raw.
 
 Per cube bake (`CasterPass.cs`; the `ShadowMapService.OwnedCast.cs` this ADR was written against is
-gone — #93 folded owned submission into `CasterPass` and #98 renamed what was left `ShadowFeedService`):
+gone — #93 folded Alloy submission into `CasterPass` and #98 renamed what was left `ShadowFeedService`):
 
 1. **Collect once, not per face**: one bucket walk culls (range/height/size) and resolves each
    kept part to `(VDO, item, prim, model)` via a part-keyed capture cache; unknown parts are
@@ -62,14 +62,14 @@ vertex. Revisit only if measurement shows the residual per-face loop matters.
 ## Phase plan
 
 - **Slice 1 (this ADR): cube depth passes owned.** Implemented; verify live via the periodic
-  `owned-cast` log line + fps.
+  `Alloy cast` log line + fps.
 - **Slice 2: sun/near cascade passes** through the same collect/submit machinery (same disease,
   smaller dose).
 - **Phase 3: main colour pass.** 16.6 ms with the identical per-draw profile. The seed exists:
   ADR 0006 BatchService (multidraw groups over live engine state) + ADR 0007 OwnedShade
-  (owned program clones + lighting UBO). Direction: extend group coverage (matrix-path groups
+  (Alloy program clones + lighting UBO). Direction: extend group coverage (matrix-path groups
   landed; env-mapped/bumpy-shiny and animated-texture classes remain), then migrate group
-  submission from "first member primes engine state" to fully owned material state, at which
+  submission from "first member primes engine state" to fully Alloy material state, at which
   point the engine's per-part loop is bypassed for the opaque scene the way slice 1 bypasses it
   for shadow depth.
 
@@ -89,16 +89,16 @@ vertex. Revisit only if measurement shows the residual per-face loop matters.
 The forensic build proved replay capture dead: every capture line showed `draws=0 vdo=0x0` — a
 part's `Render()` invoked cold (outside the walk's pushed light VP / matrix-mode bracket) draws
 nothing, so the cache never populated and every bake stayed legacy. Capture is now **passive**:
-a bracket around the part's *real* engine draw (legacy bake walk + owned-path fallback loop)
+a bracket around the part's *real* engine draw (legacy bake walk + Alloy path fallback loop)
 attributes the `RenderVertexData` call to the part — the draw is never swallowed. Consequence:
 the first bake of any area runs legacy (all parts unknown → fallback overflow) and self-populates
 the cache; every subsequent static bake goes owned. No extra hooks; the bracket lives in code we
 already drive.
 
-First cut never submitted an owned draw: the 64-group cap aborted every static bake to legacy
+First cut never submitted an Alloy draw: the 64-group cap aborted every static bake to legacy
 (tile statics span more VDOs than that), while dynamic bakes routed skinned mode-2 creatures
 through a hand-rolled per-face Render() replay — ~100k engine draws/period outside
 RenderDrawBucket's own loop, with live-observed creature corruption in the main pass and extra
-casters the engine walk would have skipped. Fixes: owned path now covers **static bakes only**
+casters the engine walk would have skipped. Fixes: Alloy path now covers **static bakes only**
 (dyn bakes fully legacy, creatures untouched), group cap 512, and every capacity overflow
 degrades per-part to fallback instead of aborting the bake.

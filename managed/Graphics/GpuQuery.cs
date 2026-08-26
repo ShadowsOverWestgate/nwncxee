@@ -4,8 +4,8 @@ namespace Sowx.Graphics;
 /// readback never stalls the pass waiting for a result the GPU has not produced.
 /// <para>Harvesting happens in BEGIN, not in End, and unconditionally. End only runs when Begin took the
 /// pass, so harvesting there wedges the meter the first time both slots are pending at once -- one heavy
-/// frame with the GPU two frames behind, or a third owned pass in a frame -- and it never reports again
-/// for the session. Same rule as <c>OwnedLights.Build</c>, for the same reason.</para></summary>
+/// frame with the GPU two frames behind, or a third Alloy pass in a frame -- and it never reports again
+/// for the session. Same rule as <c>AlloyLights.Build</c>, for the same reason.</para></summary>
 public unsafe struct GpuQuery
 {
     private uint _q0, _q1;

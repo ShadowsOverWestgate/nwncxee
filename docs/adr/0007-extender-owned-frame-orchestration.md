@@ -2,7 +2,7 @@
 
 Status: phase 1 (the deterministic per-frame pass slot) still live; phases 2-3 **retired** by #87 —
 the receiver-uniform upload, SowxLights/SowxCubes injection and the OwnedShade program takeover were
-deleted once the owned pass (ADR 0009 M1) became the only custom lighting code. Kept as the record of
+deleted once the Alloy pass (ADR 0009 M1) became the only custom lighting code. Kept as the record of
 why the pass slot exists and what the engine-program route cost.
 
 ## Context
@@ -70,7 +70,7 @@ construction (`SOWX_OWNSHADE=0` reverts), but the program is now ours to modify.
 
 Slice 2 (implemented): clones register as receiver programs, so the pass-slot upload feeds them
 every sowx* lighting/shadow uniform DIRECTLY; the per-frame mirror skips sowx* (one full mirror at
-clone time bridges to the first upload). Lighting state on owned programs no longer round-trips
+clone time bridges to the first upload). Lighting state on Alloy programs no longer round-trips
 through the engine program at all. Non-lighting uniforms (matrices, fog, wind) stay mirrored --
 they are engine *state*, not engine *cadence*, and owning them buys no debuggability yet.
 
@@ -98,7 +98,7 @@ re-takeover on next LoadShader).
 
 ### Phase 4 — modern data path (slice 1 implemented: lighting UBO)
 
-Owned programs read the whole area-light snapshot from ONE std140 uniform block (`SowxLights`:
+Alloy programs read the whole area-light snapshot from ONE std140 uniform block (`SowxLights`:
 vec4 posRange[128], vec4 colorSlot[128], vec4 meta) filled by a single `glBufferSubData` per
 frame at the pass slot -- replacing ~130 uniform calls x ~70 receiver programs per upload and
 making extender/shader capacity skew (the 0x502 class) structurally impossible. Enabled by the

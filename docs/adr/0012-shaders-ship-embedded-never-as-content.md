@@ -1,11 +1,11 @@
 # 0012 — Shaders ship embedded, never as content
 
 Status: accepted (2026-08-24 grilling). Supersedes the shipping half of #92; constrains ADR 0009's
-owned pipeline and everything downstream of it.
+Alloy pipeline and everything downstream of it.
 
 ## Context
 
-Every owned stage exists twice: as a `const string` raw literal in `managed/Services/Render/*.cs`,
+Every Alloy stage exists twice: as a `const string` raw literal in `managed/Alloy/*.cs`,
 and as a `sowx_*.shd` shipped in `sow-topdata`'s hak. The override wins at runtime, so the shipped
 copy is the one that runs.
 
@@ -35,7 +35,7 @@ purely so a hak shipped against an older build does not misread slot 64 as env-m
 
 **The extender ships every shader embedded. No content repo ever carries a copy.**
 
-- A shader is *code*, not data. `sowx_ownlit_fs` declares the `SowxDraw` struct whose layout lives in
+- A shader is *code*, not data. `cx_ownlit_fs` declares the `SowxDraw` struct whose layout lives in
   a C# file, reads uniform blocks the C# fills, and honours a clip expression the depth prepass
   depends on character-for-character. It ships with the renderer it agrees with, or the agreement is
   unenforceable.
@@ -45,7 +45,7 @@ purely so a hak shipped against an older build does not misread slot 64 as env-m
 - **The two roles are now distinct.** *Shipping* a shader is forbidden; *overriding* one is
   supported. Nothing in a hak, NWSync repo, or content release may carry a `sowx_*` resref.
 - **The dump is how a customizer starts.** A `/dumpshaders` chat command writes every overridable
-  resref to `<user directory>/sowx_shader_dump/`, plus the bindless variant. Because it dumps what is
+  resref to `<user directory>/cx_shader_dump/`, plus the bindless variant. Because it dumps what is
   compiled in, the starting point is current by construction — the drift class is structurally
   impossible rather than detected, in the same spirit as #127's grass punch-through.
 
@@ -53,8 +53,8 @@ purely so a hak shipped against an older build does not misread slot 64 as env-m
 
 - The seventeen overridable resrefs become the written-down contract, replacing
   `check-shaders.py`'s `override_sources` table as the authority. Six of them
-  (`sowx_post_vs`, `sowx_bloomdn_fs`, `sowx_bloomup_fs`, `sowx_resolve_fs`, `sowx_cast_vs`,
-  `sowx_cast_fs`) were overridable at runtime but never shipped, never dumped and never guarded;
+  (`cx_post_vs`, `cx_bloomdn_fs`, `cx_bloomup_fs`, `cx_resolve_fs`, `cx_cast_vs`,
+  `cx_cast_fs`) were overridable at runtime but never shipped, never dumped and never guarded;
   they join the contract and gain guard coverage.
 - `/dumpshaders` replaces `SOWX_DUMP_SHADERS` (ADR 0013). The headless path it served — the only
   offline compile check on the `BindlessFs` rewrite, which `check-shaders.py` cannot reproduce

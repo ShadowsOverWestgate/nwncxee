@@ -1,10 +1,10 @@
 using System;
 using Sowx.Framework;
-using Sowx.Services.Render;   // ShaderResource: override lookup + $TOKEN$ expansion, both content/render concerns
+using Sowx.Alloy;   // ShaderResource: override lookup + $TOKEN$ expansion, both content/render concerns
 
 namespace Sowx.Graphics;
 
-/// <summary>Shader-object plumbing shared by the owned pass's programs (#83): compile, link, uniform lookup.
+/// <summary>Shader-object plumbing shared by the Alloy pass's programs (#83): compile, link, uniform lookup.
 /// Alloc-free apart from the log strings on the failure paths, which are cold by construction -- a program
 /// either builds once at first use or is disabled for the session.</summary>
 internal static unsafe class GlProgram

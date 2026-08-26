@@ -17,7 +17,7 @@ public static unsafe class Gl
     public const uint TEXTURE_INTERNAL_FORMAT = 0x1003, TEXTURE_ALPHA_SIZE = 0x805F;
     public const uint TEXTURE_WIDTH = 0x1000, TEXTURE_HEIGHT = 0x1001;
     public const uint CULL_FACE = 0x0B44, SCISSOR_TEST = 0x0C11;
-    /// <summary>#125: GL_DEPTH_CLAMP. The owned sky replays a dome the engine drew under its OWN projection
+    /// <summary>#125: GL_DEPTH_CLAMP. The Alloy sky replays a dome the engine drew under its OWN projection
     /// (far 1000.0) beneath the world's, so it can cross the world far plane; clamping keeps the far-plane
     /// fragments rather than letting them clip into a hole at the horizon.</summary>
     public const uint DEPTH_CLAMP = 0x864F;
@@ -27,7 +27,7 @@ public static unsafe class Gl
     public const uint ARRAY_BUFFER = 0x8892, STATIC_DRAW = 0x88E4, DYNAMIC_DRAW = 0x88E8;
     public const uint VERTEX_SHADER = 0x8B31, FRAGMENT_SHADER = 0x8B30;
     /// <summary>#147: the tessellation pair, and the primitive mode that feeds them. GL 4.0+, so core on the
-    /// 4.6 context the owned pass already requires -- water is the one class whose geometry is coarse enough
+    /// 4.6 context the Alloy pass already requires -- water is the one class whose geometry is coarse enough
     /// to need subdividing and cheap enough to afford it.</summary>
     public const uint TESS_CONTROL_SHADER = 0x8E88, TESS_EVALUATION_SHADER = 0x8E87;
     public const uint PATCHES = 0x000E, PATCH_VERTICES = 0x8E72, MAX_TESS_GEN_LEVEL = 0x8E7E;
@@ -54,7 +54,7 @@ public static unsafe class Gl
     public const uint FRAMEBUFFER_BINDING = 0x8CA6, DEPTH_WRITEMASK = 0x0B72, DEPTH_FUNC = 0x0B74, DEPTH_RANGE = 0x0B70;
     // FBO / depth-pass (shadow map, #65 slice 3).
     public const uint FRAMEBUFFER = 0x8D40, DEPTH_ATTACHMENT = 0x8D00, FRAMEBUFFER_COMPLETE = 0x8CD5;
-    // owned world draw (#81): engine-VAO attribute harvest + engine-FBO mirroring in the 4.6 context.
+    // Alloy world draw (#81): engine-VAO attribute harvest + engine-FBO mirroring in the 4.6 context.
     public const uint ELEMENT_ARRAY_BUFFER = 0x8893, ELEMENT_ARRAY_BUFFER_BINDING = 0x8895;
     public const uint VERTEX_ATTRIB_ARRAY_ENABLED = 0x8622, VERTEX_ATTRIB_ARRAY_SIZE = 0x8623,
                       VERTEX_ATTRIB_ARRAY_STRIDE = 0x8624, VERTEX_ATTRIB_ARRAY_TYPE = 0x8625,
@@ -66,9 +66,9 @@ public static unsafe class Gl
     public const uint DEPTH_COMPONENT = 0x1902, DEPTH_COMPONENT24 = 0x81A6, DEPTH_COMPONENT16 = 0x81A5, UNSIGNED_INT = 0x1405;
     public const uint DEPTH_BUFFER_BIT = 0x0100, COLOR_BUFFER_BIT = 0x4000, LESS = 0x0201, LEQUAL = 0x0203, NONE = 0;
     /// <summary>#132: the current clear colour, as glGetFloatv reads it back -- the engine's own value, so
-    /// the owned HDR target starts from what the engine cleared to instead of from a guess.</summary>
+    /// the Alloy HDR target starts from what the engine cleared to instead of from a guess.</summary>
     public const uint COLOR_CLEAR_VALUE = 0x0C22;
-    /// <summary>#129: the depth-attachment probe the owned framebuffer copy sizes itself from. A blit of
+    /// <summary>#129: the depth-attachment probe the Alloy framebuffer copy sizes itself from. A blit of
     /// DEPTH_BUFFER_BIT needs the two attachments to agree on format, so the copy allocates from what the
     /// engine's own attachment reports rather than assuming 24-bit. DEPTH (0x1801) is the attachment POINT
     /// the query takes for the default framebuffer, where DEPTH_ATTACHMENT is not a legal name.</summary>
@@ -103,7 +103,7 @@ public static unsafe class Gl
     public const uint TEXTURE_MAX_ANISOTROPY = 0x84FE, MAX_TEXTURE_MAX_ANISOTROPY = 0x84FF,
                       TEXTURE_LOD_BIAS = 0x8501;
     /// <summary>Sample count of the bound draw framebuffer. 1 (or 0) means alpha-to-coverage has nothing to
-    /// modulate and the owned grass pass falls back to dithering its cutout edge.</summary>
+    /// modulate and the Alloy grass pass falls back to dithering its cutout edge.</summary>
     public const uint SAMPLES = 0x80A9;
     /// <summary>#127: the grass displacement field's format -- RG the signed XY push, B the press-down.</summary>
     public const uint RGBA8 = 0x8058;
@@ -112,7 +112,7 @@ public static unsafe class Gl
     /// producing a partially transparent depth-writing fragment. Inert where SAMPLES is 1.</summary>
     public const uint SAMPLE_ALPHA_TO_COVERAGE = 0x809E;
     public const uint TEXTURE_COMPARE_MODE = 0x884C, TEXTURE_COMPARE_FUNC = 0x884D, COMPARE_REF_TO_TEXTURE = 0x884E;
-    // clustered forward+ on the owned path (#83): compute dispatch, SSBOs and the GPU timer for the
+    // clustered forward+ on the Alloy path (#83): compute dispatch, SSBOs and the GPU timer for the
     // cluster-build budget. All 4.6-core, so they exist only inside the #80 share-listed context.
     public const uint COMPUTE_SHADER = 0x91B9, SHADER_STORAGE_BUFFER = 0x90D2;
     public const uint SHADER_STORAGE_BARRIER_BIT = 0x2000;
@@ -122,7 +122,7 @@ public static unsafe class Gl
     public const uint RENDERBUFFER_SAMPLES = 0x8CAB, TEXTURE_SAMPLES = 0x9106, TEXTURE_2D_MULTISAMPLE = 0x9100, RENDERBUFFER_BINDING = 0x8CA7;
     public const uint TIME_ELAPSED = 0x88BF, QUERY_RESULT = 0x8866, QUERY_RESULT_AVAILABLE = 0x8867;
     /// <summary>glBeginQuery target counting fragments that passed depth+stencil (#119): the overdraw meter
-    /// for the owned colour pass. Not ANY_SAMPLES_PASSED -- that one is boolean and answers a different
+    /// for the Alloy colour pass. Not ANY_SAMPLES_PASSED -- that one is boolean and answers a different
     /// question.</summary>
     public const uint SAMPLES_PASSED = 0x8914;
     // #93 multidraw-indirect from persistent-mapped storage. The MAP_* bits are glBufferStorage flags AND
@@ -153,7 +153,7 @@ public static unsafe class Gl
     /// only way to ask what the SAMPLER returns rather than what the format declares.</summary>
     public static delegate* unmanaged<uint, int, uint, uint, void*, void> GetTexImage;
     public static delegate* unmanaged<uint, int, void> PixelStorei;
-    /// <summary>glPatchParameteri: how many vertices make one patch. Three -- the owned pass feeds the
+    /// <summary>glPatchParameteri: how many vertices make one patch. Three -- the Alloy pass feeds the
     /// engine's own triangle index buffer straight through as patches.</summary>
     public static delegate* unmanaged<uint, int, void> PatchParameteri;
     public static delegate* unmanaged<uint, IntPtr, void*, uint, void> BufferData;
@@ -191,13 +191,13 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, int, int*, void> Uniform1iv;     // (loc, count, ptr) -- per-slot ints
     public static delegate* unmanaged<int, int, float*, void> Uniform3fv;   // (loc, count, ptr) -- per-slot vec3
     public static delegate* unmanaged<int, int, float*, void> Uniform4fv;   // (loc, count, ptr) -- per-slot vec4
-    // Owned-program cloning (ADR 0007 phase 3): enumerate + mirror engine-program uniforms.
+    // Alloy program cloning (ADR 0007 phase 3): enumerate + mirror engine-program uniforms.
     public static delegate* unmanaged<int, int, float*, void> Uniform2fv;
     public static delegate* unmanaged<int, int, int*, void> Uniform2iv, Uniform3iv, Uniform4iv;
     public static delegate* unmanaged<int, int, byte, float*, void> UniformMatrix2fv, UniformMatrix3fv;
     /// <summary>glGetActiveUniform: prog, index, bufSize, length*, size*, type*, name* -- uniform enumeration.</summary>
     public static delegate* unmanaged<uint, uint, int, int*, int*, uint*, byte*, void> GetActiveUniform;
-    // Lighting UBO (ADR 0007 modern path): one std140 block shared by every owned program.
+    // Lighting UBO (ADR 0007 modern path): one std140 block shared by every Alloy program.
     public static delegate* unmanaged<uint, IntPtr, IntPtr, void*, void> BufferSubData;
     public static delegate* unmanaged<uint, uint, uint, void> BindBufferBase;
     public static delegate* unmanaged<uint, byte*, uint> GetUniformBlockIndex;
@@ -240,7 +240,7 @@ public static unsafe class Gl
     /// basevertex*. One call submits a whole batch group (ADR 0006 phase 1). Null on ancient drivers.</summary>
     public static delegate* unmanaged<uint, int*, uint, void**, int, int*, void> MultiDrawElementsBaseVertex;
 
-    // owned world draw (#81)
+    // Alloy world draw (#81)
     public static delegate* unmanaged<uint, uint, int*, void> GetVertexAttribiv;
     public static delegate* unmanaged<uint, uint, void**, void> GetVertexAttribPointerv;
     public static delegate* unmanaged<uint, uint, uint, int*, void> GetFramebufferAttachmentParameteriv;
@@ -249,7 +249,7 @@ public static unsafe class Gl
     /// internal format (#129's depth-copy probe); the binding is restored to 0 immediately.</summary>
     public static delegate* unmanaged<uint, uint, void> BindRenderbuffer;
     /// <summary>glBindTextureUnit (GL 4.5 DSA): unit, texture. One call where ActiveTexture+BindTexture+
-    /// ActiveTexture was three -- the owned colour pass changes texture state ~4000 times a frame (#151).</summary>
+    /// ActiveTexture was three -- the Alloy colour pass changes texture state ~4000 times a frame (#151).</summary>
     public static delegate* unmanaged<uint, uint, void> BindTextureUnit;
     /// <summary>ARB_bindless_texture: texture -> 64-bit handle, and residency. Presence of the extension is
     /// checked by string (GLX hands back non-null pointers for unsupported extensions).</summary>
@@ -269,7 +269,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, int*, void> GetQueryObjectiv;
     public static delegate* unmanaged<uint, uint, ulong*, void> GetQueryObjectui64v;
     public static delegate* unmanaged<int, int, int, int, void> Uniform3i;
-    // #93 owned caster submission. All 4.6-core, so they exist only inside the #80 share-listed context;
+    // #93 Alloy caster submission. All 4.6-core, so they exist only inside the #80 share-listed context;
     // every one is null-checked before the path arms.
     /// <summary>glBufferStorage (GL 4.4): target, size, data, flags. Immutable store -- the only way to get
     /// a mapping that survives use, which is what "persistent-mapped" means.</summary>

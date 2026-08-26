@@ -104,7 +104,7 @@ OIT (weighted-blended or otherwise) is **M4**, not M3.
 
 ### Depth prepass: in, opaque-only, and published
 
-Opaque owned geometry, depth-only. It is *published as a resource*, not kept private to the colour
+Opaque Alloy geometry, depth-only. It is *published as a resource*, not kept private to the colour
 pass — water's screen-space depth read and M4's SSAO/GTAO both want exactly this buffer, and
 building it without a consumer contract means building it twice.
 
@@ -118,7 +118,7 @@ shading pass. Two things the design text did not name and the build settled:
 - The published contract is `DepthResource` (attachment name, `IsTexture`, size, pass generation), not a
   rebuilt `InDepthPass` bool. `IsTexture` is published rather than assumed because until the exit step the
   buffer is the engine's own attachment, which may be a renderbuffer and therefore unsampleable.
-- Re-testing prepass depth in the colour pass requires every owned vertex stage to compute one clip
+- Re-testing prepass depth in the colour pass requires every Alloy vertex stage to compute one clip
   expression, character for character, under `invariant gl_Position` — the lit stage's association differed
   and was unified. The colour pass tests LEQUAL, not EQUAL, so a stood-down prepass stays correct.
 
@@ -168,9 +168,9 @@ because its bucket order is fixed, not because two are needed.
 
 ### Colour space: one resolve stage, flipped at the M3 exit
 
-The owned frame becomes **linear end to end**, with a single fullscreen resolve encoding to display
+The Alloy frame becomes **linear end to end**, with a single fullscreen resolve encoding to display
 space as the last step inside bracket 2, writing straight into the engine's framebuffer as its
-output — no third bracket, no blit. The owned frame is *finished* when we hand the context back,
+output — no third bracket, no blit. The Alloy frame is *finished* when we hand the context back,
 which makes the seam with the engine's 2D UI a single inspectable point.
 
 This is cheaper than the per-shader encode it replaces — one `pow()` per screen pixel instead of one
@@ -223,14 +223,14 @@ rediscovered as a bug.
 > 0x260) — the last engine call inside RSP before `RenderDrawBucket(0)`. At its return the world FBO
 > is bound and cleared, view and projection are valid (they were valid from `Camera::RenderScene`,
 > per #108), and nothing has been drawn. It also sits after `Scene::DoFog` (slot 0x280), which runs
-> between the clear and bucket 0 and writes state the owned pass reads; anchoring ahead of the two
+> between the clear and bucket 0 and writes state the Alloy pass reads; anchoring ahead of the two
 > vcalls would buy a one-frame fog/fade lag for nothing. Steps 1, 2, 4 and 5 landed as written.
 >
-> Two consequences the flip carries, both deliberate: the owned target is now **linear**, which
+> Two consequences the flip carries, both deliberate: the Alloy target is now **linear**, which
 > moves scene fog across the encode and changes how a foggy frame looks (this ADR's own §"Colour
 > space" ordering, un-welded); and a `PostChain` refusal — default framebuffer, multisampled depth,
-> offset viewport — now stands the **whole owned pass** down to vanilla for that frame, because a
-> linear owned frame with no resolve is wrong by a gamma and no display-space variant of the owned
+> offset viewport — now stands the **whole Alloy pass** down to vanilla for that frame, because a
+> linear Alloy frame with no resolve is wrong by a gamma and no display-space variant of the owned
 > stages survives.
 
 Two facts that shape it, both verified rather than assumed:
@@ -265,7 +265,7 @@ One shadow bracket at the pass slot, one colour bracket at the anchor. That is 4
 calls per frame, which is what the frame costs today (`DrawOwned`, `CasterPass.EndFrame`).
 
 **M3 may not exceed it.** Each bracket is a fence plus `glFlush` plus two context switches plus an
-error drain — a GPU pipeline bubble. The owned pass is fast because it hands the GPU big
+error drain — a GPU pipeline bubble. The Alloy pass is fast because it hands the GPU big
 uninterrupted blocks, and every pass M3 adds goes *inside* an existing bracket. A pass that "needs"
 its own bracket is a pass in the wrong slot.
 

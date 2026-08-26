@@ -65,7 +65,7 @@ public sealed class CommandRegistry
         reply = null;
         if (text.Length < 2 || text[0] != '/') return false;
         // The whole line is lowercased, arguments included -- the if-chain this replaced did the same, and the
-        // knob keys depend on it (`/light GAIN 2` must reach OwnedLights as "gain").
+        // knob keys depend on it (`/light GAIN 2` must reach AlloyLights as "gain").
         string cmd = text.Trim().ToLowerInvariant();
         int sp = cmd.IndexOf(' ');
         string name = sp < 0 ? cmd : cmd[..sp];

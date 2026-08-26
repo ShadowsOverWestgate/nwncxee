@@ -52,7 +52,7 @@ only what is actually performance instrumentation.
 
 ## Windows
 
-Windows support of the owned pipeline stays deferred (ADR 0009/0010), but the port is a commitment,
+Windows support of the Alloy pipeline stays deferred (ADR 0009/0010), but the port is a commitment,
 not a maybe, so **nothing in this layout may foreclose it.** Two constraints, both of which this
 decision happens to serve:
 
@@ -148,7 +148,7 @@ Two boundaries are drawn where the ticket's bullets did not:
 
 The AC "the bucket gate does not depend on the batcher being armed" was a real coupling, not a naming one:
 `EndFrame` cleared the single `_active` flag when `glMultiDrawElementsBaseVertex` turned out to be missing, so
-a GL without multidraw took the capture tables, the census, the gate AND the owned pass down with the submits.
+a GL without multidraw took the capture tables, the census, the gate AND the Alloy pass down with the submits.
 Arming is now two flags: `PartTable.Active` (the capture hooks are in -- the census and the gate legitimately
 ride on it, since no table means nothing to classify or suppress) and `BatchService._batchArmed`, which is
 private to the batcher and which nothing else can read. That is the one deliberate behaviour change in the

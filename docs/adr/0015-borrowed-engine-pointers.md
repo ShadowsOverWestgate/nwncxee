@@ -7,7 +7,7 @@ as an open ticket.
 ## Context
 
 Every renderer crash this project has had is the same crash. A core dump from 2026-08-22 (SIGSEGV
-after drinking a potion, owned pipeline armed, #128 + #137 live) is the worked example:
+after drinking a potion, Alloy pipeline armed, #128 + #137 live) is the worked example:
 
 - The faulting call was `AurTextureGetTID` @0x48e080, reached from `OwnedDrawService.BuildBatches` ->
   `Scene::RenderSinglePass`.
@@ -22,12 +22,12 @@ slot*0x10`, or the SharedMaterial's table at `this+0xd0`. It returns whatever po
 was left holding, live or dead. So re-fetching every frame does not help: the staleness is in the
 engine's field, not in our cache. *A per-frame re-fetch of a stale field is a stale field.*
 
-Underneath it is the structural constraint, and it is not going away: **the owned pass reads engine
+Underneath it is the structural constraint, and it is not going away: **the Alloy pass reads engine
 objects at points in the frame the engine never does** — bucket 0/1, for parts the engine has not
 reached yet, and after object lifetimes the engine assumes nobody is observing (a VFX gob lives
 seconds). The engine does not null a freed texture out of the materials that point at it; it relies
 on nobody reading a material outside its own draw. We do exactly that. So dangling reads are the
-normal condition of an owned renderer, not a bug to be fixed once.
+normal condition of an Alloy renderer, not a bug to be fixed once.
 
 ## Decision
 
@@ -37,9 +37,9 @@ point of use, by one of two mechanisms — never by trusting the field it came f
 1. **Vtable check** (for objects that have one). The engine has exactly two texture vtables, so "is
    this still a texture" is two compares against `_ZTV11CAurTexture` / `_ZTV16CAurTextureBasic`
    (+0x10, Itanium ABI). `Sowx.Framework.AurTex` is the one front door to `AurTextureGetTID`; every
-   material-derived call site routes through it (owned colour diffuse + five PBR slots, owned sky,
+   material-derived call site routes through it (Alloy colour diffuse + five PBR slots, Alloy sky,
    `CasterPass` masked casters, `GrassField`, the `BatchService` census, chat portraits).
-   A refusal costs that part its owned draw for the frame — the engine draws it, i.e. vanilla — and
+   A refusal costs that part its Alloy draw for the frame — the engine draws it, i.e. vanilla — and
    is counted, with the session total on the `[owned]` line.
 2. **Death notice** (for objects that have no vtable to check, or where a check would be too late).
    Hook the destructor and revoke the pointer from our table: `Part::~Part` (`_ZN4PartD2Ev`
@@ -78,8 +78,8 @@ Corollaries that are part of the decision:
 
 ## Forensics recipe
 
-Reproduce: drink a potion in a live session with the owned pass armed (short-lived VFX gob = the
-shortest lifetime the owned pass ever holds a pointer into). Then, from the systemd core
+Reproduce: drink a potion in a live session with the Alloy pass armed (short-lived VFX gob = the
+shortest lifetime the Alloy pass ever holds a pointer into). Then, from the systemd core
 (`coredumpctl`), read the faulting argument's first word and scan the image for the live population
 of that class's vtable. See also the `addr2line` recipe for NativeAOT frames in #145/#150.
 

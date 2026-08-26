@@ -8,7 +8,7 @@ namespace Sowx.Framework;
 /// object's vtable and calling through slot 0x18. Hand it a freed pointer and the call lands wherever the
 /// reused heap now says, which is a SIGSEGV rather than a wrong texture.
 /// <para>The rule the chat portraits learned (#33) was "never cache the pointer, re-fetch every frame". The
-/// owned pipeline already obeys it -- every consumer calls <c>Material::GetTexture</c> per frame -- and it is
+/// Alloy pipeline already obeys it -- every consumer calls <c>Material::GetTexture</c> per frame -- and it is
 /// not enough, because <c>Material::GetTexture</c> @0x4c5810 is a plain FIELD READ (<c>this + slot*0x10</c>,
 /// or the SharedMaterial's table at <c>this+0xd0</c>). It returns whatever pointer the material was left
 /// holding, live or not. A per-frame re-fetch of a stale field is still a stale pointer.</para>
@@ -31,7 +31,7 @@ public static unsafe class AurTex
     private static long _refused;
 
     /// <summary>Resolved and usable. False leaves every caller where it was before its texture resolved --
-    /// no texture id, so no owned draw for that part.</summary>
+    /// no texture id, so no Alloy draw for that part.</summary>
     public static bool Ready { get; private set; }
 
     /// <summary>How many dangling texture pointers have been refused this session. Nonzero is not an error
@@ -68,7 +68,7 @@ public static unsafe class AurTex
     }
 
     /// <summary>This texture's GL id, or 0 if the pointer is null or no longer a texture. Hot -- called per
-    /// owned part per frame.</summary>
+    /// Alloy part per frame.</summary>
     public static int Tid(IntPtr tex) => Live(tex) ? _getTid(tex) : 0;
 
     /// <summary>Off-device: the guard, in both directions, with SYNTHETIC vtables -- so it runs identically

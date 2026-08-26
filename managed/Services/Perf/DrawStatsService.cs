@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
-using static Sowx.Services.Render.SceneLayout;
+using static Sowx.Alloy.SceneLayout;
 
 namespace Sowx.Services.Perf;
 
@@ -47,8 +47,8 @@ public sealed unsafe class DrawStatsService : IExtenderService
         // #170: ahead of the stand-down -- the host called EndFrame every frame regardless, and EndFrame
         // guards itself on Enabled. Registering after the return would silently change that.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 0, EndFrame, "DrawStatsService.endFrame", log);
-        if (Settings.Text(Render.BatchService.DrawModeKey, Render.BatchService.DrawModeBatch)
-            != Render.BatchService.DrawModeStats) return;
+        if (Settings.Text(Alloy.BatchService.DrawModeKey, Alloy.BatchService.DrawModeBatch)
+            != Alloy.BatchService.DrawModeStats) return;
         _log = log;
         // Chained, not Install()ed: RenderVertexData has several subscribers (#88). Lowest priority --
         // we only count what actually reached the GPU.

@@ -14,7 +14,7 @@ ones that have no resref -- lives below. `ShaderResource.Tokens`' sizing tokens 
 stand-in values, since only the shapes matter here.
 
 Why a second copy of a composition is never tolerable: a `SowxDraw` record layout that lives in C#
-was, until ADR 0012, also hand-copied into shipped `sowx_*.shd`. When the record grew in #120 the
+was, until ADR 0012, also hand-copied into shipped `cx_*.shd`. When the record grew in #120 the
 stale copies read every draw out of a neighbour's slot and the world went black. Nothing ships a copy
 now, and nothing here restates one either.
 
@@ -36,19 +36,19 @@ SOURCES = [
     # The service's own file is deliberately absent: it holds no shader text now. Keep it that way --
     # a const string added THERE and concatenated into one here would splice in as empty and be
     # validated as if it shipped. (A constant a Source arm names directly still hard-errors.)
-    "managed/Services/Render/OwnedDrawService.Shaders.cs",
-    "managed/Services/Render/Pass/OwnedLights.cs",
-    "managed/Services/Render/Pass/CasterPass.cs",
-    "managed/Services/Render/Pass/GrassField.cs",
-    "managed/Services/Render/Pass/PostChain.cs",
-    "managed/Services/Render/Pass/FrameSnapshot.cs",
+    "managed/Alloy/AlloyRenderer.Shaders.cs",
+    "managed/Alloy/Pass/AlloyLights.cs",
+    "managed/Alloy/Pass/CasterPass.cs",
+    "managed/Alloy/Pass/GrassField.cs",
+    "managed/Alloy/Pass/PostChain.cs",
+    "managed/Alloy/Pass/FrameSnapshot.cs",
 ]
 # ShaderResource.Tokens' three sizing tokens. Any legal value compiles the same shapes.
 TOKENS = {"$CAP$": "128", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667"}
-STAGES = "managed/Services/Render/Core/ShaderStages.cs"
+STAGES = "managed/Alloy/Core/ShaderStages.cs"
 DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*const string (\w+) = (.*)$")
 PIECE = re.compile(r'"""\n(.*?)\n\s*"""|([A-Za-z_]\w*)', re.S)
-RESREF = re.compile(r'(\w+)\s*=\s*"(sowx_\w+)"')
+RESREF = re.compile(r'(\w+)\s*=\s*"(cx_\w+)"')
 # `internal static string Source(string resref) => resref switch { ... };` -- the shape ShaderStages
 # guarantees. One arm per resref: a qualified resref constant, then a plain `+` chain of constants.
 SWITCH = re.compile(r"string Source\(string resref\) => resref switch\s*\{(.*?)\n\s*\};", re.S)
@@ -103,7 +103,7 @@ def composition(consts):
             continue
         ref = refs.get(left.rsplit(".", 1)[-1])
         if ref is None:
-            sys.exit(f"{STAGES}: switch arm `{left}` is not a known sowx_* resref constant")
+            sys.exit(f"{STAGES}: switch arm `{left}` is not a known cx_* resref constant")
         pieces = []
         for term in expr.split("+"):
             leaf = term.strip().rsplit(".", 1)[-1]
@@ -239,9 +239,9 @@ def check_material(consts, stages):
         print(f"material synthesis: SKIPPED -- no {', '.join(missing)} (Arch: spirv-tools)")
         return 0
     # The real lit stage minus its main, so the folds see whatever C# actually splices into the chain.
-    prelude, main = stages["sowx_ownlit_fs"], consts["OwnedLitFsMain"]
+    prelude, main = stages["cx_ownlit_fs"], consts["OwnedLitFsMain"]
     if not prelude.endswith(main):
-        sys.exit("sowx_ownlit_fs no longer ends with OwnedLitFsMain -- the material prelude broke")
+        sys.exit("cx_ownlit_fs no longer ends with OwnedLitFsMain -- the material prelude broke")
     prelude = prelude[: -len(main)]
     for tok, val in TOKENS.items():
         prelude = prelude.replace(tok, val)
@@ -276,18 +276,18 @@ def check_material(consts, stages):
 # evaluation stage does, after displacing.
 def programs(c, s):
     return {
-        "fullbright": (s["sowx_own_vs"], s["sowx_own_fs"]),
+        "fullbright": (s["cx_own_vs"], s["cx_own_fs"]),
         "depth prepass": (c["DepthVs"], c["DepthFs"]),
         "keyhole depth prepass": (c["DepthKeyVs"], c["DepthKeyFs"]),
-        "caster depth": (s["sowx_cast_vs"], s["sowx_cast_fs"]),
+        "caster depth": (s["cx_cast_vs"], s["cx_cast_fs"]),
         "caster depth (alpha-tested)": (c["CastMaskVs"], c["CastMaskFs"]),
-        "clustered lit": (s["sowx_ownlit_vs"], s["sowx_ownlit_fs"]),
-        "post bloom downsample": (s["sowx_post_vs"], s["sowx_bloomdn_fs"]),
-        "post bloom upsample": (s["sowx_post_vs"], s["sowx_bloomup_fs"]),
-        "post resolve": (s["sowx_post_vs"], s["sowx_resolve_fs"]),
-        "owned water": (s["sowx_water_vs"], s["sowx_water_tcs"], s["sowx_water_tes"], s["sowx_water_fs"]),
-        "instanced grass": (s["sowx_grass_vs"], s["sowx_grass_fs"]),
-        "clustered light build": (s["sowx_cluster_cs"],),
+        "clustered lit": (s["cx_ownlit_vs"], s["cx_ownlit_fs"]),
+        "post bloom downsample": (s["cx_post_vs"], s["cx_bloomdn_fs"]),
+        "post bloom upsample": (s["cx_post_vs"], s["cx_bloomup_fs"]),
+        "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),
+        "owned water": (s["cx_water_vs"], s["cx_water_tcs"], s["cx_water_tes"], s["cx_water_fs"]),
+        "instanced grass": (s["cx_grass_vs"], s["cx_grass_fs"]),
+        "clustered light build": (s["cx_cluster_cs"],),
     }
 
 

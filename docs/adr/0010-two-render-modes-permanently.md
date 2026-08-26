@@ -10,11 +10,11 @@ naively that invites deleting the engine path once the last class is owned.
 
 Three facts say otherwise, and only the first was on the table when 0009 was written:
 
-- **macOS caps at OpenGL 4.1.** Apple deprecated GL after 4.1 in favour of Metal. SowxRender's
-  frame graph needs a 4.6 core context (#70), so the owned renderer is structurally
+- **macOS caps at OpenGL 4.1.** Apple deprecated GL after 4.1 in favour of Metal. Alloy's
+  frame graph needs a 4.6 core context (#70), so the Alloy renderer is structurally
   unavailable there. The affected player count is small but not zero.
 - **The extender is more than its renderer.** The chat and dialog UI replacements are the
-  features players actually ask for. A device that cannot run the owned renderer must still get
+  features players actually ask for. A device that cannot run the Alloy renderer must still get
   them; tying the whole extender to a GL 4.6 requirement would trade a large benefit for a
   smaller one.
 - **A/B is how rendering bugs get diagnosed.** "Is it the extender?" needs a one-command answer
@@ -27,9 +27,9 @@ Three facts say otherwise, and only the first was on the table when 0009 was wri
 indefinitely, and no milestone may remove it.
 
 - The existing `/vanilla` chat command stays, frame-atomic, switching the whole scene at once.
-  Ownership is class-granular *within* the owned mode; the mode switch is not a per-class
+  Ownership is class-granular *within* the Alloy mode; the mode switch is not a per-class
   affordance.
-- "Bypass" therefore means **suppress, never delete**. Every owned class keeps its engine
+- "Bypass" therefore means **suppress, never delete**. Every Alloy class keeps its engine
   counterpart callable, and suppression stays a decision made per frame rather than a
   one-way excision.
 - A device unable to create the 4.6 share-listed context **falls back to vanilla mode
@@ -40,7 +40,7 @@ indefinitely, and no milestone may remove it.
   report.
 
 Out of scope here, and noted only so it is not mistaken for part of this decision: a settings
-UI letting players enable and disable sowx modules individually, with the owned renderer gated
+UI letting players enable and disable sowx modules individually, with the Alloy renderer gated
 behind the device check. That is wanted eventually; nothing in this ADR waits on it.
 
 ## Consequences

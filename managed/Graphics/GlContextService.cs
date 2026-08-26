@@ -196,7 +196,7 @@ public sealed unsafe class GlContextService : IExtenderService
 
         if (++_frames >= LogEvery)
         {
-            _log?.Info($"GlContextService: [gl46] {_frames} brackets (>= 1/frame; +1 per owned pass), " +
+            _log?.Info($"GlContextService: [gl46] {_frames} brackets (>= 1/frame; +1 per Alloy pass), " +
                        $"errors 4.6={_err46} engine={_errEng}, switch-fails={_switchFails}");
             _frames = 0; _err46 = 0; _errEng = 0; _switchFails = 0;
         }

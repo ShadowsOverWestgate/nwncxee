@@ -32,7 +32,7 @@ that carries them is content that will one day be older than the client reading 
 ## Getting a starting point
 
 Type **`/dumpshaders`** in-game. It writes every overridable stage as an editable `.shd`
-into `sowx_shader_dump/` inside the client's own user directory (next to `nwn.ini`).
+into `cx_shader_dump/` inside the client's own user directory (next to `nwn.ini`).
 
 What you get is the stage **this build compiles** — dumped from the same text the
 renderer uses, so it is current by construction rather than by somebody remembering to
@@ -45,7 +45,7 @@ There is also a headless trigger for offline work: put `dumpshaders=1` in
 ### The workflow
 
 1. `/dumpshaders`.
-2. Edit `sowx_shader_dump/<resref>.shd`.
+2. Edit `cx_shader_dump/<resref>.shd`.
 3. Place it where your client's resource chain will find it — an `override/` directory
    for local play, a hak for a module you control.
 4. Restart the client and read `~/sowx.log`. An override that loaded says so:
@@ -62,27 +62,27 @@ change on the C# side. Freezing today's numbers into your copy is how it goes st
 
 | resref | stage | what it does |
 | --- | --- | --- |
-| `sowx_own_vs` | vertex | Unlit ("fullbright") owned geometry: projects the batch, reads the per-draw record. |
-| `sowx_own_fs` | fragment | Unlit shading — texture, per-draw tint, alpha cutout. |
-| `sowx_ownlit_vs` | vertex | Lit owned geometry, including the skinning branch for creature parts. |
-| `sowx_ownlit_fs` | fragment | The main lit shader: clustered local lights, sun cascades, PBR material synthesis, key light and fog. The big one. |
-| `sowx_water_vs` | vertex | Water surface, pre-tessellation. |
-| `sowx_water_tcs` | tess control | Water tessellation levels — water is the only class that tessellates. |
-| `sowx_water_tes` | tess eval | Wave-field displacement and the projection that follows it. |
-| `sowx_water_fs` | fragment | Water shading: fetch-driven sea state, lighting, fog. |
-| `sowx_grass_vs` | vertex | Instanced grass blades, wind animation. |
-| `sowx_grass_fs` | fragment | Grass shading. |
-| `sowx_cluster_cs` | compute | Builds the light cluster grid the lit and water stages read. |
-| `sowx_cast_vs` | vertex | Shadow-map depth bake: projects casters into a cascade or cube face. |
-| `sowx_cast_fs` | fragment | The caster pass's fragment stage. Depth-only, and deliberately inert. |
-| `sowx_post_vs` | vertex | Fullscreen triangle shared by the whole post chain. |
-| `sowx_bloomdn_fs` | fragment | Bloom downsample. |
-| `sowx_bloomup_fs` | fragment | Bloom upsample. |
-| `sowx_resolve_fs` | fragment | The resolve: tonemap, dither, and the one stage that encodes to display space. |
+| `cx_own_vs` | vertex | Unlit ("fullbright") Alloy geometry: projects the batch, reads the per-draw record. |
+| `cx_own_fs` | fragment | Unlit shading — texture, per-draw tint, alpha cutout. |
+| `cx_ownlit_vs` | vertex | Lit Alloy geometry, including the skinning branch for creature parts. |
+| `cx_ownlit_fs` | fragment | The main lit shader: clustered local lights, sun cascades, PBR material synthesis, key light and fog. The big one. |
+| `cx_water_vs` | vertex | Water surface, pre-tessellation. |
+| `cx_water_tcs` | tess control | Water tessellation levels — water is the only class that tessellates. |
+| `cx_water_tes` | tess eval | Wave-field displacement and the projection that follows it. |
+| `cx_water_fs` | fragment | Water shading: fetch-driven sea state, lighting, fog. |
+| `cx_grass_vs` | vertex | Instanced grass blades, wind animation. |
+| `cx_grass_fs` | fragment | Grass shading. |
+| `cx_cluster_cs` | compute | Builds the light cluster grid the lit and water stages read. |
+| `cx_cast_vs` | vertex | Shadow-map depth bake: projects casters into a cascade or cube face. |
+| `cx_cast_fs` | fragment | The caster pass's fragment stage. Depth-only, and deliberately inert. |
+| `cx_post_vs` | vertex | Fullscreen triangle shared by the whole post chain. |
+| `cx_bloomdn_fs` | fragment | Bloom downsample. |
+| `cx_bloomup_fs` | fragment | Bloom upsample. |
+| `cx_resolve_fs` | fragment | The resolve: tonemap, dither, and the one stage that encodes to display space. |
 
-One more file appears in the dump: `sowx_ownlit_fs.bindless.shd`. It is **reference
+One more file appears in the dump: `cx_ownlit_fs.bindless.shd`. It is **reference
 only** — the lit stage after the extender's own bindless rewrite. The dot makes it
-unloadable as a resref. Override `sowx_ownlit_fs` and the rewrite is applied to whatever
+unloadable as a resref. Override `cx_ownlit_fs` and the rewrite is applied to whatever
 you supply.
 
 ## The guards
@@ -105,8 +105,8 @@ built on.
 
 ### Record — the per-draw SSBO layout
 
-**Applies to:** `sowx_own_vs`, `sowx_ownlit_vs`, `sowx_ownlit_fs`, all four `sowx_water_*`
-(as `SowxDraw`); `sowx_cast_vs` (as `SowxCaster`).
+**Applies to:** `cx_own_vs`, `cx_ownlit_vs`, `cx_ownlit_fs`, all four `cx_water_*`
+(as `SowxDraw`); `cx_cast_vs` (as `SowxCaster`).
 
 **Rejects:** a `struct SowxDraw` / `struct SowxCaster` declaring a different number of
 trailing `vec4` fields than the C# stride stages. Counted, not compared, so renaming or
@@ -122,7 +122,7 @@ prints its own equivalent.
 
 ### Cutout — per-draw alpha
 
-**Applies to:** the `sowx_own_*` and `sowx_ownlit_*` pairs.
+**Applies to:** the `cx_own_*` and `cx_ownlit_*` pairs.
 
 **Rejects:** a fragment stage without `uAlphaCut`, or one that reads `vAlpha` without a
 vertex stage that supplies it.
@@ -135,7 +135,7 @@ surface solid.
 
 ### Skin — creature skinning
 
-**Applies to:** `sowx_own_vs`, `sowx_ownlit_vs`, and only while skinned parts are armed.
+**Applies to:** `cx_own_vs`, `cx_ownlit_vs`, and only while skinned parts are armed.
 
 **Rejects:** a vertex stage with no `SOWX_FEAT_SKIN` branch.
 
@@ -145,12 +145,12 @@ matrix, silently.
 
 ### Linear — do not encode
 
-**Applies to:** every owned fragment stage except the resolve — `sowx_own_fs`,
-`sowx_ownlit_fs`, `sowx_water_fs`, `sowx_grass_fs`, `sowx_bloomdn_fs`, `sowx_bloomup_fs`.
+**Applies to:** every Alloy fragment stage except the resolve — `cx_own_fs`,
+`cx_ownlit_fs`, `cx_water_fs`, `cx_grass_fs`, `cx_bloomdn_fs`, `cx_bloomup_fs`.
 
 **Rejects:** any use of `SowxRevert` or `SowxSoftClip`.
 
-**Why:** the owned frame is linear end to end and the resolve encodes it once. A stage
+**Why:** the Alloy frame is linear end to end and the resolve encodes it once. A stage
 that encodes as well hands display-space values to a target that gets encoded a second
 time. The whole frame washes out, and nothing says so.
 
@@ -160,7 +160,7 @@ space ...` for grass.
 
 ### Resolve — the same guard from the other end
 
-**Applies to:** `sowx_resolve_fs`, the one stage that must encode.
+**Applies to:** `cx_resolve_fs`, the one stage that must encode.
 
 **Rejects:** a stage that calls `SowxLinear` (decoding a target that is already linear —
 the frame comes out a gamma dark), or one with no `SowxEncode` at all (the frame stays
@@ -171,7 +171,7 @@ yours to change; the rest of the pipeline is built on it.
 
 ### Caster inertness
 
-**Applies to:** `sowx_cast_fs`.
+**Applies to:** `cx_cast_fs`.
 
 **Rejects:** `discard` or a written `gl_FragDepth`.
 
@@ -180,12 +180,12 @@ silent-failure surface — a `discard` means the caster casts no shadow at all, 
 written `gl_FragDepth` displaces the depth the map is compared against into acne or
 peter-panning. Neither errors, neither logs.
 
-`sowx_cast_vs` additionally must keep `uBone`: without the skinning branch every creature
+`cx_cast_vs` additionally must keep `uBone`: without the skinning branch every creature
 casts its bind pose.
 
 ### Depth — the prepass expression
 
-**Applies to:** `sowx_own_vs` and `sowx_ownlit_vs`. Water is exempt — it tessellates,
+**Applies to:** `cx_own_vs` and `cx_ownlit_vs`. Water is exempt — it tessellates,
 so its evaluation stage is what projects, and it does not take the prepass.
 
 **Requires, character for character:**
@@ -214,11 +214,11 @@ If you want the prepass back, keep the expression.
 
 ### Not guarded
 
-`sowx_post_vs`, `sowx_grass_vs` and `sowx_cluster_cs` carry no guard.
+`cx_post_vs`, `cx_grass_vs` and `cx_cluster_cs` carry no guard.
 
 The first two read no per-draw record and write no colour; an interface break in them
 fails the **link**, which the build-failure fallback already refuses with a log line.
-`sowx_cluster_cs` does read a C#-strided record, but as a bare `vec4 uLights[]` with the
+`cx_cluster_cs` does read a C#-strided record, but as a bare `vec4 uLights[]` with the
 stride open-coded on both sides rather than as a struct — the counting guard cannot reach
 it, and a text match on the indexing arithmetic would forbid restyling. It is stated here
 rather than guessed at: an override of the cluster build that gets the stride wrong will
@@ -226,14 +226,14 @@ fail silently.
 
 ## Where this is enforced
 
-The guard predicates live in `managed/Services/Render/OwnedDrawService.Shaders.cs`
+The guard predicates live in `managed/Alloy/AlloyRenderer.Shaders.cs`
 (`RecordSafe`, `CutoutSafe`, `SkinSafe`, `LinearSafe`, `ResolveSafe`, `DepthSafe`) and
-`managed/Services/Render/Pass/CasterPass.cs` (`CastVsSafe`, `CastFsSafe`). Each is asserted
+`managed/Alloy/Pass/CasterPass.cs` (`CastVsSafe`, `CastFsSafe`). Each is asserted
 in both directions by the SelfCheck suites — the embedded stages pass, and deliberately
 broken text is refused — and `run-demo.sh` fails the build if any suite fails. The one
 exception is Skin, whose refusing direction cannot be asserted there: it short-circuits
 on an arming flag that is set after SelfCheck runs.
 
-`managed/Services/Render/ShaderStages.cs` is the authoritative composition table: which
+`managed/Alloy/ShaderStages.cs` is the authoritative composition table: which
 constants concatenate into which resref, and the header each dumped file carries. The
 offline checker `check-shaders.py` reads that table rather than restating it.
