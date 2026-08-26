@@ -95,7 +95,7 @@ internal static unsafe class WaterBodies
             return;
         }
 
-        Matrix4x4 m = *(Matrix4x4*)(node + NodeMatrix);
+        Matrix4x4 m = new NodeRef(node).Model;
         float* bn = (float*)(part + PartBboxMin);
         float* bx = (float*)(part + PartBboxMax);
         // Measured live: a good many water parts carry a DEGENERATE object bbox (min == max), and the ones

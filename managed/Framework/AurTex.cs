@@ -84,7 +84,13 @@ public static unsafe class AurTex
     {
         bool wasReady = Ready; IntPtr wv = _vtbl, wb = _vtblBasic;
         long before = _refused;
-        bool ok = !Live(IntPtr.Zero);                              // null, before anything is armed                              // null, before anything is armed
+        // Saving Ready is not the same as clearing it, and the two assertions below are ABOUT the unarmed
+        // state. On a live client Ready is already true, so the "unarmed" probe was really an armed probe
+        // against the client's own vtables: refused AND counted, which made `_refused == before` false and
+        // this check fail on every live run since it was written. It passed everywhere it was ever watched
+        // (headless, where Ready is false), which is how it stayed that way.
+        Ready = false;
+        bool ok = !Live(IntPtr.Zero);                              // null, before anything is armed
         IntPtr* obj = stackalloc IntPtr[1];
         IntPtr* fakeVtbl = stackalloc IntPtr[2];
         *obj = (IntPtr)fakeVtbl;

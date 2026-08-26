@@ -105,9 +105,12 @@ public sealed unsafe partial class AlloyRenderer
     /// exists -- a destroyed one can keep every field long enough to pass them, and then the gob chase in
     /// <see cref="LiveAlpha"/> walks a freelist word. <c>Part::~Part</c> is what makes this answer no.</para></summary>
     private static bool IdentityOk(int i, IntPtr tri)
-        => PartTable.EntryLive(_oEntry[i], tri)
-           && *(IntPtr*)(tri + PartNode) == _oNode[i] && *(IntPtr*)(tri + PartMaterial) == _oMat[i]
-           && *(int*)(tri + PartTexRotate) == _oRotBits[i];
+    {
+        var part = new PartRef(tri);
+        return PartTable.EntryLive(_oEntry[i], tri)
+               && part.Node.Ptr == _oNode[i] && part.Material.Ptr == _oMat[i]
+               && part.TexRotateBits == _oRotBits[i];
+    }
 
     /// <summary>#126: order the blended run back to front -- the farthest key first, so nearer surfaces
     /// composite over what is already behind them. Stable, which is what keeps parts at equal distance in
@@ -141,7 +144,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The part's own alpha multiplier (part+0xa0), live: it is animated state, not enrollment
     /// state.</summary>
-    private static float PartAlpha(IntPtr tri) => *(float*)(tri + SceneLayout.PartAlpha);
+    private static float PartAlpha(IntPtr tri) => new PartRef(tri).Alpha;
 
     /// <summary>#128: this frame's whole alpha multiplier for a part -- its own animated alpha, the fade
     /// factor of the tile it stands on, and the instance's two multiplies. Every term is read live and none
@@ -159,7 +162,7 @@ public sealed unsafe partial class AlloyRenderer
         float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
         if (_oMx[i])
         {
-            float* m = (float*)(_oNode[i] + NodeMatrix);
+            float* m = new NodeRef(_oNode[i]).Matrix;
             cx = m[12]; cy = m[13]; cz = m[14];
         }
         float dx = cx - _eyePos.X, dy = cy - _eyePos.Y, dz = cz - _eyePos.Z;
@@ -181,6 +184,7 @@ public sealed unsafe partial class AlloyRenderer
         uint keyMode = 0;
         bool keyLit = false, keyDis = false;
         int routed = RouteParts();
+        bool dumping = FrameDump.Begin();
         // #134: routing walks the CLASS RANGES, not the ownership table -- a part whose class range was
         // never built simply never appears, and no skip site can report on it. Say so once.
         if (_watchDrawLeft > 0)
@@ -209,6 +213,7 @@ public sealed unsafe partial class AlloyRenderer
             if (cls == (int)AlloyClass.Water && !_waterArmed) continue;
             IntPtr tri = _oTri[i];
             if (tri == IntPtr.Zero) continue;
+            var part = new PartRef(tri);
             // Geometry the engine has stopped walking -- culled by its own visibility, while ownership
             // (rebuilt every EnrollEvery frames) still holds it. Drawing it was ~44% of the Alloy draw count
             // live, all of it invisible, and it is exactly what the one-owner audit was reporting as
@@ -243,7 +248,7 @@ public sealed unsafe partial class AlloyRenderer
             // pixels, which is the artifact-free half of the trade. This is what makes /draw lodpx safe to
             // raise: the tileset shell of the area stays whole at any threshold.
             if (_lodPx > 0f && cls != (int)AlloyClass.Water && _oR[i] > 0f
-                && *(IntPtr*)(tri + PartTile) == IntPtr.Zero)
+                && part.Tile == IntPtr.Zero)
             {
                 float d2 = EyeDist2(i);
                 float px = _oR[i] * _lodScale;
@@ -267,14 +272,15 @@ public sealed unsafe partial class AlloyRenderer
             // MatStatic (Ghidra @0x450560): ambient = node+0xf4, diffuse = node+0xe8, emissive = part+0x7c.
             // ponytail: MatStatic also multiplies ambient+diffuse by AurGetTileColor() when the part's tile
             // record (part+0x98, +0x54) is set. Not reproduced -- add it if tiles read the wrong hue.
-            IntPtr mdl = lit ? *(IntPtr*)(tri + PartMdlNode) : IntPtr.Zero;
+            IntPtr mdl = lit ? part.Mdl.Ptr : IntPtr.Zero;
             if (lit && mdl == IntPtr.Zero) { _skipNoMdl++; W(i, "skipped: no mdl node"); continue; }
 
             // texture: re-fetch per frame -- CAurTexture* is BORROWED, freed on area transitions (never
             // cache), and the per-frame fetch is exactly what keeps animated textures cycling
-            long aur = _getTexture(_oMat[i], 0);
-            if (aur == 0) { _skipTex++; W(i, "skipped: no diffuse texture"); continue; }
-            int tid = AurTex.Tid((IntPtr)aur);
+            var mat = new MaterialRef(_oMat[i]);
+            var aur = mat.Texture(0);
+            if (aur.IsNull) { _skipTex++; W(i, "skipped: no diffuse texture"); continue; }
+            int tid = aur.ResolveTid();
             if (tid == 0) { _skipTex++; W(i, "skipped: diffuse has no GL id"); continue; }
 
             // #120: the same re-fetch for whichever of the PBR slots this material declared. A slot that
@@ -286,8 +292,7 @@ public sealed unsafe partial class AlloyRenderer
                 slotTid[s] = 0;
                 if (lit && (_oSlots[i] & SlotBit(s)) != 0)
                 {
-                    long a = _getTexture(_oMat[i], s + 1);
-                    int t = AurTex.Tid((IntPtr)a);
+                    int t = mat.Texture(s + 1).ResolveTid();
                     if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
                 }
             }
@@ -296,12 +301,12 @@ public sealed unsafe partial class AlloyRenderer
             if (lit && _aoTest) { slotTid[AoSlot] = tid; slots |= AoBit; }
 
             // index range re-read live from the VDO item tables (Repack revokes before they move)
-            IntPtr vdo = _oVdo[i];
-            long elem = (long)*(IntPtr*)(vdo + VdoElemItems);
-            long vert = (long)*(IntPtr*)(vdo + VdoVertItems);
+            var vdo = new VdoRef(_oVdo[i]);
+            long elem = vdo.ElemItems;
+            long vert = vdo.VertItems;
             int item = _oItem[i];
             if (elem == 0 || vert == 0 || item < 0
-                || item >= *(int*)(vdo + VdoElemCount) || item >= *(int*)(vdo + VdoVertCount))
+                || item >= vdo.ElemCount || item >= vdo.VertCount)
             { _skipRange++; W(i, "skipped: item out of range"); continue; }
             int idxCount = *(int*)(elem + item * 8 + 4);
             if (idxCount <= 0) { _skipRange++; W(i, "skipped: empty index range"); continue; }
@@ -355,16 +360,17 @@ public sealed unsafe partial class AlloyRenderer
             // and the world normal (mat3 of the same GLSL-visible matrix is the correct normal transform here
             // -- the raw bytes already read as the transpose), and the shaders reach uVP * model for clip.
             float* r = data + n * DrawFloats;
-            *(Matrix4x4*)r = _oMx[i] ? *(Matrix4x4*)(_oNode[i] + NodeMatrix) : Matrix4x4.Identity;
+            *(Matrix4x4*)r = _oMx[i] ? new NodeRef(_oNode[i]).Model : Matrix4x4.Identity;
             // rot.z carries #124's dissolve flag and rot.w #126's per-draw alpha multiplier (the part's own
             // alpha, times the tile fade factor where one applies): the record already had two dead floats
             // here, so both folds cost no stride growth and leave RecordSafe's vec4 count alone.
             r[16] = _oCos[i]; r[17] = _oSin[i]; r[18] = dissolve; r[19] = _passAlpha[k];
             if (lit)
             {
-                float* amb = (float*)(mdl + MdlAmbient);
-                float* dif = (float*)(mdl + MdlDiffuse);
-                float* emi = (float*)(tri + PartSelfIllum);
+                var mdlRef = new MdlRef(mdl);
+                float* amb = mdlRef.Ambient;
+                float* dif = mdlRef.Diffuse;
+                float* emi = part.SelfIllum;
                 r[20] = amb[0]; r[21] = amb[1]; r[22] = amb[2]; r[23] = 1f;
                 // #128: PartTriMesh::Mat @0x450960's remaining two instance terms, live. Lit-only because
                 // the decompile guards its three SetMaterialv calls behind IsEnabled(5) -- an unlit part gets
@@ -411,6 +417,9 @@ public sealed unsafe partial class AlloyRenderer
                     for (int t = 0; t < MapSlots; t++) hh[1 + t] = HandleFor(slotTid[t]);
                 }
             }
+            if (FrameDump.Capturing)
+                FrameDump.Row_(cls, lit, v, _oMat[i], mode, feat, dis, blend, slots, merge,
+                               idxCount, _dOff[n], _dBase[n], r);
             _gLen[groups - 1]++;
             n++;
             // #151: an Alloy rigid INSTANCE part leaves the engine walk, and with it the walk-side shadow
@@ -434,6 +443,7 @@ public sealed unsafe partial class AlloyRenderer
             if (_gCls[g] > (byte)AlloyClass.Water && g < _gWaterEnd) _gWaterEnd = g;
         }
         _drawN = n;
+        if (dumping) FrameDump.Finish(groups, _log);
         return groups;
     }
 
@@ -464,13 +474,12 @@ public sealed unsafe partial class AlloyRenderer
                 if (p.Vao < 0 || !SkyBox.Fresh(i) || _drawN >= MaxOwned || _skyN >= MaxSkyDraws)
                 { staged = -1; break; }
                 // borrowed CAurTexture*, re-fetched per frame like every other Alloy draw
-                long aur = _getTexture(p.Mat, 0);
-                int tid = AurTex.Tid((IntPtr)aur);
-                IntPtr vdo = p.Vdo;
-                long elem = (long)*(IntPtr*)(vdo + VdoElemItems);
-                long vert = (long)*(IntPtr*)(vdo + VdoVertItems);
+                int tid = new MaterialRef(p.Mat).Texture(0).ResolveTid();
+                var vdo = new VdoRef(p.Vdo);
+                long elem = vdo.ElemItems;
+                long vert = vdo.VertItems;
                 if (tid == 0 || elem == 0 || vert == 0 || p.Item < 0
-                    || p.Item >= *(int*)(vdo + VdoElemCount) || p.Item >= *(int*)(vdo + VdoVertCount))
+                    || p.Item >= vdo.ElemCount || p.Item >= vdo.VertCount)
                 { staged = -1; break; }
                 int idxCount = *(int*)(elem + p.Item * 8 + 4);
                 if (idxCount <= 0 || !EnsureVao(p.Vao)) { staged = -1; break; }

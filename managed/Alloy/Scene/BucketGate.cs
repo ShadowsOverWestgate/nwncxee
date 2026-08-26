@@ -213,9 +213,10 @@ internal static unsafe class BucketGate
             // part by definition).
             if (_bucketId == AlphaBucket) return slot;
             if (_pState[e] != StActive || _pOwnOnly[e] || _pIncluded[e] != _gen) return slot;
-            if (*(IntPtr*)(tri + PartNode) != _pNode[e] || *(IntPtr*)(tri + PartMaterial) != _pMat[e]) return slot;
-            if (*(int*)(tri + PartTexRotate) != _pRot[e] || (IntPtr)_getTexture(_pMat[e], 0) != _pTex0[e]) return slot;
-            IntPtr tile = *(IntPtr*)(tri + PartTile);
+            PartRef p = new(tri);
+            if (p.Node.Ptr != _pNode[e] || p.Material.Ptr != _pMat[e]) return slot;
+            if (p.TexRotateBits != _pRot[e] || new MaterialRef(_pMat[e]).Texture(0).Ptr != _pTex0[e]) return slot;
+            IntPtr tile = p.Tile;
             if (tile != IntPtr.Zero && Fading(tile)) return slot;
             if (_keyhole != null && _camSlot != IntPtr.Zero)
             {

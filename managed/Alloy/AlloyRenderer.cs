@@ -569,6 +569,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         { log.Info("AlloyRenderer: stood down (lockchat)"); return; }
         // never arm on a broken contract: the misrender either predicts must not ship
         if (!SortSelfCheck(log) || !ShaderContract.SelfCheck(log)) return;
+        // NOT in the chain above: those two guard what reaches the screen, and this one guards a debug dump.
+        // A regression in the canonicaliser should cost /framedump, not drop every user back to vanilla.
+        FrameDump.SelfCheck(log);
         // #128: same rule. A wrong gob offset draws a creature at the wrong alpha and a leaky refused-gob set
         // half-owns one -- both misrenders, neither of which errors.
         if (!AlloyCensus.GobSelfCheck(log)) return;

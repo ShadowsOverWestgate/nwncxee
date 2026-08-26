@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
@@ -43,17 +44,6 @@ public sealed unsafe class BatchService : IExtenderService
     /// two booleans because the two arm the same symbols and cannot coexist; and it is config rather than a
     /// command because both decide what installs, which only happens once.</summary>
     internal const string DrawModeKey = "drawhooks", DrawModeBatch = "batch", DrawModeStats = "stats";
-
-    /// <summary>The blend-disable flag <c>RenderFlat</c> reads at mat+0x98 (Ghidra
-    /// GetTexture/GetEnvMapTID @0x4c5810/0x4c5c40; texture slots sit at mat+i*0x10).</summary>
-    private const int MatBlendFlag = 0x98;
-
-    /// <summary>The material's own env map (<c>Material::HasEnvMap</c> @0x4c6180 tests exactly this field).
-    /// It is NOT one of the numbered texture slots, so <c>GetTexture</c> never reaches it -- a group keyed on
-    /// the numbered slots alone cannot tell an env-mapped material from a plain one sharing its diffuse, and
-    /// one batched draw would then paint all of them with the representative's shine (or none of them).
-    /// Compared only, never dereferenced: a <c>CAurTexture*</c> is borrowed.</summary>
-    private const int MatEnvMap = 0x40;
 
     private const uint GlUnsignedShort = 0x1403;
 
@@ -198,7 +188,7 @@ public sealed unsafe class BatchService : IExtenderService
         }
         if (!Live || _inBucket == 0 || part == IntPtr.Zero)
         { Vanilla(part); return; }
-        IntPtr node = *(IntPtr*)(part + PartNode);
+        IntPtr node = new PartRef(part).Node.Ptr;
         if (_bucketId <= MaxCasterBucket && IsInstance(part) && CasterPass.SkinBegin(part, node))
         {
             PartDraw(part);
@@ -234,7 +224,7 @@ public sealed unsafe class BatchService : IExtenderService
         if (!Live || _inBucket == 0 || part == IntPtr.Zero || _origPartSkinDraw == null)
         { Vanilla(part); _inSkinDraw = prev; _skinDrawPart = prevPart; return; }
         _skinSeen++;
-        IntPtr node = *(IntPtr*)(part + PartNode);
+        IntPtr node = new PartRef(part).Node.Ptr;
         bool bracket = _bucketId <= MaxCasterBucket && IsInstance(part)
                        && CasterPass.SkinBegin(part, node);
         PartDraw(part);
@@ -247,6 +237,18 @@ public sealed unsafe class BatchService : IExtenderService
     /// pose (the bone solve lives in <c>PartSkin::Draw</c> alone), and every "fall back to vanilla" branch in
     /// this service is one place that could do it. So the choice is made once, here.</summary>
     private static void Vanilla(IntPtr part)
+    {
+        if (_timing)
+        {
+            long t0 = Stopwatch.GetTimestamp();
+            VanillaBody(part);
+            _vanTicks += Stopwatch.GetTimestamp() - t0;
+            return;
+        }
+        VanillaBody(part);
+    }
+
+    private static void VanillaBody(IntPtr part)
     {
         // Keyed on the PART, not merely on the window. "PartSkin::Draw never enters PartTriMesh::Draw" is an
         // RE claim, and the code cannot check it -- but it does not have to depend on it either. If some
@@ -288,7 +290,7 @@ public sealed unsafe class BatchService : IExtenderService
         _skinForce = true; _skinPosed = false;
         bool prev = _inSkinDraw; IntPtr prevPart = _skinDrawPart;
         _inSkinDraw = true; _skinDrawPart = part;
-        IntPtr node = *(IntPtr*)(part + PartNode);
+        IntPtr node = new PartRef(part).Node.Ptr;
         // The caster pass wants the same solved pose, and this is now the only place in the frame it is
         // live: the iterator suppresses the engine's own draw of an Alloy skinmesh.
         bool bracket = CasterPass.SkinBegin(part, node);
@@ -301,8 +303,43 @@ public sealed unsafe class BatchService : IExtenderService
         return _skinPosed;
     }
 
+    /// <summary>#194: the entry-read timer. OFF by default and toggled by <c>/batchtime</c>, because the two
+    /// <c>Stopwatch.GetTimestamp</c> pairs cost ~20ns each and this hook fires once per part per frame --
+    /// measuring it costs more than the thing measured is suspected of costing.
+    /// <para>What it isolates is the QUESTION the ticket asks and nothing else: the time
+    /// <see cref="PartDrawBody"/> spends reading its own table, with the engine's draw subtracted out.
+    /// Timing the hook whole would have measured <c>PartTriMesh::Draw</c>, which is orders of magnitude
+    /// larger and would have answered "no" to every layout regardless of the layout.</para></summary>
+    internal static bool _timing;
+    private static long _pdTicks, _vanTicks, _pdCalls;
+    /// <summary>Frames the timer has actually accumulated over. NOT <c>LogEvery</c>: the toggle zeroes the
+    /// counters mid-window, so dividing a partial window by the full one under-reports ms/frame by up to
+    /// 900x -- and it is the FIRST line anyone reads.</summary>
+    private static int _pdFrames;
+
+    /// <summary>Toggle the entry-read timer, reported on the next <c>[batch]</c> line.</summary>
+    internal static string BatchTime()
+    {
+        _timing = !_timing;
+        _pdTicks = 0; _vanTicks = 0; _pdCalls = 0; _pdFrames = 0;
+        return _timing
+            ? $"[batchtime] on -- PartDraw entry-read time on the next [batch] line (every {LogEvery} frames)"
+            : "[batchtime] off";
+    }
+
     private static void PartDraw(IntPtr part)
     {
+        if (!_timing) { PartDrawBody(part); return; }
+        long t0 = Stopwatch.GetTimestamp(), v0 = _vanTicks;
+        PartDrawBody(part);
+        // Minus whatever Vanilla spent inside, read as a DELTA so a nested vanilla draw is subtracted once.
+        _pdTicks += Stopwatch.GetTimestamp() - t0 - (_vanTicks - v0);
+        _pdCalls++;
+    }
+
+    private static void PartDrawBody(IntPtr part)
+    {
+        var p = new PartRef(part);
         int e = Find(part);
         if (e < 0) { Record(part); return; }
 
@@ -312,13 +349,13 @@ public sealed unsafe class BatchService : IExtenderService
 
         if (_pState[e] == StProbe)
         {
-            if (_pNode[e] != *(IntPtr*)(part + PartNode) || _pMat[e] != *(IntPtr*)(part + PartMaterial)
-                || HashMatrix((float*)(_pNode[e] + NodeMatrix)) != _pMxHash[e])
+            if (_pNode[e] != p.Node.Ptr || _pMat[e] != p.Material.Ptr
+                || HashMatrix(new NodeRef(_pNode[e]).Matrix) != _pMxHash[e])
             { Die(e, "probation-moved"); Vanilla(part); _vanDead++; return; }
             Complete(part, e);
             return;
         }
-        if (_pState[e] == StStale && _pNode[e] == *(IntPtr*)(part + PartNode) && _pMat[e] == *(IntPtr*)(part + PartMaterial))
+        if (_pState[e] == StStale && _pNode[e] == p.Node.Ptr && _pMat[e] == p.Material.Ptr)
         {
             // Repack moved this VDO's items: recapture (item index + prim) through the funnel during a
             // vanilla draw; the entry keeps its group (Repack changes layout, not content/textures)
@@ -332,7 +369,7 @@ public sealed unsafe class BatchService : IExtenderService
             _vanDead++;
             return;
         }
-        if (_pState[e] != StActive || _pNode[e] != *(IntPtr*)(part + PartNode) || _pMat[e] != *(IntPtr*)(part + PartMaterial))
+        if (_pState[e] != StActive || _pNode[e] != p.Node.Ptr || _pMat[e] != p.Material.Ptr)
         {
             // recycled pointer or known-unbatchable: vanilla (identity mismatch also permanently kills it)
             if (_pState[e] == StActive) Die(e, "identity-changed");
@@ -354,22 +391,22 @@ public sealed unsafe class BatchService : IExtenderService
         // still BE identity-class -- any transition (mover) permanently demotes
         if (_pMx[e])
         {
-            float* live = (float*)(node + NodeMatrix);
+            float* live = new NodeRef(node).Matrix;
             int gm = _pGroup[e] * 16;
             for (int f = 0; f < 16; f++)
                 if (_gMatrix[gm + f] != live[f])
                 { Die(e, "matrix-moved"); Vanilla(part); _vanDead++; return; }
         }
-        else if ((*(byte*)(node + NodeFlags) & 0x1e) != 0 || IsInstance(part))
+        else if (new NodeRef(node).MatrixClass || IsInstance(part))
         { Die(e, "became-matrix-class"); Vanilla(part); _vanDead++; return; }
         // #134: same read as the old `shaped` skin term, same correction -- an instance carries per-draw
         // state (alpha, colour, self-illum) that a replayed multidraw cannot vary, so THIS service still
         // never batches one. The Alloy pass takes them instead, one draw record each.
         bool dirty = IsInstance(part) || _canDissolve != 0;
-        IntPtr tile = *(IntPtr*)(part + PartTile);
+        IntPtr tile = p.Tile;
         if (tile != IntPtr.Zero && Fading(tile)) dirty = true;
         // animated/cycled diffuse texture or re-rotated tile: content no longer matches the group -> vanilla
-        if ((IntPtr)_getTexture(_pMat[e], 0) != _pTex0[e] || *(int*)(part + PartTexRotate) != _pRot[e])
+        if (new MaterialRef(_pMat[e]).Texture(0).Ptr != _pTex0[e] || p.TexRotateBits != _pRot[e])
         { Die(e, "texture-or-rotation-changed"); Vanilla(part); _vanDead++; return; }
         _pDirty[e] = dirty;
 
@@ -431,7 +468,7 @@ public sealed unsafe class BatchService : IExtenderService
         {
             CasterPass.SkinObserve(vdo, (int)item, prim);
             int e = _capture;
-            if (_pVdo[e] != IntPtr.Zero || vdo == IntPtr.Zero || *(int*)(vdo + VdoMode) != 1)
+            if (_pVdo[e] != IntPtr.Zero || vdo == IntPtr.Zero || new VdoRef(vdo).Mode != 1)
                 Die(e, "multidraw-or-unindexed");                              // multi-draw part / non-indexed VDO
             else
             {
@@ -439,9 +476,10 @@ public sealed unsafe class BatchService : IExtenderService
                 if (_capDiagLeft > 0)
                 {   // one-shot: prove the table-derived range matches the engine's own draw args (#81 crash triage)
                     _capDiagLeft--;
-                    long el = (long)*(IntPtr*)(vdo + VdoElemItems);
+                    var v = new VdoRef(vdo);
+                    long el = v.ElemItems;
                     int it = (int)item;
-                    string tab = el != 0 && it < *(int*)(vdo + VdoElemCount)
+                    string tab = el != 0 && it < v.ElemCount
                         ? $"count={*(int*)(el + it * 8 + 4)} byteOff={(long)(uint)*(int*)(el + it * 8) * 2}"
                         : "tables unavailable";
                     _log?.Info($"BatchService: capture-diag vdo=0x{(ulong)vdo:x} item={item} prim={prim} engineArgs size={size} offset={offset} vs table {tab}");
@@ -455,9 +493,10 @@ public sealed unsafe class BatchService : IExtenderService
         int g = _pending;
         _pending = -1;                                            // one submit per trigger
         IntPtr gvdo = _gVdo[g];
-        long elem = (long)*(IntPtr*)(gvdo + VdoElemItems);
-        long vert = (long)*(IntPtr*)(gvdo + VdoVertItems);
-        int nElem = *(int*)(gvdo + VdoElemCount), nVert = *(int*)(gvdo + VdoVertCount);
+        var gv = new VdoRef(gvdo);
+        long elem = gv.ElemItems;
+        long vert = gv.VertItems;
+        int nElem = gv.ElemCount, nVert = gv.VertCount;
         if (elem == 0 || vert == 0) return;
         int k = 0;
         int m0 = _gFirst[g];
@@ -490,15 +529,16 @@ public sealed unsafe class BatchService : IExtenderService
     /// through the funnel while its vanilla draw runs, then bind it to a group. Cold (once per part).</summary>
     private static void Record(IntPtr part)
     {
-        IntPtr node = *(IntPtr*)(part + PartNode);
-        IntPtr mat = *(IntPtr*)(part + PartMaterial);
+        var p = new PartRef(part);
+        IntPtr node = p.Node.Ptr;
+        IntPtr mat = p.Material.Ptr;
         // phase 2: matrix-path parts (placeables) qualify too -- the model matrix joins the group key and
         // any later change (door opens, creature moves, billboard) permanently demotes to vanilla.
         // #134: BOTH halves of RenderDrawBucket's matrix condition, not just the flags. An instance is
         // transformed by SetModelMatrix(vp+0x18) exactly as a flagged part is, so calling one matrix-class
         // and not the other would draw every gob at the world origin.
         bool mx = node != IntPtr.Zero
-                  && ((*(byte*)(node + NodeFlags) & 0x1e) != 0 || IsInstance(part));
+                  && (new NodeRef(node).MatrixClass || IsInstance(part));
         // #135: dangly parts are recorded like any other. The exclusion assumed the CPU re-solve invalidated
         // a (VDO, item) capture; it does not -- see IsDangly for where the solve runs and what it writes.
         bool shaped = node != IntPtr.Zero && mat != IntPtr.Zero
@@ -510,7 +550,7 @@ public sealed unsafe class BatchService : IExtenderService
                   // refusal everywhere ELSE: outside draw bucket 6 a bumpy-shiny material means the engine
                   // did NOT route it to water (g_nEnableBumpyWater off), and the Alloy pass has no answer for
                   // whatever it did route it to.
-                  && (_hasBumpyShiny(mat) == 0 || _bucketId == AlloyRenderer.WaterBucket);
+                  && (!Engine.HasBumpyShiny(new MaterialRef(mat)) || _bucketId == AlloyRenderer.WaterBucket);
         // #126: opacity no longer decides whether a part is RECORDED, only whether this batcher may submit
         // it. The transparent classes are what the Alloy pass enrolls from, and it can only enroll what the
         // capture tables hold. Bucket 8 joins them by position rather than by opacity: the engine has already
@@ -521,12 +561,12 @@ public sealed unsafe class BatchService : IExtenderService
         // the engine's own bucket-6 walk -- under fswater's per-part state, on exactly the fallback frames
         // where the Alloy pass has handed water back. Own-only instead: still captured, still enrollable,
         // and Vanilla on every frame the Alloy pass does not draw it.
-        bool ok = shaped && _isOpaque(part) != 0 && _bucketId != AlphaBucket
+        bool ok = shaped && Engine.IsOpaque(p) && _bucketId != AlphaBucket
                   && _bucketId != AlloyRenderer.WaterBucket;
         int e = Insert(part);
         if (e < 0) { Vanilla(part); return; }                // table full -> vanilla forever
         _pNode[e] = node; _pMat[e] = mat; _pMx[e] = mx; _pVdo[e] = IntPtr.Zero; _pSeen[e] = _frame;
-        _pGob[e] = *(IntPtr*)(part + PartGob);
+        _pGob[e] = p.Gob.Ptr;
         _pSkin[e] = _inSkinDraw;
         if (_pGob[e] != IntPtr.Zero) _pInstRecorded++;
         // #137: ...and a skinmesh is Alloy-only WHATEVER else is true of it. The doc says a skinned part is
@@ -555,7 +595,7 @@ public sealed unsafe class BatchService : IExtenderService
             // probation: a matrix-path part must show a bit-stable matrix on two sightings before it gets
             // a group -- else every flagged part that turns out to be a mover would mint a dead one-member
             // group (table spam)
-            _pMxHash[e] = HashMatrix((float*)(node + NodeMatrix));
+            _pMxHash[e] = HashMatrix(new NodeRef(node).Matrix);
             _pState[e] = StProbe;
             Vanilla(part);
             return;
@@ -607,22 +647,24 @@ public sealed unsafe class BatchService : IExtenderService
         { if (_pVdo[e] == IntPtr.Zero) _recNoCap++; else _recBadVdo++; Die(e, _pVdo[e] == IntPtr.Zero ? "no-capture" : "bad-vdo"); return; }
 
         int prim = _pPrim[e];
-        int hint = _getRenderHint(part);
+        var pr = new PartRef(part);
+        var mr = new MaterialRef(mat);
+        int hint = Engine.RenderHint(pr);
         // material content: texture slots (equality only -- CAurTexture* are borrowed, never deref'd),
         // shared-material override, and the blend-disable flag RenderFlat reads at mat+0x98
-        IntPtr t0 = (IntPtr)_getTexture(mat, 0), t1 = (IntPtr)_getTexture(mat, 1),
-               t2 = (IntPtr)_getTexture(mat, 2), t3 = (IntPtr)_getTexture(mat, 3);
-        IntPtr shared = *(IntPtr*)(mat + MatShared);
-        IntPtr env = *(IntPtr*)(mat + MatEnvMap);
-        byte flag = *(byte*)(mat + MatBlendFlag);
+        IntPtr t0 = mr.Texture(0).Ptr, t1 = mr.Texture(1).Ptr,
+               t2 = mr.Texture(2).Ptr, t3 = mr.Texture(3).Ptr;
+        IntPtr shared = mr.Shared.Ptr;
+        IntPtr env = mr.EnvMap;
+        byte flag = mr.BlendFlag;
         bool light = flag == 0;
-        int rot = *(int*)(part + PartTexRotate);
+        int rot = pr.TexRotateBits;
         bool mx = _pMx[e];
         // #128: a MOVER's transform is not part of its group key -- it changes every frame, so keying on it
         // would mint one group per part per pose and exhaust the table. The flag itself IS in the key, which
         // is what keeps a mover out of a static group whose frozen matrix a replayed multidraw would apply.
         bool mover = IsInstance(part);
-        float* liveM = (float*)(node + NodeMatrix);
+        float* liveM = new NodeRef(node).Matrix;
         // The group key, hashed and interned. This was a linear walk of _groupCount until the caps were
         // raised for object-dense areas: O(n^2) across an area load, which is 24M field compares at the 7000
         // groups that used to be the ceiling and 13.4 BILLION at 163840 -- minutes of hung load, i.e. the
@@ -689,6 +731,7 @@ public sealed unsafe class BatchService : IExtenderService
         // an ordinary frame.
         if (_partCount >= MaxParts - MaxParts / 4 || _groupCount >= MaxGroups - MaxGroups / 8)
             OnTablePressure();
+        if (_timing) _pdFrames++;
         if (++_frame % LogEvery != 0) return;
         int members = 0, solo = 0;
         for (int i = 0; i < _groupCount; i++) { members += _gCount[i]; if (_gCount[i] < 2) solo++; }
@@ -710,9 +753,17 @@ public sealed unsafe class BatchService : IExtenderService
                    // Alloy pass took from one it could not solve.
                    (_origPartSkinDraw == null ? " | skinned: no hook"
                       : $" | skinned: {(float)_skinSeen / LogEvery:F1} draws/frame, " +
-                        $"{(float)_skinForced / LogEvery:F1} poses forced ({_skinForceFailed} unsolved)"));
+                        $"{(float)_skinForced / LogEvery:F1} poses forced ({_skinForceFailed} unsolved)")
+                   // #194: the parallel-array question, as a number. ns/call is the per-part entry read;
+                   // ms/frame is what a struct-of-arrays -> array-of-structs conversion could win at most.
+                   + (!_timing || _pdCalls == 0 ? ""
+                      : $" | entry reads: {(float)_pdCalls / _pdFrames:F0}/frame at " +
+                        $"{_pdTicks * 1e9d / Stopwatch.Frequency / _pdCalls:F0}ns = " +
+                        $"{_pdTicks * 1e3d / Stopwatch.Frequency / _pdFrames:F3}ms/frame" +
+                        $" over {_pdFrames} frames"));
         _batched = 0; _calls = 0; _skipped = 0; BucketGate._iterSkip = 0; _vanSolo = 0; _vanDirty = 0; _vanDead = 0;
         _vanOwnOnly = 0; _skinSeen = 0; _skinForced = 0; _skinForceFailed = 0;
         _recNotOk = 0; _recNoCap = 0; _recBadVdo = 0; _submitTrunc = 0;
+        _pdTicks = 0; _vanTicks = 0; _pdCalls = 0; _pdFrames = 0;
     }
 }

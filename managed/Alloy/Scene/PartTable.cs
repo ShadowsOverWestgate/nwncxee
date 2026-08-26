@@ -104,6 +104,12 @@ internal static unsafe class PartTable
     }
 
     // part entries: open-address hash on part pointer, parallel arrays, no allocation
+    //
+    // #194: the layout is struct-of-arrays, and the dominant reader is NOT a sweep -- PartDraw touches
+    // ~10 columns of ONE entry, once per part per frame, which is ~10 cache lines where an array of structs
+    // would touch one or two. Whether that is visible is a measurement, not an argument: /batchtime puts the
+    // entry-read time (the engine's own draw subtracted out) on the [batch] line. Convert to PartEntry[] if
+    // it shows; record the number here and leave it alone if it does not.
     internal const byte StEmpty = 0, StCapturing = 1, StActive = 2, StDead = 3, StStale = 4, StProbe = 5;
     internal static readonly IntPtr[] _pPart = new IntPtr[MaxParts];
     internal static readonly IntPtr[] _pNode = new IntPtr[MaxParts];
@@ -237,12 +243,12 @@ internal static unsafe class PartTable
     internal static bool IsDangly(IntPtr part)
     {
         if (_danglyVtbl == IntPtr.Zero || part == IntPtr.Zero) return false;
-        return *(IntPtr*)part == _danglyVtbl;
+        return new PartRef(part).Vtbl == _danglyVtbl;
     }
 
     internal static bool IsInstance(IntPtr part)
     {
-        return part != IntPtr.Zero && *(IntPtr*)(part + PartGob) != IntPtr.Zero;
+        return new PartRef(part).IsInstance;
     }
 
     /// <summary>#145: is this entry still a live recording of <paramref name="part"/>? Pointer identity is
@@ -296,7 +302,7 @@ internal static unsafe class PartTable
     /// past the end of a fade would otherwise come back as a negative alpha.</summary>
     internal static float TileFadeFactor(IntPtr tri)
     {
-        IntPtr tile = *(IntPtr*)(tri + PartTile);
+        IntPtr tile = new PartRef(tri).Tile;
         if (tile == IntPtr.Zero) return 1f;
         float f = *(float*)(tile + TileFade);
         return f >= 1f ? 1f : f > 0f ? f : 0f;

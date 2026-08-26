@@ -125,8 +125,8 @@ internal static unsafe class AlloyCensus
     internal static bool IsWater(IntPtr mat, IntPtr shared)
     {
         if (mat == IntPtr.Zero) return false;
-        if (_bumpyWater != null && *_bumpyWater != 0 && _hasBumpyShiny(mat) != 0) return true;
-        return shared != IntPtr.Zero && *(int*)(shared + SharedSampleFb) == SampleFbWater;
+        if (_bumpyWater != null && *_bumpyWater != 0 && Engine.HasBumpyShiny(new MaterialRef(mat))) return true;
+        return shared != IntPtr.Zero && new SharedRef(shared).SampleFb == SampleFbWater;
     }
 
     /// <summary><c>sample_framebuffer</c>'s two values: 1 routes to draw bucket 5 (refraction glass), 2 to
@@ -190,8 +190,8 @@ internal static unsafe class AlloyCensus
     internal static bool WatchAccepted(int e, IntPtr mat)
     {
         if (_dumpTex == null || mat == IntPtr.Zero) return false;
-        IntPtr t = (IntPtr)_getTexture(mat, 0);
-        if (t == IntPtr.Zero || !TexName(t).Contains(_dumpTex, System.StringComparison.OrdinalIgnoreCase))
+        TextureRef t = new MaterialRef(mat).Texture(0);
+        if (t.IsNull || !t.ResolveName().Contains(_dumpTex, System.StringComparison.OrdinalIgnoreCase))
             return false;
         if (_watchEntry < 0) _watchEntry = e;
         WatchTex[e] = true;
@@ -227,7 +227,7 @@ internal static unsafe class AlloyCensus
             // branch already does, on a part that drew within the frame. The multi-draw case this mark exists
             // for passes it unchanged.
             if (!_ownDry && _pGob[e] != IntPtr.Zero && _pSeen[e] >= _frame - 1
-                && _pPart[e] != IntPtr.Zero && *(IntPtr*)(_pPart[e] + PartGob) == _pGob[e])
+                && _pPart[e] != IntPtr.Zero && new PartRef(_pPart[e]).Gob.Ptr == _pGob[e])
                 OwnRefuse(0, _pGob[e]);
             return Gate("state");
         }
@@ -244,10 +244,11 @@ internal static unsafe class AlloyCensus
         // Alloy block draws the whole table in one go, so one foreign part is area geometry in a portrait.
         if (_gScene[g] != _ownScene) { Bump(ref _ownRejScene); return Gate("scene"); }
         IntPtr v = _pVdo[e], mat = _pMat[e], part = _pPart[e];
+        var p = new PartRef(part); var m = new MaterialRef(mat); var vd = new VdoRef(v);
         // Published the moment the part is in hand, and kept through every refusal from here down: creature
         // colour is all-owned-or-none per instance (#107/#128), so a refusal has to be attributable to its
         // gob. The gates ABOVE this line need no attribution -- a stale or foreign-scene part is not drawing.
-        c.Gob = *(IntPtr*)(part + PartGob);
+        c.Gob = p.Gob.Ptr;
         // A SharedMaterial is NOT a reason to hand a part back. Ghidra Material::GetTexture @0x4c5810
         // resolves every slot through it already (shared+0xd8+i*0x10+8, else the material's own), so the
         // texture we captured is the right one. All it adds on top is a custom shader program
@@ -257,7 +258,8 @@ internal static unsafe class AlloyCensus
         // in the Alloy program, so they are exact too. What is left over is still approximated with the
         // generic lit program -- the deliberate trade, one renderer on screen beats a correct half -- and the
         // three-way split is what says how much of it there is, and which shaders.
-        IntPtr shared = *(IntPtr*)(mat + MatShared);
+        var s = m.Shared;
+        IntPtr shared = s.Ptr;
         // #126: sample_framebuffer and volumetric reject on the MATERIAL, ahead of everything else, because
         // they are the two classes the Alloy pass has no answer for: the first is buckets 5/6 (refraction
         // glass and water, both of which read a framebuffer copy this pass does not take yet), and the second
@@ -268,26 +270,25 @@ internal static unsafe class AlloyCensus
         // water (bucket 6), and Scene::AddPartsTreeToDrawBuckets @0x460880 branches on exactly that.
         bool water = IsWater(mat, shared);
         if (water) NoteWaterMaterial(mat, shared);
-        if (shared != IntPtr.Zero
-            && ((*(int*)(shared + SharedSampleFb) != 0 && !water) || *(byte*)(shared + SharedVolumetric) != 0))
+        if (!s.IsNull && ((s.SampleFb != 0 && !water) || s.Volumetric))
         { Bump(ref _ownRejFbSample); return Gate("fb/volumetric"); }
         // ...and the classification itself, which from here on is what a refusal is counted AGAINST: the
         // blended class is all-owned-or-none (#107 s2), so every gate below has to say which class it ate.
-        c.Src = *(int*)(mat + MatSrcBlend); c.Dst = *(int*)(mat + MatDstBlend);
+        c.Src = m.SrcBlend; c.Dst = m.DstBlend;
         // The cap bucket overrides the material: RenderSinglePass draws bucket 7 with Disable(0) and
         // Disable(1) -- blending and the alpha discard both off -- so a cap is an opaque draw whatever its
         // material declares.
         c.Cls = _gBucket[g] == CapBucket ? (int)AlloyClass.Opaque
-              : (int)AlloyClasses.Of(water, c.Dst == BlendOne, _isOpaque(part) != 0,
-                    shared != IntPtr.Zero && *(byte*)(shared + SharedTransparency) != 0,
-                    *(float*)(part + PartAlpha) < 1f);
+              : (int)AlloyClasses.Of(water, c.Dst == BlendOne, Engine.IsOpaque(p),
+                    !s.IsNull && s.Transparency,
+                    p.Alpha < 1f);
         if (!_ownDry) _ownByClass[c.Cls]++;
-        if (v == IntPtr.Zero || *(int*)(v + VdoMode) != 1 || _pTex0[e] == IntPtr.Zero)
+        if (v == IntPtr.Zero || vd.Mode != 1 || _pTex0[e] == IntPtr.Zero)
         { Refuse(ref _ownRejVdo, c); return Gate("vdo"); }
         c.Feat = 0;
-        if (shared != IntPtr.Zero)
+        if (!s.IsNull)
         {
-            byte* vs = (byte*)(shared + SharedVsName);
+            byte* vs = s.VsName;
             if (*vs == 0) Bump(ref _ownSharedPlain);
             else if ((c.Feat = Classify(vs)) != 0) Bump(ref _ownSharedFeature);
             else { Bump(ref _ownSharedShader); if (!_ownDry) NoteUnknown(vs); }
@@ -300,14 +301,14 @@ internal static unsafe class AlloyCensus
         // Slots 1/2 are the normal and spec/roughness maps of the fslit_nm/_sm variants. #120 made the owned
         // lit stage read them (and slots 3/4/5) rather than bind slot 0 alone, so this is now a coverage
         // count of how much of the Alloy set is PBR content -- never a reason to reject.
-        if (_getTexture(mat, 1) != 0 || _getTexture(mat, 2) != 0) Bump(ref _ownWithMaps);
+        if (!m.Texture(1).IsNull || !m.Texture(2).IsNull) Bump(ref _ownWithMaps);
         // #128: the engine's own routing condition, both halves -- PartTriMesh::Draw @0x4513d0 takes
         // RenderEnvironmentMapped when EITHER the instance overrides the env map or the material declares one.
-        c.Env = _hasEnvMap(mat) != 0 || GobHasEnvMap(c.Gob);
+        c.Env = Engine.HasEnvMap(m) || GobHasEnvMap(c.Gob);
         if (c.Env) Bump(ref _ownWithEnv);
-        long elem = (long)*(IntPtr*)(v + VdoElemItems);
+        long elem = vd.ElemItems;
         int it = _pItem[e];
-        if (elem == 0 || it < 0 || it >= *(int*)(v + VdoElemCount) || it >= *(int*)(v + VdoVertCount))
+        if (elem == 0 || it < 0 || it >= vd.ElemCount || it >= vd.VertCount)
         { Refuse(ref _ownRejItem, c); return Gate("item"); }
         if (*(int*)(elem + it * 8 + 4) <= 0) { Refuse(ref _ownRejItem, c); return Gate("item-range"); }
 
@@ -380,13 +381,16 @@ internal static unsafe class AlloyCensus
     /// record stages ambient.w as 1. Fold it into that slot if instanced content ever reads too shiny.</para></para>
     /// Cold at enrollment, hot once per Alloy part per frame via <see cref="InstanceOwnable"/>.</summary>
     internal static bool GobUnownable(IntPtr gob)
-        => *(byte*)(gob + GobHighlight) != 0 || *(byte*)(gob + GobSceneTint) != 0;
+    {
+        var g = new GobRef(gob);
+        return g.Highlight || g.SceneTint;
+    }
 
     /// <summary>Does this instance override the env map (<c>gob+0x480</c>)? The engine's own routing test in
     /// <c>PartTriMesh::Draw</c> @0x4513d0, ORed with the material's own -- either one sends the draw through
     /// <c>RenderEnvironmentMapped</c>, and the Alloy pass answers both the same way.</summary>
     internal static bool GobHasEnvMap(IntPtr gob)
-        => gob != IntPtr.Zero && *(IntPtr*)(gob + GobEnvOverride) != IntPtr.Zero;
+        => gob != IntPtr.Zero && new GobRef(gob).EnvOverride != IntPtr.Zero;
 
     /// <summary>The instance's live alpha multiplier: <c>PartTriMesh::Mat</c>'s two multiplies onto
     /// <c>part+0xa0</c>, armed by <c>gob+0xf6</c> and by bit 3 of the owner byte at <c>*(gob+0x68)+0x8e</c>.
@@ -394,12 +398,12 @@ internal static unsafe class AlloyCensus
     /// transparent run for as little as a single frame, which is why #128 could not cache opacity.</summary>
     internal static float GobAlphaMul(IntPtr part)
     {
-        IntPtr gob = *(IntPtr*)(part + PartGob);
-        if (gob == IntPtr.Zero) return 1f;
-        float a = *(short*)(gob + GobColourMul) != 0 ? *(float*)(gob + GobAlpha) : 1f;
-        IntPtr owner = *(IntPtr*)(gob + GobFadeOwner);
-        if (owner != IntPtr.Zero && (*(byte*)(owner + GobOwnerFlags) & GobOwnerFadeBit) != 0)
-            a *= *(float*)(gob + GobFadeAlpha);
+        GobRef gob = new PartRef(part).Gob;
+        if (gob.IsNull) return 1f;
+        float a = gob.ColourMulArmed ? gob.Alpha : 1f;
+        GobRef owner = gob.FadeOwner;
+        if (!owner.IsNull && owner.OwnerFades)
+            a *= gob.FadeAlpha;
         return a;
     }
 
@@ -407,9 +411,9 @@ internal static unsafe class AlloyCensus
     /// the same <c>gob+0xf6</c>. A component-wise product, so the identity is (1,1,1).</summary>
     internal static System.Numerics.Vector3 GobDiffuseMul(IntPtr part)
     {
-        IntPtr gob = *(IntPtr*)(part + PartGob);
-        if (gob == IntPtr.Zero || *(short*)(gob + GobColourMul) == 0) return System.Numerics.Vector3.One;
-        float* c = (float*)(gob + GobColour);
+        GobRef gob = new PartRef(part).Gob;
+        if (gob.IsNull || !gob.ColourMulArmed) return System.Numerics.Vector3.One;
+        float* c = gob.Colour;
         return new System.Numerics.Vector3(c[0], c[1], c[2]);
     }
 
@@ -417,9 +421,9 @@ internal static unsafe class AlloyCensus
     /// is zero -- getting that backwards paints every plain instance white.</summary>
     internal static System.Numerics.Vector3 GobEmissiveAdd(IntPtr part)
     {
-        IntPtr gob = *(IntPtr*)(part + PartGob);
-        if (gob == IntPtr.Zero || *(short*)(gob + GobSelfIllum) == 0) return default;
-        float* e = (float*)(gob + GobEmissive);
+        GobRef gob = new PartRef(part).Gob;
+        if (gob.IsNull || !gob.SelfIllumArmed) return default;
+        float* e = gob.Emissive;
         return new System.Numerics.Vector3(e[0], e[1], e[2]);
     }
 
@@ -430,7 +434,7 @@ internal static unsafe class AlloyCensus
     /// walk draws it highlighted. Revoking would spend a full re-enrollment on a hover.</para></summary>
     internal static bool InstanceOwnable(IntPtr part)
     {
-        IntPtr gob = *(IntPtr*)(part + PartGob);
+        IntPtr gob = new PartRef(part).Gob.Ptr;
         return gob == IntPtr.Zero || !GobUnownable(gob);
     }
 
@@ -464,7 +468,8 @@ internal static unsafe class AlloyCensus
         // Caster enrollment runs at the present with no Scene in hand, hence the flag rather than a comparison.
         if (!_gWorld[g]) return false;
         IntPtr v = _pVdo[e], part = _pPart[e];
-        if (v == IntPtr.Zero || *(int*)(v + VdoMode) != 1) return false;
+        var p = new PartRef(part); var vd = new VdoRef(v);
+        if (v == IntPtr.Zero || vd.Mode != 1) return false;
         // #126 follow-up -- the cutout caster. "Opaque geometry casts, transparent geometry does not" was
         // the vanilla-shaped rule, and vanilla only ever cast authored stencil volumes, so foliage cast
         // NOTHING and the question never came up. A rasterizing caster pass can do better: the 0.2 cutout
@@ -475,21 +480,22 @@ internal static unsafe class AlloyCensus
         //   Blended -- does not cast. A binary shadow map can only say "fully shadowed" about a surface that
         //              is by definition partly see-through; that wants transmittance (M4), not a lie.
         //   Additive-- does not cast. It emits light.
-        IntPtr mat = _pMat[e], shared = mat == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(mat + MatShared);
-        if (shared != IntPtr.Zero
-            && (*(int*)(shared + SharedSampleFb) != 0 || *(byte*)(shared + SharedVolumetric) != 0)) return false;
-        bool env = mat != IntPtr.Zero && _hasEnvMap(mat) != 0;
-        var cls = mat == IntPtr.Zero ? AlloyClass.Opaque
+        IntPtr mat = _pMat[e];
+        var m = new MaterialRef(mat);
+        var s = m.Shared;
+        if (!s.IsNull && (s.SampleFb != 0 || s.Volumetric)) return false;
+        bool env = !m.IsNull && Engine.HasEnvMap(m);
+        var cls = m.IsNull ? AlloyClass.Opaque
                 // ...never water: the sample_framebuffer refusal above already sent it back, and bucket 6 is
                 // above MaxCasterBucket anyway, so nothing in the water class reaches the caster pass.
                 : AlloyClasses.Of(false,
-                                         *(int*)(mat + MatDstBlend) == BlendOne, _isOpaque(part) != 0,
-                      shared != IntPtr.Zero && *(byte*)(shared + SharedTransparency) != 0,
-                      *(float*)(part + PartAlpha) < 1f);
+                                         m.DstBlend == BlendOne, Engine.IsOpaque(p),
+                      !s.IsNull && s.Transparency,
+                      p.Alpha < 1f);
         if (cls != AlloyClass.Opaque && cls != AlloyClass.Cutout) return false;
-        long elem = (long)*(IntPtr*)(v + VdoElemItems);
+        long elem = vd.ElemItems;
         int it = _pItem[e];
-        if (elem == 0 || it < 0 || it >= *(int*)(v + VdoElemCount) || it >= *(int*)(v + VdoVertCount)) return false;
+        if (elem == 0 || it < 0 || it >= vd.ElemCount || it >= vd.VertCount) return false;
         if (*(int*)(elem + it * 8 + 4) <= 0) return false;
 
         c.Tri = part; c.Node = _pNode[e]; c.Mat = _pMat[e]; c.Vdo = v;
@@ -521,16 +527,16 @@ internal static unsafe class AlloyCensus
     internal static bool HasUnportedShader(IntPtr mat)
     {
         if (mat == IntPtr.Zero) return false;
-        IntPtr shared = *(IntPtr*)(mat + MatShared);
-        if (shared == IntPtr.Zero) return false;
+        SharedRef s = new MaterialRef(mat).Shared;
+        if (s.IsNull) return false;
         // The VS name decides when there is one -- that is #123's model, and a recognised feature covers
         // its fragment half by construction. What the VS test alone MISSES is a .mtr that names only
         // customShaderFS (+0x199, the next resref slot after +0x188 per SharedMaterial::ParseField
         // @0x4c6760): none of the seven features is authored that way, so an FS with no VS is a custom
         // program by definition -- and the black sky is a fragment shader.
-        byte* vs = (byte*)(shared + SharedVsName);
+        byte* vs = s.VsName;
         if (*vs != 0) return Classify(vs) == 0;
-        return *(byte*)(shared + SharedFsName) != 0;
+        return s.HasFs;
     }
 
     /// <summary>#123: match a SharedMaterial's <c>customShaderVS</c> resref against the seven the owned
@@ -881,14 +887,16 @@ internal static unsafe class AlloyCensus
     internal static string GobTerms(IntPtr gob)
     {
         if (gob == IntPtr.Zero) return "gobmod=-";
-        IntPtr owner = *(IntPtr*)(gob + GobFadeOwner);
+        var g = new GobRef(gob);
+        IntPtr owner = g.FadeOwner.Ptr;
+        // the flag fields print their VALUE, so they stay raw: GobRef's bool would print "hlTrue" for "hl1"
         return $"gobmod=hl{*(byte*)(gob + GobHighlight)}/tint{*(byte*)(gob + GobSceneTint)}" +
                $"/col{*(short*)(gob + GobColourMul)}/emi{*(short*)(gob + GobSelfIllum)}" +
-               $"/env{(*(IntPtr*)(gob + GobEnvOverride) != IntPtr.Zero ? 1 : 0)}" +
+               $"/env{(g.EnvOverride != IntPtr.Zero ? 1 : 0)}" +
                $"/own{(owner == IntPtr.Zero ? -1 : *(byte*)(owner + GobOwnerFlags) & GobOwnerFadeBit)}" +
-               $" gmul=a{*(float*)(gob + GobAlpha):0.00}/a2{*(float*)(gob + GobFadeAlpha):0.00}" +
-               $" gcol={*(float*)(gob + GobColour):0.00},{*(float*)(gob + GobColour + 4):0.00},{*(float*)(gob + GobColour + 8):0.00}" +
-               $" gemi={*(float*)(gob + GobEmissive):0.00},{*(float*)(gob + GobEmissive + 4):0.00},{*(float*)(gob + GobEmissive + 8):0.00}";
+               $" gmul=a{g.Alpha:0.00}/a2{g.FadeAlpha:0.00}" +
+               $" gcol={g.Colour[0]:0.00},{g.Colour[1]:0.00},{g.Colour[2]:0.00}" +
+               $" gemi={g.Emissive[0]:0.00},{g.Emissive[1]:0.00},{g.Emissive[2]:0.00}";
     }
 
     /// <summary>#129 diagnosis: name each distinct water material once. The stage's liquid colour is the
@@ -898,15 +906,16 @@ internal static unsafe class AlloyCensus
     /// ponytail: never cleared, so a session that visits many areas keeps a few dozen strings.</summary>
     internal static void NoteWaterMaterial(IntPtr mat, IntPtr shared)
     {
-        IntPtr t0 = (IntPtr)_getTexture(mat, 0);
-        string name = TexName(t0);
+        var m = new MaterialRef(mat);
+        TextureRef t0 = m.Texture(0);
+        string name = t0.ResolveName();
         if (!_waterMats.Add(name)) return;
-        bool bumpy = _bumpyWater != null && *_bumpyWater != 0 && _hasBumpyShiny(mat) != 0;
-        int fb = shared == IntPtr.Zero ? -1 : *(int*)(shared + SharedSampleFb);
-        _log?.Info($"[water] material tex0=\"{name}\" tid={AurTex.Tid(t0)} {TexFormat(AurTex.Tid(t0))} " +
+        bool bumpy = _bumpyWater != null && *_bumpyWater != 0 && Engine.HasBumpyShiny(m);
+        int fb = shared == IntPtr.Zero ? -1 : new SharedRef(shared).SampleFb;
+        _log?.Info($"[water] material tex0=\"{name}\" tid={t0.ResolveTid()} {TexFormat(t0.ResolveTid())} " +
                    $"route={(bumpy ? "bumpy-shiny" : "sample_framebuffer")} sample_fb={fb} " +
-                   $"blend={*(int*)(mat + MatSrcBlend)}/{*(int*)(mat + MatDstBlend)} " +
-                   $"env={_hasEnvMap(mat) != 0} {TexTopMip(AurTex.Tid(t0))} " +
+                   $"blend={m.SrcBlend}/{m.DstBlend} " +
+                   $"env={Engine.HasEnvMap(m)} {TexTopMip(t0.ResolveTid())} " +
                    $"{WaterBodies.Describe()} {AlloyRenderer.DescribeWind()}");
     }
 
@@ -964,15 +973,16 @@ internal static unsafe class AlloyCensus
     /// diffuse carries alpha the caster mask could have used.</summary>
     internal static void DumpPart(IntPtr part)
     {
-        IntPtr mat = *(IntPtr*)(part + PartMaterial);
+        var p = new PartRef(part);
+        var m = p.Material;
         if (_dumpTex != null)
         {
-            IntPtr t = mat == IntPtr.Zero ? IntPtr.Zero : (IntPtr)_getTexture(mat, 0);
+            TextureRef t = m.IsNull ? default : m.Texture(0);
             // #134: "*" matches every part. Four rolls asked "is the ivy owned" of a substring that named
             // exactly ONE part in the area -- the answer was yes every time and the thing on screen was
             // other geometry. A name you have to guess is not a filter, it is a hypothesis.
             if (!_dumpAll
-                && (t == IntPtr.Zero || !TexName(t).Contains(_dumpTex, System.StringComparison.OrdinalIgnoreCase)))
+                && (t.IsNull || !t.ResolveName().Contains(_dumpTex, System.StringComparison.OrdinalIgnoreCase)))
             { _dumpLeft++; return; }                       // refund: only matches spend the budget
             WatchEngineDraws++;
             // #134: a WHOLE sampled frame, not one row of it. One row per frame made every roll read as
@@ -986,22 +996,22 @@ internal static unsafe class AlloyCensus
             }
             if (_dumpTexRows++ >= (_dumpAll ? DumpAllRows : DumpTexRows)) { _dumpLeft++; return; }
         }
-        IntPtr node = *(IntPtr*)(part + PartNode);
+        NodeRef node = p.Node;
         int e = Find(part);
         if (e >= 0) _watchEntry = e;
         string ent = e < 0 ? "unrecorded" : $"entry={e} st={_pState[e]} died={(_pState[e] == StDead ? _pDeath[e] ?? "?" : "-")} own={OwnFlag[e]} ownonly={_pOwnOnly[e]} capbucket={(_pState[e] == StActive ? _gBucket[_pGroup[e]] : -1)} seen={_frame - _pSeen[e]}";
-        IntPtr t0 = mat == IntPtr.Zero ? IntPtr.Zero : (IntPtr)_getTexture(mat, 0);
-        int tid = AurTex.Tid(t0);
-        IntPtr shared = mat == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(mat + MatShared);
-        _log?.Info($"[dumpframe] bucket={_bucketId} inbucket={_inBucket} dangly={IsDangly(part)} skin={BatchService._inSkinDraw} why={(e < 0 ? "unrecorded" : WhyNotOwnable(e))} part=0x{(ulong)part:x} vtbl=0x{(ulong)*(IntPtr*)part:x} {ent} " +
-                   $"tex=\"{TexName(t0)}\" tid={tid} texalpha={(tid > 0 && CasterPass.TexHasAlpha(tid))} {TexFormat(tid)} " +
-                   $"opaque={(mat != IntPtr.Zero && _isOpaque(part) != 0)} env={(mat != IntPtr.Zero && _hasEnvMap(mat) != 0)} " +
-                   $"blend={(mat == IntPtr.Zero ? 0 : *(int*)(mat + MatSrcBlend))}/{(mat == IntPtr.Zero ? 0 : *(int*)(mat + MatDstBlend))} " +
-                   $"alpha={*(float*)(part + PartAlpha):0.00} gob=0x{(ulong)*(IntPtr*)(part + PartGob):x} " +
-                   $"node=0x{(ulong)node:x} nvtbl=0x{(ulong)(node == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)node):x} " +
-                   $"n10=0x{(ulong)(node == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(node + 0x10)):x} " +
-                   $"nflags=0x{(node == IntPtr.Zero ? 0 : *(byte*)(node + NodeFlags)):x} {GobTerms(*(IntPtr*)(part + PartGob))} " +
-                   $"transp={(shared != IntPtr.Zero && *(byte*)(shared + SharedTransparency) != 0)} " +
-                   $"shvs=\"{(shared == IntPtr.Zero ? "-" : Marshal.PtrToStringAnsi(shared + SharedVsName) ?? "")}\"");
+        TextureRef t0 = m.IsNull ? default : m.Texture(0);
+        int tid = t0.ResolveTid();
+        SharedRef shared = m.Shared;
+        _log?.Info($"[dumpframe] bucket={_bucketId} inbucket={_inBucket} dangly={IsDangly(part)} skin={BatchService._inSkinDraw} why={(e < 0 ? "unrecorded" : WhyNotOwnable(e))} part=0x{(ulong)part:x} vtbl=0x{(ulong)p.Vtbl:x} {ent} " +
+                   $"tex=\"{t0.ResolveName()}\" tid={tid} texalpha={(tid > 0 && CasterPass.TexHasAlpha(tid))} {TexFormat(tid)} " +
+                   $"opaque={(!m.IsNull && Engine.IsOpaque(p))} env={(!m.IsNull && Engine.HasEnvMap(m))} " +
+                   $"blend={(m.IsNull ? 0 : m.SrcBlend)}/{(m.IsNull ? 0 : m.DstBlend)} " +
+                   $"alpha={p.Alpha:0.00} gob=0x{(ulong)p.Gob.Ptr:x} " +
+                   $"node=0x{(ulong)node.Ptr:x} nvtbl=0x{(ulong)(node.IsNull ? IntPtr.Zero : *(IntPtr*)node.Ptr):x} " +
+                   $"n10=0x{(ulong)(node.IsNull ? IntPtr.Zero : *(IntPtr*)(node.Ptr + 0x10)):x} " +
+                   $"nflags=0x{(node.IsNull ? 0 : node.Flags):x} {GobTerms(p.Gob.Ptr)} " +
+                   $"transp={(!shared.IsNull && shared.Transparency)} " +
+                   $"shvs=\"{(shared.IsNull ? "-" : Marshal.PtrToStringAnsi((IntPtr)shared.VsName) ?? "")}\"");
     }
 }

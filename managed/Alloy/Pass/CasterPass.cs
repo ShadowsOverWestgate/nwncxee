@@ -561,9 +561,10 @@ public sealed unsafe class CasterPass : IExtenderService
         if (_skinCount >= MaxSkin) { _skinOverflow++; return false; }
         _skinBrackets++;   // the count that separates "never saw a creature" from "saw one and refused it"
         _skinPart = part; _skinSlot = -1;
-        fixed (float* m = _skinModel) *(Matrix4x4*)m = *(Matrix4x4*)(node + NodeMatrix);
-        float* mn = (float*)(part + PartBboxMin);
-        float* mx = (float*)(part + PartBboxMax);
+        fixed (float* m = _skinModel) *(Matrix4x4*)m = new NodeRef(node).Model;
+        PartRef p = new(part);
+        float* mn = p.BboxMin;
+        float* mx = p.BboxMax;
         // Centre from the model matrix translation, radius from the bbox extent -- the same derivation the
         // rigid matrix-path casters use, and for the same reason (the bbox centre is not object-space).
         _skinCx = _skinModel[12]; _skinCy = _skinModel[13]; _skinCz = _skinModel[14];
@@ -587,11 +588,11 @@ public sealed unsafe class CasterPass : IExtenderService
             // mode-2 projected-shadow stream. This pass only accepts mode-1, so that question decides whether
             // it works at all; name the first few draws rather than leave a silent zero to interpret.
             _skinDiagLeft--;
-            _log?.Info($"CasterPass: skin-capture diag vdo=0x{(ulong)vdo:x} mode={(vdo == IntPtr.Zero ? -1 : *(int*)(vdo + VdoMode))}" +
+            _log?.Info($"CasterPass: skin-capture diag vdo=0x{(ulong)vdo:x} mode={(vdo == IntPtr.Zero ? -1 : new VdoRef(vdo).Mode)}" +
                        $" item={item} prim={prim} (mode 1 = the indexed mesh this pass can draw)");
         }
         if (_skinCount >= MaxSkin) { _skinOverflow++; return true; }
-        if (vdo == IntPtr.Zero || *(int*)(vdo + VdoMode) != 1) { _skinNotMode1++; return true; }
+        if (vdo == IntPtr.Zero || new VdoRef(vdo).Mode != 1) { _skinNotMode1++; return true; }
         if (!TryRange(vdo, item, out _, out _, out _)) { _skinBadRange++; return true; }
         // one-entry memo: VdoSlot is a linear scan of up to MaxVdos, and unlike enrollment this runs per
         // skinned draw per FRAME -- consecutive parts of one creature share a VDO, so it usually hits
@@ -645,7 +646,7 @@ public sealed unsafe class CasterPass : IExtenderService
         if (!_armed || _disarmed || !_skinned || node == IntPtr.Zero || tri == IntPtr.Zero) return;
         if (!RenderMode.Alloy || !GlContextService.Available) return;
         if (_skinCount >= MaxSkin) { _skinOverflow++; return; }
-        if (vdo == IntPtr.Zero || *(int*)(vdo + VdoMode) != 1) { _skinNotMode1++; return; }
+        if (vdo == IntPtr.Zero || new VdoRef(vdo).Mode != 1) { _skinNotMode1++; return; }
         if (!TryRange(vdo, item, out _, out _, out _)) { _skinBadRange++; return; }
         int v;
         if (vdo == _skinLastVdo) v = _skinLastSlot;
@@ -657,9 +658,10 @@ public sealed unsafe class CasterPass : IExtenderService
         if (v < 0) { _skinNoSlot++; return; }
         int i = _skinCount++;
         _sVdo[i] = vdo; _sItem[i] = item; _sPrim[i] = prim; _sVao[i] = v; _sBone[i] = -1;
-        Matrix4x4 model = *(Matrix4x4*)(node + NodeMatrix);
+        Matrix4x4 model = *(Matrix4x4*)new NodeRef(node).Matrix;
         fixed (float* dst = _sModel) *(Matrix4x4*)(dst + i * 16) = model;
-        float* mn = (float*)(tri + PartBboxMin), mx = (float*)(tri + PartBboxMax);
+        PartRef p = new(tri);
+        float* mn = p.BboxMin, mx = p.BboxMax;
         float ex = (mx[0] - mn[0]) * 0.5f, ey = (mx[1] - mn[1]) * 0.5f, ez = (mx[2] - mn[2]) * 0.5f;
         _sCx[i] = model.M41; _sCy[i] = model.M42; _sCz[i] = model.M43;
         _sR[i] = MathF.Sqrt(ex * ex + ey * ey + ez * ez);
@@ -676,10 +678,11 @@ public sealed unsafe class CasterPass : IExtenderService
     private static bool TryRange(IntPtr vdo, int item, out int idxCount, out uint first, out uint baseVert)
     {
         idxCount = 0; first = 0; baseVert = 0;
-        long elem = (long)*(IntPtr*)(vdo + VdoElemItems);
-        long vert = (long)*(IntPtr*)(vdo + VdoVertItems);
+        VdoRef v = new(vdo);
+        long elem = v.ElemItems;
+        long vert = v.VertItems;
         if (elem == 0 || vert == 0 || item < 0
-            || item >= *(int*)(vdo + VdoElemCount) || item >= *(int*)(vdo + VdoVertCount)) return false;
+            || item >= v.ElemCount || item >= v.VertCount) return false;
         int n = *(int*)(elem + item * 8 + 4);
         if (n <= 0) return false;
         idxCount = n;
@@ -1130,8 +1133,9 @@ public sealed unsafe class CasterPass : IExtenderService
             _cCut[i] = c.EnvAlpha ? EnvAlphaDiscard : CutoutDiscard;
             _cUv[i] = _vUv[v].Present;
             if (!_vUv[v].Present) _maskNoUv++;
-            float* mn = (float*)(c.Tri + PartBboxMin);
-            float* mx = (float*)(c.Tri + PartBboxMax);
+            PartRef p = new(c.Tri);
+            float* mn = p.BboxMin;
+            float* mx = p.BboxMax;
             _cCx[i] = (mn[0] + mx[0]) * 0.5f; _cCy[i] = (mn[1] + mx[1]) * 0.5f; _cCz[i] = (mn[2] + mx[2]) * 0.5f;
             float ex = mx[0] - _cCx[i], ey = mx[1] - _cCy[i], ez = mx[2] - _cCz[i];
             _cR[i] = MathF.Sqrt(ex * ex + ey * ey + ez * ez);
@@ -1283,7 +1287,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// pull in #81 -- so this binds one stream and no more.</summary>
     private static bool Harvest(IntPtr vdo, int s)
     {
-        uint vao = *(uint*)(vdo + VdoVao);
+        uint vao = new VdoRef(vdo).Vao;
         if (vao == 0) return false;
         int saved; Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &saved);
         Gl.BindVertexArray(vao);
@@ -1530,10 +1534,11 @@ public sealed unsafe class CasterPass : IExtenderService
             IntPtr tri = _cTri[i];
             if (tri == IntPtr.Zero) { dropped++; continue; }
             // recycled pointer / re-parented part: not ours any more, wait for the next enrollment
-            if (*(IntPtr*)(tri + PartNode) != _cNode[i] || *(IntPtr*)(tri + PartMaterial) != _cMat[i])
+            PartRef p = new(tri);
+            if (p.Node.Ptr != _cNode[i] || p.Material.Ptr != _cMat[i])
             { _cTri[i] = IntPtr.Zero; dropped++; continue; }
 
-            Matrix4x4 model = _cMx[i] ? *(Matrix4x4*)(_cNode[i] + NodeMatrix) : Matrix4x4.Identity;
+            Matrix4x4 model = _cMx[i] ? *(Matrix4x4*)new NodeRef(_cNode[i]).Matrix : Matrix4x4.Identity;
 
             // index range re-read live from the VDO item tables (they move under Repack)
             if (!TryRange(_cVdo[i], _cItem[i], out int idxCount, out uint first, out uint baseVert)) { dropped++; continue; }

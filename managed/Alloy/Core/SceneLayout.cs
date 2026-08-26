@@ -53,6 +53,17 @@ internal static class SceneLayout
     /// for matrix-class parts (node+0x80 &amp; 0x1e). Bit-identical matrix = same placeable transform.</summary>
     public const int NodeMatrix = 0x18, NodeFlags = 0x80;
 
+    /// <summary>The blend-disable flag <c>RenderFlat</c> reads at mat+0x98 (Ghidra
+    /// GetTexture/GetEnvMapTID @0x4c5810/0x4c5c40; texture slots sit at mat+i*0x10).</summary>
+    public const int MatBlendFlag = 0x98;
+
+    /// <summary>The material's own env map (<c>Material::HasEnvMap</c> @0x4c6180 tests exactly this field).
+    /// It is NOT one of the numbered texture slots, so <c>GetTexture</c> never reaches it -- a group keyed on
+    /// the numbered slots alone cannot tell an env-mapped material from a plain one sharing its diffuse, and
+    /// one batched draw would then paint all of them with the representative's shine (or none of them).
+    /// Compared only, never dereferenced: a <c>CAurTexture*</c> is borrowed.</summary>
+    public const int MatEnvMap = 0x40;
+
     /// <summary>Material -&gt; SharedMaterial* override at +0xd0 (Ghidra GetTexture/GetEnvMapTID
     /// @0x4c5810/0x4c5c40).</summary>
     public const int MatShared = 0xd0;

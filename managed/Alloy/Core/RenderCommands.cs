@@ -49,6 +49,12 @@ internal static class RenderCommands
         r.Register("/probe", "report or tune the environment probe; /probe reset restores boot values",
                    a => Tune("probe", ProbeKeys, 2, a));
         r.Register("/dumpshaders", "write every overridable shader stage to the dump directory", DumpShaders);
+        // #192: a one-shot ACTION, so a command and not a config setting (ADR 0013). The next colour pass
+        // serves it; the reply is what the previous one wrote, because the render thread is the only place
+        // the answer exists.
+        r.Register("/framedump", "dump what the Alloy colour pass submits, for diffing two runs", FrameDump_);
+        // #194: a measurement toggle, off by default -- the timer costs more than what it measures.
+        r.Register("/batchtime", "toggle the PartDraw entry-read timer on the [batch] line", _ => BatchService.BatchTime());
         // #182: a per-pass on/off is one flag and one line -- it needs neither the float dial nor a
         // Describe/Tune slot, and both passes stay armed so the flip lands on the next frame.
         r.Register("/sky", "toggle the Alloy sky pass", _ => SkyBox.Toggle());
@@ -98,6 +104,19 @@ internal static class RenderCommands
                 case "aces": v = 2f; return true;
             }
         return float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    }
+
+    /// <summary>#192: arm the frame-diff dump. The command cannot report the file it produces -- the dump
+    /// happens on the render thread some frames later -- so it reports the PREVIOUS one, which is what turns
+    /// "run it twice and diff" into a loop a human can drive without watching the log.</summary>
+    private static string? FrameDump_(string args)
+    {
+        FrameDump.Armed = true;
+        string prev = FrameDump.LastDraws == 0
+            ? ""
+            : $" (last: {FrameDump.LastDraws} draws, {FrameDump.LastDistinct} distinct keys, " +
+              $"{FrameDump.LastGroups} groups minted)";
+        return $"[framedump] armed -- writing to {FrameDump.Dir} on the next Alloy pass{prev}";
     }
 
     /// <summary>#160: write every overridable stage to <c>&lt;user directory&gt;/cx_shader_dump/</c> as an

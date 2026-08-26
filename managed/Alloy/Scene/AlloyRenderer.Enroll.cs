@@ -141,7 +141,8 @@ public sealed unsafe partial class AlloyRenderer
             _oBone[i] = -1;
             if (c.Gob != IntPtr.Zero) _gobOwned++;
             // #126: the local bbox centre, for the blended pass's back-to-front key.
-            float* lo = (float*)(c.Tri + PartBboxMin), hi = (float*)(c.Tri + PartBboxMax);
+            var tri = new PartRef(c.Tri);
+            float* lo = tri.BboxMin, hi = tri.BboxMax;
             _oCx[i] = (lo[0] + hi[0]) * 0.5f; _oCy[i] = (lo[1] + hi[1]) * 0.5f; _oCz[i] = (lo[2] + hi[2]) * 0.5f;
             float ex = hi[0] - lo[0], ey = hi[1] - lo[1], ez = hi[2] - lo[2];
             _oR[i] = 0.5f * MathF.Sqrt(ex * ex + ey * ey + ez * ez);
@@ -276,7 +277,7 @@ public sealed unsafe partial class AlloyRenderer
     /// .mtr loads and do not animate, so nothing re-reads them per frame.</para></summary>
     /// <summary>Mask bit of map slot <paramref name="s"/>: its index, except for the AO slot -- see
     /// <see cref="AoBit"/> for why that one is out of line.</summary>
-    private static int SlotBit(int s) => s == AoSlot ? AoBit : 1 << s;
+    internal static int SlotBit(int s) => s == AoSlot ? AoBit : 1 << s;
 
     private static void ReadMaterial(IntPtr mat, int i, int feat)
     {
@@ -286,15 +287,16 @@ public sealed unsafe partial class AlloyRenderer
         // map, +0x50 the bumpy-shiny map. Asking for slot 4 on a plain Material would bind an env map as a
         // height map. THIS gate is the only thing stopping that now: #121 made env-mapped parts ownable, so
         // +0x40 is reachable on a live material rather than rejected at Record.
-        int top = *(IntPtr*)(mat + MatShared) != IntPtr.Zero ? PbrSlots : 2;
+        var matRef = new MaterialRef(mat);
+        int top = !matRef.Shared.IsNull ? PbrSlots : 2;
         int mask = 0;
-        for (int s = 1; s <= top; s++) if (_getTexture(mat, s) != 0) mask |= 1 << (s - 1);
+        for (int s = 1; s <= top; s++) if (!matRef.Texture(s).IsNull) mask |= 1 << (s - 1);
         // #123: and slot 6 for the one feature that reads it. A flowmap material with no flow map bound
         // leaves the bit clear, and the fragment stage then slides nothing -- vanilla's texture6Bound test.
-        if (feat == (int)ShaderFeature.Flowmap && _getTexture(mat, FlowSlot + 1) != 0) mask |= 1 << FlowSlot;
+        if (feat == (int)ShaderFeature.Flowmap && !matRef.Texture(FlowSlot + 1).IsNull) mask |= 1 << FlowSlot;
         // #146: ...and slot 7 for the AO map, inside the SAME shared-material gate the loop above needs --
         // on a plain Material, GetTexture(7) is an unbounded read of whatever field sits at mat+0x70.
-        if (top == PbrSlots && _getTexture(mat, AoSlot + 1) != 0) mask |= AoBit;
+        if (top == PbrSlots && !matRef.Texture(AoSlot + 1).IsNull) mask |= AoBit;
         _oSlots[i] = mask;
 
         int f = i * 4;
@@ -309,10 +311,10 @@ public sealed unsafe partial class AlloyRenderer
         // shared count by Material::InitSharedMaterial @0x4c7260, which appends default records rather than
         // the shared values, so reading it alone would hand back floors for the very content this exists for.
         // Reading the instance list second is what lets a per-part override still win where one is set.
-        IntPtr shared = *(IntPtr*)(mat + MatShared);
-        if (shared != IntPtr.Zero)
-            Apply(*(IntPtr*)(shared + SharedParams), *(int*)(shared + SharedParamCount), o, f);
-        Apply(*(IntPtr*)(mat + MatParams), *(int*)(mat + MatParamCount), o, f);
+        var shared = matRef.Shared;
+        if (!shared.IsNull)
+            Apply(shared.Params, shared.ParamCount, o, f);
+        Apply(matRef.Params, matRef.ParamCount, o, f);
         // fSwaySpeed divides. Zero is what an undeclared parameter reads as, and 1.0 is the value every
         // wind .mtr states ("denormalize the parameters set to 1.0 for this type of foliage"), so the
         // undeclared case IS the authored one -- and without this it is a division by zero, i.e. NaN
@@ -427,7 +429,7 @@ public sealed unsafe partial class AlloyRenderer
     /// engine rather than shade off a guessed normal.</summary>
     private static bool Harvest(IntPtr vdo, int s)
     {
-        uint vao = *(uint*)(vdo + VdoVao);
+        uint vao = new VdoRef(vdo).Vao;
         if (vao == 0) return false;
         int saved;
         Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &saved);
