@@ -55,10 +55,12 @@ public sealed class ConfigFile
         return true;
     }
 
-    /// <summary>Write <paramref name="text"/> iff it differs from what this file last held. Creates the
-    /// directory; an IO failure is logged and swallowed (a config write must never take the client down).</summary>
+    /// <summary>Write <paramref name="text"/> iff it differs from what this file last held. Does nothing and
+    /// stays retryable while the user dir is unresolved, the same deferral rule <see cref="Load"/> honours (#190).
+    /// Creates the directory; an IO failure is logged and swallowed (a config write must never take the client down).</summary>
     public void Save(string text, ExtenderLog? log)
     {
+        if (!Ready) return;   // before the _savedText latch below, or a refused save is lost, not deferred (#190)
         if (text == _savedText) return;
         _savedText = text;   // set before the write: a failed write must not re-attempt every frame
         try
@@ -73,6 +75,10 @@ public sealed class ConfigFile
     /// <summary>Declare <paramref name="text"/> to be what is already on disk, so the next identical
     /// <see cref="Save"/> is a no-op. For a loader that wants no write until the user actually changes something.</summary>
     public void Baseline(string text) => _savedText = text;
+
+    /// <summary>What the last accepted <see cref="Save"/> wrote; "" until one is. For <see cref="SelfCheck"/>,
+    /// which has no other way to see that a refused save stayed retryable.</summary>
+    internal string SavedText => _savedText;
 
     /// <summary>Read a cfg's text WITHOUT the deferral gate, "" when absent or unreadable. Only for a
     /// decision that must be made pre-main (ShaderStages' dump trigger); everything else uses <see cref="Load"/>.</summary>
@@ -129,6 +135,24 @@ public sealed class ConfigFile
         bool applied = false;
         bool latched = f.Load(log, _ => applied = true);
         E(Ready || (!latched && !f.Loaded && !applied), "pre-main load is a no-op and stays retryable");
+
+        // #190: the save half of the same rule -- refused while unready, and the SAME text still writes later.
+        // Guarded like the load case above: the "unresolved" half is only true pre-main, and forcing it is
+        // not possible -- UserDirectory() re-resolves from g_pExoBase whenever the cache is null.
+        if (!Ready)
+        {
+            var g = new ConfigFile("sowx-selfcheck-save.cfg");
+            g.Save("k=v", log);
+            E(g.SavedText.Length == 0, "save while the user dir is unresolved writes nothing and does not latch");
+            E(!File.Exists(g.Path), "refused save leaves no file under the pre-main fallback path");
+
+            string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sowx-selfcheck-userdir");
+            Native.ForceUserDirectory(tmp);
+            g.Save("k=v", log);
+            E(File.Exists(g.Path) && File.ReadAllText(g.Path) == "k=v", "the same text writes once the user dir resolves");
+            try { File.Delete(g.Path); Directory.Delete(tmp); } catch { }
+            Native.ForceUserDirectory(null);
+        }
 
         log.Info(ok ? "ConfigFile.SelfCheck: passed" : "ConfigFile.SelfCheck: FAILED");
     }

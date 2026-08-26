@@ -749,7 +749,7 @@ internal static unsafe class Particles
         // A material naming its own program is not this shader's to draw -- and unlike world geometry, where
         // an unported shader costs a small shading difference on one part, a particle effect authored around
         // a custom fragment stage IS that stage. Per-emitter fallback makes refusing free.
-        if (BatchService.HasUnportedShader(mat)) { _decShader++; return false; }
+        if (OwnershipCensus.HasUnportedShader(mat)) { _decShader++; return false; }
         texObj = (IntPtr)_getTexture(mat, 0);
         // AurTex's vtable check is the LIVENESS gate and nothing more here: the id it hands back belongs to
         // the object the Material is holding, which is not necessarily the object the engine draws with. It

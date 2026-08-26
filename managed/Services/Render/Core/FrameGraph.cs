@@ -50,7 +50,7 @@ internal enum PassId
     /// <para>The engine takes TWO snapshots per frame (<c>Camera::CopyRenderSubframe</c> before bucket 5 and
     /// again before bucket 6, <c>Scene::RenderSinglePass</c> @0x46e5f0) because its bucket order is fixed,
     /// not because two are needed. The owned frame takes one; the engine's water copy disappears with the
-    /// bucket-6 walk it belongs to (<see cref="BatchService"/>'s <c>HasItemsOfType</c> gate). The
+    /// bucket-6 walk it belongs to (<see cref="BucketGate"/>'s <c>HasItemsOfType</c> gate). The
     /// bucket-5 copy stays the engine's until the framebuffer-sampling class is owned.</para></summary>
     FbCopy,
     /// <summary>#129: water, drawn from the copy above -- screen-space refraction and reflection with the

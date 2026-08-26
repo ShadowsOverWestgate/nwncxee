@@ -12,7 +12,7 @@ namespace Sowx.Services.Render;
 /// such snapshots per frame (<c>Camera::CopyRenderSubframe</c> @0x4a6b90, called before draw bucket 5 and
 /// again before bucket 6 in <c>Scene::RenderSinglePass</c> @0x46e5f0) because its bucket order is fixed, not
 /// because two are needed. The owned frame takes one; the engine's water-driven copy disappears with the
-/// bucket-6 walk it belongs to, which <see cref="BatchService"/> suppresses wholesale.</para>
+/// bucket-6 walk it belongs to, which <see cref="BucketGate"/> suppresses wholesale.</para>
 /// <para>What the copy is NOT: the engine's bucket-5 copy for the framebuffer-sampling class (refraction
 /// glass). That class is still the engine's -- the owned pass has no program for it -- so it keeps taking its
 /// own snapshot. Feeding it ours would be wrong twice over: ours is taken inside the owned bracket, which
@@ -20,7 +20,7 @@ namespace Sowx.Services.Render;
 /// display-space target after the resolve. "Exactly one copy" therefore means one OWNED copy and zero engine
 /// water copies; the bucket-5 one goes when the class does.</para>
 /// <para><c>/water on 0</c> stands the whole thing down: no copy, no owned water program, and
-/// <see cref="BatchService"/> leaves bucket 6 to the engine exactly as before #129. Every look dial here is
+/// <see cref="BucketGate"/> leaves bucket 6 to the engine exactly as before #129. Every look dial here is
 /// a <c>/water</c> key (ADR 0013 bucket 1); the one boot decision is the tessellation segment count, which
 /// is geometry rather than look and lives in the config file.</para>
 /// </summary>
@@ -41,12 +41,12 @@ internal static unsafe class FrameSnapshot
     internal static bool Usable => On && !_down.Failed;
 
     /// <summary>The copy for THIS pass is taken and sampleable. False whenever the owned water stage must not
-    /// draw -- which is also the signal <see cref="BatchService"/>'s bucket-6 gate reads, so the engine
+    /// draw -- which is also the signal <see cref="BucketGate"/>'s bucket-6 gate reads, so the engine
     /// keeps drawing its own water rather than nobody drawing any.</summary>
     internal static bool Ready { get; private set; }
 
     /// <summary>Owned copies taken this session, and the number the [owned] line reports. The acceptance
-    /// criterion is one per frame that has water on screen -- see <see cref="BatchService"/> for the
+    /// criterion is one per frame that has water on screen -- see <see cref="BucketGate"/> for the
     /// other half of it, which is that the engine took none.</summary>
     internal static int Copies { get; private set; }
 

@@ -40,7 +40,7 @@ internal static unsafe class SkyBox
     private const int SceneGobs = 0x18, SceneFadeGob = 0x38, SceneT = 0x40, SceneCur = 0x44,
                       SceneDesired = 0x48, SceneOff = 0x4c;
     /// <summary>The alpha multiplier <c>PartTriMesh::Mat</c> reads off the instance, and the field
-    /// <c>RenderSkyBoxes</c> writes the cross-fade into. Same offset <c>BatchService.GobAlpha</c> names.</summary>
+    /// <c>RenderSkyBoxes</c> writes the cross-fade into. Same offset <c>OwnershipCensus.GobAlpha</c> names.</summary>
     private const int GobAlpha = 0x108;
     /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1), stride 0x58, top at
     /// +0x18 -- <c>RenderSkyBoxes</c> itself calls <c>SetMatrixMode(2)</c> before the gob draws.</summary>
@@ -173,7 +173,7 @@ internal static unsafe class SkyBox
         }
         ref Part p = ref _parts[s];
         p.Tri = tri; p.Node = node; p.Mat = mat; p.Gob = *(IntPtr*)(tri + PartGob);
-        p.Ported = !BatchService.HasUnportedShader(mat);
+        p.Ported = !OwnershipCensus.HasUnportedShader(mat);
         p.Model = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
         p.Vdo = IntPtr.Zero;
         _capSlot = s;

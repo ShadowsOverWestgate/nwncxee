@@ -13,7 +13,7 @@ internal struct OwnedCandidate
     /// <summary>#84 batch sort key: the diffuse CAurTexture* seen at capture. Used ONLY as an opaque grouping
     /// hint -- never dereferenced (borrowed pointer) and never trusted as the live texture, which the draw
     /// loop re-fetches. Material* would be useless here: each part owns its own Material instance, so pointer
-    /// identity shatters every group to size 1 (BatchService keys on material CONTENT for the same reason).</summary>
+    /// identity shatters every group to size 1 (PartTable's group key uses material CONTENT for the same reason).</summary>
     public IntPtr Tex0;
     public int Item, Prim;
     /// <summary>part+0xb0 as raw bits: the texture-rotation angle in degrees, compared for change.</summary>

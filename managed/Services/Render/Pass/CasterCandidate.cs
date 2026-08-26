@@ -22,9 +22,4 @@ internal struct CasterCandidate
     /// coverage too -- but at a threshold low enough that only empty texels punch through, so a polished
     /// floor keeps its shadow. Everything else with alpha takes the engine's own 0.2 cutout.</summary>
     public bool EnvAlpha;
-    /// <summary>#135: a <c>PartDanglyMesh</c>. Its depth is only true for the frame that solved it -- the
-    /// same property a creature's pose has, arrived at from the other direction: a creature moves its matrix
-    /// and keeps its vertices, a dangly keeps its matrix and moves its vertices. Either way the caster
-    /// caches, which key on matrix motion, must not hold it.</summary>
-    public bool Dangly;
 }

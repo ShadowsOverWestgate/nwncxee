@@ -52,6 +52,12 @@ public static unsafe class Native
     private static readonly IntPtr _exoBaseSym = Sym(SymbolMap.ExoBase);
     private static string? _userDir;
 
+    /// <summary>Seed <see cref="UserDirectory"/>'s cache, or null to clear it. Only for
+    /// <see cref="ConfigFile.SelfCheck"/>'s "unresolved, then resolved" sequence, which cannot otherwise
+    /// happen in one headless run. Note it can only make the dir RESOLVE: passing null clears the cache, and
+    /// the next call re-reads <c>g_pExoBase</c>. The unresolved half of that sequence is real, not forced.</summary>
+    internal static void ForceUserDirectory(string? dir) => _userDir = dir;
+
     /// <summary>Offset of the user-directory CExoString within CExoBase. Verified identical on the Linux
     /// and Windows builds (CExoBase::CExoBase stores the ctor arg via InitFromCharArray at this+0x38).</summary>
     private const int ExoBaseUserDirOffset = 0x38;

@@ -13,7 +13,7 @@ public sealed unsafe partial class OwnedDrawService
     /// <summary>Revoke one slot: the part reverts to engine drawing from its next iterator sighting.</summary>
     private static void Revoke(int i)
     {
-        BatchService.OwnFlag[_oEntry[i]] = 0;
+        OwnershipCensus.OwnFlag[_oEntry[i]] = 0;
         _oTri[i] = IntPtr.Zero;
         _revokes++;
     }
@@ -45,7 +45,7 @@ public sealed unsafe partial class OwnedDrawService
         // pass added later cannot be left out of it the way grass was.
         PassRegistry.Global.Revoke();
         _sinceEnroll = EnrollEvery;
-        // ...and the fast retry, not just the next cadence tick. A wipe leaves BatchService's table empty,
+        // ...and the fast retry, not just the next cadence tick. A wipe leaves the part table empty,
         // so the enrollment this queues necessarily misses -- parts have to be re-recorded first -- and
         // without the retry budget the second attempt waits a full EnrollEvery. That is the ~1s of vanilla
         // after every release, and it is the visible half of the fallback. Same re-arm the render-mode edge
@@ -56,7 +56,7 @@ public sealed unsafe partial class OwnedDrawService
     }
 
     /// <summary>Cold, at a frame boundary before the owned block: rebuild the ownership table wholesale from
-    /// BatchService's capture tables. This IS the frame-atomic swap -- nothing else adds an entry, so no part
+    /// PartTable's capture tables. This IS the frame-atomic swap -- nothing else adds an entry, so no part
     /// can change owner between the owned draw and the bucket walk that skips it.
     /// <para>ponytail: rebuilt on a fixed cadence rather than per frame. Parts qualify/de-qualify rarely, and
     /// the failure mode is one-sided (a newly-qualifying part stays engine-drawn until the next enrollment);
@@ -66,12 +66,12 @@ public sealed unsafe partial class OwnedDrawService
         _sinceEnroll = 0; _enrolls++; _enrollScene = scene;
         WipeHandles();   // #153: new enrollment, new tids -- yesterday's handles answer for nobody
         _watchEnrolled = 0;
-        System.Array.Clear(BatchService.WatchTex);
+        System.Array.Clear(OwnershipCensus.WatchTex);
         for (int i = 0; i < _ownCount; i++)
             if (_oTri[i] != IntPtr.Zero)
             {
-                if (BatchService.WatchedEntry(_oEntry[i])) _log?.Info("[dumpframe] ENROLL cleared by the re-enrollment reset");
-                BatchService.OwnFlag[_oEntry[i]] = 0;
+                if (OwnershipCensus.WatchedEntry(_oEntry[i])) _log?.Info("[dumpframe] ENROLL cleared by the re-enrollment reset");
+                OwnershipCensus.OwnFlag[_oEntry[i]] = 0;
             }
         _ownCount = 0; _litCount = 0; _litUnownable = 0; _skinUnownable = 0; _gobOwned = 0;
         Array.Clear(_sortCount, 0, MaxVdos * 2);
@@ -90,15 +90,15 @@ public sealed unsafe partial class OwnedDrawService
         var c = default(OwnedCandidate);
         int candidates = 0;
         _capacitySpill = 0;
-        BatchService.OwnScanBegin(scene);
-        for (int e = 0, n = BatchService.EntryCount; e < n; e++)
+        OwnershipCensus.OwnScanBegin(scene);
+        for (int e = 0, n = PartTable.EntryCount; e < n; e++)
         {
-            if (!BatchService.TryOwnCandidate(e, ref c)) continue;
+            if (!OwnershipCensus.TryOwnCandidate(e, ref c)) continue;
             candidates++;
-            if (BatchService.WatchAccepted(e, c.Mat)) _watchEnrolled++;
+            if (OwnershipCensus.WatchAccepted(e, c.Mat)) _watchEnrolled++;
             // #126: a refusal from here on is counted against the class it would have joined -- see the
             // all-owned-or-none sweep below. The surplus stays engine-drawn, never dropped.
-            bool watch = BatchService.WatchedEntry(e);
+            bool watch = OwnershipCensus.WatchedEntry(e);
             // #128: the two CAPACITY refusals do not go to the gob. They are not properties of the instance
             // -- the same creature is ownable in an emptier area -- and routing them there turns a full table
             // into a cliff: thousands of gobs marked, the refused set overflows, and the sweep then drops
@@ -106,10 +106,10 @@ public sealed unsafe partial class OwnedDrawService
             // dropped" is the rule, and at capacity a creature split across two renderers (a lighting
             // mismatch) beats every creature in the area reverting.
             if (_ownCount >= MaxOwned)
-            { _capacitySpill++; BatchService.OwnRefusedByClass[c.Cls]++; if (watch) _log?.Info("[dumpframe] ENROLL refused: table full"); continue; }
+            { _capacitySpill++; OwnershipCensus.OwnRefusedByClass[c.Cls]++; if (watch) _log?.Info("[dumpframe] ENROLL refused: table full"); continue; }
             int v = VdoSlot(c.Vdo);
             if (v < 0)
-            { BatchService.OwnRefusedByClass[c.Cls]++; if (watch) _log?.Info("[dumpframe] ENROLL refused: no VAO slot (harvest failed)"); continue; }
+            { OwnershipCensus.OwnRefusedByClass[c.Cls]++; if (watch) _log?.Info("[dumpframe] ENROLL refused: no VAO slot (harvest failed)"); continue; }
             // #137: a true skinmesh (a cloak, a robe, a tail) carries the bone streams and is POSED by them.
             // #128 refused it here for want of a skinning branch; the stages have one now, so the only
             // refusal left is the one #128's reason still holds for -- the kill switch off, or a bone stream
@@ -120,17 +120,17 @@ public sealed unsafe partial class OwnedDrawService
             // capture whose VAO harvest came back boneless would enrol as an ordinary rigid part, skip
             // PoseSkinned, and draw in its bind pose -- which is the failure the asymmetric gate would have
             // let through as the QUIET one.
-            if (_vSkin[v] != (_skinning && BatchService.Skinned(e)))
-            { _skinUnownable++; BatchService.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: skin mismatch (armed={_skinning} boneStreams={_vSkin[v]} skinPart={BatchService.Skinned(e)})"); continue; }
+            if (_vSkin[v] != (_skinning && PartTable.Skinned(e)))
+            { _skinUnownable++; OwnershipCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: skin mismatch (armed={_skinning} boneStreams={_vSkin[v]} skinPart={PartTable.Skinned(e)})"); continue; }
             bool lit = c.Lit && _lighting;
             if (lit && (!canLight || !_vLit[v]))
-            { _litUnownable++; BatchService.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: lit but unshadeable (canLight={canLight} vdoLit={_vLit[v]})"); continue; }
+            { _litUnownable++; OwnershipCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: lit but unshadeable (canLight={canLight} vdoLit={_vLit[v]})"); continue; }
             // #121: an env-mapped part the engine draws UNLIT would go through the fullbright variant, which
             // has no env handling at all -- the engine still routes it to RenderEnvironmentMapped (the switch
             // in PartTriMesh::Draw is on HasEnvMap, not on the lit flag), so owning it would silently drop
             // whatever shine it had. Only the lit variant can reproduce it; the rest stay vanilla.
             if (c.Env && !lit)
-            { _litUnownable++; BatchService.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info("[dumpframe] ENROLL refused: env-mapped but unlit"); continue; }
+            { _litUnownable++; OwnershipCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info("[dumpframe] ENROLL refused: env-mapped but unlit"); continue; }
             int i = _ownCount++;
             _oEntry[i] = e; _oTri[i] = c.Tri; _oNode[i] = c.Node; _oMat[i] = c.Mat; _oVdo[i] = c.Vdo;
             _oItem[i] = c.Item; _oPrim[i] = c.Prim; _oVao[i] = v; _oMx[i] = c.Mx; _oLit[i] = lit;
@@ -151,7 +151,7 @@ public sealed unsafe partial class OwnedDrawService
             if (c.Env) _oSlots[i] |= EnvSlot;
             float rad = BitConverter.Int32BitsToSingle(c.RotBits) * DegToRad;
             _oCos[i] = MathF.Cos(rad); _oSin[i] = MathF.Sin(rad);
-            BatchService.OwnFlag[e] = 1;
+            OwnershipCensus.OwnFlag[e] = 1;
             if (watch) _log?.Info($"[dumpframe] ENROLL accepted slot={i} cls={(OwnedClass)c.Cls} lit={lit} vao={v}");
         }
         // #107 s2 / #126: all-owned-or-none, for the one class whose draw ORDER is load-bearing. A half-owned
@@ -166,18 +166,18 @@ public sealed unsafe partial class OwnedDrawService
         // instance whole is the only state that reads as one renderer.
         _gobParts = 0;
         for (int i = 0; i < _ownCount; i++)
-            if (_oTri[i] != IntPtr.Zero && BatchService.GobRefused(_oGob[i]))
+            if (_oTri[i] != IntPtr.Zero && OwnershipCensus.GobRefused(_oGob[i]))
             {
-                if (BatchService.WatchedEntry(_oEntry[i])) _log?.Info("[dumpframe] ENROLL revoked: instance dropped whole");
-                BatchService.OwnFlag[_oEntry[i]] = 0; _oTri[i] = IntPtr.Zero; _gobParts++;
+                if (OwnershipCensus.WatchedEntry(_oEntry[i])) _log?.Info("[dumpframe] ENROLL revoked: instance dropped whole");
+                OwnershipCensus.OwnFlag[_oEntry[i]] = 0; _oTri[i] = IntPtr.Zero; _gobParts++;
             }
         _blendedDropped = 0;
-        if (BatchService.OwnRefusedByClass[(int)OwnedClass.Blended] > 0)
+        if (OwnershipCensus.OwnRefusedByClass[(int)OwnedClass.Blended] > 0)
             for (int i = 0; i < _ownCount; i++)
                 if (_oTri[i] != IntPtr.Zero && _oCls[i] == (byte)OwnedClass.Blended)
                 {
-                    if (BatchService.WatchedEntry(_oEntry[i])) _log?.Info("[dumpframe] ENROLL revoked: blended class dropped whole");
-                    BatchService.OwnFlag[_oEntry[i]] = 0; _oTri[i] = IntPtr.Zero; _blendedDropped++;
+                    if (OwnershipCensus.WatchedEntry(_oEntry[i])) _log?.Info("[dumpframe] ENROLL revoked: blended class dropped whole");
+                    OwnershipCensus.OwnFlag[_oEntry[i]] = 0; _oTri[i] = IntPtr.Zero; _blendedDropped++;
                 }
         // The radix digits are counted AFTER the sweep, so a dropped class costs no order slot.
         for (int i = 0; i < _ownCount; i++)
@@ -218,10 +218,10 @@ public sealed unsafe partial class OwnedDrawService
         // enrolled, and an enrollment that drew nothing is exactly the case this retry exists for.
         if (_orderCount == 0 && _resumeRetries > 0) { _resumeRetries--; _sinceEnroll = EnrollEvery; }
         else _resumeRetries = 0;
-        if (!BatchService.Active)
+        if (!PartTable.Active)
         {
             if (_enrollDiagLeft-- > 0)
-                _log?.Info("OwnedDrawService: BatchService inactive (drawhooks != batch or hooks unavailable) -- " +
+                _log?.Info("OwnedDrawService: part capture inactive (drawhooks != batch or hooks unavailable) -- " +
                            "the owned pass enrolls from its capture tables, so nothing can be owned");
             return;
         }
@@ -230,13 +230,13 @@ public sealed unsafe partial class OwnedDrawService
         if (_orderCount == 0)
         {
             if (_enrollDiagLeft-- > 0)
-                _log?.Info($"OwnedDrawService: enroll miss -- {BatchService.OwnScanDiag()}");
+                _log?.Info($"OwnedDrawService: enroll miss -- {OwnershipCensus.OwnScanDiag()}");
         }
         else if (!_reportedHit)
         {
             _reportedHit = true;
             _log?.Info($"OwnedDrawService: enrolled {_orderCount}/{candidates} ownable parts on {_vdoCount} VDOs " +
-                       $"({BatchService.OwnScanDiag()})");
+                       $"({OwnershipCensus.OwnScanDiag()})");
         }
     }
 

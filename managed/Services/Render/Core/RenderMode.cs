@@ -42,7 +42,7 @@ public static class RenderMode
         if (!Latch()) return;
         bool owned = _owned;
         // The wipe must land before OwnedDrawService's EndFrame sees the new TableGen at the bottom of this present.
-        BatchService.OnRenderModeEdge(owned);
+        PartTable.OnRenderModeEdge(owned);
         OwnedDrawService.OnRenderModeEdge(owned);
         _log?.Info(owned
             ? "[rendermode] OWNED -- SowxRender colour pass, shadow pipeline and batching live"

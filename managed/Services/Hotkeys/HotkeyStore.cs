@@ -177,6 +177,10 @@ public static class HotkeyStore
 
     public static void Save(ExtenderLog log)
     {
+        // Same deferral rule as Load (#190). NOT retryable, unlike ConfigFile.Save: the callers are one-shot
+        // consent actions, so a grant made while the user dir is unresolved persists only in memory. Reachable
+        // only if consent ever moves off the in-game modal, which runs long past pre-main.
+        if (!ConfigFile.Ready) return;
         try
         {
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);

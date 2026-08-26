@@ -11,7 +11,7 @@ namespace Sowx.Services.Render;
 public sealed unsafe partial class OwnedDrawService
 {
     // the ownership table (parallel arrays, index = owned slot; _order walks them grouped by VAO)
-    private static readonly int[] _oEntry = new int[MaxOwned];      // BatchService part-table slot
+    private static readonly int[] _oEntry = new int[MaxOwned];      // PartTable slot
     private static readonly IntPtr[] _oTri = new IntPtr[MaxOwned];  // Zero = revoked, harvested at enrollment
     private static readonly IntPtr[] _oNode = new IntPtr[MaxOwned];
     private static readonly IntPtr[] _oMat = new IntPtr[MaxOwned];

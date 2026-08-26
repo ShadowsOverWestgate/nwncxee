@@ -335,12 +335,12 @@ internal static class ShaderContract
                   && !DepthSafe(OwnedVs.Replace(ClipExpr, "gl_Position = uVP * (d.model * vec4(aPos, 1.0));"))
                   // ...and the suppression list is the capture list. These two disagreeing is the one #126
                   // failure that is silent in both directions -- geometry dropped, or drawn twice.
-                  && BatchService.OwnableBucket(0) && BatchService.OwnableBucket(1)
-                  && BatchService.OwnableBucket(4) && BatchService.OwnableBucket(7)
-                  && BatchService.OwnableBucket(8)
+                  && OwnershipCensus.OwnableBucket(0) && OwnershipCensus.OwnableBucket(1)
+                  && OwnershipCensus.OwnableBucket(4) && OwnershipCensus.OwnableBucket(7)
+                  && OwnershipCensus.OwnableBucket(8)
                   // #134: the dynamic gob pair joins, and joins TOGETHER -- the engine walks 2 then 3, and
                   // owning one without the other splits one instance's geometry across two renderers.
-                  && BatchService.OwnableBucket(2) && BatchService.OwnableBucket(3)
+                  && OwnershipCensus.OwnableBucket(2) && OwnershipCensus.OwnableBucket(3)
                   // 5 (refraction glass) stays the engine's: it reads a framebuffer copy taken after the
                   // owned bracket has already resolved.
                   // #129: 6 is deliberately NOT asserted here. OwnableBucket evaluates it AS
@@ -348,7 +348,7 @@ internal static class ShaderContract
                   // read as cover and catch nothing. What actually governs the water draw is _waterArmed
                   // (Usable && lightingOn && the program), and what keeps suppression honest is _waterDrew,
                   // which IterSight tests directly. Both are structural, and neither is assertable here.
-                  && !BatchService.OwnableBucket(5)
+                  && !OwnershipCensus.OwnableBucket(5)
                   // #92: a resref past the CResRef limit can never name a resource, so an override
                   // dropped under it would go silently unread.
                   && ShdFullbrightVs.Length <= ShaderResource.ResRefBytes

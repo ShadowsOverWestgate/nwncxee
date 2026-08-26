@@ -44,7 +44,7 @@ namespace Sowx.Services.Render;
 /// before the vcall. Drawing the whole set before the engine's first opaque walk is what keeps suppression
 /// honest: the engine re-buckets geometry every frame, so a part's enrolled bucket goes stale and splitting
 /// the draw by it lets the engine walk a part before we draw it -- double-draw, z-fighting.</para>
-/// <para>Ownership lives as a column on BatchService's part table (<see cref="BatchService.OwnFlag"/>)
+/// <para>Ownership lives as a column on the shared part table (<see cref="OwnershipCensus.OwnFlag"/>)
 /// so the iterator's existing <c>Find</c> serves both. The table is rebuilt wholesale at a frame boundary
 /// (enrollment, every <see cref="EnrollEvery"/> frames, before the owned block) -- that is the frame-atomic
 /// swap. The only mid-frame mutation is revocation, which is safe in both directions because suppression is
@@ -82,7 +82,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// <para>4096 was under the real population and it showed: a large area logged
     /// <c>4082/5631 parts owned</c> -- pinned at the cap, with ~1550 ownable parts spilling. That alone is
     /// "some tiles render vanilla", but the visible symptom was worse than that, because WHICH parts spill
-    /// is decided by a first-come-first-served walk of BatchService's hash table. That order is stable only
+    /// is decided by a first-come-first-served walk of PartTable's hash table. That order is stable only
     /// while the table's population is: one part recorded into a low slot pushes a previously-owned part
     /// past the cap, so every enrollment (~1/s) re-picked the winners and tiles flipped renderer under a
     /// static camera. Capacity above the population is what makes the churn stop existing rather than
@@ -94,7 +94,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// resident, up from 22MB. Bought deliberately: the renderer targets modern machines and object-dense
     /// areas, and a cap that cannot hold the area is a rendering fault, not a saving.</para>
     /// <para>Raising it is only meaningful because the group lookup it feeds became a hash at the same time
-    /// -- BatchService's linear group walk was O(n^2) across an area load, which is 24M field compares at
+    /// -- PartTable's linear group walk was O(n^2) across an area load, which is 24M field compares at
     /// 7000 groups and 13.4 BILLION at this cap. Without that, this number buys a load that never
     /// finishes.</para>
     /// <para>ponytail: still first-come-first-served, so an area past even this would flicker the way 4096
@@ -239,7 +239,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     private static byte* _mtxStacks;
 
     /// <summary>Pass generation: bumped at every RenderSinglePass entry (main view, reflection subframes,
-    /// each is its own pass). An owned draw stamps it into BatchService's OwnGen column; the iterator
+    /// each is its own pass). An owned draw stamps it into OwnershipCensus's OwnGen column; the iterator
     /// suppresses a part only when the stamp matches the pass it is walking.</summary>
     internal static int PassGen;
     /// <summary>#125: did the owned world block take THIS pass? The sky reads it for two things -- whether a
@@ -389,7 +389,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     /// true, so it reads as the reason at a skip site: <c>{ _skipTex++; if (W(i, "tex")) continue; }</c>.</summary>
     private static bool W(int i, string why)
     {
-        if (BatchService.WatchedEntry(_oEntry[i]) && _watchDrawLeft-- > 0)
+        if (OwnershipCensus.WatchedEntry(_oEntry[i]) && _watchDrawLeft-- > 0)
             _log?.Info($"[dumpframe] DRAW {why} (slot {i}, capture bucket {_oBucket[i]}, cls {(OwnedClass)_oCls[i]})");
         return true;
     }
@@ -416,7 +416,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
     private static int _litUnownable;
     /// <summary>#128: parts refused for carrying bone streams, and what the per-instance sweep then cost --
     /// already-accepted parts revoked because a SIBLING of theirs on the same instance was refused. Together
-    /// with <c>BatchService.RefusedGobs</c> on the same line they are the honest answer to "why is that
+    /// with <c>OwnershipCensus.RefusedGobs</c> on the same line they are the honest answer to "why is that
     /// creature still vanilla". Counted as PARTS, which is the figure the sweep actually produces: the gob
     /// count includes instances that had nothing accepted to revoke.</summary>
     private static int _skinUnownable, _gobParts;
@@ -571,7 +571,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         if (!SortSelfCheck(log) || !ShaderContract.SelfCheck(log)) return;
         // #128: same rule. A wrong gob offset draws a creature at the wrong alpha and a leaky refused-gob set
         // half-owns one -- both misrenders, neither of which errors.
-        if (!BatchService.GobSelfCheck(log)) return;
+        if (!OwnershipCensus.GobSelfCheck(log)) return;
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _mtxStacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
@@ -799,10 +799,10 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         {
             if (_oTri[i] == IntPtr.Zero) continue;
             int e = _oEntry[i];
-            if (BatchService.OwnGen[e] == PassGen && BatchService.OwnSupGen[e] != PassGen)
+            if (OwnershipCensus.OwnGen[e] == PassGen && OwnershipCensus.OwnSupGen[e] != PassGen)
             {
                 _unmatched++; _unmatchedBucket[_oBucket[i]]++; _unmatchedCls[_oCls[i]]++;
-                if (!BatchService.SightedThisFrame(e)) _unmatchedUnseen++;
+                if (!PartTable.SightedThisFrame(e)) _unmatchedUnseen++;
             }
         }
     }
@@ -904,7 +904,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
             if (j != i && _oTri[j] != IntPtr.Zero && _oGob[j] == gob) { Revoke(j); _oBone[j] = -1; }
     }
 
-    /// <summary>#86 frame-edge handler. Resuming enrolls from a table BatchService just wiped, so the first
+    /// <summary>#86 frame-edge handler. Resuming enrolls from a table PartTable just wiped, so the first
     /// attempts necessarily come up empty (parts must be re-recorded and complete first). Retry every pass
     /// until one lands rather than spending a full <see cref="EnrollEvery"/> cadence per attempt -- that is
     /// the difference between ownership resuming in a few frames and in a few seconds. The diagnostics are
@@ -918,12 +918,12 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         _reportedHit = false;
     }
 
-    /// <summary>Iterator sighting from BatchService's GetNextItem hook: an owned part just came up in the
+    /// <summary>Iterator sighting from BucketGate's GetNextItem hook: an owned part just came up in the
     /// engine's bucket walk. True = skip it (we drew it this pass and it sits in buckets 0/1); false = let
     /// the engine draw it, which is what a mid-frame revocation or a skipped owned draw falls back to.</summary>
     internal static bool IterSight(int e, int bucket)
     {
-        // #126: the bucket list is ONE list with the capture gate's (BatchService.OwnableBucket) -- 0/1 plus
+        // #126: the bucket list is ONE list with the capture gate's (OwnershipCensus.OwnableBucket) -- 0/1 plus
         // the three residual static classes 4/7/8, and since #134 the dynamic gob pair 2/3. Suppressing a
         // bucket the owned pass does not draw drops geometry; drawing one it does not suppress double-draws
         // it.
@@ -933,9 +933,9 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         // stood the copy down has stamped water parts it never drew, and suppressing those is a hole in the
         // sea rather than a fallback.
         if (bucket == WaterBucket && !_waterDrew) { _fallbacks++; return false; }
-        if (BatchService.OwnGen[e] != PassGen || !BatchService.OwnableBucket(bucket))
+        if (OwnershipCensus.OwnGen[e] != PassGen || !OwnershipCensus.OwnableBucket(bucket))
         { _fallbacks++; return false; }
-        BatchService.OwnSupGen[e] = PassGen;
+        OwnershipCensus.OwnSupGen[e] = PassGen;
         _skips++;
         return true;
     }
@@ -957,7 +957,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         Beams.OnRepack(vdo);
     }
 
-    /// <summary>Frame tick from the present (after the bucket walks). Module unload, a BatchService table
+    /// <summary>Frame tick from the present (after the bucket walks). Module unload, a PartTable
     /// wipe and a lost 4.6 context all invalidate every recorded identity wholesale.</summary>
     public static void EndFrame()
     {
@@ -982,7 +982,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) RevokeAll("module unload");
         _wasInModule = inModule;
-        if (_tableGen != BatchService.TableGen) { RevokeAll("part table wiped"); _tableGen = BatchService.TableGen; }
+        if (_tableGen != PartTable.TableGen) { RevokeAll("part table wiped"); _tableGen = PartTable.TableGen; }
 
         // the overflow counter lives in a GL buffer, so its readback has to happen inside the 4.6 bracket:
         // arm it one frame ahead of the log so the value the log prints is this period's
@@ -1004,8 +1004,8 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
                    // if the sweep is simply doing its job -- and only the split says which.
                    (_skinUnownable == 0 && _gobParts == 0 ? "" :
                        $", {_skinUnownable} skinned parts left to the engine, {_gobParts} accepted parts revoked " +
-                       $"by the per-instance sweep (out of {BatchService.RefusedGobs} instances with a refused part)" +
-                       (BatchService.RefusedGobOverflow ? " -- REFUSED-GOB SET OVERFLOWED, every instance dropped" : "")) +
+                       $"by the per-instance sweep (out of {OwnershipCensus.RefusedGobs} instances with a refused part)" +
+                       (OwnershipCensus.RefusedGobOverflow ? " -- REFUSED-GOB SET OVERFLOWED, every instance dropped" : "")) +
                    // #137: and what the skinmesh class itself did. A zero everywhere with the class armed
                    // means no cloak was on screen, which is a different statement from "the pose failed" --
                    // so the failures are named, not merely absent.
@@ -1042,9 +1042,9 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
                     "the engine at all -- geometry it culled and we drew anyway; the rest were walked and " +
                     "not suppressed, which is a bucket-list gap) (by capture bucket" + UnmatchedByBucket() +
                     $"; classes {string.Join("/", _unmatchedCls)})") + ", " +
-                   (_watchEnrolled == 0 && BatchService.WatchEngineDraws == 0 ? "" :
+                   (_watchEnrolled == 0 && OwnershipCensus.WatchEngineDraws == 0 ? "" :
                        $"dumptex {_watchEnrolled} enrolled, {(float)_watchSubmitted / _frames:F1} submitted/frame, " +
-                       $"{(float)BatchService.WatchEngineDraws / _frames:F1} engine draws/frame, ") +
+                       $"{(float)OwnershipCensus.WatchEngineDraws / _frames:F1} engine draws/frame, ") +
                    $"foreign-scene buckets {(float)_foreignBuckets / _frames:F1}/frame, " +
                    // #125: "masked" is the criterion, not "captured" -- it counts the frames the engine's own
                    // sky wrote nothing because the owned one had already drawn. Captured but never masked
@@ -1082,7 +1082,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
                    // The coverage question -- "what is the engine still drawing, and why?" -- was only
                    // answerable from the one-shot enroll diag, which a healthy session prints once at startup
                    // and never again. It belongs where the numbers it explains are.
-                   $"; {BatchService.OwnScanDiag()}" +
+                   $"; {OwnershipCensus.OwnScanDiag()}" +
                    // Nothing lit means nothing samples the shadow maps -- the whole owned lit stage, cascades
                    // and cubes included, is dead code for the session. Loud, because it looks like working
                    // output: parts are owned, cubes render, and the frame is merely fullbright.
@@ -1102,7 +1102,7 @@ public sealed unsafe partial class OwnedDrawService : IExtenderService
         GrassField.ResetPeriod();
         Beams.ResetPeriod();
         Particles.ResetPeriod();
-        _watchSubmitted = 0; BatchService.WatchEngineDraws = 0;
+        _watchSubmitted = 0; OwnershipCensus.WatchEngineDraws = 0;
         _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = _skipUnseen = _skipGob = 0;
         _ownDissolve = 0; _ownFade = 0;
         Array.Clear(_unmatchedBucket); Array.Clear(_unseenBucket); Array.Clear(_unmatchedCls); _unmatchedUnseen = 0;

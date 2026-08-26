@@ -11,10 +11,9 @@ namespace Sowx.Services.Render;
 /// <summary>
 /// #93 (map #68, spec #78 M2): the one owned submission path every rigid shadow caster goes through.
 /// Tiles and placeables are the same thing here -- a part with an indexed VDO, an index range and a model
-/// matrix -- so there is no static/dynamic split and no kind-based branching anywhere below. What separates
-/// two casters is whether their transform actually CHANGED since last frame, which is what #97's scheduler
-/// (<see cref="RenderView"/>) partitions on: still casters are baked into a cached depth mirror and reused,
-/// movers are drawn over the composite every frame.
+/// matrix -- so there is no static/dynamic split and no kind-based branching anywhere below. #187: there is
+/// no motion split either. Every view bakes what it sees, every frame -- the cost is honest and no view can
+/// hold depth for a world that has since moved.
 /// <para>Submission is <c>glMultiDrawElementsIndirect</c> out of persistent-mapped storage: one immutable
 /// command buffer and one per-draw SSBO, each a 3-region ring with a fence per region, staged by the CPU and
 /// never re-allocated. Per-draw data is indexed by <c>gl_BaseInstance</c> rather than <c>gl_DrawID</c>
@@ -28,8 +27,8 @@ namespace Sowx.Services.Render;
 /// view, out of a ring sized for that view class. Nothing about a caster differs between the two -- the sun
 /// and a torch draw the same geometry through the same command format.</para>
 /// <para>#96 puts CREATURE casters through that same path: same command format, same rings, same views, one
-/// extra per-draw field. What differs is where they come from -- a creature has no enrollment and no cache,
-/// because its pose is only true for the frame it was seen in. Each frame the passive-capture bracket around a
+/// extra per-draw field. What differs is where they come from -- a creature has no enrollment, because its
+/// pose is only true for the frame it was seen in. Each frame the passive-capture bracket around a
 /// creature part's own engine draw records its (VDO, item, prim) and its live model matrix.
 /// <para>An NWN creature turns out to be mostly PARTS-BASED (live-verified by dumping the VAOs, 2026-08-20):
 /// each body piece is a rigid mesh parented to a bone, carrying position/uv/normal/tangent and NO bone stream,
@@ -57,9 +56,8 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>Sun ring depth: regions in flight before the CPU has to wait on a fence. Three frames is the
     /// usual "CPU one frame ahead, GPU one behind, one spare" figure -- but a region is consumed per VIEW, and
     /// #94 submits one per cascade, so a 3-region ring would wrap inside a single frame and stall on a fence
-    /// the same frame issued. #97 doubles the per-cascade worst case again: a re-baking view stages its still
-    /// set and its movers as two separate submissions.</summary>
-    private const int SunRegions = 4 * MaxCascades;
+    /// the same frame issued. One submission per view since #187, so two frames of cascades is the ceiling.</summary>
+    private const int SunRegions = 2 * MaxCascades;
     /// <summary>Casters staged per CUBE face. A local light's view only ever holds geometry inside one torch's
     /// reach, so it needs nothing like the sun's capacity.
     /// <para>This is the one capacity that is NOT free to raise: the cube ring reserves
@@ -158,19 +156,12 @@ public sealed unsafe class CasterPass : IExtenderService
     /// unrolled a sampler per slot, and a cube ARRAY has no such ceiling -- the cost is VRAM and nothing else.
     /// <para>#151 raised the default from 8 to 24: a torch-lit street routinely declares 60+ shadow-casting
     /// lights, and at 8 the budget's membership churned as the player walked, which is what read as shadows
-    /// popping in and out. 24 cubes at 512px is ~300MB of DEPTH_COMPONENT24 across the live array and its
-    /// bake mirror. It only became affordable once the slot stopped being the light's RANK -- a still cube
-    /// costs its mover pass and nothing else, so the count that matters for CPU is how many lights MOVE, not
-    /// how many have a slot. Lower <c>cube_count</c> (or <c>cube_size</c>) on a small card.</para></summary>
+    /// popping in and out. Since #187 every slot in the budget bakes six faces every frame, so this count IS
+    /// the pass's cost. Lower <c>cube_count</c> (or <c>cube_size</c>) on a small card.</para></summary>
     private static int _cubeLights = 32, _cubeSize = 512;
     /// <summary>Near plane shared by every cube face. Bigger is better depth precision; it also means a
     /// caster closer to the light than this is not recorded, so it stays small.</summary>
     private const float CubeNear = 0.3f;
-    /// <summary>#151b: how far a light may drift from where its cube was baked before the cube is stale.
-    /// Flickering torches jitter position and range by less than this every frame; bit-exact equality made
-    /// each of them a permanent six-face re-bake. The cube keeps its BAKED geometry while inside the
-    /// tolerance, so the receiver's depth comparison never drifts from the depth it samples.</summary>
-    private const float LightJitterEps = 0.25f;
     /// <summary>#151 shadow LOD: a caster whose world radius spans fewer than this many TEXELS of the map it
     /// is baking into is dropped from that view. Sub-texel casters cannot produce a stable shadow -- they
     /// alias in and out as the fit shifts -- so this trades nothing visible for most of a far cascade's
@@ -182,21 +173,15 @@ public sealed unsafe class CasterPass : IExtenderService
     private static float _lodTexels = LodBoot;
     /// <summary>Boot value of <see cref="_lodTexels"/>, and what <c>/shadow reset</c> restores.</summary>
     private const float LodBoot = 0f;
-    /// <summary>#151: per sun-cascade dirty RECT -- the texel-space bounds the mover pass last drew into.
-    /// A composite restores only the union of last frame's rect and this frame's from the cache, instead of
-    /// the whole 2048^2 layer: movers cluster around the PC, so the copy shrinks from 16MB to however much
-    /// actually moved. Invalid (full restore) after a bake failure or before the first bake.</summary>
-    private static readonly int[] _sunRect = new int[MaxCascades * 4];
-    private static readonly bool[] _sunRectValid = new bool[MaxCascades];
 
     /// <summary>The cube array holding the local-light shadows (0 = none yet), layer <c>6*slot + face</c>.</summary>
     internal static uint CubeTex;
     /// <summary>Cubes fully rendered on the last pass -- a light that lost a face to a ring stall is not in
     /// this count, so the receiver never samples a cube with one stale face in it.</summary>
     internal static int CubeCount;
-    /// <summary>Per cube slot: the position the cube was BAKED from (xyz) and its far plane (w). The receiver
-    /// reads the light's geometry from HERE, never from the live light -- a torch that moved between the bake
-    /// and the sample would otherwise shift the whole comparison and detach its own shadow.</summary>
+    /// <summary>Per cube slot: the position the cube was baked from (xyz) and its far plane (w). The receiver
+    /// reads the light's geometry from HERE, never from the live light, so its depth comparison stays welded
+    /// to the depth it samples.</summary>
     internal static readonly float[] CubeLight = new float[MaxCubes * 4];
     /// <summary>Engine light identity per cube slot (equality only, never dereferenced -- the engine frees
     /// PartLight on area boundaries). This is what binds a light in the walk's snapshot to its cube.</summary>
@@ -303,34 +288,11 @@ public sealed unsafe class CasterPass : IExtenderService
     /// shadow, take the max row length of the matrix's 3x3 as the scale factor here.</para></summary>
     private static readonly float[] _cCx = new float[MaxCasters], _cCy = new float[MaxCasters],
                                     _cCz = new float[MaxCasters], _cR = new float[MaxCasters];
-    /// <summary>Last frame's model matrix per caster -- the whole of the motion classification.</summary>
-    private static readonly float[] _cPrev = new float[MaxCasters * 16];
-    /// <summary>#97's input: did this caster's transform change since the previous collect?</summary>
-    internal static readonly bool[] Moved = new bool[MaxCasters];
-    /// <summary>Last collect's <see cref="Moved"/>. What the scheduler keys on is not motion but a change of
-    /// MEMBERSHIP in the moved set: a caster that keeps moving is drawn on top of the cache every frame and
-    /// costs it nothing, while one that starts or stops moving changes what belongs in the cache.</summary>
-    private static readonly bool[] _wasMoved = new bool[MaxCasters];
-    /// <summary>#151c: frames this caster's matrix has now been still. A caster is only re-admitted to the
-    /// caches after <see cref="StillLatch"/> still frames -- the live log showed ~6 membership flips a frame
-    /// in steady state (animating placeables pausing between loops), and every flip is a six-face re-bake of
-    /// every cube in reach. A flapping caster is a MOVER: drawn over the composite each frame for the price
-    /// of a draw, not a bake. A truly stopped one bakes in once, a second late, which nothing can see.</summary>
-    private static readonly short[] _stillFrames = new short[MaxCasters];
-    private const short StillLatch = 60;
-    /// <summary>#135: casters whose geometry moves without their matrix moving -- danglymesh foliage. Never
-    /// cached, drawn over the composite every frame, exactly as a creature is.</summary>
-    private static readonly bool[] _cDangly = new bool[MaxCasters];
-    /// <summary>How many of the per-frame casters are dangly, for the period line: it is the cost this
-    /// exemption adds to every view that can see foliage.</summary>
-    private static long _danglySum;
     private static readonly int[] _order = new int[MaxCasters];
     private static readonly int[] _sortCount = new int[MaxVdos];
     private static int _casterCount;
-    /// <summary>Casters whose transform changed in the last collect (the moved/still partition's size).</summary>
-    internal static int MovedCount;
 
-    // --- #96 skinned casters. No table, no enrollment, no cache: a skinned part is re-recorded from scratch
+    // --- #96 skinned casters. No table and no enrollment: a skinned part is re-recorded from scratch
     // every frame out of the passive-capture bracket around its own engine draw, which is the one moment its
     // bone matrices are live. A frame that did not see a part's bones simply has no record for it -- so a
     // skinned shadow can blink, but it can never be a frame stale.
@@ -386,48 +348,29 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>Bone SLOT of this live caster, or -1 for a rigid one. The ring region's base is added at
     /// submit -- Collect runs before the bone upload picks a region, and the record wants the flat index.</summary>
     private static readonly int[] _liveBone = new int[MaxCasters];
-    /// <summary>#97: is this live caster a MOVER -- drawn on top of the composite every frame and deliberately
-    /// absent from the cached depth? True for every creature caster (a pose is only true for the frame it was
-    /// captured in) and for a rigid caster whose transform changed this collect.</summary>
-    private static readonly bool[] _liveMoved = new bool[MaxCasters];
     /// <summary>Creature casters occupy the head of the live list (#100 stages them first); the static world
     /// follows. Submit uses the split to report what a view actually took.</summary>
     private static int _liveCreatures;
     private static int _liveCount;
-    /// <summary>#151: the live list split into STILL and MOVER indices, once per <see cref="Collect"/>.
-    /// Every view used to walk all <see cref="_liveCount"/> casters and drop the wrong half on the first
-    /// line -- 52 views over 10k casters is half a million iterations a frame spent proving nothing. A view
-    /// now iterates only the partition it stages, which is what makes a cube affordable enough to have many
-    /// of them.</summary>
-    private static readonly int[] _stillIdx = new int[MaxCasters], _moverIdx = new int[MaxCasters];
-    private static int _stillCount, _moverCount;
-    /// <summary>#151: the still casters within reach of ONE cube light, filtered once and then walked by all
+    /// <summary>The whole live list as an index list, so every view stages through one code path. Filled once
+    /// per <see cref="Collect"/>; the sun's views take it entire.</summary>
+    private static readonly int[] _allIdx = new int[MaxCasters];
+    /// <summary>#151: the casters within reach of ONE cube light, filtered once and then walked by all
     /// six of its faces. The sphere test is face-independent, so doing it per face was six times the work.</summary>
     private static readonly int[] _lightIdx = new int[MaxCasters];
-    /// <summary>#151b: the MOVERS within one cube light's reach, filtered once per light. Zero of them on a
-    /// clean composited cube is what lets the whole light skip -- no restore copies, no submits, no fences.</summary>
-    private static readonly int[] _lightMovIdx = new int[MaxCasters];
-    /// <summary>#151c: does this FACE's live layer still equal its cache (index <c>slot * 6 + face</c>)?
-    /// True after a bake or restore that drew zero movers into it; false the moment one is drawn. A clean
-    /// face whose pyramid holds no movers this frame skips its restore copy and its submit outright -- and
-    /// since a swaying vine occupies one or two faces of a torch's cube, not six, this is what turns 144
-    /// composited faces a frame into the handful that actually see something moving.</summary>
-    private static readonly bool[] _faceClean = new bool[MaxCubes * CubeFaces];
-    /// <summary>#151b: membership flips this frame (a rigid caster that started or stopped moving), as world
-    /// spheres. A flip used to bump <c>_worldGen</c> -- invalidating ALL views for a door swinging somewhere
-    /// -- which the live log showed as 70-107 of 148 views re-baking every frame in a busy area. Now only the
-    /// views whose region the flipped caster intersects are invalidated. Overflow falls back to the global
-    /// bump, counted.</summary>
-    private const int MaxFlips = 128;
-    private static readonly float[] _flipX = new float[MaxFlips], _flipY = new float[MaxFlips],
-                                    _flipZ = new float[MaxFlips], _flipR = new float[MaxFlips];
-    private static int _flipCount;
-    private static long _genBumps, _flipSum, _cubeSkips, _degenSum, _ownedInstanceCasts;
-    /// <summary>#151: this frame's Collect lost over half the table -- render no views from it.</summary>
-    private static bool _degenerate;
+    private static long _ownedInstanceCasts;
+
+    /// <summary>Frames where <see cref="Collect"/> lost over half its candidates to a live re-read (a mid-frame
+    /// Repack moving the item tables, a mass revoke). #187 deleted the guard that skipped such a frame -- with
+    /// no caches to poison there is nothing to hold back -- but the frame is still real, and now bakes
+    /// near-empty depth instead: shadows drop out for one frame rather than freezing. The counter stays so that
+    /// flicker is attributable rather than mysterious.</summary>
+    private static long _degenSum;
     /// <summary>Creature casters the last <see cref="Submit"/> staged -- the number that answers "why did the
     /// shadow vanish": a cube whose faces take zero creature casters cannot show one.</summary>
     private static int _submitCreatures;
+    /// <summary>Casters the last <see cref="Submit"/> actually staged (post-cull), for the cube tally.</summary>
+    private static int _submitStaged;
     /// <summary>Cutout-caster forensics: draws that ran the 0.2 discard this period, and the three ways a
     /// masked caster can fail to reach the bake -- no UV stream to sample with, no diffuse this frame, or no
     /// cutout program at all. Each of them is a MISSING leaf shadow; none of them is the solid quad.</summary>
@@ -485,73 +428,29 @@ public sealed unsafe class CasterPass : IExtenderService
     private static int _sinceEnroll = EnrollEvery, _tableGen = -1;
     private static bool _wasInModule, _loggedOnce, _noSunLogged, _reportedHit;
     private static int _frames, _lastEnrolled, _lastCandidates, _overflow;
-    private static long _draws, _mdiCalls, _movedSum, _culled, _fenceStalls, _lodCulled;
+    private static long _draws, _mdiCalls, _culled, _fenceStalls, _lodCulled;
     /// <summary>Which half of the fit test rejected a caster -- off the light axis, or past the fit's ends.
     /// Without the split, "everything culled" and "nothing enrolled" read identically in the period line.</summary>
     private static long _cullPerp, _cullAlong;
     /// <summary>Casters a VIEW could not stage because its ring region filled (distinct from the enrollment
     /// overflow, which is the whole table being over capacity), and cubes rendered per frame.</summary>
     private static long _viewOverflow, _cubeLightsSum;
+    /// <summary>#186: casters STAGED into cube faces this period -- the cube-submission figure the local-light
+    /// reach is measured by. Separate from <see cref="_draws"/>, which the sun's four cascades dominate.</summary>
+    private static long _cubeStaged;
     private static int _cullDiagLeft = 4;
 
-    // --- #97 the shadow scheduler. Bake timing is ours: every view's depth is CACHED in a mirror of its own
-    // array and composited back with glCopyImageSubData each frame, with only the movers drawn on top. What
-    // invalidates a cache is data, never a kind: the world's moved-set membership changing (_worldGen), the
-    // view's own fit changing (an exactly-equal light view-projection is the whole test -- the fit texel-snaps,
-    // so standing still reproduces the same matrix bit for bit), a cube's light moving or being reassigned,
-    // and an area change (Release bumps the generation).
-    /// <summary>Bumped whenever the STILL world changes: a caster joining or leaving the moved set, a caster
-    /// revoked mid-window, a re-enrollment that came back with a different set, an area change. Everything
-    /// cached is stamped with it.</summary>
-    private static int _worldGen;
-    /// <summary>Enrollment set fingerprint (count + pointer sum). Equal fingerprints mean the same casters in
-    /// the same slots, so the cached depth -- and each slot's motion history -- survive a re-enrollment; that
-    /// is what stops a full re-bake once a second while the player stands still.</summary>
-    private static long _setSig;
-    private static int _setCount;
-    /// <summary>Depth mirrors of <see cref="CascadeTex"/> / <see cref="CubeTex"/>, same format and layout, each
-    /// holding the last STILL-only bake of the corresponding layer. Nothing samples them -- they are copy
-    /// sources, which is why one texture per array is enough and why the receiver is untouched.</summary>
-    private static uint _cascadeCache, _cubeCache;
-    /// <summary>Per cascade: the view-projection its cache was baked with, the world generation it was baked
-    /// at, and whether it holds anything. The BAKED matrix is what the composite's movers draw with and what
-    /// <see cref="CascadeVp"/> publishes -- a recomputed one would not line up with the cached depth.</summary>
-    private static readonly float[] _sunBakedVp = new float[MaxCascades * 16];
-    /// <summary>The focus and sun direction the cache was baked around. A composite culls its movers against
-    /// THESE, not the live fit: a deferred far cascade is holding a view the world has since moved on from,
-    /// and culling its movers against the new one would drop a mover that is inside the view it is drawing.</summary>
-    private static readonly Vector3[] _sunBakedFocus = new Vector3[MaxCascades], _sunBakedDir = new Vector3[MaxCascades];
-    private static readonly int[] _sunGen = new int[MaxCascades];
-    private static readonly bool[] _sunValid = new bool[MaxCascades];
-    /// <summary>Frame each cascade's cache was baked on. The stagger slot goes to the OLDEST needy cascade,
-    /// which is what makes it a rotation: picking the innermost needy one instead re-bakes cascade 1 every
-    /// frame and never reaches 2 or 3 while the sun keeps moving.</summary>
-    private static readonly int[] _sunBakedSeq = new int[MaxCascades];
-    /// <summary>Scratch for the stagger decision -- which cascades want a re-bake this frame.</summary>
-    private static readonly bool[] _sunNeeds = new bool[MaxCascades];
-    /// <summary>Per cube slot: the light it was baked for, where that light stood, its reach, and the world
-    /// generation. A carried torch fails the position test every frame, so it is never cached -- the ticket's
-    /// "correct every frame" comes out of the same rule as everything else, not a special case.</summary>
-    private static readonly IntPtr[] _cubeBakedId = new IntPtr[MaxCubes];
-    private static readonly Vector3[] _cubeBakedPos = new Vector3[MaxCubes];
-    private static readonly float[] _cubeBakedFar = new float[MaxCubes];
-    private static readonly int[] _cubeGen = new int[MaxCubes];
-    private static readonly bool[] _cubeValid = new bool[MaxCubes];
-    /// <summary>Views re-baked and views rendered on the last frame -- the overlay's evidence that a static
-    /// scene costs near-zero bake -- plus the CPU milliseconds the shadow slot took.
-    /// <para>The milliseconds are CPU SUBMISSION only, and the re-baked count is the figure to read: a
-    /// composited frame still copies a full depth layer per view server-side (~117MB a frame at the shipped
-    /// 4 cascades + 8 cubes), which a Stopwatch around GL calls cannot see. ponytail: a GPU timer query would
-    /// measure the copies properly -- worth it if the composite ever looks like the cost rather than the
-    /// saving.</para></summary>
-    internal static int LastBaked, LastViews;
+    /// <summary>Views rendered on the last frame -- every one of them a bake since #187 -- plus the CPU
+    /// milliseconds the shadow slot took. The milliseconds are CPU SUBMISSION only; <see cref="_qShadow"/> is
+    /// what measures the GPU side.</summary>
+    internal static int LastViews;
     internal static float LastShadowMs;
-    /// <summary>#151: GPU time of the whole shadow bracket (bakes, restore copies, mover draws). The CPU
-    /// stopwatch cannot see the server-side depth copies a composited frame is made of, and the live logs
-    /// had ~12ms of frame time no CPU timer accounted for -- this query is what convicts or clears them.</summary>
+    /// <summary>#151: GPU time of the whole shadow bracket. The CPU stopwatch only sees submission, and the
+    /// live logs had ~12ms of frame time no CPU timer accounted for -- this query is what convicts or clears
+    /// the pass, and it is the number #187's regression is read off.</summary>
     private static GpuQuery _qShadow;
     private static bool _qShadowOn;
-    private static long _bakedSum, _viewSum;
+    private static long _viewSum;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
@@ -637,7 +536,7 @@ public sealed unsafe class CasterPass : IExtenderService
         var next = (delegate* unmanaged<IntPtr, void>)*_repackSlot;
         if (next != null) next(vdo);
         for (int i = 0; i < _casterCount; i++)
-            if (_cTri[i] != IntPtr.Zero && _cVdo[i] == vdo) { _cTri[i] = IntPtr.Zero; _worldGen++; _genBumps++; }
+            if (_cTri[i] != IntPtr.Zero && _cVdo[i] == vdo) _cTri[i] = IntPtr.Zero;
         // the live list was resolved from those same tables earlier this frame: drop it wholesale rather
         // than submit a view from index ranges that have already moved
         _liveCount = 0;
@@ -831,9 +730,9 @@ public sealed unsafe class CasterPass : IExtenderService
                   // same pin on the cube side: uLocalLight is indexed by a slot the CPU hands out, so a
                   // shorter array reads out of bounds the moment the count passes it
                   && OwnedLights.LocalShadowLib.Contains($"uLocalLight[{MaxCubes}]")
-                  // #97 stages a re-baking view TWICE (still set, then movers), so a frame's worst case is two
-                  // regions per view -- a ring that only covered one would stall on a fence it issued itself
-                  && SunRegions >= MaxCascades * 2 * 2 && RegionsPerCube >= CubeFaces * 2;
+                  // one region per view, and the CPU runs a frame ahead: a ring that only covered one frame's
+                  // views would stall on a fence it issued itself
+                  && SunRegions >= MaxCascades * 2 && RegionsPerCube >= CubeFaces * 2;
         // #100's face cull, brute-forced over the +X face (forward = +X, so t = dx and the pyramid is
         // |dy| <= dx, |dz| <= dx). The invariant that matters is one-directional: NOTHING inside the pyramid
         // may be culled. Admitting a little extra is the deliberate cost of a rotation-invariant test.
@@ -849,82 +748,6 @@ public sealed unsafe class CasterPass : IExtenderService
         // and it must still reject the obvious misses, else it is culling nothing at all
         if (ok && (!FaceCulls(100f, -10f, 0f) || !FaceCulls(101f, 1f, 0f)))
         { ok = false; log.Info("CasterPass.SelfCheck FAIL: face cull admits geometry behind or beside the face"); }
-
-        // #97's cache-validity test, which is the whole scheduler in one comparison: an unchanged fit MUST
-        // reproduce the baked matrix exactly (else nothing ever composites and a static scene re-bakes at
-        // 60Hz), and a moved fit MUST NOT (else the cache outlives the view it describes and shadows freeze
-        // where the geometry no longer is). Both failures are silent on screen -- one is a cost, the other a
-        // stale image that still looks like a shadow.
-        if (ok)
-        {
-            var dir = Vector3.Normalize(new Vector3(0.3f, 0.4f, -0.9f));
-            var at = new Vector3(11.25f, -7.5f, 2f);
-            float radius = ShadowMath.CascadeRadius(0, _cascades, _maxDist);
-            float texel = 2f * radius / _mapSize;
-            Matrix4x4 baked = ShadowMath.DirectionalLightViewProj(dir, at, radius, FitMargin(), _mapSize);
-            fixed (float* b = _sunBakedVp) *(Matrix4x4*)b = baked;
-            Matrix4x4 same = ShadowMath.DirectionalLightViewProj(dir, at, radius, FitMargin(), _mapSize);
-            Matrix4x4 moved = ShadowMath.DirectionalLightViewProj(dir, at + new Vector3(4f * texel, 0f, 0f),
-                                                                 radius, FitMargin(), _mapSize);
-            if (!SameSunVp(0, &same) || SameSunVp(0, &moved))
-            {
-                ok = false;
-                log.Info("CasterPass.SelfCheck FAIL: the cascade cache-validity test does not separate an " +
-                         "unchanged fit from a moved one");
-            }
-            fixed (float* b = _sunBakedVp) *(Matrix4x4*)b = default;
-        }
-
-        // #151's slot rule. What it must get right: a light KEEPS its slot when the ranking reshuffles (the
-        // whole point -- a re-slotted light re-bakes six faces), no two lights ever share one (an aliased
-        // slot shows one light's shadow under another), and a newcomer's slot is invalidated so it cannot
-        // composite over the previous tenant's depth. All three are invisible on screen until they are not.
-        if (ok)
-        {
-            const int slots = 4;
-            var A = (IntPtr)0x10; var B = (IntPtr)0x20; var C = (IntPtr)0x30; var D = (IntPtr)0x40;
-            bool* valid = stackalloc bool[MaxCubes];
-            IntPtr* baked = stackalloc IntPtr[MaxCubes];
-            IntPtr* want = stackalloc IntPtr[MaxCubes];
-            int* got = stackalloc int[MaxCubes];
-            for (int j = 0; j < MaxCubes; j++) { valid[j] = false; baked[j] = IntPtr.Zero; }
-
-            want[0] = A; want[1] = B; want[2] = C;
-            AssignCubeSlots(want, 3, slots, valid, baked, got);
-            if (got[0] != 0 || got[1] != 1 || got[2] != 2)
-            { ok = false; log.Info("CasterPass.SelfCheck FAIL: a cold cube budget does not fill its slots in order"); }
-            for (int s = 0; s < 3; s++) { valid[got[s]] = true; baked[got[s]] = want[s]; }
-
-            // the walking case: C is now nearest, A furthest, and D has entered the budget
-            want[0] = C; want[1] = D; want[2] = A; want[3] = B;
-            AssignCubeSlots(want, 4, slots, valid, baked, got);
-            if (got[0] != 2 || got[2] != 0 || got[3] != 1)
-            { ok = false; log.Info("CasterPass.SelfCheck FAIL: a light loses its cube slot when the ranking reshuffles -- every walking frame re-bakes"); }
-            if (got[1] != 3 || valid[3])
-            { ok = false; log.Info("CasterPass.SelfCheck FAIL: a newcomer did not take a free slot, or took one without invalidating its cache"); }
-            for (int a = 0; a < 4; a++) for (int b = a + 1; b < 4; b++)
-                if (got[a] == got[b]) { ok = false; log.Info("CasterPass.SelfCheck FAIL: two lights were handed the same cube slot"); }
-
-            // two unidentified lights must not match each other's blank id into one slot
-            for (int j = 0; j < MaxCubes; j++) { valid[j] = true; baked[j] = IntPtr.Zero; }
-            want[0] = IntPtr.Zero; want[1] = IntPtr.Zero;
-            AssignCubeSlots(want, 2, slots, valid, baked, got);
-            if (got[0] == got[1])
-            { ok = false; log.Info("CasterPass.SelfCheck FAIL: two lights with no identity share a cube slot"); }
-        }
-
-        // #151b's scoped invalidation: a flip must kill exactly the cubes whose sphere it touches.
-        if (ok)
-        {
-            _cubeValid[0] = true; _cubeBakedPos[0] = new Vector3(0, 0, 0); _cubeBakedFar[0] = 10f;
-            _cubeValid[1] = true; _cubeBakedPos[1] = new Vector3(100, 0, 0); _cubeBakedFar[1] = 10f;
-            _flipX[0] = 5f; _flipY[0] = 0f; _flipZ[0] = 0f; _flipR[0] = 1f; _flipCount = 1;
-            ApplyFlips();
-            if (!(_cubeValid[0] == false && _cubeValid[1] == true))
-            { ok = false; log.Info("CasterPass.SelfCheck FAIL: a membership flip does not invalidate exactly the cubes in its reach"); }
-            _cubeValid[0] = false; _cubeValid[1] = false; _cubeBakedPos[0] = default; _cubeBakedPos[1] = default;
-            _cubeBakedFar[0] = 0f; _cubeBakedFar[1] = 0f; _flipCount = 0;
-        }
 
         log.Info(ok
             ? "CasterPass.SelfCheck: passed"
@@ -952,9 +775,9 @@ public sealed unsafe class CasterPass : IExtenderService
         _skinLive = _skinCount; _skinCount = 0;   // the PREVIOUS colour pass's poses -- #113's named lag
         _boneSlotsLive = _boneSlots; _boneSlots = 0;
         _skinSum += _skinLive;
-        // The overlay's schedule readout describes THIS frame, so it has to be zeroed ahead of every early-out
-        // below -- a frozen "sh 4/4" left over from the last frame that rendered reads as a pass still baking.
-        LastBaked = 0; LastViews = 0;
+        // The overlay's view readout describes THIS frame, so it has to be zeroed ahead of every early-out
+        // below -- a frozen count left over from the last frame that rendered reads as a pass still baking.
+        LastViews = 0;
         Lifecycle();
         // AFTER the period line, which reports it: zeroing the timing ahead of Lifecycle made every period
         // line read 0.00 ms, since the frame's own measurement lands further down.
@@ -963,10 +786,8 @@ public sealed unsafe class CasterPass : IExtenderService
         if (_sinceEnroll < EnrollEvery) _sinceEnroll++; else Enroll();
         if (_casterCount == 0 && _skinLive == 0) return;
 
-        // Collect FIRST and unconditionally: the motion classification is a per-frame fact about the world,
-        // not a property of any one view. Running it inside a view's submit would freeze Moved/MovedCount at
-        // stale values on a frame that submits nothing (interiors have no sun), and would report every caster
-        // as still on views 2..N once #94/#95 submit several per frame.
+        // Collect FIRST and unconditionally: resolving the world is a per-frame fact, not a property of any
+        // one view, and #94/#95 submit several views off the one collect.
         Collect();
 
         // The sun is the only view with an exterior precondition. The cubes light interiors -- which is where
@@ -989,11 +810,9 @@ public sealed unsafe class CasterPass : IExtenderService
         // it is the feed this pass reads. The camera fallback stands if that walk ever moves in here.
         Vector3 focus = FrameInputs.HasFocus ? FrameInputs.Focus : FrameInputs.CameraPos;
 
-        if (_degenerate) return;   // stale views for one frame beat empty caches forever
         if (!GlContextService.Enter()) return;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         _qShadowOn = _qShadow.Begin(Gl.TIME_ELAPSED);
-        ApplyFlips();
         UploadBones();
         // #117: the shadow bracket's passes come off FrameGraph, not from the order these two lines sit in.
         foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
@@ -1011,7 +830,7 @@ public sealed unsafe class CasterPass : IExtenderService
         }
         if (_qShadowOn) { _qShadow.End(Gl.TIME_ELAPSED); _qShadowOn = false; }
         LastShadowMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000f / System.Diagnostics.Stopwatch.Frequency;
-        _bakedSum += LastBaked; _viewSum += LastViews;
+        _viewSum += LastViews;
         // One fence per FRAME on the bone region: it was written once before any view and read by all of them.
         // Only a frame that actually WROTE a region fences and advances -- a frame with no skinned casters
         // would otherwise leak a sync object per frame, and a frame that SKIPPED the region on a fence timeout
@@ -1024,66 +843,25 @@ public sealed unsafe class CasterPass : IExtenderService
         GlContextService.Leave();
     }
 
-    /// <summary>The sun cascades: one concentric fit per layer around the shadow focus, each scheduled
-    /// independently (#97).
-    /// <para>The fit texel-snaps, so a player standing still reproduces the previous frame's matrix bit for
-    /// bit and every cascade composites -- which is the whole of "near-zero bake cost in a static scene".
-    /// When the fit does change, cascade 0 re-bakes at once and at most ONE far cascade joins it, the rest
-    /// compositing from the depth they already hold. Under CONTINUOUS invalidation -- time of day moving --
-    /// every far cascade wants a re-bake every frame, so the slot goes to whichever has held its cache
-    /// longest: that rotates through them at one per frame instead of pinning the innermost needy one and
-    /// starving the rest, which is what the ticket's "staggered across frames" has to mean to be true.</para></summary>
+    /// <summary>The sun cascades: one concentric fit per layer around the shadow focus, every one of them
+    /// baked from the live fit every frame (#187). Cascades are rendered innermost first so a fence stall
+    /// costs the FAR ones, whose absence is a missing distant shadow rather than a missing one at the
+    /// player's feet.</summary>
     private static void SunPass(Vector3 focus)
     {
         Vector3 dir = Vector3.Normalize(FrameInputs.SunDir);
-        // Who wants a re-bake, decided for ALL cascades before any of them gets the slot -- an in-loop
-        // "first one wins" cannot rotate.
-        int grant = -1, oldest = 0;
-        for (int i = 0; i < _cascades; i++)
-        {
-            float r = ShadowMath.CascadeRadius(i, _cascades, _maxDist);
-            Matrix4x4 fit = ShadowMath.DirectionalLightViewProj(dir, focus, r, FitMargin(), _mapSize);
-            _sunNeeds[i] = !(_sunValid[i] && _sunGen[i] == _worldGen && SameSunVp(i, &fit));
-            // a cascade with nothing cached is not deferrable at all, so it never competes for the slot
-            if (i == 0 || !_sunNeeds[i] || !_sunValid[i]) continue;
-            int age = _frameSeq - _sunBakedSeq[i];
-            if (grant < 0 || age > oldest) { grant = i; oldest = age; }
-        }
-
-        // Cascades are rendered innermost first so a fence stall costs the FAR ones, whose absence is a
-        // missing distant shadow rather than a missing one at the player's feet.
         int done = 0;
         for (int i = 0; i < _cascades; i++)
         {
             float radius = ShadowMath.CascadeRadius(i, _cascades, _maxDist);
             float margin = FitMargin();
             Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, focus, radius, margin, _mapSize);
-            bool rebake = _sunNeeds[i] && (i == 0 || !_sunValid[i] || i == grant);
-            // A composite draws -- and culls -- in the view its cache was baked with, never the live fit.
-            Matrix4x4 use = rebake ? vp : BakedSunVp(i);
-            Vector3 vFocus = rebake ? focus : _sunBakedFocus[i];
-            Vector3 vDir = rebake ? dir : _sunBakedDir[i];
             bool viewOk;
-            fixed (int* stills = _stillIdx) fixed (int* movs = _moverIdx)
-                viewOk = RenderView(ref _sunRing, _depthTex, _cascadeCache, _mapSize, i, &use,
-                                    vDir, vFocus, radius, margin, point: false, rebake,
-                                    stills, _stillCount, movs, _moverCount);
-            if (!viewOk)
-            {
-                // A re-bake that got its still half in and then lost its movers has already OVERWRITTEN the
-                // mirror, while the metadata below still describes the previous bake. Leaving it valid lets a
-                // later frame composite depth baked for a different view -- shadows for geometry that has
-                // moved on. Same guard the cube path takes on a half-written cube.
-                if (rebake) _sunValid[i] = false;
-                break;
-            }
-            if (rebake)
-            {
-                fixed (float* b = _sunBakedVp) *(Matrix4x4*)(b + i * 16) = vp;
-                _sunBakedFocus[i] = focus; _sunBakedDir[i] = dir;
-                _sunGen[i] = _worldGen; _sunValid[i] = true; _sunBakedSeq[i] = _frameSeq;
-            }
-            fixed (float* pub = CascadeVp) *(Matrix4x4*)(pub + i * 16) = use;
+            fixed (int* all = _allIdx)
+                viewOk = RenderView(ref _sunRing, _depthTex, _mapSize, i, &vp,
+                                    dir, focus, radius, margin, point: false, all, _liveCount);
+            if (!viewOk) break;
+            fixed (float* pub = CascadeVp) *(Matrix4x4*)(pub + i * 16) = vp;
             CascadeTexel[i] = 2f * radius / _mapSize;
             CascadeRange[i] = 2f * radius + margin;
             done++;
@@ -1097,29 +875,9 @@ public sealed unsafe class CasterPass : IExtenderService
         if (done > 0) _cascadeStamp = _frameSeq;
     }
 
-    /// <summary>Is this cascade's cache still describing the fit we would render now? Exact float equality is
-    /// the right test and not a sloppy one: both matrices come out of the same texel-snapping fit, so equal
-    /// inputs give identical bits and a difference of any size means a different view.</summary>
-    private static bool SameSunVp(int i, Matrix4x4* vp)
-    {
-        float* m = (float*)vp;
-        fixed (float* b = _sunBakedVp)
-        {
-            float* q = b + i * 16;
-            for (int f = 0; f < 16; f++) if (q[f] != m[f]) return false;
-        }
-        return true;
-    }
-
-    private static Matrix4x4 BakedSunVp(int i)
-    {
-        fixed (float* b = _sunBakedVp) return *(Matrix4x4*)(b + i * 16);
-    }
-
-    /// <summary>The local-light cubes: six faces per light, nearest to the camera first, each scheduled by
-    /// #97's cache rule. A light standing still over an unchanged still world composites all six faces; one
-    /// that moved -- a carried torch, on every frame it is carried -- re-bakes all six, so its shadows are
-    /// correct every frame out of the same rule as everything else rather than a special case.
+    /// <summary>The local-light cubes: six faces per light, nearest to the shadow focus first, all six baked
+    /// every frame (#187) -- so a carried torch and a wall sconce cost the same and neither can hold depth
+    /// for a world that has moved on.
     /// <para>A light is published only once all six of its faces landed. Partial cascades are safe because
     /// selection is innermost-first and a missing outer layer is simply never reached; a cube has no such
     /// ordering, so a light that lost one face to a ring stall would sample five fresh faces and one holding
@@ -1150,100 +908,41 @@ public sealed unsafe class CasterPass : IExtenderService
             if (have < n) have++;
         }
 
-        // #151: a light KEEPS the slot it held last frame for as long as it stays in the budget. The slot
-        // used to be its rank (nearest-first), so walking past a torch re-ranked every light behind it and
-        // re-baked six faces each for nothing -- live-measured at ~40 of 52 views re-baked per walking frame,
-        // which is where the shadow pass's whole cost was. Identity keying makes a still world cost nothing
-        // to walk through, and that is what pays for the raised cube budget.
         // A slot nobody claims is published INACTIVE (far = 0, id = 0) rather than compacted away: the
-        // receiver reads far <= near as "lit", so holes in the slot array are free, and compaction is exactly
-        // the re-ranking this removes.
-        IntPtr* want = stackalloc IntPtr[MaxCubes];
-        int* slotOf = stackalloc int[MaxCubes];
-        for (int s = 0; s < have; s++) want[s] = FrameInputs.LocalLightId[order[s]];
-        fixed (bool* valid = _cubeValid) fixed (IntPtr* baked = _cubeBakedId)
-            AssignCubeSlots(want, have, _cubeLights, valid, baked, slotOf);
+        // receiver reads far <= near as "lit", so holes in the slot array are free.
         for (int j = 0; j < _cubeLights; j++) { CubeLight[j * 4 + 3] = 0f; CubeLightId[j] = IntPtr.Zero; }
 
         int done = 0, frameCreatures = 0, nearestCreatures = -1;
         for (int s = 0; s < have; s++)
         {
-            int li = order[s], slot = slotOf[s];
-            if (slot < 0) continue;   // more selected lights than slots cannot happen (have <= _cubeLights)
+            int li = order[s], slot = s;
             int lightCreatures = 0;
             Vector3 pos = FrameInputs.LocalLightPos[li];
             float far = FrameInputs.LocalLightRange[li];
             IntPtr id = FrameInputs.LocalLightId[li];
             if (!(far > CubeNear)) continue;   // a light with no reach records nothing worth sampling
-            // #97: a cube is cached while it is the SAME light, standing where it was, with the same reach,
-            // over an unchanged still world. #151b: "where it was" is now a TOLERANCE, not bit equality --
-            // NWN torches flicker, and a light whose position or range jitters by centimetres failed the
-            // exact test every frame, re-baking six faces forever. Within the tolerance the cube keeps its
-            // BAKED geometry (published below), so the receiver's comparison stays welded to the depth it
-            // actually samples; a quarter-unit offset in where a flame's shadow is anchored is invisible.
-            bool same = _cubeValid[slot] && _cubeGen[slot] == _worldGen && _cubeBakedId[slot] == id
-                        && (_cubeBakedPos[slot] - pos).LengthSquared() <= LightJitterEps * LightJitterEps
-                        && MathF.Abs(_cubeBakedFar[slot] - far) <= LightJitterEps;
-            bool rebake = !same;
-            if (same) { pos = _cubeBakedPos[slot]; far = _cubeBakedFar[slot]; }
             // #151: the sphere test is the same for all six faces, so it runs ONCE per light instead of six
-            // times over the whole still list. Identical predicate to Submit's own off-axis test with
+            // times over the whole live list. Identical predicate to Submit's own off-axis test with
             // reach = far, so the faces cull exactly what they always did -- this only removes repetition.
             int ln = 0;
-            if (rebake)
-                for (int q = 0; q < _stillCount; q++)
-                {
-                    int ci = _stillIdx[q];
-                    float dx = _liveCx[ci] - pos.X, dy = _liveCy[ci] - pos.Y, dz = _liveCz[ci] - pos.Z;
-                    float rr = far + _liveR[ci];
-                    if (dx * dx + dy * dy + dz * dz <= rr * rr) _lightIdx[ln++] = ci;
-                }
-            // #151b: the movers this light can see at all, filtered once for its six faces. A composited
-            // cube with ZERO of them, whose layer still equals its cache, has nothing to do -- no restore
-            // copies, no submits, no fences. That skip is what makes 24 cubes cost like the few that have
-            // something moving in them, instead of 144 faces of server-side depth copies a frame.
-            int mn = 0;
-            for (int q = 0; q < _moverCount; q++)
+            for (int q = 0; q < _liveCount; q++)
             {
-                int ci = _moverIdx[q];
-                float dx = _liveCx[ci] - pos.X, dy = _liveCy[ci] - pos.Y, dz = _liveCz[ci] - pos.Z;
-                float rr = far + _liveR[ci];
-                if (dx * dx + dy * dy + dz * dz <= rr * rr) _lightMovIdx[mn++] = ci;
+                float dx = _liveCx[q] - pos.X, dy = _liveCy[q] - pos.Y, dz = _liveCz[q] - pos.Z;
+                float rr = far + _liveR[q];
+                if (dx * dx + dy * dy + dz * dz <= rr * rr) _lightIdx[ln++] = q;
             }
             bool whole = true;
-            fixed (int* near = _lightIdx) fixed (int* movs = _lightMovIdx)
+            fixed (int* near = _lightIdx)
                 for (int f = 0; f < CubeFaces && whole; f++)
                 {
                     Vector3 fwd = ShadowMath.CubeFaceForward(f);
-                    // movers THIS face can see, by the same pyramid test Submit runs -- the skip must only
-                    // fire when the submit it skips would have drawn nothing
-                    int fm = 0;
-                    for (int q = 0; q < mn; q++)
-                    {
-                        int ci = _lightMovIdx[q];
-                        float dx = _liveCx[ci] - pos.X, dy = _liveCy[ci] - pos.Y, dz = _liveCz[ci] - pos.Z;
-                        float dSq = dx * dx + dy * dy + dz * dz;
-                        float t = dx * fwd.X + dy * fwd.Y + dz * fwd.Z;
-                        if (dSq <= (far + _liveR[ci]) * (far + _liveR[ci]) && !FaceCulls(dSq, t, _liveR[ci])) fm++;
-                    }
-                    if (!rebake && fm == 0 && _faceClean[slot * CubeFaces + f]) { _cubeSkips++; continue; }
                     Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
-                    whole = RenderView(ref _cubeRing, CubeTex, _cubeCache, _cubeSize, slot * CubeFaces + f, &vp,
-                                       fwd, pos, far, 0f, point: true, rebake, near, ln, movs, mn);
-                    if (whole) _faceClean[slot * CubeFaces + f] = fm == 0;
+                    whole = RenderView(ref _cubeRing, CubeTex, _cubeSize, slot * CubeFaces + f, &vp,
+                                       fwd, pos, far, 0f, point: true, near, ln);
+                    _cubeStaged += _submitStaged;
                     lightCreatures += _submitCreatures;
                 }
-            if (!whole)
-            {   // a half-written cube is worse than none: its cache no longer matches any one bake
-                _cubeValid[slot] = false;
-                for (int f = 0; f < CubeFaces; f++) _faceClean[slot * CubeFaces + f] = false;
-                break;   // the ring is behind; the lights after this one would stall too
-            }
-            if (rebake)
-            {
-                _cubeValid[slot] = true; _cubeGen[slot] = _worldGen;
-                _cubeBakedId[slot] = id; _cubeBakedPos[slot] = pos; _cubeBakedFar[slot] = far;
-            }
+            if (!whole) break;   // the ring is behind; the lights after this one would stall too
             frameCreatures += lightCreatures;
             if (s == 0) nearestCreatures = lightCreatures;
             CubeLight[slot * 4] = pos.X; CubeLight[slot * 4 + 1] = pos.Y; CubeLight[slot * 4 + 2] = pos.Z;
@@ -1302,8 +1001,8 @@ public sealed unsafe class CasterPass : IExtenderService
         bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) Release("module unload");
         _wasInModule = inModule;
-        if (_tableGen != BatchService.TableGen)
-        { Release("part table wiped"); _tableGen = BatchService.TableGen; }
+        if (_tableGen != PartTable.TableGen)
+        { Release("part table wiped"); _tableGen = PartTable.TableGen; }
 
         int period = _loggedOnce ? LogEvery : FirstLogAt;
         if (++_frames < period) return;
@@ -1311,14 +1010,13 @@ public sealed unsafe class CasterPass : IExtenderService
         _log?.Info($"CasterPass: [casters] {CascadeCount}/{_cascades} sun cascades at {_mapSize}px out to " +
                    $"{_maxDist:F0}u" + FitReadout() +
                    $", {(float)_cubeLightsSum / _frames:F1}/{_cubeLights} local cubes at " +
-                   $"{_cubeSize}px, {_lastEnrolled}/{_lastCandidates} enrolled on {_vdoCount} VDOs" +
+                   $"{_cubeSize}px taking {(float)_cubeStaged / _frames:F0} caster submissions/frame" +
+                   $", {_lastEnrolled}/{_lastCandidates} enrolled on {_vdoCount} VDOs" +
                    (_overflow > 0 ? $" (+{_overflow} over capacity)" : "") +
-                   $", {(float)_bakedSum / _frames:F1}/{(float)_viewSum / _frames:F1} views re-baked/rendered " +
-                   $"per frame ({LastShadowMs:F2} ms cpu last" +
+                   $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
                    (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
                    $", {(float)_draws / _frames:F0} depth draws/frame in {(float)_mdiCalls / _frames:F1} " +
-                   $"multidraw-indirect calls, {(float)_movedSum / _frames:F1} moved/frame" +
-                   (_danglySum == 0 ? "" : $" ({(float)_danglySum / _frames:F1} of them dangly, never cached)") + ", " +
+                   $"multidraw-indirect calls, " +
                    $"{(float)_culled / _frames:F0} culled/frame (off-axis {_cullPerp}, past-ends {_cullAlong}), " +
                    (_skinned ? $"{(float)_skinSum / _frames:F1} creature casters/frame from " +
                               $"{(float)_skinBrackets / _frames:F1} creature part draws seen" : "creature casters off") +
@@ -1331,40 +1029,25 @@ public sealed unsafe class CasterPass : IExtenderService
                    (_skinDropped > 0 ? $", {_skinDropped} skinned draws dropped for want of a bone region" : "") +
                    (_boneStalls > 0 ? $" ({_boneStalls} frames of it on a bone-ring fence timeout)" : "") +
                    $", LOD dropped {_lodCulled / (float)MathF.Max(_frames, 1):F0} sub-texel casters/frame (/shadow lod {_lodTexels}), " +
-                   (_degenSum > 0 ? $"{_degenSum} DEGENERATE collects held back from the caches, " : "") +
-                   $"{_ownedInstanceCasts / (float)MathF.Max(_frames, 1):F0} owned instance parts recast/frame, " +
-                   $"{_cubeSkips / MathF.Max(_frames, 1):F1} cube faces skipped clean/frame, " +
-                   $"{_flipSum} scoped flips / {_genBumps} global world-gen bumps this period" +
+                   $"{_ownedInstanceCasts / (float)MathF.Max(_frames, 1):F0} owned instance parts recast/frame" +
                    (_fenceStalls > 0 ? $", {_fenceStalls} views SKIPPED on a ring-fence timeout" : "") +
                    (_viewOverflow > 0 ? $", {_viewOverflow} casters dropped by a full view region" : "") +
+                   (_degenSum > 0 ? $", {_degenSum} DEGENERATE collects baked near-empty" : "") +
                    // The cutout casters: env-mapped materials the engine calls opaque without ever reading
                    // their diffuse alpha, so their depth draw runs the same 0.2 discard the colour pass does.
                    // Zero here with foliage on screen means they are all falling out at one of the three
                    // terms after it.
-                   // TOTALS, not per-frame averages: a static scene re-bakes ~0 views per frame (the
-                   // caches hold), so every static caster's depth draw -- masked or not -- happens on the
-                   // rare bake. Averaged over the period those round to "0" and read as "the alpha test
-                   // never runs", which is exactly the wrong conclusion to hand a live report.
                    $", {_texWithAlpha}/{_texQueried} caster textures carry alpha -> " +
                    $"{_submitMasked} alpha-tested depth draws this period" +
                    (_maskNoUv + _maskNoTex + _maskNoProg == 0 ? ""
                     : $" ({_maskNoUv} masked casters have no UV stream, {_maskNoTex} no diffuse this frame, " +
                       $"{_maskNoProg} no cutout program -- each casts nothing)"));
-        _frames = 0; _draws = 0; _mdiCalls = 0; _movedSum = 0; _danglySum = 0; _culled = 0; _fenceStalls = 0;
-        _cullPerp = 0; _cullAlong = 0; _viewOverflow = 0; _cubeLightsSum = 0; _bakedSum = 0; _viewSum = 0;
-        _genBumps = 0; _flipSum = 0; _cubeSkips = 0; _lodCulled = 0; _degenSum = 0; _ownedInstanceCasts = 0; _qShadow.Reset();
+        _frames = 0; _draws = 0; _mdiCalls = 0; _culled = 0; _fenceStalls = 0;
+        _cullPerp = 0; _cullAlong = 0; _viewOverflow = 0; _cubeLightsSum = 0; _cubeStaged = 0; _viewSum = 0;
+        _lodCulled = 0; _ownedInstanceCasts = 0; _degenSum = 0; _qShadow.Reset();
         _skinSum = 0; _skinOverflow = 0; _skinDropped = 0; _boneStalls = 0; _skinNoSlot = 0;
         _skinBrackets = 0; _skinNotMode1 = 0; _skinBadRange = 0; _skinBoned = 0; _boneOverflow = 0;
         _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0;
-    }
-
-    /// <summary>Drop every cached view. Bumping the generation alone would do it, but clearing the validity
-    /// flags as well is what makes a never-baked view and a stale one the same thing to the scheduler.</summary>
-    private static void InvalidateCaches()
-    {
-        _worldGen++;
-        for (int i = 0; i < MaxCascades; i++) { _sunValid[i] = false; _sunRectValid[i] = false; }
-        for (int i = 0; i < MaxCubes; i++) { _cubeValid[i] = false; _cubeBakedId[i] = IntPtr.Zero; }
     }
 
     private static void Release(string why)
@@ -1373,10 +1056,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // the bracket, so the rebuild happens there (EnsureVao). Retiring the slots is also what makes this
         // IDEMPOTENT: a lost 4.6 context disables its service permanently, so Lifecycle calls Release every
         // frame thereafter, and a guard on the caster count alone would re-log forever.
-        // #97: an area change is exactly the "no ghost shadows after a transition" case -- every cached layer
-        // describes a world that has gone, so the whole schedule is dropped before anything else.
-        InvalidateCaches();
-        // ...and the texture-alpha verdicts with them. They are keyed on GL texture IDS, and GL recycles the
+        // The texture-alpha verdicts go with it. They are keyed on GL texture IDS, and GL recycles the
         // names of deleted objects -- the same trap the VAO cache re-checks every pass for. A recycled id
         // inheriting the previous texture's verdict is a wasted fetch in one direction and, in the other, a
         // foliage texture classified as having no alpha: the solid slab back again, intermittently and only
@@ -1393,8 +1073,7 @@ public sealed unsafe class CasterPass : IExtenderService
         SkinEnd();
         if (!any) return;
         for (int i = 0; i < _casterCount; i++) _cTri[i] = IntPtr.Zero;
-        _casterCount = 0; _liveCount = 0; MovedCount = 0;
-        _setSig = 0; _setCount = -1;   // the next enrollment must read as a NEW set, whatever it finds
+        _casterCount = 0; _liveCount = 0;
         CascadeCount = 0; CubeCount = 0;   // the maps describe a world that just went away; stop the receiver sampling them
         _sinceEnroll = EnrollEvery;
         _reportedHit = false;
@@ -1407,9 +1086,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// creature its engine draw stops -- which is also what stops #96's passive bracket firing for it -- and
     /// until this side re-enrolls, that creature casts from NEITHER source. The window is up to a second, at
     /// every spawn and every area transition, and it reads as a shadow blinking out. One poke closes it.</para>
-    /// <para>Cheap to over-call: an enrollment that finds the same set leaves the motion snapshots and every
-    /// cached view exactly where they were (the <c>sig</c> test in <see cref="Enroll"/>), so the cost is one
-    /// table scan.</para></summary>
+    /// <para>Cheap to over-call: the cost is one table scan.</para></summary>
     internal static void ForceEnroll() => _sinceEnroll = EnrollEvery;
 
     /// <summary>Cold, once per <see cref="EnrollEvery"/> frames: rebuild the caster set wholesale from
@@ -1434,10 +1111,9 @@ public sealed unsafe class CasterPass : IExtenderService
         Array.Clear(_sortCount, 0, MaxVdos);
         var c = default(CasterCandidate);
         int candidates = 0;
-        long sig = 0;
-        for (int e = 0, n = BatchService.EntryCount; e < n; e++)
+        for (int e = 0, n = PartTable.EntryCount; e < n; e++)
         {
-            if (!BatchService.TryCasterCandidate(e, ref c)) continue;
+            if (!OwnershipCensus.TryCasterCandidate(e, ref c)) continue;
             candidates++;
             if (_casterCount >= MaxCasters) { _overflow++; continue; }
             int v = VdoSlot(c.Vdo);
@@ -1452,7 +1128,6 @@ public sealed unsafe class CasterPass : IExtenderService
             // (TexHasAlpha) -- never for the engine's opacity flags, which short-circuit three different ways
             // (env map, gob alpha, and the material's own memo) and have sent three fixes to the wrong place.
             _cCut[i] = c.EnvAlpha ? EnvAlphaDiscard : CutoutDiscard;
-            _cDangly[i] = c.Dangly;
             _cUv[i] = _vUv[v].Present;
             if (!_vUv[v].Present) _maskNoUv++;
             float* mn = (float*)(c.Tri + PartBboxMin);
@@ -1460,27 +1135,7 @@ public sealed unsafe class CasterPass : IExtenderService
             _cCx[i] = (mn[0] + mx[0]) * 0.5f; _cCy[i] = (mn[1] + mx[1]) * 0.5f; _cCz[i] = (mn[2] + mx[2]) * 0.5f;
             float ex = mx[0] - _cCx[i], ey = mx[1] - _cCy[i], ez = mx[2] - _cCz[i];
             _cR[i] = MathF.Sqrt(ex * ex + ey * ey + ez * ez);
-            sig += (long)c.Tri;
             _sortCount[v]++;
-        }
-        // #97: an enrollment that came back with the SAME casters in the same slots leaves every motion
-        // snapshot -- and so every cached view -- exactly where it was. Only a genuinely different set
-        // re-seeds the snapshots and bumps the generation. Re-seeding from the LIVE matrix rather than NaN is
-        // what keeps the following frame from classifying the whole world as moved and re-baking it: the
-        // first collect after an enrollment is then about what has actually moved SINCE it.
-        // ponytail: a sum of pointers, not a hash -- two casters swapping slots is invisible to it, and the
-        // cost of that is one wrongly-paired motion snapshot, i.e. an extra bake. Reach for a real hash only
-        // if a live capture ever shows one.
-        if (sig != _setSig || _casterCount != _setCount)
-        {
-            _setSig = sig; _setCount = _casterCount;
-            _worldGen++; _genBumps++;
-            for (int i = 0; i < _casterCount; i++)
-            {
-                Matrix4x4 m = _cMx[i] ? *(Matrix4x4*)(_cNode[i] + NodeMatrix) : Matrix4x4.Identity;
-                fixed (float* prev = _cPrev) *(Matrix4x4*)(prev + i * 16) = m;
-                Moved[i] = false; _wasMoved[i] = false; _stillFrames[i] = StillLatch;
-            }
         }
         // counting sort into _order so the submission walks grouped by VAO: one bind and (primitive changes
         // aside) one multidraw-indirect per VDO
@@ -1717,8 +1372,7 @@ public sealed unsafe class CasterPass : IExtenderService
         if (_depthTex == 0)
         {
             _depthTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades);
-            _cascadeCache = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades);
-            if (_depthTex == 0 || _cascadeCache == 0) return false;   // DepthArray already disarmed by name
+            if (_depthTex == 0) return false;   // DepthArray already disarmed by name
             if (!CreateRing(ref _sunRing, MaxCasters, SunRegions,
                             $"{_mapSize}x{_mapSize}x{_cascades} cascade array")) return false;
         }
@@ -1731,8 +1385,7 @@ public sealed unsafe class CasterPass : IExtenderService
         if (CubeTex == 0)
         {
             CubeTex = DepthArray(Gl.TEXTURE_CUBE_MAP_ARRAY, _cubeSize, _cubeLights * CubeFaces);
-            _cubeCache = DepthArray(Gl.TEXTURE_CUBE_MAP_ARRAY, _cubeSize, _cubeLights * CubeFaces);
-            if (CubeTex == 0 || _cubeCache == 0) return false;   // DepthArray already disarmed by name
+            if (CubeTex == 0) return false;   // DepthArray already disarmed by name
             // Global state, not a texture parameter: filtering blends across face borders, which is what
             // makes the receiver's hardware-PCF fetch legitimate right up to a face edge. The interim cubes
             // bought the same thing with an over-scanned face frustum and a matching uv shrink in the shader.
@@ -1746,10 +1399,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>A depth array sampled with hardware PCF: LINEAR + depth-compare IS the filter, one bilinear
     /// 2x2 comparison per fetch at no more cost than a plain sample. Same setup for the 2D cascade array and
     /// the cube array -- only the target and the layer count differ.</summary>
-    /// <summary>0 = the storage was refused. #97 doubled this pass's depth footprint (every array has a cache
-    /// mirror), so an out-of-memory allocation is a real outcome now -- and a silent one: a texture with no
-    /// storage makes every <c>CopyImageSubData</c> an INVALID_OPERATION no-op, so the composite restores
-    /// nothing and the shadows FREEZE rather than the pass failing by name.</summary>
+    /// <summary>0 = the storage was refused, and the pass has already disarmed itself by name.</summary>
     private static uint DepthArray(uint target, int size, int layers)
     {
         uint t; Gl.GenTextures(1, &t);
@@ -1836,13 +1486,11 @@ public sealed unsafe class CasterPass : IExtenderService
         // A count left standing is then permanently "fresh" -- the receiver samples a frozen map for the rest
         // of the session, shadows pinned where the geometry no longer is.
         CascadeCount = 0; CubeCount = 0;
-        InvalidateCaches();
     }
 
-    /// <summary>Once per frame, before any view submits: revalidate every caster, classify it by transform
-    /// change, and resolve its live world sphere and index range into the per-frame live list. Everything
-    /// here is view-independent by construction, which is what keeps <see cref="Moved"/> a fact about the
-    /// world rather than about whichever view happened to draw last. Hot and alloc-free.</summary>
+    /// <summary>Once per frame, before any view submits: revalidate every caster and resolve its live world
+    /// sphere and index range into the per-frame live list. Everything here is view-independent by
+    /// construction, so every view of the frame stages from the one answer. Hot and alloc-free.</summary>
     private static void Collect()
     {
         // #96: this frame's creature casters, as ordinary live casters -- they differ from a rigid one in
@@ -1853,8 +1501,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // whatever is left, and the thing the player is looking at -- the moving creature at their feet --
         // must not be what gets cut. Losing a distant wall from one cube face is invisible; losing an arm is
         // what the flicker report was.</para>
-        int live = 0, moved = 0, dangly = 0, dropped = 0;
-        _flipCount = 0;
+        int live = 0, dropped = 0;
         for (int i = 0; i < _skinLive; i++)
         {
             if (live >= MaxCasters) { _skinOverflow += _skinLive - i; break; }   // never a silent drop
@@ -1871,12 +1518,10 @@ public sealed unsafe class CasterPass : IExtenderService
             // before -- creature parts are not cutout quads.
             _liveTex[live] = 0; _liveCut[live] = CutoutDiscard;
             _liveBone[live] = _sBone[i];   // the ring region's base is added at submit, after the upload
-            _liveMoved[live] = true;       // a creature is never cached: its pose is only true for this frame
             live++;
         }
         _liveCreatures = live;   // creatures occupy [0, _liveCreatures); the static world follows
 
-        fixed (float* prevAll = _cPrev)
         fixed (float* modelAll = _liveModel)
         for (int k = 0; k < _casterCount; k++)
         {
@@ -1884,46 +1529,11 @@ public sealed unsafe class CasterPass : IExtenderService
             int i = _order[k];
             IntPtr tri = _cTri[i];
             if (tri == IntPtr.Zero) { dropped++; continue; }
-            // recycled pointer / re-parented part: not ours any more, wait for the next enrollment. Its depth
-            // is in every cache that baked it, so the caches have to go with it or it leaves a ghost.
+            // recycled pointer / re-parented part: not ours any more, wait for the next enrollment
             if (*(IntPtr*)(tri + PartNode) != _cNode[i] || *(IntPtr*)(tri + PartMaterial) != _cMat[i])
-            { _cTri[i] = IntPtr.Zero; _worldGen++; _genBumps++; dropped++; continue; }
+            { _cTri[i] = IntPtr.Zero; dropped++; continue; }
 
-            float* prev = prevAll + i * 16;
             Matrix4x4 model = _cMx[i] ? *(Matrix4x4*)(_cNode[i] + NodeMatrix) : Matrix4x4.Identity;
-            float* m = (float*)&model;
-            bool changed = false;
-            for (int f = 0; f < 16; f++) if (prev[f] != m[f]) { changed = true; break; }
-            if (changed) for (int f = 0; f < 16; f++) prev[f] = m[f];
-            // #135: a dangly is never still, whatever its matrix says. Animate re-solves its vertices every
-            // frame into the same VDO item while node+0x18 sits perfectly constant, so the matrix comparison
-            // above -- the only motion test the caches have -- calls it static and bakes its depth once. The
-            // leaves then sway out from under their own shadow. Treated as a permanent mover instead, which
-            // is what the creature path two branches up already does for the mirror-image reason.
-            if (_cDangly[i]) { changed = true; dangly++; }
-            // #151c: hysteresis. Motion resets the clock; stillness must hold for StillLatch frames before
-            // the caster counts as still again. `changed` keeps meaning "matrix moved this frame".
-            if (changed) _stillFrames[i] = 0; else if (_stillFrames[i] < StillLatch) _stillFrames[i]++;
-            bool mover = changed || _stillFrames[i] < StillLatch;
-            if (changed) moved++;
-            Moved[i] = mover;
-            // #97: MEMBERSHIP, not motion. A caster that keeps moving is drawn over the composite every frame
-            // and never touches the cache; one that starts or stops moving changes what the cache should hold.
-            if (mover != _wasMoved[i])
-            {
-                _wasMoved[i] = mover;
-                // scoped invalidation: remember WHERE the flip happened; ApplyFlips kills only the views
-                // that can see it. -1 = too many flips this frame, fall back to killing everything.
-                if (_flipCount >= 0 && _flipCount < MaxFlips)
-                {
-                    _flipX[_flipCount] = _cMx[i] ? m[12] : _cCx[i];
-                    _flipY[_flipCount] = _cMx[i] ? m[13] : _cCy[i];
-                    _flipZ[_flipCount] = _cMx[i] ? m[14] : _cCz[i];
-                    _flipR[_flipCount] = _cR[i];
-                    _flipCount++;
-                }
-                else _flipCount = -1;
-            }
 
             // index range re-read live from the VDO item tables (they move under Repack)
             if (!TryRange(_cVdo[i], _cItem[i], out int idxCount, out uint first, out uint baseVert)) { dropped++; continue; }
@@ -1951,107 +1561,48 @@ public sealed unsafe class CasterPass : IExtenderService
             _liveTex[live] = _cUv[i] ? MaskTid(_cMat[i]) : 0;
             _liveCut[live] = _cCut[i];
             _liveBone[live] = -1;
-            _liveMoved[live] = mover;
             live++;
         }
         _liveCount = live;
-        int still = 0, mov = 0;
-        for (int i = 0; i < live; i++)
-            if (_liveMoved[i]) _moverIdx[mov++] = i; else _stillIdx[still++] = i;
-        _stillCount = still; _moverCount = mov;
-        MovedCount = moved;
-        _movedSum += moved;
-        _danglySum += dangly;
-        if (_flipCount < 0) { _worldGen++; _genBumps++; }
-        else _flipSum += _flipCount;
-        // #151: a collect that lost most of the table (a Repack mid-frame moves the VDO item tables out from
-        // under TryRange; a mass revoke empties _cTri) must not feed the caches. A cube that re-bakes from
-        // it banks an EMPTY shadow map as valid -- and because the caster SET is unchanged afterwards, no
-        // generation bump ever invalidates it: the light stops shadowing forever, and walking closer does
-        // nothing. The live log caught exactly such a frame ("736 creature casters live, 0 static" over an
-        // 11000-part table). One frame of stale views is invisible; a poisoned cache is not.
-        _degenerate = _casterCount > 0 && dropped * 2 > _casterCount;
-        if (_degenerate) _degenSum++;
+        if (_casterCount > 0 && dropped * 2 > _casterCount) _degenSum++;
+        for (int i = 0; i < live; i++) _allIdx[i] = i;
     }
 
-    /// <summary>#151b: invalidate exactly the cached views a flipped caster's sphere intersects. Runs once
-    /// per frame between <see cref="Collect"/> and the passes; O(flips * views), both small.</summary>
-    private static void ApplyFlips()
-    {
-        if (_flipCount <= 0) return;
-        for (int f = 0; f < _flipCount; f++)
-        {
-            float fx = _flipX[f], fy = _flipY[f], fz = _flipZ[f], fr = _flipR[f];
-            for (int i = 0; i < _cascades; i++)
-            {
-                if (!_sunValid[i]) continue;
-                float r = ShadowMath.CascadeRadius(i, _cascades, _maxDist) + FitMargin() + fr;
-                Vector3 c = _sunBakedFocus[i];
-                float dx = fx - c.X, dy = fy - c.Y, dz = fz - c.Z;
-                if (dx * dx + dy * dy + dz * dz <= r * r) _sunValid[i] = false;
-            }
-            for (int j = 0; j < _cubeLights; j++)
-            {
-                if (!_cubeValid[j]) continue;
-                float r = _cubeBakedFar[j] + fr;
-                Vector3 c = _cubeBakedPos[j];
-                float dx = fx - c.X, dy = fy - c.Y, dz = fz - c.Z;
-                if (dx * dx + dy * dy + dz * dz <= r * r) _cubeValid[j] = false;
-            }
-        }
-    }
-
-    /// <summary>Stage the live casters this view can see into the next ring region and submit them as one
-    /// multidraw-indirect per (VAO, primitive) group, into <paramref name="layer"/> of the depth array.
-    /// View-dependent work only -- the cull and the command build. Called once per sun cascade and once per
-    /// cube face, over the one <see cref="Collect"/> that already ran this frame; <paramref name="point"/>
-    /// picks which of the two culls applies. Hot and alloc-free: commands and per-draw records are written straight through the persistent mappings.
-    /// <para>False = this view produced nothing usable (a ring-fence timeout, an incomplete FBO). The layer is
-    /// cleared even when every caster culls out, because an uncleared layer is not "empty", it is LAST
-    /// frame's depth -- shadows frozen in mid-air where the geometry no longer is.</para></summary>
-    /// <summary>#97's scheduled render of one view (a cascade layer, or one face of one cube).
-    /// <para>A re-bake stages the STILL casters, clears, draws them and copies the result into the view's
-    /// cache; then it stages the movers over the top. A composite skips all that: it copies the cache back
-    /// into the live layer and draws only the movers. Movers are excluded from the cache rather than baked
-    /// into it and overdrawn, which is what makes the composite ghost-free -- overdrawing cannot remove the
-    /// depth a mover left behind at its old position.</para>
-    /// <para>False = the view produced nothing usable, and the caller must not mark its cache valid.</para></summary>
-    private static bool RenderView(ref RingBuf ring, uint tex, uint cacheTex, int size, int layer,
+    /// <summary>#187: bake one view (a cascade layer, or one face of one cube) from what it sees, this frame.
+    /// Stages the live casters this view can see into the next ring region and submits them as one
+    /// multidraw-indirect per (VAO, primitive) group, into <paramref name="layer"/> of the depth array. Called
+    /// once per sun cascade and once per cube face, over the one <see cref="Collect"/> that already ran this
+    /// frame; <paramref name="point"/> picks which of the two culls applies. Hot and alloc-free: commands and
+    /// per-draw records are written straight through the persistent mappings.
+    /// <para>False = this view produced nothing usable (a ring-fence timeout, an incomplete FBO), and the
+    /// caller must not publish it. The layer is cleared even when every caster culls out, because an uncleared
+    /// layer is not "empty", it is LAST frame's depth -- shadows frozen where the geometry no longer is.</para></summary>
+    private static bool RenderView(ref RingBuf ring, uint tex, int size, int layer,
                                    Matrix4x4* vp, Vector3 lightDir, Vector3 focus, float reach, float margin,
-                                   bool point, bool rebake, int* stills, int stillCount,
-                                   int* movers, int moverCount)
+                                   bool point, int* list, int listCount)
     {
         LastViews++;
-        if (rebake)
-        {
-            LastBaked++;
-            if (!Submit(ref ring, tex, size, layer, vp, lightDir, focus, reach, margin, point,
-                        stills, stillCount, pre: PreClear, save: true, cacheTex)) return false;
-        }
-        return Submit(ref ring, tex, size, layer, vp, lightDir, focus, reach, margin, point,
-                      movers, moverCount, pre: rebake ? PreKeep : PreRestore, save: false, cacheTex);
+        return Submit(ref ring, tex, size, layer, vp, lightDir, focus, reach, margin, point, list, listCount);
     }
-
-    /// <summary>What a submission does to the layer before it draws: clear it (a bake), copy the cached depth
-    /// back into it (a composite), or leave what the bake just put there (a bake's mover half).</summary>
-    private const int PreClear = 0, PreRestore = 1, PreKeep = 2;
 
     private static bool Submit(ref RingBuf ring, uint tex, int size, int layer,
                                Matrix4x4* vp, Vector3 lightDir, Vector3 focus, float reach, float margin, bool point,
-                               int* list, int listCount, int pre, bool save, uint cacheTex)
+                               int* list, int listCount)
     {
         int region = ring.At;
+        // zeroed AHEAD of the fence early-out: a view that stalls stages nothing, and a count left standing
+        // is the PREVIOUS view's, which the cube tally would add a second time
+        _submitCreatures = 0; _submitStaged = 0;
         // the GPU may still be reading this region's commands: overwriting them before its fence signals is
         // silent command corruption, so a wait that TIMES OUT skips the view rather than barging through
         if (!GpuRing.Acquire(ring.Fence, region))
-        { _fenceStalls++; if (!point && layer < MaxCascades) _sunRectValid[layer] = false; return false; }
+        { _fenceStalls++; return false; }
         int cap = ring.Cap;
         uint* cmd = (uint*)(ring.CmdMap + (long)region * cap * CmdBytes);
         float* rec = ring.DrawMap + (long)region * cap * DrawFloats;
         int baseIndex = region * cap;
 
         int n = 0, culled = 0;
-        _submitCreatures = 0;
         // the fit's own extent: anything farther from the light axis than this cannot shade inside it
         float along = reach + margin;
         // #151 shadow LOD: this view's texel in world units -- ortho cascades span 2*reach across `size`
@@ -2069,7 +1620,6 @@ public sealed unsafe class CasterPass : IExtenderService
         fixed (float* modelAll = _liveModel)
         for (int w = 0; w < listCount; w++)
         {
-            // #97's still/mover partition, resolved once in Collect rather than re-tested per view (#151).
             int i = list[w];
             float dx = _liveCx[i] - focus.X, dy = _liveCy[i] - focus.Y, dz = _liveCz[i] - focus.Z;
             float t = dx * lightDir.X + dy * lightDir.Y + dz * lightDir.Z;
@@ -2141,52 +1691,7 @@ public sealed unsafe class CasterPass : IExtenderService
             n++;
         }
         _culled += culled;
-
-        // The composite's restore is a server-side image copy -- no FBO, no shader, no state -- so it runs
-        // before the layer is attached and takes the clear's place rather than joining it.
-        uint target = point ? Gl.TEXTURE_CUBE_MAP_ARRAY : Gl.TEXTURE_2D_ARRAY;
-        // #151: the mover pass's texel-space bounds under THIS view -- what the sun's dirty-rect restore is
-        // scoped to. Computed for sun composites and sun mover passes only; a cube face keeps the full-layer
-        // copy (512^2, and the per-face clean skip already prunes those).
-        bool sunRect = !point && layer < MaxCascades && (pre == PreRestore || pre == PreKeep);
-        int rx0 = size, ry0 = size, rx1 = 0, ry1 = 0;
-        if (sunRect)
-            for (int q = 0; q < listCount; q++)
-            {
-                int i = list[q];
-                // ortho fit: clip == ndc, so the projection is one matrix row pair; radius maps linearly
-                float wx = _liveCx[i], wy = _liveCy[i], wz = _liveCz[i];
-                float* mvp = (float*)vp;
-                float cx = mvp[0] * wx + mvp[4] * wy + mvp[8] * wz + mvp[12];
-                float cy = mvp[1] * wx + mvp[5] * wy + mvp[9] * wz + mvp[13];
-                float rt = _liveR[i] * size / (2f * reach) + 2f;
-                int px = (int)((cx * 0.5f + 0.5f) * size), py = (int)((cy * 0.5f + 0.5f) * size);
-                int r0 = (int)rt + 1;
-                if (px - r0 < rx0) rx0 = px - r0;
-                if (py - r0 < ry0) ry0 = py - r0;
-                if (px + r0 > rx1) rx1 = px + r0;
-                if (py + r0 > ry1) ry1 = py + r0;
-            }
-        if (rx0 < 0) rx0 = 0; if (ry0 < 0) ry0 = 0; if (rx1 > size) rx1 = size; if (ry1 > size) ry1 = size;
-        if (pre == PreRestore)
-        {
-            int cx0 = 0, cy0 = 0, cx1 = size, cy1 = size;
-            if (sunRect && _sunRectValid[layer])
-            {   // union of where movers were last drawn and where they are now; empty stays empty
-                cx0 = Math.Min(_sunRect[layer * 4], rx0); cy0 = Math.Min(_sunRect[layer * 4 + 1], ry0);
-                cx1 = Math.Max(_sunRect[layer * 4 + 2], rx1); cy1 = Math.Max(_sunRect[layer * 4 + 3], ry1);
-                if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0; if (cx1 > size) cx1 = size; if (cy1 > size) cy1 = size;
-            }
-            if (cx1 > cx0 && cy1 > cy0)
-                Gl.CopyImageSubData(cacheTex, target, 0, cx0, cy0, layer, tex, target, 0, cx0, cy0, layer,
-                                    cx1 - cx0, cy1 - cy0, 1);
-        }
-        if (sunRect)
-        {
-            _sunRect[layer * 4] = rx0; _sunRect[layer * 4 + 1] = ry0;
-            _sunRect[layer * 4 + 2] = rx1; _sunRect[layer * 4 + 3] = ry1;
-            _sunRectValid[layer] = true;
-        }
+        _submitStaged = n;
 
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0, layer);
@@ -2198,12 +1703,10 @@ public sealed unsafe class CasterPass : IExtenderService
         // first would leave stale depth wherever a previous pass left either of them set
         Gl.Enable(Gl.DEPTH_TEST); Gl.DepthFunc(Gl.LEQUAL); Gl.DepthMask(1);
         Gl.Disable(Gl.BLEND); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
-        if (pre == PreClear) Gl.Clear(Gl.DEPTH_BUFFER_BIT);
+        Gl.Clear(Gl.DEPTH_BUFFER_BIT);
         if (n == 0)
-        {   // cleared == fully lit, which is the truth -- and an empty BAKE still has a cache to fill, or the
-            // next composite restores whatever the mirror happened to hold
+        {   // cleared == fully lit, which is the truth for a view nothing casts into
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-            if (save) Gl.CopyImageSubData(tex, target, 0, 0, 0, layer, cacheTex, target, 0, 0, 0, layer, size, size, 1);
             return true;
         }
         Gl.UseProgram(_prog);
@@ -2243,40 +1746,9 @@ public sealed unsafe class CasterPass : IExtenderService
         Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, 0);
         Gl.BindVertexArray(0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        // The bake's still-only depth, banked for every frame that composites from it. GL orders the copy
-        // after the draws above, so no barrier is needed.
-        if (save) Gl.CopyImageSubData(tex, target, 0, 0, 0, layer, cacheTex, target, 0, 0, 0, layer, size, size, 1);
         GpuRing.Signal(ring.Fence, region);
         ring.At = (region + 1) % ring.Regions;
         return true;
-    }
-
-    /// <summary>#151: which cube slot does each selected light get? A light that already owns a slot KEEPS
-    /// it, whatever its rank; only a newcomer takes a free one, and taking a free slot invalidates whatever
-    /// cache was left in it. Keying on rank instead -- what this replaces -- re-baked six faces for every
-    /// light whose rank shifted, which is every light behind the player as they walk.
-    /// <para><paramref name="slotOf"/> is filled for all <paramref name="have"/> entries; -1 means no slot
-    /// (only reachable if <paramref name="have"/> exceeds <paramref name="slots"/>, which the caller's
-    /// selection already prevents). Alloc-free, O(have * slots) over at most 64 * 64.</para></summary>
-    private static void AssignCubeSlots(IntPtr* want, int have, int slots, bool* valid, IntPtr* baked, int* slotOf)
-    {
-        bool* taken = stackalloc bool[MaxCubes];
-        for (int j = 0; j < slots; j++) taken[j] = false;
-        for (int s = 0; s < have; s++)
-        {
-            slotOf[s] = -1;
-            // IntPtr.Zero is "no light", never an identity to match: two unidentified lights must not be
-            // handed the same cube by matching each other's blank.
-            if (want[s] == IntPtr.Zero) continue;
-            for (int j = 0; j < slots; j++)
-                if (!taken[j] && valid[j] && baked[j] == want[s]) { slotOf[s] = j; taken[j] = true; break; }
-        }
-        for (int s = 0; s < have; s++)
-        {
-            if (slotOf[s] >= 0) continue;
-            for (int j = 0; j < slots; j++)
-                if (!taken[j]) { slotOf[s] = j; taken[j] = true; valid[j] = false; break; }
-        }
     }
 
     /// <summary>#100: is a caster sphere outside this cube face's 90deg pyramid? <paramref name="t"/> is its

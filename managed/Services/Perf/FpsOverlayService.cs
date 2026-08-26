@@ -92,13 +92,11 @@ public sealed class FpsOverlayService : IExtenderService
             Append("  L"); AppendNum(OwnedLights.LastLightCount, 0);
             Append(" cl "); AppendNum(OwnedLights.LastBuildMs, 2); Append(" ms");
         }
-        // #97 acceptance: the shadow schedule has to be readable where the frame budget is. "sh b/v" is views
-        // RE-BAKED over views rendered -- standing still in a static scene reads 0/n, which is the criterion.
-        // The ms is CPU submission only (see CasterPass.LastShadowMs); the b/v ratio is the number to read.
+        // #187: every view is a bake, so "sh n" is views baked this frame -- the number the removal's cost is
+        // read off. The ms is CPU submission only (see CasterPass.LastShadowMs).
         if (CasterPass.LastViews > 0)
         {
-            Append("  sh "); AppendNum(CasterPass.LastBaked, 0);
-            Append("/"); AppendNum(CasterPass.LastViews, 0);
+            Append("  sh "); AppendNum(CasterPass.LastViews, 0);
             Append(" "); AppendNum(CasterPass.LastShadowMs, 2); Append(" ms");
         }
 

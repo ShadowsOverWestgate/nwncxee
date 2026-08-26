@@ -258,7 +258,7 @@ public sealed unsafe partial class OwnedDrawService
     /// stand in FRONT of it. That is vanilla's arrangement -- effects are invisible to the reflection and are
     /// not painted over by the surface -- and the ticket keeps it deliberately.</para>
     /// <para>Stands down whole whenever the copy could not be taken (<see cref="FrameSnapshot.Ready"/> false) or
-    /// the program did not build. Nothing partial: <see cref="BatchService"/>'s bucket-6 gate reads the
+    /// the program did not build. Nothing partial: <see cref="BucketGate"/>'s bucket-6 gate reads the
     /// same flag, so the engine draws every water surface itself on exactly the passes this one does not.</para></summary>
     private static void WaterOwnedPass(int from, int to, Matrix4x4* vp, float* view, float* proj,
                                        int* viewport, float near, float far)

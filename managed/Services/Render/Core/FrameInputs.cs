@@ -99,7 +99,9 @@ public static class FrameInputs
     /// value <see cref="AreaLightPosRange"/> shades from, deliberately: a cube baked from anywhere else
     /// computes occlusion for a light that is not where the BRDF thinks it is.</summary>
     public static readonly Vector3[] LocalLightPos = new Vector3[MaxLocalLights];
-    /// <summary>Light reach (cube far plane): <c>+0x78</c> when &gt; 0, else <c>+0x70</c>.</summary>
+    /// <summary>Light reach (cube far plane) = <c>GetLightAdjustedRadius</c>, the engine's own lit radius off
+    /// <c>PartLight+0x70</c>. #186: exactly the sphere the receiver's attenuation has support over, so nothing
+    /// outside it is worth baking.</summary>
     public static readonly float[] LocalLightRange = new float[MaxLocalLights];
     /// <summary>Light RGB (<c>+0x64</c>) -- for light-&gt;slot matching / debug, not the cube itself.</summary>
     public static readonly Vector3[] LocalLightColor = new Vector3[MaxLocalLights];

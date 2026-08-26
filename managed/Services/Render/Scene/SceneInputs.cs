@@ -320,10 +320,15 @@ public sealed unsafe class SceneInputs : IExtenderService
     // LightManager layout (Ghidra: AddLight / GetShadowLights / SetupLightsForThisPositionAndRadius): the MASTER
     // CExoArrayList<PartLight*> sits at this+0x10 (data) / +0x18 (count) -- every registered light in the loaded
     // area, creation order (stable). PartLight fields: castShadows +0x74, type +0x80 (0 = point/directional),
-    // enable flags +0x84/+0x88 (either set = active), range +0x70 (+0x78 preferred when > 0), intensity +0xa4,
+    // enable flags +0x84/+0x88 (either set = active), range +0x70, intensity +0xa4,
     // RGB +0x64, world pos +0xac. Directional (sun/moon) excluded by range, like ShadowService.
     private const int LmMasterData = 0x10, LmMasterCount = 0x18;
     private const int PlCastShadows = 0x74, PlType = 0x80, PlFlagA = 0x84, PlFlagB = 0x88;
+    /// <summary>The MDL light node's <c>radius</c> (+0x70) and <c>shadowradius</c> (+0x78) controllers
+    /// (Ghidra <c>MdlNodeLight::InternalParseField</c> @0x44baf0 binds both names to those offsets;
+    /// <c>PartLight::PartLight</c> @0x43d1d0 defaults 0x78 to -1). Only 0x70 reaches the engine's lighting --
+    /// 0x78 is a shadow-only override its STENCIL paths consult, and #186 stopped it sizing the owned cubes.
+    /// It is read here for the diagnostic dumps and nothing else.</summary>
     private const int PlRange = 0x70, PlRangeAlt = 0x78, PlIntensity = 0xa4, PlColor = 0x64, PlPos = 0xac;
     /// <summary>Engine shadow-fade weight (GetShadowLights decrements it per frame for deprioritized
     /// lights). Diagnostic only -- printed by the masterlight dump.</summary>
@@ -469,10 +474,17 @@ public sealed unsafe class SceneInputs : IExtenderService
             }
             if (_torchDiag) TrackNearest(p, pos, range, alt, inten, color, adjR, upW, culled, snapIdx);
             if (*(int*)(p + PlCastShadows) == 0) continue;
-            // Shadow reach must cover the LIT radius, or shadows cut off inside the lit sphere.
-            float shadowR = alt > 0f ? alt : range;
-            if (adjR > shadowR) shadowR = adjR;
-            FrameInputs.RecordLocalLight((IntPtr)p, pos, shadowR, color);
+            // #186: the cube's reach is the LIT radius exactly -- the same sphere the receiver's attenuation
+            // has support over, and the same one the engine lights with. Ghidra: SetLightGL @0x4c0e60 uploads
+            // GetLightAdjustedRadius(pl)^2 as the light's range (property 4), and inc_lighting.shd's
+            // ComputePointLightSource returns outright when that value is under the squared distance
+            // (GAMMA_CORRECTION == 1, the live path). Neither the engine nor the owned receiver has anything
+            // to say past it. It used to take max(this, PartLight+0x78) -- the MDL `shadowradius`, an
+            // artist-authored override the ENGINE only ever consults from its stencil paths
+            // (Scene::DoGobShadows @0x45fbd3, RenderShadowPlanes @0x463e79, PartProjection::Init @0x450193,
+            // all under `f78 > 0 ? f78 : f70`). Honouring it here sized the cube and pulled in casters for
+            // world the light cannot reach, at no visible gain.
+            FrameInputs.RecordLocalLight((IntPtr)p, pos, adjR, color);
         }
         _walkDoneCount = FrameInputs.AreaLightCount;
     }

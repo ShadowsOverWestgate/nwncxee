@@ -105,7 +105,7 @@ public sealed unsafe partial class OwnedDrawService
     /// exists -- a destroyed one can keep every field long enough to pass them, and then the gob chase in
     /// <see cref="LiveAlpha"/> walks a freelist word. <c>Part::~Part</c> is what makes this answer no.</para></summary>
     private static bool IdentityOk(int i, IntPtr tri)
-        => BatchService.EntryLive(_oEntry[i], tri)
+        => PartTable.EntryLive(_oEntry[i], tri)
            && *(IntPtr*)(tri + PartNode) == _oNode[i] && *(IntPtr*)(tri + PartMaterial) == _oMat[i]
            && *(int*)(tri + PartTexRotate) == _oRotBits[i];
 
@@ -148,7 +148,7 @@ public sealed unsafe partial class OwnedDrawService
     /// is cached at capture, which is what the creature case demands: a gob can fade a whole creature into
     /// the transparent run for a single frame and out again.</summary>
     private static float LiveAlpha(IntPtr tri)
-        => PartAlpha(tri) * BatchService.TileFadeFactor(tri) * BatchService.GobAlphaMul(tri);
+        => PartAlpha(tri) * PartTable.TileFadeFactor(tri) * OwnershipCensus.GobAlphaMul(tri);
 
     /// <summary>Squared distance from THIS pass's eye to the part's world centre -- the blended sort key.
     /// Derived exactly as the caster cull derives it and for the same reason (live-verified there): a
@@ -186,12 +186,12 @@ public sealed unsafe partial class OwnedDrawService
         if (_watchDrawLeft > 0)
         {
             bool routedWatch = false;
-            for (int k = 0; k < routed && !routedWatch; k++) routedWatch = BatchService.WatchedEntry(_oEntry[_pass[k]]);
+            for (int k = 0; k < routed && !routedWatch; k++) routedWatch = OwnershipCensus.WatchedEntry(_oEntry[_pass[k]]);
             if (!routedWatch)
             {
                 bool owned = false;
                 for (int i = 0; i < _ownCount && !owned; i++)
-                    owned = _oTri[i] != IntPtr.Zero && BatchService.WatchedEntry(_oEntry[i]);
+                    owned = _oTri[i] != IntPtr.Zero && OwnershipCensus.WatchedEntry(_oEntry[i]);
                 if (owned) { _watchDrawLeft--; _log?.Info("[dumpframe] DRAW never routed -- owned, but RouteParts did not include it"); }
             }
         }
@@ -214,7 +214,7 @@ public sealed unsafe partial class OwnedDrawService
             // live, all of it invisible, and it is exactly what the one-owner audit was reporting as
             // UNMATCHED: not a double draw, a ghost. The engine's own sighting window is the predictor, and
             // a part that comes back simply goes unstamped for one frame and is drawn by the engine.
-            if (!BatchService.SightedRecently(_oEntry[i]))
+            if (!PartTable.SightedRecently(_oEntry[i]))
             {
                 _skipUnseen++; _unseenBucket[_oBucket[i]]++;
                 W(i, "skipped: engine-culled");
@@ -231,7 +231,7 @@ public sealed unsafe partial class OwnedDrawService
             // env override. SKIPPED, not revoked: a highlight lasts exactly as long as the cursor sits on the
             // placeable, and revoking would spend a whole re-enrollment on a hover. Unstamped means the
             // iterator does not suppress it, so the engine's own walk draws it highlighted, which is vanilla.
-            if (!BatchService.InstanceOwnable(tri))
+            if (!OwnershipCensus.InstanceOwnable(tri))
             { _skipGob++; W(i, "skipped: instance state unownable this pass"); continue; }
             // #152 colour LOD. Stamped THEN skipped: the stamp suppresses the engine's own draw, so the part
             // is rendered by nobody -- handing it back would just move the cost, not remove it. Water is
@@ -248,7 +248,7 @@ public sealed unsafe partial class OwnedDrawService
                 float d2 = EyeDist2(i);
                 float px = _oR[i] * _lodScale;
                 if (px * px < _lodPx * _lodPx * d2)
-                { _lodSkipped++; BatchService.OwnGen[_oEntry[i]] = PassGen; W(i, "skipped: sub-pixel LOD"); continue; }
+                { _lodSkipped++; OwnershipCensus.OwnGen[_oEntry[i]] = PassGen; W(i, "skipped: sub-pixel LOD"); continue; }
             }
             // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
             // it into the blended run with the tile's factor folded into its alpha, which is what the engine
@@ -262,7 +262,7 @@ public sealed unsafe partial class OwnedDrawService
             // Keeping the flag off them also keeps them out of the prepass exclusion below, which they would
             // otherwise pay for a discard their stage does not have.
             float dissolve = lit && !ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])
-                             && BatchService.KeyholeDissolves(tri) ? 1f : 0f;
+                             && PartTable.KeyholeDissolves(tri) ? 1f : 0f;
             if (dissolve != 0f) _ownDissolve++;
             // MatStatic (Ghidra @0x450560): ambient = node+0xf4, diffuse = node+0xe8, emissive = part+0x7c.
             // ponytail: MatStatic also multiplies ambient+diffuse by AurGetTileColor() when the part's tile
@@ -346,7 +346,7 @@ public sealed unsafe partial class OwnedDrawService
                 keyCls = cls; keyBlend = blend;
             }
             W(i, "SUBMITTED");
-            if (BatchService.WatchTex[_oEntry[i]]) _watchSubmitted++;
+            if (OwnershipCensus.WatchTex[_oEntry[i]]) _watchSubmitted++;
             _dCount[n] = idxCount;
             _dOff[n] = (nint)((long)(uint)*(int*)(elem + item * 8) * 2);
             _dBase[n] = *(int*)(vert + item * 8);
@@ -369,8 +369,8 @@ public sealed unsafe partial class OwnedDrawService
                 // #128: PartTriMesh::Mat @0x450960's remaining two instance terms, live. Lit-only because
                 // the decompile guards its three SetMaterialv calls behind IsEnabled(5) -- an unlit part gets
                 // a flat constant colour and the instance's alpha, which is all the record above carries.
-                var cm = BatchService.GobDiffuseMul(tri);
-                var ea = BatchService.GobEmissiveAdd(tri);
+                var cm = OwnershipCensus.GobDiffuseMul(tri);
+                var ea = OwnershipCensus.GobEmissiveAdd(tri);
                 r[24] = dif[0] * cm.X; r[25] = dif[1] * cm.Y; r[26] = dif[2] * cm.Z; r[27] = 1f;
                 r[28] = emi[0] + ea.X; r[29] = emi[1] + ea.Y; r[30] = emi[2] + ea.Z; r[31] = 1f;
                 int o = i * 8;
@@ -418,9 +418,9 @@ public sealed unsafe partial class OwnedDrawService
             // bracket; parts the caster CENSUS still carries (table-eligible) would be double-recorded, so
             // only the census's rejects -- the moving creature pieces that probation killed -- recast here.
             if (_oGob[i] != IntPtr.Zero && _oBone[i] < 0
-                && !BatchService.CasterCensusCovers(_oEntry[i]))
+                && !OwnershipCensus.CasterCensusCovers(_oEntry[i]))
                 CasterPass.RecordOwnedInstance(tri, _oNode[i], _oVdo[i], _oItem[i], _oPrim[i]);
-            BatchService.OwnGen[_oEntry[i]] = PassGen;
+            OwnershipCensus.OwnGen[_oEntry[i]] = PassGen;
         }
         // #126: where each pass's batch range ends. Read off the batches themselves rather than tracked
         // through the cut above -- the routed order is class-ordered by construction, so the first batch of a

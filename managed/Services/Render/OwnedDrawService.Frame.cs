@@ -18,7 +18,7 @@ public sealed unsafe partial class OwnedDrawService
     private static void DrawOwned()
     {
         // #129: last pass's snapshot is not this pass's. Revoked first thing, so every path out of here that
-        // never reaches PassId.FbCopy leaves owned water disarmed -- and BatchService's bucket-6 gate reads
+        // never reaches PassId.FbCopy leaves owned water disarmed -- and BucketGate's bucket-6 gate reads
         // the same flag, so the engine draws water itself on exactly those passes.
         FrameSnapshot.Revoke();
         if (_progFailed || _batchUnavailable) return;   // EndFrame revokes + disarms; never pay the bracket for nothing

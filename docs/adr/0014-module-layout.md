@@ -125,3 +125,31 @@ Two departures from the sketch above, both deliberate:
 `FrameRegistry` (#170) and `PassRegistry` (#175) are the same participant-registry rule applied to the frame
 and to the passes; both use delegates rather than an interface, because the participants are static classes
 whose entry points are reached from `[UnmanagedCallersOnly]` handlers that cannot capture a receiver.
+
+## Implementation note (#188, 2026-08-26)
+
+`BatchService` split four ways, not three: `PartTable`, `OwnershipCensus`, `BucketGate` and the batcher that
+kept the name. The fourth is the one this ADR sketched as shared state and #173 already met once -- the part
+table and its parallel columns stay ONE struct-of-arrays module, because the hot walks read the columns
+directly and a real boundary there costs a copy or an indirection per part per frame. The three behaviour
+modules are separate `internal static` classes rather than partials of one, since partials would all still be
+named `BatchService`; they reach the columns through `using static`, which is a compile-time alias and emits
+the same instruction the same-class read did.
+
+Two boundaries are drawn where the ticket's bullets did not:
+
+- **The capture funnel stayed with the batcher.** `PartTriMesh::Draw` / `PartSkin::Draw` and the `Record` /
+  `Complete` bodies hanging off them WRITE the table, but they are the hook body -- they run a vanilla draw
+  through a trampoline `BatchService` owns to make the `RenderVertexData` funnel fire. Splitting them from
+  their trampoline buys nothing and risks the ordering. `PartTable` owns identity, lifetime and the group
+  registry; `BatchService` owns what fills them.
+- **`TableGen` is on `PartTable`, not the census.** It is bumped by the wipe, which is table machinery, and
+  it is what tells every holder of an entry index that its indices died.
+
+The AC "the bucket gate does not depend on the batcher being armed" was a real coupling, not a naming one:
+`EndFrame` cleared the single `_active` flag when `glMultiDrawElementsBaseVertex` turned out to be missing, so
+a GL without multidraw took the capture tables, the census, the gate AND the owned pass down with the submits.
+Arming is now two flags: `PartTable.Active` (the capture hooks are in -- the census and the gate legitimately
+ride on it, since no table means nothing to classify or suppress) and `BatchService._batchArmed`, which is
+private to the batcher and which nothing else can read. That is the one deliberate behaviour change in the
+split; everything else is a move.
