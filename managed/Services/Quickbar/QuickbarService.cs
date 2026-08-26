@@ -209,8 +209,8 @@ public sealed unsafe class QuickbarService : IExtenderService
         }
         else
         {
-            int vpW = _vpW > 0 ? _vpW : TextRenderer.ViewportW;
-            int vpH = _vpH > 0 ? _vpH : TextRenderer.ViewportH;
+            int vpW = _vpW > 0 ? _vpW : TextRig.ViewportW;
+            int vpH = _vpH > 0 ? _vpH : TextRig.ViewportH;
             _settings.OpenAt(vpW, vpH, _config);
         }
         RebuildChrome();
@@ -248,7 +248,7 @@ public sealed unsafe class QuickbarService : IExtenderService
     private static void RebuildChrome()
     {
         _dirty = false;
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null || _vpW <= 0 || _vpH <= 0)
         {
             _extraFrames = Array.Empty<RenderFrame>();

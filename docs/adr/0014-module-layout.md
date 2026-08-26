@@ -98,3 +98,30 @@ UI client (it draws through the text rig and registers a window), and `Shadow/Sh
 zero-size `Window` purely to get a per-frame draw slot — #170's participant registry is what removes that one.
 `ShaderResource` stays in `Render/`: `GlProgram` reaches it for override lookup and `$TOKEN$` expansion, and
 both are content/render concerns rather than platform ones, so the GLX/WGL seam is unaffected.
+
+## Implementation note (#175/#176, 2026-08-26)
+
+The layout landed with `Render/` carrying the three internal folders and ONE namespace (`Sowx.Services.Render`)
+rather than one namespace per folder: the folders are navigation, the namespace is the layer, and splitting the
+namespace would have meant a `using` churn across every file for no layering gain. `Shadow/` is gone --
+`CasterPass`, `CasterCandidate` and `ShadowService` to `Render/Pass/`, `ShadowMath` and `FrameInputs` (was
+`ShadowInputs`) to `Render/Core/`, `SceneInputs` (was `ShadowFeedService`) and `CameraCapture` (was
+`ShadowCaptureService`) to `Render/Scene/`. `WaterPass` is `Render/Pass/FrameSnapshot`. `Ui/TextRenderer` is
+`Ui/TextRig` -- it is a GL rig, and the name said otherwise -- and `PortraitQuad`, a pure chat concept, left the
+shared layer for `Chat/Core/Model`. `Metrics`' documentation, which named the chatbox and the wrong owner, is
+rewritten.
+
+Two departures from the sketch above, both deliberate:
+
+- **`Perf/BatchService` moved but did not split.** It is out of `Perf/` (which now holds only `DrawStats` and
+  `FpsOverlay`, i.e. instrumentation) and into `Render/Scene/`, and its own doc comment now says the name
+  describes a minority of what it does. The three-way split into census / bucket gate / batcher is a
+  #173-sized job on ~2,200 lines of shared static tables and is filed as #188 rather than smuggled into a
+  build-only rename pass.
+- **`CasterPass` is not on the pass lifecycle registry yet.** #175's `PassLifecycle` slots are shaped for the
+  colour bracket: `CasterPass` runs in the shadow bracket, installs through its own service, and stands down
+  by a latched `Disarm` rather than a context edge. Folding it in is follow-up work, not a folder move.
+
+`FrameRegistry` (#170) and `PassRegistry` (#175) are the same participant-registry rule applied to the frame
+and to the passes; both use delegates rather than an interface, because the participants are static classes
+whose entry points are reached from `[UnmanagedCallersOnly]` handlers that cannot capture a receiver.

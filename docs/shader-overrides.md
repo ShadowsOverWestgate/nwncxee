@@ -226,9 +226,9 @@ fail silently.
 
 ## Where this is enforced
 
-The guard predicates live in `managed/Services/Render/OwnedDrawService.cs`
+The guard predicates live in `managed/Services/Render/OwnedDrawService.Shaders.cs`
 (`RecordSafe`, `CutoutSafe`, `SkinSafe`, `LinearSafe`, `ResolveSafe`, `DepthSafe`) and
-`managed/Services/Shadow/CasterPass.cs` (`CastVsSafe`, `CastFsSafe`). Each is asserted
+`managed/Services/Render/Pass/CasterPass.cs` (`CastVsSafe`, `CastFsSafe`). Each is asserted
 in both directions by the SelfCheck suites — the embedded stages pass, and deliberately
 broken text is refused — and `run-demo.sh` fails the build if any suite fails. The one
 exception is Skin, whose refusing direction cannot be asserted there: it short-circuits

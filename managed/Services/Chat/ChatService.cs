@@ -50,7 +50,7 @@ public sealed unsafe class ChatService : IExtenderService
         RowAlign.SelfCheck(log);       // shared row alignment/justify primitive proof (off-device)
         ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
         ChatConfig.SelfCheck(log);     // config round-trip + legacy-file migration proof (off-device)
-        TextRenderer.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
+        TextRig.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
         SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
         if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla chat intact
         {
@@ -440,10 +440,10 @@ public sealed unsafe class ChatService : IExtenderService
     /// outline, anim, timestamps) live on <see cref="ChatWindow"/> and are resolved per-build.</summary>
     private static void ApplyConfig()
     {
-        float fontPx = System.Math.Clamp(_config.FontPx, TextRenderer.MinFontPx, TextRenderer.MaxFontPx);
-        float effectivePx = System.Math.Clamp(fontPx * Metrics.GameUiScale, TextRenderer.MinFontPx, TextRenderer.AtlasMaxPx);
+        float fontPx = System.Math.Clamp(_config.FontPx, TextRig.MinFontPx, TextRig.MaxFontPx);
+        float effectivePx = System.Math.Clamp(fontPx * Metrics.GameUiScale, TextRig.MinFontPx, TextRig.AtlasMaxPx);
         Metrics.Scale = effectivePx / Metrics.DesignFontPx;
-        TextRenderer.SetFont(effectivePx);
+        TextRig.SetFont(effectivePx);
     }
 
     /// <summary>The global (shared-atlas) font pixel height. Read by the dialog settings panel, which surfaces
@@ -454,7 +454,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// per-motion path). Does NOT persist -- the caller saves on drag end, matching chat's save-on-mouse-up.</summary>
     public static void SetGlobalFontPx(float px)
     {
-        float c = System.Math.Clamp(px, TextRenderer.MinFontPx, TextRenderer.MaxFontPx);
+        float c = System.Math.Clamp(px, TextRig.MinFontPx, TextRig.MaxFontPx);
         if (c == _config.FontPx) return;
         _config.FontPx = c;
         ApplyConfig(); DirtyAll(); Rebuild();
@@ -519,7 +519,7 @@ public sealed unsafe class ChatService : IExtenderService
             return;
         }
 
-        TextRenderer.Init(log);   // cold atlas bake (null under run-demo: stbtt absent -> render no-ops)
+        TextRig.Init(log);   // cold atlas bake (null under run-demo: stbtt absent -> render no-ops)
         // Tabs are pure receive-filters now (#25); the send channel is the dropdown (window-level).
         // Default is a single All tab; the player adds per-channel tabs via the settings window (#39).
         _layout = new ChatLayout(new ChatWindow(60, 40, 520, 300,
@@ -665,7 +665,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// tab matches (scroll hold / slide-in), then publish ONCE. Cold (network thread).</summary>
     private static void OnIngest(ChatLine line)
     {
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         if (_layout == null || atlas == null) { Rebuild(); return; }
 
         // #46: route incoming Tells before the scroll-compensation loop so a new tab is visible on rebuild.
@@ -794,7 +794,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// LOH scratch alloc (#53). The focused window is always rebuilt (it owns drag chrome, grip, strip).</summary>
     private static void Rebuild()
     {
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         if (_layout == null || atlas == null) return;
         ChatWindow[] wins = _layout.Windows;   // snapshot
         int n = wins.Length;
@@ -1021,7 +1021,7 @@ public sealed unsafe class ChatService : IExtenderService
         {
             _layout.FocusedIndex = index;
             win.ChannelListOpen = false;
-            _settings.OpenAt(win, _config, TextRenderer.ViewportW, TextRenderer.ViewportH,
+            _settings.OpenAt(win, _config, TextRig.ViewportW, TextRig.ViewportH,
                              winIndex: index, winCount: _layout.Count);
             Rebuild(); return true;
         }
@@ -1230,7 +1230,7 @@ public sealed unsafe class ChatService : IExtenderService
         else for (int i = wins.Length - 1; i >= 0; i--)
             if (wins[i].Contains(_lastMx, _lastMy)) { hit = wins[i]; hitIdx = i; break; }
         if (hit == null) return false;
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null) return true;
         float before = hit.Active.ScrollPx;
         hit.ScrollByPx(dy * WheelLines * atlas.LineHeight);

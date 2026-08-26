@@ -431,7 +431,7 @@ public static unsafe class Gl
         DeleteSync = (delegate* unmanaged<IntPtr, void>)P("glDeleteSync");
 
         // FBO procs are NOT in this gate: text/chat rendering must not regress if a client lacks them.
-        // ShadowFeedService null-checks GenFramebuffers/FramebufferTexture2D itself before using the FBO path.
+        // SceneInputs null-checks GenFramebuffers/FramebufferTexture2D itself before using the FBO path.
         _ready = CreateProgram != null && GenVertexArrays != null && BufferData != null && DrawArrays != null;
         if (!_ready) { log.Info("Gl: a required GL 3.x proc was missing"); _failed = true; }
         return _ready;

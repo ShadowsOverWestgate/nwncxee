@@ -475,7 +475,7 @@ internal static unsafe class SymbolMap
     /// +0x28, <c>areaFlags</c> int at +0x3c, <c>playerPosition</c> vec3 at +0x4c, <c>cameraPosition</c> vec3
     /// at +0x64. Reading it is what lets #123's feature switches be the engine's own values rather than a
     /// reconstruction -- and the camera here is the SCENE's, not the last pass's (the
-    /// <c>ShadowInputs.CameraPos</c> hazard) because the engine sets it once per frame for its own shaders.</summary>
+    /// <c>FrameInputs.CameraPos</c> hazard) because the engine sets it once per frame for its own shaders.</summary>
     public const string GlShaderRuntimeData = "_ZN8GLRender26m_shaderExposedRuntimeDataE";
     /// <summary>GLRender::m_fog @0x19ad160 (B) -- the area's fog block, read by <c>GLRender::SetUniforms</c>
     /// @0x4ccbf0 to build the engine's own <c>fogParams</c>/<c>fogColor</c>: +0x00 start, +0x04 end,

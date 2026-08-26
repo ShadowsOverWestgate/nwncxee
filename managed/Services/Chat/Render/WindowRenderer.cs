@@ -3,6 +3,8 @@ using System.Text;
 using Sowx.Services.Chat.Core;
 using Sowx.Ui;
 
+using Sowx.Services.Chat.Core.Model;
+
 namespace Sowx.Services.Chat.Render;
 
 /// <summary>

@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using Sowx.Ui;
 
+using Sowx.Services.Chat.Core.Model;
+
 namespace Sowx.Services.Chat.Render;
 
 /// <summary>One built chatbox frame: the interleaved verts + the metadata the animated draw needs. The

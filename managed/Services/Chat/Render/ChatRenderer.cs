@@ -6,23 +6,25 @@ using Sowx.Services.Chat.Core;
 using Sowx.Ui;
 using Sowx.Graphics;
 
+using Sowx.Services.Chat.Core.Model;
+
 namespace Sowx.Services.Chat.Render;
 
 /// <summary>
 /// Chat-coupled owned-render pass (map #13). Owns the per-window <see cref="Frame"/> publish/animation
-/// buffering and drives the shared <see cref="TextRenderer"/> primitives (program, atlas, VAO/VBO rig,
+/// buffering and drives the shared <see cref="TextRig"/> primitives (program, atlas, VAO/VBO rig,
 /// portrait rig) to draw the chat windows inside the SwapBuffers hook. Callers build a batch cold
 /// (ingest/input/resize thread) via <see cref="VertexBatch"/> and <see cref="Publish(RenderFrame[])"/>;
 /// the hot <see cref="Draw"/> only uploads-if-changed and issues one <c>glDrawArrays</c> per window,
-/// allocating nothing in steady state. The generic drawing primitives live in <see cref="TextRenderer"/>.
+/// allocating nothing in steady state. The generic drawing primitives live in <see cref="TextRig"/>.
 /// </summary>
 public static unsafe class ChatRenderer
 {
     private const int Floats = VertexBatch.Floats;   // x,y,u,v,r,g,b,a
 
-    /// <summary>Injected log + baked atlas, both owned by <see cref="TextRenderer"/> (set in its Init).</summary>
-    private static ExtenderLog? _log => TextRenderer.Log;
-    private static GlyphAtlas? _atlas => TextRenderer.Atlas;
+    /// <summary>Injected log + baked atlas, both owned by <see cref="TextRig"/> (set in its Init).</summary>
+    private static ExtenderLog? _log => TextRig.Log;
+    private static GlyphAtlas? _atlas => TextRig.Atlas;
 
     private static bool _diagged;              // one-shot: log GL error + viewport on the first drawn frame
 
@@ -102,11 +104,11 @@ public static unsafe class ChatRenderer
     /// <summary>Toggle the hardcoded demo string over the shared primitives (slice #19 owned-render demo).</summary>
     public static bool ToggleDemo()
     {
-        if (_atlas == null) { _log?.Info("TextRenderer: no atlas; can't draw text"); return false; }
+        if (_atlas == null) { _log?.Info("TextRig: no atlas; can't draw text"); return false; }
         _demoOn = !_demoOn;
         if (_demoOn) { var b = BuildDemo(_atlas); Publish(b.Item1, b.Item2); }
         else Clear();
-        _log?.Info($"TextRenderer: demo={_demoOn}");
+        _log?.Info($"TextRig: demo={_demoOn}");
         return _demoOn;
     }
 
@@ -181,10 +183,10 @@ public static unsafe class ChatRenderer
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &save[4]);
 
-        if (TextRenderer.EnsureProgram())
+        if (TextRig.EnsureProgram())
         {
-            if (!TextRenderer._texUp) TextRenderer.UploadTexture();
-            if (!TextRenderer._vaoUp) TextRenderer.SetupVao();
+            if (!TextRig._texUp) TextRig.UploadTexture();
+            if (!TextRig._vaoUp) TextRig.SetupVao();
 
             byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
             byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
@@ -194,9 +196,9 @@ public static unsafe class ChatRenderer
 
             int* vp = stackalloc int[4];
             Gl.GetIntegerv(Gl.VIEWPORT, vp);
-            TextRenderer.ViewportW = vp[2]; TextRenderer.ViewportH = vp[3];
+            TextRig.ViewportW = vp[2]; TextRig.ViewportH = vp[3];
             float* m = stackalloc float[16];
-            TextRenderer.Ortho(m, vp[2], vp[3]);
+            TextRig.Ortho(m, vp[2], vp[3]);
 
             for (int i = 0; i < frames.Length; i++)
             {
@@ -212,12 +214,12 @@ public static unsafe class ChatRenderer
                 {
                     // ponytail: settled — Scratch has correct data from the last ApplyAnim.
                     // Single-frame: VBO still holds it; multi-frame: re-upload (shared VBO).
-                    if (frames.Length > 1) TextRenderer.UploadBuffer(f.Scratch, uploadLen);
+                    if (frames.Length > 1) TextRig.UploadBuffer(f.Scratch, uploadLen);
                 }
                 else if (stable)
                 {
                     ApplyAnim(f, residual, now, ls);
-                    TextRenderer.UploadBuffer(f.Scratch, uploadLen);
+                    TextRig.UploadBuffer(f.Scratch, uploadLen);
                     f.Settled = true;
                     f.OpaqueCount = opaque;
                 }
@@ -225,7 +227,7 @@ public static unsafe class ChatRenderer
                 {
                     f.Settled = false;
                     ApplyAnim(f, residual, now, ls);
-                    TextRenderer.UploadBuffer(f.Scratch, uploadLen);
+                    TextRig.UploadBuffer(f.Scratch, uploadLen);
                 }
                 _drawCount = rf.Count;
 
@@ -234,7 +236,7 @@ public static unsafe class ChatRenderer
                     while (Gl.GetError() != 0) { }
                     _diagged = true;
                     DrawFrame(f, m, vp, residual, now, ls);
-                    _log?.Info($"TextRenderer: draw verts={_drawCount} viewport={vp[2]}x{vp[3]} " +
+                    _log?.Info($"TextRig: draw verts={_drawCount} viewport={vp[2]}x{vp[3]} " +
                                $"was[depth={sDepth} blend={sBlend} cull={sCull} scissor={sScissor}] glErr=0x{Gl.GetError():x}");
                 }
                 else DrawFrame(f, m, vp, residual, now, ls);
@@ -302,7 +304,7 @@ public static unsafe class ChatRenderer
     private static void DrawFrame(Frame f, float* proj, int* vp, float residual, System.DateTime now, System.DateTime ls)
     {
         RenderFrame rf = f.Rf;
-        TextRenderer.BindText(proj);
+        TextRig.BindText(proj);
         if (rf.BodyStart > 0) Gl.DrawArrays(Gl.TRIANGLES, 0, rf.BodyStart);
 
         int bodyVerts = rf.BodyEnd - rf.BodyStart;
@@ -324,7 +326,7 @@ public static unsafe class ChatRenderer
         int tail = _drawCount - rf.BodyEnd;
         if (tail > 0)
         {
-            TextRenderer.BindText(proj);   // the portrait pass switched program/VAO/buffer
+            TextRig.BindText(proj);   // the portrait pass switched program/VAO/buffer
             Gl.DrawArrays(Gl.TRIANGLES, rf.BodyEnd, tail);
         }
     }
@@ -344,9 +346,9 @@ public static unsafe class ChatRenderer
                                       bool animEnabled, double holdSec, double fadeSec)
     {
         int k = quads.Count;
-        if (k == 0 || TextRenderer._aurGet == null || !Sowx.Framework.AurTex.Ready) return;
-        if (!TextRenderer.EnsurePortraitProgram()) return;
-        if (!TextRenderer._pvaoUp) TextRenderer.SetupPortraitVao();
+        if (k == 0 || TextRig._aurGet == null || !Sowx.Framework.AurTex.Ready) return;
+        if (!TextRig.EnsurePortraitProgram()) return;
+        if (!TextRig._pvaoUp) TextRig.SetupPortraitVao();
         if (k > MaxPortraitsPerFrame) { _log?.Info($"[chat] portrait cap hit ({k}>{MaxPortraitsPerFrame})"); k = MaxPortraitsPerFrame; }
 
         // Resolve every TID and build all geometry FIRST. AurTextureGet's create path (first load of a
@@ -361,20 +363,20 @@ public static unsafe class ChatRenderer
         {
             float a = scrolled ? 1f : ChatAnim.FadeAlpha(now, quads[i].Ts, ls, animEnabled, holdSec, fadeSec);
             if (a <= 0f) continue;                                 // fully faded -> skip
-            int tid = TextRenderer.ResolveTid(quads[i].Resref);
+            int tid = TextRig.ResolveTid(quads[i].Resref);
             if (tid == 0) continue;   // not uploaded yet, or unresolvable -> skip this frame
             tids[drawn] = tid;
-            TextRenderer.FillQuad(verts + drawn * Floats * 6, quads[i], residual, a);   // slide with the body + fade
+            TextRig.FillQuad(verts + drawn * Floats * 6, quads[i], residual, a);   // slide with the body + fade
             drawn++;
         }
         if (drawn == 0) return;
 
-        Gl.UseProgram(TextRenderer._progRgb);
-        Gl.UniformMatrix4fv(TextRenderer._uProjRgb, 1, (byte)Gl.FALSE, proj);
+        Gl.UseProgram(TextRig._progRgb);
+        Gl.UniformMatrix4fv(TextRig._uProjRgb, 1, (byte)Gl.FALSE, proj);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.Uniform1i(TextRenderer._uTexRgb, 0);
-        Gl.BindVertexArray(TextRenderer._pvao);
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, TextRenderer._pvbo);
+        Gl.Uniform1i(TextRig._uTexRgb, 0);
+        Gl.BindVertexArray(TextRig._pvao);
+        Gl.BindBuffer(Gl.ARRAY_BUFFER, TextRig._pvbo);
         Gl.BufferData(Gl.ARRAY_BUFFER, (System.IntPtr)(Floats * 6 * drawn * sizeof(float)), verts, Gl.DYNAMIC_DRAW);
         for (int i = 0; i < drawn; i++)
         {
@@ -407,7 +409,7 @@ public static unsafe class ChatRenderer
     {
         if (_atlas == null || _log == null) return;
         if (!Gl.Init(_log)) return;
-        if (_attrVerts == null || _attrEpoch != TextRenderer.AtlasEpoch) { BuildAttribution(); _attrEpoch = TextRenderer.AtlasEpoch; }
+        if (_attrVerts == null || _attrEpoch != TextRig.AtlasEpoch) { BuildAttribution(); _attrEpoch = TextRig.AtlasEpoch; }
         if (_attrCount == 0) return;
 
         int* save = stackalloc int[5];
@@ -418,10 +420,10 @@ public static unsafe class ChatRenderer
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &save[4]);
 
-        if (TextRenderer.EnsureProgram())
+        if (TextRig.EnsureProgram())
         {
-            if (!TextRenderer._texUp) TextRenderer.UploadTexture();
-            if (!TextRenderer._vaoUp) TextRenderer.SetupVao();
+            if (!TextRig._texUp) TextRig.UploadTexture();
+            if (!TextRig._vaoUp) TextRig.SetupVao();
 
             byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
             byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
@@ -430,15 +432,15 @@ public static unsafe class ChatRenderer
 
             int* vp = stackalloc int[4];
             Gl.GetIntegerv(Gl.VIEWPORT, vp);
-            TextRenderer.ViewportW = vp[2]; TextRenderer.ViewportH = vp[3];
+            TextRig.ViewportW = vp[2]; TextRig.ViewportH = vp[3];
             float* m = stackalloc float[16];
-            TextRenderer.Ortho(m, vp[2], vp[3]);
+            TextRig.Ortho(m, vp[2], vp[3]);
 
-            TextRenderer.BindText(m);
+            TextRig.BindText(m);
             // LINEAR smooths the synthetic-italic shear (NEAREST creates hard stairstepping).
             Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
             Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-            Gl.BindBuffer(Gl.ARRAY_BUFFER, TextRenderer._vbo);
+            Gl.BindBuffer(Gl.ARRAY_BUFFER, TextRig._vbo);
             fixed (float* p = _attrVerts)
                 Gl.BufferData(Gl.ARRAY_BUFFER, (System.IntPtr)(_attrVerts.Length * sizeof(float)), p, Gl.DYNAMIC_DRAW);
             Gl.DrawArrays(Gl.TRIANGLES, 0, _attrCount);

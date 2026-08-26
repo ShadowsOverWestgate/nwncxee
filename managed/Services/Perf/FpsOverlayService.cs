@@ -1,6 +1,7 @@
 using System;
 using Sowx.Framework;
 using Sowx.Ui;      // a genuine UI client: draws through the text rig and registers a UiHost window
+using Sowx.Services.Render;
 
 namespace Sowx.Services.Perf;
 
@@ -68,16 +69,16 @@ public sealed class FpsOverlayService : IExtenderService
             }
         }
         _last = now;
-        if (_vertCount > 0 && TextRenderer.ViewportW > 0)
-            TextRenderer.DrawBatch(_verts, _vertCount, 1f,
-                TextRenderer.ViewportW - _bakedW - 6f, 6f);
+        if (_vertCount > 0 && TextRig.ViewportW > 0)
+            TextRig.DrawBatch(_verts, _vertCount, 1f,
+                TextRig.ViewportW - _bakedW - 6f, 6f);
     }
 
     /// <summary>Re-bake the readout at origin (drawn via uOffset translation): dark backing rect + one
     /// line of atlas glyphs. Zero-alloc -- digits are written straight into the char buffer.</summary>
     private static void Bake(float fps, float avgMs, float maxMs)
     {
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null) { _vertCount = 0; return; }
 
         _textLen = 0;
@@ -86,19 +87,19 @@ public sealed class FpsOverlayService : IExtenderService
         Append("  max "); AppendNum(maxMs, 1);
         // #83 acceptance: the owned path's clustered light rig has to show its GPU cost and its light count
         // where the frame budget is read, not only in the period log.
-        if (Render.OwnedLights.LastLightCount > 0)
+        if (OwnedLights.LastLightCount > 0)
         {
-            Append("  L"); AppendNum(Render.OwnedLights.LastLightCount, 0);
-            Append(" cl "); AppendNum(Render.OwnedLights.LastBuildMs, 2); Append(" ms");
+            Append("  L"); AppendNum(OwnedLights.LastLightCount, 0);
+            Append(" cl "); AppendNum(OwnedLights.LastBuildMs, 2); Append(" ms");
         }
         // #97 acceptance: the shadow schedule has to be readable where the frame budget is. "sh b/v" is views
         // RE-BAKED over views rendered -- standing still in a static scene reads 0/n, which is the criterion.
         // The ms is CPU submission only (see CasterPass.LastShadowMs); the b/v ratio is the number to read.
-        if (Shadow.CasterPass.LastViews > 0)
+        if (CasterPass.LastViews > 0)
         {
-            Append("  sh "); AppendNum(Shadow.CasterPass.LastBaked, 0);
-            Append("/"); AppendNum(Shadow.CasterPass.LastViews, 0);
-            Append(" "); AppendNum(Shadow.CasterPass.LastShadowMs, 2); Append(" ms");
+            Append("  sh "); AppendNum(CasterPass.LastBaked, 0);
+            Append("/"); AppendNum(CasterPass.LastViews, 0);
+            Append(" "); AppendNum(CasterPass.LastShadowMs, 2); Append(" ms");
         }
 
         float w = 0f;

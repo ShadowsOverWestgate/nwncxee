@@ -6,7 +6,7 @@ namespace Sowx.Ui;
 /// <summary>
 /// A single-channel (alpha) glyph atlas baked once at init (cold) with the client's own
 /// stb_truetype exports. Owns the CPU bitmap + per-codepoint <see cref="Glyph"/> table; the GL
-/// upload lives in <see cref="TextRenderer"/> because no GL context exists at init time.
+/// upload lives in <see cref="TextRig"/> because no GL context exists at init time.
 /// </summary>
 public sealed unsafe class GlyphAtlas
 {

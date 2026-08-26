@@ -31,16 +31,21 @@ import textwrap
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SOURCES = [
-    "managed/Services/Render/OwnedDrawService.cs",
-    "managed/Services/Render/OwnedLights.cs",
-    "managed/Services/Shadow/CasterPass.cs",
-    "managed/Services/Render/GrassField.cs",
-    "managed/Services/Render/PostChain.cs",
-    "managed/Services/Render/WaterPass.cs",
+    # #171: the owned pass's GLSL lives in the partial, not the service. Must stay FIRST --
+    # harvest() inlines only constants it has already seen, and the files below name these.
+    # The service's own file is deliberately absent: it holds no shader text now. Keep it that way --
+    # a const string added THERE and concatenated into one here would splice in as empty and be
+    # validated as if it shipped. (A constant a Source arm names directly still hard-errors.)
+    "managed/Services/Render/OwnedDrawService.Shaders.cs",
+    "managed/Services/Render/Pass/OwnedLights.cs",
+    "managed/Services/Render/Pass/CasterPass.cs",
+    "managed/Services/Render/Pass/GrassField.cs",
+    "managed/Services/Render/Pass/PostChain.cs",
+    "managed/Services/Render/Pass/FrameSnapshot.cs",
 ]
 # ShaderResource.Tokens' three sizing tokens. Any legal value compiles the same shapes.
 TOKENS = {"$CAP$": "128", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667"}
-STAGES = "managed/Services/Render/ShaderStages.cs"
+STAGES = "managed/Services/Render/Core/ShaderStages.cs"
 DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*const string (\w+) = (.*)$")
 PIECE = re.compile(r'"""\n(.*?)\n\s*"""|([A-Za-z_]\w*)', re.S)
 RESREF = re.compile(r'(\w+)\s*=\s*"(sowx_\w+)"')

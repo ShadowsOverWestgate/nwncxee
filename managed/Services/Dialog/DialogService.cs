@@ -420,7 +420,7 @@ public sealed unsafe class DialogService : IExtenderService
         float bodyTop = f.PanelY + f.TitleH;
         if (!In(f.PanelX, bodyTop, f.PanelW, _bodyHPub, _lastMx, _lastMy)) return false;
         float maxScroll = f.ContentH - _bodyHPub; if (maxScroll < 0f) maxScroll = 0f;
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         float step = (atlas?.LineHeight ?? 18f) * 3f;
         float sp = _scroll - dy * step;
         _scroll = sp < 0f ? 0f : (sp > maxScroll ? maxScroll : sp);
@@ -501,7 +501,7 @@ public sealed unsafe class DialogService : IExtenderService
     {
         float fontPx = System.Math.Clamp(ChatService.GlobalFontPx, DialogSettings.FontMin, DialogSettings.FontMax);
         _settings.OpenAt(f.PanelX + f.PanelW - _settings.W, f.PanelY + f.TitleH,
-                         TextRenderer.ViewportW, TextRenderer.ViewportH,
+                         TextRig.ViewportW, TextRig.ViewportH,
                          _locked, fontPx, _maxBodyH, _animEnabled, _fadeInMs, _fadeOutMs, _justify);
         BuildSettings();
     }
@@ -594,7 +594,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static bool OverNpcText(DialogFrame? f, float x, float y)
     {
         if (f == null || f.NpcBlock.Runes == null || f.NpcBlock.Runes.Count == 0) return false;
-        GlyphAtlas? atlas = TextRenderer.Atlas; if (atlas == null) return false;
+        GlyphAtlas? atlas = TextRig.Atlas; if (atlas == null) return false;
         float bodyTop = f.PanelY + f.TitleH;
         if (y < bodyTop || y > bodyTop + _bodyHPub) return false;
         if (x < f.NpcX || x > f.NpcX + f.NpcW) return false;
@@ -607,7 +607,7 @@ public sealed unsafe class DialogService : IExtenderService
     /// index is chosen by the nearest glyph gap, measured with the same <see cref="RowEdges"/> walk the glyphs use.</summary>
     private static int NpcHitIndex(DialogFrame f, float x, float y)
     {
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         Block blk = f.NpcBlock;
         if (atlas == null || blk.Runes == null || blk.Lines.Count == 0) return 0;
         float lh = atlas.LineHeight;
@@ -757,7 +757,7 @@ public sealed unsafe class DialogService : IExtenderService
         if (!GameGate.InGame) return;
         DialogFrame? f = _frame;
         if (f == null) return;
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null) return;
 
         float bodyTarget = System.Math.Min(f.ContentH, _maxBodyH);
@@ -811,22 +811,22 @@ public sealed unsafe class DialogService : IExtenderService
                 EmitRect(ref n, su, sv, panelX + panelW - o - 1f, panelY + panelH - ResizeGripPx + o,
                          panelX + panelW - o, panelY + panelH - o, GripCol);
             }
-        TextRenderer.DrawBatch(_chrome, n / VertexBatch.Floats, chromeA);
+        TextRig.DrawBatch(_chrome, n / VertexBatch.Floats, chromeA);
 
         // 2. content: clipped to the body, offset by (bodyTop - scroll), faded.
         int bx = (int)panelX, by = (int)bodyTop, bw = (int)System.Math.Ceiling(panelW), bh = (int)System.Math.Ceiling(bodyH);
         float offY = bodyTop - scroll;
         if (f.ContentCount > 0)
-            TextRenderer.DrawBatch(f.ContentVerts, f.ContentCount, contentA, 0f, offY, true, bx, by, bw, bh);
+            TextRig.DrawBatch(f.ContentVerts, f.ContentCount, contentA, 0f, offY, true, bx, by, bw, bh);
         if (f.PortraitResref.Length > 0 && f.Pw > 0f)
-            TextRenderer.DrawPortrait(f.PortraitResref, f.Pcx, f.Pcy + offY, f.Pw, f.Ph, contentA, true, bx, by, bw, bh);
+            TextRig.DrawPortrait(f.PortraitResref, f.Pcx, f.Pcy + offY, f.Pw, f.Ph, contentA, true, bx, by, bw, bh);
 
         // 3. title glyphs (name + gear), fixed, chrome alpha.
-        if (f.TitleCount > 0) TextRenderer.DrawBatch(f.TitleVerts, f.TitleCount, chromeA);
+        if (f.TitleCount > 0) TextRig.DrawBatch(f.TitleVerts, f.TitleCount, chromeA);
 
         // 4. settings panel, full alpha.
         DialogFrame? sf = _settingsFrame;
-        if (sf != null && sf.ContentCount > 0) TextRenderer.DrawBatch(sf.ContentVerts, sf.ContentCount, 1f);
+        if (sf != null && sf.ContentCount > 0) TextRig.DrawBatch(sf.ContentVerts, sf.ContentCount, 1f);
     }
 
     // ---- chrome emit (reused buffer, zero-alloc after the first grow) --------------------------
@@ -875,7 +875,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static void Rebuild()
     {
         if (!_open) return;                                    // fading out: keep the last frame for Draw to fade
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null) { _frame = null; return; }
 
         Reply[] replies = _replies;
@@ -884,7 +884,7 @@ public sealed unsafe class DialogService : IExtenderService
         string portraitResref = _portraitResref;
         int hover = _hover;
 
-        int vpW = TextRenderer.ViewportW, vpH = TextRenderer.ViewportH;
+        int vpW = TextRig.ViewportW, vpH = TextRig.ViewportH;
         if (vpW <= 0 || vpH <= 0) { vpW = 1280; vpH = 720; }
 
         float lh = atlas.LineHeight;
@@ -908,7 +908,7 @@ public sealed unsafe class DialogService : IExtenderService
 
         bool hasPortrait = portraitResref.Length > 0;
         float portraitH = hasPortrait ? PortraitRows * lh : 0f;
-        float portraitW = portraitH * TextRenderer.PortraitAspect;
+        float portraitW = portraitH * TextRig.PortraitAspect;
         float npcX = textX + (hasPortrait ? portraitW + PanelPad : 0f);
         float npcW = textW - (hasPortrait ? portraitW + PanelPad : 0f) - scrollGutter;
 
@@ -1012,7 +1012,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static void BuildSettings()
     {
         if (!_settings.Open) { _settingsFrame = null; return; }
-        GlyphAtlas? atlas = TextRenderer.Atlas;
+        GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null) { _settingsFrame = null; return; }
 
         var b = new VertexBatch(atlas.SolidU, atlas.SolidV);
