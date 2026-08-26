@@ -29,7 +29,11 @@ public sealed unsafe partial class AlloyRenderer
         // Same pair the fullbright and lit programs take. #161: all four stages declare the record, so all
         // four are counted -- the tessellation pair reads it to build the wave field.
         if (prog != 0 && !(ShaderContract.RecordSafe(wvs) && ShaderContract.RecordSafe(wtc) && ShaderContract.RecordSafe(wte) && ShaderContract.RecordSafe(wfs)
-                           && ShaderContract.LinearSafe(wfs)))
+                           && ShaderContract.LinearSafe(wfs)
+                           // #208: ...and the four samplers this program binds units to. A dropped uProbe
+                           // leaves a samplerCube on unit 0 beside the diffuse: INVALID_OPERATION, every
+                           // water draw dropped, nothing in the log.
+                           && ShaderContract.SlotSafe(wfs, "uTex", "uFbColor", "uFbDepth", "uProbe")))
         {
             Gl.DeleteProgram(prog);
             _log?.Info("AlloyRenderer: water override declares the wrong per-draw record or still " +
@@ -224,6 +228,9 @@ public sealed unsafe partial class AlloyRenderer
                                        out string vsSrc, out string fsSrc);
         if (prog != 0 && !(ShaderContract.RecordSafe(vsSrc) && ShaderContract.RecordSafe(fsSrc) && ShaderContract.CutoutSafe(vsSrc, fsSrc)
                            && ShaderContract.SkinSafe(vsSrc, _skinning) && ShaderContract.LinearSafe(fsSrc)
+                           // #208: ...and the sampler declarations the unit table binds against, which only
+                           // the compiled source can answer for. Bound-sampler check, so bindless skips it.
+                           && (_bindless || ShaderContract.LitSlotSafe(fsSrc))
                            && (!_bindless || fsSrc.Contains("SowxTexH"))))
         {
             prog = RebuildEmbedded(prog, OwnedLitVs, litFs, "clustered lit", ref vsSrc);
@@ -278,8 +285,8 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(_litProbe, (int)EnvProbe.ProbeUnit);
         // #120's five map samplers, for the same reason: left at their default they would all point at unit
         // 0 and read the diffuse as a normal map on every part that declares one.
-        string[] pbr = { "uNrmTex", "uSpecTex", "uRoughTex", "uHeightTex", "uIllumTex", "uFlowTex", "uAoTex" };
-        for (int i = 0; i < MapSlots; i++) Gl.Uniform1i(GlProgram.Loc(prog, pbr[i]), (int)PbrUnit0 + i);
+        for (int i = 0; i < MapSlots; i++)
+            Gl.Uniform1i(GlProgram.Loc(prog, TextureSlots.MapSamplers[i]), (int)PbrUnit0 + i);
         _log?.Info("AlloyRenderer: clustered forward+ lit program ready (4.6 context)");
     }
 

@@ -112,10 +112,8 @@ public sealed unsafe partial class AlloyRenderer
                              && _progLit46 != 0;
             }
             Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-            if (srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
-            Gl.Enable(Gl.DEPTH_TEST); Gl.DepthMask(1);
-            Gl.Disable(Gl.BLEND); _blendOn = false;
-            Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
+            new PassState(depth: true, depthWrite: true, srgb: srgb).Apply();
+            _blendOn = false;
             Gl.ActiveTexture(Gl.TEXTURE0);
             _lastPixels = viewport[2] * viewport[3];
             // #129: built HERE, not at the pass, because staging has to know. A water part staged for a pass

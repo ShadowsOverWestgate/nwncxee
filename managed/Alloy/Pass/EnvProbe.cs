@@ -49,10 +49,10 @@ internal static unsafe class EnvProbe
     /// <summary>Texture unit the probe binds on: above the material slots (3..9 since #146 added the AO
     /// map), which are above the two shadow maps (1/2) and the diffuse (0). It must stay above them -- a
     /// samplerCube and a sampler2D on ONE unit is INVALID_OPERATION and the draw is dropped, silently as far
-    /// as the frame is concerned. 12 rather than 10, which skips the units the grass push map (10) and the
-    /// #139 resolve (10/11) hold; those are other programs, but a cube target sharing a unit with them is
-    /// exactly the mistake this comment exists to prevent.</summary>
-    internal const uint ProbeUnit = 12;
+    /// as the frame is concerned. Above the grass push map and the #139 resolve as well: those are other
+    /// programs, but a cube target sharing a unit with them is exactly the mistake this alias exists to
+    /// prevent. See <see cref="TextureSlots"/> for the whole ladder, which asserts that ordering.</summary>
+    internal const uint ProbeUnit = TextureSlots.Probe;
 
     /// <summary>Near plane of a face frustum. Small: the probe sits at the camera, and the geometry that
     /// matters (the room around it) starts close.</summary>
@@ -188,10 +188,10 @@ internal static unsafe class EnvProbe
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.Viewport(0, 0, Size, Size);
         Gl.ClearColor(clear.X, clear.Y, clear.Z, 1f);
-        Gl.Enable(Gl.DEPTH_TEST); Gl.DepthMask(1); Gl.DepthFunc(Gl.LEQUAL);
-        Gl.Disable(Gl.BLEND); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
-        // The cube holds linear radiance; an sRGB-encoding target would encode it a second time on write.
-        Gl.Disable(Gl.FRAMEBUFFER_SRGB);
+        // srgb off: the cube holds linear radiance, and an sRGB-encoding target would encode it a second
+        // time on write.
+        new PassState(depth: true, depthWrite: true, srgb: false).Apply();
+        Gl.DepthFunc(Gl.LEQUAL);
         return true;
     }
 

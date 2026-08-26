@@ -39,10 +39,10 @@ internal static unsafe class PostChain
     /// <summary>Bloom chain depth ceiling. Six halvings from 1080p bottoms out at 8px, which is already
     /// wider than any bloom anyone wants; the real chain is the smaller of this and what the size allows.</summary>
     private const int MaxLevels = 6;
-    /// <summary>Texture unit the resolve samples the HDR colour and the bloom chain on. Above everything the
-    /// Alloy lit stage binds (the probe is the highest, at 9) -- the resolve runs in the same bracket and
-    /// leaving a unit shared with a live sampler of a different type is INVALID_OPERATION.</summary>
-    private const uint HdrUnit = 10, BloomUnit = 11;
+    /// <summary>Texture units the resolve samples the HDR colour and the bloom chain on -- clear of every
+    /// unit the Alloy lit stage binds, because the resolve runs in the same bracket and leaving a unit shared
+    /// with a live sampler of a different type is INVALID_OPERATION. See <see cref="TextureSlots"/>.</summary>
+    private const uint HdrUnit = TextureSlots.PostHdr, BloomUnit = TextureSlots.PostBloom;
 
     /// <summary>Tonemap operators. <see cref="Shoulder"/> is the default and the only one that leaves the
     /// midtones alone -- engine-drawn geometry shares this framebuffer and never goes through the resolve,
@@ -264,9 +264,7 @@ internal static unsafe class PostChain
         _bloomOk = false;
         if (!Armed || _bloom <= 0f || _levels <= 0) return;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.Disable(Gl.DEPTH_TEST); Gl.DepthMask(0);
-        Gl.Disable(Gl.BLEND);
-        Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
+        new PassState(depth: false, depthWrite: false).Apply();
         Gl.BindVertexArray(_vao);
         Gl.ActiveTexture(Gl.TEXTURE0 + BloomUnit);
 
@@ -321,9 +319,7 @@ internal static unsafe class PostChain
         if (!Armed) return;
         Gl.UseProgram(_progComposite);
         Gl.BindVertexArray(_vao);
-        Gl.Disable(Gl.DEPTH_TEST); Gl.DepthMask(0);
-        Gl.Disable(Gl.BLEND);
-        Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
+        new PassState(depth: false, depthWrite: false).Apply();
         Gl.ActiveTexture(Gl.TEXTURE0 + HdrUnit);
         Gl.BindTexture(Gl.TEXTURE_2D, _hdrTex);
         Gl.ActiveTexture(Gl.TEXTURE0 + BloomUnit);
@@ -444,7 +440,9 @@ internal static unsafe class PostChain
                               "it still encodes to display space (pre-#132), and the chain it feeds is linear");
         _progComposite = GlProgram.Graphics(ShdPostVs, post, ShdResolveFs, ShaderStages.Source(ShdResolveFs),
                                             _log, "PostChain resolve", out _, out string resolveSrc);
-        if (_progComposite != 0 && !ShaderContract.ResolveSafe(resolveSrc))
+        // #208: the resolve's two units come with it -- an override that renamed either samples unit 0.
+        if (_progComposite != 0 && !(ShaderContract.ResolveSafe(resolveSrc)
+                                     && ShaderContract.SlotSafe(resolveSrc, "uHdr", "uBloom")))
             _progComposite = Rebuild(_progComposite, ResolveFs, "resolve",
                                      "it decodes its input (pre-#132) or performs no encode at all, and this "
                                      + "is the frame's one encode");

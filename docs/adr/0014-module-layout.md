@@ -153,3 +153,24 @@ Arming is now two flags: `PartTable.Active` (the capture hooks are in -- the cen
 ride on it, since no table means nothing to classify or suppress) and `BatchService._batchArmed`, which is
 private to the batcher and which nothing else can read. That is the one deliberate behaviour change in the
 split; everything else is a move.
+
+## Amendment (#206, 2026-08-27): `Alloy/Scene/` calls no GL, and the build says so
+
+ADR 0016 declined to build an RHI layer for M4. What stands in for one is this: the RE knowledge in
+`Alloy/Scene/` -- which engine field holds a fade factor, how a VDO is laid out, where a part's material
+sits -- is the part of Alloy a future backend would not rewrite, and keeping it free of GL calls is the
+whole of what preserves it. So it is a rule the build enforces rather than one a reader remembers:
+`build.sh` greps `managed/Alloy/Scene/` for `Gl.` and refuses to build on a hit, unless the line carries a
+`gl-ok: <why>` marker.
+
+The audit found 34 calls across three of nine files, and none of them were extraction:
+
+- `BatchService.cs` (5) is draw submission by its own summary -- misfiled, moved to `Alloy/`.
+- `AlloyCensus.cs` (19) were all in two texture readbacks the triage prints. They are pure GL queries
+  belonging to no pass, so they became `Alloy/TexProbe.cs`.
+- `AlloyRenderer.Enroll.cs` (10) were `Harvest` (query an engine VDO's attribute formats out of the live
+  context) and `EnsureVao` (build the 4.6-side VAO over the shared buffers). Both are submission-side work
+  the ownership walk merely calls; they became `Alloy/AlloyRenderer.Vao.cs`.
+
+34 before, 0 after, and no written-reason survivors -- so the boundary was real, and what violated it was
+three files sitting on the wrong side of it rather than extraction reaching through.

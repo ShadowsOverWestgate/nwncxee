@@ -114,11 +114,11 @@ internal static unsafe class GrassField
     /// should be most flattened. Folding both into the RG magnitude leaves a tuft standing upright under
     /// every creature's feet.</summary>
     private const int PushChannels = 4;
-    /// <summary>Texture unit the push map binds on. Deliberately clear of every unit the Alloy frame already
-    /// spends: 0 diffuse, 1 sun cascades, 2 local cubes, 3-8 the lit program's .mtr map slots, 9 the IBL
-    /// probe, and 11/12 the engine's own framebuffer copies. Both programs rebind their units every pass, so
-    /// sharing one would work today and break the first time either stops -- 10 costs nothing.</summary>
-    private const uint PushUnit = 10;
+    /// <summary>Texture unit the push map binds on. It SHARES 10 with the #139 resolve, which is safe only
+    /// because they are different programs that never run in the same bracket -- and both rebind their units
+    /// every pass. <see cref="TextureSlots"/> is the ladder and the only place it is written down; the
+    /// paraphrase that used to sit here had already drifted two units out of date.</summary>
+    private const uint PushUnit = TextureSlots.GrassPush;
     /// <summary>The engine's own blade scale jitter, from <c>FUN_0x4b3a00</c>:
     /// <c>(rand%10000/10000 - 0.5) * 0.4 + 1.0</c>.</summary>
     private const float ScaleJitter = 0.4f;
@@ -1033,7 +1033,7 @@ internal static unsafe class GrassField
         // #132: an override written before the linear flip still ends in SowxRevert, links cleanly, and
         // gets encoded a second time by the resolve -- a washed-out lawn, silently. Rebuilt from the
         // embedded text rather than logged and shipped, like every other Alloy stage's guard.
-        if (prog != 0 && !ShaderContract.LinearSafe(fsSrc))
+        if (prog != 0 && !(ShaderContract.LinearSafe(fsSrc) && ShaderContract.SlotSafe(fsSrc, "uTex")))
         {
             Gl.DeleteProgram(prog);
             _log?.Info("GrassField: grass override still encodes to display space -- rebuilding from the "

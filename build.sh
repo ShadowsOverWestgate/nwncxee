@@ -12,6 +12,16 @@ if [ ! -f build/libfunchook.so ]; then
   cp -a build/funchook/libfunchook.so* build/
 fi
 
+# #206: the extraction boundary. managed/Alloy/Scene/ holds the RE knowledge -- which engine field means
+# what -- and that is the part a future backend would not rewrite, so it stays free of GL. A call that has
+# to live there says why on its own line with a `gl-ok:` marker.
+# ...including the `using static` that would let every call through as a bare name.
+if grep -rnE '\bGl\.|using static .*\bGl;' managed/Alloy/Scene/ | grep -v 'gl-ok:'; then
+  echo "!! Alloy/Scene must not call GL (see the lines above; #206). Move it to the submission side," >&2
+  echo "!! or keep it and write the reason on the same line as a 'gl-ok: <why>' comment." >&2
+  exit 1
+fi
+
 echo ">> building managed lib (C# NativeAOT -> sowx_managed.so)..."
 SOWX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
 # Quiet on success, but NEVER swallow a failure: discarding stderr here once hid a compile error behind a

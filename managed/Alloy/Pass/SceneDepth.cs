@@ -22,7 +22,7 @@ internal static unsafe class SceneDepth
 {
     /// <summary>Texture unit the copy binds on. Above <see cref="FrameSnapshot.DepthUnit"/> so the two can be
     /// live at once -- water samples its own copy earlier in the same frame.</summary>
-    internal const uint Unit = 15;
+    internal const uint Unit = TextureSlots.SceneDepth;
 
     /// <summary>True when the copy taken this pass is usable. False is a clean stand-down: the caller draws
     /// without softness rather than not drawing.</summary>

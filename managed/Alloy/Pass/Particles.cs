@@ -1701,7 +1701,7 @@ internal static unsafe class Particles
     /// world around them rather than becoming the one coloured thing in a grey frame.</para>
     /// <para>No colour-space encode: since #139 the Alloy colour target holds DISPLAY-SPACE values (RGBA16F
     /// is headroom, not a colour space), so writing what vanilla wrote IS the match.</para></summary>
-    private const string ParticleFsHead = """
+    internal const string ParticleFsHead = """
         #version 460 core
         in vec4 vColor;
         in vec2 vUv;

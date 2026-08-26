@@ -92,6 +92,30 @@ internal static class ShaderContract
     /// around them, but not the colour-space decision the rest of the pipeline is built on.</para></summary>
     public static bool ResolveSafe(string fs) => !fs.Contains("SowxLinear") && fs.Contains("SowxEncode");
 
+    /// <summary>#208: does this FRAGMENT stage still declare the samplers the C# side binds units to? Same
+    /// shape and same trap as <see cref="CutoutSafe"/>: <see cref="TextureSlots.Check"/> polices the EMBEDDED
+    /// text, but a content override (#92) replaces the stage wholesale, and one that renamed or dropped a
+    /// sampler links perfectly -- <c>glUniform1i</c> on the missing uniform's -1 location is a legal no-op.
+    /// What ships is then a sampler left on unit 0 beside the diffuse. Two samplers of one type read each
+    /// other's texture (a normal map shaded as albedo); two of DIFFERENT types on one unit is
+    /// <c>INVALID_OPERATION</c>, and every lit draw is dropped with nothing at all in the log.
+    /// <para>Bound samplers only, so it is meaningless under the #153 bindless rewrite -- that path deletes
+    /// these declarations on purpose. The lit caller gates on <c>_bindless</c>.</para>
+    /// <para>The expected names are the CALLER's, passed in. A per-program table here would be the slot
+    /// manager #208 declined to build, and it would sit one indirection away from the guard that reads it --
+    /// each program already knows which samplers it binds.</para></summary>
+    public static bool SlotSafe(string fs, params string[] samplers)
+    {
+        foreach (string s in samplers)
+            if (!fs.Contains($"uniform sampler2D {s};") && !fs.Contains($"uniform samplerCube {s};"))
+                return false;
+        return true;
+    }
+
+    /// <summary>The lit stage's whole sampler set: the diffuse, the map ladder and the probe cube.</summary>
+    public static bool LitSlotSafe(string fs)
+        => SlotSafe(fs, "uTex") && SlotSafe(fs, TextureSlots.MapSamplers) && SlotSafe(fs, "uProbe");
+
     /// <summary>Headless check of the one #84 desync that fails SILENTLY: the per-draw SSBO's binding point
     /// and record stride live twice -- once as C# constants driving the staging writes and the upload, once as
     /// literal GLSL in <see cref="AlloyRenderer.DrawBufDecl"/>. Bind to the wrong point or stage the wrong stride and the
@@ -103,8 +127,11 @@ internal static class ShaderContract
     /// draws, the world goes black rather than merely unaccelerated. Standing down is the honest failure.</para></summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
+        // #208: run FIRST and unconditionally -- it names the slot that disagreed, which the && chain below
+        // would swallow.
+        bool slots = TextureSlots.Check(log);
         // the record's field list, counted: four vec4s after the mat4 IS the 128-byte stride staged above
-        bool ok = DrawBufDecl.Contains($"binding = {BindDraw}") && DrawFloats * sizeof(float) == 176
+        bool ok = slots && DrawBufDecl.Contains($"binding = {BindDraw}") && DrawFloats * sizeof(float) == 176
                   && DrawBufDecl.Split("vec4").Length - 1 == (DrawFloats - 16) / 4
                   && DrawBufDecl.Contains("vec4 emi") && DrawBufDecl.Contains("vec4 spc")
                   && DrawBufDecl.Contains("vec4 feat")
@@ -331,6 +358,18 @@ internal static class ShaderContract
                   // SkinSafe's refusing direction is NOT assertable here: it short-circuits on _skinning,
                   // which Initialize sets AFTER this runs, so the predicate is unconditionally true at
                   // SelfCheck time. Its guard site is covered instead by the CutoutSafe pair beside it.
+                  // #208: the slot guard, both directions. The embedded lit stage must pass it (a guard its
+                  // own text trips rebuilds from that text every session), and a stage with one sampler
+                  // renamed must fail -- which is the only case it exists for.
+                  && LitSlotSafe(OwnedLitFsHead)
+                  && !LitSlotSafe(OwnedLitFsHead.Replace("uniform sampler2D uAoTex;", "uniform sampler2D uNope;"))
+                  && !LitSlotSafe(OwnedLitFsHead.Replace("uniform samplerCube uProbe;", ""))
+                  // ...and the same over every other overridable stage that binds a unit, so the embedded
+                  // text of each passes the guard its own override will be held to.
+                  && SlotSafe(FrameSnapshot.FsHead, "uTex", "uFbColor", "uFbDepth", "uProbe")
+                  && SlotSafe(PostChain.ResolveFs, "uHdr", "uBloom")
+                  && SlotSafe(GrassField.GrassFsHead, "uTex")
+                  && !SlotSafe(PostChain.ResolveFs, "uNotASampler")
                   && !DepthSafe(OwnedVs.Replace("invariant gl_Position;", ""))
                   && !DepthSafe(OwnedVs.Replace(ClipExpr, "gl_Position = uVP * (d.model * vec4(aPos, 1.0));"))
                   // ...and the suppression list is the capture list. These two disagreeing is the one #126
@@ -361,7 +400,8 @@ internal static class ShaderContract
                   && ShdWaterTes.Length <= ShaderResource.ResRefBytes;
         log.Info(ok
             ? "ShaderContract.SelfCheck: passed"
-            : $"ShaderContract.SelfCheck: FAILED -- per-draw SSBO contract (binding {BindDraw}, " +
+            : $"ShaderContract.SelfCheck: FAILED -- {(slots ? "" : "a texture slot disagreed (named above), ")}" +
+              $"the per-draw SSBO contract (binding {BindDraw}, " +
               $"stride {DrawFloats * sizeof(float)}B) or the #102 linear/display-space pairing drifted; " +
               "standing down rather than drawing from the wrong records");
         return ok;

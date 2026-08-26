@@ -26,10 +26,10 @@ namespace Sowx.Alloy;
 /// </summary>
 internal static unsafe class FrameSnapshot
 {
-    /// <summary>Texture units the copy binds on. Above the probe's cube (12), which is above the material
-    /// slots (3..9) and the shadow maps (1/2) -- and deliberately clear of the units the grass push map (10)
-    /// and the #139 resolve (10/11) use, even though those are other programs.</summary>
-    internal const uint ColorUnit = 13, DepthUnit = 14;
+    /// <summary>Texture units the copy binds on -- above the probe's cube, and clear of the grass push map
+    /// and the #139 resolve even though those are other programs. <see cref="TextureSlots"/> is the ladder
+    /// and the only place it is written down; do not paraphrase it here.</summary>
+    internal const uint ColorUnit = TextureSlots.SnapshotColor, DepthUnit = TextureSlots.SnapshotDepth;
 
     /// <summary><c>/water on 0</c> stands the class down; <c>/water on 1</c> brings it back at the next
     /// pass. Armed and idling rather than un-installed, so the toggle is live either way.</summary>

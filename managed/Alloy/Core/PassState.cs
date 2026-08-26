@@ -1,0 +1,50 @@
+using Sowx.Graphics;
+
+namespace Sowx.Alloy;
+
+/// <summary>#207: an owned pass's fixed-function preamble, as a value. Every pass used to open with the same
+/// six or seven <c>Gl.Enable</c>/<c>Disable</c> lines in its own order, which made "what state does this pass
+/// run in?" a question you answered by reading a sequence instead of a declaration -- and made an omission
+/// (the one <c>Disable</c> a copied preamble dropped) invisible.
+/// <para>Deliberately dumb: <see cref="Apply"/> issues every call, every time. There is NO state cache and no
+/// redundant-call elimination behind it. The driver already shadow-caches this state and so does the engine;
+/// a third copy is a third thing that can disagree with the GL context after a vanilla draw runs between two
+/// of our passes -- which is exactly the situation every Alloy pass is in.</para>
+/// <para>It carries only what the preambles actually share. <c>glDepthFunc</c>, viewport, framebuffer and
+/// texture-unit setup stay at the call site: they are per-pass decisions, not a common preamble, and growing
+/// the struct to hold them would turn a declaration back into a sequence.</para></summary>
+internal readonly struct PassState
+{
+    public readonly bool Depth, DepthWrite, Blend, Cull, Scissor;
+    /// <summary>Tri-state on purpose: null means "leave sRGB encoding as the caller found it". A pass that
+    /// renders into the ENGINE's target inherits that flag from the frame it was entered with (the post
+    /// chain's composite is restored to it by name, one line before it runs), so a preamble that forced it
+    /// either way would encode the frame twice or not at all -- silently, which is #132's whole failure
+    /// mode. Only a pass that owns its own target says so.</summary>
+    public readonly bool? Srgb;
+    /// <summary>The <c>glBlendFunc</c> factors, issued only when <see cref="Blend"/> is set.
+    /// <para>ponytail: no caller sets <see cref="Blend"/> yet -- all five converted preambles disable it, and
+    /// the three passes that DO blend (grass, beams, particles) still hand-roll a partial preamble, because
+    /// converting them would make them touch state they have never touched. These two exist because #207
+    /// declared the shape; the upgrade path is those three passes, and if they are never converted the right
+    /// move is to delete this pair rather than leave it as cover.</para></summary>
+    public readonly uint BlendSrc, BlendDst;
+
+    public PassState(bool depth, bool depthWrite, bool blend = false, bool cull = false,
+                     bool scissor = false, bool? srgb = null, uint blendSrc = 0, uint blendDst = 0)
+    {
+        Depth = depth; DepthWrite = depthWrite; Blend = blend; Cull = cull;
+        Scissor = scissor; Srgb = srgb; BlendSrc = blendSrc; BlendDst = blendDst;
+    }
+
+    /// <summary>Put the GL context into this state. Hot: called once per pass, allocates nothing.</summary>
+    public unsafe void Apply()
+    {
+        if (Depth) Gl.Enable(Gl.DEPTH_TEST); else Gl.Disable(Gl.DEPTH_TEST);
+        Gl.DepthMask(DepthWrite ? (byte)1 : (byte)0);
+        if (Blend) { Gl.Enable(Gl.BLEND); Gl.BlendFunc(BlendSrc, BlendDst); } else Gl.Disable(Gl.BLEND);
+        if (Cull) Gl.Enable(Gl.CULL_FACE); else Gl.Disable(Gl.CULL_FACE);
+        if (Scissor) Gl.Enable(Gl.SCISSOR_TEST); else Gl.Disable(Gl.SCISSOR_TEST);
+        if (Srgb == true) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else if (Srgb == false) Gl.Disable(Gl.FRAMEBUFFER_SRGB);
+    }
+}

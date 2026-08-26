@@ -183,7 +183,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <para>Unlike the flow map this is probed on EVERY shared material -- there is no shader feature that
     /// announces it. That costs one <c>Material::GetTexture</c> per enrolled part, and a batch split only
     /// where a material actually declares one.</para></summary>
-    internal const int AoSlot = 6, MapSlots = 7;
+    internal const int AoSlot = 6, MapSlots = TextureSlots.MapCount;
     /// <summary>#146: the AO slot's MASK bit -- 1 &lt;&lt; 7, deliberately NOT <c>1 &lt;&lt; AoSlot</c>. Every
     /// other slot's bit is its index, but bit 6 was <see cref="EnvSlot"/> before this ticket and the lit
     /// stage is content-overridable: a hak shipped against an older build still reads 64 as "env-mapped".
@@ -193,7 +193,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>Texture unit slot 1 binds on; the rest follow it. Units 0/1/2 are diffuse, sun cascades and
     /// the local cube array, and <see cref="EnvProbe.ProbeUnit"/> sits above all of them -- SelfCheck holds
     /// that ordering, because a samplerCube sharing a unit with a sampler2D kills every lit draw in silence.</summary>
-    internal const uint PbrUnit0 = 3;
+    internal const uint PbrUnit0 = TextureSlots.MapBase;
     /// <summary>#121: the env-map bit of the same mask (<c>Material::HasEnvMap</c>, mat+0x40). One past the
     /// bindable texture slots, and unlike them it binds nothing -- it only tells the fragment stage that this
     /// is legacy "shiny" content whose diffuse alpha is a reflectivity mask.</summary>
@@ -1172,7 +1172,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>Texture units the shadow maps bind on. Unit 0 is the part's diffuse and gets rebound per
     /// batch, so the maps live above it and are bound once per pass.</summary>
-    internal const uint SunUnit = 1, CubeUnit = 2;
+    internal const uint SunUnit = TextureSlots.SunShadow, CubeUnit = TextureSlots.LocalShadow;
     private static int _litCubeTex = -1, _litCubeLight = -1, _litCubePlane = -1, _litCubeCount = -1,
                        _litCubeSoft = -1;
     private static int _litProbe = -1, _litProbeMips = -1, _litProbeGain = -1, _litCapture = -1,

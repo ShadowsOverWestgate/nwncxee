@@ -1706,8 +1706,8 @@ public sealed unsafe class CasterPass : IExtenderService
         Gl.Viewport(0, 0, size, size);
         // depth state BEFORE the clear: a clear runs through the write mask and the scissor, so clearing
         // first would leave stale depth wherever a previous pass left either of them set
-        Gl.Enable(Gl.DEPTH_TEST); Gl.DepthFunc(Gl.LEQUAL); Gl.DepthMask(1);
-        Gl.Disable(Gl.BLEND); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
+        new PassState(depth: true, depthWrite: true).Apply();
+        Gl.DepthFunc(Gl.LEQUAL);
         Gl.Clear(Gl.DEPTH_BUFFER_BIT);
         if (n == 0)
         {   // cleared == fully lit, which is the truth for a view nothing casts into
