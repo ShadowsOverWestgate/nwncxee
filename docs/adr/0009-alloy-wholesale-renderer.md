@@ -52,8 +52,26 @@ exist" becomes ours:
   engine's committed skin streams (mode-2 pool buffers); sun CSM through the same submission.
 - **M3 — full scene ownership**: creatures/skinned colour pass, remaining buckets (water,
   particles, alpha), engine `RenderScene` submission fully bypassed.
-- **M4 — 2026 features on the Alloy pipeline**: PCSS/contact-hardening shadows, SSAO, proper
-  HDR post stack, layered single-pass cube rendering, GPU-driven culling.
+- **M4 — own the frame** *(amended 2026-08-26; see below)*: Alloy stops being a guest inside
+  `Scene::RenderSinglePass` and drives the frame itself — the loop, the clear, the render target
+  and the present. `RenderSinglePass` is not entered rather than hollowed out per item; ADR 0010's
+  vanilla mode is preserved as a branch taken at frame start. Each ownership step is chosen so it
+  closes an RHI readiness gate (`docs/research/rhi-abstraction.md` G1–G4) and follows its §6
+  hygiene — never so it adds an abstraction layer.
+
+### Amendment (2026-08-26): M4 was "2026 features"
+
+M4 originally read *"PCSS/contact-hardening shadows, SSAO, proper HDR post stack, layered
+single-pass cube rendering, GPU-driven culling"* — technique work on top of an owned pass. That
+was written under the assumption that M3 would leave the frame owned. It did not: M3 closed with
+Alloy anchored at `Scene::FadeDoors`, inside the engine's own `RenderSinglePass`, with the loop,
+the `Clear(7)`, the bucket walk and the present still the engine's. #132 dropped M3's frame-time
+gate for exactly that reason, and the RHI readiness research reached the same place independently
+— four of its six gates are restatements of frame ownership.
+
+So the engine frame is the bottleneck under every remaining graphics feature, and the feature list
+is post-independence work. It returns as ordinary repo issues once the frame is owned, not as a
+milestone. Map #68 carries the sequencing.
 
 ## Consequences
 
