@@ -1,6 +1,7 @@
 # 0010 — Two render modes ship permanently
 
 Status: accepted (#107 grilling, 2026-08-20). Constrains ADR 0009's M3 and everything after it.
+Amended 2026-08-26 (#203 / ADR 0016) — see the amendment at the end.
 
 ## Context
 
@@ -56,3 +57,32 @@ behind the device check. That is wanted eventually; nothing in this ADR waits on
   and the gate's fixed comparison shots (#107) are shot against vanilla mode by construction.
 - Windows and macOS support of the *owned* pipeline remains deferred (0009); this ADR is what
   makes that deferral survivable rather than blocking.
+
+## Amendment (2026-08-26, #203 / ADR 0016): what M4 costs this ADR, and the one part still unbuilt
+
+M4 scoping expected vanilla mode to be an M4 cost item, on the assumption that it is implemented as
+"do not install these hooks" and would have to become "do not take the branch at frame start". That
+assumption was wrong: **it is already the branch.** `RenderMode` latches once per frame at
+`FramePhase.Start` (`managed/Alloy/Core/RenderMode.cs:45-57`), every render site reads the latched
+bool, and the hooks install unconditionally (`managed/Alloy/AlloyRenderer.cs:565-568`). The genuine
+"install nothing" keys are `lockchat`, `gl46`, `shadows` and `hdr`, none of which is `/vanilla`.
+**M4 owes this ADR nothing on that front.**
+
+What *is* unbuilt is this ADR's fourth bullet: **the detected capability tier and the manual
+override are not separate pieces of state.** `RenderMode` carries only the override; the capability
+side lives in the unrelated `GlContextService.Available` / `gl46` path. That was tolerable while the
+frame belonged to the engine. It stops being tolerable at M4's cutover, where a frame-start branch
+has to answer "this machine cannot run it" and "this player chose not to" separately — and where an
+Alloy dropout must say which one it was, on screen and in the log. Implementing the split is M4 step
+7's work.
+
+Two consequences of ADR 0016 land back here, neither of which weakens this decision:
+
+- **The suppression machinery survives without a redesign.** `BucketGate` has four call sites outside
+  its own file, and a walk that is never entered fires no hooks. "Suppress, never delete" is
+  satisfied by the engine path remaining callable, which the shim's config key preserves.
+- **The three-mode reading of a Vulkan future was wrong.** `docs/research/rhi-abstraction.md` failed
+  G5 permanently on the grounds that this ADR keeps vanilla forever, making "GL-and-Vulkan-and-
+  vanilla" the only reachable end state. A Vulkan backend will instead be a separate *configuration*
+  with no runtime swapping, so this ADR does not create that trap. Nothing here changes; the
+  research's G5 verdict does.
