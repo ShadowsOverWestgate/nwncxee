@@ -78,6 +78,52 @@ public sealed unsafe class ShadowFeedService : IExtenderService
     /// <summary>PartTriMesh world-space bbox min/max (float3 @+0x64/+0x70).</summary>
     private const int PartBboxMin = 0x64, PartBboxMax = 0x70;
 
+    // ---- the BSP sphere re-walk's struct layout (#65 slice 3c), all Ghidra-verified against ManageSceneBSP ----
+    /// <summary>BSPNode -&gt; nodedata* (the node contents / tile model). Null on empty internal nodes.</summary>
+    private const int BspNodeData = 0x70;
+    /// <summary>nodedata -&gt; PartTriMesh** tile-part array; count at <see cref="NodeDataPartCount"/>.</summary>
+    private const int NodeDataParts = 0x20;
+    /// <summary>nodedata -&gt; int tile-part count (pairs with <see cref="NodeDataParts"/>).</summary>
+    private const int NodeDataPartCount = 0x28;
+    /// <summary>nodedata -&gt; PartTriMesh* single "primary" mesh (fallback when the parts array is empty --
+    /// the engine's <c>currentscene+0x1e0 != 0</c> fast branch uses only this).</summary>
+    private const int NodeDataPrimary = 0x90;
+    /// <summary>PartTriMesh -&gt; mesh data (MdlNode) pointer. The renderable-this-frame flag hangs off it.</summary>
+    private const int PartMeshData = 0x8;
+    /// <summary>meshdata -&gt; int "renderable/submitted this frame" flag. <c>PartTriMesh::IsPartRenderable</c>
+    /// (which <c>Scene::AddPartsToDrawBuckets</c> gates every transfer on) returns false while this is 0, so a
+    /// re-walked off-screen caster is dropped unless we set it -- exactly as the engine's own
+    /// <c>FUN_00581000</c> does before <c>AddPartToMeshBuckets</c>.</summary>
+    private const int MeshRenderableFlag = 0x118;
+
+    // ---- the off-screen gob append (#65 slice 3d) ----
+    /// <summary>Scene -&gt; Gob** scene-gob array; count at <see cref="SceneGobCount"/>. The camera-cull loop in
+    /// ManageSceneBSP walks exactly this list.</summary>
+    private const int SceneGobList = 0x130;
+    /// <summary>Scene -&gt; int scene-gob count (pairs with <see cref="SceneGobList"/>).</summary>
+    private const int SceneGobCount = 0x138;
+    /// <summary>Gob -&gt; cached "in view volume" byte (<c>Gob::IsInViewVolume</c> returns exactly this). Fresh
+    /// after orig ManageSceneBSP ran; we append only <c>== 0</c> gobs (the engine already added the visible ones,
+    /// so this avoids a double-add). Read raw -- do NOT hook the devirt-guarded IsInViewVolume.</summary>
+    private const int GobInView = 0x1b;
+    /// <summary>Gob -&gt; "geometry dirty" byte. <c>ProcessGob</c> recomputes the has-geometry flag
+    /// (<c>gob+0x1a4</c>, which AddPartsToDrawBuckets gates the gob draw on) only when this is non-zero, then
+    /// clears it. Set it on an appended gob so its geometry flag is (re)computed this frame.</summary>
+    private const int GobGeometryDirty = 0x1a5;
+
+    // ---- the camera-follow anchor chain (#65) ----
+    /// <summary>CAurCamera -&gt; current behavior host (<c>CurrentCamera[0x8b]</c> == +0x458), a <c>CAurBehavior*</c>;
+    /// its vtable+<see cref="BehaviorAsFollowVtbl"/> is <c>AsBehaviorCameraFollow()</c>.</summary>
+    private const int CameraBehaviorHost = 0x458;
+    /// <summary>Behavior-host vtable slot for <c>AsBehaviorCameraFollow()</c> -- pure <c>return this</c> for a follow
+    /// cam, null otherwise (a base-class type filter). Replicated exactly from ManageSceneBSP's own devirt call, so
+    /// non-follow cameras (free-cam/cutscene) safely yield null.</summary>
+    private const int BehaviorAsFollowVtbl = 0x48;
+    /// <summary>CAurBehaviorCameraFollow -&gt; <c>SafePointer&lt;CAurObject&gt;</c> to the followed object (the PC);
+    /// raw pointer at +0. Its <see cref="Render.SceneLayout.GobPosition"/> (+0xa8) is exactly what
+    /// GetTargetWorldPosition returns.</summary>
+    private const int BehaviorTargetObj = 0x20;
+
     // One map centre per presented frame, shared by the re-walk and published as ShadowInputs.Focus for
     // CasterPass's cascade fit. Player-anchored when the controlled creature is reachable, else the
     // camera-ground focus -- but ONE value per frame either way.
@@ -497,7 +543,7 @@ public sealed unsafe class ShadowFeedService : IExtenderService
         // Tiles (slice 3c): re-walk the static-geometry BSP sphere and re-submit the tile parts the camera culled.
         if (_rewalkOn && _bspTraverseSphere != null && _addPartToMeshBuckets != null)
         {
-            IntPtr root = *(IntPtr*)((byte*)scene + SymbolMap.SceneBspRoot);
+            IntPtr root = *(IntPtr*)((byte*)scene + Render.SceneLayout.SceneBspRoot);
             if (root != IntPtr.Zero)
             {
                 _rewalkParts = 0;
@@ -526,8 +572,8 @@ public sealed unsafe class ShadowFeedService : IExtenderService
     private static void AppendOffscreenGobs(IntPtr scene, Vector3 center, float radiusSq)
     {
         if (_gobBucket == IntPtr.Zero || _gobBucketAdd == null) return;
-        IntPtr list = *(IntPtr*)((byte*)scene + SymbolMap.SceneGobList);
-        int count = *(int*)((byte*)scene + SymbolMap.SceneGobCount);
+        IntPtr list = *(IntPtr*)((byte*)scene + SceneGobList);
+        int count = *(int*)((byte*)scene + SceneGobCount);
         if (list == IntPtr.Zero || count <= 0) return;
 
         int added = 0;
@@ -535,13 +581,13 @@ public sealed unsafe class ShadowFeedService : IExtenderService
         {
             IntPtr gob = ((IntPtr*)list)[i];
             if (gob == IntPtr.Zero) continue;
-            if (*((byte*)gob + SymbolMap.GobInView) != 0) continue;                       // engine already added the visible ones
-            if (*(IntPtr*)((byte*)gob + SymbolMap.GobNode) == IntPtr.Zero) continue;      // sort-comparator would null-deref
-            if (*(IntPtr*)((byte*)gob + SymbolMap.GobPartTree) == IntPtr.Zero) continue;  // no part tree -> nothing to cast
-            float* p = (float*)((byte*)gob + SymbolMap.GobPosition);
+            if (*((byte*)gob + GobInView) != 0) continue;                       // engine already added the visible ones
+            if (*(IntPtr*)((byte*)gob + Render.SceneLayout.GobNode) == IntPtr.Zero) continue;      // sort-comparator would null-deref
+            if (*(IntPtr*)((byte*)gob + Render.SceneLayout.GobPartTree) == IntPtr.Zero) continue;  // no part tree -> nothing to cast
+            float* p = (float*)((byte*)gob + Render.SceneLayout.GobPosition);
             float dx = p[0] - center.X, dy = p[1] - center.Y, dz = p[2] - center.Z;
             if (dx * dx + dy * dy + dz * dz > radiusSq) continue;
-            *((byte*)gob + SymbolMap.GobGeometryDirty) = 1;   // force ProcessGob to (re)compute has-geometry this frame
+            *((byte*)gob + GobGeometryDirty) = 1;   // force ProcessGob to (re)compute has-geometry this frame
             _gobBucketAdd(_gobBucket, gob);
             added++;
         }
@@ -562,16 +608,16 @@ public sealed unsafe class ShadowFeedService : IExtenderService
     private static void OnBspNode(IntPtr node, IntPtr center, float radiusSq)
     {
         if (node == IntPtr.Zero) return;
-        IntPtr nodedata = *(IntPtr*)((byte*)node + SymbolMap.BspNodeData);
+        IntPtr nodedata = *(IntPtr*)((byte*)node + BspNodeData);
         if (nodedata == IntPtr.Zero) return;
         // Submit BOTH the parts array AND the single primary, always: the engine uses one or the other depending
         // on currentscene+0x1e0, and submitting only one leaves the caster's other representation out -> a
         // partial (hollow) footprint. Duplicates are idempotent depth writes; the transfer drops junk.
-        IntPtr parts = *(IntPtr*)((byte*)nodedata + SymbolMap.NodeDataParts);
-        int count = *(int*)((byte*)nodedata + SymbolMap.NodeDataPartCount);
+        IntPtr parts = *(IntPtr*)((byte*)nodedata + NodeDataParts);
+        int count = *(int*)((byte*)nodedata + NodeDataPartCount);
         if (parts != IntPtr.Zero && count > 0)
             for (int i = 0; i < count; i++) SubmitPart(((IntPtr*)parts)[i]);
-        SubmitPart(*(IntPtr*)((byte*)nodedata + SymbolMap.NodeDataPrimary));
+        SubmitPart(*(IntPtr*)((byte*)nodedata + NodeDataPrimary));
     }
 
     /// <summary>Submit one tile part as a caster if it's non-null and opaque. Sets the mesh's renderable-this-
@@ -582,9 +628,9 @@ public sealed unsafe class ShadowFeedService : IExtenderService
     {
         if (part == IntPtr.Zero) return;
         if (_partGetIsOpaque != null && _partGetIsOpaque(part) == 0) return;
-        IntPtr meshData = *(IntPtr*)((byte*)part + SymbolMap.PartMeshData);
-        if (meshData != IntPtr.Zero && *(int*)((byte*)meshData + SymbolMap.MeshRenderableFlag) == 0)
-            *(int*)((byte*)meshData + SymbolMap.MeshRenderableFlag) = 1;
+        IntPtr meshData = *(IntPtr*)((byte*)part + PartMeshData);
+        if (meshData != IntPtr.Zero && *(int*)((byte*)meshData + MeshRenderableFlag) == 0)
+            *(int*)((byte*)meshData + MeshRenderableFlag) = 1;
         _addPartToMeshBuckets(part);
         _rewalkParts++;
     }
@@ -649,17 +695,17 @@ public sealed unsafe class ShadowFeedService : IExtenderService
         if (_currentCamera == IntPtr.Zero) return null;
         IntPtr cam = *(IntPtr*)_currentCamera;
         if (cam == IntPtr.Zero) return null;
-        IntPtr host = *(IntPtr*)((byte*)cam + SymbolMap.CameraBehaviorHost);
+        IntPtr host = *(IntPtr*)((byte*)cam + CameraBehaviorHost);
         if (host == IntPtr.Zero) return null;
         IntPtr vtbl = *(IntPtr*)host;
         if (vtbl == IntPtr.Zero) return null;
-        var asFollow = (delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)((byte*)vtbl + SymbolMap.BehaviorAsFollowVtbl));
+        var asFollow = (delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)((byte*)vtbl + BehaviorAsFollowVtbl));
         if (asFollow == null) return null;
         IntPtr behavior = asFollow(host);
         if (behavior == IntPtr.Zero) return null;   // non-follow camera -> caller uses sticky/camera-ground
-        IntPtr target = *(IntPtr*)((byte*)behavior + SymbolMap.BehaviorTargetObj);
+        IntPtr target = *(IntPtr*)((byte*)behavior + BehaviorTargetObj);
         if (target == IntPtr.Zero) return null;
-        float* p = (float*)((byte*)target + SymbolMap.GobPosition);
+        float* p = (float*)((byte*)target + Render.SceneLayout.GobPosition);
         return new Vector3(p[0], p[1], p[2]);
     }
 

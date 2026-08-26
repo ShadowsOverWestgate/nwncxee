@@ -563,7 +563,8 @@ internal static unsafe class OwnedLights
             || Gl.GenQueries == null || Gl.GetQueryObjectui64v == null)
         { _failed = true; _log?.Info("OwnedLights: compute/SSBO entry points unresolved -- owned lighting unavailable"); return false; }
 
-        uint prog = GlProgram.Compute(ShdClusterCs, BuildSrc, _log, "OwnedLights cluster build");
+        uint prog = GlProgram.Compute(ShdClusterCs, ShaderStages.Source(ShdClusterCs), _log,
+                                      "OwnedLights cluster build");
         if (prog == 0) { _failed = true; return false; }
         _locView = GlProgram.Loc(prog, "uView"); _locProjXY = GlProgram.Loc(prog, "uProjXY");
         _locZ = GlProgram.Loc(prog, "uZ"); _locCount = GlProgram.Loc(prog, "uLightCount");
@@ -983,13 +984,13 @@ internal static unsafe class OwnedLights
     /// <summary>Resref the cluster build is looked up under before the GLSL below is used (#92). An override
     /// may carry the same <c>$CAP$</c>/<c>$GROUP$</c> tokens the embedded source does -- see
     /// <see cref="ShaderResource.Tokens"/> -- because the CPU sizes its buffers from those same constants.</summary>
-    private const string ShdClusterCs = "sowx_cluster_cs";
+    internal const string ShdClusterCs = "sowx_cluster_cs";
 
     /// <summary>The cluster build. One invocation per froxel: reconstruct the froxel's eye-space AABB from the
     /// projection diagonal (x = ndc.x * depth / P00), then a sphere-vs-AABB test per light. O(clusters *
     /// lights) with no CPU involvement -- 3456 * ~120 tests is nothing for the GPU and, unlike the engine's
     /// CPU prioritizer, its cost does not grow with draw count.</summary>
-    private const string BuildSrc = """
+    internal const string BuildSrc = """
         #version 460 core
         layout(local_size_x = $GROUP$) in;
         layout(std430, binding = 0) readonly buffer LightBuf { vec4 uLights[]; };

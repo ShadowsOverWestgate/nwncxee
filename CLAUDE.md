@@ -52,7 +52,7 @@ Navigation:
                                  Chain(symbol, handler, priority) for shared symbols (#88)
         ExtenderLog.cs           inject this for logging
       Services/                business logic -- this is where you work
-        FrameTapService.cs       example: a real hook + trampoline
+    docs/hook-pattern.md       example: a real hook + trampoline
     native/bootstrap.c         the only native code
     third_party/funchook       hooking engine (git submodule)
 
@@ -77,7 +77,7 @@ no registration:
         }
     }
 
-See `FrameTapService` for the hook + trampoline mechanics. Everything else --
+See `docs/hook-pattern.md` for the hook + trampoline mechanics. Everything else --
 loading, discovery, install ordering -- is done for you.
 
 ## Comment rule
@@ -157,9 +157,9 @@ watch for "first frame presented -- hook is LIVE" (now emitted by `UiHostService
 in `managed/Ui/`, the frame host that owns the `SwapBuffers` present, computes the
 in-game gate + UI-scale sync, and drives the `UiHost` window registry's draw
 roll-call each frame; #62). Chat renders as one registered `Window` whose
-content-draw slot runs the chatbox; `FrameTapService` is the minimal hook-pattern
-example and stands down while the framework owns the frame (resumes under
-`SOWX_LOCKCHAT`).
+content-draw slot runs the chatbox. The minimal hook-pattern example now lives in
+`docs/hook-pattern.md` (#158); under the `SOWX_LOCKCHAT` opt-out nothing hooks the
+present at all and the client renders vanilla.
 
 Linux only. Windows = proxy DLL or rename-launcher; macOS = `DYLD_INSERT_LIBRARIES`,
 blocked by the notarized app's hardened runtime until re-signed (do last).

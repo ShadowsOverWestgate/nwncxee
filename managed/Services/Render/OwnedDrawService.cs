@@ -787,6 +787,10 @@ public sealed unsafe class OwnedDrawService : IExtenderService
         OwnedClasses.SelfCheck(log);
         SkyBox.SelfCheck(log);
         GrassField.SelfCheck(log);
+        ShaderStages.SelfCheck(log);
+        // ADR 0012: the dump is how a customizer gets a current starting point. Ahead of every stand-down
+        // below, so a session that owns nothing can still produce one.
+        ShaderStages.DumpIfConfigured(log);
         Beams.SelfCheck(log);
         Particles.SelfCheck(log);
         if (Environment.GetEnvironmentVariable("SOWX_OWNDRAW") == "0" || UiHostService.Locked)
@@ -908,7 +912,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
         if (!prev) AuditPass();
     }
 
-    /// <summary>Is this the world Scene? A Scene's static tile BSP (<see cref="SymbolMap.SceneBspRoot"/>) is
+    /// <summary>Is this the world Scene? A Scene's static tile BSP (<see cref="SceneLayout.SceneBspRoot"/>) is
     /// written by <c>Scene::InitBSP</c> alone (@0x46c330; <c>Scene::Scene</c> zeroes it, and every
     /// <c>SceneBSPAdd*</c> only inserts into an existing root). A GUI 3D panel's Scene -- which reaches the
     /// same <c>Scene::RenderSinglePass</c> through <c>Camera::RenderScene</c>, off <c>Camera+0x90</c> -- is
@@ -916,7 +920,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     /// camera + SetAmbient, no InitBSP, so its root stays null. This is also the engine's own test --
     /// <c>ManageSceneBSP</c> @0x47fa80 early-outs on exactly it.</summary>
     internal static bool IsWorldScene(IntPtr scene) =>
-        scene != IntPtr.Zero && *(IntPtr*)(scene + SymbolMap.SceneBspRoot) != IntPtr.Zero;
+        scene != IntPtr.Zero && *(IntPtr*)(scene + SceneLayout.SceneBspRoot) != IntPtr.Zero;
 
     private static bool _inColourPass;
     /// <summary>Scene the ownership table was enrolled from. The owned block draws only into a bucket walk of
@@ -1751,6 +1755,37 @@ public sealed unsafe class OwnedDrawService : IExtenderService
                   && !BindlessFs(OwnedLitFsHead + MaterialLib).Contains("uniform sampler2D uAoTex;")
                   && BindlessFs("void main() { }") == "void main() { }"
                   && LinearSafe(WaterPass.Fs) && LinearSafe(GrassField.EmbeddedFs)
+                  // #161: the record guard reaches every stage that declares the record -- on water that is
+                  // the tessellation pair too -- and the embedded text passes it, for the same reason as
+                  // above: a guard its own defaults trip rebuilds from them every session.
+                  && RecordSafe(WaterPass.Vs) && RecordSafe(WaterPass.Tcs)
+                  && RecordSafe(WaterPass.Tes) && RecordSafe(WaterPass.Fs)
+                  // ...and it REFUSES a record that disagrees, in both layouts it now polices. A predicate
+                  // that only ever returns true is precisely the silent failure it was written to prevent,
+                  // and nothing else in this build would notice.
+                  && !RecordSafe("struct SowxDraw { mat4 model; vec4 rot; };")
+                  && !RecordSafe("struct SowxCaster { mat4 model; vec4 bounds; };", "SowxCaster", 2)
+                  && RecordSafe("void main() { }")   // a stage that declares no record cannot disagree
+                  // #161: the resolve's inverted colour-space guard, both directions. It is the frame's one
+                  // encode, so it must hold on the embedded text and must catch a stage that decodes first
+                  // (pre-#132) or performs no encode at all -- each of which washes out the whole frame.
+                  && ResolveSafe(PostChain.ResolveFs)
+                  && !ResolveSafe(PostChain.ResolveFs.Replace("SowxEncode", "SowxLinear"))
+                  && !ResolveSafe(PostChain.ResolveFs.Replace("SowxEncode", "SowxPassthrough"))
+                  // ...and the bloom chain runs in the same linear space every other owned stage writes.
+                  && LinearSafe(PostChain.BloomDownFs) && LinearSafe(PostChain.BloomUpFs)
+                  // ...and the four text-matching guards REFUSE, not just accept. A predicate that only ever
+                  // returns true is the silent failure it was written to prevent, and the embedded text can
+                  // never exercise the refusing direction on its own.
+                  && !LinearSafe("void main() { frag = SowxRevert(c); }")
+                  && !LinearSafe("void main() { frag = SowxSoftClip(c); }")
+                  && !CutoutSafe(OwnedVs, OwnedFs.Replace("uAlphaCut", "uNothing"))
+                  && !CutoutSafe(OwnedVs.Replace("vAlpha", "vNothing"), OwnedFs)
+                  // SkinSafe's refusing direction is NOT assertable here: it short-circuits on _skinning,
+                  // which Initialize sets AFTER this runs, so the predicate is unconditionally true at
+                  // SelfCheck time. Its guard site is covered instead by the CutoutSafe pair beside it.
+                  && !DepthSafe(OwnedVs.Replace("invariant gl_Position;", ""))
+                  && !DepthSafe(OwnedVs.Replace(ClipExpr, "gl_Position = uVP * (d.model * vec4(aPos, 1.0));"))
                   // ...and the suppression list is the capture list. These two disagreeing is the one #126
                   // failure that is silent in both directions -- geometry dropped, or drawn twice.
                   && Perf.BatchService.OwnableBucket(0) && Perf.BatchService.OwnableBucket(1)
@@ -1777,17 +1812,6 @@ public sealed unsafe class OwnedDrawService : IExtenderService
                   && ShdWaterFs.Length <= ShaderResource.ResRefBytes
                   && ShdWaterTcs.Length <= ShaderResource.ResRefBytes
                   && ShdWaterTes.Length <= ShaderResource.ResRefBytes;
-        // headless shader validation hook: dump the assembled lit stages for glslangValidator -- a compile
-        // error there otherwise costs a live run to discover (#153 shipped one exactly that way).
-        if (Environment.GetEnvironmentVariable("SOWX_DUMP_SHADERS") is string dumpDir && dumpDir.Length > 0)
-        {
-            string lit = OwnedLitFsHead + OwnedLights.LocalShadowLib + OwnedLights.FragmentLib
-                         + OwnedLights.SunShadowLib + MaterialLib + KeyFogFs + OwnedLitFsMain;
-            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "lit.frag"), lit);
-            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "lit_bindless.frag"), BindlessFs(lit));
-            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "lit.vert"), OwnedLitVs);
-        }
-
         log.Info(ok
             ? "OwnedDrawService.SelfCheck: passed"
             : $"OwnedDrawService.SelfCheck: FAILED -- per-draw SSBO contract (binding {BindDraw}, " +
@@ -3188,24 +3212,20 @@ public sealed unsafe class OwnedDrawService : IExtenderService
         if (_progWater != 0) return true;
         if (_waterFailed) return false;
         if (!WaterPass.On) { _waterFailed = true; return false; }
-        // OVERRIDABLE, like every other stage in this pass that produces a pixel. The extender's job is to
-        // provide the water CLASS -- the one framebuffer copy, the depth, the light rig, the probe -- and to
-        // hand a content author a stage they can rewrite; the look itself belongs in a .shd, which is what
-        // makes any of this optional. The embedded text below is the DEFAULT, not the source of truth.
-        // <para>#147: four stages, all four overridable. Water is the one class that TESSELLATES -- its
-        // geometry is two triangles per ten-unit tile, so a displacement in the vertex stage would move the
-        // corners and interpolate a flat sheet between them. Its vertex stage is its own for the same reason:
-        // it must not project, because the vertices it emits are patch corners that no longer exist by the
-        // time anything rasterises.</para>
-        string waterFs = WaterPass.Fs;
-        uint prog = GlProgram.Graphics(ShdWaterVs, WaterPass.Vs, ShdWaterTcs, WaterPass.Tcs,
-                                       ShdWaterTes, WaterPass.Tes, ShdWaterFs, waterFs,
+        // #147: four stages, all four overridable (ADR 0012) -- water is the one class that TESSELLATES,
+        // so its evaluation stage, not its vertex stage, is what projects.
+        string waterFs = ShaderStages.Source(ShdWaterFs);
+        uint prog = GlProgram.Graphics(ShdWaterVs, ShaderStages.Source(ShdWaterVs),
+                                       ShdWaterTcs, ShaderStages.Source(ShdWaterTcs),
+                                       ShdWaterTes, ShaderStages.Source(ShdWaterTes), ShdWaterFs, waterFs,
                                        _log, "OwnedDrawService water program",
-                                       out string wvs, out string wfs);
+                                       out string wvs, out string wtc, out string wte, out string wfs);
         // An override that declares the wrong per-draw record reads every draw out of a neighbour's slot --
         // the #120 failure, and silent. #132 adds the colour space to the same guard, for the same reason.
-        // Same pair the fullbright and lit programs take.
-        if (prog != 0 && !(RecordSafe(wvs) && RecordSafe(wfs) && LinearSafe(wfs)))
+        // Same pair the fullbright and lit programs take. #161: all four stages declare the record, so all
+        // four are counted -- the tessellation pair reads it to build the wave field.
+        if (prog != 0 && !(RecordSafe(wvs) && RecordSafe(wtc) && RecordSafe(wte) && RecordSafe(wfs)
+                           && LinearSafe(wfs)))
         {
             Gl.DeleteProgram(prog);
             _log?.Info("OwnedDrawService: water override declares the wrong per-draw record or still " +
@@ -3334,11 +3354,11 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     /// instead; the lit fragment resref replaces the whole composed stage, <see cref="OwnedLights.FragmentLib"/>
     /// included, so an override must carry its own clustered-lighting helpers -- and may spell their sizing
     /// constants as the <see cref="ShaderResource.Tokens"/> the embedded source uses.</summary>
-    private const string ShdFullbrightVs = "sowx_own_vs", ShdFullbrightFs = "sowx_own_fs";
-    private const string ShdLitVs = "sowx_ownlit_vs", ShdLitFs = "sowx_ownlit_fs";
+    internal const string ShdFullbrightVs = "sowx_own_vs", ShdFullbrightFs = "sowx_own_fs";
+    internal const string ShdLitVs = "sowx_ownlit_vs", ShdLitFs = "sowx_ownlit_fs";
     /// <summary>#129's water stage. Its own pair rather than the lit one's, so an author can rewrite the
     /// water surface without forking every lit part in the world.</summary>
-    private const string ShdWaterVs = "sowx_water_vs", ShdWaterFs = "sowx_water_fs",
+    internal const string ShdWaterVs = "sowx_water_vs", ShdWaterFs = "sowx_water_fs",
                          ShdWaterTcs = "sowx_water_tcs", ShdWaterTes = "sowx_water_tes";
 
     /// <summary>#84: the per-draw block, indexed by <c>uDrawBase + gl_DrawID</c>. This is what makes one
@@ -3616,13 +3636,21 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     /// with nothing at all in the log. <see cref="SelfCheck"/> cannot catch it -- it only sees the embedded
     /// text. Counted rather than matched character-for-character, so an override may still reformat or
     /// rename the fields.</summary>
-    private static bool RecordSafe(string src)
+    private static bool RecordSafe(string src) => RecordSafe(src, "SowxDraw", (DrawFloats - 16) / 4);
+
+    /// <summary>#161: the same count, for any per-draw record a C# stride stages. The caster pass has its own
+    /// (<c>SowxCaster</c>, <see cref="Shadow.CasterPass"/>) and it fails exactly the same way -- an override
+    /// declaring the wrong number of trailing vec4s reads every caster out of its neighbour's slot, which
+    /// bakes shadows in the wrong places with nothing in the log.
+    /// <para><paramref name="vec4s"/> is the count AFTER the leading <c>mat4</c>, i.e.
+    /// <c>(strideFloats - 16) / 4</c>.</para></summary>
+    internal static bool RecordSafe(string src, string structName, int vec4s)
     {
-        int at = src.IndexOf("struct SowxDraw", StringComparison.Ordinal);
+        int at = src.IndexOf("struct " + structName, StringComparison.Ordinal);
         if (at < 0) return true;                        // a stage that never declares it cannot disagree
         int end = src.IndexOf('}', at);
         string decl = end < 0 ? src[at..] : src[at..end];
-        return decl.Split("vec4").Length - 1 == (DrawFloats - 16) / 4;
+        return decl.Split("vec4").Length - 1 == vec4s;
     }
 
     /// <summary>#126: does this stage pair carry the cutout and the per-draw alpha? A content override (#92)
@@ -3661,7 +3689,16 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     /// why the answer is to rebuild from the embedded text rather than to log and carry on.</para></summary>
     internal static bool LinearSafe(string fs) => !fs.Contains("SowxRevert") && !fs.Contains("SowxSoftClip");
 
-    private const string OwnedVs = """
+    /// <summary>#132's guard from the other end, for the ONE stage that encodes: the resolve. Every other
+    /// owned fragment stage must not encode (<see cref="LinearSafe"/>); this one must, and must not decode
+    /// first. A pre-#132 resolve override opens with <c>SowxLinear</c> on a target that is already linear and
+    /// comes out a gamma dark; one that dropped the encode leaves the whole frame linear and comes out washed
+    /// out. Both link cleanly and say nothing, so both rebuild from the embedded text.
+    /// <para>Named terms, like every other guard here -- an override may restyle the tonemap and the dither
+    /// around them, but not the colour-space decision the rest of the pipeline is built on.</para></summary>
+    internal static bool ResolveSafe(string fs) => !fs.Contains("SowxLinear") && fs.Contains("SowxEncode");
+
+    internal const string OwnedVs = """
         #version 460 core
         layout(location = 0) in vec3 aPos;
         layout(location = 1) in vec2 aUV;
@@ -3693,7 +3730,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
         """;
     /// <summary>The unlit variant: the engine draws these parts with lighting disabled (MatStatic's flat-white
     /// branch -- cap 5 off, or a <c>mat+0x98</c> material), so flat texture IS their vanilla appearance.</summary>
-    private const string OwnedFs = """
+    internal const string OwnedFs = """
         #version 460 core
         in vec2 vUV;
         flat in float vAlpha;
@@ -3792,7 +3829,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     /// <summary>The lit variant's vertex stage. Beyond the fullbright one it carries world position, world
     /// normal and the view depth: <c>gl_Position.w</c> IS the linear view depth under a perspective
     /// projection, so the fragment stage finds its froxel slice without a second matrix.</summary>
-    private const string OwnedLitVs = """
+    internal const string OwnedLitVs = """
         #version 460 core
         layout(location = 0) in vec3 aPos;
         layout(location = 1) in vec2 aUV;
@@ -3859,7 +3896,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     /// legacy content's reflectivity mask.</para>
     /// <para>ponytail: no synthesis beyond what the stock shaders already do for a declared-nothing material
     /// (#122).</para></summary>
-    private const string OwnedLitFsHead = """
+    internal const string OwnedLitFsHead = """
         #version 460 core
         in vec2 vUV;
         in vec3 vWorld;
@@ -3946,7 +3983,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     /// the quality-gated constants are taken at the high setting (the owned lobe is GGX + Schlick geometric
     /// shadowing unconditionally, which IS <c>SHADER_QUALITY_MODE &gt; 1</c>), and a map's presence is read
     /// off the live slot mask where stock reads a compile-time <c>#if</c>.</para></summary>
-    private const string MaterialLib = """
+    internal const string MaterialLib = """
 
         /// (Specularity, Roughness, Metallicness) -- declared wins, then the map, then the generated floor.
         vec3 SowxSynthPbr(vec3 declared, int slots, float envLevel, float specTexel, float roughTexel)
@@ -4006,7 +4043,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
         }
         """;
 
-    private const string OwnedLitFsMain = """
+    internal const string OwnedLitFsMain = """
         void main()
         {
             vec3 N = normalize(vNrm);
@@ -4235,7 +4272,8 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     {
         if (_prog46 == 0 && !_progFailed)
         {
-            uint prog = GlProgram.Graphics(ShdFullbrightVs, OwnedVs, ShdFullbrightFs, OwnedFs,
+            uint prog = GlProgram.Graphics(ShdFullbrightVs, ShaderStages.Source(ShdFullbrightVs),
+                                           ShdFullbrightFs, ShaderStages.Source(ShdFullbrightFs),
                                            _log, "OwnedDrawService fullbright program",
                                            out string vsSrc, out string fsSrc);
             if (prog != 0 && !(RecordSafe(vsSrc) && RecordSafe(fsSrc) && CutoutSafe(vsSrc, fsSrc)
@@ -4322,10 +4360,9 @@ public sealed unsafe class OwnedDrawService : IExtenderService
                 ? "OwnedDrawService: ARB_bindless_texture armed -- lit batches merge across textures (SOWX_BINDLESS=0 reverts)"
                 : "OwnedDrawService: bindless texturing unavailable or vetoed -- per-batch texture binds");
         }
-        string litFs = OwnedLitFsHead + OwnedLights.LocalShadowLib + OwnedLights.FragmentLib
-                       + OwnedLights.SunShadowLib + MaterialLib + KeyFogFs + OwnedLitFsMain;
+        string litFs = ShaderStages.Source(ShdLitFs);
         if (_bindless) litFs = BindlessFs(litFs);
-        uint prog = GlProgram.Graphics(ShdLitVs, OwnedLitVs, ShdLitFs, litFs,
+        uint prog = GlProgram.Graphics(ShdLitVs, ShaderStages.Source(ShdLitVs), ShdLitFs, litFs,
                                        _log, "OwnedDrawService clustered lit program",
                                        out string vsSrc, out string fsSrc);
         if (prog != 0 && !(RecordSafe(vsSrc) && RecordSafe(fsSrc) && CutoutSafe(vsSrc, fsSrc)
@@ -4657,7 +4694,7 @@ public sealed unsafe class OwnedDrawService : IExtenderService
     /// draws, and folding them in would make the overdraw and batching figures lie on capture frames.</para></summary>
     private static void CaptureProbe(int groups, float far)
     {
-        IntPtr bsp = _enrollScene != IntPtr.Zero ? *(IntPtr*)(_enrollScene + SymbolMap.SceneBspRoot) : IntPtr.Zero;
+        IntPtr bsp = _enrollScene != IntPtr.Zero ? *(IntPtr*)(_enrollScene + SceneLayout.SceneBspRoot) : IntPtr.Zero;
         if (!EnvProbe.Wanted(_eyePos, bsp, _frameSeq)) return;
         if (!EnvProbe.Begin(_eyePos, bsp, _frameSeq, far, ProbeClear())) return;
 

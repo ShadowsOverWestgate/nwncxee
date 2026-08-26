@@ -17,7 +17,8 @@ internal static unsafe class SymbolMap
     public const string HandleWMKeyDown   = "_Z22HandleWMKeyDownMessagejj";
     public const string WinMessageHandler = "_Z17WinMessageHandlerP9SDL_Event";
     public const string SwapBuffers       = "_ZN8GLRender11SwapBuffersEP10SDL_Window";
-    // window focus (CClientExoApp)
+    // window focus (CClientExoApp). Empty stubs reached by indirect dispatch, so no Windows anchor
+    // was derivable -- they skip there, which the OS focus handling already covers.
     public const string OnGainFocus       = "_ZN13CClientExoApp11OnGainFocusEv";
     public const string OnLostFocus       = "_ZN13CClientExoApp11OnLostFocusEv";
     // chat prompt (typing gate)
@@ -26,6 +27,37 @@ internal static unsafe class SymbolMap
     public const string ChatHandleEnter      = "_ZN20CGuiInGameChatPrompt11HandleEnterEv";
     public const string ChatHandleEsc        = "_ZN20CGuiInGameChatPrompt9HandleEscEv";
     public const string ChatHandleLoseFocus  = "_ZN20CGuiInGameChatPrompt41HandleLoseKeyboardFocusLMouseDownGuiEventEv";
+    // ---- chat edit control (build slice #20): focus suppression, keyboard-mode gate, SDL
+    //      text-input + clipboard. Chatbox-specific symbols are Linux-only (no _win entries -> skip-with-log
+    //      on Windows). EXCEPTIONS: ExoInput + GetKeyboardMode carry _win mappings -- the hotkey
+    //      keyboard-mode gate (cross-platform) reads them, and both are name-exported on Windows. ----
+    /// <summary>CGuiInGame::ShowChatPrompt() -- a chat opener we skip to suppress vanilla focus.</summary>
+    public const string ShowChatPrompt = "_ZN10CGuiInGame14ShowChatPromptEv";
+    /// <summary>CGuiInGame::PrepChatPromptForTellToPlayer(CNWCPlayer*) -- (this, player) chat opener; skipped.</summary>
+    public const string PrepChatPromptForTell = "_ZN10CGuiInGame29PrepChatPromptForTellToPlayerEP10CNWCPlayer";
+    /// <summary>CExoInput* global; deref for the instance to drive KeyboardModeOn/Off.</summary>
+    public const string ExoInput = "g_pExoInput";
+    /// <summary>CExoInput::KeyboardModeOn() -- engine gameplay-key gate on (text entry).</summary>
+    public const string KeyboardModeOn = "_ZN9CExoInput14KeyboardModeOnEv";
+    /// <summary>CExoInput::KeyboardModeOff() -- gameplay-key gate off (resume movement).</summary>
+    public const string KeyboardModeOff = "_ZN9CExoInput15KeyboardModeOffEv";
+    /// <summary>CExoInput::GetKeyboardMode() -- nonzero while the engine is capturing text (chat, console,
+    /// any vanilla edit field); the signal to suppress gameplay hotkeys.</summary>
+    public const string GetKeyboardMode = "_ZN9CExoInput15GetKeyboardModeEv";
+    /// <summary>CAurora::GetGUIScale() -- static float accessor for the engine's live GUI-scale multiplier
+    /// (floor 1.0; changes with resolution / the options slider). We fold it into the chatbox scale so our
+    /// overlay tracks the game's UI scaling. Name-exported on Windows (CAurora is a shared-engine class).</summary>
+    public const string GetGuiScale = "_ZN7CAurora11GetGUIScaleEv";
+    /// <summary>TurnOffKeyboardModal() -- the free function vanilla runs from CGuiEdit::SetFocus right after
+    /// KeyboardModeOn: resets modal keys, clears the WASD drive-mode latch, and sends AbortDriveControl so the
+    /// server stops too. We SkipOriginal the vanilla focus path, so we must call it ourselves or movement
+    /// sticks when chat grabs the keyboard mid-walk (#34). Takes no args -- it walks g_pAppManager itself.</summary>
+    public const string TurnOffKeyboardModal = "_Z20TurnOffKeyboardModalv";
+    public const string SdlStartTextInput   = "SDL_StartTextInput";
+    public const string SdlGetClipboardText = "SDL_GetClipboardText";
+    public const string SdlSetClipboardText = "SDL_SetClipboardText";
+    public const string SdlFree             = "SDL_free";
+
     // client<->server messages (CNWCMessage)
     public const string HandleServerToPlayerMessage = "_ZN11CNWCMessage27HandleServerToPlayerMessageEPhj";
     public const string HandleServerToPlayerLogin   = "_ZN11CNWCMessage25HandleServerToPlayerLoginEh";
@@ -34,7 +66,9 @@ internal static unsafe class SymbolMap
     // options panel (repurposed Save-Character button)
     public const string PostAttachmentInitialize = "_ZN13COptionsPanel24PostAttachmentInitializeEv";
     public const string HandleSaveCharButton     = "_ZN13COptionsPanel20HandleSaveCharButtonEv";
-    public const string OptionsHandleXButton     = "_ZN13COptionsPanel13HandleXButtonEv";   // closes the options menu (what Resume calls)
+    // Closes the options menu (what Resume calls). Client GUI, no Windows anchor yet -> skips there,
+    // and the menu simply stays open.
+    public const string OptionsHandleXButton     = "_ZN13COptionsPanel13HandleXButtonEv";
     // chat-render probe (#14) -- Linux-only throwaway; no Windows anchors (skip + log there).
     public const string AppendToMsgBuffer   = "_ZN10CGuiInGame17AppendToMsgBufferE10CExoStringjji7CResRef"; // inbound tap
     public const string SetPriMsgFilter     = "_ZN10CGuiInGame25SetPrimaryMsgWindowFilterEj";               // force backlog replay
@@ -106,11 +140,11 @@ internal static unsafe class SymbolMap
     /// What vanilla /t resolves with -- pinned tab names are character names, so try this first.</summary>
     public const string GetPlayerByCreatureName = "_ZN13CClientExoApp23GetPlayerByCreatureNameE10CExoString";
 
-    // cursor override
+    // cursor override: client-internal, no Windows anchor yet -> skip + log there.
     public const string UpdateMouseCursorAppearance = "_ZN21CClientExoAppInternal27UpdateMouseCursorAppearanceEi";
     public const string SetMouseCursor = "_ZN25CCachedMouseCursorManager14SetMouseCursorEiiiii";
 
-    // quickbar positioning
+    // quickbar positioning. Quickbar and compass alike are client GUI: no Windows anchor yet -> skip + log.
     public const string QuickbarReposition = "_ZN14CPanelQuickBar10RepositionEv";
     public const string SetPositionScreen  = "_ZN9CGuiPanel17SetPositionScreenEii";
     // compass hide/show (CGuiInGame methods, take `this`)
@@ -132,7 +166,8 @@ internal static unsafe class SymbolMap
     public const string SdlGetMouseState = "SDL_GetMouseState";
     // client-native manager: a window injected into the client's own nuklear pass via the
     // per-frame nk_sdl_render hook. Core nk_* are plain C; the SDL glue is C++-linkage on this
-    // build (mangled), so nk_sdl_render must use its mangled name or the hook never installs.
+    // build (mangled), so nk_sdl_render must use its mangled name or the hook never installs. The
+    // manager is absent on Windows: no anchor, so the whole group skips + logs there.
     public const string NkSdlRender        = "_Z13nk_sdl_renderf";
     public const string NkBegin            = "nk_begin";
     public const string NkEnd              = "nk_end";
@@ -151,12 +186,11 @@ internal static unsafe class SymbolMap
     /// is freed on area transitions -- never cache). Its world position is a Vector at <c>+0xa4</c> (x,y,z;
     /// z at +0xac per sow-codebase CNWSObject notes).</summary>
     public const string GetPlayerCreature = "_ZN13CClientExoApp17GetPlayerCreatureEv";
-    /// <summary>Byte offset of the creature's world-space m_vPosition (Vector, 3 floats) -- to verify live.</summary>
-    public const int CreaturePosition = 0xa4;
 
     // data globals
     public const string AppManager = "g_pAppManager";
     public const string GuiMan     = "g_pGuiMan";
+    /// <summary>The client's nuklear context (NUI edit-focus probe). Client global -- no Windows anchor.</summary>
     public const string Nuklear    = "g_pNuklear";
     /// <summary>CExoBase* global; deref for the instance whose CExoString@0x38 is the resolved user directory.</summary>
     public const string ExoBase    = "g_pExoBase";
@@ -563,24 +597,6 @@ internal static unsafe class SymbolMap
     /// <summary>PartTriMesh::GetIsOpaque() @0x43cee0 -- true if the part is opaque. The re-walk submits only
     /// opaque tile parts. ABI: <c>(PartTriMesh* /*rdi*/) -> bool</c>.</summary>
     public const string PartGetIsOpaque = "_ZN11PartTriMesh11GetIsOpaqueEv";
-    /// <summary>Scene -&gt; BSPNode* root (the static-geometry BSP). Linux-verified in ManageSceneBSP.</summary>
-    public const int SceneBspRoot = 0x188;
-    /// <summary>BSPNode -&gt; nodedata* (the node contents / tile model). Null on empty internal nodes.</summary>
-    public const int BspNodeData = 0x70;
-    /// <summary>nodedata -&gt; PartTriMesh** tile-part array; count at <see cref="NodeDataPartCount"/>.</summary>
-    public const int NodeDataParts = 0x20;
-    /// <summary>nodedata -&gt; int tile-part count (pairs with <see cref="NodeDataParts"/>).</summary>
-    public const int NodeDataPartCount = 0x28;
-    /// <summary>nodedata -&gt; PartTriMesh* single "primary" mesh (fallback when the parts array is empty --
-    /// the engine's <c>currentscene+0x1e0 != 0</c> fast branch uses only this).</summary>
-    public const int NodeDataPrimary = 0x90;
-    /// <summary>PartTriMesh -&gt; mesh data (MdlNode) pointer. The renderable-this-frame flag hangs off it.</summary>
-    public const int PartMeshData = 0x8;
-    /// <summary>meshdata -&gt; int "renderable/submitted this frame" flag. <c>PartTriMesh::IsPartRenderable</c>
-    /// (which <c>Scene::AddPartsToDrawBuckets</c> gates every transfer on) returns false while this is 0, so a
-    /// re-walked off-screen caster is dropped unless we set it -- exactly as the engine's own
-    /// <c>FUN_00581000</c> does before <c>AddPartToMeshBuckets</c>.</summary>
-    public const int MeshRenderableFlag = 0x118;
 
     // ---- dynamic gob casters (slice 3d, #65). ManageSceneBSP's second loop adds ONLY camera-visible gobs
     //      (gob+0x1b) to the global gobbucket; we append off-screen in-sphere gobs there so movable objects
@@ -593,11 +609,6 @@ internal static unsafe class SymbolMap
     /// <summary>CExoArrayList&lt;Gob*&gt;::Add(Gob*) @0x445f50 -- append one gob (may realloc). ABI:
     /// <c>(CExoArrayList&lt;Gob*&gt;* /*rdi*/, Gob* /*rsi*/)</c>.</summary>
     public const string GobBucketAdd = "_ZN13CExoArrayListIP3GobE3AddES1_";
-    /// <summary>Scene -&gt; the "shadow gob" (the controlled PC whose hero shadow vanilla draws). Verified in
-
-    /// SUPERSEDED as the anchor: its inlined setter lives in the vanilla shadow path, so it reads NULL under
-    /// <c>SOWX_NOSHADOWS</c> (live-confirmed). Use <see cref="CurrentCamera"/> instead.</summary>
-    public const int SceneShadowGob = 0x58;
 
     // ---- camera-follow anchor (#65): the real, camera-INDEPENDENT PC position, independent of the vanilla shadow
     //      path. ManageSceneBSP itself walks this exact chain every frame, so it is valid whenever our call-through
@@ -606,55 +617,10 @@ internal static unsafe class SymbolMap
     /// <c>CAurCamera*</c> (or 0).
     /// <para>#131 also reads the orientation QUATERNION at <c>*CurrentCamera + 0xbc</c>, stored
     /// (w, x, y, z) -- <c>PartEmitter::RenderEmitter</c> builds every billboard basis out of it.</para>
+    /// <para>This SUPERSEDED the Scene "shadow gob" at Scene+0x58 as the anchor: that field's setter is
+    /// inlined in the vanilla shadow path, so it reads NULL under <c>SOWX_NOSHADOWS</c> (live-confirmed).</para>
     /// </summary>
     public const string CurrentCamera = "CurrentCamera";
-    /// <summary>CAurCamera -&gt; current behavior host (<c>CurrentCamera[0x8b]</c> == +0x458), a <c>CAurBehavior*</c>;
-    /// its vtable+<see cref="BehaviorAsFollowVtbl"/> is <c>AsBehaviorCameraFollow()</c>.</summary>
-    public const int CameraBehaviorHost = 0x458;
-    /// <summary>Behavior-host vtable slot for <c>AsBehaviorCameraFollow()</c> -- pure <c>return this</c> for a follow
-    /// cam, null otherwise (a base-class type filter). Replicated exactly from ManageSceneBSP's own devirt call, so
-    /// non-follow cameras (free-cam/cutscene) safely yield null.</summary>
-    public const int BehaviorAsFollowVtbl = 0x48;
-    /// <summary>CAurBehaviorCameraFollow -&gt; <c>SafePointer&lt;CAurObject&gt;</c> to the followed object (the PC);
-    /// raw pointer at +0. Its <see cref="GobPosition"/> (+0xa8) is exactly what GetTargetWorldPosition returns.</summary>
-    public const int BehaviorTargetObj = 0x20;
-    /// <summary>Scene -&gt; Gob** scene-gob array; count at <see cref="SceneGobCount"/>. The camera-cull loop in
-    /// ManageSceneBSP walks exactly this list.</summary>
-    public const int SceneGobList = 0x130;
-    /// <summary>Scene -&gt; int scene-gob count (pairs with <see cref="SceneGobList"/>).</summary>
-    public const int SceneGobCount = 0x138;
-    /// <summary>Gob -&gt; node pointer. MUST be non-null before appending: the gobbucket sort comparator
-    /// <c>FUN_0055e070</c> blindly derefs <c>*(gob+0x68)+0x8e</c> (the render path null-checks it, the sort
-    /// does not) -- a gob with 0x68==0 in the bucket crashes the sort.</summary>
-    public const int GobNode = 0x68;
-    /// <summary>Gob -&gt; Part* part-tree root. <c>ProcessGob</c>/<c>AddPartsTreeToDrawBuckets</c> walk it; guard
-    /// non-null so a geometry-less gob is skipped, not derefenced.</summary>
-    public const int GobPartTree = 0x90;
-    /// <summary>Gob -&gt; world position (float x@+0xa8, y@+0xac, z@+0xb0). Read for the sphere test.</summary>
-    public const int GobPosition = 0xa8;
-    /// <summary>#127: Gob -&gt; its cached bounding box, min at +0x160 and max at +0x16c. <c>Gob::GetBoundingBox</c>
-    /// @0x436ee0 is a plain read of exactly these two, no recompute. Only the EXTENT is used (the pair's
-    /// space -- model or world -- is not established, and the extent is the same either way); it is centred
-    /// on <see cref="GobPosition"/>, which is unambiguously world.</summary>
-    public const int GobBoxMin = 0x160, GobBoxMax = 0x16c;
-    /// <summary>#127: Gob -&gt; the MdlNode <c>Gob::SetAsCharacter</c> writes through (gob+0x68), and the byte
-    /// it writes: <c>node+0x8e = 4</c>. The only positive "this gob is a creature" mark found in the client.
-    /// Used to keep creatures OUT of the grass cull -- they bend grass, they do not erase it.</summary>
-    public const int NodeCharacterKind = 0x8e, NodeCharacterValue = 4;
-    /// <summary>#127: a Part's child array (+0x38) and its count (+0x40), and the vtable slot (+0x60) that
-    /// yields the part's <c>PartTriMesh*</c> or null. Straight out of <c>Gob::ContainsNonSolids</c> @0x43f250
-    /// and <c>Gob::ContainsWater</c> @0x43f2f0, which walk exactly this shape. <see cref="PartTriMeshLive"/>
-    /// is the byte ContainsNonSolids gates the trimesh on before testing its opacity.</summary>
-    public const int PartChildren = 0x38, PartChildCount = 0x40, PartAsTriMeshVtbl = 0x60,
-                     PartTriMeshLive = 0x96;
-    /// <summary>Gob -&gt; cached "in view volume" byte (<c>Gob::IsInViewVolume</c> returns exactly this). Fresh
-    /// after orig ManageSceneBSP ran; we append only <c>== 0</c> gobs (the engine already added the visible ones,
-    /// so this avoids a double-add). Read raw -- do NOT hook the devirt-guarded IsInViewVolume.</summary>
-    public const int GobInView = 0x1b;
-    /// <summary>Gob -&gt; "geometry dirty" byte. <c>ProcessGob</c> recomputes the has-geometry flag
-    /// (<c>gob+0x1a4</c>, which AddPartsToDrawBuckets gates the gob draw on) only when this is non-zero, then
-    /// clears it. Set it on an appended gob so its geometry flag is (re)computed this frame.</summary>
-    public const int GobGeometryDirty = 0x1a5;
 
     /// <summary>Camera::GetCanKeyholeDissolve(PartTriMesh*) @ (member) -- returns whether a caster keyhole-
     /// dissolves (the camera-relative aperture around the PC). Hooked to return 0 during the depth pass so
@@ -699,13 +665,16 @@ internal static unsafe class SymbolMap
     // Windows resolution for a symbol. Exactly one path applies:
     //   Name != null : name-exported (MSVC mangling) -- resolve like Linux
     //   Rva  != 0    : not exported -- absolute = runtime module base + Rva (build-locked)
-    //   default      : no Windows resolution -- skip with a log line (graceful no-op)
+    //   absent       : no Windows resolution -- skip with a log line (graceful no-op)
     private readonly record struct Win(string? Name, int Rva);
 
     private static Win Nm(string msvc) => new(msvc, 0);
     private static Win At(int rva) => new(null, rva);
 
-    /// <summary>Linux name -> Windows resolution. A name not in here is treated as "skip" too.</summary>
+    /// <summary>Linux name -> Windows resolution. Only symbols that DO resolve on Windows are listed: a
+    /// missing key and an explicit <c>default</c> entry take the same branch in <see cref="Resolve"/> and emit
+    /// the same log line, so the Linux-only majority is listed once, as its constant, and nowhere else.
+    /// See docs/windows-symbols.md for how each anchor was derived.</summary>
     private static readonly Dictionary<string, Win> _win = new()
     {
         // --- exported on Windows (shared engine): resolve by MSVC name ---
@@ -727,183 +696,28 @@ internal static unsafe class SymbolMap
         [GetNWCMessage]               = At(0x6abf90),
         [PostAttachmentInitialize]    = At(0x830b50),
         [HandleSaveCharButton]        = At(0x82fb60),
-        [OptionsHandleXButton]        = default,   // client GUI, no Windows anchor yet: skip (menu just stays open)
         [SetFocusChatPrompt]          = At(0x6fae30),
         [ChatHandleEnter]             = At(0x87b0d0),
         [ChatHandleEsc]               = At(0x87b390),
         [ChatHandleLMouseDown]        = At(0x87b450),   // Notify event enum 1
         [ChatHandleLoseFocus]         = At(0x87b4b0),   // Notify event enum 2
         [TurnOffKeyboardModal]        = At(0x6e5d80),   // anchored via CGuiEdit::SetFocus (call after KeyboardModeOn)
+        // Footgun: nwmain.exe statically links the CRT, so the panel frees via the game's own
+        // operator delete -- allocate from the game's own operator new (build-locked RVA) or the
+        // cross-heap free corrupts. Scalar operator new(size_t), VS2017/2019 release.
+        [OperatorNew]                 = At(0xc10324),
 
-        // --- no Windows anchor: skip + log. These gate edge cases the OS already
-        //     covers; losing them degrades gracefully (see docs/windows-symbols.md). ---
-        // chat-render probe (#14): Linux-only, no Windows anchors -> skip + log.
-        [AppendToMsgBuffer]   = default,
-        [SetPriMsgFilter]     = default,
-        [ViewportSetViewport] = default,
-        [ChatDoFullScreen]    = default,
-        [ChatDoSplitScreen]   = default,
-        // chat suppression (#23): client GUI, Linux-only for now -> skip + log on Windows.
-        [AppendToChatBuffer]  = default,
-        [ChatWindowSetFilter] = default,
-        [ChatWindowShow]      = default,
-        [ChatPromptShow]      = default,
-        [ChatPromptSetFocus]  = default,
-        [SendChatTalk]        = default,
-        // dialog reimplementation (#dialog): client GUI / CNWCMessage, Linux-only for now -> skip + log.
-        [ShowDialogEntry]   = default,
-        [ShowDialogReplies] = default,
-        [ShowReplyChosen]   = default,
-        [CloseDialog]       = default,
-        [SendDialogReply]   = default,
-        [ForceDialogVisible] = default,
-        [GetGameObject]     = default,
-        [GetObjectName]     = default,
-        // outbound send parity (#22): Linux-only like the other chat senders -> skip + log on Windows.
-        [SendChatShout]   = default,
-        [SendChatWhisper] = default,
-        [SendChatTell]    = default,
-        [SendChatTellId]  = default,
-        [SendChatParty]   = default,
-        [SendChatDM]      = default,
-        // chat portraits (#26): Aurora texture manager, Linux-only anchors -> skip + log on Windows.
-        [AurTextureGet]    = default,
-        [AurTextureGetTID] = default,
-        [AurTextureVtbl]   = default,
-        [AurTextureBasicVtbl] = default,
-        // Tell-pinned tab roster (#45): Linux-only for now -> skip + log on Windows.
-        [GetPlayerByPlayerName]   = default,
-        [GetPlayerByCreatureName] = default,
-
-        [OnGainFocus] = default,   // empty focus stub, indirect dispatch
-        [OnLostFocus] = default,   // empty focus stub
-        [Nuklear]     = default,   // NUI edit-focus probe (client global)
-
-        // consent modal -- name-exported on Windows (verified in nwmain.exe's export table).
+        // --- consent modal + input, name-exported on Windows (verified in nwmain.exe's export table) ---
         [OkCancelCtor]    = Nm("??0CPanelOkCancel@@QEAA@XZ"),
         [OkCancelActivate]= Nm("?Activate@CPanelOkCancel@@QEAAXVCExoString@@II@Z"),
         [GuiMan]          = Nm("?g_pGuiMan@@3PEAVCGuiMan@@EA"),
         [GetGuiScale]     = Nm("?GetGUIScale@CAurora@@SAMXZ"),   // CAurora shared-engine class -> name-exported
-
         [SdlGetKeyName]   = Nm("SDL_GetKeyName"),
         [SdlGetModState]  = Nm("SDL_GetModState"),
         // hotkey suppression while any vanilla text field captures keys (console etc.) -- shared-engine
         // CExoInput, name-exported on Windows. (Chat also uses ExoInput but stays Linux-only for now.)
         [ExoInput]        = Nm("?g_pExoInput@@3PEAVCExoInput@@EA"),
         [GetKeyboardMode] = Nm("?GetKeyboardMode@CExoInput@@QEAAHXZ"),
-        // Footgun: nwmain.exe statically links the CRT, so the panel frees via the game's own
-        // operator delete -- allocate from the game's own operator new (build-locked RVA) or the
-        // cross-heap free corrupts. Scalar operator new(size_t), VS2017/2019 release.
-        [OperatorNew]     = At(0xc10324),
-
-        // cursor override: client-internal, no Windows anchor yet -> skip + log.
-        [UpdateMouseCursorAppearance] = default,
-        [SetMouseCursor] = default,
-
-        // quickbar / compass: client GUI, no Windows anchor yet -> skip + log.
-        [QuickbarReposition] = default,
-        [SetPositionScreen]  = default,
-        [HideCompass]        = default,
-        [ShowCompass]         = default,
-
-        // client-native manager (nuklear) -- no Windows anchor yet: skip + log (manager absent on Windows).
-        [NkSdlRender]        = default,
-        [NkBegin]            = default,
-        [NkEnd]              = default,
-        [NkLayoutRowDynamic] = default,
-        [NkLabel]            = default,
-        [NkButtonLabel]      = default,
-        [NkWindowIsClosed]   = default,
-
-        // shadow suppression (#65): Scene sub-passes, Linux-only -> skip + log on Windows.
-        [RenderDynamicShadows]     = default,
-        [RenderStaticShadows]      = default,
-        [RenderShadowPlanes]       = default,
-        [DoGobShadows]             = default,
-        [DoDynamicMeshProjections] = default,
-        // shadow-map input capture (#65 slice 2): Linux-only -> skip + log on Windows.
-        [SetLightGL]               = default,
-        [SetViewTransform]         = default,
-        // shadow-map caster re-drive (#65 slice 3b): Linux-only -> skip + log on Windows.
-        [RenderDrawBucket]         = default,
-        [RenderSinglePass]         = default,
-        [FadeDoors]                = default,
-        [MAurMtxStack]             = default,
-        [SetMatrixMode]            = default,
-        [LoadMatrixIdentity]       = default,
-        [MultMatrix]               = default,
-        [PushCurrentMatrix]        = default,
-        [PopCurrentMatrix]         = default,
-        [FlagCurrentTransformDirty]= default,
-        [SetModelMatrix]           = default,
-        [RenderVertexData]         = default,
-        [BucketGetFirstItem]       = default,
-        [RiGetGlobalShaderParamf]  = default,
-        [RiGetGlobalShaderParami]  = default,
-        [GetLightAdjustedRadius]   = default,
-        [RiIsEnabled]              = default,
-        [BucketGetNextItem]        = default,
-        [RiSetModelMatrix]         = default,
-        [MCurrentMatrix]           = default,
-        [SetOrthoTransform]        = default,
-        [SetPerspectiveTransform]  = default,
-        [GetCanKeyholeDissolve]    = default,
-        [GetPlayerCreature]        = default,
-        // caster completeness (#65 slice 3c): BSP sphere re-walk, Linux-only -> skip + log on Windows.
-        [ManageSceneBSP]           = default,
-        [AddPartsToDrawBuckets]    = default,
-        // owned grass (#127): Scene grass path + its globals, Linux-only -> skip + log on Windows.
-        [DoBinBucket]              = default,
-        [ReloadGrass]              = default,
-        [BinBucket]                = default,
-        [GrassInfo]                = default,
-        [GrassFarDistance]         = default,
-        [GrassNearRadius]          = default,
-        [GrassEnabled]             = default,
-        // owned beams (#130): Scene::RenderBeams + PartBeam::Draw + their globals, Linux-only.
-        [RenderBeams]              = default,
-        [PartBeamDraw]             = default,
-        [EnableBeams]              = default,
-        [ProjectionAlpha]          = default,
-        [AddPartToMeshBuckets]     = default,
-        [BSPTraverseSphere]        = default,
-        [PartGetIsOpaque]          = default,
-        // dynamic gob casters (#65 slice 3d): global bucket + Add, Linux-only -> skip + log on Windows.
-        [GobBucket]                = default,
-        [GobBucketAdd]             = default,
-        // camera-follow anchor (#65): the camera-independent PC position, Linux-only -> skip + log on Windows.
-        [CurrentCamera]            = default,
-        // static-geometry batching (ADR 0006), Linux-only -> BatchService stands down on Windows.
-        [GlRenderVertexData]       = default,
-        [PartTriMeshDraw]          = default,
-        [PartSkinDraw]             = default,
-        [PartDanglyMeshVtbl]       = default,
-        [RiSetCanDissolve]         = default,
-        [MatHasEnvMap]             = default,
-        [MatHasBumpyShinyMap]      = default,
-        [BucketHasItemsOfType]     = default,
-        [EnableBumpyWater]         = default,
-        [PartGetRenderHint]        = default,
-        [PrimTypeTranslationTable] = default,
-        [MatGetTexture]            = default,
-        [VdoRepack]                = default,
-        [PartDtor]                 = default,
-        // owned particles (#131): the emitter site + the engine helpers the vertex build calls rather than
-        // reproduces. Linux-only -> the class stands down and particles stay vanilla on Windows.
-        [RenderEmitter]            = default,
-        [PartEmitterDtor]          = default,
-        [EmitterGetTileAlpha]      = default,
-        [EmitterGetGobAlpha]       = default,
-        [EmitterIsSplat]           = default,
-        [EmitterIsTinted]          = default,
-        [GetEmitterLighting]       = default,
-        [CurrentScene]             = default,
-        [AurTextureBindInUnit]     = default,
-        // owned caster path (ADR 0008), Linux-only -> falls back to the engine walk on Windows.
-        [GlSetVertexDataObject]    = default,
-        [GlRenderBones]            = default,
-        [GlFog]                    = default,
-        [GlGlobalShaderConstantsF] = default,
     };
 
     // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the static file base.
@@ -968,34 +782,4 @@ internal static unsafe class SymbolMap
         return ok;
     }
 
-    // ---- chat edit control (build slice #20): focus suppression, keyboard-mode gate, SDL
-    //      text-input + clipboard. Chatbox-specific symbols are Linux-only (no _win entries -> skip-with-log
-    //      on Windows). EXCEPTIONS: ExoInput + GetKeyboardMode carry _win mappings -- the hotkey
-    //      keyboard-mode gate (cross-platform) reads them, and both are name-exported on Windows. ----
-    /// <summary>CGuiInGame::ShowChatPrompt() -- a chat opener we skip to suppress vanilla focus.</summary>
-    public const string ShowChatPrompt = "_ZN10CGuiInGame14ShowChatPromptEv";
-    /// <summary>CGuiInGame::PrepChatPromptForTellToPlayer(CNWCPlayer*) -- (this, player) chat opener; skipped.</summary>
-    public const string PrepChatPromptForTell = "_ZN10CGuiInGame29PrepChatPromptForTellToPlayerEP10CNWCPlayer";
-    /// <summary>CExoInput* global; deref for the instance to drive KeyboardModeOn/Off.</summary>
-    public const string ExoInput = "g_pExoInput";
-    /// <summary>CExoInput::KeyboardModeOn() -- engine gameplay-key gate on (text entry).</summary>
-    public const string KeyboardModeOn = "_ZN9CExoInput14KeyboardModeOnEv";
-    /// <summary>CExoInput::KeyboardModeOff() -- gameplay-key gate off (resume movement).</summary>
-    public const string KeyboardModeOff = "_ZN9CExoInput15KeyboardModeOffEv";
-    /// <summary>CExoInput::GetKeyboardMode() -- nonzero while the engine is capturing text (chat, console,
-    /// any vanilla edit field); the signal to suppress gameplay hotkeys.</summary>
-    public const string GetKeyboardMode = "_ZN9CExoInput15GetKeyboardModeEv";
-    /// <summary>CAurora::GetGUIScale() -- static float accessor for the engine's live GUI-scale multiplier
-    /// (floor 1.0; changes with resolution / the options slider). We fold it into the chatbox scale so our
-    /// overlay tracks the game's UI scaling. Name-exported on Windows (CAurora is a shared-engine class).</summary>
-    public const string GetGuiScale = "_ZN7CAurora11GetGUIScaleEv";
-    /// <summary>TurnOffKeyboardModal() -- the free function vanilla runs from CGuiEdit::SetFocus right after
-    /// KeyboardModeOn: resets modal keys, clears the WASD drive-mode latch, and sends AbortDriveControl so the
-    /// server stops too. We SkipOriginal the vanilla focus path, so we must call it ourselves or movement
-    /// sticks when chat grabs the keyboard mid-walk (#34). Takes no args -- it walks g_pAppManager itself.</summary>
-    public const string TurnOffKeyboardModal = "_Z20TurnOffKeyboardModalv";
-    public const string SdlStartTextInput   = "SDL_StartTextInput";
-    public const string SdlGetClipboardText = "SDL_GetClipboardText";
-    public const string SdlSetClipboardText = "SDL_SetClipboardText";
-    public const string SdlFree             = "SDL_free";
 }

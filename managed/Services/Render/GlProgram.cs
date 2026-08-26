@@ -49,18 +49,21 @@ internal static unsafe class GlProgram
     /// the vertex stage would move four corners and nothing between them.
     /// <para>A failure in ANY stage falls back to the whole embedded set rather than mixing a content vertex
     /// stage with an embedded evaluation one -- the two share the wave field and a half-applied override
-    /// would displace the surface out from under the normals.</para></summary>
+    /// would displace the surface out from under the normals.</para>
+    /// <para>All four sources come back, not just the outer pair: #161's record guard applies to every stage
+    /// that declares the per-draw record, and on water that is the tessellation pair too.</para></summary>
     internal static uint Graphics(string vsRef, string vs, string tcRef, string tc, string teRef, string te,
                                   string fsRef, string fs, ExtenderLog? log, string what,
-                                  out string vsSource, out string fsSource)
+                                  out string vsSource, out string tcSource, out string teSource,
+                                  out string fsSource)
     {
         string? ovs = ShaderResource.Override(vsRef, log), otc = ShaderResource.Override(tcRef, log);
         string? ote = ShaderResource.Override(teRef, log), ofs = ShaderResource.Override(fsRef, log);
-        vsSource = ovs ?? vs; fsSource = ofs ?? fs;
+        vsSource = ovs ?? vs; tcSource = otc ?? tc; teSource = ote ?? te; fsSource = ofs ?? fs;
         uint prog = Tessellated(ovs ?? vs, otc ?? tc, ote ?? te, ofs ?? fs, log, what);
         if (prog != 0 || (ovs == null && otc == null && ote == null && ofs == null)) return prog;
         log?.Info($"{what}: override .shd failed to build -- falling back to the embedded default");
-        vsSource = vs; fsSource = fs;
+        vsSource = vs; tcSource = tc; teSource = te; fsSource = fs;
         return Tessellated(vs, tc, te, fs, log, what);
     }
 

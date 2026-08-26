@@ -439,26 +439,39 @@ internal static unsafe class PostChain
         return true;
     }
 
+    /// <summary>#161: throw away a post program built from an override that breaks the colour-space contract
+    /// and rebuild it from the embedded pair -- the same refuse-and-say-so shape as
+    /// <c>OwnedDrawService.RebuildEmbedded</c>. Both stages come from the embedded text, never a content
+    /// vertex stage over an embedded fragment one: the fall back is to a KNOWN pair.</summary>
+    private static uint Rebuild(uint stale, string fs, string what, string why)
+    {
+        Gl.DeleteProgram(stale);
+        _log?.Info($"PostChain: the {what} override is refused -- {why}. Rebuilding from the embedded "
+                 + "default (regenerate the override with /dumpshaders to get it back).");
+        return GlProgram.Graphics(FullscreenVs, fs, _log, $"PostChain {what} (embedded)");
+    }
+
     private static bool EnsurePrograms()
     {
         if (_progComposite != 0) return true;
         if (_progFailed) return false;
-        _progDown = GlProgram.Graphics(ShdPostVs, FullscreenVs, ShdBloomDownFs, BloomDownFs, _log,
-                                       "PostChain bloom downsample");
-        _progUp = GlProgram.Graphics(ShdPostVs, FullscreenVs, ShdBloomUpFs, BloomUpFs, _log,
-                                     "PostChain bloom upsample");
-        _progComposite = GlProgram.Graphics(ShdPostVs, FullscreenVs, ShdResolveFs, ResolveFs, _log,
-                                            "PostChain resolve", out _, out string resolveSrc);
-        // #132: a resolve written before the flip opens with SowxLinear -- it decodes a target that is now
-        // linear and then encodes, so the whole frame comes out a gamma dark. It links cleanly and says
-        // nothing, so it is rebuilt from the embedded text like every other owned stage's override guard.
-        if (_progComposite != 0 && resolveSrc.Contains("SowxLinear"))
-        {
-            Gl.DeleteProgram(_progComposite);
-            _log?.Info("PostChain: the resolve override still decodes its input (pre-#132) -- rebuilding "
-                     + "from the embedded default");
-            _progComposite = GlProgram.Graphics(FullscreenVs, ResolveFs, _log, "PostChain resolve (embedded)");
-        }
+        string post = ShaderStages.Source(ShdPostVs);
+        _progDown = GlProgram.Graphics(ShdPostVs, post, ShdBloomDownFs, ShaderStages.Source(ShdBloomDownFs),
+                                       _log, "PostChain bloom downsample", out _, out string downSrc);
+        if (_progDown != 0 && !OwnedDrawService.LinearSafe(downSrc))
+            _progDown = Rebuild(_progDown, BloomDownFs, "bloom downsample",
+                                "it still encodes to display space (pre-#132), and the chain it feeds is linear");
+        _progUp = GlProgram.Graphics(ShdPostVs, post, ShdBloomUpFs, ShaderStages.Source(ShdBloomUpFs),
+                                     _log, "PostChain bloom upsample", out _, out string upSrc);
+        if (_progUp != 0 && !OwnedDrawService.LinearSafe(upSrc))
+            _progUp = Rebuild(_progUp, BloomUpFs, "bloom upsample",
+                              "it still encodes to display space (pre-#132), and the chain it feeds is linear");
+        _progComposite = GlProgram.Graphics(ShdPostVs, post, ShdResolveFs, ShaderStages.Source(ShdResolveFs),
+                                            _log, "PostChain resolve", out _, out string resolveSrc);
+        if (_progComposite != 0 && !OwnedDrawService.ResolveSafe(resolveSrc))
+            _progComposite = Rebuild(_progComposite, ResolveFs, "resolve",
+                                     "it decodes its input (pre-#132) or performs no encode at all, and this "
+                                     + "is the frame's one encode");
         if (_progDown == 0 || _progUp == 0 || _progComposite == 0)
         {
             _progFailed = true;
@@ -483,13 +496,13 @@ internal static unsafe class PostChain
     /// <summary>Resrefs a content author overrides the post stages at (#92), same rules as every other owned
     /// program. All three share <see cref="FullscreenVs"/>, so overriding <c>sowx_post_vs</c> replaces the
     /// vertex stage of all three at once.</summary>
-    private const string ShdPostVs = "sowx_post_vs", ShdBloomDownFs = "sowx_bloomdn_fs";
-    private const string ShdBloomUpFs = "sowx_bloomup_fs", ShdResolveFs = "sowx_resolve_fs";
+    internal const string ShdPostVs = "sowx_post_vs", ShdBloomDownFs = "sowx_bloomdn_fs";
+    internal const string ShdBloomUpFs = "sowx_bloomup_fs", ShdResolveFs = "sowx_resolve_fs";
 
     /// <summary>The full-screen triangle every post stage draws: three vertices, no buffers, no attributes.
     /// A triangle rather than a quad because the diagonal seam of a two-triangle quad costs a second
     /// rasterisation of every pixel along it and buys nothing.</summary>
-    private const string FullscreenVs = """
+    internal const string FullscreenVs = """
         #version 460 core
         out vec2 vUV;
         void main()
@@ -520,7 +533,7 @@ internal static unsafe class PostChain
     /// the threshold is linear-referred. Its default does not move with it: the threshold is 1.0 and
     /// pow(1, 2.2) is 1, so the boundary is the same number in either space. Only the soft KNEE's width
     /// changes shape below it.</para></summary>
-    private const string BloomDownFs = """
+    internal const string BloomDownFs = """
         #version 460 core
         in vec2 vUV;
         out vec4 frag;
@@ -569,7 +582,7 @@ internal static unsafe class PostChain
     /// <summary>The 3x3 tent back up the chain, added into the level below with ONE/ONE. Tent rather than
     /// bilinear: the upsample is what turns nine discrete mips into one continuous falloff, and a plain
     /// bilinear read leaves each level's own resolution visible as a ring.</summary>
-    private const string BloomUpFs = """
+    internal const string BloomUpFs = """
         #version 460 core
         in vec2 vUV;
         out vec4 frag;
@@ -593,7 +606,7 @@ internal static unsafe class PostChain
     /// That shape is the requirement -- engine-drawn geometry shares this framebuffer and never passes
     /// through here, so a curve that moved the midtones would split the frame in two. 2 is ACES
     /// (Narkowicz' fit), which does move them: a deliberate whole-frame look, not a default.</para></summary>
-    private const string ResolveFs = """
+    internal const string ResolveFs = """
         #version 460 core
         in vec2 vUV;
         out vec4 frag;

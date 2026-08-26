@@ -53,7 +53,7 @@ public sealed unsafe class ChatService : IExtenderService
         ChatConfig.SelfCheck(log);     // config round-trip + legacy-file migration proof (off-device)
         TextRenderer.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
         SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
-        if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla chat intact; FrameTapService takes the frame
+        if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla chat intact
         {
             log.Info("ChatService: SOWX_LOCKCHAT set -- standing down, vanilla chat left intact");
             return;
@@ -520,7 +520,7 @@ public sealed unsafe class ChatService : IExtenderService
     private static void InitRender(ExtenderLog log, HookService hooks)
     {
         // GATE: SOWX_LOCKCHAT stands the chat content down (UiHostService also skips its frame hook, so nothing
-        // double-hooks SwapBuffers and FrameTapService resumes the proof-of-life present).
+        // double-hooks SwapBuffers).
         if (Locked)
         {
             log.Info("ChatService: render stood down (SOWX_LOCKCHAT set)");
@@ -555,7 +555,7 @@ public sealed unsafe class ChatService : IExtenderService
             OnText = InsertUtf8,
             HitTestOverride = (px, py) => MouseOverUi((int)px, (int)py),
         };
-        UiHost.AddChordConsumer(new Sowx.Services.Chords.SlashChord());   // "/" opens a command line
+        UiHost.AddChordConsumer(new SlashChord());   // "/" opens a command line
         log.Info("ChatService: registered as a framework Window (content-draw + routed input), \"/\" opens a command line");
         Rebuild();   // show the empty box immediately, before any chat arrives
     }
@@ -565,6 +565,28 @@ public sealed unsafe class ChatService : IExtenderService
     private static int _swapTid;                  // managed thread id of the frame-present thread (probe, #33)
     private static bool _wasInModule;             // last frame's UiHost.InModule, for the module-unload edge
     private static float _appliedUiScale = 1f;    // GameUiScale we last re-baked/relaid at (scale-change edge)
+
+    /// <summary>The chord-consumer face of chat: an unmodified "/" that has fallen past every window opens the
+    /// command line. Priority 1, so a hotkey bound to the same key (Priority 2) wins it.</summary>
+    private sealed class SlashChord : IChordConsumer
+    {
+        /// <summary>SDL keycode for <c>/</c> (SDLK_SLASH), and the raw SDL modifier masks
+        /// (KMOD_SHIFT / KMOD_CTRL) that mean the player meant something else.</summary>
+        private const int KeySlash = 47, KmodShift = 0x0003, KmodCtrl = 0x00C0;
+
+        public int Priority => 1;
+
+        public bool WantsKey(int key) => key == KeySlash;
+
+        public void Fire(uint key, int sdlMods)
+        {
+            // Any modifier means the player meant something else (shift+/ = "?", ctrl+/ = a bind).
+            if (key != KeySlash || (sdlMods & (KmodShift | KmodCtrl)) != 0) return;
+            OpenWith('/');
+        }
+
+        public void FireMouse(int button, int sdlMods) { }
+    }
 
     /// <summary>The chat window's per-frame content draw (invoked by UiHostService via <see cref="UiHost.DrawFrame"/>).
     /// Runs the first-frame config restore once, reacts to the host-published gate + UI-scale edges, then draws
@@ -1499,6 +1521,11 @@ public sealed unsafe class ChatService : IExtenderService
             Post(cmd);
             return true;
         }
+        if (cmd == "/dumpshaders")
+        {
+            DumpShaders();
+            return true;
+        }
         return false;
     }
 
@@ -1575,6 +1602,19 @@ public sealed unsafe class ChatService : IExtenderService
         EchoLocal(float.IsNaN(old)
             ? $"[post] unknown knob \"{a[1]}\" -- try hdr, bloom, threshold, knee, tonemap, tmknee or softclip"
             : $"[post] {a[1]} {v:F3} (was {old:F3}) -> {Sowx.Services.Render.PostChain.Describe()}");
+    }
+
+    /// <summary>#160: write every overridable stage to <c>&lt;user directory&gt;/sowx_shader_dump/</c> as an
+    /// editable .shd, plus the bindless variant of the lit stage. Dumping what is compiled in is what makes
+    /// the starting point current by construction (ADR 0012); the sizing tokens stay unexpanded, because the
+    /// extender expands them on load for an override exactly as for the embedded default.</summary>
+    private static void DumpShaders()
+    {
+        string dir = Sowx.Services.Render.ShaderStages.DumpDir;
+        int n = Sowx.Services.Render.ShaderStages.Dump(dir, _log);
+        EchoLocal(n < 0
+            ? $"[shaders] dump to {dir} failed -- see the log"
+            : $"[shaders] {n} stages written to {dir}");
     }
 
     /// <summary>Put a line in the local chat store without touching the wire -- command feedback the player

@@ -446,10 +446,9 @@ internal static unsafe class WaterPass
         return ok;
     }
 
-    /// <summary>The whole fragment stage, composed. Kept as one property so <see cref="SelfCheck"/> and the
-    /// program build read the same text.</summary>
-    internal static string Fs => FsHead + OwnedLights.LocalShadowLib + OwnedLights.FragmentLib
-                                + OwnedLights.SunShadowLib + OwnedDrawService.KeyFogFs + WaveLib + FsMain;
+    /// <summary>The whole fragment stage, composed by <see cref="ShaderStages"/> -- the one place any owned
+    /// stage's composition is written down (ADR 0012).</summary>
+    internal static string Fs => ShaderStages.Source(OwnedDrawService.ShdWaterFs);
 
     /// <summary>#147's vertex stage. Deliberately NOT the lit pass's: water is never skinned and never a
     /// wind-feature part, and -- the reason it needs its own -- it must NOT project. The clip position is the
@@ -459,9 +458,9 @@ internal static unsafe class WaterPass
     /// omission: water is excluded from the depth prepass, so nothing re-tests these depths with LEQUAL. It
     /// is the one owned vertex stage the standing invariance constraint does not bind, which is exactly what
     /// makes displacement legal here and nowhere else.</para></summary>
-    internal static string Vs => VsHead + OwnedDrawService.DrawBufDecl + VsMain;
+    internal static string Vs => ShaderStages.Source(OwnedDrawService.ShdWaterVs);
 
-    private const string VsHead = """
+    internal const string VsHead = """
         #version 460 core
         layout(location = 0) in vec3 aPos;
         layout(location = 1) in vec2 aUV;
@@ -469,7 +468,7 @@ internal static unsafe class WaterPass
 
         """;
 
-    private const string VsMain = """
+    internal const string VsMain = """
         uniform int uDrawBase;
         out vec2 tcUV;
         out vec3 tcWorld;
@@ -496,16 +495,15 @@ internal static unsafe class WaterPass
     /// for geometry smaller than a pixel. A pond whose peak wavelength is 15cm does NOT get a million
     /// triangles -- its amplitude is millimetres, and water that flat is explicitly retired to level 1.</para>
     /// </summary>
-    internal static string Tcs => TcsHead + OwnedDrawService.DrawBufDecl
-                                 + OwnedDrawService.NoiseLib + WaveLib + TcsMain;
+    internal static string Tcs => ShaderStages.Source(OwnedDrawService.ShdWaterTcs);
 
-    private const string TcsHead = """
+    internal const string TcsHead = """
         #version 460 core
         layout(vertices = 3) out;
 
         """;
 
-    private const string TcsMain = """
+    internal const string TcsMain = """
         uniform vec3 uEyePos;
         uniform vec2 uTessDials;       // (segments per wavelength, max level)
         in vec2 tcUV[];
@@ -565,16 +563,15 @@ internal static unsafe class WaterPass
     /// field is defined over, so the fragment stage evaluating it there gets the gradient at the point this
     /// stage actually moved -- rather than at where it ended up, which is a different point on a different
     /// wave.</para></summary>
-    internal static string Tes => TesHead + OwnedDrawService.DrawBufDecl
-                                 + OwnedDrawService.NoiseLib + WaveLib + TesMain;
+    internal static string Tes => ShaderStages.Source(OwnedDrawService.ShdWaterTes);
 
-    private const string TesHead = """
+    internal const string TesHead = """
         #version 460 core
         layout(triangles, fractional_odd_spacing, ccw) in;
 
         """;
 
-    private const string TesMain = """
+    internal const string TesMain = """
         uniform mat4 uVP;
         uniform vec3 uAreaWind;
         uniform float uWaveTime;
@@ -767,7 +764,7 @@ internal static unsafe class WaterPass
     /// <summary>#129's fragment stage, part one: what water reads. Declarations only -- the per-draw record,
     /// the lighting rig and the fog/keyhole block all arrive from the same strings the lit stage composes, so
     /// the two cannot drift on any of them.</summary>
-    private const string FsHead = """
+    internal const string FsHead = """
         #version 460 core
         in vec2 vUV;
         in vec3 vWorld;
@@ -850,7 +847,7 @@ internal static unsafe class WaterPass
     /// dissolve, so the wave shape differs from vanilla's). Each is a visible feature and none is a
     /// reflection feature; file them as follow-ups if the sea reads wrong for their absence, the way #136
     /// carries the sky's own shader port.</para></summary>
-    private const string FsMain = """
+    internal const string FsMain = """
 
         // Window-space depth from the copy, linearised to a POSITIVE view-space distance. Reconstructed from
         // this pass's own near/far rather than from an engine uniform: the owned frame already extracts them

@@ -812,6 +812,18 @@ public sealed unsafe class CasterPass : IExtenderService
                   && BoneCount == 64
                   && ShdCastVs.Length <= ShaderResource.ResRefBytes
                   && ShdCastFs.Length <= ShaderResource.ResRefBytes
+                  // #161: the embedded caster stages satisfy the override guards they are checked against --
+                  // a guard its own default trips rebuilds from that same default every session, which reads
+                  // as the override silently not applying.
+                  && CastVsSafe(CastVs) && CastFsSafe(CastFs)
+                  // ...and the guards REFUSE each failure they exist for: a record short one vec4 (every
+                  // caster bakes at its neighbour's matrix), a vertex stage that lost #96's skinning (every
+                  // creature casts its bind pose), a fragment stage that discards (no shadow at all) or
+                  // writes gl_FragDepth (acne). All four link cleanly and none says anything.
+                  && !CastVsSafe(CastVs.Replace("vec4 bounds; vec4 aux;", "vec4 bounds;"))
+                  && !CastVsSafe(CastVs.Replace("uBone", "uNothing"))
+                  && !CastFsSafe("#version 460 core\nvoid main() { discard; }")
+                  && !CastFsSafe("#version 460 core\nvoid main() { gl_FragDepth = 0.5; }")
                   // the receiver's uSunVp array must be exactly as long as the cascade ceiling: a shorter one
                   // reads out of bounds on the outermost cascade, a longer one silently never fills
                   && Render.OwnedLights.SunShadowLib.Contains($"uSunVp[{MaxCascades}]")
@@ -1698,7 +1710,20 @@ public sealed unsafe class CasterPass : IExtenderService
                 || Gl.BindBufferBase == null || Gl.FenceSync == null || Gl.ClientWaitSync == null
                 || Gl.TexStorage3D == null || Gl.GenFramebuffers == null || Gl.CopyImageSubData == null)
             { Disarm("a required GL 4.4+ entry point is missing (multidraw-indirect / persistent mapping / image copy)"); return false; }
-            uint p = GlProgram.Graphics(ShdCastVs, CastVs, ShdCastFs, CastFs, _log, "CasterPass depth program");
+            uint p = GlProgram.Graphics(ShdCastVs, Render.ShaderStages.Source(ShdCastVs),
+                                        ShdCastFs, Render.ShaderStages.Source(ShdCastFs),
+                                        _log, "CasterPass depth program",
+                                        out string castVs, out string castFs);
+            if (p != 0 && !(CastVsSafe(castVs) && CastFsSafe(castFs)))
+            {
+                Gl.DeleteProgram(p);
+                _log?.Info("CasterPass: the caster depth override is refused -- it declares a per-draw record "
+                         + $"that is not the {DrawBytes}-byte SowxCaster being staged, has lost the skinning "
+                         + "branch, or its fragment stage is not inert (a discard or a written gl_FragDepth "
+                         + "silently removes or displaces every shadow). Rebuilding from the embedded stages "
+                         + "(regenerate the override with /dumpshaders to get it back).");
+                p = GlProgram.Graphics(CastVs, CastFs, _log, "CasterPass depth program (embedded)");
+            }
             if (p == 0) { _progFailed = true; Disarm("the caster depth program failed to build"); return false; }
             _prog = p;
             _locVp = GlProgram.Loc(p, "uVP");
@@ -2365,7 +2390,23 @@ public sealed unsafe class CasterPass : IExtenderService
     }
 
     /// <summary>Resrefs the caster pass looks up before falling back to the GLSL below (#92).</summary>
-    private const string ShdCastVs = "sowx_cast_vs", ShdCastFs = "sowx_cast_fs";
+    internal const string ShdCastVs = "sowx_cast_vs", ShdCastFs = "sowx_cast_fs";
+
+    /// <summary>#161: the caster vertex stage's half of the override contract -- the per-draw record it reads
+    /// (counted, so an override may still reformat the fields) and #96's skinning branch. A stage that lost
+    /// the branch links perfectly, the bone attributes simply go unread, and every creature casts its BIND
+    /// POSE's shadow while the creature itself animates.</summary>
+    private static bool CastVsSafe(string vs)
+        => Render.OwnedDrawService.RecordSafe(vs, "SowxCaster", (DrawFloats - 16) / 4)
+           && vs.Contains("uBone");
+
+    /// <summary>#161: the caster fragment stage must stay inert. It runs into a depth-only FBO, so the only
+    /// two things it can say that matter are <c>discard</c> -- which writes no depth, i.e. the caster casts no
+    /// shadow at all -- and <c>gl_FragDepth</c>, which displaces the depth the map is compared against into
+    /// acne or peter-panning. Neither errors and neither shows in the log. An override past both is provably
+    /// unable to change what the pass bakes.</summary>
+    private static bool CastFsSafe(string fs)
+        => !fs.Contains("discard") && !fs.Contains("gl_FragDepth");
 
     /// <summary>The per-draw block. Indexed by <c>gl_BaseInstance</c>, NOT <c>gl_DrawID</c>: M4's compute
     /// culling compacts the command buffer, which renumbers gl_DrawID but leaves every surviving command
@@ -2391,7 +2432,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// micro-optimisation but bounds protection: an unused lane carries a junk bone index, which an SSBO read
     /// tolerates far less gracefully than the engine's fixed-size uniform array did. The model matrix applies
     /// ON TOP of the skinned position, as it does in the engine (<c>m_mvp * vLocalPosition</c>).</summary>
-    private const string CastVs = """
+    internal const string CastVs = """
         #version 460 core
         layout(location = 0) in vec3 aPos;
         layout(location = 8) in vec4 aBoneIdx;
@@ -2417,7 +2458,7 @@ public sealed unsafe class CasterPass : IExtenderService
         }
         """;
     /// <summary>Depth-only: the fixed-function depth write is the whole output.</summary>
-    private const string CastFs = """
+    internal const string CastFs = """
         #version 460 core
         void main() { }
         """;

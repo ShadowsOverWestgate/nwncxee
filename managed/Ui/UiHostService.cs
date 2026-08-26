@@ -14,14 +14,14 @@ public sealed unsafe class UiHostService : IExtenderService
     private static ExtenderLog? _log;
 
     /// <summary>Framework opt-OUT (#23, the extender-optional guarantee): <c>SOWX_LOCKCHAT=1</c> stands the whole
-    /// UI framework down -- the host installs no frame hook, so vanilla rendering is untouched and
-    /// <c>FrameTapService</c> resumes the proof-of-life present. The single env pivot every UI service reads.</summary>
+    /// UI framework down -- the host installs no frame hook, so nothing owns the present and vanilla rendering
+    /// is untouched. The single env pivot every UI service reads.</summary>
     public static bool Locked =>
         !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOWX_LOCKCHAT"));
 
     /// <summary>True when the framework owns the <c>SwapBuffers</c> present (the default path). False under
-    /// <c>SOWX_LOCKCHAT</c>. Frame-present-coupled services (FrameTap, Dialog) read this: funchook single-hooks a
-    /// symbol, so exactly one owner of SwapBuffers may install.</summary>
+    /// <c>SOWX_LOCKCHAT</c>. Frame-present-coupled services (Dialog and friends) read this: funchook single-hooks
+    /// a symbol, so exactly one owner of SwapBuffers may install.</summary>
     public static bool OwnsFramePresent => !Locked;
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -29,7 +29,7 @@ public sealed unsafe class UiHostService : IExtenderService
         _log = log;
         UiHost.SelfCheck(log);   // #61 arbiter + #62 draw roll-call proof (off-device)
         Sowx.Services.Render.RenderMode.SelfCheck(log);   // #86 latch semantics (off-device)
-        if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla rendering intact; FrameTapService takes the frame
+        if (Locked)   // SOWX_LOCKCHAT: install nothing -> vanilla rendering intact
         {
             log.Info("UiHostService: SOWX_LOCKCHAT set -- framework stood down, vanilla rendering left intact");
             return;

@@ -62,8 +62,10 @@ decision happens to serve:
 - **`SymbolMap` stays one platform surface.** It carries both the Linux mangled names and the Windows
   RVA table, and the RVA path is build-locked against a PE TimeDateStamp. Splitting it per subsystem
   would scatter that pairing; it is explicitly not split. Trimming its redundant
-  `= default` entries is safe and separate — `SymbolMap.cs:939` proves a missing key and an explicit
-  default entry take the same branch.
+  `= default` entries is safe and separate — `SymbolMap.Resolve`'s first Windows test proves a missing key
+  and an explicit default entry take the same branch. Done in #159, which also moved the ~25 struct field
+  offsets that were never symbols out to the code that dereferences them (`SceneLayout` for the shared ones,
+  private consts for the single-reader ones).
 
 ## Consequences
 

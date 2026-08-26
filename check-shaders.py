@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 """Compile the owned pipeline's embedded GLSL with glslangValidator, offline.
 
+    ./check-shaders.py      # exit 0 = every owned program compiles
+
 The runtime failure is quiet: a lit stage that does not compile only says "clustered lit program
 unavailable -- lit parts revert to engine drawing" in the log and the world keeps rendering, vanilla.
-This turns that into a build-time error. It composes the same stages `OwnedDrawService` and
-`CasterPass` do -- the
-lit fragment stage is head + LocalShadowLib + FragmentLib + SunShadowLib + MaterialLib +
-KeyFogFs + main -- and expands the
-`ShaderResource.Tokens` sizing tokens with stand-in values, since only the shapes matter here.
+This turns that into a build-time error.
 
-    ./check-shaders.py                     # exit 0 = every owned program compiles
-    ./check-shaders.py ../sow-topdata      # ...and the sowx_*.shd overrides in that repo
-    ./check-shaders.py --emit ../sow-topdata   # regenerate those overrides from the embedded stages
+Composition is not written down here. `ShaderStages.Source` in C# is the authoritative table (ADR
+0012) and this script parses its switch arms, so a stage the extender compiles is the stage checked
+here by construction. Only program *linkage* -- which stages link together, including the depth-only
+ones that have no resref -- lives below. `ShaderResource.Tokens`' sizing tokens are expanded with
+stand-in values, since only the shapes matter here.
 
-The override pass matters more than it sounds: a shipped `sowx_*.shd` REPLACES the embedded stage at
-runtime, so it is what actually runs, and it is a hand-held copy of a `SowxDraw` record layout that
-lives in C#. When the record grew in #120 the stale copies read every draw out of a neighbour's slot
-and the world went black. The extender now refuses a stage whose record disagrees, and this catches
-the same drift one step earlier.
+Why a second copy of a composition is never tolerable: a `SowxDraw` record layout that lives in C#
+was, until ADR 0012, also hand-copied into shipped `sowx_*.shd`. When the record grew in #120 the
+stale copies read every draw out of a neighbour's slot and the world went black. Nothing ships a copy
+now, and nothing here restates one either.
 
 Needs glslangValidator (Arch: `glslang`); the material pass also needs spirv-opt/spirv-dis
 (Arch: `spirv-tools`), and skips itself with a notice where they are absent.
@@ -41,8 +40,14 @@ SOURCES = [
 ]
 # ShaderResource.Tokens' three sizing tokens. Any legal value compiles the same shapes.
 TOKENS = {"$CAP$": "128", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667"}
+STAGES = "managed/Services/Render/ShaderStages.cs"
 DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*const string (\w+) = (.*)$")
 PIECE = re.compile(r'"""\n(.*?)\n\s*"""|([A-Za-z_]\w*)', re.S)
+RESREF = re.compile(r'(\w+)\s*=\s*"(sowx_\w+)"')
+# `internal static string Source(string resref) => resref switch { ... };` -- the shape ShaderStages
+# guarantees. One arm per resref: a qualified resref constant, then a plain `+` chain of constants.
+SWITCH = re.compile(r"string Source\(string resref\) => resref switch\s*\{(.*?)\n\s*\};", re.S)
+ARM = re.compile(r"^\s*([\w.]+)\s*=>\s*([^,]+),\s*$", re.M)
 
 
 def harvest():
@@ -76,27 +81,34 @@ def harvest():
     return consts
 
 
-def check_overrides(repo):
-    """Compile the sowx_*.shd in a content repo and check their record layout against the C# one."""
-    d = os.path.join(repo, "assets", "shaders", "sowx")
-    if not os.path.isdir(d):
-        print(f"no {d} -- skipping the override pass")
-        return 0
-    want = open(os.path.join(ROOT, SOURCES[0])).read()
-    floats = int(re.search(r"const int DrawFloats = (\d+)", want).group(1))
-    vec4s = (floats - 16) // 4
-    bad = 0
-    for name in sorted(os.listdir(d)):
-        if not name.endswith(".shd"):
+def composition(consts):
+    """Resref -> composed source, read out of `ShaderStages.Source`'s switch arms. C# owns this table;
+    a name that does not resolve is a hard error, because silently dropping a piece is the drift this
+    binding exists to prevent."""
+    refs = {}
+    for path in SOURCES:
+        for name, ref in RESREF.findall(open(os.path.join(ROOT, path)).read()):
+            refs[name] = ref
+    body = SWITCH.search(open(os.path.join(ROOT, STAGES)).read())
+    if not body:
+        sys.exit(f"{STAGES}: no `Source(string resref) => resref switch` found -- did the table move?")
+    out = {}
+    for left, expr in ARM.findall(body.group(1)):
+        if left == "_":
             continue
-        src = open(os.path.join(d, name)).read()
-        decl = re.search(r"struct SowxDraw.*?\}", src, re.S)
-        if decl and decl.group(0).count("vec4") != vec4s:
-            print(f"{name}: FAILED -- declares {decl.group(0).count('vec4')} vec4s, the CPU stages {vec4s}")
-            bad = 1
-        elif decl:
-            print(f"{name}: record ok ({vec4s} vec4s)")
-    return bad
+        ref = refs.get(left.rsplit(".", 1)[-1])
+        if ref is None:
+            sys.exit(f"{STAGES}: switch arm `{left}` is not a known sowx_* resref constant")
+        pieces = []
+        for term in expr.split("+"):
+            leaf = term.strip().rsplit(".", 1)[-1]
+            if leaf not in consts:
+                sys.exit(f"{STAGES}: `{ref}` names shader constant {leaf}, which no render source declares")
+            pieces.append(consts[leaf])
+        out[ref] = "".join(pieces)
+    if not out:
+        sys.exit(f"{STAGES}: the composition table parsed to nothing")
+    return out
 
 
 # --- #122 material synthesis -------------------------------------------------
@@ -215,14 +227,17 @@ def fold(prelude, expr, tmp):
     return float(consts[v]), None
 
 
-def check_material(consts):
+def check_material(consts, stages):
     """#122: the synthesis chain folded off-device and compared against the stock generators."""
     missing = [t for t in ("glslangValidator", "spirv-opt", "spirv-dis") if shutil.which(t) is None]
     if missing:
         print(f"material synthesis: SKIPPED -- no {', '.join(missing)} (Arch: spirv-tools)")
         return 0
-    prelude = "".join(consts[k] for k in ("OwnedLitFsHead", "LocalShadowLib", "FragmentLib",
-                                          "SunShadowLib", "MaterialLib", "KeyFogFs"))
+    # The real lit stage minus its main, so the folds see whatever C# actually splices into the chain.
+    prelude, main = stages["sowx_ownlit_fs"], consts["OwnedLitFsMain"]
+    if not prelude.endswith(main):
+        sys.exit("sowx_ownlit_fs no longer ends with OwnedLitFsMain -- the material prelude broke")
+    prelude = prelude[: -len(main)]
     for tok, val in TOKENS.items():
         prelude = prelude.replace(tok, val)
     prelude = prelude.replace("out vec4 frag;", "")     # our own probe output replaces it
@@ -250,113 +265,44 @@ def check_material(consts):
     return bad
 
 
-# Resref -> the composed source the extender compiles for it. This is the ONLY place the composition is
-# written down for the override set, so an emitted .shd is the stage the extender actually runs rather than
-# someone's copy of it. Programs absent here have no resref and are not overridable (the depth-only stages).
-def override_sources(c):
+# Program linkage: which stages link together. Overridable stages are named by resref and come out of the
+# C# table; the depth-only stages have no resref, so they are the one place this file names shader text
+# directly. #147: water is the only class that tessellates -- its vertex stage must NOT project, the
+# evaluation stage does, after displacing.
+def programs(c, s):
     return {
-        "sowx_own_vs": c["OwnedVs"],
-        "sowx_own_fs": c["OwnedFs"],
-        "sowx_ownlit_vs": c["OwnedLitVs"],
-        "sowx_ownlit_fs": (c["OwnedLitFsHead"] + c["LocalShadowLib"] + c["FragmentLib"]
-                           + c["SunShadowLib"] + c["MaterialLib"] + c["KeyFogFs"] + c["OwnedLitFsMain"]),
-        # #129: water is overridable like every other stage that produces a pixel. Its vertex default is the
-        # lit stage's text, under its own resref.
-        "sowx_water_vs": c["VsHead"] + c["DrawBufDecl"] + c["VsMain"],
-        "sowx_water_tcs": c["TcsHead"] + c["DrawBufDecl"] + c["NoiseLib"] + c["WaveLib"] + c["TcsMain"],
-        "sowx_water_tes": c["TesHead"] + c["DrawBufDecl"] + c["NoiseLib"] + c["WaveLib"] + c["TesMain"],
-        "sowx_water_fs": (c["FsHead"] + c["LocalShadowLib"] + c["FragmentLib"]
-                          + c["SunShadowLib"] + c["KeyFogFs"] + c["WaveLib"] + c["FsMain"]),
-        "sowx_grass_vs": c["GrassVs"],
-        "sowx_grass_fs": (c["GrassFsHead"] + c["LocalShadowLib"] + c["FragmentLib"]
-                          + c["SunShadowLib"] + c["KeyFogFs"] + c["GrassFsMain"]),
-        "sowx_cluster_cs": c["BuildSrc"],
+        "fullbright": (s["sowx_own_vs"], s["sowx_own_fs"]),
+        "depth prepass": (c["DepthVs"], c["DepthFs"]),
+        "keyhole depth prepass": (c["DepthKeyVs"], c["DepthKeyFs"]),
+        "caster depth": (s["sowx_cast_vs"], s["sowx_cast_fs"]),
+        "caster depth (alpha-tested)": (c["CastMaskVs"], c["CastMaskFs"]),
+        "clustered lit": (s["sowx_ownlit_vs"], s["sowx_ownlit_fs"]),
+        "post bloom downsample": (s["sowx_post_vs"], s["sowx_bloomdn_fs"]),
+        "post bloom upsample": (s["sowx_post_vs"], s["sowx_bloomup_fs"]),
+        "post resolve": (s["sowx_post_vs"], s["sowx_resolve_fs"]),
+        "owned water": (s["sowx_water_vs"], s["sowx_water_tcs"], s["sowx_water_tes"], s["sowx_water_fs"]),
+        "instanced grass": (s["sowx_grass_vs"], s["sowx_grass_fs"]),
+        "clustered light build": (s["sowx_cluster_cs"],),
     }
 
 
-def emit(repo):
-    """Write every overridable stage into a content repo as <resref>.shd.
-
-    The sizing tokens are deliberately NOT expanded: ShaderResource.Tokens expands them at compile time for
-    an override exactly as it does for the embedded default, so an emitted file keeps the same $CAP$ spelling
-    the extender uses and stays correct when those sizes change.
-    """
-    c = harvest()
-    d = os.path.join(repo, "assets", "shaders", "sowx")
-    os.makedirs(d, exist_ok=True)
-    banner = (
-        "// Copied from the sow-client-extender owned pipeline's embedded default (#92).\n"
-        "// $CAP$ / $GROUP$ / $SRGB$ / $BAND$ are expanded by the extender on load -- leave them as tokens.\n"
-        "// Regenerate with `./check-shaders.py --emit <this repo>` from sow-client-extender.\n")
-    # #119: the depth prepass writes these depths and the colour pass re-tests them with LEQUAL, so a
-    # vertex override that recomputes gl_Position any other way loses fragments to a ULP of drift. Carried
-    # in the banner rather than left to whoever hand-wrote the file it replaces.
-    invariant = (
-        "// #119: `invariant gl_Position;` and the exact clip expression below are LOAD-BEARING -- the depth\n"
-        "// prepass writes these depths and the colour pass re-tests them with LEQUAL. Rewrite either and lit\n"
-        "// surfaces lose fragments to a ULP of drift (holes, no log line).\n")
-    record = (
-        "// The SowxDraw struct below is the extender's per-draw SSBO record, and this file is a COPY of a\n"
-        "// layout that lives in C#. Drop a field and every draw reads its neighbour's record -- a black,\n"
-        "// streaked world. The extender counts the vec4s and ignores a stage that disagrees, so a stale\n"
-        "// copy costs one log line and the embedded look, not the frame.\n")
-    for ref, src in override_sources(c).items():
-        src = (banner + (invariant if "invariant gl_Position" in src else "")
-               + (record if "struct SowxDraw" in src else "") + src)
-        path = os.path.join(d, f"{ref}.shd")
-        old = open(path).read() if os.path.exists(path) else None
-        if old == src:
-            print(f"{ref}.shd: unchanged")
-            continue
-        open(path, "w").write(src)
-        print(f"{ref}.shd: {'updated' if old is not None else 'written'} ({len(src)} bytes)")
-    return 0
+# Stage count -> the file extensions glslangValidator infers each stage from.
+EXTS = {1: ("comp",), 2: ("vert", "frag"), 4: ("vert", "tesc", "tese", "frag")}
 
 
 def main():
-    if len(sys.argv) > 2 and sys.argv[1] == "--emit":
-        return emit(sys.argv[2])
     c = harvest()
+    s = composition(c)
     try:
-        programs = {
-            "fullbright": (c["OwnedVs"], c["OwnedFs"]),
-            "depth prepass": (c["DepthVs"], c["DepthFs"]),
-            "keyhole depth prepass": (c["DepthKeyVs"], c["DepthKeyFs"]),
-            "caster depth": (c["CastVs"], c["CastFs"]),
-            "caster depth (alpha-tested)": (c["CastMaskVs"], c["CastMaskFs"]),
-            "clustered lit": (
-                c["OwnedLitVs"],
-                c["OwnedLitFsHead"] + c["LocalShadowLib"] + c["FragmentLib"]
-                + c["SunShadowLib"] + c["MaterialLib"] + c["KeyFogFs"] + c["OwnedLitFsMain"],
-            ),
-            "post bloom downsample": (c["FullscreenVs"], c["BloomDownFs"]),
-            "post bloom upsample": (c["FullscreenVs"], c["BloomUpFs"]),
-            "post resolve": (c["FullscreenVs"], c["ResolveFs"]),
-            # #147: four stages -- water is the only class that tessellates. Its vertex stage is its own
-            # because it must NOT project; the evaluation stage does, after displacing.
-            "owned water": (
-                c["VsHead"] + c["DrawBufDecl"] + c["VsMain"],
-                c["TcsHead"] + c["DrawBufDecl"] + c["NoiseLib"] + c["WaveLib"] + c["TcsMain"],
-                c["TesHead"] + c["DrawBufDecl"] + c["NoiseLib"] + c["WaveLib"] + c["TesMain"],
-                c["FsHead"] + c["LocalShadowLib"] + c["FragmentLib"]
-                + c["SunShadowLib"] + c["KeyFogFs"] + c["WaveLib"] + c["FsMain"],
-            ),
-            "instanced grass": (
-                c["GrassVs"],
-                c["GrassFsHead"] + c["LocalShadowLib"] + c["FragmentLib"]
-                + c["SunShadowLib"] + c["KeyFogFs"] + c["GrassFsMain"],
-            ),
-        }
+        progs = programs(c, s)
     except KeyError as e:
         sys.exit(f"could not find shader constant {e} -- did a stage get renamed?")
 
     bad = 0
     with tempfile.TemporaryDirectory() as tmp:
-        for name, stages in programs.items():
+        for name, stages in progs.items():
             paths = []
-            # Two stages is (vert, frag); four is the tessellated water program.
-            exts = ("vert", "frag") if len(stages) == 2 else ("vert", "tesc", "tese", "frag")
-            for src, ext in zip(stages, exts):
+            for src, ext in zip(stages, EXTS[len(stages)]):
                 for tok, val in TOKENS.items():
                     src = src.replace(tok, val)
                 p = os.path.join(tmp, f"{name.replace(' ', '_')}.{ext}")
@@ -367,9 +313,8 @@ def main():
             if r.returncode:
                 bad = 1
                 print(r.stdout, r.stderr)
-    bad |= check_material(c)
-    if len(sys.argv) > 1:
-        bad |= check_overrides(sys.argv[1])
+    print(f"{len(progs)} programs, {len(s)} overridable stages composed from ShaderStages.Source")
+    bad |= check_material(c, s)
     return bad
 
 

@@ -79,6 +79,23 @@ internal static unsafe class GrassField
     /// <summary>Bounds on the part-tree walk that answers "is this gob solid". A tree deeper or wider than
     /// this is a bad pointer, not a model.</summary>
     private const int MaxPartDepth = 12, MaxPartChildren = 4096;
+
+    // ---- the gob-footprint struct layout (#127), Ghidra-verified; shared Gob fields live in SceneLayout ----
+    /// <summary>Gob -&gt; its cached bounding box, min at +0x160 and max at +0x16c. <c>Gob::GetBoundingBox</c>
+    /// @0x436ee0 is a plain read of exactly these two, no recompute. Only the EXTENT is used (the pair's
+    /// space -- model or world -- is not established, and the extent is the same either way); it is centred
+    /// on <see cref="SceneLayout.GobPosition"/>, which is unambiguously world.</summary>
+    private const int GobBoxMin = 0x160, GobBoxMax = 0x16c;
+    /// <summary>The MdlNode <c>Gob::SetAsCharacter</c> writes through (<see cref="SceneLayout.GobNode"/>), and
+    /// the byte it writes: <c>node+0x8e = 4</c>. The only positive "this gob is a creature" mark found in the
+    /// client. Used to keep creatures OUT of the grass cull -- they bend grass, they do not erase it.</summary>
+    private const int NodeCharacterKind = 0x8e, NodeCharacterValue = 4;
+    /// <summary>A Part's child array (+0x38) and its count (+0x40), and the vtable slot (+0x60) that yields the
+    /// part's <c>PartTriMesh*</c> or null. Straight out of <c>Gob::ContainsNonSolids</c> @0x43f250 and
+    /// <c>Gob::ContainsWater</c> @0x43f2f0, which walk exactly this shape. <see cref="PartTriMeshLive"/> is the
+    /// byte ContainsNonSolids gates the trimesh on before testing its opacity.</summary>
+    private const int PartChildren = 0x38, PartChildCount = 0x40, PartAsTriMeshVtbl = 0x60,
+                      PartTriMeshLive = 0x96;
     /// <summary>Vertices in the blade template: two quads crossed at 90 degrees, six vertices each. Vanilla
     /// draws ONE flat card per blade, which reads as a paper cutout from the side; a cross costs one extra
     /// quad per blade and is the cheapest thing that makes grass look like grass from any angle.</summary>
@@ -549,9 +566,9 @@ internal static unsafe class GrassField
                 if (gob == IntPtr.Zero) continue;
                 // Same guard ShadowFeedService uses: a gob with no part tree has no geometry to stand in the
                 // grass with, so it must not dent it.
-                IntPtr tree = *(IntPtr*)(gob + SymbolMap.GobPartTree);
+                IntPtr tree = *(IntPtr*)(gob + SceneLayout.GobPartTree);
                 if (tree == IntPtr.Zero) continue;
-                float* pos = (float*)(gob + SymbolMap.GobPosition);
+                float* pos = (float*)(gob + SceneLayout.GobPosition);
                 float gx = (pos[0] - _pushOriginX) * _pushPerUnit, gy = (pos[1] - _pushOriginY) * _pushPerUnit;
                 // The cull footprint can be much larger than the push radius, so the window test uses
                 // whichever of the two actually reaches.
@@ -626,10 +643,10 @@ internal static unsafe class GrassField
     {
         // A creature is marked by Gob::SetAsCharacter @0x444790, which writes node+0x8e = 4. This is exactly
         // as strong as the engine's own writer: nothing else found writes that byte.
-        IntPtr node = *(IntPtr*)(gob + SymbolMap.GobNode);
+        IntPtr node = *(IntPtr*)(gob + SceneLayout.GobNode);
         if (node != IntPtr.Zero
-            && *(byte*)(node + SymbolMap.NodeCharacterKind) == SymbolMap.NodeCharacterValue) return false;
-        float* mn = (float*)(gob + SymbolMap.GobBoxMin), mx = (float*)(gob + SymbolMap.GobBoxMax);
+            && *(byte*)(node + NodeCharacterKind) == NodeCharacterValue) return false;
+        float* mn = (float*)(gob + GobBoxMin), mx = (float*)(gob + GobBoxMax);
         hx = (mx[0] - mn[0]) * 0.5f * _cullShrink;
         hy = (mx[1] - mn[1]) * 0.5f * _cullShrink;
         // A degenerate or absurd box is a field that was never filled, not a very large object.
@@ -650,16 +667,16 @@ internal static unsafe class GrassField
         IntPtr vt = *(IntPtr*)part;
         if (vt != IntPtr.Zero)
         {
-            var asTri = *(delegate* unmanaged<IntPtr, IntPtr>*)(vt + SymbolMap.PartAsTriMeshVtbl);
+            var asTri = *(delegate* unmanaged<IntPtr, IntPtr>*)(vt + PartAsTriMeshVtbl);
             if (asTri != null)
             {
                 IntPtr tri = asTri(part);
-                if (tri != IntPtr.Zero && *(byte*)(tri + SymbolMap.PartTriMeshLive) != 0 && _isOpaque(tri) != 0)
+                if (tri != IntPtr.Zero && *(byte*)(tri + PartTriMeshLive) != 0 && _isOpaque(tri) != 0)
                     return true;
             }
         }
-        IntPtr* kids = *(IntPtr**)(part + SymbolMap.PartChildren);
-        int n = *(int*)(part + SymbolMap.PartChildCount);
+        IntPtr* kids = *(IntPtr**)(part + PartChildren);
+        int n = *(int*)(part + PartChildCount);
         if (kids == null || n <= 0 || n > MaxPartChildren) return false;
         for (int i = 0; i < n; i++) if (HasOpaque(kids[i], depth + 1)) return true;
         return false;
@@ -989,15 +1006,14 @@ internal static unsafe class GrassField
     /// <summary>The composed embedded fragment stage -- what an override REPLACES. Named so
     /// <c>OwnedDrawService.SelfCheck</c> can assert the embedded text satisfies the guards it is checked
     /// against (#132), which it must, or every session rebuilds from it.</summary>
-    internal static string EmbeddedFs => GrassFsHead + OwnedLights.LocalShadowLib + OwnedLights.FragmentLib
-                                         + OwnedLights.SunShadowLib + OwnedDrawService.KeyFogFs + GrassFsMain;
+    internal static string EmbeddedFs => ShaderStages.Source(ShdGrassFs);
 
     private static bool EnsureProgram()
     {
         if (_prog != 0) return true;
         if (_failed) return false;
         string fs = EmbeddedFs;
-        uint prog = GlProgram.Graphics(ShdGrassVs, GrassVs, ShdGrassFs, fs, _log,
+        uint prog = GlProgram.Graphics(ShdGrassVs, ShaderStages.Source(ShdGrassVs), ShdGrassFs, fs, _log,
                                        "GrassField instanced grass", out _, out string fsSrc);
         // #132: an override written before the linear flip still ends in SowxRevert, links cleanly, and
         // gets encoded a second time by the resolve -- a washed-out lawn, silently. Rebuilt from the
@@ -1052,14 +1068,14 @@ internal static unsafe class GrassField
 
     // ---- shaders -----------------------------------------------------------------------------
 
-    private const string ShdGrassVs = "sowx_grass_vs", ShdGrassFs = "sowx_grass_fs";
+    internal const string ShdGrassVs = "sowx_grass_vs", ShdGrassFs = "sowx_grass_fs";
 
     /// <summary>The vertex stage: one crossed-quad blade per instance, rotated, scaled, and swayed. The sway
     /// is root-anchored (<c>z^2</c>, so the base never leaves the ground) and driven by the engine's own
     /// <c>areaGlobalWind</c> plus the per-blade bend jitter, which is what stops a field moving as one sheet.
     /// <para>This stage DISPLACES, which is exactly why grass is not in the #119 depth prepass and why it does
     /// not compute <c>OwnedDrawService</c>'s invariant clip expression.</para></summary>
-    private const string GrassVs = """
+    internal const string GrassVs = """
         #version 460 core
         layout(location = 0) in vec3 aPos;      // blade-local: xy in [-0.5,0.5], z 0 (root) .. 1 (tip)
         layout(location = 1) in vec2 aUV;       // 0..1 within one atlas cell
@@ -1149,7 +1165,7 @@ internal static unsafe class GrassField
         }
         """;
 
-    private const string GrassFsHead = """
+    internal const string GrassFsHead = """
         #version 460 core
         in vec2 vUV;
         in vec3 vWorld;
@@ -1180,7 +1196,7 @@ internal static unsafe class GrassField
     /// semi-transparent and depth-writing and deletes whatever stands behind it. Here the fade is a SCREEN-DOOR
     /// dither -- a fragment is either fully opaque or gone -- so the ramp cannot produce a blended fragment,
     /// and because the ramp reaches zero exactly at the engine's own far radius there is no pop either.</summary>
-    private const string GrassFsMain = """
+    internal const string GrassFsMain = """
         // Interleaved gradient noise (Jimenez): a hash with no visible tiling and no texture fetch. The
         // instance seed decorrelates neighbouring blades, so the dither reads as thinning grass rather than
         // as a screen-space grid crawling over it.
