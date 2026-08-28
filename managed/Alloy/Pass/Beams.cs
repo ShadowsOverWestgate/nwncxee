@@ -335,9 +335,8 @@ internal static unsafe class Beams
         float* src = stackalloc float[4] { dir.X, dir.Y, dir.Z, -1f };   // w < 0 = the directional branch
         Gl.Uniform4fv(_locSrc, 1, src);
         Gl.Uniform1f(_locZClip, WorldZClip);
-        Gl.Enable(Gl.BLEND);
-        Gl.BlendFunc(GlSrcAlpha, GlOne);
-        Gl.DepthMask(0);
+        new PassState(depth: true, depthWrite: false, blend: true,
+                      blendSrc: GlSrcAlpha, blendDst: GlOne).Apply();
 
         int boundVao = -1;
         fixed (int* counts = _sCount, bases = _sBase)

@@ -800,7 +800,7 @@ internal static unsafe class GrassField
         AlloyRenderer.UploadLocalCubes(_loc.CubeTex, _loc.CubeLight, _loc.CubePlane, _loc.CubeCount,
                                           _loc.CubeSoft);
 
-        // The class's whole point, in three calls: blending OFF, depth writes ON, and the coverage decision
+        // The class's whole point, in one declaration: blending OFF, depth writes ON, and the coverage decision
         // made entirely by the fragment stage's two discards. Two-sided because a blade is a card -- the
         // engine disables culling here too.
         // Alpha-to-coverage ONLY where the target actually has samples to cover -- there the fragment writes
@@ -808,9 +808,7 @@ internal static unsafe class GrassField
         // every sample is written whole or not at all, so the no-semi-transparent-depth-writing-fragment
         // guarantee is untouched. On a single-sampled target it would be a bare threshold shift, so it stays
         // off and the dither carries the edge instead.
-        Gl.Disable(Gl.BLEND);
-        Gl.DepthMask(1);
-        Gl.Disable(Gl.CULL_FACE);
+        new PassState(depth: true, depthWrite: true).Apply();
         if (msaa) Gl.Enable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
 
         int boundMat = -1, boundTex = 0;

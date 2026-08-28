@@ -10,6 +10,10 @@ namespace Sowx.Alloy;
 /// redundant-call elimination behind it. The driver already shadow-caches this state and so does the engine;
 /// a third copy is a third thing that can disagree with the GL context after a vanilla draw runs between two
 /// of our passes -- which is exactly the situation every Alloy pass is in.</para>
+/// <para>Particles are the one owned pass with no preamble to declare: their blend, depth-mask and cull are
+/// per-GROUP state chosen inside the draw loop (punch-through vs blended vs additive), so a declaration
+/// hoisted in front of that loop would state something untrue for most of the pass. Every pass's trailing
+/// hand-back stays hand-rolled too -- this struct sets state, it does not restore it.</para>
 /// <para>It carries only what the preambles actually share. <c>glDepthFunc</c>, viewport, framebuffer and
 /// texture-unit setup stay at the call site: they are per-pass decisions, not a common preamble, and growing
 /// the struct to hold them would turn a declaration back into a sequence.</para></summary>
@@ -22,12 +26,8 @@ internal readonly struct PassState
     /// either way would encode the frame twice or not at all -- silently, which is #132's whole failure
     /// mode. Only a pass that owns its own target says so.</summary>
     public readonly bool? Srgb;
-    /// <summary>The <c>glBlendFunc</c> factors, issued only when <see cref="Blend"/> is set.
-    /// <para>ponytail: no caller sets <see cref="Blend"/> yet -- all five converted preambles disable it, and
-    /// the three passes that DO blend (grass, beams, particles) still hand-roll a partial preamble, because
-    /// converting them would make them touch state they have never touched. These two exist because #207
-    /// declared the shape; the upgrade path is those three passes, and if they are never converted the right
-    /// move is to delete this pair rather than leave it as cover.</para></summary>
+    /// <summary>The <c>glBlendFunc</c> factors, issued only when <see cref="Blend"/> is set. The beams pass
+    /// is the one caller; every other preamble disables blending.</summary>
     public readonly uint BlendSrc, BlendDst;
 
     public PassState(bool depth, bool depthWrite, bool blend = false, bool cull = false,

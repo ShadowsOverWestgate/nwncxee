@@ -74,7 +74,6 @@ internal static unsafe class SkyComposite
         if (!Active) return;
         Active = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, hdrFbo);
-        Gl.Enable(Gl.DEPTH_TEST);
         Gl.UseProgram(_prog);
         Gl.ActiveTexture(Gl.TEXTURE0 + ScratchUnit);
         Gl.BindTexture(Gl.TEXTURE_2D, _tex);
@@ -82,9 +81,8 @@ internal static unsafe class SkyComposite
         // Same state the sky drew under before this class existed: depth mask off, the far plane, LEQUAL, so
         // the quad survives only where nothing has written depth. No blend -- the scratch already carries the
         // background it composited over.
-        Gl.DepthMask(0);
+        new PassState(depth: true, depthWrite: false).Apply();
         Gl.DepthRange(1.0, 1.0);
-        Gl.Disable(Gl.BLEND);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.DepthRange(0.0, 1.0);
         Gl.ActiveTexture(Gl.TEXTURE0);
