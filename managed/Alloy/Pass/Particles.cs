@@ -755,6 +755,10 @@ internal static unsafe class Particles
         // the object the Material is holding, which is not necessarily the object the engine draws with. It
         // still answers "is this pointer safe to call into", which is the question that matters before
         // handing it to BindInUnit.
+        // #211 survivor: the ENGINE id, on purpose. The particle draw binds through the engine's
+        // CAurTexture::BindInUnit with the texture OBJECT (see the bind in Draw), so an owned copy is not
+        // reachable from there -- copying one would be VRAM nothing samples. Particles keep the borrowed
+        // pointer behind AurTex's vtable guard, which is what they had before #211.
         tex = AurTex.Tid(texObj);
         if (tex == 0) { _decTex++; return false; }
 

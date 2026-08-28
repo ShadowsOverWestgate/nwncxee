@@ -15,9 +15,25 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#153: forget every cached handle. Called at each enrollment -- the cadence at which the
     /// tids themselves are re-harvested -- and on release. Handles stay resident until their textures die;
     /// the cache only ever answers for tids the current enrollment produced.</summary>
-    private static void WipeHandles()
+    /// <summary>#220: forget every cached handle. Only meaningful while the cache holds ENGINE names --
+    /// those get recycled behind us and the wipe is the only heal. With <c>ownedtex</c> armed the names are
+    /// Alloy's own, invalidated precisely by <c>OwnedTextures.Drain</c> -&gt; <see cref="DropHandle"/>, and
+    /// wiping here would only make the next mint re-resident an already-resident handle (GL_INVALID_
+    /// OPERATION -- the error burst #220 recorded on transitions).</summary>
+    /// <summary>#220: the 4.6 context is gone, so every handle went with it. Cleared unconditionally, and
+    /// nothing is made non-resident -- that would be a call into a dead context.</summary>
+    internal static void ForgetHandles()
     {
         Array.Clear(_hTid, 0, _hTid.Length);
+        Array.Clear(_hVal, 0, _hVal.Length);
+        Array.Clear(_hRes, 0, _hRes.Length);
+    }
+
+    private static void WipeHandles()
+    {
+        if (OwnedTextures.Armed) return;
+        Array.Clear(_hTid, 0, _hTid.Length);
+        Array.Clear(_hRes, 0, _hRes.Length);
     }
 
     private static void UploadDraws()

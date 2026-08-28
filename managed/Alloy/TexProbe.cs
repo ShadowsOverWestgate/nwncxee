@@ -7,7 +7,11 @@ namespace Sowx.Alloy;
 /// extraction boundary. They belong to no pass -- they are pure GL queries -- but they are the reason
 /// <c>Alloy/Scene/</c> used to hold nineteen <c>Gl.*</c> calls, so they live out here where GL is allowed.
 /// <para>Both are triage only: engine opacity flags and the file header have each been wrong once in this
-/// investigation, and glGetTexImage readback is the ground truth that settled it.</para></summary>
+/// investigation, and glGetTexImage readback is the ground truth that settled it.</para>
+/// <para>#210 survivor: the TEXTURE_BINDING_2D save/restore stays. These run MID-FRAME in the engine's 3.3
+/// context, with engine draws still to come, so the hand-back resync in <c>UiHostService</c> is too late to
+/// cover a texture bind made here -- GLRender's <c>m_boundTextures</c> cache would be stale for the rest of
+/// the frame.</para></summary>
 internal static unsafe class TexProbe
 {
     /// <summary>Triage only: what GL actually holds for this texture. The engine's opacity flags and the

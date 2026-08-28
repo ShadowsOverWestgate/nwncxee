@@ -392,7 +392,7 @@ public static unsafe class TextRig
     /// <summary>Draw a caller-built vertex batch (x,y,u,v,r,g,b,a) through the shared text program, atlas,
     /// VAO and VBO -- the same primitives the chatbox uses, so rects sample the solid texel and glyphs sample
     /// their atlas cell. Used by <c>DialogService</c> (#dialog) to render its own overlay inside the frame
-    /// present ChatService owns. State is snapshot/restored like <c>ChatRenderer.Draw</c>. Uploads go to the batch
+    /// present ChatService owns. Sets its own full GL preamble; no state snapshot (#210). Uploads go to the batch
     /// rig's own VBO (<see cref="MakeVao"/>), so chat's shared VBO and its settled-frame cache stay intact --
     /// chat does not re-upload while a dialog modal is open.</summary>
     /// <param name="offX">Vertex translation (px) applied via <c>uOffset</c> -- the dialog scrolls its content
@@ -407,22 +407,15 @@ public static unsafe class TextRig
         _textAlpha = alpha < 1f ? alpha : 1f;   // read by BindText; restored to 1 before returning
         _texOffX = offX; _texOffY = offY;       // ditto -- restored to (0,0) before returning
 
-        int* save = stackalloc int[5];
-        Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &save[0]);
-        Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &save[1]);
-        Gl.GetIntegerv(Gl.ARRAY_BUFFER_BINDING, &save[2]);
-        Gl.GetIntegerv(Gl.ACTIVE_TEXTURE, &save[3]);
+        // #210: no state snapshot -- UiHostService resyncs the engine on hand-back, and every draw below
+        // sets its own full preamble.
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &save[4]);
 
         if (EnsureProgram())
         {
             if (!_texUp) UploadTexture();
             if (!_bvaoUp) SetupBatchVao();
 
-            byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
-            byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
-            int* sbox = stackalloc int[4]; Gl.GetIntegerv(Gl.SCISSOR_BOX, sbox);   // save the box (chat's pattern)
             Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE);
             Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
@@ -444,25 +437,15 @@ public static unsafe class TextRig
             Gl.DrawArrays(Gl.TRIANGLES, 0, count);
             // No settled-cache invalidation: the batch rig owns _bvbo, so chat's _vbo (and its cache) is untouched.
 
-            if (sDepth != 0) Gl.Enable(Gl.DEPTH_TEST);
-            if (sCull != 0) Gl.Enable(Gl.CULL_FACE);
-            Gl.Scissor(sbox[0], sbox[1], sbox[2], sbox[3]);
-            if (sScissor != 0) Gl.Enable(Gl.SCISSOR_TEST); else Gl.Disable(Gl.SCISSOR_TEST);
-            if (sBlend == 0) Gl.Disable(Gl.BLEND);
         }
 
         _textAlpha = 1f; _texOffX = 0f; _texOffY = 0f;   // leave the shared program neutral for chat's Draw
-        Gl.BindVertexArray((uint)save[1]);
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, (uint)save[2]);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)save[4]);
-        Gl.ActiveTexture((uint)save[3]);
-        Gl.UseProgram((uint)save[0]);
     }
 
     /// <summary>Draw a single speaker portrait quad (resref -> engine-resident GL texture, never cached -- see
     /// <see cref="ResolveTid"/>) through the shared RGBA portrait program. Used by <c>DialogService</c> to put
     /// a portrait in its overlay. No-op until the engine has uploaded the texture (TID 0) or when the resref is
-    /// empty. Own GL state save/restore; the image is flipped upright + pow2-pad-cropped like the chat pass.</summary>
+    /// empty. Sets its own full GL preamble (no snapshot, #210); the image is flipped upright + pow2-pad-cropped like the chat pass.</summary>
     public static void DrawPortrait(string resref, float x, float y, float w, float h, float alpha = 1f,
                                     bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
@@ -473,19 +456,12 @@ public static unsafe class TextRig
         int tid = ResolveTid(resref);
         if (tid == 0) return;   // not uploaded yet this frame
 
-        int* save = stackalloc int[5];
-        Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &save[0]);
-        Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &save[1]);
-        Gl.GetIntegerv(Gl.ARRAY_BUFFER_BINDING, &save[2]);
-        Gl.GetIntegerv(Gl.ACTIVE_TEXTURE, &save[3]);
+        // #210: no state snapshot -- UiHostService resyncs the engine on hand-back, and every draw below
+        // sets its own full preamble.
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &save[4]);
 
         if (!_pvaoUp) SetupPortraitVao();
 
-        byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
-        byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
-        int* sbox = stackalloc int[4]; Gl.GetIntegerv(Gl.SCISSOR_BOX, sbox);
         Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE);
         Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
@@ -508,17 +484,6 @@ public static unsafe class TextRig
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
 
-        if (sDepth != 0) Gl.Enable(Gl.DEPTH_TEST);
-        if (sCull != 0) Gl.Enable(Gl.CULL_FACE);
-        Gl.Scissor(sbox[0], sbox[1], sbox[2], sbox[3]);
-        if (sScissor != 0) Gl.Enable(Gl.SCISSOR_TEST); else Gl.Disable(Gl.SCISSOR_TEST);
-        if (sBlend == 0) Gl.Disable(Gl.BLEND);
-
-        Gl.BindVertexArray((uint)save[1]);
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, (uint)save[2]);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)save[4]);
-        Gl.ActiveTexture((uint)save[3]);
-        Gl.UseProgram((uint)save[0]);
     }
 
     /// <summary>Portrait content aspect (width:height); the engine crops portraits taller-than-wide. Public so

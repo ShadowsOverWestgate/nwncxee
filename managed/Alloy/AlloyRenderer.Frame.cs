@@ -26,6 +26,12 @@ public sealed unsafe partial class AlloyRenderer
         // the issue phase cannot fail. Missing entry points are the one way it could.
         if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null) { _batchUnavailable = true; return; }
 
+        // #210 survivor bin: every GL read on this path is an INPUT, not a mirror. Alloy draws in its own
+        // share-listed 4.6 context (GlContextService), so it cannot desync GLRender's shadow cache and has
+        // nothing to restore -- but it still has to be TOLD where the engine wants the result: this viewport,
+        // this framebuffer and its attachments, this sRGB-encode state, this clear colour. The save/restore
+        // pairs further down (VAO, element buffer, texture binding) are 4.6-context-local, preserving Alloy's
+        // own state across its own helpers.
         int* viewport = stackalloc int[4];
         Gl.GetIntegerv(Gl.VIEWPORT, viewport);
         int engFbo; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &engFbo);
@@ -96,6 +102,7 @@ public sealed unsafe partial class AlloyRenderer
                           && (_isEnabled == null || _isEnabled(CapLighting) != 0);
 
         if (!GlContextService.Enter()) return;
+        OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
         if (EnsureProgram() && BindTarget(engFbo, colorType, colorName, depthType, depthName))
         {
             // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both

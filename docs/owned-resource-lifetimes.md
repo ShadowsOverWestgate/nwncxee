@@ -19,6 +19,19 @@ allocator recycles addresses — so "the pointer still compares equal" is not ev
 same thing. The GL objects are untouched: they belong to the context, and rebuilding a program per
 area transition would be a stall for nothing.
 
+The one row that is deliberately in BOTH halves is `OwnedTextures` (#211): the copies are keyed on an
+engine GL name, which is captured world state, *and* they are GL objects. The world edge retires them and
+the context edge forgets them — but the world walk runs at a frame edge in the ENGINE context, so it can
+only *queue* the delete; `OwnedTextures.Drain` issues it inside the next 4.6 bracket. That is the same
+split `EnsureVao` makes for its retired VAO names, and the reason a `Revoke` slot is still not a GL slot.
+
+`OwnedTextures` also has an edge **no other row has**, and the reason is worth stating: it keys on an
+engine GL texture name, so the event that invalidates it is the engine deleting that name — which on an
+**area transition** fires none of the world edges above (#220 measured one part-table wipe in an entire
+session). It therefore hooks `RenderInterface::DeleteTextures` @0x45d1d0, the single funnel every engine
+texture name dies through, and retires the one copy that name produced. If you add a table keyed on
+anything the engine hands out by GL name, this is the edge you need too — not `Revoke`.
+
 **`ContextLost` — the context edge.** The 4.6 context went away. What dies is every **GL name**.
 Nothing is deleted, because the objects went with the context and the name now belongs to whatever
 the driver recycles it for. They are *dropped*, because every `EnsureX` in the renderer
@@ -89,7 +102,7 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Ownership table `_oTri/_oGob/_oVdo/_oEntry` | `AlloyRenderer.Enroll` | `RevokeAll` | `AlloyRenderer.cs:995,1003,1005,1007` + per-part `Revoke(i)` on repack (`:951`) and identity change (`Batches.cs:234`) | via `RevokeAll` |
 | Part/group tables (`PartTable`) | `BatchService.Complete` | `WipeTables` / `Die` | `PartTable.cs:453,481`, `BatchService.cs:717`, `OnPartDtor` `:633` | none — CPU only |
 | VAO cache `_vVdo/_vStale` | `EnsureVao` | `RevokeAll` retires the slots | `Enroll.cs` | GL names zeroed by `AlloyRenderer.ContextLost` |
-| Bindless handle cache `_hTid` | `AlloyRenderer.Issue` staging | `WipeHandles` | `Enroll.cs:26` (release) and `:62` (enrollment) | — |
+| Bindless handle cache `_hTid` | `AlloyRenderer.Issue` staging | `WipeHandles` — **only while `ownedtex=0`** (#220); armed, see the row below | `Enroll.cs:26` (release) and `:62` (enrollment) | `AlloyRenderer.ForgetHandles` |
 | Water planes (`WaterBodies`) | plane measurement during enrollment | `WaterBodies.Clear` | registry `Revoke` slot | none — CPU only |
 | Sky parts (`SkyBox`) | `OnPartDraw` capture window | `SkyBox.Forget`; per-part `SkyBox.Revoke` | registry `Revoke`; `BatchService.cs:624`; scene change `SkyBox.cs:136` | none — holds no GL |
 | Beam parts + VAO slots (`Beams`) | bucket-15 capture | `Beams.Forget` | registry `Revoke`; scene change `Beams.cs:173`; repack `:405` | `Beams.ContextLost` |
@@ -97,6 +110,8 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Grass patches + slot map (`GrassField`) | bin scatter | `GrassField.Forget` | registry `Revoke`; `Scene::ReloadGrass` `GrassField.cs:305` | `GrassField.ContextLost` |
 | Env cube freshness + BSP key (`EnvProbe`) | `EnvProbe` capture | `EnvProbe.Revoke` | registry `Revoke` | `EnvProbe.Forget` |
 | Caster set + skin records + texture-alpha verdicts (`CasterPass`) | `CasterPass.Enroll` | `Release` | `CasterPass.cs:1003,1005,1008` | routes through the same `Release` — see below |
+| Owned texture copies (`OwnedTextures`) | first in-bracket sight of an engine texture name, `OwnedTextures.Draw` | per-name: the engine's own delete funnel, `RenderInterface::DeleteTextures` → `Retire`. Wholesale: `OwnedTextures.Revoke` | the delete hook (`OwnedTextures.Install`); registry `Revoke`. Both only **queue** — `OwnedTextures.Drain` deletes, off `GlContextService.InBracket` | `OwnedTextures.ContextLost` drops map, owned-set and queue, deletes nothing |
+| Bindless handle cache `_hTid/_hVal/_hRes` | `AlloyRenderer.HandleFor` | `DropHandle`, per owned name, from `OwnedTextures.Drain` before the texture is deleted | — the enrollment `WipeHandles` is now a no-op while `ownedtex` is armed (#220) | `AlloyRenderer.ForgetHandles`, via `OwnedTextures.ContextLost` |
 
 Two more pointer-keyed tables are **enrollment-scoped scratch**, listed for completeness rather than
 because they have an edge: `AlloyRenderer._mKey/_mVal` (the material→texture-sort-key intern, cleared
@@ -119,6 +134,7 @@ are the shape that does, so if either ever outlives an enrollment it joins the t
 | Beam program + per-VDO VAOs/element buffers | `Beams.EnsureProgram` | `Beams.ContextLost` | registry `ContextLost` |
 | Particle program/VAO/VBO/sampler + native stage buffer | `Particles.Ensure*` | `Particles.ContextLost` | registry `ContextLost` |
 | Caster depth program, FBO, depth array, persistent-mapped buffers, VAOs | `CasterPass.EnsureGl` | **nothing** — kept | see below |
+| Owned texture copies (`OwnedTextures`) | `OwnedTextures.Copy` | `OwnedTextures.ContextLost` | registry `ContextLost` |
 
 ### Deliberately outside the table
 

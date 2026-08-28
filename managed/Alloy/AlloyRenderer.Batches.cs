@@ -258,13 +258,23 @@ public sealed unsafe partial class AlloyRenderer
             IntPtr mdl = lit ? part.Mdl.Ptr : IntPtr.Zero;
             if (lit && mdl == IntPtr.Zero) { _skipNoMdl++; W(i, "skipped: no mdl node"); continue; }
 
-            // texture: re-fetch per frame -- CAurTexture* is BORROWED, freed on area transitions (never
-            // cache), and the per-frame fetch is exactly what keeps animated textures cycling
+            // texture: the engine name is re-fetched per frame -- CAurTexture* is BORROWED, freed on area
+            // transitions (never cache the pointer), and the per-frame fetch is exactly what keeps animated
+            // textures cycling. #211 then maps that name to OUR copy, which cannot be freed under the draw;
+            // an animated texture cycles engine names, so each animation frame gets its own copy.
             var mat = new MaterialRef(_oMat[i]);
             var aur = mat.Texture(0);
             if (aur.IsNull) { _skipTex++; W(i, "skipped: no diffuse texture"); continue; }
-            int tid = aur.ResolveTid();
+            int tid = aur.OwnedTid();
             if (tid == 0) { _skipTex++; W(i, "skipped: diffuse has no GL id"); continue; }
+            // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an engine
+            // texture is a handle on an object the engine may delete or re-upload under us, which is exactly
+            // the corruption this fixes -- so a part whose copy was refused (a format we will not take) goes
+            // back to the engine walk rather than being drawn through a handle we cannot vouch for. Bind-path
+            // batches are unaffected: they rebind the engine id every frame, which is what they always did.
+            if (lit && _bindless && OwnedTextures.Armed
+                && (!OwnedTextures.IsOwned(tid) || HandleFor(tid) == 0))
+            { _skipTex++; W(i, "skipped: diffuse has no owned bindless handle"); continue; }
 
             // #120: the same re-fetch for whichever of the PBR slots this material declared. A slot that
             // declared a map but resolves to nothing this frame drops out of the mask rather than leaving
@@ -275,7 +285,11 @@ public sealed unsafe partial class AlloyRenderer
                 slotTid[s] = 0;
                 if (lit && (_oSlots[i] & SlotBit(s)) != 0)
                 {
-                    int t = mat.Texture(s + 1).ResolveTid();
+                    int t = mat.Texture(s + 1).OwnedTid();
+                    // ...and the same rule per slot, but a slot drops out of the mask instead of taking the
+                    // part with it -- an unowned normal map costs that one map, not the whole draw.
+                    if (t != 0 && _bindless && OwnedTextures.Armed
+                        && (!OwnedTextures.IsOwned(t) || HandleFor(t) == 0)) t = 0;
                     if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
                 }
             }
@@ -396,6 +410,9 @@ public sealed unsafe partial class AlloyRenderer
                 fixed (ulong* th = _dTexH)
                 {
                     ulong* hh = th + (long)n * 8;
+                    // Both already minted and non-zero: the gate above refuses the part (and drops the slot)
+                    // on a zero handle, so nothing reaches here that would sample handle 0 -- which is a
+                    // BLACK texture, not a missing one, and the reason that gate exists.
                     hh[0] = HandleFor(tid);
                     for (int t = 0; t < MapSlots; t++) hh[1 + t] = HandleFor(slotTid[t]);
                 }
@@ -461,7 +478,7 @@ public sealed unsafe partial class AlloyRenderer
                 if (p.Vao < 0 || !SkyBox.Fresh(i) || _drawN >= MaxOwned || _skyN >= MaxSkyDraws)
                 { staged = -1; break; }
                 // borrowed CAurTexture*, re-fetched per frame like every other Alloy draw
-                int tid = new MaterialRef(p.Mat).Texture(0).ResolveTid();
+                int tid = new MaterialRef(p.Mat).Texture(0).OwnedTid();
                 var vdo = new VdoRef(p.Vdo);
                 long elem = vdo.ElemItems;
                 long vert = vdo.VertItems;

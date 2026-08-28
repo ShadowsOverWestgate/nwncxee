@@ -220,6 +220,30 @@ internal static unsafe class SymbolMap
     /// (@0x450560) sends flat white instead of the material ambient/diffuse/emissive when it reads false, and
     /// <c>RenderFlat</c> (@0x450eb0) drops the cap around a <c>mat+0x98</c> material.</para></summary>
     public const string RiIsEnabled    = "_ZN15RenderInterface9IsEnabledEN6Aurora17AuroraEnableEnumsE";
+    /// <summary>#210 (G1): RenderInterface::ResetRenderStates() @0x45d330 -- a thin static thunk to
+    /// <c>GLRender::ResetRenderStates()</c> @0x4d1810 (no <c>this</c>). It force-applies the engine's default
+    /// render state to real GL *and* rewrites every shadow-cache global that mirrors it -- framebuffer binding,
+    /// default VAO, the enable set, depth/colour/stencil masks, blend func, fill mode, lights, material, fog,
+    /// current program, active texture unit and the bound-texture table. It does NOT touch the viewport.
+    /// <para>The engine already calls it once per frame from <c>GLRender::SwapBuffers</c> @0x4d2070, right after
+    /// <c>SDL_GL_SwapWindow</c>, so the per-frame cost is proven and the C-heap work inside it is engine-side
+    /// (not NativeAOT GC). We call it a second time on hand-back so the resync is OURS rather than incidental
+    /// to where the engine happens to have put its own.</para></summary>
+    public const string RiResetRenderStates = "_ZN15RenderInterface17ResetRenderStatesEv";
+    /// <summary>#210: RenderInterface::BindBuffer(target, name) @0x45d190 -- a static thunk to
+    /// <c>GLRender::BindBuffer</c> @0x4d04a0, which is a CACHING wrapper: for GL_ARRAY_BUFFER it compares the
+    /// requested name against <c>GLRender::m_nArrayBufferBound</c> (@0x4d04d7) and returns without calling
+    /// glBindBuffer on a match. <c>ResetRenderStates</c> does not reset that global -- array and uniform
+    /// buffer bindings are the two GL_* bindings outside its write set -- so the hand-back has to route one
+    /// bind through this wrapper to bring cache and GL back into agreement.</summary>
+    public const string RiBindBuffer = "_ZN15RenderInterface10BindBufferEjj";
+    /// <summary>#220: RenderInterface::DeleteTextures(n, names) @0x45d1d0 -- the SINGLE funnel through which
+    /// every engine GL texture name dies. Its callers are <c>CAurTextureBasic::~CAurTextureBasic</c>,
+    /// <c>::Reset</c>, <c>::glImageBasic</c> (the re-upload path), <c>AurTextureFreeAll</c>,
+    /// <c>Camera::ClearFrameBufferResources</c> and the movie/nuklear teardowns. #211 keys its owned copies
+    /// on the engine name, and this is the exact moment a name stops meaning what was copied from it --
+    /// including on an area transition, which fires no other edge Alloy watches.</summary>
+    public const string RiDeleteTextures = "_ZN15RenderInterface14DeleteTexturesEjPKj";
 
     // ---- shadow replacement (#65). Linux-only; no _win entries -> skip-with-log on Windows. ----
     // The three self-contained shadow sub-passes Scene::RenderShadows dispatches. No-op'ing these

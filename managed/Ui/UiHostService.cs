@@ -25,6 +25,8 @@ public sealed unsafe class UiHostService : IExtenderService
             return;
         }
         _getGuiScale = (delegate* unmanaged<float>)Native.Sym(SymbolMap.GetGuiScale);
+        _resetStates = (delegate* unmanaged<void>)Native.Sym(SymbolMap.RiResetRenderStates);
+        _bindBuffer = (delegate* unmanaged<uint, uint, void>)Native.Sym(SymbolMap.RiBindBuffer);
         _swapOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.SwapBuffers, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwap);
         log.Info(_swapOrig != null
@@ -34,7 +36,10 @@ public sealed unsafe class UiHostService : IExtenderService
 
     private static delegate* unmanaged<IntPtr, void> _swapOrig;
     private static delegate* unmanaged<float> _getGuiScale;   // CAurora::GetGUIScale -> live GUI-scale multiplier
+    private static delegate* unmanaged<void> _resetStates;    // RenderInterface::ResetRenderStates -- the hand-back resync
+    private static delegate* unmanaged<uint, uint, void> _bindBuffer;   // ...and the one binding it does not cover
     private static bool _announced;
+    private const uint GlArrayBuffer = 0x8892;
 
     /// <summary>The frame present: announce once, refresh the gate + UI scale, run the z-order draw roll-call,
     /// then present. Hot (every frame) and zero-alloc: pointer reads + a cached-delegate roll-call; the gate log
@@ -52,6 +57,17 @@ public sealed unsafe class UiHostService : IExtenderService
         if (GameGate.InGame) SyncUiScale();
         UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
         FrameRegistry.Global.Run(FramePhase.PrePresent);
+        // #210 (G1): the hand-back resync. Window content draws raw GL in the ENGINE's 3.3 context, past
+        // GLRender's shadow cache, which then early-outs on a stale match and skips real GL calls for the rest
+        // of the frame. One engine-side full resync closes that instead of each drawer mirroring the state it
+        // touched. Must be the LAST thing before the present -- after the window roll-call and after every
+        // PrePresent participant (GlContextService's 4.6 bracket switches back to this context in there).
+        if (_resetStates != null) _resetStates();
+        // ResetRenderStates rewrites every shadow-cache global EXCEPT the two buffer bindings, and
+        // GLRender::BindBuffer early-outs on a cache match -- so a window that left its own VBO bound in real
+        // GL would have the engine's next streamed vertex upload land in it. Routed through the engine
+        // wrapper, not glBindBuffer, precisely so the cache learns about it.
+        if (_bindBuffer != null) _bindBuffer(GlArrayBuffer, 0);
         if (_swapOrig != null) _swapOrig(window); // present
         FrameStats();
         FrameRegistry.Global.Run(FramePhase.PostPresent);

@@ -125,13 +125,24 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#153: per-draw bindless handles, 8 per record (diffuse + material slots 1..7), parallel to
     /// <see cref="_dData"/>. 0 = slot empty; the record's slot mask already forbids sampling those.</summary>
     private static readonly ulong[] _dTexH = new ulong[MaxOwned * 8];
-    /// <summary>#153: tid -> resident bindless handle, open-addressed, WIPED every enrollment -- the same
-    /// cadence at which tids themselves are re-harvested. A CAurTexture is borrowed and its GL id can be
-    /// recycled by the engine; the wipe bounds how long a handle can outlive the texture it named to one
-    /// enrollment period, the exact lifetime discipline the tid tables already live under.</summary>
+    /// <summary>#153/#220: GL texture NAME -&gt; resident bindless handle, open-addressed.
+    /// <para>#220 was this cache keyed on an ENGINE name. The engine deletes its textures and GL recycles
+    /// the names, so a handle could outlive the texture it was made for and a recycled name would hit the
+    /// stale entry -- a wall sampling a portrait. The wipe-every-enrollment this used to do was the bound on
+    /// that, and it was both too weak (the artifact was stable across wipes) and harmful: it forgot
+    /// residency it never gave up, so the next mint re-resided an already-resident handle, which is
+    /// GL_INVALID_OPERATION and the error burst the ticket recorded on transitions.</para>
+    /// <para>#211 removed the premise -- these are Alloy-OWNED names, and nothing but
+    /// <c>OwnedTextures</c> creates or destroys one. The cache is now invalidated EXACTLY when its texture
+    /// is retired (<c>OwnedTextures.Drain</c> -&gt; <c>DropHandle</c>), and the enrollment wipe is gone while
+    /// ownedtex is armed. Unarmed, engine names populate this again and the wipe is still the only heal.
+    /// </para></summary>
     internal const int HandleHashBits = 15;
     private static readonly int[] _hTid = new int[1 << HandleHashBits];
     private static readonly ulong[] _hVal = new ulong[1 << HandleHashBits];
+    /// <summary>#220: did WE make <see cref="_hVal"/>[i] resident? The driver cannot be asked, and guessing
+    /// produces GL_INVALID_OPERATION in both directions -- residency is only ever ours to know.</summary>
+    private static readonly bool[] _hRes = new bool[1 << HandleHashBits];
     /// <summary>#153: is the bindless path live? Extension present, entry points resolved, not vetoed by
     /// bindless=0, and the LIT program's actual sources carry the handle block. When false everything
     /// draws exactly as before -- per-batch texture binds.</summary>

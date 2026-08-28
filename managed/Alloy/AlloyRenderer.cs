@@ -448,26 +448,109 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>One-shot FBO-topology report (#151, the "does AA even apply to us" question).</summary>
     private static int _fboDiagSig = -1, _fboDiagLeft = 8;
 
-    /// <summary>#153: resident bindless handle for a live tid, cached until the next enrollment wipe.
-    /// 0 in, 0 out. Called only inside the 4.6 bracket (handles belong to the share group).</summary>
+    /// <summary>#153: resident bindless handle for a texture name. 0 in, 0 out. Called only inside the 4.6
+    /// bracket (handles belong to the share group), and -- while ownedtex is armed -- only ever for an
+    /// Alloy-OWNED name; see <see cref="_hTid"/> for why that is the whole of #220's fix.</summary>
     private static ulong HandleFor(int tid)
     {
         if (tid == 0) return 0;
+        if (Probe(tid, out int hit, out int free)) return _hVal[hit];
+        if (free < 0) return 0;                        // table full: no handle, caller falls back
+        ulong v = Gl.GetTextureHandleARB((uint)tid);
+        if (_handleDiagLeft > 0) HandleDiag(tid, v);
+        // A failed mint is NOT cached. It used to be, and the enrollment wipe retried it within a second;
+        // with that wipe gone (#220) a cached zero would be a permanently black texture.
+        if (v == 0) return 0;
+        Gl.MakeTextureHandleResidentARB(v);
+        _hTid[free] = tid; _hVal[free] = v; _hRes[free] = true;
+        return v;
+    }
+
+    /// <summary>Walk the open-addressed chain for <paramref name="tid"/>. True with <paramref name="hit"/>
+    /// set when the name is cached; false with <paramref name="free"/> set to the slot an insert should take
+    /// (-1 only if the table is full). Split out of <see cref="HandleFor"/> with no GL in it so
+    /// <see cref="SelfCheckHandles"/> can exercise the part that has now been wrong twice.
+    /// <para>The rule the tombstone exists for: a tombstoned slot must NOT answer for its name -- GL recycles
+    /// a deleted name immediately -- but must still be reusable, and must not end the chain.</para></summary>
+    private static bool Probe(int tid, out int hit, out int free)
+    {
         int mask = (1 << HandleHashBits) - 1;
-        int h = (int)((uint)tid * 0x9E3779B9u >> (32 - HandleHashBits)) & mask;
-        while (true)
+        int h = Slot(tid);
+        hit = -1; free = -1;
+        for (int probes = 0; probes <= mask; probes++, h = (h + 1) & mask)
         {
             int k = _hTid[h];
-            if (k == tid) return _hVal[h];
-            if (k == 0)
+            if (k == HandleTombstone) { if (free < 0) free = h; continue; }
+            if (k == tid) { hit = h; return true; }
+            if (k == 0) { if (free < 0) free = h; return false; }
+        }
+        return false;
+    }
+
+    /// <summary>Off-device: the handle cache's slot discipline, with no GL. #220 shipped a
+    /// <see cref="DropHandle"/> that left the slot keyed on the DELETED name with a zero handle -- so the
+    /// next copy, which GL had handed that very name to, matched the dead entry and drew black. That is the
+    /// same shape as #221's dead-entry bug, and it is what this asserts can no longer happen.</summary>
+    internal static bool SelfCheckHandles(ExtenderLog log)
+    {
+        int mask = (1 << HandleHashBits) - 1;
+        const int A = 4242;
+        int home = Slot(A);
+        int s0 = _hTid[home], s1 = _hTid[(home + 1) & mask], s2 = _hTid[(home + 2) & mask];
+        ulong v0 = _hVal[home];
+        _hTid[home] = 0; _hTid[(home + 1) & mask] = 0; _hTid[(home + 2) & mask] = 0;
+
+        bool ok = !Probe(A, out _, out int free) && free == home;      // empty: insert at home
+        _hTid[home] = A; _hVal[home] = 7;
+        ok &= Probe(A, out int hit, out _) && hit == home && _hVal[hit] == 7;   // cached: found
+
+        // ...the texture dies. DropHandle's slot state, asserted directly rather than through GL.
+        _hTid[home] = HandleTombstone; _hVal[home] = 0;
+        ok &= !Probe(A, out _, out free);            // the dead entry must NOT answer for its own name...
+        ok &= free == home;                          // ...and its slot is the one an insert reuses
+        // A tombstone must not END the chain: A itself, displaced to the next slot by an old collision,
+        // has to stay reachable through the tombstone rather than reading as absent.
+        _hTid[(home + 1) & mask] = A; _hVal[(home + 1) & mask] = 9;
+        ok &= Probe(A, out hit, out _) && hit == ((home + 1) & mask) && _hVal[hit] == 9;
+
+        _hTid[home] = s0; _hVal[home] = v0;
+        _hTid[(home + 1) & mask] = s1; _hTid[(home + 2) & mask] = s2;
+        log.Info(ok ? "AlloyRenderer.SelfCheckHandles: passed" : "AlloyRenderer.SelfCheckHandles: FAILED");
+        return ok;
+    }
+
+    /// <summary>#220: a slot whose texture has been deleted. Not 0 -- that would end the open-addressed probe
+    /// chain and hide every entry behind it -- and not the name either, which is the bug this replaces: GL
+    /// recycles a deleted name immediately, so a slot still keyed on it answered the NEXT copy with the dead
+    /// entry's zero handle, and the part drew black. No GL texture is ever named -1.</summary>
+    private const int HandleTombstone = -1;
+
+    private static int Slot(int tid) =>
+        (int)((uint)tid * 0x9E3779B9u >> (32 - HandleHashBits)) & ((1 << HandleHashBits) - 1);
+
+    /// <summary>#220: this name's texture is about to be deleted, so its handle must stop being resident
+    /// first -- a resident handle outlives the object it names, and sampling one after the delete is the
+    /// corruption this ticket is about. Called by <c>OwnedTextures.Drain</c>, inside the 4.6 bracket, and
+    /// only for a name that entry actually owns. A no-op for a name that never got a handle, which is the
+    /// common case (grass, sky and caster copies never take the lit bindless path).
+    /// <para>The slot becomes a <see cref="HandleTombstone"/>: not 0, which would cut the probe chain, and
+    /// not the name, which would answer for the next copy GL hands that recycled name to.</para></summary>
+    internal static void DropHandle(uint name)
+    {
+        if (!_bindless || name == 0) return;
+        int tid = (int)name, h = Slot(tid);
+        for (int probes = 0; probes < (1 << HandleHashBits); probes++)
+        {
+            int k = _hTid[h];
+            if (k == 0) return;                       // never cached: nothing to drop
+            if (k == tid)
             {
-                ulong v = Gl.GetTextureHandleARB((uint)tid);
-                if (v != 0) Gl.MakeTextureHandleResidentARB(v);
-                if (_handleDiagLeft > 0) HandleDiag(tid, v);
-                _hTid[h] = tid; _hVal[h] = v;
-                return v;
+                if (_hRes[h] && _hVal[h] != 0 && Gl.MakeTextureHandleNonResidentARB != null)
+                    Gl.MakeTextureHandleNonResidentARB(_hVal[h]);
+                _hTid[h] = HandleTombstone; _hVal[h] = 0; _hRes[h] = false;
+                return;
             }
-            h = (h + 1) & mask;
+            h = (h + 1) & ((1 << HandleHashBits) - 1);
         }
     }
 
@@ -573,6 +656,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         RenderPasses.Register(log);
         PassRegistry.SelfCheck(log);
         PassRegistry.Global.Attach(log);
+        // #211: the retired-texture deletes need a context, not a draw. Hung on the health bracket so they
+        // still happen while Alloy is stood down (/vanilla, main menu, the disarm latch).
+        GlContextService.InBracket = OwnedTextures.Drain;
         // #117: ahead of every stand-down -- a broken pass order is a misrender in BOTH bracket sites, so the
         // one service that happens to host the check must not be able to opt the check out.
         if (!FrameGraph.SelfCheck(log)) return;

@@ -18,6 +18,18 @@ internal static class RenderPasses
         var r = PassRegistry.Global;
         if (r.Sealed) return;
 
+        // #211: not a pass -- the texture table every pass draws from. Registered here anyway, because what
+        // it needs IS a pass lifecycle: both edges, an Attach for its boot gate, and a SelfCheck.
+        r.Register(new PassLifecycle
+        {
+            Name = "ownedtex",
+            Attach = OwnedTextures.Attach,
+            Install = OwnedTextures.Install,
+            SelfCheck = l => { OwnedTextures.SelfCheck(l); AlloyRenderer.SelfCheckHandles(l); },
+            Revoke = OwnedTextures.Revoke,
+            ContextLost = OwnedTextures.ContextLost,
+        }, log);
+
         // #129: FrameSnapshot first, because FrameGraph's own check asserts that the ownable-bucket list AGREES
         // with whether Alloy water can draw -- so water's boot knobs have to be read before that check runs.
         r.Register(new PassLifecycle

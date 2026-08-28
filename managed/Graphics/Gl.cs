@@ -15,6 +15,10 @@ public static unsafe class Gl
     public const uint TEXTURE_2D = 0x0DE1, BLEND = 0x0BE2, DEPTH_TEST = 0x0B71;
     /// <summary>glGetTexLevelParameteriv queries: the level's internal format, and its alpha channel width.</summary>
     public const uint TEXTURE_INTERNAL_FORMAT = 0x1003, TEXTURE_ALPHA_SIZE = 0x805F;
+    /// <summary>#211: the level queries the owned-texture copy sizes itself from -- is this level a block
+    /// format, how many bytes does it occupy, and (when it is not) how wide is each channel.</summary>
+    public const uint TEXTURE_COMPRESSED = 0x86A1, TEXTURE_COMPRESSED_IMAGE_SIZE = 0x86A0,
+                      TEXTURE_RED_SIZE = 0x805C, TEXTURE_GREEN_SIZE = 0x805D, TEXTURE_BLUE_SIZE = 0x805E;
     public const uint TEXTURE_WIDTH = 0x1000, TEXTURE_HEIGHT = 0x1001;
     public const uint CULL_FACE = 0x0B44, SCISSOR_TEST = 0x0C11;
     /// <summary>#125: GL_DEPTH_CLAMP. The Alloy sky replays a dome the engine drew under its OWN projection
@@ -107,6 +111,10 @@ public static unsafe class Gl
     public const uint SAMPLES = 0x80A9;
     /// <summary>#127: the grass displacement field's format -- RG the signed XY push, B the press-down.</summary>
     public const uint RGBA8 = 0x8058;
+    /// <summary>#211: the sized formats an unsized engine upload has to be promoted to before
+    /// <see cref="TexStorage2D"/> will take it, and the unsized enums the engine actually uses
+    /// (<c>glTexImage2D</c> @0x4cad3d passes GL_RGB/GL_RGBA/GL_RED verbatim).</summary>
+    public const uint RGB8 = 0x8051, RG8 = 0x822B, RG = 0x8227, RGB_ = 0x1907, RGBA_ = 0x1908;
     /// <summary>#127: alpha-to-coverage -- the fragment's alpha becomes a COVERAGE MASK over the target's
     /// samples. Each sample is still written whole or not at all, so it is antialiasing without ever
     /// producing a partially transparent depth-writing fragment. Inert where SAMPLES is 1.</summary>
@@ -236,6 +244,9 @@ public static unsafe class Gl
     /// <summary>glCopyImageSubData (GL 4.3 / ARB_copy_image): srcName, srcTarget, srcLevel, sx, sy, sz,
     /// dstName, dstTarget, dstLevel, dx, dy, dz, w, h, depth. Null on drivers without it -- callers fall back.</summary>
     public static delegate* unmanaged<uint, uint, int, int, int, int, uint, uint, int, int, int, int, int, int, int, void> CopyImageSubData;
+    /// <summary>glTexStorage2D (GL 4.2): target, levels, internalFormat, width, height. Immutable storage --
+    /// what <see cref="CopyImageSubData"/> needs on the destination, compressed formats included.</summary>
+    public static delegate* unmanaged<uint, int, uint, int, int, void> TexStorage2D;
     /// <summary>glMultiDrawElementsBaseVertex (GL 3.2 core): mode, counts*, type, indices**, drawcount,
     /// basevertex*. One call submits a whole batch group (ADR 0006 phase 1). Null on ancient drivers.</summary>
     public static delegate* unmanaged<uint, int*, uint, void**, int, int*, void> MultiDrawElementsBaseVertex;
@@ -255,6 +266,9 @@ public static unsafe class Gl
     /// checked by string (GLX hands back non-null pointers for unsupported extensions).</summary>
     public static delegate* unmanaged<uint, ulong> GetTextureHandleARB;
     public static delegate* unmanaged<ulong, void> MakeTextureHandleResidentARB;
+    /// <summary>#211: the other half of residency. A texture must not be deleted while a handle to it is
+    /// resident -- the handle survives the object and a draw that reads it is #220's corruption.</summary>
+    public static delegate* unmanaged<ulong, void> MakeTextureHandleNonResidentARB;
     /// <summary>glGetStringi (GL 3.0): pname, index -- the core-profile extension enumeration.</summary>
     public static delegate* unmanaged<uint, uint, byte*> GetStringi;
     public static delegate* unmanaged<int, uint*, void> DeleteVertexArrays;
@@ -399,6 +413,7 @@ public static unsafe class Gl
         Viewport = (delegate* unmanaged<int, int, int, int, void>)P("glViewport");
         DeleteTextures = (delegate* unmanaged<int, uint*, void>)P("glDeleteTextures");
         CopyImageSubData = (delegate* unmanaged<uint, uint, int, int, int, int, uint, uint, int, int, int, int, int, int, int, void>)P("glCopyImageSubData");
+        TexStorage2D = (delegate* unmanaged<uint, int, uint, int, int, void>)P("glTexStorage2D");
         MultiDrawElementsBaseVertex = (delegate* unmanaged<uint, int*, uint, void**, int, int*, void>)P("glMultiDrawElementsBaseVertex");
         GetVertexAttribiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetVertexAttribiv");
         GetVertexAttribPointerv = (delegate* unmanaged<uint, uint, void**, void>)P("glGetVertexAttribPointerv");
@@ -408,6 +423,7 @@ public static unsafe class Gl
         BindTextureUnit = (delegate* unmanaged<uint, uint, void>)P("glBindTextureUnit");
         GetTextureHandleARB = (delegate* unmanaged<uint, ulong>)P("glGetTextureHandleARB");
         MakeTextureHandleResidentARB = (delegate* unmanaged<ulong, void>)P("glMakeTextureHandleResidentARB");
+        MakeTextureHandleNonResidentARB = (delegate* unmanaged<ulong, void>)P("glMakeTextureHandleNonResidentARB");
         GetStringi = (delegate* unmanaged<uint, uint, byte*>)P("glGetStringi");
         DeleteVertexArrays = (delegate* unmanaged<int, uint*, void>)P("glDeleteVertexArrays");
         DeleteProgram = (delegate* unmanaged<uint, void>)P("glDeleteProgram");

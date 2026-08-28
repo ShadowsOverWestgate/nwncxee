@@ -747,7 +747,7 @@ internal static unsafe class GrassField
             byte* info = GrassInfo(m);
             live[m] = info != null && *(info + InfoInUse) != 0;
             IntPtr tex = !live[m] ? IntPtr.Zero : _aurGet(info + InfoName, IntPtr.Zero, null, null, 0, 0);
-            tids[m] = AurTex.Tid(tex);
+            tids[m] = OwnedTextures.Draw(AurTex.Tid(tex));
         }
         EnsureSamplers();
         int samples = 0;

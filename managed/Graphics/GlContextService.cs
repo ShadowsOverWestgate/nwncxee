@@ -80,9 +80,16 @@ public sealed unsafe class GlContextService : IExtenderService
     {
         if (_disabled) return;
         if (!_tried) { _tried = true; try { Create(); } catch (Exception e) { Fail($"EXCEPTION {e.Message}"); } }
-        if (Available && !_worked && Enter()) Leave();
+        if (Available && !_worked && Enter()) { InBracket?.Invoke(); Leave(); }
         _worked = false;
     }
+
+    /// <summary>Work that needs A context but not the Alloy pass: the health bracket runs every in-play frame
+    /// whether or not anything drew, so it is the one place a resource retired while Alloy is stood down can
+    /// still be freed. #211's texture deletes hang here -- otherwise /vanilla, a module unload back to the
+    /// main menu, or the permanent disarm latch would hold the whole owned texture set for the session,
+    /// because the colour bracket returns before <c>Enter</c> forever in those states.</summary>
+    public static Action? InBracket;
 
     private static void Fail(string why)
     {

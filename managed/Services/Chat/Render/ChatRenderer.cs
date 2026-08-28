@@ -175,22 +175,15 @@ public static unsafe class ChatRenderer
         float globalResidual = ChatAnim.Tick(System.Environment.TickCount64, focusTau);
         System.DateTime now = System.DateTime.UtcNow;
 
-        int* save = stackalloc int[5];
-        Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &save[0]);
-        Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &save[1]);
-        Gl.GetIntegerv(Gl.ARRAY_BUFFER_BINDING, &save[2]);
-        Gl.GetIntegerv(Gl.ACTIVE_TEXTURE, &save[3]);
+        // #210: no state snapshot. UiHostService resyncs the engine on hand-back; everything below sets the
+        // full preamble it needs, so nothing here is inherited from another window either.
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &save[4]);
 
         if (TextRig.EnsureProgram())
         {
             if (!TextRig._texUp) TextRig.UploadTexture();
             if (!TextRig._vaoUp) TextRig.SetupVao();
 
-            byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
-            byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
-            int* sbox = stackalloc int[4]; Gl.GetIntegerv(Gl.SCISSOR_BOX, sbox);
             Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
             Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
@@ -236,24 +229,12 @@ public static unsafe class ChatRenderer
                     while (Gl.GetError() != 0) { }
                     _diagged = true;
                     DrawFrame(f, m, vp, residual, now, ls);
-                    _log?.Info($"TextRig: draw verts={_drawCount} viewport={vp[2]}x{vp[3]} " +
-                               $"was[depth={sDepth} blend={sBlend} cull={sCull} scissor={sScissor}] glErr=0x{Gl.GetError():x}");
+                    _log?.Info($"TextRig: draw verts={_drawCount} viewport={vp[2]}x{vp[3]} glErr=0x{Gl.GetError():x}");
                 }
                 else DrawFrame(f, m, vp, residual, now, ls);
             }
 
-            if (sDepth != 0) Gl.Enable(Gl.DEPTH_TEST);
-            if (sCull != 0) Gl.Enable(Gl.CULL_FACE);
-            Gl.Scissor(sbox[0], sbox[1], sbox[2], sbox[3]);
-            if (sScissor != 0) Gl.Enable(Gl.SCISSOR_TEST); else Gl.Disable(Gl.SCISSOR_TEST);
-            if (sBlend == 0) Gl.Disable(Gl.BLEND);
         }
-
-        Gl.BindVertexArray((uint)save[1]);
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, (uint)save[2]);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)save[4]);
-        Gl.ActiveTexture((uint)save[3]);
-        Gl.UseProgram((uint)save[0]);
     }
 
     /// <summary>True when the frame's animation output is stable: residual is 0, no blink, and every span's
@@ -412,21 +393,15 @@ public static unsafe class ChatRenderer
         if (_attrVerts == null || _attrEpoch != TextRig.AtlasEpoch) { BuildAttribution(); _attrEpoch = TextRig.AtlasEpoch; }
         if (_attrCount == 0) return;
 
-        int* save = stackalloc int[5];
-        Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &save[0]);
-        Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &save[1]);
-        Gl.GetIntegerv(Gl.ARRAY_BUFFER_BINDING, &save[2]);
-        Gl.GetIntegerv(Gl.ACTIVE_TEXTURE, &save[3]);
+        // #210: no state snapshot. UiHostService resyncs the engine on hand-back; everything below sets the
+        // full preamble it needs, so nothing here is inherited from another window either.
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &save[4]);
 
         if (TextRig.EnsureProgram())
         {
             if (!TextRig._texUp) TextRig.UploadTexture();
             if (!TextRig._vaoUp) TextRig.SetupVao();
 
-            byte sDepth = Gl.IsEnabled(Gl.DEPTH_TEST), sBlend = Gl.IsEnabled(Gl.BLEND);
-            byte sCull = Gl.IsEnabled(Gl.CULL_FACE), sScissor = Gl.IsEnabled(Gl.SCISSOR_TEST);
             Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
             Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
@@ -452,17 +427,7 @@ public static unsafe class ChatRenderer
             Frame[] frames = _frames;
             for (int i = 0; i < frames.Length; i++) frames[i].Settled = false;
 
-            if (sDepth != 0) Gl.Enable(Gl.DEPTH_TEST);
-            if (sCull != 0) Gl.Enable(Gl.CULL_FACE);
-            if (sScissor != 0) Gl.Enable(Gl.SCISSOR_TEST); else Gl.Disable(Gl.SCISSOR_TEST);
-            if (sBlend == 0) Gl.Disable(Gl.BLEND);
         }
-
-        Gl.BindVertexArray((uint)save[1]);
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, (uint)save[2]);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)save[4]);
-        Gl.ActiveTexture((uint)save[3]);
-        Gl.UseProgram((uint)save[0]);
     }
 
     private static void BuildAttribution()

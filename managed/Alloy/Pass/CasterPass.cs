@@ -1671,7 +1671,11 @@ public sealed unsafe class CasterPass : IExtenderService
             // THE mask decision, and the only one that is not an inference: does this caster's diffuse carry
             // an alpha channel at all? Asked of GL, cached per texture id. No alpha -> nothing to test, cast
             // solid. Alpha -> run the discard, at the threshold the class chose.
-            int masked = _liveTex[i] != 0 && _progMask != 0 && TexHasAlpha(_liveTex[i]) ? _liveTex[i] : 0;
+            // #211: the mask samples OUR copy. TexHasAlpha still asks the engine's name -- it is a question
+            // about the image, and the copy carries the same format. Resolved here rather than in Collect,
+            // which runs before the bracket and so cannot issue the copy.
+            int masked = _liveTex[i] != 0 && _progMask != 0 && TexHasAlpha(_liveTex[i])
+                       ? OwnedTextures.Draw(_liveTex[i]) : 0;
             if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
 
             uint* q = cmd + n * CmdUints;
