@@ -66,7 +66,7 @@ public sealed unsafe class ShadowService : IExtenderService
 
     /// <summary>#86: true while the frame is latched vanilla -- every handler then calls straight through, so
     /// the engine's own stencil shadows come back with the rest of vanilla rendering.</summary>
-    private static bool Vanilla => !Sowx.Alloy.RenderMode.Alloy;
+    private static bool Vanilla => !Sowx.Alloy.AlloyGate.Alloy;
 
     private static delegate* unmanaged<IntPtr, void> _staticOrig;
     private static delegate* unmanaged<IntPtr, void> _dynOrig;

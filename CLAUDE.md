@@ -75,6 +75,7 @@ Navigation:
       Alloy/                   the renderer (#198). Core/ Scene/ Pass/ under namespace Sowx.Alloy
     docs/hook-pattern.md       example: a real hook + trampoline
     docs/owned-resource-lifetimes.md  what creates/revokes each owned table, and Revoke vs ContextLost
+    docs/alloy-refusals.md     why a frame is the engine's: the frame-start verdict and its reason set
     native/bootstrap.c         the only native code
     third_party/funchook       hooking engine (git submodule)
 

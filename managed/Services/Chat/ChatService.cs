@@ -530,6 +530,10 @@ public sealed unsafe class ChatService : IExtenderService
         // engine user dir -- where the cfg lives -- isn't resolvable here yet and LoadConfig would read
         // the ~/.config fallback instead of the real path.
         _store.AddObserver(OnIngest);  // new line -> slide-in/hold + rebuild (cold network thread)
+        // #216: the chatbox is the extender's one text surface, so it is where any service's on-screen
+        // notice lands -- an Alloy dropout above all. Set here rather than published as a chat API: Notice
+        // is the seam, and nothing outside this file needs to know a chatbox drew the line.
+        Notice.Sink = EchoLocal;
 
         // Register the framework Window whose content IS the whole chatbox (#62/#64). UiHostService drives
         // DrawContent once per frame in z-order; the framework input layer (UiInputService) routes captured

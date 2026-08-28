@@ -309,7 +309,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// flat surface.</para></summary>
     /// <summary>Highest mode <see cref="_lightViz"/> accepts. Raise it when a stage adds one, or the new
     /// mode is silently discarded at the parse.</summary>
-    internal const int LightVizMax = 21;
+    internal const int LightVizMax = 23;
     private static int _lightViz = DefViz;
     /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -363,6 +363,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static long _skipUnseen;
     private static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
                         _skipRange, _skipVao;
+    /// <summary>Parts whose material declared a normal map, and the subset whose map survived the per-slot
+    /// re-fetch into the mask the lit stage samples on.</summary>
+    private static long _nrmDeclared, _nrmBound;
     /// <summary>#128: Alloy parts handed back this pass because their INSTANCE state went unownable -- a
     /// highlight, a scene tint, a per-gob env override. Transient by nature, so it is a skip rather than a
     /// revocation, and a skip that is not counted reads as geometry vanishing.</summary>
@@ -649,6 +652,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #170: both ahead of every stand-down, matching the host's unconditional calls. The latch must
         // outlive a renderer that never armed -- /vanilla is the escape hatch it drives.
         RenderMode.Arm(log);
+        // #216: the frame verdict, one priority behind the override latch it reads.
+        AlloyGate.Arm(log);
         FrameRegistry.Global.Register(FramePhase.PostPresent, 20, EndFrame, "AlloyRenderer.endFrame", log);
         // #175: the whole pass roll-call, in one walk over one declared table. Attach is ahead of every check
         // because #129's asserts that the ownable-bucket list AGREES with whether Alloy water can draw -- and
@@ -850,7 +855,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         PassGen++;   // unconditionally: a stale generation would keep the iterator skipping parts nobody draws
         bool world = IsWorldScene(scene);
-        if (world && _armed && RenderMode.Alloy && GlContextService.Available && GameGate.InModule)
+        if (world && AlloyGate.Alloy)
         {
             // saturating, never wrapping: an unchecked ++ past int.MaxValue lands on int.MinValue and the
             // threshold is then unreachable for 2^31 passes -- i.e. enrollment silently never runs
@@ -899,6 +904,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static bool IsWorldScene(IntPtr scene) =>
         scene != IntPtr.Zero && *(IntPtr*)(scene + SceneLayout.SceneBspRoot) != IntPtr.Zero;
 
+    /// <summary>#216: the terms <see cref="AlloyGate"/> reads out of this class. <c>_armed</c> is "the hooks
+    /// installed"; the capability pair is "a program built and the multidraw entry points exist", both of
+    /// which latch and are deliberately never cleared by a context loss (see <see cref="ContextLost"/>).</summary>
+    internal static bool ArmedForFrame => _armed;
+    internal static bool DrawCapable => !_progFailed && !_batchUnavailable;
+
     /// <summary>#215: may the shim replace this pass? Taking the engine's frame away and THEN refusing to
     /// draw leaves the world as bare clear colour under the 2D UI, with nothing behind it -- so every
     /// refusal <see cref="DrawOwned"/> can answer from state that outlives the pass is asked here first.
@@ -910,10 +921,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <para>What this canNOT cover is the gamma refusal, which is re-asked per pass inside the anchor,
     /// after that pass's engine frame is already gone. ADR 0016 scopes exactly that to step 7 (#216): every
     /// refusal becomes frame-start-only, because there is no mid-frame fallback once the shim is in.</para></summary>
-    private static bool Armed4Shim => RspShim.Armed && _armed && RenderMode.Alloy
-                                      && GlContextService.Available && GameGate.InModule
-                                      && PartTable.Active && PostChain.On
-                                      && !_progFailed && !_batchUnavailable;
+    private static bool Armed4Shim => RspShim.Armed && AlloyGate.Alloy;
 
     /// <summary>#215: consecutive enrollments forced by an empty ownership set, and the ceiling on them.
     /// Convergence takes ~3 (walk records StProbe, probation completes on the next walk, the enrollment
@@ -981,14 +989,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         // #86: one gate covers the whole pass. Suppression needs no second one -- the iterator only skips a
         // part whose OwnGen matches this pass, and nothing stamps it when the Alloy block does not run.
-        if (!_armed || !RenderMode.Alloy || _ownCount == 0) return;
+        if (!AlloyGate.Alloy || _ownCount == 0) return;
         // #91: never paint into a foreign Scene. Only a NON-world pass counts as a foreign sighting -- a world
         // pass that misses is the enrolled Scene having been replaced (area transition), which resolves itself
         // within one EnrollEvery and must not read as evidence that GUI panels reach this anchor.
         if (scene != _enrollScene) { if (!_inColourPass) _foreignBuckets++; return; }
         if (!_inColourPass) return;
         if (_drawnPass == PassGen) return;
-        if (!GlContextService.Available || !GameGate.InModule) return;
         _drawnPass = PassGen;
         // Engine context, before the bracket: harvesting a VDO's attribute formats is a read of the ENGINE's
         // VAO (see VdoSlot), so it cannot happen on the 4.6 side.
@@ -1131,6 +1138,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // whatever the next context recycles that number for.
         for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vVaoOwn[v] = 0; }
         _waterFailed = false;
+        AlloyGate.Forget();   // #216: its latched refusals are facts about a target this context owned
         DepthResource.Revoke();
     }
 
@@ -1212,6 +1220,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"no-mdl {(float)_skipNoMdl / _frames:F0} tex {(float)_skipTex / _frames:F0} " +
                    $"range {(float)_skipRange / _frames:F0} vao {(float)_skipVao / _frames:F0} " +
                    $"instance-state {(float)_skipGob / _frames:F0}), " +
+                   $"normal maps {(float)_nrmBound / _frames:F0} bound of " +
+                   $"{(float)_nrmDeclared / _frames:F0} declared/frame, " +
                    $"UNMATCHED {(float)_unmatched / _frames:F1}/frame" +
                    (_unmatched == 0 ? "" : $" ({(float)_unmatchedUnseen / _frames:F0} of them never walked by " +
                     "the engine at all -- geometry it culled and we drew anyway; the rest were walked and " +
@@ -1279,6 +1289,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _watchSubmitted = 0; AlloyCensus.WatchEngineDraws = 0;
         _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = _skipUnseen = _skipGob = 0;
         _ownDissolve = 0; _ownFade = 0;
+        _nrmDeclared = _nrmBound = 0;
         Array.Clear(_unmatchedBucket); Array.Clear(_unseenBucket); Array.Clear(_unmatchedCls); _unmatchedUnseen = 0;
         Array.Clear(_drawsByClass);
         _clusterOverflow = 0;

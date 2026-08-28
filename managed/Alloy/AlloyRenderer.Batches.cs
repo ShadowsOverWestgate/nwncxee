@@ -293,6 +293,9 @@ public sealed unsafe partial class AlloyRenderer
                     if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
                 }
             }
+            // Did the normal map declared by the .mtr actually reach the shader? The two numbers apart say
+            // whether an area has no normal-mapped content at all or has it and the re-fetch above dropped it.
+            if (lit && (_oSlots[i] & SlotBit(0)) != 0) { _nrmDeclared++; if (slotTid[0] != 0) _nrmBound++; }
             if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
             // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
             if (lit && _aoTest) { slotTid[AoSlot] = tid; slots |= AoBit; }

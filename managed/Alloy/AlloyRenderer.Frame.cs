@@ -15,6 +15,16 @@ public sealed unsafe partial class AlloyRenderer
     /// keeps animated textures cycling), and <see cref="IssueBatches"/> submits the result as one multidraw per
     /// (program, VDO, texture, primitive) group. Anything that fails revalidation falls straight back to the
     /// engine walk.</summary>
+    /// <summary>#216: the bail-out a pass takes AFTER the shim has already taken the engine's frame away.
+    /// There is nothing to hand back to, so it latches: this frame is bare, the next one is vanilla with the
+    /// reason on screen. A no-op before the cutover, where returning here really does leave the engine's own
+    /// frame intact. The only refusal on this path that is not <c>PostChain</c>'s -- a persistent
+    /// <c>glXMakeCurrent</c> failure would otherwise be a permanently empty world with no reason given.</summary>
+    private static void NoFrameBehindUs(string why)
+    {
+        if (RspShim.InWindow) AlloyGate.Incapable(why);
+    }
+
     private static void DrawOwned()
     {
         // #129: last pass's snapshot is not this pass's. Revoked first thing, so every path out of here that
@@ -105,7 +115,7 @@ public sealed unsafe partial class AlloyRenderer
         bool lightingOn = _litCount > 0 && _lighting && !_litFailed && perspective
                           && (_isEnabled == null || _isEnabled(CapLighting) != 0);
 
-        if (!GlContextService.Enter()) return;
+        if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); return; }
         OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
         OwnedBuffers.Drain();    // #212: the same, for geometry
         OwnedBuffers.Refresh();  // ...and re-copy whatever the engine uploaded into a pool since last frame

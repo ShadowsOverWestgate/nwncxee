@@ -28,11 +28,15 @@ internal static class RenderCommands
     {
         _log = log;
         var r = CommandRegistry.Global;
+        // #216: the reply names BOTH pieces of state (ADR 0010) -- without the capability clause, "I pressed
+        // /vanilla and nothing changed" reads the same as "this machine cannot run the Alloy renderer".
         r.Register("/vanilla", "toggle extender rendering off/on at the next frame edge", _ =>
         {
             // The flip is applied at the next frame edge (#86); the render thread logs the transition.
-            RenderMode.Toggle();
-            return null;
+            bool vanilla = RenderMode.Toggle();
+            return (vanilla ? "rendering: VANILLA from the next frame"
+                            : "rendering: ALLOY from the next frame")
+                 + (AlloyGate.Capable ? "" : $" -- but the Alloy renderer is unavailable here: {AlloyGate.CapabilityReason}");
         });
         r.Register("/light", "report or tune the Alloy lighting knobs; /light reset restores boot values",
                    a => Tune("light", LightKeys, 2, a));

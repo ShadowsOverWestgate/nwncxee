@@ -673,6 +673,11 @@ public sealed unsafe partial class AlloyRenderer
             // without letting the builder collide with it. It must never be seen in game. roofknm dropped it.
             if (feat == SOWX_FEAT_ROOFKN && vAnchorZ > 100.0) discard;
             int slots = int(d.pbr.w);
+            // 22 = normal-map coverage: magenta where the material's map REACHED the shader, grey where it
+            // did not. The one thing viz 7 cannot say, because a mesh normal and a mapped one paint the same
+            // way there -- and a map that dropped out at the per-slot re-fetch looks exactly like content
+            // that never declared one.
+            if (uViz == 22) { frag = vec4((slots & SOWX_SLOT_NORMAL) != 0 ? vec3(1.0, 0.0, 1.0) : vec3(0.25), 1.0); return; }
             vec2 uv = vUV;
             // #123, shd_flowmap: the RG map is a per-texel flow DIRECTION, and the diffuse slides along it in
             // two half-offset phases blended by their own distance from the midpoint -- the blend is what
@@ -716,7 +721,14 @@ public sealed unsafe partial class AlloyRenderer
                 vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
                 vec3 T = p2 * du1.x + p1 * du2.x;
                 vec3 B = p2 * du1.y + p1 * du2.y;
-                float inv = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-12));
+                // The Mikkelsen frame comes out as det * (dP/du, dP/dv), where det is the screen-space UV
+                // determinant -- so on a mirrored UV island BOTH axes come back negated, and normalizing by
+                // a magnitude alone keeps that 180-degree rotation. The engine never has it: its tangent is
+                // dP/du unconditionally (MdlNodeTriMesh::CalculateTangentSpaceBasis, nm 0x457710, divides the
+                // edge combination BY the determinant) and its handedness is sign(det), which SetupTSB spends
+                // on the bitangent alone. Carry the sign here and the two frames agree on every face.
+                float uvDet = du1.x * du2.y - du1.y * du2.x;
+                float inv = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-12)) * (uvDet < 0.0 ? -1.0 : 1.0);
                 if ((slots & SOWX_SLOT_HEIGHT) != 0)
                 {
                     // inc_material.shd's SetupOcclusion: the height against a blurrier tap of itself IS the
@@ -731,6 +743,15 @@ public sealed unsafe partial class AlloyRenderer
                     vec3 nm;
                     nm.xy = texture(uNrmTex, uv).rg * 2.0 - 1.0;
                     nm.z = sqrt(max(1.0 - dot(nm.xy, nm.xy), 0.0));
+                    // 23 = the TANGENT-SPACE normal as sampled, before the frame touches it. Flat lavender
+                    //      means the map carries no signal (or is not the map we think it is), which viz 7
+                    //      cannot tell apart from a frame throwing the perturbation away.
+                    if (uViz == 23) { frag = vec4(nm * 0.5 + 0.5, 1.0); return; }
+                    // Green is NOT inverted here, and that was measured, not assumed: a lit frame rendered
+                    // both ways against a vanilla frame of the same shot, correlated over the pixels the
+                    // choice actually moves, matches vanilla UNFLIPPED (+0.50 against +0.34, and the gap
+                    // widens the more the flip matters). Which is what the RE says too -- SetupTSB's
+                    // bitangent works out to +dP/dv, the same axis the frame below builds.
                     N = normalize(mat3(T * inv, B * inv, N) * nm);
                 }
             }

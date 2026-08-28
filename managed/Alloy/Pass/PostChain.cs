@@ -66,6 +66,13 @@ internal static unsafe class PostChain
     /// shim there is no engine frame behind that refusal -- the world would be bare clear colour for the
     /// session. Off means the shim must not take the frame.</summary>
     internal static bool On => _on && !_down.Failed;
+
+    /// <summary>#216: the two halves of <see cref="On"/>, split because the frame verdict has to report them
+    /// differently -- <c>hdr=0</c> is a CHOICE and a latched stand-down is an INCAPACITY (ADR 0010).</summary>
+    internal static bool Configured => _on;
+
+    /// <summary>...and the latched half.</summary>
+    internal static bool Failed => _down.Failed;
     private static readonly StandDown _down = new("PostChain");
     private static ExtenderLog? _log;
     private static uint _fbo, _hdrTex, _bloomTex, _depthTex;
@@ -231,11 +238,16 @@ internal static unsafe class PostChain
         if ((engFbo == 0 || depthName == 0) && !RspShim.InWindow)
             return Refuse("the engine renders to the default framebuffer");
         if (viewport[0] != 0 || viewport[1] != 0) return Refuse("the engine's viewport is offset");
-        if (_gammaParam != null && _gammaParam(GammaParam) == 0)
+        if (GammaOff())   // #216 asks this at the latch too; kept for the pre-cutover and subframe passes
             return Refuse("the engine's gamma pipeline is off (GetGlobalShaderParami(0) == 0), and the "
                         + "Alloy stages have no un-linearised variant");
         return true;
     }
+
+    /// <summary>The gamma refusal's predicate, published so <see cref="AlloyGate"/> can ask it at frame start
+    /// -- where it is a decision about the whole frame rather than about one pass. Unresolved reads as "on",
+    /// which is what this client measures (#102).</summary>
+    internal static bool GammaOff() => _gammaParam != null && _gammaParam(GammaParam) == 0;
 
     /// <summary>Point the Alloy colour passes at the HDR target for this pass. #132: a false answer stands
     /// the whole Alloy frame down to vanilla, so this is asked BEFORE anything is staged -- there is no
@@ -439,14 +451,19 @@ internal static unsafe class PostChain
         return true;
     }
 
-    /// <summary>Say why the HDR target is not arming, once per distinct reason, and go on checking. NOT
-    /// latched: the engine's target is a per-pass fact -- a reflection subframe or a GUI 3D panel can render
+    /// <summary>Say why the HDR target is not arming, once per distinct reason, and go on checking. #216: a
+    /// refusal taken inside the shim window ALSO latches the frame verdict -- the engine's frame is already
+    /// gone by then, so the next frame goes vanilla with this reason rather than the world staying empty.
+    /// <para>NOT latched otherwise: the engine's target is a per-pass fact -- a reflection subframe or a GUI 3D panel can render
     /// to a different one than the world pass does -- so a session that refused once must still arm on the
     /// passes it can. The whole point of the line is that the fallback is otherwise silent: the frame
-    /// renders, just without any of #139 in it.</summary>
+    /// renders, just without any of #139 in it.</para></summary>
     private static bool Refuse(string why)
-        => _down.Refuse(_log, why, "the HDR target is not armed; #132: the Alloy frame stands down for those "
-                                 + "passes and the engine renders them vanilla");
+    {
+        if (RspShim.InWindow) AlloyGate.Incapable(why);   // #216: nothing to hand this pass back to
+        return _down.Refuse(_log, why, "the HDR target is not armed; #132: the Alloy frame stands down for those "
+                                     + "passes and the engine renders them vanilla");
+    }
 
     /// <summary>...and the latching kind, for a failure that cannot come back: a stage that did not build,
     /// an entry point the driver does not have.</summary>

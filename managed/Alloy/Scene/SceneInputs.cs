@@ -43,7 +43,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>The one "we own shadows this frame" predicate: armed, in a module, and the frame latched
     /// owned (#86). No GL term any more -- this service stopped touching GL when the maps moved to
     /// CasterPass, and a dead flag in here would read as a live safety gate that can no longer fire.</summary>
-    private static bool Owns => _enabled && GameGate.InModule && RenderMode.Alloy;
+    private static bool Owns => _enabled && GameGate.InModule && AlloyGate.Alloy;
 
     /// <summary>Radius of the off-screen GOB append: dynamic casters this far from the focus are pushed into
     /// the draw buckets even when the camera culled them, so they can still cast. Kept tight -- a creature

@@ -41,7 +41,7 @@ modern, high-performance techniques are required, but no frame-time number gates
 6. **The cutover.** Replace `Scene::RenderSinglePass` with a **mutate-only shim**, behind a config
    key, default off.
 7. **Recompute the refusal set.** Every refusal becomes frame-start-only; add an on-screen notice
-   and a logged reason on Alloy dropout.
+   and a logged reason on Alloy dropout. (#216; the recomputed set is `docs/alloy-refusals.md`.)
 8. **Punch list.** Play, note what is missing, own it.
 9. **Flip the default on. M4 closes.**
 

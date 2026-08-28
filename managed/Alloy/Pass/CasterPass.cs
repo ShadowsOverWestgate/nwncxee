@@ -38,7 +38,8 @@ namespace Sowx.Alloy;
 /// also snapshots the engine's live <c>m_bones</c> into a per-frame SSBO so the depth shader can re-run the
 /// engine's skinning. No engine replay either way, and a part not seen this frame simply has no record -- its
 /// shadow blinks rather than lying about where it is.</para></para>
-/// <para>Gated on <see cref="RenderMode.Alloy"/> so the vanilla toggle reverts it frame-atomically.
+/// <para>Gated on <see cref="AlloyGate.Alloy"/> so the vanilla toggle -- and every other frame-start
+/// refusal (#216) -- reverts it frame-atomically, along with the rest of the Alloy frame.
 /// The <c>casters=0</c> config setting is the kill switch (<c>skincast=0</c> for the skinned half alone), and
 /// <c>/shadow</c> carries the look knobs. The frame path
 /// allocates nothing.</para>
@@ -210,7 +211,7 @@ public sealed unsafe class CasterPass : IExtenderService
     }
     /// <summary>May the colour pass sample the cascades right now? Only when the array was rendered on the
     /// most recent frame tick. That one test covers every way the maps go stale at once: an interior (no sun
-    /// -&gt; no render), a vanilla stretch (the pass is gated on <see cref="RenderMode.Alloy"/>, so the toggle
+    /// -&gt; no render), a vanilla stretch (the pass is gated on <see cref="AlloyGate.Alloy"/>, so the toggle
     /// reverts sun shadows on the very next frame), and a disarm.</summary>
     internal static bool CascadesFresh => CascadeCount > 0 && CascadeTex != 0 && _cascadeStamp == _frameSeq;
 
@@ -228,7 +229,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// _sinceEnroll every frame -- so the walk runs at its widest sixty times a second on exactly the
     /// hardware that gets no shadows out of it.</para></summary>
     internal static bool WantsWideWalk =>
-        _armed && !_disarmed && RenderMode.Alloy && GameGate.InModule && GlContextService.Available
+        _armed && !_disarmed && AlloyGate.Alloy && GameGate.InModule && GlContextService.Available
         && _sinceEnroll >= EnrollEvery - 1;
     /// <summary>How far the caster walk must reach to fill the outermost cascade.</summary>
     internal static float WalkRadius => _maxDist;
@@ -572,7 +573,7 @@ public sealed unsafe class CasterPass : IExtenderService
     internal static bool SkinBegin(IntPtr part, IntPtr node)
     {
         if (!_armed || _disarmed || !_skinned || _bones == null || node == IntPtr.Zero) return false;
-        if (!RenderMode.Alloy || !GlContextService.Available) return false;
+        if (!AlloyGate.Alloy || !GlContextService.Available) return false;
         if (_skinCount >= MaxSkin) { _skinOverflow++; return false; }
         _skinBrackets++;   // the count that separates "never saw a creature" from "saw one and refused it"
         _skinPart = part; _skinSlot = -1;
@@ -659,7 +660,7 @@ public sealed unsafe class CasterPass : IExtenderService
     internal static void RecordOwnedInstance(IntPtr tri, IntPtr node, IntPtr vdo, int item, int prim)
     {
         if (!_armed || _disarmed || !_skinned || node == IntPtr.Zero || tri == IntPtr.Zero) return;
-        if (!RenderMode.Alloy || !GlContextService.Available) return;
+        if (!AlloyGate.Alloy || !GlContextService.Available) return;
         if (_skinCount >= MaxSkin) { _skinOverflow++; return; }
         if (vdo == IntPtr.Zero || new VdoRef(vdo).Mode != 1) { _skinNotMode1++; return; }
         if (!TryRange(vdo, item, out _, out _, out _)) { _skinBadRange++; return; }
@@ -800,7 +801,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // AFTER the period line, which reports it: zeroing the timing ahead of Lifecycle made every period
         // line read 0.00 ms, since the frame's own measurement lands further down.
         LastShadowMs = 0f;
-        if (!RenderMode.Alloy || !GameGate.InModule || !GlContextService.Available) return;
+        if (!AlloyGate.Alloy || !GameGate.InModule || !GlContextService.Available) return;
         if (_sinceEnroll < EnrollEvery) _sinceEnroll++; else Enroll();
         if (_casterCount == 0 && _skinLive == 0) return;
 

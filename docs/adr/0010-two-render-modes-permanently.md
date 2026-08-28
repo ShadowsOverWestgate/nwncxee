@@ -70,7 +70,11 @@ bool, and the hooks install unconditionally (`managed/Alloy/AlloyRenderer.cs:565
 
 What *is* unbuilt is this ADR's fourth bullet: **the detected capability tier and the manual
 override are not separate pieces of state.** `RenderMode` carries only the override; the capability
-side lives in the unrelated `GlContextService.Available` / `gl46` path. That was tolerable while the
+side lives in the unrelated `GlContextService.Available` / `gl46` path.
+**Paid 2026-08-28 by #216**: `AlloyGate` (`managed/Alloy/Core/AlloyGate.cs`) holds the capability state and
+`RenderMode` still holds only the override; the frame verdict combines them once per frame, `/vanilla` reports
+both, and a capability dropout raises an on-screen notice naming the reason. See `docs/alloy-refusals.md`.
+The rest of this paragraph is the history that got there. That was tolerable while the
 frame belonged to the engine. It stops being tolerable at M4's cutover, where a frame-start branch
 has to answer "this machine cannot run it" and "this player chose not to" separately — and where an
 Alloy dropout must say which one it was, on screen and in the log. Implementing the split is M4 step

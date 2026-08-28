@@ -178,11 +178,12 @@ internal static unsafe class PartTable
     /// stood down cannot take the table, the census and the gate with it.</para></summary>
     internal static bool Active;
 
-    /// <summary>Armed AND the frame latched owned (#86). The two hot funnels read this, so a vanilla frame
+    /// <summary>Armed AND the frame latched as Alloy's (#86, and #216's whole verdict). The two hot funnels
+    /// read this, so a vanilla frame
     /// records nothing, batches nothing and suppresses nothing -- every part takes the engine's own draw.
     /// Bookkeeping (EndFrame, the period log, enrollment candidacy) stays on <see cref="Active"/> so the
     /// counters still report while vanilla, which is what proves they read zero.</summary>
-    internal static bool Live => Active && RenderMode.Alloy;
+    internal static bool Live => Active && AlloyGate.Alloy;
 
     // groups: linear-scan registry (records are rare/cold), full component compare -- no hash collisions.
     // Keyed on material CONTENT (textures + shared-material + blend flag), never the Material* -- each part

@@ -32,6 +32,11 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <summary>The GLX handle of the 4.6 core context (valid while <see cref="Available"/>).</summary>
     public static IntPtr Context;
 
+    /// <summary>#216: <c>gl46=0</c> (or <c>lockchat</c>) -- a CHOICE, not a verdict about the device. Kept
+    /// apart from <c>_disabled</c>, which <see cref="Fail"/> also sets, or the frame verdict would report
+    /// every driver failure as a config opt-out.</summary>
+    public static bool OptedOut { get; private set; }
+
     private static ExtenderLog? _log;
     private static bool _disabled, _tried;
     private static IntPtr _dpy, _drw, _engCtx;
@@ -52,6 +57,7 @@ public sealed unsafe class GlContextService : IExtenderService
         // #170: the 4.6-context bracket wraps the present, so it is the LAST pre-present participant.
         FrameRegistry.Global.Register(FramePhase.PrePresent, 10, OnFrame, "GlContextService.bracket", log);
         _disabled = !Settings.Bool("gl46", true) || GameGate.Locked;
+        OptedOut = _disabled;
         log.Info(_disabled
             ? "GlContextService: stood down (gl46=0 or lockchat in sowx.cfg)"
             : "GlContextService: armed -- 4.6 share-listed context on first presented frame");
