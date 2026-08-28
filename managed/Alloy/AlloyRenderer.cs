@@ -667,6 +667,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #126: log-only. A wrong classification is a wrong-looking frame, not a wrong-drawing one -- the
         // one-owner invariant is upheld by the bucket list, which the pass checks assert against.
         AlloyClasses.SelfCheck(log);
+        // #215: here rather than at the shim's own install, which a client without the engine symbols never
+        // reaches -- the two things it checks are ours and are wrong in the same way on every client.
+        RspShim.SelfCheck(log);
         ShaderStages.SelfCheck(log);
         // ADR 0012: the dump is how a customizer gets a current starting point. Ahead of every stand-down
         // below, so a session that owns nothing can still produce one.
@@ -738,6 +741,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // the engine on a client where the Alloy renderer cannot arm would be suppressing draws nothing
         // replaces. Everything above this line has already returned in that case.
         PassRegistry.Global.Install(log, hooks);
+        // #215: last, and after PassRegistry -- the shim calls through hook sites every pass above it owns
+        // (the beam window, the emitter suppression, the bucket gate), so they have to be installed first.
+        RspShim.Install(log, hooks);
         _armed = _origRsp != null && _origFade != null;
         if (_armed) log.Info(_skinning
             ? "AlloyRenderer: #137 skinmeshes owned -- posed per frame off GLRender::m_bones (ownskin=0 in sowx.cfg disables)"
@@ -850,6 +856,28 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // threshold is then unreachable for 2^31 passes -- i.e. enrollment silently never runs
             if (_sinceEnroll < EnrollEvery) _sinceEnroll++; else Enroll(scene);
         }
+        // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
+        // being on is never enough on its own: a pass with no 4.6 context, no module, or /vanilla still gets
+        // the engine's own RenderSinglePass, which is the only frame there is behind it.
+        if (world && Armed4Shim)
+        {
+            // Enrollment cadence is the only thing that puts parts on screen now; pre-cutover the engine
+            // drew the world through the gap. On a cold start or an area transition that gap is up to
+            // EnrollEvery frames of NOTHING AT ALL, so it is closed here rather than waited out.
+            // The condition runs until something actually enrolls, not just until the Scene matches: the
+            // first walk of a new Scene records parts as StProbe, and TryOwnCandidateInner refuses every
+            // non-StActive entry -- so the enrollment a bare scene check triggers sees an empty table,
+            // sets _enrollScene, and hands the next real chance back to the 60-frame cadence.
+            if (scene != _enrollScene) _forcedEnrolls = 0;
+            if (scene != _enrollScene || (_ownCount == 0 && _forcedEnrolls < MaxForcedEnrolls))
+            { _sinceEnroll = EnrollEvery; _forcedEnrolls++; }
+            bool prevShim = _inColourPass;
+            _inColourPass = true;
+            RspShim.Run(scene);
+            _inColourPass = prevShim;
+            if (!prevShim) AuditPass();
+            return;
+        }
         // Only a colour RenderSinglePass OF THE WORLD SCENE may draw Alloy parts. RenderDrawBucket's other
         // caller is Scene::RenderDynamicGeometry (buckets 2,3; objdump: those two callers and no more), and
         // drawing from there stamps a part "drawn" outside the colour walk, which then suppresses parts
@@ -870,6 +898,29 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <c>ManageSceneBSP</c> @0x47fa80 early-outs on exactly it.</summary>
     internal static bool IsWorldScene(IntPtr scene) =>
         scene != IntPtr.Zero && *(IntPtr*)(scene + SceneLayout.SceneBspRoot) != IntPtr.Zero;
+
+    /// <summary>#215: may the shim replace this pass? Taking the engine's frame away and THEN refusing to
+    /// draw leaves the world as bare clear colour under the 2D UI, with nothing behind it -- so every
+    /// refusal <see cref="DrawOwned"/> can answer from state that outlives the pass is asked here first.
+    /// <para><c>PostChain.On</c> is the <c>hdr=0</c> case and <see cref="PartTable"/><c>.Active</c> the
+    /// <c>drawhooks=off</c>/<c>=stats</c> one: both are supported settings that, paired with
+    /// <c>ownframe=1</c>, would otherwise produce a permanently empty world with no reason given.
+    /// <c>PartTable.Active</c> is read HERE rather than at the shim's install because BatchService
+    /// initializes after this service (discovery is alphabetical) and has not set it yet.</para>
+    /// <para>What this canNOT cover is the gamma refusal, which is re-asked per pass inside the anchor,
+    /// after that pass's engine frame is already gone. ADR 0016 scopes exactly that to step 7 (#216): every
+    /// refusal becomes frame-start-only, because there is no mid-frame fallback once the shim is in.</para></summary>
+    private static bool Armed4Shim => RspShim.Armed && _armed && RenderMode.Alloy
+                                      && GlContextService.Available && GameGate.InModule
+                                      && PartTable.Active && PostChain.On
+                                      && !_progFailed && !_batchUnavailable;
+
+    /// <summary>#215: consecutive enrollments forced by an empty ownership set, and the ceiling on them.
+    /// Convergence takes ~3 (walk records StProbe, probation completes on the next walk, the enrollment
+    /// after that accepts) -- the cap is loose around that. Without it, an area with genuinely nothing
+    /// ownable would run a full table scan at frame rate for as long as the player stood in it.</summary>
+    private static int _forcedEnrolls;
+    private const int MaxForcedEnrolls = 8;
 
     private static bool _inColourPass;
     /// <summary>Scene the ownership table was enrolled from. The Alloy block draws only into a bucket walk of

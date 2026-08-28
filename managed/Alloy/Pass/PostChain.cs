@@ -61,6 +61,11 @@ internal static unsafe class PostChain
     internal static int Resolves { get; private set; }
 
     private static bool _on = true;
+    /// <summary>#215: the <c>hdr</c> boot decision, published because it is a REFUSAL the cutover has to know
+    /// about at arm time. <c>hdr=0</c> makes <see cref="Precheck"/> refuse every pass forever, and under the
+    /// shim there is no engine frame behind that refusal -- the world would be bare clear colour for the
+    /// session. Off means the shim must not take the frame.</summary>
+    internal static bool On => _on && !_down.Failed;
     private static readonly StandDown _down = new("PostChain");
     private static ExtenderLog? _log;
     private static uint _fbo, _hdrTex, _bloomTex, _depthTex;
@@ -219,7 +224,12 @@ internal static unsafe class PostChain
         if (!_on || _down.Failed) return false;
         // An offset viewport would break the resolve's 1:1 UV mapping, and the default framebuffer's depth
         // cannot be an FBO attachment at all. Both are refusals, not workarounds.
-        if (engFbo == 0 || depthName == 0) return Refuse("the engine renders to the default framebuffer");
+        // #215: under the shim the default framebuffer IS the target, every frame and on purpose -- there is
+        // no engine world FBO left to resolve into. Keyed on the shim WINDOW rather than on its setting: with
+        // the key on but the shim branch not taken, the engine is still drawing this pass and the refusal is
+        // still the right answer.
+        if ((engFbo == 0 || depthName == 0) && !RspShim.InWindow)
+            return Refuse("the engine renders to the default framebuffer");
         if (viewport[0] != 0 || viewport[1] != 0) return Refuse("the engine's viewport is offset");
         if (_gammaParam != null && _gammaParam(GammaParam) == 0)
             return Refuse("the engine's gamma pipeline is off (GetGlobalShaderParami(0) == 0), and the "
@@ -354,7 +364,10 @@ internal static unsafe class PostChain
     private static uint ProbeEngineDepth(int type, int name)
     {
         int fmt = 0;
-        if (name == 0) return 0;
+        // #215: no engine attachment to match under the shim -- ResolveDepth no-ops on a default-framebuffer
+        // target and there are no residual engine world draws to hand depth back to, so the owned depth is
+        // free to pick its own format.
+        if (name == 0) return RspShim.InWindow ? Gl.DEPTH_COMPONENT24 : 0;
         ulong attach = (uint)name | (ulong)(uint)type << 32;
         if (attach == _probedAttach && _probedFormat != 0) return _probedFormat;
         _probedAttach = attach;

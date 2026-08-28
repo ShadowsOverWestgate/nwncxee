@@ -308,6 +308,31 @@ internal static unsafe class SymbolMap
     /// first arg IS the VDO, no <c>this</c>. Hooked by DrawStatsService (ADR 0006 phase 0) for the per-frame
     /// draw histogram.</summary>
     public const string GlRenderVertexData = "_ZN8GLRender16RenderVertexDataEP16VertexDataObjectjN6Aurora20AuroraPrimitiveTypesEjj";
+    /// <summary>#215: GLRender::RenderVertexStreamData(VertexStreamDataObject*, AuroraPrimitiveTypes, uint,
+    /// uint) @0x4d0ca0 -- the engine's SECOND and last draw funnel. Established by enumerating the binary's
+    /// GL draw imports rather than assumed: nwmain imports exactly <c>glDrawArrays</c> and
+    /// <c>glDrawElements</c>, and their only call sites are @0x4d05ff (<see cref="GlRenderVertexData"/>),
+    /// @0x4d0d13/@0x4d0d46 (here) and @0xe0805a (<c>nk_sdl_render</c>, the nuklear 2D overlay, outside any
+    /// Scene pass). So these two symbols ARE the engine's 3D draw surface, which is what lets the #215 shim
+    /// counter read zero as a measurement instead of an inspection.
+    /// <para>ABI: static, no <c>this</c> -- read off the entry @0x4d0ca0, which tests <c>rdi</c> for null
+    /// and hands it straight to <c>GLRender::SetVertexStreamDataObject(VertexStreamDataObject*)</c>, with
+    /// prim/size/offset in <c>esi</c>/<c>edx</c>/<c>ecx</c>. Checked rather than inherited from
+    /// <see cref="GlRenderVertexData"/>'s: a shifted argument here would fault on the menu's debug boxes,
+    /// long before any world frame.</para></summary>
+    public const string GlRenderVertexStreamData = "_ZN8GLRender22RenderVertexStreamDataEP22VertexStreamDataObjectN6Aurora20AuroraPrimitiveTypesEjj";
+    /// <summary>#215: Gob::CollectLights(List&lt;PartLight*&gt;&amp;) @0x43fa90 -- half of the
+    /// <c>focuslighting</c> write the shim has to replicate. ABI: <c>(Gob* /*rdi*/, List* /*rsi*/)</c>.</summary>
+    public const string GobCollectLights = "_ZN3Gob13CollectLightsER4ListIP9PartLightE";
+    /// <summary>#215: <c>Scene::m_pFocusObject</c> @0x19ab960 -- the Gob whose lighting
+    /// <c>focuslighting</c> describes. Data symbol; read only.</summary>
+    public const string SceneFocusObject = "_ZN5Scene14m_pFocusObjectE";
+    /// <summary>#215: the <c>focuslighting</c> global @0x19ab748 -- three floats.
+    /// <c>Scene::RenderSinglePass</c> is its ONLY writer (the two stores at 0x46ec3d and 0x46fe64 are the
+    /// same block with and without the Tracy scope), and the exported
+    /// <c>Scene::GetLightingValueAtFocus</c> @0x462aa0 reads it -- so the mutate-only shim owes it a write.
+    /// Data symbol; the shim writes it exactly where RSP did.</summary>
+    public const string FocusLighting = "focuslighting";
     // ---- static-geometry batching (ADR 0006 phase 1), Linux-only -> BatchService stands down on Windows ----
     /// <summary>PartTriMesh::Draw() @0x4513d0 -- the per-part draw entry the bucket loop calls (via the
     /// item's Render vtable slot). BatchService's skip/record point. ABI: <c>(PartTriMesh* /*rdi*/)</c>.</summary>

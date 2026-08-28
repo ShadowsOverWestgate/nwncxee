@@ -122,8 +122,18 @@ public sealed unsafe class BatchService : IExtenderService
         // separate and goes down on its own (see _batchArmed).
         PartTable.Active = _origPartDraw != null && _drawSlot != null && BucketGate.Installed
                            && _repackSlot != null && _origPartDtor != null;
-        _batchArmed = PartTable.Active;
-        log.Info(PartTable.Active
+        // #215: the one engine-side draw path the shim's funnel swallow cannot see. Under the cutover the
+        // bucket walk still runs (that is how parts get captured at all) and Observe still fires, so a
+        // pending group would submit a REAL glMultiDrawElementsBaseVertex through Alloy's own bindings --
+        // invisible to the funnel counter, and drawn with no engine state bound. Batching goes down; every
+        // part it would have batched is an Alloy part on this path anyway.
+        _batchArmed = PartTable.Active && !RspShim.Armed;
+        log.Info(!_batchArmed && PartTable.Active
+            // #149's lesson: a period line reporting zero batched draws with no stated reason reads as a
+            // bug. Under the cutover batching is OFF on purpose, and the arm-time line has to say so.
+            ? "BatchService: capture armed, batching OFF -- #215's shim owns the frame (ownframe=1), and a "
+              + "replayed multidraw is the one draw path its funnel swallow cannot see"
+            : PartTable.Active
             ? "BatchService: static-geometry batching armed (sowx.cfg drawhooks=off disables; [batch] every 900 frames)"
             : _origPartDtor == null
               // #145: deliberate. Without the death notice, every liveness test left is an inference, and
@@ -134,7 +144,7 @@ public sealed unsafe class BatchService : IExtenderService
     }
 
     /// <summary>Chain priorities (#88): both symbols are shared, we sit under the shadow pipeline.</summary>
-    private const int DrawPriority = 50;
+    internal const int DrawPriority = 50;
     private const int RepackPriority = 50;
     private static IntPtr* _drawSlot;
     private static IntPtr* _repackSlot;

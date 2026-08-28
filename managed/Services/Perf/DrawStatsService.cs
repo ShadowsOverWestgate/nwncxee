@@ -72,7 +72,7 @@ public sealed unsafe class DrawStatsService : IExtenderService
     }
 
     /// <summary>Chain priority on RenderVertexData: below the shadow cull and the batcher (#88).</summary>
-    private const int DrawPriority = 10;
+    internal const int DrawPriority = 10;
     private static IntPtr* _drawSlot;
 
     /// <summary>Post-draw observer: calls the rest of the chain first, so CURRENT_PROGRAM is valid
