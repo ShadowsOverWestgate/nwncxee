@@ -234,10 +234,30 @@ internal static unsafe class AlloyCensus
         }
         if (OwnFlag[e] != 0) return Gate("OWNED");
         if (!_ownDry) { _ownSeen++; if (_pGob[e] != IntPtr.Zero) _ownInstSeen++; }
-        if (_pSeen[e] < _frame - 1)
+        // #236: the ENROLLMENT window is not the DRAW window. Alloy already refuses to draw an owned part
+        // the engine stopped walking (the SightedRecently gate in BuildBatches, which costs a compare and a
+        // continue), so ownership of an off-screen part is free -- but this gate used the same one-frame
+        // window and therefore DROPPED it at every enrollment. Measured live: stale was the only non-zero
+        // rejection, 5465 of 12533 active, and 5025 of those had been walked inside the cadence. That is
+        // ~5000 parts losing ownership for being behind the camera, re-acquired only at the next enrollment
+        // -- which nothing pulls forward, because a returning part is already StActive and never reaches
+        // Complete. It is the whole of the residual camera-spin pop-in.
+        if (_pSeen[e] < _frame - AlloyRenderer.OwnSightingWindow)
         {
             if (!_ownDry && _pGob[e] != IntPtr.Zero) _ownInstStale++;
-            Bump(ref _ownRejStale); return Gate("stale");
+            Bump(ref _ownRejStale);
+            return Gate("stale");
+        }
+        // ...and the window it widens is a LIVENESS window, so what it bounded has to be re-proven rather
+        // than assumed. The captured node/material were last checked against the live part by the walk, which
+        // may now be a whole window ago; every gate below dereferences them. StActive plus the #145 dtor hook
+        // says the PART is alive, not that it still wears these. A mismatch is the walk's own
+        // "identity-changed" case arriving early -- refuse, and let the next walk recapture.
+        if (_pPart[e] != IntPtr.Zero && _pSeen[e] < _frame - 1)
+        {
+            var live = new PartRef(_pPart[e]);
+            if (live.Node.Ptr != _pNode[e] || live.Material.Ptr != _pMat[e])
+            { Bump(ref _ownRejStaleMoved); return Gate("stale-identity"); }
         }
         int g = _pGroup[e];
         if (!OwnableBucket(_gBucket[g])) { Bump(ref _ownRejBucket); return Gate("bucket"); }
@@ -865,7 +885,7 @@ internal static unsafe class AlloyCensus
     }
 
     // per-gate enrollment forensics: which predicate is eating the candidates? (cold, scan-scoped)
-    internal static int _ownSeen, _ownRejStale, _ownRejBucket, _ownRejVdo, _ownRejGob, _ownRejFbSample,
+    internal static int _ownSeen, _ownRejStale, _ownRejStaleMoved, _ownRejBucket, _ownRejVdo, _ownRejGob, _ownRejFbSample,
                       _ownWithMaps, _ownRejItem, _ownSharedPlain, _ownSharedShader, _ownRejScene,
                       _ownWithEnv, _ownSharedFeature;
     internal static IntPtr _ownScene;
@@ -875,7 +895,7 @@ internal static unsafe class AlloyCensus
     internal static void OwnScanBegin(IntPtr scene)
     {
         _ownScene = scene;
-        _ownSeen = _ownRejStale = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
+        _ownSeen = _ownRejStale = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
             _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstStale = _ownInstDead = 0;
             _engineWaterWalks = _ownedWaterWalks = 0;
@@ -886,7 +906,7 @@ internal static unsafe class AlloyCensus
 
     /// <summary>Why the last enrollment scan rejected what it rejected -- one line, cold.</summary>
     internal static string OwnScanDiag() =>
-        $"active={_ownSeen} rejects: stale={_ownRejStale} bucket={_ownRejBucket} vdo={_ownRejVdo} " +
+        $"active={_ownSeen} rejects: stale={_ownRejStale} (unwalked for {AlloyRenderer.OwnSightingWindow}+ frames) stale-identity={_ownRejStaleMoved} bucket={_ownRejBucket} vdo={_ownRejVdo} " +
         $"gob={_ownRejGob} item={_ownRejItem} foreign-scene={_ownRejScene} " +
         // #128: the instanced population's own fate. "Creatures are not owned" reads identically to
         // "creatures are not in the table"; these three tell them apart without another round trip.

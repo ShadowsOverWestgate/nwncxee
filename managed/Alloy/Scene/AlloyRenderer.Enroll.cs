@@ -57,12 +57,16 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Cold, at a frame boundary before the Alloy block: rebuild the ownership table wholesale from
     /// PartTable's capture tables. This IS the frame-atomic swap -- nothing else adds an entry, so no part
     /// can change owner between the Alloy draw and the bucket walk that skips it.
-    /// <para>ponytail: rebuilt on a fixed cadence rather than per frame. Parts qualify/de-qualify rarely, and
-    /// the failure mode is one-sided (a newly-qualifying part stays engine-drawn until the next enrollment);
-    /// per-frame rebuild costs a full table scan for nothing.</para></summary>
+    /// <para>ponytail: rebuilt on a cadence rather than per frame. #236 falsified the half of this note that
+    /// said parts qualify rarely -- creature parts re-record constantly, and under the cutover the failure
+    /// mode stopped being one-sided (an unowned part is not engine-drawn now, it is nothing). So a new
+    /// candidate pulls the next rebuild forward, floored at <see cref="NewCandidateGap"/> frames. The
+    /// ceiling that remains: in a creature-heavy area that floor can hold, i.e. this cold path (handle wipe,
+    /// full table scan, texture re-intern, VAO retire) at ~6Hz. <c>pulled forward by a new candidate</c> on
+    /// the period line is the number that says whether the floor needs widening.</para></summary>
     private static void Enroll(IntPtr scene)
     {
-        _sinceEnroll = 0; _enrolls++; _enrollScene = scene;
+        _sinceEnroll = 0; _newCandidate = false; _enrolls++; _enrollScene = scene;
         WipeHandles();   // #153: new enrollment, new tids -- yesterday's handles answer for nobody
         _watchEnrolled = 0;
         System.Array.Clear(AlloyCensus.WatchTex);

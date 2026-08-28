@@ -61,6 +61,45 @@ ambiguous between "the shim broke it" and "owned geometry broke it".
 Two counters, one instrument: the **shim counter** is the binary acceptance mechanism; the **scene
 draw-call count** is a diagnostic for FPS-dip triage and gates nothing.
 
+#### Amendment (#236): zero *undirected* draws
+
+The bar above says zero GL draw calls, full stop. Live, that made ownership latency a **correctness**
+bug: a part Alloy has not enrolled yet is handed back to the engine by the bucket walk, the shim ate
+the hand-back, and the part was simply not drawn. Creatures rendered in pieces and a camera spin left
+a three-second hole. Pre-cutover the same latency cost a frame of vanilla shading and nothing else.
+
+So the bar is **zero draws nobody directed**. The walk marks the draws it is deliberately handing
+back (`RspShim.HandBack`, set for the whole of `BatchService.PartDraw` and cleared only where the part
+handed back is one Alloy owns), and those reach the original. `PASSED` on the `[rspshim]` line is
+still the acceptance counter and still must read 0 — it now counts only a draw that reached the engine
+by no route the walk asked for. `handed back/frame` beside it is the ownership-latency measure: it
+falls as enrollment catches up and is not required to be zero.
+
+This is a widening of the bar, not a retreat from it. The shim still issues no draw of its own, and
+every engine draw the *bucket walk* lets through is attributable to a named refusal in it.
+
+One thing the let-through also repairs, found while scoping it: BatchService's funnel observer submits
+the rest of a batched group by `glMultiDrawElementsBaseVertex`, which reaches neither funnel and so was
+never subject to the swallow. Under the cutover a batched group therefore drew during the window *minus
+its first member*, whose vanilla draw the shim ate — invisible to `PASSED` by construction. The first
+member is handed back now and the group matches it.
+
+The live counters also settled what ownership *means* per frame. `BuildBatches` already refuses to draw
+an owned part the engine has stopped walking, so holding an off-screen part costs a compare and a
+`continue` — but the enrollment scan used the same one-frame window and therefore *dropped* it. Measured:
+`stale` was the only non-zero rejection, 5465 of 12533 active parts, 5025 of them walked inside the
+cadence. Enrollment was discarding ~5000 parts per scan for being behind the camera, and a returning part
+is already `StActive` so it never reaches `Complete` and never latched a re-enrollment. That was the whole
+of the residual camera-spin pop-in. The enrollment window is now `OwnSightingWindow` (60 frames), separate
+from the one-frame *draw* window, and the liveness the old window bounded is re-proven explicitly
+(captured node/material re-checked against the live part before any deref).
+
+Scope, stated rather than assumed: the mark covers `PartDraw` only. Three hand-backs sit outside it —
+the sky window, the not-in-a-bucket catch-all, and the skin bail — and stay swallowed. Whether any of
+them fires inside the window is unmeasured; the `handed back/frame` figure and a live session are what
+would settle it, and marking them on a guess about who draws the sky is exactly what this bar exists
+to prevent.
+
 ### Ownership scope
 
 **Own everything.** Temporary non-rendering is acceptable — missing classes get spotted in play and

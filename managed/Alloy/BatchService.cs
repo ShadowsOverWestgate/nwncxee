@@ -339,12 +339,25 @@ public sealed unsafe class BatchService : IExtenderService
 
     private static void PartDraw(IntPtr part)
     {
-        if (!_timing) { PartDrawBody(part); return; }
-        long t0 = Stopwatch.GetTimestamp(), v0 = _vanTicks;
-        PartDrawBody(part);
-        // Minus whatever Vanilla spent inside, read as a DELTA so a nested vanilla draw is subtracted once.
-        _pdTicks += Stopwatch.GetTimestamp() - t0 - (_vanTicks - v0);
-        _pdCalls++;
+        // #236: the walk HANDS BACK. Every Vanilla() below this point is Alloy saying "not mine, not this
+        // pass" -- and under the #215 shim a hand-back that gets swallowed is a hole, not a frame of vanilla
+        // shading. Nothing here clears the mark: a part that reaches the loop body at all was not drawn by
+        // Alloy this pass, which is what the iterator already decided.
+        // Scoped to the WALK, deliberately: the three hand-backs above (the sky window, the not-in-a-bucket
+        // catch-all, the skin bail) stay swallowed. Whether any of them fires inside the window is not
+        // measured, so marking them would be a guess about who draws the sky.
+        bool prevHand = RspShim.HandBack;
+        RspShim.HandBack = true;
+        if (!_timing) PartDrawBody(part);
+        else
+        {
+            long t0 = Stopwatch.GetTimestamp(), v0 = _vanTicks;
+            PartDrawBody(part);
+            // Minus whatever Vanilla spent inside, read as a DELTA so a nested vanilla draw is subtracted once.
+            _pdTicks += Stopwatch.GetTimestamp() - t0 - (_vanTicks - v0);
+            _pdCalls++;
+        }
+        RspShim.HandBack = prevHand;
     }
 
     private static void PartDrawBody(IntPtr part)
@@ -355,6 +368,11 @@ public sealed unsafe class BatchService : IExtenderService
 
         // #82: Alloy parts reaching the loop body mean the Alloy draw did not happen for them this pass --
         // vanilla, and never batched (a batch submit on top of an Alloy draw is the double-draw failure)
+        // #236: HANDED BACK, not swallowed. Reaching this branch means the iterator's IterSight said Alloy
+        // did NOT draw the part this pass (BucketGate returns the slot only then), which is #82's own
+        // invariant -- so there is no draw to double. That is the engine-culled part coming back into view,
+        // and the class stand-downs (the blended handback) with it: swallowing them was one invisible frame
+        // per part, thousands at once on a camera spin, i.e. pop-in traded for flicker.
         if (OwnFlag[e] != 0) { _pSeen[e] = _frame; Vanilla(part); return; }
 
         if (_pState[e] == StProbe)
@@ -391,10 +409,19 @@ public sealed unsafe class BatchService : IExtenderService
             return;
         }
 
+        // #236: the tail of the window. A part back from beyond OwnSightingWindow lost its ownership at the
+        // last enrollment, and nothing else would pull one forward for it -- it is already StActive, so it
+        // never reaches Complete. Latched here instead, which bounds it to NewCandidateGap frames of vanilla
+        // shading exactly like a fresh candidate. Checked before the stamp, which is what erases the gap.
+        if (OwnFlag[e] == 0 && _pSeen[e] < _frame - AlloyRenderer.OwnSightingWindow)
+            AlloyRenderer.NoteNewCandidate();
         _pSeen[e] = _frame;
         // #126: recorded for the Alloy pass, never for this one -- and bucket 8 is the same case per frame
         // rather than per part (RenderDrawBucket folds the tile's fade factor into part+0xa0 for the length
         // of the draw, which no group's replayed state carries).
+        // #236: NOT a hand-back to suppress. Alloy-only says "the Alloy pass draws this, not the batcher"
+        // -- but OwnFlag is 0 here, so the Alloy pass has not enrolled it and nobody is drawing it. That is
+        // the creature case exactly: instances are all Alloy-only, and swallowing this ate the torsos.
         if (_pOwnOnly[e] || _bucketId == AlphaBucket) { Vanilla(part); _vanOwnOnly++; return; }
         IntPtr node = _pNode[e];
         // matrix-class members must still match the group's transform exactly; identity-class members must
@@ -711,6 +738,9 @@ public sealed unsafe class BatchService : IExtenderService
         _pTex0[e] = t0; _pRot[e] = rot;
         _pGroup[e] = g; _pNext[e] = _gFirst[g]; _gFirst[g] = e; _gCount[g]++;
         _pState[e] = StActive; _pDirty[e] = false; _pIncluded[e] = -1;
+        // #236: a part only becomes ENROLLABLE here, and enrollment ran on a 60-frame cadence -- so a
+        // creature that re-recorded its torso waited up to three seconds for the tick that could take it.
+        AlloyRenderer.NoteNewCandidate();
     }
 
     /// <summary>Frame tick from UiHostService. Periodic stats; the log is the only cold path.</summary>

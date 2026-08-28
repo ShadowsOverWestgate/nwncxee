@@ -73,6 +73,12 @@ namespace Sowx.Alloy;
 public sealed unsafe partial class AlloyRenderer : IExtenderService
 {
     internal const int LogEvery = 900, EnrollEvery = 60;
+    /// <summary>#236: how long an off-screen part keeps its ownership. NOT the draw window -- BuildBatches
+    /// refuses to draw anything the engine stopped walking, so an owned invisible part costs a compare and a
+    /// continue. This is only how long the ENROLLMENT scan will hold a part the camera has turned away from,
+    /// so that turning back is instant rather than a wait for the next scan. Measured live at 60: ~5000 of
+    /// 12533 active parts were losing ownership per enrollment to the old one-frame window.</summary>
+    internal const int OwnSightingWindow = 60;
     /// <summary>Frames before the FIRST period line. The 900-frame cadence is right for steady-state cost,
     /// but it is also the only proof this pass runs at all -- and at 900 a short session (or one that ends at
     /// a module unload) produces no line, which reads as "never armed" rather than "not yet". Report once
@@ -859,7 +865,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         {
             // saturating, never wrapping: an unchecked ++ past int.MaxValue lands on int.MinValue and the
             // threshold is then unreachable for 2^31 passes -- i.e. enrollment silently never runs
-            if (_sinceEnroll < EnrollEvery) _sinceEnroll++; else Enroll(scene);
+            // #236: the latch enrolls as soon as the throttle opens, so the bound on ownership latency is
+            // NewCandidateGap frames from the completing walk rather than the full cadence.
+            if (_newCandidate && _sinceEnroll >= NewCandidateGap) { _candidateEnrolls++; Enroll(scene); }
+            else if (_sinceEnroll < EnrollEvery) _sinceEnroll++; else Enroll(scene);
         }
         // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
         // being on is never enough on its own: a pass with no 4.6 context, no module, or /vanilla still gets
@@ -929,6 +938,23 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// ownable would run a full table scan at frame rate for as long as the player stood in it.</summary>
     private static int _forcedEnrolls;
     private const int MaxForcedEnrolls = 8;
+
+    /// <summary>#236: the floor on frames between enrollments a NEW CANDIDATE may force. Enrollment is the
+    /// cold path (a full table scan, the handle wipe, the texture re-intern), and creature parts re-record
+    /// constantly -- unthrottled, <see cref="NoteNewCandidate"/> would run it every frame. This is also the
+    /// stated bound on the latency: a part that becomes ownable is owned within this many frames, and looks
+    /// vanilla-shaded (not missing -- see <see cref="RspShim.HandBack"/>) until then.</summary>
+    private const int NewCandidateGap = 10;
+    private static bool _newCandidate;
+    private static long _candidateEnrolls;
+
+    /// <summary>#236: a part just became ownable. The 60-frame cadence was tuned for a world where the engine
+    /// drew whatever Alloy had not got to; under the cutover the gap is a hole, so a fresh candidate pulls
+    /// the next enrollment forward instead of waiting out the tick.
+    /// <para>A LATCH, not a nudge. Dropping the request when the throttle is closed would leave a lone
+    /// candidate that completed just after an enrollment waiting out the full cadence anyway -- which is the
+    /// bug, not a throttled version of the fix.</para></summary>
+    internal static void NoteNewCandidate() => _newCandidate = true;
 
     private static bool _inColourPass;
     /// <summary>Scene the ownership table was enrolled from. The Alloy block draws only into a bucket walk of
@@ -1238,7 +1264,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // while the world renders is the whole reason this is a roll-call and not a fixed list --
                    // the frame looks fine, just 8-bit and un-bloomed, and only the clause says so.
                    PassRegistry.Global.Stats(_frames) + ", " +
-                   $"enrolls={_enrolls} revokes={_revokes}; " +
+                   $"enrolls={_enrolls} ({_candidateEnrolls} pulled forward by a new candidate) revokes={_revokes}; " +
                    // #119: the prepass's own cost, and what it bought. samples/px is the overdraw figure --
                    // run the same scene with /draw prepass 0 and the difference IS the pass's worth.
                    (!_depthPrepass ? "prepass OFF (/draw prepass 1 restores it)"
@@ -1279,7 +1305,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // texture one -- and this line is the only place it would ever be visible.
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
-        _frames = 0; _draws = 0; _batches = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0;
+        _frames = 0; _draws = 0; _batches = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0; _candidateEnrolls = 0;
         _skinDrawn = 0; _skinNoPose = 0; _skinSlotOverflow = 0;
         _foreignBuckets = 0;
         SkyBox.ResetPeriod();

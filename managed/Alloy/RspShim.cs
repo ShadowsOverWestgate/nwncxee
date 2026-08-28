@@ -122,6 +122,14 @@ internal static unsafe class RspShim
     /// the setting would arm Alloy over live engine draws.</summary>
     internal static bool InWindow;
 
+    /// <summary>#236: the deliberate hand-back. Set by the bucket walk around every part it is about to
+    /// give to the engine BECAUSE ALLOY IS NOT DRAWING IT -- unrecorded, on probation, dead, dirty, solo.
+    /// Pre-cutover those parts were engine-drawn and the ownership latency cost a frame of vanilla shading;
+    /// under the swallow the same hand-back is a hole, which is what ate the creature torsos. So the window
+    /// lets these through and counts them separately: <c>passed</c> (the #218 exit bar) still means a draw
+    /// nobody directed, and <c>handback</c> means one Alloy declined by name.</summary>
+    internal static bool HandBack;
+
     /// <summary>#232/#233: does this frame have an engine overlay to run after the bracket? Latched at the
     /// top of <see cref="Run"/>, read by <see cref="PostChain"/> inside it -- the depth hand-back to the
     /// default framebuffer is only worth its blit on the frames an overlay will use it.</summary>
@@ -151,7 +159,7 @@ internal static unsafe class RspShim
     }
 
     private static bool _checkOk;
-    private static long _swallowed, _passed, _ticks, _frames;
+    private static long _swallowed, _passed, _handedBack, _ticks, _frames;
 
     /// <summary>The two invariants the shim cannot discover at runtime and would fail silently on.
     /// <para><b>Chain placement.</b> <see cref="SwallowPriority"/> must sit strictly between BatchService's
@@ -386,7 +394,8 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        if (InWindow) { _swallowed++; return; }
+        if (InWindow && !HandBack) { _swallowed++; return; }
+        if (InWindow) _handedBack++;
         var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_vdoSlot;
         if (next != null) next(vdo, item, prim, size, offset);
     }
@@ -396,7 +405,7 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnVdoBottom(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        if (InWindow) _passed++;
+        if (InWindow && !HandBack) _passed++;
         var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_vdoBottomSlot;
         if (next != null) next(vdo, item, prim, size, offset);
     }
@@ -406,7 +415,11 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnStreamDraw(IntPtr vsdo, uint prim, uint size, uint offset)
     {
-        if (InWindow) { _swallowed++; return; }
+        // #236: honours the hand-back for the same reason the other funnel does. #215 established these two
+        // funnels ARE the engine's whole 3D draw surface, so a hand-back routed here and swallowed is a hole
+        // exactly like one routed to the other -- without needing to know which parts take which route.
+        if (InWindow && !HandBack) { _swallowed++; return; }
+        if (InWindow) _handedBack++;
         if (_origStream != null) _origStream(vsdo, prim, size, offset);
     }
 
@@ -418,7 +431,8 @@ internal static unsafe class RspShim
         if (_frames < AlloyRenderer.LogEvery) return;
         double ms = _ticks * 1000.0 / Stopwatch.Frequency / _frames;
         _log?.Info($"RspShim: [rspshim] {_frames} shim frames, {_swallowed / _frames} engine draws swallowed/frame, "
+                 + $"{_handedBack / _frames} handed back/frame (#236, deliberate), "
                  + $"PASSED {_passed} (must be 0), {ms:F2}ms/frame in the shim");
-        _swallowed = 0; _passed = 0; _ticks = 0; _frames = 0;
+        _swallowed = 0; _passed = 0; _handedBack = 0; _ticks = 0; _frames = 0;
     }
 }
