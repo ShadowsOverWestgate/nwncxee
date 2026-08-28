@@ -111,6 +111,7 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Env cube freshness + BSP key (`EnvProbe`) | `EnvProbe` capture | `EnvProbe.Revoke` | registry `Revoke` | `EnvProbe.Forget` |
 | Caster set + skin records + texture-alpha verdicts (`CasterPass`) | `CasterPass.Enroll` | `Release` | `CasterPass.cs:1003,1005,1008` | routes through the same `Release` — see below |
 | Owned texture copies (`OwnedTextures`) | first in-bracket sight of an engine texture name, `OwnedTextures.Draw` | per-name: the engine's own delete funnel, `RenderInterface::DeleteTextures` → `Retire`. Wholesale: `OwnedTextures.Revoke` | the delete hook (`OwnedTextures.Install`); registry `Revoke`. Both only **queue** — `OwnedTextures.Drain` deletes, off `GlContextService.InBracket` | `OwnedTextures.ContextLost` drops map, owned-set and queue, deletes nothing |
+| Owned vertex/index buffer copies (`OwnedBuffers`) | first in-bracket sight of an engine pool buffer name, `OwnedBuffers.Draw` (from `BuildVao`) | per-name: the engine's own delete funnel, `GLRender::DeleteBuffer` → `Retire`. Wholesale: `OwnedBuffers.Revoke` | the delete hook (`OwnedBuffers.Install`); registry `Revoke`. Both only **queue** — `OwnedBuffers.Drain` deletes, at the top of the colour bracket | `OwnedBuffers.ContextLost` drops map, dirty list and queue, deletes nothing |
 | Bindless handle cache `_hTid/_hVal/_hRes` | `AlloyRenderer.HandleFor` | `DropHandle`, per owned name, from `OwnedTextures.Drain` before the texture is deleted | — the enrollment `WipeHandles` is now a no-op while `ownedtex` is armed (#220) | `AlloyRenderer.ForgetHandles`, via `OwnedTextures.ContextLost` |
 
 Two more pointer-keyed tables are **enrollment-scoped scratch**, listed for completeness rather than
@@ -124,7 +125,7 @@ are the shape that does, so if either ever outlives an enrollment it joins the t
 
 | Resource | Created by | Dropped by | Caller |
 |---|---|---|---|
-| `_prog46/_progLit46/_progDepth/_progDepthKey/_progWater`, `_fbo46`, `_drawBuf/_texHBuf/_boneBuf`, `_vVao46[]` | `EnsureProgram` / `EnsureTarget` / `UploadDraws` / `EnsureVao` | `AlloyRenderer.ContextLost` | registry `ContextLost`; `_progLit46`/`_progWater` are additionally *deleted* and rebuilt by `TakeProgramRebuild` (`Programs.cs:114`) when a compile-time dial moves — the one deletion path that is neither edge |
+| `_prog46/_progLit46/_progDepth/_progDepthKey/_progWater`, `_fbo46`, `_drawBuf/_texHBuf/_boneBuf`, `_vVao46[]`/`_vVaoOwn[]` | `EnsureProgram` / `EnsureTarget` / `UploadDraws` / `EnsureVao` | `AlloyRenderer.ContextLost` | registry `ContextLost`; `_progLit46`/`_progWater` are additionally *deleted* and rebuilt by `TakeProgramRebuild` (`Programs.cs:114`) when a compile-time dial moves — the one deletion path that is neither edge |
 | Water snapshot FBO + colour/depth textures | `FrameSnapshot.Ensure` | `FrameSnapshot.Forget` | registry `ContextLost` |
 | Scene-depth FBO + texture | `SceneDepth.Ensure` | `SceneDepth.Forget` | registry `ContextLost` |
 | Light SSBOs (`_bufLights/_bufCounts/_bufIndices/_bufStats`) | `AlloyLights` | `AlloyLights.Forget` | registry `ContextLost` |
@@ -135,6 +136,7 @@ are the shape that does, so if either ever outlives an enrollment it joins the t
 | Particle program/VAO/VBO/sampler + native stage buffer | `Particles.Ensure*` | `Particles.ContextLost` | registry `ContextLost` |
 | Caster depth program, FBO, depth array, persistent-mapped buffers, VAOs | `CasterPass.EnsureGl` | **nothing** — kept | see below |
 | Owned texture copies (`OwnedTextures`) | `OwnedTextures.Copy` | `OwnedTextures.ContextLost` | registry `ContextLost` |
+| Owned buffer copies (`OwnedBuffers`) | `OwnedBuffers.Copy` | `OwnedBuffers.ContextLost` | registry `ContextLost` |
 
 ### Deliberately outside the table
 

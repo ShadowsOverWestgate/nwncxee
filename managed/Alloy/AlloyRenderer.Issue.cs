@@ -94,7 +94,7 @@ public sealed unsafe partial class AlloyRenderer
         // batch's CLASS for water and on _gLit for the other two, because water is a class the whole way
         // down: its stage samples the framebuffer copy, and no lit batch ever should.
         int boundProg = -1;
-        int boundVao = -1, boundTex = -1;
+        uint boundVao = 0; int boundTex = -1;
         uint boundSrc = 0, boundDst = 0;
         // GL_BLEND as this pass found it: DrawOwned's preamble disables it, and TransparentPass enables it
         // before its own range, so the first batch of either kind agrees with the state already set.
@@ -202,7 +202,9 @@ public sealed unsafe partial class AlloyRenderer
                 uint src = BlendGl(_gSrc[g]), dst = BlendGl(_gDst[g]);
                 if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
             }
-            if (_gVao[g] != boundVao) { Gl.BindVertexArray(_vVao46[_gVao[g]]); boundVao = _gVao[g]; }
+            // #212: tracked by GL NAME, not by slot -- a slot now has two VAOs and the class picks.
+            uint vao = VaoName(_gVao[g], _gCls[g]);
+            if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
             // #153: a merged lit batch spans many textures; its samplers come off the handle block per draw,
             // and binding here would be dead state. Unlit and water batches still bind.
             bool handles = _bindless && lit && !water;

@@ -30,6 +30,19 @@ internal static class RenderPasses
             ContextLost = OwnedTextures.ContextLost,
         }, log);
 
+        // #212: nor is this one -- the vertex/index buffers the static-opaque class draws from. Same shape
+        // as ownedtex, one level down: a boot gate, two engine funnels, and both lifetime edges.
+        r.Register(new PassLifecycle
+        {
+            Name = "ownedgeom",
+            Attach = OwnedBuffers.Attach,
+            Install = OwnedBuffers.Install,
+            SelfCheck = l => OwnedBuffers.SelfCheck(l),
+            Revoke = OwnedBuffers.Revoke,
+            ContextLost = OwnedBuffers.ContextLost,
+            Stats = OwnedBuffers.Stats,
+        }, log);
+
         // #129: FrameSnapshot first, because FrameGraph's own check asserts that the ownable-bucket list AGREES
         // with whether Alloy water can draw -- so water's boot knobs have to be read before that check runs.
         r.Register(new PassLifecycle

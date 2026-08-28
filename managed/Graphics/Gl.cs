@@ -29,6 +29,10 @@ public static unsafe class Gl
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
     public const uint BYTE = 0x1400;
     public const uint ARRAY_BUFFER = 0x8892, STATIC_DRAW = 0x88E4, DYNAMIC_DRAW = 0x88E8;
+    /// <summary>#212: the two scratch targets glCopyBufferSubData copies between, and the size query that
+    /// says how much. Copy targets exist so a buffer can be read and written without disturbing whatever the
+    /// caller had bound for drawing.</summary>
+    public const uint COPY_READ_BUFFER = 0x8F36, COPY_WRITE_BUFFER = 0x8F37, BUFFER_SIZE = 0x8764;
     public const uint VERTEX_SHADER = 0x8B31, FRAGMENT_SHADER = 0x8B30;
     /// <summary>#147: the tessellation pair, and the primitive mode that feeds them. GL 4.0+, so core on the
     /// 4.6 context the Alloy pass already requires -- water is the one class whose geometry is coarse enough
@@ -145,7 +149,11 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint> GetError;          // GLenum glGetError(void)
     public static delegate* unmanaged<uint, void> Enable, Disable, ActiveTexture, UseProgram, BindVertexArray;
     public static delegate* unmanaged<uint, uint, void> BindTexture, BindBuffer, BlendFunc;
-    public static delegate* unmanaged<int, uint*, void> GenTextures, GenVertexArrays, GenBuffers;
+    public static delegate* unmanaged<int, uint*, void> GenTextures, GenVertexArrays, GenBuffers, DeleteBuffers;
+    /// <summary>#212: glCopyBufferSubData (GL 3.1) -- readTarget, writeTarget, readOffset, writeOffset, size.
+    /// The GPU-side buffer copy owned geometry is made of.</summary>
+    public static delegate* unmanaged<uint, uint, IntPtr, IntPtr, IntPtr, void> CopyBufferSubData;
+    public static delegate* unmanaged<uint, uint, int*, void> GetBufferParameteriv;
     public static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> TexImage2D;
     public static delegate* unmanaged<uint, uint, int, void> TexParameteri;
     public static delegate* unmanaged<uint, uint, int*, void> GetTexParameteriv;
@@ -336,6 +344,9 @@ public static unsafe class Gl
         GenTextures = (delegate* unmanaged<int, uint*, void>)P("glGenTextures");
         GenVertexArrays = (delegate* unmanaged<int, uint*, void>)P("glGenVertexArrays");
         GenBuffers = (delegate* unmanaged<int, uint*, void>)P("glGenBuffers");
+        DeleteBuffers = (delegate* unmanaged<int, uint*, void>)P("glDeleteBuffers");
+        CopyBufferSubData = (delegate* unmanaged<uint, uint, IntPtr, IntPtr, IntPtr, void>)P("glCopyBufferSubData");
+        GetBufferParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetBufferParameteriv");
         TexImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void>)P("glTexImage2D");
         TexParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glTexParameteri");
         GetTexParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetTexParameteriv");

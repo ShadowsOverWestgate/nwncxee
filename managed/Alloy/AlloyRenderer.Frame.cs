@@ -103,6 +103,8 @@ public sealed unsafe partial class AlloyRenderer
 
         if (!GlContextService.Enter()) return;
         OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
+        OwnedBuffers.Drain();    // #212: the same, for geometry
+        OwnedBuffers.Refresh();  // ...and re-copy whatever the engine uploaded into a pool since last frame
         if (EnsureProgram() && BindTarget(engFbo, colorType, colorName, depthType, depthName))
         {
             // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both
@@ -272,7 +274,7 @@ public sealed unsafe partial class AlloyRenderer
         // already keyed on the dissolve bit, so this switches at most once per pass in practice; `keyed`
         // tracks which program is current so the plain batches do not re-bind theirs on every alternation.
         bool keyed = false;
-        int boundVao = -1;
+        uint boundVao = 0;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
         for (int g = 0; g < groups; g++)
@@ -296,7 +298,10 @@ public sealed unsafe partial class AlloyRenderer
             int s = _gStart[g];
             if (keyed) _prepassKeyed += _gLen[g];
             Gl.Uniform1i(keyed ? _depthKeyBase : _depthBase, s);
-            if (_gVao[g] != boundVao) { Gl.BindVertexArray(_vVao46[_gVao[g]]); boundVao = _gVao[g]; }
+            // #212: the SAME VAO the colour pass will bind for this class. Identical buffers through both
+            // passes is what keeps #119's invariant-gl_Position depth match trivially true.
+            uint vao = VaoName(_gVao[g], _gCls[g]);
+            if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
             Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
                                            (void**)(offs + s), _gLen[g], bases + s);
             drawn += _gLen[g];

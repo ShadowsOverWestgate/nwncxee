@@ -24,6 +24,13 @@ public sealed unsafe partial class AlloyRenderer
         // about what the passes captured -- and for beams, particles and grass this walk is the only
         // teardown there is. See docs/owned-resource-lifetimes.md.
         WipeHandles();
+        // #212: above the guard for the same reason the registry walk is. The registry's Revoke deletes the
+        // owned buffer copies, and the VAOs built over them are only invalidated here -- an enrollment that
+        // took nothing (_ownCount == 0) with slots left from an earlier one would otherwise keep binding a
+        // VAO whose buffers were just freed, permanently, with the map empty so no upload can re-copy them.
+        // The VAO cache keys on VDO pointers that may now be freed: retire every slot for reuse. The GL
+        // objects can only be deleted inside the bracket, so the rebuild happens there (EnsureVao).
+        for (int v = 0; v < _vdoCount; v++) { _vVdo[v] = IntPtr.Zero; _vStale[v] = true; }
         PassRegistry.Global.Revoke();
         if (_ownCount == 0) return;
         for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero) Revoke(i);
@@ -36,9 +43,6 @@ public sealed unsafe partial class AlloyRenderer
         // a genuinely new fact -- whether ownership came back at all, and over how much. Suppressing it as a
         // repeat is what made a post-unload session look identical to one that never enrolled.
         _reportedHit = false;
-        // the VAO cache keys on VDO pointers that may now be freed: retire every slot for reuse. The GL
-        // objects can only be deleted inside the bracket, so the rebuild happens there (EnsureVao).
-        for (int v = 0; v < _vdoCount; v++) { _vVdo[v] = IntPtr.Zero; _vStale[v] = true; }
         _sinceEnroll = EnrollEvery;
         // ...and the fast retry, not just the next cadence tick. A wipe leaves the part table empty,
         // so the enrollment this queues necessarily misses -- parts have to be re-recorded first -- and

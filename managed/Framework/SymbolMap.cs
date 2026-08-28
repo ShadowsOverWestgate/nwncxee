@@ -476,6 +476,23 @@ internal static unsafe class SymbolMap
     /// sizes), MOVING the surviving items' indices and offsets. Triggered by AddItem on fragmentation, so
     /// streaming fires it mid-play; every batch member of that VDO must recapture its item.</summary>
     public const string VdoRepack = "_ZN16VertexDataObject6RepackEv";
+    /// <summary>#212: GLRender::UnlockPool(token, size, offset) @0x4cfc80 -- the SINGLE funnel through which
+    /// every byte of engine vertex/index data reaches a GL buffer (glBufferData or glBufferSubData off the
+    /// pool's host shadow). <c>VertexDataObject::Build</c>, <c>AddItem</c>'s grow, all three
+    /// <c>CommitItem*Data</c> and <c>Repack</c>'s post-compaction re-upload all pass through it, so it is the
+    /// one edge that says an owned copy has gone stale. Hooked at the GLRender level rather than the
+    /// <c>RenderInterface</c> thunk because that thunk is its only direct caller AND the vtable slot points
+    /// here -- the lower funnel catches both.</summary>
+    public const string GlUnlockPool = "_ZN8GLRender10UnlockPoolEjjj";
+    /// <summary>#212: GLRender::DeleteBuffer(name) @0x4cfec0 -- where an engine GL buffer name dies.
+    /// <c>GLRender::DeletePool</c> routes here (via the RenderInterface thunk) whenever a VDO releases a
+    /// pool, and this is the exact moment a name stops meaning what we copied from it. The geometry twin of
+    /// <see cref="RiDeleteTextures"/>, and the same #220 corruption without it.</summary>
+    public const string GlDeleteBuffer = "_ZN8GLRender12DeleteBufferEj";
+    /// <summary>#212: RenderInterface::GetPoolBuffer(token) @0x45d370 -- the pool table read that turns a
+    /// pool token into its GL buffer name. Pure (one indexed load), so the UnlockPool hook can call it to
+    /// learn which name it just wrote to.</summary>
+    public const string RiGetPoolBuffer = "_ZN15RenderInterface13GetPoolBufferEj";
     /// <summary>GLRender::SetVertexDataObject(VertexDataObject*) @0x4cff30 -- binds (lazily creating) the
     /// VDO's VAO + element buffer and updates the engine's current-VDO cache. The owned caster path (ADR 0008)
     /// binds engine geometry through this so the cache never desyncs; null unbinds to the default VAO.</summary>
