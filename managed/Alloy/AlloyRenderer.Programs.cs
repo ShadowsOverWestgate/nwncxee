@@ -108,27 +108,8 @@ public sealed unsafe partial class AlloyRenderer
         return GlProgram.Graphics(vs, fs, _log, $"AlloyRenderer {what} program (embedded)");
     }
 
-    /// <summary>#179: consume a pending relink request. Called at the top of the program ensure, i.e. inside
-    /// the owned 4.6 bracket -- the only place a GL name may be deleted. Dropping the handles is the whole
-    /// mechanism: every Ensure below rebuilds from source when its handle is zero.</summary>
-    private static void TakeProgramRebuild()
-    {
-        if (!_rebuildPrograms) return;
-        _rebuildPrograms = false;
-        // Only the stages that bake $BAND$ in. The fullbright and depth stages carry no lighting at all, so
-        // relinking them would be a hitch that changes nothing.
-        bool any = false;
-        if (_progLit46 != 0) { Gl.DeleteProgram(_progLit46); _progLit46 = 0; any = true; }
-        if (_progWater != 0) { Gl.DeleteProgram(_progWater); _progWater = 0; any = true; }
-        // Nothing built yet means nothing to relink -- AlloyLights.SelfCheck drives the shadeband dial at
-        // boot, so the flag is pending on the first frame of every session. The line must report a player
-        // action, not that one.
-        if (any) _log?.Info("AlloyRenderer: relinking the lit and water stages -- a compile-time dial moved");
-    }
-
     private static bool EnsureProgram()
     {
-        TakeProgramRebuild();
         if (_prog46 == 0 && !_progFailed)
         {
             uint prog = GlProgram.Graphics(ShdFullbrightVs, ShaderStages.Source(ShdFullbrightVs),
@@ -146,6 +127,8 @@ public sealed unsafe partial class AlloyRenderer
             _locVp = GlProgram.Loc(prog, "uVP"); _locBase = GlProgram.Loc(prog, "uDrawBase");
             _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz");
             _locCut = GlProgram.Loc(prog, "uAlphaCut");
+            _locLinear = GlProgram.Loc(prog, "uLinearOut");
+            _locTint = GlProgram.Loc(prog, "uTint");
             _locFeat = FeatLocs(prog);
             _log?.Info("AlloyRenderer: fullbright program ready (4.6 context)");
         }

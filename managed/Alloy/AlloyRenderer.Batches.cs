@@ -238,23 +238,6 @@ public sealed unsafe partial class AlloyRenderer
             // iterator does not suppress it, so the engine's own walk draws it highlighted, which is vanilla.
             if (!AlloyCensus.InstanceOwnable(tri))
             { _skipGob++; W(i, "skipped: instance state unownable this pass"); continue; }
-            // #152 colour LOD. Stamped THEN skipped: the stamp suppresses the engine's own draw, so the part
-            // is rendered by nobody -- handing it back would just move the cost, not remove it. Water is
-            // exempt (#129's stamp invariant: a stamped water part must be one the copy machinery drew), and
-            // a zero radius means "bounds unknown", never "small".
-            // TILES are exempt too (TileData* at part+0x98, the CheckFadePlane discriminator): a small tile
-            // part is a patch of ground or wall, and culling it is a HOLE in a surface. Free-standing
-            // clutter -- placeables, gobs, decor, everything with no tile record -- pops out at a couple of
-            // pixels, which is the artifact-free half of the trade. This is what makes /draw lodpx safe to
-            // raise: the tileset shell of the area stays whole at any threshold.
-            if (_lodPx > 0f && cls != (int)AlloyClass.Water && _oR[i] > 0f
-                && part.Tile == IntPtr.Zero)
-            {
-                float d2 = EyeDist2(i);
-                float px = _oR[i] * _lodScale;
-                if (px * px < _lodPx * _lodPx * d2)
-                { _lodSkipped++; AlloyCensus.OwnGen[_oEntry[i]] = PassGen; W(i, "skipped: sub-pixel LOD"); continue; }
-            }
             // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
             // it into the blended run with the tile's factor folded into its alpha, which is what the engine
             // does with it in bucket 8 -- and bucket 8 is a bucket IterSight can suppress now.
@@ -462,8 +445,12 @@ public sealed unsafe partial class AlloyRenderer
         // #91's rule again: only the enrolled world Scene's sky, never a GUI 3D panel's.
         if (scene == IntPtr.Zero || scene != _enrollScene) return;
         Span<SkyBox.Role> roles = stackalloc SkyBox.Role[3];
+        float* fog = stackalloc float[3];
+        SkyBox.FogColor(scene, fog);
         int nr = SkyBox.Roles(scene, roles);
+        SkyBox.NoteRoles(roles, nr);
         fixed (float* data = _dData)
+        fixed (float* t3 = _skTint)
         for (int r = 0; r < nr; r++)
         {
             int staged = 0;
@@ -492,7 +479,15 @@ public sealed unsafe partial class AlloyRenderer
                 *(Matrix4x4*)rec = p.Model;
                 // identity texture rotation, no dissolve, the role's alpha; no feature, and the lit block is
                 // never read because the sky takes the fullbright program (the engine draws it Disable(5)).
-                rec[16] = 1f; rec[17] = 0f; rec[18] = 0f; rec[19] = roles[r].Alpha;
+                // #222: Mat()'s two branches, in full. A fog-tinted gob is drawn in the scene's fog
+                // colour at alpha 1.0 -- the alpha override is part of the same branch, not a separate
+                // decision, and dropping it would tint the fade and then fade the tint away again.
+                bool tinted = SkyBox.FogTinted(p.Gob);
+                float* tint = t3 + _skyN * 3;
+                if (tinted) { tint[0] = fog[0]; tint[1] = fog[1]; tint[2] = fog[2]; }
+                else { tint[0] = 1f; tint[1] = 1f; tint[2] = 1f; }
+                rec[16] = 1f; rec[17] = 0f; rec[18] = 0f;
+                rec[19] = tinted ? 1f : roles[r].Alpha;
                 rec[40] = 0f; rec[41] = 0f; rec[42] = 0f; rec[43] = 0f;
                 _skVao[_skyN] = p.Vao; _skTex[_skyN] = tid; _skMode[_skyN] = _primTable[p.Prim];
                 _skSrc[_skyN] = roles[r].Src; _skDst[_skyN] = roles[r].Dst;
@@ -520,33 +515,46 @@ public sealed unsafe partial class AlloyRenderer
     private static void SkyOwnedPass(Matrix4x4* vp, int* viewport)
     {
         if (_skyN == 0 || Gl.DepthRange == null) return;
+        // #222: the sky composites in DISPLAY space or not at all. Given a scratch it draws there, in the
+        // engine's own colour space and against the engine's own clear, and the fold-back decodes once. A
+        // refusal keeps the old linear path, which is a bright horizon and not a missing sky.
+        float* clear = stackalloc float[4]
+            { PostChain.ClearR, PostChain.ClearG, PostChain.ClearB, PostChain.ClearA };
+        bool scratch = SkyComposite.Begin(viewport, clear);
         Gl.UseProgram(_prog46);
         Gl.Uniform1i(_locTex, 0);
+        Gl.Uniform1i(_locLinear, scratch ? 0 : 1);
         Gl.Uniform1i(_locViz, _lightViz);
         Gl.UniformMatrix4fv(_locVp, 1, 0, (float*)vp);
         UploadFeatureTerms(_locFeat, viewport);
         Gl.Uniform1f(_locCut, -1f);          // the engine draws the sky with the discard off
-        Gl.DepthMask(0);
-        Gl.DepthRange(1.0, 1.0);
+        // Depth is the composite's business when there is a scratch -- it has no depth attachment, and the
+        // test that keeps the sky behind the world runs once, there. DEPTH_CLAMP still applies either way:
+        // the matrices were captured under the engine's sky projection and the dome can cross the far plane,
+        // which clipped reads as a hole at the horizon.
+        if (!scratch) { Gl.DepthMask(0); Gl.DepthRange(1.0, 1.0); }
         Gl.Enable(Gl.DEPTH_CLAMP);
         Gl.Enable(Gl.BLEND); _blendOn = true;
         int boundVao = -1, boundTex = -1;
         uint boundSrc = 0xFFFFFFFF, boundDst = 0xFFFFFFFF;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
+        fixed (float* t3 = _skTint)
         for (int i = 0; i < _skyN; i++)
         {
             uint src = BlendGl(_skSrc[i]), dst = BlendGl(_skDst[i]);
             if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
             if (_skVao[i] != boundVao) { Gl.BindVertexArray(_vVao46[_skVao[i]]); boundVao = _skVao[i]; }
             if (_skTex[i] != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)_skTex[i]); boundTex = _skTex[i]; }
+            Gl.Uniform3fv(_locTint, 1, t3 + i * 3);
             int s = _skyFirst + i;
             Gl.Uniform1i(_locBase, s);
             Gl.MultiDrawElementsBaseVertex(_skMode[i], counts + s, GlUnsignedShort, (void**)(offs + s), 1, bases + s);
             _batches++; _draws++;
         }
         Gl.Disable(Gl.DEPTH_CLAMP);
-        Gl.DepthRange(0.0, 1.0);
+        if (scratch) { SkyComposite.End(PostChain.Fbo); _blendOn = false; }
+        else Gl.DepthRange(0.0, 1.0);
         // The vanilla site reads this to decide whether to colour-mask the engine's own copy: it is set only
         // after the Alloy sky actually reached the GPU this pass, never on intent.
         SkyBox.MarkDrawn(PassGen);

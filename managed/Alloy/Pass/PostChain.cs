@@ -62,6 +62,13 @@ internal static unsafe class PostChain
     private static readonly StandDown _down = new("PostChain");
     private static ExtenderLog? _log;
     private static uint _fbo, _hdrTex, _bloomTex;
+    /// <summary>The framebuffer the Alloy colour passes draw into, for the one pass that has to leave it and
+    /// come back: #222's sky scratch. Read-only on purpose -- binding it is <see cref="Begin"/>'s job.</summary>
+    internal static uint Fbo => _fbo;
+    /// <summary>The engine's clear colour in DISPLAY space, as handed to <see cref="Begin"/>. Kept because
+    /// SkyComposite's scratch clears to the same value UNlinearised, and re-reading it from GL there would
+    /// get this context's clear colour rather than the engine's.</summary>
+    internal static float ClearR, ClearG, ClearB, ClearA = 1f;
     private static int _w, _h, _levels;
     private static uint _progDown, _progUp, _progComposite;
     private static uint _vao;
@@ -89,6 +96,11 @@ internal static unsafe class PostChain
     /// (no bloom, no tonemap), 3 = the bloom contribution amplified 20x, which is what makes faint
     /// structure in a dim halo visible at all.</summary>
     private static float _viz;
+    /// <summary><c>/post clearviz 1</c>: clear the HDR target to magenta instead of the engine's clear
+    /// colour. Nothing else in the frame can produce that value, so any magenta the finished frame shows is
+    /// a pixel NO pass covered -- which is the one question a shading view cannot answer. Debug only, and
+    /// deliberately not a boot value: <c>/post reset</c> turns it off with the other views.</summary>
+    private static bool _clearViz;
     private static int _mode = Shoulder;
     private static float _bootBloom, _bootThreshold, _bootKnee, _bootTmKnee, _bootDither;
     private static int _bootMode;
@@ -120,7 +132,8 @@ internal static unsafe class PostChain
     internal static string Describe() =>
         $"hdr {(_on ? "on" : "off")}  bloom {_bloom:F3}  threshold {_threshold:F2}  knee {_knee:F2}  " +
         $"tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  tmknee {_tmKnee:F2}  " +
-        $"dither {_dither:F2}" + (_viz > 0f ? $"  VIZ {_viz:F0}" : "");
+        $"dither {_dither:F2}" + (_viz > 0f ? $"  VIZ {_viz:F0}" : "")
+        + (_clearViz ? "  CLEARVIZ (target cleared magenta)" : "");
 
     /// <summary>Live tuning behind <c>/post</c>; returns the old value, NaN for an unknown key. Same
     /// no-lock reasoning as <see cref="AlloyLights.Tune"/>: independent floats, written from the input
@@ -139,6 +152,7 @@ internal static unsafe class PostChain
             case "tmknee":    old = _tmKnee; _tmKnee = v; break;
             case "dither":    old = _dither; _dither = v; break;
             case "viz":       old = _viz; _viz = v; break;
+            case "clearviz":  old = _clearViz ? 1f : 0f; _clearViz = v != 0f; break;
             default: return float.NaN;
         }
         _log?.Info($"PostChain: /post {key} {v:F2} (was {old:F2}) -> {Describe()}");
@@ -151,7 +165,7 @@ internal static unsafe class PostChain
         _tmKnee = _bootTmKnee; _mode = _bootMode; _dither = _bootDither;
         // viz has no boot value and never should: it is a debug VIEW, not a look setting, so "reset" means
         // off. Leaving it out is why /post reset could not undo a stray /post viz either.
-        _viz = 0f;
+        _viz = 0f; _clearViz = false;
         _log?.Info($"PostChain: /post reset -> {Describe()}");
     }
 
@@ -232,7 +246,9 @@ internal static unsafe class PostChain
         // OBJECTS, never per-context state, and glClearColor is per-context: querying it here would return
         // whatever THIS context was last set to -- (0,0,0,0) until the first probe capture, and EnvProbe's
         // own clear colour ever after.
-        Gl.ClearColor(MathF.Pow(MathF.Max(clearRgba[0], 0f), AlloyLights.SrgbGamma),
+        ClearR = clearRgba[0]; ClearG = clearRgba[1]; ClearB = clearRgba[2]; ClearA = clearRgba[3];
+        if (_clearViz) Gl.ClearColor(1f, 0f, 1f, 1f);
+        else Gl.ClearColor(MathF.Pow(MathF.Max(clearRgba[0], 0f), AlloyLights.SrgbGamma),
                       MathF.Pow(MathF.Max(clearRgba[1], 0f), AlloyLights.SrgbGamma),
                       MathF.Pow(MathF.Max(clearRgba[2], 0f), AlloyLights.SrgbGamma), clearRgba[3]);
         Gl.Clear(Gl.COLOR_BUFFER_BIT);

@@ -201,7 +201,7 @@ internal static class ShaderContract
                   // which is what shipped content looks like today, so nothing would look wrong.
                   && OwnedLitFsHead.Contains($"SOWX_SLOT_AO = {AoBit};")
                   && OwnedLitFsHead.Contains($"SOWX_SLOT_ENV = {EnvSlot};")
-                  && OwnedLitFsMain.Contains("if ((slots & SOWX_SLOT_AO) != 0 && shadeLod < 1.0) occl *= mix(texture(uAoTex, uv).r, 1.0, shadeLod);")
+                  && OwnedLitFsMain.Contains("if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv).r;")
                   && OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl")
                   && OwnedVs.Contains("uDrawBase + gl_DrawID") && OwnedLitVs.Contains("uDrawBase + gl_DrawID")
                   // #119: the prepass depth is only re-testable by the colour pass while all three stages
@@ -245,7 +245,7 @@ internal static class ShaderContract
                   // ...and the fullbright stage must DECODE, unconditionally: #132 made the target linear,
                   // so a stage that passed its display-space texel through would be wrong by a gamma
                   // wherever the engine is not drawing beside it.
-                  && OwnedFs.Contains("vec3($SRGB$)") && !OwnedFs.Contains("uCapture")
+                  && OwnedFs.Contains("vec3($SRGB$)") && OwnedFs.Contains("uLinearOut") && OwnedFs.Contains("t.rgb * uTint") && !OwnedFs.Contains("uCapture")
                   // #121: the ambient-specular term, and the capture pairing that keeps the probe linear.
                   // A stage that lost the sample still renders (flat, as before #121); one that kept the
                   // sample but lost the capture branch samples the cube it is drawing into -- undefined --

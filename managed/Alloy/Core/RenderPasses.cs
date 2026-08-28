@@ -36,14 +36,19 @@ internal static class RenderPasses
             Name = "waterbodies",
             Attach = WaterBodies.Attach,
             SelfCheck = WaterBodies.SelfCheck,
+            // #147/#209: keyed on PART POINTERS, so it dies on the world edge. Called by hand from
+            // RevokeAll until the walk itself moved above that method's empty-table guard.
+            Revoke = WaterBodies.Clear,
             Describe = WaterBodies.Describe,
         }, log);
         r.Register(new PassLifecycle
         {
             Name = "sky",
-            // No ContextLost: the sky holds no GL objects of its own -- it replays captured parts through
-            // the Alloy draw service's programs and VAOs. The null slot is the honest answer here.
-            SelfCheck = SkyBox.SelfCheck,
+            // The sky's own capture holds no GL objects -- it replays captured parts through the Alloy draw
+            // service's programs and VAOs. #222's scratch target DOES, so ContextLost is no longer null.
+            Attach = SkyComposite.Configure,
+            ContextLost = SkyComposite.ContextLost,
+            SelfCheck = l => { SkyBox.SelfCheck(l); SkyComposite.SelfCheck(l); },
             Revoke = SkyBox.Forget,
             Stats = _ => SkyBox.Stats(),
         }, log);
@@ -106,6 +111,9 @@ internal static class RenderPasses
             Attach = EnvProbe.Attach,
             SelfCheck = EnvProbe.SelfCheck,
             ContextLost = EnvProbe.Forget,
+            // #209: was missing. The re-bake keys on a BSP POINTER, so a recycled address carried the
+            // previous area's cube into the new one.
+            Revoke = EnvProbe.Revoke,
             Describe = EnvProbe.Describe,
             Tune = EnvProbe.Tune,
             Reset = EnvProbe.ResetTuning,
@@ -122,11 +130,14 @@ internal static class RenderPasses
             Reset = PostChain.ResetTuning,
         }, log);
         // #179: the Alloy world pass's own dials, so /draw reaches them through the one command
-        // implementation. No Attach/Install/ContextLost slots -- AlloyRenderer IS the service that drives
-        // this walk, and it owns those edges directly.
+        // implementation. No Attach/Install slots -- AlloyRenderer IS the service that drives this walk, and
+        // it owns those edges directly. ContextLost is in the table anyway (#209): driving the walk is no
+        // reason to be absent from it, and being absent is how this pass kept its own GL names through a
+        // context loss while every pass it calls dropped theirs. No Revoke -- RevokeAll IS its world edge.
         r.Register(new PassLifecycle
         {
             Name = "draw",
+            ContextLost = AlloyRenderer.ContextLost,
             SelfCheck = AlloyRenderer.TuneSelfCheck,
             Describe = AlloyRenderer.DescribeTuning,
             Tune = AlloyRenderer.Tune,

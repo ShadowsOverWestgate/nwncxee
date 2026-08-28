@@ -20,11 +20,11 @@ public sealed unsafe partial class AlloyRenderer
 
     private static void RevokeAll(string why)
     {
-        // #147: ahead of the empty-table guard on purpose. Water planes are keyed on PART POINTERS, and every
-        // reason to reach here (context loss, module unload, a wiped part table) is a reason those pointers
-        // may be reused by different geometry -- a stale plane would union with the new area's and inflate
-        // its fetch. Clearing costs an area's worth of re-measurement, which is a handful of frames.
-        WaterBodies.Clear();
+        // #209: above the empty-table guard, because the ownership count says what ALLOY took and nothing
+        // about what the passes captured -- and for beams, particles and grass this walk is the only
+        // teardown there is. See docs/owned-resource-lifetimes.md.
+        WipeHandles();
+        PassRegistry.Global.Revoke();
         if (_ownCount == 0) return;
         for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero) Revoke(i);
         _ownCount = 0;
@@ -39,11 +39,6 @@ public sealed unsafe partial class AlloyRenderer
         // the VAO cache keys on VDO pointers that may now be freed: retire every slot for reuse. The GL
         // objects can only be deleted inside the bracket, so the rebuild happens there (EnsureVao).
         for (int v = 0; v < _vdoCount; v++) { _vVdo[v] = IntPtr.Zero; _vStale[v] = true; }
-        // #125/#130/#175: every pass's CAPTURED world state hangs off the same freed gobs and the same
-        // retired VAO slots -- the sky's parts, the beams' parts, the emitters, grass's patch table.
-        // Dropping them re-arms the engine's own (unmasked) draw until capture warms again. One walk, so a
-        // pass added later cannot be left out of it the way grass was.
-        PassRegistry.Global.Revoke();
         _sinceEnroll = EnrollEvery;
         // ...and the fast retry, not just the next cadence tick. A wipe leaves the part table empty,
         // so the enrollment this queues necessarily misses -- parts have to be re-recorded first -- and

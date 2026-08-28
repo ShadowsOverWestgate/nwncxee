@@ -86,6 +86,5 @@ internal static unsafe class ShaderResource
     internal static string Tokens(string src) => src
         .Replace("$CAP$", AlloyLights.ClusterCap.ToString())
         .Replace("$GROUP$", AlloyLights.GroupSize.ToString())
-        .Replace("$SRGB$", AlloyLights.SrgbGamma.ToString("0.0#", CultureInfo.InvariantCulture))
-        .Replace("$BAND$", AlloyLights.ShadeBandGlsl);
+        .Replace("$SRGB$", AlloyLights.SrgbGamma.ToString("0.0#", CultureInfo.InvariantCulture));
 }

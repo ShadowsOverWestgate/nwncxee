@@ -182,6 +182,9 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _skVao = new int[MaxSkyDraws], _skTex = new int[MaxSkyDraws];
     private static readonly uint[] _skMode = new uint[MaxSkyDraws];
     private static readonly int[] _skSrc = new int[MaxSkyDraws], _skDst = new int[MaxSkyDraws];
+    /// <summary>#222: the constant colour <c>PartTriMesh::Mat</c> would have set for this sky part -- white,
+    /// or the scene's fog colour where the gob carries the +0x19 tint byte. Three floats per draw.</summary>
+    private static readonly float[] _skTint = new float[MaxSkyDraws * 3];
     private static int _skyFirst, _skyN;
     private static uint _drawBuf;
     /// <summary>#153: the per-draw texture-handle SSBO (binding <see cref="BindTexH"/>).</summary>

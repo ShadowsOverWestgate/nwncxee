@@ -68,6 +68,15 @@ internal static class SceneLayout
     /// @0x4c5810/0x4c5c40).</summary>
     public const int MatShared = 0xd0;
 
+    /// <summary>#222: the Scene's fog COLOUR (Ghidra <c>Scene::SetFogColor(Vector&amp;)</c> @0x45e220 writes
+    /// exactly these three floats), and the gob byte that says a part is painted in it.
+    /// <c>PartTriMesh::Mat</c> @0x450960 takes a branch nothing in the Alloy pass had: with
+    /// <c>gob+0x19</c> set and a live scene it calls <c>SetColor4f(fog.r, fog.g, fog.b, 1.0)</c> and draws
+    /// the part in the FOG COLOUR at full alpha, instead of white at the part's own alpha. The skyfade gob
+    /// is that part -- which is why vanilla's horizon fade is dark at night and ours was a bright grey
+    /// texture.</summary>
+    public const int SceneFogColor = 0x14c, GobFogTint = 0x19;
+
     /// <summary>VDO layout (Ghidra AddItem/RenderVertexData/SetVertexDataObject): +0xc VAO id, +0x14 mode
     /// (1 = indexed static), vertex item table {offset,size} at +0x48 (count +0x50), element item table at
     /// +0x58 (count +0x60).</summary>

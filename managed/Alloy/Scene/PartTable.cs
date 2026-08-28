@@ -141,7 +141,18 @@ internal static unsafe class PartTable
     /// <summary>#134: which gate killed this entry, for the census. There are ten ways to reach StDead and
     /// the aggregate counters name three of them, which is how 5319 gob draws a frame went unexplained.</summary>
     internal static readonly string[] _pDeath = new string[MaxParts];
+    /// <summary>#221: the part this entry recorded has been destroyed (<c>Part::~Part</c>). The entry keeps
+    /// its slot -- returning one to <see cref="StEmpty"/> would cut the probe chains that run through it --
+    /// but its ADDRESS no longer means anything, so the next part the allocator hands back at it must
+    /// re-record instead of landing on the tombstone. Without this a recycled pointer was unownable for the
+    /// life of the table: <see cref="Find"/> matched it, the draw took the not-active branch, and the part
+    /// drew vanilla forever (the character losing Alloy ownership after a few area transitions, which only
+    /// <c>/vanilla</c> -- the one path to <see cref="WipeTables"/> during play -- healed).</summary>
+    internal static readonly bool[] _pFreed = new bool[MaxParts];
     internal static int _partCount;
+    /// <summary>#221: freed slots re-recorded into. Reported by the [batch] line, because "the table is
+    /// reclaiming recycled addresses" and "no part ever dies" read the same in every other counter.</summary>
+    internal static int _reclaims;
 
 
     /// <summary>#137: this entry was recorded through <c>PartSkin::Draw</c>, so it is a TRUE skinmesh --
@@ -269,6 +280,16 @@ internal static unsafe class PartTable
         return _pState[e] = StDead;
     }
 
+    /// <summary>#221: record that <paramref name="part"/> has been destroyed, and return the entry that held
+    /// it (-1 if none). Separate from <c>OnPartDtor</c> so the self-check can exercise it without the
+    /// trampoline. Compares the pointer only -- a dying part is never dereferenced.</summary>
+    internal static int MarkFreed(IntPtr part)
+    {
+        int e = Find(part);
+        if (e >= 0) _pFreed[e] = true;
+        return e;
+    }
+
     internal static ulong HashMatrix(float* m)
     {
         ulong h = 14695981039346656037UL;
@@ -323,18 +344,56 @@ internal static unsafe class PartTable
         int s = (int)(((ulong)part >> 4) % MaxParts);
         for (int probe = 0; probe < 32; probe++, s = (s + 1) % MaxParts)
         {
-            if (_pPart[s] == part) return s;
+            // #221: a pointer match on a FREED slot is a miss -- the address was recycled, so the caller
+            // must re-record. Stopping here cannot skip a live entry for the same pointer: Insert claims the
+            // first reusable slot in the chain, so a live one can never sit behind this pointer's tombstone.
+            if (_pPart[s] == part) return _pFreed[s] ? -1 : s;
             if (_pState[s] == StEmpty) return -1;
         }
         return -1;
     }
 
+    /// <summary>#221: drop an entry from its group's member chain before its slot is reused. Every other
+    /// caller leaves the chain alone on purpose -- it is push-front, nothing removes a member, and a dead
+    /// entry stays linked (the submit walk skips it on state) -- so <c>Complete</c> could assume it pushed
+    /// each entry exactly once. A reused slot breaks that assumption twice over: re-interning to the SAME
+    /// group writes <c>_pNext[e] = e</c>, and the submit walk then loops forever on the render thread, while
+    /// re-interning to a different one splices the old group's chain into the new group's members.</summary>
+    private static void Unlink(int e)
+    {
+        int g = _pGroup[e];
+        if ((uint)g >= (uint)_groupCount) return;      // never completed, or a wiped generation's group id
+        for (int m = _gFirst[g], prev = -1; m >= 0; prev = m, m = _pNext[m])
+        {
+            if (m != e) continue;
+            if (prev < 0) _gFirst[g] = _pNext[e]; else _pNext[prev] = _pNext[e];
+            if (_gCount[g] > 0) _gCount[g]--;
+            break;
+        }
+        _pNext[e] = -1;
+    }
+
     internal static int Insert(IntPtr part)
     {
-        if (_partCount >= MaxParts - MaxParts / 4) return -1;      // keep load factor sane
+        bool room = _partCount < MaxParts - MaxParts / 4;          // keep load factor sane
         int s = (int)(((ulong)part >> 4) % MaxParts);
         for (int probe = 0; probe < 32; probe++, s = (s + 1) % MaxParts)
-            if (_pState[s] == StEmpty) { _pPart[s] = part; _partCount++; return s; }
+        {
+            // #221: reuse comes FIRST and is not gated on the load factor. Reusing a slot lengthens no probe
+            // chain, and _partCount only ever climbs (nothing returns an entry to StEmpty), so gating reuse
+            // on it is what made a long session's recycled pointers unownable once the table crossed 75%.
+            // The slot is left indistinguishable from a fresh one; Record/Complete fill the rest.
+            if (_pFreed[s])
+            {
+                Unlink(s);
+                // StEmpty here terminates the probe chain of every OTHER key that runs through this slot,
+                // and live entries can sit beyond it -- so Record must write a non-empty state before
+                // anything that can re-enter Find (a nested Vanilla draw, a diagnostic).
+                _pFreed[s] = false; _pState[s] = StEmpty; AlloyCensus.OwnFlag[s] = 0;
+                _pPart[s] = part; _reclaims++; return s;
+            }
+            if (_pState[s] == StEmpty) { if (!room) return -1; _pPart[s] = part; _partCount++; return s; }
+        }
         return -1;
     }
 
@@ -464,7 +523,7 @@ internal static unsafe class PartTable
     internal static void WipeTables(string why)
     {
         _wipeFrame = _frame;
-        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(AlloyCensus.OwnFlag);
+        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed); Array.Clear(AlloyCensus.OwnFlag);
         _gSlot.AsSpan().Fill(-1);            // -1 is empty; 0 is a valid group id
         _partCount = 0; _groupCount = 0; TableGen++;
         _saturated = false;

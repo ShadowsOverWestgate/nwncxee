@@ -130,17 +130,6 @@ internal static unsafe class AlloyLights
     /// PCF tap this shipped with; anything above widens the filter with four more taps on a disc
     /// perpendicular to the sample ray. Costs 4 extra cube fetches per shadowing light per fragment.</summary>
     private static float _shadowSoft = 1.5f;
-    /// <summary>#152 distance-banded shading: view depth where the cheap band begins (<c>/light shadeband</c>, 0 =
-    /// off) and the fade width to full cheapness. Past the band a fragment keeps every LIGHT -- the user's
-    /// requirement -- but drops what distance already hides: shadow-map taps (faded to lit across the
-    /// window, so nothing pops), the specular lobe, and the PBR map fetches. Fog and minification dominate
-    /// out there; the band just stops paying for what they erase. Compile-time constant ($BAND$), so no
-    /// uniform plumbing, and a stale content override simply keeps the old full-cost path.</summary>
-    private static float _shadeBand = 45f, _shadeFade = 15f;
-    /// <summary>The $BAND$ token: "start, 1/fade" as a vec2 constructor's arguments.</summary>
-    internal static string ShadeBandGlsl =>
-        _shadeBand.ToString("0.0#", CultureInfo.InvariantCulture) + ", " +
-        (_shadeBand > 0f ? 1f / MathF.Max(_shadeFade, 0.01f) : 0f).ToString("0.0###", CultureInfo.InvariantCulture);
     /// <summary>#139: self-shadow near-field skip, as a multiple of <see cref="_srcRadius"/>. A world point
     /// closer to the light than this is reported lit outright -- a carried torch sits INSIDE the hand and
     /// forearm holding it, and a punctual shadow test there shadows the carrier from its own light.</summary>
@@ -170,7 +159,6 @@ internal static unsafe class AlloyLights
                          _bootAmbient = 1f, _bootSun = 1f, _bootOver = 1f;
     private static float _bootHot = 0.9f, _bootHotSize = 0.15f, _bootWrapN = 0.25f;
     private static float _bootWrap = 1f, _bootShadowSoft = 0f, _bootShadowNear = 1f;
-    private static float _bootShadeBand = 45f;
 
     /// <summary>Current tuning, one line, for the <c>/light</c> echo and the arm-time log.</summary>
     internal static string Describe() =>
@@ -178,7 +166,7 @@ internal static unsafe class AlloyLights
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  " +
         $"ambient x{AmbientScale:F2}  sun x{SunScale:F2}  overbright x{OverbrightScale:F2}  " +
         $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  shadowsoft {_shadowSoft:F2}  shadownear {_shadowNear:F2}  " +
-        $"hot {_hot:F2}  hotsize {_hotSize:F3}  shadeband {_shadeBand:F1}";
+        $"hot {_hot:F2}  hotsize {_hotSize:F3}";
 
     /// <summary>Live tuning setter behind <c>/light</c>. Returns the old value, or NaN for an unknown key.
     /// <para>Written from the input thread and read by the render thread next frame. That is safe WITHOUT a
@@ -201,9 +189,6 @@ internal static unsafe class AlloyLights
             case "shadownear": old = _shadowNear; _shadowNear = v; break;
             case "hot":     old = _hot; _hot = v; break;
             case "hotsize": old = _hotSize; _hotSize = v; break;
-            // The band is a COMPILE-TIME constant ($BAND$, expanded by ShaderResource), so unlike every
-            // other dial it needs the Alloy programs relinked before it can be seen.
-            case "shadeband": old = _shadeBand; _shadeBand = v; AlloyRenderer.RequestProgramRebuild(); break;
             default: return float.NaN;
         }
         _log?.Info($"AlloyLights: /light {key} {v:F2} (was {old:F2}) -> {Describe()}");
@@ -224,7 +209,6 @@ internal static unsafe class AlloyLights
         float Att(float f2, float gain) => gain * (1f - f2) / (_atten.X + _atten.Y * f2);
         float g = _gain, r = _srcRadius, p = _falloffPow, am = AmbientScale, su = SunScale, ov = OverbrightScale;
         float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN;
-        float sbv = _shadeBand;
         float bg = _bootGain, br = _bootRadius, bp = _bootPow, ba = _bootAmbient, bs = _bootSun, bo = _bootOver;
 
         _bootGain = 40f; _bootRadius = 0.7f; _bootPow = 2f; _bootAmbient = 1f; _bootSun = 1f; _bootOver = 1f;
@@ -232,23 +216,18 @@ internal static unsafe class AlloyLights
         bool ok = float.IsNaN(Tune("nope", 1f));                       // unknown knob is reported
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyLights.SelfCheck FAIL: {w}"); } }
         foreach (var key in new[] { "gain", "radius", "falloff", "ambient", "sun", "overbright",
-                                    "wrap", "wrapndl", "shadowsoft", "shadownear", "hot", "hotsize",
-                                    "shadeband" })
+                                    "wrap", "wrapndl", "shadowsoft", "shadownear", "hot", "hotsize" })
             ok &= !float.IsNaN(Tune(key, 3f));                          // every documented knob is reachable
         ok &= _gain == 3f && _srcRadius == 3f && _falloffPow == 3f && AmbientScale == 3f && SunScale == 3f
               && OverbrightScale == 3f && _wrap == 3f && _shadowSoft == 3f && _shadowNear == 3f
-              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadeBand == 3f;
-        // #179: the band is the one dial the shader bakes in, so tuning it must move the TOKEN too --
-        // a set that leaves $BAND$ at the old text is a knob that reports a value the frame never runs.
-        E(ShadeBandGlsl.StartsWith("3.0", StringComparison.Ordinal),
-          "shadeband reaches the $BAND$ token the lit stage is built from");
+              && _hot == 3f && _hotSize == 3f && _wrapN == 3f;
         _bootGain = 7f;                                                 // reset must honour the BOOT value...
         ResetTuning();
         ok &= _gain == 7f && _srcRadius == 0.7f && AmbientScale == 1f;  // ...not the 40f literal
         ok &= Describe().Contains("gain") && Describe().Contains("sun") && Describe().Contains("overbright")
               && Describe().Contains("wrap") && Describe().Contains("shadowsoft")
               && Describe().Contains("shadownear") && Describe().Contains("hot")
-              && Describe().Contains("wrapndl") && Describe().Contains("shadeband");
+              && Describe().Contains("wrapndl");
 
         // #140: the engine's attenuation constants, and the property that actually matters -- the curve's
         // peak is the engine's own max-intensity setting in LINEAR space. Get the sign of the exponent
@@ -296,7 +275,6 @@ internal static unsafe class AlloyLights
 
         _gain = g; _srcRadius = r; _falloffPow = p; AmbientScale = am; SunScale = su; OverbrightScale = ov;
         _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn;
-        _shadeBand = sbv;
         _log = quiet;
         log.Info(ok ? "AlloyLights.SelfCheck: passed"
                     : "AlloyLights.SelfCheck: FAILED -- /light knob table drifted from its documented keys");
@@ -310,7 +288,6 @@ internal static unsafe class AlloyLights
         AmbientScale = _bootAmbient; SunScale = _bootSun; OverbrightScale = _bootOver;
         _wrap = _bootWrap; _shadowSoft = _bootShadowSoft; _shadowNear = _bootShadowNear;
         _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN;
-        if (_shadeBand != _bootShadeBand) { _shadeBand = _bootShadeBand; AlloyRenderer.RequestProgramRebuild(); }
         _log?.Info($"AlloyLights: /light reset -> {Describe()}");
     }
     /// <summary>What the shader is actually running, for the period log -- read where it is USED, not at
@@ -357,7 +334,6 @@ internal static unsafe class AlloyLights
         _bootWrap = _wrap; _bootShadowSoft = _shadowSoft; _bootShadowNear = _shadowNear;
         _bootGain = _gain; _bootRadius = _srcRadius; _bootPow = _falloffPow;
         _bootAmbient = AmbientScale; _bootSun = SunScale; _bootOver = OverbrightScale;
-        _bootShadeBand = _shadeBand;
         log.Info($"AlloyLights: {Describe()} -- /light retunes every dial live, /light reset restores these");
     }
 
@@ -720,14 +696,6 @@ internal static unsafe class AlloyLights
         // behaviour. 0 = off, which is what such an override leaves behind.
         uniform float uWrapN;
         const uint SOWX_CLUSTER_CAP = $CAP$u;
-        // #152: (band start view depth, 1/fade width). 0 start = banding off. SowxShadeLod is 0 near (full
-        // cost), 1 past the band (lights kept; taps/lobe/maps dropped -- what fog and minification already
-        // erased). A content override compiled before this token existed never references it and keeps the
-        // full-cost path, which is the safe direction.
-        const vec2 SOWX_SHADE_BAND = vec2($BAND$);
-        float SowxShadeLod(float viewDepth)
-        { return SOWX_SHADE_BAND.x <= 0.0 ? 0.0 : clamp((viewDepth - SOWX_SHADE_BAND.x) * SOWX_SHADE_BAND.y, 0.0, 1.0); }
-
         // The engine's own sRGB->linear conversion (Ghidra RenderInterface::GetColorSpaceFromSRGB: powf(c,
         // 2.2) per channel, identity at 0 and 1). Textures and material colours both arrive non-linear --
         // the stock shaders apply the same curve via ApplyColorSpace before lighting them.
@@ -828,7 +796,6 @@ internal static unsafe class AlloyLights
                                 float rough, float specularity, out vec3 spec)
         {
             spec = vec3(0.0);
-            float lod = SowxShadeLod(viewDepth);
             uint cl = SowxCluster(viewDepth);
             uint n = uClCount[cl];
             uint base = cl * SOWX_CLUSTER_CAP;
@@ -889,12 +856,10 @@ internal static unsafe class AlloyLights
                 // #143 floor on top of it would wrap past the point of looking lit at all.
                 float ndl = SowxWrap(dot(N, L), max(s, uWrapN));
                 if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
-                // #152: past the shade band the light STAYS -- only its shadow taps fade to lit and its
-                // specular contribution fades out, both across the band window so nothing pops.
-                float sh = lod >= 1.0 ? 1.0 : mix(SowxLocalShadow(slot, worldPos, N), 1.0, lod);
+                float sh = SowxLocalShadow(slot, worldPos, N);
                 vec3 lit = c * (max(att, 0.0) * ndl * sh);
                 acc += lit;
-                if (lod < 1.0) spec += lit * SowxSpecLobe(N, V, L, rough, specularity) * (1.0 - lod);
+                spec += lit * SowxSpecLobe(N, V, L, rough, specularity);
             }
             return acc;
         }

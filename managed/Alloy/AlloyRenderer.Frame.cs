@@ -86,7 +86,6 @@ public sealed unsafe partial class AlloyRenderer
         if (perspective && Matrix4x4.Invert(view, out Matrix4x4 camToWorld))
         {
             _eyePos = camToWorld.Translation;   // #120: this pass's eye, for the specular view vector
-            _lodScale = proj.M22 * viewport[3] * 0.5f;
             FrameInputs.LatchSceneCam(camToWorld.Translation,
                 Vector3.Normalize(Vector3.TransformNormal(new Vector3(0f, 0f, -1f), camToWorld)),
                 p11, viewport[2] * viewport[3], _frameSeq);

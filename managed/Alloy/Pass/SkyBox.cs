@@ -205,6 +205,23 @@ internal static unsafe class SkyBox
     /// <summary>The engine's own gates, mirrored: the skybox off byte, "no current sky", the fade epsilon
     /// (<c>DAT_013eeeb0</c> is 0.0f) on the desired sky, and a null cross-fade gob. Miss one of these and the
     /// Alloy pass paints a sky into an interior.</summary>
+    /// <summary>#222: is this gob painted in the scene's FOG COLOUR? <c>PartTriMesh::Mat</c> @0x450960:
+    /// with <c>gob+0x19</c> set and a live scene it calls <c>SetColor4f(fog.rgb, 1.0)</c> -- the part is
+    /// drawn in the fog colour at FULL alpha, not white at its own. The skyfade gob is exactly that, which
+    /// is why vanilla's horizon fade goes dark at night while ours drew the raw grey texture.
+    /// <para>Reads the gob only to compare a byte; the pointer is the one <see cref="Roles"/> just took off
+    /// the Scene, so it is live for the length of the staging walk.</para></summary>
+    internal static bool FogTinted(IntPtr gob)
+        => gob != IntPtr.Zero && *(byte*)(gob + GobFogTint) != 0;
+
+    /// <summary>The scene's fog colour, the value <c>Mat()</c> tints with. Display space, like every colour
+    /// the engine hands out.</summary>
+    internal static void FogColor(IntPtr scene, float* rgb)
+    {
+        float* f = (float*)(scene + SceneFogColor);
+        rgb[0] = f[0]; rgb[1] = f[1]; rgb[2] = f[2];
+    }
+
     internal static int Roles(IntPtr scene, Span<Role> into)
     {
         int n = 0;
@@ -286,7 +303,23 @@ internal static unsafe class SkyBox
     /// a healthy "masked" long after the sky stopped being drawn, which is the opposite of the question.</summary>
     internal static void ResetPeriod() { _masked = 0; _captured = 0; _foreign = 0; }
 
+    /// <summary>The role alphas the last staged pass actually used, for the period line. #132 made the Alloy
+    /// frame LINEAR and the resolve does the one encode, so a role drawn at partial alpha composites
+    /// BRIGHTER than the engine's display-space blend of the same value -- by alpha^(1/2.2)/alpha, which is
+    /// 1.5x at 0.5 and 4x at 0.1. Whether that is happening is a question about these three numbers, and
+    /// nothing else in the log carries them.</summary>
+    internal static void NoteRoles(Span<Role> r, int n)
+    {
+        _roleN = n;
+        for (int i = 0; i < n && i < 3; i++) _roleAlpha[i] = r[i].Alpha;
+    }
+    private static int _roleN;
+    private static readonly float[] _roleAlpha = new float[3];
+
     internal static string Stats() => _disabled ? "sky off (/sky)" : $"sky {_count} parts, {_captured} captured, {_masked} masked" +
+        $", roles {_roleN}" + (_roleN == 0 ? "" : " at alpha " +
+            string.Join("/", System.Linq.Enumerable.Select(
+                System.Linq.Enumerable.Take(_roleAlpha, _roleN), a => a.ToString("F3")))) +
         $", dtor-revoked={_revoked}" +
         (Unported() == 0 ? "" : $", {Unported()} LEFT VANILLA (custom sky shader not ported to the Alloy pass)") +
         (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped");

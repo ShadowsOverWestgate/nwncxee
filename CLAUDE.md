@@ -74,6 +74,7 @@ Navigation:
       Services/                business logic -- this is where you work
       Alloy/                   the renderer (#198). Core/ Scene/ Pass/ under namespace Sowx.Alloy
     docs/hook-pattern.md       example: a real hook + trampoline
+    docs/owned-resource-lifetimes.md  what creates/revokes each owned table, and Revoke vs ContextLost
     native/bootstrap.c         the only native code
     third_party/funchook       hooking engine (git submodule)
 

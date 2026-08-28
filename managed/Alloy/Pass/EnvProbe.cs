@@ -149,6 +149,16 @@ internal static unsafe class EnvProbe
             ResetTuning();
             E(Gain == 0.25f && _on, "reset honours the BOOT value and re-arms");
             _bootGain = boot;
+
+            // #209: the world edge, which the probe had no slot for at all. Both halves matter -- dropping
+            // Ready without the key would re-bake once and then trust the stale key again, and dropping the
+            // key without Ready leaves the cube readable until the player walks MoveDist.
+            Tex = 9; Ready = true; _bsp = (IntPtr)0x1234;
+            Revoke();
+            E(!Ready && _bsp == IntPtr.Zero,
+              "the world edge drops the cube's freshness AND its BSP key -- a recycled BSP address must not read as the same area");
+            E(Tex == 9, "...and keeps the GL objects: they belong to the context, not to the world");
+            Tex = 0;
         }
         finally
         {
@@ -226,7 +236,18 @@ internal static unsafe class EnvProbe
     /// owned them is gone -- the names are simply dropped so the next capture builds fresh ones.</summary>
     internal static void Forget()
     {
-        Tex = 0; _fbo = 0; Ready = false; _bsp = IntPtr.Zero; _down.Forget();
+        Tex = 0; _fbo = 0; _down.Forget();
+        Revoke();   // a cube built by a dead context is stale for the world reason too
+    }
+
+    /// <summary>#209: the world edge. The cube describes an area that has gone away, and <see cref="_bsp"/>
+    /// -- the only thing that would ask for a re-bake -- is a BARE POINTER used as an equality key. The
+    /// allocator recycles those, so a new area landing on the old BSP address kept <see cref="Ready"/> set
+    /// and lit the new interior with the previous one's env map. The GL objects survive: they are the
+    /// context's, not the world's, and the next capture reuses them.</summary>
+    internal static void Revoke()
+    {
+        Ready = false; _bsp = IntPtr.Zero;
     }
 
     /// <summary>The view the probe is captured with, for the light-cluster build: the FACE's view, not the

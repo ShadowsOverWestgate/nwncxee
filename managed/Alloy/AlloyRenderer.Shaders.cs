@@ -327,6 +327,17 @@ public sealed unsafe partial class AlloyRenderer
         // #126: the engine's fAlphaDiscardValue -- 0.2 on the classes it draws under Enable(1), -1.0 (i.e.
         // no test at all) on the rest. A uniform here because the class is a per-batch fact.
         uniform float uAlphaCut;
+        // #222: 1 = linearise the texel, which is what every Alloy draw wants against the linear frame.
+        // 0 = leave it in DISPLAY space, which only the skybox asks for, because SkyComposite gives it a
+        // display-space target to blend against and decodes the result once. A stage override that predates
+        // this uniform links with the location at -1, the set is a no-op, and its baked-in linearise stands:
+        // the sky keeps #222's bright horizon and nothing else changes.
+        uniform int uLinearOut;
+        // #222: the constant colour PartTriMesh::Mat sets before the draw. White for every ordinary unlit
+        // part; the SCENE'S FOG COLOUR for a part whose gob carries the +0x19 tint byte, which is what the
+        // skyfade gob is. A uniform rather than a per-draw record field because the whole unlit class shares
+        // one value and the sky changes it at most once per role.
+        uniform vec3 uTint;
         out vec4 frag;
         void main()
         {
@@ -336,7 +347,9 @@ public sealed unsafe partial class AlloyRenderer
             // #132: the target is LINEAR, so the texel's display-space encode comes off here too -- the
             // probe and the frame want the same thing now. Same exponent AlloyLights.SowxLinear uses,
             // spelled out because this stage does not include that lib.
-            frag = vec4(pow(max(t.rgb, vec3(0.0)), vec3($SRGB$)), t.a * vAlpha);
+            vec3 tinted = t.rgb * uTint;
+            vec3 rgb = uLinearOut != 0 ? pow(max(tinted, vec3(0.0)), vec3($SRGB$)) : tinted;
+            frag = vec4(rgb, t.a * vAlpha);
         }
         """;
 
@@ -683,14 +696,12 @@ public sealed unsafe partial class AlloyRenderer
                 flowMix = abs(c1 - 0.5) * 2.0;
             }
             vec3 V = normalize(uEyePos - vWorld);
-            // #152: how deep into the cheap band this fragment sits (0 = full cost, 1 = fully banded).
-            float shadeLod = SowxShadeLod(vDepth);
             float occl = 1.0;
             // #146: outside the normal/height branch below -- a material may declare an AO map and nothing
             // else, and the engine's screen-space SSAO (an FB effect, downstream of this pass entirely) does
             // not see the contact detail a baked map carries.
-            if ((slots & SOWX_SLOT_AO) != 0 && shadeLod < 1.0) occl *= mix(texture(uAoTex, uv).r, 1.0, shadeLod);
-            if ((slots & (SOWX_SLOT_NORMAL | SOWX_SLOT_HEIGHT)) != 0 && shadeLod < 1.0)
+            if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv).r;
+            if ((slots & (SOWX_SLOT_NORMAL | SOWX_SLOT_HEIGHT)) != 0)
             {
                 // Cotangent frame from screen-space derivatives (Mikkelsen), NOT the engine's vTangent /
                 // fHandedness streams at attribute locations 4/5 (GLRender::ConnectShaderData's bind table).
@@ -735,9 +746,7 @@ public sealed unsafe partial class AlloyRenderer
             float sunNdl = SowxWrap(dot(N, uAreaDir), uWrapN);
             // the wrapped value, not the raw one -- a fragment the wrap has just lit must still be able to
             // be in shadow, or the band the wrap opens up glows through every caster
-            // #152: the sun's PCF taps fade to lit across the band -- the cascades cover 120u and the far
-            // half of that is exactly where their texels are coarsest and fog is thickest.
-            float sunVis = shadeLod >= 1.0 ? 1.0 : mix(SowxSunShadow(vWorld, N, sunNdl), 1.0, shadeLod);
+            float sunVis = SowxSunShadow(vWorld, N, sunNdl);
             // 3 = sun visibility alone: white lit, black shadowed. A frame that looks unshadowed reads here
             //     as "the cascades are empty" or "nothing selected a cascade", which the composite cannot say.
             if (uViz == 3) { frag = vec4(vec3(sunVis), 1.0); return; }
@@ -761,8 +770,8 @@ public sealed unsafe partial class AlloyRenderer
             // #122: the maps are sampled here and the synthesis itself is a pure function -- it has to fold
             // to a constant off-device (check-shaders.py) for the declared-beats-synthesised rule to be
             // checkable at all. A slot with nothing bound is not sampled, exactly as before.
-            float specTexel = (slots & SOWX_SLOT_SPEC) != 0 && shadeLod < 1.0 ? texture(uSpecTex, uv).r : 0.0;
-            float roughTexel = (slots & SOWX_SLOT_ROUGH) != 0 && shadeLod < 1.0 ? texture(uRoughTex, uv).r : 0.0;
+            float specTexel = (slots & SOWX_SLOT_SPEC) != 0 ? texture(uSpecTex, uv).r : 0.0;
+            float roughTexel = (slots & SOWX_SLOT_ROUGH) != 0 ? texture(uRoughTex, uv).r : 0.0;
             vec3 pbr = SowxSynthPbr(d.pbr.xyz, slots, envLevel, specTexel, roughTexel);
             float spec = pbr.x, rough = pbr.y, metal = pbr.z;
             vec3 base = albedo * matDiffuse;

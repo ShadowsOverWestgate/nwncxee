@@ -810,6 +810,56 @@ internal static unsafe class AlloyCensus
             Log = log;
         }
 
+        // #221: the recycled-address path. Live it looks like "Alloy silently released the character" with
+        // no revoke, no refusal and no counter moving, and it only heals on a table wipe -- so it is asserted
+        // here, on the real arrays, rather than trusted to a session that has to be caught in the act.
+        savedParts = _partCount; int savedReclaims = _reclaims;
+        try
+        {
+            _partCount = 0; _reclaims = 0;
+            IntPtr p1 = (IntPtr)0x4000;
+            int e1 = Insert(p1);
+            E(e1 >= 0 && Find(p1) == e1, "a fresh part inserts and is found");
+            _pState[e1] = StActive;
+            E(MarkFreed(p1) == e1, "Part::~Part finds the entry that held the dying pointer");
+            E(Find(p1) < 0, "...and the address stops resolving to its tombstone");
+            int e2 = Insert(p1);
+            E(e2 == e1 && Find(p1) == e2, "a part recycled onto the same address re-records into that slot");
+            E(_pState[e2] == StEmpty && OwnFlag[e2] == 0 && _partCount == 1,
+              "...as a slot indistinguishable from a fresh one, and without double-counting the part");
+            // and the load factor must not gate reuse: _partCount only ever climbs, so a long session
+            // otherwise reaches a point where every recycled pointer is refused forever
+            _pState[e2] = StActive; MarkFreed(p1);
+            _partCount = MaxParts;
+            E(Insert(p1) == e1, "a freed slot is reusable even with the table's load factor exhausted");
+            E(Insert((IntPtr)0x8000) < 0, "...while a genuinely new pointer is still refused there");
+            E(_reclaims == 2, "and each reuse is counted");
+
+            // ...and the slot leaves its old group's member chain on the way out. Complete pushes and
+            // nothing else ever removes, so a slot reused while still linked either points _pNext at itself
+            // -- an unbounded submit walk on the RENDER thread -- or splices its old group into its new one.
+            int sg = _groupCount;
+            _groupCount = 1; _gFirst[0] = e1; _gCount[0] = 3;
+            _pGroup[e1] = 0; _pNext[e1] = 40; _pGroup[40] = 0; _pNext[40] = 41; _pGroup[41] = 0; _pNext[41] = -1;
+            _pState[e1] = StActive; MarkFreed(p1);
+            E(Insert(p1) == e1, "the reuse under test still takes the same slot");
+            E(_gFirst[0] == 40 && _pNext[41] == -1 && _gCount[0] == 2,
+              "a reused HEAD leaves the group chain, which stays walkable and loses exactly one member");
+            E(_pNext[e1] == -1, "...and the slot itself links to nothing, so re-completing it cannot self-loop");
+            // the same from the middle of the chain, which is the splice case
+            _gFirst[0] = 40; _pNext[40] = e1; _pNext[e1] = 41; _gCount[0] = 3; _pGroup[e1] = 0;
+            _pState[e1] = StActive; MarkFreed(p1);
+            E(Insert(p1) == e1 && _pNext[40] == 41 && _gCount[0] == 2,
+              "a reused MIDDLE member is spliced out, not out of the chain's other links");
+            _groupCount = sg; _gFirst[0] = -1; _gCount[0] = 0;
+        }
+        finally
+        {
+            Array.Clear(_pState); Array.Clear(_pPart); Array.Clear(_pFreed); Array.Clear(OwnFlag);
+            Array.Clear(_pGroup); Array.Clear(_pNext);
+            _partCount = savedParts; _reclaims = savedReclaims;
+        }
+
         log.Info(ok ? "AlloyCensus.GobSelfCheck: passed" : "AlloyCensus.GobSelfCheck: FAILED");
         return ok;
     }

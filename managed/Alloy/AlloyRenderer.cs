@@ -318,6 +318,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// without this there is nothing to point the feature at.</summary>
     private static bool _aoTest = DefAoTest;
     private static int _locViz = -1;
+    /// <summary>#222: the fullbright stage's colour-space switch. Set on every bind of that program -- a
+    /// GLSL uniform defaults to 0, i.e. display space, which is right for the sky alone.</summary>
+    private static int _locLinear = -1;
+    /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
+    /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
+    private static int _locTint = -1;
     /// <summary>#121: this draw is going into the <see cref="EnvProbe"/> cube, not onto the screen. The lit
     /// and water stages read it, so a capture never samples the probe -- which is currently an attachment of
     /// the framebuffer being drawn into. Since #132 it says nothing about COLOUR SPACE any more: the screen
@@ -438,15 +444,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// and the post chain (bloom + composite). Their sum with colour/prepass/shadow is the whole Alloy GPU
     /// frame; until these existed the variance the user chased lived in the unmeasured slice.</summary>
     private static GpuQuery _qParticles, _qWater, _qSkyGrass, _qPost;
-    /// <summary>#152 colour LOD: a part whose bbox projects to fewer PIXELS than this is skipped -- and
-    /// STAMPED, so the engine does not draw it either: sub-pixel geometry is nobody's to render. The classic
-    /// LOD trade NWN never had; a whole-area camera is full of parts a fraction of a pixel tall.
-    /// <c>/draw lodpx</c> tunes it (0 disables); raise toward 2-3 for aggressive distance thinning.</summary>
-    private static float _lodPx = DefLodPx;
-    /// <summary>Projection scale for the LOD test: <c>proj.M22 * viewportH / 2</c> -- world radius over
-    /// distance times this = radius in pixels. Captured per pass beside the eye.</summary>
-    private static float _lodScale;
-    private static long _lodSkipped;
 
     /// <summary>One-shot FBO-topology report (#151, the "does AA even apply to us" question).</summary>
     private static int _fboDiagSig = -1, _fboDiagLeft = 8;
@@ -466,11 +463,38 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             {
                 ulong v = Gl.GetTextureHandleARB((uint)tid);
                 if (v != 0) Gl.MakeTextureHandleResidentARB(v);
+                if (_handleDiagLeft > 0) HandleDiag(tid, v);
                 _hTid[h] = tid; _hVal[h] = v;
                 return v;
             }
             h = (h + 1) & mask;
         }
+    }
+
+    /// <summary>Diagnostic budget for <see cref="HandleDiag"/>. Cold by construction -- the miss path runs
+    /// about once per distinct texture per enrollment, not per draw -- and it stops speaking after this many
+    /// reports, so it costs one branch on a warm cache.</summary>
+    private static int _handleDiagLeft = HandleDiagBudget;
+    private const int HandleDiagBudget = 24;
+    /// <summary>#153 follow-up: which GL call is failing on the handle path, and with what. The 4.6 bracket
+    /// drains <c>glGetError</c> anonymously, so a session reporting "errors 4.6=450" says a fault exists and
+    /// nothing about where -- and the two candidate faults are told apart by the CODE.
+    /// <c>INVALID_OPERATION</c> after a non-zero handle is a re-resident of an already-resident handle (the
+    /// enrollment wipe forgetting residency it never gave up); <c>INVALID_VALUE</c>, or a zero handle from a
+    /// tid the material just resolved, is a dead or recycled texture name.
+    /// <para>Deliberately drains here rather than in the bracket: a code without its call site is the same
+    /// non-answer the bracket already gives.</para></summary>
+    private static void HandleDiag(int tid, ulong v)
+    {
+        uint err = 0, e;
+        int guard = 0;
+        while ((e = Gl.GetError()) != 0 && ++guard < 8) err = e;
+        if (err == 0 && v != 0) return;   // the normal case; this path allocates nothing, so it stays silent
+        _handleDiagLeft--;
+        _log?.Info($"AlloyRenderer: [handle] tid={tid} handle=0x{v:x} err=0x{err:x} " +
+                   (v == 0 ? "-- glGetTextureHandleARB returned NO handle for a tid the material resolved this frame"
+                           : "-- the handle came back but the call errored") +
+                   $" ({_handleDiagLeft} reports left)");
     }
 
     /// <summary>#153: does this context expose ARB_bindless_texture? By STRING -- GLX returns non-null
@@ -640,12 +664,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// because with the env reads gone the code default IS the boot value -- and a const cannot drift from
     /// the field initialiser the way a hand-copied literal did.</summary>
     private const bool DefLighting = true, DefPrepass = true, DefAoTest = false;
-    private const float DefLodPx = 1.0f, DefSunBias = 0.06f;
+    private const float DefSunBias = 0.06f;
     private const int DefViz = 0;
 
     /// <summary>The Alloy pass's live dials, for the <c>/draw</c> echo and the arm-time line.</summary>
     internal static string DescribeTuning() =>
-        $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  lodpx {_lodPx:F2}  " +
+        $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
         $"viz {_lightViz}/{LightVizMax}  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}";
 
     /// <summary>Live tuning setter behind <c>/draw</c>. Returns the old value, or NaN for an unknown key.
@@ -662,7 +686,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         {
             case "light":    old = _lighting ? 1f : 0f; _lighting = v != 0f; break;
             case "prepass":  old = _depthPrepass ? 1f : 0f; _depthPrepass = v != 0f; break;
-            case "lodpx":    old = _lodPx; _lodPx = v; break;
             case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
             case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
             case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
@@ -676,18 +699,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static void ResetTuning()
     {
         _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
-        _lodPx = DefLodPx; _sunWorldBias = DefSunBias; _lightViz = DefViz;
+        _sunWorldBias = DefSunBias; _lightViz = DefViz;
         _log?.Info($"AlloyRenderer: /draw reset -> {DescribeTuning()}");
     }
-
-    /// <summary>#179: an Alloy program must be relinked before a compile-time constant it bakes in
-    /// (<c>$BAND$</c>) can be seen. Set from the input thread, consumed inside the 4.6 bracket by
-    /// <see cref="TakeProgramRebuild"/> -- deleting a GL name from the chat thread would be a delete on the
-    /// wrong context.</summary>
-    private static volatile bool _rebuildPrograms;
-
-    /// <summary>Ask for a relink at the next Alloy pass. Cold: one chat command.</summary>
-    internal static void RequestProgramRebuild() => _rebuildPrograms = true;
 
     /// <summary>Headless check of the <c>/draw</c> contract: every documented key is reachable, an unknown one
     /// is reported rather than silently ignored, the viz ceiling clamps instead of no-opping, and reset
@@ -700,12 +714,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyRenderer.TuneSelfCheck FAIL: {w}"); } }
 
         bool li = _lighting, dp = _depthPrepass, ao = _aoTest;
-        float lx = _lodPx, cb = _sunWorldBias;
+        float cb = _sunWorldBias;
         int vz = _lightViz;
 
-        foreach (string key in new[] { "light", "prepass", "lodpx", "viz", "aotest", "csmbias" })
+        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias" })
             E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
-        E(_lighting && _depthPrepass && _aoTest && _lodPx == 1f && _sunWorldBias == 1f && _lightViz == 1,
+        E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1,
           "every key lands on its own field");
         E(Tune("light", 0f) == 1f && !_lighting, "a boolean dial takes 0 and reports its old value as 1");
         E(Tune("viz", LightVizMax + 5f) == 1f && _lightViz == LightVizMax,
@@ -714,14 +728,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
         ResetTuning();
         E(_lighting == DefLighting && _depthPrepass == DefPrepass && _aoTest == DefAoTest
-          && _lodPx == DefLodPx && _sunWorldBias == DefSunBias && _lightViz == DefViz,
+          && _sunWorldBias == DefSunBias && _lightViz == DefViz,
           "reset returns every dial to its boot value");
         E(DescribeTuning().Contains("light") && DescribeTuning().Contains("prepass")
-          && DescribeTuning().Contains("lodpx") && DescribeTuning().Contains("viz")
+          && DescribeTuning().Contains("viz")
           && DescribeTuning().Contains("aotest") && DescribeTuning().Contains("csmbias"),
           "the echo names every key the command accepts");
 
-        _lighting = li; _depthPrepass = dp; _aoTest = ao; _lodPx = lx; _sunWorldBias = cb; _lightViz = vz;
+        _lighting = li; _depthPrepass = dp; _aoTest = ao; _sunWorldBias = cb; _lightViz = vz;
         _log = quiet;
         log.Info(ok ? "AlloyRenderer.TuneSelfCheck: passed"
                     : "AlloyRenderer.TuneSelfCheck: FAILED -- the /draw knob table drifted from its keys");
@@ -960,6 +974,27 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Beams.OnRepack(vdo);
     }
 
+    /// <summary>#209: this pass's own context-loss slot, which it drove inline (and incompletely) before the
+    /// lifetime audit. Every GL NAME here belongs to the 4.6 context, so nothing is deleted -- the objects
+    /// went with it -- the names are dropped so each Ensure rebuilds instead of short-circuiting on a
+    /// non-zero handle and drawing through a dead one. That is #175's bug, in the one pass that still had it.
+    /// <para>Uniform locations are not listed: every one of them is re-fetched by the Ensure that rebuilds
+    /// its program. <c>_progFailed</c>/<c>_litFailed</c> are deliberately NOT cleared -- a stage that could
+    /// not build is a fact about the source, not about the context, and clearing them would re-arm a pass
+    /// EndFrame already disarmed. <c>_waterFailed</c> is cleared because it also latches a knob state
+    /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
+    internal static void ContextLost()
+    {
+        _prog46 = 0; _progLit46 = 0; _progDepth = 0; _progDepthKey = 0; _progWater = 0; _fbo46 = 0;
+        _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
+        // ...and the VAO cache. RevokeAll marks the slots stale, and EnsureVao DELETES a stale non-zero name
+        // before rebuilding -- which on a name minted by a context that no longer exists is a delete aimed at
+        // whatever the next context recycles that number for.
+        for (int v = 0; v < MaxVdos; v++) _vVao46[v] = 0;
+        _waterFailed = false;
+        DepthResource.Revoke();
+    }
+
     /// <summary>Frame tick from the present (after the bucket walks). Module unload, a PartTable
     /// wipe and a lost 4.6 context all invalidate every recorded identity wholesale.</summary>
     public static void EndFrame()
@@ -979,9 +1014,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        ") -- the Alloy world pass is off for this session and no [alloy] lines will follow");
             return;
         }
-        if (!GlContextService.Available)
-        { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost();
-          _progWater = 0; _waterFailed = false; DepthResource.Revoke(); }
+        if (!GlContextService.Available) { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost(); }
         bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) RevokeAll("module unload");
         _wasInModule = inModule;
@@ -1069,7 +1102,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        ? $", shaded {_qSamples.Avg / 1e6:F2}M samples/frame over {_lastPixels / 1e6f:F2}Mpx " +
                          $"(overdraw x{_qSamples.Avg / _lastPixels:F2})"
                        : "") +
-                   $", LOD skipped {_lodSkipped / (float)Math.Max(_frames, 1):F0} sub-pixel draws/frame (/draw lodpx {_lodPx})" +
                    (_qColour.Measured ? $", colour passes {_qColour.Avg / 1e6:F3}ms (opaque+blended+additive)" : "") +
                    (_qParticles.Measured || _qWater.Measured || _qPost.Measured
                        ? $", gpu split: particles {_qParticles.Avg / 1e6:F3} / water {_qWater.Avg / 1e6:F3} / " +
@@ -1111,7 +1143,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Array.Clear(_unmatchedBucket); Array.Clear(_unseenBucket); Array.Clear(_unmatchedCls); _unmatchedUnseen = 0;
         Array.Clear(_drawsByClass);
         _clusterOverflow = 0;
-        _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _lodSkipped = 0; _qPrepass.Reset(); _qSamples.Reset(); _qColour.Reset();
+        _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _qPrepass.Reset(); _qSamples.Reset(); _qColour.Reset();
         _qParticles.Reset(); _qWater.Reset(); _qSkyGrass.Reset(); _qPost.Reset();
     }
 

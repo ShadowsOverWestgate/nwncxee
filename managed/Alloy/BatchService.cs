@@ -622,7 +622,9 @@ public sealed unsafe class BatchService : IExtenderService
         // #150: unconditional, and NOT inside the Find branch below -- a sky part is deliberately routed away
         // from this table (OnPartDraw's SkyBox window returns early), so Find never sees one.
         SkyBox.Revoke(part);
-        int e = Find(part);
+        // #221: the freed mark goes on unconditionally -- including an entry some other gate already killed,
+        // whose tombstone would otherwise outlive the allocation and block the address for good.
+        int e = MarkFreed(part);
         if (e >= 0 && _pState[e] != StEmpty && _pState[e] != StDead)
         {
             OwnFlag[e] = 0;
@@ -747,7 +749,7 @@ public sealed unsafe class BatchService : IExtenderService
                    // #145: parts the engine destroyed under a recorded entry. A 0 that survives an area
                    // transition means Part::~Part is not reaching us, which is indistinguishable from
                    // "nothing died" in every other number here.
-                   $" dtor-revoked={DtorRevokes}" +
+                   $" dtor-revoked={DtorRevokes} reclaimed={_reclaims}" +
                    // #137: the skinmesh class, which had no row at all before it had a hook. A zero here is
                    // "the hook never fired", not "there were no cloaks"; forced/no-pose separate a class the
                    // Alloy pass took from one it could not solve.

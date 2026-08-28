@@ -157,6 +157,9 @@ public sealed unsafe partial class AlloyRenderer
                 {
                     Gl.UseProgram(_prog46);
                     Gl.Uniform1i(_locTex, 0);
+                    Gl.Uniform1i(_locLinear, 1);          // #222: every unlit draw but the sky wants linear
+                    float* white = stackalloc float[3] { 1f, 1f, 1f };
+                    Gl.Uniform3fv(_locTint, 1, white);    // ...and white, which is Mat()'s ordinary branch
                     Gl.Uniform1i(_locViz, viz);
                     Gl.UniformMatrix4fv(_locVp, 1, 0, vpRaw);
                     UploadFeatureTerms(_locFeat, viewport);
