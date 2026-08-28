@@ -5,10 +5,12 @@ namespace Sowx.Alloy;
 /// than kept private to the colour pass. ADR 0011 makes this a contract because two future readers -- water's
 /// screen-space depth march and M4's ambient occlusion -- want exactly this buffer, and each building its own
 /// means building it three times.
-/// <para>Until the ADR 0011 exit step binds our own render target, the buffer IS the engine's depth
-/// attachment, so a consumer gets whatever the engine allocated: on a renderbuffer attachment it is complete
-/// and correct but NOT sampleable, which is why <see cref="IsTexture"/> is published beside the name instead
-/// of assumed. The default framebuffer's depth publishes as name 0 / not-a-texture for the same reason.</para>
+/// <para>Since #214 the buffer is ALLOY's own depth texture (<see cref="PostChain.DepthTex"/>), so
+/// <see cref="IsTexture"/> is true whenever it is published at all -- it stays published beside the name
+/// rather than assumed by consumers, because the pre-#214 shape (the engine's attachment, which could be a
+/// renderbuffer and so complete but not sampleable) is what the flag was written for and nothing about a
+/// consumer's side of the contract changed. Sampling it while the colour bracket has it attached is still
+/// the feedback loop <see cref="SceneDepth"/> exists to avoid: consumers take a copy.</para>
 /// <para>Read it as <c>DepthResource.Filled(AlloyRenderer.PassGen)</c>: the generation is what says the
 /// prepass ran for the pass you are in, not merely that it ran once. Reflection subframes and GUI 3D panels
 /// are their own passes and mostly do not fill it.</para>

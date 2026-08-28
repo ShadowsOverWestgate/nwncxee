@@ -14,11 +14,13 @@ namespace Sowx.Alloy;
 /// keeps the overbright range, and one full-screen pass at the end of the colour bracket is where it gets
 /// spent: as bloom (which is what makes a bright light read as BRIGHT rather than as clipped) and as a
 /// tonemap shoulder.</para>
-/// <para>The target shares the ENGINE's depth attachment rather than owning one. Depth blits cannot convert
-/// format and the engine's attachment may be a renderbuffer of unknown internal format, so copying it is a
-/// guess; sharing it is exact -- the prepass keeps publishing the same <see cref="DepthResource"/>, and the
-/// engine's own draws after the bracket depth-test against the world the Alloy pass wrote, with no copy at
-/// all. Only colour is ours, and only colour is composited back.</para>
+/// <para>#214: the target owns its depth attachment too. It has to -- the engine only builds a world
+/// framebuffer from inside <c>RenderSinglePass</c>, so after the M4 cutover there is no attachment left to
+/// borrow. The owned texture is allocated to the internal format the engine's attachment reports (probed off
+/// the OBJECT, never off the attachment's bit widths), which is what makes the one thing sharing used to give
+/// for free legal: <see cref="ResolveDepth"/> blits our depth back into the engine's attachment at the
+/// resolve, so the engine's own draws after the bracket still depth-test against the world the Alloy pass
+/// wrote. Colour and depth are both ours now, and both are composited back.</para>
 /// <para>#132 flipped what the target holds: LINEAR values, unclamped. Every Alloy stage now writes linear
 /// and this resolve does the one encode for the whole frame -- one conversion per screen pixel instead of
 /// one per fragment, cheaper than the per-shader encode it replaces, and the only order in which blended
@@ -31,8 +33,8 @@ namespace Sowx.Alloy;
 /// no resolve is wrong by a gamma, and there is no display-space variant of the Alloy stages left to fall
 /// back to. <see cref="Begin"/> is therefore asked BEFORE anything is staged, and a false answer stands the
 /// pass down to vanilla outright. It refuses when the engine target cannot be shared: a default framebuffer
-/// (its depth cannot be attached to an FBO at all), a multisampled attachment beside our single-sample
-/// colour texture, or an offset viewport.</para>
+/// (its depth cannot be attached to an FBO at all), an offset viewport, or -- since #214, and only once
+/// the driver has said so -- an attachment the owned depth cannot be handed back to.</para>
 /// </summary>
 internal static unsafe class PostChain
 {
@@ -61,10 +63,27 @@ internal static unsafe class PostChain
     private static bool _on = true;
     private static readonly StandDown _down = new("PostChain");
     private static ExtenderLog? _log;
-    private static uint _fbo, _hdrTex, _bloomTex;
+    private static uint _fbo, _hdrTex, _bloomTex, _depthTex;
+    private static uint _depFormat;
+    /// <summary>The engine depth attachment whose hand-back the driver refused, as
+    /// <see cref="AttachmentKey"/> -- NOT a global latch. The engine's target is a per-pass fact (a GUI 3D
+    /// panel or a reflection subframe renders to a different one than the world pass does), and it is also
+    /// what the user changes when the log line tells them to try MSAA off: keyed, a new attachment is tried
+    /// again, and only the one that actually failed keeps standing down.</summary>
+    private static ulong _handbackBad;
+    /// <summary>Cached <see cref="ProbeEngineDepth"/> answer and the attachment it was asked about. The
+    /// probe is a bind round-trip plus queries and Begin runs every pass of every frame; both sibling probes
+    /// in this codebase (<see cref="SceneDepth"/>, <see cref="FrameSnapshot"/>) cache for the same reason.</summary>
+    private static ulong _probedAttach;
+    private static uint _probedFormat;
+    private static int _depW, _depH;
     /// <summary>The framebuffer the Alloy colour passes draw into, for the one pass that has to leave it and
     /// come back: #222's sky scratch. Read-only on purpose -- binding it is <see cref="Begin"/>'s job.</summary>
     internal static uint Fbo => _fbo;
+    /// <summary>#214: the depth attachment the Alloy colour passes write, owned rather than the engine's.
+    /// Published as <see cref="DepthResource"/> by the prepass; sampling it while it is attached is the
+    /// feedback loop <see cref="SceneDepth"/> exists to avoid, so consumers take a copy.</summary>
+    internal static uint DepthTex => _depthTex;
     /// <summary>The engine's clear colour in DISPLAY space, as handed to <see cref="Begin"/>. Kept because
     /// SkyComposite's scratch clears to the same value UNlinearised, and re-reading it from GL there would
     /// get this context's clear colour rather than the engine's.</summary>
@@ -173,7 +192,9 @@ internal static unsafe class PostChain
     /// gone, so this only forgets them -- it never deletes.</summary>
     internal static void Forget()
     {
-        _fbo = 0; _hdrTex = 0; _bloomTex = 0; _w = 0; _h = 0; _levels = 0;
+        _fbo = 0; _hdrTex = 0; _bloomTex = 0; _depthTex = 0; _w = 0; _h = 0; _levels = 0;
+        _depFormat = 0; _depW = 0; _depH = 0;
+        _handbackBad = 0; _probedAttach = 0; _probedFormat = 0;
         _progDown = 0; _progUp = 0; _progComposite = 0; _vao = 0;
         _progFailed = false; Armed = false; _down.Forget();
     }
@@ -216,27 +237,42 @@ internal static unsafe class PostChain
     /// nothing but that clear (Camera::InitializeFrameBufferResources has just run Clear(7) and no draw has
     /// followed), and a blit would copy a display-space value into a linear target -- wrong by a gamma on
     /// every area that clears to something other than black.</para></summary>
-    internal static bool Begin(uint mirrorFbo, int depthType, int depthName, int* viewport, float* clearRgba)
+    internal static bool Begin(uint mirrorFbo, int depthType, int depthName, int* viewport, float* clearRgba,
+                               double clearDepth)
     {
         Armed = false;
         if (!_on || _down.Failed) return false;
-        if (Gl.ClearColor == null || Gl.Clear == null || Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null)
+        // BlitFramebuffer is in the list because the hand-back is not optional since #214: without it the
+        // Alloy frame draws into a depth buffer the engine never receives, and its residual draws test
+        // against nothing but the engine's clear -- geometry through walls, silently.
+        if (Gl.ClearColor == null || Gl.Clear == null || Gl.GenFramebuffers == null
+            || Gl.FramebufferTexture2D == null || Gl.BlitFramebuffer == null)
             return StandDown("a required GL entry point is missing");
         if (!EnsurePrograms()) return false;
         if (!EnsureTargets(viewport[2], viewport[3])) return false;
 
+        // #214: the engine's attachment is no longer shared -- it is only the format the owned depth
+        // texture has to MATCH, because the resolve blits ours back into it and a depth blit cannot convert.
+        uint depthFmt = ProbeEngineDepth(depthType, depthName);
+        if (depthFmt == 0) return Refuse("the engine's depth attachment holds no depth format the owned "
+                                       + "depth texture can be matched to");
+        // ...and the hand-back has to be possible for THIS attachment: a pass that draws a frame whose depth
+        // never reaches the engine leaves the engine's own residual draws testing against a stale buffer.
+        // Asked after the probe, so the format is part of the key -- turning MSAA off (or any device reset
+        // that rebuilds the engine's target) presents a different attachment and gets a fresh attempt.
+        if (_handbackBad != 0 && _handbackBad == AttachmentKey(depthType, depthName, depthFmt)) return false;
+        if (!EnsureDepth(depthFmt, viewport[2], viewport[3])) return false;
+
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _hdrTex, 0);
-        if (depthType == (int)Gl.RENDERBUFFER)
-            Gl.FramebufferRenderbuffer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.RENDERBUFFER, (uint)depthName);
-        else Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, (uint)depthName, 0);
+        // DEPTH_ATTACHMENT alone even for a packed format: nothing owned touches stencil, and every Alloy
+        // funnel attaches depth here (see FrameSnapshot's probe, which relies on exactly that).
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _depthTex, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
         {
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, mirrorFbo);
-            return Refuse(status == Gl.FRAMEBUFFER_INCOMPLETE_MULTISAMPLE
-                ? "the engine's depth attachment is multisampled and the HDR colour texture is not"
-                : $"the HDR framebuffer is incomplete (0x{status:x})");
+            return Refuse($"the HDR framebuffer is incomplete (0x{status:x})");
         }
 
         // The engine's own clear colour, linearised: ground truth rather than a guess, and one clear
@@ -251,10 +287,142 @@ internal static unsafe class PostChain
         else Gl.ClearColor(MathF.Pow(MathF.Max(clearRgba[0], 0f), AlloyLights.SrgbGamma),
                       MathF.Pow(MathF.Max(clearRgba[1], 0f), AlloyLights.SrgbGamma),
                       MathF.Pow(MathF.Max(clearRgba[2], 0f), AlloyLights.SrgbGamma), clearRgba[3]);
-        Gl.Clear(Gl.COLOR_BUFFER_BIT);
+        // Depth comes with it since #214: the engine cleared ITS attachment at the anchor, not ours.
+        // The mask is set beside the clear rather than assumed -- glClear honours it, and a stale
+        // DepthMask(0) would leave the prepass writing into last pass's depth. The VALUE is the engine's
+        // own, handed over for exactly the reason the clear colour is: glClearDepth is per-context state,
+        // and the resolve blits this buffer back over every pixel of the engine's attachment -- including
+        // the ones no Alloy pass covered, which would otherwise get a far value the engine never chose.
+        if (Gl.ClearDepth != null) Gl.ClearDepth(clearDepth);
+        Gl.DepthMask(1);
+        Gl.Clear(Gl.COLOR_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT);
         // Left set: the only other consumer of this context's clear colour is EnvProbe, which sets its own
         // every capture (EnvProbe.Begin), so there is nothing here worth restoring.
         Armed = true;
+        return true;
+    }
+
+    /// <summary>#214: hand the depth Alloy just wrote back to the engine's attachment. Alloy owns the
+    /// buffer now, but the engine's own draws after the bracket -- the residual bucket walk, the GUI 3D
+    /// panels -- still depth-test against the world this pass rendered, so a frame that skipped this would
+    /// show them punching through walls. Legal because <see cref="EnsureDepth"/> matched the format;
+    /// NEAREST because a depth blit may not filter.
+    /// <para>The caller has the engine mirror bound as the draw target, which is the whole point of doing
+    /// it here rather than in the caller.</para>
+    /// <para>Whether a 1x source may blit into a MULTISAMPLED engine attachment is asked of the DRIVER
+    /// rather than pre-refused: the engine's world FBO is 8x on any client with MSAA on, and before #214 a
+    /// 1x colour texture beside an 8x shared depth made the target INCOMPLETE, so those clients rendered
+    /// vanilla outright. Owned depth makes the target complete, and this blit is the one remaining question
+    /// -- so it is attempted and the error checked, which is ground truth on the driver in front of us.</para></summary>
+    private static void ResolveDepth()
+    {
+        if (Gl.BlitFramebuffer == null || _depthTex == 0) return;
+        // Taken before the blit can invalidate anything: this is the attachment the hand-back is ABOUT.
+        ulong key = _probedAttach | (ulong)_depFormat << 48;
+        int dst; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &dst);
+        if (dst == 0) return;                 // no engine attachment to hand it back to
+        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo);
+        Gl.BlitFramebuffer(0, 0, _depW, _depH, 0, 0, _depW, _depH, Gl.DEPTH_BUFFER_BIT, (uint)Gl.NEAREST);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)dst);
+        uint err = Gl.GetError == null ? 0 : Gl.GetError();
+        if (err == 0) return;
+        // Drop the probe cache so the next pass asks the attachment again rather than trusting the answer
+        // that produced this: a device reset (alt-tab, resolution change) can swap the engine's attachment
+        // for one of a different format while keeping its name, and that is precisely the case that must get
+        // a fresh attempt rather than inherit this refusal.
+        uint chosen = _depFormat;
+        _probedAttach = 0; _probedFormat = 0;
+        // ...and stand THIS attachment down. The frame already drew with depth the engine never received, so
+        // its residual draws are testing against a stale buffer; a second one would be a choice. Keyed, not
+        // global: the next distinct engine target -- including the one the user gets by turning MSAA off --
+        // is tried on its own merits.
+        _handbackBad = key;
+        _ = Refuse($"the depth resolve blit raised 0x{err:x} (owned depth format 0x{chosen:x}) -- the owned "
+                 + "depth cannot be handed back to this engine target, so the Alloy frame stands down for "
+                 + "it. A multisampled engine attachment is the likely cause: try MSAA off.");
+    }
+
+    /// <summary>What the engine's depth attachment actually holds, asked of the OBJECT rather than of the
+    /// attachment's bit widths -- #129's finding, reproduced: a packed D24S8 reads as a plain 24-bit depth
+    /// through the attachment query, after which the blit mismatches and is discarded whole and silently.
+    /// 0 = nothing this can match.
+    /// <para>Unrecognised formats fall back to the attachment's BIT WIDTHS rather than refusing. Sharing
+    /// never had to know the format, so an unsized <c>DEPTH_COMPONENT</c> (or a sized variant not listed
+    /// here) would otherwise stand the whole Alloy frame down for a session on that driver. A wrong guess
+    /// degrades to <see cref="ResolveDepth"/>'s blit-error path, which re-probes -- strictly better.</para></summary>
+    private static uint ProbeEngineDepth(int type, int name)
+    {
+        int fmt = 0;
+        if (name == 0) return 0;
+        ulong attach = (uint)name | (ulong)(uint)type << 32;
+        if (attach == _probedAttach && _probedFormat != 0) return _probedFormat;
+        _probedAttach = attach;
+        if (type == (int)Gl.RENDERBUFFER)
+        {
+            if (Gl.GetRenderbufferParameteriv == null || Gl.BindRenderbuffer == null) return _probedFormat = 0;
+            Gl.BindRenderbuffer(Gl.RENDERBUFFER, (uint)name);
+            Gl.GetRenderbufferParameteriv(Gl.RENDERBUFFER, Gl.RENDERBUFFER_INTERNAL_FORMAT, &fmt);
+            Gl.BindRenderbuffer(Gl.RENDERBUFFER, 0);
+        }
+        else
+        {
+            if (Gl.GetTexLevelParameteriv == null) return _probedFormat = 0;
+            Gl.ActiveTexture(Gl.TEXTURE0);
+            Gl.BindTexture(Gl.TEXTURE_2D, (uint)name);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
+            Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        }
+        // Probing raises rather than answers where an object does not carry the parameter; drain so the next
+        // real failure is not read as this one.
+        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+        switch ((uint)fmt)
+        {
+            case Gl.DEPTH_COMPONENT16: case Gl.DEPTH_COMPONENT24: case Gl.DEPTH_COMPONENT32:
+            case Gl.DEPTH_COMPONENT32F: case Gl.DEPTH24_STENCIL8: case Gl.DEPTH32F_STENCIL8:
+                return _probedFormat = (uint)fmt;
+        }
+        // Off the bound framebuffer, which is the caller's engine mirror carrying this very attachment
+        // (BindTarget runs before Begin). Bound to something else, the query answers 0 and we refuse --
+        // which is exactly what this path replaced, so a wrong binding costs nothing extra.
+        int bits = 0, stencil = 0, comp = 0;
+        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
+            Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
+        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
+            Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencil);
+        // The one distinction bit widths cannot make: DEPTH_COMPONENT32 and DEPTH_COMPONENT32F both report
+        // 32, and a depth blit between them is INVALID_OPERATION. Unanswered reads as fixed-point, which is
+        // the commoner attachment of the two.
+        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
+            Gl.FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &comp);
+        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+        return _probedFormat = bits <= 0 ? 0
+             : stencil > 0 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH32F_STENCIL8 : Gl.DEPTH24_STENCIL8)
+             : bits >= 32 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH_COMPONENT32F : Gl.DEPTH_COMPONENT32)
+             : bits >= 24 ? Gl.DEPTH_COMPONENT24 : Gl.DEPTH_COMPONENT16;
+    }
+
+    /// <summary>Identity of an engine depth attachment: what the probe caches on and what a refused
+    /// hand-back is keyed to. Name and type alone would not do -- GL reuses freed object names, and the
+    /// format is exactly what changes under a device reset that keeps one.</summary>
+    private static ulong AttachmentKey(int type, int name, uint fmt)
+        => (uint)name | (ulong)(uint)type << 32 | (ulong)fmt << 48;
+
+    /// <summary>Alloy's own depth attachment, sized to the target and format-matched to the engine's.
+    /// Keyed on the FORMAT as well as the size, because a device reset can hand back a differently formatted
+    /// attachment at the same resolution -- and the format is what makes <see cref="ResolveDepth"/> legal.</summary>
+    private static bool EnsureDepth(uint fmt, int w, int h)
+    {
+        if (_depthTex != 0 && fmt == _depFormat && w == _depW && h == _depH) return true;
+        if (w <= 0 || h <= 0) return false;
+        if (_depthTex != 0 && Gl.DeleteTextures != null)
+        { uint old = _depthTex; Gl.DeleteTextures(1, &old); _depthTex = 0; }
+        uint tex; Gl.GenTextures(1, &tex);
+        if (tex == 0) return Refuse("the owned depth texture could not be created");
+        RenderTarget.AllocDepth(tex, fmt, w, h);
+        _depthTex = tex; _depFormat = fmt; _depW = w; _depH = h;
+        _log?.Info($"PostChain: owned depth attachment {w}x{h}, internal format 0x{fmt:x} "
+                 + "(matched to the engine's, which the resolve blits back into)");
         return true;
     }
 
@@ -333,6 +501,7 @@ internal static unsafe class PostChain
     internal static void Composite(int* viewport)
     {
         if (!Armed) return;
+        ResolveDepth();
         Gl.UseProgram(_progComposite);
         Gl.BindVertexArray(_vao);
         new PassState(depth: false, depthWrite: false).Apply();
@@ -422,8 +591,8 @@ internal static unsafe class PostChain
         Gl.ActiveTexture(Gl.TEXTURE0);
 
         if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        _log?.Info($"PostChain: HDR target {w}x{h} RGBA16F, {_levels}-level bloom chain, sharing the " +
-                   "engine's depth attachment");
+        _log?.Info($"PostChain: HDR target {w}x{h} RGBA16F, {_levels}-level bloom chain, with its own " +
+                   "depth attachment (#214)");
         return true;
     }
 

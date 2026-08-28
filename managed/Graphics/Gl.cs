@@ -82,6 +82,13 @@ public static unsafe class Gl
     /// the query takes for the default framebuffer, where DEPTH_ATTACHMENT is not a legal name.</summary>
     public const uint FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE = 0x8216, FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE = 0x8217,
                       DEPTH = 0x1801, STENCIL = 0x1802, STENCIL_ATTACHMENT = 0x8D20;
+    /// <summary>#214: FLOAT vs UNSIGNED_NORMALIZED for an attachment's components. The one thing bit widths
+    /// cannot tell apart -- DEPTH_COMPONENT32 and DEPTH_COMPONENT32F both report 32 -- and a depth blit
+    /// between the two is INVALID_OPERATION, so the owned depth allocation has to ask.</summary>
+    public const uint FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE = 0x8211, UNSIGNED_NORMALIZED = 0x8C17;
+    /// <summary>#214: the engine's own glClearDepth value, read in the engine context beside
+    /// COLOR_CLEAR_VALUE. Per-context state, so the owned 4.6 context cannot be asked for it.</summary>
+    public const uint DEPTH_CLEAR_VALUE = 0x0B73;
     public const uint DEPTH_COMPONENT32F = 0x8CAC, DEPTH24_STENCIL8 = 0x88F0, DEPTH_STENCIL = 0x84F9,
                       UNSIGNED_INT_24_8 = 0x84FA, DEPTH_STENCIL_ATTACHMENT = 0x821A, STENCIL_BUFFER_BIT = 0x0400,
                       DEPTH_COMPONENT32 = 0x81A7, DEPTH32F_STENCIL8 = 0x8CAD,

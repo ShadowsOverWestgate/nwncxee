@@ -67,6 +67,10 @@ public sealed unsafe partial class AlloyRenderer
         // just used at the anchor.
         float* engClear = stackalloc float[4] { 0f, 0f, 0f, 1f };
         if (Gl.GetFloatv != null) Gl.GetFloatv(Gl.COLOR_CLEAR_VALUE, engClear);
+        // #214: and its depth-clear value, for the same reason -- the owned depth is cleared to what the
+        // engine cleared ITS attachment to, and the resolve blits ours back over every pixel of it.
+        float engClearDepth = 1f;
+        if (Gl.GetFloatv != null) Gl.GetFloatv(Gl.DEPTH_CLEAR_VALUE, &engClearDepth);
         // ...and the refusals that need no bracket at all, ahead of the preamble they would otherwise
         // waste -- PoseSkinned alone force-solves every Alloy skinmesh through the engine.
         if (!PostChain.Precheck(engFbo, depthName, viewport)) return;
@@ -141,7 +145,7 @@ public sealed unsafe partial class AlloyRenderer
             // staged, because a refusal is no longer survivable: there is no display-space variant of the
             // Alloy stages to fall back to, so the whole pass stands down and the engine renders it vanilla.
             // Staging first would stamp OwnGen on parts the iterator then suppresses and nobody draws.
-            if (!PostChain.Begin(_fbo46, depthType, depthName, viewport, engClear))
+            if (!PostChain.Begin(_fbo46, depthType, depthName, viewport, engClear, engClearDepth))
             { GlContextService.Leave(); return; }
             int groups = BuildBatches(lightingOn);
             if (groups > 0)
@@ -155,7 +159,7 @@ public sealed unsafe partial class AlloyRenderer
                     switch (id)
                     {
                         case PassId.DepthPrepass:
-                            DepthPrepassPass(_gOpaqueEnd, &vp, viewport, depthType, depthName);
+                            DepthPrepassPass(_gOpaqueEnd, &vp, viewport);
                             break;
                         case PassId.OpaqueOwned:
                             OpaqueOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
@@ -261,7 +265,7 @@ public sealed unsafe partial class AlloyRenderer
     /// The cutout class the ADR makes a measurement question is still not owned.
     /// <para>Publishes <see cref="DepthResource"/> on the way out: the buffer is the deliverable, not a
     /// private optimisation.</para></summary>
-    private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport, int depthType, int depthName)
+    private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport)
     {
         if (!_depthPrepass || !EnsureDepthProgram()) return;
         int skipped = 0, drawn = 0;
@@ -312,7 +316,9 @@ public sealed unsafe partial class AlloyRenderer
         // spans the blending classes too, and the prepass walks the opaque range alone.
         _prepassDraws += drawn;
         _prepassSkipped += skipped;
-        DepthResource.Publish(depthType, depthName, viewport, PassGen);
+        // #214: OUR depth attachment, not the engine's -- a texture by construction, so consumers get a
+        // sampleable name rather than whatever the engine happened to allocate.
+        DepthResource.Publish((int)Gl.ATTACHMENT_TEXTURE, (int)PostChain.DepthTex, viewport, PassGen);
     }
 
     /// <summary>ADR 0011 step 2, the Alloy opaque set: submit the staged batches, shaded.
