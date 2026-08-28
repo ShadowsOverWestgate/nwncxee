@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 
 namespace Sowx.Framework;
@@ -25,6 +26,15 @@ public static class KnobSurface
         CommandRegistry.Global.Register("/knobs", "list the commands and config settings this build has",
                                         Report, "/cxhelp");
 
+    /// <summary>#234: the third thing <c>/knobs</c> has to be able to say -- a knob of the CLIENT's that
+    /// this build TAKES AWAY. It is in neither bucket by construction, and a hand-written line here would
+    /// be the catalogue the class exists to avoid, so the layer that removes the knob registers a supplier
+    /// instead and the framework names nothing above it (ADR 0014). Returning null means "nothing to say
+    /// this session", which is how a supplier reports live state rather than a fact.</summary>
+    public static void Note(Func<string?> supplier) => _notes.Add(supplier);
+
+    private static readonly List<Func<string?>> _notes = new();
+
     /// <summary>Both buckets, one line each. Cold — one dispatch per typed line.</summary>
     private static string Report(string args)
     {
@@ -42,6 +52,11 @@ public static class KnobSurface
         for (int i = 0; i < cfg.Count; i++)
             sb.Append($"\n  {cfg[i].Key}={cfg[i].Value}")
               .Append(cfg[i].Value == cfg[i].Default ? " (default)" : $" (default {cfg[i].Default})");
+        for (int i = 0; i < _notes.Count; i++)
+        {
+            string? note = _notes[i]();
+            if (note != null) sb.Append("\n[knobs] ").Append(note);
+        }
         return sb.ToString();
     }
 }

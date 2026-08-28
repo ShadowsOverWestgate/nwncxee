@@ -921,7 +921,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <para>What this canNOT cover is the gamma refusal, which is re-asked per pass inside the anchor,
     /// after that pass's engine frame is already gone. ADR 0016 scopes exactly that to step 7 (#216): every
     /// refusal becomes frame-start-only, because there is no mid-frame fallback once the shim is in.</para></summary>
-    private static bool Armed4Shim => RspShim.Armed && AlloyGate.Alloy;
+    private static bool Armed4Shim => RspShim.Armed && RspShim.Ready && AlloyGate.Alloy;
 
     /// <summary>#215: consecutive enrollments forced by an empty ownership set, and the ceiling on them.
     /// Convergence takes ~3 (walk records StProbe, probation completes on the next walk, the enrollment

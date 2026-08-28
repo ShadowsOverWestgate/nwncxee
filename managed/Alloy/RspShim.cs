@@ -33,10 +33,11 @@ namespace Sowx.Alloy;
 /// <see cref="BatchService"/> disarms batching outright when this key is on.</para>
 /// <para>Behind <c>ownframe</c> in <c>sowx.cfg</c>, default OFF (ADR 0013 bucket 2: an arming decision, not a
 /// look). With the key off nothing here installs, so the pre-cutover frame is unchanged by construction.</para>
-/// <para>Dropped on this path, by design and filed as #217's punch list: the six engine overlays (highlight
-/// gob, triggers, personal space, paths, drawable squares, light ranges), the stencil-shadow block, and
+/// <para>Dropped on this path, by design and filed as #217's punch list: personal space, paths, drawable
+/// squares and light ranges (all four reachable-but-never-issued), the stencil-shadow block, and
 /// <c>Camera::DoFrameBufferEffects</c>/<c>CopyRenderSubframe</c>. Anything only the engine drew goes with
-/// them -- on SoW that is the dynamic sky (#136).</para>
+/// them -- on SoW that is the dynamic sky (#136). The highlight overlays came BACK in #232/#233; see
+/// <see cref="EngineOverlays"/>.</para>
 /// <para><b>Also dropped, and it is bookkeeping:</b> RSP's head (@0x46e6b3..0x46e6fb) rebuilds the shadow-light
 /// lists <c>Scene+0x60</c>/<c>+0x70</c> from <c>LightManager::GetShadowLights(1)</c>/<c>(0)</c>. Alloy
 /// self-drives its own light walk from <c>Scene::AddPartsToDrawBuckets</c>, so the SSBO does not depend on
@@ -58,6 +59,26 @@ internal static unsafe class RspShim
     /// all fire from here for free.</summary>
     private const int VtDoBinBucket = 0x1c0, VtRenderBeams = 0x1d8, VtDoEmitterBucket = 0x1e8,
                       VtRenderLensFlares = 0x230, VtFadeDoors = 0x260, VtDoFog = 0x280;
+
+    /// <summary>#232/#233: the overlay slots RSP calls between bucket 7 and the shadow block, at 0x46e9fb
+    /// and 0x46ea15/0x46ee97. RSP calls them UNCONDITIONALLY -- the punch list's "gate" column describes
+    /// gates INSIDE them (<c>Scene+0x88</c> for the gob, the trigger-bucket count for the other) -- so the
+    /// shim calls them the same way and lets each self-gate.
+    /// <para>The third slot RSP calls here, <c>Scene::DoTriggerBucket</c> (0x1f0, punch-list item 14), is
+    /// NOT replicated: it draws the entries whose <c>PartTrigger+0xd8</c> is clear, and every trigger the
+    /// client displays has it set. See the punch list for the chain that proves it.</para></summary>
+    private const int VtDoHighlightGob = 0x1b8, VtDoHighlightTriggers = 0x1f8;
+
+    /// <summary>#235: <c>LightManager</c> vptr displacement of <c>EnableLights()</c>, RSP's very first call
+    /// (@0x46e6a5). Verified against <c>_ZTV12LightManager</c> @0x186e2a0, not taken from the ADR.</summary>
+    private const int VtEnableLights = 0x18;
+
+    /// <summary>Count of highlight gobs (<c>Scene+0x88</c>); the array is at <c>+0x80</c> and its colours at
+    /// <c>+0x90</c>, both read by <c>Scene::DoHighlightGob</c> itself.</summary>
+    private const int SceneHighlightGobs = 0x88;
+
+    /// <summary><c>CExoArrayList&lt;Part*&gt;</c> count, at <c>+8</c> of the list head.</summary>
+    private const int ListCount = 8;
 
     /// <summary>Scene -&gt; LightManager* and Scene -&gt; the focus position, read off the
     /// <c>focuslighting</c> block at 0x46ebd7..0x46ec46.</summary>
@@ -82,6 +103,8 @@ internal static unsafe class RspShim
     private static IntPtr* _focusObject;
     private static float* _focusLighting;
     private static IntPtr* _vdoSlot, _vdoBottomSlot;
+    private static int* _fullDynamicLighting;
+    private static byte* _triggerBucket;
     private static delegate* unmanaged<IntPtr, uint, uint, uint, void> _origStream;
 
     /// <summary>Chain priority on <c>GLRender::RenderVertexData</c>. Strictly between BatchService's 50 and
@@ -99,8 +122,33 @@ internal static unsafe class RspShim
     /// the setting would arm Alloy over live engine draws.</summary>
     internal static bool InWindow;
 
-    /// <summary>Did the key arm and every symbol resolve? <see cref="Run"/> is only reachable through this.</summary>
+    /// <summary>#232/#233: does this frame have an engine overlay to run after the bracket? Latched at the
+    /// top of <see cref="Run"/>, read by <see cref="PostChain"/> inside it -- the depth hand-back to the
+    /// default framebuffer is only worth its blit on the frames an overlay will use it.</summary>
+    internal static bool WantsEngineOverlays;
+
+    /// <summary>Did the key arm and every ENGINE symbol resolve? Necessary, not sufficient --
+    /// <see cref="Run"/> is reachable only through this AND <see cref="Ready"/>.</summary>
     internal static bool Armed { get; private set; }
+
+    /// <summary>...and is GL up yet? <see cref="Gl"/>'s entry points are resolved lazily on the first frame
+    /// that needs them, so at <see cref="Install"/> time -- service init, no context -- every one of them is
+    /// null. Asking there is asking too early: it would stand the cutover down for the session over a
+    /// condition that is false only before the first frame. So the question moves here, to the FRAME-START
+    /// gate, where a "no" still has the engine's own <c>RenderSinglePass</c> behind it (ADR 0016 step 7:
+    /// every refusal is frame-start-only, because there is no mid-frame fallback once the shim is in).
+    /// <para><see cref="Gl.Init"/> is a single bool on the second call and every call after, so asking per
+    /// frame costs a branch.</para></summary>
+    internal static bool Ready
+    {
+        get
+        {
+            if (Gl.BindFramebuffer != null) return true;
+            if (_log == null || !Gl.Init(_log) || Gl.BindFramebuffer == null) return false;
+            _log.Info("RspShim: glBindFramebuffer resolved -- the cutover takes the frame from here");
+            return true;
+        }
+    }
 
     private static bool _checkOk;
     private static long _swallowed, _passed, _ticks, _frames;
@@ -118,11 +166,21 @@ internal static unsafe class RspShim
         int seen = 0;
         foreach (int id in WalkOrder) seen |= 1 << id;
         if (seen != 0x1ff || WalkOrder.Length != 9) ok = false;
+        // #232/#233: the overlay displacements must be distinct from each other AND from the six the shim
+        // already calls. A duplicated displacement is a silent wrong virtual -- FadeDoors run twice, say --
+        // which reads as a rendering oddity rather than as the typo it is.
+        ReadOnlySpan<int> slots = stackalloc int[] { VtDoBinBucket, VtRenderBeams, VtDoEmitterBucket,
+                                                     VtRenderLensFlares, VtFadeDoors, VtDoFog,
+                                                     VtDoHighlightGob, VtDoHighlightTriggers };
+        for (int i = 0; i < slots.Length && ok; i++)
+            for (int j = i + 1; j < slots.Length; j++)
+                if (slots[i] == slots[j]) { ok = false; break; }
         _checkOk = ok;
         log.Info(ok ? $"RspShim.SelfCheck: passed (swallow at {SwallowPriority}, "
-                    + $"between {DrawStatsService.DrawPriority} and {BatchService.DrawPriority}; buckets 0-8)"
-                    : "RspShim.SelfCheck: FAILED -- chain placement or bucket coverage is wrong; the cutover "
-                    + "would capture nothing or miscount");
+                    + $"between {DrawStatsService.DrawPriority} and {BatchService.DrawPriority}; buckets 0-8; "
+                    + $"{slots.Length} distinct Scene vtable slots)"
+                    : "RspShim.SelfCheck: FAILED -- chain placement, bucket coverage or a vtable displacement "
+                    + "is wrong; the cutover would capture nothing, miscount, or call the wrong virtual");
         return ok;
     }
 
@@ -141,11 +199,22 @@ internal static unsafe class RspShim
         _emitterLighting = (delegate* unmanaged<V3, IntPtr, IntPtr, V3>)Native.Sym(SymbolMap.GetEmitterLighting);
         _focusObject = (IntPtr*)Native.Sym(SymbolMap.SceneFocusObject);
         _focusLighting = (float*)Native.Sym(SymbolMap.FocusLighting);
-        if (_drawBucket == null || _skyBoxes == null || _collectLights == null || _emitterLighting == null
-            || _focusObject == null || _focusLighting == null || Gl.BindFramebuffer == null)
+        _fullDynamicLighting = (int*)Native.Sym(SymbolMap.FullDynamicLighting);
+        _triggerBucket = (byte*)Native.Sym(SymbolMap.TriggerBucket);
+        // Named, not counted: "an engine symbol did not resolve" is unactionable, and this list is the only
+        // place that knows which one. glBindFramebuffer is deliberately NOT here -- see Ready.
+        string? missing = _drawBucket == null ? SymbolMap.RenderDrawBucket
+                        : _skyBoxes == null ? SymbolMap.RenderSkyBoxes
+                        : _collectLights == null ? SymbolMap.GobCollectLights
+                        : _emitterLighting == null ? SymbolMap.GetEmitterLighting
+                        : _focusObject == null ? SymbolMap.SceneFocusObject
+                        : _focusLighting == null ? SymbolMap.FocusLighting
+                        : _fullDynamicLighting == null ? SymbolMap.FullDynamicLighting
+                        : _triggerBucket == null ? SymbolMap.TriggerBucket : null;
+        if (missing != null)
         {
-            log.Info($"RspShim: {Key}=1 but an engine symbol or glBindFramebuffer did not resolve -- the "
-                   + "cutover stands down and Scene::RenderSinglePass keeps running");
+            log.Info($"RspShim: {Key}=1 but {missing} did not resolve -- the cutover stands down and "
+                   + "Scene::RenderSinglePass keeps running");
             return;
         }
 
@@ -164,6 +233,16 @@ internal static unsafe class RspShim
         }
 
         Armed = true;
+        // "ARMED" is the engine half; the frame does not become Alloy's until Ready as well, which is a
+        // first-frame away and logs its own line.
+        // #234: the cutover takes Camera::DoFrameBufferEffects with RenderSinglePass, and with it the two
+        // client video options that gated it. /knobs is where ADR 0013 says a knob has to be visible, so
+        // the layer that removed them says so there rather than leaving them silently inert.
+        KnobSurface.Note(static () => !Armed ? null
+            : "the client's SSAO and Sharpen video options are INERT this session: they gate "
+            + "Camera::DoFrameBufferEffects, which lived inside Scene::RenderSinglePass and went with it "
+            + "when ownframe=1 took the frame. An Alloy equivalent is M5 work (ADR 0016); set ownframe=0 "
+            + "or /vanilla to get them back.");
         FrameRegistry.Global.Register(FramePhase.PostPresent, 30, Period, "RspShim.period", log);
         log.Info($"RspShim: ARMED -- {Key}=1, Scene::RenderSinglePass replaced by the mutate-only shim on "
                + "the Alloy path ([rspshim] every 900 frames; /vanilla or ownframe=0 restores it)");
@@ -182,6 +261,27 @@ internal static unsafe class RspShim
         long t0 = Stopwatch.GetTimestamp();
         IntPtr vptr = *(IntPtr*)scene;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        // #232/#233: decided BEFORE the anchor, because the answer has to reach PostChain's resolve, which
+        // runs inside it. Both counts are already final here -- Scene::AddPartsToDrawBuckets fills the
+        // trigger bucket and Scene::AddHighlightGob the gob array, both outside RSP and ahead of it.
+        WantsEngineOverlays = *(int*)(scene + SceneHighlightGobs) != 0
+                              || *(int*)(_triggerBucket + ListCount) != 0;
+        // ...and cleared BEFORE the bracket, not after it: only this frame's blit may arm it. A frame that
+        // bails out of DrawOwned early (nothing enrolled, a PostChain refusal, no 4.6 context) never reaches
+        // the resolve, and an inherited `true` would depth-test the overlays against a stale buffer.
+        PostChain.DefaultDepthOk = false;
+        // #235, item 2 and RSP's very first call (@0x46e6a5). Not a draw: it is
+        // LightManager::ControlLightsFade(+0x60, +0x40, 0), which advances every PartLight's fade weight at
+        // +0x90 and re-commits the area ambient/diffuse terms. That weight is the SCALE GetNearestLights
+        // passes to SetLightGL for every light it pushes, including the two area lights at LightManager
+        // +0x98/+0xa0 -- and SetLightGL is exactly the hook CameraCapture reads FrameInputs.AreaAmbient and
+        // AreaDiffuse off. Dropped, the weights freeze wherever the last vanilla frame left them (zero for
+        // any light added since), which is wrong-looking lighting rather than a missing draw.
+        if (*_fullDynamicLighting != 0)
+        {
+            IntPtr lm = *(IntPtr*)(scene + SceneLightManager);
+            if (lm != IntPtr.Zero) Vt(*(IntPtr*)lm, VtEnableLights, lm);
+        }
         InWindow = true;
         // BEFORE the anchor, exactly as RSP orders it (@0x46e736, one instruction group ahead of FadeDoors
         // @0x46e742). Scene::DoFog @0x45f1b0 reads Scene+0x140..0x14c and drives SetFogModef/SetFogModev
@@ -209,9 +309,50 @@ internal static unsafe class RspShim
         Vt(vptr, VtRenderLensFlares, scene);   // flare occlusion fade
         InWindow = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        EngineOverlays(vptr, scene);
         _ticks += Stopwatch.GetTimestamp() - t0;
         _frames++;
     }
+
+    /// <summary>#232 + #233: the three dropped overlays, run by the ENGINE at the end of the shim instead of
+    /// at RSP's own position, with the swallow window closed so their draws issue.
+    /// <para><b>Why the engine draws them and Alloy does not.</b> Both build their geometry into the static
+    /// <c>VertexStreamDataObject</c> at 0x1aaba30 through <c>WritePartHighlightVertices</c>, whose arguments
+    /// are a <c>Vector</c> and a <c>Quaternion</c> BY VALUE. Calling that from here means inventing an ABI to
+    /// re-implement a vertex builder the engine already runs correctly -- the guess this repo forbids, for no
+    /// gain. Running the engine's own overlay is faithful by construction and costs two vtable calls.</para>
+    /// <para><b>Why here and not at RSP's slot.</b> Alloy draws inside the FadeDoors anchor, in its own 4.6
+    /// context, and resolves into the default framebuffer; an engine draw cannot be interleaved into that
+    /// bracket. After it, the frame is finished and in DISPLAY space -- which is the space these overlays
+    /// blend in -- and <see cref="PostChain.DefaultDepthOk"/> says the owned depth reached the same
+    /// framebuffer. Moving them past the water bucket is the one visual difference from vanilla: an
+    /// additively-blended highlight now composites over water rather than under it.</para>
+    /// <para><b>Item 14 stays dropped, and it is classified rather than assumed.</b>
+    /// <c>Scene::DoTriggerBucket</c> walks the SAME trigger bucket and draws exactly the complement of this
+    /// pass -- the entries whose <c>PartTrigger+0xd8</c> is clear. That flag's only writer is
+    /// <c>PartTrigger::SetHighlighted</c> @0x4da090, reached only through
+    /// <c>AurPartTriggerSetHighlight</c>, whose only caller is <c>CNWCTrigger::UpdateTriggerColor</c>
+    /// @0x80eff0 -- and every path through that function ends at the same
+    /// <c>AurPartTriggerSetHighlight(t, true, …, true)</c>, DM branch included. So the complement is always
+    /// empty and the call would draw nothing.</para></summary>
+    private static void EngineOverlays(IntPtr vptr, IntPtr scene)
+    {
+        if (!WantsEngineOverlays || !PostChain.DefaultDepthOk) return;
+        Vt(vptr, VtDoHighlightGob, scene);
+        // The trigger highlight is a STENCIL pass and needs one: SetShadowStencilBuffer @0x460c30 is
+        // ClearStencilValue(0x7f) + SetStencilMask(0xff) + Clear(4), so it clears whatever framebuffer is
+        // bound (no FBO of its own to bind, which is why this replay works at all) -- but the mask it then
+        // builds is the only thing keeping its full-screen quad off the whole screen.
+        if (!PostChain.DefaultStencilOk) return;
+        // RSP calls this twice, with the bool that selects which half of the trigger bucket to draw: 0 at
+        // 0x46ea15 and 1 at 0x46ee97 (read from the disassembly -- the decompiler drops the argument).
+        VtB(vptr, VtDoHighlightTriggers, scene, 0);
+        VtB(vptr, VtDoHighlightTriggers, scene, 1);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void VtB(IntPtr vptr, int slot, IntPtr scene, byte arg)
+        => ((delegate* unmanaged<IntPtr, byte, void>)(*(IntPtr*)(vptr + slot)))(scene, arg);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void Vt(IntPtr vptr, int slot, IntPtr scene)

@@ -333,6 +333,17 @@ internal static unsafe class SymbolMap
     /// <c>Scene::GetLightingValueAtFocus</c> @0x462aa0 reads it -- so the mutate-only shim owes it a write.
     /// Data symbol; the shim writes it exactly where RSP did.</summary>
     public const string FocusLighting = "focuslighting";
+    /// <summary>#235: <c>g_bFullDynamicLighting</c> @0x19ab8a4 -- the int that decides which of
+    /// <c>LightManager</c>'s two enable walks <c>Scene::RenderSinglePass</c> runs. Non-zero on this client
+    /// (FRAGMENT_LIGHTING=1), so <c>EnableLights</c> is the live arm and <c>EnableLightsDynamicOnly</c> is
+    /// dead. Read, never written -- the shim replicates RSP's gate rather than assuming its value.</summary>
+    public const string FullDynamicLighting = "g_bFullDynamicLighting";
+    /// <summary>#233: <c>triggerbucket</c> @0x19abbd0 -- the trigger draw bucket, a
+    /// <c>CExoArrayList&lt;Part*&gt;</c> whose COUNT sits at <c>+8</c> (the <c>DAT_01aabbd8</c> that
+    /// <c>Scene::DoTriggerBucket</c> and <c>Scene::DoHighlightTriggers</c> both gate on). Refilled by
+    /// <c>Scene::AddPartsToDrawBuckets</c> before RSP and reset by <c>ClearBuckets</c> after, so it is
+    /// already correct when the shim reads it. Data symbol; read only.</summary>
+    public const string TriggerBucket = "triggerbucket";
     // ---- static-geometry batching (ADR 0006 phase 1), Linux-only -> BatchService stands down on Windows ----
     /// <summary>PartTriMesh::Draw() @0x4513d0 -- the per-part draw entry the bucket loop calls (via the
     /// item's Render vtable slot). BatchService's skip/record point. ABI: <c>(PartTriMesh* /*rdi*/)</c>.</summary>
