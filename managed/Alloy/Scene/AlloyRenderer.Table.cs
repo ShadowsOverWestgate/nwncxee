@@ -88,11 +88,11 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly IntPtr[] _vVdo = new IntPtr[MaxVdos];
     private static readonly uint[] _vVao46 = new uint[MaxVdos];
     /// <summary>#212: the SAME VAO over Alloy's own copies of this VDO's buffers, or 0 when the copy was
-    /// refused or <c>ownedgeom=0</c>. Only the static-opaque class binds it -- that is the ticket's proving
-    /// slice, and widening it is one predicate in <see cref="AlloyRenderer.VaoName"/>.</summary>
+    /// refused or <c>ownedgeom=0</c>. #213 widened its use from the static-opaque proving slice to every
+    /// class, so this is the VAO any batch on the slot binds once the whole slot copied.
+    /// <see cref="AlloyRenderer.VaoName"/>.</summary>
     private static readonly uint[] _vVaoOwn = new uint[MaxVdos];
     /// <summary>How many VDO slots have one. See <c>EnsureVao</c>.</summary>
-    private static int _vaoOwned;
     private static readonly uint[] _vElemBuf = new uint[MaxVdos];
     private static readonly VertexStream[] _vPos = new VertexStream[MaxVdos];
     private static readonly VertexStream[] _vUv = new VertexStream[MaxVdos];

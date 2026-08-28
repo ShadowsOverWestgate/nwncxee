@@ -51,25 +51,33 @@ public sealed unsafe partial class AlloyRenderer
     /// at OUR locations: replicating every enabled engine attrib crashed the driver's vertex-pull JIT when
     /// one carried a client-pointer binding (#81), and neither Alloy program consumes anything else.
     /// <para>#212: TWO VAOs, identical but for which buffers they pull from -- the engine's pool buffers and
-    /// Alloy's own copies of them. Both, because ownership is per class this ticket: see
-    /// <see cref="VaoName"/>. The owned one is 0 whenever any one of this VDO's buffers has no copy, so a
-    /// refusal costs that VDO its ownership and nothing else.</para></summary>
+    /// Alloy's own copies of them. Both, because the owned one is 0 whenever any one of this VDO's buffers
+    /// has no copy: a refusal costs that VDO its ownership and nothing else, and the engine-side VAO is what
+    /// it falls back to. See <see cref="VaoName"/>.</para></summary>
     private static bool EnsureVao(int v)
     {
         if (_vVao46[v] != 0 && !_vStale[v]) return true;
         uint* old = stackalloc uint[2] { _vVao46[v], _vVaoOwn[v] };
         for (int i = 0; i < 2; i++) if (old[i] != 0) Gl.DeleteVertexArrays(1, old + i);
-        if (_vVaoOwn[v] != 0) _vaoOwned--;   // the slot being torn down stops counting BEFORE it is rebuilt
         _vVao46[v] = BuildVao(v, owned: false);
         _vVaoOwn[v] = OwnedBuffers.Armed ? BuildVao(v, owned: true) : 0;
         _vStale[v] = false;
-        // The live-verify signal for #212. That copies were MADE is the VRAM line's business; this says how
-        // many VDO slots the static-opaque class actually draws from ours -- the difference between owned
-        // geometry working and owned geometry being allocated and never bound.
-        if (_vVaoOwn[v] != 0) _vaoOwned++;
         // A slot with no ENGINE VAO is not drawable at all: binding 0 pulls no attributes and the multidraw
         // reads whatever the default VAO holds. Refused rather than reported built.
         return _vVao46[v] != 0;
+    }
+
+    /// <summary>The live-verify signal: how many live VDO slots actually DRAW from Alloy's buffers. That
+    /// copies were made is the VRAM line's business; this is the difference between owned geometry working
+    /// and owned geometry being allocated and never bound.
+    /// <para>Counted at the log rather than tracked, because <c>RevokeAll</c> retires slots without deleting
+    /// their VAOs -- that waits for a bracket -- so a running tally would over-report every slot retired and
+    /// not yet rebuilt.</para></summary>
+    private static int OwnedVaos()
+    {
+        int n = 0;
+        for (int v = 0; v < _vdoCount; v++) if (_vVdo[v] != IntPtr.Zero && _vVaoOwn[v] != 0) n++;
+        return n;
     }
 
     /// <summary>One VAO over one set of buffers. <paramref name="owned"/> swaps every source buffer for
@@ -81,9 +89,9 @@ public sealed unsafe partial class AlloyRenderer
         bool skin = _vSkin[v] && _skinning;
         var pos = _vPos[v]; var uv = _vUv[v]; var nrm = _vNrm[v];
         var bi = _vBi[v]; var bw = _vBw[v];
-        if (owned && !(Rebase(ref pos) && Rebase(ref uv)
-                       && (!_vLit[v] || Rebase(ref nrm))
-                       && (!skin || (Rebase(ref bi) && Rebase(ref bw))))) return 0;
+        if (owned && !(OwnedBuffers.Rebase(ref pos) && OwnedBuffers.Rebase(ref uv)
+                       && (!_vLit[v] || OwnedBuffers.Rebase(ref nrm))
+                       && (!skin || (OwnedBuffers.Rebase(ref bi) && OwnedBuffers.Rebase(ref bw))))) return 0;
         uint vao; Gl.GenVertexArrays(1, &vao);
         Gl.BindVertexArray(vao);
         VertexArrays.Bind(LocPos, in pos);
@@ -101,19 +109,38 @@ public sealed unsafe partial class AlloyRenderer
         return vao;
     }
 
-    /// <summary>Point one harvested stream at Alloy's copy of its buffer. Offsets and strides are untouched:
-    /// the copy is byte-identical, so every item offset the VDO tables hand the draw still lands.</summary>
-    private static bool Rebase(ref VertexStream s)
+
+    /// <summary>The sky dome's VAO. Same owned-or-engine fallback, but off the class mask: the dome is not
+    /// an <see cref="AlloyClass"/>, and its own pass line reports it.</summary>
+    internal static uint SkyVao(int v) => _vVaoOwn[v] != 0 ? _vVaoOwn[v] : _vVao46[v];
+
+    /// <summary>#213's acceptance signal: the classes that have bound an OWNED VAO since the last period
+    /// line, one bit per <see cref="AlloyClass"/>. The slot count cannot say this -- a class whose slots all
+    /// refused, and a class nothing staged for, both read as "some slots owned" -- and the criterion is per
+    /// class. Set from the submission loops, which is why it is a mask and not a count.</summary>
+    private static int _ownedClsMask;
+
+    /// <summary>Which classes drew from Alloy's buffers this period, cleared as it is read.</summary>
+    internal static string OwnedClasses()
     {
-        uint own = OwnedBuffers.Draw(s.Buf);
-        if (own == 0) return false;
-        s.Buf = own;
-        return true;
+        int m = _ownedClsMask;
+        _ownedClsMask = 0;
+        if (m == 0) return "none";
+        string s = "";
+        for (int c = 0; c < AlloyClasses.Count; c++)
+            if ((m & (1 << c)) != 0) s += (s.Length == 0 ? "" : "+") + (AlloyClass)c;
+        return s;
     }
 
-    /// <summary>#212: which VAO a batch of this class binds. Static opaque pulls from Alloy's own buffers
-    /// where a copy exists; every other class still pulls from the engine's pools, unchanged -- the ticket's
-    /// proving slice. Widening it is deleting the class test.</summary>
+    /// <summary>#213: which VAO this VDO slot binds -- Alloy's own buffers wherever a copy exists, whatever
+    /// the class. #212's proving slice was static opaque alone; the class test that enforced it is gone, so
+    /// cutout, blended, water, additive, the sky dome and the skinned parts all pull from the same copies.
+    /// The remaining fallback is per-SLOT, not per-class: a VDO one of whose buffers refused to copy keeps
+    /// drawing from the engine's pools rather than half from each.</summary>
     private static uint VaoName(int v, int cls)
-        => cls == (int)AlloyClass.Opaque && _vVaoOwn[v] != 0 ? _vVaoOwn[v] : _vVao46[v];
+    {
+        if (_vVaoOwn[v] == 0) return _vVao46[v];
+        _ownedClsMask |= 1 << cls;
+        return _vVaoOwn[v];
+    }
 }

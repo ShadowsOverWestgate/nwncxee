@@ -112,6 +112,7 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Caster set + skin records + texture-alpha verdicts (`CasterPass`) | `CasterPass.Enroll` | `Release` | `CasterPass.cs:1003,1005,1008` | routes through the same `Release` — see below |
 | Owned texture copies (`OwnedTextures`) | first in-bracket sight of an engine texture name, `OwnedTextures.Draw` | per-name: the engine's own delete funnel, `RenderInterface::DeleteTextures` → `Retire`. Wholesale: `OwnedTextures.Revoke` | the delete hook (`OwnedTextures.Install`); registry `Revoke`. Both only **queue** — `OwnedTextures.Drain` deletes, off `GlContextService.InBracket` | `OwnedTextures.ContextLost` drops map, owned-set and queue, deletes nothing |
 | Owned vertex/index buffer copies (`OwnedBuffers`) | first in-bracket sight of an engine pool buffer name, `OwnedBuffers.Draw` (from `BuildVao`) | per-name: the engine's own delete funnel, `GLRender::DeleteBuffer` → `Retire`. Wholesale: `OwnedBuffers.Revoke` | the delete hook (`OwnedBuffers.Install`); registry `Revoke`. Both only **queue** — `OwnedBuffers.Drain` deletes, at the top of the colour bracket | `OwnedBuffers.ContextLost` drops map, dirty list and queue, deletes nothing |
+| Caster VAOs over those copies (`CasterPass._vVaoOwn`) | `CasterPass.EnsureVao`, inside the shadow bracket | slots retired by `CasterPass.Release` (`_vStale`), names deleted by the next `EnsureVao` | `CasterPass.Lifecycle` — the same three edges `RevokeAll` watches, and it runs from the pass slot, ahead of the present that revokes | kept, like the pass's other GL names — see below |
 | Bindless handle cache `_hTid/_hVal/_hRes` | `AlloyRenderer.HandleFor` | `DropHandle`, per owned name, from `OwnedTextures.Drain` before the texture is deleted | — the enrollment `WipeHandles` is now a no-op while `ownedtex` is armed (#220) | `AlloyRenderer.ForgetHandles`, via `OwnedTextures.ContextLost` |
 
 Two more pointer-keyed tables are **enrollment-scoped scratch**, listed for completeness rather than
@@ -132,11 +133,38 @@ are the shape that does, so if either ever outlives an enrollment it joins the t
 | Env cube + its FBO/depth | `EnvProbe` capture | `EnvProbe.Forget` | registry `ContextLost` |
 | Post targets, FBO, fullscreen VAO | `PostChain` | `PostChain.Forget` | registry `ContextLost` |
 | Grass VAO/VBO/program/samplers/push texture | `GrassField.EnsureBuffers` | `GrassField.ContextLost` | registry `ContextLost` |
-| Beam program + per-VDO VAOs/element buffers | `Beams.EnsureProgram` | `Beams.ContextLost` | registry `ContextLost` |
+| Beam program + per-VDO VAO **pairs** (engine buffers and Alloy copies, `_vVao`/`_vVaoOwn`) + element buffers | `Beams.EnsureProgram` | `Beams.ContextLost` | registry `ContextLost` |
 | Particle program/VAO/VBO/sampler + native stage buffer | `Particles.Ensure*` | `Particles.ContextLost` | registry `ContextLost` |
 | Caster depth program, FBO, depth array, persistent-mapped buffers, VAOs | `CasterPass.EnsureGl` | **nothing** — kept | see below |
 | Owned texture copies (`OwnedTextures`) | `OwnedTextures.Copy` | `OwnedTextures.ContextLost` | registry `ContextLost` |
 | Owned buffer copies (`OwnedBuffers`) | `OwnedBuffers.Copy` | `OwnedBuffers.ContextLost` | registry `ContextLost` |
+
+### The geometry update path (#213)
+
+A copy is not a snapshot. Three classes rewrite their vertices while they are on screen, and each has
+a written path rather than a per-frame full re-upload:
+
+- **Dangly meshes** (`PartDanglyMesh::Animate` @0x49c935) and **morph-animated nodes**
+  (`MdlNodeAnimMesh::InternalControl` @0x4996b9) commit through
+  `VertexDataObject::CommitItemDynamicData` @0x45c7d0, which tail-calls
+  `RenderInterface::UnlockPool(token, size, offset)` with **that one item's byte span** — size and
+  offset in bytes, straight into `glBufferSubData` (`GLRender::UnlockPool` @0x4cfc80). `MarkDirty`
+  coalesces every span seen since the last refresh into one `[Lo, Hi)` range per buffer and
+  `OwnedBuffers.Respan` copies exactly that range. A pool that grew (size changed, i.e. `ResizePool`
+  then a full `glBufferData`) falls back to a whole-buffer re-blit, because a sub-range copied into a
+  copy of the old size is two layouts spliced together. `size == 0xFFFFFFFF` is the engine's
+  "whole pool" and promotes the entry to the full path.
+- **Grass** (`CAurTriangleList::BuildGrassPolys` @0x4b5286) commits the same way, but Alloy's grass
+  pass draws from its **own** instance VBO (`GrassField.EnsureBuffers`) and never reads the engine's.
+- **Particles** likewise: `Particles` orphans and re-fills its own `DYNAMIC_DRAW` VBO each frame
+  (`Particles.cs:1362`), so no engine pool is involved. **Beams** and the **post/fullscreen** VAOs are
+  Alloy-created too.
+- **Skinned parts** need no update path at all. The bone streams are indices and weights — static per
+  mesh — and the pose is a uniform block (`UploadBones`), so the buffer never changes.
+
+The refresh runs at the top of **both** brackets — the shadow bake (`CasterPass`, first) and the
+colour pass (`AlloyRenderer.Frame`) — so a mover's shadow and its mesh are never a frame apart.
+A write that lands after the last refresh of a frame is one frame stale on screen, then correct.
 
 ### Deliberately outside the table
 

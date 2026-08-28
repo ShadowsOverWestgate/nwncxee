@@ -103,6 +103,8 @@ internal static unsafe class Beams
     private static readonly uint[] _vElemBuf = new uint[MaxVdos];
     private static readonly VertexStream[] _vPos = new VertexStream[MaxVdos], _vFr = new VertexStream[MaxVdos];
     private static readonly bool[] _vStale = new bool[MaxVdos];
+    /// <summary>#213: the same VAO over Alloy's copies of this VDO's buffers, 0 when any stream had none.</summary>
+    private static readonly uint[] _vVaoOwn = new uint[MaxVdos];
     private static int _vdoCount;
 
     private static ExtenderLog? _log;
@@ -250,19 +252,38 @@ internal static unsafe class Beams
         return _vElemBuf[s] != 0 && _vPos[s].Present && _vFr[s].Present;
     }
 
+    /// <summary>#213: two VAOs, over the engine's pool buffers and over Alloy's copies of them, the same
+    /// pair every other Alloy pass builds. <see cref="Vao"/> picks; a slot whose copy was refused keeps
+    /// drawing from the engine's.</summary>
     private static bool EnsureVao(int v)
     {
         if (_vVao[v] != 0 && !_vStale[v]) return true;
-        if (_vVao[v] != 0) { uint old = _vVao[v]; Gl.DeleteVertexArrays(1, &old); _vVao[v] = 0; }
+        uint* old = stackalloc uint[2] { _vVao[v], _vVaoOwn[v] };
+        for (int i = 0; i < 2; i++) if (old[i] != 0) Gl.DeleteVertexArrays(1, old + i);
+        _vVao[v] = BuildVao(v, owned: false);
+        _vVaoOwn[v] = OwnedBuffers.Armed ? BuildVao(v, owned: true) : 0;
+        _vStale[v] = false;
+        return _vVao[v] != 0;
+    }
+
+    private static uint BuildVao(int v, bool owned)
+    {
+        uint elem = owned ? OwnedBuffers.Draw(_vElemBuf[v]) : _vElemBuf[v];
+        if (elem == 0) return 0;
+        var pos = _vPos[v]; var fr = _vFr[v];
+        if (owned && !(OwnedBuffers.Rebase(ref pos) && OwnedBuffers.Rebase(ref fr))) return 0;
         uint vao; Gl.GenVertexArrays(1, &vao);
         Gl.BindVertexArray(vao);
-        VertexArrays.Bind(LocPos, in _vPos[v]);
-        VertexArrays.Bind(LocFrontal, in _vFr[v]);
-        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _vElemBuf[v]);
+        VertexArrays.Bind(LocPos, in pos);
+        VertexArrays.Bind(LocFrontal, in fr);
+        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, elem);
         Gl.BindVertexArray(0);
-        _vVao[v] = vao; _vStale[v] = false;
-        return true;
+        return vao;
     }
+
+
+    /// <summary>Which VAO this slot draws from: Alloy's copies where the whole slot copied.</summary>
+    private static uint Vao(int v) => _vVaoOwn[v] != 0 ? _vVaoOwn[v] : _vVao[v];
 
     /// <summary>The direction <c>RenderBeams</c> extrudes along: the first scene light with range >= 1000
     /// that is live and of kind 0, negated. Returns false when no such light exists, which is every interior
@@ -344,7 +365,7 @@ internal static unsafe class Beams
         for (int k = 0; k < staged; k++)
         {
             ref Beam b = ref _beams[_sBeam[k]];
-            if (b.Vao != boundVao) { Gl.BindVertexArray(_vVao[b.Vao]); boundVao = b.Vao; }
+            if (b.Vao != boundVao) { Gl.BindVertexArray(Vao(b.Vao)); boundVao = b.Vao; }
             fixed (Matrix4x4* m = &b.Model) Gl.UniformMatrix4fv(_locModel, 1, 0, (float*)m);
             Gl.MultiDrawElementsBaseVertex(_primTable[BeamPrim], counts + k, GlUnsignedShort,
                                            (void**)(offs + k), 1, bases + k);
@@ -413,7 +434,7 @@ internal static unsafe class Beams
     {
         _prog = 0; _failed = false;
         _locModel = -1; _locView = -1; _locProj = -1; _locSrc = -1; _locZClip = -1; _locColor = -1;
-        for (int v = 0; v < MaxVdos; v++) { _vVao[v] = 0; _vElemBuf[v] = 0; }
+        for (int v = 0; v < MaxVdos; v++) { _vVao[v] = 0; _vVaoOwn[v] = 0; _vElemBuf[v] = 0; }
         Forget();
     }
 

@@ -202,7 +202,7 @@ public sealed unsafe partial class AlloyRenderer
                 uint src = BlendGl(_gSrc[g]), dst = BlendGl(_gDst[g]);
                 if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
             }
-            // #212: tracked by GL NAME, not by slot -- a slot now has two VAOs and the class picks.
+            // #212: tracked by GL NAME, not by slot -- a slot now has two VAOs and ownership picks.
             uint vao = VaoName(_gVao[g], _gCls[g]);
             if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
             // #153: a merged lit batch spans many textures; its samplers come off the handle block per draw,

@@ -26,9 +26,10 @@ namespace Sowx.Alloy;
 /// <c>Repack</c>'s post-compaction full re-upload. So one hook marks the copy dirty and <see cref="Refresh"/>
 /// re-copies it at the next bracket, which is also what makes the ticket's "VDO repack is handled" true for
 /// the DATA (the index/offset half was already handled by revoking every part on a repacked VDO).</para>
-/// <para>Scope: <see cref="AlloyRenderer.EnsureVao"/> builds a SECOND VAO per VDO over these copies, and only
-/// the static-opaque class binds it. Every other class still pulls from the engine's buffers, which is the
-/// ticket's proving slice -- widening it is one predicate.</para>
+/// <para>Scope: <see cref="AlloyRenderer.EnsureVao"/> builds a SECOND VAO per VDO over these copies, and
+/// #213 widened its use to EVERY class Alloy draws -- opaque, cutout, blended, water, additive, the sky dome,
+/// the skinned parts, and the shadow pass's own VDO table. What still draws from an engine buffer is a slot
+/// whose copy was refused, and that falls back whole rather than per stream.</para>
 /// <para>Residency is ADR 0016's: upload on enroll, free on revoke, <b>no budget and no LRU</b>, with a
 /// logged VRAM high-water mark. A budget before a measurement is #149's mistake in a new costume.</para>
 /// </summary>
@@ -41,6 +42,13 @@ internal static unsafe class OwnedBuffers
         internal uint Owned;
         internal long Bytes;
         internal bool Dirty;
+        /// <summary>#213: the byte range the engine has written since the last <see cref="Refresh"/>, in
+        /// buffer coordinates -- the coalesced union of every <c>UnlockPool</c> span seen. Meaningful only
+        /// while <see cref="Dirty"/> and not <see cref="Full"/>.</summary>
+        internal long Lo, Hi;
+        /// <summary>The engine asked for a whole-pool push (<see cref="WholePool"/>), so the span is the
+        /// buffer and the refresh is a re-blit rather than a sub-range copy.</summary>
+        internal bool Full;
     }
 
     private static readonly Dictionary<int, Entry> _map = new();
@@ -61,16 +69,35 @@ internal static unsafe class OwnedBuffers
     /// <summary>Is the owned-geometry path live? Read by the VAO builder, which only builds the second VAO
     /// when it is.</summary>
     internal static bool Armed => _armed;
+    /// <summary>How far ownership reaches, so a live session can bisect a suspected owned-geometry fault
+    /// without a rebuild. 0 = off, 1 = the colour passes only (the shadow bake keeps the engine's pools),
+    /// 2 = everything. Read by the shadow pass, which is the only caller that can be excluded on its own.
+    /// <para>ponytail: a bisect knob, not a feature. It goes when #227 -- the intermittent shadow artifact
+    /// it exists to chase -- closes.</para></summary>
+    internal static bool ArmedForShadows => _armed && _level >= 2;
+    /// <summary>Refresh a dirty copy over the sub-range the engine named (1) or re-blit the whole buffer (0).
+    /// The second is #212's behaviour, kept as the other half of the bisect.</summary>
+    internal static bool SpanRefresh => _span;
+    private static int _level = 2;
+    private static bool _span = true;
     private static long _bytes, _peakBytes;
     private static int _copies, _refused, _recopies, _retired, _peakCount;
+    /// <summary>#213's measurement of the per-frame movers: pool uploads seen against copies we hold, and how
+    /// many of the resulting refreshes were a sub-range copy rather than a whole-buffer re-blit. A dynamic
+    /// class that is being kept current shows up here as spans, every frame.</summary>
+    private static long _unlocks, _spanRefresh, _fullRefresh, _spanBytes;
 
     /// <summary>Wired once from <see cref="AlloyRenderer"/>'s init, before any frame runs.</summary>
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _armed = Settings.Bool("ownedgeom", true);
+        _level = Settings.Int("ownedgeom", 2, 0, 2);
+        _armed = _level > 0;
+        _span = Settings.Bool("ownedgeomspan", true);
         log.Info(_armed
-            ? "OwnedBuffers: armed -- static-opaque draws pull from Alloy-created vertex/index buffers (ownedgeom=0 to draw from engine pools)"
+            ? $"OwnedBuffers: armed at level {_level} -- {(_level >= 2 ? "every Alloy class including the shadow bake" : "the colour passes only; the shadow bake keeps the engine's pools")} " +
+              $"draws from Alloy-created vertex/index buffers, refreshing {(_span ? "the sub-range the engine named" : "the whole buffer (ownedgeomspan=0)")} " +
+              "(ownedgeom=1 to exclude the shadow bake, 0 to draw from engine pools throughout)"
             : "OwnedBuffers: stood down (ownedgeom=0) -- every class draws from the engine's own pool buffers");
     }
 
@@ -107,12 +134,12 @@ internal static unsafe class OwnedBuffers
     private static void OnUnlockPool(uint token, uint size, uint offset)
     {
         if (_origUnlock != null) _origUnlock(token, size, offset);
-        MarkDirty(token);
+        MarkDirty(token, size, offset);
     }
 
     /// <summary>The handler's body, split out so <see cref="SelfCheck"/> can exercise it -- an
     /// <c>UnmanagedCallersOnly</c> method cannot be called from managed code.</summary>
-    private static void MarkDirty(uint token)
+    private static void MarkDirty(uint token, uint size, uint offset)
     {
         if (_map.Count == 0 || _getPoolBuffer == null || token == NoPool) return;
         // ponytail: only HALF the engine's own guard. GLRender::UnlockPool @0x4cfc80 tests the token against
@@ -122,10 +149,23 @@ internal static unsafe class OwnedBuffers
         // own token validity set. A garbage NAME would be harmless either way -- the worst it can do is
         // dirty a buffer of ours, which re-copies from the same real source.
         int name = (int)_getPoolBuffer(token);
-        if (!_map.TryGetValue(name, out Entry e) || e.Owned == 0 || e.Dirty) return;
-        e.Dirty = true;
+        if (!_map.TryGetValue(name, out Entry e) || e.Owned == 0) return;
+        _unlocks++;
+        bool full = size == WholePool;
+        if (!e.Dirty)
+        {
+            e.Dirty = true; e.Full = full; e.Lo = offset; e.Hi = (long)offset + size;
+            _dirty.Add(name);
+        }
+        else if (full) e.Full = true;
+        else
+        {
+            // ponytail: ONE coalesced span, not a set of them -- two writes to opposite ends of a pool copy
+            // the pool. A span list would allocate on this hook; upgrade path is a fixed-size span array.
+            if (offset < e.Lo) e.Lo = offset;
+            if ((long)offset + size > e.Hi) e.Hi = (long)offset + size;
+        }
         _map[name] = e;
-        _dirty.Add(name);
     }
 
     /// <summary>The engine is deleting this GL buffer name. Anything copied from it is retired: the name is
@@ -145,6 +185,18 @@ internal static unsafe class OwnedBuffers
         _pending.Add(e.Owned);
         _bytes -= e.Bytes;
         _retired++;
+    }
+
+    /// <summary>Point one harvested vertex stream at Alloy's copy of its buffer, for a VAO being built over
+    /// the copies. Offsets and strides are untouched: the copy is byte-identical, so every item offset the
+    /// VDO tables hand the draw still lands. False (leaving <paramref name="s"/> alone) when there is no
+    /// copy, which costs the caller its whole owned VAO rather than half of one.</summary>
+    internal static bool Rebase(ref VertexStream s)
+    {
+        uint own = Draw(s.Buf);
+        if (own == 0) return false;
+        s.Buf = own;
+        return true;
     }
 
     /// <summary>The name a VAO should bind for this engine buffer: our copy, or 0 when the table is stood
@@ -167,10 +219,10 @@ internal static unsafe class OwnedBuffers
 
     /// <summary>Re-copy every buffer the engine has written to since the last frame. Once per frame from
     /// inside the 4.6 bracket; nothing to do is the normal case and costs one count check.
-    /// <para>ponytail: whole-buffer re-copy, not the sub-range <c>UnlockPool</c> was told about. A pool
-    /// upload is a load-time event (streaming a model in, a repack) rather than a per-frame one, and the
-    /// range arithmetic would have to track a coalesced set of dirty spans to save a copy nobody is timing.
-    /// Upgrade path if a pool ever turns out to unlock per frame: keep the min/max offset per entry.</para>
+    /// <para>#213: the sub-range the engine named, where it named one -- see <see cref="Respan"/>. That is
+    /// the update path the per-frame movers need: dangly (<c>PartDanglyMesh::Animate</c> @0x49c935) and
+    /// morph-animated nodes (<c>MdlNodeAnimMesh::InternalControl</c> @0x4996b9) both commit through
+    /// <c>CommitItemDynamicData</c>, which tail-calls <c>UnlockPool</c> with that one item's byte span.</para>
     /// <para>A write that lands AFTER this call is one frame stale on screen, then correct. The engine
     /// commits geometry outside the Alloy bracket, so the window is the tail of the same frame's load.</para>
     /// </summary>
@@ -187,13 +239,47 @@ internal static unsafe class OwnedBuffers
             // instead would delete a buffer the VAO still references (GL keeps the storage alive, so the draw
             // would be stale forever anyway) for strictly more machinery. Upgrade path if a driver ever fails
             // here routinely: mark the slot's VAO stale so it rebuilds on the engine's buffers.
-            long now = Recopy((uint)name, e.Owned);
+            long now = e.Full || !_span
+                ? Recopy((uint)name, e.Owned)
+                : Respan((uint)name, e.Owned, e.Lo, e.Hi, e.Bytes);
             if (now != 0) { _bytes += now - e.Bytes; e.Bytes = now; }
             _map[name] = e;
             _recopies++;
         }
         _dirty.Clear();
         HighWater();
+    }
+
+    /// <summary>#213: refresh only the bytes the engine said it wrote. <c>UnlockPool</c>'s second and third
+    /// arguments ARE the sub-range -- Ghidra @0x4cfc80 passes them straight to <c>glBufferSubData</c> as size
+    /// and offset -- so a dangly mesh or a morph-animated node costs one item-sized copy per frame instead of
+    /// its whole shared pool, which on a static-vertex pool is every mesh that shares the VDO.
+    /// <para>A size change means the pool was reallocated (<c>ResizePool</c>, then a full
+    /// <c>glBufferData</c>), and a sub-range copy into a copy of the old size would be geometry from two
+    /// different layouts. That falls back to the whole-buffer path, which reallocates ours to match.</para>
+    /// </summary>
+    /// <remarks>The span is the engine's, and it has TWO upload branches. Which one a pool takes is the
+    /// <c>RequestPool</c> flags word at pool+0x14: bit 8 set (@0x4cfd43) honours the offset and uploads
+    /// <c>[offset, offset+size)</c>; bit 8 clear with bit 1 set (@0x4cfe66) ignores the offset entirely and
+    /// uploads <c>[0, size)</c> from the host base. The span below is right under both, because the only
+    /// pool of the second kind is the global element stream -- <c>VertexDataObject::Build</c> @0x45bac0
+    /// requests its three per-VDO pools with 0x102 (dynamic), 0x100 (element) and 0x100 (static vertex), all
+    /// bit 8, while the element-stream pool is 0x2 and <c>CommitElementStreamData</c> @0x45c9c0 unlocks it
+    /// with <c>xor %edx,%edx</c>, i.e. offset 0, where the two branches agree.</remarks>
+    private static long Respan(uint src, uint dst, long lo, long hi, long known)
+    {
+        long size = SizeOf(src);
+        if (size != known || size <= 0) { _fullRefresh++; return size <= 0 ? 0 : Blit(src, dst, size); }
+        if (lo < 0) lo = 0;
+        if (hi > size) hi = size;
+        if (hi <= lo) return known;
+        Gl.BindBuffer(Gl.COPY_READ_BUFFER, src);
+        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, dst);
+        Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, (IntPtr)lo, (IntPtr)lo, (IntPtr)(hi - lo));
+        Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
+        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+        _spanRefresh++; _spanBytes += hi - lo;
+        return known;
     }
 
     /// <summary>One engine buffer -> one owned copy, GPU-side. Returns 0 (leaving nothing allocated) on any
@@ -221,6 +307,7 @@ internal static unsafe class OwnedBuffers
     private static long Recopy(uint src, uint dst)
     {
         long size = SizeOf(src);
+        _fullRefresh++;
         return size <= 0 ? 0 : Blit(src, dst, size);
     }
 
@@ -260,6 +347,10 @@ internal static unsafe class OwnedBuffers
     /// <summary>The engine's "this VDO has no such pool" token (<c>VertexDataObject::AddItem</c> tests it at
     /// +0x24 and +0x30).</summary>
     private const uint NoPool = 0xFFFFFFFF;
+    /// <summary>The size <c>GLRender::UnlockPool</c> reads as "the whole pool": both of its
+    /// <c>glBufferSubData</c> sites substitute the pool's own byte count for it (@0x4cfda1/0x4cfda3 and
+    /// @0x4cfe7d/0x4cfe7f).</summary>
+    private const uint WholePool = 0xFFFFFFFF;
 
     /// <summary>ADR 0016's measurement, and the only VRAM number this ticket ships. Every MiB, not every
     /// buffer: the count climbs on every insert, and per-copy logging inside the bracket is what made the
@@ -309,7 +400,9 @@ internal static unsafe class OwnedBuffers
     }
 
     internal static string Stats(int frames) =>
-        _copies == 0 ? "" : $"owned geom {_map.Count} bufs {_bytes / OneMiB}MiB (peak {_peakBytes / OneMiB}MiB, refresh {_recopies}, refused {_refused})";
+        _copies == 0 ? "" : $"owned geom {_map.Count} bufs {_bytes / OneMiB}MiB (peak {_peakBytes / OneMiB}MiB, " +
+            $"refresh {_recopies} = {_spanRefresh} span/{_fullRefresh} full, {_spanBytes / 1024}KiB spanned, " +
+            $"unlocks {_unlocks}, refused {_refused})";
 
     /// <summary>Off-device: the caching contract, with no GL. An unarmed table is a pass-through, a refused
     /// copy is remembered rather than retried, the upload funnel dirties exactly the names we hold, and the
@@ -319,7 +412,7 @@ internal static unsafe class OwnedBuffers
         bool wasArmed = _armed;
         var saved = new Dictionary<int, Entry>(_map);
         var savedPool = _getPoolBuffer;
-        _map.Clear(); _dirty.Clear(); _pending.Clear(); _refused = 0;
+        _map.Clear(); _dirty.Clear(); _pending.Clear(); _refused = 0; _unlocks = 0;
 
         _armed = false;
         bool ok = Draw(7) == 0 && _map.Count == 0;          // stood down: nothing owned, nothing remembered
@@ -337,14 +430,20 @@ internal static unsafe class OwnedBuffers
         // the upload funnel dirties the copy behind the name the token resolves to, and a refused entry has
         // nothing to dirty (a Refresh of one would try to copy into buffer 0).
         _getPoolBuffer = &FakePool;
-        MarkDirty(13); MarkDirty(13); MarkDirty(11);
+        MarkDirty(13, 16, 32); MarkDirty(13, 16, 8); MarkDirty(11, 16, 0);
         ok &= _dirty.Count == 1 && _dirty[0] == 13 && _map[13].Dirty;
+        // #213: two disjoint writes coalesce to the span that covers both, and neither is a full re-blit.
+        ok &= !_map[13].Full && _map[13].Lo == 8 && _map[13].Hi == 48;
+        // ...and a whole-pool unlock (size 0xFFFFFFFF) promotes the entry past the span arithmetic, which
+        // would otherwise compute a 4GiB range from it.
+        MarkDirty(13, WholePool, 0);
+        ok &= _map[13].Full && _dirty.Count == 1;
 
         // ...and the delete funnel retires the copy made from that name, queueing OURS.
         Retire(13);
         ok &= !_map.ContainsKey(13) && _pending.Count == 1 && _pending[0] == 99;
 
-        _map.Clear(); _dirty.Clear(); _pending.Clear(); _refused = 0; _bytes = 0;
+        _map.Clear(); _dirty.Clear(); _pending.Clear(); _refused = 0; _bytes = 0; _unlocks = 0;
         _armed = wasArmed; _getPoolBuffer = savedPool;
         foreach (var kv in saved) _map[kv.Key] = kv.Value;
         log.Info(ok ? "OwnedBuffers.SelfCheck: passed" : "OwnedBuffers.SelfCheck: FAILED");

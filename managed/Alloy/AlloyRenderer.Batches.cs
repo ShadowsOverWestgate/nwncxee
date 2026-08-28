@@ -561,7 +561,7 @@ public sealed unsafe partial class AlloyRenderer
         {
             uint src = BlendGl(_skSrc[i]), dst = BlendGl(_skDst[i]);
             if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
-            if (_skVao[i] != boundVao) { Gl.BindVertexArray(_vVao46[_skVao[i]]); boundVao = _skVao[i]; }
+            if (_skVao[i] != boundVao) { Gl.BindVertexArray(SkyVao(_skVao[i])); boundVao = _skVao[i]; }
             if (_skTex[i] != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)_skTex[i]); boundTex = _skTex[i]; }
             Gl.Uniform3fv(_locTint, 1, t3 + i * 3);
             int s = _skyFirst + i;

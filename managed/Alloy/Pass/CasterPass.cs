@@ -385,6 +385,21 @@ public sealed unsafe class CasterPass : IExtenderService
     // built lazily inside the bracket over the same shared buffers (#70: buffers share, VAOs do not).
     private static readonly IntPtr[] _vVdo = new IntPtr[MaxVdos];
     private static readonly uint[] _vVao46 = new uint[MaxVdos];
+    /// <summary>#213: the same VAO over Alloy's own copies of this VDO's buffers -- 0 when any one of them
+    /// has no copy, in which case the slot bakes from the engine's pools as before. The shadow pass keeps its
+    /// own VDO table, but not its own COPIES: <see cref="OwnedBuffers"/> keys on the engine buffer name, and
+    /// a caster shares its pools with the colour pass, so this costs VAOs and no VRAM.</summary>
+    private static readonly uint[] _vVaoOwn = new uint[MaxVdos];
+    /// <summary>Slots whose bake actually draws from Alloy's buffers -- the shadow half of #213's signal.
+    /// Counted at the log rather than tracked: <see cref="Release"/> retires slots without deleting their
+    /// VAOs (that waits for a bracket), so an incrementally maintained tally would over-report until every
+    /// retired slot happened to be rebuilt.</summary>
+    private static int OwnedVaos()
+    {
+        int n = 0;
+        for (int v = 0; v < _vdoCount; v++) if (_vVdo[v] != IntPtr.Zero && _vVaoOwn[v] != 0) n++;
+        return n;
+    }
     private static readonly uint[] _vElemBuf = new uint[MaxVdos];
     private static readonly VertexStream[] _vPos = new VertexStream[MaxVdos];
     private static readonly bool[] _vStale = new bool[MaxVdos];
@@ -814,6 +829,11 @@ public sealed unsafe class CasterPass : IExtenderService
         Vector3 focus = FrameInputs.HasFocus ? FrameInputs.Focus : FrameInputs.CameraPos;
 
         if (!GlContextService.Enter()) return;
+        // #213: the bake reads the same copies the colour pass will, so it refreshes them on the same frame.
+        // This bracket runs FIRST; without it a dangly or morph-animated caster would bake one frame behind
+        // the mesh it belongs to -- a shadow of the previous pose lying beside the current one. A no-op
+        // whenever nothing unlocked, which is every frame without a mover in view.
+        OwnedBuffers.Refresh();
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         _qShadowOn = _qShadow.Begin(Gl.TIME_ELAPSED);
         UploadBones();
@@ -1014,7 +1034,7 @@ public sealed unsafe class CasterPass : IExtenderService
                    $"{_maxDist:F0}u" + FitReadout() +
                    $", {(float)_cubeLightsSum / _frames:F1}/{_cubeLights} local cubes at " +
                    $"{_cubeSize}px taking {(float)_cubeStaged / _frames:F0} caster submissions/frame" +
-                   $", {_lastEnrolled}/{_lastCandidates} enrolled on {_vdoCount} VDOs" +
+                   $", {_lastEnrolled}/{_lastCandidates} enrolled on {_vdoCount} VDOs ({OwnedVaos()} on owned buffers)" +
                    (_overflow > 0 ? $" (+{_overflow} over capacity)" : "") +
                    $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
                    (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
@@ -1275,7 +1295,7 @@ public sealed unsafe class CasterPass : IExtenderService
         {
             if (_vdoCount >= MaxVdos || (reserve && _vdoCount >= SkinVdoCeiling)) return -1;
             s = _vdoCount++;
-            _vVao46[s] = 0;
+            _vVao46[s] = 0; _vVaoOwn[s] = 0;
         }
         if (!Harvest(vdo, s)) return -1;
         _vVdo[s] = vdo; _vStale[s] = _vVao46[s] != 0;
@@ -1744,7 +1764,7 @@ public sealed unsafe class CasterPass : IExtenderService
             }
             if (cut0 != 0 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_stagedVao[start] != boundVao)
-            { Gl.BindVertexArray(_vVao46[_stagedVao[start]]); boundVao = _stagedVao[start]; }
+            { Gl.BindVertexArray(Vao(_stagedVao[start])); boundVao = _stagedVao[start]; }
             Gl.MultiDrawElementsIndirect(_primTable[_stagedPrim[start]], GlUnsignedShort,
                                          (void*)(regionOff + (long)start * CmdBytes), j - start, 0);
             _mdiCalls++;
@@ -1780,26 +1800,51 @@ public sealed unsafe class CasterPass : IExtenderService
     /// the batch cut key -- one multidraw carries one texture and one program.</summary>
     private static readonly int[] _stagedTex = new int[MaxCasters];
 
-    /// <summary>Build the 4.6-side VAO over the SHARED engine buffers from the harvested position format.
-    /// Position only: a depth draw reads nothing else.</summary>
+    /// <summary>Build the 4.6-side VAO(s) from the harvested position format. Position only: a depth draw
+    /// reads nothing else (plus the UV a masked caster discards against, and the bone streams).
+    /// <para>#213: two of them, over the engine's pool buffers and over Alloy's copies, exactly as the colour
+    /// pass builds them -- <see cref="Vao"/> picks. The bake and the colour pass must agree about where a
+    /// caster's vertices are, and the cheapest way to guarantee that is for both to read the same copy.</para>
+    /// </summary>
     private static bool EnsureVao(int v)
     {
         if (_vVao46[v] != 0 && !_vStale[v]) return true;
-        if (_vVao46[v] != 0) { uint old = _vVao46[v]; Gl.DeleteVertexArrays(1, &old); _vVao46[v] = 0; }
+        uint* old = stackalloc uint[2] { _vVao46[v], _vVaoOwn[v] };
+        for (int i = 0; i < 2; i++) if (old[i] != 0) Gl.DeleteVertexArrays(1, old + i);
+        _vVao46[v] = BuildVao(v, owned: false);
+        _vVaoOwn[v] = OwnedBuffers.ArmedForShadows ? BuildVao(v, owned: true) : 0;
+        _vStale[v] = false;
+        return _vVao46[v] != 0;
+    }
+
+    /// <summary>One VAO over one set of buffers. <paramref name="owned"/> swaps every source buffer for
+    /// Alloy's copy of it; a stream with no copy returns 0 rather than a VAO half-pulling from each.</summary>
+    private static uint BuildVao(int v, bool owned)
+    {
+        uint elem = owned ? OwnedBuffers.Draw(_vElemBuf[v]) : _vElemBuf[v];
+        if (elem == 0) return 0;
+        var pos = _vPos[v]; var uv = _vUv[v]; var bi = _vBi[v]; var bw = _vBw[v];
+        if (owned && !(OwnedBuffers.Rebase(ref pos)
+                       && (!uv.Present || OwnedBuffers.Rebase(ref uv))
+                       && (!_vSkin[v] || (OwnedBuffers.Rebase(ref bi) && OwnedBuffers.Rebase(ref bw))))) return 0;
         uint vao; Gl.GenVertexArrays(1, &vao);
         Gl.BindVertexArray(vao);
-        VertexArrays.Bind(LocPos, in _vPos[v]);
-        if (_vUv[v].Present) VertexArrays.Bind(LocUv, in _vUv[v]);
+        VertexArrays.Bind(LocPos, in pos);
+        if (uv.Present) VertexArrays.Bind(LocUv, in uv);
         if (_vSkin[v])
         {
-            VertexArrays.Bind(LocBoneIdx, in _vBi[v]);
-            VertexArrays.Bind(LocBoneW, in _vBw[v]);
+            VertexArrays.Bind(LocBoneIdx, in bi);
+            VertexArrays.Bind(LocBoneW, in bw);
         }
-        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _vElemBuf[v]);
+        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, elem);
         Gl.BindVertexArray(0);
-        _vVao46[v] = vao; _vStale[v] = false;
-        return true;
+        return vao;
     }
+
+
+    /// <summary>Which VAO this slot bakes from: Alloy's copies where the whole slot copied, the engine's
+    /// pools otherwise.</summary>
+    private static uint Vao(int v) => _vVaoOwn[v] != 0 ? _vVaoOwn[v] : _vVao46[v];
 
     /// <summary>Resrefs the caster pass looks up before falling back to the GLSL below (#92).</summary>
     internal const string ShdCastVs = "cx_cast_vs", ShdCastFs = "cx_cast_fs";
