@@ -127,7 +127,7 @@ internal static unsafe class PartTable
     /// re-record instead of landing on the tombstone. Without this a recycled pointer was unownable for the
     /// life of the table: <see cref="Find"/> matched it, the draw took the not-active branch, and the part
     /// drew vanilla forever (the character losing Alloy ownership after a few area transitions, which only
-    /// <c>/vanilla</c> -- the one path to <see cref="WipeTables"/> during play -- healed).</summary>
+    /// an area transition healed).</summary>
     internal static readonly bool[] _pFreed = new bool[MaxParts];
     internal static int _partCount;
     /// <summary>#221: freed slots re-recorded into. Reported by the [batch] line, because "the table is
@@ -362,19 +362,10 @@ internal static unsafe class PartTable
         Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed); Array.Clear(AlloyCensus.OwnFlag);
         _partCount = 0; TableGen++;
         _saturated = false;
-        // #256: the table is empty and only the walk can refill it. The vanilla toggle and the pressure wipe
-        // change no scene membership, so the epoch will not move on its own -- ask for a walk explicitly.
+        // #256: the table is empty and only the walk can refill it. The pressure wipe changes no scene
+        // membership, so the epoch will not move on its own -- ask for a walk explicitly.
         SceneWalk.RequestWalk();
         Log?.Info($"PartTable: {why} -- part tables wiped");
     }
 
-    /// <summary>#86 frame-edge handler. A vanilla stretch freezes capture while the world keeps changing
-    /// underneath it -- liveness stamps stop. Resuming on top of that is
-    /// what left parts recorded-but-never-drawn.
-    /// So the vanilla edge tears the tables down and the Alloy edge re-records from nothing, which is exactly
-    /// what an area transition already does (and why switching areas healed it).</summary>
-    public static void OnRenderModeEdge(bool owned)
-    {
-        if (!owned && Active) WipeTables("vanilla toggle");
-    }
 }

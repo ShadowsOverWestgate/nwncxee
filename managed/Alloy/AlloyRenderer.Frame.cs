@@ -15,14 +15,14 @@ public sealed unsafe partial class AlloyRenderer
     /// keeps animated textures cycling), and <see cref="IssueBatches"/> submits the result as one multidraw per
     /// (program, VDO, texture, primitive) group. Anything that fails revalidation falls straight back to the
     /// engine walk.</summary>
-    /// <summary>#216: the bail-out a pass takes AFTER the shim has already taken the engine's frame away.
-    /// There is nothing to hand back to, so it latches: this frame is bare, the next one is vanilla with the
-    /// reason on screen. A no-op before the cutover, where returning here really does leave the engine's own
-    /// frame intact. The only refusal on this path that is not <c>PostChain</c>'s -- a persistent
-    /// <c>glXMakeCurrent</c> failure would otherwise be a permanently empty world with no reason given.</summary>
+    /// <summary>#216/#263: the bail-out a pass takes AFTER the shim has already taken the engine's frame
+    /// away. There is nothing to hand back to and -- since the renderer is chosen at boot -- no way to warm
+    /// the engine's resource world mid-session, so this is a HARD FAILURE: the reason is logged and put on
+    /// screen naming the restart, and the mode does not move. A no-op before the shim's window, where
+    /// returning here really does leave the engine's own frame intact.</summary>
     private static void NoFrameBehindUs(string why)
     {
-        if (RspShim.InWindow) AlloyGate.Incapable(why);
+        if (RspShim.InWindow) AlloyGate.Fail(why);
     }
 
     private static void DrawOwned()
@@ -40,7 +40,14 @@ public sealed unsafe partial class AlloyRenderer
         if (_progFailed || _batchUnavailable) return;   // EndFrame revokes + disarms; never pay the bracket for nothing
         // Checked BEFORE anything stamps OwnGen: BuildBatches marks parts as drawn, which is only honest while
         // the issue phase cannot fail. Missing entry points are the one way it could.
-        if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null) { _batchUnavailable = true; return; }
+        if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null)
+        {
+            // #263: the verdict froze before this frame, so nothing re-reads DrawCapable. Say it here or the
+            // world goes bare with no line at all.
+            _batchUnavailable = true;
+            AlloyGate.Fail("glMultiDrawElementsBaseVertex or glBindBufferBase is missing");
+            return;
+        }
 
         // #257: where the frame goes is LATCHED, not interrogated. Every frame used to open with nine
         // GL queries -- viewport, framebuffer binding, four attachment params, sRGB, and the two clear

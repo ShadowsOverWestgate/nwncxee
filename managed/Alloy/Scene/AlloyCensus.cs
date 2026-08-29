@@ -213,7 +213,6 @@ internal static unsafe class AlloyCensus
         // the candidate struct is reused across the whole enrollment scan, and enrollment reads Gob back on a
         // REFUSAL -- so a gate that fires before the part loads must not leave the previous entry's gob behind
         c.Gob = IntPtr.Zero;
-        if (!Active) return Gate("inactive");
         if (_pState[e] != StActive)
         {
             if (!_ownDry && _pGob[e] != IntPtr.Zero) _ownInstDead++;

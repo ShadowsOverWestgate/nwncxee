@@ -51,7 +51,7 @@ public sealed unsafe partial class AlloyRenderer
             // NAMES, and a name is exactly what the owned-resource lifetimes doc says never to key a table
             // on: the engine recreates its render targets on a device reset (alt-tab, workspace switch) and
             // the numbers can come back identical while the objects behind them are gone. That path
-            // (ownframe=0, /vanilla) keeps the per-frame queries it always had; under the cutover the
+            // (ownframe=0) keeps the per-frame queries it always had; under the cutover the
             // engine has no world FBO at all, so there is no name here to go stale.
             _tgtValid = _target.Fbo == 0;
             FboTopology(in _target);

@@ -38,7 +38,7 @@ namespace Sowx.Alloy;
 /// solved (#262: by <c>SkinPose</c>, from the engine's animation state) into a per-frame SSBO so the depth
 /// shader can re-run the engine's skinning. No engine replay either way, and a part not seen this frame simply has no record -- its
 /// shadow blinks rather than lying about where it is.</para></para>
-/// <para>Gated on <see cref="AlloyGate.Alloy"/> so the vanilla toggle -- and every other frame-start
+/// <para>Gated on <see cref="AlloyGate.Alloy"/> so the vanilla verdict -- and every other frame-start
 /// refusal (#216) -- reverts it frame-atomically, along with the rest of the Alloy frame.
 /// The <c>casters=0</c> config setting is the kill switch (<c>skincast=0</c> for the skinned half alone), and
 /// <c>/shadow</c> carries the look knobs. The frame path
@@ -265,7 +265,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     /// <summary>May the colour pass sample the cubes right now? Same single test as
     /// <see cref="CascadesFresh"/>: rendered on the most recent frame tick or not at all, which covers the
-    /// vanilla toggle, a module unload and a disarm together.</summary>
+    /// vanilla verdict, a module unload and a disarm together.</summary>
     internal static bool CubesFresh => CubeCount > 0 && CubeTex != 0 && _cubeStamp == _frameSeq;
 
     /// <summary>Cube slot holding <paramref name="id"/>'s shadow, or -1. Called once per area light from the
@@ -1034,9 +1034,9 @@ public sealed unsafe class CasterPass : IExtenderService
         // below -- a frozen count left over from the last frame that rendered reads as a pass still baking.
         LastViews = 0;
         // #241, ahead of EVERY early-out below: a frame that does not collect leaves the memo's stamps a
-        // frame behind, so the sweep would miss whatever vanished while it was not looking. /vanilla is the
-        // path that proves it -- toggle it on, walk, toggle it off, and the first Alloy frame would otherwise
-        // republish the shadows the world had before the walk.
+        // frame behind, so the sweep would miss whatever vanished while it was not looking. Any stretch of
+        // non-Alloy frames proves it -- the main menu and back is enough, and the first Alloy frame after
+        // would otherwise republish the shadows the world had before the walk.
         if (!_cubeScanned) _invalidate = true;
         _cubeScanned = false;
         Lifecycle();

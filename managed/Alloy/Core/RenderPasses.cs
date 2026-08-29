@@ -26,7 +26,7 @@ internal static class RenderPasses
             Attach = l => { OwnedTextures.Attach(l); KnobSurface.Note(AlloyRenderer.VramNote); },
             Install = OwnedTextures.Install,
             SelfCheck = l => { OwnedTextures.SelfCheck(l); AlloyRenderer.SelfCheckHandles(l); },
-            // #259: no Revoke. Its resources are keyed on CONTENT, so a part-table wipe or a /vanilla toggle
+            // #259: no Revoke. Its resources are keyed on CONTENT, so a part-table wipe
             // invalidates nothing in them -- and since they are only ever populated at the engine's upload
             // funnel, wiping them on an edge the engine does not rebuild across would leave every texture
             // borrowed for the rest of the session. The engine's own DeleteTextures IS the world edge here.

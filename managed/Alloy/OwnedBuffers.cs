@@ -24,7 +24,7 @@ namespace Sowx.Alloy;
 /// upload funnel and the engine's delete funnel -- rewrite the index.</para>
 /// <para><b>Why the takeover is safe even when Alloy never draws.</b> The bytes uploaded are the bytes the
 /// engine would have uploaded, into the buffer the engine's own pool descriptor names. A mid-session stand
-/// down (no 4.6 context, <c>/vanilla</c>, a refused frame) therefore degrades to vanilla, not to an empty
+/// down (no 4.6 context, a vanilla verdict, a refused frame) therefore degrades to vanilla, not to an empty
 /// world -- which is exactly what a copy-based scheme could not promise. It is also why the ticket's
 /// world-vs-UI pool question is an instrument here (<see cref="NoteEngineDraw"/>) and not a gate: a pool the
 /// UI draws from holds correct bytes whether Alloy or the engine put them there.</para>

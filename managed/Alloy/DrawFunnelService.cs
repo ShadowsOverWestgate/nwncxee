@@ -61,6 +61,9 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // #170: ahead of every stand-down, as the host's unconditional call was. Priority pins it AFTER
         // DrawStats and BEFORE OwnedDraw -- alphabetical service discovery gives the wrong order on its own.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 10, EndFrame, "DrawFunnels.endFrame", log);
+        // #263: read rather than asked of AlloyGate, so this does not depend on service discovery order.
+        if (Settings.Bool(AlloyGate.VanillaKey, false))
+        { log.Info($"DrawFunnels: standing down ({AlloyGate.VanillaKey}=1) -- the engine renders this session"); return; }
         string mode = Settings.Text(DrawModeKey, DrawModeBatch);
         if (mode != DrawModeBatch)
         { log.Info($"DrawFunnels: standing down (sowx.cfg drawhooks={mode})"); return; }

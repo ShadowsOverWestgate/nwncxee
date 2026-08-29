@@ -77,8 +77,12 @@ What *is* unbuilt is this ADR's fourth bullet: **the detected capability tier an
 override are not separate pieces of state.** `RenderMode` carries only the override; the capability
 side lives in the unrelated `GlContextService.Available` / `gl46` path.
 **Paid 2026-08-28 by #216**: `AlloyGate` (`managed/Alloy/Core/AlloyGate.cs`) holds the capability state and
-`RenderMode` still holds only the override; the frame verdict combines them once per frame, `/vanilla` reports
-both, and a capability dropout raises an on-screen notice naming the reason. See `docs/alloy-refusals.md`.
+`RenderMode` held only the override; the frame verdict combined them once per frame, `/vanilla` reports
+both, and a capability dropout raises an on-screen notice naming the reason.
+**Collapsed 2026-08-29 by #263**: the amendment at the top of this ADR is paid here — `RenderMode` is deleted,
+the request is the `vanilla` key in `sowx.cfg`, and `AlloyGate` decides once per session and freezes. The two
+pieces of state are still separate (`OptedOut` vs `Capable`), which is what this bullet asked for. See
+`docs/alloy-refusals.md`.
 The rest of this paragraph is the history that got there. That was tolerable while the
 frame belonged to the engine. It stops being tolerable at M4's cutover, where a frame-start branch
 has to answer "this machine cannot run it" and "this player chose not to" separately — and where an

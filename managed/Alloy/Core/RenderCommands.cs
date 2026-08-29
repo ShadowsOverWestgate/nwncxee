@@ -7,8 +7,8 @@ namespace Sowx.Alloy;
 /// <summary>
 /// The renderer's own slash commands (#165): the live-tuning dials and the shader dump, registered into
 /// <see cref="CommandRegistry"/> instead of living as branches in the chat service. Registration happens
-/// ahead of every renderer stand-down, so <c>/vanilla</c> -- the escape hatch -- exists even in a session
-/// that owns nothing.
+/// ahead of every renderer stand-down, so <c>/vanilla</c> -- which reports which renderer is running and
+/// why -- exists even in a session that owns nothing.
 /// </summary>
 internal static class RenderCommands
 {
@@ -28,16 +28,17 @@ internal static class RenderCommands
     {
         _log = log;
         var r = CommandRegistry.Global;
-        // #216: the reply names BOTH pieces of state (ADR 0010) -- without the capability clause, "I pressed
-        // /vanilla and nothing changed" reads the same as "this machine cannot run the Alloy renderer".
-        r.Register("/vanilla", "toggle extender rendering off/on at the next frame edge", _ =>
-        {
-            // The flip is applied at the next frame edge (#86); the render thread logs the transition.
-            bool vanilla = RenderMode.Toggle();
-            return (vanilla ? "rendering: VANILLA from the next frame"
-                            : "rendering: ALLOY from the next frame")
-                 + (AlloyGate.Capable ? "" : $" -- but the Alloy renderer is unavailable here: {AlloyGate.CapabilityReason}");
-        });
+        // #263: a REPORT, not a toggle. The renderer is chosen once at boot (ADR 0018's amendment to ADR
+        // 0010) because half of what Alloy installs replaces an engine path rather than watching it, so the
+        // two resource worlds cannot both be warm. The reply still names BOTH pieces of state (ADR 0010) --
+        // without the capability clause, "I set vanilla=1 and nothing changed" reads the same as "this
+        // machine cannot run the Alloy renderer" -- and it names the file to edit, since sowx.cfg is
+        // hand-edited and never written back.
+        r.Register("/vanilla", "report which renderer this session is running, and how to change it", _ =>
+            $"rendering: {(AlloyGate.Alloy ? "ALLOY" : "VANILLA")}"
+            + (AlloyGate.Reason.Length == 0 ? "" : $" -- {AlloyGate.Reason}")
+            + (AlloyGate.Failed ? $" -- the Alloy renderer FAILED: {AlloyGate.CapabilityReason}" : "")
+            + $" | restart-required: set {AlloyGate.VanillaKey}={(AlloyGate.OptedOut ? 0 : 1)} in {Settings.Path}");
         r.Register("/light", "report or tune the Alloy lighting knobs; /light reset restores boot values",
                    a => Tune("light", LightKeys, 2, a));
         r.Register("/grass", "report or tune the Alloy grass field; /grass reset restores boot values",

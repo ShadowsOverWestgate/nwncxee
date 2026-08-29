@@ -49,7 +49,7 @@ namespace Sowx.Alloy;
 /// so the iterator's existing <c>Find</c> serves both. The table is rebuilt wholesale at a frame boundary
 /// (enrollment, on a scene-walk delta, before the Alloy block) -- that is the frame-atomic
 /// swap. The only mid-frame mutation is revocation, which is safe in both directions because suppression is
-/// gated on the per-pass draw generation. <c>/vanilla</c> is the kill switch. Hot path allocates nothing.</para>
+/// gated on the per-pass draw generation. <c>vanilla=1</c> in sowx.cfg is the kill switch. Hot path allocates nothing.</para>
 /// <para>#128: CREATURES join it, and they arrive by relaxing two things rather than by a new path. The
 /// engine draws them from <c>Scene::RenderDynamicGeometry</c> -- buckets 2 and 3, but through the same
 /// <c>RenderDrawBucket</c> the capture already brackets -- so what actually kept them out was the capture's
@@ -761,14 +761,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        // #165: ahead of every stand-down and every check below -- /vanilla is the escape hatch for a
+        // #165: ahead of every stand-down and every check below -- /vanilla reports the renderer for a
         // misrendering session, so it must exist even in a session whose renderer never armed.
         RenderCommands.Register(log);
-        // #170: both ahead of every stand-down, matching the host's unconditional calls. The latch must
-        // outlive a renderer that never armed -- /vanilla is the escape hatch it drives.
-        RenderMode.Arm(log);
-        // #216: the frame verdict, one priority behind the override latch it reads.
+        // #170: ahead of every stand-down, matching the host's unconditional calls. The verdict must
+        // outlive a renderer that never armed -- /vanilla is the report it drives.
         AlloyGate.Arm(log);
+        // #263: the config half of the verdict is the FIRST stand-down, ahead of every Attach and every
+        // Install. Steps 4-7 replace engine paths rather than watching them -- Alloy performs the pool
+        // upload, mints the texture handles, forces PLT compositing to the CPU -- so arming them in a
+        // session the engine is going to render is not a wasted hook, it is a broken world. Restart-only
+        // (ADR 0018's amendment to ADR 0010) is exactly what buys the two worlds never being warm at once.
+        if (AlloyGate.OptedOut)
+        { log.Info("AlloyRenderer: stood down (vanilla=1) -- the engine owns every resource this session"); return; }
         FrameRegistry.Global.Register(FramePhase.PostPresent, 20, EndFrame, "AlloyRenderer.endFrame", log);
         // #175: the whole pass roll-call, in one walk over one declared table. Attach is ahead of every check
         // because #129's asserts that the ownable-bucket list AGREES with whether Alloy water can draw -- and
@@ -777,7 +782,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         PassRegistry.SelfCheck(log);
         PassRegistry.Global.Attach(log);
         // #211: the retired-texture deletes need a context, not a draw. Hung on the health bracket so they
-        // still happen while Alloy is stood down (/vanilla, main menu, the disarm latch).
+        // still happen while Alloy is stood down (main menu, the disarm latch).
         // #212: and the geometry deletes with them, for exactly the same reason -- the colour bracket's own
         // Drain never runs in those states, so a revoke there would hold the whole owned set for the session.
         GlContextService.InBracket = static () =>
@@ -803,9 +808,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // Every pass's own check. Advisory by convention -- the checks that GATE arming are the contract ones
         // below, which the passes do not own.
         PassRegistry.Global.RunSelfChecks(log);
-        // #179: SOWX_OWNDRAW is gone rather than moved -- /vanilla was already the same switch, only better
-        // (a frame edge, no relaunch, and it stands the shadow and batching sides down too). The service now
-        // arms unconditionally and idles behind RenderMode.Alloy, which every Alloy render site already reads.
+        // #179: SOWX_OWNDRAW is gone rather than moved -- the vanilla setting is the same switch, and it
+        // stands the shadow and residency sides down too (#263).
         if (GameGate.Locked)
         { log.Info("AlloyRenderer: stood down (lockchat)"); return; }
         // never arm on a broken contract: the misrender either predicts must not ship
@@ -870,7 +874,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             : "AlloyRenderer: skinmeshes stay engine-drawn (cloaks, robes, tails)");
         if (_armed) log.Info($"AlloyRenderer: /draw {DescribeTuning()}");
         log.Info(_armed
-            ? "AlloyRenderer: armed -- Alloy world pass at the #132 frame anchor, Scene::FadeDoors (/vanilla disables)"
+            ? "AlloyRenderer: armed -- Alloy world pass at the #132 frame anchor, Scene::FadeDoors (vanilla=1 in sowx.cfg disables)"
             : $"AlloyRenderer: {(_origRsp == null ? "RenderSinglePass" : "Scene::FadeDoors")} hook failed -- Alloy world pass unavailable");
     }
 
@@ -1020,7 +1024,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             FrameZones.Add(FrameZones.Zone.Enroll, tEnroll);
         }
         // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
-        // being on is never enough on its own: a pass with no 4.6 context, no module, or /vanilla still gets
+        // being on is never enough on its own: a pass with no 4.6 context, no module, or a vanilla verdict still gets
         // the engine's own RenderSinglePass, which is the only frame there is behind it.
         if (world && Armed4Shim)
         {
@@ -1253,18 +1257,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             if (j != i && _oTri[j] != IntPtr.Zero && _oGob[j] == gob) { Revoke(j); _oBone[j] = -1; }
     }
 
-    /// <summary>#86 frame-edge handler. Resuming enrolls from a table PartTable just wiped, so the first
-    /// attempts necessarily come up empty (parts must be re-recorded and complete first). Retry every pass
-    /// until one lands. The diagnostics are re-armed too: every resume is a fresh chance to see WHY nothing
-    /// enrolled.</summary>
-    internal static void OnRenderModeEdge(bool owned)
-    {
-        if (!owned) return;
-        SceneWalk.Dirty = true;
-        _enrollDiagLeft = EnrollDiagBudget;
-        _reportedHit = false;
-    }
-
     /// <summary>Iterator sighting from BucketGate's GetNextItem hook: an Alloy part just came up in the
     /// engine's bucket walk. True = skip it (we drew it this pass and it sits in buckets 0/1); false = let
     /// the engine draw it, which is what a mid-frame revocation or a skipped Alloy draw falls back to.</summary>
@@ -1326,7 +1318,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // whatever the next context recycles that number for.
         for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vOwned[v] = false; }
         _waterFailed = false;
-        AlloyGate.Forget();   // #216: its latched refusals are facts about a target this context owned
         // #257: and so is the target latch -- every name in it belongs to the context that just went.
         ForgetTarget();
         DepthResource.Revoke();

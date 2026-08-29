@@ -157,7 +157,9 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Render mode** — which renderer draws the 3D scene: the *owned* mode (Alloy) or the
   *vanilla* mode (the engine's own path). Both ship permanently; a device that cannot run the
   Alloy mode still runs every other extender feature. The mode is whole-scene — never a
-  per-class mixture — and switching it is frame-atomic.
+  per-class mixture — and it is **chosen once per session** (`vanilla=1` in `sowx.cfg`,
+  restart required), because Alloy's residency is exclusive and the two resource worlds
+  cannot both be warm. `/vanilla` reports which one is running and why.
 - **Permanent engine resident** — a responsibility the engine keeps for good, not one staged
   back to it during a migration: the 2D UI, resource loading, simulation state, and
   animation/bone state. Rendering is not on the list. The rule that draws the line is *the

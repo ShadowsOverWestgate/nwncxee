@@ -67,8 +67,8 @@ internal static unsafe class SceneWalk
     private static int _lastSeq;
     private static bool _seqLatched;
     /// <summary>Re-walk on the next tick regardless of the epoch. Set by every edge that empties the table
-    /// WITHOUT the engine's scene membership changing -- the <c>/vanilla</c> toggle and the pressure wipe
-    /// both do exactly that. Without it the table would stay empty until some gob happened to join or leave
+    /// WITHOUT the engine's scene membership changing -- the pressure wipe does exactly that. Without it
+    /// the table would stay empty until some gob happened to join or leave
     /// a scene: an empty world with a perfectly healthy epoch.</summary>
     private static bool _walkPending;
 

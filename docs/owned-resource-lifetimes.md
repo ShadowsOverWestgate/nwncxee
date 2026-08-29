@@ -95,8 +95,6 @@ part-table wipe        |-> AlloyRenderer.RevokeAll      (AlloyRenderer.cs:1003-1
 4.6 context lost      /       -> WipeHandles + PassRegistry.Global.Revoke()   (Enroll.cs:26-27)
                               -> CasterPass.Lifecycle -> Release              (CasterPass.cs:1003-1008)
 4.6 context lost      -> PassRegistry.Global.ContextLost()                    (AlloyRenderer.cs:1003)
-vanilla toggle        -> PartTable.OnRenderModeEdge -> WipeTables             (PartTable.cs:481)
-                            (which bumps TableGen, so it arrives as "part table wiped" above)
 table pressure        -> PartTable.OnTablePressure -> WipeTables              (PartTable.cs:453)
 Scene changed         -> SceneWalk.Reset -> WipeTables                        (SceneWalk.cs)
 scene walk sweep      -> SceneWalk.Sweep -> Die(e, "unreachable")             (SceneWalk.cs)

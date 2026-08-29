@@ -48,7 +48,7 @@ namespace Sowx.Alloy;
 /// this repo forbids. If <c>PartLight+0xa8</c>'s frozen shadow-fade weight ever surfaces, close it with RE.</para></summary>
 internal static unsafe class RspShim
 {
-    /// <summary>The config key. Read once, at Initialize; there is no runtime toggle -- <c>/vanilla</c> is
+    /// <summary>The config key. Read once, at Initialize; there is no runtime toggle -- <c>vanilla=1</c> is
     /// the escape hatch, and it takes the whole Alloy path down including this.</summary>
     internal const string Key = "ownframe";
 
@@ -264,10 +264,10 @@ internal static unsafe class RspShim
             : "the client's SSAO and Sharpen video options are INERT this session: they gate "
             + "Camera::DoFrameBufferEffects, which lived inside Scene::RenderSinglePass and went with it "
             + "when ownframe=1 took the frame. An Alloy equivalent is M5 work (ADR 0016); set ownframe=0 "
-            + "or /vanilla to get them back.");
+            + "or vanilla=1 to get them back.");
         FrameRegistry.Global.Register(FramePhase.PostPresent, 30, Period, "RspShim.period", log);
         log.Info($"RspShim: ARMED -- {Key}=1, Scene::RenderSinglePass replaced by the mutate-only shim on "
-               + "the Alloy path ([rspshim] every 900 frames; /vanilla or ownframe=0 restores it)");
+               + "the Alloy path ([rspshim] every 900 frames; vanilla=1 or ownframe=0 restores it)");
     }
 
     /// <summary>The shim. Runs in ENGINE context, in place of <c>Scene::RenderSinglePass</c>.

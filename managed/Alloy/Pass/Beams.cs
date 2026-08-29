@@ -338,8 +338,8 @@ internal static unsafe class Beams
     }
 
     /// <summary>Resolve one beam's draw arguments off its VDO's own item tables and park them in slot
-    /// <paramref name="k"/>. False means this beam cannot be drawn, which per the all-or-none rule stands the
-    /// whole class down for the pass.</summary>
+    /// <paramref name="k"/>. False means this beam cannot be drawn: #261 retired the all-or-none rule, so it
+    /// is skipped and its neighbours draw.</summary>
     private static bool Stage(int i, int k)
     {
         ref Beam b = ref _beams[i];

@@ -83,7 +83,7 @@ public sealed unsafe class ShadowService : IExtenderService
         int hooked = 0;
         // Static/directional environment stencil: suppressed in BOTH modes (the map replaces sun/moon
         // environment shadows). No per-light context -- a fixed directional pass.
-        // The trampoline is KEPT, not discarded: the vanilla toggle has to be able to call it again, and a
+        // The trampoline is KEPT, not discarded: an Idle or Incapable frame has to be able to call it, and a
         // silently missing static-shadow pass reads as "vanilla just looks like that".
         _staticOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.RenderStaticShadows,
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRenderStaticShadows);

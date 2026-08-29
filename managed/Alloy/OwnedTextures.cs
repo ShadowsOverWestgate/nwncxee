@@ -44,7 +44,7 @@ namespace Sowx.Alloy;
 /// pixels to upload), and anything uploaded through <c>DirectCreateTexture</c> -- Ghidra says that is the
 /// movie player and <c>Camera::RefreshRenderSubframeResources</c>, neither of which Alloy draws.</para>
 /// <para><b>Lifecycle</b> (docs/owned-resource-lifetimes.md), and this table has NO <c>Revoke</c> slot.
-/// Content-keyed resources survive a part-table wipe and a <c>/vanilla</c> toggle unchanged, and since they
+/// Content-keyed resources survive a part-table wipe unchanged, and since they
 /// are populated ONLY at the upload funnel, wiping them on an edge the engine does not rebuild across would
 /// leave every texture borrowed for the rest of the session. The world edge is the engine's own
 /// <see cref="OnDeleteTextures"/>, which QUEUES rather than deletes -- it runs wherever the engine happened

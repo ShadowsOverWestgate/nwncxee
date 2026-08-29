@@ -127,7 +127,9 @@ public sealed unsafe partial class AlloyRenderer
                 prog = RebuildEmbedded(prog, OwnedVs, OwnedFs, "fullbright", ref vsSrc);
             }
             _vsDepthSafe &= ShaderContract.DepthSafe(vsSrc);
-            if (prog == 0) { _progFailed = true; return false; }
+            // #263: programs build on first use, i.e. inside the first frame the verdict already froze on.
+            // A silent latch here is a permanently bare world, so it is a hard failure with a reason.
+            if (prog == 0) { _progFailed = true; AlloyGate.Fail("an Alloy program did not build"); return false; }
             _prog46 = prog;
             _locVp = GlProgram.Loc(prog, "uVP"); _locBase = GlProgram.Loc(prog, "uDrawBase");
             _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz");

@@ -42,7 +42,7 @@ First build clones+builds the funchook submodule (git submodule --init).
 
 There are no `SOWX_*` environment variables. Every knob is either a **chat command**
 (`/light`, `/grass`, `/post`, `/draw`, `/water`, `/probe`, `/shadow`, `/particles`,
-`/sky`, `/beams`, `/fps`, `/keydiag`, `/vanilla`) or a **config setting** in
+`/sky`, `/beams`, `/fps`, `/keydiag`) or a **config setting** in
 `sowx.cfg`, in the client's user directory beside `nwn.ini` and the per-feature
 cfgs -- capability gates, buffer sizes, arming decisions. `/knobs` prints both,
 and the exact path it read. Adding a knob means picking one of the two; there is no third place to put it.

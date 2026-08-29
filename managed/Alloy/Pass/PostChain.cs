@@ -525,7 +525,7 @@ internal static unsafe class PostChain
     /// renders, just without any of #139 in it.</para></summary>
     private static bool Refuse(string why)
     {
-        if (RspShim.InWindow) AlloyGate.Incapable(why);   // #216: nothing to hand this pass back to
+        if (RspShim.InWindow) AlloyGate.Fail(why);   // #263: nothing to hand this pass back to, and no restart-free way to get it
         return _down.Refuse(_log, why, "the HDR target is not armed; #132: the Alloy frame stands down for those "
                                      + "passes and the engine renders them vanilla");
     }
@@ -533,7 +533,12 @@ internal static unsafe class PostChain
     /// <summary>...and the latching kind, for a failure that cannot come back: a stage that did not build,
     /// an entry point the driver does not have.</summary>
     private static bool StandDown(string why)
-        => _down.Fail(_log, why, "the HDR target cannot arm this session; the engine renders vanilla");
+    {
+        // #263: same argument as Refuse's -- this latches inside a frame the verdict already froze on, and
+        // nothing re-reads PostChain.Failed afterwards.
+        if (RspShim.InWindow) AlloyGate.Fail(why);
+        return _down.Fail(_log, why, "the HDR target cannot arm this session; the engine renders vanilla");
+    }
 
     /// <summary>The bloom chain: progressive downsample, then a tent upsample back up, accumulating. Runs
     /// with the HDR target still bound as the read source and the chain's own framebuffer as the draw

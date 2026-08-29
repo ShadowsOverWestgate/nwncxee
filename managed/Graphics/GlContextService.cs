@@ -92,7 +92,7 @@ public sealed unsafe class GlContextService : IExtenderService
 
     /// <summary>Work that needs A context but not the Alloy pass: the health bracket runs every in-play frame
     /// whether or not anything drew, so it is the one place a resource retired while Alloy is stood down can
-    /// still be freed. #211's texture deletes hang here -- otherwise /vanilla, a module unload back to the
+    /// still be freed. #211's texture deletes hang here -- otherwise a module unload back to the
     /// main menu, or the permanent disarm latch would hold the whole owned texture set for the session,
     /// because the colour bracket returns before <c>Enter</c> forever in those states.</summary>
     public static Action? InBracket;
