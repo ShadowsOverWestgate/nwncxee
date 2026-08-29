@@ -234,20 +234,13 @@ internal static unsafe class AlloyCensus
         }
         if (OwnFlag[e] != 0) return Gate("OWNED");
         if (!_ownDry) { _ownSeen++; if (_pGob[e] != IntPtr.Zero) _ownInstSeen++; }
-        // #236: the ENROLLMENT window is not the DRAW window. Alloy already refuses to draw an owned part
-        // the engine stopped walking (the SightedRecently gate in BuildBatches, which costs a compare and a
-        // continue), so ownership of an off-screen part is free -- but this gate used the same one-frame
-        // window and therefore DROPPED it at every enrollment. Measured live: stale was the only non-zero
-        // rejection, 5465 of 12533 active, and 5025 of those had been walked inside the cadence. That is
-        // ~5000 parts losing ownership for being behind the camera, re-acquired only at the next enrollment
-        // -- which nothing pulls forward, because a returning part is already StActive and never reaches
-        // Complete. It is the whole of the residual camera-spin pop-in.
-        if (_pSeen[e] < _frame - AlloyRenderer.OwnSightingWindow)
-        {
-            if (!_ownDry && _pGob[e] != IntPtr.Zero) _ownInstStale++;
-            Bump(ref _ownRejStale);
-            return Gate("stale");
-        }
+        // #256: THE SIGHTING WINDOW IS GONE. It was an inference -- "the engine has not walked this part
+        // lately, so it is probably not here any more" -- and #236 had already had to widen it to 60 frames
+        // to stop it dropping ~5000 of 12533 active parts per enrollment for being behind the camera.
+        // Liveness is now a FACT the scene walk establishes: a record exists exactly while the part is
+        // reachable from the Scene, and an unreachable one is swept (SceneWalk.Sweep) or destroyed
+        // (Part::~Part). Candidacy therefore asks nothing about visibility at all. What the camera can see
+        // is a per-FRAME question, asked at draw time against the bucket arrays.
         // ...and the window it widens is a LIVENESS window, so what it bounded has to be re-proven rather
         // than assumed. The captured node/material were last checked against the live part by the walk, which
         // may now be a whole window ago; every gate below dereferences them. StActive plus the #145 dtor hook
@@ -257,7 +250,15 @@ internal static unsafe class AlloyCensus
         {
             var live = new PartRef(_pPart[e]);
             if (live.Node.Ptr != _pNode[e] || live.Material.Ptr != _pMat[e])
-            { Bump(ref _ownRejStaleMoved); return Gate("stale-identity"); }
+            {
+                // #256: refuse AND re-read. Under capture a drifted record came back by being re-Recorded
+                // from a later draw; there is no such draw now, so an in-place material swap
+                // (Gob::ReplaceTexture @0x43e980) would strand the part in vanilla until the area changed.
+                // ponytail: this makes the entry Dirty, so a material that drifts EVERY frame would enroll
+                // every frame. `enrolls=` on the period line is the number that says whether one does.
+                if (!_ownDry) SceneWalk.Rebind(e, live);
+                Bump(ref _ownRejStaleMoved); return Gate("stale-identity");
+            }
         }
         int g = _pGroup[e];
         if (!OwnableBucket(_gBucket[g])) { Bump(ref _ownRejBucket); return Gate("bucket"); }
@@ -626,10 +627,10 @@ internal static unsafe class AlloyCensus
     /// an instance actually dies at (the state gate, and staleness) are the two that say nothing about kind.
     /// Counted off <see cref="_pGob"/>, which is a copy taken at Record and never dereferenced, so it is safe
     /// on exactly the dead and stale entries this is asking about.</summary>
-    internal static int _ownInstSeen, _ownInstStale, _ownInstDead;
-    /// <summary>Instanced parts ever Recorded. Session-cumulative on purpose: a zero here means instances are
-    /// not reaching PartTriMesh::Draw at all, which is a different bug from every gate below.</summary>
-    internal static int _pInstRecorded;
+    internal static int _ownInstSeen, _ownInstDead;
+    /// <summary>Instanced parts ever enumerated. Session-cumulative on purpose: a zero here means the scene
+    /// walk is not reaching gob part trees at all, which is a different bug from every gate below.</summary>
+    internal static long _pInstRecorded;
 
     internal const int RefGobHash = 4096;
     internal static readonly IntPtr[] _refGob = new IntPtr[RefGobHash];
@@ -886,7 +887,7 @@ internal static unsafe class AlloyCensus
     }
 
     // per-gate enrollment forensics: which predicate is eating the candidates? (cold, scan-scoped)
-    internal static int _ownSeen, _ownRejStale, _ownRejStaleMoved, _ownRejBucket, _ownRejVdo, _ownRejGob, _ownRejFbSample,
+    internal static int _ownSeen, _ownRejStaleMoved, _ownRejBucket, _ownRejVdo, _ownRejGob, _ownRejFbSample,
                       _ownWithMaps, _ownRejItem, _ownSharedPlain, _ownSharedShader, _ownRejScene,
                       _ownWithEnv, _ownSharedFeature;
     internal static IntPtr _ownScene;
@@ -896,9 +897,9 @@ internal static unsafe class AlloyCensus
     internal static void OwnScanBegin(IntPtr scene)
     {
         _ownScene = scene;
-        _ownSeen = _ownRejStale = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
+        _ownSeen = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
-            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstStale = _ownInstDead = 0;
+            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = 0;
             _engineWaterWalks = _ownedWaterWalks = 0;
         Array.Clear(_ownByClass); Array.Clear(OwnRefusedByClass);
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
@@ -907,11 +908,11 @@ internal static unsafe class AlloyCensus
 
     /// <summary>Why the last enrollment scan rejected what it rejected -- one line, cold.</summary>
     internal static string OwnScanDiag() =>
-        $"active={_ownSeen} rejects: stale={_ownRejStale} (unwalked for {AlloyRenderer.OwnSightingWindow}+ frames) stale-identity={_ownRejStaleMoved} bucket={_ownRejBucket} vdo={_ownRejVdo} " +
+        $"active={_ownSeen} rejects: stale-identity={_ownRejStaleMoved} bucket={_ownRejBucket} vdo={_ownRejVdo} " +
         $"gob={_ownRejGob} item={_ownRejItem} foreign-scene={_ownRejScene} " +
         // #128: the instanced population's own fate. "Creatures are not owned" reads identically to
         // "creatures are not in the table"; these three tell them apart without another round trip.
-        $"| instances: {_ownInstSeen} live ({_ownInstStale} of them stale), {_ownInstDead} dead before the scan, " +
+        $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan, " +
         $"{_pInstRecorded} recorded ever, " +
         $"fb-sampling/volumetric={_ownRejFbSample}, " +
         // #126: the classification, as coverage. Cutout-vs-blended is the split the whole transparency

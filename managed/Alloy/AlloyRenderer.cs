@@ -47,7 +47,7 @@ namespace Sowx.Alloy;
 /// the draw by it lets the engine walk a part before we draw it -- double-draw, z-fighting.</para>
 /// <para>Ownership lives as a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>)
 /// so the iterator's existing <c>Find</c> serves both. The table is rebuilt wholesale at a frame boundary
-/// (enrollment, every <see cref="EnrollEvery"/> frames, before the Alloy block) -- that is the frame-atomic
+/// (enrollment, on a scene-walk delta, before the Alloy block) -- that is the frame-atomic
 /// swap. The only mid-frame mutation is revocation, which is safe in both directions because suppression is
 /// gated on the per-pass draw generation. <c>/vanilla</c> is the kill switch. Hot path allocates nothing.</para>
 /// <para>#128: CREATURES join it, and they arrive by relaxing two things rather than by a new path. The
@@ -73,13 +73,12 @@ namespace Sowx.Alloy;
 /// </summary>
 public sealed unsafe partial class AlloyRenderer : IExtenderService
 {
-    internal const int LogEvery = 900, EnrollEvery = 60;
-    /// <summary>#236: how long an off-screen part keeps its ownership. NOT the draw window -- BuildBatches
-    /// refuses to draw anything the engine stopped walking, so an owned invisible part costs a compare and a
-    /// continue. This is only how long the ENROLLMENT scan will hold a part the camera has turned away from,
-    /// so that turning back is instant rather than a wait for the next scan. Measured live at 60: ~5000 of
-    /// 12533 active parts were losing ownership per enrollment to the old one-frame window.</summary>
-    internal const int OwnSightingWindow = 60;
+    internal const int LogEvery = 900;
+    /// <summary>Minimum frames between enrollments. A floor on a cold path, NOT a cadence -- the trigger is
+    /// always a scene-walk delta, and a new Scene bypasses it outright. The bound it states: a part that
+    /// becomes ownable is owned within this many frames, and stays vanilla-shaded (not missing -- see
+    /// <see cref="RspShim.HandBack"/>) until then. Same number #236 measured for the same cost.</summary>
+    internal const int EnrollFloor = 10;
     /// <summary>Frames before the FIRST period line. The 900-frame cadence is right for steady-state cost,
     /// but it is also the only proof this pass runs at all -- and at 900 a short session (or one that ends at
     /// a module unload) produces no line, which reads as "never armed" rather than "not yet". Report once
@@ -368,7 +367,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal const int CapLighting = 5;
 
     // lifecycle
-    private static int _sinceEnroll = EnrollEvery, _tableGen = -1;
+    private static int _tableGen = -1, _sinceEnroll;
     private static bool _wasInModule;
 
     // period counters (the Alloy draw log counter, counterpart to M0's Alloy cast)
@@ -432,8 +431,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>Passes an empty enrollment may retry back-to-back after a resume before falling back to the
     /// normal cadence (~2s at 60fps): enough for the re-record to complete, bounded so a genuinely unownable
     /// area cannot spin the scan every pass forever.</summary>
-    internal const int ResumeRetries = 120, EnrollDiagBudget = 8;
-    private static int _resumeRetries;
+    internal const int EnrollDiagBudget = 8;
     /// <summary>Distinct diffuse textures interned at the last enrollment -- the batch floor (see EndFrame).</summary>
     private static int _lastTextures;
     private static bool _reportedHit;
@@ -904,8 +902,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // #236: the latch enrolls as soon as the throttle opens, so the bound on ownership latency is
             // NewCandidateGap frames from the completing walk rather than the full cadence.
             long tEnroll = FrameZones.Now;
-            if (_newCandidate && _sinceEnroll >= NewCandidateGap) { _candidateEnrolls++; Enroll(scene); }
-            else if (_sinceEnroll < EnrollEvery) _sinceEnroll++; else Enroll(scene);
+            // #256: the world walk FIRST -- one int load in the common case, a re-walk on the engine's own
+            // membership epoch. Enrollment is then edge-triggered on what that walk changed, which is what
+            // retires the 60-frame cadence: there is no clock here any more.
+            SceneWalk.Tick(scene);
+            // The FLOOR, and it is not a cadence: nothing here fires because time passed, it only delays an
+            // edge that has already happened. Enrollment is the cold path (handle wipe, full table scan,
+            // texture re-intern, VAO retire) and the walk's delta signal is unbounded by construction --
+            // #236 put a floor under the old new-candidate latch for exactly this reason and deleting the
+            // cadence took it with it. Measured live at 0,04-0,08 epoch moves per frame (a walk every 12-20
+            // frames), so at the observed rate this binds almost never; it exists for the churnier area.
+            if (_sinceEnroll < int.MaxValue) _sinceEnroll++;
+            bool due = SceneWalk.Dirty || scene != _enrollScene;
+            if (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene)) Enroll(scene);
             FrameZones.Add(FrameZones.Zone.Enroll, tEnroll);
         }
         // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
@@ -913,16 +922,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // the engine's own RenderSinglePass, which is the only frame there is behind it.
         if (world && Armed4Shim)
         {
-            // Enrollment cadence is the only thing that puts parts on screen now; pre-cutover the engine
-            // drew the world through the gap. On a cold start or an area transition that gap is up to
-            // EnrollEvery frames of NOTHING AT ALL, so it is closed here rather than waited out.
-            // The condition runs until something actually enrolls, not just until the Scene matches: the
-            // first walk of a new Scene records parts as StProbe, and TryOwnCandidateInner refuses every
-            // non-StActive entry -- so the enrollment a bare scene check triggers sees an empty table,
-            // sets _enrollScene, and hands the next real chance back to the 60-frame cadence.
-            if (scene != _enrollScene) _forcedEnrolls = 0;
-            if (scene != _enrollScene || (_ownCount == 0 && _forcedEnrolls < MaxForcedEnrolls))
-            { _sinceEnroll = EnrollEvery; _forcedEnrolls++; }
+            // #256: the first walk of a new Scene reaches parts whose geometry is not resident yet, so it
+            // enrols records that cannot bind until SetupArrays has run for them. The retry budget covers
+            // exactly that window -- a Scene that has enrolled NOTHING keeps asking, bounded, rather than
+            // waiting on an epoch bump that a purely resident-state change never produces.
+            // Against its OWN latch, not against _enrollScene: the enroll block above already ran under the
+            // same gate and set _enrollScene = scene, so a test on that is always false by the time it is
+            // reached and the budget would silently be per-session.
+            if (scene != _forcedScene) { _forcedScene = scene; _forcedEnrolls = 0; }
+            if (_ownCount == 0 && _forcedEnrolls < MaxForcedEnrolls)
+            { SceneWalk.Dirty = true; _forcedEnrolls++; }
             bool prevShim = _inColourPass;
             _inColourPass = true;
             RspShim.Run(scene);
@@ -971,34 +980,18 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static bool Armed4Shim => RspShim.Armed && RspShim.Ready && AlloyGate.Alloy;
 
     /// <summary>#215: consecutive enrollments forced by an empty ownership set, and the ceiling on them.
-    /// Convergence takes ~3 (walk records StProbe, probation completes on the next walk, the enrollment
-    /// after that accepts) -- the cap is loose around that. Without it, an area with genuinely nothing
-    /// ownable would run a full table scan at frame rate for as long as the player stood in it.</summary>
+    /// #256: what they now wait for is RESIDENCY -- the first walk of a Scene records parts whose
+    /// VertexPrimitive has no VDO yet, and each frame's rebind pass binds a few more. Without the cap, an
+    /// area with genuinely nothing ownable would run a full table scan at frame rate forever.</summary>
     private static int _forcedEnrolls;
+    private static IntPtr _forcedScene;
     private const int MaxForcedEnrolls = 8;
-
-    /// <summary>#236: the floor on frames between enrollments a NEW CANDIDATE may force. Enrollment is the
-    /// cold path (a full table scan, the handle wipe, the texture re-intern), and creature parts re-record
-    /// constantly -- unthrottled, <see cref="NoteNewCandidate"/> would run it every frame. This is also the
-    /// stated bound on the latency: a part that becomes ownable is owned within this many frames, and looks
-    /// vanilla-shaded (not missing -- see <see cref="RspShim.HandBack"/>) until then.</summary>
-    private const int NewCandidateGap = 10;
-    private static bool _newCandidate;
-    private static long _candidateEnrolls;
-
-    /// <summary>#236: a part just became ownable. The 60-frame cadence was tuned for a world where the engine
-    /// drew whatever Alloy had not got to; under the cutover the gap is a hole, so a fresh candidate pulls
-    /// the next enrollment forward instead of waiting out the tick.
-    /// <para>A LATCH, not a nudge. Dropping the request when the throttle is closed would leave a lone
-    /// candidate that completed just after an enrollment waiting out the full cadence anyway -- which is the
-    /// bug, not a throttled version of the fix.</para></summary>
-    internal static void NoteNewCandidate() => _newCandidate = true;
 
     private static bool _inColourPass;
     /// <summary>Scene the ownership table was enrolled from. The Alloy block draws only into a bucket walk of
     /// THIS Scene, which is what makes one-owner true by construction rather than by the colour-pass gate
     /// alone. An area transition that replaces the Scene leaves it stale, so nothing draws until the next
-    /// enrollment picks up the new one -- bounded by <see cref="EnrollEvery"/>.</summary>
+    /// enrollment picks up the new one -- which the walk's Scene check triggers on the same frame.</summary>
     private static IntPtr _enrollScene;
     /// <summary>Bucket 0/1 walks of a Scene that is not <see cref="_enrollScene"/> -- the #91 sighting counter.
     /// Non-zero means GUI 3D panels really do walk the opaque buckets and the gate is earning its keep.</summary>
@@ -1056,7 +1049,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (!AlloyGate.Alloy || _ownCount == 0) return;
         // #91: never paint into a foreign Scene. Only a NON-world pass counts as a foreign sighting -- a world
         // pass that misses is the enrolled Scene having been replaced (area transition), which resolves itself
-        // within one EnrollEvery and must not read as evidence that GUI panels reach this anchor.
+        // within a walk or two and must not read as evidence that GUI panels reach this anchor.
         if (scene != _enrollScene) { if (!_inColourPass) _foreignBuckets++; return; }
         if (!_inColourPass) return;
         if (_drawnPass == PassGen) return;
@@ -1133,14 +1126,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>#86 frame-edge handler. Resuming enrolls from a table PartTable just wiped, so the first
     /// attempts necessarily come up empty (parts must be re-recorded and complete first). Retry every pass
-    /// until one lands rather than spending a full <see cref="EnrollEvery"/> cadence per attempt -- that is
-    /// the difference between ownership resuming in a few frames and in a few seconds. The diagnostics are
-    /// re-armed too: every resume is a fresh chance to see WHY nothing enrolled.</summary>
+    /// until one lands. The diagnostics are re-armed too: every resume is a fresh chance to see WHY nothing
+    /// enrolled.</summary>
     internal static void OnRenderModeEdge(bool owned)
     {
         if (!owned) return;
-        _sinceEnroll = EnrollEvery;
-        _resumeRetries = ResumeRetries;
+        SceneWalk.Dirty = true;
         _enrollDiagLeft = EnrollDiagBudget;
         _reportedHit = false;
     }
@@ -1376,7 +1367,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // while the world renders is the whole reason this is a roll-call and not a fixed list --
                    // the frame looks fine, just 8-bit and un-bloomed, and only the clause says so.
                    PassRegistry.Global.Stats(_frames) + ", " +
-                   $"enrolls={_enrolls} ({_candidateEnrolls} pulled forward by a new candidate) revokes={_revokes}; " +
+                   $"enrolls={_enrolls} revokes={_revokes}; " +
                    // #119: the prepass's own cost, and what it bought. samples/px is the overdraw figure --
                    // run the same scene with /draw prepass 0 and the difference IS the pass's worth.
                    (!_depthPrepass ? "prepass OFF (/draw prepass 1 restores it)"
@@ -1417,7 +1408,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // texture one -- and this line is the only place it would ever be visible.
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
-        _frames = 0; _draws = 0; _batches = 0; _dedupDrawn = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0; _candidateEnrolls = 0;
+        _frames = 0; _draws = 0; _batches = 0; _dedupDrawn = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0;
         _skinDrawn = 0; _skinNoPose = 0; _skinSlotOverflow = 0;
         _foreignBuckets = 0;
         SkyBox.ResetPeriod();

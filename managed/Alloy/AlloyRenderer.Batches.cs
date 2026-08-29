@@ -438,7 +438,7 @@ public sealed unsafe partial class AlloyRenderer
             // live, all of it invisible, and it is exactly what the one-owner audit was reporting as
             // UNMATCHED: not a double draw, a ghost. The engine's own sighting window is the predictor, and
             // a part that comes back simply goes unstamped for one frame and is drawn by the engine.
-            if (!PartTable.SightedRecently(_oEntry[i]))
+            if (!PartTable.InBucketsRecently(_oEntry[i]))
             {
                 _skipUnseen++; _unseenBucket[_oBucket[i]]++;
                 W(i, "skipped: engine-culled");

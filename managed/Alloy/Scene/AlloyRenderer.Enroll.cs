@@ -43,13 +43,9 @@ public sealed unsafe partial class AlloyRenderer
         // a genuinely new fact -- whether ownership came back at all, and over how much. Suppressing it as a
         // repeat is what made a post-unload session look identical to one that never enrolled.
         _reportedHit = false;
-        _sinceEnroll = EnrollEvery;
-        // ...and the fast retry, not just the next cadence tick. A wipe leaves the part table empty,
-        // so the enrollment this queues necessarily misses -- parts have to be re-recorded first -- and
-        // without the retry budget the second attempt waits a full EnrollEvery. That is the ~1s of vanilla
-        // after every release, and it is the visible half of the fallback. Same re-arm the render-mode edge
-        // does, for the same reason.
-        _resumeRetries = ResumeRetries;
+        // #256: a wipe leaves the part table empty and the walk generation stale, so the next Tick must
+        // re-enumerate rather than wait on an epoch bump that a release does not produce.
+        SceneWalk.Dirty = true;
         _enrollDiagLeft = EnrollDiagBudget;
         _log?.Info($"AlloyRenderer: ownership released ({why}) -- all parts revert to the engine walk");
     }
@@ -57,16 +53,23 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Cold, at a frame boundary before the Alloy block: rebuild the ownership table wholesale from
     /// PartTable's capture tables. This IS the frame-atomic swap -- nothing else adds an entry, so no part
     /// can change owner between the Alloy draw and the bucket walk that skips it.
-    /// <para>ponytail: rebuilt on a cadence rather than per frame. #236 falsified the half of this note that
-    /// said parts qualify rarely -- creature parts re-record constantly, and under the cutover the failure
-    /// mode stopped being one-sided (an unowned part is not engine-drawn now, it is nothing). So a new
-    /// candidate pulls the next rebuild forward, floored at <see cref="NewCandidateGap"/> frames. The
-    /// ceiling that remains: in a creature-heavy area that floor can hold, i.e. this cold path (handle wipe,
-    /// full table scan, texture re-intern, VAO retire) at ~6Hz. <c>pulled forward by a new candidate</c> on
-    /// the period line is the number that says whether the floor needs widening.</para></summary>
+    /// <para>#256: EDGE-TRIGGERED, not periodic. It runs when <see cref="SceneWalk"/> changed the record
+    /// set (a part enumerated, bound or swept) or the Scene changed, and otherwise not at all -- so a
+    /// settled area pays nothing for it, and a mid-area spawn is picked up on the frame the engine's own
+    /// membership epoch moves rather than up to a second later.
+    /// <para>ponytail: still a WHOLESALE rebuild of the ownership table on that edge, not an incremental
+    /// patch of the entries that changed. Deltas are strand 2's, over records that by then hold still; the
+    /// <c>enrolls=</c> count on the period line is what says whether the edge fires often enough for the
+    /// wholesale cost to matter.</para></para></summary>
     private static void Enroll(IntPtr scene)
     {
-        _sinceEnroll = 0; _newCandidate = false; _enrolls++; _enrollScene = scene;
+        SceneWalk.Dirty = false; _sinceEnroll = 0; _enrolls++; _enrollScene = scene;
+        // #256: consume the table-wipe edge HERE. A Scene change wipes the tables (SceneWalk.Reset) and this
+        // enrollment then rebuilds ownership from the re-walked table in the same pass -- but the TableGen
+        // edge is checked at the present, and would fire RevokeAll on an enrollment whose slots are in fact
+        // current. Every area transition otherwise paid a wasted full scan, a handle wipe and a VAO retire,
+        // an extra frame of nothing, and an "ownership released" line that named no real release.
+        _tableGen = PartTable.TableGen;
         WipeHandles();   // #153: new enrollment, new tids -- yesterday's handles answer for nobody
         // #242: and the persistent records with them. The table is about to be rebuilt from zero, so slot N
         // is a different part after this line than before it -- the one invalidation no per-part compare
@@ -221,12 +224,9 @@ public sealed unsafe partial class AlloyRenderer
         if (_gobOwned > 0) CasterPass.ForceEnroll();
         _lastEnrolled = _orderCount; _lastCandidates = candidates; _lastTextures = _matCount;
         MeshCensus();
-        // Empty right after a resume means the re-record has not finished, not that nothing is ownable:
-        // re-arm the cadence so the next pass tries again instead of waiting out the full countdown.
-        // ...on the DRAWABLE count: the all-owned-or-none sweep can empty the order while leaving slots
-        // enrolled, and an enrollment that drew nothing is exactly the case this retry exists for.
-        if (_orderCount == 0 && _resumeRetries > 0) { _resumeRetries--; _sinceEnroll = EnrollEvery; }
-        else _resumeRetries = 0;
+        // Empty right after a resume means the records are not RESIDENT yet, not that nothing is ownable --
+        // a fresh Scene binds its VertexPrimitives over the next few frames. OnRenderSinglePass's bounded
+        // forced-enroll budget is what retries; nothing here may re-arm unboundedly.
         if (!PartTable.Active)
         {
             if (_enrollDiagLeft-- > 0)

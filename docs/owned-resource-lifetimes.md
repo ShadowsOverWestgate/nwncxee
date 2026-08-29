@@ -86,7 +86,15 @@ part-table wipe        |-> AlloyRenderer.RevokeAll      (AlloyRenderer.cs:1003-1
 vanilla toggle        -> PartTable.OnRenderModeEdge -> WipeTables             (PartTable.cs:481)
                             (which bumps TableGen, so it arrives as "part table wiped" above)
 table pressure        -> PartTable.OnTablePressure -> WipeTables              (PartTable.cs:453)
+Scene changed         -> SceneWalk.Reset -> WipeTables                        (SceneWalk.cs)
+scene walk sweep      -> SceneWalk.Sweep -> Die(e, "unreachable")             (SceneWalk.cs)
 ```
+
+**#256 adds a second death edge for a record, and it is not a destruction.** `Part::~Part` covers parts
+that are *freed*; the sweep covers parts that are merely *no longer in the scene* --
+`Scene::ChildRemove` @0x462cc0 and `Gob::Amputate` @0x443fa0 both unlink without freeing, so a gob that
+left the area generates no dtor at all. A record now lives exactly as long as the part is reachable from
+`Scene+0x130` / `Scene+0x188`, which is a fact the walk establishes rather than a window it infers.
 
 `RevokeAll` runs the world walk **above** its empty-table guard. The ownership count says what *Alloy
 took*; it says nothing about what the *passes captured*. Sky is the only pass with a per-part death
@@ -100,7 +108,7 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Resource | Created by | Revoked by | Caller | Context loss |
 |---|---|---|---|---|
 | Ownership table `_oTri/_oGob/_oVdo/_oEntry` | `AlloyRenderer.Enroll` | `RevokeAll` | `AlloyRenderer.cs:995,1003,1005,1007` + per-part `Revoke(i)` on repack (`:951`) and identity change (`Batches.cs:234`) | via `RevokeAll` |
-| Part/group tables (`PartTable`) | `BatchService.Complete` | `WipeTables` / `Die` | `PartTable.cs:453,481`, `BatchService.cs:717`, `OnPartDtor` `:633` | none — CPU only |
+| Part/group tables (`PartTable`) | `SceneWalk.Enrol` + `BatchService.Mint` (#256; was `BatchService.Complete`, fed by a draw capture) | `WipeTables` / `Die` / `SceneWalk.Sweep` | `PartTable.cs:453,481`, `OnPartDtor`, `SceneWalk.cs` | none — CPU only |
 | VAO cache `_vVdo/_vStale` | `EnsureVao` | `RevokeAll` retires the slots | `Enroll.cs` | GL names zeroed by `AlloyRenderer.ContextLost` |
 | Bindless handle cache `_hTid` | `AlloyRenderer.Issue` staging | `WipeHandles` — **only while `ownedtex=0`** (#220); armed, see the row below | `Enroll.cs:26` (release) and `:62` (enrollment) | `AlloyRenderer.ForgetHandles` |
 | Water planes (`WaterBodies`) | plane measurement during enrollment | `WaterBodies.Clear` | registry `Revoke` slot | none — CPU only |

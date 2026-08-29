@@ -72,7 +72,7 @@ public sealed unsafe class BatchService : IExtenderService
     /// dirty and never batched.</summary>
     private static int _canDissolve;
     private static delegate* unmanaged<int, void> _origCanDissolve;
-    private static int _capture = -1, _pending = -1, _pendingSelf = -1;
+    private static int _pending = -1, _pendingSelf = -1;
     private static readonly int[] _mdCounts = new int[MaxSubmit];
     private static readonly void*[] _mdOffsets = new void*[MaxSubmit];
     private static readonly int[] _mdBase = new int[MaxSubmit];
@@ -82,8 +82,11 @@ public sealed unsafe class BatchService : IExtenderService
 
     // period stats
     private static long _batched, _calls, _skipped, _vanDead, _vanSolo, _vanDirty, _vanOwnOnly;
-    private static long _recNotOk, _recNoCap, _recBadVdo;   // why-dead forensics (record path, cold)
-    private static int _capDiagLeft = 5, _subDiagLeft = 3;   // #81 crash-triage one-shots
+    private static long _recNoCap;   // why-dead forensics (bind path, cold)
+    /// <summary>#256: parts the engine drew that the scene walk never recorded -- the acceptance counter for
+    /// "every part the engine classified this frame is in the record set". Non-zero means the walk has a hole.</summary>
+    internal static long _unrecorded;
+    private static int _subDiagLeft = 3;   // #81 crash-triage one-shot
     private static bool _wasInModule;
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -98,8 +101,14 @@ public sealed unsafe class BatchService : IExtenderService
 
         PartTable.Log = log;
         AlloyCensus.Configure(log);
+        // Above the symbol gate on purpose: the mark-and-sweep contract is pure managed logic over synthetic
+        // parts, so it is checkable on a headless run -- which is the only place it is ever checked at all.
+        SceneWalk.SelfCheck(log);
         if (!PartTable.Resolve())
         { log.Info("BatchService: engine symbols unresolved -- batching unavailable (headless/Windows?)"); return; }
+        // #256: enumeration is the SOURCE of every record now, so it resolves before the tables arm. Without
+        // it there is no discovery at all -- nothing below may pretend otherwise by falling back to capture.
+        if (!SceneWalk.Resolve(log)) return;
 
         _origPartDraw = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.PartTriMeshDraw, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPartDraw);
@@ -149,16 +158,20 @@ public sealed unsafe class BatchService : IExtenderService
     private static IntPtr* _drawSlot;
     private static IntPtr* _repackSlot;
 
-    /// <summary>Repack observer: items of this VDO just moved -- force every member on it to
-    /// recapture before it can batch again.</summary>
+    /// <summary>Repack observer: items of this VDO just moved -- force every member on it to re-read its
+    /// draw arguments before it can batch again.</summary>
     [UnmanagedCallersOnly]
     private static void OnVdoRepack(IntPtr vdo)
     {
         var next = (delegate* unmanaged<IntPtr, void>)*_repackSlot;
         if (next != null) next(vdo);
 
+        int stale = 0;
         for (int i = 0; i < MaxParts; i++)
-            if (_pState[i] == StActive && _pVdo[i] == vdo) _pState[i] = StStale;
+            if (_pState[i] == StActive && _pVdo[i] == vdo) { _pState[i] = StStale; stale++; }
+        // #256: a repack changes no scene membership, so nothing else would ever look at these again --
+        // the epoch will not move for a layout change. Ask for a walk, whose sweep re-queues them.
+        if (stale > 0) SceneWalk.NoteStale();
     }
 
     [UnmanagedCallersOnly]
@@ -364,7 +377,13 @@ public sealed unsafe class BatchService : IExtenderService
     {
         var p = new PartRef(part);
         int e = Find(part);
-        if (e < 0) { Record(part); return; }
+        // #256: a part the engine is drawing that Alloy has no record for is a part the scene walk did not
+        // reach. It is NOT recorded here -- discovery is SceneWalk's, and inventing a record from a draw is
+        // exactly the inheritance M5 exists to end. The engine draws it; SceneWalk.CrossCheck counts it.
+        // Counted only for the WORLD scene: SceneWalk.Tick is never called for a GUI 3D panel's Scene (#91),
+        // so every panel part is legitimately unenumerated and would otherwise make the alarm ring whenever
+        // a character sheet is open -- i.e. exactly when nobody would trust it.
+        if (e < 0) { if (_bucketWorld) _unrecorded++; Vanilla(part); return; }
 
         // #82: Alloy parts reaching the loop body mean the Alloy draw did not happen for them this pass --
         // vanilla, and never batched (a batch submit on top of an Alloy draw is the double-draw failure)
@@ -375,32 +394,15 @@ public sealed unsafe class BatchService : IExtenderService
         // per part, thousands at once on a camera spin, i.e. pop-in traded for flicker.
         if (OwnFlag[e] != 0) { _pSeen[e] = _frame; Vanilla(part); return; }
 
-        if (_pState[e] == StProbe)
-        {
-            if (_pNode[e] != p.Node.Ptr || _pMat[e] != p.Material.Ptr
-                || HashMatrix(new NodeRef(_pNode[e]).Matrix) != _pMxHash[e])
-            { Die(e, "probation-moved"); Vanilla(part); _vanDead++; return; }
-            Complete(part, e);
-            return;
-        }
-        if (_pState[e] == StStale && _pNode[e] == p.Node.Ptr && _pMat[e] == p.Material.Ptr)
-        {
-            // Repack moved this VDO's items: recapture (item index + prim) through the funnel during a
-            // vanilla draw; the entry keeps its group (Repack changes layout, not content/textures)
-            IntPtr oldVdo = _pVdo[e];
-            _pVdo[e] = IntPtr.Zero; _pState[e] = StCapturing;
-            _capture = e;
-            Vanilla(part);
-            _capture = -1;
-            _pState[e] = _pState[e] == StCapturing && _pVdo[e] == oldVdo ? StActive : Die(e, "recapture-failed");
-            _pSeen[e] = _frame; _pDirty[e] = false;
-            _vanDead++;
-            return;
-        }
+        // #256: StUnbound and StStale are both "re-read the VertexPrimitive", and SceneWalk.Rebind does it
+        // once per frame off the record rather than by re-entering a vanilla draw to watch the funnel.
         if (_pState[e] != StActive || _pNode[e] != p.Node.Ptr || _pMat[e] != p.Material.Ptr)
         {
-            // recycled pointer or known-unbatchable: vanilla (identity mismatch also permanently kills it)
-            if (_pState[e] == StActive) Die(e, "identity-changed");
+            // #256: an identity change is a RE-READ, not a death. Gob::ReplaceTexture @0x43e980 and friends
+            // rewrite Part+0x58 in place with no birth and no death (#253 §3.2 item 4), and under capture
+            // the record could only come back by being re-Recorded from a later draw. There is no such draw
+            // any more, so killing the entry here would strand the part in vanilla for the life of the area.
+            if (_pState[e] == StActive) SceneWalk.Rebind(e, p);
             // #128: a DEAD entry that is still drawing is still sighted. Enrollment reads this to decide
             // whether a dead instanced part is a live one it must drop its whole creature for, or despawned
             // debris it should forget -- so the sighting has to keep ticking past the death.
@@ -409,12 +411,6 @@ public sealed unsafe class BatchService : IExtenderService
             return;
         }
 
-        // #236: the tail of the window. A part back from beyond OwnSightingWindow lost its ownership at the
-        // last enrollment, and nothing else would pull one forward for it -- it is already StActive, so it
-        // never reaches Complete. Latched here instead, which bounds it to NewCandidateGap frames of vanilla
-        // shading exactly like a fresh candidate. Checked before the stamp, which is what erases the gap.
-        if (OwnFlag[e] == 0 && _pSeen[e] < _frame - AlloyRenderer.OwnSightingWindow)
-            AlloyRenderer.NoteNewCandidate();
         _pSeen[e] = _frame;
         // #126: recorded for the Alloy pass, never for this one -- and bucket 8 is the same case per frame
         // rather than per part (RenderDrawBucket folds the tile's fade factor into part+0xa0 for the length
@@ -494,36 +490,9 @@ public sealed unsafe class BatchService : IExtenderService
         // would hand its funnel event to the batcher below, which could flush a pending group of WORLD
         // geometry under the sky's GL state -- sky projection, (SRC_ALPHA, ZERO), depth mask off.
         if (SkyBox.InWindow) { SkyBox.Observe(vdo, (int)item, prim); return; }
-        // #96: inside an instanced part's draw the funnel IS the caster capture point -- the node matrix is
-        // live there, and the (VDO, item, prim) triple is the same one the depth pass will submit.
-        // #134 splits it from the batch capture rather than letting it swallow one. Before, every instanced
-        // part was dead by the time it got here, so consuming the observation cost nothing; now that they
-        // enrol, an eaten observation leaves _pVdo null and Complete kills the entry as "no-capture" --
-        // i.e. the gate flip would have been a no-op with a plausible-looking reason. The two records read
-        // the same three values and neither writes what the other reads, so both simply happen.
-        if (_capture >= 0)
-        {
-            CasterPass.SkinObserve(vdo, (int)item, prim);
-            int e = _capture;
-            if (_pVdo[e] != IntPtr.Zero || vdo == IntPtr.Zero || new VdoRef(vdo).Mode != 1)
-                Die(e, "multidraw-or-unindexed");                              // multi-draw part / non-indexed VDO
-            else
-            {
-                _pVdo[e] = vdo; _pItem[e] = (int)item; _pPrim[e] = prim;
-                if (_capDiagLeft > 0)
-                {   // one-shot: prove the table-derived range matches the engine's own draw args (#81 crash triage)
-                    _capDiagLeft--;
-                    var v = new VdoRef(vdo);
-                    long el = v.ElemItems;
-                    int it = (int)item;
-                    string tab = el != 0 && it < v.ElemCount
-                        ? $"count={*(int*)(el + it * 8 + 4)} byteOff={(long)(uint)*(int*)(el + it * 8) * 2}"
-                        : "tables unavailable";
-                    _log?.Info($"BatchService: capture-diag vdo=0x{(ulong)vdo:x} item={item} prim={prim} engineArgs size={size} offset={offset} vs table {tab}");
-                }
-            }
-            return;
-        }
+        // #256: the batch capture branch that used to live here is GONE. (VDO, item, prim) is read off
+        // the VertexPrimitive by SceneWalk; the funnel is now only the CASTER's bone-capture point and the
+        // batch submit trigger, neither of which is a record source.
         if (CasterPass.SkinObserve(vdo, (int)item, prim)) return;
         if (_pending < 0) return;
 
@@ -562,84 +531,6 @@ public sealed unsafe class BatchService : IExtenderService
         _batched += k; _calls++;
     }
 
-    /// <summary>First sighting of a part in a batchable context: qualify it, capture its (VDO, item, prim)
-    /// through the funnel while its vanilla draw runs, then bind it to a group. Cold (once per part).</summary>
-    private static void Record(IntPtr part)
-    {
-        var p = new PartRef(part);
-        IntPtr node = p.Node.Ptr;
-        IntPtr mat = p.Material.Ptr;
-        // phase 2: matrix-path parts (placeables) qualify too -- the model matrix joins the group key and
-        // any later change (door opens, creature moves, billboard) permanently demotes to vanilla.
-        // #134: BOTH halves of RenderDrawBucket's matrix condition, not just the flags. An instance is
-        // transformed by SetModelMatrix(vp+0x18) exactly as a flagged part is, so calling one matrix-class
-        // and not the other would draw every gob at the world origin.
-        bool mx = node != IntPtr.Zero
-                  && (new NodeRef(node).MatrixClass || IsInstance(part));
-        // #135: dangly parts are recorded like any other. The exclusion assumed the CPU re-solve invalidated
-        // a (VDO, item) capture; it does not -- see IsDangly for where the solve runs and what it writes.
-        bool shaped = node != IntPtr.Zero && mat != IntPtr.Zero
-                  // #121: an env-mapped part is batchable and ownable. The Alloy lit stage feeds its ambient
-                  // specular from the per-area IBL probe rather than from the material's env texture, so the
-                  // texture never has to be bound and cannot split a batch.
-                  // #129: bumpy-shiny is no longer a blanket refusal -- that flag routes the part to the
-                  // WATER program (vswater/fswater), and the Alloy pass has one of those now. It stays a
-                  // refusal everywhere ELSE: outside draw bucket 6 a bumpy-shiny material means the engine
-                  // did NOT route it to water (g_nEnableBumpyWater off), and the Alloy pass has no answer for
-                  // whatever it did route it to.
-                  && (!Engine.HasBumpyShiny(new MaterialRef(mat)) || _bucketId == AlloyRenderer.WaterBucket);
-        // #126: opacity no longer decides whether a part is RECORDED, only whether this batcher may submit
-        // it. The transparent classes are what the Alloy pass enrolls from, and it can only enroll what the
-        // capture tables hold. Bucket 8 joins them by position rather than by opacity: the engine has already
-        // folded the tile's fade factor into part+0xa0 by the time this runs, so a part fading from 1.0 would
-        // otherwise read opaque on its first fading frame.
-        // #129: ...and never water. A water part that happens to read opaque under GetIsOpaque would
-        // otherwise mint a batch group in bucket 6, and this service would then multidraw-replay it INSIDE
-        // the engine's own bucket-6 walk -- under fswater's per-part state, on exactly the fallback frames
-        // where the Alloy pass has handed water back. Own-only instead: still captured, still enrollable,
-        // and Vanilla on every frame the Alloy pass does not draw it.
-        bool ok = shaped && Engine.IsOpaque(p) && _bucketId != AlphaBucket
-                  && _bucketId != AlloyRenderer.WaterBucket;
-        int e = Insert(part);
-        if (e < 0) { Vanilla(part); return; }                // table full -> vanilla forever
-        _pNode[e] = node; _pMat[e] = mat; _pMx[e] = mx; _pVdo[e] = IntPtr.Zero; _pSeen[e] = _frame;
-        _pGob[e] = p.Gob.Ptr;
-        _pSkin[e] = _inSkinDraw;
-        if (_pGob[e] != IntPtr.Zero) _pInstRecorded++;
-        // #137: ...and a skinmesh is Alloy-only WHATEVER else is true of it. The doc says a skinned part is
-        // never batch-submitted, and until this line that held only via the IsInstance branch below -- i.e.
-        // on the assumption that every PartSkin hangs off a Gob. One that did not would pass probation, mint
-        // a matrix-keyed group, and be replayed by glMultiDrawElementsBaseVertex under whatever pose
-        // m_bones happened to hold: the bind-pose misrender this whole ticket exists to avoid.
-        _pOwnOnly[e] = (shaped && !ok) || _pSkin[e];
-        if (!shaped)
-        {   // #134: which of the three terms, not just "one of them" -- the gob population dies here in bulk
-            _recNotOk++;
-            Die(e, node == IntPtr.Zero ? "no-node" : mat == IntPtr.Zero ? "no-material" : "bumpy-shiny-outside-water");
-            Vanilla(part); return;
-        }
-        // #128: an INSTANCE skips probation outright. Probation exists so a matrix-keyed group cannot be
-        // minted for a transform that will not hold still -- but an instance is never batch-submitted by this
-        // service anyway (the `dirty` term in PartDraw refuses every one of them), so it has nothing to gain
-        // from a matrix-keyed group and everything to lose from the death that follows failing probation.
-        // Under probation a creature died on its second sighting ("probation-moved") and a door died the frame
-        // it opened ("matrix-moved"), permanently -- which is what kept the whole dynamic-geometry class out
-        // of ownership. Recorded as a MOVER instead: captured and grouped for the Alloy pass, Alloy-only so this
-        // service never touches it, and its transform read live at draw time, where it is always current.
-        if (IsInstance(part)) { _pOwnOnly[e] = true; Complete(part, e); return; }
-        if (mx)
-        {
-            // probation: a matrix-path part must show a bit-stable matrix on two sightings before it gets
-            // a group -- else every flagged part that turns out to be a mover would mint a dead one-member
-            // group (table spam)
-            _pMxHash[e] = HashMatrix(new NodeRef(node).Matrix);
-            _pState[e] = StProbe;
-            Vanilla(part);
-            return;
-        }
-        Complete(part, e);
-    }
-
     private static delegate* unmanaged<IntPtr, void> _origPartDtor;
     /// <summary>#145: parts destroyed out from under a recorded entry, this session. The [batch] line prints
     /// it, and a count that stays 0 across an area transition means the hook is not firing -- which looks
@@ -674,17 +565,21 @@ public sealed unsafe class BatchService : IExtenderService
         _origPartDtor(part);
     }
 
-    /// <summary>Capture (VDO, item, prim) through the funnel during a vanilla draw, then bind to a group.</summary>
-    private static void Complete(IntPtr part, int e)
+    /// <summary>#256: intern this record's group from field reads. The tail of what used to be
+    /// <c>Complete</c>, with the two things it could only learn from a draw -- the (VDO, item, prim) triple
+    /// and which bucket the engine filed the part in -- supplied by <see cref="SceneWalk"/> instead, off the
+    /// VertexPrimitive and off <c>Scene::AddPartsTreeToDrawBuckets</c>'s own material rules. The group key
+    /// itself is unchanged: material CONTENT, never the <c>Material*</c>.
+    /// <para>False = the entry died here (no VDO, or the group table is full); the caller must not treat it
+    /// as bound. Cold -- once per record, on a walk.</para></summary>
+    internal static bool Mint(IntPtr part, int e, int bucket, int sub, IntPtr scene, bool world, bool ownOnly)
     {
-        IntPtr node = _pNode[e], mat = _pMat[e];
-        _pState[e] = StCapturing;
-        _capture = e;
-        Vanilla(part);
-        _capture = -1;
-        if (_pState[e] == StDead || _pVdo[e] == IntPtr.Zero)
-        { if (_pVdo[e] == IntPtr.Zero) _recNoCap++; else _recBadVdo++; Die(e, _pVdo[e] == IntPtr.Zero ? "no-capture" : "bad-vdo"); return; }
-
+        IntPtr mat = _pMat[e];
+        if (_pVdo[e] == IntPtr.Zero) { _recNoCap++; Die(e, "no-vdo"); return false; }
+        _pOwnOnly[e] = ownOnly;
+        // #221: a reused slot must not be spliced into its previous tenant's member chain, and re-interning
+        // to the SAME group would write _pNext[e] = e and hang the submit walk on the render thread.
+        Unlink(e);
         int prim = _pPrim[e];
         var pr = new PartRef(part);
         var mr = new MaterialRef(mat);
@@ -703,7 +598,7 @@ public sealed unsafe class BatchService : IExtenderService
         // would mint one group per part per pose and exhaust the table. The flag itself IS in the key, which
         // is what keeps a mover out of a static group whose frozen matrix a replayed multidraw would apply.
         bool mover = IsInstance(part);
-        float* liveM = new NodeRef(node).Matrix;
+        float* liveM = new NodeRef(_pNode[e]).Matrix;
         // The group key, hashed and interned. This was a linear walk of _groupCount until the caps were
         // raised for object-dense areas: O(n^2) across an area load, which is 24M field compares at the 7000
         // groups that used to be the ceiling and 13.4 BILLION at 163840 -- minutes of hung load, i.e. the
@@ -725,12 +620,12 @@ public sealed unsafe class BatchService : IExtenderService
         }
         if (g < 0)
         {
-            if (_groupCount >= MaxGroups || free < 0) { Die(e, "groups-full"); return; }
+            if (_groupCount >= MaxGroups || free < 0) { Die(e, "groups-full"); return false; }
             g = _groupCount++;
             _gSlot[free] = g; _gHash[g] = h;
             _gVdo[g] = _pVdo[e]; _gTex0[g] = t0; _gTex1[g] = t1; _gTex2[g] = t2; _gTex3[g] = t3;
-            _gShared[g] = shared; _gEnv[g] = env; _gFlag[g] = flag; _gRot[g] = rot; _gBucket[g] = _bucketId; _gPhase[g] = _phase;
-            _gScene[g] = _bucketScene; _gWorld[g] = _bucketWorld;
+            _gShared[g] = shared; _gEnv[g] = env; _gFlag[g] = flag; _gRot[g] = rot; _gBucket[g] = bucket; _gPhase[g] = sub;
+            _gScene[g] = scene; _gWorld[g] = world;
             _gMx[g] = mx; _gMover[g] = mover;
             if (mx && !mover) for (int f = 0; f < 16; f++) _gMatrix[g * 16 + f] = liveM[f];
             _gHint[g] = hint; _gLight[g] = light; _gPrim[g] = prim; _gFirst[g] = -1; _gCount[g] = 0; _gSubmitGen[g] = -1;
@@ -738,10 +633,9 @@ public sealed unsafe class BatchService : IExtenderService
         _pTex0[e] = t0; _pRot[e] = rot;
         _pGroup[e] = g; _pNext[e] = _gFirst[g]; _gFirst[g] = e; _gCount[g]++;
         _pState[e] = StActive; _pDirty[e] = false; _pIncluded[e] = -1;
-        // #236: a part only becomes ENROLLABLE here, and enrollment ran on a 60-frame cadence -- so a
-        // creature that re-recorded its torso waited up to three seconds for the tick that could take it.
-        AlloyRenderer.NoteNewCandidate();
+        return true;
     }
+
 
     /// <summary>Frame tick from UiHostService. Periodic stats; the log is the only cold path.</summary>
     public static void EndFrame()
@@ -775,6 +669,7 @@ public sealed unsafe class BatchService : IExtenderService
             OnTablePressure();
         if (_timing) _pdFrames++;
         if (++_frame % LogEvery != 0) return;
+        _log?.Info("BatchService: " + SceneWalk.Period());
         int members = 0, solo = 0;
         for (int i = 0; i < _groupCount; i++) { members += _gCount[i]; if (_gCount[i] < 2) solo++; }
         _log?.Info($"BatchService: [batch] {_groupCount} groups ({solo} solo) / {members} members ({_partCount} parts tracked), " +
@@ -785,7 +680,10 @@ public sealed unsafe class BatchService : IExtenderService
                    $"Alloy-only {(float)_vanOwnOnly / LogEvery:F0}, " +
                    (_saturated ? $"TABLE SATURATED ({_satLive} live / {_satDead} dead, surplus engine-drawn), " : "") +
                    (_submitTrunc > 0 ? $"SUBMIT TRUNCATED {_submitTrunc}x (a group exceeded {MaxSubmit} members -- geometry dropped), " : "") +
-                   $"rec-dead notOk={_recNotOk} noCap={_recNoCap} badVdo={_recBadVdo}" +
+                   $"rec-dead noVdo={_recNoCap}" +
+                   // #256: parts the engine drew that the walk never enumerated -- the acceptance number for
+                   // "the record set covers what the engine classified". Non-zero is a hole in the walk.
+                   $" unrecorded-draws={_unrecorded}" +
                    // #145: parts the engine destroyed under a recorded entry. A 0 that survives an area
                    // transition means Part::~Part is not reaching us, which is indistinguishable from
                    // "nothing died" in every other number here.
@@ -805,7 +703,7 @@ public sealed unsafe class BatchService : IExtenderService
                         $" over {_pdFrames} frames"));
         _batched = 0; _calls = 0; _skipped = 0; BucketGate._iterSkip = 0; _vanSolo = 0; _vanDirty = 0; _vanDead = 0;
         _vanOwnOnly = 0; _skinSeen = 0; _skinForced = 0; _skinForceFailed = 0;
-        _recNotOk = 0; _recNoCap = 0; _recBadVdo = 0; _submitTrunc = 0;
+        _recNoCap = 0; _unrecorded = 0; _submitTrunc = 0;
         _pdTicks = 0; _vanTicks = 0; _pdCalls = 0; _pdFrames = 0;
     }
 }

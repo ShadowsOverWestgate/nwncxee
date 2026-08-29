@@ -110,7 +110,11 @@ internal static unsafe class PartTable
     // would touch one or two. Whether that is visible is a measurement, not an argument: /batchtime puts the
     // entry-read time (the engine's own draw subtracted out) on the [batch] line. Convert to PartEntry[] if
     // it shows; record the number here and leave it alone if it does not.
-    internal const byte StEmpty = 0, StCapturing = 1, StActive = 2, StDead = 3, StStale = 4, StProbe = 5;
+    /// <summary>#256: recorded by the scene walk, but its <c>VertexPrimitive</c> has no VDO yet --
+    /// <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 has not run for this part. Not an error and not a
+    /// death: enumeration reaches a part before its geometry is resident, so the record waits and the field
+    /// is re-read (<c>SceneWalk.Rebind</c>) rather than the triple being invented.</summary>
+    internal const byte StEmpty = 0, StActive = 2, StDead = 3, StStale = 4, StUnbound = 5;
     internal static readonly IntPtr[] _pPart = new IntPtr[MaxParts];
     internal static readonly IntPtr[] _pNode = new IntPtr[MaxParts];
     internal static readonly IntPtr[] _pMat = new IntPtr[MaxParts];
@@ -119,13 +123,18 @@ internal static unsafe class PartTable
     internal static readonly int[] _pPrim = new int[MaxParts];         // prim type captured at the funnel
     internal static readonly int[] _pRot = new int[MaxParts];          // texture-rotation bits at record
     internal static readonly bool[] _pMx = new bool[MaxParts];         // matrix-path part (phase 2)
-    internal static readonly ulong[] _pMxHash = new ulong[MaxParts];   // probation matrix hash
     internal static readonly int[] _pItem = new int[MaxParts];
     internal static readonly byte[] _pState = new byte[MaxParts];
     internal static readonly bool[] _pDirty = new bool[MaxParts];
     internal static readonly int[] _pGroup = new int[MaxParts];
     internal static readonly int[] _pNext = new int[MaxParts];      // group member chain
     internal static readonly int[] _pSeen = new int[MaxParts];
+    /// <summary>#256: the <see cref="SceneWalk.Gen"/> that last REACHED this entry from the scene. Not a
+    /// sighting and not a visibility stamp -- it is the mark half of the walk's mark-and-sweep, and it is
+    /// what reclaims a part that stopped being in the scene without being destroyed
+    /// (<c>Scene::ChildRemove</c> @0x462cc0 and <c>Gob::Amputate</c> @0x443fa0 both unlink without
+    /// freeing, so <c>Part::~Part</c> never fires for them).</summary>
+    internal static readonly int[] _pWalkGen = new int[MaxParts];
     internal static readonly int[] _pIncluded = new int[MaxParts];
     /// <summary>#126: recorded for the Alloy pass only -- a transparent, additive, cap or fading part. It is
     /// captured (VDO, item, prim) and grouped like any other, because that is what ownership enrolls from,
@@ -291,13 +300,6 @@ internal static unsafe class PartTable
         return e;
     }
 
-    internal static ulong HashMatrix(float* m)
-    {
-        ulong h = 14695981039346656037UL;
-        for (int i = 0; i < 16; i++) { h ^= *(uint*)(m + i); h *= 1099511628211UL; }
-        return h;
-    }
-
     /// <summary>Did the engine's own walk sight this part THIS frame? The Alloy pass's audit asks it about
     /// a part it drew that was never suppressed: a part the engine did not walk at all is geometry it culled
     /// and we drew anyway (a stale-ownership cost, bounded by the enrollment cadence), while one it DID walk
@@ -305,12 +307,14 @@ internal static unsafe class PartTable
     /// single UNMATCHED total and want opposite fixes.</summary>
     internal static bool SightedThisFrame(int e) => _pSeen[e] >= _frame;
 
-    /// <summary>Has the engine walked this part within the last frame? The same window enrollment qualifies
-    /// candidates on, asked per DRAW instead of per enrollment: ownership is rebuilt on a 60-frame cadence,
-    /// so between rebuilds the Alloy set keeps every part the camera has moved away from, and the Alloy pass
-    /// draws all of them for nothing. A part that comes back is simply not drawn by us for the frame it
-    /// reappears -- the iterator sights it, finds no stamp for this pass, and the engine draws it.</summary>
-    internal static bool SightedRecently(int e) => _pSeen[e] >= _frame - 1;
+    /// <summary>#256: is this part in THIS frame's draw-bucket arrays? Enrolment no longer asks anything
+    /// about sightings -- a record exists because the walk reached the part, whether or not it is on screen
+    /// -- so this is now purely the per-frame VISIBILITY question, and the answer is the engine's own
+    /// finished cull (#253 §7.1: "is this part in this frame's bucket array", obtained by a pointer read).
+    /// Drawing the whole enumerated area every frame would be most of it wasted.
+    /// <para>The stamp comes from <see cref="BucketGate"/>'s reads of <c>Scene+0x208</c>, not from a capture.
+    /// #243 replaces the source with Alloy's own cull; this predicate is where it plugs in.</para></summary>
+    internal static bool InBucketsRecently(int e) => _pSeen[e] >= _frame - 1;
 
     /// <summary>Has this part's tile left the opaque class this frame? Mirrors ProcessTriMeshParts's own
     /// condition: the state says FADE, or the factor has already come off 1.0.</summary>
@@ -360,7 +364,7 @@ internal static unsafe class PartTable
     /// each entry exactly once. A reused slot breaks that assumption twice over: re-interning to the SAME
     /// group writes <c>_pNext[e] = e</c>, and the submit walk then loops forever on the render thread, while
     /// re-interning to a different one splices the old group's chain into the new group's members.</summary>
-    private static void Unlink(int e)
+    internal static void Unlink(int e)
     {
         int g = _pGroup[e];
         if ((uint)g >= (uint)_groupCount) return;      // never completed, or a wiped generation's group id
@@ -528,6 +532,9 @@ internal static unsafe class PartTable
         _gSlot.AsSpan().Fill(-1);            // -1 is empty; 0 is a valid group id
         _partCount = 0; _groupCount = 0; TableGen++;
         _saturated = false;
+        // #256: the table is empty and only the walk can refill it. The vanilla toggle and the pressure wipe
+        // change no scene membership, so the epoch will not move on its own -- ask for a walk explicitly.
+        SceneWalk.RequestWalk();
         Log?.Info($"PartTable: {why} -- part tables wiped");
     }
 

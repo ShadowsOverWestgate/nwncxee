@@ -235,7 +235,7 @@ public sealed unsafe partial class AlloyRenderer
         if (prog == 0)
         {
             _litFailed = true;
-            _sinceEnroll = EnrollEvery;   // re-enroll at once so lit parts revert to the engine's own draw
+            SceneWalk.Dirty = true;   // re-enroll at once so lit parts revert to the engine's own draw
             _log?.Info("AlloyRenderer: clustered lit program unavailable -- lit parts revert to engine drawing");
             return;
         }

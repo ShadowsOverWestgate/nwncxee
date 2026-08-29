@@ -10,6 +10,18 @@ internal static class SceneLayout
 {
     /// <summary>Scene -&gt; BSPNode* root (the static-geometry BSP). Linux-verified in ManageSceneBSP.</summary>
     public const int SceneBspRoot = 0x188;
+    /// <summary>#256: Scene -&gt; <c>CExoArrayList&lt;Gob*&gt;</c>, EVERY gob in the scene: items at +0x130,
+    /// count at +0x138. <c>Scene::ChildAdd</c> @0x461d50 appends here and <c>ManageSceneBSP</c> @0x47fa80
+    /// iterates <c>0..*(Scene+0x138)</c> over it three separate times. This is the authoritative membership
+    /// list -- <c>gobbucket</c> @0x19abbf0 is only the VISIBLE slice and is rebuilt every frame.</summary>
+    public const int SceneGobs = 0x130, SceneGobCount = 0x138;
+
+    /// <summary>#256: the BSP node's inventory pointer (<c>BSPNode+0x70</c>) and, inside it, the
+    /// <c>CExoArrayList&lt;PartTriMesh*&gt;</c> of tile geometry (items +0x20, count +0x28).
+    /// <c>SceneBSPAddPart</c> @0x47ca10 files a plain <c>PartTriMesh</c> at exactly
+    /// <c>*(BSPFitBox(...)+0x70) + 0x20</c>; the other lists at +0x10 (gobs), +0x30 (emitters), +0x40
+    /// (projections), +0x50 (beams), +0x70 (triggers) are other classes' and are not walked here.</summary>
+    public const int BspNodeData = 0x70, BspDataTriMesh = 0x20, BspDataTriMeshCount = 0x28;
     /// <summary>Gob -&gt; node pointer. MUST be non-null before appending to the gobbucket: the sort comparator
     /// <c>FUN_0055e070</c> blindly derefs <c>*(gob+0x68)+0x8e</c> (the render path null-checks it, the sort
     /// does not) -- a gob with 0x68==0 in the bucket crashes the sort.</summary>
@@ -19,6 +31,16 @@ internal static class SceneLayout
     public const int GobPartTree = 0x90;
     /// <summary>Gob -&gt; world position (float x@+0xa8, y@+0xac, z@+0xb0).</summary>
     public const int GobPosition = 0xa8;
+    /// <summary>#256: the two LOD-alternate part-tree roots beside <see cref="GobPartTree"/>.
+    /// <c>Gob::SetLODModel</c> @0x43e6a0 ROTATES the three against each other every frame, per visible gob,
+    /// with no construction, no destruction and no epoch bump -- #253 §3.2's registry-killer. Enumerating
+    /// all three makes the rotation a field read: whichever root is active, its parts are already recorded.
+    /// </summary>
+    public const int GobLodRoot1 = 0x98, GobLodRoot2 = 0xa0;
+    /// <summary>#256: Gob -&gt; <c>CExoArrayList&lt;Part*&gt;</c> of the roots this gob APPENDED at runtime
+    /// (items +0x130, count +0x138), parallel to the <c>Model*</c> array at +0x120. <c>Gob::Append</c>
+    /// @0x4422a0 pushes here; <c>Gob::Amputate</c> @0x443fa0 removes.</summary>
+    public const int GobAppendRoots = 0x130, GobAppendCount = 0x138;
 
     /// <summary>Part -&gt; Material*. Ghidra RenderDrawBucket @0x46d060 / PartTriMesh::Draw @0x4513d0.</summary>
     public const int PartMaterial = 0x58;
@@ -33,6 +55,30 @@ internal static class SceneLayout
     public const int PartNode = 0x88;
     /// <summary>Part -&gt; TileData* (Ghidra CheckFadePlane @0x47bf30).</summary>
     public const int PartTile = 0x98;
+    /// <summary>#256: Part -&gt; child array (items +0x38, count +0x40). Written by
+    /// <c>CreateInstanceTreeR</c> @0x43c6b0 and freed by <c>Part::~Part</c> @0x437720; the parent
+    /// back-pointer is +0x48. This is what makes a part TREE walkable without entering a draw.</summary>
+    public const int PartChildren = 0x38, PartChildCount = 0x40;
+    /// <summary>#256: the primitive-type index on the MdlNode (<c>AlloyRenderer.PartMdlNode</c>), argument 3 of the engine's own
+    /// <c>RenderVertexData</c> call. Read out of <c>RenderFlat</c> @0x450eb0:
+
+    /// <see cref="PartMdlNode"/>. Indexes <c>PrimTypeTranslationTable</c>.</summary>
+    public const int MdlPrimType = 0x270;
+    /// <summary>#256: the draw arguments, as FIELDS. <c>RenderFlat</c> @0x450eb0 calls
+    /// <c>RenderVertexData(*(vp+0x58), *(uint*)(vp+0x60), prim, size, offset)</c> where size and offset are
+    /// <c>VertexDataObject::GetItemElementSize/Offset</c> of that same pair. So the whole triple the batcher
+    /// used to learn by watching the engine draw is two loads off the VertexPrimitive.
+    /// <para><b>This is every draw path, checked and not inferred.</b> <c>RenderEnvironmentMapped</c>
+    /// @0x451040 and <c>RenderBumpyShiny</c> @0x451200 both end in a tail call to <c>RenderFlat</c> with the
+    /// same VertexPrimitive; and a SKINNED part reaches it too -- <c>PartSkin::Draw</c> @0x4830b0 -&gt;
+    /// <c>RenderSkinned</c> @0x482c70 -&gt; <c>ExecuteSkinGPU</c> @0x482800, whose tail is
+    /// <c>RenderFlat((VertexPrimitiveFlat*)vp)</c> on the <c>VertexPrimitiveSkinned</c>. Same two offsets
+    /// for all four classes.</para>
+    /// <para><c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 is the writer, and it runs from the top of
+    /// <c>PartTriMesh::Draw</c> (vp vtable +0x38; <c>ExecuteSkinGPU</c> calls the same slot). A part whose geometry has never been uploaded therefore
+    /// reads a null VDO and an item of -1 -- that is not an error, it is "not resident yet", and the record
+    /// waits unbound rather than being invented.</para></summary>
+    public const int VpVdo = 0x58, VpItem = 0x60;
     /// <summary>Part -&gt; texture-rotation angle (degrees, float; Ghidra PartTriMesh::RotateTexture
     /// @0x44fff0): TransformTextureMatrix pushes it before every draw -- NWN's tile-texture 0/90/180/270
     /// anti-repetition scheme. Part of the group key (raw bits), else a batch renders every member under the

@@ -486,6 +486,26 @@ internal static unsafe class SymbolMap
     /// from a rigid one, which no field on the part answers. The Itanium ABI stores the address of the
     /// vtable's function-pointer area, 0x10 past the symbol, in the object's first word.</summary>
     public const string PartDanglyMeshVtbl = "_ZTV14PartDanglyMesh";
+    /// <summary>#256: <c>PartSkin</c>'s vtable, the same kind of identity as
+    /// <see cref="PartDanglyMeshVtbl"/>. The scene walk records a part without ever entering its draw, so
+    /// "this is a true skinmesh" can no longer be read off a <c>PartSkin::Draw</c> window -- it is a vtable
+    /// compare, which is exact.</summary>
+    public const string PartSkinVtbl = "_ZTV8PartSkin";
+    /// <summary>#256: <c>Scene::Sequence</c> @0x18aa1b0 -- the global scene-membership epoch,
+    /// bumped by <c>Gob::SetScene</c> @0x43e020 on every join and every leave, in ANY scene. One int load
+    /// per frame is the whole maintenance signal for the enumerated record set (ADR 0018: re-read, never
+    /// infer). Global, so a GUI 3D panel bumps it too -- which is the measurement #256 owes.</summary>
+    public const string SceneSequence = "_ZN5Scene8SequenceE";
+    /// <summary>#256: <c>countpart</c> @0x18da6b8 -- the engine's own live-part census, incremented in
+    /// <c>Part::Part</c> and decremented in <c>Part::~Part</c>. The bring-up validator: it counts every
+    /// <c>Part</c> in every scene (GUI panels included), so it is an upper bound on the walk, never an
+    /// equality.</summary>
+    public const string CountPart = "countpart";
+    /// <summary>#256: <c>BSPTraverse(BSPNode*, void(*)(BSPNode*, void*), void*)</c> @0x5b22c0 -- the
+    /// UNCULLED variant (the other two take a camera position or a plane list). Visits every node:
+    /// <c>node+0x10</c> then iterating <c>node+0x18</c>. Tile geometry has no owning gob, so this is the
+    /// only route to it that does not depend on what the camera can see.</summary>
+    public const string BspTraverse = "_Z11BSPTraverseP7BSPNodePFvS0_PvES1_";
     /// <summary>RenderInterface::SetCanDissolve(int) @0x45ccd0 -- the bucket loop sets this per item from
     /// Camera::GetCanKeyholeDissolve right before the item renders; latched to know each part's dissolve
     /// state without re-calling the camera test.</summary>
