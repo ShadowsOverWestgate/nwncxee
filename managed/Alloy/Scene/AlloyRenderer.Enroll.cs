@@ -220,6 +220,7 @@ public sealed unsafe partial class AlloyRenderer
         // that costs. Poked whenever any instanced part is owned, which is the only case that can open it.
         if (_gobOwned > 0) CasterPass.ForceEnroll();
         _lastEnrolled = _orderCount; _lastCandidates = candidates; _lastTextures = _matCount;
+        MeshCensus();
         // Empty right after a resume means the re-record has not finished, not that nothing is ownable:
         // re-arm the cadence so the next pass tries again instead of waiting out the full countdown.
         // ...on the DRAWABLE count: the all-owned-or-none sweep can empty the order while leaving slots
@@ -268,6 +269,122 @@ public sealed unsafe partial class AlloyRenderer
         if (!Harvest(vdo, s)) return -1;
         _vVdo[s] = vdo; _vStale[s] = _vVao46[s] != 0;
         return s;
+    }
+
+    /// <summary>#244: census the repeated population rather than assuming it -- or assuming it away. Runs on
+    /// the enrollment cadence over the WHOLE ownership table (tileset parts, placeables and creature parts
+    /// alike), building two keys per part and measuring the equal runs of each.
+    /// <para><b>The range key</b> is (VDO, matrix-class, first index, element count): parts that draw the
+    /// SAME geometry out of the buffer. Matrix-class is in it because it changes what a shared mesh means --
+    /// an object-space part carries its placement in a model matrix, so N of them on one range is N
+    /// instances of one draw, while a world-space part has an identity matrix with its placement baked into
+    /// the vertices, so two on one range would be the same triangles drawn twice in the same place.</para>
+    /// <para><b>The shape key</b> is (gob?, primitive, diffuse texture, element count): parts that draw the
+    /// same MESH, wherever its vertices sit. This is the one the range key cannot see, and it is the case
+    /// that matters on real content -- an area's fifty identical barrels are fifty placements of one model,
+    /// and if the engine copies that model's vertices into the buffer once per placement then every range is
+    /// distinct while the geometry is the same fifty times over. A range census alone reads that as "no
+    /// repetition", which is false in the way that costs the most.</para>
+    /// <para>The shape key is a SIGNATURE, not a proof: two different meshes sharing a texture and an index
+    /// count collide. It is built only from values the enrollment already validated -- no new pointer chase,
+    /// and specifically not the vertex-item count, which nothing in the renderer reads and which this is not
+    /// entitled to guess. Read it as a screen: 1,00x is conclusive (nothing repeats), and anything above it
+    /// is a population worth confirming before it is designed against.</para>
+    /// <para>Cold by construction -- enrollment cadence, static scratch arrays, sorted in place.</para>
+    /// </summary>
+    private static void MeshCensus()
+    {
+        int n = 0;
+        _msUnread = 0; _msGobParts = 0; _msMxParts = 0;
+        for (int i = 0; i < _ownCount; i++)
+        {
+            if (_oTri[i] == IntPtr.Zero) continue;
+            // The index range this part draws, read the way the staging walk reads it -- and guarded the same
+            // way, because this is the one place the census dereferences engine memory rather than its own
+            // tables. A part whose range will not resolve is left OUT and counted, so a census that went
+            // blind says so instead of reporting the survivors as the population.
+            var vdo = new VdoRef(_oVdo[i]);
+            long elem = vdo.ElemItems;
+            int item = _oItem[i];
+            if (elem == 0 || item < 0 || item >= vdo.ElemCount) { _msUnread++; continue; }
+            long first = (uint)*(int*)(elem + item * 8);
+            int count = *(int*)(elem + item * 8 + 4);
+            if (count <= 0) { _msUnread++; continue; }
+            bool gob = _oGob[i] != IntPtr.Zero;
+            if (gob) _msGobParts++;
+            long clamped = (uint)Math.Min(count, MsCountMax);
+            _msCount[n] = count; _msSlot[n] = i;
+            _msKey[n] = ((long)(uint)_oVao[i] << MsVaoShift) | (_oMx[i] ? MsMxBit : 0L)
+                        | (first << MsFirstShift) | clamped;
+            if (_oMx[i]) _msMxParts++;
+            _msShape[n] = (gob ? MsGobBit : 0L) | (_oMx[i] ? MsShapeMxBit : 0L)
+                          | ((long)(uint)_oPrim[i] << MsPrimShift)
+                          | ((long)(uint)_oTexKey[i] << MsTexShift) | clamped;
+            // ...and the vertex range the content hash reads, when it is armed. The vert item table is
+            // (base, count) as two int32s -- VertexDataObject::AddItem @0x45ca94 computes the next free
+            // vertex as item[last].base + item[last].count over this same table, which is what pins the
+            // second field. Clamping to that count is what stops a short mesh's hash running on into its
+            // NEIGHBOUR's vertices and reading two identical meshes as different.
+            long vert = vdo.VertItems;
+            _msVao[n] = _oVao[i]; _msBase[n] = 0; _msVerts[n] = 0;
+            if (vert != 0 && item < vdo.VertCount)
+            { _msBase[n] = *(int*)(vert + item * 8); _msVerts[n] = *(int*)(vert + item * 8 + 4); }
+            n++;
+        }
+        _msParts = n;
+        // The content pass, if armed: it maps each VDO's position buffer once and hashes every part on it,
+        // so it needs the whole staged population before it can run -- and it is GL, so it lives outside
+        // Scene/. The hash then joins the shape key, which is why the key is completed here and not above.
+        bool hashed = HashVertices(n);
+        for (int k = 0; k < n; k++)
+        {
+            // The rigid key drops the VDO and the texture: a model repeated across two buffers, or retextured,
+            // is still the same geometry. What it keeps is the index count and matrix-class -- the first
+            // because two shapes agreeing on a distance multiset and a triangle count are the same shape, the
+            // second because it splits "could share vertices today" from "would have to be un-baked first".
+            _msRigidKey[k] = (_msShape[k] & (MsShapeMxBit | ((1L << MsTexShift) - 1)))
+                             | ((long)(hashed ? _msRigid[k] : 0u) << MsHashShift);
+            if (hashed) _msShape[k] |= (long)(_msHash[k] & ((1u << MsHashBits) - 1)) << MsHashShift;
+        }
+        Array.Sort(_msKey, 0, n);
+        Array.Sort(_msShape, 0, n);
+        for (int k = 0; k < n; k++) _msIdx[k] = k;
+        Array.Sort(_msRigidKey, _msIdx, 0, n);
+        ScanRuns(_msRigidKey, n, MsShapeMxBit,
+                 out _msRigidShapes, out _msRigidMax, out _msRigidRepeat, out _msRigidRepeatMx);
+        // #244 phase A: with the rigid grouping in hand, derive a placement for every repeated part and check
+        // it reproduces the copy exactly. This is the de-duplication's own arithmetic, run and audited before
+        // anything is stored or drawn from it -- a nearly-right transform is the one outcome that must never
+        // reach the draw path.
+        if (hashed) VerifyDedupPass(n);
+        ScanRuns(_msKey, n, MsMxBit, out _msMeshes, out _msMaxInstances, out _msShared, out _msSharedMx);
+        ScanRuns(_msShape, n, MsGobBit, out _msShapes, out _msShapeMax, out _msShapeRepeat, out _msShapeRepeatGob);
+        // Same sorted key, a second flag: how much of the repeated population is COLLAPSIBLE at all. Cheaper
+        // than a second key, and the three run figures it recomputes are identical by construction.
+        ScanRuns(_msShape, n, MsShapeMxBit, out _, out _, out _, out _msShapeRepeatMx);
+    }
+
+    /// <summary>#244: the equal runs of a sorted census key -- distinct values, the largest run, how many
+    /// parts sit in a run of two or more, and how many of THOSE carry <paramref name="flag"/>. One scanner
+    /// for both keys: the two differ in what they pack, never in how a run is counted.</summary>
+    private static void ScanRuns(long[] key, int n, long flag,
+                                 out int groups, out int max, out int shared, out int sharedFlagged)
+    {
+        groups = max = shared = sharedFlagged = 0;
+        for (int a = 0; a < n; )
+        {
+            int b = a;
+            while (b < n && key[b] == key[a]) b++;
+            int c = b - a;
+            groups++;
+            if (c > max) max = c;
+            if (c > 1)
+            {
+                shared += c;
+                if ((key[a] & flag) != 0) sharedFlagged += c;
+            }
+            a = b;
+        }
     }
 
     /// <summary>Counting-sort key: lit parts occupy the upper half so one program bind covers each half.</summary>

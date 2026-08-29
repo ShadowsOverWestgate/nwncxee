@@ -814,6 +814,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
             case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
             case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
+            // #244: arms the mesh census's CONTENT pass. A readback by nature (the engine's host-side pool
+            // shadow is not reachable -- GetPoolBuffer answers with a GL name), so it is off by default and
+            // costs a buffer map per VDO on the enrollments it is armed for.
+            case "meshhash": old = _meshHash ? 1f : 0f; _meshHash = v != 0f; break;
+            // #244: draw de-duplicated parts from their representative's geometry. Off by default and
+            // separate from meshhash, which only BUILDS the registry -- arming the draw is the first step
+            // where a wrong entry becomes pixels, and it wants its own switch to bisect with.
+            case "dedup":    old = _dedupDraw ? 1f : 0f; _dedupDraw = v != 0f; break;
             default: return float.NaN;
         }
         // #242: a dial can change what a record MEANS (aotest fills a slot, viz changes nothing in the
@@ -850,7 +858,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         float cb = _sunWorldBias;
         int vz = _lightViz;
 
-        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias" })
+        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "meshhash", "dedup" })
             E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
         E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1,
           "every key lands on its own field");
@@ -1280,6 +1288,70 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"no-mdl {(float)_skipNoMdl / _frames:F0} tex {(float)_skipTex / _frames:F0} " +
                    $"range {(float)_skipRange / _frames:F0} vao {(float)_skipVao / _frames:F0} " +
                    $"instance-state {(float)_skipGob / _frames:F0}), " +
+                   // #244 (AC1): the mesh-sharing census. "1,00x" says every owned part has its own item
+                   // range and there is nothing for instancing to collapse; the object-space figure is the
+                   // only part of the shared count that could become instances, for the reason MeshCensus
+                   // states. Reported from the live area rather than assumed from the VDO count.
+                   $"mesh sharing {(_msMeshes == 0 ? 0f : (float)_msParts / _msMeshes):F2}x " +
+                   $"({_msMeshes} meshes, max {_msMaxInstances} instances, {_msShared} parts share a mesh " +
+                   $"of which {_msSharedMx} object-space" +
+                   (_msUnread == 0 ? "" : $"; {_msUnread} PARTS UNREAD -- their index range did not resolve, " +
+                    "so they are outside this count") + "), " +
+                   // #244: the SHAPE tier, which is the one that matters on placeable-heavy content -- fifty
+                   // identical barrels are fifty placements of one model, and if the engine copies its
+                   // vertices per placement then every RANGE is distinct while the geometry repeats fifty
+                   // times. A signature, not a proof (same texture + same index count collides), so 1,00x is
+                   // the conclusive reading and anything above it is a population to confirm, not design on.
+                   $"shape repeats {(_msShapes == 0 ? 0f : (float)_msParts / _msShapes):F2}x " +
+                   $"({_msShapes} shapes, max {_msShapeMax}, {_msShapeRepeat} parts on a repeated shape " +
+                   $"of which {_msShapeRepeatGob} placeable/creature and {_msShapeRepeatMx} object-space; " +
+                   $"{_msGobParts} gobs and {_msMxParts} object-space of {_msParts} censused parts" +
+                   // #244: which of the two keys produced that number. Unarmed it is the SIGNATURE, which
+                   // over-counts by collision (same texture + same index count) and must not be quoted as
+                   // proof; armed it is the vertex content. A hashed count short of the censused count is
+                   // parts whose range would not map -- they all keep hash 0 and so group together, which
+                   // over-reports, so the two numbers are printed side by side rather than summarised.
+                   (!_meshHash ? "; by SIGNATURE only -- /draw meshhash 1 for vertex content"
+                               : $"; by vertex content, {_msHashed} of {_msParts} hashed") + "), " +
+                   // #244: what REPEATS, as against what is collapsible today. The exact hash above is over
+                   // raw positions, so for a world-space part -- ~92% of an area -- it reports every
+                   // placement as a distinct mesh however many times the model repeats. This key is
+                   // invariant under placement, so it sees the repetition itself; the object-space split is
+                   // how much of it could share vertices without un-baking a transform first.
+                   (!_meshHash ? "" :
+                       $"rigid repeats {(_msRigidShapes == 0 ? 0f : (float)_msParts / _msRigidShapes):F2}x " +
+                       $"({_msRigidShapes} shapes, max {_msRigidMax}, {_msRigidRepeat} parts repeat " +
+                       $"of which {_msRigidRepeatMx} object-space), " +
+                       // #244 phase A: the go/no-go. "repeat" above is an upper bound -- HashRigid is
+                       // reflection-invariant and NWN mirrors tiles -- so what matters is how many repeats
+                       // survive a derived placement that reproduces every vertex, normal and UV exactly.
+                       // The reject reasons are named because the shortfall has to be attributable: mirror is
+                       // expected, residual means the transform is not recoverable, attr means the copies
+                       // differ in UVs or normals and can never share a buffer whatever their positions do.
+                       // #244: members over representatives -- the PROVEN de-duplication factor, as against
+                       // the rigid key's screened one. Every member behind it was verified vertex, UV and
+                       // normal against the representative it would share a buffer with.
+                       $"dedup {(_dedupReps == 0 ? 0f : (float)(_dedupExact + _dedupMirror + _dedupReordered + _dedupReps) / _dedupReps):F2}x " +
+                       $"on {_dedupReps} meshes kept ({_ddLive} parts registered, " +
+                       // #244: refused by a SAFETY gate rather than by geometry -- an animating source, a
+                       // skinned part, a primitive mismatch. Apart from the geometry counts on purpose:
+                       // "how much repeats" and "how much is safe to collapse" are different numbers.
+                       $"{_ddGated} gated" +
+                       (!_dedupDraw ? "; NOT DRAWN -- /draw dedup 1 arms it"
+                                    : $", {(float)_dedupDrawn / _frames:F0} drawn/frame") +
+                       // #244: what the registry COSTS. It is rebuilt every enrollment, so this lands on the
+                       // frames ADR 0017 already calls a compound spike -- a colour-pass win bought with an
+                       // enrollment hitch is not a win, and this is the number that says which it is.
+                       $"; verify {_ddMs:F2}ms last, {_ddMsPeak:F2}ms peak); " +
+                       $"{_dedupExact + _dedupMirror + _dedupReordered} VERIFIED ({_dedupExact} direct, " +
+                       $"{_dedupMirror} mirrored, {_dedupReordered} reordered), {_dedupOrder} unmatched, rejected " +
+                       $"{_dedupResidual} not-same-mesh / {_dedupAttr} uv-normal / {_dedupUnusable} untestable" +
+                       // #244: WHY the matcher gave up. The first two are the caps -- budget, raisable -- and
+                       // "incongruent" is the only one that is evidence about the content.
+                       (_dedupOrder == 0 ? "" :
+                           $"; unmatched by: {_mfTooBig} too-big, {_mfTrials} trial-cap, " +
+                           $"{_mfNoAnchor} no-anchor, {_mfNoCandidate} no-candidate, " +
+                           $"{_mfIncongruent} incongruent") + "), ") +
                    $"normal maps {(float)_nrmBound / _frames:F0} bound of " +
                    $"{(float)_nrmDeclared / _frames:F0} declared/frame, " +
                    // #242 (AC3): the whole point of the persistent records, as one number. "written" should
@@ -1345,7 +1417,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // texture one -- and this line is the only place it would ever be visible.
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
-        _frames = 0; _draws = 0; _batches = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0; _candidateEnrolls = 0;
+        _frames = 0; _draws = 0; _batches = 0; _dedupDrawn = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0; _candidateEnrolls = 0;
         _skinDrawn = 0; _skinNoPose = 0; _skinSlotOverflow = 0;
         _foreignBuckets = 0;
         SkyBox.ResetPeriod();

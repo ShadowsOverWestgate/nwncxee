@@ -125,6 +125,120 @@ what repeats across an NWN area is the transform, not the mesh. This collapses d
 step 2's cost — rather than draw calls, which are the non-problem. Cheap because the data is already
 in the right shape.
 
+**Measured (#244, 2026-08-29), and the premise does not hold.** The census keys every owned part by
+(VDO, matrix-class, item) and measures the equal runs. Two independent live areas, one of them #238's
+heavy exterior:
+
+    mesh sharing 1,00x (10798 meshes, max 1 instances, 0 parts share a mesh of which 0 object-space)
+    mesh sharing 1,00x (10664 meshes, max 1 instances, 0 parts share a mesh of which 0 object-space)
+
+Distinct meshes equals the part count exactly, and the largest instance count on any mesh is one. Six
+VDOs is **buffer consolidation, not mesh sharing**: the engine hands each placement its own item range in
+a shared buffer. Two numbers on the same line corroborate it independently — `shared-material=10 exact`
+out of ~10 800 parts, and 10 816 textures for 10 798 parts. Geometry, material and texture are all
+per-placement.
+
+So "what repeats across an NWN area is the transform, not the mesh" is false **as the engine stores it** --
+no two parts share a buffer range. That is not the same as "nothing repeats", and reading it that way was
+the first of several wrong turns on this step. What actually holds is stronger and more useful: **the engine
+bakes each placement into its own copy of the vertices**, so repetition is real and is duplicated rather
+than shared. The measurement that settles it is the content one below, not this one.
+
+**The shape tier, measured by vertex content (#244, 2026-08-29).** The range tier above says only that no
+two parts share a buffer range. It cannot see repeated geometry the engine *copied* per placement, which is
+the case that matters on real content -- so a second key was added, and then a content hash to settle it.
+
+    signature only:   shape repeats 2,47x (1237 shapes, max 180)
+    vertex content:   shape repeats 1,00x (1152 shapes, max 3, 9 parts on a repeated shape,
+                      all 9 placeable/creature and object-space; 94 gobs and 94 object-space
+                      of 1157 censused parts; 1157 of 1157 hashed)
+
+**The signature over-counted by more than two to one, and the content hash is what caught it.** A key of
+(primitive, texture, index count) cannot separate fifty copies of one model from fifty terrain patches that
+share a topology and a texture while their vertex positions differ, and on tileset content the second is
+what it was actually finding -- one signature group held 262 of 386 "repeats" in a 1199-part area. Coverage
+is total (every censused part hashed), so the collapse is not an artifact of unhashed parts grouping on a
+zero hash.
+
+Three structural facts fall out of it, and they are worth more than the number:
+
+- **Gob parts and object-space parts are the same set, exactly, in every run** -- 32/32, 76/76, 94/94,
+  109/109, 112/112, 123/123. Placeables and creatures carry a model matrix; the tileset does not. So roughly
+  92% of an area's parts are **world-space baked**: their placement lives in their vertices, and no
+  de-duplication or instancing can collapse them without un-baking the transform first. That is a far
+  stronger statement than "they do not share a range".
+- **Every genuinely repeated part is a placeable or creature** -- 5 of 5, 9 of 9, 10 of 10, 11 of 11. The
+  intuition that repetition lives in the decor is right about the mechanism.
+- **The magnitude is ~1%**: 5-11 parts out of 1150-1230, at 3 to 5 copies each, in areas where gobs are only
+  8% of the population. These are not decor-heavy areas, and a modern one would shift the share -- but see
+  below for why that does not revive the rung.
+
+**The rung's PROMISE still does not follow, even though its premise holds.** Step 5 was budgeted as
+"collapse draw *records*, cutting the 3,7ms Build". A record is per-placement by construction -- its own
+transform, alpha, fade factor and texture handles -- and the validation that builds it is per-placement too.
+De-duplication cuts geometry, not records: it does not reduce record count, Build, draw count or caster
+count, and draw calls were already a non-problem at 27 GL calls. What it can buy is vertex-fetch locality
+and (with a packed store) VRAM. That distinction is the single most important thing on this step and it was
+restated at every stage, because the number that motivates the work is not the number the ladder wanted.
+
+### What was measured, after three instruments were wrong
+
+The final, proven figure is **2,5x on the complex area** -- ~9 500 parts backed by ~3 800 meshes, every
+membership verified vertex, UV and normal against the representative it would share a buffer with. Getting
+there took four corrections, and each one moved the answer by more than the last:
+
+| instrument | said | why it was wrong |
+|---|---|---|
+| range key (item identity) | 1,00x | the engine copies; identity was never going to show sharing |
+| shape signature (texture + index count) | 2,47x | collided on tileset topology -- one group held 262 of 386 "repeats" |
+| exact position hash | 1,00x | baked placement makes every copy's bytes differ; saw only the 9% object-space slice |
+| rigid hash, one canonical per run | 26% verified | absolute epsilon below float32's ULP at world scale, and a prefix-screened run holds several shapes |
+
+The pattern is worth keeping: **every one of those was found by disbelieving a result, not by a failure.**
+A census that reports a number is not the same as a census that reports the right number, and on this step
+the difference was consistently a factor of two or more.
+
+### What shipped, and what did not
+
+Shipped behind dials, both default off: the census and its content/rigid hashes (`/draw meshhash`), the
+verifier and the de-duplication registry, and the colour-path draw that sources geometry from a
+representative under a verified placement (`/draw dedup`). The vertex stage is untouched -- the placement
+rides in `d.model`, so #119's `gl_Position = uVP * d.model * vec4(aPos, 1.0)` holds without a shader edit
+and the depth prepass agrees by construction.
+
+Not done, and deliberately: the caster pass still submits each part's own range (correct, just not shared);
+matrix-class parts are registered but not followed; there is no packed canonical store, so no VRAM is
+saved; and **the registry is rebuilt per enrollment and only while the diagnostic is armed, so this cannot
+ship enabled until that cost is measured** (`verify Xms` on the `[alloy]` line) or the registry is cached
+across enrollments by part identity. No before/after frame-time claim is made: the A/B was never run under
+controlled conditions, and the frame is CPU-bound while this is a GPU-side win.
+
+**What the census does and does not see, stated so the number is not over-read.** There are three tiers of
+mesh sharing, and they are not equally cheap to detect:
+
+1. two parts on the same item entry — the same index range by identity;
+2. two parts on *different* item entries that name the same (offset, count) — the same range, aliased;
+3. two parts on different ranges holding equal vertices — the same geometry, duplicated.
+
+The census keys on the **index range** rather than on the item index, so it covers tiers 1 and 2 for one
+dereference per part at enrollment cadence — the same element-pool read the staging walk already does,
+guarded the same way, with parts whose range will not resolve left out and counted rather than silently
+dropped. Tier 3 is content comparison, is genuinely expensive, and is not attempted; the nearest ticket
+that would collapse records here is a geometry de-duplication pass, which is not proposed.
+
+*The two live numbers above were taken with an earlier key that covered tier 1 only.* Tier 2 is
+instrumented and unmeasured. The corroborating evidence argues it is empty — aliased ranges would very
+likely alias materials too, and `shared-material` reads 10 exact out of ~10 800 — but that is an argument,
+which is the thing this ADR is trying not to close on. Re-run and confirm before quoting the figure as
+covering both tiers.
+
+The census stays in the renderer as the standing instrument: one sorted pass over the ownership table per
+enrollment, reported on the `[alloy]` line, so a tileset or a content set where this stops being true says
+so without anyone re-deriving the question. **It answers "how many parts share a mesh", not the ticket's
+second half, "how many distinct transforms each mesh carries"** — with a maximum of one instance per mesh
+that half is vacuous (one instance cannot carry two transforms), and folding a transform hash into the key
+is work worth doing on the first content where sharing is not 1,00x, not before.
+
 ### Step 6 — the shadow pass, which may be step 2 by measurement.
 
 #151 established that frame time tracked shadow re-bake count, and the shadow pass is not inside the

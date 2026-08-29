@@ -234,13 +234,38 @@ public sealed unsafe partial class AlloyRenderer
         return m;
     }
 
+    /// <summary>#244: the model matrix a world-space part draws under -- identity when it draws its own
+    /// vertices, and the verified placement when it draws a representative's.
+    /// <para>Column-major on the wire, which is what the record already is: the shader reads
+    /// <c>d.model * vec4(aPos, 1.0)</c> and GLSL reads an std430 mat4 as columns, so the first four floats
+    /// are the first COLUMN. <c>System.Numerics.Matrix4x4</c> stores rows first and puts translation in
+    /// M41..M43, which lands the transform in exactly that order -- the same layout an engine node matrix
+    /// already arrives in, so a de-duped part and a matrix-class one are the same shape to the shader.</para>
+    /// <para>ponytail: matrix-class parts are registered but not followed here. Their model would be the
+    /// node's matrix composed with the derived one, which is a per-frame product rather than a stable field,
+    /// and they are ~6% of the population whose derived transform is near-identity anyway. Compose it here
+    /// when that 6% is worth the per-frame multiply.</para></summary>
+    private static Matrix4x4 DedupModel(int i)
+    {
+        if (!_dedupDraw || _ddRep[i] < 0) return Matrix4x4.Identity;
+        long o = (long)i * 12;
+        return new Matrix4x4(_ddMat[o], _ddMat[o + 4], _ddMat[o + 8], 0f,
+                             _ddMat[o + 1], _ddMat[o + 5], _ddMat[o + 9], 0f,
+                             _ddMat[o + 2], _ddMat[o + 6], _ddMat[o + 10], 0f,
+                             _ddMat[o + 3], _ddMat[o + 7], _ddMat[o + 11], 1f);
+    }
+
     /// <summary>#242: the stable half -- written when the slot is built and never again while it holds the
     /// same part. The texture rotation cannot change without failing <c>IdentityOk</c> (which revokes), a
     /// .mtr does not animate, and the three alpha ones are literal constants. An identity model matrix is
     /// here too: a part whose class does not stage a node has no live matrix to re-read.</summary>
     private static void WriteStable(float* r, int i, bool lit)
     {
-        if (!_oMx[i]) *(Matrix4x4*)r = Matrix4x4.Identity;
+        // #244: a de-duped part draws its representative's vertices, so its model matrix is the derived
+        // placement rather than identity -- and it is STABLE by construction (the transform between two
+        // baked copies cannot change while both are enrolled), so it belongs here and costs nothing per
+        // frame. ADR 0017's split is preserved: this is not a per-frame field wearing a stable one's coat.
+        if (!_oMx[i]) *(Matrix4x4*)r = DedupModel(i);
         r[16] = _oCos[i]; r[17] = _oSin[i];
         int fo = i * 4;
         r[42] = _oFeat[fo + 2]; r[43] = _oFeat[fo + 3];
@@ -525,18 +550,28 @@ public sealed unsafe partial class AlloyRenderer
             // whether an area has no normal-mapped content at all or has it and the re-fetch above dropped it.
             if (lit && (_oSlots[i] & SlotBit(0)) != 0) { _nrmDeclared++; if (slotTid[0] != 0) _nrmBound++; }
 
+            // #244: where a verified de-duplication exists, the draw sources its GEOMETRY from the
+            // representative and keeps everything else its own -- its textures, its colours, its alpha, its
+            // record slot. The placement that reconciles the two rides in the model matrix, and the vertex
+            // stage is untouched: it still computes uVP * d.model * vec4(aPos, 1.0) character for
+            // character, so #119's depth match holds without a shader edit.
+            // A representative that has since been revoked is not followed -- the part draws its own
+            // geometry, which is always still there.
+            int src = i;
+            if (_dedupDraw && _ddRep[i] >= 0 && !_oMx[i] && cls != (int)AlloyClass.Water
+                && _oTri[_ddRep[i]] != IntPtr.Zero) { src = _ddRep[i]; _dedupDrawn++; }
             // index range re-read live from the VDO item tables (Repack revokes before they move)
-            var vdo = new VdoRef(_oVdo[i]);
+            var vdo = new VdoRef(_oVdo[src]);
             long elem = vdo.ElemItems;
             long vert = vdo.VertItems;
-            int item = _oItem[i];
+            int item = _oItem[src];
             if (elem == 0 || vert == 0 || item < 0
                 || item >= vdo.ElemCount || item >= vdo.VertCount)
             { _skipRange++; UnstampRecord(i); W(i, "skipped: item out of range"); continue; }
             int idxCount = *(int*)(elem + item * 8 + 4);
             if (idxCount <= 0) { _skipRange++; UnstampRecord(i); W(i, "skipped: empty index range"); continue; }
 
-            int v = _oVao[i];
+            int v = _oVao[src];
             if (!EnsureVao(v)) { _skipVao++; UnstampRecord(i); W(i, "skipped: no VAO"); continue; }
             uint mode = _primTable[_oPrim[i]];
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --

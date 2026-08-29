@@ -151,6 +151,9 @@ public static unsafe class Gl
     /// draw count from, so the count never has to reach the CPU.</summary>
     public const uint PARAMETER_BUFFER = 0x80EE;
     public const uint MAP_WRITE_BIT = 0x0002, MAP_PERSISTENT_BIT = 0x0040, MAP_COHERENT_BIT = 0x0080;
+    /// <summary>#244: the read side of the same flag set -- for mapping an existing buffer back to the host,
+    /// which is a readback and belongs to diagnostics, not to a frame.</summary>
+    public const uint MAP_READ_BIT = 0x0001;
     public const uint SYNC_GPU_COMMANDS_COMPLETE = 0x9117, SYNC_FLUSH_COMMANDS_BIT = 0x0001;
     public const uint ALREADY_SIGNALED = 0x911A, CONDITION_SATISFIED = 0x911C;
 
@@ -308,6 +311,9 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, IntPtr, void*, uint, void> BufferStorage;
     /// <summary>glMapBufferRange (GL 3.0): target, offset, length, access. Returns the client pointer.</summary>
     public static delegate* unmanaged<uint, IntPtr, IntPtr, uint, void*> MapBufferRange;
+    /// <summary>glUnmapBuffer (GL 1.5): target. False means the contents were lost while mapped and the
+    /// caller must re-read -- which for a read-only diagnostic map means discard, not retry.</summary>
+    public static delegate* unmanaged<uint, byte> UnmapBuffer;
     /// <summary>glMultiDrawElementsIndirect (GL 4.3): mode, type, indirect (byte offset into the bound
     /// DRAW_INDIRECT_BUFFER), drawcount, stride (0 = tightly packed).</summary>
     public static delegate* unmanaged<uint, uint, void*, int, int, void> MultiDrawElementsIndirect;
@@ -471,6 +477,7 @@ public static unsafe class Gl
         Uniform3i = (delegate* unmanaged<int, int, int, int, void>)P("glUniform3i");
         BufferStorage = (delegate* unmanaged<uint, IntPtr, void*, uint, void>)P("glBufferStorage");
         MapBufferRange = (delegate* unmanaged<uint, IntPtr, IntPtr, uint, void*>)P("glMapBufferRange");
+        UnmapBuffer = (delegate* unmanaged<uint, byte>)P("glUnmapBuffer");
         MultiDrawElementsIndirect = (delegate* unmanaged<uint, uint, void*, int, int, void>)P("glMultiDrawElementsIndirect");
         MultiDrawElementsIndirectCount = (delegate* unmanaged<uint, uint, void*, IntPtr, int, int, void>)P("glMultiDrawElementsIndirectCount");
         // ...and the pre-4.6 spelling, which is the same function under the extension that promoted into core.
