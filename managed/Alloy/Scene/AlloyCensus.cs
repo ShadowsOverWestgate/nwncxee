@@ -528,6 +528,7 @@ internal static unsafe class AlloyCensus
         // than coverage (inc_standard.shd:248), so it must not be allowed to cut holes in a solid surface's
         // shadow at the cutout threshold.
         c.EnvAlpha = env;
+        c.Dangly = IsDangly(part);
         return true;
     }
 

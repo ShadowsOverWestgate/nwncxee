@@ -82,6 +82,13 @@ public sealed unsafe partial class AlloyRenderer
     /// matrix, texture rotation and material colours that used to be per-part uniforms.</summary>
     private static void IssueBatches(int from, int groups, float* vpRaw, int* viewport, float near, float far)
     {
+        long tIssue = FrameZones.Now;
+        try { IssueBatchesInner(from, groups, vpRaw, viewport, near, far); }
+        finally { FrameZones.Add(FrameZones.Zone.Issue, tIssue); }
+    }
+
+    private static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far)
+    {
         // A probe capture must not carry the debug viz through: /draw viz would bake flat cyan (or a
         // cluster heat map) into the cube and leave it there for every frame that samples it afterwards.
         int viz = _capturing ? 0 : _lightViz;

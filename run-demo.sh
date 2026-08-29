@@ -7,14 +7,19 @@ cd "$(dirname "$0")"
 B="$PWD/sow-client-extender"
 
 [ -f "$B/libsowx.so" ] || { echo "run ./build.sh first"; exit 1; }
-LOG="${HOME:-/tmp}/sowx.log"   # ExtenderLog writes here (see ExtenderLog.cs)
+# ExtenderLog writes to $HOME/sowx.log, which is where a real SESSION's log lives too -- a headless run
+# here would truncate the log the last game session left behind, which is the only evidence a live-verified
+# ticket has. Give the demo its own HOME so the two can never collide.
+DEMOHOME="${TMPDIR:-/tmp}/sowx-demo"
+mkdir -p "$DEMOHOME"
+LOG="$DEMOHOME/sowx.log"
 # ROTATE, never delete. This is the same file the real client writes, and a client session's log is
 # the only record of what happened in a live area -- deleting it means a run-demo after a play session
 # destroys the evidence you were about to read. (It has: a large-area diagnosis was mid-flight.)
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
 
 echo ">> launching /usr/bin/env with the extender preloaded..."
-SOWX_MANAGED="$B/sowx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" /usr/bin/env >/dev/null
+HOME="$DEMOHOME" SOWX_MANAGED="$B/sowx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" /usr/bin/env >/dev/null
 
 echo
 echo ">> $LOG (written from C#):"

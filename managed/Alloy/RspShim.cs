@@ -267,6 +267,10 @@ internal static unsafe class RspShim
     internal static void Run(IntPtr scene)
     {
         long t0 = Stopwatch.GetTimestamp();
+        // #238: the Alloy frame draws INSIDE this call (FadeDoors is #132's anchor), so the shim's own
+        // number has to have it subtracted -- the published "6ms/frame in the shim" was the walk plus the
+        // whole Alloy CPU frame, which is what made the ticket's accounting look like 13ms of 150.
+        long alloy0 = FrameZones.Ticks(FrameZones.Zone.Alloy);
         IntPtr vptr = *(IntPtr*)scene;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         // #232/#233: decided BEFORE the anchor, because the answer has to reach PostChain's resolve, which
@@ -318,7 +322,10 @@ internal static unsafe class RspShim
         InWindow = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         EngineOverlays(vptr, scene);
-        _ticks += Stopwatch.GetTimestamp() - t0;
+        long child = FrameZones.Ticks(FrameZones.Zone.Alloy) - alloy0;
+        long spent = Stopwatch.GetTimestamp() - t0;
+        FrameZones.Add(FrameZones.Zone.Shim, t0, child);
+        _ticks += spent - child;
         _frames++;
     }
 
@@ -424,7 +431,9 @@ internal static unsafe class RspShim
     }
 
     /// <summary>The acceptance line. <c>passed</c> is the exit bar's draw counter and must read 0; the shim's
-    /// own wall time is the reported half of the frame-time criterion -- <c>/fps</c> is the instrument for
+    /// own wall time is the reported half of the frame-time criterion. #238: "own" is now literal -- the
+    /// Alloy bracket that runs inside the anchor is subtracted, so this number is the engine walk plus the
+    /// bookkeeping vcalls and nothing else. It was the whole Alloy CPU frame as well before that -- <c>/fps</c> is the instrument for
     /// the A/B, which is a live measurement, not a gate.</summary>
     private static void Period()
     {

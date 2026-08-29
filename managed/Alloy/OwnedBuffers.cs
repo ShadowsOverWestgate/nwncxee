@@ -217,6 +217,14 @@ internal static unsafe class OwnedBuffers
         return owned;
     }
 
+    /// <summary>#241: has the engine written into this buffer since the last <see cref="Refresh"/>? The
+    /// re-bake predicate's VERTEX-motion signal -- dangly and morph-animated nodes both commit through
+    /// <c>CommitItemDynamicData</c>, so both land in the dirty set with no per-class test. Only ever asked
+    /// of a buffer this table OWNS: an unowned VDO's writes are invisible here, which is why the dangly
+    /// class still carries its own flag.</summary>
+    internal static bool DirtySince(uint engineBuf)
+        => engineBuf != 0 && _map.TryGetValue((int)engineBuf, out Entry e) && e.Dirty;
+
     /// <summary>Re-copy every buffer the engine has written to since the last frame. Once per frame from
     /// inside the 4.6 bracket; nothing to do is the normal case and costs one count check.
     /// <para>#213: the sub-range the engine named, where it named one -- see <see cref="Respan"/>. That is

@@ -210,7 +210,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary>Keys <c>/shadow</c> accepts. The first two are <see cref="CasterPass"/>'s, the rest this
     /// feed's -- one command over the whole shadow path, because a player tuning it is looking at one thing.</summary>
-    private const string ShadowKeys = "dist|lod|nearradius|focusdist|cubewalk|lightcull|diag|lightdiag|torchdiag|trace";
+    private const string ShadowKeys = "dist|lod|rebake|nearradius|focusdist|cubewalk|lightcull|diag|lightdiag|torchdiag|trace";
 
     /// <summary>ADR 0013 bucket 1, in the shape <c>RenderCommands.Tune</c> established: <c>/shadow</c> reports,
     /// <c>/shadow &lt;key&gt; &lt;value&gt;</c> sets, <c>/shadow reset</c> restores the boot values. Every one
@@ -298,6 +298,9 @@ public sealed unsafe class SceneInputs : IExtenderService
         // Phase 2: self-drive the light walk here (zero-frame-fresh snapshot; the engine's own
         // GetShadowLights calls no longer walk). Unconditional -- the Alloy pass's light SSBO needs
         // the snapshot even when the shadow pipeline itself is off.
+        // #238: one zone over the whole ADR 0007 pass slot -- the light walk, the focus and the caster bake
+        // are one non-overlapping span of the frame, and it is a SIBLING of the shim rather than nested in it.
+        long tShadow = FrameZones.Now;
         WalkMasterList(*(IntPtr*)(scene + SceneLightManager));
         // The shadow focus every Alloy view fits around. Published here rather than at the present because
         // this is the slot where the engine's own camera state is current (ADR 0007 phase 1).
@@ -313,6 +316,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // AFTER the bind it reports: DumpNearest prints each light's cube SLOT, so run from the end of the
         // walk it named last frame's assignment against this frame's positions -- wrong in exactly the
         // slot-reshuffle case ("the carried torch blinks") the diagnostic exists for.
+        FrameZones.Add(FrameZones.Zone.Shadow, tShadow);
         if (_torchDiag) DumpNearest();
         _passDoneThisFrame = true;
     }

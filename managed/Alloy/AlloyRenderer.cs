@@ -867,8 +867,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // threshold is then unreachable for 2^31 passes -- i.e. enrollment silently never runs
             // #236: the latch enrolls as soon as the throttle opens, so the bound on ownership latency is
             // NewCandidateGap frames from the completing walk rather than the full cadence.
+            long tEnroll = FrameZones.Now;
             if (_newCandidate && _sinceEnroll >= NewCandidateGap) { _candidateEnrolls++; Enroll(scene); }
             else if (_sinceEnroll < EnrollEvery) _sinceEnroll++; else Enroll(scene);
+            FrameZones.Add(FrameZones.Zone.Enroll, tEnroll);
         }
         // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
         // being on is never enough on its own: a pass with no 4.6 context, no module, or /vanilla still gets

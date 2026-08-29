@@ -27,6 +27,12 @@ public sealed unsafe partial class AlloyRenderer
 
     private static void DrawOwned()
     {
+        long tAlloy = FrameZones.Now;
+        try { DrawOwnedInner(); } finally { FrameZones.Add(FrameZones.Zone.Alloy, tAlloy); }
+    }
+
+    private static void DrawOwnedInner()
+    {
         // #129: last pass's snapshot is not this pass's. Revoked first thing, so every path out of here that
         // never reaches PassId.FbCopy leaves Alloy water disarmed -- and BucketGate's bucket-6 gate reads
         // the same flag, so the engine draws water itself on exactly those passes.
@@ -87,7 +93,9 @@ public sealed unsafe partial class AlloyRenderer
         // Only now: posing force-solves every Alloy skinmesh through the engine, and a pass that is about
         // to hand the frame back would have the engine solve each of them a second time on its own walk.
         // Still ENGINE context, which is what PartSkin::Draw needs.
+        long tPose = FrameZones.Now;
         PoseSkinned();
+        FrameZones.Add(FrameZones.Zone.Pose, tPose);
 
         // row-major v*M convention: clip = v * Model * View * Proj; raw bytes read column-major by GLSL are
         // the transpose, so uVP * d.model * vec4(aPos,1) is exact -- (M*V*P)^T = (V*P)^T * M^T, which is why
@@ -116,9 +124,11 @@ public sealed unsafe partial class AlloyRenderer
                           && (_isEnabled == null || _isEnabled(CapLighting) != 0);
 
         if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); return; }
+        long tOwn = FrameZones.Now;
         OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
         OwnedBuffers.Drain();    // #212: the same, for geometry
         OwnedBuffers.Refresh();  // ...and re-copy whatever the engine uploaded into a pool since last frame
+        FrameZones.Add(FrameZones.Zone.Own, tOwn);
         if (EnsureProgram() && BindTarget(engFbo, colorType, colorName, depthType, depthName))
         {
             // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both
@@ -157,12 +167,16 @@ public sealed unsafe partial class AlloyRenderer
             // Staging first would stamp OwnGen on parts the iterator then suppresses and nobody draws.
             if (!PostChain.Begin(_fbo46, depthType, depthName, viewport, engClear, engClearDepth))
             { GlContextService.Leave(); return; }
+            long tBuild = FrameZones.Now;
             int groups = BuildBatches(lightingOn);
+            FrameZones.Add(FrameZones.Zone.Build, tBuild);
             if (groups > 0)
             {
+                long tUp = FrameZones.Now;
                 StageSky();
                 UploadDraws();
                 UploadBones();
+                FrameZones.Add(FrameZones.Zone.Upload, tUp);
                 foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
                 {
                     if (bracket != Bracket.Colour) continue;
@@ -358,6 +372,17 @@ public sealed unsafe partial class AlloyRenderer
     /// floor. The #119 meters are saved and restored across it -- a capture's draws are not the frame's
     /// draws, and folding them in would make the overdraw and batching figures lie on capture frames.</para></summary>
     private static void CaptureProbe(int groups, float far)
+    {
+        long tProbe = FrameZones.Now;
+        // The six faces submit through IssueBatches, which books its own zone -- so the parent subtracts it
+        // exactly as the shim subtracts the Alloy frame. Without this a capture frame counts the submission
+        // twice, and a capture frame is precisely the shape that latches the worst-frame snapshot.
+        long issue0 = FrameZones.Ticks(FrameZones.Zone.Issue);
+        try { CaptureProbeInner(groups, far); }
+        finally { FrameZones.Add(FrameZones.Zone.Probe, tProbe, FrameZones.Ticks(FrameZones.Zone.Issue) - issue0); }
+    }
+
+    private static void CaptureProbeInner(int groups, float far)
     {
         IntPtr bsp = _enrollScene != IntPtr.Zero ? *(IntPtr*)(_enrollScene + SceneLayout.SceneBspRoot) : IntPtr.Zero;
         if (!EnvProbe.Wanted(_eyePos, bsp, _frameSeq)) return;

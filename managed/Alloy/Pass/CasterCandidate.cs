@@ -22,4 +22,8 @@ internal struct CasterCandidate
     /// coverage too -- but at a threshold low enough that only empty texels punch through, so a polished
     /// floor keeps its shadow. Everything else with alpha takes the engine's own 0.2 cutout.</summary>
     public bool EnvAlpha;
+    /// <summary>#241: a <c>PartDanglyMesh</c>, whose VERTICES move while its node matrix does not. The one
+    /// caster the re-bake predicate cannot infer motion for, so it is declared a permanent mover here --
+    /// exactly the assertion #135 had to make and #187 deleted along with the old cache.</summary>
+    public bool Dangly;
 }

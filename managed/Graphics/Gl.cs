@@ -147,6 +147,9 @@ public static unsafe class Gl
     // #93 multidraw-indirect from persistent-mapped storage. The MAP_* bits are glBufferStorage flags AND
     // glMapBufferRange flags: the map's set must be a subset of the storage's or the map fails.
     public const uint DRAW_INDIRECT_BUFFER = 0x8F3F;
+    /// <summary>GL_PARAMETER_BUFFER (GL 4.6): where <see cref="MultiDrawElementsIndirectCount"/> reads its
+    /// draw count from, so the count never has to reach the CPU.</summary>
+    public const uint PARAMETER_BUFFER = 0x80EE;
     public const uint MAP_WRITE_BIT = 0x0002, MAP_PERSISTENT_BIT = 0x0040, MAP_COHERENT_BIT = 0x0080;
     public const uint SYNC_GPU_COMMANDS_COMPLETE = 0x9117, SYNC_FLUSH_COMMANDS_BIT = 0x0001;
     public const uint ALREADY_SIGNALED = 0x911A, CONDITION_SATISFIED = 0x911C;
@@ -308,6 +311,18 @@ public static unsafe class Gl
     /// <summary>glMultiDrawElementsIndirect (GL 4.3): mode, type, indirect (byte offset into the bound
     /// DRAW_INDIRECT_BUFFER), drawcount, stride (0 = tightly packed).</summary>
     public static delegate* unmanaged<uint, uint, void*, int, int, void> MultiDrawElementsIndirect;
+    /// <summary>glMultiDrawElementsIndirectCount (GL 4.6 / ARB_indirect_parameters): mode, type, indirect
+    /// (byte offset into the bound DRAW_INDIRECT_BUFFER), drawcount (byte offset into the bound
+    /// PARAMETER_BUFFER -- a GPU-side count, which is the whole point), maxdrawcount, stride.
+    /// <para>#238: the one entry point a GPU-culled draw list needs and the only one missing. Without it the
+    /// count a compute cull produces has to come back to the CPU to be passed as an argument, which is a
+    /// stall on the very frame the cull was meant to make cheaper. Bound here ahead of its first caller
+    /// because binding it is free and being blocked on it later is not.</para>
+    /// <para><b>Non-null proves nothing.</b> GLX hands back a pointer for essentially any name, supported or
+    /// not, so the first caller must gate on the extension STRING (GL 4.6 or <c>GL_ARB_indirect_parameters</c>)
+    /// the way <c>AlloyRenderer.HasBindless</c> does -- never on a null check. The ARB-suffixed lookup below
+    /// is for the platforms where that spelling is the only one, not a capability test.</para></summary>
+    public static delegate* unmanaged<uint, uint, void*, IntPtr, int, int, void> MultiDrawElementsIndirectCount;
     /// <summary>glVertexAttribDivisor (GL 3.3): index, divisor. 1 = the attribute advances once per
     /// INSTANCE rather than per vertex, which is what makes an instance stream an instance stream.</summary>
     public static delegate* unmanaged<uint, uint, void> VertexAttribDivisor;
@@ -457,6 +472,10 @@ public static unsafe class Gl
         BufferStorage = (delegate* unmanaged<uint, IntPtr, void*, uint, void>)P("glBufferStorage");
         MapBufferRange = (delegate* unmanaged<uint, IntPtr, IntPtr, uint, void*>)P("glMapBufferRange");
         MultiDrawElementsIndirect = (delegate* unmanaged<uint, uint, void*, int, int, void>)P("glMultiDrawElementsIndirect");
+        MultiDrawElementsIndirectCount = (delegate* unmanaged<uint, uint, void*, IntPtr, int, int, void>)P("glMultiDrawElementsIndirectCount");
+        // ...and the pre-4.6 spelling, which is the same function under the extension that promoted into core.
+        if (MultiDrawElementsIndirectCount == null)
+            MultiDrawElementsIndirectCount = (delegate* unmanaged<uint, uint, void*, IntPtr, int, int, void>)P("glMultiDrawElementsIndirectCountARB");
         VertexAttribDivisor = (delegate* unmanaged<uint, uint, void>)P("glVertexAttribDivisor");
         DrawArraysInstancedBaseInstance =
             (delegate* unmanaged<uint, int, int, int, uint, void>)P("glDrawArraysInstancedBaseInstance");

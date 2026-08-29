@@ -18,6 +18,7 @@ public sealed unsafe class UiHostService : IExtenderService
     {
         _log = log;
         UiHost.SelfCheck(log);   // #61 arbiter + #62 draw roll-call proof (off-device)
+        FrameZones.SelfCheck(log);   // #238 frame-split instrument (off-device)
         SettingsPanel.SelfCheck(log);   // #166 shared settings panel: hit-test, drag, edit buffer (off-device)
         if (GameGate.Locked)   // lockchat: install nothing -> vanilla rendering intact
         {
@@ -55,7 +56,9 @@ public sealed unsafe class UiHostService : IExtenderService
         FrameRegistry.Global.Run(FramePhase.Start);
         RefreshGate();
         if (GameGate.InGame) SyncUiScale();
+        long tUi = FrameZones.Now;
         UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
+        FrameZones.Add(FrameZones.Zone.Ui, tUi);
         FrameRegistry.Global.Run(FramePhase.PrePresent);
         // #210 (G1): the hand-back resync. Window content draws raw GL in the ENGINE's 3.3 context, past
         // GLRender's shadow cache, which then early-outs on a stale match and skips real GL calls for the rest
@@ -68,7 +71,12 @@ public sealed unsafe class UiHostService : IExtenderService
         // GL would have the engine's next streamed vertex upload land in it. Routed through the engine
         // wrapper, not glBindBuffer, precisely so the cache learns about it.
         if (_bindBuffer != null) _bindBuffer(GlArrayBuffer, 0);
+        // #238: the present is its own zone. It is the discriminator the other brackets cannot supply --
+        // a frame that spends its time HERE is waiting on the GPU or on vsync, which is a different problem
+        // from every zone that measures our own CPU work.
+        long tSwap = FrameZones.Now;
         if (_swapOrig != null) _swapOrig(window); // present
+        FrameZones.Add(FrameZones.Zone.Present, tSwap);
         FrameStats();
         FrameRegistry.Global.Run(FramePhase.PostPresent);
     }
@@ -86,6 +94,7 @@ public sealed unsafe class UiHostService : IExtenderService
         if (_fsLast != 0 && GameGate.InModule)
         {
             long dt = now - _fsLast;
+            FrameZones.EndFrame(dt);   // #238: fold this frame's zone split in, against the same dt
             _fsSum += dt; _fsN++;
             if (dt > _fsMax) _fsMax = dt;
             float ms = dt * 1000f / System.Diagnostics.Stopwatch.Frequency;
@@ -96,9 +105,15 @@ public sealed unsafe class UiHostService : IExtenderService
                 float avg = _fsSum * 1000f / System.Diagnostics.Stopwatch.Frequency / _fsN;
                 float max = _fsMax * 1000f / System.Diagnostics.Stopwatch.Frequency;
                 _log?.Info($"UiHostService: [frame] avg {avg:F2}ms ({1000f / avg:F0}fps) max {max:F1}ms, >6.9ms {_fsOver7}/{_fsN}, >16.7ms {_fsOver17}/{_fsN}");
+                // #238: NOT inside the null-conditional -- Period() carries the period reset, and `?.` skips
+                // argument evaluation, so a null log would desync it from the _fs* counters reset below
+                // permanently (every later line would then average since boot).
+                string zones = FrameZones.Period();
+                _log?.Info(zones);                 // ...and where that frame went
                 _fsSum = 0; _fsN = 0; _fsMax = 0; _fsOver7 = 0; _fsOver17 = 0;
             }
         }
+        else FrameZones.Discard();   // #238: menu/loading frames are not the period's
         _fsLast = now;
     }
 
