@@ -112,6 +112,23 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 
 ## Rendering (Alloy)
 
+- **Builder intent** — the part of an area's authored lighting that Alloy must preserve regardless
+  of how it shades: *a light reaches what the builder made it reach, and what the builder left dark
+  stays dark*. Range and the lit/unlit boundary are a content contract, because builders use them
+  for gameplay — an area left unlit is meant to be unlit, and a decor light is not meant to extend a
+  sightline. How a lit surface *responds* — colour, specular, roughness, bloom, tessellation, shadow
+  softness — is Alloy's and is free to differ from the engine's. Distinct from visual parity with
+  the engine's renderer, which is not a goal anywhere.
+- **Parasitic input** — Alloy state produced by observing the engine render rather than by reading
+  what the engine simulates: a part discovered because the engine tried to draw it, a camera
+  harvested off a transform call site, a pose produced by re-entering a draw function. The
+  contrast is a **direct read** — the same fact taken from the engine's own state at a moment Alloy
+  chooses. Retiring parasitic input is what M5 means by *build it properly*; it is a statement about
+  Alloy's inputs, never about the image.
+- **Scene enumeration** — Alloy's own walk of the world's objects, covering everything in the area
+  rather than the visible slice, producing the persistent records every pass reads. Contrast the
+  **draw traversal**, the engine's per-frame walk of its draw buckets, which Alloy inherited
+  discovery and visibility from through M4.
 - **Owned** vs **staged** — a scene part is *owned* when Alloy draws it (engine
   submission suppressed for it) and *staged* when the engine still draws it during the
   migration. Every part is drawn every frame by exactly one owner, never both, never neither.

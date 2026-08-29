@@ -3,6 +3,12 @@
 Status: accepted (direction); supersedes the "patch the engine" framing of 0005–0008, which are
 retroactively its foundation layer. #67 campaign, 2026-08-19.
 
+**Its milestone list is superseded by ADR 0018 (#255, 2026-08-29).** M0–M4 are done; M5 — the
+wholesale rework of how Alloy operates, now that ownership is complete — is specified there, along
+with the bar and the strand sequence. What this document keeps permanently is its *argument*: why a
+wholesale renderer at all. Read 0018 for what remains to be built. Amended twice before that: M4
+redrawn 2026-08-26 (#203 / ADR 0016), M5 added 2026-08-29.
+
 ## Context
 
 The measured frame (ADR 0008) shows the engine's 2002 submission model is the bottleneck

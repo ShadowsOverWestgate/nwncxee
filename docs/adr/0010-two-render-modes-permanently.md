@@ -2,6 +2,11 @@
 
 Status: accepted (#107 grilling, 2026-08-20). Constrains ADR 0009's M3 and everything after it.
 Amended 2026-08-26 (#203 / ADR 0016) — see the amendment at the end.
+**Amended again 2026-08-29 (#255 / ADR 0018): both modes still ship permanently, but the vanilla
+mode becomes restart-only rather than a live toggle**, so the two resource worlds are never warm at
+once. That is what makes M5's exclusive residency ownership affordable, and it lets the per-frame
+refusal surface collapse into a boot decision. The decision this ADR records — that the engine path
+is supported indefinitely and "bypass" means suppress, never delete — is unchanged.
 
 ## Context
 

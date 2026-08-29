@@ -3,6 +3,13 @@
 Status: accepted (#238, 2026-08-29). Follows ADR 0016, which owns the frame and explicitly declines
 to gate on perf. This ADR is what perf work is ordered by now that the frame is ours.
 
+**Its remaining steps are absorbed by ADR 0018 (#255, 2026-08-29).** Step 3 (own visibility, #243)
+is M5 strand 2's first ticket; step 4 (stop paying for the engine's bucket traversal, never filed)
+is M5 strand 1 step 1 — and #253 found it is a *smaller* change than this ADR assumed, needing no
+new hook, because discovery and classification finish before `RenderSinglePass` is dispatched.
+Step 5's de-duplication machinery is deleted by M5 rather than completed: its useful half becomes a
+property of the residency system. Steps 0, 1, 2 and 6 shipped and stand.
+
 ## Context
 
 M4 closed the cutover: Alloy draws the 3D world from its own resources, in its own loop, into its
