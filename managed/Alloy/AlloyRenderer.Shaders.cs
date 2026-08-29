@@ -25,7 +25,7 @@ public sealed unsafe partial class AlloyRenderer
     internal const string ShdWaterVs = "cx_water_vs", ShdWaterFs = "cx_water_fs",
                          ShdWaterTcs = "cx_water_tcs", ShdWaterTes = "cx_water_tes";
 
-    /// <summary>#84: the per-draw block, indexed by <c>uDrawBase + gl_DrawID</c>. This is what makes one
+    /// <summary>#84: the per-draw block, reached through <c>uDrawIdx[uDrawBase + gl_DrawID]</c>. This is what makes one
     /// multidraw able to cover a whole group -- everything that varies per part and used to be a uniform lives
     /// here instead. <c>binding = 4</c> must stay in step with <see cref="BindDraw"/>.
     /// <para><c>rot</c> is (cos, sin) of the tile texture rotation: the engine's own vertex stage does
@@ -38,6 +38,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>#123: <c>feat</c> is (<see cref="ShaderFeature"/>, and the three parameters that feature reads).
     /// Same reason it is per draw and not a uniform: one batch spans materials asking for different
     /// shaders.</para>
+    /// <para>#242: the extra indirection is what lets the records be PERSISTENT -- they are indexed by
+    /// ownership slot and written only when the part moves, while the draw order is per pass. The index
+    /// array is the only per-draw thing the frame still uploads whole, at four bytes each.</para>
     /// <para>ponytail: both vertex stages read this block, so the whole Alloy pass -- fullbright included --
     /// now needs vertex-stage SSBO access. GL 4.6 only REQUIRES
     /// <c>MAX_VERTEX_SHADER_STORAGE_BLOCKS >= 0</c> (it is the fragment/compute minimums that are 8), so a
@@ -48,6 +51,10 @@ public sealed unsafe partial class AlloyRenderer
     internal const string DrawBufDecl = """
         struct SowxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; };
         layout(std430, binding = 4) readonly buffer SowxDrawBuf { SowxDraw uDraw[]; };
+        layout(std430, binding = 9) readonly buffer SowxDrawIdxBuf { int uDrawIdx[]; };
+        // #242: the record slot draw n reads. Records are indexed by OWNERSHIP slot and persist across
+        // frames; draw order is per pass, so the two are different numbers and this is the map between them.
+        int SowxSlot(int draw) { return uDrawIdx[draw]; }
 
         """;
 
@@ -301,7 +308,7 @@ public sealed unsafe partial class AlloyRenderer
         """ + FeatVs + BoneVs + """
         void main()
         {
-            SowxDraw d = uDraw[uDrawBase + gl_DrawID];
+            SowxDraw d = uDraw[SowxSlot(uDrawBase + gl_DrawID)];
             float anchorZ;
             vec4 pos = SowxFeatPos(d, aPos, anchorZ);
             int bb = SowxBoneBase(d);
@@ -367,7 +374,7 @@ public sealed unsafe partial class AlloyRenderer
         invariant gl_Position;
         void main()
         {
-            SowxDraw d = uDraw[uDrawBase + gl_DrawID];
+            SowxDraw d = uDraw[SowxSlot(uDrawBase + gl_DrawID)];
             gl_Position = uVP * d.model * vec4(aPos, 1.0);
         }
         """;
@@ -398,7 +405,7 @@ public sealed unsafe partial class AlloyRenderer
         flat out int vDraw;
         void main()
         {
-            int id = uDrawBase + gl_DrawID;
+            int id = SowxSlot(uDrawBase + gl_DrawID);
             SowxDraw d = uDraw[id];
             gl_Position = uVP * d.model * vec4(aPos, 1.0);
             // ponytail: vWorld is the same product the colour stage forms, but it reaches it through `pos`
@@ -450,7 +457,7 @@ public sealed unsafe partial class AlloyRenderer
         """ + FeatVs + BoneVs + """
         void main()
         {
-            int id = uDrawBase + gl_DrawID;
+            int id = SowxSlot(uDrawBase + gl_DrawID);
             SowxDraw d = uDraw[id];
             vec4 pos = SowxFeatPos(d, aPos, vAnchorZ);
             // #137: a posed skinmesh REPLACES the feature position -- the two never coexist (see

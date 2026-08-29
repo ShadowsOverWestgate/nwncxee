@@ -529,8 +529,9 @@ internal static unsafe class GrassField
         // The first write after a Forget (area load, /grass density) starts at byte 0, over a range the GPU
         // may still be reading from last frame's draws -- a bare BufferSubData there makes the driver
         // serialise, at exactly the two moments this class exists to keep smooth. Orphan the old allocation
-        // first, the way UploadDraws does (#84). Every later write is an append past the drawn range and
-        // needs none of this.
+        // first. (#84's UploadDraws did the same until #242 made those records persistent -- a persistent
+        // buffer cannot orphan, and this one still can because a Forget really does discard its contents.)
+        // Every later write is an append past the drawn range and needs none of this.
         if (_uploaded == 0)
             Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)((long)MaxInstances * InstFloats * sizeof(float)), null,
                           Gl.DYNAMIC_DRAW);

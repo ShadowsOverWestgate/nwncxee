@@ -440,6 +440,11 @@ public sealed unsafe class CasterPass : IExtenderService
     /// near-empty depth instead: shadows drop out for one frame rather than freezing. The counter stays so that
     /// flicker is attributable rather than mysterious.</summary>
     private static long _degenSum;
+    /// <summary>Live casters summed over the period. Reported ALONGSIDE the mover count, because the two
+    /// being equal is a bug with no other symptom: it means the still world is not in the list the bake
+    /// reads, and every shadow of it vanishes the moment nothing moves. That is exactly what #241 shipped,
+    /// and "still" being printed is what stops it being shipped twice.</summary>
+    private static long _liveSum;
     /// <summary>Creature casters the last <see cref="Submit"/> staged -- the number that answers "why did the
     /// shadow vanish": a cube whose faces take zero creature casters cannot show one.</summary>
     private static int _submitCreatures;
@@ -1370,6 +1375,10 @@ public sealed unsafe class CasterPass : IExtenderService
                    $"{(float)_moverSum / _frames:F1} movers/frame -- matrix {(float)_mvMatrix / _frames:F1}, " +
                    $"bones {(float)_mvBone / _frames:F1}, dangly {(float)_mvDangly / _frames:F1}, " +
                    $"vertex-dirty {(float)_mvVertex / _frames:F1}, {(float)_ghostSum / _frames:F1} vanished)" +
+                   // ...of how many live casters. Movers are a SUBSET of the live list, never the whole of
+                   // it: a still caster still casts. The two numbers meeting is the #241 regression.
+                   $" out of {(float)_liveSum / _frames:F1} live " +
+                   $"({(float)(_liveSum - _moverSum) / _frames:F1} still)" +
                    $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
                    (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
                    $", {(float)_draws / _frames:F0} depth draws/frame in {(float)_mdiCalls / _frames:F1} " +
@@ -1401,7 +1410,7 @@ public sealed unsafe class CasterPass : IExtenderService
                       $"{_maskNoProg} no cutout program -- each casts nothing)"));
         _frames = 0; _draws = 0; _mdiCalls = 0; _culled = 0; _fenceStalls = 0;
         _cullPerp = 0; _cullAlong = 0; _viewOverflow = 0; _cubeLightsSum = 0; _cubeStaged = 0; _viewSum = 0;
-        _lodCulled = 0; _ownedInstanceCasts = 0; _degenSum = 0; _qShadow.Reset();
+        _lodCulled = 0; _ownedInstanceCasts = 0; _degenSum = 0; _liveSum = 0; _qShadow.Reset();
         _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _moverSum = 0; _ghostSum = 0;
         _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0;
         _skinSum = 0; _skinOverflow = 0; _skinDropped = 0; _boneStalls = 0; _skinNoSlot = 0;
@@ -1965,14 +1974,21 @@ public sealed unsafe class CasterPass : IExtenderService
                                 _liveCx[live], _liveCy[live], _liveCz[live], _liveR[live]);
             // Counted by REASON, not just totalled: "no improvement" and "every caster is a mover" look
             // identical in a skip count, and which TERM is saturating decides where the next fix goes.
+            // Classification only. A still caster is STILL A CASTER: it stays in the live list and casts
+            // its shadow like any other, it merely does not invalidate the slots it stands in. #241 wrote
+            // this as an `else continue`, which skipped the `live++` below and made _liveCount the MOVER
+            // count -- so a world that stopped moving baked empty and every shadow in it vanished until
+            // something moved again. The predicate was innocent; the list it consulted was not.
+            bool mover = true;
             if (cMoved) _mvMatrix++;
             else if (_cDangly[i]) _mvDangly++;
             else if (_vDirty[_cVao[i]]) _mvVertex++;
-            else continue;
-            _moverIdx[_moverCount++] = live;
+            else mover = false;
+            if (mover) _moverIdx[_moverCount++] = live;
             live++;
         }
         _liveCount = live;
+        _liveSum += live;
         // Whatever stopped being live this frame -- died, left the capture, lost its index range to a Repack
         // -- becomes a mover at its last known position. That is what invalidates the slots it was standing
         // in, and ONLY those: the alternative is a blanket 192-view re-bake every time one item range blinks.

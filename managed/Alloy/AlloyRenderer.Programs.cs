@@ -29,6 +29,10 @@ public sealed unsafe partial class AlloyRenderer
         // Same pair the fullbright and lit programs take. #161: all four stages declare the record, so all
         // four are counted -- the tessellation pair reads it to build the wave field.
         if (prog != 0 && !(ShaderContract.RecordSafe(wvs) && ShaderContract.RecordSafe(wtc) && ShaderContract.RecordSafe(wte) && ShaderContract.RecordSafe(wfs)
+                           // #242: ...and reaches it through the slot map. An override that predates the
+                           // persistent records declares exactly the right record and indexes it by DRAW.
+                           && ShaderContract.SlotIndexSafe(wvs) && ShaderContract.SlotIndexSafe(wtc)
+                           && ShaderContract.SlotIndexSafe(wte)
                            && ShaderContract.LinearSafe(wfs)
                            // #208: ...and the four samplers this program binds units to. A dropped uProbe
                            // leaves a samplerCube on unit 0 beside the diffuse: INVALID_OPERATION, every
@@ -117,6 +121,7 @@ public sealed unsafe partial class AlloyRenderer
                                            _log, "AlloyRenderer fullbright program",
                                            out string vsSrc, out string fsSrc);
             if (prog != 0 && !(ShaderContract.RecordSafe(vsSrc) && ShaderContract.RecordSafe(fsSrc) && ShaderContract.CutoutSafe(vsSrc, fsSrc)
+                               && ShaderContract.SlotIndexSafe(vsSrc)   // #242
                                && ShaderContract.SkinSafe(vsSrc, _skinning) && ShaderContract.LinearSafe(fsSrc)))
             {
                 prog = RebuildEmbedded(prog, OwnedVs, OwnedFs, "fullbright", ref vsSrc);
@@ -210,6 +215,7 @@ public sealed unsafe partial class AlloyRenderer
                                        _log, "AlloyRenderer clustered lit program",
                                        out string vsSrc, out string fsSrc);
         if (prog != 0 && !(ShaderContract.RecordSafe(vsSrc) && ShaderContract.RecordSafe(fsSrc) && ShaderContract.CutoutSafe(vsSrc, fsSrc)
+                           && ShaderContract.SlotIndexSafe(vsSrc)   // #242
                            && ShaderContract.SkinSafe(vsSrc, _skinning) && ShaderContract.LinearSafe(fsSrc)
                            // #208: ...and the sampler declarations the unit table binds against, which only
                            // the compiled source can answer for. Bound-sampler check, so bindless skips it.

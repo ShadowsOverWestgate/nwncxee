@@ -127,10 +127,53 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _dCount = new int[MaxOwned];
     private static readonly nint[] _dOff = new nint[MaxOwned];
     private static readonly int[] _dBase = new int[MaxOwned];
-    private static readonly float[] _dData = new float[MaxOwned * DrawFloats];
+    private static readonly float[] _dData = new float[MaxRecords * DrawFloats];
     /// <summary>#153: per-draw bindless handles, 8 per record (diffuse + material slots 1..7), parallel to
     /// <see cref="_dData"/>. 0 = slot empty; the record's slot mask already forbids sampling those.</summary>
-    private static readonly ulong[] _dTexH = new ulong[MaxOwned * 8];
+    private static readonly ulong[] _dTexH = new ulong[MaxRecords * 8];
+    /// <summary>#242: the per-draw index array -- for draw <c>n</c> of this pass, the RECORD slot it reads.
+    /// The records themselves are indexed by ownership slot and persist across frames, while draw order is
+    /// per pass (a fading tile joins the blended run, and that run is sorted from this pass's eye), so the
+    /// two cannot be the same number. This is the only per-draw array the frame still uploads whole -- four
+    /// bytes each rather than a hundred and seventy-six.</summary>
+    private static readonly int[] _dSlot = new int[MaxOwned];
+    /// <summary>#242: which record slots were rewritten this frame, i.e. the movers. Uploaded one
+    /// <c>BufferSubData</c> each; past a quarter of the table the whole range goes up in one call instead.
+    /// </summary>
+    private static readonly int[] _recDirty = new int[MaxRecords];
+    private static int _recDirtyN;
+    /// <summary>#242: the epoch each slot's record was built under, and the frame it was last verified on.
+    /// A slot whose epoch is stale rebuilds unconditionally; one already verified this frame is free for
+    /// every pass after the first. Epoch 0 is "never built", so the arrays need no initialisation.</summary>
+    private static readonly int[] _recGen = new int[MaxOwned];
+    private static readonly int[] _recFrame = new int[MaxOwned];
+    /// <summary>#242: the blanket invalidation counter. Bumped by anything that can make every persistent
+    /// record wrong at once -- an enrollment (the slots reshuffle), a bindless handle wipe, a lost context,
+    /// a debug toggle, an armed frame dump. See ADR 0017's "Step 2, as built".</summary>
+    private static int _recEpoch = 1;
+    /// <summary>#242: the borrowed <c>CAurTexture*</c> this slot's record resolved its diffuse (and each
+    /// declared map slot) from, last rebuild. The pointer is the CHEAP half of the texture path -- a plain
+    /// field read off the material -- and the tid and bindless handle behind it are the expensive half, so
+    /// an unchanged pointer is what buys the whole re-fetch being skipped. An animated texture cycles engine
+    /// names, so its pointer changes every frame and it is a permanent mover; that is correct.</summary>
+    private static readonly IntPtr[] _recAur = new IntPtr[MaxOwned];
+    private static readonly IntPtr[] _recAurS = new IntPtr[MaxOwned * MapSlots];
+    /// <summary>#242: the resolved tids and live slot mask behind <see cref="_recAur"/> -- still needed
+    /// every frame by the batch key (a bind-path batch cuts on its textures) even when the record itself
+    /// does not move.</summary>
+    private static readonly int[] _recTid = new int[MaxOwned];
+    private static readonly int[] _recTidS = new int[MaxOwned * MapSlots];
+    private static readonly int[] _recSlotMask = new int[MaxOwned];
+    /// <summary>#242: how many record slots the persistent GPU buffer holds for OWNED parts, the sky's
+    /// reserved block sitting immediately above them. Grows to the high-water ownership count and never
+    /// shrinks; a growth reallocates, so the whole range is re-sent on that frame.</summary>
+    private static int _recOwnCap;
+    /// <summary>#242: the dirty list overflowed (or the buffer was just reallocated) -- send the whole
+    /// range instead of naming slots. Correct, and merely more expensive than the incremental path.</summary>
+    private static bool _recDirtyAll = true;
+    /// <summary>#242: the audit AC3 asks for -- record writes should scale with the MOVER count. If
+    /// "written" reads as the owned count, the split has a permanent mover in it.</summary>
+    private static long _recWritten, _recStable;
     /// <summary>#153/#220: GL texture NAME -&gt; resident bindless handle, open-addressed.
     /// <para>#220 was this cache keyed on an ENGINE name. The engine deletes its textures and GL recycles
     /// the names, so a handle could outlive the texture it was made for and a recycled name would hit the
@@ -206,6 +249,11 @@ public sealed unsafe partial class AlloyRenderer
     private static uint _drawBuf;
     /// <summary>#153: the per-draw texture-handle SSBO (binding <see cref="BindTexH"/>).</summary>
     private static uint _texHBuf;
+    /// <summary>#242: the per-draw index SSBO (binding <see cref="BindDrawIdx"/>), and how many records the
+    /// GPU side of <see cref="_drawBuf"/>/<see cref="_texHBuf"/> currently holds. A capacity growth
+    /// reallocates both, which is why it forces a wholesale re-send.</summary>
+    private static uint _slotBuf;
+    private static int _recCapGpu;
     /// <summary>#137's bone block and the CPU stage behind it. One region, rewritten every colour pass.</summary>
     private static uint _boneBuf;
     private static readonly float[] _boneStage = new float[MaxBoneSlots * BoneFloats];

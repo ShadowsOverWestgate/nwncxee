@@ -112,6 +112,17 @@ internal static class ShaderContract
         return true;
     }
 
+    /// <summary>#242: a stage that derives a draw index must reach its record THROUGH the slot map. The
+    /// records are persistent and indexed by ownership slot now, and the draw order is not that order -- so a
+    /// stage still spelling <c>uDraw[uDrawBase + gl_DrawID]</c> reads a NEIGHBOUR's model matrix, and (under
+    /// bindless, where the same index feeds <c>uTexH</c>) a neighbour's textures. It links cleanly, declares
+    /// the right record, passes every other guard here, and renders a scrambled world with nothing in the log.
+    /// <para>Which is precisely a pre-#242 content override: the record layout did not change, so
+    /// <see cref="RecordSafe"/> cannot see the difference. Stages with no <c>gl_DrawID</c> at all -- every
+    /// fragment stage, which receives the resolved slot in <c>vDraw</c> -- pass trivially.</para></summary>
+    public static bool SlotIndexSafe(string src)
+        => !src.Contains("gl_DrawID") || src.Contains("SowxSlot(uDrawBase + gl_DrawID)");
+
     /// <summary>The lit stage's whole sampler set: the diffuse, the map ladder and the probe cube.</summary>
     public static bool LitSlotSafe(string fs)
         => SlotSafe(fs, "uTex") && SlotSafe(fs, TextureSlots.MapSamplers) && SlotSafe(fs, "uProbe");
@@ -204,6 +215,23 @@ internal static class ShaderContract
                   && OwnedLitFsMain.Contains("if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv).r;")
                   && OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl")
                   && OwnedVs.Contains("uDrawBase + gl_DrawID") && OwnedLitVs.Contains("uDrawBase + gl_DrawID")
+                  // #242: ...and every one of them reaches its record THROUGH the draw-to-slot index. The
+                  // records are persistent and indexed by ownership slot now; a stage that still indexed by
+                  // draw would read a neighbour's record -- the wrong matrix and the wrong textures on every
+                  // part, which is a misrender with nothing in the log. The binding lives twice (this const,
+                  // that literal) for the same reason BindDraw does.
+                  && DrawBufDecl.Contains($"binding = {BindDrawIdx}")
+                  && DrawBufDecl.Contains("int SowxSlot(int draw) { return uDrawIdx[draw]; }")
+                  && OwnedVs.Contains("uDraw[SowxSlot(uDrawBase + gl_DrawID)]")
+                  && DepthVs.Contains("uDraw[SowxSlot(uDrawBase + gl_DrawID)]")
+                  && OwnedLitVs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
+                  && DepthKeyVs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
+                  && FrameSnapshot.Vs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
+                  // ...and the guard that says the same thing about a stage this file never sees. It must
+                  // refuse the pre-#242 spelling, which is the one an override written yesterday carries.
+                  && SlotIndexSafe(OwnedVs) && SlotIndexSafe(OwnedLitVs) && SlotIndexSafe(FrameSnapshot.Vs)
+                  && SlotIndexSafe(OwnedFs) && SlotIndexSafe(FrameSnapshot.Fs)
+                  && !SlotIndexSafe("SowxDraw d = uDraw[uDrawBase + gl_DrawID];")
                   // #119: the prepass depth is only re-testable by the colour pass while all three stages
                   // compute the SAME clip expression and declare it invariant. Drift either and lit
                   // surfaces lose fragments to LEQUAL -- a hole, with nothing in the log.

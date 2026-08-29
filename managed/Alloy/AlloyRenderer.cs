@@ -32,7 +32,8 @@ namespace Sowx.Alloy;
 /// <para>#84: submission is MULTIDRAW-BATCHED, so draw count follows the (program, VDO, texture, primitive)
 /// group count rather than the part count. Everything that used to be a per-part uniform -- model matrix,
 /// texture rotation, material ambient/diffuse -- moved into a per-draw SSBO the shaders index by
-/// <c>uDrawBase + gl_DrawID</c>, which is what lets one <c>glMultiDrawElementsBaseVertex</c> cover a whole
+/// <c>uDrawIdx[uDrawBase + gl_DrawID]</c> (#242: the records are persistent and indexed by ownership
+/// slot, so the draw carries the slot), which is what lets one <c>glMultiDrawElementsBaseVertex</c> cover a whole
 /// group. The draw block is therefore two phases: build (revalidate every part, stage its record, cut the
 /// batch at each key change) then issue (one bind set + one multidraw per batch).</para>
 /// <para>WHERE the Alloy block runs is load-bearing, and #132 settled it: the anchor is an after-original
@@ -118,6 +119,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// + vec4 pbr + vec4 spc + vec4 feat</c> = 176 bytes, whose alignment (16) already divides the size, so
     /// the array stride is 176 with no padding.</summary>
     internal const int DrawFloats = 44;
+    /// <summary>#242: record slots the persistent buffer can hold -- one per ownership slot, plus the sky's
+    /// reserved block immediately above them. The sky's parts are not in the ownership table (they are
+    /// captured off the engine's matrix stack) and are restaged every pass, so they take a fixed block at the
+    /// top rather than a slot each.</summary>
+    internal const int MaxRecords = MaxOwned + MaxSkyDraws;
     /// <summary>SSBO binding point of the per-draw block. Must match <c>DrawBufDecl</c>'s literal; 0..3 belong
     /// to <see cref="AlloyLights"/> (lights, cluster counts, cluster indices, stats).</summary>
     internal const uint BindDraw = 4;
@@ -130,6 +136,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#153 bindless: SSBO binding of the per-draw texture-handle block (8 uvec2 per record).
     /// 0..3 = the light rig, 4 = draws, 5 = caster records, 6 = caster bones, 7 = Alloy bones.</summary>
     internal const uint BindTexH = 8;
+    /// <summary>#242: SSBO binding of the per-DRAW index array -- draw n of this pass names the record slot
+    /// it reads. 0..3 are AlloyLights', 4 the records, 5/6 CasterPass', 7 the bones, 8 the handles. Must
+    /// match <c>DrawBufDecl</c>'s literal.</summary>
+    internal const uint BindDrawIdx = 9;
     /// <summary>Bones per skinned part, fixed by the engine: <c>GLRender::m_bones</c> is a 64 x mat4 static
     /// array and the vertex stream's indices address it directly. The matrices already sit in GLSL's
     /// column-major order (see <see cref="SymbolMap.GlRenderBones"/>), so a snapshot is a straight memcpy.
@@ -546,7 +556,15 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// not the name, which would answer for the next copy GL hands that recycled name to.</para></summary>
     internal static void DropHandle(uint name)
     {
-        if (!_bindless || name == 0) return;
+        if (name == 0) return;
+        // #242: ABOVE the bindless guard, and that placement is the whole point. A persistent record carries
+        // its handles across frames, so a handle that dies invalidates every record -- #220 again with a
+        // longer fuse. But the slot's cached TID is bind-path state as well, and the bind path is exactly
+        // what runs with bindless off: without this the caches would hold a deleted owned name until the
+        // next enrollment, where the old per-frame OwnedTid() re-fetch used to heal it on the spot. The edge
+        // is an area transition, so dirty-all is the cheap answer.
+        InvalidateRecords();
+        if (!_bindless) return;
         int tid = (int)name, h = Slot(tid);
         for (int probes = 0; probes < (1 << HandleHashBits); probes++)
         {
@@ -694,7 +712,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (GameGate.Locked)
         { log.Info("AlloyRenderer: stood down (lockchat)"); return; }
         // never arm on a broken contract: the misrender either predicts must not ship
-        if (!SortSelfCheck(log) || !ShaderContract.SelfCheck(log)) return;
+        // #242: the split joins that chain for the same reason -- a record that stopped carrying a
+        // per-frame field renders stale state and says nothing at all.
+        if (!SortSelfCheck(log) || !SplitSelfCheck(log) || !ShaderContract.SelfCheck(log)) return;
         // NOT in the chain above: those two guard what reaches the screen, and this one guards a debug dump.
         // A regression in the canonicaliser should cost /framedump, not drop every user back to vanilla.
         FrameDump.SelfCheck(log);
@@ -796,6 +816,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
             default: return float.NaN;
         }
+        // #242: a dial can change what a record MEANS (aotest fills a slot, viz changes nothing in the
+        // record but costs nothing to be safe about), and a persistent record built under the old dial would
+        // survive the change. One dirty-all on a chat command is free.
+        InvalidateRecords();
         _log?.Info($"AlloyRenderer: /draw {key} {v:F2} (was {old:F2}) -> {DescribeTuning()}");
         return old;
     }
@@ -805,6 +829,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
         _sunWorldBias = DefSunBias; _lightViz = DefViz;
+        // #242: AFTER the dials, the way Tune does it. /draw runs on the input thread, so a bump published
+        // ahead of the assignments lets a staging walk rebuild against the OLD dial and stamp the NEW epoch
+        // -- wrong until something else invalidates, worst case a whole enrollment away.
+        InvalidateRecords();
         _log?.Info($"AlloyRenderer: /draw reset -> {DescribeTuning()}");
     }
 
@@ -1161,6 +1189,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         _prog46 = 0; _progLit46 = 0; _progDepth = 0; _progDepthKey = 0; _progWater = 0; _fbo46 = 0;
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
+        // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
+        // capacity so the next upload reallocates rather than writing into a dead name, and the epoch so
+        // every record is rebuilt rather than assumed still on the GPU.
+        _slotBuf = 0; _recCapGpu = 0; InvalidateRecords();
         // ...and the VAO cache. RevokeAll marks the slots stale, and EnsureVao DELETES a stale non-zero name
         // before rebuilding -- which on a name minted by a context that no longer exists is a delete aimed at
         // whatever the next context recycles that number for.
@@ -1250,6 +1282,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"instance-state {(float)_skipGob / _frames:F0}), " +
                    $"normal maps {(float)_nrmBound / _frames:F0} bound of " +
                    $"{(float)_nrmDeclared / _frames:F0} declared/frame, " +
+                   // #242 (AC3): the whole point of the persistent records, as one number. "written" should
+                   // be the MOVER count -- creatures, doors, animated textures, fading tiles -- and not the
+                   // owned count. If the two are the same the split has a permanent mover in it and step 2
+                   // of ADR 0017 bought nothing, which no frame-time average would ever say out loud.
+                   $"records {(float)_recWritten / _frames:F0}/frame written, " +
+                   $"{(float)_recStable / _frames:F0} stable ({_recOwnCap} slots), " +
                    $"UNMATCHED {(float)_unmatched / _frames:F1}/frame" +
                    (_unmatched == 0 ? "" : $" ({(float)_unmatchedUnseen / _frames:F0} of them never walked by " +
                     "the engine at all -- geometry it culled and we drew anyway; the rest were walked and " +
@@ -1317,6 +1355,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _watchSubmitted = 0; AlloyCensus.WatchEngineDraws = 0;
         _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = _skipUnseen = _skipGob = 0;
         _ownDissolve = 0; _ownFade = 0;
+        _recWritten = 0; _recStable = 0;
         _nrmDeclared = _nrmBound = 0;
         Array.Clear(_unmatchedBucket); Array.Clear(_unseenBucket); Array.Clear(_unmatchedCls); _unmatchedUnseen = 0;
         Array.Clear(_drawsByClass);

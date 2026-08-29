@@ -169,6 +169,197 @@ public sealed unsafe partial class AlloyRenderer
         return dx * dx + dy * dy + dz * dz;
     }
 
+    /// <summary>#242: store <paramref name="v"/> and say whether that changed anything. The whole
+    /// persistent-record scheme is this compare: a field written every frame with the value it already held
+    /// is not a mover, and the record it sits in does not need re-sending.</summary>
+    private static bool St(float* p, float v)
+    {
+        if (*p == v) return false;
+        *p = v;
+        return true;
+    }
+
+    /// <summary>#242: the cached slot tids of a record that did not move. Still needed every frame -- a
+    /// bind-path batch cuts on its textures, so the batch key reads them even when the record does not.
+    /// </summary>
+    private static void LoadSlotTids(int i, int* slotTid)
+    {
+        for (int s = 0; s < MapSlots; s++) slotTid[s] = _recTidS[i * MapSlots + s];
+    }
+
+    /// <summary>#242: the record fields ADR 0017's split table calls PER-FRAME, gathered off the live scene
+    /// by the staging walk and handed to <see cref="WritePerFrame"/>. A plain value struct on the stack --
+    /// no engine pointer reaches this far, which is what makes the split checkable off-device.
+    /// <para>Everything NOT here is stable at enrolment and written once, by <see cref="WriteStable"/>.
+    /// Moving a field from this struct into that one is the exact mistake the ticket describes: it does not
+    /// read as a perf bug, it reads as a frozen animated texture or a tile stuck at full opacity months
+    /// later. <see cref="SplitSelfCheck"/> is what makes that move go red.</para></summary>
+    internal struct RecordFrameState
+    {
+        /// <summary>Matrix-class parts only -- creatures, doors, dangly, anything on a node. A part whose
+        /// class stages identity has no live matrix to re-read, so it is stable by construction.</summary>
+        internal bool HasModel;
+        internal Matrix4x4 Model;
+        internal float Dissolve, Alpha;
+        internal bool Lit;
+        internal float AmbR, AmbG, AmbB, DifR, DifG, DifB, EmiR, EmiG, EmiB, Slots;
+        internal bool Water;
+        internal float BodyFetch, BodySize, BodyExtent, BodySpeed;
+        internal float FeatX, FeatY;
+    }
+
+    /// <summary>#242: the per-frame half of the record, compared into place. Returns whether anything
+    /// actually moved -- which is the whole scheme: a field rewritten with the value it already held does
+    /// not make its record a mover, and only movers are re-sent.</summary>
+    private static bool WritePerFrame(float* r, in RecordFrameState f)
+    {
+        bool m = false;
+        if (f.HasModel && *(Matrix4x4*)r != f.Model) { *(Matrix4x4*)r = f.Model; m = true; }
+        m |= St(r + 18, f.Dissolve) | St(r + 19, f.Alpha);
+        if (f.Lit)
+        {
+            m |= St(r + 20, f.AmbR) | St(r + 21, f.AmbG) | St(r + 22, f.AmbB)
+                 | St(r + 28, f.EmiR) | St(r + 29, f.EmiG) | St(r + 30, f.EmiB)
+                 | St(r + 35, f.Slots);
+            // ...but not the diffuse triple on a LIT WATER batch: those three floats are the body below, and
+            // writing both would leave the record dirty every frame no matter what moved -- which is the one
+            // way this scheme can be defeated without rendering anything wrong.
+            if (!f.Water)
+                m |= St(r + 24, f.DifR) | St(r + 25, f.DifG) | St(r + 26, f.DifB);
+        }
+        if (f.Water)
+            m |= St(r + 24, f.BodyFetch) | St(r + 25, f.BodySize)
+                 | St(r + 26, f.BodyExtent) | St(r + 27, f.BodySpeed);
+        m |= St(r + 40, f.FeatX) | St(r + 41, f.FeatY);
+        return m;
+    }
+
+    /// <summary>#242: the stable half -- written when the slot is built and never again while it holds the
+    /// same part. The texture rotation cannot change without failing <c>IdentityOk</c> (which revokes), a
+    /// .mtr does not animate, and the three alpha ones are literal constants. An identity model matrix is
+    /// here too: a part whose class does not stage a node has no live matrix to re-read.</summary>
+    private static void WriteStable(float* r, int i, bool lit)
+    {
+        if (!_oMx[i]) *(Matrix4x4*)r = Matrix4x4.Identity;
+        r[16] = _oCos[i]; r[17] = _oSin[i];
+        int fo = i * 4;
+        r[42] = _oFeat[fo + 2]; r[43] = _oFeat[fo + 3];
+        if (!lit) return;
+        r[23] = 1f; r[27] = 1f; r[31] = 1f;
+        int o = i * 8;
+        r[32] = _oParam[o]; r[33] = _oParam[o + 1]; r[34] = _oParam[o + 2];
+        r[36] = _oParam[o + 4]; r[37] = _oParam[o + 5]; r[38] = _oParam[o + 6]; r[39] = _oParam[o + 7];
+    }
+
+    /// <summary>#242 (AC5): off-device, the split itself. Every field of
+    /// <see cref="RecordFrameState"/> is perturbed on its own and must make the record a mover; a record
+    /// re-written with the values it already holds must not. Move any one of them out of
+    /// <see cref="WritePerFrame"/> and into <see cref="WriteStable"/> -- the mistake the ticket is about --
+    /// and its perturbation stops being seen, which is this check going red.
+    /// <para>Verified red during development by moving <c>Alpha</c> into the stable half: a fading tile then
+    /// stands at full opacity for as long as it is owned, and nothing else says so.</para></summary>
+    private static bool SplitSelfCheck(ExtenderLog log)
+    {
+        float[] rec = new float[DrawFloats];
+        var f = default(RecordFrameState);
+        f.HasModel = true; f.Model = Matrix4x4.CreateTranslation(1f, 2f, 3f);
+        f.Dissolve = 1f; f.Alpha = 0.5f; f.Lit = true;
+        f.AmbR = 0.1f; f.AmbG = 0.2f; f.AmbB = 0.3f;
+        f.DifR = 0.4f; f.DifG = 0.5f; f.DifB = 0.6f;
+        f.EmiR = 0.7f; f.EmiG = 0.8f; f.EmiB = 0.9f;
+        f.Slots = 3f; f.FeatX = 5f; f.FeatY = 6f;
+        bool ok;
+        fixed (float* r = rec)
+        {
+            ok = WritePerFrame(r, in f) && !WritePerFrame(r, in f);
+            if (!ok) log.Info("AlloyRenderer.SplitSelfCheck: FAILED -- a record is a mover every frame, or "
+                              + "never one; either way the persistent-record scheme is not running");
+            // one field at a time, restored after each, so a miss names itself rather than being masked by
+            // the next perturbation
+            ok &= Perturb(r, ref f, ref f.Dissolve, log, "rot.z dissolve")
+                  & Perturb(r, ref f, ref f.Alpha, log, "rot.w alpha")
+                  & Perturb(r, ref f, ref f.AmbR, log, "amb.r")
+                  & Perturb(r, ref f, ref f.AmbG, log, "amb.g")
+                  & Perturb(r, ref f, ref f.AmbB, log, "amb.b")
+                  & Perturb(r, ref f, ref f.DifR, log, "dif.r")
+                  & Perturb(r, ref f, ref f.DifG, log, "dif.g")
+                  & Perturb(r, ref f, ref f.DifB, log, "dif.b")
+                  & Perturb(r, ref f, ref f.EmiR, log, "emi.r")
+                  & Perturb(r, ref f, ref f.EmiG, log, "emi.g")
+                  & Perturb(r, ref f, ref f.EmiB, log, "emi.b")
+                  & Perturb(r, ref f, ref f.Slots, log, "pbr.w live slot mask")
+                  & Perturb(r, ref f, ref f.FeatX, log, "feat.x")
+                  & Perturb(r, ref f, ref f.FeatY, log, "feat.y bone base");
+            // ...and the matrix, which is the one the ticket names first: a mover the split does not know
+            // about is a frozen record, and it reads as correct until the thing moves.
+            Matrix4x4 was = f.Model;
+            f.Model = Matrix4x4.CreateTranslation(9f, 9f, 9f);
+            bool mm = WritePerFrame(r, in f);
+            f.Model = was;
+            WritePerFrame(r, in f);
+            if (!mm) log.Info("AlloyRenderer.SplitSelfCheck: FAILED -- a moved model matrix does not "
+                              + "re-send its record; every creature and door would freeze where it stood");
+            ok &= mm;
+        }
+        // #129/#147: the water body, on its own record. Its four floats share the diffuse slot with the lit
+        // terms, so a state that is both would be testing the overlap rather than the split.
+        float[] wrec = new float[DrawFloats];
+        var w = default(RecordFrameState);
+        w.Water = true; w.Alpha = 1f;
+        w.BodyFetch = 11f; w.BodySize = 12f; w.BodyExtent = 13f; w.BodySpeed = 14f;
+        fixed (float* r = wrec)
+        {
+            bool wok = WritePerFrame(r, in w) && !WritePerFrame(r, in w);
+            if (!wok) log.Info("AlloyRenderer.SplitSelfCheck: FAILED -- a water record is a mover every "
+                               + "frame, or never one");
+            ok &= wok
+                  & Perturb(r, ref w, ref w.BodyFetch, log, "water fetch")
+                  & Perturb(r, ref w, ref w.BodySize, log, "water size")
+                  & Perturb(r, ref w, ref w.BodyExtent, log, "water extent")
+                  & Perturb(r, ref w, ref w.BodySpeed, log, "water speed");
+        }
+        return ok;
+    }
+
+    private static bool Perturb(float* r, ref RecordFrameState f, ref float field, ExtenderLog log, string name)
+    {
+        float was = field;
+        field = was + 1f;
+        bool seen = WritePerFrame(r, in f);
+        field = was;
+        WritePerFrame(r, in f);
+        if (!seen)
+            log.Info($"AlloyRenderer.SplitSelfCheck: FAILED -- {name} is not a per-frame field any more; "
+                     + "a record that stops carrying it renders stale state and says nothing");
+        return seen;
+    }
+
+    /// <summary>#242: this slot's texture caches advanced but its record never did -- the walk skipped out
+    /// between the two. Un-stamp it, so the part rebuilds from scratch when it comes back rather than being
+    /// served as clean against caches its record does not match.
+    /// <para>Without this the failure is the nastiest shape there is: the diffuse pointer moves, the resolve
+    /// updates the cache, a transient range or VAO skip drops the part, and on its return the pointer
+    /// compares EQUAL to the cache -- so the record keeps the previous texture's handles for as long as the
+    /// part is owned. That is #220 again, with a longer fuse and nothing in the log.</para></summary>
+    private static void UnstampRecord(int i) => _recGen[i] = 0;   // 0 = never built; the epoch starts at 1
+
+    /// <summary>#242: this record moved and has to reach the GPU again. Overflow is not a silent drop -- it
+    /// promotes the frame to a wholesale upload, which is correct and merely more expensive.</summary>
+    private static void MarkRecordDirty(int slot)
+    {
+        _recWritten++;
+        if (_recDirtyN < _recDirty.Length) _recDirty[_recDirtyN++] = slot;
+        else _recDirtyAll = true;
+    }
+
+    /// <summary>#242: every persistent record is suspect -- rebuild them all on the next frame that draws.
+    /// The edges that need it are the ones no per-part compare can see: an enrollment (slots reshuffle under
+    /// the table, so slot N is a different part), any bindless handle wipe or context loss (a record holding
+    /// a dead handle is #220's wall-sampling-a-portrait), and the debug toggles that change what a record
+    /// means. See ADR 0017's "Step 2, as built".</summary>
+    internal static void InvalidateRecords() => System.Threading.Interlocked.Increment(ref _recEpoch);
+                                              // Interlocked: /draw runs on the input thread
+
     /// <summary>Phase A of the Alloy block: walk this pass's order (<see cref="RouteParts"/>), revalidate
     /// every part, and stage the survivors into the multidraw argument arrays plus one per-draw SSBO record
     /// each -- cutting a batch whenever the (class, program, VDO, texture, primitive, blend) key changes.
@@ -200,6 +391,9 @@ public sealed unsafe partial class AlloyRenderer
             }
         }
         _gOpaqueEnd = _gBlendEnd = _gWaterEnd = 0;
+        // #242: the persistent buffer grows to the high-water ownership count and never shrinks. A growth
+        // reallocates it, so everything in it goes back up on this frame rather than only the movers.
+        if (_ownCount > _recOwnCap) { _recOwnCap = _ownCount; _recDirtyAll = true; }
         // #120: this part's live slot-1..5 tids. Declared ONCE, outside the loop -- a stackalloc per
         // iteration grows the frame by the part count.
         int* slotTid = stackalloc int[MapSlots];
@@ -258,47 +452,78 @@ public sealed unsafe partial class AlloyRenderer
             IntPtr mdl = lit ? part.Mdl.Ptr : IntPtr.Zero;
             if (lit && mdl == IntPtr.Zero) { _skipNoMdl++; W(i, "skipped: no mdl node"); continue; }
 
-            // texture: the engine name is re-fetched per frame -- CAurTexture* is BORROWED, freed on area
-            // transitions (never cache the pointer), and the per-frame fetch is exactly what keeps animated
-            // textures cycling. #211 then maps that name to OUR copy, which cannot be freed under the draw;
-            // an animated texture cycles engine names, so each animation frame gets its own copy.
+            // #242: this slot's persistent record. Three states, cheapest first -- already verified by an
+            // earlier pass THIS frame (nothing to re-read at all), unchanged since the last frame (the
+            // texture re-fetch and the handle mints are skipped, which is the expensive half), or dirty.
+            // A stale epoch forces the third: see InvalidateRecords for what can make every record wrong.
+            bool stale = _recGen[i] != _recEpoch;
+            bool verified = !stale && _recFrame[i] == _frameSeq;
             var mat = new MaterialRef(_oMat[i]);
-            var aur = mat.Texture(0);
-            if (aur.IsNull) { _skipTex++; W(i, "skipped: no diffuse texture"); continue; }
-            int tid = aur.OwnedTid();
-            if (tid == 0) { _skipTex++; W(i, "skipped: diffuse has no GL id"); continue; }
-            // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an engine
-            // texture is a handle on an object the engine may delete or re-upload under us, which is exactly
-            // the corruption this fixes -- so a part whose copy was refused (a format we will not take) goes
-            // back to the engine walk rather than being drawn through a handle we cannot vouch for. Bind-path
-            // batches are unaffected: they rebind the engine id every frame, which is what they always did.
-            if (lit && _bindless && OwnedTextures.Armed
-                && (!OwnedTextures.IsOwned(tid) || HandleFor(tid) == 0))
-            { _skipTex++; W(i, "skipped: diffuse has no owned bindless handle"); continue; }
-
-            // #120: the same re-fetch for whichever of the PBR slots this material declared. A slot that
-            // declared a map but resolves to nothing this frame drops out of the mask rather than leaving
-            // the shader sampling an empty unit.
-            int slots = 0;
-            for (int s = 0; s < MapSlots; s++)
+            int tid, slots;
+            bool texDirty = false;
+            if (verified) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
+            else
             {
-                slotTid[s] = 0;
-                if (lit && (_oSlots[i] & SlotBit(s)) != 0)
+                // texture: the engine name is re-fetched per frame -- CAurTexture* is BORROWED, freed on
+                // area transitions (never cache the pointer), and the per-frame fetch is exactly what keeps
+                // animated textures cycling. #211 then maps that name to OUR copy, which cannot be freed
+                // under the draw; an animated texture cycles engine names, so each animation frame gets its
+                // own copy.
+                // #242: the POINTER is compared per frame; only a change re-resolves it to a tid and a
+                // bindless handle. That is the ADR 0017 split's per-frame half -- the fetch stays, the two
+                // hash probes behind it do not.
+                var aur = mat.Texture(0);
+                if (aur.IsNull) { _skipTex++; W(i, "skipped: no diffuse texture"); continue; }
+                texDirty = stale || aur.Ptr != _recAur[i];
+                for (int s = 0; !texDirty && lit && s < MapSlots; s++)
+                    if ((_oSlots[i] & SlotBit(s)) != 0 && mat.Texture(s + 1).Ptr != _recAurS[i * MapSlots + s])
+                        texDirty = true;
+                if (!texDirty) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
+                else
                 {
-                    int t = mat.Texture(s + 1).OwnedTid();
-                    // ...and the same rule per slot, but a slot drops out of the mask instead of taking the
-                    // part with it -- an unowned normal map costs that one map, not the whole draw.
-                    if (t != 0 && _bindless && OwnedTextures.Armed
-                        && (!OwnedTextures.IsOwned(t) || HandleFor(t) == 0)) t = 0;
-                    if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
+                    tid = aur.OwnedTid();
+                    if (tid == 0) { _skipTex++; W(i, "skipped: diffuse has no GL id"); continue; }
+                    // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
+                    // engine texture is a handle on an object the engine may delete or re-upload under us,
+                    // which is exactly the corruption this fixes -- so a part whose copy was refused (a
+                    // format we will not take) goes back to the engine walk rather than being drawn through
+                    // a handle we cannot vouch for. Bind-path batches are unaffected: they rebind the engine
+                    // id every frame, which is what they always did.
+                    if (lit && _bindless && OwnedTextures.Armed
+                        && (!OwnedTextures.IsOwned(tid) || HandleFor(tid) == 0))
+                    { _skipTex++; W(i, "skipped: diffuse has no owned bindless handle"); continue; }
+
+                    // #120: the same re-fetch for whichever of the PBR slots this material declared. A slot
+                    // that declared a map but resolves to nothing this frame drops out of the mask rather
+                    // than leaving the shader sampling an empty unit.
+                    slots = 0;
+                    for (int s = 0; s < MapSlots; s++)
+                    {
+                        slotTid[s] = 0;
+                        _recAurS[i * MapSlots + s] = IntPtr.Zero;
+                        if (lit && (_oSlots[i] & SlotBit(s)) != 0)
+                        {
+                            var sa = mat.Texture(s + 1);
+                            _recAurS[i * MapSlots + s] = sa.Ptr;
+                            int t = sa.OwnedTid();
+                            // ...and the same rule per slot, but a slot drops out of the mask instead of
+                            // taking the part with it -- an unowned normal map costs that one map, not the
+                            // whole draw.
+                            if (t != 0 && _bindless && OwnedTextures.Armed
+                                && (!OwnedTextures.IsOwned(t) || HandleFor(t) == 0)) t = 0;
+                            if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
+                        }
+                    }
+                    if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
+                    // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
+                    if (lit && _aoTest) { slotTid[AoSlot] = tid; slots |= AoBit; }
+                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots;
+                    for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
                 }
             }
             // Did the normal map declared by the .mtr actually reach the shader? The two numbers apart say
             // whether an area has no normal-mapped content at all or has it and the re-fetch above dropped it.
             if (lit && (_oSlots[i] & SlotBit(0)) != 0) { _nrmDeclared++; if (slotTid[0] != 0) _nrmBound++; }
-            if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
-            // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
-            if (lit && _aoTest) { slotTid[AoSlot] = tid; slots |= AoBit; }
 
             // index range re-read live from the VDO item tables (Repack revokes before they move)
             var vdo = new VdoRef(_oVdo[i]);
@@ -307,12 +532,12 @@ public sealed unsafe partial class AlloyRenderer
             int item = _oItem[i];
             if (elem == 0 || vert == 0 || item < 0
                 || item >= vdo.ElemCount || item >= vdo.VertCount)
-            { _skipRange++; W(i, "skipped: item out of range"); continue; }
+            { _skipRange++; UnstampRecord(i); W(i, "skipped: item out of range"); continue; }
             int idxCount = *(int*)(elem + item * 8 + 4);
-            if (idxCount <= 0) { _skipRange++; W(i, "skipped: empty index range"); continue; }
+            if (idxCount <= 0) { _skipRange++; UnstampRecord(i); W(i, "skipped: empty index range"); continue; }
 
             int v = _oVao[i];
-            if (!EnsureVao(v)) { _skipVao++; W(i, "skipped: no VAO"); continue; }
+            if (!EnsureVao(v)) { _skipVao++; UnstampRecord(i); W(i, "skipped: no VAO"); continue; }
             uint mode = _primTable[_oPrim[i]];
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
             // but so the depth prepass can drop a whole batch: a displacing feature must not write its
@@ -355,70 +580,88 @@ public sealed unsafe partial class AlloyRenderer
             _dCount[n] = idxCount;
             _dOff[n] = (nint)((long)(uint)*(int*)(elem + item * 8) * 2);
             _dBase[n] = *(int*)(vert + item * 8);
+            // #242: the record this draw reads lives at the OWNERSHIP slot and outlives the frame; the draw
+            // order does not, so the draw carries the slot rather than the record.
+            _dSlot[n] = i;
 
             // the per-draw record. The model matrix drives BOTH the world position the light loop shades at
             // and the world normal (mat3 of the same GLSL-visible matrix is the correct normal transform here
             // -- the raw bytes already read as the transpose), and the shaders reach uVP * model for clip.
-            float* r = data + n * DrawFloats;
-            *(Matrix4x4*)r = _oMx[i] ? new NodeRef(_oNode[i]).Model : Matrix4x4.Identity;
-            // rot.z carries #124's dissolve flag and rot.w #126's per-draw alpha multiplier (the part's own
-            // alpha, times the tile fade factor where one applies): the record already had two dead floats
-            // here, so both folds cost no stride growth and leave RecordSafe's vec4 count alone.
-            r[16] = _oCos[i]; r[17] = _oSin[i]; r[18] = dissolve; r[19] = _passAlpha[k];
-            if (lit)
+            // #242: every field below is COMPARED before it is written, and the record is only re-sent to the
+            // GPU if something actually moved. Which fields can move at all is ADR 0017's split table; the
+            // compares here are the enforcement, and the self-check pins them.
+            float* r = data + (long)i * DrawFloats;
+            if (!verified)
             {
-                var mdlRef = new MdlRef(mdl);
-                float* amb = mdlRef.Ambient;
-                float* dif = mdlRef.Diffuse;
-                float* emi = part.SelfIllum;
-                r[20] = amb[0]; r[21] = amb[1]; r[22] = amb[2]; r[23] = 1f;
-                // #128: PartTriMesh::Mat @0x450960's remaining two instance terms, live. Lit-only because
-                // the decompile guards its three SetMaterialv calls behind IsEnabled(5) -- an unlit part gets
-                // a flat constant colour and the instance's alpha, which is all the record above carries.
-                var cm = AlloyCensus.GobDiffuseMul(tri);
-                var ea = AlloyCensus.GobEmissiveAdd(tri);
-                r[24] = dif[0] * cm.X; r[25] = dif[1] * cm.Y; r[26] = dif[2] * cm.Z; r[27] = 1f;
-                r[28] = emi[0] + ea.X; r[29] = emi[1] + ea.Y; r[30] = emi[2] + ea.Z; r[31] = 1f;
-                int o = i * 8;
-                r[32] = _oParam[o]; r[33] = _oParam[o + 1]; r[34] = _oParam[o + 2]; r[35] = slots;
-                r[36] = _oParam[o + 4]; r[37] = _oParam[o + 5]; r[38] = _oParam[o + 6]; r[39] = _oParam[o + 7];
-            }
-            // #147: water reuses the material-colour slot for its BODY. The water stage reads none of
-            // amb/dif/emi (its liquid colour is the diffuse's own average, #129), and the alternative --
-            // an eighth vec4 -- would grow the stride for one class and force every override to be
-            // re-emitted. Overwrites the lit branch above, which ran for a lit water batch.
-            if (cls == (int)AlloyClass.Water)
-            {
-                var wind = AreaWind();
-                // Engine wind units -> metres/second, so the shader's growth law is fed the quantity it is
-                // written in. See FrameSnapshot.WindScale for why this is a dial and not a constant.
-                float speed = wind.Length() * FrameSnapshot.WindScale;
-                if (WaterBodies.Body(tri, wind, out float fetch, out float size, out float extent))
-                { r[24] = fetch; r[25] = size; r[26] = extent; r[27] = speed; }
-                else { r[24] = 0f; r[25] = 0f; r[26] = 0f; r[27] = speed; }
-            }
-            // #123: outside the lit branch -- the FULLBRIGHT vertex stage switches on it too, so an unlit
-            // wind part still sways. Only the fragment-side features (the roof anchor discard, the flow-map
-            // slide) are lit-only, and neither of those parts is ever unlit.
-            int fo = i * 4;
-            r[40] = _oFeat[fo]; r[41] = _oFeat[fo + 1]; r[42] = _oFeat[fo + 2]; r[43] = _oFeat[fo + 3];
-            // #137: feat.y is this draw's bone base -- the MATRIX index of its first bone in the block, so
-            // the stage indexes it with a single add. Written after the copy above, which it replaces.
-            if (_oBone[i] >= 0) { r[40] = (int)ShaderFeature.Skin; r[41] = _oBone[i] * BoneCount; }
-            // #153: this record's textures as resident handles -- diffuse at 0, material slots 1..7 in the
-            // shader's macro order (slotTid[k] = material texture k+1). Only for lit records; unlit parts
-            // draw on the bind path and never read the block.
-            if (merge)
-            {
-                fixed (ulong* th = _dTexH)
+                bool rec = texDirty;
+                if (stale) { WriteStable(r, i, lit); rec = true; }
+                var pf = default(RecordFrameState);
+                // rot.z carries #124's dissolve flag and rot.w #126's per-draw alpha multiplier (the part's
+                // own alpha, times the tile fade factor where one applies): the record already had two dead
+                // floats here, so both folds cost no stride growth and leave RecordSafe's vec4 count alone.
+                pf.Dissolve = dissolve; pf.Alpha = _passAlpha[k];
+                pf.HasModel = _oMx[i];
+                if (pf.HasModel) pf.Model = new NodeRef(_oNode[i]).Model;
+                pf.Lit = lit;
+                if (lit)
                 {
-                    ulong* hh = th + (long)n * 8;
-                    // Both already minted and non-zero: the gate above refuses the part (and drops the slot)
-                    // on a zero handle, so nothing reaches here that would sample handle 0 -- which is a
-                    // BLACK texture, not a missing one, and the reason that gate exists.
-                    hh[0] = HandleFor(tid);
-                    for (int t = 0; t < MapSlots; t++) hh[1 + t] = HandleFor(slotTid[t]);
+                    var mdlRef = new MdlRef(mdl);
+                    float* amb = mdlRef.Ambient;
+                    float* dif = mdlRef.Diffuse;
+                    float* emi = part.SelfIllum;
+                    // #128: PartTriMesh::Mat @0x450960's remaining two instance terms, live. Lit-only because
+                    // the decompile guards its three SetMaterialv calls behind IsEnabled(5) -- an unlit part
+                    // gets a flat constant colour and the instance's alpha, which is all the record above
+                    // carries.
+                    var cm = AlloyCensus.GobDiffuseMul(tri);
+                    var ea = AlloyCensus.GobEmissiveAdd(tri);
+                    pf.AmbR = amb[0]; pf.AmbG = amb[1]; pf.AmbB = amb[2];
+                    pf.DifR = dif[0] * cm.X; pf.DifG = dif[1] * cm.Y; pf.DifB = dif[2] * cm.Z;
+                    pf.EmiR = emi[0] + ea.X; pf.EmiG = emi[1] + ea.Y; pf.EmiB = emi[2] + ea.Z;
+                    pf.Slots = slots;
                 }
+                // #147: water reuses the material-colour slot for its BODY. The water stage reads none of
+                // amb/dif/emi (its liquid colour is the diffuse's own average, #129), and the alternative --
+                // an eighth vec4 -- would grow the stride for one class and force every override to be
+                // re-emitted. Overwrites the lit terms above, which ran for a lit water batch.
+                if (cls == (int)AlloyClass.Water)
+                {
+                    var wind = AreaWind();
+                    // Engine wind units -> metres/second, so the shader's growth law is fed the quantity it
+                    // is written in. See FrameSnapshot.WindScale for why this is a dial and not a constant.
+                    pf.Water = true;
+                    pf.BodySpeed = wind.Length() * FrameSnapshot.WindScale;
+                    if (WaterBodies.Body(tri, wind, out float fetch, out float size, out float extent))
+                    { pf.BodyFetch = fetch; pf.BodySize = size; pf.BodyExtent = extent; }
+                }
+                // #123: outside the lit branch -- the FULLBRIGHT vertex stage switches on it too, so an unlit
+                // wind part still sways. Only the fragment-side features (the roof anchor discard, the
+                // flow-map slide) are lit-only, and neither of those parts is ever unlit.
+                // #137: feat.y is this draw's bone base -- the MATRIX index of its first bone in the block,
+                // so the stage indexes it with a single add. It REPLACES the .mtr feature, which is why a
+                // posed skinmesh is the per-frame arm rather than a write after the .mtr copy.
+                int fo = i * 4;
+                pf.FeatX = _oBone[i] >= 0 ? (int)ShaderFeature.Skin : _oFeat[fo];
+                pf.FeatY = _oBone[i] >= 0 ? _oBone[i] * BoneCount : _oFeat[fo + 1];
+                rec |= WritePerFrame(r, in pf);
+                // #153: this record's textures as resident handles -- diffuse at 0, material slots 1..7 in
+                // the shader's macro order (slotTid[k] = material texture k+1). Only for lit records; unlit
+                // parts draw on the bind path and never read the block. Re-minted only when the borrowed
+                // CAurTexture* moved: an unchanged pointer is an unchanged copy is an unchanged handle.
+                if (merge && texDirty)
+                {
+                    fixed (ulong* th = _dTexH)
+                    {
+                        ulong* hh = th + (long)i * 8;
+                        // Both already minted and non-zero: the gate above refuses the part (and drops the
+                        // slot) on a zero handle, so nothing reaches here that would sample handle 0 --
+                        // which is a BLACK texture, not a missing one, and the reason that gate exists.
+                        hh[0] = HandleFor(tid);
+                        for (int t = 0; t < MapSlots; t++) hh[1 + t] = HandleFor(slotTid[t]);
+                    }
+                }
+                if (rec) MarkRecordDirty(i); else _recStable++;
+                _recGen[i] = _recEpoch; _recFrame[i] = _frameSeq;
             }
             if (FrameDump.Capturing)
                 FrameDump.Row_(cls, lit, v, _oMat[i], mode, feat, dis, blend, slots, merge,
@@ -495,7 +738,13 @@ public sealed unsafe partial class AlloyRenderer
                 _dCount[n] = idxCount;
                 _dOff[n] = (nint)((long)(uint)*(int*)(elem + p.Item * 8) * 2);
                 _dBase[n] = *(int*)(vert + p.Item * 8);
-                float* rec = data + n * DrawFloats;
+                // #242: the sky's records live in the reserved block above the ownership slots and are
+                // restaged every pass -- a captured matrix stack is per pass by construction, so there is
+                // nothing here for a persistence scheme to save.
+                int srec = _recOwnCap + _skyN;
+                _dSlot[n] = srec;
+                MarkRecordDirty(srec);
+                float* rec = data + (long)srec * DrawFloats;
                 *(Matrix4x4*)rec = p.Model;
                 // identity texture rotation, no dissolve, the role's alpha; no feature, and the lit block is
                 // never read because the sky takes the fullbright program (the engine draws it Disable(5)).

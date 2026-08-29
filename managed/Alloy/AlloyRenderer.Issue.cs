@@ -9,9 +9,6 @@ namespace Sowx.Alloy;
 /// <summary>#173: BATCH ISSUE. Uploading the staged per-draw records and bone snapshots, then submitting the built groups as one multidraw per (program, VDO, texture, primitive) cut -- and the blended and water variants that ride the same records under different GL state. Hot: nothing on this path allocates.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>Push this pass's staged records into the per-draw SSBO. The BufferData ORPHANS the old
-    /// allocation first: a bare BufferSubData over a buffer the GPU may still be reading (2-3 passes run per
-    /// frame) makes the driver sync, and donating a stall back is exactly what #84 is trying to avoid.</summary>
     /// <summary>#153: forget every cached handle. Called at each enrollment -- the cadence at which the
     /// tids themselves are re-harvested -- and on release. Handles stay resident until their textures die;
     /// the cache only ever answers for tids the current enrollment produced.</summary>
@@ -24,6 +21,7 @@ public sealed unsafe partial class AlloyRenderer
     /// nothing is made non-resident -- that would be a call into a dead context.</summary>
     internal static void ForgetHandles()
     {
+        InvalidateRecords();   // #242: the persistent records hold the handles this forgets
         Array.Clear(_hTid, 0, _hTid.Length);
         Array.Clear(_hVal, 0, _hVal.Length);
         Array.Clear(_hRes, 0, _hRes.Length);
@@ -32,29 +30,89 @@ public sealed unsafe partial class AlloyRenderer
     private static void WipeHandles()
     {
         if (OwnedTextures.Armed) return;
+        InvalidateRecords();   // #242: same reason as ForgetHandles -- a record outlives the wipe otherwise
         Array.Clear(_hTid, 0, _hTid.Length);
         Array.Clear(_hRes, 0, _hRes.Length);
     }
 
+    /// <summary>#242: push the records that MOVED into the persistent per-draw SSBO, then the small
+    /// draw-to-slot index array this pass's order needs. The records are indexed by ownership slot and
+    /// survive the frame, so what goes up is the mover set -- a walking creature, an animated texture, a
+    /// fading tile -- rather than the whole owned table.
+    /// <para>Past a quarter of the table, naming slots costs more than sending everything, so the frame is
+    /// promoted to one wholesale upload. That is also what a reallocation and a dirty-list overflow take.
+    /// </para>
+    /// <para>No orphan any more, and that is the trade this makes: a bare <c>BufferSubData</c> over a buffer
+    /// the GPU may still be reading can make the driver sync, which is the stall #84's orphan was avoiding.
+    /// Orphaning is not available to a persistent buffer -- the whole point is that last frame's contents are
+    /// still there. ponytail: if the Upload zone grows, the upgrade is triple-buffering through GpuRing's
+    /// persistent coherent mapping, which is already bound; it is not a return to the orphan.</para></summary>
     private static void UploadDraws()
     {
+        int cap = _recOwnCap + MaxSkyDraws;
+        bool grew = false;
         if (_drawBuf == 0) { uint b; Gl.GenBuffers(1, &b); _drawBuf = b; }
-        var size = (IntPtr)((long)_drawN * DrawFloats * sizeof(float));
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _drawBuf);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, size, null, Gl.DYNAMIC_DRAW);
-        fixed (float* p = _dData) Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, size, p);
+        if (cap > _recCapGpu)
+        {
+            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER,
+                          (IntPtr)((long)cap * DrawFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+            grew = true;
+        }
+        // Against what this frame DRAWS, not against the high-water capacity: _recOwnCap latches at the
+        // largest area of the session and never shrinks, so thresholding on it would leave a small interior
+        // issuing thousands of scattered SubData calls into a buffer that can no longer orphan -- one
+        // enrollment's worth of hitch, once a cadence, in exactly the "just left the city" case.
+        bool whole = grew || _recDirtyAll || _recDirtyN > _drawN / 4;
+        fixed (float* p = _dData)
+        {
+            if (whole)
+                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
+                                 (IntPtr)((long)cap * DrawFloats * sizeof(float)), p);
+            else
+                for (int d = 0; d < _recDirtyN; d++)
+                {
+                    long off = (long)_recDirty[d] * DrawFloats * sizeof(float);
+                    Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)off,
+                                     (IntPtr)(DrawFloats * sizeof(float)), p + _recDirty[d] * DrawFloats);
+                }
+        }
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDraw, _drawBuf);
         if (_bindless)
         {
             if (_texHBuf == 0) { uint b; Gl.GenBuffers(1, &b); _texHBuf = b; }
-            var hSize = (IntPtr)((long)_drawN * 8 * sizeof(ulong));
             Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _texHBuf);
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, hSize, null, Gl.DYNAMIC_DRAW);
-            fixed (ulong* p = _dTexH) Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, hSize, p);
+            if (grew)
+                Gl.BufferData(Gl.SHADER_STORAGE_BUFFER,
+                              (IntPtr)((long)cap * 8 * sizeof(ulong)), null, Gl.DYNAMIC_DRAW);
+            fixed (ulong* p = _dTexH)
+            {
+                if (whole)
+                    Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
+                                     (IntPtr)((long)cap * 8 * sizeof(ulong)), p);
+                else
+                    for (int d = 0; d < _recDirtyN; d++)
+                    {
+                        long off = (long)_recDirty[d] * 8 * sizeof(ulong);
+                        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)off,
+                                         (IntPtr)(8 * sizeof(ulong)), p + _recDirty[d] * 8);
+                    }
+            }
             Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindTexH, _texHBuf);
         }
+        if (grew) _recCapGpu = cap;
+        _recDirtyN = 0; _recDirtyAll = false;
+        // ...and the one array that IS per draw and per pass. Four bytes each, orphaned like the records
+        // used to be: it is rewritten whole every pass, so last pass's contents are worth nothing.
+        if (_slotBuf == 0) { uint b; Gl.GenBuffers(1, &b); _slotBuf = b; }
+        var sSize = (IntPtr)((long)_drawN * sizeof(int));
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _slotBuf);
+        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, sSize, null, Gl.DYNAMIC_DRAW);
+        fixed (int* p = _dSlot) Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, sSize, p);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDrawIdx, _slotBuf);
     }
 
     /// <summary>#137: push this pass's bone snapshots into the bone block. Orphan-then-fill for

@@ -513,7 +513,7 @@ internal static unsafe class FrameSnapshot
 
         void main()
         {
-            int id = uDrawBase + gl_DrawID;
+            int id = SowxSlot(uDrawBase + gl_DrawID);
             SowxDraw d = uDraw[id];
             tcWorld = (d.model * vec4(aPos, 1.0)).xyz;
             tcNrm = mat3(d.model) * aNrm;

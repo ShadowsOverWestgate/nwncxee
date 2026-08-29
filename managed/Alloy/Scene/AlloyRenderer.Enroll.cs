@@ -68,6 +68,10 @@ public sealed unsafe partial class AlloyRenderer
     {
         _sinceEnroll = 0; _newCandidate = false; _enrolls++; _enrollScene = scene;
         WipeHandles();   // #153: new enrollment, new tids -- yesterday's handles answer for nobody
+        // #242: and the persistent records with them. The table is about to be rebuilt from zero, so slot N
+        // is a different part after this line than before it -- the one invalidation no per-part compare
+        // could ever catch, because the comparison is against the previous tenant's record.
+        InvalidateRecords();
         _watchEnrolled = 0;
         System.Array.Clear(AlloyCensus.WatchTex);
         for (int i = 0; i < _ownCount; i++)

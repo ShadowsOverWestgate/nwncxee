@@ -235,3 +235,72 @@ comparable with newer ones.
 
 Not decided here: #151, #152 and #153 remain their own tickets. This ADR owns the *order* and the
 measurement that justifies the first item.
+
+## Step 2, as built (#242) — the split, written down before the code assumed it
+
+The record buffer is persistent GPU state indexed by **ownership slot**, not by draw index. Draw
+order is per pass (a fading tile joins the blended run; the blended run is sorted from this pass's
+eye), so the two cannot be the same number: the pass uploads a small `draw -> slot` index array
+(4 bytes per draw) and every stage reads `uDraw[uDrawIdx[uDrawBase + gl_DrawID]]`. That indirection
+is what buys the record itself the right to stay where it is.
+
+### What is stable, what is per-frame, and how each per-frame field is DETECTED
+
+| record field | when it is written | the live input compared, per frame |
+|---|---|---|
+| `model` (mat4) | rebuild | the node matrix itself, compared against the record's own copy — matrix-class parts only; the rest staged identity once |
+| `rot.xy` (texture rotation) | enrolment | never re-read: a rotation change fails `IdentityOk` and revokes |
+| `rot.z` (keyhole dissolve) | rebuild | `PartTable.KeyholeDissolves`, compared against the record |
+| `rot.w` (alpha multiplier) | rebuild | `LiveAlpha` — already computed by `RouteParts`, compared against the record |
+| `amb` | enrolment | mdl node ambient; only a material swap changes it, and that fails `IdentityOk` |
+| `dif`, `emi` | rebuild | the mdl node's colours folded with the gob's colour multiply and self-illum add, compared against the record |
+| `pbr.xyz`, `spc` | enrolment | .mtr parameters; a .mtr does not animate |
+| `pbr.w` (live slot mask) | rebuild | falls out of the texture re-fetch below |
+| `feat` | enrolment | .mtr feature and its three parameters — except `feat.y`, the bone base, which a posed skinmesh rewrites every frame (such a part is unconditionally dirty) |
+| bindless handles (8) | rebuild | the borrowed `CAurTexture*` of the diffuse and of each declared slot, compared against `_recAur`/`_recAurS` — an animated texture cycles ENGINE names, so its pointer changes and it is a permanent mover, which is correct |
+
+Everything **not** in the record stays O(routed) and is re-read every frame for every part:
+`SightedRecently`, `IdentityOk`, `InstanceOwnable`, the VDO index range (`_dCount`/`_dOff`/`_dBase`),
+the VAO, and the batch key. Those are the liveness gates; caching them would be caching the answer
+to "is this part still ours", which is the one question that must be asked fresh.
+
+**Dangly and morph-animated meshes need no entry above.** They move VERTICES under a matrix that does
+not move, and no vertex ever reaches the record — the VAO reads the (owned, `OwnedBuffers.Refresh`ed)
+buffer directly, and the index range is re-read per frame regardless. `OwnedBuffers.DirtySince` is
+therefore *not* a record signal; it stays what #241 made it, a shadow re-bake signal. This is the one
+place where the ticket's trap list over-specifies: the mechanism it warns about cannot reach a field
+this buffer holds.
+
+**`CasterPass.Moved` is deliberately NOT called from here.** It is stateful and consumed: the shadow
+pass runs before Alloy, so it has already taken this frame's "moved" edge and rewritten the memo's
+hash. A second ask would read *still* on a genuine mover — exactly the frozen record the ticket
+warns about — and its eviction path fires a `Ghost`, i.e. spurious bakes. What is reused is the
+*mechanism*: a conservative per-part memo whose only permitted error is in the direction that costs
+work. Here it is exact rather than hashed, because the record already holds the previous matrix.
+
+### Blanket invalidation (an epoch bump), for the edges no per-part compare can see
+
+`_recEpoch` is bumped — every slot rebuilds on the next frame that draws — on: enrolment (slots
+reshuffle under the table), any bindless handle wipe (`ForgetHandles`, `WipeHandles`,
+`OwnedTextures.Drain` → `DropHandle`)
+and 4.6 context loss, and any `/draw` dial (`aotest` fills a slot the record's mask names). A persistent
+record that outlived its handles is a wall sampling a dead texture (#220's shape); dirty-all on a
+once-per-area event is the cheap correct answer.
+
+One slot-level invalidation sits with them, and it is not an edge but an ordering: the texture caches
+are written where the tids are resolved, and the walk can still skip out (index range, VAO) before the
+record is committed. Such a slot is *un-stamped* at the skip site, because on its return the diffuse
+pointer would compare equal to a cache its record never caught up with — and it would then be served
+as clean, holding the previous texture's handles for as long as it is owned.
+
+Water is re-derived every frame (its record carries per-frame wind and fetch) but still only re-sent
+when one of those four floats actually moves. Its body shares the diffuse triple with the lit terms,
+so `WritePerFrame` writes one or the other and never both — writing both would leave every water
+record dirty every frame while rendering perfectly, which is the one way this scheme can be defeated
+silently.
+
+### Auditable
+
+The `[alloy]` period line reports `records N/frame written (M stable)`. Written should be the mover
+count — creatures, doors, animated textures, fading tiles — and *not* the owned count. If it reads
+as the owned count, the split has a permanent mover in it and step 2 bought nothing.
