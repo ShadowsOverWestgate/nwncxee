@@ -31,8 +31,9 @@ namespace Sowx.Alloy;
 /// BOTTOM of the chain so it reports what actually reached the original rather than restating the swallow.
 /// The one draw path the funnels do not cover is the batcher's own multidraw, which is why
 /// <see cref="BatchService"/> disarms batching outright when this key is on.</para>
-/// <para>Behind <c>ownframe</c> in <c>sowx.cfg</c>, default OFF (ADR 0013 bucket 2: an arming decision, not a
-/// look). With the key off nothing here installs, so the pre-cutover frame is unchanged by construction.</para>
+/// <para>Behind <c>ownframe</c> in <c>sowx.cfg</c>, default ON since #218 closed M4 (ADR 0013 bucket 2: an
+/// arming decision, not a look). Set it to 0 and nothing here installs, so the pre-cutover frame is
+/// unchanged by construction -- that is the escape hatch, not the default.</para>
 /// <para>Dropped on this path, by design and filed as #217's punch list: personal space, paths, drawable
 /// squares and light ranges (all four reachable-but-never-issued), the stencil-shadow block, and
 /// <c>Camera::DoFrameBufferEffects</c>/<c>CopyRenderSubframe</c>. Anything only the engine drew goes with
@@ -158,7 +159,18 @@ internal static unsafe class RspShim
         }
     }
 
-    private static bool _checkOk;
+    private static bool _checkOk, _barLogged;
+
+    /// <summary>Draw bucket 5, the OTHER framebuffer-sampling class. Bucket 6 is
+    /// <see cref="AlloyRenderer.WaterBucket"/>; these two are the only classes whose engine draw reads a
+    /// <c>Camera::CopyRenderSubframe</c> snapshot.</summary>
+    private const int SampleBucket = 5;
+
+    /// <summary>Engine draws refused because the class samples a copy this shim does not take. See
+    /// <see cref="FbSampling"/>.</summary>
+    private static long _sampleSwallowed;
+    /// <summary>Last period's refusal totals, so the period line can report the CHANGE. See <see cref="Period"/>.</summary>
+    private static int _lastRefBuf, _lastRefTex;
     private static long _swallowed, _passed, _handedBack, _ticks, _frames;
 
     /// <summary>The two invariants the shim cannot discover at runtime and would fail silently on.
@@ -196,7 +208,7 @@ internal static unsafe class RspShim
     {
         _log = log;
         if (!_checkOk) return;   // SelfCheck runs unconditionally, early in AlloyRenderer.Initialize
-        _enabled = Settings.Bool(Key, false);
+        _enabled = Settings.Bool(Key, true);
         // Key off installs NOTHING: the pre-cutover frame is then byte-for-byte unchanged because there is
         // no layer in the chain to be wrong about, not because a flag was checked.
         if (!_enabled) return;
@@ -322,6 +334,7 @@ internal static unsafe class RspShim
         InWindow = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         EngineOverlays(vptr, scene);
+        if (!_barLogged && PostChain.Resolves > 0) Bar();
         long child = FrameZones.Ticks(FrameZones.Zone.Alloy) - alloy0;
         long spent = Stopwatch.GetTimestamp() - t0;
         FrameZones.Add(FrameZones.Zone.Shim, t0, child);
@@ -394,6 +407,28 @@ internal static unsafe class RspShim
         if (list[0] != IntPtr.Zero) NativeMemory.Free((void*)list[0]);
     }
 
+    /// <summary>Is the walk inside a class whose engine draw SAMPLES a framebuffer copy the cutover removed?
+    /// <para>Punch-list items 19 and 26 drop both <c>Camera::CopyRenderSubframe</c> calls; items 27 and the
+    /// bucket-5 walk keep the walks that consume them. That pair is only coherent while Alloy draws every
+    /// part of both classes, and #129 and #236 each build a hand-back for when it does not -- the
+    /// <c>!_waterDrew</c> whole-sea fallback in <see cref="AlloyRenderer.IterSight"/>, and the per-part
+    /// enrollment latency. Both hand back to an engine draw whose sampler source is never written this
+    /// frame, and whose target was never created at all: <c>Camera::InitializeFrameBufferResources</c>'s
+    /// sole caller is RSP. Sampling that is undefined, and it is what water tiles flickering in and out
+    /// actually is.</para>
+    /// <para>So the hand-back is refused for these two classes and only these two. A part Alloy has not
+    /// enrolled yet is briefly missing instead of briefly wrong, and converges within
+    /// <c>NewCandidateGap</c> frames -- ADR 0016's "temporary non-rendering is acceptable", where drawing
+    /// through an uninitialised sampler is not. The bucket stays in <see cref="WalkOrder"/>: the walk is
+    /// what carries the sighting, and dropping it would starve the class permanently.</para>
+    /// <para>Not the fix for a PERSISTENT refusal -- <c>_waterArmed</c> false all session leaves a silently
+    /// missing sea. That is a mid-frame refusal ADR 0016 step 7 says must move to the frame-start gate, and
+    /// it is ticket-sized; <see cref="_sampleSwallowed"/> on the period line is what makes it observable
+    /// meanwhile.</para></summary>
+    private static bool FbSampling
+        => BucketGate._inBucket > 0
+           && (BucketGate._bucketId == AlloyRenderer.WaterBucket || BucketGate._bucketId == SampleBucket);
+
     /// <summary>The swallow, layer 20 of the <c>RenderVertexData</c> chain. Returning here skips every lower
     /// subscriber AND the original -- and BatchService, which sits above at 50, still runs its capture
     /// observation after this returns. That is the whole reason the shim can walk the buckets for capture
@@ -401,7 +436,7 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        if (InWindow && !HandBack) { _swallowed++; return; }
+        if (InWindow && (!HandBack || FbSampling)) { if (HandBack) _sampleSwallowed++; _swallowed++; return; }
         if (InWindow) _handedBack++;
         var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_vdoSlot;
         if (next != null) next(vdo, item, prim, size, offset);
@@ -425,9 +460,45 @@ internal static unsafe class RspShim
         // #236: honours the hand-back for the same reason the other funnel does. #215 established these two
         // funnels ARE the engine's whole 3D draw surface, so a hand-back routed here and swallowed is a hole
         // exactly like one routed to the other -- without needing to know which parts take which route.
-        if (InWindow && !HandBack) { _swallowed++; return; }
+        if (InWindow && (!HandBack || FbSampling)) { if (HandBack) _sampleSwallowed++; _swallowed++; return; }
         if (InWindow) _handedBack++;
         if (_origStream != null) _origStream(vsdo, prim, size, offset);
+    }
+
+    /// <summary>#218's second acceptance criterion, asserted rather than assumed: on the first frame the
+    /// shim actually took, are the render target, the depth buffer, the vertex/index buffers and the
+    /// textures all ALLOY-CREATED?
+    /// <para>Each term is the discriminating one for its resource, not a restatement of "the feature is on".
+    /// <c>PostChain.Fbo</c>/<c>DepthTex</c> are names Alloy generated -- zero means it is resolving into
+    /// something it did not make. The two <c>Refused</c> counters are the borrowed-name leak: both tables
+    /// fall back to the ENGINE's name when a copy is refused, silently and per resource, so "armed" alone
+    /// does not mean "owned". Read as LIFETIME totals here, because this is the first-resolve verdict and
+    /// everything before it is its subject; the period line reports the same two as a per-period delta.</para>
+    /// <para>Asked on the first frame Alloy actually RESOLVED, not the first frame the shim took. Those are
+    /// not the same frame and the difference inverts the verdict: enrollment needs ~3 walks to converge, so
+    /// the first shim frame owns nothing, <c>DrawOwnedInner</c> returns ahead of <c>PostChain.Begin</c>, and
+    /// <c>PostChain.Fbo</c> -- generated lazily there -- is still 0. Asked then, this would latch a FAILED
+    /// on frame 1 of every clean start and never re-ask. If Alloy never resolves at all, the ABSENCE of this
+    /// line says so, alongside the refusals AlloyGate already logs; there is no timeout path.</para>
+    /// <para>Logged once, because it is a milestone assert. It is
+    /// a log verdict and not a stand-down: by here the engine's frame is already gone, and a shim that
+    /// refused to finish the frame over a borrowed texture would trade a wrong-looking world for no world.
+    /// ponytail: one line, no per-frame machinery -- the period line re-reads the same terms every 900
+    /// frames if a later area regresses one.</para></summary>
+    private static void Bar()
+    {
+        _barLogged = true;
+        string? bad = PostChain.Fbo == 0 ? "the render target is not Alloy-created (PostChain.Fbo == 0)"
+                    : PostChain.DepthTex == 0 ? "the depth buffer is not Alloy-created (PostChain.DepthTex == 0)"
+                    : !OwnedBuffers.Armed ? "owned geometry stood down -- the engine's vertex/index buffers are in use"
+                    : !OwnedTextures.Armed ? "owned textures stood down -- engine texture names are being sampled"
+                    : OwnedBuffers.Refused != 0 ? $"{OwnedBuffers.Refused} engine buffers refused a copy and are borrowed"
+                    : OwnedTextures.Refused != 0 ? $"{OwnedTextures.Refused} engine textures refused a copy and are borrowed"
+                    : null;
+        _log?.Info(bad == null
+            ? $"RspShim: [bar] resources OWNED -- target {PostChain.Fbo}, depth {PostChain.DepthTex}, "
+            + "geometry and textures Alloy-created with zero refusals"
+            : $"RspShim: [bar] FAILED -- {bad}; the frame is Alloy's but its resources are not entirely");
     }
 
     /// <summary>The acceptance line. <c>passed</c> is the exit bar's draw counter and must read 0; the shim's
@@ -435,13 +506,21 @@ internal static unsafe class RspShim
     /// Alloy bracket that runs inside the anchor is subtracted, so this number is the engine walk plus the
     /// bookkeeping vcalls and nothing else. It was the whole Alloy CPU frame as well before that -- <c>/fps</c> is the instrument for
     /// the A/B, which is a live measurement, not a gate.</summary>
+    /// <para>#218: the borrowed counts are a DELTA over the period, not the lifetime totals. Both tables
+    /// count a refusal once per resource and never decrement, so a lifetime figure would let one transient
+    /// refusal in one area taint every line for the rest of the session -- unable to tell a new regression
+    /// from a historic one, which is the only thing this column is here to say.</para>
     private static void Period()
     {
         if (_frames < AlloyRenderer.LogEvery) return;
         double ms = _ticks * 1000.0 / Stopwatch.Frequency / _frames;
         _log?.Info($"RspShim: [rspshim] {_frames} shim frames, {_swallowed / _frames} engine draws swallowed/frame, "
                  + $"{_handedBack / _frames} handed back/frame (#236, deliberate), "
-                 + $"PASSED {_passed} (must be 0), {ms:F2}ms/frame in the shim");
-        _swallowed = 0; _passed = 0; _handedBack = 0; _ticks = 0; _frames = 0;
+                 + $"PASSED {_passed} (must be 0), {ms:F2}ms/frame in the shim, "
+                 + $"borrowed {OwnedBuffers.Refused - _lastRefBuf} buffers / "
+                 + $"{OwnedTextures.Refused - _lastRefTex} textures this period (must be 0/0), "
+                 + $"{_sampleSwallowed} fb-sampling hand-backs refused");
+        _lastRefBuf = OwnedBuffers.Refused; _lastRefTex = OwnedTextures.Refused;
+        _swallowed = 0; _passed = 0; _handedBack = 0; _sampleSwallowed = 0; _ticks = 0; _frames = 0;
     }
 }

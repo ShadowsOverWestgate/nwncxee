@@ -237,6 +237,33 @@ why anchoring there worked at all.
 - ADRs 0009 and 0010 are amended alongside this one; ADR 0015 needs review, because G2 changes what
   "borrowed" means for geometry and textures.
 
+## Step 9 (#218): the flip, and what the flip does not settle
+
+`ownframe` defaults to **1** since #218. The escape hatches are unchanged and both frame-atomic:
+`ownframe=0` in `sowx.cfg` installs nothing at all, and `/vanilla` takes the whole Alloy path down
+per frame — the shim's gate is `RspShim.Armed && RspShim.Ready && AlloyGate.Alloy`, so the config
+key being on is never on its own enough to take a frame.
+
+The bar's resource half is now asserted rather than assumed. `RspShim.Bar` runs on the first frame
+the shim takes and logs `[bar]`: the render target and depth buffer are Alloy-generated names
+(`PostChain.Fbo`/`DepthTex`), the geometry and texture tables are armed, and neither has **refused**
+a copy. The refusal counters are the discriminating term — both tables fall back to the engine's
+name per resource when a copy fails, so "armed" is not "owned". The `[rspshim]` period line carries
+the same two as a **per-period delta**, so a later area that regresses one is caught without a
+restart — a lifetime total could not, because neither counter ever decrements and one transient
+refusal would then read as a standing fault for the rest of the session.
+
+`[bar]` is a verdict, not a stand-down. By the time it can be evaluated the engine's frame is gone;
+a shim that refused to finish the frame over one borrowed texture would trade a wrong-looking world
+for no world.
+
+**Still owed, and #218 stays open until it is paid:** the live pass. Everything above is static. The
+three criteria a running client has to answer are `PASSED 0` on `[rspshim]` in interior, exterior,
+water and heavy-creature content; `[bar]` reading `resources OWNED` in each; and a frame time
+recorded per area. `handed back/frame` beside `PASSED` is the ownership-latency measure and is
+informational — the amendment above is what makes it so. On the frame-time number, ADR 0017 already
+holds the measured post-cutover regression; it is reported here, not gated, exactly as this ADR says.
+
 ## Unconfirmed, and named rather than assumed
 
 - Callers of `Scene::GetLightingValueAtFocus` (reached via `call *0x138`) were not resolved.

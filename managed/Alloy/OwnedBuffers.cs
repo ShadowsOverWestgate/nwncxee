@@ -78,6 +78,9 @@ internal static unsafe class OwnedBuffers
     /// <summary>Refresh a dirty copy over the sub-range the engine named (1) or re-blit the whole buffer (0).
     /// The second is #212's behaviour, kept as the other half of the bisect.</summary>
     internal static bool SpanRefresh => _span;
+    /// <summary>Engine buffers we tried to copy and could not; the VAO builder then keeps the ENGINE's.
+    /// #218's exit bar reads it, same as <c>OwnedTextures.Refused</c>.</summary>
+    internal static int Refused => _refused;
     private static int _level = 2;
     private static bool _span = true;
     private static long _bytes, _peakBytes;

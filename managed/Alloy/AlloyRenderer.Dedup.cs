@@ -229,30 +229,36 @@ public sealed unsafe partial class AlloyRenderer
             }
             mirrored = true;
         }
-        int v = _msVao[c];
+        int v = _msVao[c], vi = _msVao[i];
+        // Each copy through its OWN stream. The two are routinely on different VDOs, and a VDO's offset and
+        // stride are its own: reading i's buffer with c's descriptor lands at an address i's mapping never
+        // covered, which is an out-of-bounds READ of a mapped range -- a segfault when the two strides
+        // differ enough, and silently wrong attribute data when they do not. Congruent() already pairs its
+        // descriptors this way; these two loops were the sites that did not.
         VertexStream ps = _vPos[v], us = _vUv[v], ns = _vNrm[v];
+        VertexStream vs = _vUv[vi], ms = _vNrm[vi];
         int verts = _msVerts[c];
         // UVs bitwise: they are not transformed, so any difference at all means the two copies cannot share
         // a vertex buffer however well their positions agree.
         byte* uc = _mapUv[v] + us.Off + (long)_msBase[c] * us.Stride;
-        byte* ui = _mapUv[_msVao[i]] + us.Off + (long)_msBase[i] * us.Stride;
+        byte* ui = _mapUv[vi] + vs.Off + (long)_msBase[i] * vs.Stride;
         for (int k = 0; k < verts; k++)
         {
             float* a = (float*)(uc + (long)k * us.Stride);
-            float* b = (float*)(ui + (long)k * us.Stride);
+            float* b = (float*)(ui + (long)k * vs.Stride);
             if (a[0] != b[0] || a[1] != b[1]) return MatchAttr;
         }
         // ...and the normals through the rotation alone. A lit part whose normals do not survive the
         // transform would shade wrong while drawing in exactly the right place, which is the failure least
         // likely to be noticed and most likely to be blamed on lighting.
-        if (ns.Present && _mapNrm[v] != null && _mapNrm[_msVao[i]] != null)
+        if (ns.Present && ms.Present && _mapNrm[v] != null && _mapNrm[vi] != null)
         {
             byte* nc = _mapNrm[v] + ns.Off + (long)_msBase[c] * ns.Stride;
-            byte* ni = _mapNrm[_msVao[i]] + ns.Off + (long)_msBase[i] * ns.Stride;
+            byte* ni = _mapNrm[vi] + ms.Off + (long)_msBase[i] * ms.Stride;
             for (int k = 0; k < verts; k++)
             {
                 float* a = (float*)(nc + (long)k * ns.Stride);
-                float* b = (float*)(ni + (long)k * ns.Stride);
+                float* b = (float*)(ni + (long)k * ms.Stride);
                 float x = r[0] * a[0] + r[1] * a[1] + r[2] * a[2];
                 float y = r[3] * a[0] + r[4] * a[1] + r[5] * a[2];
                 float z = r[6] * a[0] + r[7] * a[1] + r[8] * a[2];

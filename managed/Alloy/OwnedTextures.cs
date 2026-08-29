@@ -59,6 +59,10 @@ internal static unsafe class OwnedTextures
     /// <summary>Is the owned-texture path live? Read by the handle cache, which changes its invalidation
     /// discipline entirely on the answer (see <c>AlloyRenderer.WipeHandles</c>).</summary>
     internal static bool Armed => _armed;
+
+    /// <summary>Engine textures we tried to copy and could not, and therefore sample BORROWED. #218's exit
+    /// bar reads it: "all textures Alloy-created" is false the moment this is non-zero.</summary>
+    internal static int Refused => _refused;
     private static long _bytes, _peakBytes;
     private static int _copies, _refused, _peakCount;
 
