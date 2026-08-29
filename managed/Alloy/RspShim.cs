@@ -315,8 +315,18 @@ internal static unsafe class RspShim
         // through GLRender::SetUniforms, which fogs from m_fog. Dropped, those overlays would fog off
         // whatever RenderDrawBucket's per-item write left there last (0x46d63d writes a SCALED colour).
         Vt(vptr, VtDoFog, scene);              // scene fog -> GLRender::m_fog, for the engine's own overlay draws
+        // #261, and it is the whole of the particle lag. DoEmitterBucket is the only caller of
+        // PartEmitter::AnimateParticles, and RSP runs it at step 28 -- AFTER the anchor, so an Alloy frame
+        // drew the positions the PREVIOUS frame's simulation left. Under the cutover the order is Alloy's
+        // to pick, so the simulation runs first and the pass draws this frame's particles. Its own draws
+        // are swallowed by the funnels, exactly as they were at step 28, and the walk is where the
+        // population and the engine's back-to-front sort come from.
+        Vt(vptr, VtDoEmitterBucket, scene);
         Vt(vptr, VtFadeDoors, scene);          // door fade + hit-test alpha -- AND #132's anchor: Alloy draws here
         _drawBucket(scene, WalkOrder[0]);
+        // #261 took the sky POPULATION off this call -- SkyBox.Enroll walks the Scene's own gobs. It stays
+        // as the sky's SIMULATION tick: ProcessGob, node animation, the cross-fade alpha writes, and the
+        // per-gob SetPosition(Scene+0x190) that parks each dome at the camera. Its draws are swallowed.
         _skyBoxes(scene);
         for (int i = 1; i < WalkOrder.Length; i++)
         {
@@ -328,8 +338,11 @@ internal static unsafe class RspShim
             if (id == 1) Vt(vptr, VtDoBinBucket, scene);     // grass wind + per-bin LOD distance
             else if (id == 5) FocusLighting(scene);          // the focuslighting write, at RSP's step
         }
-        Vt(vptr, VtRenderBeams, scene);        // bucket 15's capture window (#130)
-        Vt(vptr, VtDoEmitterBucket, scene);    // the ONLY caller of PartEmitter::AnimateParticles
+        // #261 took the beam POPULATION off this call -- Beams.Enroll reads bucket 15 itself. The vcall
+        // stays as bookkeeping, like DoFog above: its own draws are swallowed by the funnels, and what is
+        // left is the state prologue/epilogue (blend, depth mask, global colour) that RSP's later steps and
+        // EngineOverlays below both inherit.
+        Vt(vptr, VtRenderBeams, scene);
         Vt(vptr, VtRenderLensFlares, scene);   // flare occlusion fade
         InWindow = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);

@@ -96,10 +96,6 @@ internal static unsafe class PostChain
     /// Published as <see cref="DepthResource"/> by the prepass; sampling it while it is attached is the
     /// feedback loop <see cref="SceneDepth"/> exists to avoid, so consumers take a copy.</summary>
     internal static uint DepthTex => _depthTex;
-    /// <summary>The engine's clear colour in DISPLAY space, as handed to <see cref="Begin"/>. Kept because
-    /// SkyComposite's scratch clears to the same value UNlinearised, and re-reading it from GL there would
-    /// get this context's clear colour rather than the engine's.</summary>
-    internal static float ClearR, ClearG, ClearB, ClearA = 1f;
     private static int _w, _h, _levels;
     private static uint _progDown, _progUp, _progComposite;
     private static uint _vao;
@@ -304,7 +300,6 @@ internal static unsafe class PostChain
         // OBJECTS, never per-context state, and glClearColor is per-context: querying it here would return
         // whatever THIS context was last set to -- (0,0,0,0) until the first probe capture, and EnvProbe's
         // own clear colour ever after.
-        ClearR = clearRgba[0]; ClearG = clearRgba[1]; ClearB = clearRgba[2]; ClearA = clearRgba[3];
         if (_clearViz) Gl.ClearColor(1f, 0f, 1f, 1f);
         else Gl.ClearColor(MathF.Pow(MathF.Max(clearRgba[0], 0f), AlloyLights.SrgbGamma),
                       MathF.Pow(MathF.Max(clearRgba[1], 0f), AlloyLights.SrgbGamma),

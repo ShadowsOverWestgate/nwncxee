@@ -334,12 +334,6 @@ public sealed unsafe partial class AlloyRenderer
         // #126: the engine's fAlphaDiscardValue -- 0.2 on the classes it draws under Enable(1), -1.0 (i.e.
         // no test at all) on the rest. A uniform here because the class is a per-batch fact.
         uniform float uAlphaCut;
-        // #222: 1 = linearise the texel, which is what every Alloy draw wants against the linear frame.
-        // 0 = leave it in DISPLAY space, which only the skybox asks for, because SkyComposite gives it a
-        // display-space target to blend against and decodes the result once. A stage override that predates
-        // this uniform links with the location at -1, the set is a no-op, and its baked-in linearise stands:
-        // the sky keeps #222's bright horizon and nothing else changes.
-        uniform int uLinearOut;
         // #222: the constant colour PartTriMesh::Mat sets before the draw. White for every ordinary unlit
         // part; the SCENE'S FOG COLOUR for a part whose gob carries the +0x19 tint byte, which is what the
         // skyfade gob is. A uniform rather than a per-draw record field because the whole unlit class shares
@@ -355,7 +349,7 @@ public sealed unsafe partial class AlloyRenderer
             // probe and the frame want the same thing now. Same exponent AlloyLights.SowxLinear uses,
             // spelled out because this stage does not include that lib.
             vec3 tinted = t.rgb * uTint;
-            vec3 rgb = uLinearOut != 0 ? pow(max(tinted, vec3(0.0)), vec3($SRGB$)) : tinted;
+            vec3 rgb = pow(max(tinted, vec3(0.0)), vec3($SRGB$));
             frag = vec4(rgb, t.a * vAlpha);
         }
         """;

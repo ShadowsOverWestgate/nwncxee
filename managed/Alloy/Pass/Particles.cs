@@ -36,12 +36,22 @@ namespace Sowx.Alloy;
 /// which is also the escape hatch: an emitter we cannot build (custom material shader, no texture, table
 /// full) is simply not marked, so the engine draws it at its own slot and nothing is lost. There is no
 /// all-owned-or-none rule here and there does not need to be one.</para>
-/// <para>ponytail: one frame of lag, and it is structural. The capture happens at step 28 and the Alloy draw
-/// at #132's frame anchor, so a pass draws the particle positions the previous pass's
-/// <c>AnimateParticles</c> left -- the same lag class as ADR 0011's creature poses, and finer-grained than
-/// them (particles move smoothly and are small). Upgrade path, if it ever reads badly: walk
-/// <c>emitterbucket</c> ourselves at the Alloy slot instead of learning the population from the engine's
-/// walk. It costs the sort, which is why it is not paid up front.</para>
+/// <para><b>#261: the feed is ours and the lag is gone.</b> Two changes, and they are separate.</para>
+/// <para><b>The lag</b> was scheduling, not structure. <c>Scene::DoEmitterBucket</c> is the only caller of
+/// <c>PartEmitter::AnimateParticles</c> and RSP runs it at step 28, after #132's anchor -- so a pass drew
+/// the positions the previous pass's simulation left. Under the cutover the order is Alloy's to choose, so
+/// <see cref="RspShim"/> now runs that walk BEFORE the anchor. Population, sort and positions are all this
+/// frame's, and nothing was reimplemented to get there: the engine still simulates, and its draws are still
+/// swallowed. Simulation stays engine-side per ADR 0018's boundary.</para>
+/// <para><b>The feed</b> is a persistent RECORD buffer the CPU updates by delta, not a vertex stream rebuilt
+/// every frame. One 96-byte record a particle (see <see cref="RecFloats"/>) lives in a block owned by its
+/// emitter's table slot and stays put across frames; the build writes into a CPU shadow, hashes the block,
+/// and sends it only when the engine's simulation actually moved it. What IS uploaded every frame is a
+/// draw-order index list -- four bytes a particle against a hundred and ninety-two before -- because the
+/// depth order changes when the records do not. The six vertices a particle are expanded from
+/// <c>gl_VertexID</c> in the vertex stage.</para>
+/// <para>The compute SORT is strand 2's, deliberately: this ticket owns the feed, so the class split and
+/// the emitter grouping below are unchanged and the only thing that moved is how the data gets there.</para>
 /// </summary>
 internal static unsafe class Particles
 {
@@ -215,16 +225,22 @@ internal static unsafe class Particles
     /// position, then UV, matching the <c>0x805</c> attribute token <c>RenderEmitter</c> asks the stream
     /// object for -- so the build stays a port rather than a re-derivation. #148 appends two fields the
     /// engine has no equivalent for.
-    /// <para>Both of them are PER EMITTER, and they live in the vertex rather than in a uniform for one
+    /// <para>Both of them are PER EMITTER, and they live in the RECORD rather than in a uniform for one
     /// reason: #131 batches emitters into a single draw, so anything that varies per emitter and is uploaded
-    /// as a uniform would split the groups it took the whole ticket to merge. Eight bytes a vertex is much
-    /// cheaper than giving up cross-screen batching.</para></summary>
-    private const int Stride = 32;
+    /// as a uniform would split the groups it took the whole ticket to merge.</para></summary>
+    /// <summary>#261: one particle RECORD, in floats. Six <c>vec4</c>s, std430:
+    /// <c>{pos.xyz, col} {far.xyz, colFar} {right.xyz, soft} {up.xyz, type} {centre.xyz, -} {u0,u1,v0,v1}</c>,
+    /// the two colours as <c>uintBitsToFloat</c>. Everything is WORLD space -- the build applies the
+    /// emitter's model matrix to the centre and its two axes, which is exact for an affine matrix and four
+    /// transforms cheaper per particle than transforming the corners.</summary>
+    private const int RecFloats = 24;
     /// <summary>The engine's software matrix stack: model is index 2, stride 0x58, top at +0x18. Named
     /// rather than open-coded because <see cref="Beams"/> and <see cref="SkyBox"/> name the same trio, and a
     /// layout correction that misses one site is the kind that is found by looking at the screen.</summary>
     private const int ModeModel = 2, StackStride = 0x58, StackTop = 0x18;
-    private const uint LocColor = 0, LocPos = 1, LocUv = 2, LocNrm = 3, LocSoft = 4;
+    /// <summary>The two SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
+    /// 5-7 the caster's; these are the next free pair and the vertex stage names the same literals.</summary>
+    internal const uint BindRecs = 10, BindIdx = 11;
 
     /// <summary>Emitters tracked at once. Past this an emitter is declined and draws vanilla, which is the
     /// whole cost of the cap.</summary>
@@ -232,9 +248,9 @@ internal static unsafe class Particles
     /// <summary>Draw groups per pass. One group is one <c>glDrawArrays</c>; overflowing it declines the
     /// remaining emitters rather than merging groups that must not merge.</summary>
     private const int MaxGroups = 4096;
-    /// <summary>Vertex-buffer growth, in vertices: start here, double until the frame fits, stop at the cap
-    /// (32 bytes each, so the cap is 64MB) and stand the pass down rather than truncating.</summary>
-    private const int MinVerts = 4096, MaxVerts = 1 << 21;
+    /// <summary>Record-buffer growth, in records: start here, double until the frame fits, stop at the cap
+    /// (96 bytes each, so the cap is 48MB) and stand the pass down rather than truncating.</summary>
+    private const int MinRecs = 1024, MaxRecs = 1 << 19;
 
     /// <summary>One captured emitter. Only the identity and the transform are held; everything the build
     /// reads is re-read off the live emitter at draw time.</summary>
@@ -253,6 +269,14 @@ internal static unsafe class Particles
         /// a string compare over up to 64 records across two lists, which is cold work -- doing it in the
         /// per-frame resolve would put it on the hot path for every emitter on screen, every frame.</summary>
         public float Emissive;
+        /// <summary>#261: this emitter's slice of the persistent record buffer, in RECORDS. Stable across
+        /// frames -- that is what makes the upload a delta rather than a rebuild -- and reassigned only when
+        /// the emitter needs more room than it holds.</summary>
+        public int RecBase, RecCap;
+        /// <summary>FNV-1a over the block as it was last UPLOADED. Equal means the engine's simulation
+        /// produced the same records this frame, so the block is not re-sent. Zero means "never uploaded",
+        /// which is why the allocator sets it to zero on every reassignment.</summary>
+        public ulong Hash;
     }
 
     private static readonly Emit[] _tab = new Emit[MaxEmitters];
@@ -272,11 +296,11 @@ internal static unsafe class Particles
     /// the engine draws with.</summary>
     private static readonly IntPtr[] _sTexObj = new IntPtr[MaxEmitters];
     private static readonly bool[] _sTaken = new bool[MaxEmitters];
-    // _gFirst/_gCount index into _draw (emitters); _gStart/_gVerts are the vertex-space range the writer
-    // actually produced. Two pairs on purpose: a particle array can hand back a null slot, so the vertices
-    // written are a result, not the product of the counts read at classify time.
+    // _gFirst/_gCount index into _draw (emitters); _gStart/_gParts are the range of the draw-order INDEX
+    // list the writer actually produced, in particles. Two pairs on purpose: a particle array can hand back
+    // a null slot, so what is written is a result, not the product of the counts read at classify time.
     private static readonly int[] _gFirst = new int[MaxGroups], _gCount = new int[MaxGroups],
-                                  _gStart = new int[MaxGroups], _gVerts = new int[MaxGroups],
+                                  _gStart = new int[MaxGroups], _gParts = new int[MaxGroups],
                                   _gTex = new int[MaxGroups], _gCls = new int[MaxGroups],
                                   _gCull = new int[MaxGroups];
     private static readonly float[] _gEmis = new float[MaxGroups];
@@ -310,7 +334,8 @@ internal static unsafe class Particles
     /// was armed on a plain launch. The stray-rays bug is still open; <c>/particles on 0</c> is now the way
     /// to compare against vanilla in the same session rather than a relaunch.</summary>
     private static bool _on = BootOn;
-    private static uint _prog, _vao, _vbo;
+    private static uint _prog, _vao, _recBuf, _idxBuf;
+    private static int _locEye = -1;
     private static int _locView = -1, _locProj = -1, _locTex = -1, _locCut = -1,
                        _locFog = -1, _locFogColor = -1, _locAdditive = -1,
                        _locSoftOn = -1, _locDepthTex = -1, _locEmissive = -1, _locLit = -1, _locViz = -1;
@@ -321,11 +346,21 @@ internal static unsafe class Particles
                        _lSunTex = -1, _lSunVp = -1, _lSunTexel = -1, _lSunBias = -1, _lSunCount = -1,
                        _lCubeTex = -1, _lCubeLight = -1, _lCubePlane = -1, _lCubeCount = -1, _lCubeSoft = -1,
                        _lSunMedia = -1, _lLocalMedia = -1;
-    private static byte* _stage;
-    private static int _stageVerts;
+    /// <summary>The CPU shadow of the record buffer, addressed by <see cref="Emit.RecBase"/>. The build
+    /// writes here; only the blocks whose hash moved are sent to GL.</summary>
+    private static float* _recs;
+    private static int _recsCap, _recTop;
+    /// <summary>Record indices in DRAW order, one per particle -- the whole of what this pass uploads every
+    /// frame regardless of what changed. Four bytes a particle against 192 before, and it is what lets the
+    /// records stay put while the depth order does not.</summary>
+    private static uint* _idx;
+    private static int _idxCap;
 
     private static int _frame;
     private static int _captured, _declined, _emitters, _groups, _foreign, _suppressed, _overflow;
+    /// <summary>#261's own numbers: record blocks re-sent this period, blocks the hash said were unchanged,
+    /// and times the block allocator ran out and started over (which costs one frame of vanilla emitters).</summary>
+    private static int _blockUploads, _blockSkips, _recResets;
     // Why an emitter was declined, split -- "particles are still vanilla" has five different fixes behind
     // it and only the split says which.
     private static int _decFade, _decEmpty, _decShader, _decTex, _decFull, _reclaimed, _softPasses,
@@ -463,9 +498,13 @@ internal static unsafe class Particles
         log.Info($"Particles: armed and {(_on ? "ON" : "IDLE")} -- {Describe()} (/particles on 1 arms it)");
     }
 
-    /// <summary>The vanilla site, once per emitter per frame, in the engine's own sorted order. Two jobs:
-    /// learn the population (and its transform), and decline to run the original for an emitter the owned
-    /// pass already drew this pass.</summary>
+    /// <summary>The engine's own walk, once per emitter per frame, in its own sorted order. Two jobs: learn
+    /// the population (and its transform), and decline to run the original for an emitter the owned pass
+    /// already drew this pass.
+    /// <para>#261 moved that walk ahead of the frame anchor, so the stamp it tests is one pass old under the
+    /// cutover -- hence the two-armed test below. Getting that wrong is not cosmetic: the funnels swallow
+    /// the engine's DRAW, not its build, and the build is what this class costs. Skipping the original is
+    /// safe by precedent, since the pre-#261 order skipped it on every steady-state frame.</para></summary>
     [UnmanagedCallersOnly]
     private static void OnRenderEmitter(IntPtr em)
     {
@@ -481,7 +520,14 @@ internal static unsafe class Particles
         _scene = scene;
 
         int slot = Capture(em);
-        if (slot >= 0 && _tab[slot].IssuedGen == AlloyRenderer.PassGen) { _suppressed++; return; }
+        // #261: the decline is what skips the ENGINE's own vertex build, which is this class's whole cost --
+        // the funnels only swallow the draw. Hoisting this walk ahead of the anchor moved it one pass
+        // earlier than the stamp, so under the cutover the test is "drawn in the pass just gone". At
+        // ownframe=0 the walk is still at RSP's step 28, after the draw, so the exact-generation arm is the
+        // one that fires and that path is unchanged.
+        if (slot >= 0 && (_tab[slot].IssuedGen == AlloyRenderer.PassGen
+                          || (RspShim.Armed && _tab[slot].IssuedGen == AlloyRenderer.PassGen - 1)))
+        { _suppressed++; return; }
         _origRender(em);
     }
 
@@ -525,6 +571,11 @@ internal static unsafe class Particles
             else if (stale >= 0) { s = stale; _reclaimed++; }
             else { _declined++; _decFull++; return -1; }
             _tab[s].IssuedGen = -1;
+            // #261: a slot is reused after a tombstone, a stale reclaim or a Forget(), and the block
+            // allocator's bump counter is reset by the last of those. Carrying the old RecBase/RecCap into
+            // a new emitter would hand it a slice the allocator has already handed to someone else -- two
+            // emitters writing one block, with the hash layer making the wrong one sticky.
+            _tab[s].RecBase = 0; _tab[s].RecCap = 0; _tab[s].Hash = 0;
             _tab[s].Emissive = ReadEmissive(*(IntPtr*)(em + EmMaterial));
             _captured++;
         }
@@ -566,9 +617,9 @@ internal static unsafe class Particles
         int groups = Group(n);
         if (groups == 0 || _drawN == 0) return;
 
-        int verts = 0;
-        for (int i = 0; i < _drawN; i++) verts += _sCount[_draw[i]] * 6;
-        if (!EnsureBuffer(verts)) return;
+        int parts = 0;
+        for (int i = 0; i < _drawN; i++) parts += _sCount[_draw[i]];
+        if (!EnsureBuffers(parts)) return;
 
         // #148: only the alpha-blended class is lit. Additive is self-illuminated by definition, and
         // punch-through in this game's content is Turn Undead auras and a holy strike -- lighting those
@@ -576,27 +627,46 @@ internal static unsafe class Particles
         // the build reads it: an emitter drawn lit must not also get the CPU tint.
         bool lit = _lit && lightingOn && AlloyLights.Ready;
 
-        // Write in DRAW order, so every group is one contiguous range and one glDrawArrays.
+        // #261: build each emitter's records into its OWN persistent block, and write the draw-order index
+        // list as we go. The blocks do not move; the index list does, and it is 4 bytes a particle.
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _recBuf);
         int at = 0;
         for (int i = 0; i < _drawN; i++)
         {
             int k = _draw[i];
             ref Emit e = ref _tab[_sSlot[k]];
-            _wrote[i] = BuildEmitter(e.Ptr, ref e, _stage + (long)at * Stride, _sCount[k],
+            if (!EnsureBlock(ref e, _sCount[k])) { _wrote[i] = 0; continue; }
+            int wrote = BuildEmitter(e.Ptr, ref e, _recs + (long)e.RecBase * RecFloats, _sCount[k],
                                      camFwd, camQ, axisY, axisX, eye,
                                      lit && _sCls[k] == ClsBlend);
-            at += _wrote[i];
+            _wrote[i] = wrote;
+            if (wrote == 0) continue;
+            // The delta. An emitter whose particles did not move -- a frozen splat field, an emitter the
+            // simulation skipped -- costs a hash of its own memory and no bus traffic at all.
+            ulong h = Fnv(_recs + (long)e.RecBase * RecFloats, (long)wrote * RecFloats);
+            if (h != e.Hash)
+            {
+                e.Hash = h;
+                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER,
+                                 (IntPtr)((long)e.RecBase * RecFloats * sizeof(float)),
+                                 (IntPtr)((long)wrote * RecFloats * sizeof(float)),
+                                 _recs + (long)e.RecBase * RecFloats);
+                _blockUploads++;
+            }
+            else _blockSkips++;
+            for (int j = 0; j < wrote; j++) _idx[at + j] = (uint)(e.RecBase + j);
+            at += wrote;
         }
         if (at == 0) return;
 
-        // groups are contiguous in _draw and written in that order, so their vertex ranges follow directly
+        // groups are contiguous in _draw and written in that order, so their PARTICLE ranges follow directly
         int cursor = 0;
         for (int gi = 0; gi < groups; gi++)
         {
-            int verts2 = 0;
-            for (int j = 0; j < _gCount[gi]; j++) verts2 += _wrote[_gFirst[gi] + j];
-            _gStart[gi] = cursor; _gVerts[gi] = verts2;
-            cursor += verts2;
+            int gn = 0;
+            for (int j = 0; j < _gCount[gi]; j++) gn += _wrote[_gFirst[gi] + j];
+            _gStart[gi] = cursor; _gParts[gi] = gn;
+            cursor += gn;
         }
 
         // #148: the depth snapshot, here rather than at a pass slot of its own. It is not an ordering
@@ -605,11 +675,15 @@ internal static unsafe class Particles
         // Taken after the build so the frame's cost is paid only when there is something to soften.
         bool soft = _soft && SceneDepth.Take(viewport);
 
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, _vbo);
-        Gl.BufferSubData(Gl.ARRAY_BUFFER, 0, (IntPtr)((long)at * Stride), _stage);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _idxBuf);
+        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, 0, (IntPtr)((long)at * sizeof(uint)), _idx);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _recBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _idxBuf);
         Gl.UseProgram(_prog);
         Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
         Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
+        Gl.Uniform3fv(_locEye, 1, (float*)&eye);
         Gl.Uniform1i(_locTex, 0);
         AlloyRenderer.UploadFog(_locFog, _locFogColor);
         if (lit)
@@ -639,7 +713,7 @@ internal static unsafe class Particles
         float emis = float.NaN;
         for (int gi = 0; gi < groups; gi++)
         {
-            if (_gVerts[gi] == 0) continue;
+            if (_gParts[gi] == 0) continue;
             if (_gCls[gi] != cls)
             {
                 cls = _gCls[gi];
@@ -671,17 +745,17 @@ internal static unsafe class Particles
                 _bindInUnit(texObj, 0, -1);
             }
             if (_gEmis[gi] != emis) { emis = _gEmis[gi]; Gl.Uniform1f(_locEmissive, emis); }
-            Gl.DrawArrays(Gl.TRIANGLES, _gStart[gi], _gVerts[gi]);
+            // Six vertices a particle, expanded from gl_VertexID -- there is no vertex buffer any more.
+            Gl.DrawArrays(Gl.TRIANGLES, _gStart[gi] * 6, _gParts[gi] * 6);
         }
 
         if (_samp != 0) Gl.BindSampler(0, 0);
         Gl.BindVertexArray(0);
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, 0);
         Gl.Disable(Gl.BLEND);
         Gl.Disable(Gl.CULL_FACE);
         Gl.DepthMask(1);
 
-        // Stamped only on emitters whose vertices actually reached the GPU -- the engine-side hook reads
+        // Stamped only on emitters whose records actually reached the GPU -- the engine-side hook reads
         // this to decide whether to skip its own draw, so an emitter that produced nothing (every particle
         // slot null, or a linked pair with no partner) has to keep its vanilla one rather than vanish.
         for (int i = 0; i < _drawN; i++)
@@ -873,7 +947,7 @@ internal static unsafe class Particles
     /// <summary>Port of <c>PartEmitter::RenderEmitter</c>'s build loop: six vertices per particle, written
     /// in the engine's own order and layout. Returns the vertex count written.
     /// <para>Allocation-free by construction -- this runs inside the colour bracket.</para></summary>
-    private static int BuildEmitter(IntPtr em, ref Emit e, byte* dst, int count,
+    private static int BuildEmitter(IntPtr em, ref Emit e, float* dst, int count,
                                     Vector3 camFwd, Vector4 camQ, Vector3 axisY, Vector3 axisX,
                                     Vector3 eye, bool drawsLit)
     {
@@ -988,10 +1062,10 @@ internal static unsafe class Particles
         // The render type, carried per vertex in the one byte the packed normal leaves spare. It costs
         // nothing when the viz dial is off and it is the difference between "particles are wrong" and
         // "Motion_Blur is wrong", which are questions of very different size.
-        sbyte vizType = (sbyte)type;
+        float vizType = type;
         IntPtr* parts = *(IntPtr**)(em + EmParts);
         float u0 = 0f, u1 = 1f, v0 = 0f, v1 = 1f;
-        byte* p = dst;
+        float* p = dst;
 
         for (int i = 0; i < count; i++)
         {
@@ -1094,70 +1168,56 @@ internal static unsafe class Particles
                                : Vector3.Cross(splat ? *(Vector3*)(pt + PSplatNormal) : fwd, right);
             }
 
-            // #148: the shading normal, before the half-extents scale the axes away. A flat billboard has
-            // one normal and lights like a card; bulging it into a hemisphere towards the viewer is what
-            // makes a smoke puff read as volume instead of as paper. The bulge is one axis-length, so a
-            // corner tilts 45 degrees off the facing direction.
-            Vector3 rn = Norm(right), un = Norm(up), wc = centre;
-            // ...and in WORLD space, because the eye is. The quad's axes and position are still in the
-            // emitter's own space at this point (the model matrix is applied to the corners below), so
-            // mixing a world eye into them would shade a transformed emitter as though it were at the
-            // origin -- which is the very case the model matrix is captured for.
-            if (!e.Ident)
-            {
-                rn = Norm(Vector3.TransformNormal(rn, e.Model));
-                un = Norm(Vector3.TransformNormal(un, e.Model));
-                wc = Vector3.Transform(centre, e.Model);
-            }
-            Vector3 facing = Norm(eye - wc);
-            Vector3 nA = Norm(rn + un + facing), nB = Norm(un - rn + facing);
-            Vector3 nC = Norm(rn - un + facing), nD = Norm(-rn - un + facing);
-
             right *= halfW;
             up *= halfH;
 
             if (grid) Frame(pt, period, frameStart, frameEnd, du, dv, gx, gx * gy,
                             out u0, out u1, out v0, out v1);
 
-            Vector3 a = pos + right + up, b = pos - right + up;
-            Vector3 cc = far + right - up, dd = far - right - up;
+            // #261: the record is WORLD space. Transforming the centre and the two axes is exactly
+            // equivalent to transforming the four corners for an affine matrix -- and the vertex stage's
+            // hemispherical normal, which used to be four CPU normalisations per particle, falls out of the
+            // same two axes there. See RecFloats for the layout.
             if (!e.Ident)
             {
-                a = Vector3.Transform(a, e.Model); b = Vector3.Transform(b, e.Model);
-                cc = Vector3.Transform(cc, e.Model); dd = Vector3.Transform(dd, e.Model);
+                pos = Vector3.Transform(pos, e.Model);
+                far = Vector3.Transform(far, e.Model);
+                centre = Vector3.Transform(centre, e.Model);
+                right = Vector3.TransformNormal(right, e.Model);
+                up = Vector3.TransformNormal(up, e.Model);
             }
-
-            // the engine's own winding: (A, B, C) then (C, B, D)
-            Put(ref p, col, a, u1, v1, nA, soft, vizType);
-            Put(ref p, col, b, u0, v1, nB, soft, vizType);
-            Put(ref p, colFar, cc, u1, v0, nC, soft, vizType);
-            Put(ref p, colFar, cc, u1, v0, nC, soft, vizType);
-            Put(ref p, col, b, u0, v1, nB, soft, vizType);
-            Put(ref p, colFar, dd, u0, v0, nD, soft, vizType);
+            Put(ref p, pos, col, far, colFar, right, soft, up, vizType, centre, u0, u1, v0, v1);
         }
-        return (int)(p - dst) / Stride;
+        return (int)(p - dst) / RecFloats;
     }
 
+    /// <summary>One record, in the <see cref="RecFloats"/> layout. The two colours ride the <c>w</c> slots
+    /// as raw bits, which is what <c>uintBitsToFloat</c> undoes in the stage.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void Put(ref byte* p, uint col, in Vector3 pos, float u, float v,
-                            in Vector3 nrm, float soft, sbyte type)
+    private static void Put(ref float* p, in Vector3 pos, uint col, in Vector3 far, uint colFar,
+                            in Vector3 right, float soft, in Vector3 up, float type,
+                            in Vector3 centre, float u0, float u1, float v0, float v1)
     {
-        *(uint*)p = col;
-        *(float*)(p + 4) = pos.X; *(float*)(p + 8) = pos.Y; *(float*)(p + 12) = pos.Z;
-        *(float*)(p + 16) = u; *(float*)(p + 20) = v;
-        // signed-byte normal: 8 bits an axis is plenty for a term that only ever drives a wrapped diffuse
-        // lobe, and it keeps the whole vertex at 32 bytes instead of 44.
-        *(sbyte*)(p + 24) = Snorm(nrm.X); *(sbyte*)(p + 25) = Snorm(nrm.Y); *(sbyte*)(p + 26) = Snorm(nrm.Z);
-        *(sbyte*)(p + 27) = type;
-        *(float*)(p + 28) = soft;
-        p += Stride;
+        p[0] = pos.X; p[1] = pos.Y; p[2] = pos.Z; *(uint*)(p + 3) = col;
+        p[4] = far.X; p[5] = far.Y; p[6] = far.Z; *(uint*)(p + 7) = colFar;
+        p[8] = right.X; p[9] = right.Y; p[10] = right.Z; p[11] = soft;
+        p[12] = up.X; p[13] = up.Y; p[14] = up.Z; p[15] = type;
+        p[16] = centre.X; p[17] = centre.Y; p[18] = centre.Z; p[19] = 0f;
+        p[20] = u0; p[21] = u1; p[22] = v0; p[23] = v1;
+        p += RecFloats;
     }
 
-    /// <summary>Pack to GL_BYTE/normalised. 127 rather than 128 so +1.0 round-trips to exactly +1.0 -- GL's
-    /// signed-normalised conversion divides by 127, and packing with 128 would make every unit normal come
-    /// back slightly long and the lobe slightly bright.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static sbyte Snorm(float x) => (sbyte)(x <= -1f ? -127 : x >= 1f ? 127 : (int)(x * 127f));
+    /// <summary>FNV-1a over a record block, eight bytes at a time. The delta's whole change detector: the
+    /// engine simulates particles and tells nobody, so "did this emitter move" is a question about its own
+    /// bytes and nothing else.</summary>
+    private static ulong Fnv(float* f, long floats)
+    {
+        ulong h = 14695981039346656037UL;
+        ulong* q = (ulong*)f;
+        for (long i = 0; i < floats / 2; i++) { h ^= q[i]; h *= 1099511628211UL; }
+        if ((floats & 1) != 0) { h ^= *(uint*)(f + floats - 1); h *= 1099511628211UL; }
+        return h;
+    }
 
     /// <summary>#148: this material's <c>fEmissive</c>, or 1.0. Cold -- once per emitter per table slot.
     /// <para>Both lists, shared first then instance, exactly as <c>AlloyRenderer.ReadMaterial</c> walks
@@ -1289,6 +1349,7 @@ internal static unsafe class Particles
         { _failed = true; _log?.Info("Particles: program build failed -- emitters stay vanilla"); return false; }
         _locView = GlProgram.Loc(_prog, "uView");
         _locProj = GlProgram.Loc(_prog, "uProj");
+        _locEye = GlProgram.Loc(_prog, "uEye");
         _locTex = GlProgram.Loc(_prog, "uTex");
         _locCut = GlProgram.Loc(_prog, "uAlphaCut");
         _locFog = GlProgram.Loc(_prog, "uFogParams");
@@ -1348,36 +1409,75 @@ internal static unsafe class Particles
         return true;
     }
 
-    private static bool EnsureBuffer(int verts)
+    /// <summary>#261: the persistent record buffer and the per-frame index list. Growth is by doubling and
+    /// a grow REBUILDS the GL store, so every block's hash is void -- <see cref="EnsureBlock"/> is what
+    /// re-sends them, one emitter at a time, on the next frame each is drawn.
+    /// <para>There is no vertex buffer and no vertex format: the stage expands six vertices a particle from
+    /// <c>gl_VertexID</c>, so the VAO is empty and exists only because core profile requires one bound.</para>
+    /// </summary>
+    private static bool EnsureBuffers(int parts)
     {
-        if (verts <= 0 || verts > MaxVerts) { if (verts > MaxVerts) _overflow++; return false; }
-        if (_stageVerts >= verts && _vbo != 0) return true;
-        int want = _stageVerts > 0 ? _stageVerts : MinVerts;
-        while (want < verts) want *= 2;
-
-        if (_stage != null) NativeMemory.Free(_stage);
-        _stage = (byte*)NativeMemory.Alloc((nuint)((long)want * Stride));
-        _stageVerts = want;
-
-        if (_vbo == 0) { uint b; Gl.GenBuffers(1, &b); _vbo = b; }
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, _vbo);
-        Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)((long)want * Stride), null, Gl.DYNAMIC_DRAW);
-
+        if (parts <= 0 || parts > MaxRecs) { if (parts > MaxRecs) _overflow++; return false; }
         if (_vao == 0) { uint v; Gl.GenVertexArrays(1, &v); _vao = v; }
-        Gl.BindVertexArray(_vao);
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, _vbo);
-        Gl.VertexAttribPointer(LocColor, 4, Gl.UNSIGNED_BYTE, 1, Stride, (void*)0);
-        Gl.EnableVertexAttribArray(LocColor);
-        Gl.VertexAttribPointer(LocPos, 3, Gl.FLOAT, 0, Stride, (void*)4);
-        Gl.EnableVertexAttribArray(LocPos);
-        Gl.VertexAttribPointer(LocUv, 2, Gl.FLOAT, 0, Stride, (void*)16);
-        Gl.EnableVertexAttribArray(LocUv);
-        Gl.VertexAttribPointer(LocNrm, 4, Gl.BYTE, 1, Stride, (void*)24);
-        Gl.EnableVertexAttribArray(LocNrm);
-        Gl.VertexAttribPointer(LocSoft, 1, Gl.FLOAT, 0, Stride, (void*)28);
-        Gl.EnableVertexAttribArray(LocSoft);
-        Gl.BindVertexArray(0);
+        if (_idxCap < parts)
+        {
+            int want = _idxCap > 0 ? _idxCap : MinRecs;
+            while (want < parts) want *= 2;
+            if (_idx != null) NativeMemory.Free(_idx);
+            _idx = (uint*)NativeMemory.Alloc((nuint)((long)want * sizeof(uint)));
+            _idxCap = want;
+            if (_idxBuf == 0) { uint b; Gl.GenBuffers(1, &b); _idxBuf = b; }
+            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _idxBuf);
+            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)want * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+        }
+        // The record store is sized off the ALLOCATOR's high-water mark, not off this frame's particle
+        // count: blocks are persistent, so an emitter that went off screen still owns its slice.
+        if (_recsCap < _recTop + parts)
+        {
+            int want = _recsCap > 0 ? _recsCap : MinRecs;
+            while (want < _recTop + parts && want < MaxRecs) want *= 2;
+            if (want < _recTop + parts) { ResetBlocks(); return false; }
+            float* grown = (float*)NativeMemory.Alloc((nuint)((long)want * RecFloats * sizeof(float)));
+            if (_recs != null) NativeMemory.Free(_recs);
+            _recs = grown;
+            _recsCap = want;
+            if (_recBuf == 0) { uint b; Gl.GenBuffers(1, &b); _recBuf = b; }
+            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _recBuf);
+            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER,
+                          (IntPtr)((long)want * RecFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+            // The new store holds nothing, so every block is stale by construction.
+            for (int i = 0; i < _tabN; i++) _tab[i].Hash = 0;
+        }
+        return _recBuf != 0 && _idxBuf != 0;
+    }
+
+    /// <summary>Give this emitter a block big enough for <paramref name="count"/> records, bump-allocated
+    /// and then left alone. Reassignment voids the hash, which is what re-sends the block.
+    /// <para>ponytail: growing an emitter's block LEAKS its old one -- there is no free list, because an
+    /// emitter's particle count is declared in its model and effectively never grows. The allocator's
+    /// backstop is <see cref="ResetBlocks"/>: run out, start over, and pay one frame of vanilla emitters.
+    /// <c>rec-resets=</c> on the period line is the trip-wire; a non-zero rate is when a free list becomes
+    /// worth writing.</para></summary>
+    private static bool EnsureBlock(ref Emit e, int count)
+    {
+        if (count <= 0) return false;
+        if (e.RecCap >= count) return true;
+        // Unreachable in practice -- EnsureBuffers already grew the store to _recTop + this frame's whole
+        // particle count before the loop, which bounds every bump below. A decline rather than a reset
+        // because a reset here would rebase blocks the loop has already written into the index list.
+        if (_recTop + count > _recsCap) { _declined++; _decFull++; return false; }
+        e.RecBase = _recTop; e.RecCap = count; e.Hash = 0;
+        _recTop += count;
         return true;
+    }
+
+    /// <summary>The block allocator's only recovery: hand every slice back at once. Every emitter re-bumps
+    /// on its next draw, so the cost is bounded by one frame.</summary>
+    private static void ResetBlocks()
+    {
+        _recTop = 0;
+        _recResets++;
+        for (int i = 0; i < _tabN; i++) { _tab[i].RecBase = 0; _tab[i].RecCap = 0; _tab[i].Hash = 0; }
     }
 
     /// <summary>Every captured identity is void: the emitters belong to a Scene whose unload freed them.
@@ -1386,13 +1486,15 @@ internal static unsafe class Particles
     internal static void Forget()
     {
         _tabN = 0; _orderN = 0; _orderGen = -1; _scene = IntPtr.Zero;
+        // The table went, so every block it named went with it. Not a reset: nothing is left to re-bump.
+        _recTop = 0;
     }
 
     /// <summary>The 4.6 context went away. Every GL NAME this class holds belongs to it, so they are not
     /// merely unused -- they are stale, and there is nothing to delete because the objects went with the
     /// context.
     /// <para>This is separate from <see cref="Forget"/> for a reason with teeth. <c>EnsureProgram</c> returns
-    /// true on <c>_prog != 0</c> and <c>EnsureBuffer</c> on <c>_vbo != 0</c>, so a table-only reset would
+    /// true on <c>_prog != 0</c> and <c>EnsureBuffers</c> on its own caps, so a table-only reset would
     /// leave both believing they were ready, every GL call in the draw would fail silently, and the
     /// suppression stamp -- which keys on vertices STAGED, not on vertices drawn -- would go on suppressing
     /// the engine's own draw. The result is no particles anywhere, for the rest of the process, with nothing
@@ -1400,11 +1502,12 @@ internal static unsafe class Particles
     internal static void ContextLost()
     {
         Forget();
-        _prog = 0; _vao = 0; _vbo = 0; _samp = 0; _failed = false;
+        _prog = 0; _vao = 0; _recBuf = 0; _idxBuf = 0; _samp = 0; _failed = false;
         _locView = _locProj = _locTex = _locCut = _locFog = _locFogColor = _locAdditive = -1;
-        _locSoftOn = _locDepthTex = _locEmissive = _locLit = -1;
-        if (_stage != null) { NativeMemory.Free(_stage); _stage = null; }
-        _stageVerts = 0;
+        _locSoftOn = _locDepthTex = _locEmissive = _locLit = _locEye = -1;
+        if (_recs != null) { NativeMemory.Free(_recs); _recs = null; }
+        if (_idx != null) { NativeMemory.Free(_idx); _idx = null; }
+        _recsCap = 0; _idxCap = 0;
     }
 
     // ---- live tuning (/particles) ------------------------------------------------------------
@@ -1464,6 +1567,7 @@ internal static unsafe class Particles
         for (int i = 0; i < 7; i++) _cType[i] = 0;
         for (int i = 0; i < ClsCount; i++) _cCls[i] = 0;
         _cSplat = 0; _cTinted = 0; _cGrid = 0;
+        _blockUploads = 0; _blockSkips = 0; _recResets = 0;
     }
 
     /// <summary>AC 4's number: emitters owned against draws issued. Vanilla's ratio is 1:1 by construction --
@@ -1481,7 +1585,9 @@ internal static unsafe class Particles
           + (!_lit ? ", unlit" : $", {_litGroups} lit draws")
           + (_emissive == 0 ? "" : $", {_emissive} emissive")
           + (_reclaimed == 0 ? "" : $", {_reclaimed} table slots reclaimed from unwalked emitters")
-          + (_overflow == 0 ? "" : $", {_overflow} passes OVERFLOWED (group or vertex cap)")
+          + $", {_blockUploads}/{_blockUploads + _blockSkips} record blocks re-sent"
+          + (_recResets == 0 ? "" : $", {_recResets} BLOCK-ALLOCATOR RESETS (see EnsureBlock)")
+          + (_overflow == 0 ? "" : $", {_overflow} passes OVERFLOWED (group or record cap)")
           + (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped")
           + Census();
 
@@ -1592,9 +1698,14 @@ internal static unsafe class Particles
         E(SoftSuppressed(true, 0) && SoftSuppressed(false, 1) && SoftSuppressed(false, 2)
           && !SoftSuppressed(false, 0) && !SoftSuppressed(false, 6),
           "splats and render types 1 and 2 suppress softness; nothing else does");
-        E(Snorm(1f) == 127 && Snorm(-1f) == -127 && Snorm(0f) == 0,
-          "the packed normal round-trips +/-1 exactly under GL's divide-by-127");
         E(Norm(Vector3.Zero) == Vector3.Zero, "a degenerate axis normalises to zero rather than to NaN");
+        // #261: the corner table, which is the CPU winding this stage replaced. A/B ride the NEAR centre
+        // and C/D the far one -- get that pairing backwards and a motion-blurred streak fades across itself
+        // instead of along, which reads as "particles look wrong" and nothing narrower.
+        E(ParticleVs.Contains("vec2( 1.0,  1.0), vec2(-1.0,  1.0), vec2( 1.0, -1.0)")
+          && ParticleVs.Contains("vec2( 1.0, -1.0), vec2(-1.0,  1.0), vec2(-1.0, -1.0)")
+          && ParticleVs.Contains("bool near = sg.y > 0.0"),
+          "the expansion keeps the engine's winding: (A, B, C) then (C, B, D), near end on +up");
 
         // ---- #148: the fragment stage's ORDER, which is the half of this that no arithmetic check can
         // reach. Every one of these is a real failure with a plausible-looking frame behind it: lighting a
@@ -1623,10 +1734,14 @@ internal static unsafe class Particles
           && AlloyLights.SunShadowLib.Contains("(1.0 - uSunMedia)")
           && AlloyLights.LocalShadowLib.Contains("(1.0 - uLocalMedia)"),
           "the composed light libraries still declare what this stage calls");
-        E(ParticleVs.Contains("layout(location = 3) in vec4 aNrm")
-          && ParticleVs.Contains("layout(location = 4) in float aSoft")
-          && Stride == 32,
-          "the vertex stage reads the two #148 attributes at the locations the VAO binds them");
+        // #261: the stage expands from the record buffer, so what has to hold is the BINDINGS and the
+        // record size -- a stage that names a different binding than the C# side binds draws nothing, and a
+        // layout that drifts from RecFloats reads every particle's fields out of its neighbour.
+        E(ParticleVs.Contains($"binding = {BindRecs}) readonly buffer SowxParticleBuf")
+          && ParticleVs.Contains($"binding = {BindIdx}) readonly buffer SowxParticleIdx")
+          && ParticleVs.Contains("gl_VertexID / 6")
+          && RecFloats == 24,
+          "the vertex stage expands from the record and index buffers this pass binds");
 
         // ---- the classifier, and with it the ticket's punch-through requirement.
         E(ClsPunch < ClsBlend && ClsBlend < ClsAdd,
@@ -1653,21 +1768,38 @@ internal static unsafe class Particles
     // ---- shaders ---------------------------------------------------------------------------------------
 
     /// <summary>The vertex stage. Everything the stock <c>vsparticle</c> does is already done by the time a
-    /// vertex exists -- it is <c>VertexColor = vColor; TransformMainCoordinates();</c> and nothing else -- so
-    /// this is the transform and the two varyings.
-    /// <para>No #119 invariant clip expression: particles never enter the depth prepass (they are built per
-    /// frame, and two of the three classes do not write depth at all), so there is no LEQUAL match to
-    /// preserve.</para></summary>
+    /// vertex exists -- it is <c>VertexColor = vColor; TransformMainCoordinates();</c> and nothing else.
+    /// <para>#261: attributeless. There is no vertex buffer; six vertices a particle are expanded from
+    /// <c>gl_VertexID</c> against the persistent record buffer, through the draw-order index list. The
+    /// corner signs reproduce the CPU build's own winding exactly -- (A, B, C) then (C, B, D), with A/B on
+    /// the NEAR centre and C/D on the far one, which is what makes a motion-blurred streak fade along its
+    /// length rather than across it.</para>
+    /// <para>The hemispherical shading normal moved here with the expansion: it is
+    /// <c>normalize(sx*rn + sy*un + facing)</c>, four CPU normalisations a particle before and one cheap
+    /// vertex expression now. A degenerate quad (a zero half-extent) normalises a zero vector, which is why
+    /// the axes go through a guarded normalise -- the quad has no area either way, but a NaN normal is not
+    /// something to leave to chance.</para>
+    /// <para>No #119 invariant clip expression: particles never enter the depth prepass (two of the three
+    /// classes do not write depth at all), so there is no LEQUAL match to preserve.</para></summary>
     private const string ParticleVs = """
         #version 460 core
-        layout(location = 0) in vec4 aColor;   // 4 x unsigned byte, normalised
-        layout(location = 1) in vec3 aPos;     // world space: the build already applied the model matrix
-        layout(location = 2) in vec2 aUv;
-        layout(location = 3) in vec4 aNrm;     // xyz = hemispherical shading normal; w = render type
-        layout(location = 4) in float aSoft;   // particleSoftness, per emitter (0 = suppressed)
+
+        // #261: one particle. Six vec4, std430 -- see Particles.RecFloats for the C# side of this layout.
+        struct SowxParticle
+        {
+            vec4 posCol;      // xyz = near centre (world), w = RGBA8 colour as raw bits
+            vec4 farColFar;   // xyz = far centre (world),  w = the far end's colour
+            vec4 rightSoft;   // xyz = scaled right axis (world), w = particleSoftness
+            vec4 upType;      // xyz = scaled up axis (world),    w = render type
+            vec4 centre;      // xyz = the particle's OWN centre, which the facing direction is taken from
+            vec4 uv;          // u0, u1, v0, v1
+        };
+        layout(std430, binding = 10) readonly buffer SowxParticleBuf { SowxParticle particles[]; };
+        layout(std430, binding = 11) readonly buffer SowxParticleIdx { uint partIdx[]; };
 
         uniform mat4 uView;
         uniform mat4 uProj;
+        uniform vec3 uEye;
 
         out vec4 vColor;
         out vec2 vUv;
@@ -1677,15 +1809,38 @@ internal static unsafe class Particles
         out float vSoft;
         flat out int vType;
 
+        vec3 SowxSafeNorm(vec3 v)
+        {
+            float l = dot(v, v);
+            return l > 0.0 ? v * inversesqrt(l) : vec3(0.0);
+        }
+
         void main()
         {
-            vColor = aColor;
-            vUv = aUv;
-            vWorld = aPos;
-            vNrm = aNrm.xyz;
-            vType = int(round(aNrm.w * 127.0));
-            vSoft = aSoft;
-            vec4 vp = uView * vec4(aPos, 1.0);
+            int corner = gl_VertexID % 6;
+            SowxParticle p = particles[partIdx[gl_VertexID / 6]];
+
+            // (A, B, C, C, B, D) as sign pairs: sx picks the right axis, sy picks the up axis AND which
+            // end of a stretched pair the vertex sits on.
+            const vec2 SIGNS[6] = vec2[6](vec2( 1.0,  1.0), vec2(-1.0,  1.0), vec2( 1.0, -1.0),
+                                          vec2( 1.0, -1.0), vec2(-1.0,  1.0), vec2(-1.0, -1.0));
+            vec2 sg = SIGNS[corner];
+            bool near = sg.y > 0.0;
+
+            vec3 base = near ? p.posCol.xyz : p.farColFar.xyz;
+            vec3 world = base + sg.x * p.rightSoft.xyz + sg.y * p.upType.xyz;
+
+            vec3 rn = SowxSafeNorm(p.rightSoft.xyz);
+            vec3 un = SowxSafeNorm(p.upType.xyz);
+            vec3 facing = SowxSafeNorm(uEye - p.centre.xyz);
+
+            vColor = unpackUnorm4x8(floatBitsToUint(near ? p.posCol.w : p.farColFar.w));
+            vUv = vec2(sg.x > 0.0 ? p.uv.y : p.uv.x, near ? p.uv.w : p.uv.z);
+            vWorld = world;
+            vNrm = SowxSafeNorm(sg.x * rn + sg.y * un + facing);
+            vSoft = p.rightSoft.w;
+            vType = int(p.upType.w);
+            vec4 vp = uView * vec4(world, 1.0);
             vViewZ = -vp.z;
             gl_Position = uProj * vp;
         }

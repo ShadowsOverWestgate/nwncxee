@@ -72,11 +72,9 @@ internal static class RenderPasses
         r.Register(new PassLifecycle
         {
             Name = "sky",
-            // The sky's own capture holds no GL objects -- it replays captured parts through the Alloy draw
-            // service's programs and VAOs. #222's scratch target DOES, so ContextLost is no longer null.
-            Attach = SkyComposite.Configure,
-            ContextLost = SkyComposite.ContextLost,
-            SelfCheck = l => { SkyBox.SelfCheck(l); SkyComposite.SelfCheck(l); },
+            // #261 deleted SkyComposite with its scratch target, so the sky holds no GL objects again: it
+            // draws enrolled parts through the Alloy draw service's own programs and VAOs.
+            SelfCheck = SkyBox.SelfCheck,
             Revoke = SkyBox.Forget,
             Stats = _ => SkyBox.Stats(),
         }, log);

@@ -709,6 +709,10 @@ public sealed unsafe partial class AlloyRenderer
         IntPtr scene = SkyBox.Scene;
         // #91's rule again: only the enrolled world Scene's sky, never a GUI 3D panel's.
         if (scene == IntPtr.Zero || scene != _enrollScene) return;
+        // #261: the engine's sky draw is only silent under the cutover (the shim swallows the draw funnels).
+        // With ownframe=0 there is no colour mask left to suppress it with, so the owned sky stands aside
+        // and the engine paints its own at its own step -- one pre-cutover frame, unchanged.
+        if (!RspShim.Armed) return;
         Span<SkyBox.Role> roles = stackalloc SkyBox.Role[3];
         float* fog = stackalloc float[3];
         SkyBox.FogColor(scene, fog);
@@ -723,7 +727,7 @@ public sealed unsafe partial class AlloyRenderer
             {
                 ref SkyBox.Part p = ref SkyBox.At(i);
                 if (p.Gob != roles[r].Gob) continue;
-                if (p.Vao < 0 || !SkyBox.Fresh(i) || _drawN >= MaxOwned || _skyN >= MaxSkyDraws)
+                if (p.Vao < 0 || !SkyBox.Drawable(i) || _drawN >= MaxOwned || _skyN >= MaxSkyDraws)
                 { staged = -1; break; }
                 // borrowed CAurTexture*, re-fetched per frame like every other Alloy draw
                 int tid = new MaterialRef(p.Mat).Texture(0).OwnedTid();
@@ -782,28 +786,29 @@ public sealed unsafe partial class AlloyRenderer
     /// (far 1000.0, <c>RenderSkyBoxes</c>) and are replayed under the world's: the dome can cross the world
     /// far plane, and clipped it would read as a hole at the horizon with nothing in the log.</para>
     /// <para>Depth range and clamp are 4.6-CONTEXT state the later passes share, so both are restored here
-    /// rather than left for someone else to find.</para></summary>
+    /// rather than left for someone else to find.</para>
+    /// <para>ponytail: the roles composite in LINEAR, and #261 deleted the display-space scratch that used
+    /// to make them match vanilla exactly (ADR 0018: "there is no strand 3"). The settled sky is unaffected
+    /// -- its role is <c>(SRC_ALPHA, ZERO)</c>, which never reads the destination -- but the cross-fade and
+    /// the skyfade gob are genuine over-blends, and at partial alpha a linear over composites brighter than
+    /// the engine's display-space one by <c>alpha^(1/2.2)/alpha</c> (1.5x at 0.5). Deliberate: the sky is
+    /// Alloy's to author now and the frame it lands in is linear. The three alphas are on the period line
+    /// (<see cref="SkyBox.NoteRoles"/>) precisely so this is a number and not a suspicion; if the horizon
+    /// band ever reads wrong, the upgrade is a per-role alpha correction, not the scratch target back.</para>
+    /// </summary>
     private static void SkyOwnedPass(Matrix4x4* vp, int* viewport)
     {
         if (_skyN == 0 || Gl.DepthRange == null) return;
-        // #222: the sky composites in DISPLAY space or not at all. Given a scratch it draws there, in the
-        // engine's own colour space and against the engine's own clear, and the fold-back decodes once. A
-        // refusal keeps the old linear path, which is a bright horizon and not a missing sky.
-        float* clear = stackalloc float[4]
-            { PostChain.ClearR, PostChain.ClearG, PostChain.ClearB, PostChain.ClearA };
-        bool scratch = SkyComposite.Begin(viewport, clear);
         Gl.UseProgram(_prog46);
         Gl.Uniform1i(_locTex, 0);
-        Gl.Uniform1i(_locLinear, scratch ? 0 : 1);
         Gl.Uniform1i(_locViz, _lightViz);
         Gl.UniformMatrix4fv(_locVp, 1, 0, (float*)vp);
         UploadFeatureTerms(_locFeat, viewport);
         Gl.Uniform1f(_locCut, -1f);          // the engine draws the sky with the discard off
-        // Depth is the composite's business when there is a scratch -- it has no depth attachment, and the
-        // test that keeps the sky behind the world runs once, there. DEPTH_CLAMP still applies either way:
-        // the matrices were captured under the engine's sky projection and the dome can cross the far plane,
-        // which clipped reads as a hole at the horizon.
-        if (!scratch) { Gl.DepthMask(0); Gl.DepthRange(1.0, 1.0); }
+        // DEPTH_CLAMP because the composed matrices sit under the ENGINE's sky projection (RenderSkyBoxes
+        // replaces it with its own near/far) and are drawn under the world's: the dome can cross the world
+        // far plane, and clipped it reads as a hole at the horizon with nothing in the log.
+        Gl.DepthMask(0); Gl.DepthRange(1.0, 1.0);
         Gl.Enable(Gl.DEPTH_CLAMP);
         Gl.Enable(Gl.BLEND); _blendOn = true;
         int boundVao = -1, boundTex = -1;
@@ -824,10 +829,6 @@ public sealed unsafe partial class AlloyRenderer
             _batches++; _draws++;
         }
         Gl.Disable(Gl.DEPTH_CLAMP);
-        if (scratch) { SkyComposite.End(PostChain.Fbo); _blendOn = false; }
-        else Gl.DepthRange(0.0, 1.0);
-        // The vanilla site reads this to decide whether to colour-mask the engine's own copy: it is set only
-        // after the Alloy sky actually reached the GPU this pass, never on intent.
-        SkyBox.MarkDrawn(PassGen);
+        Gl.DepthRange(0.0, 1.0);
     }
 }

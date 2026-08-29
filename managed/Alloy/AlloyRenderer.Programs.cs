@@ -132,7 +132,6 @@ public sealed unsafe partial class AlloyRenderer
             _locVp = GlProgram.Loc(prog, "uVP"); _locBase = GlProgram.Loc(prog, "uDrawBase");
             _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz");
             _locCut = GlProgram.Loc(prog, "uAlphaCut");
-            _locLinear = GlProgram.Loc(prog, "uLinearOut");
             _locTint = GlProgram.Loc(prog, "uTint");
             _locFeat = FeatLocs(prog);
             _log?.Info("AlloyRenderer: fullbright program ready (4.6 context)");

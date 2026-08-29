@@ -358,25 +358,26 @@ internal static unsafe class SymbolMap
     public const string PartSkinDraw = "_ZN8PartSkin4DrawEv";
     /// <summary>#125: Scene::RenderSkyBoxes() @0x466910 -- the whole per-area skybox draw, called from
     /// RenderSinglePass between buckets 0 and 1. Three gobs (current, cross-fading, skyfade) rendered under
-    /// their own projection with the depth mask off. Hooked to open the owned pass's capture window and to
-    /// colour-mask the engine's copy once the owned pass draws it at its graph slot.</summary>
+    /// their own projection with the depth mask off. #261: NOT hooked. The shim calls it for its
+    /// bookkeeping -- ProcessGob, node animation, the cross-fade alpha writes and the per-gob
+    /// <c>SetPosition(Scene+0x190)</c> -- and Alloy enrols the gobs itself. ABI: <c>(Scene* /*rdi*/)</c>.</summary>
     public const string RenderSkyBoxes = "_ZN5Scene14RenderSkyBoxesEv";
+    /// <summary>#261: Part::GetWorld(Vector&amp;, Quaternion&amp;) @0x437930 -- composes a part's world
+    /// transform by walking <c>part+0x48</c> to the root and then applying the owning Gob's adjusted
+    /// scale/orientation/position. No Part subclass overrides vtable slot 0x20 (checked against every
+    /// <c>_ZTV4Part*</c>), so it is safe to call by symbol. OUT PARAMETERS, which is why the sky can call it
+    /// at all: the engine's own by-value <c>Vector</c>/<c>Quaternion</c> returns are an ABI this side does
+    /// not invent. ABI: <c>(Part* /*rdi*/, Vector* /*rsi*/, Quaternion* /*rdx*/)</c>.</summary>
+    public const string PartGetWorld = "_ZN4Part8GetWorldER6VectorR10Quaternion";
+    /// <summary>#261: Gob::GetAdjustedScale() @0x437cf0 -- <c>LerpFloat(gob+0x1c0).Lerped() *
+    /// *(float*)(gob+0x49c)</c>, the uniform scale <c>Gob::Render</c> pushes and <see cref="PartGetWorld"/>
+    /// applies to the position but does not hand back. A plain float return, so it is callable.
+    /// ABI: <c>(Gob const* /*rdi*/) -&gt; float</c>.</summary>
+    public const string GobGetAdjustedScale = "_ZNK3Gob16GetAdjustedScaleEv";
 
-    // ---- #130: the beam site. Beams are NOT walked by Scene::RenderDrawBucket -- Scene::RenderBeams
-    //      @0x46aba0 (vt+0x1d8) walks DRAW BUCKET 15 with its own program and its own state, right after
-    //      bucket 4, and it is the last content class in the pass before particles.
-    /// <summary>#130: Scene::RenderBeams() @0x46aba0 -- the volumetric light-beam pass. Gated on the
-    /// <c>enablebeams</c> global; picks the first scene light with range >= 1000 (the sun/moon) and extrudes
-    /// every bucket-15 item away from it through <c>vs_beamvol</c>/<c>fs_beamvol</c>, additive
-    /// <c>(SRC_ALPHA, ONE)</c> with the depth mask off. Hooked to open the owned pass's capture window and to
-    /// colour-mask the engine's copy once the owned pass draws it at its graph slot.
-    /// ABI: <c>(Scene* /*rdi*/)</c>.</summary>
-    public const string RenderBeams = "_ZN5Scene11RenderBeamsEv";
-    /// <summary>#130: PartBeam::Draw() @0x450120 -- the whole of it is
-    /// <c>RenderVertexData(part+0xa0, part+0xa8, 4, 0xffffffff)</c>, so it is both the per-beam capture point
-    /// and the identity the owned replay keys on. It is NOT <c>PartTriMesh::Draw</c>, so DrawFunnelService's part
-    /// hook never sees a beam. ABI: <c>(PartBeam* /*rdi*/)</c>.</summary>
-    public const string PartBeamDraw = "_ZN8PartBeam4DrawEv";
+    // ---- #130/#261: the beam globals. Beams are NOT walked by Scene::RenderDrawBucket -- they live in
+    //      DRAW BUCKET 15, which Scene::RenderBeams @0x46aba0 (vt+0x1d8) walks with its own program and its
+    //      own state. Alloy enumerates that bucket itself (Beams.Enroll); the vtable slot is the shim's.
     /// <summary>Global <c>enablebeams</c> @0x18aa18c (int, 1 by default) -- the flag
     /// <c>Scene::RenderBeams</c> gates its whole body on. The owned pass honours it: beams off means the
     /// owned draw does nothing AND does not suppress.</summary>

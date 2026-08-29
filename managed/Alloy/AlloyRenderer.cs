@@ -334,9 +334,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// without this there is nothing to point the feature at.</summary>
     private static bool _aoTest = DefAoTest;
     private static int _locViz = -1;
-    /// <summary>#222: the fullbright stage's colour-space switch. Set on every bind of that program -- a
-    /// GLSL uniform defaults to 0, i.e. display space, which is right for the sky alone.</summary>
-    private static int _locLinear = -1;
     /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
     /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
     private static int _locTint = -1;
@@ -969,6 +966,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // membership epoch. Enrollment is then edge-triggered on what that walk changed, which is what
             // retires the 60-frame cadence: there is no clock here any more.
             SceneWalk.Tick(scene);
+            // #261: bucket 15 is not part of the world walk and never will be -- it is a per-frame,
+            // culled classification the engine builds ahead of RSP. Read here rather than enrolled on an
+            // edge, in engine context, because that is what the beam VAO harvest needs.
+            Beams.Enroll(scene);
+            // #261: the sky's three gobs are not in Scene+0x130 either -- they hang off Scene+0x18/+0x38 and
+            // only Scene::RenderSkyBoxes ever walked them. Same slot, same reason as beams.
+            SkyBox.Enroll(scene);
             // The FLOOR, and it is not a cadence: nothing here fires because time passed, it only delays an
             // edge that has already happened. Enrollment is the cold path (handle wipe, full table scan,
             // texture re-intern, VAO retire) and the walk's delta signal is unbounded by construction --
@@ -1122,7 +1126,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         for (int i = 0; i < SkyBox.Count; i++)
         {
             ref SkyBox.Part p = ref SkyBox.At(i);
-            p.Vao = SkyBox.Fresh(i) ? VdoSlot(p.Vdo) : -1;
+            p.Vao = SkyBox.Drawable(i) ? VdoSlot(p.Vdo) : -1;
         }
         DrawOwned();
     }

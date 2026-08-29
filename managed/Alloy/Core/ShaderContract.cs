@@ -273,7 +273,7 @@ internal static class ShaderContract
                   // ...and the fullbright stage must DECODE, unconditionally: #132 made the target linear,
                   // so a stage that passed its display-space texel through would be wrong by a gamma
                   // wherever the engine is not drawing beside it.
-                  && OwnedFs.Contains("vec3($SRGB$)") && OwnedFs.Contains("uLinearOut") && OwnedFs.Contains("t.rgb * uTint") && !OwnedFs.Contains("uCapture")
+                  && OwnedFs.Contains("vec3($SRGB$)") && OwnedFs.Contains("t.rgb * uTint") && !OwnedFs.Contains("uCapture")
                   // #121: the ambient-specular term, and the capture pairing that keeps the probe linear.
                   // A stage that lost the sample still renders (flat, as before #121); one that kept the
                   // sample but lost the capture branch samples the cube it is drawing into -- undefined --

@@ -14,22 +14,35 @@ namespace Sowx.Alloy;
 /// off and depth test against a dome that sits AT the camera -- so it passes everywhere and paints over
 /// bucket 0. That is #107 §3's ordering hazard, and it is why every Alloy blending class before this ticket
 /// carried a named approximation about being painted over.</para>
-/// <para>What the engine still does, every frame: the whole of <c>RenderSkyBoxes</c>, under
-/// <c>glColorMask(0,0,0,0)</c>. That is deliberate and it is what makes the rest of this file small. The
-/// three gob draws keep running, so <c>PartTriMesh::Draw</c> keeps funnelling parts through
-/// <see cref="Begin"/> -- capture stays warm, node animation and <c>ProcessGob</c> keep happening, the model
-/// matrices are the engine's own live ones, and an area transition needs no code at all. With the depth mask
-/// already off inside, a colour-masked sky writes NOTHING, so the ordering hazard is gone by construction
-/// rather than by suppression. The cost is three small-model draws the engine paid anyway.</para>
-/// <para>The matrices are the reason for the whole arrangement. A sky part is transformed by the engine's
-/// SOFTWARE MATRIX STACK, not by <c>node+0x18</c>: <c>Gob::Render</c> @0x452260 pushes the gob's transform
-/// and <c>Gob::PartDraw</c> @0x451d50 pushes each node's, then calls the part's Draw vtable slot (+0xd0,
-/// <c>PartTriMesh::Draw</c>). So the Alloy pass cannot read a model matrix off the node the way every other
-/// Alloy class does -- it reads the stack top at capture, which is only live inside that draw.</para>
-/// <para>ponytail: the matrix a pass replays was captured at the PREVIOUS frame's vanilla site, so the dome
-/// follows the camera one frame late. On a dome the size of a sky that is centimetres. Upgrade path, if a
-/// spinning cloud layer ever reads badly: reconstruct the transform from the gob (+0xa8 position, the node
-/// chain's own pos/quat/scale) instead of capturing it.</para>
+/// <para><b>#261: the source data is ours.</b> <see cref="Enroll"/> walks the three sky gobs
+/// <see cref="Roles"/> already reads off the Scene, down each one's part tree, once a frame in engine
+/// context. There is no hook on <c>Scene::RenderSkyBoxes</c>, no capture window, no funnel arm and no
+/// colour mask. The engine's own routine still runs from the shim -- its draws are swallowed there like
+/// every other engine draw -- because it is the sky's SIMULATION tick: <c>Gob::ProcessGob</c>, node
+/// animation, the cross-fade writes to <c>gob+0x108</c>, and the per-frame
+/// <c>Gob::SetPosition(Scene+0x190)</c> that parks each dome at the camera.</para>
+/// <para><b>The matrix is composed, not captured.</b> A sky part is transformed by the engine's SOFTWARE
+/// matrix stack -- <c>Gob::Render</c> @0x452260 applies the gob's transform and <c>Gob::PartDraw</c>
+/// @0x451d50 each node's -- so <c>node+0x18</c> means nothing here. But
+/// <c>Part::GetWorld(Vector&amp;, Quaternion&amp;)</c> @0x437930 composes exactly that chain (leaf, up
+/// through <c>part+0x48</c>, then the gob's own adjusted scale/orientation/position) and hands it back
+/// through OUT PARAMETERS, which is an ABI this side can call without inventing one. Three field reads
+/// finish it: the uniform scale it does not return (<c>Gob::GetAdjustedScale</c> times every
+/// <c>part+0x2c</c> up the chain), and the camera-parking correction below.</para>
+/// <para><b>Why the position is corrected.</b> <c>RenderSkyBoxes</c> calls <c>Gob::SetPosition</c> (Gob
+/// vt+0xb8) with <c>Scene+0x190</c> immediately before each <c>Gob::Render</c>, and enrollment runs BEFORE
+/// the shim reaches that call -- so <c>gob+0xa8</c> still holds the previous frame's camera. Since
+/// <c>Gob::GetAdjustedPosition</c> @0x439900 is <c>gob[0xa8..0xb0] + Q(gob+0xb4)*lerpedOffsets</c>, the
+/// gob position enters the composition purely additively, and adding
+/// <c>Scene+0x190 - gob+0xa8</c> to the composed world position is exact rather than approximate. That is
+/// what retires the last of the one-frame lag: the dome is at THIS frame's camera.</para>
+/// <para><b>The matrix convention, derived not assumed.</b> <c>MakeMatrix4x4</c> @0x5b8ce0 writes the
+/// translation at float indices 12..14 and <c>2(xy+wz)</c> at index 1, so the engine's 16 floats are
+/// byte-identical to a <c>System.Numerics.Matrix4x4</c> of the same transform (quaternions are stored
+/// (w,x,y,z)). <c>operator*(Matrix4x4, Vector4)</c> @0x5b5320 dots ROWS of the column-major array, so
+/// <c>operator*(A,B)</c> @0x5b54c0 is the column-vector product and <c>aurMatrixStack::ApplyMatrix</c>
+/// @0x4db450's <c>top = top * M</c> becomes <c>top = M * top</c> on this side.
+/// <c>aurMatrixStack::Scale</c> @0x4db060 scales the array's columns, so it is the same left-multiply.</para>
 /// </summary>
 internal static unsafe class SkyBox
 {
@@ -43,8 +56,26 @@ internal static unsafe class SkyBox
     /// <c>RenderSkyBoxes</c> writes the cross-fade into. Same offset <c>AlloyCensus.GobAlpha</c> names.</summary>
     private const int GobAlpha = 0x108;
     /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1), stride 0x58, top at
-    /// +0x18 -- <c>RenderSkyBoxes</c> itself calls <c>SetMatrixMode(2)</c> before the gob draws.</summary>
+    /// +0x18. <c>RenderSkyBoxes</c> replaces the PROJECTION (push/identity/SetPerspectiveTransform @0x466aa2)
+    /// and leaves the model stack alone, so this top is the base every composed sky matrix sits on -- and it
+    /// is the same value at the Alloy slot, because every engine walk brackets its own model writes with
+    /// Push/PopCurrentMatrix.</summary>
     private const int ModeModel = 2, StackStride = 0x58, StackTop = 0x18;
+    /// <summary>Where <c>RenderSkyBoxes</c> parks every sky gob: <c>Gob::SetPosition(Scene+0x190)</c>, a
+    /// <c>Vector</c>, called once per gob per frame right before <c>Gob::Render</c>.</summary>
+    private const int SceneSkyPos = 0x190;
+    /// <summary>Gob fields: the position <c>SetPosition</c> writes (+0xa8, the additive term of
+    /// <c>GetAdjustedPosition</c>), the "visible" byte <c>Gob::Render</c> gates on (+0x1a4), and the
+    /// attachment link (+0x450) whose chain multiplies a further lerped scale into the gob's own.</summary>
+    private const int GobPos = 0xa8, GobVisible = 0x1a4, GobAttach = 0x450;
+    /// <summary>Part fields <c>Gob::PartDraw</c> and <c>Part::GetWorld</c> read: the draw gate at +0x34, the
+    /// uniform scale at +0x2c and the parent link at +0x48. Position (+0x10) and orientation (+0x1c) are the
+    /// other two, and <c>GetWorld</c> composes those for us.</summary>
+    private const int PartVisible = 0x34, PartScale = 0x2c, PartParent = 0x48;
+    /// <summary>Part vtable slot 0x60, <c>Part::AsPartTriMesh</c> -- the same discriminator
+    /// <see cref="SceneWalk"/> uses, and the one that keeps a sky gob's lights and dummies out of the
+    /// table.</summary>
+    private const int PartVtblAsTriMesh = 0x60;
     /// <summary>A skybox model is a handful of parts and there are at most three gobs in play -- 11 was the
     /// most ever logged. Sized as a ceiling anyway (one Part struct is small), because a sky handed back for
     /// want of a slot is a whole-screen artifact.</summary>
@@ -58,11 +89,12 @@ internal static unsafe class SkyBox
     /// to read the wrong way round and the difference is a sky that brightens through every cross-fade.</summary>
     private const int BlendSrcAlpha = 0, BlendZero = 3, BlendOverAlpha = 1;
 
-    /// <summary>One captured sky part. Everything but the matrix is re-validated at draw time.</summary>
+    /// <summary>One enrolled sky part. Rebuilt from the gob's own part tree every frame, so there is no
+    /// liveness field: an entry exists exactly while the engine's own tree holds it.</summary>
     internal struct Part
     {
         public IntPtr Tri, Node, Mat, Vdo, Gob;
-        public int Item, Prim, Frame;
+        public int Item, Prim;
         /// <summary>#125: can the Alloy pass actually SHADE this part -- i.e. its material either declares
         /// no custom shader, or one the Alloy pass implements? A dynamic skybox is its fragment shader; drawn
         /// with the plain stage it is the diffuse texture alone, which for sow-topdata's night background is
@@ -76,12 +108,17 @@ internal static unsafe class SkyBox
 
     private static readonly Part[] _parts = new Part[MaxParts];
     private static int _count;
-    private static int _capSlot = -1;
     private static byte* _stacks;
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, void> _orig;
-    private static int _frame, _drawnGen = -1, _masked, _captured, _foreign;
-    private static long _revoked;
+    /// <summary><c>Part::GetWorld(Vector&amp;, Quaternion&amp;)</c> -- no Part subclass overrides vtable slot
+    /// 0x20, so this is called by symbol rather than through a vptr.</summary>
+    private static delegate* unmanaged<IntPtr, Vector3*, float*, void> _getWorld;
+    /// <summary><c>Gob::GetAdjustedScale</c> -- a plain float return, which is why the scale comes from here
+    /// while the position and orientation come from <see cref="_getWorld"/>'s out parameters.</summary>
+    private static delegate* unmanaged<IntPtr, float> _gobScale;
+    /// <summary>The model stack top, read once per enrollment; every composed matrix ends on it.</summary>
+    private static Matrix4x4 _base = Matrix4x4.Identity;
+    private static int _enrolled, _attached;
     private static bool _off;
     /// <summary>The player's own switch (<c>/sky</c>, ADR 0013 bucket 1). Distinct from <see cref="_off"/>,
     /// which means "this session cannot own the sky at all": the hook is armed either way, so the toggle is
@@ -89,11 +126,7 @@ internal static unsafe class SkyBox
     /// in the capture window on the render thread.</summary>
     private static volatile bool _disabled;
 
-    /// <summary>True between the hook's entry and exit: <c>DrawFunnelService.OnPartDraw</c> routes sky parts here
-    /// instead of into the general part table. They must stay out of it -- their transform changes every
-    /// frame, so the general part table could never hold a stable record for one.</summary>
-    internal static bool InWindow;
-    /// <summary>The Scene whose skybox was captured, for the Alloy pass to compare against its own.</summary>
+    /// <summary>The Scene whose sky was enrolled, for the Alloy pass to compare against its own.</summary>
     internal static IntPtr Scene;
 
     internal static int Count => _count;
@@ -103,99 +136,105 @@ internal static unsafe class SkyBox
     {
         _log = log;
         _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
-        if (_stacks == null) { _off = true; return; }
-        _orig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.RenderSkyBoxes, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRenderSkyBoxes);
-        if (_orig == null) { _off = true; log.Info("SkyBox: Scene::RenderSkyBoxes did not hook -- the sky stays vanilla"); }
+        _getWorld = (delegate* unmanaged<IntPtr, Vector3*, float*, void>)Native.Sym(SymbolMap.PartGetWorld);
+        _gobScale = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.GobGetAdjustedScale);
+        if (_stacks == null || _getWorld == null || _gobScale == null)
+        { _off = true; log.Info("SkyBox: matrix stack, Part::GetWorld or Gob::GetAdjustedScale unresolved -- the sky stays vanilla"); }
     }
 
-    /// <summary>The vanilla site. Opens the capture window and lets the engine run its whole routine --
-    /// colour-masked when the Alloy pass already drew the sky this pass, so the draws still happen (capture,
-    /// ProcessGob, node animation) and write nothing. The state prologue/epilogue runs either way, which is
-    /// what keeps bucket 1 downstream finding the blend/discard/lighting state it expects.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnRenderSkyBoxes(IntPtr scene)
+    /// <summary>#261: the sky, read off the Scene's own gobs. Once per world frame, in ENGINE context,
+    /// before the frame anchor -- <c>AlloyRenderer.VdoSlot</c> harvests engine VAOs off the entries this
+    /// leaves. Allocation-free; three gobs of a handful of parts each.
+    /// <para>Rebuilt from scratch each call. The gobs are the ones <see cref="Roles"/> names, the trees are
+    /// the ones <c>Gob::ProxyPartDraw</c> would have walked, and the gates are <c>Gob::Render</c>'s own --
+    /// so there is nothing here that can go stale, and an area transition needs no tombstone.</para></summary>
+    internal static void Enroll(IntPtr scene)
     {
-        if (_orig == null) return;
-        // A GUI 3D panel drives the SAME Scene virtuals as the world, and RenderSinglePass calls this
-        // unconditionally, so a portrait or inventory preview reaches here every frame with its own Scene.
-        // Nothing below may run for one: the Forget/latch pair would wipe the captured table every frame an
-        // inventory is open, and the sky would be permanently vanilla with no counter saying why.
-        if (!AlloyRenderer.IsWorldScene(scene)) { _orig(scene); _foreign++; return; }
-        // /sky off: idle, never uninstalled. The table is dropped on the first such frame so the Alloy pass
-        // has nothing to stage -- Fresh() is a sighting window, and _frame stops advancing here.
-        if (_disabled)
-        {
-            if (_count != 0 || Scene != IntPtr.Zero) Forget();
-            InWindow = false;
-            _orig(scene);
-            return;
-        }
-        // A new world Scene is a new sky population: the old gobs are freed and their entries would sit dead
-        // in the table forever, filling it after a handful of area transitions and starving the real ones.
-        if (scene != Scene) Forget();
+        _count = 0;
+        if (_off || _disabled || scene == IntPtr.Zero) { Scene = IntPtr.Zero; return; }
         Scene = scene;
-        // Capture only in a pass the Alloy block took. It is the pass whose matrix stack the replay will be
-        // read against, and a pass the Alloy block skipped (context down, vanilla mode) is one whose sky the
-        // engine is about to draw for real.
-        bool ours = AlloyRenderer.DrewThisPass;
-        // ...and never mask on the strength of a stale flag: the Alloy pass stamps the CURRENT pass
-        // generation, so a pass that staged nothing falls back to a visible engine sky rather than to none.
-        bool mask = ours && _drawnGen == AlloyRenderer.PassGen && Gl.ColorMask != null;
-        InWindow = ours;
-        if (mask) { Gl.ColorMask(0, 0, 0, 0); _masked++; }
-        _orig(scene);
-        if (mask) Gl.ColorMask(1, 1, 1, 1);
-        InWindow = false;
-        if (ours) _frame++;
-    }
-
-    /// <summary>A sky part is about to draw vanilla: record its identity and the live model matrix, and arm
-    /// the funnel for its (VDO, item, prim). Returns the slot to close with <see cref="End"/>, or -1.</summary>
-    internal static int Begin(IntPtr tri)
-    {
-        IntPtr node = *(IntPtr*)(tri + PartNode), mat = *(IntPtr*)(tri + PartMaterial);
-        if (node == IntPtr.Zero || mat == IntPtr.Zero) return -1;
-        int s = -1, free = -1;
-        for (int i = 0; i < _count; i++)
+        _base = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
+        Vector3 cam = *(Vector3*)(scene + SceneSkyPos);
+        Span<Role> roles = stackalloc Role[3];
+        int n = Roles(scene, roles);
+        for (int r = 0; r < n; r++)
         {
-            if (_parts[i].Tri == tri) { s = i; break; }
-            if (_parts[i].Tri == IntPtr.Zero && free < 0) free = i;
+            IntPtr gob = roles[r].Gob;
+            if (gob == IntPtr.Zero || *(byte*)(gob + GobVisible) == 0) continue;
+            // ponytail: a gob with an attachment chain has a further lerped scale factor folded in by
+            // Gob::Render @0x45235b, and this side does not walk it. A skybox gob is created free-standing
+            // by Scene::SetSkyBox, so the chain is expected to be null -- refuse the whole sky rather than
+            // draw it at a scale we did not measure. `sky attached=` on the period line is the trip-wire;
+            // if it ever moves, replicate the @0x452370 loop (LerpFloat::Lerped is exported).
+            if (*(IntPtr*)(gob + GobAttach) != IntPtr.Zero) { _attached++; _count = 0; return; }
+            float gs = _gobScale(gob);
+            Tree(*(IntPtr*)(gob + GobPartTree), gob, gs, cam);
         }
-        if (s < 0)
+    }
+
+    /// <summary>One gob's part tree, iteratively, mirroring <c>Gob::PartDraw</c>: a part whose +0x34 is
+    /// clear draws nothing AND stops the recursion, exactly as the engine's early return does.</summary>
+    private static void Tree(IntPtr root, IntPtr gob, float gobScale, Vector3 cam)
+    {
+        if (root == IntPtr.Zero) return;
+        int sp = 0;
+        _stack[sp++] = root;
+        while (sp > 0)
         {
-            // A revoked slot is reused before the table grows: a sky that swaps within one Scene would
-            // otherwise creep towards MaxParts one tombstone at a time.
-            if (free >= 0) s = free;
-            else if (_count < MaxParts) s = _count++;
-            else return -1;
-            _captured++;
+            IntPtr part = _stack[--sp];
+            if (*(byte*)(part + PartVisible) == 0) continue;
+            IntPtr tri = ((delegate* unmanaged<IntPtr, IntPtr>)
+                          (*(IntPtr*)(*(IntPtr*)part + PartVtblAsTriMesh)))(part);
+            if (tri != IntPtr.Zero) Capture(tri, gob, gobScale, cam);
+            IntPtr* kids = *(IntPtr**)(part + PartChildren);
+            int k = *(int*)(part + PartChildCount);
+            if (kids == null) continue;
+            for (int i = 0; i < k; i++)
+            {
+                if (kids[i] == IntPtr.Zero) continue;
+                if (sp >= StackMax) break;
+                _stack[sp++] = kids[i];
+            }
         }
-        ref Part p = ref _parts[s];
-        p.Tri = tri; p.Node = node; p.Mat = mat; p.Gob = *(IntPtr*)(tri + PartGob);
-        p.Ported = !AlloyCensus.HasUnportedShader(mat);
-        p.Model = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
-        p.Vdo = IntPtr.Zero;
-        _capSlot = s;
-        return s;
     }
 
-    internal static void End(int s)
+    private static void Capture(IntPtr tri, IntPtr gob, float gobScale, Vector3 cam)
     {
-        _capSlot = -1;
-        if (s >= 0 && _parts[s].Vdo != IntPtr.Zero) _parts[s].Frame = _frame;
+        if (_count >= MaxParts) return;
+        IntPtr vp = *(IntPtr*)(tri + PartNode), mat = *(IntPtr*)(tri + PartMaterial);
+        if (vp == IntPtr.Zero || mat == IntPtr.Zero) return;
+        IntPtr vdo = *(IntPtr*)(vp + VpVdo);
+        int item = *(int*)(vp + VpItem);
+        // The same three refusals SceneWalk.TryBind makes: no resident geometry yet, or a VDO this renderer
+        // cannot draw from its own tables. Reached without a draw, which is the whole point of #261.
+        if (vdo == IntPtr.Zero || item < 0 || *(int*)(vdo + VdoMode) != 1) return;
+        IntPtr mdl = *(IntPtr*)(tri + AlloyRenderer.PartMdlNode);
+        if (mdl == IntPtr.Zero) return;
+
+        Vector3 pos; float* q = stackalloc float[4];
+        _getWorld(tri, &pos, q);
+        // The camera-parking correction. See the class remarks: gob+0xa8 enters GetAdjustedPosition purely
+        // additively, so this replaces the previous frame's parked position with this frame's.
+        pos += cam - *(Vector3*)(gob + GobPos);
+        // Quaternions are stored (w, x, y, z); System.Numerics takes (x, y, z, w).
+        var rot = new Quaternion(q[1], q[2], q[3], q[0]);
+        float scale = gobScale;
+        for (IntPtr p = tri; p != IntPtr.Zero; p = *(IntPtr*)(p + PartParent)) scale *= *(float*)(p + PartScale);
+
+        ref Part e = ref _parts[_count++];
+        e.Tri = tri; e.Node = vp; e.Mat = mat; e.Gob = gob;
+        e.Vdo = vdo; e.Item = item; e.Prim = *(int*)(mdl + MdlPrimType);
+        e.Ported = !AlloyCensus.HasUnportedShader(mat);
+        e.Vao = -1;
+        e.Model = Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rot)
+                  * Matrix4x4.CreateTranslation(pos) * _base;
+        _enrolled++;
     }
 
-    /// <summary>The <c>RenderVertexData</c> funnel's sky arm: one indexed submit per part is all a skybox
-    /// mesh is. A part that submits twice (multi-draw) or from an unindexed VDO leaves its slot empty and is
-    /// simply not replayed -- the engine's own draw is the fallback, and it is still running.</summary>
-    internal static void Observe(IntPtr vdo, int item, int prim)
-    {
-        if (_capSlot < 0) return;
-        ref Part p = ref _parts[_capSlot];
-        if (p.Vdo != IntPtr.Zero) { p.Vdo = IntPtr.Zero; _capSlot = -1; return; }
-        p.Vdo = vdo; p.Item = item; p.Prim = prim;
-    }
+    /// <summary>A sky model is a root and a few dozen leaves; this is a runaway guard, not a sizing
+    /// decision.</summary>
+    private const int StackMax = 256;
+    private static readonly IntPtr[] _stack = new IntPtr[StackMax];
 
     /// <summary>One gob of the sky, in draw order, with the alpha and blend pair the engine would give it.
     /// The alphas come off the Scene live rather than off <c>gob+0x108</c>, which the engine writes at the
@@ -241,32 +280,10 @@ internal static unsafe class SkyBox
         return n;
     }
 
-    /// <summary>#150: <c>Part::~Part</c> reached this table. Same lever as #145, one table over: a sky part
-    /// is routed AWAY from the general part table, so the death notice that fix installed never reached the
-    /// entries here -- and the sky's own liveness test (<see cref="Fresh"/>) is a sighting window, which a
-    /// destroyed part passes for as long as the capture window has not run again. The frame that follows
-    /// reads <c>p.Mat</c>, and <c>Material::GetTexture</c> is a plain field read, so a freed material hands
-    /// back a wild pointer that <see cref="AurTex"/> then dereferences.
-    /// <para>Compares only, never dereferences, and tombstones rather than swap-removes: <see cref="_capSlot"/>
-    /// indexes this array, so a compaction between <see cref="Begin"/> and <see cref="End"/> would rebind a
-    /// slot mid-capture.</para></summary>
-    internal static void Revoke(IntPtr part)
-    {
-        for (int i = 0; i < _count; i++)
-        {
-            if (_parts[i].Tri != part) continue;
-            _parts[i].Tri = _parts[i].Node = _parts[i].Mat = _parts[i].Vdo = _parts[i].Gob = IntPtr.Zero;
-            _parts[i].Vao = -1;
-            _revoked++;
-            return;
-        }
-    }
-
-    /// <summary>Was this part captured on the frame just gone? A gob that stopped drawing (area changed, sky
-    /// turned off) leaves stale entries, and replaying one paints last area's sky.</summary>
-    internal static bool Fresh(int i) => _parts[i].Tri != IntPtr.Zero && _parts[i].Vdo != IntPtr.Zero
-                                         && _parts[i].Ported
-                                         && _parts[i].Frame >= _frame - 1;
+    /// <summary>Can this entry actually be drawn? Geometry resolved, and a material whose shader the Alloy
+    /// pass has a port of. A gob that stopped drawing simply is not in the table any more (#261), so there
+    /// is no staleness question left here.</summary>
+    internal static bool Drawable(int i) => _parts[i].Vdo != IntPtr.Zero && _parts[i].Ported;
 
     /// <summary>Diagnostic: sky parts captured whose material names a shader the Alloy pass has no port of.
     /// Non-zero means the sky is deliberately left vanilla, which is a different fact from never seeing
@@ -278,30 +295,25 @@ internal static unsafe class SkyBox
         return n;
     }
 
-    /// <summary>The Alloy pass drew the sky in pass generation <paramref name="gen"/> -- the vanilla site
-    /// colour-masks itself for exactly that generation.</summary>
-    internal static void MarkDrawn(int gen) => _drawnGen = gen;
-
     /// <summary>The <c>/sky</c> body: flip the Alloy sky and say where it landed. Cold (input thread); the
-    /// render thread picks the flag up in its next capture window.</summary>
+    /// render thread picks the flag up in its next enrollment.</summary>
     internal static string Toggle()
     {
-        if (_off || _orig == null) return "[sky] unavailable this session -- the sky stays vanilla";
+        if (_off) return "[sky] unavailable this session -- the sky stays vanilla";
         _disabled = !_disabled;
         return $"[sky] Alloy sky {(_disabled ? "off -- the engine draws it" : "on")}";
     }
 
-    /// <summary>Every captured identity is void: the parts belong to gobs the area unload freed.</summary>
+    /// <summary>Every enrolled identity is void: the parts belong to gobs the area unload freed.</summary>
     internal static void Forget()
     {
         _count = 0;
-        _drawnGen = -1;
         Scene = IntPtr.Zero;
     }
 
     /// <summary>Zeroed with the rest of the period report's counters: a cumulative one would keep printing
-    /// a healthy "masked" long after the sky stopped being drawn, which is the opposite of the question.</summary>
-    internal static void ResetPeriod() { _masked = 0; _captured = 0; _foreign = 0; }
+    /// a healthy "enrolled" long after the sky stopped being drawn, which is the opposite of the question.</summary>
+    internal static void ResetPeriod() { _enrolled = 0; _attached = 0; }
 
     /// <summary>The role alphas the last staged pass actually used, for the period line. #132 made the Alloy
     /// frame LINEAR and the resolve does the one encode, so a role drawn at partial alpha composites
@@ -316,13 +328,13 @@ internal static unsafe class SkyBox
     private static int _roleN;
     private static readonly float[] _roleAlpha = new float[3];
 
-    internal static string Stats() => _disabled ? "sky off (/sky)" : $"sky {_count} parts, {_captured} captured, {_masked} masked" +
+    internal static string Stats() => _disabled ? "sky off (/sky)" : _off ? "sky vanilla (unavailable)"
+        : $"sky {_count} parts, {_enrolled} enrolled" +
         $", roles {_roleN}" + (_roleN == 0 ? "" : " at alpha " +
             string.Join("/", System.Linq.Enumerable.Select(
                 System.Linq.Enumerable.Take(_roleAlpha, _roleN), a => a.ToString("F3")))) +
-        $", dtor-revoked={_revoked}" +
-        (Unported() == 0 ? "" : $", {Unported()} LEFT VANILLA (custom sky shader not ported to the Alloy pass)") +
-        (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped");
+        (Unported() == 0 ? "" : $", {Unported()} UNPORTED (custom sky shader not ported -- #136; nothing draws them)") +
+        (_attached == 0 ? "" : $", {_attached} passes REFUSED (sky gob has an attachment chain, scale unmeasured)");
 
     /// <summary>Off-device: <see cref="Roles"/>'s gates and their order, over a stand-in Scene. This is the
     /// one piece of the sky that is a decision rather than a replay -- miss a gate and the Alloy pass paints
@@ -366,22 +378,25 @@ internal static unsafe class SkyBox
         E(Roles(s, r) == 2 && r[1].Gob == (IntPtr)fadeGob && r[1].Alpha == 0.5f && r[1].Dst == BlendOverAlpha,
           "the skyfade gob draws last, over-blended, on its own alpha");
 
-        // #150: the death notice, over the table itself. Begin cannot be exercised off-device (it reads the
-        // part and asks the material for its shader), but the half that matters -- a revoked slot stops being
-        // Fresh, and a slot that was never captured is untouched -- is pure table work.
-        int savedCount = _count; long savedRevokes = _revoked;
+        int savedCount = _count;
         _count = 2;
-        _parts[0] = new Part { Tri = 0x1000, Mat = 0x2000, Vdo = 0x3000, Ported = true, Frame = _frame };
-        _parts[1] = new Part { Tri = 0x4000, Mat = 0x5000, Vdo = 0x6000, Ported = true, Frame = _frame };
-        E(Fresh(0) && Fresh(1), "a captured, ported, current part is fresh");
-        Revoke(0x1000);
-        E(!Fresh(0) && _parts[0].Mat == IntPtr.Zero && _revoked == savedRevokes + 1,
-          "a destroyed part is tombstoned, drops its material, and stops being fresh");
-        E(Fresh(1) && _parts[1].Mat == 0x5000, "...and its neighbour is untouched");
-        Revoke(0x1000);
-        E(_revoked == savedRevokes + 1, "a second death notice for the same part revokes nothing twice");
-        _count = savedCount; _revoked = savedRevokes;
+        _parts[0] = new Part { Tri = 0x1000, Mat = 0x2000, Vdo = 0x3000, Ported = true };
+        _parts[1] = new Part { Tri = 0x4000, Mat = 0x5000, Vdo = 0x6000, Ported = false };
+        E(Drawable(0) && !Drawable(1), "an unported part is not drawable -- #136, and it is not a fallback");
+        _parts[0].Vdo = IntPtr.Zero;
+        E(!Drawable(0), "...and neither is one whose VertexPrimitive has no VDO yet");
+        _count = savedCount;
         _parts[0] = default; _parts[1] = default;
+
+        // #261: the matrix convention, which is the one piece of the composition that is a derivation rather
+        // than a transcription. Getting the multiply order or the (w,x,y,z) quaternion backwards puts the
+        // dome somewhere no counter would ever mention.
+        var rot = new Quaternion(0f, 0f, MathF.Sqrt(0.5f), MathF.Sqrt(0.5f));   // +90 deg about z
+        Matrix4x4 m = Matrix4x4.CreateScale(2f) * Matrix4x4.CreateFromQuaternion(rot)
+                      * Matrix4x4.CreateTranslation(new Vector3(10f, 0f, 0f));
+        Vector3 got = Vector3.Transform(new Vector3(1f, 0f, 0f), m);
+        E(MathF.Abs(got.X - 10f) < 1e-4f && MathF.Abs(got.Y - 2f) < 1e-4f && MathF.Abs(got.Z) < 1e-4f,
+          "scale, then rotate, then translate -- a point at x=1 lands at (10, 2, 0), not (11, 0, 0)");
 
         log.Info(ok ? "SkyBox.SelfCheck: passed" : "SkyBox.SelfCheck: FAILED");
     }

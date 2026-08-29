@@ -61,9 +61,10 @@ internal static class ShaderStages
 
         """;
 
-    /// <summary>Every overridable resref with the header its dumped copy carries. All eighteen: four owned,
-    /// four water, two grass, the cluster build, two caster, four post-chain stages and #222's sky
-    /// composite.</summary>
+    /// <summary>Every overridable resref with the header its dumped copy carries. All seventeen: four
+    /// owned, four water, two grass, the cluster build, two caster and four post-chain stages. #261 deleted
+    /// the eighteenth with SkyComposite; <see cref="SelfCheck"/> asserts the count, so this prose and that
+    /// assert have to move together.</summary>
     internal static readonly (string Ref, string Header)[] All =
     {
         (AlloyRenderer.ShdFullbrightVs, Banner + Invariant + Record),
@@ -83,7 +84,6 @@ internal static class ShaderStages
         (PostChain.ShdBloomDownFs,         Banner),
         (PostChain.ShdBloomUpFs,           Banner),
         (PostChain.ShdResolveFs,           Banner),
-        (SkyComposite.ShdSkyCompositeFs,   Banner),
     };
 
     /// <summary>The GLSL the extender compiles for one resref, sizing tokens unexpanded
@@ -99,7 +99,6 @@ internal static class ShaderStages
         AlloyRenderer.ShdWaterTcs => FrameSnapshot.TcsHead + AlloyRenderer.DrawBufDecl + AlloyRenderer.NoiseLib + FrameSnapshot.WaveLib + FrameSnapshot.TcsMain,
         AlloyRenderer.ShdWaterTes => FrameSnapshot.TesHead + AlloyRenderer.DrawBufDecl + AlloyRenderer.NoiseLib + FrameSnapshot.WaveLib + FrameSnapshot.TesMain,
         AlloyRenderer.ShdWaterFs => FrameSnapshot.FsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.KeyFogFs + FrameSnapshot.WaveLib + FrameSnapshot.FsMain,
-        SkyComposite.ShdSkyCompositeFs => SkyComposite.SkyCompositeFs,
         GrassField.ShdGrassVs => GrassField.GrassVs,
         GrassField.ShdGrassFs => GrassField.GrassFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.KeyFogFs + GrassField.GrassFsMain,
         AlloyLights.ShdClusterCs => AlloyLights.BuildSrc,
@@ -154,7 +153,7 @@ internal static class ShaderStages
     /// that declares it. A missing switch arm is otherwise invisible until a program builds from "".</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = All.Length == 18;
+        bool ok = All.Length == 17;
         foreach ((string r, string header) in All)
         {
             string src = Source(r);

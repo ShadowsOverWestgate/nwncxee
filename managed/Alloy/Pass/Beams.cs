@@ -8,24 +8,28 @@ using static Sowx.Alloy.SceneLayout;
 namespace Sowx.Alloy;
 
 /// <summary>
-/// #130 (map #68, spec #114 M3, ADR 0011): volumetric light beams, captured off the engine's own draw and
-/// replayed by the Alloy pass at its graph slot -- the last ordinary content class of the colour pass.
+/// #130 (map #68, spec #114 M3, ADR 0011) and #261 (M5 strand 1 step 6): volumetric light beams, enumerated
+/// by Alloy off the engine's bucket 15 and drawn at the Alloy graph slot.
 /// <para>Vanilla draws them from <c>Scene::RenderBeams</c> @0x46aba0 (Scene vt+0x1d8), step 27 of
 /// <c>Scene::RenderSinglePass</c>, immediately after the additive bucket. They are not draw-bucket residents
-/// in the sense the Alloy pass knows: the walk is
+/// in the sense the general walk knows: the population is
 /// <c>DrawBucketManager::GetFirstItem(Scene+0x208, 0xf, 0)</c> -- bucket <b>15</b>, which
-/// <c>Scene::RenderDrawBucket</c> never touches -- so no part of the existing capture machinery has ever seen
-/// one. What IS in the bucket are <c>PartBeam</c>s: static geometry built once per area by
-/// <c>BSPCreateStaticProjections</c> @0x47e890 (the same bake that makes <c>PartShadow</c>, chosen by the
-/// model's own flag at <c>Model+0x114</c>), so a beam is a resident VDO and not a per-frame simulation.</para>
-/// <para>The arrangement is <see cref="SkyBox"/>'s and for the same reasons: the engine keeps running its
-/// whole routine under <c>glColorMask(0,0,0,0)</c> once the Alloy pass has drawn, so capture stays warm, the
-/// state prologue/epilogue still runs for whatever follows, and an area transition needs no code. The engine
-/// already draws beams with the depth mask off, so a colour-masked pass writes nothing at all.</para>
-/// <para>ponytail: replay is one frame late, because the capture happens at the vanilla site (step 27) and
-/// the Alloy pass runs at #132's frame anchor. Beam geometry is static per area, so the only staleness is
-/// the first frame after a transition -- which falls back to a visible engine draw anyway, since a beam with
-/// no capture is refused. Upgrade path, if it ever matters: walk bucket 15 ourselves at the Alloy slot.</para>
+/// <c>Scene::RenderDrawBucket</c> never touches. What IS in the bucket are <c>PartBeam</c>s: static geometry
+/// built once per area by <c>BSPCreateStaticProjections</c> @0x47e890 (the same bake that makes
+/// <c>PartShadow</c>, chosen by the model's own flag at <c>Model+0x114</c>), so a beam is a resident VDO and
+/// not a per-frame simulation.</para>
+/// <para><b>#261: the source data is ours.</b> <see cref="Enroll"/> reads the bucket arrays directly, once a
+/// frame in engine context, exactly as <c>RenderBeams</c> does -- item, then vtable slot 0x90
+/// (<c>Part::AsPartBeam</c>), then the VDO at <c>PartBeam+0xa0</c>. There is no hook on
+/// <c>Scene::RenderBeams</c>, no hook on <c>PartBeam::Draw</c>, no capture window and no colour mask: the
+/// table is rebuilt from the engine's own live classification every frame, so there is nothing that can go
+/// stale and no population to reconcile against. The one-frame lag went with the capture site.</para>
+/// <para><b>The model matrix is read, not captured.</b> <c>RenderBeams</c> pushes nothing onto the matrix
+/// stack -- verified in the disassembly, its only matrix contact is none -- and
+/// <c>Scene::RenderDrawBucket</c> @0x46d0b0 brackets every per-part <c>SetModelMatrix</c> with
+/// <c>PushCurrentMatrix</c>/<c>PopCurrentMatrix</c>. RSP's own push/identity/pop pair sits AFTER the beam
+/// call (@0x471985, against @0x46f13b). So the model stack top is invariant across the whole of RSP and
+/// reading it at the Alloy slot yields the value the engine's own draw would have used.</para>
 /// </summary>
 internal static unsafe class Beams
 {
@@ -72,16 +76,21 @@ internal static unsafe class Beams
     /// <summary>A handful of static volumes per area; past this a beam is left to the engine.</summary>
     private const int MaxBeams = 2048, MaxVdos = 512;
     /// <summary>The matrix stack: model is index 2, stride 0x58, top at +0x18 (same layout
-    /// <see cref="SkyBox"/> reads). <c>RenderBeams</c> pushes nothing, so the top at capture IS the transform
-    /// the engine's own draw used -- reading it is a replay, not a reconstruction.</summary>
+    /// <see cref="SkyBox"/> reads). Read once per enrollment -- see the class remarks for why the top is the
+    /// same value at the Alloy slot as it is at <c>RenderBeams</c>'s.</summary>
     private const int ModeModel = 2, StackStride = 0x58, StackTop = 0x18;
+    /// <summary>The embedded <c>DrawBucketManager</c> and the bucket <c>RenderBeams</c> asks it for.</summary>
+    private const int SceneDrawBuckets = 0x208, BeamBucket = 0xf;
+    /// <summary>Part vtable slot 0x90, <c>Part::AsPartBeam</c> -- dumped from <c>_ZTV8PartBeam</c>, and the
+    /// call <c>RenderBeams</c> @0x46ad90 makes on every bucket item before touching it as a beam.</summary>
+    private const int PartVtblAsPartBeam = 0x90;
 
-    /// <summary>One captured beam. Everything but the matrix is re-validated at draw time.</summary>
+    /// <summary>One enrolled beam. Rebuilt from the bucket every frame, so there is no liveness field: an
+    /// entry exists exactly while the engine's own classification holds it.</summary>
     internal struct Beam
     {
         public IntPtr Part, Vdo;
-        public int Item, Vao, Frame;
-        public Matrix4x4 Model;
+        public int Item, Vao;
     }
 
     private static readonly Beam[] _beams = new Beam[MaxBeams];
@@ -104,8 +113,10 @@ internal static unsafe class Beams
     private static int _vdoCount;
 
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, void> _origRender, _origDraw;
     private static byte* _stacks;
+    /// <summary>The model stack top, read once per enrollment. Every beam shares it: the bucket-15 volumes
+    /// are baked in one space and <c>RenderBeams</c> sets no per-part transform.</summary>
+    private static Matrix4x4 _model = Matrix4x4.Identity;
     private static int* _enable;
     private static float* _alpha;
     private static uint* _primTable;
@@ -116,19 +127,9 @@ internal static unsafe class Beams
     private static volatile bool _disabled;
     private static uint _prog;
     private static int _locModel = -1, _locView = -1, _locProj = -1, _locSrc = -1, _locZClip = -1, _locColor = -1;
-    private static int _frame, _drawnGen = -1, _masked, _captured, _foreign, _refused, _drawn, _standdown;
-    /// <summary>Bucket-15 beams the engine walked in the current capture window, and in the last one --
-    /// refused ones included. The replay compares against it: a beam the table never took is one the engine
-    /// would have drawn and the colour mask would have deleted, so the population has to match before
-    /// anything is masked. <see cref="Stage"/>'s all-or-none covers the table; this covers what never
-    /// reached it.</summary>
-    private static int _seen, _lastSeen;
-
-    /// <summary>True between <c>Scene::RenderBeams</c>'s entry and exit: <c>PartBeam::Draw</c> only captures
-    /// inside it, so a beam drawn from anywhere else is left alone.</summary>
-    private static bool _inWindow;
-    /// <summary>The Scene whose beams were captured, so a new area drops the table rather than replaying
-    /// volumes whose parts the unload freed.</summary>
+    private static int _enrolled, _refused, _drawn;
+    /// <summary>The Scene the table was enrolled from, and the one <see cref="Direction"/> is asked about:
+    /// the volumes were baked against this Scene's own light list.</summary>
     private static IntPtr _scene;
 
     internal static void Install(ExtenderLog log, HookService hooks)
@@ -140,82 +141,54 @@ internal static unsafe class Beams
         _alpha = (float*)Native.Sym(SymbolMap.ProjectionAlpha);
         if (_stacks == null || _primTable == null)
         { _off = true; log.Info("Beams: matrix stack or prim table unresolved -- light beams stay vanilla"); return; }
-        _origRender = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.RenderBeams, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRenderBeams);
-        _origDraw = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.PartBeamDraw, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPartBeamDraw);
-        if (_origRender == null || _origDraw == null)
-        { _off = true; log.Info("Beams: Scene::RenderBeams / PartBeam::Draw did not hook -- light beams stay vanilla"); }
-        else log.Info("Beams: armed -- bucket-15 volumes replayed at the Alloy additive slot (/beams toggles)");
+        // #261: no hooks. The population is the engine's bucket 15, read at the Alloy slot.
+        log.Info("Beams: armed -- bucket-15 volumes enumerated and drawn by Alloy (/beams toggles)");
     }
 
-    /// <summary>The vanilla site. Same shape as <see cref="SkyBox.OnRenderSkyBoxes"/>: let the engine run its
-    /// whole routine, colour-masked on the passes the Alloy block already drew the beams, so the capture and
-    /// the state prologue/epilogue both keep happening and nothing lands on screen twice.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnRenderBeams(IntPtr scene)
+    /// <summary>#261: the population, read straight off the engine's bucket 15. Once per world frame, in
+    /// ENGINE context, before the frame anchor -- <see cref="Harvest"/> queries engine VAOs and cannot run
+    /// anywhere else. Allocation-free; a handful of items per area.
+    /// <para>The table is rebuilt from scratch each call rather than aged. Bucket 15 holds exactly the live,
+    /// classified beams for this frame, so membership needs no sighting window, no tombstone and no
+    /// reconciliation against what the engine walked -- the engine's walk IS this walk.</para></summary>
+    internal static void Enroll(IntPtr scene)
     {
-        if (_origRender == null) return;
-        // A GUI 3D panel drives the same Scene virtuals as the world (#106/#125), and RenderSinglePass calls
-        // this unconditionally -- so an open inventory reaches here every frame with its own Scene.
-        if (!AlloyRenderer.IsWorldScene(scene)) { _origRender(scene); _foreign++; return; }
-        // /beams off: idle, never uninstalled. The table goes on the first such frame -- Fresh() is a
-        // sighting window and _frame stops advancing here, so a kept table would replay stale volumes.
-        if (_disabled)
+        if (_off || _disabled || scene == IntPtr.Zero) return;
+        if (scene != _scene) { Forget(); _scene = scene; }
+        _count = 0;
+        _model = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
+        IntPtr mgr = scene + SceneDrawBuckets;
+        for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
         {
-            if (_count != 0) Forget();
-            _inWindow = false;
-            _origRender(scene);
-            return;
+            IntPtr bucket = mgr + (BeamBucket * BucketGate.BucketPhases + phase) * BucketGate.BucketStride;
+            IntPtr* items = *(IntPtr**)bucket;
+            int n = *(int*)(bucket + BucketGate.BucketCount);
+            if (items == null) continue;
+            for (int i = 0; i < n; i++)
+            {
+                IntPtr item = items[i];
+                if (item == IntPtr.Zero) continue;
+                IntPtr beam = ((delegate* unmanaged<IntPtr, IntPtr>)
+                               (*(IntPtr*)(*(IntPtr*)item + PartVtblAsPartBeam)))(item);
+                if (beam != IntPtr.Zero) Capture(beam);
+            }
         }
-        if (scene != _scene) Forget();
-        _scene = scene;
-        bool ours = AlloyRenderer.DrewThisPass;
-        // Never mask on a stale flag: the Alloy pass stamps the CURRENT pass generation, so a pass that
-        // staged nothing falls back to a visible engine beam rather than to none.
-        bool mask = ours && _drawnGen == AlloyRenderer.PassGen && Gl.ColorMask != null;
-        _inWindow = ours;
-        if (ours) _seen = 0;
-        if (mask) { Gl.ColorMask(0, 0, 0, 0); _masked++; }
-        _origRender(scene);
-        if (mask) Gl.ColorMask(1, 1, 1, 1);
-        _inWindow = false;
-        if (ours) { _lastSeen = _seen; _frame++; }
-    }
-
-    /// <summary>One beam is about to draw vanilla: record its VDO, its item and the live model matrix. The
-    /// draw arguments are fields on the part, so there is nothing to observe at the funnel.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnPartBeamDraw(IntPtr part)
-    {
-        // Counted BEFORE the capture, so a beam Capture() refuses still shows up in the population the
-        // replay has to match. A refusal that did not count would read as "nothing to own here".
-        if (_inWindow && part != IntPtr.Zero) { _seen++; Capture(part); }
-        if (_origDraw != null) _origDraw(part);
     }
 
     private static void Capture(IntPtr part)
     {
         IntPtr vdo = *(IntPtr*)(part + PartVdo);
         int item = *(int*)(part + PartItem);
-        // Only the indexed-static path, which is what every resident VDO in this renderer is. A refusal is
-        // not a per-beam fallback -- the colour mask is whole-pass, so there is no such thing here; it makes
-        // the TABLE smaller than the population, and Draw() stands the whole class down when those differ.
+        // Only the indexed-static path, which is what every resident VDO in this renderer is. A refusal now
+        // costs exactly one missing shaft: under the cutover the engine draws nothing, so there is no
+        // whole-class fallback to protect and no reason to stand the pass down for it.
         if (vdo == IntPtr.Zero || *(int*)(vdo + VdoMode) != 1) { _refused++; return; }
-        int s = -1;
-        for (int i = 0; i < _count; i++) if (_beams[i].Part == part) { s = i; break; }
-        if (s < 0)
-        {
-            if (_count >= MaxBeams) { _refused++; return; }
-            s = _count++;
-            _captured++;
-        }
+        if (_count >= MaxBeams) { _refused++; return; }
         int v = VdoSlot(vdo);
         if (v < 0) { _refused++; return; }
-        ref Beam b = ref _beams[s];
+        ref Beam b = ref _beams[_count++];
         b.Part = part; b.Vdo = vdo; b.Item = item; b.Vao = v;
-        b.Model = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
-        b.Frame = _frame;
+        _enrolled++;
     }
 
     /// <summary>Find (or harvest) the VAO-cache slot for a VDO. Harvesting reads the ENGINE VAO's attribute
@@ -312,32 +285,25 @@ internal static unsafe class Beams
     internal static void Draw(Matrix4x4* view, Matrix4x4* proj)
     {
         if (_disabled || _off || _failed || _count == 0 || Gl.MultiDrawElementsBaseVertex == null) return;
+        // #261: the engine's own beam draw is only silent under the cutover (the shim swallows the draw
+        // funnels). With ownframe=0 there is no colour mask left to suppress it with, so the owned pass
+        // stands aside and the engine draws its beams at its own step -- one pre-cutover frame, unchanged.
+        if (!RspShim.Armed) return;
         // The player's own switch, honoured the way grass honours "Grass Mode": beams off means the owned
         // pass draws nothing AND suppresses nothing, so the console variable keeps meaning what it says.
         if (_enable != null && *_enable == 0) return;
-        // The Scene the CAPTURE ran on, not the one enrollment holds: the volumes were baked against
-        // this Scene's own light list, and reading another's would extrude them along a direction the
-        // geometry was never built for. Forget() clears it, so an area transition draws nothing until the
-        // engine's (unmasked) pass warms the table again.
+        // The Scene the table was enrolled from: the volumes were baked against this Scene's own light
+        // list, and reading another's would extrude them along a direction the geometry was never built for.
         if (!Direction(_scene, out Vector3 dir)) return;
         if (!EnsureProgram()) return;
 
-        // All-owned-or-none (#107 section 2): stage EVERY fresh beam before issuing any of them. A beam that
-        // fails here while its neighbours draw would be masked out of the engine's pass and simply missing,
-        // with the frame looking merely dimmer -- so one failure hands the whole class back for the pass, at
-        // the cost of one visible vanilla beam pass and no hole at all.
+        // #261 retired the all-or-none rule with the colour mask that motivated it: there is no engine copy
+        // of a beam to delete any more, so a beam that cannot be staged is skipped and its neighbours draw.
         int staged = 0;
         for (int i = 0; i < _count; i++)
-        {
-            if (!Fresh(i)) continue;
-            if (!Stage(i, staged)) { _refused++; return; }
-            _sBeam[staged++] = i;
-        }
-        // ...and the same rule over the POPULATION, not just the table. A beam refused at capture (an
-        // unindexed VDO, no attribute pair, the table full) is absent from _beams entirely, so the staging
-        // loop above cannot see it -- yet the colour mask is whole-pass, so masking would delete the engine's
-        // copy of it too. The last window's walk count is what says whether the table is the whole class.
-        if (staged == 0 || staged != _lastSeen) { if (staged != 0) _standdown++; return; }
+            if (Stage(i, staged)) _sBeam[staged++] = i;
+            else _refused++;
+        if (staged == 0) return;
 
         Gl.UseProgram(_prog);
         Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
@@ -361,7 +327,7 @@ internal static unsafe class Beams
         {
             ref Beam b = ref _beams[_sBeam[k]];
             if (b.Vao != boundVao) { Gl.BindVertexArray(Vao(b.Vao)); boundVao = b.Vao; }
-            fixed (Matrix4x4* m = &b.Model) Gl.UniformMatrix4fv(_locModel, 1, 0, (float*)m);
+            fixed (Matrix4x4* m = &_model) Gl.UniformMatrix4fv(_locModel, 1, 0, (float*)m);
             Gl.MultiDrawElementsBaseVertex(_primTable[BeamPrim], counts + k, GlUnsignedShort,
                                            (void**)(offs + k), 1, bases + k);
         }
@@ -369,9 +335,6 @@ internal static unsafe class Beams
         Gl.Disable(Gl.BLEND);
         Gl.DepthMask(1);
         _drawn += staged;
-        // Set only after the Alloy beams actually reached the GPU this pass, never on intent -- the vanilla
-        // site reads it to decide whether to colour-mask the engine's own copy.
-        _drawnGen = AlloyRenderer.PassGen;
     }
 
     /// <summary>Resolve one beam's draw arguments off its VDO's own item tables and park them in slot
@@ -390,10 +353,6 @@ internal static unsafe class Beams
         _sBase[k] = *(int*)(vert + b.Item * 8);
         return true;
     }
-
-    /// <summary>Was this beam captured on the frame just gone? A part the area unload freed leaves a stale
-    /// entry, and replaying one draws through a dangling VDO.</summary>
-    private static bool Fresh(int i) => _beams[i].Vdo != IntPtr.Zero && _beams[i].Frame >= _frame - 1;
 
     private static bool EnsureProgram()
     {
@@ -436,29 +395,25 @@ internal static unsafe class Beams
     internal static void Forget()
     {
         _count = 0;
-        _drawnGen = -1;
         _scene = IntPtr.Zero;
         for (int v = 0; v < _vdoCount; v++) { _vVdo[v] = IntPtr.Zero; _vStale[v] = true; }
         _vdoCount = 0;
     }
 
     /// <summary>The <c>/beams</c> body: flip the Alloy beam pass and say where it landed. Cold (input
-    /// thread); the render thread picks the flag up in its next capture window.</summary>
+    /// thread); the render thread picks the flag up in its next enrollment.</summary>
     internal static string Toggle()
     {
-        if (_off || _origRender == null) return "[beams] unavailable this session -- light beams stay vanilla";
+        if (_off) return "[beams] unavailable this session -- light beams stay vanilla";
         _disabled = !_disabled;
         return $"[beams] Alloy beams {(_disabled ? "off -- the engine draws them" : "on")}";
     }
 
-    internal static void ResetPeriod()
-    { _masked = 0; _captured = 0; _foreign = 0; _refused = 0; _drawn = 0; _standdown = 0; }
+    internal static void ResetPeriod() { _enrolled = 0; _refused = 0; _drawn = 0; }
 
     internal static string Stats() => _disabled ? "beams off (/beams)" : _off ? "beams vanilla (unavailable)"
-        : $"beams {_count} parts, {_captured} captured, {_drawn} drawn, {_masked} masked"
-          + (_refused == 0 ? "" : $", {_refused} REFUSED (unindexed VDO, no attribute pair, or table full)")
-          + (_standdown == 0 ? "" : $", {_standdown} passes HANDED BACK whole (owned {_count} of {_lastSeen} walked)")
-          + (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped");
+        : $"beams {_count} in bucket 15, {_enrolled} enrolled, {_drawn} drawn"
+          + (_refused == 0 ? "" : $", {_refused} REFUSED (unindexed VDO, no attribute pair, or table full)");
 
     /// <summary>Off-device: the two pieces of this file that are decisions rather than replays -- the light
     /// scan's predicate (miss it and the shafts point somewhere the volumes were never baked for) and the

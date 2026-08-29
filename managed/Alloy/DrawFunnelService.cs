@@ -82,7 +82,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         _drawSlot = hooks.Chain(SymbolMap.GlRenderVertexData,
             (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)&OnVdoDraw, DrawPriority);
         BucketGate.Install(hooks);
-        SkyBox.Install(log, hooks);
+        SkyBox.Install(log, hooks);   // #261: resolves symbols only -- there is no sky hook any more
         _repackSlot = hooks.Chain(SymbolMap.VdoRepack,
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepack, RepackPriority);
         // #145: the death notice. Every other gate infers liveness (a sighting window, an identity compare
@@ -142,17 +142,6 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         if (Live && part != IntPtr.Zero && _dumpLeft > 0)
         { _dumpLeft--; DumpPart(part); if (_dumpLeft == 0) _log?.Info("[dumpframe] end"); }
 
-        // #125: the sky window comes FIRST and returns -- a sky part is drawn outside any bucket, so the
-        // gate below would hand it straight to the engine and it would never be captured at all. It must also
-        // stay out of the general part table: its transform is the engine's matrix STACK, which changes
-        // every frame, so no record could hold a stable transform for one.
-        if (Live && part != IntPtr.Zero && SkyBox.InWindow)
-        {
-            int sky = SkyBox.Begin(part);
-            Vanilla(part);
-            SkyBox.End(sky);
-            return;
-        }
         if (!Live || _inBucket == 0 || part == IntPtr.Zero)
         { Vanilla(part); return; }
         IntPtr node = new PartRef(part).Node.Ptr;
@@ -340,12 +329,6 @@ public sealed unsafe class DrawFunnelService : IExtenderService
 
     private static void Observe(IntPtr vdo, uint item, int prim)
     {
-        // #125: inside a sky part's vanilla draw this IS the (VDO, item, prim) capture -- and nothing else
-        // in this service has a claim on it, since a sky part never reaches the tables below.
-        // Gated on the WINDOW, not on a live capture slot: SkyBox.Begin refuses a part (no node, no
-        // material, table full) without arming one, and the engine still draws that part -- and a sky
-        // funnel event must not reach the bone capture below, whose bracket belongs to a different part.
-        if (SkyBox.InWindow) { SkyBox.Observe(vdo, (int)item, prim); return; }
         // #256: the capture branch that used to live here is GONE -- (VDO, item, prim) is read off the
         // VertexPrimitive by SceneWalk. #258 took the batch submit that was the other half, so the funnel
         // is now the CASTER's bone-capture point and nothing else.
@@ -368,9 +351,6 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnPartDtor(IntPtr part)
     {
-        // #150: unconditional, and NOT inside the Find branch below -- a sky part is deliberately routed away
-        // from this table (OnPartDraw's SkyBox window returns early), so Find never sees one.
-        SkyBox.Revoke(part);
         // #221: the freed mark goes on unconditionally -- including an entry some other gate already killed,
         // whose tombstone would otherwise outlive the allocation and block the address for good.
         int e = MarkFreed(part);
