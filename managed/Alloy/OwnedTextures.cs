@@ -96,6 +96,12 @@ internal static unsafe class OwnedTextures
     /// <summary>The high-water figure the <c>/knobs</c> residency line reports, in MiB (#259).</summary>
     internal static long PeakMib => _peakBytes / OneMiB;
     private static int _uploads, _reuploads, _peakCount;
+    /// <summary>#262 follow-up: the engine's GPU-PLT switch, held at zero so PLT textures come through the
+    /// upload funnel as decoded pixels. Null when the symbol did not resolve, which leaves PLT content
+    /// exactly where it was -- borrowed.</summary>
+    private static int* _pltOnGpu;
+    private static bool _pltWanted;
+    private static long _pltForced;
 
     /// <summary>Wired once from <see cref="AlloyRenderer"/>'s init, before any frame runs.</summary>
     internal static void Attach(ExtenderLog log)
@@ -104,6 +110,20 @@ internal static unsafe class OwnedTextures
         _hash = (delegate* unmanaged<IntPtr, short, int*, int>)Native.Sym(SymbolMap.AurTextureCalcHash);
         bool wanted = Settings.Bool("ownedtex", true);
         _armed = wanted && _hash != null;
+        // ADR 0013 config bucket: a capability decision about how the ENGINE loads content, not a look dial.
+        // Costs a CPU composite per character texture at load -- which is what the engine did for years --
+        // and buys every PLT-skinned creature a place in the owned set.
+        _pltWanted = Settings.Bool("pltcpu", true);
+        if (_armed && _pltWanted)
+        {
+            _pltOnGpu = (int*)Native.Sym(SymbolMap.PltOnGpu);
+            log.Info(_pltOnGpu != null
+                ? "OwnedTextures: PLT compositing forced to the CPU -- player-character and tinted-creature "
+                + "textures reach the upload funnel and become ownable (pltcpu=0 in sowx.cfg leaves them borrowed)"
+                : "OwnedTextures: g_bGeneratePLTOnGPU unresolved -- PLT textures stay GPU-composited and BORROWED, "
+                + "so every lit part wearing one is drawn by the engine under bindless");
+            KeepPltOnCpu();
+        }
         log.Info(_armed
             ? "OwnedTextures: armed -- Alloy uploads from the engine's decoded pixels (ownedtex=0 to draw from engine ids)"
             : wanted
@@ -223,7 +243,22 @@ internal static unsafe class OwnedTextures
         if (_bytes <= _peakBytes + OneMiB) return;
         _peakBytes = _bytes;
         _log?.Info($"OwnedTextures: [vram] high-water {_peakBytes / OneMiB}MiB across {_peakCount} " +
-                   $"owned textures (uploads {_uploads}, re-uploads {_reuploads}, borrowed {_borrowed.Count})");
+                   $"owned textures (uploads {_uploads}, re-uploads {_reuploads}, borrowed {_borrowed.Count}" +
+                   (_pltOnGpu == null ? _pltWanted ? ", GPU-PLT NOT FORCED OFF (symbol unresolved)" : ", pltcpu=0"
+                                      : _pltForced == 0 ? "" : $", GPU-PLT re-cleared {_pltForced}x") + ")");
+    }
+
+    /// <summary>Hold <c>g_bGeneratePLTOnGPU</c> at zero. Re-asserted per frame rather than stored once: the
+    /// engine writes it from a settings callback (<see cref="SymbolMap.PltOnGpu"/>) that can run after our
+    /// install and again whenever the option is applied, and a single frame with it set is a character whose
+    /// texture is created outside the upload funnel and stays borrowed until something re-creates it.
+    /// <para>One predicted int compare in the common case. The count is reported because forcing an engine
+    /// global is exactly the kind of thing that should never be silent.</para></summary>
+    internal static void KeepPltOnCpu()
+    {
+        if (_pltOnGpu == null || *_pltOnGpu == 0) return;
+        *_pltOnGpu = 0;
+        _pltForced++;
     }
 
     /// <summary>Stop drawing from a texture and queue it for the bracket to delete. Shared by the delete

@@ -59,11 +59,11 @@ public sealed unsafe partial class AlloyRenderer
         float* engClear = stackalloc float[4] { t.Clear0, t.Clear1, t.Clear2, t.Clear3 };
         float engClearDepth = t.ClearDepth;
         // ...and the refusals that need no bracket at all, ahead of the preamble they would otherwise
-        // waste -- PoseSkinned alone force-solves every Alloy skinmesh through the engine.
+        // waste -- PoseSkinned alone solves every Alloy skinmesh's pose.
         if (!PostChain.Precheck(engFbo, depthName, viewport)) return;
-        // Only now: posing force-solves every Alloy skinmesh through the engine, and a pass that is about
-        // to hand the frame back would have the engine solve each of them a second time on its own walk.
-        // Still ENGINE context, which is what PartSkin::Draw needs.
+        // Only now: a pass about to hand the frame back would have the engine solve each of these poses
+        // again on its own walk, so the solve is not worth doing for it. #262: the solve no longer enters
+        // engine code at all, but it still reads engine animation state, so it stays on this side.
         long tPose = FrameZones.Now;
         PoseSkinned();
         FrameZones.Add(FrameZones.Zone.Pose, tPose);

@@ -34,9 +34,9 @@ namespace Sowx.Alloy;
 /// each body piece is a rigid mesh parented to a bone, carrying position/uv/normal/tangent and NO bone stream,
 /// posed entirely by its node matrix -- the engine's own shader runs its <c>skinmesh == 0</c> branch on it. So
 /// the animation is already in the matrix and the shadow follows the walk for free. A TRUE skinmesh (cloak,
-/// robe, tail) is the minority case: it carries the bone attributes at locations 8/9, and for those the bracket
-/// also snapshots the engine's live <c>m_bones</c> into a per-frame SSBO so the depth shader can re-run the
-/// engine's skinning. No engine replay either way, and a part not seen this frame simply has no record -- its
+/// robe, tail) is the minority case: it carries the bone attributes at locations 8/9, and for those a pose is
+/// solved (#262: by <c>SkinPose</c>, from the engine's animation state) into a per-frame SSBO so the depth
+/// shader can re-run the engine's skinning. No engine replay either way, and a part not seen this frame simply has no record -- its
 /// shadow blinks rather than lying about where it is.</para></para>
 /// <para>Gated on <see cref="AlloyGate.Alloy"/> so the vanilla toggle -- and every other frame-start
 /// refusal (#216) -- reverts it frame-atomically, along with the rest of the Alloy frame.
@@ -391,7 +391,6 @@ public sealed unsafe class CasterPass : IExtenderService
     private static int _skinSlot = -1;
     private static float _skinCx, _skinCy, _skinCz, _skinR;
     private static readonly float[] _skinModel = new float[16];
-    private static float* _bones;
     private static IntPtr _skinLastVdo;
     private static int _skinLastSlot = -1;
     private static long _skinSum, _skinOverflow, _skinDropped, _boneStalls, _skinNoSlot, _skinBoned, _boneOverflow,
@@ -575,12 +574,6 @@ public sealed unsafe class CasterPass : IExtenderService
         { log.Info("CasterPass: could not chain VdoRepack -- refusing to arm on stale index ranges"); return; }
 
         _skinned = Settings.Bool("skincast", true);
-        if (_skinned)
-        {
-            _bones = (float*)Native.Sym(SymbolMap.GlRenderBones);
-            if (_bones == null)
-            { _skinned = false; log.Info("CasterPass: GLRender::m_bones unresolved -- skinned casters unavailable"); }
-        }
 
         _armed = true;
         log.Info($"CasterPass: armed -- Alloy multidraw-indirect caster submission into a {_cascades}x{_mapSize}" +
@@ -658,7 +651,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// copy by then; no skinned pointer is ever dereferenced outside this bracket.</para></summary>
     internal static bool SkinBegin(IntPtr part, IntPtr node)
     {
-        if (!_armed || _disarmed || !_skinned || _bones == null || node == IntPtr.Zero) return false;
+        if (!_armed || _disarmed || !_skinned || node == IntPtr.Zero) return false;
         if (!AlloyGate.Alloy || !GlContextService.Available) return false;
         if (_skinCount >= MaxSkin) { _skinOverflow++; return false; }
         _skinBrackets++;   // the count that separates "never saw a creature" from "saw one and refused it"
@@ -720,9 +713,14 @@ public sealed unsafe class CasterPass : IExtenderService
             {
                 // a real skinmesh drawn without its bones would shadow in its BIND pose, so drop it instead
                 if (_boneSlots >= MaxBoneSlots) { _boneOverflow++; return true; }
-                _skinSlot = _boneSlots++;
+                // #262: solved from the engine's animation state, not lifted out of GLRender::m_bones. The
+                // engine's draw of this part IS in progress, so m_bones would be right -- but reading it
+                // would be the last thing in Alloy that depended on an engine draw having run, and the solve
+                // is the same answer from the same state.
+                int slot = _boneSlots;
                 fixed (float* dst = _boneStage)
-                    Buffer.MemoryCopy(_bones, dst + _skinSlot * BoneFloats, BoneFloats * 4L, BoneFloats * 4L);
+                    if (!SkinPose.Solve(_skinPart, dst + slot * BoneFloats)) { _boneOverflow++; return true; }
+                _skinSlot = _boneSlots++;
             }
             bone = _skinSlot;
             _skinBoned++;
@@ -737,14 +735,18 @@ public sealed unsafe class CasterPass : IExtenderService
 
     internal static void SkinEnd() { _skinPart = IntPtr.Zero; _skinSlot = -1; }
 
-    /// <summary>#151: the OWNED rigid instance part's capture. The engine-walk bracket above never sees a
-    /// part the iterator suppresses, so once the colour pass owns a creature's rigid pieces (helmet, plates
-    /// -- posed entirely by their node matrix), they silently left the shadow pass: the live report was a
-    /// knight whose CLOAK cast (a true skinmesh, captured via ForceSkinPose) while his body cast nothing.
-    /// AlloyRenderer calls this per Alloy instance part per pass with data it already holds; the record
-    /// is exactly a rigid <see cref="SkinObserve"/> minus the funnel -- same arrays, same one-frame lag,
-    /// bone -1 because the node matrix IS the animation.</summary>
-    internal static void RecordOwnedInstance(IntPtr tri, IntPtr node, IntPtr vdo, int item, int prim)
+    /// <summary>#151: the OWNED instance part's capture. The engine-walk bracket above never sees a part the
+    /// iterator suppresses, so once the colour pass owns a creature's rigid pieces (helmet, plates -- posed
+    /// entirely by their node matrix), they silently left the shadow pass: the live report was a knight whose
+    /// CLOAK cast while his body cast nothing. AlloyRenderer calls this per Alloy instance part per pass with
+    /// data it already holds; the record is exactly a <see cref="SkinObserve"/> minus the funnel -- same
+    /// arrays, same one-frame lag.
+    /// <para>#262 brought the CLOAK here too. It used to reach the shadow pass through the bracket around the
+    /// forced <c>PartSkin::Draw</c>, and there is no such draw any more -- so the caller passes the 64
+    /// matrices it just solved and this stages them, exactly as the bracket did. <paramref name="bones"/>
+    /// null is the rigid case and keeps bone -1, because the node matrix IS the animation.</para></summary>
+    internal static void RecordOwnedInstance(IntPtr tri, IntPtr node, IntPtr vdo, int item, int prim,
+                                            float* bones = null)
     {
         if (!_armed || _disarmed || !_skinned || node == IntPtr.Zero || tri == IntPtr.Zero) return;
         if (!AlloyGate.Alloy || !GlContextService.Available) return;
@@ -759,8 +761,19 @@ public sealed unsafe class CasterPass : IExtenderService
             if (v >= 0) { _skinLastVdo = vdo; _skinLastSlot = v; }
         }
         if (v < 0) { _skinNoSlot++; return; }
+        // #262: a TRUE skinmesh arrives here too now -- the pose bracket that used to feed it was the engine
+        // draw re-entry #262 deleted. Its 64 matrices are already staged by the caller, so this copies them
+        // into a caster slot; a rigid instance still casts from its node matrix alone (bone -1).
+        int bone = -1;
+        if (bones != null)
+        {
+            if (_boneSlots >= MaxBoneSlots) { _boneOverflow++; return; }
+            bone = _boneSlots++;
+            fixed (float* dst = _boneStage)
+                Buffer.MemoryCopy(bones, dst + bone * BoneFloats, BoneFloats * 4L, BoneFloats * 4L);
+        }
         int i = _skinCount++;
-        _sVdo[i] = vdo; _sItem[i] = item; _sPrim[i] = prim; _sVao[i] = v; _sBone[i] = -1;
+        _sVdo[i] = vdo; _sItem[i] = item; _sPrim[i] = prim; _sVao[i] = v; _sBone[i] = bone;
         _sTri[i] = tri;
         Matrix4x4 model = *(Matrix4x4*)new NodeRef(node).Matrix;
         fixed (float* dst = _sModel) *(Matrix4x4*)(dst + i * 16) = model;

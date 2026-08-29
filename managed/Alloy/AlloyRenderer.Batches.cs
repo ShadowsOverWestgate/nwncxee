@@ -416,6 +416,7 @@ public sealed unsafe partial class AlloyRenderer
             if (!PartTable.InBucketsRecently(_oEntry[i]))
             {
                 _skipUnseen++; _unseenBucket[_oBucket[i]]++;
+                if (_oGob[i] != IntPtr.Zero) _skipUnseenGob++;
                 W(i, "skipped: engine-culled");
                 continue;
             }
@@ -473,7 +474,7 @@ public sealed unsafe partial class AlloyRenderer
                 // bindless handle. That is the ADR 0017 split's per-frame half -- the fetch stays, the two
                 // hash probes behind it do not.
                 var aur = mat.Texture(0);
-                if (aur.IsNull) { _skipTex++; W(i, "skipped: no diffuse texture"); continue; }
+                if (aur.IsNull) { _skipTex++; _skipTexNone++; W(i, "skipped: no diffuse texture"); continue; }
                 texDirty = stale || aur.Ptr != _recAur[i];
                 for (int s = 0; !texDirty && lit && s < MapSlots; s++)
                     if ((_oSlots[i] & SlotBit(s)) != 0 && mat.Texture(s + 1).Ptr != _recAurS[i * MapSlots + s])
@@ -482,16 +483,29 @@ public sealed unsafe partial class AlloyRenderer
                 else
                 {
                     tid = aur.OwnedTid();
-                    if (tid == 0) { _skipTex++; W(i, "skipped: diffuse has no GL id"); continue; }
+                    if (tid == 0) { _skipTex++; _skipTexNoId++; W(i, "skipped: diffuse has no GL id"); continue; }
                     // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
                     // engine texture is a handle on an object the engine may delete or re-upload under us,
                     // which is exactly the corruption this fixes -- so a part whose copy was refused (a
                     // format we will not take) goes back to the engine walk rather than being drawn through
                     // a handle we cannot vouch for. Bind-path batches are unaffected: they rebind the engine
                     // id every frame, which is what they always did.
-                    if (lit && _bindless && OwnedTextures.Armed
-                        && (!OwnedTextures.IsOwned(tid) || HandleFor(tid) == 0))
-                    { _skipTex++; W(i, "skipped: diffuse has no owned bindless handle"); continue; }
+                    if (lit && _bindless && OwnedTextures.Armed)
+                    {
+                        // Two DIFFERENT faults behind one guard, and they have different fixes: a texture
+                        // Alloy never adopted (it never reached the upload funnel -- a GPU-composited PLT, a
+                        // cube, a movie frame) versus one it owns but could not mint a resident handle for.
+                        bool owned = OwnedTextures.IsOwned(tid);
+                        if (!owned || HandleFor(tid) == 0)
+                        {
+                            _skipTex++;
+                            if (owned) _skipTexNoHandle++; else _skipTexNotOwned++;
+                            TexSkipDiag(owned, tid, aur);
+                            W(i, owned ? "skipped: diffuse has no bindless handle"
+                                       : "skipped: diffuse is not an Alloy-owned texture");
+                            continue;
+                        }
+                    }
 
                     // #120: the same re-fetch for whichever of the PBR slots this material declared. A slot
                     // that declared a map but resolves to nothing this frame drops out of the mask rather
@@ -546,7 +560,8 @@ public sealed unsafe partial class AlloyRenderer
             int feat = (int)_oFeat[i * 4];
             // #137: a posed skinmesh overrides whatever content feature the material named -- see
             // ShaderFeature.Skin for why the two share the field, and why that trade is safe on shipped
-            // content. Joining the cut key here is what lets the prepass drop the whole skinned batch.
+            // content. Joining the cut key here is what lets a whole batch be skinned or not -- #262 turned
+            // that from "the prepass drops it" into "the prepass runs it under its own bone arm".
             if (_oBone[i] >= 0) feat = (int)ShaderFeature.Skin;
             // #124: ...and the dissolve bit joins it for the same reason -- the keyhole stage discards.
             bool dis = dissolve != 0f;
@@ -669,11 +684,12 @@ public sealed unsafe partial class AlloyRenderer
                                idxCount, _dOff[n], _dBase[n], r);
             _gLen[groups - 1]++;
             n++;
+            if (_oGob[i] != IntPtr.Zero) _drawsGob++;
             // #151: an Alloy rigid INSTANCE part leaves the engine walk, and with it the walk-side shadow
-            // capture -- its shadow has to be fed from here. Skinmeshes are already fed by PoseSkinned's
-            // bracket; parts the caster CENSUS still carries (table-eligible) would be double-recorded, so
-            // only the census's rejects recast here -- see CasterCensusCovers for what #258 moved out of
-            // that set.
+            // capture -- its shadow has to be fed from here. Skinmeshes are already fed by PoseSkinned, which
+            // has their solved matrices in hand; parts the caster CENSUS still carries (table-eligible) would
+            // be double-recorded, so only the census's rejects recast here -- see CasterCensusCovers for what
+            // #258 moved out of that set.
             if (_oGob[i] != IntPtr.Zero && _oBone[i] < 0
                 && !AlloyCensus.CasterCensusCovers(_oEntry[i]))
                 CasterPass.RecordOwnedInstance(tri, _oNode[i], _oVdo[i], _oItem[i], _oPrim[i]);

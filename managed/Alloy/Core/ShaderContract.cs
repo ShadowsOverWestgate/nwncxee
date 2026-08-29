@@ -173,14 +173,21 @@ internal static class ShaderContract
                   && OwnedLitVs.Contains("if (bb >= 0) gl_Position = uVP * d.model * pos;")
                   // ...which is also the token SkinSafe reads to spot a pre-#137 content override. It has to
                   // be in the COMPOSED stage, not merely in BoneVs, or the guard passes on text that never
-                  // reached the program. And it must NOT be in the depth stage: that one is the prepass, and
-                  // a skinning branch appearing there would mean the exclusion above had been undone.
+                  // reached the program. #262: the DEPTH stages carry it too now, and that is the pairing
+                  // that lets the skinmesh class back into the prepass -- a skinned batch whose prepass had
+                  // no bone arm would write a BIND-POSE silhouette and LEQUAL would punch the cloak full of
+                  // holes, so the two must move together or not at all.
                   && OwnedVs.Contains("SOWX_FEAT_SKIN") && OwnedLitVs.Contains("SOWX_FEAT_SKIN")
-                  && !DepthVs.Contains("SOWX_FEAT_SKIN") && !DepthKeyVs.Contains("SOWX_FEAT_SKIN")
-                  // The prepass exclusion is the OTHER half of that decision, and it is the half no shader
-                  // text can assert: a skinned batch left in the prepass writes a bind-pose silhouette and
-                  // LEQUAL then punches the cloak full of holes.
-                  && ShaderFeatures.OutOfPrepass((int)ShaderFeature.Skin)
+                  && DepthVs.Contains("SOWX_FEAT_SKIN") && DepthKeyVs.Contains("SOWX_FEAT_SKIN")
+                  // ...and the assigning statement is the SAME LITERAL in all four stages, which is the form
+                  // of `invariant gl_Position` this renderer keeps everywhere else. An equivalent expression
+                  // tree would probably do; "probably" is not what #119 is for.
+                  && DepthVs.Contains("if (bb >= 0) gl_Position = uVP * d.model * pos;")
+                  && DepthKeyVs.Contains("if (bb >= 0) gl_Position = uVP * d.model * pos;")
+                  // The keyhole prepass discards on vWorld, so it must be the SKINNED world position or the
+                  // two passes punch different apertures -- silent LEQUAL culling behind a dissolving cloak.
+                  && DepthKeyVs.Contains("vWorld = (d.model * pos).xyz;")
+                  && !ShaderFeatures.OutOfPrepass((int)ShaderFeature.Skin)
                   && !ShaderFeatures.Displaces((int)ShaderFeature.Skin)
                   && ShaderFeatures.OutOfPrepass((int)ShaderFeature.WindGrass)
                   && !ShaderFeatures.OutOfPrepass((int)ShaderFeature.Flowmap)

@@ -59,6 +59,22 @@ internal static class SceneLayout
     /// <c>CreateInstanceTreeR</c> @0x43c6b0 and freed by <c>Part::~Part</c> @0x437720; the parent
     /// back-pointer is +0x48. This is what makes a part TREE walkable without entering a draw.</summary>
     public const int PartChildren = 0x38, PartChildCount = 0x40;
+    /// <summary>#262: the part's own LOCAL transform, which the engine's animation step writes and every
+    /// bone solve composes: <c>Vector</c> position at +0x10, <c>Quaternion</c> orientation at +0x1c stored
+    /// (w,x,y,z) -- pinned by <c>operator-(Quaternion const&amp;)</c> @0x5b5d50 negating the first word alone.
+    /// The parent back-pointer named on <see cref="PartChildren"/>, spelled out because
+    /// <see cref="SkinPose"/> walks UP it as well as down the child array.</summary>
+    public const int PartPos = 0x10, PartRot = 0x1c, PartParent = 0x48;
+    /// <summary>#262: MdlNode -&gt; its parent MdlNode. <c>GatherBones</c> @0x482b10 admits a child part only
+    /// when this matches the walked part's own node, which is what keeps the traversal INDEX -- the thing the
+    /// bone map refers to -- equal to the engine's.</summary>
+    public const int MdlNodeParent = 0x60;
+    /// <summary>#262: the prepared skinning data on a <c>MdlNodeSkin</c>, all of it written by
+    /// <c>PartSkin::PostProcess</c> @0x483120 and read by <c>ExecuteSkinGPU</c> @0x482800. Bone count is a
+    /// SHORT at +0x284 (zero = not prepared yet); +0x2f0 and +0x300 are the data pointers of the inverse
+    /// bind-pose <c>CExoArrayList&lt;Quaternion&gt;</c>/<c>&lt;Vector&gt;</c>, indexed by GATHERED index;
+    /// +0x320 is the 64-entry <c>short</c> map from bone slot to gathered index.</summary>
+    public const int SkinBoneCount = 0x284, SkinBindRot = 0x2f0, SkinBindPos = 0x300, SkinBoneMap = 0x320;
     /// <summary>#256: the primitive-type index on the MdlNode (<c>AlloyRenderer.PartMdlNode</c>), argument 3 of the engine's own
     /// <c>RenderVertexData</c> call. Read out of <c>RenderFlat</c> @0x450eb0:
 

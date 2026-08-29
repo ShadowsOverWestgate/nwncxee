@@ -19,9 +19,11 @@ namespace Sowx.Alloy;
 /// <item><c>PartTriMesh::Draw</c> / <c>PartSkin::Draw</c> -- the vanilla draw, which under
 /// <see cref="RspShim"/> is also the HAND-BACK (#236); <see cref="SkyBox"/>'s capture window (#125); the
 /// caster pass's bone bracket (#96); and #256's <c>unrecorded-draws</c> counter, the acceptance number for
-/// "the scene walk reached every part the engine draws".</item>
+/// "the scene walk reached every part the engine draws". The skin entry also carries the #221 instrument --
+/// its draws/frame row is what says whether that hook fires at all.</item>
 /// <item><c>Part::~Part</c> -- the death notice (#145, #221). Every other liveness test is an inference.</item>
-/// <item><c>GLRender::RenderVertexData</c> -- the bone-capture and pose-swallow funnel (#137).</item>
+/// <item><c>GLRender::RenderVertexData</c> -- the caster pass's capture funnel (#96). #262 removed the
+/// pose-swallow window that used to share it: nothing re-enters a draw to produce a pose any more.</item>
 /// <item><c>VertexDataObject::Repack</c> -- the layout-change edge no scene epoch reports.</item>
 /// </list>
 /// <para>Armed by <c>drawhooks</c> in <c>sowx.cfg</c> (the default arms this service, <c>stats</c> hands the
@@ -158,8 +160,8 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     /// deliberately so -- a cloak is a part like any other once it is in the table, and everything downstream
     /// (the census, candidacy, enrollment, the iterator's suppression, #128's per-instance sweep) then reaches
     /// it for free. Only two things differ: the vanilla draw goes through <see cref="_origPartSkinDraw"/>
-    /// (which <see cref="Vanilla"/> routes), and the entry is stamped <see cref="_pSkin"/> so the Alloy pass
-    /// knows to force a pose and bind bones rather than draw it in its bind pose.
+    /// (which <see cref="Vanilla"/> routes), and the entry is stamped <c>_pSkin</c> so the Alloy pass knows
+    /// to solve a pose and bind bones rather than draw it in its bind pose.
     /// <para>The ticket assumed the bucket iterator could not suppress this class. It can, and the walk
     /// proves it rather than the reasoning: <c>Scene::RenderDrawBucket</c> @0x46d060 resolves each item
     /// through vtable slot 0x60 (<c>AsPartTriMesh</c>, which <see cref="OnNextItem"/> already mimics) and
@@ -207,45 +209,9 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     /// right trampoline for it and the wrong one for nobody else. Zero outside a skin body.</summary>
     private static IntPtr _skinDrawPart;
     /// <summary>...and whether we are inside one at all, which is what <see cref="Record"/> stamps
-    /// <see cref="_pSkin"/> from and the census reports.</summary>
+    /// <c>_pSkin</c> from and the census reports.</summary>
     internal static bool _inSkinDraw;
-    /// <summary>#137: the funnel-swallow window. While set, <see cref="OnVdoDraw"/> does not call the rest of
-    /// the chain -- the engine's draw call never issues -- but everything BEFORE it in
-    /// <c>PartSkin::Draw</c> has already run, which is the whole point: <c>GatherBones</c> and the 64
-    /// <c>SetBoneMatrix</c> calls are what put this frame's pose in <c>GLRender::m_bones</c>.</summary>
-    private static bool _skinForce;
-    /// <summary>Did the swallowed call actually reach the funnel? <c>PartSkin::Draw</c> returns early on a
-    /// part <c>IsPartRenderable</c> refuses, and a pose that was never solved is the previous part's -- so
-    /// the Alloy pass hands a part back to the engine rather than draw it wearing someone else's bones.</summary>
-    private static bool _skinPosed;
-    private static long _skinSeen, _skinForced, _skinForceFailed;
-
-    /// <summary>#137: make the engine solve this skinned part's pose WITHOUT drawing it. The Alloy colour
-    /// pass runs at bucket 0/1, before the engine ever walks the dynamic buckets, so the bones sitting in
-    /// <c>GLRender::m_bones</c> at that moment are the previous frame's -- a robe one frame behind the body
-    /// it hangs on, which is visible swimming, not a subtle lag. Calling the trampoline with the funnel
-    /// swallowed costs the same bone solve the engine was going to do anyway (the iterator then suppresses
-    /// its draw entirely), and leaves this frame's pose in <c>m_bones</c> for the caller to copy.
-    /// <para>Engine context only: the trampoline touches engine GL state. False = no pose was solved; the
-    /// caller must hand the part back rather than draw it.</para></summary>
-    internal static bool ForceSkinPose(IntPtr part)
-    {
-        if (_origPartSkinDraw == null || part == IntPtr.Zero) return false;
-        _skinForce = true; _skinPosed = false;
-        bool prev = _inSkinDraw; IntPtr prevPart = _skinDrawPart;
-        _inSkinDraw = true; _skinDrawPart = part;
-        IntPtr node = new PartRef(part).Node.Ptr;
-        // The caster pass wants the same solved pose, and this is now the only place in the frame it is
-        // live: the iterator suppresses the engine's own draw of an Alloy skinmesh.
-        bool bracket = CasterPass.SkinBegin(part, node);
-        _origPartSkinDraw(part);
-        if (bracket) CasterPass.SkinEnd();
-        _inSkinDraw = prev; _skinDrawPart = prevPart;
-        _skinForce = false;
-        _skinForced++;
-        if (!_skinPosed) _skinForceFailed++;
-        return _skinPosed;
-    }
+    private static long _skinSeen;
 
     private static void PartDraw(IntPtr part)
     {
@@ -312,16 +278,6 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        // #137: the swallow. This is a POSE call, not a draw -- the bone solve above it has already run and
-        // that is all it was for, so the chain below (and with it the engine's draw) is skipped. Every other
-        // subscriber sits at a LOWER priority, i.e. inside this call, so none of them counts a draw that did
-        // not happen -- DrawStatsService says so in its own handler.
-        if (_skinForce)
-        {
-            _skinPosed = true;
-            CasterPass.SkinObserve(vdo, (int)item, (int)prim);
-            return;
-        }
         var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_drawSlot;
         if (next != null) next(vdo, item, prim, size, offset);
         Observe(vdo, item, (int)prim);
@@ -400,12 +356,11 @@ public sealed unsafe class DrawFunnelService : IExtenderService
                    // "nothing died" in every other number here.
                    $" dtor-revoked={DtorRevokes} reclaimed={_reclaims}" +
                    // #137: the skinmesh class, which had no row at all before it had a hook. A zero here is
-                   // "the hook never fired", not "there were no cloaks"; forced/no-pose separate a class the
-                   // Alloy pass took from one it could not solve.
+                   // "the hook never fired", not "there were no cloaks" -- which is exactly the #221 finding
+                   // #262 was asked to re-check, so the row stays after the pose path stopped needing it.
                    (_origPartSkinDraw == null ? " | skinned: no hook"
-                      : $" | skinned: {(float)_skinSeen / LogEvery:F1} draws/frame, " +
-                        $"{(float)_skinForced / LogEvery:F1} poses forced ({_skinForceFailed} unsolved)"));
-        _skinSeen = 0; _skinForced = 0; _skinForceFailed = 0;
+                      : $" | skinned: {(float)_skinSeen / LogEvery:F1} engine draws/frame"));
+        _skinSeen = 0;
         _unrecorded = 0;
     }
 }

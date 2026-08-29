@@ -210,8 +210,8 @@ internal static unsafe class PostChain
     /// <summary>#132: the refusals that are decidable WITHOUT the 4.6 bracket, asked in ENGINE context
     /// before the Alloy pass pays for its preamble. False stands the whole pass down to vanilla.
     /// <para>Split out of <see cref="Begin"/> for two reasons and both are load-bearing. It saves the
-    /// preamble -- <c>AlloyLights.Upload</c>/<c>Build</c> and <c>PoseSkinned</c>, which force-solves every
-    /// Alloy skinmesh through the engine -- on a pass that was never going to arm; on a client that renders
+    /// preamble -- <c>AlloyLights.Upload</c>/<c>Build</c> and <c>PoseSkinned</c>, which solves every Alloy
+    /// skinmesh's pose -- on a pass that was never going to arm; on a client that renders
     /// to the default framebuffer that is EVERY frame, forever, to produce a vanilla one. And the gamma
     /// question can only be answered here: it gates the Alloy DECODES too, which live in the stages and
     /// cannot be switched per pass.</para>

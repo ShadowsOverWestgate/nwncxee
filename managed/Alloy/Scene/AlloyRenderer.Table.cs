@@ -29,8 +29,7 @@ public sealed unsafe partial class AlloyRenderer
     /// sweep groups by -- never dereferenced here, only compared.</summary>
     private static readonly IntPtr[] _oGob = new IntPtr[MaxOwned];
     /// <summary>#137: this enrolled part's bone slot for THIS pass, or -1 for a rigid one. Rewritten every
-    /// frame in <see cref="PoseSkinned"/>, never carried across one -- a pose is per-frame by definition.
-    /// </summary>
+    /// frame in <c>PoseSkinned</c>, never carried across one -- a pose is per-frame by definition.</summary>
     private static readonly int[] _oBone = new int[MaxOwned];
     /// <summary>#120: the two PBR vec4s of this part's draw record, staged verbatim -- (Specularity,
     /// Roughness, Metallicness, _) then (CustomSpecularColor.rgb, declared?). Read once at enrollment off the
@@ -308,16 +307,18 @@ public sealed unsafe partial class AlloyRenderer
     /// reallocates both, which is why it forces a wholesale re-send.</summary>
     private static uint _slotBuf;
     private static int _recCapGpu;
-    /// <summary>#137's bone block and the CPU stage behind it. One region, rewritten every colour pass.</summary>
+    /// <summary>#137's bone block and the CPU stage behind it. One region, rewritten every colour pass.
+    /// #262: the stage is native and GROWS (<c>EnsureBoneSlots</c>) rather than turning a crowd past the
+    /// budget into dropped creatures; <c>_boneHigh</c> is the per-report high-water mark that keeps the
+    /// ceiling counted rather than silent.</summary>
     private static uint _boneBuf;
-    private static readonly float[] _boneStage = new float[MaxBoneSlots * BoneFloats];
-    private static int _boneSlots;
-    /// <summary><c>GLRender::m_bones</c>: where the engine leaves a solved pose. Read only immediately after
-    /// <see cref="DrawFunnelService.ForceSkinPose"/> returns true -- it is ONE array shared by every skinned
-    /// draw in the frame, so it holds the last part posed and nothing else.</summary>
-    private static float* _bones;
-    /// <summary>#137 armed: the bone array resolved and <c>ownskin</c> not 0. False leaves the skinmesh
-    /// class exactly where #128 left it -- refused at enrollment, drawn by the engine.</summary>
+    private static float* _boneStage;
+    private static int _boneSlots, _boneCap, _boneHigh;
+    /// <summary>#137 armed: <c>ownskin</c> not 0. False leaves the skinmesh class exactly where #128 left it
+    /// -- refused at enrollment, drawn by the engine.</summary>
     private static bool _skinning;
-    private static long _skinDrawn, _skinNoPose, _skinSlotOverflow;
+    /// <summary>#262: did <see cref="SkinPose.SelfCheck"/> pass? Checked once at install, ahead of every
+    /// engine-symbol stand-down, so the answer is about this BUILD and not about this client.</summary>
+    private static bool _skinMathOk;
+    private static long _skinDrawn, _skinNoPose;
 }

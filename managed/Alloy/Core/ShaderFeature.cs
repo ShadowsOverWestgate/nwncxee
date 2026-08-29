@@ -63,19 +63,17 @@ internal static class ShaderFeatures
     internal static bool Displaces(int feat)
         => feat >= (int)ShaderFeature.WindGrass && feat <= (int)ShaderFeature.RoofKnM;
 
-    /// <summary>#137: must this batch stay OUT of the #119 depth prepass? Everything <see cref="Displaces"/>
-    /// names, plus the skinmesh class -- and the skinned case is the ticket's "prepass decision", made
-    /// explicitly here rather than left implicit.
-    /// <para>The reason is #119's constraint itself. The prepass and the colour pass must compute
-    /// <c>gl_Position</c> from a character-for-character identical expression under <c>invariant</c>, or
-    /// LEQUAL drops real fragments as silent holes. A skinned position is a weighted sum of four bone
-    /// matrices -- it cannot be that expression, and giving the prepass its own skinning branch would mean
-    /// two copies of a sum whose floating-point ASSOCIATION would have to match, which <c>invariant</c> does
-    /// not promise across programs. So skinned draws leave the prepass, exactly as displacing ones do. The
-    /// cost is the overdraw of a cloak, which is a handful of parts; the alternative is holes in them.</para>
+    /// <summary>Must this batch stay OUT of the #119 depth prepass? Exactly what <see cref="Displaces"/>
+    /// names, and nothing else.
+    /// <para>#137 also excluded the skinmesh class, reading #119's constraint as "a skinned position cannot
+    /// be the prepass's expression". #262 corrected that: the constraint is that the two stages compute
+    /// <c>gl_Position</c> from a character-for-character IDENTICAL expression under <c>invariant</c>, and
+    /// identical is exactly what the depth stage now has -- the same <c>SowxSkinMat</c> text, over the same
+    /// <c>uBone</c> binding, in the same product order (<see cref="AlloyRenderer.DepthVs"/>). The
+    /// displacing forks stay out because their prepass has no such arm: its depth would be the part's
+    /// UNDISPLACED silhouette and the colour pass's LEQUAL would then kill real fragments.</para>
     /// </summary>
-    internal static bool OutOfPrepass(int feat)
-        => Displaces(feat) || feat == (int)ShaderFeature.Skin;
+    internal static bool OutOfPrepass(int feat) => Displaces(feat);
 
     /// <summary>Does this feature switch keyholing OFF? Those parts keep their ownership when the camera
     /// would dissolve them, because their vanilla shader ignores the dissolve too.

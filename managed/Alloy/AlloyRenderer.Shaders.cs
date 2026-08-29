@@ -362,14 +362,23 @@ public sealed unsafe partial class AlloyRenderer
         #version 460 core
         layout(location = 0) in vec3 aPos;
 
-        """ + DrawBufDecl + """
+        """ + DrawBufDecl + FeatDecl + BoneVs + """
         uniform mat4 uVP;
         uniform int uDrawBase;
         invariant gl_Position;
         void main()
         {
             SowxDraw d = uDraw[SowxSlot(uDrawBase + gl_DrawID)];
-            gl_Position = uVP * d.model * vec4(aPos, 1.0);
+            // #262: the skinned arm, and it goes through the same `pos` TEMP the colour stages use so the
+            // assigning statement is character for character theirs -- ShaderContract asserts that one
+            // literal against all four stages. #119's `invariant gl_Position` is the only reason this stage
+            // exists to be careful about, and everywhere else in this renderer that promise is kept by
+            // identical TEXT rather than by an equivalent expression tree.
+            vec4 pos = vec4(aPos, 1.0);
+            int bb = SowxBoneBase(d);
+            if (bb >= 0) pos = SowxSkinMat(bb) * vec4(aPos, 1.0);
+            if (bb >= 0) gl_Position = uVP * d.model * pos;
+            else gl_Position = uVP * d.model * vec4(aPos, 1.0);
         }
         """;
     internal const string DepthFs = """
@@ -390,7 +399,7 @@ public sealed unsafe partial class AlloyRenderer
         #version 460 core
         layout(location = 0) in vec3 aPos;
 
-        """ + DrawBufDecl + """
+        """ + DrawBufDecl + FeatDecl + BoneVs + """
         uniform mat4 uVP;
         uniform int uDrawBase;
         invariant gl_Position;
@@ -401,14 +410,19 @@ public sealed unsafe partial class AlloyRenderer
         {
             int id = SowxSlot(uDrawBase + gl_DrawID);
             SowxDraw d = uDraw[id];
-            gl_Position = uVP * d.model * vec4(aPos, 1.0);
-            // ponytail: vWorld is the same product the colour stage forms, but it reaches it through `pos`
-            // (SowxFeatPos's undisplaced return), so the two are not guaranteed bit-identical the way
-            // gl_Position is. Worst case is one fragment at the punch-through threshold deciding differently
-            // between the passes -- a sub-pixel speck on an edge the noise already makes ragged. Only a
-            // displacing part could make it worse, and those never reach this stage at all. If it ever shows,
-            // the fix is to give this stage SowxFeatPos too and mirror the expression character for character.
-            vWorld = (d.model * vec4(aPos, 1.0)).xyz;
+            vec4 pos = vec4(aPos, 1.0);
+            int bb = SowxBoneBase(d);   // #262: a dissolving skinmesh takes the same arm DepthVs does
+            if (bb >= 0) pos = SowxSkinMat(bb) * vec4(aPos, 1.0);
+            if (bb >= 0) gl_Position = uVP * d.model * pos;
+            else gl_Position = uVP * d.model * vec4(aPos, 1.0);
+            // vWorld feeds the APERTURE, and it has to be the position the colour stage discards on or the
+            // two passes punch different holes. That was a ponytail note while only rigid parts reached this
+            // stage -- a sub-pixel speck at the threshold. #262 let skinmeshes in and a cloak's vertices sit
+            // METRES from bind pose, so it stops being a speck: the prepass would keep a fragment the colour
+            // pass discards, write cloak depth over it, and LEQUAL would cull the room behind the character.
+            // Hence `pos`, which is the skinned position when there is one and aPos when there is not.
+            // The remaining gap is the DISPLACED case (SowxFeatPos), and those never reach this stage.
+            vWorld = (d.model * pos).xyz;
             vDepth = gl_Position.w;
             vDraw = id;
         }

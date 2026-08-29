@@ -127,9 +127,8 @@ public sealed unsafe partial class AlloyRenderer
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _boneBuf);
         Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, size, null, Gl.DYNAMIC_DRAW);
         if (_boneSlots > 0)
-            fixed (float* p = _boneStage)
-                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
-                                 (IntPtr)((long)_boneSlots * BoneFloats * sizeof(float)), p);
+            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
+                             (IntPtr)((long)_boneSlots * BoneFloats * sizeof(float)), _boneStage);
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindBones, _boneBuf);
     }

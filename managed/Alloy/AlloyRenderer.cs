@@ -145,8 +145,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// column-major order (see <see cref="SymbolMap.GlRenderBones"/>), so a snapshot is a straight memcpy.
     /// </summary>
     internal const int BoneCount = 64, BoneFloats = BoneCount * 16;
-    /// <summary>Skinned parts posed per frame. 4KB each, so 64 slots is 256KB and covers a crowd; past it a
-    /// skinmesh is handed back to the engine rather than drawn in a bind pose.</summary>
+    /// <summary>Skinned parts posed per frame, INITIAL capacity. 4KB each, so 512 slots is 2MB and covers a
+    /// crowd. #262: no longer a ceiling -- the stage doubles rather than drop a creature, and the high-water
+    /// mark is reported. <see cref="CasterPass"/> keeps it as a hard cap; a shadow that does not bake is a
+    /// missing shadow, not a missing creature.</summary>
     internal const int MaxBoneSlots = 512;
     /// <summary>aurMatrixStack layout (Ghidra GLRender::PushMatrix/PopMatrix/aurMatrixStack::SetIdentity):
     /// stride 0x58 per stack, top matrix (row-major float[16]) at +0x18. Modes: PROJECTION=0, VIEW=1.</summary>
@@ -444,6 +446,38 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#128: instanced parts this enrollment took -- placeables, doors and creatures alike. Its only
     /// job is to say whether the shadow side needs poking, so it counts PARTS and not instances.</summary>
     private static int _gobOwned;
+    /// <summary>The INSTANCED half of the draw accounting: gob parts Alloy staged, and gob parts it handed
+    /// back because the engine's buckets had not sighted them. Every other number on the [alloy] line mixes
+    /// tiles, placeables and creatures into one total, so "are characters Alloy's" -- the question two
+    /// visible symptoms turn on (a creature drawn by the engine after the bracket has resolved shows through
+    /// walls and takes no Alloy shadow) -- could only be inferred from the capture-bucket split, which is a
+    /// CLASSIFICATION and not a per-frame fact. These two are the fact.</summary>
+    private static long _drawsGob, _skipUnseenGob;
+    /// <summary>...and the three causes behind the <c>tex</c> fallback, which are three different bugs
+    /// wearing one number. "No diffuse" is content; "no GL id" is the copy path; "no owned handle" is the
+    /// BINDLESS layer, which #220 already caught being wrong once and which a part can fail every frame
+    /// forever -- a steady count here, roughly one creature's worth of parts, is a specific model whose
+    /// texture Alloy declined to own, and that model then renders vanilla for the whole session.</summary>
+    private static long _skipTexNone, _skipTexNoId, _skipTexNoHandle, _skipTexNotOwned;
+    /// <summary>A small budget of NAMED failures. The counters say which fault; only the resref says which
+    /// CONTENT, and that is what separates "one model's texture" from "a whole class of them". Budgeted
+    /// rather than rate-limited: the population is what matters and it is small, so a handful of distinct
+    /// names is the whole answer.</summary>
+    private static int _texSkipDiagLeft = 12;
+    private static readonly System.Collections.Generic.HashSet<string> _texSkipSeen = new();
+
+    /// <summary>Name a diffuse the bindless guard turned away, once per distinct resref.</summary>
+    private static void TexSkipDiag(bool owned, int tid, TextureRef aur)
+    {
+        if (_texSkipDiagLeft <= 0) return;
+        string nm = aur.ResolveName();
+        if (!_texSkipSeen.Add(nm)) return;
+        _texSkipDiagLeft--;
+        _log?.Info($"AlloyRenderer: [texskip] \"{nm}\" tid={tid} owned={owned} -- "
+                   + (owned ? "Alloy owns it but GetTextureHandleARB minted nothing"
+                            : "never reached the upload funnel, so it is BORROWED and bindless will not vouch for it")
+                   + "; every lit part using it is drawn by the engine (bindless=0 in sowx.cfg is the A/B)");
+    }
     /// <summary>Monotonic presented-frame counter: the light SSBO uploads once per frame, not once per pass.</summary>
     private static int _frameSeq;
     private static bool _takeOverflow, _ambientFallbackLogged, _loggedOnce;
@@ -746,7 +780,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // still happen while Alloy is stood down (/vanilla, main menu, the disarm latch).
         // #212: and the geometry deletes with them, for exactly the same reason -- the colour bracket's own
         // Drain never runs in those states, so a revoke there would hold the whole owned set for the session.
-        GlContextService.InBracket = static () => { OwnedTextures.Drain(); SampleVram(); };
+        GlContextService.InBracket = static () =>
+        { OwnedTextures.KeepPltOnCpu(); OwnedTextures.Drain(); SampleVram(); };
         // #117: ahead of every stand-down -- a broken pass order is a misrender in BOTH bracket sites, so the
         // one service that happens to host the check must not be able to opt the check out.
         if (!FrameGraph.SelfCheck(log)) return;
@@ -757,6 +792,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // reaches -- the two things it checks are ours and are wrong in the same way on every client.
         RspShim.SelfCheck(log);
         ShaderStages.SelfCheck(log);
+        // #262: Alloy does the bone solve itself now, so its arithmetic is ours to be wrong about. Up here
+        // with the other unconditional checks -- a client that never arms still reports whether the maths
+        // this build ships is right, and the answer does not depend on any engine symbol.
+        _skinMathOk = SkinPose.SelfCheck();
+        log.Info(_skinMathOk ? "SkinPose.SelfCheck: passed" : "SkinPose.SelfCheck: FAILED -- skinmeshes stay engine-drawn");
         // ADR 0012: the dump is how a customizer gets a current starting point. Ahead of every stand-down
         // below, so a session that owns nothing can still produce one.
         ShaderStages.DumpIfConfigured(log);
@@ -810,17 +850,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepackHook, RepackPriority);
         // #179: the six look/debug dials above are /draw's, not the environment's -- the code defaults ARE
         // the boot values and nothing here reads a knob for them any more.
-        // #137: the skinmesh class. Two independent things must hold -- the engine's bone array must resolve
-        // (nothing to copy without it) and the class must have a draw hook, which DrawFunnelService reports.
-        // Config bucket (ADR 0013): a capability gate that decides what the vertex stages are BUILT from, so
-        // it cannot move mid-session and is not a command.
-        _skinning = Settings.Bool("ownskin", true);
-        if (_skinning)
-        {
-            _bones = (float*)Native.Sym(SymbolMap.GlRenderBones);
-            if (_bones == null)
-            { _skinning = false; log.Info("AlloyRenderer: GLRender::m_bones unresolved -- skinmeshes stay engine-drawn"); }
-        }
+        // #137: the skinmesh class. Config bucket (ADR 0013): a capability gate that decides what the vertex
+        // stages are BUILT from, so it cannot move mid-session and is not a command. #262 dropped its second
+        // term -- the pose no longer comes out of GLRender::m_bones, so that symbol resolving proves nothing.
+        // A failed check disarms the class rather than posing a crowd from a transposed matrix -- the engine
+        // still draws every cloak in that case.
+        _skinning = Settings.Bool("ownskin", true) && _skinMathOk;
         _isEnabled = (delegate* unmanaged<int, byte>)Native.Sym(SymbolMap.RiIsEnabled);
         // Hook install is its own walk, and it stays HERE rather than joining Attach above: a pass that hooks
         // the engine on a client where the Alloy renderer cannot arm would be suppressing draws nothing
@@ -831,7 +866,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         RspShim.Install(log, hooks);
         _armed = _origRsp != null && _origFade != null;
         if (_armed) log.Info(_skinning
-            ? "AlloyRenderer: #137 skinmeshes owned -- posed per frame off GLRender::m_bones (ownskin=0 in sowx.cfg disables)"
+            ? "AlloyRenderer: #262 skinmeshes owned -- posed per frame from engine animation state, no draw re-entry (ownskin=0 in sowx.cfg disables)"
             : "AlloyRenderer: skinmeshes stay engine-drawn (cloaks, robes, tails)");
         if (_armed) log.Info($"AlloyRenderer: /draw {DescribeTuning()}");
         log.Info(_armed
@@ -1131,46 +1166,73 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         DrawOwned();
     }
 
-    /// <summary>#137: solve every Alloy skinmesh's pose for THIS frame, in engine context, before the
-    /// bracket -- and since #132 after <see cref="PostChain.Precheck"/>, so a pass that is standing down
-    /// does not solve poses the engine is about to solve again itself.
-    /// <para>The timing is the whole point, and it is why this exists at all rather than the pass simply
-    /// reading <c>m_bones</c>. The Alloy pass draws at bucket 0 or 1, before the engine has walked the
-    /// dynamic buckets a creature lives in -- so at this moment <c>m_bones</c> holds the LAST skinned part of
-    /// the PREVIOUS frame, and nothing else. A robe drawn from that would trail the body it hangs on by a
-    /// frame while the body's own node matrix is current: visible swimming at the waist, not a subtle lag.
-    /// Calling <c>PartSkin::Draw</c> with the funnel swallowed runs the engine's own bone solve and stops
-    /// short of the draw, which costs nothing extra overall -- the iterator then suppresses the draw the
-    /// engine was going to make anyway.</para>
-    /// <para>A part whose pose does not come back (<c>IsPartRenderable</c> refused it, or the slots ran out)
-    /// is un-owned here and now. That is in time to matter: the iterator's suppression happens at buckets
-    /// 2/3, later in the same frame, so clearing the flag hands the part back to the engine rather than
-    /// dropping it.</para></summary>
+    /// <summary>#137/#262: solve every Alloy skinmesh's pose for THIS frame, before the bracket -- and since
+    /// #132 after <see cref="PostChain.Precheck"/>, so a pass that is standing down does not solve poses the
+    /// engine is about to solve again itself.
+    /// <para>#262 changed WHERE the pose comes from, not when. It used to come from re-entering
+    /// <c>PartSkin::Draw</c> with the draw funnel swallowed, purely to make the engine's own bone solve
+    /// happen, and then copying <c>GLRender::m_bones</c> out. The reason given for that was a statement about
+    /// VANILLA's draw order -- the Alloy pass runs before the engine walks the dynamic buckets, so m_bones
+    /// held the previous frame's last skinned part -- and under the cutover the shim decides when the walk
+    /// happens. The residual constraint is real and unchanged: the ENGINE owns animation state. So
+    /// <see cref="SkinPose"/> READS that state and does the solve itself, and no engine draw function is
+    /// entered at all.</para>
+    /// <para>A part whose pose does not come back (its <c>MdlNodeSkin</c> is not prepared yet, or its tree
+    /// overflowed the walk) is un-owned here and now. That is in time to matter: the iterator's suppression
+    /// happens at buckets 2/3, later in the same frame, so clearing the flag hands the part back to the
+    /// engine rather than dropping it -- and the engine's own draw is what prepares an unprepared node, so
+    /// the hand-back is also the repair.</para></summary>
     private static void PoseSkinned()
     {
         _boneSlots = 0;
         // Nothing to pose for if the pass cannot draw: DrawOwned bails on these two without stamping a
         // single part, so the engine walks every one of them itself -- and would then solve each pose a
         // second time.
-        if (!_skinning || _bones == null || _progFailed || _batchUnavailable) return;
+        if (!_skinning || _progFailed || _batchUnavailable) return;
         for (int i = 0; i < _ownCount; i++)
         {
             _oBone[i] = -1;
             if (_oTri[i] == IntPtr.Zero || !_vSkin[_oVao[i]]) continue;
-            // Identity first, and here it is not the usual "a stale read is acceptable" case: this call
-            // enters ENGINE code with the part as `this`, so a recycled pointer is a CHASED one. The same
-            // single-level compare BuildBatches revokes on. A failure here is not counted as an unsolved
-            // pose -- the part was already gone, and conflating the two would send the next diagnosis after
-            // a skinning bug that is really a lifetime one.
+            // Identity first, and here it is not the usual "a stale read is acceptable" case: the solve
+            // chases this part's parent chain, child array and MdlNode, so a recycled pointer is a CHASED
+            // one. The same single-level compare BuildBatches revokes on. A failure here is not counted as
+            // an unsolved pose -- the part was already gone, and conflating the two would send the next
+            // diagnosis after a skinning bug that is really a lifetime one.
             if (!IdentityOk(i, _oTri[i])) { RevokeSkinned(i); continue; }
-            if (_boneSlots >= MaxBoneSlots) { _skinSlotOverflow++; RevokeSkinned(i); continue; }
-            if (!DrawFunnelService.ForceSkinPose(_oTri[i])) { _skinNoPose++; RevokeSkinned(i); continue; }
-            int slot = _boneSlots++;
-            fixed (float* dst = _boneStage)
-                Buffer.MemoryCopy(_bones, dst + slot * BoneFloats, BoneFloats * 4L, BoneFloats * 4L);
+            if (!EnsureBoneSlots(_boneSlots + 1)) { _skinNoPose++; RevokeSkinned(i); continue; }
+            int slot = _boneSlots;
+            if (!SkinPose.Solve(_oTri[i], _boneStage + slot * BoneFloats))
+            { _skinNoPose++; RevokeSkinned(i); continue; }
+            _boneSlots++;
             _oBone[i] = slot;
             _skinDrawn++;
+            if (_boneSlots > _boneHigh) _boneHigh = _boneSlots;
+            // #151's shadow feed. This is where the old ForceSkinPose bracket fed CasterPass, and the timing
+            // is unchanged -- the matrices it needs are the ones just staged.
+            CasterPass.RecordOwnedInstance(_oTri[i], _oNode[i], _oVdo[i], _oItem[i], _oPrim[i],
+                                           _boneStage + slot * BoneFloats);
         }
+    }
+
+    /// <summary>#262: room for <paramref name="want"/> bone slots, doubling the stage rather than dropping a
+    /// creature past a fixed budget. Native memory on purpose -- the growth is rare but it happens on the
+    /// render thread, and a managed array of this size would hand the collector a gen-2 allocation there.
+    /// False = the allocator refused; the caller hands the part back like any other unsolved pose.
+    /// <para>The catch is the whole point of the return value. <c>NativeMemory.Realloc</c> does not return
+    /// null on failure -- it THROWS -- and this runs inside the present hook, so an escaping exception
+    /// crosses an <c>[UnmanagedCallersOnly]</c> boundary and takes the client down instead of costing one
+    /// creature a frame of vanilla shading.</para></summary>
+    private static bool EnsureBoneSlots(int want)
+    {
+        if (want <= _boneCap) return true;
+        int cap = _boneCap == 0 ? MaxBoneSlots : _boneCap;
+        while (cap < want) cap *= 2;
+        float* next;
+        try { next = (float*)NativeMemory.Realloc(_boneStage, (nuint)cap * BoneFloats * sizeof(float)); }
+        catch (OutOfMemoryException) { return false; }
+        if (next == null) return false;
+        _boneStage = next; _boneCap = cap;
+        return true;
     }
 
     /// <summary>#137: hand an unposable skinmesh back to the engine -- AND the rest of its creature with it.
@@ -1321,10 +1383,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // means no cloak was on screen, which is a different statement from "the pose failed" --
                    // so the failures are named, not merely absent.
                    (!_skinning ? ", skinmeshes not owned"
-                      : _skinDrawn == 0 && _skinNoPose == 0 && _skinSlotOverflow == 0 ? ""
+                      : _skinDrawn == 0 && _skinNoPose == 0 ? ""
                       : $", {(float)_skinDrawn / _frames:F1} skinmeshes posed/frame" +
-                        (_skinNoPose == 0 ? "" : $", {_skinNoPose} handed back unposed") +
-                        (_skinSlotOverflow == 0 ? "" : $", {_skinSlotOverflow} over the {MaxBoneSlots}-slot bone budget")) +
+                        (_skinNoPose == 0 ? "" : $", {_skinNoPose} handed back unposed" +
+                            (SkinPose.NoBind == 0 ? "" : $" ({SkinPose.NoBind} node not prepared)") +
+                            (SkinPose.Overflow == 0 ? "" : $" ({SkinPose.Overflow} bone tree too deep)")) +
+                        $", {_boneHigh} bone slots peak of {_boneCap}") +
                    "), " +
                    $"Alloy draws {(float)_draws / _frames:F0}/frame in {(float)_batches / _frames:F0} batches " +
                    // #126: the transparency model, as numbers. Cutout should dwarf blended on NWN content;
@@ -1345,9 +1409,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    (_skipUnseen == 0 ? "" : " by capture bucket" + ByBucket(_unseenBucket)) + " " +
                    $"unlit-pass {(float)_skipNoLight / _frames:F0} identity {(float)_skipIdentity / _frames:F0} " +
                    $"dissolve {(float)_ownDissolve / _frames:F0} owned, fade {(float)_ownFade / _frames:F0} owned " +
-                   $"no-mdl {(float)_skipNoMdl / _frames:F0} tex {(float)_skipTex / _frames:F0} " +
+                   $"no-mdl {(float)_skipNoMdl / _frames:F0} tex {(float)_skipTex / _frames:F0}" +
+                   (_skipTex == 0 ? " " : $" (no-diffuse {(float)_skipTexNone / _frames:F0}" +
+                       $" no-gl-id {(float)_skipTexNoId / _frames:F0}" +
+                       $" not-owned {(float)_skipTexNotOwned / _frames:F0}" +
+                       $" no-handle {(float)_skipTexNoHandle / _frames:F0}) ") +
                    $"range {(float)_skipRange / _frames:F0} vao {(float)_skipVao / _frames:F0} " +
                    $"instance-state {(float)_skipGob / _frames:F0}), " +
+                   // The one split that answers "are characters Alloy's" without inference. Drawn ~0 with
+                   // owned nonzero means every creature and placeable in view is being drawn by the ENGINE,
+                   // after the Alloy bracket has resolved -- which is what renders them through walls and
+                   // leaves them out of Alloy's shadowing.
+                   $"instanced {(float)_drawsGob / _frames:F0} drawn/frame, " +
+                   $"{(float)_skipUnseenGob / _frames:F0} engine-culled/frame of {_gobOwned} owned, " +
                    // #244 (AC1): the mesh-sharing census. "1,00x" says every owned part has its own item
                    // range and there is nothing for instancing to collapse; the object-space figure is the
                    // only part of the shared count that could become instances, for the reason MeshCensus
@@ -1437,7 +1511,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
         _frames = 0; _draws = 0; _batches = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0;
-        _skinDrawn = 0; _skinNoPose = 0; _skinSlotOverflow = 0;
+        _drawsGob = 0; _skipUnseenGob = 0;
+        _skipTexNone = 0; _skipTexNoId = 0; _skipTexNoHandle = 0; _skipTexNotOwned = 0;
+        _skinDrawn = 0; _skinNoPose = 0; _boneHigh = 0;
+        SkinPose.NoBind = 0; SkinPose.Overflow = 0;
         _foreignBuckets = 0;
         SkyBox.ResetPeriod();
         GrassField.ResetPeriod();

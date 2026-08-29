@@ -123,13 +123,12 @@ public sealed unsafe partial class AlloyRenderer
             // #137: a true skinmesh (a cloak, a robe, a tail) carries the bone streams and is POSED by them.
             // #128 refused it here for want of a skinning branch; the stages have one now, so the only
             // refusal left is the one #128's reason still holds for -- the kill switch off, or a bone stream
-            // on a VDO that never reached PartSkin::Draw (so no pose can be forced for it). Either way it is
+            // on a VDO whose part is not a PartSkin (so nothing addresses those bones). Either way it is
             // refused against the GOB, and the sweep below hands the creature wearing it back entire.
-            // Refused in BOTH directions, because both mismatches are misrenders. A bone stream with no
-            // PartSkin capture cannot be posed (no hook fired for it, so no trampoline to force); a PartSkin
-            // capture whose VAO harvest came back boneless would enrol as an ordinary rigid part, skip
-            // PoseSkinned, and draw in its bind pose -- which is the failure the asymmetric gate would have
-            // let through as the QUIET one.
+            // Refused in BOTH directions, because both mismatches are misrenders. A bone stream on a part
+            // with no skin identity has no bone map to solve against; a PartSkin whose VAO harvest came back
+            // boneless would enrol as an ordinary rigid part, skip PoseSkinned, and draw in its bind pose --
+            // which is the failure the asymmetric gate would have let through as the QUIET one.
             if (_vSkin[v] != (_skinning && PartTable.Skinned(e)))
             { _skinUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: skin mismatch (armed={_skinning} boneStreams={_vSkin[v]} skinPart={PartTable.Skinned(e)})"); continue; }
             bool lit = c.Lit && _lighting;

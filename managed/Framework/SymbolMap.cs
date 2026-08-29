@@ -256,6 +256,18 @@ internal static unsafe class SymbolMap
     /// <c>glTexSubImage2D</c> (assumes storage) over <c>glTexImage2D</c> (allocates); a fresh texture always
     /// needs the allocating form.</para></summary>
     public const string RiCreateTexture = "_ZN15RenderInterface13CreateTextureEP11CAurTexturebi";
+    /// <summary><c>g_bGeneratePLTOnGPU</c> @0x19abd7c (B, a 4-byte int) -- does the engine composite PLT
+    /// textures on the GPU? PLT is the LAYERED, colourable format every player character's body uses: skin,
+    /// hair, metal, cloth and leather channels tinted per character.
+    /// <para>Non-zero takes those textures around <see cref="RiCreateTexture"/> entirely, so Alloy never
+    /// sees decoded pixels and cannot own them. Both readers agree on the shape:
+    /// <c>ConstructImage</c> @0x48a665 runs <c>ImageDecode</c> (the CPU composite, into 4-byte pixels) only
+    /// under <c>== 0</c>, and <c>glImageBasic</c> @0x48bd54 gates the ordinary GenTextures/upload path on
+    /// <c>(flag == 0 || tex+0x84 != 4)</c> -- <c>+0x84 == 4</c> being the PLT marker. That disjunction is
+    /// precisely why non-PLT models are Alloy's and PLT ones are not.</para>
+    /// <para>Written by a settings callback @0x8ca140 (<c>g_bGeneratePLTOnGPU = *(byte*)arg2</c>), which can
+    /// fire after our install -- hence the per-frame re-assert rather than a one-shot store.</para></summary>
+    public const string PltOnGpu = "g_bGeneratePLTOnGPU";
 
     // ---- shadow replacement (#65). Linux-only; no _win entries -> skip-with-log on Windows. ----
     // The three self-contained shadow sub-passes Scene::RenderShadows dispatches. No-op'ing these
@@ -352,8 +364,12 @@ internal static unsafe class SymbolMap
     /// tail). It never enters <see cref="PartTriMeshDraw"/>: it calls <c>RenderSkinned</c> @0x482c70, which
     /// gathers the bone chain and hands <c>ExecuteSkinGPU</c> @0x482800 a pose to write into
     /// <see cref="GlRenderBones"/> before ending in the same <c>RenderFlat</c>/<c>RenderEnvironmentMapped</c>
-    /// pair every rigid part uses. So this is the second capture point the part table needs, and calling the
-    /// trampoline with the funnel swallowed is how the owned pass gets a live pose without a draw.
+    /// pair every rigid part uses. So this is the second capture point the part table needs.
+    /// <para>#262: the trampoline is no longer called to PRODUCE a pose -- <c>SkinPose</c> ports that solve
+    /// and reads the animation state itself. What the hook is still for is the vanilla draw (the #236
+    /// hand-back), and the row it prints is the #221 instrument: whether it fires at all. The hand-back is
+    /// also the repair path for an unprepared <c>MdlNodeSkin</c>, since <c>PartSkin::PostProcess</c> @0x483120
+    /// runs at the top of this function, ahead of the funnel the shim swallows.</para>
     /// ABI: <c>(PartSkin* /*rdi*/)</c>.</summary>
     public const string PartSkinDraw = "_ZN8PartSkin4DrawEv";
     /// <summary>#125: Scene::RenderSkyBoxes() @0x466910 -- the whole per-area skybox draw, called from
@@ -568,8 +584,12 @@ internal static unsafe class SymbolMap
     /// @0x4ccbf0 then uploads the array with <c>glUniformMatrix4fv(loc, 64, transpose=0, m_bones)</c> -- so
     /// what SITS in m_bones is already in the column-major order GLSL wants, and a raw memcpy of it into an
     /// std430 <c>mat4[]</c> is byte-identical to what the engine feeds its own shader. The transpose is the
-    /// engine's business, not ours: we copy the stored bytes and multiply in the same order its shader does.
-    /// Snapshotted per skinned part draw by #96.</summary>
+    /// engine's business, not ours: we write the same stored bytes and multiply in the same order its shader
+    /// does.
+    /// <para>#262: NOT resolved and never read. <c>SkinPose</c> does the bone solve itself and produces this
+    /// layout directly, so what survives here is the LAYOUT CONTRACT the Alloy vertex stages inherit -- the
+    /// reason a solved matrix can be memcpied into an std430 <c>mat4[]</c> untouched. Reading the array again
+    /// would mean an engine draw had to have run, which is exactly what #262 removed.</para></summary>
     public const string GlRenderBones = "_ZN8GLRender7m_bonesE";
     /// <summary>GLRender::m_shaderExposedRuntimeData @0x19e1ea0 (B) -- the struct <c>GLRender::SetUniforms</c>
     /// @0x4ccbf0 uploads the "what is the world doing right now" uniforms straight out of. Field offsets read

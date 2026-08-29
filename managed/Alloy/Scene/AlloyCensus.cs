@@ -229,7 +229,7 @@ internal static unsafe class AlloyCensus
             // for passes it unchanged.
             if (!_ownDry && _pGob[e] != IntPtr.Zero && _pSeen[e] >= _frame - 1
                 && _pPart[e] != IntPtr.Zero && new PartRef(_pPart[e]).Gob.Ptr == _pGob[e])
-                OwnRefuse(0, _pGob[e]);
+            { NoteInstRefusing(e); OwnRefuse(0, _pGob[e]); }
             return Gate("state");
         }
         if (OwnFlag[e] != 0) return Gate("OWNED");
@@ -464,8 +464,14 @@ internal static unsafe class AlloyCensus
     /// SharedMaterial, gob modifiers and the missing diffuse slot are all irrelevant. What remains is what
     /// the depth draw actually needs: an indexed (mode-1) VDO with a live index range, a class that casts
     /// (opaque, or -- since the cutout caster below -- alpha-tested), and a recent sighting. Buckets 0..4 pass, which
-    /// is exactly what makes tiles (0/1) and placeables (2/3/4) one set with no kind branching; skinned parts
-    /// fall out at the mode-1 test and stay #96's problem. Cold: one call per table slot per enrollment.</summary>
+    /// is exactly what makes tiles (0/1) and placeables (2/3/4) one set with no kind branching.
+    /// <para>Skinned parts are excluded EXPLICITLY (#262). The note here used to say they "fall out at the
+    /// mode-1 test", and that was never true of a cloak Alloy can own -- enrollment requires mode 1, so a
+    /// cloak reaching the colour pass reaches this too, and it would be filed as a RIGID caster: node matrix
+    /// only, bone -1, i.e. a shadow in the bind pose. With #262 also staging one from real bones, the same
+    /// cloak cast twice, once wrongly. The bones-carrying path is the only one that can be right for this
+    /// class, so it is the only one it takes.</para>
+    /// Cold: one call per table slot per enrollment.</summary>
     /// <summary>#151: will the caster CENSUS carry this entry? The cheap prefix of
     /// <see cref="TryCasterCandidate"/>'s acceptance -- state, sighting, bucket, world -- used by the owned
     /// pass to avoid double-recording a part the table already casts. A DEAD entry fails here, which is the
@@ -478,6 +484,10 @@ internal static unsafe class AlloyCensus
     {
         if ((uint)e >= MaxParts || !Active || _pState[e] != StActive) return false;
         if (_pSeen[e] < _frame - 1) return false;
+        // #262: in step with TryCasterCandidate's own skin test, and for the same reason -- this predicate
+        // exists to say "the census has it", so answering yes for a class the census now refuses would leave
+        // a cloak with no caster at all instead of two.
+        if (_pSkin[e]) return false;
         return _pBucket[e] <= MaxCasterBucket && _pWorld[e];
     }
 
@@ -486,6 +496,10 @@ internal static unsafe class AlloyCensus
         if (!Active || _pState[e] != StActive) return false;
         if (_pSeen[e] < _frame - 1) return false;
         if (_pBucket[e] > MaxCasterBucket) return false;
+        // #262: a true skinmesh cannot be a candidate here. Everything below files a RIGID record -- node
+        // matrix, bone -1 -- which for a cloak is its BIND pose. AlloyRenderer.PoseSkinned records this class
+        // itself, with the 64 matrices it just solved.
+        if (_pSkin[e]) return false;
         // #91, the caster half: a GUI 3D panel's parts sit at that panel's node coordinates, so enrolling one
         // as a caster paints a phantom shadow into the world from geometry that exists only in a portrait.
         // Caster enrollment runs at the present with no Scene in hand, hence the flag rather than a comparison.
@@ -629,6 +643,49 @@ internal static unsafe class AlloyCensus
     /// Counted off <see cref="_pGob"/>, which is a copy taken at Record and never dereferenced, so it is safe
     /// on exactly the dead and stale entries this is asking about.</summary>
     internal static int _ownInstSeen, _ownInstDead;
+    /// <summary>...and the half of <see cref="_ownInstDead"/> that actually COSTS a creature: a
+    /// not-active entry only refuses its gob when it was in this frame's draw buckets and still points at
+    /// the same gob. A dead part nobody is drawing is free; a dead part the engine IS drawing takes the
+    /// whole instance vanilla through the all-owned-or-none sweep. Reporting the two as one number reads as
+    /// "creatures die a lot" when the question is "does anything a creature is DRAWING fail to bind".</summary>
+    internal static int _ownInstRefusing;
+    /// <summary>Which gate killed the parts in <see cref="_ownInstRefusing"/>. The one thing the #128
+    /// coverage line could not say, and the only thing that separates "the sweep is doing its job" from a
+    /// class the binder cannot take -- <c>_pDeath</c> has held the answer per entry all along, unaggregated.
+    /// Eight distinct reasons is more than the binder has.</summary>
+    private const int MaxInstWhy = 8;
+    private static readonly string[] _instWhy = new string[MaxInstWhy];
+    private static readonly int[] _instWhyN = new int[MaxInstWhy];
+
+    /// <summary>Tally one instance part that is about to refuse its gob, by the gate that got it. Cold: at
+    /// most once per table slot per enrollment.</summary>
+    private static void NoteInstRefusing(int e)
+    {
+        _ownInstRefusing++;
+        string why = _pState[e] switch
+        {
+            StDead => _pDeath[e] ?? "dead",
+            StUnbound => "unbound",
+            StStale => "stale",
+            StEmpty => "empty",
+            _ => "?",
+        };
+        for (int i = 0; i < MaxInstWhy; i++)
+        {
+            if (_instWhy[i] == null) { _instWhy[i] = why; _instWhyN[i] = 1; return; }
+            if (_instWhy[i] == why) { _instWhyN[i]++; return; }
+        }
+    }
+
+    /// <summary>The tally above, rendered most-costly-first-ish (insertion order; there are at most eight).
+    /// Empty string when nothing refused, so the coverage line stays quiet on a healthy scan.</summary>
+    private static string InstWhyNote()
+    {
+        string s = "";
+        for (int i = 0; i < MaxInstWhy && _instWhy[i] != null; i++)
+            s += (s.Length == 0 ? "" : " ") + _instWhy[i] + "=" + _instWhyN[i];
+        return s.Length == 0 ? "" : $" [{s}]";
+    }
     /// <summary>Instanced parts ever enumerated. Session-cumulative on purpose: a zero here means the scene
     /// walk is not reaching gob part trees at all, which is a different bug from every gate below.</summary>
     internal static long _pInstRecorded;
@@ -835,7 +892,8 @@ internal static unsafe class AlloyCensus
         _ownScene = scene;
         _ownSeen = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
-            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = 0;
+            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing = 0;
+        Array.Clear(_instWhy); Array.Clear(_instWhyN);
             _engineWaterWalks = _ownedWaterWalks = 0;
         Array.Clear(_ownByClass); Array.Clear(OwnRefusedByClass);
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
@@ -848,7 +906,8 @@ internal static unsafe class AlloyCensus
         $"gob={_ownRejGob} item={_ownRejItem} foreign-scene={_ownRejScene} " +
         // #128: the instanced population's own fate. "Creatures are not owned" reads identically to
         // "creatures are not in the table"; these three tell them apart without another round trip.
-        $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan, " +
+        $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan " +
+        $"({_ownInstRefusing} of them DRAWING, i.e. taking their whole creature vanilla{InstWhyNote()}), " +
         $"{_pInstRecorded} recorded ever, " +
         $"fb-sampling/volumetric={_ownRejFbSample}, " +
         // #126: the classification, as coverage. Cutout-vs-blended is the split the whole transparency
