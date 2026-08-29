@@ -152,73 +152,10 @@ public sealed unsafe partial class AlloyRenderer
     /// without un-baking the transform first. The hash reporting them apart is the truth about what is
     /// collapsible, not a miss.</summary>
     private const long MsShapeMxBit = 1L << 34;
-    /// <summary>#244: the content hash's slice of the shape key -- 27 bits above the signature, folded in
-    /// only while the hash is armed. Enough that a collision inside one area is unlikely and cheap enough
-    /// that the key stays one positive long; the signature underneath it (texture, index count) has to agree
-    /// too, so a hash collision alone cannot merge two meshes.</summary>
-    private const int MsHashShift = 36, MsHashBits = 27;
-    /// <summary>#244: how many vertices of each mesh the content hash reads, clamped to the item's real
-    /// vertex count. A prefix rather than the whole mesh: two copies of one model agree from their first
-    /// vertex, and two same-topology terrain patches disagree there -- which is the discrimination this
-    /// exists for. ponytail: raise it if two meshes are ever found to agree on a prefix and diverge later;
-    /// the cost is linear in it.</summary>
-    private const int MsHashVerts = 16;
     /// <summary>#244: the shape census's scratch, parallel to <see cref="_msKey"/> and sorted the same way.
     /// A second array rather than a second walk: the guarded element-pool read that both keys need is the
     /// expensive half, and doing it once is what keeps this on the enrollment cadence.</summary>
     private static readonly long[] _msShape = new long[MaxOwned];
-    /// <summary>#244: the content hash's inputs and its output, staged per censused part in census order --
-    /// the VDO slot to map, the vertex range to read, and the hash of it. Filled only while
-    /// <see cref="_meshHash"/> is armed; the hash is folded into <see cref="_msShape"/> afterwards, which is
-    /// why it is staged rather than written straight into the key (the key's other fields are built during
-    /// the walk, and the hash pass needs the whole population before it can map a buffer once).</summary>
-    private static readonly int[] _msVao = new int[MaxOwned], _msBase = new int[MaxOwned],
-                                 _msVerts = new int[MaxOwned];
-    private static readonly uint[] _msHash = new uint[MaxOwned];
-    /// <summary>#244: the placement-invariant hash of the same prefix -- what REPEATS, as against what is
-    /// collapsible today. See <c>HashRigid</c>.</summary>
-    private static readonly uint[] _msRigid = new uint[MaxOwned];
-    /// <summary>#244: the whole-mesh, order-insensitive shape hash. Only the dedup verify reads it, to tell a
-    /// copy it could not correspond from a shape that never matched.</summary>
-    private static readonly uint[] _msFull = new uint[MaxOwned];
-    /// <summary>#244: each censused part's element count, kept so the dedup registry can require an exact
-    /// match rather than trusting the census key, whose count field saturates.</summary>
-    private static readonly int[] _msCount = new int[MaxOwned];
-    /// <summary>#244: the OWNERSHIP SLOT each censused part came from. The census walks slots but numbers its
-    /// own entries, and only advances for parts that survive its skips -- a revoked slot, an unreadable
-    /// range, an empty index count -- so the two indices diverge the moment anything is skipped. Everything
-    /// in the _ms* arrays is census-indexed; anything crossing back to the ownership table goes through
-    /// here.</summary>
-    private static readonly int[] _msSlot = new int[MaxOwned];
-
-    /// <summary>#244 phase B(1): the DE-DUPLICATION REGISTRY, indexed by ownership slot. <c>_ddRep</c> is the
-    /// slot whose geometry this part would draw instead of its own (-1 = draws its own), and <c>_ddMat</c>
-    /// is the 3x4 transform that puts that geometry where this part belongs -- derived and then verified
-    /// against every vertex, UV and normal, so an entry here is a proof, not a guess.
-    /// <para>Rebuilt from scratch at each enrollment, because a slot is a different part afterwards.</para>
-    /// </summary>
-    private static readonly int[] _ddRep = new int[MaxOwned];
-    private static readonly float[] _ddMat = new float[MaxOwned * 12];
-    /// <summary>#244: live registry entries, and the parts refused one by a safety gate rather than by the
-    /// geometry -- an animated source, a skinned part, a primitive mismatch. Separating them keeps "how much
-    /// repeats" apart from "how much is safe to collapse", which are different numbers.</summary>
-    private static int _ddLive, _ddGated;
-    /// <summary>#244: the third census key -- shape up to a rigid transform. Its own array because it is
-    /// sorted independently of <see cref="_msShape"/>.</summary>
-    private static readonly long[] _msRigidKey = new long[MaxOwned];
-    /// <summary>#244: the census slots, permuted alongside <see cref="_msRigidKey"/> when it is sorted -- so
-    /// a run of equal keys can be walked back to the PARTS that formed it, which the key alone cannot do.
-    /// The dedup verify needs the parts, not the counts.</summary>
-    private static readonly int[] _msIdx = new int[MaxOwned];
-    /// <summary>#244: how coarse the invariant hash's distances are, in world units. Float error under a
-    /// rigid transform is ~1e-6, so this is four orders of margin; the cost of it being too coarse is two
-    /// genuinely different meshes colliding, which the texture and index count underneath still separate.
-    /// </summary>
-    private const float RigidQuantum = 1f / 256f;
-    /// <summary>#244: how many parts the last content pass actually hashed. Short of the censused count
-    /// means buffers that would not map or ranges that did not fit -- those parts keep a zero hash, which
-    /// groups them together, so the number is what says whether the shape figure can be trusted.</summary>
-    private static int _msHashed;
     /// <summary>#244: what the last census found -- distinct meshes, the largest instance count on any one
     /// mesh, how many parts sit on a mesh at least two parts share, and how many of THOSE are matrix-class.
     /// The last number is the one the ticket turns on: a world-space part has an identity model matrix, so
@@ -239,11 +176,6 @@ public sealed unsafe partial class AlloyRenderer
     /// near zero the area's geometry is world-space and nothing repeated in it is collapsible whatever the
     /// shape tier says -- which is the reading that decides whether a repeat count means anything.</summary>
     private static int _msMxParts, _msShapeRepeatMx;
-    /// <summary>#244: the rigid tier -- distinct shapes up to a placement, the largest repeat, how many parts
-    /// sit on a repeated one and how many of those are object-space. The last figure splits the repetition
-    /// into the part that could share vertices today and the part that would first have to be un-baked.
-    /// </summary>
-    private static int _msRigidShapes, _msRigidMax, _msRigidRepeat, _msRigidRepeatMx;
 
     // #84 multidraw submission: one entry per DRAW in _dCount/_dOff/_dBase + one staged SSBO record per draw,
     // sliced into batches by the _g* table. All static -- the hot path stages into them and allocates nothing.
@@ -382,7 +314,7 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly float[] _boneStage = new float[MaxBoneSlots * BoneFloats];
     private static int _boneSlots;
     /// <summary><c>GLRender::m_bones</c>: where the engine leaves a solved pose. Read only immediately after
-    /// <see cref="BatchService.ForceSkinPose"/> returns true -- it is ONE array shared by every skinned
+    /// <see cref="DrawFunnelService.ForceSkinPose"/> returns true -- it is ONE array shared by every skinned
     /// draw in the frame, so it holds the last part posed and nothing else.</summary>
     private static float* _bones;
     /// <summary>#137 armed: the bone array resolved and <c>ownskin</c> not 0. False leaves the skinmesh

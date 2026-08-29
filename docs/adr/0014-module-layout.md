@@ -165,7 +165,8 @@ whole of what preserves it. So it is a rule the build enforces rather than one a
 
 The audit found 34 calls across three of nine files, and none of them were extraction:
 
-- `BatchService.cs` (5) is draw submission by its own summary -- misfiled, moved to `Alloy/`.
+- `BatchService.cs` (5) is draw submission by its own summary -- misfiled, moved to `Alloy/`. (#258
+  deleted the submission and renamed the survivor `DrawFunnelService.cs`; it is still `Alloy/`'s.)
 - `AlloyCensus.cs` (19) were all in two texture readbacks the triage prints. They are pure GL queries
   belonging to no pass, so they became `Alloy/TexProbe.cs`.
 - `AlloyRenderer.Enroll.cs` (10) were `Harvest` (query an engine VDO's attribute formats out of the live

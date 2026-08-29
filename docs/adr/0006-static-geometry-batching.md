@@ -1,6 +1,14 @@
 # 0006 — Static-geometry batching: extender-owned draw submission for the static world
 
-Status: proposed (plan B of the #67 perf campaign; Ghidra session 2026-08-18)
+Status: **superseded by ADR 0016 (M4) and deleted in #258.** The batcher shipped, then the #215
+cutover made `RspShim` own the frame -- and a replayed multidraw is the one draw path its funnel
+swallow cannot see, so under the shipped default (`ownframe=1`) this service never submitted. #258
+deleted it, its group registry, matrix probation and the 64K submit arrays; what survives is the hook
+set, now `DrawFunnelService`. Under `ownframe=0` the parts it used to batch fall back to the engine's
+own per-part draws, which is what they did whenever a group had one member. Kept for the RE it
+records (the 2002 draw loop's per-item cost, the group-key derivation) and for its own history.
+
+Originally: proposed (plan B of the #67 perf campaign; Ghidra session 2026-08-18)
 
 ## Context: what the 2002 draw loop costs
 

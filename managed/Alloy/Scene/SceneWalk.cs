@@ -15,7 +15,7 @@ namespace Sowx.Alloy;
 /// registry: <c>Gob::SetLODModel</c> @0x43e6a0 rotates a gob's whole active part subtree every frame, per
 /// visible gob, with no ctor, no dtor and no epoch bump, and two more edges have no notice at all. So the
 /// three triggers here are (a) <c>Scene::Sequence</c> @0x18aa1b0, the engine's own global membership epoch,
-/// (b) a Scene change, and (c) <c>Part::~Part</c>, which <see cref="BatchService"/> already hooks (#145,
+/// (b) a Scene change, and (c) <c>Part::~Part</c>, which <see cref="DrawFunnelService"/> already hooks (#145,
 /// #221). Everything else -- transforms, the active LOD root, material bindings -- is a per-record FIELD
 /// READ, which is why the LOD rotation is a non-event: all three roots are enumerated, so whichever one the
 /// engine swaps in is already in the table.</para>
@@ -252,8 +252,8 @@ internal static unsafe class SceneWalk
     }
 
     /// <summary>Create a record for a part the walk has never seen. The field-read replacement for
-    /// <c>BatchService.Record</c>: every column it used to fill by observing a vanilla draw is a load off
-    /// the part, the material or the VertexPrimitive.</summary>
+    /// the old capture <c>Record</c>: every column it used to fill by observing a vanilla draw is a load
+    /// off the part, the material or the VertexPrimitive.</summary>
     private static int Enrol(IntPtr part)
     {
         var p = new PartRef(part);
@@ -272,7 +272,6 @@ internal static unsafe class SceneWalk
         // A reclaimed slot carries its previous tenant's stamp, so it is pushed out of the window, not left.
         _pSeen[e] = _frame - 2;
         _pWalkGen[e] = Gen;
-        _pGroup[e] = -1; _pNext[e] = -1; _pIncluded[e] = -1; _pDirty[e] = false;
         if (_pGob[e] != IntPtr.Zero) AlloyCensus._pInstRecorded++;
         // #137's identity, by vtable rather than by "which hook body is on the stack". A skinmesh is posed
         // by the engine's 64-matrix bone array, so the Alloy pass has to force a pose and bind bones.
@@ -301,20 +300,29 @@ internal static unsafe class SceneWalk
         IntPtr vdo = *(IntPtr*)(vp + VpVdo);
         int item = *(int*)(vp + VpItem);
         if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; return false; }
-        // Only mode 1 (indexed static) can be replayed; the batcher's own capture killed the rest as
+        // Only mode 1 (indexed static) can be drawn from our own tables; the capture killed the rest as
         // "multidraw-or-unindexed" and that verdict is unchanged, it is just reached without a draw.
         if (new VdoRef(vdo).Mode != 1) { Release(e, "unindexed"); return false; }
         IntPtr mdl = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
         if (mdl == IntPtr.Zero) { Release(e, "no-mdlnode"); return false; }
         _pVdo[e] = vdo; _pItem[e] = item; _pPrim[e] = *(int*)(mdl + MdlPrimType);
-        int bucket = Classify(part, _pMat[e], out int sub);
-        // Not tested against AlphaBucket: Classify never produces 7 or 8 (they are per-frame fade states,
-        // not properties of the part), and PartDrawBody re-asks the live _bucketId anyway.
-        bool ownOnly = !Engine.IsOpaque(new PartRef(part))
+        int bucket = Classify(part, _pMat[e]);
+        // Not tested against AlphaBucket: Classify never produces 7 or 8 -- they are per-frame fade states,
+        // not properties of the part, and BucketGate publishes the live _bucketId for whoever needs it.
+        _pOwnOnly[e] = !Engine.IsOpaque(new PartRef(part))
                        || bucket == AlloyRenderer.WaterBucket
                        || _pSkin[e] || _pGob[e] != IntPtr.Zero;
-        if (!BatchService.Mint(part, e, bucket, sub, _scene, AlloyRenderer.IsWorldScene(_scene), ownOnly))
-            return false;
+        // #258: what interning a group used to do, minus the group. The metadata the registry carried
+        // incidentally is a column now; the diffuse slot and the rotation bits stay because the census and
+        // AlloyRenderer.IdentityOk still compare them against the live material to spot an animated texture.
+        var mr = new MaterialRef(_pMat[e]);
+        _pTex0[e] = mr.Texture(0).Ptr;
+        _pRot[e] = new PartRef(part).TexRotateBits;
+        _pBucket[e] = bucket;
+        _pScene[e] = _scene;
+        _pWorld[e] = AlloyRenderer.IsWorldScene(_scene);
+        _pLight[e] = mr.BlendFlag == 0;
+        _pState[e] = StActive;
         _bound++; Dirty = true;
         return true;
     }
@@ -421,18 +429,16 @@ internal static unsafe class SceneWalk
     /// <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 rather than observed. That function's whole
     /// classification is a function of the material, and every term is a field read or an exported query:
     /// bumpy-shiny + <c>g_nEnableBumpyWater</c> -&gt; 6; the SharedMaterial's +500 selector -&gt; 6 or 5;
-    /// <c>mat+0x94 == 2</c> (dst blend ONE, i.e. additive) -&gt; 4; otherwise opaque 2 / transparent 3. The
-    /// sub-bucket is the same expression on every arm: gated by <c>shared+0x1f1</c>, valued
-    /// <c>shared+0x1f8 ^ 1</c>.
+    /// <c>mat+0x94 == 2</c> (dst blend ONE, i.e. additive) -&gt; 4; otherwise opaque 2 / transparent 3.
+    /// (#258: the engine's sub-bucket, gated by <c>shared+0x1f1</c> and valued <c>shared+0x1f8 ^ 1</c>, was
+    /// only ever part of the group key and is no longer derived.)
     /// <para>ponytail: buckets 7 (neighbour caps) and 8 (a tile mid-fade) are deliberately NOT produced.
     /// Both are per-FRAME conditions the engine reroutes into from <c>HandleFading{In,Out}Bucket</c>
-    /// @0x47f670/@0x47f870, not properties of the part -- and the batcher's old bucket-8 latch was recorded
-    /// once and never recomputed, which its own note called out as batch coverage decaying across a session.
-    /// The per-frame <c>Fading()</c> tests in <see cref="BucketGate"/> and the batch walk already answer the
-    /// question live, where it is always current.</para></summary>
-    internal static int Classify(IntPtr part, IntPtr mat, out int sub)
+    /// @0x47f670/@0x47f870, not properties of the part. The Alloy pass asks the fade question live, per
+    /// frame, through <see cref="PartTable.TileFadeFactor"/>, which is where it is always current.</para>
+    /// </summary>
+    internal static int Classify(IntPtr part, IntPtr mat)
     {
-        sub = 0;
         var p = new PartRef(part);
         if (mat == IntPtr.Zero) return Engine.IsOpaque(p) ? 2 : 3;
         var m = new MaterialRef(mat);
@@ -450,16 +456,9 @@ internal static unsafe class SceneWalk
                    : m.Shared.Volumetric ? 5
                    : Engine.IsOpaque(p) ? 2 : 3;
         }
-        if (shared != IntPtr.Zero && *(sbyte*)(shared + SharedSubGate) != 0)
-            sub = *(byte*)(shared + AlloyCensus.SharedVolumetric) ^ 1;
         return bucket;
     }
 
-    /// <summary>The one SharedMaterial field only this classifier reads: the sub-bucket GATE at +0x1f1.
-    /// The other two terms <c>AddPartsTreeToDrawBuckets</c> @0x460880 classifies on already have names --
-    /// its "+500" selector is <see cref="AlloyCensus.SharedSampleFb"/> (0x1f4) and its "+0x1f8" is
-    /// <see cref="AlloyCensus.SharedVolumetric"/>.</summary>
-    private const int SharedSubGate = 0x1f1;
 
     /// <summary>The one measurement #256 owes: how often the GLOBAL epoch moves. <c>Scene::Sequence</c> is
     /// bumped by <c>Gob::SetScene</c> for ANY scene, a GUI 3D panel included, so a churning panel would

@@ -200,7 +200,6 @@ internal readonly unsafe ref struct TextureRef
 internal static unsafe class Engine
 {
     internal static bool IsOpaque(PartRef part) => PartTable._isOpaque(part.Ptr) != 0;
-    internal static int RenderHint(PartRef part) => PartTable._getRenderHint(part.Ptr);
     internal static bool HasEnvMap(MaterialRef mat) => PartTable._hasEnvMap(mat.Ptr) != 0;
     internal static bool HasBumpyShiny(MaterialRef mat) => PartTable._hasBumpyShiny(mat.Ptr) != 0;
 }

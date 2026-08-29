@@ -38,13 +38,13 @@ point of use, by one of two mechanisms — never by trusting the field it came f
    this still a texture" is two compares against `_ZTV11CAurTexture` / `_ZTV16CAurTextureBasic`
    (+0x10, Itanium ABI). `Sowx.Framework.AurTex` is the one front door to `AurTextureGetTID`; every
    material-derived call site routes through it (Alloy colour diffuse + five PBR slots, Alloy sky,
-   `CasterPass` masked casters, `GrassField`, the `BatchService` census, chat portraits).
+   `CasterPass` masked casters, `GrassField`, the Alloy census, chat portraits).
    A refusal costs that part its Alloy draw for the frame — the engine draws it, i.e. vanilla — and
    is counted, with the session total on the `[owned]` line.
 2. **Death notice** (for objects that have no vtable to check, or where a check would be too late).
    Hook the destructor and revoke the pointer from our table: `Part::~Part` (`_ZN4PartD2Ev`
    @0x437720) for the batch part table (#145) and the sky part table (#150). Where the death notice
-   cannot be installed, the feature **stands down** rather than infer liveness — `BatchService`
+   cannot be installed, the feature **stands down** rather than infer liveness — `DrawFunnelService`
    already does this if `Part::~Part` fails to hook.
 
 Corollaries that are part of the decision:

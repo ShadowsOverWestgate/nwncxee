@@ -55,7 +55,7 @@ public sealed class HookService : IDisposable
         if (target == IntPtr.Zero) return IntPtr.Zero;
 
         // funchook does NOT detect duplicate targets: a second prepare's install overwrites the first
-        // patch and silently orphans the first handler (this killed BatchService's capture, #81). One
+        // patch and silently orphans the first handler (this killed the part-draw capture, #81). One
         // owner per function; co-consumers use Chain instead.
         if (_chains.ContainsKey(target) || !_prepared.TryAdd(target, linux))
         {

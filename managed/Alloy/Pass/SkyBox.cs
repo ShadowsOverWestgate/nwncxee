@@ -89,9 +89,9 @@ internal static unsafe class SkyBox
     /// in the capture window on the render thread.</summary>
     private static volatile bool _disabled;
 
-    /// <summary>True between the hook's entry and exit: <c>BatchService.OnPartDraw</c> routes sky parts here
+    /// <summary>True between the hook's entry and exit: <c>DrawFunnelService.OnPartDraw</c> routes sky parts here
     /// instead of into the general part table. They must stay out of it -- their transform changes every
-    /// frame, so matrix probation would never settle and the entries would be permanent demotion noise.</summary>
+    /// frame, so the general part table could never hold a stable record for one.</summary>
     internal static bool InWindow;
     /// <summary>The Scene whose skybox was captured, for the Alloy pass to compare against its own.</summary>
     internal static IntPtr Scene;

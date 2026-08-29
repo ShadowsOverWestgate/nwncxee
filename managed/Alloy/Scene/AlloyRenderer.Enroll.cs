@@ -313,50 +313,17 @@ public sealed unsafe partial class AlloyRenderer
             bool gob = _oGob[i] != IntPtr.Zero;
             if (gob) _msGobParts++;
             long clamped = (uint)Math.Min(count, MsCountMax);
-            _msCount[n] = count; _msSlot[n] = i;
             _msKey[n] = ((long)(uint)_oVao[i] << MsVaoShift) | (_oMx[i] ? MsMxBit : 0L)
                         | (first << MsFirstShift) | clamped;
             if (_oMx[i]) _msMxParts++;
             _msShape[n] = (gob ? MsGobBit : 0L) | (_oMx[i] ? MsShapeMxBit : 0L)
                           | ((long)(uint)_oPrim[i] << MsPrimShift)
                           | ((long)(uint)_oTexKey[i] << MsTexShift) | clamped;
-            // ...and the vertex range the content hash reads, when it is armed. The vert item table is
-            // (base, count) as two int32s -- VertexDataObject::AddItem @0x45ca94 computes the next free
-            // vertex as item[last].base + item[last].count over this same table, which is what pins the
-            // second field. Clamping to that count is what stops a short mesh's hash running on into its
-            // NEIGHBOUR's vertices and reading two identical meshes as different.
-            long vert = vdo.VertItems;
-            _msVao[n] = _oVao[i]; _msBase[n] = 0; _msVerts[n] = 0;
-            if (vert != 0 && item < vdo.VertCount)
-            { _msBase[n] = *(int*)(vert + item * 8); _msVerts[n] = *(int*)(vert + item * 8 + 4); }
             n++;
         }
         _msParts = n;
-        // The content pass, if armed: it maps each VDO's position buffer once and hashes every part on it,
-        // so it needs the whole staged population before it can run -- and it is GL, so it lives outside
-        // Scene/. The hash then joins the shape key, which is why the key is completed here and not above.
-        bool hashed = HashVertices(n);
-        for (int k = 0; k < n; k++)
-        {
-            // The rigid key drops the VDO and the texture: a model repeated across two buffers, or retextured,
-            // is still the same geometry. What it keeps is the index count and matrix-class -- the first
-            // because two shapes agreeing on a distance multiset and a triangle count are the same shape, the
-            // second because it splits "could share vertices today" from "would have to be un-baked first".
-            _msRigidKey[k] = (_msShape[k] & (MsShapeMxBit | ((1L << MsTexShift) - 1)))
-                             | ((long)(hashed ? _msRigid[k] : 0u) << MsHashShift);
-            if (hashed) _msShape[k] |= (long)(_msHash[k] & ((1u << MsHashBits) - 1)) << MsHashShift;
-        }
         Array.Sort(_msKey, 0, n);
         Array.Sort(_msShape, 0, n);
-        for (int k = 0; k < n; k++) _msIdx[k] = k;
-        Array.Sort(_msRigidKey, _msIdx, 0, n);
-        ScanRuns(_msRigidKey, n, MsShapeMxBit,
-                 out _msRigidShapes, out _msRigidMax, out _msRigidRepeat, out _msRigidRepeatMx);
-        // #244 phase A: with the rigid grouping in hand, derive a placement for every repeated part and check
-        // it reproduces the copy exactly. This is the de-duplication's own arithmetic, run and audited before
-        // anything is stored or drawn from it -- a nearly-right transform is the one outcome that must never
-        // reach the draw path.
-        if (hashed) VerifyDedupPass(n);
         ScanRuns(_msKey, n, MsMxBit, out _msMeshes, out _msMaxInstances, out _msShared, out _msSharedMx);
         ScanRuns(_msShape, n, MsGobBit, out _msShapes, out _msShapeMax, out _msShapeRepeat, out _msShapeRepeatGob);
         // Same sorted key, a second flag: how much of the repeated population is COLLAPSIBLE at all. Cheaper

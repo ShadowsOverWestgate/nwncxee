@@ -332,9 +332,9 @@ internal static unsafe class SymbolMap
     /// <c>Scene::AddPartsToDrawBuckets</c> before RSP and reset by <c>ClearBuckets</c> after, so it is
     /// already correct when the shim reads it. Data symbol; read only.</summary>
     public const string TriggerBucket = "triggerbucket";
-    // ---- static-geometry batching (ADR 0006 phase 1), Linux-only -> BatchService stands down on Windows ----
+    // ---- the engine draw funnels Alloy sits on, Linux-only -> DrawFunnelService stands down on Windows ----
     /// <summary>PartTriMesh::Draw() @0x4513d0 -- the per-part draw entry the bucket loop calls (via the
-    /// item's Render vtable slot). BatchService's skip/record point. ABI: <c>(PartTriMesh* /*rdi*/)</c>.</summary>
+    /// item's Render vtable slot). DrawFunnelService's hand-back point. ABI: <c>(PartTriMesh* /*rdi*/)</c>.</summary>
     public const string PartTriMeshDraw = "_ZN11PartTriMesh4DrawEv";
     /// <summary>#137: PartSkin::Draw() @0x4830b0 -- the TRUE skinmesh's draw entry (a cloak, a robe, a
     /// tail). It never enters <see cref="PartTriMeshDraw"/>: it calls <c>RenderSkinned</c> @0x482c70, which
@@ -362,7 +362,7 @@ internal static unsafe class SymbolMap
     public const string RenderBeams = "_ZN5Scene11RenderBeamsEv";
     /// <summary>#130: PartBeam::Draw() @0x450120 -- the whole of it is
     /// <c>RenderVertexData(part+0xa0, part+0xa8, 4, 0xffffffff)</c>, so it is both the per-beam capture point
-    /// and the identity the owned replay keys on. It is NOT <c>PartTriMesh::Draw</c>, so BatchService's part
+    /// and the identity the owned replay keys on. It is NOT <c>PartTriMesh::Draw</c>, so DrawFunnelService's part
     /// hook never sees a beam. ABI: <c>(PartBeam* /*rdi*/)</c>.</summary>
     public const string PartBeamDraw = "_ZN8PartBeam4DrawEv";
     /// <summary>Global <c>enablebeams</c> @0x18aa18c (int, 1 by default) -- the flag
@@ -494,19 +494,12 @@ internal static unsafe class SymbolMap
     /// <c>node+0x10</c> then iterating <c>node+0x18</c>. Tile geometry has no owning gob, so this is the
     /// only route to it that does not depend on what the camera can see.</summary>
     public const string BspTraverse = "_Z11BSPTraverseP7BSPNodePFvS0_PvES1_";
-    /// <summary>RenderInterface::SetCanDissolve(int) @0x45ccd0 -- the bucket loop sets this per item from
-    /// Camera::GetCanKeyholeDissolve right before the item renders; latched to know each part's dissolve
-    /// state without re-calling the camera test.</summary>
-    public const string RiSetCanDissolve = "_ZN15RenderInterface14SetCanDissolveEi";
-    /// <summary>Material::HasEnvMap @0x43d1a0-ish -- env-mapped parts take RenderEnvironmentMapped, not
+        /// <summary>Material::HasEnvMap @0x43d1a0-ish -- env-mapped parts take RenderEnvironmentMapped, not
     /// RenderFlat; excluded from batching.</summary>
     public const string MatHasEnvMap = "_ZN8Material9HasEnvMapEv";
     /// <summary>Material::HasBumpyShinyMap -- bumpy-shiny parts take RenderBumpyShiny; excluded.</summary>
     public const string MatHasBumpyShinyMap = "_ZN8Material16HasBumpyShinyMapEv";
-    /// <summary>PartTriMesh::GetRenderHint() @0x43ce90 -- RenderFlat feeds this to SetRenderHint per draw
-    /// (program selection input); part of the batch group key.</summary>
-    public const string PartGetRenderHint = "_ZN11PartTriMesh13GetRenderHintEv";
-    /// <summary>Material::GetTexture(int) @0x4c5810 -- texture slot i (SharedMaterial override at
+        /// <summary>Material::GetTexture(int) @0x4c5810 -- texture slot i (SharedMaterial override at
     /// mat+0xd0 wins, else own slot at mat+i*0x10). Batch group key = material CONTENT (each part owns
     /// its Material instance, so pointer identity shatters groups to size 1).</summary>
     public const string MatGetTexture = "_ZN8Material10GetTextureEi";

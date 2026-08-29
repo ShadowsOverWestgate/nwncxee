@@ -27,7 +27,7 @@ public enum FramePhase
 /// to arrays once at init, and <see cref="Run"/> is a plain indexed walk invoking cached delegates. Nothing
 /// after <see cref="Seal"/> allocates, sorts, or enumerates.
 /// <para><b>Priority, not registration order.</b> Services are discovered alphabetically, which is not the
-/// order the frame needs -- <c>BatchService</c> initializes before <c>DrawStatsService</c> but must tick after
+/// order the frame needs -- <c>DrawFunnelService</c> initializes before <c>DrawStatsService</c> but must tick after
 /// it. Every participant states a priority (low runs first) exactly as <c>HookService.Chain</c> does for
 /// shared symbols (#88); ties fall back to registration order.</para>
 /// <para><see cref="Seal"/> happens-before the first frame: the host calls it just before

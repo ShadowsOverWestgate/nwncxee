@@ -12,10 +12,9 @@ namespace Sowx.Alloy;
 /// <c>HasItemsOfType</c> -- brackets the walk, publishes the walk context every other module keys on
 /// (bucket id, Scene, phase, generation), and SKIPS the items an Alloy pass already drew.
 /// <para>This is the correctness surface of the whole Alloy pipeline: one wrong answer is a double-draw or
-/// a hole. It is a separate module from the batcher for exactly that reason. Its suppression reads the
-/// CENSUS (<c>OwnFlag</c>/<c>OwnGen</c>) and the TABLE (sightings, identity); the only batcher state it
-/// reads is <c>_pIncluded</c>/<c>_gSubmitGen</c>, whose miss direction is "return the slot, let the engine
-/// draw it" -- so a batcher that never armed can only make this gate skip LESS, never more.</para>
+/// a hole. Since #258 it has exactly one reason to skip an item -- the Alloy world pass drew it this pass
+/// (<c>OwnFlag</c>/<c>OwnGen</c>, confirmed by <c>IterSight</c>) -- and every miss returns the slot, so the
+/// gate can only ever skip LESS than it should, never more.</para>
 /// <para>Alloc-free: <see cref="OnNextItem"/> runs per bucket item per frame.</para></summary>
 internal static unsafe class BucketGate
 {
@@ -27,11 +26,10 @@ internal static unsafe class BucketGate
     internal static delegate* unmanaged<IntPtr, int, int, IntPtr> _origFirstItem;
     internal static delegate* unmanaged<IntPtr, int, int, IntPtr> _origNextItem;
 
-    /// <summary>Did the walk hooks go in? The batcher's arming reads this; nothing here reads the
-    /// batcher's.</summary>
+    /// <summary>Did the walk hooks go in? <see cref="DrawFunnelService"/>'s arming reads this.</summary>
     internal static bool Installed => _origBucket != null && _origFirstItem != null;
 
-    /// <summary>Install the four walk hooks. Called from <see cref="BatchService.Initialize"/> in the
+    /// <summary>Install the four walk hooks. Called from <see cref="DrawFunnelService.Initialize"/> in the
     /// original order -- the bucket bracket, then the iterator pair, then the water gate -- because hook
     /// install order is what decides the funchook chain each symbol ends up carrying.</summary>
     internal static void Install(HookService hooks)
@@ -52,13 +50,9 @@ internal static unsafe class BucketGate
     /// walked, its cull phase, and a generation bumped per walk and per phase.</summary>
     internal static int _inBucket, _bucketId = -1, _phase, _gen;
 
-    /// <summary>Items this walk skipped, for the period line. A gate counter, not a batch one: it counts
-    /// both the Alloy pass suppressions and the batch-covered members.</summary>
-    internal static long _iterSkip;
-
     /// <summary>Scene whose bucket walk is currently running. Camera::RenderScene is not exclusive to the
     /// world view -- GUI 3D panels drive the same Scene::RenderSinglePass path with their own Scene -- so a
-    /// capture group is keyed by the Scene it was recorded from and ownership can never harvest across two (#91).</summary>
+    /// record carries the Scene it was walked from and ownership can never harvest across two (#91).</summary>
     internal static IntPtr _bucketScene;
     /// <summary>Whether <see cref="_bucketScene"/> is the world Scene, resolved while it is still live. Caster
     /// enrollment runs at the present with no Scene in hand, so it reads this instead of dereferencing a group's
@@ -178,14 +172,11 @@ internal static unsafe class BucketGate
         return _origFirstItem != null ? _origFirstItem(mgr, id, phase) : IntPtr.Zero;
     }
 
-    /// <summary>ADR 0006 phase 3: iteration-level ownership. Members already covered by this walk's
-    /// multi-draw are skipped HERE, so the engine's loop body (matrix push, SetShaderParamv, fog/light/cull
-    /// toggles, dissolve test, SetUniforms dirty-scan) never runs for them at all -- previously every skipped
-    /// member still paid all of that and we only suppressed the terminal draw. The slot's end sentinel derefs
-    /// to null, exactly the caller's own exit test, so looping past skipped slots is transparent. Any
-    /// revalidation failure (recycled pointer, re-rotated/animated texture, tile fade, keyhole dissolve) falls
-    /// through to the vanilla loop body, where OnPartDraw dirties/demotes as before -- worst case is one
-    /// z-identical duplicate opaque draw that frame.</summary>
+    /// <summary>Iteration-level ownership: a part the Alloy world pass drew this pass is skipped HERE, so
+    /// the engine's loop body (matrix push, SetShaderParamv, fog/light/cull toggles, dissolve test,
+    /// SetUniforms dirty-scan) never runs for it at all -- suppressing only the terminal draw still paid all
+    /// of that. The slot's end sentinel derefs to null, exactly the caller's own exit test, so looping past
+    /// skipped slots is transparent, and every miss returns the slot for the engine to draw.</summary>
     [UnmanagedCallersOnly]
     internal static IntPtr OnNextItem(IntPtr mgr, int id, int phase)
     {
@@ -201,30 +192,14 @@ internal static unsafe class BucketGate
             int e = Find(tri);
             if (e < 0) return slot;
             // #82: a part the Alloy world pass drew this pass is skipped HERE (exactly-one-owner). The
-            // sighting is also its liveness signal, exactly as for batched members below.
+            // sighting is also its liveness signal.
             if (OwnFlag[e] != 0)
             {
                 _pSeen[e] = _frame;
                 if (AlloyRenderer.IterSight(e, _bucketId)) continue;
                 return slot;
             }
-            // ...and only THEN the batcher's own suppression, which bucket 8 stays out of (#126 moved the
-            // gate here: the Alloy branch above must be able to suppress a fading part, which is a bucket-8
-            // part by definition).
-            if (_bucketId == AlphaBucket) return slot;
-            if (_pState[e] != StActive || _pOwnOnly[e] || _pIncluded[e] != _gen) return slot;
-            PartRef p = new(tri);
-            if (p.Node.Ptr != _pNode[e] || p.Material.Ptr != _pMat[e]) return slot;
-            if (p.TexRotateBits != _pRot[e] || new MaterialRef(_pMat[e]).Texture(0).Ptr != _pTex0[e]) return slot;
-            IntPtr tile = p.Tile;
-            if (tile != IntPtr.Zero && Fading(tile)) return slot;
-            if (_keyhole != null && _camSlot != IntPtr.Zero)
-            {
-                IntPtr cam = *(IntPtr*)_camSlot;
-                if (cam != IntPtr.Zero && _keyhole(cam, tri) != 0) return slot;
-            }
-            _pSeen[e] = _frame;   // the iterator sighting IS the liveness signal now
-            _iterSkip++;
+            return slot;
         }
     }
 }

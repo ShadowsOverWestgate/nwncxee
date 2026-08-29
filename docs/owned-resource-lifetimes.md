@@ -72,9 +72,9 @@ can no longer be trusted. Same word, different meaning, and neither is wired to 
 ## The edges, and who fires them
 
 ```
-Part::~Part           -> BatchService.OnPartDtor        (BatchService.cs:620)  per-part death notice
-                            -> SkyBox.Revoke(part)      (BatchService.cs:624)
-                            -> PartTable Die(e)         (BatchService.cs:633)
+Part::~Part           -> DrawFunnelService.OnPartDtor  (DrawFunnelService.cs:367) per-part death notice
+                            -> SkyBox.Revoke(part)      (DrawFunnelService.cs:371)
+                            -> PartTable Die(e)         (DrawFunnelService.cs:381)
 VDO repack            -> AlloyRenderer.OnVdoRepackHook  (AlloyRenderer.cs:951) per-VDO
                             -> Beams.OnRepack, CasterPass.OnVdoRepack
 Scene::ReloadGrass    -> GrassField.OnReloadGrass       (GrassField.cs:305)
@@ -98,7 +98,7 @@ left the area generates no dtor at all. A record now lives exactly as long as th
 
 `RevokeAll` runs the world walk **above** its empty-table guard. The ownership count says what *Alloy
 took*; it says nothing about what the *passes captured*. Sky is the only pass with a per-part death
-notice of its own (`BatchService.cs:624`); for beams, particles and grass this walk is the **only**
+notice of its own (`DrawFunnelService.cs:371`); for beams, particles and grass this walk is the **only**
 teardown, and even sky's `Scene` pointer and drawn-generation are reachable no other way.
 
 ## The table
@@ -108,11 +108,11 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Resource | Created by | Revoked by | Caller | Context loss |
 |---|---|---|---|---|
 | Ownership table `_oTri/_oGob/_oVdo/_oEntry` | `AlloyRenderer.Enroll` | `RevokeAll` | `AlloyRenderer.cs:995,1003,1005,1007` + per-part `Revoke(i)` on repack (`:951`) and identity change (`Batches.cs:234`) | via `RevokeAll` |
-| Part/group tables (`PartTable`) | `SceneWalk.Enrol` + `BatchService.Mint` (#256; was `BatchService.Complete`, fed by a draw capture) | `WipeTables` / `Die` / `SceneWalk.Sweep` | `PartTable.cs:453,481`, `OnPartDtor`, `SceneWalk.cs` | none — CPU only |
+| Part table (`PartTable`) | `SceneWalk.Enrol` + `SceneWalk.TryBind` (#256; #258 folded the group intern into the record) | `WipeTables` / `Die` / `SceneWalk.Sweep` | `PartTable.cs`, `OnPartDtor`, `SceneWalk.cs` | none — CPU only |
 | VAO cache `_vVdo/_vStale` | `EnsureVao` | `RevokeAll` retires the slots | `Enroll.cs` | GL names zeroed by `AlloyRenderer.ContextLost` |
 | Bindless handle cache `_hTid` | `AlloyRenderer.Issue` staging | `WipeHandles` — **only while `ownedtex=0`** (#220); armed, see the row below | `Enroll.cs:26` (release) and `:62` (enrollment) | `AlloyRenderer.ForgetHandles` |
 | Water planes (`WaterBodies`) | plane measurement during enrollment | `WaterBodies.Clear` | registry `Revoke` slot | none — CPU only |
-| Sky parts (`SkyBox`) | `OnPartDraw` capture window | `SkyBox.Forget`; per-part `SkyBox.Revoke` | registry `Revoke`; `BatchService.cs:624`; scene change `SkyBox.cs:136` | none — holds no GL |
+| Sky parts (`SkyBox`) | `OnPartDraw` capture window | `SkyBox.Forget`; per-part `SkyBox.Revoke` | registry `Revoke`; `DrawFunnelService.cs:371`; scene change `SkyBox.cs:136` | none — holds no GL |
 | Beam parts + VAO slots (`Beams`) | bucket-15 capture | `Beams.Forget` | registry `Revoke`; scene change `Beams.cs:173`; repack `:405` | `Beams.ContextLost` |
 | Emitter table (`Particles`) | emitter-bucket capture | `Particles.Forget` | registry `Revoke`; scene change `Particles.cs:480` | `Particles.ContextLost` (also frees the native stage buffer) |
 | Grass patches + slot map (`GrassField`) | bin scatter | `GrassField.Forget` | registry `Revoke`; `Scene::ReloadGrass` `GrassField.cs:305` | `GrassField.ContextLost` |

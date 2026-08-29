@@ -7,7 +7,7 @@ namespace Sowx.Services.Perf;
 
 /// <summary>
 /// ADR 0006 phase 0: per-frame draw-path histogram. Opt-in via <c>drawhooks=stats</c> in <c>sowx.cfg</c> (off = no
-/// hooks, zero cost). Config and not a chat command (ADR 0013): it and <c>BatchService</c> hook the same
+/// hooks, zero cost). Config and not a chat command (ADR 0013): it and <c>DrawFunnelService</c> hook the same
 /// symbols, so which of them arms is decided once, at install, and cannot be flipped mid-session.
 /// <para>Call-through hooks on <c>GLRender::RenderVertexData</c> (every GL draw the engine submits)
 /// and <c>Scene::RenderDrawBucket</c> (to attribute draws to bucket ids). Aggregates draws by
@@ -47,8 +47,8 @@ public sealed unsafe class DrawStatsService : IExtenderService
         // #170: ahead of the stand-down -- the host called EndFrame every frame regardless, and EndFrame
         // guards itself on Enabled. Registering after the return would silently change that.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 0, EndFrame, "DrawStatsService.endFrame", log);
-        if (Settings.Text(Alloy.BatchService.DrawModeKey, Alloy.BatchService.DrawModeBatch)
-            != Alloy.BatchService.DrawModeStats) return;
+        if (Settings.Text(Alloy.DrawFunnelService.DrawModeKey, Alloy.DrawFunnelService.DrawModeBatch)
+            != Alloy.DrawFunnelService.DrawModeStats) return;
         _log = log;
         // Chained, not Install()ed: RenderVertexData has several subscribers (#88). Lowest priority --
         // we only count what actually reached the GPU.
@@ -71,7 +71,7 @@ public sealed unsafe class DrawStatsService : IExtenderService
         _bucket = prev;
     }
 
-    /// <summary>Chain priority on RenderVertexData: below the shadow cull and the batcher (#88).</summary>
+    /// <summary>Chain priority on RenderVertexData: below the shadow cull and the draw funnels (#88).</summary>
     internal const int DrawPriority = 10;
     private static IntPtr* _drawSlot;
 

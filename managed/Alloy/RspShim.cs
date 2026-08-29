@@ -29,8 +29,8 @@ namespace Sowx.Alloy;
 /// overlay, outside any Scene pass) -- see <see cref="SymbolMap.GlRenderVertexStreamData"/>. Swallowing both
 /// funnels therefore covers the engine's whole 3D draw surface, and <see cref="_passed"/> is counted at the
 /// BOTTOM of the chain so it reports what actually reached the original rather than restating the swallow.
-/// The one draw path the funnels do not cover is the batcher's own multidraw, which is why
-/// <see cref="BatchService"/> disarms batching outright when this key is on.</para>
+/// #258 deleted the one draw path the funnels could not cover -- the batcher's own replayed multidraw,
+/// which under this key (the shipped default) never submitted at all.</para>
 /// <para>Behind <c>ownframe</c> in <c>sowx.cfg</c>, default ON since #218 closed M4 (ADR 0013 bucket 2: an
 /// arming decision, not a look). Set it to 0 and nothing here installs, so the pre-cutover frame is
 /// unchanged by construction -- that is the escape hatch, not the default.</para>
@@ -108,10 +108,11 @@ internal static unsafe class RspShim
     private static byte* _triggerBucket;
     private static delegate* unmanaged<IntPtr, uint, uint, uint, void> _origStream;
 
-    /// <summary>Chain priority on <c>GLRender::RenderVertexData</c>. Strictly between BatchService's 50 and
-    /// DrawStatsService's 10, and that placement is the whole design: BatchService sits ABOVE and calls the
-    /// chain before its own <c>Observe</c>, so capture still happens on a swallowed call; DrawStats sits
-    /// BELOW, so it does not count a draw that never issued.</summary>
+    /// <summary>Chain priority on <c>GLRender::RenderVertexData</c>. Strictly between
+    /// <see cref="DrawFunnelService"/>'s 50 and DrawStatsService's 10, and that placement is the whole
+    /// design: the funnel service sits ABOVE and calls the chain before its own <c>Observe</c>, so the bone
+    /// capture still happens on a swallowed call; DrawStats sits BELOW, so it does not count a draw that
+    /// never issued.</summary>
     private const int SwallowPriority = 20;
     /// <summary>...and the honest counter, at the bottom of the same chain. Anything that reaches the
     /// original during the window passes through here, whatever route it took.</summary>
@@ -124,7 +125,7 @@ internal static unsafe class RspShim
     internal static bool InWindow;
 
     /// <summary>#236: the deliberate hand-back. Set by the bucket walk around every part it is about to
-    /// give to the engine BECAUSE ALLOY IS NOT DRAWING IT -- unrecorded, on probation, dead, dirty, solo.
+    /// give to the engine BECAUSE ALLOY IS NOT DRAWING IT -- unrecorded, dead, or an identity that moved.
     /// Pre-cutover those parts were engine-drawn and the ownership latency cost a frame of vanilla shading;
     /// under the swallow the same hand-back is a hole, which is what ate the creature torsos. So the window
     /// lets these through and counts them separately: <c>passed</c> (the #218 exit bar) still means a draw
@@ -174,15 +175,16 @@ internal static unsafe class RspShim
     private static long _swallowed, _passed, _handedBack, _ticks, _frames;
 
     /// <summary>The two invariants the shim cannot discover at runtime and would fail silently on.
-    /// <para><b>Chain placement.</b> <see cref="SwallowPriority"/> must sit strictly between BatchService's
-    /// and DrawStatsService's. Above BatchService and the swallow eats the capture the walk exists for --
-    /// the world would come up empty. Below DrawStats and the histogram counts draws that never issued.
+    /// <para><b>Chain placement.</b> <see cref="SwallowPriority"/> must sit strictly between
+    /// <see cref="DrawFunnelService"/>'s and DrawStatsService's. Above the funnel service and the swallow
+    /// eats the bone capture the pose call exists for -- skinned parts would wear the previous frame's pose.
+    /// Below DrawStats and the histogram counts draws that never issued.
     /// Neither shows up as an error; both are just a wrong-looking session.</para>
     /// <para><b>Walk coverage.</b> Every bucket id 0..8 exactly once. A missing id is a class that is never
     /// captured and so never owned, which reads as "Alloy cannot draw that class" rather than as a typo.</para></summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = SwallowPriority > DrawStatsService.DrawPriority && SwallowPriority < BatchService.DrawPriority;
+        bool ok = SwallowPriority > DrawStatsService.DrawPriority && SwallowPriority < DrawFunnelService.DrawPriority;
         int seen = 0;
         foreach (int id in WalkOrder) seen |= 1 << id;
         if (seen != 0x1ff || WalkOrder.Length != 9) ok = false;
@@ -197,7 +199,7 @@ internal static unsafe class RspShim
                 if (slots[i] == slots[j]) { ok = false; break; }
         _checkOk = ok;
         log.Info(ok ? $"RspShim.SelfCheck: passed (swallow at {SwallowPriority}, "
-                    + $"between {DrawStatsService.DrawPriority} and {BatchService.DrawPriority}; buckets 0-8; "
+                    + $"between {DrawStatsService.DrawPriority} and {DrawFunnelService.DrawPriority}; buckets 0-8; "
                     + $"{slots.Length} distinct Scene vtable slots)"
                     : "RspShim.SelfCheck: FAILED -- chain placement, bucket coverage or a vtable displacement "
                     + "is wrong; the cutover would capture nothing, miscount, or call the wrong virtual");
@@ -428,8 +430,8 @@ internal static unsafe class RspShim
            && (BucketGate._bucketId == AlloyRenderer.WaterBucket || BucketGate._bucketId == SampleBucket);
 
     /// <summary>The swallow, layer 20 of the <c>RenderVertexData</c> chain. Returning here skips every lower
-    /// subscriber AND the original -- and BatchService, which sits above at 50, still runs its capture
-    /// observation after this returns. That is the whole reason the shim can walk the buckets for capture
+    /// subscriber AND the original -- and <see cref="DrawFunnelService"/>, which sits above at 50, still
+    /// runs its bone observation after this returns. That is the whole reason the shim can walk the buckets
     /// and still issue no draw.</summary>
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)

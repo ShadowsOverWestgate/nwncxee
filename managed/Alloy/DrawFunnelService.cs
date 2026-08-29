@@ -9,58 +9,37 @@ using static Sowx.Alloy.BucketGate;
 using static Sowx.Alloy.AlloyCensus;
 namespace Sowx.Alloy;
 
-/// <summary>ADR 0006 phase 1: extender-owned draw submission for opaque, pre-transformed static geometry --
-/// and, since #188, that is ALL this type is. The ownership census went to <see cref="AlloyCensus"/>,
-/// the engine bucket-walk suppression to <see cref="BucketGate"/> and the tables they share to
-/// <see cref="PartTable"/>; what stayed is the capture funnel (the two <c>Draw</c> hooks that put a part in
-/// the table) and the batcher the name describes. The capture stays here rather than in the table module
-/// because it IS the hook body -- <c>Record</c>/<c>Complete</c> run a vanilla draw through the trampoline
-/// this type owns to make the funnel fire.
-/// <para>The engine's 2002 bucket loop submits ~2000 tiny draws/frame (each with full per-draw state
-/// churn); this service records each batchable part's draw once -- (VDO, item, prim) captured at the
-/// <c>GLRender::RenderVertexData</c> funnel, grouped by (VDO, Material, bucket, cull phase, render hint,
-/// lighting toggle) -- and thereafter, when the first clean member of a group draws (engine state fully
-/// configured by the engine itself), submits every other member in ONE <c>glMultiDrawElementsBaseVertex</c>
-/// and skips their per-part path. Geometry is byte-identical to vanilla: same shared vertex buffers, same
-/// index ranges (re-read from the VDO item tables each submit, so <c>Repack()</c> moves are absorbed),
-/// same program/textures/uniforms (the first member's own draw applied them).</para>
-/// <para>Excluded from BATCHING (always vanilla, unless the Alloy pass takes them): matrix-path/skinned
-/// parts, bumpy-shiny materials, non-opaque parts, bucket 8 (per-item alpha), keyhole-dissolving or
-/// tile-fading members (per-frame via the engine's own <c>SetCanDissolve</c> value + the part's tile-fade
-/// factor). #126 split "not batchable" from "not recorded": the transparent classes are captured and
-/// grouped like anything else, because that is what the Alloy pass enrolls from, and carry a
-/// <see cref="PartTable._pOwnOnly"/> flag that keeps them out of this service's own submits. Lifetime is
-/// <see cref="PartTable"/>'s: entries are keyed by part+node+material pointer identity, a mismatch kills the
-/// entry (recycled pointer), and submits never dereference a part -- only our own copies + the live VDO
-/// tables -- so freed parts simply stop being seen (members must have drawn within the last 2 frames).</para>
-/// <para>Armed by <c>drawhooks=batch</c> in <c>sowx.cfg</c>, the default; <c>drawhooks=stats</c> hands the draw hooks to
-/// <c>DrawStatsService</c> and <c>drawhooks=off</c> disables both (#182 -- one mode, because both hook the same
-/// symbols; drawstats also wants the vanilla draw stream). Hot and alloc-free throughout.</para>
-/// </summary>
-public sealed unsafe class BatchService : IExtenderService
+/// <summary>#258: the engine draw funnels Alloy sits on, and nothing else. This was <c>BatchService</c>,
+/// ADR 0006's extender-owned multidraw submission; the #215 cutover made <c>RspShim</c> own the frame, and a
+/// replayed multidraw is the one draw path its funnel swallow cannot see -- so the batcher had been latched
+/// off since it shipped while everything upstream of it still ran per part per frame. The batcher, its group
+/// registry, matrix probation and the 64K submit arrays are gone; what stayed is the set of hooks the rest
+/// of Alloy is built on, and every one of them has a live consumer:
+/// <list type="bullet">
+/// <item><c>PartTriMesh::Draw</c> / <c>PartSkin::Draw</c> -- the vanilla draw, which under
+/// <see cref="RspShim"/> is also the HAND-BACK (#236); <see cref="SkyBox"/>'s capture window (#125); the
+/// caster pass's bone bracket (#96); and #256's <c>unrecorded-draws</c> counter, the acceptance number for
+/// "the scene walk reached every part the engine draws".</item>
+/// <item><c>Part::~Part</c> -- the death notice (#145, #221). Every other liveness test is an inference.</item>
+/// <item><c>GLRender::RenderVertexData</c> -- the bone-capture and pose-swallow funnel (#137).</item>
+/// <item><c>VertexDataObject::Repack</c> -- the layout-change edge no scene epoch reports.</item>
+/// </list>
+/// <para>Armed by <c>drawhooks</c> in <c>sowx.cfg</c> (the default arms this service, <c>stats</c> hands the
+/// draw hooks to <c>DrawStatsService</c>, anything else disables both -- one mode, because both hook the
+/// same symbols). Hot and alloc-free throughout.</para></summary>
+public sealed unsafe class DrawFunnelService : IExtenderService
 {
-    /// <summary>#182: the ONE key that says who owns the draw hooks. <c>batch</c> (default) = this service,
+    /// <summary>#182: the ONE key that says who owns the draw hooks. <c>batch</c> (default) = this service
+    /// -- the value keeps its name after #258 deleted the batcher, because it is a <c>sowx.cfg</c> contract
+    /// with existing installs (ADR 0013) and renaming it would silently disarm them. Reads as:
     /// <c>stats</c> = <c>DrawStatsService</c>'s histogram, anything else = neither. It is one mode rather than
     /// two booleans because the two arm the same symbols and cannot coexist; and it is config rather than a
     /// command because both decide what installs, which only happens once.</summary>
     internal const string DrawModeKey = "drawhooks", DrawModeBatch = "batch", DrawModeStats = "stats";
 
-    private const uint GlUnsignedShort = 0x1403;
-
-    /// <summary>Members of ONE group a single multidraw can carry. Raised with the group table: a dense
-    /// area's biggest group is bounded by the group table, not by a separate number, and overflow here is a
-    /// SILENT truncation -- the tail of the group simply is not drawn. Counted now (<c>_submitTrunc</c>) so
-    /// it can never be silent again.</summary>
-    private const int MaxSubmit = 65536;
-
     private const int LogEvery = 900;
     private static ExtenderLog? _log;
 
-    /// <summary>#188: the BATCHER's own latch, and the whole of what "the batcher is armed" means. It goes
-    /// down when <c>glMultiDrawElementsBaseVertex</c> turns out to be missing, and it takes nothing with it:
-    /// the capture tables, the census and the bucket gate stay up on <see cref="PartTable.Active"/>. Before
-    /// the split these were one flag, so an absent multidraw stood the whole Alloy pipeline down.</summary>
-    private static bool _batchArmed;
     private static delegate* unmanaged<IntPtr, void> _origPartDraw;
     /// <summary>#137: <c>PartSkin::Draw</c>'s trampoline. A separate entry point for the same job, because
     /// the true skinmesh class never passes through <see cref="_origPartDraw"/> at all -- see
@@ -68,25 +47,10 @@ public sealed unsafe class BatchService : IExtenderService
     /// drawn, uncaptured, and (like every un-hooked class) invisible to the census.</summary>
     private static delegate* unmanaged<IntPtr, void> _origPartSkinDraw;
 
-    /// <summary>The engine's own <c>SetCanDissolve</c> value for the draw in flight. A dissolving part is
-    /// dirty and never batched.</summary>
-    private static int _canDissolve;
-    private static delegate* unmanaged<int, void> _origCanDissolve;
-    private static int _pending = -1, _pendingSelf = -1;
-    private static readonly int[] _mdCounts = new int[MaxSubmit];
-    private static readonly void*[] _mdOffsets = new void*[MaxSubmit];
-    private static readonly int[] _mdBase = new int[MaxSubmit];
-    /// <summary>Group members a multidraw could not carry this period. Non-zero means geometry is being
-    /// dropped from the tail of a group -- raise <see cref="MaxSubmit"/>.</summary>
-    private static int _submitTrunc;
-
     // period stats
-    private static long _batched, _calls, _skipped, _vanDead, _vanSolo, _vanDirty, _vanOwnOnly;
-    private static long _recNoCap;   // why-dead forensics (bind path, cold)
     /// <summary>#256: parts the engine drew that the scene walk never recorded -- the acceptance counter for
     /// "every part the engine classified this frame is in the record set". Non-zero means the walk has a hole.</summary>
     internal static long _unrecorded;
-    private static int _subDiagLeft = 3;   // #81 crash-triage one-shot
     private static bool _wasInModule;
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -94,10 +58,10 @@ public sealed unsafe class BatchService : IExtenderService
         _log = log;
         // #170: ahead of every stand-down, as the host's unconditional call was. Priority pins it AFTER
         // DrawStats and BEFORE OwnedDraw -- alphabetical service discovery gives the wrong order on its own.
-        FrameRegistry.Global.Register(FramePhase.PostPresent, 10, EndFrame, "BatchService.endFrame", log);
+        FrameRegistry.Global.Register(FramePhase.PostPresent, 10, EndFrame, "DrawFunnels.endFrame", log);
         string mode = Settings.Text(DrawModeKey, DrawModeBatch);
         if (mode != DrawModeBatch)
-        { log.Info($"BatchService: standing down (sowx.cfg drawhooks={mode})"); return; }
+        { log.Info($"DrawFunnels: standing down (sowx.cfg drawhooks={mode})"); return; }
 
         PartTable.Log = log;
         AlloyCensus.Configure(log);
@@ -105,7 +69,7 @@ public sealed unsafe class BatchService : IExtenderService
         // parts, so it is checkable on a headless run -- which is the only place it is ever checked at all.
         SceneWalk.SelfCheck(log);
         if (!PartTable.Resolve())
-        { log.Info("BatchService: engine symbols unresolved -- batching unavailable (headless/Windows?)"); return; }
+        { log.Info("DrawFunnels: engine symbols unresolved -- Alloy unavailable (headless/Windows?)"); return; }
         // #256: enumeration is the SOURCE of every record now, so it resolves before the tables arm. Without
         // it there is no discovery at all -- nothing below may pretend otherwise by falling back to capture.
         if (!SceneWalk.Resolve(log)) return;
@@ -118,8 +82,6 @@ public sealed unsafe class BatchService : IExtenderService
         _drawSlot = hooks.Chain(SymbolMap.GlRenderVertexData,
             (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)&OnVdoDraw, DrawPriority);
         BucketGate.Install(hooks);
-        _origCanDissolve = (delegate* unmanaged<int, void>)hooks.Install(
-            SymbolMap.RiSetCanDissolve, (IntPtr)(delegate* unmanaged<int, void>)&OnSetCanDissolve);
         SkyBox.Install(log, hooks);
         _repackSlot = hooks.Chain(SymbolMap.VdoRepack,
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepack, RepackPriority);
@@ -127,29 +89,17 @@ public sealed unsafe class BatchService : IExtenderService
         // against fields that a freed block may still be holding); this one is told.
         _origPartDtor = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.PartDtor, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPartDtor);
-        // The CAPTURE tables arm here, and the census and the gate ride on them; the batcher's own latch is
-        // separate and goes down on its own (see _batchArmed).
+        // The record tables arm here, and the census and the gate ride on them.
         PartTable.Active = _origPartDraw != null && _drawSlot != null && BucketGate.Installed
                            && _repackSlot != null && _origPartDtor != null;
-        // #215: the one engine-side draw path the shim's funnel swallow cannot see. Under the cutover the
-        // bucket walk still runs (that is how parts get captured at all) and Observe still fires, so a
-        // pending group would submit a REAL glMultiDrawElementsBaseVertex through Alloy's own bindings --
-        // invisible to the funnel counter, and drawn with no engine state bound. Batching goes down; every
-        // part it would have batched is an Alloy part on this path anyway.
-        _batchArmed = PartTable.Active && !RspShim.Armed;
-        log.Info(!_batchArmed && PartTable.Active
-            // #149's lesson: a period line reporting zero batched draws with no stated reason reads as a
-            // bug. Under the cutover batching is OFF on purpose, and the arm-time line has to say so.
-            ? "BatchService: capture armed, batching OFF -- #215's shim owns the frame (ownframe=1), and a "
-              + "replayed multidraw is the one draw path its funnel swallow cannot see"
-            : PartTable.Active
-            ? "BatchService: static-geometry batching armed (sowx.cfg drawhooks=off disables; [batch] every 900 frames)"
+        log.Info(PartTable.Active
+            ? "DrawFunnels: engine draw funnels armed (sowx.cfg drawhooks=off disables; [funnels] every 900 frames)"
             : _origPartDtor == null
               // #145: deliberate. Without the death notice, every liveness test left is an inference, and
               // the one the Alloy pass used walked a freed part into a freelist word.
-              ? "BatchService: Part::~Part unhooked -- batching stands down rather than track parts it "
+              ? "DrawFunnels: Part::~Part unhooked -- Alloy stands down rather than track parts it "
                 + "cannot be told the death of"
-              : "BatchService: hook install failed -- batching unavailable");
+              : "DrawFunnels: hook install failed -- Alloy unavailable");
     }
 
     /// <summary>Chain priorities (#88): both symbols are shared, we sit under the shadow pipeline.</summary>
@@ -174,13 +124,6 @@ public sealed unsafe class BatchService : IExtenderService
         if (stale > 0) SceneWalk.NoteStale();
     }
 
-    [UnmanagedCallersOnly]
-    private static void OnSetCanDissolve(int v)
-    {
-        _canDissolve = v;
-        if (_origCanDissolve != null) _origCanDissolve(v);
-    }
-
     /// <summary>#96 passive bone capture: a skinned part is never batchable and never owned, so its draw runs
     /// vanilla either way -- but that draw is the one moment in the frame its bone matrices are live, so the
     /// caster pass brackets it and snapshots them. The bracket wraps the WHOLE body because every branch below
@@ -200,8 +143,8 @@ public sealed unsafe class BatchService : IExtenderService
 
         // #125: the sky window comes FIRST and returns -- a sky part is drawn outside any bucket, so the
         // gate below would hand it straight to the engine and it would never be captured at all. It must also
-        // stay out of the general part table: its transform is the engine's matrix STACK, which changes every
-        // frame, so matrix probation would never settle for one.
+        // stay out of the general part table: its transform is the engine's matrix STACK, which changes
+        // every frame, so no record could hold a stable transform for one.
         if (Live && part != IntPtr.Zero && SkyBox.InWindow)
         {
             int sky = SkyBox.Begin(part);
@@ -261,18 +204,6 @@ public sealed unsafe class BatchService : IExtenderService
     /// this service is one place that could do it. So the choice is made once, here.</summary>
     private static void Vanilla(IntPtr part)
     {
-        if (_timing)
-        {
-            long t0 = Stopwatch.GetTimestamp();
-            VanillaBody(part);
-            _vanTicks += Stopwatch.GetTimestamp() - t0;
-            return;
-        }
-        VanillaBody(part);
-    }
-
-    private static void VanillaBody(IntPtr part)
-    {
         // Keyed on the PART, not merely on the window. "PartSkin::Draw never enters PartTriMesh::Draw" is an
         // RE claim, and the code cannot check it -- but it does not have to depend on it either. If some
         // nested rigid draw ever did land inside the window, a flag would route a PartTriMesh* into
@@ -326,30 +257,6 @@ public sealed unsafe class BatchService : IExtenderService
         return _skinPosed;
     }
 
-    /// <summary>#194: the entry-read timer. OFF by default and toggled by <c>/batchtime</c>, because the two
-    /// <c>Stopwatch.GetTimestamp</c> pairs cost ~20ns each and this hook fires once per part per frame --
-    /// measuring it costs more than the thing measured is suspected of costing.
-    /// <para>What it isolates is the QUESTION the ticket asks and nothing else: the time
-    /// <see cref="PartDrawBody"/> spends reading its own table, with the engine's draw subtracted out.
-    /// Timing the hook whole would have measured <c>PartTriMesh::Draw</c>, which is orders of magnitude
-    /// larger and would have answered "no" to every layout regardless of the layout.</para></summary>
-    internal static bool _timing;
-    private static long _pdTicks, _vanTicks, _pdCalls;
-    /// <summary>Frames the timer has actually accumulated over. NOT <c>LogEvery</c>: the toggle zeroes the
-    /// counters mid-window, so dividing a partial window by the full one under-reports ms/frame by up to
-    /// 900x -- and it is the FIRST line anyone reads.</summary>
-    private static int _pdFrames;
-
-    /// <summary>Toggle the entry-read timer, reported on the next <c>[batch]</c> line.</summary>
-    internal static string BatchTime()
-    {
-        _timing = !_timing;
-        _pdTicks = 0; _vanTicks = 0; _pdCalls = 0; _pdFrames = 0;
-        return _timing
-            ? $"[batchtime] on -- PartDraw entry-read time on the next [batch] line (every {LogEvery} frames)"
-            : "[batchtime] off";
-    }
-
     private static void PartDraw(IntPtr part)
     {
         // #236: the walk HANDS BACK. Every Vanilla() below this point is Alloy saying "not mine, not this
@@ -361,15 +268,7 @@ public sealed unsafe class BatchService : IExtenderService
         // measured, so marking them would be a guess about who draws the sky.
         bool prevHand = RspShim.HandBack;
         RspShim.HandBack = true;
-        if (!_timing) PartDrawBody(part);
-        else
-        {
-            long t0 = Stopwatch.GetTimestamp(), v0 = _vanTicks;
-            PartDrawBody(part);
-            // Minus whatever Vanilla spent inside, read as a DELTA so a nested vanilla draw is subtracted once.
-            _pdTicks += Stopwatch.GetTimestamp() - t0 - (_vanTicks - v0);
-            _pdCalls++;
-        }
+        PartDrawBody(part);
         RspShim.HandBack = prevHand;
     }
 
@@ -385,8 +284,7 @@ public sealed unsafe class BatchService : IExtenderService
         // a character sheet is open -- i.e. exactly when nobody would trust it.
         if (e < 0) { if (_bucketWorld) _unrecorded++; Vanilla(part); return; }
 
-        // #82: Alloy parts reaching the loop body mean the Alloy draw did not happen for them this pass --
-        // vanilla, and never batched (a batch submit on top of an Alloy draw is the double-draw failure)
+        // #82: Alloy parts reaching the loop body mean the Alloy draw did not happen for them this pass.
         // #236: HANDED BACK, not swallowed. Reaching this branch means the iterator's IterSight said Alloy
         // did NOT draw the part this pass (BucketGate returns the slot only then), which is #82's own
         // invariant -- so there is no draw to double. That is the engine-culled part coming back into view,
@@ -407,62 +305,20 @@ public sealed unsafe class BatchService : IExtenderService
             // whether a dead instanced part is a live one it must drop its whole creature for, or despawned
             // debris it should forget -- so the sighting has to keep ticking past the death.
             _pSeen[e] = _frame;
-            Vanilla(part); _vanDead++;
+            Vanilla(part);
             return;
         }
 
         _pSeen[e] = _frame;
-        // #126: recorded for the Alloy pass, never for this one -- and bucket 8 is the same case per frame
-        // rather than per part (RenderDrawBucket folds the tile's fade factor into part+0xa0 for the length
-        // of the draw, which no group's replayed state carries).
-        // #236: NOT a hand-back to suppress. Alloy-only says "the Alloy pass draws this, not the batcher"
-        // -- but OwnFlag is 0 here, so the Alloy pass has not enrolled it and nobody is drawing it. That is
-        // the creature case exactly: instances are all Alloy-only, and swallowing this ate the torsos.
-        if (_pOwnOnly[e] || _bucketId == AlphaBucket) { Vanilla(part); _vanOwnOnly++; return; }
-        IntPtr node = _pNode[e];
-        // matrix-class members must still match the group's transform exactly; identity-class members must
-        // still BE identity-class -- any transition (mover) permanently demotes
-        if (_pMx[e])
-        {
-            float* live = new NodeRef(node).Matrix;
-            int gm = _pGroup[e] * 16;
-            for (int f = 0; f < 16; f++)
-                if (_gMatrix[gm + f] != live[f])
-                { Die(e, "matrix-moved"); Vanilla(part); _vanDead++; return; }
-        }
-        else if (new NodeRef(node).MatrixClass || IsInstance(part))
-        { Die(e, "became-matrix-class"); Vanilla(part); _vanDead++; return; }
-        // #134: same read as the old `shaped` skin term, same correction -- an instance carries per-draw
-        // state (alpha, colour, self-illum) that a replayed multidraw cannot vary, so THIS service still
-        // never batches one. The Alloy pass takes them instead, one draw record each.
-        bool dirty = IsInstance(part) || _canDissolve != 0;
-        IntPtr tile = p.Tile;
-        if (tile != IntPtr.Zero && Fading(tile)) dirty = true;
-        // animated/cycled diffuse texture or re-rotated tile: content no longer matches the group -> vanilla
-        if (new MaterialRef(_pMat[e]).Texture(0).Ptr != _pTex0[e] || p.TexRotateBits != _pRot[e])
-        { Die(e, "texture-or-rotation-changed"); Vanilla(part); _vanDead++; return; }
-        _pDirty[e] = dirty;
-
-        int g = _pGroup[e];
-        if (_gSubmitGen[g] == _gen)
-        {
-            if (_pIncluded[e] == _gen) { _skipped++; return; }   // covered by this walk's multi-draw
-            Vanilla(part); _vanDirty++;                    // was stale/dirty at submit -> vanilla
-            return;
-        }
-        if (dirty) { Vanilla(part); _vanDirty++; return; }
-        if (_gCount[g] < 2 || !_batchArmed || Gl.MultiDrawElementsBaseVertex == null) { Vanilla(part); _vanSolo++; return; }
-
-        // first clean member this walk: draw it vanilla (engine configures all state), then the funnel
-        // hook submits the rest of the group while that state is still bound
-        _gSubmitGen[g] = _gen; _pIncluded[e] = _gen;
-        _pending = g; _pendingSelf = e;
+        // #258: every path out of here is the same one. The batcher's tail -- matrix probation, the dirty
+        // tests, the group submit -- decided whether THIS service would draw the part, and it no longer
+        // draws anything. Under the shim a part reaching this body was handed back by the Alloy pass, and
+        // the engine is what draws it.
         Vanilla(part);
-        _pending = -1; _pendingSelf = -1;
     }
 
-    /// <summary>Post-draw observer: runs the rest of the chain (the real draw) first, so engine state
-    /// is fully bound. Capture + batch-submit path; near-free when nothing is pending.</summary>
+    /// <summary>Post-draw observer: runs the rest of the chain (the real draw) first, so engine state is
+    /// fully bound. Near-free -- the sky window and the bone capture are all that read it.</summary>
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
@@ -478,57 +334,21 @@ public sealed unsafe class BatchService : IExtenderService
         }
         var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_drawSlot;
         if (next != null) next(vdo, item, prim, size, offset);
-        Observe(vdo, item, (int)prim, size, offset);
+        Observe(vdo, item, (int)prim);
     }
 
-    private static void Observe(IntPtr vdo, uint item, int prim, uint size, uint offset)
+    private static void Observe(IntPtr vdo, uint item, int prim)
     {
         // #125: inside a sky part's vanilla draw this IS the (VDO, item, prim) capture -- and nothing else
         // in this service has a claim on it, since a sky part never reaches the tables below.
         // Gated on the WINDOW, not on a live capture slot: SkyBox.Begin refuses a part (no node, no
-        // material, table full) without arming one, and the engine still draws that part. Falling through
-        // would hand its funnel event to the batcher below, which could flush a pending group of WORLD
-        // geometry under the sky's GL state -- sky projection, (SRC_ALPHA, ZERO), depth mask off.
+        // material, table full) without arming one, and the engine still draws that part -- and a sky
+        // funnel event must not reach the bone capture below, whose bracket belongs to a different part.
         if (SkyBox.InWindow) { SkyBox.Observe(vdo, (int)item, prim); return; }
-        // #256: the batch capture branch that used to live here is GONE. (VDO, item, prim) is read off
-        // the VertexPrimitive by SceneWalk; the funnel is now only the CASTER's bone-capture point and the
-        // batch submit trigger, neither of which is a record source.
-        if (CasterPass.SkinObserve(vdo, (int)item, prim)) return;
-        if (_pending < 0) return;
-
-        int g = _pending;
-        _pending = -1;                                            // one submit per trigger
-        IntPtr gvdo = _gVdo[g];
-        var gv = new VdoRef(gvdo);
-        long elem = gv.ElemItems;
-        long vert = gv.VertItems;
-        int nElem = gv.ElemCount, nVert = gv.VertCount;
-        if (elem == 0 || vert == 0) return;
-        int k = 0;
-        int m0 = _gFirst[g];
-        for (int m = m0; m >= 0; m = _pNext[m])
-        {
-            // A ceiling you cannot observe hitting is a budget, and this one drops geometry when it does.
-            if (k >= MaxSubmit) { _submitTrunc++; break; }
-            if (m == _pendingSelf || _pState[m] != StActive || _pDirty[m] || _pSeen[m] < _frame - 1
-                || OwnFlag[m] != 0 || _pOwnOnly[m]) continue;
-            int it = _pItem[m];
-            if (it < 0 || it >= nElem || it >= nVert) continue;
-            _mdCounts[k] = *(int*)(elem + it * 8 + 4);
-            _mdOffsets[k] = (void*)(long)((uint)(*(int*)(elem + it * 8)) * 2);
-            _mdBase[k] = *(int*)(vert + it * 8);
-            _pIncluded[m] = _gen;
-            k++;
-        }
-        if (k == 0) return;
-        if (_subDiagLeft > 0)
-        {
-            _subDiagLeft--;
-            _log?.Info($"BatchService: submit-diag vdo=0x{(ulong)gvdo:x} k={k} prim=0x{_primTable[_gPrim[g]]:x} first: count={_mdCounts[0]} off={(long)_mdOffsets[0]} base={_mdBase[0]}");
-        }
-        fixed (int* pc = _mdCounts) fixed (void** po = _mdOffsets) fixed (int* pb = _mdBase)
-            Gl.MultiDrawElementsBaseVertex(_primTable[_gPrim[g]], pc, GlUnsignedShort, po, k, pb);
-        _batched += k; _calls++;
+        // #256: the capture branch that used to live here is GONE -- (VDO, item, prim) is read off the
+        // VertexPrimitive by SceneWalk. #258 took the batch submit that was the other half, so the funnel
+        // is now the CASTER's bone-capture point and nothing else.
+        CasterPass.SkinObserve(vdo, (int)item, prim);
     }
 
     private static delegate* unmanaged<IntPtr, void> _origPartDtor;
@@ -565,89 +385,10 @@ public sealed unsafe class BatchService : IExtenderService
         _origPartDtor(part);
     }
 
-    /// <summary>#256: intern this record's group from field reads. The tail of what used to be
-    /// <c>Complete</c>, with the two things it could only learn from a draw -- the (VDO, item, prim) triple
-    /// and which bucket the engine filed the part in -- supplied by <see cref="SceneWalk"/> instead, off the
-    /// VertexPrimitive and off <c>Scene::AddPartsTreeToDrawBuckets</c>'s own material rules. The group key
-    /// itself is unchanged: material CONTENT, never the <c>Material*</c>.
-    /// <para>False = the entry died here (no VDO, or the group table is full); the caller must not treat it
-    /// as bound. Cold -- once per record, on a walk.</para></summary>
-    internal static bool Mint(IntPtr part, int e, int bucket, int sub, IntPtr scene, bool world, bool ownOnly)
-    {
-        IntPtr mat = _pMat[e];
-        if (_pVdo[e] == IntPtr.Zero) { _recNoCap++; Die(e, "no-vdo"); return false; }
-        _pOwnOnly[e] = ownOnly;
-        // #221: a reused slot must not be spliced into its previous tenant's member chain, and re-interning
-        // to the SAME group would write _pNext[e] = e and hang the submit walk on the render thread.
-        Unlink(e);
-        int prim = _pPrim[e];
-        var pr = new PartRef(part);
-        var mr = new MaterialRef(mat);
-        int hint = Engine.RenderHint(pr);
-        // material content: texture slots (equality only -- CAurTexture* are borrowed, never deref'd),
-        // shared-material override, and the blend-disable flag RenderFlat reads at mat+0x98
-        IntPtr t0 = mr.Texture(0).Ptr, t1 = mr.Texture(1).Ptr,
-               t2 = mr.Texture(2).Ptr, t3 = mr.Texture(3).Ptr;
-        IntPtr shared = mr.Shared.Ptr;
-        IntPtr env = mr.EnvMap;
-        byte flag = mr.BlendFlag;
-        bool light = flag == 0;
-        int rot = pr.TexRotateBits;
-        bool mx = _pMx[e];
-        // #128: a MOVER's transform is not part of its group key -- it changes every frame, so keying on it
-        // would mint one group per part per pose and exhaust the table. The flag itself IS in the key, which
-        // is what keeps a mover out of a static group whose frozen matrix a replayed multidraw would apply.
-        bool mover = IsInstance(part);
-        float* liveM = new NodeRef(_pNode[e]).Matrix;
-        // The group key, hashed and interned. This was a linear walk of _groupCount until the caps were
-        // raised for object-dense areas: O(n^2) across an area load, which is 24M field compares at the 7000
-        // groups that used to be the ceiling and 13.4 BILLION at 163840 -- minutes of hung load, i.e. the
-        // raise would have traded "some tiles render vanilla" for "the area never finishes loading".
-        // The probe carries the SAME comparison the walk did (GroupMatches), so a hash collision costs a
-        // compare and never a wrong group.
-        ulong h = GroupHash(_pVdo[e], t0, t1, t2, t3, shared, env, flag, rot, hint, prim,
-                            light, mx, mover, liveM);
-        int slot = (int)(h * 0x9E3779B97F4A7C15UL >> (64 - GroupHashBits));
-        int g = -1, free = -1;
-        for (int p = 0; p < GroupHashSize; p++)
-        {
-            int j = (slot + p) & (GroupHashSize - 1);
-            int cand = _gSlot[j];
-            if (cand < 0) { free = j; break; }
-            if (_gHash[cand] == h && GroupMatches(cand, _pVdo[e], t0, t1, t2, t3, shared, env, flag, rot,
-                                                  hint, prim, light, mx, mover, liveM))
-            { g = cand; break; }
-        }
-        if (g < 0)
-        {
-            if (_groupCount >= MaxGroups || free < 0) { Die(e, "groups-full"); return false; }
-            g = _groupCount++;
-            _gSlot[free] = g; _gHash[g] = h;
-            _gVdo[g] = _pVdo[e]; _gTex0[g] = t0; _gTex1[g] = t1; _gTex2[g] = t2; _gTex3[g] = t3;
-            _gShared[g] = shared; _gEnv[g] = env; _gFlag[g] = flag; _gRot[g] = rot; _gBucket[g] = bucket; _gPhase[g] = sub;
-            _gScene[g] = scene; _gWorld[g] = world;
-            _gMx[g] = mx; _gMover[g] = mover;
-            if (mx && !mover) for (int f = 0; f < 16; f++) _gMatrix[g * 16 + f] = liveM[f];
-            _gHint[g] = hint; _gLight[g] = light; _gPrim[g] = prim; _gFirst[g] = -1; _gCount[g] = 0; _gSubmitGen[g] = -1;
-        }
-        _pTex0[e] = t0; _pRot[e] = rot;
-        _pGroup[e] = g; _pNext[e] = _gFirst[g]; _gFirst[g] = e; _gCount[g]++;
-        _pState[e] = StActive; _pDirty[e] = false; _pIncluded[e] = -1;
-        return true;
-    }
-
-
     /// <summary>Frame tick from UiHostService. Periodic stats; the log is the only cold path.</summary>
     public static void EndFrame()
     {
         if (!PartTable.Active) return;
-        // #188: the stand-down is the BATCHER's, not the table's. Before the split this cleared the one
-        // shared flag, so a GL without multidraw took the census and the bucket gate down with the submits.
-        if (_batchArmed && Gl.MultiDrawElementsBaseVertex == null && _log != null)
-        {
-            Gl.Init(_log);                                         // GL context exists here, not at service init
-            if (Gl.MultiDrawElementsBaseVertex == null) { _batchArmed = false; _log.Info("BatchService: glMultiDrawElementsBaseVertex missing -- batching off"); return; }
-        }
         // module-unload edge: every part/VDO dies with the module -- drop all recorded identity
         bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) WipeTables("module unloaded");
@@ -665,25 +406,14 @@ public sealed unsafe class BatchService : IExtenderService
         // area precisely because a bigger area reaches the cap sooner. So the diagnosis is MEASURED here
         // rather than asserted: one sweep of the state array, and only at pressure, so it costs nothing on
         // an ordinary frame.
-        if (_partCount >= MaxParts - MaxParts / 4 || _groupCount >= MaxGroups - MaxGroups / 8)
-            OnTablePressure();
-        if (_timing) _pdFrames++;
+        if (_partCount >= MaxParts - MaxParts / 4) OnTablePressure();
         if (++_frame % LogEvery != 0) return;
-        _log?.Info("BatchService: " + SceneWalk.Period());
-        int members = 0, solo = 0;
-        for (int i = 0; i < _groupCount; i++) { members += _gCount[i]; if (_gCount[i] < 2) solo++; }
-        _log?.Info($"BatchService: [batch] {_groupCount} groups ({solo} solo) / {members} members ({_partCount} parts tracked), " +
-                   $"batched {(float)_batched / LogEvery:F0} draws/frame in {(float)_calls / LogEvery:F1} calls, " +
-                   $"iter-skipped {(float)BucketGate._iterSkip / LogEvery:F0} + late {(float)_skipped / LogEvery:F0}, " +
-                   $"vanilla solo {(float)_vanSolo / LogEvery:F0} / " +
-                   $"dirty {(float)_vanDirty / LogEvery:F0} / dead {(float)_vanDead / LogEvery:F0} / " +
-                   $"Alloy-only {(float)_vanOwnOnly / LogEvery:F0}, " +
+        _log?.Info("DrawFunnels: " + SceneWalk.Period());
+        _log?.Info($"DrawFunnels: [funnels] {_partCount} parts tracked, " +
                    (_saturated ? $"TABLE SATURATED ({_satLive} live / {_satDead} dead, surplus engine-drawn), " : "") +
-                   (_submitTrunc > 0 ? $"SUBMIT TRUNCATED {_submitTrunc}x (a group exceeded {MaxSubmit} members -- geometry dropped), " : "") +
-                   $"rec-dead noVdo={_recNoCap}" +
                    // #256: parts the engine drew that the walk never enumerated -- the acceptance number for
                    // "the record set covers what the engine classified". Non-zero is a hole in the walk.
-                   $" unrecorded-draws={_unrecorded}" +
+                   $"unrecorded-draws={_unrecorded}" +
                    // #145: parts the engine destroyed under a recorded entry. A 0 that survives an area
                    // transition means Part::~Part is not reaching us, which is indistinguishable from
                    // "nothing died" in every other number here.
@@ -693,17 +423,8 @@ public sealed unsafe class BatchService : IExtenderService
                    // Alloy pass took from one it could not solve.
                    (_origPartSkinDraw == null ? " | skinned: no hook"
                       : $" | skinned: {(float)_skinSeen / LogEvery:F1} draws/frame, " +
-                        $"{(float)_skinForced / LogEvery:F1} poses forced ({_skinForceFailed} unsolved)")
-                   // #194: the parallel-array question, as a number. ns/call is the per-part entry read;
-                   // ms/frame is what a struct-of-arrays -> array-of-structs conversion could win at most.
-                   + (!_timing || _pdCalls == 0 ? ""
-                      : $" | entry reads: {(float)_pdCalls / _pdFrames:F0}/frame at " +
-                        $"{_pdTicks * 1e9d / Stopwatch.Frequency / _pdCalls:F0}ns = " +
-                        $"{_pdTicks * 1e3d / Stopwatch.Frequency / _pdFrames:F3}ms/frame" +
-                        $" over {_pdFrames} frames"));
-        _batched = 0; _calls = 0; _skipped = 0; BucketGate._iterSkip = 0; _vanSolo = 0; _vanDirty = 0; _vanDead = 0;
-        _vanOwnOnly = 0; _skinSeen = 0; _skinForced = 0; _skinForceFailed = 0;
-        _recNoCap = 0; _unrecorded = 0; _submitTrunc = 0;
-        _pdTicks = 0; _vanTicks = 0; _pdCalls = 0; _pdFrames = 0;
+                        $"{(float)_skinForced / LogEvery:F1} poses forced ({_skinForceFailed} unsolved)"));
+        _skinSeen = 0; _skinForced = 0; _skinForceFailed = 0;
+        _unrecorded = 0;
     }
 }

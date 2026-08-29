@@ -58,7 +58,6 @@ internal static class RenderCommands
         // the answer exists.
         r.Register("/framedump", "dump what the Alloy colour pass submits, for diffing two runs", FrameDump_);
         // #194: a measurement toggle, off by default -- the timer costs more than what it measures.
-        r.Register("/batchtime", "toggle the PartDraw entry-read timer on the [batch] line", _ => BatchService.BatchTime());
         // #182: a per-pass on/off is one flag and one line -- it needs neither the float dial nor a
         // Describe/Tune slot, and both passes stay armed so the flip lands on the next frame.
         r.Register("/sky", "toggle the Alloy sky pass", _ => SkyBox.Toggle());

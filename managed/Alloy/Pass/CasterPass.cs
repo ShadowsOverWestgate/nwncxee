@@ -283,7 +283,7 @@ public sealed unsafe class CasterPass : IExtenderService
     internal static bool CascadesFresh => CascadeCount > 0 && CascadeTex != 0 && _cascadeStamp == _frameSeq;
 
     /// <summary>Does the caster set get rebuilt on this frame's enrollment? The set is only ever as complete
-    /// as what the engine's bucket walk carried, and <see cref="BatchService"/> only offers parts seen in
+    /// as what the engine's bucket walk carried, and <see cref="DrawFunnelService"/> only offers parts seen in
     /// the last frame or two -- so the BSP re-walk that feeds it has to reach <see cref="WalkRadius"/> on
     /// the frames whose colour pass an enrollment reads, and can stay tight on the other 59. Since #118 moved
     /// the enrollment to the pass slot it eats the PREVIOUS colour pass's records, which is what the "- 1"
@@ -567,7 +567,7 @@ public sealed unsafe class CasterPass : IExtenderService
         { log.Info("CasterPass: primitive-type table unresolved -- Alloy caster submission unavailable"); return; }
 
         // Repack moves a VDO's item indices and offsets under us. Every other consumer of these tables
-        // already invalidates on it (#88 chain: batcher 50, interim cube 40, Alloy colour 30) and this pass
+        // already invalidates on it (#88 chain: draw funnels 50, interim cube 40, Alloy colour 30) and this pass
         // must too -- a stale item index does not read as an empty draw, it reads as ANOTHER part's index
         // range, which submits out-of-range indices to the GPU.
         _repackSlot = hooks.Chain(SymbolMap.VdoRepack,
@@ -588,7 +588,7 @@ public sealed unsafe class CasterPass : IExtenderService
                  $" sun cascade array out to {_maxDist:F0}u (config csm_cascades/csm_size, /shadow dist)" +
                  $" and {_cubeLights}x{_cubeSize} local-light shadow cubes (config cube_count/cube_size)" +
                  (_skinned ? ", skinned casters posed from per-frame bone snapshots (config skincast=0 disables)" : "") +
-                 "; needs BatchService's capture tables, so a disarmed batcher leaves it with nothing to enroll");
+                 "; needs the part table, so unarmed draw funnels leave it with nothing to enroll");
     }
 
     /// <summary>The caster pass's live dials, for <c>/shadow</c> (ADR 0013 bucket 1). Both are look
@@ -649,7 +649,7 @@ public sealed unsafe class CasterPass : IExtenderService
         SkinEnd();
     }
 
-    /// <summary>#96 passive-capture bracket, opened by <see cref="BatchService"/> around the engine draw
+    /// <summary>#96 passive-capture bracket, opened by <see cref="DrawFunnelService"/> around the engine draw
     /// of a part on a skin-flagged node -- which in practice means any part of an animated creature, most of
     /// them rigid pieces posed by their node matrix rather than true skinmeshes. False = do not bracket
     /// (nothing to capture into), which costs the caller one test.
@@ -1347,10 +1347,10 @@ public sealed unsafe class CasterPass : IExtenderService
                $"half-extent {ShadowMath.CascadeRadius(0, _cascades, _maxDist):F0}u)";
     }
 
-    /// <summary>Module unload, a BatchService table wipe and a lost 4.6 context all invalidate every recorded
+    /// <summary>Module unload, a PartTable wipe and a lost 4.6 context all invalidate every recorded
     /// identity wholesale; the period line is the only evidence the pass runs at all.
     /// <para>#118: this runs from the pass slot, which need not fire outside a module at all, so the InModule
-    /// edge below is no longer the load-bearing one. TableGen is: BatchService ticks from the present
+    /// edge below is no longer the load-bearing one. TableGen is: DrawFunnelService ticks from the present
     /// unconditionally and wipes on module unload, so the first tick back inside a module releases.</para></summary>
     private static void Lifecycle()
     {
@@ -1465,7 +1465,7 @@ public sealed unsafe class CasterPass : IExtenderService
     internal static void ForceEnroll() => _sinceEnroll = EnrollEvery;
 
     /// <summary>Cold, once per <see cref="EnrollEvery"/> frames: rebuild the caster set wholesale from
-    /// BatchService's capture tables. Tiles and placeables come out of the same scan under the same
+    /// the part table. Tiles and placeables come out of the same scan under the same
     /// predicate -- the only per-caster difference is <see cref="CasterCandidate.Mx"/>, which decides whether
     /// its model matrix is the node's or the identity, and that is geometry, not kind.
     /// <para>The set can only hold what the engine's bucket walk carried, so the walk -- not this scan -- is

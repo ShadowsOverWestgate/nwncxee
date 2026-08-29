@@ -15,7 +15,7 @@ namespace Sowx.Alloy;
 /// the per-gate forensics and the <c>dumpframe</c>/<c>dumptex</c> triage that say what a refusal was.
 /// <para>It classifies; it draws nothing and suppresses nothing. What it decides is read by the owned
 /// passes (through the candidate feeds) and by <see cref="BucketGate"/> (through the columns), and it is
-/// entirely independent of whether <see cref="BatchService"/> is submitting anything.</para>
+/// entirely independent of which pass, if any, ends up drawing the part.</para>
 /// <para>Cold by construction: one call per table slot per enrollment, on a 60-frame cadence. The two
 /// exceptions are named at their declarations (<see cref="InstanceOwnable"/> and the gob folds, which the
 /// Alloy draw loop calls per part per frame) and allocate nothing.</para></summary>
@@ -104,7 +104,7 @@ internal static unsafe class AlloyCensus
     internal static int _watchEntry = -1;
 
     /// <summary>#82 ownership columns, driven by AlloyRenderer: 1 = the Alloy world pass owns this part
-    /// (the batcher must never draw it), and the pass generation its Alloy draw last succeeded in. They live
+    /// (the engine's own walk must never draw it too), and the pass generation its Alloy draw last succeeded in. They live
     /// here so the iterator's existing <c>Find</c> serves both owners -- no second hash probe per part.</summary>
     internal static readonly byte[] OwnFlag = new byte[MaxParts];
 
@@ -175,7 +175,7 @@ internal static unsafe class AlloyCensus
         if (e == _watchEntry && !_ownDry)
             _log?.Info($"[dumpframe] ENROLL entry={e} -> {(got ? "candidate" : _ownGate ?? "?")} " +
                        $"cls={c.Cls} state={_pState[e]} seenAgo={_frame - _pSeen[e]} " +
-                       $"bucket={(_pState[e] == StActive ? _gBucket[_pGroup[e]] : -1)} " +
+                       $"bucket={(_pState[e] == StActive ? _pBucket[e] : -1)} " +
                        $"vdo=0x{(ulong)_pVdo[e]:x} item={_pItem[e]} ownflagBefore={OwnFlag[e]}");
         return got;
     }
@@ -260,11 +260,10 @@ internal static unsafe class AlloyCensus
                 Bump(ref _ownRejStaleMoved); return Gate("stale-identity");
             }
         }
-        int g = _pGroup[e];
-        if (!OwnableBucket(_gBucket[g])) { Bump(ref _ownRejBucket); return Gate("bucket"); }
+        if (!OwnableBucket(_pBucket[e])) { Bump(ref _ownRejBucket); return Gate("bucket"); }
         // #91: a part recorded from another Scene (a GUI 3D panel) must never enter the world table -- the
         // Alloy block draws the whole table in one go, so one foreign part is area geometry in a portrait.
-        if (_gScene[g] != _ownScene) { Bump(ref _ownRejScene); return Gate("scene"); }
+        if (_pScene[e] != _ownScene) { Bump(ref _ownRejScene); return Gate("scene"); }
         IntPtr v = _pVdo[e], mat = _pMat[e], part = _pPart[e];
         var p = new PartRef(part); var m = new MaterialRef(mat); var vd = new VdoRef(v);
         // Published the moment the part is in hand, and kept through every refusal from here down: creature
@@ -300,7 +299,7 @@ internal static unsafe class AlloyCensus
         // The cap bucket overrides the material: RenderSinglePass draws bucket 7 with Disable(0) and
         // Disable(1) -- blending and the alpha discard both off -- so a cap is an opaque draw whatever its
         // material declares.
-        c.Cls = _gBucket[g] == CapBucket ? (int)AlloyClass.Opaque
+        c.Cls = _pBucket[e] == CapBucket ? (int)AlloyClass.Opaque
               : (int)AlloyClasses.Of(water, c.Dst == BlendOne, Engine.IsOpaque(p),
                     !s.IsNull && s.Transparency,
                     p.Alpha < 1f);
@@ -334,10 +333,10 @@ internal static unsafe class AlloyCensus
         { Refuse(ref _ownRejItem, c); return Gate("item"); }
         if (*(int*)(elem + it * 8 + 4) <= 0) { Refuse(ref _ownRejItem, c); return Gate("item-range"); }
 
-        c.Bucket = _gBucket[g];
+        c.Bucket = _pBucket[e];
         c.Tri = part; c.Node = _pNode[e]; c.Mat = mat; c.Vdo = v; c.Tex0 = _pTex0[e];
         c.Item = it; c.Prim = _pPrim[e]; c.RotBits = _pRot[e]; c.Mx = _pMx[e];
-        c.Lit = _gLight[g];
+        c.Lit = _pLight[e];
         _ownGate = null;
         return true;
     }
@@ -469,26 +468,28 @@ internal static unsafe class AlloyCensus
     /// fall out at the mode-1 test and stay #96's problem. Cold: one call per table slot per enrollment.</summary>
     /// <summary>#151: will the caster CENSUS carry this entry? The cheap prefix of
     /// <see cref="TryCasterCandidate"/>'s acceptance -- state, sighting, bucket, world -- used by the owned
-    /// pass to avoid double-recording a part the table already casts. An entry probation KILLED (the moving
-    /// creature piece) fails here, which is exactly the population the per-frame recast exists for.</summary>
+    /// pass to avoid double-recording a part the table already casts. A DEAD entry fails here, which is the
+    /// population the per-frame recast exists for.
+    /// <para>#258 widened what this covers: matrix probation used to kill a moving creature piece, so it
+    /// reached the recast; without probation the same piece stays active and is carried by this scan
+    /// instead, at the caster pass's own enrollment cadence. LIVE-UNVERIFIED -- if a walking creature's
+    /// shadow is ever seen lagging its body, this is the first place to look.</para></summary>
     internal static bool CasterCensusCovers(int e)
     {
         if ((uint)e >= MaxParts || !Active || _pState[e] != StActive) return false;
         if (_pSeen[e] < _frame - 1) return false;
-        int g = _pGroup[e];
-        return _gBucket[g] <= MaxCasterBucket && _gWorld[g];
+        return _pBucket[e] <= MaxCasterBucket && _pWorld[e];
     }
 
     internal static bool TryCasterCandidate(int e, ref CasterCandidate c)
     {
         if (!Active || _pState[e] != StActive) return false;
         if (_pSeen[e] < _frame - 1) return false;
-        int g = _pGroup[e];
-        if (_gBucket[g] > MaxCasterBucket) return false;
+        if (_pBucket[e] > MaxCasterBucket) return false;
         // #91, the caster half: a GUI 3D panel's parts sit at that panel's node coordinates, so enrolling one
         // as a caster paints a phantom shadow into the world from geometry that exists only in a portrait.
         // Caster enrollment runs at the present with no Scene in hand, hence the flag rather than a comparison.
-        if (!_gWorld[g]) return false;
+        if (!_pWorld[e]) return false;
         IntPtr v = _pVdo[e], part = _pPart[e];
         var p = new PartRef(part); var vd = new VdoRef(v);
         if (v == IntPtr.Zero || vd.Mode != 1) return false;
@@ -759,57 +760,11 @@ internal static unsafe class AlloyCensus
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
         Array.Clear(OwnRefusedByClass);
 
-        // #149: the group-key intern. The linear walk it replaced IS the specification, so every lookup here
-        // is done BOTH ways and the two must agree -- including the pair a hash gets wrong on its own: a
-        // matrix differing in one float (a different group) and a -0/+0 pair (the SAME group, because
-        // -0f != 0f is false, so the comparison calls them equal while their bits differ).
-        int savedG = _groupCount, savedB = _bucketId, savedPh = _phase;
-        IntPtr savedSc = _bucketScene;
-        try
-        {
-            _groupCount = 0; _bucketId = 0; _phase = 0; _bucketScene = IntPtr.Zero;
-            _gSlot.AsSpan().Fill(-1);
-            float* m = stackalloc float[16];
-            for (int i = 0; i < 16; i++) m[i] = i;
-
-            E(SelfGroup(1, m, E) == 0 && _groupCount == 1, "a fresh key mints group 0");
-            E(SelfGroup(1, m, E) == 0 && _groupCount == 1, "...and the same key interns to it, not to a second");
-            E(SelfGroup(2, m, E) == 1 && _groupCount == 2, "a different VDO is a different group");
-            m[7] = 99f;
-            E(SelfGroup(1, m, E) == 2 && _groupCount == 3, "a matrix differing in ONE float is a different group");
-            m[7] = 0f;
-            int plus = SelfGroup(1, m, E);
-            m[7] = -0f;
-            E(SelfGroup(1, m, E) == plus, "-0 and +0 in the matrix are the SAME group");
-
-            // ...and the SHIFT spreads across the whole table. This one is invisible to any correctness
-            // oracle -- a mis-bound shift still returns the right group, it just crams every key into the
-            // first 1/N of the slots and turns O(1) probing back into a linear walk. It has now been a live
-            // bug twice (TexKey's hardcoded >>53, and this table inherited the pattern), so it is asserted
-            // rather than trusted: distinct keys must reach the upper half of the table.
-            int top = 0;
-            for (int i = 0; i < 256; i++)
-            {
-                ulong hh = GroupHash((IntPtr)(0x1000 + i * 0x30), IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
-                                     IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, false, false, false, m);
-                int sl = (int)(hh * 0x9E3779B97F4A7C15UL >> (64 - GroupHashBits));
-                if (sl > top) top = sl;
-            }
-            E(top >= GroupHashSize / 4,
-              $"the group hash spreads over the whole table (highest of 256 slots {top} of {GroupHashSize}) " +
-              "-- a shift not bound to GroupHashBits clusters every key into the low slots");
-        }
-        finally
-        {
-            _groupCount = savedG; _bucketId = savedB; _phase = savedPh; _bucketScene = savedSc;
-            _gSlot.AsSpan().Fill(-1);
-        }
-
         // The table-pressure decision, which is the whole of the "renderer keeps falling back to vanilla in
         // big areas" fix and is otherwise only observable on a live client in a big area. Runs on the real
         // arrays and restores them: nothing is recorded yet at self-check time, so there is nothing to lose,
         // but the counters are put back regardless in case that ever stops being true.
-        int savedParts = _partCount, savedGroups = _groupCount, savedGen = TableGen;
+        int savedParts = _partCount, savedGen = TableGen;
         bool savedSat = _saturated;
         try
         {
@@ -828,7 +783,7 @@ internal static unsafe class AlloyCensus
         finally
         {
             Array.Clear(_pState); Array.Clear(_pPart); Array.Clear(OwnFlag);
-            _partCount = savedParts; _groupCount = savedGroups; TableGen = savedGen; _saturated = savedSat;
+            _partCount = savedParts; TableGen = savedGen; _saturated = savedSat;
             Log = log;
         }
 
@@ -856,29 +811,10 @@ internal static unsafe class AlloyCensus
             E(Insert(p1) == e1, "a freed slot is reusable even with the table's load factor exhausted");
             E(Insert((IntPtr)0x8000) < 0, "...while a genuinely new pointer is still refused there");
             E(_reclaims == 2, "and each reuse is counted");
-
-            // ...and the slot leaves its old group's member chain on the way out. Complete pushes and
-            // nothing else ever removes, so a slot reused while still linked either points _pNext at itself
-            // -- an unbounded submit walk on the RENDER thread -- or splices its old group into its new one.
-            int sg = _groupCount;
-            _groupCount = 1; _gFirst[0] = e1; _gCount[0] = 3;
-            _pGroup[e1] = 0; _pNext[e1] = 40; _pGroup[40] = 0; _pNext[40] = 41; _pGroup[41] = 0; _pNext[41] = -1;
-            _pState[e1] = StActive; MarkFreed(p1);
-            E(Insert(p1) == e1, "the reuse under test still takes the same slot");
-            E(_gFirst[0] == 40 && _pNext[41] == -1 && _gCount[0] == 2,
-              "a reused HEAD leaves the group chain, which stays walkable and loses exactly one member");
-            E(_pNext[e1] == -1, "...and the slot itself links to nothing, so re-completing it cannot self-loop");
-            // the same from the middle of the chain, which is the splice case
-            _gFirst[0] = 40; _pNext[40] = e1; _pNext[e1] = 41; _gCount[0] = 3; _pGroup[e1] = 0;
-            _pState[e1] = StActive; MarkFreed(p1);
-            E(Insert(p1) == e1 && _pNext[40] == 41 && _gCount[0] == 2,
-              "a reused MIDDLE member is spliced out, not out of the chain's other links");
-            _groupCount = sg; _gFirst[0] = -1; _gCount[0] = 0;
         }
         finally
         {
             Array.Clear(_pState); Array.Clear(_pPart); Array.Clear(_pFreed); Array.Clear(OwnFlag);
-            Array.Clear(_pGroup); Array.Clear(_pNext);
             _partCount = savedParts; _reclaims = savedReclaims;
         }
 
@@ -1019,11 +955,11 @@ internal static unsafe class AlloyCensus
         NodeRef node = p.Node;
         int e = Find(part);
         if (e >= 0) _watchEntry = e;
-        string ent = e < 0 ? "unrecorded" : $"entry={e} st={_pState[e]} died={(_pState[e] == StDead ? _pDeath[e] ?? "?" : "-")} own={OwnFlag[e]} ownonly={_pOwnOnly[e]} capbucket={(_pState[e] == StActive ? _gBucket[_pGroup[e]] : -1)} seen={_frame - _pSeen[e]}";
+        string ent = e < 0 ? "unrecorded" : $"entry={e} st={_pState[e]} died={(_pState[e] == StDead ? _pDeath[e] ?? "?" : "-")} own={OwnFlag[e]} ownonly={_pOwnOnly[e]} capbucket={(_pState[e] == StActive ? _pBucket[e] : -1)} seen={_frame - _pSeen[e]}";
         TextureRef t0 = m.IsNull ? default : m.Texture(0);
         int tid = t0.ResolveTid();
         SharedRef shared = m.Shared;
-        _log?.Info($"[dumpframe] bucket={_bucketId} inbucket={_inBucket} dangly={IsDangly(part)} skin={BatchService._inSkinDraw} why={(e < 0 ? "unrecorded" : WhyNotOwnable(e))} part=0x{(ulong)part:x} vtbl=0x{(ulong)p.Vtbl:x} {ent} " +
+        _log?.Info($"[dumpframe] bucket={_bucketId} inbucket={_inBucket} dangly={IsDangly(part)} skin={DrawFunnelService._inSkinDraw} why={(e < 0 ? "unrecorded" : WhyNotOwnable(e))} part=0x{(ulong)part:x} vtbl=0x{(ulong)p.Vtbl:x} {ent} " +
                    $"tex=\"{t0.ResolveName()}\" tid={tid} texalpha={(tid > 0 && CasterPass.TexHasAlpha(tid))} {TexFormat(tid)} " +
                    $"opaque={(!m.IsNull && Engine.IsOpaque(p))} env={(!m.IsNull && Engine.HasEnvMap(m))} " +
                    $"blend={(m.IsNull ? 0 : m.SrcBlend)}/{(m.IsNull ? 0 : m.DstBlend)} " +

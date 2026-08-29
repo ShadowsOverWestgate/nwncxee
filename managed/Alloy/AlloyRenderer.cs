@@ -52,10 +52,11 @@ namespace Sowx.Alloy;
 /// gated on the per-pass draw generation. <c>/vanilla</c> is the kill switch. Hot path allocates nothing.</para>
 /// <para>#128: CREATURES join it, and they arrive by relaxing two things rather than by a new path. The
 /// engine draws them from <c>Scene::RenderDynamicGeometry</c> -- buckets 2 and 3, but through the same
-/// <c>RenderDrawBucket</c> the capture already brackets -- so what actually kept them out was BatchService's
+/// <c>RenderDrawBucket</c> the capture already brackets -- so what actually kept them out was the capture's
 /// matrix PROBATION, which killed any part whose transform moved between two sightings; an animating creature
-/// fails that by construction and a door fails it the frame it opens. Instances skip probation now and are
-/// recorded as MOVERS, whose transform this pass reads live at draw time anyway. The second relaxation is the
+/// failed that by construction and a door failed it the frame it opened. Instances were exempted from it as
+/// MOVERS, whose transform this pass reads live at draw time anyway, and #258 deleted probation
+/// outright. The second relaxation is the
 /// instance modulation: <c>PartTriMesh::Mat</c>'s alpha multiply, colour multiply and self-illum add are
 /// folded into the per-draw record every frame instead of refusing the part, which matters because a creature
 /// FADES through one of them -- opacity here is per-frame state, never capture state. What still cannot be
@@ -747,12 +748,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // scene fog and the door/tile fades already written for this frame, and nothing drawn yet.
         _origFade = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.FadeDoors, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnFadeDoors);
-        _repackSlot = hooks.Chain(SymbolMap.VdoRepack,   // shared symbol: batcher + Alloy cast invalidate too (#88)
+        _repackSlot = hooks.Chain(SymbolMap.VdoRepack,   // shared symbol: draw funnels + Alloy cast invalidate too (#88)
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepackHook, RepackPriority);
         // #179: the six look/debug dials above are /draw's, not the environment's -- the code defaults ARE
         // the boot values and nothing here reads a knob for them any more.
         // #137: the skinmesh class. Two independent things must hold -- the engine's bone array must resolve
-        // (nothing to copy without it) and the class must have a capture hook, which BatchService reports.
+        // (nothing to copy without it) and the class must have a draw hook, which DrawFunnelService reports.
         // Config bucket (ADR 0013): a capability gate that decides what the vertex stages are BUILT from, so
         // it cannot move mid-session and is not a command.
         _skinning = Settings.Bool("ownskin", true);
@@ -809,14 +810,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
             case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
             case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
-            // #244: arms the mesh census's CONTENT pass. A readback by nature (the engine's host-side pool
-            // shadow is not reachable -- GetPoolBuffer answers with a GL name), so it is off by default and
-            // costs a buffer map per VDO on the enrollments it is armed for.
-            case "meshhash": old = _meshHash ? 1f : 0f; _meshHash = v != 0f; break;
-            // #244: draw de-duplicated parts from their representative's geometry. Off by default and
-            // separate from meshhash, which only BUILDS the registry -- arming the draw is the first step
-            // where a wrong entry becomes pixels, and it wants its own switch to bisect with.
-            case "dedup":    old = _dedupDraw ? 1f : 0f; _dedupDraw = v != 0f; break;
             default: return float.NaN;
         }
         // #242: a dial can change what a record MEANS (aotest fills a slot, viz changes nothing in the
@@ -853,7 +846,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         float cb = _sunWorldBias;
         int vz = _lightViz;
 
-        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "meshhash", "dedup" })
+        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias" })
             E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
         E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1,
           "every key lands on its own field");
@@ -981,7 +974,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <para><c>PostChain.On</c> is the <c>hdr=0</c> case and <see cref="PartTable"/><c>.Active</c> the
     /// <c>drawhooks=off</c>/<c>=stats</c> one: both are supported settings that, paired with
     /// <c>ownframe=1</c>, would otherwise produce a permanently empty world with no reason given.
-    /// <c>PartTable.Active</c> is read HERE rather than at the shim's install because BatchService
+    /// <c>PartTable.Active</c> is read HERE rather than at the shim's install because DrawFunnelService
     /// initializes after this service (discovery is alphabetical) and has not set it yet.</para>
     /// <para>What this canNOT cover is the gamma refusal, which is re-asked per pass inside the anchor,
     /// after that pass's engine frame is already gone. ADR 0016 scopes exactly that to step 7 (#216): every
@@ -1106,7 +1099,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // a skinning bug that is really a lifetime one.
             if (!IdentityOk(i, _oTri[i])) { RevokeSkinned(i); continue; }
             if (_boneSlots >= MaxBoneSlots) { _skinSlotOverflow++; RevokeSkinned(i); continue; }
-            if (!BatchService.ForceSkinPose(_oTri[i])) { _skinNoPose++; RevokeSkinned(i); continue; }
+            if (!DrawFunnelService.ForceSkinPose(_oTri[i])) { _skinNoPose++; RevokeSkinned(i); continue; }
             int slot = _boneSlots++;
             fixed (float* dst = _boneStage)
                 Buffer.MemoryCopy(_bones, dst + slot * BoneFloats, BoneFloats * 4L, BoneFloats * 4L);
@@ -1308,52 +1301,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"({_msShapes} shapes, max {_msShapeMax}, {_msShapeRepeat} parts on a repeated shape " +
                    $"of which {_msShapeRepeatGob} placeable/creature and {_msShapeRepeatMx} object-space; " +
                    $"{_msGobParts} gobs and {_msMxParts} object-space of {_msParts} censused parts" +
-                   // #244: which of the two keys produced that number. Unarmed it is the SIGNATURE, which
-                   // over-counts by collision (same texture + same index count) and must not be quoted as
-                   // proof; armed it is the vertex content. A hashed count short of the censused count is
-                   // parts whose range would not map -- they all keep hash 0 and so group together, which
-                   // over-reports, so the two numbers are printed side by side rather than summarised.
-                   (!_meshHash ? "; by SIGNATURE only -- /draw meshhash 1 for vertex content"
-                               : $"; by vertex content, {_msHashed} of {_msParts} hashed") + "), " +
-                   // #244: what REPEATS, as against what is collapsible today. The exact hash above is over
-                   // raw positions, so for a world-space part -- ~92% of an area -- it reports every
-                   // placement as a distinct mesh however many times the model repeats. This key is
-                   // invariant under placement, so it sees the repetition itself; the object-space split is
-                   // how much of it could share vertices without un-baking a transform first.
-                   (!_meshHash ? "" :
-                       $"rigid repeats {(_msRigidShapes == 0 ? 0f : (float)_msParts / _msRigidShapes):F2}x " +
-                       $"({_msRigidShapes} shapes, max {_msRigidMax}, {_msRigidRepeat} parts repeat " +
-                       $"of which {_msRigidRepeatMx} object-space), " +
-                       // #244 phase A: the go/no-go. "repeat" above is an upper bound -- HashRigid is
-                       // reflection-invariant and NWN mirrors tiles -- so what matters is how many repeats
-                       // survive a derived placement that reproduces every vertex, normal and UV exactly.
-                       // The reject reasons are named because the shortfall has to be attributable: mirror is
-                       // expected, residual means the transform is not recoverable, attr means the copies
-                       // differ in UVs or normals and can never share a buffer whatever their positions do.
-                       // #244: members over representatives -- the PROVEN de-duplication factor, as against
-                       // the rigid key's screened one. Every member behind it was verified vertex, UV and
-                       // normal against the representative it would share a buffer with.
-                       $"dedup {(_dedupReps == 0 ? 0f : (float)(_dedupExact + _dedupMirror + _dedupReordered + _dedupReps) / _dedupReps):F2}x " +
-                       $"on {_dedupReps} meshes kept ({_ddLive} parts registered, " +
-                       // #244: refused by a SAFETY gate rather than by geometry -- an animating source, a
-                       // skinned part, a primitive mismatch. Apart from the geometry counts on purpose:
-                       // "how much repeats" and "how much is safe to collapse" are different numbers.
-                       $"{_ddGated} gated" +
-                       (!_dedupDraw ? "; NOT DRAWN -- /draw dedup 1 arms it"
-                                    : $", {(float)_dedupDrawn / _frames:F0} drawn/frame") +
-                       // #244: what the registry COSTS. It is rebuilt every enrollment, so this lands on the
-                       // frames ADR 0017 already calls a compound spike -- a colour-pass win bought with an
-                       // enrollment hitch is not a win, and this is the number that says which it is.
-                       $"; verify {_ddMs:F2}ms last, {_ddMsPeak:F2}ms peak); " +
-                       $"{_dedupExact + _dedupMirror + _dedupReordered} VERIFIED ({_dedupExact} direct, " +
-                       $"{_dedupMirror} mirrored, {_dedupReordered} reordered), {_dedupOrder} unmatched, rejected " +
-                       $"{_dedupResidual} not-same-mesh / {_dedupAttr} uv-normal / {_dedupUnusable} untestable" +
-                       // #244: WHY the matcher gave up. The first two are the caps -- budget, raisable -- and
-                       // "incongruent" is the only one that is evidence about the content.
-                       (_dedupOrder == 0 ? "" :
-                           $"; unmatched by: {_mfTooBig} too-big, {_mfTrials} trial-cap, " +
-                           $"{_mfNoAnchor} no-anchor, {_mfNoCandidate} no-candidate, " +
-                           $"{_mfIncongruent} incongruent") + "), ") +
+                   // #244: a SIGNATURE, never a proof -- same texture + same index count collides. ADR 0017
+                   // settled the reading (1,00x at record identity, 2,5x at content level); #258 deleted the
+                   // content pass that measured the second, because it could only reach the bytes by mapping
+                   // a buffer back. Sharing is residency's question now (#254), keyed on content at load.
+                   "), " +
                    $"normal maps {(float)_nrmBound / _frames:F0} bound of " +
                    $"{(float)_nrmDeclared / _frames:F0} declared/frame, " +
                    // #242 (AC3): the whole point of the persistent records, as one number. "written" should
@@ -1419,7 +1371,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // texture one -- and this line is the only place it would ever be visible.
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
-        _frames = 0; _draws = 0; _batches = 0; _dedupDrawn = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0;
+        _frames = 0; _draws = 0; _batches = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0;
         _skinDrawn = 0; _skinNoPose = 0; _skinSlotOverflow = 0;
         _foreignBuckets = 0;
         SkyBox.ResetPeriod();

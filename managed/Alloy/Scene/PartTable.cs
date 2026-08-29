@@ -8,7 +8,7 @@ namespace Sowx.Alloy;
 
 /// <summary>#188: the part table -- every recorded part, its parallel columns, the group registry they key
 /// into, and the identity/lifetime machinery (record slots, sightings, death, wipe, pressure) that the
-/// census, the bucket gate and the batcher all ride on. One struct-of-arrays module rather than three,
+/// census, the bucket gate and the Alloy pass all ride on. One struct-of-arrays module rather than three,
 /// for #173's reason: the hot walks read these arrays directly and a real boundary here costs a copy or an
 /// indirection per part per frame.
 /// <para>It also owns the engine reads those arrays are filled from -- the <c>Material</c>/<c>Part</c>
@@ -16,16 +16,16 @@ namespace Sowx.Alloy;
 /// <para>Members are <c>internal</c> and reached by the other three modules through
 /// <c>using static</c>, which is a compile-time alias: a cross-module read of a column is the same
 /// instruction as the same-class read it replaced.</para>
-/// <para>What is NOT here: the capture funnel that WRITES the columns (<c>PartTriMesh::Draw</c>,
-/// <c>Record</c>, <c>Complete</c>) stays in <see cref="BatchService"/> beside the hooks it hangs off --
-/// splitting a hook body from its trampoline buys nothing and risks the ordering.</para></summary>
+/// <para>What is NOT here: who WRITES the columns. Since #256 that is <see cref="SceneWalk"/>, which
+/// enumerates the world and fills a record from field reads; <see cref="DrawFunnelService"/> keeps only the
+/// hook bodies (the death notice, the sighting stamp) that have to sit beside their trampolines.</para>
+/// </summary>
 internal static unsafe class PartTable
 {
-    /// <summary>The per-item-alpha bucket. Read by all three: the gate never suppresses it for the batcher,
-    /// the batcher never submits into it, and the census owns it (#126).</summary>
+    /// <summary>The per-item-alpha bucket. The census owns it (#126).</summary>
     internal const int AlphaBucket = 8;
 
-    /// <summary>Presents since boot, ticked by <see cref="BatchService.EndFrame"/>. The sighting stamps,
+    /// <summary>Presents since boot, ticked by <see cref="DrawFunnelService.EndFrame"/>. The sighting stamps,
     /// the staleness windows and the census's settle clock are all counted in it.</summary>
     internal static int _frame;
 
@@ -38,41 +38,26 @@ internal static unsafe class PartTable
     /// <c>ProcessTriMeshParts</c> @0x480d40 is the reader: +0x70 is this frame's factor (+0x74 is the pending
     /// one <c>Scene::ResetTileFading</c> swaps in), and +0xc0 is the state enum.
     /// <para>A tile that is fading leaves the opaque class outright -- ProcessTriMeshParts routes it into
-    /// <c>fadebuckets</c>, and <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 puts those in bucket 8. That was
-    /// a hand-back until #126, which made bucket 8 suppressible and the fade a per-frame overlay on the
-    /// Alloy blended class (<see cref="TileFadeFactor"/>). This test still says "not batchable by this
-    /// service", which it is: the per-item alpha multiply is per part.</para></summary>
-    internal const int TileFade = 0x70, TileFadeState = 0xc0;
-    /// <summary><c>TileData::FADE</c> (@0x12ef184, value 1). The other two states (DO_NOT_FADE 2,
-    /// FADE_NOT_CHECKED 4) leave the part in the opaque buckets, and the factor alone is not enough: a tile
-    /// entering FADE still reads 1.0 for its first frame.</summary>
-    internal const int TileStateFade = 1;
+    /// <c>fadebuckets</c>, and <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 puts those in bucket 8. Since
+    /// #126 bucket 8 is suppressible and the fade is a per-frame overlay on the Alloy blended class
+    /// (<see cref="TileFadeFactor"/>).</para></summary>
+    internal const int TileFade = 0x70;
 
-    /// <summary>Recorded-part capacity, and with <c>MaxGroups</c> the reason the renderer can hold a whole
-    /// object-dense area rather than the first 4096 parts of one. 262144 parts + 262144 groups is 70MB of
-    /// the 135MB these tables cost resident (up from 22MB) -- bought deliberately, because a cap that cannot
-    /// hold the area is a rendering fault and not a saving.
-    /// <para>Power of two because the group intern table derives its Fibonacci shift from the exponent, and
-    /// a shift written as a literal is the bug that has now bitten this codebase twice.</para></summary>
+    /// <summary>Recorded-part capacity: the reason the renderer can hold a whole object-dense area rather
+    /// than the first 4096 parts of one. A cap that cannot hold the area is a rendering fault, not a saving.
+    /// <para>#258 deleted the group registry that sat beside it -- 262144 groups over 23 arrays at 181
+    /// bytes each, 45,3 MiB, for a batcher that could not submit under the #215 cutover. The part columns
+    /// are now the whole of what a record costs, and they went from 13 bytes of batcher state per entry
+    /// (group id, member link, submit generation, dirty) to 14 bytes of scene record (bucket, Scene, world,
+    /// lit) -- +0,25 MiB against the 45,3 MiB, 1 MiB of submit arrays and 15,2 MiB of dedup registry that
+    /// went with it.</para></summary>
     internal const int MaxPartsBits = 18, MaxParts = 1 << MaxPartsBits;
 
-    /// <summary>Group capacity, and it is <see cref="MaxParts"/> deliberately rather than a fraction of it.
-    /// <para>Sizing the two apart was fiction from the moment the model matrix entered the group key: a
-    /// static matrix-class part groups only with parts at the IDENTICAL 16-float transform, and in a tileset
-    /// almost nothing is, so <c>_groupCount</c> tracks <c>_partCount</c> one-to-one (measured live: 5828 of
-    /// 5832 groups solo). At 8192 the group table was the binding cap on the whole renderer, 8x tighter than
-    /// the part table it is fed by, and every area past ~7000 ownable parts tripped the pressure wipe below
-    /// -- once a second, forever, each one dropping the world back to vanilla.</para>
-    /// <para>Costs ~165 bytes per group across the 22 arrays below (64 for the eight pointers, 32 for the
-    /// eight ints, 5 for the flags, 64 for the matrix), so ~10.8MB rather than ~1.4MB. That is the price of
-    /// a large area rendering at all, and it is in line with what the shadow rings already map.</para></summary>
-    internal const int MaxGroups = MaxParts;
 
     internal static delegate* unmanaged<IntPtr, IntPtr, byte> _keyhole;
     internal static IntPtr _camSlot;   // &CurrentCamera; live CAurCamera* is *_camSlot
 
     internal static delegate* unmanaged<IntPtr, byte> _isOpaque, _hasEnvMap, _hasBumpyShiny;
-    internal static delegate* unmanaged<IntPtr, int> _getRenderHint;
     internal static delegate* unmanaged<IntPtr, int, long> _getTexture;
     internal static uint* _primTable;
     /// <summary><c>g_nEnableBumpyWater</c>: null (Windows, or a build without the symbol) leaves the
@@ -91,7 +76,6 @@ internal static unsafe class PartTable
         _isOpaque = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.PartGetIsOpaque);
         _hasEnvMap = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.MatHasEnvMap);
         _hasBumpyShiny = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.MatHasBumpyShinyMap);
-        _getRenderHint = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.PartGetRenderHint);
         IntPtr dv = Native.Sym(SymbolMap.PartDanglyMeshVtbl);
         _danglyVtbl = dv == IntPtr.Zero ? IntPtr.Zero : dv + 0x10;
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
@@ -99,17 +83,14 @@ internal static unsafe class PartTable
         _bumpyWater = (int*)Native.Sym(SymbolMap.EnableBumpyWater);
         _keyhole = (delegate* unmanaged<IntPtr, IntPtr, byte>)Native.Sym(SymbolMap.GetCanKeyholeDissolve);
         _camSlot = Native.Sym(SymbolMap.CurrentCamera);
-        return _isOpaque != null && _hasEnvMap != null && _hasBumpyShiny != null && _getRenderHint != null
-               && _getTexture != null && _primTable != null;
+        return _isOpaque != null && _hasEnvMap != null && _hasBumpyShiny != null && _getTexture != null && _primTable != null;
     }
 
     // part entries: open-address hash on part pointer, parallel arrays, no allocation
     //
-    // #194: the layout is struct-of-arrays, and the dominant reader is NOT a sweep -- PartDraw touches
-    // ~10 columns of ONE entry, once per part per frame, which is ~10 cache lines where an array of structs
-    // would touch one or two. Whether that is visible is a measurement, not an argument: /batchtime puts the
-    // entry-read time (the engine's own draw subtracted out) on the [batch] line. Convert to PartEntry[] if
-    // it shows; record the number here and leave it alone if it does not.
+    // #194: the layout is struct-of-arrays. #258 deleted the per-part column reader that made the question
+    // interesting (and /batchtime, which measured it); what is left touches a handful of columns per part
+    // per frame. Convert to PartEntry[] only against a measurement, never against the argument.
     /// <summary>#256: recorded by the scene walk, but its <c>VertexPrimitive</c> has no VDO yet --
     /// <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 has not run for this part. Not an error and not a
     /// death: enumeration reaches a part before its geometry is resident, so the record waits and the field
@@ -125,9 +106,6 @@ internal static unsafe class PartTable
     internal static readonly bool[] _pMx = new bool[MaxParts];         // matrix-path part (phase 2)
     internal static readonly int[] _pItem = new int[MaxParts];
     internal static readonly byte[] _pState = new byte[MaxParts];
-    internal static readonly bool[] _pDirty = new bool[MaxParts];
-    internal static readonly int[] _pGroup = new int[MaxParts];
-    internal static readonly int[] _pNext = new int[MaxParts];      // group member chain
     internal static readonly int[] _pSeen = new int[MaxParts];
     /// <summary>#256: the <see cref="SceneWalk.Gen"/> that last REACHED this entry from the scene. Not a
     /// sighting and not a visibility stamp -- it is the mark half of the walk's mark-and-sweep, and it is
@@ -135,17 +113,10 @@ internal static unsafe class PartTable
     /// (<c>Scene::ChildRemove</c> @0x462cc0 and <c>Gob::Amputate</c> @0x443fa0 both unlink without
     /// freeing, so <c>Part::~Part</c> never fires for them).</summary>
     internal static readonly int[] _pWalkGen = new int[MaxParts];
-    internal static readonly int[] _pIncluded = new int[MaxParts];
-    /// <summary>#126: recorded for the Alloy pass only -- a transparent, additive, cap or fading part. It is
-    /// captured (VDO, item, prim) and grouped like any other, because that is what ownership enrolls from,
-    /// but this batcher never submits it: its own multidraw replays the first member's engine state, and
-    /// blend factors, the bucket-8 alpha multiply and the cutout toggle all vary per part inside one
-    /// material group. Its own draw stays vanilla until the Alloy pass takes it.
-    /// <para>ponytail: latched at Record and never recomputed, so a part first sighted while its tile was
-    /// fading stays unbatchable by THIS service for the life of the entry (the Alloy pass still takes it --
-    /// it reclassifies per frame). The ceiling is batch coverage decaying across a session as tiles fade,
-    /// recovering at the next table wipe. Recomputing it would also have to re-key the entry's group, whose
-    /// bucket is part of the key; do that if the [batch] line's Alloy-only count ever climbs.</para></summary>
+    /// <summary>#126: an Alloy-ONLY class -- a transparent, additive, cap or fading part, or one that hangs
+    /// off a gob. Latched at bind from the classification, and since #258 no gate reads it: the batcher it
+    /// excluded the part from is gone. It stays because it is the one place the record says WHY a part is
+    /// the Alloy pass's alone, which is what the <c>dumpframe</c> row reports.</summary>
     internal static readonly bool[] _pOwnOnly = new bool[MaxParts];
     /// <summary>#134: which gate killed this entry, for the census. There are ten ways to reach StDead and
     /// the aggregate counters name three of them, which is how 5319 gob draws a frame went unexplained.</summary>
@@ -182,9 +153,8 @@ internal static unsafe class PartTable
     /// <summary>Are the CAPTURE hooks in? False = no tables, so the census has nothing to classify, the gate
     /// nothing to suppress and the Alloy world pass nothing to enroll from -- which it reports rather than
     /// sitting at zero silently, because <c>drawhooks=off</c> otherwise disables the Alloy pass too.
-    /// <para>#188: this is deliberately NOT "the batcher is armed". Multidraw availability moves the
-    /// batcher's own latch (BatchService's <c>_batchArmed</c>) and leaves this one alone, so a batcher that
-    /// stood down cannot take the table, the census and the gate with it.</para></summary>
+    /// <para>#188: this is deliberately NOT "some pass is armed" -- a pass that stands down must not take
+    /// the table, the census and the gate with it.</para></summary>
     internal static bool Active;
 
     /// <summary>Armed AND the frame latched as Alloy's (#86, and #216's whole verdict). The two hot funnels
@@ -194,52 +164,15 @@ internal static unsafe class PartTable
     /// counters still report while vanilla, which is what proves they read zero.</summary>
     internal static bool Live => Active && AlloyGate.Alloy;
 
-    // groups: linear-scan registry (records are rare/cold), full component compare -- no hash collisions.
-    // Keyed on material CONTENT (textures + shared-material + blend flag), never the Material* -- each part
-    // owns its Material instance, so pointer identity shatters every group to size 1 (first live run).
-    internal static readonly IntPtr[] _gVdo = new IntPtr[MaxGroups];
-    internal static readonly IntPtr[] _gTex0 = new IntPtr[MaxGroups];
-    internal static readonly IntPtr[] _gTex1 = new IntPtr[MaxGroups];
-    internal static readonly IntPtr[] _gTex2 = new IntPtr[MaxGroups];
-    internal static readonly IntPtr[] _gTex3 = new IntPtr[MaxGroups];
-    internal static readonly IntPtr[] _gShared = new IntPtr[MaxGroups];
-    internal static readonly IntPtr[] _gEnv = new IntPtr[MaxGroups];     // #121: mat+0x40, part of the key
-    internal static readonly byte[] _gFlag = new byte[MaxGroups];
-    internal static readonly int[] _gBucket = new int[MaxGroups];
-    internal static readonly IntPtr[] _gScene = new IntPtr[MaxGroups];   // #91: the Scene this group was recorded from
-    internal static readonly bool[] _gWorld = new bool[MaxGroups];       // ... and whether that Scene was the world's
-    internal static readonly int[] _gPhase = new int[MaxGroups];
-    internal static readonly int[] _gHint = new int[MaxGroups];
-    internal static readonly bool[] _gLight = new bool[MaxGroups];
-    internal static readonly int[] _gPrim = new int[MaxGroups];
-    internal static readonly int[] _gRot = new int[MaxGroups];
-    internal static readonly bool[] _gMx = new bool[MaxGroups];
-    /// <summary>#128: the group's members are MOVERS -- instanced parts whose transform changes every frame.
-    /// Its <see cref="_gMatrix"/> is therefore meaningless and never written; the flag is in the group key so
-    /// a mover can never join a static group whose frozen matrix a replayed multidraw would apply.</summary>
-    internal static readonly bool[] _gMover = new bool[MaxGroups];
-    internal static readonly float[] _gMatrix = new float[MaxGroups * 16];   // model matrix for matrix-path groups
-    internal static readonly int[] _gFirst = new int[MaxGroups];
-    internal static readonly int[] _gCount = new int[MaxGroups];
-    internal static readonly int[] _gSubmitGen = new int[MaxGroups];
-    /// <summary>#149: the group-key intern table. <c>_gHash</c> is each group's key hash; <c>_gSlot</c> is the
-    /// open-addressed index into it, -1 = empty, sized 2x for a 0.5 load factor.
-    /// <para>The shift is bound to <see cref="GroupHashBits"/> rather than written as a literal. Fibonacci
-    /// hashing takes the TOP bits of the product, so a hardcoded shift silently clusters every key into the
-    /// first 1/N of the table the moment the table grows -- the bug that was sitting in <c>TexKey</c>.</para></summary>
-    internal const int GroupHashBits = MaxPartsBits + 1, GroupHashSize = 1 << GroupHashBits;
-    internal static readonly ulong[] _gHash = new ulong[MaxGroups];
-    internal static readonly int[] _gSlot = EmptySlots();
-    /// <summary>-1, not 0, and it has to be done at construction as well as at every wipe: 0 is a valid
-    /// group id, so a zero-filled table reads as "group 0 lives in every slot" and the very first record
-    /// probes the whole table without finding a free one.</summary>
-    internal static int[] EmptySlots()
-    {
-        int[] a = new int[GroupHashSize];
-        a.AsSpan().Fill(-1);
-        return a;
-    }
-    internal static int _groupCount;
+    /// <summary>#258: what the group registry carried as incidental metadata, now a column of the scene
+    /// record itself. The bucket <see cref="SceneWalk.Classify"/> derived, the Scene the walk read the part
+    /// from and whether that Scene was the world's (#91 -- a GUI 3D panel's part must never enter the world
+    /// table), and whether the material lights (blend flag 0). Nothing else the group key held is read by
+    /// anyone: the key existed to decide who could share a multidraw, and there is no multidraw.</summary>
+    internal static readonly int[] _pBucket = new int[MaxParts];
+    internal static readonly IntPtr[] _pScene = new IntPtr[MaxParts];
+    internal static readonly bool[] _pWorld = new bool[MaxParts];
+    internal static readonly bool[] _pLight = new bool[MaxParts];
 
     /// <summary>Is this part an INSTANCE -- does it hang off a <c>Gob</c>? #134: this used to be spelled
     /// <c>IsSkinned</c> and read <c>*(*(node+0x10)+0x50)</c>, which is the same value by a longer route
@@ -316,11 +249,6 @@ internal static unsafe class PartTable
     /// #243 replaces the source with Alloy's own cull; this predicate is where it plugs in.</para></summary>
     internal static bool InBucketsRecently(int e) => _pSeen[e] >= _frame - 1;
 
-    /// <summary>Has this part's tile left the opaque class this frame? Mirrors ProcessTriMeshParts's own
-    /// condition: the state says FADE, or the factor has already come off 1.0.</summary>
-    internal static bool Fading(IntPtr tile)
-        => *(int*)(tile + TileFadeState) == TileStateFade || *(float*)(tile + TileFade) < 1f;
-
     /// <summary>#126: the tile fade factor this part draws at, 1.0 for a part with no tile or a tile that is
     /// not fading. This is the multiplier <c>RenderDrawBucket</c> folds into <c>part+0xa0</c> for the length
     /// of a bucket-8 draw and restores afterwards, so the Alloy pass reads it rather than the multiplied
@@ -358,26 +286,6 @@ internal static unsafe class PartTable
         return -1;
     }
 
-    /// <summary>#221: drop an entry from its group's member chain before its slot is reused. Every other
-    /// caller leaves the chain alone on purpose -- it is push-front, nothing removes a member, and a dead
-    /// entry stays linked (the submit walk skips it on state) -- so <c>Complete</c> could assume it pushed
-    /// each entry exactly once. A reused slot breaks that assumption twice over: re-interning to the SAME
-    /// group writes <c>_pNext[e] = e</c>, and the submit walk then loops forever on the render thread, while
-    /// re-interning to a different one splices the old group's chain into the new group's members.</summary>
-    internal static void Unlink(int e)
-    {
-        int g = _pGroup[e];
-        if ((uint)g >= (uint)_groupCount) return;      // never completed, or a wiped generation's group id
-        for (int m = _gFirst[g], prev = -1; m >= 0; prev = m, m = _pNext[m])
-        {
-            if (m != e) continue;
-            if (prev < 0) _gFirst[g] = _pNext[e]; else _pNext[prev] = _pNext[e];
-            if (_gCount[g] > 0) _gCount[g]--;
-            break;
-        }
-        _pNext[e] = -1;
-    }
-
     internal static int Insert(IntPtr part)
     {
         bool room = _partCount < MaxParts - MaxParts / 4;          // keep load factor sane
@@ -390,7 +298,6 @@ internal static unsafe class PartTable
             // The slot is left indistinguishable from a fresh one; Record/Complete fill the rest.
             if (_pFreed[s])
             {
-                Unlink(s);
                 // StEmpty here terminates the probe chain of every OTHER key that runs through this slot,
                 // and live entries can sit beyond it -- so Record must write a non-empty state before
                 // anything that can re-enter Find (a nested Vanilla draw, a diagnostic).
@@ -402,83 +309,7 @@ internal static unsafe class PartTable
         return -1;
     }
 
-    /// <summary>#149 self-check helper: intern one synthetic group key through the HASH path, and assert the
-    /// linear walk the hash replaced would have reached the same answer. Distinguished from
-    /// <see cref="Record"/> only by not needing a live part -- the key fields are the same ones.</summary>
-    internal static int SelfGroup(long vdo, float* m, Action<bool, string> e)
-    {
-        IntPtr v = (IntPtr)vdo, z = IntPtr.Zero;
-        ulong h = GroupHash(v, z, z, z, z, z, z, 0, 0, 0, 0, false, true, false, m);
-        int slot = (int)(h * 0x9E3779B97F4A7C15UL >> (64 - GroupHashBits));
-        int g = -1, free = -1;
-        for (int p = 0; p < GroupHashSize; p++)
-        {
-            int j = (slot + p) & (GroupHashSize - 1);
-            int cand = _gSlot[j];
-            if (cand < 0) { free = j; break; }
-            if (_gHash[cand] == h && GroupMatches(cand, v, z, z, z, z, z, z, 0, 0, 0, 0, false, true, false, m))
-            { g = cand; break; }
-        }
-        // the oracle: the walk this replaced, over the same table and the same comparison
-        int lin = -1;
-        for (int i = 0; i < _groupCount; i++)
-            if (GroupMatches(i, v, z, z, z, z, z, z, 0, 0, 0, 0, false, true, false, m)) { lin = i; break; }
-        e(g == lin, $"the hash and the linear walk agree (hash={g} walk={lin})");
-        if (g >= 0) return g;
-        g = _groupCount++;
-        _gSlot[free] = g; _gHash[g] = h;
-        _gVdo[g] = v; _gTex0[g] = z; _gTex1[g] = z; _gTex2[g] = z; _gTex3[g] = z;
-        _gShared[g] = z; _gEnv[g] = z; _gFlag[g] = 0; _gRot[g] = 0; _gBucket[g] = _bucketId; _gPhase[g] = _phase;
-        _gScene[g] = _bucketScene; _gWorld[g] = false; _gMx[g] = true; _gMover[g] = false;
-        for (int f = 0; f < 16; f++) _gMatrix[g * 16 + f] = m[f];
-        _gHint[g] = 0; _gLight[g] = false; _gPrim[g] = 0; _gFirst[g] = -1; _gCount[g] = 0; _gSubmitGen[g] = -1;
-        return g;
-    }
-
-    /// <summary>#149: the group key's identity test -- the ONE definition of "these two draws can share a
-    /// group". Shared by the hash probe in <see cref="Record"/> and by the self-check's reference walk, so
-    /// the fast path and the specification cannot drift apart.
-    /// <para>A MOVER's transform is deliberately absent: it changes every frame, so keying on it would mint
-    /// one group per part per pose. The flag itself IS in the key, which is what keeps a mover out of a
-    /// static group whose frozen matrix a replayed multidraw would apply (#128).</para></summary>
-    internal static bool GroupMatches(int i, IntPtr vdo, IntPtr t0, IntPtr t1, IntPtr t2, IntPtr t3,
-                                     IntPtr shared, IntPtr env, byte flag, int rot, int hint, int prim,
-                                     bool light, bool mx, bool mover, float* liveM)
-    {
-        if (_gVdo[i] != vdo || _gTex0[i] != t0 || _gTex1[i] != t1 || _gTex2[i] != t2 || _gTex3[i] != t3
-            || _gShared[i] != shared || _gEnv[i] != env
-            || _gFlag[i] != flag || _gRot[i] != rot || _gBucket[i] != _bucketId
-            || _gScene[i] != _bucketScene
-            || _gPhase[i] != _phase || _gHint[i] != hint || _gLight[i] != light || _gPrim[i] != prim
-            || _gMx[i] != mx || _gMover[i] != mover) return false;
-        if (mx && !mover)
-            for (int f = 0; f < 16; f++) if (_gMatrix[i * 16 + f] != liveM[f]) return false;
-        return true;
-    }
-
-    /// <summary>...and its hash, over exactly the fields <see cref="GroupMatches"/> compares. The bucket,
-    /// Scene and phase come off the capture state the same way that method reads them, so the two cannot
-    /// disagree about what is in the key.
-    /// <para>Float bits are hashed with -0 normalised to +0: <c>-0f != 0f</c> is FALSE, so the comparison
-    /// calls them equal while their bit patterns differ, and an un-normalised hash would mint a second group
-    /// for the same key. One extra group, never a misrender -- but free to get right.</para></summary>
-    internal static ulong GroupHash(IntPtr vdo, IntPtr t0, IntPtr t1, IntPtr t2, IntPtr t3,
-                                   IntPtr shared, IntPtr env, byte flag, int rot, int hint, int prim,
-                                   bool light, bool mx, bool mover, float* liveM)
-    {
-        ulong h = 0xcbf29ce484222325UL;
-        void Mix(ulong v) { h = (h ^ v) * 0x100000001b3UL; }
-        Mix((ulong)vdo); Mix((ulong)t0); Mix((ulong)t1); Mix((ulong)t2); Mix((ulong)t3);
-        Mix((ulong)shared); Mix((ulong)env);
-        Mix(flag); Mix((uint)rot); Mix((uint)_bucketId); Mix((ulong)_bucketScene);
-        Mix((uint)_phase); Mix((uint)hint); Mix((uint)prim);
-        Mix(light ? 1UL : 0UL); Mix(mx ? 1UL : 0UL); Mix(mover ? 1UL : 0UL);
-        if (mx && !mover)
-            for (int f = 0; f < 16; f++) Mix(BitConverter.SingleToUInt32Bits(liveM[f] + 0f));
-        return h;
-    }
-
-    /// <summary>Drop every recorded identity: part entries, groups and the ownership column.
+    /// <summary>Drop every recorded identity: part entries and the ownership column.
     /// <see cref="TableGen"/> bumps, which is what tells AlloyRenderer its slot indices died.
     /// The live area re-records over a frame or two.</summary>
     /// <summary>The present at which the part table was last emptied. #134: the census counts from HERE, not
@@ -520,7 +351,7 @@ internal static unsafe class PartTable
         if (_saturated) return;                       // say it once per saturated stretch, not every frame
         _saturated = true;
         Log?.Info($"PartTable: table SATURATED -- {live} live vs {dead} dead entries in " +
-                   $"{_groupCount} groups / {_partCount} parts. NOT wiping: this is a large area, not " +
+                   $"{_partCount} parts. NOT wiping: this is a large area, not " +
                    "transition debris, and wiping live entries is what used to drop the whole world back " +
                    "to vanilla once a second. Parts past the cap stay engine-drawn.");
     }
@@ -529,8 +360,7 @@ internal static unsafe class PartTable
     {
         _wipeFrame = _frame;
         Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed); Array.Clear(AlloyCensus.OwnFlag);
-        _gSlot.AsSpan().Fill(-1);            // -1 is empty; 0 is a valid group id
-        _partCount = 0; _groupCount = 0; TableGen++;
+        _partCount = 0; TableGen++;
         _saturated = false;
         // #256: the table is empty and only the walk can refill it. The vanilla toggle and the pressure wipe
         // change no scene membership, so the epoch will not move on its own -- ask for a walk explicitly.
@@ -539,7 +369,7 @@ internal static unsafe class PartTable
     }
 
     /// <summary>#86 frame-edge handler. A vanilla stretch freezes capture while the world keeps changing
-    /// underneath it -- liveness stamps stop and groups keep their membership. Resuming on top of that is
+    /// underneath it -- liveness stamps stop. Resuming on top of that is
     /// what left parts recorded-but-never-drawn.
     /// So the vanilla edge tears the tables down and the Alloy edge re-records from nothing, which is exactly
     /// what an area transition already does (and why switching areas healed it).</summary>
