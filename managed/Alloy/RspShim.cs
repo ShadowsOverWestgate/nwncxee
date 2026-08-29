@@ -493,7 +493,7 @@ internal static unsafe class RspShim
                     : !OwnedBuffers.Armed ? "owned geometry stood down -- the engine's vertex/index buffers are in use"
                     : !OwnedTextures.Armed ? "owned textures stood down -- engine texture names are being sampled"
                     : OwnedBuffers.Refused != 0 ? $"{OwnedBuffers.Refused} engine buffers refused a copy and are borrowed"
-                    : OwnedTextures.Refused != 0 ? $"{OwnedTextures.Refused} engine textures refused a copy and are borrowed"
+                    : OwnedTextures.Borrowed != 0 ? $"{OwnedTextures.Borrowed} engine textures never came through the upload funnel and are borrowed"
                     : null;
         _log?.Info(bad == null
             ? $"RspShim: [bar] resources OWNED -- target {PostChain.Fbo}, depth {PostChain.DepthTex}, "
@@ -506,10 +506,11 @@ internal static unsafe class RspShim
     /// Alloy bracket that runs inside the anchor is subtracted, so this number is the engine walk plus the
     /// bookkeeping vcalls and nothing else. It was the whole Alloy CPU frame as well before that -- <c>/fps</c> is the instrument for
     /// the A/B, which is a live measurement, not a gate.</summary>
-    /// <para>#218: the borrowed counts are a DELTA over the period, not the lifetime totals. Both tables
-    /// count a refusal once per resource and never decrement, so a lifetime figure would let one transient
-    /// refusal in one area taint every line for the rest of the session -- unable to tell a new regression
-    /// from a historic one, which is the only thing this column is here to say.</para>
+    /// <para>#218: the borrowed counts are a DELTA over the period, not the lifetime totals. A lifetime
+    /// figure would let one transient refusal in one area taint every line for the rest of the session --
+    /// unable to tell a new regression from a historic one, which is the only thing this column is here to
+    /// say. #259: the texture count can now fall as well as rise (a tid drawn before its upload stops being
+    /// borrowed the moment Alloy adopts it), so the delta is signed and a negative reads as recovery.</para>
     private static void Period()
     {
         if (_frames < AlloyRenderer.LogEvery) return;
@@ -518,9 +519,9 @@ internal static unsafe class RspShim
                  + $"{_handedBack / _frames} handed back/frame (#236, deliberate), "
                  + $"PASSED {_passed} (must be 0), {ms:F2}ms/frame in the shim, "
                  + $"borrowed {OwnedBuffers.Refused - _lastRefBuf} buffers / "
-                 + $"{OwnedTextures.Refused - _lastRefTex} textures this period (must be 0/0), "
+                 + $"{OwnedTextures.Borrowed - _lastRefTex} textures this period (must be 0/0), "
                  + $"{_sampleSwallowed} fb-sampling hand-backs refused");
-        _lastRefBuf = OwnedBuffers.Refused; _lastRefTex = OwnedTextures.Refused;
+        _lastRefBuf = OwnedBuffers.Refused; _lastRefTex = OwnedTextures.Borrowed;
         _swallowed = 0; _passed = 0; _handedBack = 0; _sampleSwallowed = 0; _ticks = 0; _frames = 0;
     }
 }

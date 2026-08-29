@@ -84,6 +84,9 @@ internal static unsafe class OwnedBuffers
     private static int _level = 2;
     private static bool _span = true;
     private static long _bytes, _peakBytes;
+
+    /// <summary>The high-water figure the <c>/knobs</c> residency line reports, in MiB (#259).</summary>
+    internal static long PeakMib => _peakBytes / OneMiB;
     private static int _copies, _refused, _recopies, _retired, _peakCount;
     /// <summary>#213's measurement of the per-frame movers: pool uploads seen against copies we hold, and how
     /// many of the resulting refreshes were a sub-range copy rather than a whole-buffer re-blit. A dynamic

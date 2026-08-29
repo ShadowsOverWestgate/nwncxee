@@ -71,6 +71,13 @@ public static unsafe class AurTex
     /// Alloy part per frame.</summary>
     public static int Tid(IntPtr tex) => Live(tex) ? _getTid(tex) : 0;
 
+    /// <summary>Is this pointer a live <c>CAurTextureBasic</c> specifically? <see cref="Live"/> admits both
+    /// texture classes, which is right for <c>AurTextureGetTID</c> and wrong for anything that reads a
+    /// BASIC field off the object -- the per-cell GL name array at <c>+0x50</c> and the resolved name at
+    /// <c>+0xa8</c> exist on the subclass only. #259 reads both at the upload funnel, so it asks the
+    /// narrower question. Cold: once per engine texture upload.</summary>
+    public static bool IsBasic(IntPtr tex) => Ready && tex != IntPtr.Zero && *(IntPtr*)tex == _vtblBasic;
+
     /// <summary>Off-device: the guard, in both directions, with SYNTHETIC vtables -- so it runs identically
     /// on a machine with no client, which is where a silent inversion would otherwise go unnoticed until it
     /// admitted a freed pointer on someone's live session. The real vtable ADDRESSES cannot be asserted here

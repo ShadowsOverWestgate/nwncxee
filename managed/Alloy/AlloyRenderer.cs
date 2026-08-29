@@ -609,22 +609,83 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#153: does this context expose ARB_bindless_texture? By STRING -- GLX returns non-null
     /// function pointers for unsupported extensions, so the pointers alone prove nothing.</summary>
     private static bool HasBindless()
+        => Gl.GetTextureHandleARB != null && Gl.MakeTextureHandleResidentARB != null
+           && HasExt("GL_ARB_bindless_texture"u8);
+
+    /// <summary>Is this extension string in the 4.6 CORE context's list? By enumeration, allocation-free.
+    /// Must be called inside the bracket -- it is asking the context Alloy draws in, which is not the
+    /// engine's 3.3 one and does not necessarily advertise the same set.</summary>
+    private static bool HasExt(ReadOnlySpan<byte> want)
     {
-        if (Gl.GetTextureHandleARB == null || Gl.MakeTextureHandleResidentARB == null || Gl.GetStringi == null)
-            return false;
+        if (Gl.GetStringi == null) return false;
         int n = 0; Gl.GetIntegerv(Gl.NUM_EXTENSIONS, &n);
         for (uint i = 0; i < (uint)n; i++)
         {
             byte* e = Gl.GetStringi(Gl.EXTENSIONS, i);
             if (e == null) continue;
-            // compare against "GL_ARB_bindless_texture" without allocating
             int k = 0;
-            for (; k < BindlessExt.Length && e[k] != 0; k++) if (e[k] != BindlessExt[k]) break;
-            if (k == BindlessExt.Length && e[k] == 0) return true;
+            for (; k < want.Length && e[k] != 0; k++) if (e[k] != want[k]) break;
+            if (k == want.Length && e[k] == 0) return true;
         }
         return false;
     }
-    private static ReadOnlySpan<byte> BindlessExt => "GL_ARB_bindless_texture"u8;
+
+    /// <summary>#259: what the driver will say about VRAM, probed once inside the bracket. There is no VRAM
+    /// query in the client at all (<c>GLRender::GetDeviceInfo_i</c> @0x4d1d10 answers
+    /// <c>UNIFORM_BUFFER_OFFSET_ALIGNMENT</c> for query 0 and <c>0xFFFFFFFF</c> for everything else), so the
+    /// two vendor extensions are the only route and neither is guaranteed in a 4.6 core context -- which is
+    /// why the answer is measured and printed rather than assumed. Both report KiB.</summary>
+    private static void ProbeVram()
+    {
+        _vramProbed = true;
+        // The DISCRIMINANT is which extension answered, never the total -- an NVX driver that reports 0 for
+        // its dedicated pool would otherwise be queried with the ATI enum.
+        _vramNvx = HasExt("GL_NVX_gpu_memory_info"u8);
+        if (_vramNvx) { _vramExt = "NVX_gpu_memory_info"; _vramTotalKib = GetInt(GpuMemTotalNvx); }
+        else if (HasExt("GL_ATI_meminfo"u8)) _vramExt = "ATI_meminfo";
+        _log?.Info(_vramExt == null
+            ? "AlloyRenderer: [vram] no GPU memory query in this context (NVX_gpu_memory_info / ATI_meminfo absent) -- residency is reported as Alloy's own bytes only"
+            : $"AlloyRenderer: [vram] {_vramExt} present" + (_vramTotalKib > 0 ? $", {_vramTotalKib / 1024}MiB total" : ""));
+    }
+
+    /// <summary>Probe once, then keep the free-VRAM figure fresh. Called from the bracket -- the only place
+    /// a GL query may be issued at all -- so <c>/knobs</c> can read a number rather than call into the wrong
+    /// context from the chat thread. One <c>glGetIntegerv</c> a frame against a frame's worth of GL traffic.
+    /// <c>GL_ATI_meminfo</c>'s query is an array whose FIRST element is the free pool.</summary>
+    internal static void SampleVram()
+    {
+        if (!_vramProbed) ProbeVram();
+        if (_vramExt == null) return;
+        int* v = stackalloc int[4] { 0, 0, 0, 0 };
+        Gl.GetIntegerv(_vramNvx ? GpuMemCurrentNvx : TexFreeMemoryAti, v);
+        _vramFreeKib = v[0];
+    }
+    private static int _vramFreeKib;
+
+    /// <summary>GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX / _CURRENT_AVAILABLE_VIDMEM_NVX /
+    /// GL_TEXTURE_FREE_MEMORY_ATI.</summary>
+    private const uint GpuMemTotalNvx = 0x9047, GpuMemCurrentNvx = 0x9049, TexFreeMemoryAti = 0x87FC;
+
+    private static bool _vramProbed, _vramNvx;
+    private static string? _vramExt;
+    private static int _vramTotalKib;
+
+    /// <summary>One <c>glGetIntegerv</c>, for a query that answers a single value.</summary>
+    private static int GetInt(uint pname) { int v = 0; Gl.GetIntegerv(pname, &v); return v; }
+
+    /// <summary>#259's <c>/knobs</c> line: what Alloy is holding, and what the device will say about the
+    /// pool it is holding it in. Null until the bracket has probed, which is the honest answer before a
+    /// frame has run.</summary>
+    internal static string? VramNote()
+    {
+        if (!_vramProbed) return null;
+        string device = _vramExt == null
+            ? "the device answers no memory query in this context (NVX_gpu_memory_info / ATI_meminfo absent)"
+            : $"{_vramExt}: " + (_vramTotalKib > 0 ? $"{_vramTotalKib / 1024}MiB total, " : "")
+              + $"{_vramFreeKib / 1024}MiB free";
+        return $"[vram] Alloy holds {OwnedTextures.PeakMib}MiB of textures and {OwnedBuffers.PeakMib}MiB of "
+             + $"geometry at high water; {device}";
+    }
 
     /// <summary>#153: rewrite a fragment stage's bound samplers into per-draw bindless handles. The stage
     /// already receives <c>vDraw</c> (the record index) for its material colours; the same index now selects
@@ -688,7 +749,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // still happen while Alloy is stood down (/vanilla, main menu, the disarm latch).
         // #212: and the geometry deletes with them, for exactly the same reason -- the colour bracket's own
         // Drain never runs in those states, so a revoke there would hold the whole owned set for the session.
-        GlContextService.InBracket = static () => { OwnedTextures.Drain(); OwnedBuffers.Drain(); };
+        GlContextService.InBracket = static () => { OwnedTextures.Drain(); OwnedBuffers.Drain(); SampleVram(); };
         // #117: ahead of every stand-down -- a broken pass order is a misrender in BOTH bracket sites, so the
         // one service that happens to host the check must not be able to opt the check out.
         if (!FrameGraph.SelfCheck(log)) return;

@@ -23,10 +23,13 @@ internal static class RenderPasses
         r.Register(new PassLifecycle
         {
             Name = "ownedtex",
-            Attach = OwnedTextures.Attach,
+            Attach = l => { OwnedTextures.Attach(l); KnobSurface.Note(AlloyRenderer.VramNote); },
             Install = OwnedTextures.Install,
             SelfCheck = l => { OwnedTextures.SelfCheck(l); AlloyRenderer.SelfCheckHandles(l); },
-            Revoke = OwnedTextures.Revoke,
+            // #259: no Revoke. Its resources are keyed on CONTENT, so a part-table wipe or a /vanilla toggle
+            // invalidates nothing in them -- and since they are only ever populated at the engine's upload
+            // funnel, wiping them on an edge the engine does not rebuild across would leave every texture
+            // borrowed for the rest of the session. The engine's own DeleteTextures IS the world edge here.
             ContextLost = OwnedTextures.ContextLost,
         }, log);
 

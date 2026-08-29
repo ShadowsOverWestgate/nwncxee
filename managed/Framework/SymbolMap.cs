@@ -244,6 +244,18 @@ internal static unsafe class SymbolMap
     /// on the engine name, and this is the exact moment a name stops meaning what was copied from it --
     /// including on an area transition, which fires no other edge Alloy watches.</summary>
     public const string RiDeleteTextures = "_ZN15RenderInterface14DeleteTexturesEjPKj";
+    /// <summary>#259: RenderInterface::CreateTexture(CAurTexture*, bool, int) @0x45d200 -- the engine's
+    /// per-cell texture UPLOAD, and the only window in which decoded pixels exist. Ghidra: its one caller is
+    /// <c>CAurTextureBasic::glImageBasic</c> @0x48bcf0, which binds cell <c>i</c>'s GL name and calls this
+    /// once per cell of the <c>numX*numY</c> grid; <c>GLRender::CreateTexture</c> @0x4ca2b0 beneath it does
+    /// the sub-image split, the over-MAX_TEXTURE_SIZE box filter, the format-table lookup and the
+    /// <c>glTexImage2D</c>/<c>glCompressedTexImage2D</c> upload -- all into whatever is bound to
+    /// <c>GL_TEXTURE_2D</c> on unit 0. <c>CAurTextureBasic::FreeImage</c> releases the decoded pixels as
+    /// soon as the loop finishes, so this is the whole window.
+    /// <para>ABI: <c>(CAurTexture* /*rdi*/, bool useSubImage /*sil*/, int cell /*edx*/)</c>. The bool picks
+    /// <c>glTexSubImage2D</c> (assumes storage) over <c>glTexImage2D</c> (allocates); a fresh texture always
+    /// needs the allocating form.</para></summary>
+    public const string RiCreateTexture = "_ZN15RenderInterface13CreateTextureEP11CAurTexturebi";
 
     // ---- shadow replacement (#65). Linux-only; no _win entries -> skip-with-log on Windows. ----
     // The three self-contained shadow sub-passes Scene::RenderShadows dispatches. No-op'ing these
@@ -705,6 +717,12 @@ internal static unsafe class SymbolMap
     /// <summary>The two texture vtables, which is the whole of "is this pointer still a texture" --
     /// see <see cref="AurTex"/>. Data symbols, never called: what is read is the value a live object's
     /// first word holds, i.e. the symbol plus the Itanium ABI's 0x10.</summary>
+    /// <summary>#259: AurTextureCalculateHashID(const char* name, short nSchemes, int* schemes) @0x4857b0 --
+    /// the engine's OWN identity for a texture, and therefore Alloy's. <c>CAurTextureBasic::CalculateHashID</c>
+    /// @0x485890 is exactly <c>(basic+0xa8, *(short*)(basic+0xd4), *(int**)(basic+0x48))</c> cached at
+    /// <c>basic+0xd8</c>, and <c>AurTextureFind</c> looks textures up by it. The scheme array is what keeps
+    /// two PLT skins sharing one resref from being one resource -- the collision a name-only key would have.</summary>
+    public const string AurTextureCalcHash = "_Z25AurTextureCalculateHashIDPKcsPi";
     public const string AurTextureVtbl = "_ZTV11CAurTexture";
     public const string AurTextureBasicVtbl = "_ZTV16CAurTextureBasic";
 

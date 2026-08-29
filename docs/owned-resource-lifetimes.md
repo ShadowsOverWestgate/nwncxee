@@ -19,18 +19,30 @@ allocator recycles addresses — so "the pointer still compares equal" is not ev
 same thing. The GL objects are untouched: they belong to the context, and rebuilding a program per
 area transition would be a stall for nothing.
 
-The one row that is deliberately in BOTH halves is `OwnedTextures` (#211): the copies are keyed on an
-engine GL name, which is captured world state, *and* they are GL objects. The world edge retires them and
-the context edge forgets them — but the world walk runs at a frame edge in the ENGINE context, so it can
-only *queue* the delete; `OwnedTextures.Drain` issues it inside the next 4.6 bracket. That is the same
-split `EnsureVao` makes for its retired VAO names, and the reason a `Revoke` slot is still not a GL slot.
+`OwnedTextures` (#259) is the one row with **no `Revoke` slot at all**, and the reason generalises. Its
+resources are keyed on the engine's own texture identity (`AurTextureCalculateHashID` over the resolved
+name at `basic+0xa8` and the PLT schemes at `+0x48`/`+0xd4`, folded with the atlas cell), so a part-table
+wipe or a `/vanilla` toggle invalidates nothing in them. More to the point, they are populated *only* at
+the engine's upload funnel — so wiping them on an edge the engine does not rebuild across would leave
+every texture borrowed for the rest of the session, with no path back.
 
-`OwnedTextures` also has an edge **no other row has**, and the reason is worth stating: it keys on an
-engine GL texture name, so the event that invalidates it is the engine deleting that name — which on an
-**area transition** fires none of the world edges above (#220 measured one part-table wipe in an entire
-session). It therefore hooks `RenderInterface::DeleteTextures` @0x45d1d0, the single funnel every engine
-texture name dies through, and retires the one copy that name produced. If you add a table keyed on
-anything the engine hands out by GL name, this is the edge you need too — not `Revoke`.
+Its two edges are both **engine funnels rather than Alloy events**. The engine's GL name is only an
+*index* onto a resource — the lookup the hot `Draw` path needs, because a material hands out a tid and
+nothing else — and it is rewritten at the two moments a tid changes meaning:
+
+* **The upload**, `RenderInterface::CreateTexture` @0x45d200 — the engine's per-cell upload, and the only
+  window in which decoded pixels exist. Alloy re-invokes it against a texture of its own, points the index
+  at the resource, and retires the previous texture for that resource. This is what makes a re-upload
+  visible immediately instead of at the next world edge (#227's structural cause).
+* **The delete**, `RenderInterface::DeleteTextures` @0x45d1d0 — the single funnel every engine texture
+  name dies through, and **the world edge for a texture**: a resource the engine no longer holds is one
+  Alloy can never be handed a tid for again. An **area transition** fires it and none of the world edges
+  above (#220 measured one part-table wipe in an entire session). It drops the index entry and QUEUES the
+  texture — it runs at a frame edge in the ENGINE context, where a GL delete would go to the wrong context
+  entirely, so `OwnedTextures.Drain` issues it inside the next 4.6 bracket. Same split `EnsureVao` makes
+  for its retired VAO names.
+
+If you add a table the engine hands out by GL name, these are the edges you need — not `Revoke`.
 
 **`ContextLost` — the context edge.** The 4.6 context went away. What dies is every **GL name**.
 Nothing is deleted, because the objects went with the context and the name now belongs to whatever
@@ -118,7 +130,7 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Grass patches + slot map (`GrassField`) | bin scatter | `GrassField.Forget` | registry `Revoke`; `Scene::ReloadGrass` `GrassField.cs:305` | `GrassField.ContextLost` |
 | Env cube freshness + BSP key (`EnvProbe`) | `EnvProbe` capture | `EnvProbe.Revoke` | registry `Revoke` | `EnvProbe.Forget` |
 | Caster set + skin records + texture-alpha verdicts (`CasterPass`) | `CasterPass.Enroll` | `Release` | `CasterPass.cs:1003,1005,1008` | routes through the same `Release` — see below |
-| Owned texture copies (`OwnedTextures`) | first in-bracket sight of an engine texture name, `OwnedTextures.Draw` | per-name: the engine's own delete funnel, `RenderInterface::DeleteTextures` → `Retire`. Wholesale: `OwnedTextures.Revoke` | the delete hook (`OwnedTextures.Install`); registry `Revoke`. Both only **queue** — `OwnedTextures.Drain` deletes, off `GlContextService.InBracket` | `OwnedTextures.ContextLost` drops map, owned-set and queue, deletes nothing |
+| Owned textures (`OwnedTextures`) | the engine's upload funnel, `RenderInterface::CreateTexture` → `Adopt` | a re-upload through the same funnel, or the engine's `RenderInterface::DeleteTextures` → `Retire`. **No registry `Revoke`** — see above | the two hooks (`OwnedTextures.Install`). Both only **queue** — `OwnedTextures.Drain` deletes, off `GlContextService.InBracket` | `OwnedTextures.ContextLost` drops resources, index, owned-set and queue, deletes nothing |
 | Owned vertex/index buffer copies (`OwnedBuffers`) | first in-bracket sight of an engine pool buffer name, `OwnedBuffers.Draw` (from `BuildVao`) | per-name: the engine's own delete funnel, `GLRender::DeleteBuffer` → `Retire`. Wholesale: `OwnedBuffers.Revoke` | the delete hook (`OwnedBuffers.Install`); registry `Revoke`. Both only **queue** — `OwnedBuffers.Drain` deletes, at the top of the colour bracket | `OwnedBuffers.ContextLost` drops map, dirty list and queue, deletes nothing |
 | Caster VAOs over those copies (`CasterPass._vVaoOwn`) | `CasterPass.EnsureVao`, inside the shadow bracket | slots retired by `CasterPass.Release` (`_vStale`), names deleted by the next `EnsureVao` | `CasterPass.Lifecycle` — the same three edges `RevokeAll` watches, and it runs from the pass slot, ahead of the present that revokes | kept, like the pass's other GL names — see below |
 | Bindless handle cache `_hTid/_hVal/_hRes` | `AlloyRenderer.HandleFor` | `DropHandle`, per owned name, from `OwnedTextures.Drain` before the texture is deleted | — the enrollment `WipeHandles` is now a no-op while `ownedtex` is armed (#220) | `AlloyRenderer.ForgetHandles`, via `OwnedTextures.ContextLost` |
@@ -144,7 +156,7 @@ are the shape that does, so if either ever outlives an enrollment it joins the t
 | Beam program + per-VDO VAO **pairs** (engine buffers and Alloy copies, `_vVao`/`_vVaoOwn`) + element buffers | `Beams.EnsureProgram` | `Beams.ContextLost` | registry `ContextLost` |
 | Particle program/VAO/VBO/sampler + native stage buffer | `Particles.Ensure*` | `Particles.ContextLost` | registry `ContextLost` |
 | Caster depth program, FBO, depth array, persistent-mapped buffers, VAOs | `CasterPass.EnsureGl` | **nothing** — kept | see below |
-| Owned texture copies (`OwnedTextures`) | `OwnedTextures.Copy` | `OwnedTextures.ContextLost` | registry `ContextLost` |
+| Owned textures (`OwnedTextures`) | `OwnedTextures.Adopt` | `OwnedTextures.ContextLost` | registry `ContextLost` |
 | Owned buffer copies (`OwnedBuffers`) | `OwnedBuffers.Copy` | `OwnedBuffers.ContextLost` | registry `ContextLost` |
 
 The owned depth texture has no `Revoke` edge: its contents are per-pass (cleared in `PostChain.Begin`, blitted back into the engine's attachment by `ResolveDepth`), so there is no world-edge state in it to invalidate. It *is* reallocated whenever the engine's attachment changes format or the target changes size, which is the same edge a resolution change or an alt-tab device reset arrives on.

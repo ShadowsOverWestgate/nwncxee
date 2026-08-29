@@ -7,52 +7,78 @@ using Sowx.Graphics;
 namespace Sowx.Alloy;
 
 /// <summary>
-/// #211 (map #68, spec #203 M4, RHI gate G2): the textures Alloy DRAWS FROM, which are Alloy's own.
-/// <para>The engine's are borrowed: a <c>CAurTexture*</c> is freed on an area transition and on module
-/// unload, and every owned draw so far worked around that by re-fetching the id through
-/// <c>AurTextureGetTID</c> every frame behind the <see cref="AurTex"/> vtable guard. Re-fetching times
-/// around the failure; owning removes it. A texture Alloy created cannot be freed under Alloy.</para>
-/// <para>The copy is GPU-side and pays nothing per frame: on first sight of an engine texture name,
-/// <c>glTexStorage2D</c> the same format and level count and <c>glCopyImageSubData</c> each level across.
-/// No Aurora decode, no CPU staging, no readback -- the engine already put the decoded image in a GL
-/// texture and the 4.6 context shares its objects, so the image is already reachable. Sampler state is
-/// NOT part of a copy, so filter and wrap are read off the engine name and set on ours (which also closes
-/// the gap Particles.cs documents: <c>AurTextureGetTID</c> skips the engine's own filter/wrap setup, so an
-/// owned draw used to sample through whatever the last binder left behind).</para>
-/// <para><b>The key is the engine's GL name.</b> Not the <c>CAurTexture*</c> -- that is a per-material
-/// reference whose address the allocator recycles (#221) -- and not the resref, which cannot be built on a
-/// hot path without allocating. While a GL name is live it identifies exactly one image; it is only
-/// recycled after a delete, and deletes come with the world edges this table is wiped on.</para>
-/// <para>ponytail: an engine texture re-uploaded UNDER a name we already copied (AurTextureRefreshAll, the
-/// TTF atlas rebuild, AurTextureSetLayered) leaves us serving the old image until the next world edge.
-/// The upgrade path is a per-entry content stamp, which nothing cheap exists for -- so the ceiling is a
-/// boot gate instead: <c>ownedtex=0</c> in sowx.cfg draws from engine names exactly as before #211.</para>
-/// <para>Lifecycle (docs/owned-resource-lifetimes.md): <see cref="Revoke"/> is the WORLD edge -- it drops
-/// the map and QUEUES the copies for deletion, because the world walk runs at a frame edge in the ENGINE
-/// context and a GL delete there would be issued against the wrong context entirely. <see cref="Drain"/>
-/// does the deleting on the next frame that enters the 4.6 bracket, the same split
-/// <c>EnsureVao</c> makes for its retired VAO names. <see cref="ContextLost"/> is the GL-name edge -- the
-/// objects went with the context, so map and queue are dropped and nothing is deleted.</para>
+/// #259 (map #68, ADR 0018 M5 strand 1): the textures Alloy DRAWS FROM, which are Alloy's own -- uploaded
+/// by Alloy from the engine's DECODED PIXELS, not copied off the engine's finished GL texture.
+/// <para>M5's boundary is "the engine reads files and decodes them, Alloy owns everything after that".
+/// #211 could not reach the decoded form, so it copied GPU-side (<c>glTexStorage2D</c> +
+/// <c>glCopyImageSubData</c>) keyed on the engine's GL name, and inherited that key's ceiling: a texture
+/// re-uploaded under a name already copied served the old image until the next world edge. That ceiling is
+/// the structural cause of #227, and it is gone -- the copy path is deleted.</para>
+/// <para><b>The window.</b> <c>CAurTextureBasic::BuildAndStoreTexture</c> @0x48b320 decodes into
+/// <c>basic+0x58</c>, uploads, then <c>FreeImage</c>s. The upload is <c>glImageBasic</c> @0x48bcf0 looping
+/// <c>RenderInterface::CreateTexture(tex, sub, cell)</c> once per cell of the <c>numX*numY</c> grid, having
+/// bound that cell's GL name. Everything underneath -- <c>ImageGetSubImage</c>, the over-MAX_TEXTURE_SIZE
+/// box filter, the format table, <c>glTexImage2D</c>/<c>glCompressedTexImage2D</c>, the mip walk, the
+/// single-channel swizzle -- writes into whatever is bound to <c>GL_TEXTURE_2D</c> on unit 0.</para>
+/// <para><b>So Alloy's upload IS that code, aimed at Alloy's texture.</b> The hook lets the engine's own
+/// call finish, then binds an Alloy-minted name and calls the trampoline a second time. Nothing here
+/// reimplements a decode, a sub-image split or a format decision, and the single-channel legacy formats
+/// #211 had to refuse (its <c>Sized()</c> promotion changed the sampler swizzle) upload correctly because
+/// the engine sets the swizzle on our texture too. It costs a second sub-image + box filter per texture,
+/// on the cold load path only.</para>
+/// <para><b>Context.</b> The hook fires with the ENGINE's context current, not Alloy's 4.6 bracket -- which
+/// is exactly why re-invoking the engine's own upload is safe where hand-rolled 4.x calls would not be. The
+/// two contexts are share-listed (<c>GlContextService</c>), so the object is visible to Alloy; the engine's
+/// own <c>SwapBuffers</c> between a load and the first draw is the flush that publishes it. Deletes still
+/// belong to the bracket -- see <see cref="Drain"/>.</para>
+/// <para><b>Identity is content, not a GL name.</b> A resource is keyed on the texture's resolved name
+/// (<c>basic+0xa8</c>, the field <c>CAurTexture::Restore</c> re-acquires by) folded with the cell index,
+/// read COLD at the upload. The engine GL name survives only as an <see cref="_index"/> entry -- a lookup
+/// the hot <see cref="Draw"/> path needs because a material hands out a tid and nothing else, refreshed at
+/// BOTH edges that change what a tid means: this upload funnel and the delete funnel. A re-upload mints a
+/// NEW owned name and bumps the resource's generation, so a resident bindless handle can never be
+/// respecified under the driver and a recycled engine name cannot alias a stale resource.</para>
+/// <para><b>What stays borrowed</b> (counted by <see cref="Borrowed"/>, never silently): cube textures
+/// (<c>glImageBasic</c> routes those to <c>CreateCubeTexture</c>, which is not this funnel -- they were
+/// refused by #211 too), the <c>g_bGeneratePLTOnGPU</c> path (composited on the GPU, there are no decoded
+/// pixels to upload), and anything uploaded through <c>DirectCreateTexture</c> -- Ghidra says that is the
+/// movie player and <c>Camera::RefreshRenderSubframeResources</c>, neither of which Alloy draws.</para>
+/// <para><b>Lifecycle</b> (docs/owned-resource-lifetimes.md), and this table has NO <c>Revoke</c> slot.
+/// Content-keyed resources survive a part-table wipe and a <c>/vanilla</c> toggle unchanged, and since they
+/// are populated ONLY at the upload funnel, wiping them on an edge the engine does not rebuild across would
+/// leave every texture borrowed for the rest of the session. The world edge is the engine's own
+/// <see cref="OnDeleteTextures"/>, which QUEUES rather than deletes -- it runs wherever the engine happened
+/// to be, which is not the 4.6 context -- and <see cref="Drain"/> does the deleting on the next frame that
+/// enters the bracket. <see cref="ContextLost"/> is the GL-name edge: the objects went with the context, so
+/// everything is dropped and nothing is deleted.</para>
 /// </summary>
 internal static unsafe class OwnedTextures
 {
-    /// <summary>An engine name we have already looked at. <c>Owned</c> 0 means "copy refused" -- cached so a
-    /// texture we cannot copy is not re-attempted every frame; that name draws from the engine's id.</summary>
+    /// <summary>One Alloy-owned texture: the resource behind a content key. <c>Gen</c> counts how many times
+    /// the engine has re-uploaded this resource -- the instrument #227 never had.</summary>
     private readonly struct Entry
     {
         internal readonly uint Owned;
         internal readonly long Bytes;
-        internal Entry(uint owned, long bytes) { Owned = owned; Bytes = bytes; }
+        internal readonly uint Gen;
+        internal Entry(uint owned, long bytes, uint gen) { Owned = owned; Bytes = bytes; Gen = gen; }
     }
 
-    private static readonly Dictionary<int, Entry> _map = new();
+    /// <summary>Content key -> Alloy's texture. The resource table; nothing in it is keyed on a GL name.</summary>
+    private static readonly Dictionary<ulong, Entry> _res = new();
+    /// <summary>Engine GL name -> content key. An INDEX, not a resource: it says which resource a tid means
+    /// right now, and it is rewritten at the upload edge and erased at the delete edge.</summary>
+    private static readonly Dictionary<int, ulong> _index = new();
     /// <summary>The reverse question the bindless path has to ask: is this name a copy of ours? A handle must
-    /// never be minted on an engine texture (that IS #220), and a refused copy hands the engine id straight
-    /// back, so "armed" is not the same as "this name is owned".</summary>
+    /// never be minted on an engine texture (that IS #220), and a borrowed texture draws from the engine's
+    /// id, so "armed" is not the same as "this name is owned".</summary>
     private static readonly HashSet<uint> _owned = new();
+    /// <summary>Engine names Alloy draws BORROWED -- distinct tids, so the count is textures rather than
+    /// frames. #218's exit bar reads it: "all textures Alloy-created" is false the moment this is non-zero.</summary>
+    private static readonly HashSet<int> _borrowed = new();
     /// <summary>Names retired and waiting for a bracket to delete them in. Pre-sized: entries are added from
-    /// the engine's delete funnel, which runs on the render thread, and a List growth there would allocate
-    /// on a hot-adjacent path.</summary>
+    /// the engine's delete and upload funnels, which run on the render thread, and a List growth there would
+    /// allocate on a hot-adjacent path.</summary>
     private static readonly List<uint> _pending = new(1024);
     private static ExtenderLog? _log;
     private static bool _armed;
@@ -60,44 +86,239 @@ internal static unsafe class OwnedTextures
     /// discipline entirely on the answer (see <c>AlloyRenderer.WipeHandles</c>).</summary>
     internal static bool Armed => _armed;
 
-    /// <summary>Engine textures we tried to copy and could not, and therefore sample BORROWED. #218's exit
-    /// bar reads it: "all textures Alloy-created" is false the moment this is non-zero.</summary>
-    internal static int Refused => _refused;
+    /// <summary>Engine textures Alloy samples BORROWED, distinct by GL name. Not a refusal any more --
+    /// nothing is attempted and declined; these are the names that never came through the upload funnel at
+    /// all (see the class remarks for which, and why).</summary>
+    internal static int Borrowed => _borrowed.Count;
+
     private static long _bytes, _peakBytes;
-    private static int _copies, _refused, _peakCount;
+
+    /// <summary>The high-water figure the <c>/knobs</c> residency line reports, in MiB (#259).</summary>
+    internal static long PeakMib => _peakBytes / OneMiB;
+    private static int _uploads, _reuploads, _peakCount;
 
     /// <summary>Wired once from <see cref="AlloyRenderer"/>'s init, before any frame runs.</summary>
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _armed = Settings.Bool("ownedtex", true);
+        _hash = (delegate* unmanaged<IntPtr, short, int*, int>)Native.Sym(SymbolMap.AurTextureCalcHash);
+        bool wanted = Settings.Bool("ownedtex", true);
+        _armed = wanted && _hash != null;
         log.Info(_armed
-            ? "OwnedTextures: armed -- owned draws sample Alloy-created copies (ownedtex=0 to draw from engine ids)"
-            : "OwnedTextures: stood down (ownedtex=0) -- owned draws sample engine texture ids");
+            ? "OwnedTextures: armed -- Alloy uploads from the engine's decoded pixels (ownedtex=0 to draw from engine ids)"
+            : wanted
+              ? "OwnedTextures: stood down -- AurTextureCalculateHashID unresolved, so there is no identity to key resources on and owned draws sample engine texture ids"
+              : "OwnedTextures: stood down (ownedtex=0) -- owned draws sample engine texture ids");
     }
 
-    /// <summary>#220: chain the engine's texture-delete funnel. This is the edge the first cut of #211 did
-    /// not have -- an AREA TRANSITION deletes the engine's textures and fires none of the world edges Alloy
-    /// watches (the part table is not wiped on a transition; #220 measured one wipe in a whole session), so
-    /// a map keyed on engine names would serve the previous area's copy for a recycled name. Stable
-    /// wrong-texture corruption, with no bindless involved.</summary>
+    /// <summary>Chain the two engine funnels this table lives on: the UPLOAD (#259, where decoded pixels
+    /// exist) and the DELETE (#220, the area-transition edge that fires no other edge Alloy watches).</summary>
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         if (!_armed) return;
+        _origCreate = (delegate* unmanaged<IntPtr, byte, int, void>)hooks.Install(
+            SymbolMap.RiCreateTexture, (IntPtr)(delegate* unmanaged<IntPtr, byte, int, void>)&OnCreateTexture);
+        log.Info(_origCreate != null
+            ? "OwnedTextures: watching RenderInterface::CreateTexture -- Alloy uploads every engine texture from its decoded pixels"
+            : "OwnedTextures: CreateTexture not installed -- every texture is BORROWED (owned draws sample engine ids)");
+
         _origDelete = (delegate* unmanaged<uint, uint*, void>)hooks.Install(
             SymbolMap.RiDeleteTextures, (IntPtr)(delegate* unmanaged<uint, uint*, void>)&OnDeleteTextures);
         log.Info(_origDelete != null
-            ? "OwnedTextures: watching RenderInterface::DeleteTextures -- copies retire with the name they were made from"
-            : "OwnedTextures: DeleteTextures not installed -- copies only retire on a world edge (area transitions will serve stale textures)");
+            ? "OwnedTextures: watching RenderInterface::DeleteTextures -- a tid stops resolving the moment it stops meaning its resource"
+            : "OwnedTextures: DeleteTextures not installed -- a recycled engine name will resolve the previous area's resource");
     }
 
+    private static delegate* unmanaged<IntPtr, byte, int, void> _origCreate;
     private static delegate* unmanaged<uint, uint*, void> _origDelete;
     private static long _retired;
 
-    /// <summary>The engine is deleting these GL names. Anything we copied from one of them is retired: the
-    /// name is about to mean something else, and our copy is about to be the wrong picture rather than a
-    /// stale one. Hot-adjacent (fires in bursts on transitions, never per frame) and allocation-free in the
-    /// steady state -- Dictionary/HashSet removal allocates nothing and <see cref="_pending"/> is pre-sized.
+    /// <summary><c>CAurTextureBasic+0x50</c>: <c>uint*</c>, the <c>numX*numY</c> GL names
+    /// <c>glImageBasic</c> @0x48bcf0 generates and binds one per cell.</summary>
+    private const int OffCellNames = 0x50;
+    /// <summary><c>CAurTextureBasic+0xa8</c>: <c>char[0x20]</c>, the resolved texture name
+    /// <c>LoadImage</c> @0x487980 fills and <c>CAurTexture::Restore</c> @0x48e300 re-acquires by. Stable
+    /// across a delete/rebuild, which is what makes it an identity.</summary>
+    private const int OffName = 0xa8;
+    /// <summary><c>CAurTextureBasic+0x48</c> / <c>+0xd4</c>: the PLT scheme array (<c>int*</c>) and its
+    /// <c>short</c> count -- the other half of the engine's own texture identity.</summary>
+    private const int OffSchemes = 0x48, OffSchemeCount = 0xd4;
+    /// <summary><c>CAurTextureBasic+0xca</c> / <c>+0xcc</c>: the <c>short</c> atlas grid the engine
+    /// de-atlases into one GL texture per cell.</summary>
+    private const int OffNumX = 0xca, OffNumY = 0xcc;
+
+    /// <summary>The engine is about to upload cell <paramref name="cell"/> of <paramref name="tex"/> into the
+    /// GL name it has bound. Let that happen, then do it again into a texture of ours.
+    /// <para>Cold -- once per texture per (re)build, never per frame -- so the allocations a Dictionary
+    /// insert makes are not on a hot path. Runs in the ENGINE's context; see the class remarks.</para></summary>
+    [UnmanagedCallersOnly]
+    private static void OnCreateTexture(IntPtr tex, byte useSubImage, int cell)
+    {
+        if (_origCreate != null) _origCreate(tex, useSubImage, cell);
+        Adopt(tex, cell);
+    }
+
+    /// <summary>The upload handler's body, split out so <see cref="SelfCheck"/> can exercise it -- an
+    /// <c>UnmanagedCallersOnly</c> method cannot be called from managed code.</summary>
+    private static void Adopt(IntPtr tex, int cell)
+    {
+        if (!_armed || _origCreate == null) return;
+        // The BASIC vtable specifically: every field below belongs to the subclass, and #138/#221 say a
+        // texture pointer is only ever as good as its vtable.
+        if (!AurTex.IsBasic(tex)) return;
+
+        uint* cells = *(uint**)((byte*)tex + OffCellNames);
+        int n = *(short*)((byte*)tex + OffNumX) * *(short*)((byte*)tex + OffNumY);
+        if (cells == null || cell < 0 || cell >= n) return;
+        int etid = (int)cells[cell];
+        if (etid <= 0) return;
+
+        // ponytail: before the first present there is no 4.6 context and no entry points, so a texture
+        // uploaded that early stays borrowed for the session -- nothing re-drives this funnel for a texture
+        // the engine already holds. The window is the main menu, which Alloy does not draw, and the count
+        // says so out loud rather than hiding it. Upgrade path: re-drive AurTextureRefreshAll @0x48f050 from
+        // the engine's context once the bracket exists.
+        if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.GetIntegerv == null)
+        {
+            _borrowed.Add(etid);
+            return;
+        }
+
+        ulong key = Key(tex, cell);
+        uint dst;
+        Gl.GenTextures(1, &dst);
+        if (dst == 0) { _borrowed.Add(etid); return; }
+
+        int saved; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &saved);
+        DrainErrors();   // the verdict below is ours to read, so nobody else's error may be sitting here
+        // Raw glBindTexture, NOT AurTextureBindTID: the engine caches what it thinks is bound, and routing
+        // our name through its wrapper would leave that cache naming a texture the engine does not own.
+        Gl.BindTexture(Gl.TEXTURE_2D, dst);
+        // ...and always the ALLOCATING form. `true` is the glTexSubImage2D path, which assumes storage a
+        // freshly generated name does not have.
+        _origCreate(tex, 0, cell);
+        uint err = Gl.GetError();          // read BEFORE Measure, whose own queries would mask it
+        long bytes = err == 0 ? Measure() : 0;
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
+
+        if (err != 0)
+        {
+            if (Gl.DeleteTextures != null) Gl.DeleteTextures(1, &dst);
+            _borrowed.Add(etid);
+            if (_diagLeft > 0) { _diagLeft--; _log?.Info($"OwnedTextures: tid {etid} borrowed -- the engine's upload into our name gave 0x{err:x}"); }
+            return;
+        }
+
+        Replace(key, etid, dst, bytes);
+        HighWater();
+    }
+
+    /// <summary>The residency line, every MiB rather than every texture -- the count climbs on every insert,
+    /// so testing it per texture fired a few hundred interpolated lines while an area loaded.
+    /// <para>The resource count runs ABOVE "textures in the area": an animated texture cycles one resource
+    /// per animation frame, and the engine de-atlases a numX*numY grid into one texture per cell. Correct
+    /// and bounded, not a leak.</para></summary>
+    private static void HighWater()
+    {
+        if (_bytes <= _peakBytes + OneMiB) return;
+        _peakBytes = _bytes;
+        _log?.Info($"OwnedTextures: [vram] high-water {_peakBytes / OneMiB}MiB across {_peakCount} " +
+                   $"owned textures (uploads {_uploads}, re-uploads {_reuploads}, borrowed {_borrowed.Count})");
+    }
+
+    /// <summary>Stop drawing from a texture and queue it for the bracket to delete. Shared by the delete
+    /// funnel and the re-upload path, which retire for different reasons and by the same mechanics.</summary>
+    private static void Discard(Entry e)
+    {
+        if (e.Owned == 0) return;
+        _owned.Remove(e.Owned);
+        _pending.Add(e.Owned);
+        _bytes -= e.Bytes;
+    }
+
+    /// <summary>Adopt a freshly uploaded texture as the resource behind <paramref name="key"/>, retiring
+    /// whatever held that key before. Split out from <see cref="Adopt"/>, whose other half is GL, so
+    /// <see cref="SelfCheck"/> can assert the table mutation rather than a copy of it.</summary>
+    private static void Replace(ulong key, int etid, uint owned, long bytes)
+    {
+        uint gen = 0;
+        if (_res.TryGetValue(key, out Entry old))
+        {
+            gen = old.Gen + 1;
+            Discard(old);
+            _reuploads++;
+        }
+        _res[key] = new Entry(owned, bytes, gen);
+        _owned.Add(owned);
+        _index[etid] = key;
+        _borrowed.Remove(etid);
+        _uploads++;
+        _bytes += bytes;
+        if (_res.Count > _peakCount) _peakCount = _res.Count;
+    }
+
+    /// <summary>A resource's identity: the ENGINE's own hash for the texture, folded with the cell index.
+    /// <c>CAurTextureBasic::CalculateHashID</c> @0x485890 hashes the resolved name at <c>+0xa8</c> together
+    /// with the PLT scheme array at <c>+0x48</c>/<c>+0xd4</c>, and <c>AurTextureFind</c> looks textures up by
+    /// it -- so it is exactly "which texture is this" as the engine itself answers it, and two PLT skins
+    /// sharing one resref are two resources rather than one. The cell occupies the low half whole, so an
+    /// atlas cell can never collide with another texture's hash.
+    /// <para>Cold: once per cell per (re)upload, and it costs one engine call rather than a string walk.</para></summary>
+    private static ulong Key(IntPtr tex, int cell) => ((ulong)(uint)_hash(tex + OffName,
+        *(short*)((byte*)tex + OffSchemeCount), *(int**)((byte*)tex + OffSchemes)) << 32) | (uint)cell;
+
+    private static delegate* unmanaged<IntPtr, short, int*, int> _hash;
+
+    /// <summary>How much VRAM the texture currently bound to <c>GL_TEXTURE_2D</c> occupies, over every level
+    /// that has storage. A block format answers directly; anything else is width*height*(sum of the channel
+    /// widths). Accounting only -- a driver that answers nothing costs a zero, not a refusal.</summary>
+    private static long Measure()
+    {
+        if (Gl.GetTexLevelParameteriv == null) return 0;
+        long total = 0;
+        for (int level = 0; level < MaxLevels; level++)
+        {
+            int w = 0, h = 0;
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_WIDTH, &w);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_HEIGHT, &h);
+            if (w <= 0 || h <= 0) break;
+            int compressed = 0;
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_COMPRESSED, &compressed);
+            if (compressed != 0)
+            {
+                int size = 0;
+                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
+                total += size > 0 ? size : 0;
+                continue;
+            }
+            int r = 0, g = 0, b = 0, a = 0;
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_RED_SIZE, &r);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_GREEN_SIZE, &g);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_BLUE_SIZE, &b);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_ALPHA_SIZE, &a);
+            total += (long)w * h * (r + g + b + a) / 8;
+        }
+        return total;
+    }
+
+    /// <summary>Empty the error queue without trusting it to end. A context the driver has given up on
+    /// answers an error forever, and an unbounded drain there is a hang rather than a diagnostic.</summary>
+    private static void DrainErrors() { for (int i = 0; i < 8 && Gl.GetError() != 0; i++) { } }
+
+    /// <summary>Capped: a driver that refuses one upload refuses every texture like it, and the first few
+    /// lines say which as well as any number of them would.</summary>
+    private static int _diagLeft = 8;
+
+    /// <summary>A 16384-wide texture has 15 mips; the cap only bounds a driver that answers a nonzero width
+    /// forever.</summary>
+    private const int MaxLevels = 16;
+
+    private const long OneMiB = 1024 * 1024;
+
+    /// <summary>The engine is deleting these GL names. This is THE world edge for a texture: a resource the
+    /// engine no longer holds is one Alloy can never be handed a tid for again, so the index entry goes and
+    /// the texture behind it is queued. An area transition fires this and nothing else Alloy watches (#220
+    /// measured one part-table wipe in an entire session); a rebuild re-adopts at the upload funnel.
     /// <para>Issues no GL: this runs wherever the engine happened to be, which is not the 4.6 context.
     /// <see cref="Drain"/> does the deleting.</para></summary>
     [UnmanagedCallersOnly]
@@ -107,22 +328,20 @@ internal static unsafe class OwnedTextures
         if (_origDelete != null) _origDelete(n, names);
     }
 
-    /// <summary>The handler's body, split out so <see cref="SelfCheck"/> can exercise it -- an
-    /// <c>UnmanagedCallersOnly</c> method cannot be called from managed code (AurTex splits <c>Live</c> out
-    /// of <c>Tid</c> for the same reason).</summary>
+    /// <summary>The delete handler's body, split out so <see cref="SelfCheck"/> can exercise it.</summary>
     private static void Retire(uint n, uint* names)
     {
         if (names == null) return;
         for (uint i = 0; i < n; i++)
         {
-            int key = (int)names[i];
-            if (!_map.TryGetValue(key, out Entry e)) continue;
-            _map.Remove(key);
-            if (e.Owned == 0) continue;
-            _owned.Remove(e.Owned);
-            _pending.Add(e.Owned);
-            _bytes -= e.Bytes;
+            int name = (int)names[i];
+            _borrowed.Remove(name);
+            if (!_index.TryGetValue(name, out ulong key)) continue;
+            _index.Remove(name);
             _retired++;
+            if (!_res.TryGetValue(key, out Entry e)) continue;
+            _res.Remove(key);
+            Discard(e);
         }
     }
 
@@ -131,183 +350,29 @@ internal static unsafe class OwnedTextures
     /// the whole of #220.</summary>
     internal static bool IsOwned(int name) => name > 0 && _owned.Contains((uint)name);
 
-    /// <summary>The name an owned draw should sample for this engine texture id: our copy, or
-    /// <paramref name="engineTid"/> itself when the table is stood down or the copy refused. Hot -- called
-    /// per Alloy part per frame -- but allocation-free and, after first sight, one dictionary probe.
-    /// Must be called inside the 4.6 bracket: the copy issues GL.</summary>
+    /// <summary>The name an owned draw should sample for this engine texture id: Alloy's, or
+    /// <paramref name="engineTid"/> itself when the table is stood down or the texture never came through the
+    /// upload funnel. Hot -- called per Alloy part per frame -- and in the normal case two dictionary probes
+    /// and nothing else. Issues no GL, so it is not bracket-bound.
+    /// <para>The one allocation it can make is the borrowed set growing, which happens once per DISTINCT
+    /// engine name Alloy never adopted and never again for that name. Zero of them is the #218 bar.</para></summary>
     internal static int Draw(int engineTid)
     {
         if (!_armed || engineTid <= 0) return engineTid;
-        if (_map.TryGetValue(engineTid, out Entry e)) return e.Owned != 0 ? (int)e.Owned : engineTid;
-        uint owned = Copy(engineTid, out long bytes);
-        _map[engineTid] = new Entry(owned, bytes);
-        if (owned == 0) { _refused++; return engineTid; }
-        _owned.Add(owned);
-        _copies++;
-        _bytes += bytes;
-        if (_map.Count > _peakCount) _peakCount = _map.Count;
-        // Every MiB, not every texture. The count climbs on every single insert, so testing it here made the
-        // "high-water" line fire once per texture -- a few hundred interpolated log lines while an area
-        // loads, allocating inside the 4.6 bracket. Entry count runs ABOVE "textures in the area": an
-        // animated texture cycles one engine name per animation frame and each is its own resource. That is
-        // correct and bounded, not a leak.
-        if (_bytes > _peakBytes + OneMiB)
-        {
-            _peakBytes = _bytes;
-            _log?.Info($"OwnedTextures: [vram] high-water {_peakBytes / OneMiB}MiB across {_peakCount} " +
-                       $"owned textures (copies {_copies}, refused {_refused})");
-        }
-        return (int)owned;
+        if (_index.TryGetValue(engineTid, out ulong key) && _res.TryGetValue(key, out Entry e))
+            return (int)e.Owned;
+        _borrowed.Add(engineTid);
+        return engineTid;
     }
 
-    /// <summary>One engine name -> one owned copy. Cold: runs on first sight of a texture and never again.
-    /// Returns 0 (and leaves nothing allocated) on any refusal -- a missing entry point, a level-0 query
-    /// that answers nothing, or a driver without <c>glCopyImageSubData</c>.</summary>
-    private static uint Copy(int src, out long bytes)
-    {
-        bytes = 0;
-        if (Gl.CopyImageSubData == null || Gl.TexStorage2D == null || Gl.GetTexLevelParameteriv == null
-            || Gl.GenTextures == null || Gl.GetTexParameteriv == null) return 0;
-
-        int saved; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &saved);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)src);
-        while (Gl.GetError() != 0) { }   // ours to read below, so nobody else's error may be sitting here
-        int w0 = 0, h0 = 0, fmt = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w0);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h0);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
-        fmt = Sized(fmt);
-        if (w0 <= 0 || h0 <= 0 || fmt == 0) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved); return 0; }
-
-        // TEXTURE_MAX_LEVEL is a cap, not a count -- walk until a level has no storage (TexProbe learned the
-        // same thing the hard way). Every level of an immutable texture must exist, so the count is what we
-        // find, not what the engine claims.
-        int levels = 1;
-        while (levels < MaxLevels)
-        {
-            int lw = 0; Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_WIDTH, &lw);
-            if (lw <= 0) break;
-            levels++;
-        }
-        for (int l = 0; l < levels; l++) bytes += LevelBytes(l);
-
-        // filter/wrap, read here while the SOURCE is bound
-        int minf = 0, magf = 0, wrapS = 0, wrapT = 0, maxLevel = 0;
-        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, &minf);
-        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, &magf);
-        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, &wrapS);
-        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, &wrapT);
-        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, &maxLevel);
-
-        uint dst; Gl.GenTextures(1, &dst);
-        if (dst == 0) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved); return 0; }
-        Gl.BindTexture(Gl.TEXTURE_2D, dst);
-        Gl.TexStorage2D(Gl.TEXTURE_2D, levels, (uint)fmt, w0, h0);
-        // The storage decides everything after it. A format glTexStorage2D will not take leaves the texture
-        // with NO storage, every copy into it fails, and the part draws BLACK -- which is what shipped, and
-        // what a refusal here turns back into the engine's own texture.
-        uint err = Gl.GetError();
-        if (err != 0)
-        {
-            Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
-            Gl.DeleteTextures(1, &dst);
-            if (_fmtDiagLeft > 0) { _fmtDiagLeft--; _log?.Info($"OwnedTextures: refused tid {src} -- glTexStorage2D(fmt=0x{fmt:x}, {levels} levels, {w0}x{h0}) gave 0x{err:x}"); }
-            bytes = 0;
-            return 0;
-        }
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, minf);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, magf);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, wrapS);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, wrapT);
-        // A min filter that mips against one stored level samples nothing; clamp the cap to what we copied.
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, maxLevel < levels - 1 ? maxLevel : levels - 1);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
-
-        for (int l = 0, lw = w0, lh = h0; l < levels; l++, lw = lw > 1 ? lw >> 1 : 1, lh = lh > 1 ? lh >> 1 : 1)
-            Gl.CopyImageSubData((uint)src, Gl.TEXTURE_2D, l, 0, 0, 0, dst, Gl.TEXTURE_2D, l, 0, 0, 0, lw, lh, 1);
-        err = Gl.GetError();
-        if (err != 0)
-        {
-            Gl.DeleteTextures(1, &dst);
-            if (_fmtDiagLeft > 0) { _fmtDiagLeft--; _log?.Info($"OwnedTextures: refused tid {src} -- glCopyImageSubData(fmt=0x{fmt:x}, {levels} levels, {w0}x{h0}) gave 0x{err:x}"); }
-            bytes = 0;
-            return 0;
-        }
-        return dst;
-    }
-
-    /// <summary>The sized internal format to allocate for an engine texture, or 0 for one we will not try.
-    /// <para>The engine uploads through <c>glTexImage2D</c> with an UNSIZED internal format (@0x4cad3d passes
-    /// GL_RGB, GL_RGBA and GL_RED verbatim), and a driver reports that enum straight back from
-    /// <c>TEXTURE_INTERNAL_FORMAT</c>. <c>glTexStorage2D</c> takes sized formats only, so the unsized answers
-    /// have to be promoted or nothing is allocated at all. Everything else is passed through as-is and stands
-    /// or falls on the error check at the allocation -- guessing at a format we have not seen is how this bug
-    /// happened once already.</para>
-    /// <para>The single-channel legacy formats (ALPHA, LUMINANCE, LUMINANCE_ALPHA) are deliberately NOT
-    /// mapped: their sized equivalents changed which channel the sampler reads, so a promotion would draw
-    /// the right image through the wrong swizzle. Those textures stay the engine's.</para></summary>
-    private static int Sized(int fmt) => fmt switch
-    {
-        (int)Gl.RGBA_ => (int)Gl.RGBA8,
-        (int)Gl.RGB_ => (int)Gl.RGB8,
-        (int)Gl.RG => (int)Gl.RG8,
-        (int)Gl.RED => (int)Gl.R8,
-        _ => fmt,
-    };
-
-    /// <summary>Capped: a format the driver refuses refuses for every texture that uses it, and the first few
-    /// lines say which format as well as any number of them would.</summary>
-    private static int _fmtDiagLeft = 8;
-
-    /// <summary>How much VRAM one level of the currently bound source texture occupies. A block format
-    /// answers directly; anything else is width*height*(sum of the channel widths).</summary>
-    private static long LevelBytes(int level)
-    {
-        int compressed = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_COMPRESSED, &compressed);
-        if (compressed != 0)
-        {
-            int size = 0;
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
-            return size > 0 ? size : 0;
-        }
-        int w = 0, h = 0, r = 0, g = 0, b = 0, a = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_WIDTH, &w);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_HEIGHT, &h);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_RED_SIZE, &r);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_GREEN_SIZE, &g);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_BLUE_SIZE, &b);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_ALPHA_SIZE, &a);
-        return (long)w * h * (r + g + b + a) / 8;
-    }
-
-    /// <summary>A 16384-wide texture has 15 mips; the cap only bounds a driver that answers a nonzero width
-    /// forever.</summary>
-    private const int MaxLevels = 16;
-
-    private const long OneMiB = 1024 * 1024;
-
-    /// <summary>The WORLD edge: the engine names we keyed on are gone and their addresses will be reused, so
-    /// every copy is dropped. The 4.6 context is alive here, so the copies are DELETED -- that is the VRAM
-    /// coming back, and the reason this is not just a map clear. Also fires on the vanilla toggle and on
-    /// table pressure, where the whole set is simply re-copied on the next frames.</summary>
-    internal static void Revoke()
-    {
-        if (_map.Count == 0) return;
-        foreach (Entry e in _map.Values) if (e.Owned != 0) _pending.Add(e.Owned);
-        _owned.Clear();
-        _log?.Info($"OwnedTextures: revoked {_map.Count} owned textures ({_bytes / 1024 / 1024}MiB queued for release)");
-        _map.Clear();
-        _bytes = 0;
-    }
-
-    /// <summary>Delete what <see cref="Revoke"/> retired. Called once per frame from inside the 4.6 bracket,
-    /// where the names actually live. Nothing to do is the normal case and costs one count check.
+    /// <summary>Delete what <see cref="Revoke"/> and the re-upload path retired. Called once per frame from
+    /// inside the 4.6 bracket, where the names actually live. Nothing to do is the normal case and costs one
+    /// count check.
     /// <para>Residency first: #153 makes a handle resident for every texture the lit path draws, and a
     /// resident handle outlives the texture it names. <c>AlloyRenderer.DropHandle</c> looks the name up in
     /// the handle cache and drops it only if we actually made one resident -- asking the driver instead
     /// would MINT a handle for the textures that never had one and then fail to make a non-resident handle
-    /// non-resident, one GL_INVALID_OPERATION per copy.</para></summary>
+    /// non-resident, one GL_INVALID_OPERATION per texture.</para></summary>
     internal static void Drain()
     {
         if (_pending.Count == 0) return;
@@ -319,57 +384,78 @@ internal static unsafe class OwnedTextures
             if (Gl.DeleteTextures != null) Gl.DeleteTextures(1, &name);
         }
         _pending.Clear();
-        _log?.Info($"OwnedTextures: released {n} owned textures (retired by the engine so far: {_retired})");
+        _log?.Info($"OwnedTextures: released {n} owned textures (engine names retired so far: {_retired})");
     }
-
 
     /// <summary>The GL-NAME edge: the objects went with the context. Names are dropped, nothing is deleted --
     /// deleting into a dead context is what #209 calls the terminal edge.</summary>
     internal static void ContextLost()
     {
-        _map.Clear();
+        _res.Clear();
+        _index.Clear();
         _owned.Clear();
+        _borrowed.Clear();
         _pending.Clear();
         _bytes = 0;
         AlloyRenderer.ForgetHandles();   // the names went with the context; nothing to make non-resident
     }
 
-    /// <summary>Off-device: the caching contract, with no GL. An unarmed table is a pass-through, and a
-    /// refused copy is remembered as a refusal rather than retried -- the two behaviours that decide whether
-    /// a driver without <c>glCopyImageSubData</c> costs one query or one per part per frame.</summary>
+    /// <summary>Off-device: the residency contract, with no GL and no engine. What it pins is everything
+    /// #259 changed about the keying -- that identity is content, that the engine's GL name is an index
+    /// rewritten at both of its edges, and that a re-upload retires the old texture instead of respecifying
+    /// it. The upload itself needs a client; #227 can only be re-tested live.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         bool wasArmed = _armed;
-        var saved = new Dictionary<int, Entry>(_map);
-        _map.Clear();
+        long savedRetired = _retired;
+        var savedRes = new Dictionary<ulong, Entry>(_res);
+        var savedIdx = new Dictionary<int, ulong>(_index);
+        var savedOwned = new HashSet<uint>(_owned);
+        var savedBorrowed = new HashSet<int>(_borrowed);
+        int savedPending = _pending.Count;
+        _res.Clear(); _index.Clear(); _owned.Clear(); _borrowed.Clear();
 
         _armed = false;
-        bool ok = Draw(7) == 7 && _map.Count == 0;          // stood down: pass-through, nothing remembered
+        bool ok = Draw(7) == 7 && _borrowed.Count == 0;             // stood down: pass-through, nothing noticed
         _armed = true;
-        ok &= Draw(0) == 0 && Draw(-1) == -1 && _map.Count == 0;   // no id is not a texture
+        ok &= Draw(0) == 0 && Draw(-1) == -1 && _borrowed.Count == 0;   // no id is not a texture
 
-        // Copy() refuses without GL entry points, which is exactly the headless case -- so this exercises
-        // the refusal path for real rather than by injection.
-        ok &= Draw(11) == 11 && _map.Count == 1;             // refused...
-        ok &= Draw(11) == 11 && _map.Count == 1 && _refused == 1;   // ...and remembered, not retried
-        _map[13] = new Entry(99, 0);
-        ok &= Draw(13) == 99;                                // a copy that exists is what the draw samples
+        // Never uploaded through our funnel -> BORROWED, counted once per distinct name rather than per frame.
+        ok &= Draw(11) == 11 && Draw(11) == 11 && Borrowed == 1;
 
-        // #220: the ownership question the bindless path asks. A refused entry is NOT owned even though it
-        // has a map entry -- getting that backwards is how a handle lands on an engine texture.
-        _owned.Add(99);
-        ok &= IsOwned(99) && !IsOwned(11) && !IsOwned(0) && !IsOwned(-1);
-        // ...and the engine's delete funnel retires the copy made from that name, queueing OUR name (not
-        // the engine's) for the deleting Drain does inside the bracket.
-        int before = _pending.Count;
-        uint* names = stackalloc uint[2] { 13, 4242 };
-        Retire(2, names);
-        ok &= !_map.ContainsKey(13) && !IsOwned(99)
-              && _pending.Count == before + 1 && _pending[before] == 99;
-        _pending.Clear(); _owned.Clear();
+        // The content key is the identity; the engine name is an index onto it. Two names may resolve one
+        // resource, and one name resolves a different resource after a re-upload. The key itself is the
+        // engine's hash, so it needs a client -- what is asserted here is the table it drives.
+        const ulong k0 = 0x5AF300000000UL, k1 = k0 | 1;
+        Replace(k0, 13, 99, 4096);
+        _index[14] = k0;                                             // a second live name onto one resource
+        ok &= Draw(13) == 99 && Draw(14) == 99 && Borrowed == 1;
 
-        _map.Clear(); _refused = 0; _armed = wasArmed;
-        foreach (var kv in saved) _map[kv.Key] = kv.Value;
+        // #220: the ownership question the bindless path asks. A borrowed name is NOT owned.
+        ok &= IsOwned(99) && !IsOwned(11) && !IsOwned(13) && !IsOwned(0) && !IsOwned(-1);
+
+        // The re-upload path -- a NEW texture rather than a respecified one, because a resident bindless
+        // handle makes respecifying storage undefined -- with the old one queued and the generation bumped.
+        Replace(k0, 14, 100, 4096);
+        ok &= Draw(14) == 100 && Draw(13) == 100 && !IsOwned(99) && IsOwned(100)
+              && _res[k0].Gen == 1 && _pending.Count == savedPending + 1 && _pending[savedPending] == 99;
+
+        // The delete funnel is the world edge: index entry gone, resource queued, borrowed mark cleared
+        // (a recycled name is a new question), and the tid resolves nothing until an upload re-adopts it.
+        uint* dead = stackalloc uint[3] { 13, 14, 11 };
+        Retire(3, dead);
+        ok &= !_index.ContainsKey(13) && !_index.ContainsKey(14) && !_res.ContainsKey(k0)
+              && !IsOwned(100) && _pending.Count == savedPending + 2 && Borrowed == 0;
+        ok &= Draw(13) == 13 && Draw(14) == 14 && Borrowed == 2 && !_res.ContainsKey(k1);
+        _pending.RemoveRange(savedPending, 2);
+
+        _res.Clear(); _index.Clear(); _owned.Clear(); _borrowed.Clear();
+        foreach (var kv in savedRes) _res[kv.Key] = kv.Value;
+        foreach (var kv in savedIdx) _index[kv.Key] = kv.Value;
+        foreach (uint o in savedOwned) _owned.Add(o);
+        foreach (int b in savedBorrowed) _borrowed.Add(b);
+        _armed = wasArmed;
+        _retired = savedRetired;   // the check's own synthetic deletes are not a session's
         log.Info(ok ? "OwnedTextures.SelfCheck: passed" : "OwnedTextures.SelfCheck: FAILED");
         return ok;
     }
