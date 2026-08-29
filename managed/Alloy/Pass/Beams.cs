@@ -41,10 +41,6 @@ internal static unsafe class Beams
     /// <summary>The PartLight live flag at +0x74 -- the one field of the light <c>RenderBeams</c>'s scan
     /// reads that no other walker does. Range, kind and direction are shared, in <see cref="SceneLayout"/>.</summary>
     private const int LightLive = 0x74;
-    /// <summary>The range above which a light is the sun/moon (<c>_DAT_013f04a8</c> = 1000.0f, the same
-    /// number <c>ShadowService.DirectionalRange</c> carries). Beams are extruded from the FIRST scene light
-    /// that clears it, which is what makes them sun shafts rather than per-lamp volumes.</summary>
-    private const float DirectionalRange = 1000f;
     /// <summary><c>projectionWorldZClip</c>: the world z every back-facing beam vertex is extruded down to.
     /// <para><c>RenderBeams</c> @0x46add0 is <c>movss xmm0,[0x12f04a4]; mov edi,1; call SetShaderParamf</c> --
     /// the <c>edi</c> is the shader-constant INDEX and the value is the .rodata float, <b>-20.0</b>. Read the
@@ -299,6 +295,8 @@ internal static unsafe class Beams
         {
             IntPtr l = lights[i];
             if (l == IntPtr.Zero) continue;
+            // Beams are extruded from the FIRST scene light that clears the directional range, which is
+            // what makes them sun shafts rather than per-lamp volumes.
             if (*(float*)(l + LightRange) < DirectionalRange) continue;
             if (*(int*)(l + LightLive) == 0 || *(int*)(l + LightKind) != 0) continue;
             var d = *(Vector3*)(l + LightDir);

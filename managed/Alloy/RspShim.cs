@@ -296,11 +296,10 @@ internal static unsafe class RspShim
         PostChain.DefaultDepthOk = false;
         // #235, item 2 and RSP's very first call (@0x46e6a5). Not a draw: it is
         // LightManager::ControlLightsFade(+0x60, +0x40, 0), which advances every PartLight's fade weight at
-        // +0x90 and re-commits the area ambient/diffuse terms. That weight is the SCALE GetNearestLights
-        // passes to SetLightGL for every light it pushes, including the two area lights at LightManager
-        // +0x98/+0xa0 -- and SetLightGL is exactly the hook CameraCapture reads FrameInputs.AreaAmbient and
-        // AreaDiffuse off. Dropped, the weights freeze wherever the last vanilla frame left them (zero for
-        // any light added since), which is wrong-looking lighting rather than a missing draw.
+        // +0x90. That weight is the one FrameRead scales the two area lights at LightManager +0x98/+0xa0
+        // by, so this call is what makes FrameInputs.AreaAmbient/AreaDiffuse current -- which is why the
+        // anchor's read sits after it (#257). Dropped, the weights freeze wherever the last vanilla frame
+        // left them (zero for any light added since), which is wrong-looking lighting, not a missing draw.
         if (*_fullDynamicLighting != 0)
         {
             IntPtr lm = *(IntPtr*)(scene + SceneLightManager);
@@ -308,13 +307,12 @@ internal static unsafe class RspShim
         }
         InWindow = true;
         // BEFORE the anchor, exactly as RSP orders it (@0x46e736, one instruction group ahead of FadeDoors
-        // @0x46e742). Scene::DoFog @0x45f1b0 reads Scene+0x140..0x14c and drives SetFogModef/SetFogModev
-        // into GLRender::m_fog -- which is the block AlloyRenderer.Uniforms reads for the fog enable, start,
-        // end and colour of EVERY owned part. Dropped, the last writer before the anchor is
-        // RenderDrawBucket's own per-item fog from the PREVIOUS frame's walk (0x46d63d writes a per-item
-        // SCALED colour), so Alloy's fog would be stale residue tinted by whichever part drew last, and
-        // would stop tracking area transitions and script fog changes entirely.
-        Vt(vptr, VtDoFog, scene);              // scene fog -> GLRender::m_fog, which Alloy's stages read
+        // @0x46e742). Scene::DoFog @0x45f1b0 pushes Scene+0x140..0x14c into GLRender::m_fog. Alloy no longer
+        // reads that global -- #257 reads the same four Scene fields direct -- but the call stays, because
+        // it is RSP bookkeeping like every other item here: EngineOverlays below runs real engine draws
+        // through GLRender::SetUniforms, which fogs from m_fog. Dropped, those overlays would fog off
+        // whatever RenderDrawBucket's per-item write left there last (0x46d63d writes a SCALED colour).
+        Vt(vptr, VtDoFog, scene);              // scene fog -> GLRender::m_fog, for the engine's own overlay draws
         Vt(vptr, VtFadeDoors, scene);          // door fade + hit-test alpha -- AND #132's anchor: Alloy draws here
         _drawBucket(scene, WalkOrder[0]);
         _skyBoxes(scene);

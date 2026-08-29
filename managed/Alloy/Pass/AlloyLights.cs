@@ -312,13 +312,18 @@ internal static unsafe class AlloyLights
     private static int _queryAt;
 
     /// <summary>Light staging: two vec4 per light (pos+range, colour+pad), filled straight from the walk
-    /// snapshot. Static, so the per-frame upload allocates nothing.</summary>
-    private static readonly float[] _stage = new float[FrameInputs.MaxLights * 8];
+    /// snapshot. #257: grown to whatever the snapshot holds and kept, so the per-frame upload allocates
+    /// nothing in the steady state without a worst-case array standing behind it.</summary>
+    private static float[] _stage = new float[InitialLights * 8];
+    /// <summary>Starting light capacity of the staging buffer and the SSBO. Not a ceiling.</summary>
+    private const int InitialLights = 256;
+    /// <summary>Lights the SSBO is currently sized for; a denser area re-allocates it once.</summary>
+    private static int _ssboLights;
     private static int _uploaded;
     private static int _uploadFrame = -1;
 
     /// <summary>Period counters, read by the Alloy draw log line.</summary>
-    internal static int LastLightCount, LastOverflow;
+    internal static int LastLightCount;
     internal static float LastBuildMs;
 
     /// <summary>True once the rig is usable: compute + SSBO entry points resolved and the program linked.</summary>
@@ -355,7 +360,8 @@ internal static unsafe class AlloyLights
         if (_uploadFrame == frame) return;
         _uploadFrame = frame;
         int n = FrameInputs.LightCount;
-        if (n > FrameInputs.MaxLights) n = FrameInputs.MaxLights;
+        if (n * 8 > _stage.Length) _stage = new float[n * 8];
+        if (n > _ssboLights) GrowLightBuffer(n);
         fixed (float* s = _stage)
         {
             for (int i = 0; i < n; i++)
@@ -376,7 +382,17 @@ internal static unsafe class AlloyLights
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         _uploaded = n;
         LastLightCount = n;
-        LastOverflow = FrameInputs.LightOverflow;
+    }
+
+    /// <summary>Re-size the light SSBO for a denser area than any seen this session. Cold: an area load at
+    /// worst, and never in a frame that did not need it. The contents are re-uploaded by the caller, which
+    /// is why this only has to allocate.</summary>
+    private static void GrowLightBuffer(int lights)
+    {
+        _ssboLights = lights;
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufLights);
+        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)lights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        _log?.Info($"AlloyLights: light SSBO grown to {lights} lights");
     }
 
     /// <summary>Bin this pass's lights into the froxel grid. <paramref name="view"/> is the engine's view
@@ -385,9 +401,9 @@ internal static unsafe class AlloyLights
     /// <paramref name="p00"/>/<paramref name="p11"/> are the projection's diagonal terms, which are
     /// transpose-invariant and therefore safe to read straight off the stack.</summary>
     /// <summary>Read the froxel grid's entire projection input off the projection matrix itself, so the depth
-    /// slicing and the froxel bounds can never disagree about which pass they belong to (the capture-side
-    /// <c>CamNear</c>/<c>CamFar</c> can still hold an auxiliary pass's values -- see
-    /// <see cref="FrameInputs.FarMaxLastFrame"/>'s own account of that hazard).
+    /// slicing and the froxel bounds can never disagree about which pass they belong to. #257 made
+    /// <c>FrameInputs.CamNear</c>/<c>CamFar</c> the SCENE camera's own, so they no longer belong to an
+    /// auxiliary pass -- but this pass may be rendering a probe cube, whose projection is its own.
     /// <para>Raw bytes are row-major and GLSL reads them column-major, so the GLSL-visible element (col c,
     /// row r) is <c>raw[c*4+r]</c>. For a GL perspective projection <c>G[2][2] = -(f+n)/(f-n)</c>,
     /// <c>G[3][2] = -2fn/(f-n)</c> and <c>G[2][3] = -1</c>, which inverts to <c>n = B/(A-1)</c>,
@@ -535,7 +551,7 @@ internal static unsafe class AlloyLights
     internal static string Diag(uint overflow) =>
         $"{DescribeCurve()}, " +
         $"lights {LastLightCount} ({FrameInputs.LocalLightCount} flagged castShadows, " +
-        $"{FrameInputs.LightsWithCube} with a cube)" + (LastOverflow > 0 ? $"(+{LastOverflow} past snapshot)" : "") +
+        $"{FrameInputs.LightsWithCube} with a cube)" +
         $", cluster build {LastBuildMs:F3}ms on {GridX}x{GridY}x{GridZ}" +
         (overflow > 0 ? $", CLUSTER OVERFLOW {overflow}/period (cap {ClusterCap})" : "");
 
@@ -557,7 +573,8 @@ internal static unsafe class AlloyLights
         uint b;
         Gl.GenBuffers(1, &b); _bufLights = b;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufLights);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(FrameInputs.MaxLights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(InitialLights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        _ssboLights = InitialLights;
         Gl.GenBuffers(1, &b); _bufCounts = b;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufCounts);
         Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(ClusterCount * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
@@ -573,7 +590,7 @@ internal static unsafe class AlloyLights
         fixed (uint* q = _query) Gl.GenQueries(2, q);
         _prog = prog;
         _log?.Info($"AlloyLights: clustered forward+ ready -- {GridX}x{GridY}x{GridZ} froxels, " +
-                   $"{ClusterCap} lights/cluster, {FrameInputs.MaxLights}-light SSBO");
+                   $"{ClusterCap} lights/cluster, {InitialLights}-light SSBO (grown on demand -- no ceiling)");
         return true;
     }
 
@@ -582,7 +599,7 @@ internal static unsafe class AlloyLights
     /// The attenuation curves are ported from the staging receiver's Alloy lighting block (inc_lighting.shd,
     /// #67) so a seam between an owned and an engine-drawn part falls off the same way.</summary>
     /// <summary>sRGB -&gt; linear exponent, verified against <c>RenderInterface::GetColorSpaceFromSRGB</c>
-    /// (the constant it reads is 2.2). Shared with <see cref="CameraCapture"/>, which applies
+    /// (the constant it reads is 2.2). Shared with <see cref="FrameRead"/>, which applies
     /// the same curve CPU-side to the area terms.</summary>
     internal const float SrgbGamma = 2.2f;
 

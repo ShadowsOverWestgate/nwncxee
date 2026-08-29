@@ -32,34 +32,41 @@ public sealed unsafe partial class AlloyRenderer
         => _runtime == null ? default
          : new Vector2(*(float*)(_runtime + RtAreaWind), *(float*)(_runtime + RtAreaWind + 4));
 
-    /// <summary>#132: the engine's fog colour, linearised. <c>m_fog</c> stores it display-space -- the stock
+    /// <summary>#132: the scene's fog colour, linearised. The block stores it display-space -- the stock
     /// shaders lerp toward it AFTER RevertColorSpace -- and the Alloy frame is linear end to end, so the
     /// curve comes off here rather than in every stage that fogs.</summary>
     private static void UploadFogColour(int loc)
     {
+        Vector3 src = FrameInputs.FogColor;
         float* c = stackalloc float[4];
-        float* src = _fog + FogColor / 4;
-        for (int i = 0; i < 3; i++) c[i] = MathF.Pow(MathF.Max(src[i], 0f), AlloyLights.SrgbGamma);
-        c[3] = src[3];
+        c[0] = MathF.Pow(MathF.Max(src.X, 0f), AlloyLights.SrgbGamma);
+        c[1] = MathF.Pow(MathF.Max(src.Y, 0f), AlloyLights.SrgbGamma);
+        c[2] = MathF.Pow(MathF.Max(src.Z, 0f), AlloyLights.SrgbGamma);
+        c[3] = 1f;
         Gl.Uniform4fv(loc, 1, c);
+    }
+
+    /// <summary>#257: this frame's fog, packed the way every Alloy stage reads it -- enable, start, end and
+    /// 1/(end-start). Read out of <see cref="FrameInputs"/>, which took it straight off <c>Scene+0x140</c>;
+    /// nothing asks the engine to fill <c>GLRender::m_fog</c> for us any more, so a frame where the engine
+    /// drew nothing still fogs correctly.</summary>
+    private static void PackFog(float* px)
+    {
+        px[0] = FrameInputs.FogOn ? 1f : 0f;
+        px[1] = FrameInputs.FogStart; px[2] = FrameInputs.FogEnd;
+        float span = px[2] - px[1];
+        px[3] = span != 0f ? 1f / span : 0f;
     }
 
     /// <summary>#131: just the scene-fog pair, for a program that wants fog and none of the rest of
     /// <see cref="UploadFeatureTerms"/>. Same source, same bool-byte conversion; split out rather than
-    /// copied so <see cref="GlFog"/>'s layout stays known in one place.</summary>
+    /// copied so the pack stays in one place.</summary>
     internal static void UploadFog(int fogLoc, int fogColorLoc)
     {
         float* px = stackalloc float[4];
-        if (_fog != null)
-        {
-            px[0] = ((byte*)_fog)[FogEnabled] != 0 ? 1f : 0f;
-            px[1] = _fog[FogStart / 4]; px[2] = _fog[FogEnd / 4];
-            float span = px[2] - px[1];
-            px[3] = span != 0f ? 1f / span : 0f;
-            Gl.Uniform4fv(fogLoc, 1, px);
-            UploadFogColour(fogColorLoc);
-        }
-        else { px[0] = px[1] = px[2] = px[3] = 0f; Gl.Uniform4fv(fogLoc, 1, px); }
+        PackFog(px);
+        Gl.Uniform4fv(fogLoc, 1, px);
+        UploadFogColour(fogColorLoc);
     }
 
     /// <summary>Feed one program the engine's own live world state -- the same five values its own shaders
@@ -73,20 +80,9 @@ public sealed unsafe partial class AlloyRenderer
         float* px = stackalloc float[4];
         px[0] = 1f / w; px[1] = 1f / h; px[2] = w / h;
         Gl.Uniform3fv(loc.Pixel, 1, px);
-        if (_fog != null)
-        {
-            // fogEnabled is a BOOL BYTE, and SetUniforms @0x4cdb33 converts it: movzbl 0x18(%r12) then
-            // cvtsi2ss. Reading those 4 bytes as a float instead gives bit pattern 1 -- a denormal, which
-            // GLSL is free to flush to zero, so `uFogParams.x == 0.0` would go TRUE on an FTZ driver and
-            // the Alloy pass would render unfogged on that machine and only that machine.
-            px[0] = ((byte*)_fog)[FogEnabled] != 0 ? 1f : 0f;
-            px[1] = _fog[FogStart / 4]; px[2] = _fog[FogEnd / 4];
-            float span = px[2] - px[1];
-            px[3] = span != 0f ? 1f / span : 0f;
-            Gl.Uniform4fv(loc.Fog, 1, px);
-            UploadFogColour(loc.FogColor);
-        }
-        else { px[0] = px[1] = px[2] = px[3] = 0f; Gl.Uniform4fv(loc.Fog, 1, px); }
+        PackFog(px);
+        Gl.Uniform4fv(loc.Fog, 1, px);
+        UploadFogColour(loc.FogColor);
         if (_shaderConstF != null)
         {
             float a = _shaderConstF[KeyholeDiaA], b = _shaderConstF[KeyholeDiaB];

@@ -727,13 +727,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             log.Info("AlloyRenderer: GLRender::m_shaderExposedRuntimeData unresolved -- #123's feature " +
                      "switches stay inert (no wind sway, roofs where authored), and #124's camera dissolve " +
                      "with them -- uKeyholeCam reads this struct too");
-        _fog = (float*)Native.Sym(SymbolMap.GlFog);
         _shaderConstF = (float*)Native.Sym(SymbolMap.GlGlobalShaderConstantsF);
         // #124 degrades one term at a time and says which: no fog block leaves Alloy parts unfogged (the
         // pre-#124 look), no constants leaves the dissolve aperture at zero, i.e. no dissolve. Neither is a
         // misrender, and neither is worth standing the pass down for.
-        if (_fog == null)
-            log.Info("AlloyRenderer: GLRender::m_fog unresolved -- #124's scene fog stays off on Alloy parts");
         // The dissolve needs BOTH the diameter pair and the runtime struct's camera terms: without the
         // latter uKeyholeCam stays (0,0), the fragment offset never goes negative, and the aperture never
         // opens. Naming only one of them would send the next reader to the wrong symbol.
@@ -887,6 +884,18 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static void OnFadeDoors(IntPtr scene)
     {
         if (_origFade != null) _origFade(scene);
+        // #257: the frame constants, read here and only here. This is the one point in the frame that is
+        // both Alloy's own and correctly ordered -- the engine's EnableLights has advanced the area lights'
+        // fade weights, CurrentCamera holds the camera whose scene is rendering (Camera::RenderScene sets it
+        // at @0x4a822c and clears it at @0x4a8324), and nothing has drawn. It runs on BOTH paths, because
+        // the vanilla RenderSinglePass calls FadeDoors at the same step the shim vcalls it.
+        // ...and the re-read here is what makes the AREA terms this frame's: LightManager::EnableLights
+        // advanced their fade weights inside RSP, after SceneInputs' own earlier read.
+        if (IsWorldScene(scene))
+        {
+            FrameRead.Tick(scene);
+            SceneInputs.FrameStart(scene);
+        }
         OnFrameAnchor(scene);
     }
 
@@ -1198,6 +1207,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vVaoOwn[v] = 0; }
         _waterFailed = false;
         AlloyGate.Forget();   // #216: its latched refusals are facts about a target this context owned
+        // #257: and so is the target latch -- every name in it belongs to the context that just went.
+        ForgetTarget();
         DepthResource.Revoke();
     }
 
@@ -1468,14 +1479,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#124's two more fields of the same struct, from the same pairing: <c>cameraPitch</c> at
     /// +0x84 and <c>playerCameraDist</c> at +0x8c. Both feed the keyhole aperture.</summary>
     internal const int RtCamPitch = 0x84, RtCamDist = 0x8c;
-    /// <summary>#124: <see cref="SymbolMap.GlFog"/>'s fields -- start, end, the display-space colour and the
-    /// enable flag. <c>fogParams.w</c> is computed, not stored.</summary>
-    internal const int FogStart = 0x00, FogEnd = 0x04, FogColor = 0x08, FogEnabled = 0x18;
     /// <summary>#124: the keyhole diameter pair inside
     /// <see cref="SymbolMap.GlGlobalShaderConstantsF"/>. Stored unordered -- SetUniforms uploads min as
     /// <c>keyholeDiameterMin</c> and max as <c>keyholeDiameterMax</c>, so the ordering happens here too.</summary>
     internal const int KeyholeDiaA = 21, KeyholeDiaB = 22;
-    private static float* _fog;
     private static float* _shaderConstF;
 
     /// <summary>Stand-in area ambient for the frames before the engine's first index -1 light bind. Grey, not

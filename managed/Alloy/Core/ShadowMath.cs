@@ -316,17 +316,12 @@ public static class ShadowMath
             Check(MathF.Abs(Vector3.Dot(at - eye, fwd) - (at - eye).Length()) < 1e-3f,
                   "scene cam: on-axis focus depth == its distance");
 
-            // Largest-viewport-wins: a smaller perspective pass (a reflection subframe) cannot take the latch
-            // from the scene's full-backbuffer pass, whatever order they arrive in.
-            Vector3 other = new(999f, 999f, 999f);
-            FrameInputs.LatchSceneCam(eye, fwd, 1.5f, 1920 * 1080, 100);
-            FrameInputs.LatchSceneCam(other, -fwd, 1.5f, 512 * 512, 100);
-            Check(FrameInputs.SceneCamPos == eye, "scene cam: a smaller pass cannot steal the latch");
-            // The window shrinks. Without a per-frame reset the old area stands as a high-water mark and the
-            // latch stays pinned to the pre-resize camera for the rest of the session.
-            FrameInputs.LatchSceneCam(other, -fwd, 1.5f, 1280 * 720, 101);
-            Check(FrameInputs.SceneCamPos == other, "scene cam: a new frame re-opens the contest");
-            FrameInputs.HasSceneCam = false;   // leave nothing latched from the check itself
+            // #257: the same forward, from the camera QUATERNION instead of the inverted view matrix. The
+            // two derivations have to agree, because the frame constants now take the quaternion route and
+            // every shadow fit in this file was validated against the matrix one.
+            Quaternion look = Quaternion.CreateFromRotationMatrix(camInv);
+            Check(Vector3.Dot(FrameRead.ViewForward(look), fwd) > 0.999f,
+                  "scene cam: the camera quaternion gives the same forward as the inverted view");
 
             log.Info("ShadowMath.SelfCheck: passed");
         }

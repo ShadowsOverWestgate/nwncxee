@@ -262,18 +262,6 @@ internal static unsafe class SymbolMap
     /// builder, dispatched directly by RenderShadows (Scene-vtable +0x1e0).</summary>
     public const string DoDynamicMeshProjections = "_ZN5Scene24DoDynamicMeshProjectionsEP9PartLight";
 
-    // ---- shadow-map pipeline input capture (#65 slice 2). All call-through (observe, not replace). ----
-    /// <summary>SetLightGL(PartLight*, int, float) @ 0x4c0e60 -- pushes one light to GL. Reads the light's
-    /// dir/pos vector at PartLight+0x64/+0x68/+0x6c, a type/discriminant int at +0x80, a scalar at +0x70
-    /// (color/radius are computed via GetLightAdjusted*). Source of the sun/moon direction for the light matrix.</summary>
-    public const string SetLightGL = "_Z10SetLightGLPK9PartLightif";
-    /// <summary>RenderInterface::SetViewTransform(Vector&amp; pos, Quaternion&amp; rot) @ 0x45d3d0 -- camera view
-    /// set each frame. STATIC (thunks to GLRender::SetViewTransform, no <c>this</c>): rdi = Vector* (camera
-    /// world pos, 3 floats), rsi = Quaternion* (x,y,z,w). Clean source of camera pose. (§6.1: the camera's
-    /// projection is set separately via RenderInterface::SetPerspectiveTransform, doubles, called from
-    /// Camera::RenderScene @0x4a7db1 -- known fovy=45/near=0.1/far~215..1000, not currently hooked.)</summary>
-    public const string SetViewTransform = "_ZN15RenderInterface16SetViewTransformER6VectorR10Quaternion";
-
     // ---- shadow-map caster re-drive (#65 slice 3b). The frame slot + the geometry submission. ----
     /// <summary>Scene::RenderDrawBucket(int bucketId) @ 0x46d060 -- draws one geometry bucket (the whole
     /// iterate+SetModelMatrix+RenderVertexData loop, DrawBucketManager @Scene+0x208). Ids 1..8 (RenderSinglePass);
@@ -574,11 +562,6 @@ internal static unsafe class SymbolMap
     /// reconstruction -- and the camera here is the SCENE's, not the last pass's (the
     /// <c>FrameInputs.CameraPos</c> hazard) because the engine sets it once per frame for its own shaders.</summary>
     public const string GlShaderRuntimeData = "_ZN8GLRender26m_shaderExposedRuntimeDataE";
-    /// <summary>GLRender::m_fog @0x19ad160 (B) -- the area's fog block, read by <c>GLRender::SetUniforms</c>
-    /// @0x4ccbf0 to build the engine's own <c>fogParams</c>/<c>fogColor</c>: +0x00 start, +0x04 end,
-    /// +0x08 colour (vec4, DISPLAY space -- the stock shader lerps toward it after the encode), +0x18 the
-    /// enable flag. <c>fogParams.w</c> is not stored -- SetUniforms computes <c>1/(end - start)</c>.</summary>
-    public const string GlFog = "_ZN8GLRender5m_fogE";
     /// <summary>GLRender::m_globalShaderConstantsf @0x19af8a0 (B) -- the float side of the engine's global
     /// shader constants. [21] and [22] are the two keyhole diameters; SetUniforms uploads the MIN of the pair
     /// as <c>keyholeDiameterMin</c> and the MAX as <c>keyholeDiameterMax</c>, so the pair is unordered in
@@ -657,9 +640,6 @@ internal static unsafe class SymbolMap
     /// <summary>RenderInterface::SetOrthoTransform(l,r,b,t,n,f doubles) @0x45d0f0 -- ortho into the current
     /// (PROJECTION) stack via aurMatrixStack::Orthographic (glOrtho arg order).</summary>
     public const string SetOrthoTransform = "_ZN15RenderInterface17SetOrthoTransformEdddddd";
-    /// <summary>RenderInterface::SetPerspectiveTransform(fovy,aspect,near,far doubles) @0x45d0e0 -- the camera
-    /// projection; used to restore it after the light depth pass. Called from Camera::RenderScene @0x4a7db1.</summary>
-    public const string SetPerspectiveTransform = "_ZN15RenderInterface23SetPerspectiveTransformEdddd";
 
     // ---- shadow-map caster completeness (#65 slice 3c). The camera-frustum cull is inlined in the BSP
     //      descent (no per-object hook); the reference mod's proven fix re-walks the BSP in a sphere around
@@ -671,12 +651,6 @@ internal static unsafe class SymbolMap
     /// re-submit off-screen tileset casters, which the next <c>AddPartsToDrawBuckets</c> then transfers into
     /// the DrawBucketManager (type 0) + matrix-sets for free. Free fn: <c>(Scene* /*rdi*/)</c>.</summary>
     public const string ManageSceneBSP = "_Z14ManageSceneBSPP5Scene";
-    /// <summary>Scene::AddPartsToDrawBuckets() @0x4751d0 -- transfers this frame's collected mesh buckets into
-    /// the DrawBucketManager. Runs in <c>Scene::Render</c> after <c>ManageSceneBSP</c> and BEFORE the virtual
-    /// render dispatch (vtbl+0x218, which contains RenderShadows + the bucket draws) -- so its return is the
-    /// one deterministic per-frame point where the buckets are complete and nothing has drawn yet (ADR 0007
-    /// phase 1: all extender passes fire here, never on engine cadence). Member fn: <c>(Scene* this)</c>.</summary>
-    public const string AddPartsToDrawBuckets = "_ZN5Scene21AddPartsToDrawBucketsEv";
     /// <summary>AddPartToMeshBuckets(PartTriMesh*) @0x47f450 -- the engine's own caster submit: pushes a tile
     /// part into the global <c>meshbuckets[textureTID]</c> + <c>meshshadowbucket</c>. Our BSP re-walk callback
     /// calls it exactly as the engine's <c>ProcessTriMeshParts</c> does. NO dedup (caller's job); it also
@@ -718,6 +692,11 @@ internal static unsafe class SymbolMap
     /// inlined in the vanilla shadow path, so it reads NULL under <c>noshadows</c> (live-confirmed).</para>
     /// </summary>
     public const string CurrentCamera = "CurrentCamera";
+
+    /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
+    /// being previewed in isolation. <c>Scene::DoFog</c> @0x45f1b0 reads it: with a gob set, the fog colour
+    /// it pushes is black rather than the area's, which #257 replicates when it reads the fog block direct.</summary>
+    public const string LightManagerOnlyGob = "_ZN12LightManager10m_pOnlyGobE";
 
     /// <summary>Camera::GetCanKeyholeDissolve(PartTriMesh*) @ (member) -- returns whether a caster keyhole-
     /// dissolves (the camera-relative aperture around the PC). Hooked to return 0 during the depth pass so

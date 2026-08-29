@@ -149,8 +149,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>Boot value of <see cref="_lightCullMode"/> (see it for what the modes mean).</summary>
     private const int LightCullBoot = 1;
 
-    /// <summary>The one-time <c>[shadowdiag]</c> capture dumps, off by default. Read by
-    /// <see cref="CameraCapture"/>, whose dumps this flag has always claimed to gate.</summary>
+    /// <summary>The one-time <c>[shadowdiag]</c> dumps, off by default.</summary>
     internal static bool Diag => _diag;
 
     private static bool _passDoneThisFrame, _interiorDecided;
@@ -171,6 +170,12 @@ public sealed unsafe class SceneInputs : IExtenderService
         // Config bucket (ADR 0013): this arms the feed's hooks, so it is a boot decision. Everything the
         // walk merely LOOKS at -- radii, cull mode, the diagnostics -- is /shadow's.
         _enabled = Settings.Bool("shadows", true);
+
+        ShadowMath.SelfCheck(log);   // pure math, runs headless
+        // #257: the frame constants are read, not captured -- and ahead of the stand-down, because the
+        // camera, the area terms and the fog are inputs to EVERY Alloy pass, shadows or no shadows.
+        FrameRead.Resolve(log);
+
         if (!_enabled) return;
 
         _appMgr = Native.Sym(SymbolMap.AppManager);
@@ -183,8 +188,6 @@ public sealed unsafe class SceneInputs : IExtenderService
         _rewalkOn = Settings.Bool("shadow_rewalk", true);
         _origManageSceneBSP = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.ManageSceneBSP, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnManageSceneBSP);
-        _origAddPartsToDrawBuckets = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.AddPartsToDrawBuckets, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnAddPartsToDrawBuckets);
         _addPartToMeshBuckets = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.AddPartToMeshBuckets);
         _bspTraverseSphere = (delegate* unmanaged<IntPtr, Vector3*, float, IntPtr, void>)Native.Sym(SymbolMap.BSPTraverseSphere);
         _partGetIsOpaque = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.PartGetIsOpaque);
@@ -279,35 +282,27 @@ public sealed unsafe class SceneInputs : IExtenderService
         _diag = _lightDiag = _torchDiag = _trace = false;
     }
 
-    private static delegate* unmanaged<IntPtr, void> _origAddPartsToDrawBuckets;
-
-    /// <summary>ADR 0007 phase 1: the ONE deterministic per-frame slot for every extender render pass.
-    /// <c>Scene::Render</c> calls this after <c>ManageSceneBSP</c> and before the virtual render dispatch
-    /// (Ghidra @0x5762d0), so at return the buckets are complete and nothing has drawn yet. The passes used
-    /// to ride <c>Scene::RenderShadows</c>, which the engine calls only when ITS shadow selection wants
-    /// stencil work -- zone-dependent, so whole frames passed with the light snapshot left stale (the
-    /// "torch randomly off" bug). First fire per presented frame only: reflection
-    /// subframes re-run Scene::Render, but the maps are light-space (camera-independent).
+    /// <summary>#257: the light feed's frame slot, called by <see cref="AlloyRenderer"/> at the frame
+    /// anchor -- Alloy's own moment, not an engine draw hook. It sits after the engine's
+    /// <c>LightManager::EnableLights</c> (so the fade weights are this frame's) and before anything draws,
+    /// which is the same position in the frame ADR 0007 phase 1 picked; what changed is who decides it.
+    /// <para>First fire per presented frame only: a reflection subframe re-renders the scene, and the maps
+    /// are light-space (camera-independent), so a second walk would recompute the same answer.</para>
     /// <para>#118: the world-caster bake hangs off the end of this, so ADR 0011's shadow bracket opens here
     /// instead of at the present. The bracket count is unchanged -- it moved, it did not multiply.</para></summary>
-    [UnmanagedCallersOnly]
-    private static void OnAddPartsToDrawBuckets(IntPtr scene)
+    internal static void FrameStart(IntPtr scene)
     {
-        if (_origAddPartsToDrawBuckets != null) _origAddPartsToDrawBuckets(scene);
-        if (scene == IntPtr.Zero || _passDoneThisFrame) return;
-        // Phase 2: self-drive the light walk here (zero-frame-fresh snapshot; the engine's own
-        // GetShadowLights calls no longer walk). Unconditional -- the Alloy pass's light SSBO needs
-        // the snapshot even when the shadow pipeline itself is off.
-        // #238: one zone over the whole ADR 0007 pass slot -- the light walk, the focus and the caster bake
-        // are one non-overlapping span of the frame, and it is a SIBLING of the shim rather than nested in it.
+        if (!_enabled || scene == IntPtr.Zero || _passDoneThisFrame) return;
+        // The Alloy pass's light SSBO needs the snapshot even when the shadow pipeline itself is off, so
+        // the walk is unconditional inside this slot.
+        // #238: one zone over the whole slot -- the light walk, the focus and the caster bake are one
+        // non-overlapping span of the frame, and it is a SIBLING of the shim rather than nested in it.
         long tShadow = FrameZones.Now;
         WalkMasterList(*(IntPtr*)(scene + SceneLightManager));
-        // The shadow focus every Alloy view fits around. Published here rather than at the present because
-        // this is the slot where the engine's own camera state is current (ADR 0007 phase 1).
+        // The shadow focus every Alloy view fits around.
         ShadowFocus();
-        // #118: the world-caster bake, HERE rather than at the present, so the cascades and cubes are baked
-        // before the colour pass that samples them. Everything it needs is current: the light walk and the
-        // focus just ran, and ManageSceneBSP's caster re-walk ran before this hook.
+        // #118: the world-caster bake, so the cascades and cubes are baked before the colour pass that
+        // samples them.
         CasterPass.OnPassSlot();
         // AFTER the bake, so a light and the cube it points at come from the SAME bake. Binding before it
         // would map this frame's lights onto last frame's slot assignment, and the nearest-first cube sort
@@ -384,8 +379,8 @@ public sealed unsafe class SceneInputs : IExtenderService
         // in this same pass slot, and the roll-call this service's frame edge rides runs at the present --
         // resetting there handed the cube pass an empty set every frame. The walk is once-per-frame and
         // idempotent, so restarting it at its own top is the same reset with no ordering to get wrong.
-        FrameInputs.BeginAreaLights();
-        FrameInputs.ResetLocalLights();
+        FrameInputs.BeginAreaLights(count);
+        FrameInputs.ResetLocalLights(count);
         bool walkDiag = _trace && ++_walkDiagTick >= 900;   // ~15s at 60fps (one walk/frame): dump raw filter fields near the camera
         if (walkDiag) _walkDiagTick = 0;
         for (int i = 0; i < count; i++)
@@ -454,8 +449,10 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (_lightCullMode > 0 && FrameInputs.HasCamera && FrameInputs.HasPerspective)
             {
                 float slackR = adjR * FrustumCullSlack;
-                // Last frame's MAX far, never the latest raw capture -- see FrameInputs.FarMaxLastFrame
-                float cullFar = FrameInputs.FarMaxLastFrame > 0f ? FrameInputs.FarMaxLastFrame : FrameInputs.CamFar;
+                // #257: the scene camera's own far plane. The FarMax rollover this used to need existed
+                // because the far plane was captured per PASS and an auxiliary subframe's small far could
+                // win the frame -- which culled the carried torch. There is one camera read now.
+                float cullFar = FrameInputs.CamFar;
                 bool vis = _lightCullMode == 1 || _focus == default
                     ? (pos - FrameInputs.CameraPos).LengthSquared() < (cullFar + slackR) * (cullFar + slackR)
                     : ShadowMath.SphereInCameraFrustum(pos, slackR, FrameInputs.CameraPos, _focus,
@@ -490,7 +487,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             // world the light cannot reach, at no visible gain.
             FrameInputs.RecordLocalLight((IntPtr)p, pos, adjR, color);
         }
-        _walkDoneCount = FrameInputs.AreaLightCount;
+        _walkDoneCount = FrameInputs.LightCount;
     }
 
     /// <summary>CPU-side light-&gt;cube bind: cube slot per AREA light (-1 = no cube), the one thing that tells
@@ -499,7 +496,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static void BindLightCubes()
     {
         int bound = 0;
-        for (int i = 0; i < FrameInputs.AreaLightCount; i++)
+        for (int i = 0; i < FrameInputs.LightCount; i++)
             if ((FrameInputs.AreaLightSlot[i] = CasterPass.CubeSlotOf(FrameInputs.AreaLightId[i])) >= 0) bound++;
         // A cube nothing binds to is written every frame and read by no one, and the receiver's -1 path
         // returns "lit" in silence -- so rendered-cube counts alone cannot tell a working shadow from an
@@ -550,15 +547,11 @@ public sealed unsafe class SceneInputs : IExtenderService
         if (++_torchTick < 120 || ptr == IntPtr.Zero) return;
         _torchTick = 0;
         _tPtr = ptr;
-        // The Alloy path only sees what the froxel build binned, and only the first MaxAreaLights of the
-        // snapshot are candidates for a shadow cube -- so the snapshot INDEX decides both.
-        string reach = _tSnapIdx < 0
-            ? (_tCulled ? "CULLED (not in snapshot at all)" : "DROPPED (snapshot full)")
-            : _tSnapIdx < FrameInputs.MaxAreaLights
-                ? $"snapshot[{_tSnapIdx}] -- lit and shadow-eligible"
-                : $"snapshot[{_tSnapIdx}] -- lit only, PAST the {FrameInputs.MaxAreaLights} shadow-candidate cap";
+        // The Alloy path only sees what the froxel build binned, and the snapshot INDEX is where to look.
+        string reach = _tSnapIdx < 0 ? "CULLED (not in snapshot at all)"
+                                     : $"snapshot[{_tSnapIdx}] -- lit and shadow-eligible";
         int slot = -1;
-        for (int i = 0; i < FrameInputs.LightCount && i < FrameInputs.MaxLights; i++)
+        for (int i = 0; i < FrameInputs.LightCount; i++)
             if (FrameInputs.AreaLightId[i] == ptr) { slot = FrameInputs.AreaLightSlot[i]; break; }
         // Bake separation is THE number for the "torch shuts off" class: the cube describes the position it
         // was rendered from, the BRDF shades from the live position, and the gap between them is false
@@ -576,9 +569,8 @@ public sealed unsafe class SceneInputs : IExtenderService
                    $"CLASS engine-curve " +
                    $"range={_tRange:F1} alt={_tAlt:F1} inten={_tInten:F2} -> adjR={_tAdjR:F1} upW={_tUpW:F1} | " +
                    $"{reach} | cubeSlot={slot} | BAKE {bake} | " +
-                   $"snapshot {FrameInputs.LightCount}/{FrameInputs.MaxLights} (overflow {FrameInputs.LightOverflow}), " +
-                   $"culled/period={_lightsCulled}, cullMode={_lightCullMode} " +
-                   $"farLast={FrameInputs.FarMaxLastFrame:F0} camFar={FrameInputs.CamFar:F0}");
+                   $"snapshot {FrameInputs.LightCount}, " +
+                   $"culled/period={_lightsCulled}, cullMode={_lightCullMode} camFar={FrameInputs.CamFar:F0}");
     }
     /// <summary>Snapshot count at the end of the last completed master-list walk; the upload comparing its
     /// live count against this detects mid-walk sampling (lights after the cut go dark that frame).</summary>
@@ -795,16 +787,14 @@ public sealed unsafe class SceneInputs : IExtenderService
         return new Vector3(p[0], p[1], p[2]);
     }
 
-    /// <summary>Per-presented-frame edge from the UiHost roll-call: roll the far-plane max over, re-arm the
-    /// once-per-frame walk and re-read the area flag. The light snapshots are NOT reset here -- they restart
-    /// at the top of the walk itself, which since #118 is the same slot that consumes them, one call earlier.
-    /// Resetting at this edge instead would be a reset nothing needs, in the frame's other half.</summary>
+    /// <summary>Per-presented-frame edge from the UiHost roll-call: re-arm the once-per-frame walk and
+    /// re-read the area flag. The light snapshots are NOT reset here -- they restart at the top of the walk
+    /// itself, which since #118 is the same slot that consumes them, one call earlier. Resetting at this
+    /// edge instead would be a reset nothing needs, in the frame's other half.</summary>
     private static void Draw()
     {
-        if (FrameInputs.FarMaxThisFrame > 0f) FrameInputs.FarMaxLastFrame = FrameInputs.FarMaxThisFrame;
-        FrameInputs.FarMaxThisFrame = 0f;
         _haveFocus = false;    // recompute the shared map centre next frame
-        _passDoneThisFrame = false; // re-arm the once-per-frame walk (first AddPartsToDrawBuckets fire)
+        _passDoneThisFrame = false; // re-arm the once-per-frame walk (first FrameStart of the next frame)
         _interiorDecided = false;   // re-read the area's interior flag next frame
         LogLocalLights();      // one-shot dump of the recorded point lights
     }
@@ -821,7 +811,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             Vector3 p = FrameInputs.LocalLightPos[i];
             sb.Append($" [{i}]=({p.X:F1},{p.Y:F1},{p.Z:F1}) r{FrameInputs.LocalLightRange[i]:F1}");
         }
-        _log.Info($"SceneInputs: {FrameInputs.LocalLightCount} point light(s) recorded (slice 6, overflow {FrameInputs.LocalLightOverflow}):{sb}");
+        _log.Info($"SceneInputs: {FrameInputs.LocalLightCount} point light(s) recorded (slice 6):{sb}");
     }
 
 }

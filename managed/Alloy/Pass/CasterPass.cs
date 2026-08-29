@@ -1158,12 +1158,13 @@ public sealed unsafe class CasterPass : IExtenderService
         int have = 0;
         for (int i = 0; i < FrameInputs.LocalLightCount; i++)
         {
-            // Rank by distance to the shadow FOCUS (the PC), not the raw camera. The captured camera is
-            // whatever the last SetViewTransform left -- live-observed as (0, 0, 742), a UI/ortho pass, and
-            // #118's move to the pass slot was not verified to change it. Sorting by distance to a point 742u overhead ranks lights by
-            // ALTITUDE, so which lights get a cube is near-arbitrary and reshuffles as the light set shifts:
-            // a carried torch's shadow blinks in and out as the player walks. The sun fit already takes the
-            // focus for exactly this reason; the cubes were still reading the bad value.
+            // Rank by distance to the shadow FOCUS (the PC), not the camera. Historically the camera was
+            // whatever the last SetViewTransform left -- live-observed as (0, 0, 742), a UI/ortho pass --
+            // and sorting by distance to a point 742u overhead ranks lights by ALTITUDE: which lights got a
+            // cube was near-arbitrary and reshuffled as the light set shifted, so a carried torch's shadow
+            // blinked in and out as the player walked. #257 made the camera a direct read and that hazard
+            // is gone, but the focus is still the right anchor -- it is the PC, which is what the shadows
+            // are for, and the sun fit takes the same point.
             float d = (FrameInputs.LocalLightPos[i] - focus).LengthSquared();
             if (have == n && (n == 0 || d >= dist[n - 1])) continue;
             int k = have < n ? have : n - 1;

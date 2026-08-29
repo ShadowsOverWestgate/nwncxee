@@ -42,51 +42,22 @@ public sealed unsafe partial class AlloyRenderer
         // the issue phase cannot fail. Missing entry points are the one way it could.
         if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null) { _batchUnavailable = true; return; }
 
-        // #210 survivor bin: every GL read on this path is an INPUT, not a mirror. Alloy draws in its own
-        // share-listed 4.6 context (GlContextService), so it cannot desync GLRender's shadow cache and has
-        // nothing to restore -- but it still has to be TOLD where the engine wants the result: this viewport,
-        // this framebuffer and its attachments, this sRGB-encode state, this clear colour. The save/restore
-        // pairs further down (VAO, element buffer, texture binding) are 4.6-context-local, preserving Alloy's
-        // own state across its own helpers.
-        int* viewport = stackalloc int[4];
-        Gl.GetIntegerv(Gl.VIEWPORT, viewport);
-        int engFbo; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &engFbo);
-        int colorType = 0, colorName = 0, depthType = 0, depthName = 0;
-        if (engFbo != 0)
-        {
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &colorType);
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &colorName);
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &depthType);
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &depthName);
-        }
-        bool srgb = Gl.IsEnabled(Gl.FRAMEBUFFER_SRGB) != 0;
-        // #151: settle the AA question with the actual FBO topology, once. The user sees "MSAA on" in the
-        // game options while the Alloy frame draws into PostChain's single-sample RGBA16F target -- whether
-        // the ENGINE's world FBO is itself multisampled here decides where anti-aliasing has to be put back.
-        if (engFbo != 0 && (engFbo ^ colorName << 8 ^ depthName << 16 ^ colorType << 24 ^ depthType << 28) != _fboDiagSig && _fboDiagLeft > 0)
-        {
-            // re-log on CHANGE, not once: the first anchor fires on the menu/loading FBO, and the in-game
-            // world FBO is the one the AA question is actually about. Capped so a ping-ponging engine
-            // cannot spam the log.
-            _fboDiagSig = engFbo ^ colorName << 8 ^ depthName << 16 ^ colorType << 24 ^ depthType << 28;
-            _fboDiagLeft--;
-            int cs = AttachmentSamples(colorType, colorName), ds = AttachmentSamples(depthType, depthName);
-            int ctxSamples = 0; Gl.GetIntegerv(Gl.SAMPLES, &ctxSamples);
-            _log?.Info($"AlloyRenderer: FBO topology -- engine fbo {engFbo}, colour {TypeName(colorType)} " +
-                       $"{colorName} ({cs}x), depth {TypeName(depthType)} {depthName} ({ds}x), " +
-                       $"GL_SAMPLES here {ctxSamples}; the Alloy HDR target is 1x by construction, so owned " +
-                       $"passes are anti-aliased only if the engine attachment they END UP in is multisampled");
-        }
-        // #132: the engine's clear colour, read HERE and nowhere else. A GL share list shares objects, not
-        // per-context state, so glClearColor cannot be queried from inside the 4.6 bracket -- that context
-        // has its own, and PostChain's target would clear to it. This is the value the engine's own Clear(7)
-        // just used at the anchor.
-        float* engClear = stackalloc float[4] { 0f, 0f, 0f, 1f };
-        if (Gl.GetFloatv != null) Gl.GetFloatv(Gl.COLOR_CLEAR_VALUE, engClear);
-        // #214: and its depth-clear value, for the same reason -- the owned depth is cleared to what the
-        // engine cleared ITS attachment to, and the resolve blits ours back over every pixel of it.
-        float engClearDepth = 1f;
-        if (Gl.GetFloatv != null) Gl.GetFloatv(Gl.DEPTH_CLEAR_VALUE, &engClearDepth);
+        // #257: where the frame goes is LATCHED, not interrogated. Every frame used to open with nine
+        // GL queries -- viewport, framebuffer binding, four attachment params, sRGB, and the two clear
+        // values -- because the engine owned the frame's output configuration and could change it under us.
+        // Under the cutover it does not: the answer is the same every frame until something that CANNOT
+        // happen silently happens (a resize, an area change, a context loss). So the queries run once per
+        // such generation, and once every LogEvery frames they run again as an ASSERTION -- re-read,
+        // compared, and any drift logged and adopted. What survives unchanged is the argument for reading
+        // the clear values in ENGINE context at all: a GL share list shares objects, not per-context state,
+        // so glClearColor is not queryable from inside the 4.6 bracket -- that context has its own.
+        ref Target t = ref ThisFrameTarget();
+        int* viewport = stackalloc int[4] { t.Vp0, t.Vp1, t.Vp2, t.Vp3 };
+        int engFbo = t.Fbo, colorType = t.ColorType, colorName = t.ColorName,
+            depthType = t.DepthType, depthName = t.DepthName;
+        bool srgb = t.Srgb;
+        float* engClear = stackalloc float[4] { t.Clear0, t.Clear1, t.Clear2, t.Clear3 };
+        float engClearDepth = t.ClearDepth;
         // ...and the refusals that need no bracket at all, ahead of the preamble they would otherwise
         // waste -- PoseSkinned alone force-solves every Alloy skinmesh through the engine.
         if (!PostChain.Precheck(engFbo, depthName, viewport)) return;
@@ -108,16 +79,11 @@ public sealed unsafe partial class AlloyRenderer
         // every froxel input comes off THIS pass's projection, never the capture side (see TryPerspective)
         bool perspective = AlloyLights.TryPerspective((float*)&proj, out float p00, out float p11,
                                                       out float near, out float far);
-        // The scene camera, for the shadow pass (#99). Same row-vector convention as above, so the inverse
-        // view's translation IS the eye and view-space -Z rotated by it is the look direction. Gated on
-        // TryPerspective, which an ortho/UI pass fails outright.
-        if (perspective && Matrix4x4.Invert(view, out Matrix4x4 camToWorld))
-        {
-            _eyePos = camToWorld.Translation;   // #120: this pass's eye, for the specular view vector
-            FrameInputs.LatchSceneCam(camToWorld.Translation,
-                Vector3.Normalize(Vector3.TransformNormal(new Vector3(0f, 0f, -1f), camToWorld)),
-                p11, viewport[2] * viewport[3], _frameSeq);
-        }
+        // #120: this pass's eye, for the specular view vector. Same row-vector convention as above, so the
+        // inverse view's translation IS the eye. Pass-local state, read off this pass's own stacks -- the
+        // SCENE camera is not derived here any more (#257 reads it whole at the anchor), so there is no
+        // contest between passes left to resolve.
+        if (perspective && Matrix4x4.Invert(view, out Matrix4x4 camToWorld)) _eyePos = camToWorld.Translation;
         // Cap 5 is the engine's own lit predicate (Ghidra MatStatic @0x450560 / RenderFlat @0x450eb0): with
         // it off every part gets flat white, so the flat variant IS vanilla for this pass.
         bool lightingOn = _litCount > 0 && _lighting && !_litFailed && perspective

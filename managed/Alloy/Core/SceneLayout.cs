@@ -135,4 +135,9 @@ internal static class SceneLayout
     /// -- <c>BSPCreateStaticProjections</c> bakes the volumes against +0xac too, so reading the other pair
     /// extrudes them the wrong way.</summary>
     public const int LightRange = 0x70, LightKind = 0x80, LightDir = 0xac;
+
+    /// <summary>Range that tells a directional (sun/moon) light from a placed one: directionals carry
+    /// ~100000, points ~10. Read off the same <see cref="LightRange"/> field by everything that has to make
+    /// the distinction.</summary>
+    public const float DirectionalRange = 1000f;
 }
