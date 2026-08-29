@@ -115,6 +115,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     {
         var next = (delegate* unmanaged<IntPtr, void>)*_repackSlot;
         if (next != null) next(vdo);
+        OwnedBuffers.NoteRepack();   // #260: the arena argument's other rate -- see OwnedBuffers.NoteRepack
 
         int stale = 0;
         for (int i = 0; i < MaxParts; i++)

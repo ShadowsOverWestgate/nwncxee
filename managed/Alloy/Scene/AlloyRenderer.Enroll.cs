@@ -264,7 +264,7 @@ public sealed unsafe partial class AlloyRenderer
         {
             if (_vdoCount >= MaxVdos) return -1;
             s = _vdoCount++;
-            _vVao46[s] = 0;
+            _vVao46[s] = 0; _vOwned[s] = false;
         }
         if (!Harvest(vdo, s)) return -1;
         _vVdo[s] = vdo; _vStale[s] = _vVao46[s] != 0;

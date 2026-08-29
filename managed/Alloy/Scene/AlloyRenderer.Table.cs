@@ -87,12 +87,11 @@ public sealed unsafe partial class AlloyRenderer
     // built lazily inside the bracket (VAOs don't share across contexts; the buffers they reference do)
     private static readonly IntPtr[] _vVdo = new IntPtr[MaxVdos];
     private static readonly uint[] _vVao46 = new uint[MaxVdos];
-    /// <summary>#212: the SAME VAO over Alloy's own copies of this VDO's buffers, or 0 when the copy was
-    /// refused or <c>ownedgeom=0</c>. #213 widened its use from the static-opaque proving slice to every
-    /// class, so this is the VAO any batch on the slot binds once the whole slot copied.
-    /// <see cref="AlloyRenderer.VaoName"/>.</summary>
-    private static readonly uint[] _vVaoOwn = new uint[MaxVdos];
-    /// <summary>How many VDO slots have one. See <c>EnsureVao</c>.</summary>
+    /// <summary>#260: does Alloy own the pools this slot's VAO pulls from? There is only one VAO now -- the
+    /// takeover uploads into the pool's OWN buffer, so "Alloy's copy" and "the engine's buffer" are the same
+    /// name -- and this is what is left of the distinction: the acceptance signal
+    /// (<see cref="AlloyRenderer.VaoName"/>), stamped once per slot build rather than probed per draw.</summary>
+    private static readonly bool[] _vOwned = new bool[MaxVdos];
     private static readonly uint[] _vElemBuf = new uint[MaxVdos];
     private static readonly VertexStream[] _vPos = new VertexStream[MaxVdos];
     private static readonly VertexStream[] _vUv = new VertexStream[MaxVdos];

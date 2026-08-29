@@ -749,7 +749,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // still happen while Alloy is stood down (/vanilla, main menu, the disarm latch).
         // #212: and the geometry deletes with them, for exactly the same reason -- the colour bracket's own
         // Drain never runs in those states, so a revoke there would hold the whole owned set for the session.
-        GlContextService.InBracket = static () => { OwnedTextures.Drain(); OwnedBuffers.Drain(); SampleVram(); };
+        GlContextService.InBracket = static () => { OwnedTextures.Drain(); SampleVram(); };
         // #117: ahead of every stand-down -- a broken pass order is a misrender in BOTH bracket sites, so the
         // one service that happens to host the check must not be able to opt the check out.
         if (!FrameGraph.SelfCheck(log)) return;
@@ -1258,7 +1258,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // ...and the VAO cache. RevokeAll marks the slots stale, and EnsureVao DELETES a stale non-zero name
         // before rebuilding -- which on a name minted by a context that no longer exists is a delete aimed at
         // whatever the next context recycles that number for.
-        for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vVaoOwn[v] = 0; }
+        for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vOwned[v] = false; }
         _waterFailed = false;
         AlloyGate.Forget();   // #216: its latched refusals are facts about a target this context owned
         // #257: and so is the target latch -- every name in it belongs to the context that just went.
@@ -1303,7 +1303,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #120 made the floor a SOFT one: slots 1..5 joined the batch key but not the radix digit (which still
         // sorts on the diffuse alone), so two materials sharing a diffuse and differing in their normal map
         // now cut a batch the count does not predict. A small excess over the floor is that, not a regression.
-        _log?.Info($"AlloyRenderer: [alloy] {_lastEnrolled}/{_lastCandidates} parts owned{CapacityNote()} on {_vdoCount} VDOs ({OwnedVaos()} on owned buffers, drawn by {OwnedClasses()}) " +
+        _log?.Info($"AlloyRenderer: [alloy] {_lastEnrolled}/{_lastCandidates} parts owned{CapacityNote()} on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}) " +
                    $"/ {_lastTextures} textures " +
                    $"({_litCount} lit, {_litUnownable} lit left to the engine" +
                    // #128: what the creature class costs, split. "Creatures are still vanilla" has three

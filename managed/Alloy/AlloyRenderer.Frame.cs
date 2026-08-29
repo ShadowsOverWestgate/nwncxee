@@ -92,8 +92,8 @@ public sealed unsafe partial class AlloyRenderer
         if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); return; }
         long tOwn = FrameZones.Now;
         OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
-        OwnedBuffers.Drain();    // #212: the same, for geometry
-        OwnedBuffers.Refresh();  // ...and re-copy whatever the engine uploaded into a pool since last frame
+        OwnedBuffers.ClearDirty();   // #260: geometry uploaded itself at the engine's commit; close the window
+        OwnedBuffers.HighWater();    // ...and report the mark the funnel recorded, where a string is affordable
         FrameZones.Add(FrameZones.Zone.Own, tOwn);
         if (EnsureProgram() && BindTarget(engFbo, colorType, colorName, depthType, depthName))
         {

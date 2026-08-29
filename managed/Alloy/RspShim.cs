@@ -438,6 +438,9 @@ internal static unsafe class RspShim
     {
         if (InWindow && (!HandBack || FbSampling)) { if (HandBack) _sampleSwallowed++; _swallowed++; return; }
         if (InWindow) _handedBack++;
+        // #260's tagging: outside the window the ENGINE is drawing for itself -- the UI, the menu, a GUI 3D
+        // panel -- so the pools this VDO names are the ones that question is about.
+        else OwnedBuffers.NoteEngineDraw(vdo);
         var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_vdoSlot;
         if (next != null) next(vdo, item, prim, size, offset);
     }
@@ -490,9 +493,9 @@ internal static unsafe class RspShim
         _barLogged = true;
         string? bad = PostChain.Fbo == 0 ? "the render target is not Alloy-created (PostChain.Fbo == 0)"
                     : PostChain.DepthTex == 0 ? "the depth buffer is not Alloy-created (PostChain.DepthTex == 0)"
-                    : !OwnedBuffers.Armed ? "owned geometry stood down -- the engine's vertex/index buffers are in use"
+                    : !OwnedBuffers.Armed ? "owned geometry stood down -- the engine uploads its own vertex/index pools"
                     : !OwnedTextures.Armed ? "owned textures stood down -- engine texture names are being sampled"
-                    : OwnedBuffers.Refused != 0 ? $"{OwnedBuffers.Refused} engine buffers refused a copy and are borrowed"
+                    : OwnedBuffers.Borrowed != 0 ? $"{OwnedBuffers.Borrowed} engine buffers are drawn from but were never uploaded by Alloy"
                     : OwnedTextures.Borrowed != 0 ? $"{OwnedTextures.Borrowed} engine textures never came through the upload funnel and are borrowed"
                     : null;
         _log?.Info(bad == null
@@ -518,10 +521,10 @@ internal static unsafe class RspShim
         _log?.Info($"RspShim: [rspshim] {_frames} shim frames, {_swallowed / _frames} engine draws swallowed/frame, "
                  + $"{_handedBack / _frames} handed back/frame (#236, deliberate), "
                  + $"PASSED {_passed} (must be 0), {ms:F2}ms/frame in the shim, "
-                 + $"borrowed {OwnedBuffers.Refused - _lastRefBuf} buffers / "
+                 + $"borrowed {OwnedBuffers.Borrowed - _lastRefBuf} buffers / "
                  + $"{OwnedTextures.Borrowed - _lastRefTex} textures this period (must be 0/0), "
                  + $"{_sampleSwallowed} fb-sampling hand-backs refused");
-        _lastRefBuf = OwnedBuffers.Refused; _lastRefTex = OwnedTextures.Borrowed;
+        _lastRefBuf = OwnedBuffers.Borrowed; _lastRefTex = OwnedTextures.Borrowed;
         _swallowed = 0; _passed = 0; _handedBack = 0; _sampleSwallowed = 0; _ticks = 0; _frames = 0;
     }
 }

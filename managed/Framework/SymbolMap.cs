@@ -528,20 +528,32 @@ internal static unsafe class SymbolMap
     /// <summary>#212: GLRender::UnlockPool(token, size, offset) @0x4cfc80 -- the SINGLE funnel through which
     /// every byte of engine vertex/index data reaches a GL buffer (glBufferData or glBufferSubData off the
     /// pool's host shadow). <c>VertexDataObject::Build</c>, <c>AddItem</c>'s grow, all three
-    /// <c>CommitItem*Data</c> and <c>Repack</c>'s post-compaction re-upload all pass through it, so it is the
-    /// one edge that says an owned copy has gone stale. Hooked at the GLRender level rather than the
+    /// <c>CommitItem*Data</c> and <c>Repack</c>'s post-compaction re-upload all pass through it, so #260
+    /// PERFORMS it rather than observing it. Hooked at the GLRender level rather than the
     /// <c>RenderInterface</c> thunk because that thunk is its only direct caller AND the vtable slot points
     /// here -- the lower funnel catches both.</summary>
     public const string GlUnlockPool = "_ZN8GLRender10UnlockPoolEjjj";
     /// <summary>#212: GLRender::DeleteBuffer(name) @0x4cfec0 -- where an engine GL buffer name dies.
-    /// <c>GLRender::DeletePool</c> routes here (via the RenderInterface thunk) whenever a VDO releases a
-    /// pool, and this is the exact moment a name stops meaning what we copied from it. The geometry twin of
-    /// <see cref="RiDeleteTextures"/>, and the same #220 corruption without it.</summary>
+    /// <c>GLRender::DeletePool</c> @0x4d1d80 routes here whenever a pool is released, freeing the buffer
+    /// #260 minted for it; this is the exact moment the name (and the pool token behind it) go back into
+    /// circulation. The geometry twin of <see cref="RiDeleteTextures"/>, and the same #220 corruption
+    /// without it.</summary>
     public const string GlDeleteBuffer = "_ZN8GLRender12DeleteBufferEj";
-    /// <summary>#212: RenderInterface::GetPoolBuffer(token) @0x45d370 -- the pool table read that turns a
-    /// pool token into its GL buffer name. Pure (one indexed load), so the UnlockPool hook can call it to
-    /// learn which name it just wrote to.</summary>
-    public const string RiGetPoolBuffer = "_ZN15RenderInterface13GetPoolBufferEj";
+    /// <summary>#260: <c>noemittervar</c> @0x19e3114 (B) -- the nearest EXPORTED symbol below the GLRender
+    /// pool descriptor table's two globals, which have no symbols of their own. The table base pointer sits
+    /// at nm 0x19e5480 = <c>noemittervar + 0x236c</c> and the descriptor count at 0x19e5488 = +0x2374;
+    /// objdump of <c>GLRender::GetPoolBuffer</c> @0x4cfba0 resolves its RIP-relative load to exactly
+    /// <c>noemittervar+0x236c</c>, which is where those two offsets come from.</summary>
+    public const string GlPoolTableAnchor = "noemittervar";
+    /// <summary>#260: <c>g_bOrphanBuffersBeforeWrite</c> @0x18aa51c (D) -- the engine's driver hint on the
+    /// whole-buffer dynamic upload branch of <c>GLRender::UnlockPool</c>: re-specify the store with a null
+    /// pointer before writing it, so the driver need not stall on the previous contents. Read, not decided,
+    /// because Alloy performs that upload now and a silently dropped orphan is an unexplained stall.</summary>
+    public const string GlOrphanBuffers = "g_bOrphanBuffersBeforeWrite";
+    /// <summary>#260: <c>totalmempool</c> @0x19ad058 (B) -- the engine's own running total of pool bytes,
+    /// maintained by <c>RequestPool</c>/<c>ResizePool</c>/<c>DeletePool</c>. The host-shadow half of the
+    /// residency figure, reported beside what Alloy holds in VRAM (#254 left it unmeasured).</summary>
+    public const string GlTotalMemPool = "totalmempool";
     /// <summary>GLRender::SetVertexDataObject(VertexDataObject*) @0x4cff30 -- binds (lazily creating) the
     /// VDO's VAO + element buffer and updates the engine's current-VDO cache. The owned caster path (ADR 0008)
     /// binds engine geometry through this so the cache never desyncs; null unbinds to the default VAO.</summary>

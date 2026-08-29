@@ -50,48 +50,43 @@ public sealed unsafe partial class AlloyRenderer
     /// across contexts; buffers do -- #70). ONLY position, UV and (where the stream exists) normal are bound,
     /// at OUR locations: replicating every enabled engine attrib crashed the driver's vertex-pull JIT when
     /// one carried a client-pointer binding (#81), and neither Alloy program consumes anything else.
-    /// <para>#212: TWO VAOs, identical but for which buffers they pull from -- the engine's pool buffers and
-    /// Alloy's own copies of them. Both, because the owned one is 0 whenever any one of this VDO's buffers
-    /// has no copy: a refusal costs that VDO its ownership and nothing else, and the engine-side VAO is what
-    /// it falls back to. See <see cref="VaoName"/>.</para></summary>
+    /// <para>#260: ONE VAO. #212/#213 built a second one over Alloy's copies of the same buffers; there are
+    /// no copies now -- Alloy uploads into the pool's own buffer -- so the two VAOs would be identical. What
+    /// survives is the question of whether the pools behind it are Alloy's, asked once here and reported by
+    /// <see cref="VaoName"/>.</para></summary>
     private static bool EnsureVao(int v)
     {
         if (_vVao46[v] != 0 && !_vStale[v]) return true;
-        uint* old = stackalloc uint[2] { _vVao46[v], _vVaoOwn[v] };
-        for (int i = 0; i < 2; i++) if (old[i] != 0) Gl.DeleteVertexArrays(1, old + i);
-        _vVao46[v] = BuildVao(v, owned: false);
-        _vVaoOwn[v] = OwnedBuffers.Armed ? BuildVao(v, owned: true) : 0;
+        if (_vVao46[v] != 0) { uint old = _vVao46[v]; Gl.DeleteVertexArrays(1, &old); }
+        _vVao46[v] = BuildVao(v);
+        _vOwned[v] = _vVao46[v] != 0 && OwnedBuffers.Owns(_vElemBuf[v]) && OwnedBuffers.Owns(_vPos[v].Buf);
         _vStale[v] = false;
         // A slot with no ENGINE VAO is not drawable at all: binding 0 pulls no attributes and the multidraw
         // reads whatever the default VAO holds. Refused rather than reported built.
         return _vVao46[v] != 0;
     }
 
-    /// <summary>The live-verify signal: how many live VDO slots actually DRAW from Alloy's buffers. That
-    /// copies were made is the VRAM line's business; this is the difference between owned geometry working
-    /// and owned geometry being allocated and never bound.
+    /// <summary>The live-verify signal: how many live VDO slots draw from pools Alloy uploaded. That the
+    /// pools are resident is the VRAM line's business; this is the difference between owned geometry working
+    /// and owned geometry being uploaded and never bound.
     /// <para>Counted at the log rather than tracked, because <c>RevokeAll</c> retires slots without deleting
     /// their VAOs -- that waits for a bracket -- so a running tally would over-report every slot retired and
     /// not yet rebuilt.</para></summary>
     private static int OwnedVaos()
     {
         int n = 0;
-        for (int v = 0; v < _vdoCount; v++) if (_vVdo[v] != IntPtr.Zero && _vVaoOwn[v] != 0) n++;
+        for (int v = 0; v < _vdoCount; v++) if (_vVdo[v] != IntPtr.Zero && _vOwned[v]) n++;
         return n;
     }
 
-    /// <summary>One VAO over one set of buffers. <paramref name="owned"/> swaps every source buffer for
-    /// Alloy's copy of it; a buffer with no copy returns 0 rather than a VAO half-pulling from each.</summary>
-    private static uint BuildVao(int v, bool owned)
+    /// <summary>One VAO over this slot's streams, wherever the engine's pool descriptors say they live.</summary>
+    private static uint BuildVao(int v)
     {
-        uint elem = owned ? OwnedBuffers.Draw(_vElemBuf[v]) : _vElemBuf[v];
+        uint elem = _vElemBuf[v];
         if (elem == 0) return 0;
         bool skin = _vSkin[v] && _skinning;
         var pos = _vPos[v]; var uv = _vUv[v]; var nrm = _vNrm[v];
         var bi = _vBi[v]; var bw = _vBw[v];
-        if (owned && !(OwnedBuffers.Rebase(ref pos) && OwnedBuffers.Rebase(ref uv)
-                       && (!_vLit[v] || OwnedBuffers.Rebase(ref nrm))
-                       && (!skin || (OwnedBuffers.Rebase(ref bi) && OwnedBuffers.Rebase(ref bw))))) return 0;
         uint vao; Gl.GenVertexArrays(1, &vao);
         Gl.BindVertexArray(vao);
         VertexArrays.Bind(LocPos, in pos);
@@ -110,9 +105,9 @@ public sealed unsafe partial class AlloyRenderer
     }
 
 
-    /// <summary>The sky dome's VAO. Same owned-or-engine fallback, but off the class mask: the dome is not
-    /// an <see cref="AlloyClass"/>, and its own pass line reports it.</summary>
-    internal static uint SkyVao(int v) => _vVaoOwn[v] != 0 ? _vVaoOwn[v] : _vVao46[v];
+    /// <summary>The sky dome's VAO. Off the class mask: the dome is not an <see cref="AlloyClass"/>, and its
+    /// own pass line reports it.</summary>
+    internal static uint SkyVao(int v) => _vVao46[v];
 
     /// <summary>#213's acceptance signal: the classes that have bound an OWNED VAO since the last period
     /// line, one bit per <see cref="AlloyClass"/>. The slot count cannot say this -- a class whose slots all
@@ -132,15 +127,13 @@ public sealed unsafe partial class AlloyRenderer
         return s;
     }
 
-    /// <summary>#213: which VAO this VDO slot binds -- Alloy's own buffers wherever a copy exists, whatever
-    /// the class. #212's proving slice was static opaque alone; the class test that enforced it is gone, so
-    /// cutout, blended, water, additive, the sky dome and the skinned parts all pull from the same copies.
-    /// The remaining fallback is per-SLOT, not per-class: a VDO one of whose buffers refused to copy keeps
-    /// drawing from the engine's pools rather than half from each.</summary>
+    /// <summary>The VAO this VDO slot binds, and the acceptance stamp that goes with it. #260 removed the
+    /// choice -- there is one VAO, over the pool buffers Alloy itself uploads -- so what is left is the
+    /// report: which classes drew from pools Alloy owns. A slot whose pools the ENGINE uploaded (everything
+    /// resident before the first present) draws correctly and is simply not counted.</summary>
     private static uint VaoName(int v, int cls)
     {
-        if (_vVaoOwn[v] == 0) return _vVao46[v];
-        _ownedClsMask |= 1 << cls;
-        return _vVaoOwn[v];
+        if (_vOwned[v]) _ownedClsMask |= 1 << cls;
+        return _vVao46[v];
     }
 }
