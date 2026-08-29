@@ -181,6 +181,16 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly nint[] _dOff = new nint[MaxOwned];
     private static readonly int[] _dBase = new int[MaxOwned];
     private static readonly float[] _dData = new float[MaxRecords * DrawFloats];
+    /// <summary>#243: the world bounding sphere of each RECORD, parallel to <see cref="_dData"/> -- centre
+    /// in xyz, radius in w. Written on the same edges the record is (stable once at enrolment, again
+    /// whenever the part moves), because the sphere is a function of the same model matrix. A radius of
+    /// <see cref="NeverCull"/> means "do not cull me": the vertices move under a matrix that does not
+    /// (skinned, dangly, a displacing feature), or the bbox is degenerate. Unknown bounds mean VISIBLE --
+    /// the failure mode of a cull is invisible geometry.</summary>
+    private static readonly float[] _dSph = new float[MaxRecords * 4];
+    /// <summary>The radius that exempts a record from the cull. Large enough to fail every plane test and
+    /// finite, so it survives a matrix multiply without becoming a NaN.</summary>
+    internal const float NeverCull = 1e30f;
     /// <summary>#153: per-draw bindless handles, 8 per record (diffuse + material slots 1..7), parallel to
     /// <see cref="_dData"/>. 0 = slot empty; the record's slot mask already forbids sampling those.</summary>
     private static readonly ulong[] _dTexH = new ulong[MaxRecords * 8];

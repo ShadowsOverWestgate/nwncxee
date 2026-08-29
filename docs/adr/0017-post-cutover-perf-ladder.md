@@ -108,6 +108,47 @@ in the visibility path because visibility is no longer an enrolment property.
 still compute `gl_Position = uVP * d.model * vec4(aPos, 1.0);` character-for-character under
 `invariant gl_Position;`, or the colour pass loses fragments to LEQUAL as silent holes.
 
+#### What shipped (#243, `managed/Alloy/Pass/CullPass.cs`), and the decisions it had to make
+
+**Same-frame hi-Z, not reprojected.** The ticket asked for the choice to be written down rather than
+discovered live. The pyramid is built *inside* the frame that consumes it, by splitting the cull
+across the two passes that already exist: dispatch A tests the frustum only and feeds the depth
+prepass; the prepass depth is reduced to a max-pyramid; dispatch B tests frustum **and** pyramid and
+feeds the colour pass. Reprojection was rejected because it buys nothing here — the prepass depth is
+already paid for (#119), and a pyramid one frame stale is exactly the silhouette popping the ticket
+names as the classic artefact. Everything the prepass leaves out (cutouts, dropped discarding
+classes, all engine-drawn geometry) makes the pyramid *shallower*, and a shallower pyramid culls
+*less*. Every approximation in this pass errs toward drawing.
+
+**The vertex stages did not move**, so #119's constraint is a no-op here rather than a risk taken.
+The cull compacts each batch into *its own* source region, so `_gStart[g]` stays both the indirect
+byte offset and `uDrawBase`; the compacted per-draw index array binds at the same
+`BindDrawIdx`, and `uDraw[uDrawIdx[uDrawBase + gl_DrawID]]` resolves exactly as before. No
+`.shd` override needs re-emitting.
+
+**The opaque range only.** Compaction is an `atomicAdd`, so order *inside* a batch is not the
+staging order. Opaque draws are order-independent; the blended and water ranges are sorted
+back-to-front and stay on the `BaseVertex` path untouched. Cutout batches blend and *do* ride the
+indirect path — overlapping graded edges can therefore composite differently frame to frame. Named,
+not hidden; `/draw cull 0` is the A/B.
+
+**Bounds are a separate buffer, not a wider record.** The 176-byte `SowxDraw` record is pinned by
+`ShaderContract` and copied into every override, so the world sphere (centre + radius per ownership
+slot) rides its own SSBO, written on the same edge the record is. Three classes are exempted with an
+infinite radius rather than bounded: posed skinmeshes, dangly meshes, and displacing features — each
+moves vertices out from under the node matrix the sphere is derived from. Unknown bounds mean
+VISIBLE, always: the failure mode of a cull is invisible geometry.
+
+**The CPU gate is gone, and that costs before it pays.** `PartTable.InBucketsRecently` no longer
+gates staging while the cull is armed, which is AC1 — but it also means the staging walk now
+revalidates every owned part rather than the ~56% the engine's walk had sighted. The cull's win is
+*GPU* work removed on a frame #238 measured as CPU-bound. That is the honest reading, and it is why
+this is step 3 and not the last one: the CPU saving is step 4's, when the walk itself retires.
+
+**The count never comes back on the path.** `glMultiDrawElementsIndirectCount` reads it from the
+parameter buffer. The culled-vs-drawn figure in the period line is a `glCopyBufferSubData` into a
+three-deep ring, read three frames behind the dispatch that produced it.
+
 ### Step 4 — stop paying for the engine's traversal.
 
 `RspShim.Run` splits cleanly in two. The scalar bookkeeping is cheap and stays: `ControlLightsFade`,

@@ -115,6 +115,13 @@ public sealed unsafe partial class AlloyRenderer
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDrawIdx, _slotBuf);
     }
 
+    /// <summary>#243: put the CPU-staged per-draw index array back on <see cref="BindDrawIdx"/>. The cull
+    /// binds its own compacted one for the passes it drives; every other pass reads the staged order.</summary>
+    private static void BindStagedSlots()
+    {
+        if (_slotBuf != 0) Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDrawIdx, _slotBuf);
+    }
+
     /// <summary>#137: push this pass's bone snapshots into the bone block. Orphan-then-fill for
     /// <see cref="UploadDraws"/>'s reason. Nothing to upload is the common case (no skinmesh on screen), and
     /// the block stays bound empty rather than unbound -- a stage that declares it must find something there
@@ -137,14 +144,16 @@ public sealed unsafe partial class AlloyRenderer
     /// every batch (and it is a DIFFERENT location per program, so the program switch cannot leave a stale
     /// one behind) -- the shaders read record uDrawBase + gl_DrawID, which is what carries the per-part model
     /// matrix, texture rotation and material colours that used to be per-part uniforms.</summary>
-    private static void IssueBatches(int from, int groups, float* vpRaw, int* viewport, float near, float far)
+    private static void IssueBatches(int from, int groups, float* vpRaw, int* viewport, float near, float far,
+                                     bool indirect = false)
     {
         long tIssue = FrameZones.Now;
-        try { IssueBatchesInner(from, groups, vpRaw, viewport, near, far); }
+        try { IssueBatchesInner(from, groups, vpRaw, viewport, near, far, indirect); }
         finally { FrameZones.Add(FrameZones.Zone.Issue, tIssue); }
     }
 
-    private static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far)
+    private static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far,
+                                          bool indirect)
     {
         // A probe capture must not carry the debug viz through: /draw viz would bake flat cyan (or a
         // cluster heat map) into the cube and leave it there for every frame that samples it afterwards.
@@ -293,8 +302,14 @@ public sealed unsafe partial class AlloyRenderer
             // #147: water is drawn as PATCHES so the tessellator sees it. Same index buffer, same triangles
             // -- only the primitive mode changes, and the tess-control stage retires a patch to level 1 when
             // there is no wave to resolve, so a millpond costs the same as before.
-            Gl.MultiDrawElementsBaseVertex(water ? Gl.PATCHES : _gMode[g], counts + s, GlUnsignedShort,
-                                           (void**)(offs + s), _gLen[g], bases + s);
+            // #243: the same batch, from a list the GPU compacted. The bind set above is unchanged (the
+            // cull moves WHICH draws are in the batch, never what state they draw under), and the record
+            // lookup is unchanged too -- uDrawBase is still this batch's start, because the cull compacts
+            // each batch into its own source region rather than into one global run.
+            if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
+            else
+                Gl.MultiDrawElementsBaseVertex(water ? Gl.PATCHES : _gMode[g], counts + s, GlUnsignedShort,
+                                               (void**)(offs + s), _gLen[g], bases + s);
             _batches++;
             _draws += _gLen[g];
             _drawsByClass[_gCls[g]] += _gLen[g];

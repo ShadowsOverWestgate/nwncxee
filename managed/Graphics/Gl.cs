@@ -42,6 +42,9 @@ public static unsafe class Gl
     public const uint COMPILE_STATUS = 0x8B81, LINK_STATUS = 0x8B82;
     public const uint TEXTURE0 = 0x84C0;
     public const uint R8 = 0x8229, RED = 0x1903;
+    /// <summary>#243: the hi-Z pyramid's format -- one float per texel, holding the MAX window depth of the
+    /// region it covers.</summary>
+    public const uint R32F = 0x822E;
     public const uint TEXTURE_MIN_FILTER = 0x2801, TEXTURE_MAG_FILTER = 0x2800;
     public const uint TEXTURE_WRAP_S = 0x2802, TEXTURE_WRAP_T = 0x2803, TEXTURE_WRAP_R = 0x8072;
     public const int  NEAREST = 0x2600, LINEAR = 0x2601, CLAMP_TO_EDGE = 0x812F;
@@ -100,6 +103,8 @@ public static unsafe class Gl
     /// roughness maps onto.</summary>
     public const uint RGBA16F = 0x881A, RGBA = 0x1908, HALF_FLOAT = 0x140B, TEXTURE_MAX_LEVEL = 0x813D;
     public const int LINEAR_MIPMAP_LINEAR = 0x2703, LINEAR_MIPMAP_NEAREST = 0x2701;
+    /// <summary>#243: the hi-Z pyramid's minification filter -- an INTERPOLATED max is not a max.</summary>
+    public const int NEAREST_MIPMAP_NEAREST = 0x2700;
     /// <summary>#139's HDR resolve: the split read/draw binding points glBlitFramebuffer works between, and
     /// the level clamps that keep a bloom chain's read level out of the range the draw level is attached in
     /// (sampling a level of a texture another level of which is the current attachment is only defined while
@@ -135,6 +140,9 @@ public static unsafe class Gl
     // cluster-build budget. All 4.6-core, so they exist only inside the #80 share-listed context.
     public const uint COMPUTE_SHADER = 0x91B9, SHADER_STORAGE_BUFFER = 0x90D2;
     public const uint SHADER_STORAGE_BARRIER_BIT = 0x2000;
+    /// <summary>#243: the two barrier bits the cull dispatch needs after it -- its writes are consumed as
+    /// indirect commands and as a parameter-buffer count, neither of which SHADER_STORAGE alone covers.</summary>
+    public const uint COMMAND_BARRIER_BIT = 0x0040, BUFFER_UPDATE_BARRIER_BIT = 0x0200;
     /// <summary>Sample counts of an existing attachment: renderbuffer (glGetRenderbufferParameteriv) and
     /// multisample texture (glGetTexLevelParameteriv on TEXTURE_2D_MULTISAMPLE).</summary>
     public const uint NUM_EXTENSIONS = 0x821D, EXTENSIONS = 0x1F03;

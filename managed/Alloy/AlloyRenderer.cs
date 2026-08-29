@@ -764,6 +764,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #165: ahead of every stand-down and every check below -- /vanilla reports the renderer for a
         // misrendering session, so it must exist even in a session whose renderer never armed.
         RenderCommands.Register(log);
+        CullPass.Init(log);
         // #170: ahead of every stand-down, matching the host's unconditional calls. The verdict must
         // outlive a renderer that never armed -- /vanilla is the report it drives.
         AlloyGate.Arm(log);
@@ -882,13 +883,15 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// because with the env reads gone the code default IS the boot value -- and a const cannot drift from
     /// the field initialiser the way a hand-copied literal did.</summary>
     private const bool DefLighting = true, DefPrepass = true, DefAoTest = false;
+    private const int DefCull = CullPass.ModeHiZ;
     private const float DefSunBias = 0.06f;
     private const int DefViz = 0;
 
     /// <summary>The Alloy pass's live dials, for the <c>/draw</c> echo and the arm-time line.</summary>
     internal static string DescribeTuning() =>
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
-        $"viz {_lightViz}/{LightVizMax}  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}";
+        $"viz {_lightViz}/{LightVizMax}  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  " +
+        $"cull {CullPass.Mode}/{CullPass.ModeHiZ}";
 
     /// <summary>Live tuning setter behind <c>/draw</c>. Returns the old value, or NaN for an unknown key.
     /// <para>Same threading argument as <c>/light</c>: each dial is an independent field written from the
@@ -907,6 +910,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
             case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
             case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
+            // #243 (AC5): the A/B for a cull, which is the one system whose bug is geometry that is simply
+            // not there. Off puts both passes back on the staged BaseVertex submission AND puts the engine's
+            // bucket walk back in charge of the draw-path gate -- so it is a real revert, not a cull that
+            // keeps nothing.
+            case "cull":     old = CullPass.Mode; CullPass.Mode = Math.Clamp((int)v, 0, CullPass.ModeHiZ); break;
             default: return float.NaN;
         }
         // #242: a dial can change what a record MEANS (aotest fills a slot, viz changes nothing in the
@@ -921,7 +929,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static void ResetTuning()
     {
         _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
-        _sunWorldBias = DefSunBias; _lightViz = DefViz;
+        _sunWorldBias = DefSunBias; _lightViz = DefViz; CullPass.Mode = DefCull;
         // #242: AFTER the dials, the way Tune does it. /draw runs on the input thread, so a bump published
         // ahead of the assignments lets a staging walk rebuild against the OLD dial and stamp the NEW epoch
         // -- wrong until something else invalidates, worst case a whole enrollment away.
@@ -940,12 +948,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyRenderer.TuneSelfCheck FAIL: {w}"); } }
 
         bool li = _lighting, dp = _depthPrepass, ao = _aoTest;
+        int cu = CullPass.Mode;
         float cb = _sunWorldBias;
         int vz = _lightViz;
 
-        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias" })
+        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull" })
             E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
-        E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1,
+        E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1 && CullPass.Mode == 1,
           "every key lands on its own field");
         E(Tune("light", 0f) == 1f && !_lighting, "a boolean dial takes 0 and reports its old value as 1");
         E(Tune("viz", LightVizMax + 5f) == 1f && _lightViz == LightVizMax,
@@ -954,14 +963,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
         ResetTuning();
         E(_lighting == DefLighting && _depthPrepass == DefPrepass && _aoTest == DefAoTest
-          && _sunWorldBias == DefSunBias && _lightViz == DefViz,
+          && _sunWorldBias == DefSunBias && _lightViz == DefViz && CullPass.Mode == DefCull,
           "reset returns every dial to its boot value");
         E(DescribeTuning().Contains("light") && DescribeTuning().Contains("prepass")
           && DescribeTuning().Contains("viz")
-          && DescribeTuning().Contains("aotest") && DescribeTuning().Contains("csmbias"),
+          && DescribeTuning().Contains("aotest") && DescribeTuning().Contains("csmbias")
+          && DescribeTuning().Contains("cull"),
           "the echo names every key the command accepts");
 
         _lighting = li; _depthPrepass = dp; _aoTest = ao; _sunWorldBias = cb; _lightViz = vz;
+        CullPass.Mode = cu;
+        CullPass.SelfCheck(log);
         _log = quiet;
         log.Info(ok ? "AlloyRenderer.TuneSelfCheck: passed"
                     : "AlloyRenderer.TuneSelfCheck: FAILED -- the /draw knob table drifted from its keys");
@@ -1321,6 +1333,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #257: and so is the target latch -- every name in it belongs to the context that just went.
         ForgetTarget();
         DepthResource.Revoke();
+        CullPass.ContextLost();
     }
 
     /// <summary>Frame tick from the present (after the bucket walks). Module unload, a PartTable
@@ -1394,6 +1407,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    (_blendedDropped == 0 ? "" : $"; {_blendedDropped} BLENDED PARTS HANDED BACK -- the class " +
                     "could not be Alloy whole, so none of it is") + ") " +
                    $"({(_batches == 0 ? 0f : (float)_draws / _batches):F1} draws/batch), " +
+                   // #243 (AC5): what the GPU cull kept, and what it dropped. Taken off the count buffer
+                   // three frames behind the dispatch, so nothing on the submission path waits for it. The
+                   // "not running" reading is deliberately distinct from a cull that kept everything: one is
+                   // "this instrument has nothing to say", the other is a finding about the area.
+                   (CullPass.Mode <= CullPass.ModeOff ? "cull OFF (/draw cull 2 arms it), "
+                      : !CullPass.Ready ? "cull unavailable -- no compute or no indirect-count, "
+                      : CullPass.CullFrames == 0 ? "cull armed, no counts read back yet, "
+                      : $"cull keeps {(float)CullPass.KeptDraws / CullPass.CullFrames:F0}/frame and drops " +
+                        $"{(float)CullPass.CulledDraws / CullPass.CullFrames:F0} " +
+                        $"({(CullPass.KeptDraws + CullPass.CulledDraws == 0 ? 0f : 100f * CullPass.CulledDraws / (CullPass.KeptDraws + CullPass.CulledDraws)):F0}% of the opaque range, " +
+                        $"{(CullPass.Mode >= CullPass.ModeHiZ ? "frustum+hi-Z" : "frustum only")}; bounds span " +
+                        $"{CullPass.SpreadX:F0}x{CullPass.SpreadY:F0}x{CullPass.SpreadZ:F0}u, largest radius " +
+                        $"{CullPass.SpreadMaxR:F0}u), ") +
                    $"iter-skips {(float)_skips / _frames:F0}/frame, " +
                    $"engine fallbacks {(float)_fallbacks / _frames:F1}/frame " +
                    $"(engine-culled {(float)_skipUnseen / _frames:F0}" +
@@ -1501,6 +1527,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // texture one -- and this line is the only place it would ever be visible.
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
+        CullPass.ResetStats();
         _frames = 0; _draws = 0; _batches = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0;
         _drawsGob = 0; _skipUnseenGob = 0;
         _skipTexNone = 0; _skipTexNoId = 0; _skipTexNoHandle = 0; _skipTexNotOwned = 0;

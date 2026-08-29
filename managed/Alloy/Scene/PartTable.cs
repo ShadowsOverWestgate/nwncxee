@@ -246,7 +246,10 @@ internal static unsafe class PartTable
     /// finished cull (#253 §7.1: "is this part in this frame's bucket array", obtained by a pointer read).
     /// Drawing the whole enumerated area every frame would be most of it wasted.
     /// <para>The stamp comes from <see cref="BucketGate"/>'s reads of <c>Scene+0x208</c>, not from a capture.
-    /// #243 replaces the source with Alloy's own cull; this predicate is where it plugs in.</para></summary>
+    /// #243 DID plug in here, and the plug is a bypass: with <see cref="CullPass"/> armed the staging walk
+    /// stops asking this at all and the GPU decides visibility, because the answer here is a fact about the
+    /// engine's traversal cadence rather than about the camera. It remains the enrolment and eviction
+    /// signal, and the answer again the moment <c>/draw cull 0</c> stands the cull down.</para></summary>
     internal static bool InBucketsRecently(int e) => _pSeen[e] >= _frame - 1;
 
     /// <summary>#126: the tile fade factor this part draws at, 1.0 for a part with no tile or a tile that is

@@ -42,6 +42,14 @@ internal static class TextureSlots
     internal const uint SnapshotColor = 13, SnapshotDepth = 14;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
+    /// <summary>#243: the hi-Z pyramid, read by the CULL DISPATCH only. Shares <see cref="Probe"/>'s unit
+    /// for <see cref="PostHdr"/>'s reason and one more: the dispatch is a compute program that runs BETWEEN
+    /// two draw passes and samples nothing else, and every draw program rebinds its own probe at the program
+    /// switch that opens each pass. The dispatch still leaves texture 0 on the unit rather than its pyramid,
+    /// so a consumer that somehow did not rebind samples nothing instead of a 2D texture through a cube
+    /// sampler. 0..15 is the whole budget this renderer allows itself (GL guarantees only 16 per stage), so
+    /// a seventeenth unit is not available to spend here.</summary>
+    internal const uint HiZ = Probe;
 
     /// <summary>The map samplers, in unit order from <see cref="MapBase"/>. This array IS the bind order the
     /// lit program's link-time <c>glUniform1i</c> loop walks -- there is no second copy of it.</summary>

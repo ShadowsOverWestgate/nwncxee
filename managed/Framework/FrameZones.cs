@@ -57,6 +57,10 @@ public static class FrameZones
         Own,
         /// <summary>Nested in <see cref="Alloy"/>: the six-face IBL probe capture.</summary>
         Probe,
+        /// <summary>#243: nested in <see cref="Alloy"/>: staging the cull's source list and the two GPU
+        /// dispatches over it. CPU-side only -- what the dispatches themselves cost is GPU time and shows up
+        /// in <see cref="Present"/> or in nothing at all.</summary>
+        Cull,
 
         Count,
     }

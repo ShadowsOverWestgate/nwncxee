@@ -208,6 +208,34 @@ public sealed unsafe partial class AlloyRenderer
         internal float FeatX, FeatY;
     }
 
+    /// <summary>#243: this record's world bounding sphere, for the cull. The local bbox centre and radius
+    /// are enrolment-stable (<c>_oCx..</c>, <c>_oR</c>); what moves is the model matrix, so the sphere is
+    /// that centre through it and that radius scaled by the matrix's largest row.
+    /// <para>Three kinds of part are EXEMPTED with <see cref="NeverCull"/> rather than bounded: a posed
+    /// skinmesh (its vertices are placed by 64 bone matrices, not by this one), a dangly mesh (its vertices
+    /// move under a matrix that does not -- #241's standing observation), and a displacing feature (wind
+    /// sway leaves the rest bbox by construction). Each would otherwise be culled at a silhouette it is no
+    /// longer standing in, and a cull's bug is invisible geometry.</para></summary>
+    private static void WriteSphere(int i, in RecordFrameState f, IntPtr tri, int feat)
+    {
+        fixed (float* sp = _dSph)
+        {
+            float* s = sp + (long)i * 4;
+            if (_oBone[i] >= 0 || ShaderFeatures.OutOfPrepass(feat) || PartTable.IsDangly(tri)
+                || !(_oR[i] > 0f))
+            { s[0] = 0f; s[1] = 0f; s[2] = 0f; s[3] = NeverCull; return; }
+            // A matrix-class part's world centre is its model matrix TRANSLATION, and its radius is the
+            // bbox extent unscaled. Not derived here -- copied from the three live-verified sites that
+            // already answer this question the same way (EyeDist2 above, CasterPass's rigid matrix path and
+            // its live-caster copy), whose note is explicit that the bbox centre is NOT object-space. The
+            // repo rule is NEVER GUESS, and transforming the centre by the matrix would be a guess that adds
+            // the node translation a second time.
+            float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
+            if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; }
+            s[0] = cx; s[1] = cy; s[2] = cz; s[3] = _oR[i];
+        }
+    }
+
     /// <summary>#242: the per-frame half of the record, compared into place. Returns whether anything
     /// actually moved -- which is the whole scheme: a field rewritten with the value it already held does
     /// not make its record a mover, and only movers are re-sent.</summary>
@@ -413,7 +441,15 @@ public sealed unsafe partial class AlloyRenderer
             // live, all of it invisible, and it is exactly what the one-owner audit was reporting as
             // UNMATCHED: not a double draw, a ghost. The engine's own sighting window is the predictor, and
             // a part that comes back simply goes unstamped for one frame and is drawn by the engine.
-            if (!PartTable.InBucketsRecently(_oEntry[i]))
+            // #243: the engine's bucket walk is no longer the visibility answer when Alloy owns the
+            // question. Its cadence is what made pop-in a tuned window (#236) rather than a fact about the
+            // camera, so with the cull armed EVERY owned part is staged and the GPU decides. The walk stays
+            // the ENROLMENT/eviction signal; it is only the draw-path gate that moves.
+            // ...and READY, not merely armed: this walk runs before the cull's own Begin, so on a driver
+            // with no compute or no indirect-count (or after a context loss, until the programs rebuild)
+            // nothing would take the question over and the whole area would draw uncelled.
+            if (!(CullPass.Mode > CullPass.ModeOff && CullPass.Ready)
+                && !PartTable.InBucketsRecently(_oEntry[i]))
             {
                 _skipUnseen++; _unseenBucket[_oBucket[i]]++;
                 if (_oGob[i] != IntPtr.Zero) _skipUnseenGob++;
@@ -676,6 +712,10 @@ public sealed unsafe partial class AlloyRenderer
                         for (int t = 0; t < MapSlots; t++) hh[1 + t] = HandleFor(slotTid[t]);
                     }
                 }
+                // #243: the cull's bounds ride the same edge as the record -- a part that did not move did
+                // not move its sphere either. Written before the dirty mark so a caller reading the two
+                // together never sees a fresh record beside last frame's bounds.
+                if (rec) WriteSphere(i, in pf, tri, feat);
                 if (rec) MarkRecordDirty(i); else _recStable++;
                 _recGen[i] = _recEpoch; _recFrame[i] = _frameSeq;
             }

@@ -150,6 +150,22 @@ public sealed unsafe partial class AlloyRenderer
                 UploadDraws();
                 UploadBones();
                 FrameZones.Add(FrameZones.Zone.Upload, tUp);
+                // #243: Alloy's own visibility. Staged from the OPAQUE range alone -- the blended and water
+                // ranges are sorted back-to-front and an atomic compaction would scramble that order -- and
+                // dispatched twice: frustum-only for the depth prepass, then frustum + hi-Z for the colour
+                // pass once the prepass has filled the depth the pyramid is built from.
+                long tCull = FrameZones.Now;
+                int opaqueDraws = _gOpaqueEnd > 0 ? _gStart[_gOpaqueEnd - 1] + _gLen[_gOpaqueEnd - 1] : 0;
+                fixed (int* dCount = _dCount, dBase = _dBase, dSlot = _dSlot, gStart = _gStart, gLen = _gLen)
+                fixed (nint* dOff = _dOff)
+                fixed (float* sph = _dSph)
+                    // A probe capture draws the same batches six more times from six other cameras, so its
+                    // faces cannot ride a list culled for THIS one -- passing zero groups stands the cull
+                    // down for the whole pass rather than leaving a stale list armed behind it.
+                    if (CullPass.Begin(_capturing ? 0 : _gOpaqueEnd, opaqueDraws, dCount, dOff, dBase, dSlot,
+                                       gStart, gLen, sph, _recOwnCap + MaxSkyDraws))
+                        CullPass.Dispatch(CullPass.PhasePrepass, &vp, hiZ: false, PassGen);
+                FrameZones.Add(FrameZones.Zone.Cull, tCull);
                 foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
                 {
                     if (bracket != Bracket.Colour) continue;
@@ -157,8 +173,20 @@ public sealed unsafe partial class AlloyRenderer
                     {
                         case PassId.DepthPrepass:
                             DepthPrepassPass(_gOpaqueEnd, &vp, viewport);
+                            // #243: the pyramid, from the depth that pass just wrote. Inside the same frame
+                            // on purpose -- a pyramid carried from last frame pops at the silhouette of
+                            // every moving occluder, and the prepass depth is already paid for (#119).
+                            if (DepthResource.Filled(PassGen))
+                                CullPass.BuildHiZ(PostChain.DepthTex, viewport[2], viewport[3], viewport,
+                                                  PostChain.Fbo, PassGen);
                             break;
                         case PassId.OpaqueOwned:
+                            // Second dispatch, and it is unconditional rather than folded into the prepass
+                            // case: a frame graph without a prepass in it must still leave the colour pass a
+                            // list to draw, and hi-Z simply stands down when there is no depth to build from.
+                            long tCull2 = FrameZones.Now;
+                            CullPass.Dispatch(CullPass.PhaseColour, &vp, hiZ: DepthResource.Filled(PassGen), PassGen);
+                            FrameZones.Add(FrameZones.Zone.Cull, tCull2);
                             OpaqueOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
                             // The GPU-side cluster stats belong to the SCREEN's build. Harvested here rather
                             // than after the bracket because the probe capture rebuilds the clusters once per
@@ -267,6 +295,11 @@ public sealed unsafe partial class AlloyRenderer
         if (!_depthPrepass || !EnsureDepthProgram()) return;
         int skipped = 0, drawn = 0;
         bool timing = _qPrepass.Begin(Gl.TIME_ELAPSED);
+        // #243: the FRUSTUM-only list. The prepass is what the hi-Z pyramid is built from, so it cannot be
+        // culled against the pyramid it produces -- and it must not be: a part the prepass skips is one the
+        // pyramid does not know about, which only ever makes the colour cull more conservative.
+        bool indirect = CullPass.Active;
+        if (indirect) CullPass.BindForDraw(CullPass.PhasePrepass);
         Gl.ColorMask(0, 0, 0, 0);
         Gl.DepthFunc(Gl.LESS);
         Gl.UseProgram(_progDepth);
@@ -303,14 +336,20 @@ public sealed unsafe partial class AlloyRenderer
             // passes is what keeps #119's invariant-gl_Position depth match trivially true.
             uint vao = VaoName(_gVao[g], _gCls[g]);
             if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
-            Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
-                                           (void**)(offs + s), _gLen[g], bases + s);
+            if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
+            else
+                Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
+                                               (void**)(offs + s), _gLen[g], bases + s);
             drawn += _gLen[g];
         }
+        if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
         Gl.ColorMask(1, 1, 1, 1);
         if (timing) _qPrepass.End(Gl.TIME_ELAPSED);
         // Counted from what this loop submitted, not from the pass's total draw count: since #126 that total
         // spans the blending classes too, and the prepass walks the opaque range alone.
+        // #243: under the cull this is what was STAGED, not what the GPU kept -- the count that decides is in
+        // the parameter buffer and does not come back. The period line's cull clause carries the kept figure;
+        // this one is the ceiling it culls from, and reading it as "draws" would overstate the pass.
         _prepassDraws += drawn;
         _prepassSkipped += skipped;
         // #214: OUR depth attachment, not the engine's -- a texture by construction, so consumers get a
@@ -331,7 +370,14 @@ public sealed unsafe partial class AlloyRenderer
         // the Alloy colour work cost" is the question the [alloy] line exists to answer.
         bool counting = _qSamples.Begin(Gl.SAMPLES_PASSED);
         _colourTiming = _qColour.Begin(Gl.TIME_ELAPSED);
-        IssueBatches(0, groups, (float*)vp, viewport, near, far);
+        // #243: the frustum + hi-Z list, if the cull ran for this pass. Bound around the submission rather
+        // than for the whole bracket -- the blended, water and additive ranges are sorted and stay on the
+        // staged BaseVertex path, and finding an indirect buffer still bound under them is a class of bug
+        // that shows up as a wrong batch rather than as an error.
+        bool indirect = CullPass.Active;
+        if (indirect) CullPass.BindForDraw(CullPass.PhaseColour);
+        IssueBatches(0, groups, (float*)vp, viewport, near, far, indirect);
+        if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
         if (counting) _qSamples.End(Gl.SAMPLES_PASSED);
     }
 
