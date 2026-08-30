@@ -45,10 +45,11 @@ internal static class ShaderStages
         """;
 
     internal const string CasterRecord = """
-        // LOAD-BEARING: the SowxCaster struct below is the shadow pass's per-caster SSBO record, and this file
-        // is a COPY of a layout that lives in C#. Drop or reorder a field and every caster bakes at its
-        // neighbour's matrix. The skinning branch is load-bearing too: without it every creature casts its
-        // bind pose. The extender refuses a stage that disagrees. See docs/shader-overrides.md.
+        // LOAD-BEARING: this stage reads ALLOY's per-draw record (SowxDraw) through the ownership slot the
+        // SowxCaster block hands it. Both structs are COPIES of layouts that live in C#; drop or reorder a
+        // field and every caster bakes at its neighbour's matrix. The skinning branch is load-bearing too:
+        // without it every creature casts its bind pose. The extender refuses a stage that disagrees.
+        // See docs/shader-overrides.md.
 
 
         """;
@@ -78,7 +79,7 @@ internal static class ShaderStages
         (GrassField.ShdGrassVs,            Banner),
         (GrassField.ShdGrassFs,            Banner),
         (AlloyLights.ShdClusterCs,         Banner),
-        (CasterPass.ShdCastVs,             Banner + CasterRecord),
+        (CasterPass.ShdCastVs,             Banner + Invariant + Record + CasterRecord),
         (CasterPass.ShdCastFs,             Banner),
         (PostChain.ShdPostVs,              Banner),
         (PostChain.ShdBloomDownFs,         Banner),

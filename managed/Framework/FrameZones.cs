@@ -42,8 +42,10 @@ public static class FrameZones
         /// <summary>Split marker, not a bracket.</summary>
         Nested,
 
-        /// <summary>Nested in <see cref="Shadow"/>: the caster pass's OWN enrollment scan, which runs on the
-        /// same 60-frame cadence as <see cref="Enroll"/> and can therefore land on the same frame.</summary>
+        /// <summary>Nested in <see cref="Shadow"/>: the caster pass's own enrollment scan. #302 deleted the
+        /// scan -- the shadow bake walks Alloy's ownership table, so there is ONE enrollment now -- and the
+        /// member stays only so the zone ids below it do not shift; it never accrues. ponytail: remove it
+        /// when the enum is next renumbered anyway.</summary>
         ShadowEnroll,
         /// <summary>Nested in <see cref="Alloy"/>: revalidate + route + stage every owned part.</summary>
         Build,

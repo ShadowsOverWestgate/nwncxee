@@ -32,10 +32,12 @@ internal static class ShaderContract
     /// rename the fields.</summary>
     public static bool RecordSafe(string src) => RecordSafe(src, "SowxDraw", (AlloyRenderer.DrawFloats - 16) / 4);
 
-    /// <summary>#161: the same count, for any per-draw record a C# stride stages. The caster pass has its own
-    /// (<c>SowxCaster</c>, <see cref="CasterPass"/>) and it fails exactly the same way -- an override
-    /// declaring the wrong number of trailing vec4s reads every caster out of its neighbour's slot, which
-    /// bakes shadows in the wrong places with nothing in the log.
+    /// <summary>#161: the same count, for any per-draw record a C# stride stages.
+    /// <para>#302 retired its second caller. The caster pass staged a <c>SowxCaster</c> of its own -- a
+    /// parallel record carrying a second copy of the model matrix, the bone base and the cutout -- and this
+    /// overload existed to police a stride that could silently desync from it. The shadow bake reads
+    /// <c>SowxDraw</c> now, so there is one stride and one guard; what is left of SowxCaster is bounds and a
+    /// slot index, with nothing an override can misread into a neighbour's material.</para>
     /// <para><paramref name="vec4s"/> is the count AFTER the leading <c>mat4</c>, i.e.
     /// <c>(strideFloats - 16) / 4</c>.</para></summary>
     public static bool RecordSafe(string src, string structName, int vec4s)
@@ -379,11 +381,9 @@ internal static class ShaderContract
                   // above: a guard its own defaults trip rebuilds from them every session.
                   && RecordSafe(FrameSnapshot.Vs) && RecordSafe(FrameSnapshot.Tcs)
                   && RecordSafe(FrameSnapshot.Tes) && RecordSafe(FrameSnapshot.Fs)
-                  // ...and it REFUSES a record that disagrees, in both layouts it now polices. A predicate
-                  // that only ever returns true is precisely the silent failure it was written to prevent,
-                  // and nothing else in this build would notice.
+                  // ...and it REFUSES a record that disagrees. A predicate that only ever returns true is
+                  // precisely the silent failure it was written to prevent, and nothing else would notice.
                   && !RecordSafe("struct SowxDraw { mat4 model; vec4 rot; };")
-                  && !RecordSafe("struct SowxCaster { mat4 model; vec4 bounds; };", "SowxCaster", 2)
                   && RecordSafe("void main() { }")   // a stage that declares no record cannot disagree
                   // #161: the resolve's inverted colour-space guard, both directions. It is the frame's one
                   // encode, so it must hold on the embedded text and must catch a stage that decodes first

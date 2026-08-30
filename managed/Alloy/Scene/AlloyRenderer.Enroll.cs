@@ -88,6 +88,11 @@ public sealed unsafe partial class AlloyRenderer
                 AlloyCensus.OwnFlag[_oEntry[i]] = 0;
             }
         _ownCount = 0; _litCount = 0; _litUnownable = 0; _skinUnownable = 0; _gobOwned = 0;
+        // #302: slot N may be a different part after this scan than before it. Bumped here, but a slot
+        // whose tenant is UNCHANGED keeps its old stamp below -- the same-frame shadow bracket runs before
+        // the record rebuild, and must not refuse a still world.
+        _enrollGen++;
+        ulong shadowSig = 0;
         Array.Clear(_sortCount, 0, MaxVdos * 4);
         Array.Clear(_clsCount); Array.Clear(_clsStart); Array.Clear(_clsEnd);
         _orderCount = 0;
@@ -155,6 +160,15 @@ public sealed unsafe partial class AlloyRenderer
             _oNoCull[i] = c.TwoSided;
             _oBucket[i] = (byte)c.Bucket; _oGob[i] = c.Gob;
             _oBone[i] = -1;
+            _oDangly[i] = PartTable.IsDangly(c.Tri);   // #302: a permanent shadow mover
+            // #302 (review): the tenancy stamp moves ONLY when the tenant does. The shadow bracket runs
+            // between this scan (RSP prologue) and the record rebuild (the FadeDoors anchor), so a stamp
+            // bumped for a slot whose part did not change would refuse the whole still world for exactly
+            // that one frame -- the enrollment-cadence blackout, the same bug as the epoch one with a
+            // narrower generation. _oTri[i] still holds the PREVIOUS enrollment's tenant here (nothing
+            // clears it), which is what makes the compare possible at all.
+            if (_oTri[i] != c.Tri) _oEnrollGen[i] = _enrollGen;
+            shadowSig ^= (ulong)c.Tri * 0x9E3779B97F4A7C15UL;
             if (c.Gob != IntPtr.Zero) _gobOwned++;
             // #126: the local bbox centre, for the blended pass's back-to-front key.
             var tri = new PartRef(c.Tri);
@@ -223,11 +237,16 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = 0; k < AlloyClasses.Count; k++) _clsEnd[k] = _clsCount[k];
         Array.Copy(_orderTmp, _order, live);
         _orderCount = live;
+        // #302 (review): a caster that DEPARTS at an enrollment edge leaves no ghost -- its slot is freshly
+        // stamped by its new tenant before the vanish sweep looks, and the sphere under it is already the
+        // tenant's. The set signature is the honest cover, restored from the pre-#302 design: an enrollment
+        // that changed the SET pays one blanket shadow re-bake; a static area re-enrolls to the same
+        // signature and pays nothing. XOR is order-independent on purpose -- a reshuffle is not a set change.
+        if (shadowSig != _shadowSig) { _shadowSig = shadowSig; CasterPass.ShadowInvalidate(); }
 
-        // #128: an instance that just changed hands has to change hands on the SHADOW side too, and the two
-        // enrollments run on independent counters -- see CasterPass.ForceEnroll for the frames of darkness
-        // that costs. Poked whenever any instanced part is owned, which is the only case that can open it.
-        if (_gobOwned > 0) CasterPass.ForceEnroll();
+        // #302: there is ONE enrollment now. The shadow pass walks this same table, so an instance that
+        // changes hands changes hands on both sides in the same breath -- the two counters, and #128's
+        // frames of darkness between them, are gone.
         _lastEnrolled = _orderCount; _lastCandidates = candidates; _lastTextures = _matCount;
         MeshCensus();
         // Empty right after a resume means the records are not RESIDENT yet, not that nothing is ownable --

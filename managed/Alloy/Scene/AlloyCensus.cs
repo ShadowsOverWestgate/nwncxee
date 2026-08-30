@@ -11,7 +11,8 @@ namespace Sowx.Alloy;
 /// <summary>#188: the ownership census -- which recorded parts the Alloy passes MAY take, and why the rest
 /// were passed over. The ownership columns (<see cref="OwnFlag"/>, <see cref="OwnGen"/>,
 /// the ownable-bucket list, the colour candidate feed
-/// (<see cref="TryOwnCandidate"/>) and the caster candidate feed (<see cref="TryCasterCandidate"/>), plus
+/// (<see cref="TryOwnCandidate"/>; #302 retired the separate caster feed -- the shadow bake walks the
+/// ownership table), plus
 /// the per-gate forensics and the <c>dumpframe</c>/<c>dumptex</c> triage that say what a refusal was.
 /// <para>It classifies; it draws nothing and suppresses nothing. What it decides is read by the owned
 /// passes (through the candidate feeds) and by <see cref="BucketGate"/> (through the columns), and it is
@@ -484,92 +485,7 @@ internal static unsafe class AlloyCensus
         return gob == IntPtr.Zero || !GobUnownable(gob);
     }
 
-    /// <summary>#93 caster enrollment: is the part in table slot <paramref name="e"/> a rigid shadow caster?
-    /// Deliberately looser than <see cref="TryOwnCandidate"/> -- a depth pass has no material, so env maps,
-    /// SharedMaterial, gob modifiers and the missing diffuse slot are all irrelevant. What remains is what
-    /// the depth draw actually needs: an indexed (mode-1) VDO with a live index range, a class that casts
-    /// (opaque, or -- since the cutout caster below -- alpha-tested), and a recent sighting. Buckets 0..4 pass, which
-    /// is exactly what makes tiles (0/1) and placeables (2/3/4) one set with no kind branching.
-    /// <para>Skinned parts are excluded EXPLICITLY (#262). The note here used to say they "fall out at the
-    /// mode-1 test", and that was never true of a cloak Alloy can own -- enrollment requires mode 1, so a
-    /// cloak reaching the colour pass reaches this too, and it would be filed as a RIGID caster: node matrix
-    /// only, bone -1, i.e. a shadow in the bind pose. With #262 also staging one from real bones, the same
-    /// cloak cast twice, once wrongly. The bones-carrying path is the only one that can be right for this
-    /// class, so it is the only one it takes.</para>
-    /// Cold: one call per table slot per enrollment.</summary>
-    /// <summary>#151: will the caster CENSUS carry this entry? The cheap prefix of
-    /// <see cref="TryCasterCandidate"/>'s acceptance -- state, bucket, world -- used by the owned
-    /// pass to avoid double-recording a part the table already casts. A DEAD entry fails here, which is the
-    /// population the per-frame recast exists for.
-    /// <para>#258 widened what this covers: matrix probation used to kill a moving creature piece, so it
-    /// reached the recast; without probation the same piece stays active and is carried by this scan
-    /// instead, at the caster pass's own enrollment cadence. LIVE-UNVERIFIED -- if a walking creature's
-    /// shadow is ever seen lagging its body, this is the first place to look.</para></summary>
-    internal static bool CasterCensusCovers(int e)
-    {
-        if ((uint)e >= MaxParts || !Active || _pState[e] != StActive) return false;
-        // #262: in step with TryCasterCandidate's own skin test, and for the same reason -- this predicate
-        // exists to say "the census has it", so answering yes for a class the census now refuses would leave
-        // a cloak with no caster at all instead of two.
-        if (_pSkin[e]) return false;
-        return _pBucket[e] <= MaxCasterBucket && _pWorld[e];
-    }
 
-    internal static bool TryCasterCandidate(int e, ref CasterCandidate c)
-    {
-        if (!Active || _pState[e] != StActive) return false;
-        if (_pBucket[e] > MaxCasterBucket) return false;
-        // #262: a true skinmesh cannot be a candidate here. Everything below files a RIGID record -- node
-        // matrix, bone -1 -- which for a cloak is its BIND pose. AlloyRenderer.PoseSkinned records this class
-        // itself, with the 64 matrices it just solved.
-        if (_pSkin[e]) return false;
-        // #91, the caster half: a GUI 3D panel's parts sit at that panel's node coordinates, so enrolling one
-        // as a caster paints a phantom shadow into the world from geometry that exists only in a portrait.
-        // Caster enrollment runs at the present with no Scene in hand, hence the flag rather than a comparison.
-        if (!_pWorld[e]) return false;
-        IntPtr v = _pVdo[e], part = _pPart[e];
-        var p = new PartRef(part); var vd = new VdoRef(v);
-        if (v == IntPtr.Zero || vd.Mode != 1) return false;
-        // #126 follow-up -- the cutout caster. "Opaque geometry casts, transparent geometry does not" was
-        // the vanilla-shaped rule, and vanilla only ever cast authored stencil volumes, so foliage cast
-        // NOTHING and the question never came up. A rasterizing caster pass can do better: the 0.2 cutout
-        // that makes a leaf a leaf in the colour pass makes it a leaf in the shadow map too.
-        // So the class decides, not the opacity bit:
-        //   Opaque  -- casts solid, no texture fetch (the majority).
-        //   Cutout  -- casts ALPHA-TESTED. New, and the whole point of this.
-        //   Blended -- does not cast. A binary shadow map can only say "fully shadowed" about a surface that
-        //              is by definition partly see-through; that wants transmittance (M4), not a lie.
-        //   Additive-- does not cast. It emits light.
-        IntPtr mat = _pMat[e];
-        var m = new MaterialRef(mat);
-        var s = m.Shared;
-        if (!s.IsNull && (s.SampleFb != 0 || s.Volumetric)) return false;
-        bool env = !m.IsNull && Engine.HasEnvMap(m);
-        var cls = m.IsNull ? AlloyClass.Opaque
-                // ...never water: the sample_framebuffer refusal above already sent it back, and bucket 6 is
-                // above MaxCasterBucket anyway, so nothing in the water class reaches the caster pass.
-                : AlloyClasses.Of(false,
-                                         m.DstBlend == BlendOne, Engine.IsOpaque(p),
-                      !s.IsNull && s.Transparency,
-                      p.Alpha < 1f);
-        if (cls != AlloyClass.Opaque && cls != AlloyClass.Cutout) return false;
-        long elem = vd.ElemItems;
-        int it = _pItem[e];
-        if (elem == 0 || it < 0 || it >= vd.ElemCount || it >= vd.VertCount) return false;
-        if (*(int*)(elem + it * 8 + 4) <= 0) return false;
-
-        c.Tri = part; c.Node = _pNode[e]; c.Mat = _pMat[e]; c.Vdo = v;
-        c.Item = it; c.Prim = _pPrim[e]; c.Mx = _pMx[e];
-        // WHETHER a caster is alpha-tested is decided by its texture, inside the bracket (CasterPass's
-        // TexHasAlpha) -- not here, and never from the engine's opacity flags, which short-circuit on an env
-        // map, on the gob alpha and on their own memo. What IS decided here is the THRESHOLD, and only one
-        // authoring makes a difference to it: an env-mapped material's diffuse alpha is reflectivity rather
-        // than coverage (inc_standard.shd:248), so it must not be allowed to cut holes in a solid surface's
-        // shadow at the cutout threshold.
-        c.EnvAlpha = env;
-        c.Dangly = IsDangly(part);
-        return true;
-    }
 
     /// <summary>Highest draw bucket a shadow caster may live in. 0/1 are the static tile buckets and 2/3 the
     /// dynamic gob pair (opaque/transparent, drawn inside <c>Scene::RenderDynamicGeometry</c>); above that

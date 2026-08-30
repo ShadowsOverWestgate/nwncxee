@@ -179,7 +179,7 @@ internal static unsafe class CasterGather
 
     /// <summary>Select this view's casters. <paramref name="point"/> picks the cube face's cone test over the
     /// cascade fit's axis test, exactly as the CPU walk's own branch does; <paramref name="lodR"/> is this
-    /// view's sub-texel radius, and a record whose <c>aux.z</c> marks it a creature is exempt from it.
+    /// view's sub-texel radius, and a record whose <c>aux.y</c> marks it a creature is exempt from it.
     /// <para>Binds the per-draw records for the draws that follow, so the caller does not.</para></summary>
     internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, float lodR, bool point)
     {
@@ -293,7 +293,7 @@ internal static unsafe class CasterGather
                 offEnds = abs(t) > uAlong + r;
             }
             if (offAxis || offEnds) return;
-            if (r < uLodR && c.aux.z == 0.0) return;   // aux.z != 0: a creature, exempt from the sub-texel cull
+            if (r < uLodR && c.aux.y == 0.0) return;   // aux.y != 0: a creature, exempt from the sub-texel cull
             uint o = uSrc[b + 5u] + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
             uCmd[q] = uSrc[b];             // count
@@ -314,7 +314,7 @@ internal static unsafe class CasterGather
            && GatherCs.Contains("return lim < 0.0 || dSq - t * t > lim * lim;")
            && GatherCs.Contains("offEnds = abs(t) > uAlong + r;")
            && GatherCs.Contains("offAxis = dot(perp, perp) > (uReach + r) * (uReach + r);")
-           && GatherCs.Contains("if (r < uLodR && c.aux.z == 0.0) return;")
+           && GatherCs.Contains("if (r < uLodR && c.aux.y == 0.0) return;")
            && GatherCs.Contains("uCmd[q + 4u] = uint(slot);")
            && GatherCs.Contains($"binding = {CasterPass.BindCaster}")
            && GatherCs.Contains($"binding = {BindSrc}") && GatherCs.Contains($"binding = {BindCmd}")

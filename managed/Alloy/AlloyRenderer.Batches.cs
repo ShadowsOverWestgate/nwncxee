@@ -269,6 +269,25 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
+    /// <summary>#302: the same sphere, GEOMETRIC even for the three exempted kinds. See
+    /// <c>_dCastSph</c> for why the shadow pass cannot use a <see cref="NeverCull"/> one.</summary>
+    private static void WriteCasterSphere(int i, in RecordFrameState f)
+    {
+        fixed (float* sp = _dCastSph)
+        {
+            float* s = sp + (long)i * 4;
+            float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
+            if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; }
+            float r = _oR[i];
+            // Review, restoring the deleted MinSkinRadius insurance: a skinmesh's bbox is its BIND pose,
+            // and an animated pose (an extended arm, a swinging cloak) reaches past it. The slack keeps the
+            // reach culls and the staleness volumes honest about where the pose can actually be; keyed on
+            // the VDO's bone streams because that is enrollment-stable where the per-frame bone slot is not.
+            if (_vSkin[_oVao[i]]) r = MathF.Max(r + 2f, 3f);
+            s[0] = cx; s[1] = cy; s[2] = cz; s[3] = r;
+        }
+    }
+
     /// <summary>#242: the per-frame half of the record, compared into place. Returns whether anything
     /// actually moved -- which is the whole scheme: a field rewritten with the value it already held does
     /// not make its record a mover, and only movers are re-sent.</summary>
@@ -493,7 +512,7 @@ public sealed unsafe partial class AlloyRenderer
             // revoked: the state can last a single frame and revoking would spend a whole re-enrollment on
             // it. The skip is a hole -- `instance-state` on the [alloy] line is how big.
             if (!AlloyCensus.InstanceOwnable(tri))
-            { _skipGob++; W(i, "skipped: instance state unownable this pass"); continue; }
+            { _skipGob++; _recEnroll[i] = 0; W(i, "skipped: instance state unownable this pass"); continue; }
             // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
             // it into the blended run with the tile's factor folded into its alpha, which is what the engine
             // does with it in bucket 8 -- and bucket 8 is a bucket IterSight can suppress now.
@@ -512,7 +531,13 @@ public sealed unsafe partial class AlloyRenderer
             // ponytail: MatStatic also multiplies ambient+diffuse by AurGetTileColor() when the part's tile
             // record (part+0x98, +0x54) is set. Not reproduced -- add it if tiles read the wrong hue.
             IntPtr mdl = lit ? part.Mdl.Ptr : IntPtr.Zero;
-            if (lit && mdl == IntPtr.Zero) { _skipNoMdl++; W(i, "skipped: no mdl node"); continue; }
+            // #302 (review): every content skip from here down also revokes the slot's SHADOW tenancy.
+            // The record block never runs for a skipped part, so its mover stamps freeze at their last
+            // values -- frozen-equal is a caster re-baking every view it stands in forever, frozen-unequal
+            // is a shadow that stops tracking -- and the #302 contract is simpler than either: a part
+            // nothing draws casts nothing. The stale rebuild on return stamps it a mover (newTenant), so
+            // the views it re-enters re-bake.
+            if (lit && mdl == IntPtr.Zero) { _skipNoMdl++; _recEnroll[i] = 0; W(i, "skipped: no mdl node"); continue; }
 
             // #242: this slot's persistent record. Three states, cheapest first -- already verified by an
             // earlier pass THIS frame (nothing to re-read at all), unchanged since the last frame (the
@@ -535,7 +560,7 @@ public sealed unsafe partial class AlloyRenderer
                 // bindless handle. That is the ADR 0017 split's per-frame half -- the fetch stays, the two
                 // hash probes behind it do not.
                 var aur = mat.Texture(0);
-                if (aur.IsNull) { _skipTex++; _skipTexNone++; W(i, "skipped: no diffuse texture"); continue; }
+                if (aur.IsNull) { _skipTex++; _skipTexNone++; _recEnroll[i] = 0; W(i, "skipped: no diffuse texture"); continue; }
                 texDirty = stale || aur.Ptr != _recAur[i];
                 for (int s = 0; !texDirty && lit && s < MapSlots; s++)
                     if ((_oSlots[i] & SlotBit(s)) != 0 && mat.Texture(s + 1).Ptr != _recAurS[i * MapSlots + s])
@@ -544,7 +569,7 @@ public sealed unsafe partial class AlloyRenderer
                 else
                 {
                     tid = aur.OwnedTid();
-                    if (tid == 0) { _skipTex++; _skipTexNoId++; W(i, "skipped: diffuse has no GL id"); continue; }
+                    if (tid == 0) { _skipTex++; _skipTexNoId++; _recEnroll[i] = 0; W(i, "skipped: diffuse has no GL id"); continue; }
                     // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
                     // engine texture is a handle on an object the engine may delete or re-upload under us,
                     // which is exactly the corruption this fixes -- so a part whose copy was refused (a
@@ -559,7 +584,7 @@ public sealed unsafe partial class AlloyRenderer
                         bool owned = OwnedTextures.IsOwned(tid);
                         if (!owned || HandleFor(tid) == 0)
                         {
-                            _skipTex++;
+                            _skipTex++; _recEnroll[i] = 0;
                             if (owned) _skipTexNoHandle++; else _skipTexNotOwned++;
                             TexSkipDiag(owned, tid, aur);
                             W(i, owned ? "skipped: diffuse has no bindless handle"
@@ -748,6 +773,13 @@ public sealed unsafe partial class AlloyRenderer
                 int fo = i * 4;
                 pf.FeatX = _oBone[i] >= 0 ? (int)ShaderFeature.Skin : _oFeat[fo];
                 pf.FeatY = _oBone[i] >= 0 ? _oBone[i] * BoneCount : _oFeat[fo + 1];
+                // #302: the shadow's mover signal wants GEOMETRY motion, not "the record was re-sent" --
+                // tile-fade alpha and the day-night ambient drift rewrite hundreds of records a frame, and
+                // charging those as movers re-baked every cube every frame (the predicate skipped nothing).
+                // So the model is compared HERE, before the write consumes the difference; a change of
+                // tenant is the other true mover (the new part APPEARED in the views it stands in).
+                bool casterMoved = pf.HasModel && *(Matrix4x4*)r != pf.Model;
+                bool newTenant = _recEnroll[i] != _oEnrollGen[i];
                 rec |= WritePerFrame(r, in pf);
                 // #153: this record's textures as resident handles -- diffuse at 0, material slots 1..7 in
                 // the shader's macro order (slotTid[k] = material texture k+1). Only for lit records; unlit
@@ -769,8 +801,11 @@ public sealed unsafe partial class AlloyRenderer
                 // not move its sphere either. Written before the dirty mark so a caller reading the two
                 // together never sees a fresh record beside last frame's bounds.
                 if (rec) WriteSphere(i, in pf, tri, feat);
+                if (rec) WriteCasterSphere(i, in pf);
                 if (rec) MarkRecordDirty(i); else _recStable++;
-                _recGen[i] = _recEpoch; _recFrame[i] = _frameSeq;
+                _recGen[i] = _recEpoch; _recFrame[i] = _frameSeq; _recEnroll[i] = _oEnrollGen[i];
+                // #302: a LEVEL the shadow pass compares against _recFrame, never an edge it consumes.
+                if (casterMoved || newTenant) _recMovedAt[i] = _frameSeq;
             }
             // #287: ...and after the record block, so the extent is measured on the sphere this frame wrote.
             if (cls <= (int)AlloyClass.Cutout)
@@ -791,14 +826,8 @@ public sealed unsafe partial class AlloyRenderer
             n++;
             if (noCull) _twoSidedDraws++;
             if (_oGob[i] != IntPtr.Zero) _drawsGob++;
-            // #151: an Alloy rigid INSTANCE part leaves the engine walk, and with it the walk-side shadow
-            // capture -- its shadow has to be fed from here. Skinmeshes are already fed by PoseSkinned, which
-            // has their solved matrices in hand; parts the caster CENSUS still carries (table-eligible) would
-            // be double-recorded, so only the census's rejects recast here -- see CasterCensusCovers for what
-            // #258 moved out of that set.
-            if (_oGob[i] != IntPtr.Zero && _oBone[i] < 0
-                && !AlloyCensus.CasterCensusCovers(_oEntry[i]))
-                CasterPass.RecordOwnedInstance(tri, _oNode[i], _oVdo[i], _oItem[i], _oPrim[i]);
+            // #302: no shadow feed here any more. An instance part IS an ownership slot, and the bake walks
+            // the ownership table -- so there is nothing to hand over and nothing that can be double-recorded.
             AlloyCensus.OwnGen[_oEntry[i]] = PassGen;
         }
         // #126: where each pass's batch range ends. Read off the batches themselves rather than tracked

@@ -106,12 +106,19 @@ built on.
 ### Record — the per-draw SSBO layout
 
 **Applies to:** `cx_own_vs`, `cx_ownlit_vs`, `cx_ownlit_fs`, all four `cx_water_*`
-(as `SowxDraw`); `cx_cast_vs` (as `SowxCaster`).
+(as `SowxDraw`); `cx_cast_vs` (as `SowxCaster` *and* `SowxDraw`).
 
-**Rejects:** a `struct SowxDraw` / `struct SowxCaster` declaring a different number of
-trailing `vec4` fields than the C# stride stages. Counted, not compared, so renaming or
-reformatting the fields is fine. A stage that declares no record at all cannot disagree
-and passes.
+**Rejects:** a `struct SowxDraw` declaring a different number of trailing `vec4` fields
+than the C# stride stages. Counted, not compared, so renaming or reformatting the fields
+is fine. A stage that declares no record at all cannot disagree and passes.
+
+`cx_cast_vs` (#302) carries three terms of its own: `struct SowxCaster` must be exactly
+two `vec4`s and no `mat4` (the 2026-08-30 misrender was precisely a leftover `mat4` --
+a 96-byte GPU stride over a 32-byte stage, every caster baking at a random part's
+matrix); the stage must read Alloy's record through the ownership slot, spelled
+`uDraw[int(uCaster[gl_BaseInstance].aux.x)]` verbatim; and it must keep the skinning
+branch (`uBone`). Lose the branch and every creature casts its bind pose while it
+animates -- it links fine and says nothing.
 
 **Why:** the record is a contract with a C# constant. Declare too few fields and every
 draw reads its neighbour's model matrix and material — a black, streaked world, silent.

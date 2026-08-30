@@ -1223,10 +1223,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             _oBone[i] = slot;
             _skinDrawn++;
             if (_boneSlots > _boneHigh) _boneHigh = _boneSlots;
-            // #151's shadow feed. This is where the old ForceSkinPose bracket fed CasterPass, and the timing
-            // is unchanged -- the matrices it needs are the ones just staged.
-            CasterPass.RecordOwnedInstance(_oTri[i], _oNode[i], _oVdo[i], _oItem[i], _oPrim[i],
-                                           _boneStage + slot * BoneFloats);
+            // #302: no separate shadow feed. The pose lands in _oBone/feat.y and the bake reads it through
+            // the same record and the same bone block the colour pass draws from.
         }
     }
 
