@@ -235,7 +235,7 @@ internal static unsafe class GrassField
         public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge;
         public int PushTex, PushGain, PushWindow;
         public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN;
-        public int SunTex, SunVp, SunTexel, SunBias, SunCount;
+        public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn;
         public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage;
     }
     private static Loc _loc;
@@ -808,7 +808,7 @@ internal static unsafe class GrassField
         }
         AlloyRenderer.UploadFeatureTerms(_featLoc, viewport);
         AlloyRenderer.UploadAreaTerms(_loc.Ambient, _loc.Diffuse, _loc.Dir);
-        AlloyRenderer.UploadSunCascades(_loc.SunTex, _loc.SunVp, _loc.SunTexel, _loc.SunBias, _loc.SunCount);
+        AlloyRenderer.UploadSunCascades(_loc.SunTex, _loc.SunVp, _loc.SunTexel, _loc.SunBias, _loc.SunCount, _loc.SunDyn);
         AlloyRenderer.UploadLocalCubes(_loc.CubeTex, _loc.CubeLight, _loc.CubePlane, _loc.CubeCount,
                                           _loc.CubeSoft, _loc.CubeDynPage);
 
@@ -1074,6 +1074,7 @@ internal static unsafe class GrassField
             Z = GlProgram.Loc(prog, "uZ"), Falloff = GlProgram.Loc(prog, "uFalloff"),
             Wrap = GlProgram.Loc(prog, "uWrap"), Atten = GlProgram.Loc(prog, "uAtten"), Hot = GlProgram.Loc(prog, "uHot"), WrapN = GlProgram.Loc(prog, "uWrapN"),
             SunTex = GlProgram.Loc(prog, "uSunShadow"), SunVp = GlProgram.Loc(prog, "uSunVp"),
+            SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"), SunDyn = GlProgram.Loc(prog, "uSunDyn"),
             SunTexel = GlProgram.Loc(prog, "uSunTexel"), SunBias = GlProgram.Loc(prog, "uSunBias"),
             SunCount = GlProgram.Loc(prog, "uSunCascades"),
             CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeLight = GlProgram.Loc(prog, "uLocalLight"),
@@ -1087,6 +1088,8 @@ internal static unsafe class GrassField
         Gl.UseProgram(prog);
         Gl.Uniform1i(_loc.Tex, 0);
         Gl.Uniform1i(_loc.SunTex, (int)AlloyRenderer.SunUnit);
+        // the grass program's unit 10 is uPushTex, so its sun-dyn sampler reads the second unit the table assigns
+        Gl.Uniform1i(_loc.SunDynTex, (int)AlloyRenderer.SunDynUnitGrass);
         Gl.Uniform1i(_loc.CubeTex, (int)AlloyRenderer.CubeUnit);
         Gl.Uniform1i(_loc.CubeDynTex, (int)AlloyRenderer.CubeDynUnit);
         Gl.Uniform1i(_loc.PushTex, (int)PushUnit);

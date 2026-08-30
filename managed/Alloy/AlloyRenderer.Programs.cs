@@ -68,6 +68,7 @@ public sealed unsafe partial class AlloyRenderer
         _watSunTex = GlProgram.Loc(prog, "uSunShadow"); _watSunVp = GlProgram.Loc(prog, "uSunVp");
         _watSunTexel = GlProgram.Loc(prog, "uSunTexel"); _watSunBias = GlProgram.Loc(prog, "uSunBias");
         _watSunCount = GlProgram.Loc(prog, "uSunCascades");
+        _watSunDynTex = GlProgram.Loc(prog, "uSunDynShadow"); _watSunDyn = GlProgram.Loc(prog, "uSunDyn");
         _watCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _watCubeLight = GlProgram.Loc(prog, "uLocalLight");
         _watCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _watCubeCount = GlProgram.Loc(prog, "uLocalCubes");
         _watCubeSoft = GlProgram.Loc(prog, "uLocalSoft");
@@ -87,6 +88,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.UseProgram(prog);
         Gl.Uniform1i(_watTex, 0);
         Gl.Uniform1i(_watSunTex, (int)SunUnit);
+        Gl.Uniform1i(_watSunDynTex, (int)SunDynUnit);
         Gl.Uniform1i(_watCubeTex, (int)CubeUnit);
         Gl.Uniform1i(_watCubeDynTex, (int)CubeDynUnit);
         Gl.Uniform1i(_watProbe, (int)EnvProbe.ProbeUnit);
@@ -258,6 +260,7 @@ public sealed unsafe partial class AlloyRenderer
         _litSunTex = GlProgram.Loc(prog, "uSunShadow"); _litSunVp = GlProgram.Loc(prog, "uSunVp");
         _litSunTexel = GlProgram.Loc(prog, "uSunTexel"); _litSunBias = GlProgram.Loc(prog, "uSunBias");
         _litSunCount = GlProgram.Loc(prog, "uSunCascades");
+        _litSunDynTex = GlProgram.Loc(prog, "uSunDynShadow"); _litSunDyn = GlProgram.Loc(prog, "uSunDyn");
         _litCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _litCubeLight = GlProgram.Loc(prog, "uLocalLight");
         _litCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _litCubeCount = GlProgram.Loc(prog, "uLocalCubes");
         _litCubeSoft = GlProgram.Loc(prog, "uLocalSoft");
@@ -274,6 +277,7 @@ public sealed unsafe partial class AlloyRenderer
         // cube_count=0) never reaches it, and then EVERY Alloy lit batch silently vanishes.
         Gl.UseProgram(prog);
         Gl.Uniform1i(_litSunTex, (int)SunUnit);
+        Gl.Uniform1i(_litSunDynTex, (int)SunDynUnit);
         Gl.Uniform1i(_litCubeTex, (int)CubeUnit);
         Gl.Uniform1i(_litCubeDynTex, (int)CubeDynUnit);
         Gl.Uniform1i(_litProbe, (int)EnvProbe.ProbeUnit);

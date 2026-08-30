@@ -109,7 +109,7 @@ public sealed unsafe partial class AlloyRenderer
     /// matrices are never re-derived here, and the freshness test is the single gate that covers interiors, a
     /// vanilla stretch and a disarm alike.</summary>
     private static void UploadSunCascades()
-        => UploadSunCascades(_litSunTex, _litSunVp, _litSunTexel, _litSunBias, _litSunCount);
+        => UploadSunCascades(_litSunTex, _litSunVp, _litSunTexel, _litSunBias, _litSunCount, _litSunDyn);
 
     /// <summary>Point the lit program at <see cref="CasterPass"/>'s local-light cube array, or tell it there
     /// is nothing to sample. The per-slot position and far plane are the ones each cube was RENDERED with --
@@ -156,15 +156,24 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>#127: the cascade receiver's uniforms, into a named program's locations. Same values, same
     /// freshness gate; only where they land differs.</summary>
-    internal static void UploadSunCascades(int locTex, int locVp, int locTexel, int locBias, int locCount)
+    internal static void UploadSunCascades(int locTex, int locVp, int locTexel, int locBias, int locCount,
+                                           int locDyn)
     {
         if (locCount < 0) return;
         if (!CasterPass.CascadesFresh) { Gl.Uniform1i(locCount, 0); return; }
         int n = CasterPass.CascadeCount;
         Gl.ActiveTexture(Gl.TEXTURE0 + SunUnit);
         Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, CasterPass.CascadeTex);
+        // #306: the dynamic half rides the same publish, on BOTH units the table assigns it (the grass
+        // program's unit 10 is its displacement field, so grass reads the array off unit 13 instead).
+        Gl.ActiveTexture(Gl.TEXTURE0 + SunDynUnit);
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, CasterPass.SunDynTex);
+        Gl.ActiveTexture(Gl.TEXTURE0 + SunDynUnitGrass);
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, CasterPass.SunDynTex);
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
         Gl.Uniform1i(locTex, (int)SunUnit);
+        if (locDyn >= 0)
+            fixed (float* dm = CasterPass.SunDynMask) Gl.Uniform4fv(locDyn, 1, dm);
         fixed (float* vp = CasterPass.CascadeVp) Gl.UniformMatrix4fv(locVp, n, 0, vp);
         float* pack = stackalloc float[4];
         for (int i = 0; i < 4; i++) pack[i] = i < n ? CasterPass.CascadeTexel[i] : 0f;

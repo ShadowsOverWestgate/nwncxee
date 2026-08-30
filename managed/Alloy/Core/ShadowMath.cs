@@ -34,7 +34,13 @@ public static class ShadowMath
             float texel = 2f * radius / mapSize;
             float cr = MathF.Round(Vector3.Dot(center, right) / texel) * texel;
             float cu = MathF.Round(Vector3.Dot(center, up) / texel) * texel;
-            float cd = Vector3.Dot(center, dir);
+            // #306: the along-light component snaps too. It never affected which texel a caster lands on,
+            // but leaving it continuous made the matrix a function of the RAW focus -- so no two walking
+            // frames ever produced the same map, and the cascade static half could never be reused. Snapped,
+            // the whole matrix is quantised: a sub-texel focus move reproduces it bit-identical, which is
+            // what lets CasterPass key a cascade's static bake on the matrix itself. Depth shifts by at most
+            // one texel step, identically for caster and receiver, so the comparison is unmoved.
+            float cd = MathF.Round(Vector3.Dot(center, dir) / texel) * texel;
             center = right * cr + up * cu + dir * cd;
         }
         Vector3 eye = center - dir * (radius + upstreamMargin);
@@ -224,6 +230,10 @@ public static class ShadowMath
             Check(a.Equals(b), "texel snap: sub-texel centre shift -> identical map");
             Matrix4x4 far = DirectionalLightViewProj(dir, new Vector3(100f + texel * 3f, 200f, 5f), radius, radius, map);
             Check(!far.Equals(a), "texel snap: multi-texel shift -> different map");
+            // #306: a sub-texel shift ALONG the light must reproduce the map too -- the along-light snap is
+            // what makes the matrix a usable static-bake key while the focus walks.
+            Matrix4x4 al = DirectionalLightViewProj(dir, new Vector3(100f, 200f, 5f - texel * 0.4f), radius, radius, map);
+            Check(a.Equals(al), "texel snap: sub-texel along-light shift -> identical map");
 
             // Sun cascades (#94): radii strictly increase, the outermost IS the max shadow distance, and every
             // cascade is contained in the next -- containment is what lets the receiver pick the FIRST cascade

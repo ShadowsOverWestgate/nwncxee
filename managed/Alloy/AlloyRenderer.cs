@@ -646,7 +646,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>Is this extension string in the 4.6 CORE context's list? By enumeration, allocation-free.
     /// Must be called inside the bracket -- it is asking the context Alloy draws in, which is not the
     /// engine's 3.3 one and does not necessarily advertise the same set.</summary>
-    private static bool HasExt(ReadOnlySpan<byte> want)
+    internal static bool HasExt(ReadOnlySpan<byte> want)
     {
         if (Gl.GetStringi == null) return false;
         int n = 0; Gl.GetIntegerv(Gl.NUM_EXTENSIONS, &n);
@@ -1558,7 +1558,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        _watGrid, _watTile, _watZ, _watFalloff, _watWrap, _watAtten, _watHot,
                        _watWrapN, _watViz, _watEye, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
                        _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
-                       _watCubeDynTex, _watCubeDynPage,
+                       _watCubeDynTex, _watCubeDynPage, _watSunDynTex, _watSunDyn,
                        _watProbe, _watProbeMips, _watProbeGain, _watSceneEnv, _watCapture,
                        _watFbColor, _watFbDepth, _watNearFar, _watView, _watProj, _watDials,
                        _watWaveTime, _watTess, _watWind;
@@ -1589,9 +1589,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>Texture units the shadow maps bind on. Unit 0 is the part's diffuse and gets rebound per
     /// batch, so the maps live above it and are bound once per pass.</summary>
     internal const uint SunUnit = TextureSlots.SunShadow, CubeUnit = TextureSlots.LocalShadow,
-                        CubeDynUnit = TextureSlots.LocalShadowDyn;
+                        CubeDynUnit = TextureSlots.LocalShadowDyn,
+                        SunDynUnit = TextureSlots.SunShadowDyn, SunDynUnitGrass = TextureSlots.SunShadowDynGrass;
     private static int _litCubeTex = -1, _litCubeLight = -1, _litCubePlane = -1, _litCubeCount = -1,
-                       _litCubeSoft = -1, _litCubeDynTex = -1, _litCubeDynPage = -1;
+                       _litCubeSoft = -1, _litCubeDynTex = -1, _litCubeDynPage = -1,
+                       _litSunDynTex = -1, _litSunDyn = -1;
     private static int _litProbe = -1, _litProbeMips = -1, _litProbeGain = -1, _litCapture = -1,
                        _litSceneEnv = -1;
     /// <summary>Shadow depth bias in WORLD units, sent per cascade as a fraction of that cascade's published

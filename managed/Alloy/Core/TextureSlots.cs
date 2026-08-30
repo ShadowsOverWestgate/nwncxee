@@ -43,6 +43,13 @@ internal static class TextureSlots
     /// samplerCubeArrayShadow left at its default unit 0 collides with the diffuse's sampler2D -- an
     /// INVALID_OPERATION that silently drops every draw.</summary>
     internal const uint LocalShadowDyn = PostBloom;
+    /// <summary>#306: the sun's dynamic cascade array (<c>sampler2DArrayShadow</c>), sampled by every program
+    /// that samples <see cref="SunShadow"/>. Shares <see cref="PostHdr"/>'s unit on
+    /// <see cref="LocalShadowDyn"/>'s argument -- except on the GRASS program, where unit 10 is the
+    /// displacement field, so grass binds it to <see cref="SnapshotColor"/>'s instead (free there: grass
+    /// samples no frame snapshot). <see cref="AlloyRenderer.UploadSunCascades"/> binds the array on BOTH
+    /// units, which is two cheap binds against burning a unit the budget does not have.</summary>
+    internal const uint SunShadowDyn = PostHdr, SunShadowDynGrass = SnapshotColor;
     /// <summary>The environment probe cube -- above the whole map block for the type-collision reason.</summary>
     internal const uint Probe = 12;
     /// <summary>The frame snapshot the water stage refracts through: colour then depth.</summary>
@@ -85,6 +92,8 @@ internal static class TextureSlots
           $"{LocalShadow} uLocalShadow");
         E(AlloyLights.LocalShadowLib.Contains("uniform samplerCubeArrayShadow uLocalDynShadow;"),
           $"{LocalShadowDyn} uLocalDynShadow");
+        E(AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunDynShadow;"),
+          $"{SunShadowDyn} uSunDynShadow");
         for (int i = 0; i < MapSamplers.Length; i++)
             E(AlloyRenderer.OwnedLitFsHead.Contains($"uniform sampler2D {MapSamplers[i]};"),
               $"{MapBase + i} {MapSamplers[i]}");

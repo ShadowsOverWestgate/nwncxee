@@ -252,6 +252,10 @@ public static unsafe class Gl
     /// <summary>glFramebufferTextureLayer (GL 3.2): target, attachment, texture, level, layer -- attaches one
     /// layer of an array texture (the depth-cube 2D-array render path).</summary>
     public static delegate* unmanaged<uint, uint, uint, int, int, void> FramebufferTextureLayer;
+    /// <summary>glFramebufferTexture (GL 3.2): target, attachment, texture, level -- attaches EVERY layer of
+    /// an array texture at once (a layered attachment), which is what lets a stage route draws by
+    /// <c>gl_Layer</c> (#307's layered bake).</summary>
+    public static delegate* unmanaged<uint, uint, uint, int, void> FramebufferTexture;
     /// <summary>glTexImage3D: target, level, internalFormat, w, h, depth, border, format, type, data.</summary>
     public static delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void> TexImage3D;
     public static delegate* unmanaged<uint, uint> CheckFramebufferStatus;
@@ -446,6 +450,7 @@ public static unsafe class Gl
         BindFramebuffer = (delegate* unmanaged<uint, uint, void>)P("glBindFramebuffer");
         FramebufferTexture2D = (delegate* unmanaged<uint, uint, uint, uint, int, void>)P("glFramebufferTexture2D");
         FramebufferTextureLayer = (delegate* unmanaged<uint, uint, uint, int, int, void>)P("glFramebufferTextureLayer");
+        FramebufferTexture = (delegate* unmanaged<uint, uint, uint, int, void>)P("glFramebufferTexture");
         TexImage3D = (delegate* unmanaged<uint, int, int, int, int, int, int, uint, uint, void*, void>)P("glTexImage3D");
         CheckFramebufferStatus = (delegate* unmanaged<uint, uint>)P("glCheckFramebufferStatus");
         BlitFramebuffer =

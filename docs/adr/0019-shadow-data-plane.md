@@ -165,6 +165,29 @@ measured and rejected; that is why this is not a repeat.
 - Instrument: static and dynamic bakes reported separately. Static bakes tracking the view count
   means the split bought nothing.
 
+**The sun half is built (#306).** The mechanism that makes a cascade's static half a cacheable thing
+at all is the texel snap, taken one step further: `ShadowMath` now snaps the along-light component of
+the fit centre too, so the whole fit matrix is quantised to the texel grid and the static key IS the
+matrix — a sub-texel focus move reproduces it bit-identical, and "the snapped centre moved" needs no
+second bookkeeping. The dynamic half is a same-size mirror array (`csm_dyn 0` deletes it), baked
+movers-only every frame with the *same* matrix the static layer carries, so the receiver's uv/layer/ref
+carry over and the compose is the cubes' own `min()` — one composition rule, not two.
+
+**The degrade, and the toroidal verdict.** A cascade whose static half is stale essentially every
+frame (>= 90% of a 120-frame window) degrades itself to the combined bake — today's behaviour, SetAll,
+no dynamic half — and the period line marks the layer `C`. That is the honest answer to "the split
+buys nothing while walking": correct shadows at today's cost, never two bakes for one.
+
+The analytic expectation, recorded so the live number has something to disagree with: at run speed
+(~4 u/frame-second, ~0,07 u/frame) the snapped centre moves nearly every frame on cascade 0 (1,5 cm
+texels) and every other frame on cascade 3 (~12 cm), so *while moving* most layers should sit in `C`
+and the split's win is the **standing** case — ambient movers (creatures, swinging doors) no longer
+re-bake the whole visible world, which the plain #282 predicate could not avoid. The toroidal
+(scrolled) cascade is therefore **deferred, not declined**: it is the escalation that would extend the
+win to walking frames, and it is taken only if the live per-layer readout (`static per layer L0../L1..`
+on the `[casters]` line, walking and standing measured separately against #301's numbers) shows the
+walking cost matters after #305/#307 land. The measurement is the open item; the decision rule is not.
+
 ### R3 — one layered bake pass
 
 Collapse the per-view loop: one compute pass emits layer-tagged commands for all stale views, the
@@ -175,6 +198,27 @@ vertex stage writes `gl_Layer` from its record, and the bake becomes a handful o
 (`CasterGather.Capable()` is the pattern) with the per-view loop kept as the fallback. The
 geometry-shader fallback is not worth taking. R3 is last because its win shrinks after R2, and it may
 end up not being worth building at all.
+
+**Built (#307), with the per-view path kept as both fallback and A/B** (`/shadow layered 0`; the
+extension is probed once inside the bracket and its absence is said once). The shape as built:
+
+- A stale view is *queued*, not submitted; a flush after the pass loop runs one layered pass per
+  distinct target texture (at most four exist: sun static/dynamic, cube static/pool). Per target: the
+  stale layers clear through the per-layer attach loop (a layered clear would wipe fresh layers too —
+  that FBO churn is correctness and stays), then one layered attachment, one dispatch over
+  (draws x views), and one `glMultiDrawElementsIndirectCount` per batch whose region is the batch's
+  staged region scaled by the view count.
+- Per-view uniforms are gone: a view is 28 floats in a view-table SSBO (fit matrix, focus/reach,
+  dir/along, lodR/point/set/layer). The command's `baseInstance` packs the view-table index above the
+  ownership slot (shift 18, pinned against `MaxOwned` by SelfCheck); the vertex stage unpacks both,
+  routes with `gl_Layer`, and its clip expression is still #119's character for character — the fit
+  matrix is read as a local spelled `uVP`.
+- A view the predicate skips is never queued, so it contributes no commands — the predicate's saving
+  survives the merge by construction.
+- A failed flush publishes nothing for the frame (counts zeroed, blanket set): a one-frame blink,
+  never five fresh layers and a stale one published as fresh.
+- MDI calls/frame become (batches x targets x chunks) instead of (batches x views); the before/after
+  against #301's numbers is the live A/B still owed, both paths exercised.
 
 ## Considered and rejected
 

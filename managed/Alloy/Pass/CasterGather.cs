@@ -118,6 +118,9 @@ internal static unsafe class CasterGather
         _prog = 0; _failed = false;
         _srcBuf = 0; _srcCap = 0; _srcHash = 0; _cmdCap = 0; _cntCap = 0; _at = 0;
         Array.Clear(_cmdBuf); Array.Clear(_cntBuf);
+        _layerProg = 0; _layerFailed = false; _viewBuf = 0; _viewCap = 0;
+        _lyCmdCap = 0; _lyCntCap = 0; _lyAt = 0;
+        Array.Clear(_lyCmd); Array.Clear(_lyCnt);
         Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); Array.Clear(_readCap);
         _drawN = 0; _groups = 0; _dispatched = false;
     }
@@ -319,6 +322,110 @@ internal static unsafe class CasterGather
         Samples++;
     }
 
+    // --- #307: the layered bake. One dispatch selects casters for MANY stale views at once -- one thread
+    // per (draw, view) pair -- and writes layer-tagged commands into one command buffer, region per batch
+    // sized draws x views. The depth stages then route by gl_Layer out of the view table, so the whole bake
+    // for one target texture is one dispatch plus one MDI per batch instead of that pair per view.
+
+    /// <summary>The view table's SSBO binding, and the packing of a command's <c>baseInstance</c>:
+    /// bits [0, <see cref="ViewShift"/>) are the ownership slot, the bits above are the view-table index the
+    /// vertex stage reads its fit matrix and layer from. <c>CasterPass.SelfCheck</c> pins the shift against
+    /// <see cref="AlloyRenderer.MaxOwned"/>.</summary>
+    internal const uint BindView = 20;
+    internal const int ViewShift = 18;
+    /// <summary>Floats per view-table record: mat4 vp + (focus, reach) + (dir, along) + (lodR, point, set,
+    /// layer). std430 gives this struct no padding.</summary>
+    internal const int ViewFloats = 28;
+
+    /// <summary>The view table's GLSL declaration, shared by the layered dispatch and both layered depth
+    /// stages -- <c>AlloyRenderer.DrawBufDecl</c>'s pattern, so the three cannot drift apart.</summary>
+    internal const string ViewTblDecl = """
+        struct SowxView { mat4 vp; vec4 a; vec4 b; vec4 c; };   // a = focus/reach, b = dir/along, c = lodR/point/set/layer
+        layout(std430, binding = 20) readonly buffer SowxBakeViews { SowxView uViewTbl[]; };
+        """;
+
+    private static uint _layerProg;
+    private static bool _layerFailed;
+    private static int _luDrawN, _luViewN, _luCull;
+    private static uint _viewBuf;
+    private static int _viewCap;
+    private static readonly uint[] _lyCmd = new uint[Rotation], _lyCnt = new uint[Rotation];
+    private static long _lyCmdCap;
+    private static int _lyCntCap, _lyAt;
+    /// <summary>Layered dispatches issued, and views they covered -- the period line's halves.</summary>
+    internal static long LayerDispatches, LayerViews;
+
+    /// <summary>The layered dispatch program could not build; the caller keeps the per-view path.</summary>
+    internal static bool LayerFailed => _layerFailed;
+
+    /// <summary>Build the layered dispatch. Same non-overridable stance as <see cref="Ensure"/>.</summary>
+    internal static bool EnsureLayer()
+    {
+        if (_layerProg != 0) return true;
+        if (_layerFailed || !Capable()) { _layerFailed = true; return false; }
+        _layerProg = GlProgram.Compute(LayerCs, _log, "CasterGather layered caster cull");
+        if (_layerProg == 0) { _layerFailed = true; return false; }
+        _luDrawN = GlProgram.Loc(_layerProg, "uDrawN");
+        _luViewN = GlProgram.Loc(_layerProg, "uViewN");
+        _luCull = GlProgram.Loc(_layerProg, "uCull");
+        return true;
+    }
+
+    /// <summary>Select every queued view's casters in ONE dispatch: upload the chunk's view table, size the
+    /// command buffer to draws x views, and leave the indirect/parameter bindings armed for
+    /// <see cref="DrawLayer"/>. Same rotation argument as <see cref="Dispatch"/> -- chunks are serial, and
+    /// reusing a pair <see cref="Rotation"/> chunks later leaves the barriers standing.</summary>
+    internal static bool DispatchLayer(float* views, int viewN)
+    {
+        if (_layerProg == 0 || _drawN <= 0 || viewN <= 0 || CullPass.SphereBuf == 0) return false;
+        if (_viewBuf == 0) { uint b; Gl.GenBuffers(1, &b); _viewBuf = b; _viewCap = 0; }
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _viewBuf);
+        if (viewN > _viewCap)
+        { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW); _viewCap = viewN; }
+        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), views);
+
+        _lyAt = (_lyAt + 1) % Rotation;
+        long cmds = (long)_drawN * viewN;
+        bool growCmd = cmds > _lyCmdCap, growCnt = _groups > _lyCntCap;
+        for (int i = 0; i < Rotation; i++)
+        {
+            Ensure(ref _lyCmd[i], cmds * CmdBytes, growCmd);
+            Ensure(ref _lyCnt[i], (long)_groups * sizeof(uint), growCnt);
+        }
+        if (growCmd) _lyCmdCap = cmds;
+        if (growCnt) _lyCntCap = _groups;
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _lyCnt[_lyAt]);
+        fixed (uint* z = _zero)
+            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)_groups * sizeof(uint)), z);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+
+        Gl.UseProgram(_layerProg);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, CullPass.BindSphere, CullPass.SphereBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _lyCmd[_lyAt]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _lyCnt[_lyAt]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindView, _viewBuf);
+        Gl.Uniform1i(_luDrawN, _drawN);
+        Gl.Uniform1i(_luViewN, viewN);
+        Gl.Uniform1i(_luCull, Mode != 0 ? 1 : 0);
+        Gl.DispatchCompute((uint)((_drawN + GroupSize - 1) / GroupSize), (uint)viewN, 1);
+        Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.COMMAND_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
+        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _lyCmd[_lyAt]);
+        Gl.BindBuffer(Gl.PARAMETER_BUFFER, _lyCnt[_lyAt]);
+        LayerDispatches++; LayerViews += viewN;
+        return true;
+    }
+
+    /// <summary>One batch of the layered pass: the same indirect-count draw as <see cref="Draw"/>, with the
+    /// batch's region and ceiling scaled by the chunk's view count.</summary>
+    internal static void DrawLayer(uint mode, int batch, int start, int max, int viewN)
+    {
+        Gl.MultiDrawElementsIndirectCount(mode, CasterPass.GlUnsignedShort,
+                                          (void*)((long)start * viewN * CmdBytes),
+                                          (IntPtr)((long)batch * sizeof(uint)), max * viewN, CmdBytes);
+        Batches++;
+    }
+
     /// <summary>The cone slope, as the shader spells it. Interpolated from <see cref="CasterPass.FaceConeSlope"/>
     /// so the GPU test cannot drift from the CPU reference it is a port of, and pinned by
     /// <c>CasterPass.SelfCheck</c>.</summary>
@@ -403,6 +510,98 @@ internal static unsafe class CasterGather
             uCmd[q + 4u] = uint(slot);     // baseInstance IS the ownership slot the depth stages read uDraw at
         }
         """).Replace("@SLOPE@", Slope);
+
+    /// <summary>#307: the layered cull -- <see cref="GatherCs"/>'s tests, term for term, with the view's
+    /// parameters read out of the view table instead of uniforms and one thread per (draw, view) pair. A
+    /// survivor's command region is its batch's staged region scaled by the chunk's view count, and its
+    /// <c>baseInstance</c> packs the view-table index above the ownership slot so the depth stage can route
+    /// by <c>gl_Layer</c>. The set filter stays AHEAD of the cull and ungated by <c>uCull</c>, for #305's
+    /// reason: which half of the split a caster belongs in is what the arrays' contents MEAN.</summary>
+    private static readonly string LayerCs = ("""
+        #version 460 core
+        layout(local_size_x = 64, local_size_y = 1) in;   // GroupSize
+
+        layout(std430, binding = 13) readonly buffer SowxCullSphere { vec4 uSph[]; };
+        layout(std430, binding = 17) readonly buffer SowxGatherSrc  { uint uSrc[]; };
+        layout(std430, binding = 18) writeonly buffer SowxGatherCmd { uint uCmd[]; };
+        layout(std430, binding = 19) buffer SowxGatherCount         { uint uCnt[]; };
+
+        """ + ViewTblDecl + """
+        uniform int uDrawN;
+        uniform int uViewN;
+        uniform int uCull;
+
+        bool SowxFaceCulls(float dSq, float t, float r)
+        {
+            if (t < -r) return true;
+            float lim = t * @SLOPE@ + 2.0 * r;
+            return lim < 0.0 || dSq - t * t > lim * lim;
+        }
+
+        void main()
+        {
+            uint i = gl_GlobalInvocationID.x;
+            uint vi = gl_GlobalInvocationID.y;
+            if (i >= uint(uDrawN) || vi >= uint(uViewN)) return;
+            uint b = i * 7u;
+            vec4 vc = uViewTbl[vi].c;
+            int set = int(vc.z);
+            if (set == 1 && uSrc[b + 6u] != 0u) return;
+            if (set == 2 && uSrc[b + 6u] == 0u) return;
+            int slot = int(uSrc[b + 3u]);
+            vec4 s = uSph[slot];
+            if (uCull != 0 && s.w < 1e29)
+            {
+                float r = s.w;
+                vec3 d = s.xyz - uViewTbl[vi].a.xyz;
+                float reach = uViewTbl[vi].a.w;
+                vec3 dir = uViewTbl[vi].b.xyz;
+                float t = dot(d, dir);
+                bool offAxis, offEnds;
+                if (vc.y != 0.0)
+                {
+                    float dSq = dot(d, d);
+                    offAxis = dSq > (reach + r) * (reach + r);
+                    offEnds = SowxFaceCulls(dSq, t, r);
+                }
+                else
+                {
+                    vec3 perp = d - t * dir;
+                    offAxis = dot(perp, perp) > (reach + r) * (reach + r);
+                    offEnds = abs(t) > uViewTbl[vi].b.w + r;
+                }
+                if (offAxis || offEnds) return;
+                if (r < vc.x) return;
+            }
+            uint o = uSrc[b + 5u] * uint(uViewN) + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
+            uint q = o * 5u;
+            uCmd[q] = uSrc[b];             // count
+            uCmd[q + 1u] = 1u;             // instanceCount
+            uCmd[q + 2u] = uSrc[b + 1u];   // firstIndex, in INDICES
+            uCmd[q + 3u] = uSrc[b + 2u];   // baseVertex
+            uCmd[q + 4u] = uint(slot) | (vi << 18u);   // baseInstance = ownership slot | view index
+        }
+        """).Replace("@SLOPE@", Slope);
+
+    /// <summary>What <c>CasterPass.SelfCheck</c> pins about the layered dispatch, on <see cref="SourceSafe"/>'s
+    /// argument: every term whose silent drift deletes a shadow, spelled from the same constants.</summary>
+    internal static bool LayerSafe()
+        => LayerCs.Contains($"float lim = t * {Slope} + 2.0 * r;")
+           && LayerCs.Contains("offEnds = abs(t) > uViewTbl[vi].b.w + r;")
+           && LayerCs.Contains("offAxis = dot(perp, perp) > (reach + r) * (reach + r);")
+           && LayerCs.Contains($"binding = {CullPass.BindSphere}") && LayerCs.Contains("SowxCullSphere")
+           && LayerCs.Contains("if (uCull != 0 && s.w < 1e29)")
+           && LayerCs.Contains("if (r < vc.x) return;")
+           && LayerCs.Contains("uint b = i * 7u;")
+           && LayerCs.Contains("if (set == 1 && uSrc[b + 6u] != 0u) return;")
+           && LayerCs.Contains("if (set == 2 && uSrc[b + 6u] == 0u) return;")
+           // the pack: the shift is ViewShift on both sides, the batch region scales by the view count, and
+           // the slot rides the low bits the depth stage masks back out
+           && LayerCs.Contains($"uCmd[q + 4u] = uint(slot) | (vi << {ViewShift}u);")
+           && LayerCs.Contains("uint o = uSrc[b + 5u] * uint(uViewN) + atomicAdd(uCnt[uSrc[b + 4u]], 1u);")
+           && LayerCs.Contains($"binding = {BindView}")
+           && LayerCs.Contains($"binding = {BindSrc}") && LayerCs.Contains($"binding = {BindCmd}")
+           && LayerCs.Contains($"binding = {BindCount}");
 
     /// <summary>What <c>CasterPass.SelfCheck</c> pins about the dispatch: the cull it runs is the CPU
     /// reference's, over the SHARED sphere buffer, with the shared exemption, conservative in the direction

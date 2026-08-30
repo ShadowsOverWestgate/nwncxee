@@ -391,6 +391,7 @@ internal static unsafe class Particles
     private static int _lAmbient = -1, _lDiffuse = -1, _lDir = -1, _lGrid = -1, _lTile = -1, _lZ = -1,
                        _lFalloff = -1, _lWrap = -1, _lAtten = -1, _lHot = -1, _lWrapN = -1,
                        _lSunTex = -1, _lSunVp = -1, _lSunTexel = -1, _lSunBias = -1, _lSunCount = -1,
+                       _lSunDynTex = -1, _lSunDyn = -1,
                        _lCubeTex = -1, _lCubeLight = -1, _lCubePlane = -1, _lCubeCount = -1, _lCubeSoft = -1,
                        _lCubeDynTex = -1, _lCubeDynPage = -1,
                        _lSunMedia = -1, _lLocalMedia = -1;
@@ -760,7 +761,7 @@ internal static unsafe class Particles
             AlloyLights.SetDrawUniforms(_lGrid, _lTile, _lZ, _lFalloff, _lWrap, _lAtten, _lHot, _lWrapN,
                                         viewport, near, far);
             AlloyRenderer.UploadAreaTerms(_lAmbient, _lDiffuse, _lDir);
-            AlloyRenderer.UploadSunCascades(_lSunTex, _lSunVp, _lSunTexel, _lSunBias, _lSunCount);
+            AlloyRenderer.UploadSunCascades(_lSunTex, _lSunVp, _lSunTexel, _lSunBias, _lSunCount, _lSunDyn);
             AlloyRenderer.UploadLocalCubes(_lCubeTex, _lCubeLight, _lCubePlane, _lCubeCount, _lCubeSoft,
                                            _lCubeDynPage);
             // A particle is a point in a volume, not a point on a surface: the shadow lookups' normal
@@ -1437,6 +1438,7 @@ internal static unsafe class Particles
         _lWrap = GlProgram.Loc(_prog, "uWrap"); _lAtten = GlProgram.Loc(_prog, "uAtten");
         _lHot = GlProgram.Loc(_prog, "uHot"); _lWrapN = GlProgram.Loc(_prog, "uWrapN");
         _lSunTex = GlProgram.Loc(_prog, "uSunShadow"); _lSunVp = GlProgram.Loc(_prog, "uSunVp");
+        _lSunDynTex = GlProgram.Loc(_prog, "uSunDynShadow"); _lSunDyn = GlProgram.Loc(_prog, "uSunDyn");
         _lSunTexel = GlProgram.Loc(_prog, "uSunTexel"); _lSunBias = GlProgram.Loc(_prog, "uSunBias");
         _lSunCount = GlProgram.Loc(_prog, "uSunCascades");
         _lCubeTex = GlProgram.Loc(_prog, "uLocalShadow"); _lCubeLight = GlProgram.Loc(_prog, "uLocalLight");
@@ -1452,6 +1454,7 @@ internal static unsafe class Particles
         // would otherwise mean "no particles at all" on a strict driver rather than "unlit particles".
         Gl.UseProgram(_prog);
         Gl.Uniform1i(_lSunTex, (int)AlloyRenderer.SunUnit);
+        Gl.Uniform1i(_lSunDynTex, (int)AlloyRenderer.SunDynUnit);
         Gl.Uniform1i(_lCubeTex, (int)AlloyRenderer.CubeUnit);
         Gl.Uniform1i(_lCubeDynTex, (int)AlloyRenderer.CubeDynUnit);
         return true;

@@ -942,6 +942,14 @@ internal static unsafe class AlloyLights
         uniform vec4 uSunBias;       // depth bias in DEVICE units, per cascade (world bias / that fit's range)
         uniform int uSunCascades;    // 0 = no cascades to sample this frame (interior, vanilla, not yet drawn)
 
+        // #306: the sun's DYNAMIC half -- movers only, re-baked every frame with the SAME per-cascade fit
+        // matrix as the static layer, composed by min(): the cube pool's own rule (#305), so the receiver
+        // has one composition rule, not two. uSunDyn[i] is 1 when layer i holds a fresh dynamic bake this
+        // frame and 0 otherwise -- a program that never sets it reads 0 everywhere and degrades to
+        // static-only, exactly as uLocalDynPage does.
+        uniform sampler2DArrayShadow uSunDynShadow;
+        uniform vec4 uSunDyn;
+
         // Cascade edge kept clear of the PCF kernel: a fragment whose taps would straddle the border falls
         // through to the next cascade instead of sampling past the map and reading "unshadowed".
         const float SOWX_SUN_BORDER = 0.985;
@@ -976,10 +984,22 @@ internal static unsafe class AlloyLights
                 float layer = float(i);
                 float ref = ndc.z * 0.5 + 0.5 - uSunBias[i];
                 vec2 o = texel * 0.5;
-                return 0.25 * (texture(uSunShadow, vec4(uv + vec2(-o.x, -o.y), layer, ref))
-                             + texture(uSunShadow, vec4(uv + vec2( o.x, -o.y), layer, ref))
-                             + texture(uSunShadow, vec4(uv + vec2(-o.x,  o.y), layer, ref))
-                             + texture(uSunShadow, vec4(uv + vec2( o.x,  o.y), layer, ref)));
+                float vs = 0.25 * (texture(uSunShadow, vec4(uv + vec2(-o.x, -o.y), layer, ref))
+                                 + texture(uSunShadow, vec4(uv + vec2( o.x, -o.y), layer, ref))
+                                 + texture(uSunShadow, vec4(uv + vec2(-o.x,  o.y), layer, ref))
+                                 + texture(uSunShadow, vec4(uv + vec2( o.x,  o.y), layer, ref)));
+                // #306: the dynamic half at the SAME four-tap kernel -- its movers are re-baked every frame
+                // at the static layer's own fit, so uv/layer/ref carry over unchanged and min() composes the
+                // two exactly (depth visibility is a min-of-blockers). Matching kernels matter here: the
+                // dynamic half is the player's own shadow, and a harder edge on exactly that shadow is the
+                // regression the split must not have.
+                float vd = 1.0;
+                if (uSunDyn[i] > 0.5)
+                    vd = 0.25 * (texture(uSunDynShadow, vec4(uv + vec2(-o.x, -o.y), layer, ref))
+                               + texture(uSunDynShadow, vec4(uv + vec2( o.x, -o.y), layer, ref))
+                               + texture(uSunDynShadow, vec4(uv + vec2(-o.x,  o.y), layer, ref))
+                               + texture(uSunDynShadow, vec4(uv + vec2( o.x,  o.y), layer, ref)));
+                return min(vs, vd);
             }
             return 1.0;   // past the outermost cascade: no shadow information, and lit is the safe answer
         }

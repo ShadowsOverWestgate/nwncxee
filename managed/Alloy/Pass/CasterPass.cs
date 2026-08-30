@@ -232,6 +232,45 @@ public sealed unsafe class CasterPass : IExtenderService
     private static readonly bool[] _sunHadMover = new bool[MaxCascades];
     private static long _sunBakedViews, _sunSkippedViews;
 
+    // --- #306: the sun cascades join the static/dynamic split. The mechanism is the cubes' (#305): the
+    // existing cascade array becomes the STATIC half, baked on the predicate; a same-shape dynamic array
+    // holds movers only and re-bakes every frame; the receiver composes the two with min(). What makes a
+    // cascade reusable at all is the texel snap -- ShadowMath now quantises the whole fit matrix, so the
+    // static key is the MATRIX ITSELF and a sub-texel focus move reproduces it bit-identical. Whether the
+    // snap actually buys reuse at walking speed is a measurement, not an argument: the period line reports
+    // static re-bakes per cascade LAYER, and a layer whose static half is stale essentially every frame
+    // degrades itself to the combined bake (today's behaviour, SetAll, no dynamic half) and says so.
+
+    /// <summary>The sun's dynamic depth array (0 = none), one layer per cascade at the SAME face size as the
+    /// static array -- the near cascade must carry the player's own shadow at full quality, and a mirror is
+    /// the shape with no per-layer resolution bookkeeping. Config <c>csm_dyn</c> 0 disables the sun split
+    /// permanently (the cubes keep theirs).</summary>
+    internal static uint SunDynTex;
+    /// <summary>Per cascade layer: 1 = the dynamic half holds a fresh mover bake this frame, 0 = sample the
+    /// static half alone. The receiver's <c>uSunDyn</c>; zero is what a program that never sets it reads.</summary>
+    internal static readonly float[] SunDynMask = new float[MaxCascades];
+    /// <summary>The static half's bake key under the split: the fit matrix each layer was last baked with.
+    /// Fully texel-quantised since #306's ShadowMath snap, so comparing it IS the "snapped centre moved"
+    /// test, with the direction and fit folded in for free.</summary>
+    private static readonly Matrix4x4[] _sunKeyVp = new Matrix4x4[MaxCascades];
+    /// <summary>Which population the recorded static layer holds -- SetAll (combined) or SetStatic. A mode
+    /// flip re-keys the layer, or a mover baked in while combined would outlive the mode (#305's cube rule).</summary>
+    private static readonly bool[] _sunKeyCombined = new bool[MaxCascades];
+    /// <summary>Layer is DEGRADED to the combined bake: its static half was stale on (nearly) every frame of
+    /// the last window, so the split was paying two bakes for one. Decided per window, with hysteresis.</summary>
+    private static readonly bool[] _sunCombined = new bool[MaxCascades];
+    /// <summary>The degrade window: static bakes per layer over <see cref="SunWin"/> frames. Enter combined
+    /// at &gt;= 90% of the window, leave at &lt;= 50% -- the gap is what stops a layer flapping at the edge.</summary>
+    private const int SunWin = 120;
+    private static readonly int[] _sunWinBaked = new int[MaxCascades];
+    private static int _sunWinFrames;
+    /// <summary>Static re-bakes per cascade LAYER this period -- the number that says what the texel snap's
+    /// reuse rate actually is at walking speed (AC: a reading, not an argument).</summary>
+    private static readonly long[] _sunStaticL = new long[MaxCascades];
+    private static long _sunDynBakedViews;
+    /// <summary>Config <c>csm_dyn</c>: 0 = no sun dynamic array, the cascades keep the combined bake.</summary>
+    private static bool _sunSplitCfg = true;
+
     /// <summary>Set by anything that makes every recorded face meaningless at once -- a tuning change, a
     /// release, a frame whose scan never reached every slot. Consumed only by a COMPLETE scan, so the
     /// evidence outlives any frame that could not carry it.</summary>
@@ -406,6 +445,43 @@ public sealed unsafe class CasterPass : IExtenderService
     private static uint _progMask;
     private static int _locMaskVp = -1, _locMaskTex = -1, _locMaskCut = -1;
     private static bool _glFailed, _progFailed;
+
+    // --- #307: the layered bake. With #302/#303 a view is a dispatch and a draw; this collapses the loop:
+    // every stale view is QUEUED instead of submitted, and one flush per target texture runs one layered
+    // dispatch (all views at once, commands tagged with their view) and one indirect-count draw per batch
+    // into a layered framebuffer -- the vertex stage routes by gl_Layer out of the view table. The per-view
+    // FBO/clear loop stays (a clear must touch only the stale layers), but the per-view uniform upload, the
+    // per-view dispatch and the views x batches MDI storm all go. ARB_shader_viewport_layer_array is NOT
+    // core in 4.6, so it is probed at runtime and the per-view path is kept as the fallback -- and as the
+    // A/B (/shadow layered 0), which must produce identical shadows.
+
+    /// <summary><c>/shadow layered 1|0</c>: the A/B. Off = one dispatch + one MDI set per view, as before.</summary>
+    private static bool _layerDial = true;
+    /// <summary>0 = not yet probed, 1 = the extension is present, -1 = absent (said once; per-view path).</summary>
+    private static int _layerProbe;
+    private static uint _progLayer, _progLayerMask;
+    private static int _locLayerMaskTex = -1, _locLayerMaskCut = -1;
+    private static bool _layerProgFailed;
+    /// <summary>The frame's queued stale views. 1024 covers the ceiling population (4 + 4 cascades and
+    /// 64 x 6 x 2 cube faces); an overflow renders inline through the per-view path rather than dropping.</summary>
+    private const int MaxBakeViews = 1024;
+    /// <summary>Commands the layered buffer may hold per rotation slot (x20 B). Past it the flush chunks its
+    /// views -- only a blanket-invalidate frame in a huge area ever needs more than one chunk.</summary>
+    private const int MaxLayerCmds = 512 * 1024;
+    private static readonly uint[] _qTex = new uint[MaxBakeViews];
+    private static readonly int[] _qSize = new int[MaxBakeViews], _qLayer = new int[MaxBakeViews],
+                                  _qSet = new int[MaxBakeViews];
+    private static readonly bool[] _qPoint = new bool[MaxBakeViews];
+    private static readonly Matrix4x4[] _qVp = new Matrix4x4[MaxBakeViews];
+    private static readonly Vector3[] _qFocus = new Vector3[MaxBakeViews], _qDir = new Vector3[MaxBakeViews];
+    private static readonly float[] _qReach = new float[MaxBakeViews], _qAlong = new float[MaxBakeViews];
+    private static int _qN;
+    /// <summary>One chunk's staged view table, in <see cref="CasterGather.ViewFloats"/> layout.</summary>
+    private static readonly float[] _viewStage = new float[MaxBakeViews * CasterGather.ViewFloats];
+    private static long _layerFlushFails;
+
+    /// <summary>Is the layered path taking this frame's views?</summary>
+    private static bool LayeredActive => _layerDial && _layerProbe > 0 && _progLayer != 0;
     private static readonly StandDown _down = new("CasterPass DISARMED");
 
     // --- lifecycle + diagnostics
@@ -448,6 +524,8 @@ public sealed unsafe class CasterPass : IExtenderService
         // cube_dyn_count on a small card.
         _cubeDynSize = Settings.Int("cube_dyn_size", _cubeDynSize, 64, 2048);
         _cubeDynPages = Settings.Int("cube_dyn_count", _cubeLights, 0, MaxCubes);
+        // #306: the sun's half of the split sizes an allocation too (a csm_cascades x csm_size mirror).
+        _sunSplitCfg = Settings.Int("csm_dyn", 1, 0, 1) != 0;
         _dynPageSlot = new int[Math.Max(_cubeDynPages, 1)];
         Array.Fill(_dynPageSlot, -1);
         Array.Fill(_dynPageOf, -1);
@@ -482,8 +560,9 @@ public sealed unsafe class CasterPass : IExtenderService
     /// file next to the map sizes.</summary>
     internal static string Describe()
         => $"dist {_maxDist:F0} lod {_lodTexels:F1} rebake {(_rebake ? 1 : 0)} " +
-           $"gather {CasterGather.Mode} split {(_split ? 1 : 0)} " +
-           $"({_cascades}x{_mapSize} cascades, {_cubeLights}x{_cubeSize} cubes, " +
+           $"gather {CasterGather.Mode} split {(_split ? 1 : 0)} layered {(_layerDial ? 1 : 0)} " +
+           $"({_cascades}x{_mapSize} cascades{(_sunSplitCfg ? " + dyn mirror" : "")}, " +
+           $"{_cubeLights}x{_cubeSize} cubes, " +
            $"{_cubeDynPages}x{_cubeDynSize} dynamic pool pages)";
 
     /// <summary>Set one dial, returning its old value; NaN when the key is not ours, which is how the
@@ -519,13 +598,19 @@ public sealed unsafe class CasterPass : IExtenderService
                 _split = v != 0f;
                 _invalidate = true;
                 return os;
+            case "layered":
+                // #307's A/B: 0 = one dispatch and one MDI set per view. Same content either way, so no
+                // blanket is needed -- the recorded depth does not depend on which path baked it.
+                float oly = _layerDial ? 1f : 0f;
+                _layerDial = v != 0f;
+                return oly;
             default: return float.NaN;
         }
     }
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _lodTexels = LodBoot; _rebake = true; _split = true; _invalidate = true; CasterGather.Mode = 1; }
+    { _maxDist = MaxDistBoot; _lodTexels = LodBoot; _rebake = true; _split = true; _layerDial = true; _invalidate = true; CasterGather.Mode = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -657,6 +742,33 @@ public sealed unsafe class CasterPass : IExtenderService
                   && AlloyLights.LocalShadowLib.Contains("float v = min(vs, vd);")
                   && AlloyLights.LocalShadowLib.Contains("return min(vs * 0.2, vd);")
                   && AlloyLights.LocalShadowLib.Contains("pg > 0.5")
+                  // #306: the sun's half of the split, in the cube's exact shape -- one min() compose, a
+                  // per-layer freshness flag that reads "static only" off the zero an unset uniform leaves.
+                  && AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunDynShadow;")
+                  && AlloyLights.SunShadowLib.Contains("if (uSunDyn[i] > 0.5)")
+                  && AlloyLights.SunShadowLib.Contains("return min(vs, vd);")
+                  // #307: the layered stages. The pack is pinned on BOTH sides (the dispatch writes
+                  // slot | (view << shift), the stage unpacks with the same shift and its mask), the layer
+                  // routing exists in both stages, the skinning branch survives, and the clip expression is
+                  // still #119's under the invariant. Any of these drifting is a caster baked into the wrong
+                  // layer or at the wrong matrix, with nothing in the log.
+                  && CastLayerVs.Contains("#extension GL_ARB_shader_viewport_layer_array : require")
+                  && CastLayerMaskVs.Contains("#extension GL_ARB_shader_viewport_layer_array : require")
+                  && CastLayerVs.Contains("gl_Layer = int(uViewTbl[vi].c.w);")
+                  && CastLayerMaskVs.Contains("gl_Layer = int(uViewTbl[vi].c.w);")
+                  && CastLayerVs.Contains($"int vi = gl_BaseInstance >> {CasterGather.ViewShift};")
+                  && CastLayerMaskVs.Contains($"int vi = gl_BaseInstance >> {CasterGather.ViewShift};")
+                  && CastLayerVs.Contains("uDraw[gl_BaseInstance & 0x3ffff]")
+                  && CastLayerMaskVs.Contains("uDraw[gl_BaseInstance & 0x3ffff]")
+                  && (1 << CasterGather.ViewShift) - 1 == 0x3ffff
+                  && (1 << CasterGather.ViewShift) >= AlloyRenderer.MaxOwned
+                  && MaxBakeViews <= 1 << (30 - CasterGather.ViewShift)
+                  && CastLayerVs.Contains($"binding = {CasterGather.BindView}")
+                  && CastLayerMaskVs.Contains($"binding = {CasterGather.BindView}")
+                  && CastLayerVs.Contains("int bb = SowxBoneBase(d);")
+                  && ShaderContract.DepthSafe(CastLayerVs) && ShaderContract.DepthSafe(CastLayerMaskVs)
+                  && !CastLayerVs.Contains("discard")
+                  && CasterGather.LayerSafe()
                   // #303: the gather dispatch culls the CPU reference's tests over the SHARED SowxCullSphere
                   // buffer, conservative in the direction that costs a draw -- a cull that rejects a visible
                   // caster deletes a shadow; one that admits an invisible one costs a draw. GLSL cannot be
@@ -820,9 +932,10 @@ public sealed unsafe class CasterPass : IExtenderService
         // last frame's records armed, which would bake a world that has since moved.
         CasterGather.Stand();
         _gStaged = false;
+        _qN = 0;
         if (sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0))
         {
-            if (EnsureCommon() && CasterGather.Ensure()) _gStaged = GatherStage();
+            if (EnsureCommon() && CasterGather.Ensure()) { EnsureLayered(); _gStaged = GatherStage(); }
             // #303: the compute dispatch is the ONLY selection path. A program that can never build would
             // otherwise idle here forever with the engine's stencil shadows already suppressed.
             else if (CasterGather.Failed) Disarm("the caster gather dispatch failed to build");
@@ -844,6 +957,16 @@ public sealed unsafe class CasterPass : IExtenderService
                     if (_cubeLights > 0 && FrameInputs.LocalLightCount > 0 && EnsureCubes()) CubePass(focus);
                     break;
             }
+        }
+        // #307: the queued stale views flush in one layered pass per target, HERE -- the publish arrays the
+        // passes wrote above assumed the bakes land. A failed flush publishes nothing for the frame instead:
+        // the receiver samples no maps (a one-frame blink, never a lie) and the blanket re-bakes from scratch.
+        if (!FlushLayered())
+        {
+            _layerFlushFails++;
+            CascadeCount = 0; CubeCount = 0;
+            Array.Clear(SunDynMask); Array.Clear(CubeDynPage);
+            _invalidate = true; _sunScanned = false; _cubeScanned = false;
         }
         // ...and only now may the frame's invalidation be consumed: every pass that ran reached every one of
         // its views, so each of them recorded this frame's movers against its own slots.
@@ -868,27 +991,51 @@ public sealed unsafe class CasterPass : IExtenderService
         int done = 0;
         bool invalidate = _frameInvalidate;
         _sunRan = true; _sunScanned = true;
+        // #306: the split runs only when its array exists -- csm_dyn 0 or a refused allocation is the
+        // combined bake everywhere, exactly as /shadow split 0 spells it.
+        bool split = _split && SunDynTex != 0;
+        // The degrade window ticks once per sun frame. A layer whose static half re-baked on >= 90% of the
+        // window's frames is paying two bakes where one combined bake would do; it degrades to today's
+        // behaviour until the rate drops back under half (walking stops), and the period line says so.
+        if (split && ++_sunWinFrames >= SunWin)
+        {
+            for (int c = 0; c < _cascades; c++)
+                _sunCombined[c] = _sunWinBaked[c] >= (_sunCombined[c] ? SunWin / 2 : SunWin * 9 / 10);
+            Array.Clear(_sunWinBaked);
+            _sunWinFrames = 0;
+        }
         for (int i = 0; i < _cascades; i++)
         {
+            SunDynMask[i] = 0f;
             float radius = ShadowMath.CascadeRadius(i, _cascades, _maxDist);
             float margin = FitMargin();
             Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, focus, radius, margin, _mapSize);
-            // #282 terms 1+2: the fit itself. The recorded layer is a function of exactly these five numbers,
-            // so any of them differing is a bake -- as is a layer holding no complete bake at all.
-            bool keyChanged = !_sunBaked[i]
-                              || _sunKeyFocus[i * 3] != focus.X || _sunKeyFocus[i * 3 + 1] != focus.Y
-                              || _sunKeyFocus[i * 3 + 2] != focus.Z
-                              || _sunKeyDir[i * 3] != dir.X || _sunKeyDir[i * 3 + 1] != dir.Y
-                              || _sunKeyDir[i * 3 + 2] != dir.Z
-                              || _sunKeyFit[i * 2] != radius || _sunKeyFit[i * 2 + 1] != margin;
+            bool combined = !split || _sunCombined[i];
+            // #282 terms 1+2: the fit itself. Combined, the recorded layer is a function of the raw five
+            // numbers, exactly as before the split. Under the split the static key is the QUANTISED fit
+            // matrix -- ShadowMath snaps every component to the texel grid, so a sub-texel focus move
+            // reproduces it bit-identical and the layer is reusable while the player walks within a texel.
+            // A population flip (SetAll <-> SetStatic) re-keys the layer either way.
+            bool keyChanged = !_sunBaked[i] || _sunKeyCombined[i] != combined
+                              || (combined
+                                  ? _sunKeyFocus[i * 3] != focus.X || _sunKeyFocus[i * 3 + 1] != focus.Y
+                                    || _sunKeyFocus[i * 3 + 2] != focus.Z
+                                    || _sunKeyDir[i * 3] != dir.X || _sunKeyDir[i * 3 + 1] != dir.Y
+                                    || _sunKeyDir[i * 3 + 2] != dir.Z
+                                    || _sunKeyFit[i * 2] != radius || _sunKeyFit[i * 2 + 1] != margin
+                                  : vp != _sunKeyVp[i]);
             // #282 term 3: a mover inside the fit. NOT a sphere around the focus -- a cascade admits a
             // CYLINDER along the light axis, and a caster standing up-light of the fit shades into it. Same
             // split the walk's own directional cull makes (perpendicular distance vs distance along), so the
             // predicate can only be stale about geometry the view would have culled anyway.
+            // #306: under the split, continuous motion lives in the dynamic layer and must not re-bake the
+            // static one -- only STATIC-SET EVENTS (appearances, membership flips) and ghosts invalidate it.
             bool hasMover = false;
-            for (int q = 0; q < _moverCount && !hasMover; q++)
+            int[] evtIdx = combined ? _moverIdx : _sMoverIdx;
+            int evtN = combined ? _moverCount : _sMoverCount;
+            for (int q = 0; q < evtN && !hasMover; q++)
             {
-                int m = _moverIdx[q];
+                int m = evtIdx[q];
                 hasMover = InFit(_liveCx[m] - focus.X, _liveCy[m] - focus.Y, _liveCz[m] - focus.Z,
                                  _liveR[m], dir, radius, radius + margin);
             }
@@ -902,23 +1049,50 @@ public sealed unsafe class CasterPass : IExtenderService
                 // matrix and the two ranges below are recomputed bit-identical to the ones already published.
                 _sunSkippedViews++;
                 done++;
-                continue;
             }
-            _sunBakedViews++;
-            ChargeBake(WhySun, invalidate, keyChanged);
-            bool viewOk = RenderView(_depthTex, _mapSize, i, &vp,
-                                     dir, focus, radius, margin, point: false);
-            // A cascade that stalled holds last frame's depth under this frame's key, and the cascades after
-            // it were never scanned -- so their mover evidence is missing too. One blanket frame covers both.
-            if (!viewOk) { _sunBaked[i] = false; _sunScanned = false; break; }
-            _sunBaked[i] = true;
-            _sunKeyFocus[i * 3] = focus.X; _sunKeyFocus[i * 3 + 1] = focus.Y; _sunKeyFocus[i * 3 + 2] = focus.Z;
-            _sunKeyDir[i * 3] = dir.X; _sunKeyDir[i * 3 + 1] = dir.Y; _sunKeyDir[i * 3 + 2] = dir.Z;
-            _sunKeyFit[i * 2] = radius; _sunKeyFit[i * 2 + 1] = margin;
-            fixed (float* pub = CascadeVp) *(Matrix4x4*)(pub + i * 16) = vp;
-            CascadeTexel[i] = 2f * radius / _mapSize;
-            CascadeRange[i] = 2f * radius + margin;
-            done++;
+            else
+            {
+                _sunBakedViews++;
+                if (split) { _sunWinBaked[i]++; _sunStaticL[i]++; }
+                ChargeBake(WhySun, invalidate, keyChanged);
+                bool viewOk = RenderView(_depthTex, _mapSize, i, &vp,
+                                         dir, focus, radius, margin, point: false,
+                                         set: combined ? CasterGather.SetAll : CasterGather.SetStatic);
+                // A cascade that stalled holds last frame's depth under this frame's key, and the cascades
+                // after it were never scanned -- so their mover evidence is missing too. One blanket frame
+                // covers both.
+                if (!viewOk) { _sunBaked[i] = false; _sunScanned = false; break; }
+                _sunBaked[i] = true;
+                _sunKeyCombined[i] = combined;
+                _sunKeyVp[i] = vp;
+                _sunKeyFocus[i * 3] = focus.X; _sunKeyFocus[i * 3 + 1] = focus.Y; _sunKeyFocus[i * 3 + 2] = focus.Z;
+                _sunKeyDir[i * 3] = dir.X; _sunKeyDir[i * 3 + 1] = dir.Y; _sunKeyDir[i * 3 + 2] = dir.Z;
+                _sunKeyFit[i * 2] = radius; _sunKeyFit[i * 2 + 1] = margin;
+                fixed (float* pub = CascadeVp) *(Matrix4x4*)(pub + i * 16) = vp;
+                CascadeTexel[i] = 2f * radius / _mapSize;
+                CascadeRange[i] = 2f * radius + margin;
+                done++;
+            }
+            // #306: the dynamic layer bakes EVERY frame it has movers -- no predicate, its whole content is
+            // the movers -- with the SAME fit matrix the published static layer carries (on a skip the
+            // recompute above is bit-identical to it, courtesy of the snap), so the receiver's uv/layer/ref
+            // carry over unchanged and min() composes the two exactly. No movers in the fit = mask 0, and
+            // the receiver never samples the stale layer; a stalled dyn bake leaves the mask 0 too, which is
+            // a mover shadow that blinks for a frame, never one that lies.
+            if (!combined)
+            {
+                bool hasDyn = false;
+                for (int q = 0; q < _dMoverCount && !hasDyn; q++)
+                {
+                    int m = _dMoverIdx[q];
+                    hasDyn = InFit(_liveCx[m] - focus.X, _liveCy[m] - focus.Y, _liveCz[m] - focus.Z,
+                                   _liveR[m], dir, radius, radius + margin);
+                }
+                if (hasDyn && _sunBaked[i]
+                    && RenderView(SunDynTex, _mapSize, i, &vp, dir, focus, radius, margin, point: false,
+                                  set: CasterGather.SetDynamic))
+                { SunDynMask[i] = 1f; _sunDynBakedViews++; }
+            }
         }
         CascadeTex = _depthTex;
         // CascadeCount is the ONLY thing bounding the receiver's read: a stall at cascade i leaves layers
@@ -1203,7 +1377,26 @@ public sealed unsafe class CasterPass : IExtenderService
                    $"{_cubeDynSize}px = {_cubeDynPages * CubeFaces * (long)_cubeDynSize * _cubeDynSize * 4 / (1024 * 1024)} MB " +
                    $"beside the static array's {_cubeLights * CubeFaces * (long)_cubeSize * _cubeSize * 4 / (1024 * 1024)} MB) " +
                    $"(sun {(float)_sunBakedViews / _frames:F1} re-baked, " +
-                   $"{(float)_sunSkippedViews / _frames:F1} skipped) " +
+                   $"{(float)_sunSkippedViews / _frames:F1} skipped" +
+                   // #306: the static re-bake rate PER CASCADE LAYER is the texel snap's measured reuse
+                   // rate -- the number the toroidal-escalation verdict reads. A layer marked C degraded
+                   // itself to the combined bake (static half stale essentially every frame), which is
+                   // today's behaviour and not a wrong shadow.
+                   (SunDynTex != 0
+                    ? $"; static per layer {SunLayerReadout()} /frame, " +
+                      $"{(float)_sunDynBakedViews / _frames:F1} dynamic bakes/frame, " +
+                      $"degraded-to-combined [{SunCombinedReadout()}]"
+                    : "; sun split OFF (csm_dyn 0)") + ") " +
+                   // #307: which submission path the views took, and what it cost.
+                   (_layerDial
+                    ? _layerProbe > 0 && _progLayer != 0
+                      ? $"(layered bake: {(float)CasterGather.LayerDispatches / _frames:F1} dispatches over " +
+                        $"{(float)CasterGather.LayerViews / _frames:F1} views/frame" +
+                        (_layerFlushFails > 0 ? $", {_layerFlushFails} flush FAILURES" : "") + ") "
+                      : _layerProbe < 0
+                        ? "(layered bake UNAVAILABLE -- no ARB_shader_viewport_layer_array, per-view path) "
+                        : ""
+                    : "(layered bake OFF -- /shadow layered 1) ") +
                    $"(bakes charged to -- sun: blanket {_bakeWhy[WhySun]}, key {_bakeWhy[WhySun + 1]}, " +
                    $"mover {_bakeWhy[WhySun + 2]}; cube: blanket {_bakeWhy[WhyCube]}, key {_bakeWhy[WhyCube + 1]}, " +
                    $"mover {_bakeWhy[WhyCube + 2]}) " +
@@ -1251,12 +1444,31 @@ public sealed unsafe class CasterPass : IExtenderService
         _liveSum = 0; _qShadow.Reset();
         _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0;
         _sunBakedViews = 0; _sunSkippedViews = 0;
+        Array.Clear(_sunStaticL); _sunDynBakedViews = 0;
+        CasterGather.LayerDispatches = 0; CasterGather.LayerViews = 0;
         Array.Clear(_bakeWhy);
         _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _noRecordSum = 0;
         _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0;
         CasterGather.Views = 0; CasterGather.Batches = 0;
         CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0;
         CasterGather.UploadsSkipped = 0; CasterGather.Uploads = 0;
+    }
+
+    /// <summary>#306: the per-layer static re-bake rates, "L0 0,2/L1 0,1/..." -- cold, period line only.</summary>
+    private static string SunLayerReadout()
+    {
+        string s = "";
+        for (int i = 0; i < _cascades; i++)
+            s += (i > 0 ? "/" : "") + $"L{i} {(float)_sunStaticL[i] / _frames:F1}";
+        return s;
+    }
+
+    /// <summary>#306: which layers are currently degraded to the combined bake, e.g. "CC--".</summary>
+    private static string SunCombinedReadout()
+    {
+        string s = "";
+        for (int i = 0; i < _cascades; i++) s += _sunCombined[i] ? "C" : "-";
+        return s;
     }
 
     /// <summary>Pool pages currently claimed -- the period line's occupancy figure. Cold.</summary>
@@ -1287,6 +1499,9 @@ public sealed unsafe class CasterPass : IExtenderService
         Array.Clear(_sunBaked); Array.Clear(_sunHadMover);
         // #305: the pool pages name lights that just went away, and the published page indices with them.
         Array.Clear(_cubeCombined); Array.Clear(CubeDynPage);
+        // #306: the sun's half of the same wipe, degrade window included.
+        Array.Clear(SunDynMask); Array.Clear(_sunCombined); Array.Clear(_sunWinBaked);
+        _sunWinFrames = 0;
         Array.Fill(_dynPageOf, -1);
         if (_dynPageSlot.Length > 0) Array.Fill(_dynPageSlot, -1);
         // ...and the log is once per RELEASE, not once per frame: a lost 4.6 context disables its service
@@ -1456,6 +1671,12 @@ public sealed unsafe class CasterPass : IExtenderService
             if (_depthTex == 0) return false;   // DepthArray already disarmed by name
             Array.Clear(_sunBaked);   // #282: fresh storage holds no bake, whatever the keys say
         }
+        // #306: the sun's dynamic half, allocated whenever configured (the /shadow split dial is live).
+        if (_sunSplitCfg && SunDynTex == 0)
+        {
+            SunDynTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades);
+            if (SunDynTex == 0) return false;   // DepthArray already disarmed by name
+        }
         return true;
     }
 
@@ -1480,6 +1701,153 @@ public sealed unsafe class CasterPass : IExtenderService
             if (CubeDynTex == 0) return false;   // DepthArray already disarmed by name
         }
         return true;
+    }
+
+    /// <summary>#307: probe and arm the layered bake, inside the bracket. The extension is a property of the
+    /// 4.6 context, asked once; a driver without it (or a program that will not build) takes the per-view
+    /// path and says so once. Nothing disarms here -- the fallback IS the shipping path.</summary>
+    private static void EnsureLayered()
+    {
+        if (!_layerDial || _layerProgFailed) return;
+        if (_layerProbe == 0)
+        {
+            _layerProbe = Gl.FramebufferTexture != null
+                          && AlloyRenderer.HasExt("GL_ARB_shader_viewport_layer_array"u8) ? 1 : -1;
+            if (_layerProbe < 0)
+                _log?.Info("CasterPass: ARB_shader_viewport_layer_array is not in this context -- the " +
+                           "layered bake is unavailable, every view submits on the per-view path");
+        }
+        if (_layerProbe < 0 || _progLayer != 0) return;
+        if (!CasterGather.EnsureLayer())
+        {
+            _layerProgFailed = true;
+            _log?.Info("CasterPass: the layered gather dispatch failed to build -- per-view path");
+            return;
+        }
+        uint p = GlProgram.Graphics(CastLayerVs, CastFs, _log, "CasterPass layered depth program");
+        uint pm = GlProgram.Graphics(CastLayerMaskVs, CastMaskFs, _log, "CasterPass layered masked depth program");
+        // Both or neither: a layered pass whose masked batches silently fell back to solid quads would
+        // differ from the per-view A/B exactly where the cutout fix lives.
+        if (p == 0 || pm == 0)
+        {
+            if (p != 0) Gl.DeleteProgram(p);
+            if (pm != 0) Gl.DeleteProgram(pm);
+            _layerProgFailed = true;
+            _log?.Info("CasterPass: a layered depth program failed to build -- per-view path");
+            return;
+        }
+        _progLayer = p; _progLayerMask = pm;
+        _locLayerMaskTex = GlProgram.Loc(pm, "uTex");
+        _locLayerMaskCut = GlProgram.Loc(pm, "uAlphaCut");
+        _log?.Info("CasterPass: layered bake armed -- every stale view in one command buffer per target, " +
+                   "gl_Layer from the view table (/shadow layered 0 is the per-view A/B)");
+    }
+
+    /// <summary>#307: render the frame's queued views, one layered pass per distinct target texture.
+    /// False = the flush could not complete; the caller must publish NOTHING this frame.</summary>
+    private static bool FlushLayered()
+    {
+        int n = _qN; _qN = 0;
+        if (n == 0) return true;
+        // distinct targets in first-seen order -- at most four exist (sun static/dynamic, cube static/pool).
+        // A fifth-plus target would be a queue writer this flush does not know about; failing the flush
+        // (publish nothing, blanket next frame) is the honest answer, not silently never baking it.
+        uint* seen = stackalloc uint[8];
+        int nt = 0;
+        for (int k = 0; k < n; k++)
+        {
+            bool dup = false;
+            for (int t = 0; t < nt && !dup; t++) dup = seen[t] == _qTex[k];
+            if (dup) continue;
+            if (nt >= 8) return false;
+            seen[nt++] = _qTex[k];
+        }
+        for (int t = 0; t < nt; t++)
+            if (!FlushTarget(seen[t], n)) return false;
+        return true;
+    }
+
+    private static bool FlushTarget(uint tex, int n)
+    {
+        int size = 0;
+        // The stale layers clear FIRST, one attach per view: a layered attachment clears every layer at
+        // once, fresh ones included, so the per-layer loop here is correctness rather than thrift. This is
+        // the FBO churn that survives #307; the uniforms, dispatches and the MDI storm are what go.
+        for (int k = 0; k < n; k++)
+        {
+            if (_qTex[k] != tex) continue;
+            size = _qSize[k];
+            if (!BeginTarget(tex, size, _qLayer[k])) return false;
+        }
+        Gl.FramebufferTexture(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0);
+        if (Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
+        {
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+            Disarm("the layered caster depth framebuffer is incomplete");
+            return false;
+        }
+        Gl.Viewport(0, 0, size, size);
+        // ponytail: chunking only exists for the blanket-invalidate frame in a huge area -- a settled frame
+        // is one chunk. Growing MaxLayerCmds is the upgrade if the chunk count ever shows on the period line.
+        int chunk = Math.Max(1, MaxLayerCmds / Math.Max(_gDrawN, 1));
+        int k2 = 0;
+        while (true)
+        {
+            int vn = 0;
+            fixed (float* vs = _viewStage)
+                while (k2 < n && vn < chunk)
+                { if (_qTex[k2] == tex) StageView(vs, vn++, k2); k2++; }
+            if (vn == 0) break;
+            bool ok;
+            fixed (float* vs = _viewStage) ok = CasterGather.DispatchLayer(vs, vn);
+            if (!ok) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); return false; }
+            DrawLayered(vn);
+            CasterGather.End();
+        }
+        Gl.BindVertexArray(0);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        return true;
+    }
+
+    /// <summary>One queued view into the chunk's staged table, in the layout the dispatch and the layered
+    /// vertex stage both read (mat4 vp; focus/reach; dir/along; lodR/point/set/layer).</summary>
+    private static void StageView(float* dst, int vi, int k)
+    {
+        float* r = dst + (long)vi * CasterGather.ViewFloats;
+        fixed (Matrix4x4* m = &_qVp[k]) Buffer.MemoryCopy(m, r, 64, 64);
+        r[16] = _qFocus[k].X; r[17] = _qFocus[k].Y; r[18] = _qFocus[k].Z; r[19] = _qReach[k];
+        r[20] = _qDir[k].X; r[21] = _qDir[k].Y; r[22] = _qDir[k].Z; r[23] = _qAlong[k];
+        // this view's sub-texel radius, the same expression the per-view dispatch spells
+        r[24] = _lodTexels * 2f * _qReach[k] / _qSize[k];
+        r[25] = _qPoint[k] ? 1f : 0f;
+        r[26] = _qSet[k];
+        r[27] = _qLayer[k];
+    }
+
+    /// <summary>The layered pass's batch loop: <see cref="GatherSubmit"/>'s state walk minus the per-view
+    /// uniforms, one indirect-count draw per batch for ALL the chunk's views.</summary>
+    private static void DrawLayered(int vn)
+    {
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        int boundVao = -1, boundMask = -1, boundTex = -1;
+        float boundCut = -1f;
+        for (int g = 0; g < _gGroups; g++)
+        {
+            int cut0 = _gTex[g];
+            if ((cut0 != 0 ? 1 : 0) != boundMask)
+            {
+                boundMask = cut0 != 0 ? 1 : 0;
+                Gl.UseProgram(cut0 != 0 ? _progLayerMask : _progLayer);
+                if (cut0 != 0) Gl.Uniform1i(_locLayerMaskTex, 0);
+                boundCut = -1f;
+            }
+            if (cut0 != 0 && _gCut[g] != boundCut)
+            { boundCut = _gCut[g]; Gl.Uniform1f(_locLayerMaskCut, boundCut); }
+            if (cut0 != 0 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
+            if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
+            CasterGather.DrawLayer(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g], vn);
+        }
+        _mdiCalls += _gGroups;
     }
 
     /// <summary>A depth array sampled with hardware PCF: LINEAR + depth-compare IS the filter, one bilinear
@@ -1521,7 +1889,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // A count left standing is then permanently "fresh" -- the receiver samples a frozen map for the rest
         // of the session, shadows pinned where the geometry no longer is.
         CascadeCount = 0; CubeCount = 0;
-        Array.Clear(_cubeBaked); Array.Clear(CubeDynPage);
+        Array.Clear(_cubeBaked); Array.Clear(CubeDynPage); Array.Clear(SunDynMask);
     }
 
     /// <summary>Once per frame, before any view submits: revalidate every caster and resolve its live world
@@ -1683,6 +2051,19 @@ public sealed unsafe class CasterPass : IExtenderService
         {   // an EMPTY world still bakes: the clear is the bake
             if (!BeginTarget(tex, size, layer)) return false;
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+            return true;
+        }
+        // #307: under the layered bake a stale view is QUEUED, not submitted -- the flush after the pass
+        // loop renders every queued view of a target in one layered pass. The optimistic true is covered by
+        // the flush-failure handling, which publishes nothing for the frame. An overflowing queue renders
+        // inline rather than dropping a view.
+        if (LayeredActive && _qN < MaxBakeViews)
+        {
+            _submitCreatures = _gCreatures;
+            _qTex[_qN] = tex; _qSize[_qN] = size; _qLayer[_qN] = layer; _qVp[_qN] = *vp;
+            _qFocus[_qN] = focus; _qDir[_qN] = lightDir; _qReach[_qN] = reach; _qAlong[_qN] = reach + margin;
+            _qPoint[_qN] = point; _qSet[_qN] = set;
+            _qN++;
             return true;
         }
         return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point, set);
@@ -1963,5 +2344,56 @@ public sealed unsafe class CasterPass : IExtenderService
         uniform float uAlphaCut;
         in vec2 vUV;
         void main() { if (texture(uTex, vUV).a <= uAlphaCut) discard; }
+        """;
+
+    /// <summary>#307: the layered depth stage. <c>baseInstance</c> packs the view-table index above the
+    /// ownership slot (<see cref="CasterGather.ViewShift"/>); the stage routes to its layer and takes its fit
+    /// matrix from the view table, so no per-view uniform exists. <c>uVP</c> is deliberately spelled as a
+    /// LOCAL so the clip expression stays #119's character for character under the invariant -- the maths is
+    /// identical, only where the matrix comes from moved. Embedded only, never overridable: an override here
+    /// could only desync the two bake paths the A/B compares.</summary>
+    internal const string CastLayerVs = """
+        #version 460 core
+        #extension GL_ARB_shader_viewport_layer_array : require
+        layout(location = 0) in vec3 aPos;
+
+        """ + AlloyRenderer.DrawBufDecl + AlloyRenderer.FeatDecl + AlloyRenderer.BoneVs + """
+
+        """ + CasterGather.ViewTblDecl + """
+        invariant gl_Position;
+        void main()
+        {
+            int vi = gl_BaseInstance >> 18;
+            SowxDraw d = uDraw[gl_BaseInstance & 0x3ffff];
+            gl_Layer = int(uViewTbl[vi].c.w);
+            mat4 uVP = uViewTbl[vi].vp;
+            int bb = SowxBoneBase(d);
+            if (bb >= 0) gl_Position = uVP * d.model * (SowxSkinMat(bb) * vec4(aPos, 1.0));
+            else gl_Position = uVP * d.model * vec4(aPos, 1.0);
+        }
+        """;
+
+    /// <summary>...and the masked twin, <see cref="CastMaskVs"/> with the same routing. No skinning, for
+    /// the same bind-pose-cutout reason.</summary>
+    private const string CastLayerMaskVs = """
+        #version 460 core
+        #extension GL_ARB_shader_viewport_layer_array : require
+        layout(location = 0) in vec3 aPos;
+        layout(location = 1) in vec2 aUV;
+
+        """ + AlloyRenderer.DrawBufDecl + """
+
+        """ + CasterGather.ViewTblDecl + """
+        invariant gl_Position;
+        out vec2 vUV;
+        void main()
+        {
+            int vi = gl_BaseInstance >> 18;
+            SowxDraw d = uDraw[gl_BaseInstance & 0x3ffff];
+            gl_Layer = int(uViewTbl[vi].c.w);
+            mat4 uVP = uViewTbl[vi].vp;
+            gl_Position = uVP * d.model * vec4(aPos, 1.0);
+            vUV = aUV;
+        }
         """;
 }
