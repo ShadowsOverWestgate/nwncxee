@@ -479,6 +479,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     }
     /// <summary>Monotonic presented-frame counter: the light SSBO uploads once per frame, not once per pass.</summary>
     private static int _frameSeq;
+
     private static bool _takeOverflow, _ambientFallbackLogged, _loggedOnce;
     private static uint _clusterOverflow;
     /// <summary>#119 measurement: prepass GPU time, and the fragments the COLOUR pass actually shaded.
@@ -1414,7 +1415,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                       : CullPass.CullFrames == 0 ? "cull armed, no counts read back yet, "
                       : $"cull keeps {(float)CullPass.KeptDraws / CullPass.CullFrames:F0}/frame and drops " +
                         $"{(float)CullPass.CulledDraws / CullPass.CullFrames:F0} " +
-                        $"({(CullPass.KeptDraws + CullPass.CulledDraws == 0 ? 0f : 100f * CullPass.CulledDraws / (CullPass.KeptDraws + CullPass.CulledDraws)):F0}% of the opaque range, " +
+                        $"({(CullPass.KeptDraws + CullPass.CulledDraws == 0 ? 0f : 100f * CullPass.CulledDraws / (CullPass.KeptDraws + CullPass.CulledDraws)):F0}% of the colour range, " +
                         $"{(CullPass.Mode >= CullPass.ModeHiZ ? "frustum+hi-Z" : "frustum only")}; bounds span " +
                         $"{CullPass.SpreadX:F0}x{CullPass.SpreadY:F0}x{CullPass.SpreadZ:F0}u, largest radius " +
                         $"{CullPass.SpreadMaxR:F0}u), ") +

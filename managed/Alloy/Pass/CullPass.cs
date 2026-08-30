@@ -27,14 +27,22 @@ namespace Sowx.Alloy;
 /// rebuild of its source list: the batch walk stages the six-uint record where it already stages the draw's
 /// count, offset and base, and this class uploads it. What is left on the CPU is the batch CUT alone, whose
 /// keys are engine pointers read during revalidation and cannot be asked of the GPU.</para>
-/// <para><b>Opaque range only.</b> Compaction is an <c>atomicAdd</c>, so the order inside a batch is not
-/// this frame's staging order. Opaque draws are order-independent; the blended and water ranges are sorted
-/// back-to-front and stay on the <c>BaseVertex</c> path untouched -- #290 is that half, scoped and split
-/// out rather than left implied. Cutout batches blend and DO ride the
-/// indirect path -- overlapping cutouts can therefore composite in a different order from frame to frame.
-/// Named rather than hidden: they depth-write with a discard, so the visible consequence is at most a
-/// shimmer where two graded edges overlap, and <c>/draw cull 0</c> is the A/B that proves it either way.
-/// </para>
+/// <para><b>Two kinds of batch (#290).</b> Below <c>compactBelow</c> a batch COMPACTS: an <c>atomicAdd</c>
+/// appends survivors in whatever order the hardware hands them out, which is sound for the opaque range
+/// because its draws are order-independent. At and above it a batch is SORTED: the first dispatch measures
+/// each survivor's squared distance from the eye, and a second dispatch gives it its slot by counting how
+/// many survivors of the same batch are farther away. See <see cref="SortCs"/>.</para>
+/// <para>That is #287's deferred ordering question, answered on the GPU: nothing about WHICH transparent
+/// draws exist or what order they composite in comes back to the CPU. The key is measured from the bounding
+/// sphere already resident in the SSBO, the compare is on the float key rather than a quantised one (so two
+/// coplanar surfaces cannot tie into the wrong order), the tie-break is the staged index (so equal-distance
+/// draws hold their texture-grouped enrollment order frame to frame), and the per-draw alpha multiplier
+/// cannot come unpaired from its index because it rides the RECORD, which the permutation names through
+/// <c>uOut</c> rather than reorders.</para>
+/// <para>Cutout batches blend and ride the COMPACTING side -- overlapping cutouts can therefore composite in
+/// a different order from frame to frame. Named rather than hidden: they depth-write with a discard, so the
+/// visible consequence is at most a shimmer where two graded edges overlap, and <c>/draw cull 0</c> is the
+/// A/B that proves it either way.</para>
 /// <para>Stands down whole when 4.6 indirect-count or compute is missing, when the programs fail to build,
 /// or when the knob is off -- and standing down means the caller's existing <c>BaseVertex</c> submission,
 /// which is unchanged. A cull that cannot run must never mean an empty world.</para>
@@ -45,7 +53,8 @@ internal static unsafe class CullPass
     /// <see cref="CasterPass"/>, 7 the Alloy bones, 8 the bindless handles, 9 the per-draw index array,
     /// 10/11 <see cref="Particles"/>. Everything here is private to the dispatch except
     /// <see cref="AlloyRenderer.BindDrawIdx"/>, which the compacted slot buffer takes at DRAW time.</summary>
-    internal const uint BindSrc = 12, BindSphere = 13, BindCmd = 14, BindOutSlot = 15, BindCount = 16;
+    internal const uint BindSrc = 12, BindSphere = 13, BindCmd = 14, BindOutSlot = 15, BindCount = 16,
+                        BindKey = 17;
 
     /// <summary>Uints per source record: index count, first index, base vertex, record slot, batch, and the
     /// batch's output base. Six rather than five because the batch's start offset is what turns an
@@ -67,13 +76,14 @@ internal static unsafe class CullPass
     internal const int PhasePrepass = 0, PhaseColour = 1;
 
     private static ExtenderLog? _log;
-    private static uint _prog, _progHiZ;
+    private static uint _prog, _progHiZ, _progSort;
     private static bool _failed;
     private static int _uDrawN, _uPlanes, _uHiZ, _uVP, _uPyr, _uPyrSize, _uMaxLod;
-    private static int _uLodPx, _uLodScale;
+    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye;
+    private static int _sDrawN, _sCompactBelow;
     private static int _hSrc, _hLevel;
 
-    private static uint _srcBuf, _sphBuf;
+    private static uint _srcBuf, _sphBuf, _keyBuf;
     private static readonly uint[] _cmdBuf = new uint[2];
     private static readonly uint[] _slotBuf = new uint[2];
     private static readonly uint[] _cntBuf = new uint[2];
@@ -131,6 +141,11 @@ internal static unsafe class CullPass
     /// </summary>
     private static float _lodScale;
 
+    /// <summary>#290: this pass's eye, the sort key's one input. The same quantity
+    /// <c>AlloyRenderer.EyeDist2</c> measures from on the CPU, so the two orders agree and
+    /// <c>/draw cull 0</c> is a like-for-like A/B rather than a different sort.</summary>
+    private static Vector3 _eye;
+
     /// <summary>The pass can actually run: the programs built and every entry point it needs exists.</summary>
     internal static bool Ready => _prog != 0;
 
@@ -141,6 +156,12 @@ internal static unsafe class CullPass
     /// line says so -- a centre spread far smaller than the area is the signature.</summary>
     internal static float SpreadX, SpreadY, SpreadZ, SpreadMaxR;
     private static int _drawN, _groups, _phase = -1;
+
+    /// <summary>#290: the first SORTED batch -- everything below it compacts in the first dispatch, and
+    /// everything at or above it is placed by the second. Kept because the dispatch needs it as a uniform
+    /// and <see cref="SortCs"/> needs it to know which draws are its.</summary>
+    private static int _compactBelow;
+
 
     /// <summary>#287: the diagnostic above, measured by the staging walk that already touches every one of
     /// these spheres. It used to be a second walk here; the extent is the same extent either way.</summary>
@@ -153,12 +174,12 @@ internal static unsafe class CullPass
     /// dead context) and everything rebuilds on the next pass. See docs/owned-resource-lifetimes.md.</summary>
     internal static void ContextLost()
     {
-        _prog = 0; _progHiZ = 0; _failed = false;
-        _srcBuf = 0; _sphBuf = 0; _cmdCap = 0; _cntCap = 0; _sphCap = 0;
+        _prog = 0; _progHiZ = 0; _progSort = 0; _failed = false;
+        _srcBuf = 0; _sphBuf = 0; _keyBuf = 0; _cmdCap = 0; _cntCap = 0; _sphCap = 0;
         Array.Clear(_cmdBuf); Array.Clear(_slotBuf); Array.Clear(_cntBuf);
         Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); _readCap = 0;
         _pyrTex = 0; _pyrFbo = 0; _pyrVao = 0; _pyrW = 0; _pyrH = 0; _pyrLevels = 0; _pyrGen = -1;
-        _phase = -1;
+        _phase = -1; _compactBelow = 0;
     }
 
     /// <summary>Everything the dispatch needs from GL. #264 promoted this to a BOOT term: with the engine's
@@ -178,8 +199,9 @@ internal static unsafe class CullPass
         if (_prog != 0) return true;
         if (_failed || !Capable()) return false;
         _prog = GlProgram.Compute(CullCs, _log, "CullPass frustum/hi-Z cull");
+        _progSort = GlProgram.Compute(SortCs, _log, "CullPass back-to-front rank sort");
         _progHiZ = GlProgram.Graphics(PostChain.FullscreenVs, HiZFs, _log, "CullPass hi-Z pyramid");
-        if (_prog == 0 || _progHiZ == 0)
+        if (_prog == 0 || _progHiZ == 0 || _progSort == 0)
         {
             _failed = true; _prog = 0;
             // #264: hard, not a downgrade. The frame has no other visibility test, and the boot verdict has
@@ -196,10 +218,15 @@ internal static unsafe class CullPass
         _uMaxLod = GlProgram.Loc(_prog, "uMaxLod");
         _uLodPx = GlProgram.Loc(_prog, "uLodPx");
         _uLodScale = GlProgram.Loc(_prog, "uLodScale");
+        _uCompactBelow = GlProgram.Loc(_prog, "uCompactBelow");
+        _uEye = GlProgram.Loc(_prog, "uEye");
+        _sDrawN = GlProgram.Loc(_progSort, "uDrawN");
+        _sCompactBelow = GlProgram.Loc(_progSort, "uCompactBelow");
         _hSrc = GlProgram.Loc(_progHiZ, "uSrc");
         _hLevel = GlProgram.Loc(_progHiZ, "uLevel");
         if (_pyrVao == 0) { uint v; Gl.GenVertexArrays(1, &v); _pyrVao = v; }
-        _log?.Info("CullPass: armed -- GPU frustum + hi-Z cull, glMultiDrawElementsIndirectCount submission");
+        _log?.Info("CullPass: armed -- GPU frustum + hi-Z cull, GPU back-to-front sort of the blending "
+                   + "ranges, glMultiDrawElementsIndirectCount submission");
         return true;
     }
 
@@ -207,15 +234,17 @@ internal static unsafe class CullPass
     /// ONLY thing that may switch them off the <c>BaseVertex</c> path.</summary>
     internal static bool Active => Mode > ModeOff && _phase >= 0;
 
-    /// <summary>Upload the pass's opaque draw list and the per-record bounding spheres. Returns false when
+    /// <summary>Upload the pass's draw list and the per-record bounding spheres. Returns false when
     /// the cull is not running this pass, and the caller then submits exactly as before.
-    /// <para><paramref name="groups"/> is the OPAQUE batch count: the blended and water ranges are sorted
-    /// and never reach here.</para>
+    /// <para>#290: <paramref name="groups"/> is now EVERY batch of the pass, and
+    /// <paramref name="compactBelow"/> is where the compacting half ends -- the opaque batch count. Batches
+    /// at or above it are SORTED back-to-front by the second dispatch (see the class summary), which the
+    /// and additive ranges are placed by the sort dispatch instead of the atomic.</para>
     /// <para>#287: <paramref name="src"/> is <see cref="SrcUints"/> uints per draw, staged by the batch walk
     /// itself -- see <see cref="SrcUints"/>. Nothing per-draw is computed here any more; this is an upload
     /// and a set of buffer sizes.</para></summary>
     internal static bool Begin(int groups, int drawN, uint* src, float* spheres, int sphereSlots,
-                              float lodScale)
+                              float lodScale, int compactBelow, Vector3 eye)
     {
         _phase = -1;
         if (Mode <= ModeOff || drawN <= 0 || groups <= 0 || !Ensure()) return false;
@@ -231,6 +260,8 @@ internal static unsafe class CullPass
         }
 
         _drawN = drawN; _groups = groups; _lodScale = lodScale;
+        _compactBelow = Math.Clamp(compactBelow, 0, groups);
+        _eye = eye;
 
         if (_srcBuf == 0) { uint b; Gl.GenBuffers(1, &b); _srcBuf = b; }
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _srcBuf);
@@ -255,6 +286,10 @@ internal static unsafe class CullPass
             Ensure(ref _slotBuf[i], (long)drawN * sizeof(uint), drawN > _cmdCap);
             Ensure(ref _cntBuf[i], (long)groups * sizeof(uint), groups > _cntCap);
         }
+        // #290: the sort's scratch -- one key per draw, negative for a draw the cull dropped. One buffer
+        // rather than a key array beside a keep array: distances are never negative, so the sign IS the
+        // verdict, and the rank scan reads one word per neighbour instead of two.
+        Ensure(ref _keyBuf, (long)drawN * sizeof(float), drawN > _cmdCap);
         if (drawN > _cmdCap) _cmdCap = drawN;
         if (groups > _cntCap) _cntCap = groups;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
@@ -289,6 +324,7 @@ internal static unsafe class CullPass
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _cmdBuf[phase]);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _slotBuf[phase]);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _cntBuf[phase]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindKey, _keyBuf);
         Gl.Uniform1i(_uDrawN, _drawN);
         Gl.UniformMatrix4fv(_uVP, 1, 0, (float*)vp);
         float* planes = stackalloc float[24];
@@ -296,6 +332,8 @@ internal static unsafe class CullPass
         Gl.Uniform4fv(_uPlanes, 6, planes);
         Gl.Uniform1f(_uLodPx, MathF.Max(LodPx, 0f));
         Gl.Uniform1f(_uLodScale, _lodScale);
+        Gl.Uniform1i(_uCompactBelow, _compactBelow);
+        fixed (Vector3* e = &_eye) Gl.Uniform3fv(_uEye, 1, (float*)e);
         bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0 && _pyrGen == gen;
         Gl.Uniform1i(_uHiZ, useHiZ ? 1 : 0);
         if (useHiZ)
@@ -307,7 +345,23 @@ internal static unsafe class CullPass
             Gl.BindTexture(Gl.TEXTURE_2D, _pyrTex);
             Gl.ActiveTexture(Gl.TEXTURE0);
         }
-        Gl.DispatchCompute((uint)((_drawN + GroupSize - 1) / GroupSize), 1, 1);
+        uint groups1D = (uint)((_drawN + GroupSize - 1) / GroupSize);
+        Gl.DispatchCompute(groups1D, 1, 1);
+        // #290: the sort is a SECOND dispatch, and the barrier between them is load-bearing -- a draw ranks
+        // itself against keys every other invocation of the first dispatch wrote, so none of them may still
+        // be in flight. One pass cannot do both: a rank needs the whole batch's verdicts decided.
+        if (_compactBelow < _groups)
+        {
+            Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
+            Gl.UseProgram(_progSort);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _cmdBuf[phase]);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _slotBuf[phase]);
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindKey, _keyBuf);
+            Gl.Uniform1i(_sDrawN, _drawN);
+            Gl.Uniform1i(_sCompactBelow, _compactBelow);
+            Gl.DispatchCompute(groups1D, 1, 1);
+        }
         // Both consumers are outside the shader-storage class: the commands are read as indirect state and
         // the count as parameter-buffer state. SHADER_STORAGE alone leaves both undefined.
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.COMMAND_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
@@ -547,11 +601,14 @@ internal static unsafe class CullPass
     /// one? A line-by-line port of <see cref="CullCs"/>'s <c>main</c>, run one invocation at a time -- which
     /// is what a sequential <c>atomicAdd</c> is -- over a synthetic pass, compared against the list the
     /// <c>BaseVertex</c> path would submit from the same staging.
-    /// <para>Set equality per batch, not sequence equality: the order INSIDE a batch is the atomic's, not the
-    /// staging walk's, and on real hardware it is not even deterministic. What is asserted is what the
-    /// submission actually depends on -- every survivor lands inside its own batch's output region, carries
-    /// its own record slot, and its command is its source record field for field. Class order is preserved by
-    /// construction, because each batch compacts into its own region.</para>
+    /// <para>Two standards, because #290 gave the pass two kinds of batch. For a COMPACTING batch it is set
+    /// equality: the order inside it is the atomic's, not the staging walk's, and on real hardware it is not
+    /// even deterministic -- so what is asserted is what the submission actually depends on, that every
+    /// survivor lands inside its own batch's output region, carries its own record slot, and its command is
+    /// its source record field for field. For an ORDERED batch it is SEQUENCE equality, which is the whole
+    /// point of one: every draw sits at its exact staged index and a culled one holds its place as a
+    /// zero-instance command. Class order is preserved either way, because each batch owns its own output
+    /// region.</para>
     /// <para>The port is deliberately adjacent to the GLSL it mirrors. If one changes and the other does not,
     /// that is what this goes red on.</para></summary>
     private static bool Parity(ExtenderLog log, Matrix4x4 vp, float* planes)
@@ -559,12 +616,15 @@ internal static unsafe class CullPass
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"CullPass.Parity FAIL: {w}"); } }
 
-        // Two batches of three draws, all inside the frustum the caller built: straight ahead at 10 units.
-        const int drawN = 6, groups = 2;
-        int* gStart = stackalloc int[groups] { 0, 3 };
-        int* gLen = stackalloc int[groups] { 3, 3 };
+        // Three batches, all inside the frustum the caller built: straight ahead at 10 units. Batch 2 is
+        // the SORTED one -- #290's half, where the back-to-front order is produced rather than inherited.
+        const int drawN = 10, groups = 3, compactBelow = 2;
+        int* gStart = stackalloc int[groups] { 0, 3, 6 };
+        int* gLen = stackalloc int[groups] { 3, 3, 4 };
         uint* src = stackalloc uint[drawN * SrcUints];
         float* sph = stackalloc float[drawN * 4];
+        float* key = stackalloc float[drawN];
+        var eye = Vector3.Zero;
         int n = 0;
         for (int g = 0; g < groups; g++)
             for (int d = 0; d < gLen[g]; d++, n++)
@@ -577,58 +637,93 @@ internal static unsafe class CullPass
         sph[1 * 4 + 0] = 500f;                                   // draw 1: far off to the side
         sph[4 * 4 + 3] = AlloyRenderer.NeverCull;                // draw 4: unknown bounds, never culled
         sph[5 * 4 + 3] = 0.001f;                                 // draw 5: a speck, for the LOD test
+        // The sorted batch: near, far, equally far (the tie), and one the frustum drops.
+        sph[6 * 4 + 2] = -10f;
+        sph[7 * 4 + 2] = -30f;
+        sph[8 * 4 + 2] = -30f;
+        sph[9 * 4 + 0] = 500f;
 
         uint* cmd = stackalloc uint[drawN * CmdUints];
         int* outSlot = stackalloc int[drawN];
         uint* cnt = stackalloc uint[groups];
 
         // Everything visible: the compaction must reproduce the staged list exactly, batch for batch.
-        Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, cmd, outSlot, cnt);
+        Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd, outSlot, cnt);
         E(cnt[0] == 2 && cnt[1] == 3, "only the out-of-frustum draw is dropped when nothing else can be");
         E(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
           "the compacted list agrees with the CPU-staged one draw for draw");
 
+        // #290 (AC1 + AC5), the sorted half. Not "the same set": the submitted order has to BE the
+        // back-to-front one, produced from keys the dispatch measured, with the culled draw compacted out.
+        E(cnt[2] == 3, "the sorted batch's count is its survivors, not its staged length");
+        E(outSlot[6] == 7 && outSlot[7] == 8 && outSlot[8] == 6,
+          "the sorted batch submits farthest first, and an exact tie keeps the lower staged index");
+        E(Sorted(sph, outSlot, gStart[2], (int)cnt[2], eye, log),
+          "...which is to say every neighbour in it is no nearer than the one before");
+        E(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
+          "...and each of its commands is its own staged draw's range");
+        // A rank is order-independent by construction; this is what pins that it really is.
+        Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd, outSlot, cnt,
+                scramble: true);
+        E(cnt[2] == 3 && outSlot[6] == 7 && outSlot[7] == 8 && outSlot[8] == 6,
+          "the sort is the same when the atomic hands its draws out backwards");
+
         // LOD: a speck goes, an exempt record stays, and the ordinary draws are untouched. uLodScale is
         // proj.M22 * viewportH / 2 -- 1.0 * 1080 / 2 for the caller's 90-degree projection.
-        Emulate(src, sph, drawN, groups, planes, vp, 1f, 540f, cmd, outSlot, cnt);
+        Emulate(src, sph, drawN, groups, planes, vp, 1f, 540f, compactBelow, eye, key, cmd, outSlot, cnt);
         E(cnt[1] == 2 && outSlot[gStart[1]] == 3 && outSlot[gStart[1] + 1] == 4,
           "a sub-pixel draw is LOD-culled and the ones that are not are the ones that survive");
         E(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
           "...and what survives it is still the staged record, field for field");
-        Emulate(src, sph, drawN, groups, planes, vp, 1f, 0f, cmd, outSlot, cnt);
+        Emulate(src, sph, drawN, groups, planes, vp, 1f, 0f, compactBelow, eye, key, cmd, outSlot, cnt);
         E(cnt[1] == 3, "a pass with no perspective scale runs no LOD test rather than culling everything");
-        Emulate(src, sph, drawN, groups, planes, vp, 1e6f, 540f, cmd, outSlot, cnt);
+        Emulate(src, sph, drawN, groups, planes, vp, 1e6f, 540f, compactBelow, eye, key, cmd, outSlot, cnt);
         E(cnt[1] == 1 && outSlot[gStart[1]] == 4,
           "an absurd LOD threshold still cannot touch a NeverCull record");
+        E(cnt[2] == 3, "...nor anything in a SORTED batch, which runs no LOD test at all");
         return ok;
     }
 
     /// <summary>The port. <c>i</c> is <c>gl_GlobalInvocationID.x</c> and the counter is the atomic; every
-    /// other line is <see cref="CullCs"/>'s, in order.</summary>
+    /// other line is <see cref="CullCs"/>'s and <see cref="SortCs"/>'s, in order -- two loops because there
+    /// are two dispatches, and the barrier between them is what the loop boundary stands for.
+    /// <para><paramref name="scramble"/> runs the invocations backwards. A sequential port hands the atomic
+    /// out in staged order, which is the one thing real hardware never promises; the sorted range must come
+    /// out identical either way, and that is asserted rather than assumed.</para></summary>
     private static void Emulate(uint* src, float* sph, int drawN, int groups, float* planes, Matrix4x4 vp,
-                                float lodPx, float lodScale, uint* cmd, int* outSlot, uint* cnt)
+                                float lodPx, float lodScale, int compactBelow, Vector3 eye, float* key,
+                                uint* cmd, int* outSlot, uint* cnt, bool scramble = false)
     {
         for (int g = 0; g < groups; g++) cnt[g] = 0;
-        for (int i = 0; i < drawN; i++)
+        for (int q = 0; q < drawN; q++)
         {
+            int i = scramble ? drawN - 1 - q : q;
             uint* b = src + (long)i * SrcUints;
+            bool sorted = b[4] >= (uint)compactBelow;
             int slot = (int)b[3];
             float* s = sph + (long)slot * 4;
             var c = new Vector3(s[0], s[1], s[2]);
             float r = s[3];
+            bool keep = true;
             if (r < 1e29f)
             {
-                bool clipped = false;
-                for (int p = 0; p < 6 && !clipped; p++)
-                    clipped = planes[p * 4] * c.X + planes[p * 4 + 1] * c.Y + planes[p * 4 + 2] * c.Z
-                              + planes[p * 4 + 3] < -r;
-                if (clipped) continue;
-                if (lodPx > 0f && lodScale > 0f)
+                for (int p = 0; p < 6 && keep; p++)
+                    keep = !(planes[p * 4] * c.X + planes[p * 4 + 1] * c.Y + planes[p * 4 + 2] * c.Z
+                             + planes[p * 4 + 3] < -r);
+                if (keep && !sorted && lodPx > 0f && lodScale > 0f)
                 {
                     float w = Vector4.Transform(new Vector4(c, 1f), vp).W;
-                    if (w > 0f && r * lodScale < lodPx * w) continue;
+                    if (w > 0f && r * lodScale < lodPx * w) keep = false;
                 }
             }
+            if (sorted)
+            {
+                Vector3 d = c - eye;
+                key[i] = keep ? Vector3.Dot(d, d) : -1f;
+                if (keep) cnt[b[4]]++;
+                continue;
+            }
+            if (!keep) continue;
             uint o = b[5] + cnt[b[4]]++;
             uint k = o * 5u;
             cmd[k] = b[0];
@@ -638,14 +733,59 @@ internal static unsafe class CullPass
             cmd[k + 4u] = 0u;
             outSlot[o] = slot;
         }
+        // ...and the second dispatch: the rank sort.
+        for (int q = 0; q < drawN; q++)
+        {
+            int i = scramble ? drawN - 1 - q : q;
+            uint* b = src + (long)i * SrcUints;
+            uint batch = b[4];
+            if (batch < (uint)compactBelow) continue;
+            float k = key[i];
+            if (k < 0f) continue;
+            uint bas = b[5];
+            uint rank = 0;
+            for (uint j = bas; j < (uint)drawN; j++)
+            {
+                if (src[(long)j * SrcUints + 4] != batch) break;
+                if (j == (uint)i) continue;
+                float kj = key[j];
+                if (kj < 0f) continue;
+                if (kj > k || (kj == k && j < (uint)i)) rank++;
+            }
+            uint o = bas + rank;
+            uint cw = o * 5u;
+            cmd[cw] = b[0];
+            cmd[cw + 1u] = 1u;
+            cmd[cw + 2u] = b[1];
+            cmd[cw + 3u] = b[2];
+            cmd[cw + 4u] = 0u;
+            outSlot[o] = (int)b[3];
+        }
+    }
+
+    /// <summary>#290 (AC5): the submitted run really is back-to-front. Read off the SPHERES rather than the
+    /// keys, so a key the emulator computed wrongly cannot agree with itself.</summary>
+    private static bool Sorted(float* sph, int* outSlot, int start, int count, Vector3 eye, ExtenderLog log)
+    {
+        float prev = float.MaxValue;
+        for (int o = start; o < start + count; o++)
+        {
+            float* s = sph + (long)outSlot[o] * 4;
+            Vector3 d = new Vector3(s[0], s[1], s[2]) - eye;
+            float k = Vector3.Dot(d, d);
+            if (k > prev)
+            { log.Info($"CullPass.Parity FAIL: output {o} is farther than the one before it"); return false; }
+            prev = k;
+        }
+        return true;
     }
 
     /// <summary>Every survivor of <paramref name="cmd"/> is a staged draw of its own batch, once, with its
     /// own record slot -- and it landed inside that batch's output region. The two ways a compaction can be
     /// wrong that the draw call cannot survive: a draw written into someone else's region, and a command
     /// paired with the wrong record slot.</summary>
-    private static bool Agrees(uint* src, int drawN, int groups, int* gStart, uint* cmd, int* outSlot,
-                              uint* cnt, ExtenderLog log)
+    private static bool Agrees(uint* src, int drawN, int groups, int* gStart, uint* cmd,
+                              int* outSlot, uint* cnt, ExtenderLog log)
     {
         bool ok = true;
         for (int g = 0; g < groups; g++)
@@ -678,6 +818,7 @@ internal static unsafe class CullPass
         layout(std430, binding = 14) writeonly buffer SowxCullCmd    { uint uCmd[]; };
         layout(std430, binding = 15) writeonly buffer SowxCullOutIdx { int  uOut[]; };
         layout(std430, binding = 16) buffer SowxCullCount            { uint uCnt[]; };
+        layout(std430, binding = 17) buffer SowxCullKey              { float uKey[]; };
         uniform int uDrawN;
         uniform vec4 uPlanes[6];
         uniform mat4 uVP;
@@ -687,6 +828,8 @@ internal static unsafe class CullPass
         uniform float uMaxLod;
         uniform float uLodPx;
         uniform float uLodScale;
+        uniform int uCompactBelow;
+        uniform vec3 uEye;
 
         // One pyramid tap, addressed through the LEVEL-0 grid rather than the level's own.
         // This is the fix for #243's first live bug. `textureLod(uv, L)` maps uv across the width of level
@@ -745,16 +888,37 @@ internal static unsafe class CullPass
             uint i = gl_GlobalInvocationID.x;
             if (i >= uint(uDrawN)) return;
             uint b = i * 6u;
+            uint batch = uSrc[b + 4u];
+            // #290: a batch at or above uCompactBelow is SORTED -- this dispatch only decides its verdict
+            // and measures its key, and the second dispatch places it. Everything below compacts here, as
+            // it has since #243, because opaque draws have no order to preserve.
+            bool sorted = batch >= uint(uCompactBelow);
             int slot = int(uSrc[b + 3u]);
             vec4 s = uSph[slot];
+            bool keep = true;
             if (s.w < 1e29)
             {
-                for (int p = 0; p < 6; p++)
-                    if (dot(uPlanes[p].xyz, s.xyz) + uPlanes[p].w < -s.w) return;
-                if (SowxSubPixel(s.xyz, s.w)) return;
-                if (uHiZ != 0 && SowxOccluded(s.xyz, s.w)) return;
+                for (int p = 0; p < 6 && keep; p++)
+                    if (dot(uPlanes[p].xyz, s.xyz) + uPlanes[p].w < -s.w) keep = false;
+                // #290: LOD is for the OPAQUE range alone. A blended or additive draw is routinely far
+                // larger on screen than its bounding radius -- a torch flame or a spell mote is a bloomed
+                // sprite, and thinning it by projected radius would delete lights the frustum and the
+                // pyramid both agree are visible.
+                if (keep && !sorted && SowxSubPixel(s.xyz, s.w)) keep = false;
+                if (keep && uHiZ != 0 && SowxOccluded(s.xyz, s.w)) keep = false;
             }
-            uint o = uSrc[b + 5u] + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
+            if (sorted)
+            {
+                // The key, and the verdict carried in its sign: squared distance from this pass's eye,
+                // which is exactly what the CPU's EyeDist2 measures, so the two orders agree.
+                vec3 d = s.xyz - uEye;
+                uKey[i] = keep ? dot(d, d) : -1.0;
+                // The count is the batch's SURVIVOR count -- the sort compacts as well as orders.
+                if (keep) atomicAdd(uCnt[batch], 1u);
+                return;
+            }
+            if (!keep) return;
+            uint o = uSrc[b + 5u] + atomicAdd(uCnt[batch], 1u);
             uint c = o * 5u;
             uCmd[c] = uSrc[b];        // count
             uCmd[c + 1u] = 1u;        // instanceCount
@@ -762,6 +926,63 @@ internal static unsafe class CullPass
             uCmd[c + 3u] = uSrc[b + 2u];   // baseVertex
             uCmd[c + 4u] = 0u;        // baseInstance
             uOut[o] = slot;
+        }
+        """;
+
+    /// <summary>#290: the back-to-front sort, as a RANK rather than a shuffle. One thread per draw; a
+    /// survivor of a sorted batch counts how many survivors of the same batch are FARTHER than it, and that
+    /// count is its offset from the batch's output base. No scratch list, no bucket table, and no key
+    /// quantisation -- the compare is on the float key itself, so two coplanar surfaces cannot tie into the
+    /// wrong order the way a radix over quantised depth lets them.
+    /// <para>The tie-break is the STAGED index, which keeps equal-distance draws in the texture-grouped
+    /// enrollment order the CPU sort also leaves them in -- stable, and stable the same way, so a still
+    /// camera does not shuffle its transparents frame to frame.</para>
+    /// <para>A batch's draws are contiguous in the source list (the cut walks it in order), so the scan runs
+    /// from the batch's base until the batch field changes. ponytail: that is O(n^2) compares inside a
+    /// batch, spread across n threads. The blending ranges are the small remainder of a scene by
+    /// construction -- single-digit batches in a typical area -- and every alternative (bitonic, radix)
+    /// needs more dispatches and a scratch list to beat it. If a scene ever lands enough transparents to
+    /// show on the <c>[alloy]</c> line, a bitonic sort over these same keys drops in without changing
+    /// anything around it.</para></summary>
+    private const string SortCs = """
+        #version 460 core
+        layout(local_size_x = 64) in;   // GroupSize
+        layout(std430, binding = 12) readonly buffer SowxCullSrc     { uint uSrc[]; };
+        layout(std430, binding = 14) writeonly buffer SowxCullCmd    { uint uCmd[]; };
+        layout(std430, binding = 15) writeonly buffer SowxCullOutIdx { int  uOut[]; };
+        layout(std430, binding = 17) readonly buffer SowxCullKey     { float uKey[]; };
+        uniform int uDrawN;
+        uniform int uCompactBelow;
+
+        void main()
+        {
+            uint i = gl_GlobalInvocationID.x;
+            if (i >= uint(uDrawN)) return;
+            uint b = i * 6u;
+            uint batch = uSrc[b + 4u];
+            if (batch < uint(uCompactBelow)) return;
+            float k = uKey[i];
+            if (k < 0.0) return;              // the cull dropped it
+            uint base = uSrc[b + 5u];
+            uint rank = 0u;
+            for (uint j = base; j < uint(uDrawN); j++)
+            {
+                if (uSrc[j * 6u + 4u] != batch) break;   // batches are contiguous in the source list
+                if (j == i) continue;
+                float kj = uKey[j];
+                if (kj < 0.0) continue;
+                // Farther first. An exact tie falls to the lower staged index, which is the CPU sort's own
+                // stable order -- so the two agree draw for draw and /draw cull 0 is a like-for-like A/B.
+                if (kj > k || (kj == k && j < i)) rank++;
+            }
+            uint o = base + rank;
+            uint c = o * 5u;
+            uCmd[c] = uSrc[b];
+            uCmd[c + 1u] = 1u;
+            uCmd[c + 2u] = uSrc[b + 1u];
+            uCmd[c + 3u] = uSrc[b + 2u];
+            uCmd[c + 4u] = 0u;
+            uOut[o] = int(uSrc[b + 3u]);
         }
         """;
 

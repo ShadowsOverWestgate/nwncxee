@@ -144,6 +144,18 @@ public sealed unsafe partial class AlloyRenderer
     /// every batch (and it is a DIFFERENT location per program, so the program switch cannot leave a stale
     /// one behind) -- the shaders read record uDrawBase + gl_DrawID, which is what carries the per-part model
     /// matrix, texture rotation and material colours that used to be per-part uniforms.</summary>
+    /// <summary>#290: one colour-bracket range, from the cull's compacted list where the cull ran. Bound
+    /// around the range rather than for the whole bracket -- the sky, grass, beam and particle passes bind
+    /// buffers of their own in between, and finding an indirect buffer still bound under one of them is a
+    /// class of bug that shows up as a wrong batch rather than as an error.</summary>
+    private static void IssueColour(int from, int to, Matrix4x4* vp, int* viewport, float near, float far)
+    {
+        bool indirect = CullPass.Active;
+        if (indirect) CullPass.BindForDraw(CullPass.PhaseColour);
+        IssueBatches(from, to, (float*)vp, viewport, near, far, indirect);
+        if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
+    }
+
     private static void IssueBatches(int from, int groups, float* vpRaw, int* viewport, float near, float far,
                                      bool indirect = false)
     {
@@ -323,9 +335,12 @@ public sealed unsafe partial class AlloyRenderer
             // cull moves WHICH draws are in the batch, never what state they draw under), and the record
             // lookup is unchanged too -- uDrawBase is still this batch's start, because the cull compacts
             // each batch into its own source region rather than into one global run.
-            if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
+            // #290: ...including the primitive override, which the indirect path used to drop -- a water
+            // batch submitted as TRIANGLES never reaches the tessellator, so its waves simply do not exist.
+            uint prim = water ? Gl.PATCHES : _gMode[g];
+            if (indirect) CullPass.Draw(prim, g, s, _gLen[g]);
             else
-                Gl.MultiDrawElementsBaseVertex(water ? Gl.PATCHES : _gMode[g], counts + s, GlUnsignedShort,
+                Gl.MultiDrawElementsBaseVertex(prim, counts + s, GlUnsignedShort,
                                                (void**)(offs + s), _gLen[g], bases + s);
             _batches++;
             _draws += _gLen[g];
@@ -364,7 +379,9 @@ public sealed unsafe partial class AlloyRenderer
         if (to <= from) return;
         Gl.DepthMask(0);
         Gl.Enable(Gl.BLEND); _blendOn = true;
-        IssueBatches(from, to, (float*)vp, viewport, near, far);
+        // #290: the same compacted list the opaque pass drew from, whose batches in THIS range were placed
+        // by the sort dispatch -- back-to-front from this pass's eye, measured on the GPU.
+        IssueColour(from, to, vp, viewport, near, far);
     }
 
     /// <summary>ADR 0011 <see cref="PassId.WaterOwned"/> (#129): the water class, drawn from the one
@@ -383,7 +400,7 @@ public sealed unsafe partial class AlloyRenderer
         _waterView = view; _waterProj = proj; _waterNear = near; _waterFar = far;
         Gl.DepthMask(1);
         FrameSnapshot.Bind();
-        IssueBatches(from, to, (float*)vp, viewport, near, far);
+        IssueColour(from, to, vp, viewport, near, far);
         // Leave the state the additive pass expects to find: it enables blending itself, but the depth mask
         // is pass-level state and additive must not write depth.
         Gl.DepthMask(0);
