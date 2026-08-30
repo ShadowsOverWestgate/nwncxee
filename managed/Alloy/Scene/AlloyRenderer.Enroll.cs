@@ -80,6 +80,22 @@ public sealed unsafe partial class AlloyRenderer
         return -1;
     }
 
+    /// <summary>The <c>Part::~Part</c> death notice, delivered to the OWNERSHIP tables. #308 made slots
+    /// persistent across enrollments, and enrollments run only every EnrollFloor-ish frames -- so between
+    /// scans a dead tenant's <c>_oTri</c> kept dangling and every shadow bracket raw-chased it
+    /// (<c>TryCaster</c>'s tile-fade read, <c>PoseSkinned</c>'s bone solve). On an area transition the
+    /// engine frees parts by the thousand and returns their pages, which turns that chase from a stale read
+    /// into the SIGSEGV under <c>Scene::Render</c>. Same doctrine as the part table's own tombstone (#145,
+    /// #221): every owned pointer table gets the death notice, told, not inferred. O(1) through the
+    /// enrollment hash; the vanish sweep then ghosts the freed slot at its last sphere, exactly as any
+    /// mid-frame revoke. Compares the dying pointer only -- never dereferences it.</summary>
+    internal static void NotePartDeath(IntPtr part)
+    {
+        int mask = (1 << SlotHashBits) - 1;
+        for (int j = SlotHash(part); _shGen[j] == _enrollGen; j = (j + 1) & mask)
+            if (_oTri[_shSlot[j]] == part) { Revoke(_shSlot[j]); return; }
+    }
+
     /// <summary>A newcomer's slot: a vacated one if any sweep left one, the next high-water slot otherwise.
     /// Never overflows past MaxOwned -- the capacity gate refuses on the LIVE count, and every slot below the
     /// high-water mark is either live or on the free list.</summary>
@@ -256,6 +272,17 @@ public sealed unsafe partial class AlloyRenderer
             // rare (a rebind, a walk re-seat) so the cost of suspicion is one honest one-frame flap.
             if (!kept || drifted) _oEnrollGen[i] = _enrollGen;
             if (!kept) _ownLive++;
+            // A NEWCOMER joins the tri->slot hash now, not at the next scan's HashLiveSlots: the death
+            // notice (NotePartDeath) looks tenants up through this hash BETWEEN scans, and a part that
+            // enrolled and died inside one enrollment gap would otherwise stay chased by the shadow
+            // bracket as a dangling pointer. Appending mid-scan is safe for FindSlot -- a hashed slot
+            // claimed this scan is refused by the _oClaim compare exactly as before.
+            if (!kept)
+            {
+                int hj = SlotHash(c.Tri);
+                while (_shGen[hj] == _enrollGen) hj = (hj + 1) & ((1 << SlotHashBits) - 1);
+                _shGen[hj] = _enrollGen; _shSlot[hj] = i;
+            }
             _oEntry[i] = e; _oTri[i] = c.Tri; _oNode[i] = c.Node; _oMat[i] = c.Mat; _oVdo[i] = c.Vdo;
             _oItem[i] = c.Item; _oPrim[i] = c.Prim; _oVao[i] = v; _oMx[i] = c.Mx; _oLit[i] = lit;
             _oRotBits[i] = c.RotBits;

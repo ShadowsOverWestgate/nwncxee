@@ -137,6 +137,11 @@ public sealed unsafe class DrawFunnelService : IExtenderService
             Die(e, "destroyed");
             DtorRevokes++;
         }
+        // ...and the OWNERSHIP slot with it: #308's persistent slots outlive the enrollment gap, so the
+        // notice must reach them directly or the shadow bracket keeps chasing the freed part until the
+        // next scan (the busy-area transition crash). Unconditional -- an enrolled tenant can outlive its
+        // part-table entry's state.
+        AlloyRenderer.NotePartDeath(part);
         _origPartDtor(part);
     }
 
