@@ -392,6 +392,7 @@ internal static unsafe class Particles
                        _lFalloff = -1, _lWrap = -1, _lAtten = -1, _lHot = -1, _lWrapN = -1,
                        _lSunTex = -1, _lSunVp = -1, _lSunTexel = -1, _lSunBias = -1, _lSunCount = -1,
                        _lCubeTex = -1, _lCubeLight = -1, _lCubePlane = -1, _lCubeCount = -1, _lCubeSoft = -1,
+                       _lCubeDynTex = -1, _lCubeDynPage = -1,
                        _lSunMedia = -1, _lLocalMedia = -1;
     /// <summary>The CPU shadow of the record buffer, addressed by <see cref="Emit.RecBase"/>. The build
     /// writes here; only the blocks whose hash moved are sent to GL.</summary>
@@ -760,7 +761,8 @@ internal static unsafe class Particles
                                         viewport, near, far);
             AlloyRenderer.UploadAreaTerms(_lAmbient, _lDiffuse, _lDir);
             AlloyRenderer.UploadSunCascades(_lSunTex, _lSunVp, _lSunTexel, _lSunBias, _lSunCount);
-            AlloyRenderer.UploadLocalCubes(_lCubeTex, _lCubeLight, _lCubePlane, _lCubeCount, _lCubeSoft);
+            AlloyRenderer.UploadLocalCubes(_lCubeTex, _lCubeLight, _lCubePlane, _lCubeCount, _lCubeSoft,
+                                           _lCubeDynPage);
             // A particle is a point in a volume, not a point on a surface: the shadow lookups' normal
             // offset is a surface remedy and applying it to a camera-facing billboard normal is what put
             // bands across the smoke. Both lookups keep their constant biases; only the offset goes.
@@ -1440,6 +1442,7 @@ internal static unsafe class Particles
         _lCubeTex = GlProgram.Loc(_prog, "uLocalShadow"); _lCubeLight = GlProgram.Loc(_prog, "uLocalLight");
         _lCubePlane = GlProgram.Loc(_prog, "uLocalPlane"); _lCubeCount = GlProgram.Loc(_prog, "uLocalCubes");
         _lCubeSoft = GlProgram.Loc(_prog, "uLocalSoft");
+        _lCubeDynTex = GlProgram.Loc(_prog, "uLocalDynShadow"); _lCubeDynPage = GlProgram.Loc(_prog, "uLocalDynPage");
         _lSunMedia = GlProgram.Loc(_prog, "uSunMedia");
         _lLocalMedia = GlProgram.Loc(_prog, "uLocalMedia");
         // The sampler UNITS, once, at link time rather than per pass. uSunShadow and uLocalShadow are a
@@ -1450,6 +1453,7 @@ internal static unsafe class Particles
         Gl.UseProgram(_prog);
         Gl.Uniform1i(_lSunTex, (int)AlloyRenderer.SunUnit);
         Gl.Uniform1i(_lCubeTex, (int)AlloyRenderer.CubeUnit);
+        Gl.Uniform1i(_lCubeDynTex, (int)AlloyRenderer.CubeDynUnit);
         return true;
     }
 

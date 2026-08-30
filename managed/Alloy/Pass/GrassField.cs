@@ -236,7 +236,7 @@ internal static unsafe class GrassField
         public int PushTex, PushGain, PushWindow;
         public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN;
         public int SunTex, SunVp, SunTexel, SunBias, SunCount;
-        public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft;
+        public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage;
     }
     private static Loc _loc;
     private static AlloyRenderer.FeatLoc _featLoc;
@@ -810,7 +810,7 @@ internal static unsafe class GrassField
         AlloyRenderer.UploadAreaTerms(_loc.Ambient, _loc.Diffuse, _loc.Dir);
         AlloyRenderer.UploadSunCascades(_loc.SunTex, _loc.SunVp, _loc.SunTexel, _loc.SunBias, _loc.SunCount);
         AlloyRenderer.UploadLocalCubes(_loc.CubeTex, _loc.CubeLight, _loc.CubePlane, _loc.CubeCount,
-                                          _loc.CubeSoft);
+                                          _loc.CubeSoft, _loc.CubeDynPage);
 
         // The class's whole point, in one declaration: blending OFF, depth writes ON, and the coverage decision
         // made entirely by the fragment stage's two discards. Two-sided because a blade is a card -- the
@@ -1079,6 +1079,7 @@ internal static unsafe class GrassField
             CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeLight = GlProgram.Loc(prog, "uLocalLight"),
             CubePlane = GlProgram.Loc(prog, "uLocalPlane"), CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
             CubeSoft = GlProgram.Loc(prog, "uLocalSoft"),
+            CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"), CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"),
         };
         _featLoc = AlloyRenderer.FeatLocs(prog);
         // Same reason the lit program does it here: a sampler left at its default points at unit 0, and GL
@@ -1087,6 +1088,7 @@ internal static unsafe class GrassField
         Gl.Uniform1i(_loc.Tex, 0);
         Gl.Uniform1i(_loc.SunTex, (int)AlloyRenderer.SunUnit);
         Gl.Uniform1i(_loc.CubeTex, (int)AlloyRenderer.CubeUnit);
+        Gl.Uniform1i(_loc.CubeDynTex, (int)AlloyRenderer.CubeDynUnit);
         Gl.Uniform1i(_loc.PushTex, (int)PushUnit);
         _log?.Info("GrassField: instanced grass program ready");
         return true;

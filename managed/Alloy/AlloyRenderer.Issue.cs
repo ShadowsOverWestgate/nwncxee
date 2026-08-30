@@ -237,7 +237,8 @@ public sealed unsafe partial class AlloyRenderer
                     fixed (Vector3* eye = &_eyePos) Gl.Uniform3fv(_watEye, 1, (float*)eye);
                     UploadAreaTerms(_watAmbient, _watDiffuse, _watDir);
                     UploadSunCascades(_watSunTex, _watSunVp, _watSunTexel, _watSunBias, _watSunCount);
-                    UploadLocalCubes(_watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft);
+                    UploadLocalCubes(_watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
+                                     _watCubeDynPage);
                     UploadProbe(_watProbeMips, _watProbeGain, _watSceneEnv);
                     // The cascade/cube/probe uploads each left their own unit current for a moment; the copy
                     // pair has to be back on its units before the first water draw samples them.

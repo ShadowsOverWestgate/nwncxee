@@ -116,7 +116,8 @@ public sealed unsafe partial class AlloyRenderer
     /// the receiver never re-derives them from the live light, which is what keeps a carried torch's shadow
     /// attached to the torch. Same freshness gate as the cascades.</summary>
     private static void UploadLocalCubes()
-        => UploadLocalCubes(_litCubeTex, _litCubeLight, _litCubePlane, _litCubeCount, _litCubeSoft);
+        => UploadLocalCubes(_litCubeTex, _litCubeLight, _litCubePlane, _litCubeCount, _litCubeSoft,
+                            _litCubeDynPage);
 
     /// <summary>#121: point the lit program at the IBL probe, or tell it there is nothing to sample
     /// (<c>uProbeMips</c> 0). Unbinding rather than leaving the cube bound during a capture is not
@@ -178,7 +179,8 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>#127: the local-cube receiver's uniforms, into a named program's locations.</summary>
-    internal static void UploadLocalCubes(int locTex, int locLight, int locPlane, int locCount, int locSoft)
+    internal static void UploadLocalCubes(int locTex, int locLight, int locPlane, int locCount, int locSoft,
+                                          int locDynPage)
     {
         if (locCount < 0) return;
         // #139: the softness pair goes out even when there are no cubes -- it is program state, not per-cube
@@ -188,9 +190,15 @@ public sealed unsafe partial class AlloyRenderer
         int n = CasterPass.CubeCount;
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeUnit);
         Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeTex);
+        // #305: the dynamic pool rides the same publish -- the per-slot page indices carry PAGE+1, so a slot
+        // with no movers (or a session with no pool) reads 0 and the receiver stays static-only there.
+        Gl.ActiveTexture(Gl.TEXTURE0 + CubeDynUnit);
+        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeDynTex);
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
         Gl.Uniform1i(locTex, (int)CubeUnit);
         fixed (float* l = CasterPass.CubeLight) Gl.Uniform4fv(locLight, n, l);
+        if (locDynPage >= 0)
+            fixed (float* p = CasterPass.CubeDynPage) Gl.Uniform1fv(locDynPage, n, p);
         Gl.Uniform2f(locPlane, CasterPass.CubeNearPlane, 1f / CasterPass.CubeFaceSize);
         Gl.Uniform1i(locCount, n);
     }

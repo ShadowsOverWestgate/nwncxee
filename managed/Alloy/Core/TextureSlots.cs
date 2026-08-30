@@ -36,6 +36,13 @@ internal static class TextureSlots
     /// displacement field instead. Deliberate and safe: they are different programs that never run in the
     /// same bracket, so the table records the reuse rather than burning a unit to avoid it.</summary>
     internal const uint PostHdr = 10, PostBloom = 11, GrassPush = 10;
+    /// <summary>#305: the dynamic-pool cube array (<c>samplerCubeArrayShadow</c>), sampled by every program
+    /// that samples <see cref="LocalShadow"/>. Shares <see cref="PostBloom"/>'s unit on the same argument as
+    /// <see cref="GrassPush"/>: the post resolve is a different program that never runs in the lit/water/
+    /// grass/particle brackets, and 0..15 is the whole budget. Bound at each program's link, because a
+    /// samplerCubeArrayShadow left at its default unit 0 collides with the diffuse's sampler2D -- an
+    /// INVALID_OPERATION that silently drops every draw.</summary>
+    internal const uint LocalShadowDyn = PostBloom;
     /// <summary>The environment probe cube -- above the whole map block for the type-collision reason.</summary>
     internal const uint Probe = 12;
     /// <summary>The frame snapshot the water stage refracts through: colour then depth.</summary>
@@ -76,6 +83,8 @@ internal static class TextureSlots
           $"{SunShadow} uSunShadow");
         E(AlloyLights.LocalShadowLib.Contains("uniform samplerCubeArrayShadow uLocalShadow;"),
           $"{LocalShadow} uLocalShadow");
+        E(AlloyLights.LocalShadowLib.Contains("uniform samplerCubeArrayShadow uLocalDynShadow;"),
+          $"{LocalShadowDyn} uLocalDynShadow");
         for (int i = 0; i < MapSamplers.Length; i++)
             E(AlloyRenderer.OwnedLitFsHead.Contains($"uniform sampler2D {MapSamplers[i]};"),
               $"{MapBase + i} {MapSamplers[i]}");

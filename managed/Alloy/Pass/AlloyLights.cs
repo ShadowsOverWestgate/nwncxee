@@ -627,6 +627,15 @@ internal static unsafe class AlloyLights
         // something wrong.
         uniform vec2 uLocalSoft;
 
+        // #305: the DYNAMIC pool -- movers only, re-baked every frame at reduced resolution, composed with
+        // the static cube by min(): depth visibility is a min-of-blockers, so the two arrays compose exactly
+        // and NO COPY exists anywhere on the path (#187's composite cache lost to its own per-view copy;
+        // this is not that design). uLocalDynPage[slot] carries the pool PAGE PLUS ONE (0 = no movers near
+        // that light) -- a program that never sets it reads 0 everywhere, so a stale content override
+        // degrades to static-only rather than to sampling page zero.
+        uniform samplerCubeArrayShadow uLocalDynShadow;
+        uniform float uLocalDynPage[64];
+
         // Sample point pushed along the normal by this many cube texels -- the same acne fight the sun
         // cascades run, scaled by the texel a face actually spans at this distance rather than a constant.
         const float SOWX_LOCAL_NORMAL_OFFSET = 2.0;
@@ -667,7 +676,13 @@ internal static unsafe class AlloyLights
             // the reference the other way makes every lit surface shadow itself.
             m = clamp(max(max(abs(d.x), abs(d.y)), abs(d.z)) - SOWX_LOCAL_BIAS, near, far);
             float ref = far / (far - near) * (1.0 - near / m);
-            float v = texture(uLocalShadow, vec4(d, float(slot)), ref);
+            float vs = texture(uLocalShadow, vec4(d, float(slot)), ref);
+            // #305: one hard tap into the dynamic pool -- the movers it holds are small, close and re-baked
+            // every frame, so the static disc below stays the only softened term. Same d and ref: the two
+            // arrays share the light's geometry, so one reference depth compares against both.
+            float pg = uLocalDynPage[slot];
+            float vd = pg > 0.5 ? texture(uLocalDynShadow, vec4(d, pg - 1.0), ref) : 1.0;
+            float v = min(vs, vd);
             if (uLocalSoft.x <= 0.0) return v;
             // #139: four more taps on a disc perpendicular to the sample ray. The cube fetch is already
             // hardware PCF, so this WIDENS that filter rather than replacing it. The reference depth is
@@ -678,11 +693,11 @@ internal static unsafe class AlloyLights
             vec3 axis = abs(d.x) < 0.9 * m ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
             vec3 du = normalize(cross(axis, d)) * (texel * uLocalSoft.x);
             vec3 dv = normalize(cross(d, du)) * (texel * uLocalSoft.x);
-            v += texture(uLocalShadow, vec4(d + du, float(slot)), ref);
-            v += texture(uLocalShadow, vec4(d - du, float(slot)), ref);
-            v += texture(uLocalShadow, vec4(d + dv, float(slot)), ref);
-            v += texture(uLocalShadow, vec4(d - dv, float(slot)), ref);
-            return v * 0.2;
+            vs += texture(uLocalShadow, vec4(d + du, float(slot)), ref);
+            vs += texture(uLocalShadow, vec4(d - du, float(slot)), ref);
+            vs += texture(uLocalShadow, vec4(d + dv, float(slot)), ref);
+            vs += texture(uLocalShadow, vec4(d - dv, float(slot)), ref);
+            return min(vs * 0.2, vd);
         }
 
         """;

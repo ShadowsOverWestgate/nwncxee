@@ -11,8 +11,10 @@ namespace Sowx.Alloy;
 /// <summary>
 /// #93 (map #68, spec #78 M2): the one Alloy submission path every rigid shadow caster goes through.
 /// Tiles and placeables are the same thing here -- a part with an indexed VDO, an index range and a model
-/// matrix -- so there is no static/dynamic split and no kind-based branching anywhere below. #187: there is
-/// no static/dynamic split. There IS a motion split, and #282 finished it: a view re-bakes only when its
+/// matrix -- so there is no kind-based branching anywhere below. #305 split the cube POPULATION in two --
+/// a static array baked on the predicate and a small per-frame dynamic pool, composed with min() in the
+/// receiver (never #187's rejected copy-based composite; <c>/shadow split 0</c> is the combined-bake A/B).
+/// There is also a motion split, and #282 finished it: a view re-bakes only when its
 /// recorded depth has stopped describing the world -- the view's own key changed, or something moved inside
 /// it (<see cref="ViewStale"/>). #241 gave the cubes that predicate and left the sun at full price; both
 /// carry it now. Every term errs toward stale, so a wrong answer costs a bake and can never freeze a shadow,
@@ -168,8 +170,53 @@ public sealed unsafe class CasterPass : IExtenderService
     /// any (re)creation of the array -- all of which leave the layers holding depth nobody may sample.</summary>
     private static readonly bool[] _cubeBaked = new bool[MaxCubes];
     /// <summary>Did a mover intersect this slot's light on the PREVIOUS frame? That is what invalidates the
-    /// frame a mover LEAVES: it is inside no longer, so no live mover would name the slot it just vacated.</summary>
+    /// frame a mover LEAVES: it is inside no longer, so no live mover would name the slot it just vacated.
+    /// #305: under the split this carries STATIC-EVENT evidence instead (appearances, vanishes, set
+    /// transitions) -- toggling <c>/shadow split</c> sets the blanket, so the two meanings never mix.</summary>
     private static readonly bool[] _cubeHadMover = new bool[MaxCubes];
+
+    // --- #305: the static/dynamic split. The predicate above can only SKIP a view; it cannot make a stale
+    // one cheaper, and a stale cube re-bakes the whole static world it sees -- one walking creature dirties
+    // the room. So the population is split: the STATIC array (the existing CubeTex) bakes on the predicate
+    // and is invalidated only by static-set events, while a smaller DYNAMIC pool holds movers only and
+    // re-bakes every frame, which is affordable because it is the movers and not the room. The receiver
+    // composes the two with min() -- depth is a min-of-blockers, so it composes exactly, and NO COPY exists
+    // anywhere in the design (this is not #187's composite cache, whose per-view glCopyImageSubData is what
+    // lost). Cubes only; the sun cascades keep the plain predicate.
+
+    /// <summary>Dynamic-pool face size (config <c>cube_dyn_size</c>) and page count (config
+    /// <c>cube_dyn_count</c>, 0 = no pool, split permanently off; defaults to the cube budget so the pool
+    /// never starves into the combined fallback). A PAGE is one light's six mover-only
+    /// faces, claimed only while a mover stands inside that light -- the pool is per mover-bearing light,
+    /// never a 1:1 mirror of the static array, which is what keeps its VRAM a fraction of the static
+    /// array's. Movers are few, small and close, so reduced resolution is the right spend.</summary>
+    private static int _cubeDynSize = 256, _cubeDynPages = 16;
+    /// <summary><c>/shadow split 1|0</c>: the A/B. Off = one combined bake per cube on the plain #241
+    /// predicate, exactly as before this ticket.</summary>
+    private static bool _split = true;
+    /// <summary>The dynamic pool's cube array (0 = none yet), layer <c>6*page + face</c>.</summary>
+    internal static uint CubeDynTex;
+    /// <summary>Per cube slot: the pool PAGE holding its movers, PLUS ONE -- 0 means "no movers near this
+    /// light", which is also what a receiver program that never sets the uniform reads, so a stale content
+    /// override degrades to static-only rather than to sampling page zero. Published fresh each frame the
+    /// page bakes.</summary>
+    internal static readonly float[] CubeDynPage = new float[MaxCubes];
+    /// <summary>Face size of the dynamic pool as rendered.</summary>
+    internal static int CubeDynFaceSize => _cubeDynSize;
+    /// <summary>Slot -&gt; claimed pool page (-1 none) and page -&gt; owning slot (-1 free). Sticky, like the
+    /// slots themselves: a page churn would be invisible in the depth (it re-bakes every frame) but wastes
+    /// nothing to avoid.</summary>
+    private static readonly int[] _dynPageOf = new int[MaxCubes];
+    private static int[] _dynPageSlot = Array.Empty<int>();
+    /// <summary>Slot is in COMBINED mode: it has movers but no pool page (pool exhausted), so it bakes both
+    /// halves into the static array every frame -- the per-slot fallback to pre-split behaviour. A mode
+    /// change re-keys the slot, or a mover baked in while combined would outlive the mode.</summary>
+    private static readonly bool[] _cubeCombined = new bool[MaxCubes];
+    /// <summary>Frame each OWNERSHIP slot was last a dynamic caster on -- the set-transition detector. A
+    /// caster whose membership flips (starts or stops moving) is a static-set event: the static bake must
+    /// shed it or adopt it, within one predicate cycle.</summary>
+    private static readonly int[] _dynStamp = new int[MaxCasters];
+    private static long _cubeDynBakedPages;
     /// <summary>#282: the sun's half of the same bake state. A cascade's recorded depth is a function of the
     /// fit -- focus, light direction, radius and margin -- and of what stood inside it, so those four are the
     /// key and the mover test is the only other term.
@@ -193,6 +240,19 @@ public sealed unsafe class CasterPass : IExtenderService
     /// construction in a still area, which is the whole point.</summary>
     private static readonly int[] _moverIdx = new int[MaxCasters];
     private static int _moverCount;
+    /// <summary>#305: the frame's DYNAMIC casters (live indices) -- skinned, matrix-moved, dangly,
+    /// vertex-dirty. What the dynamic pool bakes, and what marks a light mover-bearing. A subset of
+    /// <see cref="_moverIdx"/> (which adds appearances, for the sun's unsplit predicate).</summary>
+    private static readonly int[] _dMoverIdx = new int[MaxCasters];
+    private static int _dMoverCount;
+    /// <summary>#305: the frame's STATIC-SET EVENTS (live indices) -- a caster that appeared, or whose
+    /// dynamic membership flipped. The only live movers that may invalidate a static page; vanishes ride the
+    /// ghost list as they always did.</summary>
+    private static readonly int[] _sMoverIdx = new int[MaxCasters];
+    private static int _sMoverCount;
+    /// <summary>#305: is this live caster dynamic this frame? Staged into the gather source as the set
+    /// flag its dispatch filter reads.</summary>
+    private static readonly bool[] _liveDyn = new bool[MaxCasters];
     /// <summary>Spheres of the casters that were live last frame and are not live now -- a part that died, a
     /// creature that walked out of the capture, a VDO item range that stopped resolving. A vanished caster
     /// leaves no live mover to name the slot it was standing in, so its LAST KNOWN sphere is the mover: the
@@ -381,6 +441,16 @@ public sealed unsafe class CasterPass : IExtenderService
         _cascades = Settings.Int("csm_cascades", _cascades, 1, MaxCascades);
         _cubeLights = Settings.Int("cube_count", _cubeLights, 0, MaxCubes);
         _cubeSize = Settings.Int("cube_size", _cubeSize, 64, 2048);
+        // #305: the dynamic pool's shape. Sizes an allocation, so config, not /shadow (ADR 0013).
+        // The page DEFAULT is the cube budget itself: the first live run saturated a 16-page pool in a
+        // 32-cube street and every overflow slot fell back to the combined bake -- the exact static-bake
+        // churn the split exists to remove, for 24 MB saved. Full coverage is the right default; shrink
+        // cube_dyn_count on a small card.
+        _cubeDynSize = Settings.Int("cube_dyn_size", _cubeDynSize, 64, 2048);
+        _cubeDynPages = Settings.Int("cube_dyn_count", _cubeLights, 0, MaxCubes);
+        _dynPageSlot = new int[Math.Max(_cubeDynPages, 1)];
+        Array.Fill(_dynPageSlot, -1);
+        Array.Fill(_dynPageOf, -1);
 
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
@@ -412,8 +482,9 @@ public sealed unsafe class CasterPass : IExtenderService
     /// file next to the map sizes.</summary>
     internal static string Describe()
         => $"dist {_maxDist:F0} lod {_lodTexels:F1} rebake {(_rebake ? 1 : 0)} " +
-           $"gather {CasterGather.Mode} " +
-           $"({_cascades}x{_mapSize} cascades, {_cubeLights}x{_cubeSize} cubes)";
+           $"gather {CasterGather.Mode} split {(_split ? 1 : 0)} " +
+           $"({_cascades}x{_mapSize} cascades, {_cubeLights}x{_cubeSize} cubes, " +
+           $"{_cubeDynPages}x{_cubeDynSize} dynamic pool pages)";
 
     /// <summary>Set one dial, returning its old value; NaN when the key is not ours, which is how the
     /// dispatcher knows to try the scene feed's dials instead.</summary>
@@ -441,13 +512,20 @@ public sealed unsafe class CasterPass : IExtenderService
                 float orb = _rebake ? 1f : 0f;
                 _rebake = v != 0f;
                 return orb;
+            case "split":
+                // #305's A/B: 0 = one combined bake per cube on the plain predicate. The blanket is set
+                // because the recorded faces (and _cubeHadMover's meaning) belong to the other mode.
+                float os = _split ? 1f : 0f;
+                _split = v != 0f;
+                _invalidate = true;
+                return os;
             default: return float.NaN;
         }
     }
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _lodTexels = LodBoot; _rebake = true; _invalidate = true; CasterGather.Mode = 1; }
+    { _maxDist = MaxDistBoot; _lodTexels = LodBoot; _rebake = true; _split = true; _invalidate = true; CasterGather.Mode = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -571,6 +649,14 @@ public sealed unsafe class CasterPass : IExtenderService
                   // same pin on the cube side: uLocalLight is indexed by a slot the CPU hands out, so a
                   // shorter array reads out of bounds the moment the count passes it
                   && AlloyLights.LocalShadowLib.Contains($"uLocalLight[{MaxCubes}]")
+                  // #305: the dynamic half. The page array is slot-indexed like uLocalLight; the compose is
+                  // min() (depth is a min-of-blockers -- any other operator double-counts or hides one
+                  // array); and the page guard reads "none" from the ZERO a program that never sets the
+                  // uniform leaves behind, so a stale content override degrades to static-only.
+                  && AlloyLights.LocalShadowLib.Contains($"uLocalDynPage[{MaxCubes}]")
+                  && AlloyLights.LocalShadowLib.Contains("float v = min(vs, vd);")
+                  && AlloyLights.LocalShadowLib.Contains("return min(vs * 0.2, vd);")
+                  && AlloyLights.LocalShadowLib.Contains("pg > 0.5")
                   // #303: the gather dispatch culls the CPU reference's tests over the SHARED SowxCullSphere
                   // buffer, conservative in the direction that costs a draw -- a cull that rejects a visible
                   // caster deletes a shadow; one that admits an invisible one costs a draw. GLSL cannot be
@@ -627,17 +713,18 @@ public sealed unsafe class CasterPass : IExtenderService
             {
                 _liveIdxCount[i] = 30 + i; _liveFirst[i] = (uint)(100 + i); _liveBaseVert[i] = (uint)(7 + i);
                 _liveCut[i] = 0.2f; _liveSlot[i] = 4100 + i;
+                _liveDyn[i] = i == 1;   // #305: the set flag, one of each, so a swap fails
             }
             uint* src = stackalloc uint[2 * CasterGather.SrcUints];
             StageOne(src, 0, 0, 0, 0);
             StageOne(src, 1, 1, 1, 1);
             bool pack = src[0] == 30 && src[1] == 100 && src[2] == 7 && src[3] == 4100 && src[4] == 0
-                        && src[5] == 0
+                        && src[5] == 0 && src[6] == 0
                         && src[CasterGather.SrcUints] == 31
                         && src[CasterGather.SrcUints + 3] == 4101 && src[CasterGather.SrcUints + 4] == 1
-                        && src[CasterGather.SrcUints + 5] == 1
-                        && CasterGather.SrcUints == 6 && CasterGather.CmdBytes == 20;
-            _liveCreatures = 0; _liveCount = 0;
+                        && src[CasterGather.SrcUints + 5] == 1 && src[CasterGather.SrcUints + 6] == 1
+                        && CasterGather.SrcUints == 7 && CasterGather.CmdBytes == 20;
+            _liveCreatures = 0; _liveCount = 0; _liveDyn[0] = false; _liveDyn[1] = false;
             if (!pack)
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: the compute gather's staging drifted from the source the dispatch reads"); }
             // The rotation's write-after-read argument holds only above a floor of 2: at 1 no barrier stands
@@ -913,13 +1000,16 @@ public sealed unsafe class CasterPass : IExtenderService
         {
             if (pick[j] >= 0) { slotOf[pick[j]] = j; continue; }
             // the slot lost its light: whatever depth it holds describes a light no longer in the budget,
-            // and the next light to take it must not inherit it
+            // and the next light to take it must not inherit it -- nor its dynamic page or mode
             _cubeBaked[j] = false; _cubeKeyId[j] = IntPtr.Zero; _cubeHadMover[j] = false;
+            _cubeCombined[j] = false;
+            if (_dynPageOf[j] >= 0) { _dynPageSlot[_dynPageOf[j]] = -1; _dynPageOf[j] = -1; }
         }
 
         // A slot nobody claims is published INACTIVE (far = 0, id = 0) rather than compacted away: the
         // receiver reads far <= near as "lit", so holes in the slot array are free.
-        for (int j = 0; j < _cubeLights; j++) { CubeLight[j * 4 + 3] = 0f; CubeLightId[j] = IntPtr.Zero; }
+        for (int j = 0; j < _cubeLights; j++)
+        { CubeLight[j * 4 + 3] = 0f; CubeLightId[j] = IntPtr.Zero; CubeDynPage[j] = 0f; }
 
         int done = 0, frameCreatures = 0, nearestCreatures = -1;
         // #241: the transition below is only meaningful about a slot this frame BAKED -- a skipped nearest
@@ -927,6 +1017,9 @@ public sealed unsafe class CasterPass : IExtenderService
         bool nearestBaked = false;
         bool invalidate = _frameInvalidate;
         bool scannedAll = true;
+        // #305: the split runs only when its pool exists -- cube_dyn_count 0 or a refused allocation is the
+        // combined bake everywhere, exactly as /shadow split 0 spells it.
+        bool split = _split && _cubeDynPages > 0 && CubeDynTex != 0;
         for (int rank = 0; rank < have; rank++)
         {
             int slot = slotOf[rank];
@@ -944,12 +1037,43 @@ public sealed unsafe class CasterPass : IExtenderService
             bool slotChanged = !_cubeBaked[slot] || _cubeKeyId[slot] != id || _cubeKeyFar[slot] != far
                                || _cubeKeyPos[slot * 3] != pos.X || _cubeKeyPos[slot * 3 + 1] != pos.Y
                                || _cubeKeyPos[slot * 3 + 2] != pos.Z;
-            // #241 term 3: a caster that moved, inside this light's reach. Scanned EVERY frame whatever the
-            // verdict, because _cubeHadMover has to be current for the frame the mover leaves.
-            bool hasMover = false;
-            for (int q = 0; q < _moverCount && !hasMover; q++)
+            // #305: is a DYNAMIC caster inside this light's reach? That is what claims (and keeps) a pool
+            // page -- and, when the pool is dry, what forces the combined fallback below.
+            bool hasDyn = false;
+            if (split)
+                for (int q = 0; q < _dMoverCount && !hasDyn; q++)
+                {
+                    int m = _dMoverIdx[q];
+                    float mx = _liveCx[m] - pos.X, my = _liveCy[m] - pos.Y, mz = _liveCz[m] - pos.Z;
+                    float mr = far + _liveR[m];
+                    hasDyn = mx * mx + my * my + mz * mz <= mr * mr;
+                }
+            int page = _dynPageOf[slot];
+            if (split && hasDyn && page < 0)
             {
-                int m = _moverIdx[q];
+                for (int p = 0; p < _cubeDynPages && page < 0; p++)
+                    if (_dynPageSlot[p] < 0) { _dynPageSlot[p] = slot; _dynPageOf[slot] = page = p; }
+            }
+            else if (page >= 0 && (!split || !hasDyn))
+            {   // no movers left near this light: the page returns to the pool and the receiver stops
+                // sampling it (the publish wipe already left CubeDynPage[slot] at 0)
+                _dynPageSlot[page] = -1; _dynPageOf[slot] = -1; page = -1;
+            }
+            // Pool exhausted: this slot bakes BOTH halves into the static array every mover frame -- the
+            // per-slot fallback to pre-split behaviour. A mode change re-keys the slot, or a mover baked in
+            // while combined would outlive the mode.
+            bool combined = !split || (hasDyn && page < 0);
+            if (_cubeCombined[slot] != combined) { slotChanged = true; _cubeCombined[slot] = combined; }
+
+            // #241 term 3: a mover inside this light's reach -- under the split (#305), a STATIC-SET EVENT:
+            // continuous motion lives in the dynamic page and must not re-bake the room. Scanned EVERY frame
+            // whatever the verdict, because _cubeHadMover has to be current for the frame the mover leaves.
+            bool hasMover = false;
+            int[] evtIdx = combined ? _moverIdx : _sMoverIdx;
+            int evtN = combined ? _moverCount : _sMoverCount;
+            for (int q = 0; q < evtN && !hasMover; q++)
+            {
+                int m = evtIdx[q];
                 float mx = _liveCx[m] - pos.X, my = _liveCy[m] - pos.Y, mz = _liveCz[m] - pos.Z;
                 float mr = far + _liveR[m];
                 hasMover = mx * mx + my * my + mz * mz <= mr * mr;
@@ -971,34 +1095,55 @@ public sealed unsafe class CasterPass : IExtenderService
                 CubeLight[slot * 4 + 2] = _cubeKeyPos[slot * 3 + 2]; CubeLight[slot * 4 + 3] = _cubeKeyFar[slot];
                 CubeLightId[slot] = id;
                 done++;
-                continue;
             }
-            _cubeBakedSlots++;
-            ChargeBake(WhyCube, invalidate, slotChanged);
-            bool whole = true;
-            for (int f = 0; f < CubeFaces && whole; f++)
+            else
             {
-                Vector3 fwd = ShadowMath.CubeFaceForward(f);
-                Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
-                whole = RenderView(CubeTex, _cubeSize, slot * CubeFaces + f, &vp,
-                                   fwd, pos, far, 0f, point: true);
-                lightCreatures += _submitCreatures;
+                _cubeBakedSlots++;
+                ChargeBake(WhyCube, invalidate, slotChanged);
+                bool whole = true;
+                for (int f = 0; f < CubeFaces && whole; f++)
+                {
+                    Vector3 fwd = ShadowMath.CubeFaceForward(f);
+                    Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
+                    whole = RenderView(CubeTex, _cubeSize, slot * CubeFaces + f, &vp,
+                                       fwd, pos, far, 0f, point: true,
+                                       set: combined ? CasterGather.SetAll : CasterGather.SetStatic);
+                    lightCreatures += _submitCreatures;
+                }
+                // A partial bake is not a bake: leaving the slot unbaked is what forces the whole cube again
+                // next frame instead of letting five fresh faces and one stale one be published as fresh
+                // forever.
+                _cubeBaked[slot] = whole;
+                // The ring is behind; the lights after this one would stall too. Leaving the scan INCOMPLETE
+                // is load-bearing: the slots past this point never ran their mover test, so this frame's
+                // evidence must not be consumed on their behalf.
+                if (!whole) { scannedAll = false; break; }
+                _cubeKeyId[slot] = id; _cubeKeyFar[slot] = far;
+                _cubeKeyPos[slot * 3] = pos.X; _cubeKeyPos[slot * 3 + 1] = pos.Y; _cubeKeyPos[slot * 3 + 2] = pos.Z;
+                frameCreatures += lightCreatures;
+                if (rank == 0) { nearestCreatures = lightCreatures; nearestBaked = true; }
+                CubeLight[slot * 4] = pos.X; CubeLight[slot * 4 + 1] = pos.Y; CubeLight[slot * 4 + 2] = pos.Z;
+                CubeLight[slot * 4 + 3] = far;
+                CubeLightId[slot] = id;
+                done++;
             }
-            // A partial bake is not a bake: leaving the slot unbaked is what forces the whole cube again next
-            // frame instead of letting five fresh faces and one stale one be published as fresh forever.
-            _cubeBaked[slot] = whole;
-            // The ring is behind; the lights after this one would stall too. Leaving the scan INCOMPLETE is
-            // load-bearing: the slots past this point never ran their mover test, so this frame's evidence
-            // must not be consumed on their behalf.
-            if (!whole) { scannedAll = false; break; }
-            _cubeKeyId[slot] = id; _cubeKeyFar[slot] = far;
-            _cubeKeyPos[slot * 3] = pos.X; _cubeKeyPos[slot * 3 + 1] = pos.Y; _cubeKeyPos[slot * 3 + 2] = pos.Z;
-            frameCreatures += lightCreatures;
-            if (rank == 0) { nearestCreatures = lightCreatures; nearestBaked = true; }
-            CubeLight[slot * 4] = pos.X; CubeLight[slot * 4 + 1] = pos.Y; CubeLight[slot * 4 + 2] = pos.Z;
-            CubeLight[slot * 4 + 3] = far;
-            CubeLightId[slot] = id;
-            done++;
+            // #305: the dynamic page bakes EVERY frame it exists -- no predicate, because its whole content
+            // is the movers. Published only on a complete bake, for the same five-fresh-faces reason; an
+            // unpublished page costs the movers' shadow for one frame, never a lie.
+            if (page >= 0)
+            {
+                bool dynWhole = true;
+                for (int f = 0; f < CubeFaces && dynWhole; f++)
+                {
+                    Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
+                    dynWhole = RenderView(CubeDynTex, _cubeDynSize, page * CubeFaces + f, &vp,
+                                          ShadowMath.CubeFaceForward(f), pos, far, 0f, point: true,
+                                          set: CasterGather.SetDynamic);
+                }
+                if (!dynWhole) { scannedAll = false; break; }
+                CubeDynPage[slot] = page + 1;
+                _cubeDynBakedPages++;
+            }
         }
         // Only a scan that reached every slot may consume the frame's invalidation: the break above leaves
         // the slots after it with no record of this frame's movers.
@@ -1050,6 +1195,13 @@ public sealed unsafe class CasterPass : IExtenderService
                    $", casting off {AlloyRenderer.OrderCount} Alloy ownership slots" +
                    $", {(float)_cubeBakedSlots / _frames:F1} cube slots re-baked and " +
                    $"{(float)_cubeSkippedSlots / _frames:F1} skipped per frame " +
+                   // #305: static and dynamic bakes SEPARATELY -- static bakes tracking the view count means
+                   // the split bought nothing and the invalidation is too coarse; this line is that reading.
+                   $"(split {(_split ? "on" : "OFF -- /shadow split 1")}: " +
+                   $"{(float)_cubeBakedSlots / _frames:F1} static / {(float)_cubeDynBakedPages / _frames:F1} " +
+                   $"dynamic cube bakes per frame, dyn pool {DynPagesUsed()}/{_cubeDynPages} pages at " +
+                   $"{_cubeDynSize}px = {_cubeDynPages * CubeFaces * (long)_cubeDynSize * _cubeDynSize * 4 / (1024 * 1024)} MB " +
+                   $"beside the static array's {_cubeLights * CubeFaces * (long)_cubeSize * _cubeSize * 4 / (1024 * 1024)} MB) " +
                    $"(sun {(float)_sunBakedViews / _frames:F1} re-baked, " +
                    $"{(float)_sunSkippedViews / _frames:F1} skipped) " +
                    $"(bakes charged to -- sun: blanket {_bakeWhy[WhySun]}, key {_bakeWhy[WhySun + 1]}, " +
@@ -1097,7 +1249,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _frames = 0; _mdiCalls = 0;
         _cubeLightsSum = 0; _viewSum = 0;
         _liveSum = 0; _qShadow.Reset();
-        _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _moverSum = 0; _ghostSum = 0;
+        _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0;
         _sunBakedViews = 0; _sunSkippedViews = 0;
         Array.Clear(_bakeWhy);
         _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _noRecordSum = 0;
@@ -1105,6 +1257,14 @@ public sealed unsafe class CasterPass : IExtenderService
         CasterGather.Views = 0; CasterGather.Batches = 0;
         CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0;
         CasterGather.UploadsSkipped = 0; CasterGather.Uploads = 0;
+    }
+
+    /// <summary>Pool pages currently claimed -- the period line's occupancy figure. Cold.</summary>
+    private static int DynPagesUsed()
+    {
+        int used = 0;
+        for (int p = 0; p < _cubeDynPages && p < _dynPageSlot.Length; p++) if (_dynPageSlot[p] >= 0) used++;
+        return used;
     }
 
     private static void Release(string why)
@@ -1125,6 +1285,10 @@ public sealed unsafe class CasterPass : IExtenderService
         // or the first frame in the new area finds every view fresh -- shadows frozen from the old module.
         Array.Clear(_cubeBaked); Array.Clear(_cubeHadMover); Array.Clear(_cubeKeyId);
         Array.Clear(_sunBaked); Array.Clear(_sunHadMover);
+        // #305: the pool pages name lights that just went away, and the published page indices with them.
+        Array.Clear(_cubeCombined); Array.Clear(CubeDynPage);
+        Array.Fill(_dynPageOf, -1);
+        if (_dynPageSlot.Length > 0) Array.Fill(_dynPageSlot, -1);
         // ...and the log is once per RELEASE, not once per frame: a lost 4.6 context disables its service
         // permanently, so Lifecycle calls this every frame thereafter and an unguarded line would fill the log.
         bool any = _prevCount > 0 || _liveCount > 0 || CascadeCount > 0 || CubeCount > 0;
@@ -1308,6 +1472,13 @@ public sealed unsafe class CasterPass : IExtenderService
             // bought the same thing with an over-scanned face frustum and a matching uv shrink in the shader.
             Gl.Enable(Gl.TEXTURE_CUBE_MAP_SEAMLESS);
         }
+        // #305: the dynamic pool, allocated whenever it is configured (the /shadow split dial is live, so
+        // the array must exist even on a frame the dial is off). A refused allocation disarms by name.
+        if (_cubeDynPages > 0 && CubeDynTex == 0)
+        {
+            CubeDynTex = DepthArray(Gl.TEXTURE_CUBE_MAP_ARRAY, _cubeDynSize, _cubeDynPages * CubeFaces);
+            if (CubeDynTex == 0) return false;   // DepthArray already disarmed by name
+        }
         return true;
     }
 
@@ -1350,7 +1521,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // A count left standing is then permanently "fresh" -- the receiver samples a frozen map for the rest
         // of the session, shadows pinned where the geometry no longer is.
         CascadeCount = 0; CubeCount = 0;
-        Array.Clear(_cubeBaked);
+        Array.Clear(_cubeBaked); Array.Clear(CubeDynPage);
     }
 
     /// <summary>Once per frame, before any view submits: revalidate every caster and resolve its live world
@@ -1369,7 +1540,7 @@ public sealed unsafe class CasterPass : IExtenderService
     private static void Collect()
     {
         int live = 0;
-        _moverCount = 0; _ghostCount = 0;
+        _moverCount = 0; _ghostCount = 0; _dMoverCount = 0; _sMoverCount = 0;
         // Read BEFORE OwnedBuffers.ClearDirty: dangly and morph-animated nodes both commit through
         // CommitItemDynamicData, so both land in the owned-buffer dirty set. Per VDO slot, not per caster.
         for (int v = 0; v < MaxVdos; v++) _vDirty[v] = AlloyRenderer.VdoDirty(v);
@@ -1413,6 +1584,16 @@ public sealed unsafe class CasterPass : IExtenderService
                 else if (_vDirty[f.Vao]) _mvVertex++;
                 else mover = false;
                 if (mover) _moverIdx[_moverCount++] = live;
+                // #305: dynamic membership is motion, not appearance -- a prop that pops in still is a
+                // static-set event, not a mover. A membership flip in either direction is also a static
+                // event: the static bake must shed a caster that starts moving and adopt one that stops,
+                // both within one predicate cycle. `appeared` forces the event (err toward stale: the
+                // stamp says nothing trustworthy about a caster that was not collected last frame).
+                bool dyn = f.Skinned || f.Dangly || f.RecMoved || _vDirty[f.Vao];
+                _liveDyn[live] = dyn;
+                bool wasDyn = !appeared && _dynStamp[slot] == _frameSeq - 1;
+                if (dyn) { _dynStamp[slot] = _frameSeq; _dMoverIdx[_dMoverCount++] = live; }
+                if (appeared || dyn != wasDyn) _sMoverIdx[_sMoverCount++] = live;
                 _liveStamp[slot] = _frameSeq;
                 live++;
             }
@@ -1491,7 +1672,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// shadows frozen where the geometry no longer is.</para></summary>
     private static bool RenderView(uint tex, int size, int layer,
                                    Matrix4x4* vp, Vector3 lightDir, Vector3 focus, float reach, float margin,
-                                   bool point)
+                                   bool point, int set = CasterGather.SetAll)
     {
         // zeroed ahead of every early-out: a view that bakes nothing staged no creatures, and a stale count
         // would be re-added per cube face
@@ -1504,7 +1685,7 @@ public sealed unsafe class CasterPass : IExtenderService
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
             return true;
         }
-        return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point);
+        return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point, set);
     }
 
     /// <summary>Attach one depth layer of <paramref name="tex"/> and clear it. Shared by both submission
@@ -1579,6 +1760,8 @@ public sealed unsafe class CasterPass : IExtenderService
         r[3] = (uint)_liveSlot[i];
         r[4] = (uint)g;
         r[5] = (uint)start;
+        // #305: the set flag the dispatch filter reads -- which of the two arrays this caster belongs in.
+        r[6] = _liveDyn[i] ? 1u : 0u;
     }
 
     /// <summary>#286: stage the whole frame once, in batch order, and publish it. Everything per-view that
@@ -1634,7 +1817,8 @@ public sealed unsafe class CasterPass : IExtenderService
     /// and writes the commands; the CPU issues one indirect-count draw per batch and never learns how many
     /// survived.</summary>
     private static bool GatherSubmit(uint tex, int size, int layer, Matrix4x4* vp,
-                                     Vector3 lightDir, Vector3 focus, float reach, float margin, bool point)
+                                     Vector3 lightDir, Vector3 focus, float reach, float margin, bool point,
+                                     int set)
     {
         // PRE-cull figures: the survivors are the GPU's, and asking would be the readback this pass exists
         // to not do -- the latent sample on the period line is what reports them.
@@ -1642,7 +1826,7 @@ public sealed unsafe class CasterPass : IExtenderService
         if (!BeginTarget(tex, size, layer)) return false;
         // this view's texel in world units -- ortho cascades span 2*reach across `size` texels, a cube face
         // 2*d at distance d bounded by reach. Identical to the walk's own lodR.
-        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, _lodTexels * 2f * reach / size, point);
+        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, _lodTexels * 2f * reach / size, point, set);
         // unit 0 is where the cutout stage samples; nothing else in this bracket moves the active unit
         Gl.ActiveTexture(Gl.TEXTURE0);
         int boundVao = -1, boundMask = -1, boundTex = -1;

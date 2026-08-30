@@ -36,9 +36,18 @@ internal static unsafe class CasterGather
 
     /// <summary>Uints per source record, and their order -- index count, first index, base vertex, OWNERSHIP
     /// slot (#303: the sphere index and the <c>baseInstance</c> the depth stages read <c>uDraw</c> through),
-    /// batch, batch output base. <see cref="CullPass.SrcUints"/>'s layout, deliberately: one shape for
-    /// both gathers, and the batch's output base is what turns an <c>atomicAdd</c> into an output index.</summary>
-    internal const int SrcUints = 6;
+    /// batch, batch output base, and (#305) the DYNAMIC flag: 1 = this caster is a mover this frame. The
+    /// flag is what <see cref="Dispatch"/>'s set filter tests, so one frame staging serves the static bake,
+    /// the dynamic bake and the sun alike. Otherwise <see cref="CullPass.SrcUints"/>'s layout, deliberately:
+    /// one shape for both gathers, and the batch's output base is what turns an <c>atomicAdd</c> into an
+    /// output index.</summary>
+    internal const int SrcUints = 7;
+
+    /// <summary>#305: which half of the population a dispatch admits. <see cref="SetAll"/> = no filter (the
+    /// sun, and the combined bake <c>/shadow split 0</c> restores); <see cref="SetStatic"/> = still casters
+    /// only; <see cref="SetDynamic"/> = movers only. Applied BEFORE the cull and independent of
+    /// <c>/shadow gather 0</c>, because the filter is what the two arrays' contents MEAN, not a cull.</summary>
+    internal const int SetAll = 0, SetStatic = 1, SetDynamic = 2;
     /// <summary>Uints per <c>DrawElementsIndirectCommand</c>. Fixed by GL.</summary>
     internal const int CmdUints = 5, CmdBytes = CmdUints * 4;
     private const int GroupSize = 64;
@@ -67,7 +76,7 @@ internal static unsafe class CasterGather
     private static ExtenderLog? _log;
     private static uint _prog;
     private static bool _failed;
-    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uLodR, _uCull;
+    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uLodR, _uCull, _uSet;
 
     private static uint _srcBuf;
     private static int _srcCap;
@@ -135,6 +144,7 @@ internal static unsafe class CasterGather
         _uAlong = GlProgram.Loc(_prog, "uAlong");
         _uLodR = GlProgram.Loc(_prog, "uLodR");
         _uCull = GlProgram.Loc(_prog, "uCull");
+        _uSet = GlProgram.Loc(_prog, "uSet");
         _log?.Info("CasterGather: armed -- shadow caster selection in compute over the shared SowxCullSphere " +
                    "bounds, glMultiDrawElementsIndirectCount submission (/shadow gather 0 disables the cull)");
         return true;
@@ -207,7 +217,8 @@ internal static unsafe class CasterGather
     /// cascade fit's axis test; <paramref name="lodR"/> is this view's sub-texel radius, and a
     /// <see cref="AlloyRenderer.NeverCull"/> sphere is exempt from it -- the same exemption, from the same
     /// buffer, the colour cull applies.</summary>
-    internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, float lodR, bool point)
+    internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, float lodR, bool point,
+                                  int set = SetAll)
     {
         _at = (_at + 1) % Rotation;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _cntBuf[_at]);
@@ -223,6 +234,7 @@ internal static unsafe class CasterGather
         Gl.Uniform1i(_uDrawN, _drawN);
         Gl.Uniform1i(_uPoint, point ? 1 : 0);
         Gl.Uniform1i(_uCull, Mode != 0 ? 1 : 0);
+        Gl.Uniform1i(_uSet, set);
         float* v = stackalloc float[3];
         v[0] = focus.X; v[1] = focus.Y; v[2] = focus.Z;
         Gl.Uniform3fv(_uFocus, 1, v);
@@ -334,6 +346,7 @@ internal static unsafe class CasterGather
         uniform int uDrawN;
         uniform int uPoint;
         uniform int uCull;
+        uniform int uSet;
         uniform vec3 uFocus;
         uniform vec3 uDir;
         uniform float uReach;
@@ -351,7 +364,11 @@ internal static unsafe class CasterGather
         {
             uint i = gl_GlobalInvocationID.x;
             if (i >= uint(uDrawN)) return;
-            uint b = i * 6u;
+            uint b = i * 7u;
+            // #305: the set filter, ahead of the cull and NOT gated on uCull -- which half of the split a
+            // caster belongs in is what the two arrays' contents mean, not a cull /shadow gather 0 may waive.
+            if (uSet == 1 && uSrc[b + 6u] != 0u) return;
+            if (uSet == 2 && uSrc[b + 6u] == 0u) return;
             int slot = int(uSrc[b + 3u]);
             vec4 s = uSph[slot];
             // s.w >= 1e29 is NeverCull: bounds the colour cull exempts (posed skinmesh, dangly, displacing,
@@ -404,6 +421,11 @@ internal static unsafe class CasterGather
            && GatherCs.Contains("if (uCull != 0 && s.w < 1e29)")
            && GatherCs.Contains("if (r < uLodR) return;")
            && GatherCs.Contains("uCmd[q + 4u] = uint(slot);")
+           // #305: the set filter reads the staged dynamic flag at the 7-uint stride, in BOTH directions --
+           // a filter that lost either arm bakes the same caster into both arrays, and min() then hides it.
+           && GatherCs.Contains("uint b = i * 7u;") && SrcUints == 7
+           && GatherCs.Contains("if (uSet == 1 && uSrc[b + 6u] != 0u) return;")
+           && GatherCs.Contains("if (uSet == 2 && uSrc[b + 6u] == 0u) return;")
            && GatherCs.Contains($"binding = {BindSrc}") && GatherCs.Contains($"binding = {BindCmd}")
            && GatherCs.Contains($"binding = {BindCount}");
 }

@@ -71,6 +71,7 @@ public sealed unsafe partial class AlloyRenderer
         _watCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _watCubeLight = GlProgram.Loc(prog, "uLocalLight");
         _watCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _watCubeCount = GlProgram.Loc(prog, "uLocalCubes");
         _watCubeSoft = GlProgram.Loc(prog, "uLocalSoft");
+        _watCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _watCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage");
         _watProbe = GlProgram.Loc(prog, "uProbe"); _watProbeMips = GlProgram.Loc(prog, "uProbeMips");
         _watProbeGain = GlProgram.Loc(prog, "uProbeGain"); _watSceneEnv = GlProgram.Loc(prog, "uSceneEnv");
         _watCapture = GlProgram.Loc(prog, "uCapture");
@@ -87,6 +88,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(_watTex, 0);
         Gl.Uniform1i(_watSunTex, (int)SunUnit);
         Gl.Uniform1i(_watCubeTex, (int)CubeUnit);
+        Gl.Uniform1i(_watCubeDynTex, (int)CubeDynUnit);
         Gl.Uniform1i(_watProbe, (int)EnvProbe.ProbeUnit);
         Gl.Uniform1i(_watFbColor, (int)FrameSnapshot.ColorUnit);
         Gl.Uniform1i(_watFbDepth, (int)FrameSnapshot.DepthUnit);
@@ -259,6 +261,7 @@ public sealed unsafe partial class AlloyRenderer
         _litCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _litCubeLight = GlProgram.Loc(prog, "uLocalLight");
         _litCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _litCubeCount = GlProgram.Loc(prog, "uLocalCubes");
         _litCubeSoft = GlProgram.Loc(prog, "uLocalSoft");
+        _litCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _litCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage");
         _litProbe = GlProgram.Loc(prog, "uProbe"); _litProbeMips = GlProgram.Loc(prog, "uProbeMips");
         _litProbeGain = GlProgram.Loc(prog, "uProbeGain");
         _litSceneEnv = GlProgram.Loc(prog, "uSceneEnv");
@@ -272,6 +275,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.UseProgram(prog);
         Gl.Uniform1i(_litSunTex, (int)SunUnit);
         Gl.Uniform1i(_litCubeTex, (int)CubeUnit);
+        Gl.Uniform1i(_litCubeDynTex, (int)CubeDynUnit);
         Gl.Uniform1i(_litProbe, (int)EnvProbe.ProbeUnit);
         // #120's five map samplers, for the same reason: left at their default they would all point at unit
         // 0 and read the diffuse as a normal map on every part that declares one.
