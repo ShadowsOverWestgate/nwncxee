@@ -677,6 +677,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _log?.Info(_vramExt == null
             ? "AlloyRenderer: [vram] no GPU memory query in this context (NVX_gpu_memory_info / ATI_meminfo absent) -- residency is reported as Alloy's own bytes only"
             : $"AlloyRenderer: [vram] {_vramExt} present" + (_vramTotalKib > 0 ? $", {_vramTotalKib / 1024}MiB total" : ""));
+        // #267's open question, answered from the context that would use them rather than from glxinfo.
+        _log?.Info("AlloyRenderer: [vram] arena-relevant extensions in this context: "
+            + $"ARB_sparse_texture={(HasExt("GL_ARB_sparse_texture"u8) ? "yes" : "no")}, "
+            + $"ARB_sparse_texture2={(HasExt("GL_ARB_sparse_texture2"u8) ? "yes" : "no")}, "
+            + $"EXT_memory_object={(HasExt("GL_EXT_memory_object"u8) ? "yes" : "no")}");
     }
 
     /// <summary>Probe once, then keep the free-VRAM figure fresh. Called from the bracket -- the only place
