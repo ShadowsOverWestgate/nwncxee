@@ -92,6 +92,15 @@ public sealed unsafe partial class AlloyRenderer
         return n;
     }
 
+    /// <summary>#287: the cull's source list, one <see cref="CullPass.SrcUints"/>-uint record per DRAW of
+    /// this pass, staged beside <c>_dCount/_dOff/_dBase/_dSlot</c> by the walk that already writes them.
+    /// <para>It used to be rebuilt by a second walk inside <see cref="CullPass.Begin"/>. The four draw-args
+    /// columns cannot leave the CPU -- <c>/draw cull 0</c> has to fall back to
+    /// <c>glMultiDrawElementsBaseVertex</c>, which takes CPU pointers -- but writing them twice can, and the
+    /// two columns the second walk existed for (the draw's batch and that batch's output base) are both known
+    /// at this store, because the cut has just placed the draw.</para></summary>
+    private static readonly uint[] _dSrc = new uint[MaxOwned * CullPass.SrcUints];
+
     /// <summary>Is this slot's part still the one that enrolled? The same single-level compare
     /// <see cref="BuildBatches"/> revokes on -- node, material and texture rotation read straight off the
     /// part. Reading a stale part is the accepted risk model here; chasing a POINTER out of one is not, so
@@ -425,7 +434,13 @@ public sealed unsafe partial class AlloyRenderer
         // #120: this part's live slot-1..5 tids. Declared ONCE, outside the loop -- a stackalloc per
         // iteration grows the frame by the part count.
         int* slotTid = stackalloc int[MapSlots];
+        // #287: the cull's bounds diagnostic, measured by the walk that already touches every sphere it
+        // covers, rather than by a second walk of the staged list.
+        float lox = float.MaxValue, loy = float.MaxValue, loz = float.MaxValue;
+        float hix = float.MinValue, hiy = float.MinValue, hiz = float.MinValue, maxR = 0f;
         fixed (float* data = _dData)
+        fixed (float* sphAll = _dSph)
+        fixed (uint* srcAll = _dSrc)
         for (int k = 0; k < routed; k++)
         {
             int i = _pass[k];
@@ -436,37 +451,23 @@ public sealed unsafe partial class AlloyRenderer
             IntPtr tri = _oTri[i];
             if (tri == IntPtr.Zero) continue;
             var part = new PartRef(tri);
-            // Geometry the engine has stopped walking -- culled by its own visibility, while ownership
-            // (rebuilt every EnrollEvery frames) still holds it. Drawing it was ~44% of the Alloy draw count
-            // live, all of it invisible, and it is exactly what the one-owner audit was reporting as
-            // UNMATCHED: not a double draw, a ghost. The engine's own sighting window is the predictor, and
-            // a part that comes back simply goes unstamped for one frame and is drawn by the engine.
-            // #243: the engine's bucket walk is no longer the visibility answer when Alloy owns the
-            // question. Its cadence is what made pop-in a tuned window (#236) rather than a fact about the
-            // camera, so with the cull armed EVERY owned part is staged and the GPU decides. The walk stays
-            // the ENROLMENT/eviction signal; it is only the draw-path gate that moves.
-            // ...and READY, not merely armed: this walk runs before the cull's own Begin, so on a driver
-            // with no compute or no indirect-count (or after a context loss, until the programs rebuild)
-            // nothing would take the question over and the whole area would draw uncelled.
-            if (!(CullPass.Mode > CullPass.ModeOff && CullPass.Ready)
-                && !PartTable.InBucketsRecently(_oEntry[i]))
-            {
-                _skipUnseen++; _unseenBucket[_oBucket[i]]++;
-                if (_oGob[i] != IntPtr.Zero) _skipUnseenGob++;
-                W(i, "skipped: engine-culled");
-                continue;
-            }
-            // Lit parts sort last. One with the lighting rig unavailable this pass is skipped, not painted
-            // flat -- the engine's own walk then draws it, which is its vanilla look.
+            // #264: EVERY owned part is staged, and CullPass decides what survives. The gate that used to
+            // sit here asked the engine's bucket walk "did you touch this part lately", which was enrolment
+            // cadence wearing visibility's clothes (#243) -- and there is no walk to ask. A cull that cannot
+            // run is now a BOOT refusal (AlloyGate), not a per-frame downgrade, because the only alternative
+            // left is drawing the whole enumerated area every frame.
+            // Lit parts sort last. One with the lighting rig unavailable this pass is skipped rather than
+            // painted flat. #285: that skip is a HOLE, not a hand-back -- see `unlit-pass` on the [alloy]
+            // line, which must read 0 on a pass that has a lighting rig at all.
             bool lit = _oLit[i];
             if (lit && !lightingOn) { _skipNoLight++; W(i, "skipped: lighting off this pass"); continue; }
-            // identity + dynamic state: a recycled pointer, a re-rotated tile, a fading or
-            // keyhole-dissolving part is not ours this frame -- the engine's own loop body draws it
+            // identity + dynamic state: a recycled pointer or a re-rotated tile is not ours this frame, so
+            // ownership is REVOKED and the next enrollment recaptures it. #285: nothing draws it in between.
             if (!IdentityOk(i, tri)) { _skipIdentity++; W(i, "skipped: identity changed -- revoked"); Revoke(i); continue; }
-            // #128: instance state the Alloy programs cannot express -- a highlight, a scene tint, a per-gob
-            // env override. SKIPPED, not revoked: a highlight lasts exactly as long as the cursor sits on the
-            // placeable, and revoking would spend a whole re-enrollment on a hover. Unstamped means the
-            // iterator does not suppress it, so the engine's own walk draws it highlighted, which is vanilla.
+            // #128/#285: instance state no Alloy program can express, which since #285 is the SCENE TINT
+            // alone (the highlight is owned, the per-gob env override was already #121's). SKIPPED, not
+            // revoked: the state can last a single frame and revoking would spend a whole re-enrollment on
+            // it. The skip is a hole -- `instance-state` on the [alloy] line is how big.
             if (!AlloyCensus.InstanceOwnable(tri))
             { _skipGob++; W(i, "skipped: instance state unownable this pass"); continue; }
             // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
@@ -523,9 +524,9 @@ public sealed unsafe partial class AlloyRenderer
                     // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
                     // engine texture is a handle on an object the engine may delete or re-upload under us,
                     // which is exactly the corruption this fixes -- so a part whose copy was refused (a
-                    // format we will not take) goes back to the engine walk rather than being drawn through
-                    // a handle we cannot vouch for. Bind-path batches are unaffected: they rebind the engine
-                    // id every frame, which is what they always did.
+                    // format we will not take) is NOT DRAWN rather than drawn through a handle we cannot
+                    // vouch for (#285: there is no engine walk behind it; `not-owned` is the count).
+                    // Bind-path batches are unaffected: they rebind the engine id every frame.
                     if (lit && _bindless && OwnedTextures.Armed)
                     {
                         // Two DIFFERENT faults behind one guard, and they have different fixes: a texture
@@ -635,6 +636,10 @@ public sealed unsafe partial class AlloyRenderer
             // #242: the record this draw reads lives at the OWNERSHIP slot and outlives the frame; the draw
             // order does not, so the draw carries the slot rather than the record.
             _dSlot[n] = i;
+            // #287: and the same draw as the cull's source record -- the batch is the one the cut just
+            // opened or extended, and its output base is where its compacted run starts.
+            CullPass.Pack(srcAll + (long)n * CullPass.SrcUints, idxCount, _dOff[n], _dBase[n], i,
+                          groups - 1, _gStart[groups - 1]);
 
             // the per-draw record. The model matrix drives BOTH the world position the light loop shades at
             // and the world normal (mat3 of the same GLSL-visible matrix is the correct normal transform here
@@ -719,6 +724,18 @@ public sealed unsafe partial class AlloyRenderer
                 if (rec) MarkRecordDirty(i); else _recStable++;
                 _recGen[i] = _recEpoch; _recFrame[i] = _frameSeq;
             }
+            // #287: ...and after the record block, so the extent is measured on the sphere this frame wrote.
+            if (cls <= (int)AlloyClass.Cutout)
+            {
+                float* sp = sphAll + (long)i * 4;
+                if (sp[3] < NeverCull)
+                {
+                    lox = MathF.Min(lox, sp[0]); hix = MathF.Max(hix, sp[0]);
+                    loy = MathF.Min(loy, sp[1]); hiy = MathF.Max(hiy, sp[1]);
+                    loz = MathF.Min(loz, sp[2]); hiz = MathF.Max(hiz, sp[2]);
+                    maxR = MathF.Max(maxR, sp[3]);
+                }
+            }
             if (FrameDump.Capturing)
                 FrameDump.Row_(cls, lit, v, _oMat[i], mode, feat, dis, blend, slots, merge,
                                idxCount, _dOff[n], _dBase[n], r);
@@ -739,6 +756,7 @@ public sealed unsafe partial class AlloyRenderer
         // through the cut above -- the routed order is class-ordered by construction, so the first batch of a
         // later class IS the previous range's end, and a class that staged nothing leaves an empty range
         // rather than someone else's batches.
+        if (hix >= lox) CullPass.SetSpread(hix - lox, hiy - loy, hiz - loz, maxR);
         _gOpaqueEnd = _gBlendEnd = _gWaterEnd = groups;
         for (int g = 0; g < groups; g++)
         {

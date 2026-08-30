@@ -64,6 +64,10 @@ public sealed unsafe partial class AlloyRenderer
     private static void Enroll(IntPtr scene)
     {
         SceneWalk.Dirty = false; _sinceEnroll = 0; _enrolls++; _enrollScene = scene;
+        // #284: a new enrollment re-asks every VDO the drip deferred for want of resident pools. This is
+        // the bounded re-arm -- the alternative, one attempt per VDO for the session, rebuilds the exact
+        // permanence the drip exists to remove whenever the first attempt loses a race with residency.
+        DripRearm();
         // #256: consume the table-wipe edge HERE. A Scene change wipes the tables (SceneWalk.Reset) and this
         // enrollment then rebuilds ownership from the re-walked table in the same pass -- but the TableGen
         // edge is checked at the present, and would fire RevokeAll on an enrollment whose slots are in fact
@@ -116,15 +120,17 @@ public sealed unsafe partial class AlloyRenderer
             // dropped" is the rule, and at capacity a creature split across two renderers (a lighting
             // mismatch) beats every creature in the area reverting.
             if (_ownCount >= MaxOwned)
-            { _capacitySpill++; AlloyCensus.OwnRefusedByClass[c.Cls]++; if (watch) _log?.Info("[dumpframe] ENROLL refused: table full"); continue; }
+            { _capacitySpill++; AlloyCensus.OwnRefusedByClass[c.Cls]++; AlloyCensus.RejReason(AlloyCensus.RejTableFull, c.Cls); if (watch) _log?.Info("[dumpframe] ENROLL refused: table full"); continue; }
             int v = VdoSlot(c.Vdo);
             if (v < 0)
-            { AlloyCensus.OwnRefusedByClass[c.Cls]++; if (watch) _log?.Info("[dumpframe] ENROLL refused: no VAO slot (harvest failed)"); continue; }
+            { AlloyCensus.OwnRefusedByClass[c.Cls]++; AlloyCensus.RejReason(AlloyCensus.RejNoVao, c.Cls); if (watch) _log?.Info("[dumpframe] ENROLL refused: no VAO slot (harvest failed)"); continue; }
             // #137: a true skinmesh (a cloak, a robe, a tail) carries the bone streams and is POSED by them.
             // #128 refused it here for want of a skinning branch; the stages have one now, so the only
             // refusal left is the one #128's reason still holds for -- the kill switch off, or a bone stream
             // on a VDO whose part is not a PartSkin (so nothing addresses those bones). Either way it is
-            // refused against the GOB, and the sweep below hands the creature wearing it back entire.
+            // refused against the GOB, and the sweep below drops the creature wearing it entire. #285: that
+            // is the whole creature NOT DRAWN, not one drawn vanilla -- the sweep is all-or-nothing so the
+            // creature is not split across two renderers, and `instances:` on the census line is the count.
             // Refused in BOTH directions, because both mismatches are misrenders. A bone stream on a part
             // with no skin identity has no bone map to solve against; a PartSkin whose VAO harvest came back
             // boneless would enrol as an ordinary rigid part, skip PoseSkinned, and draw in its bind pose --

@@ -10,7 +10,7 @@ namespace Sowx.Alloy;
 
 /// <summary>#188: the ownership census -- which recorded parts the Alloy passes MAY take, and why the rest
 /// were passed over. The ownership columns (<see cref="OwnFlag"/>, <see cref="OwnGen"/>,
-/// <see cref="OwnSupGen"/>), the ownable-bucket list, the colour candidate feed
+/// the ownable-bucket list, the colour candidate feed
 /// (<see cref="TryOwnCandidate"/>) and the caster candidate feed (<see cref="TryCasterCandidate"/>), plus
 /// the per-gate forensics and the <c>dumpframe</c>/<c>dumptex</c> triage that say what a refusal was.
 /// <para>It classifies; it draws nothing and suppresses nothing. What it decides is read by the owned
@@ -23,32 +23,19 @@ internal static unsafe class AlloyCensus
 {
     internal static ExtenderLog? _log;
 
-    /// <summary>Read <c>dumpframe</c> and <c>dumptex</c> out of <c>sowx.cfg</c> and arm the triage census.
-    /// #126: the warm-up counts in PRESENTS, not "the next pass" -- the first census fired on the freshest
-    /// possible table and read as enrollment lag rather than steady state.</summary>
+    /// <summary>Read <c>dumptex</c> out of <c>sowx.cfg</c> and arm the enrollment watch.
+    /// <para>#264 took <c>dumpframe</c> with the engine walk it censused: its row was one per part the ENGINE
+    /// drew, and the engine draws no part of the world any more. What survives is the half that never needed
+    /// a draw -- <see cref="WatchAccepted"/> adopts the watch at enrollment, and the ENROLL/DRAW breadcrumbs
+    /// follow the entry from there.</para></summary>
     internal static void Configure(ExtenderLog log)
     {
         _log = log;
-        string dumpAt = Settings.Text("dumpframe", "");
-        _dumpAt = dumpAt.Length == 0 ? -1 : int.TryParse(dumpAt, out int df) && df > 1 ? df : 300;
-        // #134: aim the census at a texture instead of at a moment. Five rolls in a row fired while the
+        // #134: aim the watch at a texture rather than at a moment. Five rolls in a row fired while the
         // camera was somewhere else, because "300 frames after the table settled" is not "standing at the
         // thing we are debugging" and no warm-up rule can make it so.
         _dumpTex = Settings.Text("dumptex", "");
         if (_dumpTex.Length == 0) _dumpTex = null;
-        _dumpAll = _dumpTex == "*";
-        if (_dumpTex != null) _dumpAt = _dumpAt < 0 ? 0 : _dumpAt;
-    }
-
-    /// <summary>The world bucket-0 edge: open the triage census if the table has settled for long enough,
-    /// and disarm so it only ever runs once. Called from the gate, which is where that edge is.</summary>
-    internal static void BeginDump()
-    {
-        if (_frame - _wipeFrame < _dumpAt) return;
-        _dumpAt = -1; _dumpLeft = DumpMax;
-        _log?.Info(_dumpTex == null
-            ? $"[dumpframe] begin, {_frame - _wipeFrame} frames after the table settled"
-            : $"[dumpframe] begin, watching for \"{_dumpTex}\" until {DumpMax} rows or the module ends");
     }
 
     /// <summary>#126: the material's blend pair -- source factor at +0x90, destination at +0x94, both
@@ -86,25 +73,16 @@ internal static unsafe class AlloyCensus
     /// VS/FS/GS). A material can name a fragment shader and no vertex shader.</summary>
     internal const int SharedFsName = 0x199;
 
-    /// <summary>#126 triage: one-shot census of every part the ENGINE draws in one world pass -- which
-    /// bucket it was captured in, why ownership passed it over, and what its diffuse texture actually is.
-    /// Armed by <c>dumpframe</c> in <c>sowx.cfg</c>, fires on the next world bucket-0 entry and disarms. Cold by
-    /// construction (it only ever runs on the one frame) and allocating is fine there.</summary>
-    internal static int _dumpAt = -1, _dumpLeft;
     /// <summary><c>dumptex</c> (sowx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
     /// time, for as long as it takes the camera to find them.</summary>
     internal static string? _dumpTex;
-    internal static int _dumpTexFrame = -1, _dumpTexRows;
-    /// <summary>Census sampling for <c>dumptex</c>: every Nth frame, up to M matching parts of it.</summary>
-    internal const int DumpTexEvery = 120, DumpTexRows = 16, DumpAllRows = 200;
-    /// <summary><c>dumptex=*</c> -- census every engine-drawn part of the sampled frame, not one texture's.</summary>
-    internal static bool _dumpAll;
     /// <summary>Table slot of the part <c>dumptex</c> last matched, published by the census for enrollment to
     /// recognise without dereferencing anything. -1 until the camera finds it.</summary>
     internal static int _watchEntry = -1;
 
-    /// <summary>#82 ownership columns, driven by AlloyRenderer: 1 = the Alloy world pass owns this part
-    /// (the engine's own walk must never draw it too), and the pass generation its Alloy draw last succeeded in. They live
+    /// <summary>#82 ownership columns, driven by AlloyRenderer: 1 = the Alloy world pass owns this part, and
+    /// the pass generation its Alloy draw last succeeded in. (#285: the "so the engine must not draw it too"
+    /// half of this is history -- since #264 the engine draws no world part at all.) They live
     /// here so the iterator's existing <c>Find</c> serves both owners -- no second hash probe per part.</summary>
     internal static readonly byte[] OwnFlag = new byte[MaxParts];
 
@@ -112,7 +90,6 @@ internal static unsafe class AlloyCensus
     /// <summary>Pass generation in which the iterator last SUPPRESSED this part. Compared against
     /// <see cref="OwnGen"/> to audit the exactly-one-owner invariant: drawn but never suppressed in the
     /// same pass means the engine drew it too (double-draw) or nobody walked it (ghost geometry).</summary>
-    internal static readonly int[] OwnSupGen = new int[MaxParts];
 
     /// <summary>#129: does the engine route this material to draw bucket 6, i.e. is this water?
     /// <para><c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880's own two terms, in its own order:
@@ -174,7 +151,7 @@ internal static unsafe class AlloyCensus
         // under suspicion, so the guard silenced exactly the line worth reading.
         if (e == _watchEntry && !_ownDry)
             _log?.Info($"[dumpframe] ENROLL entry={e} -> {(got ? "candidate" : _ownGate ?? "?")} " +
-                       $"cls={c.Cls} state={_pState[e]} seenAgo={_frame - _pSeen[e]} " +
+                       $"cls={c.Cls} state={_pState[e]} " +
                        $"bucket={(_pState[e] == StActive ? _pBucket[e] : -1)} " +
                        $"vdo=0x{(ulong)_pVdo[e]:x} item={_pItem[e]} ownflagBefore={OwnFlag[e]}");
         return got;
@@ -204,9 +181,6 @@ internal static unsafe class AlloyCensus
     /// "how much of what I am looking at is".</summary>
     internal static readonly bool[] WatchTex = new bool[MaxParts];
 
-    /// <summary>Engine draws of a matching part, per frame -- counted before every gate, so a part drawn
-    /// outside the bucket walk still lands here.</summary>
-    internal static int WatchEngineDraws;
 
     internal static bool TryOwnCandidateInner(int e, ref AlloyCandidate c)
     {
@@ -222,11 +196,15 @@ internal static unsafe class AlloyCensus
             // second renderer through every fade. Marked from the copy taken at Record, never from the dead
             // part, and only while it is still drawing, so a despawn clears itself within a frame.
             // ...and the gob must still be the one we copied. An identity-changed entry keeps its old _pGob
-            // while a RECYCLED part at that address goes on refreshing the sighting, so without this a reused
-            // gob pointer would sweep a live creature every enrollment. Same single-level read the death
-            // branch already does, on a part that drew within the frame. The multi-draw case this mark exists
-            // for passes it unchanged.
-            if (!_ownDry && _pGob[e] != IntPtr.Zero && _pSeen[e] >= _frame - 1
+            // while a RECYCLED part at that address answers to a different gob, so without this a reused
+            // pointer would sweep a live creature every enrollment. Same single-level read the death branch
+            // already does.
+            // #264: the "and it drew within the frame" half of this test WAS load-bearing, and dropping it
+            // outright was wrong -- the first live run refused 44 creatures whole off entries the sweep had
+            // already found unreachable. Its record-set equivalent is the walk generation: an entry the last
+            // walk still reached is one whose part is genuinely in the scene, which is what "still drawing"
+            // was standing in for. A swept-unreachable entry says nothing about its gob and must not veto it.
+            if (!_ownDry && _pGob[e] != IntPtr.Zero && _pWalkGen[e] == SceneWalk.Gen
                 && _pPart[e] != IntPtr.Zero && new PartRef(_pPart[e]).Gob.Ptr == _pGob[e])
             { NoteInstRefusing(e); OwnRefuse(0, _pGob[e]); }
             return Gate("state");
@@ -240,12 +218,13 @@ internal static unsafe class AlloyCensus
         // reachable from the Scene, and an unreachable one is swept (SceneWalk.Sweep) or destroyed
         // (Part::~Part). Candidacy therefore asks nothing about visibility at all. What the camera can see
         // is a per-FRAME question, asked at draw time against the bucket arrays.
-        // ...and the window it widens is a LIVENESS window, so what it bounded has to be re-proven rather
-        // than assumed. The captured node/material were last checked against the live part by the walk, which
-        // may now be a whole window ago; every gate below dereferences them. StActive plus the #145 dtor hook
-        // says the PART is alive, not that it still wears these. A mismatch is the walk's own
-        // "identity-changed" case arriving early -- refuse, and let the next walk recapture.
-        if (_pPart[e] != IntPtr.Zero && _pSeen[e] < _frame - 1)
+        // The captured node/material were last checked against the live part by the scene walk, which may be
+        // several frames ago; every gate below dereferences them. StActive plus the #145 dtor hook says the
+        // PART is alive, not that it still wears these. A mismatch is the walk's own "identity-changed" case
+        // arriving early -- refuse, and let the next walk recapture. #264: asked of EVERY candidate now. It
+        // used to be skipped for a freshly sighted part, and there are no sightings; enrollment is
+        // edge-triggered (#256), so the cost is one pointer pair per candidate per edge.
+        if (_pPart[e] != IntPtr.Zero)
         {
             var live = new PartRef(_pPart[e]);
             if (live.Node.Ptr != _pNode[e] || live.Material.Ptr != _pMat[e])
@@ -304,7 +283,16 @@ internal static unsafe class AlloyCensus
                     p.Alpha < 1f);
         if (!_ownDry) _ownByClass[c.Cls]++;
         if (v == IntPtr.Zero || vd.Mode != 1 || _pTex0[e] == IntPtr.Zero)
-        { Refuse(ref _ownRejVdo, c); return Gate("vdo"); }
+        { Refuse(ref _ownRejVdo, c, RejVdo); return Gate("vdo"); }
+        // #284: a diffuse that is a live texture with no GL id is a part the draw loop will skip (no-gl-id),
+        // and the engine has no retry -- its build queue is one-shot and drains whether or not the build
+        // found a decoded image. Enrolment is the Alloy-owned edge that notices; OwnedTextures owns the
+        // retry, and the budget. Enrolled anyway: the id may well be there by the time the draw runs.
+        if (!_ownDry)
+        {
+            var diffuse = m.Texture(0);
+            if (!diffuse.IsNull && AurTex.Tid(diffuse.Ptr) == 0) OwnedTextures.NoteUnbuilt(diffuse.Ptr);
+        }
         c.Feat = 0;
         if (!s.IsNull)
         {
@@ -317,7 +305,7 @@ internal static unsafe class AlloyCensus
         // terms are folded live by the draw loop now. What still refuses is the handful of instance state no
         // Alloy program can express at all.
         if (c.Gob != IntPtr.Zero && GobUnownable(c.Gob))
-        { Refuse(ref _ownRejGob, c); return Gate("gob-unownable"); }
+        { Refuse(ref _ownRejGob, c, RejSceneTint); return Gate("scene-tint"); }
         // Slots 1/2 are the normal and spec/roughness maps of the fslit_nm/_sm variants. #120 made the owned
         // lit stage read them (and slots 3/4/5) rather than bind slot 0 alone, so this is now a coverage
         // count of how much of the Alloy set is PBR content -- never a reason to reject.
@@ -329,8 +317,8 @@ internal static unsafe class AlloyCensus
         long elem = vd.ElemItems;
         int it = _pItem[e];
         if (elem == 0 || it < 0 || it >= vd.ElemCount || it >= vd.VertCount)
-        { Refuse(ref _ownRejItem, c); return Gate("item"); }
-        if (*(int*)(elem + it * 8 + 4) <= 0) { Refuse(ref _ownRejItem, c); return Gate("item-range"); }
+        { Refuse(ref _ownRejItem, c, RejItem); return Gate("item"); }
+        if (*(int*)(elem + it * 8 + 4) <= 0) { Refuse(ref _ownRejItem, c, RejItem); return Gate("item-range"); }
 
         c.Bucket = _pBucket[e];
         c.Tri = part; c.Node = _pNode[e]; c.Mat = mat; c.Vdo = v; c.Tex0 = _pTex0[e];
@@ -347,8 +335,20 @@ internal static unsafe class AlloyCensus
     /// nobody was failing and cost a round trip. There is one chain now.</summary>
     internal static bool Gate(string why) { _ownGate = why; return false; }
     internal static void Bump(ref int counter) { if (!_ownDry) counter++; }
-    internal static void Refuse(ref int counter, in AlloyCandidate c)
-    { if (!_ownDry) { counter++; OwnRefuse(c.Cls, c.Gob); } }
+    internal static void Refuse(ref int counter, in AlloyCandidate c, int reason)
+    { if (!_ownDry) { counter++; RejReason(reason, c.Cls); OwnRefuse(c.Cls, c.Gob); } }
+
+    /// <summary>#285: the reject tail, decomposed. Every gate PAST the classification already had a named
+    /// total and a per-class total, and neither said which gate ate which class -- "87 cutout / 87 water
+    /// refused after classifying" was a hole nobody could attribute without a Ghidra session. This is the
+    /// cross, and it is the only reason the two axes exist separately.</summary>
+    internal static readonly int[] OwnRejByReason = new int[RejCount * AlloyClasses.Count];
+    /// <summary>The gates that refuse a part AFTER it has a class. Index into <see cref="OwnRejByReason"/>;
+    /// <see cref="RejNames"/> is the printed name of each.</summary>
+    internal const int RejVdo = 0, RejSceneTint = 1, RejItem = 2, RejTableFull = 3, RejNoVao = 4, RejCount = 5;
+    private static readonly string[] RejNames = { "vdo", "scene-tint", "item", "table-full", "no-vao-slot" };
+    internal static void RejReason(int reason, int cls)
+    { if (cls >= 0 && cls < AlloyClasses.Count) OwnRejByReason[reason * AlloyClasses.Count + cls]++; }
     internal static string? _ownGate;
     /// <summary>Set while the census asks the real predicate a hypothetical: same gates, no counters, no
     /// unknown-shader notes.</summary>
@@ -377,9 +377,18 @@ internal static unsafe class AlloyCensus
     /// (<c>gob+0x10c</c>) -- Ghidra <c>PartTriMesh::Mat</c>: <c>if ((*(*(gob+0x68)+0x8e) &amp; 8) != 0)</c>.</summary>
     internal const int GobOwnerFlags = 0x8e, GobOwnerFadeBit = 8;
 
-    /// <summary>#128: does this instance carry state no Alloy program can reproduce? TWO cases, and only
-    /// two -- the highlight modes, which do not shade at all but paint a selection colour sampled from the
-    /// Scene.
+    /// <summary>#128/#285: does this instance carry state no Alloy program can reproduce? ONE case now --
+    /// the SCENE TINT (<c>gob+0x19</c>), which <c>PartTriMesh::Mat</c> @0x450960 draws as
+    /// <c>SetColor4f(currentscene+0x14c..0x154)</c> under <c>Disable(5)</c>: the whole surface replaced by one
+    /// unlit colour, which is not arithmetic on any term the SowxDraw record carries. COUNTED, not owned --
+    /// see <c>instance-state</c> on the [alloy] line and <c>scene-tint</c> on the census line.
+    /// <para>#285: the HIGHLIGHT (<c>gob+0x18</c>) came OUT. Before #264 a refusal fell through to the
+    /// engine's bucket walk and the part drew vanilla-highlighted; there is no walk, so refusing it made a
+    /// placeable VANISH for exactly as long as the cursor sat on it, with the engine's glow overlay painted
+    /// over nothing. Alloy draws the part normally now and the overlay draws the glow on top of it, which is
+    /// vanilla composition. What is given up is only <c>Mat</c>'s highlight branch -- <c>Disable(5)</c> plus
+    /// <c>SetColor4f(1,1,1,alpha)</c>, the part going flat-white-unlit under the cursor. A lit part under a
+    /// glow beats no part at all.</para>
     /// <para>Everything else <c>PartTriMesh::Mat</c> @0x450960 does with a gob is arithmetic on terms the
     /// SowxDraw record already carries -- an alpha multiply, a component-wise colour multiply and a self-illum
     /// add -- so #128 FOLDS them (see <see cref="GobAlphaMul"/> and its two neighbours) rather than refusing
@@ -403,7 +412,7 @@ internal static unsafe class AlloyCensus
     internal static bool GobUnownable(IntPtr gob)
     {
         var g = new GobRef(gob);
-        return g.Highlight || g.SceneTint;
+        return g.SceneTint;
     }
 
     /// <summary>Does this instance override the env map (<c>gob+0x480</c>)? The engine's own routing test in
@@ -449,9 +458,10 @@ internal static unsafe class AlloyCensus
 
     /// <summary>Hot (once per Alloy part per frame): may this part's instance still be drawn by the owned
     /// pass at all? A part with no gob trivially may, which is the tile case and the only load most calls do.
-    /// <para>#128: the states this asks about are TRANSIENT -- a placeable highlights for exactly as long as
-    /// the cursor is over it -- so the draw loop SKIPS on a false rather than revoking, and the engine's own
-    /// walk draws it highlighted. Revoking would spend a full re-enrollment on a hover.</para></summary>
+    /// <para>The state this asks about is TRANSIENT, so the draw loop SKIPS on a false rather than revoking:
+    /// a revoke would spend a full re-enrollment on a state that can last one frame. #285: a skip is a HOLE
+    /// now, not a hand-back -- nothing draws what this refuses -- which is why the highlight left
+    /// <see cref="GobUnownable"/> and only the scene tint is still worth the hole.</para></summary>
     internal static bool InstanceOwnable(IntPtr part)
     {
         IntPtr gob = new PartRef(part).Gob.Ptr;
@@ -472,7 +482,7 @@ internal static unsafe class AlloyCensus
     /// class, so it is the only one it takes.</para>
     /// Cold: one call per table slot per enrollment.</summary>
     /// <summary>#151: will the caster CENSUS carry this entry? The cheap prefix of
-    /// <see cref="TryCasterCandidate"/>'s acceptance -- state, sighting, bucket, world -- used by the owned
+    /// <see cref="TryCasterCandidate"/>'s acceptance -- state, bucket, world -- used by the owned
     /// pass to avoid double-recording a part the table already casts. A DEAD entry fails here, which is the
     /// population the per-frame recast exists for.
     /// <para>#258 widened what this covers: matrix probation used to kill a moving creature piece, so it
@@ -482,7 +492,6 @@ internal static unsafe class AlloyCensus
     internal static bool CasterCensusCovers(int e)
     {
         if ((uint)e >= MaxParts || !Active || _pState[e] != StActive) return false;
-        if (_pSeen[e] < _frame - 1) return false;
         // #262: in step with TryCasterCandidate's own skin test, and for the same reason -- this predicate
         // exists to say "the census has it", so answering yes for a class the census now refuses would leave
         // a cloak with no caster at all instead of two.
@@ -493,7 +502,6 @@ internal static unsafe class AlloyCensus
     internal static bool TryCasterCandidate(int e, ref CasterCandidate c)
     {
         if (!Active || _pState[e] != StActive) return false;
-        if (_pSeen[e] < _frame - 1) return false;
         if (_pBucket[e] > MaxCasterBucket) return false;
         // #262: a true skinmesh cannot be a candidate here. Everything below files a RIGID record -- node
         // matrix, bone -1 -- which for a cloak is its BIND pose. AlloyRenderer.PoseSkinned records this class
@@ -791,9 +799,11 @@ internal static unsafe class AlloyCensus
         // ...and none of that made the instance unownable, which is the whole of #128 over #134
         E(!GobUnownable((IntPtr)gob), "a MODULATING instance is still ownable: the terms are folded, not refused");
         gob[GobHighlight] = 1;
-        E(GobUnownable((IntPtr)gob), "a highlight is not");
+        // #285: and neither is a HIGHLIGHT. Refusing one used to hand the part to the engine's walk; since
+        // #264 it hands it to nothing, so a hovered placeable disappeared under its own glow.
+        E(!GobUnownable((IntPtr)gob), "a highlight is OWNABLE -- the engine's glow overlay composites over it");
         gob[GobHighlight] = 0; gob[GobSceneTint] = 1;
-        E(GobUnownable((IntPtr)gob), "nor a scene tint");
+        E(GobUnownable((IntPtr)gob), "a scene tint is not -- it REPLACES the surface with one unlit colour");
         gob[GobSceneTint] = 0;
         E(!GobHasEnvMap((IntPtr)gob), "a bare gob overrides no env map");
         *(IntPtr*)(gob + GobEnvOverride) = (IntPtr)owner;
@@ -815,6 +825,19 @@ internal static unsafe class AlloyCensus
         E(OwnRefusedByClass[2] == 1, "...and a static refusal still does");
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
         Array.Clear(OwnRefusedByClass);
+
+        // #285: the reject cross. The value of this instrument is entirely in the two axes not being
+        // transposed -- a note that reads "item/Water" for a water part refused by the VDO gate is worse
+        // than no note, because it sends the next reader to the wrong gate.
+        Array.Clear(OwnRejByReason);
+        E(RejCrossNote().Length == 0, "no refusals, no by-gate note");
+        RejReason(RejVdo, (int)AlloyClass.Water);
+        RejReason(RejItem, (int)AlloyClass.Cutout);
+        RejReason(RejItem, (int)AlloyClass.Cutout);
+        E(RejCrossNote() == " [by gate: vdo/Water=1 item/Cutout=2]", $"the cross reads gate/class: {RejCrossNote()}");
+        RejReason(RejCount - 1, AlloyClasses.Count);   // out of range: dropped, never a corrupted neighbour
+        E(RejCrossNote() == " [by gate: vdo/Water=1 item/Cutout=2]", "an out-of-range class is dropped");
+        Array.Clear(OwnRejByReason);
 
         // The table-pressure decision, which is the whole of the "renderer keeps falling back to vanilla in
         // big areas" fix and is otherwise only observable on a live client in a big area. Runs on the real
@@ -893,20 +916,33 @@ internal static unsafe class AlloyCensus
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
             _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing = 0;
         Array.Clear(_instWhy); Array.Clear(_instWhyN);
-            _engineWaterWalks = _ownedWaterWalks = 0;
-        Array.Clear(_ownByClass); Array.Clear(OwnRefusedByClass);
+        Array.Clear(_ownByClass); Array.Clear(OwnRefusedByClass); Array.Clear(OwnRejByReason);
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
         _unknownCount = 0;
+    }
+
+    /// <summary>#285: which gate ate which class, printed only where the cross is nonzero. Without it the
+    /// two axes are a riddle -- a hole large enough to notice cannot be attributed to a reason.</summary>
+    private static string RejCrossNote()
+    {
+        string s = "";
+        for (int r = 0; r < RejCount; r++)
+            for (int cl = 0; cl < AlloyClasses.Count; cl++)
+            {
+                int n = OwnRejByReason[r * AlloyClasses.Count + cl];
+                if (n != 0) s += $" {RejNames[r]}/{(AlloyClass)cl}={n}";
+            }
+        return s.Length == 0 ? "" : $" [by gate:{s}]";
     }
 
     /// <summary>Why the last enrollment scan rejected what it rejected -- one line, cold.</summary>
     internal static string OwnScanDiag() =>
         $"active={_ownSeen} rejects: stale-identity={_ownRejStaleMoved} bucket={_ownRejBucket} vdo={_ownRejVdo} " +
-        $"gob={_ownRejGob} item={_ownRejItem} foreign-scene={_ownRejScene} " +
+        $"scene-tint={_ownRejGob} item={_ownRejItem} foreign-scene={_ownRejScene} " +
         // #128: the instanced population's own fate. "Creatures are not owned" reads identically to
         // "creatures are not in the table"; these three tell them apart without another round trip.
         $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan " +
-        $"({_ownInstRefusing} of them DRAWING, i.e. taking their whole creature vanilla{InstWhyNote()}), " +
+        $"({_ownInstRefusing} of them DRAWING, i.e. taking their whole creature OUT OF THE FRAME{InstWhyNote()}), " +
         $"{_pInstRecorded} recorded ever, " +
         $"fb-sampling/volumetric={_ownRejFbSample}, " +
         // #126: the classification, as coverage. Cutout-vs-blended is the split the whole transparency
@@ -916,18 +952,12 @@ internal static unsafe class AlloyCensus
         $"{_ownByClass[(int)AlloyClass.Additive]} additive (refused after classifying: " +
         $"{OwnRefusedByClass[1]} cutout / {OwnRefusedByClass[2]} blended / " +
         $"{OwnRefusedByClass[(int)AlloyClass.Water]} water / " +
-        $"{OwnRefusedByClass[(int)AlloyClass.Additive]} additive), " +
-        // #129: the ticket's own criterion, as a counter. The engine takes a copy per bucket-6 walk it runs,
-        // so "engine water walks" IS "engine framebuffer copies for water" -- and the number that has to be
-        // zero while Alloy water is drawing.
-        $"water walks: {_ownedWaterWalks} owned / {_engineWaterWalks} engine (each engine walk is one " +
-        $"engine framebuffer copy), " +
+        $"{OwnRefusedByClass[(int)AlloyClass.Additive]} additive" + RejCrossNote() + "), " +
         $"owned-with-unused-maps={_ownWithMaps}, env-mapped={_ownWithEnv}, " +
         $"shared-material={_ownSharedPlain} exact + {_ownSharedFeature} by feature switch (#123) + " +
         $"{_ownSharedShader} approximated" +
         (_unknownCount == 0 ? "" : $" ({string.Join(", ", _unknown, 0, _unknownCount)})");
 
-    internal const int DumpMax = 6000;
     /// <summary>CAurTextureBasic's 32-byte name field (Ghidra CAurTextureBasic::CAurTextureBasic @0x487250:
     /// <c>strncpy(this + 0x88, name, 0x1f)</c>). Reached the way AurTextureMessage @0x488b10 reaches it --
     /// vtable slot 0x18 resolves a reference texture to the real one, slot 0x10 is AsCAurTextureBasic.</summary>
@@ -981,51 +1011,4 @@ internal static unsafe class AlloyCensus
         return basic == IntPtr.Zero ? "?" : Marshal.PtrToStringAnsi(basic + TexBasicName) ?? "?";
     }
 
-    /// <summary>One census line for one engine-drawn part. Everything the four open questions need at once:
-    /// which bucket the engine is drawing it in, which bucket we CAPTURED it in (they differ, and ownership
-    /// keys on the capture), what state its table entry is in, what class it classified as, and whether its
-    /// diffuse carries alpha the caster mask could have used.</summary>
-    internal static void DumpPart(IntPtr part)
-    {
-        var p = new PartRef(part);
-        var m = p.Material;
-        if (_dumpTex != null)
-        {
-            TextureRef t = m.IsNull ? default : m.Texture(0);
-            // #134: "*" matches every part. Four rolls asked "is the ivy owned" of a substring that named
-            // exactly ONE part in the area -- the answer was yes every time and the thing on screen was
-            // other geometry. A name you have to guess is not a filter, it is a hypothesis.
-            if (!_dumpAll
-                && (t.IsNull || !t.ResolveName().Contains(_dumpTex, System.StringComparison.OrdinalIgnoreCase)))
-            { _dumpLeft++; return; }                       // refund: only matches spend the budget
-            WatchEngineDraws++;
-            // #134: a WHOLE sampled frame, not one row of it. One row per frame made every roll read as
-            // "the ivy", singular, while the thing on screen is a dozen parts -- and the one row happened to
-            // be an Alloy one for four rolls running. Sample every DumpTexEvery frames, up to DumpTexRows
-            // parts, so the population is visible rather than a representative of it.
-            if (_frame != _dumpTexFrame)
-            {
-                if (_frame - _dumpTexFrame < DumpTexEvery) { _dumpLeft++; return; }
-                _dumpTexFrame = _frame; _dumpTexRows = 0;
-            }
-            if (_dumpTexRows++ >= (_dumpAll ? DumpAllRows : DumpTexRows)) { _dumpLeft++; return; }
-        }
-        NodeRef node = p.Node;
-        int e = Find(part);
-        if (e >= 0) _watchEntry = e;
-        string ent = e < 0 ? "unrecorded" : $"entry={e} st={_pState[e]} died={(_pState[e] == StDead ? _pDeath[e] ?? "?" : "-")} own={OwnFlag[e]} ownonly={_pOwnOnly[e]} capbucket={(_pState[e] == StActive ? _pBucket[e] : -1)} seen={_frame - _pSeen[e]}";
-        TextureRef t0 = m.IsNull ? default : m.Texture(0);
-        int tid = t0.ResolveTid();
-        SharedRef shared = m.Shared;
-        _log?.Info($"[dumpframe] bucket={_bucketId} inbucket={_inBucket} dangly={IsDangly(part)} skin={DrawFunnelService._inSkinDraw} why={(e < 0 ? "unrecorded" : WhyNotOwnable(e))} part=0x{(ulong)part:x} vtbl=0x{(ulong)p.Vtbl:x} {ent} " +
-                   $"tex=\"{t0.ResolveName()}\" tid={tid} texalpha={(tid > 0 && CasterPass.TexHasAlpha(tid))} {TexFormat(tid)} " +
-                   $"opaque={(!m.IsNull && Engine.IsOpaque(p))} env={(!m.IsNull && Engine.HasEnvMap(m))} " +
-                   $"blend={(m.IsNull ? 0 : m.SrcBlend)}/{(m.IsNull ? 0 : m.DstBlend)} " +
-                   $"alpha={p.Alpha:0.00} gob=0x{(ulong)p.Gob.Ptr:x} " +
-                   $"node=0x{(ulong)node.Ptr:x} nvtbl=0x{(ulong)(node.IsNull ? IntPtr.Zero : *(IntPtr*)node.Ptr):x} " +
-                   $"n10=0x{(ulong)(node.IsNull ? IntPtr.Zero : *(IntPtr*)(node.Ptr + 0x10)):x} " +
-                   $"nflags=0x{(node.IsNull ? 0 : node.Flags):x} {GobTerms(p.Gob.Ptr)} " +
-                   $"transp={(!shared.IsNull && shared.Transparency)} " +
-                   $"shvs=\"{(shared.IsNull ? "-" : Marshal.PtrToStringAnsi((IntPtr)shared.VsName) ?? "")}\"");
-    }
 }

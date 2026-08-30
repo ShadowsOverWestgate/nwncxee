@@ -77,7 +77,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Entries in <see cref="_order"/>: <see cref="_ownCount"/> minus whatever the all-owned-or-none
     /// sweep dropped. The draw walks this, never the slot count.</summary>
     private static int _orderCount;
-    /// <summary>#126: blended parts handed back this enrollment because the class could not be Alloy whole.
+    /// <summary>#126: blended parts dropped from this enrollment because the class could not be Alloy whole.
+    /// #285: dropped means NOT DRAWN -- there is no engine walk behind the class since #264.
     /// Reported: a class that never lands is the one number that separates "no transparent content here"
     /// from "one part keeps refusing and takes the class down with it".</summary>
     private static int _blendedDropped;
@@ -324,8 +325,8 @@ public sealed unsafe partial class AlloyRenderer
     private static uint _boneBuf;
     private static float* _boneStage;
     private static int _boneSlots, _boneCap, _boneHigh;
-    /// <summary>#137 armed: <c>ownskin</c> not 0. False leaves the skinmesh class exactly where #128 left it
-    /// -- refused at enrollment, drawn by the engine.</summary>
+    /// <summary>#137 armed: <c>ownskin</c> not 0. False refuses the skinmesh class at enrollment -- which
+    /// since #264 means every cloak, robe and tail is NOT DRAWN, not drawn by the engine (#285).</summary>
     private static bool _skinning;
     /// <summary>#262: did <see cref="SkinPose.SelfCheck"/> pass? Checked once at install, ahead of every
     /// engine-symbol stand-down, so the answer is about this BUILD and not about this client.</summary>

@@ -34,7 +34,9 @@ namespace Sowx.Alloy;
 /// the cost, so masking would keep every rebuild and upload alive and make the draw-count win imaginary.
 /// Instead the hook declines to call the original for an emitter the Alloy pass actually issued this pass --
 /// which is also the escape hatch: an emitter we cannot build (custom material shader, no texture, table
-/// full) is simply not marked, so the engine draws it at its own slot and nothing is lost. There is no
+/// full) is simply not marked, so the engine's own emitter draw runs at its slot. #285/#264: under the shim
+/// that draw is swallowed by the vertex funnels, so an unmarked emitter is NOT DRAWN rather than vanilla --
+/// `suppressed` against the emitter population on the [particles] line is what says how often. There is no
 /// all-owned-or-none rule here and there does not need to be one.</para>
 /// <para><b>#261: the feed is ours and the lag is gone.</b> Two changes, and they are separate.</para>
 /// <para><b>The lag</b> was scheduling, not structure. <c>Scene::DoEmitterBucket</c> is the only caller of
@@ -50,8 +52,18 @@ namespace Sowx.Alloy;
 /// draw-order index list -- four bytes a particle against a hundred and ninety-two before -- because the
 /// depth order changes when the records do not. The six vertices a particle are expanded from
 /// <c>gl_VertexID</c> in the vertex stage.</para>
-/// <para>The compute SORT is strand 2's, deliberately: this ticket owns the feed, so the class split and
-/// the emitter grouping below are unchanged and the only thing that moved is how the data gets there.</para>
+/// <para><b>#288: the last per-particle CPU loop is gone, and the order is compute's.</b> What #261 left on
+/// the CPU was the index list itself -- one write and four bytes a particle, every frame. The CPU now stages
+/// one SPAN a placed emitter (record base, particles, index offset) and one descriptor a draw group, and
+/// <see cref="ParticleCs"/> writes the list in a single dispatch of one workgroup per group. That same
+/// dispatch depth-sorts the ALPHA-BLENDED groups back to front, which vanilla never did within an emitter
+/// and this pass never did at all.</para>
+/// <para><b>#131's ordering rule survives structurally.</b> Additive commutes with itself and not with
+/// alpha-over, so the two runs have to stay separable. They do, and not because the sort is careful: a draw
+/// group is single-class by construction (see <see cref="Group"/>), one workgroup owns one group, and the
+/// groups occupy disjoint index ranges issued in group order -- so no dispatch can move a particle out of
+/// its class. Punch-through and additive are not sorted at all, deliberately. <c>/particles sort 0</c> puts
+/// the index build back on the CPU, unsorted, which is exactly the pre-#288 frame.</para>
 /// </summary>
 internal static unsafe class Particles
 {
@@ -238,12 +250,29 @@ internal static unsafe class Particles
     /// rather than open-coded because <see cref="Beams"/> and <see cref="SkyBox"/> name the same trio, and a
     /// layout correction that misses one site is the kind that is found by looking at the screen.</summary>
     private const int ModeModel = 2, StackStride = 0x58, StackTop = 0x18;
-    /// <summary>The two SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
-    /// 5-7 the caster's; these are the next free pair and the vertex stage names the same literals.</summary>
+    /// <summary>The SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
+    /// 5-7 the caster's, 12-16 <see cref="CullPass"/>'s; 10/11 are the record and index buffers the vertex
+    /// stage names, and #288's two descriptor buffers take the next free pair above the cull's.</summary>
     internal const uint BindRecs = 10, BindIdx = 11;
+    /// <summary>#288: the compute stage's inputs. <see cref="BindSpans"/> is one entry per emitter the pass
+    /// placed, <see cref="BindGroups"/> one per draw group.</summary>
+    private const uint BindSpans = 17, BindGroups = 18;
 
-    /// <summary>Emitters tracked at once. Past this an emitter is declined and draws vanilla, which is the
-    /// whole cost of the cap.</summary>
+    /// <summary>#288: the index-build workgroup size, and the largest group the compute sort will order.
+    /// One workgroup per draw group, one shared-memory bitonic network per blended group.
+    /// <para>ponytail: the cap is what the shared arrays hold -- 2048 * (float + uint) is 16KB, half the
+    /// 32KB GL guarantees, and a blended group past it keeps fill order exactly as it did before this
+    /// ticket. The upgrade path is a global key sort over the whole index list rather than a bigger
+    /// workgroup; <c>sort-skipped=</c> on the period line is when that becomes worth writing.</para></summary>
+    private const int SortLocal = 256, SortCap = 2048;
+    /// <summary>#288: the top bit of a group descriptor's particle count, set by the CPU on exactly the
+    /// groups the sort may reorder. The count itself is bounded by <see cref="MaxRecs"/>, so the bit is
+    /// free -- and it is the ONLY thing that decides a reorder, which is what keeps the classes separable.
+    /// </summary>
+    private const uint SortFlag = 0x80000000u;
+
+    /// <summary>Emitters tracked at once. Past this an emitter is declined and, since #264 deleted the
+    /// engine walk, does not draw at all (#285) -- which is the whole cost of the cap.</summary>
     private const int MaxEmitters = 8192;
     /// <summary>Draw groups per pass. One group is one <c>glDrawArrays</c>; overflowing it declines the
     /// remaining emitters rather than merging groups that must not merge.</summary>
@@ -307,6 +336,15 @@ internal static unsafe class Particles
     private static readonly IntPtr[] _gTexObj = new IntPtr[MaxGroups];
     /// <summary>Vertices each entry of <see cref="_draw"/> actually wrote.</summary>
     private static readonly int[] _wrote = new int[MaxEmitters];
+    /// <summary>#288: one span descriptor per entry of <see cref="_draw"/> -- (record base, particles, index
+    /// offset, unused), std430 <c>uvec4</c>. This is the whole of what replaced the per-particle CPU index
+    /// loop: three numbers an emitter instead of four bytes a particle.</summary>
+    private static readonly uint[] _span = new uint[MaxEmitters * 4];
+    /// <summary>#288: one descriptor per draw group -- (first span, spans, index offset, particles with
+    /// <see cref="SortFlag"/>). One workgroup consumes one of these, and a group is single-class by
+    /// construction (see <see cref="Group"/>), so no workgroup can ever move a particle across a class.
+    /// </summary>
+    private static readonly uint[] _grp = new uint[MaxGroups * 4];
     /// <summary>Emitters in draw order, grouped -- the permutation of <see cref="_order"/> the writer walks.
     /// </summary>
     private static readonly int[] _draw = new int[MaxEmitters];
@@ -332,9 +370,18 @@ internal static unsafe class Particles
     /// <summary>The per-pass toggle, live behind <c>/particles on 0|1</c>. Default ON, matching what
     /// <c>SOWX_PARTICLES</c> unset did -- #183's bar is that the default frame is unchanged, and the pass
     /// was armed on a plain launch. The stray-rays bug is still open; <c>/particles on 0</c> is now the way
-    /// to compare against vanilla in the same session rather than a relaunch.</summary>
+    /// to compare against vanilla in the same session rather than a relaunch.
+    /// <para>#288 changed neither this nor the two bisect dials, and did not fix that bug. It states the
+    /// position: the pass is ARMED by default, not stood down as #148's ticket text still claims, and the
+    /// re-measure is <c>/particles grid</c> and <c>/particles guard</c> -- what the abolished
+    /// <c>SOWX_PARTGRID</c> became under ADR 0013.</para></summary>
     private static bool _on = BootOn;
     private static uint _prog, _vao, _recBuf, _idxBuf;
+    /// <summary>#288: the index-build/sort compute program and its two descriptor buffers.</summary>
+    private static uint _csProg, _spanBuf, _grpBuf;
+    private static int _csEye = -1;
+    private static bool _csFailed;
+    private static int _spanCap, _grpCap;
     private static int _locEye = -1;
     private static int _locView = -1, _locProj = -1, _locTex = -1, _locCut = -1,
                        _locFog = -1, _locFogColor = -1, _locAdditive = -1,
@@ -350,9 +397,9 @@ internal static unsafe class Particles
     /// writes here; only the blocks whose hash moved are sent to GL.</summary>
     private static float* _recs;
     private static int _recsCap, _recTop;
-    /// <summary>Record indices in DRAW order, one per particle -- the whole of what this pass uploads every
-    /// frame regardless of what changed. Four bytes a particle against 192 before, and it is what lets the
-    /// records stay put while the depth order does not.</summary>
+    /// <summary>Record indices in DRAW order, one per particle. #288 moved the WRITE of this list onto the
+    /// GPU, so the CPU shadow is now only the <c>/particles sort 0</c> path's staging area -- kept because
+    /// that dial is the escape hatch for a driver where the compute program does not build.</summary>
     private static uint* _idx;
     private static int _idxCap;
 
@@ -361,6 +408,9 @@ internal static unsafe class Particles
     /// <summary>#261's own numbers: record blocks re-sent this period, blocks the hash said were unchanged,
     /// and times the block allocator ran out and started over (which costs one frame of vanilla emitters).</summary>
     private static int _blockUploads, _blockSkips, _recResets;
+    /// <summary>#288's numbers: groups the compute pass ordered, and blended groups it left in fill order
+    /// because they were larger than <see cref="SortCap"/>.</summary>
+    private static int _sorted, _sortSkipped;
     // Why an emitter was declined, split -- "particles are still vanilla" has five different fixes behind
     // it and only the split says which.
     private static int _decFade, _decEmpty, _decShader, _decTex, _decFull, _reclaimed, _softPasses,
@@ -420,6 +470,12 @@ internal static unsafe class Particles
     /// <para><b>Live bisect for the OPEN stray-rays bug -- keep until that closes</b>, for the same reason as
     /// <see cref="_useGrid"/>: it is one half of the pair that separates a UV fault from an artwork one.</para></summary>
     private static bool _guard = true;
+    /// <summary><c>/particles sort 0</c>: build the draw-order index list on the CPU, one entry a particle,
+    /// and do not order anything -- exactly what this pass did before #288.
+    /// <para>It is the escape hatch as well as the A/B: the compute path is the default, and a driver whose
+    /// loader never resolved <c>glDispatchCompute</c> (or where the program failed to build) falls back to
+    /// this same code without the dial being touched.</para></summary>
+    private static bool _sort = true;
     /// <summary>How far inside its own cell a quad's UV range is pulled, as a fraction of the cell.
     /// <para>An atlas cell has no border. Bilinear filtering at its edge reaches into the NEIGHBOURING cell,
     /// and a mip level of an atlas averages cells together outright -- so a frame whose neighbour holds a
@@ -627,14 +683,17 @@ internal static unsafe class Particles
         // the build reads it: an emitter drawn lit must not also get the CPU tint.
         bool lit = _lit && lightingOn && AlloyLights.Ready;
 
-        // #261: build each emitter's records into its OWN persistent block, and write the draw-order index
-        // list as we go. The blocks do not move; the index list does, and it is 4 bytes a particle.
+        // #261: build each emitter's records into its OWN persistent block. #288: what this loop stages for
+        // the index list is one SPAN an emitter -- the list itself is written by the compute dispatch below.
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _recBuf);
         int at = 0;
         for (int i = 0; i < _drawN; i++)
         {
             int k = _draw[i];
             ref Emit e = ref _tab[_sSlot[k]];
+            // Every entry gets a span, so an emitter that produced nothing is an EMPTY span rather than a
+            // stale one -- the compute pass walks spans by group membership, not by what was written.
+            _span[i * 4] = 0; _span[i * 4 + 1] = 0; _span[i * 4 + 2] = (uint)at; _span[i * 4 + 3] = 0;
             if (!EnsureBlock(ref e, _sCount[k])) { _wrote[i] = 0; continue; }
             int wrote = BuildEmitter(e.Ptr, ref e, _recs + (long)e.RecBase * RecFloats, _sCount[k],
                                      camFwd, camQ, axisY, axisX, eye,
@@ -654,7 +713,9 @@ internal static unsafe class Particles
                 _blockUploads++;
             }
             else _blockSkips++;
-            for (int j = 0; j < wrote; j++) _idx[at + j] = (uint)(e.RecBase + j);
+            // #288: the span, not the particles. The index list itself is filled by the compute pass below
+            // -- or, under /particles sort 0, from this same descriptor on the CPU.
+            _span[i * 4] = (uint)e.RecBase; _span[i * 4 + 1] = (uint)wrote; _span[i * 4 + 2] = (uint)at;
             at += wrote;
         }
         if (at == 0) return;
@@ -675,8 +736,14 @@ internal static unsafe class Particles
         // Taken after the build so the frame's cost is paid only when there is something to soften.
         bool soft = _soft && SceneDepth.Take(viewport);
 
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _idxBuf);
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, 0, (IntPtr)((long)at * sizeof(uint)), _idx);
+        if (!Order(groups, eye))
+        {
+            for (int i = 0; i < _drawN; i++)
+                for (int j = 0; j < _wrote[i]; j++)
+                    _idx[_span[i * 4 + 2] + j] = _span[i * 4] + (uint)j;
+            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _idxBuf);
+            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, 0, (IntPtr)((long)at * sizeof(uint)), _idx);
+        }
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _recBuf);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _idxBuf);
@@ -1409,6 +1476,92 @@ internal static unsafe class Particles
         return true;
     }
 
+    /// <summary>#288: build the index-build/sort program. Not an overridable stage -- ADR 0012's table is
+    /// the set a content author can restyle, and there is no look here to restyle. A driver whose loader
+    /// never produced the compute entry points latches <see cref="_csFailed"/> and the CPU path stands in.
+    /// </summary>
+    private static bool EnsureSort()
+    {
+        if (_csProg != 0) return true;
+        if (_csFailed) return false;
+        if (Gl.DispatchCompute == null || Gl.MemoryBarrier == null || Gl.BindBufferBase == null)
+        { _csFailed = true; return false; }
+        _csProg = GlProgram.Compute(ParticleCs, _log, "Particles index build + depth sort");
+        if (_csProg == 0) { _csFailed = true; return false; }
+        _csEye = GlProgram.Loc(_csProg, "uEye");
+        _log?.Info($"Particles: #288 armed -- index build and depth sort in compute, "
+                   + $"{SortLocal} threads a group, sort cap {SortCap} particles");
+        return true;
+    }
+
+    /// <summary>#288: fill the draw-order index list, and order the blended groups back-to-front, on the
+    /// GPU. False means the caller does it on the CPU instead, unsorted -- which is what this pass did
+    /// before the ticket.
+    /// <para><b>The separability guarantee is structural, not arithmetic.</b> One workgroup owns one draw
+    /// group; a draw group is single-class by construction (see <see cref="Group"/>); and the index ranges
+    /// the groups occupy are disjoint and issued in group order. So no dispatch can move a particle out of
+    /// its group, and #131's rule -- that additive and alpha-over do not commute with each other -- is
+    /// preserved by the shape of the dispatch rather than by anything the shader is careful about.</para>
+    /// </summary>
+    /// <summary>#288: may the compute pass reorder this group? The whole of the ordering rule, in one place
+    /// so that <see cref="SelfCheck"/> pins the SAME predicate <see cref="Order"/> stages rather than a
+    /// restatement of it that can drift away from it.</summary>
+    private static bool WillSort(int cls, int parts) => cls == ClsBlend && parts > 1 && parts <= SortCap;
+
+    private static bool Order(int groups, Vector3 eye)
+    {
+        if (!_sort || !EnsureSort()) return false;
+
+        // Only the alpha-blended class gets ordered. Punch-through writes depth and discards, so it is
+        // already order-independent; addition commutes with itself, which is exactly why the additive class
+        // could be batched across the screen in the first place -- reordering it would cost a sort and buy
+        // nothing.
+        for (int gi = 0; gi < groups; gi++)
+        {
+            uint count = (uint)_gParts[gi];
+            bool sort = WillSort(_gCls[gi], _gParts[gi]);
+            if (_gCls[gi] == ClsBlend && count > SortCap) _sortSkipped++;
+            if (sort) _sorted++;
+            _grp[gi * 4] = (uint)_gFirst[gi];
+            _grp[gi * 4 + 1] = (uint)_gCount[gi];
+            _grp[gi * 4 + 2] = (uint)_gStart[gi];
+            _grp[gi * 4 + 3] = sort ? count | SortFlag : count;
+        }
+
+        Stage(ref _spanBuf, ref _spanCap, _span, _drawN * 4, BindSpans);
+        Stage(ref _grpBuf, ref _grpCap, _grp, groups * 4, BindGroups);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _recBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _idxBuf);
+        Gl.UseProgram(_csProg);
+        Gl.Uniform3fv(_csEye, 1, (float*)&eye);
+        Gl.DispatchCompute((uint)groups, 1, 1);
+        // The vertex stage reads the index list as shader storage; BUFFER_UPDATE is for the other consumer,
+        // which is a later frame's glBufferSubData onto the same buffer the moment /particles sort 0 is
+        // typed. An incoherent shader write is not ordered against a client update without it.
+        Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
+        return true;
+    }
+
+    /// <summary>Upload one descriptor array, growing its store by doubling. Both are small enough that the
+    /// whole array goes up every pass: the spans are three numbers an emitter and the groups four, against
+    /// the four bytes a PARTICLE this replaced.</summary>
+    private static void Stage(ref uint buf, ref int cap, uint[] src, int uints, uint binding)
+    {
+        if (buf == 0) { uint b; Gl.GenBuffers(1, &b); buf = b; }
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, buf);
+        if (cap < uints)
+        {
+            int want = cap > 0 ? cap : 256;
+            while (want < uints) want *= 2;
+            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)want * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+            cap = want;
+        }
+        fixed (uint* p = src)
+            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)uints * sizeof(uint)), p);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, binding, buf);
+    }
+
     /// <summary>#261: the persistent record buffer and the per-frame index list. Growth is by doubling and
     /// a grow REBUILDS the GL store, so every block's hash is void -- <see cref="EnsureBlock"/> is what
     /// re-sends them, one emitter at a time, on the next frame each is drawn.
@@ -1503,6 +1656,7 @@ internal static unsafe class Particles
     {
         Forget();
         _prog = 0; _vao = 0; _recBuf = 0; _idxBuf = 0; _samp = 0; _failed = false;
+        _csProg = 0; _spanBuf = 0; _grpBuf = 0; _csEye = -1; _csFailed = false; _spanCap = 0; _grpCap = 0;
         _locView = _locProj = _locTex = _locCut = _locFog = _locFogColor = _locAdditive = -1;
         _locSoftOn = _locDepthTex = _locEmissive = _locLit = _locEye = -1;
         if (_recs != null) { NativeMemory.Free(_recs); _recs = null; }
@@ -1514,13 +1668,14 @@ internal static unsafe class Particles
 
     /// <summary>Boot values for <see cref="ResetTuning"/>, i.e. what a plain launch used to give.</summary>
     private const bool BootOn = true, BootDiag = false, BootSoft = true, BootLit = true,
-                       BootGrid = true, BootGuard = true;
+                       BootGrid = true, BootGuard = true, BootSort = true;
     private const int BootViz = 0;
 
     /// <summary>One line for the <c>/particles</c> echo and the arm-time log.</summary>
     internal static string Describe()
         => $"{(_off ? "UNAVAILABLE" : _on ? "on" : "off")} soft {(_soft ? 1 : 0)} lit {(_lit ? 1 : 0)} " +
            $"viz {_viz} grid {(_useGrid ? 1 : 0)} guard {(_guard ? 1 : 0)} diag {(_diag ? 1 : 0)} " +
+           $"sort {(_sort ? 1 : 0)}{(_csFailed ? " (NO COMPUTE -- CPU index build)" : "")} " +
            $"(batch {(_batch ? 1 : 0)}, sampler {(_ownSampler ? "owned" : "inherited")} -- both config keys)";
 
     /// <summary>Live dial behind <c>/particles &lt;key&gt; &lt;value&gt;</c>, old value back, NaN for an
@@ -1545,6 +1700,7 @@ internal static unsafe class Particles
                 break;
             case "grid": old = _useGrid ? 1f : 0f; _useGrid = on; break;
             case "guard": old = _guard ? 1f : 0f; _guard = on; break;
+            case "sort": old = _sort ? 1f : 0f; _sort = on; break;
             default: return float.NaN;
         }
         _log?.Info($"Particles: /particles {key} {v:F0} (was {old:F0}) -> {Describe()}");
@@ -1555,7 +1711,7 @@ internal static unsafe class Particles
     internal static void ResetTuning()
     {
         _on = BootOn; _diag = BootDiag; _soft = BootSoft; _lit = BootLit;
-        _viz = BootViz; _useGrid = BootGrid; _guard = BootGuard;
+        _viz = BootViz; _useGrid = BootGrid; _guard = BootGuard; _sort = BootSort;
         _log?.Info($"Particles: /particles reset -> {Describe()}");
     }
 
@@ -1567,7 +1723,7 @@ internal static unsafe class Particles
         for (int i = 0; i < 7; i++) _cType[i] = 0;
         for (int i = 0; i < ClsCount; i++) _cCls[i] = 0;
         _cSplat = 0; _cTinted = 0; _cGrid = 0;
-        _blockUploads = 0; _blockSkips = 0; _recResets = 0;
+        _blockUploads = 0; _blockSkips = 0; _recResets = 0; _sorted = 0; _sortSkipped = 0;
     }
 
     /// <summary>AC 4's number: emitters owned against draws issued. Vanilla's ratio is 1:1 by construction --
@@ -1586,6 +1742,10 @@ internal static unsafe class Particles
           + (_emissive == 0 ? "" : $", {_emissive} emissive")
           + (_reclaimed == 0 ? "" : $", {_reclaimed} table slots reclaimed from unwalked emitters")
           + $", {_blockUploads}/{_blockUploads + _blockSkips} record blocks re-sent"
+          + (!_sort ? ", index built on the CPU, unsorted (/particles sort 0)"
+             : _csFailed ? ", index built on the CPU, unsorted (NO COMPUTE)"
+             : $", {_sorted} groups depth-sorted in compute"
+               + (_sortSkipped == 0 ? "" : $", {_sortSkipped} sort-skipped (over {SortCap})"))
           + (_recResets == 0 ? "" : $", {_recResets} BLOCK-ALLOCATOR RESETS (see EnsureBlock)")
           + (_overflow == 0 ? "" : $", {_overflow} passes OVERFLOWED (group or record cap)")
           + (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped")
@@ -1602,6 +1762,29 @@ internal static unsafe class Particles
         sb.Append($" | punch={_cCls[ClsPunch]} blended={_cCls[ClsBlend]} additive={_cCls[ClsAdd]}");
         sb.Append($" | splat={_cSplat} tinted={_cTinted} uvgrid={_cGrid}]");
         return sb.ToString();
+    }
+
+    /// <summary>#288: the compute stage's bitonic network, transcribed. It exists ONLY for
+    /// <see cref="SelfCheck"/> -- the shader is the one that runs -- and it is written line for line against
+    /// <see cref="ParticleCs"/> so that a change to one and not the other shows up as a failing check
+    /// rather than as reordered smoke on somebody's screen.</summary>
+    private static void SortModel(float[] key, uint[] val)
+    {
+        int count = key.Length;
+        int n = 1;
+        while (n < count) n <<= 1;
+        var k = new float[n];
+        var v = new uint[n];
+        for (int i = 0; i < n; i++) { k[i] = i < count ? key[i] : 3.0e38f; v[i] = i < count ? val[i] : 0u; }
+        for (int step = 2; step <= n; step <<= 1)
+            for (int j = step >> 1; j > 0; j >>= 1)
+                for (int i = 0; i < n; i++)
+                {
+                    int l = i ^ j;
+                    if (l > i && (k[i] > k[l]) == ((i & step) == 0))
+                    { (k[i], k[l]) = (k[l], k[i]); (v[i], v[l]) = (v[l], v[i]); }
+                }
+        for (int i = 0; i < count; i++) { key[i] = k[i]; val[i] = v[i]; }
     }
 
     /// <summary>Off-device: the parts of this file that are decisions rather than transcription -- the
@@ -1747,6 +1930,71 @@ internal static unsafe class Particles
         E(ClsPunch < ClsBlend && ClsBlend < ClsAdd,
           "punch-through draws FIRST: it writes depth, so the blended classes get to test against it");
 
+        // a dispatch naming a different binding or cap than the CPU staged for reads someone else's buffer
+        E(ParticleCs.Contains($"binding = {BindRecs}) readonly buffer SowxParticleBuf")
+          && ParticleCs.Contains($"binding = {BindIdx}) buffer SowxParticleIdx")
+          && ParticleCs.Contains($"binding = {BindSpans}) readonly buffer SowxSpanBuf")
+          && ParticleCs.Contains($"binding = {BindGroups}) readonly buffer SowxGroupBuf"),
+          "the compute stage names the four bindings this pass binds");
+        E(ParticleCs.Contains($"local_size_x = {SortLocal}") && ParticleCs.Contains($"SOWX_SORT_CAP = {SortCap}u"),
+          "the compute stage's workgroup size and shared-array cap are the ones the CPU dispatches for");
+        E(ParticleCs.Contains("0x80000000u") && SortFlag == 0x80000000u && MaxRecs < SortFlag,
+          "the sort flag rides a bit the particle count can never reach");
+
+        // #131's ordering rule rests on exactly two things: groups are single-class, and their ranges disjoint
+        int[] cls0 = { ClsAdd, ClsBlend, ClsPunch, ClsBlend, ClsAdd, ClsPunch };
+        for (int i = 0; i < cls0.Length; i++)
+        {
+            _sCls[i] = cls0[i]; _sTexObj[i] = (IntPtr)(1 + i); _sCull[i] = 0; _sEmis[i] = 1f;
+            _sTaken[i] = false; _wrote[i] = 4 + i;
+        }
+        int gN = Group(cls0.Length);
+        bool single = true, partition = true, monotone = true, flagged = true;
+        int cur = 0, placed = 0, prevCls = -1;
+        for (int gi = 0; gi < gN; gi++)
+        {
+            int gp = 0;
+            for (int j = 0; j < _gCount[gi]; j++)
+            {
+                if (_sCls[_draw[_gFirst[gi] + j]] != _gCls[gi]) single = false;
+                gp += _wrote[_gFirst[gi] + j];
+            }
+            // The index range, derived exactly as Draw derives it.
+            if (_gFirst[gi] != placed) partition = false;
+            placed += _gCount[gi];
+            if (WillSort(_gCls[gi], gp) && _gCls[gi] != ClsBlend) flagged = false;
+            if (_batch && _gCls[gi] < prevCls) monotone = false;
+            prevCls = _gCls[gi];
+            cur += gp;
+        }
+        E(single, "every draw group holds exactly one blend class -- a workgroup cannot mix additive with alpha-over");
+        E(partition && placed == cls0.Length && cur > 0,
+          "the groups partition the draw list: consecutive, disjoint, and covering every placed emitter");
+        E(flagged
+          && !WillSort(ClsPunch, 100) && !WillSort(ClsAdd, 100)
+          && WillSort(ClsBlend, 2) && WillSort(ClsBlend, SortCap)
+          && !WillSort(ClsBlend, 1) && !WillSort(ClsBlend, SortCap + 1),
+          "only an alpha-blended group is ever reordered, and only up to the shared-memory cap -- "
+          + "additive and punch-through keep their issue order, which is #131's whole ordering rule");
+        E(!_batch || monotone, "the groups come out class-major: punch, then blended, then additive");
+        _drawN = 0; _orderN = 0;
+        Array.Clear(_wrote, 0, cls0.Length);
+
+        // the bitonic network as the stage writes it: one that is not a permutation drops particles
+        foreach (int cnt in new[] { 1, 2, 3, 7, 8, 33, 256, 300 })
+        {
+            var key = new float[cnt];
+            var val = new uint[cnt];
+            for (int i = 0; i < cnt; i++) { key[i] = ((i * 37) % cnt) - cnt * 0.5f; val[i] = (uint)i; }
+            SortModel(key, val);
+            bool sorted = true, perm = true;
+            for (int i = 1; i < cnt; i++) if (key[i - 1] > key[i]) sorted = false;
+            var seen = new bool[cnt];
+            foreach (uint v in val) { if (v >= cnt || seen[v]) perm = false; else seen[v] = true; }
+            E(sorted, $"the bitonic network sorts {cnt} keys ascending -- most negative first, i.e. FARTHEST first");
+            E(perm, $"...and is a permutation of its input at {cnt}: no particle is dropped or drawn twice");
+        }
+
         // ---- the toggle (#180). Two flags on purpose: the chat toggle must not be able to arm a client
         // where the pass never resolved, and collapsing them back into one would draw from unresolved
         // pointers.
@@ -1766,6 +2014,105 @@ internal static unsafe class Particles
     }
 
     // ---- shaders ---------------------------------------------------------------------------------------
+
+    /// <summary>#288: the index build and the depth sort, in one dispatch of one workgroup per draw group.
+    /// <para><b>What moved.</b> #261 already expanded the six vertices a particle from <c>gl_VertexID</c>
+    /// against the persistent record buffer, so no per-quad geometry has been staged on the CPU since. What
+    /// remained on the CPU was the DRAW-ORDER INDEX LIST -- one write and four bytes a particle, every
+    /// frame, uploaded whole. That is now three numbers an emitter uploaded as a span descriptor, and this
+    /// stage writes the list.</para>
+    /// <para><b>The sort.</b> Alpha-over is the only class whose result depends on the order two of its own
+    /// particles arrive in, so it is the only class ordered: a shared-memory bitonic network over squared
+    /// distance to the eye, back to front. The other two are left alone deliberately -- punch-through writes
+    /// depth and discards, and addition commutes with itself. #131's rule is that additive does NOT commute
+    /// with alpha-over, and this dispatch cannot break it, because a workgroup only ever touches the index
+    /// range of its own single-class group.</para>
+    /// <para>The network is the textbook one: for each <c>k</c>, for each <c>j</c>, the element at <c>i</c>
+    /// pairs with <c>i ^ j</c> and only the LOWER of the two swaps, so within one step every element belongs
+    /// to exactly one pair and the stride loop cannot race itself. The tail past the particle count is
+    /// padded with <c>+inf</c>, which sorts to the end and is never written back.</para></summary>
+    private const string ParticleCs = """
+        #version 460 core
+        layout(local_size_x = 256) in;
+
+        struct SowxParticle
+        {
+            vec4 posCol;
+            vec4 farColFar;
+            vec4 rightSoft;
+            vec4 upType;
+            vec4 centre;
+            vec4 uv;
+        };
+        layout(std430, binding = 10) readonly buffer SowxParticleBuf { SowxParticle particles[]; };
+        layout(std430, binding = 11) buffer SowxParticleIdx { uint partIdx[]; };
+        // (record base, particles, index offset, -), one per emitter the pass placed
+        layout(std430, binding = 17) readonly buffer SowxSpanBuf { uvec4 spans[]; };
+        // (first span, spans, index offset, particles | 0x80000000 when this group may be reordered)
+        layout(std430, binding = 18) readonly buffer SowxGroupBuf { uvec4 groups[]; };
+
+        uniform vec3 uEye;
+
+        const uint SOWX_SORT_CAP = 2048u;
+        shared float sKey[SOWX_SORT_CAP];
+        shared uint  sVal[SOWX_SORT_CAP];
+
+        void main()
+        {
+            uvec4 g = groups[gl_WorkGroupID.x];
+            uint tid = gl_LocalInvocationID.x;
+            uint lanes = gl_WorkGroupSize.x;
+            uint dst = g.z;
+            uint count = g.w & 0x7fffffffu;
+
+            for (uint s = 0u; s < g.y; ++s)
+            {
+                uvec4 sp = spans[g.x + s];
+                for (uint j = tid; j < sp.y; j += lanes) partIdx[sp.z + j] = sp.x + j;
+            }
+            // The whole workgroup takes this branch together -- g is workgroup-uniform -- so leaving here
+            // cannot strand anyone at a barrier below.
+            if ((g.w & 0x80000000u) == 0u) return;
+            memoryBarrierBuffer();
+            barrier();
+
+            uint n = 1u;
+            while (n < count) n <<= 1u;
+            for (uint i = tid; i < n; i += lanes)
+            {
+                if (i < count)
+                {
+                    uint r = partIdx[dst + i];
+                    vec3 d = particles[r].centre.xyz - uEye;
+                    sKey[i] = -dot(d, d);
+                    sVal[i] = r;
+                }
+                else { sKey[i] = 3.0e38; sVal[i] = 0u; }
+            }
+            memoryBarrierShared();
+            barrier();
+
+            for (uint k = 2u; k <= n; k <<= 1u)
+            {
+                for (uint j = k >> 1u; j > 0u; j >>= 1u)
+                {
+                    for (uint i = tid; i < n; i += lanes)
+                    {
+                        uint l = i ^ j;
+                        if (l > i && (sKey[i] > sKey[l]) == ((i & k) == 0u))
+                        {
+                            float fk = sKey[i]; sKey[i] = sKey[l]; sKey[l] = fk;
+                            uint fv = sVal[i]; sVal[i] = sVal[l]; sVal[l] = fv;
+                        }
+                    }
+                    memoryBarrierShared();
+                    barrier();
+                }
+            }
+
+            for (uint i = tid; i < count; i += lanes) partIdx[dst + i] = sVal[i];
+        }
+        """;
 
     /// <summary>The vertex stage. Everything the stock <c>vsparticle</c> does is already done by the time a
     /// vertex exists -- it is <c>VertexColor = vColor; TransformMainCoordinates();</c> and nothing else.

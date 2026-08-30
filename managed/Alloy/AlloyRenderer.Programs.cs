@@ -48,7 +48,7 @@ public sealed unsafe partial class AlloyRenderer
         if (prog == 0)
         {
             _waterFailed = true;
-            _log?.Info("AlloyRenderer: water program unavailable -- the engine draws water itself");
+            _log?.Info("AlloyRenderer: water program unavailable -- water is NOT DRAWN this session (#285: no engine walk behind it)");
             return false;
         }
         _progWater = prog;

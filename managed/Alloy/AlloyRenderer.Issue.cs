@@ -334,8 +334,8 @@ public sealed unsafe partial class AlloyRenderer
     /// it. The upgrade that removes the dependency entirely is alpha-to-coverage -- ADR 0011 names it beside
     /// the alpha test -- which needs a multisampled target and is worth taking when the Alloy frame binds its
     /// own (the M3 exit step).</para>
-    /// <para>NAMED APPROXIMATION, for as long as the Alloy pass anchors ahead of the engine's walk: these classes
-    /// composite BEFORE everything the engine still draws itself, and nothing they draw writes depth. So a
+    /// <para>NAMED APPROXIMATION, for as long as the Alloy pass anchors ahead of the engine's residual 2D and
+    /// GUI draws: these classes composite BEFORE those, and nothing they draw writes depth. So a
     /// creature standing behind an owned window paints over it rather than being seen through it (vanilla
     /// gets a different wrong answer: it depth-writes its blended geometry, so the creature vanishes
     /// instead), and the SKYBOX -- which the engine draws between buckets 0 and 1, depth-mask off -- paints
@@ -358,7 +358,7 @@ public sealed unsafe partial class AlloyRenderer
     /// not painted over by the surface -- and the ticket keeps it deliberately.</para>
     /// <para>Stands down whole whenever the copy could not be taken (<see cref="FrameSnapshot.Ready"/> false) or
     /// the program did not build. Nothing partial: <see cref="BucketGate"/>'s bucket-6 gate reads the
-    /// same flag, so the engine draws every water surface itself on exactly the passes this one does not.</para></summary>
+    /// same flag, so water is simply NOT DRAWN on exactly the passes this one does not take (#285).</para></summary>
     private static void WaterOwnedPass(int from, int to, Matrix4x4* vp, float* view, float* proj,
                                        int* viewport, float near, float far)
     {
@@ -367,8 +367,6 @@ public sealed unsafe partial class AlloyRenderer
         Gl.DepthMask(1);
         FrameSnapshot.Bind();
         IssueBatches(from, to, (float*)vp, viewport, near, far);
-        // The one flag IterSight reads: staged-and-drawn, not merely staged.
-        _waterDrew = true;
         // Leave the state the additive pass expects to find: it enables blending itself, but the depth mask
         // is pass-level state and additive must not write depth.
         Gl.DepthMask(0);

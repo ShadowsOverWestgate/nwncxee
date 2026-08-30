@@ -18,15 +18,16 @@ namespace Sowx.Alloy;
 /// instruction as the same-class read it replaced.</para>
 /// <para>What is NOT here: who WRITES the columns. Since #256 that is <see cref="SceneWalk"/>, which
 /// enumerates the world and fills a record from field reads; <see cref="DrawFunnelService"/> keeps only the
-/// hook bodies (the death notice, the sighting stamp) that have to sit beside their trampolines.</para>
+/// hook bodies (the death notice) that have to sit beside their trampolines.</para>
 /// </summary>
 internal static unsafe class PartTable
 {
     /// <summary>The per-item-alpha bucket. The census owns it (#126).</summary>
     internal const int AlphaBucket = 8;
 
-    /// <summary>Presents since boot, ticked by <see cref="DrawFunnelService.EndFrame"/>. The sighting stamps,
-    /// the staleness windows and the census's settle clock are all counted in it.</summary>
+    /// <summary>Presents since boot, ticked by <see cref="DrawFunnelService.EndFrame"/>. The census's settle
+    /// clock and the wipe stamp are counted in it. #264 took the sighting stamps and their staleness windows:
+    /// liveness is <see cref="SceneWalk"/>'s mark-and-sweep and visibility is <see cref="CullPass"/>'s.</summary>
     internal static int _frame;
 
     /// <summary>Whoever logs about the table (the pressure decision and the wipe). Named rather than
@@ -106,7 +107,6 @@ internal static unsafe class PartTable
     internal static readonly bool[] _pMx = new bool[MaxParts];         // matrix-path part (phase 2)
     internal static readonly int[] _pItem = new int[MaxParts];
     internal static readonly byte[] _pState = new byte[MaxParts];
-    internal static readonly int[] _pSeen = new int[MaxParts];
     /// <summary>#256: the <see cref="SceneWalk.Gen"/> that last REACHED this entry from the scene. Not a
     /// sighting and not a visibility stamp -- it is the mark half of the walk's mark-and-sweep, and it is
     /// what reclaims a part that stopped being in the scene without being destroyed
@@ -129,6 +129,24 @@ internal static unsafe class PartTable
     /// drew vanilla forever (the character losing Alloy ownership after a few area transitions, which only
     /// an area transition healed).</summary>
     internal static readonly bool[] _pFreed = new bool[MaxParts];
+
+    /// <summary>#264: has <see cref="SceneWalk"/> already asked this record's VertexPrimitive to set its
+    /// arrays up? The call is what fills the VDO/item fields, and it LATCHES its own verdict -- a primitive
+    /// whose MdlNode carries no drawable geometry comes back with item -1 and marks itself done, so a second
+    /// call can only ever return the same answer. Without this flag the drain queue re-asks every such record
+    /// every frame: the first live run burned 512 calls a frame, for ever, on 1899 tiles that were never
+    /// going to bind.
+    /// <para>Cleared wherever the primitive underneath may have changed -- a slot reclaimed by
+    /// <see cref="Insert"/>, and a record whose node or material moved (<c>SceneWalk.Rebind</c>).</para></summary>
+    internal static readonly bool[] _pSetupTried = new bool[MaxParts];
+    /// <summary>#284: has <see cref="SkinPose"/> already spent this record's one <c>PartSkin::PostProcess</c>
+    /// @0x483120 on it? Same shape and same reason as <see cref="_pSetupTried"/> -- the engine call latches
+    /// its own verdict (it deletes the temporary arrays its entry guard tests), so a second call can only
+    /// return immediately, and a node that comes back still unprepared will come back unprepared for ever.
+    /// <para>A record column rather than a set of part pointers on purpose: it clears exactly where the part
+    /// underneath can have changed -- a slot reclaimed by <see cref="Insert"/>, a re-bound record
+    /// (<c>SceneWalk.Rebind</c>) and a table wipe -- so a recycled address is never denied its attempt.</para></summary>
+    internal static readonly bool[] _pPoseTried = new bool[MaxParts];
     internal static int _partCount;
     /// <summary>#221: freed slots re-recorded into. Reported by the [batch] line, because "the table is
     /// reclaiming recycled addresses" and "no part ever dies" read the same in every other counter.</summary>
@@ -233,24 +251,6 @@ internal static unsafe class PartTable
         return e;
     }
 
-    /// <summary>Did the engine's own walk sight this part THIS frame? The Alloy pass's audit asks it about
-    /// a part it drew that was never suppressed: a part the engine did not walk at all is geometry it culled
-    /// and we drew anyway (a stale-ownership cost, bounded by the enrollment cadence), while one it DID walk
-    /// and we still failed to suppress is a real gap in the bucket list. The two read identically in a
-    /// single UNMATCHED total and want opposite fixes.</summary>
-    internal static bool SightedThisFrame(int e) => _pSeen[e] >= _frame;
-
-    /// <summary>#256: is this part in THIS frame's draw-bucket arrays? Enrolment no longer asks anything
-    /// about sightings -- a record exists because the walk reached the part, whether or not it is on screen
-    /// -- so this is now purely the per-frame VISIBILITY question, and the answer is the engine's own
-    /// finished cull (#253 §7.1: "is this part in this frame's bucket array", obtained by a pointer read).
-    /// Drawing the whole enumerated area every frame would be most of it wasted.
-    /// <para>The stamp comes from <see cref="BucketGate"/>'s reads of <c>Scene+0x208</c>, not from a capture.
-    /// #243 DID plug in here, and the plug is a bypass: with <see cref="CullPass"/> armed the staging walk
-    /// stops asking this at all and the GPU decides visibility, because the answer here is a fact about the
-    /// engine's traversal cadence rather than about the camera. It remains the enrolment and eviction
-    /// signal, and the answer again the moment <c>/draw cull 0</c> stands the cull down.</para></summary>
-    internal static bool InBucketsRecently(int e) => _pSeen[e] >= _frame - 1;
 
     /// <summary>#126: the tile fade factor this part draws at, 1.0 for a part with no tile or a tile that is
     /// not fading. This is the multiplier <c>RenderDrawBucket</c> folds into <c>part+0xa0</c> for the length
@@ -305,9 +305,11 @@ internal static unsafe class PartTable
                 // and live entries can sit beyond it -- so Record must write a non-empty state before
                 // anything that can re-enter Find (a nested Vanilla draw, a diagnostic).
                 _pFreed[s] = false; _pState[s] = StEmpty; AlloyCensus.OwnFlag[s] = 0;
+                _pSetupTried[s] = false; _pPoseTried[s] = false;
                 _pPart[s] = part; _reclaims++; return s;
             }
-            if (_pState[s] == StEmpty) { if (!room) return -1; _pPart[s] = part; _partCount++; return s; }
+            if (_pState[s] == StEmpty)
+            { if (!room) return -1; _pPart[s] = part; _pSetupTried[s] = false; _pPoseTried[s] = false; _partCount++; return s; }
         }
         return -1;
     }
@@ -362,7 +364,10 @@ internal static unsafe class PartTable
     internal static void WipeTables(string why)
     {
         _wipeFrame = _frame;
-        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed); Array.Clear(AlloyCensus.OwnFlag);
+        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed); Array.Clear(_pSetupTried);
+        Array.Clear(_pPoseTried);
+        SkinPose.Forget();
+        Array.Clear(AlloyCensus.OwnFlag);
         _partCount = 0; TableGen++;
         _saturated = false;
         // #256: the table is empty and only the walk can refill it. The pressure wipe changes no scene

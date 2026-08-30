@@ -172,6 +172,13 @@ internal readonly unsafe ref struct VdoRef
     internal int VertCount => *(int*)(_p + SceneLayout.VdoVertCount);
     internal long ElemItems => (long)*(IntPtr*)(_p + SceneLayout.VdoElemItems);
     internal int ElemCount => *(int*)(_p + SceneLayout.VdoElemCount);
+
+    /// <summary>#284: <c>Build</c> ran and gave this VDO an element stream. See
+    /// <see cref="SceneLayout.VdoIndexed"/> for why the VAO drip refuses without it.</summary>
+    internal bool Indexed => *(byte*)(_p + SceneLayout.VdoIndexed) != 0;
+    internal uint ElemToken => *(uint*)(_p + SceneLayout.VdoElemToken);
+    internal uint VertToken => *(uint*)(_p + SceneLayout.VdoVertToken);
+    internal uint DynToken => *(uint*)(_p + SceneLayout.VdoDynToken);
 }
 
 /// <summary>A borrowed <c>CAurTexture*</c>. Every accessor is a METHOD: the name walks two vtable slots, and

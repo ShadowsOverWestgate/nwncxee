@@ -108,6 +108,17 @@ internal static unsafe class OwnedTextures
     {
         _log = log;
         _hash = (delegate* unmanaged<IntPtr, short, int*, int>)Native.Sym(SymbolMap.AurTextureCalcHash);
+        // #284: resolved whatever `ownedtex` says. A texture with no GL id is a hole in the owned draw under
+        // either key -- the retry is about the ENGINE's build having never run, not about who owns the copy.
+        _buildAndStore = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.AurTextureBuildAndStore);
+        _nullTex = (IntPtr*)Native.Sym(SymbolMap.AurTextureNullPtr);
+        if (_nullTex == null)
+            log.Info("OwnedTextures: CAurTextureBasic::m_pNullTexture unresolved -- a material naming the "
+                   + "engine's NULL texture cannot be told from an unbuilt one, so it will be retried and "
+                   + "written off as spent rather than named (#284)");
+        if (_buildAndStore == null)
+            log.Info("OwnedTextures: CAurTexture::BuildAndStore unresolved -- a texture whose build lost its "
+                   + "race with the resource loader stays without a GL id, and its part is not drawn (#284)");
         bool wanted = Settings.Bool("ownedtex", true);
         _armed = wanted && _hash != null;
         // ADR 0013 config bucket: a capability decision about how the ENGINE loads content, not a look dial.
@@ -121,7 +132,7 @@ internal static unsafe class OwnedTextures
                 ? "OwnedTextures: PLT compositing forced to the CPU -- player-character and tinted-creature "
                 + "textures reach the upload funnel and become ownable (pltcpu=0 in sowx.cfg leaves them borrowed)"
                 : "OwnedTextures: g_bGeneratePLTOnGPU unresolved -- PLT textures stay GPU-composited and BORROWED, "
-                + "so every lit part wearing one is drawn by the engine under bindless");
+                + "so under bindless every lit part wearing one is NOT DRAWN (#285: nothing draws what Alloy declines)");
             KeepPltOnCpu();
         }
         log.Info(_armed
@@ -259,6 +270,194 @@ internal static unsafe class OwnedTextures
         if (_pltOnGpu == null || *_pltOnGpu == 0) return;
         *_pltOnGpu = 0;
         _pltForced++;
+    }
+
+    /// <summary>#284: textures whose GL id is still 0 -- a live <c>CAurTexture*</c> whose build has never
+    /// produced a name. The engine builds a texture EXACTLY twice: when it is first created
+    /// (<c>AurTextureGet</c> @0x48cc10 <c>Add</c>s it to the <c>RefreshTextures</c> list) and when its PLT
+    /// scheme changes (<c>AurTextureSetLayered</c> @0x489bd0 <c>AddUnique</c>s it), and
+    /// <c>AurTextureBuildAndStoreAll</c> @0x48e680 drains that list to empty whether or not each build
+    /// succeeded. <c>BuildAndStoreTexture</c> soft-fails -- if the decoded image at <c>basic+0x58</c> is
+    /// still null it never reaches <c>glImageBasic</c>, so <c>basic+0x6c</c> stays 0 -- and nothing
+    /// re-enqueues on resource arrival (<c>CResPLT::OnResourceServiced</c> @0x1136640 only parses the file).
+    /// The one-shot queue can therefore lose a race with residency, permanently.
+    /// <para>Vanilla never showed it because the engine's own draw kept re-binding id 0 and nobody noticed a
+    /// texture-less part; under #264 an Alloy part with no id is SKIPPED, which live reads as a player
+    /// character with no head. The retry is Alloy's, on Alloy's edge.</para></summary>
+    private static readonly IntPtr[] _rebuildQ = new IntPtr[RebuildQueue];
+    private static int _rebuildN;
+    /// <summary>What one texture has cost, and whether asking again can ever pay: the attempts spent, the
+    /// drip frame the last one ran on, and a verdict of NEVER for the two states the binary says no build can
+    /// leave.
+    /// <para>#284's first attempt was ONE try per texture, forever, and the live run says that is wrong for
+    /// the case it was built for. The failure it fixes is a race with residency -- the resource is not there
+    /// yet -- so the single try is spent at the worst possible moment, during the load, and the permanence it
+    /// removed comes straight back. Re-armed every <see cref="RebuildRearm"/> drip frames up to
+    /// <see cref="RebuildAttempts"/> times instead: bounded, self-terminating, and it converges on the one
+    /// answer that matters, which is whether waiting was all it needed.</para>
+    /// <para>ponytail: still keyed on the raw <c>CAurTexture*</c>, which the engine frees on an area
+    /// transition -- so a NEW texture at a recycled address inherits the old one's ledger, and a
+    /// <c>Never</c> verdict makes that inheritance permanent rather than merely early. Cleared only on
+    /// <see cref="ContextLost"/>. Upgrade path unchanged: clear it on the first <see cref="Retire"/> batch
+    /// after a world edge, where the pointer population turns over anyway.</para></summary>
+    private struct Try { internal int Tries, Frame; internal bool Never; }
+    private static readonly Dictionary<IntPtr, Try> _rebuildTried = new();
+    private static int _dripFrame;
+    private static long _rebuilds, _rebuildWon, _rebuildDead, _rebuildDropped;
+    /// <summary>The residual, split by the reason a build cannot help -- see <see cref="Rebuild"/> for what
+    /// each one is in the binary. These are POPULATIONS of distinct textures, not attempt counts: a texture
+    /// is charged to exactly one of them, at its FINAL disposition, once.</summary>
+    private static long _rebuildNullTex, _rebuildNoBasic, _rebuildNoImage, _rebuildSpent;
+    /// <summary>How many unbuilt textures may be waiting at once, how many rebuilds a frame may pay for, how
+    /// many attempts one texture is worth, and how long it waits between them. The budget is the stated cost:
+    /// at most four engine texture builds per frame, on frames where anything is queued at all.
+    /// <para>The re-arm interval is a WAIT, not a cadence -- roughly five seconds at 60fps -- and the attempt
+    /// cap is what stops it becoming one. Three attempts across ~15 seconds outlives any plausible resource
+    /// fetch; a texture still without an id after that is not waiting on anything.</para></summary>
+    private const int RebuildQueue = 64, RebuildBudget = 4, RebuildAttempts = 3, RebuildRearm = 300;
+
+    /// <summary>Note a texture that resolved to GL id 0, for <see cref="DripRebuilds"/> to retry. Cold --
+    /// called from the enrollment scan, not from the draw loop -- and it allocates only on the first sighting
+    /// of a given pointer. Nothing here dereferences <paramref name="tex"/>; the liveness guard is at the
+    /// drain, where the call actually happens.</summary>
+    internal static void NoteUnbuilt(IntPtr tex)
+    {
+        if (tex == IntPtr.Zero || _buildAndStore == null) return;
+        if (_rebuildTried.TryGetValue(tex, out Try t)
+            && (t.Never || t.Tries >= RebuildAttempts || _dripFrame - t.Frame < RebuildRearm)) return;
+        if (_rebuildN >= RebuildQueue) { _rebuildDropped++; return; }
+        for (int i = 0; i < _rebuildN; i++) if (_rebuildQ[i] == tex) return;
+        _rebuildQ[_rebuildN++] = tex;
+    }
+
+    /// <summary>Spend at most <see cref="RebuildBudget"/> engine texture builds, on the frame anchor where
+    /// <c>Beams.Enroll</c> and <c>SkyBox.Enroll</c> already run: once a frame, before the Alloy bracket, with
+    /// the ENGINE's context current. That last part is not incidental -- <c>BuildAndStore</c> re-runs the
+    /// engine's own upload (<c>SetActiveTexture</c>, <c>AurTextureBindTID</c>,
+    /// <c>RenderInterface::CreateTexture</c>) and the engine caches what it thinks is bound, so running it
+    /// inside Alloy's 4.6 bracket would leave that cache naming objects in the other context. It is the same
+    /// reason <see cref="Adopt"/> is safe: the funnel fires where the engine already is.
+    /// <para>Ahead of the owned draws, so a texture that builds here is sampled the same frame; and it routes
+    /// through the upload funnel, so a successful retry lands in the owned table by itself.</para></summary>
+    internal static void DripRebuilds()
+    {
+        if (_buildAndStore == null) return;
+        _dripFrame++;
+        for (int spent = 0; spent < RebuildBudget && _rebuildN > 0; spent++)
+        {
+            IntPtr tex = _rebuildQ[--_rebuildN];
+            _rebuildQ[_rebuildN] = IntPtr.Zero;
+            Rebuild(tex);
+        }
+    }
+
+    /// <summary>One retry, guarded, and the two refusals that come BEFORE the call rather than after it.
+    /// <para>A <c>CAurTexture*</c> is BORROWED (#138), so the pointer is re-proven through
+    /// <see cref="AurTex"/> first: a nonzero id means the race resolved itself, and a REFUSED read means the
+    /// material handed out a freed texture, which a build would follow into a wild vtable call.</para>
+    /// <para><b>Then the identity question, which #284 shipped without and which made the retry an active
+    /// hazard.</b> <c>AurTextureGetTID</c> @0x48e080 resolves the reference chain and returns 0 OUTRIGHT when
+    /// the answer is <c>m_pNullTexture</c> -- it never reads <c>basic+0x6c</c>. So a material naming the
+    /// engine's shared null texture reports no id no matter what, and the old code took that for an unbuilt
+    /// texture and called <c>BuildAndStore</c> on it: <c>Reset</c> @0x4858c0 would then
+    /// <c>RenderInterface::DeleteTextures</c> the GL names of the object EVERY other material falls back to.
+    /// Damage, in service of a build whose result the caller cannot observe.</para>
+    /// <para>And the pair the build itself resolves to: <c>AsCAurTextureBasic</c> (vtable 0x10) answering
+    /// null, on which <c>BuildAndStore</c> @0x48bc80 returns without doing anything; and a build that ran and
+    /// left <c>basic+0xe7</c> set, which is <c>ConstructImage</c> @0x48a5d0 reaching its tail with no decoded
+    /// image at <c>+0x58</c> and no texture controller at <c>+0x38</c> -- the resource was not there. Only
+    /// the last of those is worth asking again.</para></summary>
+    private static void Rebuild(IntPtr tex)
+    {
+        long refusedBefore = AurTex.Refused;
+        if (AurTex.Tid(tex) != 0) { _rebuildWon++; _rebuildTried.Remove(tex); return; }
+        if (AurTex.Refused != refusedBefore) { _rebuildDead++; Give(tex, true); return; }
+
+        IntPtr real = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)tex + AlloyCensus.TexVtblReferenced))(tex);
+        if (real == IntPtr.Zero) real = tex;
+        if (_nullTex != null && real == *_nullTex)
+        { _rebuildNullTex++; Give(tex, true); UnbuiltDiag(tex, "the engine's shared NULL texture", IntPtr.Zero, 0); return; }
+        IntPtr basic = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)real + AlloyCensus.TexVtblAsBasic))(real);
+        if (basic == IntPtr.Zero)
+        { _rebuildNoBasic++; Give(tex, true); UnbuiltDiag(tex, "no CAurTextureBasic behind it", IntPtr.Zero, 0); return; }
+
+        // The PLT composite runs on the CPU only while the engine's global says so, and ConstructImage reads
+        // it at the moment of the build -- so it is asserted here rather than trusted from Attach.
+        KeepPltOnCpu();
+        _rebuilds++;
+        _buildAndStore(tex);
+        int tid = AurTex.Tid(tex);
+        if (tid != 0) { _rebuildWon++; _rebuildTried.Remove(tex); return; }
+        // Counted at FINAL disposition only. Charged per attempt these would be attempt tallies wearing a
+        // population's label -- two textures at three tries each reading as six -- and a texture that wins on
+        // its last attempt would sit in the residual and in `now have an id` at once.
+        if (Give(tex, false))
+        {
+            if (*(byte*)(basic + BasicInvalid) != 0) _rebuildNoImage++;
+            else _rebuildSpent++;
+        }
+        UnbuiltDiag(tex, "built, still no id", basic, tid);
+    }
+
+    /// <summary>Charge one attempt against a texture, or write it off for good. Returns true when this was
+    /// the last attempt it will get, so the caller can count a residual exactly once.</summary>
+    private static bool Give(IntPtr tex, bool never)
+    {
+        _rebuildTried.TryGetValue(tex, out Try t);
+        t.Tries++; t.Frame = _dripFrame; t.Never = never;
+        _rebuildTried[tex] = t;
+        return never || t.Tries >= RebuildAttempts;
+    }
+
+    /// <summary>Name what a still-unbuilt texture actually IS, once per distinct resource. The counters say
+    /// how many; only these fields say which of the two states the binary allows, and #284 shipped a fix for
+    /// the wrong one because nothing in the log could tell them apart. <c>scheme</c> is <c>basic+0x48</c>,
+    /// the layer colours <c>SetScheme</c> @0x485f90 allocates -- nonzero is a PLT texture, which is what a
+    /// player character's head, torso and thighs are.</summary>
+    private static void UnbuiltDiag(IntPtr tex, string what, IntPtr basic, int tid)
+    {
+        if (_unbuiltDiagLeft <= 0) return;
+        string nm = AlloyCensus.TexName(tex);
+        if (!_unbuiltDiagSeen.Add(nm)) return;
+        _unbuiltDiagLeft--;
+        _log?.Info($"OwnedTextures: [unbuilt] \"{nm}\" -- {what}"
+                 + (basic == IntPtr.Zero ? "" :
+                    $"; scheme={(*(IntPtr*)(basic + BasicScheme) == IntPtr.Zero ? "none (file-backed)" : "PLT")}"
+                  + $" image={(*(IntPtr*)(basic + BasicImage) == IntPtr.Zero ? "none" : "decoded")}"
+                  + $" built={*(byte*)(basic + BasicBuilt)} invalid={*(byte*)(basic + BasicInvalid)} tid={tid}")
+                 + $" (#284: {_rebuildTried[tex].Tries}/{RebuildAttempts} attempts)");
+    }
+
+    /// <summary>The fields <see cref="UnbuiltDiag"/> reads off a <c>CAurTextureBasic</c>, all four of them
+    /// written by <c>ConstructImage</c> @0x48a5d0 and cleared by <c>Reset</c> @0x4858c0: the PLT layer scheme,
+    /// the decoded image, the constructed latch, and the "no image and no controller" verdict.</summary>
+    private const int BasicScheme = 0x48, BasicImage = 0x58, BasicBuilt = 0xe6, BasicInvalid = 0xe7;
+    private static int _unbuiltDiagLeft = 8;
+    private static readonly HashSet<string> _unbuiltDiagSeen = new();
+
+    private static delegate* unmanaged<IntPtr, void> _buildAndStore;
+    private static IntPtr* _nullTex;
+
+    /// <summary>#284's number, for the period line: how many unbuilt textures Alloy has retried, how many of
+    /// those now have an id, and how many it refused to touch. A rebuild count that keeps climbing is a
+    /// texture population arriving late, not a leak; a nonzero drop count means the queue is too small for
+    /// the area and the ceiling wants raising.
+    /// <para>The residual is ATTRIBUTED rather than implied. Three of its four terms are textures no build
+    /// can help and Alloy has stopped asking -- the parts wearing them are holes for the session, and the
+    /// [unbuilt] lines name the content. <c>no image</c> is the one that was still waiting on something --
+    /// a resource that did not arrive inside the attempt window.</para>
+    /// </summary>
+    internal static string RebuildNote()
+    {
+        long residual = _rebuildNullTex + _rebuildNoBasic + _rebuildNoImage + _rebuildSpent;
+        if (_rebuilds == 0 && _rebuildN == 0 && _rebuildDropped == 0 && residual == 0) return "";
+        return $", unbuilt textures: {_rebuilds} retried ({_rebuildWon} now have an id, {_rebuildDead} refused as "
+             + $"freed), {_rebuildN} queued"
+             + (_rebuildDropped == 0 ? "" : $", {_rebuildDropped} DROPPED (queue full)")
+             + (residual == 0 ? "" : $"; UNBUILDABLE: {_rebuildNullTex} are the NULL texture, {_rebuildNoBasic} "
+                 + $"have no basic, {_rebuildNoImage} found no image (resource not resident), {_rebuildSpent} "
+                 + "out of attempts (all four are holes for the session; `no image` is the one whose resource "
+                 + "never arrived inside the attempt window)");
     }
 
     /// <summary>Stop drawing from a texture and queue it for the bracket to delete. Shared by the delete
@@ -432,6 +631,10 @@ internal static unsafe class OwnedTextures
         _borrowed.Clear();
         _pending.Clear();
         _bytes = 0;
+        // #284: every engine texture is unbuilt again on the far side of a context loss, so the one-attempt
+        // ledger has to go with the names it was a ledger about -- keeping it would refuse the whole world
+        // its single retry. The queue holds pointers into a world that may not survive either.
+        _rebuildTried.Clear(); Array.Clear(_rebuildQ); _rebuildN = 0; _dripFrame = 0;
         AlloyRenderer.ForgetHandles();   // the names went with the context; nothing to make non-resident
     }
 
@@ -483,6 +686,35 @@ internal static unsafe class OwnedTextures
               && !IsOwned(100) && _pending.Count == savedPending + 2 && Borrowed == 0;
         ok &= Draw(13) == 13 && Draw(14) == 14 && Borrowed == 2 && !_res.ContainsKey(k1);
         _pending.RemoveRange(savedPending, 2);
+
+        // #284: the re-arm ledger, which is pure bookkeeping and therefore the half of the retry that CAN be
+        // asserted without a client -- the build itself needs one. What it pins is the correction the live run
+        // forced: a texture gets another attempt after waiting, and stops getting them at the cap.
+        var savedTried = new Dictionary<IntPtr, Try>(_rebuildTried);
+        int savedFrame = _dripFrame, savedQ = _rebuildN;
+        var savedQArr = (IntPtr[])_rebuildQ.Clone();
+        var savedBuild = _buildAndStore;
+        _rebuildTried.Clear(); _rebuildN = 0; _dripFrame = 0;
+        _buildAndStore = (delegate* unmanaged<IntPtr, void>)1;   // armed, never called: nothing here drains
+        IntPtr probe = (IntPtr)0x5A1;
+        NoteUnbuilt(probe);
+        ok &= _rebuildN == 1;
+        NoteUnbuilt(probe); ok &= _rebuildN == 1;                 // already queued: one entry, not two
+        _rebuildN = 0; Give(probe, false);
+        NoteUnbuilt(probe); ok &= _rebuildN == 0;                 // just tried -- waits out the re-arm
+        _dripFrame += RebuildRearm;
+        NoteUnbuilt(probe); ok &= _rebuildN == 1;                 // ...and comes back when the wait is over
+        _rebuildN = 0;
+        while (!Give(probe, false)) { }
+        _dripFrame += RebuildRearm;
+        NoteUnbuilt(probe); ok &= _rebuildN == 0;                 // out of attempts: never again
+        _rebuildTried.Clear(); _rebuildN = 0;
+        Give(probe, true); _dripFrame += RebuildRearm;
+        NoteUnbuilt(probe); ok &= _rebuildN == 0;                 // written off outright: same, on one attempt
+        _rebuildTried.Clear();
+        foreach (var kv in savedTried) _rebuildTried[kv.Key] = kv.Value;
+        Array.Copy(savedQArr, _rebuildQ, RebuildQueue);
+        _dripFrame = savedFrame; _rebuildN = savedQ; _buildAndStore = savedBuild;
 
         _res.Clear(); _index.Clear(); _owned.Clear(); _borrowed.Clear();
         foreach (var kv in savedRes) _res[kv.Key] = kv.Value;

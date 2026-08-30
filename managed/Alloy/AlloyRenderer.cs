@@ -25,10 +25,10 @@ namespace Sowx.Alloy;
 /// light-count ceiling to pop at; parts the engine draws unlit keep the flat variant, which is their vanilla
 /// look. #120: a lit part is SHADED from its material, not just textured -- the five stock .mtr map slots
 /// beyond the diffuse and the four stock parameter names feed a GGX lobe, which is the term vanilla runs on
-/// every lit part and the Alloy pass used to drop on all of them. A lit part we cannot shade faithfully (no normal stream, lit program down) is handed back to the
-/// engine rather than painted flat. The engine's bucket walk then skips
-/// exactly those parts at the GetNextItem iterator, and only on passes where the Alloy draw actually
-/// happened -- never dropped, never double-drawn (audited live as the UNMATCHED counter).
+/// every lit part and the Alloy pass used to drop on all of them. A lit part we cannot shade faithfully
+/// (no normal stream, lit program down) is skipped rather than painted flat -- and since #264 deleted the
+/// engine walk, skipped means NOT DRAWN. The exactly-one-owner problem went with the walk: there is exactly
+/// one renderer, so there is nothing to suppress and nothing to double-draw.
 /// <para>#84: submission is MULTIDRAW-BATCHED, so draw count follows the (program, VDO, texture, primitive)
 /// group count rather than the part count. Everything that used to be a per-part uniform -- model matrix,
 /// texture rotation, material ambient/diffuse -- moved into a per-draw SSBO the shaders index by
@@ -45,11 +45,11 @@ namespace Sowx.Alloy;
 /// before the vcall. Drawing the whole set before the engine's first opaque walk is what keeps suppression
 /// honest: the engine re-buckets geometry every frame, so a part's enrolled bucket goes stale and splitting
 /// the draw by it lets the engine walk a part before we draw it -- double-draw, z-fighting.</para>
-/// <para>Ownership lives as a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>)
-/// so the iterator's existing <c>Find</c> serves both. The table is rebuilt wholesale at a frame boundary
+/// <para>Ownership lives as a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>).
+/// The table is rebuilt wholesale at a frame boundary
 /// (enrollment, on a scene-walk delta, before the Alloy block) -- that is the frame-atomic
-/// swap. The only mid-frame mutation is revocation, which is safe in both directions because suppression is
-/// gated on the per-pass draw generation. <c>vanilla=1</c> in sowx.cfg is the kill switch. Hot path allocates nothing.</para>
+/// swap. The only mid-frame mutation is revocation. <c>vanilla=1</c> in sowx.cfg is the kill switch, and
+/// since #263 it is restart-only. Hot path allocates nothing.</para>
 /// <para>#128: CREATURES join it, and they arrive by relaxing two things rather than by a new path. The
 /// engine draws them from <c>Scene::RenderDynamicGeometry</c> -- buckets 2 and 3, but through the same
 /// <c>RenderDrawBucket</c> the capture already brackets -- so what actually kept them out was the capture's
@@ -77,8 +77,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal const int LogEvery = 900;
     /// <summary>Minimum frames between enrollments. A floor on a cold path, NOT a cadence -- the trigger is
     /// always a scene-walk delta, and a new Scene bypasses it outright. The bound it states: a part that
-    /// becomes ownable is owned within this many frames, and stays vanilla-shaded (not missing -- see
-    /// <see cref="RspShim.HandBack"/>) until then. Same number #236 measured for the same cost.</summary>
+    /// becomes ownable is owned within this many frames. Since #264 it is MISSING until then, not
+    /// vanilla-shaded -- there is no engine walk behind it -- so this floor is a visible-latency bound now
+    /// rather than a shading-quality one.</summary>
     internal const int EnrollFloor = 10;
     /// <summary>Frames before the FIRST period line. The 900-frame cadence is right for steady-state cost,
     /// but it is also the only proof this pass runs at all -- and at 900 a short session (or one that ends at
@@ -371,22 +372,21 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static bool _wasInModule;
 
     // period counters (the Alloy draw log counter, counterpart to M0's Alloy cast)
-    private static long _draws, _skips, _fallbacks, _unmatched;
+    private static long _draws;
     /// <summary>Why an Alloy part still did not draw this pass, by term. The single fallback count could not
     /// separate a camera-dependent bail-out (keyhole, tile fade) from a content one, which is exactly the
     /// distinction a part that is Alloy head-on and vanilla at the screen edge turns on.</summary>
-    private static long _skipUnseen;
     private static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
                         _skipRange, _skipVao;
     /// <summary>Parts whose material declared a normal map, and the subset whose map survived the per-slot
     /// re-fetch into the mask the lit stage samples on.</summary>
     private static long _nrmDeclared, _nrmBound;
-    /// <summary>#128: Alloy parts handed back this pass because their INSTANCE state went unownable -- a
-    /// highlight, a scene tint, a per-gob env override. Transient by nature, so it is a skip rather than a
-    /// revocation, and a skip that is not counted reads as geometry vanishing.</summary>
+    /// <summary>#128/#285: Alloy parts NOT DRAWN this pass because their INSTANCE state went unownable --
+    /// the scene tint, and only that since #285 owned the highlight. Transient by nature, so it is a skip
+    /// rather than a revocation; and since #264 a skip is a hole, which is exactly why it is counted.</summary>
     private static long _skipGob;
     /// <summary>#124's coverage number: Alloy parts the camera dissolves this pass. Before the fold these
-    /// were the keyhole SKIP count -- same population, handed back to the engine; now they are drawn by the
+    /// were the keyhole SKIP count -- same population, dropped from the frame; now they are drawn by the
     /// Alloy program with the dissolve folded in, so the before/after the ticket asks for is this one figure
     /// read off the period line either side of the change.</summary>
     private static long _ownDissolve;
@@ -394,12 +394,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// never sighted is either a suppression gap (a bucket we draw into but do not suppress) or geometry the
     /// engine culled this frame and we drew anyway; the two need different fixes and read identically in a
     /// single total.</summary>
-    private static long _unmatchedUnseen;
-    private static readonly long[] _unmatchedBucket = new long[16];
     /// <summary>#134 diagnostic: the engine-culled skip, split by the bucket the part was captured in. "Owned
     /// but never walked" is the one skip that cannot be read off the totals -- it means the part is neither
     /// drawn by us nor suppressed, so whichever bucket dominates here names the walk we are missing.</summary>
-    private static readonly long[] _unseenBucket = new long[16];
     /// <summary>#134: a small budget of watched-part draw-side lines, so following one part through the owned
     /// loop costs a handful of log lines rather than one per frame forever.</summary>
     private static int _watchDrawLeft = 20;
@@ -417,9 +414,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             _log?.Info($"[dumpframe] DRAW {why} (slot {i}, capture bucket {_oBucket[i]}, cls {(AlloyClass)_oCls[i]})");
         return true;
     }
-    private static readonly long[] _unmatchedCls = new long[AlloyClasses.Count];
     /// <summary>#126's counterpart to it: Alloy parts the tile fade moves into the blended run this pass.
-    /// Before the fold these were the tilefade SKIP count -- same population, handed back to the engine.</summary>
+    /// Before the fold these were the tilefade SKIP count -- same population, dropped from the frame.</summary>
     private static long _ownFade;
     /// <summary>#126: Alloy draws per class this pass, and the batches each class's pass submitted. The
     /// cutout/blended split is the whole model, so it is reported rather than inferred.</summary>
@@ -446,13 +442,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#128: instanced parts this enrollment took -- placeables, doors and creatures alike. Its only
     /// job is to say whether the shadow side needs poking, so it counts PARTS and not instances.</summary>
     private static int _gobOwned;
-    /// <summary>The INSTANCED half of the draw accounting: gob parts Alloy staged, and gob parts it handed
-    /// back because the engine's buckets had not sighted them. Every other number on the [alloy] line mixes
-    /// tiles, placeables and creatures into one total, so "are characters Alloy's" -- the question two
-    /// visible symptoms turn on (a creature drawn by the engine after the bracket has resolved shows through
-    /// walls and takes no Alloy shadow) -- could only be inferred from the capture-bucket split, which is a
-    /// CLASSIFICATION and not a per-frame fact. These two are the fact.</summary>
-    private static long _drawsGob, _skipUnseenGob;
+    /// <summary>The INSTANCED half of the draw accounting: gob parts Alloy staged this pass. Every other
+    /// number on the [alloy] line mixes tiles, placeables and creatures into one total, so "are characters
+    /// Alloy's" could only be inferred from the capture-bucket split, which is a CLASSIFICATION and not a
+    /// per-frame fact. This is the fact. #285: read it against <c>{_gobOwned} owned</c> -- a gap between them
+    /// is instanced geometry NOT DRAWN, since #264 left nothing behind an unstaged part.</summary>
+    private static long _drawsGob;
     /// <summary>...and the three causes behind the <c>tex</c> fallback, which are three different bugs
     /// wearing one number. "No diffuse" is content; "no GL id" is the copy path; "no owned handle" is the
     /// BINDLESS layer, which #220 already caught being wrong once and which a part can fail every frame
@@ -476,7 +471,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _log?.Info($"AlloyRenderer: [texskip] \"{nm}\" tid={tid} owned={owned} -- "
                    + (owned ? "Alloy owns it but GetTextureHandleARB minted nothing"
                             : "never reached the upload funnel, so it is BORROWED and bindless will not vouch for it")
-                   + "; every lit part using it is drawn by the engine (bindless=0 in sowx.cfg is the A/B)");
+                   + "; #285: every lit part using it is NOT DRAWN (bindless=0 in sowx.cfg is the A/B)");
     }
     /// <summary>Monotonic presented-frame counter: the light SSBO uploads once per frame, not once per pass.</summary>
     private static int _frameSeq;
@@ -862,6 +857,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // still draws every cloak in that case.
         _skinning = Settings.Bool("ownskin", true) && _skinMathOk;
         _isEnabled = (delegate* unmanaged<int, byte>)Native.Sym(SymbolMap.RiIsEnabled);
+        ResolveVaoDrip(log);
         // Hook install is its own walk, and it stays HERE rather than joining Attach above: a pass that hooks
         // the engine on a client where the Alloy renderer cannot arm would be suppressing draws nothing
         // replaces. Everything above this line has already returned in that case.
@@ -884,6 +880,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// the field initialiser the way a hand-copied literal did.</summary>
     private const bool DefLighting = true, DefPrepass = true, DefAoTest = false;
     private const int DefCull = CullPass.ModeHiZ;
+    private const float DefLod = CullPass.DefLodPx;
     private const float DefSunBias = 0.06f;
     private const int DefViz = 0;
 
@@ -891,7 +888,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static string DescribeTuning() =>
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
         $"viz {_lightViz}/{LightVizMax}  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  " +
-        $"cull {CullPass.Mode}/{CullPass.ModeHiZ}";
+        $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px";
 
     /// <summary>Live tuning setter behind <c>/draw</c>. Returns the old value, or NaN for an unknown key.
     /// <para>Same threading argument as <c>/light</c>: each dial is an independent field written from the
@@ -911,10 +908,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
             case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
             // #243 (AC5): the A/B for a cull, which is the one system whose bug is geometry that is simply
-            // not there. Off puts both passes back on the staged BaseVertex submission AND puts the engine's
-            // bucket walk back in charge of the draw-path gate -- so it is a real revert, not a cull that
-            // keeps nothing.
+            // not there. Off puts both passes back on the staged BaseVertex submission with NO cull at all
+            // (#264 deleted the engine walk that used to gate them) -- slow, and the honest control.
             case "cull":     old = CullPass.Mode; CullPass.Mode = Math.Clamp((int)v, 0, CullPass.ModeHiZ); break;
+            // #287: LOD selection, in pixels of projected radius. It rides the cull dispatch, so /draw cull 0
+            // stands it down too -- this dial only says how aggressive it is while the cull is running.
+            case "lod":      old = CullPass.LodPx; CullPass.LodPx = MathF.Max(v, 0f); break;
             default: return float.NaN;
         }
         // #242: a dial can change what a record MEANS (aotest fills a slot, viz changes nothing in the
@@ -929,7 +928,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static void ResetTuning()
     {
         _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
-        _sunWorldBias = DefSunBias; _lightViz = DefViz; CullPass.Mode = DefCull;
+        _sunWorldBias = DefSunBias; _lightViz = DefViz; CullPass.Mode = DefCull; CullPass.LodPx = DefLod;
         // #242: AFTER the dials, the way Tune does it. /draw runs on the input thread, so a bump published
         // ahead of the assignments lets a staging walk rebuild against the OLD dial and stamp the NEW epoch
         // -- wrong until something else invalidates, worst case a whole enrollment away.
@@ -949,12 +948,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
         bool li = _lighting, dp = _depthPrepass, ao = _aoTest;
         int cu = CullPass.Mode;
+        float lp = CullPass.LodPx;
         float cb = _sunWorldBias;
         int vz = _lightViz;
 
-        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull" })
+        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull", "lod" })
             E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
-        E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1 && CullPass.Mode == 1,
+        E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1 && CullPass.Mode == 1
+          && CullPass.LodPx == 1f,
           "every key lands on its own field");
         E(Tune("light", 0f) == 1f && !_lighting, "a boolean dial takes 0 and reports its old value as 1");
         E(Tune("viz", LightVizMax + 5f) == 1f && _lightViz == LightVizMax,
@@ -963,16 +964,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
         ResetTuning();
         E(_lighting == DefLighting && _depthPrepass == DefPrepass && _aoTest == DefAoTest
-          && _sunWorldBias == DefSunBias && _lightViz == DefViz && CullPass.Mode == DefCull,
+          && _sunWorldBias == DefSunBias && _lightViz == DefViz && CullPass.Mode == DefCull
+          && CullPass.LodPx == DefLod,
           "reset returns every dial to its boot value");
         E(DescribeTuning().Contains("light") && DescribeTuning().Contains("prepass")
           && DescribeTuning().Contains("viz")
           && DescribeTuning().Contains("aotest") && DescribeTuning().Contains("csmbias")
-          && DescribeTuning().Contains("cull"),
+          && DescribeTuning().Contains("cull") && DescribeTuning().Contains("lod"),
           "the echo names every key the command accepts");
 
         _lighting = li; _depthPrepass = dp; _aoTest = ao; _sunWorldBias = cb; _lightViz = vz;
-        CullPass.Mode = cu;
+        CullPass.Mode = cu; CullPass.LodPx = lp;
         CullPass.SelfCheck(log);
         _log = quiet;
         log.Info(ok ? "AlloyRenderer.TuneSelfCheck: passed"
@@ -1024,6 +1026,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // #261: the sky's three gobs are not in Scene+0x130 either -- they hang off Scene+0x18/+0x38 and
             // only Scene::RenderSkyBoxes ever walked them. Same slot, same reason as beams.
             SkyBox.Enroll(scene);
+            // #284: the unbuilt-texture retry, and it belongs HERE and not in the 4.6 bracket.
+            // CAurTexture::BuildAndStore re-runs the engine's own upload -- SetActiveTexture, AurTextureBindTID,
+            // RenderInterface::CreateTexture -- and the engine caches what it thinks is bound. Run inside
+            // Alloy's context those binds land on Alloy's objects while the engine's cache records them,
+            // which is #220's corruption with a different cause. Engine context, once a frame, budgeted.
+            OwnedTextures.DripRebuilds();
+            // #284: and the other engine-draw-driven lazy initializer, on the same slot and for the same
+            // context reason -- PartSkin::PostProcess @0x483120 ends in RenderInterface pool traffic, and
+            // its only vanilla caller was RenderSkinned, i.e. a draw this branch no longer performs.
+            SkinPose.DripPrepares();
             // The FLOOR, and it is not a cadence: nothing here fires because time passed, it only delays an
             // edge that has already happened. Enrollment is the cold path (handle wipe, full table scan,
             // texture re-intern, VAO retire) and the walk's delta signal is unbounded by construction --
@@ -1054,7 +1066,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             _inColourPass = true;
             RspShim.Run(scene);
             _inColourPass = prevShim;
-            if (!prevShim) AuditPass();
             return;
         }
         // Only a colour RenderSinglePass OF THE WORLD SCENE may draw Alloy parts. RenderDrawBucket's other
@@ -1065,7 +1076,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _inColourPass = world;
         if (_origRsp != null) _origRsp(scene);
         _inColourPass = prev;
-        if (!prev) AuditPass();
     }
 
     /// <summary>Is this the world Scene? A Scene's static tile BSP (<see cref="SceneLayout.SceneBspRoot"/>) is
@@ -1111,40 +1121,23 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// alone. An area transition that replaces the Scene leaves it stale, so nothing draws until the next
     /// enrollment picks up the new one -- which the walk's Scene check triggers on the same frame.</summary>
     private static IntPtr _enrollScene;
-    /// <summary>Bucket 0/1 walks of a Scene that is not <see cref="_enrollScene"/> -- the #91 sighting counter.
-    /// Non-zero means GUI 3D panels really do walk the opaque buckets and the gate is earning its keep.</summary>
-    private static int _foreignBuckets;
     private static int _drawnPass = -1;   // pass whose Alloy block already ran (once per pass)
 
     /// <summary>Ownable parts the last enrollment turned away for want of a slot. Non-zero means the area is
-    /// past <see cref="MaxOwned"/>, which is not just "some tiles stay vanilla": the spill set is decided by
-    /// hash-table walk order, so it re-picks itself every enrollment and tiles visibly change renderer under
-    /// a static camera. It is the first number to read when the world looks spotty.</summary>
+    /// past <see cref="MaxOwned"/>.
+    /// <para>#264 changed what that costs. It used to mean "these tiles stay vanilla", re-picked every
+    /// enrollment by hash-table walk order, so the world looked spotty and shifted under a static camera.
+    /// With the engine walk deleted there is no vanilla to spill to: a spilled part is INVISIBLE. This is the
+    /// first number to read when geometry is missing.</para></summary>
     private static int _capacitySpill;
 
     /// <summary>The capacity clause of the [alloy] line -- silent when there is room, loud when there is not,
     /// because "4082/5631" only reads as a bug if you happen to know what MaxOwned is.</summary>
     internal static string CapacityNote()
         => _capacitySpill == 0 ? "" :
-           $" (AT CAPACITY: {_capacitySpill} ownable parts spilled to the engine, MaxOwned={MaxOwned} -- the "
-         + "spill set re-picks itself every enrollment, so those parts CHANGE RENDERER as you watch)";
-
-    /// <summary>Exactly-one-owner audit, after the pass's bucket walks have run: a part we drew this pass
-    /// that the iterator never suppressed was either drawn by the engine too (double-draw -- the z-fighting
-    /// signature) or never walked at all (ghost geometry we drew while the engine had culled it).</summary>
-    private static void AuditPass()
-    {
-        for (int i = 0; i < _ownCount; i++)
-        {
-            if (_oTri[i] == IntPtr.Zero) continue;
-            int e = _oEntry[i];
-            if (AlloyCensus.OwnGen[e] == PassGen && AlloyCensus.OwnSupGen[e] != PassGen)
-            {
-                _unmatched++; _unmatchedBucket[_oBucket[i]]++; _unmatchedCls[_oCls[i]]++;
-                if (!PartTable.SightedThisFrame(e)) _unmatchedUnseen++;
-            }
-        }
-    }
+           $" (AT CAPACITY: {_capacitySpill} ownable parts spilled, MaxOwned={MaxOwned} -- since #264 nothing "
+         + "else draws the world, so those parts are NOT RENDERED AT ALL, and the spill set re-picks itself "
+         + "every enrollment, so which geometry is missing changes as you watch)";
 
     /// <summary>#132's frame anchor: the Alloy colour block, run from an after-original hook on
     /// <c>Scene::FadeDoors</c> -- the last engine call inside <c>Scene::RenderSinglePass</c> before
@@ -1168,7 +1161,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #91: never paint into a foreign Scene. Only a NON-world pass counts as a foreign sighting -- a world
         // pass that misses is the enrolled Scene having been replaced (area transition), which resolves itself
         // within a walk or two and must not read as evidence that GUI panels reach this anchor.
-        if (scene != _enrollScene) { if (!_inColourPass) _foreignBuckets++; return; }
+        if (scene != _enrollScene) return;
         if (!_inColourPass) return;
         if (_drawnPass == PassGen) return;
         _drawnPass = PassGen;
@@ -1194,10 +1187,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <see cref="SkinPose"/> READS that state and does the solve itself, and no engine draw function is
     /// entered at all.</para>
     /// <para>A part whose pose does not come back (its <c>MdlNodeSkin</c> is not prepared yet, or its tree
-    /// overflowed the walk) is un-owned here and now. That is in time to matter: the iterator's suppression
-    /// happens at buckets 2/3, later in the same frame, so clearing the flag hands the part back to the
-    /// engine rather than dropping it -- and the engine's own draw is what prepares an unprepared node, so
-    /// the hand-back is also the repair.</para></summary>
+    /// overflowed the walk) is un-owned here and now, which since #264 means it is not drawn this frame.
+    /// An unprepared <c>MdlNodeSkin</c> used to be repaired by the engine's own draw of the part, and there
+    /// is no such draw any more -- so #284 gave the repair an Alloy edge of its own
+    /// (<see cref="SkinPose.DripPrepares"/>, from the frame anchor). The refusal here is one frame, not the
+    /// session; a cloak seen permanently missing is now a number on the period line, not a mystery.</para></summary>
     private static void PoseSkinned()
     {
         _boneSlots = 0;
@@ -1267,28 +1261,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (gob == IntPtr.Zero) return;
         for (int j = 0; j < _ownCount; j++)
             if (j != i && _oTri[j] != IntPtr.Zero && _oGob[j] == gob) { Revoke(j); _oBone[j] = -1; }
-    }
-
-    /// <summary>Iterator sighting from BucketGate's GetNextItem hook: an Alloy part just came up in the
-    /// engine's bucket walk. True = skip it (we drew it this pass and it sits in buckets 0/1); false = let
-    /// the engine draw it, which is what a mid-frame revocation or a skipped Alloy draw falls back to.</summary>
-    internal static bool IterSight(int e, int bucket)
-    {
-        // #126: the bucket list is ONE list with the capture gate's (AlloyCensus.OwnableBucket) -- 0/1 plus
-        // the three residual static classes 4/7/8, and since #134 the dynamic gob pair 2/3. Suppressing a
-        // bucket the Alloy pass does not draw drops geometry; drawing one it does not suppress double-draws
-        // it.
-        // #129: ...and bucket 6 answers to one thing more. Every other class is staged and drawn in the same
-        // breath, so OwnGen implies "drawn"; water is staged in the preamble and drawn only if the ONE
-        // framebuffer copy could be taken, which is not knowable until the copy is attempted. A pass that
-        // stood the copy down has stamped water parts it never drew, and suppressing those is a hole in the
-        // sea rather than a fallback.
-        if (bucket == WaterBucket && !_waterDrew) { _fallbacks++; return false; }
-        if (AlloyCensus.OwnGen[e] != PassGen || !AlloyCensus.OwnableBucket(bucket))
-        { _fallbacks++; return false; }
-        AlloyCensus.OwnSupGen[e] = PassGen;
-        _skips++;
-        return true;
     }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
@@ -1373,7 +1345,20 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #120 made the floor a SOFT one: slots 1..5 joined the batch key but not the radix digit (which still
         // sorts on the diffuse alone), so two materials sharing a diffuse and differing in their normal map
         // now cut a batch the count does not predict. A small excess over the floor is that, not a regression.
-        _log?.Info($"AlloyRenderer: [alloy] {_lastEnrolled}/{_lastCandidates} parts owned{CapacityNote()} on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}) " +
+        // #264: the gap between these two is a HOLE now, not a ratio. Every candidate the enrollment turned
+        // away used to fall through to the engine's walk and draw vanilla; there is no walk, so it is simply
+        // not drawn. Named in the line rather than left to subtraction -- "6944/7144" reads as coverage, and
+        // "200 NOT DRAWN" reads as the missing geometry it actually is. The reject breakdown at the end of
+        // this line is what it decomposes into.
+        int holes = _lastCandidates - _lastEnrolled;
+        _log?.Info($"AlloyRenderer: [alloy] {_lastEnrolled}/{_lastCandidates} parts owned{CapacityNote()}" +
+                   (holes <= 0 ? "" : $" ({holes} NOT DRAWN -- nothing renders an unowned part since #264"
+                                       + $"; harvest refused VDOs: no-engine-vao {HarvestNoVao} no-elembuf {HarvestNoElem}"
+                                       + $" no-pos {HarvestNoPos} no-uv {HarvestNoUv})") +
+                   // #284: OUTSIDE the holes parenthetical on purpose. The number that says the drip worked
+                   // is the one printed on a period with no holes left at all.
+                   DripNote() +
+                   $" on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}) " +
                    $"/ {_lastTextures} textures " +
                    $"({_litCount} lit, {_litUnownable} lit left to the engine" +
                    // #128: what the creature class costs, split. "Creatures are still vanilla" has three
@@ -1393,6 +1378,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                             (SkinPose.NoBind == 0 ? "" : $" ({SkinPose.NoBind} node not prepared)") +
                             (SkinPose.Overflow == 0 ? "" : $" ({SkinPose.Overflow} bone tree too deep)")) +
                         $", {_boneHigh} bone slots peak of {_boneCap}") +
+                   // #284: session totals, so a creature that is STILL a hole three periods later is
+                   // visible as one rather than being reset out of the line every period.
+                   SkinPose.PrepareNote() +
                    "), " +
                    $"Alloy draws {(float)_draws / _frames:F0}/frame in {(float)_batches / _frames:F0} batches " +
                    // #126: the transparency model, as numbers. Cutout should dwarf blended on NWN content;
@@ -1420,11 +1408,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                         $"{(CullPass.Mode >= CullPass.ModeHiZ ? "frustum+hi-Z" : "frustum only")}; bounds span " +
                         $"{CullPass.SpreadX:F0}x{CullPass.SpreadY:F0}x{CullPass.SpreadZ:F0}u, largest radius " +
                         $"{CullPass.SpreadMaxR:F0}u), ") +
-                   $"iter-skips {(float)_skips / _frames:F0}/frame, " +
-                   $"engine fallbacks {(float)_fallbacks / _frames:F1}/frame " +
-                   $"(engine-culled {(float)_skipUnseen / _frames:F0}" +
-                   (_skipUnseen == 0 ? "" : " by capture bucket" + ByBucket(_unseenBucket)) + " " +
-                   $"unlit-pass {(float)_skipNoLight / _frames:F0} identity {(float)_skipIdentity / _frames:F0} " +
+                   // #285: every reason on this list is a HOLE -- geometry that nothing renders this frame.
+                   $"NOT DRAWN this frame: unlit-pass {(float)_skipNoLight / _frames:F0} identity {(float)_skipIdentity / _frames:F0} " +
                    $"dissolve {(float)_ownDissolve / _frames:F0} owned, fade {(float)_ownFade / _frames:F0} owned " +
                    $"no-mdl {(float)_skipNoMdl / _frames:F0} tex {(float)_skipTex / _frames:F0}" +
                    (_skipTex == 0 ? " " : $" (no-diffuse {(float)_skipTexNone / _frames:F0}" +
@@ -1434,11 +1419,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"range {(float)_skipRange / _frames:F0} vao {(float)_skipVao / _frames:F0} " +
                    $"instance-state {(float)_skipGob / _frames:F0}), " +
                    // The one split that answers "are characters Alloy's" without inference. Drawn ~0 with
-                   // owned nonzero means every creature and placeable in view is being drawn by the ENGINE,
-                   // after the Alloy bracket has resolved -- which is what renders them through walls and
-                   // leaves them out of Alloy's shadowing.
+                   // owned nonzero means every creature and placeable in view is a HOLE (#285): since #264
+                   // there is no engine walk behind the skip, so nothing renders them at all.
                    $"instanced {(float)_drawsGob / _frames:F0} drawn/frame, " +
-                   $"{(float)_skipUnseenGob / _frames:F0} engine-culled/frame of {_gobOwned} owned, " +
                    // #244 (AC1): the mesh-sharing census. "1,00x" says every owned part has its own item
                    // range and there is nothing for instancing to collapse; the object-space figure is the
                    // only part of the shared count that could become instances, for the reason MeshCensus
@@ -1470,15 +1453,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // of ADR 0017 bought nothing, which no frame-time average would ever say out loud.
                    $"records {(float)_recWritten / _frames:F0}/frame written, " +
                    $"{(float)_recStable / _frames:F0} stable ({_recOwnCap} slots), " +
-                   $"UNMATCHED {(float)_unmatched / _frames:F1}/frame" +
-                   (_unmatched == 0 ? "" : $" ({(float)_unmatchedUnseen / _frames:F0} of them never walked by " +
-                    "the engine at all -- geometry it culled and we drew anyway; the rest were walked and " +
-                    "not suppressed, which is a bucket-list gap) (by capture bucket" + UnmatchedByBucket() +
-                    $"; classes {string.Join("/", _unmatchedCls)})") + ", " +
-                   (_watchEnrolled == 0 && AlloyCensus.WatchEngineDraws == 0 ? "" :
+                   (_watchEnrolled == 0 ? "" :
                        $"dumptex {_watchEnrolled} enrolled, {(float)_watchSubmitted / _frames:F1} submitted/frame, " +
-                       $"{(float)AlloyCensus.WatchEngineDraws / _frames:F1} engine draws/frame, ") +
-                   $"foreign-scene buckets {(float)_foreignBuckets / _frames:F1}/frame, " +
+                       "") +
                    // #125: "masked" is the criterion, not "captured" -- it counts the frames the engine's own
                    // sky wrote nothing because the Alloy one had already drawn. Captured but never masked
                    // means the pass is staging nothing, which is a different bug from never seeing the sky.
@@ -1528,22 +1505,20 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
         CullPass.ResetStats();
-        _frames = 0; _draws = 0; _batches = 0; _skips = 0; _fallbacks = 0; _unmatched = 0; _revokes = 0; _enrolls = 0;
-        _drawsGob = 0; _skipUnseenGob = 0;
+        _frames = 0; _draws = 0; _batches = 0; _revokes = 0; _enrolls = 0;
+        _drawsGob = 0;
         _skipTexNone = 0; _skipTexNoId = 0; _skipTexNoHandle = 0; _skipTexNotOwned = 0;
         _skinDrawn = 0; _skinNoPose = 0; _boneHigh = 0;
         SkinPose.NoBind = 0; SkinPose.Overflow = 0;
-        _foreignBuckets = 0;
         SkyBox.ResetPeriod();
         GrassField.ResetPeriod();
         Beams.ResetPeriod();
         Particles.ResetPeriod();
-        _watchSubmitted = 0; AlloyCensus.WatchEngineDraws = 0;
-        _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = _skipUnseen = _skipGob = 0;
+        _watchSubmitted = 0;
+        _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = _skipGob = 0;
         _ownDissolve = 0; _ownFade = 0;
         _recWritten = 0; _recStable = 0;
         _nrmDeclared = _nrmBound = 0;
-        Array.Clear(_unmatchedBucket); Array.Clear(_unseenBucket); Array.Clear(_unmatchedCls); _unmatchedUnseen = 0;
         Array.Clear(_drawsByClass);
         _clusterOverflow = 0;
         _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _qPrepass.Reset(); _qSamples.Reset(); _qColour.Reset();
@@ -1552,7 +1527,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>The unmatched total, split by the bucket the parts were captured in -- only the buckets that
     /// actually contributed, so the line stays short when one class dominates.</summary>
-    internal static string UnmatchedByBucket() => ByBucket(_unmatchedBucket);
 
     /// <summary>A per-bucket counter as "bucket:per-frame", only the buckets that contributed.</summary>
     internal static string ByBucket(long[] counts)
@@ -1564,7 +1538,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     }
 
     private static uint _progWater;
-    private static bool _waterFailed, _waterArmed, _waterDrew;
+    private static bool _waterFailed, _waterArmed;
     /// <summary>The engine's water draw bucket (<c>Scene::RenderSinglePass</c> @0x46e5f0's "Water" scope).
     /// One name, read by the ownable-bucket list and by the suppression that has to agree with it.</summary>
     internal const int WaterBucket = 6;

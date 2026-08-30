@@ -207,6 +207,11 @@ internal static unsafe class Beams
     private static bool Harvest(IntPtr vdo, int s)
     {
         uint vao = *(uint*)(vdo + VdoVao);
+        // ponytail: the #284 sibling. A beam VDO minted after the shim armed has no engine VAO either, and
+        // this refuses it silently. NOT dripped here: AlloyRenderer's drip runs at the enrollment edge, while
+        // this runs INSIDE the engine's own bucket-15 draw, where re-entering SetVertexDataObject would move
+        // the current-VDO cache under the caller. Upgrade path if `beams 0 drawn` is ever traced to this:
+        // arm the drip at the bucket window's open, not per harvest.
         if (vao == 0 || Gl.GetVertexAttribiv == null) return false;
         int saved;
         Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &saved);

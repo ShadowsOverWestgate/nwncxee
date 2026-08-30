@@ -224,3 +224,147 @@ A write that lands after the last refresh of a frame is one frame stale on scree
    release caller. Harmless today (nothing can submit between a release and the next enrollment,
    which wipes first), but the comment was a claim about a caller that did not exist. **Fixed**: it
    is called from `RevokeAll`.
+
+## Engine-draw-driven lazy initializers (#284)
+
+`PartTriMesh::Draw` @0x4513d0 was never only a draw. Under #264 the engine's bucket walk is gone, so
+anything it used to *initialise on the way past* now has to be driven by Alloy. Two of these were
+found the bad way — something was missing on a live run and the log said why afterwards — so this is
+the list, read off the binary rather than off a bug report.
+
+The method: take `PartTriMesh::Draw` down and ask of each call whether it mutates state Alloy later
+reads. The vtable slots below are dumped from `_ZTV11PartTriMesh` (+0x10 for the Itanium ABI header),
+not guessed.
+
+That method has one blind spot, and it cost the third entry: **a skinned part never enters
+`PartTriMesh::Draw`.** `PartSkin::Draw` @0x4830b0 goes straight to `RenderSkinned`, so walking the
+tri-mesh draw could not have found the skinmesh initializer no matter how carefully it was done. The
+list is only as complete as the set of draws it was read off; there are two, and both are below.
+
+| Engine call (from `PartTriMesh::Draw`) | Mutates state Alloy reads? | Alloy-side driver, and its cost |
+|---|---|---|
+| `IsPartRenderable` @0x450e60 | No — pure read of `part+0x96` / node `+0x118`/`+0x278`/`+0x284`. | none needed |
+| vtable +0xc8 `Mat` @0x450960 / +0x100 `MatStatic` @0x450560 | **Fixed-function GL state only** (`SetColor4f`, `SetMaterialv`, `SetBlendingMode`, `Enable/Disable`), plus the three gob modulation terms. Nothing persists on the part. | Alloy's own pass state + `AlloyCensus.GobAlphaMul`/`GobDiffuseMul`/`GobEmissiveAdd`. Per-part, but they are reads. |
+| `Material::BindAllStandardTextures` @0x4c6e30 → `CAurTexture::BindInUnit` @0x48e1e0 | **Binds, never builds.** It reads `AurTextureGetTID` and calls `AurTextureBindTIDInUnit`. It does, however, tick the texture CONTROLLER (`AurTextureGetController` + slot 0x10, under `enabletexturecontrollers`) — the procedural/animated-texture update. | Nothing drives controllers for owned parts. The particle pass still routes through `BindInUnit`; the owned colour pass does not. **Accepted, unmeasured**: NWN's controller population is Life/Wave water shaders, which Alloy replaces with its own water pass. Re-open if a procedural texture reads frozen. |
+| `Material::CheckTextureControllers` @0x4c5d20 | Only `SetControllerEnabled` under `HasBumpyShinyMap`. | none needed |
+| vtable +0x38 `VertexPrimitive::SetupArrays` | **YES — the whole VDO.** It fills `vp+VpVdo`/`vp+VpItem` and latches its verdict. Nothing else calls it, so no record ever got a VDO and the world went black. | `SceneWalk.TryBind`, ONE call per record ever (`PartTable._pSetupTried`), budget 512/frame in the steady state and unbounded on a new `Scene` (an area load is already a hitch). |
+| vtable +0x120 `TransformTextureMatrix` / +0x128 `RestoreTextureMatrix` @0x4500b0/0x4500d0 | GL texture-matrix push/pop from `part+0xb0` (the texture angle). | Alloy folds the angle into its own record. No engine state persists. |
+| `RenderBumpyShiny` @0x451200 | Lazily creates the `vswater`/`fswater` custom program into `DAT_01aab338`. Engine-only — Alloy never reads it. | none needed |
+| `RenderEnvironmentMapped` @0x451040 | Reads `gob+0x480` (a **`CAurTexture*` env-map REPLACEMENT**, not a flag), scales ambient by `gob+0x108` when `gob+0xf6` is set, falls back to `mat+0x40` then `currentscene+0x1e8`. Binds; mutates nothing. | `AlloyCensus.GobHasEnvMap` sets `AlloyCandidate.Env`; #121's IBL probe supplies the texture. |
+| `RenderFlat` @0x450eb0 | Sets the render hint and the scene's shadow-map bind, then `RenderVertexData`. | Alloy's own submission. |
+
+And one more from the *other* draw, because a skinmesh never enters `PartTriMesh::Draw` at all —
+`PartSkin::Draw` @0x4830b0 goes straight to `RenderSkinned` @0x482c70:
+
+| Engine call (from `RenderSkinned` @0x482c70) | Mutates state Alloy reads? | Alloy-side driver, and its cost |
+|---|---|---|
+| Part vtable +0xe0 `PartSkin::PostProcess` @0x483120 | **YES — the entire bind pose.** It writes the bone count `node+0x284`, the inverse bind-pose lists `+0x2f0`/`+0x300` and the 64-entry bone map `+0x320` — which is exactly and only what `SkinPose.Solve` reads. `RenderSkinned`'s *first act* is to call it, so in vanilla every skinmesh was prepared by its own first draw. | `SkinPose.NoteUnprepared` at the refusal, `SkinPose.DripPrepares` at the frame anchor: **2 calls/frame, one attempt per record** (`PartTable._pPoseTried`). See below. |
+
+### The one that was missed: the skinmesh bind pose
+
+`SkinPose` already knew this and said the wrong thing about it: "the part is handed back, the engine
+draws it once, and the next frame solves." Since #264 there **is** no engine draw, so an unprepared
+`MdlNodeSkin` was never prepared — a permanent hole, one whole creature at a time (`RevokeSkinned`
+takes the rest of the gob with the cloak).
+
+**The ABI, from the binary and not from the mangled name.** `_ZN8PartSkin11PostProcessEP4Part` mangles
+identically whether the member is static or not, so the arbiter is `_ZTV8PartSkin`: slot **+0xe0**
+(+0x10 for the Itanium header), i.e. it is a **virtual** override of `Part::PostProcess(Part*)`
+@0x436e10. `RenderSkinned` calls it as `(**(code**)(*part + 0xe0))(part, part)` — the part as *both*
+`this` and the explicit argument. That argument is the base class's recursion context: `Part::PostProcess`
+walks `part+0x38`/`+0x40` and threads it down the children unchanged. `PartSkin`'s override never reads
+`rsi` at all (disassembled — it is dead from entry), so passing the part twice is both correct and what
+the engine does. The slot must be dispatched off a vptr **proven to be `PartSkin`'s exactly**: on any
+other part the same slot is the base version, which recurses the whole subtree.
+
+**It is idempotent, and it latches itself.** Entry guard: `node+0x278` (a `MdlNodeTriMesh_PostProcess*`,
+the temporary load-time data) non-null. Tail: node `+0xa8` = `MdlNodeSkinRemoveTemporaryArrays`
+@0x437540 → `MdlNodeSkin::InternalRemoveTemporaryArrays` @0x454600 →
+`MdlNodeTriMesh::InternalRemoveTemporaryArrays` @0x4542a0, which `operator delete`s that block and
+writes **0** to `node+0x278`. So the second call returns immediately — which is why the engine could
+afford to call it on every single skinned draw, and why one attempt per record is the whole budget.
+Same shape as `SetupArrays` above.
+
+**The corollary is the residual hole**: `node+0x278 == 0` with `node+0x284 == 0` means the temporaries
+are gone and *nothing* can ever prepare that node. That is counted separately and reported as
+`PERMANENT -- no bind data left`, so a remaining missing creature is attributable rather than silent.
+
+**Alloy-side driver**: `SkinPose.Solve` notes the part at its second refusal branch (cold — a refusal,
+which in a settled area is zero; a null `MdlNode` is never noted, because `PostProcess` dereferences it
+unguarded). `SkinPose.DripPrepares` spends the queue on the frame anchor beside
+`OwnedTextures.DripRebuilds`, **with the engine's context current** — load-bearing for the same reason:
+`PostProcess` ends in `RenderInterface::RequestPool`/`LockPool`/`UnlockPool`, and running the engine's
+own pool traffic inside Alloy's 4.6 bracket would leave the engine's bind cache naming objects in the
+other context. It runs ahead of the owned draws, so a node repaired here poses the same frame, and the
+upload goes out through `UnlockPool` — #260's funnel — so the geometry lands in owned residency by
+itself.
+
+**Cost**: at most **2** `PostProcess` calls per frame, and **one attempt per record for as long as that
+record lives**. Two rather than the texture drip's four because the call is heavier — it rebuilds the
+node's vertex indices and tangent basis (`MdlNodeTriMesh::BuildVertexIndices` / `GenerateVertexData` /
+`CalculateTangentSpaceBasis`) and takes two pools. Vanilla paid all of it in one frame on the first
+draw of every new skinmesh, so this is not a new cost, only a metered one.
+
+**Guards at the drain, not at the enqueue.** A `Part*` is borrowed and its death notice is `Part::~Part`
+(#145/#221), so the record is re-proven with `PartTable.EntryLive(e, part)` immediately before the call,
+and `PartTable.Skinned(e)` — an exact `_ZTV8PartSkin` compare taken at the walk — is the type proof. The
+node is re-read cold: a sibling part sharing the `MdlNodeSkin` may have prepared it already, which
+counts as a win and costs no call. One side effect worth stating because it lands on a borrowed object:
+`PostProcess` opens with `Gob::Reset` @0x499bd0 on `part+0x50`, so repairing a live creature resets its
+gob — exactly what the engine's own first draw did.
+
+**Ledger lifecycle**: `PartTable._pPoseTried` is a record column, not a set of part pointers, so it
+clears exactly where the part underneath can have changed — a slot reclaimed by `Insert`, a re-bound
+record (`SceneWalk.Rebind`) and `WipeTables`. That is deliberately *not* the `OwnedTextures` ceiling: a
+recycled address is never denied its attempt. `WipeTables` also calls `SkinPose.Forget`, because every
+queued entry index names a record that no longer exists.
+
+Reported on the `[alloy]` period line as `unprepared skinmeshes:`, session totals — beside the skinmesh
+pose counters it belongs with, not on `[rspshim]` where the texture drip reports.
+
+### The one that was open: the texture build
+
+**Nothing on the draw path builds a texture.** The engine builds one exactly twice:
+
+- `AurTextureGet` @0x48cc10 — `CExoArrayList<CAurTextureBasic*>::Add(&RefreshTextures, tex)` on a
+  newly created texture (creation edge);
+- `AurTextureSetLayered` @0x489bd0 — `AddUnique` on the same list when a PLT scheme changes
+  (`Gob::ReplaceTexture` → `Material::ReplaceTexturePLT` → here; the appearance edge).
+
+`AurTextureMakeCurrent` @0x48f560 (sole caller `Scene::Render`, which still runs under the shim)
+drains that list through `AurTextureBuildAndStoreAll` @0x48e680 and then sets the count to **0 —
+whether or not each build succeeded**. And `CAurTextureBasic::BuildAndStoreTexture` @0x48b320
+soft-fails: it runs `ConstructImage` @0x48a5d0 once (latched by `basic+0xe6`), and if the decoded
+image at `basic+0x58` is still null it never reaches `glImageBasic` @0x48bcf0, so the GL id at
+`basic+0x6c` stays 0. `CResPLT::OnResourceServiced` @0x1136640 only parses the file — **no retry path
+exists anywhere**. The one-shot queue can lose its race with residency, permanently.
+
+Vanilla survived it because the engine's own draw bound id 0 and drew a texture-less part nobody
+looked at twice. Under #264 an Alloy part with no diffuse id is *skipped*, which reads live as a
+player character with no head.
+
+**Alloy-side driver**: `AlloyCensus.TryOwnCandidate` notes a live-but-idless diffuse at enrollment
+(cold, once per candidate per scan) into `OwnedTextures.NoteUnbuilt`; `OwnedTextures.DripRebuilds`
+spends it on the frame anchor where `Beams.Enroll`/`SkyBox.Enroll` already run — once a frame, before
+the Alloy bracket, **with the engine's context current**. That last part is load-bearing rather than
+convenient: `BuildAndStore` re-runs the engine's own upload (`SetActiveTexture`, `AurTextureBindTID`,
+`RenderInterface::CreateTexture`) and the engine caches what it thinks is bound, so running it inside
+Alloy's 4.6 bracket would leave that cache naming objects in the other context — #220's corruption
+with a different cause. It is the same reason `Adopt` is safe: the funnel fires where the engine
+already is.
+**Cost**: at most 4 `CAurTexture::BuildAndStore` @0x48bc80 calls per frame, and **one attempt per
+texture for the session** — `BuildAndStore` is `CAurTextureBasic::Reset` @0x4858c0 (which clears
+`+0xe6`/`+0xe7`, deletes the GL names and zeroes `+0x6c`, so the rebuild genuinely re-runs
+`ConstructImage`) plus a full decode and upload. The pointer is re-proven through `AurTex`'s vtable
+guard at the drain, never at the enqueue, because a `CAurTexture*` is borrowed. Because the rebuild
+routes through `RenderInterface::CreateTexture`, a successful retry lands in the owned table by
+itself. Reported on the `[rspshim]` period line as `unbuilt textures:`.
+
+The ledger is cleared on `ContextLost` — every engine texture is unbuilt again on the far side, so
+keeping it would refuse the whole world its single retry.
+
+**Known ceiling** (`ponytail:` in `OwnedTextures`): the ledger keys on the raw `CAurTexture*`, which
+the engine frees on an area transition, so a new texture allocated at a recycled address is denied
+its one retry — the permanence this fixes, in miniature. Upgrade path is to clear it on the first
+`Retire` batch after a world edge, where the pointer population turns over anyway. `RebuildNote`'s
+retried-vs-won split is the instrument that would show it: it stops converging.

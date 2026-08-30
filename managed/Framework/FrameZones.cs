@@ -28,8 +28,8 @@ public static class FrameZones
         Enroll,
         /// <summary>The ADR 0007 pass slot: light walk, shadow focus, and the world-caster bake.</summary>
         Shadow,
-        /// <summary>The RSP shim's own work -- the engine bucket walk and the bookkeeping vcalls, with the
-        /// Alloy bracket that runs inside its anchor subtracted out.</summary>
+        /// <summary>The RSP shim's own work -- the bookkeeping vcalls RenderSinglePass braided into its
+        /// drawing, with the Alloy bracket that runs inside its anchor subtracted out.</summary>
         Shim,
         /// <summary>The Alloy colour frame (<c>DrawOwned</c>), CPU submission side.</summary>
         Alloy,

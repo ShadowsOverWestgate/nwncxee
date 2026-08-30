@@ -384,14 +384,14 @@ internal static unsafe class FrameSnapshot
     /// <summary>Permanent: the class cannot work in this context at all. Water reverts to the engine's own
     /// draw for the session.</summary>
     private static bool Fail(string why)
-        => _down.Fail(_log, why, "the engine draws water (and takes its own framebuffer copy) exactly as it "
-                               + "did before #129");
+        => _down.Fail(_log, why, "water is NOT DRAWN for the session -- #285: since #264 deleted the engine "
+                               + "walk there is nothing behind the refusal");
 
     /// <summary>Per-pass: this particular pass cannot take the copy. NOT latched -- a GUI 3D panel or a
     /// reflection subframe legitimately refuses while the world pass keeps arming -- but the reason is logged
     /// once per distinct reason, because the fallback is otherwise silent.</summary>
     private static bool Refuse(string why)
-        => _down.Refuse(_log, why, "no framebuffer copy this pass; the engine draws water instead");
+        => _down.Refuse(_log, why, "no framebuffer copy this pass; water is not drawn on it (#285: a hole, not a hand-back)");
 
     internal static string Stats(int frames)
         => $"water: {Copies} copies, {Refusals} refused" + (frames > 0 ? $" over {frames} frames" : "");

@@ -9,7 +9,7 @@ using static Sowx.Alloy.BucketGate;
 using static Sowx.Alloy.AlloyCensus;
 namespace Sowx.Alloy;
 
-/// <summary>#258: the engine draw funnels Alloy sits on, and nothing else. This was <c>BatchService</c>,
+/// <summary>#264: the two engine notices Alloy still needs, and nothing else. Was <c>BatchService</c>, This was <c>BatchService</c>,
 /// ADR 0006's extender-owned multidraw submission; the #215 cutover made <c>RspShim</c> own the frame, and a
 /// replayed multidraw is the one draw path its funnel swallow cannot see -- so the batcher had been latched
 /// off since it shipped while everything upstream of it still ran per part per frame. The batcher, its group
@@ -42,17 +42,6 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     private const int LogEvery = 900;
     private static ExtenderLog? _log;
 
-    private static delegate* unmanaged<IntPtr, void> _origPartDraw;
-    /// <summary>#137: <c>PartSkin::Draw</c>'s trampoline. A separate entry point for the same job, because
-    /// the true skinmesh class never passes through <see cref="_origPartDraw"/> at all -- see
-    /// <see cref="SymbolMap.PartSkinDraw"/>. Null leaves the class exactly where it was before #137: engine
-    /// drawn, uncaptured, and (like every un-hooked class) invisible to the census.</summary>
-    private static delegate* unmanaged<IntPtr, void> _origPartSkinDraw;
-
-    // period stats
-    /// <summary>#256: parts the engine drew that the scene walk never recorded -- the acceptance counter for
-    /// "every part the engine classified this frame is in the record set". Non-zero means the walk has a hole.</summary>
-    internal static long _unrecorded;
     private static bool _wasInModule;
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -79,15 +68,8 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // it there is no discovery at all -- nothing below may pretend otherwise by falling back to capture.
         if (!SceneWalk.Resolve(log)) return;
 
-        _origPartDraw = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.PartTriMeshDraw, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPartDraw);
-        _origPartSkinDraw = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.PartSkinDraw, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSkinDraw);
-        // Chained, not Install()ed: RenderVertexData and Repack both have several subscribers (#88).
-        _drawSlot = hooks.Chain(SymbolMap.GlRenderVertexData,
-            (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)&OnVdoDraw, DrawPriority);
-        BucketGate.Install(hooks);
         SkyBox.Install(log, hooks);   // #261: resolves symbols only -- there is no sky hook any more
+        // Chained, not Install()ed: Repack has several subscribers (#88).
         _repackSlot = hooks.Chain(SymbolMap.VdoRepack,
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepack, RepackPriority);
         // #145: the death notice. Every other gate infers liveness (a sighting window, an identity compare
@@ -95,8 +77,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         _origPartDtor = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.PartDtor, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPartDtor);
         // The record tables arm here, and the census and the gate ride on them.
-        PartTable.Active = _origPartDraw != null && _drawSlot != null && BucketGate.Installed
-                           && _repackSlot != null && _origPartDtor != null;
+        PartTable.Active = _repackSlot != null && _origPartDtor != null;
         log.Info(PartTable.Active
             ? "DrawFunnels: engine draw funnels armed (sowx.cfg drawhooks=off disables; [funnels] every 900 frames)"
             : _origPartDtor == null
@@ -107,10 +88,8 @@ public sealed unsafe class DrawFunnelService : IExtenderService
               : "DrawFunnels: hook install failed -- Alloy unavailable");
     }
 
-    /// <summary>Chain priorities (#88): both symbols are shared, we sit under the shadow pipeline.</summary>
-    internal const int DrawPriority = 50;
+    /// <summary>Chain priority (#88): Repack is shared, and we sit under the shadow pipeline.</summary>
     private const int RepackPriority = 50;
-    private static IntPtr* _drawSlot;
     private static IntPtr* _repackSlot;
 
     /// <summary>Repack observer: items of this VDO just moved -- force every member on it to re-read its
@@ -128,170 +107,6 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // #256: a repack changes no scene membership, so nothing else would ever look at these again --
         // the epoch will not move for a layout change. Ask for a walk, whose sweep re-queues them.
         if (stale > 0) SceneWalk.NoteStale();
-    }
-
-    /// <summary>#96 passive bone capture: a skinned part is never batchable and never owned, so its draw runs
-    /// vanilla either way -- but that draw is the one moment in the frame its bone matrices are live, so the
-    /// caster pass brackets it and snapshots them. The bracket wraps the WHOLE body because every branch below
-    /// ends in exactly one <c>_origPartDraw</c>, and the funnel observation has to land inside it.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnPartDraw(IntPtr part)
-    {
-        // #126: bucket 8 reaches the capture path now. A fading part has to be RECORDED (and kept alive by
-        // its sightings) or the Alloy pass has nothing to enroll for the fade class; what it must not do is
-        // batch, which PartDraw refuses below.
-        // #134: the census runs BEFORE the bucket gate. A part drawn outside Scene::RenderDrawBucket is
-        // invisible to every counter this service keeps -- not owned, not captured, not even refused -- and
-        // "no rows at all" reads identically to "nothing to report". The row names its _inBucket so the two
-        // can be told apart.
-        if (Live && part != IntPtr.Zero && _dumpLeft > 0)
-        { _dumpLeft--; DumpPart(part); if (_dumpLeft == 0) _log?.Info("[dumpframe] end"); }
-
-        if (!Live || _inBucket == 0 || part == IntPtr.Zero)
-        { Vanilla(part); return; }
-        IntPtr node = new PartRef(part).Node.Ptr;
-        if (_bucketId <= MaxCasterBucket && IsInstance(part) && CasterPass.SkinBegin(part, node))
-        {
-            PartDraw(part);
-            CasterPass.SkinEnd();
-            return;
-        }
-        PartDraw(part);
-    }
-
-    /// <summary>#137: the TRUE skinmesh's capture point. Same body as <see cref="OnPartDraw"/> and
-    /// deliberately so -- a cloak is a part like any other once it is in the table, and everything downstream
-    /// (the census, candidacy, enrollment, the iterator's suppression, #128's per-instance sweep) then reaches
-    /// it for free. Only two things differ: the vanilla draw goes through <see cref="_origPartSkinDraw"/>
-    /// (which <see cref="Vanilla"/> routes), and the entry is stamped <c>_pSkin</c> so the Alloy pass knows
-    /// to solve a pose and bind bones rather than draw it in its bind pose.
-    /// <para>The ticket assumed the bucket iterator could not suppress this class. It can, and the walk
-    /// proves it rather than the reasoning: <c>Scene::RenderDrawBucket</c> @0x46d060 resolves each item
-    /// through vtable slot 0x60 (<c>AsPartTriMesh</c>, which <see cref="OnNextItem"/> already mimics) and
-    /// draws it through slot 0xd0 -- and slot 0xd0 of <c>_ZTV8PartSkin</c> IS <c>PartSkin::Draw</c>
-    /// @0x4830b0, exactly as slot 0xd0 of <c>_ZTV11PartTriMesh</c> is @0x4513d0. So a skinmesh arrives on
-    /// the same walk, under the same <c>_inBucket</c>, resolving to the same pointer this hook records.
-    /// What was missing was only the entry.</para></summary>
-    [UnmanagedCallersOnly]
-    private static void OnSkinDraw(IntPtr part)
-    {
-        // The swallow window: AlloyRenderer is calling the trampoline purely to make the engine solve this
-        // part's bones. Never reached through the engine's own walk -- Vanilla() calls the trampoline, not the
-        // hook -- so this is only ever a re-entry guard, and cheap enough to keep as one.
-        bool prev = _inSkinDraw; IntPtr prevPart = _skinDrawPart;
-        _inSkinDraw = true; _skinDrawPart = part;
-        if (Live && part != IntPtr.Zero && _dumpLeft > 0)
-        { _dumpLeft--; DumpPart(part); if (_dumpLeft == 0) _log?.Info("[dumpframe] end"); }
-        if (!Live || _inBucket == 0 || part == IntPtr.Zero || _origPartSkinDraw == null)
-        { Vanilla(part); _inSkinDraw = prev; _skinDrawPart = prevPart; return; }
-        _skinSeen++;
-        IntPtr node = new PartRef(part).Node.Ptr;
-        bool bracket = _bucketId <= MaxCasterBucket && IsInstance(part)
-                       && CasterPass.SkinBegin(part, node);
-        PartDraw(part);
-        if (bracket) CasterPass.SkinEnd();
-        _inSkinDraw = prev; _skinDrawPart = prevPart;
-    }
-
-    /// <summary>Hand this part to the engine. Two draw entry points reach the shared body below and they are
-    /// NOT interchangeable: calling <c>PartTriMesh::Draw</c> on a <c>PartSkin</c> would draw it in its bind
-    /// pose (the bone solve lives in <c>PartSkin::Draw</c> alone), and every "fall back to vanilla" branch in
-    /// this service is one place that could do it. So the choice is made once, here.</summary>
-    private static void Vanilla(IntPtr part)
-    {
-        // Keyed on the PART, not merely on the window. "PartSkin::Draw never enters PartTriMesh::Draw" is an
-        // RE claim, and the code cannot check it -- but it does not have to depend on it either. If some
-        // nested rigid draw ever did land inside the window, a flag would route a PartTriMesh* into
-        // PartSkin::Draw: a call through the wrong vtable, i.e. a crash rather than a misrender.
-        if (part != IntPtr.Zero && part == _skinDrawPart && _origPartSkinDraw != null)
-        { _origPartSkinDraw(part); return; }
-        if (_origPartDraw != null) _origPartDraw(part);
-    }
-
-    /// <summary>The part whose <c>PartSkin::Draw</c> body is on the stack, so <see cref="Vanilla"/> picks the
-    /// right trampoline for it and the wrong one for nobody else. Zero outside a skin body.</summary>
-    private static IntPtr _skinDrawPart;
-    /// <summary>...and whether we are inside one at all, which is what <see cref="Record"/> stamps
-    /// <c>_pSkin</c> from and the census reports.</summary>
-    internal static bool _inSkinDraw;
-    private static long _skinSeen;
-
-    private static void PartDraw(IntPtr part)
-    {
-        // #236: the walk HANDS BACK. Every Vanilla() below this point is Alloy saying "not mine, not this
-        // pass" -- and under the #215 shim a hand-back that gets swallowed is a hole, not a frame of vanilla
-        // shading. Nothing here clears the mark: a part that reaches the loop body at all was not drawn by
-        // Alloy this pass, which is what the iterator already decided.
-        // Scoped to the WALK, deliberately: the three hand-backs above (the sky window, the not-in-a-bucket
-        // catch-all, the skin bail) stay swallowed. Whether any of them fires inside the window is not
-        // measured, so marking them would be a guess about who draws the sky.
-        bool prevHand = RspShim.HandBack;
-        RspShim.HandBack = true;
-        PartDrawBody(part);
-        RspShim.HandBack = prevHand;
-    }
-
-    private static void PartDrawBody(IntPtr part)
-    {
-        var p = new PartRef(part);
-        int e = Find(part);
-        // #256: a part the engine is drawing that Alloy has no record for is a part the scene walk did not
-        // reach. It is NOT recorded here -- discovery is SceneWalk's, and inventing a record from a draw is
-        // exactly the inheritance M5 exists to end. The engine draws it; SceneWalk.CrossCheck counts it.
-        // Counted only for the WORLD scene: SceneWalk.Tick is never called for a GUI 3D panel's Scene (#91),
-        // so every panel part is legitimately unenumerated and would otherwise make the alarm ring whenever
-        // a character sheet is open -- i.e. exactly when nobody would trust it.
-        if (e < 0) { if (_bucketWorld) _unrecorded++; Vanilla(part); return; }
-
-        // #82: Alloy parts reaching the loop body mean the Alloy draw did not happen for them this pass.
-        // #236: HANDED BACK, not swallowed. Reaching this branch means the iterator's IterSight said Alloy
-        // did NOT draw the part this pass (BucketGate returns the slot only then), which is #82's own
-        // invariant -- so there is no draw to double. That is the engine-culled part coming back into view,
-        // and the class stand-downs (the blended handback) with it: swallowing them was one invisible frame
-        // per part, thousands at once on a camera spin, i.e. pop-in traded for flicker.
-        if (OwnFlag[e] != 0) { _pSeen[e] = _frame; Vanilla(part); return; }
-
-        // #256: StUnbound and StStale are both "re-read the VertexPrimitive", and SceneWalk.Rebind does it
-        // once per frame off the record rather than by re-entering a vanilla draw to watch the funnel.
-        if (_pState[e] != StActive || _pNode[e] != p.Node.Ptr || _pMat[e] != p.Material.Ptr)
-        {
-            // #256: an identity change is a RE-READ, not a death. Gob::ReplaceTexture @0x43e980 and friends
-            // rewrite Part+0x58 in place with no birth and no death (#253 §3.2 item 4), and under capture
-            // the record could only come back by being re-Recorded from a later draw. There is no such draw
-            // any more, so killing the entry here would strand the part in vanilla for the life of the area.
-            if (_pState[e] == StActive) SceneWalk.Rebind(e, p);
-            // #128: a DEAD entry that is still drawing is still sighted. Enrollment reads this to decide
-            // whether a dead instanced part is a live one it must drop its whole creature for, or despawned
-            // debris it should forget -- so the sighting has to keep ticking past the death.
-            _pSeen[e] = _frame;
-            Vanilla(part);
-            return;
-        }
-
-        _pSeen[e] = _frame;
-        // #258: every path out of here is the same one. The batcher's tail -- matrix probation, the dirty
-        // tests, the group submit -- decided whether THIS service would draw the part, and it no longer
-        // draws anything. Under the shim a part reaching this body was handed back by the Alloy pass, and
-        // the engine is what draws it.
-        Vanilla(part);
-    }
-
-    /// <summary>Post-draw observer: runs the rest of the chain (the real draw) first, so engine state is
-    /// fully bound. Near-free -- the sky window and the bone capture are all that read it.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
-    {
-        var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_drawSlot;
-        if (next != null) next(vdo, item, prim, size, offset);
-        Observe(vdo, item, (int)prim);
-    }
-
-    private static void Observe(IntPtr vdo, uint item, int prim)
-    {
-        // #256: the capture branch that used to live here is GONE -- (VDO, item, prim) is read off the
-        // VertexPrimitive by SceneWalk. #258 took the batch submit that was the other half, so the funnel
-        // is now the CASTER's bone-capture point and nothing else.
-        CasterPass.SkinObserve(vdo, (int)item, prim);
     }
 
     private static delegate* unmanaged<IntPtr, void> _origPartDtor;
@@ -351,19 +166,9 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         _log?.Info("DrawFunnels: " + SceneWalk.Period());
         _log?.Info($"DrawFunnels: [funnels] {_partCount} parts tracked, " +
                    (_saturated ? $"TABLE SATURATED ({_satLive} live / {_satDead} dead, surplus engine-drawn), " : "") +
-                   // #256: parts the engine drew that the walk never enumerated -- the acceptance number for
-                   // "the record set covers what the engine classified". Non-zero is a hole in the walk.
-                   $"unrecorded-draws={_unrecorded}" +
                    // #145: parts the engine destroyed under a recorded entry. A 0 that survives an area
                    // transition means Part::~Part is not reaching us, which is indistinguishable from
                    // "nothing died" in every other number here.
-                   $" dtor-revoked={DtorRevokes} reclaimed={_reclaims}" +
-                   // #137: the skinmesh class, which had no row at all before it had a hook. A zero here is
-                   // "the hook never fired", not "there were no cloaks" -- which is exactly the #221 finding
-                   // #262 was asked to re-check, so the row stays after the pose path stopped needing it.
-                   (_origPartSkinDraw == null ? " | skinned: no hook"
-                      : $" | skinned: {(float)_skinSeen / LogEvery:F1} engine draws/frame"));
-        _skinSeen = 0;
-        _unrecorded = 0;
+                   $" dtor-revoked={DtorRevokes} reclaimed={_reclaims}");
     }
 }

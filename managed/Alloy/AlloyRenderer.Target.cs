@@ -162,7 +162,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>Bind the 4.6-side draw target: default framebuffer when the engine draws to 0 (same
     /// drawable, shared), else a mirror FBO over the engine FBO's attachments (textures/renderbuffers
-    /// share; FBO containers do not). Incomplete mirror = clean skip, the engine draws everything.
+    /// share; FBO containers do not). Incomplete mirror = clean skip, and since #264 that means the 3D world does not draw at all.
     /// <para>Re-attached and re-checked EVERY pass rather than cached on attachment name/type. GL reuses
     /// freed object names, and an FBO attachment references the object, not the name -- so when the engine
     /// recreates its render targets (focus loss / alt-tab / workspace switch reruns its device reset) the
@@ -182,7 +182,7 @@ public sealed unsafe partial class AlloyRenderer
         {
             _mirrorBad = bad;
             _log?.Info(bad
-                ? "AlloyRenderer: engine-FBO mirror incomplete -- Alloy draws skipped, engine draws everything"
+                ? "AlloyRenderer: engine-FBO mirror incomplete -- Alloy draws skipped, so the 3D world is NOT DRAWN"
                 : "AlloyRenderer: engine-FBO mirror complete again -- Alloy draws resumed");
         }
         return !bad;

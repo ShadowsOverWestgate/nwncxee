@@ -432,7 +432,7 @@ internal static unsafe class AlloyLights
     {
         // NOT gated on the light count: with zero point lights the dispatch still writes an all-zero cluster
         // table, which is exactly right -- the lit parts then shade on area ambient + sun alone instead of
-        // being handed back to the engine for want of a torch.
+        // being dropped from the frame for want of a torch.
         if (!Ensure()) return false;
         if (!(p00 > 0f) || !(p11 > 0f) || !(far > near)) return false;
         if (near < MinNear) near = MinNear;

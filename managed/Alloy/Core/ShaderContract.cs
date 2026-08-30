@@ -407,21 +407,22 @@ internal static class ShaderContract
                   && !SlotSafe(PostChain.ResolveFs, "uNotASampler")
                   && !DepthSafe(OwnedVs.Replace("invariant gl_Position;", ""))
                   && !DepthSafe(OwnedVs.Replace(ClipExpr, "gl_Position = uVP * (d.model * vec4(aPos, 1.0));"))
-                  // ...and the suppression list is the capture list. These two disagreeing is the one #126
-                  // failure that is silent in both directions -- geometry dropped, or drawn twice.
+                  // ...and the ownable list is the DRAW list: nothing else renders the world since #264, so
+                  // a bucket missing here is a class that goes dark rather than one that stays vanilla.
                   && AlloyCensus.OwnableBucket(0) && AlloyCensus.OwnableBucket(1)
                   && AlloyCensus.OwnableBucket(4) && AlloyCensus.OwnableBucket(7)
                   && AlloyCensus.OwnableBucket(8)
                   // #134: the dynamic gob pair joins, and joins TOGETHER -- the engine walks 2 then 3, and
                   // owning one without the other splits one instance's geometry across two renderers.
                   && AlloyCensus.OwnableBucket(2) && AlloyCensus.OwnableBucket(3)
-                  // 5 (refraction glass) stays the engine's: it reads a framebuffer copy taken after the
-                  // Alloy bracket has already resolved.
+                  // 5 (refraction glass) is nobody's since #264 deleted the engine walk: it reads a
+                  // framebuffer copy taken after the Alloy bracket has already resolved, so Alloy has no
+                  // program for it and there is no engine draw left to fall back to. `sample-class=` on the
+                  // [scenewalk] line is how big that hole is; owning it is the follow-up.
                   // #129: 6 is deliberately NOT asserted here. OwnableBucket evaluates it AS
                   // FrameSnapshot.Usable, so any check of the two against each other is a tautology -- it would
                   // read as cover and catch nothing. What actually governs the water draw is _waterArmed
-                  // (Usable && lightingOn && the program), and what keeps suppression honest is _waterDrew,
-                  // which IterSight tests directly. Both are structural, and neither is assertable here.
+                  // (Usable && lightingOn && the program), which is structural and not assertable here.
                   && !AlloyCensus.OwnableBucket(5)
                   // #92: a resref past the CResRef limit can never name a resource, so an override
                   // dropped under it would go silently unread.

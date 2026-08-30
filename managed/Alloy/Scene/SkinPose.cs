@@ -38,19 +38,24 @@ internal static unsafe class SkinPose
 
     /// <summary>Solve <paramref name="part"/>'s pose into <paramref name="dst"/>, which must have room for
     /// <see cref="AlloyRenderer.BoneFloats"/> floats (64 mat4). False = no pose; the part has to be handed
-    /// back rather than drawn in its bind pose.
-    /// <para>Refusal is the honest answer for a skinmesh whose <c>MdlNodeSkin</c> has not been prepared:
-    /// <c>PartSkin::PostProcess</c> @0x483120 builds the bind arrays and the bone map lazily, on the model's
-    /// first engine draw, and it is the engine's job -- not Alloy's -- to run it. A part in that state is
-    /// handed back, the engine draws it once, and the next frame solves.</para></summary>
+    /// back rather than drawn in its bind pose -- and since #264 that means NOT DRAWN at all.
+    /// <para>A skinmesh whose <c>MdlNodeSkin</c> has not been prepared is the case #284 had to close:
+    /// <c>PartSkin::PostProcess</c> @0x483120 builds the bind arrays and the bone map lazily, and its only
+    /// caller is <c>RenderSkinned</c> @0x482c70 -- an ENGINE DRAW of the part, which #264 deleted. Nothing
+    /// re-drives it, so an unprepared node stayed unprepared for the session and its creature was a permanent
+    /// hole. The refusal is still the honest answer for this frame; what changed is that the part is
+    /// <see cref="NoteUnprepared"/>ed here and <see cref="DripPrepares"/> runs the repair on an Alloy edge,
+    /// so the next frame solves.</para></summary>
     internal static bool Solve(IntPtr part, float* dst)
     {
         IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
+        // No node is not a repairable state -- PostProcess dereferences it unguarded -- so it is never noted.
         if (node == IntPtr.Zero) { NoBind++; return false; }
         int bones = *(short*)(node + SceneLayout.SkinBoneCount);
         IntPtr bindRot = *(IntPtr*)(node + SceneLayout.SkinBindRot);
         IntPtr bindPos = *(IntPtr*)(node + SceneLayout.SkinBindPos);
-        if (bones <= 0 || bindRot == IntPtr.Zero || bindPos == IntPtr.Zero) { NoBind++; return false; }
+        if (bones <= 0 || bindRot == IntPtr.Zero || bindPos == IntPtr.Zero)
+        { NoBind++; NoteUnprepared(part); return false; }
 
         // RenderSkinned's first act: the inverse of the root -> this-part chain, accumulated from the LEAF
         // upward, which is what makes the gathered transforms land in the skinmesh's own space.
@@ -111,6 +116,97 @@ internal static unsafe class SkinPose
         }
         return true;
     }
+
+    /// <summary>#284: parts whose <c>MdlNodeSkin</c> is unprepared, waiting for their one repair. Entry index
+    /// and the part pointer it recorded, because BOTH are needed at the drain: the index carries the
+    /// one-attempt ledger and the pointer is what <c>PartTable.EntryLive</c> proves the record still means.
+    /// <para>ADR 0015: a <c>Part*</c> is BORROWED and its death notice is <c>Part::~Part</c> (#145/#221),
+    /// which is what leaves the tombstone <c>EntryLive</c> reads. Nothing here dereferences the pointer; the
+    /// liveness proof is at the drain, immediately before the call.</para></summary>
+    private static readonly int[] _prepQ = new int[PrepQueue];
+    private static readonly IntPtr[] _prepPart = new IntPtr[PrepQueue];
+    private static int _prepN;
+    private static long _prepCalls, _prepWon, _prepNoData, _prepDead, _prepDropped;
+    /// <summary>How many unprepared skinmeshes may wait at once, and how many repairs a frame may pay for.
+    /// The budget is the stated cost: at most two <c>PartSkin::PostProcess</c> calls per frame, on frames
+    /// where anything is queued at all, and never the same record twice.
+    /// <para>Two rather than the texture drip's four because the call is heavier: it rebuilds the node's
+    /// vertex indices and tangent basis and takes two <c>RenderInterface</c> pools. Vanilla paid all of it
+    /// in one frame, on the first draw of every new skinmesh, so a couple a frame is not a new cost.</para></summary>
+    private const int PrepQueue = 64, PrepBudget = 2;
+
+    /// <summary>Note a part whose bind arrays are missing, for <see cref="DripPrepares"/> to repair. Cold --
+    /// it runs only on a refusal, which in a settled area is zero -- and allocation-free: the queue and the
+    /// ledger are both pre-sized. One attempt per RECORD, latched in <c>PartTable._pPoseTried</c>, which is
+    /// also what makes a queue this small enough (an entry cannot re-enter it).</summary>
+    private static void NoteUnprepared(IntPtr part)
+    {
+        int e = PartTable.Find(part);
+        if (!PartTable.EntryLive(e, part) || !PartTable.Skinned(e) || PartTable._pPoseTried[e]) return;
+        if (_prepN >= PrepQueue) { _prepDropped++; return; }
+        for (int i = 0; i < _prepN; i++) if (_prepQ[i] == e) return;
+        _prepQ[_prepN] = e; _prepPart[_prepN] = part; _prepN++;
+    }
+
+    /// <summary>#284's driver: spend at most <see cref="PrepBudget"/> engine skin builds, on the frame anchor
+    /// where <c>OwnedTextures.DripRebuilds</c> already runs -- once a frame, before the Alloy bracket, with
+    /// the ENGINE's context current. The context is load-bearing for the same reason it is there:
+    /// <c>PostProcess</c> ends in <c>RenderInterface::RequestPool</c>/<c>LockPool</c>/<c>UnlockPool</c>, and
+    /// running the engine's own pool traffic inside Alloy's 4.6 bracket would leave the engine's bind cache
+    /// naming objects in the other context.
+    /// <para>Ahead of the owned draws, so a node repaired here is posed the same frame; and the upload goes
+    /// through <c>UnlockPool</c>, which is #260's funnel, so the geometry lands in owned residency by
+    /// itself.</para></summary>
+    internal static void DripPrepares()
+    {
+        for (int spent = 0; spent < PrepBudget && _prepN > 0; spent++)
+        {
+            _prepN--;
+            int e = _prepQ[_prepN];
+            IntPtr part = _prepPart[_prepN];
+            _prepPart[_prepN] = IntPtr.Zero;
+            PartTable._pPoseTried[e] = true;
+            Prepare(e, part);
+        }
+    }
+
+    /// <summary>One repair, guarded three ways. The record must still BE this part and still be a
+    /// <c>PartSkin</c> (<c>PartTable.Skinned</c> is an exact vtable test taken at the walk) -- on any other
+    /// part the same vtable slot is <c>Part::PostProcess</c> @0x436e10, which recurses the whole subtree. The
+    /// node is re-read cold: a sibling part sharing the <c>MdlNodeSkin</c> may have prepared it already,
+    /// which is a win and not a call. And a node with no temporary arrays left
+    /// (<see cref="SceneLayout.SkinTempArrays"/>) can never be prepared by anything -- counted, not retried.
+    /// <para>Called as the engine calls it: the part as both arguments (see
+    /// <see cref="SceneLayout.PartVtblPostProcess"/> for the ABI). Side effect worth naming, because it is on
+    /// a borrowed object: <c>PostProcess</c> opens with <c>Gob::Reset</c> @0x499bd0 on <c>part+0x50</c>, so
+    /// repairing a live creature resets its gob -- exactly what the engine's own first draw did.</para></summary>
+    private static void Prepare(int e, IntPtr part)
+    {
+        if (!PartTable.EntryLive(e, part) || !PartTable.Skinned(e)) { _prepDead++; return; }
+        IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
+        if (node == IntPtr.Zero) { _prepDead++; return; }
+        if (*(short*)(node + SceneLayout.SkinBoneCount) > 0) { _prepWon++; return; }
+        if (*(IntPtr*)(node + SceneLayout.SkinTempArrays) == IntPtr.Zero) { _prepNoData++; return; }
+        _prepCalls++;
+        IntPtr slot = *(IntPtr*)(*(IntPtr*)part + SceneLayout.PartVtblPostProcess);
+        ((delegate* unmanaged<IntPtr, IntPtr, void>)slot)(part, part);
+        if (*(short*)(node + SceneLayout.SkinBoneCount) > 0) _prepWon++;
+    }
+
+    /// <summary>The part table was wiped, so every queued index names a record that no longer exists. The
+    /// one-attempt ledger is a column and goes with the wipe on its own; this only drops the queue.</summary>
+    internal static void Forget() { Array.Clear(_prepPart); _prepN = 0; }
+
+    /// <summary>#284's number for the period line: how many unprepared skinmeshes Alloy has repaired, how
+    /// many now have a bind pose, and how many it will never fix. Session totals, like the texture drip's --
+    /// a hole that is still a hole three periods later is the thing worth seeing.
+    /// <para>A climbing repair count is creatures arriving, not a leak. A nonzero <c>no data</c> is the
+    /// residual hole and is attributable: those nodes lost their temporary arrays before anything asked.</para></summary>
+    internal static string PrepareNote()
+        => _prepCalls == 0 && _prepN == 0 && _prepNoData == 0 && _prepDropped == 0 ? ""
+         : $", unprepared skinmeshes: {_prepCalls} repaired ({_prepWon} now pose, {_prepDead} refused as "
+         + $"freed, {_prepNoData} PERMANENT -- no bind data left), {_prepN} queued"
+         + (_prepDropped == 0 ? "" : $", {_prepDropped} DROPPED (queue full)");
 
     /// <summary><c>GatherBones</c>: preorder DFS of the part tree, accumulating each node's local transform
     /// onto the one handed down. Traversal ORDER is the index the bone map refers to, so the child filter

@@ -124,6 +124,70 @@ as a device capability.
 
 What is left that genuinely *is* a per-part capability refusal — a part Alloy could draw and does not, which
 under #236 is a hole rather than a vanilla draw — is: `stale-identity`, `fb/volumetric`, `vdo`,
-`gob-unownable`, `item` and `item-range`. Each is a gap in an earlier strand-1 step rather than work step 8
+`scene-tint`, `item` and `item-range`. Each is a gap in an earlier strand-1 step rather than work step 8
 can do, and the `[funnels]` period line counts every one of them. **They are named here so the number is not
 lost, not because collapsing them was skipped.**
+
+
+## Every decline is a hole now, and each one's disposition (#285)
+
+Before #264 an "Alloy declines this part" branch fell through to the engine's bucket walk and the part drew
+vanilla. There is no walk. A decline is geometry that nothing renders, so each branch is either **owned** or
+**counted under a name on a period line**. Nothing is left implicit.
+
+### Owned since #285
+
+- **The placeable highlight** (`gob+0x18`). `AlloyCensus.GobUnownable` refused it, and #128's reasoning —
+  "SKIPPED, not revoked; the engine's own walk draws it highlighted, which is vanilla" — stopped being true
+  the moment the walk went. Hovering a placeable made it vanish for the length of the hover while
+  `Scene::DoHighlightGob` painted a glow over nothing. Alloy draws the part normally now and the engine's
+  overlay composites the glow on top, which *is* vanilla composition. What is given up is only
+  `PartTriMesh::Mat` @0x450960's highlight branch — `Disable(5)` plus `SetColor4f(1,1,1,alpha)`, the part
+  going flat-white-unlit under the cursor.
+- **The per-gob env override** (`gob+0x480`) was already owned by #121 and is *not* a flag:
+  `RenderEnvironmentMapped` @0x451040 reads it as a `CAurTexture*` that REPLACES the material's env map
+  (falling back to `mat+0x40`, then to `currentscene+0x1e8`), then calls `RenderFlat` anyway. Alloy's IBL
+  probe supplies the texture. `AlloyCensus.GobHasEnvMap` sets `AlloyCandidate.Env`, exactly as a material
+  env map does.
+  *Known approximation, unowned*: that function also passes `part+0xa0 * gob+0x108` to
+  `SetPixelShaderAmbientColor` — the reflection's strength. Alloy stages ambient.w as 1.
+
+### Counted, not owned
+
+- **The scene tint** (`gob+0x19`). `Mat`'s tint branch is `SetColor4f(currentscene+0x14c..0x154)` under
+  `Disable(5)`: the surface replaced by one unlit colour, which is not arithmetic on any term the SowxDraw
+  record carries. Rare, and expressible only by a program variant nothing else would use.
+  **Counted** as `scene-tint=` on the census line (enrollment) and `instance-state` on the `[alloy]` line
+  (draw loop).
+- **The enrollment reject tail.** Every gate already had a named total and every post-classification refusal
+  a per-class total, and neither said *which gate ate which class* — "87 cutout / 87 water refused after
+  classifying" could not be attributed without a Ghidra session. The census line now carries the cross:
+  `[by gate: vdo/Water=87 item/Cutout=87 …]`, printed only where a cell is nonzero, over the five gates that
+  refuse a classified part (`vdo`, `scene-tint`, `item`, `table-full`, `no-vao-slot`).
+- **Unbuilt diffuse textures** (`no-gl-id` on the `[alloy]` line). Not a decline any more — see #284 and the
+  retry drip in `docs/owned-resource-lifetimes.md`. The count is the acceptance instrument and must reach 0.
+
+### Accepted in writing: `sample_framebuffer 1` / draw bucket 5
+
+`sample_framebuffer` has two values and they are different classes, not degrees of one:
+`Scene::AddPartsTreeToDrawBuckets` @0x460880 routes **2** (water) to bucket 6 and **1** (refraction glass) to
+bucket 5. #129 gave water an Alloy program that samples the one framebuffer copy Alloy already takes. Bucket 5
+has none, and #264 removed the engine draw that used to cover it, so it is a hole.
+
+**Accepted, not fixed.** The reasoning:
+
+1. It is the *only* remaining class with no Alloy program at all, and the shape of the fix is known — the
+   water pass is the precedent, since bucket 5 needs the same framebuffer copy and a refraction offset rather
+   than a wave model. It is a ticket, not a gap in the frame architecture.
+2. SoW content does not appear to use it: `sample_framebuffer 1` is a `.mtr` keyword
+   (`SharedMaterial::ParseField` @0x4c6760, field `+0x1f4`), and the test area classified zero parts into it.
+3. The hole is **measured, not assumed**. Both ends are instrumented and neither is optional:
+   `fb-sampling/volumetric=` on the census line is how many candidates the material gate refused, and
+   `sample-class=` on the `[scenewalk]` line is how many parts the engine's own classification put in draw
+   bucket 5 this period — i.e. the size of the hole, read off the engine's answer rather than ours.
+   `SceneWalk.CrossCheck` computes it against `Scene+0x208`, which holds the finished classification.
+
+**Open acceptance box (needs a live run, cannot be ticked here):** find content that uses
+`sample_framebuffer 1` — a refraction-glass window or a magical barrier — stand in front of it and read
+`sample-class=` on the `[scenewalk]` line. It read 0 in the test area, which makes the hole *unmeasured*
+rather than absent; a nonzero reading on such content is what turns this acceptance into a ticket.

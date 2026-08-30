@@ -28,9 +28,9 @@ namespace Sowx.Alloy;
 /// because a light or a dummy can parent geometry.</para>
 /// <para><b>The bucket arrays are a validator, not a source.</b> <c>Scene+0x208</c> holds the finished,
 /// classified, CULLED set; a 90 degree camera turn replaces most of it. Reading it as the record source
-/// would build the delta machinery against a churning population (ADR 0018's "building it twice").
-/// <see cref="BucketGate"/> still reads it per frame for VISIBILITY, which is a different question and is
-/// #243's to replace.</para></summary>
+/// would build the delta machinery against a churning population (ADR 0018's "building it twice"). Since
+/// #264 deleted the engine walk they are read for nothing else: <see cref="CrossCheck"/> asks them whether
+/// this walk has a hole, and <see cref="_lastSample"/> counts the one class the cutover dropped.</para></summary>
 internal static unsafe class SceneWalk
 {
     /// <summary>Bound on one walk's explicit DFS stack. A part tree is wide and shallow (a tileset model is
@@ -121,9 +121,17 @@ internal static unsafe class SceneWalk
         bool sceneChanged = scene != _scene;
         _lastSeq = seq; _seqLatched = true;
         if (sceneChanged) { _scene = scene; Reset(); }
+        // A NEW Scene pays for all of it at once, deliberately. An area load is already a hitch -- the
+        // player is on a loading screen -- and dripping the setup through the frames after it is what the
+        // first live run showed as tiles arriving in front of you. The budget is for the steady state: a
+        // spawned placeable, a door swapping its model, a gob whose LOD subtree rotated in.
+        _setupLeft = sceneChanged ? int.MaxValue : SetupBudget;
         if (bumped || sceneChanged || _walkPending || _staleQueued)
         { _walkPending = false; _staleQueued = false; Walk(scene); }
         else Rebind();
+        // A walk binds what it can as it goes; anything it left behind is drained by the queue right after,
+        // while the budget still has room.
+        if (_setupLeft > 0 && _unboundCount > 0) Rebind();
         // The bring-up validator, on the period cadence. The engine has already run ManageSceneBSP and
         // AddPartsToDrawBuckets by the time this anchor is reached, so Scene+0x208 holds THIS frame's
         // finished classification -- every part in it must have a record.
@@ -131,13 +139,35 @@ internal static unsafe class SceneWalk
         // a different (per-present, not per-world-frame) clock, so once it crossed the threshold the check
         // would run every frame until the two happened to line up.
         if (++_sinceCheck >= AlloyRenderer.LogEvery)
-        { _sinceCheck = 0; _lastMiss = CrossCheck(scene + SceneDrawBuckets); }
+        { _sinceCheck = 0; _lastMiss = CrossCheck(scene + SceneDrawBuckets, out _lastSample); }
     }
 
     /// <summary>Scene -&gt; the embedded <c>DrawBucketManager</c> (0x310 bytes, constructed in place by
     /// <c>Scene::Scene</c> @0x4724f0; every <c>AddPartToBucket</c> call passes <c>this+0x208</c>).</summary>
     private const int SceneDrawBuckets = 0x208;
     private static int _lastMiss, _sinceCheck;
+
+    /// <summary>#264: <c>SetupArrays</c> calls left this frame. It is the geometry upload for a part -- tangent
+    /// basis, VDO item allocation, the pool write -- so a fresh area with nine thousand unbound records would
+    /// pay for all of them in one frame and hitch. Bounded per frame instead: an area binds over a second or
+    /// so, which is the same convergence the capture path had (it bound a part the frame the camera first
+    /// faced it) without the camera dependency.
+    /// <para>ponytail: flat budget, no priority. Nothing here knows which parts are near the camera, so the
+    /// queue order is walk order. If the fill-in is ever visible as geometry arriving in the wrong order,
+    /// the upgrade is to sort the unbound queue by distance -- not to raise the budget.</para></summary>
+    private const int SetupBudget = 512;
+    private static int _setupLeft;
+    private static long _setups;
+    /// <summary>#264: records whose <c>SetupArrays</c> came back with no drawable geometry. They are asked
+    /// once and then left alone, so this is a POPULATION and not a rate -- it is how much of the enumerated
+    /// world is permanently not geometry, and the number that says whether the walk is enumerating things it
+    /// should not be reaching at all.</summary>
+    private static long _noGeom;
+    /// <summary>#264: parts the engine classified into the <c>sample_framebuffer</c> bucket at the last
+    /// cross-check. That class is the one thing the walk's deletion dropped outright -- Alloy has no program
+    /// for it, so nothing draws it now -- and this is the number that says whether the hole is three
+    /// distortion effects or half an area. It must be read before anyone argues about how big it is.</summary>
+    private static int _lastSample;
 
     /// <summary>A new Scene invalidates every record wholesale: the old Scene's parts are being torn down
     /// (<c>Scene::~Scene</c> @0x472e40 walks its gobs out one by one) and their addresses will be recycled.
@@ -266,11 +296,6 @@ internal static unsafe class SceneWalk
         // expansion under a gob's tree carries its own +0x50 (CreateInstanceTreeR @0x43c6b0 is its sole
         // writer), and SpawnPartsForTile @0x46352b leaves it null outright.
         _pGob[e] = p.Gob.Ptr;
-        // NOT a sighting. _pSeen means "in this frame's draw-bucket arrays" (PartTable.InBucketsRecently)
-        // and only BucketGate may write it -- stamping it here would make every part of a freshly loaded
-        // area read as visible for two frames, drawing the whole area including what is behind the camera.
-        // A reclaimed slot carries its previous tenant's stamp, so it is pushed out of the window, not left.
-        _pSeen[e] = _frame - 2;
         _pWalkGen[e] = Gen;
         if (_pGob[e] != IntPtr.Zero) AlloyCensus._pInstRecorded++;
         // #137's identity, by vtable rather than by "which hook body is on the stack". A skinmesh is posed
@@ -285,7 +310,7 @@ internal static unsafe class SceneWalk
         if (vp == IntPtr.Zero || mat == IntPtr.Zero)
         { Release(e, vp == IntPtr.Zero ? "no-node" : "no-material"); return e; }
         _pState[e] = StUnbound;
-        if (!TryBind(e) && _pState[e] == StUnbound) Enqueue(e);
+        if (!TryBind(e) && _pState[e] == StUnbound && !_pSetupTried[e]) Enqueue(e);
         return e;
     }
 
@@ -299,7 +324,25 @@ internal static unsafe class SceneWalk
         if (vp == IntPtr.Zero) return false;
         IntPtr vdo = *(IntPtr*)(vp + VpVdo);
         int item = *(int*)(vp + VpItem);
-        if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; return false; }
+        // #264: RESIDENCY IS ALLOY'S TO DRIVE NOW. These two fields are filled by
+        // VertexPrimitive::SetupArrays (vtable 0x38), and until #264 the only thing that ever called it was
+        // PartTriMesh::Draw -- i.e. the engine bucket walk. With the walk deleted nothing ran it, every
+        // record stayed StUnbound, enrollment saw an empty candidate set and the world went black. So the
+        // walk makes the call itself, at the same frame anchor the engine's draw used to run from.
+        if (vdo == IntPtr.Zero || item < 0)
+        {
+            // ONCE per record, and the flag is why. SetupArrays latches its own verdict, so a primitive that
+            // comes back with item -1 has no drawable geometry and will answer the same for ever. The first
+            // live run re-asked every frame and spent 512 calls a frame on 1899 tiles that never bound --
+            // which is a rendering system doing nothing, expensively, in perpetuity.
+            if (_pSetupTried[e] || _setupLeft <= 0) { _pState[e] = StUnbound; return false; }
+            _pSetupTried[e] = true;
+            _setupLeft--; _setups++;
+            ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)vp + VpVtblSetupArrays)))(vp);
+            vdo = *(IntPtr*)(vp + VpVdo);
+            item = *(int*)(vp + VpItem);
+            if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; _noGeom++; return false; }
+        }
         // Only mode 1 (indexed static) can be drawn from our own tables; the capture killed the rest as
         // "multidraw-or-unindexed" and that verdict is unchanged, it is just reached without a draw.
         if (new VdoRef(vdo).Mode != 1) { Release(e, "unindexed"); return false; }
@@ -337,6 +380,10 @@ internal static unsafe class SceneWalk
         _pVdo[e] = IntPtr.Zero;
         _pMx[e] = _pNode[e] != IntPtr.Zero && (new NodeRef(_pNode[e]).MatrixClass || live.IsInstance);
         AlloyCensus.OwnFlag[e] = 0;
+        // #264: a new VertexPrimitive has its own setup state, so the latched "nothing here" verdict does
+        // not carry across the swap -- clearing it is what lets a re-modelled part bind at all.
+        // #284: and a new MdlNode is a new bind-array question, so the pose attempt clears with it.
+        _pSetupTried[e] = false; _pPoseTried[e] = false;
         _pState[e] = _pNode[e] == IntPtr.Zero || _pMat[e] == IntPtr.Zero ? Die(e, "no-node") : StUnbound;
         if (_pState[e] == StUnbound) Enqueue(e);
         Dirty = true;
@@ -356,7 +403,10 @@ internal static unsafe class SceneWalk
             byte st = _pState[e];
             if (st != StUnbound && st != StStale) continue;   // bound, released or swept since
             if (_pWalkGen[e] != Gen) continue;                // not in the scene any more
-            if (!TryBind(e) && _pState[e] == StUnbound) _unbound[left++] = e;
+            // ...and a record whose setup was tried and produced nothing does NOT go back in the queue.
+            // It is not waiting for anything: nothing else in the frame will make its primitive drawable,
+            // and re-queueing it is what made the drain never drain.
+            if (!TryBind(e) && _pState[e] == StUnbound && !_pSetupTried[e]) _unbound[left++] = e;
         }
         _unboundCount = left;
     }
@@ -491,13 +541,14 @@ internal static unsafe class SceneWalk
                  // draws one), which is correct to hold and will bind if the LOD swaps; a TILE record that
                  // never binds is world geometry the camera has not reached, which is the residency gap.
                  + $"unbound={_unboundCount} (gob={unboundGob} tile={unboundTile}) "
-                 + $"+{_added} added/-{_swept} swept/{_bound} bound this period "
+                 + $"+{_added} added/-{_swept} swept/{_bound} bound/{_setups} set-up this period "
+                 + $"no-geometry={_noGeom} "
                  + $"non-mesh={_nonMesh} table-full={_spill} stack-overflow={_overflow} "
                  // The two validators. countpart is an UPPER bound, never an equality: it counts every Part
                  // in every scene, GUI 3D panels included. bucket-miss is the sharp one -- it must be 0.
-                 + $"countpart={cp} bucket-miss={_lastMiss}";
+                 + $"countpart={cp} bucket-miss={_lastMiss} sample-class={_lastSample}";
         _bumpsSinceLog = 0; _framesSinceLog = 0;
-        _walksSinceLog = 0; _walkTicks = 0; _added = 0; _swept = 0; _bound = 0;
+        _walksSinceLog = 0; _walkTicks = 0; _added = 0; _swept = 0; _bound = 0; _setups = 0;
         return s;
     }
 
@@ -505,9 +556,9 @@ internal static unsafe class SceneWalk
     /// engine classified into <c>Scene+0x208</c> this frame must have a record. A miss means the walk did
     /// not reach something the engine is drawing, which is the failure this ticket has to be able to see.
     /// Returns the number of misses.</summary>
-    internal static int CrossCheck(IntPtr mgr)
+    internal static int CrossCheck(IntPtr mgr, out int sample)
     {
-        int miss = 0;
+        int miss = 0; sample = 0;
         for (int id = 0; id < BucketTypes; id++)
             for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
             {
@@ -522,10 +573,15 @@ internal static unsafe class SceneWalk
                     IntPtr tri = ((delegate* unmanaged<IntPtr, IntPtr>)
                                   (*(IntPtr*)(*(IntPtr*)part + BucketGate.PartVtblGetTriMesh)))(part);
                     if (tri != IntPtr.Zero && Find(tri) < 0) miss++;
+                    if (id == SampleBucket) sample++;
                 }
             }
         return miss;
     }
+
+    /// <summary>The <c>sample_framebuffer</c> item type -- the class whose engine draw READS the frame
+    /// buffer copy the #215 cutover removed, and which no Alloy program covers. Counted, not drawn.</summary>
+    private const int SampleBucket = 5;
 
     /// <summary>16 item types x 3 sub-buckets = the 48 <c>DrawBucket</c> records at <c>Scene+0x208</c>
     /// (<c>GetDrawBucketByItemType</c> @0x47bd60's <c>(type*3 + sub)*0x10</c> stride).</summary>

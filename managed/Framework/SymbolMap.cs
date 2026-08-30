@@ -356,22 +356,7 @@ internal static unsafe class SymbolMap
     /// <c>Scene::AddPartsToDrawBuckets</c> before RSP and reset by <c>ClearBuckets</c> after, so it is
     /// already correct when the shim reads it. Data symbol; read only.</summary>
     public const string TriggerBucket = "triggerbucket";
-    // ---- the engine draw funnels Alloy sits on, Linux-only -> DrawFunnelService stands down on Windows ----
-    /// <summary>PartTriMesh::Draw() @0x4513d0 -- the per-part draw entry the bucket loop calls (via the
-    /// item's Render vtable slot). DrawFunnelService's hand-back point. ABI: <c>(PartTriMesh* /*rdi*/)</c>.</summary>
-    public const string PartTriMeshDraw = "_ZN11PartTriMesh4DrawEv";
-    /// <summary>#137: PartSkin::Draw() @0x4830b0 -- the TRUE skinmesh's draw entry (a cloak, a robe, a
-    /// tail). It never enters <see cref="PartTriMeshDraw"/>: it calls <c>RenderSkinned</c> @0x482c70, which
-    /// gathers the bone chain and hands <c>ExecuteSkinGPU</c> @0x482800 a pose to write into
-    /// <see cref="GlRenderBones"/> before ending in the same <c>RenderFlat</c>/<c>RenderEnvironmentMapped</c>
-    /// pair every rigid part uses. So this is the second capture point the part table needs.
-    /// <para>#262: the trampoline is no longer called to PRODUCE a pose -- <c>SkinPose</c> ports that solve
-    /// and reads the animation state itself. What the hook is still for is the vanilla draw (the #236
-    /// hand-back), and the row it prints is the #221 instrument: whether it fires at all. The hand-back is
-    /// also the repair path for an unprepared <c>MdlNodeSkin</c>, since <c>PartSkin::PostProcess</c> @0x483120
-    /// runs at the top of this function, ahead of the funnel the shim swallows.</para>
-    /// ABI: <c>(PartSkin* /*rdi*/)</c>.</summary>
-    public const string PartSkinDraw = "_ZN8PartSkin4DrawEv";
+    // ---- the engine draw funnel Alloy sits on, Linux-only -> DrawFunnelService stands down on Windows ----
     /// <summary>#125: Scene::RenderSkyBoxes() @0x466910 -- the whole per-area skybox draw, called from
     /// RenderSinglePass between buckets 0 and 1. Three gobs (current, cross-fading, skyfade) rendered under
     /// their own projection with the depth mask off. #261: NOT hooked. The shim calls it for its
@@ -575,6 +560,12 @@ internal static unsafe class SymbolMap
     /// VDO's VAO + element buffer and updates the engine's current-VDO cache. The owned caster path (ADR 0008)
     /// binds engine geometry through this so the cache never desyncs; null unbinds to the default VAO.</summary>
     public const string GlSetVertexDataObject = "_ZN8GLRender19SetVertexDataObjectEP16VertexDataObject";
+    /// <summary>GLRender::m_nArrayBufferBound @0x19e30e4 (B) -- the shadow copy of the ARRAY_BUFFER binding
+    /// that <c>GLRender::BindBuffer</c> @0x4d04a0 early-outs against. Written, not read: Alloy binds that
+    /// target with raw GL, so before any call back into engine code that binds an array buffer the shadow
+    /// has to be made truthful, or the engine skips a bind it needed and the following
+    /// <c>glVertexAttribPointer</c> captures Alloy's buffer instead of the pool's (#284).</summary>
+    public const string GlArrayBufferBound = "_ZN8GLRender19m_nArrayBufferBoundE";
     /// <summary>primTypeTranslationTable @0x12f50e0 (R) -- AuroraPrimitiveTypes -> GLenum table indexed by
     /// the prim id RenderVertexData receives.</summary>
     public const string PrimTypeTranslationTable = "primTypeTranslationTable";
@@ -632,25 +623,6 @@ internal static unsafe class SymbolMap
     /// @0x4d0570 -- STATIC (no this): the terminal per-part draw. Hooked to SKIP (early-return) a caster the cube
     /// pass sphere-culled out of the current light's range. ABI: rdi=vdo, esi, edx=primType, ecx, r8d.</summary>
     public const string RenderVertexData = "_ZN8GLRender16RenderVertexDataEP16VertexDataObjectjN6Aurora20AuroraPrimitiveTypesEjj";
-    /// <summary>DrawBucketManager::GetFirstItem(int bucket, int phase) @0x47bed0 -- returns a pointer to the
-    /// iterator slot; the item is <c>*ret</c> (null = phase empty). <c>this</c> = Scene+0x208. Phases 0..2
-    /// (opaque / two-sided / front-cull -- Scene::RenderDrawBucket walks all three).</summary>
-    public const string BucketGetFirstItem = "_ZN17DrawBucketManager12GetFirstItemEii";
-    /// <summary>DrawBucketManager::GetNextItem(int bucket, int phase) @0x47be90 -- advance the same iterator;
-    /// item is <c>*ret</c> (null = done). Pairs with <see cref="BucketGetFirstItem"/>.</summary>
-    public const string BucketGetNextItem = "_ZN17DrawBucketManager11GetNextItemEii";
-    /// <summary>DrawBucketManager::HasItemsOfType(int itemType) @0x47bef0 -- does this bucket hold anything,
-    /// in any of its three phases? Two call sites, BOTH inside <c>Scene::RenderSinglePass</c> @0x46e5f0
-    /// (verified by xref): one gates the framebuffer-sampling block (type 5) and one the water block
-    /// (type 6). Each block is a <c>Camera::CopyRenderSubframe</c> followed by the bucket walk, so answering
-    /// "no" for type 6 removes the engine's water copy AND its walk together -- which is what makes #129's
-    /// one-copy claim structural rather than a second suppression to keep in step.
-    /// <para>The manager itself is <c>Scene+0x208</c>, and its buckets are a flat array: item type
-    /// <c>t</c>, phase <c>p</c> lives at <c>mgr + (t*3 + p)*0x10</c> as {<c>Part** items</c> @+0,
-    /// <c>int count</c> @+8} (<c>GetDrawBucketByItemType</c> @0x47bd60 / <c>GetNextItem</c> @0x47be90). Read
-    /// directly rather than through the iterator pair: those mutate the manager's own cursor at +0x300, and
-    /// the engine is walking with it.</para></summary>
-    public const string BucketHasItemsOfType = "_ZN17DrawBucketManager14HasItemsOfTypeEi";
     /// <summary>Global <c>g_nEnableBumpyWater</c> @0x19ace10 (B) -- the int
     /// <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 ANDs with <c>Material::HasBumpyShinyMap</c> before
     /// routing a part to draw bucket 6. Data symbol; read, never write.</summary>
@@ -756,8 +728,32 @@ internal static unsafe class SymbolMap
     /// <c>basic+0xd8</c>, and <c>AurTextureFind</c> looks textures up by it. The scheme array is what keeps
     /// two PLT skins sharing one resref from being one resource -- the collision a name-only key would have.</summary>
     public const string AurTextureCalcHash = "_Z25AurTextureCalculateHashIDPKcsPi";
+    /// <summary>#284: <c>CAurTexture::BuildAndStore()</c> @0x48bc80 -- the engine's ON-DEMAND texture build,
+    /// and the only retry that exists. It resolves the reference/basic pair (vtable 0x18 then 0x10) and calls
+    /// <c>CAurTextureBasic::Reset</c> @0x4858c0 followed by <c>BuildAndStoreTexture</c> @0x48b320. Reset is
+    /// what makes it a RETRY and not a no-op: it clears the constructed latch at <c>basic+0xe6</c> and the
+    /// no-image verdict at <c>+0xe7</c>, deletes the GL names at <c>+0x50</c> and zeroes the id at
+    /// <c>+0x6c</c>, so the rebuild re-runs <c>ConstructImage</c> @0x48a5d0 and can decode a resource that
+    /// was not serviced the first time round. <c>+0xe7</c> is NOT the null texture -- it is
+    /// <c>ConstructImage</c>'s tail finding no decoded image at <c>+0x58</c> and no controller at
+    /// <c>+0x38</c>; the null texture is a separate OBJECT (<see cref="AurTextureNullPtr"/>), and #284
+    /// shipped a retry that could not tell them apart.
+    /// <para>Deleting the GL names is why a caller must first prove there is something to rebuild: called on
+    /// a texture that already has an id, or on the shared null texture, Reset is pure destruction.</para>
+    /// <para>Expensive -- a decode plus a fresh upload through <c>RenderInterface::CreateTexture</c>, i.e.
+    /// the funnel <see cref="Sowx.Alloy.OwnedTextures"/> adopts from -- so it is dripped, never swept.
+    /// ABI: <c>(CAurTexture* /*rdi*/) -> void</c>. Needs a live GL context.</para></summary>
+    public const string AurTextureBuildAndStore = "_ZN11CAurTexture13BuildAndStoreEv";
     public const string AurTextureVtbl = "_ZTV11CAurTexture";
     public const string AurTextureBasicVtbl = "_ZTV16CAurTextureBasic";
+    /// <summary>#284: <c>CAurTextureBasic::m_pNullTexture</c> @0x19abe90 -- the engine's ONE shared "no
+    /// texture" object, and the reason a GL id of 0 has two meanings. <c>AurTextureGetTID</c> @0x48e080
+    /// resolves the reference chain and returns 0 outright when the answer is this object, without ever
+    /// reading <c>basic+0x6c</c>; so a material naming it reports no id for ever, and no number of rebuilds
+    /// can change that. Read as a pointer-sized DATUM rather than through <c>AurTextureGetNULL</c>
+    /// @0x48dc20, which LAZILY CREATES the object on first call -- a query must not be the thing that
+    /// allocates the answer, and null (not yet created) correctly matches nothing.</summary>
+    public const string AurTextureNullPtr = "_ZN16CAurTextureBasic14m_pNullTextureE";
 
     // Resource manager: read a resource's bytes the way the engine's own CResHelper does (#92, owned-pipeline
     // .shd overrides). Sequence, from CResHelper<CResSHD,2069>::SetResRef / ClearResHelper:

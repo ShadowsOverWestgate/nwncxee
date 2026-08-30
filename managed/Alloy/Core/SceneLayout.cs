@@ -75,6 +75,25 @@ internal static class SceneLayout
     /// bind-pose <c>CExoArrayList&lt;Quaternion&gt;</c>/<c>&lt;Vector&gt;</c>, indexed by GATHERED index;
     /// +0x320 is the 64-entry <c>short</c> map from bone slot to gathered index.</summary>
     public const int SkinBoneCount = 0x284, SkinBindRot = 0x2f0, SkinBindPos = 0x300, SkinBoneMap = 0x320;
+    /// <summary>#284: the MdlNode's <c>MdlNodeTriMesh_PostProcess*</c> -- the TEMPORARY load-time data
+    /// <c>PartSkin::PostProcess</c> @0x483120 reads to build everything on <see cref="SkinBoneCount"/>. It is
+    /// both that function's entry guard and its own undoing: the tail calls node <c>+0xa8</c>
+    /// (<c>MdlNodeSkinRemoveTemporaryArrays</c> @0x437540 -&gt; <c>MdlNodeTriMesh::InternalRemoveTemporaryArrays</c>
+    /// @0x4542a0), which <c>operator delete</c>s the block and writes 0 here.
+    /// <para>So this field is the whole idempotency story, and the whole permanence story: null with a zero
+    /// bone count means the temporaries are GONE and no number of calls can ever prepare the node.</para></summary>
+    public const int SkinTempArrays = 0x278;
+    /// <summary>#284: <c>Part</c> vtable DISPLACEMENT of <c>PostProcess(Part*)</c> -- the skinmesh's bind
+    /// arrays and bone map. Read off <c>_ZTV8PartSkin</c> (+0x10 for the Itanium header; slot 0xe0 =
+    /// <c>PartSkin::PostProcess</c> @0x483120), and it is the same displacement <c>RenderSkinned</c>
+    /// @0x482c70 calls it through, on EVERY skinned draw, as its first act.
+    /// <para>ABI: <c>(Part* /*rdi*/, Part* /*rsi*/)</c> -- a non-static virtual whose explicit argument is the
+    /// base <c>Part::PostProcess</c> @0x436e10 recursion context, threaded down the child array unchanged.
+    /// <c>RenderSkinned</c> passes the part as BOTH, and the <c>PartSkin</c> override never reads rsi at all
+    /// (disassembled: rsi is dead from entry). Pass the part twice, as the engine does.</para>
+    /// <para>VIRTUAL on purpose, and the vptr must be proven to be <c>PartSkin</c>'s exactly: on any other
+    /// part this slot is <c>Part::PostProcess</c>, which recurses the whole subtree.</para></summary>
+    public const int PartVtblPostProcess = 0xe0;
     /// <summary>#256: the primitive-type index on the MdlNode (<c>AlloyRenderer.PartMdlNode</c>), argument 3 of the engine's own
     /// <c>RenderVertexData</c> call. Read out of <c>RenderFlat</c> @0x450eb0:
 
@@ -95,6 +114,17 @@ internal static class SceneLayout
     /// reads a null VDO and an item of -1 -- that is not an error, it is "not resident yet", and the record
     /// waits unbound rather than being invented.</para></summary>
     public const int VpVdo = 0x58, VpItem = 0x60;
+
+    /// <summary>#264: <c>VertexPrimitive</c> vtable DISPLACEMENT of <c>SetupArrays()</c> -- the call that
+    /// fills <see cref="VpVdo"/>/<see cref="VpItem"/> in the first place. Read off
+    /// <c>_ZTV19VertexPrimitiveFlat</c> (slot 0x38 = <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920), and
+    /// it is the same displacement <c>PartTriMesh::Draw</c> @0x4513d0 calls it through:
+    /// <c>(**(code**)(*(long*)(this+0x88) + 0x38))()</c>. VIRTUAL on purpose -- Skinned, Anim and Dangly
+    /// primitives each override it, so it must go through the live vptr and never through the Flat symbol.
+    /// <para>Idempotent: the body's first act is an early-out when the primitive is already set up
+    /// (<c>+0x64</c> set, VDO non-null, <c>+0x84</c> clear), so a call on a bound primitive is a compare.</para>
+    /// ABI: <c>(VertexPrimitive* /*rdi*/)</c>, no arguments, no return.</summary>
+    public const int VpVtblSetupArrays = 0x38;
     /// <summary>Part -&gt; texture-rotation angle (degrees, float; Ghidra PartTriMesh::RotateTexture
     /// @0x44fff0): TransformTextureMatrix pushes it before every draw -- NWN's tile-texture 0/90/180/270
     /// anti-repetition scheme. Part of the group key (raw bits), else a batch renders every member under the
@@ -144,6 +174,20 @@ internal static class SceneLayout
     /// +0x58 (count +0x60).</summary>
     public const int VdoVao = 0xc, VdoMode = 0x14, VdoVertItems = 0x48, VdoVertCount = 0x50,
                      VdoElemItems = 0x58, VdoElemCount = 0x60;
+
+    /// <summary>#284: the three fields the engine's own lazy VAO build reads, and which therefore decide
+    /// whether driving that build is safe yet. <c>VdoIndexed</c> is the byte
+    /// <c>VertexDataObjectBase</c>'s constructor zeroes and <c>VertexDataObject::Build</c> @0x45bac0 sets to
+    /// 1 for modes 1 and 2 -- <c>GetElementArrayBuffer</c> @0x45b320 returns 0 while it is clear, and a zero
+    /// there sends <c>GLRender::BindBuffer</c> @0x4d04a0 down its unbind branch in the middle of the build.
+    /// <c>VdoElemToken</c>/<c>VdoVertToken</c>/<c>VdoDynToken</c> are the three pool tokens whose GL names
+    /// the build captures into the new VAO -- the attribute loop @0x4d0028..0x4d0427 runs TWICE, over
+    /// (+0x24, mask +0x28) and then (+0x30, mask +0x34) (<c>mov 0x30(%r14),%eax</c> @0x4d040d). An absent
+    /// token reads 0xffffffff and the engine skips it (<c>cmp $0xffffffff,%eax</c> @0x4d003a), which is why
+    /// the drip's residency gate treats absent and resident alike.</summary>
+    public const int VdoIndexed = 0x8, VdoElemToken = 0x18, VdoVertToken = 0x24, VdoDynToken = 0x30;
+    /// <summary>The engine's "no such pool" token, tested at every one of the three token fields.</summary>
+    public const uint VdoNoPool = 0xFFFFFFFF;
 
     /// <summary>PartLight fields three scene walkers read: range at +0x70 (sun/moon carry ~100000, point
     /// lights ~10, so &gt;1000 is the directional discriminator), a discriminant that must be zero at +0x80,

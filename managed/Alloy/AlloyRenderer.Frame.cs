@@ -35,7 +35,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         // #129: last pass's snapshot is not this pass's. Revoked first thing, so every path out of here that
         // never reaches PassId.FbCopy leaves Alloy water disarmed -- and BucketGate's bucket-6 gate reads
-        // the same flag, so the engine draws water itself on exactly those passes.
+        // the same flag, so water is simply not drawn on exactly those passes (#285: a hole, not vanilla).
         FrameSnapshot.Revoke();
         if (_progFailed || _batchUnavailable) return;   // EndFrame revokes + disarms; never pay the bracket for nothing
         // Checked BEFORE anything stamps OwnGen: BuildBatches marks parts as drawn, which is only honest while
@@ -132,7 +132,6 @@ public sealed unsafe partial class AlloyRenderer
             // lit program, or a build that refused) would leave the water program reading undefined
             // BufferData contents -- an unbounded per-fragment light loop, not a dim sea.
             _waterArmed = FrameSnapshot.Usable && lightingOn && EnsureWaterProgram();
-            _waterDrew = false;
             // #139/#132: from here to PassId.PostProcess the colour passes draw into an RGBA16F target that
             // shares the engine's depth, and everything they write is LINEAR. Asked BEFORE anything is
             // staged, because a refusal is no longer survivable: there is no display-space variant of the
@@ -156,14 +155,16 @@ public sealed unsafe partial class AlloyRenderer
                 // pass once the prepass has filled the depth the pyramid is built from.
                 long tCull = FrameZones.Now;
                 int opaqueDraws = _gOpaqueEnd > 0 ? _gStart[_gOpaqueEnd - 1] + _gLen[_gOpaqueEnd - 1] : 0;
-                fixed (int* dCount = _dCount, dBase = _dBase, dSlot = _dSlot, gStart = _gStart, gLen = _gLen)
-                fixed (nint* dOff = _dOff)
+                // #287: pixels per unit of world radius at unit depth, the LOD test's one input. Zero when
+                // this pass has no perspective projection, and the test then stands down.
+                float lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
+                fixed (uint* src = _dSrc)
                 fixed (float* sph = _dSph)
                     // A probe capture draws the same batches six more times from six other cameras, so its
                     // faces cannot ride a list culled for THIS one -- passing zero groups stands the cull
                     // down for the whole pass rather than leaving a stale list armed behind it.
-                    if (CullPass.Begin(_capturing ? 0 : _gOpaqueEnd, opaqueDraws, dCount, dOff, dBase, dSlot,
-                                       gStart, gLen, sph, _recOwnCap + MaxSkyDraws))
+                    if (CullPass.Begin(_capturing ? 0 : _gOpaqueEnd, opaqueDraws, src, sph,
+                                       _recOwnCap + MaxSkyDraws, lodScale))
                         CullPass.Dispatch(CullPass.PhasePrepass, &vp, hiZ: false, PassGen);
                 FrameZones.Add(FrameZones.Zone.Cull, tCull);
                 foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)

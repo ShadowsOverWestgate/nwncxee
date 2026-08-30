@@ -89,7 +89,8 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>SSBO binding points of the per-draw block and #96's bone block; must match the literals in
     /// <c>CasterBufDecl</c> / <c>BoneBufDecl</c>. 0..3 belong to <see cref="AlloyLights"/> and 4 to the owned
     /// colour pass's per-draw block.</summary>
-    private const uint BindCaster = 5, BindBones = 6;
+    internal const uint BindCaster = 5;
+    private const uint BindBones = 6;
     /// <summary>Bones per skinned record, fixed by the engine: <c>GLRender::m_bones</c> is a 64 x mat4 static
     /// array and <c>SetUniforms</c> uploads all 64 every time, so a snapshot is a flat 4KB memcpy. The stored
     /// matrices are already in GLSL's column-major order (see <see cref="SymbolMap.GlRenderBones"/>), so the
@@ -117,8 +118,8 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <c>MathF.Sqrt(2)^2 == 1.9999999</c>, so the true sqrt(2) rejects the very corner it is meant to keep.
     /// <see cref="SelfCheck"/> caught that; the slack is what makes the test conservative in practice and not
     /// just on paper.</summary>
-    private const float FaceConeSlope = 1.4143f;
-    private const uint GlUnsignedShort = 0x1403;
+    internal const float FaceConeSlope = 1.4143f;
+    internal const uint GlUnsignedShort = 0x1403;
 
     /// <summary>Cascade ceiling. The receiver's <c>uSunVp</c> array is sized from this, so raising it means
     /// raising both -- <see cref="SelfCheck"/> pins them together.</summary>
@@ -387,16 +388,11 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>Open capture bracket: the part being drawn, its bone slot (-1 until its first funnel call
     /// allocates one) and its model matrix. A multi-draw skinned part yields several records off ONE snapshot,
     /// which is why the slot is allocated lazily and shared rather than one-per-record.</summary>
-    private static IntPtr _skinPart;
-    private static int _skinSlot = -1;
-    private static float _skinCx, _skinCy, _skinCz, _skinR;
-    private static readonly float[] _skinModel = new float[16];
     private static IntPtr _skinLastVdo;
     private static int _skinLastSlot = -1;
-    private static long _skinSum, _skinOverflow, _skinDropped, _boneStalls, _skinNoSlot, _skinBoned, _boneOverflow,
-                      _skinBrackets, _skinNotMode1, _skinBadRange;
+    private static long _skinSum, _skinOverflow, _skinDropped, _boneStalls, _skinNoSlot, _boneOverflow,
+                      _skinNotMode1, _skinBadRange;
     /// <summary>One-shot skin-capture diagnostics left to print (#73's open mode-1/mode-2 question).</summary>
-    private static int _skinDiagLeft = 6;
     /// <summary>One-shot VAO dumps left to print for a VDO harvested inside a skin bracket (#96 triage).</summary>
     private static int _vaoDiagLeft = 6;
     /// <summary>Transition lines left for the cube/creature triage, and the state they compare against.</summary>
@@ -574,6 +570,7 @@ public sealed unsafe class CasterPass : IExtenderService
         { log.Info("CasterPass: could not chain VdoRepack -- refusing to arm on stale index ranges"); return; }
 
         _skinned = Settings.Bool("skincast", true);
+        CasterGather.Init(log);
 
         _armed = true;
         log.Info($"CasterPass: armed -- Alloy multidraw-indirect caster submission into a {_cascades}x{_mapSize}" +
@@ -589,6 +586,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// file next to the map sizes.</summary>
     internal static string Describe()
         => $"dist {_maxDist:F0} lod {_lodTexels:F1} rebake {(_rebake ? 1 : 0)} " +
+           $"gather {CasterGather.Mode} " +
            $"({_cascades}x{_mapSize} cascades, {_cubeLights}x{_cubeSize} cubes)";
 
     /// <summary>Set one dial, returning its old value; NaN when the key is not ours, which is how the
@@ -607,6 +605,12 @@ public sealed unsafe class CasterPass : IExtenderService
                 _lodTexels = MathF.Max(v, 0f);
                 _invalidate = true;   // the LOD cull decides what a bake CONTAINS; recorded faces predate it
                 return ol;
+            case "gather":
+                // #286's A/B: 1 = caster selection in compute, 0 = the CPU per-view walk. "A shadow is
+                // missing" needs a bisect, and the walk is the known-good half of it.
+                float og = CasterGather.Mode;
+                CasterGather.Mode = v != 0f ? 1 : 0;
+                return og;
             case "rebake":
                 float orb = _rebake ? 1f : 0f;
                 _rebake = v != 0f;
@@ -617,7 +621,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _lodTexels = LodBoot; _rebake = true; _invalidate = true; }
+    { _maxDist = MaxDistBoot; _lodTexels = LodBoot; _rebake = true; _invalidate = true; CasterGather.Mode = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -633,114 +637,21 @@ public sealed unsafe class CasterPass : IExtenderService
         for (int i = 0; i < _casterCount; i++)
             if (_cTri[i] != IntPtr.Zero && _cVdo[i] == vdo) _cTri[i] = IntPtr.Zero;
         // the live list was resolved from those same tables earlier this frame: drop it wholesale rather
-        // than submit a view from index ranges that have already moved
+        // than submit a view from index ranges that have already moved -- and with it #286's staging, which
+        // is an UPLOADED copy of those same ranges and would otherwise keep feeding the rest of the frame's
+        // dispatches after the walk had stopped
         _liveCount = 0;
-        // same for this frame's skinned captures, and close any open bracket so the part that is drawing right
-        // now does not go on filing records against a bone slot the reset just handed back
+        CasterGather.Stand();
+        // same for this frame's skinned captures
         _skinCount = 0; _boneSlots = 0;
-        SkinEnd();
     }
 
-    /// <summary>#96 passive-capture bracket, opened by <see cref="DrawFunnelService"/> around the engine draw
-    /// of a part on a skin-flagged node -- which in practice means any part of an animated creature, most of
-    /// them rigid pieces posed by their node matrix rather than true skinmeshes. False = do not bracket
-    /// (nothing to capture into), which costs the caller one test.
-    /// <para>The part's transform is read HERE rather than at submit time: a skinned part is always on the
-    /// engine's model-matrix path (ADR 0006 fact 2 -- the bucket loop pushes node+0x18 for a part with a skin),
-    /// and by the time the depth pass runs, the node may have been recycled. Everything the submit needs is a
-    /// copy by then; no skinned pointer is ever dereferenced outside this bracket.</para></summary>
-    internal static bool SkinBegin(IntPtr part, IntPtr node)
-    {
-        if (!_armed || _disarmed || !_skinned || node == IntPtr.Zero) return false;
-        if (!AlloyGate.Alloy || !GlContextService.Available) return false;
-        if (_skinCount >= MaxSkin) { _skinOverflow++; return false; }
-        _skinBrackets++;   // the count that separates "never saw a creature" from "saw one and refused it"
-        _skinPart = part; _skinSlot = -1;
-        fixed (float* m = _skinModel) *(Matrix4x4*)m = new NodeRef(node).Model;
-        PartRef p = new(part);
-        float* mn = p.BboxMin;
-        float* mx = p.BboxMax;
-        // Centre from the model matrix translation, radius from the bbox extent -- the same derivation the
-        // rigid matrix-path casters use, and for the same reason (the bbox centre is not object-space).
-        _skinCx = _skinModel[12]; _skinCy = _skinModel[13]; _skinCz = _skinModel[14];
-        float ex = (mx[0] - mn[0]) * 0.5f, ey = (mx[1] - mn[1]) * 0.5f, ez = (mx[2] - mn[2]) * 0.5f;
-        _skinR = MathF.Sqrt(ex * ex + ey * ey + ez * ez);
-        if (!(_skinR > MinSkinRadius)) _skinR = MinSkinRadius;   // also catches a NaN/degenerate box
-        return true;
-    }
-
-    /// <summary>Funnel observation inside an open bracket: one engine draw of the bracketed part, which is one
-    /// skinned caster record. True = consumed (the caller must not treat it as a batch capture).
-    /// <para>Where a bone snapshot IS needed (a true skinmesh), it is taken on the FIRST record of the bracket
-    /// and shared by the rest: a multi-draw part is several index ranges of one posed mesh, so they all skin
-    /// from the same 64 matrices -- which is also why multi-draw parts cast here although the rigid path drops
-    /// them.</para></summary>
-    internal static bool SkinObserve(IntPtr vdo, int item, int prim)
-    {
-        if (_skinPart == IntPtr.Zero) return false;
-        if (_skinDiagLeft > 0)
-        {   // #73 closed on an OPEN question -- whether a creature's COLOUR draw is the mode-1 mesh or the
-            // mode-2 projected-shadow stream. This pass only accepts mode-1, so that question decides whether
-            // it works at all; name the first few draws rather than leave a silent zero to interpret.
-            _skinDiagLeft--;
-            _log?.Info($"CasterPass: skin-capture diag vdo=0x{(ulong)vdo:x} mode={(vdo == IntPtr.Zero ? -1 : new VdoRef(vdo).Mode)}" +
-                       $" item={item} prim={prim} (mode 1 = the indexed mesh this pass can draw)");
-        }
-        if (_skinCount >= MaxSkin) { _skinOverflow++; return true; }
-        if (vdo == IntPtr.Zero || new VdoRef(vdo).Mode != 1) { _skinNotMode1++; return true; }
-        if (!TryRange(vdo, item, out _, out _, out _)) { _skinBadRange++; return true; }
-        // one-entry memo: VdoSlot is a linear scan of up to MaxVdos, and unlike enrollment this runs per
-        // skinned draw per FRAME -- consecutive parts of one creature share a VDO, so it usually hits
-        int v;
-        if (vdo == _skinLastVdo) v = _skinLastSlot;
-        else
-        {
-            v = VdoSlot(vdo, reserve: true);
-            // a miss is never memoised: the reserve that refused it is a table-pressure state, not a property
-            // of this VDO, and Release frees slots -- memoising -1 would keep refusing it for the session
-            if (v >= 0) { _skinLastVdo = vdo; _skinLastSlot = v; }
-        }
-        if (v < 0) { _skinNoSlot++; return true; }
-        // The live-verified shape of an NWN creature: MOST of its parts are rigid meshes parented to a bone
-        // and posed entirely by their node matrix -- their VAO carries position/uv/normal/tangent and no bone
-        // stream at all (the engine's own shader runs its `skinmesh == 0` branch on them). Those need no bones
-        // to cast a correctly animated shadow; the matrix captured in SkinBegin IS the animation. Only a TRUE
-        // skinmesh -- a cloak, a robe, a tail -- carries attribs 8/9 and needs the snapshot.
-        int bone = -1;
-        if (_vSkin[v])
-        {
-            if (_skinSlot < 0)
-            {
-                // a real skinmesh drawn without its bones would shadow in its BIND pose, so drop it instead
-                if (_boneSlots >= MaxBoneSlots) { _boneOverflow++; return true; }
-                // #262: solved from the engine's animation state, not lifted out of GLRender::m_bones. The
-                // engine's draw of this part IS in progress, so m_bones would be right -- but reading it
-                // would be the last thing in Alloy that depended on an engine draw having run, and the solve
-                // is the same answer from the same state.
-                int slot = _boneSlots;
-                fixed (float* dst = _boneStage)
-                    if (!SkinPose.Solve(_skinPart, dst + slot * BoneFloats)) { _boneOverflow++; return true; }
-                _skinSlot = _boneSlots++;
-            }
-            bone = _skinSlot;
-            _skinBoned++;
-        }
-        int i = _skinCount++;
-        _sVdo[i] = vdo; _sItem[i] = item; _sPrim[i] = prim; _sVao[i] = v; _sBone[i] = bone;
-        _sTri[i] = _skinPart;
-        fixed (float* src = _skinModel) fixed (float* dst = _sModel) *(Matrix4x4*)(dst + i * 16) = *(Matrix4x4*)src;
-        _sCx[i] = _skinCx; _sCy[i] = _skinCy; _sCz[i] = _skinCz; _sR[i] = _skinR;
-        return true;
-    }
-
-    internal static void SkinEnd() { _skinPart = IntPtr.Zero; _skinSlot = -1; }
-
-    /// <summary>#151: the OWNED instance part's capture. The engine-walk bracket above never sees a part the
-    /// iterator suppresses, so once the colour pass owns a creature's rigid pieces (helmet, plates -- posed
-    /// entirely by their node matrix), they silently left the shadow pass: the live report was a knight whose
-    /// CLOAK cast while his body cast nothing. AlloyRenderer calls this per Alloy instance part per pass with
-    /// data it already holds; the record is exactly a <see cref="SkinObserve"/> minus the funnel -- same
-    /// arrays, same one-frame lag.
+    /// <summary>#151: the instance part's caster record. AlloyRenderer calls this per Alloy instance part per
+    /// pass with data it already holds -- node matrix, VDO, item, prim -- and no engine draw is involved.
+    /// <para>#264 made it the ONLY way a creature casts. The other one was a bracket around the engine's own
+    /// draw of the part (<c>SkinBegin</c>/<c>SkinObserve</c>), which existed to catch the pieces the colour
+    /// pass had NOT taken; with the engine walk deleted there is no such draw, and a creature Alloy does not
+    /// own does not render at all, let alone cast.</para>
     /// <para>#262 brought the CLOAK here too. It used to reach the shadow pass through the bracket around the
     /// forced <c>PartSkin::Draw</c>, and there is no such draw any more -- so the caller passes the 64
     /// matrices it just solved and this stages them, exactly as the bracket did. <paramref name="bones"/>
@@ -923,7 +834,16 @@ public sealed unsafe class CasterPass : IExtenderService
                   && AlloyLights.LocalShadowLib.Contains($"uLocalLight[{MaxCubes}]")
                   // one region per view, and the CPU runs a frame ahead: a ring that only covered one frame's
                   // views would stall on a fence it issued itself
-                  && SunRegions >= MaxCascades * 2 && RegionsPerCube >= CubeFaces * 2;
+                  && SunRegions >= MaxCascades * 2 && RegionsPerCube >= CubeFaces * 2
+                  // #286: the compute gather runs the CPU walk's OWN cull, ported term for term, and its
+                  // conservatism is what a live shadow depends on. GLSL cannot be run headless, so what is
+                  // pinned is that every term is present and spelled from these same constants -- the cone
+                  // slope is interpolated from FaceConeSlope rather than typed a second time.
+                  && CasterGather.SourceSafe()
+                  // ...and aux.z is the gather's alone: a draw stage that started reading it would be
+                  // skinning or discarding against the LOD exemption flag.
+                  && !CastVs.Contains("aux.z") && !CastMaskVs.Contains("aux.z")
+                  && DrawFloats >= 24;
         // #241: the re-bake predicate, each of its four invalidation sources verified RED on its own -- a
         // term silently dropped from CubeStale is a shadow that stops tracking, which reads as correct until
         // something moves.
@@ -988,6 +908,42 @@ public sealed unsafe class CasterPass : IExtenderService
             if (!memo)
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: the motion memo misses a move (frozen shadows)"); }
         }
+        if (ok)
+        {   // #286's staging, against what the dispatch and the draw stages read back out of it. Not a GL
+            // call in sight: this is a memory layout shared with GLSL, and a field one slot over is a caster
+            // baking at its neighbour's matrix. The creature flag is pinned here too -- it is the ONE thing
+            // the walk spells as index order and the gather cannot.
+            _liveCreatures = 1; _liveCount = 2;
+            for (int i = 0; i < 2; i++)
+            {
+                _liveIdxCount[i] = 30 + i; _liveFirst[i] = (uint)(100 + i); _liveBaseVert[i] = (uint)(7 + i);
+                _liveCx[i] = 1f + i; _liveCy[i] = 2f + i; _liveCz[i] = 3f + i; _liveR[i] = 4f + i;
+                _liveCut[i] = 0.2f; _liveBone[i] = -1;
+                fixed (float* m = _liveModel) *(Matrix4x4*)(m + i * 16) = Matrix4x4.CreateTranslation(i, i, i);
+            }
+            _liveBone[1] = 2; _boneRegionBase = 128;
+            uint* src = stackalloc uint[2 * CasterGather.SrcUints];
+            float* recs = stackalloc float[2 * DrawFloats];
+            StageOne(src, recs, 0, 0, 0, 0);
+            StageOne(src, recs, 1, 1, 1, 1);
+            bool pack = src[0] == 30 && src[1] == 100 && src[2] == 7 && src[3] == 0 && src[4] == 0 && src[5] == 0
+                        && src[CasterGather.SrcUints + 3] == 1 && src[CasterGather.SrcUints + 4] == 1
+                        && src[CasterGather.SrcUints + 5] == 1
+                        && recs[16] == 1f && recs[19] == 4f && recs[20] == -1f && recs[21] == 0.2f
+                        // creature: exempt from the sub-texel cull. Static world: not.
+                        && recs[22] == 1f && recs[DrawFloats + 22] == 0f
+                        // the bone base is the region base plus this record's slot, in MATRICES
+                        && recs[DrawFloats + 20] == 128 + 2 * BoneCount
+                        && CasterGather.SrcUints == 6 && CasterGather.CmdBytes == 20;
+            _liveCreatures = 0; _liveCount = 0; _boneRegionBase = -1;
+            Array.Clear(_liveBone, 0, 2);
+            if (!pack)
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the compute gather's staging drifted from the record the depth stages read"); }
+            // The rotation's write-after-read argument holds only above a floor of 2: at 1 no barrier stands
+            // between a view's indirect reads and the next view's dispatch rewriting the same pair.
+            if (CasterGather.Rotation < 2)
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the gather's buffer rotation is below 2, so a view's commands can be rewritten while its draws still source them"); }
+        }
         // #100's face cull, brute-forced over the +X face (forward = +X, so t = dx and the pyramid is
         // |dy| <= dx, |dz| <= dx). The invariant that matters is one-directional: NOTHING inside the pyramid
         // may be culled. Admitting a little extra is the deliberate cost of a rotation-invariant test.
@@ -1015,9 +971,9 @@ public sealed unsafe class CasterPass : IExtenderService
     /// after-original) so the cascades and cubes are baked AHEAD of the colour pass that samples them. It ran
     /// at the present until #118, i.e. after its own reader -- ADR 0011's unowned one-frame lag.
     /// <para>Creature casters keep a one-frame pose lag, and that is deliberate (#113): their poses are
-    /// captured DURING the colour pass (<see cref="SkinBegin"/>/<see cref="SkinEnd"/> bracket
-    /// <c>PartTriMesh::Draw</c>), so the records latched below are the previous colour pass's. Retiring it
-    /// needs a pose-capture walk ahead of this slot, which is M4.</para>
+    /// staged DURING the colour pass (<see cref="RecordOwnedInstance"/>, from the matrices
+    /// <c>AlloyRenderer.PoseSkinned</c> solved), so the records latched below are the previous colour pass's.
+    /// Retiring it needs a pose walk ahead of this slot.</para>
     /// Enrollment runs in the ENGINE context (it queries engine VAOs); everything else runs inside the #80
     /// bracket.</summary>
     public static void OnPassSlot()
@@ -1083,6 +1039,13 @@ public sealed unsafe class CasterPass : IExtenderService
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         _qShadowOn = _qShadow.Begin(Gl.TIME_ELAPSED);
         UploadBones();
+        // #286: ONE staging for the whole frame, after the bones (the skin drop is a per-frame fact) and
+        // inside the bracket (the mask resolve issues Alloy's texture copy). Every view below is then a
+        // uniform block and a dispatch. Stand it down first: a frame that does not stage must not leave the
+        // last frame's records armed, which would bake a world that has since moved.
+        CasterGather.Stand();
+        if ((sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0))
+            && EnsureCommon() && CasterGather.Ensure()) GatherStage();
         // #117: the shadow bracket's passes come off FrameGraph, not from the order these two lines sit in.
         foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
         {
@@ -1295,7 +1258,10 @@ public sealed unsafe class CasterPass : IExtenderService
                     Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
                     whole = RenderView(ref _cubeRing, CubeTex, _cubeSize, slot * CubeFaces + f, &vp,
                                        fwd, pos, far, 0f, point: true, near, ln);
-                    _cubeStaged += _submitStaged;
+                    // ...but only when a WALK produced it. Under the gather _submitStaged is the frame's
+                    // whole staging, pre-cull, so adding it per face would report millions of "submissions"
+                    // that nothing submitted. The gather's own figure is on the same period line.
+                    if (!CasterGather.Active) _cubeStaged += _submitStaged;
                     lightCreatures += _submitCreatures;
                 }
             // A partial bake is not a bake: leaving the slot unbaked is what forces the whole cube again next
@@ -1365,7 +1331,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// unconditionally and wipes on module unload, so the first tick back inside a module releases.</para></summary>
     private static void Lifecycle()
     {
-        if (!GlContextService.Available) Release("4.6 context lost");
+        if (!GlContextService.Available) { Release("4.6 context lost"); CasterGather.ContextLost(); }
         bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) Release("module unload");
         _wasInModule = inModule;
@@ -1391,17 +1357,20 @@ public sealed unsafe class CasterPass : IExtenderService
                    // it: a still caster still casts. The two numbers meeting is the #241 regression.
                    $" out of {(float)_liveSum / _frames:F1} live " +
                    $"({(float)(_liveSum - _moverSum) / _frames:F1} still)" +
+                   $", caster selection {(CasterGather.Active ? "in COMPUTE" : "on the CPU (/shadow gather 1)")}" +
+                   (CasterGather.Views > 0
+                    ? $" -- {(float)CasterGather.Views / _frames:F1} dispatches/frame over " +
+                      $"{_gDrawN} staged draws in {_gGroups} batches (survivors are the GPU's; nothing is read back)"
+                    : "") +
                    $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
                    (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
                    $", {(float)_draws / _frames:F0} depth draws/frame in {(float)_mdiCalls / _frames:F1} " +
                    $"multidraw-indirect calls, " +
                    $"{(float)_culled / _frames:F0} culled/frame (off-axis {_cullPerp}, past-ends {_cullAlong}), " +
-                   (_skinned ? $"{(float)_skinSum / _frames:F1} creature casters/frame from " +
-                              $"{(float)_skinBrackets / _frames:F1} creature part draws seen" : "creature casters off") +
+                   (_skinned ? $"{(float)_skinSum / _frames:F1} creature casters/frame" : "creature casters off") +
                    (_skinNotMode1 > 0 ? $", {_skinNotMode1} not the indexed mode-1 mesh (see #73)" : "") +
                    (_skinBadRange > 0 ? $", {_skinBadRange} with no live index range" : "") +
                    (_skinOverflow > 0 ? $" (+{_skinOverflow} over capacity)" : "") +
-                   (_skinBoned > 0 ? $" ({(float)_skinBoned / _frames:F1} of them true skinmeshes posed from bones)" : "") +
                    (_boneOverflow > 0 ? $", {_boneOverflow} skinmeshes over the bone-slot budget" : "") +
                    (_skinNoSlot > 0 ? $", {_skinNoSlot} skinned draws refused a VDO slot (table reserved for rigid casters)" : "") +
                    (_skinDropped > 0 ? $", {_skinDropped} skinned draws dropped for want of a bone region" : "") +
@@ -1426,8 +1395,9 @@ public sealed unsafe class CasterPass : IExtenderService
         _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _moverSum = 0; _ghostSum = 0;
         _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0;
         _skinSum = 0; _skinOverflow = 0; _skinDropped = 0; _boneStalls = 0; _skinNoSlot = 0;
-        _skinBrackets = 0; _skinNotMode1 = 0; _skinBadRange = 0; _skinBoned = 0; _boneOverflow = 0;
+        _skinNotMode1 = 0; _skinBadRange = 0; _boneOverflow = 0;
         _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0;
+        CasterGather.Views = 0; CasterGather.Batches = 0;
     }
 
     private static void Release(string why)
@@ -1456,7 +1426,6 @@ public sealed unsafe class CasterPass : IExtenderService
         _invalidate = true; _moverCount = 0; _ghostCount = 0;
         _skinCount = 0; _skinLive = 0; _boneSlots = 0; _boneSlotsLive = 0;
         _skinLastVdo = IntPtr.Zero; _skinLastSlot = -1;   // the memo names a slot the loop above just retired
-        SkinEnd();
         if (!any) return;
         for (int i = 0; i < _casterCount; i++) _cTri[i] = IntPtr.Zero;
         _casterCount = 0; _liveCount = 0;
@@ -1686,7 +1655,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _vSkin[s] = _skinned
                     && VertexArrays.Read(EngBoneIdx, out _vBi[s])
                     && VertexArrays.Read(EngBoneW, out _vBw[s]);
-        if (_vaoDiagLeft > 0 && _skinPart != IntPtr.Zero)
+        if (_vaoDiagLeft > 0 && _vSkin[s])
         {   // #96 live triage: attribs 8/9 are the right locations (ConnectShaderData binds vIndex/vWeight
             // there), so a creature VAO with nothing on them means the bone data is not where the plan says.
             // Enumerate what the VAO DOES carry rather than guess again. Cold: a few VDOs, once each.
@@ -1761,8 +1730,6 @@ public sealed unsafe class CasterPass : IExtenderService
         {
             _depthTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades);
             if (_depthTex == 0) return false;   // DepthArray already disarmed by name
-            if (!CreateRing(ref _sunRing, MaxCasters, SunRegions,
-                            $"{_mapSize}x{_mapSize}x{_cascades} cascade array")) return false;
         }
         return true;
     }
@@ -1779,8 +1746,6 @@ public sealed unsafe class CasterPass : IExtenderService
             // makes the receiver's hardware-PCF fetch legitimate right up to a face edge. The interim cubes
             // bought the same thing with an over-scanned face frustum and a matching uv shrink in the shader.
             Gl.Enable(Gl.TEXTURE_CUBE_MAP_SEAMLESS);
-            if (!CreateRing(ref _cubeRing, MaxCubeCasters, _cubeLights * RegionsPerCube,
-                            $"{_cubeSize}x{_cubeSize}x{_cubeLights} local-light cube array")) return false;
         }
         return true;
     }
@@ -2026,10 +1991,171 @@ public sealed unsafe class CasterPass : IExtenderService
         return Submit(ref ring, tex, size, layer, vp, lightDir, focus, reach, margin, point, list, listCount);
     }
 
+    /// <summary>Attach one depth layer of <paramref name="tex"/> and clear it. Shared by both submission
+    /// paths: a view that culls out entirely still clears, because an uncleared layer is not "empty", it is
+    /// LAST frame's depth.</summary>
+    private static bool BeginTarget(uint tex, int size, int layer)
+    {
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+        Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0, layer);
+        Gl.DrawBuffer(Gl.NONE); Gl.ReadBuffer(Gl.NONE);
+        if (Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
+        { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); Disarm("the caster depth framebuffer is incomplete"); return false; }
+        Gl.Viewport(0, 0, size, size);
+        // depth state BEFORE the clear: a clear runs through the write mask and the scissor, so clearing
+        // first would leave stale depth wherever a previous pass left either of them set
+        new PassState(depth: true, depthWrite: true).Apply();
+        Gl.DepthFunc(Gl.LEQUAL);
+        Gl.Clear(Gl.DEPTH_BUFFER_BIT);
+        return true;
+    }
+
+    /// <summary>#286: the compute gather's per-frame staging. Parallel to the live list but in BATCH order,
+    /// which is what lets one dispatch feed one glMultiDrawElementsIndirectCount per batch.</summary>
+    private static readonly uint[] _gSrc = new uint[MaxCasters * CasterGather.SrcUints];
+    private static readonly float[] _gRec = new float[MaxCasters * DrawFloats];
+    /// <summary>Batch key per staged draw, and the live index it names. The key orders masked draws last (one
+    /// program switch instead of one per VAO), then by VAO, primitive and mask texture -- the (VAO, prim,
+    /// maskTex) key the CPU walk cuts its multidraws on, only sorted rather than stumbled upon.</summary>
+    private static readonly long[] _gKey = new long[MaxCasters];
+    private static readonly int[] _gLive = new int[MaxCasters];
+    private static readonly int[] _gVao = new int[MaxCasters], _gPrim = new int[MaxCasters],
+                                 _gTex = new int[MaxCasters], _gStart = new int[MaxCasters],
+                                 _gLen = new int[MaxCasters];
+    private static int _gDrawN, _gGroups, _gCreatures;
+
+    /// <summary>One staged draw, written into the source record and the per-draw <c>SowxCaster</c>. Its own
+    /// function because <see cref="SelfCheck"/> runs it: every field landing one slot over is a caster baking
+    /// at its neighbour's matrix, and none of it needs a GL context to be wrong.</summary>
+    private static void StageOne(uint* src, float* recs, int d, int i, int g, int start)
+    {
+        uint* r = src + (long)d * CasterGather.SrcUints;
+        r[0] = (uint)_liveIdxCount[i];
+        // in INDICES already, unlike the colour path's byte offsets -- the indirect command takes elements
+        r[1] = _liveFirst[i];
+        r[2] = _liveBaseVert[i];
+        r[3] = (uint)d;
+        r[4] = (uint)g;
+        r[5] = (uint)start;
+        float* rec = recs + (long)d * DrawFloats;
+        fixed (float* modelAll = _liveModel) *(Matrix4x4*)rec = *(Matrix4x4*)(modelAll + (long)i * 16);
+        rec[16] = _liveCx[i]; rec[17] = _liveCy[i]; rec[18] = _liveCz[i]; rec[19] = _liveR[i];
+        rec[20] = _liveBone[i] < 0 ? -1f : _boneRegionBase + _liveBone[i] * BoneCount;
+        rec[21] = _liveCut[i];
+        // aux.z is the LOD exemption. The CPU walk spells it as index order (creatures head the live list);
+        // a dispatch has no order to read, so it has to be a per-record flag -- and the player's own shadow
+        // flickering out in a far cascade is the one regression this must not have.
+        rec[22] = i < _liveCreatures ? 1f : 0f;
+        rec[23] = 0f;
+    }
+
+    /// <summary>#286: stage the whole frame once, in batch order, and upload it. Everything the CPU walk did
+    /// per VIEW that is not the cull itself happens here exactly once -- the VAO build, the mask-texture
+    /// resolve, the bone base, the record. Runs inside the bracket and AFTER <see cref="UploadBones"/>: the
+    /// skin drop is a per-frame fact (<see cref="_boneRegionBase"/>), not something the shader can ask, and
+    /// the mask resolve issues Alloy's own texture copy.
+    /// <para>False = nothing staged, and every view falls back to the CPU walk for the frame.</para></summary>
+    private static bool GatherStage()
+    {
+        int n = 0, creatures = 0;
+        for (int i = 0; i < _liveCount; i++)
+        {
+            // A skinned caster with no live bone region would draw in its BIND pose -- a T-posed shadow next
+            // to the creature, which is worse than none.
+            if (_liveBone[i] >= 0 && _boneRegionBase < 0) { _skinDropped++; continue; }
+            if (!EnsureVao(_liveVao[i])) continue;
+            int masked = _liveTex[i] != 0 && _progMask != 0 && TexHasAlpha(_liveTex[i])
+                       ? OwnedTextures.Draw(_liveTex[i]) : 0;
+            if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
+            if (masked != 0) _submitMasked++;
+            _gLive[n] = i;
+            _gKey[n] = ((masked != 0 ? 1L : 0L) << 62) | ((long)_liveVao[i] << 44)
+                       | ((long)_livePrim[i] << 36) | (uint)masked;
+            n++;
+            if (i < _liveCreatures) creatures++;
+        }
+        _gDrawN = 0;
+        if (n == 0) return false;
+        Array.Sort(_gKey, _gLive, 0, n);
+        int g = -1;
+        fixed (uint* src = _gSrc) fixed (float* recs = _gRec)
+            for (int d = 0; d < n; d++)
+            {
+                int i = _gLive[d];
+                if (g < 0 || _gKey[d] != _gKey[d - 1])
+                {
+                    g++;
+                    _gStart[g] = d; _gVao[g] = _liveVao[i]; _gPrim[g] = _livePrim[i];
+                    _gTex[g] = (int)(_gKey[d] & 0xffffffffL);
+                }
+                _gLen[g] = d - _gStart[g] + 1;
+                StageOne(src, recs, d, i, g, _gStart[g]);
+            }
+        _gGroups = g + 1; _gCreatures = creatures;
+        bool ok;
+        fixed (uint* src = _gSrc) fixed (float* recs = _gRec)
+            ok = CasterGather.Begin(n, _gGroups, src, recs, DrawFloats);
+        if (ok) _gDrawN = n;
+        return ok;
+    }
+
+    /// <summary>#286: bake one view without a per-view walk. The dispatch selects out of this frame's staging
+    /// and writes the commands; the CPU issues one indirect-count draw per batch and never learns how many
+    /// survived.</summary>
+    private static bool GatherSubmit(uint tex, int size, int layer, Matrix4x4* vp,
+                                     Vector3 lightDir, Vector3 focus, float reach, float margin, bool point)
+    {
+        // PRE-cull figures under the gather: the survivors are the GPU's, and asking would be the readback
+        // this pass exists to not do. The period line says which path produced them.
+        _submitCreatures = _gCreatures; _submitStaged = _gDrawN;
+        if (!BeginTarget(tex, size, layer)) return false;
+        // this view's texel in world units -- ortho cascades span 2*reach across `size` texels, a cube face
+        // 2*d at distance d bounded by reach. Identical to the walk's own lodR.
+        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, _lodTexels * 2f * reach / size, point);
+        // unit 0 is where the cutout stage samples; nothing else in this bracket moves the active unit
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        int boundVao = -1, boundMask = -1, boundTex = -1;
+        // ponytail: every view issues one indirect-count draw per GLOBAL batch, including the batches whose
+        // count the dispatch left at zero -- the CPU walk only ever issued the batches its own survivors
+        // formed. It is bounded work with no readback and the period line measures it (_mdiCalls), but at
+        // ~200 views x a few hundred batches it is the next thing to look at if the win comes in short. The
+        // upgrade path is a second tiny dispatch compacting the non-empty batches into a batch list, which
+        // stays on the same no-readback side of the line.
+        for (int g = 0; g < _gGroups; g++)
+        {
+            int cut0 = _gTex[g];
+            if ((cut0 != 0 ? 1 : 0) != boundMask)
+            {
+                boundMask = cut0 != 0 ? 1 : 0;
+                Gl.UseProgram(cut0 != 0 ? _progMask : _prog);
+                Gl.UniformMatrix4fv(cut0 != 0 ? _locMaskVp : _locVp, 1, 0, (float*)vp);
+                if (cut0 != 0) Gl.Uniform1i(_locMaskTex, 0);
+            }
+            if (cut0 != 0 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
+            if (_gVao[g] != boundVao) { Gl.BindVertexArray(Vao(_gVao[g])); boundVao = _gVao[g]; }
+            CasterGather.Draw(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g]);
+        }
+        _mdiCalls += _gGroups;
+        CasterGather.End();
+        Gl.BindVertexArray(0);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        return true;
+    }
+
     private static bool Submit(ref RingBuf ring, uint tex, int size, int layer,
                                Matrix4x4* vp, Vector3 lightDir, Vector3 focus, float reach, float margin, bool point,
                                int* list, int listCount)
     {
+        if (CasterGather.Active)
+            return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point);
+        // #286: the CPU walk's rings are mapped only once the walk is actually the path taken. A
+        // gather-default session never maps them, which is the ~100MB of persistent storage the compute
+        // path does not need -- and a mid-session `/shadow gather 0` still arms them here, inside the bracket.
+        if (ring.CmdMap == null
+            && !CreateRing(ref ring, point ? MaxCubeCasters : MaxCasters,
+                           point ? _cubeLights * RegionsPerCube : SunRegions,
+                           point ? $"{_cubeSize}x{_cubeSize}x{_cubeLights} local-light cube array"
+                                 : $"{_mapSize}x{_mapSize}x{_cascades} cascade array")) return false;
         int region = ring.At;
         // zeroed AHEAD of the fence early-out: a view that stalls stages nothing, and a count left standing
         // is the PREVIOUS view's, which the cube tally would add a second time
@@ -2138,17 +2264,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _culled += culled;
         _submitStaged = n;
 
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0, layer);
-        Gl.DrawBuffer(Gl.NONE); Gl.ReadBuffer(Gl.NONE);
-        if (Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
-        { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); Disarm("the caster depth framebuffer is incomplete"); return false; }
-        Gl.Viewport(0, 0, size, size);
-        // depth state BEFORE the clear: a clear runs through the write mask and the scissor, so clearing
-        // first would leave stale depth wherever a previous pass left either of them set
-        new PassState(depth: true, depthWrite: true).Apply();
-        Gl.DepthFunc(Gl.LEQUAL);
-        Gl.Clear(Gl.DEPTH_BUFFER_BIT);
+        if (!BeginTarget(tex, size, layer)) return false;
         if (n == 0)
         {   // cleared == fully lit, which is the truth for a view nothing casts into
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
@@ -2280,7 +2396,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// carrying its own record index -- so the layout survives culling without a reformat. <c>bounds</c> is
     /// the caster's world bounding sphere, unread by the depth stage and present so that culler can test it
     /// from the same record. <c>binding = 5</c> must stay in step with <see cref="BindCaster"/>.</summary>
-    private const string CasterBufDecl = """
+    internal const string CasterBufDecl = """
         struct SowxCaster { mat4 model; vec4 bounds; vec4 aux; };
         layout(std430, binding = 5) readonly buffer SowxCasterBuf { SowxCaster uCaster[]; };
 

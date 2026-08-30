@@ -279,6 +279,18 @@ internal static unsafe class OwnedBuffers
         return table + (nuint)token * PoolStride;
     }
 
+    /// <summary>#284: does this pool token already name a GL buffer? The VAO drip needs it because
+    /// <c>GLRender::SetVertexDataObject</c>'s create branch reads the name straight out of the descriptor at
+    /// +0x0c and captures it into the VAO it is building -- and that capture is PERMANENT, because the
+    /// already-has-a-VAO branch never re-specifies an attribute. Dripping a VDO whose pools are not resident
+    /// yet would bake buffer 0 into its VAO and turn a healable "no VAO" into an unhealable "no position
+    /// stream".</summary>
+    internal static bool PoolHasName(uint token)
+    {
+        byte* p = Pool(token);
+        return p != null && *(uint*)(p + PoolName) != 0;
+    }
+
     /// <summary>The engine is deleting this GL buffer name -- <c>DeletePool</c> @0x4d1d80 routes here for
     /// every named pool it releases, which is the pool's death and ours. The name and the token both go back
     /// into circulation, so the row must go with them.

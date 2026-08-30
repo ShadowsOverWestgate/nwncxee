@@ -23,9 +23,14 @@ namespace Sowx.Alloy;
 /// actually behind them, and a farther max culls less. The direction that matters, and that #243's first
 /// live run got wrong: the test is <c>objectNear &gt; maxSceneDepth</c>, so anything that LOWERS the max
 /// culls MORE. Over-covering the sampled region is safe; under-covering it is the bug.</para>
+/// <para>#287 adds LOD selection to the same dispatch (<see cref="LodPx"/>) and deletes the per-pass CPU
+/// rebuild of its source list: the batch walk stages the six-uint record where it already stages the draw's
+/// count, offset and base, and this class uploads it. What is left on the CPU is the batch CUT alone, whose
+/// keys are engine pointers read during revalidation and cannot be asked of the GPU.</para>
 /// <para><b>Opaque range only.</b> Compaction is an <c>atomicAdd</c>, so the order inside a batch is not
 /// this frame's staging order. Opaque draws are order-independent; the blended and water ranges are sorted
-/// back-to-front and stay on the <c>BaseVertex</c> path untouched. Cutout batches blend and DO ride the
+/// back-to-front and stay on the <c>BaseVertex</c> path untouched -- #290 is that half, scoped and split
+/// out rather than left implied. Cutout batches blend and DO ride the
 /// indirect path -- overlapping cutouts can therefore composite in a different order from frame to frame.
 /// Named rather than hidden: they depth-write with a discard, so the visible consequence is at most a
 /// shimmer where two graded edges overlap, and <c>/draw cull 0</c> is the A/B that proves it either way.
@@ -44,7 +49,12 @@ internal static unsafe class CullPass
 
     /// <summary>Uints per source record: index count, first index, base vertex, record slot, batch, and the
     /// batch's output base. Six rather than five because the batch's start offset is what turns an
-    /// <c>atomicAdd</c> into an output index without a second buffer to look it up in.</summary>
+    /// <c>atomicAdd</c> into an output index without a second buffer to look it up in.
+    /// <para>#287: STAGED BY THE CALLER, at the one site that already writes the same draw's
+    /// <c>_dCount/_dOff/_dBase/_dSlot</c>. This class used to rebuild it in a second walk of its own every
+    /// pass, which was the CPU half of "which draws exist" the ticket names; the batch and its output base
+    /// are known at that store (the cut has just placed the draw), so the rebuild folds into it at no
+    /// loop.</para></summary>
     internal const int SrcUints = 6;
     /// <summary>Uints per <c>DrawElementsIndirectCommand</c>: count, instanceCount, firstIndex, baseVertex,
     /// baseInstance. Fixed by GL, and the stride the draw calls pass.</summary>
@@ -60,6 +70,7 @@ internal static unsafe class CullPass
     private static uint _prog, _progHiZ;
     private static bool _failed;
     private static int _uDrawN, _uPlanes, _uHiZ, _uVP, _uPyr, _uPyrSize, _uMaxLod;
+    private static int _uLodPx, _uLodScale;
     private static int _hSrc, _hLevel;
 
     private static uint _srcBuf, _sphBuf;
@@ -75,9 +86,6 @@ internal static unsafe class CullPass
     /// is the reprojected cull this pass exists to not be.</summary>
     private static int _pyrGen = -1;
 
-    /// <summary>Staging for the source records. One entry per DRAW of this pass, rebuilt every pass exactly
-    /// as the index array it replaces was -- the draw ORDER is per pass even though the records are not.</summary>
-    private static readonly uint[] _src = new uint[AlloyRenderer.MaxOwned * SrcUints];
     private static uint[] _zero = new uint[1024];
 
     /// <summary>#243 (AC5): what the last readable dispatch actually kept. Copied out of the count buffer
@@ -95,16 +103,35 @@ internal static unsafe class CullPass
 
     /// <summary>Live dial behind <c>/draw cull</c>, and deliberately three-state rather than two: culling is
     /// the one system whose bug is invisible geometry, and "something is missing" has two possible authors
-    /// here. <b>0</b> stands the whole pass down (both submissions back on <c>BaseVertex</c>, the engine's
-    /// bucket walk back in charge of the draw-path gate); <b>1</b> is the frustum test alone; <b>2</b> adds
-    /// the hi-Z occlusion test. Reporting a hole means saying which of the three it survives.</summary>
+    /// here. <b>0</b> stands the whole pass down -- both submissions back on <c>BaseVertex</c> and, since
+    /// #264 deleted the engine walk, EVERY owned part drawn every frame with no cull anywhere, which is slow
+    /// and correct and is exactly what makes it the A/B for "is the cull eating this?"; <b>1</b> is the
+    /// frustum test alone; <b>2</b> adds the hi-Z occlusion test. Reporting a hole means saying which of the
+    /// three it survives.</summary>
     internal static int Mode = ModeHiZ;
     internal const int ModeOff = 0, ModeFrustum = 1, ModeHiZ = 2;
 
-    /// <summary>The pass can actually run: the programs built and every entry point it needs exists. Asked
-    /// by the STAGING walk as well as by this class -- the walk drops the engine's visibility gate only when
-    /// something is going to take over the question, and on a driver where nothing can, dropping it would
-    /// mean drawing the whole area with no cull anywhere.</summary>
+    /// <summary>#287: LOD selection, in pixels. A draw whose bounding sphere projects to a screen radius
+    /// smaller than this is dropped by the same dispatch that culls it -- the classic distance thinning NWN
+    /// never had. 0 disables it; <c>/draw lod</c> is the dial and <c>/draw cull 0</c> stands it down with
+    /// everything else, because it IS the cull shader.
+    /// <para>#152 shipped this on the CPU and 73ea59b deleted it, measured: <c>LOD skipped 0 sub-pixel
+    /// draws/frame</c> in every period of the live log, because the tile exemption it needed (a small TILE
+    /// part is a patch of wall, and culling it is a hole in a surface) excluded most of what a distant
+    /// camera sees. There is no exemption here. On the GPU the test is free, the hole it can leave is by
+    /// construction under <see cref="LodPx"/> pixels wide, and the exempt population that remains is the one
+    /// the cull already exempts -- <see cref="AlloyRenderer.NeverCull"/> bounds.</para></summary>
+    internal static float LodPx = DefLodPx;
+    /// <summary>The boot threshold, and #152's own: one pixel of projected radius.</summary>
+    internal const float DefLodPx = 1.0f;
+
+    /// <summary>Pixels per unit of world radius at unit view depth -- <c>proj.M22 * viewportHeight / 2</c>,
+    /// so <c>radius * this / depth</c> is the sphere's screen radius. Zero for a pass whose projection is not
+    /// a perspective one, and the LOD test stands down rather than dividing by a scale it cannot trust.
+    /// </summary>
+    private static float _lodScale;
+
+    /// <summary>The pass can actually run: the programs built and every entry point it needs exists.</summary>
     internal static bool Ready => _prog != 0;
 
     /// <summary>#243: the extent of the staged sphere CENTRES, and the eye they were culled against. A
@@ -114,6 +141,11 @@ internal static unsafe class CullPass
     /// line says so -- a centre spread far smaller than the area is the signature.</summary>
     internal static float SpreadX, SpreadY, SpreadZ, SpreadMaxR;
     private static int _drawN, _groups, _phase = -1;
+
+    /// <summary>#287: the diagnostic above, measured by the staging walk that already touches every one of
+    /// these spheres. It used to be a second walk here; the extent is the same extent either way.</summary>
+    internal static void SetSpread(float x, float y, float z, float maxR)
+    { SpreadX = x; SpreadY = y; SpreadZ = z; SpreadMaxR = maxR; }
 
     internal static void Init(ExtenderLog log) => _log = log;
 
@@ -129,9 +161,10 @@ internal static unsafe class CullPass
         _phase = -1;
     }
 
-    /// <summary>Everything the dispatch needs from GL. Checked once and latched: a missing entry point is a
-    /// permanent property of the driver, and the pass simply never arms.</summary>
-    private static bool Capable()
+    /// <summary>Everything the dispatch needs from GL. #264 promoted this to a BOOT term: with the engine's
+    /// bucket walk deleted there is no other visibility test in the frame, so a driver that cannot run the
+    /// dispatch cannot run Alloy at all -- see <see cref="AlloyGate"/>.</summary>
+    internal static bool Capable()
         => Gl.DispatchCompute != null && Gl.MemoryBarrier != null && Gl.BindBufferBase != null
            && Gl.MultiDrawElementsIndirectCount != null && Gl.BufferSubData != null
            && Gl.GenFramebuffers != null && Gl.FramebufferTexture2D != null && Gl.TexStorage2D != null
@@ -146,7 +179,14 @@ internal static unsafe class CullPass
         if (_failed || !Capable()) return false;
         _prog = GlProgram.Compute(CullCs, _log, "CullPass frustum/hi-Z cull");
         _progHiZ = GlProgram.Graphics(PostChain.FullscreenVs, HiZFs, _log, "CullPass hi-Z pyramid");
-        if (_prog == 0 || _progHiZ == 0) { _failed = true; _prog = 0; return false; }
+        if (_prog == 0 || _progHiZ == 0)
+        {
+            _failed = true; _prog = 0;
+            // #264: hard, not a downgrade. The frame has no other visibility test, and the boot verdict has
+            // already frozen on Alloy by the time a program can fail to build.
+            AlloyGate.Fail("the cull compute program did not build -- Alloy has no visibility test");
+            return false;
+        }
         _uDrawN = GlProgram.Loc(_prog, "uDrawN");
         _uPlanes = GlProgram.Loc(_prog, "uPlanes");
         _uHiZ = GlProgram.Loc(_prog, "uHiZ");
@@ -154,6 +194,8 @@ internal static unsafe class CullPass
         _uPyr = GlProgram.Loc(_prog, "uPyramid");
         _uPyrSize = GlProgram.Loc(_prog, "uPyrSize");
         _uMaxLod = GlProgram.Loc(_prog, "uMaxLod");
+        _uLodPx = GlProgram.Loc(_prog, "uLodPx");
+        _uLodScale = GlProgram.Loc(_prog, "uLodScale");
         _hSrc = GlProgram.Loc(_progHiZ, "uSrc");
         _hLevel = GlProgram.Loc(_progHiZ, "uLevel");
         if (_pyrVao == 0) { uint v; Gl.GenVertexArrays(1, &v); _pyrVao = v; }
@@ -165,12 +207,15 @@ internal static unsafe class CullPass
     /// ONLY thing that may switch them off the <c>BaseVertex</c> path.</summary>
     internal static bool Active => Mode > ModeOff && _phase >= 0;
 
-    /// <summary>Stage the pass's opaque draw list and upload it, plus the per-record bounding spheres.
-    /// Returns false when the cull is not running this pass, and the caller then submits exactly as before.
+    /// <summary>Upload the pass's opaque draw list and the per-record bounding spheres. Returns false when
+    /// the cull is not running this pass, and the caller then submits exactly as before.
     /// <para><paramref name="groups"/> is the OPAQUE batch count: the blended and water ranges are sorted
-    /// and never reach here.</para></summary>
-    internal static bool Begin(int groups, int drawN, int* dCount, nint* dOff, int* dBase, int* dSlot,
-                              int* gStart, int* gLen, float* spheres, int sphereSlots)
+    /// and never reach here.</para>
+    /// <para>#287: <paramref name="src"/> is <see cref="SrcUints"/> uints per draw, staged by the batch walk
+    /// itself -- see <see cref="SrcUints"/>. Nothing per-draw is computed here any more; this is an upload
+    /// and a set of buffer sizes.</para></summary>
+    internal static bool Begin(int groups, int drawN, uint* src, float* spheres, int sphereSlots,
+                              float lodScale)
     {
         _phase = -1;
         if (Mode <= ModeOff || drawN <= 0 || groups <= 0 || !Ensure()) return false;
@@ -185,39 +230,13 @@ internal static unsafe class CullPass
             _zero = new uint[cap]; _counts = new uint[cap];
         }
 
-        int n = 0;
-        float lox = float.MaxValue, loy = float.MaxValue, loz = float.MaxValue;
-        float hix = float.MinValue, hiy = float.MinValue, hiz = float.MinValue, maxR = 0f;
-        fixed (uint* s = _src)
-        for (int g = 0; g < groups; g++)
-            for (int d = gStart[g]; d < gStart[g] + gLen[g]; d++)
-            {
-                uint* r = s + (long)n++ * SrcUints;
-                r[0] = (uint)dCount[d];
-                // The indirect command's firstIndex is in ELEMENTS; _dOff carries it pre-multiplied to the
-                // byte offset MultiDrawElementsBaseVertex takes. Two-byte indices, so the halving is exact.
-                r[1] = (uint)((long)dOff[d] / 2);
-                r[2] = (uint)dBase[d];
-                r[3] = (uint)dSlot[d];
-                r[4] = (uint)g;
-                r[5] = (uint)gStart[g];
-                float* sp = spheres + (long)dSlot[d] * 4;
-                if (sp[3] < AlloyRenderer.NeverCull)
-                {
-                    lox = MathF.Min(lox, sp[0]); hix = MathF.Max(hix, sp[0]);
-                    loy = MathF.Min(loy, sp[1]); hiy = MathF.Max(hiy, sp[1]);
-                    loz = MathF.Min(loz, sp[2]); hiz = MathF.Max(hiz, sp[2]);
-                    maxR = MathF.Max(maxR, sp[3]);
-                }
-            }
-        _drawN = n; _groups = groups;
-        if (hix >= lox) { SpreadX = hix - lox; SpreadY = hiy - loy; SpreadZ = hiz - loz; SpreadMaxR = maxR; }
+        _drawN = drawN; _groups = groups; _lodScale = lodScale;
 
         if (_srcBuf == 0) { uint b; Gl.GenBuffers(1, &b); _srcBuf = b; }
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _srcBuf);
-        var srcSize = (IntPtr)((long)n * SrcUints * sizeof(uint));
+        var srcSize = (IntPtr)((long)drawN * SrcUints * sizeof(uint));
         Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, srcSize, null, Gl.DYNAMIC_DRAW);
-        fixed (uint* s = _src) Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, srcSize, s);
+        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, srcSize, src);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
 
         // The spheres are indexed by RECORD slot, exactly as the records are, and go up whole. They are four
@@ -232,11 +251,11 @@ internal static unsafe class CullPass
 
         for (int i = 0; i < 2; i++)
         {
-            Ensure(ref _cmdBuf[i], (long)n * CmdUints * sizeof(uint), n > _cmdCap);
-            Ensure(ref _slotBuf[i], (long)n * sizeof(uint), n > _cmdCap);
+            Ensure(ref _cmdBuf[i], (long)drawN * CmdUints * sizeof(uint), drawN > _cmdCap);
+            Ensure(ref _slotBuf[i], (long)drawN * sizeof(uint), drawN > _cmdCap);
             Ensure(ref _cntBuf[i], (long)groups * sizeof(uint), groups > _cntCap);
         }
-        if (n > _cmdCap) _cmdCap = n;
+        if (drawN > _cmdCap) _cmdCap = drawN;
         if (groups > _cntCap) _cntCap = groups;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         _phase = -2;   // staged; the first Dispatch publishes a phase
@@ -275,6 +294,8 @@ internal static unsafe class CullPass
         float* planes = stackalloc float[24];
         Planes((float*)vp, planes);
         Gl.Uniform4fv(_uPlanes, 6, planes);
+        Gl.Uniform1f(_uLodPx, MathF.Max(LodPx, 0f));
+        Gl.Uniform1f(_uLodScale, _lodScale);
         bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0 && _pyrGen == gen;
         Gl.Uniform1i(_uHiZ, useHiZ ? 1 : 0);
         if (useHiZ)
@@ -466,8 +487,9 @@ internal static unsafe class CullPass
     }
 
     /// <summary>Headless check of the two pieces that are arithmetic rather than GL: the plane extraction
-    /// and the source-record packing. Both fail silently in the worst possible way -- a wrong plane culls
-    /// the world, a wrong pack draws a neighbour's geometry -- and neither needs a context.</summary>
+    /// and the compacted list itself, against the CPU-staged one the <c>BaseVertex</c> path would submit.
+    /// Both fail silently in the worst possible way -- a wrong plane culls the world, a wrong compaction
+    /// draws a neighbour's geometry -- and neither needs a context.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;
@@ -494,29 +516,153 @@ internal static unsafe class CullPass
 
         // The pack, against what the shader reads out of it. Not a GL call in sight: this is a memory layout
         // shared with GLSL, and every field landing one slot over is a draw reading its neighbour's range.
-        int* count = stackalloc int[2] { 30, 60 };
-        nint* off = stackalloc nint[2] { 200, 400 };
-        int* bas = stackalloc int[2] { 7, 9 };
-        int* slot = stackalloc int[2] { 11, 13 };
-        int* gStart = stackalloc int[1] { 0 };
-        int* gLen = stackalloc int[1] { 2 };
-        int n = 0;
-        float lox = float.MaxValue, loy = float.MaxValue, loz = float.MaxValue;
-        float hix = float.MinValue, hiy = float.MinValue, hiz = float.MinValue, maxR = 0f;
-        fixed (uint* s = _src)
-        for (int g = 0; g < 1; g++)
-            for (int d = gStart[g]; d < gStart[g] + gLen[g]; d++)
-            {
-                uint* r = s + (long)n++ * SrcUints;
-                r[0] = (uint)count[d]; r[1] = (uint)((long)off[d] / 2); r[2] = (uint)bas[d];
-                r[3] = (uint)slot[d]; r[4] = (uint)g; r[5] = (uint)gStart[g];
-            }
-        E(_src[0] == 30 && _src[1] == 100 && _src[2] == 7 && _src[3] == 11 && _src[4] == 0 && _src[5] == 0,
+        uint* src = stackalloc uint[2 * SrcUints];
+        Pack(src, 30, 200, 7, 11, 0, 0);
+        Pack(src + SrcUints, 60, 400, 9, 13, 0, 0);
+        E(src[0] == 30 && src[1] == 100 && src[2] == 7 && src[3] == 11 && src[4] == 0 && src[5] == 0,
           "draw 0 packs count/firstIndex/baseVertex/slot/batch/start in that order");
-        E(_src[SrcUints + 1] == 200, "...and the byte offset becomes an ELEMENT index (two-byte indices)");
+        E(src[SrcUints + 1] == 200, "...and the byte offset becomes an ELEMENT index (two-byte indices)");
         E(CmdUints * sizeof(uint) == 20, "the indirect command stride is GL's 20 bytes");
 
+        ok &= Parity(log, vp, planes);
         log.Info(ok ? "CullPass.SelfCheck: passed" : "CullPass.SelfCheck: FAILED -- see above");
+    }
+
+    /// <summary>#287: one draw's source record, written where the batch walk already writes the same draw's
+    /// count/offset/base. The one place the layout <see cref="CullCs"/> reads back is spelled out.</summary>
+    internal static void Pack(uint* r, int idxCount, nint byteOff, int baseVertex, int slot,
+                             int batch, int batchStart)
+    {
+        r[0] = (uint)idxCount;
+        // The indirect command's firstIndex is in ELEMENTS; the staged offset is pre-multiplied to the byte
+        // offset MultiDrawElementsBaseVertex takes. Two-byte indices, so the halving is exact.
+        r[1] = (uint)((long)byteOff / 2);
+        r[2] = (uint)baseVertex;
+        r[3] = (uint)slot;
+        r[4] = (uint)batch;
+        r[5] = (uint)batchStart;
+    }
+
+    /// <summary>#287 (AC5's off-device half): does the compute-produced draw list agree with the CPU-staged
+    /// one? A line-by-line port of <see cref="CullCs"/>'s <c>main</c>, run one invocation at a time -- which
+    /// is what a sequential <c>atomicAdd</c> is -- over a synthetic pass, compared against the list the
+    /// <c>BaseVertex</c> path would submit from the same staging.
+    /// <para>Set equality per batch, not sequence equality: the order INSIDE a batch is the atomic's, not the
+    /// staging walk's, and on real hardware it is not even deterministic. What is asserted is what the
+    /// submission actually depends on -- every survivor lands inside its own batch's output region, carries
+    /// its own record slot, and its command is its source record field for field. Class order is preserved by
+    /// construction, because each batch compacts into its own region.</para>
+    /// <para>The port is deliberately adjacent to the GLSL it mirrors. If one changes and the other does not,
+    /// that is what this goes red on.</para></summary>
+    private static bool Parity(ExtenderLog log, Matrix4x4 vp, float* planes)
+    {
+        bool ok = true;
+        void E(bool c, string w) { if (!c) { ok = false; log.Info($"CullPass.Parity FAIL: {w}"); } }
+
+        // Two batches of three draws, all inside the frustum the caller built: straight ahead at 10 units.
+        const int drawN = 6, groups = 2;
+        int* gStart = stackalloc int[groups] { 0, 3 };
+        int* gLen = stackalloc int[groups] { 3, 3 };
+        uint* src = stackalloc uint[drawN * SrcUints];
+        float* sph = stackalloc float[drawN * 4];
+        int n = 0;
+        for (int g = 0; g < groups; g++)
+            for (int d = 0; d < gLen[g]; d++, n++)
+            {
+                Pack(src + (long)n * SrcUints, 30 + n, 2 * n, n, n, g, gStart[g]);
+                float* s = sph + (long)n * 4;
+                s[0] = 0f; s[1] = 0f; s[2] = -10f; s[3] = 1f;
+            }
+        // ...and the three populations a cull has to get right: outside the frustum, exempt, sub-pixel.
+        sph[1 * 4 + 0] = 500f;                                   // draw 1: far off to the side
+        sph[4 * 4 + 3] = AlloyRenderer.NeverCull;                // draw 4: unknown bounds, never culled
+        sph[5 * 4 + 3] = 0.001f;                                 // draw 5: a speck, for the LOD test
+
+        uint* cmd = stackalloc uint[drawN * CmdUints];
+        int* outSlot = stackalloc int[drawN];
+        uint* cnt = stackalloc uint[groups];
+
+        // Everything visible: the compaction must reproduce the staged list exactly, batch for batch.
+        Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, cmd, outSlot, cnt);
+        E(cnt[0] == 2 && cnt[1] == 3, "only the out-of-frustum draw is dropped when nothing else can be");
+        E(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
+          "the compacted list agrees with the CPU-staged one draw for draw");
+
+        // LOD: a speck goes, an exempt record stays, and the ordinary draws are untouched. uLodScale is
+        // proj.M22 * viewportH / 2 -- 1.0 * 1080 / 2 for the caller's 90-degree projection.
+        Emulate(src, sph, drawN, groups, planes, vp, 1f, 540f, cmd, outSlot, cnt);
+        E(cnt[1] == 2 && outSlot[gStart[1]] == 3 && outSlot[gStart[1] + 1] == 4,
+          "a sub-pixel draw is LOD-culled and the ones that are not are the ones that survive");
+        E(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
+          "...and what survives it is still the staged record, field for field");
+        Emulate(src, sph, drawN, groups, planes, vp, 1f, 0f, cmd, outSlot, cnt);
+        E(cnt[1] == 3, "a pass with no perspective scale runs no LOD test rather than culling everything");
+        Emulate(src, sph, drawN, groups, planes, vp, 1e6f, 540f, cmd, outSlot, cnt);
+        E(cnt[1] == 1 && outSlot[gStart[1]] == 4,
+          "an absurd LOD threshold still cannot touch a NeverCull record");
+        return ok;
+    }
+
+    /// <summary>The port. <c>i</c> is <c>gl_GlobalInvocationID.x</c> and the counter is the atomic; every
+    /// other line is <see cref="CullCs"/>'s, in order.</summary>
+    private static void Emulate(uint* src, float* sph, int drawN, int groups, float* planes, Matrix4x4 vp,
+                                float lodPx, float lodScale, uint* cmd, int* outSlot, uint* cnt)
+    {
+        for (int g = 0; g < groups; g++) cnt[g] = 0;
+        for (int i = 0; i < drawN; i++)
+        {
+            uint* b = src + (long)i * SrcUints;
+            int slot = (int)b[3];
+            float* s = sph + (long)slot * 4;
+            var c = new Vector3(s[0], s[1], s[2]);
+            float r = s[3];
+            if (r < 1e29f)
+            {
+                bool clipped = false;
+                for (int p = 0; p < 6 && !clipped; p++)
+                    clipped = planes[p * 4] * c.X + planes[p * 4 + 1] * c.Y + planes[p * 4 + 2] * c.Z
+                              + planes[p * 4 + 3] < -r;
+                if (clipped) continue;
+                if (lodPx > 0f && lodScale > 0f)
+                {
+                    float w = Vector4.Transform(new Vector4(c, 1f), vp).W;
+                    if (w > 0f && r * lodScale < lodPx * w) continue;
+                }
+            }
+            uint o = b[5] + cnt[b[4]]++;
+            uint k = o * 5u;
+            cmd[k] = b[0];
+            cmd[k + 1u] = 1u;
+            cmd[k + 2u] = b[1];
+            cmd[k + 3u] = b[2];
+            cmd[k + 4u] = 0u;
+            outSlot[o] = slot;
+        }
+    }
+
+    /// <summary>Every survivor of <paramref name="cmd"/> is a staged draw of its own batch, once, with its
+    /// own record slot -- and it landed inside that batch's output region. The two ways a compaction can be
+    /// wrong that the draw call cannot survive: a draw written into someone else's region, and a command
+    /// paired with the wrong record slot.</summary>
+    private static bool Agrees(uint* src, int drawN, int groups, int* gStart, uint* cmd, int* outSlot,
+                              uint* cnt, ExtenderLog log)
+    {
+        bool ok = true;
+        for (int g = 0; g < groups; g++)
+            for (int o = gStart[g]; o < gStart[g] + (int)cnt[g]; o++)
+            {
+                int found = -1;
+                for (int d = 0; d < drawN; d++)
+                    if ((int)src[(long)d * SrcUints + 3] == outSlot[o] && (int)src[(long)d * SrcUints + 4] == g)
+                        found = d;
+                if (found < 0)
+                { log.Info($"CullPass.Parity FAIL: output {o} names a slot batch {g} never staged"); ok = false; continue; }
+                uint* b = src + (long)found * SrcUints;
+                uint* k = cmd + (long)o * CmdUints;
+                if (k[0] != b[0] || k[1] != 1u || k[2] != b[1] || k[3] != b[2] || k[4] != 0u)
+                { log.Info($"CullPass.Parity FAIL: output {o}'s command is not its staged draw's range"); ok = false; }
+            }
+        return ok;
     }
 
     /// <summary>The cull itself. One thread per draw; a survivor appends into its batch's own region with an
@@ -539,6 +685,8 @@ internal static unsafe class CullPass
         uniform sampler2D uPyramid;
         uniform vec2 uPyrSize;
         uniform float uMaxLod;
+        uniform float uLodPx;
+        uniform float uLodScale;
 
         // One pyramid tap, addressed through the LEVEL-0 grid rather than the level's own.
         // This is the fix for #243's first live bug. `textureLod(uv, L)` maps uv across the width of level
@@ -554,6 +702,16 @@ internal static unsafe class CullPass
             ivec2 lsz = max(ivec2(uPyrSize) >> lod, ivec2(1));
             ivec2 t = clamp(ivec2(uv * uPyrSize) >> lod, ivec2(0), lsz - ivec2(1));
             return texelFetch(uPyramid, t, lod).r;
+        }
+
+        // #287: LOD selection. The sphere's screen radius is r * uLodScale / depth, and the clip w of its
+        // centre IS that depth under a perspective projection -- so no eye position and no view matrix reach
+        // this shader. A scale of zero means the pass is not perspective and the test cannot be trusted.
+        bool SowxSubPixel(vec3 c, float r)
+        {
+            if (uLodPx <= 0.0 || uLodScale <= 0.0) return false;
+            float w = (uVP * vec4(c, 1.0)).w;
+            return w > 0.0 && r * uLodScale < uLodPx * w;
         }
 
         bool SowxOccluded(vec3 c, float r)
@@ -593,6 +751,7 @@ internal static unsafe class CullPass
             {
                 for (int p = 0; p < 6; p++)
                     if (dot(uPlanes[p].xyz, s.xyz) + uPlanes[p].w < -s.w) return;
+                if (SowxSubPixel(s.xyz, s.w)) return;
                 if (uHiZ != 0 && SowxOccluded(s.xyz, s.w)) return;
             }
             uint o = uSrc[b + 5u] + atomicAdd(uCnt[uSrc[b + 4u]], 1u);

@@ -15,22 +15,24 @@ namespace Sowx.Alloy;
 /// other caller in the binary (ADR 0016, "RenderSinglePass is not draw-only"). Skipping it outright freezes
 /// door fades -- and with them door CLICKABILITY, because <c>Gob::HitCheck</c> reads the same field -- all
 /// particle simulation, grass wind, bin LOD, lens-flare occlusion, and the <c>focuslighting</c> global.</para>
-/// <para><b>Why it still walks the buckets.</b> The ADR's shim spec did not, and it is a gap: the part table
-/// is populated by hooks on <c>PartTriMesh::Draw</c>/<c>PartSkin::Draw</c>, which are only ever reached from
-/// <c>Scene::RenderDrawBucket</c> -- i.e. from inside RSP. A shim that skipped the walk would starve
-/// enrollment and Alloy would own nothing to draw. So the walk still runs, with the two engine draw funnels
-/// SWALLOWED: every part is still recorded, and no glDraw* issues. <see cref="BucketGate.OnNextItem"/>
-/// already skips owned parts before the loop body, so a well-owned area pays this walk almost nothing.
-/// ponytail: per-frame walk, no cadence. If it shows up in a profile, the cheap upgrade is to run it only on
-/// the frames enrollment is about to consume -- but sightings are the liveness signal, so that is a decision
-/// about the staleness window, not a free win.</para>
+/// <para><b>#264: it no longer walks the buckets.</b> The shim used to call <c>Scene::RenderDrawBucket</c>
+/// for all nine ids with both engine draw funnels swallowed, purely so the capture hooks on
+/// <c>PartTriMesh::Draw</c>/<c>PartSkin::Draw</c> would fire -- Alloy discovered a part by watching the engine
+/// try to draw it. #256 replaced discovery with <see cref="SceneWalk"/> and #243 replaced visibility with
+/// <see cref="CullPass"/>, which left the walk carrying nothing but a liveness stamp two predicates still
+/// asked for. Both now ask the record set instead, and the walk is gone: this is ADR 0018's instrument, and
+/// with it the frame is built from Alloy's own state end to end.
+/// <para>What went with it: the per-part hand-back (#236 -- there is nothing to hand back to when nothing
+/// walks), the exactly-one-owner audit and the bucket iterator's suppression (no engine draw to suppress),
+/// and the <c>sample_framebuffer</c> class, which no Alloy program covers. That last one is a real drop;
+/// <c>sample-class=</c> on the <c>[scenewalk]</c> line is its size, measured rather than argued.</para>
 /// <para><b>Zero draws is measured, not inspected.</b> nwmain imports exactly <c>glDrawArrays</c> and
 /// <c>glDrawElements</c>; their only call sites are the two funnels below and <c>nk_sdl_render</c> (2D
 /// overlay, outside any Scene pass) -- see <see cref="SymbolMap.GlRenderVertexStreamData"/>. Swallowing both
 /// funnels therefore covers the engine's whole 3D draw surface, and <see cref="_passed"/> is counted at the
 /// BOTTOM of the chain so it reports what actually reached the original rather than restating the swallow.
-/// #258 deleted the one draw path the funnels could not cover -- the batcher's own replayed multidraw,
-/// which under this key (the shipped default) never submitted at all.</para>
+/// The funnels STAY after #264: the shim still calls the emitter, sky, beam and lens-flare virtuals for
+/// their simulation, and every one of those draws for itself.</para>
 /// <para>Behind <c>ownframe</c> in <c>sowx.cfg</c>, default ON since #218 closed M4 (ADR 0013 bucket 2: an
 /// arming decision, not a look). Set it to 0 and nothing here installs, so the pre-cutover frame is
 /// unchanged by construction -- that is the escape hatch, not the default.</para>
@@ -85,11 +87,6 @@ internal static unsafe class RspShim
     /// <c>focuslighting</c> block at 0x46ebd7..0x46ec46.</summary>
     private const int SceneLightManager = 0x158, SceneFocusPos = 0x190;
 
-    /// <summary>Draw buckets the walk visits. 0..8 is every id RSP draws (0, 1, 7 opaque; 2, 3 dynamic;
-    /// 5 water-sampling; 6 water; 8 fade; 4). Order follows RSP's own; the duplicates its stencil block
-    /// re-walks are not repeated, because a second walk would record nothing a first did not.</summary>
-    private static readonly int[] WalkOrder = { 0, 1, 7, 2, 3, 5, 8, 6, 4 };
-
     /// <summary>A three-float value classified the way SysV classifies it -- xmm0 carries x and y, xmm1
     /// carries z. Same reason <c>Particles.V3</c> exists: <c>Vector3</c>'s ABI is the runtime's to choose.</summary>
     [StructLayout(LayoutKind.Sequential)]
@@ -97,7 +94,6 @@ internal static unsafe class RspShim
 
     private static ExtenderLog? _log;
     private static bool _enabled;
-    private static delegate* unmanaged<IntPtr, int, void> _drawBucket;
     private static delegate* unmanaged<IntPtr, void> _skyBoxes;
     private static delegate* unmanaged<IntPtr, IntPtr, void> _collectLights;
     private static delegate* unmanaged<V3, IntPtr, IntPtr, V3> _emitterLighting;
@@ -123,14 +119,6 @@ internal static unsafe class RspShim
     /// taken (vanilla, no 4.6 context, a GUI scene) the engine is still drawing, and a carve-out keyed on
     /// the setting would arm Alloy over live engine draws.</summary>
     internal static bool InWindow;
-
-    /// <summary>#236: the deliberate hand-back. Set by the bucket walk around every part it is about to
-    /// give to the engine BECAUSE ALLOY IS NOT DRAWING IT -- unrecorded, dead, or an identity that moved.
-    /// Pre-cutover those parts were engine-drawn and the ownership latency cost a frame of vanilla shading;
-    /// under the swallow the same hand-back is a hole, which is what ate the creature torsos. So the window
-    /// lets these through and counts them separately: <c>passed</c> (the #218 exit bar) still means a draw
-    /// nobody directed, and <c>handback</c> means one Alloy declined by name.</summary>
-    internal static bool HandBack;
 
     /// <summary>#232/#233: does this frame have an engine overlay to run after the bracket? Latched at the
     /// top of <see cref="Run"/>, read by <see cref="PostChain"/> inside it -- the depth hand-back to the
@@ -162,32 +150,18 @@ internal static unsafe class RspShim
 
     private static bool _checkOk, _barLogged;
 
-    /// <summary>Draw bucket 5, the OTHER framebuffer-sampling class. Bucket 6 is
-    /// <see cref="AlloyRenderer.WaterBucket"/>; these two are the only classes whose engine draw reads a
-    /// <c>Camera::CopyRenderSubframe</c> snapshot.</summary>
-    private const int SampleBucket = 5;
-
-    /// <summary>Engine draws refused because the class samples a copy this shim does not take. See
-    /// <see cref="FbSampling"/>.</summary>
-    private static long _sampleSwallowed;
     /// <summary>Last period's refusal totals, so the period line can report the CHANGE. See <see cref="Period"/>.</summary>
     private static int _lastRefBuf, _lastRefTex;
-    private static long _swallowed, _passed, _handedBack, _ticks, _frames;
+    private static long _swallowed, _passed, _ticks, _frames;
 
     /// <summary>The two invariants the shim cannot discover at runtime and would fail silently on.
-    /// <para><b>Chain placement.</b> <see cref="SwallowPriority"/> must sit strictly between
-    /// <see cref="DrawFunnelService"/>'s and DrawStatsService's. Above the funnel service and the swallow
-    /// eats the bone capture the pose call exists for -- skinned parts would wear the previous frame's pose.
-    /// Below DrawStats and the histogram counts draws that never issued.
-    /// Neither shows up as an error; both are just a wrong-looking session.</para>
-    /// <para><b>Walk coverage.</b> Every bucket id 0..8 exactly once. A missing id is a class that is never
-    /// captured and so never owned, which reads as "Alloy cannot draw that class" rather than as a typo.</para></summary>
+    /// <para><b>Chain placement.</b> <see cref="SwallowPriority"/> must sit above DrawStatsService's, or the
+    /// histogram counts draws that never issued. It does not show up as an error; it is just a wrong-looking
+    /// session. #264 removed the upper bound with the funnel service's own chain subscriber.</para>
+    /// <para>#264 deleted the bucket-coverage half of this check with the walk it checked.</para></summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = SwallowPriority > DrawStatsService.DrawPriority && SwallowPriority < DrawFunnelService.DrawPriority;
-        int seen = 0;
-        foreach (int id in WalkOrder) seen |= 1 << id;
-        if (seen != 0x1ff || WalkOrder.Length != 9) ok = false;
+        bool ok = SwallowPriority > DrawStatsService.DrawPriority;
         // #232/#233: the overlay displacements must be distinct from each other AND from the six the shim
         // already calls. A duplicated displacement is a silent wrong virtual -- FadeDoors run twice, say --
         // which reads as a rendering oddity rather than as the typo it is.
@@ -199,10 +173,10 @@ internal static unsafe class RspShim
                 if (slots[i] == slots[j]) { ok = false; break; }
         _checkOk = ok;
         log.Info(ok ? $"RspShim.SelfCheck: passed (swallow at {SwallowPriority}, "
-                    + $"between {DrawStatsService.DrawPriority} and {DrawFunnelService.DrawPriority}; buckets 0-8; "
+                    + $"above {DrawStatsService.DrawPriority}; "
                     + $"{slots.Length} distinct Scene vtable slots)"
-                    : "RspShim.SelfCheck: FAILED -- chain placement, bucket coverage or a vtable displacement "
-                    + "is wrong; the cutover would capture nothing, miscount, or call the wrong virtual");
+                    : "RspShim.SelfCheck: FAILED -- chain placement or a vtable displacement is wrong; the "
+                    + "cutover would miscount or call the wrong virtual");
         return ok;
     }
 
@@ -215,7 +189,6 @@ internal static unsafe class RspShim
         // no layer in the chain to be wrong about, not because a flag was checked.
         if (!_enabled) return;
 
-        _drawBucket = (delegate* unmanaged<IntPtr, int, void>)Native.Sym(SymbolMap.RenderDrawBucket);
         _skyBoxes = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.RenderSkyBoxes);
         _collectLights = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GobCollectLights);
         _emitterLighting = (delegate* unmanaged<V3, IntPtr, IntPtr, V3>)Native.Sym(SymbolMap.GetEmitterLighting);
@@ -225,8 +198,7 @@ internal static unsafe class RspShim
         _triggerBucket = (byte*)Native.Sym(SymbolMap.TriggerBucket);
         // Named, not counted: "an engine symbol did not resolve" is unactionable, and this list is the only
         // place that knows which one. glBindFramebuffer is deliberately NOT here -- see Ready.
-        string? missing = _drawBucket == null ? SymbolMap.RenderDrawBucket
-                        : _skyBoxes == null ? SymbolMap.RenderSkyBoxes
+        string? missing = _skyBoxes == null ? SymbolMap.RenderSkyBoxes
                         : _collectLights == null ? SymbolMap.GobCollectLights
                         : _emitterLighting == null ? SymbolMap.GetEmitterLighting
                         : _focusObject == null ? SymbolMap.SceneFocusObject
@@ -272,8 +244,8 @@ internal static unsafe class RspShim
 
     /// <summary>The shim. Runs in ENGINE context, in place of <c>Scene::RenderSinglePass</c>.
     /// <para>Order follows RSP's own. <c>FadeDoors</c> comes first because it is #132's frame anchor: the
-    /// whole Alloy frame draws inside that call, which is exactly where it drew before the cutover. The
-    /// bucket walk that follows is capture, not drawing.</para>
+    /// whole Alloy frame draws inside that call, which is exactly where it drew before the cutover. What
+    /// follows it is bookkeeping -- #264 deleted the bucket walk that used to.</para>
     /// <para>The default framebuffer is bound on entry and left bound on exit, so Alloy resolves straight
     /// into the backbuffer and the engine's overlay views composite the UI on top of a finished frame. There
     /// is no engine world FBO under the shim: <c>Camera::InitializeFrameBufferResources</c>,
@@ -323,21 +295,16 @@ internal static unsafe class RspShim
         // population and the engine's back-to-front sort come from.
         Vt(vptr, VtDoEmitterBucket, scene);
         Vt(vptr, VtFadeDoors, scene);          // door fade + hit-test alpha -- AND #132's anchor: Alloy draws here
-        _drawBucket(scene, WalkOrder[0]);
         // #261 took the sky POPULATION off this call -- SkyBox.Enroll walks the Scene's own gobs. It stays
         // as the sky's SIMULATION tick: ProcessGob, node animation, the cross-fade alpha writes, and the
         // per-gob SetPosition(Scene+0x190) that parks each dome at the camera. Its draws are swallowed.
         _skyBoxes(scene);
-        for (int i = 1; i < WalkOrder.Length; i++)
-        {
-            int id = WalkOrder[i];
-            _drawBucket(scene, id);
-            // RSP's own placement, keyed on the BUCKET ID so a reorder of the walk cannot silently move
-            // either one: vanilla runs DoBinBucket right after bucket 1 and writes focuslighting after
-            // bucket 5.
-            if (id == 1) Vt(vptr, VtDoBinBucket, scene);     // grass wind + per-bin LOD distance
-            else if (id == 5) FocusLighting(scene);          // the focuslighting write, at RSP's step
-        }
+        // #264: the two items the bucket walk used to carry between its draws. Neither reads a thing the
+        // walk leaves behind -- DoBinBucket @0x474c50 iterates the `binbucket` global (wind update, camera
+        // distance, the grass sort) and FocusLighting is Scene field arithmetic of our own -- so with the
+        // walk gone they simply run in RSP's relative order and nothing else moves.
+        Vt(vptr, VtDoBinBucket, scene);        // grass wind + per-bin LOD distance
+        FocusLighting(scene);                  // the focuslighting write, at RSP's step
         // #261 took the beam POPULATION off this call -- Beams.Enroll reads bucket 15 itself. The vcall
         // stays as bookkeeping, like DoFog above: its own draws are swallowed by the funnels, and what is
         // left is the state prologue/epilogue (blend, depth mask, global colour) that RSP's later steps and
@@ -420,28 +387,6 @@ internal static unsafe class RspShim
         if (list[0] != IntPtr.Zero) NativeMemory.Free((void*)list[0]);
     }
 
-    /// <summary>Is the walk inside a class whose engine draw SAMPLES a framebuffer copy the cutover removed?
-    /// <para>Punch-list items 19 and 26 drop both <c>Camera::CopyRenderSubframe</c> calls; items 27 and the
-    /// bucket-5 walk keep the walks that consume them. That pair is only coherent while Alloy draws every
-    /// part of both classes, and #129 and #236 each build a hand-back for when it does not -- the
-    /// <c>!_waterDrew</c> whole-sea fallback in <see cref="AlloyRenderer.IterSight"/>, and the per-part
-    /// enrollment latency. Both hand back to an engine draw whose sampler source is never written this
-    /// frame, and whose target was never created at all: <c>Camera::InitializeFrameBufferResources</c>'s
-    /// sole caller is RSP. Sampling that is undefined, and it is what water tiles flickering in and out
-    /// actually is.</para>
-    /// <para>So the hand-back is refused for these two classes and only these two. A part Alloy has not
-    /// enrolled yet is briefly missing instead of briefly wrong, and converges within
-    /// <c>NewCandidateGap</c> frames -- ADR 0016's "temporary non-rendering is acceptable", where drawing
-    /// through an uninitialised sampler is not. The bucket stays in <see cref="WalkOrder"/>: the walk is
-    /// what carries the sighting, and dropping it would starve the class permanently.</para>
-    /// <para>Not the fix for a PERSISTENT refusal -- <c>_waterArmed</c> false all session leaves a silently
-    /// missing sea. That is a mid-frame refusal ADR 0016 step 7 says must move to the frame-start gate, and
-    /// it is ticket-sized; <see cref="_sampleSwallowed"/> on the period line is what makes it observable
-    /// meanwhile.</para></summary>
-    private static bool FbSampling
-        => BucketGate._inBucket > 0
-           && (BucketGate._bucketId == AlloyRenderer.WaterBucket || BucketGate._bucketId == SampleBucket);
-
     /// <summary>The swallow, layer 20 of the <c>RenderVertexData</c> chain. Returning here skips every lower
     /// subscriber AND the original -- and <see cref="DrawFunnelService"/>, which sits above at 50, still
     /// runs its bone observation after this returns. That is the whole reason the shim can walk the buckets
@@ -449,8 +394,7 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        if (InWindow && (!HandBack || FbSampling)) { if (HandBack) _sampleSwallowed++; _swallowed++; return; }
-        if (InWindow) _handedBack++;
+        if (InWindow) { _swallowed++; return; }
         // #260's tagging: outside the window the ENGINE is drawing for itself -- the UI, the menu, a GUI 3D
         // panel -- so the pools this VDO names are the ones that question is about.
         else OwnedBuffers.NoteEngineDraw(vdo);
@@ -463,7 +407,7 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnVdoBottom(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        if (InWindow && !HandBack) _passed++;
+        if (InWindow) _passed++;
         var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_vdoBottomSlot;
         if (next != null) next(vdo, item, prim, size, offset);
     }
@@ -473,11 +417,7 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnStreamDraw(IntPtr vsdo, uint prim, uint size, uint offset)
     {
-        // #236: honours the hand-back for the same reason the other funnel does. #215 established these two
-        // funnels ARE the engine's whole 3D draw surface, so a hand-back routed here and swallowed is a hole
-        // exactly like one routed to the other -- without needing to know which parts take which route.
-        if (InWindow && (!HandBack || FbSampling)) { if (HandBack) _sampleSwallowed++; _swallowed++; return; }
-        if (InWindow) _handedBack++;
+        if (InWindow) { _swallowed++; return; }
         if (_origStream != null) _origStream(vsdo, prim, size, offset);
     }
 
@@ -532,12 +472,13 @@ internal static unsafe class RspShim
         if (_frames < AlloyRenderer.LogEvery) return;
         double ms = _ticks * 1000.0 / Stopwatch.Frequency / _frames;
         _log?.Info($"RspShim: [rspshim] {_frames} shim frames, {_swallowed / _frames} engine draws swallowed/frame, "
-                 + $"{_handedBack / _frames} handed back/frame (#236, deliberate), "
                  + $"PASSED {_passed} (must be 0), {ms:F2}ms/frame in the shim, "
                  + $"borrowed {OwnedBuffers.Borrowed - _lastRefBuf} buffers / "
-                 + $"{OwnedTextures.Borrowed - _lastRefTex} textures this period (must be 0/0), "
-                 + $"{_sampleSwallowed} fb-sampling hand-backs refused");
+                 + $"{OwnedTextures.Borrowed - _lastRefTex} textures this period (must be 0/0)"
+                 // #284: lifetime, not a delta -- one attempt per texture makes it a POPULATION (how much of
+                 // the world lost its build race) and never a rate. Empty when nothing has ever been unbuilt.
+                 + OwnedTextures.RebuildNote());
         _lastRefBuf = OwnedBuffers.Borrowed; _lastRefTex = OwnedTextures.Borrowed;
-        _swallowed = 0; _passed = 0; _handedBack = 0; _sampleSwallowed = 0; _ticks = 0; _frames = 0;
+        _swallowed = 0; _passed = 0; _ticks = 0; _frames = 0;
     }
 }
