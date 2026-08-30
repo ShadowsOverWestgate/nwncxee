@@ -690,8 +690,7 @@ public sealed unsafe class CasterPass : IExtenderService
         LastShadowMs = 0f;
         if (!AlloyGate.Alloy || !GameGate.InModule || !GlContextService.Available) return;
         // #302: no enrollment of its own. The population is Alloy's ownership table, scanned on Alloy's
-        // cadence, so the ShadowEnroll zone that existed to separate the two colliding scans is vacuous --
-        // there is one scan now.
+        // cadence -- there is one scan now (#304 deleted the ShadowEnroll zone that separated the two).
         // An empty table is not "nothing to do": whatever was casting last frame has stopped, and leaving
         // the recorded views alone would freeze its shadows in place. Collect's own sweep is what says so,
         // so the empty case runs the collect and then has no views to fill.
