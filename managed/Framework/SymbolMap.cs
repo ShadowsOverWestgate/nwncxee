@@ -651,49 +651,18 @@ internal static unsafe class SymbolMap
     /// (PROJECTION) stack via aurMatrixStack::Orthographic (glOrtho arg order).</summary>
     public const string SetOrthoTransform = "_ZN15RenderInterface17SetOrthoTransformEdddddd";
 
-    // ---- shadow-map caster completeness (#65 slice 3c). The camera-frustum cull is inlined in the BSP
-    //      descent (no per-object hook); the reference mod's proven fix re-walks the BSP in a sphere around
-    //      the player and re-submits casters via the engine's own AddPartToMeshBuckets, so the depth pass
-    //      sees casters the camera culled. All Linux-verified via Ghidra; no _win entries (skip on Windows). ----
-    /// <summary>ManageSceneBSP(Scene*) @0x47fa80 -- the per-frame scene-BSP collection driver (camera-culled
-    /// populate of the GLOBAL mesh buckets). Runs immediately before <c>Scene::AddPartsToDrawBuckets</c> in
-    /// <c>Scene::Render</c>. Hooked call-through: after the original runs we re-walk the BSP in a sphere and
-    /// re-submit off-screen tileset casters, which the next <c>AddPartsToDrawBuckets</c> then transfers into
-    /// the DrawBucketManager (type 0) + matrix-sets for free. Free fn: <c>(Scene* /*rdi*/)</c>.</summary>
-    public const string ManageSceneBSP = "_Z14ManageSceneBSPP5Scene";
-    /// <summary>AddPartToMeshBuckets(PartTriMesh*) @0x47f450 -- the engine's own caster submit: pushes a tile
-    /// part into the global <c>meshbuckets[textureTID]</c> + <c>meshshadowbucket</c>. Our BSP re-walk callback
-    /// calls it exactly as the engine's <c>ProcessTriMeshParts</c> does. NO dedup (caller's job); it also
-    /// advances the part's animation by DeltaT, so only submit STATIC OPAQUE tile parts (a double-advance on
-    /// an animated part slightly speeds it; a transparent double-submit double-blends). Free fn:
-    /// <c>(PartTriMesh* /*rdi*/)</c>.</summary>
-    public const string AddPartToMeshBuckets = "_Z20AddPartToMeshBucketsP11PartTriMesh";
-    /// <summary>BSPTraverse(BSPNode*, Vector const&amp;, float radiusSq, void(*)(BSPNode*, Vector const&amp;, float))
-    /// @0x5b2440 -- sphere-bounded BSP walk (camera-independent, every direction). The 3rd arg is radius
-    /// <em>SQUARED</em> (compared against signed-squared node split-plane distances -- pass r*r, not r). The
-    /// callback fires on internal nodes too; <c>node+0x20 != 0</c> marks a leaf (stop). ABI:
-    /// <c>(BSPNode* /*rdi*/, Vector* /*rsi*/, float /*xmm0*/, cb /*rdx*/)</c>; callback ABI
-    /// <c>(BSPNode* /*rdi*/, Vector* /*rsi*/, float /*xmm0*/)</c> (no context pointer -- state via statics).</summary>
-    public const string BSPTraverseSphere = "_Z11BSPTraverseP7BSPNodeRK6VectorfPFvS0_S3_fE";
-    /// <summary>PartTriMesh::GetIsOpaque() @0x43cee0 -- true if the part is opaque. The re-walk submits only
-    /// opaque tile parts. ABI: <c>(PartTriMesh* /*rdi*/) -> bool</c>.</summary>
+    // ---- #282 deleted the shadow-map caster re-walk (#65 slices 3c/3d) and its four symbols --
+    //      ManageSceneBSP, AddPartToMeshBuckets, BSPTraverse (sphere) and CExoArrayList<Gob*>::Add. All of it
+    //      existed to push camera-culled casters through the engine's draw buckets so the capture could see
+    //      them; SceneWalk enumerates the area's containers directly, and nothing reads those buckets as a
+    //      caster source. The two symbols the re-walk shared with live code stay below. ----
+    /// <summary>PartTriMesh::GetIsOpaque() @0x43cee0 -- true if the part is opaque. ABI:
+    /// <c>(PartTriMesh* /*rdi*/) -> bool</c>.</summary>
     public const string PartGetIsOpaque = "_ZN11PartTriMesh11GetIsOpaqueEv";
 
-    // ---- dynamic gob casters (slice 3d, #65). ManageSceneBSP's second loop adds ONLY camera-visible gobs
-    //      (gob+0x1b) to the global gobbucket; we append off-screen in-sphere gobs there so movable objects
-    //      cast even when off-camera. Scene::AddPartsToDrawBuckets sorts + processes gobbucket into buckets 2/3.
-    //      All Linux-verified via Ghidra; no _win entries (skip on Windows). ----
-    /// <summary>The global render gobbucket -- a <c>CExoArrayList&lt;Gob*&gt;</c> the engine clears + rebuilds
-    /// each frame in <c>ManageSceneBSP</c> (in-view gobs only) and consumes in <c>AddPartsToDrawBuckets</c>. The
-    /// symbol's ADDRESS is the list's <c>this</c> (data ptr @+0, count @+8, capacity @+0xc).</summary>
-    public const string GobBucket = "gobbucket";
-    /// <summary>CExoArrayList&lt;Gob*&gt;::Add(Gob*) @0x445f50 -- append one gob (may realloc). ABI:
-    /// <c>(CExoArrayList&lt;Gob*&gt;* /*rdi*/, Gob* /*rsi*/)</c>.</summary>
-    public const string GobBucketAdd = "_ZN13CExoArrayListIP3GobE3AddES1_";
 
-    // ---- camera-follow anchor (#65): the real, camera-INDEPENDENT PC position, independent of the vanilla shadow
-    //      path. ManageSceneBSP itself walks this exact chain every frame, so it is valid whenever our call-through
-    //      hook has run. All Ghidra-verified; Linux-only (skip on Windows). ----
+    // ---- camera-follow anchor (#65): the real, camera-INDEPENDENT PC position, independent of the vanilla
+    //      shadow path. Ghidra-verified; Linux-only (skip on Windows). ----
     /// <summary>Global <c>CurrentCamera</c> (@0x19acbb0, in .dynsym) -- the symbol's 8 bytes hold a live
     /// <c>CAurCamera*</c> (or 0).
     /// <para>#131 also reads the orientation QUATERNION at <c>*CurrentCamera + 0xbc</c>, stored

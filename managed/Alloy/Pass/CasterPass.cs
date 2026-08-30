@@ -12,8 +12,11 @@ namespace Sowx.Alloy;
 /// #93 (map #68, spec #78 M2): the one Alloy submission path every rigid shadow caster goes through.
 /// Tiles and placeables are the same thing here -- a part with an indexed VDO, an index range and a model
 /// matrix -- so there is no static/dynamic split and no kind-based branching anywhere below. #187: there is
-/// no motion split either. Every view bakes what it sees, every frame -- the cost is honest and no view can
-/// hold depth for a world that has since moved.
+/// no static/dynamic split. There IS a motion split, and #282 finished it: a view re-bakes only when its
+/// recorded depth has stopped describing the world -- the view's own key changed, or something moved inside
+/// it (<see cref="ViewStale"/>). #241 gave the cubes that predicate and left the sun at full price; both
+/// carry it now. Every term errs toward stale, so a wrong answer costs a bake and can never freeze a shadow,
+/// and <c>/shadow rebake 0</c> is the A/B back to #187's bake-everything-every-frame.
 /// <para>Submission is <c>glMultiDrawElementsIndirect</c> out of persistent-mapped storage: one immutable
 /// command buffer and one per-draw SSBO, each a 3-region ring with a fence per region, staged by the CPU and
 /// never re-allocated. Per-draw data is indexed by <c>gl_BaseInstance</c> rather than <c>gl_DrawID</c>
@@ -211,6 +214,21 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>Did a mover intersect this slot's light on the PREVIOUS frame? That is what invalidates the
     /// frame a mover LEAVES: it is inside no longer, so no live mover would name the slot it just vacated.</summary>
     private static readonly bool[] _cubeHadMover = new bool[MaxCubes];
+    /// <summary>#282: the sun's half of the same bake state. A cascade's recorded depth is a function of the
+    /// fit -- focus, light direction, radius and margin -- and of what stood inside it, so those four are the
+    /// key and the mover test is the only other term.
+    /// <para>#187 declared no motion split for the sun and CasterPass's own header still said so; that was
+    /// written when there was no predicate anywhere and every view baked every frame, and #241 then gave the
+    /// cubes one and left this at full price -- 4 x every live caster, every frame, with no staleness test at
+    /// all. The decision is re-taken here and it is PREDICATED: the cascades follow the focus, so a walking
+    /// player invalidates all four anyway and the skip only pays where it should, in a still frame.</para></summary>
+    private static readonly float[] _sunKeyFocus = new float[MaxCascades * 3];
+    private static readonly float[] _sunKeyDir = new float[MaxCascades * 3];
+    private static readonly float[] _sunKeyFit = new float[MaxCascades * 2];
+    private static readonly bool[] _sunBaked = new bool[MaxCascades];
+    private static readonly bool[] _sunHadMover = new bool[MaxCascades];
+    private static long _sunBakedViews, _sunSkippedViews;
+
     /// <summary>Set by anything that makes every recorded face meaningless at once -- a tuning change, a
     /// release, a frame whose scan never reached every slot. Consumed only by a COMPLETE scan, so the
     /// evidence outlives any frame that could not carry it.</summary>
@@ -254,6 +272,17 @@ public sealed unsafe class CasterPass : IExtenderService
     /// mid-move on a rare stall frame, which is the one failure nobody would ever trace. A blanket re-bake
     /// after such a frame costs one frame and cannot lie.</summary>
     private static bool _cubeScanned;
+    /// <summary>#282: the sun's half of the same evidence, and which of the two passes actually ran. The
+    /// blanket invalidate is consumed by both and may only be CLEARED once every pass that ran completed its
+    /// scan -- a pass that did not run cannot veto, and a frame where neither ran clears nothing.
+    /// <para>Both of the failures this shape exists for are real. Clearing it inside CubePass meant a sun
+    /// stall could be swallowed by a complete cube scan the same frame, since FrameGraph decides the order
+    /// and the mover evidence is gone by the next one; and in a torchless exterior CubePass never runs at
+    /// all, so nothing ever cleared it and the sun predicate would have re-baked all four cascades forever.
+    /// </para></summary>
+    private static bool _sunScanned, _sunRan, _cubeRan;
+    /// <summary>#282: this frame's blanket-invalidate verdict, snapshot before either pass runs.</summary>
+    private static bool _frameInvalidate;
     private static long _cubeBakedSlots, _cubeSkippedSlots, _moverSum, _ghostSum;
     /// <summary>#241: movers BY REASON. A skip count that stays at zero says the predicate is not paying;
     /// only this says why -- a world whose matrices all jitter, a shared vertex pool marked dirty by one
@@ -282,25 +311,6 @@ public sealed unsafe class CasterPass : IExtenderService
     /// -&gt; no render), a vanilla stretch (the pass is gated on <see cref="AlloyGate.Alloy"/>, so the toggle
     /// reverts sun shadows on the very next frame), and a disarm.</summary>
     internal static bool CascadesFresh => CascadeCount > 0 && CascadeTex != 0 && _cascadeStamp == _frameSeq;
-
-    /// <summary>Does the caster set get rebuilt on this frame's enrollment? The set is only ever as complete
-    /// as what the engine's bucket walk carried, and <see cref="DrawFunnelService"/> only offers parts seen in
-    /// the last frame or two -- so the BSP re-walk that feeds it has to reach <see cref="WalkRadius"/> on
-    /// the frames whose colour pass an enrollment reads, and can stay tight on the other 59. Since #118 moved
-    /// the enrollment to the pass slot it eats the PREVIOUS colour pass's records, which is what the "- 1"
-    /// below already covered -- the wide walk fires one frame early and one frame late.
-    /// <para>ponytail: a set released mid-window (module unload, table wipe) re-enrolls off the tight walk and
-    /// misses distant casters until the next wide frame -- up to a second of missing far-cascade shadows after
-    /// an area load. Have Release() force the wide walk if that ever reads as a bug.</para>
-    /// <para>Every precondition <see cref="OnPassSlot"/> itself early-outs on has to appear here too. Without the context
-    /// test, a machine whose 4.6 context never came up pins this true forever -- Lifecycle's Release re-arms
-    /// _sinceEnroll every frame -- so the walk runs at its widest sixty times a second on exactly the
-    /// hardware that gets no shadows out of it.</para></summary>
-    internal static bool WantsWideWalk =>
-        _armed && !_disarmed && AlloyGate.Alloy && GameGate.InModule && GlContextService.Available
-        && _sinceEnroll >= EnrollEvery - 1;
-    /// <summary>How far the caster walk must reach to fill the outermost cascade.</summary>
-    internal static float WalkRadius => _maxDist;
 
     /// <summary>How far every cascade's fit reaches TOWARD the light, past its own extent. The full max
     /// shadow distance for all of them, NOT each one's radius: a caster only has to be up-sun of a fragment to
@@ -363,6 +373,28 @@ public sealed unsafe class CasterPass : IExtenderService
     private static readonly int[] _order = new int[MaxCasters];
     private static readonly int[] _sortCount = new int[MaxVdos];
     private static int _casterCount;
+    /// <summary>#282: the enrolled caster's motion memo, keyed on its TABLE SLOT rather than on a hash of its
+    /// part pointer. The slot is the ownership table's own answer to "which caster is this", it is stable for
+    /// the sixty frames between enrollments, and it cannot collide -- which the direct-mapped
+    /// <see cref="_mvKey"/> memo can and did: ~3200 enrolled casters into 16384 buckets leaves a few hundred
+    /// colliding keys, and a colliding PAIR thrashes forever under a deterministic walk order -- each part
+    /// evicting the other every frame, so each reads as MOVED and each ghosts the other. That is 460 casters
+    /// a second "vanishing" in a room full of walls, every one of them dirtying the cube slots it stands in,
+    /// and it is why #241's skip predicate was skipping nothing.
+    /// <para><see cref="_cLiveKey"/> is the part pointer the slot last held, so a re-enrollment that shuffles
+    /// slots reports MOVED for the shuffled ones rather than comparing one part's matrix against another's --
+    /// wrong in the direction that costs a bake, never in the one that freezes a shadow.</para></summary>
+    private static readonly IntPtr[] _cLiveKey = new IntPtr[MaxCasters];
+    private static readonly ulong[] _cLiveHash = new ulong[MaxCasters];
+    private static readonly int[] _cLiveSeen = new int[MaxCasters];
+    private static readonly float[] _cLx = new float[MaxCasters], _cLy = new float[MaxCasters],
+                                    _cLz = new float[MaxCasters], _cLr = new float[MaxCasters];
+    /// <summary>#282: XOR of this enrollment's part pointers, with the count beside it. An enrollment that
+    /// produced the same SET leaves every slot's memo meaningful; one that did not has casters that left the
+    /// table without ever being swept, so their slots would keep their shadows for good -- hence one blanket
+    /// invalidate on exactly those frames. XOR is order-independent on purpose: a reshuffle is not a set
+    /// change, and the per-slot key compare already covers it.</summary>
+    private static ulong _enrollSig;
 
     // --- #96 skinned casters. No table and no enrollment: a skinned part is re-recorded from scratch
     // every frame out of the passive-capture bracket around its own engine draw, which is the one moment its
@@ -753,6 +785,33 @@ public sealed unsafe class CasterPass : IExtenderService
         _ghostCx[g] = cx; _ghostCy[g] = cy; _ghostCz[g] = cz; _ghostR[g] = r;
     }
 
+    /// <summary>#282: <see cref="Moved"/>'s answer for an ENROLLED caster, keyed on its table slot. Same
+    /// three questions -- did it move, is it new, and (through <see cref="TableVanish"/>) is it gone -- with
+    /// no hash bucket in the way, so a still world reports a still world.</summary>
+    private static bool TableMoved(int i, IntPtr part, ulong h, float cx, float cy, float cz, float r)
+    {
+        bool moved = _cLiveSeen[i] != _frameSeq - 1 || _cLiveKey[i] != part || _cLiveHash[i] != h;
+        _cLiveKey[i] = part; _cLiveHash[i] = h; _cLiveSeen[i] = _frameSeq;
+        _cLx[i] = cx; _cLy[i] = cy; _cLz[i] = cz; _cLr[i] = r;
+        return moved;
+    }
+
+    /// <summary>#282: an enrolled caster that was live last frame and is not live now -- revoked, re-parented,
+    /// or its item range stopped resolving. Its last known sphere is the mover, exactly as a memo ghost is,
+    /// and retiring the slot is what makes it reported once. Called from every path in <see cref="Collect"/>
+    /// that skips a slot, which together with the loop's own coverage is the whole sweep for this table:
+    /// every enrolled slot is visited every frame, so there is nothing left for a scan to find.</summary>
+    private static void TableVanish(int i)
+    {
+        if (_cLiveKey[i] == IntPtr.Zero || _cLiveSeen[i] != _frameSeq - 1) return;
+        _cLiveKey[i] = IntPtr.Zero; _cLiveSeen[i] = 0;
+        Ghost(_cLx[i], _cLy[i], _cLz[i], _cLr[i]);
+    }
+
+    /// <summary>ponytail: a fixed scan of the whole memo, which since #282 holds only the per-frame
+    /// re-recorded population (creature pieces, cloaks, the census's rejects) -- a few dozen entries in
+    /// 16384 slots, ~15us a frame. Give it a ping-ponged dense list of the slots each frame touched if that
+    /// ever shows up in a profile.</summary>
     private static void GhostSweep()
     {
         int gone = _frameSeq - 1;
@@ -764,10 +823,24 @@ public sealed unsafe class CasterPass : IExtenderService
         }
     }
 
-    /// <summary>#241: the whole re-bake decision for one cube slot, as four independent reasons a recorded
-    /// face may no longer describe the world. Pulled out so <see cref="SelfCheck"/> can pin each one.</summary>
-    internal static bool CubeStale(bool invalidate, bool slotChanged, bool hadMover, bool hasMover)
-        => invalidate || slotChanged || hadMover || hasMover;
+    /// <summary>#241: the whole re-bake decision for one VIEW, as four independent reasons a recorded depth
+    /// layer may no longer describe the world. Pulled out so <see cref="SelfCheck"/> can pin each one.
+    /// <para>#282 gave the sun cascades the same predicate. The four reasons are the same four -- a blanket
+    /// invalidate, the view's own key changing, a mover in it now, a mover in it last frame -- and what
+    /// differs between a cube face and a cascade is only which volume the mover test runs against.</para></summary>
+    internal static bool ViewStale(bool invalidate, bool keyChanged, bool hadMover, bool hasMover)
+        => invalidate || keyChanged || hadMover || hasMover;
+
+    /// <summary>#282: does a sphere at <paramref name="dx"/>/<paramref name="dy"/>/<paramref name="dz"/> from
+    /// the focus reach into a directional fit? The walk's own cull, term for term (perpendicular distance
+    /// from the light axis against reach, distance ALONG it against the fit's extent) so the sun's staleness
+    /// predicate and the sun's cull can only ever disagree in the direction that costs a bake.</summary>
+    internal static bool InFit(float dx, float dy, float dz, float r, Vector3 dir, float reach, float along)
+    {
+        float t = dx * dir.X + dy * dir.Y + dz * dir.Z;
+        float px = dx - t * dir.X, py = dy - t * dir.Y, pz = dz - t * dir.Z;
+        return px * px + py * py + pz * pz <= (reach + r) * (reach + r) && MathF.Abs(t) <= along + r;
+    }
 
     /// <summary>Resolve a VDO item's index range, live out of the item tables. Every consumer re-reads it
     /// rather than caching it because <c>Repack()</c> MOVES items, and a stale index range does not read as an
@@ -845,12 +918,27 @@ public sealed unsafe class CasterPass : IExtenderService
                   && !CastVs.Contains("aux.z") && !CastMaskVs.Contains("aux.z")
                   && DrawFloats >= 24;
         // #241: the re-bake predicate, each of its four invalidation sources verified RED on its own -- a
-        // term silently dropped from CubeStale is a shadow that stops tracking, which reads as correct until
+        // term silently dropped from ViewStale is a shadow that stops tracking, which reads as correct until
         // something moves.
-        if (ok && !(CubeStale(true, false, false, false) && CubeStale(false, true, false, false)
-                    && CubeStale(false, false, true, false) && CubeStale(false, false, false, true)
-                    && !CubeStale(false, false, false, false)))
-        { ok = false; log.Info("CasterPass.SelfCheck FAIL: the cube re-bake predicate lost an invalidation source"); }
+        if (ok)
+        {   // #282: the sun's staleness volume against the sun's CULL volume. The invariant is one-directional
+            // -- nothing the cull would ADMIT may test as outside the fit, or a mover the cascade draws never
+            // dirties it and its shadow freezes mid-walk. Up-light of the fit is the case a sphere test gets
+            // wrong, so it is probed explicitly.
+            Vector3 d = Vector3.Normalize(new Vector3(0.3f, -0.5f, -0.8f));
+            bool fit = InFit(0f, 0f, 0f, 0f, d, 10f, 20f)                        // at the focus
+                       && InFit(d.X * 19f, d.Y * 19f, d.Z * 19f, 0f, d, 10f, 20f)  // up-light, inside the extent
+                       && InFit(-d.X * 19f, -d.Y * 19f, -d.Z * 19f, 0f, d, 10f, 20f)
+                       && !InFit(d.X * 30f, d.Y * 30f, d.Z * 30f, 0f, d, 10f, 20f) // ...and past it
+                       && InFit(d.X * 30f, d.Y * 30f, d.Z * 30f, 11f, d, 10f, 20f) // ...unless its radius reaches
+                       && !InFit(0f, 40f, 0f, 0f, d, 10f, 20f);                    // off the axis entirely
+            if (!fit)
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the sun's staleness fit rejects a caster its cull admits (frozen cascades)"); }
+        }
+        if (ok && !(ViewStale(true, false, false, false) && ViewStale(false, true, false, false)
+                    && ViewStale(false, false, true, false) && ViewStale(false, false, false, true)
+                    && !ViewStale(false, false, false, false)))
+        { ok = false; log.Info("CasterPass.SelfCheck FAIL: the view re-bake predicate lost an invalidation source"); }
         if (ok)
         {   // ...and the ghost sweep, which is the ONLY thing standing between a caster that disappears and
             // the slot it was standing in keeping its shadow forever. Driven off _frameSeq directly, which
@@ -907,6 +995,39 @@ public sealed unsafe class CasterPass : IExtenderService
             _ghostCount = 0;
             if (!memo)
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: the motion memo misses a move (frozen shadows)"); }
+        }
+        if (ok)
+        {   // #282: and the per-SLOT memo the enrolled table now uses, which has to answer the same three
+            // questions with no bucket in the way -- and, unlike the hashed one, must never ghost a caster
+            // that is merely sharing a bucket with another. The vanish is the load-bearing half: it is the
+            // only thing standing between a revoked caster and the cube slots it stood in keeping its shadow.
+            Matrix4x4 a = Matrix4x4.CreateTranslation(3f, 4f, 5f);
+            Matrix4x4 b = Matrix4x4.CreateRotationZ(0.25f) * Matrix4x4.CreateTranslation(3f, 4f, 5f);
+            ulong ha = ModelHash((float*)&a), hb = ModelHash((float*)&b);
+            IntPtr q1 = (IntPtr)0x2000;
+            _frameSeq = 1; _ghostCount = 0;
+            bool slot = TableMoved(0, q1, ha, 1f, 2f, 3f, 4f);            // first sighting -> moved
+            _frameSeq = 2;
+            slot = slot && !TableMoved(0, q1, ha, 1f, 2f, 3f, 4f);        // unchanged -> still
+            _frameSeq = 3;
+            slot = slot && TableMoved(0, q1, hb, 1f, 2f, 3f, 4f);         // rotation in place -> moved
+            // ...and slot 1 is its own answer whatever slot 0 did: no bucket, so no eviction, so no ghost.
+            slot = slot && TableMoved(1, (IntPtr)0x3000, ha, 0f, 0f, 0f, 1f) && _ghostCount == 0;
+            _frameSeq = 4;
+            slot = slot && !TableMoved(0, q1, hb, 1f, 2f, 3f, 4f) && _ghostCount == 0;
+            // ...and a slot that stops being visited ghosts once, at its last known sphere, then never again.
+            _frameSeq = 5;
+            TableVanish(0);
+            slot = slot && _ghostCount == 1 && _ghostCx[0] == 1f && _ghostCy[0] == 2f
+                   && _ghostCz[0] == 3f && _ghostR[0] == 4f;
+            TableVanish(0);
+            slot = slot && _ghostCount == 1;
+            // ...and a slot that changes hands is MOVED, never a comparison of one part's matrix to another's.
+            slot = slot && TableMoved(0, (IntPtr)0x5000, hb, 1f, 2f, 3f, 4f);
+            _frameSeq = 0; _ghostCount = 0;
+            Array.Clear(_cLiveKey, 0, 2); Array.Clear(_cLiveHash, 0, 2); Array.Clear(_cLiveSeen, 0, 2);
+            if (!slot)
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the per-slot caster memo misses a move or a vanish (frozen shadows)"); }
         }
         if (ok)
         {   // #286's staging, against what the dispatch and the draw stages read back out of it. Not a GL
@@ -992,9 +1113,8 @@ public sealed unsafe class CasterPass : IExtenderService
         // #241, ahead of EVERY early-out below: a frame that does not collect leaves the memo's stamps a
         // frame behind, so the sweep would miss whatever vanished while it was not looking. Any stretch of
         // non-Alloy frames proves it -- the main menu and back is enough, and the first Alloy frame after
-        // would otherwise republish the shadows the world had before the walk.
-        if (!_cubeScanned) _invalidate = true;
-        _cubeScanned = false;
+        // would otherwise republish the shadows the world had before the walk. #282: the flag now simply
+        // survives, because only a complete frame below clears it.
         Lifecycle();
         // AFTER the period line, which reports it: zeroing the timing ahead of Lifecycle made every period
         // line read 0.00 ms, since the frame's own measurement lands further down.
@@ -1046,6 +1166,10 @@ public sealed unsafe class CasterPass : IExtenderService
         CasterGather.Stand();
         if ((sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0))
             && EnsureCommon() && CasterGather.Ensure()) GatherStage();
+        // #282: the blanket invalidate is read by BOTH passes and cleared by the cube scan, so it is snapshot
+        // once here -- FrameGraph decides the order of the two, and whichever ran second would otherwise miss it.
+        _frameInvalidate = _invalidate || !_rebake;
+        _sunRan = _cubeRan = false;
         // #117: the shadow bracket's passes come off FrameGraph, not from the order these two lines sit in.
         foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
         {
@@ -1060,6 +1184,10 @@ public sealed unsafe class CasterPass : IExtenderService
                     break;
             }
         }
+        // ...and only now may the frame's invalidation be consumed: every pass that ran reached every one of
+        // its views, so each of them recorded this frame's movers against its own slots.
+        if ((_sunRan || _cubeRan) && (!_sunRan || _sunScanned) && (!_cubeRan || _cubeScanned))
+            _invalidate = false;
         if (_qShadowOn) { _qShadow.End(Gl.TIME_ELAPSED); _qShadowOn = false; }
         LastShadowMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000f / System.Diagnostics.Stopwatch.Frequency;
         _viewSum += LastViews;
@@ -1084,16 +1212,56 @@ public sealed unsafe class CasterPass : IExtenderService
     {
         Vector3 dir = Vector3.Normalize(FrameInputs.SunDir);
         int done = 0;
+        bool invalidate = _frameInvalidate;
+        _sunRan = true; _sunScanned = true;
         for (int i = 0; i < _cascades; i++)
         {
             float radius = ShadowMath.CascadeRadius(i, _cascades, _maxDist);
             float margin = FitMargin();
             Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, focus, radius, margin, _mapSize);
+            // #282 terms 1+2: the fit itself. The recorded layer is a function of exactly these five numbers,
+            // so any of them differing is a bake -- as is a layer holding no complete bake at all.
+            bool keyChanged = !_sunBaked[i]
+                              || _sunKeyFocus[i * 3] != focus.X || _sunKeyFocus[i * 3 + 1] != focus.Y
+                              || _sunKeyFocus[i * 3 + 2] != focus.Z
+                              || _sunKeyDir[i * 3] != dir.X || _sunKeyDir[i * 3 + 1] != dir.Y
+                              || _sunKeyDir[i * 3 + 2] != dir.Z
+                              || _sunKeyFit[i * 2] != radius || _sunKeyFit[i * 2 + 1] != margin;
+            // #282 term 3: a mover inside the fit. NOT a sphere around the focus -- a cascade admits a
+            // CYLINDER along the light axis, and a caster standing up-light of the fit shades into it. Same
+            // split the walk's own directional cull makes (perpendicular distance vs distance along), so the
+            // predicate can only be stale about geometry the view would have culled anyway.
+            bool hasMover = false;
+            for (int q = 0; q < _moverCount && !hasMover; q++)
+            {
+                int m = _moverIdx[q];
+                hasMover = InFit(_liveCx[m] - focus.X, _liveCy[m] - focus.Y, _liveCz[m] - focus.Z,
+                                 _liveR[m], dir, radius, radius + margin);
+            }
+            for (int q = 0; q < _ghostCount && !hasMover; q++)
+                hasMover = InFit(_ghostCx[q] - focus.X, _ghostCy[q] - focus.Y, _ghostCz[q] - focus.Z,
+                                 _ghostR[q], dir, radius, radius + margin);
+            bool stale = ViewStale(invalidate, keyChanged, _sunHadMover[i], hasMover);
+            _sunHadMover[i] = hasMover;
+            if (!stale)
+            {   // The layer still describes this world. Nothing to republish: the key is unchanged, so the
+                // matrix and the two ranges below are recomputed bit-identical to the ones already published.
+                _sunSkippedViews++;
+                done++;
+                continue;
+            }
+            _sunBakedViews++;
             bool viewOk;
             fixed (int* all = _allIdx)
                 viewOk = RenderView(ref _sunRing, _depthTex, _mapSize, i, &vp,
                                     dir, focus, radius, margin, point: false, all, _liveCount);
-            if (!viewOk) break;
+            // A cascade that stalled holds last frame's depth under this frame's key, and the cascades after
+            // it were never scanned -- so their mover evidence is missing too. One blanket frame covers both.
+            if (!viewOk) { _sunBaked[i] = false; _sunScanned = false; break; }
+            _sunBaked[i] = true;
+            _sunKeyFocus[i * 3] = focus.X; _sunKeyFocus[i * 3 + 1] = focus.Y; _sunKeyFocus[i * 3 + 2] = focus.Z;
+            _sunKeyDir[i * 3] = dir.X; _sunKeyDir[i * 3 + 1] = dir.Y; _sunKeyDir[i * 3 + 2] = dir.Z;
+            _sunKeyFit[i * 2] = radius; _sunKeyFit[i * 2 + 1] = margin;
             fixed (float* pub = CascadeVp) *(Matrix4x4*)(pub + i * 16) = vp;
             CascadeTexel[i] = 2f * radius / _mapSize;
             CascadeRange[i] = 2f * radius + margin;
@@ -1191,7 +1359,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // #241: the transition below is only meaningful about a slot this frame BAKED -- a skipped nearest
         // light stages nothing and would otherwise read as the creature shadow vanishing every still frame.
         bool nearestBaked = false;
-        bool invalidate = _invalidate || !_rebake;
+        bool invalidate = _frameInvalidate;
         bool scannedAll = true;
         for (int rank = 0; rank < have; rank++)
         {
@@ -1226,7 +1394,7 @@ public sealed unsafe class CasterPass : IExtenderService
                 float mr = far + _ghostR[q];
                 hasMover = mx * mx + my * my + mz * mz <= mr * mr;
             }
-            bool stale = CubeStale(invalidate, slotChanged, _cubeHadMover[slot], hasMover);
+            bool stale = ViewStale(invalidate, slotChanged, _cubeHadMover[slot], hasMover);
             _cubeHadMover[slot] = hasMover;
 
             if (!stale)
@@ -1282,8 +1450,7 @@ public sealed unsafe class CasterPass : IExtenderService
         }
         // Only a scan that reached every slot may consume the frame's invalidation: the break above leaves
         // the slots after it with no record of this frame's movers.
-        _cubeScanned = scannedAll;
-        if (scannedAll) _invalidate = false;
+        _cubeScanned = scannedAll; _cubeRan = true;
         CubeCount = done > 0 ? _cubeLights : 0;
         if (done > 0) _cubeStamp = _frameSeq;
         _cubeLightsSum += done;
@@ -1349,6 +1516,8 @@ public sealed unsafe class CasterPass : IExtenderService
                    (_overflow > 0 ? $" (+{_overflow} over capacity)" : "") +
                    $", {(float)_cubeBakedSlots / _frames:F1} cube slots re-baked and " +
                    $"{(float)_cubeSkippedSlots / _frames:F1} skipped per frame " +
+                   $"(sun {(float)_sunBakedViews / _frames:F1} re-baked, " +
+                   $"{(float)_sunSkippedViews / _frames:F1} skipped) " +
                    $"(predicate {(_rebake ? "on" : "OFF -- /shadow rebake 1")}, " +
                    $"{(float)_moverSum / _frames:F1} movers/frame -- matrix {(float)_mvMatrix / _frames:F1}, " +
                    $"bones {(float)_mvBone / _frames:F1}, dangly {(float)_mvDangly / _frames:F1}, " +
@@ -1393,6 +1562,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _cullPerp = 0; _cullAlong = 0; _viewOverflow = 0; _cubeLightsSum = 0; _cubeStaged = 0; _viewSum = 0;
         _lodCulled = 0; _ownedInstanceCasts = 0; _degenSum = 0; _liveSum = 0; _qShadow.Reset();
         _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _moverSum = 0; _ghostSum = 0;
+        _sunBakedViews = 0; _sunSkippedViews = 0;
         _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0;
         _skinSum = 0; _skinOverflow = 0; _skinDropped = 0; _boneStalls = 0; _skinNoSlot = 0;
         _skinNotMode1 = 0; _skinBadRange = 0; _boneOverflow = 0;
@@ -1422,7 +1592,13 @@ public sealed unsafe class CasterPass : IExtenderService
         // pointers the allocator is free to hand back. Both have to go, or the first frame in the new area
         // finds every caster "unmoved" and every slot fresh -- shadows frozen from the previous module.
         Array.Clear(_cubeBaked); Array.Clear(_cubeHadMover); Array.Clear(_cubeKeyId);
+        Array.Clear(_sunBaked); Array.Clear(_sunHadMover);
         Array.Clear(_mvKey); Array.Clear(_mvHash); Array.Clear(_mvSeen);
+        // #282: and the per-slot half of the same memo, for the same reason -- slot 5 of the new area is not
+        // slot 5 of the old one, and a stamp that survives the transition says "unmoved" about a part that no
+        // longer exists.
+        Array.Clear(_cLiveKey); Array.Clear(_cLiveHash); Array.Clear(_cLiveSeen);
+        _enrollSig = 0;
         _invalidate = true; _moverCount = 0; _ghostCount = 0;
         _skinCount = 0; _skinLive = 0; _boneSlots = 0; _boneSlotsLive = 0;
         _skinLastVdo = IntPtr.Zero; _skinLastSlot = -1;   // the memo names a slot the loop above just retired
@@ -1448,17 +1624,25 @@ public sealed unsafe class CasterPass : IExtenderService
     /// the part table. Tiles and placeables come out of the same scan under the same
     /// predicate -- the only per-caster difference is <see cref="CasterCandidate.Mx"/>, which decides whether
     /// its model matrix is the node's or the identity, and that is geometry, not kind.
-    /// <para>The set can only hold what the engine's bucket walk carried, so the walk -- not this scan -- is
-    /// what decides whether a caster behind the camera exists at all. <c>SceneInputs</c> widens it on
-    /// exactly the frames this runs (<see cref="WantsWideWalk"/>): a BSP sphere re-walk out to
-    /// <see cref="WalkRadius"/> for static geometry, plus an off-screen gob append for movers. #101 verified
-    /// live that this holds -- no pop-in on approach, and rotating on the spot does not change which objects
-    /// cast.
-    /// <para>ponytail: the gob append is still capped at <c>/shadow nearradius</c> (25u), a radius named
-    /// and sized for the interim two-map scheme's near map, which the #98 cutover deleted. Static geometry
-    /// reaches the full 120u; an off-screen MOVER past 25u casts into no cascade. Raise it if a distant
-    /// creature is ever seen not casting -- it costs gobs appended per frame, which is why it is not simply
-    /// pinned to <see cref="WalkRadius"/>.</para></para></summary>
+    /// <para><b>#282: the source of truth is <see cref="PartTable"/>, filled by <see cref="SceneWalk"/> from
+    /// the engine's own containers -- every part in the AREA, not the slice a camera happened to face.</b>
+    /// This scan is therefore what decides whether a caster behind the camera exists, and it is complete on
+    /// its own. It was not always: before M5 strand 1 the table held what the engine's bucket walk had
+    /// carried, and <c>SceneInputs</c> widened that walk with a BSP sphere re-walk and an off-screen gob
+    /// append on exactly the frames this ran. Both are gone with the premise -- nothing reads the engine's
+    /// draw buckets as a caster source any more.</para>
+    /// <para><b>Why this table and the colour records stay two tables.</b> Not history: the slot index here
+    /// is the shadow pass's motion-memo KEY (<see cref="_cLiveKey"/>), and it is stable for the sixty frames
+    /// between enrollments. The colour path's indices are per-frame ownership indices that renumber every
+    /// frame, so keying staleness on them would put back exactly the slot churn #241's sticky seating exists
+    /// to remove. The two also answer different questions: this set is camera-independent and enrolls under a
+    /// caster predicate (bucket, class, no skinmesh), where ownership is per-frame and pass-wide.
+    /// <para>ponytail: two known leftovers of the split, both bounded. <c>RecordOwnedInstance</c> re-derefs
+    /// the node matrix and re-reads a bbox its caller already holds, and needs
+    /// <c>AlloyCensus.CasterCensusCovers</c> to keep the two tables from double-recording one part; and
+    /// <c>GatherStage</c> rewrites every caster's 20-byte command and 96-byte record once per FRAME
+    /// unconditionally, where the colour path (#242) compares into place and re-sends only what changed.
+    /// Per frame, not per view, since #286 -- the per-view rewrite is already gone.</para></para></summary>
     private static void Enroll()
     {
         _sinceEnroll = 0;
@@ -1466,6 +1650,7 @@ public sealed unsafe class CasterPass : IExtenderService
         Array.Clear(_sortCount, 0, MaxVdos);
         var c = default(CasterCandidate);
         int candidates = 0;
+        ulong sig = 0;
         for (int e = 0, n = PartTable.EntryCount; e < n; e++)
         {
             if (!AlloyCensus.TryCasterCandidate(e, ref c)) continue;
@@ -1477,6 +1662,7 @@ public sealed unsafe class CasterPass : IExtenderService
             _cTri[i] = c.Tri; _cNode[i] = c.Node; _cMat[i] = c.Mat; _cVdo[i] = c.Vdo;
             _cItem[i] = c.Item; _cPrim[i] = c.Prim; _cVao[i] = v; _cMx[i] = c.Mx;
             _cDangly[i] = c.Dangly;
+            sig ^= Mix((ulong)c.Tri);
             // A masked caster needs a UV stream to sample with; without one there is nothing to test and the
             // draw would be the solid quad again, so it stays a plain caster and the count says how many.
             // #126 follow-up: WHAT the discard threshold would be if this caster turns out to carry alpha.
@@ -1500,6 +1686,12 @@ public sealed unsafe class CasterPass : IExtenderService
         for (int k = 0; k < MaxVdos; k++) { int n = _sortCount[k]; _sortCount[k] = at; at += n; }
         for (int i = 0; i < _casterCount; i++) _order[_sortCount[_cVao[i]]++] = i;
 
+        // #282: the set changed, so casters left the table without any frame ever sweeping them and their
+        // slots would keep their shadows for good. One blanket re-bake is the whole cost, and only on the
+        // enrollments that actually changed something -- a static area re-enrolls to the same signature and
+        // pays nothing.
+        if (sig != _enrollSig || _casterCount != _lastEnrolled) _invalidate = true;
+        _enrollSig = sig;
         _lastEnrolled = _casterCount; _lastCandidates = candidates;
         if (_casterCount > 0 && !_reportedHit)
         {
@@ -1730,6 +1922,7 @@ public sealed unsafe class CasterPass : IExtenderService
         {
             _depthTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades);
             if (_depthTex == 0) return false;   // DepthArray already disarmed by name
+            Array.Clear(_sunBaked);   // #282: fresh storage holds no bake, whatever the keys say
         }
         return true;
     }
@@ -1906,19 +2099,22 @@ public sealed unsafe class CasterPass : IExtenderService
         fixed (float* modelAll = _liveModel)
         for (int k = 0; k < _casterCount; k++)
         {
-            if (live >= MaxCasters) break;
+            // #282: the tail of the table gets no visit this frame, so nothing would ever sweep whatever of
+            // it was live last frame. One blanket invalidate is the honest answer to a capacity overflow.
+            if (live >= MaxCasters) { _invalidate = true; break; }
             int i = _order[k];
             IntPtr tri = _cTri[i];
-            if (tri == IntPtr.Zero) { dropped++; continue; }
+            if (tri == IntPtr.Zero) { TableVanish(i); dropped++; continue; }
             // recycled pointer / re-parented part: not ours any more, wait for the next enrollment
             PartRef p = new(tri);
             if (p.Node.Ptr != _cNode[i] || p.Material.Ptr != _cMat[i])
-            { _cTri[i] = IntPtr.Zero; dropped++; continue; }
+            { _cTri[i] = IntPtr.Zero; TableVanish(i); dropped++; continue; }
 
             Matrix4x4 model = _cMx[i] ? *(Matrix4x4*)new NodeRef(_cNode[i]).Matrix : Matrix4x4.Identity;
 
             // index range re-read live from the VDO item tables (they move under Repack)
-            if (!TryRange(_cVdo[i], _cItem[i], out int idxCount, out uint first, out uint baseVert)) { dropped++; continue; }
+            if (!TryRange(_cVdo[i], _cItem[i], out int idxCount, out uint first, out uint baseVert))
+            { TableVanish(i); dropped++; continue; }
 
             // World centre, exactly as the interim cube cull derives it (live-verified there): a matrix-class
             // part's centre is its model matrix TRANSLATION, read fresh because it moves; everything else is
@@ -1947,8 +2143,8 @@ public sealed unsafe class CasterPass : IExtenderService
             // as moved, so an appearance invalidates the slots it appears in), and -- through the sweep below
             // -- it is gone. Dangly and the owned-buffer dirt cover the fourth: vertices that move under a
             // matrix that does not.
-            bool cMoved = Moved(tri, ModelHash(modelAll + live * 16),
-                                _liveCx[live], _liveCy[live], _liveCz[live], _liveR[live]);
+            bool cMoved = TableMoved(i, tri, ModelHash(modelAll + live * 16),
+                                     _liveCx[live], _liveCy[live], _liveCz[live], _liveR[live]);
             // Counted by REASON, not just totalled: "no improvement" and "every caster is a mover" look
             // identical in a skip count, and which TERM is saturating decides where the next fix goes.
             // Classification only. A still caster is STILL A CASTER: it stays in the live list and casts

@@ -138,7 +138,7 @@ internal static unsafe class GrassField
     private static ExtenderLog? _log;
     private static delegate* unmanaged<IntPtr, void> _origBin, _origReload;
     private static delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet;
-    private static byte* _binBucket, _grassInfo, _grassEnabled, _gobBucket;
+    private static byte* _binBucket, _grassInfo, _grassEnabled;
     private static float* _farDist, _nearRadius;
     /// <summary>Boot values for <see cref="ResetTuning"/> -- what <c>/grass reset</c> restores. These ARE
     /// the code defaults now that the dials are chat commands (ADR 0013): there is no earlier value to
@@ -250,7 +250,6 @@ internal static unsafe class GrassField
         _grassInfo = (byte*)Native.Sym(SymbolMap.GrassInfo);
         _grassEnabled = (byte*)Native.Sym(SymbolMap.GrassEnabled);
         // Not fatal: no gob list just means nothing displaces the grass (the pre-#127-followup look).
-        _gobBucket = (byte*)Native.Sym(SymbolMap.GobBucket);
         _farDist = (float*)Native.Sym(SymbolMap.GrassFarDistance);
         _nearRadius = (float*)Native.Sym(SymbolMap.GrassNearRadius);
         _aurGet = (delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr>)
@@ -556,7 +555,7 @@ internal static unsafe class GrassField
     /// hole.</para></summary>
     private static void BuildPush()
     {
-        if (_pushTex == 0 || _push == null || _gobBucket == null) return;
+        if (_pushTex == 0 || _push == null) return;
         _pushers = 0; _cullers = 0; _reticles = 0;
         // Neutral is 128,128 for the direction and 0 for the flatten -- not one byte value, so it comes from
         // a template rather than an Array.Fill.
@@ -570,16 +569,28 @@ internal static unsafe class GrassField
         _pushOriginX = MathF.Floor(centre.X / texel) * texel - extent * 0.5f;
         _pushOriginY = MathF.Floor(centre.Y / texel) * texel - extent * 0.5f;
 
-        if (_pushGain > 0f && _pushRadius > 0f)
+        // #282: the AREA's gobs, not the frame's `gobbucket`. That bucket holds what the engine's camera cull
+        // left, and until #282 it ALSO held whatever the shadow feed appended to it -- off-screen movers within
+        // 25u of the player, which is exactly the population that dents grass the camera is not facing. Reading
+        // the bucket made this pass's behaviour a side effect of somebody else's feature; reading Scene+0x130
+        // makes it a fact about the area, and a creature just off-camera bends the grass it is standing in
+        // whether or not anything meant to draw it. Scene+0x130 is the same list SceneWalk enumerates.
+        IntPtr scene = SceneWalk.WorldScene;
+        if (_pushGain > 0f && _pushRadius > 0f && scene != IntPtr.Zero)
         {
-            IntPtr* gobs = *(IntPtr**)(_gobBucket + ListPtr);
-            int count = *(int*)(_gobBucket + ListCount);
+            IntPtr* gobs = *(IntPtr**)(scene + SceneLayout.SceneGobs);
+            int count = *(int*)(scene + SceneLayout.SceneGobCount);
             float r = _pushRadius, rTex = r * _pushPerUnit;
+            // ponytail: no cheap pre-reject before Footprint. `reach` depends on the footprint, and with
+            // `_cullMax` at its default 0 (uncapped) there is no sound bound to test against first -- a
+            // guess that is too tight drops a cart-sized hole. So the whole area's gobs pay one bounded
+            // pointer chase each, a few thousand derefs a frame with no allocation. Cap `/grass cullmax`
+            // and hoist the window test above Footprint if that ever shows up in a profile.
             for (int i = 0; gobs != null && i < count; i++)
             {
                 IntPtr gob = gobs[i];
                 if (gob == IntPtr.Zero) continue;
-                // Same guard SceneInputs uses: a gob with no part tree has no geometry to stand in the
+                // Same guard the shadow feed used: a gob with no part tree has no geometry to stand in the
                 // grass with, so it must not dent it.
                 IntPtr tree = *(IntPtr*)(gob + SceneLayout.GobPartTree);
                 if (tree == IntPtr.Zero) continue;
@@ -1344,7 +1355,8 @@ internal static unsafe class GrassField
                // Non-solid gobs are the target reticle and the spell VFX. A zero here on a client that is
                // clearly targeting something means PartTriMesh::GetIsOpaque did not resolve and everything
                // counts as solid again.
-               $", {_reticles} non-solid skipped" + (_gobBucket == null ? " (NO GOB LIST -- displacement off)" : "");
+               $", {_reticles} non-solid skipped"
+               + (SceneWalk.WorldScene == IntPtr.Zero ? " (NO WORLD SCENE -- displacement off)" : "");
     }
 
     /// <summary>Off-device (run-demo.sh). Three things that are decisions rather than transcriptions, and each

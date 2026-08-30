@@ -111,9 +111,16 @@ internal static unsafe class SceneWalk
 
     /// <summary>Once per world frame, at the frame anchor and before enrollment. One int load in the common
     /// case; a full re-walk when the epoch moved or the Scene changed. Engine thread, allocation-free.</summary>
+    /// <summary>#282: the world Scene this walk last enumerated, or Zero. Published for the passes that want
+    /// the AREA's gobs rather than the frame's culled <c>gobbucket</c> -- the same "enumerate the world, not
+    /// the frame" move the part table itself made, and what keeps a pass from silently inheriting whatever
+    /// somebody else last pushed into an engine bucket.</summary>
+    internal static IntPtr WorldScene { get; private set; }
+
     internal static void Tick(IntPtr scene)
     {
         if (!Ready || scene == IntPtr.Zero) return;
+        WorldScene = AlloyRenderer.IsWorldScene(scene) ? scene : IntPtr.Zero;
         _framesSinceLog++;
         int seq = *_sequence;
         bool bumped = _seqLatched && seq != _lastSeq;

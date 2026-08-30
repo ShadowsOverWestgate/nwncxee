@@ -20,7 +20,13 @@ internal static class SceneLayout
     /// <c>CExoArrayList&lt;PartTriMesh*&gt;</c> of tile geometry (items +0x20, count +0x28).
     /// <c>SceneBSPAddPart</c> @0x47ca10 files a plain <c>PartTriMesh</c> at exactly
     /// <c>*(BSPFitBox(...)+0x70) + 0x20</c>; the other lists at +0x10 (gobs), +0x30 (emitters), +0x40
-    /// (projections), +0x50 (beams), +0x70 (triggers) are other classes' and are not walked here.</summary>
+    /// (projections), +0x50 (beams), +0x70 (triggers) are other classes' and are not walked here.
+    /// <para>#282, from the caster re-walk it deleted: that walk ALSO read a single "primary" mesh at
+    /// <c>nodedata+0x90</c>, on the reading that the engine takes one branch or the other depending on
+    /// <c>currentscene+0x1e0</c>. <see cref="SceneWalk"/> has only ever read +0x20 and has been the caster
+    /// source since M5 strand 1, so nothing changed when the second read went -- but the offset is recorded
+    /// here rather than lost with the code, because a primary-only tile node would be a HOLE in the walk and
+    /// this is the only note of where to look for one.</para></summary>
     public const int BspNodeData = 0x70, BspDataTriMesh = 0x20, BspDataTriMeshCount = 0x28;
     /// <summary>Gob -&gt; node pointer. MUST be non-null before appending to the gobbucket: the sort comparator
     /// <c>FUN_0055e070</c> blindly derefs <c>*(gob+0x68)+0x8e</c> (the render path null-checks it, the sort
