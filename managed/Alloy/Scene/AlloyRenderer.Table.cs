@@ -99,6 +99,11 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly uint[] _vElemBuf = new uint[MaxVdos];
     private static readonly VertexStream[] _vPos = new VertexStream[MaxVdos];
     private static readonly VertexStream[] _vUv = new VertexStream[MaxVdos];
+    /// <summary>#294: the engine's UV location was DISABLED on this VDO's VAO, as opposed to enabled over no
+    /// buffer. Both leave <c>_vUv</c> absent and both are owned, but only the first proves the engine's
+    /// vertex stage reads the same generic (0,0,0,1) constant Alloy's does -- so this is a report, not a
+    /// gate.</summary>
+    private static readonly bool[] _vUvDisabled = new bool[MaxVdos];
     private static readonly VertexStream[] _vNrm = new VertexStream[MaxVdos];
     private static readonly bool[] _vLit = new bool[MaxVdos];       // #83: has a usable 3-float normal stream
     /// <summary>The VDO carries the BONE streams, i.e. it belongs to a true skinmesh (a cloak, a robe, a
@@ -114,6 +119,26 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly VertexStream[] _vBi = new VertexStream[MaxVdos], _vBw = new VertexStream[MaxVdos];
     private static readonly bool[] _vStale = new bool[MaxVdos];     // slot recycled: rebuild the 4.6 VAO
     private static int _vdoCount;
+
+    /// <summary>#294: which live VDO slots carry NO UV stream, for the frame dump's header. A part on one of
+    /// these samples every texture at the generic constant (0,0) -- one texel of the diffuse, one texel of
+    /// each map -- so its whole material is a single sample stretched over the mesh. That is the engine's
+    /// input too, but it is the first thing to suspect when an owned part draws in the wrong COLOUR rather
+    /// than not at all, and no other column in the dump would say so. Slot indices, matching the <c>vao=</c>
+    /// field on the G lines.</summary>
+    internal static string UvlessSlots()
+    {
+        string s = "";
+        for (int v = 0; v < _vdoCount; v++)
+        {
+            if (_vVdo[v] == IntPtr.Zero || _vUv[v].Present) continue;
+            // disabled = the engine's own vertex stage reads the same constant, so Alloy matches it.
+            // unbacked = the location is ENABLED over no buffer, and then it does not: the engine may be
+            // pulling real UVs where Alloy feeds (0,0), which is a silent misrender rather than parity.
+            s += (s.Length == 0 ? "" : ",") + v + (_vUvDisabled[v] ? "(disabled)" : "(unbacked)");
+        }
+        return s.Length == 0 ? "none" : s;
+    }
     /// <summary>Counting-sort buckets. The draw order groups by (lit, no-cull, VDO) so the VAO, the PROGRAM
     /// and (#292) the face-culling state each settle once per group -- lit slots are the upper half, and the
     /// two-sided slots the upper half of each of those. <see cref="SortKeyOf"/> says why lit outranks cull.

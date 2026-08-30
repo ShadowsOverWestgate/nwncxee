@@ -572,11 +572,24 @@ public sealed unsafe partial class AlloyRenderer
                     // that declared a map but resolves to nothing this frame drops out of the mask rather
                     // than leaving the shader sampling an empty unit.
                     slots = 0;
+                    // #294: a map needs COORDINATES to be a map. On a VDO with no UV stream every sampler
+                    // resolves to the one texel at the generic constant (0,0) -- the same value for every
+                    // fragment of the mesh -- so the normal, specular, roughness, height and AO slots stop
+                    // carrying material detail and start carrying whichever pixel happens to sit in the
+                    // corner of the sheet. That is not the .mtr's intent, it is an artifact of sampling a 2D
+                    // map with nothing to sample it by, and it is load-bearing: SowxSynthPbr takes a declared
+                    // roughness WHOLE, so one dark corner texel makes a frosted crystal a mirror.
+                    // The env flag survives -- it is keyed on the normal and the reflection vector, not on
+                    // uv -- and so does the diffuse, which the engine reads at the same constant for the same
+                    // reason (it is where envLevel comes from). What is dropped is only what cannot mean
+                    // anything, so the synthesis falls back to its generated floor exactly as it does for
+                    // content that ships no maps at all.
+                    bool mapsMeanNothing = !_vUv[_oVao[i]].Present;
                     for (int s = 0; s < MapSlots; s++)
                     {
                         slotTid[s] = 0;
                         _recAurS[i * MapSlots + s] = IntPtr.Zero;
-                        if (lit && (_oSlots[i] & SlotBit(s)) != 0)
+                        if (lit && !mapsMeanNothing && (_oSlots[i] & SlotBit(s)) != 0)
                         {
                             var sa = mat.Texture(s + 1);
                             _recAurS[i * MapSlots + s] = sa.Ptr;
@@ -591,7 +604,7 @@ public sealed unsafe partial class AlloyRenderer
                     }
                     if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
                     // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
-                    if (lit && _aoTest) { slotTid[AoSlot] = tid; slots |= AoBit; }
+                    if (lit && _aoTest && !mapsMeanNothing) { slotTid[AoSlot] = tid; slots |= AoBit; }
                     _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots;
                     for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
                 }

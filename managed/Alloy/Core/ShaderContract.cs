@@ -57,6 +57,10 @@ internal static class ShaderContract
     /// <para>Named terms rather than the whole line, so an override may still restyle everything around
     /// them -- what it may not do is drop them.</para></summary>
     public static bool CutoutSafe(string vs, string fs)
+        // The probe is a SUBSTRING of the whole stage text, COMMENTS INCLUDED: a stage that merely mentions
+        // e.g. CasterPass's env threshold by name takes the vAlpha arm on the strength of the comment and
+        // fails against a vertex stage that forwards nothing. Say "the caster's env threshold", not its
+        // identifier, anywhere inside a stage string.
         => fs.Contains("uAlphaCut") && (fs.Contains("vAlpha") ? vs.Contains("vAlpha") : fs.Contains("rot.w"));
 
     /// <summary>#137: does this VERTEX stage carry the skinning branch? Same shape, same reason, as
@@ -341,11 +345,17 @@ internal static class ShaderContract
                   // kept the uniform but lost the >= 0.0 guard would discard every fragment of the OPAQUE
                   // set (which passes -1.0) and render an empty world.
                   && OwnedFs.Contains("if (uAlphaCut >= 0.0 && t.a <= uAlphaCut) discard;")
-                  && OwnedLitFsMain.Contains("if (uAlphaCut >= 0.0 && texel.a <= uAlphaCut) discard;")
+                  && OwnedLitFsMain.Contains("if (uAlphaCut >= 0.0 && coverage <= uAlphaCut) discard;")
+                  // #294: and COVERAGE is what the lit stage cuts and blends on, never the raw texel alpha.
+                  // On an env-mapped material that channel is reflectivity (it becomes envLevel), and the
+                  // engine spends it once: inc_standard.shd:289 multiplies only .rgb through there. A stage
+                  // that loses this line spends it twice and every reflective surface draws as a ghost --
+                  // which is invisible in a screenshot of anything that is not shiny, hence the guard.
+                  && OwnedLitFsMain.Contains("float coverage = (slots & SOWX_SLOT_ENV) != 0 ? 1.0 : texel.a;")
                   // ...and the per-draw alpha reaching the framebuffer, which is the whole of the blended
                   // class: a stage writing a constant 1.0 there renders every transparent surface solid.
                   && OwnedFs.Contains("t.a * vAlpha") && OwnedVs.Contains("vAlpha = d.rot.w;")
-                  && OwnedLitFsMain.Contains("texel.a * d.rot.w")
+                  && OwnedLitFsMain.Contains("coverage * d.rot.w")
                   // ...and the embedded stages themselves satisfy the override guard, so a wrong guard fails
                   // here rather than rebuilding every program from the embedded text every session (which
                   // would look like the override silently not applying).

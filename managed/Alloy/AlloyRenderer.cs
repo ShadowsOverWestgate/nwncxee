@@ -1364,7 +1364,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // #284: OUTSIDE the holes parenthetical on purpose. The number that says the drip worked
                    // is the one printed on a period with no holes left at all.
                    DripNote() +
-                   $" on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}) " +
+                   $" on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}{UvlessNote()}) " +
                    $"/ {_lastTextures} textures " +
                    $"({_litCount} lit, {_litUnownable} lit left to the engine" +
                    // #128: what the creature class costs, split. "Creatures are still vanilla" has three

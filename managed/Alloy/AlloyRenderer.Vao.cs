@@ -34,7 +34,22 @@ public sealed unsafe partial class AlloyRenderer
     /// GLRender::ConnectShaderData's bind table). A failed query (type 0) is refused rather than fed to
     /// VertexAttribPointer -- an enabled-but-unset array crashes the driver's vertex pull (#81). A VDO with
     /// no normal stream is still ownable, just never LIT (#83): lit parts on it hand themselves back to the
-    /// engine rather than shade off a guessed normal.</summary>
+    /// engine rather than shade off a guessed normal.
+    /// <para>#294: and a VDO with no UV stream is ownable too. It used to be refused, which since #285 made
+    /// every part on it a hole -- the glass orb that cast a shadow and drew nothing. A UV-less mesh is not
+    /// broken content: env-mapped glass looks its texture up by the reflection vector and has no diffuse UV
+    /// to have. <see cref="BuildVao"/> leaves <see cref="LocUv"/> unbound, so the vertex stage reads GL's
+    /// generic constant (0,0,0,1) at that location -- which is what the ENGINE's own draw feeds it, for the
+    /// same reason: its VAO never got a VertexAttribPointer for the slot either, and the binary never calls
+    /// any <c>glVertexAttrib{1..4}*</c> generic setter (every one of those glew slots is stored by glewInit
+    /// @0xed9d15 and read by nobody), so the constant is still GL's default on both sides.</para>
+    /// <para>The other two conditions stay refusals, and here is why. <b>no-elembuf</b>: Alloy submits
+    /// exclusively through MultiDrawElementsIndirect, so a VDO the engine draws with DrawArrays has no index
+    /// buffer to hand it and owning one would mean synthesizing indices for a mesh that has none.
+    /// <b>no-pos</b>: there is no position stream to transform, and Alloy will not guess one. A non-zero
+    /// no-pos is also a drip-ordering suspect rather than a content fact -- see <see cref="DripVao"/>, whose
+    /// residency gate exists because dripping before the pools are named bakes buffer 0 in permanently.</para>
+    /// </summary>
     private static bool Harvest(IntPtr vdo, int s)
     {
         uint vao = new VdoRef(vdo).Vao;
@@ -47,6 +62,9 @@ public sealed unsafe partial class AlloyRenderer
         _vElemBuf[s] = (uint)eb;
         VertexArrays.Read(EngPos, out _vPos[s]);
         VertexArrays.Read(EngUv, out _vUv[s]);
+        // #294: disabled, or enabled-but-unbacked? Read() collapses the two and only the first is the
+        // "engine reads the generic constant too" case. Asked HERE because Enabled() queries the binding.
+        _vUvDisabled[s] = !VertexArrays.Enabled(EngUv);
         VertexArrays.Read(EngNormal, out _vNrm[s]);
         // ...while the HARVESTED VAO is still bound: Enabled() queries the binding, not the slot, so asking
         // after the restore below would answer for whatever the engine had bound and refuse (or admit) the
@@ -63,7 +81,7 @@ public sealed unsafe partial class AlloyRenderer
         else _vSkin[s] = VertexArrays.Enabled(EngBoneIdx) && VertexArrays.Enabled(EngBoneW);
         Gl.BindVertexArray((uint)saved);
         _vLit[s] = _vNrm[s].Buf != 0 && _vNrm[s].Type == Gl.FLOAT && _vNrm[s].Size == 3;
-        if (_vElemBuf[s] != 0 && _vPos[s].Present && _vUv[s].Buf != 0) return true;
+        if (_vElemBuf[s] != 0 && _vPos[s].Present) return true;
         HarvestFailed(vdo, vao, _vElemBuf[s], _vPos[s].Present, _vUv[s].Buf);
         return false;
     }
@@ -169,20 +187,24 @@ public sealed unsafe partial class AlloyRenderer
            : $" [VAO drip: {_dripMade} made, {_dripRefused} refused, {_dripDeferred} deferred at the last enrollment]";
 
     /// <summary>Distinct VDOs whose harvest has already been reported. #285 made every refusal a hole, and
-    /// <c>no-vao-slot</c> is the largest one on live content -- but "harvest failed" names four different
+    /// <c>no-vao-slot</c> is the largest one on live content -- but "harvest failed" names several different
     /// faults and the period line cannot tell them apart. Bounded: one line per VDO, at most
     /// <see cref="HarvestReportCap"/> of them, so a persistent failure does not become a log flood.</summary>
     private static readonly System.Collections.Generic.HashSet<IntPtr> _harvestSeen = new();
     private const int HarvestReportCap = 24;
     internal static int HarvestNoVao, HarvestNoElem, HarvestNoPos, HarvestNoUv;
 
-    /// <summary>Name which of Harvest's four conditions refused this VDO, once per distinct VDO. The counts
+    /// <summary>Name which of Harvest's three surviving conditions refused this VDO, once per distinct VDO
+    /// (#294 retired the fourth). The counts
     /// are populations of VDOs, not of parts or frames.</summary>
     private static void HarvestFailed(IntPtr vdo, uint vao, uint elem, bool pos, uint uv)
     {
         if (vao == 0) HarvestNoVao++;
         else if (elem == 0) HarvestNoElem++;
         else if (!pos) HarvestNoPos++;
+        // ponytail: structurally zero since #294 owned the UV-less VDO, and kept only because it reading 0
+        // on the content that reported the hole IS the acceptance signal. Delete this branch, the counter
+        // and its period-line field once #294 is confirmed live.
         else HarvestNoUv++;
         if (_harvestSeen.Count >= HarvestReportCap || !_harvestSeen.Add(vdo)) return;
         var v = new VdoRef(vdo);
@@ -223,6 +245,22 @@ public sealed unsafe partial class AlloyRenderer
         return n;
     }
 
+    /// <summary>#294's residual: live VDO slots owned with no UV stream, and how many of those had the
+    /// engine's UV location merely DISABLED (the case where Alloy's constant and the engine's are provably
+    /// the same one) rather than enabled over no buffer. Scanned rather than tallied, for
+    /// <see cref="OwnedVaos"/>'s reason -- a lifetime counter re-counts every re-enrollment.</summary>
+    private static string UvlessNote()
+    {
+        int n = 0, off = 0;
+        for (int v = 0; v < _vdoCount; v++)
+        {
+            if (_vVdo[v] == IntPtr.Zero || _vUv[v].Present) continue;
+            n++;
+            if (_vUvDisabled[v]) off++;
+        }
+        return n == 0 ? "" : $", {n} with no UV stream ({off} engine-disabled)";
+    }
+
     /// <summary>One VAO over this slot's streams, wherever the engine's pool descriptors say they live.</summary>
     private static uint BuildVao(int v)
     {
@@ -234,7 +272,9 @@ public sealed unsafe partial class AlloyRenderer
         uint vao; Gl.GenVertexArrays(1, &vao);
         Gl.BindVertexArray(vao);
         VertexArrays.Bind(LocPos, in pos);
-        VertexArrays.Bind(LocUv, in uv);
+        // #294: unbound, not zero-filled. A disabled location supplies GL's generic constant (0,0,0,1), and
+        // nothing on either side of the process ever writes that constant -- so this IS the engine's own UV.
+        if (uv.Present) VertexArrays.Bind(LocUv, in uv);
         if (_vLit[v]) VertexArrays.Bind(LocNrm, in nrm);
         // #137: and the bone streams, on a skinned VDO. Same "one stream and no more" rule -- these two are
         // the only additions, and both are consumed by the skinning branch the Alloy stages now carry.

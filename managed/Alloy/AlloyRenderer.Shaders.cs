@@ -793,10 +793,20 @@ public sealed unsafe partial class AlloyRenderer
             vec3 matDiffuse = d.dif.rgb;
             vec4 texel = texture(uTex, uvA);
             if (flowMix > 0.0) texel = mix(texel, texture(uTex, uvB), flowMix);
+            // #294: what the diffuse alpha MEANS here, asked once and spent once. On an env-mapped material
+            // it is REFLECTIVITY, not coverage -- it becomes envLevel four lines down -- and the engine is
+            // explicit about not spending it twice: inc_standard.shd:289 multiplies only `.rgb` through on
+            // the ENVIRONMENT_MAP branch where :293 multiplies all four components on the other, and its
+            // AlphaDiscard (:175) tests the MATERIAL alpha there, never the texel's. Alloy spent it as
+            // reflectivity AND again as opacity, so the more reflective a surface was authored the more
+            // invisible it drew -- the #294 crystal reads bright and solid in vanilla and as a ghost here.
+            // CasterPass already knew this and lowered its own env threshold for the same reason; the
+            // colour path's turn.
+            float coverage = (slots & SOWX_SLOT_ENV) != 0 ? 1.0 : texel.a;
             // #126: the cutout, on the FINAL diffuse alpha and ahead of every other branch -- a discarded
             // fragment must cost neither the material synthesis nor a probe sample, and the probe capture
             // has to punch the same holes the screen does or the cube reflects solid foliage.
-            if (uAlphaCut >= 0.0 && texel.a <= uAlphaCut) discard;
+            if (uAlphaCut >= 0.0 && coverage <= uAlphaCut) discard;
             // #121: the diffuse ALPHA is the reflectivity mask on env-mapped content (inc_standard.shd:248,
             // fEnvMapLevel = 1 - alpha). A diffuse with no alpha channel reads 1.0, i.e. level 0 -- which is
             // why this costs nothing on the parts that are not env-mapped.
@@ -878,8 +888,10 @@ public sealed unsafe partial class AlloyRenderer
             // #126: rot.w is the per-draw alpha multiplier -- the part's own alpha times the tile fade
             // factor. It reaches the framebuffer only where the class blends; the opaque set draws with
             // GL_BLEND off, so its alpha channel is written and ignored, exactly as before.
+            // #294: times COVERAGE, not the raw texel alpha -- on an env-mapped material that channel is
+            // reflectivity and the engine leaves the fragment alpha to the material alone.
             // #132: linear out. No encode, no shoulder -- the resolve owns both for the whole frame.
-            frag = vec4(SowxFog(lit * kh, vDepth), texel.a * d.rot.w);
+            frag = vec4(SowxFog(lit * kh, vDepth), coverage * d.rot.w);
         }
         """;
 }
