@@ -391,7 +391,7 @@ internal static unsafe class Particles
     private static int _lAmbient = -1, _lDiffuse = -1, _lDir = -1, _lGrid = -1, _lTile = -1, _lZ = -1,
                        _lFalloff = -1, _lWrap = -1, _lAtten = -1, _lHot = -1, _lWrapN = -1,
                        _lSunTex = -1, _lSunVp = -1, _lSunTexel = -1, _lSunBias = -1, _lSunCount = -1,
-                       _lSunDynTex = -1, _lSunDyn = -1,
+                       _lSunDynTex = -1, _lSunDyn = -1, _lSunFocus = -1, _lSunRadius = -1,
                        _lCubeTex = -1, _lCubeLight = -1, _lCubePlane = -1, _lCubeCount = -1, _lCubeSoft = -1,
                        _lCubeDynTex = -1, _lCubeDynPage = -1,
                        _lSunMedia = -1, _lLocalMedia = -1;
@@ -761,7 +761,8 @@ internal static unsafe class Particles
             AlloyLights.SetDrawUniforms(_lGrid, _lTile, _lZ, _lFalloff, _lWrap, _lAtten, _lHot, _lWrapN,
                                         viewport, near, far);
             AlloyRenderer.UploadAreaTerms(_lAmbient, _lDiffuse, _lDir);
-            AlloyRenderer.UploadSunCascades(_lSunTex, _lSunVp, _lSunTexel, _lSunBias, _lSunCount, _lSunDyn);
+            AlloyRenderer.UploadSunCascades(_lSunTex, _lSunVp, _lSunTexel, _lSunBias, _lSunCount, _lSunDyn,
+                                            _lSunFocus, _lSunRadius);
             AlloyRenderer.UploadLocalCubes(_lCubeTex, _lCubeLight, _lCubePlane, _lCubeCount, _lCubeSoft,
                                            _lCubeDynPage);
             // A particle is a point in a volume, not a point on a surface: the shadow lookups' normal
@@ -1439,6 +1440,7 @@ internal static unsafe class Particles
         _lHot = GlProgram.Loc(_prog, "uHot"); _lWrapN = GlProgram.Loc(_prog, "uWrapN");
         _lSunTex = GlProgram.Loc(_prog, "uSunShadow"); _lSunVp = GlProgram.Loc(_prog, "uSunVp");
         _lSunDynTex = GlProgram.Loc(_prog, "uSunDynShadow"); _lSunDyn = GlProgram.Loc(_prog, "uSunDyn");
+        _lSunFocus = GlProgram.Loc(_prog, "uSunFocus"); _lSunRadius = GlProgram.Loc(_prog, "uSunRadius");
         _lSunTexel = GlProgram.Loc(_prog, "uSunTexel"); _lSunBias = GlProgram.Loc(_prog, "uSunBias");
         _lSunCount = GlProgram.Loc(_prog, "uSunCascades");
         _lCubeTex = GlProgram.Loc(_prog, "uLocalShadow"); _lCubeLight = GlProgram.Loc(_prog, "uLocalLight");
@@ -2294,7 +2296,7 @@ internal static unsafe class Particles
             {
                 vec3 N = normalize(vNrm);
                 float ndl = clamp(dot(N, uAreaDir), 0.0, 1.0);
-                vec3 sun = uAreaDiffuse * (ndl * SowxSunShadow(vWorld, N, ndl));
+                vec3 sun = uAreaDiffuse * (ndl * SowxSunShadow(vWorld, N, ndl, ndl));
                 vec3 point = SowxClusteredDiffuse(vWorld, N, vViewZ);
                 // the 0.15 floor and the sun-facing wrap are inc_lighting.shd:679, as every other owned
                 // stage runs them

@@ -228,6 +228,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, int, void> Uniform1i;
     public static delegate* unmanaged<int, float, void> Uniform1f;
     public static delegate* unmanaged<int, float, float, void> Uniform2f;
+    public static delegate* unmanaged<int, float, float, float, void> Uniform3f;
     public static delegate* unmanaged<int, int, float*, void> Uniform1fv;   // (loc, count, ptr) -- per-slot floats
     public static delegate* unmanaged<int, int, int*, void> Uniform1iv;     // (loc, count, ptr) -- per-slot ints
     public static delegate* unmanaged<int, int, float*, void> Uniform3fv;   // (loc, count, ptr) -- per-slot vec3
@@ -441,6 +442,7 @@ public static unsafe class Gl
         Uniform1i = (delegate* unmanaged<int, int, void>)P("glUniform1i");
         Uniform1f = (delegate* unmanaged<int, float, void>)P("glUniform1f");
         Uniform2f = (delegate* unmanaged<int, float, float, void>)P("glUniform2f");
+        Uniform3f = (delegate* unmanaged<int, float, float, float, void>)P("glUniform3f");
         Uniform1fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform1fv");
         Uniform1iv = (delegate* unmanaged<int, int, int*, void>)P("glUniform1iv");
         Uniform3fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform3fv");

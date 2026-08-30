@@ -109,7 +109,8 @@ public sealed unsafe partial class AlloyRenderer
     /// matrices are never re-derived here, and the freshness test is the single gate that covers interiors, a
     /// vanilla stretch and a disarm alike.</summary>
     private static void UploadSunCascades()
-        => UploadSunCascades(_litSunTex, _litSunVp, _litSunTexel, _litSunBias, _litSunCount, _litSunDyn);
+        => UploadSunCascades(_litSunTex, _litSunVp, _litSunTexel, _litSunBias, _litSunCount, _litSunDyn,
+                             _litSunFocus, _litSunRadius);
 
     /// <summary>Point the lit program at <see cref="CasterPass"/>'s local-light cube array, or tell it there
     /// is nothing to sample. The per-slot position and far plane are the ones each cube was RENDERED with --
@@ -157,7 +158,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#127: the cascade receiver's uniforms, into a named program's locations. Same values, same
     /// freshness gate; only where they land differs.</summary>
     internal static void UploadSunCascades(int locTex, int locVp, int locTexel, int locBias, int locCount,
-                                           int locDyn)
+                                           int locDyn, int locFocus = -1, int locRadius = -1)
     {
         if (locCount < 0) return;
         if (!CasterPass.CascadesFresh) { Gl.Uniform1i(locCount, 0); return; }
@@ -184,6 +185,20 @@ public sealed unsafe partial class AlloyRenderer
             pack[i] = range > 0f ? _sunWorldBias / range : 0f;
         }
         Gl.Uniform4fv(locBias, 1, pack);
+        // #308 follow-up: the cross-fade band's two terms -- the LIVE focus (smooth where the latched fits
+        // step) and the per-cascade fit radius. Absent on a stale content override (location -1), which
+        // degrades to the hard handoff, never to a wrong blend.
+        if (locFocus >= 0)
+        {
+            var fo = CasterPass.SunFocusLive;
+            pack[0] = fo.X; pack[1] = fo.Y; pack[2] = fo.Z;
+            Gl.Uniform3fv(locFocus, 1, pack);
+        }
+        if (locRadius >= 0)
+        {
+            for (int i = 0; i < 4; i++) pack[i] = i < n ? CasterPass.CascadeFitRadius[i] : 0f;
+            Gl.Uniform4fv(locRadius, 1, pack);
+        }
         Gl.Uniform1i(locCount, n);
     }
 

@@ -33,6 +33,11 @@ public sealed unsafe partial class AlloyRenderer
 
     private static void DrawOwnedInner()
     {
+        // #308 follow-up: consumed FIRST, above every early return -- a flag left standing across a refused
+        // colour frame would make the NEXT frame's colour pass skip the pose against a shadow bracket that
+        // may have sat that frame out, and every skinned part would draw a stale (or bind) pose.
+        bool posedByShadow = PosedByShadow;
+        PosedByShadow = false;
         // #129: last pass's snapshot is not this pass's. Revoked first thing, so every path out of here that
         // never reaches PassId.FbCopy leaves Alloy water disarmed -- and BucketGate's bucket-6 gate reads
         // the same flag, so water is simply not drawn on exactly those passes (#285: a hole, not vanilla).
@@ -71,9 +76,15 @@ public sealed unsafe partial class AlloyRenderer
         // Only now: a pass about to hand the frame back would have the engine solve each of these poses
         // again on its own walk, so the solve is not worth doing for it. #262: the solve no longer enters
         // engine code at all, but it still reads engine animation state, so it stays on this side.
-        long tPose = FrameZones.Now;
-        PoseSkinned();
-        FrameZones.Add(FrameZones.Zone.Pose, tPose);
+        // #308 follow-up: the shadow bracket poses first (ShadowPose) so the bake and this pass skin with
+        // the SAME frame's bones; re-solving here would tear them apart again. The solve only runs here on
+        // a frame the shadow bracket sat out (flag consumed at the top of this method).
+        if (!posedByShadow)
+        {
+            long tPose = FrameZones.Now;
+            PoseSkinned();
+            FrameZones.Add(FrameZones.Zone.Pose, tPose);
+        }
 
         // row-major v*M convention: clip = v * Model * View * Proj; raw bytes read column-major by GLSL are
         // the transpose, so uVP * d.model * vec4(aPos,1) is exact -- (M*V*P)^T = (V*P)^T * M^T, which is why
@@ -151,7 +162,9 @@ public sealed unsafe partial class AlloyRenderer
                 long tUp = FrameZones.Now;
                 StageSky();
                 UploadDraws();
-                UploadBones();
+                // #308 follow-up: the shadow bracket already uploaded this frame's block; re-orphaning it
+                // here would throw away the very pose the bake just sampled from.
+                if (!posedByShadow) UploadBones();
                 FrameZones.Add(FrameZones.Zone.Upload, tUp);
                 // #243: Alloy's own visibility, dispatched twice -- frustum-only for the depth prepass, then
                 // frustum + hi-Z for the colour pass once the prepass has filled the depth the pyramid is

@@ -46,10 +46,6 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _oEnrollGen = new int[MaxOwned];
     private static readonly int[] _recEnroll = new int[MaxOwned];
     private static int _enrollGen = 1;
-    /// <summary>#302 (review): XOR of the enrolled part pointers -- the pre-#302 design's set signature,
-    /// restored. A changed set is the one edge the per-slot machinery cannot cover (a departing caster's
-    /// slot is re-tenanted before the vanish sweep looks), and it costs one blanket shadow re-bake.</summary>
-    private static ulong _shadowSig;
     /// <summary>Casters admitted with an unknown (degenerate) sphere this frame -- each is a PERMANENT MOVER
     /// with infinite reach, so a nonzero steady value here means the re-bake predicate is being defeated and
     /// says by how much. Read and cleared by the caster period line.</summary>

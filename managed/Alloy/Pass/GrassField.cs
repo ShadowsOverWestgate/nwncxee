@@ -235,7 +235,7 @@ internal static unsafe class GrassField
         public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge;
         public int PushTex, PushGain, PushWindow;
         public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN;
-        public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn;
+        public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn, SunFocus, SunRadius;
         public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage;
     }
     private static Loc _loc;
@@ -808,7 +808,8 @@ internal static unsafe class GrassField
         }
         AlloyRenderer.UploadFeatureTerms(_featLoc, viewport);
         AlloyRenderer.UploadAreaTerms(_loc.Ambient, _loc.Diffuse, _loc.Dir);
-        AlloyRenderer.UploadSunCascades(_loc.SunTex, _loc.SunVp, _loc.SunTexel, _loc.SunBias, _loc.SunCount, _loc.SunDyn);
+        AlloyRenderer.UploadSunCascades(_loc.SunTex, _loc.SunVp, _loc.SunTexel, _loc.SunBias, _loc.SunCount,
+                                        _loc.SunDyn, _loc.SunFocus, _loc.SunRadius);
         AlloyRenderer.UploadLocalCubes(_loc.CubeTex, _loc.CubeLight, _loc.CubePlane, _loc.CubeCount,
                                           _loc.CubeSoft, _loc.CubeDynPage);
 
@@ -1077,6 +1078,7 @@ internal static unsafe class GrassField
             SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"), SunDyn = GlProgram.Loc(prog, "uSunDyn"),
             SunTexel = GlProgram.Loc(prog, "uSunTexel"), SunBias = GlProgram.Loc(prog, "uSunBias"),
             SunCount = GlProgram.Loc(prog, "uSunCascades"),
+            SunFocus = GlProgram.Loc(prog, "uSunFocus"), SunRadius = GlProgram.Loc(prog, "uSunRadius"),
             CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeLight = GlProgram.Loc(prog, "uLocalLight"),
             CubePlane = GlProgram.Loc(prog, "uLocalPlane"), CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
             CubeSoft = GlProgram.Loc(prog, "uLocalSoft"),
@@ -1256,7 +1258,7 @@ internal static unsafe class GrassField
             vec3 N = normalize(vNrm);
             vec3 albedo = SowxLinear(texel.rgb);
             float ndl = clamp(dot(N, uAreaDir), 0.0, 1.0);
-            vec3 sun = uAreaDiffuse * (ndl * SowxSunShadow(vWorld, N, ndl));
+            vec3 sun = uAreaDiffuse * (ndl * SowxSunShadow(vWorld, N, ndl, ndl));
             vec3 point = uLit != 0 ? SowxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0);
             // the 0.15 floor and the sun-facing wrap are inc_lighting.shd:679, as the Alloy lit stage runs it
             vec3 ambient = uAreaAmbient * uMatAmbient * mix(0.15, 1.0, ndl);

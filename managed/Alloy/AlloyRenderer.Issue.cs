@@ -236,7 +236,8 @@ public sealed unsafe partial class AlloyRenderer
                     UploadFeatureTerms(_watFeat, viewport);
                     fixed (Vector3* eye = &_eyePos) Gl.Uniform3fv(_watEye, 1, (float*)eye);
                     UploadAreaTerms(_watAmbient, _watDiffuse, _watDir);
-                    UploadSunCascades(_watSunTex, _watSunVp, _watSunTexel, _watSunBias, _watSunCount, _watSunDyn);
+                    UploadSunCascades(_watSunTex, _watSunVp, _watSunTexel, _watSunBias, _watSunCount, _watSunDyn,
+                                      _watSunFocus, _watSunRadius);
                     UploadLocalCubes(_watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
                                      _watCubeDynPage);
                     UploadProbe(_watProbeMips, _watProbeGain, _watSceneEnv);

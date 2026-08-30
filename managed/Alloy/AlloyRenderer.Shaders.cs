@@ -782,7 +782,7 @@ public sealed unsafe partial class AlloyRenderer
             float sunNdl = SowxWrap(dot(N, uAreaDir), uWrapN);
             // the wrapped value, not the raw one -- a fragment the wrap has just lit must still be able to
             // be in shadow, or the band the wrap opens up glows through every caster
-            float sunVis = SowxSunShadow(vWorld, N, sunNdl);
+            float sunVis = SowxSunShadow(vWorld, N, sunNdl, sunRaw);
             // 3 = sun visibility alone: white lit, black shadowed. A frame that looks unshadowed reads here
             //     as "the cascades are empty" or "nothing selected a cascade", which the composite cannot say.
             if (uViz == 3) { frag = vec4(vec3(sunVis), 1.0); return; }
@@ -831,7 +831,10 @@ public sealed unsafe partial class AlloyRenderer
             // see. The lobe takes the raw dot, the way the ambient hemisphere already does.
             vec3 sunSpec = uAreaDiffuse * (sunRaw * sunVis);
             vec3 pointSpec;
-            vec3 point = SowxClusteredLight(vWorld, N, V, vDepth, rough, spec, pointSpec);
+            // #308 follow-up: 1 on a creature fragment (skinmesh, or the dangly marker in feat.w) -- the
+            // local receiver's carrier-band gate, so a creature takes no dyn-pool self-shadow up close.
+            float onMover = (int(d.feat.x) == SOWX_FEAT_SKIN || d.feat.w < 0.0) ? 1.0 : 0.0;
+            vec3 point = SowxClusteredLight(vWorld, N, V, vDepth, onMover, rough, spec, pointSpec);
             // The engine's split: every light accumulates its own lobe, then ONE view-side normalisation
             // (fSpecularBaseModifier) and the material's specular colour scale the sum
             // (inc_lighting.shd:456 and :615). fSpecularity is already inside the lobe via the Fresnel term.

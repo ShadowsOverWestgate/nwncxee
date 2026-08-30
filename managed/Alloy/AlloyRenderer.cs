@@ -1066,7 +1066,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // same gate and set _enrollScene = scene, so a test on that is always false by the time it is
             // reached and the budget would silently be per-session.
             if (scene != _forcedScene) { _forcedScene = scene; _forcedEnrolls = 0; }
-            if (_ownCount == 0 && _forcedEnrolls < MaxForcedEnrolls)
+            // #308: enrolled-count, not the slot high-water mark -- slots are stable now, so _ownCount
+            // never returns to zero once anything has enrolled. Zero ENROLLED covers both residency shapes
+            // of the race this budget bridges: no candidates yet (records not resident), and candidates
+            // that all refused transiently (the VDO drip deferring while pools lack GL names -- nothing
+            // re-dirties the walk on pool residency, so without the retry a scene sticks at zero ownership
+            // with the engine's 3D draw swallowed). A scan that accepted parts and dropped them all to the
+            // all-owned-or-none sweeps re-fires too; that waste is bounded by the same 8-scan budget.
+            if (_lastEnrolled == 0 && _forcedEnrolls < MaxForcedEnrolls)
             { SceneWalk.Dirty = true; _forcedEnrolls++; }
             bool prevShim = _inColourPass;
             _inColourPass = true;
@@ -1163,7 +1170,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         // #86: one gate covers the whole pass. Suppression needs no second one -- the iterator only skips a
         // part whose OwnGen matches this pass, and nothing stamps it when the Alloy block does not run.
-        if (!AlloyGate.Alloy || _ownCount == 0) return;
+        if (!AlloyGate.Alloy || _orderCount == 0) return;   // #308: live count, not the slot high-water mark
         // #91: never paint into a foreign Scene. Only a NON-world pass counts as a foreign sighting -- a world
         // pass that misses is the enrolled Scene having been replaced (area transition), which resolves itself
         // within a walk or two and must not read as evidence that GUI panels reach this anchor.
@@ -1197,35 +1204,95 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// An unprepared <c>MdlNodeSkin</c> used to be repaired by the engine's own draw of the part, and there
     /// is no such draw any more -- so #284 gave the repair an Alloy edge of its own
     /// (<see cref="SkinPose.DripPrepares"/>, from the frame anchor). The refusal here is one frame, not the
-    /// session; a cloak seen permanently missing is now a number on the period line, not a mystery.</para></summary>
+    /// session; a cloak seen permanently missing is now a number on the period line, not a mystery.
+    /// <para>#308 follow-up: the shadow bracket's pose. The bake used to sample the bone block the LAST
+    /// colour build uploaded -- pose N-1 under a colour pass drawing pose N -- and on a cloak lit by its own
+    /// carried torch that one-frame disagreement flips the self-shadow compare's sign every frame: the
+    /// flicker. The solve now runs ONCE per frame at the shadow bracket (CPU half here, upload half in
+    /// <see cref="ShadowPoseUpload"/>), and the colour preamble reuses it instead of solving again.</para></summary>
+    internal static bool PosedByShadow;
+
+    internal static void ShadowPose()
+    {
+        if (!AlloyGate.Alloy) return;
+        long tPose = FrameZones.Now;
+        PoseSkinned();
+        FrameZones.Add(FrameZones.Zone.Pose, tPose);
+        PosedByShadow = true;
+    }
+
+    /// <summary>The GL half of <see cref="ShadowPose"/>: push the solved block. Must run inside the 4.6
+    /// bracket.</summary>
+    internal static void ShadowPoseUpload()
+    {
+        if (PosedByShadow) UploadBones();
+    }
+
+    /// <summary>#308 follow-up: bone slots are STICKY -- a part keeps its slot in the bone block across
+    /// frames, allocation mirroring the ownership table's own stable-slot scheme. The slots used to be
+    /// assigned sequentially per frame, which the shadow-bracket pose made load-bearing: the bake pairs the
+    /// LAST colour build's records (whose feat.y bone bases name last frame's layout) with THIS frame's
+    /// block, so a layout that shifted on a population change baked every caster past the shift with
+    /// another creature's bones for a frame. A sticky slot never shifts under a survivor.</summary>
+    private static readonly int[] _boneFree = new int[MaxBoneSlots];
+    private static int _boneFreeN, _boneTop;
+    private static int[] _boneOwner = new int[MaxBoneSlots];   // ownership slot holding each bone slot, -1 free
+
+    private static int AllocBoneSlot(int owner)
+    {
+        int s;
+        if (_boneFreeN > 0) s = _boneFree[--_boneFreeN];
+        else
+        {
+            if (!EnsureBoneSlots(_boneTop + 1)) return -1;
+            s = _boneTop++;
+            if (s >= _boneOwner.Length) Array.Resize(ref _boneOwner, _boneCap);
+        }
+        _boneOwner[s] = owner;
+        return s;
+    }
+
+    private static void FreeBoneSlot(int s)
+    {
+        if (s < 0 || s >= _boneTop || _boneOwner[s] < 0) return;
+        _boneOwner[s] = -1;
+        if (_boneFreeN < _boneFree.Length) _boneFree[_boneFreeN++] = s;
+    }
+
     private static void PoseSkinned()
     {
-        _boneSlots = 0;
         // Nothing to pose for if the pass cannot draw: DrawOwned bails on these two without stamping a
         // single part, so the engine walks every one of them itself -- and would then solve each pose a
         // second time.
-        if (!_skinning || _progFailed || _batchUnavailable) return;
+        if (!_skinning || _progFailed || _batchUnavailable) { _boneSlots = 0; return; }
         for (int i = 0; i < _ownCount; i++)
         {
+            int prev = _oBone[i];
             _oBone[i] = -1;
-            if (_oTri[i] == IntPtr.Zero || !_vSkin[_oVao[i]]) continue;
+            if (_oTri[i] == IntPtr.Zero || !_vSkin[_oVao[i]]) { FreeBoneSlot(prev); continue; }
             // Identity first, and here it is not the usual "a stale read is acceptable" case: the solve
             // chases this part's parent chain, child array and MdlNode, so a recycled pointer is a CHASED
             // one. The same single-level compare BuildBatches revokes on. A failure here is not counted as
             // an unsolved pose -- the part was already gone, and conflating the two would send the next
             // diagnosis after a skinning bug that is really a lifetime one.
-            if (!IdentityOk(i, _oTri[i])) { RevokeSkinned(i); continue; }
-            if (!EnsureBoneSlots(_boneSlots + 1)) { _skinNoPose++; RevokeSkinned(i); continue; }
-            int slot = _boneSlots;
-            if (!SkinPose.Solve(_oTri[i], _boneStage + slot * BoneFloats))
-            { _skinNoPose++; RevokeSkinned(i); continue; }
-            _boneSlots++;
+            if (!IdentityOk(i, _oTri[i])) { FreeBoneSlot(prev); RevokeSkinned(i); continue; }
+            int slot = prev >= 0 && prev < _boneTop && _boneOwner[prev] == i ? prev : AllocBoneSlot(i);
+            if (slot < 0 || !SkinPose.Solve(_oTri[i], _boneStage + (long)slot * BoneFloats))
+            { _skinNoPose++; FreeBoneSlot(slot); RevokeSkinned(i); continue; }
             _oBone[i] = slot;
             _skinDrawn++;
-            if (_boneSlots > _boneHigh) _boneHigh = _boneSlots;
             // #302: no separate shadow feed. The pose lands in _oBone/feat.y and the bake reads it through
             // the same record and the same bone block the colour pass draws from.
         }
+        // Reclaim orphans: an enrollment can retire or re-tenant an ownership slot without this walk seeing
+        // the handover (a fresh tenant starts at _oBone -1), leaving a bone slot whose owner no longer
+        // points back. _boneTop is the peak skinned population -- tiny -- so the sweep is a few compares.
+        for (int s = 0; s < _boneTop; s++)
+            if (_boneOwner[s] >= 0 && _oBone[_boneOwner[s]] != s) FreeBoneSlot(s);
+        // The block uploads the whole (holey) high water: stale floats in freed slots are never indexed,
+        // and a contiguous re-pack is exactly the layout shift stickiness exists to prevent.
+        _boneSlots = _boneTop;
+        if (_boneTop > _boneHigh) _boneHigh = _boneTop;
     }
 
     /// <summary>#262: room for <paramref name="want"/> bone slots, doubling the stage rather than dropping a
@@ -1559,6 +1626,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        _watWrapN, _watViz, _watEye, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
                        _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
                        _watCubeDynTex, _watCubeDynPage, _watSunDynTex, _watSunDyn,
+                       _watSunFocus, _watSunRadius,
                        _watProbe, _watProbeMips, _watProbeGain, _watSceneEnv, _watCapture,
                        _watFbColor, _watFbDepth, _watNearFar, _watView, _watProj, _watDials,
                        _watWaveTime, _watTess, _watWind;
@@ -1593,7 +1661,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                         SunDynUnit = TextureSlots.SunShadowDyn, SunDynUnitGrass = TextureSlots.SunShadowDynGrass;
     private static int _litCubeTex = -1, _litCubeLight = -1, _litCubePlane = -1, _litCubeCount = -1,
                        _litCubeSoft = -1, _litCubeDynTex = -1, _litCubeDynPage = -1,
-                       _litSunDynTex = -1, _litSunDyn = -1;
+                       _litSunDynTex = -1, _litSunDyn = -1, _litSunFocus = -1, _litSunRadius = -1;
     private static int _litProbe = -1, _litProbeMips = -1, _litProbeGain = -1, _litCapture = -1,
                        _litSceneEnv = -1;
     /// <summary>Shadow depth bias in WORLD units, sent per cascade as a fraction of that cascade's published

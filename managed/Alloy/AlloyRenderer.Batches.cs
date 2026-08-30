@@ -269,6 +269,10 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
+    /// <summary>Stand-in radius for a caster whose engine bbox is degenerate: one NWN tile's horizontal
+    /// diagonal (tiles are 10u square; WaterBodies.TileHalf is the same convention's other half).</summary>
+    private const float DegenerateCasterRadius = 7.1f;
+
     /// <summary>#302: the same sphere, GEOMETRIC even for the three exempted kinds. See
     /// <c>_dCastSph</c> for why the shadow pass cannot use a <see cref="NeverCull"/> one.</summary>
     private static void WriteCasterSphere(int i, in RecordFrameState f)
@@ -284,6 +288,12 @@ public sealed unsafe partial class AlloyRenderer
             // reach culls and the staleness volumes honest about where the pose can actually be; keyed on
             // the VDO's bone streams because that is enrollment-stable where the per-frame bone slot is not.
             if (_vSkin[_oVao[i]]) r = MathF.Max(r + 2f, 3f);
+            // A part with an unpopulated engine bbox (min == max -- measured live on tile parts, the same
+            // defect WaterBodies stands in for with TileHalf) must NOT store radius 0: a zero sphere makes
+            // TryCaster admit it at infinite reach (defeating every view's re-bake predicate) and makes the
+            // vanish sweep take the whole-frame blanket when it blinks out. One tile's diagonal is the
+            // honest bound for the population this actually is.
+            if (!(r > 0f)) r = DegenerateCasterRadius;
             s[0] = cx; s[1] = cy; s[2] = cz; s[3] = r;
         }
     }
@@ -323,7 +333,11 @@ public sealed unsafe partial class AlloyRenderer
         if (!_oMx[i]) *(Matrix4x4*)r = Matrix4x4.Identity;
         r[16] = _oCos[i]; r[17] = _oSin[i];
         int fo = i * 4;
-        r[42] = _oFeat[fo + 2]; r[43] = _oFeat[fo + 3];
+        r[42] = _oFeat[fo + 2];
+        // #308 follow-up: -1 marks a DANGLY part for the receiver's creature gate (skinmesh is already
+        // feat.x). Safe reuse: feat.w is only otherwise read inside the wind/roof feature branches, and no
+        // dangly mesh names one of those forks.
+        r[43] = PartTable.IsDangly(_oTri[i]) ? -1f : _oFeat[fo + 3];
         if (!lit) return;
         r[23] = 1f; r[27] = 1f; r[31] = 1f;
         int o = i * 8;

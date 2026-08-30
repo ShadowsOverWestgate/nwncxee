@@ -125,17 +125,6 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>Near plane shared by every cube face. Bigger is better depth precision; it also means a
     /// caster closer to the light than this is not recorded, so it stays small.</summary>
     private const float CubeNear = 0.3f;
-    /// <summary>#151 shadow LOD: a caster whose world radius spans fewer than this many TEXELS of the map it
-    /// is baking into is dropped from that view. Sub-texel casters cannot produce a stable shadow -- they
-    /// alias in and out as the fit shifts -- so this trades nothing visible for most of a far cascade's
-    /// population: cascade 3 covers the whole area with ~12cm texels, and the small props that dominate a
-    /// dense area's caster count vanish from exactly the views where they were noise. Per-VIEW, so cascade 0
-    /// (1,5cm texels) still bakes everything near the player. <c>/shadow lod</c> sets it; 0 disables.</summary>
-    /// <summary>#152: default 0 = OFF at the user's request (parked for the M4 revisit) -- turn on with
-    /// <c>/shadow lod 2</c>.</summary>
-    private static float _lodTexels = LodBoot;
-    /// <summary>Boot value of <see cref="_lodTexels"/>, and what <c>/shadow reset</c> restores.</summary>
-    private const float LodBoot = 0f;
 
     /// <summary>The cube array holding the local-light shadows (0 = none yet), layer <c>6*slot + face</c>.</summary>
     internal static uint CubeTex;
@@ -217,17 +206,28 @@ public sealed unsafe class CasterPass : IExtenderService
     /// shed it or adopt it, within one predicate cycle.</summary>
     private static readonly int[] _dynStamp = new int[MaxCasters];
     private static long _cubeDynBakedPages;
-    /// <summary>#282: the sun's half of the same bake state. A cascade's recorded depth is a function of the
-    /// fit -- focus, light direction, radius and margin -- and of what stood inside it, so those four are the
-    /// key and the mover test is the only other term.
-    /// <para>#187 declared no motion split for the sun and CasterPass's own header still said so; that was
-    /// written when there was no predicate anywhere and every view baked every frame, and #241 then gave the
-    /// cubes one and left this at full price -- 4 x every live caster, every frame, with no staleness test at
-    /// all. The decision is re-taken here and it is PREDICATED: the cascades follow the focus, so a walking
-    /// player invalidates all four anyway and the skip only pays where it should, in a still frame.</para></summary>
-    private static readonly float[] _sunKeyFocus = new float[MaxCascades * 3];
-    private static readonly float[] _sunKeyDir = new float[MaxCascades * 3];
-    private static readonly float[] _sunKeyFit = new float[MaxCascades * 2];
+    /// <summary>#282: the sun's half of the same bake state -- the snapped fit MATRIX is the key (a pure
+    /// function of direction, latched centre, radius and margin), the mover test the only other term.
+    /// <para>The LATCHED fit centre per cascade, and the fix for the crawling cascade rings: the fit
+    /// used to re-centre on the live focus every frame, and the snap quantum (one texel, 1.5cm on cascade 0)
+    /// is smaller than one frame of walking, so every cascade re-keyed and re-baked every frame, the
+    /// static/dyn split degraded to combined on all four, and the hard cascade handover swept across static
+    /// geometry as a re-resolving ring. The fit now keeps its centre until the focus drifts a fraction of
+    /// the cascade's radius away; the receiver selects by the fit itself, so nothing else must know.</para></summary>
+    private static readonly float[] _sunFitC = new float[MaxCascades * 3];
+    private static readonly bool[] _sunFitValid = new bool[MaxCascades];
+    /// <summary>Re-latch when the focus has drifted this fraction of the cascade radius from the latched
+    /// centre. Small on purpose: the receiver's cross-fade weights are computed from the LIVE focus
+    /// (<see cref="SunFocusLive"/>), and its full-handover point (90% of the fit radius) is only guaranteed
+    /// to lie inside the latched fit while the drift stays under ~5%. The bakes a tighter slack buys back
+    /// are cheap -- the snap keeps the texel grid absolute, so a re-latch reproduces every overlapping texel
+    /// bit-identical and nothing visible changes.</summary>
+    private const float SunFitSlack = 0.05f;
+    /// <summary>The LIVE fit focus of the current sun pass -- what the receiver's cascade cross-fade keys
+    /// on, precisely because it moves smoothly where the latched centres step.</summary>
+    internal static Vector3 SunFocusLive;
+    /// <summary>Per-cascade fit radius, published for the receiver's cross-fade band.</summary>
+    internal static readonly float[] CascadeFitRadius = new float[MaxCascades];
     private static readonly bool[] _sunBaked = new bool[MaxCascades];
     private static readonly bool[] _sunHadMover = new bool[MaxCascades];
     private static long _sunBakedViews, _sunSkippedViews;
@@ -512,7 +512,7 @@ public sealed unsafe class CasterPass : IExtenderService
         if (!SelfCheck(log)) return;
 
         // Config bucket (ADR 0013): every one of these sizes an allocation or gates the arming, so it is a
-        // boot decision. The look knobs -- cascade distance and the LOD threshold -- are /shadow's.
+        // boot decision. The look knobs -- cascade distance and friends -- are /shadow's.
         _mapSize = Settings.Int("csm_size", _mapSize, 256, 8192);
         _cascades = Settings.Int("csm_cascades", _cascades, 1, MaxCascades);
         _cubeLights = Settings.Int("cube_count", _cubeLights, 0, MaxCubes);
@@ -554,12 +554,11 @@ public sealed unsafe class CasterPass : IExtenderService
                  "; needs the part table, so unarmed draw funnels leave it with nothing to enroll");
     }
 
-    /// <summary>The caster pass's live dials, for <c>/shadow</c> (ADR 0013 bucket 1). Both are look
-    /// judgements made while walking around -- the cascade reach and the sub-texel cull that trades far-away
-    /// detail for bake time -- and neither reallocates anything, which is what keeps them out of the config
-    /// file next to the map sizes.</summary>
+    /// <summary>The caster pass's live dials, for <c>/shadow</c> (ADR 0013 bucket 1). Look judgements made
+    /// while walking around; none reallocates anything, which is what keeps them out of the config file next
+    /// to the map sizes.</summary>
     internal static string Describe()
-        => $"dist {_maxDist:F0} lod {_lodTexels:F1} rebake {(_rebake ? 1 : 0)} " +
+        => $"dist {_maxDist:F0} rebake {(_rebake ? 1 : 0)} " +
            $"gather {CasterGather.Mode} split {(_split ? 1 : 0)} layered {(_layerDial ? 1 : 0)} " +
            $"({_cascades}x{_mapSize} cascades{(_sunSplitCfg ? " + dyn mirror" : "")}, " +
            $"{_cubeLights}x{_cubeSize} cubes, " +
@@ -576,11 +575,6 @@ public sealed unsafe class CasterPass : IExtenderService
                 _maxDist = MathF.Max(v, 1f);
                 _invalidate = true;
                 return od;
-            case "lod":
-                float ol = _lodTexels;
-                _lodTexels = MathF.Max(v, 0f);
-                _invalidate = true;   // the LOD cull decides what a bake CONTAINS; recorded faces predate it
-                return ol;
             case "gather":
                 // #303's A/B: 1 = the dispatch culls, 0 = the dispatch admits every staged caster into every
                 // view. "A shadow is missing" needs a bisect, and cull-off is the known-good half of it.
@@ -610,7 +604,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _lodTexels = LodBoot; _rebake = true; _split = true; _layerDial = true; _invalidate = true; CasterGather.Mode = 1; }
+    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _invalidate = true; CasterGather.Mode = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -646,8 +640,10 @@ public sealed unsafe class CasterPass : IExtenderService
     internal static bool ViewStale(bool invalidate, bool keyChanged, bool hadMover, bool hasMover)
         => invalidate || keyChanged || hadMover || hasMover;
 
-    /// <summary>#302 (review): the enrollment's set-change blanket -- a departed caster's slot is re-tenanted
-    /// before the vanish sweep looks, so the set signature is what invalidates on its behalf.</summary>
+    /// <summary>#308: the part-table-wipe blanket -- the one edge with no per-slot story, because every slot
+    /// dies at once over dead pointers. Ordinary arrivals and departures need no blanket any more: a slot is
+    /// never re-tenanted within the scan that vacates it, so a departure lapses in place for the vanish
+    /// sweep to ghost, and an arrival announces itself as an appeared mover when its record lands.</summary>
     internal static void ShadowInvalidate() => _invalidate = true;
 
     /// <summary>#282: does a sphere at <paramref name="dx"/>/<paramref name="dy"/>/<paramref name="dz"/> from
@@ -774,7 +770,7 @@ public sealed unsafe class CasterPass : IExtenderService
                   // caster deletes a shadow; one that admits an invisible one costs a draw. GLSL cannot be
                   // run headless, so what is pinned is that every term is present and spelled from these same
                   // constants -- the cone slope is interpolated from FaceConeSlope rather than typed twice,
-                  // and the NeverCull exemption gates the reach tests and the LOD skip alike.
+                  // and the NeverCull exemption gates the reach tests.
                   && CasterGather.SourceSafe();
         // #241: the re-bake predicate, each of its four invalidation sources verified RED on its own -- a
         // term silently dropped from ViewStale is a shadow that stops tracking, which reads as correct until
@@ -895,6 +891,10 @@ public sealed unsafe class CasterPass : IExtenderService
         // so the empty case runs the collect and then has no views to fill.
         if (AlloyRenderer.OrderCount == 0 && _prevCount == 0) return;
 
+        // #308 follow-up: the pose solve moves to the FRONT of the frame, so the bake below skins with the
+        // same bones the colour pass will draw with -- self-shadow flicker was the two disagreeing by one
+        // frame. Before Collect, which reads the bone slots this assigns.
+        AlloyRenderer.ShadowPose();
         // Collect FIRST and unconditionally: resolving the world is a per-frame fact, not a property of any
         // one view, and #94/#95 submit several views off the one collect.
         Collect();
@@ -919,7 +919,10 @@ public sealed unsafe class CasterPass : IExtenderService
         // it is the feed this pass reads. The camera fallback stands if that walk ever moves in here.
         Vector3 focus = FrameInputs.HasFocus ? FrameInputs.Focus : FrameInputs.CameraPos;
 
-        if (!GlContextService.Enter()) return;
+        // An Enter failure must not leave the flag promising an upload that never happened -- the colour
+        // build would then skip BOTH the solve and the upload and skin against last frame's GPU block.
+        if (!GlContextService.Enter()) { AlloyRenderer.PosedByShadow = false; return; }
+        AlloyRenderer.ShadowPoseUpload();   // the GL half of ShadowPose above: this frame's bones, uploaded
         // #260: the bake and the colour pass read the SAME buffer -- the pool's, which Alloy uploaded at the
         // engine's own commit -- so there is nothing to bring into agreement here any more. What closes is
         // the dirty window, and this bracket runs after the sweep has already read _vDirty off it.
@@ -988,6 +991,7 @@ public sealed unsafe class CasterPass : IExtenderService
     private static void SunPass(Vector3 focus)
     {
         Vector3 dir = Vector3.Normalize(FrameInputs.SunDir);
+        SunFocusLive = focus;
         int done = 0;
         bool invalidate = _frameInvalidate;
         _sunRan = true; _sunScanned = true;
@@ -1008,22 +1012,28 @@ public sealed unsafe class CasterPass : IExtenderService
         {
             SunDynMask[i] = 0f;
             float radius = ShadowMath.CascadeRadius(i, _cascades, _maxDist);
+            CascadeFitRadius[i] = radius;
             float margin = FitMargin();
-            Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, focus, radius, margin, _mapSize);
+            // The latched centre, re-latched only when the focus has drifted past the slack. The receiver
+            // selects a cascade by testing the published fit itself, so a latched fit needs no other
+            // coordination -- the player's own shadow stays in cascade 0 as long as the drift stays well
+            // inside the acceptance border, which the slack guarantees by an order of magnitude.
+            Vector3 c = new Vector3(_sunFitC[i * 3], _sunFitC[i * 3 + 1], _sunFitC[i * 3 + 2]);
+            // Inner cascades are contained in the next one up, so their drift only shifts which RESOLUTION
+            // answers -- but past the outermost there is no shadow at all (the receiver returns lit), so a
+            // trailing outermost fit opens an unshadowed band ahead of a walking player. It latches on a
+            // quarter of the slack: a few extra full-view bakes per minute of walking, no band worth seeing.
+            float slack = radius * (i == _cascades - 1 ? SunFitSlack * 0.25f : SunFitSlack);
+            if (!_sunFitValid[i] || (focus - c).LengthSquared() > slack * slack) c = focus;
+            Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, c, radius, margin, _mapSize);
             bool combined = !split || _sunCombined[i];
-            // #282 terms 1+2: the fit itself. Combined, the recorded layer is a function of the raw five
-            // numbers, exactly as before the split. Under the split the static key is the QUANTISED fit
-            // matrix -- ShadowMath snaps every component to the texel grid, so a sub-texel focus move
-            // reproduces it bit-identical and the layer is reusable while the player walks within a texel.
+            // #282 terms 1+2: the fit itself, as ONE compare on the snapped matrix for both modes. The
+            // matrix is a pure function of (dir, latched centre, radius, margin, map size), so it covers
+            // every raw term the old combined-mode key compared -- and comparing those raw floats is what
+            // kept a degraded layer degraded forever: the raw focus moves every frame the snap would have
+            // absorbed, so a combined layer could never stop baking and never re-earn the split.
             // A population flip (SetAll <-> SetStatic) re-keys the layer either way.
-            bool keyChanged = !_sunBaked[i] || _sunKeyCombined[i] != combined
-                              || (combined
-                                  ? _sunKeyFocus[i * 3] != focus.X || _sunKeyFocus[i * 3 + 1] != focus.Y
-                                    || _sunKeyFocus[i * 3 + 2] != focus.Z
-                                    || _sunKeyDir[i * 3] != dir.X || _sunKeyDir[i * 3 + 1] != dir.Y
-                                    || _sunKeyDir[i * 3 + 2] != dir.Z
-                                    || _sunKeyFit[i * 2] != radius || _sunKeyFit[i * 2 + 1] != margin
-                                  : vp != _sunKeyVp[i]);
+            bool keyChanged = !_sunBaked[i] || _sunKeyCombined[i] != combined || vp != _sunKeyVp[i];
             // #282 term 3: a mover inside the fit. NOT a sphere around the focus -- a cascade admits a
             // CYLINDER along the light axis, and a caster standing up-light of the fit shades into it. Same
             // split the walk's own directional cull makes (perpendicular distance vs distance along), so the
@@ -1036,11 +1046,11 @@ public sealed unsafe class CasterPass : IExtenderService
             for (int q = 0; q < evtN && !hasMover; q++)
             {
                 int m = evtIdx[q];
-                hasMover = InFit(_liveCx[m] - focus.X, _liveCy[m] - focus.Y, _liveCz[m] - focus.Z,
+                hasMover = InFit(_liveCx[m] - c.X, _liveCy[m] - c.Y, _liveCz[m] - c.Z,
                                  _liveR[m], dir, radius, radius + margin);
             }
             for (int q = 0; q < _ghostCount && !hasMover; q++)
-                hasMover = InFit(_ghostCx[q] - focus.X, _ghostCy[q] - focus.Y, _ghostCz[q] - focus.Z,
+                hasMover = InFit(_ghostCx[q] - c.X, _ghostCy[q] - c.Y, _ghostCz[q] - c.Z,
                                  _ghostR[q], dir, radius, radius + margin);
             bool stale = ViewStale(invalidate, keyChanged, _sunHadMover[i], hasMover);
             _sunHadMover[i] = hasMover;
@@ -1056,7 +1066,7 @@ public sealed unsafe class CasterPass : IExtenderService
                 if (split) { _sunWinBaked[i]++; _sunStaticL[i]++; }
                 ChargeBake(WhySun, invalidate, keyChanged);
                 bool viewOk = RenderView(_depthTex, _mapSize, i, &vp,
-                                         dir, focus, radius, margin, point: false,
+                                         dir, c, radius, margin, point: false,
                                          set: combined ? CasterGather.SetAll : CasterGather.SetStatic);
                 // A cascade that stalled holds last frame's depth under this frame's key, and the cascades
                 // after it were never scanned -- so their mover evidence is missing too. One blanket frame
@@ -1065,9 +1075,10 @@ public sealed unsafe class CasterPass : IExtenderService
                 _sunBaked[i] = true;
                 _sunKeyCombined[i] = combined;
                 _sunKeyVp[i] = vp;
-                _sunKeyFocus[i * 3] = focus.X; _sunKeyFocus[i * 3 + 1] = focus.Y; _sunKeyFocus[i * 3 + 2] = focus.Z;
-                _sunKeyDir[i * 3] = dir.X; _sunKeyDir[i * 3 + 1] = dir.Y; _sunKeyDir[i * 3 + 2] = dir.Z;
-                _sunKeyFit[i * 2] = radius; _sunKeyFit[i * 2 + 1] = margin;
+                // The latch commits only beside a successful bake: a stalled view must not leave the next
+                // frame fitting against a centre no map was baked at.
+                _sunFitC[i * 3] = c.X; _sunFitC[i * 3 + 1] = c.Y; _sunFitC[i * 3 + 2] = c.Z;
+                _sunFitValid[i] = true;
                 fixed (float* pub = CascadeVp) *(Matrix4x4*)(pub + i * 16) = vp;
                 CascadeTexel[i] = 2f * radius / _mapSize;
                 CascadeRange[i] = 2f * radius + margin;
@@ -1085,11 +1096,11 @@ public sealed unsafe class CasterPass : IExtenderService
                 for (int q = 0; q < _dMoverCount && !hasDyn; q++)
                 {
                     int m = _dMoverIdx[q];
-                    hasDyn = InFit(_liveCx[m] - focus.X, _liveCy[m] - focus.Y, _liveCz[m] - focus.Z,
+                    hasDyn = InFit(_liveCx[m] - c.X, _liveCy[m] - c.Y, _liveCz[m] - c.Z,
                                    _liveR[m], dir, radius, radius + margin);
                 }
                 if (hasDyn && _sunBaked[i]
-                    && RenderView(SunDynTex, _mapSize, i, &vp, dir, focus, radius, margin, point: false,
+                    && RenderView(SunDynTex, _mapSize, i, &vp, dir, c, radius, margin, point: false,
                                   set: CasterGather.SetDynamic))
                 { SunDynMask[i] = 1f; _sunDynBakedViews++; }
             }
@@ -1424,7 +1435,7 @@ public sealed unsafe class CasterPass : IExtenderService
                    (CasterGather.Samples > 0
                     ? $", sampled view kept {(float)CasterGather.SampledKept / CasterGather.Samples:F0}/" +
                       $"{(float)CasterGather.SampledStaged / CasterGather.Samples:F0} staged draws " +
-                      $"(latent sample, /shadow lod {_lodTexels})"
+                      "(latent sample)"
                     : "") +
                    $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
                    (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
@@ -1496,7 +1507,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // list names ownership slots the next enrollment is free to hand to different parts. Both have to go,
         // or the first frame in the new area finds every view fresh -- shadows frozen from the old module.
         Array.Clear(_cubeBaked); Array.Clear(_cubeHadMover); Array.Clear(_cubeKeyId);
-        Array.Clear(_sunBaked); Array.Clear(_sunHadMover);
+        Array.Clear(_sunBaked); Array.Clear(_sunHadMover); Array.Clear(_sunFitValid);
         // #305: the pool pages name lights that just went away, and the published page indices with them.
         Array.Clear(_cubeCombined); Array.Clear(CubeDynPage);
         // #306: the sun's half of the same wipe, degrade window included.
@@ -1810,15 +1821,14 @@ public sealed unsafe class CasterPass : IExtenderService
     }
 
     /// <summary>One queued view into the chunk's staged table, in the layout the dispatch and the layered
-    /// vertex stage both read (mat4 vp; focus/reach; dir/along; lodR/point/set/layer).</summary>
+    /// vertex stage both read (mat4 vp; focus/reach; dir/along; spare/point/set/layer).</summary>
     private static void StageView(float* dst, int vi, int k)
     {
         float* r = dst + (long)vi * CasterGather.ViewFloats;
         fixed (Matrix4x4* m = &_qVp[k]) Buffer.MemoryCopy(m, r, 64, 64);
         r[16] = _qFocus[k].X; r[17] = _qFocus[k].Y; r[18] = _qFocus[k].Z; r[19] = _qReach[k];
         r[20] = _qDir[k].X; r[21] = _qDir[k].Y; r[22] = _qDir[k].Z; r[23] = _qAlong[k];
-        // this view's sub-texel radius, the same expression the per-view dispatch spells
-        r[24] = _lodTexels * 2f * _qReach[k] / _qSize[k];
+        r[24] = 0f;   // spare (held the #151 shadow-LOD radius until its removal)
         r[25] = _qPoint[k] ? 1f : 0f;
         r[26] = _qSet[k];
         r[27] = _qLayer[k];
@@ -2205,9 +2215,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // to not do -- the latent sample on the period line is what reports them.
         _submitCreatures = _gCreatures;
         if (!BeginTarget(tex, size, layer)) return false;
-        // this view's texel in world units -- ortho cascades span 2*reach across `size` texels, a cube face
-        // 2*d at distance d bounded by reach. Identical to the walk's own lodR.
-        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, _lodTexels * 2f * reach / size, point, set);
+        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, point, set);
         // unit 0 is where the cutout stage samples; nothing else in this bracket moves the active unit
         Gl.ActiveTexture(Gl.TEXTURE0);
         int boundVao = -1, boundMask = -1, boundTex = -1;

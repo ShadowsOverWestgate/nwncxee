@@ -14,7 +14,7 @@ namespace Sowx.Alloy;
 /// <para>#303: the bounds are <see cref="CullPass"/>'s own <c>SowxCullSphere</c> buffer, indexed by
 /// ownership slot -- the shadow cull and the colour cull test ONE set of spheres, with one set of
 /// exemptions (a <see cref="AlloyRenderer.NeverCull"/> radius -- posed skinmesh, dangly mesh, displacing
-/// feature, degenerate bounds -- passes every reach test and is exempt from the sub-texel skip, exactly as
+/// feature, degenerate bounds -- passes every reach test, exactly as
 /// the colour dispatch spells it). The per-draw <c>SowxCaster</c> record died with that: <c>baseInstance</c>
 /// carries the ownership slot itself and the depth stages read <c>uDraw[gl_BaseInstance]</c> directly.</para>
 /// <para>#303: the source buffer is PERSISTENT. The staging walk still runs per frame (index ranges are
@@ -76,7 +76,7 @@ internal static unsafe class CasterGather
     private static ExtenderLog? _log;
     private static uint _prog;
     private static bool _failed;
-    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uLodR, _uCull, _uSet;
+    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uCull, _uSet;
 
     private static uint _srcBuf;
     private static int _srcCap;
@@ -145,7 +145,6 @@ internal static unsafe class CasterGather
         _uDir = GlProgram.Loc(_prog, "uDir");
         _uReach = GlProgram.Loc(_prog, "uReach");
         _uAlong = GlProgram.Loc(_prog, "uAlong");
-        _uLodR = GlProgram.Loc(_prog, "uLodR");
         _uCull = GlProgram.Loc(_prog, "uCull");
         _uSet = GlProgram.Loc(_prog, "uSet");
         _log?.Info("CasterGather: armed -- shadow caster selection in compute over the shared SowxCullSphere " +
@@ -217,10 +216,9 @@ internal static unsafe class CasterGather
     }
 
     /// <summary>Select this view's casters. <paramref name="point"/> picks the cube face's cone test over the
-    /// cascade fit's axis test; <paramref name="lodR"/> is this view's sub-texel radius, and a
-    /// <see cref="AlloyRenderer.NeverCull"/> sphere is exempt from it -- the same exemption, from the same
-    /// buffer, the colour cull applies.</summary>
-    internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, float lodR, bool point,
+    /// cascade fit's axis test; a <see cref="AlloyRenderer.NeverCull"/> sphere is exempt from the reach
+    /// tests -- the same exemption, from the same buffer, the colour cull applies.</summary>
+    internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, bool point,
                                   int set = SetAll)
     {
         _at = (_at + 1) % Rotation;
@@ -245,7 +243,6 @@ internal static unsafe class CasterGather
         Gl.Uniform3fv(_uDir, 1, v);
         Gl.Uniform1f(_uReach, reach);
         Gl.Uniform1f(_uAlong, along);
-        Gl.Uniform1f(_uLodR, lodR);
         Gl.DispatchCompute((uint)((_drawN + GroupSize - 1) / GroupSize), 1, 1);
         // The commands are consumed as indirect state and the counts as parameter-buffer state; neither is in
         // the shader-storage class, so SHADER_STORAGE alone leaves both undefined.
@@ -333,14 +330,14 @@ internal static unsafe class CasterGather
     /// <see cref="AlloyRenderer.MaxOwned"/>.</summary>
     internal const uint BindView = 20;
     internal const int ViewShift = 18;
-    /// <summary>Floats per view-table record: mat4 vp + (focus, reach) + (dir, along) + (lodR, point, set,
+    /// <summary>Floats per view-table record: mat4 vp + (focus, reach) + (dir, along) + (spare, point, set,
     /// layer). std430 gives this struct no padding.</summary>
     internal const int ViewFloats = 28;
 
     /// <summary>The view table's GLSL declaration, shared by the layered dispatch and both layered depth
     /// stages -- <c>AlloyRenderer.DrawBufDecl</c>'s pattern, so the three cannot drift apart.</summary>
     internal const string ViewTblDecl = """
-        struct SowxView { mat4 vp; vec4 a; vec4 b; vec4 c; };   // a = focus/reach, b = dir/along, c = lodR/point/set/layer
+        struct SowxView { mat4 vp; vec4 a; vec4 b; vec4 c; };   // a = focus/reach, b = dir/along, c = spare/point/set/layer
         layout(std430, binding = 20) readonly buffer SowxBakeViews { SowxView uViewTbl[]; };
         """;
 
@@ -458,7 +455,6 @@ internal static unsafe class CasterGather
         uniform vec3 uDir;
         uniform float uReach;
         uniform float uAlong;
-        uniform float uLodR;
 
         bool SowxFaceCulls(float dSq, float t, float r)
         {
@@ -479,7 +475,7 @@ internal static unsafe class CasterGather
             int slot = int(uSrc[b + 3u]);
             vec4 s = uSph[slot];
             // s.w >= 1e29 is NeverCull: bounds the colour cull exempts (posed skinmesh, dangly, displacing,
-            // degenerate) are exempt here identically -- never reach-culled, never LOD-dropped.
+            // degenerate) are exempt here identically -- never reach-culled.
             if (uCull != 0 && s.w < 1e29)
             {
                 float r = s.w;
@@ -499,7 +495,6 @@ internal static unsafe class CasterGather
                     offEnds = abs(t) > uAlong + r;
                 }
                 if (offAxis || offEnds) return;
-                if (r < uLodR) return;
             }
             uint o = uSrc[b + 5u] + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
@@ -571,7 +566,6 @@ internal static unsafe class CasterGather
                     offEnds = abs(t) > uViewTbl[vi].b.w + r;
                 }
                 if (offAxis || offEnds) return;
-                if (r < vc.x) return;
             }
             uint o = uSrc[b + 5u] * uint(uViewN) + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
@@ -591,7 +585,6 @@ internal static unsafe class CasterGather
            && LayerCs.Contains("offAxis = dot(perp, perp) > (reach + r) * (reach + r);")
            && LayerCs.Contains($"binding = {CullPass.BindSphere}") && LayerCs.Contains("SowxCullSphere")
            && LayerCs.Contains("if (uCull != 0 && s.w < 1e29)")
-           && LayerCs.Contains("if (r < vc.x) return;")
            && LayerCs.Contains("uint b = i * 7u;")
            && LayerCs.Contains("if (set == 1 && uSrc[b + 6u] != 0u) return;")
            && LayerCs.Contains("if (set == 2 && uSrc[b + 6u] == 0u) return;")
@@ -614,11 +607,9 @@ internal static unsafe class CasterGather
            && GatherCs.Contains("return lim < 0.0 || dSq - t * t > lim * lim;")
            && GatherCs.Contains("offEnds = abs(t) > uAlong + r;")
            && GatherCs.Contains("offAxis = dot(perp, perp) > (uReach + r) * (uReach + r);")
-           // #303: the shared bounds, at the colour cull's own binding, with its own exemption value -- and
-           // the exemption gates the LOD skip too, so an exempt caster can never be sub-texel-dropped.
+           // #303: the shared bounds, at the colour cull's own binding, with its own exemption value.
            && GatherCs.Contains($"binding = {CullPass.BindSphere}") && GatherCs.Contains("SowxCullSphere")
            && GatherCs.Contains("if (uCull != 0 && s.w < 1e29)")
-           && GatherCs.Contains("if (r < uLodR) return;")
            && GatherCs.Contains("uCmd[q + 4u] = uint(slot);")
            // #305: the set filter reads the staged dynamic flag at the 7-uint stride, in BOTH directions --
            // a filter that lost either arm bakes the same caster into both arrays, and min() then hides it.

@@ -1029,7 +1029,7 @@ internal static unsafe class FrameSnapshot
             // SowxSunShadow is a cascade lookup -- paying for two per water fragment to save re-reading one
             // variable is the wrong trade on a surface that can fill the screen.
             float sunRaw = clamp(dot(N, uAreaDir), 0.0, 1.0);
-            float sunVis = SowxSunShadow(vWorld, N, sunRaw);
+            float sunVis = SowxSunShadow(vWorld, N, sunRaw, sunRaw);
 
             vec3 viewPos = (uView * vec4(vWorld, 1.0)).xyz;
             float thisZ = -viewPos.z;
@@ -1070,7 +1070,7 @@ internal static unsafe class FrameSnapshot
             // ---- lighting: the sun's glitter and every torch the froxel holds ------------------------
             float NdotV = max(dot(N, V), 0.0);
             vec3 pointSpec;
-            SowxClusteredLight(vWorld, N, V, vDepth, rough, SOWX_WATER_F0, pointSpec);
+            SowxClusteredLight(vWorld, N, V, vDepth, 0.0, rough, SOWX_WATER_F0, pointSpec);
             vec3 specLight = (uAreaDiffuse * (sunRaw * sunVis)
                                 * SowxSpecLobe(N, V, uAreaDir, rough, SOWX_WATER_F0) + pointSpec)
                              * SowxSpecBase(NdotV, rough);
