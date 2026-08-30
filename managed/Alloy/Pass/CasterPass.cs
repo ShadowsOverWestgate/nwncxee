@@ -2166,8 +2166,11 @@ public sealed unsafe class CasterPass : IExtenderService
         for (int i = 0; i < _liveCount; i++)
         {
             if (AlloyRenderer.CasterVao(_liveVao[i]) == 0) continue;
-            int masked = _liveTex[i] != 0 && _progMask != 0 && TexHasAlpha(_liveTex[i])
-                       ? OwnedTextures.Draw(_liveTex[i]) : 0;
+            // #265: resolve the OWNED name first and put the coverage question to IT -- the mask and colour
+            // passes sample the owned copy, which may be a BCn transcode whose block-quantized alpha sits on
+            // the other side of the cutout from the engine's raw original.
+            int drawTex = _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
+            int masked = drawTex != 0 && _progMask != 0 && TexHasAlpha(drawTex) ? drawTex : 0;
             if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
             if (masked != 0) _submitMasked++;
             _gLive[n] = i;

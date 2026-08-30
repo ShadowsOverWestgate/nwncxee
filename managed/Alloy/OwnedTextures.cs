@@ -125,6 +125,15 @@ internal static unsafe class OwnedTextures
         // Costs a CPU composite per character texture at load -- which is what the engine did for years --
         // and buys every PLT-skinned creature a place in the owned set.
         _pltWanted = Settings.Bool("pltcpu", true);
+        // ADR 0013 config bucket: a capability decision (spend load-time CPU to shrink VRAM 3-4x on the
+        // uncompressed share the #265 census measured at ~2/3), not a look dial. Settings read FIRST so the
+        // knob prints in /knobs even when ownedtex=0 stands the table down.
+        _bcnWanted = Settings.Bool("bcn", true);
+        _bcn = _bcnWanted && _armed;
+        if (_armed)
+            log.Info(_bcn
+                ? "OwnedTextures: BCn transcode armed -- uncompressed uploads are re-encoded BC1/BC3 (bcn=0 in sowx.cfg to keep them raw)"
+                : "OwnedTextures: BCn transcode off (bcn=0) -- uncompressed uploads stay raw");
         if (_armed && _pltWanted)
         {
             _pltOnGpu = (int*)Native.Sym(SymbolMap.PltOnGpu);
@@ -220,7 +229,7 @@ internal static unsafe class OwnedTextures
         Gl.GenTextures(1, &dst);
         if (dst == 0) { _borrowed.Add(etid); return; }
 
-        int saved; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &saved);
+        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
         DrainErrors();   // the verdict below is ours to read, so nobody else's error may be sitting here
         // Raw glBindTexture, NOT AurTextureBindTID: the engine caches what it thinks is bound, and routing
         // our name through its wrapper would leave that cache naming a texture the engine does not own.
@@ -230,7 +239,25 @@ internal static unsafe class OwnedTextures
         _origCreate(tex, 0, cell);
         uint err = Gl.GetError();          // read BEFORE Measure, whose own queries would mask it
         long bytes = err == 0 ? Measure() : 0;
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
+        long transSaved = 0;
+        if (err == 0 && _bcn && *(int*)((byte*)tex + OffCompressedSize) == 0)
+        {
+            long after = Transcode(tex, cell);
+            if (after == Broken)
+            {
+                // Both the compressed respecify AND the raw recovery failed: the texture is garbage and
+                // must not enter the owned table. Borrow the engine's copy instead.
+                Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
+                if (Gl.DeleteTextures != null) Gl.DeleteTextures(1, &dst);
+                _borrowed.Add(etid);
+                if (_diagLeft > 0) { _diagLeft--; _log?.Info($"OwnedTextures: tid {etid} borrowed -- transcode failed and its raw recovery failed too"); }
+                return;
+            }
+            // Record the POST state unconditionally: the texture is already compressed, so a driver that
+            // answers 0 for the compressed size costs a zero in the ledger, not a raw-sized lie in it.
+            if (after >= 0) { transSaved = bytes > after ? bytes - after : 0; bytes = after; }
+        }
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
 
         if (err != 0)
         {
@@ -241,7 +268,165 @@ internal static unsafe class OwnedTextures
         }
 
         Replace(key, etid, dst, bytes);
+        Census(tex, bytes, transSaved);
         HighWater();
+    }
+
+    /// <summary>#265: the transcode. The engine's raw upload into our texture just finished (it is still
+    /// bound); read each level back, encode it BC1 (no alpha) or BC3, and respecify the level compressed.
+    /// The readback inherits everything the engine's path already did -- the de-atlas, the
+    /// over-MAX_TEXTURE_SIZE box filter, the mip walk -- which is why nothing here parses an image.
+    /// <para>Cold, and the readback's pipeline sync is against an upload this call just issued.
+    /// Returns the compressed byte total, or -1 for a refusal: single-channel levels (their sampler swizzle
+    /// is the engine's contract with the RAW channel layout), tiny textures, or a driver that errored -- in
+    /// which case the engine's upload is RE-RUN so the texture is never left half-respecified.</para>
+    /// <para>ponytail: readback-encode-reupload costs one extra bus round trip per texture at load; encoding
+    /// straight from the decoded pixels at basic+0x58 would skip it but must reimplement the de-atlas and
+    /// the mip chain. Upgrade if area loads measurably slow.</para></summary>
+    private static long Transcode(IntPtr tex, int cell)
+    {
+        if (Gl.GetTexImage == null || Gl.CompressedTexImage2D == null || Gl.PixelStorei == null
+            || Gl.GetTexLevelParameteriv == null || Gl.BindBuffer == null) return -1;
+        int w0 = 0, h0 = 0, green = 0;
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w0);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h0);
+        if (w0 < 4 || h0 < 4) return -1;
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_GREEN_SIZE, &green);
+        if (green == 0) return -1;
+
+        if (_readback == null || _readback.Length < w0 * h0 * 4) _readback = new byte[w0 * h0 * 4];
+        int blkMax = BcnEncode.LevelSize(w0, h0, true);
+        if (_blocks == null || _blocks.Length < blkMax) _blocks = new byte[blkMax];
+
+        // The whole pixel-store surface the readback and the compressed upload depend on, not just the
+        // alignment: a stale PACK_ROW_LENGTH strides the readback past the buffer, and a bound pack/unpack
+        // PBO silently turns the client pointer into a buffer offset.
+        int svAlign, svRow, svSkipR, svSkipP, svPackBuf, svUnpackBuf;
+        Gl.GetIntegerv(Gl.PACK_ALIGNMENT, &svAlign);
+        Gl.GetIntegerv(Gl.PACK_ROW_LENGTH, &svRow);
+        Gl.GetIntegerv(Gl.PACK_SKIP_ROWS, &svSkipR);
+        Gl.GetIntegerv(Gl.PACK_SKIP_PIXELS, &svSkipP);
+        Gl.GetIntegerv(Gl.PIXEL_PACK_BUFFER_BINDING, &svPackBuf);
+        Gl.GetIntegerv(Gl.PIXEL_UNPACK_BUFFER_BINDING, &svUnpackBuf);
+        Gl.PixelStorei(Gl.PACK_ALIGNMENT, 1);
+        Gl.PixelStorei(Gl.PACK_ROW_LENGTH, 0);
+        Gl.PixelStorei(Gl.PACK_SKIP_ROWS, 0);
+        Gl.PixelStorei(Gl.PACK_SKIP_PIXELS, 0);
+        if (svPackBuf != 0) Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, 0);
+        if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, 0);
+
+        fixed (byte* read = _readback)
+        fixed (byte* blocks = _blocks)
+        {
+            // BC1 vs BC3 from the TEXELS, not the declared format -- the repo's standing lesson is that
+            // format flags lie about alpha (#126's ivy). A 32-bit source with constant-255 alpha is BC1 at
+            // half the size, and an opaque level 0 cannot grow transparency in the mips derived from it.
+            Gl.GetTexImage(Gl.TEXTURE_2D, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, read);
+            bool bc3 = false;
+            for (long i = 3, end = (long)w0 * h0 * 4; i < end; i += 4)
+                if (read[i] != 255) { bc3 = true; break; }
+            uint fmt = bc3 ? Gl.COMPRESSED_RGBA_S3TC_DXT5 : Gl.COMPRESSED_RGB_S3TC_DXT1;
+
+            for (int level = 0; level < MaxLevels; level++)
+            {
+                int w = 0, h = 0;
+                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_WIDTH, &w);
+                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_HEIGHT, &h);
+                if (w <= 0 || h <= 0) break;
+                if (level > 0) Gl.GetTexImage(Gl.TEXTURE_2D, level, Gl.RGBA, Gl.UNSIGNED_BYTE, read);
+                BcnEncode.EncodeLevel(read, w, h, bc3, blocks);
+                Gl.CompressedTexImage2D(Gl.TEXTURE_2D, level, fmt, w, h, 0,
+                    BcnEncode.LevelSize(w, h, bc3), blocks);
+            }
+        }
+
+        Gl.PixelStorei(Gl.PACK_ALIGNMENT, svAlign);
+        Gl.PixelStorei(Gl.PACK_ROW_LENGTH, svRow);
+        Gl.PixelStorei(Gl.PACK_SKIP_ROWS, svSkipR);
+        Gl.PixelStorei(Gl.PACK_SKIP_PIXELS, svSkipP);
+        if (svPackBuf != 0) Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, (uint)svPackBuf);
+        if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, (uint)svUnpackBuf);
+
+        uint err = Gl.GetError();
+        if (err != 0)
+        {
+            // Never leave a half-respecified texture behind: the engine's own upload restores every level
+            // raw -- and that recovery is itself VERIFIED, because the moment both uploads fail (VRAM
+            // pressure hits both) the texture is garbage and must not be published as owned.
+            _origCreate(tex, 0, cell);
+            uint recoveryErr = Gl.GetError();
+            if (++_bcnFails >= BcnFailCap)
+            {
+                _bcn = false;
+                _log?.Info($"OwnedTextures: BCn transcode DISABLED -- {_bcnFails} driver refusals (last 0x{err:x}); the uncompressed path stays raw until the next context");
+            }
+            return recoveryErr != 0 ? Broken : -1;
+        }
+        return Measure();
+    }
+
+    /// <summary>Transcode's "the texture is garbage" verdict: the compressed respecify failed AND the raw
+    /// recovery failed, so <see cref="Adopt"/> must route to the borrow path instead of publishing it.</summary>
+    private const long Broken = -2;
+
+    /// <summary>Level-readback and block scratch, grown to the largest texture seen and reused -- the upload
+    /// funnel is serialized on the engine's GL thread, so one of each is enough.</summary>
+    private static byte[]? _readback, _blocks;
+    private static bool _bcn, _bcnWanted;
+    private static int _bcnFails;
+    /// <summary>A driver that refuses one S3TC upload refuses them all; three strikes covers a transient.</summary>
+    private const int BcnFailCap = 3;
+
+    /// <summary>#265's number, measured before anything is built: per area, how many textures (and how many
+    /// bytes) come down the engine's UNCOMPRESSED upload path -- <c>basic+0x70</c> == 0, the
+    /// <c>GetCompressedSize</c> @0x484b00 verdict that picks <c>glTexImage2D</c> over
+    /// <c>glCompressedTexImage2D</c> -- versus the already-BCn path. The uncompressed share is the whole
+    /// BCn-transcode prize; the issue forbids building the transcode without this line.</summary>
+    private const int OffCompressedSize = 0x70;
+    private static int _censusRaw, _censusBcn, _censusTrans;
+    private static long _censusRawBytes, _censusBcnBytes, _censusSaved;
+    private static int _censusLastUpload;
+    private static bool _censusReported;
+    /// <summary>Frames of upload silence that count as "the area settled" -- ~5s at 60fps, same reasoning as
+    /// <see cref="RebuildRearm"/>.</summary>
+    private const int CensusSettle = 300;
+
+    private static void Census(IntPtr tex, long bytes, long transSaved)
+        => CensusTally(*(int*)((byte*)tex + OffCompressedSize) > 0, bytes, transSaved);
+
+    /// <summary>The tally half, split from the field read so <see cref="SelfCheck"/> can exercise the
+    /// window: report-then-upload resets, silence settles, one line per window. A texture is charged to the
+    /// PATH it came down (+0x70), with its transcode savings alongside -- so once #265's transcode is on, the
+    /// raw share reads as the post-transcode residual and the saved term says what the transcode took off.</summary>
+    private static void CensusTally(bool bcn, long bytes, long transSaved)
+    {
+        if (_censusReported)   // first upload after a settled report opens the next area's window
+        {
+            _censusRaw = _censusBcn = _censusTrans = 0;
+            _censusRawBytes = _censusBcnBytes = _censusSaved = 0;
+            _censusReported = false;
+        }
+        if (bcn) { _censusBcn++; _censusBcnBytes += bytes; }
+        else { _censusRaw++; _censusRawBytes += bytes; }
+        if (transSaved > 0) { _censusTrans++; _censusSaved += transSaved; }
+        _censusLastUpload = _dripFrame;
+    }
+
+    /// <summary>Emit the settle line once per upload window. Rides the <see cref="DripRebuilds"/> anchor:
+    /// once a frame, engine context, no GL.</summary>
+    private static void CensusSettleCheck()
+    {
+        if (_censusReported || _censusRaw + _censusBcn == 0 || _dripFrame - _censusLastUpload < CensusSettle)
+            return;
+        _censusReported = true;
+        int total = _censusRaw + _censusBcn;
+        long totalBytes = _censusRawBytes + _censusBcnBytes;
+        _log?.Info($"OwnedTextures: [census] area settled -- {_censusRaw}/{total} textures "
+                 + $"({100 * _censusRaw / total}%) came down the UNCOMPRESSED path (basic+0x70==0), "
+                 + $"{_censusRawBytes / OneMiB}MiB of {totalBytes / OneMiB}MiB resident "
+                 + $"({(totalBytes == 0 ? 0 : 100 * _censusRawBytes / totalBytes)}% of VRAM)"
+                 + (_censusTrans == 0 ? " -- #265: this share is the BCn-transcode prize"
+                    : $"; #265 transcoded {_censusTrans} of them to BCn, saving {_censusSaved / OneMiB}MiB"));
     }
 
     /// <summary>The residency line, every MiB rather than every texture -- the count climbs on every insert,
@@ -341,8 +526,9 @@ internal static unsafe class OwnedTextures
     /// through the upload funnel, so a successful retry lands in the owned table by itself.</para></summary>
     internal static void DripRebuilds()
     {
-        if (_buildAndStore == null) return;
         _dripFrame++;
+        CensusSettleCheck();
+        if (_buildAndStore == null) return;
         for (int spent = 0; spent < RebuildBudget && _rebuildN > 0; spent++)
         {
             IntPtr tex = _rebuildQ[--_rebuildN];
@@ -635,6 +821,11 @@ internal static unsafe class OwnedTextures
         // ledger has to go with the names it was a ledger about -- keeping it would refuse the whole world
         // its single retry. The queue holds pointers into a world that may not survive either.
         _rebuildTried.Clear(); Array.Clear(_rebuildQ); _rebuildN = 0; _dripFrame = 0;
+        _censusRaw = _censusBcn = _censusTrans = 0;
+        _censusRawBytes = _censusBcnBytes = _censusSaved = 0;
+        _censusLastUpload = 0; _censusReported = false;
+        // The refusal ledger was about the OLD context's driver state; the new context answers fresh.
+        _bcnFails = 0; _bcn = _bcnWanted && _armed;
         AlloyRenderer.ForgetHandles();   // the names went with the context; nothing to make non-resident
     }
 
@@ -711,6 +902,28 @@ internal static unsafe class OwnedTextures
         _rebuildTried.Clear(); _rebuildN = 0;
         Give(probe, true); _dripFrame += RebuildRearm;
         NoteUnbuilt(probe); ok &= _rebuildN == 0;                 // written off outright: same, on one attempt
+        // #265: the census window -- tallies split by path, silence settles into ONE report, and the next
+        // upload opens a fresh window. The +0x70 read itself needs a client; what is pinned is the window.
+        int svRaw = _censusRaw, svBcn = _censusBcn, svLast = _censusLastUpload;
+        long svRawB = _censusRawBytes, svBcnB = _censusBcnBytes;
+        bool svRep = _censusReported; int svDrip2 = _dripFrame;
+        ExtenderLog? svLog = _log; _log = null;   // the check's synthetic report is not a session's line
+        int svTrans = _censusTrans; long svSaved = _censusSaved;
+        _censusRaw = _censusBcn = _censusTrans = 0;
+        _censusRawBytes = _censusBcnBytes = _censusSaved = 0;
+        _censusReported = false; _dripFrame = 0;
+        CensusTally(false, 100, 300); CensusTally(true, 300, 0); CensusTally(false, 100, 0);
+        ok &= _censusRaw == 2 && _censusBcn == 1 && _censusRawBytes == 200 && _censusBcnBytes == 300
+           && _censusTrans == 1 && _censusSaved == 300;
+        CensusSettleCheck(); ok &= !_censusReported;              // still uploading: not settled
+        _dripFrame += CensusSettle;
+        CensusSettleCheck(); ok &= _censusReported;               // quiet long enough: one report
+        CensusTally(true, 50, 0);                                 // next area's first upload resets the window
+        ok &= !_censusReported && _censusRaw == 0 && _censusBcn == 1 && _censusBcnBytes == 50 && _censusTrans == 0;
+        _censusRaw = svRaw; _censusBcn = svBcn; _censusRawBytes = svRawB; _censusBcnBytes = svBcnB;
+        _censusTrans = svTrans; _censusSaved = svSaved;
+        _censusLastUpload = svLast; _censusReported = svRep; _dripFrame = svDrip2; _log = svLog;
+
         _rebuildTried.Clear();
         foreach (var kv in savedTried) _rebuildTried[kv.Key] = kv.Value;
         Array.Copy(savedQArr, _rebuildQ, RebuildQueue);

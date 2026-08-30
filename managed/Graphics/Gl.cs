@@ -61,6 +61,15 @@ public static unsafe class Gl
     public const uint TEXTURE_CUBE_MAP_ARRAY = 0x9009, TEXTURE_BINDING_CUBE_MAP_ARRAY = 0x900A,
                       TEXTURE_CUBE_MAP_SEAMLESS = 0x884F;
     public const uint UNPACK_ALIGNMENT = 0x0CF5;
+    /// <summary>#265: the BCn transcode's readback alignment and its two S3TC targets (EXT_texture_compression_s3tc,
+    /// universally present -- the engine's own DDS path uploads these very enums).</summary>
+    public const uint PACK_ALIGNMENT = 0x0D05,
+                      COMPRESSED_RGB_S3TC_DXT1 = 0x83F0, COMPRESSED_RGBA_S3TC_DXT5 = 0x83F3;
+    /// <summary>#265: the rest of the readback's pixel-store surface -- row shape, and the two PBO bindings
+    /// that would silently turn a client pointer into a buffer offset.</summary>
+    public const uint PACK_ROW_LENGTH = 0x0D02, PACK_SKIP_ROWS = 0x0D03, PACK_SKIP_PIXELS = 0x0D04,
+                      PIXEL_PACK_BUFFER = 0x88EB, PIXEL_UNPACK_BUFFER = 0x88EC,
+                      PIXEL_PACK_BUFFER_BINDING = 0x88ED, PIXEL_UNPACK_BUFFER_BINDING = 0x88EF;
     // glGetIntegerv pnames for save/restore.
     public const uint VIEWPORT = 0x0BA2, CURRENT_PROGRAM = 0x8B8D, VERTEX_ARRAY_BINDING = 0x85B5;
     public const uint ACTIVE_TEXTURE = 0x84E0, TEXTURE_BINDING_2D = 0x8069, ARRAY_BUFFER_BINDING = 0x8894;
@@ -194,6 +203,8 @@ public static unsafe class Gl
     /// only way to ask what the SAMPLER returns rather than what the format declares.</summary>
     public static delegate* unmanaged<uint, int, uint, uint, void*, void> GetTexImage;
     public static delegate* unmanaged<uint, int, void> PixelStorei;
+    /// <summary>glCompressedTexImage2D: the #265 transcode's upload -- pre-encoded BCn blocks, allocating form.</summary>
+    public static delegate* unmanaged<uint, int, uint, int, int, int, int, void*, void> CompressedTexImage2D;
     /// <summary>glPatchParameteri: how many vertices make one patch. Three -- the Alloy pass feeds the
     /// engine's own triangle index buffer straight through as patches.</summary>
     public static delegate* unmanaged<uint, int, void> PatchParameteri;
@@ -398,6 +409,7 @@ public static unsafe class Gl
         GetTexParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetTexParameteriv");
         PatchParameteri = (delegate* unmanaged<uint, int, void>)P("glPatchParameteri");
         PixelStorei = (delegate* unmanaged<uint, int, void>)P("glPixelStorei");
+        CompressedTexImage2D = (delegate* unmanaged<uint, int, uint, int, int, int, int, void*, void>)P("glCompressedTexImage2D");
         BufferData = (delegate* unmanaged<uint, IntPtr, void*, uint, void>)P("glBufferData");
         VertexAttribPointer = (delegate* unmanaged<uint, int, uint, byte, int, void*, void>)P("glVertexAttribPointer");
         EnableVertexAttribArray = (delegate* unmanaged<uint, void>)P("glEnableVertexAttribArray");
