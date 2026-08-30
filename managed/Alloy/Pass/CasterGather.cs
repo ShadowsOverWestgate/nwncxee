@@ -7,34 +7,36 @@ namespace Sowx.Alloy;
 
 /// <summary>
 /// #286 (M5 strand 2, ADR 0018): shadow caster selection in compute, in <see cref="CullPass"/>'s shape.
-/// Until this existed <see cref="CasterPass"/> walked every live caster on the CPU once per VIEW -- 196 views
-/// over 7950 casters, 12,46ms before a single depth draw issued -- and the walk did per-view what is a
-/// per-FRAME fact for all but the cull itself.
-/// <para>What replaces it: one staging pass per FRAME (the records, their batch keys, the VAO and mask-texture
-/// resolves, the bone bases), then per view a handful of uniforms, one dispatch that tests each caster's
-/// bounding sphere against that view and compacts the survivors into an indirect command buffer, and one
-/// <c>glMultiDrawElementsIndirectCount</c> per batch. No count ever comes back to the CPU.</para>
-/// <para>The record is <see cref="CasterPass"/>'s own <c>SowxCaster</c>, read through the same
-/// <c>CasterBufDecl</c> the draw stages read it through -- #93 put <c>bounds</c> in the record precisely so
-/// this dispatch could test it by record slot without a reformat. <c>baseInstance</c> still carries the
-/// record index, which is what makes compaction free: it renumbers <c>gl_DrawID</c> and nothing else.</para>
+/// One staging pass per FRAME (batch keys, VAO and mask-texture resolves), then per view a handful of
+/// uniforms, one dispatch that tests each caster against that view and compacts the survivors into an
+/// indirect command buffer, and one <c>glMultiDrawElementsIndirectCount</c> per batch. No count ever comes
+/// back to the CPU on the draw path.
+/// <para>#303: the bounds are <see cref="CullPass"/>'s own <c>SowxCullSphere</c> buffer, indexed by
+/// ownership slot -- the shadow cull and the colour cull test ONE set of spheres, with one set of
+/// exemptions (a <see cref="AlloyRenderer.NeverCull"/> radius -- posed skinmesh, dangly mesh, displacing
+/// feature, degenerate bounds -- passes every reach test and is exempt from the sub-texel skip, exactly as
+/// the colour dispatch spells it). The per-draw <c>SowxCaster</c> record died with that: <c>baseInstance</c>
+/// carries the ownership slot itself and the depth stages read <c>uDraw[gl_BaseInstance]</c> directly.</para>
+/// <para>#303: the source buffer is PERSISTENT. The staging walk still runs per frame (index ranges are
+/// re-read live because Repack moves them), but the upload is skipped whenever the staged bytes match what
+/// the buffer already holds -- on a settled frame nothing goes up at all.</para>
 /// <para>The cull ITSELF is ported semantics, not a re-derivation: the cone test circumscribes the 90deg face
 /// pyramid and doubles the radius allowance, exactly as <c>CasterPass.FaceCulls</c> does, and the slope is
 /// interpolated from that same constant so the two cannot drift. A caster wrongly REJECTED is a deleted
-/// shadow; one wrongly admitted costs a draw. <c>/shadow gather 0</c> is the A/B back to the CPU walk.</para>
-/// <para>Stands down whole when 4.6 indirect-count or compute is missing, or when the program fails to build;
-/// standing down means the CPU walk, unchanged.</para>
+/// shadow; one wrongly admitted costs a draw. <c>/shadow gather 0</c> disables the cull in the dispatch --
+/// every staged caster draws in every view -- which is the A/B that says whether the cull deleted a
+/// shadow.</para>
 /// </summary>
 internal static unsafe class CasterGather
 {
-    /// <summary>SSBO bindings private to this dispatch. 0..3 are <see cref="AlloyLights"/>, 5/6
-    /// <see cref="CasterPass"/>'s records and bones, 10/11 <see cref="Particles"/>, 12..16
-    /// <see cref="CullPass"/>. The per-draw records are read at <see cref="CasterPass.BindCaster"/>, the same
-    /// binding the depth stages draw them from.</summary>
+    /// <summary>SSBO bindings private to this dispatch. 0..3 are <see cref="AlloyLights"/>, 10/11
+    /// <see cref="Particles"/>, 12..16 <see cref="CullPass"/> -- whose <see cref="CullPass.BindSphere"/> this
+    /// dispatch also reads, because the bounds are the colour cull's own.</summary>
     internal const uint BindSrc = 17, BindCmd = 18, BindCount = 19;
 
-    /// <summary>Uints per source record, and their order -- index count, first index, base vertex, record
-    /// slot, batch, batch output base. <see cref="CullPass.SrcUints"/>'s layout, deliberately: one shape for
+    /// <summary>Uints per source record, and their order -- index count, first index, base vertex, OWNERSHIP
+    /// slot (#303: the sphere index and the <c>baseInstance</c> the depth stages read <c>uDraw</c> through),
+    /// batch, batch output base. <see cref="CullPass.SrcUints"/>'s layout, deliberately: one shape for
     /// both gathers, and the batch's output base is what turns an <c>atomicAdd</c> into an output index.</summary>
     internal const int SrcUints = 6;
     /// <summary>Uints per <c>DrawElementsIndirectCommand</c>. Fixed by GL.</summary>
@@ -52,36 +54,51 @@ internal static unsafe class CasterGather
     /// COMMAND_BARRIER_BIT -- whose buffer set covers the PARAMETER_BUFFER binding too, per
     /// ARB_indirect_parameters, which is how the count side is included -- and BUFFER_UPDATE_BARRIER_BIT, for
     /// the per-view zeroing. So 2 is the proven floor, pinned by <c>CasterPass.SelfCheck</c>, and 3 is that
-    /// floor with one spare.</para>
-    /// <para>Not a fence: <c>GpuRing</c> is the CPU walk's instrument because that path writes through a
-    /// persistent COHERENT mapping -- a memcpy the command stream never sees, which no barrier can order.
-    /// Nothing here is mapped; every write is in-stream. A per-view <c>ClientWaitSync</c> would also be
-    /// exactly the per-view CPU cost this pass exists to remove. And not a barrier BEFORE each dispatch,
-    /// which would make a rotation of 1 safe only by serialising the dispatch against the previous view's
-    /// draws -- the overlap the rotation is here to keep.</para></summary>
+    /// floor with one spare.</para></summary>
     internal const int Rotation = 3;
 
-    /// <summary>Live dial behind <c>/shadow gather</c>: 1 = compute selection, 0 = <see cref="CasterPass"/>'s
-    /// CPU per-view walk. Two states rather than three -- the third bisect step the colour path's
-    /// <c>/draw cull</c> spells is already spelled here by <c>noshadows=0</c>, which hands the whole shadow
-    /// question back to the engine's stencil.</summary>
+    /// <summary>Live dial behind <c>/shadow gather</c>: 1 = the dispatch culls, 0 = the dispatch admits every
+    /// staged caster into every view (#303: the CPU walk this used to fall back to is deleted, so the A/B is
+    /// now cull-on against cull-off, the same pair <c>/draw cull</c> spells for the colour path). The third
+    /// bisect step is <c>noshadows=0</c>, which hands the whole shadow question back to the engine's
+    /// stencil.</summary>
     internal static int Mode = 1;
 
     private static ExtenderLog? _log;
     private static uint _prog;
     private static bool _failed;
-    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uLodR;
+    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uLodR, _uCull;
 
-    private static uint _srcBuf, _recBuf;
+    private static uint _srcBuf;
+    private static int _srcCap;
+    private static ulong _srcHash;
     private static readonly uint[] _cmdBuf = new uint[Rotation], _cntBuf = new uint[Rotation];
     private static int _cmdCap, _cntCap, _at;
     private static int _drawN, _groups;
     private static uint[] _zero = new uint[1024];
 
-    /// <summary>Views dispatched and batches submitted this period -- the gather's half of the caster pass's
-    /// period line. There is no survivor count here on purpose: reading one back is the thing this pass
-    /// exists to not do.</summary>
-    internal static long Views, Batches;
+    /// <summary>The latent count sample's ring: one copy per frame of the LAST view's per-batch counts, read
+    /// back two frames later -- <see cref="CullPass"/>'s own instrument shape, so the culled-vs-drawn figure
+    /// reaches the period line without a readback on the draw path.</summary>
+    private static readonly uint[] _readBuf = new uint[3];
+    private static readonly int[] _readN = new int[3];
+    private static readonly int[] _readDrawN = new int[3];
+    private static readonly int[] _readCap = new int[3];
+    private static uint[] _counts = new uint[1024];
+    private static int _readSeq;
+    private static bool _dispatched;
+
+    /// <summary>Views dispatched, batches submitted, and the latent sample's tally (survivors and staged
+    /// draws of one view per frame, three frames late) -- the gather's half of the caster pass's period
+    /// line.</summary>
+    internal static long Views, Batches, SampledKept, SampledStaged, Samples;
+    /// <summary>Frames whose staged source matched the persistent buffer byte for byte, so nothing was
+    /// uploaded -- the number that says #303's "the per-frame upload is gone" is actually true.</summary>
+    internal static long UploadsSkipped, Uploads;
+
+    /// <summary>The program failed to build and will never arm; <see cref="CasterPass"/> disarms on it
+    /// rather than idling forever.</summary>
+    internal static bool Failed => _failed;
 
     internal static void Init(ExtenderLog log) => _log = log;
 
@@ -90,9 +107,10 @@ internal static unsafe class CasterGather
     internal static void ContextLost()
     {
         _prog = 0; _failed = false;
-        _srcBuf = 0; _recBuf = 0; _cmdCap = 0; _cntCap = 0; _at = 0;
+        _srcBuf = 0; _srcCap = 0; _srcHash = 0; _cmdCap = 0; _cntCap = 0; _at = 0;
         Array.Clear(_cmdBuf); Array.Clear(_cntBuf);
-        _drawN = 0; _groups = 0;
+        Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); Array.Clear(_readCap);
+        _drawN = 0; _groups = 0; _dispatched = false;
     }
 
     /// <summary>Everything the dispatch needs from GL, checked once and latched: a missing entry point is a
@@ -106,7 +124,7 @@ internal static unsafe class CasterGather
     internal static bool Ensure()
     {
         if (_prog != 0) return true;
-        if (_failed || Mode == 0 || !Capable()) return false;
+        if (_failed || !Capable()) { _failed = true; return false; }
         _prog = GlProgram.Compute(GatherCs, _log, "CasterGather caster cull");
         if (_prog == 0) { _failed = true; return false; }
         _uDrawN = GlProgram.Loc(_prog, "uDrawN");
@@ -116,27 +134,31 @@ internal static unsafe class CasterGather
         _uReach = GlProgram.Loc(_prog, "uReach");
         _uAlong = GlProgram.Loc(_prog, "uAlong");
         _uLodR = GlProgram.Loc(_prog, "uLodR");
-        _log?.Info("CasterGather: armed -- shadow caster selection in compute, " +
-                   "glMultiDrawElementsIndirectCount submission (/shadow gather 0 for the CPU walk)");
+        _uCull = GlProgram.Loc(_prog, "uCull");
+        _log?.Info("CasterGather: armed -- shadow caster selection in compute over the shared SowxCullSphere " +
+                   "bounds, glMultiDrawElementsIndirectCount submission (/shadow gather 0 disables the cull)");
         return true;
     }
 
-    /// <summary>Is the gather driving this frame's views? False means every view stages on the CPU exactly as
-    /// it did before.</summary>
-    internal static bool Active => Mode != 0 && _prog != 0 && _drawN > 0;
+    /// <summary>Is the gather driving this frame's views with a non-empty staging? A frame that staged ZERO
+    /// draws is not inactive -- its views still clear -- so <see cref="CasterPass"/> gates on its own staged
+    /// flag, not on this.</summary>
+    internal static bool Active => _prog != 0 && _drawN > 0;
 
     /// <summary>Forget the frame's staging. Called before every staging attempt, so a frame that stages
-    /// nothing (the knob went off, a collect came back empty, an upload was refused) falls back to the CPU
-    /// walk instead of baking the PREVIOUS frame's records into this frame's views.</summary>
+    /// nothing (a collect came back empty, an upload was refused) bakes empty views instead of baking the
+    /// PREVIOUS frame's staging into this frame's views.</summary>
     internal static void Stand() => _drawN = 0;
 
-    /// <summary>Upload one frame's staging: the source records (six uints each) and the per-draw
-    /// <c>SowxCaster</c> block every view of the frame draws from. Orphan-then-fill rather than a fence ring:
-    /// the whole block is a few hundred KB and it is written once per frame, not once per view.</summary>
-    internal static bool Begin(int drawN, int groups, uint* src, float* recs, int recFloats)
+    /// <summary>Publish one frame's staging. #303: the source buffer is persistent -- FNV-hashed against the
+    /// last upload, and a frame whose staged bytes match sends nothing at all. The bounds live in
+    /// <see cref="CullPass"/>'s sphere buffer, which the colour build maintains; nothing per-draw is uploaded
+    /// here on a settled frame.</summary>
+    internal static bool Begin(int drawN, int groups, uint* src)
     {
         _drawN = 0;
         if (drawN <= 0 || groups <= 0 || !Ensure()) return false;
+        if (CullPass.SphereBuf == 0) return false;   // no colour build yet: no bounds to cull against
         if (groups > _zero.Length)
         {
             int cap = _zero.Length;
@@ -144,18 +166,22 @@ internal static unsafe class CasterGather
             _zero = new uint[cap];
         }
 
-        if (_srcBuf == 0) { uint b; Gl.GenBuffers(1, &b); _srcBuf = b; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _srcBuf);
-        var srcSize = (IntPtr)((long)drawN * SrcUints * sizeof(uint));
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, srcSize, null, Gl.DYNAMIC_DRAW);
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, srcSize, src);
-
-        if (_recBuf == 0) { uint b; Gl.GenBuffers(1, &b); _recBuf = b; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _recBuf);
-        var recSize = (IntPtr)((long)drawN * recFloats * sizeof(float));
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, recSize, null, Gl.DYNAMIC_DRAW);
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, recSize, recs);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        long srcWords = (long)drawN * SrcUints;
+        ulong h = 1469598103934665603ul;
+        for (long i = 0; i < srcWords; i++) h = (h ^ src[i]) * 1099511628211ul;
+        h = (h ^ (uint)drawN) * 1099511628211ul ^ (uint)groups;
+        bool grow = drawN > _srcCap;
+        if (_srcBuf == 0) { uint b; Gl.GenBuffers(1, &b); _srcBuf = b; grow = true; }
+        if (grow || h != _srcHash)
+        {
+            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _srcBuf);
+            if (grow)
+            { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)drawN * SrcUints * sizeof(uint)), null, Gl.DYNAMIC_DRAW); _srcCap = drawN; }
+            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(srcWords * sizeof(uint)), src);
+            _srcHash = h;
+            Uploads++;
+        }
+        else UploadsSkipped++;
 
         for (int i = 0; i < Rotation; i++)
         {
@@ -178,9 +204,9 @@ internal static unsafe class CasterGather
     }
 
     /// <summary>Select this view's casters. <paramref name="point"/> picks the cube face's cone test over the
-    /// cascade fit's axis test, exactly as the CPU walk's own branch does; <paramref name="lodR"/> is this
-    /// view's sub-texel radius, and a record whose <c>aux.y</c> marks it a creature is exempt from it.
-    /// <para>Binds the per-draw records for the draws that follow, so the caller does not.</para></summary>
+    /// cascade fit's axis test; <paramref name="lodR"/> is this view's sub-texel radius, and a
+    /// <see cref="AlloyRenderer.NeverCull"/> sphere is exempt from it -- the same exemption, from the same
+    /// buffer, the colour cull applies.</summary>
     internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, float lodR, bool point)
     {
         _at = (_at + 1) % Rotation;
@@ -191,11 +217,12 @@ internal static unsafe class CasterGather
 
         Gl.UseProgram(_prog);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, CasterPass.BindCaster, _recBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, CullPass.BindSphere, CullPass.SphereBuf);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _cmdBuf[_at]);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _cntBuf[_at]);
         Gl.Uniform1i(_uDrawN, _drawN);
         Gl.Uniform1i(_uPoint, point ? 1 : 0);
+        Gl.Uniform1i(_uCull, Mode != 0 ? 1 : 0);
         float* v = stackalloc float[3];
         v[0] = focus.X; v[1] = focus.Y; v[2] = focus.Z;
         Gl.Uniform3fv(_uFocus, 1, v);
@@ -211,6 +238,7 @@ internal static unsafe class CasterGather
         Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _cmdBuf[_at]);
         Gl.BindBuffer(Gl.PARAMETER_BUFFER, _cntBuf[_at]);
         Views++;
+        _dispatched = true;
     }
 
     /// <summary>One batch, out of the compacted list the dispatch just wrote. <paramref name="start"/> is the
@@ -225,16 +253,62 @@ internal static unsafe class CasterGather
         Batches++;
     }
 
-    /// <summary>Hand the indirect bindings back, so nothing later in the frame -- a CPU-walk view under a
-    /// mid-session <c>/shadow gather 0</c>, or the colour pass's own submission -- finds them bound.</summary>
+    /// <summary>Hand the indirect bindings back, so nothing later in the frame -- the colour pass's own
+    /// submission -- finds them bound.</summary>
     internal static void End()
     {
         Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, 0);
         Gl.BindBuffer(Gl.PARAMETER_BUFFER, 0);
     }
 
+    /// <summary>Once per frame, after the views: copy the LAST dispatched view's per-batch counts aside and
+    /// harvest the copy from two frames ago. One view per frame is a sample, not a total -- but it is the
+    /// same latent-copy instrument <see cref="CullPass"/> uses, it costs no stall, and a cull that started
+    /// deleting shadows shows in it immediately.</summary>
+    internal static void Sample()
+    {
+        if (!_dispatched || _groups <= 0) return;
+        // Sample-only entry points: a driver without them loses the figure, never the shadows.
+        if (Gl.CopyBufferSubData == null || Gl.GetBufferSubData == null) return;
+        _dispatched = false;
+        int w = _readSeq % 3, r = (_readSeq + 1) % 3;
+        _readSeq++;
+        if (_groups > _counts.Length)
+        {
+            int cap = _counts.Length;
+            while (cap < _groups) cap *= 2;
+            _counts = new uint[cap];
+        }
+        // Capacity is PER RING SLOT: after a growth the other two slots still hold their old size, and a
+        // shared cap would skip re-sizing them -- a copy past the end of a too-small buffer.
+        Ensure(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
+               _readBuf[w] == 0 || _counts.Length > _readCap[w]);
+        _readCap[w] = _counts.Length;
+        // No extra barrier: the dispatch's own MemoryBarrier names BUFFER_UPDATE_BARRIER_BIT, which is the
+        // bit that orders shader-storage writes before buffer-copy reads, and it stands between the last
+        // dispatch's atomicAdds and this copy in command order.
+        Gl.BindBuffer(Gl.COPY_READ_BUFFER, _cntBuf[_at]);
+        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _readBuf[w]);
+        Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, IntPtr.Zero, IntPtr.Zero,
+                             (IntPtr)((long)_groups * sizeof(uint)));
+        Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
+        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+        _readN[w] = _groups; _readDrawN[w] = _drawN;
+        if (_readBuf[r] == 0 || _readN[r] <= 0) return;
+        Gl.BindBuffer(Gl.COPY_READ_BUFFER, _readBuf[r]);
+        fixed (uint* c = _counts)
+            Gl.GetBufferSubData(Gl.COPY_READ_BUFFER, IntPtr.Zero, (IntPtr)((long)_readN[r] * sizeof(uint)), c);
+        Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
+        long kept = 0;
+        for (int i = 0; i < _readN[r]; i++) kept += _counts[i];
+        // Against the draw count of the frame that WROTE those counts, not this frame's.
+        SampledKept += Math.Min(kept, _readDrawN[r]);
+        SampledStaged += _readDrawN[r];
+        Samples++;
+    }
+
     /// <summary>The cone slope, as the shader spells it. Interpolated from <see cref="CasterPass.FaceConeSlope"/>
-    /// so the GPU test cannot drift from the CPU one it is a port of, and pinned by
+    /// so the GPU test cannot drift from the CPU reference it is a port of, and pinned by
     /// <c>CasterPass.SelfCheck</c>.</summary>
     private static readonly string Slope =
         CasterPass.FaceConeSlope.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
@@ -242,20 +316,24 @@ internal static unsafe class CasterGather
     /// <summary>The cull. One thread per staged draw; a survivor appends into its batch's own output region
     /// with an <c>atomicAdd</c>, so every batch keeps its boundaries and only its interior order moves (depth
     /// draws are order-independent).
-    /// <para>Both tests are <c>CasterPass.Submit</c>'s, term for term. The cone test is conservative BY
-    /// CONSTRUCTION -- it circumscribes the 90deg face pyramid (corners at <c>|perp| = sqrt2 * t</c>) and
-    /// allows twice the caster radius -- and that direction is the whole point: admitting a caster the face
-    /// cannot see costs a depth draw, rejecting one it can see deletes a shadow.</para></summary>
+    /// <para>#303: the bounds come from <c>SowxCullSphere</c> -- the colour cull's own buffer, indexed by the
+    /// ownership slot the source carries -- and a <c>NeverCull</c> radius (&gt;= 1e29, the exemption the
+    /// colour dispatch also tests) skips every test: unknown or unbounded means CAST. Both view tests are the
+    /// CPU reference's, term for term. The cone test is conservative BY CONSTRUCTION -- it circumscribes the
+    /// 90deg face pyramid (corners at <c>|perp| = sqrt2 * t</c>) and allows twice the caster radius -- and
+    /// that direction is the whole point: admitting a caster the face cannot see costs a depth draw,
+    /// rejecting one it can see deletes a shadow.</para></summary>
     private static readonly string GatherCs = ("""
         #version 460 core
         layout(local_size_x = 64) in;   // GroupSize
 
-        """ + CasterPass.CasterBufDecl + """
+        layout(std430, binding = 13) readonly buffer SowxCullSphere { vec4 uSph[]; };
         layout(std430, binding = 17) readonly buffer SowxGatherSrc  { uint uSrc[]; };
         layout(std430, binding = 18) writeonly buffer SowxGatherCmd { uint uCmd[]; };
         layout(std430, binding = 19) buffer SowxGatherCount         { uint uCnt[]; };
         uniform int uDrawN;
         uniform int uPoint;
+        uniform int uCull;
         uniform vec3 uFocus;
         uniform vec3 uDir;
         uniform float uReach;
@@ -275,37 +353,43 @@ internal static unsafe class CasterGather
             if (i >= uint(uDrawN)) return;
             uint b = i * 6u;
             int slot = int(uSrc[b + 3u]);
-            SowxCaster c = uCaster[slot];
-            float r = c.bounds.w;
-            vec3 d = c.bounds.xyz - uFocus;
-            float t = dot(d, uDir);
-            bool offAxis, offEnds;
-            if (uPoint != 0)
+            vec4 s = uSph[slot];
+            // s.w >= 1e29 is NeverCull: bounds the colour cull exempts (posed skinmesh, dangly, displacing,
+            // degenerate) are exempt here identically -- never reach-culled, never LOD-dropped.
+            if (uCull != 0 && s.w < 1e29)
             {
-                float dSq = dot(d, d);
-                offAxis = dSq > (uReach + r) * (uReach + r);
-                offEnds = SowxFaceCulls(dSq, t, r);
+                float r = s.w;
+                vec3 d = s.xyz - uFocus;
+                float t = dot(d, uDir);
+                bool offAxis, offEnds;
+                if (uPoint != 0)
+                {
+                    float dSq = dot(d, d);
+                    offAxis = dSq > (uReach + r) * (uReach + r);
+                    offEnds = SowxFaceCulls(dSq, t, r);
+                }
+                else
+                {
+                    vec3 perp = d - t * uDir;
+                    offAxis = dot(perp, perp) > (uReach + r) * (uReach + r);
+                    offEnds = abs(t) > uAlong + r;
+                }
+                if (offAxis || offEnds) return;
+                if (r < uLodR) return;
             }
-            else
-            {
-                vec3 perp = d - t * uDir;
-                offAxis = dot(perp, perp) > (uReach + r) * (uReach + r);
-                offEnds = abs(t) > uAlong + r;
-            }
-            if (offAxis || offEnds) return;
-            if (r < uLodR && c.aux.y == 0.0) return;   // aux.y != 0: a creature, exempt from the sub-texel cull
             uint o = uSrc[b + 5u] + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
             uCmd[q] = uSrc[b];             // count
             uCmd[q + 1u] = 1u;             // instanceCount
             uCmd[q + 2u] = uSrc[b + 1u];   // firstIndex, in INDICES
             uCmd[q + 3u] = uSrc[b + 2u];   // baseVertex
-            uCmd[q + 4u] = uint(slot);     // baseInstance IS the per-draw record index
+            uCmd[q + 4u] = uint(slot);     // baseInstance IS the ownership slot the depth stages read uDraw at
         }
         """).Replace("@SLOPE@", Slope);
 
-    /// <summary>What <c>CasterPass.SelfCheck</c> pins about the dispatch: the cull it runs is the CPU walk's,
-    /// not a re-derivation. Text rather than arithmetic because GLSL cannot be run headless -- but every term
+    /// <summary>What <c>CasterPass.SelfCheck</c> pins about the dispatch: the cull it runs is the CPU
+    /// reference's, over the SHARED sphere buffer, with the shared exemption, conservative in the direction
+    /// that costs a draw. Text rather than arithmetic because GLSL cannot be run headless -- but every term
     /// that would silently delete a shadow if it drifted is named here, and the slope is interpolated from
     /// the C# constant rather than typed twice.</summary>
     internal static bool SourceSafe()
@@ -314,9 +398,12 @@ internal static unsafe class CasterGather
            && GatherCs.Contains("return lim < 0.0 || dSq - t * t > lim * lim;")
            && GatherCs.Contains("offEnds = abs(t) > uAlong + r;")
            && GatherCs.Contains("offAxis = dot(perp, perp) > (uReach + r) * (uReach + r);")
-           && GatherCs.Contains("if (r < uLodR && c.aux.y == 0.0) return;")
+           // #303: the shared bounds, at the colour cull's own binding, with its own exemption value -- and
+           // the exemption gates the LOD skip too, so an exempt caster can never be sub-texel-dropped.
+           && GatherCs.Contains($"binding = {CullPass.BindSphere}") && GatherCs.Contains("SowxCullSphere")
+           && GatherCs.Contains("if (uCull != 0 && s.w < 1e29)")
+           && GatherCs.Contains("if (r < uLodR) return;")
            && GatherCs.Contains("uCmd[q + 4u] = uint(slot);")
-           && GatherCs.Contains($"binding = {CasterPass.BindCaster}")
            && GatherCs.Contains($"binding = {BindSrc}") && GatherCs.Contains($"binding = {BindCmd}")
            && GatherCs.Contains($"binding = {BindCount}");
 }

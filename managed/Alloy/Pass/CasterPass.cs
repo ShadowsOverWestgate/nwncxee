@@ -17,12 +17,13 @@ namespace Sowx.Alloy;
 /// it (<see cref="ViewStale"/>). #241 gave the cubes that predicate and left the sun at full price; both
 /// carry it now. Every term errs toward stale, so a wrong answer costs a bake and can never freeze a shadow,
 /// and <c>/shadow rebake 0</c> is the A/B back to #187's bake-everything-every-frame.
-/// <para>Submission is <c>glMultiDrawElementsIndirect</c> out of persistent-mapped storage: one immutable
-/// command buffer and one per-draw SSBO, each a 3-region ring with a fence per region, staged by the CPU and
-/// never re-allocated. Per-draw data is indexed by <c>gl_BaseInstance</c> rather than <c>gl_DrawID</c>
-/// deliberately -- M4's GPU culling compacts the command buffer, which renumbers gl_DrawID but leaves each
-/// surviving command's baseInstance pointing at its own record. That is the one format decision this ticket
-/// cannot get wrong, so <see cref="SelfCheck"/> pins it.</para>
+/// <para>#303: selection and submission are <see cref="CasterGather"/>'s compute dispatch alone -- the CPU
+/// per-view walk and its persistent-mapped rings are deleted. The dispatch culls against
+/// <see cref="CullPass"/>'s shared <c>SowxCullSphere</c> buffer (one set of bounds, one set of exemptions,
+/// for the shadow cull and the colour cull alike) and writes indirect commands whose <c>baseInstance</c> IS
+/// the ownership slot, so the depth stages read <c>uDraw[gl_BaseInstance]</c> directly. gl_BaseInstance
+/// rather than gl_DrawID because compaction renumbers gl_DrawID and nothing else; <see cref="SelfCheck"/>
+/// pins it.</para>
 /// <para>The pass runs in the #80 4.6 context -- the SAME context the colour pass draws in, which is why it
 /// binds Alloy's VAOs rather than keeping a set of its own -- and renders every view the Alloy lit stage
 /// samples: the sun's concentric cascade array (#94) and the local lights' depth cube array (#95), six faces
@@ -60,42 +61,13 @@ public sealed unsafe class CasterPass : IExtenderService
     /// "shadows go missing in big areas", not as a cap.</summary>
     private const int MaxCasters = AlloyRenderer.MaxOwned, MaxVdos = AlloyRenderer.MaxVdos;
     private const int LogEvery = 900, FirstLogAt = 120;
-    /// <summary>Sun ring depth: regions in flight before the CPU has to wait on a fence. Three frames is the
-    /// usual "CPU one frame ahead, GPU one behind, one spare" figure -- but a region is consumed per VIEW, and
-    /// #94 submits one per cascade, so a 3-region ring would wrap inside a single frame and stall on a fence
-    /// the same frame issued. One submission per view since #187, so two frames of cascades is the ceiling.</summary>
-    private const int SunRegions = 2 * MaxCascades;
-    /// <summary>Casters staged per CUBE face. A local light's view only ever holds geometry inside one torch's
-    /// reach, so it needs nothing like the sun's capacity.
-    /// <para>This is the one capacity that is NOT free to raise: the cube ring reserves
-    /// <see cref="RegionsPerCube"/> regions PER LIGHT, so the mapped footprint is
-    /// <c>lights * RegionsPerCube * this * (CmdBytes + DrawBytes)</c> -- 103MB at 24 lights. #149's sweep put
-    /// it at 8192 by treating it like a flat table and missed the multiplier, which at #151's raised light
-    /// count would have been 410MB of persistently-mapped buffer on top of ~300MB of depth. Overflow is
-    /// counted and logged (<c>casters dropped by a full view region</c>), never a silent half-submission, so
-    /// the honest move is a sane figure with a visible ceiling rather than a huge one nobody can afford.</para></summary>
-    private const int MaxCubeCasters = 2048;
-    /// <summary>Faces per cube, and ring regions reserved per cube. Regions per cube must be at least
-    /// <see cref="CubeFaces"/> so no face reuses a region another face of the SAME frame is still in; the
-    /// doubling is the usual CPU-ahead-of-GPU frame of slack on top.</summary>
-    private const int CubeFaces = 6, RegionsPerCube = 3 * CubeFaces;
+    /// <summary>Faces per cube.</summary>
+    private const int CubeFaces = 6;
     /// <summary>A <c>DrawElementsIndirectCommand</c> is five uints -- count, instanceCount, firstIndex,
     /// baseVertex, baseInstance -- and the buffer is tightly packed, so the stride is 20 bytes.
     /// <c>firstIndex</c> is in INDICES, not bytes: the byte-offset APIs elsewhere in this repo multiply the
     /// VDO's element offset by 2 and this one must not.</summary>
     private const int CmdUints = 5, CmdBytes = CmdUints * 4;
-    /// <summary>Floats per SowxCaster record: std430 <c>mat4 model + vec4 bounds + vec4 aux</c> = 96 bytes,
-    /// whose alignment (16) already divides the size, so the array stride is 96 with no padding. The bounds are
-    /// the caster's world bounding sphere (xyz centre, w radius) and they are in the RECORD rather than a
-    /// CPU-side array precisely so M4's compute cull can read them by baseInstance without a format change -- a
-    /// culler that had to be handed a second, separately-keyed buffer is the reformat this ticket must avoid.
-    /// <c>aux.x</c> is #96's bone base: the MATRIX index of this caster's first bone, or &lt; 0 for a rigid
-    /// caster. Model and bounds keep their offsets, so the cull M4 drops in still reads the same two fields.</summary>
-    private const int DrawFloats = 8, DrawBytes = DrawFloats * 4;
-    /// <summary>SSBO binding points of the per-draw block and #96's bone block; must match the literals in
-    /// <c>CasterBufDecl</c> / <c>BoneBufDecl</c>. 0..3 belong to <see cref="AlloyLights"/> and 4 to the owned
-    /// colour pass's per-draw block.</summary>
-    internal const uint BindCaster = 5;
     /// <summary>#302: the bake reads the COLOUR path's per-draw records and its bone block, at the colour
     /// path's own binding points. There is no second record buffer and no second bone ring.</summary>
     private const uint BindDraw = AlloyRenderer.BindDraw, BindBones = AlloyRenderer.BindBones;
@@ -351,44 +323,20 @@ public sealed unsafe class CasterPass : IExtenderService
     /// follows. Submit uses the split to report what a view actually took.</summary>
     private static int _liveCreatures;
     private static int _liveCount;
-    /// <summary>The whole live list as an index list, so every view stages through one code path. Filled once
-    /// per <see cref="Collect"/>; the sun's views take it entire.</summary>
-    private static readonly int[] _allIdx = new int[MaxCasters];
-    /// <summary>#151: the casters within reach of ONE cube light, filtered once and then walked by all
-    /// six of its faces. The sphere test is face-independent, so doing it per face was six times the work.</summary>
-    private static readonly int[] _lightIdx = new int[MaxCasters];
 
     /// <summary>Live casters summed over the period. Reported ALONGSIDE the mover count, because the two
     /// being equal is a bug with no other symptom: it means the still world is not in the list the bake
     /// reads, and every shadow of it vanishes the moment nothing moves. That is exactly what #241 shipped,
     /// and "still" being printed is what stops it being shipped twice.</summary>
     private static long _liveSum;
-    /// <summary>Creature casters the last <see cref="Submit"/> staged -- the number that answers "why did the
-    /// shadow vanish": a cube whose faces take zero creature casters cannot show one.</summary>
+    /// <summary>Creature casters in the frame's staging (pre-cull; the survivors are the GPU's) -- the number
+    /// that answers "why did the shadow vanish": a frame that stages zero creature casters cannot show one.</summary>
     private static int _submitCreatures;
-    /// <summary>Casters the last <see cref="Submit"/> actually staged (post-cull), for the cube tally.</summary>
-    private static int _submitStaged;
     /// <summary>Cutout-caster forensics: draws that ran the 0.2 discard this period, and the three ways a
     /// masked caster can fail to reach the bake -- no UV stream to sample with, no diffuse this frame, or no
     /// cutout program at all. Each of them is a MISSING leaf shadow; none of them is the solid quad.</summary>
     private static long _submitMasked;
     private static int _maskNoTex, _maskNoProg;
-
-
-    /// <summary>One persistent-mapped submission ring: <see cref="Regions"/> regions of <see cref="Cap"/>
-    /// commands + per-draw records, with a fence per region. The sun and the local cubes own SEPARATE rings
-    /// because a region is consumed per VIEW and the two differ by an order of magnitude in both directions --
-    /// the sun submits 4 views of up to 8192 casters, the cubes 6 views per light of a few hundred. One shared
-    /// ring sized for both would either wrap inside a frame (and stall on a fence issued that same frame) or
-    /// cost a hundred megabytes of mapped storage.</summary>
-    private struct RingBuf
-    {
-        public uint Cmd, Draw;
-        public byte* CmdMap;
-        public float* DrawMap;
-        public int Cap, Regions, At;
-        public IntPtr[] Fence;
-    }
 
     // --- 4.6-side objects (touched only inside the bracket)
     private static uint _prog, _fbo, _depthTex;
@@ -397,7 +345,6 @@ public sealed unsafe class CasterPass : IExtenderService
     /// masked casters then stay out of every bake.</summary>
     private static uint _progMask;
     private static int _locMaskVp = -1, _locMaskTex = -1, _locMaskCut = -1;
-    private static RingBuf _sunRing, _cubeRing;
     private static bool _glFailed, _progFailed;
     private static readonly StandDown _down = new("CasterPass DISARMED");
 
@@ -405,17 +352,8 @@ public sealed unsafe class CasterPass : IExtenderService
     private static bool _wasInModule, _loggedOnce, _noSunLogged;
     private static int _tableGen = -1;
     private static int _frames;
-    private static long _draws, _mdiCalls, _culled, _fenceStalls, _lodCulled;
-    /// <summary>Which half of the fit test rejected a caster -- off the light axis, or past the fit's ends.
-    /// Without the split, "everything culled" and "nothing enrolled" read identically in the period line.</summary>
-    private static long _cullPerp, _cullAlong;
-    /// <summary>Casters a VIEW could not stage because its ring region filled (distinct from the enrollment
-    /// overflow, which is the whole table being over capacity), and cubes rendered per frame.</summary>
-    private static long _viewOverflow, _cubeLightsSum;
-    /// <summary>#186: casters STAGED into cube faces this period -- the cube-submission figure the local-light
-    /// reach is measured by. Separate from <see cref="_draws"/>, which the sun's four cascades dominate.</summary>
-    private static long _cubeStaged;
-    private static int _cullDiagLeft = 4;
+    private static long _mdiCalls;
+    private static long _cubeLightsSum;
 
     /// <summary>Views rendered on the last frame -- since #241 that is the views the re-bake predicate found
     /// STALE, not every view the budget holds; <c>/shadow rebake 0</c> is what puts it back to all of them -- plus the CPU
@@ -494,8 +432,8 @@ public sealed unsafe class CasterPass : IExtenderService
                 _invalidate = true;   // the LOD cull decides what a bake CONTAINS; recorded faces predate it
                 return ol;
             case "gather":
-                // #286's A/B: 1 = caster selection in compute, 0 = the CPU per-view walk. "A shadow is
-                // missing" needs a bisect, and the walk is the known-good half of it.
+                // #303's A/B: 1 = the dispatch culls, 0 = the dispatch admits every staged caster into every
+                // view. "A shadow is missing" needs a bisect, and cull-off is the known-good half of it.
                 float og = CasterGather.Mode;
                 CasterGather.Mode = v != 0f ? 1 : 0;
                 return og;
@@ -592,22 +530,15 @@ public sealed unsafe class CasterPass : IExtenderService
         // masked path exists to remove and looks exactly like the pass working.
         bool ok = CastMaskFs.Contains("if (texture(uTex, vUV).a <= uAlphaCut) discard;")
                   && CastMaskFs.Contains("uniform float uAlphaCut;")
-                  && CasterBufDecl.Contains($"binding = {BindCaster}") && DrawBytes == 32 && CmdBytes == 20
-                  // The stride pin, restored the hard way: the 2026-08-30 live break was this exact struct
-                  // still carrying `mat4 model` -- 96 GPU-side bytes over a 32-byte CPU stage, every caster
-                  // reading a NEIGHBOUR'S aux.x and baking at a random part's matrix. A vec4 COUNT alone
-                  // passes that layout (mat4 + 2 vec4s counts 2), so the mat4 exclusion is part of the pin.
-                  && CasterStrideSafe(CasterBufDecl)
-                  && !CasterStrideSafe("struct SowxCaster { mat4 model; vec4 bounds; vec4 aux; };")
-                  && !CasterStrideSafe("struct SowxCaster { vec4 bounds; };")
+                  && CmdBytes == 20
                   && CastVs.Contains("gl_BaseInstance") && !CastVs.Contains("gl_DrawID")
                   // ...and the masked stage indexes its record the same way, for the same M4 reason
                   && CastMaskVs.Contains("gl_BaseInstance") && !CastMaskVs.Contains("gl_DrawID")
-                  // #302: BOTH depth stages read the model matrix out of ALLOY's record, through the slot
-                  // aux.x carries. A stage that went back to a matrix of its own would bake a world one data
+                  // #303: BOTH depth stages read the model matrix out of ALLOY's record, at the ownership
+                  // slot baseInstance carries -- no shadow-side record block exists at all. A stage that went back to a matrix of its own would bake a world one data
                   // plane out of step with the one being drawn, and nothing would say so.
-                  && CastVs.Contains("SowxDraw d = uDraw[int(uCaster[gl_BaseInstance].aux.x)];")
-                  && CastMaskVs.Contains("SowxDraw d = uDraw[int(uCaster[gl_BaseInstance].aux.x)];")
+                  && CastVs.Contains("SowxDraw d = uDraw[gl_BaseInstance];")
+                  && CastMaskVs.Contains("SowxDraw d = uDraw[gl_BaseInstance];")
                   && !CastVs.Contains("c.model") && !CastMaskVs.Contains("c.model")
                   && AlloyRenderer.DrawBufDecl.Contains($"binding = {BindDraw}")
                   // #96 through #302: the bone base is the RECORD's, at the colour path's binding, and the
@@ -630,7 +561,7 @@ public sealed unsafe class CasterPass : IExtenderService
                   // caster bakes at its neighbour's matrix), a vertex stage that lost #96's skinning (every
                   // creature casts its bind pose), a fragment stage that discards (no shadow at all) or
                   // writes gl_FragDepth (acne). All four link cleanly and none says anything.
-                  && !CastVsSafe(CastVs.Replace("uCaster[gl_BaseInstance].aux.x", "0"))
+                  && !CastVsSafe(CastVs.Replace("uDraw[gl_BaseInstance]", "uDraw[0]"))
                   && !CastVsSafe(CastVs.Replace("uBone", "uNothing"))
                   && !CastFsSafe("#version 460 core\nvoid main() { discard; }")
                   && !CastFsSafe("#version 460 core\nvoid main() { gl_FragDepth = 0.5; }")
@@ -640,18 +571,13 @@ public sealed unsafe class CasterPass : IExtenderService
                   // same pin on the cube side: uLocalLight is indexed by a slot the CPU hands out, so a
                   // shorter array reads out of bounds the moment the count passes it
                   && AlloyLights.LocalShadowLib.Contains($"uLocalLight[{MaxCubes}]")
-                  // one region per view, and the CPU runs a frame ahead: a ring that only covered one frame's
-                  // views would stall on a fence it issued itself
-                  && SunRegions >= MaxCascades * 2 && RegionsPerCube >= CubeFaces * 2
-                  // #286: the compute gather runs the CPU walk's OWN cull, ported term for term, and its
-                  // conservatism is what a live shadow depends on. GLSL cannot be run headless, so what is
-                  // pinned is that every term is present and spelled from these same constants -- the cone
-                  // slope is interpolated from FaceConeSlope rather than typed a second time.
-                  && CasterGather.SourceSafe()
-                  // ...and aux.y is the gather's alone: a draw stage that started reading it would be
-                  // skinning or discarding against the LOD exemption flag.
-                  && !CastVs.Contains("aux.y") && !CastMaskVs.Contains("aux.y")
-                  && DrawFloats == 8;
+                  // #303: the gather dispatch culls the CPU reference's tests over the SHARED SowxCullSphere
+                  // buffer, conservative in the direction that costs a draw -- a cull that rejects a visible
+                  // caster deletes a shadow; one that admits an invisible one costs a draw. GLSL cannot be
+                  // run headless, so what is pinned is that every term is present and spelled from these same
+                  // constants -- the cone slope is interpolated from FaceConeSlope rather than typed twice,
+                  // and the NeverCull exemption gates the reach tests and the LOD skip alike.
+                  && CasterGather.SourceSafe();
         // #241: the re-bake predicate, each of its four invalidation sources verified RED on its own -- a
         // term silently dropped from ViewStale is a shadow that stops tracking, which reads as correct until
         // something moves.
@@ -693,32 +619,27 @@ public sealed unsafe class CasterPass : IExtenderService
         {   // #286's staging, against what the dispatch and the draw stages read back out of it. Not a GL
             // call in sight: this is a memory layout shared with GLSL, and a field one slot over is a caster
             // baking at its neighbour's geometry.
-            // #302: the record is BOUNDS + a slot number now. The model matrix, the bone base and the
-            // material are read through uDraw[slot], so the one thing this has to pin is that the slot
-            // survives the staging -- a slot off by one is a caster baking at another part's matrix, with
-            // nothing in the log.
+            // #303: the source is an index range, the OWNERSHIP slot (word 3 -- the sphere the dispatch
+            // culls and the baseInstance the depth stages read uDraw through) and the batch pair. A slot off
+            // by one is a caster baking at another part's matrix, with nothing in the log.
             _liveCreatures = 1; _liveCount = 2;
             for (int i = 0; i < 2; i++)
             {
                 _liveIdxCount[i] = 30 + i; _liveFirst[i] = (uint)(100 + i); _liveBaseVert[i] = (uint)(7 + i);
-                _liveCx[i] = 1f + i; _liveCy[i] = 2f + i; _liveCz[i] = 3f + i; _liveR[i] = 4f + i;
                 _liveCut[i] = 0.2f; _liveSlot[i] = 4100 + i;
             }
             uint* src = stackalloc uint[2 * CasterGather.SrcUints];
-            float* recs = stackalloc float[2 * DrawFloats];
-            StageOne(src, recs, 0, 0, 0, 0);
-            StageOne(src, recs, 1, 1, 1, 1);
-            bool pack = src[0] == 30 && src[1] == 100 && src[2] == 7 && src[3] == 0 && src[4] == 0 && src[5] == 0
-                        && src[CasterGather.SrcUints + 3] == 1 && src[CasterGather.SrcUints + 4] == 1
+            StageOne(src, 0, 0, 0, 0);
+            StageOne(src, 1, 1, 1, 1);
+            bool pack = src[0] == 30 && src[1] == 100 && src[2] == 7 && src[3] == 4100 && src[4] == 0
+                        && src[5] == 0
+                        && src[CasterGather.SrcUints] == 31
+                        && src[CasterGather.SrcUints + 3] == 4101 && src[CasterGather.SrcUints + 4] == 1
                         && src[CasterGather.SrcUints + 5] == 1
-                        && recs[0] == 1f && recs[3] == 4f && recs[4] == 4100f
-                        && recs[DrawFloats + 4] == 4101f
-                        // creature: exempt from the sub-texel cull. Static world: not.
-                        && recs[5] == 1f && recs[DrawFloats + 5] == 0f
                         && CasterGather.SrcUints == 6 && CasterGather.CmdBytes == 20;
             _liveCreatures = 0; _liveCount = 0;
             if (!pack)
-            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the compute gather's staging drifted from the record the depth stages read"); }
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the compute gather's staging drifted from the source the dispatch reads"); }
             // The rotation's write-after-read argument holds only above a floor of 2: at 1 no barrier stands
             // between a view's indirect reads and the next view's dispatch rewriting the same pair.
             if (CasterGather.Rotation < 2)
@@ -742,8 +663,8 @@ public sealed unsafe class CasterPass : IExtenderService
 
         log.Info(ok
             ? "CasterPass.SelfCheck: passed"
-            : $"CasterPass.SelfCheck: FAILED -- indirect/per-draw contract drifted (binding {BindCaster}, " +
-              $"record {DrawBytes}B, command {CmdBytes}B, gl_BaseInstance indexing); standing down");
+            : $"CasterPass.SelfCheck: FAILED -- indirect/per-draw contract drifted (command {CmdBytes}B, " +
+              "gl_BaseInstance-as-ownership-slot indexing); standing down");
         return ok;
     }
 
@@ -812,8 +733,14 @@ public sealed unsafe class CasterPass : IExtenderService
         // uniform block and a dispatch. Stand it down first: a frame that does not stage must not leave the
         // last frame's records armed, which would bake a world that has since moved.
         CasterGather.Stand();
-        if ((sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0))
-            && EnsureCommon() && CasterGather.Ensure()) GatherStage();
+        _gStaged = false;
+        if (sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0))
+        {
+            if (EnsureCommon() && CasterGather.Ensure()) _gStaged = GatherStage();
+            // #303: the compute dispatch is the ONLY selection path. A program that can never build would
+            // otherwise idle here forever with the engine's stencil shadows already suppressed.
+            else if (CasterGather.Failed) Disarm("the caster gather dispatch failed to build");
+        }
         // #282: the blanket invalidate is read by BOTH passes and cleared by the cube scan, so it is snapshot
         // once here -- FrameGraph decides the order of the two, and whichever ran second would otherwise miss it.
         _frameInvalidate = _invalidate || !_rebake;
@@ -836,6 +763,9 @@ public sealed unsafe class CasterPass : IExtenderService
         // its views, so each of them recorded this frame's movers against its own slots.
         if ((_sunRan || _cubeRan) && (!_sunRan || _sunScanned) && (!_cubeRan || _cubeScanned))
             _invalidate = false;
+        // #303: the culled-vs-drawn sample -- a latent copy of the last view's survivor counts, read back
+        // frames later, so the figure reaches the period line without a readback on the draw path.
+        CasterGather.Sample();
         if (_qShadowOn) { _qShadow.End(Gl.TIME_ELAPSED); _qShadowOn = false; }
         LastShadowMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000f / System.Diagnostics.Stopwatch.Frequency;
         _viewSum += LastViews;
@@ -890,10 +820,8 @@ public sealed unsafe class CasterPass : IExtenderService
             }
             _sunBakedViews++;
             ChargeBake(WhySun, invalidate, keyChanged);
-            bool viewOk;
-            fixed (int* all = _allIdx)
-                viewOk = RenderView(ref _sunRing, _depthTex, _mapSize, i, &vp,
-                                    dir, focus, radius, margin, point: false, all, _liveCount);
+            bool viewOk = RenderView(_depthTex, _mapSize, i, &vp,
+                                     dir, focus, radius, margin, point: false);
             // A cascade that stalled holds last frame's depth under this frame's key, and the cascades after
             // it were never scanned -- so their mover evidence is missing too. One blanket frame covers both.
             if (!viewOk) { _sunBaked[i] = false; _sunScanned = false; break; }
@@ -1048,30 +976,15 @@ public sealed unsafe class CasterPass : IExtenderService
             }
             _cubeBakedSlots++;
             ChargeBake(WhyCube, invalidate, slotChanged);
-            // #151: the sphere test is the same for all six faces, so it runs ONCE per light instead of six
-            // times over the whole live list. Identical predicate to Submit's own off-axis test with
-            // reach = far, so the faces cull exactly what they always did -- this only removes repetition.
-            int ln = 0;
-            for (int q = 0; q < _liveCount; q++)
-            {
-                float dx = _liveCx[q] - pos.X, dy = _liveCy[q] - pos.Y, dz = _liveCz[q] - pos.Z;
-                float rr = far + _liveR[q];
-                if (dx * dx + dy * dy + dz * dz <= rr * rr) _lightIdx[ln++] = q;
-            }
             bool whole = true;
-            fixed (int* near = _lightIdx)
-                for (int f = 0; f < CubeFaces && whole; f++)
-                {
-                    Vector3 fwd = ShadowMath.CubeFaceForward(f);
-                    Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
-                    whole = RenderView(ref _cubeRing, CubeTex, _cubeSize, slot * CubeFaces + f, &vp,
-                                       fwd, pos, far, 0f, point: true, near, ln);
-                    // ...but only when a WALK produced it. Under the gather _submitStaged is the frame's
-                    // whole staging, pre-cull, so adding it per face would report millions of "submissions"
-                    // that nothing submitted. The gather's own figure is on the same period line.
-                    if (!CasterGather.Active) _cubeStaged += _submitStaged;
-                    lightCreatures += _submitCreatures;
-                }
+            for (int f = 0; f < CubeFaces && whole; f++)
+            {
+                Vector3 fwd = ShadowMath.CubeFaceForward(f);
+                Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
+                whole = RenderView(CubeTex, _cubeSize, slot * CubeFaces + f, &vp,
+                                   fwd, pos, far, 0f, point: true);
+                lightCreatures += _submitCreatures;
+            }
             // A partial bake is not a bake: leaving the slot unbaked is what forces the whole cube again next
             // frame instead of letting five fresh faces and one stale one be published as fresh forever.
             _cubeBaked[slot] = whole;
@@ -1134,8 +1047,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _loggedOnce = true;
         _log?.Info($"CasterPass: [casters] {CascadeCount}/{_cascades} sun cascades at {_mapSize}px out to " +
                    $"{_maxDist:F0}u" + FitReadout() +
-                   $", {(float)_cubeLightsSum / _frames:F1}/{_cubeLights} local cubes at " +
-                   $"{_cubeSize}px taking {(float)_cubeStaged / _frames:F0} caster submissions/frame" +
+                   $", {(float)_cubeLightsSum / _frames:F1}/{_cubeLights} local cubes at {_cubeSize}px" +
                    $", casting off {AlloyRenderer.OrderCount} Alloy ownership slots" +
                    $", {(float)_cubeBakedSlots / _frames:F1} cube slots re-baked and " +
                    $"{(float)_cubeSkippedSlots / _frames:F1} skipped per frame " +
@@ -1155,20 +1067,25 @@ public sealed unsafe class CasterPass : IExtenderService
                    // it: a still caster still casts. The two numbers meeting is the #241 regression.
                    $" out of {(float)_liveSum / _frames:F1} live " +
                    $"({(float)(_liveSum - _moverSum) / _frames:F1} still)" +
-                   $", caster selection {(CasterGather.Active ? "in COMPUTE" : "on the CPU (/shadow gather 1)")}" +
+                   $", caster selection in compute over the shared SowxCullSphere bounds " +
+                   $"(cull {(CasterGather.Mode != 0 ? "on" : "OFF -- /shadow gather 1")})" +
                    (CasterGather.Views > 0
                     ? $" -- {(float)CasterGather.Views / _frames:F1} dispatches/frame over " +
-                      $"{_gDrawN} staged draws in {_gGroups} batches (survivors are the GPU's; nothing is read back)"
+                      $"{_gDrawN} staged draws in {_gGroups} batches " +
+                      $"({CasterGather.UploadsSkipped}/{CasterGather.UploadsSkipped + CasterGather.Uploads} " +
+                      "frame stagings matched the persistent source, nothing uploaded)"
+                    : "") +
+                   // #303: the culled-vs-drawn figure -- one view per frame, latently copied and read back
+                   // frames later, so it costs no stall on the draw path.
+                   (CasterGather.Samples > 0
+                    ? $", sampled view kept {(float)CasterGather.SampledKept / CasterGather.Samples:F0}/" +
+                      $"{(float)CasterGather.SampledStaged / CasterGather.Samples:F0} staged draws " +
+                      $"(latent sample, /shadow lod {_lodTexels})"
                     : "") +
                    $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
                    (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
-                   $", {(float)_draws / _frames:F0} depth draws/frame in {(float)_mdiCalls / _frames:F1} " +
-                   $"multidraw-indirect calls, " +
-                   $"{(float)_culled / _frames:F0} culled/frame (off-axis {_cullPerp}, past-ends {_cullAlong}), " +
+                   $", {(float)_mdiCalls / _frames:F1} multidraw-indirect calls/frame, " +
                    $"{_liveCreatures} posed casters live" +
-                   $", LOD dropped {_lodCulled / (float)MathF.Max(_frames, 1):F0} sub-texel casters/frame (/shadow lod {_lodTexels}), " +
-                   (_fenceStalls > 0 ? $", {_fenceStalls} views SKIPPED on a ring-fence timeout" : "") +
-                   (_viewOverflow > 0 ? $", {_viewOverflow} casters dropped by a full view region" : "") +
                    // The cutout casters: env-mapped materials the engine calls opaque without ever reading
                    // their diffuse alpha, so their depth draw runs the same 0.2 discard the colour pass does.
                    // Zero here with foliage on screen means they are all falling out at one of the three
@@ -1178,15 +1095,17 @@ public sealed unsafe class CasterPass : IExtenderService
                    (_maskNoTex + _maskNoProg == 0 ? ""
                     : $" ({_maskNoTex} masked casters have no diffuse this frame, " +
                       $"{_maskNoProg} no cutout program -- each casts nothing)"));
-        _frames = 0; _draws = 0; _mdiCalls = 0; _culled = 0; _fenceStalls = 0;
-        _cullPerp = 0; _cullAlong = 0; _viewOverflow = 0; _cubeLightsSum = 0; _cubeStaged = 0; _viewSum = 0;
-        _lodCulled = 0; _liveSum = 0; _qShadow.Reset();
+        _frames = 0; _mdiCalls = 0;
+        _cubeLightsSum = 0; _viewSum = 0;
+        _liveSum = 0; _qShadow.Reset();
         _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _moverSum = 0; _ghostSum = 0;
         _sunBakedViews = 0; _sunSkippedViews = 0;
         Array.Clear(_bakeWhy);
         _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _noRecordSum = 0;
         _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0;
         CasterGather.Views = 0; CasterGather.Batches = 0;
+        CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0;
+        CasterGather.UploadsSkipped = 0; CasterGather.Uploads = 0;
     }
 
     private static void Release(string why)
@@ -1328,10 +1247,9 @@ public sealed unsafe class CasterPass : IExtenderService
         if (_glFailed || _progFailed) return false;
         if (_prog == 0)
         {
-            if (Gl.MultiDrawElementsIndirect == null || Gl.BufferStorage == null || Gl.MapBufferRange == null
-                || Gl.BindBufferBase == null || Gl.FenceSync == null || Gl.ClientWaitSync == null
+            if (Gl.MultiDrawElementsIndirect == null || Gl.BindBufferBase == null
                 || Gl.TexStorage3D == null || Gl.GenFramebuffers == null || Gl.CopyImageSubData == null)
-            { Disarm("a required GL 4.4+ entry point is missing (multidraw-indirect / persistent mapping / image copy)"); return false; }
+            { Disarm("a required GL 4.4+ entry point is missing (multidraw-indirect / image copy)"); return false; }
             uint p = GlProgram.Graphics(ShdCastVs, ShaderStages.Source(ShdCastVs),
                                         ShdCastFs, ShaderStages.Source(ShdCastFs),
                                         _log, "CasterPass depth program",
@@ -1339,8 +1257,8 @@ public sealed unsafe class CasterPass : IExtenderService
             if (p != 0 && !(CastVsSafe(castVs) && CastFsSafe(castFs)))
             {
                 Gl.DeleteProgram(p);
-                _log?.Info("CasterPass: the caster depth override is refused -- it declares a per-draw record "
-                         + $"that is not the {DrawBytes}-byte SowxCaster being staged, has lost the skinning "
+                _log?.Info("CasterPass: the caster depth override is refused -- it no longer reads Alloy's "
+                         + "record through uDraw[gl_BaseInstance], has lost the skinning "
                          + "branch, or its fragment stage is not inert (a discard or a written gl_FragDepth "
                          + "silently removes or displaces every shadow). Rebuilding from the embedded stages "
                          + "(regenerate the override with /dumpshaders to get it back).");
@@ -1422,21 +1340,6 @@ public sealed unsafe class CasterPass : IExtenderService
     }
 
 
-
-    private static bool CreateRing(ref RingBuf r, int cap, int regions, string what)
-    {
-        long cmdSize = (long)regions * cap * CmdBytes;
-        long drawSize = (long)regions * cap * DrawBytes;
-        r.CmdMap = GpuRing.Map(Gl.DRAW_INDIRECT_BUFFER, cmdSize, out r.Cmd);
-        r.DrawMap = (float*)GpuRing.Map(Gl.SHADER_STORAGE_BUFFER, drawSize, out r.Draw);
-        if (r.CmdMap == null || r.DrawMap == null)
-        { Disarm($"persistent mapping of the {what} indirect/per-draw buffers was refused"); return false; }
-        r.Cap = cap; r.Regions = regions; r.At = 0;
-        r.Fence = new IntPtr[regions];
-        _log?.Info($"CasterPass: {what} + {regions}-region persistent rings ready " +
-                   $"({cmdSize + drawSize} bytes mapped)");
-        return true;
-    }
 
     private static void Disarm(string why)
     {
@@ -1545,7 +1448,6 @@ public sealed unsafe class CasterPass : IExtenderService
         _moverSum += _moverCount;
         Array.Copy(_liveSlot, _prevSlots, live);
         _prevCount = live;
-        for (int i = 0; i < live; i++) _allIdx[i] = i;
     }
 
     /// <summary>#302 triage, cold and one-shot: the bake's ONE placement input, checked against the engine's
@@ -1581,20 +1483,29 @@ public sealed unsafe class CasterPass : IExtenderService
     }
 
     /// <summary>#187: bake one view (a cascade layer, or one face of one cube) from what it sees, this frame.
-    /// Stages the live casters this view can see into the next ring region and submits them as one
-    /// multidraw-indirect per (VAO, primitive) group, into <paramref name="layer"/> of the depth array. Called
-    /// once per sun cascade and once per cube face, over the one <see cref="Collect"/> that already ran this
-    /// frame; <paramref name="point"/> picks which of the two culls applies. Hot and alloc-free: commands and
-    /// per-draw records are written straight through the persistent mappings.
-    /// <para>False = this view produced nothing usable (a ring-fence timeout, an incomplete FBO), and the
-    /// caller must not publish it. The layer is cleared even when every caster culls out, because an uncleared
-    /// layer is not "empty", it is LAST frame's depth -- shadows frozen where the geometry no longer is.</para></summary>
-    private static bool RenderView(ref RingBuf ring, uint tex, int size, int layer,
+    /// #303: one path -- the gather dispatch selects out of the frame's staging against the shared cull
+    /// spheres, and the survivors draw by indirect count; <paramref name="point"/> picks which of the two
+    /// view tests the dispatch runs.
+    /// <para>False = this view produced nothing usable (nothing staged this frame, an incomplete FBO), and
+    /// the caller must not publish it. The layer is cleared even when every caster culls out -- and when the
+    /// frame staged ZERO casters -- because an uncleared layer is not "empty", it is LAST frame's depth:
+    /// shadows frozen where the geometry no longer is.</para></summary>
+    private static bool RenderView(uint tex, int size, int layer,
                                    Matrix4x4* vp, Vector3 lightDir, Vector3 focus, float reach, float margin,
-                                   bool point, int* list, int listCount)
+                                   bool point)
     {
+        // zeroed ahead of every early-out: a view that bakes nothing staged no creatures, and a stale count
+        // would be re-added per cube face
+        _submitCreatures = 0;
+        if (!_gStaged) return false;
         LastViews++;
-        return Submit(ref ring, tex, size, layer, vp, lightDir, focus, reach, margin, point, list, listCount);
+        if (!CasterGather.Active)
+        {   // an EMPTY world still bakes: the clear is the bake
+            if (!BeginTarget(tex, size, layer)) return false;
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+            return true;
+        }
+        return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point);
     }
 
     /// <summary>Attach one depth layer of <paramref name="tex"/> and clear it. Shared by both submission
@@ -1636,10 +1547,9 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>#286: the compute gather's per-frame staging. Parallel to the live list but in BATCH order,
     /// which is what lets one dispatch feed one glMultiDrawElementsIndirectCount per batch.</summary>
     private static readonly uint[] _gSrc = new uint[MaxCasters * CasterGather.SrcUints];
-    private static readonly float[] _gRec = new float[MaxCasters * DrawFloats];
     /// <summary>Batch key per staged draw, and the live index it names. The key orders masked draws last (one
     /// program switch instead of one per VAO), then by VAO, primitive and mask texture -- the (VAO, prim,
-    /// maskTex) key the CPU walk cuts its multidraws on, only sorted rather than stumbled upon.</summary>
+    /// maskTex) key the multidraws cut on.</summary>
     private static readonly long[] _gKey = new long[MaxCasters];
     private static readonly int[] _gLive = new int[MaxCasters];
     private static readonly int[] _gVao = new int[MaxCasters], _gPrim = new int[MaxCasters],
@@ -1649,39 +1559,34 @@ public sealed unsafe class CasterPass : IExtenderService
     /// carries one value -- the same shape the colour path's <c>uAlphaCut</c> has.</summary>
     private static readonly float[] _gCut = new float[MaxCasters];
     private static int _gDrawN, _gGroups, _gCreatures;
+    /// <summary>#303: the frame produced a coherent staging -- a non-empty one the gather accepted, or a
+    /// genuinely empty world. False = the gather refused a non-empty staging (no program, no sphere buffer
+    /// yet), and the views must NOT bake -- baking would clear live shadows out of the maps.</summary>
+    private static bool _gStaged;
 
-    /// <summary>One staged draw, written into the source record and the per-draw <c>SowxCaster</c>. Its own
-    /// function because <see cref="SelfCheck"/> runs it: every field landing one slot over is a caster baking
-    /// at its neighbour's matrix, and none of it needs a GL context to be wrong.</summary>
-    private static void StageOne(uint* src, float* recs, int d, int i, int g, int start)
+    /// <summary>One staged draw, written into the source record. Its own function because
+    /// <see cref="SelfCheck"/> runs it: a field landing one slot over is a caster baking at its neighbour's
+    /// matrix, and none of it needs a GL context to be wrong.
+    /// <para>#303: word 3 is the OWNERSHIP SLOT -- the dispatch culls <c>SowxCullSphere[slot]</c> (the colour
+    /// cull's own bounds and exemptions) and writes it as <c>baseInstance</c>, which the depth stages read
+    /// <c>uDraw</c> through. There is no per-draw shadow record left at all.</para></summary>
+    private static void StageOne(uint* src, int d, int i, int g, int start)
     {
         uint* r = src + (long)d * CasterGather.SrcUints;
         r[0] = (uint)_liveIdxCount[i];
         // in INDICES already, unlike the colour path's byte offsets -- the indirect command takes elements
         r[1] = _liveFirst[i];
         r[2] = _liveBaseVert[i];
-        r[3] = (uint)d;
+        r[3] = (uint)_liveSlot[i];
         r[4] = (uint)g;
         r[5] = (uint)start;
-        float* rec = recs + (long)d * DrawFloats;
-        // bounds: the world sphere the dispatch culls against. NOT in SowxDraw and genuinely view-varying
-        // work -- the colour cull's own sphere exempts skinned/dangly/displacing parts with an infinite
-        // radius, which is right for a culler and useless for a bake that has to locate them.
-        rec[0] = _liveCx[i]; rec[1] = _liveCy[i]; rec[2] = _liveCz[i]; rec[3] = _liveR[i];
-        // aux.x is the OWNERSHIP SLOT: the model matrix, the bone base and the material are read out of
-        // uDraw[slot] by the depth stage, exactly as the colour path reads them.
-        rec[4] = _liveSlot[i];
-        // aux.y is the LOD exemption. The CPU walk spells it as index order (creatures head the live list);
-        // a dispatch has no order to read, so it has to be a per-record flag -- and the player's own shadow
-        // flickering out in a far cascade is the one regression this must not have.
-        rec[5] = i < _liveCreatures ? 1f : 0f;
-        rec[6] = 0f; rec[7] = 0f;
     }
 
-    /// <summary>#286: stage the whole frame once, in batch order, and upload it. Everything the CPU walk did
-    /// per VIEW that is not the cull itself happens here exactly once -- the VAO lookup, the mask-texture
+    /// <summary>#286: stage the whole frame once, in batch order, and publish it. Everything per-view that
+    /// is not the cull itself happens here exactly once -- the VAO lookup, the mask-texture
     /// resolve, the record. Inside the bracket, because the mask resolve issues Alloy's own texture copy.
-    /// <para>False = nothing staged, and every view falls back to the CPU walk for the frame.</para></summary>
+    /// <para>False = a non-empty staging was REFUSED (the views must idle, not bake); an empty world stages
+    /// true with zero draws, and its views bake clears.</para></summary>
     private static bool GatherStage()
     {
         int n = 0, creatures = 0;
@@ -1701,10 +1606,10 @@ public sealed unsafe class CasterPass : IExtenderService
             if (i < _liveCreatures) creatures++;
         }
         _gDrawN = 0;
-        if (n == 0) return false;
+        if (n == 0) return true;   // an empty world is a coherent staging: every view bakes a clear
         Array.Sort(_gKey, _gLive, 0, n);
         int g = -1;
-        fixed (uint* src = _gSrc) fixed (float* recs = _gRec)
+        fixed (uint* src = _gSrc)
             for (int d = 0; d < n; d++)
             {
                 int i = _gLive[d];
@@ -1716,12 +1621,12 @@ public sealed unsafe class CasterPass : IExtenderService
                     _gCut[g] = _liveCut[i];
                 }
                 _gLen[g] = d - _gStart[g] + 1;
-                StageOne(src, recs, d, i, g, _gStart[g]);
+                StageOne(src, d, i, g, _gStart[g]);
             }
         _gGroups = g + 1; _gCreatures = creatures;
         bool ok;
-        fixed (uint* src = _gSrc) fixed (float* recs = _gRec)
-            ok = CasterGather.Begin(n, _gGroups, src, recs, DrawFloats);
+        fixed (uint* src = _gSrc)
+            ok = CasterGather.Begin(n, _gGroups, src);
         if (ok) _gDrawN = n;
         return ok;
     }
@@ -1732,9 +1637,9 @@ public sealed unsafe class CasterPass : IExtenderService
     private static bool GatherSubmit(uint tex, int size, int layer, Matrix4x4* vp,
                                      Vector3 lightDir, Vector3 focus, float reach, float margin, bool point)
     {
-        // PRE-cull figures under the gather: the survivors are the GPU's, and asking would be the readback
-        // this pass exists to not do. The period line says which path produced them.
-        _submitCreatures = _gCreatures; _submitStaged = _gDrawN;
+        // PRE-cull figures: the survivors are the GPU's, and asking would be the readback this pass exists
+        // to not do -- the latent sample on the period line is what reports them.
+        _submitCreatures = _gCreatures;
         if (!BeginTarget(tex, size, layer)) return false;
         // this view's texel in world units -- ortho cascades span 2*reach across `size` texels, a cube face
         // 2*d at distance d bounded by reach. Identical to the walk's own lodR.
@@ -1744,8 +1649,8 @@ public sealed unsafe class CasterPass : IExtenderService
         int boundVao = -1, boundMask = -1, boundTex = -1;
         float boundCut = -1f;
         // ponytail: every view issues one indirect-count draw per GLOBAL batch, including the batches whose
-        // count the dispatch left at zero -- the CPU walk only ever issued the batches its own survivors
-        // formed. It is bounded work with no readback and the period line measures it (_mdiCalls), but at
+        // count the dispatch left at zero. It is bounded work with no readback and the period line
+        // measures it (_mdiCalls), but at
         // ~200 views x a few hundred batches it is the next thing to look at if the win comes in short. The
         // upgrade path is a second tiny dispatch compacting the non-empty batches into a batch list, which
         // stays on the same no-readback side of the line.
@@ -1773,172 +1678,6 @@ public sealed unsafe class CasterPass : IExtenderService
         return true;
     }
 
-    private static bool Submit(ref RingBuf ring, uint tex, int size, int layer,
-                               Matrix4x4* vp, Vector3 lightDir, Vector3 focus, float reach, float margin, bool point,
-                               int* list, int listCount)
-    {
-        if (CasterGather.Active)
-            return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point);
-        // #286: the CPU walk's rings are mapped only once the walk is actually the path taken. A
-        // gather-default session never maps them, which is the ~100MB of persistent storage the compute
-        // path does not need -- and a mid-session `/shadow gather 0` still arms them here, inside the bracket.
-        if (ring.CmdMap == null
-            && !CreateRing(ref ring, point ? MaxCubeCasters : MaxCasters,
-                           point ? _cubeLights * RegionsPerCube : SunRegions,
-                           point ? $"{_cubeSize}x{_cubeSize}x{_cubeLights} local-light cube array"
-                                 : $"{_mapSize}x{_mapSize}x{_cascades} cascade array")) return false;
-        int region = ring.At;
-        // zeroed AHEAD of the fence early-out: a view that stalls stages nothing, and a count left standing
-        // is the PREVIOUS view's, which the cube tally would add a second time
-        _submitCreatures = 0; _submitStaged = 0;
-        // the GPU may still be reading this region's commands: overwriting them before its fence signals is
-        // silent command corruption, so a wait that TIMES OUT skips the view rather than barging through
-        if (!GpuRing.Acquire(ring.Fence, region))
-        { _fenceStalls++; return false; }
-        int cap = ring.Cap;
-        uint* cmd = (uint*)(ring.CmdMap + (long)region * cap * CmdBytes);
-        float* rec = ring.DrawMap + (long)region * cap * DrawFloats;
-        int baseIndex = region * cap;
-
-        int n = 0, culled = 0;
-        // the fit's own extent: anything farther from the light axis than this cannot shade inside it
-        float along = reach + margin;
-        // #151 shadow LOD: this view's texel in world units -- ortho cascades span 2*reach across `size`
-        // texels; a cube face spans 2*d at distance d, bounded by reach. Casters under _lodTexels of it are
-        // sub-texel noise and skipped. Creatures are exempt: they sit at the head of the live list, and the
-        // player's own shadow flickering out in a far cascade is the one regression this must not have.
-        float lodR = _lodTexels * 2f * reach / size;
-        if (_cullDiagLeft > 0 && _liveCount > 0)
-        {   // a 100%-culled pass is indistinguishable from a dead one in the period line: name the inputs
-            _cullDiagLeft--;
-            _log?.Info($"CasterPass: cull inputs live={_liveCount} focus=({focus.X:F1},{focus.Y:F1},{focus.Z:F1}) " +
-                       $"dir=({lightDir.X:F2},{lightDir.Y:F2},{lightDir.Z:F2}) reach={reach:F0} along={along:F0} " +
-                       $"first=({_liveCx[0]:F1},{_liveCy[0]:F1},{_liveCz[0]:F1}) r={_liveR[0]:F1}");
-        }
-        for (int w = 0; w < listCount; w++)
-        {
-            int i = list[w];
-            float dx = _liveCx[i] - focus.X, dy = _liveCy[i] - focus.Y, dz = _liveCz[i] - focus.Z;
-            float t = dx * lightDir.X + dy * lightDir.Y + dz * lightDir.Z;
-            float r = _liveR[i];
-            bool offAxis, offEnds;
-            if (point)
-            {
-                // A cube face: the light is a POINT, so range decides what is recorded at all, and the face
-                // itself is a 90deg square pyramid. #100: testing only range + "not behind me" admitted most
-                // of a HEMISPHERE per face -- six times the geometry a face can see -- which overflowed the
-                // per-face capacity and truncated the staging tail. Test the pyramid instead.
-                // <para>The test is against the pyramid's CIRCUMSCRIBING cone (its corners sit at
-                // |perp| = t*sqrt2), not its four side planes: a cone is rotation-invariant, so it needs no
-                // per-face right/up basis and can never clip a corner the way a mis-rotated square would. It
-                // admits a little more than the pyramid, which is the safe direction.</para>
-                float dSq = dx * dx + dy * dy + dz * dz;
-                offAxis = dSq > (reach + r) * (reach + r);
-                offEnds = FaceCulls(dSq, t, r);
-            }
-            else
-            {
-                // CPU cull against the fit: distance from the light axis through the focus, plus the caster's
-                // own radius. Splitting it into perpendicular/along keeps casters standing BETWEEN the light
-                // and the fit (the classic near-clip miss) instead of culling them by plain range.
-                float px = dx - t * lightDir.X, py = dy - t * lightDir.Y, pz = dz - t * lightDir.Z;
-                offAxis = px * px + py * py + pz * pz > (reach + r) * (reach + r);
-                offEnds = MathF.Abs(t) > along + r;
-            }
-            if (offAxis || offEnds)
-            {
-                culled++;
-                if (offAxis) _cullPerp++; else _cullAlong++;
-                continue;
-            }
-            if (r < lodR && i >= _liveCreatures) { _lodCulled++; continue; }
-            // #100: continue rather than break, so the count is CASTERS lost and not views that overflowed --
-            // the old counter read ~2 a frame while each of those views was silently dropping its whole tail.
-            // The remaining iterations only re-run the cull, which is the work this loop was doing anyway.
-            if (n >= cap) { _viewOverflow++; continue; }
-            if (AlloyRenderer.CasterVao(_liveVao[i]) == 0) continue;
-            // THE mask decision, and the only one that is not an inference: does this caster's diffuse carry
-            // an alpha channel at all? Asked of GL, cached per texture id. No alpha -> nothing to test, cast
-            // solid. Alpha -> run the discard, at the threshold the class chose.
-            // #211: the mask samples OUR copy. TexHasAlpha still asks the engine's name -- it is a question
-            // about the image, and the copy carries the same format. Resolved here rather than in Collect,
-            // which runs before the bracket and so cannot issue the copy.
-            int masked = _liveTex[i] != 0 && _progMask != 0 && TexHasAlpha(_liveTex[i])
-                       ? OwnedTextures.Draw(_liveTex[i]) : 0;
-            if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
-
-            uint* q = cmd + n * CmdUints;
-            q[0] = (uint)_liveIdxCount[i];
-            q[1] = 1;
-            q[2] = _liveFirst[i];
-            q[3] = _liveBaseVert[i];
-            q[4] = (uint)(baseIndex + n);            // baseInstance IS the per-draw record index
-            float* d = rec + n * DrawFloats;
-            d[0] = _liveCx[i]; d[1] = _liveCy[i]; d[2] = _liveCz[i]; d[3] = r;
-            // aux.x is the ownership slot the depth stage reads uDraw through; aux.y is the gather's LOD
-            // exemption, which this walk spells as index order and never reads back.
-            d[4] = _liveSlot[i]; d[5] = 0f; d[6] = 0f; d[7] = 0f;
-            _stagedVao[n] = _liveVao[i]; _stagedPrim[n] = _livePrim[i]; _stagedTex[n] = masked;
-            _stagedCut[n] = _liveCut[i];
-            if (masked != 0) _submitMasked++;
-            if (i < _liveCreatures) _submitCreatures++;
-            n++;
-        }
-        _culled += culled;
-        _submitStaged = n;
-
-        if (!BeginTarget(tex, size, layer)) return false;
-        if (n == 0)
-        {   // cleared == fully lit, which is the truth for a view nothing casts into
-            Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-            return true;
-        }
-        Gl.UseProgram(_prog);
-        Gl.UniformMatrix4fv(_locVp, 1, 0, (float*)vp);
-        // unit 0 is where the cutout stage samples; nothing else in this bracket moves the active unit
-        Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCaster, ring.Draw);
-        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, ring.Cmd);
-
-        long regionOff = (long)region * cap * CmdBytes;
-        int start = 0, boundVao = -1, boundMask = 0, boundTex = -1;
-        float boundCut = -1f;
-        for (int j = 1; j <= n; j++)
-        {
-            bool cut = j == n || _stagedVao[j] != _stagedVao[start] || _stagedPrim[j] != _stagedPrim[start]
-                       || _stagedTex[j] != _stagedTex[start] || _stagedCut[j] != _stagedCut[start];
-            if (!cut) continue;
-            // The masked batches run the cutout program with their diffuse bound; everything else runs the
-            // position-only stage, which is the whole set on ordinary content.
-            int cut0 = _stagedTex[start];
-            if ((cut0 != 0 ? 1 : 0) != boundMask)
-            {
-                boundMask = cut0 != 0 ? 1 : 0;
-                Gl.UseProgram(cut0 != 0 ? _progMask : _prog);
-                Gl.UniformMatrix4fv(cut0 != 0 ? _locMaskVp : _locVp, 1, 0, (float*)vp);
-                if (cut0 != 0) Gl.Uniform1i(_locMaskTex, 0);
-                boundCut = -1f;
-            }
-            if (cut0 != 0 && _stagedCut[start] != boundCut)
-            { boundCut = _stagedCut[start]; Gl.Uniform1f(_locMaskCut, boundCut); }
-            if (cut0 != 0 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
-            if (_stagedVao[start] != boundVao)
-            { Gl.BindVertexArray(AlloyRenderer.CasterVao(_stagedVao[start])); boundVao = _stagedVao[start]; }
-            Gl.MultiDrawElementsIndirect(_primTable[_stagedPrim[start]], GlUnsignedShort,
-                                         (void*)(regionOff + (long)start * CmdBytes), j - start, 0);
-            _mdiCalls++;
-            start = j;
-        }
-        _draws += n;
-
-        Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, 0);
-        Gl.BindVertexArray(0);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        GpuRing.Signal(ring.Fence, region);
-        ring.At = (region + 1) % ring.Regions;
-        return true;
-    }
-
     /// <summary>#100: is a caster sphere outside this cube face's 90deg pyramid? <paramref name="t"/> is its
     /// depth along the face forward and <paramref name="dSq"/> its squared distance from the light, so the
     /// perpendicular offset is the third side of that right triangle -- no per-face basis needed, which is the
@@ -1953,45 +1692,17 @@ public sealed unsafe class CasterPass : IExtenderService
         return lim < 0f || dSq - t * t > lim * lim;
     }
 
-    /// <summary>Per-staged-draw group keys, parallel to the command slots the loop above fills.</summary>
-    private static readonly int[] _stagedVao = new int[MaxCasters], _stagedPrim = new int[MaxCasters];
-    /// <summary>#126 follow-up: the diffuse this staged draw discards against, 0 for a solid caster. Part of
-    /// the batch cut key -- one multidraw carries one texture and one program.</summary>
-    private static readonly int[] _stagedTex = new int[MaxCasters];
-    /// <summary>...and the threshold it discards AT, likewise part of the cut key since #302 made it a
-    /// per-batch uniform rather than a per-draw record field.</summary>
-    private static readonly float[] _stagedCut = new float[MaxCasters];
-
-
-
-
-
     /// <summary>Resrefs the caster pass looks up before falling back to the GLSL below (#92).</summary>
     internal const string ShdCastVs = "cx_cast_vs", ShdCastFs = "cx_cast_fs";
 
-    /// <summary>#161: the caster vertex stage's half of the override contract -- the per-draw record it reads
-    /// (counted, so an override may still reformat the fields) and #96's skinning branch. A stage that lost
-    /// the branch links perfectly, the bone attributes simply go unread, and every creature casts its BIND
-    /// POSE's shadow while the creature itself animates.</summary>
-    /// <summary>#161: the caster vertex stage's half of the override contract. #302 retired the second-stride
-    /// guard with the record it policed -- there is no parallel material format left to desync -- and what
-    /// replaces it is the two things an override still has to keep: it reads Alloy's record through the
-    /// ownership slot, and it keeps #96's skinning branch. A stage that lost the branch links perfectly, the
-    /// bone attributes simply go unread, and every creature casts its BIND POSE while it animates.</summary>
+    /// <summary>#161: the caster vertex stage's half of the override contract. #303 retired the SowxCaster
+    /// block with the staging that filled it, so what an override has to keep is two things: it reads Alloy's
+    /// record through <c>uDraw[gl_BaseInstance]</c> (the ownership slot the gather wrote as baseInstance),
+    /// and it keeps #96's skinning branch. A stage that lost the branch links perfectly, the bone attributes
+    /// simply go unread, and every creature casts its BIND POSE while it animates.</summary>
     private static bool CastVsSafe(string vs)
-        => vs.Contains("uDraw[int(uCaster[gl_BaseInstance].aux.x)]") && vs.Contains("uBone")
-           && CasterStrideSafe(vs);
-
-    /// <summary>The SowxCaster stride, checked by SHAPE: exactly <see cref="DrawFloats"/>/4 vec4s and no
-    /// mat4, in whatever text declares the struct. A stage that never declares it cannot disagree.</summary>
-    private static bool CasterStrideSafe(string src)
-    {
-        int at = src.IndexOf("struct SowxCaster", StringComparison.Ordinal);
-        if (at < 0) return true;
-        int end = src.IndexOf('}', at);
-        string decl = end < 0 ? src[at..] : src[at..end];
-        return decl.Split("vec4").Length - 1 == DrawFloats / 4 && !decl.Contains("mat4");
-    }
+        => vs.Contains("uDraw[gl_BaseInstance]") && vs.Contains("uBone")
+           && !vs.Contains("SowxCaster");
 
     /// <summary>#161: the caster fragment stage must stay inert. It runs into a depth-only FBO, so the only
     /// two things it can say that matter are <c>discard</c> -- which writes no depth, i.e. the caster casts no
@@ -2001,23 +1712,11 @@ public sealed unsafe class CasterPass : IExtenderService
     private static bool CastFsSafe(string fs)
         => !fs.Contains("discard") && !fs.Contains("gl_FragDepth");
 
-    /// <summary>The per-draw block, indexed by <c>gl_BaseInstance</c> and NOT <c>gl_DrawID</c>: the compute
-    /// cull compacts the command buffer, which renumbers gl_DrawID but leaves every surviving command
-    /// carrying its own index -- so the layout survives culling without a reformat.
-    /// <para>#302 reduced it to what a shadow view genuinely needs and Alloy's persistent record does not
-    /// carry: <c>bounds</c> is the caster's world sphere, GEOMETRIC even for the kinds
-    /// <c>SowxCullSphere</c> exempts, and <c>aux.x</c> is the OWNERSHIP SLOT -- everything else (model
-    /// matrix, bone base, material) is read from <c>uDraw[aux.x]</c>, the colour path's own record.
-    /// <c>aux.y</c> is the gather's LOD exemption. There is no second copy of any field that lives in
-    /// SowxDraw, which is why this no longer needs the second-stride guard.</para>
-    /// <c>binding = 5</c> must stay in step with <see cref="BindCaster"/>.</summary>
-    internal const string CasterBufDecl = """
-        struct SowxCaster { vec4 bounds; vec4 aux; };
-        layout(std430, binding = 5) readonly buffer SowxCasterBuf { SowxCaster uCaster[]; };
-
-        """;
-    /// <summary>Depth vertex stage. #302: it reads Alloy's own per-draw record through the ownership slot the
-    /// staging handed it, so the model matrix and #96's bone base are the SAME numbers the colour pass draws
+    /// <summary>Depth vertex stage. #303: <c>gl_BaseInstance</c> IS the ownership slot (the gather's
+    /// dispatch writes it into every surviving command), so the stage reads Alloy's own per-draw record
+    /// directly -- the model matrix and #96's bone base are the SAME numbers the colour pass draws
+    /// with rather than a second copy of them. gl_BaseInstance and NOT gl_DrawID: compaction renumbers
+    /// gl_DrawID and nothing else. So the model matrix and #96's bone base are the SAME numbers the colour pass draws
     /// with rather than a second copy of them. The skinning branch mirrors the colour stage's arm term for
     /// term (<c>SowxBoneBase</c> / <c>SowxSkinMat</c>, shared source, not a re-spelling), and the rigid arm is
     /// <see cref="AlloyRenderer.ClipExpr"/> character-for-character under <c>invariant gl_Position</c> --
@@ -2026,12 +1725,12 @@ public sealed unsafe class CasterPass : IExtenderService
         #version 460 core
         layout(location = 0) in vec3 aPos;
 
-        """ + CasterBufDecl + AlloyRenderer.DrawBufDecl + AlloyRenderer.FeatDecl + AlloyRenderer.BoneVs + """
+        """ + AlloyRenderer.DrawBufDecl + AlloyRenderer.FeatDecl + AlloyRenderer.BoneVs + """
         uniform mat4 uVP;
         invariant gl_Position;
         void main()
         {
-            SowxDraw d = uDraw[int(uCaster[gl_BaseInstance].aux.x)];
+            SowxDraw d = uDraw[gl_BaseInstance];
             int bb = SowxBoneBase(d);
             if (bb >= 0) gl_Position = uVP * d.model * (SowxSkinMat(bb) * vec4(aPos, 1.0));
             else gl_Position = uVP * d.model * vec4(aPos, 1.0);
@@ -2055,13 +1754,13 @@ public sealed unsafe class CasterPass : IExtenderService
         layout(location = 0) in vec3 aPos;
         layout(location = 1) in vec2 aUV;
 
-        """ + CasterBufDecl + AlloyRenderer.DrawBufDecl + """
+        """ + AlloyRenderer.DrawBufDecl + """
         uniform mat4 uVP;
         invariant gl_Position;
         out vec2 vUV;
         void main()
         {
-            SowxDraw d = uDraw[int(uCaster[gl_BaseInstance].aux.x)];
+            SowxDraw d = uDraw[gl_BaseInstance];
             gl_Position = uVP * d.model * vec4(aPos, 1.0);
             vUV = aUV;
         }

@@ -45,11 +45,11 @@ internal static class ShaderStages
         """;
 
     internal const string CasterRecord = """
-        // LOAD-BEARING: this stage reads ALLOY's per-draw record (SowxDraw) through the ownership slot the
-        // SowxCaster block hands it. Both structs are COPIES of layouts that live in C#; drop or reorder a
-        // field and every caster bakes at its neighbour's matrix. The skinning branch is load-bearing too:
-        // without it every creature casts its bind pose. The extender refuses a stage that disagrees.
-        // See docs/shader-overrides.md.
+        // LOAD-BEARING: this stage reads ALLOY's per-draw record (SowxDraw) at gl_BaseInstance, which IS
+        // the ownership slot (#303 -- the gather dispatch writes it into every surviving command). Index it
+        // any other way and every caster bakes at its neighbour's matrix. The skinning branch is
+        // load-bearing too: without it every creature casts its bind pose. The extender refuses a stage
+        // that disagrees. See docs/shader-overrides.md.
 
 
         """;
@@ -162,7 +162,7 @@ internal static class ShaderStages
                   && src.Contains("#version")
                   && header.Contains("docs/shader-overrides.md")
                   && header.Contains(Record) == src.Contains("struct SowxDraw")
-                  && header.Contains(CasterRecord) == src.Contains("struct SowxCaster")
+                  && header.Contains(CasterRecord) == src.Contains("uDraw[gl_BaseInstance]")
                   && header.Contains(Invariant) == src.Contains("invariant gl_Position;");
         }
         log.Info(ok

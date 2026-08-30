@@ -166,13 +166,15 @@ public sealed unsafe partial class AlloyRenderer
                 // #287: pixels per unit of world radius at unit depth, the LOD test's one input. Zero when
                 // this pass has no perspective projection, and the test then stands down.
                 float lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
-                fixed (uint* src = _dSrc)
+                // #303: the spheres go up whatever the cull mode -- the shadow gather reads the same buffer.
                 fixed (float* sph = _dSph)
+                    CullPass.UploadSpheres(sph, _recOwnCap + MaxSkyDraws);
+                fixed (uint* src = _dSrc)
                     // A probe capture draws the same batches six more times from six other cameras, so its
                     // faces cannot ride a list culled for THIS one -- passing zero groups stands the cull
                     // down for the whole pass rather than leaving a stale list armed behind it.
-                    if (CullPass.Begin(_capturing ? 0 : groups, cullDraws, src, sph,
-                                       _recOwnCap + MaxSkyDraws, lodScale, _gOpaqueEnd, _eyePos))
+                    if (CullPass.Begin(_capturing ? 0 : groups, cullDraws, src,
+                                       lodScale, _gOpaqueEnd, _eyePos))
                         CullPass.Dispatch(CullPass.PhasePrepass, &vp, hiZ: false, PassGen);
                 FrameZones.Add(FrameZones.Zone.Cull, tCull);
                 foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)

@@ -242,12 +242,15 @@ internal static unsafe class CullPass
     /// and additive ranges are placed by the sort dispatch instead of the atomic.</para>
     /// <para>#287: <paramref name="src"/> is <see cref="SrcUints"/> uints per draw, staged by the batch walk
     /// itself -- see <see cref="SrcUints"/>. Nothing per-draw is computed here any more; this is an upload
-    /// and a set of buffer sizes.</para></summary>
-    internal static bool Begin(int groups, int drawN, uint* src, float* spheres, int sphereSlots,
+    /// and a set of buffer sizes.</para>
+    /// <para>#303: the spheres are no longer a parameter -- <see cref="UploadSpheres"/> carries them, outside
+    /// the Mode gate, because the shadow gather culls against the same buffer whatever <c>/draw cull</c>
+    /// says.</para></summary>
+    internal static bool Begin(int groups, int drawN, uint* src,
                               float lodScale, int compactBelow, Vector3 eye)
     {
         _phase = -1;
-        if (Mode <= ModeOff || drawN <= 0 || groups <= 0 || !Ensure()) return false;
+        if (Mode <= ModeOff || drawN <= 0 || groups <= 0 || _sphBuf == 0 || !Ensure()) return false;
         // The per-batch count array is indexed by batch; the zero-fill in Dispatch is what resets it. GROWN
         // rather than capped: a refusal here would be a refusal AFTER the staging walk had already dropped
         // the engine's visibility gate on the strength of Ready, and the frame would then draw the whole
@@ -270,14 +273,6 @@ internal static unsafe class CullPass
         Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, srcSize, src);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
 
-        // The spheres are indexed by RECORD slot, exactly as the records are, and go up whole. They are four
-        // floats against the record's forty-four, and they change on the same edges -- so a dirty list here
-        // would be #242's machinery again for a fortieth of the traffic.
-        if (_sphBuf == 0) { uint b; Gl.GenBuffers(1, &b); _sphBuf = b; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _sphBuf);
-        var sphSize = (IntPtr)((long)sphereSlots * 4 * sizeof(float));
-        if (sphereSlots > _sphCap) { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, sphSize, null, Gl.DYNAMIC_DRAW); _sphCap = sphereSlots; }
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, sphSize, spheres);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _sphBuf);
 
         for (int i = 0; i < 2; i++)
@@ -296,6 +291,27 @@ internal static unsafe class CullPass
         _phase = -2;   // staged; the first Dispatch publishes a phase
         return true;
     }
+
+    /// <summary>#303: the per-ownership-slot <c>SowxCullSphere</c> upload, hoisted out of <see cref="Begin"/>
+    /// and out of the Mode gate: the shadow gather culls against this same buffer, so it must stay current
+    /// under <c>/draw cull 0</c> and during a probe capture alike. The spheres are indexed by RECORD slot,
+    /// exactly as the records are, and go up whole -- four floats against the record's forty-four, changing
+    /// on the same edges, so a dirty list here would be #242's machinery again for a fortieth of the
+    /// traffic.</summary>
+    internal static void UploadSpheres(float* spheres, int sphereSlots)
+    {
+        if (sphereSlots <= 0 || Gl.BufferSubData == null) return;
+        if (_sphBuf == 0) { uint b; Gl.GenBuffers(1, &b); _sphBuf = b; }
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _sphBuf);
+        var sphSize = (IntPtr)((long)sphereSlots * 4 * sizeof(float));
+        if (sphereSlots > _sphCap) { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, sphSize, null, Gl.DYNAMIC_DRAW); _sphCap = sphereSlots; }
+        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, sphSize, spheres);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+    }
+
+    /// <summary>The shared sphere buffer's GL name, for the shadow gather's dispatch. 0 until the first
+    /// colour build uploads it, and the gather stands down for that frame.</summary>
+    internal static uint SphereBuf => _sphBuf;
 
     private static void Ensure(ref uint buf, long bytes, bool grow)
     {
