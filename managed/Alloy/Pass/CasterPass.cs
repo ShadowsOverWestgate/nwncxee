@@ -2004,7 +2004,14 @@ public sealed unsafe class CasterPass : IExtenderService
         Gl.Viewport(0, 0, size, size);
         // depth state BEFORE the clear: a clear runs through the write mask and the scissor, so clearing
         // first would leave stale depth wherever a previous pass left either of them set
-        new PassState(depth: true, depthWrite: true).Apply();
+        // #292: cull OFF, deliberately DIFFERENT from the colour pass, and this is the disposition the
+        // ticket asks for. A shadow map is depth from the LIGHT's camera, so "which face is the front one"
+        // is the light's question and not the eye's: culling back faces here would drop a single-sided wall
+        // whenever the light stands behind it, and the light would pour straight through. Casting from every
+        // face is a superset -- for a closed mesh the nearest surface is a front face either way, and for an
+        // open sheet the sheet is what should occlude. So the mismatch is one-directional and safe, whereas
+        // matching the colour pass would open leaks.
+        new PassState(depth: true, depthWrite: true, cull: false).Apply();
         Gl.DepthFunc(Gl.LEQUAL);
         Gl.Clear(Gl.DEPTH_BUFFER_BIT);
         return true;

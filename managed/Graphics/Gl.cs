@@ -21,6 +21,9 @@ public static unsafe class Gl
                       TEXTURE_RED_SIZE = 0x805C, TEXTURE_GREEN_SIZE = 0x805D, TEXTURE_BLUE_SIZE = 0x805E;
     public const uint TEXTURE_WIDTH = 0x1000, TEXTURE_HEIGHT = 0x1001;
     public const uint CULL_FACE = 0x0B44, SCISSOR_TEST = 0x0C11;
+    /// <summary>#292: the face <c>glCullFace</c> discards. BACK is the engine's own default
+    /// (<c>Scene::RenderDrawBucket</c> @0x46d060 restores <c>SetCullFace(1)</c> on every exit).</summary>
+    public const uint BACK = 0x0405;
     /// <summary>#125: GL_DEPTH_CLAMP. The Alloy sky replays a dome the engine drew under its OWN projection
     /// (far 1000.0) beneath the world's, so it can cross the world far plane; clamping keeps the far-plane
     /// fragments rather than letting them clip into a hole at the horizon.</summary>
@@ -168,7 +171,8 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, int*, void> GetIntegerv;
     public static delegate* unmanaged<uint, byte> IsEnabled;   // GLboolean glIsEnabled(GLenum)
     public static delegate* unmanaged<uint> GetError;          // GLenum glGetError(void)
-    public static delegate* unmanaged<uint, void> Enable, Disable, ActiveTexture, UseProgram, BindVertexArray;
+    public static delegate* unmanaged<uint, void> Enable, Disable, ActiveTexture, UseProgram, BindVertexArray,
+                                                  CullFace;
     public static delegate* unmanaged<uint, uint, void> BindTexture, BindBuffer, BlendFunc;
     public static delegate* unmanaged<int, uint*, void> GenTextures, GenVertexArrays, GenBuffers, DeleteBuffers;
     /// <summary>#212: glCopyBufferSubData (GL 3.1) -- readTarget, writeTarget, readOffset, writeOffset, size.
@@ -371,6 +375,7 @@ public static unsafe class Gl
         GetError = (delegate* unmanaged<uint>)P("glGetError");
         Enable = (delegate* unmanaged<uint, void>)P("glEnable");
         Disable = (delegate* unmanaged<uint, void>)P("glDisable");
+        CullFace = (delegate* unmanaged<uint, void>)P("glCullFace");
         BlendFunc = (delegate* unmanaged<uint, uint, void>)P("glBlendFunc");
         ActiveTexture = (delegate* unmanaged<uint, void>)P("glActiveTexture");
         UseProgram = (delegate* unmanaged<uint, void>)P("glUseProgram");

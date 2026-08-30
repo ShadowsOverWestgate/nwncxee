@@ -57,6 +57,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#126: the material's Aurora blend pair, translated to GL at bind time. Only the blending
     /// classes read it.</summary>
     private static readonly byte[] _oSrc = new byte[MaxOwned], _oDst = new byte[MaxOwned];
+    /// <summary>#292: this part's material said <c>twosided</c>, so it draws with face culling OFF. The
+    /// engine's default -- and what a part with no material gets -- is culling ON, which is why this is the
+    /// exception flag rather than a cull flag.</summary>
+    private static readonly bool[] _oNoCull = new bool[MaxOwned];
     /// <summary>#126: the part's LOCAL bbox centre (part+0x64/+0x70, the pair
     /// <c>Camera::GetCanKeyholeDissolve</c> and the caster cull both read). Run through the live model matrix
     /// each pass it gives the world-space sort key for the back-to-front blended order; captured at
@@ -110,9 +114,11 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly VertexStream[] _vBi = new VertexStream[MaxVdos], _vBw = new VertexStream[MaxVdos];
     private static readonly bool[] _vStale = new bool[MaxVdos];     // slot recycled: rebuild the 4.6 VAO
     private static int _vdoCount;
-    /// <summary>Counting-sort buckets. The draw order groups by (lit, VDO) so both the VAO and the PROGRAM
-    /// bind once per group -- lit slots are the upper half.</summary>
-    private static readonly int[] _sortCount = new int[MaxVdos * 2];
+    /// <summary>Counting-sort buckets. The draw order groups by (lit, no-cull, VDO) so the VAO, the PROGRAM
+    /// and (#292) the face-culling state each settle once per group -- lit slots are the upper half, and the
+    /// two-sided slots the upper half of each of those. <see cref="SortKeyOf"/> says why lit outranks cull.
+    /// </summary>
+    private static readonly int[] _sortCount = new int[MaxVdos * 4];
     /// <summary>#84 second radix digit: counting-sort buckets over the interned texture key. Sorting by it
     /// FIRST and then stably by (lit, VDO) leaves the order grouped by (lit, VDO) with equal textures
     /// contiguous inside each group -- i.e. exactly the batch key, in one pass over the table.</summary>
@@ -296,6 +302,9 @@ public sealed unsafe partial class AlloyRenderer
     /// cannot vary inside: depth mask, blend function and the alpha-discard threshold.</summary>
     private static readonly byte[] _gCls = new byte[MaxOwned];
     private static readonly byte[] _gSrc = new byte[MaxOwned], _gDst = new byte[MaxOwned];
+    /// <summary>#292: this batch draws with face culling off. A batch key term rather than a per-draw one:
+    /// culling is fixed-function GL state and one multidraw cannot vary it.</summary>
+    private static readonly bool[] _gNoCull = new bool[MaxOwned];
     /// <summary>#126: where the opaque set ends and where the blended run ends, in batch indices. Each pass
     /// draws exactly its own range -- the depth prepass and the probe capture take the opaque prefix.</summary>
     private static int _gOpaqueEnd, _gBlendEnd, _gWaterEnd;

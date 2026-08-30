@@ -88,7 +88,7 @@ public sealed unsafe partial class AlloyRenderer
                 AlloyCensus.OwnFlag[_oEntry[i]] = 0;
             }
         _ownCount = 0; _litCount = 0; _litUnownable = 0; _skinUnownable = 0; _gobOwned = 0;
-        Array.Clear(_sortCount, 0, MaxVdos * 2);
+        Array.Clear(_sortCount, 0, MaxVdos * 4);
         Array.Clear(_clsCount); Array.Clear(_clsStart); Array.Clear(_clsEnd);
         _orderCount = 0;
         // the texture-key interning is scoped to ONE enrollment: it is a sort proxy only, so a fresh table
@@ -152,6 +152,7 @@ public sealed unsafe partial class AlloyRenderer
             _oRotBits[i] = c.RotBits;
             _oTexKey[i] = TexKey(c.Tex0);
             _oCls[i] = (byte)c.Cls; _oSrc[i] = (byte)c.Src; _oDst[i] = (byte)c.Dst;
+            _oNoCull[i] = c.TwoSided;
             _oBucket[i] = (byte)c.Bucket; _oGob[i] = c.Gob;
             _oBone[i] = -1;
             if (c.Gob != IntPtr.Zero) _gobOwned++;
@@ -204,8 +205,8 @@ public sealed unsafe partial class AlloyRenderer
             _clsCount[_oCls[i]]++;
             if (_oLit[i]) _litCount++;
         }
-        // Three-digit LSD radix into _order, every digit counting-sorted (stable): texture, then (lit, VDO),
-        // then #126's class. The result walks grouped by CLASS -- so each pass owns a contiguous batch range
+        // Three-digit LSD radix into _order, every digit counting-sorted (stable): texture, then
+        // (lit, #292's no-cull bit, VDO), then #126's class. The result walks grouped by CLASS -- so each pass owns a contiguous batch range
         // -- and inside a class by (lit, VDO) with equal textures contiguous, which is the #84 batch key. The
         // draw loop then cuts a batch on a key change instead of searching for one.
         int at = 0;
@@ -213,7 +214,7 @@ public sealed unsafe partial class AlloyRenderer
         for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero) _orderTmp[_texSortCount[_oTexKey[i]]++] = i;
         int live = at;
         at = 0;
-        for (int k = 0; k < MaxVdos * 2; k++) { int n = _sortCount[k]; _sortCount[k] = at; at += n; }
+        for (int k = 0; k < MaxVdos * 4; k++) { int n = _sortCount[k]; _sortCount[k] = at; at += n; }
         for (int k = 0; k < live; k++) { int i = _orderTmp[k]; _order[_sortCount[SortKey(i)]++] = i; }
         at = 0;
         for (int k = 0; k < AlloyClasses.Count; k++) { int n = _clsCount[k]; _clsStart[k] = at; _clsCount[k] = at; at += n; }
@@ -360,7 +361,11 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>Counting-sort key: lit parts occupy the upper half so one program bind covers each half.</summary>
-    private static int SortKey(int i) => _oLit[i] ? MaxVdos + _oVao[i] : _oVao[i];
+    /// <summary>The middle radix digit: (lit, no-cull, VDO). #292 put the cull bit UNDER the lit one -- see
+    /// <see cref="SortKeyOf"/> -- so that inside a class the two-sided parts of each lighting mode run
+    /// contiguously and the cut in <c>BuildBatches</c> flips face culling at most twice, without ever
+    /// splitting a program's run in half.</summary>
+    private static int SortKey(int i) => SortKeyOf(_oNoCull[i], _oLit[i], _oVao[i]);
 
     /// <summary>#120: harvest what the part's .mtr declared -- which of the extra texture slots carry a
     /// map, and the four stock PBR parameters by name (plus, #123, the parameters of whichever custom shader

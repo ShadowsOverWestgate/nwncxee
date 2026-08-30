@@ -47,6 +47,20 @@ internal static unsafe class AlloyCensus
     /// (<c>SharedMaterial::ParseField</c> @0x4c6760): <c>transparency</c> at +0x1f0, <c>sample_framebuffer</c>
     /// at +0x1f4 (1 = bucket 5, 2 = water) and <c>volumetric</c> at +0x1f8.</summary>
     internal const int SharedTransparency = 0x1f0, SharedSampleFb = 0x1f4, SharedVolumetric = 0x1f8;
+    /// <summary>#292: the <c>twosided</c> keyword, parsed by the same <c>SharedMaterial::ParseField</c>
+    /// @0x4c6760 to <c>this+0x1f1</c> as a bool -- the byte immediately after <c>transparency</c>, not a
+    /// second field of it. This, and NOT <c>MdlNode+0x164</c>, is what decides face culling on the world
+    /// path: that offset is <c>MdlNodeEmitter</c>'s and belongs to the particle pass alone.
+    /// <para>The engine spends it at BUCKET-FILL time, not at draw time.
+    /// <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 files each part in one of three sub-lists --
+    /// <c>sub = twosided ? (volumetric ? 0 : 1) : 0</c> -- and <c>Scene::RenderDrawBucket</c> @0x46d060
+    /// draws sub-list 1 under <c>Disable(3)</c> (cap 3 = GL_CULL_FACE), sub-list 2 under
+    /// <c>Enable(3) + SetCullFace(0)</c>, and leaves <c>Enable(3) + SetCullFace(1)</c> behind on every exit
+    /// -- which is the state sub-list 0 draws in. So the vanilla default is CULLING ON, back faces.</para>
+    /// <para>Sub-list 2 is the twosided-AND-volumetric double-file (bucket 3 front-culled, then its own
+    /// bucket back-culled); it cannot reach Alloy, because a volumetric material is refused outright above.
+    /// Two states is the whole vocabulary here.</para></summary>
+    internal const int SharedTwoSided = 0x1f1;
     /// <summary>The tilefade cap bucket -- Tracy scope "Tilefade Cap", fed from <c>capbuckets</c>.</summary>
     internal const int CapBucket = 7;
     /// <summary>#134: the dynamic gob pair (#103's taxonomy). Everything instanced lands in one of these two
@@ -274,6 +288,8 @@ internal static unsafe class AlloyCensus
         // ...and the classification itself, which from here on is what a refusal is counted AGAINST: the
         // blended class is all-owned-or-none (#107 s2), so every gate below has to say which class it ate.
         c.Src = m.SrcBlend; c.Dst = m.DstBlend;
+        // #292: no material means no `twosided` keyword, which is the engine's default and so culls.
+        c.TwoSided = !s.IsNull && s.TwoSided;
         // The cap bucket overrides the material: RenderSinglePass draws bucket 7 with Disable(0) and
         // Disable(1) -- blending and the alpha discard both off -- so a cap is an opaque draw whatever its
         // material declares.

@@ -84,8 +84,8 @@ internal static unsafe class FrameDump
     /// which under merge belong on the draw rather than on the group precisely because the group no longer
     /// splits on them.</para></summary>
     internal static void Row_(int cls, bool lit, int vao, IntPtr mat, uint mode, int feat, bool dis,
-                              int blend, int slots, bool merge, int idxCount, nint off, int baseVertex,
-                              float* r)
+                              int blend, bool noCull, int slots, bool merge, int idxCount, nint off,
+                              int baseVertex, float* r)
     {
         var k = new StringBuilder(128);
         k.Append("cls=").Append(((AlloyClass)cls).ToString())
@@ -93,7 +93,11 @@ internal static unsafe class FrameDump
          .Append(" mode=0x").Append(mode.ToString("x", CultureInfo.InvariantCulture))
          .Append(" feat=").Append(feat)
          .Append(" dis=").Append(dis ? 1 : 0)
-         .Append(" blend=").Append(blend);
+         .Append(" blend=").Append(blend)
+         // #292: the material's `twosided`. In the dump because it is now a batch-key term AND the one piece
+         // of a part's state that can make it vanish outright rather than look wrong -- a mesh drawn under
+         // the culling it did not ask for shows nothing at all, and no other column would say so.
+         .Append(" nocull=").Append(noCull ? 1 : 0);
         // Under merge the batcher compares neither the diffuse id nor the seven slot ids, so a key that
         // carried them would report fragmentation the cut does not have.
         // The mask is in the key either way -- it is what keeps a material declaring the EnvSlot bit (64,

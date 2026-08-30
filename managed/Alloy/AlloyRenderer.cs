@@ -423,6 +423,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#84's measurable form of "draw count decoupled from part count": submitted multidraw batches.
     /// draws/batches IS the batching ratio the acceptance criterion asks for, straight out of the log.</summary>
     private static long _batches;
+    /// <summary>#292 (AC6): staged draws whose material said <c>twosided</c>, and the batches that the
+    /// culling term alone opened. Together they say what reproducing the engine's per-material cull decision
+    /// cost the batch count -- the criterion this ticket asks to be measured, not assumed.</summary>
+    private static long _twoSidedDraws, _cullCuts;
     private static int _frames, _revokes, _enrolls, _lastEnrolled, _lastCandidates, _enrollDiagLeft = EnrollDiagBudget;
     /// <summary>Passes an empty enrollment may retry back-to-back after a resume before falling back to the
     /// normal cadence (~2s at 60fps): enough for the re-record to complete, bounded so a genuinely unownable
@@ -811,7 +815,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // never arm on a broken contract: the misrender either predicts must not ship
         // #242: the split joins that chain for the same reason -- a record that stopped carrying a
         // per-frame field renders stale state and says nothing at all.
-        if (!SortSelfCheck(log) || !SplitSelfCheck(log) || !ShaderContract.SelfCheck(log)) return;
+        if (!SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log)
+            || !ShaderContract.SelfCheck(log)) return;
         // NOT in the chain above: those two guard what reaches the screen, and this one guards a debug dump.
         // A regression in the canonicaliser should cost /framedump, not drop every user back to vanilla.
         FrameDump.SelfCheck(log);
@@ -1395,6 +1400,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    (_blendedDropped == 0 ? "" : $"; {_blendedDropped} BLENDED PARTS HANDED BACK -- the class " +
                     "could not be Alloy whole, so none of it is") + ") " +
                    $"({(_batches == 0 ? 0f : (float)_draws / _batches):F1} draws/batch), " +
+                   // #292: the face-culling term's own cost. A two-sided count of 0 with a live scene means
+                   // no shipped material here says `twosided`, which is a finding about the content, not a
+                   // broken read; cuts above zero is what the term actually charged in batches.
+                   $"({(float)_twoSidedDraws / _frames:F0} two-sided draws/frame, " +
+                   $"{(float)_cullCuts / _frames:F1} batch cuts/frame on culling), " +
                    // #243 (AC5): what the GPU cull kept, and what it dropped. Taken off the count buffer
                    // three frames behind the dispatch, so nothing on the submission path waits for it. The
                    // "not running" reading is deliberately distinct from a cull that kept everything: one is
@@ -1506,6 +1516,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
         CullPass.ResetStats();
         _frames = 0; _draws = 0; _batches = 0; _revokes = 0; _enrolls = 0;
+        _twoSidedDraws = 0; _cullCuts = 0;
         _drawsGob = 0;
         _skipTexNone = 0; _skipTexNoId = 0; _skipTexNoHandle = 0; _skipTexNotOwned = 0;
         _skinDrawn = 0; _skinNoPose = 0; _boneHigh = 0;

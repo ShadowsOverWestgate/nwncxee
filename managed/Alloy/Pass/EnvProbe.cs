@@ -200,7 +200,12 @@ internal static unsafe class EnvProbe
         Gl.ClearColor(clear.X, clear.Y, clear.Z, 1f);
         // srgb off: the cube holds linear radiance, and an sRGB-encoding target would encode it a second
         // time on write.
-        new PassState(depth: true, depthWrite: true, srgb: false).Apply();
+        // #292: cull ON, same as the screen pass -- a probe capture re-enters the SAME batch loop six more
+        // times (see AlloyRenderer._capturing), so its faces get the per-material decision per batch and this
+        // only states the default underneath them. It is not "camera-facing by construction and therefore
+        // exempt": a cube face sees the world's back faces exactly as the screen does, and leaving culling
+        // off here would bake a solid cave ceiling into the reflection the screen pass no longer shows.
+        new PassState(depth: true, depthWrite: true, cull: true, srgb: false).Apply();
         Gl.DepthFunc(Gl.LEQUAL);
         return true;
     }

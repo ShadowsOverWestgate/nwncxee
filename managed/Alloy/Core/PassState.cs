@@ -10,6 +10,11 @@ namespace Sowx.Alloy;
 /// redundant-call elimination behind it. The driver already shadow-caches this state and so does the engine;
 /// a third copy is a third thing that can disagree with the GL context after a vanilla draw runs between two
 /// of our passes -- which is exactly the situation every Alloy pass is in.</para>
+/// <para>#292: <c>Cull</c> is the pass's DEFAULT, not its whole answer. The world batch loops (colour and
+/// depth prepass alike) toggle face culling per batch off the material's <c>twosided</c> keyword, which is
+/// where the engine keeps the decision -- this states what a pass with no batch of its own draws in. Every
+/// pass that draws WORLD geometry now says which it wants rather than inheriting a default; the fullscreen
+/// ones (the post chain's quads) have no faces to cull and keep the default.</para>
 /// <para>Particles are the one owned pass with no preamble to declare: their blend, depth-mask and cull are
 /// per-GROUP state chosen inside the draw loop (punch-through vs blended vs additive), so a declaration
 /// hoisted in front of that loop would state something untrue for most of the pass. Every pass's trailing

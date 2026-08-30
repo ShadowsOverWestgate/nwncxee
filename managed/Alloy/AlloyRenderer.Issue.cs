@@ -159,8 +159,9 @@ public sealed unsafe partial class AlloyRenderer
         // cluster heat map) into the cube and leave it there for every frame that samples it afterwards.
         int viz = _capturing ? 0 : _lightViz;
         // Which program is bound, -1 for neither yet. In the opaque range this switches once (lit batches
-        // sort last inside a class); in the blended range it can alternate, because there the order is the
-        // camera's and nothing else. ponytail: a lit rebind re-sends the cascade and cube uniforms, so an
+        // sort last inside a class -- #292 put the face-culling bit BELOW the lit one precisely so that
+        // stays true); in the blended range it can alternate, because there the order is the camera's and
+        // nothing else. ponytail: a lit rebind re-sends the cascade and cube uniforms, so an
         // alternating blended set pays for them per switch. The set is the small remainder by construction;
         // if it ever is not, the fix is a second sort digit inside the distance order, not a cache.
         // #129: three programs now, not two -- fullbright (0), clustered lit (1) and water (2). Keyed on the
@@ -172,6 +173,11 @@ public sealed unsafe partial class AlloyRenderer
         // GL_BLEND as this pass found it: DrawOwned's preamble disables it, and TransparentPass enables it
         // before its own range, so the first batch of either kind agrees with the state already set.
         bool boundBlend = _blendOn;
+        // #292: face culling, per batch. -1 rather than a guess at the preamble's state: the sky, grass,
+        // particle and beam passes all leave their own culling behind them, and a probe capture re-enters
+        // this loop six more times, so the first batch of every entry issues the call rather than trusting
+        // what someone else set.
+        int boundCull = -1;
         float boundCut = float.NaN;   // per PROGRAM: reset on every UseProgram below
         int* boundSlot = stackalloc int[MapSlots];
         for (int s = 0; s < MapSlots; s++) boundSlot[s] = -1;
@@ -273,6 +279,17 @@ public sealed unsafe partial class AlloyRenderer
             {
                 uint src = BlendGl(_gSrc[g]), dst = BlendGl(_gDst[g]);
                 if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
+            }
+            // #292: the engine's own per-material decision, reproduced. Sub-list 1 of
+            // Scene::RenderDrawBucket @0x46d060 draws under Disable(CULL_FACE); everything else draws under
+            // the Enable(CULL_FACE) + SetCullFace(BACK) that function leaves behind on every exit. Batches
+            // are sorted by (lit, no-cull, VDO), so this toggles at most twice per class.
+            int wantCull = _gNoCull[g] ? 0 : 1;
+            if (wantCull != boundCull)
+            {
+                boundCull = wantCull;
+                if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
+                else Gl.Disable(Gl.CULL_FACE);
             }
             // #212: tracked by GL NAME, not by slot -- a slot now has two VAOs and ownership picks.
             uint vao = VaoName(_gVao[g], _gCls[g]);

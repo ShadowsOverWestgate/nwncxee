@@ -809,7 +809,11 @@ internal static unsafe class GrassField
         // every sample is written whole or not at all, so the no-semi-transparent-depth-writing-fragment
         // guarantee is untouched. On a single-sampled target it would be a bare threshold shift, so it stays
         // off and the dither carries the edge instead.
-        new PassState(depth: true, depthWrite: true).Apply();
+        // #292: cull OFF, stated rather than inherited from the default. Grass is the one owned pass whose
+        // geometry is genuinely two-sided -- a blade is a single card seen from both faces -- so this
+        // reproduces the engine, it does not miss it. There is no material behind a blade to read `twosided`
+        // off; the class IS the decision.
+        new PassState(depth: true, depthWrite: true, cull: false).Apply();
         if (msaa) Gl.Enable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
 
         int boundMat = -1, boundTex = 0;

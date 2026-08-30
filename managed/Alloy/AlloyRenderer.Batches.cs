@@ -139,6 +139,30 @@ public sealed unsafe partial class AlloyRenderer
         return ok;
     }
 
+    /// <summary>#292: the middle radix digit's buckets and the rank of its two bits. Both halves matter and
+    /// they fail differently: a key wider than <see cref="_sortCount"/> throws out of the enrollment sweep
+    /// (loudly, but only on content that happens to reach the top bucket), and a wrong RANK costs nothing
+    /// visible at all -- it just re-sends the lighting rig once more per class forever. So the width is
+    /// asserted against the array itself rather than against the constant it was sized from.</summary>
+    private static bool CullSortSelfCheck(ExtenderLog log)
+    {
+        int unlitCulled = SortKeyOf(false, false, 0), unlitFree = SortKeyOf(true, false, MaxVdos - 1);
+        int litCulled = SortKeyOf(false, true, 0), litMax = SortKeyOf(true, true, MaxVdos - 1);
+        bool ok = _sortCount.Length == MaxVdos * 4 && litMax == MaxVdos * 4 - 1
+                  && unlitCulled == 0 && unlitFree < litCulled;
+        if (!ok) log.Info("AlloyRenderer.CullSortSelfCheck: FAILED -- the (lit, no-cull, VDO) radix digit " +
+                          "does not fit its buckets, or the cull bit outranks the lit one");
+        return ok;
+    }
+
+    /// <summary>The packing <see cref="SortKey"/> applies, spelled without the tables so the check above can
+    /// exercise it. LIT is the senior bit: a program switch re-sends the whole lighting rig (cascades, local
+    /// cubes, the probe -- see <see cref="IssueBatchesInner"/>), and face culling is one <c>glEnable</c>. So
+    /// the order inside a class is (unlit culled, unlit two-sided, lit culled, lit two-sided): one program
+    /// bind per class as before, and at most two cull toggles.</summary>
+    private static int SortKeyOf(bool noCull, bool lit, int vao)
+        => ((lit ? 2 : 0) + (noCull ? 1 : 0)) * MaxVdos + vao;
+
     private static void SortBlended(int[] idx, float[] key, float[] alpha, int n)
     {
         for (int a = 1; a < n; a++)
@@ -410,7 +434,7 @@ public sealed unsafe partial class AlloyRenderer
         int groups = 0, n = 0;
         int keyVao = -1, keyTex = -1, keyFeat = -1, keyCls = -1, keyBlend = -1;
         uint keyMode = 0;
-        bool keyLit = false, keyDis = false;
+        bool keyLit = false, keyDis = false, keyNoCull = false;
         int routed = RouteParts();
         bool dumping = FrameDump.Begin();
         // #134: routing walks the CLASS RANGES, not the ownership table -- a part whose class range was
@@ -604,6 +628,9 @@ public sealed unsafe partial class AlloyRenderer
             bool dis = dissolve != 0f;
             // #126: the class and the blend pair are GL state, which one multidraw cannot vary inside.
             int blend = AlloyClasses.Blends(cls) ? (_oSrc[i] << 8) | _oDst[i] : 0;
+            // #292: ...and so is face culling, for exactly the same reason. Sorted under the lit bit
+            // (SortKeyOf), so this cuts at most twice per class rather than once per interleaved part.
+            bool noCull = _oNoCull[i];
             // #153: under bindless a LIT batch no longer splits on its textures -- the handles ride the
             // record, so one multidraw spans every texture in the class. Feat/dis stay in the key only for
             // the depth prepass's whole-batch drop; unlit parts keep the bind path and the full key.
@@ -617,16 +644,24 @@ public sealed unsafe partial class AlloyRenderer
                     sameSlots = _gTexN[(groups - 1) * MapSlots + s] == slotTid[s];
             }
             if (!sameSlots || lit != keyLit || v != keyVao || tidKey != keyTex || mode != keyMode
-                || feat != keyFeat || dis != keyDis || cls != keyCls || blend != keyBlend)
+                || feat != keyFeat || dis != keyDis || cls != keyCls || blend != keyBlend
+                || noCull != keyNoCull)
             {
+                // #292 (AC6): what the cull term cost. Counted as the batches it OPENED on its own -- every
+                // other key term agreed and only the culling state differed -- so the line reports the split
+                // this ticket added rather than the whole batch count, which no baseline would separate.
+                if (groups != 0 && noCull != keyNoCull && sameSlots && lit == keyLit && v == keyVao
+                    && tidKey == keyTex && mode == keyMode && feat == keyFeat && dis == keyDis
+                    && cls == keyCls && blend == keyBlend) _cullCuts++;
                 _gStart[groups] = n; _gLen[groups] = 0;
                 _gLit[groups] = lit; _gVao[groups] = v; _gTex[groups] = tid; _gMode[groups] = mode;
                 _gFeat[groups] = feat; _gDis[groups] = dis;
                 _gCls[groups] = (byte)cls; _gSrc[groups] = _oSrc[i]; _gDst[groups] = _oDst[i];
+                _gNoCull[groups] = noCull;
                 for (int s = 0; s < MapSlots; s++) _gTexN[groups * MapSlots + s] = slotTid[s];
                 groups++;
                 keyLit = lit; keyVao = v; keyTex = tidKey; keyMode = mode; keyFeat = feat; keyDis = dis;
-                keyCls = cls; keyBlend = blend;
+                keyCls = cls; keyBlend = blend; keyNoCull = noCull;
             }
             W(i, "SUBMITTED");
             if (AlloyCensus.WatchTex[_oEntry[i]]) _watchSubmitted++;
@@ -737,10 +772,11 @@ public sealed unsafe partial class AlloyRenderer
                 }
             }
             if (FrameDump.Capturing)
-                FrameDump.Row_(cls, lit, v, _oMat[i], mode, feat, dis, blend, slots, merge,
+                FrameDump.Row_(cls, lit, v, _oMat[i], mode, feat, dis, blend, noCull, slots, merge,
                                idxCount, _dOff[n], _dBase[n], r);
             _gLen[groups - 1]++;
             n++;
+            if (noCull) _twoSidedDraws++;
             if (_oGob[i] != IntPtr.Zero) _drawsGob++;
             // #151: an Alloy rigid INSTANCE part leaves the engine walk, and with it the walk-side shadow
             // capture -- its shadow has to be fed from here. Skinmeshes are already fed by PoseSkinned, which
@@ -884,6 +920,16 @@ public sealed unsafe partial class AlloyRenderer
         // far plane, and clipped it reads as a hole at the horizon with nothing in the log.
         Gl.DepthMask(0); Gl.DepthRange(1.0, 1.0);
         Gl.Enable(Gl.DEPTH_CLAMP);
+        // #292: STATED, not inherited, and stated as the ENGINE's. This pass has no material to read
+        // `twosided` off and no batch of its own, so it used to run under the pass-wide disable and would
+        // otherwise now run under whatever the pass before it left -- which is not the same state twice: the
+        // grass pass returns before its own preamble when an area has no grass, and the opaque range ends
+        // two-sided only when its last batch was. Vanilla draws the sky BACK-CULLED: SetupOpenGL @0x42b060
+        // enables cap 3 at startup, Scene::RenderSkyBoxes @0x466910 touches caps 0/1/2/5 but never 3, and it
+        // runs after a Scene::RenderDrawBucket @0x46d060 that exits Enable(3)+SetCullFace(1). The dome is
+        // the engine's own geometry replayed under the engine's own winding, so the state it is drawn
+        // correctly in over there is the state it is drawn correctly in here.
+        Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK);
         Gl.Enable(Gl.BLEND); _blendOn = true;
         int boundVao = -1, boundTex = -1;
         uint boundSrc = 0xFFFFFFFF, boundDst = 0xFFFFFFFF;

@@ -91,6 +91,9 @@ internal readonly unsafe ref struct SharedRef
     internal bool Transparency => *(byte*)(_p + AlloyCensus.SharedTransparency) != 0;
     internal int SampleFb => *(int*)(_p + AlloyCensus.SharedSampleFb);
     internal bool Volumetric => *(byte*)(_p + AlloyCensus.SharedVolumetric) != 0;
+    /// <summary>#292: the <c>twosided</c> keyword -- draw this material's faces with culling OFF. See
+    /// <see cref="AlloyCensus.SharedTwoSided"/> for the engine's own three-sub-list spelling of it.</summary>
+    internal bool TwoSided => *(byte*)(_p + AlloyCensus.SharedTwoSided) != 0;
     /// <summary>Is a <c>customShaderVS</c>/<c>FS</c> resref named at all? The first byte of the inline
     /// 17-byte buffer -- an empty VS name is the "pure texture redirect" test.</summary>
     internal bool HasVs => *(byte*)(_p + AlloyCensus.SharedVsName) != 0;

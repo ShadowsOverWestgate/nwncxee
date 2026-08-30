@@ -117,7 +117,11 @@ public sealed unsafe partial class AlloyRenderer
                              && _progLit46 != 0;
             }
             Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-            new PassState(depth: true, depthWrite: true, srgb: srgb).Apply();
+            // #292: cull ON is the engine's default -- Scene::RenderDrawBucket @0x46d060 leaves
+            // Enable(CULL_FACE) + SetCullFace(BACK) behind on every exit, and that is the state its
+            // sub-list 0 (everything not marked `twosided`) draws in. The batch loops override it per batch;
+            // this states the default the passes with no batch of their own inherit.
+            new PassState(depth: true, depthWrite: true, cull: true, srgb: srgb).Apply();
             _blendOn = false;
             Gl.ActiveTexture(Gl.TEXTURE0);
             _lastPixels = viewport[2] * viewport[3];
@@ -310,6 +314,12 @@ public sealed unsafe partial class AlloyRenderer
         // tracks which program is current so the plain batches do not re-bind theirs on every alternation.
         bool keyed = false;
         uint boundVao = 0;
+        // #292: the prepass makes the SAME per-batch cull decision as the colour pass, off the same
+        // _gNoCull, because #119's constraint is about the depth the colour pass then tests LEQUAL against.
+        // That constraint says every owned vertex stage must compute gl_Position character-for-character
+        // identically; culling is the other half of it -- an identical clip position on a triangle only one
+        // of the two passes rasterises still loses the fragment. Same batches, same state, same depth.
+        int boundCull = -1;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
         for (int g = 0; g < groups; g++)
@@ -333,6 +343,13 @@ public sealed unsafe partial class AlloyRenderer
             int s = _gStart[g];
             if (keyed) _prepassKeyed += _gLen[g];
             Gl.Uniform1i(keyed ? _depthKeyBase : _depthBase, s);
+            int wantCull = _gNoCull[g] ? 0 : 1;
+            if (wantCull != boundCull)
+            {
+                boundCull = wantCull;
+                if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
+                else Gl.Disable(Gl.CULL_FACE);
+            }
             // #212: the SAME VAO the colour pass will bind for this class. Identical buffers through both
             // passes is what keeps #119's invariant-gl_Position depth match trivially true.
             uint vao = VaoName(_gVao[g], _gCls[g]);
