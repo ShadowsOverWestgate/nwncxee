@@ -31,11 +31,14 @@ internal static unsafe class AlloyLights
     /// knob, not <see cref="ClusterCap"/>, is the one dense lighting wants.</summary>
     private const int GridX = 32, GridY = 18, GridZ = 24;
     private const int ClusterCount = GridX * GridY * GridZ;
-    /// <summary>Lights binned per cluster. A froxel is ~1/144th of the screen over one depth slice; 64 is far
-    /// past what real content puts in one. <para>ponytail: fixed capacity, no per-cluster compaction pass.
-    /// Overflow is counted and logged; if it ever fires, the upgrade is a two-pass count-then-fill build with
-    /// a compacted offset table.</para></summary>
-    internal const int ClusterCap = 64;
+    /// <summary>Lights binned per cluster. A froxel is ~1/144th of the screen over one depth slice; 64 fired
+    /// (242 overflows/period in a torch-dense Arelith area, 2026-08-31), so 128. NOT free: the fragment
+    /// loop reads the cluster's COUNT, and the count was clamped BY the old cap -- restoring the dropped
+    /// lights is the point, and in a formerly-overflowing froxel it costs up to 2x the per-fragment loop,
+    /// plus SSBO bytes (3,5MB -> 7MB). <para>ponytail: fixed capacity, no per-cluster compaction pass. Overflow is counted and
+    /// logged; if 128 ever fires, the upgrade is a two-pass count-then-fill build with a compacted offset
+    /// table.</para></summary>
+    internal const int ClusterCap = 128;
     /// <summary>Compute workgroup size; the dispatch is 1D over clusters and decodes (x,y,z) from the id.</summary>
     internal const int GroupSize = 64;
     /// <summary>SSBO binding points, shared by the compute and the lit fragment program.</summary>

@@ -325,7 +325,7 @@ public sealed unsafe class CasterPass : IExtenderService
     private static bool _sunScanned, _sunRan, _cubeRan;
     /// <summary>#282: this frame's blanket-invalidate verdict, snapshot before either pass runs.</summary>
     private static bool _frameInvalidate;
-    private static long _cubeBakedSlots, _cubeSkippedSlots, _moverSum, _ghostSum;
+    private static long _cubeBakedSlots, _cubeSkippedSlots, _cubeOffSlots, _moverSum, _ghostSum;
     /// <summary>#241: movers BY REASON. A skip count that stays at zero says the predicate is not paying;
     /// only this says why -- a world whose matrices all jitter, a shared vertex pool marked dirty by one
     /// dangly mesh, or simply a scene full of creatures. Each is a different fix.</summary>
@@ -1131,6 +1131,16 @@ public sealed unsafe class CasterPass : IExtenderService
     {
         int n = FrameInputs.LocalLightCount;
         if (n > _cubeLights) n = _cubeLights;
+        // #322 review: the SAME predicate and slack the receiver-side light cull runs
+        // (ShadowMath.SphereInCameraFrustum, self-checked) -- not a second hand-rolled cone. Two divergent
+        // answers to "is this light visible" starve a light one of them keeps; one answer cannot drift.
+        // A light whose LIT SPHERE misses the frustum shades no visible fragment, so neither its static
+        // bake nor its dynamic page can be sampled this frame. The one consumer this lies to is the probe
+        // capture (it renders all six directions), which is rare and env-mapped-only.
+        bool cull = FrameInputs.HasPerspective && FrameInputs.HasSceneCam;
+        Vector3 camPos = FrameInputs.SceneCamPos;
+        Vector3 camFwd = cull ? Vector3.Normalize(FrameInputs.SceneCamFwd) : Vector3.UnitX;
+        float camFar = FrameInputs.CamFar;
         // Nearest-first by camera distance: the budget is spent on the lights the player is standing in, and
         // a carried torch is by construction among them. Insertion sort, n <= MaxCubes, alloc-free.
         int* order = stackalloc int[MaxCubes];
@@ -1205,6 +1215,11 @@ public sealed unsafe class CasterPass : IExtenderService
         // #305: the split runs only when its pool exists -- cube_dyn_count 0 or a refused allocation is the
         // combined bake everywhere, exactly as /shadow split 0 spells it.
         bool split = _split && _cubeDynPages > 0 && CubeDynTex != 0;
+        // #322 review: one hidden UNBAKED slot per frame bakes anyway, nearest first -- the warm-up drain.
+        // Without it a camera turn finds every hidden slot unbaked at once and the ring smears the burst
+        // as visible shadow pop-in; with it the churn is paid gradually while hidden, which is what the
+        // pre-cull behaviour paid continuously.
+        int warmBudget = 1;
         for (int rank = 0; rank < have; rank++)
         {
             int slot = slotOf[rank];
@@ -1222,10 +1237,22 @@ public sealed unsafe class CasterPass : IExtenderService
             bool slotChanged = !_cubeBaked[slot] || _cubeKeyId[slot] != id || _cubeKeyFar[slot] != far
                                || _cubeKeyPos[slot * 3] != pos.X || _cubeKeyPos[slot * 3 + 1] != pos.Y
                                || _cubeKeyPos[slot * 3 + 2] != pos.Z;
+            // #322 review: the visibility verdict, BEFORE any page claim. Hidden lights must not hold pool
+            // pages (they never bake them, so holding one only starves a visible light into the combined
+            // fallback -- a six-face re-bake every mover frame), and their split mode must not flap.
+            bool off = false;
+            if (cull && !ShadowMath.SphereInCameraFrustum(pos, far * ShadowMath.FrustumCullSlack,
+                                                          camPos, camPos + camFwd, FrameInputs.CamFovy,
+                                                          FrameInputs.CamAspect, FrameInputs.CamNear, camFar))
+            {
+                off = true;
+                if (_cubeBaked[slot] || warmBudget <= 0) _cubeOffSlots++;
+                else { warmBudget--; off = false; }   // the warm-up drain: bake this hidden slot after all
+            }
             // #305: is a DYNAMIC caster inside this light's reach? That is what claims (and keeps) a pool
             // page -- and, when the pool is dry, what forces the combined fallback below.
             bool hasDyn = false;
-            if (split)
+            if (split && !off)
                 for (int q = 0; q < _dMoverCount && !hasDyn; q++)
                 {
                     int m = _dMoverIdx[q];
@@ -1234,7 +1261,11 @@ public sealed unsafe class CasterPass : IExtenderService
                     hasDyn = mx * mx + my * my + mz * mz <= mr * mr;
                 }
             int page = _dynPageOf[slot];
-            if (split && hasDyn && page < 0)
+            if (off && page >= 0)
+            {   // hidden: the page returns to the pool now; re-entry reclaims one
+                _dynPageSlot[page] = -1; _dynPageOf[slot] = -1; page = -1;
+            }
+            else if (split && hasDyn && page < 0)
             {
                 for (int p = 0; p < _cubeDynPages && page < 0; p++)
                     if (_dynPageSlot[p] < 0) { _dynPageSlot[p] = slot; _dynPageOf[slot] = page = p; }
@@ -1246,9 +1277,11 @@ public sealed unsafe class CasterPass : IExtenderService
             }
             // Pool exhausted: this slot bakes BOTH halves into the static array every mover frame -- the
             // per-slot fallback to pre-split behaviour. A mode change re-keys the slot, or a mover baked in
-            // while combined would outlive the mode.
+            // while combined would outlive the mode. A HIDDEN slot keeps its stored mode: the state nobody
+            // sampled must not mark the slot changed.
             bool combined = !split || (hasDyn && page < 0);
-            if (_cubeCombined[slot] != combined) { slotChanged = true; _cubeCombined[slot] = combined; }
+            if (off) combined = _cubeCombined[slot];
+            else if (_cubeCombined[slot] != combined) { slotChanged = true; _cubeCombined[slot] = combined; }
 
             // #241 term 3: a mover inside this light's reach -- under the split (#305), a STATIC-SET EVENT:
             // continuous motion lives in the dynamic page and must not re-bake the room. Scanned EVERY frame
@@ -1271,6 +1304,25 @@ public sealed unsafe class CasterPass : IExtenderService
             }
             bool stale = ViewStale(invalidate, slotChanged, _cubeHadMover[slot], hasMover);
             _cubeHadMover[slot] = hasMover;
+
+            // Off-screen: skip every bake for this light, static and dynamic. The mover scan above still
+            // ran, so a stale verdict is remembered by unbaking the slot -- re-entry then re-bakes once
+            // (slotChanged), or sooner through the warm-up drain above. A slot still holding a good bake
+            // republishes it; one that does not stays at the INACTIVE wipe.
+            if (off)
+            {
+                if (stale) _cubeBaked[slot] = false;
+                if (_cubeBaked[slot])
+                {
+                    CubeLight[slot * 4] = _cubeKeyPos[slot * 3];
+                    CubeLight[slot * 4 + 1] = _cubeKeyPos[slot * 3 + 1];
+                    CubeLight[slot * 4 + 2] = _cubeKeyPos[slot * 3 + 2];
+                    CubeLight[slot * 4 + 3] = _cubeKeyFar[slot];
+                    CubeLightId[slot] = id;
+                }
+                done++;
+                continue;
+            }
 
             if (!stale)
             {   // The six layers still describe this world. Republish the slot unchanged -- the receiver
@@ -1379,7 +1431,8 @@ public sealed unsafe class CasterPass : IExtenderService
                    $", {(float)_cubeLightsSum / _frames:F1}/{_cubeLights} local cubes at {_cubeSize}px" +
                    $", casting off {AlloyRenderer.OrderCount} Alloy ownership slots" +
                    $", {(float)_cubeBakedSlots / _frames:F1} cube slots re-baked and " +
-                   $"{(float)_cubeSkippedSlots / _frames:F1} skipped per frame " +
+                   $"{(float)_cubeSkippedSlots / _frames:F1} skipped and " +
+                   $"{(float)_cubeOffSlots / _frames:F1} off-screen per frame " +
                    // #305: static and dynamic bakes SEPARATELY -- static bakes tracking the view count means
                    // the split bought nothing and the invalidation is too coarse; this line is that reading.
                    $"(split {(_split ? "on" : "OFF -- /shadow split 1")}: " +
@@ -1453,7 +1506,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _frames = 0; _mdiCalls = 0;
         _cubeLightsSum = 0; _viewSum = 0;
         _liveSum = 0; _qShadow.Reset();
-        _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0;
+        _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _cubeOffSlots = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0;
         _sunBakedViews = 0; _sunSkippedViews = 0;
         Array.Clear(_sunStaticL); _sunDynBakedViews = 0;
         CasterGather.LayerDispatches = 0; CasterGather.LayerViews = 0;

@@ -301,6 +301,17 @@ public sealed unsafe partial class AlloyRenderer
     /// <c>_oCls[i]</c> alone once the fade overlay applies.</summary>
     private static readonly byte[] _passCls = new byte[MaxOwned];
     private static readonly float[] _passAlpha = new float[MaxOwned];
+    /// <summary>#322: the draw-arg cache -- index count, byte offset and base vertex as read off the VDO
+    /// item tables the last time this slot staged. Valid while stamped with the live epoch AND the stamp
+    /// survives <c>UnstampRecord</c>, which fires on every re-tenant and drifted keep -- the only edges that
+    /// re-point <c>_oVdo</c>/<c>_oItem</c>; Repack revokes before the tables move, and a freed VDO kills its
+    /// parts through the identity check first. Measured 2026-08-31: cutting these
+    /// (plus the duplicate identity compare) did NOT move the Restage bracket -- its bulk is elsewhere in
+    /// the staging loop. The cache stays because it is correct and strictly cheaper, not because it won.</summary>
+    private static readonly int[] _cIdx = new int[MaxOwned];
+    private static readonly nint[] _cOff = new nint[MaxOwned];
+    private static readonly int[] _cBase = new int[MaxOwned];
+    private static readonly int[] _cGen = new int[MaxOwned];
     /// <summary>Blended candidates of this pass and their squared distance from the eye, before the sort.</summary>
     private static readonly int[] _blend = new int[MaxOwned];
     private static readonly float[] _blendKey = new float[MaxOwned];

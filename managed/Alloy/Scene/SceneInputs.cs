@@ -223,6 +223,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // non-overlapping span of the frame, and it is a SIBLING of the shim rather than nested in it.
         long tShadow = FrameZones.Now;
         WalkMasterList(*(IntPtr*)(scene + SceneLightManager));
+        FrameZones.Add(FrameZones.Zone.Lwalk, tShadow);
         // The shadow focus every Alloy view fits around.
         ShadowFocus();
         // #282: the interior flag used to be decided in the ManageSceneBSP hook that carried the re-walk.
@@ -239,7 +240,9 @@ public sealed unsafe class SceneInputs : IExtenderService
         }
         // #118: the world-caster bake, so the cascades and cubes are baked before the colour pass that
         // samples them.
+        long tBake = FrameZones.Now;
         CasterPass.OnPassSlot();
+        FrameZones.Add(FrameZones.Zone.Bake, tBake);
         // AFTER the bake, so a light and the cube it points at come from the SAME bake. Binding before it
         // would map this frame's lights onto last frame's slot assignment, and the nearest-first cube sort
         // reshuffles slots -- a light would sample another light's cube for a frame.
@@ -282,9 +285,8 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// per-fragment Alloy loop light set.</summary>
     private static int _lightCullMode = LightCullBoot;
 
-    /// <summary>Radius slack on the frustum test: covers the mirrored reflection-subframe camera and one
-    /// frame of camera-turn latency without re-introducing pop.</summary>
-    private const float FrustumCullSlack = 1.25f;
+    /// <summary>See <see cref="ShadowMath.FrustumCullSlack"/> -- shared with the cube-bake cull (#322).</summary>
+    private const float FrustumCullSlack = ShadowMath.FrustumCullSlack;
     private static int _lightsCulled;
     private static bool _lightDiag;
 
@@ -380,7 +382,8 @@ public sealed unsafe class SceneInputs : IExtenderService
             // Mode 1 (default) = camera-distance vs the far plane (orientation-free: immune to the
             // reflection subframe's mirrored camera and needs no view-rotation convention). Mode 2 =
             // frustum sphere test on a camera->focus look-at basis (tighter; opt-in until live-proven).
-            // 0 = off. Cube slots below are NOT culled -- off-screen cubes stay warm, no rebake churn.
+            // 0 = off. Cube BAKES are culled too since #322, by the same predicate and slack (CasterPass
+            // CubePass); hidden slots drain one warm-up bake per frame instead of staying warm outright.
             bool culled = false;
             if (_lightCullMode > 0 && FrameInputs.HasCamera && FrameInputs.HasPerspective)
             {

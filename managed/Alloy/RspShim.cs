@@ -153,6 +153,12 @@ internal static unsafe class RspShim
     /// <summary>Last period's refusal totals, so the period line can report the CHANGE. See <see cref="Period"/>.</summary>
     private static int _lastRefBuf, _lastRefTex;
     private static long _swallowed, _passed, _ticks, _frames;
+    /// <summary>Per-vcall tick sums over the period, in the order the shim runs them: emitters, anchor
+    /// (net of the Alloy bracket inside it), sky, bin bucket, beams+flares, engine overlays. What is left
+    /// against <see cref="_ticks"/> is fog/lights/focus and the shim's own bookkeeping. Attribution for the
+    /// period line: the shim's ~6ms is engine simulation, and this says whose.</summary>
+    private static readonly long[] _stepTicks = new long[6];
+    private static readonly string[] _stepNames = { "emit", "anchor", "sky", "bin", "beams", "overlay" };
 
     /// <summary>The two invariants the shim cannot discover at runtime and would fail silently on.
     /// <para><b>Chain placement.</b> <see cref="SwallowPriority"/> must sit above DrawStatsService's, or the
@@ -257,6 +263,9 @@ internal static unsafe class RspShim
         // number has to have it subtracted -- the published "6ms/frame in the shim" was the walk plus the
         // whole Alloy CPU frame, which is what made the ticket's accounting look like 13ms of 150.
         long alloy0 = FrameZones.Ticks(FrameZones.Zone.Alloy);
+        // The shadow bracket runs inside the anchor too (measured: anchor tracked Zone.Shadow tick for
+        // tick, 2026-08-31) -- net it out the same way, or the shim re-reports the whole CasterPass CPU.
+        long shadow0 = FrameZones.Ticks(FrameZones.Zone.Shadow);
         IntPtr vptr = *(IntPtr*)scene;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         // #232/#233: decided BEFORE the anchor, because the answer has to reach PostChain's resolve, which
@@ -293,32 +302,49 @@ internal static unsafe class RspShim
         // to pick, so the simulation runs first and the pass draws this frame's particles. Its own draws
         // are swallowed by the funnels, exactly as they were at step 28, and the walk is where the
         // population and the engine's back-to-front sort come from.
+        long s0 = Stopwatch.GetTimestamp();
         Vt(vptr, VtDoEmitterBucket, scene);
+        long s1 = Stopwatch.GetTimestamp(); _stepTicks[0] += s1 - s0;
+        // #322 (review): the child brackets netted out of the ANCHOR step are sampled across the anchor
+        // vcall alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
+        // here goes negative the moment any Alloy/Shadow bracket runs outside the anchor.
+        long ca1 = FrameZones.Ticks(FrameZones.Zone.Alloy), cs1 = FrameZones.Ticks(FrameZones.Zone.Shadow);
         Vt(vptr, VtFadeDoors, scene);          // door fade + hit-test alpha -- AND #132's anchor: Alloy draws here
+        long anchorChild = FrameZones.Ticks(FrameZones.Zone.Alloy) - ca1
+                         + FrameZones.Ticks(FrameZones.Zone.Shadow) - cs1;
+        long s2 = Stopwatch.GetTimestamp();
         // #261 took the sky POPULATION off this call -- SkyBox.Enroll walks the Scene's own gobs. It stays
         // as the sky's SIMULATION tick: ProcessGob, node animation, the cross-fade alpha writes, and the
         // per-gob SetPosition(Scene+0x190) that parks each dome at the camera. Its draws are swallowed.
         _skyBoxes(scene);
+        long s3 = Stopwatch.GetTimestamp(); _stepTicks[2] += s3 - s2;
         // #264: the two items the bucket walk used to carry between its draws. Neither reads a thing the
         // walk leaves behind -- DoBinBucket @0x474c50 iterates the `binbucket` global (wind update, camera
         // distance, the grass sort) and FocusLighting is Scene field arithmetic of our own -- so with the
         // walk gone they simply run in RSP's relative order and nothing else moves.
         Vt(vptr, VtDoBinBucket, scene);        // grass wind + per-bin LOD distance
+        long s4 = Stopwatch.GetTimestamp(); _stepTicks[3] += s4 - s3;
         FocusLighting(scene);                  // the focuslighting write, at RSP's step
         // #261 took the beam POPULATION off this call -- Beams.Enroll reads bucket 15 itself. The vcall
         // stays as bookkeeping, like DoFog above: its own draws are swallowed by the funnels, and what is
         // left is the state prologue/epilogue (blend, depth mask, global colour) that RSP's later steps and
         // EngineOverlays below both inherit.
+        long s5 = Stopwatch.GetTimestamp();
         Vt(vptr, VtRenderBeams, scene);
         Vt(vptr, VtRenderLensFlares, scene);   // flare occlusion fade
         InWindow = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        long s6 = Stopwatch.GetTimestamp(); _stepTicks[4] += s6 - s5;
         EngineOverlays(vptr, scene);
+        _stepTicks[5] += Stopwatch.GetTimestamp() - s6;
         if (!_barLogged && PostChain.Resolves > 0) Bar();
-        long child = FrameZones.Ticks(FrameZones.Zone.Alloy) - alloy0;
+        long child = FrameZones.Ticks(FrameZones.Zone.Alloy) - alloy0
+                   + FrameZones.Ticks(FrameZones.Zone.Shadow) - shadow0;
         long spent = Stopwatch.GetTimestamp() - t0;
         FrameZones.Add(FrameZones.Zone.Shim, t0, child);
-        _ticks += spent - child;
+        _ticks += Math.Max(0, spent - child);
+        // The Alloy bracket runs inside the anchor vcall; net it out so the step reads the ENGINE's share.
+        _stepTicks[1] += Math.Max(0, (s2 - s1) - anchorChild);
         _frames++;
     }
 
@@ -520,7 +546,7 @@ internal static unsafe class RspShim
         if (_frames < AlloyRenderer.LogEvery) return;
         double ms = _ticks * 1000.0 / Stopwatch.Frequency / _frames;
         _log?.Info($"RspShim: [rspshim] {_frames} shim frames, {_swallowed / _frames} engine draws swallowed/frame, "
-                 + $"PASSED {_passed} (must be 0), {ms:F2}ms/frame in the shim, "
+                 + $"PASSED {_passed} (must be 0), {ms:F2}ms/frame in the shim ({StepLine()}), "
                  + $"borrowed {OwnedBuffers.Borrowed - _lastRefBuf} buffers / "
                  + $"{OwnedTextures.Borrowed - _lastRefTex} textures this period (must be 0/0)"
                  // #284: lifetime, not a delta -- one attempt per texture makes it a POPULATION (how much of
@@ -528,5 +554,19 @@ internal static unsafe class RspShim
                  + OwnedTextures.RebuildNote());
         _lastRefBuf = OwnedBuffers.Borrowed; _lastRefTex = OwnedTextures.Borrowed;
         _swallowed = 0; _passed = 0; _ticks = 0; _frames = 0;
+        Array.Clear(_stepTicks);
+    }
+
+    /// <summary>The per-vcall halves of the shim number, ms/frame each.</summary>
+    private static string StepLine()
+    {
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < _stepTicks.Length; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            sb.Append(_stepNames[i]).Append(':')
+              .Append((_stepTicks[i] * 1000.0 / Stopwatch.Frequency / _frames).ToString("F2"));
+        }
+        return sb.ToString();
     }
 }

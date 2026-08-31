@@ -139,6 +139,12 @@ public static class ShadowMath
     /// component order/convention was never live-verified and mis-culled everything when wrong.
     /// <paramref name="fovy"/> is degrees as SetPerspective delivers it (values &lt;= 3.2 = radians,
     /// defensively). A degenerate look-at (at the camera) keeps the sphere.</summary>
+    /// <summary>Radius slack every caller of <see cref="SphereInCameraFrustum"/> applies: covers the
+    /// mirrored reflection-subframe camera and one frame of camera-turn latency without re-introducing pop.
+    /// One constant on purpose (#322 review) -- the light cull and the cube-bake cull must give the same
+    /// answer to "is this light visible", or a light one keeps is starved by the other.</summary>
+    public const float FrustumCullSlack = 1.25f;
+
     public static bool SphereInCameraFrustum(Vector3 p, float r, Vector3 camPos, Vector3 lookAt,
                                              float fovy, float aspect, float near, float far)
     {

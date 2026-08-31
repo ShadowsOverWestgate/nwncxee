@@ -44,6 +44,38 @@ public static class FrameZones
 
         /// <summary>Nested in <see cref="Alloy"/>: revalidate + route + stage every owned part.</summary>
         Build,
+        /// <summary>#322: nested in <see cref="Build"/>: the routing walk (identity, live alpha, tile fade,
+        /// blended sort) -- the half an incremental build keeps O(world).</summary>
+        Scan,
+        /// <summary>#322: nested in <see cref="Build"/>: the staging walk (records, textures, draw args,
+        /// batch cuts) -- the half #322 wants proportional to the changed set. This split IS the ticket's
+        /// step 1: it attributes the Build monolith before any phase boundary is drawn.</summary>
+        Restage,
+        /// <summary>#322: nested in <see cref="Shadow"/>: the LightManager master-list walk.</summary>
+        Lwalk,
+        /// <summary>#322: nested in <see cref="Shadow"/>: <c>CasterPass.OnPassSlot</c> -- cube ranking,
+        /// mover scans and the view bakes.</summary>
+        Bake,
+        /// <summary>#322: nested in <see cref="Alloy"/>: the light walk upload + cluster build.</summary>
+        Lights,
+        /// <summary>#322: nested in <see cref="Alloy"/>: the colour-pass loop's own CPU work, minus the
+        /// nested Issue/Cull/Post/Probe brackets inside it -- prepass, hi-Z, grass, water, beams,
+        /// particles, state churn. Added because the Alloy zone measured ~6ms MORE than its children
+        /// claimed, and an unclaimed tower cannot be cut.</summary>
+        Passes,
+        /// <summary>#322: nested in <see cref="Alloy"/>: the post chain -- Begin (target setup) plus
+        /// bloom/composite/highlight at the PostProcess slot.</summary>
+        Post,
+        /// <summary>#322: nested in <see cref="Passes"/>: the depth prepass submission loop + the hi-Z
+        /// pyramid build.</summary>
+        Prepass,
+        /// <summary>#322: nested in <see cref="Passes"/>: the full-screen copies -- the water snapshot and
+        /// the soft-particle depth take. Small numbers here are honest; a large one is a GPU sync stall
+        /// wearing a memcpy's name.</summary>
+        Blit,
+        /// <summary>#322: nested in <see cref="Passes"/>: the particle pass CPU (build + upload + submit),
+        /// minus its Blit child.</summary>
+        Parts,
         /// <summary>Nested in <see cref="Alloy"/>: the wholesale per-draw SSBO / handle / bone uploads.</summary>
         Upload,
         /// <summary>Nested in <see cref="Alloy"/>: the multidraw submission itself.</summary>

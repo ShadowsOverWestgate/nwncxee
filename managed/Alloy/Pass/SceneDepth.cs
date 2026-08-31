@@ -42,6 +42,13 @@ internal static unsafe class SceneDepth
     /// the stand-down this promises.</summary>
     internal static bool Take(int* viewport)
     {
+        long tBlit = FrameZones.Now;
+        try { return TakeInner(viewport); }
+        finally { FrameZones.Add(FrameZones.Zone.Blit, tBlit); }
+    }
+
+    private static bool TakeInner(int* viewport)
+    {
         Ready = false;
         if (_down.Failed) return false;
         if (Gl.BlitFramebuffer == null || Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null
