@@ -268,7 +268,7 @@ internal static unsafe class OwnedTextures
         }
 
         Replace(key, etid, dst, bytes);
-        Census(tex, bytes, transSaved);
+        Census(tex, bytes, transSaved, n, cell);
         HighWater();
     }
 
@@ -385,30 +385,43 @@ internal static unsafe class OwnedTextures
     private const int OffCompressedSize = 0x70;
     private static int _censusRaw, _censusBcn, _censusTrans;
     private static long _censusRawBytes, _censusBcnBytes, _censusSaved;
+    /// <summary>#266's number, measured before anything is built: per area, how many textures are
+    /// <c>numX*numY &gt; 1</c> grids the engine de-atlased into one GL texture per cell (the array-texture
+    /// prize), how many cells they expand into, and their bytes. The issue forbids building the
+    /// array-texture path without this line.</summary>
+    private static int _censusGrid, _censusGridCells;
+    private static long _censusGridBytes;
     private static int _censusLastUpload;
     private static bool _censusReported;
     /// <summary>Frames of upload silence that count as "the area settled" -- ~5s at 60fps, same reasoning as
     /// <see cref="RebuildRearm"/>.</summary>
     private const int CensusSettle = 300;
 
-    private static void Census(IntPtr tex, long bytes, long transSaved)
-        => CensusTally(*(int*)((byte*)tex + OffCompressedSize) > 0, bytes, transSaved);
+    private static void Census(IntPtr tex, long bytes, long transSaved, int gridN, int cell)
+        => CensusTally(*(int*)((byte*)tex + OffCompressedSize) > 0, bytes, transSaved, gridN, cell);
 
     /// <summary>The tally half, split from the field read so <see cref="SelfCheck"/> can exercise the
     /// window: report-then-upload resets, silence settles, one line per window. A texture is charged to the
     /// PATH it came down (+0x70), with its transcode savings alongside -- so once #265's transcode is on, the
     /// raw share reads as the post-transcode residual and the saved term says what the transcode took off.</summary>
-    private static void CensusTally(bool bcn, long bytes, long transSaved)
+    private static void CensusTally(bool bcn, long bytes, long transSaved, int gridN = 1, int cell = 0)
     {
         if (_censusReported)   // first upload after a settled report opens the next area's window
         {
             _censusRaw = _censusBcn = _censusTrans = 0;
             _censusRawBytes = _censusBcnBytes = _censusSaved = 0;
+            _censusGrid = _censusGridCells = 0; _censusGridBytes = 0;
             _censusReported = false;
         }
         if (bcn) { _censusBcn++; _censusBcnBytes += bytes; }
         else { _censusRaw++; _censusRawBytes += bytes; }
         if (transSaved > 0) { _censusTrans++; _censusSaved += transSaved; }
+        if (gridN > 1)
+        {
+            // Cell 0 counts the texture; every cell counts toward the object/byte total the de-atlas costs.
+            if (cell == 0) { _censusGrid++; _censusGridCells += gridN; }
+            _censusGridBytes += bytes;
+        }
         _censusLastUpload = _dripFrame;
     }
 
@@ -427,6 +440,9 @@ internal static unsafe class OwnedTextures
                  + $"({(totalBytes == 0 ? 0 : 100 * _censusRawBytes / totalBytes)}% of VRAM)"
                  + (_censusTrans == 0 ? " -- #265: this share is the BCn-transcode prize"
                     : $"; #265 transcoded {_censusTrans} of them to BCn, saving {_censusSaved / OneMiB}MiB"));
+        _log?.Info($"OwnedTextures: [census] #266 grids -- {_censusGrid} textures are numX*numY>1, "
+                 + $"de-atlased into {_censusGridCells} GL textures ({_censusGridBytes / OneMiB}MiB)"
+                 + (_censusGrid == 0 ? "; the array-texture path buys nothing here" : ""));
     }
 
     /// <summary>The residency line, every MiB rather than every texture -- the count climbs on every insert,
@@ -912,14 +928,22 @@ internal static unsafe class OwnedTextures
         _censusRaw = _censusBcn = _censusTrans = 0;
         _censusRawBytes = _censusBcnBytes = _censusSaved = 0;
         _censusReported = false; _dripFrame = 0;
+        int svGrid = _censusGrid, svGridCells = _censusGridCells; long svGridB = _censusGridBytes;
+        _censusGrid = _censusGridCells = 0; _censusGridBytes = 0;
         CensusTally(false, 100, 300); CensusTally(true, 300, 0); CensusTally(false, 100, 0);
         ok &= _censusRaw == 2 && _censusBcn == 1 && _censusRawBytes == 200 && _censusBcnBytes == 300
            && _censusTrans == 1 && _censusSaved == 300;
+        // #266: a 2x2 grid -- cell 0 counts the texture and its cell total, every cell counts bytes.
+        CensusTally(true, 10, 0, 4, 0); CensusTally(true, 10, 0, 4, 1);
+        CensusTally(true, 10, 0, 4, 2); CensusTally(true, 10, 0, 4, 3);
+        ok &= _censusGrid == 1 && _censusGridCells == 4 && _censusGridBytes == 40;
         CensusSettleCheck(); ok &= !_censusReported;              // still uploading: not settled
         _dripFrame += CensusSettle;
         CensusSettleCheck(); ok &= _censusReported;               // quiet long enough: one report
         CensusTally(true, 50, 0);                                 // next area's first upload resets the window
-        ok &= !_censusReported && _censusRaw == 0 && _censusBcn == 1 && _censusBcnBytes == 50 && _censusTrans == 0;
+        ok &= !_censusReported && _censusRaw == 0 && _censusBcn == 1 && _censusBcnBytes == 50 && _censusTrans == 0
+           && _censusGrid == 0 && _censusGridCells == 0 && _censusGridBytes == 0;
+        _censusGrid = svGrid; _censusGridCells = svGridCells; _censusGridBytes = svGridB;
         _censusRaw = svRaw; _censusBcn = svBcn; _censusRawBytes = svRawB; _censusBcnBytes = svBcnB;
         _censusTrans = svTrans; _censusSaved = svSaved;
         _censusLastUpload = svLast; _censusReported = svRep; _dripFrame = svDrip2; _log = svLog;
