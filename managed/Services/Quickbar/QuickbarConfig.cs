@@ -14,9 +14,14 @@ public sealed class QuickbarConfig
     public int GridPx = 50;
     public bool EdgeSnap = true;
 
+    /// <summary>#232 second mode: highlighted objects draw as an owned outline + 50% fill instead of the
+    /// engine's glow gobs. Read at frame time by the Alloy highlight pass via
+    /// <c>QuickbarService.OutlineHighlight</c>.</summary>
+    public bool OutlineHl;
+
     public string ToText() =>
         $"align={(int)Align}\nbars={(Bars ? 1 : 0)}\nhidden={(Hidden ? 1 : 0)}\ncompass={(CompassHidden ? 1 : 0)}\n" +
-        $"grid={(GridOn ? 1 : 0)}\ngridpx={GridPx}\nedgesnap={(EdgeSnap ? 1 : 0)}\n";
+        $"grid={(GridOn ? 1 : 0)}\ngridpx={GridPx}\nedgesnap={(EdgeSnap ? 1 : 0)}\noutlinehl={(OutlineHl ? 1 : 0)}\n";
 
     public static QuickbarConfig Parse(string text)
     {
@@ -46,6 +51,9 @@ public sealed class QuickbarConfig
                 case "edgesnap":
                     if (int.TryParse(val, out int es)) cfg.EdgeSnap = es != 0;
                     break;
+                case "outlinehl":
+                    if (int.TryParse(val, out int oh)) cfg.OutlineHl = oh != 0;
+                    break;
             }
         });
         return cfg;
@@ -56,7 +64,7 @@ public sealed class QuickbarConfig
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"QuickbarConfig.SelfCheck FAIL: {w}"); } }
 
-        var cfg = new QuickbarConfig { Align = QbarAlign.Right, Bars = false, Hidden = true, CompassHidden = true, GridOn = true, GridPx = 75, EdgeSnap = false };
+        var cfg = new QuickbarConfig { Align = QbarAlign.Right, Bars = false, Hidden = true, CompassHidden = true, GridOn = true, GridPx = 75, EdgeSnap = false, OutlineHl = true };
         string text = cfg.ToText();
         var rt = Parse(text);
         E(rt.Align == QbarAlign.Right, "align round-trips");
@@ -66,6 +74,7 @@ public sealed class QuickbarConfig
         E(rt.GridOn, "grid round-trips");
         E(rt.GridPx == 75, "gridpx round-trips");
         E(!rt.EdgeSnap, "edgesnap round-trips (off)");
+        E(rt.OutlineHl, "outlinehl round-trips");
 
         var def = Parse("");
         E(def.Align == QbarAlign.Center, "default align is Center");
@@ -75,6 +84,7 @@ public sealed class QuickbarConfig
         E(!def.GridOn, "default grid is false");
         E(def.GridPx == 50, "default gridpx is 50");
         E(def.EdgeSnap, "default edgesnap is true");
+        E(!def.OutlineHl, "default outlinehl is false");
 
         log.Info(ok ? "QuickbarConfig.SelfCheck: passed" : "QuickbarConfig.SelfCheck: FAILED");
     }

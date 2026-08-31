@@ -345,8 +345,13 @@ internal static unsafe class RspShim
     /// empty and the call would draw nothing.</para></summary>
     private static void EngineOverlays(IntPtr vptr, IntPtr scene)
     {
+        // #232 second mode: on a frame the owned outline+fill highlight drew, the engine glow would double
+        // up on the gobs it covered -- but only on those. Read-and-clear, so a frame where the owned pass
+        // refused (no depth blit, program failure) still gets the full engine glow instead of nothing.
+        bool ownedHighlight = AlloyRenderer.TakeHighlightDrawn();
         if (!WantsEngineOverlays || !PostChain.DefaultDepthOk) return;
-        Vt(vptr, VtDoHighlightGob, scene);
+        if (!ownedHighlight) Vt(vptr, VtDoHighlightGob, scene);
+        else GlowRemainder(vptr, scene);
         // The trigger highlight is a STENCIL pass and needs one: SetShadowStencilBuffer @0x460c30 is
         // ClearStencilValue(0x7f) + SetStencilMask(0xff) + Clear(4), so it clears whatever framebuffer is
         // bound (no FBO of its own to bind, which is why this replay works at all) -- but the mask it then
@@ -356,6 +361,49 @@ internal static unsafe class RspShim
         // 0x46ea15 and 1 at 0x46ee97 (read from the disassembly -- the decompiler drops the argument).
         VtB(vptr, VtDoHighlightTriggers, scene, 0);
         VtB(vptr, VtDoHighlightTriggers, scene, 1);
+    }
+
+    /// <summary>#232 second mode, the remainder: a highlighted gob with no Alloy draw records (an invisible
+    /// usable placeable, a climb/sit indicator) never reaches the owned mask, and the engine glow -- which
+    /// builds its own vertices from the part tree -- is the only thing that can mark it. So on a frame the
+    /// owned pass drew, the engine's <c>DoHighlightGob</c> still runs, NARROWED: Scene's highlight list
+    /// (+0x80 gobs / +0x88 count / +0x90 colours, stride 0xc) is compacted in place to the unhandled gobs,
+    /// the virtual called, and both arrays restored -- entries and count exactly as found. Same thread,
+    /// same frame, no engine code runs in between.
+    /// <para>ponytail: past <see cref="GlowCap"/> roots the compaction buffers stop scaling and the FULL
+    /// glow runs instead -- a doubled highlight on a hundred-object sweep beats losing the invisible ones.</para></summary>
+    private const int GlowCap = 128;
+
+    private static void GlowRemainder(IntPtr vptr, IntPtr scene)
+    {
+        int n = *(int*)(scene + AlloyRenderer.SceneHlCount);
+        int handled = AlloyRenderer.HandledCount;
+        if (n <= 0 || handled >= n) return;   // everything owned: no glow at all
+        if (n > GlowCap) { Vt(vptr, VtDoHighlightGob, scene); return; }
+        IntPtr* gobs = *(IntPtr**)(scene + AlloyRenderer.SceneHlGobs);
+        float* cols = (float*)*(IntPtr*)(scene + AlloyRenderer.SceneHlColors);
+        IntPtr* savedGobs = stackalloc IntPtr[GlowCap];
+        float* savedCols = stackalloc float[GlowCap * 3];
+        new Span<IntPtr>(gobs, n).CopyTo(new Span<IntPtr>(savedGobs, n));
+        new Span<float>(cols, n * 3).CopyTo(new Span<float>(savedCols, n * 3));
+        int m = 0;
+        for (int i = 0; i < n; i++)
+        {
+            bool owned = false;
+            for (int k = 0; k < handled; k++)
+                if (AlloyRenderer.HandledHl[k] == savedGobs[i]) { owned = true; break; }
+            if (owned) continue;
+            gobs[m] = savedGobs[i];
+            cols[m * 3] = savedCols[i * 3];
+            cols[m * 3 + 1] = savedCols[i * 3 + 1];
+            cols[m * 3 + 2] = savedCols[i * 3 + 2];
+            m++;
+        }
+        *(int*)(scene + AlloyRenderer.SceneHlCount) = m;
+        if (m > 0) Vt(vptr, VtDoHighlightGob, scene);
+        new Span<IntPtr>(savedGobs, n).CopyTo(new Span<IntPtr>(gobs, n));
+        new Span<float>(savedCols, n * 3).CopyTo(new Span<float>(cols, n * 3));
+        *(int*)(scene + AlloyRenderer.SceneHlCount) = n;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

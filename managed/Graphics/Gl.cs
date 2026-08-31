@@ -29,6 +29,7 @@ public static unsafe class Gl
     /// fragments rather than letting them clip into a hole at the horizon.</summary>
     public const uint DEPTH_CLAMP = 0x864F;
     public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303;
+    public const uint POLYGON_OFFSET_FILL = 0x8037;
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
     public const uint BYTE = 0x1400;
     public const uint ARRAY_BUFFER = 0x8892, STATIC_DRAW = 0x88E4, DYNAMIC_DRAW = 0x88E8;
@@ -240,6 +241,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, float, void> Uniform1f;
     public static delegate* unmanaged<int, float, float, void> Uniform2f;
     public static delegate* unmanaged<int, float, float, float, void> Uniform3f;
+    public static delegate* unmanaged<int, float, float, float, float, void> Uniform4f;
     public static delegate* unmanaged<int, int, float*, void> Uniform1fv;   // (loc, count, ptr) -- per-slot floats
     public static delegate* unmanaged<int, int, int*, void> Uniform1iv;     // (loc, count, ptr) -- per-slot ints
     public static delegate* unmanaged<int, int, float*, void> Uniform3fv;   // (loc, count, ptr) -- per-slot vec3
@@ -284,6 +286,7 @@ public static unsafe class Gl
     /// (#129's /water diag reads the framebuffer copy back once to settle what is actually in it).</summary>
     public static delegate* unmanaged<int, int, int, int, uint, uint, void*, void> ReadPixels;
     public static delegate* unmanaged<byte, void> DepthMask;
+    public static delegate* unmanaged<float, float, void> PolygonOffset;
     public static delegate* unmanaged<byte, byte, byte, byte, void> ColorMask;
     public static delegate* unmanaged<double, void> ClearDepth;
     public static delegate* unmanaged<double, double, void> DepthRange;
@@ -455,6 +458,7 @@ public static unsafe class Gl
         Uniform1f = (delegate* unmanaged<int, float, void>)P("glUniform1f");
         Uniform2f = (delegate* unmanaged<int, float, float, void>)P("glUniform2f");
         Uniform3f = (delegate* unmanaged<int, float, float, float, void>)P("glUniform3f");
+        Uniform4f = (delegate* unmanaged<int, float, float, float, float, void>)P("glUniform4f");
         Uniform1fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform1fv");
         Uniform1iv = (delegate* unmanaged<int, int, int*, void>)P("glUniform1iv");
         Uniform3fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform3fv");
@@ -477,6 +481,7 @@ public static unsafe class Gl
         DepthFunc = (delegate* unmanaged<uint, void>)P("glDepthFunc");
         Clear = (delegate* unmanaged<uint, void>)P("glClear");
         DepthMask = (delegate* unmanaged<byte, void>)P("glDepthMask");
+        PolygonOffset = (delegate* unmanaged<float, float, void>)P("glPolygonOffset");
         ColorMask = (delegate* unmanaged<byte, byte, byte, byte, void>)P("glColorMask");
         ClearDepth = (delegate* unmanaged<double, void>)P("glClearDepth");
         DepthRange = (delegate* unmanaged<double, double, void>)P("glDepthRange");

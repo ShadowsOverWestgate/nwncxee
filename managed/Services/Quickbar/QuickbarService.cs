@@ -53,6 +53,10 @@ public sealed unsafe class QuickbarService : IExtenderService
     /// <summary>Extra frames this service wants drawn (band under chat, settings on top).</summary>
     public static RenderFrame[] ExtraFrames => _extraFrames;
 
+    /// <summary>#232 second mode, read at frame time by the Alloy outline-highlight pass (a bool field
+    /// read; no allocation, safe from the render thread).</summary>
+    public static bool OutlineHighlight => _config.OutlineHl;
+
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;

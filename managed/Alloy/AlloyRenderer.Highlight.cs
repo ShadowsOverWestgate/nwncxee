@@ -1,0 +1,339 @@
+using System;
+using System.Numerics;
+using System.Runtime.InteropServices;
+using Sowx.Graphics;
+using Sowx.Services.Quickbar;
+
+namespace Sowx.Alloy;
+
+/// <summary>#232's second mode: the OWNED highlight. Instead of replaying the engine's
+/// <c>Scene::DoHighlightGob</c> glow (gob geometry through <c>WritePartHighlightVertices</c>), redraw the
+/// highlighted object flat: a 50%-alpha fill over its visible surface plus a thick, smooth silhouette
+/// outline. Opt-in from <c>/settings</c> ("Outline highlight", persisted in <c>sowx-quickbar.cfg</c>); when
+/// it draws, <see cref="RspShim.EngineOverlays"/> narrows the engine glow to the gobs this pass could NOT
+/// cover (see <see cref="HandledCount"/>).
+/// <para>Runs right after <see cref="PostChain"/>'s composite: the target framebuffer holds the finished
+/// DISPLAY-space frame and <see cref="PostChain.DepthTex"/> holds the frame's depth. The pass is
+/// SCREEN-SPACE and, whatever the highlight count, exactly two draws deep: (1) ALL highlighted objects'
+/// Alloy draw records rasterise one RGBA MASK (rgb = that root's highlight colour, a = coverage),
+/// depth-tested against the frame's own depth under a small polygon offset -- the offset is what makes
+/// this robust where a depth-EQUALITY fill speckles; (2) ONE fullscreen triangle blends the result over
+/// the frame, fill from the mask (bilinear edge = antialiased) and outline from a ring-tap dilation of it
+/// (a coverage ramp = thick AND smooth). Per-frame cost is therefore one geometry re-draw of the
+/// highlighted set plus one fixed 24-tap fullscreen pass, not a pass per object.</para></summary>
+public sealed unsafe partial class AlloyRenderer
+{
+    /// <summary><c>Scene</c>'s highlight state, as <c>Scene::AddHighlightGob</c> @0x462280 lays it out:
+    /// a <c>CExoArrayList&lt;Gob*&gt;</c> at +0x80 (data ptr +0x80, count +0x88) and a parallel RGB
+    /// <c>Vector</c> array whose data pointer sits at +0x90, stride 0xc.</summary>
+    internal const int SceneHlGobs = 0x80, SceneHlCount = 0x88, SceneHlColors = 0x90;
+
+    /// <summary>Gob field offsets <c>Scene::DoHighlightGob</c> @0x470fc0 reads when it recurses into a
+    /// highlighted gob's attached children: +0x1c is the visible byte, +0x68 a pointer whose +0x8e bit 0
+    /// marks the child as skipped, and vtable displacement 0x228 fills a malloc'd {Gob** data, int count}
+    /// pair (per the @0x470fc0 decompilation -- NOT the head/tail list Gob::CollectLights uses) the caller
+    /// frees.</summary>
+    private const int GobVisible = 0x1c, GobSkipPtr = 0x68, GobSkipFlag = 0x8e, VtGobChildren = 0x228;
+
+    /// <summary>Ceilings: highlighted ROOT gobs per frame, and (roots + attached children) in total.
+    /// Roots beyond the cap stay unhandled and get the engine glow instead of silently vanishing.
+    /// ponytail: the per-draw match below is a linear scan over these targets; if a census ever shows
+    /// hundreds of simultaneous highlights mattering, swap it for a fixed-size open-addressed table.</summary>
+    private const int MaxHlRoots = 128, MaxHlTargets = 256;
+
+    /// <summary>Outline thickness in pixels: the dilation radius the composite's ring taps sample at.</summary>
+    private const float OutlinePx = 5f;
+
+    /// <summary>Fill opacity over the highlighted object's visible surface.</summary>
+    private const float FillAlpha = 0.10f;
+
+    /// <summary>The mask rasterisation's depth bias: pulled toward the viewer so the re-draw passes LEQUAL
+    /// against its own colour-pass depth everywhere, instead of speckling on exact-equality precision.</summary>
+    private const float MaskOffsetFactor = -1f, MaskOffsetUnits = -2f;
+
+    private static uint _progHl, _progHlComp, _hlMaskTex, _hlMaskFbo, _hlVao;
+    private static int _hlVp, _hlBase, _hlColor, _hlCompMask, _hlCompFill, _hlCompRadius;
+    private static int _hlW, _hlH;
+    private static uint _hlDepthAttached;
+    private static bool _hlFailed, _hlLogged;
+
+    /// <summary>The root gobs the pass actually covered this frame (at least one Alloy record drew into the
+    /// mask). Read by <see cref="RspShim.EngineOverlays"/>, which narrows the engine glow to the REST --
+    /// a highlighted object with no drawable records (an invisible usable placeable, a climb/sit indicator)
+    /// has nothing in the mask, and the engine's own glow is the only thing that can mark it. Valid for the
+    /// frame <see cref="TakeHighlightDrawn"/> returns true on; <see cref="HandledCount"/> is reset with it.</summary>
+    internal static readonly IntPtr[] HandledHl = new IntPtr[MaxHlRoots];
+    internal static int HandledCount;
+
+    /// <summary>Set when the pass drew this frame; read-and-cleared by <see cref="RspShim.EngineOverlays"/>
+    /// so the engine glow only stands down on frames the owned highlight actually replaced it.</summary>
+    private static bool _hlDrawn;
+    internal static bool TakeHighlightDrawn() { bool d = _hlDrawn; _hlDrawn = false; return d; }
+
+    internal static void HighlightContextLost()
+    {
+        _progHl = 0; _progHlComp = 0; _hlMaskTex = 0; _hlMaskFbo = 0; _hlVao = 0;
+        _hlW = 0; _hlH = 0; _hlDepthAttached = 0;
+    }
+
+    /// <summary>The root's highlight colour at full coverage, over <see cref="DepthVs"/> -- the vertex
+    /// stage is reused verbatim so the mask's biased LEQUAL test sits against exactly the positions the
+    /// colour pass wrote depth from.</summary>
+    private const string HighlightMaskFs = """
+        #version 460 core
+        uniform vec3 uColor;
+        out vec4 frag;
+        void main() { frag = vec4(uColor, 1.0); }
+        """;
+
+    /// <summary>The composite: fill where the mask has coverage (its bilinear edge antialiases the rim, and
+    /// rgb rides the same fetch so per-object colours cost nothing), outline where a ring-tap dilation of
+    /// the coverage lands OUTSIDE it, coloured by the taps' own coverage-weighted rgb. Coverage through
+    /// smoothstep is what makes the outline read as one thick soft stroke rather than an aliased wireframe.</summary>
+    private const string HighlightCompFs = """
+        #version 460 core
+        in vec2 vUV;
+        uniform sampler2D uMask;
+        uniform float uFill;    // fill opacity
+        uniform float uRadius;  // outline thickness, px
+        out vec4 frag;
+        void main()
+        {
+            vec2 ts = 1.0 / vec2(textureSize(uMask, 0));
+            vec4 m = texture(uMask, vUV);
+            vec3 accC = vec3(0.0);
+            float accA = 0.0;
+            for (int i = 0; i < 12; i++)
+            {
+                float a = 6.2831853 * float(i) / 12.0;
+                vec2 d = vec2(cos(a), sin(a)) * ts * uRadius;
+                vec4 s0 = texture(uMask, vUV + d);
+                vec4 s1 = texture(uMask, vUV + d * 0.5);
+                accC += s0.rgb + s1.rgb;   // rgb scales with coverage at bilinear edges: premultiplied for free
+                accA += s0.a + s1.a;
+            }
+            float outline = smoothstep(0.06, 0.4, accA / 24.0) * (1.0 - m.a);
+            float fillA = m.a * uFill;
+            float alpha = max(fillA, outline);
+            if (alpha <= 0.001) discard;
+            vec3 fillC = m.rgb / max(m.a, 1e-4);
+            vec3 outC = accC / max(accA, 1e-4);
+            frag = vec4(outline > fillA ? outC : fillC, alpha);
+        }
+        """;
+
+    private static bool EnsureHighlightPrograms()
+    {
+        if (_progHl != 0 && _progHlComp != 0) return true;
+        if (_hlFailed) return false;
+        if (Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null || Gl.TexStorage2D == null
+            || Gl.PolygonOffset == null)
+        { _hlFailed = true; return false; }
+        uint mask = GlProgram.Graphics(DepthVs, HighlightMaskFs, _log, "AlloyRenderer highlight mask program");
+        uint comp = GlProgram.Graphics(PostChain.FullscreenVs, HighlightCompFs, _log,
+                                       "AlloyRenderer highlight composite program");
+        if (mask == 0 || comp == 0) { _hlFailed = true; return false; }
+        _progHl = mask;
+        _hlVp = GlProgram.Loc(mask, "uVP");
+        _hlBase = GlProgram.Loc(mask, "uDrawBase");
+        _hlColor = GlProgram.Loc(mask, "uColor");
+        _progHlComp = comp;
+        _hlCompMask = GlProgram.Loc(comp, "uMask");
+        _hlCompFill = GlProgram.Loc(comp, "uFill");
+        _hlCompRadius = GlProgram.Loc(comp, "uRadius");
+        if (_hlVao == 0) { uint v; Gl.GenVertexArrays(1, &v); _hlVao = v; }
+        return true;
+    }
+
+    /// <summary>The RGBA8 mask target, viewport-sized, recreated on resize. The frame's depth texture is
+    /// attached fresh whenever <see cref="PostChain"/> recreates it on its own schedule.</summary>
+    private static bool EnsureHighlightMask(int w, int h)
+    {
+        if (_hlMaskTex == 0 || w != _hlW || h != _hlH)
+        {
+            if (_hlMaskTex != 0) { uint t = _hlMaskTex; Gl.DeleteTextures(1, &t); _hlMaskTex = 0; }
+            if (_hlMaskFbo != 0) { uint f = _hlMaskFbo; Gl.DeleteFramebuffers(1, &f); _hlMaskFbo = 0; }
+            uint tex; Gl.GenTextures(1, &tex);
+            Gl.BindTexture(Gl.TEXTURE_2D, tex);
+            Gl.TexStorage2D(Gl.TEXTURE_2D, 1, Gl.RGBA8, w, h);
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, (int)Gl.CLAMP_TO_EDGE);
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, (int)Gl.CLAMP_TO_EDGE);
+            uint fbo; Gl.GenFramebuffers(1, &fbo);
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, fbo);
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, tex, 0);
+            _hlMaskTex = tex; _hlMaskFbo = fbo; _hlW = w; _hlH = h; _hlDepthAttached = 0;
+        }
+        else Gl.BindFramebuffer(Gl.FRAMEBUFFER, _hlMaskFbo);
+        if (_hlDepthAttached != PostChain.DepthTex)
+        {
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D,
+                                    PostChain.DepthTex, 0);
+            if (Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
+            {
+                _hlFailed = true;
+                _log?.Info("AlloyRenderer: highlight mask framebuffer incomplete -- outline highlight disarmed");
+                return false;
+            }
+            _hlDepthAttached = PostChain.DepthTex;
+        }
+        return true;
+    }
+
+    /// <summary>The pass. Called from the frame walk immediately after the post-process composite; the
+    /// engine target is bound with the finished frame in it.</summary>
+    private static void OutlineHighlightPass(int groups, Matrix4x4* vp, int* viewport)
+    {
+        HandledCount = 0;
+        if (!QuickbarService.OutlineHighlight) return;
+        IntPtr scene = _enrollScene;
+        if (scene == IntPtr.Zero || *(int*)(scene + SceneHlCount) == 0) return;
+        if (PostChain.DepthTex == 0) return;
+        if (!EnsureHighlightPrograms()) return;
+
+        // The target set for EVERY highlighted root at once: the gob plus its visible attached children
+        // (weapons, shields -- exactly the set the engine glow covers), each carrying its root's index so
+        // the mask draw picks the right colour and the hit lands on the right root. Read per frame off the
+        // live Scene; nothing cached across frames (borrowed pointers).
+        IntPtr* targets = stackalloc IntPtr[MaxHlTargets];
+        byte* targetRoot = stackalloc byte[MaxHlTargets];
+        byte* rootHit = stackalloc byte[MaxHlRoots];
+        // Hoisted out of the loop: stackalloc in a loop grows the frame until return.
+        IntPtr* list = stackalloc IntPtr[2];
+        int nGobs = *(int*)(scene + SceneHlCount);
+        if (nGobs > MaxHlRoots) nGobs = MaxHlRoots;
+        IntPtr* arr = *(IntPtr**)(scene + SceneHlGobs);
+        float* cols = (float*)*(IntPtr*)(scene + SceneHlColors);
+        int nT = 0;
+        for (int i = 0; i < nGobs; i++)
+        {
+            rootHit[i] = 0;
+            if (nT >= MaxHlTargets) break;
+            IntPtr gob = arr[i];
+            targetRoot[nT] = (byte)i;
+            targets[nT++] = gob;
+            list[0] = IntPtr.Zero; list[1] = IntPtr.Zero;
+            ((delegate* unmanaged<IntPtr, IntPtr, void>)(*(IntPtr*)(*(IntPtr*)gob + VtGobChildren)))(gob, (IntPtr)list);
+            int nc = (int)list[1];
+            IntPtr* kids = (IntPtr*)list[0];
+            for (int c = 0; c < nc && nT < MaxHlTargets; c++)
+            {
+                IntPtr k = kids[c];
+                IntPtr skip = *(IntPtr*)(k + GobSkipPtr);
+                if (skip != IntPtr.Zero && (*(byte*)(skip + GobSkipFlag) & 1) != 0) continue;
+                if (*(byte*)(k + GobVisible) == 0) continue;
+                targetRoot[nT] = (byte)i;
+                targets[nT++] = k;
+            }
+            if (kids != null) NativeMemory.Free(kids);
+        }
+        if (nT == 0) return;
+
+        int prevFbo;
+        Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &prevFbo);
+
+        // Step 1: ONE visibility mask for the whole set. Biased LEQUAL against the frame's own depth --
+        // visible surface takes its root's colour at full coverage, everything else stays the cleared zero.
+        if (!EnsureHighlightMask(viewport[2], viewport[3]))
+        { Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prevFbo); return; }
+        Gl.Viewport(0, 0, viewport[2], viewport[3]);
+        Gl.ClearColor(0f, 0f, 0f, 0f);
+        Gl.Clear(Gl.COLOR_BUFFER_BIT);
+        Gl.UseProgram(_progHl);
+        Gl.UniformMatrix4fv(_hlVp, 1, 0, (float*)vp);
+        Gl.Enable(Gl.DEPTH_TEST);
+        Gl.DepthFunc(Gl.LEQUAL);
+        Gl.DepthMask(0);
+        Gl.Disable(Gl.BLEND);
+        Gl.Enable(Gl.POLYGON_OFFSET_FILL);
+        Gl.PolygonOffset(MaskOffsetFactor, MaskOffsetUnits);
+        DrawTargets(groups, targets, targetRoot, rootHit, nT, cols);
+        Gl.Disable(Gl.POLYGON_OFFSET_FILL);
+
+        // Step 2: ONE fullscreen triangle over the finished frame -- fill + dilated outline, blended.
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prevFbo);
+        Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        Gl.UseProgram(_progHlComp);
+        Gl.BindVertexArray(_hlVao);
+        Gl.Disable(Gl.DEPTH_TEST);
+        Gl.Enable(Gl.BLEND);
+        Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        Gl.BindTexture(Gl.TEXTURE_2D, _hlMaskTex);
+        Gl.Uniform1i(_hlCompMask, 0);
+        Gl.Uniform1f(_hlCompFill, FillAlpha);
+        Gl.Uniform1f(_hlCompRadius, OutlinePx);
+        Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
+        Gl.BindVertexArray(0);
+
+        // Hand the state back the way Composite leaves it: depth on, mask on, blend off.
+        Gl.Disable(Gl.BLEND);
+        Gl.Enable(Gl.DEPTH_TEST);
+        Gl.DepthMask(1);
+
+        // The verdict, per root: only roots that put at least one record into the mask are HANDLED. The
+        // rest -- no Alloy records, e.g. an invisible usable placeable -- stay the engine glow's to draw.
+        for (int i = 0; i < nGobs; i++)
+            if (rootHit[i] != 0) HandledHl[HandledCount++] = arr[i];
+        if (HandledCount == 0) return;
+        _hlDrawn = true;
+        if (!_hlLogged)
+        {
+            _hlLogged = true;
+            _log?.Info($"AlloyRenderer: outline highlight LIVE -- {HandledCount}/{nGobs} root gob(s) owned " +
+                       "(screen-space mask fill + dilated outline, one pass for the set); the engine's " +
+                       "DoHighlightGob glow keeps any remainder");
+        }
+    }
+
+    /// <summary>One walk over the staged batches, issuing a single-draw multidraw for every record whose
+    /// owning gob is in the target set, with the root's colour bound and the root marked hit. Same
+    /// per-batch VAO/cull discipline as the depth prepass -- and the prepass's class exclusions too:
+    /// opaque, non-displacing, non-discarding batches only, because the mask's biased depth test still
+    /// needs the record's colour-pass depth to be where <see cref="DepthVs"/> puts it, and a cutout's flat
+    /// mask would paint its alpha holes solid.</summary>
+    private static void DrawTargets(int groups, IntPtr* targets, byte* targetRoot, byte* rootHit, int nT,
+                                    float* cols)
+    {
+        uint boundVao = 0;
+        int boundCull = -1, boundColor = -1;
+        int end = groups < _gOpaqueEnd ? groups : _gOpaqueEnd;
+        fixed (int* counts = _dCount, bases = _dBase)
+        fixed (nint* offs = _dOff)
+        for (int g = 0; g < end; g++)
+        {
+            if (ShaderFeatures.OutOfPrepass(_gFeat[g])) continue;
+            if (_gCls[g] == (byte)AlloyClass.Cutout) continue;
+            int s = _gStart[g], len = _gLen[g];
+            for (int j = s; j < s + len; j++)
+            {
+                IntPtr gob = _oGob[_dSlot[j]];
+                if (gob == IntPtr.Zero) continue;
+                int hit = -1;
+                for (int k = 0; k < nT; k++)
+                    if (targets[k] == gob) { hit = k; break; }
+                if (hit < 0) continue;
+                int root = targetRoot[hit];
+                rootHit[root] = 1;
+                if (root != boundColor)
+                {
+                    boundColor = root;
+                    Gl.Uniform3f(_hlColor, cols[root * 3], cols[root * 3 + 1], cols[root * 3 + 2]);
+                }
+                int wantCull = _gNoCull[g] ? 0 : 1;
+                if (wantCull != boundCull)
+                {
+                    boundCull = wantCull;
+                    if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
+                    else Gl.Disable(Gl.CULL_FACE);
+                }
+                uint vao = VaoName(_gVao[g], _gCls[g]);
+                if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+                Gl.Uniform1i(_hlBase, j);
+                Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + j, GlUnsignedShort,
+                                               (void**)(offs + j), 1, bases + j);
+            }
+        }
+    }
+}

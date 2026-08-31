@@ -289,6 +289,10 @@ public sealed unsafe partial class AlloyRenderer
                             BindTarget(engFbo, colorType, colorName, depthType, depthName);
                             if (srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
                             PostChain.Composite(viewport);
+                            // #232 second mode: the owned outline+fill highlight, drawn into the finished
+                            // display-space frame with the depth Composite just blitted to it. Not a
+                            // FrameGraph slot: it is part of finishing the post-process output, like Bloom.
+                            OutlineHighlightPass(groups, &vp, viewport);
                             if (tb) _qPost.End(Gl.TIME_ELAPSED);
                             break;
                     }

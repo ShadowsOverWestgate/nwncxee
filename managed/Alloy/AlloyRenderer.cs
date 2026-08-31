@@ -1368,6 +1368,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static void ContextLost()
     {
         _prog46 = 0; _progLit46 = 0; _progDepth = 0; _progDepthKey = 0; _progWater = 0; _fbo46 = 0;
+        HighlightContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
         // capacity so the next upload reallocates rather than writing into a dead name, and the epoch so

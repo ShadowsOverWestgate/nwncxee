@@ -39,7 +39,7 @@ public sealed class QuickbarSettings
     public List<SetRow> Rows => Panel.Rows;
 
     // Bit discriminators for ToggleBit rows.
-    private const uint BitBars = 1, BitHidden = 2, BitCompass = 3, BitGrid = 4, BitEdge = 5;
+    private const uint BitBars = 1, BitHidden = 2, BitCompass = 3, BitGrid = 4, BitEdge = 5, BitOutlineHl = 6;
 
     private static readonly int[] GridSizes = { 25, 50, 75, 100, 150, 200 };
     private static int NextGridSize(int cur)
@@ -94,6 +94,10 @@ public sealed class QuickbarSettings
             On = cfg.EdgeSnap, Top = y, Height = RowH, Bit = BitEdge });
         y += RowH;
 
+        rows.Add(new SetRow { Kind = SetKind.Toggle, Act = SetAct.ToggleBit, Label = "Outline highlight",
+            On = cfg.OutlineHl, Top = y, Height = RowH, Bit = BitOutlineHl });
+        y += RowH;
+
         Panel.Publish(rows, y);
     }
 
@@ -138,6 +142,7 @@ public sealed class QuickbarSettings
                     case BitCompass: cfg.CompassHidden = !cfg.CompassHidden; break;
                     case BitGrid: cfg.GridOn = !cfg.GridOn; break;
                     case BitEdge: cfg.EdgeSnap = !cfg.EdgeSnap; break;
+                    case BitOutlineHl: cfg.OutlineHl = !cfg.OutlineHl; break;
                 }
                 break;
             case SetAct.CycleGridSize:
@@ -162,13 +167,13 @@ public sealed class QuickbarSettings
         var cfg = new QuickbarConfig();
         var s = new QuickbarSettings();
         s.OpenAt(1280, 800, cfg);
-        E(s.Open && s.Rows.Count == 6, "opens with 6 rows (grid off hides size)");
+        E(s.Open && s.Rows.Count == 7, "opens with 7 rows (grid off hides size)");
         E(s.MouseUp(), "up after open is consumed");
 
         // The panel owns the geometry now: width from the design width, height from the published layout.
         E(System.Math.Abs(s.W - PanelW * Metrics.Scale) < 0.01f, "panel width is the design width, scaled");
-        E(System.Math.Abs(s.H - (SettingsPanel.TitleH + 6f * RowH + SettingsPanel.Pad)) < 0.01f,
-          "panel height = title + 6 rows + pad");
+        E(System.Math.Abs(s.H - (SettingsPanel.TitleH + 7f * RowH + SettingsPanel.Pad)) < 0.01f,
+          "panel height = title + 7 rows + pad");
         E(ReferenceEquals(s.Rows, s.Panel.Rows), "the rows the service draws are the panel's published rows");
 
         // Cycle align: Left(0)->Center(1)->Right(2)->Left(0)
@@ -226,7 +231,7 @@ public sealed class QuickbarSettings
         SetRow grid = s.Rows.Find(r => r.Bit == BitGrid)!;
         s.MouseDown(s.X + 5, grid.Top + 2, cfg);
         E(cfg.GridOn, "grid toggled on");
-        E(s.Rows.Count == 7, "grid on shows size cycle row (the press relayouts)");
+        E(s.Rows.Count == 8, "grid on shows size cycle row (the press relayouts)");
         SetRow gsz = s.Rows.Find(r => r.Act == SetAct.CycleGridSize)!;
         s.MouseDown(s.X + 5, gsz.Top + 2, cfg);
         E(cfg.GridPx == 75, "grid size cycles 50 -> 75");
@@ -241,6 +246,13 @@ public sealed class QuickbarSettings
         E(edge.On, "edge snap default on");
         s.MouseDown(s.X + 5, edge.Top + 2, cfg);
         E(!cfg.EdgeSnap, "edge snap toggled off");
+
+        // Outline highlight toggle (default off)
+        s.OpenAt(1280, 800, cfg); s.MouseUp();
+        SetRow ohl = s.Rows.Find(r => r.Bit == BitOutlineHl)!;
+        E(!ohl.On, "outline highlight default off");
+        s.MouseDown(s.X + 5, ohl.Top + 2, cfg);
+        E(cfg.OutlineHl, "outline highlight toggled on");
 
         s.Reset();
         E(!s.Open && !s.Moving && !s.MouseUp(), "Reset closes and drops press/drag ownership");
