@@ -51,6 +51,13 @@ public static class FrameZones
         /// batch cuts) -- the half #322 wants proportional to the changed set. This split IS the ticket's
         /// step 1: it attributes the Build monolith before any phase boundary is drawn.</summary>
         Restage,
+        /// <summary>#324: inside <see cref="Restage"/> (NOT subtracted from it): the two spans of the staging
+        /// walk that hold its engine-pointer derefs -- instance state, dissolve, the texture re-fetches, the
+        /// VDO item range, the node matrix, the colour triples, the water body -- together with the owned
+        /// bookkeeping interleaved with them. An UPPER BOUND on the unmovable half, so Restage minus Chase is
+        /// a lower bound on what a GPU pass could take. SAMPLED 1-in-<c>AlloyRenderer.ChaseEvery</c> parts
+        /// and extrapolated; parts that skip out mid-span are not sampled. An estimate, not a bracket sum.</summary>
+        Chase,
         /// <summary>#322: nested in <see cref="Shadow"/>: the LightManager master-list walk.</summary>
         Lwalk,
         /// <summary>#322: nested in <see cref="Shadow"/>: <c>CasterPass.OnPassSlot</c> -- cube ranking,
@@ -117,6 +124,15 @@ public static class FrameZones
         if (dt > 0) _frame[(int)z] += dt;
     }
 
+    /// <summary>#324: close a bracket taken on 1-in-<paramref name="every"/> iterations of a walk, credited
+    /// times <paramref name="every"/>. Timestamping every part of a 14k walk would cost more than the half
+    /// being measured; the sample is the instrument.</summary>
+    public static void AddSampled(Zone z, long t0, int every)
+    {
+        long dt = Stopwatch.GetTimestamp() - t0;
+        if (dt > 0) _frame[(int)z] += dt * every;
+    }
+
     /// <summary>Drop this frame's brackets without folding them into the period -- the loading-screen and
     /// main-menu case. Without it the first in-module frame after a menu would carry the menu's ticks.</summary>
     public static void Discard() => Array.Clear(_frame, 0, N);
@@ -137,7 +153,32 @@ public static class FrameZones
         _dtSum += dt; _frames++;
         if (dt > _dtWorst) { _dtWorst = dt; Array.Copy(_frame, _worst, N); }
         if (dt > _dtWorstDrew && Drew()) { _dtWorstDrew = dt; Array.Copy(_frame, _worstDrew, N); }
+        if (_enrollMarked && _enrollN < _enrollTicks.Length) _enrollTicks[_enrollN++] = _frame[(int)Zone.Enroll];
+        _enrollMarked = false;
         for (int i = 0; i < N; i++) { _sum[i] += _frame[i]; _frame[i] = 0; }
+    }
+
+    /// <summary>#324: the Enroll ticks of every CADENCE frame this period -- a frame the enrolment walk ran
+    /// on, marked by <see cref="MarkEnrollFrame"/>. The p99 over that population is the metric move #5 (a
+    /// fixed enrolment slot budget) is judged by; over all frames it would only be the walk's mean. The
+    /// walk runs every 12-20 frames, so a 900-frame period never fills the array.</summary>
+    private static readonly long[] _enrollTicks = new long[1024];
+    private static int _enrollN;
+    private static bool _enrollMarked;
+
+    /// <summary>Call on a frame the enrolment walk ran, before <see cref="EndFrame"/>.</summary>
+    public static void MarkEnrollFrame() => _enrollMarked = true;
+
+    private static string EnrollP99()
+    {
+        int n = _enrollN;
+        _enrollN = 0;
+        if (n == 0) return " || Enroll: no walk this period";
+        var s = new long[n];
+        Array.Copy(_enrollTicks, s, n);
+        Array.Sort(s);
+        double k = 1000.0 / Stopwatch.Frequency;
+        return $" || Enroll walks {n}: p99 {s[(int)(n * 0.99)] * k:F1}ms p50 {s[n / 2] * k:F1}ms";
     }
 
     /// <summary>The period line, and the reset with it. Three rows: the average frame's split, the worst
@@ -151,6 +192,7 @@ public static class FrameZones
         string line = "FrameZones: [zones] " + Row(_sum, _dtSum, frames)
                     + " || worst frame " + Row(_worst, _dtWorst, 1);
         if (_dtWorstDrew != _dtWorst) line += " || worst that RENDERED " + Row(_worstDrew, _dtWorstDrew, 1);
+        line += EnrollP99();
         Array.Clear(_sum, 0, N); Array.Clear(_worst, 0, N); Array.Clear(_worstDrew, 0, N);
         _dtSum = 0; _dtWorst = 0; _dtWorstDrew = 0; _frames = 0;
         return line;
@@ -195,9 +237,14 @@ public static class FrameZones
         Add(Zone.Shim, t0);
         ok &= _frame[(int)Zone.Shim] >= f;
         if (!ok) log.Info("FrameZones.SelfCheck: FAILED -- a parent bracket did not subtract its child");
+        // #324: a sampled bracket is credited `every` times over, so the split reads as a whole-walk estimate.
+        AddSampled(Zone.Chase, t0, 16);
+        bool s = _frame[(int)Zone.Chase] >= f * 16 && _frame[(int)Zone.Chase] < f * 17;
+        if (!s) log.Info("FrameZones.SelfCheck: FAILED -- the sampled bracket was not extrapolated");
 
         EndFrame(f);                      // a 1000ms frame that rendered -- the worst so far, on both latches
         _frame[(int)Zone.Enroll] = f;
+        MarkEnrollFrame();                // #324: the one cadence frame -- the p99 population is this alone
         EndFrame(f / 2);                  // ...and a faster one, which must not displace it
         bool w = _worst[(int)Zone.Alloy] == 100 && _worst[(int)Zone.Enroll] == 0;
         if (!w) log.Info("FrameZones.SelfCheck: FAILED -- the worst frame is not the one that was kept");
@@ -213,10 +260,10 @@ public static class FrameZones
 
         string line = Period();
         bool r = line.Contains("Enroll:") && line.Contains("other:") && line.Contains("worst frame")
-                 && line.Contains("worst that RENDERED")
+                 && line.Contains("worst that RENDERED") && line.Contains("Enroll walks 1: p99 1000")
                  && _frames == 0 && _dtWorst == 0 && _dtWorstDrew == 0;
         if (!r) log.Info("FrameZones.SelfCheck: FAILED -- the period line or its reset drifted");
-        log.Info(ok && w && t && r ? "FrameZones.SelfCheck: passed"
+        log.Info(ok && s && w && t && r ? "FrameZones.SelfCheck: passed"
                                    : "FrameZones.SelfCheck: see failures above");
     }
 }

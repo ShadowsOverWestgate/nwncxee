@@ -108,7 +108,7 @@ public sealed unsafe class UiHostService : IExtenderService
                 // #238: NOT inside the null-conditional -- Period() carries the period reset, and `?.` skips
                 // argument evaluation, so a null log would desync it from the _fs* counters reset below
                 // permanently (every later line would then average since boot).
-                string zones = FrameZones.Period();
+                string zones = FrameZones.Period() + Sowx.Graphics.GlContextService.GpuSpanLine();
                 _log?.Info(zones);                 // ...and where that frame went
                 _fsSum = 0; _fsN = 0; _fsMax = 0; _fsOver7 = 0; _fsOver17 = 0;
             }

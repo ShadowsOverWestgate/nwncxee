@@ -488,11 +488,34 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>...and the shading pass's own GPU time. Frame time cannot answer "is the prepass worth it"
     /// on a vsync-capped display -- both modes sit on the cap and the saving becomes headroom -- so the A/B
     /// reads the work itself. Independent of SAMPLES_PASSED: different query target, both may be active.</summary>
-    private static GpuQuery _qPrepass, _qSamples, _qColour;
-    /// <summary>#151: the passes the colour timer never covered -- particles, water (copy + draw), sky+grass,
-    /// and the post chain (bloom + composite). Their sum with colour/prepass/shadow is the whole Alloy GPU
-    /// frame; until these existed the variance the user chased lived in the unmeasured slice.</summary>
-    private static GpuQuery _qParticles, _qWater, _qSkyGrass, _qPost;
+    private static GpuQuery _qSamples;
+    /// <summary>#325: the timed GPU terms of the colour bracket, in pass order. Beams and the probe capture
+    /// are untimed; the shadow bracket (<c>CasterPass</c>) and the cluster build (<c>AlloyLights</c>) run
+    /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.</summary>
+    internal enum GpuTerm { Prepass, Opaque, Cutout, Grass, Sky, Blended, Water, Additive, Particles, Post, Count }
+    /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
+    /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
+    private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
+    /// <summary>The term whose query is open, -1 for none. Closed at frame start if a pass left it open.</summary>
+    private static int _qOpen = -1;
+    /// <summary>#287's pixels-per-world-radius-at-unit-depth for THIS pass (0 without perspective), kept for
+    /// the cube receiver's disc gate (#326).</summary>
+    private static float _lodScale;
+
+    /// <summary>Open a term's elapsed query unless another is already open -- the guard that keeps the
+    /// brackets serial. A term whose query declined the frame (result not ready) is simply not measured.</summary>
+    private static void GpuBegin(GpuTerm t)
+    { if (_qOpen < 0 && _qTerm[(int)t].Begin(Gl.TIME_ELAPSED)) _qOpen = (int)t; }
+
+    /// <summary>Frame start: a term still open from the last frame (an early return between its Begin and
+    /// End) is closed here, or every later Begin is refused and the line reads zero for the session.</summary>
+    private static void GpuFrameStart() { if (_qOpen >= 0) GpuEnd((GpuTerm)_qOpen); }
+
+    /// <summary>Close the term if it is the open one; a no-op for a term that never opened.</summary>
+    private static void GpuEnd(GpuTerm t)
+    { if (_qOpen == (int)t) { _qTerm[(int)t].End(Gl.TIME_ELAPSED); _qOpen = -1; } }
+
+    private static double GpuMs(GpuTerm t) => _qTerm[(int)t].Avg / 1e6;
 
     /// <summary>One-shot FBO-topology report (#151, the "does AA even apply to us" question).</summary>
     private static int _fboDiagSig = -1, _fboDiagLeft = 8;
@@ -749,9 +772,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         return outFs.Insert(at, sb.ToString());
     }
 
-    /// <summary>The colour timer spans three passes now (opaque, blended, additive), so its End lives at the
-    /// last of them rather than inside the one that began it.</summary>
-    private static bool _colourTiming, _waterTiming;
     private static long _prepassDraws;
     /// <summary>#124: prepass draws that went through the keyhole depth stage. The number that says the fix
     /// is doing its job -- before it, every one of these was in <see cref="_prepassSkipped"/> instead.</summary>
@@ -1055,7 +1075,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // frames), so at the observed rate this binds almost never; it exists for the churnier area.
             if (_sinceEnroll < int.MaxValue) _sinceEnroll++;
             bool due = SceneWalk.Dirty || scene != _enrollScene;
-            if (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene)) Enroll(scene);
+            if (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene)) { Enroll(scene); FrameZones.MarkEnrollFrame(); }
             FrameZones.Add(FrameZones.Zone.Enroll, tEnroll);
         }
         // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
@@ -1428,6 +1448,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // "200 NOT DRAWN" reads as the missing geometry it actually is. The reject breakdown at the end of
         // this line is what it decomposes into.
         int holes = _lastCandidates - _lastEnrolled;
+        // #325: the old single colour timer's span, opaque through additive (water = copy + draw).
+        double colourMs = 0; for (int t = (int)GpuTerm.Opaque; t <= (int)GpuTerm.Additive; t++) colourMs += GpuMs((GpuTerm)t);
         _log?.Info($"AlloyRenderer: [alloy] {_lastEnrolled}/{_lastCandidates} parts owned{CapacityNote()}" +
                    (holes <= 0 ? "" : $" ({holes} NOT DRAWN -- nothing renders an unowned part since #264"
                                        + $"; harvest refused VDOs: no-engine-vao {HarvestNoVao} no-elembuf {HarvestNoElem}"
@@ -1553,15 +1575,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                     : $"prepass {(float)_prepassDraws / _frames:F0} draws/frame" +
                       (_prepassKeyed == 0 ? "" : $" ({(float)_prepassKeyed / _frames:F0} of them dissolving, keyhole stage)") +
                       (_prepassSkipped == 0 ? "" : $" (+{(float)_prepassSkipped / _frames:F0} excluded, displacing/skinned or cutout)") +
-                      (_qPrepass.Measured ? $" in {_qPrepass.Avg / 1e6:F3}ms" : "")) +
+                      (_qTerm[(int)GpuTerm.Prepass].Measured ? $" in {GpuMs(GpuTerm.Prepass):F3}ms" : "")) +
                    (_qSamples.Measured && _lastPixels > 0
                        ? $", shaded {_qSamples.Avg / 1e6:F2}M samples/frame over {_lastPixels / 1e6f:F2}Mpx " +
                          $"(overdraw x{_qSamples.Avg / _lastPixels:F2})"
                        : "") +
-                   (_qColour.Measured ? $", colour passes {_qColour.Avg / 1e6:F3}ms (opaque+blended+additive)" : "") +
-                   (_qParticles.Measured || _qWater.Measured || _qPost.Measured
-                       ? $", gpu split: particles {_qParticles.Avg / 1e6:F3} / water {_qWater.Avg / 1e6:F3} / " +
-                         $"grass {_qSkyGrass.Avg / 1e6:F3} / post {_qPost.Avg / 1e6:F3} ms" : "") +
+                   (_qTerm[(int)GpuTerm.Opaque].Measured
+                       ? $", gpu ms: opaque {GpuMs(GpuTerm.Opaque):F2} / cutout {GpuMs(GpuTerm.Cutout):F2} / " +
+                         $"grass {GpuMs(GpuTerm.Grass):F2} / sky {GpuMs(GpuTerm.Sky):F2} / blended {GpuMs(GpuTerm.Blended):F2} / " +
+                         $"water {GpuMs(GpuTerm.Water):F2} / additive {GpuMs(GpuTerm.Additive):F2} (colour {colourMs:F2}) " +
+                         $"/ particles {GpuMs(GpuTerm.Particles):F2} / post {GpuMs(GpuTerm.Post):F2}" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.
                    $", probe {(EnvProbe.Ready ? $"ready ({EnvProbe.Captures} captures)" : "none yet")}" +
@@ -1604,8 +1627,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _nrmDeclared = _nrmBound = 0;
         Array.Clear(_drawsByClass);
         _clusterOverflow = 0;
-        _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _qPrepass.Reset(); _qSamples.Reset(); _qColour.Reset();
-        _qParticles.Reset(); _qWater.Reset(); _qSkyGrass.Reset(); _qPost.Reset();
+        _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _qSamples.Reset();
+        for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset();
     }
 
     /// <summary>The unmatched total, split by the bucket the parts were captured in -- only the buckets that

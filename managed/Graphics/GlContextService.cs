@@ -51,6 +51,23 @@ public sealed unsafe class GlContextService : IExtenderService
 
     private static int _frames, _err46, _errEng, _switchFails;
 
+    /// <summary>#324: GPU span of the frame's Alloy work -- t0 at the first Enter, t1 re-stamped at every
+    /// Leave, so the pair brackets the shadow bake through the colour frame on the GPU timeline. NOT the
+    /// frame's GPU time: engine GL outside the brackets (2D UI, present) is excluded and idle gaps inside
+    /// them are included. Read beside the CPU [zones] line and the [alloy] elapsed queries: span far above
+    /// the elapsed sum means the GPU idled on the CPU; frame period minus span bounds the headroom the
+    /// GPU-side moves (#1-#4) spend into.</summary>
+    private static GpuStamp _span;
+    private static bool _stamped;
+
+    /// <summary>The period's GPU span, formatted for the [zones] line; resets the period.</summary>
+    public static string GpuSpanLine()
+    {
+        string s = _span.Measured ? $" || gpu-span avg {_span.AvgMs:F1}ms max {_span.MaxMs:F1}ms" : " || gpu-span n/a";
+        _span.Reset();
+        return s;
+    }
+
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
@@ -88,6 +105,7 @@ public sealed unsafe class GlContextService : IExtenderService
         if (!_tried) { _tried = true; try { Create(); } catch (Exception e) { Fail($"EXCEPTION {e.Message}"); } }
         if (Available && !_worked && Enter()) { InBracket?.Invoke(); Leave(); }
         _worked = false;
+        _span.Rotate(); _stamped = false;
     }
 
     /// <summary>Work that needs A context but not the Alloy pass: the health bracket runs every in-play frame
@@ -184,6 +202,7 @@ public sealed unsafe class GlContextService : IExtenderService
         _flush();
         if (_makeCur(_dpy, _drw, Context) == 0) { _switchFails++; if (fIn != IntPtr.Zero) _deleteSync(fIn); return false; }
         if (fIn != IntPtr.Zero) { _waitSync(fIn, 0, TimeoutIgnored); _deleteSync(fIn); }
+        if (!_stamped) _stamped = _span.Begin();
         return true;
     }
 
@@ -193,6 +212,7 @@ public sealed unsafe class GlContextService : IExtenderService
     {
         int guard = 0;
         while (Gl.GetError() != 0 && ++guard < 16) _err46++;
+        if (_stamped) _span.End();
 
         IntPtr fOut = _fenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         _flush();

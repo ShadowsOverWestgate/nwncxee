@@ -209,7 +209,10 @@ public sealed unsafe partial class AlloyRenderer
         if (locCount < 0) return;
         // #139: the softness pair goes out even when there are no cubes -- it is program state, not per-cube
         // state, and a program that only ever sees the no-cubes path would otherwise keep the zeroes.
-        if (locSoft >= 0) Gl.Uniform2f(locSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld);
+        // #326: pixels -> world radius per unit view depth, so the shader compares its disc against the
+        // screen without knowing the projection. 0 (no perspective this pass) = the disc everywhere.
+        float discZ = _lodScale > 0f ? AlloyLights.ShadowDiscPx / _lodScale : 0f;
+        if (locSoft >= 0) Gl.Uniform3f(locSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, discZ);
         if (!CasterPass.CubesFresh) { Gl.Uniform1i(locCount, 0); return; }
         int n = CasterPass.CubeCount;
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeUnit);

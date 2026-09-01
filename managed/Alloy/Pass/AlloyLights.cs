@@ -133,6 +133,11 @@ internal static unsafe class AlloyLights
     /// PCF tap this shipped with; anything above widens the filter with four more taps on a disc
     /// perpendicular to the sample ray. Costs 4 extra cube fetches per shadowing light per fragment.</summary>
     private static float _shadowSoft = 1.5f;
+    /// <summary>#326: the PCF disc's radius on SCREEN, in pixels, below which it stands down to the single
+    /// hardware tap. #325 measured the cube taps as the colour pass's one big term and the disc is four of
+    /// every five; its width scales with distance to the LIGHT, so the test is per fragment, not a view-depth
+    /// line. 0 = the disc everywhere. ponytail: a hard threshold, no fade band across it.</summary>
+    private static float _discPx = 3f;
     /// <summary>#139: self-shadow near-field skip, as a multiple of <see cref="_srcRadius"/>. A world point
     /// closer to the light than this is reported lit outright -- a carried torch sits INSIDE the hand and
     /// forearm holding it, and a punctual shadow test there shadows the carrier from its own light.</summary>
@@ -161,14 +166,14 @@ internal static unsafe class AlloyLights
     private static float _bootGain = 0.1f, _bootRadius = 1f, _bootPow = 1f,
                          _bootAmbient = 1f, _bootSun = 1f, _bootOver = 1f;
     private static float _bootHot = 0.9f, _bootHotSize = 0.15f, _bootWrapN = 0.25f;
-    private static float _bootWrap = 1f, _bootShadowSoft = 0f, _bootShadowNear = 1f;
+    private static float _bootWrap = 1f, _bootShadowSoft = 0f, _bootShadowNear = 1f, _bootDiscPx = 3f;
 
     /// <summary>Current tuning, one line, for the <c>/light</c> echo and the arm-time log.</summary>
     internal static string Describe() =>
         $"gain {_gain:F2}  wrapradius {_srcRadius:F2}  rimfade {_falloffPow:F2}  " +
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  " +
         $"ambient x{AmbientScale:F2}  sun x{SunScale:F2}  overbright x{OverbrightScale:F2}  " +
-        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  shadowsoft {_shadowSoft:F2}  shadownear {_shadowNear:F2}  " +
+        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadownear {_shadowNear:F2}  " +
         $"hot {_hot:F2}  hotsize {_hotSize:F3}";
 
     /// <summary>Live tuning setter behind <c>/light</c>. Returns the old value, or NaN for an unknown key.
@@ -189,6 +194,7 @@ internal static unsafe class AlloyLights
             case "wrap":    old = _wrap; _wrap = v; break;
             case "wrapndl": old = _wrapN; _wrapN = v; break;
             case "shadowsoft": old = _shadowSoft; _shadowSoft = v; break;
+            case "discpx": old = _discPx; _discPx = v; break;
             case "shadownear": old = _shadowNear; _shadowNear = v; break;
             case "hot":     old = _hot; _hot = v; break;
             case "hotsize": old = _hotSize; _hotSize = v; break;
@@ -211,7 +217,7 @@ internal static unsafe class AlloyLights
         // second transcription of it: f2 in [0, 1], gain 1, rim-fade exponent 1.
         float Att(float f2, float gain) => gain * (1f - f2) / (_atten.X + _atten.Y * f2);
         float g = _gain, r = _srcRadius, p = _falloffPow, am = AmbientScale, su = SunScale, ov = OverbrightScale;
-        float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN;
+        float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN, sf = _discPx;
         float bg = _bootGain, br = _bootRadius, bp = _bootPow, ba = _bootAmbient, bs = _bootSun, bo = _bootOver;
 
         _bootGain = 40f; _bootRadius = 0.7f; _bootPow = 2f; _bootAmbient = 1f; _bootSun = 1f; _bootOver = 1f;
@@ -219,10 +225,10 @@ internal static unsafe class AlloyLights
         bool ok = float.IsNaN(Tune("nope", 1f));                       // unknown knob is reported
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyLights.SelfCheck FAIL: {w}"); } }
         foreach (var key in new[] { "gain", "radius", "falloff", "ambient", "sun", "overbright",
-                                    "wrap", "wrapndl", "shadowsoft", "shadownear", "hot", "hotsize" })
+                                    "wrap", "wrapndl", "shadowsoft", "discpx", "shadownear", "hot", "hotsize" })
             ok &= !float.IsNaN(Tune(key, 3f));                          // every documented knob is reachable
         ok &= _gain == 3f && _srcRadius == 3f && _falloffPow == 3f && AmbientScale == 3f && SunScale == 3f
-              && OverbrightScale == 3f && _wrap == 3f && _shadowSoft == 3f && _shadowNear == 3f
+              && OverbrightScale == 3f && _wrap == 3f && _shadowSoft == 3f && _discPx == 3f && _shadowNear == 3f
               && _hot == 3f && _hotSize == 3f && _wrapN == 3f;
         _bootGain = 7f;                                                 // reset must honour the BOOT value...
         ResetTuning();
@@ -277,7 +283,7 @@ internal static unsafe class AlloyLights
           "the check restores EVERY boot value it clobbered -- a missed one makes /light reset discard a tuned value");
 
         _gain = g; _srcRadius = r; _falloffPow = p; AmbientScale = am; SunScale = su; OverbrightScale = ov;
-        _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn;
+        _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn; _discPx = sf;
         _log = quiet;
         log.Info(ok ? "AlloyLights.SelfCheck: passed"
                     : "AlloyLights.SelfCheck: FAILED -- /light knob table drifted from its documented keys");
@@ -289,7 +295,7 @@ internal static unsafe class AlloyLights
     {
         _gain = _bootGain; _srcRadius = _bootRadius; _falloffPow = _bootPow;
         AmbientScale = _bootAmbient; SunScale = _bootSun; OverbrightScale = _bootOver;
-        _wrap = _bootWrap; _shadowSoft = _bootShadowSoft; _shadowNear = _bootShadowNear;
+        _wrap = _bootWrap; _shadowSoft = _bootShadowSoft; _shadowNear = _bootShadowNear; _discPx = _bootDiscPx;
         _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN;
         _log?.Info($"AlloyLights: /light reset -> {Describe()}");
     }
@@ -339,7 +345,7 @@ internal static unsafe class AlloyLights
         // /light is the whole surface. The env block that used to sit here only ever set a value the command
         // could already set, and could not be moved without a relaunch.
         _bootHot = _hot; _bootHotSize = _hotSize; _bootWrapN = _wrapN;
-        _bootWrap = _wrap; _bootShadowSoft = _shadowSoft; _bootShadowNear = _shadowNear;
+        _bootWrap = _wrap; _bootShadowSoft = _shadowSoft; _bootShadowNear = _shadowNear; _bootDiscPx = _discPx;
         _bootGain = _gain; _bootRadius = _srcRadius; _bootPow = _falloffPow;
         _bootAmbient = AmbientScale; _bootSun = SunScale; _bootOver = OverbrightScale;
         log.Info($"AlloyLights: {Describe()} -- /light retunes every dial live, /light reset restores these");
@@ -517,10 +523,11 @@ internal static unsafe class AlloyLights
         if (locWrapN >= 0) Gl.Uniform1f(locWrapN, _wrapN);
     }
 
-    /// <summary>#139: the local-cube receiver's two softness terms -- PCF radius in texels, and the world
-    /// distance inside which a fragment is reported lit outright. Read here so <c>/light</c> retunes both
-    /// live, like every other knob.</summary>
+    /// <summary>#139/#326: the local-cube receiver's three softness terms -- PCF radius in texels, the screen
+    /// radius in pixels below which that disc stands down, and the world distance inside which a fragment is
+    /// reported lit outright. Read here so <c>/light</c> retunes all three live, like every other knob.</summary>
     internal static float ShadowSoft => _shadowSoft;
+    internal static float ShadowDiscPx => _discPx;
     internal static float ShadowNearWorld => _shadowNear * _srcRadius;
 
     /// <summary>Non-blocking timer + overflow readback: only ever touched when the driver says the result is
@@ -628,7 +635,7 @@ internal static unsafe class AlloyLights
         // outright. Both default to 0 on a program that never sets them, which IS the pre-#139 behaviour --
         // that is deliberate, so a stale content override degrades to a hard single tap rather than to
         // something wrong.
-        uniform vec2 uLocalSoft;
+        uniform vec3 uLocalSoft;   // x = disc texels, y = near skip, z = disc stand-down: world radius per unit view depth (0 = none)
 
         // #305: the DYNAMIC pool -- movers only, re-baked every frame at reduced resolution, composed with
         // the static cube by min(): depth visibility is a min-of-blockers, so the two arrays compose exactly
@@ -673,7 +680,7 @@ internal static unsafe class AlloyLights
         // ShadowMath's SelfCheck welds that round-trip headless, so a convention slip fails there, not here.
         // `ndlRaw` is the caller's geometric dot(N, L) -- already in hand at every lit call site -- for the
         // slope terms; recomputing it here cost a normalize per fragment per shadowing light.
-        float SowxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover)
+        float SowxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover, float viewDepth)
         {
             if (uLocalCubes <= 0 || slot < 0 || slot >= uLocalCubes) return 1.0;
             vec4 L = uLocalLight[slot];
@@ -714,7 +721,9 @@ internal static unsafe class AlloyLights
             bool dyn = pg > 0.5 && !(onMover > 0.5 && m < SOWX_LOCAL_DYN_NEAR * uLocalSoft.y);
             float vd = dyn ? texture(uLocalDynShadow, vec4(d, pg - 1.0), ref) : 1.0;
             float v = min(vs, vd);
-            if (uLocalSoft.x <= 0.0) return v;
+            // #326: one tap when the disc is under its pixel budget on screen (z = px / lod scale) -- four of
+            // every five cube fetches
+            if (uLocalSoft.x <= 0.0 || (uLocalSoft.z > 0.0 && texel * uLocalSoft.x < viewDepth * uLocalSoft.z)) return v;
             // #139: four more taps on a disc perpendicular to the sample ray. The cube fetch is already
             // hardware PCF, so this WIDENS that filter rather than replacing it. The reference depth is
             // deliberately the centre tap's for all five -- re-deriving it per tap would compare each
@@ -935,7 +944,7 @@ internal static unsafe class AlloyLights
                 // #143 floor on top of it would wrap past the point of looking lit at all.
                 float ndl = SowxWrap(dot(N, L), max(s, uWrapN));
                 if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
-                float sh = SowxLocalShadow(slot, worldPos, N, dot(N, L), onMover);
+                float sh = SowxLocalShadow(slot, worldPos, N, dot(N, L), onMover, viewDepth);
                 vec3 lit = c * (max(att, 0.0) * ndl * sh);
                 acc += lit;
                 spec += lit * SowxSpecLobe(N, V, L, rough, specularity);
@@ -967,7 +976,7 @@ internal static unsafe class AlloyLights
                 if (slot < 0) continue;
                 vec3 d = pr.xyz - worldPos;
                 if (dot(d, d) > pr.w * pr.w) continue;
-                vis = min(vis, SowxLocalShadow(slot, worldPos, N, dot(N, normalize(d)), 0.0));
+                vis = min(vis, SowxLocalShadow(slot, worldPos, N, dot(N, normalize(d)), 0.0, viewDepth));
             }
             return vis;
         }

@@ -160,7 +160,7 @@ public static unsafe class Gl
     /// multisample texture (glGetTexLevelParameteriv on TEXTURE_2D_MULTISAMPLE).</summary>
     public const uint NUM_EXTENSIONS = 0x821D, EXTENSIONS = 0x1F03;
     public const uint RENDERBUFFER_SAMPLES = 0x8CAB, TEXTURE_SAMPLES = 0x9106, TEXTURE_2D_MULTISAMPLE = 0x9100, RENDERBUFFER_BINDING = 0x8CA7;
-    public const uint TIME_ELAPSED = 0x88BF, QUERY_RESULT = 0x8866, QUERY_RESULT_AVAILABLE = 0x8867;
+    public const uint TIME_ELAPSED = 0x88BF, QUERY_RESULT = 0x8866, QUERY_RESULT_AVAILABLE = 0x8867, TIMESTAMP = 0x8E28;
     /// <summary>glBeginQuery target counting fragments that passed depth+stencil (#119): the overdraw meter
     /// for the Alloy colour pass. Not ANY_SAMPLES_PASSED -- that one is boolean and answers a different
     /// question.</summary>
@@ -332,6 +332,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, uint*, void> GenQueries;
     public static delegate* unmanaged<uint, uint, void> BeginQuery;
     public static delegate* unmanaged<uint, void> EndQuery;
+    public static delegate* unmanaged<uint, uint, void> QueryCounter;
     public static delegate* unmanaged<uint, uint, int*, void> GetQueryObjectiv;
     public static delegate* unmanaged<uint, uint, ulong*, void> GetQueryObjectui64v;
     public static delegate* unmanaged<int, int, int, int, void> Uniform3i;
@@ -509,6 +510,7 @@ public static unsafe class Gl
         GenQueries = (delegate* unmanaged<int, uint*, void>)P("glGenQueries");
         BeginQuery = (delegate* unmanaged<uint, uint, void>)P("glBeginQuery");
         EndQuery = (delegate* unmanaged<uint, void>)P("glEndQuery");
+        QueryCounter = (delegate* unmanaged<uint, uint, void>)P("glQueryCounter");
         GetQueryObjectiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetQueryObjectiv");
         GetQueryObjectui64v = (delegate* unmanaged<uint, uint, ulong*, void>)P("glGetQueryObjectui64v");
         Uniform3i = (delegate* unmanaged<int, int, int, int, void>)P("glUniform3i");

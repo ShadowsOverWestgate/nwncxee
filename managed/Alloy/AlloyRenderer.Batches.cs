@@ -475,6 +475,8 @@ public sealed unsafe partial class AlloyRenderer
     /// staleness is N frames of a drift that moves over seconds. Fast-visible state (alpha, fade, matrix,
     /// the diffuse pointer, dissolve) never rides this.</summary>
     private const int ColourCadence = 8;
+    /// <summary>#324: one routed part in this many carries the <c>Zone.Chase</c> timestamps. Power of two.</summary>
+    internal const int ChaseEvery = 16;
 
     private static int BuildBatches(bool lightingOn)
     {
@@ -503,7 +505,7 @@ public sealed unsafe partial class AlloyRenderer
                 if (owned) { _watchDrawLeft--; _log?.Info("[dumpframe] DRAW never routed -- owned, but RouteParts did not include it"); }
             }
         }
-        _gOpaqueEnd = _gBlendEnd = _gWaterEnd = 0;
+        _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = 0;
         // #242: the persistent buffer grows to the high-water ownership count and never shrinks. A growth
         // reallocates it, so everything in it goes back up on this frame rather than only the movers.
         if (_ownCount > _recOwnCap) { _recOwnCap = _ownCount; _recDirtyAll = true; }
@@ -543,6 +545,8 @@ public sealed unsafe partial class AlloyRenderer
             // alone (the highlight is owned, the per-gob env override was already #121's). SKIPPED, not
             // revoked: the state can last a single frame and revoking would spend a whole re-enrollment on
             // it. The skip is a hole -- `instance-state` on the [alloy] line is how big.
+            bool samp = (k & (ChaseEvery - 1)) == 0;
+            long tChase = samp ? FrameZones.Now : 0;
             if (!AlloyCensus.InstanceOwnable(tri))
             { _skipGob++; _recEnroll[i] = 0; W(i, "skipped: instance state unownable this pass"); continue; }
             // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
@@ -705,6 +709,7 @@ public sealed unsafe partial class AlloyRenderer
                 _cGen[i] = _recEpoch;
             }
 
+            if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
             int v = _oVao[src];
             if (!EnsureVao(v)) { _skipVao++; UnstampRecord(i); W(i, "skipped: no VAO"); continue; }
             uint mode = _primTable[_oPrim[i]];
@@ -778,6 +783,7 @@ public sealed unsafe partial class AlloyRenderer
             float* r = data + (long)i * DrawFloats;
             if (!verified)
             {
+                if (samp) tChase = FrameZones.Now;
                 bool rec = texDirty;
                 if (stale) { WriteStable(r, i, lit); rec = true; }
                 var pf = default(RecordFrameState);
@@ -843,6 +849,7 @@ public sealed unsafe partial class AlloyRenderer
                 // charging those as movers re-baked every cube every frame (the predicate skipped nothing).
                 // So the model is compared HERE, before the write consumes the difference; a change of
                 // tenant is the other true mover (the new part APPEARED in the views it stands in).
+                if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
                 bool casterMoved = pf.HasModel && *(Matrix4x4*)r != pf.Model;
                 bool newTenant = _recEnroll[i] != _oEnrollGen[i];
                 rec |= WritePerFrame(r, in pf);
@@ -900,9 +907,10 @@ public sealed unsafe partial class AlloyRenderer
         // later class IS the previous range's end, and a class that staged nothing leaves an empty range
         // rather than someone else's batches.
         if (hix >= lox) CullPass.SetSpread(hix - lox, hiy - loy, hiz - loz, maxR);
-        _gOpaqueEnd = _gBlendEnd = _gWaterEnd = groups;
+        _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = groups;
         for (int g = 0; g < groups; g++)
         {
+            if (_gCls[g] > (byte)AlloyClass.Opaque && g < _gCutoutStart) _gCutoutStart = g;
             if (_gCls[g] > (byte)AlloyClass.Cutout && g < _gOpaqueEnd) _gOpaqueEnd = g;
             if (_gCls[g] > (byte)AlloyClass.Blended && g < _gBlendEnd) _gBlendEnd = g;
             if (_gCls[g] > (byte)AlloyClass.Water && g < _gWaterEnd) _gWaterEnd = g;

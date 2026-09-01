@@ -327,7 +327,7 @@ internal static class ShaderContract
                   // ...and every one of them must read "off" from the ZERO a program that never sets the
                   // uniform leaves behind, or a stale content override (#92) does something wrong rather
                   // than something old. This is the whole reason none of them rides in uFalloff's spare lane.
-                  && AlloyLights.LocalShadowLib.Contains("if (uLocalSoft.x <= 0.0) return v;")
+                  && AlloyLights.LocalShadowLib.Contains("if (uLocalSoft.x <= 0.0 || (uLocalSoft.z > 0.0 && texel * uLocalSoft.x < viewDepth * uLocalSoft.z)) return v;")
                   // ...and the dissolve has to reach the fragment stage at all: it rides in rot.z, which was
                   // a dead float, so a stage reading the wrong lane dissolves nothing and says nothing.
                   && OwnedLitFsMain.Contains("SowxKeyhole(d.rot.z, vWorld, vDepth)")

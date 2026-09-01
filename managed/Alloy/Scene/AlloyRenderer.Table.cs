@@ -344,6 +344,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#126: where the opaque set ends and where the blended run ends, in batch indices. Each pass
     /// draws exactly its own range -- the depth prepass and the probe capture take the opaque prefix.</summary>
     private static int _gOpaqueEnd, _gBlendEnd, _gWaterEnd;
+    /// <summary>#325: where the cutout run begins inside the opaque set, so the opaque pass can time the two
+    /// classes apart. Equals <see cref="_gOpaqueEnd"/> when nothing staged as cutout.</summary>
+    private static int _gCutoutStart;
     private static int _drawN;
     // #125: the sky's own draw list, staged after the batch records and issued one draw at a time -- a
     // skybox is a handful of parts and each carries its own captured matrix, so there is nothing to group.

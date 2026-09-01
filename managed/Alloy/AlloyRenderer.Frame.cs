@@ -158,6 +158,7 @@ public sealed unsafe partial class AlloyRenderer
             bool postOk = PostChain.Begin(_fbo46, depthType, depthName, viewport, engClear, engClearDepth);
             FrameZones.Add(FrameZones.Zone.Post, tPostBegin);
             if (!postOk) { GlContextService.Leave(); return; }
+            GpuFrameStart();
             long tBuild = FrameZones.Now;
             int groups = BuildBatches(lightingOn);
             FrameZones.Add(FrameZones.Zone.Build, tBuild);
@@ -183,6 +184,7 @@ public sealed unsafe partial class AlloyRenderer
                 // #287: pixels per unit of world radius at unit depth, the LOD test's one input. Zero when
                 // this pass has no perspective projection, and the test then stands down.
                 float lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
+                _lodScale = lodScale;
                 // #303: the spheres go up whatever the cull mode -- the shadow gather reads the same buffer.
                 fixed (float* sph = _dSph)
                     CullPass.UploadSpheres(sph, _recOwnCap + MaxSkyDraws);
@@ -231,22 +233,26 @@ public sealed unsafe partial class AlloyRenderer
                             { _takeOverflow = false; _clusterOverflow += AlloyLights.TakeClusterOverflow(); }
                             break;
                         case PassId.GrassOwned:
-                            bool tg = _qSkyGrass.Begin(Gl.TIME_ELAPSED);
+                            GpuBegin(GpuTerm.Grass);
                             GrassField.Draw(&vp, viewport, near, far, lightingOn);
-                            if (tg) _qSkyGrass.End(Gl.TIME_ELAPSED);
+                            GpuEnd(GpuTerm.Grass);
                             // Grass draws unblended by construction and toggles GL_BLEND itself; hand the
                             // tracked state back exactly as it was, or the next pass's own bookkeeping
                             // (IssueBatches reads _blendOn as "what is already set") starts from a lie.
                             if (_blendOn) Gl.Enable(Gl.BLEND); else Gl.Disable(Gl.BLEND);
                             break;
                         case PassId.SkyOwned:
+                            GpuBegin(GpuTerm.Sky);
                             SkyOwnedPass(&vp, viewport);
+                            GpuEnd(GpuTerm.Sky);
                             break;
                         case PassId.BlendedOwned:
+                            GpuBegin(GpuTerm.Blended);
                             TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                            GpuEnd(GpuTerm.Blended);
                             break;
                         case PassId.FbCopy:
-                            _waterTiming = _qWater.Begin(Gl.TIME_ELAPSED);
+                            GpuBegin(GpuTerm.Water);
                             // Only when there is water to read it. The copy is a full-screen blit of colour
                             // AND depth -- cheap, but not free, and every frame without a water surface on
                             // screen would be paying for a texture nothing samples.
@@ -263,11 +269,12 @@ public sealed unsafe partial class AlloyRenderer
                         case PassId.WaterOwned:
                             WaterOwnedPass(_gBlendEnd, _gWaterEnd, &vp, (float*)&view, (float*)&proj,
                                            viewport, near, far);
-                            if (_waterTiming) { _qWater.End(Gl.TIME_ELAPSED); _waterTiming = false; }
+                            GpuEnd(GpuTerm.Water);
                             break;
                         case PassId.AdditiveOwned:
+                            GpuBegin(GpuTerm.Additive);
                             TransparentPass(_gWaterEnd, groups, &vp, viewport, near, far);
-                            if (_colourTiming) { _qColour.End(Gl.TIME_ELAPSED); _colourTiming = false; }
+                            GpuEnd(GpuTerm.Additive);
                             // The blending classes leave the depth mask off and GL_BLEND on; the probe
                             // capture that follows draws the opaque set again and must find neither.
                             Gl.Disable(Gl.BLEND); _blendOn = false; Gl.DepthMask(1);
@@ -280,13 +287,13 @@ public sealed unsafe partial class AlloyRenderer
                         case PassId.ParticlesOwned:
                             // Particles bind a program, a VAO and a buffer of their own and hand the state
                             // back the way the beams left it -- blend off, depth mask on, culling off.
-                            bool tp = _qParticles.Begin(Gl.TIME_ELAPSED);
+                            GpuBegin(GpuTerm.Particles);
                             long blit0 = FrameZones.Ticks(FrameZones.Zone.Blit);
                             long tParts = FrameZones.Now;
                             Particles.Draw(&view, &proj, viewport, near, far, lightingOn);
                             FrameZones.Add(FrameZones.Zone.Parts, tParts,
                                            FrameZones.Ticks(FrameZones.Zone.Blit) - blit0);
-                            if (tp) _qParticles.End(Gl.TIME_ELAPSED);
+                            GpuEnd(GpuTerm.Particles);
                             break;
                         case PassId.ProbeCapture:
                             if (!lightingOn) break;
@@ -300,7 +307,7 @@ public sealed unsafe partial class AlloyRenderer
                         case PassId.PostProcess:
                             if (!PostChain.Armed) break;
                             long tPost = FrameZones.Now;
-                            bool tb = _qPost.Begin(Gl.TIME_ELAPSED);
+                            GpuBegin(GpuTerm.Post);
                             // Bloom runs against the HDR target and binds its own attachments; the engine's
                             // target has to come back before the composite writes into it, and with it the
                             // viewport and the sRGB-encode state the pass was entered with.
@@ -312,7 +319,7 @@ public sealed unsafe partial class AlloyRenderer
                             // display-space frame with the depth Composite just blitted to it. Not a
                             // FrameGraph slot: it is part of finishing the post-process output, like Bloom.
                             OutlineHighlightPass(groups, &vp, viewport);
-                            if (tb) _qPost.End(Gl.TIME_ELAPSED);
+                            GpuEnd(GpuTerm.Post);
                             FrameZones.Add(FrameZones.Zone.Post, tPost);
                             break;
                     }
@@ -347,7 +354,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         if (!_depthPrepass || !EnsureDepthProgram()) return;
         int skipped = 0, drawn = 0;
-        bool timing = _qPrepass.Begin(Gl.TIME_ELAPSED);
+        GpuBegin(GpuTerm.Prepass);
         // #243: the FRUSTUM-only list. The prepass is what the hi-Z pyramid is built from, so it cannot be
         // culled against the pyramid it produces -- and it must not be: a part the prepass skips is one the
         // pyramid does not know about, which only ever makes the colour cull more conservative.
@@ -416,7 +423,7 @@ public sealed unsafe partial class AlloyRenderer
         }
         if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
         Gl.ColorMask(1, 1, 1, 1);
-        if (timing) _qPrepass.End(Gl.TIME_ELAPSED);
+        GpuEnd(GpuTerm.Prepass);
         // Counted from what this loop submitted, not from the pass's total draw count: since #126 that total
         // spans the blending classes too, and the prepass walks the opaque range alone.
         // #243: under the cull this is what was STAGED, not what the GPU kept -- the count that decides is in
@@ -434,15 +441,19 @@ public sealed unsafe partial class AlloyRenderer
     /// <c>invariant gl_Position</c> over the identical clip expression (<see cref="ClipExpr"/>), so equal is
     /// what they produce -- but LEQUAL is also correct when the prepass stood down, which EQUAL is not, and
     /// early-Z rejects the hidden fragments either way.</para></summary>
-    private static void OpaqueOwnedPass(int groups, Matrix4x4* vp, int* viewport, float near, float far)
+    private static void OpaqueOwnedPass(int opaqueEnd, Matrix4x4* vp, int* viewport, float near, float far)
     {
         Gl.DepthFunc(Gl.LEQUAL);
         // SAMPLES_PASSED covers the OPAQUE set alone, so the overdraw figure stays comparable with #119's
-        // baseline; the colour timer is ended after the blending classes (see DrawOwned), because "what does
-        // the Alloy colour work cost" is the question the [alloy] line exists to answer.
+        // baseline. #325: two calls so opaque and cutout time apart; the seam re-binds the indirect buffer,
+        // the slots and the program (one lit uniform re-send), and draws exactly the same batches.
         bool counting = _qSamples.Begin(Gl.SAMPLES_PASSED);
-        _colourTiming = _qColour.Begin(Gl.TIME_ELAPSED);
-        IssueColour(0, groups, vp, viewport, near, far);
+        GpuBegin(GpuTerm.Opaque);
+        IssueColour(0, _gCutoutStart, vp, viewport, near, far);
+        GpuEnd(GpuTerm.Opaque);
+        GpuBegin(GpuTerm.Cutout);
+        IssueColour(_gCutoutStart, opaqueEnd, vp, viewport, near, far);
+        GpuEnd(GpuTerm.Cutout);
         if (counting) _qSamples.End(Gl.SAMPLES_PASSED);
     }
 
