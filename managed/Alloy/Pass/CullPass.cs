@@ -539,7 +539,7 @@ internal static unsafe class CullPass
     /// plane distance is in world units and the sphere test is a plain compare. Row-major here means the
     /// combination is <c>clip = v * VP</c>, so the planes come off the COLUMNS -- the transpose of the form
     /// the paper writes for column-vector convention.</summary>
-    private static void Planes(float* m, float* p)
+    internal static void Planes(float* m, float* p)
     {
         // m[r*4+c] is row r, column c of the row-vector matrix: clip.c = sum_r v[r] * m[r*4+c].
         for (int i = 0; i < 6; i++)

@@ -687,6 +687,12 @@ public sealed unsafe partial class AlloyRenderer
             // above the walkmesh with its normals pointing down, so the toolset can transform the roof
             // without letting the builder collide with it. It must never be seen in game. roofknm dropped it.
             if (feat == SOWX_FEAT_ROOFKN && vAnchorZ > 100.0) discard;
+            // #330: the keyhole verdict FIRST. It used to sit at the very end, so every fragment inside the
+            // aperture paid the whole lit stage -- the cluster loop and the cube taps -- and then discarded;
+            // under a keyhole through stacked roofs that was every layer at every pixel of the hole. The
+            // probe capture never dissolves (a hole baked into the cube is permanent in every reflection).
+            float kh = uCapture != 0 ? 1.0 : SowxKeyhole(d.rot.z, vWorld, vDepth);
+            if (kh < 0.0) discard;
             int slots = int(d.pbr.w);
             // 22 = normal-map coverage: magenta where the material's map REACHED the shader, grey where it
             // did not. The one thing viz 7 cannot say, because a mesh normal and a mapped one paint the same
@@ -886,8 +892,6 @@ public sealed unsafe partial class AlloyRenderer
             // Both terms are camera-dependent, so the probe capture takes neither: a dissolve baked into the
             // cube is a permanent hole in every reflection the area ever shows.
             if (uCapture != 0) { frag = vec4(lit, 1.0); return; }
-            float kh = SowxKeyhole(d.rot.z, vWorld, vDepth);
-            if (kh < 0.0) discard;
             // #126: rot.w is the per-draw alpha multiplier -- the part's own alpha times the tile fade
             // factor. It reaches the framebuffer only where the class blends; the opaque set draws with
             // GL_BLEND off, so its alpha channel is written and ignored, exactly as before.

@@ -30,12 +30,14 @@ public sealed unsafe partial class AlloyRenderer
     private static int RouteParts()
     {
         int n = 0, nb = 0;
+        fixed (float* sph = _dSph)
+        {
         for (int c = (int)AlloyClass.Opaque; c <= (int)AlloyClass.Cutout; c++)
         {
             int nd = 0;   // _orderTmp is the enrollment radix's scratch, idle during a pass
             for (int k = _clsStart[c]; k < _clsEnd[c]; k++)
             {
-                if (!RouteLive(k, out int i, out IntPtr tri)) continue;
+                if (!RouteLive(k, sph, out int i, out IntPtr tri)) continue;
                 // The fade overlay, and the part's own animated alpha with it: while its tile fades, an opaque
                 // or cutout part IS a bucket-8 part -- the engine folds the tile's factor into the part's own
                 // alpha for the length of the draw (RenderDrawBucket @0x46d060, bucket 8 only) and draws it
@@ -44,7 +46,7 @@ public sealed unsafe partial class AlloyRenderer
                 // solid for up to an EnrollEvery cadence.
                 // #328: the tile term is kept apart -- it is the one alpha term the shadow side refuses on (a
                 // part fading by its OWN alpha still casts), and this is the frame's one chase of it.
-                float fade = PartTable.TileFadeFactor(tri);
+                float fade = TileFade(i, tri);
                 _oFading[i] = fade < 1f;
                 float alpha = PartAlpha(tri) * fade * AlloyCensus.GobAlphaMul(tri);
                 if (alpha < 1f)
@@ -57,9 +59,9 @@ public sealed unsafe partial class AlloyRenderer
         }
         for (int k = _clsStart[(int)AlloyClass.Blended]; k < _clsEnd[(int)AlloyClass.Blended]; k++)
         {
-            if (!RouteLive(k, out int i, out IntPtr tri)) continue;
+            if (!RouteLive(k, sph, out int i, out IntPtr tri)) continue;
             _blend[nb] = i;
-            _blendAlpha[nb] = LiveAlpha(tri);
+            _blendAlpha[nb] = LiveAlpha(i, tri);
             _blendKey[nb] = EyeDist2(i); nb++;
         }
         SortBlended(_blend, _blendKey, _blendAlpha, nb);
@@ -70,9 +72,9 @@ public sealed unsafe partial class AlloyRenderer
         // Add one if a map ever stacks a waterfall sheet in front of a pool.
         for (int k = _clsStart[(int)AlloyClass.Water]; k < _clsEnd[(int)AlloyClass.Water]; k++)
         {
-            if (!RouteLive(k, out int i, out IntPtr tri)) continue;
+            if (!RouteLive(k, sph, out int i, out IntPtr tri)) continue;
             _pass[n] = i; _passCls[n] = (byte)AlloyClass.Water;
-            _passAlpha[n] = LiveAlpha(tri);
+            _passAlpha[n] = LiveAlpha(i, tri);
             // #147: measured here rather than at enroll -- routing is where a water part is certainly live
             // and certainly has its node, and the registry ignores one it already holds.
             WaterBodies.Note(tri, _oNode[i]);
@@ -80,13 +82,14 @@ public sealed unsafe partial class AlloyRenderer
         }
         for (int k = _clsStart[(int)AlloyClass.Additive]; k < _clsEnd[(int)AlloyClass.Additive]; k++)
         {
-            if (!RouteLive(k, out int i, out IntPtr tri)) continue;
+            if (!RouteLive(k, sph, out int i, out IntPtr tri)) continue;
             _pass[n] = i; _passCls[n] = (byte)AlloyClass.Additive;
             // Additive fades too: the engine routes an additive part on a fading tile into bucket 8 like any
             // other, and IterSight suppresses it there, so a glow left at full brightness through a fade
             // would be ours to explain.
-            _passAlpha[n] = LiveAlpha(tri);
+            _passAlpha[n] = LiveAlpha(i, tri);
             n++;
+        }
         }
         return n;
     }
@@ -96,11 +99,15 @@ public sealed unsafe partial class AlloyRenderer
     /// dereference the frame makes from here on sits behind this verdict, so the staging walk does not
     /// re-check). Sound across the walk because both walks run inside one bracket on one thread, exactly
     /// as the blended sort's route-time <see cref="EyeDist2"/> chase already assumes.</summary>
-    private static bool RouteLive(int k, out int i, out IntPtr tri)
+    /// <para>#330: ...and behind the FRUSTUM GATE, which runs before the first dereference of the part. A
+    /// slot the engine did not visit and this pass cannot see keeps last frame's record untouched: nothing
+    /// the engine does to an off-screen part reaches it (see <see cref="RouteWanted"/>).</para>
+    private static bool RouteLive(int k, float* sph, out int i, out IntPtr tri)
     {
         i = _order[k];
         tri = _oTri[i];
         if (tri == IntPtr.Zero) { W(i, "skipped: slot vacated (revoked or class dropped)"); return false; }
+        if (!RouteWanted(i, sph)) { W(i, "skipped: off this pass's frustum, record kept"); return false; }
         if (!IdentityOk(i, tri))
         { _skipIdentity++; W(i, "skipped: identity changed -- revoked"); Revoke(i); return false; }
         return true;
@@ -203,12 +210,6 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
-    /// <summary>#124/#327: does the camera keyhole dissolve this part this frame -- lit, a feature that
-    /// keyholes, and the engine's aperture test says so. One engine call per part per pass: at route for
-    /// the opaque classes (the partition needs the answer), at staging for the rest.</summary>
-    private static bool Dissolves(int i, IntPtr tri)
-        => _oLit[i] && !ShaderFeatures.NoKeyholing((int)_oFeat[i * 4]) && PartTable.KeyholeDissolves(tri);
-
     /// <summary>The part's own alpha multiplier (part+0xa0), live: it is animated state, not enrollment
     /// state.</summary>
     private static float PartAlpha(IntPtr tri) => new PartRef(tri).Alpha;
@@ -217,8 +218,8 @@ public sealed unsafe partial class AlloyRenderer
     /// factor of the tile it stands on, and the instance's two multiplies. Every term is read live and none
     /// is cached at capture, which is what the creature case demands: a gob can fade a whole creature into
     /// the transparent run for a single frame and out again.</summary>
-    private static float LiveAlpha(IntPtr tri)
-        => PartAlpha(tri) * PartTable.TileFadeFactor(tri) * AlloyCensus.GobAlphaMul(tri);
+    private static float LiveAlpha(int i, IntPtr tri)
+        => PartAlpha(tri) * TileFade(i, tri) * AlloyCensus.GobAlphaMul(tri);
 
     /// <summary>Squared distance from THIS pass's eye to the part's world centre -- the blended sort key.
     /// Derived exactly as the caster cull derives it and for the same reason (live-verified there): a
@@ -476,6 +477,7 @@ public sealed unsafe partial class AlloyRenderer
         // this per-slot unstamp, fired on every re-tenant and every drifted keep, is the only signal that
         // _oVdo/_oItem may have been re-pointed under the cache.
         _cGen[i] = 0;
+        UnstampChase(i);
     }
 
     /// <summary>#242: this record moved and has to reach the GPU again. Overflow is not a silent drop -- it
@@ -560,7 +562,7 @@ public sealed unsafe partial class AlloyRenderer
             int cls = _passCls[k];
             // #129: never stamp what the frame cannot draw -- see _waterArmed. Ahead of the stale check
             // below because it is a decision about the PASS, not about this part.
-            if (cls == (int)AlloyClass.Water && !_waterArmed) continue;
+            if (cls == (int)AlloyClass.Water && !_waterArmed) { BreakChaseContinuity(); continue; }
             IntPtr tri = _oTri[i];
             if (tri == IntPtr.Zero) continue;
             var part = new PartRef(tri);
@@ -573,17 +575,11 @@ public sealed unsafe partial class AlloyRenderer
             // painted flat. #285: that skip is a HOLE, not a hand-back -- see `unlit-pass` on the [alloy]
             // line, which must read 0 on a pass that has a lighting rig at all.
             bool lit = _oLit[i];
-            if (lit && !lightingOn) { _skipNoLight++; W(i, "skipped: lighting off this pass"); continue; }
+            if (lit && !lightingOn) { _skipNoLight++; BreakChaseContinuity(); W(i, "skipped: lighting off this pass"); continue; }
             // #322: identity was verified (and a mismatch revoked) by RouteParts this pass -- every engine
             // read below sits behind that verdict, not behind a second copy of the same four compares.
-            // #128/#285: instance state no Alloy program can express, which since #285 is the SCENE TINT
-            // alone (the highlight is owned, the per-gob env override was already #121's). SKIPPED, not
-            // revoked: the state can last a single frame and revoking would spend a whole re-enrollment on
-            // it. The skip is a hole -- `instance-state` on the [alloy] line is how big.
             bool samp = (k & (ChaseEvery - 1)) == 0;
             long tChase = samp ? FrameZones.Now : 0;
-            if (!AlloyCensus.InstanceOwnable(tri))
-            { _skipGob++; _recEnroll[i] = 0; SetCastOk(i, false); W(i, "skipped: instance state unownable this pass"); continue; }
             // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
             // it into the blended run with the tile's factor folded into its alpha, which is what the engine
             // does with it in bucket 8 -- and bucket 8 is a bucket IterSight can suppress now.
@@ -839,7 +835,9 @@ public sealed unsafe partial class AlloyRenderer
                 // floats here, so both folds cost no stride growth and leave RecordSafe's vec4 count alone.
                 pf.Dissolve = dissolve; pf.Alpha = _passAlpha[k];
                 pf.HasModel = _oMx[i];
-                if (pf.HasModel) pf.Model = new NodeRef(_oNode[i]).Model;
+                bool newTenant = _recEnroll[i] != _oEnrollGen[i];
+                // #330: read off the engine only if it can have moved -- see ChaseModel.
+                if (pf.HasModel) pf.Model = ChaseModel(i, r, stale, newTenant);
                 pf.Lit = lit;
                 if (lit)
                 {
@@ -898,7 +896,6 @@ public sealed unsafe partial class AlloyRenderer
                 // tenant is the other true mover (the new part APPEARED in the views it stands in).
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
                 bool casterMoved = pf.HasModel && *(Matrix4x4*)r != pf.Model;
-                bool newTenant = _recEnroll[i] != _oEnrollGen[i];
                 rec |= WritePerFrame(r, in pf);
                 // #153: this record's textures as resident handles -- diffuse at 0, material slots 1..7 in
                 // the shader's macro order (slotTid[k] = material texture k+1). Only for lit records; unlit

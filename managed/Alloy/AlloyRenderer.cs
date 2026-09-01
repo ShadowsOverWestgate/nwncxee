@@ -381,10 +381,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>Parts whose material declared a normal map, and the subset whose map survived the per-slot
     /// re-fetch into the mask the lit stage samples on.</summary>
     private static long _nrmDeclared, _nrmBound;
-    /// <summary>#128/#285: Alloy parts NOT DRAWN this pass because their INSTANCE state went unownable --
-    /// the scene tint, and only that since #285 owned the highlight. Transient by nature, so it is a skip
-    /// rather than a revocation; and since #264 a skip is a hole, which is exactly why it is counted.</summary>
-    private static long _skipGob;
     /// <summary>#124's coverage number: Alloy parts the camera dissolves this pass. Before the fold these
     /// were the keyhole SKIP count -- same population, dropped from the frame; now they are drawn by the
     /// Alloy program with the dissolve folded in, so the before/after the ticket asks for is this one figure
@@ -851,7 +847,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // never arm on a broken contract: the misrender either predicts must not ship
         // #242: the split joins that chain for the same reason -- a record that stopped carrying a
         // per-frame field renders stale state and says nothing at all.
-        if (!SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log)
+        if (!SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !ChaseSelfCheck(log)
             || !ShaderContract.SelfCheck(log)) return;
         // NOT in the chain above: those two guard what reaches the screen, and this one guards a debug dump.
         // A regression in the canonicaliser should cost /framedump, not drop every user back to vanilla.
@@ -861,6 +857,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (!AlloyCensus.GobSelfCheck(log)) return;
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
+        ResolveChase(log);   // #330: the three engine sets the chase is bounded by; unresolved = unbounded
         _mtxStacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
         _runtime = (byte*)Native.Sym(SymbolMap.GlShaderRuntimeData);
         if (_runtime == null)
@@ -925,12 +922,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private const float DefLod = CullPass.DefLodPx;
     private const float DefSunBias = 0.06f;
     private const int DefViz = 0;
+    private const bool DefPoll = false;
 
     /// <summary>The Alloy pass's live dials, for the <c>/draw</c> echo and the arm-time line.</summary>
     internal static string DescribeTuning() =>
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
         $"viz {_lightViz}/{LightVizMax}  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  " +
-        $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px";
+        $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}";
 
     /// <summary>Live tuning setter behind <c>/draw</c>. Returns the old value, or NaN for an unknown key.
     /// <para>Same threading argument as <c>/light</c>: each dial is an independent field written from the
@@ -956,6 +954,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // #287: LOD selection, in pixels of projected radius. It rides the cull dispatch, so /draw cull 0
             // stands it down too -- this dial only says how aggressive it is while the cull is running.
             case "lod":      old = CullPass.LodPx; CullPass.LodPx = MathF.Max(v, 0f); break;
+            // #330: the bounded chase's A/B -- 1 re-reads every engine term every frame AND audits what the
+            // caches would have served (the poll-miss counters on the [alloy] line, which must read 0).
+            case "poll":     old = _fullPoll ? 1f : 0f; _fullPoll = v != 0f; break;
             default: return float.NaN;
         }
         // #242: a dial can change what a record MEANS (aotest fills a slot, viz changes nothing in the
@@ -971,6 +972,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
         _sunWorldBias = DefSunBias; _lightViz = DefViz; CullPass.Mode = DefCull; CullPass.LodPx = DefLod;
+        _fullPoll = DefPoll;
         // #242: AFTER the dials, the way Tune does it. /draw runs on the input thread, so a bump published
         // ahead of the assignments lets a staging walk rebuild against the OLD dial and stamp the NEW epoch
         // -- wrong until something else invalidates, worst case a whole enrollment away.
@@ -991,13 +993,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         bool li = _lighting, dp = _depthPrepass, ao = _aoTest;
         int cu = CullPass.Mode;
         float lp = CullPass.LodPx;
+        bool fp = _fullPoll;
         float cb = _sunWorldBias;
         int vz = _lightViz;
 
-        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull", "lod" })
+        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull", "lod", "poll" })
             E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
         E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1 && CullPass.Mode == 1
-          && CullPass.LodPx == 1f,
+          && CullPass.LodPx == 1f && _fullPoll,
           "every key lands on its own field");
         E(Tune("light", 0f) == 1f && !_lighting, "a boolean dial takes 0 and reports its old value as 1");
         E(Tune("viz", LightVizMax + 5f) == 1f && _lightViz == LightVizMax,
@@ -1007,16 +1010,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         ResetTuning();
         E(_lighting == DefLighting && _depthPrepass == DefPrepass && _aoTest == DefAoTest
           && _sunWorldBias == DefSunBias && _lightViz == DefViz && CullPass.Mode == DefCull
-          && CullPass.LodPx == DefLod,
+          && CullPass.LodPx == DefLod && _fullPoll == DefPoll,
           "reset returns every dial to its boot value");
         E(DescribeTuning().Contains("light") && DescribeTuning().Contains("prepass")
           && DescribeTuning().Contains("viz")
           && DescribeTuning().Contains("aotest") && DescribeTuning().Contains("csmbias")
-          && DescribeTuning().Contains("cull") && DescribeTuning().Contains("lod"),
+          && DescribeTuning().Contains("cull") && DescribeTuning().Contains("lod")
+          && DescribeTuning().Contains("poll"),
           "the echo names every key the command accepts");
 
         _lighting = li; _depthPrepass = dp; _aoTest = ao; _sunWorldBias = cb; _lightViz = vz;
-        CullPass.Mode = cu; CullPass.LodPx = lp;
+        CullPass.Mode = cu; CullPass.LodPx = lp; _fullPoll = fp;
         CullPass.SelfCheck(log);
         _log = quiet;
         log.Info(ok ? "AlloyRenderer.TuneSelfCheck: passed"
@@ -1222,6 +1226,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             ref SkyBox.Part p = ref SkyBox.At(i);
             p.Vao = SkyBox.Drawable(i) ? VdoSlot(p.Vdo) : -1;
         }
+        SampleEngineSets();   // #330: engine context, after AddPartsToDrawBuckets, before the first chase
         DrawOwned();
     }
 
@@ -1535,8 +1540,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        $" no-gl-id {(float)_skipTexNoId / _frames:F0}" +
                        $" not-owned {(float)_skipTexNotOwned / _frames:F0}" +
                        $" no-handle {(float)_skipTexNoHandle / _frames:F0}) ") +
-                   $"range {(float)_skipRange / _frames:F0} vao {(float)_skipVao / _frames:F0} " +
-                   $"instance-state {(float)_skipGob / _frames:F0}), " +
+                   $"range {(float)_skipRange / _frames:F0} vao {(float)_skipVao / _frames:F0}), " +
                    // The one split that answers "are characters Alloy's" without inference. Drawn ~0 with
                    // owned nonzero means every creature and placeable in view is a HOLE (#285): since #264
                    // there is no engine walk behind the skip, so nothing renders them at all.
@@ -1572,6 +1576,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // of ADR 0017 bought nothing, which no frame-time average would ever say out loud.
                    $"records {(float)_recWritten / _frames:F0}/frame written, " +
                    $"{(float)_recStable / _frames:F0} stable ({_recOwnCap} slots), " +
+                   // #330: how much of the engine chase the view bounded away, and the poll audit.
+                   ChaseNote() + ", " +
                    (_watchEnrolled == 0 ? "" :
                        $"dumptex {_watchEnrolled} enrolled, {(float)_watchSubmitted / _frames:F1} submitted/frame, " +
                        "") +
@@ -1636,7 +1642,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Beams.ResetPeriod();
         Particles.ResetPeriod();
         _watchSubmitted = 0;
-        _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = _skipGob = 0;
+        _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = 0;
+        ResetChasePeriod();
         _ownDissolve = 0; _ownFade = 0;
         _recWritten = 0; _recStable = 0;
         _nrmDeclared = _nrmBound = 0;

@@ -211,12 +211,17 @@ internal static unsafe class SceneWalk
         // above cannot reach it. The unculled BSPTraverse visits every node whether the camera can see it or
         // not, which is exactly the difference between enumerating the area and enumerating the frame.
         IntPtr root = *(IntPtr*)(scene + SceneBspRoot);
+        _walkingBsp = true;
         if (root != IntPtr.Zero)
             _bspTraverse(root, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnBspNode, IntPtr.Zero);
+        _walkingBsp = false;
 
         Sweep();
         _walkTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
     }
+
+    /// <summary>#330: the BSP traversal is in progress, so every record made now is BSP-filed.</summary>
+    private static bool _walkingBsp;
 
     [UnmanagedCallersOnly]
     private static void OnBspNode(IntPtr node, IntPtr ctx)
@@ -303,6 +308,7 @@ internal static unsafe class SceneWalk
         // expansion under a gob's tree carries its own +0x50 (CreateInstanceTreeR @0x43c6b0 is its sole
         // writer), and SpawnPartsForTile @0x46352b leaves it null outright.
         _pGob[e] = p.Gob.Ptr;
+        _pBsp[e] = _walkingBsp;
         _pWalkGen[e] = Gen;
         if (_pGob[e] != IntPtr.Zero) AlloyCensus._pInstRecorded++;
         // #137's identity, by vtable rather than by "which hook body is on the stack". A skinmesh is posed

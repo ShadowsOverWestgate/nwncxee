@@ -19,7 +19,7 @@ internal static class RenderCommands
     private const string ParticleKeys = "on|diag|soft|lit|viz|grid|guard|sort";
     // hdr is NOT here: it stands the whole Alloy frame down, which is a boot decision (config hdr=0).
     private const string PostKeys = "bloom|threshold|knee|tonemap|tmknee|softclip";
-    private const string DrawKeys = "light|prepass|viz|aotest|csmbias|cull|lod";
+    private const string DrawKeys = "light|prepass|viz|aotest|csmbias|cull|lod|poll";
     private const string WaterKeys = "on|tint|wave|ssr|foam|wind|speed|diag";
     private const string ProbeKeys = "on|gain|areawide";
 

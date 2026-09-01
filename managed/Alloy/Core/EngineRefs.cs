@@ -77,8 +77,22 @@ internal readonly unsafe ref struct MaterialRef
     /// <para>Null-safe on the RECEIVER, like every other accessor here: a null material has no textures, and
     /// the alternative is the caller's own ternary at each of the dozen call sites. It is not null-safe on
     /// the RESULT -- that is what <see cref="TextureRef.IsNull"/> is for.</para></summary>
+    /// <summary>#330: <c>Material::GetTexture(int)</c> @0x4c5810 as the two loads it is -- the
+    /// SharedMaterial's slot table wins when it holds one (<c>shared + 8 + (slot+13)*0x10</c>), else the
+    /// material's own slot at <c>mat + slot*0x10</c>. It was a <c>calli</c> paying a GC transition once per
+    /// owned part per frame, and the Chase bracket is where that showed.</summary>
     internal TextureRef Texture(int slot)
-        => new(_p == IntPtr.Zero ? IntPtr.Zero : (IntPtr)PartTable._getTexture(_p, slot));
+    {
+        if (_p == IntPtr.Zero) return new(IntPtr.Zero);
+        IntPtr shared = *(IntPtr*)(_p + SceneLayout.MatShared);
+        if (shared != IntPtr.Zero)
+        {
+            IntPtr over = *(IntPtr*)(shared + SharedSlot0 + slot * MatSlotStride);
+            if (over != IntPtr.Zero) return new(over);
+        }
+        return new(*(IntPtr*)(_p + slot * MatSlotStride));
+    }
+    private const int MatSlotStride = 0x10, SharedSlot0 = 8 + 13 * MatSlotStride;
 }
 
 internal readonly unsafe ref struct SharedRef

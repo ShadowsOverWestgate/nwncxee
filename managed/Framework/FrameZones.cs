@@ -52,7 +52,7 @@ public static class FrameZones
         /// step 1: it attributes the Build monolith before any phase boundary is drawn.</summary>
         Restage,
         /// <summary>#324: inside <see cref="Restage"/> (NOT subtracted from it): the two spans of the staging
-        /// walk that hold its engine-pointer derefs -- instance state, dissolve, the texture re-fetches, the
+        /// walk that hold its engine-pointer derefs -- dissolve, the texture re-fetches, the
         /// VDO item range, the node matrix, the colour triples, the water body -- together with the owned
         /// bookkeeping interleaved with them. An UPPER BOUND on the unmovable half, so Restage minus Chase is
         /// a lower bound on what a GPU pass could take. SAMPLED 1-in-<c>AlloyRenderer.ChaseEvery</c> parts

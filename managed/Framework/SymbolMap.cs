@@ -356,6 +356,19 @@ internal static unsafe class SymbolMap
     /// <c>Scene::AddPartsToDrawBuckets</c> before RSP and reset by <c>ClearBuckets</c> after, so it is
     /// already correct when the shim reads it. Data symbol; read only.</summary>
     public const string TriggerBucket = "triggerbucket";
+    /// <summary>#330: <c>gobbucket</c> @0x19abbf0 -- the engine's per-frame VISIBLE gob list, a
+    /// <c>CExoArrayList&lt;Gob*&gt;</c> (items at +0, count at +8). <c>ManageSceneBSP</c> @0x47fa80 refills it from
+    /// the Scene's gobs through <c>Gob::IsInViewVolume</c>, and <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0
+    /// walks it into <c>AddPartsTreeToDrawBuckets</c> @0x460880 -- the ONLY writer of an instanced part's
+    /// VertexPrimitive matrix. So at the FadeDoors anchor it is exactly the set of gobs whose parts can have
+    /// moved this frame. Data symbol; read only.</summary>
+    public const string GobBucket = "gobbucket";
+    /// <summary>#330: <c>fadingoutbucket</c> @0x19abba0 and <c>fadinginbucket</c> @0x19abbb0 -- the tiles whose
+    /// fade factor is being stepped this frame. <c>HandleFadingOutBucket</c> @0x47f870 /
+    /// <c>HandleFadingInBucket</c> @0x47f670 write <c>TileData+0x74</c> for each member from
+    /// <c>ManageSceneBSP</c>, which commits +0x74 into the live +0x70 at its top on the next frame. Same
+    /// list layout as <see cref="GobBucket"/>. Data symbols; read only.</summary>
+    public const string FadingOutBucket = "fadingoutbucket", FadingInBucket = "fadinginbucket";
     // ---- the engine draw funnel Alloy sits on, Linux-only -> DrawFunnelService stands down on Windows ----
     /// <summary>#125: Scene::RenderSkyBoxes() @0x466910 -- the whole per-area skybox draw, called from
     /// RenderSinglePass between buckets 0 and 1. Three gobs (current, cross-fading, skyfade) rendered under

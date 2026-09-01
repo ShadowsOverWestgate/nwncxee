@@ -97,6 +97,7 @@ public sealed unsafe partial class AlloyRenderer
         // every froxel input comes off THIS pass's projection, never the capture side (see TryPerspective)
         bool perspective = AlloyLights.TryPerspective((float*)&proj, out float p00, out float p11,
                                                       out float near, out float far);
+        SetPassFrustum((float*)&vp, perspective);   // #330: the route gate's planes, this pass's own
         // #120: this pass's eye, for the specular view vector. Same row-vector convention as above, so the
         // inverse view's translation IS the eye. Pass-local state, read off this pass's own stacks -- the
         // SCENE camera is not derived here any more (#257 reads it whole at the anchor), so there is no

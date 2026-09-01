@@ -36,8 +36,9 @@ internal static unsafe class PartTable
     /// <summary>Tile-fade state and factor (the TileData* hangs off <see cref="PartTile"/>). #124 corrected
     /// both: the factor is at +0x70, NOT +0x8c below it -- <c>TileData::TileData</c> @0x43f050 inits three
     /// separate floats to 1.0 and the original RE picked the wrong one, so this test was permanently false.
-    /// <c>ProcessTriMeshParts</c> @0x480d40 is the reader: +0x70 is this frame's factor (+0x74 is the pending
-    /// one <c>Scene::ResetTileFading</c> swaps in), and +0xc0 is the state enum.
+    /// <c>ProcessTriMeshParts</c> @0x480d40 is the reader: +0x70 is this frame's factor, +0x74 the pending one
+    /// <c>HandleFadingIn/OutBucket</c> step and the top of <c>ManageSceneBSP</c> @0x47fa80 commits (#330;
+    /// <c>Scene::ResetTileFading</c> is a dead export), and +0xc0 is the state enum.
     /// <para>A tile that is fading leaves the opaque class outright -- ProcessTriMeshParts routes it into
     /// <c>fadebuckets</c>, and <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 puts those in bucket 8. Since
     /// #126 bucket 8 is suppressible and the fade is a per-frame overlay on the Alloy blended class
@@ -55,8 +56,20 @@ internal static unsafe class PartTable
     internal const int MaxPartsBits = 18, MaxParts = 1 << MaxPartsBits;
 
 
-    internal static delegate* unmanaged<IntPtr, IntPtr, byte> _keyhole;
+    /// <summary>#330: <c>SuppressGCTransition</c> -- the callee is ~60 instructions of pure field reads
+    /// (decompiled @0x4a6f70: three camera fields, three part fields, <c>BoxAbovePlane</c>) and it is asked
+    /// once per lit part per frame, so the GC transition around a plain <c>calli</c> was a real share of the
+    /// Scan bracket. Legal because it never blocks, never calls back and never throws.</summary>
+    internal static delegate* unmanaged[SuppressGCTransition]<IntPtr, IntPtr, byte> _keyhole;
     internal static IntPtr _camSlot;   // &CurrentCamera; live CAurCamera* is *_camSlot
+    /// <summary>The live <c>CAurCamera*</c>, or zero before the symbol resolved or while no camera renders.</summary>
+    internal static IntPtr CurrentCamera => _camSlot == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)_camSlot;
+    /// <summary>#330: every camera field <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 reads -- the enable
+    /// byte at +0xe50, the aperture plane at +0xe54..+0xe60 and the height cut at +0xe64 -- as one 24-byte
+    /// span (the 3 bytes of padding after the enable byte ride along; comparing more is only more
+    /// conservative). <c>Camera::RenderScene</c> @0x4a7920 is their only writer, every frame, ahead of the
+    /// FadeDoors anchor, so a snapshot compare at the anchor is a camera-dirty bit with no hook.</summary>
+    internal const int CamKeyholeState = 0xe50, CamKeyholeWords = 3;
 
     internal static delegate* unmanaged<IntPtr, byte> _isOpaque, _hasEnvMap, _hasBumpyShiny;
     internal static delegate* unmanaged<IntPtr, int, long> _getTexture;
@@ -82,7 +95,7 @@ internal static unsafe class PartTable
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _bumpyWater = (int*)Native.Sym(SymbolMap.EnableBumpyWater);
-        _keyhole = (delegate* unmanaged<IntPtr, IntPtr, byte>)Native.Sym(SymbolMap.GetCanKeyholeDissolve);
+        _keyhole = (delegate* unmanaged[SuppressGCTransition]<IntPtr, IntPtr, byte>)Native.Sym(SymbolMap.GetCanKeyholeDissolve);
         _camSlot = Native.Sym(SymbolMap.CurrentCamera);
         return _isOpaque != null && _hasEnvMap != null && _hasBumpyShiny != null && _getTexture != null && _primTable != null;
     }
@@ -163,6 +176,10 @@ internal static unsafe class PartTable
     /// saw them -- a multi-draw creature part dies at Complete as "multidraw-or-unindexed" -- and a dead
     /// entry's part pointer must never be dereferenced to get it.</summary>
     internal static readonly IntPtr[] _pGob = new IntPtr[MaxParts];
+    /// <summary>#330: the walk reached this part through the BSP's tri-mesh lists, not a gob tree -- the
+    /// mesh-bucket loop of <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 rewrites its matrix (when its node
+    /// flags or a gob say so) whether or not any gob is in view.</summary>
+    internal static readonly bool[] _pBsp = new bool[MaxParts];
 
     /// <summary>Bumped on every table wipe: entry indices held elsewhere are stale from that moment.</summary>
     internal static int TableGen;
@@ -271,8 +288,24 @@ internal static unsafe class PartTable
     internal static bool KeyholeDissolves(IntPtr tri)
     {
         if (_keyhole == null || _camSlot == IntPtr.Zero) return false;
-        IntPtr cam = *(IntPtr*)_camSlot;
+        IntPtr cam = CurrentCamera;
         return cam != IntPtr.Zero && _keyhole(cam, tri) != 0;
+    }
+
+    /// <summary>#330: has the keyhole camera state moved since <paramref name="key"/> was last taken? Compares
+    /// the live camera pointer plus its <see cref="CamKeyholeState"/> words against the four-word key and
+    /// refreshes it. A null camera keys as all-zero, so the verdicts cached under a real camera do not
+    /// survive its loss. Pure in its inputs, which is what the self-check exercises with a fake camera block.</summary>
+    internal static bool KeyholeCameraMoved(IntPtr cam, ulong* key)
+    {
+        ulong* live = stackalloc ulong[CamKeyholeWords + 1];
+        live[0] = (ulong)cam;
+        for (int w = 0; w < CamKeyholeWords; w++)
+            live[1 + w] = cam == IntPtr.Zero ? 0 : *(ulong*)(cam + CamKeyholeState + w * 8);
+        bool moved = false;
+        for (int w = 0; w <= CamKeyholeWords; w++)
+            if (key[w] != live[w]) { key[w] = live[w]; moved = true; }
+        return moved;
     }
 
     internal static int Find(IntPtr part)

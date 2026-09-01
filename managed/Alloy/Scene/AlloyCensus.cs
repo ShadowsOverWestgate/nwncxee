@@ -18,7 +18,7 @@ namespace Sowx.Alloy;
 /// passes (through the candidate feeds) and by <see cref="BucketGate"/> (through the columns), and it is
 /// entirely independent of which pass, if any, ends up drawing the part.</para>
 /// <para>Cold by construction: one call per table slot per enrollment, on a 60-frame cadence. The two
-/// exceptions are named at their declarations (<see cref="InstanceOwnable"/> and the gob folds, which the
+/// exceptions are named at their declarations (<see cref="GobUnownable"/> and the gob folds, which the
 /// Alloy draw loop calls per part per frame) and allocate nothing.</para></summary>
 internal static unsafe class AlloyCensus
 {
@@ -425,7 +425,10 @@ internal static unsafe class AlloyCensus
     /// <para>ponytail: RenderEnvironmentMapped also passes <c>part+0xa0 * gob+0x108</c> as the ambient
     /// intensity to <c>SetPixelShaderAmbientColor</c> -- the reflection's STRENGTH. Not reproduced; the owned
     /// record stages ambient.w as 1. Fold it into that slot if instanced content ever reads too shiny.</para></para>
-    /// Cold at enrollment, hot once per Alloy part per frame via <see cref="InstanceOwnable"/>.</summary>
+    /// Cold, at enrollment only. #330: the per-frame re-ask is gone -- <c>gob+0x19</c> is the SKYFADE flag,
+    /// written by <c>Gob::Gob</c> (0) and <c>Scene::SetSkyFade</c> @0x55e2b0 (1, once per area load on the
+    /// <c>skyfade1</c> gob before it has parts) and never cleared, so the enrollment refusal is the whole
+    /// answer.</summary>
     internal static bool GobUnownable(IntPtr gob)
     {
         var g = new GobRef(gob);
@@ -473,17 +476,6 @@ internal static unsafe class AlloyCensus
         return new System.Numerics.Vector3(e[0], e[1], e[2]);
     }
 
-    /// <summary>Hot (once per Alloy part per frame): may this part's instance still be drawn by the owned
-    /// pass at all? A part with no gob trivially may, which is the tile case and the only load most calls do.
-    /// <para>The state this asks about is TRANSIENT, so the draw loop SKIPS on a false rather than revoking:
-    /// a revoke would spend a full re-enrollment on a state that can last one frame. #285: a skip is a HOLE
-    /// now, not a hand-back -- nothing draws what this refuses -- which is why the highlight left
-    /// <see cref="GobUnownable"/> and only the scene tint is still worth the hole.</para></summary>
-    internal static bool InstanceOwnable(IntPtr part)
-    {
-        IntPtr gob = new PartRef(part).Gob.Ptr;
-        return gob == IntPtr.Zero || !GobUnownable(gob);
-    }
 
 
 
