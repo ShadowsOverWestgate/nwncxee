@@ -34,7 +34,11 @@ public sealed unsafe partial class AlloyRenderer
             // blended. So does this pass. Reading the part alpha live here (rather than trusting the class
             // from the last enrollment) is also what keeps a part whose alpha animated below 1 from standing
             // solid for up to an EnrollEvery cadence.
-            float alpha = LiveAlpha(tri);
+            // #328: the tile term is kept apart -- it is the one alpha term the shadow side refuses on (a
+            // part fading by its OWN alpha still casts), and this is the frame's one chase of it.
+            float fade = PartTable.TileFadeFactor(tri);
+            _oFading[i] = fade < 1f;
+            float alpha = PartAlpha(tri) * fade * AlloyCensus.GobAlphaMul(tri);
             if (alpha >= 1f) { _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; n++; continue; }
             _ownFade++;
             _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = EyeDist2(i); nb++;
@@ -548,7 +552,7 @@ public sealed unsafe partial class AlloyRenderer
             bool samp = (k & (ChaseEvery - 1)) == 0;
             long tChase = samp ? FrameZones.Now : 0;
             if (!AlloyCensus.InstanceOwnable(tri))
-            { _skipGob++; _recEnroll[i] = 0; W(i, "skipped: instance state unownable this pass"); continue; }
+            { _skipGob++; _recEnroll[i] = 0; SetCastOk(i, false); W(i, "skipped: instance state unownable this pass"); continue; }
             // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
             // it into the blended run with the tile's factor folded into its alpha, which is what the engine
             // does with it in bucket 8 -- and bucket 8 is a bucket IterSight can suppress now.
@@ -587,7 +591,7 @@ public sealed unsafe partial class AlloyRenderer
             // nothing draws casts nothing. The stale rebuild on return stamps it a mover (newTenant), so
             // the views it re-enters re-bake. Cadenced with the colour reads -- the mdl is only chased on a
             // colour frame, so its absence is only observable then.
-            if (lit && colour && mdl == IntPtr.Zero) { _skipNoMdl++; _recEnroll[i] = 0; W(i, "skipped: no mdl node"); continue; }
+            if (lit && colour && mdl == IntPtr.Zero) { _skipNoMdl++; _recEnroll[i] = 0; SetCastOk(i, false); W(i, "skipped: no mdl node"); continue; }
 
             var mat = new MaterialRef(_oMat[i]);
             int tid, slots;
@@ -604,7 +608,7 @@ public sealed unsafe partial class AlloyRenderer
                 // bindless handle. That is the ADR 0017 split's per-frame half -- the fetch stays, the two
                 // hash probes behind it do not.
                 var aur = mat.Texture(0);
-                if (aur.IsNull) { _skipTex++; _skipTexNone++; _recEnroll[i] = 0; W(i, "skipped: no diffuse texture"); continue; }
+                if (aur.IsNull) { _skipTex++; _skipTexNone++; _recEnroll[i] = 0; SetCastOk(i, false); W(i, "skipped: no diffuse texture"); continue; }
                 texDirty = stale || aur.Ptr != _recAur[i];
                 // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
                 // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
@@ -616,7 +620,7 @@ public sealed unsafe partial class AlloyRenderer
                 else
                 {
                     tid = aur.OwnedTid();
-                    if (tid == 0) { _skipTex++; _skipTexNoId++; _recEnroll[i] = 0; W(i, "skipped: diffuse has no GL id"); continue; }
+                    if (tid == 0) { _skipTex++; _skipTexNoId++; _recEnroll[i] = 0; SetCastOk(i, false); W(i, "skipped: diffuse has no GL id"); continue; }
                     // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
                     // engine texture is a handle on an object the engine may delete or re-upload under us,
                     // which is exactly the corruption this fixes -- so a part whose copy was refused (a
@@ -631,7 +635,7 @@ public sealed unsafe partial class AlloyRenderer
                         bool owned = OwnedTextures.IsOwned(tid);
                         if (!owned || HandleFor(tid) == 0)
                         {
-                            _skipTex++; _recEnroll[i] = 0;
+                            _skipTex++; _recEnroll[i] = 0; SetCastOk(i, false);
                             if (owned) _skipTexNoHandle++; else _skipTexNotOwned++;
                             TexSkipDiag(owned, tid, aur);
                             W(i, owned ? "skipped: diffuse has no bindless handle"
@@ -700,9 +704,9 @@ public sealed unsafe partial class AlloyRenderer
                 int item = _oItem[src];
                 if (elem == 0 || vert == 0 || item < 0
                     || item >= vdo.ElemCount || item >= vdo.VertCount)
-                { _skipRange++; UnstampRecord(i); W(i, "skipped: item out of range"); continue; }
+                { _skipRange++; UnstampRecord(i); SetCastOk(i, false); W(i, "skipped: item out of range"); continue; }
                 idxCount = *(int*)(elem + item * 8 + 4);
-                if (idxCount <= 0) { _skipRange++; UnstampRecord(i); W(i, "skipped: empty index range"); continue; }
+                if (idxCount <= 0) { _skipRange++; UnstampRecord(i); SetCastOk(i, false); W(i, "skipped: empty index range"); continue; }
                 _cIdx[i] = idxCount;
                 _cOff[i] = (nint)((long)(uint)*(int*)(elem + item * 8) * 2);
                 _cBase[i] = *(int*)(vert + item * 8);
@@ -711,7 +715,7 @@ public sealed unsafe partial class AlloyRenderer
 
             if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
             int v = _oVao[src];
-            if (!EnsureVao(v)) { _skipVao++; UnstampRecord(i); W(i, "skipped: no VAO"); continue; }
+            if (!EnsureVao(v)) { _skipVao++; UnstampRecord(i); SetCastOk(i, false); W(i, "skipped: no VAO"); continue; }
             uint mode = _primTable[_oPrim[i]];
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
             // but so the depth prepass can drop a whole batch: a displacing feature must not write its
@@ -878,6 +882,9 @@ public sealed unsafe partial class AlloyRenderer
                 _recGen[i] = _recEpoch; _recFrame[i] = _frameSeq; _recEnroll[i] = _oEnrollGen[i];
                 // #302: a LEVEL the shadow pass compares against _recFrame, never an edge it consumes.
                 if (casterMoved || newTenant) _recMovedAt[i] = _frameSeq;
+                // #328: ...and the admission level beside it, on the same edge: a record landed for this
+                // tenant, so the slot casts unless its tile is fading or its class cannot write depth.
+                SetCastOk(i, !_oFading[i] && _oCls[i] <= (byte)AlloyClass.Cutout);
             }
             // #287: ...and after the record block, so the extent is measured on the sphere this frame wrote.
             if (cls <= (int)AlloyClass.Cutout)

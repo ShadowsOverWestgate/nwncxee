@@ -29,6 +29,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void FreeSlot(int i)
     {
         _oTri[i] = IntPtr.Zero;
+        SetCastOk(i, false);   // #328: a vacated slot casts nothing, and the shadow side re-collects on it
         _ownLive--;
         _freeSlots[_freeCount++] = i;
     }
@@ -181,6 +182,7 @@ public sealed unsafe partial class AlloyRenderer
         // changes -- the same-frame shadow bracket runs before the record rebuild, and must not refuse a
         // still world. The tenants that survive are found through the hash, seated in their old slots, and
         // keep their old stamp.
+        int orderBefore = _orderCount;
         _enrollGen++;
         HashLiveSlots();
         Array.Clear(_sortCount, 0, MaxVdos * 4);
@@ -266,6 +268,10 @@ public sealed unsafe partial class AlloyRenderer
             bool drifted = kept && (_oMat[i] != c.Mat || _oNode[i] != c.Node || _oVdo[i] != c.Vdo
                 || _oItem[i] != c.Item || _oRotBits[i] != c.RotBits || _oMx[i] != c.Mx || _oLit[i] != lit);
             if (!kept || drifted) UnstampRecord(i);
+            // #328: a new or drifted tenant has no record the bake may trust until the next write lands
+            // one; a kept tenant whose class moved changes what the collect cached about it.
+            if (!kept || drifted) SetCastOk(i, false);
+            else if (_oCls[i] != (byte)c.Cls) CasterGen++;
             // A kept tenant whose identity fields drifted may not be the same part at all -- a freed
             // PartTriMesh recycled at the same address inside one frame window would otherwise inherit the
             // dead part's record with no vanish, appear, or move ever reaching the shadow side. Drift is
@@ -321,7 +327,7 @@ public sealed unsafe partial class AlloyRenderer
                 bool moved = oldSlots != _oSlots[i];
                 for (int k = 0; k < 8 && !moved; k++) moved = keep[k] != _oParam[po + k];
                 for (int k = 0; k < 4 && !moved; k++) moved = keep[8 + k] != _oFeat[fo + k];
-                if (moved) UnstampRecord(i);
+                if (moved) { UnstampRecord(i); CasterGen++; }   // #328: the env-alpha bit rides _oSlots
             }
             float rad = BitConverter.Int32BitsToSingle(c.RotBits) * DegToRad;
             _oCos[i] = MathF.Cos(rad); _oSin[i] = MathF.Sin(rad);
@@ -399,6 +405,9 @@ public sealed unsafe partial class AlloyRenderer
         // story left is the part-table wipe -- dead pointers everywhere, every slot vacated at once -- and
         // that keeps the blanket.
         if (tableWiped) CasterPass.ShadowInvalidate();
+        // #328: a wipe reseats every slot without a FreeSlot, and a population change is a set change
+        // whatever the per-slot stamps say -- both are re-collect edges for the shadow side.
+        if (tableWiped || _orderCount != orderBefore) CasterGen++;
 
         // #302: there is ONE enrollment now. The shadow pass walks this same table, so an instance that
         // changes hands changes hands on both sides in the same breath -- the two counters, and #128's

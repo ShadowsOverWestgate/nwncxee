@@ -422,6 +422,16 @@ public sealed unsafe class CasterPass : IExtenderService
     /// follows. Submit uses the split to report what a view actually took.</summary>
     private static int _liveCreatures;
     private static int _liveCount;
+    /// <summary>#328: what the standing list was collected under -- Alloy's caster generation and record
+    /// epoch, and the frame. While all three hold, a frame walks the list (<see cref="Refresh"/>) instead of
+    /// the world; <c>_collectSeq</c> counts collects so the gather's staging knows when its copy went stale.
+    /// -1 = no list (a repack or release dropped it).</summary>
+    private static int _liveGen = -1, _liveEpoch = -1, _collectedAt = -1, _collectSeq;
+    /// <summary>The collect the gather staging was built from, its staged count, and its masked count (a
+    /// period counter the standing staging re-adds per frame).</summary>
+    private static int _gCollectSeq = -1, _gN, _gMasked;
+    /// <summary>Collects this period, for the [casters] line.</summary>
+    private static int _collects;
 
     /// <summary>Live casters summed over the period. Reported ALONGSIDE the mover count, because the two
     /// being equal is a bug with no other symptom: it means the still world is not in the list the bake
@@ -610,15 +620,15 @@ public sealed unsafe class CasterPass : IExtenderService
     private const int RepackPriority = 20;
     private static IntPtr* _repackSlot;
 
-    /// <summary>Repack observer. #302 left this pass no cached index ranges to invalidate -- Collect re-reads
-    /// them from Alloy's own VDO tables every frame -- but the LIVE list and the gather's uploaded staging are
-    /// both copies of ranges that have just moved, so both are dropped rather than submitted from.</summary>
+    /// <summary>Repack observer. The live list and the gather's uploaded staging are both copies of index
+    /// ranges that have just moved, so both are dropped rather than submitted from -- and #328 makes the
+    /// drop the re-collect edge, since the list otherwise stands across frames.</summary>
     [UnmanagedCallersOnly]
     private static void OnVdoRepack(IntPtr vdo)
     {
         var next = (delegate* unmanaged<IntPtr, void>)*_repackSlot;
         if (next != null) next(vdo);
-        _liveCount = 0; _liveCreatures = 0;
+        _liveCount = 0; _liveCreatures = 0; _liveGen = -1;
         CasterGather.Stand();
     }
 
@@ -810,6 +820,26 @@ public sealed unsafe class CasterPass : IExtenderService
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: the vanish sweep misses a caster that stopped casting (frozen shadows)"); }
         }
         if (ok)
+        {   // #328: the predicate is ONE function for the full collect and the standing-list refresh. Pin
+            // what it must say: a still caster is live but not a mover; one that starts moving is dynamic
+            // AND a static-set event; one that keeps moving is dynamic only; an appearance is an event.
+            _frameSeq = 9; _moverCount = _dMoverCount = _sMoverCount = 0;
+            _dynStamp[5] = 0; _dynStamp[6] = 0; _dynStamp[7] = 8;
+            Admit(0, 5, skinned: false, appeared: false, recMoved: false, dangly: false, vDirty: false);
+            Admit(1, 6, skinned: false, appeared: false, recMoved: true, dangly: false, vDirty: false);
+            Admit(2, 7, skinned: false, appeared: false, recMoved: true, dangly: false, vDirty: false);
+            Admit(3, 8, skinned: false, appeared: true, recMoved: false, dangly: false, vDirty: false);
+            bool pred = _moverCount == 3 && _moverIdx[0] == 1 && _moverIdx[1] == 2 && _moverIdx[2] == 3
+                        && _dMoverCount == 2 && _dMoverIdx[0] == 1 && _dMoverIdx[1] == 2
+                        && _sMoverCount == 2 && _sMoverIdx[0] == 1 && _sMoverIdx[1] == 3
+                        && !_liveDyn[0] && _liveDyn[1] && _liveStamp[8] == 9;
+            _frameSeq = 0; _moverCount = _dMoverCount = _sMoverCount = 0; _mvMatrix = 0; _mvAppear = 0;
+            for (int q = 5; q <= 8; q++) { _dynStamp[q] = 0; _liveStamp[q] = 0; }
+            _liveDyn[1] = _liveDyn[2] = false;
+            if (!pred)
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the mover predicate misclassifies a caster (a shadow that stops tracking, or a static page that never re-bakes)"); }
+        }
+        if (ok)
         {   // #286's staging, against what the dispatch and the draw stages read back out of it. Not a GL
             // call in sight: this is a memory layout shared with GLSL, and a field one slot over is a caster
             // baking at its neighbour's geometry.
@@ -830,7 +860,7 @@ public sealed unsafe class CasterPass : IExtenderService
                         && src[5] == 0 && src[6] == 0
                         && src[CasterGather.SrcUints] == 31
                         && src[CasterGather.SrcUints + 3] == 4101 && src[CasterGather.SrcUints + 4] == 1
-                        && src[CasterGather.SrcUints + 5] == 1 && src[CasterGather.SrcUints + 6] == 1
+                        && src[CasterGather.SrcUints + 5] == 1 && src[CasterGather.SrcUints + CasterGather.SetFlagWord] == 1
                         && CasterGather.SrcUints == 7 && CasterGather.CmdBytes == 20;
             _liveCreatures = 0; _liveCount = 0; _liveDyn[0] = false; _liveDyn[1] = false;
             if (!pack)
@@ -895,9 +925,14 @@ public sealed unsafe class CasterPass : IExtenderService
         // same bones the colour pass will draw with -- self-shadow flicker was the two disagreeing by one
         // frame. Before Collect, which reads the bone slots this assigns.
         AlloyRenderer.ShadowPose();
-        // Collect FIRST and unconditionally: resolving the world is a per-frame fact, not a property of any
-        // one view, and #94/#95 submit several views off the one collect.
-        Collect();
+        // Collect FIRST: resolving the world is a per-frame fact, not a property of any one view, and #94/#95
+        // submit several views off the one collect. #328: the WORLD is re-collected only on an edge -- a
+        // caster-generation or record-epoch bump, a repack or release (both reset the generation), or a
+        // frame the bracket skipped (every stamp would read as an appearance). Every other frame walks the
+        // standing list for its movers, which is two orders of magnitude fewer than the casters.
+        bool fresh = _liveGen == AlloyRenderer.CasterGen && _liveEpoch == AlloyRenderer.RecordEpoch
+                     && _collectedAt == _frameSeq - 1;
+        if (!fresh || !Refresh()) Collect();
 
         // The sun is the only view with an exterior precondition. The cubes light interiors -- which is where
         // the AC lives (torchlight occluded by walls) -- so they must NOT sit behind this gate.
@@ -1475,6 +1510,10 @@ public sealed unsafe class CasterPass : IExtenderService
                    // it: a still caster still casts. The two numbers meeting is the #241 regression.
                    $" out of {(float)_liveSum / _frames:F1} live " +
                    $"({(float)(_liveSum - _moverSum) / _frames:F1} still)" +
+                   // #328: the list is re-collected on a world edge and walked in between. This is the one
+                   // number that tells a slow refresh from a churning edge (a fade, a flapping skip) when
+                   // Bake reads high: it should be a few per period in a settled area.
+                   $", the world re-collected {_collects} of {_frames} frames" +
                    $", caster selection in compute over the shared SowxCullSphere bounds " +
                    $"(cull {(CasterGather.Mode != 0 ? "on" : "OFF -- /shadow gather 1")})" +
                    (CasterGather.Views > 0
@@ -1512,7 +1551,7 @@ public sealed unsafe class CasterPass : IExtenderService
         CasterGather.LayerDispatches = 0; CasterGather.LayerViews = 0;
         Array.Clear(_bakeWhy);
         _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _noRecordSum = 0;
-        _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0;
+        _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0; _collects = 0;
         CasterGather.Views = 0; CasterGather.Batches = 0;
         CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0;
         CasterGather.UploadsSkipped = 0; CasterGather.Uploads = 0;
@@ -1573,7 +1612,7 @@ public sealed unsafe class CasterPass : IExtenderService
         bool any = _prevCount > 0 || _liveCount > 0 || CascadeCount > 0 || CubeCount > 0;
         _invalidate = true; _moverCount = 0; _ghostCount = 0;
         _prevCount = 0;
-        _liveCount = 0; _liveCreatures = 0;
+        _liveCount = 0; _liveCreatures = 0; _liveGen = -1;
         CasterGather.Stand();
         CascadeCount = 0; CubeCount = 0;   // the maps describe a world that just went away; stop the receiver sampling them
         if (any) _log?.Info($"CasterPass: caster set released ({why})");
@@ -1999,40 +2038,17 @@ public sealed unsafe class CasterPass : IExtenderService
                 // diffuse did not resolve THIS frame casts solid, and this is the number that says how often.
                 if (_liveTex[live] == 0 && !f.Skinned && AlloyRenderer.VdoHasUv(f.Vao)) _maskNoTex++;
                 _liveCut[live] = f.EnvAlpha ? EnvAlphaDiscard : CutoutDiscard;
-                // Counted by REASON, not just totalled: "no improvement" and "every caster is a mover" look
-                // identical in a skip count, and which term saturates decides where the next fix goes.
-                // A still caster is STILL A CASTER -- it stays in the list and bakes; it merely does not
-                // invalidate the views it stands in.
-                bool mover = true;
                 // Review: a caster ABSENT last frame is a mover on return, whatever its record says -- a
                 // transient TryRange or VAO failure longer than the one-frame ghost+hadMover cover would
                 // otherwise re-appear into views that never re-bake its shadow back.
                 bool appeared = _liveStamp[slot] != _frameSeq - 1;
-                if (f.Skinned) _mvBone++;
-                else if (appeared) _mvAppear++;
-                else if (f.RecMoved) _mvMatrix++;
-                else if (f.Dangly) _mvDangly++;
-                else if (_vDirty[f.Vao]) _mvVertex++;
-                else mover = false;
-                if (mover) _moverIdx[_moverCount++] = live;
-                // #305: dynamic membership is motion, not appearance -- a prop that pops in still is a
-                // static-set event, not a mover. A membership flip in either direction is also a static
-                // event: the static bake must shed a caster that starts moving and adopt one that stops,
-                // both within one predicate cycle. `appeared` forces the event (err toward stale: the
-                // stamp says nothing trustworthy about a caster that was not collected last frame).
-                bool dyn = f.Skinned || f.Dangly || f.RecMoved || _vDirty[f.Vao];
-                _liveDyn[live] = dyn;
-                bool wasDyn = !appeared && _dynStamp[slot] == _frameSeq - 1;
-                if (dyn) { _dynStamp[slot] = _frameSeq; _dMoverIdx[_dMoverCount++] = live; }
-                if (appeared || dyn != wasDyn) _sMoverIdx[_sMoverCount++] = live;
-                _liveStamp[slot] = _frameSeq;
+                Admit(live, slot, f.Skinned, appeared, f.RecMoved, f.Dangly, _vDirty[f.Vao]);
                 live++;
             }
             // ...and pass 0 is the whole creature population, so the split #100 needs falls out of the walk.
             if (pass == 0) _liveCreatures = live;
         }
         _liveCount = live;
-        _liveSum += live;
         // Whatever stopped casting this frame -- revoked, re-enrolled away, its index range stopped resolving
         // -- is a mover at its LAST KNOWN sphere. That invalidates the views it was standing in, and only
         // those: the alternative is a blanket re-bake every time one item range blinks.
@@ -2052,13 +2068,84 @@ public sealed unsafe class CasterPass : IExtenderService
         }
         _noRecordSum += AlloyRenderer.CasterNoRecord;
         AlloyRenderer.CasterNoRecord = 0;
-        _degenSum += AlloyRenderer.CasterDegenerate;
-        AlloyRenderer.CasterDegenerate = 0;
         RecordProbe();
         _ghostSum += _ghostCount;
-        _moverSum += _moverCount;
+        Account();
         Array.Copy(_liveSlot, _prevSlots, live);
         _prevCount = live;
+        _liveGen = AlloyRenderer.CasterGen; _liveEpoch = AlloyRenderer.RecordEpoch;
+        _collectSeq++; _collects++;
+    }
+
+    /// <summary>The per-caster predicate, ONE function for the full collect and the standing-list refresh so
+    /// the two cannot classify a caster differently. Counted by REASON, not just totalled: "no improvement"
+    /// and "every caster is a mover" look identical in a skip count, and which term saturates decides where
+    /// the next fix goes. A still caster is STILL A CASTER -- it stays in the list and bakes; it merely does
+    /// not invalidate the views it stands in.
+    /// <para>#305: dynamic membership is motion, not appearance -- a prop that pops in still is a static-set
+    /// event, not a mover. A membership flip in either direction is also a static event: the static bake
+    /// must shed a caster that starts moving and adopt one that stops, both within one predicate cycle.
+    /// <paramref name="appeared"/> forces the event (err toward stale: the stamp says nothing trustworthy
+    /// about a caster that was not collected last frame).</para></summary>
+    private static void Admit(int live, int slot, bool skinned, bool appeared, bool recMoved, bool dangly,
+                              bool vDirty)
+    {
+        bool mover = true;
+        if (skinned) _mvBone++;
+        else if (appeared) _mvAppear++;
+        else if (recMoved) _mvMatrix++;
+        else if (dangly) _mvDangly++;
+        else if (vDirty) _mvVertex++;
+        else mover = false;
+        if (mover) _moverIdx[_moverCount++] = live;
+        bool dyn = skinned || dangly || recMoved || vDirty;
+        _liveDyn[live] = dyn;
+        bool wasDyn = !appeared && _dynStamp[slot] == _frameSeq - 1;
+        if (dyn) { _dynStamp[slot] = _frameSeq; _dMoverIdx[_dMoverCount++] = live; }
+        if (appeared || dyn != wasDyn) _sMoverIdx[_sMoverCount++] = live;
+        _liveStamp[slot] = _frameSeq;
+    }
+
+    /// <summary>#328: the frame's collect when the world did not change -- the list stands, and only what can
+    /// move WITHOUT a <see cref="AlloyRenderer.CasterGen"/> edge is re-read: the mover levels, the per-VDO
+    /// dirty set, and the spheres. Nothing here derefs the engine; the index ranges stand because
+    /// both edges that move them (a repack, a re-seated enrollment) drop the list. False = a bone slot was
+    /// assigned or reclaimed since the collect, which moves a caster between the two halves of the list; the
+    /// caller re-collects, and nothing below has run.
+    /// <para>No appearances and no ghosts by construction: the membership is the collect's, and a membership
+    /// change is a generation bump.</para></summary>
+    private static bool Refresh()
+    {
+        for (int i = 0; i < _liveCount; i++)
+            if (AlloyRenderer.SlotSkinned(_liveSlot[i]) != (i < _liveCreatures)) return false;
+        _moverCount = 0; _ghostCount = 0; _dMoverCount = 0; _sMoverCount = 0;
+        for (int v = 0; v < MaxVdos; v++) _vDirty[v] = AlloyRenderer.VdoDirty(v);
+        for (int i = 0; i < _liveCount; i++)
+        {
+            int slot = _liveSlot[i];
+            bool skinned = i < _liveCreatures;
+            bool recMoved = AlloyRenderer.SlotRecMoved(slot);
+            bool dangly = AlloyRenderer.SlotDangly(slot);
+            bool vDirty = _vDirty[_liveVao[i]];
+            // EVERY sphere re-read, not the movers' alone: the sphere is written on any record change and,
+            // for a matrix-less part, from bbox terms a kept enrollment may rewrite without a generation
+            // bump. Four sequential loads per caster; the old walk read them all too.
+            AlloyRenderer.MoverSphere(slot, out _liveCx[i], out _liveCy[i], out _liveCz[i], out _liveR[i]);
+            Admit(i, slot, skinned, appeared: false, recMoved, dangly, vDirty);
+        }
+        Account();
+        return true;
+    }
+
+    /// <summary>The period sums a collect or a refresh leaves behind, and the frame stamp that says the
+    /// list is current.</summary>
+    private static void Account()
+    {
+        _liveSum += _liveCount;
+        _moverSum += _moverCount;
+        _degenSum += AlloyRenderer.CasterDegenerate;
+        AlloyRenderer.CasterDegenerate = 0;
+        _collectedAt = _frameSeq;
     }
 
     /// <summary>#302 triage, cold and one-shot: the bake's ONE placement input, checked against the engine's
@@ -2205,7 +2292,7 @@ public sealed unsafe class CasterPass : IExtenderService
         r[4] = (uint)g;
         r[5] = (uint)start;
         // #305: the set flag the dispatch filter reads -- which of the two arrays this caster belongs in.
-        r[6] = _liveDyn[i] ? 1u : 0u;
+        r[CasterGather.SetFlagWord] = _liveDyn[i] ? 1u : 0u;
     }
 
     /// <summary>#286: stage the whole frame once, in batch order, and publish it. Everything per-view that
@@ -2215,7 +2302,21 @@ public sealed unsafe class CasterPass : IExtenderService
     /// true with zero draws, and its views bake clears.</para></summary>
     private static bool GatherStage()
     {
-        int n = 0, creatures = 0;
+        if (_gCollectSeq == _collectSeq)
+        {   // #328: the list stood, so the staging stands. The set flag is the one word that moves per frame
+            // (a caster starting or stopping); the gather's own hash then skips the upload when nothing did.
+            fixed (uint* src = _gSrc)
+            {
+                for (int d = 0; d < _gN; d++)
+                    src[(long)d * CasterGather.SrcUints + CasterGather.SetFlagWord] = _liveDyn[_gLive[d]] ? 1u : 0u;
+                bool stood = _gN == 0 || CasterGather.Begin(_gN, _gGroups, src);
+                _gDrawN = stood ? _gN : 0;
+                if (stood) _submitMasked += _gMasked;
+                return stood;
+            }
+        }
+        int n = 0, creatures = 0, maskedN = 0;
+        _gCollectSeq = _collectSeq; _gN = 0; _gMasked = 0;
         for (int i = 0; i < _liveCount; i++)
         {
             if (AlloyRenderer.CasterVao(_liveVao[i]) == 0) continue;
@@ -2225,7 +2326,7 @@ public sealed unsafe class CasterPass : IExtenderService
             int drawTex = _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
             int masked = drawTex != 0 && _progMask != 0 && TexHasAlpha(drawTex) ? drawTex : 0;
             if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
-            if (masked != 0) _submitMasked++;
+            if (masked != 0) maskedN++;
             _gLive[n] = i;
             // #302: the cutout threshold is a per-BATCH uniform now, exactly as the colour path spells it
             // (uAlphaCut), so it joins the key rather than riding in a per-draw record. Two values exist.
@@ -2252,11 +2353,11 @@ public sealed unsafe class CasterPass : IExtenderService
                 _gLen[g] = d - _gStart[g] + 1;
                 StageOne(src, d, i, g, _gStart[g]);
             }
-        _gGroups = g + 1; _gCreatures = creatures;
+        _gGroups = g + 1; _gCreatures = creatures; _gN = n; _gMasked = maskedN;
         bool ok;
         fixed (uint* src = _gSrc)
             ok = CasterGather.Begin(n, _gGroups, src);
-        if (ok) _gDrawN = n;
+        if (ok) { _gDrawN = n; _submitMasked += maskedN; }
         return ok;
     }
 

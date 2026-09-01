@@ -56,6 +56,40 @@ public sealed unsafe partial class AlloyRenderer
     /// build is skipping slots the bake wants.</summary>
     internal static int CasterNoRecord;
 
+    /// <summary>#328: may the shadow pass cast this slot? A LEVEL maintained on the record write edge --
+    /// true when a record landed for the slot's current tenant on a non-fading tile in a depth-writing
+    /// class, false on every refusal (a skipped part, a re-tenanted or freed slot, a tile mid-fade). It
+    /// replaces the per-caster-per-frame tile-fade chase and tenancy compare, and every FLIP bumps
+    /// <see cref="CasterGen"/>. One frame late like the record it rides with, and coherent with it.</summary>
+    private static readonly bool[] _castOk = new bool[MaxOwned];
+    /// <summary>The slot's tile is mid-fade this frame, written by <c>RouteParts</c> where the fade is
+    /// chased for the colour route anyway. Read on the record write edge into <see cref="_castOk"/>.</summary>
+    private static readonly bool[] _oFading = new bool[MaxOwned];
+
+    /// <summary>#328: the caster WORLD generation -- bumped whenever the set of castable slots, or a fact the
+    /// bake caches about one (its class, material slots, VDO item, tenant), changes. <see cref="CasterPass"/>
+    /// keeps its collected list across frames while this holds and walks only movers in between; a bump is
+    /// what makes it re-collect. Compared, never consumed (ADR 0017): two readers see the same value.</summary>
+    internal static int CasterGen = 1;
+
+    /// <summary>The record epoch, for the shadow side's insurance re-collect: a bump retires texture copies
+    /// (an animated diffuse cycling, a dial), which is the one input the collect caches that no slot fact
+    /// names. Roughly once a second in a torch-lit area.</summary>
+    internal static int RecordEpoch => _recEpoch;
+
+    /// <summary>Publish the slot's cast admission, bumping <see cref="CasterGen"/> only on a change.</summary>
+    private static void SetCastOk(int i, bool ok)
+    {
+        if (_castOk[i] == ok) return;
+        _castOk[i] = ok;
+        CasterGen++;
+    }
+
+    /// <summary>The mover LEVEL for one slot, read the same way <see cref="TryCaster"/> reads it -- the
+    /// slot's most recent build was also a build that moved something.</summary>
+    internal static bool SlotRecMoved(int slot) => _recMovedAt[slot] == _recFrame[slot];
+    internal static bool SlotDangly(int slot) => _oDangly[slot];
+
     /// <summary>Entries in the draw order -- the caster walk's own bound.</summary>
     internal static int OrderCount => _orderCount;
     /// <summary>The ownership slot at draw-order position <paramref name="k"/>. Grouped by class then VAO,
@@ -82,62 +116,47 @@ public sealed unsafe partial class AlloyRenderer
         /// <summary>Posed by bones, so it is exempt from the sub-texel LOD cull for the same reason the
         /// colour cull exempts it: the player's own shadow must not flicker out in a far cascade.</summary>
         public bool Skinned;
-        /// <summary>The record is stale or was never built. Such a caster CASTS anyway -- unknown state means
-        /// cast, the same direction <see cref="NeverCull"/> takes for unknown bounds -- and its sphere is not
-        /// trusted, so it is neither culled nor LOD-dropped.</summary>
-        public bool Unknown;
     }
 
     /// <summary>Resolve one ownership slot as a shadow caster. False = this slot casts nothing: it is not an
-    /// opaque or cutout part, or its ownership was revoked. Never false for a slot whose RECORD is merely
-    /// stale -- that is <see cref="CasterFacts.Unknown"/>, which casts.</summary>
+    /// opaque or cutout part, its ownership was revoked, or the record write refused it (see
+    /// <see cref="_castOk"/>). Never false for a slot whose record is merely epoch-stale: with agreeing
+    /// tenancy it still carries the right geometry, and geometry is all the depth stages read.</summary>
     internal static bool TryCaster(int slot, out CasterFacts f)
     {
         f = default;
         // Only the two classes that can honestly write a binary depth: a blended part is by definition partly
         // see-through and an additive one emits light. Same rule the caster census applied.
         if (_oTri[slot] == IntPtr.Zero || _oCls[slot] > (byte)AlloyClass.Cutout) return false;
-        // A FADING tile must not cast (review: the bucket gate that stood here was dead code -- the walk
-        // never produces buckets 7/8, a mid-fade roof enrolls as bucket 2/Opaque). The colour path reads the
-        // fade live and routes such a part into the blended run for the frame; the caster path reads the
-        // same live factor and refuses, because a roof being faded out for the camera's benefit must not
-        // keep the room under a full roof shadow. One field chase per caster per frame, factor 1 for the
-        // overwhelming majority.
-        if (PartTable.TileFadeFactor(_oTri[slot]) < 1f) return false;
+        // #328: tenancy and tile fade, as the level the record write left -- deliberately NOT the record
+        // epoch, see _oEnrollGen for the once-a-second flicker asking the wider question produced.
+        if (!_castOk[slot]) { CasterNoRecord++; return false; }
         f.Vdo = _oVdo[slot]; f.Mat = _oMat[slot];
         f.Item = _oItem[slot]; f.Prim = _oPrim[slot]; f.Vao = _oVao[slot];
         f.EnvAlpha = (_oSlots[slot] & EnvSlot) != 0;
         f.Skinned = _oBone[slot] >= 0;
-        // Was the record built for THIS tenant of the slot? Deliberately NOT the record epoch -- see
-        // _oEnrollGen for the once-a-second flicker that asking the wider question produced. An epoch-stale
-        // record with agreeing tenancy still carries the right geometry (the matrix does not go stale with a
-        // texture handle), and geometry is all the depth stages read.
-        f.Unknown = _recEnroll[slot] != _oEnrollGen[slot];
         // Read as a LEVEL, never as an edge: _recFrame is stamped on every build and _recMovedAt only on a
         // build that changed something, so the two agreeing is "the last build moved it" and asking twice
         // gives the same answer. ADR 0017's hazard was a signal the first pass to ask consumed.
         f.Dangly = _oDangly[slot];
         f.RecMoved = _recMovedAt[slot] == _recFrame[slot];
-        fixed (float* sp = _dCastSph)
-        {
-            float* s = sp + (long)slot * 4;
-            f.Cx = s[0]; f.Cy = s[1]; f.Cz = s[2]; f.R = s[3];
-        }
-        // #302: a slot with no trustworthy record is NOT a caster this frame. "Unknown means cast" is right
-        // about unknown BOUNDS -- a part whose sphere is degenerate still bakes, uncullable, below -- but it
-        // cannot mean "bake this geometry through a matrix that may belong to another part". Not staging it
-        // is not a silent freeze either: it was in the previous frame's list, so the vanish sweep ghosts it
-        // at its last known sphere and the views it stood in re-bake. Nor is it an enrollment-frame dropout:
-        // the epoch bump and the record rebuild share one colour pass, so the next shadow bracket already
-        // sees current records. What stays refused is only what the colour build itself skips -- and a part
-        // nothing draws should cast nothing.
-        if (f.Unknown) { CasterNoRecord++; return false; }
-        // Unknown BOUNDS, on the other hand, mean cast: an infinite radius passes every reach test and fails
-        // every sub-texel one, so such a caster is neither culled nor LOD-dropped. Matches CullPass -- and is
-        // COUNTED, because an infinite mover defeats the re-bake predicate in every view it is admitted to,
-        // which is exactly the silent cost ADR 0019 S3 exists to keep visible.
-        if (!(f.R > 0f)) { f.Cx = 0f; f.Cy = 0f; f.Cz = 0f; f.R = NeverCull; CasterDegenerate++; }
+        MoverSphere(slot, out f.Cx, out f.Cy, out f.Cz, out f.R);
         return true;
+    }
+
+    /// <summary>A caster's sphere as the bake ADMITS it: unknown BOUNDS mean cast ("unknown means cast" is
+    /// right about bounds, never about a record built for another tenant -- that is <see cref="_castOk"/>).
+    /// A degenerate sphere becomes an infinite radius, which passes every reach test and fails every
+    /// sub-texel one, so such a caster is neither culled nor LOD-dropped. Matches CullPass -- and is COUNTED,
+    /// because an infinite mover defeats the re-bake predicate in every view it is admitted to, which is
+    /// exactly the silent cost ADR 0019 S3 exists to keep visible. The ghost sweep reads
+    /// <see cref="CasterSphere"/> instead: a departing caster with unknown bounds takes the blanket.</summary>
+    internal static void MoverSphere(int slot, out float cx, out float cy, out float cz, out float r)
+    {
+        CasterSphere(slot, out cx, out cy, out cz, out r);
+        if (r > 0f) return;
+        cx = 0f; cy = 0f; cz = 0f; r = NeverCull;
+        CasterDegenerate++;
     }
 
     /// <summary>Is this ownership slot posed by bones? The cheap gate the caster walk uses to put the

@@ -138,6 +138,31 @@ Until then a swinging door is the case to watch, and it is on the A/B checklist 
 gl_Position;` — `ShaderContract.DepthSafe` now pins both, which it could not do while the stage
 multiplied by a matrix of its own.
 
+### 5. The collect stands across frames (#328)
+
+`Collect()` selecting out of Alloy's table was still a walk of every caster every frame — 13,5k
+`TryCaster` + `TryRange` resolves to find ~200 movers, and that walk was the whole of the measured
+5ms Bake. The list now **stands** until the world changes, and a frame in between walks the standing
+list for its movers (`Refresh()`): the mover level of §2, the per-VDO dirty set, and the spheres.
+Nothing in that walk derefs the engine. The `[casters]` line reports how many frames of the period
+re-collected: a settled area shows a handful, and a high Bake beside a high count is a churning
+edge (a fade in progress, a skip that flaps per frame), not a slow refresh.
+
+"The world changed" is `AlloyRenderer.CasterGen`, bumped where the change happens rather than
+discovered by re-walking: the record write publishes a per-slot **admission level** (`_castOk` —
+a record landed for this tenant, on a non-fading tile, in a depth-writing class) and every flip of
+it bumps the generation; so does a freed or re-tenanted slot, a kept tenant whose class or material
+slots moved, a table wipe, and a population change. The admission level replaces the per-caster
+tile-fade chase and tenancy compare `TryCaster` used to make, and it is one frame late like the
+record it rides with (§4). A repack or a release drops the list outright; a record-epoch bump
+(a retired texture copy) re-collects as insurance for the one cached input no slot fact names — the
+cutout mask's texture id. Same rule as §2: the generation is compared, never consumed.
+
+What is deliberately not re-read between edges: the index range (both edges that move it drop the
+list), the mask texture (an animated cutout's silhouette follows at the epoch's ~1Hz, not per frame),
+and a late-resolving texture copy (a masked caster stays solid until the next edge). A bone slot
+assigned or reclaimed after the collect is caught by the refresh itself, which re-collects.
+
 ## The two rungs this ADR also covers
 
 R1 above is built. R2 and R3 are decided here so they are not re-argued when they are built.

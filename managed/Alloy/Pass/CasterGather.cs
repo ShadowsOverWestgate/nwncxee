@@ -42,6 +42,9 @@ internal static unsafe class CasterGather
     /// one shape for both gathers, and the batch's output base is what turns an <c>atomicAdd</c> into an
     /// output index.</summary>
     internal const int SrcUints = 7;
+    /// <summary>The source word that carries the #305 set flag -- the one word the standing staging
+    /// rewrites per frame (#328), so its index is a contract shared with <c>GatherCs</c>.</summary>
+    internal const int SetFlagWord = 6;
 
     /// <summary>#305: which half of the population a dispatch admits. <see cref="SetAll"/> = no filter (the
     /// sun, and the combined bake <c>/shadow split 0</c> restores); <see cref="SetStatic"/> = still casters
