@@ -148,6 +148,10 @@ public sealed unsafe partial class AlloyRenderer
     /// FIRST and then stably by (lit, VDO) leaves the order grouped by (lit, VDO) with equal textures
     /// contiguous inside each group -- i.e. exactly the batch key, in one pass over the table.</summary>
     private static readonly int[] _texSortCount = new int[MaxMats];
+    /// <summary>#327: the third radix digit's buckets, over <see cref="FeatPrimKey"/>. The feature and the
+    /// primitive mode are both cut-key terms and neither was sorted, so a VDO's run cut on every interleave
+    /// of them -- under bindless, most of what a lit batch could still cut on.</summary>
+    private static readonly int[] _featPrimCount = new int[FeatPrimKeys];
     private static readonly IntPtr[] _mKey = new IntPtr[MatHash];
     private static readonly int[] _mVal = new int[MatHash];
     private static int _matCount;
@@ -301,6 +305,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <c>_oCls[i]</c> alone once the fade overlay applies.</summary>
     private static readonly byte[] _passCls = new byte[MaxOwned];
     private static readonly float[] _passAlpha = new float[MaxOwned];
+    /// <summary>#327: ...and, for the opaque classes only, whether the keyhole dissolves the entry this
+    /// frame -- chased at route so the class run can be partitioned on it (see <see cref="RouteParts"/>).</summary>
+    private static readonly bool[] _passDis = new bool[MaxOwned];
     /// <summary>#322: the draw-arg cache -- index count, byte offset and base vertex as read off the VDO
     /// item tables the last time this slot staged. Valid while stamped with the live epoch AND the stamp
     /// survives <c>UnstampRecord</c>, which fires on every re-tenant and drifted keep -- the only edges that

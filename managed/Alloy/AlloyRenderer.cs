@@ -427,6 +427,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// culling term alone opened. Together they say what reproducing the engine's per-material cull decision
     /// cost the batch count -- the criterion this ticket asks to be measured, not assumed.</summary>
     private static long _twoSidedDraws, _cullCuts;
+    /// <summary>#327: opaque-range batch cuts per cut-key term, in <see cref="CutTerms"/> order.</summary>
+    private static readonly string[] CutTerms = { "vao", "feat", "dissolve", "blend", "cull", "prim", "lit", "tex" };
+    private static readonly long[] _cutBy = new long[CutTerms.Length];
+    private static string CutCensus()
+    {
+        var sb = new System.Text.StringBuilder();   // cold: the period line
+        for (int t = 0; t < CutTerms.Length; t++)
+            sb.Append(t == 0 ? "" : ", ").Append(CutTerms[t]).Append(' ').Append(((float)_cutBy[t] / _frames).ToString("F0"));
+        return sb.ToString();
+    }
     private static int _frames, _revokes, _enrolls, _lastEnrolled, _lastCandidates, _enrollDiagLeft = EnrollDiagBudget;
     /// <summary>Passes an empty enrollment may retry back-to-back after a resume before falling back to the
     /// normal cadence (~2s at 60fps): enough for the re-record to complete, bounded so a genuinely unownable
@@ -1501,7 +1511,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // no shipped material here says `twosided`, which is a finding about the content, not a
                    // broken read; cuts above zero is what the term actually charged in batches.
                    $"({(float)_twoSidedDraws / _frames:F0} two-sided draws/frame, " +
-                   $"{(float)_cullCuts / _frames:F1} batch cuts/frame on culling), " +
+                   $"{(float)_cullCuts / _frames:F1} batch cuts/frame on culling; " +
+                   // #327: the opaque cut census by term. A term that dominates here is the next sort digit.
+                   $"opaque cuts/frame by term: {CutCensus()}), " +
                    // #243 (AC5): what the GPU cull kept, and what it dropped. Taken off the count buffer
                    // three frames behind the dispatch, so nothing on the submission path waits for it. The
                    // "not running" reading is deliberately distinct from a cull that kept everything: one is
@@ -1614,7 +1626,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
         CullPass.ResetStats();
         _frames = 0; _draws = 0; _batches = 0; _revokes = 0; _enrolls = 0;
-        _twoSidedDraws = 0; _cullCuts = 0;
+        _twoSidedDraws = 0; _cullCuts = 0; Array.Clear(_cutBy);
         _drawsGob = 0;
         _skipTexNone = 0; _skipTexNoId = 0; _skipTexNoHandle = 0; _skipTexNotOwned = 0;
         _skinDrawn = 0; _skinNoPose = 0; _boneHigh = 0;

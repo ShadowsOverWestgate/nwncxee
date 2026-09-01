@@ -17,6 +17,12 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>The sort is the only one in the frame, and it is paid by the blended remainder alone -- which is
     /// the whole point of the cutout/blended split: the cutout majority is order-independent and stays in the
     /// texture-grouped opaque order.</para>
+    /// <para>#327: ...order-independent is also why each opaque class is PARTITIONED on the keyhole dissolve
+    /// bit here. It is the one cut-key term the enrollment radix cannot sort (camera state, thousands of
+    /// parts at once under a roof), and CullPass compacts a batch with an atomic, so staging order is not
+    /// draw order: the dissolving members go after the rest of their class, so the dissolve term cuts once
+    /// per class and the tail re-cuts only on the sorted static key -- at most twice the distinct static
+    /// keys, rather than once per interleave.</para>
     /// <para>ponytail: insertion sort, i.e. O(n^2) in the blended count. That count is the small minority of
     /// a scene by construction, and the alternative (a radix over quantised depth) is a bucket table to size
     /// and clear per pass. If a scene ever lands enough blended parts to show on the [alloy] line's colour
@@ -24,24 +30,30 @@ public sealed unsafe partial class AlloyRenderer
     private static int RouteParts()
     {
         int n = 0, nb = 0;
-        int opaqueEnd = _clsEnd[(int)AlloyClass.Cutout];   // classes are contiguous: opaque then cutout
-        for (int k = _clsStart[(int)AlloyClass.Opaque]; k < opaqueEnd; k++)
+        for (int c = (int)AlloyClass.Opaque; c <= (int)AlloyClass.Cutout; c++)
         {
-            if (!RouteLive(k, out int i, out IntPtr tri)) continue;
-            // The fade overlay, and the part's own animated alpha with it: while its tile fades, an opaque
-            // or cutout part IS a bucket-8 part -- the engine folds the tile's factor into the part's own
-            // alpha for the length of the draw (RenderDrawBucket @0x46d060, bucket 8 only) and draws it
-            // blended. So does this pass. Reading the part alpha live here (rather than trusting the class
-            // from the last enrollment) is also what keeps a part whose alpha animated below 1 from standing
-            // solid for up to an EnrollEvery cadence.
-            // #328: the tile term is kept apart -- it is the one alpha term the shadow side refuses on (a
-            // part fading by its OWN alpha still casts), and this is the frame's one chase of it.
-            float fade = PartTable.TileFadeFactor(tri);
-            _oFading[i] = fade < 1f;
-            float alpha = PartAlpha(tri) * fade * AlloyCensus.GobAlphaMul(tri);
-            if (alpha >= 1f) { _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; n++; continue; }
-            _ownFade++;
-            _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = EyeDist2(i); nb++;
+            int nd = 0;   // _orderTmp is the enrollment radix's scratch, idle during a pass
+            for (int k = _clsStart[c]; k < _clsEnd[c]; k++)
+            {
+                if (!RouteLive(k, out int i, out IntPtr tri)) continue;
+                // The fade overlay, and the part's own animated alpha with it: while its tile fades, an opaque
+                // or cutout part IS a bucket-8 part -- the engine folds the tile's factor into the part's own
+                // alpha for the length of the draw (RenderDrawBucket @0x46d060, bucket 8 only) and draws it
+                // blended. So does this pass. Reading the part alpha live here (rather than trusting the class
+                // from the last enrollment) is also what keeps a part whose alpha animated below 1 from standing
+                // solid for up to an EnrollEvery cadence.
+                // #328: the tile term is kept apart -- it is the one alpha term the shadow side refuses on (a
+                // part fading by its OWN alpha still casts), and this is the frame's one chase of it.
+                float fade = PartTable.TileFadeFactor(tri);
+                _oFading[i] = fade < 1f;
+                float alpha = PartAlpha(tri) * fade * AlloyCensus.GobAlphaMul(tri);
+                if (alpha < 1f)
+                { _ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = EyeDist2(i); nb++; continue; }
+                if (Dissolves(i, tri)) { _orderTmp[nd++] = i; continue; }
+                _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = false; n++;
+            }
+            for (int d = 0; d < nd; d++)
+            { int i = _orderTmp[d]; _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = true; n++; }
         }
         for (int k = _clsStart[(int)AlloyClass.Blended]; k < _clsEnd[(int)AlloyClass.Blended]; k++)
         {
@@ -153,8 +165,12 @@ public sealed unsafe partial class AlloyRenderer
         int litCulled = SortKeyOf(false, true, 0), litMax = SortKeyOf(true, true, MaxVdos - 1);
         bool ok = _sortCount.Length == MaxVdos * 4 && litMax == MaxVdos * 4 - 1
                   && unlitCulled == 0 && unlitFree < litCulled;
-        if (!ok) log.Info("AlloyRenderer.CullSortSelfCheck: FAILED -- the (lit, no-cull, VDO) radix digit " +
-                          "does not fit its buckets, or the cull bit outranks the lit one");
+        // #327: the (feature, primitive) digit fills its buckets exactly, and an out-of-table prim clamps.
+        ok &= FeatPrimKeyOf((int)ShaderFeature.Skin, PrimTypes - 1) == _featPrimCount.Length - 1
+              && FeatPrimKeyOf((int)ShaderFeature.Skin, PrimTypes + 5) == _featPrimCount.Length - 1
+              && FeatPrimKeyOf(0, -1) == 0 && FeatPrimKeyOf(0, 0) == 0;
+        if (!ok) log.Info("AlloyRenderer.CullSortSelfCheck: FAILED -- a radix digit does not fit its " +
+                          "buckets, or the cull bit outranks the lit one");
         return ok;
     }
 
@@ -165,6 +181,15 @@ public sealed unsafe partial class AlloyRenderer
     /// bind per class as before, and at most two cull toggles.</summary>
     private static int SortKeyOf(bool noCull, bool lit, int vao)
         => ((lit ? 2 : 0) + (noCull ? 1 : 0)) * MaxVdos + vao;
+
+    /// <summary>#327: entries in the engine's <c>primTypeTranslationTable</c> -- 0x1c bytes of uint per
+    /// <c>nm -S</c>, indexed by the mdl node's prim type. The key clamps rather than trusts the index: the
+    /// draw path reads the table unguarded, but a sort bucket must not.</summary>
+    private const int PrimTypes = 7;
+    /// <summary>Buckets for the (feature, primitive) digit. Assumes <see cref="ShaderFeature.Skin"/> is the
+    /// enum's ceiling; a feature appended after it overflows, which <see cref="CullSortSelfCheck"/> catches.</summary>
+    private const int FeatPrimKeys = ((int)ShaderFeature.Skin + 1) * PrimTypes;
+    private static int FeatPrimKeyOf(int feat, int prim) => feat * PrimTypes + Math.Clamp(prim, 0, PrimTypes - 1);
 
     private static void SortBlended(int[] idx, float[] key, float[] alpha, int n)
     {
@@ -177,6 +202,12 @@ public sealed unsafe partial class AlloyRenderer
             idx[b + 1] = i; key[b + 1] = k; alpha[b + 1] = al;
         }
     }
+
+    /// <summary>#124/#327: does the camera keyhole dissolve this part this frame -- lit, a feature that
+    /// keyholes, and the engine's aperture test says so. One engine call per part per pass: at route for
+    /// the opaque classes (the partition needs the answer), at staging for the rest.</summary>
+    private static bool Dissolves(int i, IntPtr tri)
+        => _oLit[i] && !ShaderFeatures.NoKeyholing((int)_oFeat[i * 4]) && PartTable.KeyholeDissolves(tri);
 
     /// <summary>The part's own alpha multiplier (part+0xa0), live: it is animated state, not enrollment
     /// state.</summary>
@@ -564,9 +595,9 @@ public sealed unsafe partial class AlloyRenderer
             // (fst, fst_sm, fsglu, fs, fstc), so vanilla draws an unlit part solid through the aperture.
             // Keeping the flag off them also keeps them out of the prepass exclusion below, which they would
             // otherwise pay for a discard their stage does not have.
-            float dissolve = lit && !ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])
-                             && PartTable.KeyholeDissolves(tri) ? 1f : 0f;
-            if (dissolve != 0f) _ownDissolve++;
+            bool dis = cls <= (int)AlloyClass.Cutout ? _passDis[k] : Dissolves(i, tri);
+            float dissolve = dis ? 1f : 0f;
+            if (dis) _ownDissolve++;
             // #242: this slot's persistent record. Three states, cheapest first -- already verified by an
             // earlier pass THIS frame (nothing to re-read at all), unchanged since the last frame (the
             // texture re-fetch and the handle mints are skipped, which is the expensive half), or dirty.
@@ -726,8 +757,7 @@ public sealed unsafe partial class AlloyRenderer
             // content. Joining the cut key here is what lets a whole batch be skinned or not -- #262 turned
             // that from "the prepass drops it" into "the prepass runs it under its own bone arm".
             if (_oBone[i] >= 0) feat = (int)ShaderFeature.Skin;
-            // #124: ...and the dissolve bit joins it for the same reason -- the keyhole stage discards.
-            bool dis = dissolve != 0f;
+            // #124: ...and the dissolve bit (dis, above) joins it for the same reason -- the keyhole stage discards.
             // #126: the class and the blend pair are GL state, which one multidraw cannot vary inside.
             int blend = AlloyClasses.Blends(cls) ? (_oSrc[i] << 8) | _oDst[i] : 0;
             // #292: ...and so is face culling, for exactly the same reason. Sorted under the lit bit
@@ -755,6 +785,19 @@ public sealed unsafe partial class AlloyRenderer
                 if (groups != 0 && noCull != keyNoCull && sameSlots && lit == keyLit && v == keyVao
                     && tidKey == keyTex && mode == keyMode && feat == keyFeat && dis == keyDis
                     && cls == keyCls && blend == keyBlend) _cullCuts++;
+                // #327: which term opened an opaque-range cut -- one counter per term, a cut that flipped
+                // several charged to each. The instrument the sort above is judged by.
+                if (groups != 0 && cls == keyCls && cls <= (int)AlloyClass.Cutout)
+                {
+                    if (v != keyVao) _cutBy[0]++;
+                    if (feat != keyFeat) _cutBy[1]++;
+                    if (dis != keyDis) _cutBy[2]++;
+                    if (blend != keyBlend) _cutBy[3]++;
+                    if (noCull != keyNoCull) _cutBy[4]++;
+                    if (mode != keyMode) _cutBy[5]++;
+                    if (lit != keyLit) _cutBy[6]++;
+                    if (tidKey != keyTex || !sameSlots) _cutBy[7]++;
+                }
                 _gStart[groups] = n; _gLen[groups] = 0;
                 _gLit[groups] = lit; _gVao[groups] = v; _gTex[groups] = tid; _gMode[groups] = mode;
                 _gFeat[groups] = feat; _gDis[groups] = dis;

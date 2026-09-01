@@ -458,32 +458,38 @@ public sealed unsafe partial class AlloyRenderer
         _litCount = 0;
         Array.Clear(_sortCount, 0, MaxVdos * 4);
         Array.Clear(_texSortCount, 0, MaxMats);
+        Array.Clear(_featPrimCount);
         Array.Clear(_clsCount); Array.Clear(_clsStart); Array.Clear(_clsEnd);
         for (int i = 0; i < _ownCount; i++)
         {
             if (_oTri[i] == IntPtr.Zero) continue;
             _sortCount[SortKey(i)]++;
             _texSortCount[_oTexKey[i]]++;
+            _featPrimCount[FeatPrimKey(i)]++;
             _clsCount[_oCls[i]]++;
             if (_oLit[i]) _litCount++;
         }
-        // Three-digit LSD radix into _order, every digit counting-sorted (stable): texture, then
-        // (lit, #292's no-cull bit, VDO), then #126's class. The result walks grouped by CLASS -- so each pass owns a contiguous batch range
-        // -- and inside a class by (lit, VDO) with equal textures contiguous, which is the #84 batch key. The
-        // draw loop then cuts a batch on a key change instead of searching for one.
+        // Four-digit LSD radix into _order, every digit counting-sorted (stable): texture, then #327's
+        // (feature, primitive), then (lit, #292's no-cull bit, VDO), then #126's class. The result walks
+        // grouped by CLASS -- so each pass owns a contiguous batch range -- and inside a class by (lit, cull,
+        // VDO, feature, primitive) with equal textures contiguous, which is the whole enrollment-static half
+        // of the batch cut key. The draw loop then cuts a batch on a key change instead of searching for one;
+        // the one per-frame term left, the dissolve bit, is RouteParts's partition.
         int at = 0;
         for (int k = 0; k < MaxMats; k++) { int n = _texSortCount[k]; _texSortCount[k] = at; at += n; }
         for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero) _orderTmp[_texSortCount[_oTexKey[i]]++] = i;
         int live = at;
         at = 0;
+        for (int k = 0; k < FeatPrimKeys; k++) { int n = _featPrimCount[k]; _featPrimCount[k] = at; at += n; }
+        for (int k = 0; k < live; k++) { int i = _orderTmp[k]; _order[_featPrimCount[FeatPrimKey(i)]++] = i; }
+        at = 0;
         for (int k = 0; k < MaxVdos * 4; k++) { int n = _sortCount[k]; _sortCount[k] = at; at += n; }
-        for (int k = 0; k < live; k++) { int i = _orderTmp[k]; _order[_sortCount[SortKey(i)]++] = i; }
+        for (int k = 0; k < live; k++) { int i = _order[k]; _orderTmp[_sortCount[SortKey(i)]++] = i; }
         at = 0;
         for (int k = 0; k < AlloyClasses.Count; k++) { int n = _clsCount[k]; _clsStart[k] = at; _clsCount[k] = at; at += n; }
-        for (int k = 0; k < live; k++) { int i = _order[k]; _orderTmp[_clsCount[_oCls[i]]++] = i; }
+        for (int k = 0; k < live; k++) { int i = _orderTmp[k]; _order[_clsCount[_oCls[i]]++] = i; }
         // ...and the cursor each class's fill left behind IS its end index.
         for (int k = 0; k < AlloyClasses.Count; k++) _clsEnd[k] = _clsCount[k];
-        Array.Copy(_orderTmp, _order, live);
         _orderCount = live;
         // #308: the set-signature blanket is retired with the renumbering that made it necessary. A slot
         // is never re-tenanted within the scan that vacates it (the departed sweep runs after the scan, and
@@ -638,6 +644,13 @@ public sealed unsafe partial class AlloyRenderer
     /// contiguously and the cut in <c>BuildBatches</c> flips face culling at most twice, without ever
     /// splitting a program's run in half.</summary>
     private static int SortKey(int i) => SortKeyOf(_oNoCull[i], _oLit[i], _oVao[i]);
+
+    /// <summary>#327: the (feature, primitive) radix digit, with the skin override BuildBatches applies to
+    /// the feature. A fresh tenant is unposed at enrollment (its bone slot lands on the first pose after),
+    /// so a skinmesh sorts under its content feature until the next enrollment -- one extra cut, briefly, on
+    /// the rare part class that is skinned at all.</summary>
+    private static int FeatPrimKey(int i)
+        => FeatPrimKeyOf(_oBone[i] >= 0 ? (int)ShaderFeature.Skin : (int)_oFeat[i * 4], _oPrim[i]);
 
     /// <summary>#120: harvest what the part's .mtr declared -- which of the extra texture slots carry a
     /// map, and the four stock PBR parameters by name (plus, #123, the parameters of whichever custom shader
