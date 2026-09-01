@@ -164,7 +164,7 @@ internal static class RenderPasses
         {
             Name = "draw",
             ContextLost = AlloyRenderer.ContextLost,
-            SelfCheck = AlloyRenderer.TuneSelfCheck,
+            SelfCheck = l => { AlloyRenderer.TuneSelfCheck(l); AlloyRenderer.EnrollSelfCheck(l); },
             Describe = AlloyRenderer.DescribeTuning,
             Tune = AlloyRenderer.Tune,
             Reset = AlloyRenderer.ResetTuning,

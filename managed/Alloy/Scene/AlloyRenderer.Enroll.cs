@@ -56,8 +56,9 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>Publish tri -&gt; slot for every live tenant under this enrollment's generation (so the table
     /// never needs clearing). The tenant pointer itself is not stored: <c>_oTri[_shSlot[j]]</c> IS the key,
-    /// which holds because nothing revokes or reseats a hashed slot before the scan's last FindSlot -- the
-    /// sweeps all run after the scan, and AllocSlot only hands out slots freed by earlier enrollments.</summary>
+    /// which holds because nothing reseats a hashed slot before the scan's last FindSlot -- the sweeps all
+    /// run after the scan, and AllocSlot only hands out slots freed by earlier walks (#329's floor). A slot
+    /// NotePartDeath revokes between two steps holds Zero, which no live tri matches.</summary>
     private static void HashLiveSlots()
     {
         int mask = (1 << SlotHashBits) - 1;
@@ -94,13 +95,57 @@ public sealed unsafe partial class AlloyRenderer
     {
         int mask = (1 << SlotHashBits) - 1;
         for (int j = SlotHash(part); _shGen[j] == _enrollGen; j = (j + 1) & mask)
-            if (_oTri[_shSlot[j]] == part) { Revoke(_shSlot[j]); return; }
+            if (_oTri[_shSlot[j]] == part) Revoke(_shSlot[j]);   // #329: EVERY slot -- a reseated part holds two until the finish
     }
 
     /// <summary>A newcomer's slot: a vacated one if any sweep left one, the next high-water slot otherwise.
     /// Never overflows past MaxOwned -- the capacity gate refuses on the LIVE count, and every slot below the
-    /// high-water mark is either live or on the free list.</summary>
-    private static int AllocSlot() => _freeCount > 0 ? _freeSlots[--_freeCount] : _ownCount++;
+    /// high-water mark is either live or on the free list.
+    /// <para>#329: only slots below <see cref="_freeAvail"/> are offered. The walk now spans frames, and a
+    /// part death between two of them (NotePartDeath -> Revoke) pushes a slot ABOVE the floor; handing that
+    /// slot out inside the same walk would re-tenant it in the scan that vacated it, which is the case
+    /// #308's lapse-in-place shadow story rules out. The hole left below the floor is filled from the top.</para></summary>
+    private static int AllocSlot()
+    {
+        if (_freeAvail == 0) return _ownCount++;
+        int s = _freeSlots[--_freeAvail];
+        _freeSlots[_freeAvail] = _freeSlots[--_freeCount];
+        return s;
+    }
+
+    /// <summary>#329: the free-list floor a walk snapshots at its begin -- see <see cref="AllocSlot"/>.</summary>
+    private static int _freeAvail;
+    /// <summary>#329: the walk's resumable cursor over PartTable entries, -1 between walks. A walk in progress
+    /// keeps going on every frame regardless of the floor or the dirty edge; the draw side keeps the previous
+    /// complete census (<c>_order</c> and the class ranges are rebuilt only at <see cref="EnrollFinish"/>).</summary>
+    private static int _walkAt = -1;
+    /// <summary>#329: candidates this walk may process per frame; int.MaxValue for an unbudgeted one.</summary>
+    private static int _walkBudget;
+    /// <summary>#329: <c>enrollbudget</c> in sowx.cfg -- candidates per frame, 0 = the whole walk in one frame.
+    /// 12ms walks measured at ~15k candidates put one candidate near 0,8us, so 1500 is ~1,2ms of walk plus the
+    /// finish frame's sweeps and radix. Enrolment lag in a big area is the accepted cost (#329).
+    /// ponytail: a fixed count, so the finish frame (sweeps, radix, MeshCensus) is unbudgeted and the
+    /// per-candidate cost is assumed; the upgrade is a time budget off FrameZones.Now if p99 still misses.</summary>
+    private static int _enrollBudget = 1500;
+    /// <summary>#329: carried from begin to finish -- the candidate tally for the report line, the order count
+    /// before this walk (the set-change edge for the shadow side), and whether the table was wiped at begin.</summary>
+    private static int _walkCandidates, _walkOrderBefore;
+    private static bool _walkWiped;
+
+    /// <summary>#329: a walk is in progress for this Scene. The step gate and the begin gate must agree.</summary>
+    private static bool Walking(IntPtr scene) => _walkAt >= 0 && scene == _enrollScene;
+
+    /// <summary>#329: the free-list floor, checked once at Initialize on the empty table: a walk begins over
+    /// two vacated slots, a death mid-walk frees a third, and only the first two may be handed out.</summary>
+    internal static void EnrollSelfCheck(ExtenderLog log)
+    {
+        _freeSlots[0] = 7; _freeSlots[1] = 8; _freeCount = 2; _freeAvail = 2;
+        _freeSlots[_freeCount++] = 9;
+        bool ok = AllocSlot() == 8 && AllocSlot() == 7 && AllocSlot() == _ownCount - 1
+                  && _freeCount == 1 && _freeSlots[0] == 9 && _freeAvail == 0;
+        log.Info(ok ? "AlloyRenderer.EnrollSelfCheck: passed" : "AlloyRenderer.EnrollSelfCheck: FAILED -- a mid-walk vacated slot was re-offered inside the walk");
+        _freeCount = 0; _freeAvail = 0; _ownCount = 0;
+    }
 
     private static void RevokeAll(string why)
     {
@@ -118,7 +163,8 @@ public sealed unsafe partial class AlloyRenderer
         PassRegistry.Global.Revoke();
         if (_ownCount == 0) return;
         for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero) Revoke(i);
-        _ownCount = 0; _freeCount = 0; _ownLive = 0;   // #308: the whole slot space is fresh again
+        _ownCount = 0; _freeCount = 0; _freeAvail = 0; _ownLive = 0;   // #308: the whole slot space is fresh again
+        _walkAt = -1;   // #329: a walk in progress was over slots that no longer exist
         // ...and the draw order with it: an empty table must not leave class ranges pointing into it.
         _orderCount = 0;
         Array.Clear(_clsStart); Array.Clear(_clsEnd);
@@ -144,9 +190,23 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>#308: the SCAN is wholesale, the SLOTS are stable. Every candidate is re-gated and re-harvested
     /// on the edge, but a part that held a slot last enrollment is seated back in it -- the slot index is
     /// the identity every persistent slot-keyed table hangs off, and renumbering it was the shadow tenancy
-    /// flap. Only genuine arrivals and departures move anything downstream.</para></para></summary>
+    /// flap. Only genuine arrivals and departures move anything downstream.</para>
+    /// <para>#329: BUDGETED. One walk is <see cref="EnrollBegin"/>, then one <see cref="EnrollStep"/> per
+    /// frame until the cursor runs off the table, then <see cref="EnrollFinish"/> in that last step. The
+    /// 12ms every-tenth-frame hitch was the whole walk on one frame; a frame mid-walk draws from the previous
+    /// complete census, since nothing the draw side reads is rebuilt before the finish. A wipe, an empty
+    /// census and <c>enrollbudget=0</c> walk unbudgeted -- there is nothing standing to draw from meanwhile.</para></summary>
     private static void Enroll(IntPtr scene)
     {
+        if (!Walking(scene)) EnrollBegin(scene);
+        EnrollStep();
+    }
+
+    private static void EnrollBegin(IntPtr scene)
+    {
+        // a new Scene walks unbudgeted: the standing order is the OLD scene's, and drawing it into the new
+        // one for a walk's length is exactly the half-built census the budget must never show
+        bool newScene = scene != _enrollScene;
         SceneWalk.Dirty = false; _sinceEnroll = 0; _enrolls++; _enrollScene = scene;
         // #284: a new enrollment re-asks every VDO the drip deferred for want of resident pools. This is
         // the bounded re-arm -- the alternative, one attempt per VDO for the session, rebuilds the exact
@@ -157,12 +217,10 @@ public sealed unsafe partial class AlloyRenderer
         // edge is checked at the present, and would fire RevokeAll on an enrollment whose slots are in fact
         // current. Every area transition otherwise paid a wasted full scan, a handle wipe and a VAO retire,
         // an extra frame of nothing, and an "ownership released" line that named no real release.
-        bool tableWiped = _tableGen != PartTable.TableGen;
+        bool tableWiped = _walkWiped = _tableGen != PartTable.TableGen;
         _tableGen = PartTable.TableGen;
-        WipeHandles();   // #153: still per-enrollment -- a no-op in the armed mode, and in the non-armed one
-                         // it is the only heal for the engine-name handle cache (#220). #308 removed only
-                         // the unconditional record-epoch bump that rode with it: slots are stable now, so
-                         // the records a scan orphans are unstamped one by one where they are re-seated.
+        _walkBudget = tableWiped || newScene || _orderCount == 0 || _enrollBudget == 0 ? int.MaxValue : _enrollBudget;
+        _walkAt = 0; _walkCandidates = 0; _walkOrderBefore = _orderCount; _freeAvail = _freeCount;
         _watchEnrolled = 0;
         System.Array.Clear(AlloyCensus.WatchTex);
         for (int i = 0; i < _ownCount; i++)
@@ -176,24 +234,28 @@ public sealed unsafe partial class AlloyRenderer
         // the old high-water mark would ratchet the slot space by an area's population per transition. The
         // whole space resets and the scan below repacks densely; the shadow side gets the blanket at the
         // bottom of this pass.
-        if (tableWiped) { _ownCount = 0; _freeCount = 0; _ownLive = 0; }
-        _litCount = 0; _litUnownable = 0; _skinUnownable = 0; _gobOwned = 0;
+        if (tableWiped) { _ownCount = 0; _freeCount = 0; _freeAvail = 0; _ownLive = 0; }
+        _litUnownable = 0; _skinUnownable = 0; _gobOwned = 0;
         // #308: bumped per SCAN as before, but a slot now only ADOPTS the new generation when its tenant
         // changes -- the same-frame shadow bracket runs before the record rebuild, and must not refuse a
         // still world. The tenants that survive are found through the hash, seated in their old slots, and
         // keep their old stamp.
-        int orderBefore = _orderCount;
         _enrollGen++;
         HashLiveSlots();
-        Array.Clear(_sortCount, 0, MaxVdos * 4);
-        Array.Clear(_clsCount); Array.Clear(_clsStart); Array.Clear(_clsEnd);
-        _orderCount = 0;
         // the texture-key interning is scoped to ONE enrollment: it is a sort proxy only, so a fresh table
         // every time is both cheaper than invalidating it and immune to the recycled-pointer problem
-        Array.Clear(_texSortCount, 0, MaxMats);
         Array.Clear(_mKey, 0, MatHash);
         _matCount = 0;
+        _capacitySpill = 0;
+        AlloyCensus.OwnScanBegin(scene);
+    }
 
+    /// <summary>#329: up to <see cref="_walkBudget"/> candidates from the cursor, then the finish if the
+    /// table ran out. Kept tenants are re-seated in place with the values they already hold, so a frame
+    /// between two steps draws them unchanged; newcomers take slots outside the standing order and enter
+    /// it at the finish; departures stay drawn until then.</summary>
+    private static void EnrollStep()
+    {
         // A lit part whose lighting cannot be reproduced (no normal stream, or the lit program failed to
         // build) is NOT enrolled: it goes back to the engine's own vanilla-lit draw, which is the only
         // fallback that holds "Alloy parts lit at least as well as vanilla". Fullbright is not.
@@ -202,13 +264,13 @@ public sealed unsafe partial class AlloyRenderer
         // #308 follow-up: scratch for the kept-slot stable-half content compare below -- 8 PBR params + 4
         // feature floats. Outside the loop: a stackalloc inside it would stack a copy per candidate.
         float* keep = stackalloc float[12];
-        int candidates = 0;
-        _capacitySpill = 0;
-        AlloyCensus.OwnScanBegin(scene);
-        for (int e = 0, n = PartTable.EntryCount; e < n; e++)
+        int stepped = 0;
+        for (; _walkAt < PartTable.EntryCount; _walkAt++)
         {
+            if (stepped >= _walkBudget) return;   // resume here next frame
+            int e = _walkAt;
             if (!AlloyCensus.TryOwnCandidate(e, ref c)) continue;
-            candidates++;
+            stepped++; _walkCandidates++;
             if (AlloyCensus.WatchAccepted(e, c.Mat)) _watchEnrolled++;
             // #126: a refusal from here on is counted against the class it would have joined -- see the
             // all-owned-or-none sweep below. The surplus stays engine-drawn, never dropped.
@@ -224,6 +286,22 @@ public sealed unsafe partial class AlloyRenderer
             // refusing a kept tenant on their account would oscillate the whole table at the full boundary.
             int i = FindSlot(c.Tri);
             bool kept = i >= 0;
+            bool lit = c.Lit && _lighting;
+            // The record survives its tenant only while the stable half still describes it: a changed
+            // tenant rebuilds from scratch, and so does a kept one whose harvest drifted under it (a
+            // rebind moved the node or material, the walk re-seated the VDO item) or whose class moved.
+            // Everything WriteStable reads is derived from these fields, and _recAur catches the textures.
+            // ponytail: the eight-field list mirrors WriteStable's transitive inputs by hand; grow that
+            // function and this compare must grow with it, or kept slots serve stale stable halves.
+            // #329: a drifted tenant is reseated as a NEWCOMER. Rewriting its old slot in place mid-walk
+            // would draw it under the standing order's old class with new state, and finishing the walk
+            // in-frame on every drift ran half the walks of a busy area whole (measured: p99 13-15ms).
+            // The old slot keeps drawing what it held until the departed sweep vacates it at the finish;
+            // a pointer drift never draws stale because BuildBatches revokes on the same identity compare.
+            bool drifted = kept && (_oMat[i] != c.Mat || _oNode[i] != c.Node || _oVdo[i] != c.Vdo
+                || _oItem[i] != c.Item || _oRotBits[i] != c.RotBits || _oMx[i] != c.Mx || _oLit[i] != lit
+                || _oCls[i] != (byte)c.Cls);
+            if (drifted) kept = false;
             if (!kept && _ownLive >= MaxOwned)
             { _capacitySpill++; AlloyCensus.OwnRefusedByClass[c.Cls]++; AlloyCensus.RejReason(AlloyCensus.RejTableFull, c.Cls); if (watch) _log?.Info("[dumpframe] ENROLL refused: table full"); continue; }
             int v = VdoSlot(c.Vdo);
@@ -242,7 +320,6 @@ public sealed unsafe partial class AlloyRenderer
             // which is the failure the asymmetric gate would have let through as the QUIET one.
             if (_vSkin[v] != (_skinning && PartTable.Skinned(e)))
             { _skinUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: skin mismatch (armed={_skinning} boneStreams={_vSkin[v]} skinPart={PartTable.Skinned(e)})"); continue; }
-            bool lit = c.Lit && _lighting;
             if (lit && (!canLight || !_vLit[v]))
             { _litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: lit but unshadeable (canLight={canLight} vdoLit={_vLit[v]})"); continue; }
             // #121: an env-mapped part the engine draws UNLIT would go through the fullbright variant, which
@@ -259,24 +336,14 @@ public sealed unsafe partial class AlloyRenderer
             // so it never fired and every re-tenanted slot was trusted with its previous tenant's record).
             if (!kept) i = AllocSlot();
             _oClaim[i] = _enrollGen;
-            // The record survives its tenant only while the stable half still describes it: a changed
-            // tenant rebuilds from scratch, and so does a kept one whose harvest drifted under it (a
-            // rebind moved the node or material, the walk re-seated the VDO item). Everything WriteStable
-            // reads is derived from these fields, and _recAur catches the textures on its own.
-            // ponytail: the seven-field list mirrors WriteStable's transitive inputs by hand; grow that
-            // function and this compare must grow with it, or kept slots serve stale stable halves.
-            bool drifted = kept && (_oMat[i] != c.Mat || _oNode[i] != c.Node || _oVdo[i] != c.Vdo
-                || _oItem[i] != c.Item || _oRotBits[i] != c.RotBits || _oMx[i] != c.Mx || _oLit[i] != lit);
-            if (!kept || drifted) UnstampRecord(i);
-            // #328: a new or drifted tenant has no record the bake may trust until the next write lands
-            // one; a kept tenant whose class moved changes what the collect cached about it.
-            if (!kept || drifted) SetCastOk(i, false);
-            else if (_oCls[i] != (byte)c.Cls) CasterGen++;
+            if (!kept) UnstampRecord(i);
+            // #328: a new tenant has no record the bake may trust until the next write lands one.
+            if (!kept) SetCastOk(i, false);
             // A kept tenant whose identity fields drifted may not be the same part at all -- a freed
             // PartTriMesh recycled at the same address inside one frame window would otherwise inherit the
             // dead part's record with no vanish, appear, or move ever reaching the shadow side. Drift is
             // rare (a rebind, a walk re-seat) so the cost of suspicion is one honest one-frame flap.
-            if (!kept || drifted) _oEnrollGen[i] = _enrollGen;
+            if (!kept) _oEnrollGen[i] = _enrollGen;
             if (!kept) _ownLive++;
             // A NEWCOMER joins the tri->slot hash now, not at the next scan's HashLiveSlots: the death
             // notice (NotePartDeath) looks tenants up through this hash BETWEEN scans, and a part that
@@ -311,7 +378,7 @@ public sealed unsafe partial class AlloyRenderer
             // Material* can still move (the engine exports runtime SetMaterialParam mutators). ReadMaterial
             // rewrites the CPU arrays either way; snapshot them first and unstamp on any drift, which is
             // the per-slot form of the heal the deleted whole-table epoch bump used to provide.
-            bool stableHalf = kept && !drifted;
+            bool stableHalf = kept;
             int po = i * 8, fo = i * 4, oldSlots = _oSlots[i];
             if (stableHalf)
             {
@@ -334,6 +401,23 @@ public sealed unsafe partial class AlloyRenderer
             AlloyCensus.OwnFlag[e] = 1;
             if (watch) _log?.Info($"[dumpframe] ENROLL accepted slot={i} cls={(AlloyClass)c.Cls} lit={lit} vao={v}");
         }
+        // a budgeted walk finishes on a frame of its OWN: measured live, a finish riding the last step was
+        // the 3-5,6ms p99 (step 1,3ms + sweeps + radix + census) against a 2ms bar
+        if (stepped > 0 && _walkBudget != int.MaxValue) return;
+        _walkAt = -1;
+        EnrollFinish();
+    }
+
+    /// <summary>#329: the walk's atomic tail -- the sweeps, the handle wipe and the order rebuild, all in
+    /// one frame, so the census the draw side reads goes from one complete state to the next.</summary>
+    private static void EnrollFinish()
+    {
+        bool tableWiped = _walkWiped;
+        int candidates = _walkCandidates, orderBefore = _walkOrderBefore;
+        WipeHandles();   // #153: still per-enrollment -- a no-op in the armed mode, and in the non-armed one
+                         // it is the only heal for the engine-name handle cache (#220). #308 removed only
+                         // the unconditional record-epoch bump that rode with it: slots are stable now, so
+                         // the records a scan orphans are unstamped one by one where they are re-seated.
         // #308: the departed sweep -- slots no candidate re-claimed. Their parts left the table (or the
         // walk's candidate set), so the slot is vacated for a later newcomer. FreeSlot, not Revoke: the
         // OwnFlag under _oEntry may have changed hands this scan (see FreeSlot), and the bulk clear above
@@ -371,6 +455,10 @@ public sealed unsafe partial class AlloyRenderer
                     AlloyCensus.OwnFlag[_oEntry[i]] = 0; FreeSlot(i); _blendedDropped++;
                 }
         // The radix digits are counted AFTER the sweep, so a dropped class costs no order slot.
+        _litCount = 0;
+        Array.Clear(_sortCount, 0, MaxVdos * 4);
+        Array.Clear(_texSortCount, 0, MaxMats);
+        Array.Clear(_clsCount); Array.Clear(_clsStart); Array.Clear(_clsEnd);
         for (int i = 0; i < _ownCount; i++)
         {
             if (_oTri[i] == IntPtr.Zero) continue;
@@ -413,7 +501,6 @@ public sealed unsafe partial class AlloyRenderer
         // changes hands changes hands on both sides in the same breath -- the two counters, and #128's
         // frames of darkness between them, are gone.
         _lastEnrolled = _orderCount; _lastCandidates = candidates; _lastTextures = _matCount;
-        MeshCensus();
         // Empty right after a resume means the records are not RESIDENT yet, not that nothing is ownable --
         // a fresh Scene binds its VertexPrimitives over the next few frames. OnRenderSinglePass's bounded
         // forced-enroll budget is what retries; nothing here may re-arm unboundedly.
@@ -480,7 +567,8 @@ public sealed unsafe partial class AlloyRenderer
     /// and specifically not the vertex-item count, which nothing in the renderer reads and which this is not
     /// entitled to guess. Read it as a screen: 1,00x is conclusive (nothing repeats), and anything above it
     /// is a population worth confirming before it is designed against.</para>
-    /// <para>Cold by construction -- enrollment cadence, static scratch arrays, sorted in place.</para>
+    /// <para>Cold by construction -- period-line cadence (#329 took its two sorts off the walk's finish
+    /// frame), static scratch arrays, sorted in place.</para>
     /// </summary>
     private static void MeshCensus()
     {

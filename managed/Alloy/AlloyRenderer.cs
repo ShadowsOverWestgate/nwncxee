@@ -77,7 +77,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal const int LogEvery = 900;
     /// <summary>Minimum frames between enrollments. A floor on a cold path, NOT a cadence -- the trigger is
     /// always a scene-walk delta, and a new Scene bypasses it outright. The bound it states: a part that
-    /// becomes ownable is owned within this many frames. Since #264 it is MISSING until then, not
+    /// becomes ownable is owned within this many frames plus one budgeted walk (#329). Since #264 it is MISSING until then, not
     /// vanilla-shaded -- there is no engine walk behind it -- so this floor is a visible-latency bound now
     /// rather than a shading-quality one.</summary>
     internal const int EnrollFloor = 10;
@@ -887,6 +887,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // A failed check disarms the class rather than posing a crowd from a transposed matrix -- the engine
         // still draws every cloak in that case.
         _skinning = Settings.Bool("ownskin", true) && _skinMathOk;
+        _enrollBudget = Settings.Int("enrollbudget", _enrollBudget, 0);
         _isEnabled = (delegate* unmanaged<int, byte>)Native.Sym(SymbolMap.RiIsEnabled);
         ResolveVaoDrip(log);
         // Hook install is its own walk, and it stays HERE rather than joining Attach above: a pass that hooks
@@ -1075,7 +1076,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // frames), so at the observed rate this binds almost never; it exists for the churnier area.
             if (_sinceEnroll < int.MaxValue) _sinceEnroll++;
             bool due = SceneWalk.Dirty || scene != _enrollScene;
-            if (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene)) { Enroll(scene); FrameZones.MarkEnrollFrame(); }
+            // #329: a walk in progress steps every frame; the floor and the edge gate only its BEGIN.
+            if (Walking(scene) || (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene))) { Enroll(scene); FrameZones.MarkEnrollFrame(); }
             FrameZones.Add(FrameZones.Zone.Enroll, tEnroll);
         }
         // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
@@ -1436,6 +1438,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (_frames == period - 2) _takeOverflow = true;
         if (++_frames < period) return;
         _loggedOnce = true;
+        MeshCensus();   // #329: off the walk, for the line below alone
         // distinct textures is the BATCH FLOOR: one program + one VDO cannot batch below one call per texture,
         // so batches/frame ~= textures tells you the grouping is optimal and the ratio is scene-bound, while
         // batches >> textures says the sort is failing. Without it the ratio alone cannot distinguish the two.
