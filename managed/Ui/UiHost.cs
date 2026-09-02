@@ -103,6 +103,10 @@ public static class UiHost
         Focused = w;
     }
 
+    /// <summary>Release focus, as a click on empty space does. For a click that lands somewhere the host
+    /// cannot hit-test -- over a NUI window, which draws on top of us and takes the press itself.</summary>
+    public static void Blur() => SetFocused(null);
+
     /// <summary>Topmost window (any) whose live UI covers the point, or null. Drives the cursor -- overlays
     /// count. Uses <see cref="Window.Hit"/> so a window's chrome outside its rect (popped-out strip, dropdown)
     /// still registers.</summary>

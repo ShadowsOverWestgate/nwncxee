@@ -30,7 +30,7 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
 
     private static ExtenderLog? _log;
     private static IntPtr _nkGlobal;                         // &g_pNuklear (deref for the live context)
-    private static delegate* unmanaged<float, void> _renderOrig;
+    private static IntPtr* _renderSlot;   // chain slot: the next nk_sdl_render subscriber
     private static delegate* unmanaged<IntPtr, byte*, NkRect, uint, int> _begin;
     private static delegate* unmanaged<IntPtr, void> _end;
     private static delegate* unmanaged<IntPtr, float, int, void> _row;
@@ -60,11 +60,12 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
         _button   = (delegate* unmanaged<IntPtr, byte*, int>)Native.Sym(SymbolMap.NkButtonLabel);
         _isClosed = (delegate* unmanaged<IntPtr, byte*, int>)Native.Sym(SymbolMap.NkWindowIsClosed);
 
-        _renderOrig = (delegate* unmanaged<float, void>)hooks.Install(
-            SymbolMap.NkSdlRender, (IntPtr)(delegate* unmanaged<float, void>)&OnNkRender);
+        // Chained, not Installed: UiHostService draws the framework's own windows on this symbol too (#88).
+        // Lower priority = inner, so its raw GL and state resync are done before we queue a nuklear window.
+        _renderSlot = hooks.Chain(SymbolMap.NkSdlRender, (IntPtr)(delegate* unmanaged<float, void>)&OnNkRender, 10);
 
         _ready = _nkGlobal != IntPtr.Zero && _begin != null && _end != null && _row != null
-              && _label != null && _button != null && _isClosed != null && _renderOrig != null;
+              && _label != null && _button != null && _isClosed != null && _renderSlot != null;
         if (!_ready) { _log?.Info("HotkeyManager: nuklear unavailable on this client -- manager disabled"); return; }
 
         _title         = Bake("SoW Hotkeys");
@@ -97,7 +98,7 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
     private static void OnNkRender(float aa)
     {
         if (_open) Draw();
-        _renderOrig(aa);
+        ((delegate* unmanaged<float, void>)(*_renderSlot))(aa);
     }
 
     private static void Draw()

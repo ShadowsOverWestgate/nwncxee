@@ -162,6 +162,8 @@ internal static class ShaderContract
                   && FeatDecl.Contains($"SOWX_FEAT_ROOFKNM   {(int)ShaderFeature.RoofKnM}")
                   && FeatDecl.Contains($"SOWX_FEAT_FLOWMAP   {(int)ShaderFeature.Flowmap}")
                   && FeatDecl.Contains($"SOWX_FEAT_SKIN      {(int)ShaderFeature.Skin}")
+                  && FeatDecl.Contains($"SOWX_FEAT_NOIRWET   {(int)ShaderFeature.NoirWet}")
+                  && FeatDecl.Contains($"SOWX_FEAT_NOIRGLOSS {(int)ShaderFeature.NoirGloss}")
                   // #137: the skinning half. The binding point and the two attribute locations live twice
                   // (C# consts, literal GLSL) and neither disagreement is visible -- a wrong binding reads an
                   // empty block and collapses the mesh to the origin, a wrong location reads whatever stream
@@ -198,7 +200,20 @@ internal static class ShaderContract
                   && ShaderFeatures.OutOfPrepass((int)ShaderFeature.WindGrass)
                   && !ShaderFeatures.OutOfPrepass((int)ShaderFeature.Flowmap)
                   // ...and the CPU-side exclusions that go with them: no name here, no switch there.
-                  && ShaderFeatures.VsNames.Length == 8
+                  && ShaderFeatures.VsNames.Length == 12
+                  // #348: the two look features, and the properties that keep them out of the wind forks'
+                  // special cases -- neither displaces, so neither leaves the depth prepass.
+                  && ShaderFeatures.VsNames[(int)ShaderFeature.NoirWet] == "vs_noirwet"
+                  && ShaderFeatures.VsNames[(int)ShaderFeature.NoirGloss] == "vs_noirgloss"
+                  && ShaderFeatures.VsNames[(int)ShaderFeature.GroundWeather] == "td_ground_vs"
+                  && !ShaderFeatures.Displaces((int)ShaderFeature.NoirWet)
+                  && !ShaderFeatures.Displaces((int)ShaderFeature.GroundWeather)
+                  // #556: the weather ground reads slot 6 for its snow, so it must enrol it -- without
+                  // this the snow overlay samples an unbound unit and mixes toward black.
+                  && ShaderFeatures.ReadsAuxSlot((int)ShaderFeature.GroundWeather)
+                  && ShaderFeatures.ReadsAuxSlot((int)ShaderFeature.Flowmap)
+                  && !ShaderFeatures.ReadsAuxSlot((int)ShaderFeature.NoirWet)
+                  && !ShaderFeatures.OutOfPrepass((int)ShaderFeature.NoirGloss)
                   && ShaderFeatures.Displaces((int)ShaderFeature.WindGrass)
                   && ShaderFeatures.Displaces((int)ShaderFeature.RoofKnM)
                   && !ShaderFeatures.Displaces((int)ShaderFeature.Flowmap)
@@ -450,7 +465,47 @@ internal static class ShaderContract
                   && ShdLitVs.Length <= ShaderResource.ResRefBytes
                   && ShdLitFs.Length <= ShaderResource.ResRefBytes
                   && ShdWaterVs.Length <= ShaderResource.ResRefBytes
-                  && ShdWaterFs.Length <= ShaderResource.ResRefBytes;
+                  && ShdWaterFs.Length <= ShaderResource.ResRefBytes
+                  // #346, the vanilla bridge: the lit stage calls two functions it does not define -- the
+                  // splice supplies them, or the snapshot between the markers does. Asserted here rather
+                  // than discovered as a compile failure, because that failure stands the LIT program down
+                  // and reverts the world to engine drawing.
+                  && VanillaShader.HasSplice(TargetFs)
+                  && TargetFs.Contains("float GetTargetGroundHighlightStrength()")
+                  && TargetFs.Contains("void ApplyTargetGroundHighlight(inout vec4")
+                  && TargetFs.Contains("SowxDisplayOverlays")
+                  // #347/#348: the CONTENT hook region, and the two signatures that are its whole contract.
+                  // A missing one is not a missing feature -- it is a lit program that does not link, which
+                  // takes the world with it.
+                  && VanillaShader.HasSplice(HookFs)
+                  && HookFs.Contains("void SowxSurfaceHook(inout vec3 albedo, inout vec3 nrm, inout vec3 pbr")
+                  && HookFs.Contains("vec3 SowxDisplayHook(vec3 c)")
+                  // ...and the environment they share, ahead of all three. Declared twice (once per file)
+                  // it would be a compile error, declared nowhere a link error; this is the one copy.
+                  && VanillaEnvFs.Contains("#define SOWX_ALLOY")
+                  && VanillaEnvFs.Contains("uniform mat4 m_proj")
+                  // #551: the environment must NOT declare the scriptable block. Every spliced file
+                  // includes inc_scriptable for it and the bridge resolves that include, so a declaration
+                  // here is a redefinition -- which fails the whole lit program, not just the feature.
+                  && !VanillaEnvFs.Contains("uniform float scriptableFloat")
+                  && !VanillaEnvFs.Contains("uniform int scriptableInt")
+                  && VanillaEnvFs.Contains("float SowxVisionLight()")
+                  // #347: the stage identity a spliced file branches on. Asserted because its absence is
+                  // SILENT -- an undefined SHADER_TYPE makes `#if SHADER_TYPE == 2` read 0, so a content
+                  // file's fragment half preprocesses away and its hook becomes an empty function that
+                  // links and does nothing. That is how racial vision was inert here.
+                  && VanillaEnvFs.Contains("#define SHADER_TYPE 2")
+                  // #348: what a content file's own normal work writes through. inc_ripple's TiltNormal is
+                  // written against a VIEW-space normal and these two matrices; Alloy's is world-space, so
+                  // they are identity and the conversion collapses to the tilt the helper performs anyway.
+                  && VanillaEnvFs.Contains("vec3 vFragmentNormal")
+                  && VanillaEnvFs.Contains("const mat4 m_view =")
+                  && VanillaEnvFs.Contains("const mat4 m_view_inv =")
+                  // ...and the marker surgery itself is lossless: with nothing to substitute, splicing must
+                  // give back exactly what it was handed. An unterminated marker or an off-by-one in the
+                  // region bounds silently eats GLSL, which is the one failure mode of string surgery.
+                  && VanillaShader.Splice(TargetFs, null, "selfcheck", false) == TargetFs
+                  && VanillaShader.Splice(HookFs, null, "selfcheck", false) == HookFs;
         log.Info(ok
             ? "ShaderContract.SelfCheck: passed"
             : $"ShaderContract.SelfCheck: FAILED -- {(slots ? "" : "a texture slot disagreed (named above), ")}" +

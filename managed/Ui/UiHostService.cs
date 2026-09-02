@@ -33,18 +33,28 @@ public sealed unsafe class UiHostService : IExtenderService
         log.Info(_swapOrig != null
             ? "UiHostService: frame present owned (SwapBuffers) -- driving the window registry"
             : "UiHostService: frame present not installed (Install returned Zero: symbol unresolved or already hooked)");
+
+        // The roll-call's draw site. nk_sdl_render is nuklear's GL flush: run the windows just before it and
+        // they land under every NUI window and over the vanilla GUI panels. Chained, not Installed --
+        // HotkeyManagerService builds a nuklear window on the same symbol (#88). Higher priority = outer, so
+        // our raw GL and its resync are done before the manager adds its window to the queue.
+        _nkSlot = hooks.Chain(SymbolMap.NkSdlRender, (IntPtr)(delegate* unmanaged<float, void>)&OnNkRender, 20);
+        log.Info(_nkSlot != null
+            ? "UiHostService: window roll-call runs below NUI (chained on nk_sdl_render)"
+            : "UiHostService: nk_sdl_render unavailable -- window roll-call stays at the present (above NUI)");
     }
 
     private static delegate* unmanaged<IntPtr, void> _swapOrig;
+    private static IntPtr* _nkSlot;   // chain slot: the next nk_sdl_render subscriber (null = not chained)
     private static delegate* unmanaged<float> _getGuiScale;   // CAurora::GetGUIScale -> live GUI-scale multiplier
     private static delegate* unmanaged<void> _resetStates;    // RenderInterface::ResetRenderStates -- the hand-back resync
     private static delegate* unmanaged<uint, uint, void> _bindBuffer;   // ...and the one binding it does not cover
     private static bool _announced;
     private const uint GlArrayBuffer = 0x8892;
 
-    /// <summary>The frame present: announce once, refresh the gate + UI scale, run the z-order draw roll-call,
-    /// then present. Hot (every frame) and zero-alloc: pointer reads + a cached-delegate roll-call; the gate log
-    /// fires only on a state transition and the scale reaction is the content's (rare, cold-shaped) concern.</summary>
+    /// <summary>The frame present: announce once, run the frame phases, then present. The window roll-call
+    /// itself happens earlier, at <see cref="OnNkRender"/>, so the windows land below NUI; it falls back to
+    /// here only when that chain never installed. Hot (every frame) and zero-alloc.</summary>
     [UnmanagedCallersOnly]
     private static void OnSwap(IntPtr window)
     {
@@ -54,11 +64,7 @@ public sealed unsafe class UiHostService : IExtenderService
             _log?.Info("UiHostService: first frame presented -- hook is LIVE");
         }
         FrameRegistry.Global.Run(FramePhase.Start);
-        RefreshGate();
-        if (GameGate.InGame) SyncUiScale();
-        long tUi = FrameZones.Now;
-        UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
-        FrameZones.Add(FrameZones.Zone.Ui, tUi);
+        if (_nkSlot == null) DrawWindows();       // fallback: no nk_sdl_render chain -> draw here, above NUI
         FrameRegistry.Global.Run(FramePhase.PrePresent);
         // #210 (G1): the hand-back resync. Window content draws raw GL in the ENGINE's 3.3 context, past
         // GLRender's shadow cache, which then early-outs on a stale match and skips real GL calls for the rest
@@ -79,6 +85,29 @@ public sealed unsafe class UiHostService : IExtenderService
         FrameZones.Add(FrameZones.Zone.Present, tSwap);
         FrameStats();
         FrameRegistry.Global.Run(FramePhase.PostPresent);
+    }
+
+    /// <summary>The window roll-call's draw site (below NUI): draw, resync, then let the rest of the chain --
+    /// and finally nuklear's own flush -- run. Hot, and on the same thread as the present.</summary>
+    [UnmanagedCallersOnly]
+    private static void OnNkRender(float aa)
+    {
+        DrawWindows();
+        ((delegate* unmanaged<float, void>)(*_nkSlot))(aa);
+    }
+
+    /// <summary>Refresh the session gate + UI scale, run the z-order roll-call, then hand the GL state back.
+    /// The hand-back is #210 (G1) one call earlier: our raw GL desyncs GLRender's shadow cache, and what
+    /// renders next is NUI, not the present.</summary>
+    private static void DrawWindows()
+    {
+        RefreshGate();
+        if (GameGate.InGame) SyncUiScale();
+        long tUi = FrameZones.Now;
+        UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
+        FrameZones.Add(FrameZones.Zone.Ui, tUi);
+        if (_resetStates != null) _resetStates();
+        if (_bindBuffer != null) _bindBuffer(GlArrayBuffer, 0);
     }
 
     private static long _fsLast, _fsSum, _fsMax;

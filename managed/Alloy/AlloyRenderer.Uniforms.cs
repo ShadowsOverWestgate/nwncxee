@@ -106,15 +106,68 @@ public sealed unsafe partial class AlloyRenderer
             px[0] = MathF.Min(a, b); px[1] = MathF.Max(a, b);
             Gl.Uniform2fv(loc.KhDia, 1, px);
         }
+        UploadTargetShape(loc);
+        UploadVanillaEnv(loc);
         if (_runtime == null) return;
         Gl.Uniform1i(loc.Time, *(int*)(_runtime + RtTimeOfDay));
 
         Gl.Uniform3fv(loc.Wind, 1, (float*)(_runtime + RtAreaWind));
         Gl.Uniform1i(loc.Flags, *(int*)(_runtime + RtAreaFlags));
         Gl.Uniform3fv(loc.Cam, 1, (float*)(_runtime + RtCamPos));
+        Gl.Uniform3fv(loc.CamFocus, 1, (float*)(_runtime + RtCamFocus));
         Gl.Uniform3fv(loc.Player, 1, (float*)(_runtime + RtPlayerPos));
         px[0] = *(float*)(_runtime + RtCamDist); px[1] = *(float*)(_runtime + RtCamPitch);
         Gl.Uniform2fv(loc.KhCam, 1, px);
+    }
+
+    /// <summary>#346: the spell-targeting shape's terms, straight out of the engine's global-constant
+    /// tables -- the same values <c>GLRender::SetUniforms</c> hands the engine's own copy of the same
+    /// shader. Written under the ENGINE's uniform names: the stage compiles <c>inc_target.shd</c> itself
+    /// (see <see cref="TargetFs"/>), so these are its declarations, not ours.
+    /// <para>Only what that file reads is uploaded. The harms/helps/ignores flags and the spell and feat ids
+    /// are declared there and sampled by nothing, and a program that carries no targeting code at all gets
+    /// location -1 for every one of these, which GL ignores.</para>
+    /// <para>Nothing is converted. The colour is the engine's own display-space vec4 and the fragment stage
+    /// mixes with it inside the same encode bracket the fog uses, so a shape drawn on an Alloy tile and one
+    /// drawn on a vanilla tile are the same strength.</para></summary>
+    private static void UploadTargetShape(in FeatLoc loc)
+    {
+        // The shape's own "nothing to draw" answer is targetShape 0 AND range 0; the object type is the
+        // other half of it, and 0 there is what the engine writes when the cursor is over nothing.
+        if (_shaderConstI == null || _shaderConstV == null || _shaderConstV4 == null || _shaderConstF == null)
+        { Gl.Uniform1i(loc.TgtObjL, 0); Gl.Uniform1i(loc.TgtShapeL, 0); return; }
+        Gl.Uniform1i(loc.TgtShapeL, _shaderConstI[TgtShape]);
+        Gl.Uniform1i(loc.TgtSelfL, _shaderConstI[TgtOnSelf]);
+        Gl.Uniform1i(loc.TgtObjL, _shaderConstI[TgtObjType]);
+        Gl.Uniform1f(loc.TgtSizeXL, _shaderConstF[TgtSizeX]);
+        Gl.Uniform1f(loc.TgtSizeYL, _shaderConstF[TgtSizeY]);
+        Gl.Uniform1f(loc.TgtRangeL, _shaderConstF[TgtRange]);
+        Gl.Uniform4fv(loc.TgtColL, 1, _shaderConstV4 + TgtColour * 4);
+        Gl.Uniform3fv(loc.TgtWorldL, 1, _shaderConstV);
+    }
+
+    /// <summary>#347: the rest of the shared vanilla environment -- the projection and the scriptable
+    /// entries the spliced stock files gate on. Same shape and same reason as
+    /// <see cref="UploadTargetShape"/>: written under the ENGINE's uniform names, because the code reading
+    /// them is the engine's own, and a program carrying none of them gets -1 for every location.
+    /// <para>The noir and vision gates are integers a server script sets. Zero is "off" and is what an
+    /// unresolved constant table leaves them at, which is the correct answer for a client that cannot read
+    /// them rather than a feature stuck on.</para></summary>
+    private static void UploadVanillaEnv(in FeatLoc loc)
+    {
+        fixed (Matrix4x4* m = &_projMtx) Gl.UniformMatrix4fv(loc.ProjL, 1, 0, (float*)m);
+        if (_shaderConstI == null || _shaderConstF == null || _shaderConstV4 == null) return;
+        // #551: the block, not a selection. A content shader that begins reading a slot nobody thought to
+        // wire would otherwise compile, link, and read zero -- working under the engine and silently doing
+        // nothing under Alloy. sow-topdata#551 (Float13, the sky-light veil fade) is that case exactly.
+        // 48 uniforms per program per pass, all of them -1 on a program that declares none.
+        fixed (FeatLoc* l = &loc)
+        for (int i = 0; i < ScriptableSlots; i++)
+        {
+            Gl.Uniform1i(l->SInt[i], _shaderConstI[SIntBase + i]);
+            Gl.Uniform1f(l->SFloat[i], _shaderConstF[SFloatBase + i]);
+            Gl.Uniform4fv(l->SVec[i], 1, _shaderConstV4 + (SVecBase + i) * 4);
+        }
     }
 
     /// <summary>The engine's own area terms, captured from SetLightGL's index -1 path. No capture yet (a

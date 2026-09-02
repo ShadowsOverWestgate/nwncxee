@@ -42,19 +42,43 @@ internal enum ShaderFeature
     /// pose. No shipped robe declares one; if one ever does, the fix is a bit in <c>feat.z</c> rather than a
     /// second field.</para></summary>
     Skin = 8,
+    /// <summary>#348: <c>fs_noirwet</c> -- a still liquid. Normal-only animated ripples anchored in world
+    /// space, a low roughness and a white sheen. The pool stays dead flat: nothing here displaces, so unlike
+    /// the wind forks this feature is not in <see cref="Displaces"/> and its parts stay in the prepass.</summary>
+    NoirWet = 9,
+    /// <summary>#348: <c>fs_noirgloss</c> -- still wet blood. The same normal hook, but the bump is frozen
+    /// and finite-differenced out of the diffuse's own luminance, plus a mild darken and a deep-red specular
+    /// tint. Same no-displacement note as <see cref="NoirWet"/>.</summary>
+    NoirGloss = 10,
+    /// <summary>#556: <c>td_ground_fs</c> -- the weather ground. Snow banked into the diffuse's own
+    /// crevices, a wet darken with the roughness and specularity to match, standing puddles that flatten
+    /// the normal map and take a Fresnel of the sky, and rain ripples over both. Around eighty materials
+    /// name it, which is most of the outdoor tileset; drawn with the plain stage, none of it happened.</summary>
+    GroundWeather = 11,
 }
 
 internal static class ShaderFeatures
 {
     /// <summary>The <c>customShaderVS</c> resrefs, indexed by <see cref="ShaderFeature"/>. The VS name alone
     /// separates all seven -- flowmap's vertex fork is stock code, but the .mtr still names it.</summary>
-    /// <para>#137's <see cref="ShaderFeature.Skin"/> deliberately has NO entry: it is not a content shader
-    /// and no material names it, so this array stays the seven forks plus the empty <c>None</c>.</para>
+    /// <para>#137's <see cref="ShaderFeature.Skin"/> is not a content shader and no material names it, so
+    /// its slot is empty -- but the slot has to EXIST, because this array is indexed by the enum and #348
+    /// added ids above it. An empty name never matches (<see cref="AlloyCensus.Classify"/> compares the
+    /// whole NUL-terminated resref), which is exactly the behaviour Skin wants.</para>
     internal static readonly string[] VsNames =
     {
         "", "shd_windgrass_vs", "shd_windleaf_vs", "shd_windplant_vs",
         "shd_roofkn_vs", "shd_roofknm_vs", "shd_nokeyhole_vs", "shd_flowmap_vs",
+        "", "vs_noirwet", "vs_noirgloss", "td_ground_vs",
     };
+
+    /// <summary>#556: does this feature read material texture slot 6? Two do, for different things -- the
+    /// flow map's RG direction field (#123) and the weather ground's snow overlay -- because the SLOT is the
+    /// contract and the name beside it is only what one shader calls it. Everything else leaves the bit
+    /// clear, which is vanilla's own <c>texture6Bound</c> test: a material that binds nothing there gets
+    /// nothing sampled.</summary>
+    internal static bool ReadsAuxSlot(int feat)
+        => feat == (int)ShaderFeature.Flowmap || feat == (int)ShaderFeature.GroundWeather;
 
     /// <summary>Does this feature move vertices? Such a part must stay out of the #119 depth prepass: the
     /// prepass stage does not displace, so its depth is the part's UNDISPLACED silhouette and the colour

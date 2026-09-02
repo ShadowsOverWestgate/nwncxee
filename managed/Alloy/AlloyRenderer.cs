@@ -873,6 +873,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                      "switches stay inert (no wind sway, roofs where authored), and #124's camera dissolve " +
                      "with them -- uKeyholeCam reads this struct too");
         _shaderConstF = (float*)Native.Sym(SymbolMap.GlGlobalShaderConstantsF);
+        _shaderConstI = (int*)Native.Sym(SymbolMap.GlGlobalShaderConstantsI);
+        _shaderConstV = (float*)Native.Sym(SymbolMap.GlGlobalShaderConstantsV);
+        _shaderConstV4 = (float*)Native.Sym(SymbolMap.GlGlobalShaderConstantsV4);
+        // #346: the targeting shape degrades the same way the dissolve does -- unresolved leaves uTgtMode
+        // at the "nothing to draw" default, which is a missing overlay, not a misrender.
+        if (_shaderConstI == null || _shaderConstV == null || _shaderConstV4 == null)
+            log.Info("AlloyRenderer: GLRender::m_globalShaderConstants{i,v,v4} unresolved -- the spell " +
+                     "targeting shape stays undrawn on Alloy parts");
         // #124 degrades one term at a time and says which: no fog block leaves Alloy parts unfogged (the
         // pre-#124 look), no constants leaves the dissolve aperture at zero, i.e. no dissolve. Neither is a
         // misrender, and neither is worth standing the pass down for.
@@ -992,6 +1000,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "prepasskey": old = _prepassKey ? 1f : 0f; _prepassKey = v != 0f; break;
             // #336 step 4: the visible set's A/B -- 0 walks the whole order every pass.
             case "vislist":  old = _visList ? 1f : 0f; _visList = v != 0f; break;
+            // Whether a TILE gob's parts may dissolve. 0 = vanilla, where the aperture stops at every gob
+            // and the windows stay floating in the hole it punched.
+            case "gobkey":   old = GobKeyhole ? 1f : 0f; GobKeyhole = v != 0f; break;
             default: return float.NaN;
         }
         // #242: a dial can change what a record MEANS (aotest fills a slot, viz changes nothing in the
@@ -1450,7 +1461,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // ...and the VAO cache. RevokeAll marks the slots stale, and EnsureVao DELETES a stale non-zero name
         // before rebuilding -- which on a name minted by a context that no longer exists is a delete aimed at
         // whatever the next context recycles that number for.
-        for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vOwned[v] = false; }
+        // #136: the engine-layout VAO cache goes with it. Same rule, same reason -- a container object is
+        // not shared, so every name in it belonged to the context that just went.
+        for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vOwned[v] = false; ForgetEngineVao(v); }
         _waterFailed = false;
         // #257: and so is the target latch -- every name in it belongs to the context that just went.
         ForgetTarget();
@@ -1728,8 +1741,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>#341 adds the eye and the four fog-target terms: the fog colour is direction-dependent
     /// now, so every stage that fogs uploads the same five values through <see cref="UploadFog"/>.</summary>
-    internal struct FeatLoc { internal int Time, Wind, Flags, Cam, Player, Fog, FogColor, KhDia, KhCam, Pixel,
-                                       Eye, FogSky, FogSkyColor, FogSun, FogSunColor; }
+    internal unsafe struct FeatLoc { internal int Time, Wind, Flags, Cam, CamFocus, Player, Fog, FogColor, KhDia, KhCam,
+                                       Pixel, Eye, FogSky, FogSkyColor, FogSun, FogSunColor,
+                                       TgtShapeL, TgtSelfL, TgtObjL, TgtSizeXL, TgtSizeYL, TgtRangeL,
+                                       TgtColL, TgtWorldL, ProjL;
+        /// <summary>#551: the WHOLE scriptable block, by location. Picking entries one feature at a time
+        /// was a standing bug: a content shader that starts reading a new slot compiles, links, and reads
+        /// zero, which is a feature that silently does nothing under Alloy and works under the engine.
+        /// sow-topdata#551 is exactly that case (Float13, the sky-light veil fade) and it is why this is a
+        /// block. Filled at program build; a slot the stage does not use is -1, which GL ignores.</summary>
+        internal fixed int SInt[ScriptableSlots];
+        internal fixed int SFloat[ScriptableSlots];
+        internal fixed int SVec[ScriptableSlots];
+    }
     private static FeatLoc _locFeat, _litFeat;
     /// <summary>#123: <c>GLRender::m_shaderExposedRuntimeData</c>, the struct the engine's own SetUniforms
     /// uploads these five from. Null (symbol unresolved) leaves the wind still and the roofs wherever they
@@ -1738,6 +1762,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     internal const int RtTimeOfDay = 0x18, RtAreaWind = 0x28, RtAreaFlags = 0x3c,
                       RtPlayerPos = 0x4c, RtCamPos = 0x64;
+
+    /// <summary>#347: the camera's PIVOT, as the engine's own stages read it under the name
+    /// <c>cameraFocus</c> -- <c>GLRender::SetUniforms</c> @0x4cf359 uploads
+    /// <c>m_shaderExposedRuntimeData + 0x90</c> to the location <c>ConnectShaderData</c> resolved for that
+    /// name. Not the camera POSITION (<see cref="RtCamPos"/>, +0x64): in chase cam the pivot sits on the
+    /// controlled character at roughly chest height, which is why content measures a sight range against it
+    /// and not against the eye.</summary>
+    internal const int RtCamFocus = 0x90;
     /// <summary>#124's two more fields of the same struct, from the same pairing: <c>cameraPitch</c> at
     /// +0x84 and <c>playerCameraDist</c> at +0x8c. Both feed the keyhole aperture.</summary>
     internal const int RtCamPitch = 0x84, RtCamDist = 0x8c;
@@ -1746,6 +1778,34 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <c>keyholeDiameterMin</c> and max as <c>keyholeDiameterMax</c>, so the ordering happens here too.</summary>
     internal const int KeyholeDiaA = 21, KeyholeDiaB = 22;
     private static float* _shaderConstF;
+
+    /// <summary>#346: the spell-targeting shape's own slice of the same three tables, indices read off the
+    /// <c>SetUniforms</c>/<c>ConnectShaderData</c> pairing and confirmed against the setters
+    /// (<c>SpellTargeting::UpdateSpellTargetingStaticData</c> @0x958790 writes params 0x1b/0x20/0x28/0x29/
+    /// 0x2a/0x10, and <c>CClientExoAppInternal::MainLoop</c> @0x658c13 the object type and world point).
+    /// Only what <c>inc_target.shd</c> actually reads is listed -- the harms/helps/ignores flags and the
+    /// spell and feat ids reach the shader as uniforms nothing in it samples.</summary>
+    internal const int TgtShape = 27, TgtOnSelf = 32, TgtObjType = 35,
+                       TgtSizeX = 40, TgtSizeY = 41, TgtRange = 42, TgtColour = 16;
+    /// <summary>#347: the rest of the scriptable block the spliced stock includes read, by the same
+    /// pairing -- <c>scriptableInt(n)</c> is <c>m_globalShaderConstantsi[10 + n]</c> and
+    /// <c>scriptableFloat(n)</c> is <c>m_globalShaderConstantsf[23 + n]</c>, from
+    /// <c>ConnectShaderData</c>'s n = 1..16 loop against <c>SetUniforms</c>' slot bases (+0x2c and +0x60).
+    /// 4 gates and scales the noir desaturation, 11 and 12 the racial-vision mode and its range.</summary>
+    /// <summary>#551: the scriptable block is 16 of each, and the engine's own tables hold them at these
+    /// bases -- <c>scriptableInt(n)</c> is <c>m_globalShaderConstantsi[10 + n]</c>, <c>scriptableFloat(n)</c>
+    /// is <c>m_globalShaderConstantsf[23 + n]</c> and <c>scriptableVec(n)</c> is
+    /// <c>m_globalShaderConstantsv4[n - 1]</c>, from <c>ConnectShaderData</c>'s n = 1..16 loop paired with
+    /// <c>SetUniforms</c>' slot bases (+0x2c, +0x60, +0x00). NWScript's own count is 48 uniforms, which is
+    /// these three sixteens.</summary>
+    internal const int ScriptableSlots = 16, SIntBase = 11, SFloatBase = 24, SVecBase = 0;
+
+    /// <summary>#347: this pass's PROJECTION, latched where the frame reads it off the engine's matrix
+    /// stack, for the spliced stock files that ask for <c>m_proj</c>. Per pass, not per frame: the probe
+    /// cube renders under its own, and a stale one would tell a stock file it was drawing 2D UI.</summary>
+    private static Matrix4x4 _projMtx = Matrix4x4.Identity;
+    private static int* _shaderConstI;
+    private static float* _shaderConstV, _shaderConstV4;
 
     /// <summary>Stand-in area ambient for the frames before the engine's first index -1 light bind. Grey, not
     /// black: a missing capture must not paint the world dark.</summary>

@@ -28,6 +28,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#128: the Gob this part instances off, zero for static geometry. The key the all-owned-or-none
     /// sweep groups by -- never dereferenced here, only compared.</summary>
     private static readonly IntPtr[] _oGob = new IntPtr[MaxOwned];
+    /// <summary>Is this part's gob a TILE gob (<see cref="SceneLayout.GobTileData"/>)? Sampled at
+    /// enrolment because that is the one place the gob is known live. See <c>Dissolves</c>.</summary>
+    private static readonly bool[] _oTileGob = new bool[MaxOwned];
     /// <summary>#336: see <c>AlloyCandidate.LodRoot</c>.</summary>
     private static readonly IntPtr[] _oLodRoot = new IntPtr[MaxOwned];
     /// <summary>#137: this enrolled part's bone slot for THIS pass, or -1 for a rigid one. Rewritten every
@@ -366,6 +369,20 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#222: the constant colour <c>PartTriMesh::Mat</c> would have set for this sky part -- white,
     /// or the scene's fog colour where the gob carries the +0x19 tint byte. Three floats per draw.</summary>
     private static readonly float[] _skTint = new float[MaxSkyDraws * 3];
+
+    /// <summary>#136: the sky parts drawn with the ENGINE's own compiled program instead of an Alloy stage
+    /// -- a dynamic sky IS its fragment shader, and there is no port of it. Parallel to the arrays above and
+    /// staged in the same walk; <see cref="MaxEngTex"/> texture units because that is what a stock stage
+    /// declares before the maps an unlit sky cannot use.</summary>
+    internal const int MaxEngTex = 4;
+    private static readonly uint[] _seProg = new uint[MaxSkyDraws];
+    private static readonly int[] _seVao = new int[MaxSkyDraws];
+    private static readonly uint[] _seMode = new uint[MaxSkyDraws];
+    private static readonly int[] _seCount = new int[MaxSkyDraws], _seBase = new int[MaxSkyDraws];
+    private static readonly nint[] _seOff = new nint[MaxSkyDraws];
+    private static readonly int[] _seSrc = new int[MaxSkyDraws], _seDst = new int[MaxSkyDraws];
+    private static readonly int[] _seTex = new int[MaxSkyDraws * MaxEngTex];
+    private static int _seN;
     private static int _skyFirst, _skyN;
     private static uint _drawBuf;
     /// <summary>#153: the per-draw texture-handle SSBO (binding <see cref="BindTexH"/>).</summary>

@@ -74,16 +74,77 @@ def harvest():
                 fenced = not fenced
             i += 1
         text = "\n".join(expr)
-        if '"""' not in text:
-            continue
         out = []
         for p in PIECE.finditer(text):
             if p.group(1) is not None:
                 out.append(textwrap.dedent(p.group(1)) + "\n")
             elif p.group(2) in consts:
                 out.append(consts[p.group(2)])
+        # An ALIAS (`A = B + C;`, no literal of its own) resolves here too, which is why the emptiness
+        # test replaced a test for a raw literal: a const string that is not shader text -- a config key,
+        # a log line -- names no known constant and folds to nothing, so it still drops out.
+        if not out:
+            continue
         consts[m.group(1)] = "".join(out)
     return consts
+
+
+# #346, the vanilla bridge: a stage can carry `// $VANILLA <resref>` … `// $VANILLA-END`, and at runtime
+# the engine's own copy of that file replaces the region. The fallback inside it is a STUB -- the feature
+# off -- so compiling that proves only that the world still renders. What is worth checking offline is the
+# real content file against Alloy's environment, which is why this splices from a content checkout when it
+# can find one. Set SOWX_CONTENT_SHD to point elsewhere; missing is not an error, it is the stub's case.
+CONTENT_SHD = os.environ.get("SOWX_CONTENT_SHD",
+                             os.path.expanduser("~/repos/sow-topdata/assets/shaders"))
+VANILLA = re.compile(r"^([ \t]*)// \$VANILLA (\w+)\n.*?^[ \t]*// \$VANILLA-END[ \t]*$",
+                     re.S | re.M)
+
+
+# Mirrors VanillaShader.Supplied: the engine's uniform/varying interface, which the renderer's own
+# environment block stands in for and which must never be pulled into an Alloy stage.
+SUPPLIED = {"inc_common", "inc_uniforms"}
+
+
+def find_shd(name):
+    for root, _, files in os.walk(CONTENT_SHD):
+        if name + ".shd" in files:
+            return os.path.join(root, name + ".shd")
+    return None
+
+
+def expand(path, done, depth=0):
+    """A content file's own #includes, resolved out of the checkout -- the C# side resolves them through
+    the resource chain, and a cx_* hook file is composed OF them. One visit each: the files carry #ifndef
+    guards, so a second inclusion is already a no-op in GLSL. An include the checkout does not answer for is
+    dropped, which is how the ones the renderer's environment supplies (inc_uniforms) stay out."""
+    out = []
+    for line in open(path).read().split("\n"):
+        t = line.lstrip()
+        if not t.startswith("#include"):
+            out.append(line)
+            continue
+        m = re.search(r'"([^"]+)"', t)
+        if not m or m.group(1) in done or m.group(1) in SUPPLIED or depth >= 4:
+            continue
+        done.add(m.group(1))
+        hit = find_shd(m.group(1))
+        if hit:
+            out += expand(hit, done, depth + 1)
+    return out
+
+
+def splice(src, seen):
+    """Replace each marked region with the content repo's copy of that .shd, where one exists."""
+    def one(m):
+        indent, resref = m.group(1), m.group(2)
+        hit = find_shd(resref)
+        if hit is None:
+            seen.setdefault(resref, None)
+            return m.group(0)
+        seen[resref] = hit
+        body = expand(hit, set())
+        return indent + f"// $VANILLA {resref}\n" + "\n".join(indent + l if l.strip() else "" for l in body)
+    return VANILLA.sub(one, src) if os.path.isdir(CONTENT_SHD) else src
 
 
 def composition(consts):
@@ -111,6 +172,13 @@ def composition(consts):
                 sys.exit(f"{STAGES}: `{ref}` names shader constant {leaf}, which no render source declares")
             pieces.append(consts[leaf])
         out[ref] = "".join(pieces)
+    seen = {}
+    for ref in out:
+        out[ref] = splice(out[ref], seen)
+    for resref, path in sorted(seen.items()):
+        print(f"vanilla bridge: {resref}.shd "
+              + (f"spliced from {os.path.relpath(path, os.path.expanduser('~'))}" if path
+                 else f"NOT FOUND under {CONTENT_SHD} -- compiled the stub, which checks nothing"))
     if not out:
         sys.exit(f"{STAGES}: the composition table parsed to nothing")
     return out
@@ -249,9 +317,12 @@ def check_material(consts, stages):
     # SPIR-V wants an explicit location on every user in/out; the GL path leaves them implicit.
     loc = [0]
     def locate(m):
-        # generous stride: a mat4[] uniform consumes one location per column, and an overlap is an error
-        loc[0] += 64
-        return f"layout(location = {loc[0] - 64}) {m.group(0)}"
+        # An ARRAY uniform consumes one location per element column, so it gets a generous stride; a scalar
+        # or vector consumes one, and a mat4 four. Striding everything by 64 ran past the implementation
+        # limit once the lit stage started carrying the engine's own uniform names too (#237).
+        stride = 64 if "[" in m.group(0) else 4
+        loc[0] += stride
+        return f"layout(location = {loc[0] - stride}) {m.group(0)}"
     prelude = re.sub(r"^(?:flat )?in \w+ \w+;", locate, prelude, flags=re.M)
     # ...and on every non-opaque uniform. Samplers are opaque and must NOT get one.
     prelude = re.sub(r"^uniform (?!\w*sampler)\w+ \w+(\[[^\]]*\])?;", locate, prelude, flags=re.M)
@@ -272,8 +343,8 @@ def check_material(consts, stages):
 
 # Program linkage: which stages link together. Overridable stages are named by resref and come out of the
 # C# table; the depth-only stages have no resref, so they are the one place this file names shader text
-# directly. #147: water is the only class that tessellates -- its vertex stage must NOT project, the
-# evaluation stage does, after displacing.
+# directly. #339 took the tessellation out with the custom water shader: water is a plain vertex/fragment
+# pair again, like every other class here.
 def programs(c, s):
     return {
         "fullbright": (s["cx_own_vs"], s["cx_own_fs"]),
@@ -285,7 +356,7 @@ def programs(c, s):
         "post bloom downsample": (s["cx_post_vs"], s["cx_bloomdn_fs"]),
         "post bloom upsample": (s["cx_post_vs"], s["cx_bloomup_fs"]),
         "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),
-        "owned water": (s["cx_water_vs"], s["cx_water_tcs"], s["cx_water_tes"], s["cx_water_fs"]),
+        "owned water": (s["cx_water_vs"], s["cx_water_fs"]),
         "instanced grass": (s["cx_grass_vs"], s["cx_grass_fs"]),
         "clustered light build": (s["cx_cluster_cs"],),
     }

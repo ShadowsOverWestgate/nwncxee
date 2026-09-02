@@ -298,6 +298,50 @@ public sealed unsafe partial class AlloyRenderer
     /// own pass line reports it.</summary>
     internal static uint SkyVao(int v) => _vVao46[v];
 
+    /// <summary>#136: the same streams under the ENGINE's attribute locations, for a draw issued against an
+    /// engine-compiled program. <c>GLRender::ConnectShaderData</c> @0x4ce8e0 binds them explicitly --
+    /// <c>vPos</c> 0, <c>vTcIn</c> 1, <c>vColor</c> 2, <c>vCustomColor</c> 3, <c>vNormal</c> 7,
+    /// <c>vIndex</c> 8 -- and Alloy's own layout puts the NORMAL at 2, on top of <c>vColor</c>. One VAO per
+    /// slot, built on demand and cached beside the 4.6 one; a container object, so it cannot be shared with
+    /// the engine's context even though every buffer in it is (#80).
+    /// <para>Only the three streams a sky stage reads. <c>vColor</c> stays unbound on purpose: the sky
+    /// stages do not define VERTEX_COLOR, so nothing samples it, and binding the normal there (Alloy's own
+    /// layout) is exactly the mistake this exists to avoid.</para></summary>
+    private static readonly uint[] _vVaoEng = new uint[MaxVdos];
+
+    internal static uint EngineVao(int v)
+    {
+        if ((uint)v >= (uint)_vdoCount) return 0;
+        if (_vVaoEng[v] != 0) return _vVaoEng[v];
+        uint elem = _vElemBuf[v];
+        if (elem == 0) return 0;
+        var pos = _vPos[v]; var uv = _vUv[v]; var nrm = _vNrm[v];
+        uint vao; Gl.GenVertexArrays(1, &vao);
+        Gl.BindVertexArray(vao);
+        VertexArrays.Bind(EngLocPos, in pos);
+        if (uv.Present) VertexArrays.Bind(EngLocUv, in uv);
+        if (nrm.Present) VertexArrays.Bind(EngLocNrm, in nrm);
+        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, elem);
+        Gl.BindVertexArray(0);
+        _vVaoEng[v] = vao;
+        return vao;
+    }
+
+    /// <summary>#136: drop this slot's engine-layout VAO -- on a rebind (the slot now names another VDO) or
+    /// a context loss (the name belongs to a context that is gone, so it must be forgotten, never deleted).
+    /// The delete is deliberately absent on the loss path for the reason <c>EnsureVao</c> spells out: a
+    /// delete aimed at a dead name hits whatever the next context recycles that number for.</summary>
+    internal static void ForgetEngineVao(int v)
+    {
+        if ((uint)v >= (uint)_vVaoEng.Length) return;
+        _vVaoEng[v] = 0;
+    }
+
+    /// <summary>#136: the engine's own attribute locations, from <c>ConnectShaderData</c>'s
+    /// <c>glBindAttribLocation</c> run. Read off the binary, not the shader source -- the source names them
+    /// and the engine numbers them.</summary>
+    private const uint EngLocPos = 0, EngLocUv = 1, EngLocNrm = 7;
+
     /// <summary>#213's acceptance signal: the classes that have bound an OWNED VAO since the last period
     /// line, one bit per <see cref="AlloyClass"/>. The slot count cannot say this -- a class whose slots all
     /// refused, and a class nothing staged for, both read as "some slots owned" -- and the criterion is per

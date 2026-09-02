@@ -47,6 +47,8 @@ public sealed unsafe class UiInputService : IExtenderService
     private static delegate* unmanaged<IntPtr, void> _kbOn, _kbOff;
     private static delegate* unmanaged<void> _turnOffModal;
     private static delegate* unmanaged<int*, int*, uint> _sdlGetMouseState;
+    private static delegate* unmanaged<IntPtr, int> _nkAnyHovered;   // nk_window_is_any_hovered
+    private static delegate* unmanaged<IntPtr, void> _nkCopyEvent;   // nk_sdl_copy_event
     private static bool _kbHeld;   // our view of the engine keyboard-capture gate; edges drive the modal reset
 
     // Trampolines to the engine originals.
@@ -74,6 +76,8 @@ public sealed unsafe class UiInputService : IExtenderService
         _kbOff           = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOff);
         _turnOffModal    = (delegate* unmanaged<void>)Native.Sym(SymbolMap.TurnOffKeyboardModal);
         _sdlGetMouseState = (delegate* unmanaged<int*, int*, uint>)Native.Sym(SymbolMap.SdlGetMouseState);
+        _nkAnyHovered    = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.NkWindowIsAnyHovered);
+        _nkCopyEvent     = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.NkSdlCopyEvent);
 
         UiHost.KeyboardGate = KbGate;   // centralized engine keyboard gate (#64 AC3): one owner for all consumers
 
@@ -140,7 +144,9 @@ public sealed unsafe class UiInputService : IExtenderService
             _log?.Info($"[keydiag] key={key} focused={_focused} owner={UiHost.AnyKeyboardOwner} " +
                        $"suppress={UiHost.AnySuppressChords} nui={NuiEditFocused()} kbmode={KeyboardModeActive()} natdlg={NativeDialogOpen()}");
         // Precedence: a window (keyboard owner or selective modal) eats it -> don't run the engine original.
-        if (UiHost.DispatchKey(key, mods)) return 0;
+        // Unless a NUI edit box has focus: NUI draws over us and runs its own SDL pump, so a key routed to our
+        // keyboard owner as well would land in BOTH fields at once.
+        if (!NuiEditFocused() && UiHost.DispatchKey(key, mods)) return 0;
         // Chord layer: only on the fresh press (auto-repeat gate), and only when the gate is clear.
         bool fresh = _keysDown.Add(key);
         if (fresh && ChordGateClear()) UiHost.FireChords(key, mods);
@@ -176,19 +182,32 @@ public sealed unsafe class UiInputService : IExtenderService
                     _keysDown.Remove(*(uint*)(ev + SdlEvSymOff));
                     break;
                 case SdlTextInput:
-                    UiHost.DispatchText(ev + SdlEvTextOff);   // finished UTF-8 -> the keyboard owner's edit line
+                    // ...and the same for finished text: a focused NUI edit box owns the keyboard outright.
+                    if (!NuiEditFocused())
+                        UiHost.DispatchText(ev + SdlEvTextOff);   // finished UTF-8 -> the keyboard owner's edit line
                     break;
                 case SdlMouseMotion:
                 {
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
                     if (UiHost.HoverToFocus) UiHost.HoverFocusAt(mx, my);
-                    if (UiHost.DispatchMouseMotion(mx, my)) return 0;
+                    if (UiHost.DispatchMouseMotion(mx, my))
+                    {
+                        // Swallowing motion (a settings panel open, a drag in progress) starves nuklear's own
+                        // feed, which hangs off CExoInput::AddEvent below us -- its mouse position would freeze
+                        // and NuiHovered() would then answer from wherever the pointer last was NOT over us.
+                        // Hand it the motion directly; it is state, not an action, so nothing acts twice.
+                        if (_nkCopyEvent != null) _nkCopyEvent(ev);
+                        return 0;
+                    }
                     break;
                 }
                 case SdlMouseDown:
                 {
                     byte btn = *(byte*)(ev + SdlEvButtonOff);
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    // NUI draws over us -> it gets the press. Blur first: this is a click elsewhere, and
+                    // FocusAt (skipped here) is what would otherwise have released our windows' focus.
+                    if (NuiHovered()) { UiHost.Blur(); break; }
                     if (!UiHost.HoverToFocus) UiHost.FocusAt(mx, my);   // click-to-focus (default)
                     if (UiHost.DispatchMouseButton(true, btn, mx, my)) return 0;
                     if (ChordGateClear()) UiHost.FireMouseChords(btn, RawMods());
@@ -202,6 +221,7 @@ public sealed unsafe class UiInputService : IExtenderService
                     break;
                 }
                 case SdlMouseWheel:
+                    if (NuiHovered()) break;                           // ...and the scroll
                     if (UiHost.DispatchMouseWheel(*(int*)(ev + SdlEvWheelYOff))) return 0;
                     break;
             }
@@ -264,6 +284,19 @@ public sealed unsafe class UiInputService : IExtenderService
     }
 
     // ---- environmental probes -------------------------------------------------------------------
+    /// <summary>True while the pointer is over a NUI window. Those draw ON TOP of our windows (the roll-call
+    /// runs at nk_sdl_render), so they take the press and the wheel; without this a NUI window dragged over the
+    /// chatbox would look on top and still lose every click to it. Only the acquisition edges consult it --
+    /// motion and button-up stay unconditional so a drag that starts on our window still finishes when the
+    /// pointer crosses a NUI one. State is nuklear's from the frame just drawn, so it lags by at most a frame.
+    /// </summary>
+    private static bool NuiHovered()
+    {
+        if (_nuklearGlobal == IntPtr.Zero || _nkAnyHovered == null) return false;
+        IntPtr ctx = *(IntPtr*)_nuklearGlobal;
+        return ctx != IntPtr.Zero && _nkAnyHovered(ctx) != 0;
+    }
+
     private static bool NuiEditFocused()
     {
         if (_nuklearGlobal == IntPtr.Zero) return false;

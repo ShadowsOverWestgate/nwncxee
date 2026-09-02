@@ -40,7 +40,13 @@ internal static unsafe class ShaderResource
         (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.CxxOperatorNew);
 
     /// <summary>The GLSL a content author supplied for <paramref name="resref"/>, or null when nothing in
-    /// the resource chain provides it (the common case: everyone runs the embedded defaults).</summary>
+    /// the resource chain provides it (the common case: everyone runs the embedded defaults).
+    /// <para><b>OUR resrefs only</b> -- <c>sowx_*</c>/<c>cx_*</c>, which nothing else in the client ever
+    /// looks up. Where no <c>CRes</c> exists yet this makes a BARE one and registers it, and the engine
+    /// reads a <c>.shd</c> back through <c>CResHelper&lt;CResSHD, 2069&gt;</c>, casting whatever the key
+    /// table holds. Point this at a resref the engine also loads and its next shader compile stores through
+    /// <c>CResSHD::GetSHDDataPtr()</c> on an object that is not one, and the client dies (#346, live).
+    /// A stock file goes through <see cref="VanillaShader"/>, which asks the ENGINE for it.</para></summary>
     internal static string? Override(string resref, ExtenderLog? log)
     {
         if (_resManSym == IntPtr.Zero || _exists == null || _getResObject == null || _setResObject == null

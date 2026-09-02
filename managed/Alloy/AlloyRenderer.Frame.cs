@@ -93,6 +93,7 @@ public sealed unsafe partial class AlloyRenderer
 
         Matrix4x4 view = *(Matrix4x4*)(_mtxStacks + ModeView * StackStride + StackTop);
         Matrix4x4 proj = *(Matrix4x4*)(_mtxStacks + ModeProjection * StackStride + StackTop);
+        _projMtx = proj;   // #347: what a spliced stock file reads as m_proj
         Matrix4x4 vp = view * proj;
         // every froxel input comes off THIS pass's projection, never the capture side (see TryPerspective)
         bool perspective = AlloyLights.TryPerspective((float*)&proj, out float p00, out float p11,

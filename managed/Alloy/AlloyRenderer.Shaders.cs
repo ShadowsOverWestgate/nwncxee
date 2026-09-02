@@ -68,11 +68,14 @@ public sealed unsafe partial class AlloyRenderer
         #define SOWX_FEAT_ROOFKNM   5
         #define SOWX_FEAT_FLOWMAP   7
         #define SOWX_FEAT_SKIN      8
+        #define SOWX_FEAT_NOIRWET   9
+        #define SOWX_FEAT_NOIRGLOSS 10
         uniform int uTimeOfDay;        // worldtimerTimeOfDay, the engine's own int
         uniform vec3 uAreaWind;        // areaGlobalWind
         uniform int uAreaFlags;        // areaFlags
         uniform vec3 uCamPos;          // cameraPosition
         uniform vec3 uPlayerPos;       // playerPosition
+        uniform vec3 uCamFocus;        // cameraFocus -- the camera PIVOT (runtime +0x90), not uCamPos
 
         """;
 
@@ -251,8 +254,6 @@ public sealed unsafe partial class AlloyRenderer
     /// a linear function of the view position, and <c>gl_Position.w</c> IS <c>-vPosView.z</c>.</para>
     /// <para>The engine reconstructs the world position with <c>m_view_inv * vPosView</c> purely because its
     /// stage does not carry one. Ours does, and it is the same point.</para></summary>
-    internal const string KeyFogFs = KeyholeFs + FogFs;
-
     internal const string KeyholeFs = NoiseLib + """
 
         // inc_keyhole.shd's own constants. FLOOR_OFFSET is the height above the player below which nothing
@@ -334,6 +335,197 @@ public sealed unsafe partial class AlloyRenderer
             vec3 disp = mix(pow(max(lin, vec3(0.0)), g),
                             pow(max(SowxFogColourLin(world, f), vec3(0.0)), g), f);
             return pow(max(disp, vec3(0.0)), vec3($SRGB$));
+        }
+
+        """;
+
+    /// <summary>The keyhole and the fog, in the order every fragment stage wants them. Declared after
+    /// both halves: <c>check-shaders.py</c> inlines only constants it has already read.</summary>
+    internal const string KeyFogFs = KeyholeFs + FogFs;
+
+    /// <summary>#347: the VANILLA ENVIRONMENT -- everything a spliced stock include would have got from
+    /// the <c>#include</c> lines <see cref="VanillaShader"/> drops, in one block ahead of every marked
+    /// region so that two spliced files cannot each declare it. That collision is not hypothetical: both
+    /// <c>inc_noir.shd</c> and <c>inc_vision.shd</c> include <c>inc_scriptable</c>, and a uniform declared
+    /// twice in one compilation unit is a compile error, not a warning.
+    /// <para>Macros where Alloy already carries the value under its own name, so a splice costs no extra
+    /// upload; uniforms only where it does not.</para>
+    /// <para><b><c>SOWX_ALLOY</c> is the contract with the content repo.</b> A stock file that needs to do
+    /// something different when Alloy is the renderer -- because Alloy replaced the engine machinery it
+    /// would otherwise read -- branches on this. Old content that has never heard of it compiles exactly as
+    /// it does for the engine, which is why the extender and the hak can land in either order.</para>
+    /// <para><c>LIGHTING 0</c> is that case's first customer. The engine's forward light arrays
+    /// (<c>numLights</c>, <c>lightPosition[]</c>) do not exist here -- Alloy's lights are an SSBO the
+    /// clustered pass walks -- so every stock block guarded on them compiles out, and where a file wants a
+    /// light term anyway it asks <see cref="SowxVisionLight"/> for Alloy's.</para></summary>
+    internal const string VanillaEnvFs = """
+
+        #define SOWX_ALLOY 1
+        #define POSITION_WORLD 1
+        #define POSITION_VIEW  0
+        #define LIGHTING 0
+        #define PI 3.14159265359
+        #define COLOR_WHITE vec4(1.0, 1.0, 1.0, 1.0)
+        #define vPosWorld vWorld
+        #define playerPosition uPlayerPos
+        // The camera PIVOT, not the eye: inc_uniforms' `cameraFocus`, which the bridge never follows, so
+        // Alloy owes the value. Content measures a sight range against it because in chase cam it sits on
+        // the controlled character (inc_vision).
+        #define cameraFocus uCamFocus
+        #define worldtimerTimeOfDay uTimeOfDay
+        // The engine's own projection, off the same matrix stack Alloy reads its own from. Only the
+        // DIAGONAL is ever read by the files spliced here (m_proj[3][3] separates the orthographic 2D UI
+        // from the perspective world), and a diagonal element is the same in either transpose convention --
+        // which matters, because Alloy stages hold the transpose of what the engine's do.
+        uniform mat4 m_proj;
+        // The scriptable block is NOT declared here. Every file spliced into this stage includes
+        // inc_scriptable for it, and the bridge resolves that include through the resource chain, so
+        // declaring it too is a redefinition and a dead stage. What Alloy owes is the VALUES:
+        // UploadVanillaEnv and UploadTargetShape write them under those names out of the engine's own
+        // tables (scriptableInt(n) = i[10+n], scriptableFloat(n) = f[23+n]), and a name the stage does not
+        // use resolves to -1, which GL ignores.
+
+        // The engine's compatibility preamble, the part of it a spliced file can reach. GLRender builds
+        // this ahead of every stage it compiles (@0x12f3fd0) and content is written against it.
+        #define texture2D texture
+        #define textureCube texture
+        #define GAMMA_CORRECTION 1
+        // ...and the one a STAGE declares rather than the preamble: 1 = vertex, 2 = fragment, as every
+        // stock stage sets for itself (`vsparticle.shd` 1, `fsparticle.shd` 2) and `inc_common.shd` defaults
+        // to 2 for a file that forgot. This block stands in for the stage a spliced file thinks it is in,
+        // and that stage is `cx_ownlit_fs` -- so 2. Undefined it is not a compile error, which is the whole
+        // hazard: `#if SHADER_TYPE == 2` silently reads 0 and the file's fragment half vanishes. `inc_vision`
+        // is written that way (its body is FRAGMENT ONLY because it reads gl_FragCoord, with an empty
+        // `ApplyRacialVision` as the #else), so without this the racial-vision hook compiled to a no-op and
+        // SoW's darkness limiting simply did not happen under Alloy -- no error, no effect.
+        #define SHADER_TYPE 2
+        #define vTexCoords vUV
+        #define texUnit0 uTex
+        // Material texture slot 6. Stock names it by unit; Alloy binds it as the flow map's sampler, and
+        // which of the two a material means is its own business -- the slot is the contract, not the name.
+        #define texUnit6 uFlowTex
+        // inc_common's colour-space pair, and its exact curve. ApplyColorSpace goes display -> WORKING
+        // space and RevertColorSpace comes back. The Alloy frame is linear, which is what working space is
+        // on a gamma-correcting client, so content that converts either way gets what it expects -- and
+        // that is also why a stock stage's FragmentColor is linear where it is handed to the hook.
+        vec3 ApplyColorSpace(vec3 c)  { return sign(c) * pow(abs(c), vec3($SRGB$)); }
+        vec3 RevertColorSpace(vec3 c) { return sign(c) * pow(abs(c), vec3(1.0 / $SRGB$)); }
+        // The area's fog colour as the engine's stages see it: DISPLAY space. Alloy linearises it at upload
+        // (#132), so this undoes that rather than carrying the same number twice.
+        #define fogColor vec4(pow(max(uFogColor.rgb, vec3(0.0)), vec3(1.0 / $SRGB$)), 1.0)
+
+        // #348: what inc_ripple.shd's TiltNormal writes through, and the two matrices it converts with.
+        // The helper tilts a VIEW-space normal in the surface's world xy plane; Alloy's normal is already
+        // world-space, so the matrices are IDENTITY and the conversion collapses to the world-plane tilt the
+        // helper is written to perform. That is exact, not an approximation -- read the function.
+        vec3 vFragmentNormal;
+        const mat4 m_view = mat4(1.0);
+        const mat4 m_view_inv = mat4(1.0);
+        // The GEOMETRY normal (before any normal map) and the eye-to-fragment direction, both under the
+        // same identity view: stock reads them in view space and only ever takes a dot or a Z off them,
+        // neither of which a rotation changes.
+        vec3 vSurfaceNormal;
+        vec3 vViewToSurface_n;
+        // The renderer's own encode exponent, for content that has a display-space number to apply to a
+        // linear value.
+        #define SOWX_GAMMA $SRGB$
+
+        /// #347: how lit this fragment is, 0..1, for a stock file that would have asked the engine's light
+        /// arrays. Alloy's clustered diffuse is the same question answered by a different structure, and the
+        /// luma of it is what the stock term reduces to. Content reaches this through SOWX_ALLOY; nothing
+        /// here is called unless a spliced file asks for it.
+        float SowxVisionLight()
+        {
+            vec3 lit = SowxClusteredDiffuse(vWorld, normalize(vNrm), vDepth);
+            return clamp(dot(lit, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+        }
+
+        """;
+
+    /// <summary>#347/#348: the CONTENT HOOKS. Two functions the lit stage calls and does not implement, so
+    /// that shading a content repo invented -- SoW's noir desaturation, racial vision, and the wet/gloss
+    /// blood-pool looks -- lives in that repo and not in this one.
+    /// <para><b>Why the extender carries none of it.</b> The bridge exists so one copy of a shader runs, and
+    /// the copy that runs should be the one its author edits. A stock file (<c>inc_target.shd</c>) belongs
+    /// to the ENGINE, so splicing it here is faithful; <c>inc_noir</c> and <c>inc_vision</c> are SoW's, and
+    /// an extender that embedded even their stubs would be asserting what a content repo's shaders are
+    /// called. This extender is optional and drop-in: run it against any module and these two hooks are
+    /// no-ops, which is exactly the right answer for content that never asked for them.</para>
+    /// <para>The content file is <c>cx_lit_hooks</c> -- one resref, composed by the content out of its own
+    /// includes (which <see cref="VanillaShader"/> resolves through the resource chain). The two signatures
+    /// below are the whole contract, and they are generic on purpose: nothing in them names a feature.</para>
+    /// <para><b>Where each is called.</b> The surface hook runs after the texel is sampled and the normal is
+    /// final, before anything lights either -- the point every stock stage does its own surface work. It may
+    /// tilt the normal, tint the albedo, and DECLARE material terms (a stock stage's
+    /// <c>MATERIAL_*_VALUE</c> is a compile-time constant Alloy cannot otherwise see); <c>metalDecl</c> is
+    /// separate from <c>pbrDecl</c> because 0 is <see cref="MaterialLib"/>'s "nothing declared" sentinel and
+    /// a dielectric declaring 0 would otherwise synthesise to chrome. The display hook runs after fog, in
+    /// DISPLAY space, where <c>inc_standard.shd</c> puts the desaturation and the vision passes.</para></summary>
+    internal const string HookFs = """
+
+        // $VANILLA cx_lit_hooks
+        void SowxSurfaceHook(inout vec3 albedo, inout vec3 nrm, inout vec3 pbr, inout vec4 specDecl,
+                             vec2 uv, vec3 world, int feat, float tick) { }
+        vec3 SowxDisplayHook(vec3 c) { return c; }
+        // $VANILLA-END
+
+        """;
+
+    /// <summary>#346: the SPELL-TARGETING SHAPE -- the red circle (or cone, or rectangle) a caster sees on
+    /// the ground while picking a target. Vanilla draws it as arithmetic in <c>inc_standard.shd</c>'s tail,
+    /// not as a draw call, which is why the M4 cutover lost it: no engine draw went missing, an engine
+    /// SHADER did. <see cref="RspShim.EngineOverlays"/> is therefore the wrong tool here and was not used --
+    /// there is nothing to replay.
+    /// <para><b>The shape's code is not written here.</b> It is the engine's own <c>inc_target.shd</c>,
+    /// spliced in at compile time by <see cref="VanillaShader"/> from whatever the resource chain supplies
+    /// -- a hak, <c>override/</c>, NWSync, or the stock <c>base_shaders.bif</c>. That is the point of the
+    /// bridge: <c>sow-topdata</c> customises this file (a Reach-promoted range, a Widen-grown shape) and
+    /// nothing in the extender has to know.</para>
+    /// <para><b>Between the markers is a STUB, not a snapshot.</b> A copy would be the second
+    /// implementation this bridge exists to delete, and it would be the worst kind: one that runs only when
+    /// the splice failed, so its drift from the content would never be seen. What the fallback owes is the
+    /// world, not the feature -- the lit program has to link whatever the resource chain hands it, because
+    /// a program that fails to build reverts every Alloy part to engine drawing. So the stub answers "no
+    /// shape here" and the frame is otherwise untouched. No file, no overlay, and the log says so.</para>
+    /// <para>Everything the file wants from its own includes is in <see cref="VanillaEnvFs"/>. The uniforms
+    /// it declares ITSELF (<c>targetShape</c> and friends) are not repeated there --
+    /// <c>UploadTargetShape</c> writes them under the engine's own names, which is what lets the stock text
+    /// drop in unedited.</para></summary>
+    internal const string TargetFs = """
+
+        // $VANILLA inc_target
+        float GetTargetGroundHighlightStrength() { return 0.0; }
+        void ApplyTargetGroundHighlight(inout vec4 FragmentColor, float fStrength) { }
+        // $VANILLA-END
+
+        /// #346/#347: the three display-space overlays, in ONE encode bracket and in inc_standard.shd's own
+        /// order -- noir desat, then racial vision, then the targeting shape. The engine applies all three
+        /// after RevertColorSpace; the same arithmetic on linear values is a different, stronger effect
+        /// (#222's trap), and bracketing them together costs one encode instead of three.
+        /// <para>The shape goes last on purpose, and the content says why: it is UI drawn on the ground, and
+        /// a caster has to read its colour over a monochrome scene.</para>
+        vec3 SowxDisplayOverlays(vec3 lin)
+        {
+            float strength = GetTargetGroundHighlightStrength();
+            vec4 c = vec4(pow(max(lin, vec3(0.0)), vec3(1.0 / $SRGB$)), 1.0);
+            // The content's display-space passes first (SoW puts its desaturation and racial vision here),
+            // then the ENGINE's targeting shape last -- inc_standard.shd's own order, and its own reason:
+            // the shape is UI drawn on the ground, and a caster has to read its colour over a monochrome
+            // scene.
+            c.rgb = SowxDisplayHook(c.rgb);
+            ApplyTargetGroundHighlight(c, strength);
+            return pow(max(c.rgb, vec3(0.0)), vec3($SRGB$));
+        }
+
+        /// #347: the CONTENT half alone, for a stage whose stock counterpart runs the hooks but not the
+        /// targeting shape. `fswater.shd` is the case and the reason: its tail calls ApplyNoirDesat and
+        /// ApplyRacialVision and stops there, so adding the shape to Alloy's water would paint a reticle
+        /// vanilla never painted. Same encode bracket, one term short.
+        vec3 SowxDisplayContent(vec3 lin)
+        {
+            vec3 c = pow(max(lin, vec3(0.0)), vec3(1.0 / $SRGB$));
+            c = SowxDisplayHook(c);
+            return pow(max(c, vec3(0.0)), vec3($SRGB$));
         }
 
         """;
@@ -877,9 +1069,19 @@ public sealed unsafe partial class AlloyRenderer
             float specTexel = (slots & SOWX_SLOT_SPEC) != 0 ? texture(uSpecTex, uv).r : 0.0;
             float roughTexel = (slots & SOWX_SLOT_ROUGH) != 0 ? texture(uRoughTex, uv).r : 0.0;
             vec3 pbr = SowxSynthPbr(d.pbr.xyz, slots, envLevel, specTexel, roughTexel);
+            vec4 spcDecl = d.spc;
+            // #348/#556: the content's own surface work, AFTER synthesis. Its stock stages run at the same
+            // point -- SetupStandardShaderInputs has filled the MATERIAL_*_VALUE globals from the maps or
+            // the fallbacks, and both the weather and the blood-pool shaders READ those before overwriting
+            // them (`min(MATERIAL_ROUGHNESS_VALUE, WET_ROUGHNESS)` is a comparison, not a value). Handing
+            // over the declared triple instead would give them zeros to compare against.
+            vFragmentNormal = N;
+            vSurfaceNormal = normalize(vNrm);
+            vViewToSurface_n = normalize(vWorld - uEyePos);
+            SowxSurfaceHook(albedo, N, pbr, spcDecl, uv, vWorld, feat, float(uTimeOfDay) / 1000.0);
             float spec = pbr.x, rough = pbr.y, metal = pbr.z;
             vec3 base = albedo * matDiffuse;
-            vec3 specColor = SowxSpecColor(d.spc, base, metal, slots);
+            vec3 specColor = SowxSpecColor(spcDecl, base, metal, slots);
             vec3 F0 = specColor * spec;
 
             vec3 sun = uAreaDiffuse * (sunNdl * sunVis);
@@ -950,7 +1152,9 @@ public sealed unsafe partial class AlloyRenderer
             // #294: times COVERAGE, not the raw texel alpha -- on an env-mapped material that channel is
             // reflectivity and the engine leaves the fragment alpha to the material alone.
             // #132: linear out. No encode, no shoulder -- the resolve owns both for the whole frame.
-            frag = vec4(SowxFog(lit * kh, vWorld, vDepth), coverage * d.rot.w);
+            // #346/#347: the display-space overlays go on LAST, after the fog, exactly where
+            // inc_standard.shd puts them -- noir, racial vision, then the targeting shape.
+            frag = vec4(SowxDisplayOverlays(SowxFog(lit * kh, vWorld, vDepth)), coverage * d.rot.w);
         }
         """;
 }

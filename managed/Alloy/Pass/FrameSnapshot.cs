@@ -590,6 +590,11 @@ internal static unsafe class FrameSnapshot
 
         """ + AlloyRenderer.DrawBufDecl + AlloyRenderer.FeatDecl + AlloyRenderer.KeyFogDecl + """
         uniform sampler2D uTex;        // the water material's diffuse -- its AVERAGE is the liquid's colour
+        // #347: VanillaEnvFs aliases this as texUnit6. Declared, never bound, never sampled here -- its only
+        // reader is the content's SowxSurfaceHook, which this stage does not call (water takes the DISPLAY
+        // hook alone). Present so the spliced hook file compiles; unused, it is eliminated and its location
+        // resolves to -1.
+        uniform sampler2D uFlowTex;
         // #129: the one framebuffer copy, taken at PassId.FbCopy. Since #132 its colour is LINEAR -- the
         // copy is of PostChain's own target, every Alloy stage writes linear into it, and the single encode
         // happens later at the resolve. Depth is the raw window-space buffer, which SowxSceneZ linearises
@@ -1140,7 +1145,7 @@ internal static unsafe class FrameSnapshot
             // Stock's own `FragmentColor.a = 1.0`: everything behind the surface has already been
             // composited in by the refraction term, so letting the framebuffer show through counts the
             // floor twice. rot.w is below 1 only on a fading tile.
-            frag = vec4(SowxFog(lit * kh, vWorld, vDepth), d.rot.w);
+            frag = vec4(SowxDisplayContent(SowxFog(lit * kh, vWorld, vDepth)), d.rot.w);
         }
         """;
 }

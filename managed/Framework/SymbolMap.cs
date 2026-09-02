@@ -175,6 +175,10 @@ internal static unsafe class SymbolMap
     // per-frame nk_sdl_render hook. Core nk_* are plain C; the SDL glue is C++-linkage on this
     // build (mangled), so nk_sdl_render must use its mangled name or the hook never installs. The
     // manager is absent on Windows: no anchor, so the whole group skips + logs there.
+    /// <summary>Nuklear's GL flush, called from <c>CGuiMan::UpdateAndRender</c> @0x5809fa straight after
+    /// <c>Nui__Render()</c> (which only fills the command queue and touches no GL). Everything drawn before
+    /// it lands UNDER every NUI window and over the vanilla GUI panels -- which is where the framework's own
+    /// windows draw (<c>UiHostService</c>), not just where nuklear windows get built.</summary>
     public const string NkSdlRender        = "_Z13nk_sdl_renderf";
     public const string NkBegin            = "nk_begin";
     public const string NkEnd              = "nk_end";
@@ -182,6 +186,13 @@ internal static unsafe class SymbolMap
     public const string NkLabel            = "nk_label";
     public const string NkButtonLabel      = "nk_button_label";
     public const string NkWindowIsClosed   = "nk_window_is_closed";
+    /// <summary><c>int nk_window_is_any_hovered(nk_context*)</c> -- pointer precedence for the layering
+    /// above. NUI draws on top of our windows, so it must get the click too.</summary>
+    public const string NkWindowIsAnyHovered = "nk_window_is_any_hovered";
+    /// <summary><c>void nk_sdl_copy_event(SDL_Event*)</c> -- nuklear's own event feed, normally reached via
+    /// <c>CExoInput::AddEvent</c>. Swallowing an event at <c>WinMessageHandler</c> starves it, so a swallowed
+    /// pointer motion is handed here directly to keep <see cref="NkWindowIsAnyHovered"/> answering live.</summary>
+    public const string NkSdlCopyEvent      = "_Z17nk_sdl_copy_eventP9SDL_Event";
     // in-game game clock (chat game-time timestamps). The SERVER-synced module time lives on CNWCModule
     // (hour at +0x16c); CClientExoApp::GetModule(app) fetches it off the same *g_pAppManager chain the
     // in-game gate walks. NOT CWorldTimer -- that's a free-running local clock never anchored to server time.
@@ -244,6 +255,20 @@ internal static unsafe class SymbolMap
     /// buffer bindings are the two GL_* bindings outside its write set -- so the hand-back has to route one
     /// bind through this wrapper to bring cache and GL back into agreement.</summary>
     public const string RiBindBuffer = "_ZN15RenderInterface10BindBufferEjj";
+    /// <summary>#237: <c>GLRender::m_boundTextures</c> @0x19ad0e0 -- the engine's per-stage bound-texture
+    /// CACHE, 16 entries of <c>{AuroraEnableEnums target, GLuint name}</c> (8 bytes each), with
+    /// <c>m_activeTextureStage</c> @0x19ad0d8 and <c>m_bEnabledTextureStages</c> @0x19ad0d4 beside it.
+    /// <para><b>Why a renderer that draws in its OWN context has to care.</b>
+    /// <c>RenderInterface::SetActiveTextureAndBind</c> @0x45ce10 returns WITHOUT calling
+    /// <c>glActiveTexture</c> or <c>glBindTexture</c> when the requested (target, name) already matches the
+    /// cached entry. GL texture bindings are per-context, so any engine bind wrapper Alloy calls from inside
+    /// its 4.6 bracket writes this cache while the real bind lands in the WRONG context -- and the engine's
+    /// next matching bind then early-outs and draws with whatever its own context still has. Snapshot these
+    /// three across any such call; <c>OwnedTextures</c> avoids the problem the other way, by binding
+    /// raw.</para></summary>
+    public const string GlBoundTextures = "_ZN8GLRender15m_boundTexturesE";
+    public const string GlActiveTextureStage = "_ZN8GLRender20m_activeTextureStageE";
+    public const string GlEnabledTextureStages = "_ZN8GLRender23m_bEnabledTextureStagesE";
     /// <summary>#220: RenderInterface::DeleteTextures(n, names) @0x45d1d0 -- the SINGLE funnel through which
     /// every engine GL texture name dies. Its callers are <c>CAurTextureBasic::~CAurTextureBasic</c>,
     /// <c>::Reset</c>, <c>::glImageBasic</c> (the re-upload path), <c>AurTextureFreeAll</c>,
@@ -629,6 +654,18 @@ internal static unsafe class SymbolMap
     /// storage and composed at upload. [23] is <c>keyholeMinZOffset</c>, which the generation of
     /// <c>inc_keyhole.shd</c> this client runs never reads.</summary>
     public const string GlGlobalShaderConstantsF = "_ZN8GLRender24m_globalShaderConstantsfE";
+    /// <summary>GLRender::m_globalShaderConstantsi @0x19af6e0 (B) -- the INTEGER side of the same table.
+    /// [27] is <c>targetShape</c>, [32] <c>targetShapeOriginOnSelf</c>, [35] <c>targetObjectType</c>; the
+    /// pairing is <c>SetUniforms</c> @0x4ccbf0 (slot 0x1eb0 &lt;- +0x6c, 0x1ec4 &lt;- +0x80, 0x1ee0 &lt;- +0x8c)
+    /// against <c>ConnectShaderData</c>'s names, not the ADR. Read, never written.</summary>
+    public const string GlGlobalShaderConstantsI = "_ZN8GLRender24m_globalShaderConstantsiE";
+    /// <summary>GLRender::m_globalShaderConstantsv @0x19af890 (B) -- ONE Vector entry, and [0] is
+    /// <c>targetWorldCoords</c>, the ground point under the mouse (SetUniforms slot 0x1ee4). There is no
+    /// [1]: the array is 16 bytes wide.</summary>
+    public const string GlGlobalShaderConstantsV = "_ZN8GLRender24m_globalShaderConstantsvE";
+    /// <summary>GLRender::m_globalShaderConstantsv4 @0x19af780 (B) -- 17 Vector4 entries. [0..15] are the
+    /// scriptable vec4s and [16] is <c>targetShapeColour</c> (SetUniforms slot 0x1edc &lt;- +0x100).</summary>
+    public const string GlGlobalShaderConstantsV4 = "_ZN8GLRender25m_globalShaderConstantsv4E";
     /// <summary>RenderInterface::SetMatrixMode(AuroraTransStates) @0x45cd50 -- selects the matrix stack the
     /// subsequent LoadMatrixIdentity/MultMatrix/SetOrtho/SetPerspective operate on. Enum: PROJECTION=0, VIEW=1
     /// (from Camera::RenderScene's <c>xor edi,edi</c> before SetPerspective, and SetViewTransform's edi=1).</summary>
@@ -662,6 +699,21 @@ internal static unsafe class SymbolMap
     /// <summary>RenderInterface::SetModelMatrix(const Matrix4x4&amp;) @0x45d150 -- the cache-coherent front door
     /// (forwards to GLRender::SetModelMatrix). The lean bucket walker uses this per kept caster.</summary>
     public const string RiSetModelMatrix = "_ZN15RenderInterface14SetModelMatrixERK9Matrix4x4";
+
+    // #136: hosting the engine's own compiled program for a draw Alloy issues. GLRender::SetProgram
+    // @0x4cf940 is called from INSIDE RenderVertexData @0x4d05c5 -- the funnel the M4 shim swallows -- so
+    // under the cutover a custom-shader material's uniforms are never uploaded. These three are that call,
+    // taken apart, so the swallow can make it in the engine's own context.
+    /// <summary><c>GLRender::m_pCurrentCustomProgram</c> @0x19af680 (B) -- the PROG_FIXED the material bind
+    /// left current. The GL program id is the uint at <c>+0x64</c>, exactly as SetProgram reads it.</summary>
+    public const string GlCurrentCustomProgram = "_ZN8GLRender23m_pCurrentCustomProgramE";
+    /// <summary><c>GLRender::SetUniforms(PROG_FIXED&amp;)</c> @0x4ccbf0 -- uploads the whole engine uniform
+    /// set (matrices from <c>m_aurMtxStack</c>, the global constant tables, the runtime block) into that
+    /// program. ENGINE CONTEXT ONLY: see SkyBox.NoteEngineDraw.</summary>
+    public const string GlSetUniforms = "_ZN8GLRender11SetUniformsERNS_10PROG_FIXEDE";
+    /// <summary><c>GLRender::GlUseProgramConditionally(unsigned int)</c> @0x4ce8b0 -- glUseProgram behind the
+    /// engine's own current-program cache. Called on the engine side so that cache stays true.</summary>
+    public const string GlUseProgramConditionally = "_ZN8GLRender25GlUseProgramConditionallyEj";
     /// <summary>Global shader param scalar getter -- param 0x12 is the light-radius multiplier
     /// GetLightAdjustedRadius applies (adjR = range * intensity * overbright * this).</summary>
     public const string RiGetGlobalShaderParamf = "_ZN15RenderInterface21GetGlobalShaderParamfEN6Aurora23AurGlobalShaderParamf_tE";
@@ -691,7 +743,6 @@ internal static unsafe class SymbolMap
     /// <summary>PartTriMesh::GetIsOpaque() @0x43cee0 -- true if the part is opaque. ABI:
     /// <c>(PartTriMesh* /*rdi*/) -> bool</c>.</summary>
     public const string PartGetIsOpaque = "_ZN11PartTriMesh11GetIsOpaqueEv";
-
 
     // ---- camera-follow anchor (#65): the real, camera-INDEPENDENT PC position, independent of the vanilla
     //      shadow path. Ghidra-verified; Linux-only (skip on Windows). ----
@@ -768,6 +819,24 @@ internal static unsafe class SymbolMap
     public const string ResManDemand       = "_ZN10CExoResMan6DemandEP4CRes";
     public const string ResManRelease      = "_ZN10CExoResMan7ReleaseEP4CRes";
     public const string ResManReleaseObj   = "_ZN10CExoResMan16ReleaseResObjectEP4CResb";
+
+    // #346: the engine's OWN resource read, which is how a stock .shd must be fetched. CResHelper builds a
+    // typed CRes subclass per resource type and the engine reads it back through that type -- registering a
+    // bare CRes under someone else's resref is a type confusion that crashes the engine, not a leak. See
+    // ShaderResource.Override's warning. GLRender's shader-source loader @0x4d2940 calls exactly these three,
+    // in this order, and this replays that: AurResGet -> AurResGetData(size) -> AurResFree(handle).
+    /// <summary><c>AurResGet(const char* name, const char* ext, int* size, bool)</c> @0x4332c0 -- opens a
+    /// resource and pushes it on the <c>Resources</c> stack. Returns the handle and writes the byte count.
+    /// The engine passes the extension WITH its dot (".shd") and true for the bool.</summary>
+    public const string AurResGet = "_Z9AurResGetPKcS0_Pib";
+    /// <summary><c>AurResGetData(int nBytes)</c> @0x432fe0 -- read that many bytes from the resource on TOP
+    /// of the stack into its own buffer and return it. Stack-based, so the trio runs back to back with no
+    /// engine call in between, exactly as @0x4d2940 does it.</summary>
+    public const string AurResGetData = "_Z13AurResGetDatai";
+    /// <summary><c>AurResFree(void* handle)</c> @0x4335d0 -- pop and release. Called only on the path where
+    /// the handle AND the size are non-zero; the engine's own loader does not free on the failure path, so
+    /// neither do we.</summary>
+    public const string AurResFree = "_Z10AurResFreePv";
     public const string CResCtor           = "_ZN4CResC1Ev";
     /// <summary>libstdc++ <c>operator new(size_t)</c>: the CRes we hand the resman is freed by the engine's
     /// own delete, so it must come from the engine's allocator. Linux shares one heap, so this is that.</summary>

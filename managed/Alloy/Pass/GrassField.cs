@@ -1209,6 +1209,12 @@ internal static unsafe class GrassField
 
         """ + AlloyRenderer.FeatDecl + AlloyRenderer.KeyFogDecl + """
         uniform sampler2D uTex;
+        // #347: what VanillaEnvFs aliases as texUnit6. Declared, never bound and never sampled here --
+        // the only reader is the content's SowxSurfaceHook, which this stage does not call. It is present
+        // so the spliced hook file COMPILES; an unused sampler is dead-code eliminated and its location
+        // resolves to -1, which the uniform upload ignores. Grass takes the DISPLAY hook, not the surface
+        // one: it has no material features to reshade.
+        uniform sampler2D uFlowTex;
         uniform vec3 uAreaAmbient;
         uniform vec3 uAreaDiffuse;
         uniform vec3 uAreaDir;
@@ -1268,7 +1274,7 @@ internal static unsafe class GrassField
             // with undissolved grass. Grass always dissolves: it has no per-part CanDissolve to read.
             float kh = SowxKeyhole(1.0, vWorld, vDepth);
             if (kh < 0.0) discard;
-            frag = vec4(SowxFog(lit * kh, vWorld, vDepth), uMsaa != 0 ? cov : 1.0);
+            frag = vec4(SowxDisplayOverlays(SowxFog(lit * kh, vWorld, vDepth)), uMsaa != 0 ? cov : 1.0);
         }
         """;
 

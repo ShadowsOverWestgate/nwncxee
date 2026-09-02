@@ -277,12 +277,13 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>#123: the five <see cref="FeatDecl"/> uniform locations of one program, in the order
     /// <see cref="UploadFeatureTerms"/> writes them.</summary>
-    internal static FeatLoc FeatLocs(uint prog) => new()
+    internal static FeatLoc FeatLocs(uint prog) => WithScriptables(new FeatLoc
     {
         Time = GlProgram.Loc(prog, "uTimeOfDay"),
         Wind = GlProgram.Loc(prog, "uAreaWind"),
         Flags = GlProgram.Loc(prog, "uAreaFlags"),
         Cam = GlProgram.Loc(prog, "uCamPos"),
+        CamFocus = GlProgram.Loc(prog, "uCamFocus"),
         Player = GlProgram.Loc(prog, "uPlayerPos"),
         Fog = GlProgram.Loc(prog, "uFogParams"),
         FogColor = GlProgram.Loc(prog, "uFogColor"),
@@ -294,5 +295,31 @@ public sealed unsafe partial class AlloyRenderer
         FogSkyColor = GlProgram.Loc(prog, "uFogSkyColor"),
         FogSun = GlProgram.Loc(prog, "uFogSun"),
         FogSunColor = GlProgram.Loc(prog, "uFogSunColor"),
-    };
+        // #346: the ENGINE's own uniform names, because the stage compiles the engine's own file. Renaming
+        // any of these means editing spliced content, which is the drift the bridge exists to end.
+        TgtShapeL = GlProgram.Loc(prog, "targetShape"),
+        TgtSelfL = GlProgram.Loc(prog, "targetShapeOriginOnSelf"),
+        TgtObjL = GlProgram.Loc(prog, "targetObjectType"),
+        TgtSizeXL = GlProgram.Loc(prog, "targetShapeSizeX"),
+        TgtSizeYL = GlProgram.Loc(prog, "targetShapeSizeY"),
+        TgtRangeL = GlProgram.Loc(prog, "targetShapeSpellRange"),
+        TgtColL = GlProgram.Loc(prog, "targetShapeColour"),
+        TgtWorldL = GlProgram.Loc(prog, "targetWorldCoords"),
+        // #347: the shared vanilla environment. Same rule as above -- the engine's names, because the code
+        // that reads them is the engine's.
+        ProjL = GlProgram.Loc(prog, "m_proj"),
+    }, prog);
+
+    /// <summary>#551: the scriptable block's locations, filled after the struct so the fixed buffers can be
+    /// written. Cold -- once per program, at build.</summary>
+    private static FeatLoc WithScriptables(FeatLoc loc, uint prog)
+    {
+        for (int i = 0; i < ScriptableSlots; i++)
+        {
+            loc.SInt[i] = GlProgram.Loc(prog, $"scriptableInt{i + 1}");
+            loc.SFloat[i] = GlProgram.Loc(prog, $"scriptableFloat{i + 1}");
+            loc.SVec[i] = GlProgram.Loc(prog, $"scriptableVec{i + 1}");
+        }
+        return loc;
+    }
 }

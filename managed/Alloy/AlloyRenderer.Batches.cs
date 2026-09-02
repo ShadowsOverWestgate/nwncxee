@@ -203,8 +203,10 @@ public sealed unsafe partial class AlloyRenderer
         bool ok = _sortCount.Length == MaxVdos * 4 && litMax == MaxVdos * 4 - 1
                   && unlitCulled == 0 && unlitFree < litCulled;
         // #327: the (feature, primitive) digit fills its buckets exactly, and an out-of-table prim clamps.
-        ok &= FeatPrimKeyOf((int)ShaderFeature.Skin, PrimTypes - 1) == _featPrimCount.Length - 1
-              && FeatPrimKeyOf((int)ShaderFeature.Skin, PrimTypes + 5) == _featPrimCount.Length - 1
+        ok &= (int)FeatCeiling == ShaderFeatures.VsNames.Length - 1
+              && FeatPrimKeyOf((int)FeatCeiling, PrimTypes - 1) == _featPrimCount.Length - 1
+              && FeatPrimKeyOf((int)FeatCeiling, PrimTypes + 5) == _featPrimCount.Length - 1
+              && FeatPrimKeyOf((int)FeatCeiling + 3, 0) == _featPrimCount.Length - PrimTypes
               && FeatPrimKeyOf(0, -1) == 0 && FeatPrimKeyOf(0, 0) == 0;
         if (!ok) log.Info("AlloyRenderer.CullSortSelfCheck: FAILED -- a radix digit does not fit its " +
                           "buckets, or the cull bit outranks the lit one");
@@ -223,10 +225,22 @@ public sealed unsafe partial class AlloyRenderer
     /// <c>nm -S</c>, indexed by the mdl node's prim type. The key clamps rather than trusts the index: the
     /// draw path reads the table unguarded, but a sort bucket must not.</summary>
     private const int PrimTypes = 7;
-    /// <summary>Buckets for the (feature, primitive) digit. Assumes <see cref="ShaderFeature.Skin"/> is the
-    /// enum's ceiling; a feature appended after it overflows, which <see cref="CullSortSelfCheck"/> catches.</summary>
-    private const int FeatPrimKeys = ((int)ShaderFeature.Skin + 1) * PrimTypes;
-    private static int FeatPrimKeyOf(int feat, int prim) => feat * PrimTypes + Math.Clamp(prim, 0, PrimTypes - 1);
+    /// <summary><see cref="ShaderFeature"/>'s last member. Named here because the sort table below is sized
+    /// from it: #348 (NoirWet/NoirGloss) and #556 (GroundWeather) appended above what was then the ceiling
+    /// and this const kept naming <see cref="ShaderFeature.Skin"/>, so the first part carrying one of them
+    /// walked <c>_featPrimCount</c> off its end and the enrollment threw IndexOutOfRange mid-frame -- and
+    /// #556 alone is most of the outdoor tileset, so that was every rainy street.
+    /// <see cref="CullSortSelfCheck"/> now ties it to <see cref="ShaderFeatures.VsNames"/>, which any
+    /// appended feature has to extend anyway -- the old check compared Skin against a table sized from Skin
+    /// and was therefore true by construction.</summary>
+    private const ShaderFeature FeatCeiling = ShaderFeature.GroundWeather;
+    /// <summary>Buckets for the (feature, primitive) digit.</summary>
+    private const int FeatPrimKeys = ((int)FeatCeiling + 1) * PrimTypes;
+    /// <summary>Both indices are CLAMPED, not trusted: this is a sort digit, so a feature past the ceiling
+    /// merely shares a bucket (one extra batch cut, never a wrong draw) where an unclamped one takes the
+    /// frame down. The self-check is what makes the drift loud; the clamp is what makes it survivable.</summary>
+    private static int FeatPrimKeyOf(int feat, int prim)
+        => Math.Clamp(feat, 0, (int)FeatCeiling) * PrimTypes + Math.Clamp(prim, 0, PrimTypes - 1);
 
     private static void SortBlended(int[] idx, float[] key, float[] alpha, int n)
     {
@@ -1066,7 +1080,7 @@ public sealed unsafe partial class AlloyRenderer
     /// while we DID draw) is the fallback.</para></summary>
     private static void StageSky()
     {
-        _skyN = 0; _skyFirst = _drawN;
+        _skyN = 0; _seN = 0; _skyFirst = _drawN;
         IntPtr scene = SkyBox.Scene;
         // #91's rule again: only the enrolled world Scene's sky, never a GUI 3D panel's.
         if (scene == IntPtr.Zero || scene != _enrollScene) return;
@@ -1088,6 +1102,16 @@ public sealed unsafe partial class AlloyRenderer
                 if (p.Gob != roles[r].Gob) continue;
                 if (p.Vao < 0 || !SkyBox.Drawable(i) || _drawN >= MaxOwned || _skyN >= MaxSkyDraws)
                 { staged = -1; break; }
+                // #136: a part whose material names a shader no Alloy stage implements is drawn with the
+                // ENGINE's compiled program, captured at the swallow. It takes no Alloy draw record and no
+                // stage of ours -- everything it needs is already inside that program -- so it is staged to
+                // its own list here and the role counts it as drawn.
+                if (!p.Ported)
+                {
+                    if (!StageEngineSky(ref p, roles[r].Src, roles[r].Dst)) { staged = -1; break; }
+                    staged++;
+                    continue;
+                }
                 // borrowed CAurTexture*, re-fetched per frame like every other Alloy draw
                 int tid = new MaterialRef(p.Mat).Texture(0).OwnedTid();
                 var vdo = new VdoRef(p.Vdo);
@@ -1134,9 +1158,77 @@ public sealed unsafe partial class AlloyRenderer
             // every one of its parts -- or has captured none of them yet -- would leave a permanent hole in
             // a sky the engine is being colour-masked out of. Hand the whole sky back for the frame instead,
             // which costs one visible vanilla sky and no hole at all.
-            if (staged <= 0) { _drawN = _skyFirst; _skyN = 0; SceneFog.EndSky(); return; }
+            if (staged <= 0) { _drawN = _skyFirst; _skyN = 0; _seN = 0; SceneFog.EndSky(); return; }
         }
         SceneFog.EndSky();
+    }
+
+    /// <summary>#136: one sky part staged for the engine's own program. Everything the draw needs that is
+    /// not already uniform state on that program: the geometry range, the primitive mode, the role's blend
+    /// pair, and the material's textures -- read the same way every other Alloy draw reads them, because
+    /// the engine binds material texture <i>k</i> to <c>texUnit</c><i>k</i> and a captured GL binding would
+    /// have to come from the engine's context (#237: touching the active unit there desyncs its cache).
+    /// <para>False means this part cannot be drawn this frame, and the caller hands the whole role back --
+    /// the same all-owned-or-none rule the ported path follows, for the same reason.</para></summary>
+    private static bool StageEngineSky(ref SkyBox.Part p, int src, int dst)
+    {
+        if (_seN >= MaxSkyDraws || p.EngProg == 0) return false;
+        var vdo = new VdoRef(p.Vdo);
+        long elem = vdo.ElemItems, vert = vdo.VertItems;
+        if (elem == 0 || vert == 0 || p.Item < 0 || p.Item >= vdo.ElemCount || p.Item >= vdo.VertCount)
+            return false;
+        int idxCount = *(int*)(elem + p.Item * 8 + 4);
+        if (idxCount <= 0) return false;
+        var mat = new MaterialRef(p.Mat);
+        for (int k = 0; k < MaxEngTex; k++) _seTex[_seN * MaxEngTex + k] = mat.Texture(k).OwnedTid();
+        // texUnit0 is the one every stock stage samples unconditionally; without it there is nothing to draw.
+        if (_seTex[_seN * MaxEngTex] == 0) return false;
+        _seProg[_seN] = p.EngProg;
+        _seVao[_seN] = p.Vao;
+        _seMode[_seN] = _primTable[p.Prim];
+        _seCount[_seN] = idxCount;
+        _seOff[_seN] = (nint)((long)(uint)*(int*)(elem + p.Item * 8) * 2);
+        _seBase[_seN] = *(int*)(vert + p.Item * 8);
+        _seSrc[_seN] = src; _seDst[_seN] = dst;
+        _seN++;
+        return true;
+    }
+
+    /// <summary>#136: the sky parts nothing in Alloy can shade, drawn with the program the ENGINE compiled
+    /// for them -- sow-topdata's <c>fst_sky</c> chain, ~1900 lines of procedural cloud, star, sun and moon,
+    /// running as itself rather than as a port that would drift from it.
+    /// <para>What makes this legal where it is illegal for world geometry: the sky writes no depth, is not
+    /// in the depth prepass, and carries no per-draw batching -- so #119's <c>gl_Position</c> invariance
+    /// rule and #327's submission model, which forbid a stock stage everywhere else, do not reach it.</para>
+    /// <para>The program's uniforms were uploaded in ENGINE context at the swallow
+    /// (<see cref="SkyBox.NoteEngineDraw"/>) and are program-object state, which the share-listed 4.6
+    /// context (#80) sees. Textures are the exception -- bindings are per-context -- so they are bound here,
+    /// through DSA so the active unit (which the engine caches, #237) is never touched.</para>
+    /// <para>ponytail: it draws under the depth state <see cref="SkyOwnedPass"/> establishes and is called
+    /// from inside it, so the two share one preamble. Splitting them would mean stating that state twice
+    /// and having it drift once.</para></summary>
+    private static void SkyEnginePass()
+    {
+        uint boundSrc = 0xFFFFFFFF, boundDst = 0xFFFFFFFF;
+        fixed (int* counts = _seCount, bases = _seBase)
+        fixed (nint* offs = _seOff)
+        for (int i = 0; i < _seN; i++)
+        {
+            uint src = BlendGl(_seSrc[i]), dst = BlendGl(_seDst[i]);
+            if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
+            uint vao = EngineVao(_seVao[i]);
+            if (vao == 0) continue;
+            Gl.UseProgram(_seProg[i]);
+            for (uint k = 0; k < MaxEngTex; k++)
+            {
+                int t = _seTex[i * MaxEngTex + (int)k];
+                if (t != 0) Gl.BindTextureUnit(k, (uint)t);
+            }
+            Gl.BindVertexArray(vao);
+            Gl.MultiDrawElementsBaseVertex(_seMode[i], counts + i, GlUnsignedShort,
+                                           (void**)(offs + i), 1, bases + i);
+            _batches++; _draws++;
+        }
     }
 
     /// <summary>ADR 0011 step 3 (#125): the skybox, after the opaque set and before the blended one.
@@ -1161,7 +1253,7 @@ public sealed unsafe partial class AlloyRenderer
     /// </summary>
     private static void SkyOwnedPass(Matrix4x4* vp, int* viewport)
     {
-        if (_skyN == 0 || Gl.DepthRange == null) return;
+        if ((_skyN == 0 && _seN == 0) || Gl.DepthRange == null) return;
         Gl.UseProgram(_prog46);
         Gl.Uniform1i(_locTex, 0);
         Gl.Uniform1i(_locViz, _lightViz);
@@ -1201,6 +1293,8 @@ public sealed unsafe partial class AlloyRenderer
             Gl.MultiDrawElementsBaseVertex(_skMode[i], counts + s, GlUnsignedShort, (void**)(offs + s), 1, bases + s);
             _batches++; _draws++;
         }
+        // #136: the hosted-program parts last, inside the same depth/cull/blend preamble.
+        SkyEnginePass();
         Gl.Disable(Gl.DEPTH_CLAMP);
         Gl.DepthRange(0.0, 1.0);
     }

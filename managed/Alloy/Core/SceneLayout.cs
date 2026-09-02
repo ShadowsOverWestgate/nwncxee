@@ -48,11 +48,21 @@ internal static class SceneLayout
     /// @0x4422a0 pushes here; <c>Gob::Amputate</c> @0x443fa0 removes.</summary>
     public const int GobAppendRoots = 0x130, GobAppendCount = 0x138;
 
+    /// <summary>Gob -&gt; the <c>TileData*</c> of the tile it IS, or null for every other gob.
+    /// <c>Scene::SpawnTile</c> @0x574470 splits a tile in two: <c>SpawnPartsForTile</c> hands back a Gob for
+    /// the parts that need their own identity (the night-lit window, the dangly vine -- note the
+    /// <c>AnimateStaticLight</c> behaviour <c>ProcessStaticObject</c> @0x5619e0 attaches), and a plain part
+    /// list for the static remainder. <c>ProcessStaticObject</c> stores the tile here (and the gob back at
+    /// <c>tile+0x40</c>); <c>Gob::Gob</c> @0x540a00 zeroes it and only tile code ever writes it, so a
+    /// non-null field is a positive "this gob is tileset geometry, not an object".</summary>
+    public const int GobTileData = 0x1a8;
+
     /// <summary>Part -&gt; Material*. Ghidra RenderDrawBucket @0x46d060 / PartTriMesh::Draw @0x4513d0.</summary>
     public const int PartMaterial = 0x58;
     /// <summary>#336: the part's WORLD bbox, min at +0x64 and max at +0x70 (three floats each) -- what
     /// <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 hands <c>BoxAbovePlane</c> @0x5b32d0, and whose max.z
-    /// (+0x78) it compares against the camera's height cut. Static for a gobless, matrix-less part.</summary>
+    /// (+0x78) it compares against the camera's height cut. Static for a gobless, matrix-less part, and all
+    /// zeros for a gob part -- see <see cref="PartBboxMin"/> for who fills it and who does not.</summary>
     public const int PartBoxMin = 0x64, PartBoxMax = 0x70;
     /// <summary>Part -&gt; Gob* (the instance the part belongs to; null for world geometry).</summary>
     public const int PartGob = 0x50;
@@ -161,10 +171,16 @@ internal static class SceneLayout
     /// @0x43cee0 -- and the one <c>RenderDrawBucket</c> folds the tile's fade factor into for the length of a
     /// bucket-8 draw. Read live: it is animated state.</summary>
     public const int PartAlpha = 0xa0;
-    /// <summary>#126: the part's LOCAL bounding box, min at +0x64 and max at +0x70 -- the pair
+    /// <summary>#126: the part's bounding box, min at +0x64 and max at +0x70 -- the pair
     /// <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 hands to <c>BoxAbovePlane</c>, and the same one
     /// <c>SceneInputs</c>/<c>CasterPass</c>/<c>WaterBodies</c> cull against. Its centre is the blended sort
     /// key.</summary>
+    /// <para>WORLD space, and TILE PARTS ONLY: <c>ComputePartBBox</c> @0x561370 rotates and translates
+    /// every vertex into world before min/maxing, and its sole caller is <c>ProcessStaticParts</c>
+    /// @0x570970 off <c>Scene::SpawnTile</c>. <c>PartTriMesh::PartTriMesh</c> @0x53cb50 zeroes the six
+    /// floats, so a GOB part (a placeable, a creature) carries zeros here forever -- which is why a
+    /// matrix-class part's world centre is taken from its node matrix translation instead, and why the
+    /// engine's own keyhole test refuses any part with a gob.</para>
     public const int PartBboxMin = 0x64, PartBboxMax = 0x70;
 
     /// <summary>MdlNode -&gt; model matrix (row-major float[16]) at +0x18 and its flags at +0x80 --

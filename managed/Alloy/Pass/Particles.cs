@@ -357,6 +357,13 @@ internal static unsafe class Particles
     private static delegate* unmanaged<IntPtr, void> _origRender, _origDtor;
     private static delegate* unmanaged<IntPtr, int, long> _getTexture;
     private static delegate* unmanaged<IntPtr, uint, int, void> _bindInUnit;
+    /// <summary>#237: the engine's bound-texture cache, snapshot-restored across the draw loop. See
+    /// <see cref="SymbolMap.GlBoundTextures"/> for why a pass that draws in its own context has to.</summary>
+    private static ulong* _engBoundTex;
+    private static uint* _engActiveStage, _engStageEnabled;
+    /// <summary>Entries in <c>GLRender::m_boundTextures</c>, from the 0x10-iteration clear loop in
+    /// <c>GLRender::ResetRenderStates</c> @0x4d1810.</summary>
+    private const int EngTexStages = 16;
     private static delegate* unmanaged<IntPtr, float> _tileAlpha, _gobAlpha;
     private static delegate* unmanaged<IntPtr, byte> _isSplat, _isTinted;
     private static delegate* unmanaged<V3, IntPtr, int, V3> _emitterLight;
@@ -529,6 +536,9 @@ internal static unsafe class Particles
 
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
         _bindInUnit = (delegate* unmanaged<IntPtr, uint, int, void>)Native.Sym(SymbolMap.AurTextureBindInUnit);
+        _engBoundTex = (ulong*)Native.Sym(SymbolMap.GlBoundTextures);
+        _engActiveStage = (uint*)Native.Sym(SymbolMap.GlActiveTextureStage);
+        _engStageEnabled = (uint*)Native.Sym(SymbolMap.GlEnabledTextureStages);
         _tileAlpha = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.EmitterGetTileAlpha);
         _gobAlpha = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.EmitterGetGobAlpha);
         _isSplat = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.EmitterIsSplat);
@@ -787,6 +797,23 @@ internal static unsafe class Particles
         if (_ownSampler && EnsureSampler()) Gl.BindSampler(0, _samp);
         Gl.BindVertexArray(_vao);
 
+        // #237: _bindInUnit below is the ENGINE's bind wrapper, and it writes the engine's per-stage cache
+        // while the glBindTexture it performs lands in ALLOY's context. Bindings are per-context, so every
+        // entry it leaves is a lie about the engine's own context -- and the engine's next matching bind
+        // early-outs on it (SetActiveTextureAndBind @0x45ce10 returns before glActiveTexture/glBindTexture on
+        // a hit), drawing the 2D UI with whatever its context still held. Snapshot the three globals and put
+        // them back: Alloy never touched the engine's context, so the values found here stay true across the
+        // pass. The alternative -- binding raw, as OwnedTextures does -- would skip the resolve and the
+        // animation-controller tick this pass needs.
+        bool engCache = _engBoundTex != null && _engActiveStage != null && _engStageEnabled != null;
+        ulong* engSaved = stackalloc ulong[EngTexStages];
+        uint engStage = 0, engEnabled = 0;
+        if (engCache)
+        {
+            new ReadOnlySpan<ulong>(_engBoundTex, EngTexStages).CopyTo(new Span<ulong>(engSaved, EngTexStages));
+            engStage = *_engActiveStage; engEnabled = *_engStageEnabled;
+        }
+
         int cls = -1, cull = -1;
         IntPtr texObj = IntPtr.Zero;
         float emis = float.NaN;
@@ -826,6 +853,12 @@ internal static unsafe class Particles
             if (_gEmis[gi] != emis) { emis = _gEmis[gi]; Gl.Uniform1f(_locEmissive, emis); }
             // Six vertices a particle, expanded from gl_VertexID -- there is no vertex buffer any more.
             Gl.DrawArrays(Gl.TRIANGLES, _gStart[gi] * 6, _gParts[gi] * 6);
+        }
+
+        if (engCache)
+        {
+            new ReadOnlySpan<ulong>(engSaved, EngTexStages).CopyTo(new Span<ulong>(_engBoundTex, EngTexStages));
+            *_engActiveStage = engStage; *_engStageEnabled = engEnabled;
         }
 
         if (_samp != 0) Gl.BindSampler(0, 0);

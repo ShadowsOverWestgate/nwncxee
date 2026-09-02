@@ -350,6 +350,12 @@ public static unsafe class TextRig
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
         fixed (byte* px = a.Pixels)
             Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.R8, a.Width, a.Height, 0, Gl.RED, Gl.UNSIGNED_BYTE, px);
+        // #237: back to the GL default, in the ENGINE's context, or every engine texture upload after this
+        // one reads its rows one byte at a time. GLRender::CreateTexture @0x4ca2b0 -- the CAurTexture upload
+        // path, and the one an area transition runs for every texture it loads -- calls glTexImage2D with no
+        // pixel-store call of its own, and GLRender::DirectCreateTexture @0x4c9cc0 SKIPS both its set and its
+        // restore when the caller asks for 4 (`if (align != 4)`). Both assume the default is still in place.
+        Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 4);
         _texUp = true;
         _log?.Info($"TextRig: atlas uploaded as GL tex {_tex} ({a.Width}x{a.Height})");
     }

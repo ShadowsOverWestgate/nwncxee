@@ -103,6 +103,7 @@ internal static unsafe class RspShim
     private static int* _fullDynamicLighting;
     private static byte* _triggerBucket;
     private static delegate* unmanaged<IntPtr, uint, uint, uint, void> _origStream;
+    private static delegate* unmanaged<int, void> _riEnable, _riDisable;
 
     /// <summary>Chain priority on <c>GLRender::RenderVertexData</c>. Strictly between
     /// <see cref="DrawFunnelService"/>'s 50 and DrawStatsService's 10, and that placement is the whole
@@ -202,6 +203,11 @@ internal static unsafe class RspShim
         _focusLighting = (float*)Native.Sym(SymbolMap.FocusLighting);
         _fullDynamicLighting = (int*)Native.Sym(SymbolMap.FullDynamicLighting);
         _triggerBucket = (byte*)Native.Sym(SymbolMap.TriggerBucket);
+        // #237: the epilogue's two entry points. Deliberately NOT in the `missing` list below -- a shim that
+        // cannot restore five enable bits is still a shim that draws the frame, and standing the cutover down
+        // over its epilogue would be the worse trade.
+        _riEnable = (delegate* unmanaged<int, void>)Native.Sym(SymbolMap.RiEnable);
+        _riDisable = (delegate* unmanaged<int, void>)Native.Sym(SymbolMap.RiDisable);
         // Named, not counted: "an engine symbol did not resolve" is unactionable, and this list is the only
         // place that knows which one. glBindFramebuffer is deliberately NOT here -- see Ready.
         string? missing = _skyBoxes == null ? SymbolMap.RenderSkyBoxes
@@ -308,16 +314,25 @@ internal static unsafe class RspShim
         // #322 (review): the child brackets netted out of the ANCHOR step are sampled across the anchor
         // vcall alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
         // here goes negative the moment any Alloy/Shadow bracket runs outside the anchor.
+        // #261 took the sky POPULATION off this call -- SkyBox.Enroll walks the Scene's own gobs. It stays
+        // as the sky's SIMULATION tick: ProcessGob, node animation, the cross-fade alpha writes, and the
+        // per-gob SetPosition(Scene+0x190) that parks each dome at the camera. Its draws are swallowed.
+        // #136 moved it AHEAD of the anchor, for the reason #261 moved DoEmitterBucket: Alloy's sky draws
+        // inside the anchor, so a tick that ran after it fed this frame's sky from last frame's simulation
+        // -- and now that the swallow captures the engine's sky PROGRAM and its uniforms, one frame late is
+        // one frame of the wrong camera, visible as jitter the moment the player turns.
+        SkyBox.InTick = true;
+        _skyBoxes(scene);
+        SkyBox.InTick = false;
+        long s2 = Stopwatch.GetTimestamp(); _stepTicks[2] += s2 - s1;
+        // #322 (review): the child brackets netted out of the ANCHOR step are sampled across the anchor
+        // vcall alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
+        // here goes negative the moment any Alloy/Shadow bracket runs outside the anchor.
         long ca1 = FrameZones.Ticks(FrameZones.Zone.Alloy), cs1 = FrameZones.Ticks(FrameZones.Zone.Shadow);
         Vt(vptr, VtFadeDoors, scene);          // door fade + hit-test alpha -- AND #132's anchor: Alloy draws here
         long anchorChild = FrameZones.Ticks(FrameZones.Zone.Alloy) - ca1
                          + FrameZones.Ticks(FrameZones.Zone.Shadow) - cs1;
-        long s2 = Stopwatch.GetTimestamp();
-        // #261 took the sky POPULATION off this call -- SkyBox.Enroll walks the Scene's own gobs. It stays
-        // as the sky's SIMULATION tick: ProcessGob, node animation, the cross-fade alpha writes, and the
-        // per-gob SetPosition(Scene+0x190) that parks each dome at the camera. Its draws are swallowed.
-        _skyBoxes(scene);
-        long s3 = Stopwatch.GetTimestamp(); _stepTicks[2] += s3 - s2;
+        long s3 = Stopwatch.GetTimestamp();
         // #264: the two items the bucket walk used to carry between its draws. Neither reads a thing the
         // walk leaves behind -- DoBinBucket @0x474c50 iterates the `binbucket` global (wind update, camera
         // distance, the grass sort) and FocusLighting is Scene field arithmetic of our own -- so with the
@@ -336,6 +351,7 @@ internal static unsafe class RspShim
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         long s6 = Stopwatch.GetTimestamp(); _stepTicks[4] += s6 - s5;
         EngineOverlays(vptr, scene);
+        Epilogue();
         _stepTicks[5] += Stopwatch.GetTimestamp() - s6;
         if (!_barLogged && PostChain.Resolves > 0) Bar();
         long child = FrameZones.Ticks(FrameZones.Zone.Alloy) - alloy0
@@ -344,8 +360,46 @@ internal static unsafe class RspShim
         FrameZones.Add(FrameZones.Zone.Shim, t0, child);
         _ticks += Math.Max(0, spent - child);
         // The Alloy bracket runs inside the anchor vcall; net it out so the step reads the ENGINE's share.
-        _stepTicks[1] += Math.Max(0, (s2 - s1) - anchorChild);
+        _stepTicks[1] += Math.Max(0, (s3 - s2) - anchorChild);
         _frames++;
+    }
+
+    /// <summary>#237, punch-list item 38: <c>Scene::RenderSinglePass</c>'s trailing state block, replayed
+    /// verbatim at the shim's own exit -- <c>Disable(5) Enable(1) Enable(0xb) Enable(0) Disable(2)</c>, read
+    /// off the decompilation's tail rather than the ADR. Routed through <c>RenderInterface</c> so the engine's
+    /// enable cache learns about it; the enum values are not interpreted, because replaying RSP is faithful by
+    /// construction and guessing at what each cap means is not.
+    /// <para><b>Why it was not "covered by ResetRenderStates".</b> That verdict was about a WRITE SET when the
+    /// question was an EDGE. The frame runs: engine 3D (this shim) -&gt; the engine's own 2D UI -&gt;
+    /// <c>UiHostService.OnSwap</c>, whose <c>ResetRenderStates</c> hand-back (#210) is the LAST thing before
+    /// the present. Both resyncs -- ours and the engine's own inside <c>GLRender::SwapBuffers</c> -- therefore
+    /// land AFTER the 2D UI has already drawn, so nothing at all resynced at the point RSP's epilogue ran. The
+    /// leak was never about which globals the reset writes; it was about when it runs.</para>
+    /// <para>Item 6, RSP's opening <c>Enable(5)/Enable(0)/SetBlendFunc(0)</c>, rests on the same wrong verdict
+    /// but is a different question and stays dropped: its readers are the engine draws INSIDE the pass, which
+    /// under the cutover are only the shim's own sim vcalls and the overlays above. See the punch list.</para>
+    /// <para><b>Why two of the five are replayed as a toggle.</b> <c>GLRender::Enable</c> @0x4cae40 opens with
+    /// <c>IsEnabled</c> and returns before it touches GL or the cache when the bit in <c>m_bEnabledStates</c>
+    /// already agrees; <c>Disable</c> @0x4caf80 mirrors it. Under vanilla that is a safe fast path, because the
+    /// cache and real GL only ever move together. Alloy breaks that invariant by design -- it drives raw GL for
+    /// a whole frame and never writes the engine's cache -- so at the shim's exit the cache holds the last
+    /// engine vcall's belief while GL holds Alloy's leftovers, and a plain replay would short-circuit in
+    /// exactly the desynced case this exists for. Of the five caps only two reach GL:
+    /// <see cref="CapBlend"/> -&gt; <c>glEnable(GL_BLEND)</c> and <see cref="CapDepthTest"/> -&gt;
+    /// <c>glEnable(GL_DEPTH_TEST)</c>. Disabling each first forces the cache to disagree, so the enable that
+    /// follows always issues the real call and leaves cache and GL in agreement, whichever state it found.
+    /// Caps 5, 1 and 2 are cache/uniform-sequence writes with no GL call behind them, so for those the cache IS
+    /// the state and the early-out is the correct answer -- they stay a straight replay.</para></summary>
+    private const int CapBlend = 0, CapDepthTest = 0xb;
+
+    private static void Epilogue()
+    {
+        if (_riEnable == null || _riDisable == null) return;
+        _riDisable(5);
+        _riEnable(1);
+        _riDisable(CapDepthTest); _riEnable(CapDepthTest);
+        _riDisable(CapBlend); _riEnable(CapBlend);
+        _riDisable(2);
     }
 
     /// <summary>#232 + #233: the three dropped overlays, run by the ENGINE at the end of the shim instead of
@@ -468,7 +522,15 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        if (InWindow) { _swallowed++; return; }
+        if (InWindow)
+        {
+            // #136: the sky's own draws are the one kind we look at before dropping. SetProgram -- and with
+            // it the whole uniform upload -- lives INSIDE the original we are about to skip, so a custom-
+            // shader sky would reach Alloy's replay with nothing uploaded. SkyBox makes that call here, in
+            // engine context, and records the program.
+            if (SkyBox.InTick) SkyBox.NoteEngineDraw(vdo, item);
+            _swallowed++; return;
+        }
         // #260's tagging: outside the window the ENGINE is drawing for itself -- the UI, the menu, a GUI 3D
         // panel -- so the pools this VDO names are the ones that question is about.
         else OwnedBuffers.NoteEngineDraw(vdo);

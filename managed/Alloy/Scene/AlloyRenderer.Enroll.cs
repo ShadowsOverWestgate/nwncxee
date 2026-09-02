@@ -363,6 +363,11 @@ public sealed unsafe partial class AlloyRenderer
             _oCls[i] = (byte)c.Cls; _oSrc[i] = (byte)c.Src; _oDst[i] = (byte)c.Dst;
             _oNoCull[i] = c.TwoSided;
             _oBucket[i] = (byte)c.Bucket; _oGob[i] = c.Gob; _oLodRoot[i] = c.LodRoot;
+            // Sampled HERE, cold, and never re-read: the walk has just proved this gob live, where the route
+            // walk has not -- every other reader of _oGob only COMPARES it (or derefs it behind the LodRoot
+            // guard), so a per-frame deref would be a new way to touch a freed gob. A gob does not become a
+            // tile or stop being one.
+            _oTileGob[i] = c.Gob != IntPtr.Zero && *(IntPtr*)(c.Gob + GobTileData) != IntPtr.Zero;
             for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBoxMin + b * 4);   // #336: +0x64..+0x78
             // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
             // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
@@ -558,10 +563,13 @@ public sealed unsafe partial class AlloyRenderer
         {
             if (_vdoCount >= MaxVdos) return -1;
             s = _vdoCount++;
-            _vVao46[s] = 0; _vOwned[s] = false;
+            _vVao46[s] = 0; _vOwned[s] = false; ForgetEngineVao(s);
         }
         if (!Harvest(vdo, s)) return -1;
         _vVdo[s] = vdo; _vStale[s] = _vVao46[s] != 0;
+        // #136: a slot re-pointed at a different VDO has different streams, so its engine-layout VAO is
+        // wrong in exactly the way EnsureVao's staleness flag exists to catch for the 4.6 one.
+        ForgetEngineVao(s);
         return s;
     }
 
@@ -688,9 +696,10 @@ public sealed unsafe partial class AlloyRenderer
         int top = !matRef.Shared.IsNull ? PbrSlots : 2;
         int mask = 0;
         for (int s = 1; s <= top; s++) if (!matRef.Texture(s).IsNull) mask |= 1 << (s - 1);
-        // #123: and slot 6 for the one feature that reads it. A flowmap material with no flow map bound
-        // leaves the bit clear, and the fragment stage then slides nothing -- vanilla's texture6Bound test.
-        if (feat == (int)ShaderFeature.Flowmap && !matRef.Texture(FlowSlot + 1).IsNull) mask |= 1 << FlowSlot;
+        // #123/#556: and slot 6 for the features that read it -- the flow map, and the weather ground's
+        // snow overlay. A material with nothing bound there leaves the bit clear and its stage samples
+        // nothing, which is vanilla's own texture6Bound test.
+        if (ShaderFeatures.ReadsAuxSlot(feat) && !matRef.Texture(FlowSlot + 1).IsNull) mask |= 1 << FlowSlot;
         // #146: ...and slot 7 for the AO map, inside the SAME shared-material gate the loop above needs --
         // on a plain Material, GetTexture(7) is an unbounded read of whatever field sits at mat+0x70.
         if (top == PbrSlots && !matRef.Texture(AoSlot + 1).IsNull) mask |= AoBit;

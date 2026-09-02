@@ -93,6 +93,14 @@ public sealed unsafe partial class AlloyRenderer
     private static long _mxChased, _mxCached, _disAsked, _disCached, _fadeRead, _fadeServed;
     private static long _pollMissMx, _pollMissDis, _pollMissFade;
     private static long _routeIn, _routeOut, _disBoxed, _pollMissBox, _pollMissAlpha;
+    /// <summary>Why a part was refused the dissolve, per frame. The three gates ahead of the aperture test,
+    /// counted apart because "the keyhole stops at that window" is always one of them and the census is the
+    /// only thing that says which.</summary>
+    private static long _disNoLit, _disNoFeat, _disGobUnpierced;
+
+    /// <summary>Whether a TILE gob's parts may dissolve at all. <c>/draw gobkey 0</c> is the vanilla A/B:
+    /// off is the engine's own rule, where the aperture stops at every gob. See <see cref="Dissolves"/>.</summary>
+    internal static bool GobKeyhole = true;
     private static int _visGobsLast;
     /// <summary>#336: the part's world box at enrolment (six floats), for the dissolve verdict.</summary>
     private static readonly float[] _oBox = new float[MaxOwned * 6];
@@ -366,12 +374,38 @@ public sealed unsafe partial class AlloyRenderer
     /// change; while the keyhole camera words hold still the verdict is served from the slot.</summary>
     /// <para>#336: ...and for a still gobless part -- the tile geometry that is most of the routed set -- the
     /// verdict is computed from the box captured at enrolment and the camera state read once per pass, so a
-    /// walking camera (which changes the key every frame) costs no engine call and no part touch. A gob part
-    /// never dissolves (the decompile's <c>part+0x50 == 0</c>); a matrix-class part may move its box and
-    /// keeps the engine call. <c>/draw poll 1</c> asks the engine too and counts a disagreement.</para>
+    /// walking camera (which changes the key every frame) costs no engine call and no part touch. A
+    /// matrix-class part may move its box and keeps the engine call. <c>/draw poll 1</c> asks the engine too
+    /// and counts a disagreement.</para>
+    /// <para>The engine refuses every gob part (the decompile's <c>part+0x50 == 0</c>) and so did this, which
+    /// is why vanilla's aperture punches a wall and leaves its windows floating in the hole.
+    /// <c>Scene::SpawnTile</c> @0x574470 splits a tile in TWO: <c>SpawnPartsForTile</c> hands back a Gob for
+    /// the parts that need their own identity -- the window that lights up at night (note the
+    /// <c>AnimateStaticLight</c> behaviour <c>ProcessStaticObject</c> @0x5619e0 attaches to exactly this),
+    /// the vine that danglies -- and a plain part list for the static remainder. So a tileset window IS a
+    /// gob part. <see cref="SceneLayout.GobTileData"/> identifies that half positively, and it dissolves
+    /// with the wall it belongs to. <c>/draw gobkey 0</c> is the vanilla A/B.</para>
     private static bool Dissolves(int i, IntPtr tri)
     {
-        if (!_oLit[i] || ShaderFeatures.NoKeyholing((int)_oFeat[i * 4]) || _oGob[i] != IntPtr.Zero) return false;
+        // Gate order is the census order: each counter must read "parts that would have dissolved but for
+        // THIS", so the cheap content refusals come first and the lit one last.
+        if (ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])) { _disNoFeat++; return false; }
+        IntPtr gob = _oGob[i];
+        if (gob != IntPtr.Zero && !(GobKeyhole && _oTileGob[i])) { _disGobUnpierced++; return false; }
+        // Vanilla's unlit fragment stages all compile KEYHOLING 0, and so does Alloy's (ShaderContract
+        // asserts it), so the bit would reach a stage that cannot use it.
+        if (!_oLit[i]) { _disNoLit++; return false; }
+        if (gob != IntPtr.Zero)
+        {
+            // A gob part carries NO bbox to test against: PartTriMesh's ctor @0x53cb50 zeroes +0x64..+0x78
+            // and ComputePartBBox @0x561370 -- the only thing that fills them -- runs from Scene::SpawnTile
+            // alone, so tile geometry has a world box and a placeable has six zeros. That is also why the
+            // engine's own test refuses gob parts outright. Nothing is lost by skipping it: the CPU verdict
+            // is an ENABLE bit and SowxKeyhole owns the whole shape of the hole -- the in-front-of-the-player
+            // depth test, the screen aperture and the floor cut are all per fragment. Over-enabling costs a
+            // batch split, never a wrong pixel.
+            return _khCam && _khOn != 0;
+        }
         bool cached = _disGen[i] == _camGen;
         if (cached && !_fullPoll) { _disCached++; return _disVerdict[i]; }
         bool live;
@@ -424,6 +458,8 @@ public sealed unsafe partial class AlloyRenderer
                $"tile fade {(float)_fadeRead / _frames:F0}/frame read of {(float)fadeAll / _frames:F0} " +
                $"({_movCount} tiles pending" + (_movCount == 0 ? "" : $", first live {_movLive:F3} pending {_movPending:F3}") + ")" +
                $", keyhole {(float)_disBoxed / _frames:F0}/frame from the cached box" +
+               $"; dissolve refused {(float)_disNoLit / _frames:F0} unlit + {(float)_disNoFeat / _frames:F0} nokeyhole-feature"
+               + $" + {(float)_disGobUnpierced / _frames:F0} gob/frame" +
                (_fullPoll ? $"; POLL AUDIT misses (must be 0): matrix {_pollMissMx} keyhole {_pollMissDis} fade {_pollMissFade} box {_pollMissBox} alpha {_pollMissAlpha}" : "");
     }
 
@@ -432,6 +468,7 @@ public sealed unsafe partial class AlloyRenderer
         _mxChased = _mxCached = _disAsked = _disCached = _fadeRead = _fadeServed = 0;
         _routeIn = _routeOut = 0; _visRebuilds = 0;
         _pollMissMx = _pollMissDis = _pollMissFade = 0; _pollMissBox = _pollMissAlpha = 0; _disBoxed = 0;
+        _disNoLit = _disNoFeat = _disGobUnpierced = 0;
     }
 
     /// <summary>Off-device: the visited set (hit, miss, per-sample forgetting, overflow), the camera key

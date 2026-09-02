@@ -12,6 +12,10 @@
          toolchain to emit the .dll, so the Windows leg runs on a Windows runner. -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">linux-x64</RuntimeIdentifier>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Keep the symbol table in the .so: a NativeAOT crash report is a list of module offsets, and
+         without this addr2line resolves every one of them to the nearest EXPORT (i.e. SowxInit) and the
+         backtrace says nothing. Costs size in a file nobody ships to players. -->
+    <StripSymbols>false</StripSymbols>
   </PropertyGroup>
 
   <!-- Keep our own assembly whole: the service host discovers services by

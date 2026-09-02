@@ -83,10 +83,24 @@ internal static unsafe class GlProgram
     }
 
     /// <summary>Compile one stage. The source's sizing tokens are expanded here and nowhere else, so an
-    /// embedded default and a content override read identically (see <see cref="ShaderResource.Tokens"/>).</summary>
+    /// embedded default and a content override read identically (see <see cref="ShaderResource.Tokens"/>),
+    /// and <see cref="VanillaShader.Splice"/> runs at the same seam for the same reason.</summary>
     private static uint Compile(uint type, string rawSrc, ExtenderLog? log, string what)
     {
-        string src = ShaderResource.Tokens(rawSrc);
+        // #346: the vanilla bridge first, sizing tokens second -- spliced stock text is subject to the same
+        // token expansion as everything else, and a stock file carrying none is unaffected either way.
+        uint sh = CompileText(type, ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what)), log, what);
+        if (sh != 0 || !VanillaShader.HasSplice(rawSrc)) return sh;
+        // #346: a content .shd that renamed a function the stage calls would otherwise take the WHOLE
+        // program down -- and for the lit stage that means the world reverts to engine drawing over one
+        // edit in a hak. The stub is what that retry is for: the feature off, the world still rendering.
+        log?.Info($"{what}: the spliced vanilla text did not compile -- retrying with the fallback stub, "
+                + "so the program links and the feature it carried is off");
+        return CompileText(type, ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what, false)), log, what);
+    }
+
+    private static uint CompileText(uint type, string src, ExtenderLog? log, string what)
+    {
         uint sh = Gl.CreateShader(type);
         Span<byte> b = stackalloc byte[src.Length + 1];
         for (int i = 0; i < src.Length; i++) b[i] = (byte)src[i];

@@ -100,6 +100,10 @@ internal static unsafe class SkyBox
         /// with the plain stage it is the diffuse texture alone, which for sow-topdata's night background is
         /// black. False hands the whole sky back to the engine, unmasked, at its vanilla position.</summary>
         public bool Ported;
+        /// <summary>#136: the ENGINE's compiled program for this part's material, captured at the swallow
+        /// while the sky sim tick ran, and 0 for a part the engine drew with a stock stage. Non-zero is what
+        /// lets an UNPORTED sky draw at all: Alloy binds this program rather than one of its own.</summary>
+        public uint EngProg;
         /// <summary>The Alloy VAO-cache slot for <see cref="Vdo"/>, resolved on the ENGINE side each pass
         /// (harvesting reads the engine's VAO), -1 for none.</summary>
         public int Vao;
@@ -116,9 +120,25 @@ internal static unsafe class SkyBox
     /// <summary><c>Gob::GetAdjustedScale</c> -- a plain float return, which is why the scale comes from here
     /// while the position and orientation come from <see cref="_getWorld"/>'s out parameters.</summary>
     private static delegate* unmanaged<IntPtr, float> _gobScale;
+    /// <summary>#136: <c>GLRender::m_pCurrentCustomProgram</c> -- the PROG_FIXED the material bind left
+    /// current, and the program id at <c>+0x64</c> inside it. Read at the swallow, in engine context.</summary>
+    private static IntPtr* _curCustom;
+    /// <summary><c>GLRender::SetUniforms(PROG_FIXED&amp;)</c> and
+    /// <c>GLRender::GlUseProgramConditionally(uint)</c> -- between them, the custom-program branch of
+    /// <c>GLRender::SetProgram</c> @0x4cf9c8. See <see cref="NoteEngineDraw"/> for why we make that call
+    /// ourselves.</summary>
+    private static delegate* unmanaged<IntPtr, void> _setUniforms;
+    private static delegate* unmanaged<uint, void> _useProgram;
+    /// <summary>Program id inside PROG_FIXED, from <c>SetProgram</c>'s own <c>mov 0x64(%rax),%eax</c>.</summary>
+    private const int ProgId = 0x64;
+
+    /// <summary>#136: true only while <see cref="RspShim"/> is running the sky's SIMULATION vcall. The
+    /// swallow reads it to tell a sky draw from every other engine draw in the window -- there is no other
+    /// discriminator at that depth, and the vcall is the engine's own bracket around exactly these parts.</summary>
+    internal static bool InTick;
     /// <summary>The model stack top, read once per enrollment; every composed matrix ends on it.</summary>
     private static Matrix4x4 _base = Matrix4x4.Identity;
-    private static int _enrolled, _attached;
+    private static int _enrolled, _attached, _hosted;
     private static bool _off;
     /// <summary>The player's own switch (<c>/sky</c>, ADR 0013 bucket 1). Distinct from <see cref="_off"/>,
     /// which means "this session cannot own the sky at all": the hook is armed either way, so the toggle is
@@ -138,6 +158,13 @@ internal static unsafe class SkyBox
         _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
         _getWorld = (delegate* unmanaged<IntPtr, Vector3*, float*, void>)Native.Sym(SymbolMap.PartGetWorld);
         _gobScale = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.GobGetAdjustedScale);
+        _curCustom = (IntPtr*)Native.Sym(SymbolMap.GlCurrentCustomProgram);
+        _setUniforms = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GlSetUniforms);
+        _useProgram = (delegate* unmanaged<uint, void>)Native.Sym(SymbolMap.GlUseProgramConditionally);
+        if (_curCustom == null || _setUniforms == null || _useProgram == null)
+            log.Info("SkyBox: GLRender::m_pCurrentCustomProgram/SetUniforms/GlUseProgramConditionally "
+                   + "unresolved -- a dynamic sky's own program cannot be hosted, so an unported sky stays "
+                   + "undrawn (#136)");
         if (_stacks == null || _getWorld == null || _gobScale == null)
         { _off = true; log.Info("SkyBox: matrix stack, Part::GetWorld or Gob::GetAdjustedScale unresolved -- the sky stays vanilla"); }
     }
@@ -225,6 +252,7 @@ internal static unsafe class SkyBox
         e.Tri = tri; e.Node = vp; e.Mat = mat; e.Gob = gob;
         e.Vdo = vdo; e.Item = item; e.Prim = *(int*)(mdl + MdlPrimType);
         e.Ported = !AlloyCensus.HasUnportedShader(mat);
+        e.EngProg = 0;   // filled by NoteEngineDraw when the sim tick reaches this part's draw
         e.Vao = -1;
         e.Model = Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rot)
                   * Matrix4x4.CreateTranslation(pos) * _base;
@@ -272,10 +300,46 @@ internal static unsafe class SkyBox
         return n;
     }
 
+    /// <summary>#136: the engine is about to draw one sky part and <see cref="RspShim"/> is about to
+    /// swallow it. Runs in ENGINE context, at the exact point <c>GLRender::RenderVertexData</c> @0x4d05c5
+    /// would have called <c>SetProgram</c> -- which is the whole reason a dynamic sky is black today: that
+    /// call sits INSIDE the funnel the shim swallows, so the sky program's uniforms are never uploaded.
+    /// <para>So we make the call the swallowed original would have made. <c>SetProgram</c>'s custom branch
+    /// @0x4cf9c8 is <c>GlUseProgramConditionally(prog+0x64)</c> then <c>SetUniforms(*prog)</c>, and this is
+    /// those two, in that order, on the engine's side of the context fence. Uniform values are program-OBJECT
+    /// state and the 4.6 context is share-listed (#80), so what is uploaded here is what Alloy's own draw
+    /// sees. Doing it from inside the Alloy bracket instead would be #237 exactly: the engine's cached idea
+    /// of the current program reflects the ENGINE's context, so it would skip the bind and scatter ~500
+    /// uniforms over whatever Alloy had bound.</para>
+    /// <para>ponytail: the per-part uniforms (the model matrix among them) are left where the LAST captured
+    /// draw put them, which is exact for the one-custom-part sky this was built against and wrong for a
+    /// second one. The upgrade is to re-set the matrix uniforms per part at replay from
+    /// <see cref="Part.Model"/>; the count is on the period line so it is a number, not a guess.</para></summary>
+    internal static void NoteEngineDraw(IntPtr vdo, uint item)
+    {
+        if (_curCustom == null || _setUniforms == null || _useProgram == null) return;
+        IntPtr prog = *_curCustom;
+        if (prog == IntPtr.Zero) return;
+        uint id = *(uint*)(prog + ProgId);
+        if (id == 0) return;
+        // Match FIRST. The global is whatever the last material bind left there, and a part the Alloy pass
+        // can shade for itself must never inherit a neighbour's program -- so only a part that actually
+        // needs hosting takes it, and only that part's draw pays for the upload.
+        int at = -1;
+        for (int i = 0; i < _count; i++)
+            if (_parts[i].Vdo == vdo && _parts[i].Item == (int)item && !_parts[i].Ported) { at = i; break; }
+        if (at < 0) return;
+        _useProgram(id);
+        _setUniforms(prog);
+        _parts[at].EngProg = id;
+        _hosted++;
+    }
+
     /// <summary>Can this entry actually be drawn? Geometry resolved, and a material whose shader the Alloy
     /// pass has a port of. A gob that stopped drawing simply is not in the table any more (#261), so there
     /// is no staleness question left here.</summary>
-    internal static bool Drawable(int i) => _parts[i].Vdo != IntPtr.Zero && _parts[i].Ported;
+    internal static bool Drawable(int i)
+        => _parts[i].Vdo != IntPtr.Zero && (_parts[i].Ported || _parts[i].EngProg != 0);
 
     /// <summary>Diagnostic: sky parts captured whose material names a shader the Alloy pass has no port of.
     /// Non-zero means the sky is deliberately left vanilla, which is a different fact from never seeing
@@ -305,7 +369,7 @@ internal static unsafe class SkyBox
 
     /// <summary>Zeroed with the rest of the period report's counters: a cumulative one would keep printing
     /// a healthy "enrolled" long after the sky stopped being drawn, which is the opposite of the question.</summary>
-    internal static void ResetPeriod() { _enrolled = 0; _attached = 0; }
+    internal static void ResetPeriod() { _enrolled = 0; _attached = 0; _hosted = 0; }
 
     /// <summary>The role alphas the last staged pass actually used, for the period line. #132 made the Alloy
     /// frame LINEAR and the resolve does the one encode, so a role drawn at partial alpha composites
@@ -325,7 +389,8 @@ internal static unsafe class SkyBox
         $", roles {_roleN}" + (_roleN == 0 ? "" : " at alpha " +
             string.Join("/", System.Linq.Enumerable.Select(
                 System.Linq.Enumerable.Take(_roleAlpha, _roleN), a => a.ToString("F3")))) +
-        (Unported() == 0 ? "" : $", {Unported()} UNPORTED (custom sky shader not ported -- #136; nothing draws them)") +
+        (Unported() == 0 ? "" : $", {Unported()} on a custom shader (#136: {_hosted} engine-program draws " +
+                                $"hosted this period, so they draw; 0 would mean they do not)") +
         (_attached == 0 ? "" : $", {_attached} passes REFUSED (sky gob has an attachment chain, scale unmeasured)");
 
     /// <summary>Off-device: <see cref="Roles"/>'s gates and their order, over a stand-in Scene. This is the
