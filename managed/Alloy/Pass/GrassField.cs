@@ -232,7 +232,7 @@ internal static unsafe class GrassField
 
     private struct Loc
     {
-        public int Vp, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge;
+        public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge;
         public int PushTex, PushGain, PushWindow;
         public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN;
         public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn, SunFocus, SunRadius;
@@ -788,6 +788,7 @@ internal static unsafe class GrassField
         Gl.UseProgram(_prog);
         Gl.BindVertexArray(_vao);
         Gl.UniformMatrix4fv(_loc.Vp, 1, 0, (float*)vp);
+        Gl.Uniform3fv(_loc.Eye, 1, (float*)&eye);
         Gl.Uniform2f(_loc.Fade, nearDist, farDist);
         Gl.Uniform1i(_loc.Tex, 0);
         Gl.Uniform1f(_loc.WindGain, _windGain);
@@ -1060,7 +1061,7 @@ internal static unsafe class GrassField
         _prog = prog;
         _loc = new Loc
         {
-            Vp = GlProgram.Loc(prog, "uVP"),
+            Vp = GlProgram.Loc(prog, "uVP"), Eye = GlProgram.Loc(prog, "uEyePos"),
             Fade = GlProgram.Loc(prog, "uFade"), Tex = GlProgram.Loc(prog, "uTex"),
             MatAmb = GlProgram.Loc(prog, "uMatAmbient"), MatDif = GlProgram.Loc(prog, "uMatDiffuse"),
             Lit = GlProgram.Loc(prog, "uLit"), WindGain = GlProgram.Loc(prog, "uWindGain"),
@@ -1116,6 +1117,7 @@ internal static unsafe class GrassField
 
         """ + AlloyRenderer.FeatDecl + """
         uniform mat4 uVP;
+        uniform vec3 uEyePos;
         uniform vec2 uFade;                     // (full-density radius, cut-off radius) in world units
         uniform float uWindGain;
         uniform float uWindSpeed;      // uTimeOfDay -> sway phase; see GrassField._windSpeed
