@@ -97,12 +97,12 @@ public sealed unsafe partial class AlloyRenderer
         // every froxel input comes off THIS pass's projection, never the capture side (see TryPerspective)
         bool perspective = AlloyLights.TryPerspective((float*)&proj, out float p00, out float p11,
                                                       out float near, out float far);
-        SetPassFrustum((float*)&vp, perspective);   // #330: the route gate's planes, this pass's own
         // #120: this pass's eye, for the specular view vector. Same row-vector convention as above, so the
         // inverse view's translation IS the eye. Pass-local state, read off this pass's own stacks -- the
         // SCENE camera is not derived here any more (#257 reads it whole at the anchor), so there is no
-        // contest between passes left to resolve.
+        // contest between passes left to resolve. Ahead of the frustum, which measures its fog clamp from it.
         if (perspective && Matrix4x4.Invert(view, out Matrix4x4 camToWorld)) _eyePos = camToWorld.Translation;
+        SetPassFrustum((float*)&vp, perspective);   // #330: the route gate's planes, this pass's own
         // Cap 5 is the engine's own lit predicate (Ghidra MatStatic @0x450560 / RenderFlat @0x450eb0): with
         // it off every part gets flat white, so the flat variant IS vanilla for this pass.
         bool lightingOn = _litCount > 0 && _lighting && !_litFailed && perspective
@@ -289,11 +289,15 @@ public sealed unsafe partial class AlloyRenderer
                             // Particles bind a program, a VAO and a buffer of their own and hand the state
                             // back the way the beams left it -- blend off, depth mask on, culling off.
                             GpuBegin(GpuTerm.Particles);
+                            // #336: the particle pass's fill -- samples over pixels is its overdraw, the
+                            // number that says whether a half-resolution pass would pay.
+                            bool partCounting = _qPartSamples.Begin(Gl.SAMPLES_PASSED);
                             long blit0 = FrameZones.Ticks(FrameZones.Zone.Blit);
                             long tParts = FrameZones.Now;
                             Particles.Draw(&view, &proj, viewport, near, far, lightingOn);
                             FrameZones.Add(FrameZones.Zone.Parts, tParts,
                                            FrameZones.Ticks(FrameZones.Zone.Blit) - blit0);
+                            if (partCounting) _qPartSamples.End(Gl.SAMPLES_PASSED);
                             GpuEnd(GpuTerm.Particles);
                             break;
                         case PassId.ProbeCapture:
@@ -383,6 +387,8 @@ public sealed unsafe partial class AlloyRenderer
         {
             bool dis = sweep == 1;
             bool bound = false;
+            // #336: the keyhole sweep timed as its own term, and skippable (/draw prepasskey 0).
+            if (dis) { GpuEnd(GpuTerm.Prepass); if (!_prepassKey) break; GpuBegin(GpuTerm.PrepassKey); }
             for (int g = 0; g < groups; g++)
             {
                 if (ShaderFeatures.OutOfPrepass(_gFeat[g])) { if (sweep == 0) skipped += _gLen[g]; continue; }
@@ -424,7 +430,7 @@ public sealed unsafe partial class AlloyRenderer
         }
         if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
         Gl.ColorMask(1, 1, 1, 1);
-        GpuEnd(GpuTerm.Prepass);
+        GpuEnd(GpuTerm.PrepassKey);
         // Counted from what this loop submitted, not from the pass's total draw count: since #126 that total
         // spans the blending classes too, and the prepass walks the opaque range alone.
         // #243: under the cull this is what was STAGED, not what the GPU kept -- the count that decides is in
@@ -449,13 +455,26 @@ public sealed unsafe partial class AlloyRenderer
         // baseline. #325: two calls so opaque and cutout time apart; the seam re-binds the indirect buffer,
         // the slots and the program (one lit uniform re-send), and draws exactly the same batches.
         bool counting = _qSamples.Begin(Gl.SAMPLES_PASSED);
-        GpuBegin(GpuTerm.Opaque);
-        IssueColour(0, _gCutoutStart, vp, viewport, near, far);
-        GpuEnd(GpuTerm.Opaque);
-        GpuBegin(GpuTerm.Cutout);
-        IssueColour(_gCutoutStart, opaqueEnd, vp, viewport, near, far);
-        GpuEnd(GpuTerm.Cutout);
+        IssueClass(0, _gCutoutStart, GpuTerm.Opaque, GpuTerm.OpaqueKey, vp, viewport, near, far);
+        IssueClass(_gCutoutStart, opaqueEnd, GpuTerm.Cutout, GpuTerm.CutoutKey, vp, viewport, near, far);
         if (counting) _qSamples.End(Gl.SAMPLES_PASSED);
+    }
+
+    /// <summary>#336: one opaque class's batches under two GPU terms -- the plain run, then the keyhole
+    /// dissolve partition #327 placed at its tail. The seam is one more re-bind, and only when the class has
+    /// a dissolving tail at all; a roofless frame issues exactly as before.</summary>
+    private static void IssueClass(int from, int to, GpuTerm plain, GpuTerm keyed,
+                                   Matrix4x4* vp, int* viewport, float near, float far)
+    {
+        int tail = from;
+        while (tail < to && !_gDis[tail]) tail++;
+        GpuBegin(plain);
+        IssueColour(from, tail, vp, viewport, near, far);
+        GpuEnd(plain);
+        if (tail >= to) return;
+        GpuBegin(keyed);
+        IssueColour(tail, to, vp, viewport, near, far);
+        GpuEnd(keyed);
     }
 
     /// <summary>#121: capture the area's IBL probe -- the same staged batches, drawn six more times into a

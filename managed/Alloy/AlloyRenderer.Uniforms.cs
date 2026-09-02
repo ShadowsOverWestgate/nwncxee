@@ -212,7 +212,7 @@ public sealed unsafe partial class AlloyRenderer
         // #326: pixels -> world radius per unit view depth, so the shader compares its disc against the
         // screen without knowing the projection. 0 (no perspective this pass) = the disc everywhere.
         float discZ = _lodScale > 0f ? AlloyLights.ShadowDiscPx / _lodScale : 0f;
-        if (locSoft >= 0) Gl.Uniform3f(locSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, discZ);
+        if (locSoft >= 0) Gl.Uniform4f(locSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, discZ, AlloyLights.ShadowCap);
         if (!CasterPass.CubesFresh) { Gl.Uniform1i(locCount, 0); return; }
         int n = CasterPass.CubeCount;
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeUnit);

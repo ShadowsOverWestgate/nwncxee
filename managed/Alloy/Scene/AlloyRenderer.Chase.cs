@@ -92,13 +92,129 @@ public sealed unsafe partial class AlloyRenderer
     /// BSP-filed gob parts the visited set cannot bound.</summary>
     private static long _mxChased, _mxCached, _disAsked, _disCached, _fadeRead, _fadeServed;
     private static long _pollMissMx, _pollMissDis, _pollMissFade;
-    private static long _routeIn, _routeOut;
+    private static long _routeIn, _routeOut, _disBoxed, _pollMissBox, _pollMissAlpha;
     private static int _visGobsLast;
+    /// <summary>#336: the part's world box at enrolment (six floats), for the dissolve verdict.</summary>
+    private static readonly float[] _oBox = new float[MaxOwned * 6];
+    /// <summary>#336: the camera's keyhole state, read once per pass at the top of the route walk: the on
+    /// byte, the aperture plane, the height cut; <c>_khCam</c> false = no camera or no engine verdict armed,
+    /// and the engine call stands in.</summary>
+    private static readonly float[] _khPlane = new float[4];
+    private static byte _khOn;
+    private static float _khCut;
+    private static bool _khCam;
+
+    /// <summary>Off-device: the box verdict against the decompiled rule. A plane z = 5 facing up (0,0,1,-5):
+    /// a box below it dissolves (its lowest corner is under the plane), a box above it does not, the height
+    /// cut refuses a box whose top is under it, and keyhole-off refuses everything. A verdict that picks the
+    /// wrong corner passes the roof through the aperture or dissolves the floor.</summary>
+    private static bool KeyholeBoxSelfCheck(ExtenderLog log)
+    {
+        float* pl = stackalloc float[4] { 0f, 0f, 1f, -5f };
+        float* below = stackalloc float[6] { -1f, -1f, 0f, 1f, 1f, 2f };
+        float* above = stackalloc float[6] { -1f, -1f, 6f, 1f, 1f, 8f };
+        float* straddle = stackalloc float[6] { -1f, -1f, 4f, 1f, 1f, 6f };
+        bool ok = PartTable.KeyholeDissolvesBox(below, 1, pl, -10f)
+                  && !PartTable.KeyholeDissolvesBox(above, 1, pl, -10f)
+                  && PartTable.KeyholeDissolvesBox(straddle, 1, pl, -10f)
+                  && !PartTable.KeyholeDissolvesBox(below, 1, pl, 3f)      // top at 2, cut at 3: refused
+                  && !PartTable.KeyholeDissolvesBox(below, 0, pl, -10f);
+        if (!ok) log.Info("AlloyRenderer.KeyholeBoxSelfCheck: FAILED -- the cached-box dissolve verdict disagrees with the decompiled rule");
+        return ok;
+    }
+
+    private static void ReadKeyholeCamera()
+    {
+        IntPtr cam = PartTable.KeyholeArmed ? PartTable.CurrentCamera : IntPtr.Zero;
+        _khCam = cam != IntPtr.Zero;
+        if (!_khCam) return;
+        _khOn = *(byte*)(cam + PartTable.CamKeyholeState);
+        for (int k = 0; k < 4; k++) _khPlane[k] = *(float*)(cam + PartTable.CamKeyholeState + 4 + k * 4);
+        _khCut = *(float*)(cam + PartTable.CamKeyholeState + 20);
+    }
+
+    /// <summary>#336 step 4: the VISIBLE SET -- per class, in enrollment order, the slots the route walk
+    /// visits: every gob part (its gob may be visited any frame), every slot without a record for its
+    /// tenant (it must build one to cast at all), and every gobless part whose sphere is inside this pass's
+    /// planes. Rebuilt from the whole order every <see cref="VisEvery"/> frames, on an enrollment, an
+    /// epoch bump, or a camera that turned or moved past the slack; in between the walk skips the
+    /// off-screen world outright. The Route sample measured that walk at 0,4-0,5ms in the #324 area.</summary>
+    private static readonly int[] _vis = new int[MaxOwned];
+    private static readonly int[] _visStart = new int[AlloyClasses.Count], _visEnd = new int[AlloyClasses.Count];
+    private static readonly float[] _visPlanes = new float[24];
+    private static int _visBuiltAt = int.MinValue, _visEnrollGen = -1, _visEpoch = -1;
+    private static bool _visFull = true, _visList = DefVisList;
+    private const bool DefVisList = true;
+    private static long _visRebuilds;
+    private const int VisEvery = 4;
+    /// <summary>Plane drift that forces a rebuild: a normal component (about 0,6 degrees of turn) and a
+    /// distance term in world units, both well inside <see cref="RouteSlackUnits"/> over VisEvery frames.</summary>
+    private const float VisNormalEps = 0.01f, VisDistEps = 0.5f;
+
+    /// <summary>Before the route walk: decide whether this pass walks the whole order or the visible set,
+    /// and rebuild the set if it is due.</summary>
+    private static void PrepareVisible()
+    {
+        ReadKeyholeCamera();
+        _visFull = !_visList || _fullPoll || !_passFrustumOk || _visAll;
+        if (_visFull) return;
+        bool due = _frameSeq - _visBuiltAt >= VisEvery || _visEnrollGen != _enrollGen || _visEpoch != _recEpoch;
+        if (!due)
+            for (int f = 0; f < 6 && !due; f++)
+            {
+                int o = f * 4;
+                due = MathF.Abs(_passPlanes[o] - _visPlanes[o]) > VisNormalEps
+                      || MathF.Abs(_passPlanes[o + 1] - _visPlanes[o + 1]) > VisNormalEps
+                      || MathF.Abs(_passPlanes[o + 2] - _visPlanes[o + 2]) > VisNormalEps
+                      || MathF.Abs(_passPlanes[o + 3] - _visPlanes[o + 3]) > VisDistEps;
+            }
+        if (!due) return;
+        _visRebuilds++;
+        _visBuiltAt = _frameSeq; _visEnrollGen = _enrollGen; _visEpoch = _recEpoch;
+        Array.Copy(_passPlanes, _visPlanes, 24);
+        int n = 0;
+        fixed (float* sph = _dSph)
+            for (int c = 0; c < AlloyClasses.Count; c++)
+            {
+                _visStart[c] = n;
+                for (int k = _clsStart[c]; k < _clsEnd[c]; k++)
+                {
+                    int i = _order[k];
+                    if (_oTri[i] == IntPtr.Zero) continue;
+                    if (_oGob[i] != IntPtr.Zero || _recGen[i] != _recEpoch || _recEnroll[i] != _oEnrollGen[i]
+                        || SphereInPass(i, sph))
+                        _vis[n++] = i;
+                }
+                _visEnd[c] = n;
+            }
+    }
+
+    /// <summary>The list this pass routes class <paramref name="c"/> from, and its range.</summary>
+    private static int[] RouteRange(int c, out int from, out int to)
+    {
+        if (_visFull) { from = _clsStart[c]; to = _clsEnd[c]; return _order; }
+        from = _visStart[c]; to = _visEnd[c]; return _vis;
+    }
+
+    /// <summary>Is the slot's cull sphere inside this pass's six planes, with the route slack?</summary>
+    private static bool SphereInPass(int i, float* sph)
+    {
+        float* s = sph + (long)i * 4;
+        if (s[3] >= NeverCull) return true;
+        float r = s[3] * ShadowMath.FrustumCullSlack + RouteSlackUnits;
+        fixed (float* p = _passPlanes)
+            for (int f = 0; f < 6; f++)
+            {
+                float* pl = p + f * 4;
+                if (pl[0] * s[0] + pl[1] * s[1] + pl[2] * s[2] + pl[3] < -r) return false;
+            }
+        return true;
+    }
 
     private static void SetPassFrustum(float* vp, bool perspective)
     {
         _passFrustumOk = perspective;
-        if (perspective) fixed (float* p = _passPlanes) CullPass.Planes(vp, p);
+        if (perspective) fixed (float* p = _passPlanes) CullPass.Planes(vp, p, _eyePos);
     }
 
     /// <summary>#330: should this pass touch the slot at all? Everything the engine can do to a part
@@ -113,20 +229,9 @@ public sealed unsafe partial class AlloyRenderer
         if (_fullPoll || !_passFrustumOk || _visAll) return true;
         if (_recGen[i] != _recEpoch || _recEnroll[i] != _oEnrollGen[i]) return true;
         if (_oGob[i] != IntPtr.Zero && VisSlot(_oGob[i], false)) return true;
-        float* s = sph + (long)i * 4;
-        if (s[3] >= NeverCull) return true;
-        float r = s[3] * ShadowMath.FrustumCullSlack + RouteSlackUnits;
-        fixed (float* p = _passPlanes)
-            for (int f = 0; f < 6; f++)
-            {
-                float* pl = p + f * 4;
-                if (pl[0] * s[0] + pl[1] * s[1] + pl[2] * s[2] + pl[3] < -r)
-                {
-                    _routeOut++;
-                    _recFrame[i] = _frameSeq;
-                    return false;
-                }
-            }
+        // #336: no stamp on the rejected slot -- the shadow side reads "moved on its LAST build, and that
+        // build was last frame" (SlotRecMoved), so an unvisited slot reads still on its own.
+        if (!SphereInPass(i, sph)) { _routeOut++; return false; }
         _routeIn++;
         return true;
     }
@@ -259,12 +364,25 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#124/#327/#330: does the camera keyhole dissolve this part this frame -- lit, a feature that
     /// keyholes, and the engine's aperture test says so. The engine call is paid once per slot per camera
     /// change; while the keyhole camera words hold still the verdict is served from the slot.</summary>
+    /// <para>#336: ...and for a still gobless part -- the tile geometry that is most of the routed set -- the
+    /// verdict is computed from the box captured at enrolment and the camera state read once per pass, so a
+    /// walking camera (which changes the key every frame) costs no engine call and no part touch. A gob part
+    /// never dissolves (the decompile's <c>part+0x50 == 0</c>); a matrix-class part may move its box and
+    /// keeps the engine call. <c>/draw poll 1</c> asks the engine too and counts a disagreement.</para>
     private static bool Dissolves(int i, IntPtr tri)
     {
-        if (!_oLit[i] || ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])) return false;
+        if (!_oLit[i] || ShaderFeatures.NoKeyholing((int)_oFeat[i * 4]) || _oGob[i] != IntPtr.Zero) return false;
         bool cached = _disGen[i] == _camGen;
         if (cached && !_fullPoll) { _disCached++; return _disVerdict[i]; }
-        bool live = PartTable.KeyholeDissolves(tri);
+        bool live;
+        if (!_oMx[i] && _khCam)
+        {
+            fixed (float* bx = _oBox) fixed (float* pl = _khPlane)
+                live = PartTable.KeyholeDissolvesBox(bx + (long)i * 6, _khOn, pl, _khCut);
+            _disBoxed++;
+            if (_fullPoll && PartTable.KeyholeDissolves(tri) != live) _pollMissBox++;
+        }
+        else live = PartTable.KeyholeDissolves(tri);
         _disAsked++;
         if (cached && live != _disVerdict[i]) _pollMissDis++;
         _disVerdict[i] = live; _disGen[i] = _camGen;
@@ -285,7 +403,7 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>A re-tenanted slot's caches describe the previous tenant.</summary>
-    private static void UnstampChase(int i) { _disGen[i] = 0; _fadeKnown[i] = false; }
+    private static void UnstampChase(int i) { _disGen[i] = 0; _fadeKnown[i] = false; _alphaKnown[i] = false; }
 
     /// <summary>A pass skipped a part without running its record block, so the engine may move that part
     /// unobserved before the next build: the next sample chases everything once.</summary>
@@ -298,19 +416,22 @@ public sealed unsafe partial class AlloyRenderer
         int bspGob = 0;   // cold: once per period, over the live slots
         for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero && _oBsp[i] && _oMx[i] && _oGob[i] != IntPtr.Zero) bspGob++;
         return $"chase {_visGobsLast} gobs in view: routed {(float)_routeIn / _frames:F0}/frame, " +
-               $"{(float)_routeOut / _frames:F0} off-frustum untouched; matrices {(float)_mxChased / _frames:F0}/frame read of " +
+               $"{(float)_routeOut / _frames:F0} off-frustum untouched" +
+               (_visList ? $", visible set rebuilt {_visRebuilds} of {_frames} frames" : ", visible set OFF") +
+               $"; matrices {(float)_mxChased / _frames:F0}/frame read of " +
                $"{(float)mxAll / _frames:F0}" + (bspGob == 0 ? "" : $" ({bspGob} BSP-filed gob parts always read)") +
                $", keyhole {(float)_disAsked / _frames:F0}/frame asked of {(float)disAll / _frames:F0}, " +
                $"tile fade {(float)_fadeRead / _frames:F0}/frame read of {(float)fadeAll / _frames:F0} " +
                $"({_movCount} tiles pending" + (_movCount == 0 ? "" : $", first live {_movLive:F3} pending {_movPending:F3}") + ")" +
-               (_fullPoll ? $"; POLL AUDIT misses (must be 0): matrix {_pollMissMx} keyhole {_pollMissDis} fade {_pollMissFade}" : "");
+               $", keyhole {(float)_disBoxed / _frames:F0}/frame from the cached box" +
+               (_fullPoll ? $"; POLL AUDIT misses (must be 0): matrix {_pollMissMx} keyhole {_pollMissDis} fade {_pollMissFade} box {_pollMissBox} alpha {_pollMissAlpha}" : "");
     }
 
     private static void ResetChasePeriod()
     {
         _mxChased = _mxCached = _disAsked = _disCached = _fadeRead = _fadeServed = 0;
-        _routeIn = _routeOut = 0;
-        _pollMissMx = _pollMissDis = _pollMissFade = 0;
+        _routeIn = _routeOut = 0; _visRebuilds = 0;
+        _pollMissMx = _pollMissDis = _pollMissFade = 0; _pollMissBox = _pollMissAlpha = 0; _disBoxed = 0;
     }
 
     /// <summary>Off-device: the visited set (hit, miss, per-sample forgetting, overflow), the camera key

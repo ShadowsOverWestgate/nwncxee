@@ -50,8 +50,29 @@ internal static class SceneLayout
 
     /// <summary>Part -&gt; Material*. Ghidra RenderDrawBucket @0x46d060 / PartTriMesh::Draw @0x4513d0.</summary>
     public const int PartMaterial = 0x58;
+    /// <summary>#336: the part's WORLD bbox, min at +0x64 and max at +0x70 (three floats each) -- what
+    /// <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 hands <c>BoxAbovePlane</c> @0x5b32d0, and whose max.z
+    /// (+0x78) it compares against the camera's height cut. Static for a gobless, matrix-less part.</summary>
+    public const int PartBoxMin = 0x64, PartBoxMax = 0x70;
     /// <summary>Part -&gt; Gob* (the instance the part belongs to; null for world geometry).</summary>
     public const int PartGob = 0x50;
+
+    /// <summary>#338: the four reads of <c>PartTriMesh::IsPartRenderable</c> @0x450e60, the gate EVERY
+    /// <c>Part*::Draw</c> override runs before it draws anything (TriMesh, AnimMesh, AABB, DanglyMesh,
+    /// Skin) and that <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 runs before every colour-bucket
+    /// add. Named for their role in that rule, not for a guessed semantic:
+    /// <code>
+    /// v = part[0x96];
+    /// if (v != 0) {
+    ///     n = *(MdlNode**)(part + 8);                       // PartMdlNode
+    ///     if (n == 0 || *(int*)(n + 0x118) == 0) return 0;  // MdlRenderGate
+    ///     if (*(short*)(n + 0x284) == 0)                    // MdlRenderKind
+    ///         v = (*(void**)(n + 0x278) != 0);              // MdlRenderGeom
+    /// }
+    /// return v;
+    /// </code></summary>
+    public const int PartRenderFlag = 0x96;
+    public const int MdlRenderGate = 0x118, MdlRenderGeom = 0x278, MdlRenderKind = 0x284;
     /// <summary>Part -&gt; its <c>VertexPrimitive</c>, and NOT a node despite the name.
     /// <para>#134 named it: the vtables prove it (live capture, resolved against nm:
     /// <c>_ZTV19VertexPrimitiveFlat</c> for a TriMesh part, <c>_ZTV21VertexPrimitiveDangly</c> for a dangly

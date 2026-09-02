@@ -140,6 +140,34 @@ at `Enroll.cs:78`) and `AlloyCensus._refGob` (the refused-gob set, cleared by `O
 across one, so a recycled pointer has no window to be believed in. They need no `Revoke` — but they
 are the shape that does, so if either ever outlives an enrollment it joins the table above.
 
+### What is chased out of a part, and under which edge (#336)
+
+The route walk dereferences an owned `PartTriMesh*` every frame it is on screen: the alpha
+(`part+0xa0`), the tile record, the dissolve terms, and on a colour-cadence frame the `MdlNode`
+colour triples. Every one of those reads sits behind `PartTable.EntryLive`, and `EntryLive` is the
+**only** lifetime guard — `Part::~Part` → `OnPartDtor` marks the entry dead (the #221 tombstone keeps
+a recycled address from reviving it), so a pointer read after the death notice is refused, not chased.
+
+The three identity fields Alloy captures at enrolment are, per the #336 Ghidra store scan (every write
+to `[reg+0x58|0x88|0xb0]` in the binary; the full tables are on the ticket):
+
+| field | writers after construction | edge |
+|---|---|---|
+| `part+0x58` `Material*` | **none** — set in `PartTriMesh::PartTriMesh`, freed by `Part::~Part` | the death notice |
+| `part+0x88` `VertexPrimitive*` | `PartInitMaterial` @0x43de50, once, on a tree `CreateInstanceTree` created moments before (`NewCAurObject`, `SpawnPartsForTile`, `Gob::Append`); never on a drawn part; the old value is never freed by it | enrolment sees the final value |
+| `part+0xb0` texture rotation | `SetPartTextureRotate` @0x461670, once, from `SpawnPartsForTile` | enrolment sees the final value |
+
+So the per-frame compare `IdentityOk` used to run bought nothing; it is now an **audit** on the colour
+cadence (every 8 frames per slot, every frame under `/draw poll 1`) and its hit counter is the
+`identity N` figure on the [alloy] line. A non-zero steady value there means the scan missed a writer
+(a LEA-then-store, a `memcpy` over the struct) and that writer becomes the edge to hook.
+
+What pointer identity never covered, and still does not: **material content**. `Material::Refresh`
+@0x4c7770, `Material::ReplaceTexturePLT` @0x4c7a10 and `SetMaterialParam` rewrite the material in place
+(creature re-skin, equip, texture-replace VFX — all cold); Alloy re-fetches the diffuse pointer per
+frame and re-mints handles on a changed `CAurTexture*`, which is what makes those visible. `Gob::SetLODModel`
+@0x43e6a0, the per-frame LOD swap, rotates the gob's root pointers and writes no part field.
+
 ### GL objects (`ContextLost`)
 
 | Resource | Created by | Dropped by | Caller |

@@ -173,8 +173,8 @@ internal static unsafe class AlloyLights
         $"gain {_gain:F2}  wrapradius {_srcRadius:F2}  rimfade {_falloffPow:F2}  " +
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  " +
         $"ambient x{AmbientScale:F2}  sun x{SunScale:F2}  overbright x{OverbrightScale:F2}  " +
-        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadownear {_shadowNear:F2}  " +
-        $"hot {_hot:F2}  hotsize {_hotSize:F3}";
+        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  shadownear {_shadowNear:F2}  " +
+        $"hot {_hot:F2}  hotsize {_hotSize:F3}  fadeout {SceneInputs.FadeFrames}f";
 
     /// <summary>Live tuning setter behind <c>/light</c>. Returns the old value, or NaN for an unknown key.
     /// <para>Written from the input thread and read by the render thread next frame. That is safe WITHOUT a
@@ -195,9 +195,13 @@ internal static unsafe class AlloyLights
             case "wrapndl": old = _wrapN; _wrapN = v; break;
             case "shadowsoft": old = _shadowSoft; _shadowSoft = v; break;
             case "discpx": old = _discPx; _discPx = v; break;
+            case "shadowcap": old = _shadowCap; _shadowCap = Math.Clamp(v, 0f, 4f); break;   // 0 = every light; the shader keeps 4 candidates
             case "shadownear": old = _shadowNear; _shadowNear = v; break;
             case "hot":     old = _hot; _hot = v; break;
             case "hotsize": old = _hotSize; _hotSize = v; break;
+            // #336: frames a departed light takes to fade out. The ramp on the way IN is the engine's, so
+            // the two are not guaranteed to match in length -- this is the dial that makes them.
+            case "fadeout": old = SceneInputs.FadeFrames; SceneInputs.FadeFrames = Math.Max((int)v, 0); break;
             default: return float.NaN;
         }
         _log?.Info($"AlloyLights: /light {key} {v:F2} (was {old:F2}) -> {Describe()}");
@@ -217,7 +221,7 @@ internal static unsafe class AlloyLights
         // second transcription of it: f2 in [0, 1], gain 1, rim-fade exponent 1.
         float Att(float f2, float gain) => gain * (1f - f2) / (_atten.X + _atten.Y * f2);
         float g = _gain, r = _srcRadius, p = _falloffPow, am = AmbientScale, su = SunScale, ov = OverbrightScale;
-        float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN, sf = _discPx;
+        float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN, sf = _discPx, sc = _shadowCap;
         float bg = _bootGain, br = _bootRadius, bp = _bootPow, ba = _bootAmbient, bs = _bootSun, bo = _bootOver;
 
         _bootGain = 40f; _bootRadius = 0.7f; _bootPow = 2f; _bootAmbient = 1f; _bootSun = 1f; _bootOver = 1f;
@@ -225,11 +229,11 @@ internal static unsafe class AlloyLights
         bool ok = float.IsNaN(Tune("nope", 1f));                       // unknown knob is reported
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyLights.SelfCheck FAIL: {w}"); } }
         foreach (var key in new[] { "gain", "radius", "falloff", "ambient", "sun", "overbright",
-                                    "wrap", "wrapndl", "shadowsoft", "discpx", "shadownear", "hot", "hotsize" })
+                                    "wrap", "wrapndl", "shadowsoft", "discpx", "shadowcap", "shadownear", "hot", "hotsize" })
             ok &= !float.IsNaN(Tune(key, 3f));                          // every documented knob is reachable
         ok &= _gain == 3f && _srcRadius == 3f && _falloffPow == 3f && AmbientScale == 3f && SunScale == 3f
               && OverbrightScale == 3f && _wrap == 3f && _shadowSoft == 3f && _discPx == 3f && _shadowNear == 3f
-              && _hot == 3f && _hotSize == 3f && _wrapN == 3f;
+              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadowCap == 3f;
         _bootGain = 7f;                                                 // reset must honour the BOOT value...
         ResetTuning();
         ok &= _gain == 7f && _srcRadius == 0.7f && AmbientScale == 1f;  // ...not the 40f literal
@@ -283,7 +287,7 @@ internal static unsafe class AlloyLights
           "the check restores EVERY boot value it clobbered -- a missed one makes /light reset discard a tuned value");
 
         _gain = g; _srcRadius = r; _falloffPow = p; AmbientScale = am; SunScale = su; OverbrightScale = ov;
-        _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn; _discPx = sf;
+        _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn; _discPx = sf; _shadowCap = sc;
         _log = quiet;
         log.Info(ok ? "AlloyLights.SelfCheck: passed"
                     : "AlloyLights.SelfCheck: FAILED -- /light knob table drifted from its documented keys");
@@ -296,7 +300,7 @@ internal static unsafe class AlloyLights
         _gain = _bootGain; _srcRadius = _bootRadius; _falloffPow = _bootPow;
         AmbientScale = _bootAmbient; SunScale = _bootSun; OverbrightScale = _bootOver;
         _wrap = _bootWrap; _shadowSoft = _bootShadowSoft; _shadowNear = _bootShadowNear; _discPx = _bootDiscPx;
-        _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN;
+        _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN; _shadowCap = _bootShadowCap;
         _log?.Info($"AlloyLights: /light reset -> {Describe()}");
     }
     /// <summary>What the shader is actually running, for the period log -- read where it is USED, not at
@@ -346,6 +350,7 @@ internal static unsafe class AlloyLights
         // could already set, and could not be moved without a relaunch.
         _bootHot = _hot; _bootHotSize = _hotSize; _bootWrapN = _wrapN;
         _bootWrap = _wrap; _bootShadowSoft = _shadowSoft; _bootShadowNear = _shadowNear; _bootDiscPx = _discPx;
+        _bootShadowCap = _shadowCap;
         _bootGain = _gain; _bootRadius = _srcRadius; _bootPow = _falloffPow;
         _bootAmbient = AmbientScale; _bootSun = SunScale; _bootOver = OverbrightScale;
         log.Info($"AlloyLights: {Describe()} -- /light retunes every dial live, /light reset restores these");
@@ -528,6 +533,9 @@ internal static unsafe class AlloyLights
     /// reported lit outright. Read here so <c>/light</c> retunes all three live, like every other knob.</summary>
     internal static float ShadowSoft => _shadowSoft;
     internal static float ShadowDiscPx => _discPx;
+    /// <summary>#336: cube-shadow taps a fragment may pay, in cluster order; 0 = every shadowing light.</summary>
+    internal static float ShadowCap => _shadowCap;
+    private static float _shadowCap = 2f, _bootShadowCap = 2f;
     internal static float ShadowNearWorld => _shadowNear * _srcRadius;
 
     /// <summary>Non-blocking timer + overflow readback: only ever touched when the driver says the result is
@@ -635,7 +643,7 @@ internal static unsafe class AlloyLights
         // outright. Both default to 0 on a program that never sets them, which IS the pre-#139 behaviour --
         // that is deliberate, so a stale content override degrades to a hard single tap rather than to
         // something wrong.
-        uniform vec3 uLocalSoft;   // x = disc texels, y = near skip, z = disc stand-down: world radius per unit view depth (0 = none)
+        uniform vec4 uLocalSoft;   // x = disc texels, y = near skip, z = disc stand-down: world radius per unit view depth (0 = none), w = cube taps per fragment (0 = every light)
 
         // #305: the DYNAMIC pool -- movers only, re-baked every frame at reduced resolution, composed with
         // the static cube by min(): depth visibility is a min-of-blockers, so the two arrays compose exactly
@@ -784,6 +792,7 @@ internal static unsafe class AlloyLights
         // behaviour. 0 = off, which is what such an override leaves behind.
         uniform float uWrapN;
         const uint SOWX_CLUSTER_CAP = $CAP$u;
+        const int SOWX_CAP_MAX = 4;   // #336: the shadow cap's ceiling (register-resident candidates)
         // The engine's own sRGB->linear conversion (Ghidra RenderInterface::GetColorSpaceFromSRGB: powf(c,
         // 2.2) per channel, identity at 0 and 1). Textures and material colours both arrive non-linear --
         // the stock shaders apply the same curve via ApplyColorSpace before lighting them.
@@ -817,11 +826,16 @@ internal static unsafe class AlloyLights
         // depth (gl_Position.w, which for a perspective projection IS the linear view depth -- no dependence
         // on the projection's handedness convention). Must mirror the compute pass's slice mapping exactly.
         // gl_FragCoord is WINDOW-relative, so the viewport origin comes out first -- the engine's reflection
-        // subframes do not all render at (0,0).
+        // subframes do not all render at (0,0). A VERTEX stage composing this library (#336: particles light
+        // per vertex) has no gl_FragCoord and defines SOWX_CLUSTER_XY itself, in tile units, before the lib.
+        #ifndef SOWX_CLUSTER_XY
+        #define SOWX_CLUSTER_XY ((gl_FragCoord.xy - uTile.xy) / uTile.zw)
+        #endif
         uint SowxCluster(float viewDepth)
         {
-            int gx = clamp(int((gl_FragCoord.x - uTile.x) / uTile.z), 0, uGrid.x - 1);
-            int gy = clamp(int((gl_FragCoord.y - uTile.y) / uTile.w), 0, uGrid.y - 1);
+            vec2 tile = SOWX_CLUSTER_XY;
+            int gx = clamp(int(tile.x), 0, uGrid.x - 1);
+            int gy = clamp(int(tile.y), 0, uGrid.y - 1);
             float k = log(max(viewDepth, uZ.x) / uZ.x) / log(uZ.y / uZ.x);
             int gz = clamp(int(k * float(uGrid.z)), 0, uGrid.z - 1);
             return uint(gx + uGrid.x * (gy + uGrid.y * gz));
@@ -888,6 +902,15 @@ internal static unsafe class AlloyLights
             uint n = uClCount[cl];
             uint base = cl * SOWX_CLUSTER_CAP;
             vec3 acc = vec3(0.0);
+            // #336: /light shadowcap -- the cube taps a fragment may pay, chosen PER FRAGMENT by reach
+            // (f2 = dd/rr, the attenuation's own term): the capN lights reaching this fragment most
+            // strongly get a cube fetch, the rest draw unshadowed. Per fragment, never per froxel -- a
+            // per-froxel choice put the seam on the cluster grid, squares glued to the screen wherever four
+            // cube lights overlapped. The candidates are kept sorted; an evicted one is added unshadowed.
+            int capN = int(min(uLocalSoft.w, float(SOWX_CAP_MAX)));
+            float cF2[SOWX_CAP_MAX]; int cSlot[SOWX_CAP_MAX]; float cNdl[SOWX_CAP_MAX];
+            vec3 cLit[SOWX_CAP_MAX]; vec3 cSpc[SOWX_CAP_MAX];
+            int cN = 0;
             for (uint k = 0u; k < n; k++)
             {
                 uint li = uClIdx[base + k];
@@ -944,10 +967,31 @@ internal static unsafe class AlloyLights
                 // #143 floor on top of it would wrap past the point of looking lit at all.
                 float ndl = SowxWrap(dot(N, L), max(s, uWrapN));
                 if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
-                float sh = SowxLocalShadow(slot, worldPos, N, dot(N, L), onMover, viewDepth);
-                vec3 lit = c * (max(att, 0.0) * ndl * sh);
-                acc += lit;
-                spec += lit * SowxSpecLobe(N, V, L, rough, specularity);
+                vec3 unsh = c * (max(att, 0.0) * ndl);
+                vec3 spc = unsh * SowxSpecLobe(N, V, L, rough, specularity);
+                if (slot < 0) { acc += unsh; spec += spc; continue; }
+                if (capN <= 0)
+                {
+                    float sh = SowxLocalShadow(slot, worldPos, N, dot(N, L), onMover, viewDepth);
+                    acc += unsh * sh; spec += spc * sh;
+                    continue;
+                }
+                int ci = cN;   // `at` is the attenuation pair above
+                if (cN < capN) cN++;
+                else if (f2 < cF2[capN - 1]) { acc += cLit[capN - 1]; spec += cSpc[capN - 1]; ci = capN - 1; }
+                else { acc += unsh; spec += spc; continue; }
+                while (ci > 0 && cF2[ci - 1] > f2)
+                {
+                    cF2[ci] = cF2[ci - 1]; cSlot[ci] = cSlot[ci - 1]; cNdl[ci] = cNdl[ci - 1];
+                    cLit[ci] = cLit[ci - 1]; cSpc[ci] = cSpc[ci - 1];
+                    ci--;
+                }
+                cF2[ci] = f2; cSlot[ci] = slot; cNdl[ci] = dot(N, L); cLit[ci] = unsh; cSpc[ci] = spc;
+            }
+            for (int q = 0; q < cN; q++)
+            {
+                float sh = SowxLocalShadow(cSlot[q], worldPos, N, cNdl[q], onMover, viewDepth);
+                acc += cLit[q] * sh; spec += cSpc[q] * sh;
             }
             return acc;
         }
@@ -1167,6 +1211,9 @@ internal static unsafe class AlloyLights
                 lo = min(lo, p); hi = max(hi, p);
             }
 
+            // #336: walk order, unsorted. A per-froxel order for the receiver's tap cap put the cap's seam
+            // on the cluster grid (screen-aligned squares wherever four cube lights overlapped); the cap
+            // chooses per FRAGMENT now, so the list needs no order.
             uint n = 0u;
             uint base = id * CAP;
             uint dropped = 0u;

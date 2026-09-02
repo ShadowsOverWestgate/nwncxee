@@ -117,6 +117,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         _enabled = Settings.Bool("shadows", true);
 
         ShadowMath.SelfCheck(log);   // pure math, runs headless
+        FadeSelfCheck(log);          // ...and so does the fade-out bookkeeping
         // #257: the frame constants are read, not captured -- and ahead of the stand-down, because the
         // camera, the area terms and the fog are inputs to EVERY Alloy pass, shadows or no shadows.
         FrameRead.Resolve(log);
@@ -141,7 +142,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary>Keys <c>/shadow</c> accepts. The first two are <see cref="CasterPass"/>'s, the rest this
     /// feed's -- one command over the whole shadow path, because a player tuning it is looking at one thing.</summary>
-    private const string ShadowKeys = "dist|lod|rebake|gather|focusdist|lightcull|diag|lightdiag|torchdiag|trace";
+    private const string ShadowKeys = "dist|lod|rebake|gather|split|layered|refreshall|dynhold|dynevents|dynranks|movers|focusdist|lightcull|diag|lightdiag|torchdiag|trace";
 
     /// <summary>ADR 0013 bucket 1, in the shape <c>RenderCommands.Tune</c> established: <c>/shadow</c> reports,
     /// <c>/shadow &lt;key&gt; &lt;value&gt;</c> sets, <c>/shadow reset</c> restores the boot values. Every one
@@ -271,6 +272,137 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>Engine shadow-fade weight (GetShadowLights decrements it per frame for deprioritized
     /// lights). Diagnostic only -- printed by the masterlight dump.</summary>
     private const int PlFade = 0xa8;
+
+    // ---- #336: the fade-out the engine has no edge for ----
+    // A light that APPEARS ramps: the engine grows its intensity, and since the lit radius is
+    // range * intensity (GetLightAdjustedRadius) the pool grows out of the source. A light that GOES OUT
+    // is simply unlinked from the master list, so it pops. This is the missing half, on Alloy's side: the
+    // last known state of a light that left the list is re-emitted for a few frames with its intensity
+    // scaled down, which shrinks the pool back into the source on the same curve.
+
+    /// <summary>Frames a departed light takes to fade. <c>/light fadeout</c>; 0 = pop, as before.</summary>
+    internal static int FadeFrames = FadeFramesBoot;
+    internal const int FadeFramesBoot = 20;
+    /// <summary>Lights allowed to fade at once. More than this vanishing in ONE frame is a load edge -- an
+    /// area transition unlinks the whole list -- and the ghosts are dropped rather than played out.</summary>
+    private const int MaxGhosts = 16;
+
+    private static IntPtr[] _prevId = new IntPtr[64];
+    private static Vector4[] _prevPosW = new Vector4[64];
+    private static Vector3[] _prevCol = new Vector3[64];
+    private static int _prevN;
+
+    private static readonly IntPtr[] _ghostId = new IntPtr[MaxGhosts];
+    private static readonly Vector4[] _ghostPosW = new Vector4[MaxGhosts];
+    private static readonly Vector3[] _ghostCol = new Vector3[MaxGhosts];
+    private static readonly int[] _ghostLeft = new int[MaxGhosts];
+    private static int _ghostN;
+
+    /// <summary>#336: the fade bookkeeping, headless. It is a set difference over two flat arrays with a
+    /// swap-remove in the middle, and every way it can go wrong is silent -- a ghost that never retires is a
+    /// light that never goes out, a leaver that is missed is the pop this exists to remove.</summary>
+    internal static void FadeSelfCheck(ExtenderLog log)
+    {
+        bool ok = true;
+        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SceneInputs.FadeSelfCheck FAIL: {w}"); } }
+
+        int fadeWas = FadeFrames, prevWas = _prevN, ghostWas = _ghostN;
+        FadeFrames = 3; _prevN = 0; _ghostN = 0;
+
+        void Lit(params int[] ids)
+        {
+            FrameInputs.BeginAreaLights(ids.Length);
+            foreach (int id in ids)
+                FrameInputs.RecordAreaLight(id, new Vector3(id, 0f, 0f), 10f, Vector3.One);
+            FadeDepartedLights();
+        }
+
+        Lit(1, 2);
+        E(FrameInputs.LightCount == 2 && _ghostN == 0, "two lit lights, nothing fading");
+        Lit(1);
+        E(_ghostN == 1 && FrameInputs.LightCount == 2, "a departed light is still emitted, once");
+        E(FrameInputs.AreaLightPosRange[1].W < 10f, "...at a shrunken radius");
+        E(FrameInputs.AreaLightPosRange[1].W > 0f, "...and not to nothing on its first frame");
+        Lit(1); Lit(1); Lit(1);
+        E(_ghostN == 0 && FrameInputs.LightCount == 1, "and retires after FadeFrames frames");
+        Lit(1, 2); Lit(1);
+        E(_ghostN == 1, "light 2 fades again");
+        Lit(1, 2);
+        E(_ghostN == 0 && FrameInputs.LightCount == 2, "a light that comes back drops its ghost");
+        // The load edge: more leavers than the cap in one frame is an area transition, not a torch.
+        Lit(1, 2, 3, 4); FadeFrames = 3; _ghostN = 0;
+        var many = new int[MaxGhosts + 4];
+        for (int i = 0; i < many.Length; i++) many[i] = 100 + i;
+        Lit(many); Lit(1);
+        E(_ghostN == 0, "a whole list vanishing at once fades nothing");
+        FadeFrames = 0; Lit(1, 2); Lit(1);
+        E(_ghostN == 0 && FrameInputs.LightCount == 1, "fadeout 0 pops, as before");
+
+        FadeFrames = fadeWas; _prevN = prevWas; _ghostN = ghostWas;
+        FrameInputs.BeginAreaLights(0);
+        log.Info(ok ? "SceneInputs.FadeSelfCheck: passed" : "SceneInputs.FadeSelfCheck: FAILED -- see above");
+    }
+
+    /// <summary>Is this light in the set just admitted? The master list keeps its order frame to frame, so
+    /// the paired index walks in step and the full scan is the reorder path, not the common one.</summary>
+    private static bool StillLit(IntPtr id, int cur, ref int j)
+    {
+        if (j < cur && FrameInputs.AreaLightId[j] == id) { j++; return true; }
+        for (int k = 0; k < cur; k++)
+            if (FrameInputs.AreaLightId[k] == id) { j = k + 1; return true; }
+        return false;
+    }
+
+    /// <summary>Age the fading lights, emit them, and take this frame's set as the next comparison. Called
+    /// with <see cref="FrameInputs.LightCount"/> holding the lights the walk actually admitted -- the ghosts
+    /// are appended after the snapshot, so a ghost never seeds another ghost.</summary>
+    private static void FadeDepartedLights()
+    {
+        int cur = FrameInputs.LightCount;
+        // A light that came back keeps nothing of its ghost; the live entry above is already the real one.
+        for (int i = 0; i < _ghostN; i++)
+        {
+            int j0 = 0;
+            if (--_ghostLeft[i] > 0 && !StillLit(_ghostId[i], cur, ref j0)) continue;
+            _ghostN--;
+            _ghostId[i] = _ghostId[_ghostN]; _ghostPosW[i] = _ghostPosW[_ghostN];
+            _ghostCol[i] = _ghostCol[_ghostN]; _ghostLeft[i] = _ghostLeft[_ghostN];
+            i--;
+        }
+        if (FadeFrames > 0)
+        {
+            int gone = 0, j = 0;
+            for (int i = 0; i < _prevN; i++)
+            {
+                if (StillLit(_prevId[i], cur, ref j)) continue;
+                if (++gone > MaxGhosts - _ghostN) { _ghostN = 0; break; }
+                _ghostId[_ghostN] = _prevId[i]; _ghostPosW[_ghostN] = _prevPosW[i];
+                _ghostCol[_ghostN] = _prevCol[i]; _ghostLeft[_ghostN++] = FadeFrames;
+            }
+        }
+
+        if (cur > _prevId.Length)
+        {
+            _prevId = new IntPtr[cur * 2];
+            _prevPosW = new Vector4[cur * 2];
+            _prevCol = new Vector3[cur * 2];
+        }
+        _prevN = cur;
+        Array.Copy(FrameInputs.AreaLightId, _prevId, cur);
+        Array.Copy(FrameInputs.AreaLightPosRange, _prevPosW, cur);
+        Array.Copy(FrameInputs.AreaLightColor, _prevCol, cur);
+
+        for (int i = 0; i < _ghostN; i++)
+        {
+            // Intensity is the engine's own ramp on the way in, and the radius rides it -- so scaling both
+            // by the same k is what makes the pool shrink INTO the source instead of dimming in place.
+            // +1 so the first ghost frame is already below full: the light was at full strength the frame
+            // before, and re-emitting it unchanged would spend one frame of the fade standing still.
+            float k = (float)_ghostLeft[i] / (FadeFrames + 1);
+            var pw = _ghostPosW[i];
+            FrameInputs.RecordAreaLight(_ghostId[i], new Vector3(pw.X, pw.Y, pw.Z), pw.W * k, _ghostCol[i] * k);
+        }
+    }
     private const float PlDirectionalRange = 1000f;
     /// <summary>RenderInterface::GetGlobalShaderParamf -- param 0x12 = the engine's light-radius multiplier.</summary>
     private static delegate* unmanaged<uint, float> _getGspF;
@@ -391,7 +523,11 @@ public sealed unsafe class SceneInputs : IExtenderService
                 // #257: the scene camera's own far plane. The FarMax rollover this used to need existed
                 // because the far plane was captured per PASS and an auxiliary subframe's small far could
                 // win the frame -- which culled the carried torch. There is one camera read now.
-                float cullFar = FrameInputs.CamFar;
+                // #336: a light whose whole lit sphere sits past the fog's opaque distance shades nothing
+                // visible, and this same predicate gates its cube BAKE -- which is what stopped the fully
+                // fogged half of the street from baking six 512 faces apiece.
+                float cullFar = CullPass.FogCull && FrameInputs.FogOn && FrameInputs.FogEnd > 0f
+                    ? MathF.Min(FrameInputs.CamFar, FrameInputs.FogEnd) : FrameInputs.CamFar;
                 bool vis = _lightCullMode == 1 || _focus == default
                     ? (pos - FrameInputs.CameraPos).LengthSquared() < (cullFar + slackR) * (cullFar + slackR)
                     : ShadowMath.SphereInCameraFrustum(pos, slackR, FrameInputs.CameraPos, _focus,
@@ -426,6 +562,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             // world the light cannot reach, at no visible gain.
             FrameInputs.RecordLocalLight((IntPtr)p, pos, adjR, color);
         }
+        FadeDepartedLights();
         _walkDoneCount = FrameInputs.LightCount;
     }
 

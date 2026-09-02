@@ -261,6 +261,11 @@ public sealed unsafe partial class AlloyRenderer
         return n == 0 ? "" : $", {n} with no UV stream ({off} engine-disabled)";
     }
 
+    /// <summary>#336: does this VDO slot carry a UV stream? A mesh without one reads GL's generic constant
+    /// at every vertex, so its whole diffuse is one texel -- which is worth saying out loud on a watch line
+    /// rather than inferring from the population note.</summary>
+    internal static bool SlotHasUv(int v) => (uint)v < (uint)_vdoCount && _vUv[v].Present;
+
     /// <summary>One VAO over this slot's streams, wherever the engine's pool descriptors say they live.</summary>
     private static uint BuildVao(int v)
     {

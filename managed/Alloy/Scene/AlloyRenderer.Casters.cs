@@ -77,6 +77,28 @@ public sealed unsafe partial class AlloyRenderer
     /// names. Roughly once a second in a torch-lit area.</summary>
     internal static int RecordEpoch => _recEpoch;
 
+    /// <summary>#336: the slots whose record CHANGED in the latest colour build -- the only slots whose mover
+    /// level or caster sphere can differ from the frame before (both are written on that same edge; an
+    /// untouched slot's <c>_recFrame</c> stamp reads it still). The shadow side's <c>Refresh</c> walks this
+    /// list plus its own dynamic set instead of every caster. Reset by the first note of a new frame, so the
+    /// shadow bracket (which runs BEFORE the build) reads the previous build's list intact; compared, never
+    /// consumed. Overflow (a mid-frame epoch bump rebuilding every slot twice) sets the flag and the refresh
+    /// falls back to the full walk for that frame.</summary>
+    private static readonly int[] _castTouched = new int[MaxOwned];
+    private static int _castTouchedN, _castTouchedFrame = -1;
+    private static bool _castTouchedOverflow;
+
+    internal static void NoteCasterTouched(int i)
+    {
+        if (_castTouchedFrame != _frameSeq) { _castTouchedFrame = _frameSeq; _castTouchedN = 0; _castTouchedOverflow = false; }
+        if (_castTouchedN < _castTouched.Length) _castTouched[_castTouchedN++] = i; else _castTouchedOverflow = true;
+    }
+    internal static int CasterTouchedCount => _castTouchedN;
+    internal static int CasterTouchedSlot(int k) => _castTouched[k];
+    internal static bool CasterTouchedOverflow => _castTouchedOverflow;
+    /// <summary>Off-device only: the self-check seeds the list and clears it again.</summary>
+    internal static void ResetCasterTouched() { _castTouchedN = 0; _castTouchedFrame = -1; _castTouchedOverflow = false; }
+
     /// <summary>Publish the slot's cast admission, bumping <see cref="CasterGen"/> only on a change.</summary>
     private static void SetCastOk(int i, bool ok)
     {
@@ -87,7 +109,10 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The mover LEVEL for one slot, read the same way <see cref="TryCaster"/> reads it -- the
     /// slot's most recent build was also a build that moved something.</summary>
-    internal static bool SlotRecMoved(int slot) => _recMovedAt[slot] == _recFrame[slot];
+    /// <para>#336: ...AND that build was last frame's. The route walk no longer stamps the slots it skips
+    /// (the visible set never visits them), so a slot that moved on its last build and then left the view
+    /// would otherwise read as a mover for as long as it stays out.</para></summary>
+    internal static bool SlotRecMoved(int slot) => _recMovedAt[slot] == _recFrame[slot] && _recFrame[slot] == _frameSeq - 1;
     internal static bool SlotDangly(int slot) => _oDangly[slot];
 
     /// <summary>Entries in the draw order -- the caster walk's own bound.</summary>
@@ -139,7 +164,7 @@ public sealed unsafe partial class AlloyRenderer
         // build that changed something, so the two agreeing is "the last build moved it" and asking twice
         // gives the same answer. ADR 0017's hazard was a signal the first pass to ask consumed.
         f.Dangly = _oDangly[slot];
-        f.RecMoved = _recMovedAt[slot] == _recFrame[slot];
+        f.RecMoved = SlotRecMoved(slot);
         MoverSphere(slot, out f.Cx, out f.Cy, out f.Cz, out f.R);
         return true;
     }
@@ -158,6 +183,11 @@ public sealed unsafe partial class AlloyRenderer
         cx = 0f; cy = 0f; cz = 0f; r = NeverCull;
         CasterDegenerate++;
     }
+
+    /// <summary>Cold, for the <c>/shadow movers</c> dump: the slot's diffuse texture name, the one label a
+    /// part carries that a human can read. Borrowed pointers, resolved inside the pass slot.</summary>
+    internal static string SlotTexName(int slot)
+        => _oTri[slot] == IntPtr.Zero ? "-" : AlloyCensus.TexName(new MaterialRef(_oMat[slot]).Texture(0).Ptr);
 
     /// <summary>Is this ownership slot posed by bones? The cheap gate the caster walk uses to put the
     /// skinned casters at the head of its list without resolving every slot twice.</summary>

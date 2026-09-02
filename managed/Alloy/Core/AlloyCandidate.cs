@@ -46,6 +46,9 @@ internal struct AlloyCandidate
     /// colour is all-owned-or-none per instance (#107), so enrollment has to be able to name the instance a
     /// refusal belongs to and drop the rest of it with the refused part.</summary>
     public IntPtr Gob;
+    /// <summary>#336: the LOD tree this part belongs to, when its gob has alternates; the route skips the
+    /// part while <c>GobPartTree</c> names another. Zero for a part with no LOD question.</summary>
+    public IntPtr LodRoot;
     /// <summary>#126: the material's blend pair as <c>Aurora::AuroraBlendModes</c> (mat+0x90/+0x94), which
     /// the blended and additive passes translate to <c>glBlendFunc</c>. Part of the batch key: one multidraw
     /// carries one blend state.</summary>

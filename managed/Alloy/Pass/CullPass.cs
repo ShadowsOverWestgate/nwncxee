@@ -135,6 +135,13 @@ internal static unsafe class CullPass
     /// <summary>The boot threshold, and #152's own: one pixel of projected radius.</summary>
     internal const float DefLodPx = 1.0f;
 
+    /// <summary>#336: pull the far plane in to the fog's opaque distance. <c>SowxFog</c> clamps its lerp, so
+    /// a fragment past <c>FogEnd</c> is EXACTLY the fog colour -- it is drawn, lit, prepassed and shadowed to
+    /// produce a pixel the fog would have painted anyway. Measured: camfar 215 against a fog end of 125, so
+    /// two thirds of the ground area in the frustum was past it. <c>/draw fogcull</c>.</summary>
+    internal static bool FogCull = DefFogCull;
+    internal const bool DefFogCull = true;
+
     /// <summary>Pixels per unit of world radius at unit view depth -- <c>proj.M22 * viewportHeight / 2</c>,
     /// so <c>radius * this / depth</c> is the sphere's screen radius. Zero for a pass whose projection is not
     /// a perspective one, and the LOD test stands down rather than dividing by a scale it cannot trust.
@@ -344,7 +351,7 @@ internal static unsafe class CullPass
         Gl.Uniform1i(_uDrawN, _drawN);
         Gl.UniformMatrix4fv(_uVP, 1, 0, (float*)vp);
         float* planes = stackalloc float[24];
-        Planes((float*)vp, planes);
+        Planes((float*)vp, planes, _eye);
         Gl.Uniform4fv(_uPlanes, 6, planes);
         Gl.Uniform1f(_uLodPx, MathF.Max(LodPx, 0f));
         Gl.Uniform1f(_uLodScale, _lodScale);
@@ -539,7 +546,7 @@ internal static unsafe class CullPass
     /// plane distance is in world units and the sphere test is a plain compare. Row-major here means the
     /// combination is <c>clip = v * VP</c>, so the planes come off the COLUMNS -- the transpose of the form
     /// the paper writes for column-vector convention.</summary>
-    internal static void Planes(float* m, float* p)
+    internal static void Planes(float* m, float* p, Vector3 eye)
     {
         // m[r*4+c] is row r, column c of the row-vector matrix: clip.c = sum_r v[r] * m[r*4+c].
         for (int i = 0; i < 6; i++)
@@ -554,6 +561,12 @@ internal static unsafe class CullPass
             if (len > 0f) { x /= len; y /= len; z /= len; w /= len; }
             p[i * 4 + 0] = x; p[i * 4 + 1] = y; p[i * 4 + 2] = z; p[i * 4 + 3] = w;
         }
+        if (!FogCull || !FrameInputs.FogOn || FrameInputs.FogEnd <= 0f) return;
+        // Plane 5 is the far one (i>>1 == 2, w - z). Normalised, its signed distance at the eye IS the far
+        // distance, so subtracting the excess slides it in along its own normal to the fog end exactly.
+        // The eye is the one THIS vp was built from, so a mirrored subframe measures from its own camera.
+        float far = p[5 * 4 + 0] * eye.X + p[5 * 4 + 1] * eye.Y + p[5 * 4 + 2] * eye.Z + p[5 * 4 + 3];
+        if (far > FrameInputs.FogEnd) p[5 * 4 + 3] -= far - FrameInputs.FogEnd;
     }
 
     /// <summary>Headless check of the two pieces that are arithmetic rather than GL: the plane extraction
@@ -570,7 +583,7 @@ internal static unsafe class CullPass
         Matrix4x4 proj = Matrix4x4.CreatePerspectiveFieldOfView(1.0f, 1.0f, 1f, 100f);
         Matrix4x4 vp = view * proj;
         float* planes = stackalloc float[24];
-        Planes((float*)&vp, planes);
+        Planes((float*)&vp, planes, Vector3.Zero);
         bool Inside(Vector3 pt, float r)
         {
             for (int i = 0; i < 6; i++)
@@ -583,6 +596,18 @@ internal static unsafe class CullPass
         E(!Inside(new Vector3(0, 0, -500), 1f), "a point past the far plane is outside it");
         E(!Inside(new Vector3(200, 0, -10), 1f), "a point far off to the side is outside it");
         E(Inside(new Vector3(200, 0, -10), 400f), "...and is back inside once its radius reaches the camera");
+
+        // #336: the fog clamp slides plane 5 in, and nothing else. A wrong sign here culls the whole world
+        // or culls nothing, and neither shows up until someone walks into a foggy area.
+        bool fogWas = FrameInputs.FogOn; float endWas = FrameInputs.FogEnd; Vector3 camWas = FrameInputs.CameraPos;
+        FrameInputs.FogOn = true; FrameInputs.FogEnd = 50f; FrameInputs.CameraPos = Vector3.Zero;
+        Planes((float*)&vp, planes, Vector3.Zero);
+        E(Inside(new Vector3(0, 0, -40), 1f), "fog cull: a point inside the fog end survives");
+        E(!Inside(new Vector3(0, 0, -60), 1f), "fog cull: a point past the fog end is culled");
+        E(Inside(new Vector3(0, 0, -60), 15f), "...and a sphere reaching back inside it survives");
+        FrameInputs.FogOn = fogWas; FrameInputs.FogEnd = endWas; FrameInputs.CameraPos = camWas;
+        Planes((float*)&vp, planes, Vector3.Zero);
+        E(!Inside(new Vector3(0, 0, -500), 1f), "fog off: the far plane is the engine's again");
 
         // The pack, against what the shader reads out of it. Not a GL call in sight: this is a memory layout
         // shared with GLSL, and every field landing one slot over is a draw reading its neighbour's range.

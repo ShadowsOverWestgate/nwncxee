@@ -197,6 +197,25 @@ public sealed unsafe class CasterPass : IExtenderService
     /// nothing to avoid.</summary>
     private static readonly int[] _dynPageOf = new int[MaxCubes];
     private static int[] _dynPageSlot = Array.Empty<int>();
+    /// <summary>#336: per pool page, the faces an EVENT (a mover, a membership flip, a ghost) sat in last
+    /// frame -- a mover's previous face needs the re-bake as much as its current one. <see cref="AllFaces"/>
+    /// on claim, on a blanket and on a light that moved.</summary>
+    private static int[] _dynPageMask = Array.Empty<int>();
+    private const int AllFaces = (1 << CubeFaces) - 1;
+    /// <summary>#336: the sun's dynamic layer holds a bake for the fit matrix beside it, so a frame with
+    /// dynamic casters in the fit but no event among them samples it without re-baking.</summary>
+    private static readonly bool[] _sunDynValid = new bool[MaxCascades];
+    private static readonly Matrix4x4[] _sunDynVp = new Matrix4x4[MaxCascades];
+    /// <summary>#336's A/B: 0 = every dynamic view re-bakes every frame it has dynamic casters, as #305/#306
+    /// shipped it.</summary>
+    private static bool _dynEvents = true;
+    /// <summary>#336: dynamic pages for the nearest <c>/shadow dynranks</c> cube lights only (rank = the
+    /// nearest-first cube order). A far torch keeps its static cube and shadows no mover; with every face
+    /// of every page stale every frame (the tileset's animated props), the page count is the view count.
+    /// Boot = every cube.</summary>
+    private static int _dynRanks = DynRanksBoot;
+    private const int DynRanksBoot = 64;
+    private static long _cubeDynBakedFaces;
     /// <summary>Slot is in COMBINED mode: it has movers but no pool page (pool exhausted), so it bakes both
     /// halves into the static array every frame -- the per-slot fallback to pre-split behaviour. A mode
     /// change re-keys the slot, or a mover baked in while combined would outlive the mode.</summary>
@@ -411,6 +430,39 @@ public sealed unsafe class CasterPass : IExtenderService
     private static readonly int[] _liveStamp = new int[MaxCasters];
     private static readonly int[] _prevSlots = new int[MaxCasters];
     private static int _prevCount;
+    /// <summary>#336: the frame the standing list was COLLECTED on (<c>_collectedAt</c> is the frame it was
+    /// last collected OR refreshed). With the refresh no longer stamping every caster per frame, "present
+    /// last frame" is membership of a list that stood through last frame: a stamp at or after this collect,
+    /// while <c>_collectedAt</c> chains.</summary>
+    private static int _lastCollectFrame = -1;
+    /// <summary>#336: ownership slot -&gt; live index, valid while its seq is the current collect's. The
+    /// refresh resolves the colour build's touched slots through it without a walk.</summary>
+    private static readonly int[] _liveIdx = new int[MaxCasters], _liveIdxSeq = new int[MaxCasters];
+    /// <summary>#336: the live list bucketed by VAO (CSR built at collect), so a dirty VDO names its casters
+    /// without a walk over the rest.</summary>
+    private static readonly int[] _vaoStart = new int[MaxVdos + 1], _vaoMembers = new int[MaxCasters];
+    /// <summary>#336: the frame each live index was visited by the refresh, so the three visit sources
+    /// (dirty VDO, touched record, dynamic last frame) admit a caster once.</summary>
+    private static readonly int[] _liveVisit = new int[MaxCasters];
+    /// <summary>#336: the frame's visit list, gathered (and bone-checked) BEFORE any admission so a refresh
+    /// that has to bail leaves no half-written stamps for the same-frame collect to misread.</summary>
+    private static readonly int[] _visitIdx = new int[MaxCasters];
+    private static int _visitN;
+    /// <summary>#336: last frame's dynamic set, copied at <see cref="Account"/> -- the refresh revisits it
+    /// to see a caster STOP moving, which no colour-side edge reports.</summary>
+    private static readonly int[] _dPrevIdx = new int[MaxCasters];
+    private static int _dPrevCount;
+    /// <summary>#336's A/B: 1 = the refresh walks every caster as #328 shipped it.</summary>
+    private static bool _refreshAll;
+    /// <summary>Casters the refresh visited, and records the colour build changed, summed over the period.</summary>
+    private static long _visitSum, _touchedSum;
+    /// <summary>#336: frames a caster stays in the DYNAMIC set after it last moved. The live read that
+    /// named it: ~20 static cube bakes a frame charged to "mover", with vertex-dirty flapping 120-260
+    /// casters between the two sets each frame -- every flip a static-set event re-baking the cube it stood
+    /// in. A held caster costs nothing extra (the dynamic layer re-bakes every frame anyway); the flip back
+    /// happens once, after the hold. <c>/shadow dynhold 0</c> is the old behaviour.</summary>
+    private static int _dynHold = DynHoldBoot;
+    private const int DynHoldBoot = 8;
     /// <summary>This frame's diffuse texture id for a MASKED caster (0 = not masked, or the texture did not
     /// resolve). Re-fetched every collect: a <c>CAurTexture*</c> is borrowed and freed on area transitions,
     /// so it is never cached -- and the per-frame fetch is what keeps an animated diffuse cutting the right
@@ -537,6 +589,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // #306: the sun's half of the split sizes an allocation too (a csm_cascades x csm_size mirror).
         _sunSplitCfg = Settings.Int("csm_dyn", 1, 0, 1) != 0;
         _dynPageSlot = new int[Math.Max(_cubeDynPages, 1)];
+        _dynPageMask = new int[_dynPageSlot.Length];
         Array.Fill(_dynPageSlot, -1);
         Array.Fill(_dynPageOf, -1);
 
@@ -570,6 +623,7 @@ public sealed unsafe class CasterPass : IExtenderService
     internal static string Describe()
         => $"dist {_maxDist:F0} rebake {(_rebake ? 1 : 0)} " +
            $"gather {CasterGather.Mode} split {(_split ? 1 : 0)} layered {(_layerDial ? 1 : 0)} " +
+           $"refreshall {(_refreshAll ? 1 : 0)} dynhold {_dynHold} dynevents {(_dynEvents ? 1 : 0)} dynranks {_dynRanks} " +
            $"({_cascades}x{_mapSize} cascades{(_sunSplitCfg ? " + dyn mirror" : "")}, " +
            $"{_cubeLights}x{_cubeSize} cubes, " +
            $"{_cubeDynPages}x{_cubeDynSize} dynamic pool pages)";
@@ -608,13 +662,37 @@ public sealed unsafe class CasterPass : IExtenderService
                 float oly = _layerDial ? 1f : 0f;
                 _layerDial = v != 0f;
                 return oly;
+            case "refreshall":
+                // #336's A/B: 1 = the standing-list refresh visits every caster. Same verdicts either way if
+                // the visit set is complete; a shadow that stops tracking only at 0 is a missing source.
+                float ora = _refreshAll ? 1f : 0f;
+                _refreshAll = v != 0f;
+                return ora;
+            case "dynhold":
+                float oh = _dynHold;
+                _dynHold = Math.Max((int)v, 0);
+                return oh;
+            case "movers":
+                _dumpMovers = v != 0f;
+                return 0f;
+            case "dynranks":
+                float odr = _dynRanks;
+                _dynRanks = Math.Max((int)v, 0);
+                _invalidate = true;
+                return odr;
+            case "dynevents":
+                // #336's A/B: 0 = a dynamic view re-bakes every frame it has dynamic casters (all six faces).
+                float oe = _dynEvents ? 1f : 0f;
+                _dynEvents = v != 0f;
+                _invalidate = true;
+                return oe;
             default: return float.NaN;
         }
     }
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _invalidate = true; CasterGather.Mode = 1; }
+    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _invalidate = true; CasterGather.Mode = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -823,6 +901,7 @@ public sealed unsafe class CasterPass : IExtenderService
         {   // #328: the predicate is ONE function for the full collect and the standing-list refresh. Pin
             // what it must say: a still caster is live but not a mover; one that starts moving is dynamic
             // AND a static-set event; one that keeps moving is dynamic only; an appearance is an event.
+            int hold = _dynHold; _dynHold = 0;
             _frameSeq = 9; _moverCount = _dMoverCount = _sMoverCount = 0;
             _dynStamp[5] = 0; _dynStamp[6] = 0; _dynStamp[7] = 8;
             Admit(0, 5, skinned: false, appeared: false, recMoved: false, dangly: false, vDirty: false);
@@ -833,11 +912,47 @@ public sealed unsafe class CasterPass : IExtenderService
                         && _dMoverCount == 2 && _dMoverIdx[0] == 1 && _dMoverIdx[1] == 2
                         && _sMoverCount == 2 && _sMoverIdx[0] == 1 && _sMoverIdx[1] == 3
                         && !_liveDyn[0] && _liveDyn[1] && _liveStamp[8] == 9;
+            // #336: the hold. At 4 frames a caster last moved 3 frames ago is still dynamic and no event;
+            // one that last moved 5 frames ago flips back -- once -- and is a static event; a flip that would
+            // repeat every frame under vertex-dirty flapping is the churn this exists to stop.
+            _dynHold = 4; _moverCount = _dMoverCount = _sMoverCount = 0;
+            _dynStamp[5] = 6; _dynStamp[6] = 4;
+            Admit(0, 5, skinned: false, appeared: false, recMoved: false, dangly: false, vDirty: false);
+            Admit(1, 6, skinned: false, appeared: false, recMoved: false, dangly: false, vDirty: false);
+            pred &= _moverCount == 0 && _dMoverCount == 1 && _dMoverIdx[0] == 0 && _sMoverCount == 1 && _sMoverIdx[0] == 1
+                    && _liveDyn[0] && !_liveDyn[1];
+            _dynHold = hold;
             _frameSeq = 0; _moverCount = _dMoverCount = _sMoverCount = 0; _mvMatrix = 0; _mvAppear = 0;
             for (int q = 5; q <= 8; q++) { _dynStamp[q] = 0; _liveStamp[q] = 0; }
-            _liveDyn[1] = _liveDyn[2] = false;
+            _liveDyn[0] = _liveDyn[1] = _liveDyn[2] = false;
             if (!pred)
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: the mover predicate misclassifies a caster (a shadow that stops tracking, or a static page that never re-bakes)"); }
+        }
+        if (ok)
+        {   // #336: the refresh's visit set. Three still casters on one clean VDO; slot 21's record changed
+            // in the colour build, slot 22 was dynamic last frame, slot 20 nothing named -- so exactly two are
+            // visited and the third keeps its verdict, and the refreshall A/B visits all three.
+            // Off-device every ownership slot reads skinned (an unenrolled bone slot is 0), so the three
+            // sit in the creature half; the visit set is the same question either way.
+            _frameSeq = 12; _collectSeq = 3; _liveCount = 3; _liveCreatures = 3;
+            for (int q = 0; q < 3; q++)
+            { _liveSlot[q] = 20 + q; _liveVao[q] = 0; _liveIdx[20 + q] = q; _liveIdxSeq[20 + q] = 3; _liveVisit[q] = 0; _liveDyn[q] = false; }
+            BucketByVao();
+            AlloyRenderer.ResetCasterTouched(); AlloyRenderer.NoteCasterTouched(21);
+            _dPrevIdx[0] = 2; _dPrevCount = 1; _dynStamp[22] = 11;
+            long visits = _visitSum, touched = _touchedSum; _visitSum = 0;
+            bool part = Refresh() && _visitSum == 2 && _liveVisit[0] != 12 && _liveVisit[1] == 12 && _liveVisit[2] == 12
+                        && !_liveDyn[0] && _moverCount == 2;   // two visited, both skinned = both movers
+            _refreshAll = true; _frameSeq = 13; _visitSum = 0;
+            bool all = Refresh() && _visitSum == 3;
+            _touchedSum = touched;
+            _refreshAll = false; _frameSeq = 0; _collectSeq = 0; _liveCount = 0; _liveCreatures = 0; _collectedAt = -1;
+            _dPrevCount = 0; _moverCount = _dMoverCount = _sMoverCount = 0; _mvMatrix = 0; _mvBone = 0; _liveSum = 0; _moverSum = 0; _degenSum = 0;
+            _visitSum = visits;
+            for (int q = 0; q < 3; q++) { _dynStamp[20 + q] = 0; _liveStamp[20 + q] = 0; _liveDyn[q] = false; _liveVisit[q] = 0; _liveIdxSeq[20 + q] = 0; }
+            AlloyRenderer.ResetCasterTouched();
+            if (!part || !all)
+            { ok = false; log.Info($"CasterPass.SelfCheck FAIL: the refresh visit set is wrong (partial {part}, all {all}) -- a caster's motion goes unseen, or the walk is O(world) again"); }
         }
         if (ok)
         {   // #286's staging, against what the dispatch and the draw stages read back out of it. Not a GL
@@ -885,6 +1000,11 @@ public sealed unsafe class CasterPass : IExtenderService
         // and it must still reject the obvious misses, else it is culling nothing at all
         if (ok && (!FaceCulls(100f, -10f, 0f) || !FaceCulls(101f, 1f, 0f)))
         { ok = false; log.Info("CasterPass.SelfCheck FAIL: face cull admits geometry behind or beside the face"); }
+        // #336: the per-face event mask. Out of reach = no face; straight down +X = face 0 alone; a sphere
+        // around the light = every face. A mask that drops a face is a mover shadow that never updates.
+        if (ok && (FacesOf(Vector3.Zero, 10f, 20f, 0f, 0f, 1f) != 0 || FacesOf(Vector3.Zero, 10f, 5f, 0f, 0f, 0.1f) != 1
+                   || FacesOf(Vector3.Zero, 10f, 0f, -5f, 0f, 0.1f) != 8 || FacesOf(Vector3.Zero, 10f, 0f, 0f, 0f, 1f) != AllFaces))
+        { ok = false; log.Info("CasterPass.SelfCheck FAIL: the per-face event mask names the wrong faces"); }
 
         log.Info(ok
             ? "CasterPass.SelfCheck: passed"
@@ -933,6 +1053,7 @@ public sealed unsafe class CasterPass : IExtenderService
         bool fresh = _liveGen == AlloyRenderer.CasterGen && _liveEpoch == AlloyRenderer.RecordEpoch
                      && _collectedAt == _frameSeq - 1;
         if (!fresh || !Refresh()) Collect();
+        if (_dumpMovers) { _dumpMovers = false; DumpMovers(fresh); }
 
         // The sun is the only view with an exterior precondition. The cubes light interiors -- which is where
         // the AC lives (torchlight occluded by walls) -- so they must NOT sit behind this gate.
@@ -1134,10 +1255,17 @@ public sealed unsafe class CasterPass : IExtenderService
                     hasDyn = InFit(_liveCx[m] - c.X, _liveCy[m] - c.Y, _liveCz[m] - c.Z,
                                    _liveR[m], dir, radius, radius + margin);
                 }
-                if (hasDyn && _sunBaked[i]
-                    && RenderView(SunDynTex, _mapSize, i, &vp, dir, c, radius, margin, point: false,
-                                  set: CasterGather.SetDynamic))
-                { SunDynMask[i] = 1f; _sunDynBakedViews++; }
+                // #336: the layer's content is the dynamic SET, which changes on an EVENT in the fit -- a
+                // mover, a membership flip, a ghost -- and on a fit matrix it was not baked under. A held-
+                // still caster keeps the layer SAMPLED, not re-baked.
+                if (!hasDyn || !_sunBaked[i]) _sunDynValid[i] = false;
+                else if (_dynEvents && !invalidate && _sunDynValid[i] && _sunDynVp[i] == vp
+                         && !EventInFit(c, dir, radius, margin))
+                    SunDynMask[i] = 1f;
+                else if (RenderView(SunDynTex, _mapSize, i, &vp, dir, c, radius, margin, point: false,
+                                    set: CasterGather.SetDynamic))
+                { SunDynMask[i] = 1f; _sunDynBakedViews++; _sunDynValid[i] = true; _sunDynVp[i] = vp; }
+                else _sunDynValid[i] = false;
             }
         }
         CascadeTex = _depthTex;
@@ -1287,7 +1415,7 @@ public sealed unsafe class CasterPass : IExtenderService
             // #305: is a DYNAMIC caster inside this light's reach? That is what claims (and keeps) a pool
             // page -- and, when the pool is dry, what forces the combined fallback below.
             bool hasDyn = false;
-            if (split && !off)
+            if (split && !off && rank < _dynRanks)
                 for (int q = 0; q < _dMoverCount && !hasDyn; q++)
                 {
                     int m = _dMoverIdx[q];
@@ -1303,7 +1431,7 @@ public sealed unsafe class CasterPass : IExtenderService
             else if (split && hasDyn && page < 0)
             {
                 for (int p = 0; p < _cubeDynPages && page < 0; p++)
-                    if (_dynPageSlot[p] < 0) { _dynPageSlot[p] = slot; _dynPageOf[slot] = page = p; }
+                    if (_dynPageSlot[p] < 0) { _dynPageSlot[p] = slot; _dynPageOf[slot] = page = p; _dynPageMask[p] = AllFaces; }
             }
             else if (page >= 0 && (!split || !hasDyn))
             {   // no movers left near this light: the page returns to the pool and the receiver stops
@@ -1402,19 +1530,27 @@ public sealed unsafe class CasterPass : IExtenderService
             // #305: the dynamic page bakes EVERY frame it exists -- no predicate, because its whole content
             // is the movers. Published only on a complete bake, for the same five-fresh-faces reason; an
             // unpublished page costs the movers' shadow for one frame, never a lie.
+            // #336: ...per FACE, and only the faces an event sits in -- now, or last frame (a mover's old
+            // face still shows it). A face with no event in either keeps its depth: a held-still caster's
+            // shadow stands, an empty face stays cleared. The page is republished whatever was baked.
             if (page >= 0)
             {
+                int now = _dynEvents ? EventFaceMask(pos, far) : AllFaces;
+                int bake = invalidate || slotChanged ? AllFaces : now | _dynPageMask[page];
                 bool dynWhole = true;
                 for (int f = 0; f < CubeFaces && dynWhole; f++)
                 {
+                    if ((bake >> f & 1) == 0) continue;
                     Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
                     dynWhole = RenderView(CubeDynTex, _cubeDynSize, page * CubeFaces + f, &vp,
                                           ShadowMath.CubeFaceForward(f), pos, far, 0f, point: true,
                                           set: CasterGather.SetDynamic);
+                    _cubeDynBakedFaces++;
                 }
+                _dynPageMask[page] = dynWhole ? now : bake;
                 if (!dynWhole) { scannedAll = false; break; }
                 CubeDynPage[slot] = page + 1;
-                _cubeDynBakedPages++;
+                if (bake != 0) _cubeDynBakedPages++;
             }
         }
         // Only a scan that reached every slot may consume the frame's invalidation: the break above leaves
@@ -1472,7 +1608,7 @@ public sealed unsafe class CasterPass : IExtenderService
                    // the split bought nothing and the invalidation is too coarse; this line is that reading.
                    $"(split {(_split ? "on" : "OFF -- /shadow split 1")}: " +
                    $"{(float)_cubeBakedSlots / _frames:F1} static / {(float)_cubeDynBakedPages / _frames:F1} " +
-                   $"dynamic cube bakes per frame, dyn pool {DynPagesUsed()}/{_cubeDynPages} pages at " +
+                   $"dynamic cube bakes ({(float)_cubeDynBakedFaces / _frames:F1} faces) per frame, dyn pool {DynPagesUsed()}/{_cubeDynPages} pages at " +
                    $"{_cubeDynSize}px = {_cubeDynPages * CubeFaces * (long)_cubeDynSize * _cubeDynSize * 4 / (1024 * 1024)} MB " +
                    $"beside the static array's {_cubeLights * CubeFaces * (long)_cubeSize * _cubeSize * 4 / (1024 * 1024)} MB) " +
                    $"(sun {(float)_sunBakedViews / _frames:F1} re-baked, " +
@@ -1514,6 +1650,12 @@ public sealed unsafe class CasterPass : IExtenderService
                    // number that tells a slow refresh from a churning edge (a fade, a flapping skip) when
                    // Bake reads high: it should be a few per period in a settled area.
                    $", the world re-collected {_collects} of {_frames} frames" +
+                   // #336: what the refresh visited against the list it stands over. Tracks the mover count
+                   // plus the colour build's changed records; a number near "live" means a source is firing
+                   // on every caster (a dirty VDO the whole world shares, the overflow fallback, refreshall 1).
+                   $", refresh visited {(float)_visitSum / _frames:F0} of {(float)_liveSum / _frames:F0} casters/frame " +
+                   $"({(float)_touchedSum / _frames:F0} records touched by the colour build, dynamic hold {_dynHold} frames)" +
+                   (_refreshAll ? " (refreshall 1: every caster)" : "") +
                    $", caster selection in compute over the shared SowxCullSphere bounds " +
                    $"(cull {(CasterGather.Mode != 0 ? "on" : "OFF -- /shadow gather 1")})" +
                    (CasterGather.Views > 0
@@ -1544,8 +1686,8 @@ public sealed unsafe class CasterPass : IExtenderService
                       $"{_maskNoProg} no cutout program -- each casts nothing)"));
         _frames = 0; _mdiCalls = 0;
         _cubeLightsSum = 0; _viewSum = 0;
-        _liveSum = 0; _qShadow.Reset();
-        _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _cubeOffSlots = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0;
+        _liveSum = 0; _visitSum = 0; _touchedSum = 0; _qShadow.Reset();
+        _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _cubeOffSlots = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0; _cubeDynBakedFaces = 0;
         _sunBakedViews = 0; _sunSkippedViews = 0;
         Array.Clear(_sunStaticL); _sunDynBakedViews = 0;
         CasterGather.LayerDispatches = 0; CasterGather.LayerViews = 0;
@@ -1603,7 +1745,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // #305: the pool pages name lights that just went away, and the published page indices with them.
         Array.Clear(_cubeCombined); Array.Clear(CubeDynPage);
         // #306: the sun's half of the same wipe, degrade window included.
-        Array.Clear(SunDynMask); Array.Clear(_sunCombined); Array.Clear(_sunWinBaked);
+        Array.Clear(SunDynMask); Array.Clear(_sunCombined); Array.Clear(_sunWinBaked); Array.Clear(_sunDynValid);
         _sunWinFrames = 0;
         Array.Fill(_dynPageOf, -1);
         if (_dynPageSlot.Length > 0) Array.Fill(_dynPageSlot, -1);
@@ -2041,14 +2183,18 @@ public sealed unsafe class CasterPass : IExtenderService
                 // Review: a caster ABSENT last frame is a mover on return, whatever its record says -- a
                 // transient TryRange or VAO failure longer than the one-frame ghost+hadMover cover would
                 // otherwise re-appear into views that never re-bake its shadow back.
-                bool appeared = _liveStamp[slot] != _frameSeq - 1;
+                // #336: present last frame = in a list that stood through last frame (see _listFrame).
+                bool appeared = _collectedAt != _frameSeq - 1 || _liveStamp[slot] < _lastCollectFrame;
                 Admit(live, slot, f.Skinned, appeared, f.RecMoved, f.Dangly, _vDirty[f.Vao]);
+                _liveIdx[slot] = live; _liveIdxSeq[slot] = _collectSeq + 1;
                 live++;
             }
             // ...and pass 0 is the whole creature population, so the split #100 needs falls out of the walk.
             if (pass == 0) _liveCreatures = live;
         }
         _liveCount = live;
+        _visitSum += live;
+        BucketByVao();
         // Whatever stopped casting this frame -- revoked, re-enrolled away, its index range stopped resolving
         // -- is a mover at its LAST KNOWN sphere. That invalidates the views it was standing in, and only
         // those: the alternative is a blanket re-bake every time one item range blinks.
@@ -2074,7 +2220,20 @@ public sealed unsafe class CasterPass : IExtenderService
         Array.Copy(_liveSlot, _prevSlots, live);
         _prevCount = live;
         _liveGen = AlloyRenderer.CasterGen; _liveEpoch = AlloyRenderer.RecordEpoch;
+        _lastCollectFrame = _frameSeq;
         _collectSeq++; _collects++;
+    }
+
+    /// <summary>#336: counting sort of the live indices by VAO -- three passes over the list, paid once per
+    /// collect so a dirty VDO's casters are a range rather than a walk.</summary>
+    private static void BucketByVao()
+    {
+        Array.Clear(_vaoStart, 0, _vaoStart.Length);
+        for (int i = 0; i < _liveCount; i++) _vaoStart[_liveVao[i] + 1]++;
+        for (int v = 0; v < MaxVdos; v++) _vaoStart[v + 1] += _vaoStart[v];
+        for (int i = 0; i < _liveCount; i++) _vaoMembers[_vaoStart[_liveVao[i]]++] = i;
+        for (int v = MaxVdos; v > 0; v--) _vaoStart[v] = _vaoStart[v - 1];
+        _vaoStart[0] = 0;
     }
 
     /// <summary>The per-caster predicate, ONE function for the full collect and the standing-list refresh so
@@ -2098,12 +2257,40 @@ public sealed unsafe class CasterPass : IExtenderService
         else if (vDirty) _mvVertex++;
         else mover = false;
         if (mover) _moverIdx[_moverCount++] = live;
-        bool dyn = skinned || dangly || recMoved || vDirty;
+        // #336: _dynStamp is the frame the caster last MOVED; it stays dynamic for _dynHold frames after.
+        bool moving = skinned || dangly || recMoved || vDirty;
+        int last = _dynStamp[slot];
+        bool wasDyn = !appeared && _frameSeq - 1 - last <= _dynHold;
+        if (moving) { _dynStamp[slot] = _frameSeq; last = _frameSeq; }
+        bool dyn = _frameSeq - last <= _dynHold;
         _liveDyn[live] = dyn;
-        bool wasDyn = !appeared && _dynStamp[slot] == _frameSeq - 1;
-        if (dyn) { _dynStamp[slot] = _frameSeq; _dMoverIdx[_dMoverCount++] = live; }
+        if (dyn) _dMoverIdx[_dMoverCount++] = live;
         if (appeared || dyn != wasDyn) _sMoverIdx[_sMoverCount++] = live;
         _liveStamp[slot] = _frameSeq;
+    }
+
+    /// <summary>#336: <c>/shadow movers 1</c> -- one frame's movers and static-set events grouped by diffuse
+    /// texture and reason, so "200 matrix movers a frame" has names. Cold and one-shot; allocates.</summary>
+    private static bool _dumpMovers;
+    private static void DumpMovers(bool refreshed)
+    {
+        var groups = new Dictionary<string, int>();
+        void Count(string k) { groups[k] = groups.TryGetValue(k, out int c) ? c + 1 : 1; }
+        for (int q = 0; q < _moverCount; q++)
+        {
+            int m = _moverIdx[q], slot = _liveSlot[m];
+            string why = m < _liveCreatures ? "bones" : AlloyRenderer.SlotRecMoved(slot) ? "matrix"
+                         : AlloyRenderer.SlotDangly(slot) ? "dangly" : _vDirty[_liveVao[m]] ? "vertex-dirty" : "appeared";
+            Count($"{why} {AlloyRenderer.SlotTexName(slot)}");
+        }
+        for (int q = 0; q < _sMoverCount; q++) Count($"STATIC-EVENT {AlloyRenderer.SlotTexName(_liveSlot[_sMoverIdx[q]])}");
+        var top = new List<KeyValuePair<string, int>>(groups);
+        top.Sort((a, b) => b.Value.CompareTo(a.Value));
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"CasterPass: [movers] frame {_frameSeq} ({(refreshed ? "refresh" : "collect")}): {_moverCount} movers, " +
+                  $"{_sMoverCount} static-set events, {_dMoverCount} dynamic, {_ghostCount} ghosts; by texture:");
+        for (int i = 0; i < top.Count && i < 24; i++) sb.Append($"\n    {top[i].Value,5}  {top[i].Key}");
+        _log?.Info(sb.ToString());
     }
 
     /// <summary>#328: the frame's collect when the world did not change -- the list stands, and only what can
@@ -2111,29 +2298,61 @@ public sealed unsafe class CasterPass : IExtenderService
     /// dirty set, and the spheres. Nothing here derefs the engine; the index ranges stand because
     /// both edges that move them (a repack, a re-seated enrollment) drop the list. False = a bone slot was
     /// assigned or reclaimed since the collect, which moves a caster between the two halves of the list; the
-    /// caller re-collects, and nothing below has run.
+    /// caller re-collects; the visit list is gathered before any admission, so nothing was written.
     /// <para>No appearances and no ghosts by construction: the membership is the collect's, and a membership
     /// change is a generation bump.</para></summary>
+    /// <para>#336: ...and only the casters whose answer CAN differ from last frame's are visited: those on a
+    /// VDO the engine wrote, those whose record changed in the last colour build (the sphere and the mover
+    /// level are written on that edge and no other -- <c>AlloyRenderer.CasterTouchedSlot</c>), and last
+    /// frame's dynamic set, which is where a caster is seen to stop. Everything else keeps last frame's
+    /// verdict untouched: not a mover, not dynamic, in the list. The visit list is gathered and bone-checked
+    /// in full before the first admission, so a bail leaves no stamp behind. <c>/shadow refreshall 1</c> is
+    /// the A/B.</para></summary>
     private static bool Refresh()
     {
-        for (int i = 0; i < _liveCount; i++)
-            if (AlloyRenderer.SlotSkinned(_liveSlot[i]) != (i < _liveCreatures)) return false;
+        _visitN = 0;
+        if (_refreshAll || AlloyRenderer.CasterTouchedOverflow)
+        {
+            for (int i = 0; i < _liveCount; i++) if (!Mark(i)) return false;
+        }
+        else
+        {
+            for (int v = 0; v < MaxVdos; v++)
+                if (AlloyRenderer.VdoDirty(v))
+                    for (int m = _vaoStart[v]; m < _vaoStart[v + 1]; m++) if (!Mark(_vaoMembers[m])) return false;
+            for (int k = 0, n = AlloyRenderer.CasterTouchedCount; k < n; k++)
+            {
+                int slot = AlloyRenderer.CasterTouchedSlot(k);
+                if (_liveIdxSeq[slot] == _collectSeq && !Mark(_liveIdx[slot])) return false;
+            }
+            for (int q = 0; q < _dPrevCount; q++) if (!Mark(_dPrevIdx[q])) return false;
+        }
         _moverCount = 0; _ghostCount = 0; _dMoverCount = 0; _sMoverCount = 0;
         for (int v = 0; v < MaxVdos; v++) _vDirty[v] = AlloyRenderer.VdoDirty(v);
-        for (int i = 0; i < _liveCount; i++)
+        _visitSum += _visitN; _touchedSum += AlloyRenderer.CasterTouchedCount;
+        for (int k = 0; k < _visitN; k++)
         {
-            int slot = _liveSlot[i];
-            bool skinned = i < _liveCreatures;
-            bool recMoved = AlloyRenderer.SlotRecMoved(slot);
-            bool dangly = AlloyRenderer.SlotDangly(slot);
-            bool vDirty = _vDirty[_liveVao[i]];
-            // EVERY sphere re-read, not the movers' alone: the sphere is written on any record change and,
-            // for a matrix-less part, from bbox terms a kept enrollment may rewrite without a generation
-            // bump. Four sequential loads per caster; the old walk read them all too.
+            int i = _visitIdx[k], slot = _liveSlot[i];
+            // The sphere is written on any record change -- and, for a matrix-less part, from bbox terms a
+            // kept enrollment may rewrite without a generation bump.
             AlloyRenderer.MoverSphere(slot, out _liveCx[i], out _liveCy[i], out _liveCz[i], out _liveR[i]);
-            Admit(i, slot, skinned, appeared: false, recMoved, dangly, vDirty);
+            Admit(i, slot, i < _liveCreatures, appeared: false, AlloyRenderer.SlotRecMoved(slot),
+                  AlloyRenderer.SlotDangly(slot), _vDirty[_liveVao[i]]);
         }
         Account();
+        return true;
+    }
+
+    /// <summary>Put one caster on the frame's visit list, once, whichever source named it. False = its bone
+    /// slot was assigned or reclaimed since the collect, which moves it between the two halves of the list
+    /// -- the one flip the touched list does report (feat.x changes), and a skinned caster is dynamic and so
+    /// revisited every frame besides.</summary>
+    private static bool Mark(int i)
+    {
+        if (_liveVisit[i] == _frameSeq) return true;
+        _liveVisit[i] = _frameSeq;
+        if (AlloyRenderer.SlotSkinned(_liveSlot[i]) != (i < _liveCreatures)) return false;
+        _visitIdx[_visitN++] = i;
         return true;
     }
 
@@ -2146,6 +2365,8 @@ public sealed unsafe class CasterPass : IExtenderService
         _degenSum += AlloyRenderer.CasterDegenerate;
         AlloyRenderer.CasterDegenerate = 0;
         _collectedAt = _frameSeq;
+        Array.Copy(_dMoverIdx, _dPrevIdx, _dMoverCount);
+        _dPrevCount = _dMoverCount;
     }
 
     /// <summary>#302 triage, cold and one-shot: the bake's ONE placement input, checked against the engine's
@@ -2419,6 +2640,47 @@ public sealed unsafe class CasterPass : IExtenderService
         if (t < -r) return true;                          // wholly behind the face
         float lim = t * FaceConeSlope + 2f * r;
         return lim < 0f || dSq - t * t > lim * lim;
+    }
+
+    /// <summary>#336: the faces of a cube at <paramref name="pos"/> a sphere sits in, as a bit per face in
+    /// <c>CubeFaceForward</c> order; 0 when it is out of the light's reach. The same cone test the caster
+    /// submission culls by, so a face this says is empty is one the gather would have found empty.</summary>
+    private static int FacesOf(Vector3 pos, float far, float cx, float cy, float cz, float r)
+    {
+        float dx = cx - pos.X, dy = cy - pos.Y, dz = cz - pos.Z;
+        float dd = dx * dx + dy * dy + dz * dz, mr = far + r;
+        if (dd > mr * mr) return 0;
+        int m = 0;
+        if (!FaceCulls(dd, dx, r)) m |= 1; if (!FaceCulls(dd, -dx, r)) m |= 2;
+        if (!FaceCulls(dd, dy, r)) m |= 4; if (!FaceCulls(dd, -dy, r)) m |= 8;
+        if (!FaceCulls(dd, dz, r)) m |= 16; if (!FaceCulls(dd, -dz, r)) m |= 32;
+        return m;
+    }
+
+    /// <summary>#336: the faces of this light's cube that hold an EVENT this frame -- a mover, a static-set
+    /// flip, a ghost. What a dynamic page's content can differ by from last frame.</summary>
+    private static int EventFaceMask(Vector3 pos, float far)
+    {
+        int mask = 0;
+        for (int q = 0; q < _moverCount && mask != AllFaces; q++)
+        { int m = _moverIdx[q]; mask |= FacesOf(pos, far, _liveCx[m], _liveCy[m], _liveCz[m], _liveR[m]); }
+        for (int q = 0; q < _sMoverCount && mask != AllFaces; q++)
+        { int m = _sMoverIdx[q]; mask |= FacesOf(pos, far, _liveCx[m], _liveCy[m], _liveCz[m], _liveR[m]); }
+        for (int q = 0; q < _ghostCount && mask != AllFaces; q++)
+            mask |= FacesOf(pos, far, _ghostCx[q], _ghostCy[q], _ghostCz[q], _ghostR[q]);
+        return mask;
+    }
+
+    /// <summary>#336: is an event (a mover, a static-set flip, a ghost) inside this cascade's fit?</summary>
+    private static bool EventInFit(Vector3 c, Vector3 dir, float radius, float margin)
+    {
+        for (int q = 0; q < _moverCount; q++)
+        { int m = _moverIdx[q]; if (InFit(_liveCx[m] - c.X, _liveCy[m] - c.Y, _liveCz[m] - c.Z, _liveR[m], dir, radius, radius + margin)) return true; }
+        for (int q = 0; q < _sMoverCount; q++)
+        { int m = _sMoverIdx[q]; if (InFit(_liveCx[m] - c.X, _liveCy[m] - c.Y, _liveCz[m] - c.Z, _liveR[m], dir, radius, radius + margin)) return true; }
+        for (int q = 0; q < _ghostCount; q++)
+            if (InFit(_ghostCx[q] - c.X, _ghostCy[q] - c.Y, _ghostCz[q] - c.Z, _ghostR[q], dir, radius, radius + margin)) return true;
+        return false;
     }
 
     /// <summary>Resrefs the caster pass looks up before falling back to the GLSL below (#92).</summary>

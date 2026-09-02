@@ -91,7 +91,10 @@ internal static unsafe class SceneWalk
     // has not moved since an area load an hour ago.
     private static long _walks, _bumps, _spill, _overflow, _nonMesh;
     private static long _framesSinceLog, _bumpsSinceLog, _walkTicks, _walksSinceLog, _added, _swept, _bound;
-    private static int _lastWalked, _lastRoots;
+    private static int _lastWalked, _lastRoots, _lastLodAltGobs;
+    /// <summary>The tree the walk is inside, for <c>_pRoot</c>, and whether its gob carries LOD alternates.</summary>
+    private static IntPtr _curRoot;
+    private static bool _curLodAlt;
 
     internal static bool Resolve(ExtenderLog log)
     {
@@ -186,7 +189,7 @@ internal static unsafe class SceneWalk
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         Gen++;
         _walks++; _walksSinceLog++;
-        _lastWalked = 0; _lastRoots = 0;
+        _lastWalked = 0; _lastRoots = 0; _lastLodAltGobs = 0;
 
         IntPtr* gobs = *(IntPtr**)(scene + SceneGobs);
         int nGobs = *(int*)(scene + SceneGobCount);
@@ -198,9 +201,12 @@ internal static unsafe class SceneWalk
                 // All THREE LOD roots, which is the whole point (see GobLodRoot1): Gob::SetLODModel rotates
                 // them with no notice of any kind, so enumerating only the active one would go stale the
                 // moment the camera crossed an LOD radius.
+                _curLodAlt = *(IntPtr*)(gob + GobLodRoot1) != IntPtr.Zero || *(IntPtr*)(gob + GobLodRoot2) != IntPtr.Zero;
+                if (_curLodAlt) _lastLodAltGobs++;
                 Tree(*(IntPtr*)(gob + GobPartTree));
                 Tree(*(IntPtr*)(gob + GobLodRoot1));
                 Tree(*(IntPtr*)(gob + GobLodRoot2));
+                _curLodAlt = false;
                 IntPtr* roots = *(IntPtr**)(gob + GobAppendRoots);
                 int nRoots = *(int*)(gob + GobAppendCount);
                 if (roots == null) continue;
@@ -240,6 +246,7 @@ internal static unsafe class SceneWalk
     {
         if (rootPart == IntPtr.Zero) return;
         _lastRoots++;
+        _curRoot = rootPart;
         int sp = 0;
         _stack[sp++] = rootPart;
         while (sp > 0)
@@ -308,6 +315,7 @@ internal static unsafe class SceneWalk
         // expansion under a gob's tree carries its own +0x50 (CreateInstanceTreeR @0x43c6b0 is its sole
         // writer), and SpawnPartsForTile @0x46352b leaves it null outright.
         _pGob[e] = p.Gob.Ptr;
+        _pRoot[e] = _curRoot; _pLodAlt[e] = _curLodAlt && _pGob[e] != IntPtr.Zero;
         _pBsp[e] = _walkingBsp;
         _pWalkGen[e] = Gen;
         if (_pGob[e] != IntPtr.Zero) AlloyCensus._pInstRecorded++;
@@ -323,7 +331,7 @@ internal static unsafe class SceneWalk
         if (vp == IntPtr.Zero || mat == IntPtr.Zero)
         { Release(e, vp == IntPtr.Zero ? "no-node" : "no-material"); return e; }
         _pState[e] = StUnbound;
-        if (!TryBind(e) && _pState[e] == StUnbound && !_pSetupTried[e]) Enqueue(e);
+        if (!TryBind(e) && _pState[e] == StUnbound && _pSetupTries[e] < SetupAttempts) Enqueue(e);
         return e;
     }
 
@@ -331,6 +339,14 @@ internal static unsafe class SceneWalk
     /// not a failure -- <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 has not run for this part yet, so
     /// the record simply stays unbound and is retried by <see cref="Rebind"/>. See
     /// <see cref="SceneLayout.VpVdo"/> for why this is a field read at all.</summary>
+    /// <summary>#317: may this record spend a <c>SetupArrays</c> attempt in this generation? Untried
+    /// records go straight through -- the load frame must still bind the world in one pass -- and a retry
+    /// waits <see cref="PartTable.SetupRearmGens"/> generations so the empty tiles do not re-ask in a
+    /// tight loop.</summary>
+    private static bool SetupDue(int e)
+        => _pSetupTries[e] == 0
+           || (_pSetupTries[e] < SetupAttempts && Gen - _pSetupGen[e] >= SetupRearmGens);
+
     private static bool TryBind(int e)
     {
         IntPtr part = _pPart[e], vp = _pNode[e];
@@ -348,8 +364,8 @@ internal static unsafe class SceneWalk
             // comes back with item -1 has no drawable geometry and will answer the same for ever. The first
             // live run re-asked every frame and spent 512 calls a frame on 1899 tiles that never bound --
             // which is a rendering system doing nothing, expensively, in perpetuity.
-            if (_pSetupTried[e] || _setupLeft <= 0) { _pState[e] = StUnbound; return false; }
-            _pSetupTried[e] = true;
+            if (!SetupDue(e) || _setupLeft <= 0) { _pState[e] = StUnbound; return false; }
+            _pSetupTries[e]++; _pSetupGen[e] = Gen;
             _setupLeft--; _setups++;
             ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)vp + VpVtblSetupArrays)))(vp);
             vdo = *(IntPtr*)(vp + VpVdo);
@@ -396,7 +412,7 @@ internal static unsafe class SceneWalk
         // #264: a new VertexPrimitive has its own setup state, so the latched "nothing here" verdict does
         // not carry across the swap -- clearing it is what lets a re-modelled part bind at all.
         // #284: and a new MdlNode is a new bind-array question, so the pose attempt clears with it.
-        _pSetupTried[e] = false; _pPoseTried[e] = false;
+        _pSetupTries[e] = 0; _pPoseTried[e] = false;
         _pState[e] = _pNode[e] == IntPtr.Zero || _pMat[e] == IntPtr.Zero ? Die(e, "no-node") : StUnbound;
         if (_pState[e] == StUnbound) Enqueue(e);
         Dirty = true;
@@ -419,7 +435,7 @@ internal static unsafe class SceneWalk
             // ...and a record whose setup was tried and produced nothing does NOT go back in the queue.
             // It is not waiting for anything: nothing else in the frame will make its primitive drawable,
             // and re-queueing it is what made the drain never drain.
-            if (!TryBind(e) && _pState[e] == StUnbound && !_pSetupTried[e]) _unbound[left++] = e;
+            if (!TryBind(e) && _pState[e] == StUnbound && _pSetupTries[e] < SetupAttempts) _unbound[left++] = e;
         }
         _unboundCount = left;
     }
@@ -547,7 +563,7 @@ internal static unsafe class SceneWalk
             if (_pGob[e] != IntPtr.Zero) unboundGob++; else unboundTile++;
         }
         string s = $"[enum] walks={_walks} ({_walksSinceLog} this period) epoch moved on {_bumps} frames ({perFrame:0.000}/frame) walk={ms:0.00}ms "
-                 + $"roots={_lastRoots} parts walked={_lastWalked} records={_partCount} active={active} "
+                 + $"roots={_lastRoots} ({_lastLodAltGobs} gobs with LOD alternates) parts walked={_lastWalked} records={_partCount} active={active} "
                  // The unbound residue, split by whether the record hangs off a Gob. This is step 5's
                  // starting number and the two halves want different answers: a GOB record that never binds
                  // is most likely an inactive LOD alternate (the walk enumerates all three roots, the engine

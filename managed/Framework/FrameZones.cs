@@ -38,6 +38,15 @@ public static class FrameZones
         /// <summary>The present itself. Large here means GPU- or vsync-bound, which is a different problem
         /// from every other zone on this list.</summary>
         Present,
+        /// <summary>#336 step 5: the ENGINE's frame, attributed. The four top-level steps of
+        /// <c>CClientExoAppInternal::MainLoop</c> @0x658250 that are not the 3D render: the network receive
+        /// (<c>CNetLayer::ProcessReceivedFrames</c>, message handling included), the resource manager
+        /// (<c>CExoResMan::Update</c>: loads, unloads, texture builds), the client AI update
+        /// (<c>CClientAIMaster::UpdateState</c>: every creature/placeable/VFX <c>AIUpdate</c>, animation), and
+        /// the 2D GUI (<c>CGuiMan::UpdateAndRender</c>). What <c>other</c> still holds after these is input,
+        /// sound, the camera, and whatever the loop does between them. The scene render runs FROM the AI
+        /// update, so <c>Ai</c> is reported minus every renderer bracket it contains.</summary>
+        Net, Res, Ai, Gui,
 
         /// <summary>Split marker, not a bracket.</summary>
         Nested,
@@ -58,6 +67,11 @@ public static class FrameZones
         /// a lower bound on what a GPU pass could take. SAMPLED 1-in-<c>AlloyRenderer.ChaseEvery</c> parts
         /// and extrapolated; parts that skip out mid-span are not sampled. An estimate, not a bracket sum.</summary>
         Chase,
+        /// <summary>#336: inside <see cref="Scan"/> (NOT subtracted from it): the route walk's O(world)
+        /// remainder -- the vacated-slot and frustum tests on every slot the gate REJECTS, i.e. the cost of
+        /// visiting the off-screen world at all. SAMPLED 1-in-<c>AlloyRenderer.ChaseEvery</c> slots and
+        /// extrapolated. The step-4 visible-set list is built only if this reads above ~0,3ms.</summary>
+        Route,
         /// <summary>#322: nested in <see cref="Shadow"/>: the LightManager master-list walk.</summary>
         Lwalk,
         /// <summary>#322: nested in <see cref="Shadow"/>: <c>CasterPass.OnPassSlot</c> -- cube ranking,
@@ -142,7 +156,7 @@ public static class FrameZones
     private static bool Drew()
     {
         for (int i = 0; i < (int)Zone.Nested; i++)
-            if (i != (int)Zone.Ui && i != (int)Zone.Present && _frame[i] != 0) return true;
+            if (i != (int)Zone.Ui && i != (int)Zone.Present && i < (int)Zone.Net && _frame[i] != 0) return true;
         return false;
     }
 

@@ -272,15 +272,18 @@ public sealed unsafe partial class AlloyRenderer
         /// Scene fog: GetFog + the ApplyFog lerp. Two uniforms and a mix, which is all the old generation's
         /// inc_fog.shd is -- the shaped fog in sow-topdata's fork is a look decision that belongs in that
         /// fork's override, not in the embedded text.
-        /// #132 moved this lerp across the encode: the engine fogs in DISPLAY space (fslit's tail is
-        /// ApplyKeyhole, RevertColorSpace, ApplyFog) and the Alloy frame no longer has a display-space point
-        /// to fog at. Both ends of the mix are linear here instead, which is the physically right space for
-        /// it and a knowingly different look on a foggy frame -- #124 welded the engine's order and this
-        /// ticket unwelds it.
+        /// #132 moved this lerp across the encode, and #336 moves it back. The engine fogs in DISPLAY space
+        /// (fslit's tail is ApplyKeyhole, RevertColorSpace, ApplyFog) and uFogColor is a display-space value,
+        /// so a linear-space mix against it is a different CURVE, not a different colour space argument: the
+        /// same fogParams build up late and then slam, where the engine's ramp is even. The Alloy frame has
+        /// no display-space point to fog at, so the encode happens here, around the mix and nowhere else.
         vec3 SowxFog(vec3 lin, float depth)
         {
             float f = uFogParams.x == 0.0 ? 0.0 : (depth - uFogParams.y) * uFogParams.w;
-            return mix(lin, uFogColor.rgb, clamp(f, 0.0, 1.0));
+            if (f <= 0.0) return lin;
+            vec3 disp = pow(max(lin, vec3(0.0)), vec3(1.0 / $SRGB$));
+            disp = mix(disp, uFogColor.rgb, min(f, 1.0));
+            return pow(disp, vec3($SRGB$));
         }
 
         """;

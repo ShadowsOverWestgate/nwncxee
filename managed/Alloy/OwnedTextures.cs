@@ -283,6 +283,18 @@ internal static unsafe class OwnedTextures
     /// <para>ponytail: readback-encode-reupload costs one extra bus round trip per texture at load; encoding
     /// straight from the decoded pixels at basic+0x58 would skip it but must reimplement the de-atlas and
     /// the mip chain. Upgrade if area loads measurably slow.</para></summary>
+    /// <summary>#336: smallest side worth transcoding. A BCn block IS 4x4 and carries two endpoint colours
+    /// for its sixteen texels, so a 4x4 image is ONE block -- every texel in it averaged down to a line
+    /// between two colours. That is not a rounding error on a small texture, it is the texture: the client's
+    /// GUI markers pick their colour out of tiny swatch sheets (<c>gui_rgbc</c>, 4x4, the walk-to marker's
+    /// green among them), and BC1 turned that sheet into a uniform 127,127,127 -- grey chevrons on the
+    /// ground where vanilla draws green ones. The old floor was 4, which admitted exactly the case it was
+    /// meant to exclude.
+    /// <para>16 rather than 8 because the saving is what stops mattering first: a 16x16 RGBA level is 1 KiB,
+    /// so everything under this floor put together cannot move the number #265 measured, while every one of
+    /// them is a sheet whose texels were each chosen on purpose.</para></summary>
+    private const int TranscodeFloor = 16;
+
     private static long Transcode(IntPtr tex, int cell)
     {
         if (Gl.GetTexImage == null || Gl.CompressedTexImage2D == null || Gl.PixelStorei == null
@@ -290,7 +302,7 @@ internal static unsafe class OwnedTextures
         int w0 = 0, h0 = 0, green = 0;
         Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w0);
         Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h0);
-        if (w0 < 4 || h0 < 4) return -1;
+        if (w0 < TranscodeFloor || h0 < TranscodeFloor) return -1;
         Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_GREEN_SIZE, &green);
         if (green == 0) return -1;
 

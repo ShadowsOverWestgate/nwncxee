@@ -17,6 +17,13 @@ internal static unsafe class SymbolMap
     public const string HandleWMKeyDown   = "_Z22HandleWMKeyDownMessagejj";
     public const string WinMessageHandler = "_Z17WinMessageHandlerP9SDL_Event";
     public const string SwapBuffers       = "_ZN8GLRender11SwapBuffersEP10SDL_Window";
+    /// <summary>#336 step 5: the engine main loop's four non-render steps, timed by <c>EngineZonesService</c>.
+    /// <c>CNetLayer::ProcessReceivedFrames(int)</c> @0x5b92c0, <c>CExoResMan::Update(unsigned)</c> @0x536c60,
+    /// <c>CClientAIMaster::UpdateState()</c> @0x991c30, <c>CGuiMan::UpdateAndRender(float)</c> @0x580450.</summary>
+    public const string NetProcessReceivedFrames = "_ZN9CNetLayer21ProcessReceivedFramesEi";
+    public const string ResManUpdate = "_ZN10CExoResMan6UpdateEj";
+    public const string ClientAiUpdateState = "_ZN15CClientAIMaster11UpdateStateEv";
+    public const string GuiUpdateAndRender = "_ZN7CGuiMan15UpdateAndRenderEf";
     // window focus (CClientExoApp). Empty stubs reached by indirect dispatch, so no Windows anchor
     // was derivable -- they skip there, which the OS focus handling already covers.
     public const string OnGainFocus       = "_ZN13CClientExoApp11OnGainFocusEv";
@@ -363,6 +370,18 @@ internal static unsafe class SymbolMap
     /// VertexPrimitive matrix. So at the FadeDoors anchor it is exactly the set of gobs whose parts can have
     /// moved this frame. Data symbol; read only.</summary>
     public const string GobBucket = "gobbucket";
+
+    /// <summary>#336: the seven Tab-highlight colours. <c>HiliteAreaObjects</c> @0x7119f0 picks one of these
+    /// by object type and hands it to the object's highlight virtual, which is what ends up in
+    /// <c>Scene::AddHighlightGob(gob, Vector&amp;)</c> -- the ONLY two things the highlight list carries. A
+    /// highlight arriving in some other colour did not come from the Tab path.</summary>
+    /// <summary>#336: <c>CNWCAnimBase::RefreshHilite()</c> @0x9cb260 -- the ONE funnel every highlight
+    /// passes through. Tab ("highlight all") and a mouseover ("highlight this object") both reach
+    /// <c>CNWCObject::Hilite</c> -&gt; <c>CNWCAnimBase::Hilite</c>, which writes a channel slot and calls this;
+    /// so does every VFX that highlights. This recomputes the winner and is what calls
+    /// <c>Scene::AddHighlightGob</c>, so an After hook here sees the engine's own verdict rather than
+    /// re-deriving it -- and takes a single pointer, dodging the by-value Vector in Hilite's ABI.</summary>
+    public const string RefreshHilite = "_ZN12CNWCAnimBase13RefreshHiliteEv";
     /// <summary>#330: <c>fadingoutbucket</c> @0x19abba0 and <c>fadinginbucket</c> @0x19abbb0 -- the tiles whose
     /// fade factor is being stepped this frame. <c>HandleFadingOutBucket</c> @0x47f870 /
     /// <c>HandleFadingInBucket</c> @0x47f670 write <c>TileData+0x74</c> for each member from

@@ -149,11 +149,34 @@ internal static unsafe class PartTable
     /// call can only ever return the same answer. Without this flag the drain queue re-asks every such record
     /// every frame: the first live run burned 512 calls a frame, for ever, on 1899 tiles that were never
     /// going to bind.
+    /// <para>#317: but "marks itself done" was read off the comment, not the binary, and the binary says
+    /// otherwise. <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 takes its no-geometry exit when the
+    /// vertex or index totals summed off the <c>MdlNodeTriMesh</c> list are zero, and that exit leaves
+    /// <see cref="SceneLayout.VpVdo"/> NULL -- so the function's own entry guard
+    /// (<c>vp+0x64 &amp;&amp; vp+0x58 &amp;&amp; !vp+0x84</c>) fails on the next call and the ENGINE redoes
+    /// the work. Only Alloy latched. A part whose model geometry is not resident yet therefore answered
+    /// zero once and stayed invisible for the session, while vanilla re-asked and drew it -- and the one
+    /// attempt was spent at the worst possible moment, because a scene change lifts the budget
+    /// (<c>_setupLeft = int.MaxValue</c>) and drains the whole queue on the load frame.</para>
+    /// <para>So it is an attempt COUNT, not a flag. The ceiling the original latch bought is kept -- the
+    /// 1899 permanently empty tiles cost <see cref="SetupAttempts"/> calls each, not 512 a frame for ever
+    /// -- and a record still empty after that is taken at its word.
+    /// ponytail: a fixed attempt count on a wait, not a signal that the model became resident. The exact
+    /// condition is "the MdlNodeTriMesh totals changed since last ask", which is most of SetupArrays' own
+    /// prefix re-walked per record; do that if streamed content ever outlives the window.</para>
     /// <para>Cleared wherever the primitive underneath may have changed -- a slot reclaimed by
     /// <see cref="Insert"/>, and a record whose node or material moved (<c>SceneWalk.Rebind</c>).</para></summary>
-    internal static readonly bool[] _pSetupTried = new bool[MaxParts];
+    internal static readonly byte[] _pSetupTries = new byte[MaxParts];
+    /// <summary>#317: the walk generation each record last spent an attempt in, so the retries are spaced
+    /// over the load rather than burned in one frame.</summary>
+    internal static readonly int[] _pSetupGen = new int[MaxParts];
+    /// <summary>#317: how many <c>SetupArrays</c> calls one record is worth, and how many walk generations
+    /// it waits between them. The walk runs about once every ten frames, so eight attempts four generations
+    /// apart is roughly half a minute of load -- long enough for NWSync to land content the first attempt
+    /// missed, and a real ceiling rather than a timer that never terminates.</summary>
+    internal const int SetupAttempts = 8, SetupRearmGens = 4;
     /// <summary>#284: has <see cref="SkinPose"/> already spent this record's one <c>PartSkin::PostProcess</c>
-    /// @0x483120 on it? Same shape and same reason as <see cref="_pSetupTried"/> -- the engine call latches
+    /// @0x483120 on it? Same shape and same reason as <see cref="_pSetupTries"/> -- the engine call latches
     /// its own verdict (it deletes the temporary arrays its entry guard tests), so a second call can only
     /// return immediately, and a node that comes back still unprepared will come back unprepared for ever.
     /// <para>A record column rather than a set of part pointers on purpose: it clears exactly where the part
@@ -176,6 +199,12 @@ internal static unsafe class PartTable
     /// saw them -- a multi-draw creature part dies at Complete as "multidraw-or-unindexed" -- and a dead
     /// entry's part pointer must never be dereferenced to get it.</summary>
     internal static readonly IntPtr[] _pGob = new IntPtr[MaxParts];
+    /// <summary>#336: the root Part* of the tree the walk found this part under, and whether that tree is
+    /// one of a gob's THREE LOD roots with an alternate present. A part's tree never changes; which of the
+    /// three slots holds it does (<c>Gob::SetLODModel</c>), and only the tree in <c>GobPartTree</c> is the
+    /// one the engine draws. Without this every LOD level of such a gob drew at once.</summary>
+    internal static readonly IntPtr[] _pRoot = new IntPtr[MaxParts];
+    internal static readonly bool[] _pLodAlt = new bool[MaxParts];
     /// <summary>#330: the walk reached this part through the BSP's tri-mesh lists, not a gob tree -- the
     /// mesh-bucket loop of <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 rewrites its matrix (when its node
     /// flags or a gob say so) whether or not any gob is in view.</summary>
@@ -282,9 +311,73 @@ internal static unsafe class PartTable
         return f >= 1f ? 1f : f > 0f ? f : 0f;
     }
 
+    /// <summary>#338: is this part something the engine would ever draw? <c>PartTriMesh::IsPartRenderable</c>
+    /// @0x450e60, reproduced from the decompile documented on <see cref="SceneLayout.PartRenderFlag"/>.
+    /// <para>Every <c>Part*::Draw</c> override runs this first -- TriMesh, AnimMesh, AABB, DanglyMesh and
+    /// Skin all call it (objdump xref) -- and so does the colour-bucket add. A part that fails it is drawn
+    /// from NO engine path, which is why refusing it costs no caster: it was never drawn to begin with.
+    /// <para><c>part+0x96</c> has exactly two writers: the <c>PartTriMesh</c> ctor @0x43cb50 sets it, and
+    /// <c>CombineParts</c> @0x473d30 clears it on every part it MERGES INTO a combined mesh. So it is
+    /// load-time state that never flips back, and the parts it retires are absorbed originals still hanging
+    /// in the scene tree. Alloy enumerates the world rather than the engine's buckets (#255), so nothing
+    /// else filtered them out: they enrolled and drew their old geometry exactly coincident with the
+    /// combined mesh that replaced it, as solid black (authored `black`/`plx_trans`, ambient, diffuse and
+    /// emissive all zero) Z-fighting the real surface.</para></summary>
+    internal static bool IsRenderable(IntPtr part)
+    {
+        if (part == IntPtr.Zero || *(byte*)(part + SceneLayout.PartRenderFlag) == 0) return false;
+        IntPtr n = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
+        if (n == IntPtr.Zero || *(int*)(n + SceneLayout.MdlRenderGate) == 0) return false;
+        return *(short*)(n + SceneLayout.MdlRenderKind) != 0
+               || *(IntPtr*)(n + SceneLayout.MdlRenderGeom) != IntPtr.Zero;
+    }
+
+    /// <summary>Off-device: the four branches of the renderable rule over a fake part + node. A rule that
+    /// inverts drops the world; one that always passes puts the black proxies back on screen.</summary>
+    internal static bool RenderableSelfCheck(ExtenderLog log)
+    {
+        byte* part = stackalloc byte[0x100];
+        byte* node = stackalloc byte[0x300];
+        for (int i = 0; i < 0x100; i++) part[i] = 0;
+        for (int i = 0; i < 0x300; i++) node[i] = 0;
+        IntPtr p = (IntPtr)part;
+        bool ok = !IsRenderable(IntPtr.Zero) && !IsRenderable(p);          // flag clear, and a null part
+        part[SceneLayout.PartRenderFlag] = 1;
+        ok &= !IsRenderable(p);                                            // flag set, no node
+        *(IntPtr*)(part + AlloyRenderer.PartMdlNode) = (IntPtr)node;
+        ok &= !IsRenderable(p);                                            // node, gate 0
+        *(int*)(node + SceneLayout.MdlRenderGate) = 1;
+        ok &= !IsRenderable(p);                                            // kind 0 and no geometry
+        *(IntPtr*)(node + SceneLayout.MdlRenderGeom) = (IntPtr)1;
+        ok &= IsRenderable(p);                                             // kind 0 but geometry present
+        *(IntPtr*)(node + SceneLayout.MdlRenderGeom) = IntPtr.Zero;
+        *(short*)(node + SceneLayout.MdlRenderKind) = 1;
+        ok &= IsRenderable(p);                                             // kind set: geometry not asked
+        if (!ok) log.Info("PartTable.RenderableSelfCheck: FAILED -- the IsPartRenderable rule disagrees with the decompile");
+        return ok;
+    }
+
     /// <summary>Does the camera dissolve this part right now (the keyhole wall-fade)? The Alloy pass asks
     /// per part per frame -- the same test the engine's own loop body runs. Since #124 it is what STAGES the
     /// dissolve into the per-draw record, not what hands the part back.</summary>
+    /// <summary>#336: the engine's verdict reproduced from a cached box. <c>Camera::GetCanKeyholeDissolve</c>
+    /// @0x4a6f70 decompiled: <c>cam+0xe50 &amp;&amp; part+0x50 == 0 &amp;&amp; part+0x78 &gt; cam+0xe64 &amp;&amp;
+    /// BoxAbovePlane(min, max, plane@cam+0xe54) &lt; 0</c>; <c>BoxAbovePlane</c> @0x5b32d0 evaluates the
+    /// plane at the box corner that minimises it (x = a &gt; 0 ? min : max, y = b &gt; 0 ? min : max, z =
+    /// c &gt; 0 ? min : max) as <c>y*b + a*x + c*z + d</c>, in that order, in floats. The caller has
+    /// already required a gobless part; <paramref name="box"/> is its six floats.</summary>
+    internal static bool KeyholeDissolvesBox(float* box, byte keyholeOn, float* plane, float cut)
+    {
+        if (keyholeOn == 0 || !(box[5] > cut)) return false;
+        float a = plane[0], b = plane[1], c = plane[2], d = plane[3];
+        float x = a > 0f ? box[0] : box[3];
+        float y = b > 0f ? box[1] : box[4];
+        float z = c > 0f ? box[2] : box[5];
+        return y * b + a * x + c * z + d < 0f;
+    }
+
+    internal static bool KeyholeArmed => _keyhole != null && _camSlot != IntPtr.Zero;
+
     internal static bool KeyholeDissolves(IntPtr tri)
     {
         if (_keyhole == null || _camSlot == IntPtr.Zero) return false;
@@ -338,11 +431,11 @@ internal static unsafe class PartTable
                 // and live entries can sit beyond it -- so Record must write a non-empty state before
                 // anything that can re-enter Find (a nested Vanilla draw, a diagnostic).
                 _pFreed[s] = false; _pState[s] = StEmpty; AlloyCensus.OwnFlag[s] = 0;
-                _pSetupTried[s] = false; _pPoseTried[s] = false;
+                _pSetupTries[s] = 0; _pPoseTried[s] = false;
                 _pPart[s] = part; _reclaims++; return s;
             }
             if (_pState[s] == StEmpty)
-            { if (!room) return -1; _pPart[s] = part; _pSetupTried[s] = false; _pPoseTried[s] = false; _partCount++; return s; }
+            { if (!room) return -1; _pPart[s] = part; _pSetupTries[s] = 0; _pPoseTried[s] = false; _partCount++; return s; }
         }
         return -1;
     }
@@ -397,7 +490,7 @@ internal static unsafe class PartTable
     internal static void WipeTables(string why)
     {
         _wipeFrame = _frame;
-        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed); Array.Clear(_pSetupTried);
+        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed); Array.Clear(_pSetupTries);
         Array.Clear(_pPoseTried);
         SkinPose.Forget();
         Array.Clear(AlloyCensus.OwnFlag);

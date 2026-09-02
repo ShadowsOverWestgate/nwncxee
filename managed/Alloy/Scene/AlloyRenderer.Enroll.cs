@@ -362,7 +362,8 @@ public sealed unsafe partial class AlloyRenderer
             _oTexKey[i] = TexKey(c.Tex0);
             _oCls[i] = (byte)c.Cls; _oSrc[i] = (byte)c.Src; _oDst[i] = (byte)c.Dst;
             _oNoCull[i] = c.TwoSided;
-            _oBucket[i] = (byte)c.Bucket; _oGob[i] = c.Gob;
+            _oBucket[i] = (byte)c.Bucket; _oGob[i] = c.Gob; _oLodRoot[i] = c.LodRoot;
+            for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBoxMin + b * 4);   // #336: +0x64..+0x78
             // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
             // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
             if (!kept) _oBone[i] = -1;
@@ -401,7 +402,15 @@ public sealed unsafe partial class AlloyRenderer
             float rad = BitConverter.Int32BitsToSingle(c.RotBits) * DegToRad;
             _oCos[i] = MathF.Cos(rad); _oSin[i] = MathF.Sin(rad);
             AlloyCensus.OwnFlag[e] = 1;
-            if (watch) _log?.Info($"[dumpframe] ENROLL accepted slot={i} cls={(AlloyClass)c.Cls} lit={lit} vao={v}");
+            if (watch)
+                // #336: what GL actually holds for the diffuse, on the line that says the part was taken.
+                // A UV-less mesh reads ONE texel at the generic (0,0), so "the whole model is the wrong
+                // colour" is a question about that texel -- and the uploaded format and the mip chain are
+                // the two things between the file and it. Both have been wrong before (#265, #129).
+                _log?.Info($"[dumpframe] ENROLL accepted slot={i} cls={(AlloyClass)c.Cls} lit={lit} vao={v}"
+                           + $" uv={(SlotHasUv(v) ? 1 : 0)}"
+                           + $" tex0 {TexProbe.TexFormat(new TextureRef(c.Tex0).OwnedTid())}"
+                           + $" {TexProbe.TexTopMip(new TextureRef(c.Tex0).OwnedTid())}");
         }
         // a budgeted walk finishes on a frame of its OWN: measured live, a finish riding the last step was
         // the 3-5,6ms p99 (step 1,3ms + sweeps + radix + census) against a 2ms bar

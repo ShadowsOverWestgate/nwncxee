@@ -28,6 +28,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#128: the Gob this part instances off, zero for static geometry. The key the all-owned-or-none
     /// sweep groups by -- never dereferenced here, only compared.</summary>
     private static readonly IntPtr[] _oGob = new IntPtr[MaxOwned];
+    /// <summary>#336: see <c>AlloyCandidate.LodRoot</c>.</summary>
+    private static readonly IntPtr[] _oLodRoot = new IntPtr[MaxOwned];
     /// <summary>#137: this enrolled part's bone slot for THIS pass, or -1 for a rigid one. Rewritten every
     /// frame in <c>PoseSkinned</c>, never carried across one -- a pose is per-frame by definition.</summary>
     private static readonly int[] _oBone = new int[MaxOwned];

@@ -257,12 +257,21 @@ internal static unsafe class AlloyCensus
         // #91: a part recorded from another Scene (a GUI 3D panel) must never enter the world table -- the
         // Alloy block draws the whole table in one go, so one foreign part is area geometry in a portrait.
         if (_pScene[e] != _ownScene) { Bump(ref _ownRejScene); return Gate("scene"); }
+        // #338: the gate every Part*::Draw override runs before it draws (PartTriMesh, PartAnimMesh,
+        // PartAABB, PartDanglyMesh, PartSkin all call PartTriMesh::IsPartRenderable @0x450e60), and that
+        // Scene::AddPartsTreeToDrawBuckets @0x460880 runs before every colour-bucket add. Alloy walks the
+        // world, not the buckets (#255), so this is the only place that filter exists on our side -- and
+        // without it the parts CombineParts @0x473d30 has already merged away enroll and draw their absorbed
+        // geometry as solid black over the combined mesh that replaced it. Refusing them costs no caster:
+        // the engine never draws them from any path either, and the flag never flips back (see IsRenderable).
+        if (!PartTable.IsRenderable(_pPart[e])) { Bump(ref _ownRejUnrenderable); return Gate("unrenderable"); }
         IntPtr v = _pVdo[e], mat = _pMat[e], part = _pPart[e];
         var p = new PartRef(part); var m = new MaterialRef(mat); var vd = new VdoRef(v);
         // Published the moment the part is in hand, and kept through every refusal from here down: creature
         // colour is all-owned-or-none per instance (#107/#128), so a refusal has to be attributable to its
         // gob. The gates ABOVE this line need no attribution -- a stale or foreign-scene part is not drawing.
         c.Gob = p.Gob.Ptr;
+        c.LodRoot = PartTable._pLodAlt[e] ? PartTable._pRoot[e] : IntPtr.Zero;
         // A SharedMaterial is NOT a reason to hand a part back. Ghidra Material::GetTexture @0x4c5810
         // resolves every slot through it already (shared+0xd8+i*0x10+8, else the material's own), so the
         // texture we captured is the right one. All it adds on top is a custom shader program
@@ -827,6 +836,7 @@ internal static unsafe class AlloyCensus
 
     // per-gate enrollment forensics: which predicate is eating the candidates? (cold, scan-scoped)
     internal static int _ownSeen, _ownRejStaleMoved, _ownRejBucket, _ownRejVdo, _ownRejGob, _ownRejFbSample,
+                      _ownRejUnrenderable,
                       _ownWithMaps, _ownRejItem, _ownSharedPlain, _ownSharedShader, _ownRejScene,
                       _ownWithEnv, _ownSharedFeature;
     internal static IntPtr _ownScene;
@@ -838,7 +848,8 @@ internal static unsafe class AlloyCensus
         _ownScene = scene;
         _ownSeen = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
-            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing = 0;
+            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing =
+            _ownRejUnrenderable = 0;
         Array.Clear(_instWhy); Array.Clear(_instWhyN);
         Array.Clear(_ownByClass); Array.Clear(OwnRefusedByClass); Array.Clear(OwnRejByReason);
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
@@ -863,6 +874,7 @@ internal static unsafe class AlloyCensus
     internal static string OwnScanDiag() =>
         $"active={_ownSeen} rejects: stale-identity={_ownRejStaleMoved} bucket={_ownRejBucket} vdo={_ownRejVdo} " +
         $"scene-tint={_ownRejGob} item={_ownRejItem} foreign-scene={_ownRejScene} " +
+        $"unrenderable={_ownRejUnrenderable} " +
         // #128: the instanced population's own fate. "Creatures are not owned" reads identically to
         // "creatures are not in the table"; these three tell them apart without another round trip.
         $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan " +

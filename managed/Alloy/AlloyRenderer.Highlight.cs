@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Sowx.Framework;
 using Sowx.Graphics;
 using Sowx.Services.Quickbar;
 
@@ -40,6 +41,72 @@ public sealed unsafe partial class AlloyRenderer
     /// ponytail: the per-draw match below is a linear scan over these targets; if a census ever shows
     /// hundreds of simultaneous highlights mattering, swap it for a fixed-size open-addressed table.</summary>
     private const int MaxHlRoots = 128, MaxHlTargets = 256;
+
+    /// <summary>#336: the highlight CHANNELS, as <c>CNWCAnimBase</c> lays them out. A hilite is written into
+    /// one of five slots -- active flag at +0x9c[ch], colour at +0x60[ch] (12 bytes), "also add a glow gob"
+    /// at +0xb0[ch] -- and <c>RefreshHilite</c> takes the LOWEST active slot as the winner. The gob the
+    /// winner is published against sits at +0xc8.
+    /// <para>The channel is the SOURCE, which the Scene highlight list does not carry: Tab and mouseover
+    /// arrive on 2 (<c>HiliteAreaObjects</c> @0x7119f0), while every VFX that highlights arrives on 3 --
+    /// <c>CNWCVisualEffectOnObject::ApplySelfIllumination</c>, <c>::ApplyAlpha</c> and
+    /// <c>::UpdateSelfIlluminationPulse</c> all call <c>Hilite(colour, 3, 1)</c>. Lowest-wins is why a
+    /// Tab over a glowing creature shows the Tab colour.</para></summary>
+    private const int HiliteChannels = 5;
+    private const int AbActive = 0x9c, AbGlow = 0xb0, AbGob = 0xc8;
+
+    /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
+    /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. Everything
+    /// unclaimed falls through to <see cref="RspShim"/>'s <c>GlowRemainder</c> and gets the engine glow.
+    /// <c>/draw hlchan</c>.</summary>
+    internal static int HlChannels = DefHlChannels;
+    internal const int DefHlChannels = 0b00111;
+
+    /// <summary>Gobs whose winning channel the outline claims, refreshed from the engine's own verdict at
+    /// every <c>RefreshHilite</c>. Small and churn-free: an entry per highlighted object, not per part.</summary>
+    private static readonly IntPtr[] _ownedHl = new IntPtr[MaxHlRoots];
+    private static int _ownedHlN;
+
+    /// <summary><c>CNWCAnimBase::RefreshHilite</c>, after the original. The engine has just recomputed the
+    /// winning channel and published (or withdrawn) the gob, so this reads the result instead of predicting
+    /// it -- no duplicated priority rule to drift.</summary>
+    [UnmanagedCallersOnly]
+    private static void OnRefreshHilite(IntPtr animBase)
+    {
+        _origRefreshHilite(animBase);
+        if (animBase == IntPtr.Zero) return;
+        IntPtr gob = *(IntPtr*)(animBase + AbGob);
+        if (gob == IntPtr.Zero) return;
+        int win = -1;
+        for (int c = 0; c < HiliteChannels && win < 0; c++)
+            if (*(int*)(animBase + AbActive + c * 4) != 0) win = c;
+        // Claimed only when the winner is ours AND the engine would publish a gob for it at all.
+        bool claim = win >= 0 && (HlChannels & (1 << win)) != 0 && *(int*)(animBase + AbGlow + win * 4) != 0;
+        int at = -1;
+        for (int i = 0; i < _ownedHlN; i++) if (_ownedHl[i] == gob) { at = i; break; }
+        if (claim)
+        {
+            if (at < 0 && _ownedHlN < _ownedHl.Length) _ownedHl[_ownedHlN++] = gob;
+        }
+        else if (at >= 0) _ownedHl[at] = _ownedHl[--_ownedHlN];
+        if (HlDiag)
+            _log?.Info($"[hldiag] gob={gob:x} channel={win} glow={(win >= 0 ? *(int*)(animBase + AbGlow + win * 4) : 0)}"
+                       + $" -> {(claim ? "OWNED outline" : "engine glow")}");
+    }
+
+    private static delegate* unmanaged<IntPtr, void> _origRefreshHilite;
+
+    /// <summary>Did the source hook claim this gob? A gob the hook never saw is not ours: the engine can put
+    /// a gob in the highlight list by a path that never reaches <c>RefreshHilite</c>, and the safe verdict
+    /// for an unrecognised source is the vanilla glow.</summary>
+    private static bool OwnedHighlight(IntPtr gob)
+    {
+        for (int i = 0; i < _ownedHlN; i++) if (_ownedHl[i] == gob) return true;
+        return false;
+    }
+
+    /// <summary><c>/draw hldiag 1</c>: name the winning channel and the verdict every time a highlight
+    /// changes. The source is the question now, so the colour is not worth printing.</summary>
+    internal static bool HlDiag;
 
     /// <summary>Outline thickness in pixels: the dilation radius the composite's ring taps sample at.</summary>
     private const float OutlinePx = 5f;
@@ -211,6 +278,11 @@ public sealed unsafe partial class AlloyRenderer
             rootHit[i] = 0;
             if (nT >= MaxHlTargets) break;
             IntPtr gob = arr[i];
+            // #336: the list is source-agnostic -- a spell's glow sits in it looking exactly like a Tab
+            // highlight, and drawn as a crisp outline it reads as one. Only what the source hook claimed is
+            // ours; the rest stays in the engine's hands via GlowRemainder, which already covers the roots
+            // this pass leaves unhit.
+            if (!OwnedHighlight(gob)) continue;
             targetRoot[nT] = (byte)i;
             targets[nT++] = gob;
             list[0] = IntPtr.Zero; list[1] = IntPtr.Zero;
