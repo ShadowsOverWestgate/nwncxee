@@ -30,10 +30,16 @@ internal enum PassId
     GrassOwned,
     /// <summary>#125: the per-area skybox, replayed from <see cref="SkyBox"/>'s capture of the engine's own
     /// draw. Here because ADR 0011 puts it AFTER the opaque set -- so the prepass depth rejects every sky
-    /// pixel the world covered before it shades -- and BEFORE the blended class, so blended geometry seen
-    /// against the sky composites over a finished one. Vanilla draws it between buckets 0 and 1 and pays
-    /// for both mistakes.</summary>
+    /// pixel the world covered before it shades -- and BEFORE the BLENDING classes, cutout
+    /// included (#357), so anything seen against the sky composites over a finished one. Vanilla draws it
+    /// between buckets 0 and 1, which gets the second half right and the first wrong.</summary>
     SkyOwned,
+    /// <summary>#357: the cutout class -- the alpha discard, depth writes ON, no blending and no sort, which
+    /// is the whole of its order-independence (<see cref="AlloyClasses.Blends"/> carries why the blend went
+    /// away). Split out of <see cref="OpaqueOwned"/> to sit where the engine draws bucket 1, immediately
+    /// after <c>RenderSkyBoxes</c>; unblended it would be correct on either side of the sky, and this side
+    /// costs only the sky pixels the foliage then covers.</summary>
+    CutoutOwned,
     /// <summary>#126: the blended class -- genuine alpha, sorted back-to-front per part, depth writes off.
     /// Sits here because ADR 0011 puts blended after the opaque set and BEFORE the framebuffer copy the
     /// FB-sampling and water classes will read (#128): fade is a blended-class member, and moving it ahead
@@ -147,6 +153,7 @@ internal static class FrameGraph
         (PassId.OpaqueOwned,     Bracket.Colour),
         (PassId.GrassOwned,      Bracket.Colour),
         (PassId.SkyOwned,        Bracket.Colour),
+        (PassId.CutoutOwned,     Bracket.Colour),
         (PassId.BlendedOwned,    Bracket.Colour),
         (PassId.FbCopy,          Bracket.Colour),
         (PassId.WaterOwned,      Bracket.Colour),

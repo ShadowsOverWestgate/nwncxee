@@ -104,6 +104,9 @@ internal static unsafe class RspShim
     private static byte* _triggerBucket;
     private static delegate* unmanaged<IntPtr, uint, uint, uint, void> _origStream;
     private static delegate* unmanaged<int, void> _riEnable, _riDisable;
+    /// <summary><c>GLRender::m_pCurrentCustomProgram</c> -- the latch both draw funnels read. Cleared at the
+    /// shim's exit; see <see cref="EngineOverlays"/>.</summary>
+    private static IntPtr* _curCustom;
 
     /// <summary>Chain priority on <c>GLRender::RenderVertexData</c>. Strictly between
     /// <see cref="DrawFunnelService"/>'s 50 and DrawStatsService's 10, and that placement is the whole
@@ -208,6 +211,7 @@ internal static unsafe class RspShim
         // over its epilogue would be the worse trade.
         _riEnable = (delegate* unmanaged<int, void>)Native.Sym(SymbolMap.RiEnable);
         _riDisable = (delegate* unmanaged<int, void>)Native.Sym(SymbolMap.RiDisable);
+        _curCustom = (IntPtr*)Native.Sym(SymbolMap.GlCurrentCustomProgram);
         // Named, not counted: "an engine symbol did not resolve" is unactionable, and this list is the only
         // place that knows which one. glBindFramebuffer is deliberately NOT here -- see Ready.
         string? missing = _skyBoxes == null ? SymbolMap.RenderSkyBoxes
@@ -425,6 +429,16 @@ internal static unsafe class RspShim
     /// empty and the call would draw nothing.</para></summary>
     private static void EngineOverlays(IntPtr vptr, IntPtr scene)
     {
+        // The custom-program LATCH, cleared before any engine draw issues again. Both funnels open with
+        // `if (m_pCurrentCustomProgram) SetProgram(0xe)` (RenderVertexData @0x4d05a8, RenderVertexStreamData
+        // @0x4d0cd6), and shader type 0xe means "use whatever that global points at". Its only clearers are
+        // DrawReset @0x4cfa00 and ResetRenderStates @0x4d1b29, both on the engine 3D path the swallow eats --
+        // and SetCustomShaderProgram @0x4ce890 ignores a null argument, so it cannot clear it either. So the
+        // sky's PROG_FIXED, latched by SkyBox.NoteEngineDraw at the swallow, is still current here and the
+        // FIRST engine draw after the bracket -- the glow, then the 2D UI -- is forced onto the sky program
+        // with the sky's uniforms. Zeroed rather than DrawReset()'d: this is the one field of its write set
+        // that the swallow left stale, and its Disable() calls go through the cached wrapper (#237).
+        if (_curCustom != null) *_curCustom = IntPtr.Zero;
         // #232 second mode: on a frame the owned outline+fill highlight drew, the engine glow would double
         // up on the gobs it covered -- but only on those. Read-and-clear, so a frame where the owned pass
         // refused (no depth blit, program failure) still gets the full engine glow instead of nothing.

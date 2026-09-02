@@ -64,16 +64,24 @@ internal static class AlloyClasses
          : AlloyClass.Cutout;
 
     /// <summary>Does this class draw with <c>GL_BLEND</c> on, using the material's own blend pair?
-    /// <para>Everything except plain opaque, CUTOUT INCLUDED -- and that inclusion is not a detail. The
-    /// engine draws bucket 1 under <c>Enable(0)</c> + <c>Enable(1)</c> (#103's pass table): blending on AND
-    /// the 0.2 discard, together. On binary-alpha content the blend is a no-op and the discard does all the
-    /// work, which is why "cutout = alpha test" reads as the whole story -- but NWN foliage is not binary.
-    /// Measured on the shipped ivy textures: 45-69% of texels sit between alpha 0.2 and 0.9, i.e. above the
-    /// discard and below opaque. Drawn without blending those become SOLID, and a soft-edged vine turns into
-    /// a slab of whatever its dim texels shade to.</para>
-    /// <para>What the split still means, and what ADR 0011 actually decided: cutout keeps DEPTH WRITE and
-    /// needs no sort. That is the order-independence -- not the absence of blending.</para></summary>
-    internal static bool Blends(int cls) => cls != (int)AlloyClass.Opaque;
+    /// <para>The three sorted classes, and NOT cutout. #126 put cutout on the blending side, reasoning that
+    /// the engine draws bucket 1 under <c>Enable(0)</c> + <c>Enable(1)</c> (#103's pass table) and that NWN
+    /// foliage is not binary -- 45-69% of a shipped ivy texture's texels sit between alpha 0.2 and 0.9, and
+    /// drawn unblended those become SOLID. Both halves are true and the conclusion was still wrong, because
+    /// cutout also keeps its DEPTH WRITE, and #357 is what those two together look like: a graded texel lets
+    /// the destination through AND stamps depth, so every leaf edge is a hole with the sky in it that then
+    /// rejects the leaves, branches and trees drawn behind it. The class is unsorted by construction, so
+    /// which surface wins each fringe pixel is submission order -- a tree cutting a sky-coloured outline
+    /// through itself.</para>
+    /// <para>Partial transparency and depth writing cannot both be had at this price. Grass has drawn under
+    /// exactly this rule since #127 ("no grass fragment is ever partially transparent AND depth-writing")
+    /// and this is the rest of the class catching up: a texel over the discard is opaque, which is what an
+    /// alpha test has always meant. The soft vine edge is the thing given up, and ADR 0011 already names
+    /// what buys it back -- alpha-to-coverage, which needs the multisampled target the Alloy frame does not
+    /// yet bind.
+    /// <para>ponytail: hard edges on graded foliage. Upgrade path is A2C on an MSAA target, not blending
+    /// this class back on.</para></para></summary>
+    internal static bool Blends(int cls) => cls != (int)AlloyClass.Opaque && cls != (int)AlloyClass.Cutout;
 
     /// <summary>The engine's <c>fAlphaDiscardValue</c> for this class (<c>inc_common.shd:593</c>,
     /// <c>GLRender::SetUniforms</c> @0x4ccbf0: 0.2 when <c>Enable(1)</c> is on, -1.0 when it is not).
@@ -105,7 +113,7 @@ internal static class AlloyClasses
         E(Of(false, false, false, false, false) == AlloyClass.Cutout, "texture alpha alone is a cutout");
 
         E(!Blends((int)AlloyClass.Opaque), "plain opaque does not blend");
-        E(Blends((int)AlloyClass.Cutout), "a cutout DOES blend -- the engine draws bucket 1 with both");
+        E(!Blends((int)AlloyClass.Cutout), "#357: nor does a cutout -- it writes depth, so it must be opaque");
         E(Blends((int)AlloyClass.Blended) && Blends((int)AlloyClass.Additive), "blended and additive do");
         E(Blends((int)AlloyClass.Water), "and so does water -- the engine draws bucket 6 under Enable(0)");
         E(Discard((int)AlloyClass.Cutout) == 0.2f && Discard((int)AlloyClass.Blended) == 0.2f,

@@ -248,6 +248,9 @@ public sealed unsafe partial class AlloyRenderer
                             SkyOwnedPass(&vp, viewport);
                             GpuEnd(GpuTerm.Sky);
                             break;
+                        case PassId.CutoutOwned:
+                            CutoutOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
+                            break;
                         case PassId.BlendedOwned:
                             GpuBegin(GpuTerm.Blended);
                             TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
@@ -453,12 +456,24 @@ public sealed unsafe partial class AlloyRenderer
     {
         Gl.DepthFunc(Gl.LEQUAL);
         // SAMPLES_PASSED covers the OPAQUE set alone, so the overdraw figure stays comparable with #119's
-        // baseline. #325: two calls so opaque and cutout time apart; the seam re-binds the indirect buffer,
-        // the slots and the program (one lit uniform re-send), and draws exactly the same batches.
+        // baseline. #357 moved the cutout run out into its own pass behind the sky, which is also what
+        // keeps #325's separate opaque/cutout GPU terms apart.
         bool counting = _qSamples.Begin(Gl.SAMPLES_PASSED);
         IssueClass(0, _gCutoutStart, GpuTerm.Opaque, GpuTerm.OpaqueKey, vp, viewport, near, far);
-        IssueClass(_gCutoutStart, opaqueEnd, GpuTerm.Cutout, GpuTerm.CutoutKey, vp, viewport, near, far);
         if (counting) _qSamples.End(Gl.SAMPLES_PASSED);
+    }
+
+    /// <summary>#357: the cutout class, in vanilla's own slot -- bucket 1 follows <c>RenderSkyBoxes</c>.
+    /// It draws unblended (see <see cref="AlloyClasses.Blends"/>), so the order is no longer load-bearing;
+    /// it is kept because it is the engine's, and it costs only the sky pixels foliage then covers.
+    /// <para>Depth mask back ON (the sky left it off) and the same LEQUAL the opaque set used. Not in the
+    /// SAMPLES_PASSED count, which stays #119's opaque-set overdraw baseline.</para></summary>
+    private static void CutoutOwnedPass(int opaqueEnd, Matrix4x4* vp, int* viewport, float near, float far)
+    {
+        if (opaqueEnd <= _gCutoutStart) return;
+        Gl.DepthMask(1);
+        Gl.DepthFunc(Gl.LEQUAL);
+        IssueClass(_gCutoutStart, opaqueEnd, GpuTerm.Cutout, GpuTerm.CutoutKey, vp, viewport, near, far);
     }
 
     /// <summary>#336: one opaque class's batches under two GPU terms -- the plain run, then the keyhole

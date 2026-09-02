@@ -40,17 +40,35 @@ internal static unsafe class BcnEncode
         }
     }
 
+    /// <summary>Texels at or below the engine's own <c>fAlphaDiscardValue</c> (0.2, inc_common.shd:593)
+    /// do not take part in the colour-endpoint fit. Their RGB is the matte an artist left behind the alpha
+    /// -- white on most NWN foliage -- and no cutout fragment they produce is ever shaded, but a bounding
+    /// box that includes them drags an endpoint to white and every SURVIVING texel in the block decodes
+    /// along that line. That is a white rim on every alpha edge of every transcoded tree, in the colour of
+    /// nothing on screen. Stock DXT content never shows it because it was encoded once, properly, by a tool
+    /// that already knew this.</summary>
+    private const int MatteAlpha = 51;
+
     /// <summary>One 4x4 colour block -&gt; 8 bytes of BC1, always in 4-colour mode (c0 &gt; c1, or equal
     /// endpoints with every index 0, whose palette is degenerate either way).</summary>
     private static void Bc1Block(byte* px, byte* dst)
     {
         int rMin = 255, gMin = 255, bMin = 255, rMax = 0, gMax = 0, bMax = 0;
-        for (int i = 0; i < 16; i++)
+        // Two attempts: the visible texels alone, then -- only if the block has none -- all sixteen, whose
+        // colour is never sampled anyway and is encoded purely so the block is well-formed.
+        for (int pass = 0; pass < 2; pass++)
         {
-            byte* p = px + i * 4;
-            if (p[0] < rMin) rMin = p[0]; if (p[0] > rMax) rMax = p[0];
-            if (p[1] < gMin) gMin = p[1]; if (p[1] > gMax) gMax = p[1];
-            if (p[2] < bMin) bMin = p[2]; if (p[2] > bMax) bMax = p[2];
+            int seen = 0;
+            for (int i = 0; i < 16; i++)
+            {
+                byte* p = px + i * 4;
+                if (pass == 0 && p[3] <= MatteAlpha) continue;
+                seen++;
+                if (p[0] < rMin) rMin = p[0]; if (p[0] > rMax) rMax = p[0];
+                if (p[1] < gMin) gMin = p[1]; if (p[1] > gMax) gMax = p[1];
+                if (p[2] < bMin) bMin = p[2]; if (p[2] > bMax) bMax = p[2];
+            }
+            if (seen > 0) break;
         }
         // stb_dxt's inset: pull the box in 1/16th so outliers stop owning the endpoints
         int ir = (rMax - rMin) >> 4, ig = (gMax - gMin) >> 4, ib = (bMax - bMin) >> 4;
@@ -134,8 +152,24 @@ internal static unsafe class BcnEncode
         {
             int e = rgba[i * 4] - outPx[i * 4];
             int a = rgba[i * 4 + 3] - outPx[i * 4 + 3];
-            ok &= (e < 0 ? -e : e) <= 48 && (a < 0 ? -a : a) <= 24;   // one BC1 / BC4 palette step
+            // ALPHA everywhere, colour only where the texel is visible: the endpoint fit stops at
+            // MatteAlpha on purpose (see there), so a texel under it has no colour promise to keep.
+            ok &= (a < 0 ? -a : a) <= 24;                             // one BC4 palette step
+            if (rgba[i * 4 + 3] > MatteAlpha) ok &= (e < 0 ? -e : e) <= 48;   // one BC1 palette step
         }
+
+        // #357: the matte. Half a foliage block is dark leaf, half is the white the artist left under
+        // alpha 0. Every VISIBLE texel has to come back dark -- fitted over all sixteen, the endpoint goes
+        // white and the leaf edge decodes as the white rim this check exists to keep out.
+        for (int i = 0; i < 16; i++)
+        {
+            bool leaf = i < 8;
+            byte v = leaf ? (byte)40 : (byte)255;
+            rgba[i * 4] = v; rgba[i * 4 + 1] = v; rgba[i * 4 + 2] = v; rgba[i * 4 + 3] = leaf ? (byte)255 : (byte)0;
+        }
+        EncodeLevel(rgba, 4, 4, true, blk);
+        DecodeBc3(blk, outPx);
+        for (int i = 0; i < 8; i++) ok &= outPx[i * 4] < 80;
 
         // The edge clamp: a 5x5 level is four blocks whose overhang repeats the last row/column, so a solid
         // image stays solid and the size math agrees with the block grid.
