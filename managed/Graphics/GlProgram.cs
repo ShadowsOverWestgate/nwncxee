@@ -44,48 +44,6 @@ internal static unsafe class GlProgram
     internal static uint Graphics(string vsRef, string vs, string fsRef, string fs, ExtenderLog? log, string what)
         => Graphics(vsRef, vs, fsRef, fs, log, what, out _, out _);
 
-    /// <summary>#147: link a vertex + tessellation-pair + fragment program, every stage overridable. Water is
-    /// the only class that tessellates: its geometry is two triangles per ten-unit tile, so a displacement in
-    /// the vertex stage would move four corners and nothing between them.
-    /// <para>A failure in ANY stage falls back to the whole embedded set rather than mixing a content vertex
-    /// stage with an embedded evaluation one -- the two share the wave field and a half-applied override
-    /// would displace the surface out from under the normals.</para>
-    /// <para>All four sources come back, not just the outer pair: #161's record guard applies to every stage
-    /// that declares the per-draw record, and on water that is the tessellation pair too.</para></summary>
-    internal static uint Graphics(string vsRef, string vs, string tcRef, string tc, string teRef, string te,
-                                  string fsRef, string fs, ExtenderLog? log, string what,
-                                  out string vsSource, out string tcSource, out string teSource,
-                                  out string fsSource)
-    {
-        string? ovs = ShaderResource.Override(vsRef, log), otc = ShaderResource.Override(tcRef, log);
-        string? ote = ShaderResource.Override(teRef, log), ofs = ShaderResource.Override(fsRef, log);
-        vsSource = ovs ?? vs; tcSource = otc ?? tc; teSource = ote ?? te; fsSource = ofs ?? fs;
-        uint prog = Tessellated(ovs ?? vs, otc ?? tc, ote ?? te, ofs ?? fs, log, what);
-        if (prog != 0 || (ovs == null && otc == null && ote == null && ofs == null)) return prog;
-        log?.Info($"{what}: override .shd failed to build -- falling back to the embedded default");
-        vsSource = vs; tcSource = tc; teSource = te; fsSource = fs;
-        return Tessellated(vs, tc, te, fs, log, what);
-    }
-
-    /// <summary>The embedded-only four-stage link, for the rebuild path.</summary>
-    internal static uint Tessellated(string vs, string tc, string te, string fs, ExtenderLog? log, string what)
-    {
-        uint v = Compile(Gl.VERTEX_SHADER, vs, log, what);
-        uint c = Compile(Gl.TESS_CONTROL_SHADER, tc, log, what);
-        uint e = Compile(Gl.TESS_EVALUATION_SHADER, te, log, what);
-        uint f = Compile(Gl.FRAGMENT_SHADER, fs, log, what);
-        if (v == 0 || c == 0 || e == 0 || f == 0)
-        {
-            // Partial success still allocated shader objects; Link is what normally deletes them.
-            if (v != 0) Gl.DeleteShader(v);
-            if (c != 0) Gl.DeleteShader(c);
-            if (e != 0) Gl.DeleteShader(e);
-            if (f != 0) Gl.DeleteShader(f);
-            return 0;
-        }
-        return Link(log, what, v, c, e, f);
-    }
-
     /// <summary>Link a compute program. Returns 0 on failure (already logged).</summary>
     internal static uint Compute(string cs, ExtenderLog? log, string what)
     {

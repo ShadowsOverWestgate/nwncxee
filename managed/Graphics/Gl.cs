@@ -51,7 +51,7 @@ public static unsafe class Gl
     public const uint R32F = 0x822E;
     public const uint TEXTURE_MIN_FILTER = 0x2801, TEXTURE_MAG_FILTER = 0x2800;
     public const uint TEXTURE_WRAP_S = 0x2802, TEXTURE_WRAP_T = 0x2803, TEXTURE_WRAP_R = 0x8072;
-    public const int  NEAREST = 0x2600, LINEAR = 0x2601, CLAMP_TO_EDGE = 0x812F;
+    public const int  NEAREST = 0x2600, LINEAR = 0x2601, CLAMP_TO_EDGE = 0x812F, REPEAT = 0x2901;
     // Cube map (shadow cubes, #65 slice 6). Faces are POSITIVE_X + 0..5 (+X,-X,+Y,-Y,+Z,-Z).
     public const uint TEXTURE_CUBE_MAP = 0x8513, TEXTURE_CUBE_MAP_POSITIVE_X = 0x8515, TEXTURE_BINDING_CUBE_MAP = 0x8514;
     public const uint TEXTURE_2D_ARRAY = 0x8C1A, TEXTURE_BINDING_2D_ARRAY = 0x8C1D, SAMPLER_BINDING = 0x8919;

@@ -66,10 +66,8 @@ change on the C# side. Freezing today's numbers into your copy is how it goes st
 | `cx_own_fs` | fragment | Unlit shading — texture, per-draw tint, alpha cutout. |
 | `cx_ownlit_vs` | vertex | Lit Alloy geometry, including the skinning branch for creature parts. |
 | `cx_ownlit_fs` | fragment | The main lit shader: clustered local lights, sun cascades, PBR material synthesis, key light and fog. The big one. |
-| `cx_water_vs` | vertex | Water surface, pre-tessellation. |
-| `cx_water_tcs` | tess control | Water tessellation levels — water is the only class that tessellates. |
-| `cx_water_tes` | tess eval | Wave-field displacement and the projection that follows it. |
-| `cx_water_fs` | fragment | Water shading: fetch-driven sea state, lighting, fog. |
+| `cx_water_vs` | vertex | Water surface. |
+| `cx_water_fs` | fragment | Water shading: stock `fswater` on Alloy's lights, shadows, keyhole and fog. |
 | `cx_grass_vs` | vertex | Instanced grass blades, wind animation. |
 | `cx_grass_fs` | fragment | Grass shading. |
 | `cx_cluster_cs` | compute | Builds the light cluster grid the lit and water stages read. |
@@ -105,7 +103,7 @@ built on.
 
 ### Record — the per-draw SSBO layout
 
-**Applies to:** `cx_own_vs`, `cx_ownlit_vs`, `cx_ownlit_fs`, all four `cx_water_*`
+**Applies to:** `cx_own_vs`, `cx_ownlit_vs`, `cx_ownlit_fs`, both `cx_water_*`
 (as `SowxDraw`); `cx_cast_vs` (as `SowxCaster` *and* `SowxDraw`).
 
 **Rejects:** a `struct SowxDraw` declaring a different number of trailing `vec4` fields

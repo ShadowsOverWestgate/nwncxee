@@ -79,7 +79,7 @@ internal static unsafe class CullPass
     private static uint _prog, _progHiZ, _progSort;
     private static bool _failed;
     private static int _uDrawN, _uPlanes, _uHiZ, _uVP, _uPyr, _uPyrSize, _uMaxLod;
-    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye;
+    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye, _uFogCull;
     private static int _sDrawN, _sCompactBelow;
     private static int _hSrc, _hLevel;
 
@@ -135,10 +135,20 @@ internal static unsafe class CullPass
     /// <summary>The boot threshold, and #152's own: one pixel of projected radius.</summary>
     internal const float DefLodPx = 1.0f;
 
-    /// <summary>#336: pull the far plane in to the fog's opaque distance. <c>SowxFog</c> clamps its lerp, so
-    /// a fragment past <c>FogEnd</c> is EXACTLY the fog colour -- it is drawn, lit, prepassed and shadowed to
-    /// produce a pixel the fog would have painted anyway. Measured: camfar 215 against a fog end of 125, so
-    /// two thirds of the ground area in the frustum was past it. <c>/draw fogcull</c>.</summary>
+    /// <summary>#336: drop geometry the fog has already painted over. <c>SowxFog</c> clamps its lerp, so a
+    /// fragment past <see cref="SceneFog.OpaqueDistance"/> is EXACTLY the fully-fogged colour -- it is drawn,
+    /// lit, prepassed and shadowed to produce a pixel the fog would have painted anyway. Measured: camfar 215
+    /// against a fog end of 125, so two thirds of the ground area in the frustum was past it.
+    /// <c>/draw fogcull</c>.
+    /// <para><b>#341: opaque is not enough -- what is BEHIND it has to be the same colour too</b>, and that
+    /// is where the far-plane version of this was wrong. Culling a distant tower does not reveal more fog,
+    /// it reveals the SKY, which is not fogged at all; the tower's fully-fogged silhouette simply vanishes
+    /// and the pop is plainly visible on a skyline. What the fog genuinely hides is everything below the
+    /// eye: a ray that leaves the camera going DOWN never reaches the sky dome's lit half, it reaches other
+    /// fogged geometry or the fog-tinted skyfade band. So the test is two conditions, not one -- past the
+    /// opaque distance AND entirely below the eye's own height -- which a frustum plane cannot express and
+    /// the dispatch can, because it has the sphere. The ground, which is where the measured win was, is
+    /// exactly the half that survives.</para></summary>
     internal static bool FogCull = DefFogCull;
     internal const bool DefFogCull = true;
 
@@ -227,6 +237,7 @@ internal static unsafe class CullPass
         _uLodScale = GlProgram.Loc(_prog, "uLodScale");
         _uCompactBelow = GlProgram.Loc(_prog, "uCompactBelow");
         _uEye = GlProgram.Loc(_prog, "uEye");
+        _uFogCull = GlProgram.Loc(_prog, "uFogCull");
         _sDrawN = GlProgram.Loc(_progSort, "uDrawN");
         _sCompactBelow = GlProgram.Loc(_progSort, "uCompactBelow");
         _hSrc = GlProgram.Loc(_progHiZ, "uSrc");
@@ -357,6 +368,10 @@ internal static unsafe class CullPass
         Gl.Uniform1f(_uLodScale, _lodScale);
         Gl.Uniform1i(_uCompactBelow, _compactBelow);
         fixed (Vector3* e = &_eye) Gl.Uniform3fv(_uEye, 1, (float*)e);
+        // 0 = no fog cull at all, which is what an infinite opaque distance means: nothing past the frustum
+        // is provably fogged out.
+        float opaque = FogCull ? SceneFog.OpaqueDistance() : float.PositiveInfinity;
+        Gl.Uniform1f(_uFogCull, float.IsInfinity(opaque) ? 0f : opaque);
         bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0 && _pyrGen == gen;
         Gl.Uniform1i(_uHiZ, useHiZ ? 1 : 0);
         if (useHiZ)
@@ -545,7 +560,11 @@ internal static unsafe class CullPass
     /// <summary>The six frustum planes of a row-major <c>view*proj</c>, Gribb-Hartmann, normalised so the
     /// plane distance is in world units and the sphere test is a plain compare. Row-major here means the
     /// combination is <c>clip = v * VP</c>, so the planes come off the COLUMNS -- the transpose of the form
-    /// the paper writes for column-vector convention.</summary>
+    /// the paper writes for column-vector convention.
+    /// <para>#341 took the fog out of here. A PLANE cannot express the fog cull's real condition -- see
+    /// <see cref="FogCull"/> -- so the test moved into the dispatch, where the sphere's height is readable.
+    /// The <paramref name="eye"/> argument stays: callers pass the eye their vp was built from, and a
+    /// mirrored subframe measuring from the wrong camera is the bug that argument prevents.</para></summary>
     internal static void Planes(float* m, float* p, Vector3 eye)
     {
         // m[r*4+c] is row r, column c of the row-vector matrix: clip.c = sum_r v[r] * m[r*4+c].
@@ -561,12 +580,7 @@ internal static unsafe class CullPass
             if (len > 0f) { x /= len; y /= len; z /= len; w /= len; }
             p[i * 4 + 0] = x; p[i * 4 + 1] = y; p[i * 4 + 2] = z; p[i * 4 + 3] = w;
         }
-        if (!FogCull || !FrameInputs.FogOn || FrameInputs.FogEnd <= 0f) return;
-        // Plane 5 is the far one (i>>1 == 2, w - z). Normalised, its signed distance at the eye IS the far
-        // distance, so subtracting the excess slides it in along its own normal to the fog end exactly.
-        // The eye is the one THIS vp was built from, so a mirrored subframe measures from its own camera.
-        float far = p[5 * 4 + 0] * eye.X + p[5 * 4 + 1] * eye.Y + p[5 * 4 + 2] * eye.Z + p[5 * 4 + 3];
-        if (far > FrameInputs.FogEnd) p[5 * 4 + 3] -= far - FrameInputs.FogEnd;
+
     }
 
     /// <summary>Headless check of the two pieces that are arithmetic rather than GL: the plane extraction
@@ -597,15 +611,13 @@ internal static unsafe class CullPass
         E(!Inside(new Vector3(200, 0, -10), 1f), "a point far off to the side is outside it");
         E(Inside(new Vector3(200, 0, -10), 400f), "...and is back inside once its radius reaches the camera");
 
-        // #336: the fog clamp slides plane 5 in, and nothing else. A wrong sign here culls the whole world
-        // or culls nothing, and neither shows up until someone walks into a foggy area.
-        bool fogWas = FrameInputs.FogOn; float endWas = FrameInputs.FogEnd; Vector3 camWas = FrameInputs.CameraPos;
-        FrameInputs.FogOn = true; FrameInputs.FogEnd = 50f; FrameInputs.CameraPos = Vector3.Zero;
+        // #341: and the fog does NOT touch these planes any more -- the test is the dispatch's, because it
+        // needs the sphere's height. A fog that came back to the frustum would cull a skyline again.
+        bool fogWas = FrameInputs.FogOn; float endWas = FrameInputs.FogEnd;
+        FrameInputs.FogOn = true; FrameInputs.FogEnd = 50f;
         Planes((float*)&vp, planes, Vector3.Zero);
-        E(Inside(new Vector3(0, 0, -40), 1f), "fog cull: a point inside the fog end survives");
-        E(!Inside(new Vector3(0, 0, -60), 1f), "fog cull: a point past the fog end is culled");
-        E(Inside(new Vector3(0, 0, -60), 15f), "...and a sphere reaching back inside it survives");
-        FrameInputs.FogOn = fogWas; FrameInputs.FogEnd = endWas; FrameInputs.CameraPos = camWas;
+        E(Inside(new Vector3(0, 0, -60), 1f), "fog does not slide a frustum plane: a point past the fog end survives it");
+        FrameInputs.FogOn = fogWas; FrameInputs.FogEnd = endWas;
         Planes((float*)&vp, planes, Vector3.Zero);
         E(!Inside(new Vector3(0, 0, -500), 1f), "fog off: the far plane is the engine's again");
 
@@ -871,6 +883,7 @@ internal static unsafe class CullPass
         uniform float uLodScale;
         uniform int uCompactBelow;
         uniform vec3 uEye;
+        uniform float uFogCull;  // #341: fog-opaque distance, or 0 for no fog cull
 
         // One pyramid tap, addressed through the LEVEL-0 grid rather than the level's own.
         // This is the fix for #243's first live bug. `textureLod(uv, L)` maps uv across the width of level
@@ -947,6 +960,11 @@ internal static unsafe class CullPass
                 // pyramid both agree are visible.
                 if (keep && !sorted && SowxSubPixel(s.xyz, s.w)) keep = false;
                 if (keep && uHiZ != 0 && SowxOccluded(s.xyz, s.w)) keep = false;
+                // #341: past the fog's opaque distance AND entirely below the eye -- see CullPass.FogCull
+                // for why both. The clip w of the centre is the same view depth the fog ramps on, and the
+                // radius is subtracted so a sphere reaching back inside the fog is kept whole.
+                if (keep && uFogCull > 0.0 && s.z + s.w < uEye.z
+                    && (uVP * vec4(s.xyz, 1.0)).w - s.w > uFogCull) keep = false;
             }
             if (sorted)
             {

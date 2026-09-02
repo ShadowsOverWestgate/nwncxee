@@ -291,7 +291,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        _litAmbient = -1, _litDiffuse = -1, _litDir = -1,
                        _litGrid = -1, _litTile = -1, _litZ = -1, _litFalloff = -1, _litViz = -1,
                        _litSunTex = -1, _litSunVp = -1, _litSunTexel = -1, _litSunBias = -1, _litSunCount = -1,
-                       _litEye = -1,
                        // #139: the sphere-light wrap. Its own uniform rather than a spare uFalloff lane, so
                        // a content override (#92) that predates it stays at -1 here and simply does not get
                        // it.
@@ -327,8 +326,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// the Beer-Lambert clarity and the thickness behind it, which is where a landed copy still produces a
     /// flat surface.</para></summary>
     /// <summary>Highest mode <see cref="_lightViz"/> accepts. Raise it when a stage adds one, or the new
-    /// mode is silently discarded at the parse.</summary>
-    internal const int LightVizMax = 23;
+    /// mode is silently discarded at the parse -- which is not a hypothetical: #339 added four water views
+    /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
+    /// four screenshots of the old one, and the conclusions drawn from them were void.
+    /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
+    internal const int LightVizMax = 28;
     private static int _lightViz = DefViz;
     /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -1716,16 +1718,18 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static float _waterNear = 1f, _waterFar = 100f;
     private static int _watVp, _watBase, _watTex, _watCut, _watAmbient, _watDiffuse, _watDir,
                        _watGrid, _watTile, _watZ, _watFalloff, _watWrap, _watAtten, _watHot,
-                       _watWrapN, _watViz, _watEye, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
+                       _watWrapN, _watViz, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
                        _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
                        _watCubeDynTex, _watCubeDynPage, _watSunDynTex, _watSunDyn,
                        _watSunFocus, _watSunRadius,
-                       _watProbe, _watProbeMips, _watProbeGain, _watSceneEnv, _watCapture,
-                       _watFbColor, _watFbDepth, _watNearFar, _watView, _watProj, _watDials,
-                       _watWaveTime, _watTess, _watWind;
+                       _watCapture, _watFbColor, _watFbDepth, _watNoise, _watEnvMap, _watEnvOk, _watNearFar,
+                       _watView, _watProj;
     private static FeatLoc _watFeat;
 
-    internal struct FeatLoc { internal int Time, Wind, Flags, Cam, Player, Fog, FogColor, KhDia, KhCam, Pixel; }
+    /// <summary>#341 adds the eye and the four fog-target terms: the fog colour is direction-dependent
+    /// now, so every stage that fogs uploads the same five values through <see cref="UploadFog"/>.</summary>
+    internal struct FeatLoc { internal int Time, Wind, Flags, Cam, Player, Fog, FogColor, KhDia, KhCam, Pixel,
+                                       Eye, FogSky, FogSkyColor, FogSun, FogSunColor; }
     private static FeatLoc _locFeat, _litFeat;
     /// <summary>#123: <c>GLRender::m_shaderExposedRuntimeData</c>, the struct the engine's own SetUniforms
     /// uploads these five from. Null (symbol unresolved) leaves the wind still and the roofs wherever they

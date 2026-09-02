@@ -253,14 +253,6 @@ internal static unsafe class SkyBox
     internal static bool FogTinted(IntPtr gob)
         => gob != IntPtr.Zero && *(byte*)(gob + GobFogTint) != 0;
 
-    /// <summary>The scene's fog colour, the value <c>Mat()</c> tints with. Display space, like every colour
-    /// the engine hands out.</summary>
-    internal static void FogColor(IntPtr scene, float* rgb)
-    {
-        float* f = (float*)(scene + SceneFogColor);
-        rgb[0] = f[0]; rgb[1] = f[1]; rgb[2] = f[2];
-    }
-
     internal static int Roles(IntPtr scene, Span<Role> into)
     {
         int n = 0;

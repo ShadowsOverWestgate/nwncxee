@@ -52,10 +52,25 @@ internal static class TextureSlots
     internal const uint SunShadowDyn = PostHdr, SunShadowDynGrass = SnapshotColor;
     /// <summary>The environment probe cube -- above the whole map block for the type-collision reason.</summary>
     internal const uint Probe = 12;
+    /// <summary>#339: the SCENE's environment map, which vanilla's water reflects. Shares
+    /// <see cref="Probe"/>'s unit -- the water program stopped sampling the probe when the port replaced
+    /// Alloy's own reflection with stock's, so the two are never live in one program. A sampler2D here and
+    /// a samplerCube there, which is why it may not move onto a unit the lit program also binds.</summary>
+    internal const uint WaterEnv = Probe;
     /// <summary>The frame snapshot the water stage refracts through: colour then depth.</summary>
     internal const uint SnapshotColor = 13, SnapshotDepth = 14;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
+    /// <summary>#339: the engine's <c>solid_noise</c>, which vanilla's water shader samples as
+    /// <c>texUnitNoise</c>. Shares <see cref="SceneDepth"/>'s unit on <see cref="GrassPush"/>'s argument --
+    /// the particle pass is a different program in a later bracket, and both are sampler2D so even a missed
+    /// rebind reads a wrong texture rather than dropping the draw.
+    /// <para>NOT on the map block, and this is the whole reason the unit is written down: the colour loop's
+    /// slot binds run for any batch that is not a merged bindless lit one, and a water batch is never one --
+    /// so units 3..9 are overwritten with texture 0 on the first water draw. The first cut put the noise on
+    /// unit 3 and got a perfectly flat sea: every noise read returned 0, which drives the wave amplitude to
+    /// exactly zero.</para></summary>
+    internal const uint WaterNoise = SceneDepth;
     /// <summary>#243: the hi-Z pyramid, read by the CULL DISPATCH only. Shares <see cref="Probe"/>'s unit
     /// for <see cref="PostHdr"/>'s reason and one more: the dispatch is a compute program that runs BETWEEN
     /// two draw passes and samples nothing else, and every draw program rebinds its own probe at the program
@@ -100,8 +115,11 @@ internal static class TextureSlots
         E(PostChain.ResolveFs.Contains("uniform sampler2D uHdr;"), $"{PostHdr} uHdr");
         E(PostChain.ResolveFs.Contains("uniform sampler2D uBloom;"), $"{PostBloom} uBloom");
         E(GrassField.GrassVs.Contains("uniform sampler2D uPushTex;"), $"{GrassPush} uPushTex (grass program)");
-        E(AlloyRenderer.OwnedLitFsHead.Contains("uniform samplerCube uProbe;")
-          && FrameSnapshot.FsHead.Contains("uniform samplerCube uProbe;"), $"{Probe} uProbe");
+        // #339: the water stage no longer samples the probe -- vanilla's reflection falls back to the
+        // shaded surface, not to a cube -- so the lit stage is the only consumer left.
+        E(AlloyRenderer.OwnedLitFsHead.Contains("uniform samplerCube uProbe;"), $"{Probe} uProbe");
+        E(FrameSnapshot.FsHead.Contains("uniform sampler2D uNoise;"), $"{WaterNoise} uNoise (water program)");
+        E(FrameSnapshot.FsHead.Contains("uniform sampler2D uEnvMap;"), $"{WaterEnv} uEnvMap (water program)");
         E(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbColor;"), $"{SnapshotColor} uFbColor");
         E(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbDepth;"), $"{SnapshotDepth} uFbDepth");
         E(Particles.ParticleFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SceneDepth} uSceneDepth");

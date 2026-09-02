@@ -933,7 +933,7 @@ internal static unsafe class AlloyCensus
                    $"route={(bumpy ? "bumpy-shiny" : "sample_framebuffer")} sample_fb={fb} " +
                    $"blend={m.SrcBlend}/{m.DstBlend} " +
                    $"env={Engine.HasEnvMap(m)} {TexTopMip(t0.ResolveTid())} " +
-                   $"{WaterBodies.Describe()} {AlloyRenderer.DescribeWind()}");
+                   $"{AlloyRenderer.DescribeWind()}");
     }
 
     internal static readonly HashSet<string> _waterMats = new();

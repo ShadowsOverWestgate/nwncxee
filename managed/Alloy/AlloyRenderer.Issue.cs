@@ -211,38 +211,21 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.UniformMatrix4fv(_watView, 1, 0, _waterView);
                     Gl.UniformMatrix4fv(_watProj, 1, 0, _waterProj);
                     Gl.Uniform2f(_watNearFar, _waterNear, _waterFar);
-                    float* dials = stackalloc float[4];
-                    dials[0] = FrameSnapshot.Tint; dials[1] = FrameSnapshot.Wave;
-                    dials[2] = FrameSnapshot.Ssr; dials[3] = FrameSnapshot.Foam;
-                    Gl.Uniform4fv(_watDials, 1, dials);
-                    // #147: REAL seconds, not the game clock -- a module runs time-of-day at any multiple of
-                    // real time and the whole sea would move at that multiple.
-                    Gl.Uniform1f(_watWaveTime, FrameSnapshot.WaveTime);
-                    float* tess = stackalloc float[2];
-                    tess[0] = FrameSnapshot.TessSegments; tess[1] = FrameSnapshot.TessMax;
-                    Gl.Uniform2fv(_watTess, 1, tess);
-                    if (_watWind >= 0)
-                    {
-                        var w3 = AreaWind();
-                        float* wv = stackalloc float[3];
-                        wv[0] = w3.X; wv[1] = w3.Y; wv[2] = 0f;
-                        Gl.Uniform3fv(_watWind, 1, wv);
-                    }
                     AlloyLights.BindForDraw();
                     AlloyLights.SetDrawUniforms(_watGrid, _watTile, _watZ, _watFalloff, _watWrap,
                                                 _watAtten, _watHot, _watWrapN, viewport, near, far);
                     Gl.Uniform1i(_watViz, viz);
+                    Gl.Uniform1i(_watEnvOk, FrameSnapshot.EnvOk);
                     Gl.Uniform1i(_watCapture, _capturing ? 1 : 0);
                     UploadFeatureTerms(_watFeat, viewport);
-                    fixed (Vector3* eye = &_eyePos) Gl.Uniform3fv(_watEye, 1, (float*)eye);
                     UploadAreaTerms(_watAmbient, _watDiffuse, _watDir);
                     UploadSunCascades(_watSunTex, _watSunVp, _watSunTexel, _watSunBias, _watSunCount, _watSunDyn,
                                       _watSunFocus, _watSunRadius);
                     UploadLocalCubes(_watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
                                      _watCubeDynPage);
-                    UploadProbe(_watProbeMips, _watProbeGain, _watSceneEnv);
-                    // The cascade/cube/probe uploads each left their own unit current for a moment; the copy
-                    // pair has to be back on its units before the first water draw samples them.
+                    // The cascade and cube uploads each left their own unit current for a moment; the copy
+                    // pair and the noise texture have to be back on their units before the first water draw
+                    // samples them.
                     FrameSnapshot.Bind();
                 }
                 else if (lit)
@@ -256,7 +239,6 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.Uniform1i(_litViz, viz);
                     Gl.Uniform1i(_litCapture, _capturing ? 1 : 0);
                     UploadFeatureTerms(_litFeat, viewport);
-                    fixed (Vector3* eye = &_eyePos) Gl.Uniform3fv(_litEye, 1, (float*)eye);
                     UploadAreaTerms();
                     UploadSunCascades();
                     UploadLocalCubes();
@@ -330,16 +312,11 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.ActiveTexture(Gl.TEXTURE0);   // unit 0 stays current: the diffuse rebinds there
                 }
             }
-            // #147: water is drawn as PATCHES so the tessellator sees it. Same index buffer, same triangles
-            // -- only the primitive mode changes, and the tess-control stage retires a patch to level 1 when
-            // there is no wave to resolve, so a millpond costs the same as before.
             // #243: the same batch, from a list the GPU compacted. The bind set above is unchanged (the
             // cull moves WHICH draws are in the batch, never what state they draw under), and the record
             // lookup is unchanged too -- uDrawBase is still this batch's start, because the cull compacts
             // each batch into its own source region rather than into one global run.
-            // #290: ...including the primitive override, which the indirect path used to drop -- a water
-            // batch submitted as TRIANGLES never reaches the tessellator, so its waves simply do not exist.
-            uint prim = water ? Gl.PATCHES : _gMode[g];
+            uint prim = _gMode[g];
             if (indirect) CullPass.Draw(prim, g, s, _gLen[g]);
             else
                 Gl.MultiDrawElementsBaseVertex(prim, counts + s, GlUnsignedShort,
@@ -403,6 +380,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.DepthMask(1);
         FrameSnapshot.Bind();
         IssueColour(from, to, vp, viewport, near, far);
+        FrameSnapshot.Unbind();
         // Leave the state the additive pass expects to find: it enables blending itself, but the depth mask
         // is pass-level state and additive must not write depth.
         Gl.DepthMask(0);

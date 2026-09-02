@@ -28,6 +28,7 @@ public static unsafe class AurTex
     /// <summary>The two values a live texture's first word may hold: each class's vtable symbol plus the
     /// 0x10 the Itanium ABI puts before the function pointers.</summary>
     private static IntPtr _vtbl, _vtblBasic;
+    private static delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet;
     private static long _refused;
 
     /// <summary>Resolved and usable. False leaves every caller where it was before its texture resolved --
@@ -44,6 +45,7 @@ public static unsafe class AurTex
     {
         if (Ready) return;
         _getTid = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.AurTextureGetTID);
+        _aurGet = (delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr>)Native.Sym(SymbolMap.AurTextureGet);
         IntPtr v = Native.Sym(SymbolMap.AurTextureVtbl), b = Native.Sym(SymbolMap.AurTextureBasicVtbl);
         if (_getTid == null || v == IntPtr.Zero || b == IntPtr.Zero)
         {
@@ -70,6 +72,21 @@ public static unsafe class AurTex
     /// <summary>This texture's GL id, or 0 if the pointer is null or no longer a texture. Hot -- called per
     /// Alloy part per frame.</summary>
     public static int Tid(IntPtr tex) => Live(tex) ? _getTid(tex) : 0;
+
+    /// <summary>A resman texture's GL id by RESREF -- the resolve and the guard in one call, for the handful
+    /// of engine textures an owned pass wants by name rather than off a material (#339's <c>solid_noise</c>,
+    /// which is the wave field vanilla's water shader samples). Re-resolves every call and caches NOTHING:
+    /// the pointer is borrowed and the engine frees it on an area transition. Cold-ish -- once per pass, not
+    /// per part -- and allocates nothing (the name is marshalled on the stack).</summary>
+    public static int TidByName(string resref)
+    {
+        if (!Ready || _aurGet == null || resref.Length == 0) return 0;
+        byte* name = stackalloc byte[17];   // 16 resref bytes + NUL
+        int n = resref.Length < 16 ? resref.Length : 16;
+        for (int i = 0; i < n; i++) name[i] = (byte)resref[i];
+        name[n] = 0;
+        return Tid(_aurGet(name, IntPtr.Zero, null, null, 0, 0));
+    }
 
     /// <summary>Is this pointer a live <c>CAurTextureBasic</c> specifically? <see cref="Live"/> admits both
     /// texture classes, which is right for <c>AurTextureGetTID</c> and wrong for anything that reads a

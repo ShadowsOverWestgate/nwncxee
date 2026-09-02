@@ -82,9 +82,6 @@ public sealed unsafe partial class AlloyRenderer
             if (!RouteLive(list[k], k, sph, out int i, out IntPtr tri)) continue;
             _pass[n] = i; _passCls[n] = (byte)AlloyClass.Water;
             _passAlpha[n] = LiveAlpha(i, tri);
-            // #147: measured here rather than at enroll -- routing is where a water part is certainly live
-            // and certainly has its node, and the registry ignores one it already holds.
-            WaterBodies.Note(tri, _oNode[i]);
             n++;
         }
         }
@@ -321,8 +318,6 @@ public sealed unsafe partial class AlloyRenderer
         internal float Dissolve, Alpha;
         internal bool Lit;
         internal float AmbR, AmbG, AmbB, DifR, DifG, DifB, EmiR, EmiG, EmiB, Slots;
-        internal bool Water;
-        internal float BodyFetch, BodySize, BodyExtent, BodySpeed;
         internal float FeatX, FeatY;
     }
 
@@ -396,15 +391,8 @@ public sealed unsafe partial class AlloyRenderer
             m |= St(r + 20, f.AmbR) | St(r + 21, f.AmbG) | St(r + 22, f.AmbB)
                  | St(r + 28, f.EmiR) | St(r + 29, f.EmiG) | St(r + 30, f.EmiB)
                  | St(r + 35, f.Slots);
-            // ...but not the diffuse triple on a LIT WATER batch: those three floats are the body below, and
-            // writing both would leave the record dirty every frame no matter what moved -- which is the one
-            // way this scheme can be defeated without rendering anything wrong.
-            if (!f.Water)
-                m |= St(r + 24, f.DifR) | St(r + 25, f.DifG) | St(r + 26, f.DifB);
+            m |= St(r + 24, f.DifR) | St(r + 25, f.DifG) | St(r + 26, f.DifB);
         }
-        if (f.Water)
-            m |= St(r + 24, f.BodyFetch) | St(r + 25, f.BodySize)
-                 | St(r + 26, f.BodyExtent) | St(r + 27, f.BodySpeed);
         m |= St(r + 40, f.FeatX) | St(r + 41, f.FeatY);
         return m;
     }
@@ -479,23 +467,6 @@ public sealed unsafe partial class AlloyRenderer
             if (!mm) log.Info("AlloyRenderer.SplitSelfCheck: FAILED -- a moved model matrix does not "
                               + "re-send its record; every creature and door would freeze where it stood");
             ok &= mm;
-        }
-        // #129/#147: the water body, on its own record. Its four floats share the diffuse slot with the lit
-        // terms, so a state that is both would be testing the overlap rather than the split.
-        float[] wrec = new float[DrawFloats];
-        var w = default(RecordFrameState);
-        w.Water = true; w.Alpha = 1f;
-        w.BodyFetch = 11f; w.BodySize = 12f; w.BodyExtent = 13f; w.BodySpeed = 14f;
-        fixed (float* r = wrec)
-        {
-            bool wok = WritePerFrame(r, in w) && !WritePerFrame(r, in w);
-            if (!wok) log.Info("AlloyRenderer.SplitSelfCheck: FAILED -- a water record is a mover every "
-                               + "frame, or never one");
-            ok &= wok
-                  & Perturb(r, ref w, ref w.BodyFetch, log, "water fetch")
-                  & Perturb(r, ref w, ref w.BodySize, log, "water size")
-                  & Perturb(r, ref w, ref w.BodyExtent, log, "water extent")
-                  & Perturb(r, ref w, ref w.BodySpeed, log, "water speed");
         }
         return ok;
     }
@@ -997,20 +968,6 @@ public sealed unsafe partial class AlloyRenderer
                     }
                     pf.Slots = slots;
                 }
-                // #147: water reuses the material-colour slot for its BODY. The water stage reads none of
-                // amb/dif/emi (its liquid colour is the diffuse's own average, #129), and the alternative --
-                // an eighth vec4 -- would grow the stride for one class and force every override to be
-                // re-emitted. Overwrites the lit terms above, which ran for a lit water batch.
-                if (cls == (int)AlloyClass.Water)
-                {
-                    var wind = AreaWind();
-                    // Engine wind units -> metres/second, so the shader's growth law is fed the quantity it
-                    // is written in. See FrameSnapshot.WindScale for why this is a dial and not a constant.
-                    pf.Water = true;
-                    pf.BodySpeed = wind.Length() * FrameSnapshot.WindScale;
-                    if (WaterBodies.Body(tri, wind, out float fetch, out float size, out float extent))
-                    { pf.BodyFetch = fetch; pf.BodySize = size; pf.BodyExtent = extent; }
-                }
                 // #123: outside the lit branch -- the FULLBRIGHT vertex stage switches on it too, so an unlit
                 // wind part still sways. Only the fragment-side features (the roof anchor discard, the
                 // flow-map slide) are lit-only, and neither of those parts is ever unlit.
@@ -1118,8 +1075,6 @@ public sealed unsafe partial class AlloyRenderer
         // and the engine paints its own at its own step -- one pre-cutover frame, unchanged.
         if (!RspShim.Armed) return;
         Span<SkyBox.Role> roles = stackalloc SkyBox.Role[3];
-        float* fog = stackalloc float[3];
-        SkyBox.FogColor(scene, fog);
         int nr = SkyBox.Roles(scene, roles);
         SkyBox.NoteRoles(roles, nr);
         fixed (float* data = _dData)
@@ -1161,10 +1116,13 @@ public sealed unsafe partial class AlloyRenderer
                 // #222: Mat()'s two branches, in full. A fog-tinted gob is drawn in the scene's fog
                 // colour at alpha 1.0 -- the alpha override is part of the same branch, not a separate
                 // decision, and dropping it would tint the fade and then fade the tint away again.
+                // #341: the band's colour is the fully-fogged colour the terrain under it converges to,
+                // which is the raw fog colour only while /fog sky is 0. The dome parts feed the fog its sky
+                // colour on the way past -- the band itself must not, or the fog would read its own output.
                 bool tinted = SkyBox.FogTinted(p.Gob);
                 float* tint = t3 + _skyN * 3;
-                if (tinted) { tint[0] = fog[0]; tint[1] = fog[1]; tint[2] = fog[2]; }
-                else { tint[0] = 1f; tint[1] = 1f; tint[2] = 1f; }
+                if (tinted) SceneFog.SkyfadeTint(tint);
+                else { tint[0] = 1f; tint[1] = 1f; tint[2] = 1f; SceneFog.NoteSky((uint)tid, roles[r].Alpha); }
                 rec[16] = 1f; rec[17] = 0f; rec[18] = 0f;
                 rec[19] = tinted ? 1f : roles[r].Alpha;
                 rec[40] = 0f; rec[41] = 0f; rec[42] = 0f; rec[43] = 0f;
@@ -1176,8 +1134,9 @@ public sealed unsafe partial class AlloyRenderer
             // every one of its parts -- or has captured none of them yet -- would leave a permanent hole in
             // a sky the engine is being colour-masked out of. Hand the whole sky back for the frame instead,
             // which costs one visible vanilla sky and no hole at all.
-            if (staged <= 0) { _drawN = _skyFirst; _skyN = 0; return; }
+            if (staged <= 0) { _drawN = _skyFirst; _skyN = 0; SceneFog.EndSky(); return; }
         }
+        SceneFog.EndSky();
     }
 
     /// <summary>ADR 0011 step 3 (#125): the skybox, after the opaque set and before the blended one.

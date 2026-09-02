@@ -31,6 +31,28 @@ internal static unsafe class FrameSnapshot
     /// and the only place it is written down; do not paraphrase it here.</summary>
     internal const uint ColorUnit = TextureSlots.SnapshotColor, DepthUnit = TextureSlots.SnapshotDepth;
 
+    /// <summary>#339: the unit the engine's own noise texture binds on. The vanilla wave field IS that
+    /// texture at four scales, so the stage cannot draw without it.</summary>
+    internal const uint NoiseUnit = TextureSlots.WaterNoise;
+
+    /// <summary>The resref vanilla's water shader samples as <c>texUnitNoise</c>. Not a guess and not a
+    /// string-table hunch: <c>Scene::Render</c> @0x5762d0 loads exactly this name into <c>Scene+0x1f8</c>
+    /// and binds it with <c>SetActiveTextureAndBind(0xf, 4, tid)</c> -- unit 15, which is the unit
+    /// <see cref="TextureSlots.WaterNoise"/> independently landed on.</summary>
+    private const string NoiseResref = "solid_noise";
+
+    /// <summary>#339: the unit the SCENE's environment map binds on -- the reflection vanilla's water
+    /// carries and this port first shipped without.</summary>
+    internal const uint EnvUnit = TextureSlots.WaterEnv;
+
+    /// <summary><c>Scene+0x1e8</c>: the scene's environment map, a <c>SafePointer&lt;CAurTexture&gt;</c> whose
+    /// first word is the borrowed texture. <c>Scene::Render</c> @0x5762d0 fills it once per scene from the
+    /// TILESET's own resref (<c>CNWTileSet::GetEnvMapResRef</c>) and falls back to
+    /// <c>AurTextureGetFallbackEnvironmentMap</c> when the tileset names none -- so it is present even where
+    /// the MATERIAL has no env map, which is the case the <c>[water]</c> census line's <c>env=False</c>
+    /// reports and which made this term look inapplicable.</summary>
+    private const int SceneEnvMap = 0x1e8;
+
     /// <summary><c>/water on 0</c> stands the class down; <c>/water on 1</c> brings it back at the next
     /// pass. Armed and idling rather than un-installed, so the toggle is live either way.</summary>
     internal static bool On { get; private set; } = true;
@@ -66,67 +88,17 @@ internal static unsafe class FrameSnapshot
     private static int _diagLeft;
     private static ExtenderLog? _log;
 
-    /// <summary><c>/water tint</c>: metres of water the refracted colour survives (Beer-Lambert e-fold). Small
-    /// = murky harbour, large = clear tropical shallows.</summary>
-    internal static float Tint { get; private set; } = 3f;
-    /// <summary><c>/water wave</c>: ripple amplitude multiplier. 0 = a mirror-flat plane, which is also the
-    /// cleanest way to tell a reflection bug from a normal-perturbation one.</summary>
-    internal static float Wave { get; private set; } = 1f;
-    /// <summary><c>/water ssr</c>: how much of the reflection the screen-space march is allowed to supply where
-    /// it hits. 0 leaves the probe serving the whole reflection, which is the "is SSR the problem" switch.</summary>
-    internal static float Ssr { get; private set; } = 1f;
-    /// <summary>#147 <c>/water foam</c>: foam coverage multiplier. 0 removes both the whitecaps and the shore
-    /// wash, which is how you tell a foam bug from a wave bug.</summary>
-    internal static float Foam { get; private set; } = 1f;
-    /// <summary>#147 <c>/water wind</c>: engine wind units per metre/second. <c>areaGlobalWind</c> is a world
-    /// vector with no documented scale -- the stock wind shaders only ever feed its magnitude into an
-    /// arbitrary sway, so nothing in the engine pins it to a physical speed. The sea-state growth law DOES
-    /// need m/s, so the conversion is a named dial rather than a constant buried in the shader, and the
-    /// <c>[water]</c> census prints the raw magnitude so it can be calibrated against a known area.
-    /// <para>CALIBRATED 2026-08-23 from the census, which is what the line exists for: a becalmed interior
-    /// reads raw 0.118 and an open harbour reads raw 2.000 -- and 2.000 exactly, on the nose, in an area with
-    /// weather, which says it is the engine's ceiling rather than a measurement. 4 therefore puts a full-wind
-    /// coast at 8 m/s (a fresh breeze, Beaufort 5, whitecaps just starting) and a sheltered interior at half
-    /// a metre per second. The previous 12 put that harbour in a 24 m/s storm.</para></summary>
-    internal static float WindScale { get; private set; } = 4f;
-    /// <summary>#147 config <c>water_tess</c>: triangle edges per wavelength the tessellator aims for. A
-    /// boot setting rather than a <c>/water</c> key because it sizes the GEOMETRY the patch generates, not
-    /// the look of it. Six carries a
-    /// sine visibly; below four a swell reads as a faceted ridge. 0 stands displacement down altogether and
-    /// leaves the fragment-side normal doing all the work, which is the pre-tessellation look and the way to
-    /// tell a displacement bug from a shading one.</summary>
-    internal static float TessSegments { get; private set; } = 6f;
-    /// <summary>Ceiling on any one patch's tessellation level, clamped to the driver's own
-    /// <c>GL_MAX_TESS_GEN_LEVEL</c> at first use. A ten-unit tile at level 32 is ~2k triangles, and the
-    /// wavelength term already asks for far less than that on anything but a close-up swell.</summary>
-    internal static float TessMax { get; private set; } = 24f;
-
-    /// <summary>#147: seconds of REAL time since the pass first ran. The game clock will not do -- a module
-    /// sets its own minutes-per-hour (2 by default, so time-of-day advances 30x real time), and the sea would
-    /// run at whatever that multiple happens to be. Monotone and never multiplied by anything live, which is
-    /// the other half of the phase-jump rule.</summary>
-    internal static float WaveTime => (float)_clock.Elapsed.TotalSeconds * Speed;
-    /// <summary>#147 <c>/water speed</c>: how fast the field runs against real time. Deep-water dispersion says
-    /// a 10 m wave travels at 4 m/s and that IS the physics -- but NWN's world units are not metres (a tile
-    /// is ten units and a person is two), so the honest statement is that the scene's scale and the wave
-    /// model's disagree, and this is where the disagreement is absorbed. Halved by observation: at 1.0 the
-    /// harbour ran visibly fast for its apparent size.</summary>
-    internal static float Speed { get; private set; } = 0.5f;
-    private static readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
-
-    private static float _bootTint, _bootWave, _bootSsr, _bootFoam, _bootWind, _bootSpeed;
-
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        TessSegments = Settings.Float("water_tess", TessSegments, 0f, 64f);
-        _bootTint = Tint; _bootWave = Wave; _bootSsr = Ssr;
-        _bootFoam = Foam; _bootWind = WindScale; _bootSpeed = Speed;
+        _pCurrentScene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
+        if (_pCurrentScene == null)
+            log.Info("FrameSnapshot: `currentscene` unresolved -- the water stage cannot reach the scene's "
+                   + "environment map, and its reflection term stays dark (the pre-#339 look)");
     }
 
     internal static string Describe()
-        => $"water {(On ? "on" : "off")}  tint {Tint:F2}  wave {Wave:F2}  ssr {Ssr:F2}  foam {Foam:F2}" +
-           $"  wind x{WindScale:F1}  speed {Speed:F2}  tess {TessSegments:F0}/wave max {TessMax:F0}" +
+        => $"water {(On ? "on" : "off")} (vanilla fswater)  noise tid {_noiseTid} on unit {NoiseUnit}" +
            (_diagLeft > 0 ? $"  DIAG {_diagLeft} left" : "");
 
     /// <summary>Live tuning behind <c>/water</c>; returns the old value, NaN for an unknown key. Same
@@ -138,12 +110,6 @@ internal static unsafe class FrameSnapshot
         switch (key)
         {
             case "on":    old = On ? 1f : 0f; On = v > 0f; break;
-            case "tint":  old = Tint; Tint = v; break;
-            case "wave":  old = Wave; Wave = v; break;
-            case "ssr":   old = Ssr; Ssr = v; break;
-            case "foam":  old = Foam; Foam = v; break;
-            case "wind":  old = WindScale; WindScale = v; break;
-            case "speed": old = Speed; Speed = v; break;
             // A budget of readbacks, not a switch: v is how many copies to diagnose from here.
             case "diag":  old = _diagLeft; _diagLeft = v > 0f ? (int)v : 0; break;
             default: return float.NaN;
@@ -157,20 +123,8 @@ internal static unsafe class FrameSnapshot
     internal static void ResetTuning()
     {
         On = true;
-        Tint = _bootTint; Wave = _bootWave; Ssr = _bootSsr;
-        Foam = _bootFoam; WindScale = _bootWind; Speed = _bootSpeed;
         _diagLeft = 0;
         _log?.Info($"FrameSnapshot: /water reset -> {Describe()}");
-    }
-
-    /// <summary>Clamp the tessellation ceiling to what the driver will actually generate. GL guarantees at
-    /// least 64, so this is a formality -- but a level above the limit is an error, not a clamp.</summary>
-    internal static void ClampTess()
-    {
-        if (Graphics.Gl.GetIntegerv == null) return;
-        int max = 0;
-        Graphics.Gl.GetIntegerv(Graphics.Gl.MAX_TESS_GEN_LEVEL, &max);
-        if (max > 0 && TessMax > max) TessMax = max;
     }
 
     /// <summary>Drop every GL object (context loss / disarm). Names mean nothing once the context is gone, so
@@ -178,7 +132,7 @@ internal static unsafe class FrameSnapshot
     internal static void Forget()
     {
         _fbo = 0; _colTex = 0; _depTex = 0; _w = 0; _h = 0;
-        _depFormat = 0; _depMask = 0; _hdr = false; Ready = false; _down.Forget();
+        _depFormat = 0; _depMask = 0; _hdr = false; Ready = false; _noiseSamp = 0; _down.Forget();
     }
 
     /// <summary>Nothing is drawn from the copy any more -- called at the top of every Alloy colour pass so a
@@ -278,8 +232,85 @@ internal static unsafe class FrameSnapshot
         Gl.BindTexture(Gl.TEXTURE_2D, _colTex);
         Gl.ActiveTexture(Gl.TEXTURE0 + DepthUnit);
         Gl.BindTexture(Gl.TEXTURE_2D, _depTex);
+        // #339: re-resolved every bind and never cached -- a CAurTexture* is borrowed and the engine frees
+        // it on an area transition (see AurTex). A miss binds nothing, which reads as a dead-flat sea rather
+        // than as a wrong one, so it is logged once.
+        int noise = Sowx.Framework.AurTex.TidByName(NoiseResref);
+        _noiseTid = noise;
+        // A zero here is "not uploaded YET" as often as "not there": AurTextureGet's create path queues the
+        // upload on the engine's RefreshTextures list, so the first bind after a load legitimately misses.
+        // Reported once, and worded as what it is -- a flat sea is the symptom either way.
+        if (noise == 0 && !_noiseMissed)
+        {
+            _noiseMissed = true;
+            _log?.Info($"FrameSnapshot: the engine texture \"{NoiseResref}\" has no GL id yet -- if the water "
+                     + "reads flat, the vanilla wave field never got its noise");
+        }
+        Gl.ActiveTexture(Gl.TEXTURE0 + NoiseUnit);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)noise);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        // ...under a sampler of our own, for the WRAP MODE. The wave field indexes the noise by world
+        // position at four scales, so anything but REPEAT samples one edge texel over a whole harbour --
+        // the same flat sea a missing texture gives, and just as silent. The engine's own params on this
+        // object are not ours to assume, and not ours to change either.
+        if (EnsureNoiseSampler()) Gl.BindSampler(NoiseUnit, _noiseSamp);
+
+        // #339: the scene's environment map, on its own unit. Re-read per bind for AurTex's reason -- the
+        // pointer is borrowed and an area transition frees it.
+        _envTid = SceneEnvTid();
+        Gl.ActiveTexture(Gl.TEXTURE0 + EnvUnit);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)_envTid);
         Gl.ActiveTexture(Gl.TEXTURE0);
     }
+
+    /// <summary>The scene's environment-map texture id, or 0 when there is none to sample. Read off the LIVE
+    /// scene rather than cached: <c>currentscene</c> moves with the area, and the texture behind it is
+    /// borrowed.</summary>
+    private static int SceneEnvTid()
+    {
+        if (_pCurrentScene == null) return 0;
+        IntPtr scene = *_pCurrentScene;
+        if (scene == IntPtr.Zero) return 0;
+        return Sowx.Framework.AurTex.Tid(*(IntPtr*)(scene + SceneEnvMap));
+    }
+
+    /// <summary>Is the environment term live this pass? The stage reads it as a switch, because a missing
+    /// env map must leave the surface shaded rather than multiplied by black.</summary>
+    internal static int EnvOk => _envTid != 0 ? 1 : 0;
+
+    private static IntPtr* _pCurrentScene;
+    private static int _envTid;
+
+    /// <summary>Drop the noise sampler off its unit. The unit is shared with the soft-particle scene depth
+    /// (<see cref="TextureSlots.SceneDepth"/>), and a sampler object left bound overrides that texture's own
+    /// parameters in a later pass.</summary>
+    internal static void Unbind()
+    {
+        if (_noiseSamp != 0 && Gl.BindSampler != null) Gl.BindSampler(NoiseUnit, 0);
+    }
+
+    private static bool EnsureNoiseSampler()
+    {
+        if (_noiseSamp != 0) return true;
+        if (Gl.GenSamplers == null || Gl.BindSampler == null || Gl.SamplerParameteri == null) return false;
+        uint sm; Gl.GenSamplers(1, &sm);
+        if (sm == 0) return false;
+        Gl.SamplerParameteri(sm, Gl.TEXTURE_WRAP_S, Gl.REPEAT);
+        Gl.SamplerParameteri(sm, Gl.TEXTURE_WRAP_T, Gl.REPEAT);
+        // ponytail: LINEAR, not a mip filter. A mip filter on a texture that turns out to have only level 0
+        // makes it INCOMPLETE, which samples black -- the one failure that looks exactly like the bug this
+        // sampler exists to prevent. Add mips (and the level query behind them) if the far sea aliases.
+        Gl.SamplerParameteri(sm, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+        Gl.SamplerParameteri(sm, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+        _noiseSamp = sm;
+        return true;
+    }
+
+    private static bool _noiseMissed;
+    private static uint _noiseSamp;
+    /// <summary>The GL id the noise texture last resolved to, on the <c>/water</c> line. Zero with water on
+    /// screen is the whole diagnosis of a flat sea: no noise, no wave amplitude.</summary>
+    private static int _noiseTid;
 
     /// <summary>Size the copy pair to the pass. The DEPTH half is allocated from what the engine's own
     /// attachment reports rather than from a guess: <c>glBlitFramebuffer</c> requires the two depth formats
@@ -393,8 +424,20 @@ internal static unsafe class FrameSnapshot
     private static bool Refuse(string why)
         => _down.Refuse(_log, why, "no framebuffer copy this pass; water is not drawn on it (#285: a hole, not a hand-back)");
 
+    /// <summary>The periodic line. <c>tod</c> is the engine clock the whole wave field's ANIMATION runs on
+    /// (<c>fTick = worldtimerTimeOfDay * 0.001</c>), printed with its delta over the census period: a delta
+    /// of ZERO means the phase never advances and the sea is a still photograph of a wave field, however
+    /// correct that field is in space. Cheap, and it is the one thing a screenshot cannot show.</summary>
     internal static string Stats(int frames)
-        => $"water: {Copies} copies, {Refusals} refused" + (frames > 0 ? $" over {frames} frames" : "");
+    {
+        int tod = AlloyRenderer.TimeOfDay;
+        int delta = tod - _todLast;
+        _todLast = tod;
+        return $"water: {Copies} copies, {Refusals} refused" + (frames > 0 ? $" over {frames} frames" : "")
+             + $", tod {tod} ({(delta >= 0 ? "+" : "")}{delta} since last)";
+    }
+
+    private static int _todLast;
 
     /// <summary>The <c>/water</c> dial table, off-device: every key reachable, an unknown key reported, and
     /// -- the one that bites -- every knob the check drove restored. A knob left at its test value ships as
@@ -402,35 +445,22 @@ internal static unsafe class FrameSnapshot
     private static void CheckTuning(Action<bool, string> e)
     {
         ExtenderLog? quiet = _log; _log = null;
-        float tint = Tint, wave = Wave, ssr = Ssr, foam = Foam, wind = WindScale, speed = Speed;
         bool on = On; int diag = _diagLeft;
         try
         {
             e(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
-            foreach (string key in new[] { "on", "tint", "wave", "ssr", "foam", "wind", "speed", "diag" })
+            foreach (string key in new[] { "on", "diag" })
                 e(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
             e(_diagLeft == 1, "diag is a BUDGET: the value set is the number of readbacks owed");
             e(Describe().Contains("DIAG"), "...and Describe says how many are left while any are");
             e(Tune("on", 0f) == 1f && !On && !Usable,
               "/water on 0 stands the class down without touching the stand-down latch");
-            float boot = _bootTint; _bootTint = 0.25f;
             ResetTuning();
-            e(Tint == 0.25f, "reset honours the BOOT value, not the hardcoded default");
             e(On && _diagLeft == 0, "reset re-arms the class and spends no diagnostic readbacks");
-            _bootTint = boot;
         }
         finally
         {
-            // Driven through Tune, so the knobs stamped come from the KEY TABLE rather than from a list
-            // written beside the restore -- an assertion built from the restore's own list passes whatever
-            // that list forgets, which is how /post viz shipped its test value as a boot value. Describe
-            // prints every knob, so a missed one surfaces as its own sentinel.
-            const float Sentinel = -12345f;
-            foreach (string key in new[] { "on", "tint", "wave", "ssr", "foam", "wind", "speed" })
-                Tune(key, Sentinel);
-            Tint = tint; Wave = wave; Ssr = ssr; Foam = foam; WindScale = wind; Speed = speed;
             On = on; _diagLeft = diag;
-            e(!Describe().Contains("-12345"), "the check restores EVERY knob it drove");
             _log = quiet;
         }
     }
@@ -449,11 +479,12 @@ internal static unsafe class FrameSnapshot
         string fs = Fs;
         E(fs.Contains("uniform sampler2D uFbColor") && fs.Contains("uniform sampler2D uFbDepth"),
           "the stage declares the copy pair it marches");
-        // The ticket's own criterion, as a text check: SSR survives for near-field contact detail and the
-        // probe stands in wherever it misses. A stage that dropped either half would still compile.
-        E(fs.Contains("SowxWaterMarch("), "the screen-space march is still in the stage");
-        E(fs.Contains("textureLod(uProbe,"), "the probe is still the reflection's fallback");
-        E(fs.Contains("uProbeMips > 0.0"), "...and it is not sampled before a capture has completed");
+        // #339's own criterion, as a text check: the shading is stock fswater's, not a look of ours. The
+        // march is vanilla's GetRayIntersectCoords, the wave field reads the ENGINE's noise texture, and the
+        // reflection's fallback is the shaded surface -- a probe here would be the custom look coming back.
+        E(fs.Contains("SowxRayIntersect("), "the stage marches with stock's own ray intersection");
+        E(fs.Contains("texture(uNoise,"), "the wave field reads the engine's noise texture");
+        E(!fs.Contains("uProbe"), "the probe is NOT the reflection's fallback -- vanilla falls back to the surface");
         // Colour space: since #132 the whole Alloy frame is linear, so the copy is linear and a decode on
         // read would be a second linearisation. Sampling it in the wrong space is a whole-image error that
         // reads as "the reflection is washed out" (or "far too dark") rather than as a bug, so it is
@@ -477,6 +508,21 @@ internal static unsafe class FrameSnapshot
         E(add >= 0 && add > water, "additive is NOT in the copy, and composites over the water");
         E(ColorUnit > EnvProbe.ProbeUnit && DepthUnit > ColorUnit,
           "the copy's units sit above the probe cube's -- two sampler types on one unit drops the draw");
+        // #339: every view the stage implements is REACHABLE. /draw viz clamps to AlloyRenderer.LightVizMax,
+        // silently -- a view above it paints the highest one instead, which looks like a working instrument
+        // answering the wrong question. Read off the stage text so adding a view and forgetting the ceiling
+        // fails here rather than in a screenshot.
+        int highest = 0;
+        for (int i = fs.IndexOf("uViz == "); i >= 0; i = fs.IndexOf("uViz == ", i + 1))
+        {
+            int j = i + 8, n = 0;
+            while (j < fs.Length && fs[j] >= '0' && fs[j] <= '9') { n = n * 10 + (fs[j] - '0'); j++; }
+            if (n > highest) highest = n;
+        }
+        E(highest <= AlloyRenderer.LightVizMax,
+          $"the stage's highest view ({highest}) is above /draw viz's ceiling ({AlloyRenderer.LightVizMax})");
+        E(NoiseUnit != ColorUnit && NoiseUnit != DepthUnit && NoiseUnit != TextureSlots.Diffuse,
+          "the noise texture has a unit of its own");
 
         log.Info(ok ? "FrameSnapshot.SelfCheck: passed" : "FrameSnapshot.SelfCheck: FAILED");
         return ok;
@@ -486,14 +532,11 @@ internal static unsafe class FrameSnapshot
     /// stage's composition is written down (ADR 0012).</summary>
     internal static string Fs => ShaderStages.Source(AlloyRenderer.ShdWaterFs);
 
-    /// <summary>#147's vertex stage. Deliberately NOT the lit pass's: water is never skinned and never a
-    /// wind-feature part, and -- the reason it needs its own -- it must NOT project. The clip position is the
-    /// tessellation-evaluation stage's job, because the vertices this stage emits are patch corners that no
-    /// longer exist by the time anything is rasterised.
-    /// <para>No <c>invariant gl_Position</c> and no #119 clip expression, and that is correct rather than an
-    /// omission: water is excluded from the depth prepass, so nothing re-tests these depths with LEQUAL. It
-    /// is the one Alloy vertex stage the standing invariance constraint does not bind, which is exactly what
-    /// makes displacement legal here and nowhere else.</para></summary>
+    /// <summary>#339's vertex stage: the lit pass's clip expression and nothing else. Deliberately not the
+    /// lit stage itself -- water is never skinned and never a wind-feature part -- and no longer a
+    /// non-projecting one, because the tessellation pair that used to project is gone with the custom
+    /// displacement. Vanilla water displaces in the FRAGMENT stage (fswater's parallax search over
+    /// GetMainWaveOffset), so there is nothing for a tessellator to do.</summary>
     internal static string Vs => ShaderStages.Source(AlloyRenderer.ShdWaterVs);
 
     internal const string VsHead = """
@@ -502,316 +545,47 @@ internal static unsafe class FrameSnapshot
         layout(location = 1) in vec2 aUV;
         layout(location = 2) in vec3 aNrm;
 
+        // #119: the same clip expression, under the same qualifier, as every other Alloy vertex stage. Water
+        // is not in the depth prepass, so nothing re-tests these depths -- but the stage no longer
+        // displaces, so there is also no reason for it to differ.
+        invariant gl_Position;
+
         """;
 
     internal const string VsMain = """
+        uniform mat4 uVP;
         uniform int uDrawBase;
-        out vec2 tcUV;
-        out vec3 tcWorld;
-        out vec3 tcNrm;
-        flat out int tcDraw;
+        out vec2 vUV;
+        out vec3 vWorld;
+        out vec3 vNrm;
+        out float vDepth;
+        flat out int vDraw;
 
         void main()
         {
             int id = SowxSlot(uDrawBase + gl_DrawID);
             SowxDraw d = uDraw[id];
-            tcWorld = (d.model * vec4(aPos, 1.0)).xyz;
-            tcNrm = mat3(d.model) * aNrm;
-            tcUV = vec2(d.rot.x * aUV.x - d.rot.y * aUV.y, d.rot.y * aUV.x + d.rot.x * aUV.y);
-            tcDraw = id;
-        }
-        """;
-
-    /// <summary>#147's tessellation-control stage: how finely to cut this patch. A tile water plane is two
-    /// triangles across ten world units, so a displacement applied at its corners moves three points and
-    /// interpolates a flat sheet between them -- which is precisely the "the waves are only ripples on a flat
-    /// surface" the fragment-only version produced.
-    /// <para>The level comes from the WAVELENGTH rather than a constant: an edge is cut into enough segments
-    /// to carry <c>uTessDials.x</c> of them per wave, then capped by distance so the horizon is not paying
-    /// for geometry smaller than a pixel. A pond whose peak wavelength is 15cm does NOT get a million
-    /// triangles -- its amplitude is millimetres, and water that flat is explicitly retired to level 1.</para>
-    /// </summary>
-    internal static string Tcs => ShaderStages.Source(AlloyRenderer.ShdWaterTcs);
-
-    internal const string TcsHead = """
-        #version 460 core
-        layout(vertices = 3) out;
-
-        """;
-
-    internal const string TcsMain = """
-        uniform vec3 uEyePos;
-        uniform vec2 uTessDials;       // (segments per wavelength, max level)
-        in vec2 tcUV[];
-        in vec3 tcWorld[];
-        in vec3 tcNrm[];
-        flat in int tcDraw[];
-        out vec2 teUV[];
-        out vec3 teWorld[];
-        out vec3 teNrm[];
-        flat out int teDraw[];
-
-        /// One edge's level: its world length in wave-segments, faded out with distance from the eye. Edge i
-        /// of a triangle patch is the one OPPOSITE vertex i, which is the pairing gl_TessLevelOuter expects.
-        float SowxEdgeLevel(vec3 a, vec3 b, float seg, float maxLevel)
-        {
-            float len = distance(a, b);
-            float dist = distance(uEyePos, (a + b) * 0.5);
-            // Past 60 units a wave is a few pixels across and the fragment-side normal carries it perfectly
-            // well; there is nothing the silhouette can show that is worth the geometry.
-            float near = clamp(1.0 - dist / 60.0, 0.0, 1.0);
-            return clamp(len / max(seg, 0.05) * near, 1.0, maxLevel);
-        }
-
-        void main()
-        {
-            teUV[gl_InvocationID] = tcUV[gl_InvocationID];
-            teWorld[gl_InvocationID] = tcWorld[gl_InvocationID];
-            teNrm[gl_InvocationID] = tcNrm[gl_InvocationID];
-            teDraw[gl_InvocationID] = tcDraw[gl_InvocationID];
-            if (gl_InvocationID != 0) return;
-
-            SowxDraw d = uDraw[tcDraw[0]];
-            bool tracked = d.dif.x > 0.0;
-            float fetch = tracked ? d.dif.x : 30.0;
-            float bodySize = tracked ? d.dif.y : fetch;
-            float bodyMin = tracked ? d.dif.z : fetch;
-            float hs, lp;
-            SowxSeaState(fetch, bodySize, d.dif.w, hs, lp);
-            lp = min(lp, bodyMin * 0.6);
-            // Water this flat has no shape to resolve, whatever its wavelength -- a millpond is one triangle.
-            // A water_tess of 0 lands here too, which is how displacement is stood down whole.
-            float seg = (hs < 0.02 || uTessDials.x < 0.5) ? 1e6 : lp / uTessDials.x;
-
-            gl_TessLevelOuter[0] = SowxEdgeLevel(tcWorld[1], tcWorld[2], seg, uTessDials.y);
-            gl_TessLevelOuter[1] = SowxEdgeLevel(tcWorld[2], tcWorld[0], seg, uTessDials.y);
-            gl_TessLevelOuter[2] = SowxEdgeLevel(tcWorld[0], tcWorld[1], seg, uTessDials.y);
-            // The inner level must not fall below the outer ones or the interior detaches from the shared
-            // edges and cracks open between neighbouring patches -- the classic tessellation seam.
-            gl_TessLevelInner[0] = max(gl_TessLevelOuter[0],
-                                   max(gl_TessLevelOuter[1], gl_TessLevelOuter[2]));
-        }
-        """;
-
-    /// <summary>#147's tessellation-evaluation stage: where the water actually rises. Displaces along the
-    /// patch's own normal by the same field the fragment stage reads for its normals, and only then projects.
-    /// <para>The undisplaced horizontal position travels on as <c>vWavePos</c>. That is the parameter the
-    /// field is defined over, so the fragment stage evaluating it there gets the gradient at the point this
-    /// stage actually moved -- rather than at where it ended up, which is a different point on a different
-    /// wave.</para></summary>
-    internal static string Tes => ShaderStages.Source(AlloyRenderer.ShdWaterTes);
-
-    internal const string TesHead = """
-        #version 460 core
-        layout(triangles, fractional_odd_spacing, ccw) in;
-
-        """;
-
-    internal const string TesMain = """
-        uniform mat4 uVP;
-        uniform vec3 uAreaWind;
-        uniform float uWaveTime;
-        uniform vec4 uWaterDials;
-        in vec2 teUV[];
-        in vec3 teWorld[];
-        in vec3 teNrm[];
-        flat in int teDraw[];
-        out vec2 vUV;
-        out vec3 vWorld;
-        out vec3 vNrm;
-        out float vDepth;
-        out float vAnchorZ;
-        out vec2 vWavePos;
-        flat out int vDraw;
-
-        vec3 SowxBary3(vec3 a, vec3 b, vec3 c)
-        { return gl_TessCoord.x * a + gl_TessCoord.y * b + gl_TessCoord.z * c; }
-
-        void main()
-        {
-            vDraw = teDraw[0];
-            SowxDraw d = uDraw[vDraw];
-            vUV = gl_TessCoord.x * teUV[0] + gl_TessCoord.y * teUV[1] + gl_TessCoord.z * teUV[2];
-            vNrm = normalize(SowxBary3(teNrm[0], teNrm[1], teNrm[2]));
-            vec3 world = SowxBary3(teWorld[0], teWorld[1], teWorld[2]);
-            vAnchorZ = world.z;
-            vWavePos = world.xy;
-
-            bool tracked = d.dif.x > 0.0;
-            float fetch = tracked ? d.dif.x : 30.0;
-            float bodySize = tracked ? d.dif.y : fetch;
-            float bodyMin = tracked ? d.dif.z : fetch;
-            float hs, lp;
-            SowxSeaState(fetch, bodySize, d.dif.w, hs, lp);
-            hs *= uWaterDials.y;
-            lp = min(lp, bodyMin * 0.6);
-            float sharp = mix(1.0, 3.0, smoothstep(SOWX_WHITECAP_U0 * 0.5, SOWX_WHITECAP_U1, d.dif.w));
-            vec2 wdir = uAreaWind.xy;
-            float wlen = length(wdir);
-            wdir = wlen > 1e-4 ? wdir / wlen : vec2(0.7071, 0.7071);
-
-            vec2 grad;
-            float msSlope;
-            // Zero pixel size = keep every component. The control stage's own distance term already retires
-            // the geometry; a second LOD here would fight it.
-            float h = SowxSeaField(world.xy, uWaveTime, hs, lp, wdir, sharp, 0.0, grad, msSlope);
-            // Along the patch normal rather than straight up, so a tilted water plane raises waves out of
-            // its own surface instead of shearing them through it.
-            world += vNrm * h;
-            // ponytail: vertical only. Gerstner's horizontal term (crests drawn together, troughs spread) is
-            // the next increment and needs the same displacement applied in the fragment stage's field
-            // lookup, which is what vWavePos is already carrying.
-            vWorld = world;
-            gl_Position = uVP * vec4(world, 1.0);
+            vWorld = (d.model * vec4(aPos, 1.0)).xyz;
+            vNrm = mat3(d.model) * aNrm;
+            vUV = vec2(d.rot.x * aUV.x - d.rot.y * aUV.y, d.rot.y * aUV.x + d.rot.x * aUV.y);
+            vDraw = id;
+            gl_Position = uVP * d.model * vec4(aPos, 1.0);
             vDepth = gl_Position.w;
         }
         """;
 
-    /// <summary>#147: the sea state, shared verbatim by the tessellation-evaluation stage that DISPLACES the
-    /// surface and the fragment stage that shades it. One string, because two copies of a wave field are two
-    /// wave fields: the normals would describe a surface the geometry is not on, which reads as lighting that
-    /// slides over the waves instead of sticking to them.</summary>
-    internal const string WaveLib = """
-        // #147's sea state. These are the real fetch-limited-growth constants (SMB/JONSWAP shape), not taste
-        // dials, and they are what makes a well and a bay different without a single content-authored switch:
-        // at 5 m/s over 4 metres of fetch they give a 1.6 cm ripple, and over a kilometre a 25 cm swell.
-        const float SOWX_G = 9.81;
-        const float SOWX_TAU = 6.28318531;
-        // The wave SPECTRUM is pinned to a reference wind while the AMPLITUDE tracks the live one. Two
-        // reasons, one physical and one hard-won: a real sea's wavelength takes hours to answer a change in
-        // wind, and inc_clouds.shd documents what happens when a live wind term multiplies accumulated time
-        // -- the whole pattern teleports the moment the server nudges it. Amplitude can move instantly and
-        // nothing jumps; wavelength cannot.
-        const float SOWX_WIND_REF = 6.0;
-        // Whitecapping begins around Beaufort 3-4 and needs room to build -- a well never breaks, however
-        // hard it blows.
-        const float SOWX_WHITECAP_U0 = 4.0, SOWX_WHITECAP_U1 = 11.0;
-        const float SOWX_WHITECAP_FETCH = 25.0;
-        // SIX fixed WORLD directions, spread wide and deliberately not evenly. Fixed rather than
-        // wind-relative because a direction inside a phase term cannot rotate without dragging the whole
-        // field with it; the wind weights them instead.
-        const int SOWX_SEA_N = 6;
-        const vec2 SOWX_SEA_DIR[6] = vec2[6](vec2( 1.000,  0.000), vec2( 0.574,  0.819),
-                                             vec2(-0.259,  0.966), vec2( 0.766, -0.643),
-                                             vec2(-0.883,  0.469), vec2( 0.174, -0.985));
-        // ...at IRRATIONAL fractions of the peak wavelength. Four harmonically-related components repeat on
-        // their common period, and at the scale water is viewed that period is a visible corduroy -- the
-        // "you can see the wave pattern" complaint. Ratios that share no common multiple cannot close.
-        const float SOWX_SEA_SCALE[6] = float[6](1.0, 0.707, 0.437, 0.283, 0.171, 0.109);
-        // A slow, large-scale wander applied to each component's PHASE. Six irrational components still
-        // correlate locally; drifting their phases across the world with noise means no two patches of sea
-        // are ever in the same state, which is what actually kills the sense of a repeating tile.
-        const float SOWX_SEA_WANDER = 0.035;
-
-        /// #147: the fetch-limited sea state. Significant wave height and peak wavelength from the wind
-        /// speed and the run of open water the wind crosses -- the two numbers the renderer measures
-        /// (WaterBodies) and the shader turns into a look. This is the whole small-versus-large answer:
-        /// nothing here is branched on "is this a pond", the growth law simply produces a millimetre ripple
-        /// at pond fetch and a metre swell at sea fetch.
-        /// <para>Two DIFFERENT sizes go in, and the split is load-bearing rather than tidy. Amplitude reads
-        /// the directional fetch, so a canal really does chop harder along its length. The wavelength reads
-        /// the body's direction-independent size, because a wavelength that answered the wind's DIRECTION
-        /// would swing its frequency as the wind turned and teleport the entire field -- the same failure
-        /// inc_clouds.shd documents for wind SPEED, arriving through the other term.</para>
-        void SowxSeaState(float fetch, float size, float wind, out float hs, out float lp)
-        {
-            // SMB fetch-limited growth. Both terms matter: a gale over a puddle is still a puddle, and a
-            // breeze over an ocean still raises swell.
-            hs = 0.0016 * sqrt(max(fetch, 0.0)) * max(wind, 0.0);
-            // A dead calm is not a mirror. Real water always carries a few millimetres of disturbance from
-            // convection and stray air, and stock floors its own wind at 0.356 for exactly this reason -- a
-            // perfectly flat pond reads as a bug, not as weather.
-            hs = max(hs, 0.004);
-            // Peak period from the REFERENCE wind (see SOWX_WIND_REF), then deep-water dispersion for the
-            // wavelength: L = g T^2 / 2pi.
-            float tp = 0.286 * pow(max(SOWX_WIND_REF * size, 1e-3), 1.0 / 3.0);
-            lp = max(SOWX_G * tp * tp / SOWX_TAU, 0.12);
-        }
-
-        /// One component of the sum: a sine sharpened toward Gerstner crests, with its gradient computed
-        /// analytically rather than by differencing. Differencing a field this steep at a fixed epsilon
-        /// smooths exactly the crests the foam test is looking for.
-        /// <para>Returns the height; accumulates the world-space gradient into <paramref name="grad"/>.</para>
-        float SowxSeaWave(vec2 p, float t, vec2 dir, float len, float amp, float sharp, float wander,
-                          inout vec2 grad)
-        {
-            float k = SOWX_TAU / max(len, 1e-3);
-            // Deep-water dispersion: longer waves genuinely travel faster, which is what stops a multi-scale
-            // sum from looking like one texture scrolling.
-            float omega = sqrt(SOWX_G * k);
-            // The phase wander. Its gradient is deliberately NOT folded into `grad`: it varies over tens of
-            // metres while the wave varies over one, so its slope is three orders down and paying a second
-            // noise fetch per component to include it would buy nothing visible.
-            float ph = dot(dir, p) * k - t * omega + wander;
-            float c = 0.5 + 0.5 * sin(ph);
-            float shaped = pow(c, sharp);
-            // d/dph of (2*c^s - 1), with c = 0.5 + 0.5*sin(ph)
-            float dsh = sharp * pow(max(c, 1e-4), sharp - 1.0) * cos(ph);
-            grad += amp * dsh * k * dir;
-            return amp * (2.0 * shaped - 1.0);
-        }
-
-        /// The whole field: four fixed directions weighted by how well each aligns with the wind, at four
-        /// fractions of the peak wavelength. Amplitude falls off with distance so the far half of a sea is a
-        /// mirror rather than aliased static.
-        /// <para><paramref name="pixel"/> is the world size of one screen pixel here, and it is what makes
-        /// distance work. A single global amplitude fade flattens far water into painted sheet -- the wrong
-        /// remedy for the right worry. Instead each COMPONENT retires as its own wavelength approaches a
-        /// pixel, and the slope energy it took with it comes back out in
-        /// <paramref name="msSlope"/> as roughness. Nothing is lost, it changes representation: geometry the
-        /// screen cannot resolve becomes a wider specular lobe, which is what a distant sea actually looks
-        /// like -- glitter, not a mirror.</para>
-        float SowxSeaField(vec2 p, float t, float hs, float lp, vec2 wdir, float sharp, float pixel,
-                           out vec2 grad, out float msSlope)
-        {
-            grad = vec2(0.0);
-            msSlope = 0.0;
-            float h = 0.0;
-            float amp = hs * 0.5;
-            // One noise fetch, shared by every component at a different offset: the wander only has to be
-            // slowly-varying and decorrelated, not independent.
-            float wander = SowxNoise3D(vec3(p * SOWX_SEA_WANDER, t * 0.013)) * SOWX_TAU;
-            for (int i = 0; i < SOWX_SEA_N; i++)
-            {
-                // A component running with the wind carries most of the energy; one running across it keeps
-                // a quarter, which is what gives the surface cross-chop instead of a corduroy ridge.
-                float align = mix(0.25, 1.0, 0.5 + 0.5 * dot(SOWX_SEA_DIR[i], wdir));
-                float len = lp * SOWX_SEA_SCALE[i];
-                // Energy per component falls with wavelength, so the short chop rides on the swell rather
-                // than competing with it.
-                float a = amp * align * SOWX_SEA_SCALE[i];
-                // Retire below three pixels per wave, gone by one. Anything finer aliases into crawling
-                // static however carefully it is filtered.
-                float vis = pixel > 0.0 ? smoothstep(1.0, 3.0, len / pixel) : 1.0;
-                // Mean square slope of a sine of amplitude a and wavenumber k is (a*k)^2 / 2. What the
-                // component no longer contributes as SHAPE, it contributes as roughness.
-                float k = SOWX_TAU / max(len, 1e-3);
-                float ms = 0.5 * (a * k) * (a * k);
-                msSlope += ms * (1.0 - vis * vis);
-                if (vis > 0.001)
-                    h += SowxSeaWave(p, t, SOWX_SEA_DIR[i], len, a * vis, sharp,
-                                     wander * float(i + 1) * 0.37, grad);
-            }
-            return h;
-        }
-
-        """;
-
-    /// <summary>#129's fragment stage, part one: what water reads. Declarations only -- the per-draw record,
-    /// the lighting rig and the fog/keyhole block all arrive from the same strings the lit stage composes, so
-    /// the two cannot drift on any of them.</summary>
+    /// <summary>#339's fragment stage, part one: the declarations, and the stock constants they carry.
+    /// <para>Every number here is <c>inc_water.shd</c>'s own <c>#define</c> at the quality mode this client
+    /// runs -- <c>settings.tml</c>'s <c>graphics.general.shader-quality = "High Quality"</c>, which the engine
+    /// injects as <c>SHADER_QUALITY_MODE 2</c> (the string is <c>#define SHADER_QUALITY_MODE %d</c> in
+    /// nwmain). Only that branch is ported: the two lower tiers are different shaders, and reproducing a look
+    /// nobody on this client sees is the kind of ladder that rots.</para></summary>
     internal const string FsHead = """
         #version 460 core
         in vec2 vUV;
         in vec3 vWorld;
         in vec3 vNrm;
         in float vDepth;
-        in float vAnchorZ;
-        // #147: the UNDISPLACED horizontal position, from the evaluation stage. The wave field is defined
-        // over this, so evaluating it here reproduces the gradient at the point that stage actually raised --
-        // reading vWorld.xy instead would sample a different point on a different wave and the shading would
-        // slide across the geometry.
-        in vec2 vWavePos;
         flat in int vDraw;
 
         """ + AlloyRenderer.DrawBufDecl + AlloyRenderer.FeatDecl + AlloyRenderer.KeyFogDecl + """
@@ -822,73 +596,77 @@ internal static unsafe class FrameSnapshot
         // with this pass's own near/far rather than with an engine uniform.
         uniform sampler2D uFbColor;
         uniform sampler2D uFbDepth;
+        // #339: the engine's own texUnitNoise -- the resman texture `solid_noise`, bound by the pass. The
+        // wave field IS this texture's red channel at four scales, so a procedural stand-in is a different
+        // sea rather than a slightly different one.
+        uniform sampler2D uNoise;
+        // #339: the SCENE's environment map (Scene+0x1e8), which stock water reflects at FULL strength --
+        // see the composite for why. uEnvOk is 0 where the scene has none, and then the term is skipped
+        // rather than multiplied by a black texel.
+        uniform sampler2D uEnvMap;
+        uniform int uEnvOk;
         uniform vec2 uNearFar;
         uniform mat4 uView;            // world -> view, this pass's own (see uVP's row-vector note)
         uniform mat4 uProj;
         uniform vec3 uAreaAmbient;
         uniform vec3 uAreaDiffuse;
         uniform vec3 uAreaDir;
-        uniform vec3 uEyePos;
-        // #147: seconds of REAL time. Not uTimeOfDay -- that is the game clock, which a module runs at any
-        // multiple of real time (2 real minutes an hour by default, so 30x) and which would carry the whole
-        // sea at that multiple.
-        uniform float uWaveTime;
-        uniform vec2 uTessDials;
+        // uAreaWind (areaGlobalWind), uTimeOfDay (worldtimerTimeOfDay) and uEyePos come from FeatDecl and
+        // KeyFogDecl, which every Alloy fragment stage carries (#341 moved the eye into the fog block, since
+        // the fog target is a direction now). The clock is deliberately the GAME one: vswater.shd derives
+        // every phase from it, so a module running time at 30x real gets vanilla's own fast sea, not a
+        // corrected one.
         uniform int uViz;
-        uniform samplerCube uProbe;
-        uniform float uProbeMips;
-        uniform float uProbeGain;
-        uniform int uSceneEnv;
         uniform int uCapture;
         uniform float uAlphaCut;
-        // The /water tint, wave, ssr and foam dials: (e-fold depth in metres, wave amplitude scale,
-        // screen-space reflection weight, foam scale).
-        uniform vec4 uWaterDials;
         out vec4 frag;
 
-        // Water's own material constants, from the stock water shader's own defines (base_shaders.bif,
-        // inc_water.shd / fswater.shd): WATER_SPECULARITY 0.02 -- the normal-incidence reflectance of water,
-        // which is a real physical number and not a taste dial -- and a near-mirror roughness.
-        const float SOWX_WATER_F0 = 0.02;
-        const float SOWX_WATER_ROUGH = 0.03;
-        // Refraction happens over a short distance and reflection over a long one, which is why stock marches
-        // them with different budgets (WATER_REFRACTION_ITERATIONS 5 / MAX_RANGE 4.0, and 10 iterations out
-        // to 30 for the reflection). Same split, same reasoning: a refracted ray leaves the surface almost
-        // straight down and hits the floor within metres.
-        const int SOWX_REFRACT_STEPS = 5;
-        const float SOWX_REFRACT_RANGE = 4.0;
-        const int SOWX_REFLECT_STEPS = 12;
-        const float SOWX_REFLECT_RANGE = 30.0;
-        // Index of refraction of water, as the stock shader's own 1.0/1.33333.
-        const float SOWX_WATER_IOR = 0.75;
+        // inc_water.shd's config block, verbatim.
+        const float SOWX_ANIMATION_SPEED = 1.0;
+        const int SOWX_WAVE_ITERATIONS = 3;
+        const float SOWX_WATER_TRANSPARENCY_FACTOR = 0.25;
+        const float SOWX_WATER_SPECULARITY = 0.02;
+        const int SOWX_WATER_REFRACTION_ITERATIONS = 5;
+        const float SOWX_WATER_REFRACTION_MAX_RANGE = 4.0;
+        // fswater.shd's own displacement search, at SHADER_QUALITY_MODE 2.
+        const float SOWX_VECTOR_LIMIT = 0.01;
+        const int SOWX_DISPLACEMENT_ITERATIONS = 4;
+        // inc_material.shd's environment LOD ramp, applied as a texture BIAS exactly as stock does
+        // (texture2D's third argument is a bias, not a level).
+        const float SOWX_ENV_LOD_MOD = 30.0, SOWX_ENV_LOD_OFF = -1.0, SOWX_ENV_LOD_MAX = 10.0;
+        // inc_lighting.shd's fAngleMin, which every N.V here is floored at.
+        const float SOWX_ANGLE_MIN_W = 0.01;
+        // LIGHT_SUBSURFACE_SCATTERING_WRAP at this quality mode, and inc_lighting.shd:554's energy
+        // preservation for it -- 2*(1+w)/(2+PI*w), which is 0.778 at w=1 and is what stops a wrapped
+        // diffuse from adding light the surface never received.
+        const float SOWX_SSS_WRAP = 1.0;
+        const float SOWX_SSS_ENERGY = 2.0 * (1.0 + SOWX_SSS_WRAP) / (2.0 + 3.14159265 * SOWX_SSS_WRAP);
 
         """;
 
-    /// <summary>#129's fragment stage, part two: the march, the ripple normal and the composite.
-    /// <para>The march is the stock <c>GetRayIntersectCoords</c>'s method -- step along the view-space ray,
-    /// read the copy's depth at the projected point, and use the signed depth difference as the next step, so
-    /// the iteration converges on the crossing rather than sampling a fixed ladder. Two things are different
-    /// and both are deliberate. It projects through the FULL projection with a perspective divide, where
-    /// stock uses <c>mat3(m_proj)</c> and divides by the third component -- an approximation that is only
-    /// exact as far as -(f+n)/(f-n) is -1. And the miss is answered by the PROBE.</para>
-    /// <para>That last one is the ticket. Screen-space reflection can only show what is already on screen, so
-    /// a sea reflects the shoreline in front of the camera and nothing of the sky above it -- stock falls
-    /// back to the water's own shaded colour, which is why vanilla water looks like flat paint at the
-    /// horizon. Feeding #121's per-area cube there gives the sky, the horizon and the room back, while the
-    /// march keeps doing the thing it is genuinely good at: near-field contact reflections, the boat and the
-    /// pier standing in the water right where they meet it.</para>
-    /// <para>ponytail: what is NOT ported from stock's 563-line fork -- subsurface scattering, the caustic
-    /// veins and ripple sources SoW added, the wind-point-source splash array, and the noise TEXTURE the wave
-    /// field is sampled from (this uses the simplex noise the Alloy pass already carries for the camera
-    /// dissolve, so the wave shape differs from vanilla's). Each is a visible feature and none is a
-    /// reflection feature; file them as follow-ups if the sea reads wrong for their absence, the way #136
-    /// carries the sky's own shader port.</para></summary>
+    /// <summary>#339's fragment stage, part two: stock <c>fswater.shd</c>, ported onto Alloy's plumbing.
+    /// <para><b>What is vanilla here.</b> The wave field (<c>SetupWind</c>, <c>GetMainWaveOffset</c>,
+    /// <c>GetWavesOffset</c>, <c>GetSurfaceNormal</c>), the parallax displacement search, the ray march
+    /// (<c>GetRayIntersectCoords</c>/<c>GetReflectionCoords</c>), and the composite -- liquid body times the
+    /// subsurface light, Beer-Lambert refraction through the copy, a screen-space reflection scaled by
+    /// Schlick at water's own F0, and the lit surface standing in wherever the reflection ray misses. Line
+    /// for line from <c>base_shaders.bif</c>, with the engine's names swapped for this pass's.</para>
+    /// <para><b>What is Alloy.</b> Where stock calls <c>ComputeLighting</c> it gets the engine's forward
+    /// light loop; here it gets the froxel walk, the sun cascades and the local cubes -- which is the whole
+    /// point of drawing water in the owned pass at all. <c>SubsurfaceLight</c> is inc_lighting's wrapped
+    /// diffuse accumulator (<c>inc_lighting.shd:275</c>): the sun gets the wrap term exactly, and the
+    /// clustered lights get plain Lambert, because the cluster walk has no wrap parameter and adding one
+    /// would fork a lib four other programs share.</para>
+    /// <para><b>What is dropped, and it is visible.</b> <c>SetupLocalWind</c> and the
+    /// <c>windPointSources</c> array -- the splash rings a creature or a spell leaves on the surface. The
+    /// array is engine state with no Alloy feed; it needs its own RE and its own ticket.
+    /// ponytail: no ripple sources. Add them when the engine's wind-source array has a reader (#340).</para></summary>
     internal const string FsMain = """
 
-        // Window-space depth from the copy, linearised to a POSITIVE view-space distance. Reconstructed from
-        // this pass's own near/far rather than from an engine uniform: the Alloy frame already extracts them
-        // from its projection (AlloyLights.TryPerspective) and a second source could disagree with the
-        // matrix the geometry was actually drawn with.
+        float SowxSqr(float x) { return x * x; }
+
+        /// Window-space depth from the copy, linearised to a POSITIVE view-space distance -- stock's
+        /// GetDepth, reconstructed from this pass's own near/far rather than from an engine uniform.
         float SowxSceneZ(vec2 uv)
         {
             float d = texture(uFbDepth, uv).x * 2.0 - 1.0;
@@ -896,309 +674,473 @@ internal static unsafe class FrameSnapshot
             return (2.0 * n * f) / (f + n - d * (f - n));
         }
 
-        /// The copy's colour. #132: linear already -- kept as a named read so the marches and the term
-        /// views all go through one place if it ever stops being.
+        /// The copy's colour. #132: linear already, so NO decode -- stock's ApplyColorSpace on this read is
+        /// the one line of it that must not survive the port.
         vec3 SowxFbColor(vec2 uv)
         {
             return texture(uFbColor, uv).rgb;
         }
 
-        /// March a view-space ray against the copy's depth. Returns (uv, hit confidence in z) -- confidence 0
-        /// is a clean miss and the caller falls back to the probe, and everything between is the edge fade
-        /// that keeps the handover from drawing a seam across the water.
-        vec3 SowxWaterMarch(vec3 originView, vec3 rayView, float range, int steps)
+        // ---- the wave field: fswater.shd, unchanged except for where its inputs come from ---------------
+
+        float fTick;
+        float fAreaWindForce;
+        vec3 vAreaWindDirection;
+        vec3 vAreaWindDirectionDistorted;
+        float fMainWaveAmplitude;
+        float fMainWavePeriod;
+        float fMainWaveSpeed;
+        float fMainWaveNoiseModifier;
+        float fMainWaveNoiseFrequency;
+        float fMainWaveNoiseDisplacement;
+        float fArealVariation;
+        float fSurfaceNdotV;
+        vec3 vSurfaceNormalWorld;
+
+        /// vswater.shd's SetupVertexWind. Stock runs it per VERTEX and interpolates the results; every one
+        /// of them is a per-frame constant, so computing it here is the same value and one varying fewer.
+        void SowxSetupVertexWind()
         {
-            // Marched in WORLD UNITS, deliberately unlike stock. Stock scales its range by an "angle factor"
-            // and divides the ray by the same number, which cancels exactly -- neither the step size nor the
-            // total distance changes -- while leaving `dist` parameterised in units of |ray| = 1/angle.
-            // Its secant step then adds a view-space depth delta straight onto that, overshooting the
-            // crossing by up to 10x at grazing angles: precisely the geometry water reflections live in.
-            vec3 ray = normalize(rayView);
-
-            float stepMax = range / float(steps);
-            float dist = 0.0;
-            float delta = stepMax;
-            vec2 bestUv = vec2(-1.0);
-            float bestErr = 1e9;
-            bool crossed = false;
-
-            for (int i = 0; i < steps; i++)
-            {
-                dist = max(0.01, dist + clamp(delta, -stepMax, stepMax));
-                vec3 p = originView + ray * dist;
-                vec4 clip = uProj * vec4(p, 1.0);
-                if (clip.w <= 0.0) break;
-                vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
-                if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
-                // p.z is negative in view space and SowxSceneZ is positive, so their sum is the SIGNED
-                // distance from the sampled surface: negative once the ray has gone behind it.
-                delta = SowxSceneZ(uv) + p.z;
-                float err = abs(delta) / (dist + 1.0);
-                if (err < bestErr) { bestErr = err; bestUv = uv; }
-                if (delta < 0.0) crossed = true;
-                // Once the ray is behind the surface the crossing is bracketed; halve the step and let the
-                // signed delta walk it back. This is a binary search in all but name.
-                if (crossed) stepMax *= 0.5;
-            }
-
-            if (!crossed || bestUv.x < 0.0) return vec3(0.0, 0.0, 0.0);
-            // Thin-object rejection, which the first cut of this march skipped. A depth buffer records a
-            // surface, not a solid: a ray that passes BEHIND a piling still registers a crossing, and taking
-            // the colour there reflects a pillar the ray actually missed. The classic screen-space artifact,
-            // and on a rippled surface it is what turns a reflection into drifting blobs -- so a crossing
-            // whose final error is a large fraction of the step is not a hit at all.
-            if (bestErr * (dist + 1.0) > stepMax * 4.0 + 0.5) return vec3(0.0, 0.0, 0.0);
-            // Confidence: how close the best sample actually came, and how far it is from the screen edge.
-            // The edge term is what makes the probe handover a fade rather than a line -- a reflected object
-            // sliding off the side of the screen dissolves into the sky instead of being clipped out of it.
-            float quality = clamp(1.0 - bestErr / 0.2, 0.0, 1.0);
-            vec2 edge = min(bestUv, 1.0 - bestUv);
-            float fade = clamp(min(edge.x, edge.y) / 0.08, 0.0, 1.0);
-            return vec3(bestUv, quality * fade);
+            fTick = float(uTimeOfDay) * (0.001 * SOWX_ANIMATION_SPEED);
+            fAreaWindForce = dot(uAreaWind, uAreaWind);
+            vAreaWindDirection = fAreaWindForce > 0.0 ? uAreaWind * inversesqrt(fAreaWindForce)
+                                                      : vec3(0.707, 0.707, 0.0);
+            fAreaWindForce += 0.05;
         }
 
-        /// The surface normal from that gradient, re-anchored onto the part's own normal so a tilted water
-        /// plane (a canal bank, a waterfall lip) ripples along itself rather than along the world's XY.
-        vec3 SowxSeaNormal(vec3 flat_n, vec2 grad)
+        void SowxSetupWind(float fFragmentDepthOffset)
         {
-            vec3 n = normalize(vec3(-grad.x, -grad.y, 1.0));
-            return normalize(flat_n + (n - vec3(0.0, 0.0, 1.0)));
+            fMainWaveAmplitude = 0.4 * fAreaWindForce;
+            fMainWavePeriod = 2.0 / (fAreaWindForce + 1.0);
+            fMainWaveSpeed = 0.6 + 0.05 / fAreaWindForce;
+            fMainWaveNoiseModifier = 0.1;
+            fMainWaveNoiseFrequency = 0.1;
+            fMainWaveNoiseDisplacement = 0.25 + 0.5 * fAreaWindForce;
+
+            fArealVariation = texture(uNoise, 0.003 * vWorld.xy).r * 2.0 - 1.0;
+            vAreaWindDirectionDistorted = vAreaWindDirection;
+            vAreaWindDirectionDistorted.xy += vec2(vAreaWindDirection.x, -vAreaWindDirection.y)
+                                            * fArealVariation * 0.05;
+            fArealVariation *= fArealVariation;
+            fMainWaveAmplitude *= SowxSqr(1.0 - fArealVariation);
+            // Reduce at vertical.
+            fMainWaveAmplitude *= max(SowxSqr(vSurfaceNormalWorld.z) * 101.0 - 100.0, 0.0);
+
+            float fAmplitudeNoise = texture(uNoise, fMainWavePeriod * 0.01 * vWorld.xy
+                                                  - 0.005 * fTick * fMainWaveSpeed * vAreaWindDirection.xy).r;
+            fMainWaveAmplitude *= fAmplitudeNoise;
+            // WATER_DYNAMIC_DEPTH 0: the amplitude is faded out where the surface is nearly edge-on or the
+            // water is thin, because nothing displaces the DEPTH this fragment writes.
+            fMainWaveAmplitude *= min(1.0, fSurfaceNdotV * fFragmentDepthOffset);
+        }
+
+        float SowxMainWaveOffset(inout vec3 vPos)
+        {
+            // ponytail: stock calls SetupLocalWind(vPos) here for the windPointSources splash rings. No feed
+            // for that array yet (#340); the offset it would add is zero.
+            float fWaveOffset = 0.0;
+
+            float fMainWaveNoise = 1.0 - texture(uNoise, fMainWavePeriod * 0.04 * vPos.xy
+                                                       - 0.01 * fTick * fMainWaveSpeed * vAreaWindDirection.xy).r;
+            vPos.xy -= vAreaWindDirection.xy * (fMainWaveNoise * fMainWaveAmplitude * 2.0 - 5.0 * fArealVariation);
+            float fNoise = texture(uNoise, vPos.xy * fMainWaveNoiseFrequency).r * fMainWaveNoiseModifier;
+
+            float fWave = abs(mod(fTick * fMainWaveSpeed
+                                  - dot(vPos.xy - fNoise * vAreaWindDirectionDistorted.xy * fMainWaveNoiseDisplacement,
+                                        vAreaWindDirectionDistorted.xy) * fMainWavePeriod,
+                                  2.0) - 1.0);
+            fWave *= fWave;
+            fWave = 2.0 * fWave - SowxSqr(fWave);
+            fWaveOffset += fMainWaveAmplitude * SowxSqr(fMainWaveNoise) * (fWave - 0.5);
+            return fWaveOffset;
+        }
+
+        float SowxWavesOffset(vec3 vPos)
+        {
+            const vec2 vRotate = vec2(-0.5735764363, 0.819152044);
+            const mat2 M = mat2(vRotate, vec2(-vRotate.y, vRotate.x));
+            vec2 vDirection = -vAreaWindDirection.xy;
+
+            float fWave = SowxMainWaveOffset(vPos);
+
+            float fNoiseFrequency = 0.25;
+            float fAmplitude = 0.005;
+            float fSpeed = 0.14;
+
+            vPos.xy += vPos.z * 0.1;
+            for (int i = 0; i < SOWX_WAVE_ITERATIONS; i++)
+            {
+                fWave -= fAmplitude
+                       * abs(texture(uNoise, vPos.xy * fNoiseFrequency + vDirection.xy * fTick * fSpeed).r * 2.0 - 1.0)
+                       * clamp(1.0 - 5.0 * dot(vDirection, vSurfaceNormalWorld.xy), 0.0, 1.0);
+                vDirection = M * vDirection;
+                fAmplitude *= 0.75;
+                fNoiseFrequency *= 1.7;
+            }
+            return fWave;
+        }
+
+        /// The surface normal, in WORLD space -- stock builds it here and converts to view afterwards; the
+        /// Alloy lighting libs want world, so the conversion is the one that goes away.
+        vec3 SowxWaterNormal(vec3 vPos)
+        {
+            vec3 vTangent = vec3(1.0, 0.0, 0.0);
+            vec3 vBitangent = vec3(0.0, 1.0, 0.0);
+            // If we are on a tilted plane, translate the normal into this plane.
+            if (abs(vSurfaceNormalWorld.z) < 0.99)
+            {
+                vTangent = normalize(sign(vSurfaceNormalWorld.z) * vec3(-vSurfaceNormalWorld.y, vSurfaceNormalWorld.x, 0.0));
+                vBitangent = cross(vSurfaceNormalWorld, vTangent);
+            }
+
+            float fOffset = 0.05;
+            float w0 = SowxWavesOffset(vPos);
+            float wx = SowxWavesOffset(vPos + vTangent * fOffset);
+            float wy = SowxWavesOffset(vPos + vBitangent * fOffset);
+
+            vec3 vNormal = cross(vTangent * fOffset + vSurfaceNormalWorld * (wx - w0),
+                                 vBitangent * fOffset + vSurfaceNormalWorld * (wy - w0));
+            return normalize(vNormal);
+        }
+
+        // ---- the marches: inc_common's GetRayIntersectCoords, on the copy ------------------------------
+
+        /// Stock's march, verbatim in method: step along the view-space ray, read the copy's depth at the
+        /// projected point, and feed the signed depth difference back as the next step so the iteration
+        /// converges on the crossing. Returns (uv, hit view distance, relative error).
+        vec4 SowxRayIntersect(vec3 vPosViewOrigin, vec3 vRay, float fDepthOffset, float fMaxDistance, int nIterations)
+        {
+            vec2 vRayIntersectionCoords = vec2(-1.0);
+
+            float fAngleFactor = mix(1.0, abs(vRay.z), 0.9);
+            fMaxDistance *= fAngleFactor;
+            vRay /= fAngleFactor;
+
+            float fDistanceOffsetMax = fMaxDistance / float(nIterations);
+            float fDepthDeltaMin = 4096.0;
+            float fRayIntersectionDepth = fMaxDistance + vPosViewOrigin.z;
+
+            vec3 vRayMaxProj = mat3(uProj) * (vPosViewOrigin + fMaxDistance * vRay);
+            vec2 vRayCoordsMax = 0.5 * (vRayMaxProj.xy / vRayMaxProj.z) + 0.5;
+            vec3 vPosOriginProj = mat3(uProj) * vPosViewOrigin;
+            vec2 vPosProjOriginCoords = 0.5 * (vPosOriginProj.xy / vPosOriginProj.z) + 0.5;
+
+            float fInterpolationDenominatorInv =
+                1.0 / (1.0 / (vPosViewOrigin.z + vRay.z * fMaxDistance) - 1.0 / vPosViewOrigin.z);
+            float fInterpolationOffset = (1.0 / vPosViewOrigin.z) * fInterpolationDenominatorInv;
+
+            float fDepthDelta = clamp(fDepthOffset, 0.0, fDistanceOffsetMax);
+            float fDistance = 0.0;
+            bool bFoundIntersection = false;
+
+            for (int n = 1; n <= nIterations; n++)
+            {
+                fDistance += clamp(fDepthDelta, -fDistanceOffsetMax, fDistanceOffsetMax);
+                fDistance = max(0.01, fDistance);
+                vec3 vRayThis = fDistance * vRay;
+
+                vec2 vRayCoordsThis = mix(vPosProjOriginCoords, vRayCoordsMax,
+                                          (1.0 / (vPosViewOrigin.z + vRayThis.z)) * fInterpolationDenominatorInv
+                                          - fInterpolationOffset);
+                if (vRayCoordsThis.x > 1.0 || vRayCoordsThis.x < 0.0
+                    || vRayCoordsThis.y > 1.0 || vRayCoordsThis.y < 0.0) break;
+
+                float fSampleDepth = SowxSceneZ(vRayCoordsThis);
+                fDepthDelta = fSampleDepth + (vPosViewOrigin.z + vRayThis.z);
+
+                if (abs(fDepthDelta) / (fDistance + 1.0) <= abs(fDepthDeltaMin))
+                {
+                    vRayIntersectionCoords = vRayCoordsThis;
+                    fDepthDeltaMin = fDepthDelta / (fDistance + 1.0);
+                    fRayIntersectionDepth = fSampleDepth;
+                }
+                if (fDepthDelta < 0.0) bFoundIntersection = true;
+                if (bFoundIntersection) fDistanceOffsetMax *= 0.5;
+            }
+
+            return vec4(vRayIntersectionCoords.x, vRayIntersectionCoords.y, -fRayIntersectionDepth, fDepthDeltaMin);
+        }
+
+        vec4 SowxReflectionCoords(vec3 vPosViewThis, vec3 vReflect, float fDepthOffset)
+        {
+            const int nIterations = 10;
+            float fDepthMax = mix(mix(uNearFar.y, 0.0, 0.5 + 0.5 * vReflect.z), 100.0, 0.1);
+            float fDepthDeltaMax = fDepthMax + vPosViewThis.z;
+            float fMaxDistance = clamp(abs(fDepthDeltaMax), 1.0, 30.0);
+            vec4 c = SowxRayIntersect(vPosViewThis, vReflect, fDepthOffset, fMaxDistance, nIterations);
+            return vec4(c.xyz, clamp(abs(c.w / 0.2), 0.0, 1.0));
+        }
+
+        /// inc_common's GetNormalVector: the VIEW-space normal of whatever the copy's depth holds at these
+        /// coordinates, used only to reject a reflection off a surface facing away from the ray. Central
+        /// differences here rather than stock's nearest-neighbour pick -- the projection helpers its version
+        /// leans on are a bigger port than the term is worth.
+        vec3 SowxCopyNormal(vec2 uv)
+        {
+            vec2 px = uPixel.xy;
+            // View position from a depth sample: the ray through this pixel, scaled to the sampled distance.
+            vec3 dir = vec3((2.0 * uv.x - 1.0) / uProj[0][0], (2.0 * uv.y - 1.0) / uProj[1][1], -1.0);
+            vec3 p  = dir * SowxSceneZ(uv);
+            vec3 dx = vec3((2.0 * (uv.x + px.x) - 1.0) / uProj[0][0], dir.y, -1.0) * SowxSceneZ(uv + vec2(px.x, 0.0)) - p;
+            vec3 dy = vec3(dir.x, (2.0 * (uv.y + px.y) - 1.0) / uProj[1][1], -1.0) * SowxSceneZ(uv + vec2(0.0, px.y)) - p;
+            return normalize(cross(dx, dy));
+        }
+
+        /// inc_common.shd's CalculateEnvironmentTexCoords: the sphere-map lookup stock reflects the
+        /// environment with, from the VIEW-space fragment normal and the view position. Verbatim -- the
+        /// half-offset and the 0.25 in the y term are the engine's own framing of its env textures, and a
+        /// "tidier" projection here is a different reflection.
+        vec2 SowxEnvCoords(vec3 nView, vec3 posView)
+        {
+            vec2 vEnvReflect = nView.xy / (1.0 + abs(nView.z));
+            vEnvReflect += 0.5 * (posView.xy / (-posView.z + 0.2));
+            return 0.5 * vEnvReflect + vec2(0.5, 0.25);
+        }
+
+        /// The fog AMOUNT alone -- stock scales the refraction's transparency by (1 - GetFogAlpha), so the
+        /// riverbed stops showing through where the fog has already swallowed it. Same expression SowxFog
+        /// uses; only the mix is different.
+        float SowxFogAlpha(float depth)
+        {
+            return uFogParams.x == 0.0 ? 0.0 : clamp((depth - uFogParams.y) * uFogParams.w, 0.0, 1.0);
         }
 
         void main()
         {
             SowxDraw d = uDraw[vDraw];
             // /draw viz 4 is the coverage view: cyan is Alloy lit and magenta owned-fullbright, so
-            // water takes BLUE -- the whole question that view answers is "which renderer drew this", and a
-            // water surface sharing the lit colour would hide the class that is hardest to tell apart.
+            // water takes BLUE.
             if (uViz == 4) { frag = vec4(0.0, 0.0, 1.0, 1.0); return; }
 
-            vec3 flatN = normalize(vNrm);
+            vSurfaceNormalWorld = normalize(vNrm);
+            SowxSetupVertexWind();
+
             vec3 V = normalize(uEyePos - vWorld);
-            vec2 screenUv = gl_FragCoord.xy * uPixel.xy;
+            vec2 vScreenCoords = gl_FragCoord.xy * uPixel.xy;
+            vec3 vPosView = (uView * vec4(vWorld, 1.0)).xyz;
+            vec3 vViewToSurface_n = normalize(vPosView);
 
-            // The liquid's own colour is the diffuse's AVERAGE, not a texel: a water material's texture is a
-            // ripple pattern, and sampling it per fragment would paint that pattern onto a surface whose
-            // shape is coming from the wave field instead. Stock reads it at LOD 20 for the same reason.
+            // The liquid's own colour is the diffuse's AVERAGE, not a texel -- stock reads it at LOD 20 for
+            // exactly this reason: a water material's texture is a ripple pattern, and sampling it per
+            // fragment paints that pattern onto a surface whose shape comes from the wave field instead.
             vec4 baseTexel = textureLod(uTex, vec2(0.5), 20.0);
-            // NOT multiplied by d.dif. The record's material colours are written only on LIT draws
-            // (BuildBatches), so an unlit water batch would read whatever the previous occupant of the slot
-            // left there -- a stale value of any magnitude, uniform across the batch. Stock does not tint
-            // the water base by materialFrontDiffuse either: WaterBaseColor is the texture alone.
-            vec3 liquidColor = SowxLinear(baseTexel.rgb);
+            vec4 WaterBaseColor = vec4(SowxLinear(baseTexel.rgb), baseTexel.a);
 
-            // #147: the body this fragment's water belongs to. WaterBodies measures it on the CPU and
-            // BuildBatches writes it into the record's material-colour slot, which the water stage is the
-            // only reader of. x = fetch along the wind (drives amplitude), y = the body's
-            // direction-independent size (drives the wavelength), z = its smaller footprint dimension
-            // (caps it), w = wind speed in m/s. A zero fetch is an untracked plane, not a puddle.
-            bool tracked = d.dif.x > 0.0;
-            float fetch = tracked ? d.dif.x : 30.0;
-            float bodySize = tracked ? d.dif.y : fetch;
-            float bodyMin = tracked ? d.dif.z : fetch;
-            float windSpeed = d.dif.w;
-            vec2 windDir = uAreaWind.xy;
-            float windLen = length(windDir);
-            windDir = windLen > 1e-4 ? windDir / windLen : vec2(0.7071, 0.7071);
+            float fScreenFBDepth = SowxSceneZ(vScreenCoords);
+            fSurfaceNdotV = max(dot(vSurfaceNormalWorld, V), SOWX_ANGLE_MIN_W);
+            SowxSetupWind(fScreenFBDepth + vPosView.z);
 
-            float hs, lp;
-            SowxSeaState(fetch, bodySize, windSpeed, hs, lp);
-            hs *= uWaterDials.y;
-            // A wave cannot be longer than the water it is standing in. Without this a 4-metre well inherits
-            // the peak wavelength its fetch implies and reads as one slab tilting.
-            lp = min(lp, bodyMin * 0.6);
-            // Crests sharpen as the wind gets ahead of the sea; a glassy calm is a plain sine.
-            float sharp = mix(1.0, 3.0, smoothstep(SOWX_WHITECAP_U0 * 0.5, SOWX_WHITECAP_U1, windSpeed));
-            // The world size of one pixel here. uProj[1][1] is 1/tan(fovY/2) and uPixel.y is 1/height, so
-            // this is the standard footprint: 2*z*tan(fovY/2)/height.
-            float pixel = 2.0 * vDepth * uPixel.y / max(uProj[1][1], 1e-4);
-            float t = uWaveTime;
-            vec2 grad;
-            float msSlope;
-            float waveH = SowxSeaField(vWavePos, t, hs, lp, windDir, sharp, pixel, grad, msSlope);
-            vec3 N = SowxSeaNormal(flatN, grad);
-            // The sub-pixel waves, as roughness. For GGX the variance adds in alpha^2 (Toksvig / LEAN
-            // mapping), which is what turns the far half of a harbour from a flat mirror into the broad
-            // shimmer a big body of water actually shows at range -- and it is the same energy, moved from
-            // geometry to the specular lobe rather than thrown away.
-            float rough = sqrt(SOWX_WATER_ROUGH * SOWX_WATER_ROUGH + 2.0 * msSlope);
-            rough = clamp(rough, SOWX_WATER_ROUGH, 0.45);
-            vec3 Nview = normalize(mat3(uView) * N);
+            // The displacement search: where on the (raised) wave surface this pixel's ray actually lands.
+            // Stock's iteration, unchanged -- it is what turns a fragment-side wave field into something with
+            // parallax instead of a texture painted flat on the plane.
+            vec3 vWaterSurfaceCoords = vWorld;
+            vec3 vCameraToWorld_n = normalize(vWorld - uEyePos);
+            float fDisplaceFactor = 1.0 / (vCameraToWorld_n.z > 0.0 ? vCameraToWorld_n.z + SOWX_VECTOR_LIMIT
+                                                                    : vCameraToWorld_n.z - SOWX_VECTOR_LIMIT);
+            vec2 vWorldOffset = vCameraToWorld_n.xy * fDisplaceFactor;
 
-            // The sun's terms, hoisted: both the body's own lighting and the specular lobe want them, and
-            // SowxSunShadow is a cascade lookup -- paying for two per water fragment to save re-reading one
-            // variable is the wrong trade on a surface that can fill the screen.
+            float fDistance = SowxMainWaveOffset(vWaterSurfaceCoords);
+            float fSegmentSize = 1.0;
+            vWaterSurfaceCoords.xy = vWorld.xy + vWorldOffset * fDistance;
+            for (int n = 1; n < SOWX_DISPLACEMENT_ITERATIONS; n++)
+            {
+                float fMainWaveOffset = SowxMainWaveOffset(vWaterSurfaceCoords);
+                fSegmentSize *= 0.5;
+                fDistance += (fMainWaveOffset - fDistance) * fSegmentSize;
+                vWaterSurfaceCoords.xy = vWorld.xy + vWorldOffset * fDistance;
+            }
+
+            vec3 vPosViewThis = (uView * vec4(vWorld + fDisplaceFactor * vCameraToWorld_n * fDistance, 1.0)).xyz;
+            vViewToSurface_n = normalize(vPosViewThis);
+            float fDepthOffset = fScreenFBDepth + vPosViewThis.z;
+
+            vec3 N = SowxWaterNormal(vWaterSurfaceCoords);
+            vec3 vFragmentNormal = normalize(mat3(uView) * N);
+
+            // ---- lighting: stock's ComputeLighting, answered by the froxel walk ----------------------
+            // fRoughness = 0.00025 + 0.00025*-vPosView.z under SPECULAR_DISTRIBUTION_MODEL 1, and
+            // fSpecularity = 1.0 -- stock sets it to one on purpose and factors water's real F0 in at the
+            // composite, through the Fresnel term. Doing it in both places is the double-count to avoid.
+            float fRoughness = 0.00025 + 0.00025 * -vPosView.z;
+            float NdotV = max(dot(N, V), SOWX_ANGLE_MIN_W);
             float sunRaw = clamp(dot(N, uAreaDir), 0.0, 1.0);
             float sunVis = SowxSunShadow(vWorld, N, sunRaw, sunRaw);
 
-            vec3 viewPos = (uView * vec4(vWorld, 1.0)).xyz;
-            float thisZ = -viewPos.z;
-            float floorZ = SowxSceneZ(screenUv);
-            // How much water the eye is looking through, at this pixel. Negative would mean the depth copy
-            // has something in FRONT of the surface -- an Alloy blended draw, say -- and the honest answer
-            // there is "no depth at all" rather than a negative thickness.
-            float thickness = max(floorZ - thisZ, 0.0);
+            vec3 pointSpec;
+            vec3 pointDiffuse = SowxClusteredLight(vWorld, N, V, vDepth, 0.0, fRoughness, 1.0, pointSpec);
+            // FragmentColor in stock: lighting on a BLACK albedo, so what survives is the specular alone.
+            vec3 ShadedColor = (uAreaDiffuse * (sunRaw * sunVis) * SowxSpecLobe(N, V, uAreaDir, fRoughness, 1.0)
+                                + pointSpec) * SowxSpecBase(NdotV, fRoughness);
+            // ...plus the ENVIRONMENT term, which is the largest single thing the first cut of this port was
+            // missing (inc_lighting.shd:454-513). Stock adds `(AmbientLight + DiffuseLight) * envTexel *
+            // fEnvironmentSpecularity` into the specular light, and for water that last factor is exactly
+            // ONE: fSpecularity is 1.0 on this path, and SPECULAR_FRESNEL 1 makes it
+            // mix(GetFresnelSpecularity(1.0, NdotV), 1.0, rough), every term of which is 1. So the scene's
+            // environment map arrives at full strength, sampled through the WAVE-perturbed normal -- which is
+            // what makes a ripple legible at all. Without it the surface is body colour plus a 2%-Fresnel
+            // reflection, i.e. flat paint, however correct the wave field underneath is.
+            vec3 DiffuseLight = uAreaDiffuse * (sunRaw * sunVis) + pointDiffuse;
+            if (uEnvOk != 0)
+            {
+                float envLod = clamp(fRoughness * SOWX_ENV_LOD_MOD + SOWX_ENV_LOD_OFF, 0.0, SOWX_ENV_LOD_MAX);
+                vec3 envTexel = SowxLinear(texture(uEnvMap, SowxEnvCoords(vFragmentNormal, vPosViewThis), envLod).rgb);
+                ShadedColor += (uAreaAmbient + DiffuseLight) * envTexel;
+            }
+            // inc_lighting's SubsurfaceLight (its assembly at :545-555): the wrapped per-light sum, plus
+            // the area ambient OUTSIDE that sum, all scaled by the wrap's energy preservation. The sun gets
+            // the wrap exactly (:275 with LIGHT_SUBSURFACE_SCATTERING_WRAP 1.0); the clustered lights get
+            // plain Lambert, because the cluster walk has no wrap parameter and four other programs share it.
+            // ponytail: no materialFrontDiffuse tint on the sum, which stock applies. The record carries that
+            // colour in d.dif -- but only on a LIT batch, and an unlit water batch would read a stale slot of
+            // any magnitude. Stock water materials are white there; tint it from d.dif if one ever is not.
+            float sunWrap = (sunRaw + SOWX_SSS_WRAP) / (1.0 + SOWX_SSS_WRAP);
+            vec3 SubsurfaceLight = (uAreaDiffuse * (sunWrap * sunVis) + pointDiffuse + uAreaAmbient)
+                                 * SOWX_SSS_ENERGY;
 
             // ---- refraction: the floor, seen through the surface -------------------------------------
-            vec3 refractView = refract(-normalize(mat3(uView) * V), Nview, SOWX_WATER_IOR);
-            vec3 rHit = SowxWaterMarch(viewPos, refractView, SOWX_REFRACT_RANGE, SOWX_REFRACT_STEPS);
-            // A missed refraction ray is not a failure worth a fallback: the floor directly under this pixel
-            // IS in the copy, and using it is exactly stock's own mix toward vScreenCoords. What the march
-            // buys is the DISTORTION, not the colour.
-            vec2 refractUv = mix(screenUv, rHit.xy, rHit.z);
-            vec3 floorColor = SowxFbColor(refractUv);
-            // Beer-Lambert: the deeper the water at this pixel, the less of the floor survives it. The dial
-            // is the e-fold depth in metres, which is the one number that separates a harbour from a lagoon.
-            float clarity = exp2(-thickness / max(uWaterDials.x, 0.05));
-            // The light the water body itself receives. It scales the LIQUID only: floorColor came out of
-            // the framebuffer copy, which is a finished, already-shaded image -- lighting it a second time
-            // would make every shallow read twice as bright as the riverbed it is standing on.
-            vec3 onWater = uAreaAmbient * mix(0.15, 1.0, sunRaw) + uAreaDiffuse * sunRaw * sunVis;
-            vec3 through = mix(liquidColor * onWater, floorColor, clarity);
+            vec3 vRefraction = refract(vViewToSurface_n, vFragmentNormal, 1.0 / 1.33333);
+            // Only the DELTA against the flat surface, which is stock's own note: it removes refraction's
+            // flattening and keeps the distortion.
+            vec3 vRefractSurface = refract(vViewToSurface_n, normalize(mat3(uView) * vSurfaceNormalWorld), 1.0 / 1.33333);
+            vRefraction = vViewToSurface_n + (vRefraction - vRefractSurface);
 
-            // ---- reflection: the march for contact, the probe for everything else --------------------
-            vec3 R = reflect(-V, N);
-            vec3 reflHit = SowxWaterMarch(viewPos, normalize(mat3(uView) * R), SOWX_REFLECT_RANGE, SOWX_REFLECT_STEPS);
-            // The probe IS the fallback, and it is also the base the march composites onto -- so a partial
-            // hit near the screen edge blends into the sky instead of stepping to it. uProbeMips 0 means no
-            // capture has completed yet, and then the water's own colour stands in, which is vanilla's answer.
-            vec3 skyColor = (uCapture == 0 && uProbeMips > 0.0)
-                          ? textureLod(uProbe, R, rough * (uProbeMips - 1.0)).rgb * uProbeGain
-                          : liquidColor;
-            vec3 reflection = mix(skyColor, SowxFbColor(reflHit.xy), reflHit.z * uWaterDials.z);
+            vec4 vRefractionCoords = SowxRayIntersect(vPosViewThis, vRefraction, fDepthOffset,
+                                                      SOWX_WATER_REFRACTION_MAX_RANGE,
+                                                      SOWX_WATER_REFRACTION_ITERATIONS);
+            float fRefractionModifier = clamp(1.0 + 10.0 * vRefractionCoords.w, 0.0, 1.0);
+            vec3 ColorRefraction = SowxFbColor(mix(vScreenCoords, vRefractionCoords.xy, fRefractionModifier));
 
-            // ---- lighting: the sun's glitter and every torch the froxel holds ------------------------
-            float NdotV = max(dot(N, V), 0.0);
-            vec3 pointSpec;
-            SowxClusteredLight(vWorld, N, V, vDepth, 0.0, rough, SOWX_WATER_F0, pointSpec);
-            vec3 specLight = (uAreaDiffuse * (sunRaw * sunVis)
-                                * SowxSpecLobe(N, V, uAreaDir, rough, SOWX_WATER_F0) + pointSpec)
-                             * SowxSpecBase(NdotV, rough);
+            float fRefractionTransparency = WaterBaseColor.a < 1.0
+                ? exp2(-mix(fDepthOffset,
+                            clamp(vPosViewThis.z - vRefractionCoords.z, 0.0, SOWX_WATER_REFRACTION_MAX_RANGE),
+                            fRefractionModifier)
+                       * SOWX_WATER_TRANSPARENCY_FACTOR * WaterBaseColor.a / (1.0 - WaterBaseColor.a))
+                : 0.0;
+            ColorRefraction *= pow(fRefractionTransparency, fSurfaceNdotV);
+            fRefractionTransparency *= 1.0 - SowxFogAlpha(vDepth);
+
+            // ---- reflection: the same march, out to the horizon --------------------------------------
+            vec3 ColorReflection;
+            vec3 ColorLiquid = WaterBaseColor.rgb * SubsurfaceLight;
+            vec3 vReflect = reflect(vViewToSurface_n, vFragmentNormal);
+            vec4 vReflectedCoords = SowxReflectionCoords(vPosViewThis, vReflect, fDepthOffset);
+            float fReflectionMod = clamp(1.0 - vReflectedCoords.w, 0.0, 1.0);
+            if (vReflectedCoords.x >= 0.0)
+            {
+                ColorReflection = SowxFbColor(clamp(vReflectedCoords.xy, vec2(0.001), vec2(0.999)));
+                vec3 vReflectedNormal = SowxCopyNormal(clamp(vReflectedCoords.xy, vec2(0.001), vec2(0.999)));
+                fReflectionMod *= 1.0 - SowxFogAlpha(-vReflectedCoords.z);
+                ColorReflection = mix(vec3(0.0), ColorReflection,
+                                      clamp(0.1 - 4.0 * dot(vReflectedNormal, vReflect), 0.0, 1.0));
+                // The miss and the reject both land on the SHADED surface, which is vanilla's flat-horizon
+                // look. #129's probe fallback is exactly the custom shading this ticket removes.
+                ColorReflection = mix(ShadedColor, ColorReflection, fReflectionMod);
+            }
+            else
+            {
+                ColorReflection = ShadedColor;
+            }
 
             // ---- composite ---------------------------------------------------------------------------
-            // Schlick at water's real F0. This is the whole reason a sea is a mirror at the horizon and a
-            // window at your feet, and it is why the probe fallback matters so much: the grazing angles that
-            // reflect hardest are exactly the ones whose rays leave the screen.
-            float fresnel = mix(SOWX_WATER_F0, 1.0, SowxFresnel(NdotV));
-            vec3 lit = through * (1.0 - fresnel) + reflection * fresnel + specLight;
+            ColorLiquid = mix(ColorLiquid, ColorRefraction, fRefractionTransparency);
+            float fFresnelSpecularity = mix(SOWX_WATER_SPECULARITY, 1.0, SowxFresnel(NdotV));
+            vec3 lit = ColorLiquid + ColorReflection * fFresnelSpecularity;
 
-            // ---- foam: where the sea breaks, and where it meets the land ----------------------------
-            // FOAM IS AGITATION, not an outline. Still water has none at all -- froth is entrained air, and
-            // nothing entrains air in a millpond. Both terms are gated on the sea state before anything
-            // else, so a well or a cistern gets an unbroken surface right up to the stone.
-            float agitation = smoothstep(0.015, 0.09, hs);
-            float whitecap = smoothstep(SOWX_WHITECAP_U0, SOWX_WHITECAP_U1, windSpeed)
-                           * smoothstep(SOWX_WHITECAP_FETCH * 0.4, SOWX_WHITECAP_FETCH, fetch);
-            float hNorm = waveH / max(hs, 1e-4);
-            // A breaking crest is high AND steep. Height alone foams the whole swell; steepness alone foams
-            // every ripple.
-            float crestFoam = whitecap * smoothstep(0.35, 0.9, hNorm) * smoothstep(0.25, 0.9, length(grad));
-
-            // The wash. Not a band at a fixed depth -- that traces the water's own polygon and reads as a
-            // laser cut, which is exactly what it looked like. The waterline MOVES: a crest runs up the
-            // shore and drains back, so the surf is where the LOCAL water level has overtaken the bed.
-            // Subtracting the wave height from the thickness is that, and it animates for free because
-            // waveH already does.
-            float shoreWidth = mix(0.15, 2.0, clamp(hs / 0.35, 0.0, 1.0));
-            // Break the line itself up before it is ever thresholded, or every wobble added later is a
-            // wobble applied to a straight edge rather than an edge that was never straight.
-            float edge = SowxNoise3D(vec3(vWavePos * 1.1, t * 0.23)) * shoreWidth * 0.5;
-            float run = thickness - waveH + edge;
-            float shore = 1.0 - smoothstep(0.0, shoreWidth, max(run, 0.0));
-            // ...and the froth left BEHIND the run-up. Foam outlives the wave that made it, which is most of
-            // what tells the eye it is foam and not a highlight: a second, wider, weaker band keyed to where
-            // the water was a moment ago.
-            // Its own out-params: handing this call `grad` would overwrite the gradient the normal and the
-            // crest test were built from, and the two uses are far enough apart that nothing would flag it.
-            vec2 lagGrad; float lagMs;
-            float lag = thickness - SowxSeaField(vWavePos, t - 1.6, hs, lp, windDir, sharp, pixel,
-                                                 lagGrad, lagMs) + edge;
-            float trail = (1.0 - smoothstep(0.0, shoreWidth * 1.8, max(lag, 0.0))) * 0.45;
-            shore = max(shore, trail) * agitation;
-
-            // Broken up at TWO scales -- a coarse patchiness that decides where foam is at all, and a fine
-            // grain inside it. One octave gives a smooth analytic blob, which is the one thing foam is not.
-            // Advected along the wind, so the froth drifts instead of shimmering in place.
-            vec2 drift = windDir * t * 0.35;
-            float foamCoarse = SowxNoise3D(vec3(vWavePos * 0.35 - drift * 0.3, t * 0.11));
-            float foamFine = SowxNoise3D(vec3(vWavePos * 2.3 - drift, t * 0.5));
-            float foamNoise = clamp(0.35 + 0.5 * foamCoarse + 0.35 * foamFine, 0.0, 1.0);
-            float foam = clamp((crestFoam * agitation + shore) * foamNoise * uWaterDials.w, 0.0, 1.0);
-            // What foam is LIT by, and the reason the first cut put a blue rim on every pond: foam took
-            // `onWater`, which is area ambient plus sun -- at night that is a blue ambient and nothing else,
-            // so the froth came out the colour of the sky. Foam is a dense white scattering layer sitting ON
-            // the surface: it is a rough Lambertian, it sees every torch the froxel holds, and it is the one
-            // part of a night harbour that should read WARM next to a lantern.
-            vec3 foamLight = uAreaAmbient * 0.9
-                           + uAreaDiffuse * (sunRaw * sunVis)
-                           + SowxClusteredDiffuse(vWorld, N, vDepth);
-            // Not pure white: real foam is packed bubbles over dark water and reads around 0.8 at its
-            // brightest, thinning toward the water's own colour at the edges of the mask.
-            vec3 foamColor = mix(liquidColor, vec3(0.8), clamp(foam * 1.4, 0.0, 1.0)) * foamLight;
-            // It REPLACES the surface underneath -- froth is opaque, so reflection and refraction both stop
-            // where it covers.
-            lit = mix(lit, foamColor, foam);
-            if (uViz == 6) { frag = vec4(specLight, 1.0); return; }
-            // #129's own term views. Water composites four things that can each be wrong on their own and
-            // look identical in the sum -- "the water is the wrong colour" is not a diagnosis, and a
-            // screenshot cannot become one. 9 = what is seen THROUGH the surface, 10 = the reflection,
-            // 11 = fresnel as grey (the wave field's shape is visible in it), 12 = the framebuffer copy
-            // exactly as sampled (black here means the blit is not landing), 13 = the copy's linearised
-            // depth over 100m as grey (flat white or flat black means the DEPTH half is not landing, which
-            // is what makes both marches meaningless).
-            if (uViz == 9)  { frag = vec4(through, 1.0); return; }
-            if (uViz == 10) { frag = vec4(reflection, 1.0); return; }
-            if (uViz == 11) { frag = vec4(vec3(fresnel), 1.0); return; }
-            if (uViz == 12) { frag = vec4(SowxFbColor(screenUv), 1.0); return; }
-            if (uViz == 13) { frag = vec4(vec3(clamp(floorZ / 100.0, 0.0, 1.0)), 1.0); return; }
-            // 14 = the screen UV the two views above sample AT. A smooth red/green ramp is correct; a flat
-            // colour means uPixel never reached this stage and every fragment is reading ONE texel, which
-            // makes 12 and 13 look like a broken copy when the copy is fine.
-            if (uViz == 14) { frag = vec4(screenUv, 0.0, 1.0); return; }
-            // 15 = the depth copy's RAW texel, before any linearisation. 0 = never written (the blit is not
-            // landing), 1 = cleared to the far plane and nothing drew there, anything between = a real
-            // depth, which moves the question to uNearFar rather than to the copy.
-            // 15 = the depth copy's RAW texel. Kept, but read it knowing depth is NONLINEAR: every pixel of
-            // real geometry sits above 0.95, so this saturates to white whether the copy works or not. It
-            // says "is there anything at all here", nothing more.
-            if (uViz == 15) { frag = vec4(vec3(texture(uFbDepth, screenUv).x), 1.0); return; }
-            // 16 = clarity, the Beer-Lambert term that decides how much of the floor survives the water.
-            // WHITE means the water is reading as infinitely shallow (all floor, no body); BLACK means
-            // infinitely deep (all body, no floor) -- and black over a shallow pool is the flat, uniform,
-            // reflection-free surface this whole hunt is about.
-            if (uViz == 16) { frag = vec4(vec3(clarity), 1.0); return; }
-            // 17 = the thickness driving it, over 10m. Flat white here with 16 black says the surface and
-            // the copy's depth disagree about where the water is -- a view-space problem, not a copy one.
-            if (uViz == 17) { frag = vec4(vec3(clamp(thickness / 10.0, 0.0, 1.0)), 1.0); return; }
-            // 18 = the SURFACE's own view distance on the same 100m scale as 13, so the two are directly
-            // comparable on the same pixels. 13 comes from the depth copy and 18 from uView; if they
-            // disagree by more than the water is deep, the copy's linearisation and the view matrix are
-            // measuring different spaces, and thickness -- hence clarity -- is meaningless.
-            if (uViz == 18) { frag = vec4(vec3(clamp(thisZ / 100.0, 0.0, 1.0)), 1.0); return; }
-            // #147's own views. 19 = the body the renderer measured -- red is fetch over 200u, green the
-            // body's smaller dimension over 200u, blue the wind speed over 20. A plane WaterBodies never
-            // recorded shows as flat MAGENTA, not as a dim reading: the fallbacks above would otherwise make
-            // an untracked plane look like a plausible small pond, which is the one mistake this view exists
-            // to catch. 20 = the wave field, grey 0.5 at rest. 21 = foam coverage.
-            if (uViz == 19)
+            // #129's term views, kept: water composites four things that can each be wrong on their own and
+            // look identical in the sum. 9 = what is seen THROUGH the surface, 10 = the reflection,
+            // 11 = fresnel as grey, 12 = the copy as sampled, 13 = the copy's linearised depth over 100m,
+            // 20 = the wave field's normal.
+            if (uViz == 9)  { frag = vec4(ColorLiquid, 1.0); return; }
+            if (uViz == 10) { frag = vec4(ColorReflection, 1.0); return; }
+            if (uViz == 11) { frag = vec4(vec3(fFresnelSpecularity), 1.0); return; }
+            if (uViz == 12) { frag = vec4(SowxFbColor(vScreenCoords), 1.0); return; }
+            if (uViz == 13) { frag = vec4(vec3(clamp(fScreenFBDepth / 100.0, 0.0, 1.0)), 1.0); return; }
+            if (uViz == 20) { frag = vec4(N * 0.5 + 0.5, 1.0); return; }
+            // 28 = the environment term alone -- the scene env map through the wave normal, times the light
+            // on the water. Black here with a live scene means uEnvOk is 0, i.e. Scene+0x1e8 held nothing.
+            if (uViz == 28)
             {
-                if (!tracked) { frag = vec4(1.0, 0.0, 1.0, 1.0); return; }
-                frag = vec4(clamp(fetch / 200.0, 0.0, 1.0), clamp(bodyMin / 200.0, 0.0, 1.0),
-                            clamp(windSpeed / 20.0, 0.0, 1.0), 1.0); return;
+                frag = vec4(uEnvOk != 0
+                            ? SowxLinear(texture(uEnvMap, SowxEnvCoords(vFragmentNormal, vPosViewThis),
+                                                 clamp(fRoughness * SOWX_ENV_LOD_MOD + SOWX_ENV_LOD_OFF,
+                                                       0.0, SOWX_ENV_LOD_MAX)).rgb)
+                            : vec3(0.0), 1.0);
+                return;
             }
-            if (uViz == 20) { frag = vec4(vec3(clamp(waveH / max(hs, 1e-4) * 0.5 + 0.5, 0.0, 1.0)), 1.0); return; }
-            // 21 = foam. Red is coverage, green is the AGITATION gate that has to open before any foam
-            // exists at all -- a still pond reading black in green with a red rim would mean the gate leaked.
-            if (uViz == 21) { frag = vec4(foam, agitation, 0.0, 1.0); return; }
+            // 21 = the noise texture, sampled the way the wave field samples it. A flat colour means it is
+            // not bound (every read the same) or not REPEATing (one edge texel over the whole body) -- and
+            // either one drives the wave amplitude to exactly zero, which reads as a mirror-flat sea with
+            // working reflections. That is the shape of the first cut's bug, so it gets its own view.
+            if (uViz == 21) { frag = vec4(vec3(texture(uNoise, vWorld.xy * 0.1).r), 1.0); return; }
+            // 22 = the three terms that can each zero the sea on their own, in one view, because a flat
+            // surface looks identical whichever it was. RED = the part's own normal .z, which the amplitude
+            // is gated on through max(z^2*101-100, 0): anything below 0.995 kills every wave whatever the
+            // wind is. GREEN = the wave amplitude over 2 units. BLUE = the water's thickness at this pixel
+            // over 10 units, which the amplitude is faded by (stock's WATER_DYNAMIC_DEPTH 0 branch) -- black
+            // blue means the depth copy says the floor is AT the surface and the fade takes the sea out.
+            if (uViz == 22)
+            {
+                frag = vec4(clamp(abs(vSurfaceNormalWorld.z), 0.0, 1.0),
+                            clamp(fMainWaveAmplitude * 0.5, 0.0, 1.0),
+                            clamp((fScreenFBDepth + vPosView.z) * 0.1, 0.0, 1.0), 1.0);
+                return;
+            }
+            // 23 = the wave OFFSET the parallax search converged on, grey around 0.5. Structure here with a
+            // black green channel in 22 would mean the amplitude survived after all and the shading is what
+            // is hiding the sea; flat grey means the field itself is dead.
+            if (uViz == 23) { frag = vec4(vec3(clamp(fDistance * 0.5 + 0.5, 0.0, 1.0)), 1.0); return; }
+            // 24/25 = the two halves of the wave FUNCTION, once 22 has shown the amplitude is healthy.
+            // 24 is the phase the mod runs on -- banding at a few metres is correct, a flat field means the
+            // fTick term has swamped the position term and float precision has eaten the variation. 25 is
+            // the advected noise the amplitude is shaped by, whose UV carries the same fTick.
+            if (uViz == 24)
+            {
+                vec3 p = vWorld;
+                float fNoise = texture(uNoise, p.xy * fMainWaveNoiseFrequency).r * fMainWaveNoiseModifier;
+                float phase = fTick * fMainWaveSpeed
+                            - dot(p.xy - fNoise * vAreaWindDirectionDistorted.xy * fMainWaveNoiseDisplacement,
+                                  vAreaWindDirectionDistorted.xy) * fMainWavePeriod;
+                frag = vec4(vec3(mod(phase, 2.0) * 0.5), 1.0); return;
+            }
+            // 26 = the phase's INPUTS, after 24 showed the phase itself varying by a tenth of a cycle
+            // where it should sweep several. RED and GREEN are the fragment's world x and y in 10-unit
+            // bands (one NWN tile): a flat field means vWorld barely moves across a surface that plainly
+            // spans tiles, and every world-space term in the shader is then meaningless. BLUE is the
+            // spatial half of the phase alone, with the clock left out, so a banded red/green over a flat
+            // blue puts the fault in fMainWavePeriod -- i.e. in the wind force the SHADER sees, whatever
+            // the census printed on the CPU.
+            if (uViz == 26)
+            {
+                frag = vec4(fract(vWorld.x * 0.1), fract(vWorld.y * 0.1),
+                            fract(dot(vWorld.xy, vAreaWindDirectionDistorted.xy) * fMainWavePeriod * 0.5),
+                            1.0);
+                return;
+            }
+            // 27 = the two scalars the phase is built from, as a readable ramp rather than a number:
+            // RED is fAreaWindForce over 8 (4,05 reads as half), GREEN is fMainWavePeriod over 1 (0,396
+            // reads as a dark 0,4). Flat is expected -- what matters is WHICH value, and a shader that
+            // disagrees with the census line is a uniform that never arrived.
+            if (uViz == 27)
+            {
+                frag = vec4(clamp(fAreaWindForce * 0.125, 0.0, 1.0),
+                            clamp(fMainWavePeriod, 0.0, 1.0),
+                            clamp(length(vAreaWindDirectionDistorted.xy), 0.0, 1.0), 1.0);
+                return;
+            }
+            if (uViz == 25)
+            {
+                frag = vec4(vec3(1.0 - texture(uNoise, fMainWavePeriod * 0.04 * vWorld.xy
+                                             - 0.01 * fTick * fMainWaveSpeed * vAreaWindDirection.xy).r), 1.0);
+                return;
+            }
             if (uCapture != 0) { frag = vec4(lit, 1.0); return; }
 
             float kh = SowxKeyhole(d.rot.z, vWorld, vDepth);
             if (kh < 0.0) discard;
-            // Alpha 1 in every ordinary case -- rot.w is the part's own multiplier times the tile fade, and
-            // only a fading tile puts it below 1. That is deliberate and it is stock's own
-            // `FragmentColor.a = 1.0`: everything behind the surface has already been composited IN by the
-            // refraction term, so letting the framebuffer show through would count the floor twice.
-            frag = vec4(SowxFog(lit * kh, vDepth), d.rot.w);
+            // Stock's own `FragmentColor.a = 1.0`: everything behind the surface has already been
+            // composited in by the refraction term, so letting the framebuffer show through counts the
+            // floor twice. rot.w is below 1 only on a fading tile.
+            frag = vec4(SowxFog(lit * kh, vWorld, vDepth), d.rot.w);
         }
         """;
 }

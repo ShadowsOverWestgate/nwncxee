@@ -18,15 +18,26 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>Deliberately NOT <c>sqrt(dot(w.x, w.y))</c>. That spelling appears in the #123 feature port and
     /// in the stock <c>shd_windgrass_vs.shd</c> it reproduces, where it means <c>sqrt(x*y)</c> and goes NaN
     /// the moment the components differ in sign. Faithful there, wrong here.</para></summary>
-    /// <summary>#147: the RAW engine wind magnitude alongside the metres/second the sea state is fed. The
-    /// conversion (<see cref="FrameSnapshot.WindScale"/>) is an admitted guess, and this line is how it gets
-    /// calibrated -- read it in an area whose weather you know and set /water wind from it.</summary>
+    /// <summary>The RAW engine wind magnitude, which is what vanilla's water shader squares into its own
+    /// wave amplitude (<c>fAreaWindForce = dot(areaGlobalWind, areaGlobalWind)</c>). No conversion any
+    /// more -- #339 deleted the sea-state model that needed metres per second.</summary>
+    /// <summary>The engine's own wind vector and world clock, raw. Both feed vanilla's water phase --
+    /// <c>fAreaWindForce = dot(areaGlobalWind, areaGlobalWind)</c> and
+    /// <c>fTick = worldtimerTimeOfDay * 0.001</c> -- and a wave field that reads flat is one of them being
+    /// unlike what the engine's own shader gets, so the line prints them rather than a derived number.
+    /// The Z component is printed on purpose: the shader normalises the wind in THREE dimensions, so a large
+    /// Z shrinks the horizontal direction and stretches the wavelength past the area.</summary>
     internal static string DescribeWind()
     {
         var w = AreaWind();
-        float raw = w.Length();
-        return $"wind raw={raw:F3} -> {raw * FrameSnapshot.WindScale:F1}m/s";
+        float z = _runtime == null ? 0f : *(float*)(_runtime + RtAreaWind + 8);
+        int t = _runtime == null ? 0 : *(int*)(_runtime + RtTimeOfDay);
+        return $"wind raw={w.Length():F3} (x={w.X:F3} y={w.Y:F3} z={z:F3}) timeofday={t}";
     }
+
+    /// <summary>The engine's world clock as the shaders see it, for the census. Everything time-varying in
+    /// an owned stage derives from this int, so a frozen value is a frozen world.</summary>
+    internal static int TimeOfDay => _runtime == null ? 0 : *(int*)(_runtime + RtTimeOfDay);
 
     private static Vector2 AreaWind()
         => _runtime == null ? default
@@ -58,15 +69,23 @@ public sealed unsafe partial class AlloyRenderer
         px[3] = span != 0f ? 1f / span : 0f;
     }
 
-    /// <summary>#131: just the scene-fog pair, for a program that wants fog and none of the rest of
+    /// <summary>#131: just the scene fog, for a program that wants it and none of the rest of
     /// <see cref="UploadFeatureTerms"/>. Same source, same bool-byte conversion; split out rather than
-    /// copied so the pack stays in one place.</summary>
-    internal static void UploadFog(int fogLoc, int fogColorLoc)
+    /// copied so the pack stays in one place.
+    /// <para>#341: "the scene fog" is five uniforms and an eye position now, not a pair -- the target colour
+    /// is built per ray. Every stage that fogs takes all of them from here, or two stages fog the same
+    /// fragment differently.</para></summary>
+    internal static void UploadFog(in FeatLoc loc)
     {
         float* px = stackalloc float[4];
         PackFog(px);
-        Gl.Uniform4fv(fogLoc, 1, px);
-        UploadFogColour(fogColorLoc);
+        Gl.Uniform4fv(loc.Fog, 1, px);
+        UploadFogColour(loc.FogColor);
+        fixed (Vector3* eye = &_eyePos) Gl.Uniform3fv(loc.Eye, 1, (float*)eye);
+        // The height layer is anchored to the player's feet: an area carries no ground plane to read, and
+        // the runtime block is where the engine keeps the one position that tracks them.
+        float playerZ = _runtime == null ? 0f : ((float*)(_runtime + RtPlayerPos))[2];
+        SceneFog.Upload(loc, playerZ, _capturing);
     }
 
     /// <summary>Feed one program the engine's own live world state -- the same five values its own shaders
@@ -80,9 +99,7 @@ public sealed unsafe partial class AlloyRenderer
         float* px = stackalloc float[4];
         px[0] = 1f / w; px[1] = 1f / h; px[2] = w / h;
         Gl.Uniform3fv(loc.Pixel, 1, px);
-        PackFog(px);
-        Gl.Uniform4fv(loc.Fog, 1, px);
-        UploadFogColour(loc.FogColor);
+        UploadFog(loc);
         if (_shaderConstF != null)
         {
             float a = _shaderConstF[KeyholeDiaA], b = _shaderConstF[KeyholeDiaB];

@@ -526,8 +526,8 @@ public sealed unsafe class SceneInputs : IExtenderService
                 // #336: a light whose whole lit sphere sits past the fog's opaque distance shades nothing
                 // visible, and this same predicate gates its cube BAKE -- which is what stopped the fully
                 // fogged half of the street from baking six 512 faces apiece.
-                float cullFar = CullPass.FogCull && FrameInputs.FogOn && FrameInputs.FogEnd > 0f
-                    ? MathF.Min(FrameInputs.CamFar, FrameInputs.FogEnd) : FrameInputs.CamFar;
+                float cullFar = CullPass.FogCull
+                    ? MathF.Min(FrameInputs.CamFar, SceneFog.OpaqueDistance()) : FrameInputs.CamFar;
                 bool vis = _lightCullMode == 1 || _focus == default
                     ? (pos - FrameInputs.CameraPos).LengthSquared() < (cullFar + slackR) * (cullFar + slackR)
                     : ShadowMath.SphereInCameraFrustum(pos, slackR, FrameInputs.CameraPos, _focus,

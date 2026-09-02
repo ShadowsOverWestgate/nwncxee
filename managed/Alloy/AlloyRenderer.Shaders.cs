@@ -22,8 +22,7 @@ public sealed unsafe partial class AlloyRenderer
     internal const string ShdLitVs = "cx_ownlit_vs", ShdLitFs = "cx_ownlit_fs";
     /// <summary>#129's water stage. Its own pair rather than the lit one's, so an author can rewrite the
     /// water surface without forking every lit part in the world.</summary>
-    internal const string ShdWaterVs = "cx_water_vs", ShdWaterFs = "cx_water_fs",
-                         ShdWaterTcs = "cx_water_tcs", ShdWaterTes = "cx_water_tes";
+    internal const string ShdWaterVs = "cx_water_vs", ShdWaterFs = "cx_water_fs";
 
     /// <summary>#84: the per-draw block, reached through <c>uDrawIdx[uDrawBase + gl_DrawID]</c>. This is what makes one
     /// multidraw able to cover a whole group -- everything that varies per part and used to be a uniform lives
@@ -168,10 +167,22 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#124: the uniforms behind the camera dissolve and scene fog, in both fragment stages. All
     /// four come straight out of the engine's own globals -- the same values <c>GLRender::SetUniforms</c>
     /// @0x4ccbf0 hands its own shaders -- so nothing here is a reconstruction of engine state.</summary>
-    internal const string KeyFogDecl = """
+    /// <summary>#341: the fog block on its own, so a stage can fog without declaring the keyhole's
+    /// uniforms. <c>uEyePos</c> lives here rather than in each stage's own head because the fog target is
+    /// direction-dependent now and every fogging stage needs the same view ray.</summary>
+    internal const string FogDecl = """
         uniform vec4 uFogParams;       // (enabled, start, end, 1/(end-start)) -- the engine's fogParams
         uniform vec4 uFogColor;        // #132: LINEAR -- the C# side applies the engine's own sRGB curve
                                        // to the display-space value before uploading it
+        uniform vec3 uEyePos;          // #120: this pass's camera, for the view vector
+        uniform vec3 uFogSky;          // #341: (sky mix, height falloff per unit, layer floor world Z)
+        uniform vec3 uFogSkyColor;     // #341: LINEAR sky colour the fog converges toward
+        uniform vec4 uFogSun;          // #341: (world direction toward the sun, in-scatter exponent)
+        uniform vec3 uFogSunColor;     // #341: LINEAR sun colour, already scaled by the in-scatter strength
+
+        """;
+
+    internal const string KeyFogDecl = FogDecl + """
         uniform vec2 uKeyholeDia;      // (min, max) screen-relative aperture diameters
         uniform vec2 uKeyholeCam;      // (playerCameraDist, cameraPitch)
         uniform vec3 uPixel;           // pixelParams: (1/width, 1/height, width/height)
@@ -240,7 +251,9 @@ public sealed unsafe partial class AlloyRenderer
     /// a linear function of the view position, and <c>gl_Position.w</c> IS <c>-vPosView.z</c>.</para>
     /// <para>The engine reconstructs the world position with <c>m_view_inv * vPosView</c> purely because its
     /// stage does not carry one. Ours does, and it is the same point.</para></summary>
-    internal const string KeyFogFs = NoiseLib + """
+    internal const string KeyFogFs = KeyholeFs + FogFs;
+
+    internal const string KeyholeFs = NoiseLib + """
 
         // inc_keyhole.shd's own constants. FLOOR_OFFSET is the height above the player below which nothing
         // dissolves -- it is what stops the floor under the PC being punched out along with the wall.
@@ -269,21 +282,58 @@ public sealed unsafe partial class AlloyRenderer
             return 1.0;
         }
 
-        /// Scene fog: GetFog + the ApplyFog lerp. Two uniforms and a mix, which is all the old generation's
-        /// inc_fog.shd is -- the shaped fog in sow-topdata's fork is a look decision that belongs in that
-        /// fork's override, not in the embedded text.
-        /// #132 moved this lerp across the encode, and #336 moves it back. The engine fogs in DISPLAY space
-        /// (fslit's tail is ApplyKeyhole, RevertColorSpace, ApplyFog) and uFogColor is a display-space value,
-        /// so a linear-space mix against it is a different CURVE, not a different colour space argument: the
-        /// same fogParams build up late and then slam, where the engine's ramp is even. The Alloy frame has
-        /// no display-space point to fog at, so the encode happens here, around the mix and nowhere else.
-        vec3 SowxFog(vec3 lin, float depth)
+        """;
+
+    /// <summary>#341: the fog, split out of the keyhole so a stage can have one without the other (the
+    /// particle stage fogs and never dissolves; the depth prepass dissolves and never fogs).
+    /// <para>The ramp is untouched engine: <c>GetFog</c>'s linear lerp between the area author's start and
+    /// end, in view depth. What #341 changes is the two ends of it -- the target colour is built per ray
+    /// instead of being one constant, and the factor can be thinned by height.</para></summary>
+    internal const string FogFs = """
+
+        /// How fogged this fragment is, 0..1. The area author's ramp, times the height layer.
+        float SowxFogFactor(vec3 world, float depth)
         {
-            float f = uFogParams.x == 0.0 ? 0.0 : (depth - uFogParams.y) * uFogParams.w;
+            if (uFogParams.x == 0.0) return 0.0;
+            float f = (depth - uFogParams.y) * uFogParams.w;
+            if (f <= 0.0) return 0.0;
+            // #341: fog as a LAYER, thinning above uFogSky.z. Off (uFogSky.y == 0) is the boot default and
+            // the author's ramp alone -- this is the one term here that changes density rather than colour.
+            if (uFogSky.y > 0.0) f *= exp(-max(world.z - uFogSky.z, 0.0) * uFogSky.y);
+            return min(f, 1.0);
+        }
+
+        /// The LINEAR colour a fogged fragment mixes toward along this ray. Three weights, all of them
+        /// direction or depth -- none touches the ramp:
+        ///  - the sky, full at and above the horizon (where the seam against the skybox is) and falling off
+        ///    looking steeply DOWN, where there is no sky to match and the author's colour is the honest one;
+        ///  - the FOG ITSELF. #341's first cut pulled the target all the way to the sky at every depth, so a
+        ///    lightly hazed building took a sky-coloured haze rather than the author's. Scaling by `f` keeps
+        ///    the near and middle of the ramp on the colour the builder picked and lets the sky win only
+        ///    where the fog is total, which is the one place the seam exists;
+        ///  - the sun, added rather than mixed: looking into the sun through fog is BRIGHTER than the fog,
+        ///    and a mix could only ever tint it.
+        vec3 SowxFogColourLin(vec3 world, float f)
+        {
+            vec3 dir = normalize(world - uEyePos);
+            float w = uFogSky.x * smoothstep(-0.35, 0.0, dir.z) * f;
+            vec3 c = mix(uFogColor.rgb, uFogSkyColor, w);
+            return c + uFogSunColor * (f * pow(max(dot(dir, uFogSun.xyz), 0.0), uFogSun.w));
+        }
+
+        /// The lerp itself. The engine fogs in DISPLAY space (fslit's tail is ApplyKeyhole,
+        /// RevertColorSpace, ApplyFog): mixing in linear against the same endpoints is a different CURVE --
+        /// it builds up late and then slams, where the engine's ramp is even. #132 moved this across the
+        /// encode and #336 moved it back; #341 keeps it there and fixes what batch 2 left half-done, which
+        /// was a display-space source mixed toward a LINEAR target. Both ends are encoded here, once.
+        vec3 SowxFog(vec3 lin, vec3 world, float depth)
+        {
+            float f = SowxFogFactor(world, depth);
             if (f <= 0.0) return lin;
-            vec3 disp = pow(max(lin, vec3(0.0)), vec3(1.0 / $SRGB$));
-            disp = mix(disp, uFogColor.rgb, min(f, 1.0));
-            return pow(disp, vec3($SRGB$));
+            vec3 g = vec3(1.0 / $SRGB$);
+            vec3 disp = mix(pow(max(lin, vec3(0.0)), g),
+                            pow(max(SowxFogColourLin(world, f), vec3(0.0)), g), f);
+            return pow(max(disp, vec3(0.0)), vec3($SRGB$));
         }
 
         """;
@@ -438,7 +488,7 @@ public sealed unsafe partial class AlloyRenderer
 
         """ + DrawBufDecl + FeatDecl + KeyFogDecl + """
 
-        """ + KeyFogFs + """
+        """ + KeyholeFs + """
         void main()
         {
             if (SowxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth) < 0.0) discard;
@@ -538,7 +588,6 @@ public sealed unsafe partial class AlloyRenderer
         uniform vec3 uAreaAmbient;
         uniform vec3 uAreaDiffuse;
         uniform vec3 uAreaDir;         // world-space surface->light for the area directional (sun/moon)
-        uniform vec3 uEyePos;          // #120: this pass's camera, for the specular view vector
         uniform int uViz;              // /draw viz, see OwnedLitFsMain
         // #121: the per-area IBL probe, holding LINEAR radiance (EnvProbe captures with uCapture = 1, which
         // is what skips the display-space encode below). uProbeMips 0 = nothing captured yet, so no ambient
@@ -901,7 +950,7 @@ public sealed unsafe partial class AlloyRenderer
             // #294: times COVERAGE, not the raw texel alpha -- on an env-mapped material that channel is
             // reflectivity and the engine leaves the fragment alpha to the material alone.
             // #132: linear out. No encode, no shoulder -- the resolve owns both for the whole frame.
-            frag = vec4(SowxFog(lit * kh, vDepth), coverage * d.rot.w);
+            frag = vec4(SowxFog(lit * kh, vWorld, vDepth), coverage * d.rot.w);
         }
         """;
 }

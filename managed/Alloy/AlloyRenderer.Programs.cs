@@ -9,41 +9,32 @@ namespace Sowx.Alloy;
 /// <summary>#173: PROGRAM BUILD. Linking the Alloy stages -- fullbright, depth, lit and water -- from the embedded text or a content override (#92), and rebuilding from the embedded text whenever an override fails a ShaderContract predicate. Cold: once per program per context.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>Build the water variant. A failure disarms Alloy water for the session -- the engine's own
-    /// bucket-6 walk (with its own framebuffer copy) then draws every water surface, which is vanilla.</summary>
+    /// <summary>Build the water variant -- vertex and fragment only since #339 dropped the tessellated
+    /// sea. A failure disarms Alloy water for the session, and since #264 deleted the engine's bucket walk
+    /// that means water is simply not drawn (#285).</summary>
     private static bool EnsureWaterProgram()
     {
         if (_progWater != 0) return true;
         if (_waterFailed) return false;
         if (!FrameSnapshot.On) { _waterFailed = true; return false; }
-        // #147: four stages, all four overridable (ADR 0012) -- water is the one class that TESSELLATES,
-        // so its evaluation stage, not its vertex stage, is what projects.
-        string waterFs = ShaderStages.Source(ShdWaterFs);
-        uint prog = GlProgram.Graphics(ShdWaterVs, ShaderStages.Source(ShdWaterVs),
-                                       ShdWaterTcs, ShaderStages.Source(ShdWaterTcs),
-                                       ShdWaterTes, ShaderStages.Source(ShdWaterTes), ShdWaterFs, waterFs,
-                                       _log, "AlloyRenderer water program",
-                                       out string wvs, out string wtc, out string wte, out string wfs);
+        string waterVs = ShaderStages.Source(ShdWaterVs), waterFs = ShaderStages.Source(ShdWaterFs);
+        uint prog = GlProgram.Graphics(ShdWaterVs, waterVs, ShdWaterFs, waterFs, _log,
+                                       "AlloyRenderer water program", out string wvs, out string wfs);
         // An override that declares the wrong per-draw record reads every draw out of a neighbour's slot --
         // the #120 failure, and silent. #132 adds the colour space to the same guard, for the same reason.
-        // Same pair the fullbright and lit programs take. #161: all four stages declare the record, so all
-        // four are counted -- the tessellation pair reads it to build the wave field.
-        if (prog != 0 && !(ShaderContract.RecordSafe(wvs) && ShaderContract.RecordSafe(wtc) && ShaderContract.RecordSafe(wte) && ShaderContract.RecordSafe(wfs)
+        if (prog != 0 && !(ShaderContract.RecordSafe(wvs) && ShaderContract.RecordSafe(wfs)
                            // #242: ...and reaches it through the slot map. An override that predates the
                            // persistent records declares exactly the right record and indexes it by DRAW.
-                           && ShaderContract.SlotIndexSafe(wvs) && ShaderContract.SlotIndexSafe(wtc)
-                           && ShaderContract.SlotIndexSafe(wte)
+                           && ShaderContract.SlotIndexSafe(wvs)
                            && ShaderContract.LinearSafe(wfs)
-                           // #208: ...and the four samplers this program binds units to. A dropped uProbe
-                           // leaves a samplerCube on unit 0 beside the diffuse: INVALID_OPERATION, every
-                           // water draw dropped, nothing in the log.
-                           && ShaderContract.SlotSafe(wfs, "uTex", "uFbColor", "uFbDepth", "uProbe")))
+                           // #208: ...and the samplers this program binds units to. A dropped uNoise leaves
+                           // the wave field reading unit 0, which is the material diffuse.
+                           && ShaderContract.SlotSafe(wfs, "uTex", "uFbColor", "uFbDepth", "uNoise", "uEnvMap")))
         {
             Gl.DeleteProgram(prog);
             _log?.Info("AlloyRenderer: water override declares the wrong per-draw record or still " +
                        "encodes to display space -- rebuilding every water stage from the embedded default");
-            prog = GlProgram.Tessellated(FrameSnapshot.Vs, FrameSnapshot.Tcs, FrameSnapshot.Tes, waterFs,
-                                         _log, "AlloyRenderer water program (embedded)");
+            prog = GlProgram.Graphics(FrameSnapshot.Vs, waterFs, _log, "AlloyRenderer water program (embedded)");
         }
         if (prog == 0)
         {
@@ -52,9 +43,6 @@ public sealed unsafe partial class AlloyRenderer
             return false;
         }
         _progWater = prog;
-        FrameSnapshot.ClampTess();
-        // One patch is one triangle: the Alloy pass hands the tessellator the engine's own index buffer.
-        if (Gl.PatchParameteri != null) Gl.PatchParameteri(Gl.PATCH_VERTICES, 3);
         _watVp = GlProgram.Loc(prog, "uVP"); _watBase = GlProgram.Loc(prog, "uDrawBase");
         _watTex = GlProgram.Loc(prog, "uTex"); _watCut = GlProgram.Loc(prog, "uAlphaCut");
         _watAmbient = GlProgram.Loc(prog, "uAreaAmbient"); _watDiffuse = GlProgram.Loc(prog, "uAreaDiffuse");
@@ -64,7 +52,7 @@ public sealed unsafe partial class AlloyRenderer
         _watWrap = GlProgram.Loc(prog, "uWrap");
         _watAtten = GlProgram.Loc(prog, "uAtten"); _watHot = GlProgram.Loc(prog, "uHot");
         _watWrapN = GlProgram.Loc(prog, "uWrapN");
-        _watViz = GlProgram.Loc(prog, "uViz"); _watEye = GlProgram.Loc(prog, "uEyePos");
+        _watViz = GlProgram.Loc(prog, "uViz");
         _watSunTex = GlProgram.Loc(prog, "uSunShadow"); _watSunVp = GlProgram.Loc(prog, "uSunVp");
         _watSunTexel = GlProgram.Loc(prog, "uSunTexel"); _watSunBias = GlProgram.Loc(prog, "uSunBias");
         _watSunCount = GlProgram.Loc(prog, "uSunCascades");
@@ -74,15 +62,12 @@ public sealed unsafe partial class AlloyRenderer
         _watCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _watCubeCount = GlProgram.Loc(prog, "uLocalCubes");
         _watCubeSoft = GlProgram.Loc(prog, "uLocalSoft");
         _watCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _watCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage");
-        _watProbe = GlProgram.Loc(prog, "uProbe"); _watProbeMips = GlProgram.Loc(prog, "uProbeMips");
-        _watProbeGain = GlProgram.Loc(prog, "uProbeGain"); _watSceneEnv = GlProgram.Loc(prog, "uSceneEnv");
         _watCapture = GlProgram.Loc(prog, "uCapture");
         _watFbColor = GlProgram.Loc(prog, "uFbColor"); _watFbDepth = GlProgram.Loc(prog, "uFbDepth");
+        _watNoise = GlProgram.Loc(prog, "uNoise");
+        _watEnvMap = GlProgram.Loc(prog, "uEnvMap"); _watEnvOk = GlProgram.Loc(prog, "uEnvOk");
         _watNearFar = GlProgram.Loc(prog, "uNearFar");
         _watView = GlProgram.Loc(prog, "uView"); _watProj = GlProgram.Loc(prog, "uProj");
-        _watDials = GlProgram.Loc(prog, "uWaterDials");
-        _watWaveTime = GlProgram.Loc(prog, "uWaveTime"); _watTess = GlProgram.Loc(prog, "uTessDials");
-        _watWind = GlProgram.Loc(prog, "uAreaWind");
         _watFeat = FeatLocs(prog);
         // Sampler units, bound once: a sampler left at its default points at unit 0, and two sampler types
         // on one image unit is INVALID_OPERATION -- the draw is dropped, silently as far as the frame knows.
@@ -92,10 +77,11 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(_watSunDynTex, (int)SunDynUnit);
         Gl.Uniform1i(_watCubeTex, (int)CubeUnit);
         Gl.Uniform1i(_watCubeDynTex, (int)CubeDynUnit);
-        Gl.Uniform1i(_watProbe, (int)EnvProbe.ProbeUnit);
         Gl.Uniform1i(_watFbColor, (int)FrameSnapshot.ColorUnit);
         Gl.Uniform1i(_watFbDepth, (int)FrameSnapshot.DepthUnit);
-        _log?.Info("AlloyRenderer: water program ready (/water on 0 disables) -- " + FrameSnapshot.Describe());
+        Gl.Uniform1i(_watNoise, (int)FrameSnapshot.NoiseUnit);
+        Gl.Uniform1i(_watEnvMap, (int)FrameSnapshot.EnvUnit);
+        _log?.Info("AlloyRenderer: water program ready, vanilla fswater (/water on 0 disables) -- " + FrameSnapshot.Describe());
         return true;
     }
 
@@ -257,7 +243,6 @@ public sealed unsafe partial class AlloyRenderer
         _litAtten = GlProgram.Loc(prog, "uAtten"); _litHot = GlProgram.Loc(prog, "uHot");
         _litWrapN = GlProgram.Loc(prog, "uWrapN");
         _litViz = GlProgram.Loc(prog, "uViz");
-        _litEye = GlProgram.Loc(prog, "uEyePos");
         _litSunTex = GlProgram.Loc(prog, "uSunShadow"); _litSunVp = GlProgram.Loc(prog, "uSunVp");
         _litSunTexel = GlProgram.Loc(prog, "uSunTexel"); _litSunBias = GlProgram.Loc(prog, "uSunBias");
         _litSunCount = GlProgram.Loc(prog, "uSunCascades");
@@ -304,5 +289,10 @@ public sealed unsafe partial class AlloyRenderer
         KhDia = GlProgram.Loc(prog, "uKeyholeDia"),
         KhCam = GlProgram.Loc(prog, "uKeyholeCam"),
         Pixel = GlProgram.Loc(prog, "uPixel"),
+        Eye = GlProgram.Loc(prog, "uEyePos"),
+        FogSky = GlProgram.Loc(prog, "uFogSky"),
+        FogSkyColor = GlProgram.Loc(prog, "uFogSkyColor"),
+        FogSun = GlProgram.Loc(prog, "uFogSun"),
+        FogSunColor = GlProgram.Loc(prog, "uFogSunColor"),
     };
 }

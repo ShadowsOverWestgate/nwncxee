@@ -383,8 +383,12 @@ internal static unsafe class Particles
     private static bool _csFailed;
     private static int _spanCap, _grpCap;
     private static int _locEye = -1;
+    /// <summary>#341: the fog block's locations, as one <see cref="AlloyRenderer.FeatLoc"/> -- the
+    /// stage fogs through the world pass's own uploader, so it takes the world pass's own location set.</summary>
+    private static AlloyRenderer.FeatLoc _fogLoc;
+
     private static int _locView = -1, _locProj = -1, _locTex = -1, _locCut = -1,
-                       _locFog = -1, _locFogColor = -1, _locAdditive = -1,
+                       _locAdditive = -1,
                        _locSoftOn = -1, _locDepthTex = -1, _locEmissive = -1, _locLit = -1, _locViz = -1;
     /// <summary>The light rig's own uniform locations, in the order <see cref="AlloyLights"/> and
     /// <see cref="AlloyRenderer"/> want them handed back.</summary>
@@ -754,7 +758,7 @@ internal static unsafe class Particles
         Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
         Gl.Uniform3fv(_locEye, 1, (float*)&eye);
         Gl.Uniform1i(_locTex, 0);
-        AlloyRenderer.UploadFog(_locFog, _locFogColor);
+        AlloyRenderer.UploadFog(_fogLoc);
         if (lit)
         {
             AlloyLights.BindForDraw();
@@ -1418,8 +1422,10 @@ internal static unsafe class Particles
         if (_prog != 0) return true;
         if (_failed) return false;
         string libs = AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib;
+        // #341: the fog half of KeyFogFs on its own -- this stage fogs and never dissolves.
+        string fsLibs = libs + AlloyRenderer.FogFs;
         _prog = GlProgram.Graphics(ParticleVsHead + libs + ParticleVsMain,
-            ParticleFsHead + libs + ParticleFsMain, _log, "Particles");
+            ParticleFsHead + fsLibs + ParticleFsMain, _log, "Particles");
         if (_prog == 0)
         { _failed = true; _log?.Info("Particles: program build failed -- emitters stay vanilla"); return false; }
         _locView = GlProgram.Loc(_prog, "uView");
@@ -1427,8 +1433,7 @@ internal static unsafe class Particles
         _locEye = GlProgram.Loc(_prog, "uEye");
         _locTex = GlProgram.Loc(_prog, "uTex");
         _locCut = GlProgram.Loc(_prog, "uAlphaCut");
-        _locFog = GlProgram.Loc(_prog, "uFogParams");
-        _locFogColor = GlProgram.Loc(_prog, "uFogColor");
+        _fogLoc = AlloyRenderer.FeatLocs(_prog);
         _locAdditive = GlProgram.Loc(_prog, "uAdditive");
         _locSoftOn = GlProgram.Loc(_prog, "uSoftOn");
         _locDepthTex = GlProgram.Loc(_prog, "uSceneDepth");
@@ -1670,7 +1675,8 @@ internal static unsafe class Particles
         Forget();
         _prog = 0; _vao = 0; _recBuf = 0; _idxBuf = 0; _samp = 0; _failed = false;
         _csProg = 0; _spanBuf = 0; _grpBuf = 0; _csEye = -1; _csFailed = false; _spanCap = 0; _grpCap = 0;
-        _locView = _locProj = _locTex = _locCut = _locFog = _locFogColor = _locAdditive = -1;
+        _locView = _locProj = _locTex = _locCut = _locAdditive = -1;
+        _fogLoc = default;
         _locSoftOn = _locDepthTex = _locEmissive = _locLit = _locEye = -1;
         if (_recs != null) { NativeMemory.Free(_recs); _recs = null; }
         if (_idx != null) { NativeMemory.Free(_idx); _idx = null; }
@@ -1916,7 +1922,7 @@ internal static unsafe class Particles
         int iLit = ParticleFsMain.IndexOf("albedo *= vLight;", StringComparison.Ordinal);
         int iSoft = ParticleFsMain.IndexOf("if (uSoftOn != 0", StringComparison.Ordinal);
         int iEmis = ParticleFsMain.IndexOf("c.rgb *= uEmissive;", StringComparison.Ordinal);
-        int iFog = ParticleFsMain.IndexOf("uFogParams.x == 0.0", StringComparison.Ordinal);
+        int iFog = ParticleFsMain.IndexOf("SowxFogFactor(vWorld, vViewZ)", StringComparison.Ordinal);
         E(iDiscard >= 0 && iLit > iDiscard && iSoft > iLit && iEmis > iSoft && iFog > iEmis,
           "the fragment stage runs discard -> light -> soften -> emit -> fog, in that order");
         // ...and the decode, which since #132 is unconditional: the Alloy target is LINEAR, so every
@@ -2286,8 +2292,6 @@ internal static unsafe class Particles
         uniform float uAlphaCut;    // fAlphaDiscardValue: 0.2 punch-through, -1.0 (off) otherwise
         uniform int uAdditive;
         uniform float uEmissive;    // .mtr fEmissive: >1 pushes the effect into #139's HDR headroom
-        uniform vec4 uFogParams;    // (enabled, start, end, 1/(end-start))
-        uniform vec4 uFogColor;     // #132: LINEAR (the C# side linearises it)
         uniform int uSoftOn;        // 0 = no depth copy this pass, so no fade
         uniform sampler2D uSceneDepth;
         // ...and the projection again: a uniform belongs to the PROGRAM, not to a stage, but it still has to
@@ -2299,6 +2303,8 @@ internal static unsafe class Particles
         uniform int uViz;           // /particles viz: 1 = tint by render type, 2 = flat, no texture
 
         out vec4 frag;
+
+        """ + AlloyRenderer.FogDecl + """
 
         """;
 
@@ -2358,10 +2364,12 @@ internal static unsafe class Particles
             // where its texture did. Before fog: fog attenuates what is there, and emission is what is there.
             c.rgb *= uEmissive;
 
-            // #132: uFogColor arrives LINEAR, like everything else this stage handles.
-            float f = uFogParams.x == 0.0 ? 0.0 : clamp((vViewZ - uFogParams.y) * uFogParams.w, 0.0, 1.0);
+            // #341: the SAME fog the world pass runs -- ramp, height layer, sky-matched target and all.
+            // An emitter that fogged toward a different colour than the terrain behind it is a smoke plume
+            // that reads as a different weather.
+            float f = SowxFogFactor(vWorld, vViewZ);
             if (uAdditive != 0) c.a *= 1.0 - f;
-            else c.rgb = mix(c.rgb, uFogColor.rgb, f);
+            else c.rgb = SowxFog(c.rgb, vWorld, vViewZ);
             frag = c;
         }
         """;

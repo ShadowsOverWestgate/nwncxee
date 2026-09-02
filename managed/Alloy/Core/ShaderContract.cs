@@ -305,7 +305,17 @@ internal static class ShaderContract
                   // the world still renders, just with fog that dissolves and a border that does not darken;
                   // nothing says so in the log.
                   && KeyFogFs.Contains("float SowxKeyhole(") && KeyFogFs.Contains("vec3 SowxFog(")
-                  && OwnedLitFsMain.Contains("SowxFog(lit * kh, vDepth)")
+                  && OwnedLitFsMain.Contains("SowxFog(lit * kh, vWorld, vDepth)")
+                  // #341: the fog target is direction-dependent, so the WORLD position is an argument and
+                  // not a convenience -- a stage that passed the wrong point fogs toward the sky over
+                  // somewhere else. And the ramp stays the area author's: the factor is still the engine's
+                  // linear lerp between fogParams.y and its reciprocal span, with the height layer as a
+                  // MULTIPLIER on it rather than a second curve.
+                  && FogFs.Contains("float f = (depth - uFogParams.y) * uFogParams.w;")
+                  && FogFs.Contains("f *= exp(-max(world.z - uFogSky.z, 0.0) * uFogSky.y);")
+                  // ...and the sky and sun pulls are scaled by the fog itself, so a lightly fogged surface
+                  // keeps the colour the area builder set and only a saturated one converges on the sky.
+                  && FogFs.Contains("* smoothstep(-0.35, 0.0, dir.z) * f;")
                   // #139: ...and the two terms whose loss is silent. A stage that dropped the wrap or the
                   // soft cube taps just renders harder -- nothing about either fails to compile or shows in
                   // the log.
@@ -376,11 +386,10 @@ internal static class ShaderContract
                   && !BindlessFs(OwnedLitFsHead + MaterialLib).Contains("uniform sampler2D uAoTex;")
                   && BindlessFs("void main() { }") == "void main() { }"
                   && LinearSafe(FrameSnapshot.Fs) && LinearSafe(GrassField.EmbeddedFs)
-                  // #161: the record guard reaches every stage that declares the record -- on water that is
-                  // the tessellation pair too -- and the embedded text passes it, for the same reason as
-                  // above: a guard its own defaults trip rebuilds from them every session.
-                  && RecordSafe(FrameSnapshot.Vs) && RecordSafe(FrameSnapshot.Tcs)
-                  && RecordSafe(FrameSnapshot.Tes) && RecordSafe(FrameSnapshot.Fs)
+                  // #161: the record guard reaches every stage that declares the record, and the embedded
+                  // text passes it, for the same reason as above: a guard its own defaults trip rebuilds
+                  // from them every session.
+                  && RecordSafe(FrameSnapshot.Vs) && RecordSafe(FrameSnapshot.Fs)
                   // ...and it REFUSES a record that disagrees. A predicate that only ever returns true is
                   // precisely the silent failure it was written to prevent, and nothing else would notice.
                   && !RecordSafe("struct SowxDraw { mat4 model; vec4 rot; };")
@@ -411,7 +420,7 @@ internal static class ShaderContract
                   && !LitSlotSafe(OwnedLitFsHead.Replace("uniform samplerCube uProbe;", ""))
                   // ...and the same over every other overridable stage that binds a unit, so the embedded
                   // text of each passes the guard its own override will be held to.
-                  && SlotSafe(FrameSnapshot.FsHead, "uTex", "uFbColor", "uFbDepth", "uProbe")
+                  && SlotSafe(FrameSnapshot.FsHead, "uTex", "uFbColor", "uFbDepth", "uNoise", "uEnvMap")
                   && SlotSafe(PostChain.ResolveFs, "uHdr", "uBloom")
                   && SlotSafe(GrassField.GrassFsHead, "uTex")
                   && !SlotSafe(PostChain.ResolveFs, "uNotASampler")
@@ -441,9 +450,7 @@ internal static class ShaderContract
                   && ShdLitVs.Length <= ShaderResource.ResRefBytes
                   && ShdLitFs.Length <= ShaderResource.ResRefBytes
                   && ShdWaterVs.Length <= ShaderResource.ResRefBytes
-                  && ShdWaterFs.Length <= ShaderResource.ResRefBytes
-                  && ShdWaterTcs.Length <= ShaderResource.ResRefBytes
-                  && ShdWaterTes.Length <= ShaderResource.ResRefBytes;
+                  && ShdWaterFs.Length <= ShaderResource.ResRefBytes;
         log.Info(ok
             ? "ShaderContract.SelfCheck: passed"
             : $"ShaderContract.SelfCheck: FAILED -- {(slots ? "" : "a texture slot disagreed (named above), ")}" +

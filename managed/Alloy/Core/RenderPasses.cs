@@ -61,16 +61,6 @@ internal static class RenderPasses
         }, log);
         r.Register(new PassLifecycle
         {
-            Name = "waterbodies",
-            Attach = WaterBodies.Attach,
-            SelfCheck = WaterBodies.SelfCheck,
-            // #147/#209: keyed on PART POINTERS, so it dies on the world edge. Called by hand from
-            // RevokeAll until the walk itself moved above that method's empty-table guard.
-            Revoke = WaterBodies.Clear,
-            Describe = WaterBodies.Describe,
-        }, log);
-        r.Register(new PassLifecycle
-        {
             Name = "sky",
             // #261 deleted SkyComposite with its scratch target, so the sky holds no GL objects again: it
             // draws enrolled parts through the Alloy draw service's own programs and VAOs.
@@ -143,6 +133,18 @@ internal static class RenderPasses
             Describe = EnvProbe.Describe,
             Tune = EnvProbe.Tune,
             Reset = EnvProbe.ResetTuning,
+        }, log);
+        // #341: the fog's TARGET, which is a look decision and therefore a set of dials -- the ramp itself
+        // stays the area author's. No frame slot: every stage uploads it through UploadFeatureTerms.
+        r.Register(new PassLifecycle
+        {
+            Name = "fog",
+            Attach = SceneFog.Attach,
+            SelfCheck = SceneFog.SelfCheck,
+            Revoke = SceneFog.Revoke,
+            Describe = SceneFog.Describe,
+            Tune = SceneFog.Tune,
+            Reset = SceneFog.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
