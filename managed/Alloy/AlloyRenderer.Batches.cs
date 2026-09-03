@@ -548,64 +548,6 @@ public sealed unsafe partial class AlloyRenderer
     /// the diffuse pointer, dissolve) never rides this.</summary>
     private const int ColourCadence = 8;
 
-    /// <summary>#336: the highlighted root gobs, this frame and last. A highlight is a gob COLOUR arm
-    /// (<c>Scene::AddHighlightGob</c> sets the multiply and the emissive; <see cref="RspShim"/> only stands
-    /// the engine's glow DRAW down), so it reaches a part through the same fold the colour cadence defers --
-    /// and a 20-part object lit up eight frames' worth of parts at a time, one stagger group per frame.
-    /// The set is tiny, so the fix is to spend a pointer compare per part on the frames it CHANGES and
-    /// nothing at all on the frames it does not.
-    /// <para>ponytail: roots only. If a highlighted creature's weapon turns out to carry its own colour arm
-    /// it will lag the body by up to <see cref="ColourCadence"/> frames; the child walk that would close
-    /// that costs a vtable call and a malloc per root, and the release side cannot safely walk a gob that
-    /// has already left the scene.</para></summary>
-    private static readonly IntPtr[] _hlSet = new IntPtr[MaxHlRoots];
-    private static readonly IntPtr[] _hlWas = new IntPtr[MaxHlRoots];
-    private static int _hlSetN, _hlWasN;
-    /// <summary>The union of the two, non-empty only on a frame the set changed.</summary>
-    private static readonly IntPtr[] _hlEdge = new IntPtr[MaxHlRoots * 2];
-    private static int _hlEdgeN;
-
-    /// <summary>Snapshot this frame's highlight roots and diff them against last frame's. Leaves
-    /// <see cref="_hlEdgeN"/> at 0 on the overwhelming majority of frames, which is what keeps the test in
-    /// the part loop free.</summary>
-    private static void ReadHighlightEdge()
-    {
-        _hlSetN = 0;
-        IntPtr scene = _enrollScene;
-        if (scene != IntPtr.Zero)
-        {
-            int n = *(int*)(scene + SceneHlCount);
-            IntPtr* arr = *(IntPtr**)(scene + SceneHlGobs);
-            if (arr != null)
-            {
-                if (n > MaxHlRoots) n = MaxHlRoots;
-                for (int i = 0; i < n; i++) _hlSet[_hlSetN++] = arr[i];
-            }
-        }
-        bool same = _hlSetN == _hlWasN;
-        for (int i = 0; same && i < _hlSetN; i++) same = _hlSet[i] == _hlWas[i];
-        _hlEdgeN = 0;
-        if (!same)
-        {
-            for (int i = 0; i < _hlSetN; i++) _hlEdge[_hlEdgeN++] = _hlSet[i];
-            // The leavers, so the tint CLEARS as promptly as it arrived. Pointer compares only -- a gob that
-            // has left the scene must never be dereferenced here.
-            for (int i = 0; i < _hlWasN; i++)
-            {
-                bool dup = false;
-                for (int k = 0; k < _hlSetN && !dup; k++) dup = _hlWas[i] == _hlSet[k];
-                if (!dup) _hlEdge[_hlEdgeN++] = _hlWas[i];
-            }
-        }
-        _hlWasN = _hlSetN;
-        Array.Copy(_hlSet, _hlWas, _hlSetN);
-    }
-
-    private static bool HighlightEdge(IntPtr gob)
-    {
-        for (int i = 0; i < _hlEdgeN; i++) if (_hlEdge[i] == gob) return true;
-        return false;
-    }
     /// <summary>#324: one routed part in this many carries the <c>Zone.Chase</c> timestamps. Power of two.</summary>
     internal const int ChaseEvery = 16;
 
@@ -618,7 +560,6 @@ public sealed unsafe partial class AlloyRenderer
         // #322 step 1: attribute the Build monolith before drawing any phase boundary -- Scan is the
         // routing walk, Restage everything after it. No behaviour change; the [zones] line gains the split.
         long tScan = FrameZones.Now;
-        ReadHighlightEdge();
         int routed = RouteParts();
         FrameZones.Add(FrameZones.Zone.Scan, tScan);
         long tRestage = FrameZones.Now;
@@ -701,8 +642,25 @@ public sealed unsafe partial class AlloyRenderer
             // glow), so it is read every ColourCadence frames per slot and reloaded from the record in
             // between. Everything fast-visible stays per frame: alpha, tile fade, the matrix, the DIFFUSE
             // pointer (animated textures), dissolve, instance state.
-            bool colour = stale || ((i + _frameSeq) & (ColourCadence - 1)) == 0
-                          || (_hlEdgeN != 0 && HighlightEdge(_oGob[i]));
+            // #364: _fullPoll belongs here. `/draw poll 1` says it re-reads every engine term every frame
+            // and its audit counters must read 0 -- but this term sat outside it, so the slow-drift fold
+            // stayed on its stagger under a full poll and the knob could not A/B a colour-cadence bug at all.
+            //
+            // ...and an INSTANCED part is off the cadence entirely. #336 and #362 both tried to name the one
+            // event that must bypass it (a highlight) and both missed, because Scene::AddHighlightGob
+            // @0x462280 is two list writes and arms nothing -- whatever arms the gob's colour on a highlight
+            // is somewhere else, and guessing at it twice is enough. The cadence's own justification is that
+            // these terms "move over SECONDS", and the terms that can move at all are the GOB folds:
+            // GobDiffuseMul (gob+0xf6/+0xfc, Gob::SetColorShifting) and GobEmissiveAdd (gob+0xf8/+0x110,
+            // Gob::SetIllumination). A part with no gob folds neither -- both return their identity without
+            // dereferencing anything -- and all it has left is mdl ambient/diffuse and part self-illum,
+            // which are material statics that genuinely never move.
+            //
+            // So the split is by what CAN change, not by what we think just did. It is also cheaper than the
+            // stagger it replaces: gob parts are ~9% of a dense area's population (112 instanced of 1245 on
+            // the live [alloy] line) against the 12.5% a 1-in-8 cadence re-reads every frame.
+            bool colour = stale || _fullPoll || _oGob[i] != IntPtr.Zero
+                          || ((i + _frameSeq) & (ColourCadence - 1)) == 0;
             // MatStatic (Ghidra @0x450560): ambient = node+0xf4, diffuse = node+0xe8, emissive = part+0x7c.
             // ponytail: MatStatic also multiplies ambient+diffuse by AurGetTileColor() when the part's tile
             // record (part+0x98, +0x54) is set. Not reproduced -- add it if tiles read the wrong hue.

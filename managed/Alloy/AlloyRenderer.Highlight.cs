@@ -318,10 +318,10 @@ public sealed unsafe partial class AlloyRenderer
         Gl.DepthFunc(Gl.LEQUAL);
         Gl.DepthMask(0);
         Gl.Disable(Gl.BLEND);
-        Gl.Enable(Gl.POLYGON_OFFSET_FILL);
         Gl.PolygonOffset(MaskOffsetFactor, MaskOffsetUnits);
         DrawTargets(groups, targets, targetRoot, rootHit, nT, cols);
         Gl.Disable(Gl.POLYGON_OFFSET_FILL);
+        Gl.DepthFunc(Gl.LEQUAL);   // #364: the cutout run leaves EQUAL bound; every later pass assumes LEQUAL
 
         // Step 2: ONE fullscreen triangle over the finished frame -- fill + dilated outline, blended.
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prevFbo);
@@ -361,22 +361,30 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>One walk over the staged batches, issuing a single-draw multidraw for every record whose
     /// owning gob is in the target set, with the root's colour bound and the root marked hit. Same
-    /// per-batch VAO/cull discipline as the depth prepass -- and the prepass's class exclusions too:
-    /// opaque, non-displacing, non-discarding batches only, because the mask's biased depth test still
-    /// needs the record's colour-pass depth to be where <see cref="DepthVs"/> puts it, and a cutout's flat
-    /// mask would paint its alpha holes solid.</summary>
+    /// per-batch VAO/cull discipline as the depth prepass.
+    /// <para>#364: cutout batches are IN, under a different depth test, because a highlighted creature's
+    /// hair, cloak and helmet trim are cutout and leaving them out is what made an object take its outline
+    /// in pieces. The mask has no alpha to discard on -- but it does not need one. Cutout is the one class
+    /// the prepass skips (a discard's prepass depth would be its solid silhouette), so it writes its own
+    /// depth in the COLOUR pass, with the discard already applied. Drawn at <c>GL_EQUAL</c> with no bias,
+    /// only the fragments that survived that discard match, and the mask gets the exact silhouette for
+    /// free. It rests on <see cref="DepthVs"/> computing <c>gl_Position</c> character-for-character as the
+    /// colour stages do under <c>invariant gl_Position</c> -- which <c>ShaderContract</c> asserts, and which
+    /// the whole prepass already rests on.</para>
+    /// <para>Still out, and both are silhouette holes rather than timing: DISPLACING batches, whose colour
+    /// stage moves vertices this one does not, so nothing would match under either test; and everything past
+    /// <see cref="_gOpaqueEnd"/>, which writes no depth to match against.</para></summary>
     private static void DrawTargets(int groups, IntPtr* targets, byte* targetRoot, byte* rootHit, int nT,
                                     float* cols)
     {
         uint boundVao = 0;
-        int boundCull = -1, boundColor = -1;
+        int boundCull = -1, boundColor = -1, boundCut = -1;
         int end = groups < _gOpaqueEnd ? groups : _gOpaqueEnd;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
         for (int g = 0; g < end; g++)
         {
             if (ShaderFeatures.OutOfPrepass(_gFeat[g])) continue;
-            if (_gCls[g] == (byte)AlloyClass.Cutout) continue;
             int s = _gStart[g], len = _gLen[g];
             for (int j = s; j < s + len; j++)
             {
@@ -392,6 +400,19 @@ public sealed unsafe partial class AlloyRenderer
                 {
                     boundColor = root;
                     Gl.Uniform3f(_hlColor, cols[root * 3], cols[root * 3 + 1], cols[root * 3 + 2]);
+                }
+                // #364: the two depth regimes. Opaque took its depth from the prepass, so the mask is
+                // biased toward the viewer and tested LEQUAL to clear exact-equality speckle; cutout wrote
+                // its own, discard-applied, in the colour pass, so the mask tests EQUAL against it with no
+                // bias at all -- the bias is what would let the alpha holes through.
+                int wantCut = _gCls[g] == (byte)AlloyClass.Cutout ? 1 : 0;
+                if (wantCut != boundCut)
+                {
+                    boundCut = wantCut;
+                    if (wantCut != 0)
+                    { Gl.Disable(Gl.POLYGON_OFFSET_FILL); Gl.DepthFunc(Gl.EQUAL); }
+                    else
+                    { Gl.Enable(Gl.POLYGON_OFFSET_FILL); Gl.DepthFunc(Gl.LEQUAL); }
                 }
                 int wantCull = _gNoCull[g] ? 0 : 1;
                 if (wantCull != boundCull)

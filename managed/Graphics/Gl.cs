@@ -89,6 +89,9 @@ public static unsafe class Gl
                       ATTACHMENT_TEXTURE = 0x1702, FRAMEBUFFER_SRGB = 0x8DB9;
     public const uint DEPTH_COMPONENT = 0x1902, DEPTH_COMPONENT24 = 0x81A6, DEPTH_COMPONENT16 = 0x81A5, UNSIGNED_INT = 0x1405;
     public const uint DEPTH_BUFFER_BIT = 0x0100, COLOR_BUFFER_BIT = 0x4000, LESS = 0x0201, LEQUAL = 0x0203, NONE = 0;
+    /// <summary>GL_EQUAL. #364: the highlight mask tests a cutout batch against the depth its own colour
+    /// pass wrote with the discard applied, so only the surviving fragments match.</summary>
+    public const uint EQUAL = 0x0202;
     /// <summary>#132: the current clear colour, as glGetFloatv reads it back -- the engine's own value, so
     /// the Alloy HDR target starts from what the engine cleared to instead of from a guess.</summary>
     public const uint COLOR_CLEAR_VALUE = 0x0C22;
