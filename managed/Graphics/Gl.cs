@@ -115,6 +115,9 @@ public static unsafe class Gl
     /// <c>TEXTURE_MAX_LEVEL</c> caps the chain glGenerateMipmap builds, which is also the LOD the shader's
     /// roughness maps onto.</summary>
     public const uint RGBA16F = 0x881A, RGBA = 0x1908, HALF_FLOAT = 0x140B, TEXTURE_MAX_LEVEL = 0x813D;
+    /// <summary>The unsized base format. Never a legal glTexStorage2D internalformat -- named so that a
+    /// driver answering it for TEXTURE_INTERNAL_FORMAT can be refused rather than promoted (#360).</summary>
+    public const uint RGB = 0x1907;
     public const int LINEAR_MIPMAP_LINEAR = 0x2703, LINEAR_MIPMAP_NEAREST = 0x2701;
     /// <summary>#243: the hi-Z pyramid's minification filter -- an INTERPOLATED max is not a max.</summary>
     public const int NEAREST_MIPMAP_NEAREST = 0x2700;
@@ -124,6 +127,11 @@ public static unsafe class Gl
     /// BASE/MAX_LEVEL exclude it).</summary>
     public const uint READ_FRAMEBUFFER = 0x8CA8, DRAW_FRAMEBUFFER = 0x8CA9;
     public const uint TEXTURE_BASE_LEVEL = 0x813C;
+    /// <summary>The per-texture component swizzle. Default is the identity (R,G,B,A), but the engine sets it
+    /// for its single-channel legacy formats -- so a texture COPIED rather than re-uploaded has to carry
+    /// these across or it samples differently from the original it is standing in for (#360).</summary>
+    public const uint TEXTURE_SWIZZLE_R = 0x8E42, TEXTURE_SWIZZLE_G = 0x8E43,
+                      TEXTURE_SWIZZLE_B = 0x8E44, TEXTURE_SWIZZLE_A = 0x8E45;
     /// <summary>Additive blend factors, for the bloom chain's upsample accumulation.</summary>
     public const uint ZERO = 0, ONE = 1;
     /// <summary>Non-multisample completeness codes, told apart so the HDR target can say WHY it stood down --

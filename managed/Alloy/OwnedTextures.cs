@@ -40,9 +40,16 @@ namespace Sowx.Alloy;
 /// respecified under the driver and a recycled engine name cannot alias a stale resource.</para>
 /// <para><b>What stays borrowed</b> (counted by <see cref="Borrowed"/>, never silently): cube textures
 /// (<c>glImageBasic</c> routes those to <c>CreateCubeTexture</c>, which is not this funnel -- they were
-/// refused by #211 too), the <c>g_bGeneratePLTOnGPU</c> path (composited on the GPU, there are no decoded
-/// pixels to upload), and anything uploaded through <c>DirectCreateTexture</c> -- Ghidra says that is the
+/// refused by #211 too), and anything uploaded through <c>DirectCreateTexture</c> -- Ghidra says that is the
 /// movie player and <c>Camera::RefreshRenderSubframeResources</c>, neither of which Alloy draws.</para>
+/// <para><b>The one resource adopted by COPY</b> (#360): the <c>g_bGeneratePLTOnGPU</c> path. It composites
+/// by RENDERING the layers into an FBO, so there are no decoded pixels and no second upload to aim -- the
+/// finished GL texture is all there is. <see cref="DrainPltCopies"/> takes it with
+/// <c>glTexStorage2D</c> + <c>glCopyImageSubData</c> at the bracket. That is #211's mechanism and NOT its
+/// bug: #211 keyed the copy on the engine's GL NAME, so a re-upload under a copied name served the stale
+/// image until the next world edge. This keys on the same content identity as an upload and re-copies at
+/// the engine's own rebuild funnel. Only reached with <c>pltcpu=0</c>; the default forces the CPU composite
+/// and this queue stays empty.</para>
 /// <para><b>Lifecycle</b> (docs/owned-resource-lifetimes.md), and this table has NO <c>Revoke</c> slot.
 /// Content-keyed resources survive a part-table wipe unchanged, and since they
 /// are populated ONLY at the upload funnel, wiping them on an edge the engine does not rebuild across would
@@ -134,16 +141,22 @@ internal static unsafe class OwnedTextures
             log.Info(_bcn
                 ? "OwnedTextures: BCn transcode armed -- uncompressed uploads are re-encoded BC1/BC3 (bcn=0 in sowx.cfg to keep them raw)"
                 : "OwnedTextures: BCn transcode off (bcn=0) -- uncompressed uploads stay raw");
+        // #360: RESOLVED whenever the table is armed, FORCED only when the knob says so. The flag is now
+        // read as well as written -- it is what says whether a finished build went down the GPU branch and
+        // therefore needs adopting by copy rather than by upload.
+        if (_armed) _pltOnGpu = (int*)Native.Sym(SymbolMap.PltOnGpu);
         if (_armed && _pltWanted)
         {
-            _pltOnGpu = (int*)Native.Sym(SymbolMap.PltOnGpu);
             log.Info(_pltOnGpu != null
                 ? "OwnedTextures: PLT compositing forced to the CPU -- player-character and tinted-creature "
-                + "textures reach the upload funnel and become ownable (pltcpu=0 in sowx.cfg leaves them borrowed)"
-                : "OwnedTextures: g_bGeneratePLTOnGPU unresolved -- PLT textures stay GPU-composited and BORROWED, "
-                + "so under bindless every lit part wearing one is NOT DRAWN (#285: nothing draws what Alloy declines)");
+                + "textures reach the upload funnel and become ownable (pltcpu=0 adopts the GPU composite by copy instead)"
+                : "OwnedTextures: g_bGeneratePLTOnGPU unresolved -- PLT textures stay GPU-composited, "
+                + "adopted by copy where that path is available and BORROWED where it is not (#360)");
             KeepPltOnCpu();
         }
+        else if (_armed)
+            log.Info("OwnedTextures: PLT compositing left on the GPU (pltcpu=0) -- the composite is adopted "
+                   + "by a GPU-side copy at the bracket, keyed on the same content identity as an upload (#360)");
         log.Info(_armed
             ? "OwnedTextures: armed -- Alloy uploads from the engine's decoded pixels (ownedtex=0 to draw from engine ids)"
             : wanted
@@ -168,18 +181,28 @@ internal static unsafe class OwnedTextures
             ? "OwnedTextures: watching RenderInterface::DeleteTextures -- a tid stops resolving the moment it stops meaning its resource"
             : "OwnedTextures: DeleteTextures not installed -- a recycled engine name will resolve the previous area's resource");
 
-        // Attach ran first (AlloyRenderer wires the pass table before it installs it), so a null here means
-        // the knob said no or the symbol did not resolve -- both already logged there, with their reasons.
-        if (_pltOnGpu == null) return;
-        _origConstructImage = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.AurTextureConstructImage, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnConstructImage);
+        // #360: glImageBasic is taken whenever the table is armed, because it is now TWO things -- half of
+        // #358's hold, and the edge that says a PLT build has finished so its composite can be adopted.
+        // ConstructImage is the hold alone, so it stays gated on the flag actually being there to hold.
+        // Attach ran first (AlloyRenderer wires the pass table before it installs it), so a null _pltOnGpu
+        // means the symbol did not resolve -- already logged there, with its reason.
         _origGlImageBasic = (delegate* unmanaged<IntPtr, byte, void>)hooks.Install(
             SymbolMap.AurTextureGlImageBasic, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnGlImageBasic);
-        log.Info(_origConstructImage != null && _origGlImageBasic != null
-            ? "OwnedTextures: GPU-PLT held at zero on both readers -- an options-apply that re-enables it "
-            + "cannot rebuild a character outside the upload funnel any more (#358)"
-            : "OwnedTextures: a GPU-PLT reader did not install -- the flag is only re-asserted per frame, so "
-            + "an options-apply can still rebuild PLT textures GPU-side and leave them BORROWED (#358)");
+        if (_pltOnGpu != null)
+            _origConstructImage = (delegate* unmanaged<IntPtr, void>)hooks.Install(
+                SymbolMap.AurTextureConstructImage, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnConstructImage);
+        if (_pltWanted)
+            log.Info(_origConstructImage != null && _origGlImageBasic != null
+                ? "OwnedTextures: GPU-PLT held at zero on both readers -- an options-apply that re-enables it "
+                + "cannot rebuild a character outside the upload funnel any more (#358)"
+                : "OwnedTextures: a GPU-PLT reader did not install -- the flag is only re-asserted per frame, so "
+                + "an options-apply can still rebuild PLT textures GPU-side and leave them BORROWED (#358)");
+        else
+            log.Info(_origGlImageBasic != null
+                ? "OwnedTextures: watching CAurTextureBasic::glImageBasic -- a GPU-composited PLT build is "
+                + "queued for adoption by copy on the next bracket (#360)"
+                : "OwnedTextures: glImageBasic not installed -- a GPU-composited PLT texture has no edge to "
+                + "adopt it on and stays BORROWED (#360)");
     }
 
     private static delegate* unmanaged<IntPtr, void> _origConstructImage;
@@ -195,12 +218,76 @@ internal static unsafe class OwnedTextures
     }
 
     /// <summary>#358: ...and the same hold on the reader that routes a built PLT texture around the upload
-    /// funnel. Both readers, because either one alone leaves half the decision to a stale flag.</summary>
+    /// funnel. Both readers, because either one alone leaves half the decision to a stale flag.
+    /// <para>#360: and, with the hold off, the edge that says a GPU composite has FINISHED. The flag is read
+    /// before the original runs -- it is what that call is about to branch on -- and the queue is filled
+    /// after, when the cells carry names. Cold: once per texture build.</para></summary>
     [UnmanagedCallersOnly]
     private static void OnGlImageBasic(IntPtr tex, byte useSubImage)
     {
-        KeepPltOnCpu();
+        if (_pltWanted) KeepPltOnCpu();
+        bool gpu = _pltOnGpu != null && *_pltOnGpu != 0;
         if (_origGlImageBasic != null) _origGlImageBasic(tex, useSubImage);
+        if (gpu) QueuePltCopy(tex);
+    }
+
+    /// <summary><c>CAurTextureBasic+0x84</c>: the texture's own format/kind word. <c>glImageBasic</c>
+    /// @0x48bd67 takes the GPU-composite branch on <c>== 4</c> and nothing else, so 4 is the PLT marker and
+    /// this is the ONLY test that separates a build Alloy must copy from one it has already uploaded.</summary>
+    private const int OffPltKind = 0x84, PltKind = 4;
+
+    /// <summary>One finished GPU composite, waiting for a context that may copy it. Deliberately holds NO
+    /// <c>CAurTexture*</c>: the identity is already resolved to a content key here, so nothing in the queue
+    /// can be a pointer into a world that moved on before the bracket (#145's lesson, avoided rather than
+    /// guarded).</summary>
+    private readonly struct PltCopy
+    {
+        public readonly uint Src; public readonly ulong Key;
+        public PltCopy(uint src, ulong key) { Src = src; Key = key; }
+    }
+    private static readonly List<PltCopy> _pltQ = new();
+    private static long _pltCopied, _pltCopyRefused, _pltCopyDied;
+    private static int _pltCopyDiagLeft = 8;
+    private static bool _pltNoCopyLogged;
+
+    /// <summary>#360: enrol every cell of a finished GPU-PLT build for adoption by copy. Queued rather than
+    /// copied here for two reasons, both hard: <c>glCopyImageSubData</c> is GL 4.3 and this runs in the
+    /// ENGINE's context, and the two contexts are share-listed, so the source is only guaranteed visible
+    /// after the flush the frame's own present provides.
+    /// <para>No dedup. The engine builds a texture exactly twice -- creation, and <c>AurTextureSetLayered</c>
+    /// when the PLT scheme changes -- and BOTH drain through here, which is precisely the cadence at which a
+    /// re-composite must produce a new copy. Skipping a build because its key is already in the table is how
+    /// #211's name-keyed copy came to serve a stale skin.</para>
+    /// <para>The rebuild sequence, read at 0x48c630 rather than assumed: the branch frees the cell-names
+    /// array, nulls <c>+0x50</c>, calls <c>RenderInterface::DeleteTextures</c> on the old name, then falls
+    /// into the first-build path for a FRESH <c>GenTextures</c>. So the delete lands inside the original --
+    /// before this runs -- and <see cref="Retire"/> has already dropped the old row and any entry still
+    /// queued against the old name. What is queued here always names the texture that was just composited,
+    /// even where the driver hands the freed name straight back.</para>
+    /// <para>Always ONE cell: the branch writes <c>0x10001</c> to <c>+0xca</c>, i.e. numX = numY = 1. The
+    /// loop is over the grid anyway, because the grid is what the key folds in.</para></summary>
+    private static void QueuePltCopy(IntPtr tex)
+    {
+        if (!_armed || !AurTex.IsBasic(tex)) return;
+        if (*(int*)((byte*)tex + OffPltKind) != PltKind) return;
+        uint* cells = *(uint**)((byte*)tex + OffCellNames);
+        if (cells == null) return;
+        int n = *(short*)((byte*)tex + OffNumX) * *(short*)((byte*)tex + OffNumY);
+        for (int cell = 0; cell < n; cell++)
+        {
+            int etid = (int)cells[cell];
+            if (etid <= 0) continue;
+            _pltQ.Add(new PltCopy((uint)etid, Key(tex, cell)));
+        }
+    }
+
+    /// <summary>The engine is retiring this GL name; anything queued against it describes a texture that no
+    /// longer exists. Dropped rather than copied-and-discarded, because the copy would read a recycled name.
+    /// <para>The queue holds at most a few entries between brackets, so the scan is over nothing.</para></summary>
+    private static void DropQueued(uint name)
+    {
+        for (int i = _pltQ.Count - 1; i >= 0; i--)
+            if (_pltQ[i].Src == name) { _pltQ.RemoveAt(i); _pltCopyDied++; }
     }
 
     private static delegate* unmanaged<IntPtr, byte, int, void> _origCreate;
@@ -529,7 +616,12 @@ internal static unsafe class OwnedTextures
         _log?.Info($"OwnedTextures: [vram] high-water {_peakBytes / OneMiB}MiB across {_peakCount} " +
                    $"owned textures (uploads {_uploads}, re-uploads {_reuploads}, borrowed {_borrowed.Count}" +
                    (_pltOnGpu == null ? _pltWanted ? ", GPU-PLT NOT FORCED OFF (symbol unresolved)" : ", pltcpu=0"
-                                      : _pltForced == 0 ? "" : $", GPU-PLT re-cleared {_pltForced}x") + ")");
+                                      : _pltForced == 0 ? "" : $", GPU-PLT re-cleared {_pltForced}x")
+                   // #360: the copy path is never silent -- a session that adopted nothing and a session
+                   // that has no GPU composites to adopt must not read the same.
+                   + (_pltCopied + _pltCopyRefused + _pltCopyDied == 0 ? ""
+                      : $", GPU-PLT copied {_pltCopied} (refused {_pltCopyRefused}, source died {_pltCopyDied})")
+                   + ")");
     }
 
     /// <summary>Hold <c>g_bGeneratePLTOnGPU</c> at zero. Re-asserted per frame rather than stored once: the
@@ -859,6 +951,7 @@ internal static unsafe class OwnedTextures
         {
             int name = (int)names[i];
             _borrowed.Remove(name);
+            DropQueued((uint)name);   // #360: a queued copy of a name the engine just freed reads a recycle
             if (!_index.TryGetValue(name, out ulong key)) continue;
             _index.Remove(name);
             _retired++;
@@ -898,6 +991,7 @@ internal static unsafe class OwnedTextures
     /// non-resident, one GL_INVALID_OPERATION per texture.</para></summary>
     internal static void Drain()
     {
+        DrainPltCopies();
         if (_pending.Count == 0) return;
         int n = _pending.Count;
         for (int i = 0; i < n; i++)
@@ -910,6 +1004,114 @@ internal static unsafe class OwnedTextures
         _log?.Info($"OwnedTextures: released {n} owned textures (engine names retired so far: {_retired})");
     }
 
+    /// <summary>#360: adopt every queued GPU composite. Runs from <see cref="Drain"/>, i.e. inside the 4.6
+    /// bracket, which is the only place <c>glCopyImageSubData</c> is legal and the first place the source is
+    /// guaranteed published across the share-list.
+    /// <para><b>Why this is not #211's copy path.</b> That one keyed on the ENGINE's GL name, so a texture
+    /// re-uploaded under a name already copied served the previous image until the next world edge. This
+    /// keys on the same content identity every upload does and is re-taken at the engine's own rebuild
+    /// funnel, so a re-composite mints a new owned name and bumps the generation exactly as a re-upload
+    /// does. The mechanism is the same three GL calls; the correctness is entirely in the key.</para>
+    /// <para>Sampler state does NOT ride storage. Filter, wrap, the mip range and the component swizzle are
+    /// carried across explicitly -- a copy that samples differently from the original is not a copy, and the
+    /// swizzle in particular is what the engine sets for its single-channel formats.</para></summary>
+    private static void DrainPltCopies()
+    {
+        if (_pltQ.Count == 0) return;
+        if (Gl.CopyImageSubData == null || Gl.TexStorage2D == null || Gl.GenTextures == null
+            || Gl.BindTexture == null || Gl.GetIntegerv == null || Gl.GetTexLevelParameteriv == null
+            || Gl.GetTexParameteriv == null || Gl.TexParameteri == null)
+        {
+            foreach (PltCopy q in _pltQ) { _borrowed.Add((int)q.Src); _pltCopyRefused++; }
+            _pltQ.Clear();
+            // Its own latch, not the per-texture budget: a driver with no copy path refuses EVERY composite,
+            // and sharing the budget would spend it all on the first character and hide the second class of
+            // failure behind the first.
+            if (!_pltNoCopyLogged)
+            {
+                _pltNoCopyLogged = true;
+                _log?.Info("OwnedTextures: GPU-PLT copy unavailable -- this driver has no glCopyImageSubData "
+                         + "or no glTexStorage2D, so every GPU composite stays BORROWED (#360)");
+            }
+            return;
+        }
+
+        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
+        for (int i = 0; i < _pltQ.Count; i++) Copy(_pltQ[i]);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
+        _pltQ.Clear();
+    }
+
+    /// <summary>Texture parameters that must survive the copy. Read off the source, written to the
+    /// destination, in this order -- the four sampler dials, the mip range, and the four swizzle
+    /// channels.</summary>
+    private static readonly uint[] CarriedParams =
+    {
+        Gl.TEXTURE_MIN_FILTER, Gl.TEXTURE_MAG_FILTER, Gl.TEXTURE_WRAP_S, Gl.TEXTURE_WRAP_T,
+        Gl.TEXTURE_BASE_LEVEL, Gl.TEXTURE_MAX_LEVEL,
+        Gl.TEXTURE_SWIZZLE_R, Gl.TEXTURE_SWIZZLE_G, Gl.TEXTURE_SWIZZLE_B, Gl.TEXTURE_SWIZZLE_A,
+    };
+
+    /// <summary>One queued composite. Every refusal is counted and the source is left BORROWED, which is the
+    /// state it was already in -- a refused copy costs the character nothing it had.</summary>
+    private static void Copy(PltCopy q)
+    {
+        Gl.BindTexture(Gl.TEXTURE_2D, q.Src);
+        DrainErrors();   // the verdict below is ours to read
+
+        int levels = 0, fmt = 0;
+        int* lw = stackalloc int[MaxLevels], lh = stackalloc int[MaxLevels];
+        for (; levels < MaxLevels; levels++)
+        {
+            int w = 0, h = 0;
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_WIDTH, &w);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_HEIGHT, &h);
+            if (w <= 0 || h <= 0) break;
+            lw[levels] = w; lh[levels] = h;
+        }
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
+        // An UNSIZED answer cannot be handed to glTexStorage2D, and guessing a promotion is what changed the
+        // sampler swizzle under #211. Refused, named, and left borrowed instead.
+        if (levels == 0 || fmt == 0 || fmt == (int)Gl.RGBA || fmt == (int)Gl.RGB)
+        {
+            _borrowed.Add((int)q.Src); _pltCopyRefused++;
+            if (_pltCopyDiagLeft-- > 0)
+                _log?.Info($"OwnedTextures: GPU-PLT tid {q.Src} not copied -- levels={levels} "
+                         + $"internalformat=0x{fmt:x} (unsized or unreadable), left BORROWED (#360)");
+            return;
+        }
+
+        int* saved = stackalloc int[CarriedParams.Length];
+        for (int i = 0; i < CarriedParams.Length; i++)
+            Gl.GetTexParameteriv(Gl.TEXTURE_2D, CarriedParams[i], saved + i);
+
+        uint dst;
+        Gl.GenTextures(1, &dst);
+        if (dst == 0) { _borrowed.Add((int)q.Src); _pltCopyRefused++; return; }
+        Gl.BindTexture(Gl.TEXTURE_2D, dst);
+        Gl.TexStorage2D(Gl.TEXTURE_2D, levels, (uint)fmt, lw[0], lh[0]);
+        for (int i = 0; i < CarriedParams.Length; i++)
+            Gl.TexParameteri(Gl.TEXTURE_2D, CarriedParams[i], saved[i]);
+        for (int l = 0; l < levels; l++)
+            Gl.CopyImageSubData(q.Src, Gl.TEXTURE_2D, l, 0, 0, 0, dst, Gl.TEXTURE_2D, l, 0, 0, 0,
+                                lw[l], lh[l], 1);
+
+        uint err = Gl.GetError();       // read BEFORE Measure, whose own queries would mask it
+        if (err != 0)
+        {
+            if (Gl.DeleteTextures != null) Gl.DeleteTextures(1, &dst);
+            _borrowed.Add((int)q.Src); _pltCopyRefused++;
+            if (_pltCopyDiagLeft-- > 0)
+                _log?.Info($"OwnedTextures: GPU-PLT tid {q.Src} not copied -- the copy gave 0x{err:x} "
+                         + $"({lw[0]}x{lh[0]}, {levels} levels, 0x{fmt:x}), left BORROWED (#360)");
+            return;
+        }
+
+        Replace(q.Key, (int)q.Src, dst, Measure());
+        _pltCopied++;
+        HighWater();
+    }
+
     /// <summary>The GL-NAME edge: the objects went with the context. Names are dropped, nothing is deleted --
     /// deleting into a dead context is what #209 calls the terminal edge.</summary>
     internal static void ContextLost()
@@ -919,6 +1121,7 @@ internal static unsafe class OwnedTextures
         _owned.Clear();
         _borrowed.Clear();
         _pending.Clear();
+        _pltQ.Clear();   // #360: queued sources are names in a context that no longer exists
         _bytes = 0;
         // #284: every engine texture is unbuilt again on the far side of a context loss, so the one-attempt
         // ledger has to go with the names it was a ledger about -- keeping it would refuse the whole world
@@ -1045,6 +1248,20 @@ internal static unsafe class OwnedTextures
         foreach (var kv in savedIdx) _index[kv.Key] = kv.Value;
         foreach (uint o in savedOwned) _owned.Add(o);
         foreach (int b in savedBorrowed) _borrowed.Add(b);
+        // #360: the queue's two edges, off-device. A copy that outlives the name it was queued against
+        // reads a recycled texture, which is the whole of what killed #211's copy path -- so the drop is
+        // asserted here, and asserted to be exact rather than a wipe.
+        int svQDied = (int)_pltCopyDied;
+        var svQ = new List<PltCopy>(_pltQ);
+        _pltQ.Clear();
+        _pltQ.Add(new PltCopy(41, 100)); _pltQ.Add(new PltCopy(42, 200)); _pltQ.Add(new PltCopy(41, 300));
+        uint deadName = 41;
+        Retire(1, &deadName);
+        ok &= _pltQ.Count == 1 && _pltQ[0].Src == 42 && _pltCopyDied == svQDied + 2;
+        _pltQ.Clear();
+        foreach (PltCopy q in svQ) _pltQ.Add(q);
+        _pltCopyDied = svQDied;
+
         // #358: the hold itself, over a stand-in flag. A re-clear that does not actually zero the global is
         // the whole bug wearing a fixed label, and the readers' trampolines are two lines around this call.
         int stand = 1;
