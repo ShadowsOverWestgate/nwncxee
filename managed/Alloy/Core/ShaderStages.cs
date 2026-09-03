@@ -36,6 +36,19 @@ internal static class ShaderStages
 
         """;
 
+    /// <summary>#355: the grass vertex stage is invariant over ITSELF, not over the world's clip expression:
+    /// its depth prepass and its colour pass are two programs compiled from this one text, and the colour
+    /// pass tests LEQUAL against the prepass's depth. It displaces, so it neither computes nor promises the
+    /// <see cref="Invariant"/> expression.</summary>
+    internal const string SelfInvariant = """
+        // LOAD-BEARING: `invariant gl_Position;`. This stage is compiled into TWO programs -- the grass depth
+        // prepass and the grass colour pass -- and the second re-tests the first's depth with LEQUAL, so the
+        // clip position must come out bit-identical from both. Keep the declaration; the expression is yours.
+        // See docs/shader-overrides.md.
+
+
+        """;
+
     internal const string Record = """
         // LOAD-BEARING: the SowxDraw struct below is the extender's per-draw SSBO record, and this file is a
         // COPY of a layout that lives in C#. Drop or reorder a field and every draw reads its neighbour's.
@@ -74,7 +87,7 @@ internal static class ShaderStages
         (AlloyRenderer.ShdLitFs,        Banner + Record),
         (AlloyRenderer.ShdWaterVs,      Banner + Invariant + Record),
         (AlloyRenderer.ShdWaterFs,      Banner + Record),
-        (GrassField.ShdGrassVs,            Banner),
+        (GrassField.ShdGrassVs,            Banner + SelfInvariant),
         (GrassField.ShdGrassFs,            Banner),
         (AlloyLights.ShdClusterCs,         Banner),
         (CasterPass.ShdCastVs,             Banner + Invariant + Record + CasterRecord),
@@ -159,7 +172,7 @@ internal static class ShaderStages
                   && header.Contains("docs/shader-overrides.md")
                   && header.Contains(Record) == src.Contains("struct SowxDraw")
                   && header.Contains(CasterRecord) == src.Contains("uDraw[gl_BaseInstance]")
-                  && header.Contains(Invariant) == src.Contains("invariant gl_Position;");
+                  && (header.Contains(Invariant) || header.Contains(SelfInvariant)) == src.Contains("invariant gl_Position;");
         }
         log.Info(ok
             ? $"ShaderStages.SelfCheck: passed ({All.Length} overridable resrefs)"

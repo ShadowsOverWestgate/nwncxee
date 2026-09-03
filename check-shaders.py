@@ -406,6 +406,7 @@ def programs(c, s):
         "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),
         "owned water": (s["cx_water_vs"], s["cx_water_fs"]),
         "instanced grass": (s["cx_grass_vs"], s["cx_grass_fs"]),
+        "grass depth prepass": (s["cx_grass_vs"], c["GrassDepthFs"]),
         "clustered light build": (s["cx_cluster_cs"],),
         "sky decode": (c["FullscreenVs"], c["SkyDecodeFs"]),
     }

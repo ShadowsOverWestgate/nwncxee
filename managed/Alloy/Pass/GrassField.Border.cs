@@ -173,7 +173,7 @@ internal static unsafe partial class GrassField
     {
         if (_blCount == 0) return 0;
         Vector3 eye = AlloyRenderer.EyePos;
-        float farDist = MathF.Sqrt(MathF.Max(*_farDist, 0f));
+        float farDist = FarDist();
         int seen = 0;
         for (int i = 0; i < _blCount; i++)
         {
