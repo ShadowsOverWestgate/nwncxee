@@ -297,9 +297,22 @@ internal static unsafe class SymbolMap
     /// under <c>== 0</c>, and <c>glImageBasic</c> @0x48bd54 gates the ordinary GenTextures/upload path on
     /// <c>(flag == 0 || tex+0x84 != 4)</c> -- <c>+0x84 == 4</c> being the PLT marker. That disjunction is
     /// precisely why non-PLT models are Alloy's and PLT ones are not.</para>
-    /// <para>Written by a settings callback @0x8ca140 (<c>g_bGeneratePLTOnGPU = *(byte*)arg2</c>), which can
-    /// fire after our install -- hence the per-frame re-assert rather than a one-shot store.</para></summary>
+    /// <para>Written by a settings callback @0x8ca140 (<c>g_bGeneratePLTOnGPU = *(byte*)arg2</c>) -- its one
+    /// writer, and an options-apply fires it and rebuilds every PLT texture in the same engine step. #358:
+    /// which is why the flag is held at the two readers below, not merely re-asserted per frame.</para></summary>
     public const string PltOnGpu = "g_bGeneratePLTOnGPU";
+    /// <summary><c>CAurTextureBasic::ConstructImage()</c> @0x48a5d0 -- the first of the two
+    /// <see cref="PltOnGpu"/> readers, and the one that decides whether the PLT composite happens on the CPU
+    /// at all. Hooked only to hold that flag at zero across the call: the settings callback @0x8ca140 writes
+    /// it and the engine rebuilds every PLT texture in the SAME step (options-apply), which a per-frame
+    /// re-assert is one frame too late for.
+    /// <para>ABI: <c>(CAurTextureBasic* /*rdi*/)</c>, no return.</para></summary>
+    public const string AurTextureConstructImage = "_ZN16CAurTextureBasic14ConstructImageEv";
+    /// <summary><c>CAurTextureBasic::glImageBasic(bool)</c> @0x48bcf0 -- the other <see cref="PltOnGpu"/>
+    /// reader, and the one that routes a PLT texture (<c>+0x84 == 4</c>) around the upload funnel. Hooked
+    /// for the same reason and on the same terms as <see cref="AurTextureConstructImage"/>.
+    /// <para>ABI: <c>(CAurTextureBasic* /*rdi*/, bool useSubImage /*sil*/)</c>, no return.</para></summary>
+    public const string AurTextureGlImageBasic = "_ZN16CAurTextureBasic12glImageBasicEb";
 
     // ---- shadow replacement (#65). Linux-only; no _win entries -> skip-with-log on Windows. ----
     // The three self-contained shadow sub-passes Scene::RenderShadows dispatches. No-op'ing these

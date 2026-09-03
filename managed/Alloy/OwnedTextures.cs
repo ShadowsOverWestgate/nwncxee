@@ -167,6 +167,40 @@ internal static unsafe class OwnedTextures
         log.Info(_origDelete != null
             ? "OwnedTextures: watching RenderInterface::DeleteTextures -- a tid stops resolving the moment it stops meaning its resource"
             : "OwnedTextures: DeleteTextures not installed -- a recycled engine name will resolve the previous area's resource");
+
+        // Attach ran first (AlloyRenderer wires the pass table before it installs it), so a null here means
+        // the knob said no or the symbol did not resolve -- both already logged there, with their reasons.
+        if (_pltOnGpu == null) return;
+        _origConstructImage = (delegate* unmanaged<IntPtr, void>)hooks.Install(
+            SymbolMap.AurTextureConstructImage, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnConstructImage);
+        _origGlImageBasic = (delegate* unmanaged<IntPtr, byte, void>)hooks.Install(
+            SymbolMap.AurTextureGlImageBasic, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnGlImageBasic);
+        log.Info(_origConstructImage != null && _origGlImageBasic != null
+            ? "OwnedTextures: GPU-PLT held at zero on both readers -- an options-apply that re-enables it "
+            + "cannot rebuild a character outside the upload funnel any more (#358)"
+            : "OwnedTextures: a GPU-PLT reader did not install -- the flag is only re-asserted per frame, so "
+            + "an options-apply can still rebuild PLT textures GPU-side and leave them BORROWED (#358)");
+    }
+
+    private static delegate* unmanaged<IntPtr, void> _origConstructImage;
+    private static delegate* unmanaged<IntPtr, byte, void> _origGlImageBasic;
+
+    /// <summary>#358: the engine is about to decide whether to composite this texture's PLT layers on the
+    /// CPU. Cold -- once per texture build -- and the whole body is one predicted compare.</summary>
+    [UnmanagedCallersOnly]
+    private static void OnConstructImage(IntPtr tex)
+    {
+        KeepPltOnCpu();
+        if (_origConstructImage != null) _origConstructImage(tex);
+    }
+
+    /// <summary>#358: ...and the same hold on the reader that routes a built PLT texture around the upload
+    /// funnel. Both readers, because either one alone leaves half the decision to a stale flag.</summary>
+    [UnmanagedCallersOnly]
+    private static void OnGlImageBasic(IntPtr tex, byte useSubImage)
+    {
+        KeepPltOnCpu();
+        if (_origGlImageBasic != null) _origGlImageBasic(tex, useSubImage);
     }
 
     private static delegate* unmanaged<IntPtr, byte, int, void> _origCreate;
@@ -508,8 +542,23 @@ internal static unsafe class OwnedTextures
     {
         if (_pltOnGpu == null || *_pltOnGpu == 0) return;
         *_pltOnGpu = 0;
-        _pltForced++;
+        // #358: the [vram] line carries the count, but it only prints when the high-water GROWS -- so after
+        // an area has settled the count reads stale, and "re-cleared 1x" looked like proof the flag never
+        // came back when it was only proof nobody had looked since. The re-clears that matter are the ones
+        // AFTER Attach's, they are cold, and there are a handful of them: say each one out loud.
+        if (_pltForced++ > 0 && _pltDiagLeft > 0)
+        {
+            _pltDiagLeft--;
+            _log?.Info($"OwnedTextures: g_bGeneratePLTOnGPU was set back to 1 -- re-cleared ({_pltForced}x). "
+                     + (_origConstructImage != null && _origGlImageBasic != null
+                        ? "Held at the readers, so no PLT texture is rebuilt outside the upload funnel (#358)"
+                        : "The readers are NOT hooked, so a rebuild in this same engine step is GPU-composited "
+                        + "and its character stays BORROWED until something re-creates it (#358)"));
+        }
     }
+
+    /// <summary>A small budget of named re-clears: the population is what matters and it is small.</summary>
+    private static int _pltDiagLeft = 8;
 
     /// <summary>#284: textures whose GL id is still 0 -- a live <c>CAurTexture*</c> whose build has never
     /// produced a name. The engine builds a texture EXACTLY twice: when it is first created
@@ -996,6 +1045,17 @@ internal static unsafe class OwnedTextures
         foreach (var kv in savedIdx) _index[kv.Key] = kv.Value;
         foreach (uint o in savedOwned) _owned.Add(o);
         foreach (int b in savedBorrowed) _borrowed.Add(b);
+        // #358: the hold itself, over a stand-in flag. A re-clear that does not actually zero the global is
+        // the whole bug wearing a fixed label, and the readers' trampolines are two lines around this call.
+        int stand = 1;
+        int* svPlt = _pltOnGpu; long svForced = _pltForced; int svDiag = _pltDiagLeft;
+        _pltOnGpu = &stand; _pltForced = 1; _pltDiagLeft = 0;      // budget spent: no log line from a check
+        KeepPltOnCpu();
+        ok &= stand == 0 && _pltForced == 2;
+        KeepPltOnCpu();
+        ok &= _pltForced == 2;                                      // already zero: nothing to re-clear
+        _pltOnGpu = svPlt; _pltForced = svForced; _pltDiagLeft = svDiag;
+
         _armed = wasArmed;
         _retired = savedRetired;   // the check's own synthetic deletes are not a session's
         log.Info(ok ? "OwnedTextures.SelfCheck: passed" : "OwnedTextures.SelfCheck: FAILED");
