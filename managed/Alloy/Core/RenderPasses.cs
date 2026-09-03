@@ -84,6 +84,14 @@ internal static class RenderPasses
         }, log);
         r.Register(new PassLifecycle
         {
+            Name = "border",
+            Install = AreaBorder.Install,
+            SelfCheck = AreaBorder.SelfCheck,
+            Stats = _ => AreaBorder.Stats(),
+            Describe = AreaBorder.Describe,
+        }, log);
+        r.Register(new PassLifecycle
+        {
             Name = "beams",
             Install = Beams.Install,
             ContextLost = Beams.ContextLost,

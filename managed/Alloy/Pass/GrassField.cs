@@ -37,7 +37,7 @@ namespace Sowx.Alloy;
 /// <c>PartTriMesh::Draw</c> inside a <c>RenderDrawBucket</c> walk and this is neither. That is #133, and
 /// suppressing <c>DoBinBucket</c> regresses nothing -- vanilla grass cast no shadow either.</para>
 /// </summary>
-internal static unsafe class GrassField
+internal static unsafe partial class GrassField
 {
     /// <summary><c>CAurTriangleList</c> layout, from Ghidra <c>CAurTriangleList::AddTriangle</c> @0x4b5650 and
     /// <c>BuildGrassPolys</c> @0x4b5080: the world-space face vertices as a flat float array (9 floats per
@@ -266,6 +266,7 @@ internal static unsafe class GrassField
         }
 
         Array.Fill(_slot, -1);
+        BorderInstall(log);
         _origBin = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.DoBinBucket, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnDoBinBucket);
         _origReload = (delegate* unmanaged<IntPtr, void>)hooks.Install(
@@ -396,6 +397,7 @@ internal static unsafe class GrassField
                 seen++;
             }
         }
+        seen += CollectBorder(ref budget);
         return seen;
     }
 
@@ -1296,7 +1298,7 @@ internal static unsafe class GrassField
            $"({_pushers} displacing, {_cullers} culling, {_reticles} non-solid skipped) " +
            $"({_patchCount} patches, {_instCount} blades resident; " +
            $"{(_samples > 1 ? $"{_samples}x MSAA, alpha-to-coverage live" : "no MSAA, dithered edge")}" +
-           $"{(_anyFlat ? ", A TEXTURE HAS NO MIPS" : "")})";
+           $"{(_anyFlat ? ", A TEXTURE HAS NO MIPS" : "")}) {DescribeBorder()}";
 
     /// <summary>Live dial behind <c>/grass &lt;key&gt; &lt;value&gt;</c>. Returns the old value, or NaN for an
     /// unknown key. Density is the one that matters for #127's acceptance criterion: it is a CLIENT knob, not
