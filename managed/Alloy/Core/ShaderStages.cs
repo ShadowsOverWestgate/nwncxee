@@ -93,7 +93,7 @@ internal static class ShaderStages
         AlloyRenderer.ShdFullbrightVs => AlloyRenderer.OwnedVs,
         AlloyRenderer.ShdFullbrightFs => AlloyRenderer.OwnedFs,
         AlloyRenderer.ShdLitVs => AlloyRenderer.OwnedLitVs,
-        AlloyRenderer.ShdLitFs => AlloyRenderer.OwnedLitFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.MaterialLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + AlloyRenderer.OwnedLitFsMain,
+        AlloyRenderer.ShdLitFs => AlloyRenderer.OwnedLitFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.MaterialLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + AlloyRenderer.HostFs + AlloyRenderer.OwnedLitFsMain,
         AlloyRenderer.ShdWaterVs => FrameSnapshot.VsHead + AlloyRenderer.DrawBufDecl + FrameSnapshot.VsMain,
         AlloyRenderer.ShdWaterFs => FrameSnapshot.FsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + FrameSnapshot.FsMain,
         GrassField.ShdGrassVs => GrassField.GrassVs,

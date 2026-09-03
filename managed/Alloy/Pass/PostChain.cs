@@ -96,6 +96,10 @@ internal static unsafe class PostChain
     /// Published as <see cref="DepthResource"/> by the prepass; sampling it while it is attached is the
     /// feedback loop <see cref="SceneDepth"/> exists to avoid, so consumers take a copy.</summary>
     internal static uint DepthTex => _depthTex;
+    /// <summary>The HDR colour target, for the sky decode that reads it back through a texture barrier.</summary>
+    internal static uint HdrTex => _hdrTex;
+    /// <summary>The empty VAO the full-screen triangle draws under.</summary>
+    internal static uint FullscreenVao => _vao;
     private static int _w, _h, _levels;
     private static uint _progDown, _progUp, _progComposite;
     private static uint _vao;

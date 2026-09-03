@@ -277,6 +277,9 @@ public static unsafe class Gl
     /// Colour blits convert format (RGBA8 -&gt; RGBA16F is legal); depth blits do NOT, which is why #139's
     /// HDR target shares the engine's depth attachment rather than copying it.</summary>
     public static delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void> BlitFramebuffer;
+    /// <summary>glTextureBarrier (GL 4.5): makes a texture that is also the bound draw target readable, for
+    /// the one legal shape -- each fragment reads its own texel once, then writes it.</summary>
+    public static delegate* unmanaged<void> TextureBarrier;
     /// <summary>glGenerateMipmap: builds the whole chain from level 0 on the bound texture. The probe's
     /// roughness blur IS this chain (#121).</summary>
     public static delegate* unmanaged<uint, void> GenerateMipmap;
@@ -475,6 +478,7 @@ public static unsafe class Gl
         BlitFramebuffer =
             (delegate* unmanaged<int, int, int, int, int, int, int, int, uint, uint, void>)P("glBlitFramebuffer");
         GenerateMipmap = (delegate* unmanaged<uint, void>)P("glGenerateMipmap");
+        TextureBarrier = (delegate* unmanaged<void>)P("glTextureBarrier");
         ClearColor = (delegate* unmanaged<float, float, float, float, void>)P("glClearColor");
         DrawBuffer = (delegate* unmanaged<uint, void>)P("glDrawBuffer");
         ReadBuffer = (delegate* unmanaged<uint, void>)P("glReadBuffer");

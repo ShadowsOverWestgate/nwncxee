@@ -96,13 +96,16 @@ def harvest():
 # can find one. Set SOWX_CONTENT_SHD to point elsewhere; missing is not an error, it is the stub's case.
 CONTENT_SHD = os.environ.get("SOWX_CONTENT_SHD",
                              os.path.expanduser("~/repos/sow-topdata/assets/shaders"))
-VANILLA = re.compile(r"^([ \t]*)// \$VANILLA (\w+)\n.*?^[ \t]*// \$VANILLA-END[ \t]*$",
+VANILLA = re.compile(r"^([ \t]*)// \$VANILLA(-HOST)? (\w+)\n(.*?)^[ \t]*// \$VANILLA-END[ \t]*$",
                      re.S | re.M)
 
 
 # Mirrors VanillaShader.Supplied: the engine's uniform/varying interface, which the renderer's own
 # environment block stands in for and which must never be pulled into an Alloy stage.
 SUPPLIED = {"inc_common", "inc_uniforms"}
+# ...and VanillaShader.Substituted: the one include a HOSTED stage gets a stand-in for (#350). The text is
+# the C# constant, read out of the harvest so the two cannot drift.
+SUBSTITUTED = {"inc_standard": "VanillaStandardFs"}
 
 
 def find_shd(name):
@@ -112,13 +115,14 @@ def find_shd(name):
     return None
 
 
-def expand(path, done, depth=0):
+def expand(text, done, consts, depth=0):
     """A content file's own #includes, resolved out of the checkout -- the C# side resolves them through
-    the resource chain, and a cx_* hook file is composed OF them. One visit each: the files carry #ifndef
+    the resource chain, and a cx_* hook file is composed OF them. One visit each PER STAGE (`done` is
+    shared across a stage's regions, as VanillaShader.Splice shares its list): the files carry #ifndef
     guards, so a second inclusion is already a no-op in GLSL. An include the checkout does not answer for is
     dropped, which is how the ones the renderer's environment supplies (inc_uniforms) stay out."""
     out = []
-    for line in open(path).read().split("\n"):
+    for line in text.split("\n"):
         t = line.lstrip()
         if not t.startswith("#include"):
             out.append(line)
@@ -127,23 +131,67 @@ def expand(path, done, depth=0):
         if not m or m.group(1) in done or m.group(1) in SUPPLIED or depth >= 4:
             continue
         done.add(m.group(1))
+        if m.group(1) in SUBSTITUTED:
+            out += expand(consts[SUBSTITUTED[m.group(1)]], done, consts, depth + 1)
+            continue
         hit = find_shd(m.group(1))
         if hit:
-            out += expand(hit, done, depth + 1)
+            out += expand(open(hit).read(), done, consts, depth + 1)
     return out
 
 
-def splice(src, seen):
+MAIN_FN = re.compile(r"\bvoid\s+main\s*\(\s*(?:void)?\s*\)")
+# Mirrors VanillaShader.StubFn: a function DEFINITION in a stub, anchored on its opening brace.
+STUB_FN = re.compile(r"^\s*(?:\w+\s+)+(\w+)\s*\([^)]*\)\s*\{", re.M)
+OWN_DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)", re.M)
+
+
+def host(stock, resref, done, consts):
+    """Mirrors VanillaShader.HostText (#350): a content FRAGMENT STAGE rewritten to run as a function of the
+    lit program. main() renamed, gl_FragColor redirected into FragmentColor, the stage's OWN #defines scoped
+    to it (undefined before and after, then the environment's macros re-issued), and its declaration of a
+    name the environment supplies dropped. The wrapper reads the MATERIAL_*_VALUE terms back."""
+    text = "\n".join(expand(stock, done, consts))
+    if not MAIN_FN.search(text):
+        return None
+    text = MAIN_FN.sub(f"void SowxHostMain_{resref}()", text, count=1)
+    text = re.sub(r"\bgl_FragColor\b", "FragmentColor", text)
+    env = OWN_DEFINE.findall(consts["VanillaEnvDefs"])
+    text = re.sub(r"^[ \t]*uniform\b[^;\n]*\b(?:" + "|".join(env) + r")[ \t]*;[^\n]*\n?", "", text, flags=re.M)
+    own = list(dict.fromkeys(OWN_DEFINE.findall(stock)))
+    undef = "".join(f"#undef {n}\n" for n in own)
+    return (undef + text + "\n"
+            + f"void SowxHost_{resref}()\n{{\n    SowxHostMain_{resref}();\n"
+            + "    fSpecularity = MATERIAL_SPECULARITY_VALUE;\n    fRoughness = MATERIAL_ROUGHNESS_VALUE;\n"
+            + "    fMetallicness = MATERIAL_METALLICNESS_VALUE;\n    SpecularColor = MATERIAL_SPECULAR_COLOR_VALUE;\n}\n"
+            + undef + consts["VanillaEnvDefs"])
+
+
+def splice(src, seen, consts):
     """Replace each marked region with the content repo's copy of that .shd, where one exists."""
+    done = set()
     def one(m):
-        indent, resref = m.group(1), m.group(2)
+        indent, hosted, resref, stub = m.group(1), m.group(2), m.group(3), m.group(4)
         hit = find_shd(resref)
         if hit is None:
             seen.setdefault(resref, None)
             return m.group(0)
         seen[resref] = hit
-        body = expand(hit, set())
-        return indent + f"// $VANILLA {resref}\n" + "\n".join(indent + l if l.strip() else "" for l in body)
+        if resref in done:      # an earlier region already included it: its functions exist
+            return indent + f"// $VANILLA{hosted or ''} {resref}"
+        done.add(resref)
+        stock = open(hit).read()
+        body = host(stock, resref, done, consts) if hosted else "\n".join(expand(stock, done, consts))
+        # Mirrors VanillaShader.Validate: every function the stub defines must appear in the spliced text,
+        # or the runtime compiles the stub for this region -- so the check does the same rather than
+        # accepting text the runtime would reject.
+        missing = [n for n in STUB_FN.findall(stub) if not re.search(r"\b" + n + r"\s*\(", body or "")]
+        if body is None or missing:
+            print(f"vanilla bridge: {resref}.shd " + ("has no main() to host" if body is None
+                  else f"does not define {', '.join(missing)}") + " -- the stub stands")
+            return m.group(0)
+        return (indent + f"// $VANILLA{hosted or ''} {resref}\n"
+                + "\n".join(indent + l if l.strip() else "" for l in body.split("\n")))
     return VANILLA.sub(one, src) if os.path.isdir(CONTENT_SHD) else src
 
 
@@ -174,7 +222,7 @@ def composition(consts):
         out[ref] = "".join(pieces)
     seen = {}
     for ref in out:
-        out[ref] = splice(out[ref], seen)
+        out[ref] = splice(out[ref], seen, consts)
     for resref, path in sorted(seen.items()):
         print(f"vanilla bridge: {resref}.shd "
               + (f"spliced from {os.path.relpath(path, os.path.expanduser('~'))}" if path
@@ -359,6 +407,7 @@ def programs(c, s):
         "owned water": (s["cx_water_vs"], s["cx_water_fs"]),
         "instanced grass": (s["cx_grass_vs"], s["cx_grass_fs"]),
         "clustered light build": (s["cx_cluster_cs"],),
+        "sky decode": (c["FullscreenVs"], c["SkyDecodeFs"]),
     }
 
 

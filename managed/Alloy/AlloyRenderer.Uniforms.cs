@@ -172,29 +172,29 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The engine's own area terms, captured from SetLightGL's index -1 path. No capture yet (a
     /// pass before the first EnableLights) leaves the surface on ambient alone rather than unlit black.</summary>
-    private static void UploadAreaTerms() => UploadAreaTerms(_litAmbient, _litDiffuse, _litDir);
+    private static void UploadAreaTerms(in LitLoc L) => UploadAreaTerms(L.Ambient, L.Diffuse, L.Dir);
 
     /// <summary>Point the lit program at <see cref="CasterPass"/>'s cascade array, or tell it there is nothing
     /// to sample. Everything the receiver needs comes from that pass's published render-time values -- the
     /// matrices are never re-derived here, and the freshness test is the single gate that covers interiors, a
     /// vanilla stretch and a disarm alike.</summary>
-    private static void UploadSunCascades()
-        => UploadSunCascades(_litSunTex, _litSunVp, _litSunTexel, _litSunBias, _litSunCount, _litSunDyn,
-                             _litSunFocus, _litSunRadius);
+    private static void UploadSunCascades(in LitLoc L)
+        => UploadSunCascades(L.SunTex, L.SunVp, L.SunTexel, L.SunBias, L.SunCount, L.SunDyn,
+                             L.SunFocus, L.SunRadius);
 
     /// <summary>Point the lit program at <see cref="CasterPass"/>'s local-light cube array, or tell it there
     /// is nothing to sample. The per-slot position and far plane are the ones each cube was RENDERED with --
     /// the receiver never re-derives them from the live light, which is what keeps a carried torch's shadow
     /// attached to the torch. Same freshness gate as the cascades.</summary>
-    private static void UploadLocalCubes()
-        => UploadLocalCubes(_litCubeTex, _litCubeLight, _litCubePlane, _litCubeCount, _litCubeSoft,
-                            _litCubeDynPage);
+    private static void UploadLocalCubes(in LitLoc L)
+        => UploadLocalCubes(L.CubeTex, L.CubeLight, L.CubePlane, L.CubeCount, L.CubeSoft,
+                            L.CubeDynPage);
 
     /// <summary>#121: point the lit program at the IBL probe, or tell it there is nothing to sample
     /// (<c>uProbeMips</c> 0). Unbinding rather than leaving the cube bound during a capture is not
     /// belt-and-braces: sampling a texture that is an attachment of the framebuffer being written is
     /// undefined, and the capture draws through this very program.</summary>
-    private static void UploadProbe() => UploadProbe(_litProbeMips, _litProbeGain, _litSceneEnv);
+    private static void UploadProbe(in LitLoc L) => UploadProbe(L.ProbeMips, L.ProbeGain, L.SceneEnv);
 
     /// <summary>#127: the same terms, into whichever program's locations the caller names -- the Alloy grass
     /// pass runs its own program over the same lights, so the area terms cannot be a property of the lit

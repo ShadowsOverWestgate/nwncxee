@@ -590,9 +590,9 @@ internal static unsafe class FrameSnapshot
 
         """ + AlloyRenderer.DrawBufDecl + AlloyRenderer.FeatDecl + AlloyRenderer.KeyFogDecl + """
         uniform sampler2D uTex;        // the water material's diffuse -- its AVERAGE is the liquid's colour
-        // #347: VanillaEnvFs aliases this as texUnit6. Declared, never bound, never sampled here -- its only
-        // reader is the content's SowxSurfaceHook, which this stage does not call (water takes the DISPLAY
-        // hook alone). Present so the spliced hook file compiles; unused, it is eliminated and its location
+        // #347: VanillaEnvFs aliases this as texUnit6. Declared, never bound, never sampled here -- nothing
+        // spliced into this stage reads it since #350 (water takes the DISPLAY hook alone). Present so a
+        // content file that names texUnit6 still compiles; unused, it is eliminated and its location
         // resolves to -1.
         uniform sampler2D uFlowTex;
         // #129: the one framebuffer copy, taken at PassId.FbCopy. Since #132 its colour is LINEAR -- the

@@ -103,8 +103,25 @@ public sealed unsafe partial class AlloyRenderer
         return GlProgram.Graphics(vs, fs, _log, $"AlloyRenderer {what} program (embedded)");
     }
 
+    /// <summary>#350: delete every program that splices content and clear its failure latch, so each rebuilds
+    /// on its next use from the module now loaded. Inside the bracket, which is why the edge only sets the
+    /// flag. The fullbright and depth programs splice nothing and stay.</summary>
+    private static void DropSpliced()
+    {
+        _spliceStale = false;
+        if (_progLit46 != 0) Gl.DeleteProgram(_progLit46);
+        if (_progLitHost != 0) Gl.DeleteProgram(_progLitHost);
+        if (_progWater != 0) Gl.DeleteProgram(_progWater);
+        _progLit46 = 0; _progLitHost = 0; _progWater = 0;
+        _litFailed = false; _waterFailed = false;
+        GrassField.DropProgram();
+        SceneWalk.Dirty = true;
+        _log?.Info("AlloyRenderer: module changed -- the spliced programs (lit, hosted lit, water, grass) are dropped and rebuild from this module's resource chain");
+    }
+
     private static bool EnsureProgram()
     {
+        if (_spliceStale) DropSpliced();
         if (_prog46 == 0 && !_progFailed)
         {
             uint prog = GlProgram.Graphics(ShdFullbrightVs, ShaderStages.Source(ShdFullbrightVs),
@@ -168,6 +185,10 @@ public sealed unsafe partial class AlloyRenderer
         }
         _progDepth = prog;
         _depthVp = GlProgram.Loc(prog, "uVP"); _depthBase = GlProgram.Loc(prog, "uDrawBase");
+        _progSkyDecode = GlProgram.Graphics(PostChain.FullscreenVs, SkyDecodeFs, _log, "AlloyRenderer sky decode");
+        _skyDecodeHdr = GlProgram.Loc(_progSkyDecode, "uHdr");
+        if (_progSkyDecode == 0 || Gl.TextureBarrier == null)
+            _log?.Info("AlloyRenderer: sky decode unavailable -- a hosted sky program draws display space into the linear frame and reads bright");
         // #124's second stage. A failure here is NOT fatal to the prepass -- dissolving batches simply go
         // back to being left out of it, which is what they did before the fix.
         uint keyProg = GlProgram.Graphics(DepthKeyVs, DepthKeyFs, _log,
@@ -203,9 +224,11 @@ public sealed unsafe partial class AlloyRenderer
         }
         string litFs = ShaderStages.Source(ShdLitFs);
         if (_bindless) litFs = BindlessFs(litFs);
+        // #350: from the hosted regions' STUBS -- the program every lit batch draws with carries no content
+        // body; the second build below carries them for the batches that need them.
         uint prog = GlProgram.Graphics(ShdLitVs, ShaderStages.Source(ShdLitVs), ShdLitFs, litFs,
                                        _log, "AlloyRenderer clustered lit program",
-                                       out string vsSrc, out string fsSrc);
+                                       out string vsSrc, out string fsSrc, host: false);
         if (prog != 0 && !(ShaderContract.RecordSafe(vsSrc) && ShaderContract.RecordSafe(fsSrc) && ShaderContract.CutoutSafe(vsSrc, fsSrc)
                            && ShaderContract.SlotIndexSafe(vsSrc)   // #242
                            && ShaderContract.SkinSafe(vsSrc, _skinning) && ShaderContract.LinearSafe(fsSrc)
@@ -232,47 +255,73 @@ public sealed unsafe partial class AlloyRenderer
             return;
         }
         _progLit46 = prog;
-        _litVp = GlProgram.Loc(prog, "uVP"); _litBase = GlProgram.Loc(prog, "uDrawBase");
-        _litTex = GlProgram.Loc(prog, "uTex");
-        _litCut = GlProgram.Loc(prog, "uAlphaCut");
-        _litAmbient = GlProgram.Loc(prog, "uAreaAmbient"); _litDiffuse = GlProgram.Loc(prog, "uAreaDiffuse");
-        _litDir = GlProgram.Loc(prog, "uAreaDir");
-        _litGrid = GlProgram.Loc(prog, "uGrid"); _litTile = GlProgram.Loc(prog, "uTile");
-        _litZ = GlProgram.Loc(prog, "uZ"); _litFalloff = GlProgram.Loc(prog, "uFalloff");
-        _litWrap = GlProgram.Loc(prog, "uWrap");
-        _litAtten = GlProgram.Loc(prog, "uAtten"); _litHot = GlProgram.Loc(prog, "uHot");
-        _litWrapN = GlProgram.Loc(prog, "uWrapN");
-        _litViz = GlProgram.Loc(prog, "uViz");
-        _litSunTex = GlProgram.Loc(prog, "uSunShadow"); _litSunVp = GlProgram.Loc(prog, "uSunVp");
-        _litSunTexel = GlProgram.Loc(prog, "uSunTexel"); _litSunBias = GlProgram.Loc(prog, "uSunBias");
-        _litSunCount = GlProgram.Loc(prog, "uSunCascades");
-        _litSunFocus = GlProgram.Loc(prog, "uSunFocus"); _litSunRadius = GlProgram.Loc(prog, "uSunRadius");
-        _litSunDynTex = GlProgram.Loc(prog, "uSunDynShadow"); _litSunDyn = GlProgram.Loc(prog, "uSunDyn");
-        _litCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _litCubeLight = GlProgram.Loc(prog, "uLocalLight");
-        _litCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _litCubeCount = GlProgram.Loc(prog, "uLocalCubes");
-        _litCubeSoft = GlProgram.Loc(prog, "uLocalSoft");
-        _litCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _litCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage");
-        _litProbe = GlProgram.Loc(prog, "uProbe"); _litProbeMips = GlProgram.Loc(prog, "uProbeMips");
-        _litProbeGain = GlProgram.Loc(prog, "uProbeGain");
-        _litSceneEnv = GlProgram.Loc(prog, "uSceneEnv");
-        _litCapture = GlProgram.Loc(prog, "uCapture");
-        _litFeat = FeatLocs(prog);
+        _lit = LitLocs(prog);
+        // #350: the SECOND lit program, the one with the content bodies in. Same text, hosted regions spliced
+        // instead of stubbed; same contracts, because it draws the same records. Optional twice over: hostfs=0,
+        // no hosted feature, or a failed build all leave it 0 and hosted materials on the plain path.
+        _progLitHost = 0;
+        if (VanillaShader.HostArmed && System.Linq.Enumerable.Any(ShaderFeatures.FsNames, n => n.Length > 0))
+        {
+            uint ph = GlProgram.Graphics(ShdLitVs, ShaderStages.Source(ShdLitVs), ShdLitFs, litFs,
+                                         _log, "AlloyRenderer hosted lit program", out _, out string hfs, host: true);
+            if (ph != 0 && !(ShaderContract.RecordSafe(hfs) && ShaderContract.LinearSafe(hfs)
+                             && (!_bindless || hfs.Contains("SowxTexH"))))
+            {
+                Gl.DeleteProgram(ph); ph = 0;
+                _log?.Info("AlloyRenderer: hosted lit program failed its contracts -- hosted materials draw the plain lit path");
+            }
+            if (ph == 0) _log?.Info("AlloyRenderer: hosted lit program unavailable -- hosted materials draw the plain lit path");
+            else { _progLitHost = ph; _litH = LitLocs(ph); }
+        }
+        _log?.Info("AlloyRenderer: clustered forward+ lit program ready (4.6 context)");
+    }
+
+    /// <summary>Resolve one lit program's locations and bind its fixed sampler units. Called once per program
+    /// at build; #350 calls it twice.</summary>
+    private static LitLoc LitLocs(uint prog)
+    {
+        var L = new LitLoc();
+        L.Vp = GlProgram.Loc(prog, "uVP"); L.Base = GlProgram.Loc(prog, "uDrawBase");
+        L.Tex = GlProgram.Loc(prog, "uTex");
+        L.Cut = GlProgram.Loc(prog, "uAlphaCut");
+        L.Ambient = GlProgram.Loc(prog, "uAreaAmbient"); L.Diffuse = GlProgram.Loc(prog, "uAreaDiffuse");
+        L.Dir = GlProgram.Loc(prog, "uAreaDir");
+        L.Grid = GlProgram.Loc(prog, "uGrid"); L.Tile = GlProgram.Loc(prog, "uTile");
+        L.Z = GlProgram.Loc(prog, "uZ"); L.Falloff = GlProgram.Loc(prog, "uFalloff");
+        L.Wrap = GlProgram.Loc(prog, "uWrap");
+        L.Atten = GlProgram.Loc(prog, "uAtten"); L.Hot = GlProgram.Loc(prog, "uHot");
+        L.WrapN = GlProgram.Loc(prog, "uWrapN");
+        L.Viz = GlProgram.Loc(prog, "uViz");
+        L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunVp = GlProgram.Loc(prog, "uSunVp");
+        L.SunTexel = GlProgram.Loc(prog, "uSunTexel"); L.SunBias = GlProgram.Loc(prog, "uSunBias");
+        L.SunCount = GlProgram.Loc(prog, "uSunCascades");
+        L.SunFocus = GlProgram.Loc(prog, "uSunFocus"); L.SunRadius = GlProgram.Loc(prog, "uSunRadius");
+        L.SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"); L.SunDyn = GlProgram.Loc(prog, "uSunDyn");
+        L.CubeTex = GlProgram.Loc(prog, "uLocalShadow"); L.CubeLight = GlProgram.Loc(prog, "uLocalLight");
+        L.CubePlane = GlProgram.Loc(prog, "uLocalPlane"); L.CubeCount = GlProgram.Loc(prog, "uLocalCubes");
+        L.CubeSoft = GlProgram.Loc(prog, "uLocalSoft");
+        L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); L.CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage");
+        L.Probe = GlProgram.Loc(prog, "uProbe"); L.ProbeMips = GlProgram.Loc(prog, "uProbeMips");
+        L.ProbeGain = GlProgram.Loc(prog, "uProbeGain");
+        L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
+        L.Capture = GlProgram.Loc(prog, "uCapture");
+        L.Feat = FeatLocs(prog);
         // Bind the two shadow samplers to their units ONCE, here, and not only on the frames a map is fresh.
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers
         // of different types pointing at one image unit: the draw raises INVALID_OPERATION and is dropped.
         // The fresh path alone is not enough, because a session that never renders a map (an interior start,
         // cube_count=0) never reaches it, and then EVERY Alloy lit batch silently vanishes.
         Gl.UseProgram(prog);
-        Gl.Uniform1i(_litSunTex, (int)SunUnit);
-        Gl.Uniform1i(_litSunDynTex, (int)SunDynUnit);
-        Gl.Uniform1i(_litCubeTex, (int)CubeUnit);
-        Gl.Uniform1i(_litCubeDynTex, (int)CubeDynUnit);
-        Gl.Uniform1i(_litProbe, (int)EnvProbe.ProbeUnit);
+        Gl.Uniform1i(L.SunTex, (int)SunUnit);
+        Gl.Uniform1i(L.SunDynTex, (int)SunDynUnit);
+        Gl.Uniform1i(L.CubeTex, (int)CubeUnit);
+        Gl.Uniform1i(L.CubeDynTex, (int)CubeDynUnit);
+        Gl.Uniform1i(L.Probe, (int)EnvProbe.ProbeUnit);
         // #120's five map samplers, for the same reason: left at their default they would all point at unit
         // 0 and read the diffuse as a normal map on every part that declares one.
         for (int i = 0; i < MapSlots; i++)
             Gl.Uniform1i(GlProgram.Loc(prog, TextureSlots.MapSamplers[i]), (int)PbrUnit0 + i);
-        _log?.Info("AlloyRenderer: clustered forward+ lit program ready (4.6 context)");
+        return L;
     }
 
     /// <summary>#123: the five <see cref="FeatDecl"/> uniform locations of one program, in the order

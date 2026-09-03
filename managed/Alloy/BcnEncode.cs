@@ -175,6 +175,12 @@ internal static unsafe class BcnEncode
         // image stays solid and the size math agrees with the block grid.
         ok &= LevelSize(5, 5, false) == 4 * 8 && LevelSize(4, 4, true) == 16 && LevelSize(1, 1, false) == 8;
 
+        // Transcode sizes its scratch by summing this over every level, so the block grid has to stay right
+        // when the two axes bottom out at different levels -- a strip's tail sums as halves, not quarters,
+        // and a ratio over level 0 would come up short.
+        ok &= LevelSize(512, 16, true) == 128 * 4 * 16 && LevelSize(32, 1, true) == 8 * 16
+              && LevelSize(1, 4096, false) == 1024 * 8;
+
         log.Info(ok ? "BcnEncode.SelfCheck: passed" : "BcnEncode.SelfCheck: FAILED");
         return ok;
     }

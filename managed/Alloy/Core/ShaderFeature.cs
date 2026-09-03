@@ -72,6 +72,26 @@ internal static class ShaderFeatures
         "", "vs_noirwet", "vs_noirgloss", "td_ground_vs",
     };
 
+    /// <summary>#350: the <c>customShaderFS</c> resrefs Alloy HOSTS, indexed like <see cref="VsNames"/>. An
+    /// entry here is a <c>// $VANILLA-HOST</c> region in <see cref="AlloyRenderer.HostFs"/> and an arm of its
+    /// dispatcher (<c>SelfCheck</c> asserts both); the file itself comes off the resource chain at program
+    /// build. Empty = a feature whose fragment side is Alloy's own switch, as the seven forks' are.
+    /// <para>ponytail: a static table, matched by the VS name beside it. A hak naming a custom FS this
+    /// table has never heard of still draws the plain lit path; discovering FS names from the material
+    /// census and rebuilding the lit program per area is the upgrade when a third party asks.</para></summary>
+    internal static readonly string[] FsNames =
+    {
+        "", "", "", "",
+        "", "", "", "",
+        "", "fs_noirwet", "fs_noirgloss", "td_ground_fs",
+    };
+
+    /// <summary>#350: does this feature's fragment side come from a HOSTED content stage? Such a batch draws
+    /// through the second lit program, the one that carries the bodies -- keeping them out of the program
+    /// every other fragment runs, where they cost registers on Arelith's 5000 draws that never take the
+    /// branch (measured: opaque 15,1 -> 5,4 ms with the regions stubbed).</summary>
+    internal static bool Hosted(int feat) => (uint)feat < (uint)FsNames.Length && FsNames[feat].Length > 0;
+
     /// <summary>#556: does this feature read material texture slot 6? Two do, for different things -- the
     /// flow map's RG direction field (#123) and the weather ground's snow overlay -- because the SLOT is the
     /// contract and the name beside it is only what one shader calls it. Everything else leaves the bit

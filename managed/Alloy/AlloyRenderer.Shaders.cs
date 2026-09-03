@@ -70,6 +70,7 @@ public sealed unsafe partial class AlloyRenderer
         #define SOWX_FEAT_SKIN      8
         #define SOWX_FEAT_NOIRWET   9
         #define SOWX_FEAT_NOIRGLOSS 10
+        #define SOWX_FEAT_GROUNDWEATHER 11
         uniform int uTimeOfDay;        // worldtimerTimeOfDay, the engine's own int
         uniform vec3 uAreaWind;        // areaGlobalWind
         uniform int uAreaFlags;        // areaFlags
@@ -358,7 +359,7 @@ public sealed unsafe partial class AlloyRenderer
     /// (<c>numLights</c>, <c>lightPosition[]</c>) do not exist here -- Alloy's lights are an SSBO the
     /// clustered pass walks -- so every stock block guarded on them compiles out, and where a file wants a
     /// light term anyway it asks <see cref="SowxVisionLight"/> for Alloy's.</para></summary>
-    internal const string VanillaEnvFs = """
+    internal const string VanillaEnvDefs = """
 
         #define SOWX_ALLOY 1
         #define POSITION_WORLD 1
@@ -366,6 +367,9 @@ public sealed unsafe partial class AlloyRenderer
         #define LIGHTING 0
         #define PI 3.14159265359
         #define COLOR_WHITE vec4(1.0, 1.0, 1.0, 1.0)
+        // inc_standard.shd:64's own value under VERTEX_COLOR 0, inc_common's default; Alloy carries no
+        // per-vertex colour into the lit path.
+        #define VertexColor COLOR_WHITE
         #define vPosWorld vWorld
         #define playerPosition uPlayerPos
         // The camera PIVOT, not the eye: inc_uniforms' `cameraFocus`, which the bridge never follows, so
@@ -373,18 +377,6 @@ public sealed unsafe partial class AlloyRenderer
         // the controlled character (inc_vision).
         #define cameraFocus uCamFocus
         #define worldtimerTimeOfDay uTimeOfDay
-        // The engine's own projection, off the same matrix stack Alloy reads its own from. Only the
-        // DIAGONAL is ever read by the files spliced here (m_proj[3][3] separates the orthographic 2D UI
-        // from the perspective world), and a diagonal element is the same in either transpose convention --
-        // which matters, because Alloy stages hold the transpose of what the engine's do.
-        uniform mat4 m_proj;
-        // The scriptable block is NOT declared here. Every file spliced into this stage includes
-        // inc_scriptable for it, and the bridge resolves that include through the resource chain, so
-        // declaring it too is a redefinition and a dead stage. What Alloy owes is the VALUES:
-        // UploadVanillaEnv and UploadTargetShape write them under those names out of the engine's own
-        // tables (scriptableInt(n) = i[10+n], scriptableFloat(n) = f[23+n]), and a name the stage does not
-        // use resolves to -1, which GL ignores.
-
         // The engine's compatibility preamble, the part of it a spliced file can reach. GLRender builds
         // this ahead of every stage it compiles (@0x12f3fd0) and content is written against it.
         #define texture2D texture
@@ -404,15 +396,71 @@ public sealed unsafe partial class AlloyRenderer
         // Material texture slot 6. Stock names it by unit; Alloy binds it as the flow map's sampler, and
         // which of the two a material means is its own business -- the slot is the contract, not the name.
         #define texUnit6 uFlowTex
-        // inc_common's colour-space pair, and its exact curve. ApplyColorSpace goes display -> WORKING
-        // space and RevertColorSpace comes back. The Alloy frame is linear, which is what working space is
-        // on a gamma-correcting client, so content that converts either way gets what it expects -- and
-        // that is also why a stock stage's FragmentColor is linear where it is handed to the hook.
-        vec3 ApplyColorSpace(vec3 c)  { return sign(c) * pow(abs(c), vec3($SRGB$)); }
-        vec3 RevertColorSpace(vec3 c) { return sign(c) * pow(abs(c), vec3(1.0 / $SRGB$)); }
         // The area's fog colour as the engine's stages see it: DISPLAY space. Alloy linearises it at upload
         // (#132), so this undoes that rather than carrying the same number twice.
         #define fogColor vec4(pow(max(uFogColor.rgb, vec3(0.0)), vec3(1.0 / $SRGB$)), 1.0)
+        // The renderer's own encode exponent, for content that has a display-space number to apply to a
+        // linear value.
+        #define SOWX_GAMMA $SRGB$
+        // #350: inc_material's own resolution of the material terms. A stage that declares one as a
+        // constant shadows the macro for its own text; a stage that declares none reads and WRITES the
+        // globals, which is what td_ground_fs's min()/max() idiom does.
+        #define MATERIAL_ROUGHNESS_VALUE fRoughness
+        #define MATERIAL_SPECULARITY_VALUE fSpecularity
+        #define MATERIAL_METALLICNESS_VALUE fMetallicness
+        #define MATERIAL_SPECULAR_COLOR_VALUE SpecularColor
+
+        """;
+
+    /// <summary>#350: what a hosted stage gets in place of <c>inc_standard</c>. The two calls every stock
+    /// fragment stage wraps its own work in are Alloy's: the normal is final before the stage's body runs
+    /// and the lighting after it is the clustered pass. The setup call is NOT empty, and that was measured:
+    /// a stock main opens with <c>FragmentColor = vec4(1.0)</c> and it is <c>SetupStandardShaderInputs</c>
+    /// that multiplies the texel in (<c>inc_standard.shd</c>, <c>FragmentColor *= MainTextureColor</c>),
+    /// so an empty stand-in hands every hosted body a WHITE surface -- the weather ground rendered as a
+    /// snowfield with the snow at 0. The scriptable block still has to come from somewhere, and stock gets
+    /// it through this include.</summary>
+    internal const string VanillaStandardFs = """
+        #ifndef SOWX_INC_STANDARD
+        #define SOWX_INC_STANDARD
+        #include "inc_scriptable"
+        void SetupStandardShaderInputs() { FragmentColor *= SowxHostTexel; }
+        void ApplyStandardShader() { }
+        #endif
+
+        """;
+
+    /// <summary>The declarations half of the environment, after <see cref="VanillaEnvDefs"/>. The macro
+    /// half is separate because a hosted stage re-issues it after scoping out its own defines.</summary>
+    internal const string VanillaEnvFs = VanillaEnvDefs + """
+
+        // The engine's own projection, off the same matrix stack Alloy reads its own from. Only the
+        // DIAGONAL is ever read by the files spliced here (m_proj[3][3] separates the orthographic 2D UI
+        // from the perspective world), and a diagonal element is the same in either transpose convention --
+        // which matters, because Alloy stages hold the transpose of what the engine's do.
+        uniform mat4 m_proj;
+        // The scriptable block is NOT declared here. Every file spliced into this stage includes
+        // inc_scriptable for it, and the bridge resolves that include through the resource chain, so
+        // declaring it too is a redefinition and a dead stage. What Alloy owes is the VALUES:
+        // UploadVanillaEnv and UploadTargetShape write them under those names out of the engine's own
+        // tables (scriptableInt(n) = i[10+n], scriptableFloat(n) = f[23+n]), and a name the stage does not
+        // use resolves to -1, which GL ignores.
+
+        // inc_common's colour-space pair, and its exact curve. ApplyColorSpace goes display -> WORKING
+        // space and RevertColorSpace comes back. The Alloy frame is linear, which is what working space is
+        // on a gamma-correcting client, so content that converts either way gets what it expects -- and
+        // that is also why a stock stage's FragmentColor is linear where it is handed to a hosted body.
+        vec3 ApplyColorSpace(vec3 c)  { return sign(c) * pow(abs(c), vec3($SRGB$)); }
+        vec3 RevertColorSpace(vec3 c) { return sign(c) * pow(abs(c), vec3(1.0 / $SRGB$)); }
+        // #350: the stock stage's working colour, and the texel its setup call multiplies into it --
+        // Alloy's linear albedo with the coverage in .a, sampled before the body runs. .rgb is read back
+        // as the albedo.
+        vec4 FragmentColor;
+        vec4 SowxHostTexel;
+        // ...and the material terms as inc_material's generated globals: filled from Alloy's synthesis
+        // before a hosted body runs, read back after it (see the MATERIAL_*_VALUE macros above).
+        float fRoughness, fSpecularity, fMetallicness;
+        vec3 SpecularColor;
 
         // #348: what inc_ripple.shd's TiltNormal writes through, and the two matrices it converts with.
         // The helper tilts a VIEW-space normal in the surface's world xy plane; Alloy's normal is already
@@ -426,9 +474,6 @@ public sealed unsafe partial class AlloyRenderer
         // neither of which a rotation changes.
         vec3 vSurfaceNormal;
         vec3 vViewToSurface_n;
-        // The renderer's own encode exponent, for content that has a display-space number to apply to a
-        // linear value.
-        #define SOWX_GAMMA $SRGB$
 
         /// #347: how lit this fragment is, 0..1, for a stock file that would have asked the engine's light
         /// arrays. Alloy's clustered diffuse is the same question answered by a different structure, and the
@@ -442,9 +487,11 @@ public sealed unsafe partial class AlloyRenderer
 
         """;
 
-    /// <summary>#347/#348: the CONTENT HOOKS. Two functions the lit stage calls and does not implement, so
-    /// that shading a content repo invented -- SoW's noir desaturation, racial vision, and the wet/gloss
-    /// blood-pool looks -- lives in that repo and not in this one.
+    /// <summary>#347/#348: the CONTENT HOOK. A function the lit stage calls and does not implement, so
+    /// that display-space shading a content repo invented -- SoW's noir desaturation and racial vision --
+    /// lives in that repo and not in this one. (#350 deleted the surface hook beside it: a material's own
+    /// custom FS states the surface work already, and <see cref="HostFs"/> runs that file instead of
+    /// asking content to restate it.)
     /// <para><b>Why the extender carries none of it.</b> The bridge exists so one copy of a shader runs, and
     /// the copy that runs should be the one its author edits. A stock file (<c>inc_target.shd</c>) belongs
     /// to the ENGINE, so splicing it here is faithful; <c>inc_noir</c> and <c>inc_vision</c> are SoW's, and
@@ -452,22 +499,49 @@ public sealed unsafe partial class AlloyRenderer
     /// called. This extender is optional and drop-in: run it against any module and these two hooks are
     /// no-ops, which is exactly the right answer for content that never asked for them.</para>
     /// <para>The content file is <c>cx_lit_hooks</c> -- one resref, composed by the content out of its own
-    /// includes (which <see cref="VanillaShader"/> resolves through the resource chain). The two signatures
-    /// below are the whole contract, and they are generic on purpose: nothing in them names a feature.</para>
-    /// <para><b>Where each is called.</b> The surface hook runs after the texel is sampled and the normal is
-    /// final, before anything lights either -- the point every stock stage does its own surface work. It may
-    /// tilt the normal, tint the albedo, and DECLARE material terms (a stock stage's
-    /// <c>MATERIAL_*_VALUE</c> is a compile-time constant Alloy cannot otherwise see); <c>metalDecl</c> is
-    /// separate from <c>pbrDecl</c> because 0 is <see cref="MaterialLib"/>'s "nothing declared" sentinel and
-    /// a dielectric declaring 0 would otherwise synthesise to chrome. The display hook runs after fog, in
-    /// DISPLAY space, where <c>inc_standard.shd</c> puts the desaturation and the vision passes.</para></summary>
+    /// includes (which <see cref="VanillaShader"/> resolves through the resource chain). The signature
+    /// below is the whole contract, and it is generic on purpose: nothing in it names a feature. It stays
+    /// an adapter deliberately: "which display filters, in which order" is stated in no stock file, and
+    /// deriving it would mean Alloy naming SoW's functions.</para>
+    /// <para>It runs after fog, in DISPLAY space, where <c>inc_standard.shd</c> puts the desaturation and
+    /// the vision passes.</para></summary>
     internal const string HookFs = """
 
         // $VANILLA cx_lit_hooks
-        void SowxSurfaceHook(inout vec3 albedo, inout vec3 nrm, inout vec3 pbr, inout vec4 specDecl,
-                             vec2 uv, vec3 world, int feat, float tick) { }
         vec3 SowxDisplayHook(vec3 c) { return c; }
         // $VANILLA-END
+
+        """;
+
+    /// <summary>#350: the HOSTED content stages -- one region per <see cref="ShaderFeature"/> that names a
+    /// custom FS (<see cref="ShaderFeatures.FsNames"/>; <c>SelfCheck</c> holds the two lists together). Each
+    /// region is the material's own <c>customShaderFS</c>, run as a function of this program: see
+    /// <see cref="VanillaShader.HostText"/> for the rewrite and <see cref="VanillaStandardFs"/> for what
+    /// stands in for <c>inc_standard</c>. The stub is the wrapper's own empty signature, so a feature whose
+    /// file is missing, stale or broken draws the plain lit path -- and the log names it.
+    /// <para>The dispatcher is what the lit main calls, at the point a stock stage runs its body: after the
+    /// texel is sampled and the normal is final, before anything lights either. It returns whether a body
+    /// ran, so the read-back costs nothing on the parts that have none.</para></summary>
+    internal const string HostFs = """
+
+        // $VANILLA-HOST fs_noirwet
+        void SowxHost_fs_noirwet() { }
+        // $VANILLA-END
+        // $VANILLA-HOST fs_noirgloss
+        void SowxHost_fs_noirgloss() { }
+        // $VANILLA-END
+        // $VANILLA-HOST td_ground_fs
+        void SowxHost_td_ground_fs() { }
+        // $VANILLA-END
+
+        bool SowxHostSurface(int feat)
+        {
+            if (feat == SOWX_FEAT_NOIRWET) SowxHost_fs_noirwet();
+            else if (feat == SOWX_FEAT_NOIRGLOSS) SowxHost_fs_noirgloss();
+            else if (feat == SOWX_FEAT_GROUNDWEATHER) SowxHost_td_ground_fs();
+            else return false;
+            return true;
+        }
 
         """;
 
@@ -528,6 +602,23 @@ public sealed unsafe partial class AlloyRenderer
             return pow(max(c, vec3(0.0)), vec3($SRGB$));
         }
 
+        """;
+
+    /// <summary>#136's known ceiling, closed: the hosted sky program is the ENGINE's and writes DISPLAY space
+    /// into Alloy's LINEAR target, so the resolve encoded it a second time and the sky read brighter than
+    /// vanilla. This runs right after the hosted draw, over the pixels it wrote (the depth range and LEQUAL
+    /// test the sky pass already holds: only where nothing wrote depth), reading each texel back through a
+    /// texture barrier and decoding it once. The frame stays linear everywhere, which is the contract the
+    /// resolve's own guard enforces -- the fix could not live there.</summary>
+    internal const string SkyDecodeFs = """
+        #version 460 core
+        out vec4 frag;
+        uniform sampler2D uHdr;
+        void main()
+        {
+            vec4 c = texelFetch(uHdr, ivec2(gl_FragCoord.xy), 0);
+            frag = vec4(pow(max(c.rgb, vec3(0.0)), vec3($SRGB$)), c.a);
+        }
         """;
 
     /// <summary>The one clip-space expression EVERY Alloy vertex stage computes, character for character.
@@ -1069,19 +1160,33 @@ public sealed unsafe partial class AlloyRenderer
             float specTexel = (slots & SOWX_SLOT_SPEC) != 0 ? texture(uSpecTex, uv).r : 0.0;
             float roughTexel = (slots & SOWX_SLOT_ROUGH) != 0 ? texture(uRoughTex, uv).r : 0.0;
             vec3 pbr = SowxSynthPbr(d.pbr.xyz, slots, envLevel, specTexel, roughTexel);
-            vec4 spcDecl = d.spc;
-            // #348/#556: the content's own surface work, AFTER synthesis. Its stock stages run at the same
-            // point -- SetupStandardShaderInputs has filled the MATERIAL_*_VALUE globals from the maps or
-            // the fallbacks, and both the weather and the blood-pool shaders READ those before overwriting
-            // them (`min(MATERIAL_ROUGHNESS_VALUE, WET_ROUGHNESS)` is a comparison, not a value). Handing
-            // over the declared triple instead would give them zeros to compare against.
+            // #350: the material's own custom FS, hosted, AFTER synthesis -- the point its stock body runs,
+            // with SetupStandardShaderInputs's outputs in the engine's own names. The material globals are
+            // filled first because the weather ground READS them before it writes them
+            // (`min(MATERIAL_ROUGHNESS_VALUE, WET_ROUGHNESS)` is a comparison); the specular colour is
+            // synthesised from the PRE-body albedo because SetupSpecularity runs before the body in stock.
+            SowxHostTexel = vec4(albedo, coverage);
+            FragmentColor = vec4(1.0);      // stock main's own opener, for a body that skips it
             vFragmentNormal = N;
             vSurfaceNormal = normalize(vNrm);
             vViewToSurface_n = normalize(vWorld - uEyePos);
-            SowxSurfaceHook(albedo, N, pbr, spcDecl, uv, vWorld, feat, float(uTimeOfDay) / 1000.0);
+            fSpecularity = pbr.x; fRoughness = pbr.y; fMetallicness = pbr.z;
+            SpecularColor = SowxSpecColor(d.spc, albedo * matDiffuse, pbr.z, slots);
+            // 30 = the hosted body BYPASSED: the plain lit path for every hosted material, the A/B for
+            //      "the look is wrong" vs "the handoff is wrong". 31/32/33 = what the body handed back --
+            //      albedo, shading normal, (spec, rough, metal) -- against 7 (the normal before it).
+            if (uViz != 30 && SowxHostSurface(feat))
+            {
+                albedo = FragmentColor.rgb;
+                N = normalize(vFragmentNormal);
+                pbr = vec3(fSpecularity, fRoughness, fMetallicness);
+                if (uViz == 31) { frag = vec4(albedo, 1.0); return; }
+                if (uViz == 32) { frag = vec4(N * 0.5 + 0.5, 1.0); return; }
+                if (uViz == 33) { frag = vec4(pbr, 1.0); return; }
+            }
             float spec = pbr.x, rough = pbr.y, metal = pbr.z;
             vec3 base = albedo * matDiffuse;
-            vec3 specColor = SowxSpecColor(spcDecl, base, metal, slots);
+            vec3 specColor = SpecularColor;
             vec3 F0 = specColor * spec;
 
             vec3 sun = uAreaDiffuse * (sunNdl * sunVis);

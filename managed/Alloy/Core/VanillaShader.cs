@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using Sowx.Framework;
 
 namespace Sowx.Alloy;
@@ -14,10 +16,14 @@ namespace Sowx.Alloy;
 /// about how the fragment was shaded, so none of it needs Alloy's SSBO records, its bindless handles or its
 /// clustered lights -- it needs a <c>vec3</c> and a world position. Those files are the ones that drift when
 /// the extender carries a second copy, and they are exactly the ones this can splice.</para>
-/// <para><b>What it is NOT for.</b> A stock stage with a <c>main()</c>: those read per-draw uniforms
-/// (<c>MAX_NUM_LIGHTS</c> light arrays, <c>texUnit0..7</c>, the matrix stack) which is the submission model
-/// #327 spent the frame budget getting rid of, and a stock VERTEX stage computes <c>gl_Position</c> its own
-/// way, which #119's invariance constraint forbids. The bridge carries FUNCTIONS, not stages.</para>
+/// <para><b>What it hosts (#350).</b> A material's own custom FRAGMENT stage, as a function of the lit
+/// program: the body between <c>SetupStandardShaderInputs()</c> and <c>ApplyStandardShader()</c> is the
+/// look, and both of those calls are Alloy's own work already done. The stage is spliced with its includes,
+/// <c>inc_standard</c> is substituted by two no-ops, <c>main()</c> is renamed, and the material terms are
+/// read back off its <c>MATERIAL_*_VALUE</c> macros (<see cref="HostText"/>).</para>
+/// <para><b>What it is NOT for.</b> A stock stage's LIGHTING (<c>ComputeLighting</c> over the
+/// <c>MAX_NUM_LIGHTS</c> arrays is the submission model #327 spent the frame budget getting rid of) and any
+/// VERTEX stage: it computes <c>gl_Position</c> its own way, which #119's invariance constraint forbids.</para>
 /// <para><b>Why source splice and not a linked shader object.</b> Both work -- a 330-core object links into
 /// a 460-core program on Mesa 26.1 and NVIDIA 610.57 alike (measured offline, EGL, RTX 3070) -- but the
 /// engine compiles an include as a standalone unit only with ITS includes dragged in, and their
@@ -35,6 +41,13 @@ internal static unsafe class VanillaShader
     /// player-facing failure wants.</summary>
     private static readonly bool _armed = Settings.Bool("vanillabridge", true);
 
+    /// <summary>#350: the hosting gate alone (ADR 0013 bucket 2). <c>hostfs=0</c> in <c>sowx.cfg</c> compiles
+    /// every hosted region from its stub while the plain splices stay -- the A/B for "the lit program got
+    /// slower for everyone": three content bodies inside one uber-program cost registers on every fragment,
+    /// whether or not a material in the area ever takes that branch.</summary>
+    private static readonly bool _hostArmed = Settings.Bool("hostfs", true);
+    internal static bool HostArmed => _hostArmed;
+
     /// <summary>The marker pair. Everything between them is REPLACED by the engine's copy of the named
     /// resref when there is one; what a stage writes there is a STUB -- the feature off -- never a copy of
     /// the file. A copy would be exactly the second implementation this bridge deletes, and it would run
@@ -44,43 +57,149 @@ internal static unsafe class VanillaShader
     /// file is what gets validated there rather than the stub.</para></summary>
     private const string Begin = "// $VANILLA ", End = "// $VANILLA-END";
 
+    /// <summary>#350: the HOST marker. The region names a content FRAGMENT STAGE -- a material's own
+    /// <c>customShaderFS</c> -- and Alloy runs that stage's pre-shading body from inside its lit program:
+    /// the file is spliced with its includes, its <c>main()</c> renamed to <c>SowxHostMain_&lt;resref&gt;</c>,
+    /// its <c>gl_FragColor</c> write redirected into <c>FragmentColor</c>, and the two calls Alloy owns
+    /// (<c>SetupStandardShaderInputs</c>, <c>ApplyStandardShader</c>) resolved to no-ops by
+    /// <see cref="AlloyRenderer.VanillaStandardFs"/> standing in for <c>inc_standard</c>. What is left
+    /// between those two calls is the look, and the stage's <c>MATERIAL_*_VALUE</c> terms are read back off
+    /// the macros it declared. The stub between the markers is the same empty <c>SowxHost_&lt;resref&gt;</c>
+    /// the wrapper defines, so a missing or broken file is the plain lit path for that feature.</summary>
+    private const string Host = "// $VANILLA-HOST ";
+
+    /// <summary>The common prefix of all three markers -- what the region scan searches for, so a plain and
+    /// a host region are found in document order by one search.</summary>
+    private const string Marker = "// $VANILLA";
+
     /// <summary>Replace every marked region in <paramref name="src"/> with the stock text of the resref the
-    /// BEGIN marker names. A miss leaves the snapshot in place; nothing here can fail the compile that a
-    /// missing file would not already have failed.</summary>
-    internal static string Splice(string src, ExtenderLog? log, string what, bool fromContent = true)
+    /// BEGIN marker names. A miss leaves the stub in place; nothing here can fail the compile that a
+    /// missing file would not already have failed. <paramref name="host"/> false leaves every HOST region
+    /// at its stub while the plain regions still splice -- the middle rung of <c>GlProgram</c>'s retry.</summary>
+    internal static string Splice(string src, ExtenderLog? log, string what, bool fromContent = true, bool host = true)
     {
-        int at = src.IndexOf(Begin, StringComparison.Ordinal);
+        int at = src.IndexOf(Marker, StringComparison.Ordinal);
         if (at < 0) return src;
         var sb = new StringBuilder(src.Length);
+        // ONE visited list for the whole compilation unit: two regions each pulling inc_scriptable would
+        // otherwise declare the block twice, which is a dead stage rather than a warning.
+        var seen = new List<string>();
         int cursor = 0;
         while (at >= 0)
         {
-            int nameAt = at + Begin.Length;
+            bool hosted = string.CompareOrdinal(src, at, Host, 0, Host.Length) == 0;
+            if (!hosted && string.CompareOrdinal(src, at, Begin, 0, Begin.Length) != 0)
+            {
+                at = src.IndexOf(Marker, at + Marker.Length, StringComparison.Ordinal);
+                continue;
+            }
+            int nameAt = at + (hosted ? Host.Length : Begin.Length);
             int eol = src.IndexOf('\n', nameAt);
             int end = src.IndexOf(End, nameAt, StringComparison.Ordinal);
             if (eol < 0 || end < 0) break;
             string resref = src[nameAt..eol].Trim();
-            string? stock = fromContent && _armed ? EngineText(resref, log) : null;
-            sb.Append(src, cursor, eol + 1 - cursor);          // keep the BEGIN line: it names the source
-            if (stock != null)
+            string stub = src[(eol + 1)..end];
+            bool ask = fromContent && _armed && ((host && _hostArmed) || !hosted);
+            sb.Append(src, cursor, eol + 1 - cursor);          // keep the marker line: it names the source
+            if (seen.Contains(resref))
             {
-                sb.Append(Includes(stock, log, what, new List<string>(), 0));
-                log?.Info($"{what}: {resref}.shd spliced from the resource chain ({stock.Length} chars)");
+                // an earlier region already included this file: its functions exist, and the stub would
+                // define them a second time
+                cursor = end;
+                at = src.IndexOf(Marker, end + End.Length, StringComparison.Ordinal);
+                continue;
+            }
+            string? stock = ask ? EngineText(resref, log) : null;
+            string? body = stock == null ? null
+                         : hosted ? HostText(stock, resref, log, what, seen)
+                         : Validate(Includes(stock, log, what, seen, 0), stub, resref, log, what);
+            if (body != null)
+            {
+                seen.Add(resref);
+                sb.Append(body);
+                log?.Info($"{what}: {resref}.shd " + (hosted ? "hosted" : "spliced") + $" from the resource chain ({stock!.Length} chars)");
             }
             else
             {
-                sb.Append(src, eol + 1, end - eol - 1);        // the snapshot, unchanged
-                if (fromContent)
-                    log?.Info($"{what}: {resref}.shd " + (_armed ? "not in the resource chain" : "not asked for (vanillabridge=0)")
+                sb.Append(stub);                                // the stub, unchanged
+                if (fromContent && stock == null)
+                    log?.Info($"{what}: {resref}.shd " + (!_armed ? "not asked for (vanillabridge=0)" : ask ? "not in the resource chain" : !_hostArmed ? "not hosted (hostfs=0)" : "not hosted on this retry")
                             + " -- compiling the fallback stub, so whatever it carried is off");
             }
             cursor = end;
-            at = src.IndexOf(Begin, cursor, StringComparison.Ordinal);
+            at = src.IndexOf(Marker, end + End.Length, StringComparison.Ordinal);
         }
         sb.Append(src, cursor, src.Length - cursor);
         return sb.ToString();
     }
 
+    /// <summary>#350 AC: the SPLICED text is validated, not just the embedded copy. Every function the stub
+    /// defines is one the stage calls, so a chain copy that lacks any of them (an 8017-byte
+    /// <c>inc_target.shd</c> off a stale HAK, which predates <c>GetTargetGroundHighlightStrength</c>) is
+    /// caught here by name and falls back to the stub for THIS region, instead of failing the whole program
+    /// and taking every other region with it.</summary>
+    private static string? Validate(string text, string stub, string resref, ExtenderLog? log, string what)
+    {
+        foreach (Match m in StubFn.Matches(stub))
+        {
+            string name = m.Groups[1].Value;
+            if (Regex.IsMatch(text, @"\b" + name + @"\s*\(")) continue;
+            log?.Info($"{what}: {resref}.shd from the resource chain does not define {name} -- a stale copy? "
+                    + "compiling the stub for this region");
+            return null;
+        }
+        return text;
+    }
+
+    /// <summary>A function DEFINITION in stub text (name, then its parameter list, then the opening brace on
+    /// the same line) -- anchored on the brace so a line-initial <c>return Helper(x);</c> in a stub body
+    /// never becomes a name the content file is required to define.</summary>
+    private static readonly Regex StubFn = new(@"(?m)^\s*(?:\w+\s+)+(\w+)\s*\([^)]*\)\s*\{", RegexOptions.Compiled);
+    private static readonly Regex MainFn = new(@"\bvoid\s+main\s*\(\s*(?:void)?\s*\)", RegexOptions.Compiled);
+    private static readonly Regex OwnDefine = new(@"(?m)^[ \t]*#[ \t]*define[ \t]+(\w+)", RegexOptions.Compiled);
+
+    /// <summary>The names <see cref="AlloyRenderer.VanillaEnvDefs"/> supplies as macros. A hosted stage's own
+    /// declaration of one (<c>td_ground_fs</c> declares <c>uniform sampler2D texUnit6;</c> because
+    /// <c>inc_common</c> stops at 5) would redeclare what the macro maps it to, so those lines are dropped.</summary>
+    private static readonly Regex EnvDecl = new(
+        @"(?m)^[ \t]*uniform\b[^;\n]*\b(?:" + string.Join("|", OwnDefine.Matches(AlloyRenderer.VanillaEnvDefs).Select(m => m.Groups[1].Value)) + @")[ \t]*;[^\n]*\n?",
+        RegexOptions.Compiled);
+
+    /// <summary>#350: a content fragment stage, rewritten to run as a function of Alloy's lit program. Pure
+    /// text-to-text (the resolver is the only outside call), so <c>SelfCheck</c> can exercise it on a
+    /// synthetic stage.
+    /// <para>The stage's OWN <c>#define</c>s are scoped to it -- undefined before (so <c>LIGHTING 1</c>
+    /// does not collide with the environment's 0) and after (so two stages' <c>WET_DARKEN</c> do not
+    /// collide with each other), then the environment's macros are re-issued. Its includes are not scoped:
+    /// they carry <c>#ifndef</c> guards of their own and are followed once per compilation unit.</para>
+    /// <para>ponytail: a <c>#define</c> under an <c>#if</c> in the stage is still undefined here -- the
+    /// scan is textual. A stage that needs conditional macros to survive it is the first customer for a
+    /// real preprocessor pass.</para></summary>
+    internal static string? HostText(string stock, string resref, ExtenderLog? log, string what, List<string> seen)
+    {
+        string text = Includes(stock, log, what, seen, 0);
+        if (!MainFn.IsMatch(text))
+        {
+            log?.Info($"{what}: {resref}.shd from the resource chain has no main() to host -- compiling the stub for this region");
+            return null;
+        }
+        text = MainFn.Replace(text, "void SowxHostMain_" + resref + "()", 1);
+        text = Regex.Replace(text, @"\bgl_FragColor\b", "FragmentColor");
+        text = EnvDecl.Replace(text, "");
+        var own = OwnDefine.Matches(stock).Select(m => m.Groups[1].Value).Distinct().ToList();
+        var sb = new StringBuilder(text.Length + 512);
+        foreach (var n in own) sb.Append("#undef ").Append(n).Append('\n');
+        sb.Append(text).Append('\n');
+        sb.Append("void SowxHost_").Append(resref).Append("()\n{\n")
+          .Append("    SowxHostMain_").Append(resref).Append("();\n")
+          .Append("    fSpecularity = MATERIAL_SPECULARITY_VALUE;\n")
+          .Append("    fRoughness = MATERIAL_ROUGHNESS_VALUE;\n")
+          .Append("    fMetallicness = MATERIAL_METALLICNESS_VALUE;\n")
+          .Append("    SpecularColor = MATERIAL_SPECULAR_COLOR_VALUE;\n}\n");
+        foreach (var n in own) sb.Append("#undef ").Append(n).Append('\n');
+        sb.Append(AlloyRenderer.VanillaEnvDefs);
+        return sb.ToString();
+    }
 
     /// <summary>The engine's own text for a stock <c>.shd</c>, read through the engine's own entry points.
     /// <para><b>Why not <see cref="ShaderResource.Override"/>.</b> That path is for resrefs NOBODY else
@@ -126,7 +245,10 @@ internal static unsafe class VanillaShader
 
     /// <summary>Does this source carry a marked region at all? The question a failed compile asks before it
     /// decides whether there is a stub to retry with.</summary>
-    internal static bool HasSplice(string src) => src.Contains(Begin, StringComparison.Ordinal);
+    internal static bool HasSplice(string src) => src.Contains(Begin, StringComparison.Ordinal) || HasHost(src);
+
+    /// <summary>Does this source host a content stage? The question the middle retry rung asks.</summary>
+    internal static bool HasHost(string src) => src.Contains(Host, StringComparison.Ordinal);
 
     /// <summary>Resolve the file's own <c>#include</c> lines against the resource chain, once each.
     /// <para>A stock include gets its dependencies from the stage that splices it -- that is the bridge, and
@@ -148,6 +270,12 @@ internal static unsafe class VanillaShader
     /// repo's own) is followed, because that is what composition means.</summary>
     private static readonly string[] Supplied = { "inc_common", "inc_uniforms" };
 
+    /// <summary>#350: the one include the environment SUBSTITUTES rather than drops. A content stage's
+    /// <c>inc_standard</c> is the engine's whole forward pipeline; what a hosted stage needs from it is the
+    /// two entry points it calls around its own body, as no-ops, and the scriptable block. Followed once
+    /// like any other include.</summary>
+    private const string Substituted = "inc_standard";
+
     private static string Includes(string text, ExtenderLog? log, string what, List<string> seen, int depth)
     {
         if (depth >= MaxDepth || !text.Contains("#include", StringComparison.Ordinal)) return text;
@@ -161,7 +289,8 @@ internal static unsafe class VanillaShader
             if (name == null || seen.Count >= MaxIncludes || seen.Contains(name)) continue;
             if (Array.IndexOf(Supplied, name) >= 0) continue;
             seen.Add(name);
-            string? body = name.Length <= ShaderResource.ResRefBytes ? EngineText(name, null) : null;
+            string? body = name == Substituted ? AlloyRenderer.VanillaStandardFs
+                         : name.Length <= ShaderResource.ResRefBytes ? EngineText(name, null) : null;
             if (body == null) continue;                       // the environment supplies it, or nothing does
             sb.Append(Includes(body, log, what, seen, depth + 1)).Append('\n');
         }

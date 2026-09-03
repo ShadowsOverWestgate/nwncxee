@@ -295,6 +295,16 @@ internal static unsafe class OwnedTextures
     /// them is a sheet whose texels were each chosen on purpose.</para></summary>
     private const int TranscodeFloor = 16;
 
+    /// <summary>Re-encode the bound texture's whole mip chain to BC1/BC3 in place. Every level is read and
+    /// encoded before ANY of it is uploaded, because respecifying level 0 with a different internal format
+    /// reallocates the texture object: on a driver that backs an object with one miptree the other levels'
+    /// contents do not survive that, so a read interleaved with the uploads returns undefined pixels, which
+    /// encode and upload cleanly with no GL error to catch them. Inferred from the failure, not from driver
+    /// source -- what was observed is an AMD/Mesa client whose textures were right at the base level and
+    /// wrong at every mip below it (correct up close, corrupt at distance, snapping right as the camera
+    /// closed in) while the same build on NVIDIA, which allocates levels independently, showed nothing.
+    /// <c>bcn=0</c> cleared it. Returns the new size, <see cref="Broken"/>, or -1 to leave the texture raw.
+    /// </summary>
     private static long Transcode(IntPtr tex, int cell)
     {
         if (Gl.GetTexImage == null || Gl.CompressedTexImage2D == null || Gl.PixelStorei == null
@@ -307,7 +317,23 @@ internal static unsafe class OwnedTextures
         if (green == 0) return -1;
 
         if (_readback == null || _readback.Length < w0 * h0 * 4) _readback = new byte[w0 * h0 * 4];
-        int blkMax = BcnEncode.LevelSize(w0, h0, true);
+
+        // Every level's dimensions up front, and scratch for the WHOLE chain at the BC3 block size -- BC1
+        // needs half, so the encode below can never outrun this no matter which the texels pick. A ratio
+        // over level 0 would not do: once the short axis bottoms out at one block the tail stops quartering.
+        int* lw = stackalloc int[MaxLevels], lh = stackalloc int[MaxLevels], loff = stackalloc int[MaxLevels];
+        int levels = 0;
+        long blkMax = 0;
+        for (; levels < MaxLevels; levels++)
+        {
+            int w = 0, h = 0;
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_WIDTH, &w);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_HEIGHT, &h);
+            if (w <= 0 || h <= 0) break;
+            lw[levels] = w; lh[levels] = h;
+            blkMax += BcnEncode.LevelSize(w, h, true);
+        }
+        if (levels == 0) return -1;
         if (_blocks == null || _blocks.Length < blkMax) _blocks = new byte[blkMax];
 
         // The whole pixel-store surface the readback and the compressed upload depend on, not just the
@@ -339,17 +365,17 @@ internal static unsafe class OwnedTextures
                 if (read[i] != 255) { bc3 = true; break; }
             uint fmt = bc3 ? Gl.COMPRESSED_RGBA_S3TC_DXT5 : Gl.COMPRESSED_RGB_S3TC_DXT1;
 
-            for (int level = 0; level < MaxLevels; level++)
+            // read every level BEFORE respecifying any -- redefining level 0 reallocates the object
+            int off = 0;
+            for (int i = 0; i < levels; i++)
             {
-                int w = 0, h = 0;
-                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_WIDTH, &w);
-                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_HEIGHT, &h);
-                if (w <= 0 || h <= 0) break;
-                if (level > 0) Gl.GetTexImage(Gl.TEXTURE_2D, level, Gl.RGBA, Gl.UNSIGNED_BYTE, read);
-                BcnEncode.EncodeLevel(read, w, h, bc3, blocks);
-                Gl.CompressedTexImage2D(Gl.TEXTURE_2D, level, fmt, w, h, 0,
-                    BcnEncode.LevelSize(w, h, bc3), blocks);
+                if (i > 0) Gl.GetTexImage(Gl.TEXTURE_2D, i, Gl.RGBA, Gl.UNSIGNED_BYTE, read);
+                BcnEncode.EncodeLevel(read, lw[i], lh[i], bc3, blocks + off);
+                loff[i] = off; off += BcnEncode.LevelSize(lw[i], lh[i], bc3);
             }
+            for (int i = 0; i < levels; i++)
+                Gl.CompressedTexImage2D(Gl.TEXTURE_2D, i, fmt, lw[i], lh[i], 0,
+                    BcnEncode.LevelSize(lw[i], lh[i], bc3), blocks + loff[i]);
         }
 
         Gl.PixelStorei(Gl.PACK_ALIGNMENT, svAlign);

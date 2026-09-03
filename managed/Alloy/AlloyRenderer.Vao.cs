@@ -158,33 +158,72 @@ public sealed unsafe partial class AlloyRenderer
     /// single walk -- which is what <c>no-engine-vao 8831</c> on the live period line is a count of.
     /// <para>The re-arm is the enrollment edge itself, and it is bounded by that: the pools a deferral is
     /// waiting on become resident within a frame or two, and an enrollment is edge-triggered, not
-    /// per-frame.</para></summary>
-    private const int DripSlots = 16;
+    /// per-frame.</para>
+    /// <para>This is a DEDUP set, and its capacity must not double as a per-enrollment budget. At 16 it did:
+    /// a dense area minted more VDOs after the shim armed than one enrollment could drip, the overflow was
+    /// refused with no counter to say so, and the period line read <c>0 refused, 0 deferred</c> while
+    /// hundreds of parts stayed holes -- missing heads, calves and cloaks on a HAK-heavy area while a small
+    /// one was perfect. <see cref="_dripCapped"/> is the counter that had to exist for that to be visible.
+    /// <para>ponytail: linear scan over the table, which is O(n^2) across an enrollment. It runs on the
+    /// enrollment edge, not per frame, so at this size it does not signify; make it a hash set if the
+    /// population ever outgrows the table rather than growing the table again.</para></summary>
+    private const int DripSlots = 512;
     private static readonly IntPtr[] _dripVdo = new IntPtr[DripSlots];
     private static int _dripN;
-    internal static int _dripMade, _dripDeferred, _dripRefused;
+    internal static int _dripMade, _dripDeferred, _dripRefused, _dripCapped;
 
     private static bool DripArm(IntPtr vdo)
     {
         for (int i = 0; i < _dripN; i++) if (_dripVdo[i] == vdo) return false;
-        if (_dripN >= DripSlots) return false;
+        if (_dripN >= DripSlots) { _dripCapped++; return false; }
         _dripVdo[_dripN++] = vdo;
         return true;
     }
 
     /// <summary>A new enrollment re-asks every deferred VDO. Called from <c>Enroll</c>, which is the edge the
     /// drip is scoped to.</summary>
-    private static void DripRearm() { _dripN = 0; _dripDeferred = 0; }
+    private static void DripRearm() { _dripN = 0; _dripDeferred = 0; _dripCapped = 0; }
+
+    /// <summary>Did the last enrollment leave VDOs it never got to ask? Both states are transient by
+    /// nature -- a deferral is waiting on pool residency, an overflow on a free slot -- and neither raises
+    /// a walk edge of its own, so this is what the forced-enroll retry tests to re-ask them.</summary>
+    internal static bool DripPending => _dripDeferred > 0 || _dripCapped > 0;
+
+    /// <summary>The dedup half of <see cref="DripArm"/>, which is the half that went wrong: it must arm a
+    /// VDO once, refuse the repeat, and -- when the table is full -- COUNT what it turned away, because an
+    /// uncounted overflow is a hole with no symptom in the log.</summary>
+    internal static bool SelfCheckDrip(ExtenderLog log)
+    {
+        int svN = _dripN, svCap = _dripCapped;
+        var svVdo = new IntPtr[DripSlots];
+        System.Array.Copy(_dripVdo, svVdo, DripSlots);
+        _dripN = 0; _dripCapped = 0;
+
+        bool ok = DripArm(new IntPtr(0x1000)) && !DripArm(new IntPtr(0x1000));  // armed once, repeat refused
+        ok &= DripArm(new IntPtr(0x2000)) && _dripN == 2 && _dripCapped == 0;
+        while (_dripN < DripSlots) DripArm(new IntPtr(0x3000 + _dripN));
+        ok &= !DripArm(new IntPtr(0xDEAD)) && _dripCapped == 1;                 // full: refused AND counted
+        ok &= !DripArm(new IntPtr(0x1000)) && _dripCapped == 1;                 // ...a known VDO is not an overflow
+        DripRearm();
+        ok &= _dripN == 0 && _dripCapped == 0 && DripArm(new IntPtr(0x1000));   // the edge clears both
+
+        _dripN = svN; _dripCapped = svCap;
+        System.Array.Copy(svVdo, _dripVdo, DripSlots);
+        log.Info(ok ? "AlloyRenderer.SelfCheckDrip: passed" : "AlloyRenderer.SelfCheckDrip: FAILED");
+        return ok;
+    }
 
     /// <summary>#284's residual, on the period line. <c>made</c> and <c>refused</c> are LIFETIME
     /// populations of VDOs; <c>deferred</c> is per enrollment, because it is the residency race still open
     /// and a lifetime total of it could not distinguish "settled" from "never settles". A non-zero
     /// <c>refused</c> is what would kill the diagnosis -- the engine ran its own build and still left +0xc
-    /// at zero.</summary>
+    /// at zero. A non-zero <c>capped</c> says the dedup table ran out of room and the overflow never got
+    /// asked at all, which is a hole this code caused rather than one it found.</summary>
     private static string DripNote()
-        => _dripMade == 0 && _dripDeferred == 0 && _dripRefused == 0
+        => _dripMade == 0 && _dripDeferred == 0 && _dripRefused == 0 && _dripCapped == 0
            ? ""
-           : $" [VAO drip: {_dripMade} made, {_dripRefused} refused, {_dripDeferred} deferred at the last enrollment]";
+           : $" [VAO drip: {_dripMade} made, {_dripRefused} refused, and at the last enrollment"
+             + $" {_dripDeferred} deferred + {_dripCapped} past the {DripSlots}-VDO dedup table]";
 
     /// <summary>Distinct VDOs whose harvest has already been reported. #285 made every refusal a hole, and
     /// <c>no-vao-slot</c> is the largest one on live content -- but "harvest failed" names several different

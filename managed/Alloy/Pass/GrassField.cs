@@ -1038,6 +1038,13 @@ internal static unsafe class GrassField
     /// against (#132), which it must, or every session rebuilds from it.</summary>
     internal static string EmbeddedFs => ShaderStages.Source(ShdGrassFs);
 
+    /// <summary>#350: the grass stage splices content too; the module edge drops it for a rebuild.</summary>
+    internal static void DropProgram()
+    {
+        if (_prog != 0) Gl.DeleteProgram(_prog);
+        _prog = 0;
+    }
+
     private static bool EnsureProgram()
     {
         if (_prog != 0) return true;
@@ -1210,10 +1217,10 @@ internal static unsafe class GrassField
         """ + AlloyRenderer.FeatDecl + AlloyRenderer.KeyFogDecl + """
         uniform sampler2D uTex;
         // #347: what VanillaEnvFs aliases as texUnit6. Declared, never bound and never sampled here --
-        // the only reader is the content's SowxSurfaceHook, which this stage does not call. It is present
-        // so the spliced hook file COMPILES; an unused sampler is dead-code eliminated and its location
-        // resolves to -1, which the uniform upload ignores. Grass takes the DISPLAY hook, not the surface
-        // one: it has no material features to reshade.
+        // nothing spliced into this stage reads it since #350. It is present so a content file that names
+        // texUnit6 still COMPILES; an unused sampler is dead-code eliminated and its location resolves to
+        // -1, which the uniform upload ignores. Grass takes the DISPLAY hook alone: it has no material
+        // features to reshade.
         uniform sampler2D uFlowTex;
         uniform vec3 uAreaAmbient;
         uniform vec3 uAreaDiffuse;

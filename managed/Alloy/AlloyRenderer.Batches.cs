@@ -1180,7 +1180,16 @@ public sealed unsafe partial class AlloyRenderer
         int idxCount = *(int*)(elem + p.Item * 8 + 4);
         if (idxCount <= 0) return false;
         var mat = new MaterialRef(p.Mat);
-        for (int k = 0; k < MaxEngTex; k++) _seTex[_seN * MaxEngTex + k] = mat.Texture(k).OwnedTid();
+        for (int k = 0; k < MaxEngTex; k++)
+        {
+            // The ENGINE's own texture, never the owned copy: this is the engine's program replayed, and
+            // the copy shares its texels but not the object state the engine sets on its own name at bind
+            // time (filter, anisotropy) -- the dome's polar fan is the most anisotropic footprint in the
+            // frame, and the difference showed as radial spokes off the zenith. Every unit is bound, 0
+            // included: a unit the replay leaves untouched keeps whatever Alloy last bound there.
+            var t = mat.Texture(k);
+            _seTex[_seN * MaxEngTex + k] = t.IsNull ? 0 : t.ResolveTid();
+        }
         // texUnit0 is the one every stock stage samples unconditionally; without it there is nothing to draw.
         if (_seTex[_seN * MaxEngTex] == 0) return false;
         _seProg[_seN] = p.EngProg;
@@ -1219,11 +1228,8 @@ public sealed unsafe partial class AlloyRenderer
             uint vao = EngineVao(_seVao[i]);
             if (vao == 0) continue;
             Gl.UseProgram(_seProg[i]);
-            for (uint k = 0; k < MaxEngTex; k++)
-            {
-                int t = _seTex[i * MaxEngTex + (int)k];
-                if (t != 0) Gl.BindTextureUnit(k, (uint)t);
-            }
+            // every unit, 0 included: an unbound unit samples black under the engine, not a neighbour
+            for (uint k = 0; k < MaxEngTex; k++) Gl.BindTextureUnit(k, (uint)_seTex[i * MaxEngTex + (int)k]);
             Gl.BindVertexArray(vao);
             Gl.MultiDrawElementsBaseVertex(_seMode[i], counts + i, GlUnsignedShort,
                                            (void**)(offs + i), 1, bases + i);
@@ -1295,6 +1301,21 @@ public sealed unsafe partial class AlloyRenderer
         }
         // #136: the hosted-program parts last, inside the same depth/cull/blend preamble.
         SkyEnginePass();
+        if (_seN > 0 && _progSkyDecode != 0 && Gl.TextureBarrier != null && PostChain.HdrTex != 0)
+        {
+            // same depth range and test: exactly the pixels the hosted dome could have written
+            Gl.TextureBarrier();
+            Gl.Disable(Gl.BLEND);
+            Gl.UseProgram(_progSkyDecode);
+            // unit 0, which this pass has already given to engine textures and every later pass rebinds;
+            // 10..11 carry the shadow arrays the blended passes still sample
+            Gl.BindTextureUnit(0, PostChain.HdrTex);
+            Gl.Uniform1i(_skyDecodeHdr, 0);
+            Gl.BindVertexArray(PostChain.FullscreenVao);
+            Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
+            Gl.Enable(Gl.BLEND);
+            _draws++;
+        }
         Gl.Disable(Gl.DEPTH_CLAMP);
         Gl.DepthRange(0.0, 1.0);
     }

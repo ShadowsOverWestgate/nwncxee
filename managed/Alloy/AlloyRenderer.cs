@@ -269,6 +269,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     // 4.6-side objects (touched only inside the bracket)
     private static uint _prog46, _progLit46, _progDepth, _progDepthKey, _fbo46;
+    /// <summary>#350: the spliced programs were built against a resource chain that is gone. Every program
+    /// carrying a <c>// $VANILLA</c> region (lit, hosted lit, water, grass) is compiled ONCE from whatever
+    /// the chain held at the time -- so a session that logged into SoW first kept SoW's display hooks (the
+    /// racial-vision veil, and a second clustered-light walk per fragment for it) running on Arelith, and a
+    /// session that logged into Arelith first never picked SoW's files up at all. Set on the module-unload
+    /// edge (outside the bracket), acted on by <see cref="DropSpliced"/> inside it.</summary>
+    private static bool _spliceStale;
+
+    /// <summary>#136: the hosted sky's display-to-linear decode (<see cref="SkyDecodeFs"/>) and its sampler.</summary>
+    private static uint _progSkyDecode;
+    private static int _skyDecodeHdr;
     private static int _depthVp = -1, _depthBase = -1;
     /// <summary>#124: the dissolving batches' depth program (<see cref="DepthKeyVs"/>). Zero = it could not
     /// build, and those batches fall back to being excluded from the prepass -- the pre-fix behaviour, which
@@ -286,15 +297,25 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static int _locVp = -1, _locBase = -1, _locTex = -1;
     /// <summary>#126: <c>uAlphaCut</c> on each colour program -- the engine's <c>fAlphaDiscardValue</c>, set
     /// per batch from the batch's class.</summary>
-    private static int _locCut = -1, _litCut = -1;
-    private static int _litVp = -1, _litBase = -1, _litTex = -1,
-                       _litAmbient = -1, _litDiffuse = -1, _litDir = -1,
-                       _litGrid = -1, _litTile = -1, _litZ = -1, _litFalloff = -1, _litViz = -1,
-                       _litSunTex = -1, _litSunVp = -1, _litSunTexel = -1, _litSunBias = -1, _litSunCount = -1,
-                       // #139: the sphere-light wrap. Its own uniform rather than a spare uFalloff lane, so
-                       // a content override (#92) that predates it stays at -1 here and simply does not get
-                       // it.
-                       _litWrap = -1, _litAtten = -1, _litHot = -1, _litWrapN = -1;
+    private static int _locCut = -1;
+
+    /// <summary>The clustered lit program's uniform locations, ONE struct per program: #350 builds the lit
+    /// stage twice -- <see cref="_progLit46"/> from the hosted regions' stubs, which every ordinary lit batch
+    /// draws with, and <see cref="_progLitHost"/> with the content bodies in, bound only for a batch whose
+    /// feature <see cref="ShaderFeatures.Hosted"/> names. The wrap terms (#139) and the rest stay at -1 on a
+    /// content override (#92) that predates them, and simply do not get uploaded.</summary>
+    internal struct LitLoc
+    {
+        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN,
+                   SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
+                   CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage,
+                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture;
+        public FeatLoc Feat;
+    }
+    private static LitLoc _lit, _litH;
+    /// <summary>#350: the lit program WITH the hosted content bodies, or 0 (hosting off, no hosted feature, or
+    /// its build failed -- hosted materials then draw the plain lit path through <see cref="_progLit46"/>).</summary>
+    private static uint _progLitHost;
     /// <summary>#120: THIS pass's eye, from the inverse of the view matrix the pass is drawing with. Never
     /// <c>FrameInputs.CameraPos</c> -- that belongs to whichever pass set a view last -- and taken per pass
     /// rather than from the scene latch so a reflection subframe reflects from its own camera.</summary>
@@ -330,7 +351,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 28;
+    internal const int LightVizMax = 33;
     private static int _lightViz = DefViz;
     /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -835,6 +856,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #215: here rather than at the shim's own install, which a client without the engine symbols never
         // reaches -- the two things it checks are ours and are wrong in the same way on every client.
         RspShim.SelfCheck(log);
+        SelfCheckDrip(log);
         ShaderStages.SelfCheck(log);
         // #262: Alloy does the bone solve itself now, so its arithmetic is ours to be wrong about. Up here
         // with the other unconditional checks -- a client that never arms still reports whether the maths
@@ -961,6 +983,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // inherits from the engine VP, against the fog the shaders already fade to.
         $"[camfar {FrameInputs.CamFar:F0} fog {(FrameInputs.FogOn ? 1 : 0)} {FrameInputs.FogStart:F0}..{FrameInputs.FogEnd:F0}]";
 
+    /// <summary>#350: <c>scriptableInt1..16</c> and <c>scriptableFloat1..16</c> out of the engine's own
+    /// constant tables, exactly what <c>UploadVanillaEnv</c> writes. Cold; the input thread reading ints the
+    /// render thread also only reads.</summary>
+    internal static unsafe string DescribeScriptables()
+    {
+        if (_shaderConstI == null || _shaderConstF == null) return "scriptables: no table";
+        var sb = new System.Text.StringBuilder("scriptableInt");
+        for (int i = 0; i < ScriptableSlots; i++) sb.Append(' ').Append(i + 1).Append('=').Append(_shaderConstI[SIntBase + i]);
+        sb.Append("  scriptableFloat");
+        for (int i = 0; i < ScriptableSlots; i++) sb.Append(' ').Append(i + 1).Append('=').Append(_shaderConstF[SFloatBase + i].ToString("F2"));
+        return sb.ToString();
+    }
+
     /// <summary>Live tuning setter behind <c>/draw</c>. Returns the old value, or NaN for an unknown key.
     /// <para>Same threading argument as <c>/light</c>: each dial is an independent field written from the
     /// input thread and read by the render thread on its next pass, so a frame that catches one changed and
@@ -989,6 +1024,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // needs a bisect, and this is the known-good half of it.
             case "fogcull":  old = CullPass.FogCull ? 1f : 0f; CullPass.FogCull = v != 0f; break;
             case "hldiag":   old = HlDiag ? 1f : 0f; HlDiag = v != 0f; break;
+            // #350: the scriptable block as the client table holds it NOW -- the numbers a hosted content
+            // stage gates on (snow, wet, rain). A print, not a dial; the value is ignored.
+            case "consts":   old = 0f; _log?.Info("AlloyRenderer: " + DescribeScriptables()); break;
             // Bitmask over CNWCAnimBase's five hilite channels; bit 3 is the VFX one, off by default.
             case "hlchan":   old = HlChannels; HlChannels = (int)v; break;
             // #330: the bounded chase's A/B -- 1 re-reads every engine term every frame AND audits what the
@@ -1161,7 +1199,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // re-dirties the walk on pool residency, so without the retry a scene sticks at zero ownership
             // with the engine's 3D draw swallowed). A scan that accepted parts and dropped them all to the
             // all-owned-or-none sweeps re-fires too; that waste is bounded by the same 8-scan budget.
-            if (_lastEnrolled == 0 && _forcedEnrolls < MaxForcedEnrolls)
+            // ...and the same race at PARTIAL ownership, which the zero test cannot see. An enrollment that
+            // left VDOs deferred or past the dedup table has unfinished business, but a walk only re-runs on
+            // an edge and none of those states raise one -- so a dense area settled at 910 of 1300 parts and
+            // stayed there, the holes permanent. Same budget: the re-ask is bounded per scene, so a VDO that
+            // will never harvest cannot spin the walk.
+            if ((_lastEnrolled == 0 || DripPending) && _forcedEnrolls < MaxForcedEnrolls)
             { SceneWalk.Dirty = true; _forcedEnrolls++; }
             bool prevShim = _inColourPass;
             _inColourPass = true;
@@ -1451,7 +1494,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
     internal static void ContextLost()
     {
-        _prog46 = 0; _progLit46 = 0; _progDepth = 0; _progDepthKey = 0; _progWater = 0; _fbo46 = 0;
+        _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progDepth = 0; _progDepthKey = 0; _progWater = 0; _fbo46 = 0; _progSkyDecode = 0;
         HighlightContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
@@ -1492,7 +1535,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         }
         if (!GlContextService.Available) { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost(); }
         bool inModule = GameGate.InModule;
-        if (_wasInModule && !inModule) RevokeAll("module unload");
+        if (_wasInModule && !inModule) { RevokeAll("module unload"); _spliceStale = true; }
         _wasInModule = inModule;
         if (_tableGen != PartTable.TableGen) { RevokeAll("part table wiped"); _tableGen = PartTable.TableGen; }
 
@@ -1754,7 +1797,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         internal fixed int SFloat[ScriptableSlots];
         internal fixed int SVec[ScriptableSlots];
     }
-    private static FeatLoc _locFeat, _litFeat;
+    private static FeatLoc _locFeat;
     /// <summary>#123: <c>GLRender::m_shaderExposedRuntimeData</c>, the struct the engine's own SetUniforms
     /// uploads these five from. Null (symbol unresolved) leaves the wind still and the roofs wherever they
     /// were authored, which is the pre-#123 look, not a misrender.</summary>
@@ -1816,11 +1859,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal const uint SunUnit = TextureSlots.SunShadow, CubeUnit = TextureSlots.LocalShadow,
                         CubeDynUnit = TextureSlots.LocalShadowDyn,
                         SunDynUnit = TextureSlots.SunShadowDyn, SunDynUnitGrass = TextureSlots.SunShadowDynGrass;
-    private static int _litCubeTex = -1, _litCubeLight = -1, _litCubePlane = -1, _litCubeCount = -1,
-                       _litCubeSoft = -1, _litCubeDynTex = -1, _litCubeDynPage = -1,
-                       _litSunDynTex = -1, _litSunDyn = -1, _litSunFocus = -1, _litSunRadius = -1;
-    private static int _litProbe = -1, _litProbeMips = -1, _litProbeGain = -1, _litCapture = -1,
-                       _litSceneEnv = -1;
     /// <summary>Shadow depth bias in WORLD units, sent per cascade as a fraction of that cascade's published
     /// depth range so it stays a constant world distance whatever the fit. Small because the receiver's normal
     /// offset carries most of the acne fight; <c>/draw csmbias</c> tunes it.</summary>

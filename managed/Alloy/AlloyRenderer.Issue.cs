@@ -191,6 +191,7 @@ public sealed unsafe partial class AlloyRenderer
         // what someone else set.
         int boundCull = -1;
         float boundCut = float.NaN;   // per PROGRAM: reset on every UseProgram below
+        int litBase = -1, litCut = -1; // the bound lit program's, whichever of the two it is
         int* boundSlot = stackalloc int[MapSlots];
         for (int s = 0; s < MapSlots; s++) boundSlot[s] = -1;
         fixed (int* counts = _dCount, bases = _dBase)
@@ -199,7 +200,10 @@ public sealed unsafe partial class AlloyRenderer
         {
             bool water = _gCls[g] == (byte)AlloyClass.Water;
             bool lit = _gLit[g];
-            int wantProg = water ? 2 : lit ? 1 : 0;
+            // #350: a hosted feature draws through the second lit program (3); everything else lit through
+            // the first (1). Batches are cut on the feature id, so this is one switch per hosted batch.
+            bool hosted = lit && !water && _progLitHost != 0 && ShaderFeatures.Hosted(_gFeat[g]);
+            int wantProg = water ? 2 : hosted ? 3 : lit ? 1 : 0;
             if (boundProg != wantProg)
             {
                 boundProg = wantProg;
@@ -230,19 +234,21 @@ public sealed unsafe partial class AlloyRenderer
                 }
                 else if (lit)
                 {
-                    Gl.UseProgram(_progLit46);
-                    Gl.Uniform1i(_litTex, 0);
-                    Gl.UniformMatrix4fv(_litVp, 1, 0, vpRaw);
+                    ref LitLoc L = ref (hosted ? ref _litH : ref _lit);
+                    Gl.UseProgram(hosted ? _progLitHost : _progLit46);
+                    Gl.Uniform1i(L.Tex, 0);
+                    Gl.UniformMatrix4fv(L.Vp, 1, 0, vpRaw);
                     AlloyLights.BindForDraw();
-                    AlloyLights.SetDrawUniforms(_litGrid, _litTile, _litZ, _litFalloff, _litWrap,
-                                                _litAtten, _litHot, _litWrapN, viewport, near, far);
-                    Gl.Uniform1i(_litViz, viz);
-                    Gl.Uniform1i(_litCapture, _capturing ? 1 : 0);
-                    UploadFeatureTerms(_litFeat, viewport);
-                    UploadAreaTerms();
-                    UploadSunCascades();
-                    UploadLocalCubes();
-                    UploadProbe();
+                    AlloyLights.SetDrawUniforms(L.Grid, L.Tile, L.Z, L.Falloff, L.Wrap,
+                                                L.Atten, L.Hot, L.WrapN, viewport, near, far);
+                    Gl.Uniform1i(L.Viz, viz);
+                    Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
+                    UploadFeatureTerms(L.Feat, viewport);
+                    UploadAreaTerms(L);
+                    UploadSunCascades(L);
+                    UploadLocalCubes(L);
+                    UploadProbe(L);
+                    litBase = L.Base; litCut = L.Cut;
                 }
                 else
                 {
@@ -256,11 +262,11 @@ public sealed unsafe partial class AlloyRenderer
                 }
             }
             int s = _gStart[g];
-            Gl.Uniform1i(water ? _watBase : lit ? _litBase : _locBase, s);
+            Gl.Uniform1i(water ? _watBase : lit ? litBase : _locBase, s);
             // #126: the alpha cutout, per batch because it is per class -- the engine's own
             // fAlphaDiscardValue, which is a global there and a uniform here.
             float cut = AlloyClasses.Discard(_gCls[g]);
-            if (cut != boundCut) { Gl.Uniform1f(water ? _watCut : lit ? _litCut : _locCut, cut); boundCut = cut; }
+            if (cut != boundCut) { Gl.Uniform1f(water ? _watCut : lit ? litCut : _locCut, cut); boundCut = cut; }
             // ...and the blend state, per batch, because the opaque PASS now mixes both: a plain opaque batch
             // draws with GL_BLEND off and a cutout batch with it on and the material's own pair, which is
             // exactly the pair of states the engine draws buckets 0 and 1 in. Batches are class-grouped, so

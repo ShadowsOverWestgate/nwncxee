@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Sowx.Framework;
 using Sowx.Graphics;
 
@@ -64,6 +65,12 @@ internal static class ShaderContract
         // fails against a vertex stage that forwards nothing. Say "the caster's env threshold", not its
         // identifier, anywhere inside a stage string.
         => fs.Contains("uAlphaCut") && (fs.Contains("vAlpha") ? vs.Contains("vAlpha") : fs.Contains("rot.w"));
+
+    /// <summary>#350: <see cref="VanillaShader.HostText"/> over a two-line stage, for the assertions above.
+    /// Null only if the rewrite found no main, which the assertions then trip on.</summary>
+    private static string HostSample => VanillaShader.HostText(
+        "#define LIGHTING 1\n#define FOO 2\nuniform sampler2D texUnit6;\nvoid main ()\n{\n    gl_FragColor = FragmentColor;\n}\n",
+        "x", null, "selfcheck", new System.Collections.Generic.List<string>()) ?? "";
 
     /// <summary>#137: does this VERTEX stage carry the skinning branch? Same shape, same reason, as
     /// <see cref="CutoutSafe"/> -- and the same trap. A <c>sowx_*_vs</c> written before #137 links
@@ -164,6 +171,7 @@ internal static class ShaderContract
                   && FeatDecl.Contains($"SOWX_FEAT_SKIN      {(int)ShaderFeature.Skin}")
                   && FeatDecl.Contains($"SOWX_FEAT_NOIRWET   {(int)ShaderFeature.NoirWet}")
                   && FeatDecl.Contains($"SOWX_FEAT_NOIRGLOSS {(int)ShaderFeature.NoirGloss}")
+                  && FeatDecl.Contains($"SOWX_FEAT_GROUNDWEATHER {(int)ShaderFeature.GroundWeather}")
                   // #137: the skinning half. The binding point and the two attribute locations live twice
                   // (C# consts, literal GLSL) and neither disagreement is visible -- a wrong binding reads an
                   // empty block and collapses the mesh to the origin, a wrong location reads whatever stream
@@ -478,8 +486,41 @@ internal static class ShaderContract
                   // A missing one is not a missing feature -- it is a lit program that does not link, which
                   // takes the world with it.
                   && VanillaShader.HasSplice(HookFs)
-                  && HookFs.Contains("void SowxSurfaceHook(inout vec3 albedo, inout vec3 nrm, inout vec3 pbr")
                   && HookFs.Contains("vec3 SowxDisplayHook(vec3 c)")
+                  // #350: the surface hook is GONE -- a material's own FS is hosted instead. Its
+                  // reappearance would be the content contract this ticket deleted coming back.
+                  && !HookFs.Contains("SowxSurfaceHook")
+                  // ...and the hosted regions: one per FsNames entry, each with its stub and its dispatcher
+                  // arm, and no region the table does not name. Drift here is a feature that silently draws
+                  // the plain lit path, or a link error that takes the world with it.
+                  && VanillaShader.HasHost(HostFs)
+                  && HostFs.Contains("bool SowxHostSurface(int feat)")
+                  && ShaderFeatures.FsNames.Length == ShaderFeatures.VsNames.Length
+                  && ShaderFeatures.FsNames.All(n => n.Length == 0
+                         || (HostFs.Contains("// $VANILLA-HOST " + n + "\n") && HostFs.Contains("void SowxHost_" + n + "() { }")
+                             && HostFs.Contains("SowxHost_" + n + "();")))
+                  && HostFs.Split("// $VANILLA-HOST ").Length - 1 == ShaderFeatures.FsNames.Count(n => n.Length > 0)
+                  && OwnedLitFsMain.Contains("SowxHostSurface(feat))")
+                  // ...and what a hosted body reads and writes, under the engine's own names.
+                  && VanillaEnvFs.Contains("vec4 FragmentColor;")
+                  && VanillaEnvFs.Contains("#define MATERIAL_ROUGHNESS_VALUE fRoughness")
+                  && VanillaEnvFs.Contains("vec3 SpecularColor;")
+                  && VanillaStandardFs.Contains("void SetupStandardShaderInputs() { FragmentColor *= SowxHostTexel; }")
+                  && VanillaEnvFs.Contains("vec4 SowxHostTexel;")
+                  && OwnedLitFsMain.Contains("SowxHostTexel = vec4(albedo, coverage);")
+                  && VanillaStandardFs.Contains("void ApplyStandardShader() { }")
+                  && VanillaStandardFs.Contains("#include \"inc_scriptable\"")
+                  // ...and the rewrite itself, on a synthetic stage: main renamed, gl_FragColor redirected,
+                  // the stage's own defines scoped, an environment-supplied declaration dropped.
+                  && HostSample.Contains("void SowxHostMain_x()")
+                  && HostSample.Contains("FragmentColor = FragmentColor;")
+                  && !HostSample.Contains("gl_FragColor")
+                  && HostSample.Contains("#undef LIGHTING\n#undef FOO\n")
+                  && HostSample.Split("#undef FOO").Length == 3
+                  && !HostSample.Contains("uniform sampler2D")
+                  && HostSample.Contains("void SowxHost_x()")
+                  && HostSample.Contains("fRoughness = MATERIAL_ROUGHNESS_VALUE;")
+                  && HostSample.EndsWith(VanillaEnvDefs)
                   // ...and the environment they share, ahead of all three. Declared twice (once per file)
                   // it would be a compile error, declared nowhere a link error; this is the one copy.
                   && VanillaEnvFs.Contains("#define SOWX_ALLOY")
@@ -505,7 +546,8 @@ internal static class ShaderContract
                   // give back exactly what it was handed. An unterminated marker or an off-by-one in the
                   // region bounds silently eats GLSL, which is the one failure mode of string surgery.
                   && VanillaShader.Splice(TargetFs, null, "selfcheck", false) == TargetFs
-                  && VanillaShader.Splice(HookFs, null, "selfcheck", false) == HookFs;
+                  && VanillaShader.Splice(HookFs, null, "selfcheck", false) == HookFs
+                  && VanillaShader.Splice(HostFs, null, "selfcheck", false) == HostFs;
         log.Info(ok
             ? "ShaderContract.SelfCheck: passed"
             : $"ShaderContract.SelfCheck: FAILED -- {(slots ? "" : "a texture slot disagreed (named above), ")}" +
