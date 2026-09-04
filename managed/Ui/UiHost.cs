@@ -76,6 +76,16 @@ public static class UiHost
         _windows.Add(w);
     }
 
+    /// <summary>Z handed out below every registration: <see cref="Register"/> only ever assigns positive
+    /// values, so a decreasing counter starting at 0 keeps a sent-back window under all of them.</summary>
+    private static int _backZ;
+
+    /// <summary>Push a window under every other one, permanently. Registration order is discovery order,
+    /// which is type-name sorted, so a window that must paint BELOW the chat box and the dialog panel
+    /// (world-anchored nameplates) cannot get there by naming. <see cref="Focus"/> would raise it again,
+    /// but only for a focusable window -- a back window sets <c>Focusable = false</c>.</summary>
+    public static void SendToBack(Window w) => w.Z = --_backZ;
+
     /// <summary>Remove a window; if it held focus, clear the owner so the keyboard-owned gate drops
     /// (stale-owner safety -- a destroyed typing window must not keep gameplay keys suppressed).</summary>
     public static void Unregister(Window w)

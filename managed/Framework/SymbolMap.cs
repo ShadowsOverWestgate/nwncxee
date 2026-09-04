@@ -205,6 +205,42 @@ internal static unsafe class SymbolMap
     /// z at +0xac per sow-codebase CNWSObject notes).</summary>
     public const string GetPlayerCreature = "_ZN13CClientExoApp17GetPlayerCreatureEv";
 
+    // ---- overhead nameplate / chat bubble (docs/re/nameplate.md). All client-side classes: Linux-only
+    //      (no _win entries -> skip-with-log on Windows, which stands the whole feature down there). ----
+    /// <summary>CGuiInGamePopUpBubble::SetChatBubbleMode(int) @0x6a0be0 -- STATIC (mode in edi, no `this`).
+    /// Mode 0 sets every bubble's <c>+0x150</c>, and every path that could activate the panel is guarded on
+    /// it: the engine stops drawing both the plate and the bubble while still building the state and
+    /// refreshing the screen anchor we read. This is a supported vanilla setting, not a patch.</summary>
+    public const string SetChatBubbleMode = "_ZN21CGuiInGamePopUpBubble17SetChatBubbleModeEi";
+    /// <summary>CNWCCreature::ShowFeedbackBubbleText() @0x71a800 -- builds the mouse-over/Tab plate string and
+    /// sets the creature's own "plate is up" flag. ABI: <c>(this) -&gt; void</c>.</summary>
+    public const string CreatureShowFeedbackBubbleText = "_ZN12CNWCCreature22ShowFeedbackBubbleTextEv";
+    /// <summary>CNWCPlaceable::ShowFeedbackBubbleText() @0x7ea8a0 -- the placeable twin.</summary>
+    public const string PlaceableShowFeedbackBubbleText = "_ZN13CNWCPlaceable22ShowFeedbackBubbleTextEv";
+    /// <summary>CNWCItem::ShowFeedbackBubbleText() @0x7cea90 -- the item twin. Hook the PRIMARY only: the
+    /// <c>_ZThn72_</c> thunk @0x7ced80 is <c>sub $0x48,%rdi; jmp</c> straight into it, so hooking both
+    /// would double-fire.</summary>
+    public const string ItemShowFeedbackBubbleText = "_ZN8CNWCItem22ShowFeedbackBubbleTextEv";
+    /// <summary>CNWCObject::SetPopUpBubbleText(CExoString, int, float, float) @0x7e8050 -- the ONE sink both
+    /// the plate and an overhead chat line pass through, and the only place the speaking/plated object is a
+    /// clean <c>CNWCObject*</c>. ABI (verified by disassembly): <c>(this /*rdi*/, CExoString* /*rsi, the
+    /// by-value string lowered to a hidden pointer*/, int forceShow /*edx*/, float perChar /*xmm0*/,
+    /// float fixedSec /*xmm1*/)</c> -- Ghidra drops the two floats.</summary>
+    public const string SetPopUpBubbleText = "_ZN10CNWCObject18SetPopUpBubbleTextE10CExoStringiff";
+    /// <summary>CNWCMessage::HandleServerToPlayerChat(unsigned char) @0x75b280 -- the channel byte arrives in
+    /// esi and the SetPopUpBubbleText for that line runs on the same stack, so it latches the channel for
+    /// per-channel bubble styling. ABI: <c>(this /*rdi*/, uchar channel /*esi*/)</c>.</summary>
+    public const string HandleServerToPlayerChat = "_ZN11CNWCMessage24HandleServerToPlayerChatEh";
+    /// <summary>CClientExoApp::GetModuleCamera() @0x6377b0 -- null-safe <c>GetModule()-&gt;[0xe8]</c>, the LIVE
+    /// game camera (class <c>Camera</c>). Its world position is a plain field at <c>+0xb0</c>, which is all
+    /// <c>Camera::GetPosition()</c> reads. Never the Alloy CameraPos global: at present time that is the UI
+    /// frame's camera at (0,0,742).</summary>
+    public const string GetModuleCamera = "_ZN13CClientExoApp15GetModuleCameraEv";
+    /// <summary>RenderInterface::GetViewPort(float*) @0x45d0b0 -- tail-jumps to GLRender::GetViewPort, which
+    /// widens the four ints of <c>GLRender::m_viewport</c> into the caller's float[4] {x, y, w, h}. The same
+    /// call <c>Camera::MapToScreen</c> falls back to when the camera carries no viewport of its own.</summary>
+    public const string GetViewPort = "_ZN15RenderInterface11GetViewPortEPf";
+
     // data globals
     public const string AppManager = "g_pAppManager";
     public const string GuiMan     = "g_pGuiMan";

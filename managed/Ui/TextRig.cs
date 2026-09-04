@@ -211,9 +211,12 @@ public static unsafe class TextRig
     }
 
     /// <summary>Fraction of a portrait texture that is real image, from the engine's own ConvertPortrait
-    /// (content = 1/1.28 of a pow2-padded height; the rest is black at the image bottom). ponytail: if a
-    /// live frame ever shows a portrait cropped or with a black band, this one const is the knob (1.0 = raw).</summary>
-    private const float PortraitContentV = 1f / 1.28f;   // 0.78125
+    /// (content = 1/1.28 of a pow2-padded height; the rest is black at the image bottom). The nominal
+    /// 100/128 leaves a row or two of the pad visible along the bottom edge -- linear filtering samples
+    /// across the content/pad boundary -- so the crop is two texels tighter, as a fraction so it holds at
+    /// every portrait resolution. ponytail: if a live frame ever shows a portrait cropped or with a black
+    /// band, this one const is the knob (1.0 = raw).</summary>
+    private const float PortraitContentV = 98f / 128f;   // 0.765625, nominal 0.78125 less two texel rows
 
     /// <summary>Two triangles for a portrait quad. The engine uploads portraits GL-bottom-origin, so the
     /// image arrives upside down: map the quad top to V=1 (image top) and the bottom to the content floor,

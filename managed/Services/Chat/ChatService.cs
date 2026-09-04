@@ -1064,6 +1064,11 @@ public sealed unsafe class ChatService : IExtenderService
         return false;
     }
 
+    /// <summary>The one public door onto the Tell entry path, for a second consumer that has a character name
+    /// and no player id (a nameplate click, #click-to-tell). Same flow as the portrait click: the pinned Tell
+    /// tab when routing is on, the <c>/t "Name" </c> prefill when it is off. Cold (input thread).</summary>
+    public static void StartTell(string name) { if (!string.IsNullOrEmpty(name)) StartTellTo(name, _playerResolver?.Resolve(name)); }
+
     /// <summary>Open the chat input targeting <paramref name="name"/>. When Tell routing is Off, falls back
     /// to pre-filling <c>/t "name" </c>. Otherwise navigates to the existing pinned tab or creates one (#46).
     /// <paramref name="playerId"/> filters the tab to that player's messages.</summary>
