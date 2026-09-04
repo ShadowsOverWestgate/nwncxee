@@ -626,6 +626,16 @@ internal static unsafe class SymbolMap
     /// <summary>CAurTriangleBin::m_fNearRadiusSquared @0x18aa3b0 -- squared radius inside which vanilla grass
     /// is at full alpha (225 = 15 units). The owned pass reuses it as the near edge of the dither ramp.</summary>
     public const string GrassNearRadius = "_ZN15CAurTriangleBin20m_fNearRadiusSquaredE";
+    /// <summary>GLRender::m_lightAreaDiffuse / m_lightAreaAmbient / m_lightAreaDiffuseDirection
+    /// @0x19af5f0 / 0x19af600 / 0x19af5e0 -- the three area-light uniforms as the ENGINE holds them.
+    /// <c>SetAreaDiffuseLight</c> @0x4cbfc0 and <c>SetAreaAmbientLight</c> @0x4cbf60 store their argument
+    /// into these unmodified (verified in asm: three <c>movss</c> and a dirty-sequence bump, no scale), and
+    /// <c>GLRender::SetUniforms</c> uploads them. Alloy re-derives the same values off the PartLight rather
+    /// than reading them; these are what that derivation is checked against.</summary>
+    public const string LightAreaDiffuse = "_ZN8GLRender18m_lightAreaDiffuseE";
+    public const string LightAreaAmbient = "_ZN8GLRender18m_lightAreaAmbientE";
+    public const string LightAreaDiffuseDir = "_ZN8GLRender27m_lightAreaDiffuseDirectionE";
+
     /// <summary>Scene::m_bGrassIsEnabled @0x19ab970 -- the player's "Grass Mode" option, and the flag
     /// <c>DoBinBucket</c> gates its whole body on. The owned pass honours it: grass off means the owned
     /// draw does nothing AND does not suppress, so the option keeps meaning what it says.</summary>

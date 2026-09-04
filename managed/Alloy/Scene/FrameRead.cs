@@ -191,6 +191,23 @@ internal static unsafe class FrameRead
         if (travel.Z < DownwardZ) { FrameInputs.SunDir = travel; FrameInputs.HasSun = true; }
     }
 
+    /// <summary>The engine's OWN area-light uniforms, straight out of the globals
+    /// <c>SetAreaDiffuseLight</c>/<c>SetAreaAmbientLight</c> store into (verified in asm: three movss and a
+    /// dirty-sequence bump, no scale). What <see cref="ApplyAreaTerm"/> derives should equal these, and the
+    /// two are printed side by side rather than trusted.
+    /// <para>Reads nothing of Alloy's, so it answers in a <c>vanilla=1</c> session too -- which is the point:
+    /// SoW drives area lighting from a server-side day/night palette, so an Alloy frame and a vanilla frame
+    /// captured in different sessions are not comparable until these numbers say they are.</para></summary>
+    internal static string EngineAreaTerms()
+    {
+        float* dif = (float*)Native.Sym(SymbolMap.LightAreaDiffuse);
+        float* amb = (float*)Native.Sym(SymbolMap.LightAreaAmbient);
+        float* dir = (float*)Native.Sym(SymbolMap.LightAreaDiffuseDir);
+        if (dif == null || amb == null || dir == null) return "area uniforms unresolved";
+        return $"diffuse=({dif[0]:F3},{dif[1]:F3},{dif[2]:F3}) ambient=({amb[0]:F3},{amb[1]:F3},{amb[2]:F3}) " +
+               $"dir=({dir[0]:F3},{dir[1]:F3},{dir[2]:F3})";
+    }
+
     /// <summary>Pure-math check of the two derivations that have no other witness: the view forward the
     /// camera quaternion gives, and the projection term its view angle gives. Headless-safe.</summary>
     internal static void SelfCheck(ExtenderLog log)

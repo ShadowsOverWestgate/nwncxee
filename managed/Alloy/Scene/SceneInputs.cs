@@ -271,7 +271,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     private const int PlRange = 0x70, PlRangeAlt = 0x78, PlIntensity = 0xa4, PlColor = 0x64, PlPos = 0xac;
     /// <summary>Engine shadow-fade weight (GetShadowLights decrements it per frame for deprioritized
     /// lights). Diagnostic only -- printed by the masterlight dump.</summary>
-    private const int PlFade = 0xa8;
+    private const int PlFade = 0x90;
 
     // ---- #336: the fade-out the engine has no edge for ----
     // A light that APPEARS ramps: the engine grows its intensity, and since the lit radius is
@@ -453,6 +453,13 @@ public sealed unsafe class SceneInputs : IExtenderService
         FrameInputs.ResetLocalLights(count);
         bool walkDiag = _trace && ++_walkDiagTick >= 900;   // ~15s at 60fps (one walk/frame): dump raw filter fields near the camera
         if (walkDiag) _walkDiagTick = 0;
+        if (walkDiag)
+            _log?.Info($"SceneInputs: [lightdiag] radiusMult(0x12)={radiusMult:F3} minI(0x13)={(_getGspF != null ? _getGspF(0x13) : -1f):F3} " +
+                       $"maxI(0x14)={(_getGspF != null ? _getGspF(0x14) : -1f):F3} -> atten {Sowx.Alloy.AlloyLights.Atten.X:F3}/{Sowx.Alloy.AlloyLights.Atten.Y:F3} " +
+                       $"| area ambient=({FrameInputs.AreaAmbient.X:F3},{FrameInputs.AreaAmbient.Y:F3},{FrameInputs.AreaAmbient.Z:F3}) " +
+                       $"diffuse=({FrameInputs.AreaDiffuse.X:F3},{FrameInputs.AreaDiffuse.Y:F3},{FrameInputs.AreaDiffuse.Z:F3}) " +
+                       $"dir=({FrameInputs.AreaDiffuseDir.X:F3},{FrameInputs.AreaDiffuseDir.Y:F3},{FrameInputs.AreaDiffuseDir.Z:F3}) " +
+                       $"hasAmb={FrameInputs.HasAreaAmbient} hasDif={FrameInputs.HasAreaDiffuse} | ENGINE {FrameRead.EngineAreaTerms()}");
         for (int i = 0; i < count; i++)
         {
             byte* p = (byte*)*((IntPtr*)data + i);
@@ -462,7 +469,7 @@ public sealed unsafe class SceneInputs : IExtenderService
                 var wp = new Vector3(*(float*)(p + PlPos), *(float*)(p + PlPos + 4), *(float*)(p + PlPos + 8));
                 float wd = (wp - FrameInputs.CameraPos).Length();
                 if (wd < 40f)
-                    _log?.Info($"SceneInputs: masterlight d={wd:F1} pos=({wp.X:F0},{wp.Y:F0},{wp.Z:F1}) type={*(int*)(p + PlType)} cast={*(int*)(p + PlCastShadows)} flags={*(int*)(p + PlFlagA)}/{*(int*)(p + PlFlagB)} range={*(float*)(p + PlRange):F1} alt={*(float*)(p + PlRangeAlt):F1} inten={*(float*)(p + PlIntensity):F2} fade={*(float*)(p + PlFade):F2} rgb=({*(float*)(p + PlColor):F2},{*(float*)(p + PlColor + 4):F2},{*(float*)(p + PlColor + 8):F2})");
+                    _log?.Info($"SceneInputs: masterlight d={wd:F1} pos=({wp.X:F0},{wp.Y:F0},{wp.Z:F1}) type={*(int*)(p + PlType)} cast={*(int*)(p + PlCastShadows)} flags={*(int*)(p + PlFlagA)}/{*(int*)(p + PlFlagB)} range={*(float*)(p + PlRange):F1} alt={*(float*)(p + PlRangeAlt):F1} inten={*(float*)(p + PlIntensity):F2} fade={*(float*)(p + PlFade):F2} rgb=({*(float*)(p + PlColor):F2},{*(float*)(p + PlColor + 4):F2},{*(float*)(p + PlColor + 8):F2}) adjR={(_getAdjRadius != null ? _getAdjRadius((IntPtr)p) : -1f):F2}");
             }
             if (*(int*)(p + PlFlagA) == 0 && *(int*)(p + PlFlagB) == 0) continue;
             float range = *(float*)(p + PlRange);

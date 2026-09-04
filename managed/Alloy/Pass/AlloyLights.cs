@@ -64,7 +64,7 @@ internal static unsafe class AlloyLights
     /// <see cref="_srcRadius"/> is no longer part of this curve at all -- since #139 it is the sphere-light
     /// wrap radius and the base of the self-shadow near-field skip.</para>
     /// </summary>
-    private static float _gain = 0.1f, _srcRadius = 1f, _falloffPow = 1f;
+    private static float _gain = 1f, _srcRadius = 1f, _falloffPow = 1f;
 
     /// <summary>#142: the near-field core, and the answer to "no light ever gets intense close up".
     /// <para>The engine's curve is a NEEDLE. With the live constants (mi 0.410, ff 136.334) the denominator
@@ -78,11 +78,13 @@ internal static unsafe class AlloyLights
     /// far field is the half the live A/B against vanilla actually calibrated. Compact support makes "the
     /// tail is untouched" a property of the formula rather than a thing to re-check.</para>
     /// <para><c>gain + hot = 1</c> puts the very centre at the engine's own peak while <see cref="_gain"/>
-    /// alone owns everything past the core. The shipped pair is that: body at the 0.10 the live A/B settled
-    /// on, core at the full 2.44, over 15% of each light's range (about 3.5 units on a torch).</para>
+    /// alone owns everything past the core. The shipped pair is gain 1 / hot 0 -- the engine's curve, no
+    /// core term at all. The old 0.10/0.90 pair came from a live A/B whose "vanilla" side was the SoW
+    /// server's veil shader, which deliberately darkens around the player to fake missing darkvision; it was
+    /// calibrating against a darkened frame, not against vanilla, and every placed light paid for it.</para>
     /// <para>0 disables it, which is #140's curve and is also what a content override (#92) that never
     /// declares <c>uHot</c> reads.</para></summary>
-    private static float _hot = 0.9f, _hotSize = 0.15f;
+    private static float _hot = 0f, _hotSize = 0.15f;
 
     /// <summary>The engine's own two attenuation constants, latched per capture from
     /// <c>GLRender::m_globalShaderConstantsf</c> through <c>RenderInterface::GetGlobalShaderParamf</c> --
@@ -151,21 +153,22 @@ internal static unsafe class AlloyLights
     /// authored at max channel &lt;= 1 and have no surplus at all, while a torch ships at
     /// rgb=(1.75, 1.50, 1.00). That matters because seeing is a mechanical advantage -- a torch or a Light
     /// spell has to be worth carrying -- and placed lights are mostly decor.</para>
-    /// <para>0 = the engine's own behaviour exactly: <c>GetLightAdjustedColor</c> normalises the hue and
-    /// <c>GetLightAdjustedRadius</c> spends the whole surplus on radius, so an overbright light is WIDER and
-    /// no brighter. 1 = the authored surplus in full at the centre as well. The shipped 0.5 is a taste
-    /// value and nothing more: half of it, which reads as "this light is special" without flattening the
-    /// carrier into white.</para>
+    /// <para>0 = the engine's own behaviour exactly, and what ships: <c>GetLightAdjustedColor</c> normalises
+    /// the hue and <c>GetLightAdjustedRadius</c> spends the whole surplus on radius, so an overbright light
+    /// is WIDER and no brighter. 1 = the authored surplus in full at the centre as well. It shipped nonzero
+    /// only to lift carried lights out of a scene the 0.10 gain had flattened; with the gain back at the
+    /// engine's peak there is nothing to lift them out of, so a carried light is vanilla too. <c>/light
+    /// overbright 0.5</c> brings the taste value back.</para>
     /// <para>#140 brought this down from 120. That number was not a lighting decision -- it was propping up
     /// a range-blind <c>1/d^4</c> curve under which no honest value reached anything, and it is what made a
     /// torch-bearer 210x brighter than any placed light at the same distance. The curve is fixed; the cope
     /// goes with it.</para></summary>
-    internal static float OverbrightScale = 1f;
+    internal static float OverbrightScale = 0f;
     /// <summary>Boot values, kept so <c>/light reset</c> returns to "env vars as launched" rather than to the
     /// hardcoded defaults -- otherwise a reset would silently discard the launch config.</summary>
-    private static float _bootGain = 0.1f, _bootRadius = 1f, _bootPow = 1f,
+    private static float _bootGain = 1f, _bootRadius = 1f, _bootPow = 1f,
                          _bootAmbient = 1f, _bootSun = 1f, _bootOver = 1f;
-    private static float _bootHot = 0.9f, _bootHotSize = 0.15f, _bootWrapN = 0.25f;
+    private static float _bootHot = 0f, _bootHotSize = 0.15f, _bootWrapN = 0.25f;
     private static float _bootWrap = 1f, _bootShadowSoft = 0f, _bootShadowNear = 1f, _bootDiscPx = 3f;
 
     /// <summary>Current tuning, one line, for the <c>/light</c> echo and the arm-time log.</summary>
@@ -174,6 +177,9 @@ internal static unsafe class AlloyLights
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  " +
         $"ambient x{AmbientScale:F2}  sun x{SunScale:F2}  overbright x{OverbrightScale:F2}  " +
         $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  shadownear {_shadowNear:F2}  " +
+        // The engine's area terms are NOT echoed here: they live only during the world render, and a chat
+        // command runs after it, where they read zero. FrameRead.EngineAreaTerms is printed from the
+        // /shadow trace line instead, which is inside the pass slot.
         $"hot {_hot:F2}  hotsize {_hotSize:F3}  fadeout {SceneInputs.FadeFrames}f";
 
     /// <summary>Live tuning setter behind <c>/light</c>. Returns the old value, or NaN for an unknown key.

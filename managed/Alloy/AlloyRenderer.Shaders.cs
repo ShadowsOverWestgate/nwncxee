@@ -475,14 +475,39 @@ public sealed unsafe partial class AlloyRenderer
         vec3 vSurfaceNormal;
         vec3 vViewToSurface_n;
 
-        /// #347: how lit this fragment is, 0..1, for a stock file that would have asked the engine's light
-        /// arrays. Alloy's clustered diffuse is the same question answered by a different structure, and the
-        /// luma of it is what the stock term reduces to. Content reaches this through SOWX_ALLOY; nothing
-        /// here is called unless a spliced file asks for it.
+        /// #347: how lit this fragment is, for a stock file that would have asked the engine's light arrays.
+        /// The RAW measurement -- the caller applies its own floor/full curve to it, which is where those
+        /// constants belong.
+        /// <para>This is <c>inc_vision.shd</c>'s <c>VisionLightHere</c> term for term: the strongest single
+        /// light reaching this point, by the engine's own attenuation, with NO N.L and NO shadow. That is not
+        /// an approximation of the stock loop, it IS the stock loop -- it asks "is this spot inside a light",
+        /// and max() rather than a sum because two torches do not make that twice as true.</para>
+        /// <para>It used to answer with the luma of Alloy's clustered DIFFUSE, which is N.L-weighted, cube-
+        /// shadowed and summed. Every one of those makes the answer smaller than the stock loop's, and the
+        /// answer holds a distance veil OPEN -- so a lit tavern read as an unlit one and the veil crushed it
+        /// to black. A floor at grazing incidence to a wall lantern, or anything the lantern's own cube
+        /// shadows, lost the light entirely.</para>
         float SowxVisionLight()
         {
-            vec3 lit = SowxClusteredDiffuse(vWorld, normalize(vNrm), vDepth);
-            return clamp(dot(lit, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+            uint cl = SowxCluster(vDepth);
+            uint n = uClCount[cl];
+            uint base = cl * SOWX_CLUSTER_CAP;
+            vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
+            float lit = 0.0;
+            for (uint k = 0u; k < n; k++)
+            {
+                uint li = uClIdx[base + k];
+                vec4 pr = uLights[li * 2u];
+                float rr = pr.w * pr.w;
+                vec3 dl = pr.xyz - vWorld;
+                float dd = dot(dl, dl);
+                if (dd > rr) continue;
+                float f2 = dd / rr;
+                float att = (1.0 - f2) / (at.x + at.y * f2);
+                vec3 c = SowxLinear(uLights[li * 2u + 1u].rgb);
+                lit = max(lit, att * dot(c, vec3(0.299, 0.587, 0.114)));
+            }
+            return lit;
         }
 
         """;
@@ -1173,17 +1198,21 @@ public sealed unsafe partial class AlloyRenderer
             fSpecularity = pbr.x; fRoughness = pbr.y; fMetallicness = pbr.z;
             SpecularColor = SowxSpecColor(d.spc, albedo * matDiffuse, pbr.z, slots);
             // 30 = the hosted body BYPASSED: the plain lit path for every hosted material, the A/B for
-            //      "the look is wrong" vs "the handoff is wrong". 31/32/33 = what the body handed back --
-            //      albedo, shading normal, (spec, rough, metal) -- against 7 (the normal before it).
+            //      "the look is wrong" vs "the handoff is wrong".
             if (uViz != 30 && SowxHostSurface(feat))
             {
                 albedo = FragmentColor.rgb;
                 N = normalize(vFragmentNormal);
                 pbr = vec3(fSpecularity, fRoughness, fMetallicness);
-                if (uViz == 31) { frag = vec4(albedo, 1.0); return; }
-                if (uViz == 32) { frag = vec4(N * 0.5 + 0.5, 1.0); return; }
-                if (uViz == 33) { frag = vec4(pbr, 1.0); return; }
             }
+            // 31/32/33 = the surface this fragment shades with -- albedo, shading normal,
+            // (spec, rough, metal) -- against 7 (the normal before any body). Emitted AFTER the branch so
+            // they describe EVERY material: inside it they answered only on a hosted one and read as
+            // identical to viz 0 everywhere else, which is a viz that cannot be trusted to say "no
+            // difference".
+            if (uViz == 31) { frag = vec4(albedo, 1.0); return; }
+            if (uViz == 32) { frag = vec4(N * 0.5 + 0.5, 1.0); return; }
+            if (uViz == 33) { frag = vec4(pbr, 1.0); return; }
             float spec = pbr.x, rough = pbr.y, metal = pbr.z;
             vec3 base = albedo * matDiffuse;
             vec3 specColor = SpecularColor;
@@ -1236,6 +1265,10 @@ public sealed unsafe partial class AlloyRenderer
             // energy split: what the specular lobe reflects, the diffuse does not -- inc_lighting.shd's own
             // `DiffuseLight * (1.0 - fSpecularity)` and `AmbientLight * (1.0 - fSpecularity)`
             vec3 total = (ambient + diffuse * matDiffuse) * (1.0 - spec) + d.emi.rgb;
+            // 9 = the LIGHT arriving here, with no albedo on it: vanilla's TotalLight, the value
+            //     inc_lighting.shd multiplies ColorIO by. Paired with 31 it splits "the light is short"
+            //     from "the surface is dark", which no composite frame can do.
+            if (uViz == 9) { frag = vec4(total, 1.0); return; }
             // Specular and self-illumination land AFTER the albedo multiply: a highlight is light off the
             // surface, not light through it (inc_lighting.shd:615 `ColorIO.rgb += SpecularColor *
             // SpecularLight`, and the texUnit5 add just above it).
