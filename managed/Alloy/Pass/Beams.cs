@@ -108,6 +108,7 @@ internal static unsafe class Beams
     private static readonly uint[] _vElemBuf = new uint[MaxVdos];
     private static readonly VertexStream[] _vPos = new VertexStream[MaxVdos], _vFr = new VertexStream[MaxVdos];
     private static readonly bool[] _vStale = new bool[MaxVdos];
+    private static readonly VdoSig[] _vSig = new VdoSig[MaxVdos];
     /// <summary>#260: are the pools behind this slot ones Alloy uploaded? Reported, not chosen between.</summary>
     private static readonly bool[] _vOwned = new bool[MaxVdos];
     private static int _vdoCount;
@@ -195,12 +196,22 @@ internal static unsafe class Beams
     /// formats, so it has to run here (inside the engine's own draw) and not at replay time.</summary>
     private static int VdoSlot(IntPtr vdo)
     {
-        for (int i = 0; i < _vdoCount; i++) if (_vVdo[i] == vdo) return i;
-        if (_vdoCount >= MaxVdos) return -1;
-        int s = _vdoCount;
+        int s = -1;
+        for (int i = 0; i < _vdoCount; i++)
+        {
+            if (_vVdo[i] != vdo) continue;
+            if (_vSig[i] == VdoSig.Of(vdo)) return i;
+            // The AlloyRenderer.VdoSlot case: a re-minted VDO at a dead one's address. Re-harvest in place.
+            _vVdo[i] = IntPtr.Zero; _vElemBuf[i] = 0; s = i;
+            break;
+        }
+        if (s < 0)
+        {
+            if (_vdoCount >= MaxVdos) return -1;
+            s = _vdoCount++;
+        }
         if (!Harvest(vdo, s)) return -1;
-        _vVdo[s] = vdo; _vStale[s] = _vVao[s] != 0;
-        _vdoCount++;
+        _vVdo[s] = vdo; _vStale[s] = _vVao[s] != 0; _vSig[s] = VdoSig.Of(vdo);
         return s;
     }
 

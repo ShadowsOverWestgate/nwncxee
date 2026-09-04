@@ -22,6 +22,12 @@ internal static unsafe class SymbolMap
     /// <c>CClientAIMaster::UpdateState()</c> @0x991c30, <c>CGuiMan::UpdateAndRender(float)</c> @0x580450.</summary>
     public const string NetProcessReceivedFrames = "_ZN9CNetLayer21ProcessReceivedFramesEi";
     public const string ResManUpdate = "_ZN10CExoResMan6UpdateEj";
+    /// <summary>CClientExoApp::GetNetLayer() @0x6361a0 -- <c>*(*(this+8)+0x18)</c>; and
+    /// CNetLayer::GetServerNetworkAddress() @0x5ba070, which returns a CExoString BY VALUE
+    /// ("a.b.c.d:port"), so the ABI is <c>(CExoString* sret, CNetLayer* this)</c>. Read by
+    /// <c>ServerPing</c> for the /fps ping readout. Linux-only: no Windows anchor derived.</summary>
+    public const string GetNetLayer = "_ZN13CClientExoApp11GetNetLayerEv";
+    public const string GetServerNetworkAddress = "_ZN9CNetLayer23GetServerNetworkAddressEv";
     public const string ClientAiUpdateState = "_ZN15CClientAIMaster11UpdateStateEv";
     public const string GuiUpdateAndRender = "_ZN7CGuiMan15UpdateAndRenderEf";
     // window focus (CClientExoApp). Empty stubs reached by indirect dispatch, so no Windows anchor
@@ -698,6 +704,14 @@ internal static unsafe class SymbolMap
     /// circulation. The geometry twin of <see cref="RiDeleteTextures"/>, and the same #220 corruption
     /// without it.</summary>
     public const string GlDeleteBuffer = "_ZN8GLRender12DeleteBufferEj";
+    /// <summary><c>GLRender::GetVertexBufferMaxElementVertices</c> @0x4cb730 / <c>...Indices</c> @0x4cb700:
+    /// <c>glGetIntegerv(GL_MAX_ELEMENTS_VERTICES / _INDICES)</c>, cached. The ONLY reader is
+    /// <c>VertexDataObjectManager::GetVertexDataObjectTokenByAttributes</c> @0x45bdc0, which reuses a shared
+    /// VDO only while its vertex and index totals stay under them -- so the driver's answer is the shared
+    /// pool's capacity. NVIDIA answers 1048576; every Mesa driver answers 3000 (core <c>MaxArrayLockSize</c>,
+    /// reproduced under zink and llvmpipe), which fragments an area into hundreds to thousands of VDOs.</summary>
+    public const string GlMaxElementVertices = "_ZN8GLRender33GetVertexBufferMaxElementVerticesEv";
+    public const string GlMaxElementIndices = "_ZN8GLRender32GetVertexBufferMaxElementIndicesEv";
     /// <summary>#260: <c>noemittervar</c> @0x19e3114 (B) -- the nearest EXPORTED symbol below the GLRender
     /// pool descriptor table's two globals, which have no symbols of their own. The table base pointer sits
     /// at nm 0x19e5480 = <c>noemittervar + 0x236c</c> and the descriptor count at 0x19e5488 = +0x2374;

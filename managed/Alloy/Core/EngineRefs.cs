@@ -196,6 +196,24 @@ internal readonly unsafe ref struct VdoRef
     internal uint ElemToken => *(uint*)(_p + SceneLayout.VdoElemToken);
     internal uint VertToken => *(uint*)(_p + SceneLayout.VdoVertToken);
     internal uint DynToken => *(uint*)(_p + SceneLayout.VdoDynToken);
+    internal uint VertMask => *(uint*)(_p + SceneLayout.VdoVertMask);
+    internal uint DynMask => *(uint*)(_p + SceneLayout.VdoDynMask);
+}
+
+/// <summary>Everything a VAO-cache slot's harvest depends on, read off the live VDO: the engine VAO it was
+/// harvested from, the mode, the three pool tokens and the two attribute masks (which fix every stride and
+/// offset). Equal fingerprints mean the harvested layout is still the truth. A VDO freed and re-minted at
+/// the same address -- operator new recycles the 0x68-byte block, and no destructor notice exists for
+/// VDOs -- changes it, which pointer identity alone cannot see: the slot would keep serving the dead VDO's
+/// strides and buffers to the new one's parts, and they draw as screen-spanning nonsense until a full
+/// release wipes the cache.</summary>
+internal readonly record struct VdoSig(uint Vao, int Mode, uint Elem, uint Vert, uint Dyn, uint VertMask, uint DynMask)
+{
+    internal static VdoSig Of(IntPtr vdo)
+    {
+        var v = new VdoRef(vdo);
+        return new VdoSig(v.Vao, v.Mode, v.ElemToken, v.VertToken, v.DynToken, v.VertMask, v.DynMask);
+    }
 }
 
 /// <summary>A borrowed <c>CAurTexture*</c>. Every accessor is a METHOD: the name walks two vtable slots, and

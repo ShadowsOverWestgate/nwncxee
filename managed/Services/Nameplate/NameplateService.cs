@@ -909,6 +909,60 @@ public sealed unsafe class NameplateService : IExtenderService
     /// first, because <c>AurTextureGet</c>'s create path can touch GL and rebind <c>ARRAY_BUFFER</c> -- it
     /// must never run between our BindBuffer and BufferData. Then one upload and one bind+draw per plate.
     /// A texture id of 0 means the engine has not uploaded it yet: skip that plate this frame.</summary>
+    /// <summary>One line per NEW portrait texture, the first eight: level-0 size, internal format, level-1
+    /// size, mip range, filter, and a hash of levels 0 and 1 as the driver holds them. Read off the ENGINE's
+    /// texture, because that is what the plate samples -- so two machines disagreeing on the hash of the
+    /// same portrait is an upload/decode divergence, and agreeing while the plate looks different is a
+    /// draw one. Cold: once per portrait name; the readback is a sync, spent eight times a session.</summary>
+    private static void PortraitDiag(int tid, string resref)
+    {
+        if (_diagN >= _diagTids.Length || Gl.GetTexLevelParameteriv == null || Gl.GetTexImage == null
+            || Gl.GetTexParameteriv == null || Gl.PixelStorei == null) return;
+        for (int i = 0; i < _diagN; i++) if (_diagTids[i] == tid) return;
+        _diagTids[_diagN++] = tid;
+        int saved; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &saved);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
+        int w = 0, h = 0, fmt = 0, w1 = 0, h1 = 0, maxLevel = -1, minFilter = 0;
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_WIDTH, &w1);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_HEIGHT, &h1);
+        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, &maxLevel);
+        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, &minFilter);
+        ulong hash0 = 0, hash1 = 0;
+        if (w > 0 && h > 0 && w <= 1024 && h <= 1024)
+        {
+            byte[] px = new byte[w * h * 4];   // cold: once per portrait name
+            int align; Gl.GetIntegerv(Gl.PACK_ALIGNMENT, &align);
+            Gl.PixelStorei(Gl.PACK_ALIGNMENT, 1);
+            fixed (byte* p = px)
+            {
+                Gl.GetTexImage(Gl.TEXTURE_2D, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
+                hash0 = Fnv(p, w * h * 4);
+                if (w1 > 0 && h1 > 0)
+                {
+                    Gl.GetTexImage(Gl.TEXTURE_2D, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
+                    hash1 = Fnv(p, w1 * h1 * 4);
+                }
+            }
+            Gl.PixelStorei(Gl.PACK_ALIGNMENT, align);
+        }
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
+        _log?.Info($"[nameplate] portrait {resref} tid {tid}: {w}x{h} fmt 0x{fmt:x} level1 {w1}x{h1} " +
+                   $"maxlevel {maxLevel} minfilter 0x{minFilter:x} hash0 {hash0:x16} hash1 {hash1:x16} glerr 0x{Gl.GetError():x}");
+    }
+
+    private static readonly int[] _diagTids = new int[8];
+    private static int _diagN;
+
+    private static ulong Fnv(byte* p, int n)
+    {
+        ulong x = 14695981039346656037UL;
+        for (int i = 0; i < n; i++) { x ^= p[i]; x *= 1099511628211UL; }
+        return x;
+    }
+
     private static void DrawPortraits(int count)
     {
         if (count <= 0 || !AurTex.Ready || !TextRig.EnsurePortraitProgram()) return;
@@ -922,6 +976,7 @@ public sealed unsafe class NameplateService : IExtenderService
             int o = i * 5;
             int tid = AurTex.TidByName(_portraitRef[i]);
             if (tid == 0) continue;
+            PortraitDiag(tid, _portraitRef[i]);
             tids[drawn] = tid;
             TextRig.FillQuad(verts + drawn * VertexBatch.Floats * 6,
                              new Sowx.Services.Chat.Core.Model.PortraitQuad(

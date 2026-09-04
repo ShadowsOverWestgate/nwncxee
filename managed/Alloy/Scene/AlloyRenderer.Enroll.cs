@@ -556,7 +556,18 @@ public sealed unsafe partial class AlloyRenderer
         int s = -1;
         for (int v = 0; v < _vdoCount; v++)
         {
-            if (_vVdo[v] == vdo) return v;
+            if (_vVdo[v] == vdo)
+            {
+                if (_vSig[v] == VdoSig.Of(vdo)) return v;
+                // Same address, different VDO: the one harvested here died and operator new handed its
+                // block out again. Vacate and re-harvest on the spot; a stale layout must never be served.
+                _vdoRecycled++;
+                _vVdo[v] = IntPtr.Zero; _vElemBuf[v] = 0; DripForget(vdo);
+                if (_recycleDiagLeft-- > 0)
+                    _log?.Info($"AlloyRenderer: VDO {vdo:X} re-minted under slot {v} -- re-harvested");
+                s = v;
+                break;
+            }
             if (_vVdo[v] == IntPtr.Zero && s < 0) s = v;      // retired slot: reuse it, VAO rebuilt on use
         }
         if (s < 0)
@@ -566,7 +577,7 @@ public sealed unsafe partial class AlloyRenderer
             _vVao46[s] = 0; _vOwned[s] = false; ForgetEngineVao(s);
         }
         if (!Harvest(vdo, s)) return -1;
-        _vVdo[s] = vdo; _vStale[s] = _vVao46[s] != 0;
+        _vVdo[s] = vdo; _vStale[s] = _vVao46[s] != 0; _vSig[s] = VdoSig.Of(vdo);
         // #136: a slot re-pointed at a different VDO has different streams, so its engine-layout VAO is
         // wrong in exactly the way EnsureVao's staleness flag exists to catch for the 4.6 one.
         ForgetEngineVao(s);

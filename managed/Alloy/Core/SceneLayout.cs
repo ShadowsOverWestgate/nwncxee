@@ -229,6 +229,9 @@ internal static class SceneLayout
     /// token reads 0xffffffff and the engine skips it (<c>cmp $0xffffffff,%eax</c> @0x4d003a), which is why
     /// the drip's residency gate treats absent and resident alike.</summary>
     public const int VdoIndexed = 0x8, VdoElemToken = 0x18, VdoVertToken = 0x24, VdoDynToken = 0x30;
+    /// <summary>The attribute masks the two passes of that loop read (+0x28 with +0x24, +0x34 with +0x30):
+    /// together they fix every stride and offset the build captures.</summary>
+    public const int VdoVertMask = 0x28, VdoDynMask = 0x34;
     /// <summary>The engine's "no such pool" token, tested at every one of the three token fields.</summary>
     public const uint VdoNoPool = 0xFFFFFFFF;
 

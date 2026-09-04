@@ -26,9 +26,9 @@ public sealed class FpsOverlayService : IExtenderService
     private static long _last, _sum, _max;
     private static int _n;
 
-    private static readonly char[] _text = new char[64];
+    private static readonly char[] _text = new char[96];
     private static int _textLen;
-    private static readonly float[] _verts = new float[(64 + 1) * 6 * VertexBatch.Floats];
+    private static readonly float[] _verts = new float[(96 + 1) * 6 * VertexBatch.Floats];
     private static int _vertCount;
     private static float _bakedW, _bakedH;
 
@@ -36,6 +36,7 @@ public sealed class FpsOverlayService : IExtenderService
     {
         _log = log;
         CommandRegistry.Global.Register("/fps", "toggle the FPS overlay", _ => { Toggle(); return null; });
+        ServerPing.SelfCheck(log);
         if (GameGate.Locked) return;
         new Window(0, 0, 0, 0) { Focusable = false, DrawContent = Draw };
         log.Info("FpsOverlayService: registered (hidden; toggle with /fps)");
@@ -81,6 +82,8 @@ public sealed class FpsOverlayService : IExtenderService
         GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null) { _vertCount = 0; return; }
 
+        ServerPing.Refresh();
+
         _textLen = 0;
         Append("FPS "); AppendNum(fps, 0);
         Append("  "); AppendNum(avgMs, 1); Append(" ms");
@@ -98,6 +101,13 @@ public sealed class FpsOverlayService : IExtenderService
         {
             Append("  sh "); AppendNum(CasterPass.LastViews, 0);
             Append(" "); AppendNum(CasterPass.LastShadowMs, 2); Append(" ms");
+        }
+
+        // The client keeps no live latency of its own -- ServerPing measures it (BNLM echo).
+        // Hidden until a reply lands, so a single-player or unreachable server shows nothing.
+        if (ServerPing.LastMs >= 0)
+        {
+            Append("  ping "); AppendNum(ServerPing.LastMs, 0); Append(" ms");
         }
 
         float w = 0f;

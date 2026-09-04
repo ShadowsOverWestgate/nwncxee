@@ -110,6 +110,10 @@ internal static unsafe class CullPass
     private static uint[] _counts = new uint[1024];
     private static int _readSeq, _readCap;
     internal static long CulledDraws, KeptDraws, CullFrames;
+    /// <summary>Colour-phase dispatches between two <see cref="Sample"/> calls. <c>CullFrames</c> counts
+    /// samples, so the period averages are unchanged by the cadence.</summary>
+    private const int SamplePeriod = 60;
+    private static int _sampleTick;
 
     /// <summary>Live dial behind <c>/draw cull</c>, and deliberately three-state rather than two: culling is
     /// the one system whose bug is invisible geometry, and "something is missing" has two possible authors
@@ -411,7 +415,10 @@ internal static unsafe class CullPass
             Gl.ActiveTexture(Gl.TEXTURE0);
         }
         _phase = phase;
-        if (phase == PhaseColour) Sample();
+        // The kept/culled figure is a period statistic, so it is sampled on a period cadence: on Mesa the
+        // GetBufferSubData behind it cost 2-5ms of every frame (a mapped read of a GPU-written buffer is a
+        // wait there, however old the buffer), where NVIDIA charged nothing.
+        if (phase == PhaseColour && ++_sampleTick >= SamplePeriod) { _sampleTick = 0; Sample(); }
     }
 
     /// <summary>Texture unit the pyramid takes for the dispatch -- see <see cref="TextureSlots.HiZ"/> for

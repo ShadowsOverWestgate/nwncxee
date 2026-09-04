@@ -172,6 +172,21 @@ public sealed unsafe partial class AlloyRenderer
     private static int _dripN;
     internal static int _dripMade, _dripDeferred, _dripRefused, _dripCapped;
 
+    /// <summary>Per slot, the <see cref="VdoSig"/> its harvest was taken under; <see cref="VdoSlot"/>
+    /// re-harvests on a hit whose live fingerprint differs.</summary>
+    private static readonly VdoSig[] _vSig = new VdoSig[MaxVdos];
+    /// <summary>Slots caught serving a recycled VDO address. Non-zero is the mechanism behind "nonsensical
+    /// meshes after churn, healed by relogin" being seen and repaired.</summary>
+    internal static int _vdoRecycled;
+    private static int _recycleDiagLeft = 8;
+
+    /// <summary>Drop a VDO from the drip dedup so a recycled address can be dripped again in the same
+    /// enrollment -- the entry was the dead VDO's.</summary>
+    private static void DripForget(IntPtr vdo)
+    {
+        for (int i = 0; i < _dripN; i++) if (_dripVdo[i] == vdo) { _dripVdo[i] = _dripVdo[--_dripN]; return; }
+    }
+
     private static bool DripArm(IntPtr vdo)
     {
         for (int i = 0; i < _dripN; i++) if (_dripVdo[i] == vdo) return false;
@@ -258,10 +273,11 @@ public sealed unsafe partial class AlloyRenderer
     /// at zero. A non-zero <c>capped</c> says the dedup table ran out of room and the overflow never got
     /// asked at all, which is a hole this code caused rather than one it found.</summary>
     private static string DripNote()
-        => _dripMade == 0 && _dripDeferred == 0 && _dripRefused == 0 && _dripCapped == 0
+        => _dripMade == 0 && _dripDeferred == 0 && _dripRefused == 0 && _dripCapped == 0 && _vdoRecycled == 0
            ? ""
            : $" [VAO drip: {_dripMade} made, {_dripRefused} refused, and at the last enrollment"
-             + $" {_dripDeferred} deferred + {_dripCapped} past the {DripSlots}-VDO dedup table]";
+             + $" {_dripDeferred} deferred + {_dripCapped} past the {DripSlots}-VDO dedup table;"
+             + $" {_vdoRecycled} recycled-address re-harvests]";
 
     /// <summary>Distinct VDOs whose harvest has already been reported. #285 made every refusal a hole, and
     /// <c>no-vao-slot</c> is the largest one on live content -- but "harvest failed" names several different

@@ -109,6 +109,17 @@ internal static unsafe class OwnedBuffers
         _origDelete = (delegate* unmanaged<uint, void>)hooks.Install(
             SymbolMap.GlDeleteBuffer, (IntPtr)(delegate* unmanaged<uint, void>)&OnDeleteBuffer);
         if (_origDelete == null) log.Info("OwnedBuffers: GLRender::DeleteBuffer did not resolve -- no buffer death notice for the VAO caches");
+        // Whether or not the takeover is armed: the shared-VDO capacity is the engine's own pooling, and a
+        // Mesa answer of 3000 fragments it 350x against NVIDIA's (see SymbolMap.GlMaxElementVertices).
+        _maxElements = Settings.Int("maxelements", MaxElementsDefault, 0, 1 << 24);
+        if (_maxElements > 0)
+        {
+            bool a = hooks.Install(SymbolMap.GlMaxElementVertices, (IntPtr)(delegate* unmanaged<int>)&OnMaxElements) != IntPtr.Zero;
+            bool b = hooks.Install(SymbolMap.GlMaxElementIndices, (IntPtr)(delegate* unmanaged<int>)&OnMaxElements) != IntPtr.Zero;
+            log.Info(a && b
+                ? $"OwnedBuffers: shared-VDO capacity pinned to {_maxElements} vertices/indices regardless of the driver's GL_MAX_ELEMENTS answer (maxelements=0 restores it)"
+                : "OwnedBuffers: GetVertexBufferMaxElement* did not resolve -- the driver's GL_MAX_ELEMENTS answer sizes the shared VDOs");
+        }
         if (!_armed) return;
         IntPtr anchor = Native.Sym(SymbolMap.GlPoolTableAnchor);
         _table = anchor == IntPtr.Zero ? null : (byte*)anchor + PoolTableOffset;
@@ -127,6 +138,16 @@ internal static unsafe class OwnedBuffers
 
     private static delegate* unmanaged<uint, uint, uint, void> _origUnlock;
     private static delegate* unmanaged<uint, void> _origDelete;
+
+    /// <summary>NVIDIA's GL_MAX_ELEMENTS answer, which the engine has always pooled under there. The value is a
+    /// glDrawRangeElements hint in GL, never a buffer limit, and the pools grow by doubling past it anyway.</summary>
+    private const int MaxElementsDefault = 1 << 20;
+    private static int _maxElements;
+
+    /// <summary>Replaces both <c>GLRender::GetVertexBufferMaxElement*</c> wholesale; the engine's cached copy
+    /// is never consulted. Cold: read per VDO allocation.</summary>
+    [UnmanagedCallersOnly]
+    private static int OnMaxElements() => _maxElements;
     /// <summary>Address of the pool table's base POINTER (not the table). Deliberately not the table itself:
     /// <c>RequestPool</c> @0x4d1ec0 grows the table with <c>calloc</c>+<c>free</c>, so the base moves.</summary>
     private static byte* _table;

@@ -906,7 +906,7 @@ public sealed unsafe partial class AlloyRenderer
         uniform int uSceneEnv;         // does the AREA declare an env map (scene+0x1e8)? see below
         uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe
         uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
-        uniform int uSsaoOn;           // 1 when SsaoPass ran this frame and this draw is the screen's
+        uniform int uSsaoOn;           // >0 when this BATCH is in the depth SsaoPass read; <0 names why not (viz 35)
         uniform float uAoDirect;       // /ao direct: how much of the occlusion the DIRECT terms take (0 = ADR 0021)
         // #126: the engine's fAlphaDiscardValue, per batch -- 0.2 on the cutout and blended classes,
         // -1.0 (no test) on opaque and additive.
@@ -1091,7 +1091,7 @@ public sealed unsafe partial class AlloyRenderer
             // not see the contact detail a baked map carries.
             if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv).r;
             // #379: ...and the screen-space term beside it, a lighting input like the map (ADR 0021)
-            if (uSsaoOn != 0) occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
+            if (uSsaoOn > 0) occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
             if ((slots & (SOWX_SLOT_NORMAL | SOWX_SLOT_HEIGHT)) != 0)
             {
                 // Cotangent frame from screen-space derivatives (Mikkelsen), NOT the engine's vTangent /
@@ -1149,6 +1149,17 @@ public sealed unsafe partial class AlloyRenderer
             //     things that write it, so a frame that is white everywhere means no material in sight
             //     declared either -- which is the state shipped content is in today.
             if (uViz == 8) { frag = vec4(vec3(occl), 1.0); return; }
+            // 35 = why this fragment has no screen-space AO. GREEN in the prepass depth and taking it;
+            //      RED excluded as a cutout, BLUE by an out-of-prepass feature, YELLOW as a blended batch.
+            //      Grey means the pass is not running at all.
+            if (uViz == 35)
+            {
+                vec3 c = uSsaoOn > 0 ? vec3(0.0, 1.0, 0.0)
+                       : uSsaoOn == -1 ? vec3(1.0, 0.0, 0.0)
+                       : uSsaoOn == -2 ? vec3(0.0, 0.0, 1.0)
+                       : uSsaoOn == -3 ? vec3(1.0, 1.0, 0.0) : vec3(0.25);
+                frag = vec4(c, 1.0); return;
+            }
             float sunRaw = clamp(dot(N, uAreaDir), 0.0, 1.0);
             float sunNdl = SowxWrap(dot(N, uAreaDir), uWrapN);
             // the wrapped value, not the raw one -- a fragment the wrap has just lit must still be able to

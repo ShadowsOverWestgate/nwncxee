@@ -191,6 +191,20 @@ public sealed unsafe partial class AlloyRenderer
         finally { FrameZones.Add(FrameZones.Zone.Issue, tIssue); }
     }
 
+    /// <summary>Did batch <paramref name="g"/> write the depth <see cref="SsaoPass"/> read, and if not, WHICH
+    /// of the prepass's three exclusions caught it? The prepass walks the opaque range and skips the cutout
+    /// class and every out-of-prepass feature, so those three are the same three here -- a batch outside them
+    /// must not consume the visibility buffer at all. The reason travels to the lit stage as the sign of
+    /// <c>uSsaoOn</c> (which tests <c>&gt; 0</c>) so <c>/draw viz 35</c> can name it on the pixel, rather than
+    /// leaving "the door has no AO" and "the door CANNOT have AO" the same picture.</summary>
+    internal const int AoIn = 1, AoCutout = -1, AoOutOfPrepass = -2, AoBlended = -3;
+
+    private static int AoWhy(int g)
+        => g >= _gOpaqueEnd ? AoBlended
+         : _gCls[g] == (byte)AlloyClass.Cutout ? AoCutout
+         : ShaderFeatures.OutOfPrepass(_gFeat[g]) ? AoOutOfPrepass
+         : AoIn;
+
     private static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far,
                                           bool indirect)
     {
@@ -219,6 +233,12 @@ public sealed unsafe partial class AlloyRenderer
         int boundCull = -1;
         float boundCut = float.NaN;   // per PROGRAM: reset on every UseProgram below
         int litBase = -1, litCut = -1; // the bound lit program's, whichever of the two it is
+        int litSsaoOn = -1, litAoDirect = -1;
+        // #379 follow-up: SSAO is per BATCH, not per program bind. The visibility buffer is computed from
+        // the DEPTH PREPASS, and a batch the prepass skipped (cutout, an out-of-prepass feature, the whole
+        // blended range) has no depth of its own in it -- its fragments would read the occlusion of whatever
+        // stands BEHIND them. Live: the far corridor's occlusion showing through a closed door.
+        int boundSsao = -1;
         int* boundSlot = stackalloc int[MapSlots];
         for (int s = 0; s < MapSlots; s++) boundSlot[s] = -1;
         fixed (int* counts = _dCount, bases = _dBase)
@@ -275,11 +295,10 @@ public sealed unsafe partial class AlloyRenderer
                     UploadSunCascades(L);
                     UploadLocalCubes(L);
                     UploadProbe(L);
-                    bool ssao = SsaoPass.Live && !_capturing;
-                    Gl.Uniform1i(L.SsaoOn, ssao ? 1 : 0);
-                    Gl.Uniform1f(L.AoDirect, ssao ? SsaoPass.Direct : 0f);
-                    SsaoPass.BindForDraw(ssao);
+                    SsaoPass.BindForDraw(SsaoPass.Live && !_capturing);
                     litBase = L.Base; litCut = L.Cut;
+                    litSsaoOn = L.SsaoOn; litAoDirect = L.AoDirect;
+                    boundSsao = -1;
                 }
                 else
                 {
@@ -296,6 +315,16 @@ public sealed unsafe partial class AlloyRenderer
             Gl.Uniform1i(water ? _watBase : lit ? litBase : _locBase, s);
             // #126: the alpha cutout, per batch because it is per class -- the engine's own
             // fAlphaDiscardValue, which is a global there and a uniform here.
+            if (lit)
+            {
+                int ssao = SsaoPass.Live && !_capturing ? AoWhy(g) : 0;
+                if (ssao != boundSsao)
+                {
+                    boundSsao = ssao;
+                    Gl.Uniform1i(litSsaoOn, ssao);
+                    Gl.Uniform1f(litAoDirect, ssao > 0 ? SsaoPass.Direct : 0f);
+                }
+            }
             float cut = AlloyClasses.Discard(_gCls[g]);
             if (cut != boundCut) { Gl.Uniform1f(water ? _watCut : lit ? litCut : _locCut, cut); boundCut = cut; }
             // ...and the blend state, per batch, because the opaque PASS now mixes both: a plain opaque batch
