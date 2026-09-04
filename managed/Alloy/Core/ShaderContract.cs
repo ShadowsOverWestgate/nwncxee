@@ -105,6 +105,11 @@ internal static class ShaderContract
     /// around them, but not the colour-space decision the rest of the pipeline is built on.</para></summary>
     public static bool ResolveSafe(string fs) => !fs.Contains("SowxLinear") && fs.Contains("SowxEncode");
 
+    /// <summary>#375: the guard for a <see cref="PostStack"/> stage, which runs AFTER the resolve on a
+    /// display-space image and hands one on: it must neither encode (a second encode, a gamma too bright) nor
+    /// decode (the frame goes linear and a gamma dark). Named terms, like the two above.</summary>
+    public static bool DisplaySafe(string fs) => !fs.Contains("SowxLinear") && !fs.Contains("SowxEncode");
+
     /// <summary>#208: does this FRAGMENT stage still declare the samplers the C# side binds units to? Same
     /// shape and same trap as <see cref="CutoutSafe"/>: <see cref="TextureSlots.Check"/> polices the EMBEDDED
     /// text, but a content override (#92) replaces the stage wholesale, and one that renamed or dropped a

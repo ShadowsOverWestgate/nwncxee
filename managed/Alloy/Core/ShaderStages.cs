@@ -75,10 +75,11 @@ internal static class ShaderStages
 
         """;
 
-    /// <summary>Every overridable resref with the header its dumped copy carries. All fifteen: four owned,
-    /// two water, two grass, the cluster build, two caster and four post-chain stages. #261 deleted one with
-    /// SkyComposite and #339 deleted the water tessellation pair with the custom sea; <see cref="SelfCheck"/>
-    /// asserts the count, so this prose and that assert have to move together.</summary>
+    /// <summary>Every overridable resref with the header its dumped copy carries. All sixteen: four owned,
+    /// two water, two grass, the cluster build, two caster, four post-chain stages and the post stack's gamma
+    /// stage (#375). #261 deleted one with SkyComposite and #339 deleted the water tessellation pair with the
+    /// custom sea; <see cref="SelfCheck"/> asserts the count, so this prose and that assert have to move
+    /// together.</summary>
     internal static readonly (string Ref, string Header)[] All =
     {
         (AlloyRenderer.ShdFullbrightVs, Banner + Invariant + Record),
@@ -96,6 +97,12 @@ internal static class ShaderStages
         (PostChain.ShdBloomDownFs,         Banner),
         (PostChain.ShdBloomUpFs,           Banner),
         (PostChain.ShdResolveFs,           Banner),
+        (PostStack.ShdGammaFs,             Banner),
+        (SmaaStage.ShdEdgeFs,              Banner),
+        (SmaaStage.ShdWeightFs,            Banner),
+        (SmaaStage.ShdBlendFs,             Banner),
+        (SsaoPass.ShdSsaoFs,               Banner),
+        (SsaoPass.ShdSsaoBlurFs,           Banner),
     };
 
     /// <summary>The GLSL the extender compiles for one resref, sizing tokens unexpanded
@@ -118,6 +125,12 @@ internal static class ShaderStages
         PostChain.ShdBloomDownFs => PostChain.BloomDownFs,
         PostChain.ShdBloomUpFs => PostChain.BloomUpFs,
         PostChain.ShdResolveFs => PostChain.ResolveFs,
+        PostStack.ShdGammaFs => PostStack.PostStageHead + PostStack.GammaStageFs + PostStack.PostStageMain,
+        SmaaStage.ShdEdgeFs => SmaaStage.EdgeFs,
+        SmaaStage.ShdWeightFs => SmaaStage.WeightFs,
+        SmaaStage.ShdBlendFs => PostStack.PostStageHead + SmaaStage.BlendStageFs + PostStack.PostStageMain,
+        SsaoPass.ShdSsaoFs => SsaoPass.SsaoFs,
+        SsaoPass.ShdSsaoBlurFs => SsaoPass.SsaoBlurFs,
         _ => "",
     };
 
@@ -163,7 +176,7 @@ internal static class ShaderStages
     /// that declares it. A missing switch arm is otherwise invisible until a program builds from "".</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = All.Length == 15;
+        bool ok = All.Length == 21;
         foreach ((string r, string header) in All)
         {
             string src = Source(r);

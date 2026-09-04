@@ -178,6 +178,9 @@ frame and re-mints handles on a changed `CAurTexture*`, which is what makes thos
 | Light SSBOs (`_bufLights/_bufCounts/_bufIndices/_bufStats`) | `AlloyLights` | `AlloyLights.Forget` | registry `ContextLost` |
 | Env cube + its FBO/depth | `EnvProbe` capture | `EnvProbe.Forget` | registry `ContextLost` |
 | Post targets, FBO, fullscreen VAO, **owned depth attachment** (#214) | `PostChain` / `PostChain.EnsureDepth` | `PostChain.Forget` | registry `ContextLost` |
+| Post stack ping-pong pair, FBO, per-stage programs (#375) | `PostStack.EnsureTargets` / `PostStack.EnsurePrograms` | `PostStack.Forget` | registry `ContextLost` |
+| SMAA edge/blend/area/search textures, FBO, sampler, edge + weight programs (#377) | `SmaaStage.Size` / `SmaaStage.Build` | `SmaaStage.Forget` (through `PostStack.Forget`) | registry `ContextLost`; `Build` also *deletes* and rebuilds the two programs when the option's preset moves |
+| SSAO raw + visibility R8 textures, FBO, visibility + blur programs (#379) | `SsaoPass.EnsureTargets` / `SsaoPass.EnsurePrograms` | `SsaoPass.Forget` | registry `ContextLost` |
 | Grass VAO/VBO/program/samplers/push texture | `GrassField.EnsureBuffers` | `GrassField.ContextLost` | registry `ContextLost` |
 | Beam program + per-VDO VAOs (`_vVao`) + element buffers | `Beams.EnsureProgram` | `Beams.ContextLost` | registry `ContextLost` |
 | Particle program/VAO/VBO/sampler + native stage buffer | `Particles.Ensure*` | `Particles.ContextLost` | registry `ContextLost` |

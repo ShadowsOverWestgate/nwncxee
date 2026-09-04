@@ -110,7 +110,8 @@ verdict nor the next.
 
 ## Per-class stand-downs are not in this set
 
-`GrassField`, `CasterPass`, `EnvProbe`, `SceneDepth`, `FrameSnapshot` and `PostChain` each own a `StandDown`.
+`GrassField`, `CasterPass`, `EnvProbe`, `SceneDepth`, `FrameSnapshot` and `PostChain` each own a `StandDown`;
+`PostStack` (#375) stands down per STAGE, dropping the one that did not build and running the rest.
 Those degrade to "that class does not render", not to "the frame is not drawn" — punch-list territory (#217),
 not a frame verdict.
 

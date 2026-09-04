@@ -52,6 +52,10 @@ internal static class TextureSlots
     internal const uint SunShadowDyn = PostHdr, SunShadowDynGrass = SnapshotColor;
     /// <summary>The environment probe cube -- above the whole map block for the type-collision reason.</summary>
     internal const uint Probe = 12;
+    /// <summary>The aa stage's own passes, post stack only -- after the world pass, so the probe and snapshot
+    /// units are free on the same argument as <see cref="PostHdr"/>: edges then weights on 12, the area
+    /// table on 13, the search table on 14.</summary>
+    internal const uint AaEdges = 12, AaBlend = 12, AaArea = 13, AaSearch = 14;
     /// <summary>#339: the SCENE's environment map, which vanilla's water reflects. Shares
     /// <see cref="Probe"/>'s unit -- the water program stopped sampling the probe when the port replaced
     /// Alloy's own reflection with stock's, so the two are never live in one program. A sampler2D here and
@@ -59,6 +63,11 @@ internal static class TextureSlots
     internal const uint WaterEnv = Probe;
     /// <summary>The frame snapshot the water stage refracts through: colour then depth.</summary>
     internal const uint SnapshotColor = 13, SnapshotDepth = 14;
+    /// <summary>#379: the screen-space visibility the lit stage reads. Shares <see cref="SnapshotColor"/>'s
+    /// unit: the snapshot takes it at FbCopy and lit additive draws follow, so the lit program REBINDS it at
+    /// every program bind (<see cref="SsaoPass.BindForDraw"/>) rather than trusting the pass's own bind.
+    /// Both sampler2D; the grass program's dyn-sun array on the same unit is a different program.</summary>
+    internal const uint Ssao = SnapshotColor;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
     /// <summary>#339: the engine's <c>solid_noise</c>, which vanilla's water shader samples as
@@ -114,6 +123,14 @@ internal static class TextureSlots
               $"{MapBase + i} {MapSamplers[i]}");
         E(PostChain.ResolveFs.Contains("uniform sampler2D uHdr;"), $"{PostHdr} uHdr");
         E(PostChain.ResolveFs.Contains("uniform sampler2D uBloom;"), $"{PostBloom} uBloom");
+        // #375: the post stack reuses the resolve's two units, after it and in the same bracket.
+        E(PostStack.PostStageHead.Contains("uniform sampler2D uSrc;"), $"{PostHdr} uSrc (post stack)");
+        E(PostStack.PostStageHead.Contains("uniform sampler2D uDepth;"), $"{PostBloom} uDepth (post stack)");
+        E(SmaaStage.WeightFs.Contains("uniform sampler2D uEdges;"), $"{AaEdges} uEdges (aa weights)");
+        E(SmaaStage.WeightFs.Contains("uniform sampler2D uArea;"), $"{AaArea} uArea (aa weights)");
+        E(SmaaStage.WeightFs.Contains("uniform sampler2D uSearch;"), $"{AaSearch} uSearch (aa weights)");
+        E(SmaaStage.BlendStageFs.Contains("uniform sampler2D uBlend;"), $"{AaBlend} uBlend (aa stage)");
+        E(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSsao;"), $"{Ssao} uSsao (lit program)");
         E(GrassField.GrassVs.Contains("uniform sampler2D uPushTex;"), $"{GrassPush} uPushTex (grass program)");
         // #339: the water stage no longer samples the probe -- vanilla's reflection falls back to the
         // shaded surface, not to a cube -- so the lit stage is the only consumer left.

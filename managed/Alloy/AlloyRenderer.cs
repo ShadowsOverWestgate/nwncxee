@@ -306,7 +306,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// content override (#92) that predates them, and simply do not get uploaded.</summary>
     internal struct LitLoc
     {
-        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN,
+        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage,
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture;
@@ -526,7 +526,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, Sky, Blended, Water, Additive, Particles, Post, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, Sky, Blended, Water, Additive, Particles, Post, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -1691,6 +1691,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                       (_prepassSkipped == 0 ? "" : $" (+{(float)_prepassSkipped / _frames:F0} excluded, displacing/skinned or cutout)") +
                       (_qTerm[(int)GpuTerm.Prepass].Measured ? $" in {GpuMs(GpuTerm.Prepass):F3}ms" : "") +
                       (_qTerm[(int)GpuTerm.PrepassKey].Measured ? $" + keyhole sweep {GpuMs(GpuTerm.PrepassKey):F3}ms" : "") +
+                      (_qTerm[(int)GpuTerm.Ao].Measured ? $" + ao {GpuMs(GpuTerm.Ao):F3}ms" : "") +
                       (!_prepassKey ? " (keyhole sweep OFF -- /draw prepasskey 1)" : "")) +
                    (_qSamples.Measured && _lastPixels > 0
                        ? $", shaded {_qSamples.Avg / 1e6:F2}M samples/frame over {_lastPixels / 1e6f:F2}Mpx " +
@@ -1774,7 +1775,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static float _waterNear = 1f, _waterFar = 100f;
     private static int _watVp, _watBase, _watTex, _watCut, _watAmbient, _watDiffuse, _watDir,
                        _watGrid, _watTile, _watZ, _watFalloff, _watWrap, _watAtten, _watHot,
-                       _watWrapN, _watViz, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
+                       _watWrapN, _watSss, _watViz, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
                        _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
                        _watCubeDynTex, _watCubeDynPage, _watSunDynTex, _watSunDyn,
                        _watSunFocus, _watSunRadius,

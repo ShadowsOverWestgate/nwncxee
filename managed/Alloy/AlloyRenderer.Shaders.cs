@@ -905,6 +905,8 @@ public sealed unsafe partial class AlloyRenderer
         uniform float uProbeGain;      // /probe gain, the ambient-specular dial
         uniform int uSceneEnv;         // does the AREA declare an env map (scene+0x1e8)? see below
         uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe
+        uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
+        uniform int uSsaoOn;           // 1 when SsaoPass ran this frame and this draw is the screen's
         // #126: the engine's fAlphaDiscardValue, per batch -- 0.2 on the cutout and blended classes,
         // -1.0 (no test) on opaque and additive.
         uniform float uAlphaCut;
@@ -1087,6 +1089,8 @@ public sealed unsafe partial class AlloyRenderer
             // else, and the engine's screen-space SSAO (an FB effect, downstream of this pass entirely) does
             // not see the contact detail a baked map carries.
             if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv).r;
+            // #379: ...and the screen-space term beside it, a lighting input like the map (ADR 0021)
+            if (uSsaoOn != 0) occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
             if ((slots & (SOWX_SLOT_NORMAL | SOWX_SLOT_HEIGHT)) != 0)
             {
                 // Cotangent frame from screen-space derivatives (Mikkelsen), NOT the engine's vTangent /
@@ -1224,6 +1228,7 @@ public sealed unsafe partial class AlloyRenderer
             // wrapped dot, a glossy face angled away from the sun picks up a lobe it cannot geometrically
             // see. The lobe takes the raw dot, the way the ambient hemisphere already does.
             vec3 sunSpec = uAreaDiffuse * (sunRaw * sunVis);
+            vec3 sunSss = uAreaDiffuse * (sunVis * max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y);
             vec3 pointSpec;
             // #308 follow-up: 1 on a creature fragment (skinmesh, or the dangly marker in feat.w) -- the
             // local receiver's carrier-band gate, so a creature takes no dyn-pool self-shadow up close.
@@ -1234,7 +1239,7 @@ public sealed unsafe partial class AlloyRenderer
             // (inc_lighting.shd:456 and :615). fSpecularity is already inside the lobe via the Fresnel term.
             vec3 specLight = (sunSpec * SowxSpecLobe(N, V, uAreaDir, rough, spec) + pointSpec)
                              * (specColor * SowxSpecBase(max(dot(N, V), 0.0), rough));
-            vec3 diffuse = sun + point;
+            vec3 diffuse = sun + sunSss + point;
             // the 0.15 ambient floor and the sun-facing wrap are inc_lighting.shd:679 verbatim; the height
             // map's occlusion scales the AMBIENT, which is the term it is actually occluding
             vec3 ambient = uAreaAmbient * matAmbient * mix(0.15, 1.0, sunRaw) * occl;

@@ -64,6 +64,7 @@ public sealed unsafe partial class AlloyRenderer
         // the clear values in ENGINE context at all: a GL share list shares objects, not per-context state,
         // so glClearColor is not queryable from inside the 4.6 bracket -- that context has its own.
         ref Target t = ref ThisFrameTarget();
+        HoldPassTarget(in t);   // #375: the ONE read per pass; the post stack rebinds from this copy
         int* viewport = stackalloc int[4] { t.Vp0, t.Vp1, t.Vp2, t.Vp3 };
         int engFbo = t.Fbo, colorType = t.ColorType, colorName = t.ColorName,
             depthType = t.DepthType, depthName = t.DepthName;
@@ -204,6 +205,8 @@ public sealed unsafe partial class AlloyRenderer
                 long issue0 = FrameZones.Ticks(FrameZones.Zone.Issue), cull0 = FrameZones.Ticks(FrameZones.Zone.Cull);
                 long post0 = FrameZones.Ticks(FrameZones.Zone.Post), probe0 = FrameZones.Ticks(FrameZones.Zone.Probe);
                 long tPasses = FrameZones.Now;
+                // #375: the post bracket opens at PostProcess and closes at PostStack, two graph slots.
+                long tPost = 0; bool postOpen = false;
                 foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
                 {
                     if (bracket != Bracket.Colour) continue;
@@ -219,6 +222,11 @@ public sealed unsafe partial class AlloyRenderer
                                 CullPass.BuildHiZ(PostChain.DepthTex, viewport[2], viewport[3], viewport,
                                                   PostChain.Fbo, PassGen);
                             FrameZones.Add(FrameZones.Zone.Prepass, tPre);
+                            break;
+                        case PassId.AmbientOcclusion:
+                            GpuBegin(GpuTerm.Ao);
+                            SsaoPass.Run(PostChain.DepthTex, DepthResource.Filled(PassGen), &proj, viewport, PostChain.Fbo);
+                            GpuEnd(GpuTerm.Ao);
                             break;
                         case PassId.OpaqueOwned:
                             // Second dispatch, and it is unconditional rather than folded into the prepass
@@ -315,18 +323,24 @@ public sealed unsafe partial class AlloyRenderer
                             break;
                         case PassId.PostProcess:
                             if (!PostChain.Armed) break;
-                            long tPost = FrameZones.Now;
+                            tPost = FrameZones.Now; postOpen = true;
                             GpuBegin(GpuTerm.Post);
                             // Bloom runs against the HDR target and binds its own attachments; the engine's
                             // target has to come back before the composite writes into it, and with it the
                             // viewport and the sRGB-encode state the pass was entered with.
                             PostChain.Bloom();
-                            BindTarget(engFbo, colorType, colorName, depthType, depthName);
-                            if (srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
-                            PostChain.Composite(viewport);
+                            // #375: Begin binds its own framebuffer to attach; the engine's comes back for the depth hand-back
+                            uint into = PostStack.Begin(viewport[2], viewport[3]);
+                            RebindFrameTarget();
+                            PostChain.Composite(viewport, into);
+                            break;
+                        case PassId.PostStack:
+                            if (!postOpen) break;
+                            // The last live stage rebinds the engine's target itself; a no-op with none.
+                            PostStack.Run(viewport);
                             // #232 second mode: the owned outline+fill highlight, drawn into the finished
-                            // display-space frame with the depth Composite just blitted to it. Not a
-                            // FrameGraph slot: it is part of finishing the post-process output, like Bloom.
+                            // display-space frame with the depth Composite blitted to it. Not a FrameGraph
+                            // slot of its own: it is part of finishing the post output, like Bloom.
                             OutlineHighlightPass(groups, &vp, viewport);
                             GpuEnd(GpuTerm.Post);
                             FrameZones.Add(FrameZones.Zone.Post, tPost);

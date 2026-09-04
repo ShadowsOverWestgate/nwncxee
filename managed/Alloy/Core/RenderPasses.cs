@@ -165,6 +165,28 @@ internal static class RenderPasses
             Tune = PostChain.Tune,
             Reset = PostChain.ResetTuning,
         }, log);
+        // #375: the display-space stack after the resolve. No Describe/Tune slots of its own: /post is the
+        // one post command and PostChain's Describe/Tune/Reset fall through to it. No Revoke -- it captures
+        // nothing from the world; its inputs are the engine's option globals, read per frame.
+        r.Register(new PassLifecycle
+        {
+            Name = "ao",
+            Attach = SsaoPass.Attach,
+            SelfCheck = l => SsaoPass.SelfCheck(l),
+            ContextLost = SsaoPass.Forget,
+            Stats = SsaoPass.Stats,
+            Describe = SsaoPass.Describe,
+            Tune = SsaoPass.Tune,
+            Reset = SsaoPass.ResetTuning,
+        }, log);
+        r.Register(new PassLifecycle
+        {
+            Name = "poststack",
+            Attach = PostStack.Attach,
+            SelfCheck = l => PostStack.SelfCheck(l),
+            ContextLost = PostStack.Forget,
+            Stats = PostStack.Stats,
+        }, log);
         // #179: the Alloy world pass's own dials, so /draw reaches them through the one command
         // implementation. No Attach/Install slots -- AlloyRenderer IS the service that drives this walk, and
         // it owns those edges directly. ContextLost is in the table anyway (#209): driving the walk is no

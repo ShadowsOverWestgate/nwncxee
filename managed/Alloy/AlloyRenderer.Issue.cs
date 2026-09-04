@@ -217,7 +217,7 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.Uniform2f(_watNearFar, _waterNear, _waterFar);
                     AlloyLights.BindForDraw();
                     AlloyLights.SetDrawUniforms(_watGrid, _watTile, _watZ, _watFalloff, _watWrap,
-                                                _watAtten, _watHot, _watWrapN, viewport, near, far);
+                                                _watAtten, _watHot, _watWrapN, _watSss, viewport, near, far);
                     Gl.Uniform1i(_watViz, viz);
                     Gl.Uniform1i(_watEnvOk, FrameSnapshot.EnvOk);
                     Gl.Uniform1i(_watCapture, _capturing ? 1 : 0);
@@ -240,7 +240,7 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.UniformMatrix4fv(L.Vp, 1, 0, vpRaw);
                     AlloyLights.BindForDraw();
                     AlloyLights.SetDrawUniforms(L.Grid, L.Tile, L.Z, L.Falloff, L.Wrap,
-                                                L.Atten, L.Hot, L.WrapN, viewport, near, far);
+                                                L.Atten, L.Hot, L.WrapN, L.Sss, viewport, near, far);
                     Gl.Uniform1i(L.Viz, viz);
                     Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
                     UploadFeatureTerms(L.Feat, viewport);
@@ -248,6 +248,9 @@ public sealed unsafe partial class AlloyRenderer
                     UploadSunCascades(L);
                     UploadLocalCubes(L);
                     UploadProbe(L);
+                    bool ssao = SsaoPass.Live && !_capturing;
+                    Gl.Uniform1i(L.SsaoOn, ssao ? 1 : 0);
+                    SsaoPass.BindForDraw(ssao);
                     litBase = L.Base; litCut = L.Cut;
                 }
                 else

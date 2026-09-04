@@ -14,17 +14,20 @@ internal static class RenderCommands
 {
     private static ExtenderLog? _log;
 
-    private const string LightKeys = "gain|radius|falloff|ambient|sun|overbright|wrap|wrapndl|shadowsoft|discpx|shadowcap|shadownear|hot|hotsize|fadeout";
+    private const string LightKeys = "gain|radius|falloff|ambient|sun|overbright|wrap|wrapndl|sss|shadowsoft|discpx|shadowcap|shadownear|hot|hotsize|fadeout";
     private const string GrassKeys = "on|density|wind|windspeed|soften|aniso|edge|push|pushradius|pushextent|cull|cullshrink|cullmax|lod|lodmin|lodwidth|lodheight|shade|far|prepass";
     private const string ParticleKeys = "on|diag|soft|lit|shadows|viz|grid|guard|sort";
     // hdr is NOT here: it stands the whole Alloy frame down, which is a boot decision (config hdr=0).
-    private const string PostKeys = "bloom|threshold|knee|tonemap|tmknee|softclip|dither";
+    private const string PostKeys = "bloom|threshold|knee|exposure|tonemap|acesmix|tmknee|dither|viz|clearviz|stack";
     private const string DrawKeys = "light|prepass|viz|aotest|csmbias|cull|lod|poll|prepasskey|vislist|fogcull|hldiag|hlchan";
     private const string WaterKeys = "on|diag";
     private const string ProbeKeys = "on|gain|areawide";
     // #341: the fog TARGET. "height" is the one that changes density rather than colour, and it
     // boots at 0 for that reason; "cullz" is the assumption the fog cull is allowed to make.
     private const string FogKeys = "sky|sun|sunexp|height|floor|cullz";
+    // #379: the screen-space ambient occlusion pass; the ON/OFF is the client's own SSAO option, "on" here is
+    // the bypass for an A/B.
+    private const string AoKeys = "on|radius|power|dirs|steps|maxpx|blur";
 
     /// <summary>Called once from <see cref="AlloyRenderer"/>'s Initialize, before any early return.</summary>
     internal static void Register(ExtenderLog log)
@@ -52,6 +55,8 @@ internal static class RenderCommands
                    a => Tune("post", PostKeys, 3, a));
         r.Register("/fog", "report or tune the Alloy fog target; /fog reset restores boot values",
                    a => Tune("fog", FogKeys, 3, a));
+        r.Register("/ao", "report or tune the Alloy ambient occlusion; /ao reset restores boot values",
+                   a => Tune("ao", AoKeys, 2, a));
         r.Register("/draw", "report or tune the Alloy world pass (#179); /draw reset restores boot values",
                    a => Tune("draw", DrawKeys, 2, a));
         r.Register("/water", "report or tune the Alloy water; /water reset restores boot values",

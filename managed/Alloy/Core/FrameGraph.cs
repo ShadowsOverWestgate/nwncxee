@@ -20,6 +20,10 @@ internal enum PassId
     SunCascades,
     LocalLightCubes,
     DepthPrepass,
+    /// <summary>#379: screen-space ambient occlusion from the prepass depth, BEFORE the colour pass so the lit
+    /// stage reads it as a lighting input (its ambient term) rather than a post stage darkening the finished
+    /// frame the way vanilla's FB effect does (ADR 0021).</summary>
+    AmbientOcclusion,
     OpaqueOwned,
     /// <summary>#127: Alloy grass -- GPU-instanced blades over the engine's own bin geometry, replacing
     /// <c>Scene::DoBinBucket</c> outright. A cutout class: alpha discard, depth write ON, GL_BLEND OFF, so
@@ -101,6 +105,12 @@ internal enum PassId
     /// linear, so a pass PostChain refuses to arm has no Alloy frame at all -- the whole pass falls back to
     /// vanilla before anything is staged.</summary>
     PostProcess,
+    /// <summary>#375: the display-space post stack -- the client's video options the engine ran as
+    /// <c>Camera::DoFrameBufferEffects</c> (gamma first; #352's hosted chain plugs in here) over the resolved
+    /// frame, last stage into the engine's target. After the resolve because it consumes the resolve's
+    /// output; its stand-down is per stage and never reaches the frame: an empty stack is the resolve
+    /// writing straight to the engine, exactly as before it existed.</summary>
+    PostStack,
 }
 
 /// <summary>
@@ -150,6 +160,7 @@ internal static class FrameGraph
         (PassId.SunCascades,     Bracket.Shadow),
         (PassId.LocalLightCubes, Bracket.Shadow),
         (PassId.DepthPrepass,    Bracket.Colour),
+        (PassId.AmbientOcclusion, Bracket.Colour),
         (PassId.OpaqueOwned,     Bracket.Colour),
         (PassId.GrassOwned,      Bracket.Colour),
         (PassId.SkyOwned,        Bracket.Colour),
@@ -162,6 +173,7 @@ internal static class FrameGraph
         (PassId.ParticlesOwned,  Bracket.Colour),
         (PassId.ProbeCapture,    Bracket.Colour),
         (PassId.PostProcess,     Bracket.Colour),
+        (PassId.PostStack,       Bracket.Colour),
     };
 
     /// <summary>Off-device (run-demo.sh): the list schedules every declared pass exactly once, in ADR 0011's
@@ -186,6 +198,10 @@ internal static class FrameGraph
             else brackets++;
         }
         if (brackets != 2) ok = false;
+        // #375: the post GPU bracket opens at PostProcess and closes at PostStack, so they must be adjacent --
+        // a pass slotted between them would be timed as post and run on a half-finished frame.
+        for (int i = 1; i < Passes.Length; i++)
+            if (Passes[i].Id == PassId.PostStack && Passes[i - 1].Id != PassId.PostProcess) ok = false;
         log.Info(ok ? $"FrameGraph.SelfCheck: passed ({Passes.Length} passes, {brackets} brackets)"
                     : $"FrameGraph.SelfCheck: FAILED ({Passes.Length} passes, {brackets} brackets)");
         return ok;

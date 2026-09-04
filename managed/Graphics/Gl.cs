@@ -46,6 +46,8 @@ public static unsafe class Gl
     public const uint COMPILE_STATUS = 0x8B81, LINK_STATUS = 0x8B82;
     public const uint TEXTURE0 = 0x84C0;
     public const uint R8 = 0x8229, RED = 0x1903;
+    /// <summary>glClearBufferfv's buffer selector.</summary>
+    public const uint COLOR = 0x1800;
     /// <summary>#243: the hi-Z pyramid's format -- one float per texel, holding the MAX window depth of the
     /// region it covers.</summary>
     public const uint R32F = 0x822E;
@@ -237,6 +239,8 @@ public static unsafe class Gl
     /// <summary>glTextureView(texture, target, origtexture, internalformat, minlevel, numlevels, minlayer, numlayers).</summary>
     public static delegate* unmanaged<uint, uint, uint, uint, uint, uint, uint, uint, void> TextureView;
     public static delegate* unmanaged<int, uint*, void> GenSamplers;
+    /// <summary>glClearBufferfv: clear one attachment of the bound FBO without touching the clear-colour state.</summary>
+    public static delegate* unmanaged<uint, int, float*, void> ClearBufferfv;
     public static delegate* unmanaged<uint, uint, void> BindSampler;
     public static delegate* unmanaged<uint, uint, int, void> SamplerParameteri;
     public static delegate* unmanaged<uint, uint, float, void> SamplerParameterf;
@@ -445,6 +449,7 @@ public static unsafe class Gl
         TexStorage3D = (delegate* unmanaged<uint, int, uint, int, int, int, void>)P("glTexStorage3D");
         TextureView = (delegate* unmanaged<uint, uint, uint, uint, uint, uint, uint, uint, void>)P("glTextureView");
         GenSamplers = (delegate* unmanaged<int, uint*, void>)P("glGenSamplers");
+        ClearBufferfv = (delegate* unmanaged<uint, int, float*, void>)P("glClearBufferfv");
         BindSampler = (delegate* unmanaged<uint, uint, void>)P("glBindSampler");
         SamplerParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glSamplerParameteri");
         SamplerParameterf = (delegate* unmanaged<uint, uint, float, void>)P("glSamplerParameterf");

@@ -6,7 +6,7 @@ replaced at runtime by a `.shd` resource of the same name — a customization su
 for people who want the look to be theirs.
 
 This document is the contract that surface comes with: what an override is, what the
-seventeen stages are, and precisely what the extender refuses and why.
+twenty-one stages are, and precisely what the extender refuses and why.
 
 ## What an override is, and what it is not
 
@@ -58,7 +58,7 @@ that way.** The extender expands them when it compiles, for an override exactly 
 its own embedded default, so a file that keeps the tokens stays correct when those sizes
 change on the C# side. Freezing today's numbers into your copy is how it goes stale.
 
-## The seventeen stages
+## The sixteen stages
 
 | resref | stage | what it does |
 | --- | --- | --- |
@@ -77,6 +77,12 @@ change on the C# side. Freezing today's numbers into your copy is how it goes st
 | `cx_bloomdn_fs` | fragment | Bloom downsample. |
 | `cx_bloomup_fs` | fragment | Bloom upsample. |
 | `cx_resolve_fs` | fragment | The resolve: tonemap, dither, and the one stage that encodes to display space. |
+| `cx_postgam_fs` | fragment | The post stack's gamma stage (#375): the client's gamma option as `pow(c, g/2.2)`, display space in and out. |
+| `cx_smaaedge_fs` | fragment | The aa stage's first pass (#377): SMAA luma edges of the resolved frame. Carries the reference `SMAA.hlsl` under its GLSL port; `$AA$` is the preset the client's anti-aliasing option picked. |
+| `cx_smaawgt_fs` | fragment | The aa stage's second pass: SMAA blend weights from the edges and the embedded area/search tables. |
+| `cx_smaablend_fs` | fragment | The aa stage proper: SMAA neighbourhood blend of `uSrc` by the weights, display space in and out. |
+| `cx_ssao_fs` | fragment | Ambient occlusion (#379, ADR 0021): GTAO visibility from the prepass depth, R8, read by the lit stage's ambient term. Not a post stage: runs before the colour pass. |
+| `cx_ssaoblur_fs` | fragment | The depth-aware 4x4 blur that folds the AO pass's dither pattern away. |
 
 One more file appears in the dump: `cx_ownlit_fs.bindless.shd`. It is **reference
 only** — the lit stage after the extender's own bindless rewrite. The dot makes it
@@ -174,6 +180,19 @@ linear and washes out).
 Tonemap and dither around those terms as you like. The colour-space decision is not
 yours to change; the rest of the pipeline is built on it.
 
+### Post stack stages — neither end of the guard
+
+**Applies to:** `cx_postgam_fs`, `cx_smaablend_fs`, and every stage the display-space post stack grows (ADR 0020). The aa stage's two own passes (`cx_smaaedge_fs`, `cx_smaawgt_fs`) are plain fullscreen programs: no `uSrc` contract, but they must keep the sampler names the C# side binds units to.
+
+**Rejects:** a stage that calls `SowxEncode` (a second encode, a gamma too bright) or `SowxLinear`
+(the frame goes linear, a gamma dark), or one that dropped the `uSrc` sampler the stack binds the
+previous output to.
+
+The contract a stage keeps: declare `vec4 SowxStage(vec4 c)` over the display-space input and hand
+display space on; the shared main dithers after it. `uDepth` carries the frame's depth for a stage
+that wants it. A stage whose override AND embedded text both fail is dropped from the stack with
+`PostStack: the <name> stage did not build -- DROPPED`, and the frame resolves without it.
+
 ### Caster inertness
 
 **Applies to:** `cx_cast_fs`.
@@ -231,8 +250,8 @@ fail silently.
 
 ## Where this is enforced
 
-The guard predicates live in `managed/Alloy/AlloyRenderer.Shaders.cs`
-(`RecordSafe`, `CutoutSafe`, `SkinSafe`, `LinearSafe`, `ResolveSafe`, `DepthSafe`) and
+The guard predicates live in `managed/Alloy/Core/ShaderContract.cs`
+(`RecordSafe`, `CutoutSafe`, `SkinSafe`, `LinearSafe`, `ResolveSafe`, `DisplaySafe`, `DepthSafe`) and
 `managed/Alloy/Pass/CasterPass.cs` (`CastVsSafe`, `CastFsSafe`). Each is asserted
 in both directions by the SelfCheck suites — the embedded stages pass, and deliberately
 broken text is refused — and `run-demo.sh` fails the build if any suite fails. The one

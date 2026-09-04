@@ -400,7 +400,7 @@ internal static unsafe class Particles
     /// <summary>The light rig's own uniform locations, in the order <see cref="AlloyLights"/> and
     /// <see cref="AlloyRenderer"/> want them handed back.</summary>
     private static int _lAmbient = -1, _lDiffuse = -1, _lDir = -1, _lGrid = -1, _lTile = -1, _lZ = -1,
-                       _lFalloff = -1, _lWrap = -1, _lAtten = -1, _lHot = -1, _lWrapN = -1,
+                       _lFalloff = -1, _lWrap = -1, _lAtten = -1, _lHot = -1, _lWrapN = -1, _lSss = -1,
                        _lSunTex = -1, _lSunVp = -1, _lSunTexel = -1, _lSunBias = -1, _lSunCount = -1,
                        _lSunDynTex = -1, _lSunDyn = -1, _lSunFocus = -1, _lSunRadius = -1,
                        _lCubeTex = -1, _lCubeLight = -1, _lCubePlane = -1, _lCubeCount = -1, _lCubeSoft = -1,
@@ -772,7 +772,7 @@ internal static unsafe class Particles
         if (lit)
         {
             AlloyLights.BindForDraw();
-            AlloyLights.SetDrawUniforms(_lGrid, _lTile, _lZ, _lFalloff, _lWrap, _lAtten, _lHot, _lWrapN,
+            AlloyLights.SetDrawUniforms(_lGrid, _lTile, _lZ, _lFalloff, _lWrap, _lAtten, _lHot, _lWrapN, _lSss,
                                         viewport, near, far);
             AlloyRenderer.UploadAreaTerms(_lAmbient, _lDiffuse, _lDir);
             AlloyRenderer.UploadSunCascades(_lSunTex, _lSunVp, _lSunTexel, _lSunBias, _lSunCount, _lSunDyn,
@@ -1479,7 +1479,7 @@ internal static unsafe class Particles
         _lGrid = GlProgram.Loc(_prog, "uGrid"); _lTile = GlProgram.Loc(_prog, "uTile");
         _lZ = GlProgram.Loc(_prog, "uZ"); _lFalloff = GlProgram.Loc(_prog, "uFalloff");
         _lWrap = GlProgram.Loc(_prog, "uWrap"); _lAtten = GlProgram.Loc(_prog, "uAtten");
-        _lHot = GlProgram.Loc(_prog, "uHot"); _lWrapN = GlProgram.Loc(_prog, "uWrapN");
+        _lHot = GlProgram.Loc(_prog, "uHot"); _lWrapN = GlProgram.Loc(_prog, "uWrapN"); _lSss = GlProgram.Loc(_prog, "uSss");
         _lSunTex = GlProgram.Loc(_prog, "uSunShadow"); _lSunVp = GlProgram.Loc(_prog, "uSunVp");
         _lSunDynTex = GlProgram.Loc(_prog, "uSunDynShadow"); _lSunDyn = GlProgram.Loc(_prog, "uSunDyn");
         _lSunFocus = GlProgram.Loc(_prog, "uSunFocus"); _lSunRadius = GlProgram.Loc(_prog, "uSunRadius");

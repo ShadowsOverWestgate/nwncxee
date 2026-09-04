@@ -160,6 +160,27 @@ public sealed unsafe partial class AlloyRenderer
     internal static string TypeName(int type)
         => type == (int)Gl.RENDERBUFFER ? "renderbuffer" : type == (int)Gl.ATTACHMENT_TEXTURE ? "texture" : $"type 0x{type:x}";
 
+    /// <summary>#375: the target block the colour pass was ENTERED with, copied at the top of the pass. A
+    /// second <see cref="ThisFrameTarget"/> call mid-pass is not a read of the same answer: on a self-check
+    /// frame it re-queries GL, and mid-pass GL says whatever Alloy last bound -- the post stack's own
+    /// colour-only framebuffer, which the latch then adopted as the engine's target and every later frame
+    /// resolved into. That was the "screen goes dark for good once gamma moves" report, live.</summary>
+    private static Target _passTarget;
+
+    /// <summary>Snapshot the pass's target block. Once, at the top of the colour pass, after the one
+    /// <see cref="ThisFrameTarget"/> read.</summary>
+    private static void HoldPassTarget(in Target t) => _passTarget = t;
+
+    /// <summary>#375: put the pass's engine target back as the draw framebuffer, sRGB state included -- for
+    /// the post stack's last stage, which writes where the resolve would have. From the snapshot, never a
+    /// fresh read.</summary>
+    internal static void RebindFrameTarget()
+    {
+        ref Target t = ref _passTarget;
+        BindTarget(t.Fbo, t.ColorType, t.ColorName, t.DepthType, t.DepthName);
+        if (t.Srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
+    }
+
     /// <summary>Bind the 4.6-side draw target: default framebuffer when the engine draws to 0 (same
     /// drawable, shared), else a mirror FBO over the engine FBO's attachments (textures/renderbuffers
     /// share; FBO containers do not). Incomplete mirror = clean skip, and since #264 that means the 3D world does not draw at all.

@@ -131,6 +131,26 @@ internal static unsafe class AlloyLights
     /// one straight hard crease. Unlike <see cref="_wrap"/> it does NOT fall off with distance -- the
     /// facets are the same size however far away the light is.</para></summary>
     private static float _wrapN = 0.25f;
+    /// <summary>#375 follow-up: the stock SUBSURFACE term's wrap. sow-topdata's inc_lighting.shd at
+    /// SHADER_QUALITY_MODE &gt; 1 adds, per light and on top of the Lambert term,
+    /// <c>L * att * max(0, dot(Nvertex, L) + w) * 2/(2 + PI*w)</c> (LIGHT_SUBSURFACE_SCATTERING_WRAP 0.38,
+    /// fEnergyPreservation / (1 + w)): +86% at normal incidence, more at grazing angles -- the "Alloy is
+    /// 2x darker than vanilla at gamma 2.2" gap, which no gamma stage could close. Ships at 0.25, not the
+    /// content's 0.38: at the stock wrap the term lights faces past the terminator brightly enough that a
+    /// character reads as glossy in the dark (measured live, gone at 0.25). Alloy puts the wrap on the MAPPED
+    /// normal, not stock's vertex normal: on the vertex normal it is a wash independent of the normal map,
+    /// which halves the map's diffuse contrast ("PBR is gone", live). 0 is Lambert alone. Gated live
+    /// on global int param 7, the client's shader-quality option, exactly where the stock preamble gates
+    /// it.</summary>
+    private static float _sss = 0.25f;
+    /// <summary><c>GetGlobalShaderParami(7)</c> = the preamble's <c>SHADER_QUALITY_MODE</c>
+    /// (LoadAndCompileSingleShader @0x4d34b0); the subsurface term compiles in above 1.</summary>
+    private const uint QualityParam = 7;
+    private static delegate* unmanaged<uint, int> _gspI;
+    /// <summary>The stock energy factor for the subsurface term at wrap <paramref name="w"/>:
+    /// fEnergyPreservation / (1 + w) = 2 / (2 + PI * w).</summary>
+    internal static float SssK(float w) => 2f / (2f + MathF.PI * w);
+    private static bool SssOn => _sss > 0f && (_gspI == null || _gspI(QualityParam) > 1);
     /// <summary>#139: local-cube PCF radius, in cube texels at the sample distance. 0 = the single hardware
     /// PCF tap this shipped with; anything above widens the filter with four more taps on a disc
     /// perpendicular to the sample ray. Costs 4 extra cube fetches per shadowing light per fragment.</summary>
@@ -168,7 +188,7 @@ internal static unsafe class AlloyLights
     /// hardcoded defaults -- otherwise a reset would silently discard the launch config.</summary>
     private static float _bootGain = 1f, _bootRadius = 1f, _bootPow = 1f,
                          _bootAmbient = 1f, _bootSun = 1f, _bootOver = 1f;
-    private static float _bootHot = 0f, _bootHotSize = 0.15f, _bootWrapN = 0.25f;
+    private static float _bootHot = 0f, _bootHotSize = 0.15f, _bootWrapN = 0.25f, _bootSss = 0.25f;
     private static float _bootWrap = 1f, _bootShadowSoft = 0f, _bootShadowNear = 1f, _bootDiscPx = 3f;
 
     /// <summary>Current tuning, one line, for the <c>/light</c> echo and the arm-time log.</summary>
@@ -176,7 +196,7 @@ internal static unsafe class AlloyLights
         $"gain {_gain:F2}  wrapradius {_srcRadius:F2}  rimfade {_falloffPow:F2}  " +
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  " +
         $"ambient x{AmbientScale:F2}  sun x{SunScale:F2}  overbright x{OverbrightScale:F2}  " +
-        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  shadownear {_shadowNear:F2}  " +
+        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  shadownear {_shadowNear:F2}  " +
         // The engine's area terms are NOT echoed here: they live only during the world render, and a chat
         // command runs after it, where they read zero. FrameRead.EngineAreaTerms is printed from the
         // /shadow trace line instead, which is inside the pass slot.
@@ -199,6 +219,7 @@ internal static unsafe class AlloyLights
             case "overbright": old = OverbrightScale; OverbrightScale = v; break;
             case "wrap":    old = _wrap; _wrap = v; break;
             case "wrapndl": old = _wrapN; _wrapN = v; break;
+            case "sss":     old = _sss; _sss = v; break;
             case "shadowsoft": old = _shadowSoft; _shadowSoft = v; break;
             case "discpx": old = _discPx; _discPx = v; break;
             case "shadowcap": old = _shadowCap; _shadowCap = Math.Clamp(v, 0f, 4f); break;   // 0 = every light; the shader keeps 4 candidates
@@ -228,6 +249,7 @@ internal static unsafe class AlloyLights
         float Att(float f2, float gain) => gain * (1f - f2) / (_atten.X + _atten.Y * f2);
         float g = _gain, r = _srcRadius, p = _falloffPow, am = AmbientScale, su = SunScale, ov = OverbrightScale;
         float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN, sf = _discPx, sc = _shadowCap;
+        float sv = _sss;
         float bg = _bootGain, br = _bootRadius, bp = _bootPow, ba = _bootAmbient, bs = _bootSun, bo = _bootOver;
 
         _bootGain = 40f; _bootRadius = 0.7f; _bootPow = 2f; _bootAmbient = 1f; _bootSun = 1f; _bootOver = 1f;
@@ -235,18 +257,23 @@ internal static unsafe class AlloyLights
         bool ok = float.IsNaN(Tune("nope", 1f));                       // unknown knob is reported
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyLights.SelfCheck FAIL: {w}"); } }
         foreach (var key in new[] { "gain", "radius", "falloff", "ambient", "sun", "overbright",
-                                    "wrap", "wrapndl", "shadowsoft", "discpx", "shadowcap", "shadownear", "hot", "hotsize" })
+                                    "wrap", "wrapndl", "sss", "shadowsoft", "discpx", "shadowcap", "shadownear", "hot", "hotsize" })
             ok &= !float.IsNaN(Tune(key, 3f));                          // every documented knob is reachable
         ok &= _gain == 3f && _srcRadius == 3f && _falloffPow == 3f && AmbientScale == 3f && SunScale == 3f
               && OverbrightScale == 3f && _wrap == 3f && _shadowSoft == 3f && _discPx == 3f && _shadowNear == 3f
-              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadowCap == 3f;
+              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadowCap == 3f && _sss == 3f;
         _bootGain = 7f;                                                 // reset must honour the BOOT value...
         ResetTuning();
         ok &= _gain == 7f && _srcRadius == 0.7f && AmbientScale == 1f;  // ...not the 40f literal
         ok &= Describe().Contains("gain") && Describe().Contains("sun") && Describe().Contains("overbright")
               && Describe().Contains("wrap") && Describe().Contains("shadowsoft")
               && Describe().Contains("shadownear") && Describe().Contains("hot")
-              && Describe().Contains("wrapndl");
+              && Describe().Contains("wrapndl") && Describe().Contains("sss");
+        // The subsurface term is the stock one or it is nothing: the energy factor is inc_lighting.shd's
+        // fEnergyPreservation / (1 + w) and the wrap rides the MAPPED normal (stock: the vertex normal, which washes out normal maps).
+        E(MathF.Abs(SssK(0.38f) - 0.6262f) < 1e-3f, "SssK(0.38) is 2/(2+PI*0.38) = 0.626");
+        E(FragmentLib.Contains("max(dot(N, L) + uSss.x, 0.0) * uSss.y"), "the point loop carries the subsurface term on the MAPPED normal");
+        E(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
 
         // #140: the engine's attenuation constants, and the property that actually matters -- the curve's
         // peak is the engine's own max-intensity setting in LINEAR space. Get the sign of the exponent
@@ -294,6 +321,7 @@ internal static unsafe class AlloyLights
 
         _gain = g; _srcRadius = r; _falloffPow = p; AmbientScale = am; SunScale = su; OverbrightScale = ov;
         _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn; _discPx = sf; _shadowCap = sc;
+        _sss = sv;
         _log = quiet;
         log.Info(ok ? "AlloyLights.SelfCheck: passed"
                     : "AlloyLights.SelfCheck: FAILED -- /light knob table drifted from its documented keys");
@@ -306,7 +334,7 @@ internal static unsafe class AlloyLights
         _gain = _bootGain; _srcRadius = _bootRadius; _falloffPow = _bootPow;
         AmbientScale = _bootAmbient; SunScale = _bootSun; OverbrightScale = _bootOver;
         _wrap = _bootWrap; _shadowSoft = _bootShadowSoft; _shadowNear = _bootShadowNear; _discPx = _bootDiscPx;
-        _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN; _shadowCap = _bootShadowCap;
+        _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN; _shadowCap = _bootShadowCap; _sss = _bootSss;
         _log?.Info($"AlloyLights: /light reset -> {Describe()}");
     }
     /// <summary>What the shader is actually running, for the period log -- read where it is USED, not at
@@ -354,7 +382,8 @@ internal static unsafe class AlloyLights
         // #179 (ADR 0013): the thirteen light dials are pure look, so the code default IS the boot value and
         // /light is the whole surface. The env block that used to sit here only ever set a value the command
         // could already set, and could not be moved without a relaunch.
-        _bootHot = _hot; _bootHotSize = _hotSize; _bootWrapN = _wrapN;
+        _bootHot = _hot; _bootHotSize = _hotSize; _bootWrapN = _wrapN; _bootSss = _sss;
+        _gspI = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
         _bootWrap = _wrap; _bootShadowSoft = _shadowSoft; _bootShadowNear = _shadowNear; _bootDiscPx = _discPx;
         _bootShadowCap = _shadowCap;
         _bootGain = _gain; _bootRadius = _srcRadius; _bootPow = _falloffPow;
@@ -501,7 +530,7 @@ internal static unsafe class AlloyLights
     /// <summary>Grid + depth-range uniforms the lit fragment shader needs to find its own cluster. Called once
     /// per pass right after the program is bound.</summary>
     internal static void SetDrawUniforms(int locGrid, int locTile, int locZ, int locFalloff, int locWrap,
-                                         int locAtten, int locHot, int locWrapN, int* viewport,
+                                         int locAtten, int locHot, int locWrapN, int locSss, int* viewport,
                                          float near, float far)
     {
         if (near < MinNear) near = MinNear;
@@ -532,6 +561,7 @@ internal static unsafe class AlloyLights
         if (locAtten >= 0) Gl.Uniform2f(locAtten, _atten.X, _atten.Y);
         if (locHot >= 0) Gl.Uniform2f(locHot, _hot, MathF.Max(_hotSize, 1e-4f));
         if (locWrapN >= 0) Gl.Uniform1f(locWrapN, _wrapN);
+        if (locSss >= 0) Gl.Uniform2f(locSss, _sss, SssOn ? SssK(_sss) : 0f);
     }
 
     /// <summary>#139/#326: the local-cube receiver's three softness terms -- PCF radius in texels, the screen
@@ -797,6 +827,9 @@ internal static unsafe class AlloyLights
         // uWrap, so a stale override that only declares `float uWrap` still links and still gets #139's
         // behaviour. 0 = off, which is what such an override leaves behind.
         uniform float uWrapN;
+        // #375 follow-up: the stock subsurface term as (wrap, energy) -- AlloyLights._sss. (0, 0) on a stage
+        // that never declares it, which is the Lambert term alone.
+        uniform vec2 uSss;
         const uint SOWX_CLUSTER_CAP = $CAP$u;
         const int SOWX_CAP_MAX = 4;   // #336: the shadow cap's ceiling (register-resident candidates)
         // The engine's own sRGB->linear conversion (Ghidra RenderInterface::GetColorSpaceFromSRGB: powf(c,
@@ -973,8 +1006,11 @@ internal static unsafe class AlloyLights
                 // #143 floor on top of it would wrap past the point of looking lit at all.
                 float ndl = SowxWrap(dot(N, L), max(s, uWrapN));
                 if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
-                vec3 unsh = c * (max(att, 0.0) * ndl);
-                vec3 spc = unsh * SowxSpecLobe(N, V, L, rough, specularity);
+                vec3 dif = c * (max(att, 0.0) * ndl);
+                vec3 spc = dif * SowxSpecLobe(N, V, L, rough, specularity);
+                // ponytail: a light behind the surface (ndl <= 0, continued above) skips its subsurface leak
+                // rather than being fetched unshadowed; stock has no shadow to lose there, Alloy does
+                vec3 unsh = dif + c * (max(att, 0.0) * max(dot(N, L) + uSss.x, 0.0) * uSss.y);
                 if (slot < 0) { acc += unsh; spec += spc; continue; }
                 if (capN <= 0)
                 {

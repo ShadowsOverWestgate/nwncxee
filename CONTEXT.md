@@ -199,6 +199,13 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   space at the end of the frame. Distinct from a *post stack*: the resolve is a colour-space
   correction that makes Alloy blending mathematically right, not a place for tonemapping, exposure,
   or bloom — those plug in later, at the same point.
+- **Ambient occlusion pass** — screen-space visibility (GTAO) computed from the depth prepass BEFORE the
+  colour pass and read by the lit stage as a scale on its ambient term, beside the material's AO map
+  (ADR 0021, #379). A lighting input, not a post stage: vanilla's SSAO darkens the finished frame.
+- **Post stack** — the ordered display-space stages that run after the resolve, where the engine ran
+  `Camera::DoFrameBufferEffects` (ADR 0020, #375; the aa stage = SMAA, #377). Each stage reads the previous output and hands
+  display space on; the last one writes the engine's target and carries the frame's one dither. A
+  stage stands down alone; the stack never takes the frame down. Gamma is the first stage.
 - **Replacement class** — a content class the Alloy frame reimplements rather than reproduces: the engine's
   own path is left untouched and simply not called, and the Alloy one is built to the technique the class
   should have had. Distinct from *owned*, which only says who submits the same geometry. Grass (#127) is the

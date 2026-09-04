@@ -41,10 +41,14 @@ SOURCES = [
     "managed/Alloy/Pass/CasterPass.cs",
     "managed/Alloy/Pass/GrassField.cs",
     "managed/Alloy/Pass/PostChain.cs",
+    "managed/Alloy/Pass/PostStack.cs",
+    "managed/Alloy/Pass/SmaaLib.cs",   # before SmaaStage: the harvest folds references in list order
+    "managed/Alloy/Pass/SmaaStage.cs",
+    "managed/Alloy/Pass/SsaoPass.cs",
     "managed/Alloy/Pass/FrameSnapshot.cs",
 ]
 # ShaderResource.Tokens' three sizing tokens. Any legal value compiles the same shapes.
-TOKENS = {"$CAP$": "128", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667"}
+TOKENS = {"$CAP$": "128", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3"}
 STAGES = "managed/Alloy/Core/ShaderStages.cs"
 DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*const string (\w+) = (.*)$")
 PIECE = re.compile(r'"""\n(.*?)\n\s*"""|([A-Za-z_]\w*)', re.S)
@@ -404,6 +408,12 @@ def programs(c, s):
         "post bloom downsample": (s["cx_post_vs"], s["cx_bloomdn_fs"]),
         "post bloom upsample": (s["cx_post_vs"], s["cx_bloomup_fs"]),
         "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),
+        "post stack gamma": (s["cx_post_vs"], s["cx_postgam_fs"]),
+        "post stack aa edges": (s["cx_post_vs"], s["cx_smaaedge_fs"]),
+        "post stack aa weights": (s["cx_post_vs"], s["cx_smaawgt_fs"]),
+        "post stack aa blend": (s["cx_post_vs"], s["cx_smaablend_fs"]),
+        "ssao visibility": (s["cx_post_vs"], s["cx_ssao_fs"]),
+        "ssao blur": (s["cx_post_vs"], s["cx_ssaoblur_fs"]),
         "owned water": (s["cx_water_vs"], s["cx_water_fs"]),
         "instanced grass": (s["cx_grass_vs"], s["cx_grass_fs"]),
         "grass depth prepass": (s["cx_grass_vs"], c["GrassDepthFs"]),

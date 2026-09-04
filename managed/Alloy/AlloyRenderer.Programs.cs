@@ -51,7 +51,7 @@ public sealed unsafe partial class AlloyRenderer
         _watZ = GlProgram.Loc(prog, "uZ"); _watFalloff = GlProgram.Loc(prog, "uFalloff");
         _watWrap = GlProgram.Loc(prog, "uWrap");
         _watAtten = GlProgram.Loc(prog, "uAtten"); _watHot = GlProgram.Loc(prog, "uHot");
-        _watWrapN = GlProgram.Loc(prog, "uWrapN");
+        _watWrapN = GlProgram.Loc(prog, "uWrapN"); _watSss = GlProgram.Loc(prog, "uSss");
         _watViz = GlProgram.Loc(prog, "uViz");
         _watSunTex = GlProgram.Loc(prog, "uSunShadow"); _watSunVp = GlProgram.Loc(prog, "uSunVp");
         _watSunTexel = GlProgram.Loc(prog, "uSunTexel"); _watSunBias = GlProgram.Loc(prog, "uSunBias");
@@ -290,7 +290,7 @@ public sealed unsafe partial class AlloyRenderer
         L.Z = GlProgram.Loc(prog, "uZ"); L.Falloff = GlProgram.Loc(prog, "uFalloff");
         L.Wrap = GlProgram.Loc(prog, "uWrap");
         L.Atten = GlProgram.Loc(prog, "uAtten"); L.Hot = GlProgram.Loc(prog, "uHot");
-        L.WrapN = GlProgram.Loc(prog, "uWrapN");
+        L.WrapN = GlProgram.Loc(prog, "uWrapN"); L.Sss = GlProgram.Loc(prog, "uSss");
         L.Viz = GlProgram.Loc(prog, "uViz");
         L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunVp = GlProgram.Loc(prog, "uSunVp");
         L.SunTexel = GlProgram.Loc(prog, "uSunTexel"); L.SunBias = GlProgram.Loc(prog, "uSunBias");
@@ -305,6 +305,7 @@ public sealed unsafe partial class AlloyRenderer
         L.ProbeGain = GlProgram.Loc(prog, "uProbeGain");
         L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
         L.Capture = GlProgram.Loc(prog, "uCapture");
+        L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
         L.Feat = FeatLocs(prog);
         // Bind the two shadow samplers to their units ONCE, here, and not only on the frames a map is fresh.
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers
@@ -317,6 +318,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(L.CubeTex, (int)CubeUnit);
         Gl.Uniform1i(L.CubeDynTex, (int)CubeDynUnit);
         Gl.Uniform1i(L.Probe, (int)EnvProbe.ProbeUnit);
+        Gl.Uniform1i(L.Ssao, (int)TextureSlots.Ssao);
         // #120's five map samplers, for the same reason: left at their default they would all point at unit
         // 0 and read the diffuse as a normal map on every part that declares one.
         for (int i = 0; i < MapSlots; i++)

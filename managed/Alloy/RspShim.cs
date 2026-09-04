@@ -249,10 +249,10 @@ internal static unsafe class RspShim
         // client video options that gated it. /knobs is where ADR 0013 says a knob has to be visible, so
         // the layer that removed them says so there rather than leaving them silently inert.
         KnobSurface.Note(static () => !Armed ? null
-            : "the client's SSAO and Sharpen video options are INERT this session: they gate "
+            : "the client's Sharpen video option is INERT this session: it gates "
             + "Camera::DoFrameBufferEffects, which lived inside Scene::RenderSinglePass and went with it "
-            + "when ownframe=1 took the frame. An Alloy equivalent is M5 work (ADR 0016); set ownframe=0 "
-            + "or vanilla=1 to get them back.");
+            + "when ownframe=1 took the frame. Gamma, anti-aliasing and SSAO are NOT on this list -- Alloy "
+            + "serves them (#375, #377, #379); the rest is #352's hosted chain. Set ownframe=0 or vanilla=1 to get them back.");
         FrameRegistry.Global.Register(FramePhase.PostPresent, 30, Period, "RspShim.period", log);
         log.Info($"RspShim: ARMED -- {Key}=1, Scene::RenderSinglePass replaced by the mutate-only shim on "
                + "the Alloy path ([rspshim] every 900 frames; vanilla=1 or ownframe=0 restores it)");

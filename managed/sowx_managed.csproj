@@ -25,4 +25,10 @@
     <TrimmerRootAssembly Include="sowx_managed" />
   </ItemGroup>
 
+  <!-- SMAA's precomputed area/search tables (third_party/smaa/LICENSE.txt), read once per context. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Alloy/Pass/SmaaArea.bin" LogicalName="SmaaArea" />
+    <EmbeddedResource Include="Alloy/Pass/SmaaSearch.bin" LogicalName="SmaaSearch" />
+  </ItemGroup>
+
 </Project>

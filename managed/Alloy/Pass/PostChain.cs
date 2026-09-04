@@ -46,9 +46,10 @@ internal static unsafe class PostChain
     /// with a live sampler of a different type is INVALID_OPERATION. See <see cref="TextureSlots"/>.</summary>
     private const uint HdrUnit = TextureSlots.PostHdr, BloomUnit = TextureSlots.PostBloom;
 
-    /// <summary>Tonemap operators. <see cref="Shoulder"/> is the default and the only one that leaves the
-    /// midtones alone -- engine-drawn geometry shares this framebuffer and never goes through the resolve,
-    /// so a curve that moved the midtones would make owned and engine parts visibly disagree.</summary>
+    /// <summary>Tonemap operators. <see cref="Shoulder"/> is the identity below its knee; <see cref="Aces"/>
+    /// (the default since the #375 follow-ups, at <see cref="_acesMix"/> against the shoulder) moves the
+    /// midtones, which is Alloy's own look decision -- under the M4 cutover nothing the engine draws shares
+    /// the resolved world any more, so there is no engine-drawn geometry left to disagree with.</summary>
     private const int Off = 0, Shoulder = 1, Aces = 2;
 
     /// <summary>The Alloy colour passes of THIS pass are drawing into the HDR target. Since #132 the owned
@@ -116,6 +117,19 @@ internal static unsafe class PostChain
 
     // Dials. Tuned live through /post; the values here ARE the boot values (ADR 0013 bucket 1).
     private static float _bloom = 0.06f, _threshold = 1f, _knee = 0.5f, _tmKnee = 0.8f;
+    /// <summary>Scene-referred exposure: one linear gain on the resolved frame (bloom included) BEFORE the
+    /// tonemap, so blacks stay put and the shoulder takes what it pushes past 1. 1.0 is the identity. This
+    /// is Alloy's own brightness decision rather than a port of anyone's chain: the stock SoW frame gets
+    /// its lift from two display-space ACES passes and a grade, which is not a scene-referred model at all.
+    /// It is also what makes <c>tonemap aces</c> usable -- the Narkowicz fit sits below NWN's radiance
+    /// levels unexposed and darkens a dim interior.</summary>
+    private static float _exposure = 1f;
+    /// <summary>How much of the ACES curve <c>tonemap aces</c> applies, mixed in LINEAR against the shoulder
+    /// path. 1 is the full Narkowicz fit; its toe crushes NWN's dim interiors (0.01 linear comes out 2.6x
+    /// darker) so that only specular survives on a character in the dark, which reads as "glossy". 0.5 --
+    /// xtul's live call -- keeps ACES's highlight roll-off and colour while the shoulder, the identity
+    /// below its knee, holds the darks where they are.</summary>
+    private static float _acesMix = 0.5f;
     /// <summary>Output dither, in LSBs of the 8-bit target the resolve writes into. 1.0 is the correct
     /// value and not a taste setting: one LSB of triangular-PDF noise is exactly what decorrelates the
     /// quantisation step, and it is the difference between a smooth gradient and a set of contour bands.
@@ -132,13 +146,13 @@ internal static unsafe class PostChain
     /// a pixel NO pass covered -- which is the one question a shading view cannot answer. Debug only, and
     /// deliberately not a boot value: <c>/post reset</c> turns it off with the other views.</summary>
     private static bool _clearViz;
-    private static int _mode = Shoulder;
-    private static float _bootBloom, _bootThreshold, _bootKnee, _bootTmKnee, _bootDither;
+    private static int _mode = Aces;
+    private static float _bootBloom, _bootThreshold, _bootKnee, _bootTmKnee, _bootDither, _bootExposure, _bootAcesMix;
     private static int _bootMode;
 
     private static int _dSrc, _dLod, _dTexel, _dFirst, _dThresh;
     private static int _uSrc, _uLod, _uTexel;
-    private static int _cHdr, _cBloom, _cStrength, _cMode, _cKnee, _cDither, _cViz;
+    private static int _cHdr, _cBloom, _cStrength, _cMode, _cKnee, _cDither, _cViz, _cExposure, _cAcesMix;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -150,7 +164,7 @@ internal static unsafe class PostChain
         // request, never a boot state -- a forgotten viz setting booted every session into the bloom-debug
         // view until the user typed /post viz 0. Every look dial below is now the same shape.
         _bootBloom = _bloom; _bootThreshold = _threshold; _bootKnee = _knee;
-        _bootTmKnee = _tmKnee; _bootMode = _mode; _bootDither = _dither;
+        _bootTmKnee = _tmKnee; _bootMode = _mode; _bootDither = _dither; _bootExposure = _exposure; _bootAcesMix = _acesMix;
         _gammaParam = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
         if (_gammaParam == null)
             log.Info("PostChain: RenderInterface::GetGlobalShaderParami unresolved -- the resolve encodes "
@@ -162,9 +176,15 @@ internal static unsafe class PostChain
 
     internal static string Describe() =>
         $"hdr {(_on ? "on" : "off")}  bloom {_bloom:F3}  threshold {_threshold:F2}  knee {_knee:F2}  " +
-        $"tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  tmknee {_tmKnee:F2}  " +
+        $"exposure {_exposure:F2}  tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  acesmix {_acesMix:F2}  tmknee {_tmKnee:F2}  " +
         $"dither {_dither:F2}" + (_viz > 0f ? $"  VIZ {_viz:F0}" : "")
-        + (_clearViz ? "  CLEARVIZ (target cleared magenta)" : "");
+        + (_clearViz ? "  CLEARVIZ (target cleared magenta)" : "")
+        + " | " + PostStack.Describe();
+
+    /// <summary>The resolve's dither in the unit the shader takes: one LSB of the 8-bit target, or 0.
+    /// #375: whichever stage WRITES that target applies it -- the resolve when the stack is empty, the
+    /// stack's last stage otherwise -- so the frame is quantised exactly once.</summary>
+    internal static float DitherLsb => _dither / 255f;
 
     /// <summary>Live tuning behind <c>/post</c>; returns the old value, NaN for an unknown key. Same
     /// no-lock reasoning as <see cref="AlloyLights.Tune"/>: independent floats, written from the input
@@ -181,10 +201,13 @@ internal static unsafe class PostChain
             case "knee":      old = _knee; _knee = v; break;
             case "tonemap":   old = _mode; _mode = (int)v; break;
             case "tmknee":    old = _tmKnee; _tmKnee = v; break;
+            case "exposure":  old = _exposure; _exposure = v; break;
+            case "acesmix":   old = _acesMix; _acesMix = v; break;
             case "dither":    old = _dither; _dither = v; break;
             case "viz":       old = _viz; _viz = v; break;
             case "clearviz":  old = _clearViz ? 1f : 0f; _clearViz = v != 0f; break;
-            default: return float.NaN;
+            // #375: the display-space stack's own keys, behind the same command.
+            default: return PostStack.Tune(key, v);
         }
         _log?.Info($"PostChain: /post {key} {v:F2} (was {old:F2}) -> {Describe()}");
         return old;
@@ -193,10 +216,11 @@ internal static unsafe class PostChain
     internal static void ResetTuning()
     {
         _bloom = _bootBloom; _threshold = _bootThreshold; _knee = _bootKnee;
-        _tmKnee = _bootTmKnee; _mode = _bootMode; _dither = _bootDither;
+        _tmKnee = _bootTmKnee; _mode = _bootMode; _dither = _bootDither; _exposure = _bootExposure; _acesMix = _bootAcesMix;
         // viz has no boot value and never should: it is a debug VIEW, not a look setting, so "reset" means
         // off. Leaving it out is why /post reset could not undo a stray /post viz either.
         _viz = 0f; _clearViz = false;
+        PostStack.ResetTuning();
         _log?.Info($"PostChain: /post reset -> {Describe()}");
     }
 
@@ -600,12 +624,16 @@ internal static unsafe class PostChain
         _bloomOk = true;
     }
 
-    /// <summary>Resolve the HDR target into whatever framebuffer the caller has bound: add the bloom,
-    /// tonemap, encode. The caller has already rebound the engine target and its viewport.</summary>
-    internal static void Composite(int* viewport)
+    /// <summary>Resolve the HDR target: add the bloom, tonemap, encode. The caller has already rebound the
+    /// engine target and its viewport, which is where the depth hand-back goes. #375: the COLOUR goes to
+    /// <paramref name="into"/> when it is non-zero -- <see cref="PostStack.Begin"/>'s framebuffer, when a
+    /// display-space stage is live this frame -- and the dither goes with the 8-bit write, so it is the
+    /// stack's last stage's when the stack takes the frame.</summary>
+    internal static void Composite(int* viewport, uint into)
     {
         if (!Armed) return;
         ResolveDepth();
+        if (into != 0) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, into); Gl.Disable(Gl.FRAMEBUFFER_SRGB); }
         Gl.UseProgram(_progComposite);
         Gl.BindVertexArray(_vao);
         new PassState(depth: false, depthWrite: false).Apply();
@@ -619,9 +647,11 @@ internal static unsafe class PostChain
         Gl.Uniform1f(_cStrength, _bloomOk ? _bloom : 0f);
         Gl.Uniform1i(_cMode, _mode);
         Gl.Uniform1f(_cKnee, _tmKnee);
+        Gl.Uniform1f(_cExposure, _exposure);
+        Gl.Uniform1f(_cAcesMix, _acesMix);
         // ...in LSBs of the 8-bit target this writes into, converted here rather than in the shader so the
         // dial reads as "how many quantisation steps of noise", which is the only unit it makes sense in.
-        Gl.Uniform1f(_cDither, _dither / 255f);
+        Gl.Uniform1f(_cDither, into != 0 ? 0f : DitherLsb);
         Gl.Uniform1i(_cViz, (int)_viz);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
@@ -749,6 +779,8 @@ internal static unsafe class PostChain
         _cHdr = GlProgram.Loc(_progComposite, "uHdr"); _cBloom = GlProgram.Loc(_progComposite, "uBloom");
         _cStrength = GlProgram.Loc(_progComposite, "uStrength"); _cMode = GlProgram.Loc(_progComposite, "uMode");
         _cKnee = GlProgram.Loc(_progComposite, "uKnee");
+        _cExposure = GlProgram.Loc(_progComposite, "uExposure");
+        _cAcesMix = GlProgram.Loc(_progComposite, "uAcesMix");
         _cDither = GlProgram.Loc(_progComposite, "uDither");
         _cViz = GlProgram.Loc(_progComposite, "uViz");
         // Core profile draws nothing with VAO 0 bound, even from a vertex stage that reads no attributes.
@@ -785,6 +817,23 @@ internal static unsafe class PostChain
     /// only ever runs on a frame whose stages linearised, so it always has an encode to undo.</para></summary>
     private const string PostColorLib = """
         vec3 SowxEncode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(1.0 / $SRGB$)); }
+        """;
+
+    /// <summary>The frame's one dither, shared by the resolve and every <see cref="PostStack"/> stage: the
+    /// whole Alloy frame is computed in RGBA16F and written ONCE into an 8-bit target, so every gradient in
+    /// it quantises there, and a smooth shallow one -- a bloom halo -- lands its steps as contour bands.
+    /// TRIANGULAR PDF, two independent samples summed, not uniform: a uniform dither leaves the noise floor
+    /// modulated by where the signal sits inside its step, so bands survive faintly; the triangular sum
+    /// decorrelates the error outright. <c>lsb</c> is one LSB of the target, or 0 for an intermediate.</summary>
+    internal const string PostDitherLib = """
+        float SowxNoise(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+        vec3 SowxDither(vec3 c, vec2 px, float lsb)
+        {
+            if (lsb <= 0.0) return c;
+            float r1 = SowxNoise(px);
+            float r2 = SowxNoise(px + vec2(17.31, 47.13));
+            return c + (r1 + r2 - 1.0) * lsb;
+        }
         """;
 
     /// <summary>Progressive downsample, the 13-tap filter with the four-group Karis average (Jimenez'
@@ -878,10 +927,12 @@ internal static unsafe class PostChain
         uniform float uStrength;
         uniform int uMode;
         uniform float uKnee;
+        uniform float uExposure;  // scene-referred gain before the tonemap; 1 = identity
+        uniform float uAcesMix;   // mode 2: ACES mixed against the shoulder, in linear; 1 = full ACES
         uniform float uDither;   // one LSB of the output target, or 0
         uniform int uViz;        // 0 = the frame; 1 = bloom only; 2 = HDR only; 3 = bloom x20
 
-        """ + PostColorLib + """
+        """ + PostColorLib + PostDitherLib + """
 
         vec3 SowxShoulder(vec3 c, float k)
         {
@@ -900,8 +951,6 @@ internal static unsafe class PostChain
             return clamp((c * (a * c + b)) / (c * (d * c + e) + f), 0.0, 1.0);
         }
 
-        float SowxNoise(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-
         void main()
         {
             // The stage views. Deliberately BEFORE the tonemap and the dither: the question they answer is
@@ -917,26 +966,15 @@ internal static unsafe class PostChain
 
             vec3 c = texture(uHdr, vUV).rgb;
             if (uStrength > 0.0) c += textureLod(uBloom, vUV, 0.0).rgb * uStrength;
+            c *= uExposure;
             if (uMode == 1) c = SowxShoulder(c, uKnee);
-            else if (uMode == 2) c = SowxAces(c);
+            // ACES against the SHOULDER, not the raw value: the shoulder is the identity below its knee, so
+            // the mix keeps the darks the ACES toe would crush and takes only the roll-off and colour.
+            else if (uMode == 2) c = mix(SowxShoulder(c, uKnee), SowxAces(c), uAcesMix);
             vec3 outc = SowxEncode(c);
-            // The whole Alloy frame is computed in RGBA16F and then written ONCE into the engine's 8-bit
-            // attachment. Every gradient in it therefore quantises here, and a gradient smooth enough and
-            // shallow enough -- which is precisely what a broad bloom halo is -- lands its steps as visible
-            // contour bands rather than as noise. The bands are straight and evenly spaced because they are
-            // iso-luminance contours of a smooth glow, which is why they read as "stripes" and why they
-            // cross geometry, particles and empty background alike.
-            //
-            // TRIANGULAR PDF, not uniform: two independent samples summed. A uniform dither still leaves the
-            // noise floor modulated by where the signal sits inside its quantisation step, so bands survive
-            // faintly; the triangular sum decorrelates the error from the signal outright, and it is the
-            // difference between "much better" and "gone". One LSB peak-to-peak is imperceptible on its own.
-            if (uDither > 0.0)
-            {
-                float r1 = SowxNoise(gl_FragCoord.xy);
-                float r2 = SowxNoise(gl_FragCoord.xy + vec2(17.31, 47.13));
-                outc += (r1 + r2 - 1.0) * uDither;
-            }
+            // Dithered in DISPLAY space, after the encode: this is where the frame meets 8 bits (or, when
+            // the post stack takes it, uDither is 0 and the stack's last stage dithers instead).
+            outc = SowxDither(outc, gl_FragCoord.xy, uDither);
             // The alpha channel passes through untouched: the Alloy blended classes wrote real coverage
             // there and the engine's own later passes are entitled to find it, tonemapping or not.
             frag = vec4(outc, texture(uHdr, vUV).a);
@@ -957,7 +995,7 @@ internal static unsafe class PostChain
 
         float bl = _bloom, th = _threshold, kn = _knee, tk = _tmKnee, di = _dither, vz = _viz;
         int md = _mode; bool on = _on; bool armed = Armed;
-        float bb = _bootBloom, bt = _bootThreshold, bk = _bootKnee, btk = _bootTmKnee;
+        float bb = _bootBloom, bt = _bootThreshold, bk = _bootKnee, btk = _bootTmKnee, bex = _bootExposure, ex = _exposure, bam = _bootAcesMix, am = _acesMix;
         int bm = _bootMode;
         try
         {
@@ -965,18 +1003,27 @@ internal static unsafe class PostChain
             // hdr is CONFIG, not a /post key: it stands the whole Alloy frame down, which is a boot
             // decision. A Tune that still accepted it would be a live half-stand-down.
             E(float.IsNaN(Tune("hdr", 0f)), "hdr is not tunable; it is the boot setting");
-            foreach (string key in new[] { "bloom", "threshold", "knee", "tonemap", "tmknee",
+            foreach (string key in new[] { "bloom", "threshold", "knee", "tonemap", "tmknee", "exposure", "acesmix",
                                           "dither", "viz" })
                 E(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
-            E(Describe().Contains("bloom") && Describe().Contains("tonemap") && Describe().Contains("dither"),
-              "Describe names every knob group");
+            E(Describe().Contains("bloom") && Describe().Contains("tonemap") && Describe().Contains("dither")
+              && Describe().Contains("exposure"), "Describe names every knob group");
+            // Exposure is scene-referred: it multiplies the linear frame BEFORE the tonemap and the encode,
+            // never the display value -- a gain after the encode is a gamma-wrong brightness slider.
+            E(ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
+              < ResolveFs.IndexOf("if (uMode == 1) c = SowxShoulder", StringComparison.Ordinal)
+              && ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
+              < ResolveFs.IndexOf("vec3 outc = SowxEncode(c);", StringComparison.Ordinal),
+              "exposure is applied in linear, before the tonemap and the encode");
+            E(ResolveFs.Contains("mix(SowxShoulder(c, uKnee), SowxAces(c), uAcesMix)"),
+              "ACES is mixed against the shoulder, so the darks below the knee are never crushed past the mix");
             // The resolve is the ONLY place the Alloy frame meets 8-bit, so it is the only place a dither
             // can go. A resolve that lost it would band again, and the symptom (faint contour stripes over
             // smooth gradients) reads as a lighting bug rather than as a missing line here.
-            E(ResolveFs.Contains("(r1 + r2 - 1.0) * uDither"),
+            E(PostDitherLib.Contains("(r1 + r2 - 1.0) * lsb") && ResolveFs.Contains("SowxDither(outc, gl_FragCoord.xy, uDither)"),
               "the resolve dithers with a TRIANGULAR pdf -- two samples summed, not one");
             E(ResolveFs.IndexOf("vec3 outc = SowxEncode(c);", StringComparison.Ordinal)
-              < ResolveFs.IndexOf("(r1 + r2 - 1.0) * uDither", StringComparison.Ordinal),
+              < ResolveFs.IndexOf("SowxDither(outc, gl_FragCoord.xy, uDither)", StringComparison.Ordinal),
               "...and it dithers in DISPLAY space, after the encode -- dithering before it is shaped by the "
               + "curve and stops matching the quantisation step it exists to break up");
             // #132: this resolve is the frame's ONLY encode, and it is gated on the engine's own
@@ -1023,7 +1070,7 @@ internal static unsafe class PostChain
             _bloom = bl; _threshold = th; _knee = kn; _tmKnee = tk; _mode = md; _on = on;
             _dither = di; _viz = vz;
             Armed = armed;
-            _bootBloom = bb; _bootThreshold = bt; _bootKnee = bk; _bootTmKnee = btk;
+            _bootBloom = bb; _bootThreshold = bt; _bootKnee = bk; _bootTmKnee = btk; _bootExposure = bex; _exposure = ex; _bootAcesMix = bam; _acesMix = am;
             _bootMode = bm;
             E(_bloom != Sentinel && _threshold != Sentinel && _knee != Sentinel && _tmKnee != Sentinel
               && _dither != Sentinel && _viz != Sentinel,
