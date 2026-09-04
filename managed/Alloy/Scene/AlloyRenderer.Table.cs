@@ -300,7 +300,7 @@ public sealed unsafe partial class AlloyRenderer
     /// bindless=0, and the LIT program's actual sources carry the handle block. When false everything
     /// draws exactly as before -- per-batch texture binds.</summary>
     private static bool _bindless;
-    private static bool _bindlessProbed;
+    private static bool _bindlessProbed, _limitsProbed;
     /// <summary>#126: this pass's draw order, rebuilt every pass from <see cref="_order"/> -- the opaque set
     /// first, then the blended members sorted back-to-front, then additive. It is a separate array from
     /// _order because the membership is per FRAME (a fading tile joins the blended run for the frames it

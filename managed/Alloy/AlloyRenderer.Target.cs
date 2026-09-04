@@ -151,8 +151,9 @@ public sealed unsafe partial class AlloyRenderer
         else if (type == (int)Gl.ATTACHMENT_TEXTURE && Gl.GetTexLevelParameteriv != null && name != 0)
         {
             // asking TEXTURE_2D_MULTISAMPLE about a plain TEXTURE_2D raises GL_INVALID_OPERATION and writes
-            // nothing, which leaves n = 0 -> reported as 1x. The error is harmless and read by nobody.
+            // nothing, which leaves n = 0 -> reported as 1x. Drained here, or it counts on the [gl46] line.
             Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D_MULTISAMPLE, 0, Gl.TEXTURE_SAMPLES, &n);
+            for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
         }
         return n <= 0 ? 1 : n;
     }

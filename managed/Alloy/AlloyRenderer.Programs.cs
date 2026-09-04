@@ -205,6 +205,11 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
+    /// <summary>What the owned stages ask of the driver beyond the GL 4.6 floor: three vertex-stage SSBO
+    /// blocks (draw, draw index, bones; floor 0) and the whole 16-unit fragment sampler budget
+    /// (<see cref="TextureSlots"/> ends at 15; floor 16, so zero margin).</summary>
+    private const int VsSsboNeed = 3, TexUnitsNeed = 16;
+
     /// <summary>Build the lit variant. A failure disarms lit ownership for the session (and the next
     /// enrollment hands every lit part back to the engine) -- never a silent fallback to fullbright, which
     /// would look worse than vanilla.</summary>
@@ -221,6 +226,21 @@ public sealed unsafe partial class AlloyRenderer
             _log?.Info(_bindless
                 ? "AlloyRenderer: ARB_bindless_texture armed -- lit batches merge across textures (bindless=0 in sowx.cfg reverts)"
                 : "AlloyRenderer: bindless texturing unavailable or vetoed -- per-batch texture binds");
+        }
+        if (!_limitsProbed)
+        {
+            _limitsProbed = true;
+            // The two limits every owned vertex stage exceeds the GL 4.6 floor on (0 vertex SSBO blocks,
+            // 8 bindings): asked once, so a driver that cannot link says so by name rather than by log spam.
+            int vsBlocks = 0, bindings = 0, units = 0;
+            Gl.GetIntegerv(Gl.MAX_VERTEX_SHADER_STORAGE_BLOCKS, &vsBlocks);
+            Gl.GetIntegerv(Gl.MAX_SHADER_STORAGE_BUFFER_BINDINGS, &bindings);
+            Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &units);
+            int needBind = (int)CasterGather.BindView + 1;
+            bool short_ = vsBlocks < VsSsboNeed || bindings < needBind || units < TexUnitsNeed;
+            _log?.Info($"AlloyRenderer: driver limits -- vertex SSBO blocks {vsBlocks} (needs {VsSsboNeed}, GL 4.6 floor 0), " +
+                       $"SSBO bindings {bindings} (needs {needBind}, floor 8), fragment texture units {units} (needs {TexUnitsNeed}, floor 16)" +
+                       (short_ ? " -- BELOW ALLOY'S NEED: expect link failures on this driver" : ""));
         }
         string litFs = ShaderStages.Source(ShdLitFs);
         if (_bindless) litFs = BindlessFs(litFs);
@@ -306,6 +326,7 @@ public sealed unsafe partial class AlloyRenderer
         L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
         L.Capture = GlProgram.Loc(prog, "uCapture");
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
+        L.AoDirect = GlProgram.Loc(prog, "uAoDirect");
         L.Feat = FeatLocs(prog);
         // Bind the two shadow samplers to their units ONCE, here, and not only on the frames a map is fresh.
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers

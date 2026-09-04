@@ -104,6 +104,11 @@ internal static unsafe class OwnedBuffers
     /// the tokens and (from <c>glGenBuffers</c>) the names -- stale rows describing the wrong mesh.</summary>
     internal static void Install(ExtenderLog log, HookService hooks)
     {
+        // Installed whether or not the upload takeover is armed: the VAO-cache death notice
+        // (AlloyRenderer.OnEngineBufferDeleted) rides this funnel, and Alloy draws from engine pools either way.
+        _origDelete = (delegate* unmanaged<uint, void>)hooks.Install(
+            SymbolMap.GlDeleteBuffer, (IntPtr)(delegate* unmanaged<uint, void>)&OnDeleteBuffer);
+        if (_origDelete == null) log.Info("OwnedBuffers: GLRender::DeleteBuffer did not resolve -- no buffer death notice for the VAO caches");
         if (!_armed) return;
         IntPtr anchor = Native.Sym(SymbolMap.GlPoolTableAnchor);
         _table = anchor == IntPtr.Zero ? null : (byte*)anchor + PoolTableOffset;
@@ -111,8 +116,6 @@ internal static unsafe class OwnedBuffers
         _totalMemPool = (int*)Native.Sym(SymbolMap.GlTotalMemPool);
         _origUnlock = (delegate* unmanaged<uint, uint, uint, void>)hooks.Install(
             SymbolMap.GlUnlockPool, (IntPtr)(delegate* unmanaged<uint, uint, uint, void>)&OnUnlockPool);
-        _origDelete = (delegate* unmanaged<uint, void>)hooks.Install(
-            SymbolMap.GlDeleteBuffer, (IntPtr)(delegate* unmanaged<uint, void>)&OnDeleteBuffer);
         bool ok = _table != null && _origUnlock != null && _origDelete != null;
         if (!ok) _armed = false;
         log.Info(ok
@@ -300,6 +303,7 @@ internal static unsafe class OwnedBuffers
     private static void OnDeleteBuffer(uint name)
     {
         Retire(name);
+        AlloyRenderer.OnEngineBufferDeleted(name);
         if (_origDelete != null) _origDelete(name);
     }
 

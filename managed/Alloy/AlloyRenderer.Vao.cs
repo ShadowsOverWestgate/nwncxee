@@ -189,6 +189,44 @@ public sealed unsafe partial class AlloyRenderer
     /// a walk edge of its own, so this is what the forced-enroll retry tests to re-ask them.</summary>
     internal static bool DripPending => _dripDeferred > 0 || _dripCapped > 0;
 
+    private static int _bufDeaths, _bufDeathDiagLeft = 8;
+    private static readonly IntPtr[] _dying = new IntPtr[MaxVdos];
+
+    /// <summary>The engine's <c>DeletePool</c> is the death notice for every VAO slot over that buffer.
+    /// GL 4.6 5.1.2: a delete unbinds only in the deleting context, and Alloy's 4.6 VAOs keep the dead
+    /// object attached while the NAME goes straight back into circulation (5.1.3) for the next pool -- so a
+    /// slot left alone keeps drawing vertices out of a freed pool, or out of whatever pool inherited its
+    /// name, with no error on any driver and plausible-looking data on one. <see cref="VdoSlot"/>
+    /// short-circuits on VDO pointer identity, so the slot is VACATED, not merely staled, and the parts on
+    /// it revoked so the next walk harvests the VDO's new buffers. The shape is <see cref="OnVdoRepackHook"/>'s.
+    /// Engine thread, cold: pools die on transitions and creature churn, not per frame.</summary>
+    internal static void OnEngineBufferDeleted(uint name)
+    {
+        if (name == 0) return;
+        int n = 0;
+        for (int v = 0; v < _vdoCount; v++)
+        {
+            IntPtr vdo = _vVdo[v];
+            if (vdo == IntPtr.Zero) continue;
+            if (_vElemBuf[v] != name && _vPos[v].Buf != name && _vUv[v].Buf != name && _vNrm[v].Buf != name
+                && _vBi[v].Buf != name && _vBw[v].Buf != name) continue;
+            // _vElemBuf = 0 makes BuildVao refuse until the slot is re-harvested: a rebuild over the dead
+            // name would bind a buffer this context never generated.
+            _vVdo[v] = IntPtr.Zero; _vStale[v] = true; _vElemBuf[v] = 0;
+            _dying[n++] = vdo;
+        }
+        Beams.OnBufferDeleted(name);
+        if (n == 0) return;
+        // One walk of the ownership table, not one per slot: a tileset pool backs hundreds of slots.
+        Array.Sort(_dying, 0, n);
+        for (int i = 0; i < _ownCount; i++)
+            if (_oTri[i] != IntPtr.Zero && Array.BinarySearch(_dying, 0, n, _oVdo[i]) >= 0) Revoke(i);
+        SceneWalk.Dirty = true;
+        _bufDeaths++;
+        if (_bufDeathDiagLeft-- > 0)
+            _log?.Info($"AlloyRenderer: engine deleted buffer {name} under {n} VAO slots -- vacated, their parts re-enroll");
+    }
+
     /// <summary>The dedup half of <see cref="DripArm"/>, which is the half that went wrong: it must arm a
     /// VDO once, refuse the repeat, and -- when the table is full -- COUNT what it turned away, because an
     /// uncounted overflow is a hole with no symptom in the log.</summary>

@@ -231,6 +231,7 @@ internal static unsafe class PostChain
         _fbo = 0; _hdrTex = 0; _bloomTex = 0; _depthTex = 0; _w = 0; _h = 0; _levels = 0;
         _depFormat = 0; _depW = 0; _depH = 0;
         _handbackBad = 0; _probedAttach = 0; _probedFormat = 0;
+        _defaultProbed = false; _defaultFormat = 0; _defaultOk = null;
         _progDown = 0; _progUp = 0; _progComposite = 0; _vao = 0;
         _progFailed = false; Armed = false; _down.Forget();
     }
@@ -417,6 +418,43 @@ internal static unsafe class PostChain
     /// <summary>The stencil half of that one-shot answer.</summary>
     private static bool _defaultHasStencil;
 
+    /// <summary>The default framebuffer's depth format as its bit widths and component type describe it
+    /// (the ladder <see cref="ProbeEngineDepth"/> ends in); 0 = no depth. Under the M4 shim the owned depth
+    /// is ALLOCATED to this, so the hand-back is the format-matched blit GL 4.6 18.3.1 requires: the author's
+    /// driver tolerated D24 into D24S8, and Mesa raises no error for the mismatch either -- it just does
+    /// what it likes with it (docs/research/opengl-46-portability-audit.md, E4).</summary>
+    private static uint _defaultFormat, _defaultMismatchFmt;
+    private static bool _defaultProbed;
+
+    private static uint DefaultFormat()
+    {
+        if (_defaultProbed) return _defaultFormat;
+        _defaultProbed = true;
+        int bits = 0, sbits = 0, comp = 0;
+        if (Gl.GetFramebufferAttachmentParameteriv != null)
+        {
+            int prev; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &prev);
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
+            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.STENCIL, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &sbits);
+            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &comp);
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
+            if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+        }
+        _defaultHasStencil = sbits > 0;
+        _defaultFormat = bits <= 0 ? 0
+            : sbits > 0 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH32F_STENCIL8 : Gl.DEPTH24_STENCIL8)
+            : bits >= 32 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH_COMPONENT32F : Gl.DEPTH_COMPONENT32)
+            : bits >= 24 ? Gl.DEPTH_COMPONENT24 : Gl.DEPTH_COMPONENT16;
+        _log?.Info(bits > 0
+            ? $"PostChain: default framebuffer carries {bits}-bit depth and {sbits}-bit stencil (0x{_defaultFormat:x}) -- the "
+            + $"engine highlight overlays (#232) get the owned depth handed back and are occluded by the "
+            + $"world{(sbits > 0 ? ", and the trigger highlight (#233) has its stencil" : "; the TRIGGER highlight (#233) stands down, having no stencil to mask its full-screen quad")}"
+            : "PostChain: the default framebuffer has NO depth buffer -- the engine highlight overlays "
+            + "(#232/#233) stand down rather than draw through walls");
+        return _defaultFormat;
+    }
+
     /// <summary>#232/#233: the same hand-back as <see cref="ResolveDepth"/>, but into the DEFAULT
     /// framebuffer, which under the shim is the only target there is. Nothing else writes that depth buffer
     /// on an Alloy frame -- the engine's world draws are all swallowed -- so the engine overlays the shim
@@ -428,26 +466,15 @@ internal static unsafe class PostChain
     private static bool BlitDepthToDefault()
     {
         if (Gl.BlitFramebuffer == null || _depthTex == 0) return false;
-        if (_defaultOk == null)
-        {
-            int bits = 0, sbits = 0;
-            if (Gl.GetFramebufferAttachmentParameteriv != null)
-            {
-                Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH,
-                                                       Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
-                Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.STENCIL,
-                                                       Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &sbits);
-            }
-            _defaultOk = bits > 0;
-            _defaultHasStencil = sbits > 0;
-            _log?.Info(bits > 0
-                ? $"PostChain: default framebuffer carries {bits}-bit depth and {sbits}-bit stencil -- the "
-                + $"engine highlight overlays (#232) get the owned depth handed back and are occluded by the "
-                + $"world{(sbits > 0 ? ", and the trigger highlight (#233) has its stencil" : "; the TRIGGER highlight (#233) stands down, having no stencil to mask its full-screen quad")}"
-                : "PostChain: the default framebuffer has NO depth buffer -- the engine highlight overlays "
-                + "(#232/#233) stand down rather than draw through walls");
-        }
+        if (_defaultOk == null) _defaultOk = DefaultFormat() != 0;
         if (_defaultOk != true) return false;
+        if (_defaultFormat != _depFormat && _defaultMismatchFmt != _depFormat)
+        {
+            _defaultMismatchFmt = _depFormat;
+            _log?.Info($"PostChain: WARN the depth hand-back blits 0x{_depFormat:x} into a default framebuffer of " +
+                       $"0x{_defaultFormat:x} -- GL 4.6 18.3.1 makes a mismatched depth blit INVALID_OPERATION, and Mesa " +
+                       "raises no error for it (main/blit.c), so the verdict below cannot see it; overlays may occlude wrong");
+        }
         DefaultStencilOk = _defaultHasStencil;
         uint err = BlitDepthInto(0);
         if (err == 0) return true;
@@ -472,7 +499,12 @@ internal static unsafe class PostChain
         // #215: no engine attachment to match under the shim -- ResolveDepth no-ops on a default-framebuffer
         // target and there are no residual engine world draws to hand depth back to, so the owned depth is
         // free to pick its own format.
-        if (name == 0) return RspShim.InWindow ? Gl.DEPTH_COMPONENT24 : 0;
+        if (name == 0)
+        {
+            if (!RspShim.InWindow) return 0;
+            uint fb0 = DefaultFormat();   // match FB0 so the overlay hand-back is a legal blit; D24 if it has none
+            return fb0 != 0 ? fb0 : Gl.DEPTH_COMPONENT24;
+        }
         ulong attach = (uint)name | (ulong)(uint)type << 32;
         if (attach == _probedAttach && _probedFormat != 0) return _probedFormat;
         _probedAttach = attach;

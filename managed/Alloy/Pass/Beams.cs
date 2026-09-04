@@ -384,6 +384,16 @@ internal static unsafe class Beams
         for (int v = 0; v < _vdoCount; v++) if (_vVdo[v] == vdo) { Forget(); return; }
     }
 
+    /// <summary>The engine deleted a pool buffer a harvested slot points at: same backstop as
+    /// <see cref="OnRepack"/>, for the same reason -- the VAO would keep the dead name attached (GL 4.6
+    /// 5.1.2) while the next pool inherits it. Wholesale, like the repack.</summary>
+    internal static void OnBufferDeleted(uint name)
+    {
+        if (name == 0) return;
+        for (int v = 0; v < _vdoCount; v++)
+            if (_vElemBuf[v] == name || _vPos[v].Buf == name || _vFr[v].Buf == name) { Forget(); return; }
+    }
+
     /// <summary>Every captured identity is void: the parts belong to a Scene whose unload freed them.</summary>
     /// <summary>Context loss: drop every GL name (they mean nothing once the context is gone) and the
     /// captured world with them. <see cref="EnsureProgram"/> short-circuits on a non-zero <c>_prog</c> and

@@ -28,6 +28,13 @@ public struct VertexStream
 /// </summary>
 public static unsafe class VertexArrays
 {
+    /// <summary>Streams replayed since boot, and how many had an offset or stride off 4-byte alignment.
+    /// The spec allows any byte offset; radeonsi on GFX6/GFX10+ open-codes the vertex fetch for such a
+    /// stream and recompiles the vertex shader when a buffer's alignment class changes (si_state.c), so a
+    /// non-zero count here is a Mesa-only per-vertex cost the engine's pool layout is paying for
+    /// (docs/research/opengl-46-portability-audit.md, P4).</summary>
+    public static int Streams, Unaligned;
+
     /// <summary>Read one attribute slot of the CURRENTLY BOUND VAO. False (and <paramref name="s"/> zeroed)
     /// when the slot is disabled or unbacked, which is how a missing stream is reported upward.</summary>
     public static bool Read(uint loc, out VertexStream s)
@@ -57,6 +64,8 @@ public static unsafe class VertexArrays
     /// ARRAY_BUFFER binding, which is expected: the caller is inside its own VAO build.</summary>
     public static void Bind(uint loc, in VertexStream s)
     {
+        Streams++;
+        if ((s.Off & 3) != 0 || (s.Stride & 3) != 0) Unaligned++;
         Gl.BindBuffer(Gl.ARRAY_BUFFER, s.Buf);
         Gl.VertexAttribPointer(loc, s.Size, s.Type, s.Norm, s.Stride, (void*)s.Off);
         Gl.EnableVertexAttribArray(loc);

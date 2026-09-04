@@ -10,7 +10,9 @@ namespace Sowx.Alloy;
 /// vanilla runs its pass over the finished frame and darkens everything in it, direct light included.
 /// Alloy computes visibility from the depth prepass BEFORE the colour pass, horizon-based (GTAO, Jimenez
 /// 2016: per screen-space slice the two max horizons, integrated against the projected normal), and the lit
-/// stage scales its AMBIENT term by it -- beside the material's own AO map (#146), never the sun or a lamp.
+/// stage scales its AMBIENT term by it -- beside the material's own AO map (#146). <c>/ao direct</c> (1 by
+/// default) carries the same factor onto the direct terms: ambient-only is the physically right rule and is
+/// invisible in every dark-ambient area, which is every interior (ADR 0021, amended).
 /// The option's <c>ssao_intensity</c> (float param 1, default 0.5) scales the strength.</summary>
 internal static unsafe class SsaoPass
 {
@@ -46,7 +48,17 @@ internal static unsafe class SsaoPass
     private static float _maxPx = 96f;
     /// <summary>The blur stage as a dial, 0 to see the raw pattern.</summary>
     private static float _blur = 1f;
-    private static float _bootRadius = 0.6f, _bootPower = 2.2f, _bootDirs = 3f, _bootSteps = 3f, _bootMaxPx = 96f, _bootBlur = 1f;
+    /// <summary>How much of the occlusion the DIRECT terms take (<c>/ao direct</c>). ADR 0021 gave it to the
+    /// ambient alone, which is invisible wherever the area ambient is dark -- every interior, where the light
+    /// is lamps and the corners are exactly what wants occluding. Measured live: with ambient at its area
+    /// value the effect did not reach the frame at all, and /light ambient 20 was what made it appear. 1 (the
+    /// default, vanilla's post-multiply) is the only setting the effect is visible indoors at; 0 restores the
+    /// ADR's original ambient-only rule.</summary>
+    private static float _direct = 1f;
+    private static float _bootRadius = 0.6f, _bootPower = 2.2f, _bootDirs = 3f, _bootSteps = 3f, _bootMaxPx = 96f, _bootBlur = 1f, _bootDirect = 1f;
+
+    /// <summary>The lit stage's <c>uAoDirect</c>, read at every lit program bind.</summary>
+    internal static float Direct => _direct;
 
     internal const string ShdSsaoFs = "cx_ssao_fs", ShdSsaoBlurFs = "cx_ssaoblur_fs";
 
@@ -57,7 +69,7 @@ internal static unsafe class SsaoPass
         _fbEffects = (int*)Native.Sym(SymbolMap.EnableFBEffects);
         _intensity = (float*)Native.Sym(SymbolMap.SsaoIntensity);
         if (_effects == null) log.Info("SsaoPass: Camera::m_nFramebufferEffectsEnabled is unresolved -- the SSAO option stays inert");
-        _bootRadius = _radius; _bootPower = _power; _bootDirs = _dirs; _bootSteps = _steps; _bootMaxPx = _maxPx; _bootBlur = _blur;
+        _bootRadius = _radius; _bootPower = _power; _bootDirs = _dirs; _bootSteps = _steps; _bootMaxPx = _maxPx; _bootBlur = _blur; _bootDirect = _direct;
         KnobSurface.Note(static () => _effects == null ? null
             : $"the client's SSAO video option (settings.tml graphics.fbo.ssao.enabled = {(OptionOn ? 1 : 0)}) is the Alloy "
             + $"lit pass's (#379): {(_failed ? "the pass did NOT build -- the option is inert"
@@ -79,7 +91,7 @@ internal static unsafe class SsaoPass
 
     internal static string Describe()
         => $"ao {(_failed ? "FAILED" : !_on ? "BYPASSED" : OptionOn ? "live" : "idle (option off)")}  radius {_radius:F2}  "
-         + $"power {_power:F2} (x{Strength:F2} from ssao_intensity)  dirs {_dirs:F0}  steps {_steps:F0}  maxpx {_maxPx:F0}  blur {_blur:F0}";
+         + $"power {_power:F2} (x{Strength:F2} from ssao_intensity)  dirs {_dirs:F0}  steps {_steps:F0}  maxpx {_maxPx:F0}  blur {_blur:F0}  direct {_direct:F2}";
 
     internal static float Tune(string key, float v)
     {
@@ -93,6 +105,7 @@ internal static unsafe class SsaoPass
             case "steps":  old = _steps; _steps = MathF.Max(1f, MathF.Min(8f, v)); break;
             case "maxpx":  old = _maxPx; _maxPx = v; break;
             case "blur":   old = _blur; _blur = v; break;
+            case "direct": old = _direct; _direct = MathF.Max(0f, MathF.Min(1f, v)); break;
             default: return float.NaN;
         }
         _log?.Info($"SsaoPass: /ao {key} {v:F2} (was {old:F2}) -> {Describe()}");
@@ -100,7 +113,7 @@ internal static unsafe class SsaoPass
     }
 
     internal static void ResetTuning()
-    { _on = true; _radius = _bootRadius; _power = _bootPower; _dirs = _bootDirs; _steps = _bootSteps; _maxPx = _bootMaxPx; _blur = _bootBlur; }
+    { _on = true; _radius = _bootRadius; _power = _bootPower; _dirs = _bootDirs; _steps = _bootSteps; _maxPx = _bootMaxPx; _blur = _bootBlur; _direct = _bootDirect; }
 
     internal static string Stats(int frames)
     {
@@ -378,7 +391,11 @@ internal static unsafe class SsaoPass
             E(ShaderContract.SlotSafe(fs, "uDepth") && ShaderContract.SlotSafe(bl, "uSrc", "uDepth"), "the samplers the C# side binds are declared");
             E(EffectSsao == 1u, "FramebufferEffect 0 is SSAO (CClientOptions::SetEnableFBEffectSSAO -> SetFBEffectEnabled(0, on))");
             E(AlloyRenderer.OwnedLitFsMain.Contains("occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;")
-              && AlloyRenderer.OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl"), "the lit stage folds it into occl, which scales the AMBIENT term only");
+              && AlloyRenderer.OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl"), "the lit stage folds it into occl, which scales the AMBIENT term");
+            E(AlloyRenderer.OwnedLitFsMain.Contains("float dirOcc = mix(1.0, occl, uAoDirect);")
+              && AlloyRenderer.OwnedLitFsMain.Contains("vec3 diffuse = (sun + sunSss + point) * dirOcc;"),
+              "/ao direct is the only route to the DIRECT terms, and 0 leaves them exactly as ADR 0021 had them");
+            E(_bootDirect == 1f, "...and it ships at 1: ambient-only is invisible in a dark-ambient area (ADR 0021, amended)");
             E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
             E(Strength > 0f, "the strength never reads 0 -- a zero exponent is pow(v, 0) = 1, no occlusion at all");
             float r = _radius; Tune("radius", 1.5f); E(_radius == 1.5f, "/ao radius sets"); _radius = r;

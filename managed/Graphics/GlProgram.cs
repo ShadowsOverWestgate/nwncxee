@@ -76,7 +76,7 @@ internal static unsafe class GlProgram
         if (b != 0) Gl.DeleteShader(b);
         if (c != 0) Gl.DeleteShader(c);
         if (d != 0) Gl.DeleteShader(d);
-        if (ok != 0) return prog;
+        if (ok != 0) { Notes(prog, false, log, what); return prog; }
         log?.Info($"{what}: link failed -- {InfoLog(prog, false)}");
         Gl.DeleteProgram(prog);
         return 0;
@@ -94,7 +94,7 @@ internal static unsafe class GlProgram
         if (host && VanillaShader.HasHost(rawSrc))
         {
             // ponytail: every hosted region at once; bisecting to the one that failed is the upgrade
-            log?.Info($"{what}: the spliced text did not compile -- retrying with every hosted content stage "
+            log?.Info($"{what}: WARN the spliced text did not compile -- retrying with every hosted content stage "
                     + "stubbed, so those materials draw the plain lit path and everything else still splices");
             sh = CompileText(type, ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what, host: false)), log, what);
             if (sh != 0) return sh;
@@ -102,7 +102,7 @@ internal static unsafe class GlProgram
         // #346: a content .shd that renamed a function the stage calls would otherwise take the WHOLE
         // program down -- and for the lit stage that means the world reverts to engine drawing over one
         // edit in a hak. The stub is what that retry is for: the feature off, the world still rendering.
-        log?.Info($"{what}: the spliced vanilla text did not compile -- retrying with the fallback stub, "
+        log?.Info($"{what}: WARN the spliced vanilla text did not compile -- retrying with the fallback stub, "
                 + "so the program links and the feature it carried is off");
         return CompileText(type, ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what, false)), log, what);
     }
@@ -116,13 +116,24 @@ internal static unsafe class GlProgram
         fixed (byte* p = b) { byte* pp = p; Gl.ShaderSource(sh, 1, &pp, null); }
         Gl.CompileShader(sh);
         int ok; Gl.GetShaderiv(sh, Gl.COMPILE_STATUS, &ok);
-        if (ok != 0) return sh;
+        if (ok != 0) { Notes(sh, true, log, what); return sh; }
         log?.Info($"{what}: shader compile failed (type=0x{type:x}) -- {InfoLog(sh, true)}");
         Gl.DeleteShader(sh);
         return 0;
     }
 
-    /// <summary>Driver info log, truncated. Cold: only ever runs on a build failure.</summary>
+    /// <summary>A successful build's info log, when the driver left one. Mesa's compiler reports warnings
+    /// there (unused varyings, implicit conversions, extension notes) that NVIDIA's never mentions, so it is
+    /// the one channel a "compiles on both, differs on one" stage announces itself on. Cold: build time.</summary>
+    private static void Notes(uint obj, bool shader, ExtenderLog? log, string what)
+    {
+        if (log == null) return;
+        string s = InfoLog(obj, shader);
+        if (s.Length == 0 || s == "(no info log)") return;
+        log.Info($"{what}: driver notes on a successful build -- {s}");
+    }
+
+    /// <summary>Driver info log, truncated. Cold: build failures and <see cref="Notes"/>.</summary>
     private static string InfoLog(uint obj, bool shader)
     {
         Span<byte> buf = stackalloc byte[LogChars];

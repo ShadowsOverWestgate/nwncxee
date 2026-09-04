@@ -907,6 +907,7 @@ public sealed unsafe partial class AlloyRenderer
         uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe
         uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
         uniform int uSsaoOn;           // 1 when SsaoPass ran this frame and this draw is the screen's
+        uniform float uAoDirect;       // /ao direct: how much of the occlusion the DIRECT terms take (0 = ADR 0021)
         // #126: the engine's fAlphaDiscardValue, per batch -- 0.2 on the cutout and blended classes,
         // -1.0 (no test) on opaque and additive.
         uniform float uAlphaCut;
@@ -1237,12 +1238,22 @@ public sealed unsafe partial class AlloyRenderer
             // The engine's split: every light accumulates its own lobe, then ONE view-side normalisation
             // (fSpecularBaseModifier) and the material's specular colour scale the sum
             // (inc_lighting.shd:456 and :615). fSpecularity is already inside the lobe via the Fresnel term.
+            // ADR 0021 gives occlusion to the ambient term alone, which is right and is invisible wherever
+            // the area ambient is dark -- every interior, where the light is lamps and the corners are
+            // exactly what wants occluding. /ao direct is the dial back toward vanilla's post-multiply:
+            // 0 is ADR 0021 untouched, 1 occludes the direct terms outright. The probe term below picks it
+            // up through `diffuse` at no extra cost.
+            float dirOcc = mix(1.0, occl, uAoDirect);
             vec3 specLight = (sunSpec * SowxSpecLobe(N, V, uAreaDir, rough, spec) + pointSpec)
-                             * (specColor * SowxSpecBase(max(dot(N, V), 0.0), rough));
-            vec3 diffuse = sun + sunSss + point;
+                             * (specColor * SowxSpecBase(max(dot(N, V), 0.0), rough)) * dirOcc;
+            vec3 diffuse = (sun + sunSss + point) * dirOcc;
             // the 0.15 ambient floor and the sun-facing wrap are inc_lighting.shd:679 verbatim; the height
             // map's occlusion scales the AMBIENT, which is the term it is actually occluding
             vec3 ambient = uAreaAmbient * matAmbient * mix(0.15, 1.0, sunRaw) * occl;
+            // 34 = the ONLY term occlusion can move inside `total` (the (1-spec) share of the ambient).
+            //      Black at both /ao on 0 and /ao on 1 means AO has nothing to scale here, however bright
+            //      viz 8 reads -- which no other view in the ladder can say.
+            if (uViz == 34) { frag = vec4(ambient * (1.0 - spec), 1.0); return; }
             // #121: ambient specular -- the term vanilla feeds from the area env map on EVERY lit part
             // (inc_lighting.shd:456-512 gates it on SPECULAR_LIGHT, not on ENVIRONMENT_MAP) and the owned
             // pass dropped on all of them. Weighted the ENGINE's way: the env sample TINTS the light already

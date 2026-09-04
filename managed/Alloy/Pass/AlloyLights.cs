@@ -502,7 +502,8 @@ internal static unsafe class AlloyLights
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIndices, _bufIndices);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindStats, _bufStats);
         Gl.DispatchCompute((ClusterCount + GroupSize - 1) / GroupSize, 1, 1);
-        Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
+        // BUFFER_UPDATE: TakeClusterOverflow reads _bufStats back with GetBufferSubData, which SHADER_STORAGE alone does not order (GL 4.6 7.13)
+        Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
 
         if (timing)
         {

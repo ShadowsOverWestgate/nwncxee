@@ -35,6 +35,43 @@ public sealed unsafe partial class AlloyRenderer
         Array.Clear(_hRes, 0, _hRes.Length);
     }
 
+    /// <summary>The sorted dirty list as runs of consecutive slots, one <c>BufferSubData</c> per run. Per
+    /// slot was one call each, and radeonsi stages, copies and barriers EVERY call into a buffer the GPU is
+    /// still reading (<c>si_buffer_subdata</c> forces DISCARD_RANGE), so the call count is the cost there.
+    /// Duplicates collapse. Caller sorts once; both record buffers walk the same list.</summary>
+    private static void UploadRuns(void* data, int recBytes)
+    {
+        for (int d = 0; d < _recDirtyN;)
+        {
+            d = NextRun(_recDirty, _recDirtyN, d, out int first, out int last);
+            long off = (long)first * recBytes;
+            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)off,
+                             (IntPtr)((long)(last - first + 1) * recBytes), (byte*)data + off);
+        }
+    }
+
+    /// <summary>The run of consecutive (or repeated) slots starting at sorted <c>_recDirty[d]</c>; returns
+    /// the index past it.</summary>
+    private static int NextRun(int[] dirty, int n, int d, out int first, out int last)
+    {
+        first = dirty[d]; last = first;
+        while (++d < n && dirty[d] <= last + 1) last = dirty[d];
+        return d;
+    }
+
+    /// <summary>A wrong run uploads a stale record over a live slot, silently, so this joins the disarm
+    /// chain: duplicates collapse, adjacent slots merge, a gap splits.</summary>
+    private static bool RunsSelfCheck(ExtenderLog log)
+    {
+        int[] dirty = { 5, 3, 4, 9, 3, 11, 10 };
+        Array.Sort(dirty);
+        int d = NextRun(dirty, dirty.Length, 0, out int f0, out int l0);
+        d = NextRun(dirty, dirty.Length, d, out int f1, out int l1);
+        bool ok = f0 == 3 && l0 == 5 && f1 == 9 && l1 == 11 && d == dirty.Length;
+        if (!ok) log.Info("AlloyRenderer.RunsSelfCheck: FAILED -- the dirty-slot runs do not merge as sorted");
+        return ok;
+    }
+
     /// <summary>#242: push the records that MOVED into the persistent per-draw SSBO, then the small
     /// draw-to-slot index array this pass's order needs. The records are indexed by ownership slot and
     /// survive the frame, so what goes up is the mover set -- a walking creature, an animated texture, a
@@ -64,18 +101,13 @@ public sealed unsafe partial class AlloyRenderer
         // issuing thousands of scattered SubData calls into a buffer that can no longer orphan -- one
         // enrollment's worth of hitch, once a cadence, in exactly the "just left the city" case.
         bool whole = grew || _recDirtyAll || _recDirtyN > _drawN / 4;
+        if (!whole) Array.Sort(_recDirty, 0, _recDirtyN);
         fixed (float* p = _dData)
         {
             if (whole)
                 Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
                                  (IntPtr)((long)cap * DrawFloats * sizeof(float)), p);
-            else
-                for (int d = 0; d < _recDirtyN; d++)
-                {
-                    long off = (long)_recDirty[d] * DrawFloats * sizeof(float);
-                    Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)off,
-                                     (IntPtr)(DrawFloats * sizeof(float)), p + _recDirty[d] * DrawFloats);
-                }
+            else UploadRuns(p, DrawFloats * sizeof(float));
         }
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDraw, _drawBuf);
@@ -92,12 +124,7 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
                                      (IntPtr)((long)cap * 8 * sizeof(ulong)), p);
                 else
-                    for (int d = 0; d < _recDirtyN; d++)
-                    {
-                        long off = (long)_recDirty[d] * 8 * sizeof(ulong);
-                        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)off,
-                                         (IntPtr)(8 * sizeof(ulong)), p + _recDirty[d] * 8);
-                    }
+                    UploadRuns(p, 8 * sizeof(ulong));
             }
             Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindTexH, _texHBuf);
@@ -250,6 +277,7 @@ public sealed unsafe partial class AlloyRenderer
                     UploadProbe(L);
                     bool ssao = SsaoPass.Live && !_capturing;
                     Gl.Uniform1i(L.SsaoOn, ssao ? 1 : 0);
+                    Gl.Uniform1f(L.AoDirect, ssao ? SsaoPass.Direct : 0f);
                     SsaoPass.BindForDraw(ssao);
                     litBase = L.Base; litCut = L.Cut;
                 }

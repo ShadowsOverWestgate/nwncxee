@@ -306,7 +306,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// content override (#92) that predates them, and simply do not get uploaded.</summary>
     internal struct LitLoc
     {
-        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn,
+        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage,
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture;
@@ -351,7 +351,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 33;
+    internal const int LightVizMax = 34;
     private static int _lightViz = DefViz;
     /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -556,7 +556,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>#153: resident bindless handle for a texture name. 0 in, 0 out. Called only inside the 4.6
     /// bracket (handles belong to the share group), and -- while ownedtex is armed -- only ever for an
-    /// Alloy-OWNED name; see <see cref="_hTid"/> for why that is the whole of #220's fix.</summary>
+    /// Alloy-OWNED name; see <see cref="_hTid"/> for why that is the whole of #220's fix.
+    /// <para>A handled texture is IMMUTABLE from this moment: a change means a new name
+    /// (<c>OwnedTextures.Replace</c>), never an in-place <c>TexSubImage</c> from the engine context. A handle
+    /// is not a binding point, so GL 4.6 5.3.3 Rule 4 gives this context no re-attach event through which
+    /// another context's update is guaranteed visible -- residency is per context and nothing propagates.
+    /// See docs/research/opengl-46-portability-audit.md, C4.</para></summary>
     private static ulong HandleFor(int tid)
     {
         if (tid == 0) return 0;
@@ -877,6 +882,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #242: the split joins that chain for the same reason -- a record that stopped carrying a
         // per-frame field renders stale state and says nothing at all.
         if (!SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log)
+            || !RunsSelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
             || !ShaderContract.SelfCheck(log)) return;
         // NOT in the chain above: those two guard what reaches the screen, and this one guards a debug dump.

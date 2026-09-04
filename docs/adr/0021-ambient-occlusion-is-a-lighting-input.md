@@ -50,3 +50,21 @@ between the depth prepass and the opaque pass; the lit stage reads the R8 result
 - `/draw viz 8` (the `occl` view) now shows the screen-space term too.
 - Half-resolution with a bilateral upsample is the known upgrade if the pass shows in the GPU
   line at 4K; the ceiling is noted on the pass.
+
+## Amendment (2026-09-04): the ambient-only rule is invisible indoors
+
+"Strictly more than vanilla's" was wrong, and live measurement is what said so. The decision above
+gives occlusion to `ambient = uAreaAmbient * matAmbient * mix(0.15, 1.0, sunRaw)` alone. In an
+interior `uAreaAmbient` is near black -- the room is lit by point lights, which are direct -- so the
+term the effect scales is already zero and the frame does not move, at any radius or power.
+`/draw viz 34` (the ambient term as it enters `total`) read black across the whole screen, and
+`/light ambient 20` was what made the effect appear. Vanilla's post-multiply, physically wrong,
+was visible there; this was not.
+
+**`/ao direct` (0..1, default 1) carries the occlusion onto the direct terms as well**, through one
+`dirOcc = mix(1.0, occl, uAoDirect)` on `diffuse` and `specLight` in the lit stage. The probe term
+picks it up through `diffuse`. `/ao direct 0` restores the original rule for an area bright enough
+to show it.
+
+The ambient path is unchanged and still takes the full factor: at the default a fragment's ambient
+is occluded once by `occl` and its direct light once by `dirOcc`, which are the same number.

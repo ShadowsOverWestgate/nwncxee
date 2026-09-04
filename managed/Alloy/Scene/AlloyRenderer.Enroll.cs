@@ -544,7 +544,7 @@ public sealed unsafe partial class AlloyRenderer
         {
             _reportedHit = true;
             _log?.Info($"AlloyRenderer: enrolled {_orderCount}/{candidates} ownable parts on {_vdoCount} VDOs " +
-                       $"({AlloyCensus.OwnScanDiag()})");
+                       $"({AlloyCensus.OwnScanDiag()}; {VertexArrays.Unaligned}/{VertexArrays.Streams} streams off 4-byte alignment)");
         }
     }
 

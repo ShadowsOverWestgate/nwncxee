@@ -26,6 +26,25 @@ public sealed unsafe class GlContextService : IExtenderService
     private const int GLX_FBCONFIG_ID = 0x8013;
     private const int GLX_CONTEXT_MAJOR_VERSION_ARB = 0x2091, GLX_CONTEXT_MINOR_VERSION_ARB = 0x2092;
     private const int GLX_CONTEXT_PROFILE_MASK_ARB = 0x9126, GLX_CONTEXT_CORE_PROFILE_BIT_ARB = 0x1;
+    private const int GLX_CONTEXT_FLAGS_ARB = 0x2094, GLX_CONTEXT_DEBUG_BIT_ARB = 0x1;
+    private const uint GL_DEBUG_OUTPUT = 0x92E0, GL_DEBUG_OUTPUT_SYNCHRONOUS = 0x8242, GL_DONT_CARE = 0x1100,
+                       GL_DEBUG_SEVERITY_NOTIFICATION = 0x826B, GL_DEBUG_TYPE_ERROR = 0x824C,
+                       GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR = 0x824D, GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR = 0x824E,
+                       GL_DEBUG_TYPE_PORTABILITY = 0x824F, GL_DEBUG_TYPE_PERFORMANCE = 0x8250;
+    private const int DebugIds = 64, DebugLines = 200;
+
+    /// <summary><c>gldebug=1</c> in <c>sowx.cfg</c>: create the 4.6 context as a DEBUG context and route
+    /// KHR_debug messages into the extender log. This is the only channel undefined behaviour reaches --
+    /// <c>glGetError</c> has no code for it, and a non-debug context "may have zero debug output" (KHR_debug).
+    /// Mesa reports a great deal here that NVIDIA never mentions, which is the point: the tester's driver
+    /// gets to say what it objects to (docs/research/opengl-46-portability-audit.md, E1). Synchronous, so the
+    /// callback runs on this thread inside the offending call. ERROR and UNDEFINED_BEHAVIOR messages are
+    /// logged every time (Mesa files EVERY API error under one id, so an id is not an identity there), up to
+    /// <see cref="DebugLines"/> per session; the other types log their first sighting per id. An allocation
+    /// per logged line, accepted under the gate. Totals go on the [gl46] line.</summary>
+    private static bool _debug;
+    private static readonly uint[] _dbgId = new uint[DebugIds];
+    private static int _dbgN, _dbgLogged, _dbgTotal, _dbgDropped;
 
     /// <summary>True once the 4.6 context is live; consumers (tracer draw) check this per frame.</summary>
     public static bool Available;
@@ -75,6 +94,7 @@ public sealed unsafe class GlContextService : IExtenderService
         FrameRegistry.Global.Register(FramePhase.PrePresent, 10, OnFrame, "GlContextService.bracket", log);
         _disabled = !Settings.Bool("gl46", true) || GameGate.Locked;
         OptedOut = _disabled;
+        _debug = Settings.Bool("gldebug", false);
         log.Info(_disabled
             ? "GlContextService: stood down (gl46=0 or lockchat in sowx.cfg)"
             : "GlContextService: armed -- 4.6 share-listed context on first presented frame");
@@ -166,9 +186,10 @@ public sealed unsafe class GlContextService : IExtenderService
         IntPtr fbc = *(IntPtr*)fbcArr;
         if (xFree != null) xFree(fbcArr);
 
-        int* attribs = stackalloc int[7] {
+        int* attribs = stackalloc int[9] {
             GLX_CONTEXT_MAJOR_VERSION_ARB, 4, GLX_CONTEXT_MINOR_VERSION_ARB, 6,
-            GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB, 0 };
+            GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
+            _debug ? GLX_CONTEXT_FLAGS_ARB : 0, _debug ? GLX_CONTEXT_DEBUG_BIT_ARB : 0, 0 };
         IntPtr oldHandler = xSetErr((IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int>)&XErrorNoop);
         IntPtr ctx = createCtx(_dpy, fbc, _engCtx, 1, attribs);
         if (xSync != null) xSync(_dpy, 0);
@@ -183,12 +204,14 @@ public sealed unsafe class GlContextService : IExtenderService
             return;
         }
         string ver = getString != null ? CStr(getString(GL_VERSION)) : "?";
+        bool dbg = _debug && ArmDebug();
         while (Gl.GetError() != 0) { }   // fresh-context error queue starts clean
         _makeCur(_dpy, _drw, _engCtx);
 
         Context = ctx;
         Available = true;
-        log.Info($"GlContextService: 4.6 core context LIVE (0x{ctx:x}, GL_VERSION='{ver}') -- bracket every frame");
+        log.Info($"GlContextService: 4.6 core context LIVE (0x{ctx:x}, GL_VERSION='{ver}') -- bracket every frame" +
+                 (dbg ? "; DEBUG context, KHR_debug messages go to this log (gldebug=1)" : ""));
     }
 
     /// <summary>Open the context-switch bracket (hot, zero-alloc): fence the engine's queued commands,
@@ -230,9 +253,57 @@ public sealed unsafe class GlContextService : IExtenderService
         if (++_frames >= LogEvery)
         {
             _log?.Info($"GlContextService: [gl46] {_frames} brackets (>= 1/frame; +1 per Alloy pass), " +
-                       $"errors 4.6={_err46} engine={_errEng}, switch-fails={_switchFails}");
+                       $"errors 4.6={_err46} engine={_errEng}, switch-fails={_switchFails}" +
+                       (_debug ? $", debug msgs={_dbgTotal} this period ({_dbgLogged} logged, {_dbgDropped} dropped since boot)" : ""));
+            _dbgTotal = 0;
             _frames = 0; _err46 = 0; _errEng = 0; _switchFails = 0;
         }
+    }
+
+    /// <summary>Wire the KHR_debug callback on the (current) 4.6 context. Everything enabled, then the
+    /// NOTIFICATION severity muted -- Mesa files shader statistics there on every build.</summary>
+    private static bool ArmDebug()
+    {
+        var callback = (delegate* unmanaged<delegate* unmanaged<uint, uint, uint, uint, int, byte*, void*, void>, void*, void>)GP("glDebugMessageCallback");
+        var control = (delegate* unmanaged<uint, uint, uint, int, uint*, byte, void>)GP("glDebugMessageControl");
+        var enable = (delegate* unmanaged<uint, void>)GP("glEnable");
+        if (callback == null || control == null || enable == null)
+        { _log?.Info("GlContextService: gldebug=1 but KHR_debug entry points did not resolve"); return false; }
+        enable(GL_DEBUG_OUTPUT);
+        enable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+        control(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, null, 1);
+        control(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, null, 0);
+        callback(&OnDebugMessage, null);
+        return true;
+    }
+
+    [UnmanagedCallersOnly]
+    private static void OnDebugMessage(uint source, uint type, uint id, uint severity, int length, byte* msg, void* user)
+    {
+        _dbgTotal++;
+        bool always = type == GL_DEBUG_TYPE_ERROR || type == GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR;
+        if (!always)
+        {
+            for (int i = 0; i < _dbgN; i++) if (_dbgId[i] == id) return;
+            if (_dbgN >= DebugIds) { _dbgDropped++; return; }
+            _dbgId[_dbgN++] = id;
+        }
+        if (_dbgLogged >= DebugLines) { _dbgDropped++; return; }
+        _dbgLogged++;
+        string kind = type switch
+        {
+            GL_DEBUG_TYPE_ERROR => "ERROR", GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR => "UNDEFINED BEHAVIOUR",
+            GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR => "deprecated", GL_DEBUG_TYPE_PORTABILITY => "PORTABILITY",
+            GL_DEBUG_TYPE_PERFORMANCE => "performance", _ => "other",
+        };
+        _log?.Info($"GlContextService: [gldebug] {kind} id {id} (source 0x{source:x}, severity 0x{severity:x}): {CStr(msg, 1024)}");
+    }
+
+    private static string CStr(byte* p, int max)
+    {
+        if (p == null) return "<null>";
+        int len = 0; while (p[len] != 0 && len < max) len++;
+        return System.Text.Encoding.UTF8.GetString(p, len).Replace('\n', ' ');
     }
 
     private static string CStr(byte* p)
