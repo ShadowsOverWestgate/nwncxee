@@ -59,6 +59,19 @@ internal static class RenderPasses
             Tune = FrameSnapshot.Tune,
             Reset = FrameSnapshot.ResetTuning,
         }, log);
+        // not a draw pass either -- it replaces the engine's per-frame dangly SOLVE, which is a
+        // separate pass from the dangly draw. No GL objects, so no ContextLost; no captured world state,
+        // so no Revoke; its only resources are the engine's own buffers.
+        r.Register(new PassLifecycle
+        {
+            Name = "dangly",
+            Install = DanglyPhysics.Install,
+            SelfCheck = DanglyPhysics.SelfCheck,
+            Stats = DanglyPhysics.Stats,
+            Describe = DanglyPhysics.Describe,
+            Tune = DanglyPhysics.Tune,
+            Reset = DanglyPhysics.ResetTuning,
+        }, log);
         r.Register(new PassLifecycle
         {
             Name = "sky",

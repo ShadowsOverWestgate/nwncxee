@@ -197,13 +197,18 @@ public sealed unsafe partial class AlloyRenderer
     /// must not consume the visibility buffer at all. The reason travels to the lit stage as the sign of
     /// <c>uSsaoOn</c> (which tests <c>&gt; 0</c>) so <c>/draw viz 35</c> can name it on the pixel, rather than
     /// leaving "the door has no AO" and "the door CANNOT have AO" the same picture.</summary>
-    internal const int AoIn = 1, AoCutout = -1, AoOutOfPrepass = -2, AoBlended = -3;
+    internal const int AoIn = 1, AoCutout = -1, AoOutOfPrepass = -2, AoBlended = -3, AoKeyhole = -4;
 
+    /// <summary>Membership is MEASURED (<see cref="_gPrepassed"/>, written by the prepass as it walks); only
+    /// the reason a batch is out is inferred, and only to colour <c>/draw viz 35</c>. Predicting membership
+    /// from the class was the bug this replaces.</summary>
     private static int AoWhy(int g)
-        => g >= _gOpaqueEnd ? AoBlended
+        => _gPrepassed[g] ? AoIn
+         : g >= _gOpaqueEnd ? AoBlended
          : _gCls[g] == (byte)AlloyClass.Cutout ? AoCutout
          : ShaderFeatures.OutOfPrepass(_gFeat[g]) ? AoOutOfPrepass
-         : AoIn;
+         : _gDis[g] ? AoKeyhole
+         : AoOutOfPrepass;
 
     private static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far,
                                           bool indirect)
@@ -295,7 +300,7 @@ public sealed unsafe partial class AlloyRenderer
                     UploadSunCascades(L);
                     UploadLocalCubes(L);
                     UploadProbe(L);
-                    SsaoPass.BindForDraw(SsaoPass.Live && !_capturing);
+                    SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
                     litBase = L.Base; litCut = L.Cut;
                     litSsaoOn = L.SsaoOn; litAoDirect = L.AoDirect;
                     boundSsao = -1;

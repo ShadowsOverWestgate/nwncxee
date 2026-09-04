@@ -907,6 +907,7 @@ public sealed unsafe partial class AlloyRenderer
         uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe
         uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
         uniform int uSsaoOn;           // >0 when this BATCH is in the depth SsaoPass read; <0 names why not (viz 35)
+        uniform sampler2D uSceneDepth; // the prepass depth SsaoPass read, to check the pixel is OURS (viz 37)
         uniform float uAoDirect;       // /ao direct: how much of the occlusion the DIRECT terms take (0 = ADR 0021)
         // #126: the engine's fAlphaDiscardValue, per batch -- 0.2 on the cutout and blended classes,
         // -1.0 (no test) on opaque and additive.
@@ -919,6 +920,8 @@ public sealed unsafe partial class AlloyRenderer
         // #146: bit 6, texture slot 7 -- the AO map. It multiplies the SAME occlusion factor the height
         // map's local term feeds, so a material carrying both gets one combined ambient scale.
         const int SOWX_SLOT_AO = 128;
+        /// the depth encode's own rounding, nothing more: #119 makes a prepassed fragment's depth EQUAL
+        const float SOWX_AO_DEPTH_EPS = 1e-5;
         // Synthesis floors for a material that declares nothing, read straight off the OLD-generation
         // inc_material.shd the installed client actually runs (#107 §11): fSpecularityMin 0.04 (the old gen's
         // name -- the split-include fork calls it fGeneratedSpecularityMin), fGeneratedRoughnessMin 0.125
@@ -1091,7 +1094,14 @@ public sealed unsafe partial class AlloyRenderer
             // not see the contact detail a baked map carries.
             if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv).r;
             // #379: ...and the screen-space term beside it, a lighting input like the map (ADR 0021)
-            if (uSsaoOn > 0) occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
+            // ...and only where the visibility at this pixel was computed from THIS surface. The buffer comes
+            // from the depth prepass, so a fragment the prepass never drew -- a blended door, anything the
+            // sweep skipped, anything drawn over a hole -- would otherwise wear the occlusion of whatever
+            // stands behind it. #119 makes the two passes agree on gl_Position character-for-character, so
+            // for a prepassed fragment this equality is exact and the epsilon is only for the depth encode.
+            float aoDz = abs(texelFetch(uSceneDepth, ivec2(gl_FragCoord.xy), 0).r - gl_FragCoord.z);
+            bool aoMine = uSsaoOn > 0 && aoDz < SOWX_AO_DEPTH_EPS;
+            if (aoMine) occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
             if ((slots & (SOWX_SLOT_NORMAL | SOWX_SLOT_HEIGHT)) != 0)
             {
                 // Cotangent frame from screen-space derivatives (Mikkelsen), NOT the engine's vTangent /
@@ -1150,14 +1160,32 @@ public sealed unsafe partial class AlloyRenderer
             //     declared either -- which is the state shipped content is in today.
             if (uViz == 8) { frag = vec4(vec3(occl), 1.0); return; }
             // 35 = why this fragment has no screen-space AO. GREEN in the prepass depth and taking it;
-            //      RED excluded as a cutout, BLUE by an out-of-prepass feature, YELLOW as a blended batch.
+            //      RED excluded as a cutout, BLUE by an out-of-prepass feature, YELLOW as a blended batch,
+            //      MAGENTA as a keyhole batch the keyed depth sweep did not run for.
             //      Grey means the pass is not running at all.
+            // 36 = the SCREEN-SPACE term alone, straight off SsaoPass, with neither the #146 map nor the
+            //      height term in it. viz 8 cannot answer "does the AO buffer know this object is there",
+            //      because a material that ships an AO map reads occluded in it either way.
+            // 37 = whose occlusion is at this pixel. GREEN this surface's own (the prepass drew it here),
+            //      RED another surface's -- the AO buffer holds geometry BEHIND this fragment, which is what
+            //      "AO renders through doors" looks like from the inside. Grey where the pass is not running.
+            if (uViz == 37)
+            {
+                frag = vec4(uSsaoOn <= 0 ? vec3(0.25) : aoMine ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), 1.0);
+                return;
+            }
+            if (uViz == 36)
+            {
+                frag = vec4(vec3(aoMine ? texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r : 1.0), 1.0);
+                return;
+            }
             if (uViz == 35)
             {
                 vec3 c = uSsaoOn > 0 ? vec3(0.0, 1.0, 0.0)
                        : uSsaoOn == -1 ? vec3(1.0, 0.0, 0.0)
                        : uSsaoOn == -2 ? vec3(0.0, 0.0, 1.0)
-                       : uSsaoOn == -3 ? vec3(1.0, 1.0, 0.0) : vec3(0.25);
+                       : uSsaoOn == -3 ? vec3(1.0, 1.0, 0.0)
+                       : uSsaoOn == -4 ? vec3(1.0, 0.0, 1.0) : vec3(0.25);
                 frag = vec4(c, 1.0); return;
             }
             float sunRaw = clamp(dot(N, uAreaDir), 0.0, 1.0);

@@ -651,6 +651,38 @@ internal static unsafe class SymbolMap
     /// from a rigid one, which no field on the part answers. The Itanium ABI stores the address of the
     /// vtable's function-pointer area, 0x10 past the symbol, in the object's first word.</summary>
     public const string PartDanglyMeshVtbl = "_ZTV14PartDanglyMesh";
+
+    /// <summary><c>PartDanglyMesh::Animate(float)</c> @0x49bbb0 -- vtable slot 27 (+0xd8), the per-frame
+    /// dangly SOLVE. Separate from the draw, which is why Alloy's M4 draw takeover never froze the sway.
+    /// Chained, not installed: the whole point is to replace the integrator inside it.</summary>
+    public const string PartDanglyAnimate = "_ZN14PartDanglyMesh7AnimateEf";
+    /// <summary><c>Scene::GetWindVector(Vector const&amp;, float)</c> @0x460c60 -- the AREA's wind at a world
+    /// position, and the only honest source of it: a four-instruction forward to
+    /// <c>WindManager::GetGlobalWind</c> @0x490ab0, which composes <c>base * noiseBlend + pointSources</c>
+    /// and rotates the result by the yaw/pitch variation quaternions.
+    /// <para>Reading <c>WindManager+0x20</c> instead does NOT work, and the arithmetic says why: the Scene
+    /// builds its manager with the DEFAULT constructor @0x491b90, which zeroes +0x20 (<c>mov QWORD PTR
+    /// [rdi+0x20],0x0</c> @0x491bf5), and the only writer in the whole binary is the <c>setglobalwind</c>
+    /// console command. In normal play the base is (0,0,0) and every bit of felt wind is point sources.</para>
+    /// <para>Returns a <c>Vector</c> BY VALUE with no sret -- verified at the call site: <c>rdi</c> is the
+    /// scene and <c>rsi</c> the position (0x49beaf/0x49bea8), so SysV puts x,y in xmm0 and z in xmm1.</para></summary>
+    public const string SceneGetWindVector = "_ZN5Scene13GetWindVectorERK6Vectorf";
+    /// <summary><c>Part::Animate(float)</c> @0x49ad00 -- walks the part's children (Part+0x38 pointer,
+    /// Part+0x40 count) and calls +0xd8 on each. The dangly solve TAIL-CALLS it, so a replacement that
+    /// skips the original must call it or the whole subtree freezes.</summary>
+    public const string PartAnimate = "_ZN4Part7AnimateEf";
+    /// <summary><c>VertexPrimitiveDangly::GenerateVelocityArray()</c> @0x45ad70 -- allocates the zeroed
+    /// <c>verts*12</c> velocity array at <c>+0xa0</c>, lazily, on the first Animate. A replacement that
+    /// never calls the original has to drive this itself or the array is never born.</summary>
+    public const string VertexPrimGenVelocity = "_ZN21VertexPrimitiveDangly21GenerateVelocityArrayEv";
+    /// <summary><c>VertexDataObject::GetItemDynamicData(uint)</c> @0x45c6c0 -- the host shadow of one item's
+    /// DYNAMIC vertex fork, stride 12, which is where dangly writes its deformed positions AND where it
+    /// reads last frame's back. Both the state and the output live here.</summary>
+    public const string VdoGetItemDynamicData = "_ZN16VertexDataObject18GetItemDynamicDataEj";
+    /// <summary><c>VertexDataObject::CommitItemDynamicData(uint, uint)</c> @0x45c7d0 -- funnels into
+    /// <c>GLRender::UnlockPool</c>, which Alloy owns (#260) and which raises the #241 dirty bit the caster
+    /// re-bake reads. Writing the verts is not enough; this is what publishes them.</summary>
+    public const string VdoCommitItemDynamicData = "_ZN16VertexDataObject21CommitItemDynamicDataEjj";
     /// <summary>#256: <c>PartSkin</c>'s vtable, the same kind of identity as
     /// <see cref="PartDanglyMeshVtbl"/>. The scene walk records a part without ever entering its draw, so
     /// "this is a true skinmesh" can no longer be read off a <c>PartSkin::Draw</c> window -- it is a vtable

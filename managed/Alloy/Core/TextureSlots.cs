@@ -70,6 +70,12 @@ internal static class TextureSlots
     internal const uint Ssao = SnapshotColor;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
+    /// <summary>#379 follow-up: the SAME prepass depth, on the same unit, read by the LIT stage -- so a
+    /// fragment can ask whether the visibility at its pixel was computed from ITS OWN surface. Under #119 the
+    /// prepass and the colour pass compute gl_Position character-for-character, so a prepassed fragment's
+    /// gl_FragCoord.z equals the buffer exactly and anything else is another surface's occlusion. Free on
+    /// this unit in the lit bracket: the particle fade and the water noise are later programs.</summary>
+    internal const uint SsaoDepth = SceneDepth;
     /// <summary>#339: the engine's <c>solid_noise</c>, which vanilla's water shader samples as
     /// <c>texUnitNoise</c>. Shares <see cref="SceneDepth"/>'s unit on <see cref="GrassPush"/>'s argument --
     /// the particle pass is a different program in a later bracket, and both are sampler2D so even a missed
@@ -131,6 +137,7 @@ internal static class TextureSlots
         E(SmaaStage.WeightFs.Contains("uniform sampler2D uSearch;"), $"{AaSearch} uSearch (aa weights)");
         E(SmaaStage.BlendStageFs.Contains("uniform sampler2D uBlend;"), $"{AaBlend} uBlend (aa stage)");
         E(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSsao;"), $"{Ssao} uSsao (lit program)");
+        E(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SsaoDepth} uSceneDepth (lit program)");
         E(GrassField.GrassVs.Contains("uniform sampler2D uPushTex;"), $"{GrassPush} uPushTex (grass program)");
         // #339: the water stage no longer samples the probe -- vanilla's reflection falls back to the
         // shaded surface, not to a cube -- so the lit stage is the only consumer left.

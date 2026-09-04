@@ -22,6 +22,9 @@ internal static class RenderCommands
     private const string DrawKeys = "light|prepass|viz|aotest|csmbias|cull|lod|poll|prepasskey|vislist|fogcull|hldiag|hlchan";
     private const string WaterKeys = "on|diag";
     private const string ProbeKeys = "on|gain|areawide";
+    // the dangly solve's dials. "cage" is the load-bearing one -- it widens vanilla's per-axis clamp,
+    // which is the only thing keeping cloaks out of the wearer's legs, so it trades sway for clipping.
+    private const string DanglyKeys = "on|gravity|wind|turb|turbfreq|turbspeed|vary|breeze|body|cage|hz|steps";
     // #341: the fog TARGET. "height" is the one that changes density rather than colour, and it
     // boots at 0 for that reason; "cullz" is the assumption the fog cull is allowed to make.
     private const string FogKeys = "sky|sun|sunexp|height|floor|cullz";
@@ -63,6 +66,8 @@ internal static class RenderCommands
                    a => Tune("water", WaterKeys, 2, a));
         r.Register("/probe", "report or tune the environment probe; /probe reset restores boot values",
                    a => Tune("probe", ProbeKeys, 2, a));
+        r.Register("/dangly", "report or tune the Alloy dangly physics; /dangly on 0 restores the engine solve",
+                   a => Tune("dangly", DanglyKeys, 2, a));
         r.Register("/dumpshaders", "write every overridable shader stage to the dump directory", DumpShaders);
         // #192: a one-shot ACTION, so a command and not a config setting (ADR 0013). The next colour pass
         // serves it; the reply is what the previous one wrote, because the render thread is the only place

@@ -346,6 +346,11 @@ public sealed unsafe partial class AlloyRenderer
     /// batch has to be droppable whole. Prepass depth for a wall the colour pass punches through would cull
     /// the room behind it.</summary>
     private static readonly bool[] _gDis = new bool[MaxOwned];
+    /// <summary>#379 follow-up: did the depth prepass ACTUALLY draw this batch? Set by
+    /// <c>DepthPrepassPass</c> as it walks, not predicted from the class -- the SSAO consumer gate was a
+    /// second copy of the prepass's skip conditions and drifted from it (a door read "in the depth" while
+    /// the buffer plainly saw through it). The prepass is the only thing that knows.</summary>
+    internal static readonly bool[] _gPrepassed = new bool[MaxOwned];
     /// <summary>#126: the batch's class and blend pair. In the key because they ARE the GL state a multidraw
     /// cannot vary inside: depth mask, blend function and the alpha-discard threshold.</summary>
     private static readonly byte[] _gCls = new byte[MaxOwned];

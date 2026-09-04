@@ -340,6 +340,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(L.CubeDynTex, (int)CubeDynUnit);
         Gl.Uniform1i(L.Probe, (int)EnvProbe.ProbeUnit);
         Gl.Uniform1i(L.Ssao, (int)TextureSlots.Ssao);
+        Gl.Uniform1i(GlProgram.Loc(prog, "uSceneDepth"), (int)TextureSlots.SsaoDepth);
         // #120's five map samplers, for the same reason: left at their default they would all point at unit
         // 0 and read the diffuse as a normal map on every part that declares one.
         for (int i = 0; i < MapSlots; i++)

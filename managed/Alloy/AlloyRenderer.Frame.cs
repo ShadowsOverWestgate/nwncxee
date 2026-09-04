@@ -377,6 +377,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         if (!_depthPrepass || !EnsureDepthProgram()) return;
         int skipped = 0, drawn = 0;
+        Array.Clear(_gPrepassed, 0, groups);
         GpuBegin(GpuTerm.Prepass);
         // #243: the FRUSTUM-only list. The prepass is what the hi-Z pyramid is built from, so it cannot be
         // culled against the pyramid it produces -- and it must not be: a part the prepass skips is one the
@@ -426,6 +427,7 @@ public sealed unsafe partial class AlloyRenderer
                     if (dis) UploadFeatureTerms(_depthKeyFeat, viewport);
                 }
                 int s = _gStart[g];
+                _gPrepassed[g] = true;
                 if (dis) _prepassKeyed += _gLen[g];
                 Gl.Uniform1i(dis ? _depthKeyBase : _depthBase, s);
                 int wantCull = _gNoCull[g] ? 0 : 1;

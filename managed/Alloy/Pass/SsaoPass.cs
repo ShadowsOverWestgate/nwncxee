@@ -179,10 +179,13 @@ internal static unsafe class SsaoPass
     /// <summary>From every lit-program bind: the visibility texture on its unit, or nothing when the pass
     /// did not run. Per bind and not once per frame because the frame snapshot takes the same unit at
     /// FbCopy, and lit additive draws follow it. Leaves unit 0 current for the batch loop.</summary>
-    internal static void BindForDraw(bool on)
+    internal static void BindForDraw(bool on, uint sceneDepth)
     {
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.Ssao);
         Gl.BindTexture(Gl.TEXTURE_2D, on ? _out : 0);
+        // ...and the depth it was computed FROM, so the lit stage can refuse a pixel that is not its own.
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.SsaoDepth);
+        Gl.BindTexture(Gl.TEXTURE_2D, on ? sceneDepth : 0);
         Gl.ActiveTexture(Gl.TEXTURE0);
     }
 
@@ -396,8 +399,9 @@ internal static unsafe class SsaoPass
               && AlloyRenderer.OwnedLitFsMain.Contains("vec3 diffuse = (sun + sunSss + point) * dirOcc;"),
               "/ao direct is the only route to the DIRECT terms, and 0 leaves them exactly as ADR 0021 had them");
             E(_bootDirect == 1f, "...and it ships at 1: ambient-only is invisible in a dark-ambient area (ADR 0021, amended)");
-            E(AlloyRenderer.OwnedLitFsMain.Contains("if (uSsaoOn > 0) occl *="),
-              "the fetch tests > 0: uSsaoOn carries the EXCLUSION REASON in its sign (viz 35), not just on/off");
+            E(AlloyRenderer.OwnedLitFsMain.Contains("bool aoMine = uSsaoOn > 0 && aoDz < SOWX_AO_DEPTH_EPS;")
+              && AlloyRenderer.OwnedLitFsMain.Contains("if (aoMine) occl *="),
+              "the fetch is per FRAGMENT: the pixel's occlusion must have been computed from this surface's own depth");
             E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
             E(Strength > 0f, "the strength never reads 0 -- a zero exponent is pow(v, 0) = 1, no occlusion at all");
             float r = _radius; Tune("radius", 1.5f); E(_radius == 1.5f, "/ao radius sets"); _radius = r;
