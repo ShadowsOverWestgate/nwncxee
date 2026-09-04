@@ -26,6 +26,15 @@ public static unsafe class NameplateNative
     /// <summary>1 => the server has retired this object: no plate and no bubble.</summary>
     private const int ObjRetired = 0x104;
 
+    /// <summary><c>ObjectTextBubbleOverride</c> -- the module's own plate text. Mode int at <c>+0x124</c>,
+    /// then a <c>CExoString</c>: <c>char*</c> at <c>+0x128</c> and a <b>dword</b> length at <c>+0x130</c>
+    /// (<c>mov 0x130(%rbx),%edx</c>). 1 = replace, 2 = prepend, 3 = append, anything else = leave alone.
+    /// <para>CNWCObject-relative for all three plated classes: creature and placeable read them at these
+    /// offsets verbatim (disasm @0x71ab8e, @0x7ea9b8), and <c>CNWCItem</c>'s <c>+0x16c/0x170/0x178</c> is the
+    /// same triple through its base subobject at <c>+0x48</c> -- the <c>lea 0x48(%rbx)</c> that feeds
+    /// <c>SetPopUpBubbleText</c> at @0x7cebec. Every pointer this file is handed is already that base.</para></summary>
+    private const int ObjOverrideMode = 0x124, ObjOverrideText = 0x128, ObjOverrideLen = 0x130;
+
     // ---- per-class "the feedback plate is currently shown for me" flag ----
     /// <summary>CNWCCreature + 0x468, set at the top of its ShowFeedbackBubbleText (disasm @0x71a81e).</summary>
     private const int CreaturePlated = 0x468;
@@ -86,10 +95,16 @@ public static unsafe class NameplateNative
     /// plates even with the option off.</summary>
     private const int InternalFeedbackWord = 0x180;
 
-    /// <summary>Virtual slot of <c>GetPortrait(unsigned char)</c>; the plate feeds it size 1, which is what
-    /// <c>CNWCObject::SetPopUpBubblePortrait</c> is given.</summary>
+    /// <summary>Virtual slot of <c>GetPortrait(unsigned char)</c>.</summary>
     private const int GetPortraitVtblOff = 0x1d8;
-    private const byte PortraitSizePlate = 1;
+    /// <summary>Portrait size byte: the suffix appended to the base resref. Verified by decompiling
+    /// <c>CNWPortrait::GetPortrait(unsigned char)</c> (nm <c>0x81e910</c>), whose suffix table is
+    /// <c>{ "", "T", "S", "M", "L", "H" }</c> indexed by the byte -- so 1 is TINY (a 16x25 image), which is
+    /// what the engine's own bubble asks for and why our portraits were blurry. 3 is MEDIUM (64x100).
+    /// <para>Upsizing is safe without a fallback of ours: that same function walks a ladder of its own --
+    /// it asks <c>CExoResMan::Exists</c> for the requested suffix and then for +1, -1, +2, -2, +3, -3, +4, -4
+    /// before giving up, so a creature with no <c>_m</c> resolves to <c>_l</c> or <c>_s</c> on its own.</para></summary>
+    private const byte PortraitSizePlate = 3;
 
     /// <summary>CResRef is 17 bytes (char[16] + a length byte); a 16-byte buffer smashes the stack canary.</summary>
     private const int ResRefScratch = 32;
@@ -189,6 +204,41 @@ public static unsafe class NameplateNative
         };
         return off != 0 && *(int*)(obj + off) != 0;
     }
+
+    /// <summary>The object's <c>ObjectTextBubbleOverride</c> mode: 1 replace, 2 prepend, 3 append, 0 (or any
+    /// other value) none. HOT -- one field read, no allocation.</summary>
+    public static int OverrideMode(IntPtr obj)
+    {
+        if (obj == IntPtr.Zero) return 0;
+        int m = *(int*)(obj + ObjOverrideMode);
+        return m is 1 or 2 or 3 ? m : 0;
+    }
+
+    /// <summary>Does the object's override text still equal <paramref name="cached"/>? HOT: compares the
+    /// engine's bytes against the cached string in place, so a steady plate allocates nothing and a server
+    /// that flips "Sneaking" on mid-hover is caught on the next frame. Latin1, matching <see cref="RawStr"/>.
+    /// <para>A length compare alone would not do: <c>CExoString</c> assignment can land a different payload of
+    /// the same length in the same block, and status labels are all near-identical lengths.</para></summary>
+    public static bool OverrideTextIs(IntPtr obj, string cached)
+    {
+        if (obj == IntPtr.Zero) return cached.Length == 0;
+        byte* p = *(byte**)(obj + ObjOverrideText);
+        int len = *(int*)(obj + ObjOverrideLen);
+        if (p == null || len <= 0 || len > MaxOverrideLen) return cached.Length == 0;
+        if (cached.Length != len) return false;
+        for (int i = 0; i < len; i++) if (cached[i] != (char)p[i]) return false;
+        return true;
+    }
+
+    /// <summary>The override text verbatim -- NOT trimmed. The leading space / leading LF the server sends is
+    /// the splice itself (<c>sow-codebase</c> <c>TextBubbleService.ComposeOverride</c> emits its own
+    /// separators), so trimming it would glue "Poisoned" onto the injury line without its space and drop the
+    /// break before "Sneaking". COLD -- allocates, called only on the change edge.</summary>
+    public static string OverrideText(IntPtr obj)
+        => obj == IntPtr.Zero ? "" : RawStr(obj, ObjOverrideText, ObjOverrideLen, MaxOverrideLen);
+
+    /// <summary>Longest override we will copy out. Past this the pointer is not what we think it is.</summary>
+    private const int MaxOverrideLen = 1024;
 
     public static void Position(IntPtr obj, out float x, out float y, out float z)
     {
@@ -339,13 +389,18 @@ public static unsafe class NameplateNative
     private const int MaxNameLen = 256;
 
     private static string Str(IntPtr owner, int ptrOff, int lenOff)
+        => RawStr(owner, ptrOff, lenOff, MaxNameLen).Trim();
+
+    /// <summary>An engine <c>char* / len</c> pair copied out verbatim -- no trim. <see cref="Str"/> is the
+    /// trimming form; anything whose leading or trailing whitespace is load-bearing must use this.</summary>
+    private static string RawStr(IntPtr owner, int ptrOff, int lenOff, int maxLen)
     {
         byte* p = *(byte**)(owner + ptrOff);
         int len = *(int*)(owner + lenOff);
-        if (p == null || len <= 0 || len > MaxNameLen) return "";
+        if (p == null || len <= 0 || len > maxLen) return "";
         var sb = new StringBuilder(len);
         for (int i = 0; i < len; i++) sb.Append((char)p[i]);   // Latin1: char == source byte
-        return sb.ToString().Trim();
+        return sb.ToString();
     }
 
     private static readonly delegate* unmanaged<IntPtr, uint, IntPtr, void> _getObjectName =
@@ -382,8 +437,8 @@ public static unsafe class NameplateNative
         return sb.ToString();
     }
 
-    /// <summary>The object's plate portrait resref via virtual slot +0x1d8, size 1 (what the engine's own
-    /// <c>SetPopUpBubblePortrait</c> asks for). "" when the object has no portrait. COLD.</summary>
+    /// <summary>The object's plate portrait resref via virtual slot +0x1d8, at
+    /// <see cref="PortraitSizePlate"/>. "" when the object has no portrait. COLD.</summary>
     public static string Portrait(IntPtr obj)
     {
         if (obj == IntPtr.Zero) return "";

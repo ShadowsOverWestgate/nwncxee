@@ -40,6 +40,13 @@ public sealed class PlateTable
     /// <summary>Pending records the hooks may bank between two frames. Overflow is counted, not grown.</summary>
     private const int PendingRing = 128;
 
+    /// <summary>Segments of an <c>ObjectTextBubbleOverride</c> we keep. The server end composes at most a
+    /// damage row plus a status row (<c>sow-codebase TextBubbleService.ComposeOverride</c>); this is generous
+    /// headroom over that, and a longer override keeps its first <see cref="MaxParas"/> segments.
+    /// <para>ponytail: the ceiling is the para pool, not anything engine-side -- raise the const if a server
+    /// ever sends more rows.</para></summary>
+    public const int MaxParas = 6;
+
     /// <summary>One overhead chat line: the cold-resolved runes and per-rune colours, plus the wrap cache
     /// keyed on everything that can change its shape.</summary>
     public sealed class BubbleLine
@@ -122,6 +129,20 @@ public sealed class PlateTable
         public int NameWrapEpoch = -1;
         public string PortraitResref = "";
 
+        // ---- the module's ObjectTextBubbleOverride (docs/re/nameplate.md §8.5) --------------------
+        /// <summary>1 replace, 2 prepend, 3 append, 0 none. Polled every frame in <see cref="Refresh"/>, not
+        /// latched on the hook: a player starts sneaking WHILE hovered and the engine re-runs nothing.</summary>
+        public int OverrideMode;
+        /// <summary>The override verbatim, untrimmed -- the cache key the poll compares against.</summary>
+        public string OverrideText = "";
+        /// <summary>The override's LF-separated segments, colour-parsed. In <see cref="OverrideMode"/> 3 the
+        /// FIRST is the splice that continues the plate's last line and the rest are lines below it; in mode 2
+        /// the LAST is the splice that prefixes the name and the rest are lines above it; in mode 1 they are
+        /// the whole plate text. Reuses <see cref="BubbleLine"/> for its runes, colours and wrap cache -- these
+        /// never expire, so nothing ages them.</summary>
+        public readonly BubbleLine[] Paras = new BubbleLine[MaxParas];
+        public int ParaCount;
+
         // ---- the bubble queue, oldest first ----
         public readonly BubbleLine[] Lines = new BubbleLine[MaxLines];
         public int LineCount;
@@ -153,16 +174,39 @@ public sealed class PlateTable
         public float LastH;
         /// <summary>Set on a freshly claimed slot: the next draw seeds the entry slide and clears it.</summary>
         public bool AnimNew;
+        /// <summary>Last frame's separation push in draw px (negative = shoved upward). Kept so a slot change
+        /// can be absorbed into <see cref="YOff"/> (<c>PlateLayout.AbsorbPush</c>) instead of teleporting, and
+        /// so a box that steps out of separation while <see cref="FadingOut"/> keeps the slot it died in.</summary>
+        public float LastPush;
 
-        public Entry() { for (int i = 0; i < MaxLines; i++) Lines[i] = new BubbleLine(); }
+        /// <summary>True while this box is on its way OUT: the trigger has dropped and the presence alpha is
+        /// easing to zero, or the bubble's newest line is already in its fade tail. Such a box is excluded from
+        /// separation entirely -- it neither pushes nor is pushed -- so sweeping the cursor across a crowd leaves
+        /// no trail of dying plates shoving the live one around.
+        /// <para>Specifically NOT "alpha &lt; 1": a box fading IN is a real, arriving box and takes part
+        /// normally. It reads the fade state the entry already tracks rather than inferring it.</para></summary>
+        public bool FadingOut => !Alive || (ShowBubble && (TopLine < 0 || Lines[TopLine].Fading));
+
+        /// <summary>The instant this box's content was sent, the key the stack is ordered on. A bubble answers
+        /// with its NEWEST line, so an object that keeps talking keeps its place at the bottom of the stack. A
+        /// plate has no send time and answers <see cref="long.MaxValue"/> -- a live hover is happening now, so it
+        /// sorts ahead of every message and sits nearest its own object.</summary>
+        public long SortKey => ShowBubble && TopLine >= 0 ? Lines[TopLine].PostedMs : long.MaxValue;
+
+        public Entry()
+        {
+            for (int i = 0; i < MaxLines; i++) Lines[i] = new BubbleLine();
+            for (int i = 0; i < MaxParas; i++) Paras[i] = new BubbleLine();
+        }
 
         /// <summary>Release the slot. Every animation field goes with it: a pooled entry that kept a
         /// mid-fade alpha would lend it to whatever object claims the slot next.</summary>
         public void Release()
         {
             Used = false; LineCount = 0; TopLine = -1; Damage = -1;
+            OverrideMode = 0; OverrideText = ""; ParaCount = 0;
             Alive = false; ShowBubble = false;
-            Alpha = 0f; YOff = 0f; LastH = 0f; AnimNew = true;
+            Alpha = 0f; YOff = 0f; LastH = 0f; LastPush = 0f; AnimNew = true;
             // The pooled lines outlive the entry, so their fade state has to go too: a slot that kept a
             // half-faded line would lend it to whatever object claims the slot next.
             for (int i = 0; i < MaxLines; i++) { Lines[i].Alpha = 0f; Lines[i].Fading = false; }
@@ -253,6 +297,34 @@ public sealed class PlateTable
         e.NameLineCount = PlateLayout.SplitLines(name, e.NameStart, e.NameLen, MaxWrapped);
         e.NameTruncated = false;
         e.NameWrapWidth = -1f;   // invalidate the wrap cache: the content changed
+    }
+
+    /// <summary>Scratch for <see cref="SetOverride"/>'s segment spans. Render thread only -- the poll that
+    /// calls it lives in <see cref="Refresh"/>, and nothing on the hook side touches the override.</summary>
+    private static readonly int[] _segStart = new int[MaxParas], _segLen = new int[MaxParas];
+
+    /// <summary>Adopt the module's <c>ObjectTextBubbleOverride</c> for this entry: split it into segments and
+    /// colour-parse each. A re-set of the same (mode, text) is a no-op, so the per-frame poll that calls this
+    /// pays nothing until a server actually flips a status.
+    /// <para>COLD-on-change, but on the RENDER thread -- unlike every other resolve here, there is no hook to
+    /// do it on. The engine receives the override inside <c>HandleServerToPlayerCreatureUpdate_Update</c>
+    /// (disasm @0x7a268a) and <c>...GenericObjectUpdate_Update</c> (@0x7a73f9), neither of which is a symbol
+    /// whose arguments name the object, so a hook there would be a guess. The allocation is one split plus one
+    /// parse per status change per plated object, which is a keypress, not a frame.</para>
+    /// <para>Each segment is parsed on its own, so a <c>&lt;cRGB&gt;</c> opened before a line break does not
+    /// carry across it. The server end wraps every label individually, so nothing real relies on that.</para></summary>
+    internal static void SetOverride(Entry e, int mode, string text)
+    {
+        if (e.OverrideMode == mode && string.Equals(e.OverrideText, text, StringComparison.Ordinal)) return;
+        e.OverrideMode = mode;
+        e.OverrideText = text;
+        e.ParaCount = 0;
+        if (mode is < 1 or > 3 || text.Length == 0) return;
+
+        int n = PlateLayout.SplitOverride(text, _segStart, _segLen, MaxParas);
+        for (int i = 0; i < n; i++)
+            Fill(e.Paras[i], ColorRunParser.Parse(text.Substring(_segStart[i], _segLen[i])), -1, 0f, 0L);
+        e.ParaCount = n;
     }
 
     /// <summary>COLD, from the <c>SetPopUpBubbleText</c> path when the text is a chat line rather than the
@@ -447,6 +519,13 @@ public sealed class PlateTable
 
             ExpireLines(e, nowMs);
             e.Plated = NameplateNative.Plated(obj, e.Type);
+
+            // The override changes under a live plate -- a player starts sneaking mid-hover and the engine
+            // re-runs nothing we hook. So it is POLLED, not latched: a mode read plus a byte-vs-cached compare,
+            // both allocation-free, and only the change edge reaches SetOverride.
+            int om = NameplateNative.OverrideMode(obj);
+            if (om != e.OverrideMode || !NameplateNative.OverrideTextIs(obj, e.OverrideText))
+                SetOverride(e, om, NameplateNative.OverrideText(obj));
             e.Alive = (e.Plated || e.LineCount > 0)
                       && !NameplateNative.Retired(obj)                                       // acceptance §9
                       && !(e.Type == NameplateNative.TypeCreature && playerArea != 0
@@ -693,6 +772,32 @@ public sealed class PlateTable
 
         E(NameplateConfig.QueueMax == MaxLines, "the config's queue ceiling is exactly what the table can hold");
 
+        // ---- FadingOut / SortKey: what separation takes part, and in what order ----
+        var fo = new Entry { Used = true, Id = 5 };
+        fo.Alive = true; fo.Alpha = 0.3f;
+        E(!fo.FadingOut, "a plate fading IN still takes part -- the test is direction, not alpha");
+        E(fo.SortKey == long.MaxValue, "a plate has no send time and sorts as 'now'");
+        fo.Alpha = 1f;
+        E(!fo.FadingOut, "a settled plate takes part");
+        fo.Alive = false;
+        E(fo.FadingOut, "a plate whose trigger dropped is on its way out and leaves separation");
+        fo.Alive = true;
+        E(!fo.FadingOut, "and a re-hover before it disappears rejoins separation");
+
+        var fb = new Entry { Used = true, Id = 6, Alive = true, Alpha = 1f, ShowBubble = true };
+        Fill(fb.Lines[0], ColorRunParser.Parse("old"), 1, 5f, 1000);
+        Fill(fb.Lines[1], ColorRunParser.Parse("new"), 1, 5f, 4000);
+        fb.LineCount = 2;
+        ExpireLines(fb, 5000);
+        E(fb.Lines[0].Fading && !fb.Lines[1].Fading, "the older line is in its tail while the newer holds");
+        E(!fb.FadingOut, "a bubble whose NEWEST line is still live takes part, older tails and all");
+        E(fb.SortKey == 4000, "and it sorts on that newest line, so an object that keeps talking stays put");
+        ExpireLines(fb, 8000);
+        E(fb.Lines[0].Fading && fb.TopLine == 0, "only the newest line is left, and it is fading");
+        E(fb.FadingOut, "a bubble in its own fade tail leaves separation");
+        ExpireLines(fb, 20000);
+        E(fb.TopLine < 0 && fb.FadingOut, "a bubble with nothing left to draw is out too");
+
         var t = new PlateTable();
         var p = new Pending { Id = 9, Type = NameplateNative.TypeCreature, Runs = ColorRunParser.Parse("a"), DecaySec = 5f, PostedMs = 0, Channel = 1 };
         for (int i = 0; i < 5; i++) t.Apply(in p, 2);
@@ -842,11 +947,70 @@ public sealed class PlateTable
         SetName(wn, "aaa bbb");
         EnsureNameWrap(wn, A10, 45f, 3);
         E(wn.NameLineCount == 2 && Line(wn, 1) == "bbb", "a two-line wrap for the alignment cases");
-        E(PlateLayout.LineX(20f, 50f, 50f, centre: false) == 20f
-          && PlateLayout.LineX(20f, 50f, 20f, centre: false) == 20f,
-          "a creature's wrapped lines stay LEFT-aligned, short line and long alike");
-        E(PlateLayout.LineX(20f, 50f, 20f, centre: true) == 35f,
-          "a placeable's wrapped short line centres in the text column");
+        E(PlateLayout.LineX(20f, 50f, 50f) == 20f,
+          "the widest wrapped line starts at the column, wrap-produced or break-produced");
+        E(PlateLayout.LineX(20f, 50f, 20f) == 35f,
+          "and a shorter one centres in the text column -- on a creature plate as on any other");
+
+        // ---- ObjectTextBubbleOverride: the module's own plate text (docs/re/nameplate.md §8.5) ----
+        var ov = new Entry();
+        string Para(int i)
+        {
+            var p = new StringBuilder();
+            foreach (Rune r in ov.Paras[i].Runes) p.Append(r.ToString());
+            return p.ToString();
+        }
+        const string Grey = "<c\u0080\u0080\u0080>";   // the Aurora grammar: '<c' + three raw RGB bytes + '>'
+
+        SetOverride(ov, 0, "");
+        E(ov.ParaCount == 0, "no override is no paragraphs");
+        SetOverride(ov, 3, "");
+        E(ov.ParaCount == 0, "an EMPTY override leaves the plate untouched whatever the mode says");
+        SetOverride(ov, 0, " Poisoned");
+        E(ov.ParaCount == 0, "mode 0 with text is still no override -- the engine's default arm changes nothing");
+
+        // The server end's own two test vectors (sow-codebase ComposeLabelsTests).
+        SetOverride(ov, 3, " Poisoned Diseased\nSneaking Invisible");
+        E(ov.ParaCount == 2 && Para(0) == " Poisoned Diseased" && Para(1) == "Sneaking Invisible",
+          "append splits into the injury-line splice and the line below it, the server's leading space intact");
+        SetOverride(ov, 3, "\nSneaking");
+        E(ov.ParaCount == 2 && Para(0).Length == 0 && Para(1) == "Sneaking",
+          "an override opening with a break has an EMPTY splice -- nothing joins the injury line");
+        SetOverride(ov, 3, " Poisoned\r\nSneaking");
+        E(ov.ParaCount == 2 && Para(1) == "Sneaking", "CRLF is ONE break, not two");
+        SetOverride(ov, 2, "Hidden\n");
+        E(ov.OverrideMode == 2 && ov.ParaCount == 1 && Para(0) == "Hidden",
+          "a trailing break is not a blank line");
+        SetOverride(ov, 1, "The Sign");
+        E(ov.OverrideMode == 1 && ov.ParaCount == 1 && Para(0) == "The Sign",
+          "replace mode carries the whole plate string, name and band included");
+
+        SetOverride(ov, 3, " " + Grey + "Sneaking</c>");
+        E(Para(0) == " Sneaking", "the colour grammar is parsed OFF the text, not drawn as tag bytes");
+        E(ov.Paras[0].Colours[0] == 0xffffffu && ov.Paras[0].Colours[1] == 0x808080u,
+          "and the tag's colour lands on the glyphs it wrapped, the splice space staying plain");
+
+        // The change key. There is no hook for the override, so this cache is what the per-frame poll rides on.
+        ov.Paras[0].WrapWidth = 123f;
+        SetOverride(ov, 3, " " + Grey + "Sneaking</c>");
+        E(ov.Paras[0].WrapWidth == 123f, "re-setting the SAME override re-parses nothing and keeps the wrap");
+        SetOverride(ov, 3, " Sneaking Invisible");
+        E(ov.Paras[0].WrapWidth == -1f && Para(0) == " Sneaking Invisible",
+          "a CHANGED override re-resolves -- a player who starts sneaking is not cached away forever");
+        ov.Paras[0].WrapWidth = 123f;
+        SetOverride(ov, 2, " Sneaking Invisible");
+        E(ov.Paras[0].WrapWidth == -1f && ov.OverrideMode == 2,
+          "a changed MODE at the same text re-resolves too");
+
+        SetName(ov, "Bob");
+        SetOverride(ov, 3, " Sneaking");
+        E(ov.Name == "Bob" && ov.NameLineCount == 1,
+          "the override never touches Name, so the /tell prefill cannot pick up a 'Sneaking' suffix");
+
+        var sb3 = new StringBuilder("x");
+        for (int i = 0; i < MaxParas + 3; i++) sb3.Append("\nrow");
+        SetOverride(ov, 3, sb3.ToString());
+        E(ov.ParaCount == MaxParas, "an override past the paragraph ceiling stops at it rather than growing");
 
         log.Info(ok ? "PlateTable.SelfCheck: passed" : "PlateTable.SelfCheck: FAILED");
     }

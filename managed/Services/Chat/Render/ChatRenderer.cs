@@ -344,7 +344,7 @@ public static unsafe class ChatRenderer
         {
             float a = scrolled ? 1f : ChatAnim.FadeAlpha(now, quads[i].Ts, ls, animEnabled, holdSec, fadeSec);
             if (a <= 0f) continue;                                 // fully faded -> skip
-            int tid = TextRig.ResolveTid(quads[i].Resref);
+            int tid = TextRig.ResolvePortraitTid(quads[i].Resref);
             if (tid == 0) continue;   // not uploaded yet, or unresolvable -> skip this frame
             tids[drawn] = tid;
             TextRig.FillQuad(verts + drawn * Floats * 6, quads[i], residual, a);   // slide with the body + fade
@@ -359,11 +359,15 @@ public static unsafe class ChatRenderer
         Gl.BindVertexArray(TextRig._pvao);
         Gl.BindBuffer(Gl.ARRAY_BUFFER, TextRig._pvbo);
         Gl.BufferData(Gl.ARRAY_BUFFER, (System.IntPtr)(Floats * 6 * drawn * sizeof(float)), verts, Gl.DYNAMIC_DRAW);
+        bool samp = TextRig.EnsurePortraitSampler();
+        if (samp) Gl.BindSampler(0, TextRig._psamp);
         for (int i = 0; i < drawn; i++)
         {
             Gl.BindTexture(Gl.TEXTURE_2D, (uint)tids[i]);
             Gl.DrawArrays(Gl.TRIANGLES, i * 6, 6);
         }
+        // Unbind before the body-tail text draw below re-uses unit 0 for the NEAREST glyph atlas.
+        if (samp) Gl.BindSampler(0, 0);
         if (!_portraitDrew) { _portraitDrew = true; _log?.Info($"[chat] portrait first-draw tid={tids[0]} ({drawn} shown)"); }
     }
 

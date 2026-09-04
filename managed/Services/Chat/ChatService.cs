@@ -891,6 +891,7 @@ public sealed unsafe class ChatService : IExtenderService
         _store.Clear();                     // cosmetic: no prior session's lines leak in
         Edit.Clear();
         IsTyping = false;
+        TypingSignal.Reset();               // session edge: drop the latch, never send (the connection is gone)
         KeyboardMode(false);                // drop any keyboard capture left from the old session
         _settings.Reset();                  // close + drop any half-owned press so no stray up gets eaten next session
         if (_layout != null)
@@ -1269,6 +1270,7 @@ public sealed unsafe class ChatService : IExtenderService
     {
         EditBuffer.SelfCheck(log);     // off-device proof; surfaces in run-demo's sowx log
         ChatCommands.SelfCheck(log);   // slash-command grammar (#25)
+        TypingSignal.SelfCheck(log);   // chat-bar focus/unfocus latch (off-device)
         RegisterCommands();            // #165: chat's own commands go on the shared registry like anyone's
 
         _startText = (delegate* unmanaged<void>)Native.Sym(SymbolMap.SdlStartTextInput);
@@ -1285,6 +1287,9 @@ public sealed unsafe class ChatService : IExtenderService
         _sendDM      = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatDM);
         _sendTell    = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatTell);
         _sendTellId  = (delegate* unmanaged<IntPtr, uint, IntPtr, void>)Native.Sym(SymbolMap.SendChatTellId);
+
+        // Chat-bar focus/unfocus parity: our window skip-originals every vanilla site that emitted it.
+        _notifyGui = (delegate* unmanaged<IntPtr, int, int, uint, IntPtr, void>)Native.Sym(SymbolMap.NotifyServerGuiEvent);
 
         var getByName = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.GetPlayerByPlayerName);
         var getByCreature = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.GetPlayerByCreatureName);
@@ -1316,6 +1321,22 @@ public sealed unsafe class ChatService : IExtenderService
     private static delegate* unmanaged<IntPtr, IntPtr, void> _sendTalk, _sendShout, _sendWhisper, _sendParty, _sendDM;
     private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, void> _sendTell;
     private static delegate* unmanaged<IntPtr, uint, IntPtr, void> _sendTellId;
+
+    // CGuiInGame::NotifyServerAboutGuiEvent(this, type, integer, oid, Vector const&). `this` is dead in
+    // the callee (rdi is clobbered before any read) and the not-in-a-module guard is inside it.
+    private static delegate* unmanaged<IntPtr, int, int, uint, IntPtr, void> _notifyGui;
+
+    /// <summary>Tell the server the chat bar took or gave back the keyboard, the way vanilla's chat
+    /// prompt does (ChatBarFocus / ChatBarUnFocus; servers draw a "typing" indicator from it). The
+    /// latch suppresses repeats; the engine call drops the packet when we are not in a module.
+    /// Cold -- only reached from the input thread's open/close.</summary>
+    private static void NotifyChatBar(int eventType, Channel ch)
+    {
+        if (_notifyGui == null) return;
+        float* pos = stackalloc float[3];   // Vector const& -- vanilla passes {0,0,0} at every chat-bar site
+        pos[0] = 0f; pos[1] = 0f; pos[2] = 0f;
+        _notifyGui(IntPtr.Zero, eventType, TypingSignal.ModeOf(ch), TypingSignal.ObjectInvalid, (IntPtr)pos);
+    }
 
     // SDL_Keymod bits (match HotkeyInputService): Ctrl/Shift both sides.
     private const int KmodShift = 0x0003;
@@ -1419,6 +1440,7 @@ public sealed unsafe class ChatService : IExtenderService
         }
         if (!target.HasSendable) return;
         IsTyping = true;
+        if (TypingSignal.Focus()) NotifyChatBar(TypingSignal.EventFocus, target.SendChannel);
         Edit.Clear();
         if (_startText != null) _startText();
         KeyboardMode(true);
@@ -1465,6 +1487,11 @@ public sealed unsafe class ChatService : IExtenderService
         }
         else Edit.Clear();
         IsTyping = false;
+        // After the send, like vanilla's HandleEnter (ParseChatString, then the unfocus event). Cancel
+        // paths (Esc, focus loss, a window losing its sendable channel) all funnel here too, so the
+        // server never keeps a stuck "typing" state -- the same three cases vanilla covers.
+        if (TypingSignal.Unfocus())
+            NotifyChatBar(TypingSignal.EventUnfocus, _layout?.Focused.SendChannel ?? Channel.Talk);
         // Do NOT SDL_StopTextInput: the engine leaves text input globally on (it never toggles it) and the
         // debug console + other text fields depend on TEXTINPUT events firing. KeyboardModeOff below is the
         // real gate that stops chars reaching us. Stopping SDL text input here breaks the console.

@@ -233,6 +233,13 @@ public sealed unsafe class NameplateService : IExtenderService
     private static readonly float[] _boxW = new float[PlateTable.MaxEntries];
     private static readonly float[] _boxH = new float[PlateTable.MaxEntries];
     private static readonly float[] _boxA = new float[PlateTable.MaxEntries];
+    /// <summary>Where <c>Place</c> put each box, before separation and before the slide residual. Kept so the
+    /// push can be measured on its own and absorbed into the residual rather than teleporting the box.</summary>
+    private static readonly float[] _boxBaseY = new float[PlateTable.MaxEntries];
+    private static readonly long[] _boxKey = new long[PlateTable.MaxEntries];
+    private static readonly uint[] _boxId = new uint[PlateTable.MaxEntries];
+    private static readonly bool[] _boxIn = new bool[PlateTable.MaxEntries];
+    private static readonly int[] _boxOrder = new int[PlateTable.MaxEntries];
 
     /// <summary>One clickable plate, published for the input thread.</summary>
     private struct Hit { public float X, Y, W, H; public string Name; }
@@ -315,14 +322,15 @@ public sealed unsafe class NameplateService : IExtenderService
         bool portraits = _cfg.Portraits && _cfg.Mode == 2;
         bool background = _cfg.Background && _cfg.Mode == 2;
 
-        // Pass 1: measure and place every box at its anchor.
+        // Pass 1: measure and place every box at its anchor. The slide residual is NOT folded in yet -- it is
+        // applied after separation, so a box easing into place cannot perturb the overlap tests.
         for (int i = 0; i < count; i++)
         {
             PlateTable.Entry e = _table.Visible[i];
             float w, h;
             if (e.ShowBubble) MeasureBubble(e, atlas, scale, lineH, out w, out h);
             else MeasurePlate(e, atlas, scale, lineH, portraits, out w, out h);
-            PlateLayout.Place(e.AnchorX, e.AnchorY, w, h, vpW, vpH, out _boxX[i], out _boxY[i]);
+            PlateLayout.Place(e.AnchorX, e.AnchorY, w, h, vpW, vpH, out _boxX[i], out _boxBaseY[i]);
             // A newcomer starts a slide below its place; afterwards, GROWTH of the box (a newer line queued
             // beneath the older ones) pushes the top edge up, and feeding that delta back into the residual
             // makes the older lines EASE to the new offset instead of jumping to it. Shrink is deliberately
@@ -331,14 +339,32 @@ public sealed unsafe class NameplateService : IExtenderService
             if (e.AnimNew) { e.AnimNew = false; e.YOff = SlideUpPx * scale; }
             else if (e.LastH > 0f && h > e.LastH) e.YOff += h - e.LastH;
             e.LastH = h;
-            _boxY[i] += e.YOff;
+            _boxY[i] = _boxBaseY[i];
             _boxW[i] = w; _boxH[i] = h;
+            _boxKey[i] = e.SortKey;
+            _boxId[i] = e.Id;
+            _boxIn[i] = !e.FadingOut;
             // The bubble's own fade is now PER LINE (PlateTable.ExpireLines), applied inside EmitBubble; all the
             // box alpha still owes it is the "no line left to draw" cut.
             _boxA[i] = e.DistanceFade * e.Alpha * (e.ShowBubble && e.TopLine < 0 ? 0f : 1f);
         }
 
-        PlateLayout.Separate(_boxX, _boxY, _boxW, _boxH, count, SeparationGapPx * scale, vpH);
+        int sepCount = PlateLayout.OrderByRecency(_boxOrder, _boxKey, _boxId, _boxIn, count);
+        PlateLayout.Separate(_boxX, _boxY, _boxW, _boxH, _boxOrder, sepCount, SeparationGapPx * scale, vpH);
+
+        // Absorb whatever the push changed by into the slide residual, then draw at placed + push + residual.
+        // A box that took no part keeps the push it last had, so it fades where it stands rather than sliding
+        // back down to its bare anchor as the stack it belonged to dissolves around it.
+        for (int i = 0; i < count; i++)
+        {
+            PlateTable.Entry e = _table.Visible[i];
+            if (_boxIn[i]) PlateLayout.AbsorbPush(ref e.YOff, ref e.LastPush, _boxY[i] - _boxBaseY[i]);
+            _boxY[i] = _boxBaseY[i] + e.LastPush + e.YOff;
+            if (vpH <= 0f) continue;
+            float maxY = vpH - _boxH[i];
+            if (_boxY[i] > maxY) _boxY[i] = maxY;
+            if (_boxY[i] < 0f) _boxY[i] = 0f;
+        }
 
         // Pass 2: emit. Order of emission IS draw order (no depth), so chrome before text.
         int n = 0, pn = 0;
@@ -405,7 +431,8 @@ public sealed unsafe class NameplateService : IExtenderService
                    + $"dist={e.Distance.ToString("F1", CultureInfo.InvariantCulture)} "
                    + $"alpha={e.Alpha.ToString("F2", CultureInfo.InvariantCulture)} "
                    + $"yoff={e.YOff.ToString("F1", CultureInfo.InvariantCulture)} "
-                   + $"plated={e.Plated} bubble={e.ShowBubble} alive={e.Alive}");
+                   + $"plated={e.Plated} bubble={e.ShowBubble} alive={e.Alive} "
+                   + $"ovmode={e.OverrideMode} ovparas={e.ParaCount} ov='{e.OverrideText.Replace("\n", "\\n")}'");
         }
     }
 
@@ -453,11 +480,6 @@ public sealed unsafe class NameplateService : IExtenderService
     /// <summary>The max width a plate name column and a bubble box share -- one knob, <c>bubblewidth</c>.</summary>
     private static float TextMaxW(float scale) => _cfg.BubbleWidth * scale;
 
-    /// <summary>Whether a plate's name lines are centred in the text column. A creature plate is a label --
-    /// a name over a health band beside a portrait -- and stays left-aligned; every other object type is a
-    /// placeable sign or door whose builder-authored text reads as a header over a paragraph.</summary>
-    private static bool CentreName(byte type) => type != NameplateNative.TypeCreature;
-
     private static void MeasurePlate(PlateTable.Entry e, GlyphAtlas atlas, float scale, float lineH,
                                      bool portraits, out float w, out float h)
     {
@@ -465,8 +487,11 @@ public sealed unsafe class NameplateService : IExtenderService
         float nameW = MeasureName(e, atlas, TextMaxW(scale), out int nameLines);
         float bandW = band ? MeasureRunes(atlas, PlateLayout.BandText(e.Damage)) : 0f;
         bool portrait = portraits && e.PortraitResref.Length != 0;
-        PlateMetrics m = PlateLayout.Measure(nameW, nameLines, bandW, portrait, band,
-                                             _cfg.HealthBar && e.Damage >= 0, lineH, scale);
+        OverrideLayout ov = LayoutOverride(e, atlas, scale, nameLines, band, bandW);
+        PlateMetrics m = PlateLayout.Measure(ov.ShowName ? nameW : 0f, ov.ShowName ? nameLines : 0,
+                                             bandW, portrait, ov.ShowBand,
+                                             _cfg.HealthBar && e.Damage >= 0, lineH, scale,
+                                             ov.PreLines, ov.PostLines, ov.ExtraW);
         w = m.W; h = m.H;
     }
 
@@ -563,6 +588,155 @@ public sealed unsafe class NameplateService : IExtenderService
         }
     }
 
+    /// <summary>Emit one run of already-parsed, per-rune-coloured text and return the pen. The one place
+    /// colour runs become glyphs: the bubble's wrapped spans and the plate's override lines both come through
+    /// here, so an override's <c>&lt;cRGB&gt;</c> tags render exactly as a chat line's do.
+    /// <para><paramref name="fallbackRgb"/> re-colours only runes the parser left at plain white, which is how
+    /// a channel style tints untagged text without overriding the author's own colours.</para></summary>
+    private static float EmitRuns(ref int n, GlyphAtlas atlas, List<Rune> runes, uint[] colours,
+                                  int from, int to, float penX, float baseline, float a,
+                                  uint fallbackRgb, float shear, out uint tailRgb)
+    {
+        tailRgb = 0xffffffu;
+        for (int k = from; k < to && k < runes.Count; k++)
+        {
+            Rune ru = runes[k];
+            uint c = k < colours.Length ? colours[k] : 0xffffffu;
+            tailRgb = c;
+            if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
+            if (c == 0xffffffu && fallbackRgb != 0u) c = fallbackRgb;
+            float r = ((c >> 16) & 0xFF) / 255f, g = ((c >> 8) & 0xFF) / 255f, b = (c & 0xFF) / 255f;
+            if (_cfg.Outline)
+                for (int o = 0; o < OutlineOffsets.Length; o += 2)
+                    EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1],
+                              0f, 0f, 0f, a, shear);
+            EmitGlyph(ref n, gl, penX, baseline, r, g, b, a, shear);
+            penX += gl.Advance;
+        }
+        return penX;
+    }
+
+    /// <summary>Width of one wrapped span of a colour-run line. Hot but tiny -- override lines are status
+    /// labels, and a plate carries at most <see cref="PlateTable.MaxParas"/> of them.</summary>
+    private static float SpanW(GlyphAtlas atlas, PlateTable.BubbleLine ln, int s)
+    {
+        TextWrapper.LineSpan sp = ln.Spans[s];
+        float w = 0f;
+        for (int k = sp.Start; k < sp.End && k < ln.Runes.Count; k++) w += atlas.AdvanceOf(ln.Runes[k]);
+        return w;
+    }
+
+    /// <summary>Where an entry's <c>ObjectTextBubbleOverride</c> lands on the plate, resolved once and used by
+    /// both the measure and the emit. The engine composes ONE string, <c>name\nband</c>, and glues the
+    /// override onto its head or tail (docs/re/nameplate.md §8.5) -- so the segment at the joint continues an
+    /// existing line and the rest become lines of their own.</summary>
+    private struct OverrideLayout
+    {
+        public bool ShowName, ShowBand;
+        public PlateSplice Target;
+        /// <summary>Para spliced onto <see cref="Target"/>'s line, or -1.</summary>
+        public int SpliceIdx;
+        public int PreFrom, PreTo, PostFrom, PostTo;
+        public int PreLines, PostLines;
+        public float SpliceW, ExtraW;
+    }
+
+    /// <summary>Wrap the override's lines around the placement <see cref="PlateLayout.PlaceOverride"/> chose.
+    /// The splice keeps to a SINGLE line, wrapped into whatever its anchor leaves of the column: a status
+    /// suffix is short, and letting it wrap would put half of it under the band and half beside it.
+    /// <para>ponytail: raise that cap here if a server ever glues a paragraph onto the injury line.</para></summary>
+    private static OverrideLayout LayoutOverride(PlateTable.Entry e, GlyphAtlas atlas, float scale,
+                                                 int nameLines, bool band, float bandW)
+    {
+        OverrideLayout o = default;
+        o.Target = PlateLayout.PlaceOverride(e.OverrideMode, e.ParaCount, nameLines, band,
+                                             out o.ShowName, out o.ShowBand, out o.SpliceIdx,
+                                             out o.PreFrom, out o.PreTo, out o.PostFrom, out o.PostTo);
+        if (e.OverrideMode == 0 || e.ParaCount == 0) return o;
+
+        float maxW = TextMaxW(scale);
+        if (o.SpliceIdx >= 0)
+        {
+            float anchorW = o.Target switch
+            {
+                PlateSplice.BandFirst or PlateSplice.BandLast => bandW,
+                PlateSplice.NameFirst => NameLineW(e, atlas, 0, nameLines),
+                PlateSplice.NameLast => NameLineW(e, atlas, nameLines - 1, nameLines),
+                _ => 0f,
+            };
+            PlateTable.BubbleLine sp = e.Paras[o.SpliceIdx];
+            if (sp.Runes.Count != 0)
+            {
+                float room = maxW - anchorW;
+                float floorW = maxW * SpliceMinFraction;
+                if (room < floorW) room = floorW;
+                PlateTable.EnsureWrap(sp, atlas, room, TextRig.AtlasEpoch, 1);
+                o.SpliceW = sp.SpanCount > 0 ? SpanW(atlas, sp, 0) : 0f;
+                if (sp.Truncated) o.SpliceW += MeasureRunes(atlas, PlateTable.Ellipsis);
+            }
+            o.ExtraW = anchorW + o.SpliceW;
+        }
+
+        o.PreLines = WrapParas(e, atlas, maxW, o.PreFrom, o.PreTo, ref o.ExtraW);
+        o.PostLines = WrapParas(e, atlas, maxW, o.PostFrom, o.PostTo, ref o.ExtraW);
+        return o;
+    }
+
+    /// <summary>Least of the text column a spliced segment is allowed, however wide the line it joins.</summary>
+    private const float SpliceMinFraction = 0.25f;
+
+    private static int WrapParas(PlateTable.Entry e, GlyphAtlas atlas, float maxW, int from, int to,
+                                 ref float extraW)
+    {
+        int lines = 0;
+        for (int i = from; i < to; i++)
+        {
+            PlateTable.BubbleLine ln = e.Paras[i];
+            if (ln.Runes.Count == 0) continue;   // the empty segment that says "nothing glues here"
+            PlateTable.EnsureWrap(ln, atlas, maxW, TextRig.AtlasEpoch, _cfg.BubbleLines);
+            lines += ln.SpanCount;
+            if (ln.WrapPixelW > extraW) extraW = ln.WrapPixelW;
+        }
+        return lines;
+    }
+
+    /// <summary>Draw the spliced override segment -- its single wrapped line -- at the pen the plate line it
+    /// continues left off at.</summary>
+    private static void EmitSplice(ref int n, GlyphAtlas atlas, PlateTable.Entry e, in OverrideLayout ov,
+                                   float penX, float baseline, float a)
+    {
+        PlateTable.BubbleLine sp = e.Paras[ov.SpliceIdx];
+        // An EMPTY splice segment ("\nSneaking") keeps whatever spans the pooled line last held; it is never
+        // re-wrapped, so the run count is the only honest liveness test.
+        if (sp.Runes.Count == 0 || sp.SpanCount == 0) return;
+        float end = EmitRuns(ref n, atlas, sp.Runes, sp.Colours, sp.Spans[0].Start, sp.Spans[0].End,
+                             penX, baseline, a, 0u, 0f, out uint tail);
+        if (!sp.Truncated) return;
+        EmitString(ref n, atlas, PlateTable.Ellipsis, end, baseline,
+                   ((tail >> 16) & 0xFF) / 255f, ((tail >> 8) & 0xFF) / 255f, (tail & 0xFF) / 255f, a, 0f);
+    }
+
+    /// <summary>Draw a range of standalone override lines down from <paramref name="top"/>, and return the y
+    /// past the last one.</summary>
+    private static float EmitParas(ref int n, GlyphAtlas atlas, PlateTable.Entry e, int from, int to,
+                                   float colX, float textW, float top, float a, float lineH)
+    {
+        for (int i = from; i < to; i++)
+        {
+            PlateTable.BubbleLine ln = e.Paras[i];
+            if (ln.Runes.Count == 0) continue;
+            for (int s = 0; s < ln.SpanCount; s++)
+            {
+                float lw = SpanW(atlas, ln, s);
+                float lx = PlateLayout.LineX(colX, textW, lw);
+                EmitRuns(ref n, atlas, ln.Runes, ln.Colours, ln.Spans[s].Start, ln.Spans[s].End,
+                         lx, top + atlas.Ascent, a, 0u, 0f, out _);
+                top += lineH;
+            }
+        }
+        return top;
+    }
+
     private static void EmitPlate(ref int n, ref int pn, float su, float sv, GlyphAtlas atlas,
                                   PlateTable.Entry e, float x, float y, float a, float scale, float lineH,
                                   bool portraits, bool background, Hit[] hits, ref int hitN)
@@ -573,35 +747,57 @@ public sealed unsafe class NameplateService : IExtenderService
         string bandText = band ? PlateLayout.BandText(e.Damage) : "";
         float bandW = band ? MeasureRunes(atlas, bandText) : 0f;
         bool portrait = portraits && e.PortraitResref.Length != 0;
-        PlateMetrics m = PlateLayout.Measure(nameW, nameLines, bandW, portrait, band, bar, lineH, scale);
+        OverrideLayout ov = LayoutOverride(e, atlas, scale, nameLines, band, bandW);
+        band = ov.ShowBand;
+        if (!ov.ShowName) nameLines = 0;
+        PlateMetrics m = PlateLayout.Measure(ov.ShowName ? nameW : 0f, nameLines, bandW, portrait, band, bar,
+                                             lineH, scale, ov.PreLines, ov.PostLines, ov.ExtraW);
 
         if (background) EmitRect(ref n, su, sv, x, y, x + m.W, y + m.H, PlateBg.r, PlateBg.g, PlateBg.b, PlateBg.a * a);
 
         (float r, float g, float b) nc = PlateLayout.ReactionColor(e.Reaction);
-        bool centre = CentreName(e.Type);
+        float colX = x + m.NameX;
+
+        // Override lines that sit above the name (prepend mode) or replace the plate outright (mode 1).
+        EmitParas(ref n, atlas, e, ov.PreFrom, ov.PreTo, colX, m.TextW, y + m.PreY, a, lineH);
+
         for (int i = 0; i < nameLines; i++)
         {
             ReadOnlySpan<char> line = e.Name.AsSpan(e.NameStart[i], e.NameLen[i]);
             float lw = NameLineW(e, atlas, i, nameLines);
-            float lx = PlateLayout.LineX(x + m.NameX, m.TextW, lw, centre);
+            bool prefixed = ov.Target == PlateSplice.NameFirst && i == 0;
+            bool suffixed = ov.Target == PlateSplice.NameLast && i == nameLines - 1;
+            float lx = PlateLayout.LineX(colX, m.TextW, lw + (prefixed || suffixed ? ov.SpliceW : 0f));
             float by = y + m.NameY + i * lineH + atlas.Ascent;
+            if (prefixed) { EmitSplice(ref n, atlas, e, ov, lx, by, a); lx += ov.SpliceW; }
             EmitString(ref n, atlas, line, lx, by, nc.r, nc.g, nc.b, a, 0f);
+            float penX = lx + lw;
             if (e.NameTruncated && i == nameLines - 1)
                 EmitString(ref n, atlas, PlateTable.Ellipsis,
                            lx + lw - MeasureRunes(atlas, PlateTable.Ellipsis), by, nc.r, nc.g, nc.b, a, 0f);
+            if (suffixed) EmitSplice(ref n, atlas, e, ov, penX, by, a);
         }
 
-        // The name glyphs only, never the plate box -- see OnPlateClick. Centred lines are spread across the
-        // whole text column, so that is the box; left-aligned ones only reach the widest line.
-        if (_cfg.ClickToTell && e.Name.Length != 0 && nameW > 0f && hitN < hits.Length)
-            hits[hitN++] = new Hit { X = x + m.NameX, Y = y + m.NameY, W = centre ? m.TextW : nameW,
+        // The name glyphs only, never the plate box or the override -- see OnPlateClick. Every line centres in
+        // the text column, so the column IS the rect: a narrower one would miss the name it just moved.
+        if (_cfg.ClickToTell && ov.ShowName && e.Name.Length != 0 && nameW > 0f && hitN < hits.Length)
+            hits[hitN++] = new Hit { X = colX, Y = y + m.NameY, W = m.TextW,
                                      H = lineH * nameLines, Name = e.Name };
 
         if (band)
         {
             (float r, float g, float b) bc = PlateLayout.BandColor(e.Damage);
-            EmitString(ref n, atlas, bandText, x + m.BandX, y + m.BandY + atlas.Ascent, bc.r, bc.g, bc.b, a, 0f);
+            float by = y + m.BandY + atlas.Ascent;
+            bool spliced = ov.Target is PlateSplice.BandFirst or PlateSplice.BandLast;
+            float bx = PlateLayout.LineX(x + m.BandX, m.TextW, bandW + (spliced ? ov.SpliceW : 0f));
+            // A prepend that has no name line to run into runs into the band instead -- in FRONT of it.
+            if (ov.Target == PlateSplice.BandFirst) { EmitSplice(ref n, atlas, e, ov, bx, by, a); bx += ov.SpliceW; }
+            EmitString(ref n, atlas, bandText, bx, by, bc.r, bc.g, bc.b, a, 0f);
+            if (ov.Target == PlateSplice.BandLast) EmitSplice(ref n, atlas, e, ov, bx + bandW, by, a);
         }
+
+        // ... and the ones below it (append mode).
+        EmitParas(ref n, atlas, e, ov.PostFrom, ov.PostTo, colX, m.TextW, y + m.PostY, a, lineH);
 
         if (bar && m.BarW > 0f)
         {
@@ -653,23 +849,8 @@ public sealed unsafe class NameplateService : IExtenderService
                 float penX = bx + pad;
                 float baseline = cy + pad + s * lineH + atlas.Ascent;
                 TextWrapper.LineSpan sp = ln.Spans[s];
-                uint tail = 0xffffffu;
-                for (int k = sp.Start; k < sp.End && k < ln.Runes.Count; k++)
-                {
-                    Rune ru = ln.Runes[k];
-                    uint c = k < ln.Colours.Length ? ln.Colours[k] : 0xffffffu;
-                    tail = c;
-                    if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
-                    if (c == 0xffffffu && st.Rgb != 0u) c = st.Rgb;
-                    float r = ((c >> 16) & 0xFF) / 255f, g = ((c >> 8) & 0xFF) / 255f, b = (c & 0xFF) / 255f;
-                    float ga = la * st.Alpha;
-                    if (_cfg.Outline)
-                        for (int o = 0; o < OutlineOffsets.Length; o += 2)
-                            EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1],
-                                      0f, 0f, 0f, ga, st.Shear);
-                    EmitGlyph(ref n, gl, penX, baseline, r, g, b, ga, st.Shear);
-                    penX += gl.Advance;
-                }
+                penX = EmitRuns(ref n, atlas, ln.Runes, ln.Colours, sp.Start, sp.End, penX, baseline,
+                                la * st.Alpha, st.Rgb, st.Shear, out uint tail);
                 // The wrap cut the message: say so on the last kept line rather than stopping mid-word.
                 if (ln.Truncated && s == ln.SpanCount - 1)
                 {

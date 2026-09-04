@@ -10,19 +10,29 @@ namespace Sowx.Services.Nameplate;
 public readonly struct PlateMetrics
 {
     public readonly float W, H, PortraitX, PortraitY, PortraitSize, NameX, NameY, BandX, BandY, BarX, BarY, BarW, BarH;
-    /// <summary>Width of the text column (the widest of name and band). The span a centred line is centred
-    /// in -- never the whole box, which would slide the text under the portrait.</summary>
+    /// <summary>Width of the text column (the widest of name, band and any override line). The span a centred
+    /// line is centred in -- never the whole box, which would slide the text under the portrait.</summary>
     public readonly float TextW;
+    /// <summary>Top of the override lines that sit ABOVE the name (prepend mode), and of the ones BELOW the
+    /// band and bar (append mode). Both are the text column's x (<see cref="NameX"/>).</summary>
+    public readonly float PreY, PostY;
 
     public PlateMetrics(float w, float h, float portraitX, float portraitY, float portraitSize,
                         float nameX, float nameY, float bandX, float bandY,
-                        float barX, float barY, float barW, float barH, float textW)
+                        float barX, float barY, float barW, float barH, float textW,
+                        float preY = 0f, float postY = 0f)
     {
         W = w; H = h; PortraitX = portraitX; PortraitY = portraitY; PortraitSize = portraitSize;
         NameX = nameX; NameY = nameY; BandX = bandX; BandY = bandY;
         BarX = barX; BarY = barY; BarW = barW; BarH = barH; TextW = textW;
+        PreY = preY; PostY = postY;
     }
 }
+
+/// <summary>Which existing plate line an <c>ObjectTextBubbleOverride</c> segment continues:
+/// <c>First</c> means it runs in FRONT of that line (prepend), <c>Last</c> means it runs off its end
+/// (append). <c>None</c> = the plate has no such line and every segment stands on its own.</summary>
+public enum PlateSplice { None, NameFirst, NameLast, BandFirst, BandLast }
 
 /// <summary>Pure layout + fade math for the overhead plate and bubble. No GL, no native reads, and no
 /// allocation on the frame: every method here but one is called per entry per frame from the hot draw, and the
@@ -32,8 +42,11 @@ public static class PlateLayout
 {
     /// <summary>Inner padding around the plate content, design px.</summary>
     private const float PadPx = 4f;
-    /// <summary>Gap between the portrait and the text column, and above the health bar. Design px.</summary>
+    /// <summary>Gap above the health bar. Design px.</summary>
     private const float GapPx = 4f;
+    /// <summary>Gap between the portrait and the text column, design px. Wider than <see cref="GapPx"/>: a
+    /// portrait is a picture butting against a centred text column, and 4px reads as the two touching.</summary>
+    private const float PortraitGapPx = 8f;
     /// <summary>Health-bar thickness, design px.</summary>
     private const float BarHPx = 3f;
     /// <summary>NWN portrait aspect (w:h). Mirrors <see cref="TextRig.PortraitAspect"/>; duplicated as a local
@@ -180,50 +193,87 @@ public static class PlateLayout
     /// a sliver down the left edge, while capping the WHOLE column instead would have shrunk every creature
     /// portrait (a creature's one line + band + bar is already taller than two lines). So a one-line name is
     /// byte-identical to the old rule for creature and placeable alike, a second line grows the portrait, and
-    /// a third does not. The portrait is TOP-aligned at the pad in every case -- it belongs to the first line,
-    /// and any other anchor would drift with the line count.</para></summary>
+    /// a third does not. The portrait is VERTICALLY CENTRED against the whole content column
+    /// (<see cref="PortraitTop"/>); at or below the cap the two heights are equal and it sits at the pad, so the
+    /// common plate is unchanged.</para></summary>
     public static PlateMetrics Measure(float nameW, int nameLines, float bandW, bool portrait, bool band,
-                                       bool bar, float lineH, float scale)
+                                       bool bar, float lineH, float scale) =>
+        Measure(nameW, nameLines, bandW, portrait, band, bar, lineH, scale, 0, 0, 0f);
+
+    /// <summary>As above with the <c>ObjectTextBubbleOverride</c> bands (docs/re/nameplate.md §8.5) folded in:
+    /// <paramref name="preLines"/> override lines above the name, <paramref name="postLines"/> below the band
+    /// and bar, and <paramref name="extraW"/> the widest of every override line PLUS the spliced line the
+    /// override extends (the caller adds the band or name width to the splice itself).
+    /// <para>With all three at their zero the result is byte-identical to the no-override plate, which is why
+    /// the shorter overload just delegates. <paramref name="nameLines"/> may be 0 only when there ARE override
+    /// lines -- that is replace mode, where the server owns the whole string; otherwise an empty name still
+    /// occupies its line as before. The portrait spans the name lines it always did, and sits at the vertical
+    /// centre of the WHOLE composed column -- pre-lines, name, band, bar and post-lines alike.</para></summary>
+    public static PlateMetrics Measure(float nameW, int nameLines, float bandW, bool portrait, bool band,
+                                       bool bar, float lineH, float scale,
+                                       int preLines, int postLines, float extraW)
     {
-        float pad = PadPx * scale, gap = GapPx * scale, barH = BarHPx * scale;
-        if (nameLines < 1) nameLines = 1;
+        float pad = PadPx * scale, gap = GapPx * scale, barH = BarHPx * scale, pgap = PortraitGapPx * scale;
+        if (preLines < 0) preLines = 0;
+        if (postLines < 0) postLines = 0;
+        if (nameLines < 1 && preLines + postLines == 0) nameLines = 1;
+        if (nameLines < 0) nameLines = 0;
 
         float textW = nameW;
         if (band && bandW > textW) textW = bandW;
+        if (extraW > textW) textW = extraW;
         if (textW < 0f) textW = 0f;
 
+        float preH = lineH * preLines, postH = lineH * postLines;
         float nameH = lineH * nameLines;
         float below = (band ? lineH : 0f) + (bar ? gap + barH : 0f);
-        float contentH = nameH + below;
+        float contentH = preH + nameH + below + postH;
 
-        int portraitLines = nameLines < PortraitMaxLines ? nameLines : PortraitMaxLines;
+        // The portrait tracks the NAME lines; in replace mode there are none, so the override lines stand in.
+        int spanLines = nameLines > 0 ? nameLines : preLines;
+        if (spanLines < 1) spanLines = 1;
+        int portraitLines = spanLines < PortraitMaxLines ? spanLines : PortraitMaxLines;
         float portraitSize = portrait ? portraitLines * lineH + below : 0f;
         float portraitW = portraitSize * PortraitAspect;
-        float colX = pad + (portrait ? portraitW + gap : 0f);
+        float colX = pad + (portrait ? portraitW + pgap : 0f);
 
         float w = colX + textW + pad;
         float h = contentH + pad * 2f;
 
-        float bandY = pad + nameH;
-        float barY = pad + nameH + (band ? lineH : 0f) + gap;
+        float nameY = pad + preH;
+        float bandY = nameY + nameH;
+        float barY = bandY + (band ? lineH : 0f) + gap;
+        float postY = nameY + nameH + below;
 
         return new PlateMetrics(w, h,
-            pad, pad, portraitSize,
-            colX, pad,
+            pad, PortraitTop(pad, contentH, portraitSize), portraitSize,
+            colX, nameY,
             colX, bandY,
-            colX, barY, bar ? textW : 0f, bar ? barH : 0f, textW);
+            colX, barY, bar ? textW : 0f, bar ? barH : 0f, textW,
+            pad, postY);
     }
 
     /// <summary>NAME lines a portrait may grow with (the band and bar are always added on top). Past this a
-    /// longer name grows the box downward and the portrait stays put, top-aligned with the first line.</summary>
+    /// longer name grows the box downward and the portrait, capped, centres against the taller column.</summary>
     public const int PortraitMaxLines = 2;
 
-    /// <summary>Left edge of one text line inside a column of <paramref name="textW"/> starting at
-    /// <paramref name="colX"/>: centred when <paramref name="centre"/>, else the column start. A line wider
-    /// than the column pins to the start rather than hanging off the left.</summary>
-    public static float LineX(float colX, float textW, float lineW, bool centre)
+    /// <summary>Top edge of the portrait: vertically centred against the content column, never above the pad.
+    /// The clamp is defensive -- the size rule (<see cref="PortraitMaxLines"/> name lines plus the same
+    /// band/bar term the content carries) cannot exceed <paramref name="contentH"/> today, and where the two
+    /// are equal this is exactly <paramref name="pad"/>, which is what keeps the one- and two-line plate
+    /// byte-identical to the top-aligned rule it replaces.</summary>
+    public static float PortraitTop(float pad, float contentH, float portraitSize)
     {
-        if (!centre) return colX;
+        float slack = contentH - portraitSize;
+        return slack > 0f ? pad + slack * 0.5f : pad;
+    }
+
+    /// <summary>Left edge of one text line inside a column of <paramref name="textW"/> starting at
+    /// <paramref name="colX"/>: centred in the column, as vanilla centres every plate line. The column, never
+    /// the whole box -- centring in the box would slide the text under the portrait. A line wider than the
+    /// column pins to the start rather than hanging off the left.</summary>
+    public static float LineX(float colX, float textW, float lineW)
+    {
         float slack = textW - lineW;
         return slack > 0f ? colX + slack * 0.5f : colX;
     }
@@ -320,6 +370,79 @@ public static class PlateLayout
         return n;
     }
 
+    /// <summary>
+    /// Split an <c>ObjectTextBubbleOverride</c> payload into its segments, on a real LF / CR / CRLF and
+    /// <b>nothing else</b>. Deliberately NOT <see cref="BreakName"/>: this is a wire format the server
+    /// composes, not a builder-typed name field, and every one of BreakName's conveniences would corrupt it --
+    /// the trim would eat the leading space that glues "Poisoned" onto the injury line, the collapse would eat
+    /// the leading break that drops "Sneaking" below it, and the 3-space rule would break a status label that
+    /// happens to be padded. Empty segments are preserved for exactly that reason: <c>"\nSneaking"</c> is one
+    /// empty splice segment plus one line, and that empty segment is the statement that nothing joins the
+    /// existing text.
+    /// <para>Only trailing empty segments are dropped -- <c>"abc\n"</c> is one segment, not a segment and a
+    /// blank line. Pure, COLD (once per override change), self-checked.</para>
+    /// </summary>
+    /// <param name="max">segment ceiling; a longer override keeps the first <paramref name="max"/>.</param>
+    public static int SplitOverride(string s, int[] start, int[] len, int max)
+    {
+        if (s.Length == 0 || max < 1) return 0;
+        int n = 0, from = 0;
+        for (int i = 0; i <= s.Length; i++)
+        {
+            if (i != s.Length && s[i] != '\n' && s[i] != '\r') continue;
+            start[n] = from; len[n] = i - from; n++;
+            if (i + 1 < s.Length && s[i] == '\r' && s[i + 1] == '\n') i++;   // CRLF is one break, not two
+            from = i + 1;
+            if (n >= max) break;
+        }
+        while (n > 1 && len[n - 1] == 0) n--;
+        return n;
+    }
+
+    /// <summary>
+    /// The mode-to-placement half of the <c>ObjectTextBubbleOverride</c> rule: given the mode, how many
+    /// segments there are and what the plate has to glue them to, which segment continues an existing line and
+    /// which become lines of their own. Pure and atlas-free so the whole rule is self-checkable; the caller
+    /// does the wrapping and the drawing.
+    /// <para>The engine builds ONE string, <c>name\nband</c>, and joins the override to its head or tail
+    /// (docs/re/nameplate.md §8.5) -- so append's FIRST segment continues the plate's last line and prepend's
+    /// LAST segment runs into its first, while replace makes the segments the whole plate.</para>
+    /// </summary>
+    /// <returns>the line the segment at <paramref name="spliceIdx"/> joins, or <see cref="PlateSplice.None"/>
+    /// when there is nothing to join and every segment stands alone.</returns>
+    public static PlateSplice PlaceOverride(int mode, int paraCount, int nameLines, bool band,
+                                            out bool showName, out bool showBand, out int spliceIdx,
+                                            out int preFrom, out int preTo, out int postFrom, out int postTo)
+    {
+        showName = true; showBand = band;
+        spliceIdx = -1;
+        preFrom = 0; preTo = 0; postFrom = 0; postTo = 0;
+        if (mode is < 1 or > 3 || paraCount < 1) return PlateSplice.None;
+
+        if (mode == 1)   // replace: name and band are the server's to discard
+        {
+            showName = false; showBand = false;
+            preTo = paraCount;
+            return PlateSplice.None;
+        }
+
+        if (mode == 2)   // prepend: override + text
+        {
+            PlateSplice t = nameLines > 0 ? PlateSplice.NameFirst
+                          : band ? PlateSplice.BandFirst : PlateSplice.None;
+            if (t == PlateSplice.None) { preTo = paraCount; return t; }
+            spliceIdx = paraCount - 1; preTo = paraCount - 1;
+            return t;
+        }
+
+        // 3, append: text + override
+        PlateSplice a = band ? PlateSplice.BandLast
+                      : nameLines > 0 ? PlateSplice.NameLast : PlateSplice.None;
+        if (a == PlateSplice.None) { postTo = paraCount; return a; }
+        spliceIdx = 0; postFrom = 1; postTo = paraCount;
+        return a;
+    }
+
     /// <summary>1.0 nearer than <c>maxDist - fadeDist</c>, linear to 0.0 at <paramref name="maxDist"/>.
     /// <paramref name="maxDist"/> &lt;= 0 means unlimited. 0 =&gt; cull.</summary>
     public static float DistanceFade(float dist, float maxDist, float fadeDist)
@@ -371,18 +494,31 @@ public static class PlateLayout
 
     /// <summary>Our replacement for the engine's <c>BumpAllBubbles</c>, which mode 0 disables: one pass, pushing
     /// every box that still overlaps an already-placed one above it, then re-clamping into the viewport so a
-    /// pushed plate can never walk off the top of the screen. Boxes are visited in the order the table produced,
-    /// so the result is stable frame to frame. Hot: in-place over the caller's arrays, no allocation.
+    /// pushed plate can never walk off the top of the screen. Boxes are visited in the caller's array order, so
+    /// the result is stable frame to frame. Hot: in-place over the caller's arrays, no allocation.
     /// <para>ponytail: single pass, vertical only, and the viewport clamp can re-introduce the overlap it just
     /// resolved in a dense crowd. The upgrade path is the engine's own shape -- iterate to a fixed point, and pad
     /// horizontally by the portrait width in mode 2.</para></summary>
     /// <param name="vpH">viewport height; &lt;= 0 means "unknown" and leaves the push unclamped.</param>
     public static void Separate(float[] x, float[] y, float[] w, float[] h, int count, float gap, float vpH)
+        => Separate(x, y, w, h, null, count, gap, vpH);
+
+    /// <summary>The ordered form: <paramref name="order"/> names which boxes take part and in what sequence, and
+    /// <paramref name="count"/> is its length, not the box count. The FIRST index visited keeps its placed
+    /// position and every later one is pushed clear ABOVE it, so a recency-ordered list (see
+    /// <see cref="OrderByRecency"/>) stacks the newest message nearest its speaker and the older ones above it.
+    /// A box whose index is absent takes no part at all: it neither pushes nor is pushed, which is how a box in
+    /// its fade-out stops shoving the live ones around. <c>null</c> means "every box, in array order".</summary>
+    /// <param name="vpH">viewport height; &lt;= 0 means "unknown" and leaves the push unclamped.</param>
+    public static void Separate(float[] x, float[] y, float[] w, float[] h, int[]? order, int count,
+                                float gap, float vpH)
     {
-        for (int i = 1; i < count; i++)
+        for (int oi = 1; oi < count; oi++)
         {
-            for (int j = 0; j < i; j++)
+            int i = order == null ? oi : order[oi];
+            for (int oj = 0; oj < oi; oj++)
             {
+                int j = order == null ? oj : order[oj];
                 if (x[i] + w[i] <= x[j] || x[j] + w[j] <= x[i]) continue;
                 if (y[i] + h[i] <= y[j] || y[j] + h[j] <= y[i]) continue;
                 y[i] = y[j] - h[i] - gap;
@@ -392,6 +528,43 @@ public static class PlateLayout
             if (y[i] > maxY) y[i] = maxY;
             if (y[i] < 0f) y[i] = 0f;
         }
+    }
+
+    /// <summary>Fill <paramref name="order"/> with the included box indices, newest <paramref name="postedMs"/>
+    /// first, so <see cref="Separate"/> stacks a conversation chronologically instead of in screen order. Ties
+    /// break on the ascending object <paramref name="ids"/>, which are unique, so the sequence is a total order
+    /// and cannot flicker between two frames with the same input. Hot: an insertion sort over a handful of
+    /// boxes, in place, no allocation.</summary>
+    /// <returns>how many indices were written -- the <c>count</c> to hand <see cref="Separate"/>.</returns>
+    public static int OrderByRecency(int[] order, long[] postedMs, uint[] ids, bool[] include, int count)
+    {
+        int n = 0;
+        for (int i = 0; i < count; i++) if (include[i]) order[n++] = i;
+        for (int i = 1; i < n; i++)
+        {
+            int v = order[i];
+            long kp = postedMs[v]; uint kid = ids[v];
+            int j = i - 1;
+            while (j >= 0 && SortsAfter(postedMs[order[j]], ids[order[j]], kp, kid))
+            { order[j + 1] = order[j]; j--; }
+            order[j + 1] = v;
+        }
+        return n;
+    }
+
+    /// <summary>True when (<paramref name="ap"/>, <paramref name="aid"/>) belongs BEHIND (<paramref name="bp"/>,
+    /// <paramref name="bid"/>): older, or the same instant with a larger id.</summary>
+    private static bool SortsAfter(long ap, uint aid, long bp, uint bid)
+        => ap < bp || (ap == bp && aid > bid);
+
+    /// <summary>Absorb a change in a box's separation push into its slide residual, so a box that changes stack
+    /// slot eases to the new one instead of teleporting. Draw at <c>placed + push + yOff</c>: the residual is set
+    /// so that expression is unchanged on the frame the push moves, and <see cref="SettleOffset"/> then closes
+    /// it. Pure book-keeping -- it never touches the placement itself.</summary>
+    public static void AbsorbPush(ref float yOff, ref float lastPush, float push)
+    {
+        yOff += lastPush - push;
+        lastPush = push;
     }
 
     /// <summary>Health-band colour, 0..1. Out-of-range indices clamp to the nearest band.</summary>
@@ -522,13 +695,16 @@ public static class PlateLayout
         PlateMetrics m = Measure(80f, 60f, portrait: true, band: true, bar: true, lineH: 18f, scale: 1f);
         E(Near(m.PortraitSize, 18f + 18f + 4f + 3f),
           "a ONE-line name spans the whole content column, exactly as it always did");
-        E(Near(m.PortraitSize * 0.64f, m.NameX - 8f), "and keeps the 0.64 aspect at that height");
-        E(Near(m.NameX, 4f + m.PortraitSize * 0.64f + 4f), "name column clears the portrait");
+        E(Near(m.PortraitSize * 0.64f, m.NameX - 12f), "and keeps the 0.64 aspect at that height");
+        E(Near(m.NameX, 4f + m.PortraitSize * 0.64f + 8f), "name column clears the portrait");
         E(Near(m.BandX, m.NameX) && Near(m.BandY, 4f + 18f), "band sits on the second line, same column");
         E(Near(m.BarW, 80f) && Near(m.BarH, 3f), "bar spans the text column at the bar thickness");
         E(Near(m.BarY, 4f + 18f + 18f + 4f), "bar sits under the band");
         E(Near(m.H, m.PortraitSize + 8f), "height = content + both pads");
-        E(Near(m.PortraitY, 4f), "the portrait is top-aligned, with the first line");
+        E(Near(m.PortraitY, 4f),
+          "a portrait as tall as its content centres to exactly the pad -- unchanged from the top-aligned rule");
+        E(Near(m.BarX + m.BarW * 0.5f, m.NameX + m.TextW * 0.5f),
+          "the bar spans the whole text column, so it is centred by construction");
         E(Near(m.W, m.NameX + 80f + 4f), "width = column + widest text + pad");
 
         PlateMetrics tex = Measure(80f, 60f, portrait: false, band: false, bar: false, lineH: 18f, scale: 1f);
@@ -546,10 +722,14 @@ public static class PlateLayout
         E(Near(m3.H, m.H + 18f * 2f), "two extra name lines add exactly two line heights to the box");
         E(Near(m3.PortraitSize, 18f * 2f + 18f + 4f + 3f),
           "a creature's portrait grows by ONE more name line and no further, band and bar still on top");
-        E(Near(m3.NameX, 4f + m3.PortraitSize * 0.64f + 4f), "the text column clears the WIDER portrait");
+        E(Near(m3.NameX, 4f + m3.PortraitSize * 0.64f + 8f), "the text column clears the WIDER portrait");
         E(Near(m3.W - m.W, m3.NameX - m.NameX), "and the box widens by exactly that, nothing else moving");
         E(Near(m3.BandY, 4f + 18f * 3f), "the band follows the LAST name line");
         E(Near(m3.BarY, m3.BandY + 18f + 4f), "and the bar follows the band");
+        E(Near(m3.PortraitY, 4f + (18f * 3f + 18f + 4f + 3f - m3.PortraitSize) * 0.5f) && Near(m3.PortraitY, 13f),
+          "a three-line name outgrows the capped portrait, which centres in the taller column");
+        E(Near(m3.PortraitY + m3.PortraitSize * 0.5f, m3.H * 0.5f),
+          "and the portrait's centre is the box's centre, the pads being equal");
         E(Near(Measure(80f, 1, 60f, true, true, true, 18f, 1f).H, m.H), "one line is the one-line overload");
         E(Near(Measure(80f, 0, 60f, true, true, true, 18f, 1f).H, m.H), "a zero line count is treated as one");
 
@@ -563,19 +743,131 @@ public static class PlateLayout
         E(Near(p5.H, 5f * 18f + 8f), "and the box still grows to the whole name");
         E(Near(Measure(80f, 1, 60f, true, true, true, 18f, 1f).PortraitSize, 18f + 18f + 4f + 3f),
           "a one-line CREATURE portrait is byte-identical to the pre-change rule (never shrunk by the cap)");
-        E(Near(p1.NameX, 4f + 18f * 0.64f + 4f) && Near(p2.NameX, 4f + 36f * 0.64f + 4f)
+        E(Near(p1.NameX, 4f + 18f * 0.64f + 8f) && Near(p2.NameX, 4f + 36f * 0.64f + 8f)
           && Near(p5.NameX, p2.NameX), "the text column clears the portrait at every height, at the 0.64 aspect");
-        E(p1.PortraitY == p2.PortraitY && p2.PortraitY == p5.PortraitY,
-          "the portrait's top edge does not move with the line count");
+        E(Near(p1.PortraitY, 4f) && Near(p2.PortraitY, 4f),
+          "up to the cap the portrait fills its content exactly and stays at the pad");
+        E(Near(p5.PortraitY, 4f + (5f * 18f - p5.PortraitSize) * 0.5f) && Near(p5.PortraitY, 31f),
+          "past the cap the shorter portrait centres against the full content height");
+        E(Near(p5.PortraitY + p5.PortraitSize * 0.5f, p5.H * 0.5f), "which is the box's centre");
 
-        // ---- LineX: creature plates left-align, everything else centres per line ----
-        E(Near(LineX(20f, 100f, 40f, centre: false), 20f), "left alignment puts every line at the column start");
-        E(Near(LineX(20f, 100f, 40f, centre: true), 50f), "a centred line is inset by half the slack");
-        E(Near(LineX(20f, 100f, 100f, centre: true), 20f), "the widest line still starts at the column");
-        E(Near(LineX(20f, 100f, 140f, centre: true), 20f), "an over-wide line pins to the column, never left of it");
-        float shortX = LineX(20f, 100f, 30f, centre: true), longX = LineX(20f, 100f, 90f, centre: true);
+        // ---- PortraitTop: the rule itself, including the case Measure cannot reach ----
+        E(Near(PortraitTop(4f, 90f, 36f), 31f), "a short portrait centres in the content");
+        E(Near(PortraitTop(4f, 36f, 36f), 4f), "an exactly-fitting portrait sits at the pad");
+        E(Near(PortraitTop(4f, 20f, 36f), 4f),
+          "a portrait TALLER than its content pins to the pad -- no negative top, no empty space above it");
+
+        // ---- Measure with the ObjectTextBubbleOverride bands (docs/re/nameplate.md §8.5) ----
+        PlateMetrics ovNone = Measure(80f, 1, 60f, true, true, true, 18f, 1f, 0, 0, 0f);
+        E(Near(ovNone.H, m.H) && Near(ovNone.W, m.W) && Near(ovNone.NameY, m.NameY)
+          && Near(ovNone.BandY, m.BandY) && Near(ovNone.PortraitY, m.PortraitY),
+          "no override lines is byte-identical to the plate that never had the feature");
+        PlateMetrics post = Measure(80f, 1, 60f, true, true, true, 18f, 1f, 0, 2, 0f);
+        E(Near(post.H, m.H + 36f), "two appended lines add exactly two line heights");
+        E(Near(post.NameY, m.NameY) && Near(post.BandY, m.BandY),
+          "and nothing above them moves -- append grows the box downward only");
+        E(Near(post.PostY, 4f + 18f + 18f + 4f + 3f), "the appended lines start below the band AND the bar");
+        PlateMetrics pre = Measure(80f, 1, 60f, true, true, true, 18f, 1f, 2, 0, 0f);
+        E(Near(pre.H, m.H + 36f) && Near(pre.PreY, 4f), "prepended lines start at the pad and grow the box");
+        E(Near(pre.NameY, m.NameY + 36f) && Near(pre.BandY, m.BandY + 36f) && Near(pre.BarY, m.BarY + 36f),
+          "and push the name, band and bar down by exactly their height");
+        E(Near(pre.PortraitY, 4f + (79f - pre.PortraitSize) * 0.5f) && Near(pre.PortraitY, 22f),
+          "the portrait centres against the WHOLE composed column, pre-lines included");
+        E(Near(pre.PortraitSize, m.PortraitSize), "and is not stretched by the extra lines");
+        E(Near(post.PortraitY, pre.PortraitY),
+          "an append of the same line count centres the portrait identically -- it is the height that counts");
+        PlateMetrics wide = Measure(80f, 1, 60f, true, true, true, 18f, 1f, 0, 1, 140f);
+        E(Near(wide.TextW, 140f) && Near(wide.W, wide.NameX + 140f + 4f),
+          "an override line wider than name and band widens the text column");
+        PlateMetrics repl = Measure(0f, 0, 0f, true, false, false, 18f, 1f, 2, 0, 90f);
+        E(Near(repl.H, 36f + 8f), "replace mode's lines ARE the plate: no name line and no band survive");
+        E(Near(repl.PortraitSize, 36f), "and the portrait spans them exactly as it would name lines");
+
+        // ---- LineX: every line of every plate centres in the text column, as vanilla does ----
+        E(Near(LineX(20f, 100f, 40f), 50f), "a line is inset by half the slack");
+        E(Near(LineX(20f, 100f, 40f) + 40f * 0.5f, 20f + 100f * 0.5f),
+          "so its centre is the column's centre -- name, band and override line alike");
+        E(Near(LineX(20f, 100f, 100f), 20f), "the widest line still starts at the column");
+        E(Near(LineX(20f, 100f, 140f), 20f), "an over-wide line pins to the column, never left of it");
+        float shortX = LineX(20f, 100f, 30f), longX = LineX(20f, 100f, 90f);
         E(shortX > longX, "a short line sits further right than a long one");
         E(shortX >= 20f && shortX + 30f <= 120f && longX + 90f <= 120f, "both stay inside the text column");
+
+        // Every line type, on both plate shapes: a creature (name + band + bar, band the narrower line) and a
+        // placeable (two name lines, no band). The layout takes no object type at all -- that is the point.
+        PlateMetrics cre = Measure(80f, 1, 60f, true, true, true, 18f, 1f, 0, 1, 50f);
+        float creCentre = cre.NameX + cre.TextW * 0.5f;
+        E(Near(LineX(cre.NameX, cre.TextW, 80f) + 40f, creCentre), "a creature's name line centres");
+        E(Near(LineX(cre.BandX, cre.TextW, 60f) + 30f, creCentre), "its health band centres in the same column");
+        E(Near(LineX(cre.NameX, cre.TextW, 50f) + 25f, creCentre), "and so does its override line");
+        E(Near(cre.BarX + cre.BarW * 0.5f, creCentre), "the bar spans the column, centred by construction");
+        float hitL = LineX(cre.NameX, cre.TextW, 30f);
+        E(hitL >= cre.NameX && hitL + 30f <= cre.NameX + cre.TextW,
+          "the click-to-tell rect is the whole text column, so a centred short name line still lands inside it");
+        PlateMetrics plc = Measure(80f, 2, 0f, true, false, false, 18f, 1f, 1, 0, 40f);
+        float plcCentre = plc.NameX + plc.TextW * 0.5f;
+        E(Near(LineX(plc.NameX, plc.TextW, 30f) + 15f, plcCentre)
+          && Near(LineX(plc.NameX, plc.TextW, 40f) + 20f, plcCentre),
+          "a placeable centres its name and override lines the same way -- no per-type rule survives");
+        E(Near(plc.PortraitY, 4f + (54f - plc.PortraitSize) * 0.5f) && Near(plc.PortraitY, 13f),
+          "and its capped portrait centres against name plus override, not against the name alone");
+
+        // ---- PlaceOverride: which segment joins which plate line, per mode ----
+        PlateSplice Placement(int mode, int paras, int nameLines, bool band, out bool sn, out bool sb,
+                          out int si, out int pf, out int pt, out int qf, out int qt)
+            => PlaceOverride(mode, paras, nameLines, band, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+
+        PlateSplice t = Placement(3, 2, 1, true, out bool sn, out bool sb, out int si,
+                              out int pf, out int pt, out int qf, out int qt);
+        E(t == PlateSplice.BandLast && si == 0 && qf == 1 && qt == 2 && pt == 0 && sn && sb,
+          "append glues its FIRST segment onto the band and drops the rest below it");
+        t = Placement(2, 2, 1, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.NameFirst && si == 1 && pf == 0 && pt == 1 && qt == 0 && sn && sb,
+          "prepend runs its LAST segment into the name and puts the rest above it");
+        t = Placement(1, 2, 1, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.None && si == -1 && pf == 0 && pt == 2 && !sn && !sb,
+          "replace makes the segments the WHOLE plate -- no name line and no band survive");
+        t = Placement(0, 2, 1, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.None && si == -1 && pt == 0 && qt == 0 && sn && sb,
+          "mode 0 leaves the plate untouched, override segments or not");
+        t = Placement(3, 0, 1, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.None && si == -1 && qt == 0 && sn && sb,
+          "an override with no segments is no override");
+        t = Placement(3, 2, 1, false, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.NameLast && si == 0 && qf == 1 && qt == 2,
+          "with the band off, append glues onto the LAST name line instead");
+        t = Placement(2, 2, 0, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.BandFirst && si == 1 && pt == 1,
+          "with no name line, prepend runs into the FRONT of the band -- never off its end");
+        t = Placement(3, 2, 0, false, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.None && si == -1 && qf == 0 && qt == 2,
+          "with nothing to glue to, every append segment stands as its own line");
+        t = Placement(2, 1, 1, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.NameFirst && si == 0 && pt == 0, "a single-segment prepend is all splice");
+        t = Placement(3, 1, 1, true, out sn, out sb, out si, out pf, out pt, out qf, out qt);
+        E(t == PlateSplice.BandLast && si == 0 && qf == 1 && qt == 1, "a single-segment append likewise");
+
+        // ---- SplitOverride: the wire format, NOT a builder-typed name ----
+        int[] os = new int[8], ol = new int[8];
+        string Seg(string s, int i) => s.Substring(os[i], ol[i]);
+        const string vec1 = " Poisoned Diseased\nSneaking Invisible";
+        E(SplitOverride(vec1, os, ol, 8) == 2 && Seg(vec1, 0) == " Poisoned Diseased"
+          && Seg(vec1, 1) == "Sneaking Invisible",
+          "the server's composed override splits into its splice and its own line, space intact");
+        const string vec2 = "\nSneaking";
+        E(SplitOverride(vec2, os, ol, 8) == 2 && ol[0] == 0 && Seg(vec2, 1) == "Sneaking",
+          "a leading break leaves an EMPTY first segment -- nothing joins the existing line");
+        const string vec3 = "a\r\nb\rc\nd";
+        E(SplitOverride(vec3, os, ol, 8) == 4 && Seg(vec3, 1) == "b" && Seg(vec3, 2) == "c",
+          "LF, CR and CRLF are each ONE break");
+        const string vec4 = "abc\n";
+        E(SplitOverride(vec4, os, ol, 8) == 1 && Seg(vec4, 0) == "abc",
+          "a trailing break is not a blank line");
+        const string vec5 = " a   b\\nc";
+        E(SplitOverride(vec5, os, ol, 8) == 1 && Seg(vec5, 0) == vec5,
+          "BreakName's conveniences do NOT apply: no trim, no 3-space rule, no literal backslash-n");
+        E(SplitOverride("", os, ol, 8) == 0, "an empty override is no segments at all");
+        E(SplitOverride("a\nb\nc", os, ol, 2) == 2, "the segment ceiling truncates rather than overrunning");
 
         // ---- BreakName ----
         const string plain = "Events Board";
@@ -672,6 +964,58 @@ public static class PlateLayout
         sx[1] = 0f; sy[1] = 0f; sw[1] = 80f; sh[1] = 30f;
         Separate(sx, sy, sw, sh, 2, 2f, 0f);
         E(Near(sy[1], -32f), "an unknown viewport leaves the push unclamped");
+
+        // ---- Separate: the order list picks the participants AND the stacking sequence ----
+        var so = new int[3];
+        sx[0] = 0f; sy[0] = 400f; sw[0] = 80f; sh[0] = 30f;
+        sx[1] = 0f; sy[1] = 400f; sw[1] = 80f; sh[1] = 30f;
+        sx[2] = 0f; sy[2] = 400f; sw[2] = 80f; sh[2] = 30f;
+        // Box 1 sits where box 0 lands once pushed: if it took part, box 0 would be shoved to 328 instead.
+        sy[1] = 360f;
+        so[0] = 2; so[1] = 0;                                   // box 1 is not in the list at all
+        Separate(sx, sy, sw, sh, so, 2, 2f, 800f);
+        E(Near(sy[2], 400f), "the first index in the order list keeps its placed position");
+        E(Near(sy[0], 368f), "a later index is pushed above the earlier one, not above its array neighbour");
+        E(Near(sy[1], 360f), "a box left out of the order list is never pushed");
+        E(Near(sy[0], 368f), "and it never pushes either -- an excluded box is simply not there");
+
+        // ---- OrderByRecency ----
+        var okey = new long[4]; var oid = new uint[4]; var oin = new bool[4]; var ord = new int[4];
+        okey[0] = 100; okey[1] = 300; okey[2] = 200; okey[3] = 50;
+        oid[0] = 1; oid[1] = 2; oid[2] = 3; oid[3] = 4;
+        for (int i = 0; i < 4; i++) oin[i] = true;
+        int on = OrderByRecency(ord, okey, oid, oin, 4);
+        E(on == 4 && ord[0] == 1 && ord[1] == 2 && ord[2] == 0 && ord[3] == 3,
+          "interleaved timestamps land newest-first");
+        oin[2] = false;
+        on = OrderByRecency(ord, okey, oid, oin, 4);
+        E(on == 3 && ord[0] == 1 && ord[1] == 0 && ord[2] == 3, "an excluded box is absent and off the count");
+        oin[2] = true;
+
+        okey[0] = okey[1] = okey[2] = okey[3] = 777;
+        on = OrderByRecency(ord, okey, oid, oin, 4);
+        E(ord[0] == 0 && ord[1] == 1 && ord[2] == 2 && ord[3] == 3, "equal timestamps tie-break on ascending id");
+        int a0 = ord[0], a1 = ord[1], a2 = ord[2], a3 = ord[3];
+        OrderByRecency(ord, okey, oid, oin, 4);
+        E(ord[0] == a0 && ord[1] == a1 && ord[2] == a2 && ord[3] == a3,
+          "the same input orders identically twice -- an equal-timestamp stack cannot flicker");
+
+        okey[2] = long.MaxValue;
+        on = OrderByRecency(ord, okey, oid, oin, 4);
+        E(ord[0] == 2, "a plate's 'now' sentinel sorts ahead of every real timestamp");
+        E(OrderByRecency(ord, okey, oid, oin, 0) == 0, "no boxes is an empty order list, not a fault");
+
+        // ---- AbsorbPush ----
+        float yo = 0f, lp = 0f;
+        AbsorbPush(ref yo, ref lp, 0f);
+        E(yo == 0f && lp == 0f, "a box that was never pushed absorbs nothing");
+        AbsorbPush(ref yo, ref lp, -32f);
+        E(Near(yo, 32f) && Near(lp, -32f), "a new push is cancelled by the residual, so the box does not jump");
+        E(Near(400f + -32f + yo, 400f), "and the drawn position is exactly where it was before the push");
+        AbsorbPush(ref yo, ref lp, -32f);
+        E(Near(yo, 32f), "an unchanged push leaves the residual for SettleOffset to close");
+        AbsorbPush(ref yo, ref lp, 0f);
+        E(yo == 0f && lp == 0f, "losing the push absorbs back the other way");
 
         // ---- Bands + reaction ----
         E(BandText(0) == "Uninjured" && BandText(5) == "Dead", "band table ends are the spec strings");

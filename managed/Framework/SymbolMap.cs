@@ -130,6 +130,15 @@ internal static unsafe class SymbolMap
     /// non-trivial -> lowered to a pointer arg.</summary>
     public const string ChatPromptSetFocus  = "_ZN20CGuiInGameChatPrompt8SetFocusE10CExoString";
     public const string SendChatTalk        = "_ZN11CNWCMessage27SendPlayerToServerChat_TalkE10CExoString"; // outbound verify
+
+    /// <summary>CGuiInGame::NotifyServerAboutGuiEvent(int type, int integer, uint oid, Vector const&amp;) --
+    /// the sole caller of SendPlayerToServerGuiEvent_Notify (one xref in the whole binary). It reads
+    /// g_pAppManager itself and returns without sending when GetPlayerCreature() or GetNWCMessage() is
+    /// null, so it carries the not-in-a-module guard; `this` (rdi) is clobbered before use and may be
+    /// null. Chat-bar events: type 1 = focus, 2 = unfocus, integer = the prompt's chat mode,
+    /// oid = 0x7f000000, vector = {0,0,0}. Wire: existing major 0x35 minor 0x01, itself gated on
+    /// ServerSatisfiesBuild(0x2001, 0x23) -- nothing new is invented.</summary>
+    public const string NotifyServerGuiEvent = "_ZN10CGuiInGame25NotifyServerAboutGuiEventEiijRK6Vector";
     // outbound send parity (#22): the other five channel senders. All major 0x09; minor per §4.3.
     // Talk/Shout/Whisper/Party/DM take (this, CExoString); TellName takes (this, const CExoString&, const CExoString&).
     public const string SendChatShout   = "_ZN11CNWCMessage28SendPlayerToServerChat_ShoutE10CExoString";        // minor 0x02

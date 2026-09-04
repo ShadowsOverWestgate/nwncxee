@@ -100,6 +100,10 @@ public static unsafe class TextRig
     internal static int _uProjRgb, _uTexRgb;
     private static bool _progRgbUp;
     internal static bool _pvaoUp;
+    /// <summary>Sampler object the portrait pass reads the engine's texture through -- see
+    /// <see cref="EnsurePortraitSampler"/>. Same lifetime as <see cref="_pvao"/>: a GL name in the ENGINE's
+    /// context, created once and never deleted.</summary>
+    internal static uint _psamp;
 
     internal static readonly delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet =
         (delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr>)Native.Sym(SymbolMap.AurTextureGet);
@@ -178,8 +182,52 @@ public static unsafe class TextRig
         return Sowx.Framework.AurTex.Tid(tex);
     }
 
+    /// <summary>NWN portrait resrefs are a base plus one size letter -- the suffix table in
+    /// <c>CNWPortrait::GetPortrait</c> (nm <c>0x81e910</c>) is <c>{ "", "T", "S", "M", "L", "H" }</c>. Medium is
+    /// 64x100; tiny is 16x25, which is what the engine hands the chat log (<c>HandleServerToPlayerChat</c> calls
+    /// virtual <c>+0x1d8</c> with <c>edx = 1</c>, @nm <c>0x75be6e</c>) and why those portraits looked blurry.</summary>
+    private const byte SizeMedium = (byte)'m';
+
+    /// <summary>If <paramref name="name"/> (a NUL-terminated resref of <paramref name="len"/> bytes including
+    /// the NUL) ends in a size letter SMALLER than medium, rewrite it to medium in place. Pure, allocation-free
+    /// and self-checked; the caller is responsible for putting the original letter back if the medium variant
+    /// turns out not to exist.</summary>
+    /// <returns>the index that was rewritten, or -1 if nothing was.</returns>
+    private static int PreferMedium(Span<byte> name, int len)
+    {
+        int last = len - 2;                                     // the byte before the NUL
+        if (last < 1) return -1;                                // "" or a one-letter name has no base to keep
+        byte c = name[last];
+        if (c != (byte)'t' && c != (byte)'T' && c != (byte)'s' && c != (byte)'S') return -1;
+        name[last] = SizeMedium;
+        return last;
+    }
+
+    /// <summary>Portrait TID, preferring the MEDIUM size variant of the resref and falling back to the resref
+    /// as given. The engine hands the chat log a tiny (<c>_t</c>) portrait and both portrait paths magnify it,
+    /// so the preference is what fixes the blur; the fallback is what keeps a custom portrait that ships no
+    /// <c>_m</c> from vanishing outright. Nothing is cached and nothing is allocated -- the rewrite happens in
+    /// the stack buffer the resref is marshalled into. A resref already at medium or larger costs exactly one
+    /// lookup, as before; only a genuine miss pays a second.</summary>
+    internal static int ResolvePortraitTid(string resref)
+    {
+        if (resref.Length == 0) return 0;
+        Span<byte> name = stackalloc byte[17];
+        int len = FillCName(resref, name);
+        int at = PreferMedium(name, len);
+        if (at >= 0)
+        {
+            int tid;
+            fixed (byte* p = name) tid = Sowx.Framework.AurTex.Tid(_aurGet(p, IntPtr.Zero, null, null, 0, 0));
+            if (tid != 0) return tid;
+            FillCName(resref, name);                            // no medium variant: ask for exactly what we were given
+        }
+        fixed (byte* q = name) return Sowx.Framework.AurTex.Tid(_aurGet(q, IntPtr.Zero, null, null, 0, 0));
+    }
+
     /// <summary>Self-check for the resref -&gt; C-string marshalling that feeds AurTextureGet: truncation at 16
-    /// bytes and NUL-termination (a missing NUL would walk past the name into stack garbage). Headless.</summary>
+    /// bytes and NUL-termination (a missing NUL would walk past the name into stack garbage), plus the portrait
+    /// size-suffix preference. Headless.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         Span<byte> buf = stackalloc byte[17];
@@ -188,8 +236,26 @@ public static unsafe class TextRig
         ok &= FillCName("0123456789abcdefEXTRA", buf) == 17 && buf[16] == 0 && buf[15] == (byte)'f';   // over-length truncates
         ok &= FillCName("po_hu_0", buf) == 8 && buf[7] == 0 && buf[0] == (byte)'p';                    // short name NUL-terminates in place
         ok &= FillCName("", buf) == 1 && buf[0] == 0;                                                  // empty -> lone NUL
+
+        int n = FillCName("po_hu_m_99_t", buf);
+        ok &= PreferMedium(buf, n) == n - 2 && buf[n - 2] == (byte)'m' && buf[n - 1] == 0;   // tiny -> medium
+        n = FillCName("po_hu_m_99_s", buf);
+        ok &= PreferMedium(buf, n) == n - 2 && buf[n - 2] == (byte)'m';                      // small -> medium
+        n = FillCName("po_hu_m_99_m", buf);
+        ok &= PreferMedium(buf, n) < 0 && buf[n - 2] == (byte)'m';                           // already medium: untouched
+        n = FillCName("po_hu_m_99_l", buf);
+        ok &= PreferMedium(buf, n) < 0 && buf[n - 2] == (byte)'l';                           // larger: never downsized
+        n = FillCName("po_hu_m_99_h", buf);
+        ok &= PreferMedium(buf, n) < 0;
+        n = FillCName("", buf);
+        ok &= PreferMedium(buf, n) < 0;                                                      // empty name is left alone
+        n = FillCName("t", buf);
+        ok &= PreferMedium(buf, n) < 0 && buf[0] == (byte)'t';                               // a lone letter is a base, not a suffix
+        n = FillCName("0123456789abcdet", buf);
+        ok &= PreferMedium(buf, n) == 15 && buf[15] == (byte)'m' && buf[16] == 0;            // a full-length resref rewrites in place
+
         log.Info(ok ? "TextRig.SelfCheck: passed"
-                    : "TextRig.SelfCheck: FAILED (resref C-string marshalling)");
+                    : "TextRig.SelfCheck: FAILED (resref C-string marshalling / portrait size preference)");
     }
 
     private static IntPtr ResolveTexture(string resref)
@@ -254,6 +320,33 @@ public static unsafe class TextRig
         if (ok == 0) { _log?.Info("TextRig: portrait program link failed"); _progRgb = 0; return false; }
         _uProjRgb = UniformOf(_progRgb, "uProj"); _uTexRgb = UniformOf(_progRgb, "uTex");
         _log?.Info("TextRig: portrait shader program ready");
+        return true;
+    }
+
+    /// <summary>Lazily create the sampler both portrait paths draw through. A portrait source (medium, 64x100)
+    /// lands in a plate around 36px tall, so the quad is a ~2.8x MINIFICATION -- with whatever filter the engine
+    /// last left on that <c>CAurTexture</c> name (often NEAREST) that reads as the reported aliasing. A sampler
+    /// object overrides the texture's own filter/wrap for the units it is bound to and mutates NOTHING on the
+    /// texture, which is the point: <c>glTexParameteri</c> here would persist on an object the engine owns and
+    /// caches (#237), and <c>glGenerateMipmap</c> would respecify it (the AMD/Mesa mip trap). Deliberately
+    /// un-mipmapped: the engine's portrait texture may carry only level 0, and a <c>LINEAR_MIPMAP_*</c> min
+    /// filter against an incomplete chain is undefined (black, in practice). CLAMP wrap because the crop UVs
+    /// stop short of the pow2 padding -- REPEAT could fetch across the edge.
+    /// ponytail: bilinear still skips texels at 2.8x; the ceiling is a mip chain on a texture we own, or a
+    /// supersampled fetch in <see cref="FSrcRgb"/>.</summary>
+    /// <returns>false when the driver's loader gave us no sampler entry points -- callers then draw exactly as
+    /// they did before, inheriting the texture's own filter.</returns>
+    internal static bool EnsurePortraitSampler()
+    {
+        if (_psamp != 0) return true;
+        if (Gl.GenSamplers == null || Gl.BindSampler == null || Gl.SamplerParameteri == null) return false;
+        uint s; Gl.GenSamplers(1, &s);
+        if (s == 0) return false;
+        Gl.SamplerParameteri(s, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+        Gl.SamplerParameteri(s, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+        Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+        _psamp = s;
         return true;
     }
 
@@ -462,7 +555,7 @@ public static unsafe class TextRig
         if (_aurGet == null || !Sowx.Framework.AurTex.Ready) return;
         if (!Gl.Init(_log)) return;
         if (!EnsurePortraitProgram()) return;
-        int tid = ResolveTid(resref);
+        int tid = ResolvePortraitTid(resref);
         if (tid == 0) return;   // not uploaded yet this frame
 
         // #210: no state snapshot -- UiHostService resyncs the engine on hand-back, and every draw below
@@ -491,8 +584,11 @@ public static unsafe class TextRig
         Gl.BindBuffer(Gl.ARRAY_BUFFER, _pvbo);
         Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)(Floats * 6 * sizeof(float)), verts, Gl.DYNAMIC_DRAW);
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
+        bool samp = EnsurePortraitSampler();
+        if (samp) Gl.BindSampler(0, _psamp);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
-
+        // Unbind is load-bearing, not tidiness: unit 0 is the glyph atlas's unit too, and the atlas is NEAREST.
+        if (samp) Gl.BindSampler(0, 0);
     }
 
     /// <summary>Portrait content aspect (width:height); the engine crops portraits taller-than-wide. Public so

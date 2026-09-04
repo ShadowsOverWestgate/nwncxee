@@ -62,8 +62,15 @@ public static class PlateLayout
     public static PlateMetrics Measure(float nameW, float bandW, bool portrait, bool band, bool bar, float lineH, float scale);
     /// added: an N-line name (PlateLayout.BreakName / SplitLines); the one-line form delegates here.
     public static PlateMetrics Measure(float nameW, int nameLines, float bandW, bool portrait, bool band, bool bar, float lineH, float scale);
-    /// added: left edge of one name line in the text column -- centred for non-creature plates.
-    public static float LineX(float colX, float textW, float lineW, bool centre);
+    /// added: left edge of one line in the text column. EVERY line of EVERY plate type centres there --
+    /// name lines, the health band and every override line -- as vanilla does. The column, never the whole
+    /// box: centring in the box would slide the text under the portrait. The health bar spans the column
+    /// outright, so it is centred by construction.
+    public static float LineX(float colX, float textW, float lineW);
+    /// added: top edge of the portrait -- vertically centred against the content column, clamped to the pad
+    /// so a portrait at least as tall as its content never gains empty space above it. The SIZE rule is
+    /// unchanged: min(nameLines, 2) * lineH + band/bar.
+    public static float PortraitTop(float pad, float contentH, float portraitSize);
     /// added, COLD: normalise LF / CR / CRLF / literal backslash-n / 3+ spaces down to single LF breaks.
     public static string BreakName(string s);
     public static int SplitLines(string s, int[] start, int[] len, int max);
@@ -109,6 +116,10 @@ Offsets (all verified in `docs/re/nameplate.md`):
 - `CNWCObject + 0xb8`  = `CGuiInGamePopUpBubble*` (nullable)
 - `CNWCObject + 0x104` = 1 ⇒ this object gets **no** plate and **no** bubble (honour it)
 - `CNWCObject + 0x120` = flag mask; bit 4 = plate on hover, bit 8 = plate under Tab
+- `CNWCObject + 0x124 / +0x128 / +0x130` = **`ObjectTextBubbleOverride`**: mode int (1 replace,
+  2 prepend, 3 append, else none), `char*`, dword length. Same offsets for creature, placeable
+  and item (the item's `+0x16c/0x170/0x178` is this triple through its base at `+0x48`). Append
+  is `text + override` and the separators are the SERVER's — never trim them. §8.5.
 - `CNWCCreature + 0x3a8` = reaction byte: 1 friend (green), 2 enemy (red), else neutral (blue)
 - `CNWCCreature + 0x3d0` = `CNWCCreatureStats*`
 - `CNWCCreature + 0x468` = **plate currently shown for me** (set in `ShowFeedbackBubbleText`,
@@ -217,7 +228,11 @@ Every one of these must hold, and each gets a line in the commit message:
 Deliberate divergences from vanilla, to be stated in the commit message:
 - bubbles **queue** (`BubbleQueue`, default 2) instead of the last line overwriting;
 - distance fade / max distance (vanilla has neither);
-- our own overlap separation replaces `BumpAllBubbles`, which mode 0 disables;
+- our own overlap separation replaces `BumpAllBubbles`, which mode 0 disables. Two rules of ours:
+  a box in its FADE-OUT takes no part (it neither pushes nor is pushed, and fades where it stands, so
+  sweeping the cursor over a crowd leaves no trail of dying plates shoving the live one), and the boxes
+  that do take part stack by SEND TIME -- newest nearest its speaker, older riding above, so a
+  back-and-forth reads chronologically. A plate has no send time and sorts as "now";
 - plate **names wrap** at the max text width, and author breaks are honoured (a real
   LF/CR/CRLF, the literal `\n`, or a run of 3+ spaces). Vanilla draws a name on one line
   at any length, which is why builders pad names with spaces to fake a wrap.
@@ -234,6 +249,13 @@ Deliberate divergences from vanilla, to be stated in the commit message:
   window publishes **no `HitTestOverride`**: a plate must never take the cursor from the engine's contextual
   pointer, nor take a click the game world would have had.
 - **Health bar** — optional thin bar under the name, coloured by band. Off by default.
+- **`ObjectTextBubbleOverride`** — the module's own plate text (§8.5). The engine composes one
+  string, `name\nband`, and glues the override onto its head (mode 2) or tail (mode 3), or
+  replaces it outright (mode 1); we keep name and band as separate boxes, so the segment at the
+  joint continues the band line (append) or prefixes the first name line (prepend) and the rest
+  become lines of their own. Colour tags in it are `ColorRunParser.Parse`d cold, like a chat
+  line's. There is no hook — the field is written inside two big object-update handlers — so it
+  is polled per frame on plated entries with an allocation-free compare.
 
 Nothing else. No threat meters, no target frames, no combat text.
 

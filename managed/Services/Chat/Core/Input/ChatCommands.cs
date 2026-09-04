@@ -5,7 +5,9 @@ namespace Sowx.Services.Chat.Core;
 /// <summary>
 /// Parses a leading channel slash-command off a submitted line (#25). Pure -- text in, (channel, rest)
 /// out, no native refs -- so it self-checks off-device. The token set mirrors vanilla's ParseChatString
-/// (research §4.2). An unrecognized slash is left intact and sent as-is on the current channel.
+/// (research §4.2) MINUS <c>/dm</c>, which servers claim for their own DM tooling (SoW opens a panel with
+/// it); consuming it as a channel switch would swallow the command before the server ever saw it.
+/// An unrecognized slash is left intact and sent as-is on the current channel.
 /// </summary>
 public static class ChatCommands
 {
@@ -24,7 +26,6 @@ public static class ChatCommands
             "s" or "shout"                        => Channel.Shout,
             "w" or "whisper"                      => Channel.Whisper,
             "p" or "party"                        => Channel.Party,
-            "dm"                                  => Channel.DM,
             "tk" or "talk"                        => Channel.Talk,
             _                                     => null,
         };
@@ -55,7 +56,7 @@ public static class ChatCommands
         E(Parse("/s") == (Channel.Shout, null, ""), "bare switch, no message");
         E(Parse("/W  Hello") == (Channel.Whisper, null, "Hello"), "case-insensitive + trimmed rest");
         E(Parse("/party lets go") == (Channel.Party, null, "lets go"), "long alias");
-        E(Parse("/dm secret") == (Channel.DM, null, "secret"), "dm");
+        E(Parse("/dm secret") == ((Channel?)null, null, "/dm secret"), "dm is NOT a channel switch: it passes through whole");
         E(Parse("hello") == (null, null, "hello"), "plain text untouched");
         E(Parse("/unknown x") == (null, null, "/unknown x"), "unknown slash sent verbatim");
         E(Parse("") == (null, null, ""), "empty");
