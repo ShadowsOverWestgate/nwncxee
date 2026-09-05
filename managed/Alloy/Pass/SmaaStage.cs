@@ -49,11 +49,12 @@ internal static unsafe class SmaaStage
     /// <summary>The option as set right now, in MSAA samples; 0 when the global is unresolved.</summary>
     internal static int Samples => _msaa == null ? 0 : *_msaa;
     /// <summary>The stage's per-frame gate: the option is on and nothing of ours failed to build.</summary>
-    internal static bool Active => !_failed && LevelFor(Samples) > 0;
+    /// <para>#389: off whenever TAA is on -- the two are exclusive; TAA smooths what SMAA smooths and more.</para>
+    internal static bool Active => !_failed && LevelFor(Samples) > 0 && !PostChain.TaaOn;
     internal static string PresetName(int level) => level switch { 3 => "ULTRA", 2 => "HIGH", 1 => "MEDIUM", _ => "off" };
     /// <summary>The /post and /knobs term: option, preset, and whether the stage is dropped.</summary>
     internal static string Describe()
-        => $"(aa option {Samples}x -> SMAA {PresetName(LevelFor(Samples))}{(_failed ? ", FAILED" : "")})";
+        => $"(aa option {Samples}x -> SMAA {PresetName(LevelFor(Samples))}{(_failed ? ", FAILED" : PostChain.TaaOn ? ", replaced by TAA" : "")})";
 
     /// <summary>Context loss: forget every GL name; the next frame rebuilds.</summary>
     internal static void Forget()

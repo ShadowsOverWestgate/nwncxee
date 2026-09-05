@@ -77,6 +77,14 @@ internal static unsafe class PostStack
             Active = static () => GammaActive(Mask()),
             Value = static () => Gamma(),
         },
+        // #389: TAA ahead of SMAA in the table, exclusive with it in practice -- SmaaStage.Active is false
+        // while TAA is on, so whichever runs is the last stage and writes the engine's target.
+        new()
+        {
+            Name = "taa", Resref = ShdTaaFs, Fs = TaaStage.StageFs,
+            Active = static () => PostChain.TaaOn,
+            Ready = &TaaStage.Ready, Prepare = &TaaStage.Prepare,
+        },
         new()
         {
             Name = "aa", Resref = SmaaStage.ShdBlendFs, Fs = SmaaStage.BlendStageFs,
@@ -98,6 +106,7 @@ internal static unsafe class PostStack
         _gspF = (delegate* unmanaged<uint, float>)Native.Sym(SymbolMap.RiGetGlobalShaderParamf);
         _fbEffects = (int*)Native.Sym(SymbolMap.EnableFBEffects);
         SmaaStage.Attach(log);
+        TaaStage.Attach(log);
         if (_gspI == null || _gspF == null)
             log.Info("PostStack: the global shader param getters are unresolved -- every stage stays off");
         // ADR 0013: /knobs is where a client option this build serves or takes away has to be visible.
@@ -154,6 +163,7 @@ internal static unsafe class PostStack
         _fbo = 0; _tex0 = 0; _tex1 = 0; _w = 0; _h = 0; _pending = 0; _built = false; _targetBad = false;
         foreach (Stage st in _stages) { st.Prog = 0; st.Failed = false; st.Live = false; }
         SmaaStage.Forget();
+        TaaStage.Forget();
     }
 
     /// <summary>Decide this frame's stack and, if any stage is live, hand back the framebuffer the resolve's
@@ -297,6 +307,9 @@ internal static unsafe class PostStack
 
     /// <summary>The gamma stage's resref (#92 override point), same rules as every post-chain stage.</summary>
     internal const string ShdGammaFs = "cx_postgam_fs";
+    /// <summary>#389: the taa stage's resref (#92 override point, like every stack stage). Only the copy-out of
+    /// the history is overridable here; the accumulator (<see cref="TaaStage.TaaFs"/>) is embedded.</summary>
+    internal const string ShdTaaFs = "cx_taa_fs";
 
     /// <summary>What every stack stage sees: the previous output, the frame's depth, and the dither the
     /// last stage owes the 8-bit target. Display space in, display space out -- no stage converts.</summary>
@@ -366,7 +379,14 @@ internal static unsafe class PostStack
             E(_on, "/post reset turns the bypass off");
             E(PostChain.Describe().Contains("stack"), "/post reports the stack");
             E(SmaaStage.SelfCheck(log), "the aa stage's own checks");
+            E(TaaStage.SelfCheck(log), "the taa stage's own checks");
             E(_stages[^1].Name == "aa", "aa is the LAST stage: it smooths what the frame actually shows");
+            // #389: ...and TAA is exclusive with it, so it is last whenever it is live -- its stage draw is
+            // the dithered write and the history never carries the dither.
+            E(_stages[^2].Name == "taa", "taa sits right before aa, and the two are never live together");
+            float taa = PostChain.Tune("taa", 1f);
+            E(!SmaaStage.Active && _stages[^2].Active(), "with /post taa 1 the aa stage is idle and the taa stage live");
+            PostChain.Tune("taa", taa);
         }
         finally { _log = quiet; _on = true; }
         log.Info(ok ? $"PostStack.SelfCheck: passed ({_stages.Length} stage(s))" : "PostStack.SelfCheck: FAILED");

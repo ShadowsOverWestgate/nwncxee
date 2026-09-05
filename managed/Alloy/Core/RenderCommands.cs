@@ -18,7 +18,7 @@ internal static class RenderCommands
     private const string GrassKeys = "on|density|wind|windspeed|soften|aniso|edge|push|pushradius|pushextent|cull|cullshrink|cullmax|lod|lodmin|lodwidth|lodheight|shade|far|prepass";
     private const string ParticleKeys = "on|diag|soft|lit|shadows|viz|grid|guard|sort";
     // hdr is NOT here: it stands the whole Alloy frame down, which is a boot decision (config hdr=0).
-    private const string PostKeys = "bloom|threshold|knee|exposure|tonemap|acesmix|tmknee|dither|viz|clearviz|stack|scale|motion";
+    private const string PostKeys = "bloom|threshold|knee|exposure|tonemap|acesmix|tmknee|dither|viz|clearviz|stack|scale|motion|taa|taablend|aotemporal";
     private const string DrawKeys = "light|prepass|viz|aotest|csmbias|cull|lod|poll|prepasskey|vislist|fogcull|hldiag|hlchan";
     private const string WaterKeys = "on|diag";
     private const string ProbeKeys = "on|gain|areawide";
@@ -30,7 +30,7 @@ internal static class RenderCommands
     private const string FogKeys = "sky|sun|sunexp|height|floor|cullz";
     // #379: the screen-space ambient occlusion pass; the ON/OFF is the client's own SSAO option, "on" here is
     // the bypass for an A/B.
-    private const string AoKeys = "on|radius|power|dirs|steps|maxpx|blur";
+    private const string AoKeys = "on|radius|power|dirs|steps|maxpx|blur|direct|temporal";
 
     /// <summary>Called once from <see cref="AlloyRenderer"/>'s Initialize, before any early return.</summary>
     internal static void Register(ExtenderLog log)

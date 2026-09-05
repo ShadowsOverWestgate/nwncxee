@@ -29,23 +29,34 @@ internal static unsafe class SsaoPass
     private const float StockIntensity = 0.5f;
 
     private static uint _fbo, _raw, _out, _prog, _progBlur;
-    private static int _locDepth, _locProj, _locRt, _locRadius, _locPower, _locDirs, _locSteps, _locMaxPx,
-                       _locBlurSrc, _locBlurDepth, _locBlurProj;
-    private static int _w, _h;
-    private static bool _built, _failed, _on = true;
-    private static int _runs;
+    /// <summary>#390: the visibility history pair, RG16F (visibility, view distance), and its stage.</summary>
+    private static uint _hist0, _hist1, _progTemporal;
+    private static int _locDepth, _locProj, _locRt, _locRadius, _locPower, _locDirs, _locSteps, _locMaxPx, _locFrame,
+                       _locBlurSrc, _locBlurDepth, _locBlurProj,
+                       _locTRaw, _locTHist, _locTVel, _locTWeight, _locTDepth, _locTProj;
+    private static int _w, _h, _histCur;
+    private static bool _built, _failed, _on = true, _histValid;
+    private static int _runs, _temporalRuns;
     /// <summary>True from this frame's pass until the next: the lit stage may read the texture.</summary>
     internal static bool Live { get; private set; }
-    /// <summary>This frame's visibility texture (0 until built); the grass program binds it on its own unit.</summary>
-    internal static uint OutTex => _out;
+    /// <summary>This frame's visibility texture (0 until built); the grass program binds it on its own unit.
+    /// #390: the accumulated history when the temporal stage ran (its red channel is the visibility), else the
+    /// blurred single-frame estimate.</summary>
+    internal static uint OutTex => _liveOut;
+    private static uint _liveOut;
 
     /// <summary>World-space radius (NWN units are metres: a creature stands two of them). 0.6 is contact
     /// occlusion -- corners, feet, the underside of furniture -- not a room-scale gloom.</summary>
     private static float _radius = 0.6f;
     /// <summary>The visibility exponent at stock intensity (GTAO's finalValuePower); the option scales it.</summary>
     private static float _power = 2.2f;
-    /// <summary>Slices and steps per side: 3x3 is 18 depth fetches a pixel, the fast-and-pretty point.</summary>
-    private static float _dirs = 3f, _steps = 3f;
+    /// <summary>Slices and steps per side. #390: 2x1 (4 depth fetches a pixel) under the temporal
+    /// accumulator, which converges on what 3x3 (18 fetches) drew in one frame; <c>/ao temporal 0 dirs 3
+    /// steps 3</c> is that single-frame look exactly.</summary>
+    private static float _dirs = 2f, _steps = 1f;
+    /// <summary>#390: the history's share of the blend (0.8 = a five-frame accumulation); 0 is the single-frame
+    /// pass, with no history target, no per-frame noise phase and no reprojection -- today's path verbatim.</summary>
+    private static float _temporal = 0.8f, _bootTemporal = 0.8f;
     /// <summary>Screen-radius clamp in pixels: bounds the cost when the camera is against a wall.</summary>
     private static float _maxPx = 96f;
     /// <summary>The blur stage as a dial, 0 to see the raw pattern.</summary>
@@ -57,10 +68,14 @@ internal static unsafe class SsaoPass
     /// default, vanilla's post-multiply) is the only setting the effect is visible indoors at; 0 restores the
     /// ADR's original ambient-only rule.</summary>
     private static float _direct = 1f;
-    private static float _bootRadius = 0.6f, _bootPower = 2.2f, _bootDirs = 3f, _bootSteps = 3f, _bootMaxPx = 96f, _bootBlur = 1f, _bootDirect = 1f;
+    private static float _bootRadius = 0.6f, _bootPower = 2.2f, _bootDirs = 2f, _bootSteps = 1f, _bootMaxPx = 96f, _bootBlur = 1f, _bootDirect = 1f;
 
     /// <summary>The lit stage's <c>uAoDirect</c>, read at every lit program bind.</summary>
     internal static float Direct => _direct;
+    /// <summary>#390: the history weight, for <c>/post</c>'s report.</summary>
+    internal static float Temporal => _temporal;
+    /// <summary>#390: does this pass want the velocity target this frame? The motion pass runs ahead of it when so.</summary>
+    internal static bool TemporalWanted => Active && _temporal > 0f;
 
     internal const string ShdSsaoFs = "cx_ssao_fs", ShdSsaoBlurFs = "cx_ssaoblur_fs";
 
@@ -72,6 +87,7 @@ internal static unsafe class SsaoPass
         _intensity = (float*)Native.Sym(SymbolMap.SsaoIntensity);
         if (_effects == null) log.Info("SsaoPass: Camera::m_nFramebufferEffectsEnabled is unresolved -- the SSAO option stays inert");
         _bootRadius = _radius; _bootPower = _power; _bootDirs = _dirs; _bootSteps = _steps; _bootMaxPx = _maxPx; _bootBlur = _blur; _bootDirect = _direct;
+        _bootTemporal = _temporal;
         KnobSurface.Note(static () => _effects == null ? null
             : $"the client's SSAO video option (settings.tml graphics.fbo.ssao.enabled = {(OptionOn ? 1 : 0)}) is the Alloy "
             + $"lit pass's (#379): {(_failed ? "the pass did NOT build -- the option is inert"
@@ -93,7 +109,8 @@ internal static unsafe class SsaoPass
 
     internal static string Describe()
         => $"ao {(_failed ? "FAILED" : !_on ? "BYPASSED" : OptionOn ? "live" : "idle (option off)")}  radius {_radius:F2}  "
-         + $"power {_power:F2} (x{Strength:F2} from ssao_intensity)  dirs {_dirs:F0}  steps {_steps:F0}  maxpx {_maxPx:F0}  blur {_blur:F0}  direct {_direct:F2}";
+         + $"power {_power:F2} (x{Strength:F2} from ssao_intensity)  dirs {_dirs:F0}  steps {_steps:F0}  maxpx {_maxPx:F0}  blur {_blur:F0}  direct {_direct:F2}  "
+         + $"temporal {_temporal:F2}{(_temporal > 0f ? "" : " (single-frame; today's look is temporal 0 dirs 3 steps 3)")}";
 
     internal static float Tune(string key, float v)
     {
@@ -108,6 +125,7 @@ internal static unsafe class SsaoPass
             case "maxpx":  old = _maxPx; _maxPx = v; break;
             case "blur":   old = _blur; _blur = v; break;
             case "direct": old = _direct; _direct = MathF.Max(0f, MathF.Min(1f, v)); break;
+            case "temporal": old = _temporal; _temporal = MathF.Max(0f, MathF.Min(0.98f, v)); _histValid = false; break;
             default: return float.NaN;
         }
         _log?.Info($"SsaoPass: /ao {key} {v:F2} (was {old:F2}) -> {Describe()}");
@@ -115,33 +133,49 @@ internal static unsafe class SsaoPass
     }
 
     internal static void ResetTuning()
-    { _on = true; _radius = _bootRadius; _power = _bootPower; _dirs = _bootDirs; _steps = _bootSteps; _maxPx = _bootMaxPx; _blur = _bootBlur; _direct = _bootDirect; }
+    { _on = true; _radius = _bootRadius; _power = _bootPower; _dirs = _bootDirs; _steps = _bootSteps; _maxPx = _bootMaxPx; _blur = _bootBlur; _direct = _bootDirect; _temporal = _bootTemporal; }
 
     internal static string Stats(int frames)
     {
-        int n = _runs; _runs = 0;
-        return _failed ? "ao FAILED" : n == 0 ? "ao idle" : $"ao {(float)n / MathF.Max(frames, 1):F2} runs/frame";
+        int n = _runs, t = _temporalRuns; _runs = 0; _temporalRuns = 0;
+        return _failed ? "ao FAILED" : n == 0 ? "ao idle"
+             : $"ao {(float)n / MathF.Max(frames, 1):F2} runs/frame" + (t == 0 ? "" : $" ({(float)t / MathF.Max(frames, 1):F2} temporal)");
     }
 
     /// <summary>Context loss: forget every GL name.</summary>
     internal static void Forget()
-    { _fbo = 0; _raw = 0; _out = 0; _prog = 0; _progBlur = 0; _w = 0; _h = 0; _built = false; _failed = false; Live = false; }
+    {
+        _fbo = 0; _raw = 0; _out = 0; _liveOut = 0; _prog = 0; _progBlur = 0; _hist0 = 0; _hist1 = 0; _progTemporal = 0;
+        _w = 0; _h = 0; _built = false; _failed = false; _histValid = false; Live = false;
+    }
+
+    /// <summary>World edge: the history is another area's; the next temporal pass takes the frame whole.</summary>
+    internal static void Revoke() => _histValid = false;
 
     /// <summary>The pass, between the depth prepass and the colour pass: visibility into the raw target, the
     /// depth-aware 4x4 blur into the one the lit stage reads on <see cref="TextureSlots.Ssao"/>. Restores the
     /// frame's framebuffer and viewport. Hot: allocates nothing after the first frame at a size.</summary>
-    internal static void Run(uint depthTex, bool depthFilled, Matrix4x4* proj, int* viewport, uint restoreFbo)
+    /// <para>#390: with <c>temporal</c> above 0 and a velocity target painted this frame, a third stage follows
+    /// the blur: the blurred estimate is blended with last frame's history reprojected through the velocity
+    /// target, clamped to the estimate's 3x3 range, into the other history texture -- which is then the
+    /// frame's output. The history stores the view distance beside the visibility, and a sample whose distance
+    /// disagrees with this pixel's (a disocclusion) or lands off screen falls back to the current estimate.
+    /// The raw stage rotates its noise phase per frame only on this path, so <c>temporal 0</c> is the
+    /// single-frame pass unchanged.</para></summary>
+    internal static void Run(uint depthTex, bool depthFilled, Matrix4x4* proj, int* viewport, uint restoreFbo, int frameSeq)
     {
         Live = false;
         if (!Active || !depthFilled || depthTex == 0) return;
         if (!_built) EnsurePrograms();
         if (_failed || !EnsureTargets(viewport[2], viewport[3])) return;
         float w = _w, h = _h;
+        bool temporal = _temporal > 0f && _progTemporal != 0 && _hist0 != 0 && MotionVectors.Painted && MotionVectors.Tex != 0;
         Gl.BindVertexArray(PostChain.FullscreenVao);
         new PassState(depth: false, depthWrite: false).Apply();
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         bool blur = _blur != 0f && _progBlur != 0;
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, blur ? _raw : _out, 0);
+        uint histRead = _histCur == 0 ? _hist0 : _hist1, histWrite = _histCur == 0 ? _hist1 : _hist0;
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, blur || temporal ? _raw : _out, 0);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, depthTex);
@@ -154,7 +188,11 @@ internal static unsafe class SsaoPass
         Gl.Uniform1i(_locDirs, (int)_dirs);
         Gl.Uniform1i(_locSteps, (int)_steps);
         Gl.Uniform1f(_locMaxPx, _maxPx);
+        Gl.Uniform1i(_locFrame, temporal ? frameSeq & 63 : 0);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
+        // #390: the blur FIRST -- it folds the Bayer pattern away, and the accumulator's 3x3 clamp needs a
+        // neighbourhood that means something, which four fetches a pixel do not give it.
+        uint blurred = _raw;
         if (blur)
         {
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _out, 0);
@@ -165,9 +203,32 @@ internal static unsafe class SsaoPass
             Gl.Uniform1i(_locBlurSrc, 1);
             Gl.UniformMatrix4fv(_locBlurProj, 1, 0, (float*)proj);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
-            Gl.ActiveTexture(Gl.TEXTURE0 + 1);
-            Gl.BindTexture(Gl.TEXTURE_2D, 0);
+            blurred = _out;
         }
+        _liveOut = _out;
+        if (temporal)
+        {
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, histWrite, 0);
+            Gl.ActiveTexture(Gl.TEXTURE0 + 1); Gl.BindTexture(Gl.TEXTURE_2D, blurred);
+            Gl.ActiveTexture(Gl.TEXTURE0 + 2); Gl.BindTexture(Gl.TEXTURE_2D, histRead);
+            Gl.ActiveTexture(Gl.TEXTURE0 + 3); Gl.BindTexture(Gl.TEXTURE_2D, MotionVectors.Tex);
+            Gl.UseProgram(_progTemporal);
+            Gl.Uniform1i(_locTDepth, 0);
+            Gl.Uniform1i(_locTRaw, 1);
+            Gl.Uniform1i(_locTHist, 2);
+            Gl.Uniform1i(_locTVel, 3);
+            Gl.UniformMatrix4fv(_locTProj, 1, 0, (float*)proj);
+            Gl.Uniform1f(_locTWeight, _histValid ? _temporal : 0f);
+            Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
+            Gl.ActiveTexture(Gl.TEXTURE0 + 3); Gl.BindTexture(Gl.TEXTURE_2D, 0);
+            Gl.ActiveTexture(Gl.TEXTURE0 + 2); Gl.BindTexture(Gl.TEXTURE_2D, 0);
+            _histCur ^= 1; _histValid = true; _temporalRuns++;
+            // the history IS this frame's output: the lit stage reads its red channel
+            _liveOut = histWrite;
+        }
+        else _histValid = false;
+        Gl.ActiveTexture(Gl.TEXTURE0 + 1);
+        Gl.BindTexture(Gl.TEXTURE_2D, 0);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, 0);
         Gl.Enable(Gl.DEPTH_TEST); Gl.DepthMask(1);
@@ -184,12 +245,15 @@ internal static unsafe class SsaoPass
     internal static void BindForDraw(bool on, uint sceneDepth)
     {
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.Ssao);
-        Gl.BindTexture(Gl.TEXTURE_2D, on ? _out : 0);
+        Gl.BindTexture(Gl.TEXTURE_2D, on ? _liveOut : 0);
         // ...and the depth it was computed FROM, so the lit stage can refuse a pixel that is not its own.
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.SsaoDepth);
         Gl.BindTexture(Gl.TEXTURE_2D, on ? sceneDepth : 0);
         Gl.ActiveTexture(Gl.TEXTURE0);
     }
+
+    /// <summary><c>GL_RG16F</c>, absent from <see cref="Gl"/>.</summary>
+    private const uint Rg16F = 0x822F;
 
     private static bool EnsureTargets(int w, int h)
     {
@@ -197,13 +261,21 @@ internal static unsafe class SsaoPass
         if (w <= 0 || h <= 0) return false;
         if (_out == 0)
         {
-            uint* t = stackalloc uint[2];
-            Gl.GenTextures(2, t);
-            _raw = t[0]; _out = t[1];
+            uint* t = stackalloc uint[4];
+            Gl.GenTextures(4, t);
+            _raw = t[0]; _out = t[1]; _hist0 = t[2]; _hist1 = t[3];
             uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
         }
         AllocR8(_raw, w, h);
         AllocR8(_out, w, h);
+        // #390: LINEAR -- the reprojected history lands between texels; the blur reads it by texelFetch.
+        foreach (uint hs in stackalloc uint[2] { _hist0, _hist1 })
+        {
+            Gl.BindTexture(Gl.TEXTURE_2D, hs);
+            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Rg16F, w, h, 0, Gl.RG, Gl.HALF_FLOAT, null);
+            RenderTarget.Clamp(Gl.LINEAR);
+        }
+        _histValid = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _out, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
@@ -245,10 +317,20 @@ internal static unsafe class SsaoPass
         _locDepth = GlProgram.Loc(_prog, "uDepth"); _locProj = GlProgram.Loc(_prog, "uProj"); _locRt = GlProgram.Loc(_prog, "uRt");
         _locRadius = GlProgram.Loc(_prog, "uRadius"); _locPower = GlProgram.Loc(_prog, "uPower");
         _locDirs = GlProgram.Loc(_prog, "uDirs"); _locSteps = GlProgram.Loc(_prog, "uSteps"); _locMaxPx = GlProgram.Loc(_prog, "uMaxPx");
+        _locFrame = GlProgram.Loc(_prog, "uFrame");
         _progBlur = GlProgram.Graphics(PostChain.ShdPostVs, vs, ShdSsaoBlurFs, ShaderStages.Source(ShdSsaoBlurFs), _log, "SSAO blur");
-        if (_progBlur == 0) { _log?.Info("SsaoPass: the blur did not build -- visibility ships unblurred (the 4x4 pattern will show)"); return; }
-        _locBlurSrc = GlProgram.Loc(_progBlur, "uSrc"); _locBlurDepth = GlProgram.Loc(_progBlur, "uDepth");
-        _locBlurProj = GlProgram.Loc(_progBlur, "uProj");
+        if (_progBlur == 0) { _log?.Info("SsaoPass: the blur did not build -- visibility ships unblurred (the 4x4 pattern will show)"); }
+        else
+        {
+            _locBlurSrc = GlProgram.Loc(_progBlur, "uSrc"); _locBlurDepth = GlProgram.Loc(_progBlur, "uDepth");
+            _locBlurProj = GlProgram.Loc(_progBlur, "uProj");
+        }
+        // #390: embedded only, like MotionVectors -- not an override point.
+        _progTemporal = GlProgram.Graphics(PostChain.FullscreenVs, TemporalFs, _log, "SSAO temporal");
+        if (_progTemporal == 0) { _log?.Info("SsaoPass: the temporal stage did not build -- visibility is single-frame (/ao dirs 3 steps 3 restores today's density)"); return; }
+        _locTDepth = GlProgram.Loc(_progTemporal, "uDepth"); _locTProj = GlProgram.Loc(_progTemporal, "uProj");
+        _locTRaw = GlProgram.Loc(_progTemporal, "uRaw"); _locTHist = GlProgram.Loc(_progTemporal, "uHist");
+        _locTVel = GlProgram.Loc(_progTemporal, "uVel"); _locTWeight = GlProgram.Loc(_progTemporal, "uWeight");
     }
 
     /// <summary>Shared by both stages: view-space reconstruction off the frame depth and the pass's own
@@ -286,6 +368,7 @@ internal static unsafe class SsaoPass
         uniform int uDirs;           // slices
         uniform int uSteps;          // steps per side
         uniform float uMaxPx;        // screen-radius clamp
+        uniform int uFrame;          // #390: the noise phase; 0 on the single-frame path
 
         """ + SsaoLib + """
         const float PI = 3.14159265, HALF_PI = 1.57079633;
@@ -314,7 +397,9 @@ internal static unsafe class SsaoPass
             if (rPx < 1.0) { frag = 1.0; return; }
             ivec2 pix = ivec2(gl_FragCoord.xy);
             float b = BAYER[(pix.x & 3) + ((pix.y & 3) << 2)];
-            float noiseSlice = b / 16.0, noiseStep = fract(b * 0.618034);
+            // #390: the phase walks the golden ratio per frame under the accumulator, so successive frames
+            // sample different slices and steps; at uFrame 0 both are exactly the single-frame pattern.
+            float noiseSlice = fract(b / 16.0 + float(uFrame) * 0.618034), noiseStep = fract(b * 0.618034 + float(uFrame) * 0.381966);
             float falloffRange = 0.4 * uRadius, falloffMul = -1.0 / falloffRange, falloffAdd = 0.6 * uRadius / falloffRange + 1.0;
             float minS = 1.3 / rPx;
             float vis = 0.0;
@@ -381,6 +466,42 @@ internal static unsafe class SsaoPass
         }
         """;
 
+    /// <summary>#390: the accumulator. Velocity is <c>prev - cur</c> in this target's pixels, so it is uv
+    /// through its own size; the history's stored view distance against this pixel's is the disocclusion test
+    /// (10% relative), and an off-screen or sky sample takes the current estimate whole.</summary>
+    internal const string TemporalFs = """
+        #version 460 core
+        in vec2 vUV;
+        out vec2 frag;
+        uniform sampler2D uRaw;      // this frame's visibility, blurred
+        uniform sampler2D uHist;     // last frame's (visibility, view distance), LINEAR
+        uniform sampler2D uVel;      // #388: prev - cur, render pixels
+        uniform float uWeight;       // the history's share; 0 = take the frame whole
+
+        """ + SsaoLib + """
+        void main()
+        {
+            float raw = textureLod(uRaw, vUV, 0.0).r;
+            float depth = textureLod(uDepth, vUV, 0.0).r;
+            float dist = depth >= 1.0 ? 0.0 : SowxViewDist(depth);
+            vec2 huv = vUV + textureLod(uVel, vUV, 0.0).rg / vec2(textureSize(uVel, 0));
+            float w = uWeight;
+            if (dist <= 0.0 || any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) w = 0.0;
+            vec2 h = textureLod(uHist, huv, 0.0).rg;
+            w *= 1.0 - clamp(abs(h.g - dist) / (0.1 * max(dist, 1e-3)), 0.0, 1.0);
+            // the neighbourhood clamp: history outside the blurred estimate's 3x3 range is stale, not signal
+            ivec2 pix = ivec2(gl_FragCoord.xy), sz = textureSize(uRaw, 0);
+            float mn = raw, mx = raw;
+            for (int y = -1; y <= 1; y++)
+                for (int x = -1; x <= 1; x++)
+                {
+                    float n = texelFetch(uRaw, clamp(pix + ivec2(x, y), ivec2(0), sz - 1), 0).r;
+                    mn = min(mn, n); mx = max(mx, n);
+                }
+            frag = vec2(mix(raw, clamp(h.r, mn, mx), w), dist);
+        }
+        """;
+
     /// <summary>Off-device: the two stages compose on the shared reconstruction, the gate is the engine's
     /// effect bit, and the lit stage takes the result on the ambient term only.</summary>
     internal static bool SelfCheck(ExtenderLog log)
@@ -407,7 +528,16 @@ internal static unsafe class SsaoPass
             E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
             E(Strength > 0f, "the strength never reads 0 -- a zero exponent is pow(v, 0) = 1, no occlusion at all");
             float r = _radius; Tune("radius", 1.5f); E(_radius == 1.5f, "/ao radius sets"); _radius = r;
-            E(Describe().Contains("radius") && Describe().Contains("power"), "/ao reports its dials");
+            E(Describe().Contains("radius") && Describe().Contains("power") && Describe().Contains("temporal"), "/ao reports its dials");
+            // #390: the accumulator reprojects in the velocity target's own units, tests the history's depth,
+            // and at temporal 0 the raw stage's noise phase is the single-frame one exactly.
+            E(TemporalFs.Contains("/ vec2(textureSize(uVel, 0))") && TemporalFs.Contains("abs(h.g - dist)")
+              && TemporalFs.Contains("clamp(h.r, mn, mx)")
+              && ShaderContract.SlotSafe(TemporalFs, "uRaw", "uHist", "uVel", "uDepth"), "the temporal stage reprojects through the velocity target, rejects a depth mismatch and clamps to the neighbourhood");
+            E(fs.Contains("fract(b / 16.0 + float(uFrame) * 0.618034)"), "the raw stage's noise phase is uFrame-rotated, 0 = today's pattern");
+            float tp = _temporal; Tune("temporal", 0.5f); E(_temporal == 0.5f && !_histValid, "/ao temporal sets and drops the history");
+            Tune("temporal", 0f); E(!TemporalWanted, "temporal 0 asks for no velocity target"); _temporal = tp;
+            E(_bootDirs == 2f && _bootSteps == 1f && _bootTemporal > 0f, "the reduced sample count ships WITH the accumulator on, never alone");
         }
         finally { _log = quiet; }
         log.Info(ok ? "SsaoPass.SelfCheck: passed" : "SsaoPass.SelfCheck: FAILED");

@@ -31,7 +31,7 @@ internal static class ShaderContract
     /// with nothing at all in the log. <see cref="SelfCheck"/> cannot catch it -- it only sees the embedded
     /// text. Counted rather than matched character-for-character, so an override may still reformat or
     /// rename the fields.</summary>
-    public static bool RecordSafe(string src) => RecordSafe(src, "SowxDraw", (AlloyRenderer.DrawFloats - 16) / 4);
+    public static bool RecordSafe(string src) => RecordSafe(src, "SowxDraw", AlloyRenderer.DrawFloats);
 
     /// <summary>#161: the same count, for any per-draw record a C# stride stages.
     /// <para>#302 retired its second caller. The caster pass staged a <c>SowxCaster</c> of its own -- a
@@ -39,15 +39,16 @@ internal static class ShaderContract
     /// overload existed to police a stride that could silently desync from it. The shadow bake reads
     /// <c>SowxDraw</c> now, so there is one stride and one guard; what is left of SowxCaster is bounds and a
     /// slot index, with nothing an override can misread into a neighbour's material.</para>
-    /// <para><paramref name="vec4s"/> is the count AFTER the leading <c>mat4</c>, i.e.
-    /// <c>(strideFloats - 16) / 4</c>.</para></summary>
-    public static bool RecordSafe(string src, string structName, int vec4s)
+    /// <para><paramref name="floats"/> is the whole stride. #392 appended a second <c>mat4</c> (the
+    /// previous model matrix), so the count is by FIELD SIZE now -- a vec4-only count was blind to exactly
+    /// that growth, and a pre-#392 override would have read a 44-float stride against a 60-float buffer.</para></summary>
+    public static bool RecordSafe(string src, string structName, int floats)
     {
         int at = src.IndexOf("struct " + structName, StringComparison.Ordinal);
         if (at < 0) return true;                        // a stage that never declares it cannot disagree
         int end = src.IndexOf('}', at);
         string decl = end < 0 ? src[at..] : src[at..end];
-        return decl.Split("vec4").Length - 1 == vec4s;
+        return 16 * (decl.Split("mat4").Length - 1) + 4 * (decl.Split("vec4").Length - 1) == floats;
     }
 
     /// <summary>#126: does this stage pair carry the cutout and the per-draw alpha? A content override (#92)
@@ -159,9 +160,9 @@ internal static class ShaderContract
         // #208: run FIRST and unconditionally -- it names the slot that disagreed, which the && chain below
         // would swallow.
         bool slots = TextureSlots.Check(log);
-        // the record's field list, counted: four vec4s after the mat4 IS the 128-byte stride staged above
-        bool ok = slots && DrawBufDecl.Contains($"binding = {BindDraw}") && DrawFloats * sizeof(float) == 176
-                  && DrawBufDecl.Split("vec4").Length - 1 == (DrawFloats - 16) / 4
+        // the record's field list, counted by field size: the 240-byte stride staged above (#392 grew it)
+        bool ok = slots && DrawBufDecl.Contains($"binding = {BindDraw}") && DrawFloats * sizeof(float) == 240
+                  && RecordSafe(DrawBufDecl) && DrawBufDecl.Contains("vec4 feat; mat4 prev; }")
                   && DrawBufDecl.Contains("vec4 emi") && DrawBufDecl.Contains("vec4 spc")
                   && DrawBufDecl.Contains("vec4 feat")
                   // #123: the feature ids are a contract between the ShaderFeature enum (staged into
@@ -421,6 +422,9 @@ internal static class ShaderContract
                   // ...and it REFUSES a record that disagrees. A predicate that only ever returns true is
                   // precisely the silent failure it was written to prevent, and nothing else would notice.
                   && !RecordSafe("struct SowxDraw { mat4 model; vec4 rot; };")
+                  // #392: ...and the pre-#392 record, which counts the same vec4s and differs only by the
+                  // trailing mat4 -- the growth a vec4-only count could not see.
+                  && !RecordSafe("struct SowxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; };")
                   && RecordSafe("void main() { }")   // a stage that declares no record cannot disagree
                   // #161: the resolve's inverted colour-space guard, both directions. It is the frame's one
                   // encode, so it must hold on the embedded text and must catch a stage that decodes first

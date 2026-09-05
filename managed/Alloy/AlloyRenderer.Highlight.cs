@@ -119,7 +119,7 @@ public sealed unsafe partial class AlloyRenderer
     private const float MaskOffsetFactor = -1f, MaskOffsetUnits = -2f;
 
     private static uint _progHl, _progHlComp, _hlMaskTex, _hlMaskFbo, _hlVao;
-    private static int _hlVp, _hlBase, _hlColor, _hlCompMask, _hlCompFill, _hlCompRadius;
+    private static int _hlVp, _hlBase, _hlColor, _hlCompMask, _hlCompFill, _hlCompRadius, _hlCompUnjitter;
     private static int _hlW, _hlH;
     private static uint _hlDepthAttached;
     private static bool _hlFailed, _hlLogged;
@@ -163,19 +163,24 @@ public sealed unsafe partial class AlloyRenderer
         uniform sampler2D uMask;
         uniform float uFill;    // fill opacity
         uniform float uRadius;  // outline thickness, px
+        uniform vec2 uUnjitter; // #389: the mask's camera jitter in uv, read back out (0 with TAA off)
         out vec4 frag;
         void main()
         {
             vec2 ts = 1.0 / vec2(textureSize(uMask, 0));
-            vec4 m = texture(uMask, vUV);
+            // The mask was drawn with the frame's JITTERED camera so its depth test holds; the overlay lands in
+            // the accumulated (unjittered) frame, so the mask is sampled half a jitter back -- bilinear, so a
+            // sub-pixel shift is a soft edge rather than a snap.
+            vec2 uv = vUV + uUnjitter;
+            vec4 m = texture(uMask, uv);
             vec3 accC = vec3(0.0);
             float accA = 0.0;
             for (int i = 0; i < 12; i++)
             {
                 float a = 6.2831853 * float(i) / 12.0;
                 vec2 d = vec2(cos(a), sin(a)) * ts * uRadius;
-                vec4 s0 = texture(uMask, vUV + d);
-                vec4 s1 = texture(uMask, vUV + d * 0.5);
+                vec4 s0 = texture(uMask, uv + d);
+                vec4 s1 = texture(uMask, uv + d * 0.5);
                 accC += s0.rgb + s1.rgb;   // rgb scales with coverage at bilinear edges: premultiplied for free
                 accA += s0.a + s1.a;
             }
@@ -205,7 +210,7 @@ public sealed unsafe partial class AlloyRenderer
         _hlBase = GlProgram.Loc(mask, "uDrawBase");
         _hlColor = GlProgram.Loc(mask, "uColor");
         _progHlComp = comp;
-        _hlCompMask = GlProgram.Loc(comp, "uMask");
+        _hlCompMask = GlProgram.Loc(comp, "uMask"); _hlCompUnjitter = GlProgram.Loc(comp, "uUnjitter");
         _hlCompFill = GlProgram.Loc(comp, "uFill");
         _hlCompRadius = GlProgram.Loc(comp, "uRadius");
         if (_hlVao == 0) { uint v; Gl.GenVertexArrays(1, &v); _hlVao = v; }
@@ -254,7 +259,7 @@ public sealed unsafe partial class AlloyRenderer
     /// against the render-res frame depth; the composite over the finished frame runs at
     /// <paramref name="display"/>, sampling the mask bilinearly. The outline radius is in mask texels, so it
     /// widens by 1/scale on screen -- noted, not corrected.</para></summary>
-    private static void OutlineHighlightPass(int groups, Matrix4x4* vp, int* viewport, int* display)
+    private static void OutlineHighlightPass(int groups, Matrix4x4* vp, float jx, float jy, int* viewport, int* display)
     {
         HandledCount = 0;
         if (!QuickbarService.OutlineHighlight) return;
@@ -340,6 +345,8 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(_hlCompMask, 0);
         Gl.Uniform1f(_hlCompFill, FillAlpha);
         Gl.Uniform1f(_hlCompRadius, OutlinePx);
+        // NDC offset j is uv offset j/2; the mask holds clean + j, so clean reads at uv + j/2
+        Gl.Uniform2f(_hlCompUnjitter, jx * 0.5f, jy * 0.5f);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.BindVertexArray(0);
 

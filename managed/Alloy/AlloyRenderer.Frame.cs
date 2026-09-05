@@ -99,6 +99,17 @@ public sealed unsafe partial class AlloyRenderer
 
         Matrix4x4 view = *(Matrix4x4*)(_mtxStacks + ModeView * StackStride + StackTop);
         Matrix4x4 proj = *(Matrix4x4*)(_mtxStacks + ModeProjection * StackStride + StackTop);
+        // #389: the ONE site the projection is read, so the ONE site the TAA jitter goes in: an NDC offset is
+        // a shear of the clip x/y by w, and in this row-vector convention w = z*M34, so the offset lands in
+        // M31/M32 scaled by M34 (sign-agnostic). Every owned stage, the hosted stock text (_projMtx) and the
+        // cull see the same jittered camera; the velocity pass takes it back out. Zero with TAA off.
+        float jx = 0f, jy = 0f;
+        Matrix4x4 vpClean = view * proj;
+        if (PostChain.TaaOn && !_capturing)
+        {
+            PostChain.Jitter(_frameSeq, PostChain.RenderSize(t.Vp2), PostChain.RenderSize(t.Vp3), out jx, out jy);
+            proj.M31 += jx * proj.M34; proj.M32 += jy * proj.M34;
+        }
         _projMtx = proj;   // #347: what a spliced stock file reads as m_proj
         Matrix4x4 vp = view * proj;
         // every froxel input comes off THIS pass's projection, never the capture side (see TryPerspective)
@@ -214,6 +225,8 @@ public sealed unsafe partial class AlloyRenderer
                 long tPasses = FrameZones.Now;
                 // #375: the post bracket opens at PostProcess and closes at PostStack, two graph slots.
                 long tPost = 0; bool postOpen = false;
+                // #390: did the velocity pass run at the AO slot this pass? If not, PostProcess runs it.
+                bool motionRan = false;
                 foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
                 {
                     if (bracket != Bracket.Colour) continue;
@@ -234,8 +247,19 @@ public sealed unsafe partial class AlloyRenderer
                             FrameZones.Add(FrameZones.Zone.Prepass, tPre);
                             break;
                         case PassId.AmbientOcclusion:
+                            // #388/#390: the velocity target off the PREPASS depth, ahead of the AO pass that
+                            // reprojects through it. Its own term -- TIME_ELAPSED cannot nest in the AO one.
+                            // A frame with no prepass depth takes the PostProcess site below instead.
+                            if (PostChain.MotionWanted && DepthResource.Filled(PassGen) && !_capturing)
+                            {
+                                GpuBegin(GpuTerm.Motion);
+                                MotionVectors.Run(PostChain.DepthTex, &vp, &vpClean, jx, jy, viewport, PostChain.Fbo, _frameSeq);
+                                MoverMotionPass(&vp, jx, jy, viewport);
+                                GpuEnd(GpuTerm.Motion);
+                                motionRan = true;
+                            }
                             GpuBegin(GpuTerm.Ao);
-                            SsaoPass.Run(PostChain.DepthTex, DepthResource.Filled(PassGen), &proj, viewport, PostChain.Fbo);
+                            SsaoPass.Run(PostChain.DepthTex, DepthResource.Filled(PassGen), &proj, viewport, PostChain.Fbo, _frameSeq);
                             GpuEnd(GpuTerm.Ao);
                             break;
                         case PassId.OpaqueOwned:
@@ -335,10 +359,11 @@ public sealed unsafe partial class AlloyRenderer
                             // #388: the camera velocity target, off the finished depth and this pass's
                             // view-projection. Its own GPU term, ahead of the post one -- TIME_ELAPSED
                             // queries cannot nest.
-                            if (PostChain.MotionWanted)
+                            if (PostChain.MotionWanted && !motionRan && !_capturing)
                             {
                                 GpuBegin(GpuTerm.Motion);
-                                MotionVectors.Run(PostChain.DepthTex, &vp, viewport, PostChain.Fbo, _frameSeq);
+                                MotionVectors.Run(PostChain.DepthTex, &vp, &vpClean, jx, jy, viewport, PostChain.Fbo, _frameSeq);
+                                MoverMotionPass(&vp, jx, jy, viewport);
                                 GpuEnd(GpuTerm.Motion);
                             }
                             GpuBegin(GpuTerm.Post);
@@ -358,7 +383,10 @@ public sealed unsafe partial class AlloyRenderer
                             // #232 second mode: the owned outline+fill highlight, drawn into the finished
                             // display-space frame with the depth Composite blitted to it. Not a FrameGraph
                             // slot of its own: it is part of finishing the post output, like Bloom.
-                            OutlineHighlightPass(groups, &vp, viewport, display);
+                            // #389: the JITTERED camera for the mask (a biased LEQUAL against the jittered depth;
+                            // the clean camera z-fought it, live), and the jitter handed over so the composite
+                            // reads the mask back into the accumulated frame's space.
+                            OutlineHighlightPass(groups, &vp, jx, jy, viewport, display);
                             GpuEnd(GpuTerm.Post);
                             FrameZones.Add(FrameZones.Zone.Post, tPost);
                             break;

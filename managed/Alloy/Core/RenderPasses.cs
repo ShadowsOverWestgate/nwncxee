@@ -199,6 +199,8 @@ internal static class RenderPasses
             Attach = SsaoPass.Attach,
             SelfCheck = l => SsaoPass.SelfCheck(l),
             ContextLost = SsaoPass.Forget,
+            // #390: the visibility history is another area's after a transition.
+            Revoke = SsaoPass.Revoke,
             Stats = SsaoPass.Stats,
             Describe = SsaoPass.Describe,
             Tune = SsaoPass.Tune,
@@ -210,6 +212,8 @@ internal static class RenderPasses
             Attach = PostStack.Attach,
             SelfCheck = l => PostStack.SelfCheck(l),
             ContextLost = PostStack.Forget,
+            // #389: the TAA history is another area's after a transition; the first frame resolves plain.
+            Revoke = TaaStage.Reset,
             Stats = PostStack.Stats,
         }, log);
         // #179: the Alloy world pass's own dials, so /draw reaches them through the one command

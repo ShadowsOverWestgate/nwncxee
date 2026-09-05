@@ -46,11 +46,15 @@ SOURCES = [
     "managed/Alloy/Pass/SmaaStage.cs",
     "managed/Alloy/Pass/SsaoPass.cs",
     "managed/Alloy/Pass/FrameSnapshot.cs",
+    "managed/Alloy/Pass/MotionVectors.cs",
+    "managed/Alloy/Pass/TaaStage.cs",
+    "managed/Alloy/AlloyRenderer.Motion.cs",
+    "managed/Alloy/AlloyRenderer.Highlight.cs",
 ]
 # ShaderResource.Tokens' three sizing tokens. Any legal value compiles the same shapes.
 TOKENS = {"$CAP$": "128", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3"}
 STAGES = "managed/Alloy/Core/ShaderStages.cs"
-DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*const string (\w+) = (.*)$")
+DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*(?:const|readonly) string (\w+) = (.*)$")
 PIECE = re.compile(r'"""\n(.*?)\n\s*"""|([A-Za-z_]\w*)', re.S)
 RESREF = re.compile(r'(\w+)\s*=\s*"(cx_\w+)"')
 # `internal static string Source(string resref) => resref switch { ... };` -- the shape ShaderStages
@@ -64,7 +68,7 @@ def harvest():
     lines = []
     for path in SOURCES:
         lines += open(os.path.join(ROOT, path)).read().split("\n")
-    consts, i = {}, 0
+    decls, i = [], 0
     while i < len(lines):
         m = DECL.match(lines[i])
         i += 1
@@ -77,19 +81,22 @@ def harvest():
             if lines[i].count('"""') % 2 == 1:
                 fenced = not fenced
             i += 1
-        text = "\n".join(expr)
-        out = []
-        for p in PIECE.finditer(text):
-            if p.group(1) is not None:
-                out.append(textwrap.dedent(p.group(1)) + "\n")
-            elif p.group(2) in consts:
-                out.append(consts[p.group(2)])
-        # An ALIAS (`A = B + C;`, no literal of its own) resolves here too, which is why the emptiness
-        # test replaced a test for a raw literal: a const string that is not shader text -- a config key,
-        # a log line -- names no known constant and folds to nothing, so it still drops out.
-        if not out:
-            continue
-        consts[m.group(1)] = "".join(out)
+        decls.append((m.group(1), "\n".join(expr)))
+    # Two passes: an alias (`A = B + C;`, no literal of its own -- GrassVs is `static readonly`, declared
+    # ABOVE the pieces it names) resolves only once every piece is known, so fold to a fixpoint rather
+    # than in declaration order. A const string that is not shader text -- a config key, a log line --
+    # names no known constant and folds to nothing, so it still drops out.
+    consts = {}
+    for _ in range(4):
+        for name, text in decls:
+            out = []
+            for p in PIECE.finditer(text):
+                if p.group(1) is not None:
+                    out.append(textwrap.dedent(p.group(1)) + "\n")
+                elif p.group(2) in consts:
+                    out.append(consts[p.group(2)])
+            if out:
+                consts[name] = "".join(out)
     return consts
 
 
@@ -414,6 +421,12 @@ def programs(c, s):
         "post stack aa blend": (s["cx_post_vs"], s["cx_smaablend_fs"]),
         "ssao visibility": (s["cx_post_vs"], s["cx_ssao_fs"]),
         "ssao blur": (s["cx_post_vs"], s["cx_ssaoblur_fs"]),
+        "ssao temporal": (c["FullscreenVs"], c["TemporalFs"]),
+        "motion vectors": (c["FullscreenVs"], c["CameraFs"]),
+        "mover motion": (c["MotionVs"], c["MotionFs"]),
+        "taa resolve": (c["FullscreenVs"], c["TaaFs"]),
+        "post stack taa": (s["cx_post_vs"], s["cx_taa_fs"]),
+        "highlight composite": (c["FullscreenVs"], c["HighlightCompFs"]),
         "owned water": (s["cx_water_vs"], s["cx_water_fs"]),
         "instanced grass": (s["cx_grass_vs"], s["cx_grass_fs"]),
         "grass depth prepass": (s["cx_grass_vs"], c["GrassDepthFs"]),

@@ -160,9 +160,16 @@ internal static unsafe class PostChain
     /// doors because a 0x0 target is a refusal, not a look.</summary>
     private static float _scale = 1f, _bootScale = 1f;
     internal const float MinScale = 0.25f, MaxScale = 2f;
-    /// <summary>#388: the camera motion-vector pass, <c>/post motion 1</c>. Off by default -- it has no
-    /// consumer yet, so its cost would buy nothing; <c>/post viz 4</c> runs it regardless to paint it.</summary>
+    /// <summary>#388: the camera motion-vector pass armed on its own, <c>/post motion 1</c>. Its consumers (TAA
+    /// #389, temporal GTAO #390) run it without this; <c>/post viz 4</c> runs it regardless to paint it.</summary>
     private static bool _motion;
+    /// <summary>#389: temporal anti-aliasing, <c>/post taa 1</c>. Arms the sub-pixel jitter at the one site
+    /// Alloy reads the projection (Frame.cs) AND the accumulating stage; the two never ship apart. Off by
+    /// default until live-verified; SMAA stands aside while it is on.</summary>
+    private static bool _taa;
+    /// <summary>#389: the current frame's share of the TAA blend at rest (0.1 = a ten-frame history), <c>/post
+    /// taablend</c>, 0.02..0.5; motion adds to it in the stage.</summary>
+    private static float _taaBlend = 0.1f, _bootTaaBlend = 0.1f;
     private static float _bootBloom, _bootThreshold, _bootKnee, _bootTmKnee, _bootDither, _bootExposure, _bootAcesMix;
     private static int _bootMode;
 
@@ -182,6 +189,7 @@ internal static unsafe class PostChain
         // view until the user typed /post viz 0. Every look dial below is now the same shape.
         _bootBloom = _bloom; _bootThreshold = _threshold; _bootKnee = _knee;
         _bootTmKnee = _tmKnee; _bootMode = _mode; _bootDither = _dither; _bootExposure = _exposure; _bootAcesMix = _acesMix;
+        _bootTaaBlend = _taaBlend;
         _gammaParam = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
         if (_gammaParam == null)
             log.Info("PostChain: RenderInterface::GetGlobalShaderParami unresolved -- the resolve encodes "
@@ -194,7 +202,7 @@ internal static unsafe class PostChain
     internal static string Describe() =>
         $"hdr {(_on ? "on" : "off")}  bloom {_bloom:F3}  threshold {_threshold:F2}  knee {_knee:F2}  " +
         $"exposure {_exposure:F2}  tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  acesmix {_acesMix:F2}  tmknee {_tmKnee:F2}  " +
-        $"dither {_dither:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(_motion ? "on" : "off")}"
+        $"dither {_dither:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(_motion ? "on" : "off")}  taa {(_taa ? "on" : "off")} (taablend {_taaBlend:F2}, aotemporal {SsaoPass.Temporal:F2})"
         + (_viz > 0f ? $"  VIZ {_viz:F0}" : "")
         + (_clearViz ? "  CLEARVIZ (target cleared magenta)" : "")
         + " | " + PostStack.Describe();
@@ -213,8 +221,30 @@ internal static unsafe class PostChain
     /// then averages, and a coarser mip would throw it away. 0 at 1.0, so the default is pixel-identical.</summary>
     internal static float LodBias => MathF.Min(MathF.Log2(_scale), 0f);
 
-    /// <summary>#388: whether the motion-vector pass runs this frame -- armed, or the viz that paints it.</summary>
-    internal static bool MotionWanted => _motion || (int)_viz == VizMotion;
+    /// <summary>#388: whether the motion-vector pass runs this frame -- armed, the viz that paints it, or a
+    /// consumer (TAA #389, temporal GTAO #390) that reprojects through it.</summary>
+    internal static bool MotionWanted => _motion || (int)_viz == VizMotion || TaaOn || SsaoPass.TemporalWanted;
+    /// <summary>#389: TAA is on and its stage can build -- the gate the jitter and the accumulator share, so
+    /// a stage that failed to build never leaves the jitter running with nothing to average it.</summary>
+    internal static bool TaaOn => _taa && !TaaStage.Failed && !MotionVectors.Failed;
+    internal static float TaaBlend => _taaBlend;
+    /// <summary>#389: the jitter sequence length -- Halton(2,3), eight points, then it repeats.</summary>
+    internal const int JitterCount = 8;
+    /// <summary>#389: this frame's sub-pixel jitter in NDC for a render target of <paramref name="w"/> x
+    /// <paramref name="h"/>: Halton(2,3) over <see cref="JitterCount"/> frames, centred on zero, one render
+    /// pixel of spread. Pure, so the self-check can walk the sequence.</summary>
+    internal static void Jitter(int frameSeq, int w, int h, out float jx, out float jy)
+    {
+        int i = (frameSeq & 0x7fffffff) % JitterCount + 1;
+        jx = (Halton(i, 2) - 0.5f) * 2f / Math.Max(w, 1);
+        jy = (Halton(i, 3) - 0.5f) * 2f / Math.Max(h, 1);
+    }
+    private static float Halton(int i, int b)
+    {
+        float f = 1f, r = 0f;
+        while (i > 0) { f /= b; r += f * (i % b); i /= b; }
+        return r;
+    }
     /// <summary><c>/post viz 4</c>: the velocity target, painted by the resolve in place of the frame.</summary>
     internal const int VizMotion = 4;
 
@@ -240,6 +270,12 @@ internal static unsafe class PostChain
             case "clearviz":  old = _clearViz ? 1f : 0f; _clearViz = v != 0f; break;
             case "scale":     old = _scale; _scale = Math.Clamp(v, MinScale, MaxScale); break;
             case "motion":    old = _motion ? 1f : 0f; _motion = v != 0f; break;
+            case "taa":       old = _taa ? 1f : 0f; _taa = v != 0f; if (_taa) TaaStage.Reset(); break;
+            // Capped at 0.5: above it the accumulator stops averaging the jitter and the frame visibly
+            // vibrates (live, at 1.0 -- "an earthquake"). Not an A/B for TAA off; /post taa 0 is.
+            case "taablend":  old = _taaBlend; _taaBlend = Math.Clamp(v, 0.02f, 0.5f); break;
+            // #390: the ticket's door for the AO history weight; /ao temporal is the same dial.
+            case "aotemporal": return SsaoPass.Tune("temporal", v);
             // #375: the display-space stack's own keys, behind the same command.
             default: return PostStack.Tune(key, v);
         }
@@ -254,7 +290,7 @@ internal static unsafe class PostChain
         // viz has no boot value and never should: it is a debug VIEW, not a look setting, so "reset" means
         // off. Leaving it out is why /post reset could not undo a stray /post viz either.
         _viz = 0f; _clearViz = false;
-        _scale = _bootScale; _motion = false;
+        _scale = _bootScale; _motion = false; _taa = false; _taaBlend = _bootTaaBlend;
         PostStack.ResetTuning();
         _log?.Info($"PostChain: /post reset -> {Describe()}");
     }
@@ -1109,7 +1145,7 @@ internal static unsafe class PostChain
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"PostChain.SelfCheck FAIL: {w}"); } }
 
         float bl = _bloom, th = _threshold, kn = _knee, tk = _tmKnee, di = _dither, vz = _viz, sc = _scale, bsc = _bootScale;
-        bool mo = _motion;
+        bool mo = _motion, ta = _taa; float tb = _taaBlend;
         int md = _mode; bool on = _on; bool armed = Armed;
         float bb = _bootBloom, bt = _bootThreshold, bk = _bootKnee, btk = _bootTmKnee, bex = _bootExposure, ex = _exposure, bam = _bootAcesMix, am = _acesMix;
         int bm = _bootMode;
@@ -1120,8 +1156,28 @@ internal static unsafe class PostChain
             // decision. A Tune that still accepted it would be a live half-stand-down.
             E(float.IsNaN(Tune("hdr", 0f)), "hdr is not tunable; it is the boot setting");
             foreach (string key in new[] { "bloom", "threshold", "knee", "tonemap", "tmknee", "exposure", "acesmix",
-                                          "dither", "viz", "scale", "motion" })
+                                          "dither", "viz", "scale", "motion", "taa", "taablend", "aotemporal" })
                 E(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
+            // #389: TAA arms the motion pass and stands SMAA down; both toggle with the one key. The jitter
+            // sequence is centred, one render pixel wide, and repeats -- and is exactly zero-width at no size.
+            Tune("motion", 0f); Tune("viz", 0f); Tune("taa", 1f);
+            E(TaaOn && MotionWanted && !SmaaStage.Active, "/post taa 1 arms the motion pass and stands SMAA down");
+            Tune("taa", 0f); E(!TaaOn && !MotionWanted, "/post taa 0 disarms both together");
+            float sx = 0f, sy = 0f, mx = 0f;
+            for (int f = 0; f < JitterCount; f++)
+            {
+                Jitter(f, 1000, 500, out float jx, out float jy);
+                sx += jx; sy += jy; mx = MathF.Max(mx, MathF.Max(MathF.Abs(jx) * 500f, MathF.Abs(jy) * 250f));
+            }
+            Jitter(0, 1000, 500, out float j0x, out float j0y); Jitter(JitterCount, 1000, 500, out float j8x, out float j8y);
+            // Halton's first eight points are not exactly balanced (base 2 sums to 3.5625, a mean of -0.055
+            // px): a mean under a tenth of a pixel is what this asserts, not zero.
+            E(MathF.Abs(sx) * 500f / JitterCount < 0.1f && MathF.Abs(sy) * 250f / JitterCount < 0.1f, "the jitter sequence is centred within 0.1 px");
+            E(mx <= 0.5f + 1e-4f, "...and stays within half a render pixel");
+            E(j0x == j8x && j0y == j8y, "...and repeats every JitterCount frames");
+            Tune("taablend", 0f); E(_taaBlend >= 0.02f, "taablend never reaches 0: a frozen history would never converge");
+            Tune("taablend", 1f); E(_taaBlend == 0.5f, "...nor 1: that is the raw jitter with nothing averaging it");
+            Tune("aotemporal", 0f); E(SsaoPass.Temporal == 0f, "/post aotemporal reaches the AO history weight");
             // #391: the scale is clamped at the command door too -- RenderCommands only refuses negatives,
             // and a 0x0 target is a refusal wearing a knob's name. And the sizes it produces never hit 0.
             Tune("scale", 0f); E(_scale == MinScale, "scale 0 clamps to the floor");
@@ -1136,7 +1192,7 @@ internal static unsafe class PostChain
             Tune("viz", VizMotion); E(MotionWanted, "viz 4 runs the pass unarmed");
             Tune("viz", 0f); Tune("motion", 1f); E(MotionWanted, "/post motion 1 arms it");
             E(Describe().Contains("bloom") && Describe().Contains("tonemap") && Describe().Contains("dither")
-              && Describe().Contains("exposure") && Describe().Contains("scale") && Describe().Contains("motion"),
+              && Describe().Contains("exposure") && Describe().Contains("scale") && Describe().Contains("motion") && Describe().Contains("taa"),
               "Describe names every knob group");
             E(ResolveFs.Contains("if (uViz == 4)") && ResolveFs.Contains("textureLod(uBloom, vUV, 0.0).rg"),
               "viz 4 paints the velocity target off the bloom unit");
@@ -1173,7 +1229,7 @@ internal static unsafe class PostChain
             _bootBloom = 0.5f; _bootMode = Aces; _bootScale = 0.75f;
             ResetTuning();
             E(_bloom == 0.5f && _mode == Aces, "reset honours the BOOT values, not the hardcoded defaults");
-            E(_scale == 0.75f && !_motion, "reset restores the boot scale (renderscale) and disarms motion");
+            E(_scale == 0.75f && !_motion && !_taa, "reset restores the boot scale (renderscale) and disarms motion and TAA");
             // ...and clears the debug VIEW, which has no boot value. The loop above has just set viz to 1,
             // so this is the live case: without it /post reset cannot undo a stray /post viz.
             E(_viz == 0f, "reset turns the debug viz off");
@@ -1201,7 +1257,8 @@ internal static unsafe class PostChain
             _bloom = Sentinel; _threshold = Sentinel; _knee = Sentinel; _tmKnee = Sentinel;
             _dither = Sentinel; _viz = Sentinel; _scale = Sentinel;
             _bloom = bl; _threshold = th; _knee = kn; _tmKnee = tk; _mode = md; _on = on;
-            _dither = di; _viz = vz; _scale = sc; _bootScale = bsc; _motion = mo;
+            _dither = di; _viz = vz; _scale = sc; _bootScale = bsc; _motion = mo; _taa = ta; _taaBlend = tb;
+            SsaoPass.ResetTuning();
             Armed = armed;
             _bootBloom = bb; _bootThreshold = bt; _bootKnee = bk; _bootTmKnee = btk; _bootExposure = bex; _exposure = ex; _bootAcesMix = bam; _acesMix = am;
             _bootMode = bm;

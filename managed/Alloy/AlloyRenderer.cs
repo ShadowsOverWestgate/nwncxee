@@ -117,9 +117,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// point. Cheap to fix -- the tables are one int and one short per slot.</para></summary>
     internal const int MaxMats = 16384, MatHashBits = 15, MatHash = 1 << MatHashBits;
     /// <summary>Floats per SowxDraw record: std430 <c>mat4 + vec4 rot + vec4 amb + vec4 dif + vec4 emi
-    /// + vec4 pbr + vec4 spc + vec4 feat</c> = 176 bytes, whose alignment (16) already divides the size, so
-    /// the array stride is 176 with no padding.</summary>
-    internal const int DrawFloats = 44;
+    /// + vec4 pbr + vec4 spc + vec4 feat + mat4 prev</c> = 240 bytes (#392 grew it from 176), whose alignment
+    /// (16) already divides the size, so the array stride is 240 with no padding.</summary>
+    internal const int DrawFloats = 60;
+    /// <summary>#392: where <c>prev</c>, the previous frame's model matrix, starts in the record.</summary>
+    internal const int PrevFloat = 44;
     /// <summary>#242: record slots the persistent buffer can hold -- one per ownership slot, plus the sky's
     /// reserved block immediately above them. The sky's parts are not in the ownership table (they are
     /// captured off the engine's matrix stack) and are restaged every pass, so they take a fixed block at the
@@ -1544,6 +1546,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progDepth = 0; _progDepthKey = 0; _progDepthFeat = 0; _progWater = 0; _fbo46 = 0; _progSkyDecode = 0;
         HighlightContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
+        MotionContextLost();
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
         // capacity so the next upload reallocates rather than writing into a dead name, and the epoch so
         // every record is rebuilt rather than assumed still on the GPU.

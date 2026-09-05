@@ -37,6 +37,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>#123: <c>feat</c> is (<see cref="ShaderFeature"/>, and the three parameters that feature reads).
     /// Same reason it is per draw and not a uniform: one batch spans materials asking for different
     /// shaders.</para>
+    /// <para>#392: <c>prev</c> is the model matrix of the PREVIOUS frame -- rolled forward on every frame the
+    /// record is built, so it equals <c>model</c> for everything standing still and lags it by one frame on a
+    /// mover. Only the mover velocity stage (<see cref="MotionVs"/>) reads it.</para>
     /// <para>#242: the extra indirection is what lets the records be PERSISTENT -- they are indexed by
     /// ownership slot and written only when the part moves, while the draw order is per pass. The index
     /// array is the only per-draw thing the frame still uploads whole, at four bytes each.</para>
@@ -48,7 +51,7 @@ public sealed unsafe partial class AlloyRenderer
     /// by name). Upgrade path if a real client ever hits it: probe the limit and put the fullbright variant's
     /// records in a UBO, which has a required vertex-stage minimum of 12 blocks.</para></summary>
     internal const string DrawBufDecl = """
-        struct SowxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; };
+        struct SowxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; mat4 prev; };
         layout(std430, binding = 4) readonly buffer SowxDrawBuf { SowxDraw uDraw[]; };
         layout(std430, binding = 9) readonly buffer SowxDrawIdxBuf { int uDrawIdx[]; };
         // #242: the record slot draw n reads. Records are indexed by OWNERSHIP slot and persist across

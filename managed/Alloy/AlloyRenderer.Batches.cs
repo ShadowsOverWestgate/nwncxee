@@ -395,10 +395,25 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#242: the per-frame half of the record, compared into place. Returns whether anything
     /// actually moved -- which is the whole scheme: a field rewritten with the value it already held does
     /// not make its record a mover, and only movers are re-sent.</summary>
-    private static bool WritePerFrame(float* r, in RecordFrameState f)
+    /// <para>#392: <c>prev</c> (floats 44..59) is LAST FRAME's model. <paramref name="roll"/> is "this is the
+    /// record's first build this frame": the old model rolls into prev when the model moved, and prev catches
+    /// up to the model the frame after a mover stops (one extra re-send, so a closed door does not report
+    /// motion forever). <paramref name="fresh"/> seeds prev = model, so a new tenant never carries the last
+    /// tenant's matrix as its history.</para></summary>
+    private static bool WritePerFrame(float* r, in RecordFrameState f, bool roll = true, bool fresh = false)
     {
         bool m = false;
-        if (f.HasModel && *(Matrix4x4*)r != f.Model) { *(Matrix4x4*)r = f.Model; m = true; }
+        if (f.HasModel)
+        {
+            Matrix4x4* model = (Matrix4x4*)r, prev = (Matrix4x4*)(r + PrevFloat);
+            if (*model != f.Model)
+            {
+                if (roll) *prev = *model;
+                *model = f.Model; m = true;
+            }
+            else if (roll && *prev != *model) { *prev = *model; m = true; }
+            if (fresh) *prev = f.Model;
+        }
         m |= St(r + 18, f.Dissolve) | St(r + 19, f.Alpha);
         if (f.Lit)
         {
@@ -417,7 +432,7 @@ public sealed unsafe partial class AlloyRenderer
     /// here too: a part whose class does not stage a node has no live matrix to re-read.</summary>
     private static void WriteStable(float* r, int i, bool lit)
     {
-        if (!_oMx[i]) *(Matrix4x4*)r = Matrix4x4.Identity;
+        if (!_oMx[i]) { *(Matrix4x4*)r = Matrix4x4.Identity; *(Matrix4x4*)(r + PrevFloat) = Matrix4x4.Identity; }
         r[16] = _oCos[i]; r[17] = _oSin[i];
         int fo = i * 4;
         r[42] = _oFeat[fo + 2];
@@ -452,7 +467,7 @@ public sealed unsafe partial class AlloyRenderer
         bool ok;
         fixed (float* r = rec)
         {
-            ok = WritePerFrame(r, in f) && !WritePerFrame(r, in f);
+            ok = WritePerFrame(r, in f, fresh: true) && !WritePerFrame(r, in f);
             if (!ok) log.Info("AlloyRenderer.SplitSelfCheck: FAILED -- a record is a mover every frame, or "
                               + "never one; either way the persistent-record scheme is not running");
             // one field at a time, restored after each, so a miss names itself rather than being masked by
@@ -476,11 +491,23 @@ public sealed unsafe partial class AlloyRenderer
             Matrix4x4 was = f.Model;
             f.Model = Matrix4x4.CreateTranslation(9f, 9f, 9f);
             bool mm = WritePerFrame(r, in f);
-            f.Model = was;
+            // #392: the frame the matrix moved, prev holds where it WAS; the next build (nothing moved) rolls
+            // prev up to the model and re-sends once; the one after that is quiet.
+            bool prevLag = *(Matrix4x4*)(r + PrevFloat) == was && *(Matrix4x4*)r == f.Model;
+            bool catchUp = WritePerFrame(r, in f) && *(Matrix4x4*)(r + PrevFloat) == f.Model && !WritePerFrame(r, in f);
+            // ...and a second build in the SAME frame (roll: false) leaves prev where the first put it.
+            f.Model = Matrix4x4.CreateTranslation(3f, 3f, 3f);
             WritePerFrame(r, in f);
+            Matrix4x4 held = *(Matrix4x4*)(r + PrevFloat);
+            bool sameFrame = !WritePerFrame(r, in f, roll: false) && *(Matrix4x4*)(r + PrevFloat) == held;
+            f.Model = was;
+            WritePerFrame(r, in f, fresh: true);
             if (!mm) log.Info("AlloyRenderer.SplitSelfCheck: FAILED -- a moved model matrix does not "
                               + "re-send its record; every creature and door would freeze where it stood");
-            ok &= mm;
+            if (!prevLag || !catchUp || !sameFrame)
+                log.Info("AlloyRenderer.SplitSelfCheck: FAILED -- prev is not last frame's model (#392): a stopped "
+                         + "door would report motion forever, or a mover would lose its vectors");
+            ok &= mm && prevLag && catchUp && sameFrame;
         }
         return ok;
     }
@@ -583,6 +610,7 @@ public sealed unsafe partial class AlloyRenderer
             }
         }
         _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = 0;
+        _mvN = 0;   // #392: this pass's mover list, whether or not a velocity pass consumes it
         // #242: the persistent buffer grows to the high-water ownership count and never shrinks. A growth
         // reallocates it, so everything in it goes back up on this frame rather than only the movers.
         if (_ownCount > _recOwnCap) { _recOwnCap = _ownCount; _recDirtyAll = true; }
@@ -700,6 +728,12 @@ public sealed unsafe partial class AlloyRenderer
             // #242: the record this draw reads lives at the OWNERSHIP slot and outlives the frame; the draw
             // order does not, so the draw carries the slot rather than the record.
             _dSlot[n] = i;
+            // #392: a matrix mover this frame -- its record's prev lags its model by one frame, and the velocity
+            // stage redraws it with both. Rigid and opaque only: a skinned or displaced mesh moves under a
+            // matrix that does not, and a cutout mover would paint its own velocity over its holes.
+            if (_recMovedAt[i] == _frameSeq && _oMx[i] && _oBone[i] < 0 && cls == (int)AlloyClass.Opaque
+                && !ShaderFeatures.OutOfPrepass(feat))
+                NoteMoverDraw(n);
             // #287: and the same draw as the cull's source record -- the batch is the one the cut just
             // opened or extended, and its output base is where its compacted run starts.
             CullPass.Pack(srcAll + (long)n * CullPass.SrcUints, idxCount, _dOff[n], _dBase[n], i,
@@ -1099,7 +1133,9 @@ public sealed unsafe partial class AlloyRenderer
                 // tenant is the other true mover (the new part APPEARED in the views it stands in).
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
                 bool casterMoved = pf.HasModel && *(Matrix4x4*)r != pf.Model;
-                rec |= WritePerFrame(r, in pf);
+                // #392: prev rolls once per FRAME -- a second build of this record in the same frame (a
+                // reflection subframe) must not catch prev up to the model and erase the mover's vectors.
+                rec |= WritePerFrame(r, in pf, roll: _recFrame[i] != _frameSeq, fresh: stale || newTenant);
                 // #153: this record's textures as resident handles -- diffuse at 0, material slots 1..7 in
                 // the shader's macro order (slotTid[k] = material texture k+1). Only for lit records; unlit
                 // parts draw on the bind path and never read the block. Re-minted only when the borrowed
