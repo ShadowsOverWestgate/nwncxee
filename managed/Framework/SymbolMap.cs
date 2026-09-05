@@ -359,6 +359,11 @@ internal static unsafe class SymbolMap
     /// re-assert is one frame too late for.
     /// <para>ABI: <c>(CAurTextureBasic* /*rdi*/)</c>, no return.</para></summary>
     public const string AurTextureConstructImage = "_ZN16CAurTextureBasic14ConstructImageEv";
+    /// <summary><c>CAurTextureBasic::BuildAndStoreTexture()</c> @0x48b320 -- the inner build: ConstructImage (the
+    /// resource read via AurGetImageWrapper and the decode) unless +0xe6, glImageBasic (the upload) unless the
+    /// image is null, the alpha mean, FreeImage. Skipped outright when +0xe8 is set. ADR 0023 hooks it to stand a
+    /// resident texture in for the whole of that. ABI: <c>(CAurTextureBasic* /*rdi*/)</c>, no return.</summary>
+    public const string AurTextureBuildAndStoreTexture = "_ZN16CAurTextureBasic20BuildAndStoreTextureEv";
     /// <summary><c>CAurTextureBasic::glImageBasic(bool)</c> @0x48bcf0 -- the other <see cref="PltOnGpu"/>
     /// reader, and the one that routes a PLT texture (<c>+0x84 == 4</c>) around the upload funnel. Hooked
     /// for the same reason and on the same terms as <see cref="AurTextureConstructImage"/>.

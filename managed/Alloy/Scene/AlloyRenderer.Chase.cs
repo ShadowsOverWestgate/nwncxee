@@ -177,7 +177,7 @@ public sealed unsafe partial class AlloyRenderer
                       || MathF.Abs(_passPlanes[o + 3] - _visPlanes[o + 3]) > VisDistEps;
             }
         if (!due) return;
-        _visRebuilds++;
+        _visRebuilds++; FrameZones.Count(FrameZones.Ev.VisRebuild);
         _visBuiltAt = _frameSeq; _visEnrollGen = _enrollGen; _visEpoch = _recEpoch;
         Array.Copy(_passPlanes, _visPlanes, 24);
         int n = 0;
@@ -235,7 +235,7 @@ public sealed unsafe partial class AlloyRenderer
     private static bool RouteWanted(int i, float* sph)
     {
         if (_fullPoll || !_passFrustumOk || _visAll) return true;
-        if (_recGen[i] != _recEpoch || _recEnroll[i] != _oEnrollGen[i]) return true;
+        if (_recGen[i] != _recEpoch || _recEnroll[i] != _oEnrollGen[i] || _recTexStale[i]) return true;
         if (_oGob[i] != IntPtr.Zero && VisSlot(_oGob[i], false)) return true;
         // #336: no stamp on the rejected slot -- the shadow side reads "moved on its LAST build, and that
         // build was last frame" (SlotRecMoved), so an unvisited slot reads still on its own.

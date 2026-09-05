@@ -103,7 +103,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
 
         int stale = 0;
         for (int i = 0; i < MaxParts; i++)
-            if (_pState[i] == StActive && _pVdo[i] == vdo) { _pState[i] = StStale; stale++; }
+            if (_pState[i] == StActive && _pVdo[i] == vdo) { _pState[i] = StStale; SceneWalk.NoteChanged(i); stale++; }
         // #256: a repack changes no scene membership, so nothing else would ever look at these again --
         // the epoch will not move for a layout change. Ask for a walk, whose sweep re-queues them.
         if (stale > 0) SceneWalk.NoteStale();

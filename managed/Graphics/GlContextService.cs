@@ -22,7 +22,11 @@ public sealed unsafe class GlContextService : IExtenderService
 {
     private const int LogEvery = 900;
     private const ulong TimeoutIgnored = 0xFFFFFFFFFFFFFFFFUL;
-    private const uint GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117, GL_VERSION = 0x1F02;
+    private const uint GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117, GL_VERSION = 0x1F02, GL_RENDERER = 0x1F01;
+    /// <summary>The 4.6 context's GL_RENDERER names zink (Mesa's GL-on-Vulkan): the test vehicle whose bindless
+    /// teardown faults on a worker thread at texture delete; OwnedTextures reads it to keep such names alive.</summary>
+    internal static bool Zink => _zink;
+    private static bool _zink;
     private const int GLX_FBCONFIG_ID = 0x8013;
     private const int GLX_CONTEXT_MAJOR_VERSION_ARB = 0x2091, GLX_CONTEXT_MINOR_VERSION_ARB = 0x2092;
     private const int GLX_CONTEXT_PROFILE_MASK_ARB = 0x9126, GLX_CONTEXT_CORE_PROFILE_BIT_ARB = 0x1;
@@ -206,6 +210,8 @@ public sealed unsafe class GlContextService : IExtenderService
             return;
         }
         string ver = getString != null ? CStr(getString(GL_VERSION)) : "?";
+        string renderer = getString != null ? CStr(getString(GL_RENDERER)) : "?";
+        _zink = renderer.Contains("zink", StringComparison.OrdinalIgnoreCase);
         bool dbg = _debug && ArmDebug();
         while (Gl.GetError() != 0) { }   // fresh-context error queue starts clean
         _makeCur(_dpy, _drw, _engCtx);
@@ -227,7 +233,7 @@ public sealed unsafe class GlContextService : IExtenderService
         _flush();
         if (_makeCur(_dpy, _drw, Context) == 0) { _switchFails++; if (fIn != IntPtr.Zero) _deleteSync(fIn); return false; }
         if (fIn != IntPtr.Zero) { _waitSync(fIn, 0, TimeoutIgnored); _deleteSync(fIn); }
-        if (!_stamped) _stamped = _span.Begin();
+        if (!_stamped) { _span.LastMs = -1; _stamped = _span.Begin(); if (_span.LastMs >= 0) FrameZones.Gpu(_span.LastMs, GpuStamp.Age); }
         return true;
     }
 

@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System;
+using Sowx.Framework;
 using Sowx.Graphics;
 
 namespace Sowx.Alloy;
@@ -266,6 +268,119 @@ public sealed unsafe partial class AlloyRenderer
     /// every frame by the batch key (a bind-path batch cuts on its textures) even when the record itself
     /// does not move.</summary>
     private static readonly int[] _recTid = new int[MaxOwned];
+    /// <summary>The record's owned texture name RETIRED under it (the transcode drip swapping a raw upload for
+    /// its compressed copy): the engine pointer is unchanged, so the pointer compare alone would keep the
+    /// record sampling a handle the drain has since dropped. Routed and re-resolved regardless of the
+    /// frustum, then cleared. Set by <see cref="NoteOwnedNameRetired"/> from a walk over the record tids --
+    /// per slot on purpose: a global generation re-staged the whole world on every drip frame (Restage
+    /// 5,7ms in hitch frames against 0,8 mean, measured).</summary>
+    private static readonly bool[] _recTexStale = new bool[MaxOwned];
+
+    /// <summary>Only the records that minted on the retired name go stale -- the global generation this
+    /// replaced re-staged the whole world per drip frame.</summary>
+    internal static void SelfCheckNameRetired(ExtenderLog log)
+    {
+        int sv = _ownCount; _ownCount = 4;
+        var svTid = new int[4]; Array.Copy(_recTid, svTid, 4);
+        var svS = new int[4 * MapSlots]; Array.Copy(_recTidS, svS, 4 * MapSlots);
+        var svStale = new bool[4]; Array.Copy(_recTexStale, svStale, 4);
+        Array.Clear(_recTid, 0, 4); Array.Clear(_recTidS, 0, 4 * MapSlots); Array.Clear(_recTexStale, 0, 4);
+        _recTid[1] = 77; _recTidS[3 * MapSlots + 2] = 77; _recTid[2] = 78;
+        NoteOwnedNameRetired(77);
+        bool ok = !_recTexStale[0] && _recTexStale[1] && !_recTexStale[2] && _recTexStale[3];
+        // #386: a swap renames in place and queues the two records, once each
+        int svSwapN = _swapN; _swapN = 0;
+        NoteOwnedNameSwapped(77, 79); NoteOwnedNameSwapped(79, 80);
+        ok &= _recTid[1] == 80 && _recTidS[3 * MapSlots + 2] == 80 && _recTid[2] == 78 && _swapN == 2
+              && _recSwapped[1] && _recSwapped[3] && !_recSwapped[0];
+        _recSwapped[1] = _recSwapped[3] = false; _swapN = svSwapN;
+        Array.Copy(svTid, _recTid, 4); Array.Copy(svS, _recTidS, 4 * MapSlots); Array.Copy(svStale, _recTexStale, 4); _ownCount = sv;
+        log.Info(ok ? "AlloyRenderer.SelfCheckNameRetired: passed" : "AlloyRenderer.SelfCheckNameRetired: FAILED -- a retired name did not mark exactly its records");
+    }
+
+    /// <summary>#386: an owned name was REPLACED by another for the same content (the transcode swap, an
+    /// engine re-upload). Re-staging every record on it was Restage 3,3-4,9ms against 1,1 in the hitch rows
+    /// (a tileset texture sits on hundreds of parts); instead the records take the new name here and their
+    /// handle block is rewritten in the next bracket by <see cref="ApplySwaps"/> -- no chase, no re-stage.</summary>
+    internal static void NoteOwnedNameSwapped(uint oldName, uint newName)
+    {
+        int o = (int)oldName, nw = (int)newName;
+        for (int i = 0; i < _ownCount; i++)
+        {
+            bool hit = false;
+            if (_recTid[i] == o) { _recTid[i] = nw; hit = true; }
+            for (int s = 0; s < MapSlots; s++)
+                if (_recTidS[i * MapSlots + s] == o) { _recTidS[i * MapSlots + s] = nw; hit = true; }
+            if (hit && !_recSwapped[i]) { _recSwapped[i] = true; if (_swapN < _swapSlots.Length) _swapSlots[_swapN++] = i; else _swapOverflow = true; }
+        }
+    }
+    private static readonly bool[] _recSwapped = new bool[MaxOwned];
+    private static readonly int[] _swapSlots = new int[4096];
+    private static int _swapN;
+    private static bool _swapOverflow;
+
+    /// <summary>Inside the 4.6 bracket (handles are minted and made resident there): rewrite the handle
+    /// block of every swapped record from its tids and mark it for upload. A record that never had handles
+    /// (unlit) is left alone -- minting for it would spend residency on a texture nothing samples.</summary>
+    private static void ApplySwaps()
+    {
+        if (_swapN == 0 && !_swapOverflow) return;
+        int n = _swapOverflow ? _ownCount : _swapN;
+        fixed (ulong* th = _dTexH)
+        {
+            for (int k = 0; k < n; k++)
+            {
+                int i = _swapOverflow ? k : _swapSlots[k];
+                _recSwapped[i] = false;
+                if (_oTri[i] == IntPtr.Zero) continue;
+                ulong* hh = th + (long)i * 8;
+                if (hh[0] == 0) continue;
+                hh[0] = HandleFor(_recTid[i]);
+                for (int s = 0; s < MapSlots; s++) hh[1 + s] = _recTidS[i * MapSlots + s] != 0 ? HandleFor(_recTidS[i * MapSlots + s]) : 0;
+                MarkRecordDirty(i);
+            }
+        }
+        _swapN = 0; _swapOverflow = false;
+    }
+
+    /// <summary>Mark every record that minted a handle on <paramref name="name"/>. Cold (once per retired
+    /// name), MaxOwned x 8 int compares.</summary>
+    internal static void NoteOwnedNameRetired(uint name)
+    {
+        int n = (int)name;
+        for (int i = 0; i < _ownCount; i++)
+        {
+            if (_recTid[i] == n) { _recTexStale[i] = true; continue; }
+            for (int s = 0; s < MapSlots; s++)
+                if (_recTidS[i * MapSlots + s] == n) { _recTexStale[i] = true; break; }
+        }
+    }
+    /// <summary>The Drain-time form: every name about to lose its handle, marked in one scan. Replaces the
+    /// record-epoch bump <c>DropHandle</c> used to make -- which dirtied all 20k records, re-collected the
+    /// caster list and rebuilt the visible set on every owned-texture release (one every second or two in the
+    /// plaza under the texture cache). A swapped record already holds its new name, so it matches nothing here.
+    /// ponytail: names past the mark table fall back to the epoch bump; GL names are small ints in practice.</summary>
+    internal static void NoteOwnedNamesRetired(List<uint> names, HashSet<uint> handles)
+    {
+        if (names.Count == 0 && handles.Count == 0) return;
+        foreach (uint n in names) if (n >= _nameMark.Length) { InvalidateRecords(); return; }
+        foreach (uint n in handles) if (n >= _nameMark.Length) { InvalidateRecords(); return; }
+        foreach (uint n in names) _nameMark[n] = 1;
+        foreach (uint n in handles) _nameMark[n] = 1;
+        for (int i = 0; i < _ownCount; i++)
+            {
+                int t = _recTid[i];
+                if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { _recTexStale[i] = true; continue; }
+                for (int k = 0; k < MapSlots; k++)
+                {
+                    t = _recTidS[i * MapSlots + k];
+                    if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { _recTexStale[i] = true; break; }
+                }
+            }
+        foreach (uint n in names) _nameMark[n] = 0;
+        foreach (uint n in handles) _nameMark[n] = 0;
+    }
+    private static readonly byte[] _nameMark = new byte[1 << 20];
     private static readonly int[] _recTidS = new int[MaxOwned * MapSlots];
     private static readonly int[] _recSlotMask = new int[MaxOwned];
     /// <summary>#242: how many record slots the persistent GPU buffer holds for OWNED parts, the sky's

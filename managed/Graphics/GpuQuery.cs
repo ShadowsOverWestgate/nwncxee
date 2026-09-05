@@ -39,7 +39,11 @@ public unsafe struct GpuQuery
         int ready; Gl.GetQueryObjectiv(q, Gl.QUERY_RESULT_AVAILABLE, &ready);
         if (ready == 0) return;
         ulong v; Gl.GetQueryObjectui64v(q, Gl.QUERY_RESULT, &v);
-        _sum += v; _n++; pending = false;
+        pending = false;
+        // zink answered 8.2e15 ns for one term (2026-09-05): a sample longer than ten seconds is a driver's
+        // nonsense, not a frame, and one of them would own the period mean
+        if (v > 10_000_000_000UL) return;
+        _sum += v; _n++;
     }
 
     /// <summary>Period mean, 0 when nothing was harvested (which reads as "no measurement", not "free").</summary>

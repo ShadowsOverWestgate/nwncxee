@@ -196,7 +196,7 @@ internal static unsafe class AlloyLights
         $"gain {_gain:F2}  wrapradius {_srcRadius:F2}  rimfade {_falloffPow:F2}  " +
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  " +
         $"ambient x{AmbientScale:F2}  sun x{SunScale:F2}  overbright x{OverbrightScale:F2}  " +
-        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  binreach {_binReach:F2}  bincap {_binCap:F0}  shadownear {_shadowNear:F2}  " +
+        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  binreach {_binReach:F2}  bincap {_binCap:F0}  reachfade {_reachFade:F0}  shadownear {_shadowNear:F2}  " +
         // The engine's area terms are NOT echoed here: they live only during the world render, and a chat
         // command runs after it, where they read zero. FrameRead.EngineAreaTerms is printed from the
         // /shadow trace line instead, which is inside the pass slot.
@@ -224,6 +224,7 @@ internal static unsafe class AlloyLights
             case "discpx": old = _discPx; _discPx = v; break;
             case "shadowcap": old = _shadowCap; _shadowCap = Math.Clamp(v, 0f, 2f); break;   // 0 = every light; the shader keeps 2 candidates
             case "binreach": old = _binReach; _binReach = Math.Clamp(v, 0.1f, 4f); break;
+            case "reachfade": old = _reachFade; _reachFade = v != 0f ? 1f : 0f; break;
             case "bincap":   old = _binCap; _binCap = Math.Clamp(MathF.Round(v), 0f, ClusterCap); break;
             case "shadownear": old = _shadowNear; _shadowNear = v; break;
             case "hot":     old = _hot; _hot = v; break;
@@ -251,7 +252,7 @@ internal static unsafe class AlloyLights
         float Att(float f2, float gain) => gain * (1f - f2) / (_atten.X + _atten.Y * f2);
         float g = _gain, r = _srcRadius, p = _falloffPow, am = AmbientScale, su = SunScale, ov = OverbrightScale;
         float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN, sf = _discPx, sc = _shadowCap;
-        float sv = _sss, bre = _binReach, bca = _binCap;
+        float sv = _sss, bre = _binReach, bca = _binCap, rf = _reachFade;
         float bg = _bootGain, br = _bootRadius, bp = _bootPow, ba = _bootAmbient, bs = _bootSun, bo = _bootOver;
 
         _bootGain = 40f; _bootRadius = 0.7f; _bootPow = 2f; _bootAmbient = 1f; _bootSun = 1f; _bootOver = 1f;
@@ -259,11 +260,11 @@ internal static unsafe class AlloyLights
         bool ok = float.IsNaN(Tune("nope", 1f));                       // unknown knob is reported
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyLights.SelfCheck FAIL: {w}"); } }
         foreach (var key in new[] { "gain", "radius", "falloff", "ambient", "sun", "overbright",
-                                    "wrap", "wrapndl", "sss", "shadowsoft", "discpx", "shadowcap", "shadownear", "hot", "hotsize", "binreach", "bincap" })
+                                    "wrap", "wrapndl", "sss", "shadowsoft", "discpx", "shadowcap", "shadownear", "hot", "hotsize", "binreach", "bincap", "reachfade" })
             ok &= !float.IsNaN(Tune(key, 3f));                          // every documented knob is reachable
         ok &= _gain == 3f && _srcRadius == 3f && _falloffPow == 3f && AmbientScale == 3f && SunScale == 3f
               && OverbrightScale == 3f && _wrap == 3f && _shadowSoft == 3f && _discPx == 3f && _shadowNear == 3f
-              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadowCap == 2f && _sss == 3f && _binReach == 3f && _binCap == 3f;
+              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadowCap == 2f && _sss == 3f && _binReach == 3f && _binCap == 3f && _reachFade == 1f;
         _bootGain = 7f;                                                 // reset must honour the BOOT value...
         ResetTuning();
         ok &= _gain == 7f && _srcRadius == 0.7f && AmbientScale == 1f;  // ...not the 40f literal
@@ -323,7 +324,7 @@ internal static unsafe class AlloyLights
 
         _gain = g; _srcRadius = r; _falloffPow = p; AmbientScale = am; SunScale = su; OverbrightScale = ov;
         _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn; _discPx = sf; _shadowCap = sc;
-        _sss = sv; _binReach = bre; _binCap = bca;
+        _sss = sv; _binReach = bre; _binCap = bca; _reachFade = rf;
         _log = quiet;
         log.Info(ok ? "AlloyLights.SelfCheck: passed"
                     : "AlloyLights.SelfCheck: FAILED -- /light knob table drifted from its documented keys");
@@ -337,7 +338,7 @@ internal static unsafe class AlloyLights
         AmbientScale = _bootAmbient; SunScale = _bootSun; OverbrightScale = _bootOver;
         _wrap = _bootWrap; _shadowSoft = _bootShadowSoft; _shadowNear = _bootShadowNear; _discPx = _bootDiscPx;
         _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN; _shadowCap = _bootShadowCap; _sss = _bootSss;
-        _binReach = _bootBinReach; _binCap = _bootBinCap;
+        _binReach = _bootBinReach; _binCap = _bootBinCap; _reachFade = _bootReachFade;
         _log?.Info($"AlloyLights: /light reset -> {Describe()}");
     }
     /// <summary>What the shader is actually running, for the period log -- read where it is USED, not at
@@ -541,8 +542,9 @@ internal static unsafe class AlloyLights
     /// per pass right after the program is bound.</summary>
     internal static void SetDrawUniforms(int locGrid, int locTile, int locZ, int locFalloff, int locWrap,
                                          int locAtten, int locHot, int locWrapN, int locSss, int* viewport,
-                                         float near, float far)
+                                         float near, float far, int locReach = -1)
     {
+        if (locReach >= 0) Gl.Uniform1f(locReach, ReachUniform);
         if (near < MinNear) near = MinNear;
         if (locGrid >= 0) Gl.Uniform3i(locGrid, GridX, GridY, GridZ);
         if (locTile >= 0)
@@ -587,6 +589,10 @@ internal static unsafe class AlloyLights
     /// they cannot visibly light; every one of them still costs the full per-light body per fragment.
     /// Read with <c>/draw viz 38</c> (lights per pixel). 1 = the full radius.</summary>
     private static float _binReach = 0.8f, _bootBinReach = 0.8f;
+    /// <summary><c>/light reachfade</c>: 1 = the lit stage windows every light to its binned reach (see
+    /// <c>uReach</c>), 0 = the bin cut alone, as #384 shipped it.</summary>
+    private static float _reachFade = 1f, _bootReachFade = 1f;
+    internal static float ReachUniform => _reachFade != 0f ? _binReach : 0f;
     internal static float BinReach => _binReach;
     /// <summary>EXPERIMENT: the most lights a froxel keeps -- the K strongest by the engine's curve at the
     /// froxel's nearest point times the colour's luma, vanilla's per-object list made per froxel. 0 = all.
@@ -715,6 +721,7 @@ internal static unsafe class AlloyLights
         // degrades to static-only rather than to sampling page zero.
         uniform samplerCubeArrayShadow uLocalDynShadow;
         uniform float uLocalDynPage[64];
+        uniform float uLocalFade[64];   // per-slot shadow strength: a slot fading in after its bake or out after its light left the budget
 
         // Sample point pushed along the normal by this many cube texels -- the same acne fight the sun
         // cascades run, scaled by the texel a face actually spans at this distance rather than a constant.
@@ -793,7 +800,7 @@ internal static unsafe class AlloyLights
             float v = min(vs, vd);
             // #326: one tap when the disc is under its pixel budget on screen (z = px / lod scale) -- four of
             // every five cube fetches
-            if (uLocalSoft.x <= 0.0 || (uLocalSoft.z > 0.0 && texel * uLocalSoft.x < viewDepth * uLocalSoft.z)) return v;
+            if (uLocalSoft.x <= 0.0 || (uLocalSoft.z > 0.0 && texel * uLocalSoft.x < viewDepth * uLocalSoft.z)) return mix(1.0, v, uLocalFade[slot]);
             // #139: four more taps on a disc perpendicular to the sample ray. The cube fetch is already
             // hardware PCF, so this WIDENS that filter rather than replacing it. The reference depth is
             // deliberately the centre tap's for all five -- re-deriving it per tap would compare each
@@ -823,7 +830,7 @@ internal static unsafe class AlloyLights
                 vd += texture(uLocalDynShadow, vec4(d - ev, pg - 1.0), ref);
                 vd *= 0.2;
             }
-            return min(vs * 0.2, vd);
+            return mix(1.0, min(vs * 0.2, vd), uLocalFade[slot]);
         }
 
         """;
@@ -846,6 +853,10 @@ internal static unsafe class AlloyLights
         // #142: (near-field weight, core size as a fraction of the range). Zero on a stage that never gets
         // it, which is #140's curve unchanged.
         uniform vec2 uHot;
+        // The cluster bins a light out to uReach * R (/light binreach). Without a matching window here a
+        // fragment inside a binned froxel but past the reach got the full curve while its neighbour in the
+        // next froxel got nothing: a light popping on along the froxel grid at one distance. 0 = no window.
+        uniform float uReach;
         // #139: sphere-light wrap, as a multiple of uFalloff.y. 0 (the value an override that never declares
         // it leaves behind) is the punctual N.L this shipped with.
         uniform float uWrap;
@@ -1004,6 +1015,12 @@ internal static unsafe class AlloyLights
                 // cutoff window is needed and a light still cannot pop against its own cull sphere.
                 float f2 = dd / rr;
                 float fade = 1.0 - f2;
+                if (uReach > 0.0)
+                {
+                    float r2 = uReach * uReach;
+                    if (f2 > r2) continue;
+                    fade *= min((r2 - f2) / (r2 * 0.3), 1.0);   // to zero over the last 30% of the reach (in f2)
+                }
                 // Uniform-valued branch, so it is coherent across the whole draw and free -- and at the
                 // shipped 1.0 the pow is not merely cheap but exactly skipped, which is what makes "vanilla"
                 // bit-exact rather than approximately right.

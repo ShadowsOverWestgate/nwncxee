@@ -35,8 +35,10 @@ nothing else — and it is rewritten at the two moments a tid changes meaning:
   at the resource, and retires the previous texture for that resource. This is what makes a re-upload
   visible immediately instead of at the next world edge (#227's structural cause).
 * **The delete**, `RenderInterface::DeleteTextures` @0x45d1d0 — the single funnel every engine texture
-  name dies through, and **the world edge for a texture**: a resource the engine no longer holds is one
-  Alloy can never be handed a tid for again. An **area transition** fires it and none of the world edges
+  name dies through, and **the world edge for the INDEX** (ADR 0023): the tid stops meaning its resource,
+  but the resource itself goes idle and stays resident under `texcache_mb`, because the engine WILL ask
+  for the same content again and `BuildAndStoreTexture` is hooked to hand the resident texture back
+  without a read, decode or upload. Eviction is bracket-side, oldest idle first, past the budget. An **area transition** fires it and none of the world edges
   above (#220 measured one part-table wipe in an entire session). It drops the index entry and QUEUES the
   texture — it runs at a frame edge in the ENGINE context, where a GL delete would go to the wrong context
   entirely, so `OwnedTextures.Drain` issues it inside the next 4.6 bracket. Same split `EnsureVao` makes

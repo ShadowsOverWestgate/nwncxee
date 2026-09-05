@@ -25,7 +25,7 @@ internal static class RenderPasses
             Name = "ownedtex",
             Attach = l => { OwnedTextures.Attach(l); KnobSurface.Note(AlloyRenderer.VramNote); },
             Install = OwnedTextures.Install,
-            SelfCheck = l => { OwnedTextures.SelfCheck(l); BcnEncode.SelfCheck(l); AlloyRenderer.SelfCheckHandles(l); },
+            SelfCheck = l => { OwnedTextures.SelfCheck(l); BcnEncode.SelfCheck(l); AlloyRenderer.SelfCheckHandles(l); AlloyRenderer.SelfCheckNameRetired(l); OwnedTextures.SelfCheckCache(l); },
             // #259: no Revoke. Its resources are keyed on CONTENT, so a part-table wipe
             // invalidates nothing in them -- and since they are only ever populated at the engine's upload
             // funnel, wiping them on an edge the engine does not rebuild across would leave every texture
@@ -40,7 +40,7 @@ internal static class RenderPasses
             Name = "ownedgeom",
             Attach = OwnedBuffers.Attach,
             Install = OwnedBuffers.Install,
-            SelfCheck = l => { OwnedBuffers.SelfCheck(l); StagePool.SelfCheck(l); },
+            SelfCheck = l => { OwnedBuffers.SelfCheck(l); StagePool.SelfCheck(l); AlloyRenderer.SelfCheckItemDirty(l); },
             Revoke = OwnedBuffers.Revoke,
             ContextLost = OwnedBuffers.ContextLost,
             Stats = OwnedBuffers.Stats,

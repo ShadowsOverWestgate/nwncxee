@@ -28,6 +28,7 @@ public sealed unsafe partial class AlloyRenderer
     /// re-set the claimed ones, so the sweeps have no flag left to clear.</summary>
     private static void FreeSlot(int i)
     {
+        if ((uint)_oEntry[i] < (uint)_entrySlot.Length && _entrySlot[_oEntry[i]] == i) _entrySlot[_oEntry[i]] = -1;
         _oTri[i] = IntPtr.Zero;
         SetCastOk(i, false);   // #328: a vacated slot casts nothing, and the shadow side re-collects on it
         _ownLive--;
@@ -198,9 +199,67 @@ public sealed unsafe partial class AlloyRenderer
     /// census and <c>enrollbudget=0</c> walk unbudgeted -- there is nothing standing to draw from meanwhile.</para></summary>
     private static void Enroll(IntPtr scene)
     {
-        if (!Walking(scene)) EnrollBegin(scene);
+        if (!Walking(scene))
+        {
+            if (TryEnrollDelta(scene)) return;
+            EnrollBegin(scene);
+        }
         EnrollStep();
     }
+
+    /// <summary>INCREMENTAL enrolment: the PartTable names the entries that changed since the last one
+    /// (<see cref="SceneWalk.TakeChanges"/>), so only those are freed and re-seated; the 20k kept slots are
+    /// not touched, hashed, re-read or compared, and the order is rebuilt by the O(live) radix. Falls back to
+    /// the full walk on a new scene, a wiped table, an overflowed change list, or any REFUSAL -- the
+    /// all-owned-or-none sweeps (instance, blended class) need the full scan's tallies. <c>enrolldelta=0</c>
+    /// in sowx.cfg is the A/B. Runs in one frame: the change set is a few hundred parts at most.</summary>
+    private static bool TryEnrollDelta(IntPtr scene)
+    {
+        bool newScene = scene != _enrollScene;
+        bool tableWiped = _tableGen != PartTable.TableGen;
+        int n = SceneWalk.TakeChanges(_deltaBuf, out bool overflow);
+        // n == 0 is a request for a walk that names no entries (a deferred VDO's re-ask, a repack's stale
+        // marks, a RequestWalk); only the full walk answers those.
+        if (!_enrollDelta || newScene || tableWiped || overflow || n == 0 || _orderCount == 0 || _enrollBudget == 0)
+        { _deltaFull++; return false; }
+        SceneWalk.Dirty = false; _sinceEnroll = 0; _enrolls++; _deltaEnrolls++; _deltaChanges += n;
+        _enrollGen++;
+        // The tri->slot hash is keyed on _enrollGen: the death notice (NotePartDeath) looks tenants up
+        // through it between enrolments, so a bump without a re-hash leaves every standing slot invisible
+        // to it and a dying part's slot dangling -- the 14:42 SIGSEGV on a stage worker (AurTex.Live on a
+        // freed material's texture). ~20k inserts, on the ~1 frame in 4 that takes a delta.
+        HashLiveSlots();
+        bool canLight = _lighting && !_litFailed;
+        var c = default(AlloyCandidate);
+        float* keep = stackalloc float[12];
+        int orderBefore = _orderCount;
+        bool refused = false, collect = false;
+        _freeAvail = _freeCount;
+        for (int k = 0; k < n; k++)
+        {
+            int e = _deltaBuf[k];
+            int old = _entrySlot[e];
+            if (old >= 0) { AlloyCensus.OwnFlag[e] = 0; FreeSlot(old); _freeAvail = _freeCount; }
+            if (!AlloyCensus.TryOwnCandidate(e, ref c)) continue;
+            int seat = EnrollOne(e, ref c, -1, canLight, keep);
+            if (seat == Refused) refused = true;
+            // A newcomer joins the standing caster list in place (as an off entry the stage's admission turns
+            // on); one the list cannot take -- skinned, or no list standing -- costs the full re-collect.
+            else if (!CasterPass.Append(seat)) collect = true;
+        }
+        RebuildOrder();
+        if (collect) CasterGen++;
+        _lastEnrolled = _orderCount;
+        if (refused) { _deltaRefused++; return false; }   // the full walk follows, this frame
+        return true;
+    }
+    private static readonly int[] _deltaBuf = new int[8192];
+    private static readonly int[] _entrySlot = NewEntrySlot();
+    private static int[] NewEntrySlot() { var a = new int[PartTable.EntryCount]; Array.Fill(a, -1); return a; }
+    private static bool _enrollDelta = true;
+    private static long _deltaEnrolls, _deltaChanges, _deltaFull, _deltaRefused;
+    internal static string EnrollNote()
+        => $"enrol: {_deltaEnrolls} incremental ({_deltaChanges} changed entries), {_deltaFull} full, {_deltaRefused} fell back on a refusal; the parts total is the last full walk's";
 
     private static void EnrollBegin(IntPtr scene)
     {
@@ -272,150 +331,7 @@ public sealed unsafe partial class AlloyRenderer
             if (!AlloyCensus.TryOwnCandidate(e, ref c)) continue;
             stepped++; _walkCandidates++;
             if (AlloyCensus.WatchAccepted(e, c.Mat)) _watchEnrolled++;
-            // #126: a refusal from here on is counted against the class it would have joined -- see the
-            // all-owned-or-none sweep below. The surplus stays engine-drawn, never dropped.
-            bool watch = AlloyCensus.WatchedEntry(e);
-            // #128: the two CAPACITY refusals do not go to the gob. They are not properties of the instance
-            // -- the same creature is ownable in an emptier area -- and routing them there turns a full table
-            // into a cliff: thousands of gobs marked, the refused set overflows, and the sweep then drops
-            // EVERY instance in the scene rather than the surplus. "The surplus stays engine-drawn, never
-            // dropped" is the rule, and at capacity a creature split across two renderers (a lighting
-            // mismatch) beats every creature in the area reverting.
-            // #308: the slot this tenant held last enrollment, found up front so a KEPT tenant can never be
-            // spilled by capacity -- the live count includes this scan's not-yet-swept departures, and
-            // refusing a kept tenant on their account would oscillate the whole table at the full boundary.
-            int i = FindSlot(c.Tri);
-            bool kept = i >= 0;
-            bool lit = c.Lit && _lighting;
-            // The record survives its tenant only while the stable half still describes it: a changed
-            // tenant rebuilds from scratch, and so does a kept one whose harvest drifted under it (a
-            // rebind moved the node or material, the walk re-seated the VDO item) or whose class moved.
-            // Everything WriteStable reads is derived from these fields, and _recAur catches the textures.
-            // ponytail: the eight-field list mirrors WriteStable's transitive inputs by hand; grow that
-            // function and this compare must grow with it, or kept slots serve stale stable halves.
-            // #329: a drifted tenant is reseated as a NEWCOMER. Rewriting its old slot in place mid-walk
-            // would draw it under the standing order's old class with new state, and finishing the walk
-            // in-frame on every drift ran half the walks of a busy area whole (measured: p99 13-15ms).
-            // The old slot keeps drawing what it held until the departed sweep vacates it at the finish;
-            // a pointer drift never draws stale because BuildBatches revokes on the same identity compare.
-            bool drifted = kept && (_oMat[i] != c.Mat || _oNode[i] != c.Node || _oVdo[i] != c.Vdo
-                || _oItem[i] != c.Item || _oRotBits[i] != c.RotBits || _oMx[i] != c.Mx || _oLit[i] != lit
-                || _oCls[i] != (byte)c.Cls);
-            if (drifted) kept = false;
-            if (!kept && _ownLive >= MaxOwned)
-            { _capacitySpill++; AlloyCensus.OwnRefusedByClass[c.Cls]++; AlloyCensus.RejReason(AlloyCensus.RejTableFull, c.Cls); if (watch) _log?.Info("[dumpframe] ENROLL refused: table full"); continue; }
-            int v = VdoSlot(c.Vdo);
-            if (v < 0)
-            { AlloyCensus.OwnRefusedByClass[c.Cls]++; AlloyCensus.RejReason(AlloyCensus.RejNoVao, c.Cls); if (watch) _log?.Info("[dumpframe] ENROLL refused: no VAO slot (harvest failed)"); continue; }
-            // #137: a true skinmesh (a cloak, a robe, a tail) carries the bone streams and is POSED by them.
-            // #128 refused it here for want of a skinning branch; the stages have one now, so the only
-            // refusal left is the one #128's reason still holds for -- the kill switch off, or a bone stream
-            // on a VDO whose part is not a PartSkin (so nothing addresses those bones). Either way it is
-            // refused against the GOB, and the sweep below drops the creature wearing it entire. #285: that
-            // is the whole creature NOT DRAWN, not one drawn vanilla -- the sweep is all-or-nothing so the
-            // creature is not split across two renderers, and `instances:` on the census line is the count.
-            // Refused in BOTH directions, because both mismatches are misrenders. A bone stream on a part
-            // with no skin identity has no bone map to solve against; a PartSkin whose VAO harvest came back
-            // boneless would enrol as an ordinary rigid part, skip PoseSkinned, and draw in its bind pose --
-            // which is the failure the asymmetric gate would have let through as the QUIET one.
-            if (_vSkin[v] != (_skinning && PartTable.Skinned(e)))
-            { _skinUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: skin mismatch (armed={_skinning} boneStreams={_vSkin[v]} skinPart={PartTable.Skinned(e)})"); continue; }
-            if (lit && (!canLight || !_vLit[v]))
-            { _litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: lit but unshadeable (canLight={canLight} vdoLit={_vLit[v]})"); continue; }
-            // #121: an env-mapped part the engine draws UNLIT would go through the fullbright variant, which
-            // has no env handling at all -- the engine still routes it to RenderEnvironmentMapped (the switch
-            // in PartTriMesh::Draw is on HasEnvMap, not on the lit flag), so owning it would silently drop
-            // whatever shine it had. Only the lit variant can reproduce it; the rest stay vanilla.
-            if (c.Env && !lit)
-            { _litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info("[dumpframe] ENROLL refused: env-mapped but unlit"); continue; }
-            // #308: seat the tenant. A part that held a slot last enrollment keeps it -- the slot index is
-            // what every persistent table is keyed by, so keeping it is what keeps the record, the spheres
-            // and the shadow tenancy coherent across the scan. Only a genuine newcomer takes a fresh slot
-            // and the new tenancy generation; the #302 (review) intent -- the stamp moves ONLY when the
-            // tenant does -- is now true by construction (the old compare ran AFTER _oTri was overwritten,
-            // so it never fired and every re-tenanted slot was trusted with its previous tenant's record).
-            if (!kept) i = AllocSlot();
-            _oClaim[i] = _enrollGen;
-            if (!kept) UnstampRecord(i);
-            // #328: a new tenant has no record the bake may trust until the next write lands one.
-            if (!kept) SetCastOk(i, false);
-            // A kept tenant whose identity fields drifted may not be the same part at all -- a freed
-            // PartTriMesh recycled at the same address inside one frame window would otherwise inherit the
-            // dead part's record with no vanish, appear, or move ever reaching the shadow side. Drift is
-            // rare (a rebind, a walk re-seat) so the cost of suspicion is one honest one-frame flap.
-            if (!kept) _oEnrollGen[i] = _enrollGen;
-            if (!kept) _ownLive++;
-            // A NEWCOMER joins the tri->slot hash now, not at the next scan's HashLiveSlots: the death
-            // notice (NotePartDeath) looks tenants up through this hash BETWEEN scans, and a part that
-            // enrolled and died inside one enrollment gap would otherwise stay chased by the shadow
-            // bracket as a dangling pointer. Appending mid-scan is safe for FindSlot -- a hashed slot
-            // claimed this scan is refused by the _oClaim compare exactly as before.
-            if (!kept)
-            {
-                int hj = SlotHash(c.Tri);
-                while (_shGen[hj] == _enrollGen) hj = (hj + 1) & ((1 << SlotHashBits) - 1);
-                _shGen[hj] = _enrollGen; _shSlot[hj] = i;
-            }
-            _oEntry[i] = e; _oTri[i] = c.Tri; _oNode[i] = c.Node; _oMat[i] = c.Mat; _oVdo[i] = c.Vdo;
-            _oItem[i] = c.Item; _oPrim[i] = c.Prim; _oVao[i] = v; _oMx[i] = c.Mx; _oLit[i] = lit;
-            _oRotBits[i] = c.RotBits;
-            _oTexKey[i] = TexKey(c.Tex0);
-            _oCls[i] = (byte)c.Cls; _oSrc[i] = (byte)c.Src; _oDst[i] = (byte)c.Dst;
-            _oNoCull[i] = c.TwoSided;
-            _oBucket[i] = (byte)c.Bucket; _oGob[i] = c.Gob; _oLodRoot[i] = c.LodRoot;
-            // Sampled HERE, cold, and never re-read: the walk has just proved this gob live, where the route
-            // walk has not -- every other reader of _oGob only COMPARES it (or derefs it behind the LodRoot
-            // guard), so a per-frame deref would be a new way to touch a freed gob. A gob does not become a
-            // tile or stop being one.
-            _oTileGob[i] = c.Gob != IntPtr.Zero && *(IntPtr*)(c.Gob + GobTileData) != IntPtr.Zero;
-            for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBoxMin + b * 4);   // #336: +0x64..+0x78
-            // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
-            // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
-            if (!kept) _oBone[i] = -1;
-            _oDangly[i] = PartTable.IsDangly(c.Tri);   // #302: a permanent shadow mover
-            if (c.Gob != IntPtr.Zero) _gobOwned++;
-            // #126: the local bbox centre, for the blended pass's back-to-front key.
-            var tri = new PartRef(c.Tri);
-            float* lo = tri.BboxMin, hi = tri.BboxMax;
-            _oCx[i] = (lo[0] + hi[0]) * 0.5f; _oCy[i] = (lo[1] + hi[1]) * 0.5f; _oCz[i] = (lo[2] + hi[2]) * 0.5f;
-            float ex = hi[0] - lo[0], ey = hi[1] - lo[1], ez = hi[2] - lo[2];
-            _oR[i] = 0.5f * MathF.Sqrt(ex * ex + ey * ey + ez * ez);
-            // #330: spawn-time fields the chase keys on without touching the part again.
-            _oTile[i] = tri.Tile; _oBsp[i] = PartTable._pBsp[e];
-            // #308 follow-up: a kept slot's record survives the scan, but the .mtr CONTENT under a stable
-            // Material* can still move (the engine exports runtime SetMaterialParam mutators). ReadMaterial
-            // rewrites the CPU arrays either way; snapshot them first and unstamp on any drift, which is
-            // the per-slot form of the heal the deleted whole-table epoch bump used to provide.
-            bool stableHalf = kept;
-            int po = i * 8, fo = i * 4, oldSlots = _oSlots[i];
-            if (stableHalf)
-            {
-                for (int k = 0; k < 8; k++) keep[k] = _oParam[po + k];
-                for (int k = 0; k < 4; k++) keep[8 + k] = _oFeat[fo + k];
-            }
-            ReadMaterial(c.Mat, i, c.Feat);
-            // #121: bit 5 of the slot mask, and the one slot with no texture behind it -- the probe replaces
-            // what the material's env map held, so all that is carried is the flag itself.
-            if (c.Env) _oSlots[i] |= EnvSlot;
-            if (stableHalf)
-            {
-                bool moved = oldSlots != _oSlots[i];
-                for (int k = 0; k < 8 && !moved; k++) moved = keep[k] != _oParam[po + k];
-                for (int k = 0; k < 4 && !moved; k++) moved = keep[8 + k] != _oFeat[fo + k];
-                if (moved) { UnstampRecord(i); CasterGen++; }   // #328: the env-alpha bit rides _oSlots
-            }
-            float rad = BitConverter.Int32BitsToSingle(c.RotBits) * DegToRad;
-            _oCos[i] = MathF.Cos(rad); _oSin[i] = MathF.Sin(rad);
-            AlloyCensus.OwnFlag[e] = 1;
-            if (watch)
-                // #336: what GL actually holds for the diffuse, on the line that says the part was taken.
-                // A UV-less mesh reads ONE texel at the generic (0,0), so "the whole model is the wrong
-                // colour" is a question about that texel -- and the uploaded format and the mip chain are
-                // the two things between the file and it. Both have been wrong before (#265, #129).
-                _log?.Info($"[dumpframe] ENROLL accepted slot={i} cls={(AlloyClass)c.Cls} lit={lit} vao={v}"
-                           + $" uv={(SlotHasUv(v) ? 1 : 0)}"
-                           + $" tex0 {TexProbe.TexFormat(new TextureRef(c.Tex0).OwnedTid())}"
-                           + $" {TexProbe.TexTopMip(new TextureRef(c.Tex0).OwnedTid())}");
+            EnrollOne(e, ref c, FindSlot(c.Tri), canLight, keep);
         }
         // a budgeted walk finishes on a frame of its OWN: measured live, a finish riding the last step was
         // the 3-5,6ms p99 (step 1,3ms + sweeps + radix + census) against a 2ms bar
@@ -424,8 +340,205 @@ public sealed unsafe partial class AlloyRenderer
         EnrollFinish();
     }
 
+    private const int Refused = -1;
+
+    /// <summary>One candidate's acceptance: the refusals, the seat (kept in place or a fresh slot), the
+    /// material/VAO/box reads, the stable-half compare. Shared by the full walk (<paramref name="slot"/> from
+    /// <see cref="FindSlot"/>) and the incremental path (always -1: a changed entry is seated fresh).
+    /// Returns the slot, or <see cref="Refused"/>.</summary>
+    private static int EnrollOne(int e, ref AlloyCandidate c, int slot, bool canLight, float* keep)
+    {
+        // #126: a refusal from here on is counted against the class it would have joined -- see the
+        // all-owned-or-none sweep below. The surplus stays engine-drawn, never dropped.
+        bool watch = AlloyCensus.WatchedEntry(e);
+        // #128: the two CAPACITY refusals do not go to the gob. They are not properties of the instance
+        // -- the same creature is ownable in an emptier area -- and routing them there turns a full table
+        // into a cliff: thousands of gobs marked, the refused set overflows, and the sweep then drops
+        // EVERY instance in the scene rather than the surplus. "The surplus stays engine-drawn, never
+        // dropped" is the rule, and at capacity a creature split across two renderers (a lighting
+        // mismatch) beats every creature in the area reverting.
+        // #308: the slot this tenant held last enrollment, found up front so a KEPT tenant can never be
+        // spilled by capacity -- the live count includes this scan's not-yet-swept departures, and
+        // refusing a kept tenant on their account would oscillate the whole table at the full boundary.
+        int i = slot;
+        bool kept = i >= 0;
+        bool lit = c.Lit && _lighting;
+        // The record survives its tenant only while the stable half still describes it: a changed
+        // tenant rebuilds from scratch, and so does a kept one whose harvest drifted under it (a
+        // rebind moved the node or material, the walk re-seated the VDO item) or whose class moved.
+        // Everything WriteStable reads is derived from these fields, and _recAur catches the textures.
+        // ponytail: the eight-field list mirrors WriteStable's transitive inputs by hand; grow that
+        // function and this compare must grow with it, or kept slots serve stale stable halves.
+        // #329: a drifted tenant is reseated as a NEWCOMER. Rewriting its old slot in place mid-walk
+        // would draw it under the standing order's old class with new state, and finishing the walk
+        // in-frame on every drift ran half the walks of a busy area whole (measured: p99 13-15ms).
+        // The old slot keeps drawing what it held until the departed sweep vacates it at the finish;
+        // a pointer drift never draws stale because BuildBatches revokes on the same identity compare.
+        bool drifted = kept && (_oMat[i] != c.Mat || _oNode[i] != c.Node || _oVdo[i] != c.Vdo
+            || _oItem[i] != c.Item || _oRotBits[i] != c.RotBits || _oMx[i] != c.Mx || _oLit[i] != lit
+            || _oCls[i] != (byte)c.Cls);
+        if (drifted) kept = false;
+        if (!kept && _ownLive >= MaxOwned)
+        { _capacitySpill++; AlloyCensus.OwnRefusedByClass[c.Cls]++; AlloyCensus.RejReason(AlloyCensus.RejTableFull, c.Cls); if (watch) _log?.Info("[dumpframe] ENROLL refused: table full"); return Refused; }
+        int v = VdoSlot(c.Vdo);
+        if (v < 0)
+        { AlloyCensus.OwnRefusedByClass[c.Cls]++; AlloyCensus.RejReason(AlloyCensus.RejNoVao, c.Cls); if (watch) _log?.Info("[dumpframe] ENROLL refused: no VAO slot (harvest failed)"); return Refused; }
+        // #137: a true skinmesh (a cloak, a robe, a tail) carries the bone streams and is POSED by them.
+        // #128 refused it here for want of a skinning branch; the stages have one now, so the only
+        // refusal left is the one #128's reason still holds for -- the kill switch off, or a bone stream
+        // on a VDO whose part is not a PartSkin (so nothing addresses those bones). Either way it is
+        // refused against the GOB, and the sweep below drops the creature wearing it entire. #285: that
+        // is the whole creature NOT DRAWN, not one drawn vanilla -- the sweep is all-or-nothing so the
+        // creature is not split across two renderers, and `instances:` on the census line is the count.
+        // Refused in BOTH directions, because both mismatches are misrenders. A bone stream on a part
+        // with no skin identity has no bone map to solve against; a PartSkin whose VAO harvest came back
+        // boneless would enrol as an ordinary rigid part, skip PoseSkinned, and draw in its bind pose --
+        // which is the failure the asymmetric gate would have let through as the QUIET one.
+        if (_vSkin[v] != (_skinning && PartTable.Skinned(e)))
+        { _skinUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: skin mismatch (armed={_skinning} boneStreams={_vSkin[v]} skinPart={PartTable.Skinned(e)})"); return Refused; }
+        if (lit && (!canLight || !_vLit[v]))
+        { _litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: lit but unshadeable (canLight={canLight} vdoLit={_vLit[v]})"); return Refused; }
+        // #121: an env-mapped part the engine draws UNLIT would go through the fullbright variant, which
+        // has no env handling at all -- the engine still routes it to RenderEnvironmentMapped (the switch
+        // in PartTriMesh::Draw is on HasEnvMap, not on the lit flag), so owning it would silently drop
+        // whatever shine it had. Only the lit variant can reproduce it; the rest stay vanilla.
+        if (c.Env && !lit)
+        { _litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info("[dumpframe] ENROLL refused: env-mapped but unlit"); return Refused; }
+        // #308: seat the tenant. A part that held a slot last enrollment keeps it -- the slot index is
+        // what every persistent table is keyed by, so keeping it is what keeps the record, the spheres
+        // and the shadow tenancy coherent across the scan. Only a genuine newcomer takes a fresh slot
+        // and the new tenancy generation; the #302 (review) intent -- the stamp moves ONLY when the
+        // tenant does -- is now true by construction (the old compare ran AFTER _oTri was overwritten,
+        // so it never fired and every re-tenanted slot was trusted with its previous tenant's record).
+        if (!kept) i = AllocSlot();
+        _oClaim[i] = _enrollGen;
+        if (!kept) UnstampRecord(i);
+        // #328: a new tenant has no record the bake may trust until the next write lands one.
+        if (!kept) SetCastOk(i, false);
+        // A kept tenant whose identity fields drifted may not be the same part at all -- a freed
+        // PartTriMesh recycled at the same address inside one frame window would otherwise inherit the
+        // dead part's record with no vanish, appear, or move ever reaching the shadow side. Drift is
+        // rare (a rebind, a walk re-seat) so the cost of suspicion is one honest one-frame flap.
+        if (!kept) _oEnrollGen[i] = _enrollGen;
+        if (!kept) _ownLive++;
+        // A NEWCOMER joins the tri->slot hash now, not at the next scan's HashLiveSlots: the death
+        // notice (NotePartDeath) looks tenants up through this hash BETWEEN scans, and a part that
+        // enrolled and died inside one enrollment gap would otherwise stay chased by the shadow
+        // bracket as a dangling pointer. Appending mid-scan is safe for FindSlot -- a hashed slot
+        // claimed this scan is refused by the _oClaim compare exactly as before.
+        if (!kept)
+        {
+            int hj = SlotHash(c.Tri);
+            while (_shGen[hj] == _enrollGen) hj = (hj + 1) & ((1 << SlotHashBits) - 1);
+            _shGen[hj] = _enrollGen; _shSlot[hj] = i;
+        }
+        _oEntry[i] = e; _entrySlot[e] = i; _oTri[i] = c.Tri; _oNode[i] = c.Node; _oMat[i] = c.Mat; _oVdo[i] = c.Vdo;
+        _oItem[i] = c.Item; _oPrim[i] = c.Prim; _oVao[i] = v; _oMx[i] = c.Mx; _oLit[i] = lit;
+        _oRotBits[i] = c.RotBits;
+        _oTexKey[i] = TexKey(c.Tex0);
+        _oCls[i] = (byte)c.Cls; _oSrc[i] = (byte)c.Src; _oDst[i] = (byte)c.Dst;
+        _oNoCull[i] = c.TwoSided;
+        _oBucket[i] = (byte)c.Bucket; _oGob[i] = c.Gob; _oLodRoot[i] = c.LodRoot;
+        // Sampled HERE, cold, and never re-read: the walk has just proved this gob live, where the route
+        // walk has not -- every other reader of _oGob only COMPARES it (or derefs it behind the LodRoot
+        // guard), so a per-frame deref would be a new way to touch a freed gob. A gob does not become a
+        // tile or stop being one.
+        _oTileGob[i] = c.Gob != IntPtr.Zero && *(IntPtr*)(c.Gob + GobTileData) != IntPtr.Zero;
+        for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBoxMin + b * 4);   // #336: +0x64..+0x78
+        // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
+        // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
+        if (!kept) _oBone[i] = -1;
+        _oDangly[i] = PartTable.IsDangly(c.Tri);   // #302: a permanent shadow mover
+        if (c.Gob != IntPtr.Zero) _gobOwned++;
+        // #126: the local bbox centre, for the blended pass's back-to-front key.
+        var tri = new PartRef(c.Tri);
+        float* lo = tri.BboxMin, hi = tri.BboxMax;
+        _oCx[i] = (lo[0] + hi[0]) * 0.5f; _oCy[i] = (lo[1] + hi[1]) * 0.5f; _oCz[i] = (lo[2] + hi[2]) * 0.5f;
+        float ex = hi[0] - lo[0], ey = hi[1] - lo[1], ez = hi[2] - lo[2];
+        _oR[i] = 0.5f * MathF.Sqrt(ex * ex + ey * ey + ez * ez);
+        // #330: spawn-time fields the chase keys on without touching the part again.
+        _oTile[i] = tri.Tile; _oBsp[i] = PartTable._pBsp[e];
+        // #308 follow-up: a kept slot's record survives the scan, but the .mtr CONTENT under a stable
+        // Material* can still move (the engine exports runtime SetMaterialParam mutators). ReadMaterial
+        // rewrites the CPU arrays either way; snapshot them first and unstamp on any drift, which is
+        // the per-slot form of the heal the deleted whole-table epoch bump used to provide.
+        bool stableHalf = kept;
+        int po = i * 8, fo = i * 4, oldSlots = _oSlots[i];
+        if (stableHalf)
+        {
+            for (int k = 0; k < 8; k++) keep[k] = _oParam[po + k];
+            for (int k = 0; k < 4; k++) keep[8 + k] = _oFeat[fo + k];
+        }
+        ReadMaterial(c.Mat, i, c.Feat);
+        // #121: bit 5 of the slot mask, and the one slot with no texture behind it -- the probe replaces
+        // what the material's env map held, so all that is carried is the flag itself.
+        if (c.Env) _oSlots[i] |= EnvSlot;
+        if (stableHalf)
+        {
+            bool moved = oldSlots != _oSlots[i];
+            for (int k = 0; k < 8 && !moved; k++) moved = keep[k] != _oParam[po + k];
+            for (int k = 0; k < 4 && !moved; k++) moved = keep[8 + k] != _oFeat[fo + k];
+            if (moved) { UnstampRecord(i); CasterGen++; }   // #328: the env-alpha bit rides _oSlots
+        }
+        float rad = BitConverter.Int32BitsToSingle(c.RotBits) * DegToRad;
+        _oCos[i] = MathF.Cos(rad); _oSin[i] = MathF.Sin(rad);
+        AlloyCensus.OwnFlag[e] = 1;
+        if (watch)
+            // #336: what GL actually holds for the diffuse, on the line that says the part was taken.
+            // A UV-less mesh reads ONE texel at the generic (0,0), so "the whole model is the wrong
+            // colour" is a question about that texel -- and the uploaded format and the mip chain are
+            // the two things between the file and it. Both have been wrong before (#265, #129).
+            _log?.Info($"[dumpframe] ENROLL accepted slot={i} cls={(AlloyClass)c.Cls} lit={lit} vao={v}"
+                       + $" uv={(SlotHasUv(v) ? 1 : 0)}"
+                       + $" tex0 {TexProbe.TexFormat(new TextureRef(c.Tex0).OwnedTid())}"
+                       + $" {TexProbe.TexTopMip(new TextureRef(c.Tex0).OwnedTid())}");
+        return i;
+    }
+
     /// <summary>#329: the walk's atomic tail -- the sweeps, the handle wipe and the order rebuild, all in
     /// one frame, so the census the draw side reads goes from one complete state to the next.</summary>
+    /// <summary>The four-pass radix over every live slot: texture key, feature/primitive, VAO sort key, class.
+    /// O(live) integer passes -- cheap enough to re-run after an incremental enrolment too.</summary>
+    private static void RebuildOrder()
+    {
+        _litCount = 0;
+        Array.Clear(_sortCount, 0, MaxVdos * 4);
+        Array.Clear(_texSortCount, 0, MaxMats);
+        Array.Clear(_featPrimCount);
+        Array.Clear(_clsCount); Array.Clear(_clsStart); Array.Clear(_clsEnd);
+        for (int i = 0; i < _ownCount; i++)
+        {
+            if (_oTri[i] == IntPtr.Zero) continue;
+            _sortCount[SortKey(i)]++;
+            _texSortCount[_oTexKey[i]]++;
+            _featPrimCount[FeatPrimKey(i)]++;
+            _clsCount[_oCls[i]]++;
+            if (_oLit[i]) _litCount++;
+        }
+        // Four-digit LSD radix into _order, every digit counting-sorted (stable): texture, then #327's
+        // (feature, primitive), then (lit, #292's no-cull bit, VDO), then #126's class. The result walks
+        // grouped by CLASS -- so each pass owns a contiguous batch range -- and inside a class by (lit, cull,
+        // VDO, feature, primitive) with equal textures contiguous, which is the whole enrollment-static half
+        // of the batch cut key. The draw loop then cuts a batch on a key change instead of searching for one;
+        // the one per-frame term left, the dissolve bit, is RouteParts's partition.
+        int at = 0;
+        for (int k = 0; k < MaxMats; k++) { int n = _texSortCount[k]; _texSortCount[k] = at; at += n; }
+        for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero) _orderTmp[_texSortCount[_oTexKey[i]]++] = i;
+        int live = at;
+        at = 0;
+        for (int k = 0; k < FeatPrimKeys; k++) { int n = _featPrimCount[k]; _featPrimCount[k] = at; at += n; }
+        for (int k = 0; k < live; k++) { int i = _orderTmp[k]; _order[_featPrimCount[FeatPrimKey(i)]++] = i; }
+        at = 0;
+        for (int k = 0; k < MaxVdos * 4; k++) { int n = _sortCount[k]; _sortCount[k] = at; at += n; }
+        for (int k = 0; k < live; k++) { int i = _order[k]; _orderTmp[_sortCount[SortKey(i)]++] = i; }
+        at = 0;
+        for (int k = 0; k < AlloyClasses.Count; k++) { int n = _clsCount[k]; _clsStart[k] = at; _clsCount[k] = at; at += n; }
+        for (int k = 0; k < live; k++) { int i = _orderTmp[k]; _order[_clsCount[_oCls[i]]++] = i; }
+        // ...and the cursor each class's fill left behind IS its end index.
+        for (int k = 0; k < AlloyClasses.Count; k++) _clsEnd[k] = _clsCount[k];
+        _orderCount = live;
+    }
+
     private static void EnrollFinish()
     {
         bool tableWiped = _walkWiped;
@@ -471,42 +584,7 @@ public sealed unsafe partial class AlloyRenderer
                     AlloyCensus.OwnFlag[_oEntry[i]] = 0; FreeSlot(i); _blendedDropped++;
                 }
         // The radix digits are counted AFTER the sweep, so a dropped class costs no order slot.
-        _litCount = 0;
-        Array.Clear(_sortCount, 0, MaxVdos * 4);
-        Array.Clear(_texSortCount, 0, MaxMats);
-        Array.Clear(_featPrimCount);
-        Array.Clear(_clsCount); Array.Clear(_clsStart); Array.Clear(_clsEnd);
-        for (int i = 0; i < _ownCount; i++)
-        {
-            if (_oTri[i] == IntPtr.Zero) continue;
-            _sortCount[SortKey(i)]++;
-            _texSortCount[_oTexKey[i]]++;
-            _featPrimCount[FeatPrimKey(i)]++;
-            _clsCount[_oCls[i]]++;
-            if (_oLit[i]) _litCount++;
-        }
-        // Four-digit LSD radix into _order, every digit counting-sorted (stable): texture, then #327's
-        // (feature, primitive), then (lit, #292's no-cull bit, VDO), then #126's class. The result walks
-        // grouped by CLASS -- so each pass owns a contiguous batch range -- and inside a class by (lit, cull,
-        // VDO, feature, primitive) with equal textures contiguous, which is the whole enrollment-static half
-        // of the batch cut key. The draw loop then cuts a batch on a key change instead of searching for one;
-        // the one per-frame term left, the dissolve bit, is RouteParts's partition.
-        int at = 0;
-        for (int k = 0; k < MaxMats; k++) { int n = _texSortCount[k]; _texSortCount[k] = at; at += n; }
-        for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero) _orderTmp[_texSortCount[_oTexKey[i]]++] = i;
-        int live = at;
-        at = 0;
-        for (int k = 0; k < FeatPrimKeys; k++) { int n = _featPrimCount[k]; _featPrimCount[k] = at; at += n; }
-        for (int k = 0; k < live; k++) { int i = _orderTmp[k]; _order[_featPrimCount[FeatPrimKey(i)]++] = i; }
-        at = 0;
-        for (int k = 0; k < MaxVdos * 4; k++) { int n = _sortCount[k]; _sortCount[k] = at; at += n; }
-        for (int k = 0; k < live; k++) { int i = _order[k]; _orderTmp[_sortCount[SortKey(i)]++] = i; }
-        at = 0;
-        for (int k = 0; k < AlloyClasses.Count; k++) { int n = _clsCount[k]; _clsStart[k] = at; _clsCount[k] = at; at += n; }
-        for (int k = 0; k < live; k++) { int i = _orderTmp[k]; _order[_clsCount[_oCls[i]]++] = i; }
-        // ...and the cursor each class's fill left behind IS its end index.
-        for (int k = 0; k < AlloyClasses.Count; k++) _clsEnd[k] = _clsCount[k];
-        _orderCount = live;
+        RebuildOrder();
         // #308: the set-signature blanket is retired with the renumbering that made it necessary. A slot
         // is never re-tenanted within the scan that vacates it (the departed sweep runs after the scan, and
         // newcomers pop only slots freed by EARLIER enrollments), so a departing caster now always lapses
@@ -706,7 +784,8 @@ public sealed unsafe partial class AlloyRenderer
         var matRef = new MaterialRef(mat);
         int top = !matRef.Shared.IsNull ? PbrSlots : 2;
         int mask = 0;
-        for (int s = 1; s <= top; s++) if (!matRef.Texture(s).IsNull) mask |= 1 << (s - 1);
+        for (int s = 1; s <= top; s++) if (!matRef.Texture(s).IsNull) { mask |= 1 << (s - 1); OwnedTextures.Prefetch(matRef.Texture(s).Ptr); }
+        if (!matRef.Texture(0).IsNull) OwnedTextures.Prefetch(matRef.Texture(0).Ptr);   // #386: the diffuse, built before the camera gets here
         // #123/#556: and slot 6 for the features that read it -- the flow map, and the weather ground's
         // snow overlay. A material with nothing bound there leaves the bit clear and its stage samples
         // nothing, which is vanilla's own texture6Bound test.

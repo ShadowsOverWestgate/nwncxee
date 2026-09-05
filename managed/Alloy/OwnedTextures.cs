@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
@@ -68,7 +69,9 @@ internal static unsafe class OwnedTextures
         internal readonly uint Owned;
         internal readonly long Bytes;
         internal readonly uint Gen;
-        internal Entry(uint owned, long bytes, uint gen) { Owned = owned; Bytes = bytes; Gen = gen; }
+        /// <summary>ADR 0023: the drip frame this resource lost its last index entry on; 0 = indexed (in use).</summary>
+        internal readonly int Idle;
+        internal Entry(uint owned, long bytes, uint gen, int idle = 0) { Owned = owned; Bytes = bytes; Gen = gen; Idle = idle; }
     }
 
     /// <summary>Content key -> Alloy's texture. The resource table; nothing in it is keyed on a GL name.</summary>
@@ -137,6 +140,14 @@ internal static unsafe class OwnedTextures
         // knob prints in /knobs even when ownedtex=0 stands the table down.
         _bcnWanted = Settings.Bool("bcn", true);
         _bcn = _bcnWanted && _armed;
+        TranscodeBudget = Settings.Int("bcndrip", 1, 1, 64);
+        _budgetCfgMb = Settings.Int("texcache_mb", -1, -1, 1 << 20);
+        PrefetchBudget = Settings.Int("texprefetch", 2, 0, 64);
+        _single = Settings.Bool("texsingle", true);
+        // Zink bisect knobs: a handled texture's delete (auto = never on zink, whose bindless teardown faults on
+        // a worker thread there) and the non-resident call ahead of it
+        _texDelete = Settings.Int("texdelete", -1, -1, 1);
+        _handleDrop = Settings.Bool("handledrop", true);
         if (_armed)
             log.Info(_bcn
                 ? "OwnedTextures: BCn transcode armed -- uncompressed uploads are re-encoded BC1/BC3 (bcn=0 in sowx.cfg to keep them raw)"
@@ -177,6 +188,13 @@ internal static unsafe class OwnedTextures
 
         _origDelete = (delegate* unmanaged<uint, uint*, void>)hooks.Install(
             SymbolMap.RiDeleteTextures, (IntPtr)(delegate* unmanaged<uint, uint*, void>)&OnDeleteTextures);
+        // ADR 0023: the build itself, so a warm resource skips the read, the decode and the upload.
+        _origBuildAndStoreTexture = (delegate* unmanaged<IntPtr, void>)hooks.Install(
+            SymbolMap.AurTextureBuildAndStoreTexture, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnBuildAndStoreTexture);
+        _znam = (delegate* unmanaged<nuint, IntPtr>)Native.Sym("_Znam");   // the engine's operator new[]: Reset frees the cell array with delete[]
+        log.Info(_origBuildAndStoreTexture != null && _znam != null
+            ? $"OwnedTextures: watching CAurTextureBasic::BuildAndStoreTexture -- a resident texture is handed back without a read, decode or upload (texcache_mb {(_budgetCfgMb < 0 ? "auto" : _budgetCfgMb.ToString())})"
+            : "OwnedTextures: BuildAndStoreTexture not hooked or operator new[] unresolved -- textures are kept across the world edge but every build is cold");
         log.Info(_origDelete != null
             ? "OwnedTextures: watching RenderInterface::DeleteTextures -- a tid stops resolving the moment it stops meaning its resource"
             : "OwnedTextures: DeleteTextures not installed -- a recycled engine name will resolve the previous area's resource");
@@ -315,24 +333,39 @@ internal static unsafe class OwnedTextures
     [UnmanagedCallersOnly]
     private static void OnCreateTexture(IntPtr tex, byte useSubImage, int cell)
     {
-        if (_origCreate != null) _origCreate(tex, useSubImage, cell);
-        Adopt(tex, cell);
+        long t0 = FrameZones.Now;
+        // #386: ONE upload. Adopt uploads into Alloy's name and hands that name to the engine's cell array;
+        // only when it declines (or texsingle=0) does the engine's own copy get built.
+        bool handled = _single && Adopt(tex, cell, single: true);
+        if (!handled)
+        {
+            if (_origCreate != null) _origCreate(tex, useSubImage, cell);
+            Adopt(tex, cell, single: false);
+        }
+        FrameZones.Add(FrameZones.Zone.Tex, t0);
+        FrameZones.Count(FrameZones.Ev.TexUpload);
     }
 
     /// <summary>The upload handler's body, split out so <see cref="SelfCheck"/> can exercise it -- an
     /// <c>UnmanagedCallersOnly</c> method cannot be called from managed code.</summary>
-    private static void Adopt(IntPtr tex, int cell)
+    /// <summary>Returns true when Alloy's upload stands in for the engine's (<paramref name="single"/>): the
+    /// engine's cell entry then names Alloy's texture and the engine's own name is deleted unused. False =
+    /// the caller must run the engine's upload; in the double path (<paramref name="single"/> false) the
+    /// engine's copy already exists and the return value is ignored.</summary>
+    private static bool Adopt(IntPtr tex, int cell, bool single)
     {
-        if (!_armed || _origCreate == null) return;
+        if (!_armed || _origCreate == null) return false;
         // The BASIC vtable specifically: every field below belongs to the subclass, and #138/#221 say a
         // texture pointer is only ever as good as its vtable.
-        if (!AurTex.IsBasic(tex)) return;
+        if (!AurTex.IsBasic(tex)) return false;
 
         uint* cells = *(uint**)((byte*)tex + OffCellNames);
         int n = *(short*)((byte*)tex + OffNumX) * *(short*)((byte*)tex + OffNumY);
-        if (cells == null || cell < 0 || cell >= n) return;
+        if (cells == null || cell < 0 || cell >= n) return false;
         int etid = (int)cells[cell];
-        if (etid <= 0) return;
+        if (etid <= 0) return false;
+        // A cell already naming an owned texture is the engine re-uploading INTO our name (a Restore after a
+        // warm hand-back, or a refresh): fresh storage under a new name, exactly as a re-upload always was.
 
         // ponytail: before the first present there is no 4.6 context and no entry points, so a texture
         // uploaded that early stays borrowed for the session -- nothing re-drives this funnel for a texture
@@ -341,14 +374,14 @@ internal static unsafe class OwnedTextures
         // the engine's context once the bracket exists.
         if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.GetIntegerv == null)
         {
-            _borrowed.Add(etid);
-            return;
+            if (!single) _borrowed.Add(etid);
+            return false;
         }
 
         ulong key = Key(tex, cell);
         uint dst;
         Gl.GenTextures(1, &dst);
-        if (dst == 0) { _borrowed.Add(etid); return; }
+        if (dst == 0) { if (!single) _borrowed.Add(etid); return false; }
 
         int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
         DrainErrors();   // the verdict below is ours to read, so nobody else's error may be sitting here
@@ -360,50 +393,585 @@ internal static unsafe class OwnedTextures
         _origCreate(tex, 0, cell);
         uint err = Gl.GetError();          // read BEFORE Measure, whose own queries would mask it
         long bytes = err == 0 ? Measure() : 0;
-        long transSaved = 0;
-        if (err == 0 && _bcn && *(int*)((byte*)tex + OffCompressedSize) == 0)
-        {
-            long after = Transcode(tex, cell);
-            if (after == Broken)
-            {
-                // Both the compressed respecify AND the raw recovery failed: the texture is garbage and
-                // must not enter the owned table. Borrow the engine's copy instead.
-                Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
-                if (Gl.DeleteTextures != null) Gl.DeleteTextures(1, &dst);
-                _borrowed.Add(etid);
-                if (_diagLeft > 0) { _diagLeft--; _log?.Info($"OwnedTextures: tid {etid} borrowed -- transcode failed and its raw recovery failed too"); }
-                return;
-            }
-            // Record the POST state unconditionally: the texture is already compressed, so a driver that
-            // answers 0 for the compressed size costs a zero in the ledger, not a raw-sized lie in it.
-            if (after >= 0) { transSaved = bytes > after ? bytes - after : 0; bytes = after; }
-        }
+        bool wantBcn = err == 0 && _bcn && *(int*)((byte*)tex + OffCompressedSize) == 0;
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
 
         if (err != 0)
         {
             if (Gl.DeleteTextures != null) Gl.DeleteTextures(1, &dst);
-            _borrowed.Add(etid);
-            if (_diagLeft > 0) { _diagLeft--; _log?.Info($"OwnedTextures: tid {etid} borrowed -- the engine's upload into our name gave 0x{err:x}"); }
-            return;
+            if (_diagLeft > 0) { _diagLeft--; _log?.Info($"OwnedTextures: tid {etid} {(single ? "left to the engine" : "borrowed")} -- the engine's upload into our name gave 0x{err:x}"); }
+            if (!single) _borrowed.Add(etid);
+            return false;   // single: the caller builds the engine's copy, and the double-path Adopt borrows it
         }
 
+        if (single)
+        {
+            // The engine's cell now names OUR texture; its own name never received pixels and dies here.
+            // The engine's bind cache still says the old name is bound on unit 0 -- a name that no longer
+            // exists, so the next AurTextureBindTID of ours compares unequal and binds. Deleting a bound name
+            // resets the binding to 0, which is the state that cache should read as.
+            cells[cell] = dst;
+            if (cell == 0) *(int*)((byte*)tex + OffGlId) = (int)dst;
+            uint old = (uint)etid;
+            if (!_owned.Contains(old) && Gl.DeleteTextures != null) Gl.DeleteTextures(1, &old);
+            else _engineHeld.Remove(old);   // a refresh INTO our name: the engine will never return the old one, so Discard deletes it
+            _engineHeld.Add(dst);
+            _borrowed.Remove(etid);
+            _singleUploads++;
+            etid = (int)dst;
+        }
         Replace(key, etid, dst, bytes);
-        Census(tex, bytes, transSaved, n, cell);
+        Census(tex, bytes, 0, n, cell);
         HighWater();
+        if (wantBcn) EnqueueTranscode(key, etid, dst, bytes);
+        return true;
     }
 
-    /// <summary>#265: the transcode. The engine's raw upload into our texture just finished (it is still
-    /// bound); read each level back, encode it BC1 (no alpha) or BC3, and respecify the level compressed.
-    /// The readback inherits everything the engine's path already did -- the de-atlas, the
-    /// over-MAX_TEXTURE_SIZE box filter, the mip walk -- which is why nothing here parses an image.
-    /// <para>Cold, and the readback's pipeline sync is against an upload this call just issued.
-    /// Returns the compressed byte total, or -1 for a refusal: single-channel levels (their sampler swizzle
-    /// is the engine's contract with the RAW channel layout), tiny textures, or a driver that errored -- in
-    /// which case the engine's upload is RE-RUN so the texture is never left half-respecified.</para>
-    /// <para>ponytail: readback-encode-reupload costs one extra bus round trip per texture at load; encoding
-    /// straight from the decoded pixels at basic+0x58 would skip it but must reimplement the de-atlas and
-    /// the mip chain. Upgrade if area loads measurably slow.</para></summary>
+    /// <summary>#386: <c>texsingle</c> in sowx.cfg (boot 1) -- one upload per texture instead of the engine's
+    /// copy plus Alloy's. 0 is the double path as #259 shipped it.</summary>
+    private static bool _single = true;
+    private static long _singleUploads;
+    /// <summary>Owned names the ENGINE holds in a cell array (a single upload or a warm hand-back). Such a name
+    /// must not be GL-deleted by Alloy while the engine may still bind it for its own 2D use (icons, portraits,
+    /// TTF glyph sheets all come through this funnel and all transcode): a swap or eviction drops its handle and
+    /// leaves the delete to the engine's own DeleteTextures, which <see cref="FilterRetire"/> then passes to the
+    /// driver because the name is no longer in <see cref="_owned"/>. The VRAM note undercounts these zombies.</summary>
+    private static readonly HashSet<uint> _engineHeld = new();
+
+    // ---- #386: PREFETCH -- build a texture when its part ENROLS, not when the camera first sees it ----
+
+    /// <summary>Textures the enrolment walk saw unbuilt on an accepted part. The drip builds them through
+    /// the engine's own <c>BuildAndStore</c> (the #284 retry path, with its liveness guards), a few per
+    /// frame, so the burst a turn used to pay -- 11-41 demands on one frame -- is spread over the frames
+    /// after enrolment, before the camera gets there. A build lands in the cache, so the engine's own
+    /// first-sight build is then a warm hit. <c>texprefetch</c> in sowx.cfg is the per-frame budget (0 = off).
+    /// The seen-set is keyed on the BORROWED pointer and cleared when it grows large: a recycled address
+    /// costs one texture its prefetch (it builds at first sight, as before), never a wild call -- the drip
+    /// re-proves the pointer through <see cref="AurTex"/> before touching it.</summary>
+    private const int PrefetchQueue = 8192;
+    private static readonly IntPtr[] _prefetchQ = new IntPtr[PrefetchQueue];
+    private static int _prefetchN, _prefetchHead;
+    private static readonly HashSet<IntPtr> _prefetchSeen = new();
+    private static int PrefetchBudget = 2;
+    private static long _prefetched, _prefetchDropped;
+
+    internal static void Prefetch(IntPtr tex)
+    {
+        if (tex == IntPtr.Zero || PrefetchBudget == 0 || _buildAndStore == null || !_armed) return;
+        // A material hands out a per-material REFERENCE object; thousands of them name one basic texture. The
+        // first run dedupe'd on the reference and drowned the queue (12612 dropped, 5 built): resolve to the
+        // basic, and only an UNBUILT one is worth a slot. Tid() re-proves the pointer first (#138).
+        if (AurTex.Tid(tex) != 0) return;
+        IntPtr real = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)tex + AlloyCensus.TexVtblReferenced))(tex);
+        if (real == IntPtr.Zero) real = tex;
+        if (_nullTex != null && real == *_nullTex) return;
+        IntPtr basic = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)real + AlloyCensus.TexVtblAsBasic))(real);
+        if (basic == IntPtr.Zero || *(int*)((byte*)basic + OffGlId) != 0 || *((byte*)basic + FlagNeverBuild) != 0) return;
+        if (_prefetchSeen.Count > 65536) _prefetchSeen.Clear();
+        if (!_prefetchSeen.Add(basic)) return;
+        if (_prefetchN >= PrefetchQueue) { _prefetchDropped++; return; }
+        _prefetchQ[(_prefetchHead + _prefetchN++) % PrefetchQueue] = tex;
+    }
+
+    private static void DripPrefetch()
+    {
+        int built = 0;
+        // ponytail: up to 8x the budget in already-built or dead entries per frame, which cost a field read each
+        for (int looked = 0; built < PrefetchBudget && looked < PrefetchBudget * 8 && _prefetchN > 0; looked++)
+        {
+            IntPtr tex = _prefetchQ[_prefetchHead];
+            _prefetchHead = (_prefetchHead + 1) % PrefetchQueue; _prefetchN--;
+            long before = _rebuilds;
+            Rebuild(tex);   // already built = a free return; freed = refused by the vtable re-proof
+            if (_rebuilds != before) { built++; _prefetched++; FrameZones.Count(FrameZones.Ev.Prefetch); }
+        }
+    }
+
+    internal static string PrefetchNote()
+        => $"prefetch: {_prefetched} built ahead, {_prefetchN} queued, {_prefetchDropped} dropped, budget {PrefetchBudget}/frame; single upload {(_single ? "on" : "off")} ({_singleUploads} textures)";
+
+    // ---- ADR 0023: the texture CACHE -- the delete funnel is the world edge for the INDEX, not the resource ----
+
+    /// <summary>VRAM the cache may hold, in bytes. 0 = the pre-ADR-0023 behaviour (a retired index entry
+    /// discards its resource). <c>texcache_mb</c> in sowx.cfg; -1 (the default) = a quarter of the probe's
+    /// reported VRAM, 1024 MiB when the device answers no memory query. Resolved lazily: the probe runs on
+    /// the first presented frame, after this table is attached.</summary>
+    private static long _budgetBytes = -1;
+    private static int _budgetCfgMb = -1;
+    private const int BudgetFallbackMib = 1024;
+    private static long Budget()
+    {
+        if (_budgetBytes >= 0) return _budgetBytes;
+        if (_budgetCfgMb >= 0) return _budgetBytes = (long)_budgetCfgMb * OneMiB;
+        if (!AlloyRenderer.VramProbed) return -1;   // not probed yet: "unknown", not the fallback
+        // a quarter of the card: NVX reports the total, Mesa's ATI_meminfo only the free pool (most of the
+        // card at probe time), and a driver with neither gets the fallback
+        long total = AlloyRenderer.VramTotalMib, free = AlloyRenderer.VramFreeMib;
+        return _budgetBytes = (total > 0 ? total / 4 : free > 0 ? free / 4 : BudgetFallbackMib) * OneMiB;
+    }
+    private static long _idleBytes, _cacheHits, _cacheMisses, _cacheEvicted, _cacheKept;
+    private static bool _evictDue;
+    private static int _texDelete = -1;
+    private static bool _handleDrop = true, _deleteNoted;
+    private static readonly List<ulong> _unidle = new();
+    /// <summary>Handles to release for resources that went idle -- GL, so drained in the bracket like <see cref="_pending"/>.</summary>
+    private static readonly HashSet<uint> _pendingHandles = new();
+
+    /// <summary>Post-build scalars of a plain texture, keyed on its cell-0 content key: what the warm path
+    /// writes back into a fresh <c>CAurTextureBasic</c> so the engine believes it built the texture. Captured
+    /// from the object after its cold build -- nothing here is derived, every field is what the engine's own
+    /// loader left (numX/numY included; their writer is outside the class and was not chased).</summary>
+    private struct TexMeta { public int W, H, Bpp, Compressed, NumX, NumY; public float Alpha; }
+    private static readonly Dictionary<ulong, TexMeta> _meta = new();
+    /// <summary>Content keys with a transcode queued or in flight: not warm-eligible (the pipeline is about
+    /// to retire the name the engine would be handed).</summary>
+    private static readonly HashSet<ulong> _inFlight = new();
+    private static delegate* unmanaged<IntPtr, void> _origBuildAndStoreTexture;
+    private static delegate* unmanaged<nuint, IntPtr> _znam;
+    private const int OffImage = 0x58, OffGlId = 0x6c, OffWidth = 0x74, OffHeight = 0x78, OffBpp = 0x7c,
+                      OffAlphaMean = 0x30, OffController = 0x38, OffPltMarker = 0x84,
+                      FlagCube = 0xe3, FlagImageBuilt = 0xe6, FlagNoImage = 0xe7, FlagNeverBuild = 0xe8;
+    private const int PltMarker = 4;
+
+    /// <summary>Is this a texture the cache may stand in for? Plain 2D, no PLT scheme, no animation
+    /// controller, not the engine's never-build case. Everything else takes the cold path unchanged.</summary>
+    private static bool Plain(IntPtr tex)
+        => *((byte*)tex + FlagNeverBuild) == 0 && *((byte*)tex + FlagCube) == 0
+           && *(IntPtr*)((byte*)tex + OffSchemes) == IntPtr.Zero && *(int*)((byte*)tex + OffPltMarker) != PltMarker
+           && *(IntPtr*)((byte*)tex + OffController) == IntPtr.Zero;
+
+    [UnmanagedCallersOnly]
+    private static void OnBuildAndStoreTexture(IntPtr tex)
+    {
+        if (_armed && Budget() > 0 && Plain(tex) && TryWarm(tex)) return;
+        if (_origBuildAndStoreTexture != null) _origBuildAndStoreTexture(tex);
+        if (_armed && Budget() > 0) Capture(tex);
+    }
+
+    /// <summary>The cold build just finished: remember what it produced, if every cell came through the
+    /// funnel as an owned resource.</summary>
+    private static void Capture(IntPtr tex)
+    {
+        if (!AurTex.IsBasic(tex) || !Plain(tex) || *(IntPtr*)((byte*)tex + OffImage) != IntPtr.Zero) return;
+        uint* cells = *(uint**)((byte*)tex + OffCellNames);
+        int nx = *(short*)((byte*)tex + OffNumX), ny = *(short*)((byte*)tex + OffNumY);
+        if (cells == null || nx <= 0 || ny <= 0 || *((byte*)tex + FlagImageBuilt) == 0) return;
+        for (int c = 0; c < nx * ny; c++)
+            if (!_index.TryGetValue((int)cells[c], out ulong k) || !_res.ContainsKey(k)) return;
+        _meta[Key(tex, 0)] = new TexMeta
+        {
+            W = *(int*)((byte*)tex + OffWidth), H = *(int*)((byte*)tex + OffHeight), Bpp = *(int*)((byte*)tex + OffBpp),
+            Compressed = *(int*)((byte*)tex + OffCompressedSize), NumX = nx, NumY = ny,
+            Alpha = *(float*)((byte*)tex + OffAlphaMean),
+        };
+    }
+
+    /// <summary>The warm path: every cell of this texture is resident, so hand the engine Alloy's names and
+    /// the scalars its build would have produced, and skip the read, the decode and the upload. The engine
+    /// then binds our names for its own 2D use (share-listed) and, on its next Reset, hands them to
+    /// DeleteTextures -- where <see cref="OnDeleteTextures"/> keeps them. Refuses on any doubt.</summary>
+    private static bool TryWarm(IntPtr tex)
+    {
+        if (_znam == null || !AurTex.IsBasic(tex)) return false;
+        ulong k0 = Key(tex, 0);
+        if (!_meta.TryGetValue(k0, out TexMeta m)) { _cacheMisses++; return false; }
+        int cells = m.NumX * m.NumY;
+        if (cells <= 0 || cells > 4096) return false;
+        uint* names = stackalloc uint[cells > 64 ? 1 : cells];
+        uint[]? big = cells > 64 ? new uint[cells] : null;
+        for (int c = 0; c < cells; c++)
+        {
+            ulong k = (k0 & ~0xFFFFFFFFUL) | (uint)c;
+            if (_inFlight.Contains(k) || !_res.TryGetValue(k, out Entry e)) { _cacheMisses++; return false; }
+            if (big != null) big[c] = e.Owned; else names[c] = e.Owned;
+        }
+        IntPtr arr = _znam((nuint)cells * 4);
+        if (arr == IntPtr.Zero) return false;
+        for (int c = 0; c < cells; c++)
+        {
+            uint name = big != null ? big[c] : names[c];
+            ((uint*)arr)[c] = name;
+            _engineHeld.Add(name);
+            ulong k = (k0 & ~0xFFFFFFFFUL) | (uint)c;
+            _index[(int)name] = k;
+            Entry e = _res[k];
+            if (e.Idle != 0) { _idleBytes -= e.Bytes; _res[k] = new Entry(e.Owned, e.Bytes, e.Gen, 0); _pendingHandles.Remove(e.Owned); }   // live again: its handle must not be dropped under a record
+        }
+        FillWarm(tex, arr, in m);
+        _cacheHits++;
+        FrameZones.Count(FrameZones.Ev.TexWarm);
+        return true;
+    }
+
+    /// <summary>The field writes alone, so the self-check can run them over a stand-in object.</summary>
+    private static void FillWarm(IntPtr tex, IntPtr names, in TexMeta m)
+    {
+        byte* p = (byte*)tex;
+        *(IntPtr*)(p + OffCellNames) = names;
+        *(int*)(p + OffGlId) = *(int*)names;
+        *(short*)(p + OffNumX) = (short)m.NumX; *(short*)(p + OffNumY) = (short)m.NumY;
+        *(int*)(p + OffWidth) = m.W; *(int*)(p + OffHeight) = m.H; *(int*)(p + OffBpp) = m.Bpp;
+        *(int*)(p + OffCompressedSize) = m.Compressed;
+        *(float*)(p + OffAlphaMean) = m.Alpha;
+        *(IntPtr*)(p + OffImage) = IntPtr.Zero;
+        p[FlagImageBuilt] = 1; p[FlagNoImage] = 0;
+    }
+
+    /// <summary>Evict idle resources, oldest first, until the cache fits its budget. Bracket-side (it
+    /// discards GL names); cold -- runs only after a retire or a swap raised <see cref="_evictDue"/>.</summary>
+    private static void Evict()
+    {
+        _evictDue = false;
+        long budget = Budget();
+        if (budget <= 0 || _bytes <= budget) return;
+        var referenced = new HashSet<ulong>(_index.Values);
+        var idle = new List<KeyValuePair<ulong, Entry>>();
+        foreach (var kv in _res)
+        {
+            if (kv.Value.Idle == 0) continue;
+            if (referenced.Contains(kv.Key)) { _idleBytes -= kv.Value.Bytes; _pendingHandles.Remove(kv.Value.Owned); _unidle.Add(kv.Key); continue; }
+            idle.Add(kv);
+        }
+        foreach (ulong k in _unidle) { Entry e = _res[k]; _res[k] = new Entry(e.Owned, e.Bytes, e.Gen, 0); }
+        _unidle.Clear();
+        idle.Sort((a, b) => a.Value.Idle.CompareTo(b.Value.Idle));
+        int n = 0;
+        foreach (var kv in idle)
+        {
+            if (_bytes <= budget) break;
+            _res.Remove(kv.Key);
+            _meta.Remove(kv.Key & ~0xFFFFFFFFUL);
+            _idleBytes -= kv.Value.Bytes;
+            Discard(kv.Value);   // the record marks land in Drain, once for the whole batch
+            n++;
+        }
+        _cacheEvicted += n;
+        FrameZones.Count(FrameZones.Ev.TexEvict, n);
+    }
+
+    internal static string CacheNote()
+    {
+        long b = Budget();
+        return $"texcache: {_bytes / OneMiB} MiB resident ({_idleBytes / OneMiB} idle) of {(b > 0 ? (b / OneMiB).ToString() : b == 0 ? "off" : "unprobed")} MiB, " +
+               $"{_cacheHits} warm builds, {_cacheMisses} misses, {_cacheKept} kept across the world edge, {_cacheEvicted} evicted, {_meta.Count} keys known";
+    }
+
+    /// <summary>Keep-then-evict, the delete filter, and the warm fill over a stand-in object.</summary>
+    internal static void SelfCheckCache(ExtenderLog log)
+    {
+        bool ok = true;
+        long svBudget = _budgetBytes; int svCfg = _budgetCfgMb; long svBytes = _bytes, svIdle = _idleBytes;
+        var svRes = new Dictionary<ulong, Entry>(_res); var svIdx = new Dictionary<int, ulong>(_index);
+        var svOwned = new HashSet<uint>(_owned); int svPend = _pending.Count, svPendH = _pendingHandles.Count;
+        var svMeta = new Dictionary<ulong, TexMeta>(_meta);
+        _res.Clear(); _index.Clear(); _owned.Clear(); _meta.Clear(); _bytes = 0; _idleBytes = 0;
+        _budgetCfgMb = 1; _budgetBytes = OneMiB;   // 1 MiB budget
+
+        int svDrip = _dripFrame;
+        ulong kA = 0xA00000000UL, kB = 0xB00000000UL;
+        Replace(kA, 11, 101, 600 * 1024); _dripFrame = 10;
+        Replace(kB, 12, 102, 600 * 1024); _index[13] = kB; _dripFrame = 20;   // B under two engine names
+        uint* dead = stackalloc uint[3] { 11, 102, 12 };
+        // the engine retires its own name 11 (A idle, kept) and 12 (B marked idle though 13 still points at it),
+        // and hands back OWNED name 102 (kept, filtered from the driver call)
+        uint kept = FilterRetire(3, dead, out uint passN);
+        ok &= passN == 2 && kept == 1 && _res.ContainsKey(kA) && _res[kA].Idle == 20 && !_index.ContainsKey(11)
+              && _res.ContainsKey(kB) && _res[kB].Idle == 20 && _pendingHandles.Count == svPendH + 2;
+        // over budget: the referenced one is un-idled (handle drop withdrawn), the idle one goes
+        Evict();
+        ok &= !_res.ContainsKey(kA) && _res.ContainsKey(kB) && _res[kB].Idle == 0 && _bytes == 600 * 1024
+              && _idleBytes == 0 && !_pendingHandles.Contains(102);
+        _dripFrame = svDrip;
+        // the warm fill over a stand-in object
+        byte* obj = stackalloc byte[0x100];
+        new Span<byte>(obj, 0x100).Clear();
+        uint* arr = stackalloc uint[2] { 7, 8 };
+        var m = new TexMeta { W = 64, H = 32, Bpp = 4, Compressed = 0, NumX = 2, NumY = 1, Alpha = 0.5f };
+        FillWarm((IntPtr)obj, (IntPtr)arr, in m);
+        ok &= *(int*)(obj + OffGlId) == 7 && *(short*)(obj + OffNumX) == 2 && *(short*)(obj + OffNumY) == 1
+              && *(int*)(obj + OffWidth) == 64 && *(int*)(obj + OffHeight) == 32 && obj[FlagImageBuilt] == 1
+              && *(IntPtr*)(obj + OffImage) == IntPtr.Zero && *(float*)(obj + OffAlphaMean) == 0.5f;
+
+        _res.Clear(); foreach (var kv in svRes) _res[kv.Key] = kv.Value;
+        _index.Clear(); foreach (var kv in svIdx) _index[kv.Key] = kv.Value;
+        _owned.Clear(); foreach (uint o in svOwned) _owned.Add(o);
+        _meta.Clear(); foreach (var kv in svMeta) _meta[kv.Key] = kv.Value;
+        if (_pending.Count > svPend) _pending.RemoveRange(svPend, _pending.Count - svPend);
+        _pendingHandles.Remove(101); _pendingHandles.Remove(102);
+        _bytes = svBytes; _idleBytes = svIdle; _budgetBytes = svBudget; _budgetCfgMb = svCfg;
+        log.Info(ok ? "OwnedTextures.SelfCheckCache: passed" : "OwnedTextures.SelfCheckCache: FAILED -- keep/evict/filter/fill drifted");
+    }
+
+    /// <summary>The TRANSCODE DRIP. The BCn transcode used to run inline in the upload funnel -- a readback
+    /// of every level, a CPU block encode and a respecify, on the frame the engine first drew the texture --
+    /// and the hitch ledger read it at 2-5ms per texture: the readback is a pipeline sync against a GPU that
+    /// is a frame behind, and the encode is a few ms of CPU. It is now a four-stage pipeline, one texture
+    /// per frame per stage, none of it waiting on the GPU: (1) the levels are read back into a PBO behind a
+    /// fence; (2) frames later, once the fence signals, the PBO is mapped and copied out; (3) an encoder
+    /// THREAD encodes the levels; (4) the blocks are uploaded into a NEW name that <see cref="Replace"/>
+    /// swaps in. The raw upload draws meanwhile, the old name retires through the ordinary discard path,
+    /// and a transcode that fails leaves the raw one standing. <c>bcndrip</c> in sowx.cfg is the per-frame
+    /// budget for stage 1; <c>bcn=0</c> still disables the transcode.
+    /// ponytail: PBOs and fences are not re-minted across a context loss; the jobs in flight are dropped there
+    /// and the textures stay raw.</summary>
+    private struct Trans { public ulong Key; public int Etid; public uint Src; public long Bytes; }
+    private const int TransQueue = 1024;
+    private static readonly Trans[] _transQ = new Trans[TransQueue];
+    private static int _transN, _transHead;
+    private static long _transDone, _transDropped, _transStale, _transFailed;
+    private static int TranscodeBudget = 1;
+
+    private const int JobFree = 0, JobReading = 1, JobEncoding = 2, JobEncoded = 3;
+    private sealed class TransJob
+    {
+        public ulong Key; public int Etid; public uint Src; public long Bytes;
+        public uint Pbo; public long PboBytes; public IntPtr Fence;
+        public int Levels; public readonly int[] Lw = new int[MaxLevels], Lh = new int[MaxLevels];
+        public readonly long[] Off = new long[MaxLevels];
+        public byte[] Pixels = Array.Empty<byte>(), Blocks = Array.Empty<byte>();
+        public bool Bc3; public long Compressed;
+        public int MinF, MagF, WrapS, WrapT, MaxLevel, Aniso;
+        public volatile int State;
+    }
+    private const int TransJobs = 4;
+    private static readonly TransJob[] _jobs = new TransJob[TransJobs];
+    private static Thread? _encoder;
+    private static readonly SemaphoreSlim _encodeWake = new(0, int.MaxValue);
+    private const uint STREAM_READ = 0x88E1;
+
+    private static void EnqueueTranscode(ulong key, int etid, uint src, long bytes)
+    {
+        if (_transN >= TransQueue) { _transDropped++; return; }   // stays raw, as bcn=0 would leave it
+        _transQ[(_transHead + _transN++) % TransQueue] = new Trans { Key = key, Etid = etid, Src = src, Bytes = bytes };
+        _inFlight.Add(key);
+    }
+
+    /// <summary>One frame of the pipeline: uploads first (they free jobs), then fence checks, then new
+    /// readbacks up to the budget. Engine context, on the <see cref="DripRebuilds"/> anchor; the engine's
+    /// bind cache and pixel-store state are restored around every stage.</summary>
+    private static void DripTranscodes()
+    {
+        if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.GetIntegerv == null || Gl.GetTexImage == null
+            || Gl.CompressedTexImage2D == null || Gl.MapBufferRange == null || Gl.UnmapBuffer == null
+            || Gl.FenceSync == null || Gl.ClientWaitSync == null || Gl.BufferData == null) return;
+        if (_transN == 0 && !AnyJob()) return;
+        long t0 = FrameZones.Now;
+        for (int j = 0; j < TransJobs; j++)
+        {
+            _jobs[j] ??= new TransJob();
+            var job = _jobs[j];
+            long ts = FrameZones.Now;
+            if (job.State == JobEncoded) { UploadJob(job); FrameZones.Add(FrameZones.Zone.BcnUp, ts); }
+            else if (job.State == JobReading) { CollectJob(job); FrameZones.Add(FrameZones.Zone.BcnMap, ts); }
+        }
+        for (int spent = 0; spent < TranscodeBudget && _transN > 0; spent++)
+        {
+            TransJob? job = null;
+            for (int j = 0; j < TransJobs && job == null; j++) if (_jobs[j].State == JobFree) job = _jobs[j];
+            if (job == null) break;
+            Trans t = _transQ[_transHead];
+            _transHead = (_transHead + 1) % TransQueue; _transN--;
+            if (!_res.TryGetValue(t.Key, out Entry e) || e.Owned != t.Src) { _transStale++; _inFlight.Remove(t.Key); spent--; continue; }
+            long tr = FrameZones.Now;
+            StartJob(job, t);
+            FrameZones.Add(FrameZones.Zone.BcnRead, tr);
+            if (job.State == JobFree) _inFlight.Remove(t.Key);   // refused or failed at start: raw, and warm-eligible again
+        }
+        FrameZones.Add(FrameZones.Zone.Bcn, t0);
+    }
+
+    private static bool AnyJob()
+    {
+        for (int j = 0; j < TransJobs; j++) if (_jobs[j] != null && _jobs[j].State != JobFree) return true;
+        return false;
+    }
+
+    /// <summary>Stage 1: level dimensions, sampler state and the readback of every level into the job's PBO,
+    /// behind a fence. Nothing here waits: with a PACK buffer bound the readback is a GPU-side copy.</summary>
+    private static void StartJob(TransJob job, in Trans t)
+    {
+        job.Key = t.Key; job.Etid = t.Etid; job.Src = t.Src; job.Bytes = t.Bytes;
+        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
+        DrainErrors();
+        Gl.BindTexture(Gl.TEXTURE_2D, t.Src);
+        int w0 = 0, h0 = 0, green = 0;
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w0);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h0);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_GREEN_SIZE, &green);
+        // Single-channel levels keep their sampler swizzle contract with the raw layout; tiny sheets are
+        // one BCn block each (see TranscodeFloor). Both stay raw.
+        if (w0 < TranscodeFloor || h0 < TranscodeFloor || green == 0)
+        { Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind); _transStale++; return; }
+        job.Levels = 0;
+        long total = 0;
+        for (; job.Levels < MaxLevels; job.Levels++)
+        {
+            int w = 0, h = 0;
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, job.Levels, Gl.TEXTURE_WIDTH, &w);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, job.Levels, Gl.TEXTURE_HEIGHT, &h);
+            if (w <= 0 || h <= 0) break;
+            job.Lw[job.Levels] = w; job.Lh[job.Levels] = h; job.Off[job.Levels] = total;
+            total += (long)w * h * 4;
+        }
+        fixed (int* mn = &job.MinF, mg = &job.MagF, ws = &job.WrapS, wt = &job.WrapT, ml = &job.MaxLevel, an = &job.Aniso)
+        {
+            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, mn);
+            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, mg);
+            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, ws);
+            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, wt);
+            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, ml);
+            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_ANISOTROPY, an);
+        }
+        // The whole pixel-store surface the readback depends on: a stale PACK_ROW_LENGTH strides it past
+        // the buffer, and the engine's own pack binding must come back exactly.
+        int svAlign, svRow, svSkipR, svSkipP, svPackBuf;
+        Gl.GetIntegerv(Gl.PACK_ALIGNMENT, &svAlign);
+        Gl.GetIntegerv(Gl.PACK_ROW_LENGTH, &svRow);
+        Gl.GetIntegerv(Gl.PACK_SKIP_ROWS, &svSkipR);
+        Gl.GetIntegerv(Gl.PACK_SKIP_PIXELS, &svSkipP);
+        Gl.GetIntegerv(Gl.PIXEL_PACK_BUFFER_BINDING, &svPackBuf);
+        Gl.PixelStorei(Gl.PACK_ALIGNMENT, 1);
+        Gl.PixelStorei(Gl.PACK_ROW_LENGTH, 0);
+        Gl.PixelStorei(Gl.PACK_SKIP_ROWS, 0);
+        Gl.PixelStorei(Gl.PACK_SKIP_PIXELS, 0);
+        if (job.Pbo == 0) { uint b; Gl.GenBuffers(1, &b); job.Pbo = b; job.PboBytes = 0; }
+        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, job.Pbo);
+        if (job.PboBytes < total) { Gl.BufferData(Gl.PIXEL_PACK_BUFFER, (IntPtr)total, null, STREAM_READ); job.PboBytes = total; }
+        for (int i = 0; i < job.Levels; i++)
+            Gl.GetTexImage(Gl.TEXTURE_2D, i, Gl.RGBA, Gl.UNSIGNED_BYTE, (void*)job.Off[i]);
+        job.Fence = Gl.FenceSync(Gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, (uint)svPackBuf);
+        Gl.PixelStorei(Gl.PACK_ALIGNMENT, svAlign);
+        Gl.PixelStorei(Gl.PACK_ROW_LENGTH, svRow);
+        Gl.PixelStorei(Gl.PACK_SKIP_ROWS, svSkipR);
+        Gl.PixelStorei(Gl.PACK_SKIP_PIXELS, svSkipP);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
+        if (Gl.GetError() != 0 || job.Fence == IntPtr.Zero) { if (job.Fence != IntPtr.Zero) Gl.DeleteSync(job.Fence); job.Fence = IntPtr.Zero; _transFailed++; return; }
+        if (job.Pixels.Length < total) job.Pixels = new byte[total];   // cold: grows to the largest texture seen
+        job.State = JobReading;
+    }
+
+    /// <summary>Stage 2: the fence signalled, so the PBO holds the levels -- map, copy out, wake the encoder.
+    /// A fence still pending costs one query and the job waits another frame.</summary>
+    private static void CollectJob(TransJob job)
+    {
+        uint r = Gl.ClientWaitSync(job.Fence, 0, 0);
+        if (r != Gl.ALREADY_SIGNALED && r != Gl.CONDITION_SATISFIED) return;
+        Gl.DeleteSync(job.Fence); job.Fence = IntPtr.Zero;
+        long total = job.Off[job.Levels - 1] + (long)job.Lw[job.Levels - 1] * job.Lh[job.Levels - 1] * 4;
+        int svPackBuf; Gl.GetIntegerv(Gl.PIXEL_PACK_BUFFER_BINDING, &svPackBuf);
+        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, job.Pbo);
+        void* p = Gl.MapBufferRange(Gl.PIXEL_PACK_BUFFER, IntPtr.Zero, (IntPtr)total, Gl.MAP_READ_BIT);
+        bool ok = p != null;
+        if (ok)
+        {
+            fixed (byte* dst = job.Pixels) Buffer.MemoryCopy(p, dst, job.Pixels.Length, total);
+            ok = Gl.UnmapBuffer(Gl.PIXEL_PACK_BUFFER) != 0;
+        }
+        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, (uint)svPackBuf);
+        if (!ok) { _transFailed++; job.State = JobFree; _inFlight.Remove(job.Key); return; }
+        long blk = 0;
+        for (int i = 0; i < job.Levels; i++) blk += BcnEncode.LevelSize(job.Lw[i], job.Lh[i], true);
+        if (job.Blocks.Length < blk) job.Blocks = new byte[blk];
+        job.State = JobEncoding;
+        if (_encoder == null)
+        {
+            _encoder = new Thread(EncodeLoop) { IsBackground = true, Name = "sowx-bcn", Priority = ThreadPriority.BelowNormal };
+            _encoder.Start();
+        }
+        _encodeWake.Release();
+    }
+
+    /// <summary>Stage 3, off the engine thread: BC1 or BC3 from the texels (an opaque level 0 cannot grow
+    /// transparency in its mips), every level encoded into the job's block buffer. Touches nothing but the
+    /// job it was woken for; the state flip is the hand-off in both directions.</summary>
+    private static void EncodeLoop()
+    {
+        while (true)
+        {
+            _encodeWake.Wait();
+            for (int j = 0; j < TransJobs; j++)
+            {
+                var job = _jobs[j];
+                if (job == null || job.State != JobEncoding) continue;
+                fixed (byte* px = job.Pixels)
+                fixed (byte* blocks = job.Blocks)
+                {
+                    bool bc3 = false;
+                    for (long i = 3, end = (long)job.Lw[0] * job.Lh[0] * 4; i < end; i += 4)
+                        if (px[i] != 255) { bc3 = true; break; }
+                    long off = 0;
+                    for (int i = 0; i < job.Levels; i++)
+                    {
+                        BcnEncode.EncodeLevel(px + job.Off[i], job.Lw[i], job.Lh[i], bc3, blocks + off);
+                        job.Off[i] = off;   // re-used: the level's offset in the BLOCK buffer from here on
+                        off += BcnEncode.LevelSize(job.Lw[i], job.Lh[i], bc3);
+                    }
+                    job.Bc3 = bc3; job.Compressed = off;
+                }
+                job.State = JobEncoded;
+            }
+        }
+    }
+
+    /// <summary>Stage 4: a new name, the source's sampler state, the compressed levels, and the swap.</summary>
+    private static void UploadJob(TransJob job)
+    {
+        job.State = JobFree;   // whatever happens below, the job is spent
+        _inFlight.Remove(job.Key);
+        if (!_res.TryGetValue(job.Key, out Entry e) || e.Owned != job.Src) { _transStale++; return; }
+        uint dst; Gl.GenTextures(1, &dst);
+        if (dst == 0) { _transFailed++; return; }
+        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
+        int svUnpackBuf; Gl.GetIntegerv(Gl.PIXEL_UNPACK_BUFFER_BINDING, &svUnpackBuf);
+        if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, 0);
+        DrainErrors();
+        Gl.BindTexture(Gl.TEXTURE_2D, dst);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, job.MinF);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, job.MagF);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, job.WrapS);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, job.WrapT);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, job.MaxLevel);
+        if (job.Aniso > 0) Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_ANISOTROPY, job.Aniso);
+        uint fmt = job.Bc3 ? Gl.COMPRESSED_RGBA_S3TC_DXT5 : Gl.COMPRESSED_RGB_S3TC_DXT1;
+        // Immutable storage for the whole chain, then one sub-image per level. Defining mutable levels one by
+        // one read as BcnUp 2,5-4,7ms per texture: the driver re-creates the miptree on every level it learns about.
+        bool immutable = Gl.TexStorage2D != null && Gl.CompressedTexSubImage2D != null;
+        if (immutable)
+        {
+            Gl.TexStorage2D(Gl.TEXTURE_2D, job.Levels, fmt, job.Lw[0], job.Lh[0]);
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, Math.Min(job.MaxLevel, job.Levels - 1));
+        }
+        fixed (byte* blocks = job.Blocks)
+            for (int i = 0; i < job.Levels; i++)
+            {
+                int size = BcnEncode.LevelSize(job.Lw[i], job.Lh[i], job.Bc3);
+                if (immutable) Gl.CompressedTexSubImage2D(Gl.TEXTURE_2D, i, 0, 0, job.Lw[i], job.Lh[i], fmt, size, blocks + job.Off[i]);
+                else Gl.CompressedTexImage2D(Gl.TEXTURE_2D, i, fmt, job.Lw[i], job.Lh[i], 0, size, blocks + job.Off[i]);
+            }
+        uint err = Gl.GetError();
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
+        if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, (uint)svUnpackBuf);
+        if (err != 0)
+        {
+            if (Gl.DeleteTextures != null) Gl.DeleteTextures(1, &dst);
+            _transFailed++;
+            if (++_bcnFails >= BcnFailCap)
+            {
+                _bcn = false;
+                _log?.Info($"OwnedTextures: BCn transcode DISABLED -- {_bcnFails} driver refusals (last 0x{err:x}); uploads stay raw until the next context");
+            }
+            return;
+        }
+        Replace(job.Key, job.Etid, dst, job.Compressed);
+        FrameZones.Count(FrameZones.Ev.Transcode);
+        _transDone++;
+        _censusTrans++; _censusSaved += job.Bytes > job.Compressed ? job.Bytes - job.Compressed : 0;
+    }
+
+    internal static string TranscodeNote()
+        => $"transcode drip: {_transDone} done, {_transN} queued, {_transStale} stale, {_transFailed} failed, {_transDropped} dropped past the queue, budget {TranscodeBudget}/frame";
+
     /// <summary>#336: smallest side worth transcoding. A BCn block IS 4x4 and carries two endpoint colours
     /// for its sixteen texels, so a 4x4 image is ONE block -- every texel in it averaged down to a line
     /// between two colours. That is not a rounding error on a small texture, it is the texture: the client's
@@ -416,121 +984,6 @@ internal static unsafe class OwnedTextures
     /// them is a sheet whose texels were each chosen on purpose.</para></summary>
     private const int TranscodeFloor = 16;
 
-    /// <summary>Re-encode the bound texture's whole mip chain to BC1/BC3 in place. Every level is read and
-    /// encoded before ANY of it is uploaded, because respecifying level 0 with a different internal format
-    /// reallocates the texture object: on a driver that backs an object with one miptree the other levels'
-    /// contents do not survive that, so a read interleaved with the uploads returns undefined pixels, which
-    /// encode and upload cleanly with no GL error to catch them. Inferred from the failure, not from driver
-    /// source -- what was observed is an AMD/Mesa client whose textures were right at the base level and
-    /// wrong at every mip below it (correct up close, corrupt at distance, snapping right as the camera
-    /// closed in) while the same build on NVIDIA, which allocates levels independently, showed nothing.
-    /// <c>bcn=0</c> cleared it. Returns the new size, <see cref="Broken"/>, or -1 to leave the texture raw.
-    /// </summary>
-    private static long Transcode(IntPtr tex, int cell)
-    {
-        if (Gl.GetTexImage == null || Gl.CompressedTexImage2D == null || Gl.PixelStorei == null
-            || Gl.GetTexLevelParameteriv == null || Gl.BindBuffer == null) return -1;
-        int w0 = 0, h0 = 0, green = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w0);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h0);
-        if (w0 < TranscodeFloor || h0 < TranscodeFloor) return -1;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_GREEN_SIZE, &green);
-        if (green == 0) return -1;
-
-        if (_readback == null || _readback.Length < w0 * h0 * 4) _readback = new byte[w0 * h0 * 4];
-
-        // Every level's dimensions up front, and scratch for the WHOLE chain at the BC3 block size -- BC1
-        // needs half, so the encode below can never outrun this no matter which the texels pick. A ratio
-        // over level 0 would not do: once the short axis bottoms out at one block the tail stops quartering.
-        int* lw = stackalloc int[MaxLevels], lh = stackalloc int[MaxLevels], loff = stackalloc int[MaxLevels];
-        int levels = 0;
-        long blkMax = 0;
-        for (; levels < MaxLevels; levels++)
-        {
-            int w = 0, h = 0;
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_WIDTH, &w);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_HEIGHT, &h);
-            if (w <= 0 || h <= 0) break;
-            lw[levels] = w; lh[levels] = h;
-            blkMax += BcnEncode.LevelSize(w, h, true);
-        }
-        if (levels == 0) return -1;
-        if (_blocks == null || _blocks.Length < blkMax) _blocks = new byte[blkMax];
-
-        // The whole pixel-store surface the readback and the compressed upload depend on, not just the
-        // alignment: a stale PACK_ROW_LENGTH strides the readback past the buffer, and a bound pack/unpack
-        // PBO silently turns the client pointer into a buffer offset.
-        int svAlign, svRow, svSkipR, svSkipP, svPackBuf, svUnpackBuf;
-        Gl.GetIntegerv(Gl.PACK_ALIGNMENT, &svAlign);
-        Gl.GetIntegerv(Gl.PACK_ROW_LENGTH, &svRow);
-        Gl.GetIntegerv(Gl.PACK_SKIP_ROWS, &svSkipR);
-        Gl.GetIntegerv(Gl.PACK_SKIP_PIXELS, &svSkipP);
-        Gl.GetIntegerv(Gl.PIXEL_PACK_BUFFER_BINDING, &svPackBuf);
-        Gl.GetIntegerv(Gl.PIXEL_UNPACK_BUFFER_BINDING, &svUnpackBuf);
-        Gl.PixelStorei(Gl.PACK_ALIGNMENT, 1);
-        Gl.PixelStorei(Gl.PACK_ROW_LENGTH, 0);
-        Gl.PixelStorei(Gl.PACK_SKIP_ROWS, 0);
-        Gl.PixelStorei(Gl.PACK_SKIP_PIXELS, 0);
-        if (svPackBuf != 0) Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, 0);
-        if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, 0);
-
-        fixed (byte* read = _readback)
-        fixed (byte* blocks = _blocks)
-        {
-            // BC1 vs BC3 from the TEXELS, not the declared format -- the repo's standing lesson is that
-            // format flags lie about alpha (#126's ivy). A 32-bit source with constant-255 alpha is BC1 at
-            // half the size, and an opaque level 0 cannot grow transparency in the mips derived from it.
-            Gl.GetTexImage(Gl.TEXTURE_2D, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, read);
-            bool bc3 = false;
-            for (long i = 3, end = (long)w0 * h0 * 4; i < end; i += 4)
-                if (read[i] != 255) { bc3 = true; break; }
-            uint fmt = bc3 ? Gl.COMPRESSED_RGBA_S3TC_DXT5 : Gl.COMPRESSED_RGB_S3TC_DXT1;
-
-            // read every level BEFORE respecifying any -- redefining level 0 reallocates the object
-            int off = 0;
-            for (int i = 0; i < levels; i++)
-            {
-                if (i > 0) Gl.GetTexImage(Gl.TEXTURE_2D, i, Gl.RGBA, Gl.UNSIGNED_BYTE, read);
-                BcnEncode.EncodeLevel(read, lw[i], lh[i], bc3, blocks + off);
-                loff[i] = off; off += BcnEncode.LevelSize(lw[i], lh[i], bc3);
-            }
-            for (int i = 0; i < levels; i++)
-                Gl.CompressedTexImage2D(Gl.TEXTURE_2D, i, fmt, lw[i], lh[i], 0,
-                    BcnEncode.LevelSize(lw[i], lh[i], bc3), blocks + loff[i]);
-        }
-
-        Gl.PixelStorei(Gl.PACK_ALIGNMENT, svAlign);
-        Gl.PixelStorei(Gl.PACK_ROW_LENGTH, svRow);
-        Gl.PixelStorei(Gl.PACK_SKIP_ROWS, svSkipR);
-        Gl.PixelStorei(Gl.PACK_SKIP_PIXELS, svSkipP);
-        if (svPackBuf != 0) Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, (uint)svPackBuf);
-        if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, (uint)svUnpackBuf);
-
-        uint err = Gl.GetError();
-        if (err != 0)
-        {
-            // Never leave a half-respecified texture behind: the engine's own upload restores every level
-            // raw -- and that recovery is itself VERIFIED, because the moment both uploads fail (VRAM
-            // pressure hits both) the texture is garbage and must not be published as owned.
-            _origCreate(tex, 0, cell);
-            uint recoveryErr = Gl.GetError();
-            if (++_bcnFails >= BcnFailCap)
-            {
-                _bcn = false;
-                _log?.Info($"OwnedTextures: BCn transcode DISABLED -- {_bcnFails} driver refusals (last 0x{err:x}); the uncompressed path stays raw until the next context");
-            }
-            return recoveryErr != 0 ? Broken : -1;
-        }
-        return Measure();
-    }
-
-    /// <summary>Transcode's "the texture is garbage" verdict: the compressed respecify failed AND the raw
-    /// recovery failed, so <see cref="Adopt"/> must route to the borrow path instead of publishing it.</summary>
-    private const long Broken = -2;
-
-    /// <summary>Level-readback and block scratch, grown to the largest texture seen and reused -- the upload
-    /// funnel is serialized on the engine's GL thread, so one of each is enough.</summary>
-    private static byte[]? _readback, _blocks;
     private static bool _bcn, _bcnWanted;
     private static int _bcnFails;
     /// <summary>A driver that refuses one S3TC upload refuses them all; three strikes covers a transient.</summary>
@@ -723,11 +1176,16 @@ internal static unsafe class OwnedTextures
     {
         _dripFrame++;
         CensusSettleCheck();
+        DripTranscodes();
         if (_buildAndStore == null) return;
+        long tp = FrameZones.Now;
+        DripPrefetch();
+        FrameZones.Add(FrameZones.Zone.Prebuild, tp);
         for (int spent = 0; spent < RebuildBudget && _rebuildN > 0; spent++)
         {
             IntPtr tex = _rebuildQ[--_rebuildN];
             _rebuildQ[_rebuildN] = IntPtr.Zero;
+            FrameZones.Count(FrameZones.Ev.TexBuild);
             Rebuild(tex);
         }
     }
@@ -847,7 +1305,8 @@ internal static unsafe class OwnedTextures
     {
         if (e.Owned == 0) return;
         _owned.Remove(e.Owned);
-        _pending.Add(e.Owned);
+        if (_engineHeld.Contains(e.Owned)) _pendingHandles.Add(e.Owned);   // the engine deletes it; we only drop the handle
+        else _pending.Add(e.Owned);
         _bytes -= e.Bytes;
     }
 
@@ -856,14 +1315,17 @@ internal static unsafe class OwnedTextures
     /// <see cref="SelfCheck"/> can assert the table mutation rather than a copy of it.</summary>
     private static void Replace(ulong key, int etid, uint owned, long bytes)
     {
-        uint gen = 0;
+        uint gen = 0; int idle = 0;
         if (_res.TryGetValue(key, out Entry old))
         {
-            gen = old.Gen + 1;
+            gen = old.Gen + 1; idle = old.Idle;
+            if (idle != 0) _idleBytes += bytes - old.Bytes;
             Discard(old);
             _reuploads++;
+            AlloyRenderer.NoteOwnedNameSwapped(old.Owned, owned);   // #386: records take the new name in place, no re-stage
         }
-        _res[key] = new Entry(owned, bytes, gen);
+        _res[key] = new Entry(owned, bytes, gen, idle);
+        _evictDue = true;
         _owned.Add(owned);
         _index[etid] = key;
         _borrowed.Remove(etid);
@@ -939,8 +1401,50 @@ internal static unsafe class OwnedTextures
     [UnmanagedCallersOnly]
     private static void OnDeleteTextures(uint n, uint* names)
     {
+        if (Budget() > 0 && names != null && n > 0 && n <= 4096)
+        {
+            // ADR 0023: names the engine holds that are OURS (a warm build handed them out) must survive its
+            // Reset -- they are the cache. Only the rest reach the driver.
+            uint* pass = stackalloc uint[(int)n];
+            FilterRetire(n, names, out uint passN, pass);
+            if (passN > 0 && _origDelete != null) _origDelete(passN, pass);
+            return;
+        }
         Retire(n, names);
         if (_origDelete != null) _origDelete(n, names);
+    }
+
+    /// <summary>The cache-mode delete: owned names are kept (and counted), engine names retire their index
+    /// entry and put the resource to IDLE rather than discarding it. Returns the kept count; <paramref name="pass"/>
+    /// (if given) receives the names the driver may still delete.</summary>
+    private static uint FilterRetire(uint n, uint* names, out uint passN, uint* pass = null)
+    {
+        uint kept = 0; passN = 0;
+        for (uint i = 0; i < n; i++)
+        {
+            uint name = names[i];
+            _engineHeld.Remove(name);
+            bool ours = _owned.Contains(name);
+            if (ours) { kept++; _cacheKept++; }   // the GL name survives; only its INDEX entry retires below
+            else
+            {
+                if (pass != null) pass[passN] = name;
+                passN++;
+                _borrowed.Remove((int)name);
+                DropQueued(name);
+            }
+            if (!_index.TryGetValue((int)name, out ulong key)) continue;
+            _index.Remove((int)name);
+            _retired++;
+            if (!_res.TryGetValue(key, out Entry e) || e.Idle != 0) continue;
+            // Marked idle without asking whether another tid still points at it: that is an O(index) question
+            // per name on the transition frame. Evict asks it once per pass and un-idles the ones still referenced.
+            _res[key] = new Entry(e.Owned, e.Bytes, e.Gen, Math.Max(_dripFrame, 1));
+            _idleBytes += e.Bytes;
+            _pendingHandles.Add(e.Owned);   // #153's residency is per name; an idle resource holds no handle slot
+            _evictDue = true;
+        }
+        return kept;
     }
 
     /// <summary>The delete handler's body, split out so <see cref="SelfCheck"/> can exercise it.</summary>
@@ -950,6 +1454,7 @@ internal static unsafe class OwnedTextures
         for (uint i = 0; i < n; i++)
         {
             int name = (int)names[i];
+            _engineHeld.Remove((uint)name);
             _borrowed.Remove(name);
             DropQueued((uint)name);   // #360: a queued copy of a name the engine just freed reads a recycle
             if (!_index.TryGetValue(name, out ulong key)) continue;
@@ -957,9 +1462,21 @@ internal static unsafe class OwnedTextures
             _retired++;
             if (!_res.TryGetValue(key, out Entry e)) continue;
             _res.Remove(key);
-            Discard(e);
+            // The engine is deleting this very name NOW (its cell was ours): a second delete from Drain lands
+            // on whatever the driver has since given that name to -- immediate on Mesa, which is the
+            // corrupted-UI-texture class. The handle is forgotten without GL: its texture is already gone.
+            if (e.Owned == (uint)name) { _owned.Remove(e.Owned); _bytes -= e.Bytes; _pendingForget.Add(e.Owned); }
+            else Discard(e);
         }
     }
+    /// <summary>Owned names the engine deleted itself: records marked, handle tombstoned, no GL.</summary>
+    private static readonly HashSet<uint> _pendingForget = new();
+    /// <summary>Names whose delete is held for <see cref="DeferFrames"/> drains: the last draw that sampled
+    /// their handle may still be in flight, and a driver that resolves bindless descriptors at batch
+    /// completion (zink) faults on a destroyed image there. The records already carry the new name.</summary>
+    private static readonly List<uint>[] _deferred = { new(), new(), new(), new() };
+    private const int DeferFrames = 3;
+    private static int _drainSeq;
 
     /// <summary>#220: is this name one of ours? The bindless path mints a handle only when it is -- a handle
     /// on an engine texture is a handle on an object the engine may delete or re-upload under us, which is
@@ -1001,16 +1518,41 @@ internal static unsafe class OwnedTextures
     internal static void Drain()
     {
         DrainPltCopies();
-        if (_pending.Count == 0) return;
-        int n = _pending.Count;
+        // Evict FIRST: its discards join this frame's batch, and its un-idle of a referenced key keeps that
+        // handle (it used to remove from a set already dropped and cleared). Then the per-slot marks for the
+        // whole batch, then the drops -- no epoch bump anywhere on this path.
+        if (_evictDue) Evict();
+        if (_pendingForget.Count > 0)
+        {
+            foreach (uint f in _pendingForget) _pendingHandles.Add(f);   // for the record marks below
+            AlloyRenderer.NoteOwnedNamesRetired(_pending, _pendingHandles);
+            foreach (uint f in _pendingForget) { _pendingHandles.Remove(f); AlloyRenderer.ForgetHandle(f); }
+            _pendingForget.Clear();
+        }
+        else AlloyRenderer.NoteOwnedNamesRetired(_pending, _pendingHandles);
+        if (_pendingHandles.Count > 0)
+        {
+            foreach (uint h in _pendingHandles) AlloyRenderer.DropHandle(h);
+            _pendingHandles.Clear();
+        }
+        // this drain's names are held; the ones queued DeferFrames drains ago go now
+        int slot = _drainSeq++ % _deferred.Length;
+        List<uint> due = _deferred[(slot + _deferred.Length - DeferFrames) % _deferred.Length];
+        if (_pending.Count > 0) { _deferred[slot].AddRange(_pending); _pending.Clear(); }
+        if (due.Count == 0) return;
+        int n = due.Count;
+        // auto: deletes are only unsafe where zink's bindless bookkeeping is live -- vetoed bindless = no handles = safe
+        bool delete = _texDelete == 1 || (_texDelete < 0 && !(GlContextService.Zink && AlloyRenderer.Bindless));
+        if (!delete && !_deleteNoted) { _deleteNoted = true; _log?.Info("OwnedTextures: owned textures are NEVER deleted this session (zink with bindless forced, or texdelete=0) -- names leak until the context goes"); }
         for (int i = 0; i < n; i++)
         {
-            uint name = _pending[i];
-            AlloyRenderer.DropHandle(name);   // residency first: a resident handle outlives its texture
-            if (Gl.DeleteTextures != null) Gl.DeleteTextures(1, &name);
+            uint name = due[i];
+            if (_handleDrop) AlloyRenderer.DropHandle(name);   // residency first: a resident handle outlives its texture
+            else AlloyRenderer.ForgetHandle(name);
+            if (delete && Gl.DeleteTextures != null) Gl.DeleteTextures(1, &name);
         }
-        _pending.Clear();
-        _log?.Info($"OwnedTextures: released {n} owned textures (engine names retired so far: {_retired})");
+        due.Clear();
+        _log?.Info($"OwnedTextures: {(delete ? "released" : "retired (kept alive)")} {n} owned textures (engine names retired so far: {_retired})");
     }
 
     /// <summary>#360: adopt every queued GPU composite. Runs from <see cref="Drain"/>, i.e. inside the 4.6
@@ -1129,8 +1671,17 @@ internal static unsafe class OwnedTextures
         _index.Clear();
         _owned.Clear();
         _borrowed.Clear();
-        _pending.Clear();
+        _pending.Clear(); _pendingForget.Clear(); foreach (var d in _deferred) d.Clear();   // the names died with the context
         _pltQ.Clear();   // #360: queued sources are names in a context that no longer exists
+        _transN = 0; _transHead = 0;   // the queue names owned textures of the dead context
+        _meta.Clear(); _inFlight.Clear(); _pendingHandles.Clear(); _idleBytes = 0; _evictDue = false;
+        _prefetchN = 0; _prefetchHead = 0; _prefetchSeen.Clear(); _engineHeld.Clear();
+        for (int j = 0; j < TransJobs; j++)
+            if (_jobs[j] != null)
+            {   // the encoder never touches Pbo or Fence, so both reset on a job still encoding; its upload then finds no live key and drops out
+                _jobs[j].Pbo = 0; _jobs[j].PboBytes = 0; _jobs[j].Fence = IntPtr.Zero;
+                if (_jobs[j].State != JobEncoding) _jobs[j].State = JobFree;
+            }
         _bytes = 0;
         // #284: every engine texture is unbuilt again on the far side of a context loss, so the one-attempt
         // ledger has to go with the names it was a ledger about -- keeping it would refuse the whole world
@@ -1187,7 +1738,7 @@ internal static unsafe class OwnedTextures
         // The delete funnel is the world edge: index entry gone, resource queued, borrowed mark cleared
         // (a recycled name is a new question), and the tid resolves nothing until an upload re-adopts it.
         uint* dead = stackalloc uint[3] { 13, 14, 11 };
-        Retire(3, dead);
+        Retire(3, dead);   // the budget-0 edge: Retire discards (FilterRetire is the cache edge, checked in SelfCheckCache)
         ok &= !_index.ContainsKey(13) && !_index.ContainsKey(14) && !_res.ContainsKey(k0)
               && !IsOwned(100) && _pending.Count == savedPending + 2 && Borrowed == 0;
         ok &= Draw(13) == 13 && Draw(14) == 14 && Borrowed == 2 && !_res.ContainsKey(k1);

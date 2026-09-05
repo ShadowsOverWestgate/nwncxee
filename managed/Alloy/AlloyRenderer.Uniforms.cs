@@ -188,7 +188,7 @@ public sealed unsafe partial class AlloyRenderer
     /// attached to the torch. Same freshness gate as the cascades.</summary>
     private static void UploadLocalCubes(in LitLoc L)
         => UploadLocalCubes(L.CubeTex, L.CubeLight, L.CubePlane, L.CubeCount, L.CubeSoft,
-                            L.CubeDynPage);
+                            L.CubeDynPage, L.CubeFade);
 
     /// <summary>#121: point the lit program at the IBL probe, or tell it there is nothing to sample
     /// (<c>uProbeMips</c> 0). Unbinding rather than leaving the cube bound during a capture is not
@@ -274,7 +274,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>#127: the local-cube receiver's uniforms, into a named program's locations.</summary>
     internal static void UploadLocalCubes(int locTex, int locLight, int locPlane, int locCount, int locSoft,
-                                          int locDynPage)
+                                          int locDynPage, int locFade)
     {
         if (locCount < 0) return;
         // #139: the softness pair goes out even when there are no cubes -- it is program state, not per-cube
@@ -296,6 +296,8 @@ public sealed unsafe partial class AlloyRenderer
         fixed (float* l = CasterPass.CubeLight) Gl.Uniform4fv(locLight, n, l);
         if (locDynPage >= 0)
             fixed (float* p = CasterPass.CubeDynPage) Gl.Uniform1fv(locDynPage, n, p);
+        if (locFade >= 0)
+            fixed (float* p = CasterPass.CubeFade) Gl.Uniform1fv(locFade, n, p);
         Gl.Uniform2f(locPlane, CasterPass.CubeNearPlane, 1f / CasterPass.CubeFaceSize);
         Gl.Uniform1i(locCount, n);
     }

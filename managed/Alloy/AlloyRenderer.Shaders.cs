@@ -747,6 +747,27 @@ public sealed unsafe partial class AlloyRenderer
         void main() { }
         """;
 
+    /// <summary>The feature prepass's fragment stage: the cutout test the colour stages make, and nothing else.
+    /// Same texel (unit 0, the batch's diffuse, the lit stage's rotated <c>vUV</c>), same threshold
+    /// (<c>AlloyClasses.Discard</c>), same env exemption (an env-mapped material's alpha is reflectivity, not
+    /// coverage -- <c>SOWX_SLOT_ENV</c>). A negative cut (an opaque displaced batch) tests nothing. Flowmap
+    /// batches slide their diffuse uv and stay out on the CPU side, so the fetch here is never wrong for them.</summary>
+    internal const string DepthFeatFs = """
+        #version 460 core
+        in vec2 vUV;
+        flat in int vDraw;
+
+        """ + DrawBufDecl + """
+        uniform sampler2D uTex;
+        uniform float uAlphaCut;
+        void main()
+        {
+            if (uAlphaCut < 0.0) return;
+            if ((int(uDraw[vDraw].pbr.w) & 64) != 0) return;
+            if (texture(uTex, vUV).a <= uAlphaCut) discard;
+        }
+        """;
+
     /// <summary>#124: the depth stage for a batch the camera dissolves. Without it those batches leave the
     /// prepass entirely, and <c>Camera::GetCanKeyholeDissolve</c> answers "CAN this dissolve" -- a near-static
     /// property of a third of the Alloy set in a tiled interior -- while the aperture that actually discards

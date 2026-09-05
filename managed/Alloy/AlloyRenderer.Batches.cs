@@ -603,7 +603,7 @@ public sealed unsafe partial class AlloyRenderer
             {
                 for (int k = 0; k < routed; k++)
                     if (_pkVerdict[k] == Deferred)
-                    { _stageDeferred++; _pkVerdict[k] = StagePart(k, data, slotTid, lightingOn, ref _stageCounters[0], main: true); }
+                    { _stageDeferred++; FrameZones.Count(FrameZones.Ev.Deferred); _pkVerdict[k] = StagePart(k, data, slotTid, lightingOn, ref _stageCounters[0], main: true); }
             }
             else
             {
@@ -903,7 +903,7 @@ public sealed unsafe partial class AlloyRenderer
                 bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero;
                 var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);
                 if (aur.IsNull) { Inc(ref _skipTex); Inc(ref _skipTexNone); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no diffuse texture"); return Skipped; }
-                texDirty = stale || aur.Ptr != _recAur[i];
+                texDirty = stale || aur.Ptr != _recAur[i] || _recTexStale[i];
                 // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
                 // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
                 // frame. The DIFFUSE compare above stays per frame; it is the animated one.
@@ -995,7 +995,7 @@ public sealed unsafe partial class AlloyRenderer
                     if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
                     // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
                     if (lit && _aoTest && !mapsMeanNothing) { slotTid[AoSlot] = tid; slots |= AoBit; }
-                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots;
+                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _recTexStale[i] = false;
                     for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
                 }
             }

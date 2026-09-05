@@ -129,7 +129,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.BindVertexArray((uint)saved);
         if (new VdoRef(vdo).Vao != 0)
         {
-            _dripMade++;
+            _dripMade++; FrameZones.Count(FrameZones.Ev.VaoMade);
             // Bounded, and separate from the refusal report: _harvestSeen latches a VDO the FIRST time it is
             // refused and never speaks about it again, so without its own line the fix working looks exactly
             // like the fix never running.

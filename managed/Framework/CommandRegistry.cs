@@ -71,6 +71,8 @@ public sealed class CommandRegistry
         string name = sp < 0 ? cmd : cmd[..sp];
         if (!_byName.TryGetValue(name, out Command? c)) return false;
         reply = c.Run(sp < 0 ? "" : cmd[(sp + 1)..].TrimStart());
+        // A command WITH arguments is a knob change; the log is what ties a period's numbers to its setting.
+        if (sp >= 0 && reply != null) Log?.Info($"[cmd] {cmd} -> {(reply.Length > 240 ? reply[..240] : reply)}");
         return true;
     }
 

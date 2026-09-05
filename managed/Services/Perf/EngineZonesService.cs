@@ -27,7 +27,24 @@ public sealed unsafe class EngineZonesService : IExtenderService
             SymbolMap.ClientAiUpdateState, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnAi);
         _gui = (delegate* unmanaged<IntPtr, float, long>)hooks.Install(
             SymbolMap.GuiUpdateAndRender, (IntPtr)(delegate* unmanaged<IntPtr, float, long>)&OnGui);
-        log.Info("EngineZones: timing the engine loop's net / resman / AI / GUI steps into [zones] (config enginezones=0 disables)");
+        _demand = (delegate* unmanaged<IntPtr, IntPtr, long>)hooks.Install(
+            SymbolMap.ResManDemand, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, long>)&OnDemand);
+        log.Info("EngineZones: timing the engine loop's net / resman / AI / GUI steps and resource demands into [zones] (config enginezones=0 disables)");
+    }
+
+    private static delegate* unmanaged<IntPtr, IntPtr, long> _demand;
+    private static int _demandDepth;
+
+    /// <summary>The on-demand resource load, wherever the engine asks for it (a model on first sight, a
+    /// texture, an animation). Demands nest -- a model demands its textures -- so only the outermost call
+    /// is bracketed and counted. Nested zone: reported for shape inside Ai, not subtracted.</summary>
+    [UnmanagedCallersOnly]
+    private static long OnDemand(IntPtr self, IntPtr res)
+    {
+        long t = _demandDepth++ == 0 ? FrameZones.Now : 0;
+        long r = _demand != null ? _demand(self, res) : 0;
+        if (--_demandDepth == 0) { FrameZones.Add(FrameZones.Zone.Demand, t); FrameZones.Count(FrameZones.Ev.Demands); }
+        return r;
     }
 
     [UnmanagedCallersOnly]
@@ -64,7 +81,8 @@ public sealed unsafe class EngineZonesService : IExtenderService
     private static long Inner()
         => FrameZones.Ticks(FrameZones.Zone.Enroll) + FrameZones.Ticks(FrameZones.Zone.Shadow)
            + FrameZones.Ticks(FrameZones.Zone.Shim) + FrameZones.Ticks(FrameZones.Zone.Alloy)
-           + FrameZones.Ticks(FrameZones.Zone.Ui) + FrameZones.Ticks(FrameZones.Zone.Present);
+           + FrameZones.Ticks(FrameZones.Zone.Ui) + FrameZones.Ticks(FrameZones.Zone.Present)
+           + FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild);   // subtracted from Enroll already; they must not land in Ai instead
 
     [UnmanagedCallersOnly]
     private static long OnGui(IntPtr self, float dt)

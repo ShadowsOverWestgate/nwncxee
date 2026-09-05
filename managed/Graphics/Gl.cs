@@ -343,6 +343,8 @@ public static unsafe class Gl
     /// <summary>glTexStorage2D (GL 4.2): target, levels, internalFormat, width, height. Immutable storage --
     /// what <see cref="CopyImageSubData"/> needs on the destination, compressed formats included.</summary>
     public static delegate* unmanaged<uint, int, uint, int, int, void> TexStorage2D;
+    /// <summary>glCompressedTexSubImage2D (GL 1.3): target, level, xoffset, yoffset, width, height, format, imageSize, data.</summary>
+    public static delegate* unmanaged<uint, int, int, int, int, int, uint, int, void*, void> CompressedTexSubImage2D;
     /// <summary>glMultiDrawElementsBaseVertex (GL 3.2 core): mode, counts*, type, indices**, drawcount,
     /// basevertex*. One call submits a whole batch group (ADR 0006 phase 1). Null on ancient drivers.</summary>
     public static delegate* unmanaged<uint, int*, uint, void**, int, int*, void> MultiDrawElementsBaseVertex;
@@ -540,6 +542,7 @@ public static unsafe class Gl
         DeleteTextures = (delegate* unmanaged<int, uint*, void>)P("glDeleteTextures");
         CopyImageSubData = (delegate* unmanaged<uint, uint, int, int, int, int, uint, uint, int, int, int, int, int, int, int, void>)P("glCopyImageSubData");
         TexStorage2D = (delegate* unmanaged<uint, int, uint, int, int, void>)P("glTexStorage2D");
+        CompressedTexSubImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, int, void*, void>)P("glCompressedTexSubImage2D");
         MultiDrawElementsBaseVertex = (delegate* unmanaged<uint, int*, uint, void**, int, int*, void>)P("glMultiDrawElementsBaseVertex");
         GetVertexAttribiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetVertexAttribiv");
         GetVertexAttribPointerv = (delegate* unmanaged<uint, uint, void**, void>)P("glGetVertexAttribPointerv");

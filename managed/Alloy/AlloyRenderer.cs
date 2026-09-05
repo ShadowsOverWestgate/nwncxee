@@ -269,6 +269,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     // 4.6-side objects (touched only inside the bracket)
     private static uint _prog46, _progLit46, _progDepth, _progDepthKey, _fbo46;
+    /// <summary>The feature-aware depth stage: the lit program's OWN compiled vertex text (override or
+    /// embedded, so its displacement is the colour pass's character for character) over an alpha-testing
+    /// fragment stage. Takes the cutout class and the wind-displaced batches the plain prepass skips.</summary>
+    private static uint _progDepthFeat;
+    private static int _depthFeatVp = -1, _depthFeatBase = -1, _depthFeatTex = -1, _depthFeatCut = -1;
+    private static FeatLoc _depthFeatFeat;
+    private static bool _depthFeatFailed, _prepassFeat = DefPrepassFeat;
+    private const bool DefPrepassFeat = true;
+    /// <summary>The vertex source the lit / fullbright programs actually compiled with (an override wins).</summary>
+    private static string? _litVsSrc;
     /// <summary>#350: the spliced programs were built against a resource chain that is gone. Every program
     /// carrying a <c>// $VANILLA</c> region (lit, hosted lit, water, grass) is compiled ONCE from whatever
     /// the chain held at the time -- so a session that logged into SoW first kept SoW's display hooks (the
@@ -308,8 +318,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
-                   CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage,
-                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture;
+                   CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade,
+                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach;
         public FeatLoc Feat;
     }
     private static LitLoc _lit, _litH;
@@ -526,7 +536,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, Sky, Blended, Water, Additive, Particles, Post, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Post, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -538,7 +548,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>Open a term's elapsed query unless another is already open -- the guard that keeps the
     /// brackets serial. A term whose query declined the frame (result not ready) is simply not measured.</summary>
-    private static void GpuBegin(GpuTerm t)
+    internal static void GpuBegin(GpuTerm t)
     { if (_qOpen < 0 && _qTerm[(int)t].Begin(Gl.TIME_ELAPSED)) _qOpen = (int)t; }
 
     /// <summary>Frame start: a term still open from the last frame (an early return between its Begin and
@@ -546,7 +556,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static void GpuFrameStart() { if (_qOpen >= 0) GpuEnd((GpuTerm)_qOpen); }
 
     /// <summary>Close the term if it is the open one; a no-op for a term that never opened.</summary>
-    private static void GpuEnd(GpuTerm t)
+    internal static void GpuEnd(GpuTerm t)
     { if (_qOpen == (int)t) { _qTerm[(int)t].End(Gl.TIME_ELAPSED); _qOpen = -1; } }
 
     private static double GpuMs(GpuTerm t) => _qTerm[(int)t].Avg / 1e6;
@@ -569,6 +579,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static ulong HandleFor(int tid)
     {
         if (tid == 0) return 0;
+        // a name that is not ours may already be dead or RECYCLED (Mesa hands the lowest free name straight
+        // back): minting on it is a fault on zink and another texture's handle on radeonsi
+        if (OwnedTextures.Armed && !OwnedTextures.IsOwned(tid)) return 0;
         if (Probe(tid, out int hit, out int free)) return _hVal[hit];
         if (free < 0) return 0;                        // table full: no handle, caller falls back
         ulong v = Gl.GetTextureHandleARB((uint)tid);
@@ -577,6 +590,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // with that wipe gone (#220) a cached zero would be a permanently black texture.
         if (v == 0) return 0;
         Gl.MakeTextureHandleResidentARB(v);
+        FrameZones.Count(FrameZones.Ev.Mint);
         _hTid[free] = tid; _hVal[free] = v; _hRes[free] = true;
         return v;
     }
@@ -650,16 +664,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// common case (grass, sky and caster copies never take the lit bindless path).
     /// <para>The slot becomes a <see cref="HandleTombstone"/>: not 0, which would cut the probe chain, and
     /// not the name, which would answer for the next copy GL hands that recycled name to.</para></summary>
-    internal static void DropHandle(uint name)
+    internal static void DropHandle(uint name) => DropHandle(name, gl: true);
+
+    /// <summary>The texture died in the ENGINE's context before this bracket could run: the handle is gone
+    /// with it, and asking the driver to make it non-resident is INVALID_OPERATION (Mesa) or worse. Tombstone only.</summary>
+    internal static void ForgetHandle(uint name) => DropHandle(name, gl: false);
+
+    private static void DropHandle(uint name, bool gl)
     {
         if (name == 0) return;
-        // #242: ABOVE the bindless guard, and that placement is the whole point. A persistent record carries
-        // its handles across frames, so a handle that dies invalidates every record -- #220 again with a
-        // longer fuse. But the slot's cached TID is bind-path state as well, and the bind path is exactly
-        // what runs with bindless off: without this the caches would hold a deleted owned name until the
-        // next enrollment, where the old per-frame OwnedTid() re-fetch used to heal it on the spot. The edge
-        // is an area transition, so dirty-all is the cheap answer.
-        InvalidateRecords();
+        // #242: a persistent record carries its handles (and, bindless off, its cached tid) across frames, so a
+        // dying name must reach the records that hold it. That used to be an epoch bump here; under the texture
+        // cache names die every second or two, so it is now the per-slot mark NoteOwnedNamesRetired makes in
+        // Drain before this runs.
         if (!_bindless) return;
         int tid = (int)name, h = Slot(tid);
         for (int probes = 0; probes < (1 << HandleHashBits); probes++)
@@ -668,7 +685,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             if (k == 0) return;                       // never cached: nothing to drop
             if (k == tid)
             {
-                if (_hRes[h] && _hVal[h] != 0 && Gl.MakeTextureHandleNonResidentARB != null)
+                if (gl && _hRes[h] && _hVal[h] != 0 && Gl.MakeTextureHandleNonResidentARB != null)
                     Gl.MakeTextureHandleNonResidentARB(_hVal[h]);
                 _hTid[h] = HandleTombstone; _hVal[h] = 0; _hRes[h] = false;
                 return;
@@ -743,6 +760,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _log?.Info(_vramExt == null
             ? "AlloyRenderer: [vram] no GPU memory query in this context (NVX_gpu_memory_info / ATI_meminfo absent) -- residency is reported as Alloy's own bytes only"
             : $"AlloyRenderer: [vram] {_vramExt} present" + (_vramTotalKib > 0 ? $", {_vramTotalKib / 1024}MiB total" : ""));
+        if (_vramExt != null) SampleVram();   // the texture-cache budget reads the free pool at the probe, not a frame later
         // #267's open question, answered from the context that would use them rather than from glxinfo.
         _log?.Info("AlloyRenderer: [vram] arena-relevant extensions in this context: "
             + $"ARB_sparse_texture={(HasExt("GL_ARB_sparse_texture"u8) ? "yes" : "no")}, "
@@ -771,6 +789,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static bool _vramProbed, _vramNvx;
     private static string? _vramExt;
     private static int _vramTotalKib;
+    /// <summary>The probe's total, MiB; 0 before the probe or when the device answers nothing.</summary>
+    internal static long VramTotalMib => _vramTotalKib / 1024;
+    /// <summary>Is the bindless path armed this session (probed at the first lit program build)?</summary>
+    internal static bool Bindless => _bindless;
+    /// <summary>ATI_meminfo (Mesa) answers FREE, never total; at probe time that is most of the card.</summary>
+    internal static long VramFreeMib => _vramFreeKib / 1024;
+    internal static bool VramProbed => _vramProbed;
 
     /// <summary>One <c>glGetIntegerv</c>, for a query that answers a single value.</summary>
     private static int GetInt(uint pname) { int v = 0; Gl.GetIntegerv(pname, &v); return v; }
@@ -824,6 +849,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// hidden -- it is the overdraw the prepass no longer removes, and the number that says whether the wind
     /// content is big enough for a displacing prepass stage to be worth building.</summary>
     private static long _prepassSkipped;
+    private static long _prepassFeatDraws;
     private static int _lastPixels;
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -941,6 +967,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                      + " highlight keeps the engine glow and the owned outline draws nothing");
         _repackSlot = hooks.Chain(SymbolMap.VdoRepack,   // shared symbol: draw funnels + Alloy cast invalidate too (#88)
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepackHook, RepackPriority);
+        _commitSlot = hooks.Chain(SymbolMap.VdoCommitItemDynamicData,   // the item-level vertex-dirty signal
+            (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, void>)&OnCommitItemDynamicData, CommitPriority);
+        if (_commitSlot == null) log.Info("AlloyRenderer: CommitItemDynamicData unhooked -- vertex-dirty stays per pool buffer");
         // #179: the six look/debug dials above are /draw's, not the environment's -- the code defaults ARE
         // the boot values and nothing here reads a knob for them any more.
         // #137: the skinmesh class. Config bucket (ADR 0013): a capability gate that decides what the vertex
@@ -950,6 +979,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // still draws every cloak in that case.
         _skinning = Settings.Bool("ownskin", true) && _skinMathOk;
         _enrollBudget = Settings.Int("enrollbudget", _enrollBudget, 0);
+        _enrollDelta = Settings.Bool("enrolldelta", true);
         _isEnabled = (delegate* unmanaged<int, byte>)Native.Sym(SymbolMap.RiIsEnabled);
         ResolveVaoDrip(log);
         // Hook install is its own walk, and it stays HERE rather than joining Attach above: a pass that hooks
@@ -991,7 +1021,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
         $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  " +
         $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
-        $"prepasskey {(_prepassKey ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
+        $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
         $"fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  " +
         // #336: the one number that says whether a fog cull has anything to cull -- the far plane Alloy
         // inherits from the engine VP, against the fog the shaders already fade to.
@@ -1051,6 +1081,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // depth in the colour pass instead; they discard in both stages, so the sweep only ever bought
             // early-Z for parts BEHIND the aperture, which under a roof is the hole itself.
             case "prepasskey": old = _prepassKey ? 1f : 0f; _prepassKey = v != 0f; break;
+            case "prepassfeat": old = _prepassFeat ? 1f : 0f; _prepassFeat = v != 0f; break;
             // #336 step 4: the visible set's A/B -- 0 walks the whole order every pass.
             case "vislist":  old = _visList ? 1f : 0f; _visList = v != 0f; break;
             // Whether a TILE gob's parts may dissolve. 0 = vanilla, where the aperture stops at every gob
@@ -1072,7 +1103,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
         _sunWorldBias = DefSunBias; _lightViz = DefViz; CullPass.Mode = DefCull; CullPass.LodPx = DefLod;
         CullPass.FogCull = CullPass.DefFogCull; HlChannels = DefHlChannels;
-        _fullPoll = DefPoll; _prepassKey = DefPrepassKey; _visList = DefVisList; _stageThreads = DefThreads;
+        _fullPoll = DefPoll; _prepassKey = DefPrepassKey; _prepassFeat = DefPrepassFeat; _visList = DefVisList; _stageThreads = DefThreads;
         // #242: AFTER the dials, the way Tune does it. /draw runs on the input thread, so a bump published
         // ahead of the assignments lets a staging walk rebuild against the OLD dial and stamp the NEW epoch
         // -- wrong until something else invalidates, worst case a whole enrollment away.
@@ -1161,6 +1192,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // #236: the latch enrolls as soon as the throttle opens, so the bound on ownership latency is
             // NewCandidateGap frames from the completing walk rather than the full cadence.
             long tEnroll = FrameZones.Now;
+            long bcn0 = FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild);   // the drips ride this slot; Enroll must not absorb them
             // #256: the world walk FIRST -- one int load in the common case, a re-walk on the engine's own
             // membership epoch. Enrollment is then edge-triggered on what that walk changed, which is what
             // retires the 60-frame cadence: there is no clock here any more.
@@ -1192,7 +1224,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             bool due = SceneWalk.Dirty || scene != _enrollScene;
             // #329: a walk in progress steps every frame; the floor and the edge gate only its BEGIN.
             if (Walking(scene) || (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene))) { Enroll(scene); FrameZones.MarkEnrollFrame(); }
-            FrameZones.Add(FrameZones.Zone.Enroll, tEnroll);
+            FrameZones.Add(FrameZones.Zone.Enroll, tEnroll, FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild) - bcn0);
         }
         // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
         // being on is never enough on its own: a pass with no 4.6 context, no module, or a vanilla verdict still gets
@@ -1509,7 +1541,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
     internal static void ContextLost()
     {
-        _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progDepth = 0; _progDepthKey = 0; _progWater = 0; _fbo46 = 0; _progSkyDecode = 0;
+        _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progDepth = 0; _progDepthKey = 0; _progDepthFeat = 0; _progWater = 0; _fbo46 = 0; _progSkyDecode = 0;
         HighlightContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
@@ -1581,7 +1613,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                                        + $" no-pos {HarvestNoPos} no-uv {HarvestNoUv})") +
                    // #284: OUTSIDE the holes parenthetical on purpose. The number that says the drip worked
                    // is the one printed on a period with no holes left at all.
-                   DripNote() +
+                   DripNote() + " [" + OwnedTextures.TranscodeNote() + "; " + OwnedTextures.CacheNote() + "; " + OwnedTextures.PrefetchNote() + "; " + EnrollNote() + "]" +
                    $" on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}{UvlessNote()}) " +
                    $"/ {_lastTextures} textures " +
                    $"({_litCount} lit, {_litUnownable} lit left to the engine" +
@@ -1706,6 +1738,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                       (_prepassSkipped == 0 ? "" : $" (+{(float)_prepassSkipped / _frames:F0} excluded, displacing/skinned or cutout)") +
                       (_qTerm[(int)GpuTerm.Prepass].Measured ? $" in {GpuMs(GpuTerm.Prepass):F3}ms" : "") +
                       (_qTerm[(int)GpuTerm.PrepassKey].Measured ? $" + keyhole sweep {GpuMs(GpuTerm.PrepassKey):F3}ms" : "") +
+                      (_qTerm[(int)GpuTerm.PrepassFeat].Measured ? $" + cutout/displaced sweep {GpuMs(GpuTerm.PrepassFeat):F3}ms ({(float)_prepassFeatDraws / _frames:F0} draws)" : "") +
                       (_qTerm[(int)GpuTerm.Ao].Measured ? $" + ao {GpuMs(GpuTerm.Ao):F3}ms" : "") +
                       (!_prepassKey ? " (keyhole sweep OFF -- /draw prepasskey 1)" : "")) +
                    (_qSamples.Measured && _lastPixels > 0
@@ -1717,7 +1750,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          (_qTerm[(int)GpuTerm.OpaqueKey].Measured ? $" (+ keyhole {GpuMs(GpuTerm.OpaqueKey):F2})" : "") +
                          $" / cutout {GpuMs(GpuTerm.Cutout):F2}" +
                          (_qTerm[(int)GpuTerm.CutoutKey].Measured ? $" (+ keyhole {GpuMs(GpuTerm.CutoutKey):F2})" : "") + " / " +
-                         $"grass {GpuMs(GpuTerm.Grass):F2} / sky {GpuMs(GpuTerm.Sky):F2} / blended {GpuMs(GpuTerm.Blended):F2} / " +
+                         $"grass {GpuMs(GpuTerm.Grass):F2} (+ depth {GpuMs(GpuTerm.GrassDepth):F2}) / sky {GpuMs(GpuTerm.Sky):F2} / blended {GpuMs(GpuTerm.Blended):F2} / " +
                          $"water {GpuMs(GpuTerm.Water):F2} / additive {GpuMs(GpuTerm.Additive):F2} (colour {colourMs:F2}) " +
                          $"/ particles {GpuMs(GpuTerm.Particles):F2}" +
                          (_qPartSamples.Measured && _lastPixels > 0 ? $" (overdraw x{_qPartSamples.Avg / _lastPixels:F2})" : "") +
@@ -1765,7 +1798,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _nrmDeclared = _nrmBound = 0;
         Array.Clear(_drawsByClass);
         _clusterOverflow = 0;
-        _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _qSamples.Reset(); _qPartSamples.Reset();
+        _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset();
         for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset();
     }
 
@@ -1790,9 +1823,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static float _waterNear = 1f, _waterFar = 100f;
     private static int _watVp, _watBase, _watTex, _watCut, _watAmbient, _watDiffuse, _watDir,
                        _watGrid, _watTile, _watZ, _watFalloff, _watWrap, _watAtten, _watHot,
-                       _watWrapN, _watSss, _watViz, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
+                       _watWrapN, _watSss, _watReach, _watViz, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
                        _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
-                       _watCubeDynTex, _watCubeDynPage, _watSunDynTex, _watSunDyn,
+                       _watCubeDynTex, _watCubeDynPage, _watCubeFade, _watSunDynTex, _watSunDyn,
                        _watSunFocus, _watSunRadius,
                        _watCapture, _watFbColor, _watFbDepth, _watNoise, _watEnvMap, _watEnvOk, _watNearFar,
                        _watView, _watProj;

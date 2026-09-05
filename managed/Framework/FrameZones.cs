@@ -111,6 +111,21 @@ public static class FrameZones
         /// dispatches over it. CPU-side only -- what the dispatches themselves cost is GPU time and shows up
         /// in <see cref="Present"/> or in nothing at all.</summary>
         Cull,
+        /// <summary>Nested in <see cref="Ai"/> (reported for shape, not subtracted): the engine texture
+        /// upload funnel -- the engine's own build plus Alloy's owned copy and BCn transcode. First-sight
+        /// work that lands inside the engine's step, which is why Ai read high on hitch frames.</summary>
+        Tex,
+        /// <summary>Nested in <see cref="Ai"/>: <c>CExoResMan::Demand</c>, the engine's on-demand resource
+        /// load (models, textures, animations on first sight). Outermost call only.</summary>
+        Demand,
+        /// <summary>The BCn transcode pipeline's main-thread work (readback issue, PBO copy-out, compressed
+        /// upload; the encode itself is on its own thread). Runs on the Enroll slot inside Ai and is subtracted
+        /// from BOTH, so it reads on its own.</summary>
+        Bcn,
+        /// <summary>Inside <see cref="Bcn"/>: the readback issue, the PBO copy-out, the compressed upload.</summary>
+        BcnRead, BcnMap, BcnUp,
+        /// <summary>#386: the prefetch drip's engine builds. On the Enroll slot inside Ai, subtracted from both.</summary>
+        Prebuild,
 
         Count,
     }
@@ -122,6 +137,88 @@ public static class FrameZones
     private static readonly long[] _worstDrew = new long[N]; // ...and the worst that reached the scene render
     private static long _dtSum, _dtWorst, _dtWorstDrew;
     private static int _frames;
+
+    /// <summary>The HITCH LEDGER. The worst-frame row is one sample and every period's is an engine load
+    /// stall; the stutter a player feels while turning or walking is the band under it -- frames past the
+    /// 60Hz budget but short of a load stall, rendered. This sums those frames' zones separately, so the
+    /// hitch row minus the average row names what a hitch spends on. Beside it, per-frame EVENT counts --
+    /// the first-sight and re-bake work that is bursty by nature -- averaged over all frames and over hitch
+    /// frames alone: an event elevated in the hitch column is the structural suspect, an even one is not.
+    /// CPU-side only: a GPU hitch shows here as Present, and gpu-span max is its only other witness.</summary>
+    public enum Ev
+    {
+        /// <summary>Casters admitted for the first time (record landed, or back from off-list).</summary>
+        Appeared,
+        /// <summary>Static cube slots re-baked (six faces of the still world each).</summary>
+        CubeStatic,
+        /// <summary>Dynamic cube pool pages baked.</summary>
+        CubeDyn,
+        /// <summary>Sun cascade static layers re-baked.</summary>
+        SunStatic,
+        /// <summary>Sun cascade fit centres re-latched (a focus drift past the slack -- the camera turned).</summary>
+        SunLatch,
+        /// <summary>Stage parts the workers deferred to the main thread (a handle to mint, a VAO to wait on).</summary>
+        Deferred,
+        /// <summary>Enrolment walk steps.</summary>
+        Enroll,
+        /// <summary>Bindless texture handles minted (GetTextureHandle + MakeResident).</summary>
+        Mint,
+        /// <summary>Engine texture builds re-run by the unbuilt-texture drip.</summary>
+        TexBuild,
+        /// <summary>VAOs built by the drip.</summary>
+        VaoMade,
+        /// <summary>Standing caster list re-collected.</summary>
+        Collect,
+        /// <summary>Textures through the engine upload funnel (<see cref="Zone.Tex"/> is their time).</summary>
+        TexUpload,
+        /// <summary>Outermost engine resource demands (<see cref="Zone.Demand"/> is their time).</summary>
+        Demands,
+        /// <summary>Textures transcoded by the drip (<see cref="Zone.Bcn"/> is their time).</summary>
+        Transcode,
+        /// <summary>ADR 0023: engine texture builds answered from the cache (no read, decode or upload).</summary>
+        TexWarm,
+        /// <summary>ADR 0023: cached textures evicted for the budget.</summary>
+        TexEvict,
+        /// <summary>#386: textures built ahead of first sight by the prefetch drip.</summary>
+        Prefetch,
+        /// <summary>Casters whose dynamic-set membership flipped (each one invalidates the static cube it stands in).</summary>
+        DynFlip,
+        /// <summary>Static cube slots held back by <c>/shadow staticcap</c> this frame.</summary>
+        CubeHeld,
+        /// <summary>Why the standing caster list was re-collected: a CasterGen bump (a cast-admission flip in the
+        /// stage, a delta re-seat), a record-epoch bump, a skipped bracket, or a Refresh that found a moved bone slot.</summary>
+        CollectGen, CollectEpoch, CollectSkip, CollectRefresh,
+        /// <summary>The route's visible set was rebuilt (cadence, enrolment generation, epoch or a camera move).</summary>
+        VisRebuild,
+        /// <summary>A newly seated slot joined the standing caster list in place of a re-collect.</summary>
+        CasterAppend,
+        Count,
+    }
+    private const int NE = (int)Ev.Count;
+    private static readonly int[] _ev = new int[NE];
+    private static readonly long[] _evSum = new long[NE], _evHitch = new long[NE];
+    private static readonly long[] _hitch = new long[N];
+    private static long _dtHitch, _dtNoStall;
+    /// <summary>GPU span per frame, attributed by age: the stamp result for a frame arrives some frames later,
+    /// so a ring of hitch verdicts pairs it with the frame it measured. ponytail: a declined stamp slips the
+    /// pairing by a frame; the columns are a discriminator (GPU-bound hitch or not), not a per-frame ledger.</summary>
+    private static readonly bool[] _hitchRing = new bool[16];
+    private static double _gpuSum, _gpuHitch;
+    private static int _gpuN, _gpuHitchN;
+    public static void Gpu(double ms, int framesAgo)
+    {
+        _gpuSum += ms; _gpuN++;
+        if (_hitchRing[(_frames - framesAgo) & 15]) { _gpuHitch += ms; _gpuHitchN++; }
+    }
+    private static int _hitchN, _framesNoStall;
+    /// <summary>A hitch is a rendered frame longer than <see cref="HitchFactor"/> times the PREVIOUS period's
+    /// mean frame (bootstrapped at the 60Hz budget) and short of a load stall. Relative on purpose: a plaza at
+    /// 10ms dips to 14ms and a fixed 16.7 would report no hitch at all, and a weaker PC needs no retuning.</summary>
+    public const float HitchFactor = 1.5f, StallMs = 100f;
+    private static float _hitchMs = 16.7f;
+
+    /// <summary>Count an event this frame. Hot: one array add.</summary>
+    public static void Count(Ev e, int n = 1) => _ev[(int)e] += n;
 
     /// <summary>Ticks this zone has accumulated so far THIS frame -- the value a parent bracket samples
     /// before and after its child so it can subtract it.</summary>
@@ -165,11 +262,42 @@ public static class FrameZones
     public static void EndFrame(long dt)
     {
         _dtSum += dt; _frames++;
+        double msNow = dt * 1000.0 / Stopwatch.Frequency;
+        if (msNow <= StallMs) { _dtNoStall += dt; _framesNoStall++; }
         if (dt > _dtWorst) { _dtWorst = dt; Array.Copy(_frame, _worst, N); }
         if (dt > _dtWorstDrew && Drew()) { _dtWorstDrew = dt; Array.Copy(_frame, _worstDrew, N); }
         if (_enrollMarked && _enrollN < _enrollTicks.Length) _enrollTicks[_enrollN++] = _frame[(int)Zone.Enroll];
         _enrollMarked = false;
-        for (int i = 0; i < N; i++) { _sum[i] += _frame[i]; _frame[i] = 0; }
+        double ms = dt * 1000.0 / Stopwatch.Frequency;
+        bool hitch = ms > _hitchMs && ms <= StallMs && Drew();
+        if (hitch) { _hitchN++; _dtHitch += dt; }
+        _hitchRing[(_frames - 1) & 15] = hitch;
+        for (int i = 0; i < N; i++) { _sum[i] += _frame[i]; if (hitch) _hitch[i] += _frame[i]; _frame[i] = 0; }
+        for (int e = 0; e < NE; e++) { _evSum[e] += _ev[e]; if (hitch) _evHitch[e] += _ev[e]; _ev[e] = 0; }
+    }
+
+    /// <summary>The hitch row and the event columns; resets both.</summary>
+    private static string HitchLine()
+    {
+        int frames = Math.Max(_frames, 1);
+        var sb = new System.Text.StringBuilder();
+        if (_hitchN == 0) sb.Append(" || hitch: none");
+        else
+        {
+            sb.Append($" || hitch {_hitchN} frames (over {_hitchMs:F1}ms, under {StallMs:F0}ms, rendered) ").Append(Row(_hitch, _dtHitch, _hitchN));
+        }
+        // From the frames under the stall cap: one 1,7s transition frame in a period would otherwise lift the
+        // next period's threshold past every hitch in it -- and transitions are where the stutter is looked for.
+        if (_framesNoStall > 0) _hitchMs = MathF.Max(2f, (float)(_dtNoStall * 1000.0 / Stopwatch.Frequency / _framesNoStall) * HitchFactor);
+        _dtNoStall = 0; _framesNoStall = 0;
+        if (_gpuN > 0) sb.Append($" || gpu-span all|hitch: {_gpuSum / _gpuN:F1}|{(_gpuHitchN > 0 ? _gpuHitch / _gpuHitchN : 0):F1}ms ({_gpuHitchN} paired)");
+        _gpuSum = 0; _gpuHitch = 0; _gpuN = 0; _gpuHitchN = 0;
+        sb.Append(" || events/frame all|hitch:");
+        for (int e = 0; e < NE; e++)
+            sb.Append($" {(Ev)e} {(double)_evSum[e] / frames:F1}|{(_hitchN > 0 ? (double)_evHitch[e] / _hitchN : 0):F1}");
+        Array.Clear(_hitch, 0, N); Array.Clear(_evSum, 0, NE); Array.Clear(_evHitch, 0, NE);
+        _dtHitch = 0; _hitchN = 0;
+        return sb.ToString();
     }
 
     /// <summary>#324: the Enroll ticks of every CADENCE frame this period -- a frame the enrolment walk ran
@@ -181,7 +309,7 @@ public static class FrameZones
     private static bool _enrollMarked;
 
     /// <summary>Call on a frame the enrolment walk ran, before <see cref="EndFrame"/>.</summary>
-    public static void MarkEnrollFrame() => _enrollMarked = true;
+    public static void MarkEnrollFrame() { _enrollMarked = true; Count(Ev.Enroll); }
 
     private static string EnrollP99()
     {
@@ -207,6 +335,7 @@ public static class FrameZones
                     + " || worst frame " + Row(_worst, _dtWorst, 1);
         if (_dtWorstDrew != _dtWorst) line += " || worst that RENDERED " + Row(_worstDrew, _dtWorstDrew, 1);
         line += EnrollP99();
+        line += HitchLine();   // before the frame reset: the event columns average over this period's frames
         Array.Clear(_sum, 0, N); Array.Clear(_worst, 0, N); Array.Clear(_worstDrew, 0, N);
         _dtSum = 0; _dtWorst = 0; _dtWorstDrew = 0; _frames = 0;
         return line;
@@ -272,12 +401,23 @@ public static class FrameZones
                  && _dtWorstDrew == f && _worstDrew[(int)Zone.Alloy] == 100;
         if (!t) log.Info("FrameZones.SelfCheck: FAILED -- a non-rendering stall claimed the rendered-frame latch");
 
+        // The hitch ledger: the 1000ms, 500ms and 4000ms frames above are stalls, not hitches. One 20ms
+        // rendered frame is, and only its events land in the hitch column.
+        bool h = _hitchN == 0;
+        _hitchMs = 16.7f;
+        _frame[(int)Zone.Alloy] = 100; Count(Ev.Mint, 3);
+        EndFrame(f / 50);
+        h &= _hitchN == 1 && _hitch[(int)Zone.Alloy] == 100 && _evHitch[(int)Ev.Mint] == 3 && _evSum[(int)Ev.Mint] == 3;
+        if (!h) log.Info("FrameZones.SelfCheck: FAILED -- the hitch ledger took a stall or missed the hitch");
+
         string line = Period();
         bool r = line.Contains("Enroll:") && line.Contains("other:") && line.Contains("worst frame")
                  && line.Contains("worst that RENDERED") && line.Contains("Enroll walks 1: p99 1000")
-                 && _frames == 0 && _dtWorst == 0 && _dtWorstDrew == 0;
+                 && line.Contains("hitch 1 frames") && line.Contains("events/frame all|hitch:")
+                 && _frames == 0 && _dtWorst == 0 && _dtWorstDrew == 0 && _hitchN == 0 && _evSum[(int)Ev.Mint] == 0
+                 && _hitchMs > 25f && _hitchMs < 35f;   // the next threshold follows the NON-STALL mean: the one 20ms frame, x1,5
         if (!r) log.Info("FrameZones.SelfCheck: FAILED -- the period line or its reset drifted");
-        log.Info(ok && s && w && t && r ? "FrameZones.SelfCheck: passed"
+        log.Info(ok && s && w && t && h && r ? "FrameZones.SelfCheck: passed"
                                    : "FrameZones.SelfCheck: see failures above");
     }
 }

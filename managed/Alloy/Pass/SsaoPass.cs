@@ -36,6 +36,8 @@ internal static unsafe class SsaoPass
     private static int _runs;
     /// <summary>True from this frame's pass until the next: the lit stage may read the texture.</summary>
     internal static bool Live { get; private set; }
+    /// <summary>This frame's visibility texture (0 until built); the grass program binds it on its own unit.</summary>
+    internal static uint OutTex => _out;
 
     /// <summary>World-space radius (NWN units are metres: a creature stands two of them). 0.6 is contact
     /// occlusion -- corners, feet, the underside of furniture -- not a room-scale gloom.</summary>

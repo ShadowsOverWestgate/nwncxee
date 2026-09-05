@@ -1,5 +1,7 @@
 using System;
 using System.Numerics;
+using System.Runtime.InteropServices;
+using Sowx.Framework;
 
 namespace Sowx.Alloy;
 
@@ -122,16 +124,28 @@ public sealed unsafe partial class AlloyRenderer
     {
         if (_castOk[i] == ok) return;
         _castOk[i] = ok;
-        CasterGen++;
+        // Off (a freed slot, an inactive LOD) is handed to the standing list's off queue: its entry turns into
+        // a ghost and a zero-count draw at the next refresh. Only an on-flip the list cannot absorb re-collects.
+        if (!ok) { CasterPass.NoteSlotOff(i); return; }
+        if (!CasterPass.InList(i)) CasterGen++;
     }
     /// <summary>The stage's form: the generation bump is deferred to the fold, one per frame, so workers
     /// never touch the shared counter. Consumers compare generations, so one bump keeps the contract.</summary>
+    /// <para>A flip is NOT a membership change while the caster list already holds this tenant: the list keeps
+    /// the entry and its refresh turns it off (a ghost at its sphere) or back on (an appearance). Only a slot
+    /// turning on that the list never collected under this tenant needs the re-collect. Tile fades, dissolves
+    /// and texture skips are the flips that re-collected ~20k casters on a quarter of frames.</para>
     private static void SetCastOk(int i, bool ok, ref StageCounters c)
     {
         if (_castOk[i] == ok) return;
         _castOk[i] = ok;
-        c.CastChanged = true;
+        NoteCasterTouched(i);
+        if (CasterPass.FlipCollect || (ok && !CasterPass.InList(i))) c.CastChanged = true;
     }
+    internal static bool CastOk(int slot) => _castOk[slot];
+    /// <summary>Off-device only: the caster self-check seeds admission for its synthetic slots.</summary>
+    internal static void SelfCheckCastOk(int slot, bool ok) => _castOk[slot] = ok;
+    internal static int SlotEnrollGen(int slot) => _oEnrollGen[slot];
 
     /// <summary>The mover LEVEL for one slot, read the same way <see cref="TryCaster"/> reads it -- the
     /// slot's most recent build was also a build that moved something.</summary>
@@ -215,6 +229,15 @@ public sealed unsafe partial class AlloyRenderer
         // #328: tenancy and tile fade, as the level the record write left -- deliberately NOT the record
         // epoch, see _oEnrollGen for the once-a-second flicker asking the wider question produced.
         if (!_castOk[slot]) { CasterNoRecord++; return false; }
+        return TryCasterGeom(slot, out f);
+    }
+    /// <summary><see cref="TryCaster"/> without the admission gate: the geometry facts of a freshly seated
+    /// slot whose record has not landed yet, so the standing caster list can take it as an OFF entry that the
+    /// stage's admission turns on.</summary>
+    internal static bool TryCasterGeom(int slot, out CasterFacts f)
+    {
+        f = default;
+        if (_oTri[slot] == IntPtr.Zero || _oCls[slot] > (byte)AlloyClass.Cutout) return false;
         f.Vdo = _oVdo[slot]; f.Mat = _oMat[slot];
         f.Item = _oItem[slot]; f.Prim = _oPrim[slot]; f.Vao = _oVao[slot];
         f.EnvAlpha = (_oSlots[slot] & EnvSlot) != 0;
@@ -256,6 +279,93 @@ public sealed unsafe partial class AlloyRenderer
     /// moved without its matrix moving. Resolved per VDO slot, not per caster.</summary>
     internal static bool VdoDirty(int v)
         => (uint)v < MaxVdos && _vVdo[v] != IntPtr.Zero && OwnedBuffers.DirtySince(_vPos[v].Buf);
+
+    /// <summary>The ITEM-level vertex-dirty signal. <see cref="VdoDirty"/> is per pool BUFFER, and the engine
+    /// pools a whole area into a handful of them (GL_MAX_ELEMENTS 1048576: ~9 VDOs for 16k parts), so one
+    /// dangly solve committing one item marked every caster on its pool a vertex-dirty mover -- measured at
+    /// 290-540 movers/frame, each a dynamic-set flip that re-baked the static cube it stood in and kept every
+    /// sun cascade combined. <c>CommitItemDynamicData</c> names the item, so the hook below records
+    /// (vdo, item) pairs for the frame and a caster is dirty only if ITS item was committed. A pool that is
+    /// dirty with NO item commit on it moved nothing: UnlockPool's NAMED callers (Ghidra xrefs @0x55d3a0) are
+    /// AddItem, Repack, Build, CommitItemStaticData, SetupArrays, the CPU hit-check/bbox reads and load-time
+    /// generators (tangent basis, the IODispatcher model-load chain) -- none is motion -- and the motion
+    /// writers that bypass the commit (PartDanglyMesh::Animate, PartSkin::PostProcess) are the dangly and
+    /// skinned flags. Canary: a shadow that stops following an animated mesh that is neither dangly nor
+    /// skinned is an unnamed bypass writer; /shadow itemdirty 0 is the revert. Reading such a pool as moved flipped its ~2500 casters between the
+    /// shadow sets (DynFlip 470-735/frame in the hitch rows, Bake +3ms, Restage/Chase x2).</summary>
+    internal static bool ItemDirty(int v, int item) => VdoDirty(v) && ItemMoved(v, item);
+    /// <summary>The item half alone, for a caller that already holds the buffer verdict per VDO.</summary>
+    internal static bool ItemMoved(int v, int item) => _ciOverflow || ItemCommitted(v, item);
+
+    private const int CiBits = 14;
+    private static readonly ulong[] _ciKey = new ulong[1 << CiBits];
+    private static readonly int[] _ciGen = new int[1 << CiBits];
+    private static readonly int[] _ciPerVdo = new int[MaxVdos];
+    private static int _ciGeneration = 1, _ciCount;
+    private static bool _ciOverflow;
+    private static IntPtr* _commitSlot;
+    private const int CommitPriority = 10;
+    private static long _ciCommits, _ciOverflows;
+
+    private static int CiHash(ulong key) => (int)(key * 0x9E3779B97F4A7C15UL >> (64 - CiBits));
+
+    private static bool ItemCommitted(int v, int item)
+    {
+        ulong key = ((ulong)(uint)v << 32) | (uint)item;
+        int mask = (1 << CiBits) - 1;
+        for (int j = CiHash(key); _ciGen[j] == _ciGeneration; j = (j + 1) & mask)
+            if (_ciKey[j] == key) return true;
+        return false;
+    }
+
+    /// <summary>Record one item commit. Engine thread, hot (every dangly/morph item per frame): a slot scan
+    /// over ~10 VDOs and one hash insert, nothing allocated. Past the table's load the frame falls back to
+    /// the buffer-level signal rather than dropping a commit.</summary>
+    internal static void NoteItemCommit(IntPtr vdo, uint item)
+    {
+        _ciCommits++;
+        int v = -1;
+        for (int k = 0; k < _vdoCount; k++) if (_vVdo[k] == vdo) { v = k; break; }
+        if (v < 0) return;
+        if (_ciCount >= (1 << CiBits) * 3 / 4) { if (!_ciOverflow) _ciOverflows++; _ciOverflow = true; return; }
+        ulong key = ((ulong)(uint)v << 32) | item;
+        int mask = (1 << CiBits) - 1;
+        int j = CiHash(key);
+        for (; _ciGen[j] == _ciGeneration; j = (j + 1) & mask) if (_ciKey[j] == key) return;
+        _ciGen[j] = _ciGeneration; _ciKey[j] = key; _ciCount++; _ciPerVdo[v]++;
+    }
+
+    /// <summary>Close the item window with the buffer one (<c>OwnedBuffers.ClearDirty</c>): the readers ran.</summary>
+    internal static void ClearItemCommits()
+    {
+        _ciGeneration++; _ciCount = 0; _ciOverflow = false;
+        Array.Clear(_ciPerVdo, 0, MaxVdos);
+    }
+
+    [UnmanagedCallersOnly]
+    private static void OnCommitItemDynamicData(IntPtr vdo, uint item, uint flags)
+    {
+        NoteItemCommit(vdo, item);
+        if (_commitSlot != null && *_commitSlot != IntPtr.Zero)
+            ((delegate* unmanaged<IntPtr, uint, uint, void>)*_commitSlot)(vdo, item, flags);
+    }
+
+    /// <summary>The item table: a committed item is dirty, its pool-mates are not, a pool with no commit
+    /// stays dirty as a whole, and the window closes.</summary>
+    internal static void SelfCheckItemDirty(ExtenderLog log)
+    {
+        int sv = _vdoCount; var svVdo = new IntPtr[MaxVdos]; Array.Copy(_vVdo, svVdo, MaxVdos);
+        ClearItemCommits();
+        _vdoCount = 2; _vVdo[0] = (IntPtr)0x10; _vVdo[1] = (IntPtr)0x20;
+        NoteItemCommit((IntPtr)0x10, 7); NoteItemCommit((IntPtr)0x10, 7);
+        bool ok = ItemCommitted(0, 7) && !ItemCommitted(0, 8) && !ItemCommitted(1, 7) && _ciPerVdo[0] == 1 && _ciCount == 1;
+        ok &= _ciPerVdo[1] == 0 && !ItemMoved(1, 7) && !ItemMoved(0, 8) && ItemMoved(0, 7);   // no commit = nothing moved
+        NoteItemCommit((IntPtr)0x30, 1); ok &= _ciCount == 1;   // an unknown VDO is not booked
+        ClearItemCommits();
+        ok &= !ItemCommitted(0, 7) && _ciPerVdo[0] == 0;
+        _vdoCount = sv; Array.Copy(svVdo, _vVdo, MaxVdos);
+        log.Info(ok ? "AlloyRenderer.SelfCheckItemDirty: passed" : "AlloyRenderer.SelfCheckItemDirty: FAILED");
+    }
 
     /// <summary>The last sphere written for a slot, live or revoked. A caster that VANISHED leaves no live
     /// entry to name the views it was standing in, so its last known sphere is what invalidates them.</summary>

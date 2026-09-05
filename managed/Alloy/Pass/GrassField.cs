@@ -150,7 +150,7 @@ internal static unsafe partial class GrassField
                         BootPush = 0.15f, BootPushRadius = 1f, BootPushExtent = 64f,
                         BootCull = 1f, BootCullShrink = 0.8f, BootCullMax = 0f,
                         BootLod = 25f, BootLodMin = 0.02f, BootLodWidth = 0.5f, BootLodHeight = 0.25f,
-                        BootShade = 40f, BootFar = 0f;
+                        BootShade = 40f, BootFar = 0f, BootTuft = 3f;
 
     /// <summary>The RESOLUTION latch: a grass global, the texture loader or a hook that did not come up, so
     /// this client cannot run the Alloy pass at all. Separate from <see cref="_on"/> on purpose --
@@ -174,6 +174,33 @@ internal static unsafe partial class GrassField
     private static readonly Patch[] _patches = new Patch[MaxPatches];
     private static readonly int[] _slot = new int[PatchHash];
     private static int _patchCount, _instCount;
+    /// <summary>#196: sun cascades (nearest first) the blades are drawn into as casters; 0 = grass casts
+    /// nothing. <c>/grass shadow N</c>. The draw reuses the depth prepass program under the cascade's
+    /// matrix on LAST frame's visible list (the caster pass runs ahead of the colour pass), and only into a
+    /// cascade the frame re-baked, so the shadow follows the sway at the static cascade's own cadence.</summary>
+    private static int _shadowCascades = BootShadow;
+    private const int BootShadow = 1;
+    private static int _shadowN;
+    private static Vector3 _shadowEye;
+    private static float _shadowNear, _shadowFar;
+    private static long _shadowDraws, _shadowPatches, _shadowBlades;
+    /// <summary>Blade width multiplier in the cast view. <c>/grass castwidth X</c>.</summary>
+    private static float _castWidth = BootCastWidth;
+    private const float BootCastWidth = 1f;
+    /// <summary><c>/grass dumpshadow 1</c>: write the next cast layer back as a PGM beside the shader dump.</summary>
+    private static bool _dumpShadow;
+    private static int _dumpN;
+    /// <summary>GTAO on grass: 0 off, 1 the blades READ the frame's visibility (the ground's, at their pixel),
+    /// 2 they also occlude -- the depth prepass runs ahead of the SSAO read. <c>/grass ao N</c>.</summary>
+    private static int _ao = BootAo;
+    private const int BootAo = 2;
+    /// <summary>Darkening at the blade root, 0..1: the cheapest grounding there is. <c>/grass rootao X</c>.</summary>
+    private static float _rootAo = BootRootAo;
+    private const float BootRootAo = 0.3f;
+    private static int _prepGen = -1, _depthGen = -1, _seen;
+    internal static bool OccludesAo => _ao >= 2 && _on && !_off && _prepass;
+    /// <summary>#196: does cascade <paramref name="i"/> take the blades as casters this frame?</summary>
+    internal static bool CastsInto(int i) => i < _shadowCascades && _shadowN > 0 && _on && !_off && _progDepth != 0;
     /// <summary>CPU-side instance stream. Allocated once, cold: the draw path never allocates.</summary>
     private static float[]? _inst;
     private static int _uploaded;
@@ -229,7 +256,10 @@ internal static unsafe partial class GrassField
     /// <c>_far</c> overrides the player's grass-distance option when positive (the engine clamps that option
     /// at 173u; the field can go further, since the bin walk lists every frustum-visible bin).</summary>
     private static float _lod = BootLod, _lodMin = BootLodMin, _lodWidth = BootLodWidth,
-                         _lodHeight = BootLodHeight, _shade = BootShade, _far = BootFar;
+                         _lodHeight = BootLodHeight, _shade = BootShade, _far = BootFar, _tuft = BootTuft;
+    /// <summary><c>/grass vlight</c>: the light rig (sun cascade taps + cluster) runs per VERTEX of the blade
+    /// (boot) rather than per fragment; a blade's normal is flat, so only the sample point moves.</summary>
+    private static bool _vlit = true;
 
     // period counters
     private static int _frames, _draws, _visible, _culled, _baked, _refused, _disabled;
@@ -246,11 +276,11 @@ internal static unsafe partial class GrassField
 
     private struct Loc
     {
-        public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade;
+        public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, Ssao, SsaoOn, RootAo;
         public int PushTex, PushGain, PushWindow;
-        public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN, Sss;
+        public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN, Sss, Reach;
         public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn, SunFocus, SunRadius;
-        public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage;
+        public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade;
     }
     private static Loc _loc;
     private static AlloyRenderer.FeatLoc _featLoc, _featLocD;
@@ -346,7 +376,7 @@ internal static unsafe partial class GrassField
 
     internal static void Forget()
     {
-        _patchCount = 0;
+        _patchCount = 0; _shadowN = 0;
         _instCount = 0;
         _uploaded = 0;
         _drawnGen = -1;
@@ -361,7 +391,43 @@ internal static unsafe partial class GrassField
     /// <summary>The Alloy grass pass, at its <see cref="FrameGraph"/> slot inside the colour bracket.
     /// Bake-then-draw: newly visible patches are scattered and appended to the instance stream (a bounded
     /// number per frame), then every patch sighted this frame is culled, sorted and issued.</summary>
-    internal static void Draw(Matrix4x4* vp, int* viewport, float near, float far, bool lightingOn)
+    /// <summary>The blades' depth alone, for the SSAO read (<see cref="OccludesAo"/>); the colour pass then
+    /// skips its own depth stage this PassGen.</summary>
+    internal static void DrawDepth(Matrix4x4* vp, int* viewport, float near, float far)
+    {
+        if (!Gate()) return;
+        int n = Prepare();
+        if (n == 0) return;
+        Issue(n, vp, viewport, near, far, false, false, stage: 1);
+        _depthGen = AlloyRenderer.PassGen;
+    }
+
+    private static bool Gate()
+    {
+        if (_off || !_on || _down.Failed || _binBucket == null) return false;
+        if (*_grassEnabled == 0) return false;
+        if (Gl.DrawArraysInstancedBaseInstance == null || Gl.VertexAttribDivisor == null)
+        { _down.Fail(_log, "no instanced-draw entry point", "grass stays vanilla"); return false; }
+        if (!EnsureProgram() || !EnsureBuffers()) return false;
+        return _density > 0f;
+    }
+
+    /// <summary>Once per PassGen: bake, upload, push map. The seen count is kept for a second caller.</summary>
+    private static int Prepare()
+    {
+        if (_prepGen == AlloyRenderer.PassGen) return _seen;
+        _prepGen = AlloyRenderer.PassGen;
+        if (_rebake) { _rebake = false; Forget(); }
+        _frame++;
+        _frames++;
+        _seen = Collect();
+        if (_seen == 0) return 0;
+        Upload();
+        BuildPush();
+        return _seen;
+    }
+
+    internal static void Draw(Matrix4x4* vp, int* viewport, float near, float far, bool lightingOn, bool aoOn)
     {
         // Toggle-off returns WITHOUT stamping the generation: the class goes back to the ENGINE, which is
         // the opposite of the density-0 branch below (nobody draws it, and the stamp is what keeps it that way).
@@ -375,14 +441,9 @@ internal static unsafe partial class GrassField
         // re-attempt a bake budget's worth of patches that scatter nothing.
         if (_density <= 0f) { _drawnGen = AlloyRenderer.PassGen; return; }
 
-        if (_rebake) { _rebake = false; Forget(); }
-        _frame++;
-        _frames++;
-        int n = Collect();
+        int n = Prepare();
         if (n == 0) { _drawnGen = AlloyRenderer.PassGen; return; }
-        Upload();
-        BuildPush();
-        Issue(n, vp, viewport, near, far, lightingOn);
+        Issue(n, vp, viewport, near, far, lightingOn, aoOn, stage: _depthGen == AlloyRenderer.PassGen ? 2 : 0);
         // Stamped even on a frame that drew nothing visible: the Alloy pass OWNS the class this pass, and a
         // patch culled by distance must not come back as an engine draw.
         _drawnGen = AlloyRenderer.PassGen;
@@ -766,7 +827,8 @@ internal static unsafe partial class GrassField
     /// <summary>Cull, sort, issue. The sort key is (material, distance): materials are a handful and switching
     /// one costs a texture bind, while near-to-far inside a material is what lets early-Z throw away the
     /// overdraw grass is otherwise made of.</summary>
-    private static void Issue(int seen, Matrix4x4* vp, int* viewport, float near, float far, bool lightingOn)
+    /// <param name="stage">0 = depth then colour, 1 = depth only (ahead of the SSAO read), 2 = colour only.</param>
+    private static void Issue(int seen, Matrix4x4* vp, int* viewport, float near, float far, bool lightingOn, bool aoOn, int stage)
     {
         float* planes = stackalloc float[24];
         Frustum(vp, planes);
@@ -817,6 +879,7 @@ internal static unsafe partial class GrassField
         if (n == 0) return;
         Array.Sort(_visKey, _vis, 0, n);
         _visible += n;
+        _shadowN = n; _shadowEye = eye; _shadowNear = nearDist; _shadowFar = farDist;
 
         // The prefix count per patch, once: the prepass and the colour pass must draw the SAME blades.
         // keep(NEAREST point of the patch), so it is never smaller than the keep any blade of the patch
@@ -830,34 +893,44 @@ internal static unsafe partial class GrassField
         float* pw = stackalloc float[3] { _pushOriginX, _pushOriginY, _pushPerUnit / PushRes };
         Gl.BindVertexArray(_vao);
         bool prepass = _prepass && _progDepth != 0;
-        if (prepass)
+        if (stage == 1 && !prepass) { Gl.BindVertexArray(0); return; }
+        if (prepass && stage != 2)
         {
             Gl.UseProgram(_progDepth);
-            SharedUniforms(in _locD, in _featLocD, vp, &eye, nearDist, farDist, msaa, pw, viewport);
+            SharedUniforms(in _locD, in _featLocD, vp, &eye, nearDist, farDist, msaa, pw, viewport, vlit: false);
             new PassState(depth: true, depthWrite: true, cull: false).Apply();
             Gl.ColorMask(0, 0, 0, 0);
             Gl.DepthFunc(Gl.LESS);
             if (msaa) Gl.Enable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
+            AlloyRenderer.GpuBegin(AlloyRenderer.GpuTerm.GrassDepth);
             DrawPatches(n, tids, in _locD, depth: true);
+            AlloyRenderer.GpuEnd(AlloyRenderer.GpuTerm.GrassDepth);
             Gl.ColorMask(1, 1, 1, 1);
             Gl.DepthFunc(Gl.LEQUAL);
         }
+        if (stage == 1) { if (_sampMip != 0) Gl.BindSampler(0, 0); Gl.BindVertexArray(0); return; }
 
         Gl.UseProgram(_prog);
-        SharedUniforms(in _loc, in _featLoc, vp, &eye, nearDist, farDist, msaa, pw, viewport);
+        SharedUniforms(in _loc, in _featLoc, vp, &eye, nearDist, farDist, msaa, pw, viewport, vlit: _vlit && lightingOn);
         Gl.Uniform1f(_loc.Shade, _shade);
         Gl.Uniform1i(_loc.Lit, lightingOn ? 1 : 0);
+        bool ao = aoOn && _ao > 0 && SsaoPass.OutTex != 0;
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.GrassSsao);
+        Gl.BindTexture(Gl.TEXTURE_2D, ao ? SsaoPass.OutTex : 0);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        Gl.Uniform1i(_loc.SsaoOn, ao ? 1 : 0);
+        Gl.Uniform1f(_loc.RootAo, _rootAo);
         if (lightingOn)
         {
             AlloyLights.BindForDraw();
             AlloyLights.SetDrawUniforms(_loc.Grid, _loc.Tile, _loc.Z, _loc.Falloff, _loc.Wrap,
-                                        _loc.Atten, _loc.Hot, _loc.WrapN, _loc.Sss, viewport, near, far);
+                                        _loc.Atten, _loc.Hot, _loc.WrapN, _loc.Sss, viewport, near, far, _loc.Reach);
         }
         AlloyRenderer.UploadAreaTerms(_loc.Ambient, _loc.Diffuse, _loc.Dir);
         AlloyRenderer.UploadSunCascades(_loc.SunTex, _loc.SunVp, _loc.SunTexel, _loc.SunBias, _loc.SunCount,
                                         _loc.SunDyn, _loc.SunFocus, _loc.SunRadius);
         AlloyRenderer.UploadLocalCubes(_loc.CubeTex, _loc.CubeLight, _loc.CubePlane, _loc.CubeCount,
-                                          _loc.CubeSoft, _loc.CubeDynPage);
+                                          _loc.CubeSoft, _loc.CubeDynPage, _loc.CubeFade);
 
         // The class's whole point, in one declaration: blending OFF, and the coverage decision made entirely
         // by the fragment stage's two discards. Depth writes come from the prepass when it ran (the colour
@@ -875,17 +948,95 @@ internal static unsafe partial class GrassField
         // off; the class IS the decision.
         new PassState(depth: true, depthWrite: !prepass, cull: false).Apply();
         if (msaa) Gl.Enable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
+        AlloyRenderer.GpuBegin(AlloyRenderer.GpuTerm.Grass);
         DrawPatches(n, tids, in _loc, depth: false);
+        AlloyRenderer.GpuEnd(AlloyRenderer.GpuTerm.Grass);
         if (msaa) Gl.Disable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
         if (_sampMip != 0) Gl.BindSampler(0, 0);
         Gl.BindVertexArray(0);
     }
 
+    /// <summary>#196: draw last frame's visible blades into every re-baked sun cascade under
+    /// <see cref="_shadowCascades"/>, as alpha-tested depth. Called by the caster pass after its layered
+    /// flush, with its framebuffer; leaves FBO 0 bound.</summary>
+    internal static void DrawShadows(uint fbo, uint tex, int size, bool[] rebaked, int cascades)
+    {
+        int want = Math.Min(_shadowCascades, cascades);
+        if (want <= 0 || _shadowN <= 0 || _progDepth == 0 || _vao == 0 || _off || !_on || _down.Failed) return;
+        if (_binBucket == null || *_grassEnabled == 0 || _density <= 0f) return;
+        bool any = false;
+        for (int i = 0; i < want && !any; i++) any = rebaked[i];
+        if (!any) return;
+        int* tids = stackalloc int[MaxGrassMaterials];
+        for (int m = 0; m < MaxGrassMaterials; m++)
+        {
+            byte* info = GrassInfo(m);
+            bool live = info != null && *(info + InfoInUse) != 0;
+            IntPtr t = !live ? IntPtr.Zero : _aurGet(info + InfoName, IntPtr.Zero, null, null, 0, 0);
+            tids[m] = OwnedTextures.Draw(AurTex.Tid(t));
+        }
+        EnsureSamplers();
+        float* pw = stackalloc float[3] { _pushOriginX, _pushOriginY, _pushPerUnit / PushRes };
+        int* viewport = stackalloc int[4] { 0, 0, size, size };
+        Vector3 eye = _shadowEye;
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, fbo);
+        Gl.DrawBuffer(Gl.NONE); Gl.ReadBuffer(Gl.NONE);
+        Gl.Viewport(0, 0, size, size);
+        Gl.BindVertexArray(_vao);
+        Gl.UseProgram(_progDepth);
+        new PassState(depth: true, depthWrite: true, cull: false).Apply();
+        Gl.DepthFunc(Gl.LEQUAL);
+        // the push field's unit is the post stack's HDR unit (TextureSlots.GrassPush == PostHdr): by the
+        // shadow bracket its 2D binding is last frame's picture, and the blades would be displaced by it
+        Gl.ActiveTexture(Gl.TEXTURE0 + PushUnit);
+        Gl.BindTexture(Gl.TEXTURE_2D, _pushTex);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        for (int i = 0; i < want; i++)
+        {
+            if (!rebaked[i]) continue;
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0, i);
+            Matrix4x4 vp;
+            fixed (float* pub = CasterPass.CascadeVp) vp = *(Matrix4x4*)(pub + i * 16);
+            SharedUniforms(in _locD, in _featLocD, &vp, &eye, _shadowNear, _shadowFar, false, pw, viewport, vlit: false);
+            Gl.Uniform1i(_locD.Cast, 1);
+            DrawPatches(_shadowN, tids, in _locD, depth: true, cast: true);
+            _shadowDraws++;
+            if (_dumpShadow) { _dumpShadow = false; DumpLayer(tex, i, size); }
+        }
+        if (_sampMip != 0) Gl.BindSampler(0, 0);
+        Gl.BindVertexArray(0);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+    }
+
+    /// <summary>Ground truth for #196: the cast layer as an 8-bit PGM (near = bright), read back through
+    /// glGetTextureSubImage. Cold, once per command.</summary>
+    private static void DumpLayer(uint tex, int layer, int size)
+    {
+        if (Gl.GetTextureSubImage == null) { _log?.Info("GrassField: no glGetTextureSubImage -- no dump"); return; }
+        var depth = new float[size * size];
+        fixed (float* p = depth)
+            Gl.GetTextureSubImage(tex, 0, 0, 0, layer, size, size, 1, Gl.DEPTH_COMPONENT, Gl.FLOAT, size * size * 4, p);
+        float min = 1f, max = 0f; int near = 0;
+        foreach (float d in depth) { if (d < min) min = d; if (d > max) max = d; if (d < 0.999f) near++; }
+        string path = Native.ConfigPath($"cx_grass_shadow_{_dumpN++}.pgm");
+        using var f = new System.IO.FileStream(path, System.IO.FileMode.Create);
+        var hdr = System.Text.Encoding.ASCII.GetBytes($"P5\n{size} {size}\n255\n");
+        f.Write(hdr, 0, hdr.Length);
+        var row = new byte[size * size];
+        for (int i = 0; i < depth.Length; i++) row[i] = (byte)Math.Clamp((1f - depth[i]) * 255f * 4f, 0f, 255f);
+        f.Write(row, 0, row.Length);
+        _log?.Info($"GrassField: cast layer {layer} dumped to {path} -- depth min {min:0.0000} max {max:0.0000}, {near} texels written of {depth.Length}, {_shadowBlades} blades cast so far");
+    }
+
     /// <summary>The uniforms both grass programs read: camera, ladder, fade, wind, push map, feature terms.</summary>
     private static void SharedUniforms(in Loc loc, in AlloyRenderer.FeatLoc feat, Matrix4x4* vp, Vector3* eye,
-                                       float nearDist, float farDist, bool msaa, float* pw, int* viewport)
+                                       float nearDist, float farDist, bool msaa, float* pw, int* viewport, bool vlit)
     {
         Gl.UniformMatrix4fv(loc.Vp, 1, 0, (float*)vp);
+        Gl.Uniform1f(loc.Tuft, _tuft);
+        Gl.Uniform1i(loc.VLit, vlit ? 1 : 0);   // the depth program never lights: its vertex stage skips the rig
+        Gl.Uniform1i(loc.Cast, 0);
+        Gl.Uniform1f(loc.CastWidth, _castWidth);
         Gl.Uniform3fv(loc.Eye, 1, (float*)eye);
         Gl.Uniform2f(loc.Fade, nearDist, farDist);
         Gl.Uniform4f(loc.Lod, _lod, _lodMin, _lodWidth, _lodHeight);
@@ -903,7 +1054,7 @@ internal static unsafe partial class GrassField
     /// <summary>One pass over the visible patches, material-sorted: a texture bind per material change and
     /// one prefix draw per patch. The depth pass binds textures too -- its stage reads the alpha -- but
     /// skips the material colours the colour pass alone shades with.</summary>
-    private static void DrawPatches(int n, int* tids, in Loc loc, bool depth)
+    private static void DrawPatches(int n, int* tids, in Loc loc, bool depth, bool cast = false)
     {
         int boundMat = -1, boundTex = 0;
         for (int i = 0; i < n; i++)
@@ -928,6 +1079,7 @@ internal static unsafe partial class GrassField
             Gl.DrawArraysInstancedBaseInstance(Gl.TRIANGLES, 0, TemplateVerts, _visCount[i], (uint)q.First);
             _draws++;
             if (!depth) _blades += _visCount[i];
+            if (cast) { _shadowPatches++; _shadowBlades += _visCount[i]; }
         }
     }
 
@@ -1186,7 +1338,9 @@ internal static unsafe partial class GrassField
             _featLocD = AlloyRenderer.FeatLocs(_progDepth);
             Gl.UseProgram(_progDepth);
             Gl.Uniform1i(_locD.Tex, 0);
-            Gl.Uniform1i(_locD.PushTex, (int)PushUnit);
+            // the per-vertex rig's shadow samplers live in the shared vertex text: unassigned they sit on unit 0
+            // beside uTex and GL refuses every depth draw
+            ShadowUnits(in _locD);
         }
         _loc = Locate(prog);
         _featLoc = AlloyRenderer.FeatLocs(prog);
@@ -1203,6 +1357,8 @@ internal static unsafe partial class GrassField
             Vp = GlProgram.Loc(prog, "uVP"), Eye = GlProgram.Loc(prog, "uEyePos"),
             Fade = GlProgram.Loc(prog, "uFade"), Tex = GlProgram.Loc(prog, "uTex"),
             Lod = GlProgram.Loc(prog, "uLod"), Shade = GlProgram.Loc(prog, "uShade"),
+            Tuft = GlProgram.Loc(prog, "uTuft"), VLit = GlProgram.Loc(prog, "uVLit"), Cast = GlProgram.Loc(prog, "uCast"), CastWidth = GlProgram.Loc(prog, "uCastWidth"),
+            Ssao = GlProgram.Loc(prog, "uSsao"), SsaoOn = GlProgram.Loc(prog, "uSsaoOn"), RootAo = GlProgram.Loc(prog, "uRootAo"),
             MatAmb = GlProgram.Loc(prog, "uMatAmbient"), MatDif = GlProgram.Loc(prog, "uMatDiffuse"),
             Lit = GlProgram.Loc(prog, "uLit"), WindGain = GlProgram.Loc(prog, "uWindGain"),
             WindSpeed = GlProgram.Loc(prog, "uWindSpeed"),
@@ -1213,7 +1369,7 @@ internal static unsafe partial class GrassField
             Dir = GlProgram.Loc(prog, "uAreaDir"),
             Grid = GlProgram.Loc(prog, "uGrid"), Tile = GlProgram.Loc(prog, "uTile"),
             Z = GlProgram.Loc(prog, "uZ"), Falloff = GlProgram.Loc(prog, "uFalloff"),
-            Wrap = GlProgram.Loc(prog, "uWrap"), Atten = GlProgram.Loc(prog, "uAtten"), Hot = GlProgram.Loc(prog, "uHot"), WrapN = GlProgram.Loc(prog, "uWrapN"), Sss = GlProgram.Loc(prog, "uSss"),
+            Wrap = GlProgram.Loc(prog, "uWrap"), Atten = GlProgram.Loc(prog, "uAtten"), Hot = GlProgram.Loc(prog, "uHot"), WrapN = GlProgram.Loc(prog, "uWrapN"), Sss = GlProgram.Loc(prog, "uSss"), Reach = GlProgram.Loc(prog, "uReach"),
             SunTex = GlProgram.Loc(prog, "uSunShadow"), SunVp = GlProgram.Loc(prog, "uSunVp"),
             SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"), SunDyn = GlProgram.Loc(prog, "uSunDyn"),
             SunTexel = GlProgram.Loc(prog, "uSunTexel"), SunBias = GlProgram.Loc(prog, "uSunBias"),
@@ -1222,19 +1378,27 @@ internal static unsafe partial class GrassField
             CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeLight = GlProgram.Loc(prog, "uLocalLight"),
             CubePlane = GlProgram.Loc(prog, "uLocalPlane"), CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
             CubeSoft = GlProgram.Loc(prog, "uLocalSoft"),
-            CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"), CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"),
+            CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"), CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"), CubeFade = GlProgram.Loc(prog, "uLocalFade"),
         };
 
     private static bool EnsureProgramTail(uint prog)
     {
-        Gl.Uniform1i(_loc.SunTex, (int)AlloyRenderer.SunUnit);
-        // the grass program's unit 10 is uPushTex, so its sun-dyn sampler reads the second unit the table assigns
-        Gl.Uniform1i(_loc.SunDynTex, (int)AlloyRenderer.SunDynUnitGrass);
-        Gl.Uniform1i(_loc.CubeTex, (int)AlloyRenderer.CubeUnit);
-        Gl.Uniform1i(_loc.CubeDynTex, (int)AlloyRenderer.CubeDynUnit);
-        Gl.Uniform1i(_loc.PushTex, (int)PushUnit);
+        ShadowUnits(in _loc);
         _log?.Info("GrassField: instanced grass program ready");
         return true;
+    }
+
+    /// <summary>Sampler units for the shadow rig + push texture; both grass programs share the vertex text
+    /// and so both carry these samplers.</summary>
+    private static void ShadowUnits(in Loc l)
+    {
+        Gl.Uniform1i(l.SunTex, (int)AlloyRenderer.SunUnit);
+        // the grass program's unit 10 is uPushTex, so its sun-dyn sampler reads the second unit the table assigns
+        Gl.Uniform1i(l.SunDynTex, (int)AlloyRenderer.SunDynUnitGrass);
+        Gl.Uniform1i(l.CubeTex, (int)AlloyRenderer.CubeUnit);
+        Gl.Uniform1i(l.CubeDynTex, (int)AlloyRenderer.CubeDynUnit);
+        Gl.Uniform1i(l.PushTex, (int)PushUnit);
+        Gl.Uniform1i(l.Ssao, (int)TextureSlots.GrassSsao);
     }
 
     // ---- shaders -----------------------------------------------------------------------------
@@ -1246,7 +1410,13 @@ internal static unsafe partial class GrassField
     /// <c>areaGlobalWind</c> plus the per-blade bend jitter, which is what stops a field moving as one sheet.
     /// <para>This stage DISPLACES, which is exactly why grass is not in the #119 depth prepass and why it does
     /// not compute <c>AlloyRenderer</c>'s invariant clip expression.</para></summary>
-    internal const string GrassVs = """
+    internal static readonly string GrassVs = GrassVsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib
+                                              + AlloyLights.SunShadowLib + GrassVsMain;
+
+    /// <summary>The vertex head: attributes, uniforms, outs, and the cluster tile hook the light libraries
+    /// read (a vertex stage has no gl_FragCoord; the tile comes from this vertex's own NDC, as the particle
+    /// rig does it).</summary>
+    internal const string GrassVsHead = """
         #version 460 core
         layout(location = 0) in vec3 aPos;      // blade-local: xy in [-0.5,0.5], z 0 (root) .. 1 (tip)
         layout(location = 1) in vec2 aUV;       // 0..1 within one atlas cell
@@ -1263,13 +1433,26 @@ internal static unsafe partial class GrassField
         uniform sampler2D uPushTex;    // top-down displacement field, RG signed around 0.5
         uniform float uPushGain;       // 0 = nothing displaces the grass
         uniform vec3 uPushWindow;      // xy = the field's world origin, z = uv per world unit
-        out vec2 vUV;
+        uniform float uTuft;           // max blade copies across a widened far blade (1 = off)
+        uniform int uVLit;             // 1 = the light rig runs here, per vertex
+        uniform int uCast;             // 1 = a shadow view
+        uniform float uCastWidth;      // blade width multiplier in a shadow view: a 2-texel blade filters to nothing
+        uniform int uLit;              // 0 = no cluster build this pass
+        uniform float uShade;          // past this, ambient + unshadowed sun only (no rig at all)
+        uniform vec3 uAreaAmbient;
+        uniform vec3 uAreaDiffuse;
+        uniform vec3 uAreaDir;
+        out vec2 vCellUv;              // 0..1 within the blade's atlas cell
+        flat out vec2 vCellBase;       // the cell's atlas origin
+        flat out float vTuft;          // copies of the cell across this blade
+        out vec3 vLight;               // point light, per vertex, for the near blades
         out vec3 vWorld;
         out vec3 vNrm;
         out float vDepth;
         out float vFade;
         out float vDist;
         flat out uint vSeed;
+        out float vRoot;               // 0 at the root, 1 at the tip: the root-darkening ramp
         // #355: the depth prepass and the colour pass are two programs over this one text; equal depth is
         // what lets the colour pass test LEQUAL with depth writes off.
         invariant gl_Position;
@@ -1283,8 +1466,16 @@ internal static unsafe partial class GrassField
             return max(uLod.y, r * r);
         }
 
+        vec2 sowxClusterXY;
+        #define SOWX_CLUSTER_XY sowxClusterXY
+
+        """;
+
+    /// <summary>The vertex main, composed after the light libraries.</summary>
+    internal const string GrassVsMain = """
         void main()
         {
+            vCellUv = vec2(0.0); vCellBase = vec2(0.0); vTuft = 1.0; vLight = vec3(0.0); vRoot = aPos.z;
             float dist = distance(uEyePos, iPos.xyz);
             float kv = SowxGrassKeep(dist);
             // A blade past its own keep edge is gone; one AT the edge thins out over the last 20% of the
@@ -1293,13 +1484,14 @@ internal static unsafe partial class GrassField
             if (lod <= 0.0)
             {
                 gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-                vUV = vec2(0.0); vWorld = vec3(0.0); vNrm = vec3(0.0, 0.0, 1.0);
+                vWorld = vec3(0.0); vNrm = vec3(0.0, 0.0, 1.0);
                 vDepth = 1.0; vFade = 0.0; vDist = 0.0; vSeed = 0u;
                 return;
             }
             // The survivors stand in for the blades the prefix dropped: wider and taller, by the ladder's
             // exponents, so a far patch reads as a covered meadow rather than a thinning one.
             float widen = pow(kv, -uLod.z), grow = pow(kv, -uLod.w);
+            if (uCast != 0) widen *= uCastWidth;
             float c = cos(iPos.w), s = sin(iPos.w);
             vec3 p = vec3((aPos.x * c - aPos.y * s) * widen, (aPos.x * s + aPos.y * c) * widen, aPos.z * grow) * iParam.x;
 
@@ -1337,7 +1529,7 @@ internal static unsafe partial class GrassField
                 {
                     // Outside clip space on every axis: the whole blade is discarded before rasterisation.
                     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-                    vUV = vec2(0.0); vWorld = vec3(0.0); vNrm = vec3(0.0, 0.0, 1.0);
+                    vWorld = vec3(0.0); vNrm = vec3(0.0, 0.0, 1.0);
                     vDepth = 1.0; vFade = 0.0; vDist = 0.0; vSeed = 0u;
                     return;
                 }
@@ -1360,16 +1552,42 @@ internal static unsafe partial class GrassField
             // the field black whenever the sun is not behind the camera, which is not what a lawn does.
             vNrm = normalize(vec3(c, s, 0.0) * 0.3 + vec3(0.0, 0.0, 1.0));
             int cell = int(iParam.y + 0.5);
-            vUV = vec2(float(cell & 1), float(cell >> 1)) * 0.5 + aUV * 0.5;
+            vCellUv = aUV;
+            vCellBase = vec2(float(cell & 1), float(cell >> 1)) * 0.5;
+            // A far blade stands in for the ones the ladder dropped and is widened for it; rather than one
+            // stretched sprite, its quad carries the cell that many times over -- a tuft, at no extra instance.
+            vTuft = clamp(floor(widen + 0.5), 1.0, max(uTuft, 1.0));
             vFade = (1.0 - smoothstep(uFade.x, uFade.y, dist)) * lod;
             vDist = dist;
             vSeed = uint(gl_InstanceID);
+            // The cluster loop per vertex: the blade's normal is flat, so the point-light sample point moves
+            // from the pixel to the vertex. The SUN's shadow stays per fragment (#196): a neighbouring
+            // blade's shadow is thinner than the gap between two vertices and averaged away here.
+            if (uVLit != 0 && dist <= uShade)
+            {
+                sowxClusterXY = (gl_Position.xy / max(gl_Position.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
+                vLight = uLit != 0 ? SowxClusteredDiffuse(vWorld, vNrm, vDepth) : vec3(0.0);
+            }
+        }
+        """;
+
+    /// <summary>The texel both fragment stages read: the atlas cell, repeated <c>vTuft</c> times across the
+    /// blade. Derivatives are the cell's own, scaled, so the mip level does not jump at a copy seam.</summary>
+    internal const string GrassFetch = """
+        in vec2 vCellUv;
+        flat in vec2 vCellBase;
+        flat in float vTuft;
+        vec4 SowxGrassTexel()
+        {
+            vec2 gx = dFdx(vCellUv) * vec2(vTuft, 1.0) * 0.5, gy = dFdy(vCellUv) * vec2(vTuft, 1.0) * 0.5;
+            vec2 uv = vCellBase + vec2(fract(vCellUv.x * vTuft), vCellUv.y) * 0.5;
+            return textureGrad(uTex, uv, gx, gy);
         }
         """;
 
     internal const string GrassFsHead = """
         #version 460 core
-        in vec2 vUV;
+        in vec3 vLight;
         in vec3 vWorld;
         in vec3 vNrm;
         in float vDepth;
@@ -1392,14 +1610,20 @@ internal static unsafe partial class GrassField
         uniform vec3 uMatAmbient;               // the grass material's own ambient (CAurGrassInfo +0x34)
         uniform vec3 uMatDiffuse;               // ... and diffuse (+0x28), WITHOUT vanilla's fade in its alpha
         uniform int uLit;                       // 0 = no cluster build this pass: ambient + sun only
+        uniform int uVLit;                      // 1 = vLight carries the cluster loop's answer from the vertex stage
         uniform int uMsaa;                      // 1 = the target is multisampled, so alpha-to-coverage is live
         uniform float uEdge;                    // cutout ramp width, in units of the analytic one-pixel edge
+        uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
+        uniform sampler2D uSsao;                // the frame's screen-space visibility, at gl_FragCoord
+        uniform int uSsaoOn;                    // 1 = read it (the ground's answer under a blade the prepass skipped)
+        uniform float uRootAo;                  // darkening at the root, 0..1
+        in float vRoot;
         out vec4 frag;
 
         // The engine's own cutout threshold (fAlphaDiscardValue under RenderInterface::Enable(1)).
         const float SOWX_GRASS_CUT = 0.2;
 
-        """;
+        """ + GrassFetch;
 
     /// <summary>The fragment stage. Two discards and no blending at all, which is the whole replacement:
     /// vanilla's fade rides in the alpha channel its cutout reads, so between 15u and ~27.7u every blade is
@@ -1418,13 +1642,17 @@ internal static unsafe partial class GrassField
 
         void main()
         {
-            vec4 texel = texture(uTex, vUV);
+            vec4 texel = SowxGrassTexel();
             // COVERAGE, not a binary test. fwidth is the alpha's rate of change across this pixel, so the
             // ramp is exactly one pixel wide wherever the blade edge lands -- which is what turns a stair-
             // stepped silhouette into a shaded one. It must be computed BEFORE any discard: derivatives are
             // only defined in uniform control flow.
             float aw = max(fwidth(texel.a), 1e-5);
-            float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * uEdge) + 0.5, 0.0, 1.0);
+            // A far blade is one or two pixels wide, so the one-pixel ramp spans the WHOLE blade and the dither
+            // that carries it reads as floating pixels SMAA cannot resolve; past the ladder the edge is a hard
+            // step, which SMAA does resolve. Both stages must agree on the fragment set, so both carry this.
+            float edge = mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
+            float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
             // Where the target is multisampled, alpha-to-coverage resolves the edge properly and the dither
             // is left to carry the distance fade alone. Where it is not, the one dither carries both -- still
             // strictly softer than the hard step, and still never a semi-transparent depth-writing fragment.
@@ -1438,11 +1666,20 @@ internal static unsafe partial class GrassField
             // #355: a far blade is a few pixels; the cascade and cluster taps (the frame's costliest term)
             // cannot be seen on it and are not taken. Divergent, but blades cluster by distance.
             bool near = vDist <= uShade;
-            vec3 sun = uAreaDiffuse * (near ? ndl * SowxSunShadow(vWorld, N, ndl, ndl) : ndl);
-            vec3 point = (uLit != 0 && near) ? SowxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0);
+            vec3 sunpoint;
+            if (uVLit != 0) sunpoint = near ? uAreaDiffuse * (ndl * SowxSunShadow(vWorld, N, ndl, ndl)) + vLight : uAreaDiffuse * ndl;
+            else
+            {
+                vec3 sun = uAreaDiffuse * (near ? ndl * SowxSunShadow(vWorld, N, ndl, ndl) : ndl);
+                vec3 point = (uLit != 0 && near) ? SowxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0);
+                sunpoint = sun + point;
+            }
             // the 0.15 floor and the sun-facing wrap are inc_lighting.shd:679, as the Alloy lit stage runs it
             vec3 ambient = uAreaAmbient * uMatAmbient * mix(0.15, 1.0, ndl);
-            vec3 lit = albedo * (ambient + (sun + point) * uMatDiffuse);
+            // the field's own occlusion: GTAO on the ambient term as the lit stage takes it (ADR 0021), and a
+            // root ramp on everything -- a blade is lit at its tip and buried at its base
+            if (uSsaoOn != 0) ambient *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
+            vec3 lit = albedo * (ambient + sunpoint * uMatDiffuse) * mix(1.0 - uRootAo, 1.0, vRoot);
             // vanilla grass runs fsgrass, which is the stock lit shader with KEYHOLING 1 and FOG 1 -- so the
             // camera dissolve and the scene fog both apply, and dropping them would fill a low camera shot
             // with undissolved grass. Grass always dissolves: it has no per-part CanDissolve to read.
@@ -1458,7 +1695,6 @@ internal static unsafe partial class GrassField
     /// alpha-to-coverage where the target is multisampled, with the same coverage the colour pass writes.</summary>
     internal const string GrassDepthFs = """
         #version 460 core
-        in vec2 vUV;
         in vec3 vWorld;
         in vec3 vNrm;
         in float vDepth;
@@ -1469,10 +1705,12 @@ internal static unsafe partial class GrassField
         """ + AlloyRenderer.FeatDecl + AlloyRenderer.KeyFogDecl + """
         uniform sampler2D uTex;
         uniform int uMsaa;
+        uniform int uCast;                      // 1 = a shadow view: no keyhole (its depth term is the camera's)
         uniform float uEdge;
+        uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
         out vec4 frag;
 
-        """ + AlloyRenderer.KeyholeFs + """
+        """ + AlloyRenderer.KeyholeFs + GrassFetch + """
 
         const float SOWX_GRASS_CUT = 0.2;
 
@@ -1484,13 +1722,17 @@ internal static unsafe partial class GrassField
 
         void main()
         {
-            vec4 texel = texture(uTex, vUV);
+            vec4 texel = SowxGrassTexel();
             float aw = max(fwidth(texel.a), 1e-5);
-            float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * uEdge) + 0.5, 0.0, 1.0);
+            // A far blade is one or two pixels wide, so the one-pixel ramp spans the WHOLE blade and the dither
+            // that carries it reads as floating pixels SMAA cannot resolve; past the ladder the edge is a hard
+            // step, which SMAA does resolve. Both stages must agree on the fragment set, so both carry this.
+            float edge = mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
+            float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
             float keep = uMsaa != 0 ? vFade : cov * vFade;
             if (keep <= 0.0) discard;
             if (keep < 1.0 && SowxGrassDither() > keep) discard;
-            if (SowxKeyhole(1.0, vWorld, vDepth) < 0.0) discard;
+            if (uCast == 0 && SowxKeyhole(1.0, vWorld, vDepth) < 0.0) discard;
             frag = vec4(0.0, 0.0, 0.0, uMsaa != 0 ? cov : 1.0);
         }
         """;
@@ -1503,7 +1745,7 @@ internal static unsafe partial class GrassField
            $"soften {_lodBias:0.##} aniso {_appliedAniso:0.#}x edge {_edge:0.##} " +
            $"push x{_pushGain:0.##} r{_pushRadius:0.##} over {_pushExtent:0.#}u " +
            $"cull {(_cull > 0f ? $"on shrink {_cullShrink:0.##}" + (_cullMax > 0f ? $" max {_cullMax:0.#}u" : "") : "off")} " +
-           $"lod {_lod:0.#}u min {_lodMin:0.###} w{_lodWidth:0.##} h{_lodHeight:0.##} shade {_shade:0.#}u far {(_far > 0f ? $"{_far:0.#}u" : "engine")} prepass {(_prepass ? (_progDepth != 0 ? "on" : "UNAVAILABLE") : "off")} " +
+           $"lod {_lod:0.#}u min {_lodMin:0.###} w{_lodWidth:0.##} h{_lodHeight:0.##} shade {_shade:0.#}u tuft {_tuft:0} vlight {(_vlit ? 1 : 0)} shadow {_shadowCascades} castwidth {_castWidth:0.#} ({_shadowDraws} cascade draws, {_shadowPatches} patches, {_shadowBlades} blades) ao {_ao} rootao {_rootAo:0.##} far {(_far > 0f ? $"{_far:0.#}u" : "engine")} prepass {(_prepass ? (_progDepth != 0 ? "on" : "UNAVAILABLE") : "off")} " +
            $"({_pushers} displacing, {_cullers} culling, {_reticles} non-solid skipped) " +
            $"({_patchCount} patches, {_instCount} blades resident; " +
            $"{(_samples > 1 ? $"{_samples}x MSAA, alpha-to-coverage live" : "no MSAA, dithered edge")}" +
@@ -1538,6 +1780,13 @@ internal static unsafe partial class GrassField
             case "lodheight": old = _lodHeight; _lodHeight = Math.Clamp(v, 0f, 1f); break;
             case "shade": old = _shade; _shade = v; break;
             case "far": old = _far; _far = v; break;
+            case "tuft": old = _tuft; _tuft = Math.Clamp(MathF.Round(v), 1f, 8f); break;
+            case "vlight": old = _vlit ? 1f : 0f; _vlit = v > 0f; break;
+            case "ao": old = _ao; _ao = Math.Clamp((int)v, 0, 2); break;
+            case "rootao": old = _rootAo; _rootAo = Math.Clamp(v, 0f, 1f); break;
+            case "castwidth": old = _castWidth; _castWidth = Math.Clamp(v, 0.5f, 8f); break;
+            case "dumpshadow": old = 0f; _dumpShadow = v != 0f; break;
+            case "shadow": old = _shadowCascades; _shadowCascades = Math.Clamp((int)v, 0, CasterPass.MaxCascades); break;
             case "prepass": old = _prepass ? 1f : 0f; _prepass = v > 0f; break;
             default: return float.NaN;
         }
@@ -1556,7 +1805,7 @@ internal static unsafe partial class GrassField
         _pushGain = BootPush; _pushRadius = BootPushRadius; _pushExtent = BootPushExtent;
         _cull = BootCull; _cullShrink = BootCullShrink; _cullMax = BootCullMax;
         _lod = BootLod; _lodMin = BootLodMin; _lodWidth = BootLodWidth; _lodHeight = BootLodHeight;
-        _shade = BootShade; _far = BootFar; _prepass = true;
+        _shade = BootShade; _far = BootFar; _prepass = true; _tuft = BootTuft; _vlit = true;
         _rebake = true; _samplerDirty = true;
         _log?.Info($"GrassField: /grass reset -> {Describe()}");
     }

@@ -75,6 +75,33 @@ internal static unsafe class SceneWalk
     /// <summary>The table was emptied or invalidated by something other than the scene. Re-enumerate.</summary>
     internal static void RequestWalk() { _walkPending = true; Dirty = true; }
 
+    /// <summary>The entries whose ownership answer may have changed since the last enrolment -- bound,
+    /// rebound, released. What lets enrolment be INCREMENTAL: 20k kept slots re-seated and re-read per
+    /// epoch move (the engine bumps it every 11-20 frames under VFX and creature churn) was the Restage
+    /// and Enroll term of the hitch rows. Bounded; an overflow hands the enrolment back its full walk.</summary>
+    private const int ChangeCap = 8192;
+    private static readonly int[] _changed = new int[ChangeCap];
+    private static int _changedN;
+    private static bool _changedOverflow;
+    private static readonly int[] _changedGen = new int[MaxParts];
+    private static int _changeGen = 1;
+    internal static void NoteChanged(int e)
+    {
+        if ((uint)e >= MaxParts || _changedGen[e] == _changeGen) return;
+        _changedGen[e] = _changeGen;
+        if (_changedN < ChangeCap) _changed[_changedN++] = e; else _changedOverflow = true;
+    }
+    /// <summary>Drain the list into <paramref name="dst"/>; returns the count. <paramref name="overflow"/> says
+    /// the list lost entries and only a full walk is honest.</summary>
+    internal static int TakeChanges(int[] dst, out bool overflow)
+    {
+        overflow = _changedOverflow || _changedN > dst.Length;
+        int n = Math.Min(_changedN, dst.Length);
+        Array.Copy(_changed, dst, n);
+        _changedN = 0; _changedOverflow = false; _changeGen++;
+        return n;
+    }
+
     /// <summary>#227 / the repack edge: <paramref name="n"/> entries were just marked
     /// <see cref="PartTable.StStale"/> and need their draw arguments re-read. They are counted into the
     /// rebind queue here, because <see cref="Rebind()"/> skips the scan when the queue is empty and a repack
@@ -351,6 +378,7 @@ internal static unsafe class SceneWalk
     {
         IntPtr part = _pPart[e], vp = _pNode[e];
         if (vp == IntPtr.Zero) return false;
+        bool wasBound = _pState[e] == StStale;   // only a formerly bound entry's failure is a change the delta must see
         IntPtr vdo = *(IntPtr*)(vp + VpVdo);
         int item = *(int*)(vp + VpItem);
         // #264: RESIDENCY IS ALLOY'S TO DRIVE NOW. These two fields are filled by
@@ -364,13 +392,13 @@ internal static unsafe class SceneWalk
             // comes back with item -1 has no drawable geometry and will answer the same for ever. The first
             // live run re-asked every frame and spent 512 calls a frame on 1899 tiles that never bound --
             // which is a rendering system doing nothing, expensively, in perpetuity.
-            if (!SetupDue(e) || _setupLeft <= 0) { _pState[e] = StUnbound; return false; }
+            if (!SetupDue(e) || _setupLeft <= 0) { _pState[e] = StUnbound; if (wasBound) NoteChanged(e); return false; }
             _pSetupTries[e]++; _pSetupGen[e] = Gen;
             _setupLeft--; _setups++;
             ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)vp + VpVtblSetupArrays)))(vp);
             vdo = *(IntPtr*)(vp + VpVdo);
             item = *(int*)(vp + VpItem);
-            if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; _noGeom++; return false; }
+            if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; _noGeom++; if (wasBound) NoteChanged(e); return false; }
         }
         // Only mode 1 (indexed static) can be drawn from our own tables; the capture killed the rest as
         // "multidraw-or-unindexed" and that verdict is unchanged, it is just reached without a draw.
@@ -395,7 +423,7 @@ internal static unsafe class SceneWalk
         _pWorld[e] = AlloyRenderer.IsWorldScene(_scene);
         _pLight[e] = mr.BlendFlag == 0;
         _pState[e] = StActive;
-        _bound++; Dirty = true;
+        _bound++; Dirty = true; NoteChanged(e);
         return true;
     }
 
@@ -415,7 +443,7 @@ internal static unsafe class SceneWalk
         _pSetupTries[e] = 0; _pPoseTried[e] = false;
         _pState[e] = _pNode[e] == IntPtr.Zero || _pMat[e] == IntPtr.Zero ? Die(e, "no-node") : StUnbound;
         if (_pState[e] == StUnbound) Enqueue(e);
-        Dirty = true;
+        Dirty = true; NoteChanged(e);
     }
 
     /// <summary>Per frame, for the records the last walk could not bind. O(unbound), which is zero in a
@@ -485,7 +513,7 @@ internal static unsafe class SceneWalk
         AlloyCensus.OwnFlag[e] = 0;
         Die(e, why);
         _pFreed[e] = true;
-        Dirty = true;
+        Dirty = true; NoteChanged(e);
     }
 
     private static void Sweep()
@@ -649,6 +677,16 @@ internal static unsafe class SceneWalk
             _pWalkGen[ea] = 0; _pWalkGen[eb] = 0;
             _pDeath[eb] = null!;
             _partCount = savedCount;                   // the two synthetic slots are not real tenants
+            // The change list: dedupes within a generation, drains in order, flags an overflow.
+            var dst = new int[ChangeCap];
+            TakeChanges(dst, out _);
+            NoteChanged(ea); NoteChanged(ea); NoteChanged(eb);
+            ok &= TakeChanges(dst, out bool ovf) == 2 && dst[0] == ea && dst[1] == eb && !ovf;
+            NoteChanged(ea);
+            ok &= TakeChanges(dst, out ovf) == 1 && dst[0] == ea && !ovf;
+            for (int i = 0; i <= ChangeCap; i++) NoteChanged((i + 1) % MaxParts);
+            ok &= TakeChanges(dst, out ovf) == ChangeCap && ovf;
+            ok &= TakeChanges(dst, out ovf) == 0 && !ovf;
             Dirty = false;
             log.Info(ok ? "SceneWalk.SelfCheck: passed"
                         : "SceneWalk.SelfCheck: FAILED -- the mark-and-sweep contract drifted");

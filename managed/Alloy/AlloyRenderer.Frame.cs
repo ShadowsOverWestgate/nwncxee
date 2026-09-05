@@ -114,6 +114,8 @@ public sealed unsafe partial class AlloyRenderer
         long tOwn = FrameZones.Now;
         OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
         OwnedBuffers.ClearDirty();   // #260: geometry uploaded itself at the engine's commit; close the window
+        ClearItemCommits();
+        ApplySwaps();   // #386: swapped texture names take their new handles here, in the context that owns residency
         OwnedBuffers.HighWater();    // ...and report the mark the funnel recorded, where a string is affordable
         FrameZones.Add(FrameZones.Zone.Own, tOwn);
         if (EnsureProgram() && BindTarget(engFbo, colorType, colorName, depthType, depthName))
@@ -221,6 +223,9 @@ public sealed unsafe partial class AlloyRenderer
                             if (DepthResource.Filled(PassGen))
                                 CullPass.BuildHiZ(PostChain.DepthTex, viewport[2], viewport[3], viewport,
                                                   PostChain.Fbo, PassGen);
+                            // /grass ao 2: the blades occlude -- their depth lands ahead of the SSAO read,
+                            // after the pyramid so a blade never culls what stands behind it
+                            if (GrassField.OccludesAo) GrassField.DrawDepth(&vp, viewport, near, far);
                             FrameZones.Add(FrameZones.Zone.Prepass, tPre);
                             break;
                         case PassId.AmbientOcclusion:
@@ -243,9 +248,7 @@ public sealed unsafe partial class AlloyRenderer
                             { _takeOverflow = false; _clusterOverflow += AlloyLights.TakeClusterOverflow(); }
                             break;
                         case PassId.GrassOwned:
-                            GpuBegin(GpuTerm.Grass);
-                            GrassField.Draw(&vp, viewport, near, far, lightingOn);
-                            GpuEnd(GpuTerm.Grass);
+                            GrassField.Draw(&vp, viewport, near, far, lightingOn, SsaoPass.Live && !_capturing);   // brackets its own two GPU terms
                             // Grass draws unblended by construction and toggles GL_BLEND itself; hand the
                             // tracked state back exactly as it was, or the next pass's own bookkeeping
                             // (IssueBatches reads _blendOn as "what is already set") starts from a lie.
@@ -448,9 +451,57 @@ public sealed unsafe partial class AlloyRenderer
                 drawn += _gLen[g];
             }
         }
+        // The feature sweep: cutout batches (their holes are the colour pass's own discard, made here with the
+        // same texel and threshold) and wind-displaced ones (the lit program's own vertex text displaces them
+        // identically). Roof features keep their anchor discard and player-relative clip out of it, and
+        // flowmap slides its uv; those three stay excluded. Depth-only LESS writes are order-independent, so
+        // this runs as its own sweep under one program bind.
+        GpuEnd(GpuTerm.PrepassKey);
+        if (_prepassFeat && EnsureDepthFeatProgram())
+        fixed (int* counts = _dCount, bases = _dBase)
+        fixed (nint* offs = _dOff)
+        {
+            GpuBegin(GpuTerm.PrepassFeat);
+            bool bound = false; int boundTex = -1; float boundCut = float.NaN;
+            for (int g = 0; g < groups; g++)
+            {
+                if (_gDis[g] || !FeatPrepassable(g)) continue;
+                // #153: only lit records carry handles, and under bindless the stage reads nothing else
+                if (_bindless && !_gLit[g]) continue;
+                if (!bound)
+                {
+                    bound = true;
+                    Gl.UseProgram(_progDepthFeat);
+                    Gl.UniformMatrix4fv(_depthFeatVp, 1, 0, (float*)vp);
+                    Gl.Uniform1i(_depthFeatTex, 0);
+                    Gl.ActiveTexture(Gl.TEXTURE0);
+                    UploadFeatureTerms(_depthFeatFeat, viewport);
+                }
+                int s = _gStart[g];
+                _gPrepassed[g] = true;
+                Gl.Uniform1i(_depthFeatBase, s);
+                float cut = AlloyClasses.Discard(_gCls[g]);
+                if (cut != boundCut) { Gl.Uniform1f(_depthFeatCut, cut); boundCut = cut; }
+                if (!_bindless && cut >= 0f && _gTex[g] != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)_gTex[g]); boundTex = _gTex[g]; }
+                int wantCull = _gNoCull[g] ? 0 : 1;
+                if (wantCull != boundCull)
+                {
+                    boundCull = wantCull;
+                    if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
+                    else Gl.Disable(Gl.CULL_FACE);
+                }
+                uint vao = VaoName(_gVao[g], _gCls[g]);
+                if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+                if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
+                else
+                    Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
+                                                   (void**)(offs + s), _gLen[g], bases + s);
+                drawn += _gLen[g]; skipped -= _gLen[g]; _prepassFeatDraws += _gLen[g];
+            }
+            GpuEnd(GpuTerm.PrepassFeat);
+        }
         if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
         Gl.ColorMask(1, 1, 1, 1);
-        GpuEnd(GpuTerm.PrepassKey);
         // Counted from what this loop submitted, not from the pass's total draw count: since #126 that total
         // spans the blending classes too, and the prepass walks the opaque range alone.
         // #243: under the cull this is what was STAGED, not what the GPU kept -- the count that decides is in
@@ -461,6 +512,18 @@ public sealed unsafe partial class AlloyRenderer
         // #214: OUR depth attachment, not the engine's -- a texture by construction, so consumers get a
         // sampleable name rather than whatever the engine happened to allocate.
         DepthResource.Publish((int)Gl.ATTACHMENT_TEXTURE, (int)PostChain.DepthTex, viewport, PassGen);
+    }
+
+    /// <summary>Does the feature sweep of the prepass take this batch? The cutout class and every displacing
+    /// feature the plain sweep skipped -- minus the roof pair (anchor discard, player-relative clip) and
+    /// flowmap (a slid diffuse uv would punch holes the colour pass does not).</summary>
+    private static bool FeatPrepassable(int g)
+    {
+        int f = _gFeat[g];
+        if (f == (int)ShaderFeature.Flowmap || f == (int)ShaderFeature.RoofKn || f == (int)ShaderFeature.RoofKnM) return false;
+        // a blended class must not write depth ahead of the colour pass: it would occlude what it blends over
+        if (AlloyClasses.Blends(_gCls[g])) return false;
+        return _gCls[g] == (byte)AlloyClass.Cutout || ShaderFeatures.OutOfPrepass(f);
     }
 
     /// <summary>ADR 0011 step 2, the Alloy opaque set: submit the staged batches, shaded.

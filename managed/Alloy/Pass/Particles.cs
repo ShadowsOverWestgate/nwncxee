@@ -400,11 +400,11 @@ internal static unsafe class Particles
     /// <summary>The light rig's own uniform locations, in the order <see cref="AlloyLights"/> and
     /// <see cref="AlloyRenderer"/> want them handed back.</summary>
     private static int _lAmbient = -1, _lDiffuse = -1, _lDir = -1, _lGrid = -1, _lTile = -1, _lZ = -1,
-                       _lFalloff = -1, _lWrap = -1, _lAtten = -1, _lHot = -1, _lWrapN = -1, _lSss = -1,
+                       _lFalloff = -1, _lWrap = -1, _lAtten = -1, _lHot = -1, _lWrapN = -1, _lSss = -1, _lReach = -1,
                        _lSunTex = -1, _lSunVp = -1, _lSunTexel = -1, _lSunBias = -1, _lSunCount = -1,
                        _lSunDynTex = -1, _lSunDyn = -1, _lSunFocus = -1, _lSunRadius = -1,
                        _lCubeTex = -1, _lCubeLight = -1, _lCubePlane = -1, _lCubeCount = -1, _lCubeSoft = -1,
-                       _lCubeDynTex = -1, _lCubeDynPage = -1,
+                       _lCubeDynTex = -1, _lCubeDynPage = -1, _lCubeFade = -1,
                        _lSunMedia = -1, _lLocalMedia = -1;
     /// <summary>The CPU shadow of the record buffer, addressed by <see cref="Emit.RecBase"/>. The build
     /// writes here; only the blocks whose hash moved are sent to GL.</summary>
@@ -773,12 +773,12 @@ internal static unsafe class Particles
         {
             AlloyLights.BindForDraw();
             AlloyLights.SetDrawUniforms(_lGrid, _lTile, _lZ, _lFalloff, _lWrap, _lAtten, _lHot, _lWrapN, _lSss,
-                                        viewport, near, far);
+                                        viewport, near, far, _lReach);
             AlloyRenderer.UploadAreaTerms(_lAmbient, _lDiffuse, _lDir);
             AlloyRenderer.UploadSunCascades(_lSunTex, _lSunVp, _lSunTexel, _lSunBias, _lSunCount, _lSunDyn,
                                             _lSunFocus, _lSunRadius);
             AlloyRenderer.UploadLocalCubes(_lCubeTex, _lCubeLight, _lCubePlane, _lCubeCount, _lCubeSoft,
-                                           _lCubeDynPage);
+                                           _lCubeDynPage, _lCubeFade);
             // #336: /particles shadows 0 -- no cube taps on particle fragments (uLocalCubes 0 makes the
             // receiver answer lit at once). The pass read 1,2-1,8ms GPU at overdraw x0,6-0,9, so the term
             // is per-fragment cost, and the lit path's cube taps are the one heavy thing in it.
@@ -1479,7 +1479,7 @@ internal static unsafe class Particles
         _lGrid = GlProgram.Loc(_prog, "uGrid"); _lTile = GlProgram.Loc(_prog, "uTile");
         _lZ = GlProgram.Loc(_prog, "uZ"); _lFalloff = GlProgram.Loc(_prog, "uFalloff");
         _lWrap = GlProgram.Loc(_prog, "uWrap"); _lAtten = GlProgram.Loc(_prog, "uAtten");
-        _lHot = GlProgram.Loc(_prog, "uHot"); _lWrapN = GlProgram.Loc(_prog, "uWrapN"); _lSss = GlProgram.Loc(_prog, "uSss");
+        _lHot = GlProgram.Loc(_prog, "uHot"); _lWrapN = GlProgram.Loc(_prog, "uWrapN"); _lSss = GlProgram.Loc(_prog, "uSss"); _lReach = GlProgram.Loc(_prog, "uReach");
         _lSunTex = GlProgram.Loc(_prog, "uSunShadow"); _lSunVp = GlProgram.Loc(_prog, "uSunVp");
         _lSunDynTex = GlProgram.Loc(_prog, "uSunDynShadow"); _lSunDyn = GlProgram.Loc(_prog, "uSunDyn");
         _lSunFocus = GlProgram.Loc(_prog, "uSunFocus"); _lSunRadius = GlProgram.Loc(_prog, "uSunRadius");
@@ -1488,7 +1488,7 @@ internal static unsafe class Particles
         _lCubeTex = GlProgram.Loc(_prog, "uLocalShadow"); _lCubeLight = GlProgram.Loc(_prog, "uLocalLight");
         _lCubePlane = GlProgram.Loc(_prog, "uLocalPlane"); _lCubeCount = GlProgram.Loc(_prog, "uLocalCubes");
         _lCubeSoft = GlProgram.Loc(_prog, "uLocalSoft");
-        _lCubeDynTex = GlProgram.Loc(_prog, "uLocalDynShadow"); _lCubeDynPage = GlProgram.Loc(_prog, "uLocalDynPage");
+        _lCubeDynTex = GlProgram.Loc(_prog, "uLocalDynShadow"); _lCubeDynPage = GlProgram.Loc(_prog, "uLocalDynPage"); _lCubeFade = GlProgram.Loc(_prog, "uLocalFade");
         _lSunMedia = GlProgram.Loc(_prog, "uSunMedia");
         _lLocalMedia = GlProgram.Loc(_prog, "uLocalMedia");
         // The sampler UNITS, once, at link time rather than per pass. uSunShadow and uLocalShadow are a

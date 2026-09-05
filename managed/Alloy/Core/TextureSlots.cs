@@ -63,6 +63,9 @@ internal static class TextureSlots
     internal const uint WaterEnv = Probe;
     /// <summary>The frame snapshot the water stage refracts through: colour then depth.</summary>
     internal const uint SnapshotColor = 13, SnapshotDepth = 14;
+    /// <summary>The GRASS program's SSAO read: <see cref="Ssao"/>'s unit is its sun-dyn array there, so it takes
+    /// the snapshot-depth unit instead (free on grass: it samples no snapshot).</summary>
+    internal const uint GrassSsao = SnapshotDepth;
     /// <summary>#379: the screen-space visibility the lit stage reads. Shares <see cref="SnapshotColor"/>'s
     /// unit: the snapshot takes it at FbCopy and lit additive draws follow, so the lit program REBINDS it at
     /// every program bind (<see cref="SsaoPass.BindForDraw"/>) rather than trusting the pass's own bind.

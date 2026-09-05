@@ -51,7 +51,7 @@ public sealed unsafe partial class AlloyRenderer
         _watZ = GlProgram.Loc(prog, "uZ"); _watFalloff = GlProgram.Loc(prog, "uFalloff");
         _watWrap = GlProgram.Loc(prog, "uWrap");
         _watAtten = GlProgram.Loc(prog, "uAtten"); _watHot = GlProgram.Loc(prog, "uHot");
-        _watWrapN = GlProgram.Loc(prog, "uWrapN"); _watSss = GlProgram.Loc(prog, "uSss");
+        _watWrapN = GlProgram.Loc(prog, "uWrapN"); _watSss = GlProgram.Loc(prog, "uSss"); _watReach = GlProgram.Loc(prog, "uReach");
         _watViz = GlProgram.Loc(prog, "uViz");
         _watSunTex = GlProgram.Loc(prog, "uSunShadow"); _watSunVp = GlProgram.Loc(prog, "uSunVp");
         _watSunTexel = GlProgram.Loc(prog, "uSunTexel"); _watSunBias = GlProgram.Loc(prog, "uSunBias");
@@ -61,7 +61,7 @@ public sealed unsafe partial class AlloyRenderer
         _watCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _watCubeLight = GlProgram.Loc(prog, "uLocalLight");
         _watCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _watCubeCount = GlProgram.Loc(prog, "uLocalCubes");
         _watCubeSoft = GlProgram.Loc(prog, "uLocalSoft");
-        _watCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _watCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage");
+        _watCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _watCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"); _watCubeFade = GlProgram.Loc(prog, "uLocalFade");
         _watCapture = GlProgram.Loc(prog, "uCapture");
         _watFbColor = GlProgram.Loc(prog, "uFbColor"); _watFbDepth = GlProgram.Loc(prog, "uFbDepth");
         _watNoise = GlProgram.Loc(prog, "uNoise");
@@ -151,6 +151,34 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
+    /// <summary>The feature-aware depth stage (cutout + wind-displaced batches). Built from the vertex text
+    /// that actually compiled for the lit (else fullbright) program, so a content override's displacement
+    /// is the one the prepass writes. Not fatal: without it those batches stay out, as before.</summary>
+    private static bool EnsureDepthFeatProgram()
+    {
+        if (_progDepthFeat != 0) return true;
+        if (_depthFeatFailed || !_vsDepthSafe) return false;
+        // the fullbright vs writes no vDraw, and DepthFeatFs indexes the record buffer by it: lit only
+        string? vs = _litVsSrc;
+        if (vs == null) return false;   // no lit program compiled yet: try again next frame
+        // #153: lit batches merge across textures under bindless, so one bound uTex would alpha-test every
+        // draw in the batch against the first draw's leaves; the stage samples the per-draw handle instead
+        string fs = _bindless ? BindlessFs(DepthFeatFs) : DepthFeatFs;
+        uint prog = GlProgram.Graphics(vs, fs, _log, "AlloyRenderer feature depth prepass program");
+        if (prog == 0)
+        {
+            _depthFeatFailed = true;
+            _log?.Info("AlloyRenderer: feature depth prepass program unavailable -- cutout and displaced batches stay out of the prepass");
+            return false;
+        }
+        _progDepthFeat = prog;
+        _depthFeatVp = GlProgram.Loc(prog, "uVP"); _depthFeatBase = GlProgram.Loc(prog, "uDrawBase");
+        _depthFeatTex = GlProgram.Loc(prog, "uTex"); _depthFeatCut = GlProgram.Loc(prog, "uAlphaCut");
+        _depthFeatFeat = FeatLocs(prog);
+        _log?.Info("AlloyRenderer: feature depth prepass ready -- cutout and wind-displaced batches write depth (/draw prepassfeat 0 disables)");
+        return true;
+    }
+
     /// <summary>Build the depth-only program. A failure disarms the prepass for the session and the colour
     /// pass keeps its pre-#119 behaviour -- shading every fragment -- which is slower, never wrong.</summary>
     private static bool EnsureDepthProgram()
@@ -222,7 +250,13 @@ public sealed unsafe partial class AlloyRenderer
             _bindlessProbed = true;
             // Config bucket (ADR 0013): a capability gate that decides the lit stage's BUFFER LAYOUT, so it
             // is settled before the program is assembled and cannot be a command.
-            _bindless = Settings.Bool("bindless", true) && HasBindless();
+            // bindless=-1 (auto): on wherever the extension exists EXCEPT zink, whose bindless bookkeeping faults on
+            // a worker thread once handles exist at all (five Zink crashes on 2026-09-05, with deletes, without
+            // deletes, without non-resident calls); bindless=1 forces it there, bindless=0 vetoes it anywhere
+            int want = Settings.Int("bindless", -1, -1, 1);
+            bool zinkVeto = want < 0 && GlContextService.Zink;
+            _bindless = want != 0 && !zinkVeto && HasBindless();
+            if (zinkVeto) _log?.Info("AlloyRenderer: zink renderer -- bindless texturing stood down (bindless=1 in sowx.cfg forces it)");
             _log?.Info(_bindless
                 ? "AlloyRenderer: ARB_bindless_texture armed -- lit batches merge across textures (bindless=0 in sowx.cfg reverts)"
                 : "AlloyRenderer: bindless texturing unavailable or vetoed -- per-batch texture binds");
@@ -267,6 +301,7 @@ public sealed unsafe partial class AlloyRenderer
             _log?.Info("AlloyRenderer: lit stage carries no handle block -- bindless stands down, binds resume");
         }
         _vsDepthSafe &= ShaderContract.DepthSafe(vsSrc);
+        if (prog != 0) _litVsSrc = vsSrc;
         if (prog == 0)
         {
             _litFailed = true;
@@ -311,6 +346,7 @@ public sealed unsafe partial class AlloyRenderer
         L.Wrap = GlProgram.Loc(prog, "uWrap");
         L.Atten = GlProgram.Loc(prog, "uAtten"); L.Hot = GlProgram.Loc(prog, "uHot");
         L.WrapN = GlProgram.Loc(prog, "uWrapN"); L.Sss = GlProgram.Loc(prog, "uSss");
+        L.Reach = GlProgram.Loc(prog, "uReach");
         L.Viz = GlProgram.Loc(prog, "uViz");
         L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunVp = GlProgram.Loc(prog, "uSunVp");
         L.SunTexel = GlProgram.Loc(prog, "uSunTexel"); L.SunBias = GlProgram.Loc(prog, "uSunBias");
@@ -320,7 +356,7 @@ public sealed unsafe partial class AlloyRenderer
         L.CubeTex = GlProgram.Loc(prog, "uLocalShadow"); L.CubeLight = GlProgram.Loc(prog, "uLocalLight");
         L.CubePlane = GlProgram.Loc(prog, "uLocalPlane"); L.CubeCount = GlProgram.Loc(prog, "uLocalCubes");
         L.CubeSoft = GlProgram.Loc(prog, "uLocalSoft");
-        L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); L.CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage");
+        L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); L.CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"); L.CubeFade = GlProgram.Loc(prog, "uLocalFade");
         L.Probe = GlProgram.Loc(prog, "uProbe"); L.ProbeMips = GlProgram.Loc(prog, "uProbeMips");
         L.ProbeGain = GlProgram.Loc(prog, "uProbeGain");
         L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
