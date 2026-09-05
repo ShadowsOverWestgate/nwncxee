@@ -830,8 +830,8 @@ public sealed unsafe class CasterPass : IExtenderService
             case "itemdirty": { float o = _itemDirty ? 1f : 0f; _itemDirty = v != 0f; _invalidate = true; return o; }
             case "staticcap": { float o = _staticCap; _staticCap = Math.Max((int)v, 0); return o; }
             case "flipcollect": { float o = FlipCollect ? 1 : 0; FlipCollect = v != 0; return o; }
-            case "mask": { float o = _maskMode; _maskMode = Math.Clamp((int)v, -1, 2); return o; }
-            case "maskholes": { float o = _maskHoles; _maskHoles = Math.Clamp(v, 0f, 1f); return o; }
+            case "mask": { float o = _maskMode; _maskMode = Math.Clamp((int)v, -1, 2); _listVer++; return o; }
+            case "maskholes": { float o = _maskHoles; _maskHoles = Math.Clamp(v, 0f, 1f); _listVer++; return o; }
             case "fade": { float o = _fadeFrames; _fadeFrames = Math.Max((int)v, 0); return o; }
             case "fadeslots": { float o = _fadeSlots; _fadeSlots = Math.Max((int)v, 0); return o; }
             case "sunlatch": { float o = _sunLatch; _sunLatch = Math.Max((int)v, 0); return o; }
@@ -860,7 +860,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; }
+    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _listVer++; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -1925,7 +1925,8 @@ public sealed unsafe class CasterPass : IExtenderService
                    (_layerDial
                     ? _layerProbe > 0 && _progLayer != 0
                       ? $"(layered bake: {(float)CasterGather.LayerDispatches / _frames:F1} dispatches over " +
-                        $"{(float)CasterGather.LayerViews / _frames:F1} views/frame" +
+                        $"{(float)CasterGather.LayerViews / _frames:F1} views/frame, " +
+                        $"{_gDrawN} staged draws in {_gGroups} batches ({MaskedBatches()} masked)" +
                         (_layerFlushFails > 0 ? $", {_layerFlushFails} flush FAILURES" : "") + ") "
                       : _layerProbe < 0
                         ? "(layered bake UNAVAILABLE -- no ARB_shader_viewport_layer_array, per-view path) "
@@ -1959,7 +1960,7 @@ public sealed unsafe class CasterPass : IExtenderService
                    $"(cull {(CasterGather.Mode != 0 ? "on" : "OFF -- /shadow gather 1")})" +
                    (CasterGather.Views > 0
                     ? $" -- {(float)CasterGather.Views / _frames:F1} dispatches/frame over " +
-                      $"{_gDrawN} staged draws in {_gGroups} batches " +
+                      $"{_gDrawN} staged draws in {_gGroups} batches ({MaskedBatches()} masked) " +
                       $"({CasterGather.UploadsSkipped}/{CasterGather.UploadsSkipped + CasterGather.Uploads} " +
                       "frame stagings matched the persistent source, nothing uploaded)"
                     : "") +
@@ -2380,8 +2381,7 @@ public sealed unsafe class CasterPass : IExtenderService
         float boundCut = -1f;
         for (int g = 0; g < _gGroups; g++)
         {
-            if (_maskMode < 0 && _gTex[g] != 0) continue;
-            int cut0 = _maskMode == 1 || (_maskMode == 2 && _gHoles[g] >= _maskHoles) ? _gTex[g] : 0;
+            int cut0 = _gTex[g];
             if ((cut0 != 0 ? 1 : 0) != boundMask)
             {
                 boundMask = cut0 != 0 ? 1 : 0;
@@ -2838,9 +2838,11 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>#302: the batch's cutout threshold, uploaded as a uniform. Part of the sort key, so a batch
     /// carries one value -- the same shape the colour path's <c>uAlphaCut</c> has.</summary>
     private static readonly float[] _gCut = new float[MaxCasters];
-    /// <summary>Per batch: the masked texture's hole fraction, mode 2's discriminator.</summary>
-    private static readonly float[] _gHoles = new float[MaxCasters];
     private static int _gDrawN, _gGroups, _gCreatures;
+    /// <summary>Batches that bind a mask texture: each is one indirect call per flush that the solid
+    /// batches merge away.</summary>
+    private static int MaskedBatches()
+    { int m = 0; for (int g = 0; g < _gGroups; g++) if (_gTex[g] != 0) m++; return m; }
     /// <summary>#303: the frame produced a coherent staging -- a non-empty one the gather accepted, or a
     /// genuinely empty world. False = the gather refused a non-empty staging (no program, no sphere buffer
     /// yet), and the views must NOT bake -- baking would clear live shadows out of the maps.</summary>
@@ -2901,6 +2903,11 @@ public sealed unsafe class CasterPass : IExtenderService
             int drawTex = _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
             int masked = drawTex != 0 && _progMask != 0 && TexHasAlpha(drawTex) ? drawTex : 0;
             if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
+            // The mask MODE is decided here, in the key, not at the draw: a masked texture the mode draws
+            // solid merges into its (VAO, prim) batch instead of costing one indirect call per view per
+            // texture. The knobs bump _listVer so a change re-stages.
+            if (masked != 0 && (_maskMode == 0 || (_maskMode == 2 && TexHoles(masked) < _maskHoles))) masked = 0;
+            if (masked != 0 && _maskMode < 0) continue;
             if (masked != 0) maskedN++;
             _gLive[n] = i;
             // #302: the cutout threshold is a per-BATCH uniform now, exactly as the colour path spells it
@@ -2923,7 +2930,6 @@ public sealed unsafe class CasterPass : IExtenderService
                     g++;
                     _gStart[g] = d; _gVao[g] = _liveVao[i]; _gPrim[g] = _livePrim[i];
                     _gTex[g] = (int)(_gKey[d] & 0xffffffffL);
-                    _gHoles[g] = _gTex[g] != 0 ? TexHoles(_gTex[g]) : 0f;
                     _gCut[g] = _liveCut[i];
                 }
                 _gLen[g] = d - _gStart[g] + 1;
@@ -2961,8 +2967,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // stays on the same no-readback side of the line.
         for (int g = 0; g < _gGroups; g++)
         {
-            if (_maskMode < 0 && _gTex[g] != 0) continue;
-            int cut0 = _maskMode == 1 || (_maskMode == 2 && _gHoles[g] >= _maskHoles) ? _gTex[g] : 0;
+            int cut0 = _gTex[g];
             if ((cut0 != 0 ? 1 : 0) != boundMask)
             {
                 boundMask = cut0 != 0 ? 1 : 0;
