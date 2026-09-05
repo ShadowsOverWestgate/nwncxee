@@ -351,7 +351,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 37;
+    internal const int LightVizMax = 38;
     private static int _lightViz = DefViz;
     /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -554,6 +554,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>One-shot FBO-topology report (#151, the "does AA even apply to us" question).</summary>
     private static int _fboDiagSig = -1, _fboDiagLeft = 8;
 
+    /// <summary>The read-only half of <see cref="HandleFor"/>: the handle if one was minted, 0 otherwise. Safe
+    /// off the main thread as long as nothing mints during the stage, which nothing does.</summary>
+    private static ulong HandleLookup(int tid)
+        => tid != 0 && Probe(tid, out int hit, out _) ? _hVal[hit] : 0;
     /// <summary>#153: resident bindless handle for a texture name. 0 in, 0 out. Called only inside the 4.6
     /// bracket (handles belong to the share group), and -- while ownedtex is armed -- only ever for an
     /// Alloy-OWNED name; see <see cref="_hTid"/> for why that is the whole of #220's fix.
@@ -974,6 +978,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private const float DefSunBias = 0.06f;
     private const int DefViz = 0;
     private const bool DefPoll = false;
+    /// <summary>Boot worker count for the stage: six, xtul's call. Live-verified 2026-09-05 on 12 cores: audit
+    /// 0/0/0/0/0, Build 2,6 -> 1,9ms. A woken worker spins up to 4ms, so on a machine with fewer than eight cores
+    /// this oversubscribes; /draw threads N is the dial.</summary>
+    private const int DefThreads = 6;
     /// <summary>#336: does the prepass run its keyhole sweep? See <c>/draw prepasskey</c>.</summary>
     private static bool _prepassKey = DefPrepassKey;
     private const bool DefPrepassKey = true;
@@ -981,7 +989,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>The Alloy pass's live dials, for the <c>/draw</c> echo and the arm-time line.</summary>
     internal static string DescribeTuning() =>
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
-        $"viz {_lightViz}/{LightVizMax}  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  " +
+        $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  " +
         $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
         $"prepasskey {(_prepassKey ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
         $"fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  " +
@@ -1017,6 +1025,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "light":    old = _lighting ? 1f : 0f; _lighting = v != 0f; break;
             case "prepass":  old = _depthPrepass ? 1f : 0f; _depthPrepass = v != 0f; break;
             case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
+            case "threads":  old = _stageThreads; _stageThreads = Math.Clamp((int)v, 0, StagePool.MaxChunks - 1); StagePool.Rearm(); break;
             case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
             case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
             // #243 (AC5): the A/B for a cull, which is the one system whose bug is geometry that is simply
@@ -1063,7 +1072,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
         _sunWorldBias = DefSunBias; _lightViz = DefViz; CullPass.Mode = DefCull; CullPass.LodPx = DefLod;
         CullPass.FogCull = CullPass.DefFogCull; HlChannels = DefHlChannels;
-        _fullPoll = DefPoll; _prepassKey = DefPrepassKey; _visList = DefVisList;
+        _fullPoll = DefPoll; _prepassKey = DefPrepassKey; _visList = DefVisList; _stageThreads = DefThreads;
         // #242: AFTER the dials, the way Tune does it. /draw runs on the input thread, so a bump published
         // ahead of the assignments lets a staging walk rebuild against the OLD dial and stamp the NEW epoch
         // -- wrong until something else invalidates, worst case a whole enrollment away.
@@ -1088,10 +1097,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         float cb = _sunWorldBias;
         int vz = _lightViz;
 
-        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull", "lod", "poll", "prepasskey", "vislist" })
+        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull", "lod", "poll", "prepasskey", "vislist", "threads" })
             E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
         E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1 && CullPass.Mode == 1
-          && CullPass.LodPx == 1f && _fullPoll && _prepassKey && _visList,
+          && CullPass.LodPx == 1f && _fullPoll && _prepassKey && _visList && _stageThreads == 1,
           "every key lands on its own field");
         E(Tune("light", 0f) == 1f && !_lighting, "a boolean dial takes 0 and reports its old value as 1");
         E(Tune("viz", LightVizMax + 5f) == 1f && _lightViz == LightVizMax,

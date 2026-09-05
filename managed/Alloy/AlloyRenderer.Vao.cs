@@ -305,6 +305,8 @@ public sealed unsafe partial class AlloyRenderer
                    + $"pos={(pos ? 1 : 0)} uvbuf={uv} | mode={v.Mode} verts={v.VertCount} elems={v.ElemCount}");
     }
 
+    /// <summary><see cref="EnsureVao"/>'s no-GL answer: the VAO exists and is current. Workers ask this.</summary>
+    private static bool VaoReady(int v) => _vVao46[v] != 0 && !_vStale[v];
     /// <summary>Build the 4.6-side VAO(s) for this VDO slot using the harvested formats (VAOs don't share
     /// across contexts; buffers do -- #70). ONLY position, UV and (where the stream exists) normal are bound,
     /// at OUR locations: replicating every enabled engine attrib crashed the driver's vertex-pull JIT when

@@ -53,7 +53,7 @@ public sealed unsafe partial class AlloyRenderer
                 float alpha = PartAlphaCached(i, tri) * fade * (_oGob[i] != IntPtr.Zero ? AlloyCensus.GobAlphaMul(tri) : 1f);
                 if (alpha < 1f)
                 { _ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = EyeDist2(i); nb++; continue; }
-                if (Dissolves(i, tri)) { _orderTmp[nd++] = i; continue; }
+                if (Dissolves(i, tri, ref _stageCounters[0])) { _orderTmp[nd++] = i; continue; }
                 _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = false; n++;
             }
             for (int d = 0; d < nd; d++)
@@ -517,10 +517,13 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>#242: this record moved and has to reach the GPU again. Overflow is not a silent drop -- it
     /// promotes the frame to a wholesale upload, which is correct and merely more expensive.</summary>
-    private static void MarkRecordDirty(int slot)
+    private static void MarkRecordDirty(int slot) => MarkRecordDirty(slot, ref _stageCounters[0]);
+    private static void MarkRecordDirty(int slot, ref StageCounters c)
     {
-        _recWritten++;
-        if (_recDirtyN < _recDirty.Length) _recDirty[_recDirtyN++] = slot;
+        c.RecWritten++;
+        // reserve-then-write: workers append concurrently
+        int n = System.Threading.Interlocked.Increment(ref _recDirtyN) - 1;
+        if (n < _recDirty.Length) _recDirty[n] = slot;
         else _recDirtyAll = true;
     }
 
@@ -560,6 +563,7 @@ public sealed unsafe partial class AlloyRenderer
         // #322 step 1: attribute the Build monolith before drawing any phase boundary -- Scan is the
         // routing walk, Restage everything after it. No behaviour change; the [zones] line gains the split.
         long tScan = FrameZones.Now;
+        if (_stageThreads > 0) StagePool.Prewake(Math.Min(_stageThreads, StagePool.MaxChunks - 1) + 1);
         int routed = RouteParts();
         FrameZones.Add(FrameZones.Zone.Scan, tScan);
         long tRestage = FrameZones.Now;
@@ -589,234 +593,44 @@ public sealed unsafe partial class AlloyRenderer
         // covers, rather than by a second walk of the staged list.
         float lox = float.MaxValue, loy = float.MaxValue, loz = float.MaxValue;
         float hix = float.MinValue, hiy = float.MinValue, hiz = float.MinValue, maxR = 0f;
+        long tStage = FrameZones.Now;
+        BeginCasterTouched();
+        int chunks = Math.Min(_stageThreads, StagePool.MaxChunks - 1) + 1;
+        _stageRouted = routed; _stageLighting = lightingOn;
+        fixed (float* data = _dData)
+        {
+            if (chunks > 1 && StagePool.Run(chunks, _log))
+            {
+                for (int k = 0; k < routed; k++)
+                    if (_pkVerdict[k] == Deferred)
+                    { _stageDeferred++; _pkVerdict[k] = StagePart(k, data, slotTid, lightingOn, ref _stageCounters[0], main: true); }
+            }
+            else
+            {
+                if (chunks > 1) { _stageThreads = 0; _log?.Info("AlloyRenderer: /draw threads stood down by a StagePool fault; the frame re-staged serially (set /draw threads again to re-arm)"); }
+                for (int k = 0; k < routed; k++) _pkVerdict[k] = StagePart(k, data, slotTid, lightingOn, ref _stageCounters[0], main: true);
+            }
+        }
+        _stageFrames++;
+        for (int w = 0; w < _stageCounters.Length; w++) FoldCounters(ref _stageCounters[w]);
+        if (chunks > 1) FrameZones.Add(FrameZones.Zone.Chase, tStage);   // threaded: the whole stage phase stands in for the sampled chase
         fixed (float* data = _dData)
         fixed (float* sphAll = _dSph)
         fixed (uint* srcAll = _dSrc)
         for (int k = 0; k < routed; k++)
         {
+            if (_pkVerdict[k] != Staged) continue;
             int i = _pass[k];
             int cls = _passCls[k];
-            // #129: never stamp what the frame cannot draw -- see _waterArmed. Ahead of the stale check
-            // below because it is a decision about the PASS, not about this part.
-            if (cls == (int)AlloyClass.Water && !_waterArmed) { BreakChaseContinuity(); continue; }
             IntPtr tri = _oTri[i];
-            if (tri == IntPtr.Zero) continue;
-            var part = new PartRef(tri);
-            // #264: EVERY owned part is staged, and CullPass decides what survives. The gate that used to
-            // sit here asked the engine's bucket walk "did you touch this part lately", which was enrolment
-            // cadence wearing visibility's clothes (#243) -- and there is no walk to ask. A cull that cannot
-            // run is now a BOOT refusal (AlloyGate), not a per-frame downgrade, because the only alternative
-            // left is drawing the whole enumerated area every frame.
-            // Lit parts sort last. One with the lighting rig unavailable this pass is skipped rather than
-            // painted flat. #285: that skip is a HOLE, not a hand-back -- see `unlit-pass` on the [alloy]
-            // line, which must read 0 on a pass that has a lighting rig at all.
             bool lit = _oLit[i];
-            if (lit && !lightingOn) { _skipNoLight++; BreakChaseContinuity(); W(i, "skipped: lighting off this pass"); continue; }
-            // #322: identity was verified (and a mismatch revoked) by RouteParts this pass -- every engine
-            // read below sits behind that verdict, not behind a second copy of the same four compares.
-            bool samp = (k & (ChaseEvery - 1)) == 0;
-            long tChase = samp ? FrameZones.Now : 0;
-            // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
-            // it into the blended run with the tile's factor folded into its alpha, which is what the engine
-            // does with it in bucket 8 -- and bucket 8 is a bucket IterSight can suppress now.
-            // #124: the camera dissolve is a FEATURE of the Alloy program now, not a reason to hand the part
-            // back -- dissolving parts sit in bucket 1, which IterSight can suppress. #123's exemption still
-            // stands: nokeyhole, roofkn and flowmap compile their FRAGMENT stage with KEYHOLING 0, so vanilla
-            // draws them solid through a dissolve and so must we.
-            // ...and only on a LIT part: every unlit fragment stage in base_shaders.bif compiles KEYHOLING 0
-            // (fst, fst_sm, fsglu, fs, fstc), so vanilla draws an unlit part solid through the aperture.
-            // Keeping the flag off them also keeps them out of the prepass exclusion below, which they would
-            // otherwise pay for a discard their stage does not have.
-            bool dis = cls <= (int)AlloyClass.Cutout ? _passDis[k] : Dissolves(i, tri);
-            float dissolve = dis ? 1f : 0f;
-            if (dis) _ownDissolve++;
-            // #242: this slot's persistent record. Three states, cheapest first -- already verified by an
-            // earlier pass THIS frame (nothing to re-read at all), unchanged since the last frame (the
-            // texture re-fetch and the handle mints are skipped, which is the expensive half), or dirty.
-            // A stale epoch forces the third: see InvalidateRecords for what can make every record wrong.
-            bool stale = _recGen[i] != _recEpoch;
-            bool verified = !stale && _recFrame[i] == _frameSeq;
-            // #322: the colour cadence, staggered by slot. The measured Restage bulk is the per-part
-            // engine chases, and the slow-drift half of them -- the mdl colour triples, self-illum, the gob
-            // colour folds, the non-animated slot-map pointers -- moves over SECONDS (day-night, a scripted
-            // glow), so it is read every ColourCadence frames per slot and reloaded from the record in
-            // between. Everything fast-visible stays per frame: alpha, tile fade, the matrix, the DIFFUSE
-            // pointer (animated textures), dissolve, instance state.
-            // #364: _fullPoll belongs here. `/draw poll 1` says it re-reads every engine term every frame
-            // and its audit counters must read 0 -- but this term sat outside it, so the slow-drift fold
-            // stayed on its stagger under a full poll and the knob could not A/B a colour-cadence bug at all.
-            //
-            // ...and an INSTANCED part is off the cadence entirely. #336 and #362 both tried to name the one
-            // event that must bypass it (a highlight) and both missed, because Scene::AddHighlightGob
-            // @0x462280 is two list writes and arms nothing -- whatever arms the gob's colour on a highlight
-            // is somewhere else, and guessing at it twice is enough. The cadence's own justification is that
-            // these terms "move over SECONDS", and the terms that can move at all are the GOB folds:
-            // GobDiffuseMul (gob+0xf6/+0xfc, Gob::SetColorShifting) and GobEmissiveAdd (gob+0xf8/+0x110,
-            // Gob::SetIllumination). A part with no gob folds neither -- both return their identity without
-            // dereferencing anything -- and all it has left is mdl ambient/diffuse and part self-illum,
-            // which are material statics that genuinely never move.
-            //
-            // So the split is by what CAN change, not by what we think just did. It is also cheaper than the
-            // stagger it replaces: gob parts are ~9% of a dense area's population (112 instanced of 1245 on
-            // the live [alloy] line) against the 12.5% a 1-in-8 cadence re-reads every frame.
-            bool colour = stale || _fullPoll || _oGob[i] != IntPtr.Zero
-                          || ((i + _frameSeq) & (ColourCadence - 1)) == 0;
-            // MatStatic (Ghidra @0x450560): ambient = node+0xf4, diffuse = node+0xe8, emissive = part+0x7c.
-            // ponytail: MatStatic also multiplies ambient+diffuse by AurGetTileColor() when the part's tile
-            // record (part+0x98, +0x54) is set. Not reproduced -- add it if tiles read the wrong hue.
-            IntPtr mdl = lit && colour ? part.Mdl.Ptr : IntPtr.Zero;
-            // #302 (review): every content skip from here down also revokes the slot's SHADOW tenancy.
-            // The record block never runs for a skipped part, so its mover stamps freeze at their last
-            // values -- frozen-equal is a caster re-baking every view it stands in forever, frozen-unequal
-            // is a shadow that stops tracking -- and the #302 contract is simpler than either: a part
-            // nothing draws casts nothing. The stale rebuild on return stamps it a mover (newTenant), so
-            // the views it re-enters re-bake. Cadenced with the colour reads -- the mdl is only chased on a
-            // colour frame, so its absence is only observable then.
-            if (lit && colour && mdl == IntPtr.Zero) { _skipNoMdl++; _recEnroll[i] = 0; SetCastOk(i, false); W(i, "skipped: no mdl node"); continue; }
-
-            var mat = new MaterialRef(_oMat[i]);
-            int tid, slots;
-            bool texDirty = false;
-            if (verified) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
-            else
-            {
-                // texture: the engine name is re-fetched per frame -- CAurTexture* is BORROWED, freed on
-                // area transitions (never cache the pointer), and the per-frame fetch is exactly what keeps
-                // animated textures cycling. #211 then maps that name to OUR copy, which cannot be freed
-                // under the draw; an animated texture cycles engine names, so each animation frame gets its
-                // own copy.
-                // #242: the POINTER is compared per frame; only a change re-resolves it to a tid and a
-                // bindless handle. That is the ADR 0017 split's per-frame half -- the fetch stays, the two
-                // hash probes behind it do not.
-                // #336: ...on the colour cadence. The #330 RE found a cycling texture rewrites the GL name
-                // INSIDE the CAurTexture (basic+0x6c), never the pointer -- the animated frame reaches the
-                // record through the copy retire and its epoch bump, not through this compare. What the
-                // compare does catch is a material re-bind (a re-skin, an equip: cold), which can wait
-                // eight frames. A slot with no record yet, or under /draw poll 1, still reads every frame.
-                bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero;
-                var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);
-                if (aur.IsNull) { _skipTex++; _skipTexNone++; _recEnroll[i] = 0; SetCastOk(i, false); W(i, "skipped: no diffuse texture"); continue; }
-                texDirty = stale || aur.Ptr != _recAur[i];
-                // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
-                // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
-                // frame. The DIFFUSE compare above stays per frame; it is the animated one.
-                for (int s = 0; !texDirty && lit && colour && s < MapSlots; s++)
-                    if ((_oSlots[i] & SlotBit(s)) != 0 && mat.Texture(s + 1).Ptr != _recAurS[i * MapSlots + s])
-                        texDirty = true;
-                if (!texDirty) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
-                else
-                {
-                    tid = aur.OwnedTid();
-                    // #317: and NOTE it, because this is the only place that still knows. AlloyCensus does
-                    // the same at enrollment on the stated grounds that "enrollment is the Alloy-owned edge
-                    // that notices" -- but enrollment is edge-triggered (#256), so a part that enrolls once
-                    // and is skipped here every frame after is never re-asked, and one whose tid was FINE at
-                    // enrollment and went to 0 later (an area transition retiring the owned copy) is never
-                    // asked at all. Both read as "0 queued" beside a nonzero no-gl-id: an empty queue
-                    // because nothing is asking, not because nothing is waiting. NoteUnbuilt is a dictionary
-                    // probe that dedups and self-caps (attempts, re-arm, Never), so the per-frame cost of
-                    // asking from the skip is the skip's own count -- and that count is the bug.
-                    if (tid == 0)
-                    {
-                        OwnedTextures.NoteUnbuilt(aur.Ptr);
-                        _skipTex++; _skipTexNoId++; _recEnroll[i] = 0; SetCastOk(i, false);
-                        W(i, "skipped: diffuse has no GL id"); continue;
-                    }
-                    // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
-                    // engine texture is a handle on an object the engine may delete or re-upload under us,
-                    // which is exactly the corruption this fixes -- so a part whose copy was refused (a
-                    // format we will not take) is NOT DRAWN rather than drawn through a handle we cannot
-                    // vouch for (#285: there is no engine walk behind it; `not-owned` is the count).
-                    // Bind-path batches are unaffected: they rebind the engine id every frame.
-                    if (lit && _bindless && OwnedTextures.Armed)
-                    {
-                        // Two DIFFERENT faults behind one guard, and they have different fixes: a texture
-                        // Alloy never adopted (it never reached the upload funnel -- a GPU-composited PLT, a
-                        // cube, a movie frame) versus one it owns but could not mint a resident handle for.
-                        bool owned = OwnedTextures.IsOwned(tid);
-                        if (!owned || HandleFor(tid) == 0)
-                        {
-                            _skipTex++; _recEnroll[i] = 0; SetCastOk(i, false);
-                            if (owned) _skipTexNoHandle++; else _skipTexNotOwned++;
-                            TexSkipDiag(owned, tid, aur);
-                            W(i, owned ? "skipped: diffuse has no bindless handle"
-                                       : "skipped: diffuse is not an Alloy-owned texture");
-                            continue;
-                        }
-                    }
-
-                    // #120: the same re-fetch for whichever of the PBR slots this material declared. A slot
-                    // that declared a map but resolves to nothing this frame drops out of the mask rather
-                    // than leaving the shader sampling an empty unit.
-                    slots = 0;
-                    // #294: a map needs COORDINATES to be a map. On a VDO with no UV stream every sampler
-                    // resolves to the one texel at the generic constant (0,0) -- the same value for every
-                    // fragment of the mesh -- so the normal, specular, roughness, height and AO slots stop
-                    // carrying material detail and start carrying whichever pixel happens to sit in the
-                    // corner of the sheet. That is not the .mtr's intent, it is an artifact of sampling a 2D
-                    // map with nothing to sample it by, and it is load-bearing: SowxSynthPbr takes a declared
-                    // roughness WHOLE, so one dark corner texel makes a frosted crystal a mirror.
-                    // The env flag survives -- it is keyed on the normal and the reflection vector, not on
-                    // uv -- and so does the diffuse, which the engine reads at the same constant for the same
-                    // reason (it is where envLevel comes from). What is dropped is only what cannot mean
-                    // anything, so the synthesis falls back to its generated floor exactly as it does for
-                    // content that ships no maps at all.
-                    bool mapsMeanNothing = !_vUv[_oVao[i]].Present;
-                    for (int s = 0; s < MapSlots; s++)
-                    {
-                        slotTid[s] = 0;
-                        _recAurS[i * MapSlots + s] = IntPtr.Zero;
-                        if (lit && !mapsMeanNothing && (_oSlots[i] & SlotBit(s)) != 0)
-                        {
-                            var sa = mat.Texture(s + 1);
-                            _recAurS[i * MapSlots + s] = sa.Ptr;
-                            int t = sa.OwnedTid();
-                            // ...and the same rule per slot, but a slot drops out of the mask instead of
-                            // taking the part with it -- an unowned normal map costs that one map, not the
-                            // whole draw.
-                            if (t != 0 && _bindless && OwnedTextures.Armed
-                                && (!OwnedTextures.IsOwned(t) || HandleFor(t) == 0)) t = 0;
-                            if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
-                        }
-                    }
-                    if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
-                    // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
-                    if (lit && _aoTest && !mapsMeanNothing) { slotTid[AoSlot] = tid; slots |= AoBit; }
-                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots;
-                    for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
-                }
-            }
-            // Did the normal map declared by the .mtr actually reach the shader? The two numbers apart say
-            // whether an area has no normal-mapped content at all or has it and the re-fetch above dropped it.
-            if (lit && (_oSlots[i] & SlotBit(0)) != 0) { _nrmDeclared++; if (slotTid[0] != 0) _nrmBound++; }
-
+            bool dis = _pkDis[k] != 0;
+            int tid = _recTid[i], slots = _recSlotMask[i];
+            LoadSlotTids(i, slotTid);
+            int idxCount = _cIdx[i];
             int src = i;
-            // #322: index range read live from the VDO item tables only when the slot's cache stamp fell
-            // (UnstampRecord fires on every re-tenant and drifted keep -- the only edges that re-point
-            // _oVdo/_oItem -- and on every transient range failure; Repack revokes before the tables move),
-            // then served from the slot cache.
-            int idxCount;
-            if (_cGen[i] == _recEpoch) idxCount = _cIdx[i];
-            else
-            {
-                var vdo = new VdoRef(_oVdo[src]);
-                long elem = vdo.ElemItems;
-                long vert = vdo.VertItems;
-                int item = _oItem[src];
-                if (elem == 0 || vert == 0 || item < 0
-                    || item >= vdo.ElemCount || item >= vdo.VertCount)
-                { _skipRange++; UnstampRecord(i); SetCastOk(i, false); W(i, "skipped: item out of range"); continue; }
-                idxCount = *(int*)(elem + item * 8 + 4);
-                if (idxCount <= 0) { _skipRange++; UnstampRecord(i); SetCastOk(i, false); W(i, "skipped: empty index range"); continue; }
-                _cIdx[i] = idxCount;
-                _cOff[i] = (nint)((long)(uint)*(int*)(elem + item * 8) * 2);
-                _cBase[i] = *(int*)(vert + item * 8);
-                _cGen[i] = _recEpoch;
-            }
-
-            if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
             int v = _oVao[src];
-            if (!EnsureVao(v)) { _skipVao++; UnstampRecord(i); SetCastOk(i, false); W(i, "skipped: no VAO"); continue; }
+            float* r = data + (long)i * DrawFloats;
             uint mode = _primTable[_oPrim[i]];
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
             // but so the depth prepass can drop a whole batch: a displacing feature must not write its
@@ -890,6 +704,335 @@ public sealed unsafe partial class AlloyRenderer
             // opened or extended, and its output base is where its compacted run starts.
             CullPass.Pack(srcAll + (long)n * CullPass.SrcUints, idxCount, _dOff[n], _dBase[n], i,
                           groups - 1, _gStart[groups - 1]);
+            // #287: ...and after the record block, so the extent is measured on the sphere this frame wrote.
+            if (cls <= (int)AlloyClass.Cutout)
+            {
+                float* sp = sphAll + (long)i * 4;
+                if (sp[3] < NeverCull)
+                {
+                    lox = MathF.Min(lox, sp[0]); hix = MathF.Max(hix, sp[0]);
+                    loy = MathF.Min(loy, sp[1]); hiy = MathF.Max(hiy, sp[1]);
+                    loz = MathF.Min(loz, sp[2]); hiz = MathF.Max(hiz, sp[2]);
+                    maxR = MathF.Max(maxR, sp[3]);
+                }
+            }
+            if (FrameDump.Capturing)
+                FrameDump.Row_(cls, lit, v, _oMat[i], mode, feat, dis, blend, noCull, slots, merge,
+                               idxCount, _dOff[n], _dBase[n], r);
+            _gLen[groups - 1]++;
+            n++;
+            if (noCull) _twoSidedDraws++;
+            if (_oGob[i] != IntPtr.Zero) _drawsGob++;
+            // #302: no shadow feed here any more. An instance part IS an ownership slot, and the bake walks
+            // the ownership table -- so there is nothing to hand over and nothing that can be double-recorded.
+            AlloyCensus.OwnGen[_oEntry[i]] = PassGen;
+        }
+        // #126: where each pass's batch range ends. Read off the batches themselves rather than tracked
+        // through the cut above -- the routed order is class-ordered by construction, so the first batch of a
+        // later class IS the previous range's end, and a class that staged nothing leaves an empty range
+        // rather than someone else's batches.
+        if (hix >= lox) CullPass.SetSpread(hix - lox, hiy - loy, hiz - loz, maxR);
+        _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = groups;
+        for (int g = 0; g < groups; g++)
+        {
+            if (_gCls[g] > (byte)AlloyClass.Opaque && g < _gCutoutStart) _gCutoutStart = g;
+            if (_gCls[g] > (byte)AlloyClass.Cutout && g < _gOpaqueEnd) _gOpaqueEnd = g;
+            if (_gCls[g] > (byte)AlloyClass.Blended && g < _gBlendEnd) _gBlendEnd = g;
+            if (_gCls[g] > (byte)AlloyClass.Water && g < _gWaterEnd) _gWaterEnd = g;
+        }
+        _drawN = n;
+        if (dumping) FrameDump.Finish(groups, _log);
+        FrameZones.Add(FrameZones.Zone.Restage, tRestage);
+        return groups;
+    }
+
+    private const byte Skipped = 0, Staged = 1, Deferred = 2;
+    /// <summary>Per-stage counters, one set per chunk, folded into the period statics after the join -- the
+    /// hot ones every part touches. Rare skip counters go through <see cref="Inc"/> instead.</summary>
+    internal struct StageCounters
+    {
+        public long OwnDissolve, NrmDeclared, NrmBound, RecStable, RecWritten;
+        public long MxChased, MxCached, DisAsked, DisCached, DisBoxed, DisNoFeat, DisGobUnpierced, DisNoLit;
+        public long PollMissMx, PollMissDis, PollMissBox;
+        public bool CastChanged;
+    }
+    private static readonly StageCounters[] _stageCounters = new StageCounters[StagePool.MaxChunks];
+    private static void FoldCounters(ref StageCounters c)
+    {
+        _ownDissolve += c.OwnDissolve; _nrmDeclared += c.NrmDeclared; _nrmBound += c.NrmBound;
+        _recStable += c.RecStable; _recWritten += c.RecWritten;
+        _mxChased += c.MxChased; _mxCached += c.MxCached; _disAsked += c.DisAsked; _disCached += c.DisCached;
+        _disBoxed += c.DisBoxed; _disNoFeat += c.DisNoFeat; _disGobUnpierced += c.DisGobUnpierced; _disNoLit += c.DisNoLit;
+        _pollMissMx += c.PollMissMx; _pollMissDis += c.PollMissDis; _pollMissBox += c.PollMissBox;
+        if (c.CastChanged) CasterGen++;
+        c = default;
+    }
+    private static void Inc(ref long x) => System.Threading.Interlocked.Increment(ref x);
+    private static ulong Handle(int tid, bool main) => main ? HandleFor(tid) : HandleLookup(tid);
+    /// <summary>One chunk of the parallel stage: a static partition of the routed range. Chunk 0 is the main
+    /// thread's own share; every chunk runs as a worker (<c>main: false</c>) so the path is one path.</summary>
+    internal static void StageRange(int w, int chunks)
+    {
+        int routed = _stageRouted;
+        int from = (int)((long)routed * w / chunks), to = (int)((long)routed * (w + 1) / chunks);
+        int* slotTid = stackalloc int[MapSlots];
+        fixed (float* data = _dData)
+            for (int k = from; k < to; k++)
+                _pkVerdict[k] = StagePart(k, data, slotTid, _stageLighting, ref _stageCounters[w], main: false);
+    }
+    private static int _stageRouted;
+    private static bool _stageLighting;
+    /// <summary><c>/draw threads N</c>: worker threads beside the main thread for the stage. 0 = serial (boot).</summary>
+    private static int _stageThreads = DefThreads;
+    private static long _stageDeferred, _stageFrames;
+    private static readonly byte[] _pkVerdict = new byte[MaxOwned], _pkDis = new byte[MaxOwned];
+    /// <summary>The per-part half of <see cref="BuildBatches"/>: chase the engine state a routed part depends on
+    /// and write its record, sphere and cast admission -- everything that touches ONLY this slot's arrays. The
+    /// batching half reads the result back off those arrays in routed order. Split so the two can run on
+    /// different threads: this half is per-slot and order-free, the batch walk is neither.
+    /// <para>The worker rule (ADR 0022): off the main thread (<paramref name="main"/> false) a part may take
+    /// only paths whose side effects are this slot's arrays and <paramref name="c"/>. Anything that mints a GL
+    /// object, logs, allocates or touches a shared collection returns <see cref="Deferred"/> with the counters
+    /// rolled back, and the main thread re-runs the part after the join.</para></summary>
+    private static byte StagePart(int k, float* data, int* slotTid, bool lightingOn, ref StageCounters c, bool main)
+    {
+        {
+            int i = _pass[k];
+            StageCounters snap = c;
+            if (!main && AlloyCensus.WatchedEntry(_oEntry[i])) return Deferred;
+            // unarmed ownership under bindless: the main path mints on raw engine names (#220), a worker cannot
+            if (!main && _bindless && !OwnedTextures.Armed) return Deferred;
+            int cls = _passCls[k];
+            // #129: never stamp what the frame cannot draw -- see _waterArmed. Ahead of the stale check
+            // below because it is a decision about the PASS, not about this part.
+            if (cls == (int)AlloyClass.Water && !_waterArmed) { BreakChaseContinuity(); return Skipped; }
+            IntPtr tri = _oTri[i];
+            if (tri == IntPtr.Zero) return Skipped;
+            var part = new PartRef(tri);
+            // #264: EVERY owned part is staged, and CullPass decides what survives. The gate that used to
+            // sit here asked the engine's bucket walk "did you touch this part lately", which was enrolment
+            // cadence wearing visibility's clothes (#243) -- and there is no walk to ask. A cull that cannot
+            // run is now a BOOT refusal (AlloyGate), not a per-frame downgrade, because the only alternative
+            // left is drawing the whole enumerated area every frame.
+            // Lit parts sort last. One with the lighting rig unavailable this pass is skipped rather than
+            // painted flat. #285: that skip is a HOLE, not a hand-back -- see `unlit-pass` on the [alloy]
+            // line, which must read 0 on a pass that has a lighting rig at all.
+            bool lit = _oLit[i];
+            if (lit && !lightingOn) { Inc(ref _skipNoLight); BreakChaseContinuity(); W(i, "skipped: lighting off this pass"); return Skipped; }
+            // #322: identity was verified (and a mismatch revoked) by RouteParts this pass -- every engine
+            // read below sits behind that verdict, not behind a second copy of the same four compares.
+            bool samp = main && (k & (ChaseEvery - 1)) == 0;
+            long tChase = samp ? FrameZones.Now : 0;
+            // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
+            // it into the blended run with the tile's factor folded into its alpha, which is what the engine
+            // does with it in bucket 8 -- and bucket 8 is a bucket IterSight can suppress now.
+            // #124: the camera dissolve is a FEATURE of the Alloy program now, not a reason to hand the part
+            // back -- dissolving parts sit in bucket 1, which IterSight can suppress. #123's exemption still
+            // stands: nokeyhole, roofkn and flowmap compile their FRAGMENT stage with KEYHOLING 0, so vanilla
+            // draws them solid through a dissolve and so must we.
+            // ...and only on a LIT part: every unlit fragment stage in base_shaders.bif compiles KEYHOLING 0
+            // (fst, fst_sm, fsglu, fs, fstc), so vanilla draws an unlit part solid through the aperture.
+            // Keeping the flag off them also keeps them out of the prepass exclusion below, which they would
+            // otherwise pay for a discard their stage does not have.
+            bool dis = cls <= (int)AlloyClass.Cutout ? _passDis[k] : Dissolves(i, tri, ref c);
+            float dissolve = dis ? 1f : 0f;
+            if (dis) c.OwnDissolve++;
+            // #242: this slot's persistent record. Three states, cheapest first -- already verified by an
+            // earlier pass THIS frame (nothing to re-read at all), unchanged since the last frame (the
+            // texture re-fetch and the handle mints are skipped, which is the expensive half), or dirty.
+            // A stale epoch forces the third: see InvalidateRecords for what can make every record wrong.
+            bool stale = _recGen[i] != _recEpoch;
+            bool verified = !stale && _recFrame[i] == _frameSeq;
+            // #322: the colour cadence, staggered by slot. The measured Restage bulk is the per-part
+            // engine chases, and the slow-drift half of them -- the mdl colour triples, self-illum, the gob
+            // colour folds, the non-animated slot-map pointers -- moves over SECONDS (day-night, a scripted
+            // glow), so it is read every ColourCadence frames per slot and reloaded from the record in
+            // between. Everything fast-visible stays per frame: alpha, tile fade, the matrix, the DIFFUSE
+            // pointer (animated textures), dissolve, instance state.
+            // #364: _fullPoll belongs here. `/draw poll 1` says it re-reads every engine term every frame
+            // and its audit counters must read 0 -- but this term sat outside it, so the slow-drift fold
+            // stayed on its stagger under a full poll and the knob could not A/B a colour-cadence bug at all.
+            //
+            // ...and an INSTANCED part is off the cadence entirely. #336 and #362 both tried to name the one
+            // event that must bypass it (a highlight) and both missed, because Scene::AddHighlightGob
+            // @0x462280 is two list writes and arms nothing -- whatever arms the gob's colour on a highlight
+            // is somewhere else, and guessing at it twice is enough. The cadence's own justification is that
+            // these terms "move over SECONDS", and the terms that can move at all are the GOB folds:
+            // GobDiffuseMul (gob+0xf6/+0xfc, Gob::SetColorShifting) and GobEmissiveAdd (gob+0xf8/+0x110,
+            // Gob::SetIllumination). A part with no gob folds neither -- both return their identity without
+            // dereferencing anything -- and all it has left is mdl ambient/diffuse and part self-illum,
+            // which are material statics that genuinely never move.
+            //
+            // So the split is by what CAN change, not by what we think just did. It is also cheaper than the
+            // stagger it replaces: gob parts are ~9% of a dense area's population (112 instanced of 1245 on
+            // the live [alloy] line) against the 12.5% a 1-in-8 cadence re-reads every frame.
+            bool colour = stale || _fullPoll || _oGob[i] != IntPtr.Zero
+                          || ((i + _frameSeq) & (ColourCadence - 1)) == 0;
+            // MatStatic (Ghidra @0x450560): ambient = node+0xf4, diffuse = node+0xe8, emissive = part+0x7c.
+            // ponytail: MatStatic also multiplies ambient+diffuse by AurGetTileColor() when the part's tile
+            // record (part+0x98, +0x54) is set. Not reproduced -- add it if tiles read the wrong hue.
+            IntPtr mdl = lit && colour ? part.Mdl.Ptr : IntPtr.Zero;
+            // #302 (review): every content skip from here down also revokes the slot's SHADOW tenancy.
+            // The record block never runs for a skipped part, so its mover stamps freeze at their last
+            // values -- frozen-equal is a caster re-baking every view it stands in forever, frozen-unequal
+            // is a shadow that stops tracking -- and the #302 contract is simpler than either: a part
+            // nothing draws casts nothing. The stale rebuild on return stamps it a mover (newTenant), so
+            // the views it re-enters re-bake. Cadenced with the colour reads -- the mdl is only chased on a
+            // colour frame, so its absence is only observable then.
+            if (lit && colour && mdl == IntPtr.Zero) { Inc(ref _skipNoMdl); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no mdl node"); return Skipped; }
+
+            var mat = new MaterialRef(_oMat[i]);
+            int tid, slots;
+            bool texDirty = false;
+            if (verified) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
+            else
+            {
+                // texture: the engine name is re-fetched per frame -- CAurTexture* is BORROWED, freed on
+                // area transitions (never cache the pointer), and the per-frame fetch is exactly what keeps
+                // animated textures cycling. #211 then maps that name to OUR copy, which cannot be freed
+                // under the draw; an animated texture cycles engine names, so each animation frame gets its
+                // own copy.
+                // #242: the POINTER is compared per frame; only a change re-resolves it to a tid and a
+                // bindless handle. That is the ADR 0017 split's per-frame half -- the fetch stays, the two
+                // hash probes behind it do not.
+                // #336: ...on the colour cadence. The #330 RE found a cycling texture rewrites the GL name
+                // INSIDE the CAurTexture (basic+0x6c), never the pointer -- the animated frame reaches the
+                // record through the copy retire and its epoch bump, not through this compare. What the
+                // compare does catch is a material re-bind (a re-skin, an equip: cold), which can wait
+                // eight frames. A slot with no record yet, or under /draw poll 1, still reads every frame.
+                bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero;
+                var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);
+                if (aur.IsNull) { Inc(ref _skipTex); Inc(ref _skipTexNone); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no diffuse texture"); return Skipped; }
+                texDirty = stale || aur.Ptr != _recAur[i];
+                // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
+                // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
+                // frame. The DIFFUSE compare above stays per frame; it is the animated one.
+                for (int s = 0; !texDirty && lit && colour && s < MapSlots; s++)
+                    if ((_oSlots[i] & SlotBit(s)) != 0 && mat.Texture(s + 1).Ptr != _recAurS[i * MapSlots + s])
+                        texDirty = true;
+                if (!texDirty) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
+                else
+                {
+                    if (main) tid = aur.OwnedTid();
+                    else if (!OwnedTextures.TryDraw(AurTex.Tid(aur.Ptr), out tid)) { c = snap; return Deferred; }
+                    // #317: and NOTE it, because this is the only place that still knows. AlloyCensus does
+                    // the same at enrollment on the stated grounds that "enrollment is the Alloy-owned edge
+                    // that notices" -- but enrollment is edge-triggered (#256), so a part that enrolls once
+                    // and is skipped here every frame after is never re-asked, and one whose tid was FINE at
+                    // enrollment and went to 0 later (an area transition retiring the owned copy) is never
+                    // asked at all. Both read as "0 queued" beside a nonzero no-gl-id: an empty queue
+                    // because nothing is asking, not because nothing is waiting. NoteUnbuilt is a dictionary
+                    // probe that dedups and self-caps (attempts, re-arm, Never), so the per-frame cost of
+                    // asking from the skip is the skip's own count -- and that count is the bug.
+                    if (tid == 0)
+                    {
+                        if (!main) { c = snap; return Deferred; }
+                        OwnedTextures.NoteUnbuilt(aur.Ptr);
+                        Inc(ref _skipTex); Inc(ref _skipTexNoId); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
+                        W(i, "skipped: diffuse has no GL id"); return Skipped;
+                    }
+                    // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
+                    // engine texture is a handle on an object the engine may delete or re-upload under us,
+                    // which is exactly the corruption this fixes -- so a part whose copy was refused (a
+                    // format we will not take) is NOT DRAWN rather than drawn through a handle we cannot
+                    // vouch for (#285: there is no engine walk behind it; `not-owned` is the count).
+                    // Bind-path batches are unaffected: they rebind the engine id every frame.
+                    if (lit && _bindless && OwnedTextures.Armed)
+                    {
+                        // Two DIFFERENT faults behind one guard, and they have different fixes: a texture
+                        // Alloy never adopted (it never reached the upload funnel -- a GPU-composited PLT, a
+                        // cube, a movie frame) versus one it owns but could not mint a resident handle for.
+                        bool owned = OwnedTextures.IsOwned(tid);
+                        if (!owned || Handle(tid, main) == 0)
+                        {
+                            if (!main && owned) { c = snap; return Deferred; }   // the main thread may still mint it
+                            Inc(ref _skipTex); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
+                            if (owned) Inc(ref _skipTexNoHandle); else Inc(ref _skipTexNotOwned);
+                            TexSkipDiag(owned, tid, aur);
+                            W(i, owned ? "skipped: diffuse has no bindless handle"
+                                       : "skipped: diffuse is not an Alloy-owned texture");
+                            return Skipped;
+                        }
+                    }
+
+                    // #120: the same re-fetch for whichever of the PBR slots this material declared. A slot
+                    // that declared a map but resolves to nothing this frame drops out of the mask rather
+                    // than leaving the shader sampling an empty unit.
+                    slots = 0;
+                    // #294: a map needs COORDINATES to be a map. On a VDO with no UV stream every sampler
+                    // resolves to the one texel at the generic constant (0,0) -- the same value for every
+                    // fragment of the mesh -- so the normal, specular, roughness, height and AO slots stop
+                    // carrying material detail and start carrying whichever pixel happens to sit in the
+                    // corner of the sheet. That is not the .mtr's intent, it is an artifact of sampling a 2D
+                    // map with nothing to sample it by, and it is load-bearing: SowxSynthPbr takes a declared
+                    // roughness WHOLE, so one dark corner texel makes a frosted crystal a mirror.
+                    // The env flag survives -- it is keyed on the normal and the reflection vector, not on
+                    // uv -- and so does the diffuse, which the engine reads at the same constant for the same
+                    // reason (it is where envLevel comes from). What is dropped is only what cannot mean
+                    // anything, so the synthesis falls back to its generated floor exactly as it does for
+                    // content that ships no maps at all.
+                    bool mapsMeanNothing = !_vUv[_oVao[i]].Present;
+                    for (int s = 0; s < MapSlots; s++)
+                    {
+                        slotTid[s] = 0;
+                        _recAurS[i * MapSlots + s] = IntPtr.Zero;
+                        if (lit && !mapsMeanNothing && (_oSlots[i] & SlotBit(s)) != 0)
+                        {
+                            var sa = mat.Texture(s + 1);
+                            int t;
+                            if (main) t = sa.OwnedTid();
+                            else if (!OwnedTextures.TryDraw(AurTex.Tid(sa.Ptr), out t)) { c = snap; return Deferred; }
+                            // ...and the same rule per slot, but a slot drops out of the mask instead of
+                            // taking the part with it -- an unowned normal map costs that one map, not the
+                            // whole draw.
+                            if (t != 0 && _bindless && OwnedTextures.Armed
+                                && (!OwnedTextures.IsOwned(t) || Handle(t, main) == 0))
+                            { if (!main && OwnedTextures.IsOwned(t)) { c = snap; return Deferred; } t = 0; }
+                            _recAurS[i * MapSlots + s] = sa.Ptr;   // stamped only past the gates: a deferred slot must re-resolve
+                            if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
+                        }
+                    }
+                    if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
+                    // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
+                    if (lit && _aoTest && !mapsMeanNothing) { slotTid[AoSlot] = tid; slots |= AoBit; }
+                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots;
+                    for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
+                }
+            }
+            // Did the normal map declared by the .mtr actually reach the shader? The two numbers apart say
+            // whether an area has no normal-mapped content at all or has it and the re-fetch above dropped it.
+            if (lit && (_oSlots[i] & SlotBit(0)) != 0) { c.NrmDeclared++; if (slotTid[0] != 0) c.NrmBound++; }
+
+            int src = i;
+            // #322: index range read live from the VDO item tables only when the slot's cache stamp fell
+            // (UnstampRecord fires on every re-tenant and drifted keep -- the only edges that re-point
+            // _oVdo/_oItem -- and on every transient range failure; Repack revokes before the tables move),
+            // then served from the slot cache.
+            int idxCount;
+            if (_cGen[i] == _recEpoch) idxCount = _cIdx[i];
+            else
+            {
+                var vdo = new VdoRef(_oVdo[src]);
+                long elem = vdo.ElemItems;
+                long vert = vdo.VertItems;
+                int item = _oItem[src];
+                if (elem == 0 || vert == 0 || item < 0
+                    || item >= vdo.ElemCount || item >= vdo.VertCount)
+                { Inc(ref _skipRange); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: item out of range"); return Skipped; }
+                idxCount = *(int*)(elem + item * 8 + 4);
+                if (idxCount <= 0) { Inc(ref _skipRange); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: empty index range"); return Skipped; }
+                _cIdx[i] = idxCount;
+                _cOff[i] = (nint)((long)(uint)*(int*)(elem + item * 8) * 2);
+                _cBase[i] = *(int*)(vert + item * 8);
+                _cGen[i] = _recEpoch;
+            }
+
+            if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
+            int v = _oVao[src];
+            if (!main && !VaoReady(v)) { c = snap; return Deferred; }
+            if (!EnsureVao(v)) { Inc(ref _skipVao); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: no VAO"); return Skipped; }
+            int feat = _oBone[i] >= 0 ? (int)ShaderFeature.Skin : (int)_oFeat[i * 4];
+            bool merge = _bindless && lit && cls != (int)AlloyClass.Water;
 
             // the per-draw record. The model matrix drives BOTH the world position the light loop shades at
             // and the world normal (mat3 of the same GLSL-visible matrix is the correct normal transform here
@@ -911,7 +1054,7 @@ public sealed unsafe partial class AlloyRenderer
                 pf.HasModel = _oMx[i];
                 bool newTenant = _recEnroll[i] != _oEnrollGen[i];
                 // #330: read off the engine only if it can have moved -- see ChaseModel.
-                if (pf.HasModel) pf.Model = ChaseModel(i, r, stale, newTenant);
+                if (pf.HasModel) pf.Model = ChaseModel(i, r, stale, newTenant, ref c);
                 pf.Lit = lit;
                 if (lit)
                 {
@@ -969,8 +1112,8 @@ public sealed unsafe partial class AlloyRenderer
                         // Both already minted and non-zero: the gate above refuses the part (and drops the
                         // slot) on a zero handle, so nothing reaches here that would sample handle 0 --
                         // which is a BLACK texture, not a missing one, and the reason that gate exists.
-                        hh[0] = HandleFor(tid);
-                        for (int t = 0; t < MapSlots; t++) hh[1 + t] = HandleFor(slotTid[t]);
+                        hh[0] = Handle(tid, main);
+                        for (int t = 0; t < MapSlots; t++) hh[1 + t] = Handle(slotTid[t], main);
                     }
                 }
                 // #243: the cull's bounds ride the same edge as the record -- a part that did not move did
@@ -978,54 +1121,17 @@ public sealed unsafe partial class AlloyRenderer
                 // together never sees a fresh record beside last frame's bounds.
                 if (rec) WriteSphere(i, in pf, tri, feat);
                 if (rec) { WriteCasterSphere(i, in pf); NoteCasterTouched(i); }
-                if (rec) MarkRecordDirty(i); else _recStable++;
+                if (rec) MarkRecordDirty(i, ref c); else c.RecStable++;
                 _recGen[i] = _recEpoch; _recFrame[i] = _frameSeq; _recEnroll[i] = _oEnrollGen[i];
                 // #302: a LEVEL the shadow pass compares against _recFrame, never an edge it consumes.
                 if (casterMoved || newTenant) _recMovedAt[i] = _frameSeq;
                 // #328: ...and the admission level beside it, on the same edge: a record landed for this
                 // tenant, so the slot casts unless its tile is fading or its class cannot write depth.
-                SetCastOk(i, !_oFading[i] && _oCls[i] <= (byte)AlloyClass.Cutout);
+                SetCastOk(i, !_oFading[i] && _oCls[i] <= (byte)AlloyClass.Cutout, ref c);
             }
-            // #287: ...and after the record block, so the extent is measured on the sphere this frame wrote.
-            if (cls <= (int)AlloyClass.Cutout)
-            {
-                float* sp = sphAll + (long)i * 4;
-                if (sp[3] < NeverCull)
-                {
-                    lox = MathF.Min(lox, sp[0]); hix = MathF.Max(hix, sp[0]);
-                    loy = MathF.Min(loy, sp[1]); hiy = MathF.Max(hiy, sp[1]);
-                    loz = MathF.Min(loz, sp[2]); hiz = MathF.Max(hiz, sp[2]);
-                    maxR = MathF.Max(maxR, sp[3]);
-                }
-            }
-            if (FrameDump.Capturing)
-                FrameDump.Row_(cls, lit, v, _oMat[i], mode, feat, dis, blend, noCull, slots, merge,
-                               idxCount, _dOff[n], _dBase[n], r);
-            _gLen[groups - 1]++;
-            n++;
-            if (noCull) _twoSidedDraws++;
-            if (_oGob[i] != IntPtr.Zero) _drawsGob++;
-            // #302: no shadow feed here any more. An instance part IS an ownership slot, and the bake walks
-            // the ownership table -- so there is nothing to hand over and nothing that can be double-recorded.
-            AlloyCensus.OwnGen[_oEntry[i]] = PassGen;
+            _pkDis[k] = dis ? (byte)1 : (byte)0;
+            return Staged;
         }
-        // #126: where each pass's batch range ends. Read off the batches themselves rather than tracked
-        // through the cut above -- the routed order is class-ordered by construction, so the first batch of a
-        // later class IS the previous range's end, and a class that staged nothing leaves an empty range
-        // rather than someone else's batches.
-        if (hix >= lox) CullPass.SetSpread(hix - lox, hiy - loy, hiz - loz, maxR);
-        _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = groups;
-        for (int g = 0; g < groups; g++)
-        {
-            if (_gCls[g] > (byte)AlloyClass.Opaque && g < _gCutoutStart) _gCutoutStart = g;
-            if (_gCls[g] > (byte)AlloyClass.Cutout && g < _gOpaqueEnd) _gOpaqueEnd = g;
-            if (_gCls[g] > (byte)AlloyClass.Blended && g < _gBlendEnd) _gBlendEnd = g;
-            if (_gCls[g] > (byte)AlloyClass.Water && g < _gWaterEnd) _gWaterEnd = g;
-        }
-        _drawN = n;
-        if (dumping) FrameDump.Finish(groups, _log);
-        FrameZones.Add(FrameZones.Zone.Restage, tRestage);
-        return groups;
     }
 
     /// <summary>#125: stage the sky's draws behind the batch records, in the engine's own order -- current

@@ -1159,6 +1159,15 @@ public sealed unsafe partial class AlloyRenderer
             //     things that write it, so a frame that is white everywhere means no material in sight
             //     declared either -- which is the state shipped content is in today.
             if (uViz == 8) { frag = vec4(vec3(occl), 1.0); return; }
+            if (uViz == 38)
+            {   // lights per pixel, from the froxel this fragment reads: black 0, blue 8, green 16, yellow 24, red 32+
+                float t = clamp(float(uClCount[SowxCluster(vDepth)]) / 32.0, 0.0, 1.0);
+                vec3 h = t < 0.25 ? mix(vec3(0.0), vec3(0.0, 0.0, 1.0), t * 4.0)
+                       : t < 0.5 ? mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), (t - 0.25) * 4.0)
+                       : t < 0.75 ? mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), (t - 0.5) * 4.0)
+                       : mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (t - 0.75) * 4.0);
+                frag = vec4(h, 1.0); return;
+            }
             // 35 = why this fragment has no screen-space AO. GREEN in the prepass depth and taking it;
             //      RED excluded as a cutout, BLUE by an out-of-prepass feature, YELLOW as a blended batch,
             //      MAGENTA as a keyhole batch the keyed depth sweep did not run for.

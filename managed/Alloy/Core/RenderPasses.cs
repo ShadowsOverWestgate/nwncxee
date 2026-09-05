@@ -40,7 +40,7 @@ internal static class RenderPasses
             Name = "ownedgeom",
             Attach = OwnedBuffers.Attach,
             Install = OwnedBuffers.Install,
-            SelfCheck = l => OwnedBuffers.SelfCheck(l),
+            SelfCheck = l => { OwnedBuffers.SelfCheck(l); StagePool.SelfCheck(l); },
             Revoke = OwnedBuffers.Revoke,
             ContextLost = OwnedBuffers.ContextLost,
             Stats = OwnedBuffers.Stats,

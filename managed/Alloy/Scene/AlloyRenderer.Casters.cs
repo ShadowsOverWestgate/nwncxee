@@ -32,6 +32,17 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>A <c>PartDanglyMesh</c>: its vertices move while its node matrix does not, so no record
     /// compare can infer motion for it. Captured at enrollment, as the caster pass captured it before.</summary>
     private static readonly bool[] _oDangly = new bool[MaxOwned];
+    /// <summary>The frame the dangly solve last DISPLACED this slot's vertices past its still threshold
+    /// (<see cref="NoteDanglyMoved"/>). Alloy owns the solve, so "is this banner moving" is a measurement
+    /// and not a declaration: a settled cloak is a caster, not a mover. Stamp 0 = never moved.</summary>
+    private static readonly int[] _oDanglyMovedAt = new int[MaxOwned];
+    /// <summary>Path length the solve has displaced this slot's vertices since its last reported move. A
+    /// one-frame test would miss slow continuous deformation (a banner's lean following the wandering breeze
+    /// at well under the threshold per frame) and freeze its static shadow at the pose it was baked in.</summary>
+    private static readonly float[] _oDanglyAcc = new float[MaxOwned];
+    /// <summary>Frames a dangly slot stays a mover after its last measured displacement. Two covers either
+    /// order of the Animate hook against the frame edge; the caster pass's own 8-frame hold sits on top.</summary>
+    private const int DanglyMoveHold = 2;
     /// <summary>#302: the slot TENANCY generation -- which enrollment owns this slot, and which enrollment
     /// the record in it was built for. NOT the record epoch, and the distinction is a live-diagnosed flicker:
     /// the epoch is bumped by every wholesale invalidation -- enrollment, but ALSO an animated texture
@@ -90,8 +101,15 @@ public sealed unsafe partial class AlloyRenderer
 
     internal static void NoteCasterTouched(int i)
     {
+        BeginCasterTouched();
+        // reserve-then-write: the stage's workers append concurrently, after the main thread's Begin
+        int n = System.Threading.Interlocked.Increment(ref _castTouchedN) - 1;
+        if (n < _castTouched.Length) _castTouched[n] = i; else _castTouchedOverflow = true;
+    }
+    /// <summary>The per-frame reset, hoisted so it runs on the main thread before any worker can append.</summary>
+    private static void BeginCasterTouched()
+    {
         if (_castTouchedFrame != _frameSeq) { _castTouchedFrame = _frameSeq; _castTouchedN = 0; _castTouchedOverflow = false; }
-        if (_castTouchedN < _castTouched.Length) _castTouched[_castTouchedN++] = i; else _castTouchedOverflow = true;
     }
     internal static int CasterTouchedCount => _castTouchedN;
     internal static int CasterTouchedSlot(int k) => _castTouched[k];
@@ -106,6 +124,14 @@ public sealed unsafe partial class AlloyRenderer
         _castOk[i] = ok;
         CasterGen++;
     }
+    /// <summary>The stage's form: the generation bump is deferred to the fold, one per frame, so workers
+    /// never touch the shared counter. Consumers compare generations, so one bump keeps the contract.</summary>
+    private static void SetCastOk(int i, bool ok, ref StageCounters c)
+    {
+        if (_castOk[i] == ok) return;
+        _castOk[i] = ok;
+        c.CastChanged = true;
+    }
 
     /// <summary>The mover LEVEL for one slot, read the same way <see cref="TryCaster"/> reads it -- the
     /// slot's most recent build was also a build that moved something.</summary>
@@ -113,7 +139,40 @@ public sealed unsafe partial class AlloyRenderer
     /// (the visible set never visits them), so a slot that moved on its last build and then left the view
     /// would otherwise read as a mover for as long as it stays out.</para></summary>
     internal static bool SlotRecMoved(int slot) => _recMovedAt[slot] == _recFrame[slot] && _recFrame[slot] == _frameSeq - 1;
-    internal static bool SlotDangly(int slot) => _oDangly[slot];
+    /// <summary>A dangly slot whose solve displaced it within <see cref="DanglyMoveHold"/> frames. A LEVEL:
+    /// the stamp is re-read, never consumed.</summary>
+    internal static bool SlotDangly(int slot) => _oDangly[slot] && _frameSeq - _oDanglyMovedAt[slot] <= DanglyMoveHold;
+    /// <summary>Is the slot a <c>PartDanglyMesh</c> at all, moving or not. Its VDO is committed every frame
+    /// the solve runs, so the vertex-dirty mover term must not speak for it -- the measured verdict does.</summary>
+    internal static bool SlotIsDangly(int slot) => _oDangly[slot];
+
+    /// <summary>The dangly solve's report for <paramref name="part"/>: this frame's largest per-vertex
+    /// displacement, accumulated against <paramref name="still"/> (infinity forces a move). True when the
+    /// slot became a mover. Hot (per animated part per frame): the O(1) enrollment-hash probe
+    /// <see cref="NotePartDeath"/> uses, no allocation. A part not (yet) owned is not a caster and needs no stamp.</summary>
+    internal static bool NoteDanglyMoved(IntPtr part, float dist, float still)
+    {
+        int mask = (1 << SlotHashBits) - 1;
+        for (int j = SlotHash(part); _shGen[j] == _enrollGen; j = (j + 1) & mask)
+            if (_oTri[_shSlot[j]] == part)
+            {
+                int i = _shSlot[j];
+                if (!Accumulate(ref _oDanglyAcc[i], dist, still)) return false;
+                _oDanglyMovedAt[i] = _frameSeq;
+                return true;
+            }
+        return false;
+    }
+
+    /// <summary>The mover verdict: the displacement path length since the last report crosses the threshold.
+    /// <c>still</c> 0 reports every frame with any motion, the pre-#383 behaviour.</summary>
+    internal static bool Accumulate(ref float acc, float dist, float still)
+    {
+        acc += dist;
+        if (!(acc > still)) return false;
+        acc = 0f;
+        return true;
+    }
 
     /// <summary>Entries in the draw order -- the caster walk's own bound.</summary>
     internal static int OrderCount => _orderCount;
@@ -135,8 +194,8 @@ public sealed unsafe partial class AlloyRenderer
         public bool EnvAlpha;
         /// <summary>The record changed on its last build -- the matrix, the fade, a material colour.</summary>
         public bool RecMoved;
-        /// <summary>A <c>PartDanglyMesh</c>: a permanent mover, because its vertices move under a matrix that
-        /// does not and no record compare can see it.</summary>
+        /// <summary>A <c>PartDanglyMesh</c> the solve displaced this frame or last -- a mover no record compare
+        /// can see. Still danglies are casters, not movers (<see cref="SlotDangly"/>).</summary>
         public bool Dangly;
         /// <summary>Posed by bones, so it is exempt from the sub-texel LOD cull for the same reason the
         /// colour cull exempts it: the player's own shadow must not flicker out in a far cascade.</summary>
@@ -163,7 +222,7 @@ public sealed unsafe partial class AlloyRenderer
         // Read as a LEVEL, never as an edge: _recFrame is stamped on every build and _recMovedAt only on a
         // build that changed something, so the two agreeing is "the last build moved it" and asking twice
         // gives the same answer. ADR 0017's hazard was a signal the first pass to ask consumed.
-        f.Dangly = _oDangly[slot];
+        f.Dangly = SlotDangly(slot);
         f.RecMoved = SlotRecMoved(slot);
         MoverSphere(slot, out f.Cx, out f.Cy, out f.Cz, out f.R);
         return true;

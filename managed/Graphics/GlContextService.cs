@@ -43,6 +43,8 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <see cref="DebugLines"/> per session; the other types log their first sighting per id. An allocation
     /// per logged line, accepted under the gate. Totals go on the [gl46] line.</summary>
     private static bool _debug;
+    /// <summary><c>gldebug=1</c>: the passes may spend on per-call validation the release path skips.</summary>
+    internal static bool Debug => _debug;
     private static readonly uint[] _dbgId = new uint[DebugIds];
     private static int _dbgN, _dbgLogged, _dbgTotal, _dbgDropped;
 

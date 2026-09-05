@@ -1,0 +1,178 @@
+using System;
+using System.Diagnostics;
+using System.Threading;
+using Sowx.Framework;
+
+namespace Sowx.Alloy;
+
+/// <summary>The stage's worker pool: N persistent threads plus the main thread, each running one static
+/// chunk of <see cref="AlloyRenderer.StageRange"/>. No Parallel.For and no ThreadPool -- both allocate per
+/// call and neither is predictable inside a frame.
+/// <para>Wake latency is the whole cost: a worker that slept 10ms on a semaphore sits on a core in a deep
+/// idle state, and waking six of them can take as long as the work. So <see cref="Prewake"/> is called at
+/// the top of the build, before the routing walk, and a woken worker SPINS on the job generation for up to
+/// <see cref="SpinUs"/> before it blocks again -- long enough to cover the walk, short enough that a frame
+/// with no stage (a menu) does not pin six cores.</para>
+/// <para>Invariant the workers rely on: Alloy runs on the engine's main thread inside its frame, so the
+/// engine mutates nothing while a stage runs; and nothing on the main thread writes the texture index, the
+/// handle hash or the ownership tables between <c>Run</c> and its return. A future async loader breaks
+/// exactly that, and this comment is where it must look.</para></summary>
+internal static class StagePool
+{
+    /// <summary>Chunks including the main thread's; the knob's ceiling is one less.</summary>
+    internal const int MaxChunks = 8;
+    private const long SpinUs = 4000;
+    /// <summary>A join that runs this long is a lost worker, not a slow one; the frame re-stages serially.</summary>
+    private const long JoinLimitMs = 500;
+    private static readonly Thread?[] _threads = new Thread?[MaxChunks];
+    private static readonly SemaphoreSlim[] _go = new SemaphoreSlim[MaxChunks];
+    private static int _pending, _chunks, _gen;
+    private static Exception? _fault;
+    private static bool _faultLogged;
+    private static Action<int, int> _job = AlloyRenderer.StageRange;
+    // the instrument: per-frame max wake (release -> job start) and max job time, summed for the period
+    private static long _tRelease;
+    private static readonly long[] _tStart = new long[MaxChunks], _tEnd = new long[MaxChunks];
+    /// <summary>The generation a worker starts from, captured by its CREATOR before Start: a thread that reads
+    /// it itself can come up after Run has already published the next job and mistake it for seen.</summary>
+    private static readonly int[] _seenAtStart = new int[MaxChunks];
+    private static double _runMsSum, _wakeMsSum, _jobMsSum;
+    private static int _runs;
+
+    /// <summary>Clear a fault so the knob can bring the pool back; the next Run starts fresh. A worker that
+    /// timed out may still be running its old chunk, so a generation it missed is simply the one it skips.</summary>
+    internal static void Rearm()
+    {
+        if (_fault == null) return;
+        _fault = null; _faultLogged = false;
+        Volatile.Write(ref _pending, 0);
+    }
+
+    /// <summary>Wake the workers ahead of the job so the routing walk hides their wake latency. Cheap when
+    /// they are already spinning: the semaphore is capped at one and never over-released.</summary>
+    internal static void Prewake(int chunks)
+    {
+        if (_fault != null) return;
+        for (int w = 1; w < chunks; w++)
+        {
+            Ensure(w);
+            if (_go[w].CurrentCount == 0) _go[w].Release();
+        }
+    }
+
+    /// <summary>Run the job over <paramref name="chunks"/> chunks, chunk 0 on the caller. False after a
+    /// worker fault: the caller must redo the work serially, and the pool stays down.</summary>
+    internal static bool Run(int chunks, ExtenderLog? log, int testGapMs = 0)
+    {
+        if (_fault != null) return false;
+        // never more chunks than cores: on a one-core box (CI) the spinners would only starve each other
+        chunks = Math.Clamp(chunks, 1, Math.Max(1, Environment.ProcessorCount));
+        if (chunks == 1) { try { _job(0, 1); } catch (Exception e) { _fault = e; } return _fault == null; }
+        Prewake(chunks);
+        if (testGapMs > 0) Thread.Sleep(testGapMs);   // self-check only: outlive the workers' spin window
+        _chunks = chunks;
+        _tRelease = Stopwatch.GetTimestamp();
+        Volatile.Write(ref _pending, chunks - 1);
+        Interlocked.Increment(ref _gen);   // the job is published; spinning workers see it now
+        // ...and a worker whose spin window ran out before this (a slow box, a long routing walk) is blocked
+        // on its semaphore with nobody left to release it -- CI lost chunk 1 that way. Release past the
+        // publish too; a still-spinning worker just takes one more window.
+        for (int w = 1; w < chunks; w++) if (_go[w].CurrentCount == 0) _go[w].Release();
+        try { _job(0, chunks); }
+        catch (Exception e) { _fault = e; }
+        // no Sleep(1) in the join: SpinOnce() sleeps a millisecond after 20 iterations, which is the budget
+        long deadline = Stopwatch.GetTimestamp() + JoinLimitMs * Stopwatch.Frequency / 1000;
+        for (int spins = 0; Volatile.Read(ref _pending) > 0; spins++)
+        {
+            // yield past the first few spins: on an oversubscribed box the straggler needs this core
+            if (spins < 64) Thread.SpinWait(32); else Thread.Yield();
+            if (Stopwatch.GetTimestamp() > deadline) { _fault ??= new TimeoutException($"stage join past {JoinLimitMs}ms"); break; }
+        }
+        long end = Stopwatch.GetTimestamp();
+        double wake = 0, job = 0;
+        for (int w = 1; w < chunks; w++)
+        {
+            wake = Math.Max(wake, Ms(_tStart[w] - _tRelease));
+            job = Math.Max(job, Ms(_tEnd[w] - _tStart[w]));
+        }
+        _runMsSum += Ms(end - _tRelease); _wakeMsSum += wake; _jobMsSum += job; _runs++;
+        if (_fault == null) return true;
+        if (!_faultLogged) { _faultLogged = true; log?.Info($"StagePool: worker fault, threading stood down -- {_fault}"); }
+        return false;
+    }
+
+    private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+
+    /// <summary>Period averages for the describe line; resets.</summary>
+    internal static string Stats()
+    {
+        if (_runs == 0) return "stage: no threaded runs";
+        string s = $"stage run {_runMsSum / _runs:F2}ms (worker wake max {_wakeMsSum / _runs:F2}, job max {_jobMsSum / _runs:F2}) over {_runs} runs";
+        _runMsSum = _wakeMsSum = _jobMsSum = 0; _runs = 0;
+        return s;
+    }
+
+    private static void Ensure(int w)
+    {
+        if (_threads[w] != null) return;
+        _go[w] = new SemaphoreSlim(0, 1);
+        _seenAtStart[w] = Volatile.Read(ref _gen);
+        var t = new Thread(Loop) { IsBackground = true, Name = $"sowx-stage-{w}" };
+        _threads[w] = t;
+        t.Start(w);
+    }
+
+    private static void Loop(object? arg)
+    {
+        int w = (int)arg!;
+        int seen = _seenAtStart[w];
+        while (true)
+        {
+            _go[w].Wait();
+            long spinUntil = Stopwatch.GetTimestamp() + SpinUs * Stopwatch.Frequency / 1_000_000;
+            int idle = 0;
+            while (true)
+            {
+                int g = Volatile.Read(ref _gen);
+                if (g != seen)
+                {
+                    seen = g;
+                    if (w < _chunks)
+                    {
+                        _tStart[w] = Stopwatch.GetTimestamp();
+                        try { _job(w, _chunks); }
+                        catch (Exception e) { _fault = e; }   // an unhandled exception on a NativeAOT worker kills the process
+                        _tEnd[w] = Stopwatch.GetTimestamp();
+                        Interlocked.Decrement(ref _pending);
+                    }
+                    spinUntil = Stopwatch.GetTimestamp() + SpinUs * Stopwatch.Frequency / 1_000_000;
+                }
+                else if (Stopwatch.GetTimestamp() > spinUntil) break;
+                else if ((++idle & 15) == 0) Thread.Yield();
+                else Thread.SpinWait(64);
+            }
+        }
+    }
+
+    /// <summary>Four chunks sum disjoint ranges of 1..1000 into one array; the total is the serial sum.</summary>
+    internal static bool SelfCheck(ExtenderLog log)
+    {
+        long[] part = new long[MaxChunks];
+        var saved = _job;
+        _job = (w, chunks) =>
+        {
+            int from = 1000 * w / chunks, to = 1000 * (w + 1) / chunks;
+            long s = 0; for (int k = from; k < to; k++) s += k + 1;
+            part[w] = s;
+        };
+        // three runs: the second finds the workers spinning; the third publishes 20ms after the pre-wake,
+        // past the 4ms spin window, so every worker has blocked again and must be released past the publish
+        bool ok = Run(4, log) && Run(4, log) && Run(4, log, testGapMs: 20);
+        _job = saved;
+        long total = 0; foreach (long v in part) total += v;
+        ok &= total == 500500;
+        _runMsSum = _wakeMsSum = _jobMsSum = 0; _runs = 0;
+        log.Info(ok ? "StagePool.SelfCheck: passed (4 chunks, three runs)" : $"StagePool.SelfCheck: FAILED -- sum {total}, fault {_fault}");
+        return ok;
+    }
+}

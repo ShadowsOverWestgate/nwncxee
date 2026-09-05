@@ -44,6 +44,10 @@ public static unsafe class Gl
     public const uint TESS_CONTROL_SHADER = 0x8E88, TESS_EVALUATION_SHADER = 0x8E87;
     public const uint PATCHES = 0x000E, PATCH_VERTICES = 0x8E72, MAX_TESS_GEN_LEVEL = 0x8E7E;
     public const uint COMPILE_STATUS = 0x8B81, LINK_STATUS = 0x8B82;
+    /// <summary>GL 4.6 SPIR-V: the one binary format a shader blob may be in, and the enumeration that says
+    /// whether this driver accepts it at all.</summary>
+    public const uint SHADER_BINARY_FORMAT_SPIR_V = 0x9551, NUM_SHADER_BINARY_FORMATS = 0x8DF9,
+                      SHADER_BINARY_FORMATS = 0x8DF8;
     public const uint TEXTURE0 = 0x84C0;
     public const uint R8 = 0x8229, RED = 0x1903;
     /// <summary>glClearBufferfv's buffer selector.</summary>
@@ -233,6 +237,12 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint> CreateShader;
     public static delegate* unmanaged<uint, int, byte**, int*, void> ShaderSource;
     public static delegate* unmanaged<uint, void> CompileShader, DeleteShader;
+    /// <summary>glShaderBinary(count, shaders*, binaryFormat, binary*, length) -- loads a SPIR-V module into
+    /// shader objects. Nothing is compiled until <see cref="SpecializeShader"/> names an entry point.</summary>
+    public static delegate* unmanaged<int, uint*, uint, void*, int, void> ShaderBinary;
+    /// <summary>glSpecializeShader(shader, entryPoint*, numConstants, index*, value*) -- the SPIR-V
+    /// counterpart of glCompileShader; COMPILE_STATUS reports its result.</summary>
+    public static delegate* unmanaged<uint, byte*, uint, uint*, uint*, void> SpecializeShader;
     public static delegate* unmanaged<uint, uint, int*, void> GetShaderiv, GetProgramiv;
     public static delegate* unmanaged<uint, int, int*, byte*, void> GetShaderInfoLog;
     public static delegate* unmanaged<uint, int, int*, uint*, void> GetAttachedShaders;
@@ -272,6 +282,19 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, int, int*, int*, uint*, byte*, void> GetActiveUniform;
     // Lighting UBO (ADR 0007 modern path): one std140 block shared by every Alloy program.
     public static delegate* unmanaged<uint, IntPtr, IntPtr, void*, void> BufferSubData;
+    /// <summary>glClearBufferSubData (GL 4.3): target, internalformat, offset, size, format, type, data --
+    /// a NULL data fills zeros. Server-side, so no client upload into a buffer the GPU may still be reading.</summary>
+    public static delegate* unmanaged<uint, uint, IntPtr, IntPtr, uint, uint, void*, void> ClearBufferSubData;
+    public const uint R32UI = 0x8236, RED_INTEGER = 0x8D94;
+    /// <summary>Zero the first <paramref name="bytes"/> of <paramref name="buf"/> on the GPU. A client-side
+    /// BufferSubData into a buffer the previous dispatch may still read is an implicit sync the spec permits
+    /// the driver to take as a stall (Khronos, Buffer Object Streaming); a clear has no such term. Unmeasured.</summary>
+    public static void ZeroBuffer(uint buf, long bytes)
+    {
+        BindBuffer(SHADER_STORAGE_BUFFER, buf);
+        ClearBufferSubData(SHADER_STORAGE_BUFFER, R32UI, IntPtr.Zero, (IntPtr)bytes, RED_INTEGER, UNSIGNED_INT, null);
+        BindBuffer(SHADER_STORAGE_BUFFER, 0);
+    }
     public static delegate* unmanaged<uint, uint, uint, void> BindBufferBase;
     public static delegate* unmanaged<uint, byte*, uint> GetUniformBlockIndex;
     public static delegate* unmanaged<uint, uint, uint, void> UniformBlockBinding;
@@ -444,6 +467,8 @@ public static unsafe class Gl
         ShaderSource = (delegate* unmanaged<uint, int, byte**, int*, void>)P("glShaderSource");
         CompileShader = (delegate* unmanaged<uint, void>)P("glCompileShader");
         DeleteShader = (delegate* unmanaged<uint, void>)P("glDeleteShader");
+        ShaderBinary = (delegate* unmanaged<int, uint*, uint, void*, int, void>)P("glShaderBinary");
+        SpecializeShader = (delegate* unmanaged<uint, byte*, uint, uint*, uint*, void>)P("glSpecializeShader");
         GetShaderiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetShaderiv");
         GetProgramiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetProgramiv");
         GetShaderInfoLog = (delegate* unmanaged<uint, int, int*, byte*, void>)P("glGetShaderInfoLog");
@@ -474,6 +499,7 @@ public static unsafe class Gl
         BindAttribLocation = (delegate* unmanaged<uint, uint, byte*, void>)P("glBindAttribLocation");
         GetProgramInfoLog = (delegate* unmanaged<uint, int, int*, byte*, void>)P("glGetProgramInfoLog");
         BufferSubData = (delegate* unmanaged<uint, IntPtr, IntPtr, void*, void>)P("glBufferSubData");
+        ClearBufferSubData = (delegate* unmanaged<uint, uint, IntPtr, IntPtr, uint, uint, void*, void>)P("glClearBufferSubData");
         BindBufferBase = (delegate* unmanaged<uint, uint, uint, void>)P("glBindBufferBase");
         GetUniformBlockIndex = (delegate* unmanaged<uint, byte*, uint>)P("glGetUniformBlockIndex");
         UniformBlockBinding = (delegate* unmanaged<uint, uint, uint, void>)P("glUniformBlockBinding");

@@ -49,6 +49,54 @@ internal static unsafe class ShaderResource
     /// A stock file goes through <see cref="VanillaShader"/>, which asks the ENGINE for it.</para></summary>
     internal static string? Override(string resref, ExtenderLog? log)
     {
+        byte[]? b = Blob(resref, log);
+        if (b == null) return null;
+        if (IsSpirv(b))
+        {
+            log?.Info($"shader override: {resref}.shd is a SPIR-V module -- "
+                    + (SpirvArmed ? "taken as a binary stage" : "IGNORED, set spirv=1 in sowx.cfg to accept it"));
+            return null;
+        }
+        // A BOM ahead of #version is a compile error, and an editor on Windows writes one without asking.
+        string text = Encoding.UTF8.GetString(b).TrimStart('\uFEFF');
+        log?.Info($"shader override: {resref}.shd from resman ({b.Length} bytes)");
+        return text;
+    }
+
+    /// <summary>The SPIR-V module a content author supplied for <paramref name="resref"/>, or null when the
+    /// resource is absent, is GLSL text, or the <c>spirv</c> capability gate is off.
+    /// <para>A binary stage is opted into rather than accepted: none of the text machinery a GLSL override
+    /// goes through -- <see cref="Tokens"/>, <see cref="VanillaShader.Splice"/>, the
+    /// <see cref="ShaderContract"/> audits -- can read a module, so accepting one is trusting the author to
+    /// have matched the embedded stage's record layout, bindings and cutout rules.</para></summary>
+    internal static byte[]? OverrideSpirv(string resref, ExtenderLog? log)
+    {
+        if (!SpirvArmed) return null;
+        byte[]? b = Blob(resref, log);
+        if (b == null || !IsSpirv(b)) return null;
+        if ((b.Length & 3) != 0)
+        {
+            log?.Info($"shader override: {resref}.shd is {b.Length} bytes -- a SPIR-V module is a whole number of words, ignored");
+            return null;
+        }
+        return b;
+    }
+
+    /// <summary>SPIR-V's magic word, little-endian. A module that reads byte-swapped was produced for the
+    /// other endianness and GL will not take it, so it is refused rather than converted.</summary>
+    private const uint SpirvMagic = 0x07230203;
+
+    private static bool IsSpirv(byte[] b) =>
+        b.Length >= 4 && (uint)(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) == SpirvMagic;
+
+    /// <summary>Bucket 2 gate (ADR 0013): binary shader stages are off unless the machine's owner says
+    /// otherwise, because nothing downstream can audit one.</summary>
+    internal static bool SpirvArmed => _spirv ??= Settings.Bool("spirv", false);
+    private static bool? _spirv;
+
+    /// <summary>The raw bytes behind <paramref name="resref"/>.shd, or null when nothing supplies it.</summary>
+    private static byte[]? Blob(string resref, ExtenderLog? log)
+    {
         if (_resManSym == IntPtr.Zero || _exists == null || _getResObject == null || _setResObject == null
             || _demand == null || _release == null || _releaseObj == null || _cresCtor == null
             || _operatorNew == null || resref.Length > ResRefBytes) return null;
@@ -72,16 +120,15 @@ internal static unsafe class ShaderResource
 
         byte* data = *(byte**)(res + CResData);
         int size = *(int*)(res + CResSize);
-        // A BOM ahead of #version is a compile error, and an editor on Windows writes one without asking.
-        string? text = data != null && size > 0 ? Encoding.UTF8.GetString(data, size).TrimStart('\uFEFF') : null;
+        byte[]? bytes = null;
+        if (data != null && size > 0) { bytes = new byte[size]; new Span<byte>(data, size).CopyTo(bytes); }
 
         _release(resMan, res);
         // Second arg is ReleaseResObject's "do not queue for freeing"; CResHelper::ClearResHelper passes
         // exactly this predicate -- GetData() == 0, i.e. nothing was ever serviced, so there is nothing to free.
         _releaseObj(resMan, res, data == null ? (byte)1 : (byte)0);
 
-        if (text != null) log?.Info($"shader override: {resref}.shd from resman ({size} bytes)");
-        return text;
+        return bytes;
     }
 
     /// <summary>Expand the sizing tokens an Alloy pipeline source may carry, so a shipped .shd tracks the

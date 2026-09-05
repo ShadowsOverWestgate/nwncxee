@@ -196,7 +196,7 @@ internal static unsafe class AlloyLights
         $"gain {_gain:F2}  wrapradius {_srcRadius:F2}  rimfade {_falloffPow:F2}  " +
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  " +
         $"ambient x{AmbientScale:F2}  sun x{SunScale:F2}  overbright x{OverbrightScale:F2}  " +
-        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  shadownear {_shadowNear:F2}  " +
+        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  binreach {_binReach:F2}  bincap {_binCap:F0}  shadownear {_shadowNear:F2}  " +
         // The engine's area terms are NOT echoed here: they live only during the world render, and a chat
         // command runs after it, where they read zero. FrameRead.EngineAreaTerms is printed from the
         // /shadow trace line instead, which is inside the pass slot.
@@ -222,7 +222,9 @@ internal static unsafe class AlloyLights
             case "sss":     old = _sss; _sss = v; break;
             case "shadowsoft": old = _shadowSoft; _shadowSoft = v; break;
             case "discpx": old = _discPx; _discPx = v; break;
-            case "shadowcap": old = _shadowCap; _shadowCap = Math.Clamp(v, 0f, 4f); break;   // 0 = every light; the shader keeps 4 candidates
+            case "shadowcap": old = _shadowCap; _shadowCap = Math.Clamp(v, 0f, 2f); break;   // 0 = every light; the shader keeps 2 candidates
+            case "binreach": old = _binReach; _binReach = Math.Clamp(v, 0.1f, 4f); break;
+            case "bincap":   old = _binCap; _binCap = Math.Clamp(MathF.Round(v), 0f, ClusterCap); break;
             case "shadownear": old = _shadowNear; _shadowNear = v; break;
             case "hot":     old = _hot; _hot = v; break;
             case "hotsize": old = _hotSize; _hotSize = v; break;
@@ -249,7 +251,7 @@ internal static unsafe class AlloyLights
         float Att(float f2, float gain) => gain * (1f - f2) / (_atten.X + _atten.Y * f2);
         float g = _gain, r = _srcRadius, p = _falloffPow, am = AmbientScale, su = SunScale, ov = OverbrightScale;
         float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN, sf = _discPx, sc = _shadowCap;
-        float sv = _sss;
+        float sv = _sss, bre = _binReach, bca = _binCap;
         float bg = _bootGain, br = _bootRadius, bp = _bootPow, ba = _bootAmbient, bs = _bootSun, bo = _bootOver;
 
         _bootGain = 40f; _bootRadius = 0.7f; _bootPow = 2f; _bootAmbient = 1f; _bootSun = 1f; _bootOver = 1f;
@@ -257,11 +259,11 @@ internal static unsafe class AlloyLights
         bool ok = float.IsNaN(Tune("nope", 1f));                       // unknown knob is reported
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyLights.SelfCheck FAIL: {w}"); } }
         foreach (var key in new[] { "gain", "radius", "falloff", "ambient", "sun", "overbright",
-                                    "wrap", "wrapndl", "sss", "shadowsoft", "discpx", "shadowcap", "shadownear", "hot", "hotsize" })
+                                    "wrap", "wrapndl", "sss", "shadowsoft", "discpx", "shadowcap", "shadownear", "hot", "hotsize", "binreach", "bincap" })
             ok &= !float.IsNaN(Tune(key, 3f));                          // every documented knob is reachable
         ok &= _gain == 3f && _srcRadius == 3f && _falloffPow == 3f && AmbientScale == 3f && SunScale == 3f
               && OverbrightScale == 3f && _wrap == 3f && _shadowSoft == 3f && _discPx == 3f && _shadowNear == 3f
-              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadowCap == 3f && _sss == 3f;
+              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadowCap == 2f && _sss == 3f && _binReach == 3f && _binCap == 3f;
         _bootGain = 7f;                                                 // reset must honour the BOOT value...
         ResetTuning();
         ok &= _gain == 7f && _srcRadius == 0.7f && AmbientScale == 1f;  // ...not the 40f literal
@@ -321,7 +323,7 @@ internal static unsafe class AlloyLights
 
         _gain = g; _srcRadius = r; _falloffPow = p; AmbientScale = am; SunScale = su; OverbrightScale = ov;
         _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn; _discPx = sf; _shadowCap = sc;
-        _sss = sv;
+        _sss = sv; _binReach = bre; _binCap = bca;
         _log = quiet;
         log.Info(ok ? "AlloyLights.SelfCheck: passed"
                     : "AlloyLights.SelfCheck: FAILED -- /light knob table drifted from its documented keys");
@@ -335,6 +337,7 @@ internal static unsafe class AlloyLights
         AmbientScale = _bootAmbient; SunScale = _bootSun; OverbrightScale = _bootOver;
         _wrap = _bootWrap; _shadowSoft = _bootShadowSoft; _shadowNear = _bootShadowNear; _discPx = _bootDiscPx;
         _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN; _shadowCap = _bootShadowCap; _sss = _bootSss;
+        _binReach = _bootBinReach; _binCap = _bootBinCap;
         _log?.Info($"AlloyLights: /light reset -> {Describe()}");
     }
     /// <summary>What the shader is actually running, for the period log -- read where it is USED, not at
@@ -353,7 +356,7 @@ internal static unsafe class AlloyLights
     private static ExtenderLog? _log;
     private static uint _prog, _bufLights, _bufCounts, _bufIndices, _bufStats;
     private static bool _failed;
-    private static int _locView = -1, _locProjXY = -1, _locZ = -1, _locCount = -1, _locGrid = -1;
+    private static int _locView = -1, _locProjXY = -1, _locZ = -1, _locCount = -1, _locGrid = -1, _locReach = -1, _locBinCap = -1, _locBinAtten = -1;
     private static readonly uint[] _query = new uint[2];
     private static bool _queryPending0, _queryPending1;
     private static int _queryAt;
@@ -411,12 +414,14 @@ internal static unsafe class AlloyLights
         int n = FrameInputs.LightCount;
         if (n * 8 > _stage.Length) _stage = new float[n * 8];
         if (n > _ssboLights) GrowLightBuffer(n);
+        float rmin = float.MaxValue, rmax = 0f, rsum = 0f;
         fixed (float* s = _stage)
         {
             for (int i = 0; i < n; i++)
             {
                 Vector4 pr = FrameInputs.AreaLightPosRange[i];
                 Vector3 c = FrameInputs.AreaLightColor[i];
+                rmin = MathF.Min(rmin, pr.W); rmax = MathF.Max(rmax, pr.W); rsum += pr.W;
                 float* d = s + i * 8;
                 d[0] = pr.X; d[1] = pr.Y; d[2] = pr.Z; d[3] = pr.W;
                 d[4] = c.X; d[5] = c.Y; d[6] = c.Z;
@@ -431,6 +436,7 @@ internal static unsafe class AlloyLights
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         _uploaded = n;
         LastLightCount = n;
+        _radMin = n > 0 ? rmin : 0f; _radMax = rmax; _radMean = n > 0 ? rsum / n : 0f;
     }
 
     /// <summary>Re-size the light SSBO for a denser area than any seen this session. Cold: an area load at
@@ -497,6 +503,9 @@ internal static unsafe class AlloyLights
         Gl.Uniform2f(_locProjXY, p00, p11);
         Gl.Uniform2f(_locZ, near, far);
         Gl.Uniform1i(_locCount, _uploaded);
+        Gl.Uniform1f(_locReach, _binReach);
+        Gl.Uniform1i(_locBinCap, (int)_binCap);
+        Gl.Uniform2f(_locBinAtten, _atten.X, _atten.Y);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindLights, _bufLights);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, _bufCounts);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIndices, _bufIndices);
@@ -573,6 +582,20 @@ internal static unsafe class AlloyLights
     /// <summary>#336: cube-shadow taps a fragment may pay, in cluster order; 0 = every shadowing light.</summary>
     internal static float ShadowCap => _shadowCap;
     private static float _shadowCap = 2f, _bootShadowCap = 2f;
+    /// <summary>EXPERIMENT: the fraction of a light's adjusted radius the cluster build bins it by. The
+    /// engine's curve is under 1/255 of its peak past ~0.8R, so lights binned by the full R sit in froxels
+    /// they cannot visibly light; every one of them still costs the full per-light body per fragment.
+    /// Read with <c>/draw viz 38</c> (lights per pixel). 1 = the full radius.</summary>
+    private static float _binReach = 0.8f, _bootBinReach = 0.8f;
+    internal static float BinReach => _binReach;
+    /// <summary>EXPERIMENT: the most lights a froxel keeps -- the K strongest by the engine's curve at the
+    /// froxel's nearest point times the colour's luma, vanilla's per-object list made per froxel. 0 = all.
+    /// The seam risk is the one #336 met with a per-froxel shadow order: a light dropped in one froxel and
+    /// kept in its neighbour draws a grid edge, so the weakest kept light must be invisible for the cap to be.</summary>
+    private static float _binCap = 16f, _bootBinCap = 16f;
+    /// <summary>Adjusted radius of the uploaded lights this frame -- min, mean, max -- for the period line.
+    /// The plaza heatmap read 32+ lights per pixel; whether that is many lights or huge radii is this number.</summary>
+    private static float _radMin, _radMean, _radMax;
     internal static float ShadowNearWorld => _shadowNear * _srcRadius;
 
     /// <summary>Non-blocking timer + overflow readback: only ever touched when the driver says the result is
@@ -606,8 +629,8 @@ internal static unsafe class AlloyLights
     internal static string Diag(uint overflow) =>
         $"{DescribeCurve()}, " +
         $"lights {LastLightCount} ({FrameInputs.LocalLightCount} flagged castShadows, " +
-        $"{FrameInputs.LightsWithCube} with a cube)" +
-        $", cluster build {LastBuildMs:F3}ms on {GridX}x{GridY}x{GridZ}" +
+        $"{FrameInputs.LightsWithCube} with a cube; adjusted radius {_radMin:F1}/{_radMean:F1}/{_radMax:F1}u min/mean/max)" +
+        $", cluster build {LastBuildMs:F3}ms on {GridX}x{GridY}x{GridZ} (binreach {_binReach:F2}, bincap {_binCap:F0})" +
         (overflow > 0 ? $", CLUSTER OVERFLOW {overflow}/period (cap {ClusterCap})" : "");
 
     private static bool Ensure()
@@ -623,6 +646,8 @@ internal static unsafe class AlloyLights
         if (prog == 0) { _failed = true; return false; }
         _locView = GlProgram.Loc(prog, "uView"); _locProjXY = GlProgram.Loc(prog, "uProjXY");
         _locZ = GlProgram.Loc(prog, "uZ"); _locCount = GlProgram.Loc(prog, "uLightCount");
+        _locReach = GlProgram.Loc(prog, "uReach");
+        _locBinCap = GlProgram.Loc(prog, "uBinCap"); _locBinAtten = GlProgram.Loc(prog, "uAtten");
         _locGrid = GlProgram.Loc(prog, "uGrid");
 
         uint b;
@@ -832,7 +857,7 @@ internal static unsafe class AlloyLights
         // that never declares it, which is the Lambert term alone.
         uniform vec2 uSss;
         const uint SOWX_CLUSTER_CAP = $CAP$u;
-        const int SOWX_CAP_MAX = 4;   // #336: the shadow cap's ceiling (register-resident candidates)
+        const int SOWX_CAP_MAX = 2;   // #336: the shadow cap's ceiling -- two NAMED candidates, no arrays
         // The engine's own sRGB->linear conversion (Ghidra RenderInterface::GetColorSpaceFromSRGB: powf(c,
         // 2.2) per channel, identity at 0 and 1). Textures and material colours both arrive non-linear --
         // the stock shaders apply the same curve via ApplyColorSpace before lighting them.
@@ -947,10 +972,11 @@ internal static unsafe class AlloyLights
             // strongly get a cube fetch, the rest draw unshadowed. Per fragment, never per froxel -- a
             // per-froxel choice put the seam on the cluster grid, squares glued to the screen wherever four
             // cube lights overlapped. The candidates are kept sorted; an evicted one is added unshadowed.
+            // EXPERIMENT: the candidates used to be five local arrays indexed by a runtime variable in a
+            // while loop -- what a shader compiler spills to scratch memory. Two named slots, A the strongest.
             int capN = int(min(uLocalSoft.w, float(SOWX_CAP_MAX)));
-            float cF2[SOWX_CAP_MAX]; int cSlot[SOWX_CAP_MAX]; float cNdl[SOWX_CAP_MAX];
-            vec3 cLit[SOWX_CAP_MAX]; vec3 cSpc[SOWX_CAP_MAX];
-            int cN = 0;
+            float aF2 = 1e30, bF2 = 1e30; int aSlot = -1, bSlot = -1; float aNdl = 0.0, bNdl = 0.0;
+            vec3 aLit = vec3(0.0), aSpc = vec3(0.0), bLit = vec3(0.0), bSpc = vec3(0.0);
             for (uint k = 0u; k < n; k++)
             {
                 uint li = uClIdx[base + k];
@@ -1019,22 +1045,30 @@ internal static unsafe class AlloyLights
                     acc += unsh * sh; spec += spc * sh;
                     continue;
                 }
-                int ci = cN;   // `at` is the attenuation pair above
-                if (cN < capN) cN++;
-                else if (f2 < cF2[capN - 1]) { acc += cLit[capN - 1]; spec += cSpc[capN - 1]; ci = capN - 1; }
-                else { acc += unsh; spec += spc; continue; }
-                while (ci > 0 && cF2[ci - 1] > f2)
-                {
-                    cF2[ci] = cF2[ci - 1]; cSlot[ci] = cSlot[ci - 1]; cNdl[ci] = cNdl[ci - 1];
-                    cLit[ci] = cLit[ci - 1]; cSpc[ci] = cSpc[ci - 1];
-                    ci--;
+                float ndlRaw = dot(N, L);
+                if (f2 < aF2)
+                {   // new strongest: A moves to B (capN 2) or is evicted unshadowed (capN 1); old B is evicted
+                    if (capN >= 2) { if (bSlot >= 0) { acc += bLit; spec += bSpc; }
+                                     bF2 = aF2; bSlot = aSlot; bNdl = aNdl; bLit = aLit; bSpc = aSpc; }
+                    else if (aSlot >= 0) { acc += aLit; spec += aSpc; }
+                    aF2 = f2; aSlot = slot; aNdl = ndlRaw; aLit = unsh; aSpc = spc;
                 }
-                cF2[ci] = f2; cSlot[ci] = slot; cNdl[ci] = dot(N, L); cLit[ci] = unsh; cSpc[ci] = spc;
+                else if (capN >= 2 && f2 < bF2)
+                {
+                    if (bSlot >= 0) { acc += bLit; spec += bSpc; }
+                    bF2 = f2; bSlot = slot; bNdl = ndlRaw; bLit = unsh; bSpc = spc;
+                }
+                else { acc += unsh; spec += spc; }
             }
-            for (int q = 0; q < cN; q++)
+            if (aSlot >= 0)
             {
-                float sh = SowxLocalShadow(cSlot[q], worldPos, N, cNdl[q], onMover, viewDepth);
-                acc += cLit[q] * sh; spec += cSpc[q] * sh;
+                float sh = SowxLocalShadow(aSlot, worldPos, N, aNdl, onMover, viewDepth);
+                acc += aLit * sh; spec += aSpc * sh;
+            }
+            if (bSlot >= 0)
+            {
+                float sh = SowxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth);
+                acc += bLit * sh; spec += bSpc * sh;
             }
             return acc;
         }
@@ -1221,13 +1255,16 @@ internal static unsafe class AlloyLights
         layout(local_size_x = $GROUP$) in;
         layout(std430, binding = 0) readonly buffer LightBuf { vec4 uLights[]; };
         layout(std430, binding = 1) writeonly buffer ClusterCount { uint uClCount[]; };
-        layout(std430, binding = 2) writeonly buffer ClusterIdx { uint uClIdx[]; };
+        layout(std430, binding = 2) buffer ClusterIdx { uint uClIdx[]; };
         layout(std430, binding = 3) buffer Stats { uint uOverflow; };
         uniform mat4 uView;
         uniform vec2 uProjXY;
         uniform vec2 uZ;
         uniform ivec3 uGrid;
         uniform int uLightCount;
+        uniform float uReach;
+        uniform int uBinCap;
+        uniform vec2 uAtten;
         const uint CAP = $CAP$u;
 
         void main()
@@ -1260,19 +1297,41 @@ internal static unsafe class AlloyLights
             uint n = 0u;
             uint base = id * CAP;
             uint dropped = 0u;
+            // EXPERIMENT (/light bincap): keep only the K strongest, by the engine's curve at the froxel's
+            // nearest point times luma -- the ordering the per-fragment body would find, made once per froxel.
+            uint K = uBinCap <= 0 ? CAP : min(uint(uBinCap), CAP);
+            float sc[CAP];
+            vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
             for (int i = 0; i < uLightCount; i++)
             {
                 vec4 pr = uLights[i * 2];
-                float r = pr.w;
+                float r = pr.w * uReach;
                 vec3 e = (uView * vec4(pr.xyz, 1.0)).xyz;
                 vec3 dv = e - clamp(e, lo, hi);
-                if (dot(dv, dv) > r * r) continue;
-                if (n >= CAP) { dropped = 1u; break; }
-                uClIdx[base + n] = uint(i);
-                n++;
+                float dd = dot(dv, dv);
+                if (dd > r * r) continue;
+                if (uBinCap <= 0)
+                {
+                    if (n >= CAP) { dropped = 1u; break; }
+                    uClIdx[base + n] = uint(i);
+                    n++;
+                    continue;
+                }
+                float f2 = dd / (pr.w * pr.w);
+                float s = (1.0 - f2) / (at.x + at.y * f2) * dot(uLights[i * 2 + 1].rgb, vec3(0.299, 0.587, 0.114));
+                uint j;
+                if (n < K) j = n++;
+                else if (s > sc[K - 1u]) { j = K - 1u; dropped = 1u; }
+                else { dropped = 1u; continue; }
+                while (j > 0u && sc[j - 1u] < s)
+                {
+                    sc[j] = sc[j - 1u]; uClIdx[base + j] = uClIdx[base + j - 1u];
+                    j--;
+                }
+                sc[j] = s; uClIdx[base + j] = uint(i);
             }
             uClCount[id] = n;
-            if (dropped != 0u) atomicAdd(uOverflow, 1u);
+            if (dropped != 0u && uBinCap <= 0) atomicAdd(uOverflow, 1u);
         }
         """;
 }

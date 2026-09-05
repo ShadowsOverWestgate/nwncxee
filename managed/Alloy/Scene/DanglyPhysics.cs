@@ -123,8 +123,13 @@ internal static unsafe class DanglyPhysics
     /// Animate fires once per part per frame, so an accumulator would advance N times a frame.</summary>
     private static float _hz = 120f;
     private static float _maxSteps = 4f;
+    /// <summary>World units a vertex must move in one frame for the part to count as a shadow MOVER. Below
+    /// it the part keeps its static-cube shadow and does not re-bake a dynamic page. 1cm is well under a
+    /// 256px dynamic-page texel at any reach a cube light has (2*far/256 = 4cm at far 5u). Errs toward
+    /// moving: a swing is many texels a frame, a settled banner under a wandering breeze is under one.</summary>
+    private static float _still = 0.01f;
 
-    private static int _parts, _verts;
+    private static int _parts, _verts, _moved;
 
     internal static void Install(ExtenderLog log, HookService hooks)
     {
@@ -166,15 +171,16 @@ internal static unsafe class DanglyPhysics
     internal static string Stats(int frames)
     {
         if (frames <= 0 || _parts == 0) { _parts = 0; _verts = 0; return ""; }
-        string s = $"dangly {(float)_parts / frames:F1} parts/f, {(float)_verts / frames:F0} verts/f";
-        _parts = 0; _verts = 0;
+        string s = $"dangly {(float)_parts / frames:F1} parts/f, {(float)_verts / frames:F0} verts/f, " +
+                   $"{(float)_moved / frames:F1} moved/f";
+        _parts = 0; _verts = 0; _moved = 0;
         return s;
     }
 
     internal static string Describe()
         => $"dangly {(_on && _armed ? "on" : _armed ? "off (vanilla solve)" : "unarmed")} "
          + $"gravity {_gravity:F2} wind {_wind:F2} turb {_turb:F2} turbfreq {_turbFreq:F2} "
-         + $"turbspeed {_turbSpeed:F2} vary {_vary:F2} breeze {_breeze:F2} body {(_body > 0f ? _body.ToString("F2") : "off")} cage {_cage:F2} hz {_hz:F0} steps {_maxSteps:F0}";
+         + $"turbspeed {_turbSpeed:F2} vary {_vary:F2} breeze {_breeze:F2} body {(_body > 0f ? _body.ToString("F2") : "off")} cage {_cage:F2} hz {_hz:F0} steps {_maxSteps:F0} still {_still:F3}";
 
     /// <summary>Live tuning behind <c>/dangly</c>; returns the old value, NaN for an unknown key. Same
     /// no-lock reasoning as the other passes: independent floats, written from the input thread, re-read
@@ -196,6 +202,7 @@ internal static unsafe class DanglyPhysics
             case "cage":      old = _cage; _cage = MathF.Max(v, 0.01f); break;
             case "hz":        old = _hz; _hz = Math.Clamp(v, 30f, 480f); break;
             case "steps":     old = _maxSteps; _maxSteps = Math.Clamp(MathF.Round(v), 1f, 16f); break;
+            case "still":     old = _still; _still = MathF.Max(v, 0f); break;
             default: return float.NaN;
         }
         _log?.Info($"DanglyPhysics: /dangly {key} {v:F2} (was {old:F2}) -> {Describe()}");
@@ -206,7 +213,7 @@ internal static unsafe class DanglyPhysics
     {
         _on = true; _gravity = 3.0f; _wind = 14f; _turb = 0.7f;
         _turbFreq = 0.9f; _turbSpeed = 2.6f; _vary = 0.15f; _breeze = 0.35f; _body = 0.95f;
-        _cage = 3.5f; _hz = 120f; _maxSteps = 4f;
+        _cage = 3.5f; _hz = 120f; _maxSteps = 4f; _still = 0.01f;
         _log?.Info($"DanglyPhysics: /dangly reset -> {Describe()}");
     }
 
@@ -218,10 +225,11 @@ internal static unsafe class DanglyPhysics
     {
         if (!_on) { Down(part, dt); return; }
 
+        // The engine returns without integrating on these two (dangly-physics.md), so nothing moved.
         IntPtr scene = *_pCurrentScene;
-        if (scene == IntPtr.Zero) { Down(part, dt); return; }
+        if (scene == IntPtr.Zero) { Down(part, dt, solves: false); return; }
         var isAnimating = (delegate* unmanaged<IntPtr, byte>)(*(IntPtr**)scene)[SceneIsAnimatingSlot / 8];
-        if (isAnimating(scene) == 0) { Down(part, dt); return; }
+        if (isAnimating(scene) == 0) { Down(part, dt, solves: false); return; }
 
         IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
         IntPtr vp = *(IntPtr*)(part + PartVertexPrim);
@@ -263,6 +271,7 @@ internal static unsafe class DanglyPhysics
             new Span<float>(vel, n * 3).Clear();
             _commitItemDyn(vdo, (uint)item, 0xffffffff);
             StorePose(part, wpos, wrot);
+            AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, _still);
             Down_TailOnly(part, dt);
             return;
         }
@@ -317,6 +326,7 @@ internal static unsafe class DanglyPhysics
         float disp = *(float*)(node + MdlDisplacement);
         float stiff = StiffnessGain * *(float*)(node + MdlTightness);
         float damp = DampingGain * *(float*)(node + MdlPeriod);
+        float maxSq = 0f;
 
         for (int i = 0; i < n; i++)
         {
@@ -374,6 +384,10 @@ internal static unsafe class DanglyPhysics
             // NaN passes both clamps as "inside" and would land in the GPU buffer; IsFinite catches it.
             if (!float.IsFinite(p.X) || !float.IsFinite(p.Y) || !float.IsFinite(p.Z)) { p = r; v = default; }
 
+            // Displacement against the buffer's PREVIOUS pose (local space; the part's own motion is a
+            // record change the caster pass already sees). The max, not the sum: one flapping corner moves.
+            float ex = p.X - dst[o], ey = p.Y - dst[o + 1], ez = p.Z - dst[o + 2];
+            maxSq = MathF.Max(maxSq, ex * ex + ey * ey + ez * ez);
             dst[o] = p.X; dst[o + 1] = p.Y; dst[o + 2] = p.Z;
             vel[o] = v.X; vel[o + 1] = v.Y; vel[o + 2] = v.Z;
         }
@@ -381,6 +395,7 @@ internal static unsafe class DanglyPhysics
         _commitItemDyn(vdo, (uint)item, 0xffffffff);
         StorePose(part, wpos, wrot);
         _parts++; _verts += n;
+        if (AlloyRenderer.NoteDanglyMoved(part, MathF.Sqrt(maxSq), _still)) _moved++;
         Down_TailOnly(part, dt);
     }
 
@@ -391,9 +406,14 @@ internal static unsafe class DanglyPhysics
         p[0] = rot[0]; p[1] = rot[1]; p[2] = rot[2]; p[3] = rot[3];
     }
 
-    /// <summary>Hand the whole call back to the engine.</summary>
-    private static void Down(IntPtr part, float dt)
-        => ((delegate* unmanaged<IntPtr, float, void>)(*_slot))(part, dt);
+    /// <summary>Hand the whole call back to the engine. Whatever the engine's solve does to the vertices is
+    /// invisible here, so a hand-back that <paramref name="solves"/> reports the part as a mover --
+    /// over-reporting costs a bake, under-reporting freezes a shadow (ADR 0019).</summary>
+    private static void Down(IntPtr part, float dt, bool solves = true)
+    {
+        if (solves) AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, _still);
+        ((delegate* unmanaged<IntPtr, float, void>)(*_slot))(part, dt);
+    }
 
     /// <summary>The obligation the original's tail carries: animate the part's CHILDREN. Skipped, the
     /// subtree freezes. The engine's <c>dt</c> clamp lives here and only here now -- children were tuned
@@ -446,8 +466,22 @@ internal static unsafe class DanglyPhysics
         Vector3 c = Qrot(w, x, y, z, Vector3.UnitX);
         bool ok = (a - Vector3.UnitY).Length() < 1e-5f
                && (b - Vector3.UnitX).Length() < 1e-5f
-               && (c - Vector3.UnitX).Length() < 1e-5f;
+               && (c - Vector3.UnitX).Length() < 1e-5f
+               && MoverVerdictOk();
         log.Info(ok ? "DanglyPhysics.SelfCheck: passed"
                     : $"DanglyPhysics.SelfCheck: FAILED -- quaternion convention wrong (x->{a}, back->{b}, id->{c})");
+    }
+
+    /// <summary>The mover verdict: two sub-threshold twitches add up to a report, a report resets the path,
+    /// still 0 reports any motion at all, and infinity forces one.</summary>
+    private static bool MoverVerdictOk()
+    {
+        float acc = 0f;
+        bool a = !AlloyRenderer.Accumulate(ref acc, 0.006f, 0.01f);
+        bool b = AlloyRenderer.Accumulate(ref acc, 0.006f, 0.01f) && acc == 0f;
+        bool c = !AlloyRenderer.Accumulate(ref acc, 0.006f, 0.01f);
+        float z = 0f;
+        return a && b && c && AlloyRenderer.Accumulate(ref z, 1e-9f, 0f)
+            && AlloyRenderer.Accumulate(ref z, float.PositiveInfinity, 0.01f);
     }
 }

@@ -58,6 +58,38 @@ that way.** The extender expands them when it compiles, for an override exactly 
 its own embedded default, so a file that keeps the tokens stays correct when those sizes
 change on the C# side. Freezing today's numbers into your copy is how it goes stale.
 
+### SPIR-V stages
+
+A `.shd` may hold a **SPIR-V module** instead of GLSL text — same resref, same resource
+chain, sniffed by its magic word. It is off by default; put `spirv=1` in `sowx.cfg` to
+accept one.
+
+It is off by default because a module is unauditable. Everything the text path does for
+you is skipped for a binary stage:
+
+- **no token expansion** — `$CAP$` and friends are C#-side sizes, and a module baked
+  against a different cap misreads the cluster SSBO. Bake today's numbers and re-bake
+  when they change.
+- **no vanilla splice and no hosted content stages** — the `#pragma`-driven bridge that
+  pulls stock and content shader bodies in (`#346`, `#350`) is text surgery.
+- **none of the guards below run.** They read the compiled source; there is no source.
+  Accepting a module is trusting you matched the embedded stage's record layout,
+  bindings and cutout rules yourself.
+
+Practical requirements, none of which the extender can check for you:
+
+- Compile for OpenGL, not Vulkan: `glslangValidator -G --target-env opengl -o out.shd in.frag`.
+  Vulkan-flavoured SPIR-V with descriptor sets will not specialize in a GL context.
+- **Keep the names.** Alloy resolves every uniform by `glGetUniformLocation`. A stripped
+  module links fine and then every lookup returns −1, every `glUniform` is a silent
+  no-op, and the frame is wrong with nothing in the log. Do not pass `--strip`.
+- Entry point must be `main`; specialization constants are not fed.
+- Both stages of a program must be the same kind — GL does not link GLSL against SPIR-V.
+  A mixed program just fails to link and falls back to the embedded default.
+
+A build failure of any kind rebuilds the embedded stage and says so in the log, so a bad
+module costs a log line rather than the frame.
+
 ## The sixteen stages
 
 | resref | stage | what it does |

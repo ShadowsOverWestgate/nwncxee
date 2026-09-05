@@ -355,15 +355,15 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The slot's live model matrix, chased only if it can have moved: the record is stale or
     /// newly tenanted, the part is BSP-filed or gobless (mesh-bucket rewrite), or its gob was visited.
     /// Otherwise the record's own matrix is the live one.</summary>
-    private static Matrix4x4 ChaseModel(int i, float* r, bool stale, bool newTenant)
+    private static Matrix4x4 ChaseModel(int i, float* r, bool stale, bool newTenant, ref StageCounters c)
     {
         bool chase = stale || newTenant || _oBsp[i] || _oGob[i] == IntPtr.Zero || GobVisited(_oGob[i]);
-        if (chase) { _mxChased++; return new NodeRef(_oNode[i]).Model; }
-        _mxCached++;
+        if (chase) { c.MxChased++; return new NodeRef(_oNode[i]).Model; }
+        c.MxCached++;
         if (_fullPoll)
         {
             var live = new NodeRef(_oNode[i]).Model;
-            if (live != *(Matrix4x4*)r) _pollMissMx++;
+            if (live != *(Matrix4x4*)r) c.PollMissMx++;
             return live;
         }
         return *(Matrix4x4*)r;
@@ -385,16 +385,16 @@ public sealed unsafe partial class AlloyRenderer
     /// the vine that danglies -- and a plain part list for the static remainder. So a tileset window IS a
     /// gob part. <see cref="SceneLayout.GobTileData"/> identifies that half positively, and it dissolves
     /// with the wall it belongs to. <c>/draw gobkey 0</c> is the vanilla A/B.</para>
-    private static bool Dissolves(int i, IntPtr tri)
+    private static bool Dissolves(int i, IntPtr tri, ref StageCounters c)
     {
         // Gate order is the census order: each counter must read "parts that would have dissolved but for
         // THIS", so the cheap content refusals come first and the lit one last.
-        if (ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])) { _disNoFeat++; return false; }
+        if (ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])) { c.DisNoFeat++; return false; }
         IntPtr gob = _oGob[i];
-        if (gob != IntPtr.Zero && !(GobKeyhole && _oTileGob[i])) { _disGobUnpierced++; return false; }
+        if (gob != IntPtr.Zero && !(GobKeyhole && _oTileGob[i])) { c.DisGobUnpierced++; return false; }
         // Vanilla's unlit fragment stages all compile KEYHOLING 0, and so does Alloy's (ShaderContract
         // asserts it), so the bit would reach a stage that cannot use it.
-        if (!_oLit[i]) { _disNoLit++; return false; }
+        if (!_oLit[i]) { c.DisNoLit++; return false; }
         if (gob != IntPtr.Zero)
         {
             // A gob part carries NO bbox to test against: PartTriMesh's ctor @0x53cb50 zeroes +0x64..+0x78
@@ -407,18 +407,18 @@ public sealed unsafe partial class AlloyRenderer
             return _khCam && _khOn != 0;
         }
         bool cached = _disGen[i] == _camGen;
-        if (cached && !_fullPoll) { _disCached++; return _disVerdict[i]; }
+        if (cached && !_fullPoll) { c.DisCached++; return _disVerdict[i]; }
         bool live;
         if (!_oMx[i] && _khCam)
         {
             fixed (float* bx = _oBox) fixed (float* pl = _khPlane)
                 live = PartTable.KeyholeDissolvesBox(bx + (long)i * 6, _khOn, pl, _khCut);
-            _disBoxed++;
-            if (_fullPoll && PartTable.KeyholeDissolves(tri) != live) _pollMissBox++;
+            c.DisBoxed++;
+            if (_fullPoll && PartTable.KeyholeDissolves(tri) != live) c.PollMissBox++;
         }
         else live = PartTable.KeyholeDissolves(tri);
-        _disAsked++;
-        if (cached && live != _disVerdict[i]) _pollMissDis++;
+        c.DisAsked++;
+        if (cached && live != _disVerdict[i]) c.PollMissDis++;
         _disVerdict[i] = live; _disGen[i] = _camGen;
         return live;
     }

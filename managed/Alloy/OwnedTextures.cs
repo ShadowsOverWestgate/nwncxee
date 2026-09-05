@@ -966,6 +966,15 @@ internal static unsafe class OwnedTextures
     /// the whole of #220.</summary>
     internal static bool IsOwned(int name) => name > 0 && _owned.Contains((uint)name);
 
+    /// <summary><see cref="Draw"/> without the borrowed-set write: false when Draw would have recorded a
+    /// borrow (a mutation, possibly an allocation), so a worker defers that part to the main thread.</summary>
+    internal static bool TryDraw(int engineTid, out int draw)
+    {
+        draw = engineTid;
+        if (!_armed || engineTid <= 0) return true;
+        if (_index.TryGetValue(engineTid, out ulong key) && _res.TryGetValue(key, out Entry e)) { draw = (int)e.Owned; return true; }
+        return false;
+    }
     /// <summary>The name an owned draw should sample for this engine texture id: Alloy's, or
     /// <paramref name="engineTid"/> itself when the table is stood down or the texture never came through the
     /// upload funnel. Hot -- called per Alloy part per frame -- and in the normal case two dictionary probes

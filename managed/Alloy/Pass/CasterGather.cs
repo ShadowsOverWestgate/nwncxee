@@ -87,7 +87,6 @@ internal static unsafe class CasterGather
     private static readonly uint[] _cmdBuf = new uint[Rotation], _cntBuf = new uint[Rotation];
     private static int _cmdCap, _cntCap, _at;
     private static int _drawN, _groups;
-    private static uint[] _zero = new uint[1024];
 
     /// <summary>The latent count sample's ring: one copy per frame of the LAST view's per-batch counts, read
     /// back two frames later -- <see cref="CullPass"/>'s own instrument shape, so the culled-vs-drawn figure
@@ -174,12 +173,6 @@ internal static unsafe class CasterGather
         _drawN = 0;
         if (drawN <= 0 || groups <= 0 || !Ensure()) return false;
         if (CullPass.SphereBuf == 0) return false;   // no colour build yet: no bounds to cull against
-        if (groups > _zero.Length)
-        {
-            int cap = _zero.Length;
-            while (cap < groups) cap *= 2;
-            _zero = new uint[cap];
-        }
 
         long srcWords = (long)drawN * SrcUints;
         ulong h = 1469598103934665603ul;
@@ -225,10 +218,7 @@ internal static unsafe class CasterGather
                                   int set = SetAll)
     {
         _at = (_at + 1) % Rotation;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _cntBuf[_at]);
-        fixed (uint* z = _zero)
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)_groups * sizeof(uint)), z);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.ZeroBuffer(_cntBuf[_at], (long)_groups * sizeof(uint));
 
         Gl.UseProgram(_prog);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
@@ -394,10 +384,7 @@ internal static unsafe class CasterGather
         }
         if (growCmd) _lyCmdCap = cmds;
         if (growCnt) _lyCntCap = _groups;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _lyCnt[_lyAt]);
-        fixed (uint* z = _zero)
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)_groups * sizeof(uint)), z);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.ZeroBuffer(_lyCnt[_lyAt], (long)_groups * sizeof(uint));
 
         Gl.UseProgram(_layerProg);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);

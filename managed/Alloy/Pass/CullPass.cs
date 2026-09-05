@@ -96,8 +96,6 @@ internal static unsafe class CullPass
     /// is the reprojected cull this pass exists to not be.</summary>
     private static int _pyrGen = -1;
 
-    private static uint[] _zero = new uint[1024];
-
     /// <summary>#243 (AC5): what the last readable dispatch actually kept. Copied out of the count buffer
     /// three frames late through a small ring, so the period line can report culled-vs-drawn without a
     /// readback anywhere near the submission path.</summary>
@@ -277,11 +275,11 @@ internal static unsafe class CullPass
         // rather than capped: a refusal here would be a refusal AFTER the staging walk had already dropped
         // the engine's visibility gate on the strength of Ready, and the frame would then draw the whole
         // area unculled -- the cap has to not exist rather than be generous.
-        if (groups > _zero.Length)
+        if (groups > _counts.Length)
         {
-            int cap = _zero.Length;
+            int cap = _counts.Length;
             while (cap < groups) cap *= 2;
-            _zero = new uint[cap]; _counts = new uint[cap];
+            _counts = new uint[cap];
         }
 
         _drawN = drawN; _groups = groups; _lodScale = lodScale;
@@ -349,12 +347,7 @@ internal static unsafe class CullPass
     internal static void Dispatch(int phase, Matrix4x4* vp, bool hiZ, int gen)
     {
         if (_phase == -1 || _drawN <= 0) return;
-        // Zero the counters. glClearBufferData is not in the loader, and a BufferSubData of a few hundred
-        // bytes off a static zero array costs nothing next to the dispatch it precedes.
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _cntBuf[phase]);
-        fixed (uint* z = _zero)
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)_groups * sizeof(uint)), z);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.ZeroBuffer(_cntBuf[phase], (long)_groups * sizeof(uint));
 
         Gl.UseProgram(_prog);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
