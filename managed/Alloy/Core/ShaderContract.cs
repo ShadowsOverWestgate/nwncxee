@@ -253,7 +253,7 @@ internal static class ShaderContract
                   // which is what shipped content looks like today, so nothing would look wrong.
                   && OwnedLitFsHead.Contains($"SOWX_SLOT_AO = {AoBit};")
                   && OwnedLitFsHead.Contains($"SOWX_SLOT_ENV = {EnvSlot};")
-                  && OwnedLitFsMain.Contains("if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv).r;")
+                  && OwnedLitFsMain.Contains("if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv, uLodBias).r;")
                   && OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl")
                   && OwnedVs.Contains("uDrawBase + gl_DrawID") && OwnedLitVs.Contains("uDrawBase + gl_DrawID")
                   // #242: ...and every one of them reaches its record THROUGH the draw-to-slot index. The

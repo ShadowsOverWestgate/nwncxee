@@ -399,6 +399,7 @@ public sealed unsafe partial class AlloyRenderer
         KhDia = GlProgram.Loc(prog, "uKeyholeDia"),
         KhCam = GlProgram.Loc(prog, "uKeyholeCam"),
         Pixel = GlProgram.Loc(prog, "uPixel"),
+        LodBias = GlProgram.Loc(prog, "uLodBias"),
         Eye = GlProgram.Loc(prog, "uEyePos"),
         FogSky = GlProgram.Loc(prog, "uFogSky"),
         FogSkyColor = GlProgram.Loc(prog, "uFogSkyColor"),

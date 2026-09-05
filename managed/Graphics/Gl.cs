@@ -154,7 +154,7 @@ public static unsafe class Gl
                       TEXTURE_LOD_BIAS = 0x8501;
     /// <summary>Sample count of the bound draw framebuffer. 1 (or 0) means alpha-to-coverage has nothing to
     /// modulate and the Alloy grass pass falls back to dithering its cutout edge.</summary>
-    public const uint SAMPLES = 0x80A9;
+    public const uint SAMPLES = 0x80A9, SAMPLE_BUFFERS = 0x80A8;
     /// <summary>#127: the grass displacement field's format -- RG the signed XY push, B the press-down.</summary>
     public const uint RGBA8 = 0x8058;
     /// <summary>#211: the sized formats an unsized engine upload has to be promoted to before

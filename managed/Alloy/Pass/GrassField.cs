@@ -238,6 +238,7 @@ internal static unsafe partial class GrassField
     /// keep here: grass is looked at edge-on, which is precisely the case isotropic filtering handles worst.
     /// <c>_edge</c> widens the analytic cutout ramp beyond its natural one-pixel width.</summary>
     private static float _lodBias = BootSoften, _aniso = BootAniso, _edge = BootEdge;
+    private static float _appliedScaleBias;
     private static bool _samplerDirty = true;
     /// <summary>Displacement dials (live: <c>/grass push|pushradius|pushextent</c>). <c>_pushGain</c> 0
     /// disables the whole field, including its rebuild and upload.</summary>
@@ -1116,8 +1117,10 @@ internal static unsafe partial class GrassField
             _sampMip = ids[0]; _sampFlat = ids[1];
             _samplerDirty = true;
         }
-        if (!_samplerDirty) return;
-        _samplerDirty = false;
+        // #391: the render-scale bias rides the soften dial; re-applied when the scale moves
+        float scaleBias = PostChain.LodBias;
+        if (!_samplerDirty && scaleBias == _appliedScaleBias) return;
+        _samplerDirty = false; _appliedScaleBias = scaleBias;
         float maxAniso = 1f;
         if (Gl.GetFloatv != null) { float v; Gl.GetFloatv(Gl.MAX_TEXTURE_MAX_ANISOTROPY, &v); if (v > 1f) maxAniso = v; }
         float aniso = MathF.Min(MathF.Max(_aniso, 1f), maxAniso);
@@ -1129,7 +1132,7 @@ internal static unsafe partial class GrassField
             Gl.SamplerParameteri(sm, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
             Gl.SamplerParameteri(sm, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
             Gl.SamplerParameterf(sm, Gl.TEXTURE_MAX_ANISOTROPY, aniso);
-            Gl.SamplerParameterf(sm, Gl.TEXTURE_LOD_BIAS, _lodBias);
+            Gl.SamplerParameterf(sm, Gl.TEXTURE_LOD_BIAS, _lodBias + scaleBias);
         }
         _appliedAniso = aniso;
     }

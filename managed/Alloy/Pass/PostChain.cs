@@ -77,6 +77,12 @@ internal static unsafe class PostChain
     private static readonly StandDown _down = new("PostChain");
     private static ExtenderLog? _log;
     private static uint _fbo, _hdrTex, _bloomTex, _depthTex;
+    /// <summary>#391: a 1x depth at DISPLAY size for the hand-back into a multisampled target. GL 4.6 18.3.2
+    /// makes a blit whose rectangles differ INVALID_OPERATION when either framebuffer is multisampled, so
+    /// under a render scale the resolve into an MSAA engine target goes in two: scale into this, then 1:1.</summary>
+    private static uint _scratchFbo, _scratchTex;
+    private static int _scratchW, _scratchH;
+    private static uint _scratchFormat;
     private static uint _depFormat;
     /// <summary>The engine depth attachment whose hand-back the driver refused, as
     /// <see cref="AttachmentKey"/> -- NOT a global latch. The engine's target is a per-pass fact (a GUI 3D
@@ -147,6 +153,16 @@ internal static unsafe class PostChain
     /// deliberately not a boot value: <c>/post reset</c> turns it off with the other views.</summary>
     private static bool _clearViz;
     private static int _mode = Aces;
+    /// <summary>#391: the RENDER scale -- the owned 3D frame's size as a fraction of the display target's,
+    /// per axis. Below 1 the world renders at fewer pixels and the resolve upscales it (bilinear); above 1 it
+    /// is supersampling. The engine's 2D UI never sees it. Boot value from <c>renderscale</c> in sowx.cfg,
+    /// live through <c>/post scale</c>; clamped to <see cref="MinScale"/>..<see cref="MaxScale"/> at both
+    /// doors because a 0x0 target is a refusal, not a look.</summary>
+    private static float _scale = 1f, _bootScale = 1f;
+    internal const float MinScale = 0.25f, MaxScale = 2f;
+    /// <summary>#388: the camera motion-vector pass, <c>/post motion 1</c>. Off by default -- it has no
+    /// consumer yet, so its cost would buy nothing; <c>/post viz 4</c> runs it regardless to paint it.</summary>
+    private static bool _motion;
     private static float _bootBloom, _bootThreshold, _bootKnee, _bootTmKnee, _bootDither, _bootExposure, _bootAcesMix;
     private static int _bootMode;
 
@@ -160,6 +176,7 @@ internal static unsafe class PostChain
         // The one boot decision in this class: since #132 there is no Alloy frame without the resolve, so
         // hdr=0 is not a look toggle but a stand-down of the whole Alloy frame -- config, not a /post key.
         _on = Settings.Bool("hdr", true);
+        _scale = _bootScale = Settings.Float("renderscale", 1f, MinScale, MaxScale);
         // #152 is the precedent this whole policy generalises (ADR 0013): a debug visualization is a live
         // request, never a boot state -- a forgotten viz setting booted every session into the bloom-debug
         // view until the user typed /post viz 0. Every look dial below is now the same shape.
@@ -177,7 +194,8 @@ internal static unsafe class PostChain
     internal static string Describe() =>
         $"hdr {(_on ? "on" : "off")}  bloom {_bloom:F3}  threshold {_threshold:F2}  knee {_knee:F2}  " +
         $"exposure {_exposure:F2}  tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  acesmix {_acesMix:F2}  tmknee {_tmKnee:F2}  " +
-        $"dither {_dither:F2}" + (_viz > 0f ? $"  VIZ {_viz:F0}" : "")
+        $"dither {_dither:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(_motion ? "on" : "off")}"
+        + (_viz > 0f ? $"  VIZ {_viz:F0}" : "")
         + (_clearViz ? "  CLEARVIZ (target cleared magenta)" : "")
         + " | " + PostStack.Describe();
 
@@ -185,6 +203,20 @@ internal static unsafe class PostChain
     /// #375: whichever stage WRITES that target applies it -- the resolve when the stack is empty, the
     /// stack's last stage otherwise -- so the frame is quantised exactly once.</summary>
     internal static float DitherLsb => _dither / 255f;
+
+    /// <summary>#391: a display extent at the render scale, never below one pixel.</summary>
+    internal static int RenderSize(int display) => Math.Max((int)MathF.Round(display * _scale), 1);
+
+    /// <summary>#391: the texture LOD bias every owned material sample takes: <c>log2(scale)</c>, so a frame
+    /// rendered at fewer pixels picks the mips the DISPLAY footprint would have and the upscale does not
+    /// go soft on top of them. Clamped at 0: above 1.0 the point is the extra texture detail the resolve
+    /// then averages, and a coarser mip would throw it away. 0 at 1.0, so the default is pixel-identical.</summary>
+    internal static float LodBias => MathF.Min(MathF.Log2(_scale), 0f);
+
+    /// <summary>#388: whether the motion-vector pass runs this frame -- armed, or the viz that paints it.</summary>
+    internal static bool MotionWanted => _motion || (int)_viz == VizMotion;
+    /// <summary><c>/post viz 4</c>: the velocity target, painted by the resolve in place of the frame.</summary>
+    internal const int VizMotion = 4;
 
     /// <summary>Live tuning behind <c>/post</c>; returns the old value, NaN for an unknown key. Same
     /// no-lock reasoning as <see cref="AlloyLights.Tune"/>: independent floats, written from the input
@@ -206,6 +238,8 @@ internal static unsafe class PostChain
             case "dither":    old = _dither; _dither = v; break;
             case "viz":       old = _viz; _viz = v; break;
             case "clearviz":  old = _clearViz ? 1f : 0f; _clearViz = v != 0f; break;
+            case "scale":     old = _scale; _scale = Math.Clamp(v, MinScale, MaxScale); break;
+            case "motion":    old = _motion ? 1f : 0f; _motion = v != 0f; break;
             // #375: the display-space stack's own keys, behind the same command.
             default: return PostStack.Tune(key, v);
         }
@@ -220,6 +254,7 @@ internal static unsafe class PostChain
         // viz has no boot value and never should: it is a debug VIEW, not a look setting, so "reset" means
         // off. Leaving it out is why /post reset could not undo a stray /post viz either.
         _viz = 0f; _clearViz = false;
+        _scale = _bootScale; _motion = false;
         PostStack.ResetTuning();
         _log?.Info($"PostChain: /post reset -> {Describe()}");
     }
@@ -229,6 +264,7 @@ internal static unsafe class PostChain
     internal static void Forget()
     {
         _fbo = 0; _hdrTex = 0; _bloomTex = 0; _depthTex = 0; _w = 0; _h = 0; _levels = 0;
+        _scratchFbo = 0; _scratchTex = 0; _scratchW = 0; _scratchH = 0; _scratchFormat = 0;
         _depFormat = 0; _depW = 0; _depH = 0;
         _handbackBad = 0; _probedAttach = 0; _probedFormat = 0;
         _defaultProbed = false; _defaultFormat = 0; _defaultOk = null;
@@ -363,24 +399,65 @@ internal static unsafe class PostChain
     /// <summary>The blit both hand-backs are: drain the error queue so what comes back is ours, copy the
     /// owned depth into <paramref name="dst"/>, restore the draw binding. Returns the GL error, 0 for
     /// success. The two callers differ only in what a failure costs them.</summary>
-    private static uint BlitDepthInto(uint dst)
+    private static uint BlitDepthInto(uint dst, int dstW, int dstH)
     {
         if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
-        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo);
-        Gl.BlitFramebuffer(0, 0, _depW, _depH, 0, 0, _depW, _depH, Gl.DEPTH_BUFFER_BIT, (uint)Gl.NEAREST);
+        uint src = _fbo;
+        // #391: a SCALING blit under a render scale -- legal for depth as long as the filter is NEAREST and
+        // neither side is multisampled; into an MSAA target it goes through the 1x scratch first.
+        if ((dstW != _depW || dstH != _depH) && Multisampled(dst) && EnsureScratch(dstW, dstH))
+        {
+            Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo);
+            Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _scratchFbo);
+            Gl.BlitFramebuffer(0, 0, _depW, _depH, 0, 0, dstW, dstH, Gl.DEPTH_BUFFER_BIT, (uint)Gl.NEAREST);
+            Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, dst);
+            src = _scratchFbo;
+        }
+        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src);
+        int sw = src == _fbo ? _depW : dstW, sh = src == _fbo ? _depH : dstH;
+        Gl.BlitFramebuffer(0, 0, sw, sh, 0, 0, dstW, dstH, Gl.DEPTH_BUFFER_BIT, (uint)Gl.NEAREST);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, dst);
         return Gl.GetError == null ? 0 : Gl.GetError();
     }
 
-    private static void ResolveDepth()
+    /// <summary>Whether the bound draw target carries sample buffers. Asked of the framebuffer, not latched:
+    /// the engine's target is a per-pass fact.</summary>
+    private static bool Multisampled(uint dst)
+    {
+        int n = 0;
+        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, dst);
+        Gl.GetIntegerv(Gl.SAMPLE_BUFFERS, &n);
+        return n > 0;
+    }
+
+    private static bool EnsureScratch(int w, int h)
+    {
+        if (_scratchTex != 0 && w == _scratchW && h == _scratchH && _scratchFormat == _depFormat) return true;
+        if (w <= 0 || h <= 0) return false;
+        if (_scratchTex == 0)
+        {
+            uint t; Gl.GenTextures(1, &t); _scratchTex = t;
+            uint f; Gl.GenFramebuffers(1, &f); _scratchFbo = f;
+        }
+        RenderTarget.AllocDepth(_scratchTex, _depFormat, w, h);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _scratchFbo);
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _scratchTex, 0);
+        bool ok = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) == Gl.FRAMEBUFFER_COMPLETE;
+        _scratchW = w; _scratchH = h; _scratchFormat = _depFormat;
+        _log?.Info(ok ? $"PostChain: depth hand-back scratch {w}x{h} (multisampled engine target under a render scale)"
+                      : "PostChain: the depth hand-back scratch is incomplete -- the scaling blit goes direct and may be refused");
+        return ok;
+    }
+
+    private static void ResolveDepth(int dstW, int dstH)
     {
         if (Gl.BlitFramebuffer == null || _depthTex == 0) return;
         // Taken before the blit can invalidate anything: this is the attachment the hand-back is ABOUT.
         ulong key = _probedAttach | (ulong)_depFormat << 48;
         int dst; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &dst);
-        if (dst == 0) { DefaultDepthOk = RspShim.WantsEngineOverlays && BlitDepthToDefault(); return; }
+        if (dst == 0) { DefaultDepthOk = RspShim.WantsEngineOverlays && BlitDepthToDefault(dstW, dstH); return; }
         DefaultDepthOk = false;   // an engine attachment: ResolveDepth's own hand-back, not the overlays'
-        uint err = BlitDepthInto((uint)dst);
+        uint err = BlitDepthInto((uint)dst, dstW, dstH);
         if (err == 0) return;
         // Drop the probe cache so the next pass asks the attachment again rather than trusting the answer
         // that produced this: a device reset (alt-tab, resolution change) can swap the engine's attachment
@@ -463,7 +540,7 @@ internal static unsafe class PostChain
     /// a blit whose destination has no depth buffer drops the bit SILENTLY and returns no error, so
     /// glGetError cannot be the check. A failure here stands the OVERLAYS down, never the Alloy frame --
     /// the frame itself does not need this blit.</para></summary>
-    private static bool BlitDepthToDefault()
+    private static bool BlitDepthToDefault(int dstW, int dstH)
     {
         if (Gl.BlitFramebuffer == null || _depthTex == 0) return false;
         if (_defaultOk == null) _defaultOk = DefaultFormat() != 0;
@@ -476,7 +553,7 @@ internal static unsafe class PostChain
                        "raises no error for it (main/blit.c), so the verdict below cannot see it; overlays may occlude wrong");
         }
         DefaultStencilOk = _defaultHasStencil;
-        uint err = BlitDepthInto(0);
+        uint err = BlitDepthInto(0, dstW, dstH);
         if (err == 0) return true;
         _defaultOk = false;
         DefaultStencilOk = false;
@@ -664,7 +741,7 @@ internal static unsafe class PostChain
     internal static void Composite(int* viewport, uint into)
     {
         if (!Armed) return;
-        ResolveDepth();
+        ResolveDepth(viewport[2], viewport[3]);
         if (into != 0) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, into); Gl.Disable(Gl.FRAMEBUFFER_SRGB); }
         Gl.UseProgram(_progComposite);
         Gl.BindVertexArray(_vao);
@@ -672,7 +749,9 @@ internal static unsafe class PostChain
         Gl.ActiveTexture(Gl.TEXTURE0 + HdrUnit);
         Gl.BindTexture(Gl.TEXTURE_2D, _hdrTex);
         Gl.ActiveTexture(Gl.TEXTURE0 + BloomUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _bloomOk ? _bloomTex : 0);
+        // #388: the velocity viz rides the bloom unit -- nothing else the resolve samples is free, and the
+        // two views are exclusive by construction.
+        Gl.BindTexture(Gl.TEXTURE_2D, (int)_viz == VizMotion ? MotionVectors.Tex : _bloomOk ? _bloomTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.Uniform1i(_cHdr, (int)HdrUnit);
         Gl.Uniform1i(_cBloom, (int)BloomUnit);
@@ -703,7 +782,7 @@ internal static unsafe class PostChain
         Resolves = 0;
         if (!_on) return "off (config hdr=0)";
         return n == 0 ? $"NOT RESOLVING ({(_down.Reason.Length == 0 ? "never reached the pass" : _down.Reason)})"
-                      : $"{(float)n / MathF.Max(frames, 1):F2} resolves/frame at {_w}x{_h}, {_levels}-level bloom";
+                      : $"{(float)n / MathF.Max(frames, 1):F2} resolves/frame at {_w}x{_h} (scale {_scale:F2}), {_levels}-level bloom";
     }
 
     private static int LevelW(int i) => Math.Max(_w >> (i + 1), 1);
@@ -962,7 +1041,7 @@ internal static unsafe class PostChain
         uniform float uExposure;  // scene-referred gain before the tonemap; 1 = identity
         uniform float uAcesMix;   // mode 2: ACES mixed against the shoulder, in linear; 1 = full ACES
         uniform float uDither;   // one LSB of the output target, or 0
-        uniform int uViz;        // 0 = the frame; 1 = bloom only; 2 = HDR only; 3 = bloom x20
+        uniform int uViz;        // 0 = the frame; 1 = bloom only; 2 = HDR only; 3 = bloom x20; 4 = motion vectors
 
         """ + PostColorLib + PostDitherLib + """
 
@@ -995,6 +1074,10 @@ internal static unsafe class PostChain
                 return;
             }
             if (uViz == 2) { frag = vec4(SowxEncode(texture(uHdr, vUV).rgb), 1.0); return; }
+            // #388: the velocity target on the bloom unit. Mid-grey is zero motion; +-32 render pixels of
+            // motion is a full swing of red (x) or green (y), so a pan paints one flat colour over static
+            // geometry and standing still paints flat grey.
+            if (uViz == 4) { frag = vec4(0.5 + textureLod(uBloom, vUV, 0.0).rg / 64.0, 0.5, 1.0); return; }
 
             vec3 c = texture(uHdr, vUV).rgb;
             if (uStrength > 0.0) c += textureLod(uBloom, vUV, 0.0).rgb * uStrength;
@@ -1025,7 +1108,8 @@ internal static unsafe class PostChain
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"PostChain.SelfCheck FAIL: {w}"); } }
 
-        float bl = _bloom, th = _threshold, kn = _knee, tk = _tmKnee, di = _dither, vz = _viz;
+        float bl = _bloom, th = _threshold, kn = _knee, tk = _tmKnee, di = _dither, vz = _viz, sc = _scale, bsc = _bootScale;
+        bool mo = _motion;
         int md = _mode; bool on = _on; bool armed = Armed;
         float bb = _bootBloom, bt = _bootThreshold, bk = _bootKnee, btk = _bootTmKnee, bex = _bootExposure, ex = _exposure, bam = _bootAcesMix, am = _acesMix;
         int bm = _bootMode;
@@ -1036,10 +1120,26 @@ internal static unsafe class PostChain
             // decision. A Tune that still accepted it would be a live half-stand-down.
             E(float.IsNaN(Tune("hdr", 0f)), "hdr is not tunable; it is the boot setting");
             foreach (string key in new[] { "bloom", "threshold", "knee", "tonemap", "tmknee", "exposure", "acesmix",
-                                          "dither", "viz" })
+                                          "dither", "viz", "scale", "motion" })
                 E(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
+            // #391: the scale is clamped at the command door too -- RenderCommands only refuses negatives,
+            // and a 0x0 target is a refusal wearing a knob's name. And the sizes it produces never hit 0.
+            Tune("scale", 0f); E(_scale == MinScale, "scale 0 clamps to the floor");
+            Tune("scale", 9f); E(_scale == MaxScale, "scale 9 clamps to the ceiling");
+            Tune("scale", 0.67f);
+            E(RenderSize(2560) == 1715 && RenderSize(1) == 1, "render size rounds, never below one pixel");
+            E(MathF.Abs(LodBias - MathF.Log2(0.67f)) < 1e-6f, "the lod bias is log2(scale) below 1");
+            Tune("scale", 1.5f); E(LodBias == 0f, "...and 0 above it: supersampling keeps its detail");
+            Tune("scale", 1f); E(RenderSize(2560) == 2560 && LodBias == 0f, "1.0 is pixel-identical");
+            // #388: the viz runs the pass without arming it, and arming is what /post motion does.
+            Tune("motion", 0f); Tune("viz", 0f); E(!MotionWanted, "motion off and no viz: the pass sits out");
+            Tune("viz", VizMotion); E(MotionWanted, "viz 4 runs the pass unarmed");
+            Tune("viz", 0f); Tune("motion", 1f); E(MotionWanted, "/post motion 1 arms it");
             E(Describe().Contains("bloom") && Describe().Contains("tonemap") && Describe().Contains("dither")
-              && Describe().Contains("exposure"), "Describe names every knob group");
+              && Describe().Contains("exposure") && Describe().Contains("scale") && Describe().Contains("motion"),
+              "Describe names every knob group");
+            E(ResolveFs.Contains("if (uViz == 4)") && ResolveFs.Contains("textureLod(uBloom, vUV, 0.0).rg"),
+              "viz 4 paints the velocity target off the bloom unit");
             // Exposure is scene-referred: it multiplies the linear frame BEFORE the tonemap and the encode,
             // never the display value -- a gain after the encode is a gamma-wrong brightness slider.
             E(ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
@@ -1070,9 +1170,10 @@ internal static unsafe class PostChain
             E(ResolveFs.Contains("vec3 outc = SowxEncode(c);") && !PostColorLib.Contains("uniform"),
               "the resolve's encode is unconditional -- the gamma gate is Precheck's refusal, not a switch");
 
-            _bootBloom = 0.5f; _bootMode = Aces;
+            _bootBloom = 0.5f; _bootMode = Aces; _bootScale = 0.75f;
             ResetTuning();
             E(_bloom == 0.5f && _mode == Aces, "reset honours the BOOT values, not the hardcoded defaults");
+            E(_scale == 0.75f && !_motion, "reset restores the boot scale (renderscale) and disarms motion");
             // ...and clears the debug VIEW, which has no boot value. The loop above has just set viz to 1,
             // so this is the live case: without it /post reset cannot undo a stray /post viz.
             E(_viz == 0f, "reset turns the debug viz off");
@@ -1098,14 +1199,14 @@ internal static unsafe class PostChain
             // below is what stops the next knob doing the same silently.
             const float Sentinel = -12345f;
             _bloom = Sentinel; _threshold = Sentinel; _knee = Sentinel; _tmKnee = Sentinel;
-            _dither = Sentinel; _viz = Sentinel;
+            _dither = Sentinel; _viz = Sentinel; _scale = Sentinel;
             _bloom = bl; _threshold = th; _knee = kn; _tmKnee = tk; _mode = md; _on = on;
-            _dither = di; _viz = vz;
+            _dither = di; _viz = vz; _scale = sc; _bootScale = bsc; _motion = mo;
             Armed = armed;
             _bootBloom = bb; _bootThreshold = bt; _bootKnee = bk; _bootTmKnee = btk; _bootExposure = bex; _exposure = ex; _bootAcesMix = bam; _acesMix = am;
             _bootMode = bm;
             E(_bloom != Sentinel && _threshold != Sentinel && _knee != Sentinel && _tmKnee != Sentinel
-              && _dither != Sentinel && _viz != Sentinel,
+              && _dither != Sentinel && _viz != Sentinel && _scale != Sentinel,
               "the check restores EVERY knob it drove -- a missed one ships its test value as the boot value");
             _log = quiet;
         }

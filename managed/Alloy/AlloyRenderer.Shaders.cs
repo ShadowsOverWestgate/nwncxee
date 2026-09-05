@@ -72,6 +72,7 @@ public sealed unsafe partial class AlloyRenderer
         #define SOWX_FEAT_NOIRGLOSS 10
         #define SOWX_FEAT_GROUNDWEATHER 11
         uniform int uTimeOfDay;        // worldtimerTimeOfDay, the engine's own int
+        uniform float uLodBias;        // #391: log2(render scale), <= 0; every material sample takes it
         uniform vec3 uAreaWind;        // areaGlobalWind
         uniform int uAreaFlags;        // areaFlags
         uniform vec3 uCamPos;          // cameraPosition
@@ -691,6 +692,7 @@ public sealed unsafe partial class AlloyRenderer
         in vec2 vUV;
         flat in float vAlpha;
         uniform sampler2D uTex;
+        uniform float uLodBias;        // #391
         uniform int uViz;
         // #126: the engine's fAlphaDiscardValue -- 0.2 on the classes it draws under Enable(1), -1.0 (i.e.
         // no test at all) on the rest. A uniform here because the class is a per-batch fact.
@@ -704,7 +706,7 @@ public sealed unsafe partial class AlloyRenderer
         void main()
         {
             if (uViz == 4) { frag = vec4(1.0, 0.0, 1.0, 1.0); return; }
-            vec4 t = texture(uTex, vUV);
+            vec4 t = texture(uTex, vUV, uLodBias);
             if (uAlphaCut >= 0.0 && t.a <= uAlphaCut) discard;
             // #132: the target is LINEAR, so the texel's display-space encode comes off here too -- the
             // probe and the frame want the same thing now. Same exponent AlloyLights.SowxLinear uses,
@@ -760,11 +762,12 @@ public sealed unsafe partial class AlloyRenderer
         """ + DrawBufDecl + """
         uniform sampler2D uTex;
         uniform float uAlphaCut;
+        uniform float uLodBias;        // #391: the SAME bias as the colour cutout, or the two tests disagree (#119)
         void main()
         {
             if (uAlphaCut < 0.0) return;
             if ((int(uDraw[vDraw].pbr.w) & 64) != 0) return;
-            if (texture(uTex, vUV).a <= uAlphaCut) discard;
+            if (texture(uTex, vUV, uLodBias).a <= uAlphaCut) discard;
         }
         """;
 
@@ -1101,7 +1104,7 @@ public sealed unsafe partial class AlloyRenderer
             float flowMix = 0.0;
             if (feat == SOWX_FEAT_FLOWMAP && (slots & SOWX_SLOT_FLOW) != 0)
             {
-                vec2 flow = texture(uFlowTex, uv).rg * 2.0 - 1.0;
+                vec2 flow = texture(uFlowTex, uv, uLodBias).rg * 2.0 - 1.0;
                 float t1 = (float(uTimeOfDay) / 1000.0) / 5.0;
                 float c1 = fract(t1), c2 = fract(t1 + 2.5);
                 uvA = uv - d.feat.y * flow * c1;
@@ -1113,7 +1116,7 @@ public sealed unsafe partial class AlloyRenderer
             // #146: outside the normal/height branch below -- a material may declare an AO map and nothing
             // else, and the engine's screen-space SSAO (an FB effect, downstream of this pass entirely) does
             // not see the contact detail a baked map carries.
-            if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv).r;
+            if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv, uLodBias).r;
             // #379: ...and the screen-space term beside it, a lighting input like the map (ADR 0021)
             // ...and only where the visibility at this pixel was computed from THIS surface. The buffer comes
             // from the depth prepass, so a fragment the prepass never drew -- a blended door, anything the
@@ -1152,13 +1155,13 @@ public sealed unsafe partial class AlloyRenderer
                     // local self-occlusion (fOcclusionVicinityRange 2.0, base 1.0, modifier 0.0).
                     // ponytail: no parallax displacement of the UVs -- that is the same map read again, per
                     // fragment, in a loop. #122 owns what else the height map is worth.
-                    float o = texture(uHeightTex, uv, 2.0).r - texture(uHeightTex, uv).r;
+                    float o = texture(uHeightTex, uv, 2.0 + uLodBias).r - texture(uHeightTex, uv, uLodBias).r;
                     occl *= 1.0 - clamp(o, 0.0, 0.99);
                 }
                 if ((slots & SOWX_SLOT_NORMAL) != 0)
                 {
                     vec3 nm;
-                    nm.xy = texture(uNrmTex, uv).rg * 2.0 - 1.0;
+                    nm.xy = texture(uNrmTex, uv, uLodBias).rg * 2.0 - 1.0;
                     nm.z = sqrt(max(1.0 - dot(nm.xy, nm.xy), 0.0));
                     // 23 = the TANGENT-SPACE normal as sampled, before the frame touches it. Flat lavender
                     //      means the map carries no signal (or is not the map we think it is), which viz 7
@@ -1231,8 +1234,8 @@ public sealed unsafe partial class AlloyRenderer
             // (inc_standard.shd:253). Linearising the material terms too double-darkened every non-white material.
             vec3 matAmbient = d.amb.rgb;
             vec3 matDiffuse = d.dif.rgb;
-            vec4 texel = texture(uTex, uvA);
-            if (flowMix > 0.0) texel = mix(texel, texture(uTex, uvB), flowMix);
+            vec4 texel = texture(uTex, uvA, uLodBias);
+            if (flowMix > 0.0) texel = mix(texel, texture(uTex, uvB, uLodBias), flowMix);
             // #294: what the diffuse alpha MEANS here, asked once and spent once. On an env-mapped material
             // it is REFLECTIVITY, not coverage -- it becomes envLevel four lines down -- and the engine is
             // explicit about not spending it twice: inc_standard.shd:289 multiplies only `.rgb` through on
@@ -1256,8 +1259,8 @@ public sealed unsafe partial class AlloyRenderer
             // #122: the maps are sampled here and the synthesis itself is a pure function -- it has to fold
             // to a constant off-device (check-shaders.py) for the declared-beats-synthesised rule to be
             // checkable at all. A slot with nothing bound is not sampled, exactly as before.
-            float specTexel = (slots & SOWX_SLOT_SPEC) != 0 ? texture(uSpecTex, uv).r : 0.0;
-            float roughTexel = (slots & SOWX_SLOT_ROUGH) != 0 ? texture(uRoughTex, uv).r : 0.0;
+            float specTexel = (slots & SOWX_SLOT_SPEC) != 0 ? texture(uSpecTex, uv, uLodBias).r : 0.0;
+            float roughTexel = (slots & SOWX_SLOT_ROUGH) != 0 ? texture(uRoughTex, uv, uLodBias).r : 0.0;
             vec3 pbr = SowxSynthPbr(d.pbr.xyz, slots, envLevel, specTexel, roughTexel);
             // #350: the material's own custom FS, hosted, AFTER synthesis -- the point its stock body runs,
             // with SetupStandardShaderInputs's outputs in the engine's own names. The material globals are
@@ -1358,7 +1361,7 @@ public sealed unsafe partial class AlloyRenderer
             // surface, not light through it (inc_lighting.shd:615 `ColorIO.rgb += SpecularColor *
             // SpecularLight`, and the texUnit5 add just above it).
             vec3 lit = albedo * total + specLight;
-            if ((slots & SOWX_SLOT_ILLUM) != 0) lit += SowxLinear(texture(uIllumTex, uv).rgb);
+            if ((slots & SOWX_SLOT_ILLUM) != 0) lit += SowxLinear(texture(uIllumTex, uv, uLodBias).rgb);
             // #132: everything from here down stays LINEAR -- the screen and the probe want the same values
             // now, and PostChain's resolve does the frame's one encode. The probe never wanted anything else
             // (#121: glGenerateMipmap filters what is STORED, and filtering display-space values darkens

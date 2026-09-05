@@ -181,6 +181,18 @@ internal static class RenderPasses
         // #375: the display-space stack after the resolve. No Describe/Tune slots of its own: /post is the
         // one post command and PostChain's Describe/Tune/Reset fall through to it. No Revoke -- it captures
         // nothing from the world; its inputs are the engine's option globals, read per frame.
+        // #388: the camera velocity target. No Describe/Tune: /post motion and /post viz 4 reach it through
+        // PostChain. Revoke resets the previous view-projection so the first frame after an area transition
+        // paints zero rather than a jump.
+        r.Register(new PassLifecycle
+        {
+            Name = "motion",
+            Attach = MotionVectors.Attach,
+            SelfCheck = l => MotionVectors.SelfCheck(l),
+            ContextLost = MotionVectors.Forget,
+            Revoke = MotionVectors.Revoke,
+            Stats = MotionVectors.Stats,
+        }, log);
         r.Register(new PassLifecycle
         {
             Name = "ao",

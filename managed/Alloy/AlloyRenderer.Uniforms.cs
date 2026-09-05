@@ -99,6 +99,7 @@ public sealed unsafe partial class AlloyRenderer
         float* px = stackalloc float[4];
         px[0] = 1f / w; px[1] = 1f / h; px[2] = w / h;
         Gl.Uniform3fv(loc.Pixel, 1, px);
+        Gl.Uniform1f(loc.LodBias, PostChain.LodBias);   // #391: -1 where the stage declares none; GL ignores it
         UploadFog(loc);
         if (_shaderConstF != null)
         {

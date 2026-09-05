@@ -249,8 +249,12 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>The pass. Called from the frame walk immediately after the post-process composite; the
-    /// engine target is bound with the finished frame in it.</summary>
-    private static void OutlineHighlightPass(int groups, Matrix4x4* vp, int* viewport)
+    /// engine target is bound with the finished frame in it.
+    /// <para>#391: the mask is drawn at the RENDER size (<paramref name="viewport"/>) because it depth-tests
+    /// against the render-res frame depth; the composite over the finished frame runs at
+    /// <paramref name="display"/>, sampling the mask bilinearly. The outline radius is in mask texels, so it
+    /// widens by 1/scale on screen -- noted, not corrected.</para></summary>
+    private static void OutlineHighlightPass(int groups, Matrix4x4* vp, int* viewport, int* display)
     {
         HandledCount = 0;
         if (!QuickbarService.OutlineHighlight) return;
@@ -325,7 +329,7 @@ public sealed unsafe partial class AlloyRenderer
 
         // Step 2: ONE fullscreen triangle over the finished frame -- fill + dilated outline, blended.
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prevFbo);
-        Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        Gl.Viewport(display[0], display[1], display[2], display[3]);
         Gl.UseProgram(_progHlComp);
         Gl.BindVertexArray(_hlVao);
         Gl.Disable(Gl.DEPTH_TEST);

@@ -536,7 +536,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Post, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Post, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -1754,6 +1754,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $"water {GpuMs(GpuTerm.Water):F2} / additive {GpuMs(GpuTerm.Additive):F2} (colour {colourMs:F2}) " +
                          $"/ particles {GpuMs(GpuTerm.Particles):F2}" +
                          (_qPartSamples.Measured && _lastPixels > 0 ? $" (overdraw x{_qPartSamples.Avg / _lastPixels:F2})" : "") +
+                         (_qTerm[(int)GpuTerm.Motion].Measured ? $" / motion {GpuMs(GpuTerm.Motion):F2}" : "") +
                          $" / post {GpuMs(GpuTerm.Post):F2}" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.
@@ -1834,7 +1835,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#341 adds the eye and the four fog-target terms: the fog colour is direction-dependent
     /// now, so every stage that fogs uploads the same five values through <see cref="UploadFog"/>.</summary>
     internal unsafe struct FeatLoc { internal int Time, Wind, Flags, Cam, CamFocus, Player, Fog, FogColor, KhDia, KhCam,
-                                       Pixel, Eye, FogSky, FogSkyColor, FogSun, FogSunColor,
+                                       Pixel, Eye, FogSky, FogSkyColor, FogSun, FogSunColor, LodBias,
                                        TgtShapeL, TgtSelfL, TgtObjL, TgtSizeXL, TgtSizeYL, TgtRangeL,
                                        TgtColL, TgtWorldL, ProjL;
         /// <summary>#551: the WHOLE scriptable block, by location. Picking entries one feature at a time
