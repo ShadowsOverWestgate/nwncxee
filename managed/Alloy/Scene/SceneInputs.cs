@@ -142,7 +142,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary>Keys <c>/shadow</c> accepts. The first two are <see cref="CasterPass"/>'s, the rest this
     /// feed's -- one command over the whole shadow path, because a player tuning it is looking at one thing.</summary>
-    private const string ShadowKeys = "dist|lod|rebake|gather|split|layered|refreshall|dynhold|dynevents|dynranks|movers|focusdist|lightcull|diag|lightdiag|torchdiag|trace|mask|maskholes|fade|fadeslots|staticcap|flipcollect";
+    private const string ShadowKeys = "dist|lod|rebake|gather|split|layered|refreshall|dynhold|dynevents|dynranks|movers|focusdist|lightcull|diag|lightdiag|torchdiag|trace|mask|maskholes|maskh|fade|fadeslots|staticcap|flipcollect";
 
     /// <summary>ADR 0013 bucket 1, in the shape <c>RenderCommands.Tune</c> established: <c>/shadow</c> reports,
     /// <c>/shadow &lt;key&gt; &lt;value&gt;</c> sets, <c>/shadow reset</c> restores the boot values. Every one

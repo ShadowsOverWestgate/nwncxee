@@ -657,6 +657,38 @@ public sealed unsafe class CasterPass : IExtenderService
     /// masked casters then stay out of every bake.</summary>
     private static uint _progMask;
     private static int _locMaskVp = -1, _locMaskTex = -1, _locMaskCut = -1;
+    /// <summary>The masked depth program that samples the mask through the record's bindless handle
+    /// (<c>uTexH</c> slot 0) instead of a bound unit, so masked batches no longer split per texture.
+    /// Built only when the renderer's bindless path is armed; <c>/shadow maskh 0</c> is the A/B.</summary>
+    private static uint _progMaskH, _progLayerMaskH;
+    private static int _locMaskHVp = -1, _locMaskHCut = -1, _locLayerMaskHCut = -1;
+    private static bool _maskH = true;
+    private static bool HandleMaskReady => _maskH && _progMaskH != 0 && (_progLayer == 0 || _progLayerMaskH != 0);
+    private static bool _maskHFailed;
+
+    /// <summary>Build the handle-sampling pair once the renderer's bindless path is armed. Lazy because the
+    /// bindless probe runs in the first COLOUR frame and this pass's programs are built in the shadow
+    /// bracket before it; a pass built on that frame would otherwise never get the pair. Re-stages once
+    /// when the pair becomes usable, so the standing key picks it up.</summary>
+    private static void EnsureHandleMask()
+    {
+        if (_maskHFailed || _progMask == 0 || !AlloyRenderer.Bindless || CastMaskHFs == CastMaskHFsSrc) return;
+        if (_progMaskH == 0)
+        {
+            _progMaskH = GlProgram.Graphics(CastMaskHVs, CastMaskHFs, _log, "CasterPass handle-masked depth program");
+            if (_progMaskH == 0) { _maskHFailed = true; return; }
+            _locMaskHVp = GlProgram.Loc(_progMaskH, "uVP"); _locMaskHCut = GlProgram.Loc(_progMaskH, "uAlphaCut");
+            _listVer++;
+            _log?.Info("CasterPass: handle-sampled masks armed -- masked batches merge per VAO (/shadow maskh 0 is the A/B)");
+        }
+        if (_progLayer != 0 && _progLayerMaskH == 0)
+        {
+            _progLayerMaskH = GlProgram.Graphics(CastLayerMaskHVs, CastMaskHFs, _log, "CasterPass layered handle-masked depth program");
+            if (_progLayerMaskH == 0) { _maskHFailed = true; return; }
+            _locLayerMaskHCut = GlProgram.Loc(_progLayerMaskH, "uAlphaCut");
+            _listVer++;
+        }
+    }
     private static bool _glFailed, _progFailed;
 
     // --- #307: the layered bake. With #302/#303 a view is a dispatch and a draw; this collapses the loop:
@@ -775,7 +807,7 @@ public sealed unsafe class CasterPass : IExtenderService
     internal static string Describe()
         => $"dist {_maxDist:F0} rebake {(_rebake ? 1 : 0)} " +
            $"gather {CasterGather.Mode} split {(_split ? 1 : 0)} layered {(_layerDial ? 1 : 0)} " +
-           $"refreshall {(_refreshAll ? 1 : 0)} dynhold {_dynHold} dynevents {(_dynEvents ? 1 : 0)} dynranks {_dynRanks} dynfull {_dynFull} sunfull {_sunFull} sunlatch {_sunLatch} itemdirty {(_itemDirty ? 1 : 0)} staticcap {_staticCap} flipcollect {(FlipCollect ? 1 : 0)} mask {_maskMode} maskholes {_maskHoles:0.##} fade {_fadeFrames} fadeslots {_fadeSlots} " +
+           $"refreshall {(_refreshAll ? 1 : 0)} dynhold {_dynHold} dynevents {(_dynEvents ? 1 : 0)} dynranks {_dynRanks} dynfull {_dynFull} sunfull {_sunFull} sunlatch {_sunLatch} itemdirty {(_itemDirty ? 1 : 0)} staticcap {_staticCap} flipcollect {(FlipCollect ? 1 : 0)} mask {_maskMode} maskholes {_maskHoles:0.##} maskh {(_maskH ? 1 : 0)} fade {_fadeFrames} fadeslots {_fadeSlots} " +
            $"({_cascades}x{_mapSize} cascades{(_sunSplitCfg ? " + dyn mirror" : "")}, " +
            $"{_cubeLights}x{_cubeSize} cubes, " +
            $"{_cubeDynPages}x{_cubeDynSize} dynamic pool pages)";
@@ -832,6 +864,7 @@ public sealed unsafe class CasterPass : IExtenderService
             case "flipcollect": { float o = FlipCollect ? 1 : 0; FlipCollect = v != 0; return o; }
             case "mask": { float o = _maskMode; _maskMode = Math.Clamp((int)v, -1, 2); _listVer++; return o; }
             case "maskholes": { float o = _maskHoles; _maskHoles = Math.Clamp(v, 0f, 1f); _listVer++; return o; }
+            case "maskh": { float o = _maskH ? 1 : 0; _maskH = v != 0f; _listVer++; return o; }
             case "fade": { float o = _fadeFrames; _fadeFrames = Math.Max((int)v, 0); return o; }
             case "fadeslots": { float o = _fadeSlots; _fadeSlots = Math.Max((int)v, 0); return o; }
             case "sunlatch": { float o = _sunLatch; _sunLatch = Math.Max((int)v, 0); return o; }
@@ -860,7 +893,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _listVer++; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; }
+    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _maskH = true; _listVer++; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -945,6 +978,16 @@ public sealed unsafe class CasterPass : IExtenderService
         // masked path exists to remove and looks exactly like the pass working.
         bool ok = CastMaskFs.Contains("if (texture(uTex, vUV).a <= uAlphaCut) discard;")
                   && CastMaskFs.Contains("uniform float uAlphaCut;")
+                  // The handle-masked stages: the same discard, the mask off the record's handle block at
+                  // slot 0, the record index from gl_BaseInstance in both packings.
+                  && CastMaskHFs != CastMaskHFsSrc
+                  && CastMaskHFs.Contains("if (texture(uTex, vUV).a <= uAlphaCut) discard;")
+                  && CastMaskHFs.Contains($"binding = {AlloyRenderer.BindTexH}")
+                  && CastMaskHFs.Contains("(vDraw << 3) + 0]")
+                  && CastMaskHVs.Contains("vDraw = gl_BaseInstance;")
+                  && CastMaskHVs.Contains("SowxDraw d = uDraw[gl_BaseInstance];")
+                  && CastLayerMaskHVs.Contains("vDraw = gl_BaseInstance & 0x3ffff;")
+                  && CastLayerMaskHVs.Contains("uDraw[gl_BaseInstance & 0x3ffff]")
                   && CmdBytes == 20
                   && CastVs.Contains("gl_BaseInstance") && !CastVs.Contains("gl_DrawID")
                   // ...and the masked stage indexes its record the same way, for the same M4 reason
@@ -1285,7 +1328,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _qN = 0;
         if (sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0))
         {
-            if (EnsureCommon() && CasterGather.Ensure()) { EnsureLayered(); _gStaged = GatherStage(); }
+            if (EnsureCommon() && CasterGather.Ensure()) { EnsureLayered(); EnsureHandleMask(); _gStaged = GatherStage(); }
             // #303: the compute dispatch is the ONLY selection path. A program that can never build would
             // otherwise idle here forever with the engine's stencil shadows already suppressed.
             else if (CasterGather.Failed) Disarm("the caster gather dispatch failed to build");
@@ -2319,14 +2362,18 @@ public sealed unsafe class CasterPass : IExtenderService
     private static bool FlushTarget(uint tex, int n)
     {
         int size = 0;
+        bool first = true;
         // The stale layers clear FIRST, one attach per view: a layered attachment clears every layer at
-        // once, fresh ones included, so the per-layer loop here is correctness rather than thrift. This is
-        // the FBO churn that survives #307; the uniforms, dispatches and the MDI storm are what go.
+        // once, fresh ones included, so the per-layer loop here is correctness rather than thrift. The
+        // target's state (FBO, viewport, buffers, depth state) is set once on the first view; the rest
+        // attach and clear, two calls each instead of a dozen.
         for (int k = 0; k < n; k++)
         {
             if (_qTex[k] != tex) continue;
             size = _qSize[k];
-            if (!BeginTarget(tex, size, _qLayer[k])) return false;
+            if (first) { if (!BeginTarget(tex, size, _qLayer[k])) return false; first = false; continue; }
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0, _qLayer[k]);
+            Gl.Clear(Gl.DEPTH_BUFFER_BIT);
         }
         Gl.FramebufferTexture(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0);
         if (Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
@@ -2377,21 +2424,21 @@ public sealed unsafe class CasterPass : IExtenderService
     private static void DrawLayered(int vn)
     {
         Gl.ActiveTexture(Gl.TEXTURE0);
-        int boundVao = -1, boundMask = -1, boundTex = -1;
+        int boundVao = -1, boundMode = -1, boundTex = -1;
         float boundCut = -1f;
         for (int g = 0; g < _gGroups; g++)
         {
-            int cut0 = _gTex[g];
-            if ((cut0 != 0 ? 1 : 0) != boundMask)
+            int cut0 = _gTex[g], mode = _gH[g] ? 2 : cut0 != 0 ? 1 : 0;
+            if (mode != boundMode)
             {
-                boundMask = cut0 != 0 ? 1 : 0;
-                Gl.UseProgram(cut0 != 0 ? _progLayerMask : _progLayer);
-                if (cut0 != 0) Gl.Uniform1i(_locLayerMaskTex, 0);
+                boundMode = mode;
+                Gl.UseProgram(mode == 0 ? _progLayer : mode == 1 ? _progLayerMask : _progLayerMaskH);
+                if (mode == 1) Gl.Uniform1i(_locLayerMaskTex, 0);
                 boundCut = -1f;
             }
-            if (cut0 != 0 && _gCut[g] != boundCut)
-            { boundCut = _gCut[g]; Gl.Uniform1f(_locLayerMaskCut, boundCut); }
-            if (cut0 != 0 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
+            if (mode != 0 && _gCut[g] != boundCut)
+            { boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locLayerMaskCut : _locLayerMaskHCut, boundCut); }
+            if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
             CasterGather.DrawLayer(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g], vn);
         }
@@ -2803,12 +2850,14 @@ public sealed unsafe class CasterPass : IExtenderService
         { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); Disarm("the caster depth framebuffer is incomplete"); return false; }
         Gl.Viewport(0, 0, size, size);
         // #302: the depth stages read ALLOY's per-draw records and ALLOY's bone block, at Alloy's own binding
-        // points. Re-bound per view rather than once per frame because the colour pass is entitled to rebind
-        // both between frames, and a bake reading a buffer that has since been re-pointed is a world baked
-        // from someone else's matrices -- which renders, and renders wrong.
+        // points. Re-bound per view (per flush target on the layered path) rather than once per frame because
+        // the colour pass is entitled to rebind both between frames, and a bake reading a buffer that has
+        // since been re-pointed is a world baked from someone else's matrices -- which renders, and renders wrong.
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDraw, AlloyRenderer.DrawRecordBuf);
         if (AlloyRenderer.BoneBlockBuf != 0)
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindBones, AlloyRenderer.BoneBlockBuf);
+        if (AlloyRenderer.TexHandleBuf != 0)
+            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, AlloyRenderer.BindTexH, AlloyRenderer.TexHandleBuf);
         // depth state BEFORE the clear: a clear runs through the write mask and the scissor, so clearing
         // first would leave stale depth wherever a previous pass left either of them set
         // #292: cull OFF, deliberately DIFFERENT from the colour pass, and this is the disposition the
@@ -2839,10 +2888,16 @@ public sealed unsafe class CasterPass : IExtenderService
     /// carries one value -- the same shape the colour path's <c>uAlphaCut</c> has.</summary>
     private static readonly float[] _gCut = new float[MaxCasters];
     private static int _gDrawN, _gGroups, _gCreatures;
-    /// <summary>Batches that bind a mask texture: each is one indirect call per flush that the solid
-    /// batches merge away.</summary>
-    private static int MaskedBatches()
-    { int m = 0; for (int g = 0; g < _gGroups; g++) if (_gTex[g] != 0) m++; return m; }
+    /// <summary>Per batch: the mask is sampled through the record's handle (no texture in the key).</summary>
+    private static readonly bool[] _gH = new bool[MaxCasters];
+    /// <summary>Batches that bind a mask texture (one indirect call per flush each) and batches that sample
+    /// it through the handle block (merged per VAO and primitive).</summary>
+    private static string MaskedBatches()
+    {
+        int b = 0, h = 0;
+        for (int g = 0; g < _gGroups; g++) { if (_gH[g]) h++; else if (_gTex[g] != 0) b++; }
+        return $"{b} masked bound, {h} by handle";
+    }
     /// <summary>#303: the frame produced a coherent staging -- a non-empty one the gather accepted, or a
     /// genuinely empty world. False = the gather refused a non-empty staging (no program, no sphere buffer
     /// yet), and the views must NOT bake -- baking would clear live shadows out of the maps.</summary>
@@ -2909,11 +2964,16 @@ public sealed unsafe class CasterPass : IExtenderService
             if (masked != 0 && (_maskMode == 0 || (_maskMode == 2 && TexHoles(masked) < _maskHoles))) masked = 0;
             if (masked != 0 && _maskMode < 0) continue;
             if (masked != 0) maskedN++;
+            // A record with a resident handle samples its mask through the handle block, so the texture
+            // leaves the key. Handle 0 is a BLACK texture (every fragment discards), hence the guard: such a
+            // record keeps the bound-texture batch.
+            bool hmask = masked != 0 && HandleMaskReady && AlloyRenderer.RecordHandle0(_liveSlot[i]) != 0;
             _gLive[n] = i;
             // #302: the cutout threshold is a per-BATCH uniform now, exactly as the colour path spells it
             // (uAlphaCut), so it joins the key rather than riding in a per-draw record. Two values exist.
             _gKey[n] = ((masked != 0 ? 1L : 0L) << 62) | ((_liveCut[i] == EnvAlphaDiscard ? 1L : 0L) << 61)
-                       | ((long)_liveVao[i] << 44) | ((long)_livePrim[i] << 36) | (uint)masked;
+                       | ((hmask ? 1L : 0L) << 60)
+                       | ((long)_liveVao[i] << 44) | ((long)_livePrim[i] << 36) | (hmask ? 0u : (uint)masked);
             n++;
             if (i < _liveCreatures) creatures++;
         }
@@ -2930,6 +2990,7 @@ public sealed unsafe class CasterPass : IExtenderService
                     g++;
                     _gStart[g] = d; _gVao[g] = _liveVao[i]; _gPrim[g] = _livePrim[i];
                     _gTex[g] = (int)(_gKey[d] & 0xffffffffL);
+                    _gH[g] = (_gKey[d] & (1L << 60)) != 0;
                     _gCut[g] = _liveCut[i];
                 }
                 _gLen[g] = d - _gStart[g] + 1;
@@ -2957,28 +3018,25 @@ public sealed unsafe class CasterPass : IExtenderService
         CasterGather.Dispatch(focus, lightDir, reach, reach + margin, point, set);
         // unit 0 is where the cutout stage samples; nothing else in this bracket moves the active unit
         Gl.ActiveTexture(Gl.TEXTURE0);
-        int boundVao = -1, boundMask = -1, boundTex = -1;
+        int boundVao = -1, boundMode = -1, boundTex = -1;
         float boundCut = -1f;
         // ponytail: every view issues one indirect-count draw per GLOBAL batch, including the batches whose
-        // count the dispatch left at zero. It is bounded work with no readback and the period line
-        // measures it (_mdiCalls), but at
-        // ~200 views x a few hundred batches it is the next thing to look at if the win comes in short. The
-        // upgrade path is a second tiny dispatch compacting the non-empty batches into a batch list, which
-        // stays on the same no-readback side of the line.
+        // count the dispatch left at zero; the CPU cannot skip an empty one without the readback this pass
+        // exists to not do. Fewer batches (the staging key) is the lever.
         for (int g = 0; g < _gGroups; g++)
         {
-            int cut0 = _gTex[g];
-            if ((cut0 != 0 ? 1 : 0) != boundMask)
+            int cut0 = _gTex[g], mode = _gH[g] ? 2 : cut0 != 0 ? 1 : 0;
+            if (mode != boundMode)
             {
-                boundMask = cut0 != 0 ? 1 : 0;
-                Gl.UseProgram(cut0 != 0 ? _progMask : _prog);
-                Gl.UniformMatrix4fv(cut0 != 0 ? _locMaskVp : _locVp, 1, 0, (float*)vp);
-                if (cut0 != 0) Gl.Uniform1i(_locMaskTex, 0);
+                boundMode = mode;
+                Gl.UseProgram(mode == 0 ? _prog : mode == 1 ? _progMask : _progMaskH);
+                Gl.UniformMatrix4fv(mode == 0 ? _locVp : mode == 1 ? _locMaskVp : _locMaskHVp, 1, 0, (float*)vp);
+                if (mode == 1) Gl.Uniform1i(_locMaskTex, 0);
                 boundCut = -1f;
             }
-            if (cut0 != 0 && _gCut[g] != boundCut)
-            { boundCut = _gCut[g]; Gl.Uniform1f(_locMaskCut, boundCut); }
-            if (cut0 != 0 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
+            if (mode != 0 && _gCut[g] != boundCut)
+            { boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locMaskCut : _locMaskHCut, boundCut); }
+            if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
             CasterGather.Draw(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g]);
         }
@@ -3133,6 +3191,25 @@ public sealed unsafe class CasterPass : IExtenderService
         in vec2 vUV;
         void main() { if (texture(uTex, vUV).a <= uAlphaCut) discard; }
         """;
+
+    /// <summary>The handle-sampling pair: <see cref="CastMaskVs"/> carrying the record index out, and
+    /// <see cref="CastMaskFs"/> with <c>uTex</c> redirected through the handle block by
+    /// <see cref="AlloyRenderer.BindlessFs"/>. Text only; the programs exist only under bindless.</summary>
+    private static readonly string CastMaskHVs = CastMaskVs
+        .Replace("out vec2 vUV;", "out vec2 vUV;\n        flat out int vDraw;")
+        .Replace("vUV = aUV;", "vUV = aUV;\n            vDraw = gl_BaseInstance;");
+    private const string CastMaskHFsSrc = """
+        #version 460 core
+        uniform sampler2D uTex;
+        uniform float uAlphaCut;
+        in vec2 vUV;
+        flat in int vDraw;
+        void main() { if (texture(uTex, vUV).a <= uAlphaCut) discard; }
+        """;
+    private static readonly string CastMaskHFs = AlloyRenderer.BindlessFs(CastMaskHFsSrc);
+    private static readonly string CastLayerMaskHVs = CastLayerMaskVs
+        .Replace("out vec2 vUV;", "out vec2 vUV;\n        flat out int vDraw;")
+        .Replace("vUV = aUV;", "vUV = aUV;\n            vDraw = gl_BaseInstance & 0x3ffff;");
 
     /// <summary>#307: the layered depth stage. <c>baseInstance</c> packs the view-table index above the
     /// ownership slot (<see cref="CasterGather.ViewShift"/>); the stage routes to its layer and takes its fit

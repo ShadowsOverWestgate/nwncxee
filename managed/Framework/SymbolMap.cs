@@ -982,6 +982,12 @@ internal static unsafe class SymbolMap
     public const string ResManGetResObject = "_ZN10CExoResMan12GetResObjectERK7CResReft";
     public const string ResManSetResObject = "_ZN10CExoResMan12SetResObjectERK7CResReftP4CRes";
     public const string ResManDemand       = "_ZN10CExoResMan6DemandEP4CRes";
+    /// <summary>The two pre-dispatch calls of the world scene render, inside the AI update: the BSP
+    /// management (every gob, three passes, the frustum traverse) and the draw-bucket build (the sole
+    /// writer of the gob model matrix Alloy draws with). Timed only; see
+    /// docs/research/engine-scene-walk-bypass.md.</summary>
+    public const string ManageSceneBSP         = "_Z14ManageSceneBSPP5Scene";
+    public const string AddPartsToDrawBuckets  = "_ZN5Scene21AddPartsToDrawBucketsEv";
     public const string ResManRelease      = "_ZN10CExoResMan7ReleaseEP4CRes";
     public const string ResManReleaseObj   = "_ZN10CExoResMan16ReleaseResObjectEP4CResb";
 

@@ -40,6 +40,8 @@ public sealed unsafe partial class AlloyRenderer
             for (int k = from; k < to; k++)
             {
                 if (!RouteLive(list[k], k, sph, out int i, out IntPtr tri)) continue;
+                bool samp = (k & (ChaseEvery - 1)) == 0;
+                long tFade = samp ? FrameZones.Now : 0;
                 // The fade overlay, and the part's own animated alpha with it: while its tile fades, an opaque
                 // or cutout part IS a bucket-8 part -- the engine folds the tile's factor into the part's own
                 // alpha for the length of the draw (RenderDrawBucket @0x46d060, bucket 8 only) and draws it
@@ -51,9 +53,11 @@ public sealed unsafe partial class AlloyRenderer
                 float fade = TileFade(i, tri);
                 _oFading[i] = fade < 1f;
                 float alpha = PartAlphaCached(i, tri) * fade * (_oGob[i] != IntPtr.Zero ? AlloyCensus.GobAlphaMul(tri) : 1f);
+                bool dis = alpha >= 1f && Dissolves(i, tri, ref _stageCounters[0]);
+                if (samp) FrameZones.AddSampled(FrameZones.Zone.Fade, tFade, ChaseEvery);
                 if (alpha < 1f)
                 { _ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = EyeDist2(i); nb++; continue; }
-                if (Dissolves(i, tri, ref _stageCounters[0])) { _orderTmp[nd++] = i; continue; }
+                if (dis) { _orderTmp[nd++] = i; continue; }
                 _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = false; n++;
             }
             for (int d = 0; d < nd; d++)
@@ -130,6 +134,7 @@ public sealed unsafe partial class AlloyRenderer
         // enrols all three trees so a swap is a field read, and this is that read. Casts nothing either.
         if (_oLodRoot[i] != IntPtr.Zero && *(IntPtr*)(_oGob[i] + GobPartTree) != _oLodRoot[i])
         { _skipLod++; SetCastOk(i, false); W(i, "skipped: inactive LOD alternate"); return false; }
+        if (samp) FrameZones.AddSampled(FrameZones.Zone.Ident, t0, ChaseEvery);
         return true;
     }
 

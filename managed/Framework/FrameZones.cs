@@ -72,6 +72,11 @@ public static class FrameZones
         /// visiting the off-screen world at all. SAMPLED 1-in-<c>AlloyRenderer.ChaseEvery</c> slots and
         /// extrapolated. The step-4 visible-set list is built only if this reads above ~0,3ms.</summary>
         Route,
+        /// <summary>Inside <see cref="Scan"/> (NOT subtracted), on the slots the gate ACCEPTS: the identity
+        /// and LOD chase (Ident) and the tile-fade, alpha and dissolve chase (Fade). SAMPLED
+        /// 1-in-<c>AlloyRenderer.ChaseEvery</c> and extrapolated -- which of the route's per-part reads
+        /// carries Scan.</summary>
+        Ident, Fade,
         /// <summary>#322: nested in <see cref="Shadow"/>: the LightManager master-list walk.</summary>
         Lwalk,
         /// <summary>#322: nested in <see cref="Shadow"/>: <c>CasterPass.OnPassSlot</c> -- cube ranking,
@@ -118,6 +123,10 @@ public static class FrameZones
         /// <summary>Nested in <see cref="Ai"/>: <c>CExoResMan::Demand</c>, the engine's on-demand resource
         /// load (models, textures, animations on first sight). Outermost call only.</summary>
         Demand,
+        /// <summary>Nested in <see cref="Ai"/>, world scene only: <c>ManageSceneBSP</c> and
+        /// <c>Scene::AddPartsToDrawBuckets</c> -- the engine's own render preparation for a 3D frame Alloy
+        /// draws. Their sum against Ai is the ceiling on bypassing it (engine-scene-walk-bypass.md).</summary>
+        Bsp, Buckets,
         /// <summary>The BCn transcode pipeline's main-thread work (readback issue, PBO copy-out, compressed
         /// upload; the encode itself is on its own thread). Runs on the Enroll slot inside Ai and is subtracted
         /// from BOTH, so it reads on its own.</summary>

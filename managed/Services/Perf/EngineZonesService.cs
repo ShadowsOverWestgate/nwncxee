@@ -29,10 +29,37 @@ public sealed unsafe class EngineZonesService : IExtenderService
             SymbolMap.GuiUpdateAndRender, (IntPtr)(delegate* unmanaged<IntPtr, float, long>)&OnGui);
         _demand = (delegate* unmanaged<IntPtr, IntPtr, long>)hooks.Install(
             SymbolMap.ResManDemand, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, long>)&OnDemand);
+        _bsp = (delegate* unmanaged<IntPtr, long>)hooks.Install(
+            SymbolMap.ManageSceneBSP, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnBsp);
+        _buckets = (delegate* unmanaged<IntPtr, long>)hooks.Install(
+            SymbolMap.AddPartsToDrawBuckets, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnBuckets);
         log.Info("EngineZones: timing the engine loop's net / resman / AI / GUI steps and resource demands into [zones] (config enginezones=0 disables)");
     }
 
     private static delegate* unmanaged<IntPtr, IntPtr, long> _demand;
+    private static delegate* unmanaged<IntPtr, long> _bsp, _buckets;
+
+    /// <summary>The world scene's render preparation, timed and not subtracted. A GUI 3D panel's Scene has
+    /// no tile BSP root and is left out, so the two zones read the world walk alone.</summary>
+    [UnmanagedCallersOnly]
+    private static long OnBsp(IntPtr scene)
+    {
+        bool world = *(IntPtr*)(scene + Sowx.Alloy.SceneLayout.SceneBspRoot) != IntPtr.Zero;
+        long t = world ? FrameZones.Now : 0;
+        long r = _bsp != null ? _bsp(scene) : 0;
+        if (world) FrameZones.Add(FrameZones.Zone.Bsp, t);
+        return r;
+    }
+
+    [UnmanagedCallersOnly]
+    private static long OnBuckets(IntPtr scene)
+    {
+        bool world = *(IntPtr*)(scene + Sowx.Alloy.SceneLayout.SceneBspRoot) != IntPtr.Zero;
+        long t = world ? FrameZones.Now : 0;
+        long r = _buckets != null ? _buckets(scene) : 0;
+        if (world) FrameZones.Add(FrameZones.Zone.Buckets, t);
+        return r;
+    }
     private static int _demandDepth;
 
     /// <summary>The on-demand resource load, wherever the engine asks for it (a model on first sight, a
