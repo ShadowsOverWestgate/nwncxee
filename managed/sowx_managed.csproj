@@ -16,6 +16,12 @@
          without this addr2line resolves every one of them to the nearest EXPORT (i.e. SowxInit) and the
          backtrace says nothing. Costs size in a file nobody ships to players. -->
     <StripSymbols>false</StripSymbols>
+    <!-- The live scheduler trace showed ".NET Server GC" threads preempting the game's main thread 43 times in
+         8s: server GC keeps one GC thread per core and wakes them all on every collection. Workstation and
+         non-concurrent: the only GC work happens on the thread that allocates, and nothing of ours allocates
+         inside a frame (the period lines are the exception, one gen0 per ~6s). -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <!-- Keep our own assembly whole: the service host discovers services by

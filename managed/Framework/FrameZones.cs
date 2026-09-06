@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace Sowx.Framework;
 
@@ -263,7 +264,7 @@ public static class FrameZones
 
     /// <summary>Drop this frame's brackets without folding them into the period -- the loading-screen and
     /// main-menu case. Without it the first in-module frame after a menu would carry the menu's ticks.</summary>
-    public static void Discard() => Array.Clear(_frame, 0, N);
+    public static void Discard() { Array.Clear(_frame, 0, N); ReadSched(); Array.Copy(_scNow, _scLast, (int)Sc.Count); }
 
     /// <summary>Did this frame reach the scene render at all? A frame with every renderer zone at zero spent
     /// its time somewhere no bracket here can see -- in practice engine asset loading.</summary>
@@ -272,6 +273,156 @@ public static class FrameZones
         for (int i = 0; i < (int)Zone.Nested; i++)
             if (i != (int)Zone.Ui && i != (int)Zone.Present && i < (int)Zone.Net && _frame[i] != 0) return true;
         return false;
+    }
+
+    /// <summary>The SCHEDULER column: what the main thread got from the kernel this frame. A hitch row where
+    /// every zone -- engine and Alloy alike -- runs 2-3x at once is not a slow zone but a slow thread, and only
+    /// this separates the three ways that happens: cpu ≈ wall with no switches = the core itself was slow (an
+    /// SMT sibling spinning, frequency, cache); cpu &lt;&lt; wall with involuntary switches = preempted by
+    /// another thread; cpu &lt;&lt; wall with voluntary switches = blocked in a syscall (the GL driver, a
+    /// futex). One <c>getrusage(RUSAGE_THREAD)</c> per frame, no allocation.</summary>
+    [DllImport("libc.so.6", EntryPoint = "getrusage")] private static extern unsafe int GetRUsage(int who, byte* ru);
+    private const int RusageThread = 1;
+    /// <summary>x86_64 glibc <c>struct rusage</c>: utime/stime timevals at 0/16, minflt 64, majflt 72, nvcsw 128, nivcsw 136.</summary>
+    private enum Sc { Cpu, MinFlt, MajFlt, Vol, Invol, Sys, Wait, Count }
+    [DllImport("libc.so.6", EntryPoint = "open")] private static extern unsafe int Open(byte* path, int flags);
+    [DllImport("libc.so.6", EntryPoint = "pread")] private static extern unsafe nint Pread(int fd, byte* buf, nint n, long off);
+    /// <summary>/proc/thread-self/schedstat, opened once by the main thread (the path binds to the OPENER): run ns,
+    /// RUNQUEUE WAIT ns, timeslices. The wait is the preemption's size; rusage only counts its occurrences.</summary>
+    private static int _schedFd = -1;
+    private static readonly long[] _scLast = new long[(int)Sc.Count], _scNow = new long[(int)Sc.Count];
+    private static readonly long[] _scAll = new long[(int)Sc.Count], _scHitch = new long[(int)Sc.Count];
+    private static long _wallAll, _wallHitch;
+    private static bool _scPrimed;
+
+    private static unsafe void ReadSched()
+    {
+        byte* ru = stackalloc byte[160];
+        if (GetRUsage(RusageThread, ru) != 0) return;
+        long* q = (long*)ru;
+        _scNow[(int)Sc.Cpu] = (q[0] + q[2]) * 1_000_000 + q[1] + q[3];   // µs
+        _scNow[(int)Sc.Sys] = q[2] * 1_000_000 + q[3];
+        if (_schedFd == -1)
+        {
+            byte* path = stackalloc byte[32];
+            int k = 0; foreach (char c in "/proc/thread-self/schedstat") path[k++] = (byte)c; path[k] = 0;
+            _schedFd = Open(path, 0);
+            if (_schedFd < 0) _schedFd = -2;
+        }
+        if (_schedFd >= 0)
+        {
+            byte* buf = stackalloc byte[64];
+            nint n = Pread(_schedFd, buf, 63, 0);
+            long a = 0, b = 0; int i = 0;
+            for (; i < n && buf[i] != ' '; i++) a = a * 10 + (buf[i] - '0');
+            for (i++; i < n && buf[i] != ' '; i++) b = b * 10 + (buf[i] - '0');
+            _scNow[(int)Sc.Wait] = b / 1000;   // µs
+        }
+        _scNow[(int)Sc.MinFlt] = q[8]; _scNow[(int)Sc.MajFlt] = q[9];
+        _scNow[(int)Sc.Vol] = q[16]; _scNow[(int)Sc.Invol] = q[17];
+    }
+
+    /// <summary>Fold this frame's scheduler deltas in; <paramref name="dt"/> is the wall it is judged against.</summary>
+    private static void Sched(long dt, bool hitch)
+    {
+        ReadSched();
+        if (_scPrimed)
+        {
+            _wallAll += dt; if (hitch) _wallHitch += dt;
+            for (int i = 0; i < (int)Sc.Count; i++)
+            {
+                long d = _scNow[i] - _scLast[i];
+                _scAll[i] += d; if (hitch) _scHitch[i] += d;
+            }
+        }
+        Array.Copy(_scNow, _scLast, (int)Sc.Count); _scPrimed = true;
+    }
+
+    /// <summary>The BOX column, once per period: swap-ins/outs and major faults system-wide (/proc/vmstat) and the
+    /// PSI stall totals for cpu and memory (/proc/pressure). Cold path. A hitch count that tracks pswpin/pswpout
+    /// is the machine reclaiming (zram compresses on the CPU), not the frame.</summary>
+    private static long _swpIn, _swpOut, _majF, _psiCpu, _psiMem;
+    public static string BoxLine()
+    {
+        long si = 0, so = 0, mf = 0, pc = 0, pm = 0;
+        try
+        {
+            foreach (var l in System.IO.File.ReadLines("/proc/vmstat"))
+            {
+                if (l.StartsWith("pswpin ")) si = long.Parse(l.AsSpan(7));
+                else if (l.StartsWith("pswpout ")) so = long.Parse(l.AsSpan(8));
+                else if (l.StartsWith("pgmajfault ")) mf = long.Parse(l.AsSpan(11));
+            }
+            pc = PsiTotal("/proc/pressure/cpu"); pm = PsiTotal("/proc/pressure/memory");
+        }
+        catch { return " box: n/a"; }
+        string r = $" box: swap in/out {si - _swpIn}/{so - _swpOut} pages, majflt {mf - _majF}, psi some cpu {(pc - _psiCpu) / 1000}ms mem {(pm - _psiMem) / 1000}ms";
+        _swpIn = si; _swpOut = so; _majF = mf; _psiCpu = pc; _psiMem = pm;
+        return r;
+    }
+    /// <summary>The THREAD table, once per period: every thread of this process that burned CPU or was preempted --
+    /// name, CPU ms, involuntary switches, last CPU it ran on. Names the competitor the sched column only counts.
+    /// Cold path; allocates freely.</summary>
+    private static readonly System.Collections.Generic.Dictionary<int, (long cpu, long inv)> _thrLast = new();
+    public static string ThreadsLine()
+    {
+        var rows = new System.Collections.Generic.List<(string name, double cpuMs, long inv, int cpu, int nice)>();
+        long tck = 100;   // sysconf(_SC_CLK_TCK) is 100 on every Linux we run on
+        try
+        {
+            foreach (var dir in System.IO.Directory.EnumerateDirectories("/proc/self/task"))
+            {
+                int tid = int.Parse(System.IO.Path.GetFileName(dir));
+                string stat = System.IO.File.ReadAllText(dir + "/stat");
+                int a = stat.IndexOf('('), b = stat.LastIndexOf(')');
+                string name = stat.Substring(a + 1, b - a - 1);
+                string[] f = stat.Substring(b + 2).Split(' ');   // f[0] = state = field 3
+                long cpu = long.Parse(f[11]) + long.Parse(f[12]);   // utime, stime
+                int proc = int.Parse(f[36]), nice = int.Parse(f[16]);
+                long inv = 0;
+                foreach (var l in System.IO.File.ReadLines(dir + "/status"))
+                    if (l.StartsWith("nonvoluntary_ctxt_switches:")) { inv = long.Parse(l.AsSpan(27).Trim()); break; }
+                _thrLast.TryGetValue(tid, out var last);
+                _thrLast[tid] = (cpu, inv);
+                if (last.cpu == 0 && last.inv == 0) continue;   // first sight: no delta yet
+                rows.Add((name, (cpu - last.cpu) * 1000.0 / tck, inv - last.inv, proc, nice));
+            }
+        }
+        catch (Exception e) { return " || threads: n/a (" + e.GetType().Name + ")"; }
+        rows.Sort((x, y) => y.cpuMs.CompareTo(x.cpuMs));
+        var sb = new System.Text.StringBuilder(" || threads (cpu ms, invol, last cpu, nice):");
+        int n = 0;
+        foreach (var r in rows)
+        {
+            if (r.cpuMs < 5 && r.inv < 20) continue;
+            sb.Append($" {r.name} {r.cpuMs:F0}/{r.inv}/c{r.cpu}/n{r.nice}");
+            if (++n == 14) break;
+        }
+        return sb.ToString();
+    }
+    private static long PsiTotal(string path)
+    {
+        foreach (var l in System.IO.File.ReadLines(path))
+            if (l.StartsWith("some ")) { int k = l.IndexOf("total="); return long.Parse(l.AsSpan(k + 6)); }
+        return 0;
+    }
+
+    /// <summary>The BLAME column: per hitch frame, the top-level zone with the largest excess over the previous
+    /// period's mean frame -- or <c>diffuse</c> when no zone holds half the excess, which is the slow-thread
+    /// signature the hitch row's average cannot show (it blurs twenty different spikes into a uniform one).</summary>
+    private static readonly long[] _mean = new long[N];
+    private static readonly int[] _blame = new int[(int)Zone.Nested + 1];
+    private static void Blame()
+    {
+        long total = 0, best = 0; int who = (int)Zone.Nested;
+        for (int i = 0; i < (int)Zone.Nested; i++)
+        {
+            long x = _frame[i] - _mean[i];
+            if (x <= 0) continue;
+            total += x;
+            if (x > best) { best = x; who = i; }
+        }
+        _blame[best * 2 > total ? who : (int)Zone.Nested]++;
     }
 
     /// <summary>The frame boundary: fold this frame into the period, keep it if it is the worst one, and
@@ -287,7 +438,8 @@ public static class FrameZones
         _enrollMarked = false;
         double ms = dt * 1000.0 / Stopwatch.Frequency;
         bool hitch = ms > _hitchMs && ms <= StallMs && Drew();
-        if (hitch) { _hitchN++; _dtHitch += dt; }
+        if (hitch) { _hitchN++; _dtHitch += dt; Blame(); }
+        if (ExtenderLog.Enabled) Sched(dt, hitch);
         _hitchRing[(_frames - 1) & 15] = hitch;
         for (int i = 0; i < N; i++) { _sum[i] += _frame[i]; if (hitch) _hitch[i] += _frame[i]; _frame[i] = 0; }
         for (int e = 0; e < NE; e++) { _evSum[e] += _ev[e]; if (hitch) _evHitch[e] += _ev[e]; _ev[e] = 0; }
@@ -309,6 +461,24 @@ public static class FrameZones
         _dtNoStall = 0; _framesNoStall = 0;
         if (_gpuN > 0) sb.Append($" || gpu-span all|hitch: {_gpuSum / _gpuN:F1}|{(_gpuHitchN > 0 ? _gpuHitch / _gpuHitchN : 0):F1}ms ({_gpuHitchN} paired)");
         _gpuSum = 0; _gpuHitch = 0; _gpuN = 0; _gpuHitchN = 0;
+        if (_hitchN > 0)
+        {
+            sb.Append(" || blame:");
+            for (int i = 0; i <= (int)Zone.Nested; i++)
+                if (_blame[i] > 0) sb.Append(i == (int)Zone.Nested ? $" diffuse {_blame[i]}" : $" {(Zone)i} {_blame[i]}");
+        }
+        double usAll = _wallAll * 1e6 / Stopwatch.Frequency, usHitch = _wallHitch * 1e6 / Stopwatch.Frequency;
+        if (_wallAll > 0)
+            sb.Append($" || sched all|hitch: cpu {100 * _scAll[0] / Math.Max(usAll, 1):F0}%|{100 * _scHitch[0] / Math.Max(usHitch, 1):F0}%")
+              .Append($" (sys {100 * _scAll[5] / Math.Max(usAll, 1):F0}%|{100 * _scHitch[5] / Math.Max(usHitch, 1):F0}%)")
+              .Append($" rqwait {_scAll[6] / 1000.0 / frames:F2}|{(_hitchN > 0 ? _scHitch[6] / 1000.0 / _hitchN : 0):F2}ms")
+              .Append($" invol {(double)_scAll[4] / frames:F2}|{(_hitchN > 0 ? (double)_scHitch[4] / _hitchN : 0):F2}")
+              .Append($" vol {(double)_scAll[3] / frames:F2}|{(_hitchN > 0 ? (double)_scHitch[3] / _hitchN : 0):F2}")
+              .Append($" minflt {(double)_scAll[1] / frames:F1}|{(_hitchN > 0 ? (double)_scHitch[1] / _hitchN : 0):F1}")
+              .Append($" majflt {_scAll[2]}|{_scHitch[2]}");
+        Array.Clear(_scAll, 0, (int)Sc.Count); Array.Clear(_scHitch, 0, (int)Sc.Count); _wallAll = _wallHitch = 0;
+        Array.Clear(_blame, 0, _blame.Length);
+        for (int i = 0; i < N; i++) _mean[i] = _sum[i] / frames;
         sb.Append(" || events/frame all|hitch:");
         for (int e = 0; e < NE; e++)
             sb.Append($" {(Ev)e} {(double)_evSum[e] / frames:F1}|{(_hitchN > 0 ? (double)_evHitch[e] / _hitchN : 0):F1}");
@@ -434,6 +604,16 @@ public static class FrameZones
                  && _frames == 0 && _dtWorst == 0 && _dtWorstDrew == 0 && _hitchN == 0 && _evSum[(int)Ev.Mint] == 0
                  && _hitchMs > 25f && _hitchMs < 35f;   // the next threshold follows the NON-STALL mean: the one 20ms frame, x1,5
         if (!r) log.Info("FrameZones.SelfCheck: FAILED -- the period line or its reset drifted");
+        // the scheduler column: getrusage must resolve and this thread must have run, and the hitch frame above
+        // must have been blamed on the one zone it spent (Alloy) rather than read as diffuse
+        r &= line.Contains("sched all|hitch: cpu") && _scNow[(int)Sc.Cpu] > 0 && line.Contains("blame: Alloy 1");
+        // the thread table: two reads (the first only primes), the second must list this thread by name
+        ThreadsLine();
+        long spinTo = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 50; while (Stopwatch.GetTimestamp() < spinTo) { }   // 20ms of CPU, so this thread crosses the 5ms filter
+        string thr = ThreadsLine() + BoxLine();
+        r &= !thr.Contains("n/a") && thr.Contains("/c");
+        if (!r) log.Info("FrameZones.SelfCheck: FAILED -- thread/box table: " + thr);
+        if (!r) log.Info($"FrameZones.SelfCheck: FAILED -- sched/blame columns ({line.Substring(Math.Max(0, line.IndexOf("|| blame")))})");
         log.Info(ok && s && w && t && h && r ? "FrameZones.SelfCheck: passed"
                                    : "FrameZones.SelfCheck: see failures above");
     }

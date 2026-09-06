@@ -22,6 +22,7 @@ public static class ServiceHost
         log.Info("sowx build " + (Assembly.GetExecutingAssembly()
                      .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?
                      .InformationalVersion ?? "unknown"));
+        log.Info($"host: GC server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} cpus={Environment.ProcessorCount}");
         var hooks = new HookService(log);
         // ADR 0013 bucket 2, and this is as early as it goes: ahead of DISCOVERY, not just ahead of
         // Initialize. Constructing a service runs its type initializer, and GameGate latches `lockchat` in
@@ -49,6 +50,7 @@ public static class ServiceHost
         // caller inherits the rule rather than re-deriving it. Run()'s caller IS pre-main, so the gate's
         // "not yet" branch is the one under test here.
         ConfigFile.SelfCheck(log);
+        ExtenderLog.SelfCheck(log);   // the disabled log evaluates nothing, the enabled one reaches the file
         Settings.SelfCheck(log);   // #183: parse degrade, range rejection, and that /knobs lists only real keys
         KnobSurface.Register();
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
@@ -64,5 +66,6 @@ public static class ServiceHost
         foreach (FramePhase p in new[] { FramePhase.Start, FramePhase.PrePresent, FramePhase.PostPresent })
             log.Info($"host: frame {p} -> {string.Join(", ", FrameRegistry.Global.Names(p))}");
         hooks.Commit();
+        ExtenderLog.Flush();   // boot lines on disk before the host returns: the demo exits right after
     }
 }

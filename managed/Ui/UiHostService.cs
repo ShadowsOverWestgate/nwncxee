@@ -62,6 +62,8 @@ public sealed unsafe class UiHostService : IExtenderService
         {
             _announced = true;
             _log?.Info("UiHostService: first frame presented -- hook is LIVE");
+            int pin = Settings.Int("pin", -1, -1, 1023);
+            if (pin >= 0) _log?.Info($"UiHostService: main thread pin={pin} -> {(Affinity.PinThis(pin) ? "pinned" : "REFUSED")} (was on cpu {Affinity.CurrentCpu})");
         }
         FrameRegistry.Global.Run(FramePhase.Start);
         if (_nkSlot == null) DrawWindows();       // fallback: no nk_sdl_render chain -> draw here, above NUI
@@ -112,6 +114,9 @@ public sealed unsafe class UiHostService : IExtenderService
 
     private static long _fsLast, _fsSum, _fsMax;
     private static int _fsN, _fsOver7, _fsOver17;
+    /// <summary>GC counts and bytes at the last period line: a gen0 count near the hitch count is a per-frame allocator.</summary>
+    private static int _gc0, _gc1, _gc2;
+    private static long _alloc;
 
     /// <summary>Present-to-present frame stats, logged once per ~900 frames: avg/max ms plus counts over the
     /// 144Hz (6.9ms) and 60Hz (16.7ms) budgets. The one number the perf work kept lacking -- cube/depth pass
@@ -129,11 +134,21 @@ public sealed unsafe class UiHostService : IExtenderService
             float ms = dt * 1000f / System.Diagnostics.Stopwatch.Frequency;
             if (ms > 6.9f) _fsOver7++;
             if (ms > 16.7f) _fsOver17++;
-            if (_fsN >= 900)
+            if (_fsN >= 900 && !ExtenderLog.Enabled)
+            {
+                // silent: reset the period without building a line of it (Period() carries the ledger reset)
+                FrameZones.Period();
+                _fsSum = 0; _fsN = 0; _fsMax = 0; _fsOver7 = 0; _fsOver17 = 0;
+            }
+            else if (_fsN >= 900)
             {
                 float avg = _fsSum * 1000f / System.Diagnostics.Stopwatch.Frequency / _fsN;
                 float max = _fsMax * 1000f / System.Diagnostics.Stopwatch.Frequency;
-                _log?.Info($"UiHostService: [frame] avg {avg:F2}ms ({1000f / avg:F0}fps) max {max:F1}ms, >6.9ms {_fsOver7}/{_fsN}, >16.7ms {_fsOver17}/{_fsN}");
+                int gc0 = GC.CollectionCount(0), gc1 = GC.CollectionCount(1), gc2 = GC.CollectionCount(2);
+                long alloc = GC.GetTotalAllocatedBytes();
+                _log?.Info($"UiHostService: [frame] avg {avg:F2}ms ({1000f / avg:F0}fps) max {max:F1}ms, >6.9ms {_fsOver7}/{_fsN}, >16.7ms {_fsOver17}/{_fsN}"
+                         + $", gc {gc0 - _gc0}/{gc1 - _gc1}/{gc2 - _gc2} on {(alloc - _alloc) >> 10}KiB allocated" + FrameZones.BoxLine() + FrameZones.ThreadsLine());
+                _gc0 = gc0; _gc1 = gc1; _gc2 = gc2; _alloc = alloc;
                 // #238: NOT inside the null-conditional -- Period() carries the period reset, and `?.` skips
                 // argument evaluation, so a null log would desync it from the _fs* counters reset below
                 // permanently (every later line would then average since boot).

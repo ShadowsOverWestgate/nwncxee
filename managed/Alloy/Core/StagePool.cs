@@ -31,6 +31,13 @@ internal static class StagePool
     private const long JoinLimitMs = 500;
     private static readonly Thread?[] _threads = new Thread?[MaxChunks];
     private static readonly SemaphoreSlim[] _go = new SemaphoreSlim[MaxChunks];
+    /// <summary>1 while the worker spins on the generation, 0 once it is committed to blocking. A release only
+    /// goes to a worker at 0: releasing a spinner left a stale count, so it woke straight back into a full
+    /// <see cref="SpinUs"/> window with no job -- 4ms of every 7ms frame on six cores, read live as 58% of a
+    /// core per worker in a 0,5ms build. Dekker pair with the publish: the worker stores 0 then re-reads the
+    /// generation, Run stores the generation then reads this; both with full fences, so one side always sees
+    /// the other and no worker blocks past a published job.</summary>
+    private static readonly int[] _spinning = new int[MaxChunks];
     private static int _pending, _chunks, _gen;
     private static Exception? _fault;
     private static bool _faultLogged;
@@ -61,7 +68,7 @@ internal static class StagePool
         for (int w = 1; w < chunks; w++)
         {
             Ensure(w);
-            if (_go[w].CurrentCount == 0) _go[w].Release();
+            if (Volatile.Read(ref _spinning[w]) == 0 && _go[w].CurrentCount == 0) _go[w].Release();
         }
     }
 
@@ -82,7 +89,7 @@ internal static class StagePool
         // ...and a worker whose spin window ran out before this (a slow box, a long routing walk) is blocked
         // on its semaphore with nobody left to release it -- CI lost chunk 1 that way. Release past the
         // publish too; a still-spinning worker just takes one more window.
-        for (int w = 1; w < chunks; w++) if (_go[w].CurrentCount == 0) _go[w].Release();
+        for (int w = 1; w < chunks; w++) if (Volatile.Read(ref _spinning[w]) == 0 && _go[w].CurrentCount == 0) _go[w].Release();
         try { _job(0, chunks); }
         catch (Exception e) { _fault = e; }
         // no Sleep(1) in the join: SpinOnce() sleeps a millisecond after 20 iterations, which is the budget
@@ -130,10 +137,12 @@ internal static class StagePool
     private static void Loop(object? arg)
     {
         int w = (int)arg!;
+        Affinity.ClearThis();   // created by the (possibly pinned) main thread; the workers must not share its core
         int seen = _seenAtStart[w];
         while (true)
         {
             _go[w].Wait();
+            Interlocked.Exchange(ref _spinning[w], 1);
             long spinUntil = Stopwatch.GetTimestamp() + SpinUs * Stopwatch.Frequency / 1_000_000;
             int idle = 0;
             while (true)
@@ -152,7 +161,12 @@ internal static class StagePool
                     }
                     spinUntil = Stopwatch.GetTimestamp() + SpinAfterJobUs * Stopwatch.Frequency / 1_000_000;
                 }
-                else if (Stopwatch.GetTimestamp() > spinUntil) break;
+                else if (Stopwatch.GetTimestamp() > spinUntil)
+                {
+                    Interlocked.Exchange(ref _spinning[w], 0);   // full fence, then the re-read: a job published meanwhile is ours
+                    if (Volatile.Read(ref _gen) == seen) break;
+                    Interlocked.Exchange(ref _spinning[w], 1);
+                }
                 else if ((++idle & 15) == 0) Thread.Yield();
                 else Thread.SpinWait(64);
             }

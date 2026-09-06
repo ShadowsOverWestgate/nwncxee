@@ -57,6 +57,10 @@ public static class Settings
         _path = Native.ConfigPath(FileName);
         ConfigFile.ForEachPair(ConfigFile.ReadTextNow(FileName, log), (k, v) => _values[k] = v);
         if (_values.Count > 0) log?.Info($"settings: {_values.Count} key(s) from {_path}");
+        // Off-device (run-demo: no engine symbols resolve) the log stays open -- it is the self-check gate.
+        bool logs = Bool("logs", false) || Native.Sym(SymbolMap.AppManager) == IntPtr.Zero;
+        if (!logs) log?.Info($"settings: logs=0 -- silent from here; set logs=1 in {_path} for diagnostics");
+        ExtenderLog.Enabled = logs;
     }
 
     /// <summary>True for <c>1/true/yes/on</c>, false for <c>0/false/no/off</c>, else <paramref name="fallback"/>.

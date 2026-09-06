@@ -36,6 +36,8 @@ ln -sfn "$DIR" "$LINK" 2>/dev/null || LINK="$DIR"
 
 export LD_PRELOAD="$LINK/libsowx.so${LD_PRELOAD:+ $LD_PRELOAD}"
 export SOWX_MANAGED="$LINK/sowx_managed.so"
+# The runtime lets the environment override the GC mode built into sowx_managed.so; keep ours.
+unset DOTNET_gcServer DOTNET_GCHeapCount DOTNET_gcConcurrent DOTNET_GCgen0size
 
 # Steam mode: it handed us the real command as our arguments.
 if [ "$#" -gt 0 ]; then

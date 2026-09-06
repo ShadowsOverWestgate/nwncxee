@@ -865,6 +865,7 @@ internal static unsafe class OwnedTextures
     }
     private static void EncodeLoop()
     {
+        Affinity.ClearThis();
         while (true)
         {
             _encodeWake.Wait();
