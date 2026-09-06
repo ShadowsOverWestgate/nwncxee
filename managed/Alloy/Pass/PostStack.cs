@@ -34,6 +34,9 @@ internal static unsafe class PostStack
     /// shader generations (base_shaders.bif and ovr.bif) and in sow-topdata's fork; SetGamma sets it iff
     /// |g - 2.2| &gt;= 9e-5.</summary>
     internal const int MaskGamma = 0x10;
+    /// <summary><c>POSTPROCESSING_TOON 0x0020</c> -- the client's Toon video option; see
+    /// <see cref="ToonStage"/> for the engine setter this was read off.</summary>
+    internal const int MaskToon = ToonStage.MaskToon;
     /// <summary>The engine's own reference gamma: the stage is the identity at exactly this value.</summary>
     internal const float EngineGamma = 2.2f;
 
@@ -77,6 +80,14 @@ internal static unsafe class PostStack
             Active = static () => GammaActive(Mask()),
             Value = static () => Gamma(),
         },
+        // The cel stage ahead of taa/aa: the ink and the band boundaries are what the anti-aliaser is
+        // there to smooth, and the option's own users reach for it partly for the edges.
+        new()
+        {
+            Name = "toon", Resref = ShdToonFs, Fs = ToonStage.StageFs,
+            Active = static () => ToonActive(Mask()),
+            Prepare = &ToonStage.Prepare,
+        },
         // #389: TAA ahead of SMAA in the table, exclusive with it in practice -- SmaaStage.Active is false
         // while TAA is on, so whichever runs is the last stage and writes the engine's target.
         new()
@@ -107,6 +118,7 @@ internal static unsafe class PostStack
         _fbEffects = (int*)Native.Sym(SymbolMap.EnableFBEffects);
         SmaaStage.Attach(log);
         TaaStage.Attach(log);
+        ToonStage.Attach(log);
         if (_gspI == null || _gspF == null)
             log.Info("PostStack: the global shader param getters are unresolved -- every stage stays off");
         // ADR 0013: /knobs is where a client option this build serves or takes away has to be visible.
@@ -124,6 +136,14 @@ internal static unsafe class PostStack
                                                    : !_on ? "BYPASSED by /post stack 0"
                                                    : SmaaStage.Active ? $"runs after the resolve {SmaaStage.Describe()}"
                                                    : $"off {SmaaStage.Describe()}")}");
+        KnobSurface.Note(static () => _gspI == null ? null
+            : "the client's Toon video option and its three sliders (settings.tml graphics.fbo.toon.enabled, "
+            + ".depth-edge-threshold, .color-edge-threshold, .edge-hardness) are the Alloy post stack's cel "
+            + $"stage: {(_stages[1].Failed ? "the toon stage did NOT build and is dropped -- the option is inert"
+                         : _targetBad ? "the stack's target is incomplete on this device -- the option is inert"
+                         : !_on ? "BYPASSED by /post stack 0"
+                         : ToonActive(Mask()) ? "on -- " + ToonStage.Describe()
+                         : "off -- " + ToonStage.Describe() + " (/post toonbands, toonink, toonedge)")}");
         log.Info($"PostStack: attached -- {Describe()}");
     }
 
@@ -133,6 +153,8 @@ internal static unsafe class PostStack
     internal static bool GammaBit(int mask) => (mask & MaskGamma) != 0;
     /// <summary>The gamma stage's gate, the engine's: the option-mask bit, under the console gate.</summary>
     private static bool GammaActive(int mask) => GammaBit(mask) && (_fbEffects == null || *_fbEffects != 0);
+    /// <summary>The cel stage's gate, the engine's: the Toon option bit, under the same console gate.</summary>
+    private static bool ToonActive(int mask) => (mask & MaskToon) != 0 && (_fbEffects == null || *_fbEffects != 0);
 
     internal static string Describe()
     {
@@ -140,7 +162,8 @@ internal static unsafe class PostStack
         string s = $"stack {(_targetBad ? "STOOD DOWN (incomplete target)" : _on ? "on" : "BYPASSED")}  mask 0x{mask:x}";
         foreach (Stage st in _stages)
             s += $"  {st.Name} {(st.Failed ? "FAILED" : st.Active() ? "live" : "idle")}"
-               + (st.Name == "gamma" ? $" (g {Gamma():F2})" : st.Name == "aa" ? " " + SmaaStage.Describe() : "");
+               + (st.Name == "gamma" ? $" (g {Gamma():F2})" : st.Name == "aa" ? " " + SmaaStage.Describe()
+                  : st.Name == "toon" ? " (" + ToonStage.Describe() + ")" : "");
         return s;
     }
 
@@ -148,14 +171,14 @@ internal static unsafe class PostStack
     /// every stage for a live A/B against the bare resolve. Returns NaN for an unknown key.</summary>
     internal static float Tune(string key, float v)
     {
-        if (key != "stack") return float.NaN;
+        if (key != "stack") return ToonStage.Tune(key, v);
         float old = _on ? 1f : 0f;
         _on = v != 0f;
         _log?.Info($"PostStack: /post stack {v:F0} (was {old:F0}) -> {Describe()}");
         return old;
     }
 
-    internal static void ResetTuning() => _on = true;
+    internal static void ResetTuning() { _on = true; ToonStage.ResetTuning(); }
 
     /// <summary>Context loss: forget every GL name.</summary>
     internal static void Forget()
@@ -164,6 +187,7 @@ internal static unsafe class PostStack
         foreach (Stage st in _stages) { st.Prog = 0; st.Failed = false; st.Live = false; }
         SmaaStage.Forget();
         TaaStage.Forget();
+        ToonStage.Forget();
     }
 
     /// <summary>Decide this frame's stack and, if any stage is live, hand back the framebuffer the resolve's
@@ -323,6 +347,8 @@ internal static unsafe class PostStack
 
     /// <summary>The gamma stage's resref (#92 override point), same rules as every post-chain stage.</summary>
     internal const string ShdGammaFs = "cx_postgam_fs";
+    /// <summary>The cel stage's resref (#92 override point), same rules as every post-chain stage.</summary>
+    internal const string ShdToonFs = "cx_toon_fs";
     /// <summary>#389: the taa stage's resref (#92 override point, like every stack stage). Only the copy-out of
     /// the history is overridable here; the accumulator (<see cref="TaaStage.TaaFs"/>) is embedded.</summary>
     internal const string ShdTaaFs = "cx_taa_fs";
@@ -394,6 +420,10 @@ internal static unsafe class PostStack
             PostChain.ResetTuning();
             E(_on, "/post reset turns the bypass off");
             E(PostChain.Describe().Contains("stack"), "/post reports the stack");
+            E(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd)");
+            E(_stages[1].Name == "toon" && !ToonActive(0) && ToonActive(MaskToon), "the toon stage's gate is the option bit");
+            E(!float.IsNaN(PostChain.Tune("toonbands", 4f)), "/post toonbands reaches the toon stage through PostChain");
+            E(ToonStage.SelfCheck(log), "the toon stage's own checks");
             E(SmaaStage.SelfCheck(log), "the aa stage's own checks");
             E(TaaStage.SelfCheck(log), "the taa stage's own checks");
             E(_stages[^1].Name == "aa", "aa is the LAST stage: it smooths what the frame actually shows");

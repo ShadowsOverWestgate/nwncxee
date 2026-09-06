@@ -884,6 +884,17 @@ internal static unsafe class SymbolMap
     /// <summary><c>Camera::m_nFramebufferEffectsEnabled</c>: the FB-effect enable bits (Camera::SetFBEffectEnabled
     /// @0x5a6500); bit 0 = SSAO, what settings.tml <c>graphics.fbo.ssao.enabled</c> toggles.</summary>
     public const string FbEffectsMask = "_ZN6Camera28m_nFramebufferEffectsEnabledE";
+    /// <summary>The three Toon video sliders, as the plain float globals the options write and
+    /// <c>Camera::SetFrameBufferParameters</c> @0x4a6d10 publishes as global float params 0x0c/0x0d/0x0e
+    /// (settings.tml <c>graphics.fbo.toon.depth-edge-threshold</c>, <c>.color-edge-threshold</c>,
+    /// <c>.edge-hardness</c>; 0.02 / 1.00 / 0.80 stock). Read directly rather than through the params:
+    /// the publish sits in the frame walk Alloy replaced.</summary>
+    public const string ToonDepthEdge = "toon_depth_edge_threshold";
+    /// <summary>See <see cref="ToonDepthEdge"/>: the colour-edge threshold, global float param 0x0d.</summary>
+    public const string ToonColorEdge = "toon_color_edge_threshold";
+    /// <summary>See <see cref="ToonDepthEdge"/>: the edge hardness, global float param 0x0e. Zero is the
+    /// stock stage's own off switch.</summary>
+    public const string ToonEdgeHardness = "toon_edge_hardness";
     /// <summary>The <c>ssao_intensity</c> config float (settings.tml, 0.5 stock). Read directly: the engine
     /// only copies it into global float param 1 inside Camera::InitializeFrameBufferResources, which lives in
     /// the Scene::RenderSinglePass loop Alloy replaced, so under Alloy that param stays 0.</summary>

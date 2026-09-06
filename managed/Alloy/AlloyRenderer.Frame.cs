@@ -400,6 +400,7 @@ public sealed unsafe partial class AlloyRenderer
                             // #375: Begin binds its own framebuffer to attach; the engine's comes back for the depth hand-back
                             // #391/#389: the stack is told both sizes; when it upsamples, the resolve's
                             // colour draw lands at the render viewport and the taa stage writes the display.
+                            ToonStage.SetProj(&proj);
                             uint into = PostStack.Begin(viewport[2], viewport[3], display[2], display[3]);
                             RebindFrameTarget();
                             PostChain.Composite(display, into, PostStack.Upsampling ? viewport : display);

@@ -6,7 +6,7 @@ replaced at runtime by a `.shd` resource of the same name — a customization su
 for people who want the look to be theirs.
 
 This document is the contract that surface comes with: what an override is, what the
-twenty-one stages are, and precisely what the extender refuses and why.
+twenty-three stages are, and precisely what the extender refuses and why.
 
 ## What an override is, and what it is not
 
@@ -90,7 +90,7 @@ Practical requirements, none of which the extender can check for you:
 A build failure of any kind rebuilds the embedded stage and says so in the log, so a bad
 module costs a log line rather than the frame.
 
-## The sixteen stages
+## The twenty-three stages
 
 | resref | stage | what it does |
 | --- | --- | --- |
@@ -113,6 +113,7 @@ module costs a log line rather than the frame.
 | `cx_smaaedge_fs` | fragment | The aa stage's first pass (#377): SMAA luma edges of the resolved frame. Carries the reference `SMAA.hlsl` under its GLSL port; `$AA$` is the preset the client's anti-aliasing option picked. |
 | `cx_smaawgt_fs` | fragment | The aa stage's second pass: SMAA blend weights from the edges and the embedded area/search tables. |
 | `cx_smaablend_fs` | fragment | The aa stage proper: SMAA neighbourhood blend of `uSrc` by the weights, display space in and out. |
+| `cx_toon_fs` | fragment | The post stack's cel stage: the client's Toon video option and its three sliders -- a plane-fit depth and colour ink, and an opt-in luminance posterise. Display space in and out. |
 | `cx_taa_fs` | fragment | #389: the taa stage's copy-out of the history `TaaStage.Prepare` resolved (`uHist`). The accumulator itself is embedded, not overridable. |
 | `cx_ssao_fs` | fragment | Ambient occlusion (#379, ADR 0021): GTAO visibility from the prepass depth, R8, read by the lit stage's ambient term. Not a post stage: runs before the colour pass. |
 | `cx_ssaoblur_fs` | fragment | The depth-aware 4x4 blur that folds the AO pass's dither pattern away. |
@@ -215,7 +216,7 @@ yours to change; the rest of the pipeline is built on it.
 
 ### Post stack stages — neither end of the guard
 
-**Applies to:** `cx_postgam_fs`, `cx_smaablend_fs`, `cx_taa_fs`, and every stage the display-space post stack grows (ADR 0020). The aa stage's two own passes (`cx_smaaedge_fs`, `cx_smaawgt_fs`) are plain fullscreen programs: no `uSrc` contract, but they must keep the sampler names the C# side binds units to.
+**Applies to:** `cx_postgam_fs`, `cx_toon_fs`, `cx_smaablend_fs`, `cx_taa_fs`, and every stage the display-space post stack grows (ADR 0020). The aa stage's two own passes (`cx_smaaedge_fs`, `cx_smaawgt_fs`) are plain fullscreen programs: no `uSrc` contract, but they must keep the sampler names the C# side binds units to.
 
 **Rejects:** a stage that calls `SowxEncode` (a second encode, a gamma too bright) or `SowxLinear`
 (the frame goes linear, a gamma dark), or one that dropped the `uSrc` sampler the stack binds the

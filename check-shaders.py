@@ -48,6 +48,7 @@ SOURCES = [
     "managed/Alloy/Pass/FrameSnapshot.cs",
     "managed/Alloy/Pass/MotionVectors.cs",
     "managed/Alloy/Pass/TaaStage.cs",
+    "managed/Alloy/Pass/ToonStage.cs",
     "managed/Alloy/AlloyRenderer.Motion.cs",
     "managed/Alloy/AlloyRenderer.Highlight.cs",
 ]
@@ -416,6 +417,7 @@ def programs(c, s):
         "post bloom upsample": (s["cx_post_vs"], s["cx_bloomup_fs"]),
         "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),
         "post stack gamma": (s["cx_post_vs"], s["cx_postgam_fs"]),
+        "post stack toon": (s["cx_post_vs"], s["cx_toon_fs"]),
         "post stack aa edges": (s["cx_post_vs"], s["cx_smaaedge_fs"]),
         "post stack aa weights": (s["cx_post_vs"], s["cx_smaawgt_fs"]),
         "post stack aa blend": (s["cx_post_vs"], s["cx_smaablend_fs"]),

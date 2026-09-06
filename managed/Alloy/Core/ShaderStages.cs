@@ -75,9 +75,9 @@ internal static class ShaderStages
 
         """;
 
-    /// <summary>Every overridable resref with the header its dumped copy carries. All sixteen: four owned,
+    /// <summary>Every overridable resref with the header its dumped copy carries. All twenty-three: four owned,
     /// two water, two grass, the cluster build, two caster, four post-chain stages and the post stack's gamma
-    /// stage (#375), the taa stage (#389). #261 deleted one with SkyComposite and #339 deleted the water tessellation pair with the
+    /// stage (#375), the taa stage (#389) and the cel stage. #261 deleted one with SkyComposite and #339 deleted the water tessellation pair with the
     /// custom sea; <see cref="SelfCheck"/> asserts the count, so this prose and that assert have to move
     /// together.</summary>
     internal static readonly (string Ref, string Header)[] All =
@@ -102,6 +102,7 @@ internal static class ShaderStages
         (SmaaStage.ShdWeightFs,            Banner),
         (SmaaStage.ShdBlendFs,             Banner),
         (PostStack.ShdTaaFs,               Banner),
+        (PostStack.ShdToonFs,              Banner),
         (SsaoPass.ShdSsaoFs,               Banner),
         (SsaoPass.ShdSsaoBlurFs,           Banner),
     };
@@ -131,6 +132,7 @@ internal static class ShaderStages
         SmaaStage.ShdWeightFs => SmaaStage.WeightFs,
         SmaaStage.ShdBlendFs => PostStack.PostStageHead + SmaaStage.BlendStageFs + PostStack.PostStageMain,
         PostStack.ShdTaaFs => PostStack.PostStageHead + TaaStage.StageFs + PostStack.PostStageMain,
+        PostStack.ShdToonFs => PostStack.PostStageHead + ToonStage.StageFs + PostStack.PostStageMain,
         SsaoPass.ShdSsaoFs => SsaoPass.SsaoFs,
         SsaoPass.ShdSsaoBlurFs => SsaoPass.SsaoBlurFs,
         _ => "",
@@ -178,7 +180,7 @@ internal static class ShaderStages
     /// that declares it. A missing switch arm is otherwise invisible until a program builds from "".</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = All.Length == 22;
+        bool ok = All.Length == 23;
         foreach ((string r, string header) in All)
         {
             string src = Source(r);

@@ -18,7 +18,7 @@ internal static class RenderCommands
     private const string GrassKeys = "on|density|wind|windspeed|soften|aniso|edge|push|pushradius|pushvis|pushextent|cull|cullshrink|cullmax|lod|lodmin|lodwidth|lodheight|shade|far|prepass";
     private const string ParticleKeys = "on|diag|soft|lit|shadows|viz|grid|guard|sort";
     // hdr is NOT here: it stands the whole Alloy frame down, which is a boot decision (config hdr=0).
-    private const string PostKeys = "bloom|threshold|knee|exposure|tonemap|acesmix|tmknee|dither|viz|clearviz|stack|scale|motion|taa|taablend|aotemporal";
+    private const string PostKeys = "bloom|threshold|knee|exposure|tonemap|acesmix|tmknee|dither|viz|clearviz|stack|scale|motion|taa|taau|taablend|aotemporal|toonbands|toonink|toonedge";
     private const string DrawKeys = "light|prepass|viz|aotest|csmbias|cull|lod|poll|prepasskey|prepassfeat|gpumeter|vislist|fogcull|hldiag|hlchan";
     private const string WaterKeys = "on|rect|diag";
     private const string ProbeKeys = "on|gain|areawide";
