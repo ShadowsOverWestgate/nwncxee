@@ -21,7 +21,12 @@ internal static class StagePool
 {
     /// <summary>Chunks including the main thread's; the knob's ceiling is one less.</summary>
     internal const int MaxChunks = 8;
+    /// <summary>How long a worker spins for the job after a pre-wake: the routing walk it hides is ~1ms.</summary>
     private const long SpinUs = 4000;
+    /// <summary>...and after finishing a job. The next one is a frame away, so the worker blocks almost at
+    /// once: spinning here burned a core per worker for the rest of every frame (six workers read as
+    /// three busy cores on the client with the GPU at 30%), and the driver thread wants those cores.</summary>
+    private const long SpinAfterJobUs = 100;
     /// <summary>A join that runs this long is a lost worker, not a slow one; the frame re-stages serially.</summary>
     private const long JoinLimitMs = 500;
     private static readonly Thread?[] _threads = new Thread?[MaxChunks];
@@ -145,7 +150,7 @@ internal static class StagePool
                         _tEnd[w] = Stopwatch.GetTimestamp();
                         Interlocked.Decrement(ref _pending);
                     }
-                    spinUntil = Stopwatch.GetTimestamp() + SpinUs * Stopwatch.Frequency / 1_000_000;
+                    spinUntil = Stopwatch.GetTimestamp() + SpinAfterJobUs * Stopwatch.Frequency / 1_000_000;
                 }
                 else if (Stopwatch.GetTimestamp() > spinUntil) break;
                 else if ((++idle & 15) == 0) Thread.Yield();
@@ -166,7 +171,7 @@ internal static class StagePool
             part[w] = s;
         };
         // three runs: the second finds the workers spinning; the third publishes 20ms after the pre-wake,
-        // past the 4ms spin window, so every worker has blocked again and must be released past the publish
+        // past the spin window, so every worker has blocked again and must be released past the publish
         bool ok = Run(4, log) && Run(4, log) && Run(4, log, testGapMs: 20);
         _job = saved;
         long total = 0; foreach (long v in part) total += v;

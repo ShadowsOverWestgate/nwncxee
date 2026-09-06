@@ -17,7 +17,7 @@ internal static unsafe class TaaStage
 {
     private static ExtenderLog? _log;
     private static uint _fbo, _hist0, _hist1, _prog, _sampler, _stageProg;
-    private static int _locCur, _locHist, _locVel, _locBlend, _locStageHist;
+    private static int _locCur, _locHist, _locVel, _locBlend, _locStageHist, _locJitterPx, _locUpsample;
     private static int _w, _h, _cur;
     private static bool _failed, _built, _valid;
 
@@ -60,6 +60,7 @@ internal static unsafe class TaaStage
         if (_prog == 0) { _failed = true; _log?.Info("TaaStage: the resolve did not build -- the taa stage is DROPPED; SMAA serves the aa option"); return false; }
         _locCur = GlProgram.Loc(_prog, "uCur"); _locHist = GlProgram.Loc(_prog, "uHist");
         _locVel = GlProgram.Loc(_prog, "uVel"); _locBlend = GlProgram.Loc(_prog, "uBlend");
+        _locJitterPx = GlProgram.Loc(_prog, "uJitterPx"); _locUpsample = GlProgram.Loc(_prog, "uUpsample");
         return true;
     }
 
@@ -97,6 +98,9 @@ internal static unsafe class TaaStage
     /// (<paramref name="src"/>) against the reprojected, clamped history into the other history texture, which
     /// is then left on <see cref="TextureSlots.AaEdges"/> for the stage program. The caller rebinds its own
     /// target and viewport after. Hot: allocates nothing.</summary>
+    /// <summary>The current frame's (render) size, read off the texture each Prepare for the jitter scale.</summary>
+    private static int _curW, _curH;
+
     internal static void Prepare(uint src, uint stageProg, int* viewport)
     {
         uint read = _cur == 0 ? _hist0 : _hist1, write = _cur == 0 ? _hist1 : _hist0;
@@ -104,6 +108,9 @@ internal static unsafe class TaaStage
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, write, 0);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.PostHdr); Gl.BindTexture(Gl.TEXTURE_2D, src);
+        // on the unit that already holds it -- any other unit's binding is a stage's input
+        fixed (int* w = &_curW) Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, w);
+        fixed (int* h = &_curH) Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, h);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaEdges); Gl.BindTexture(Gl.TEXTURE_2D, read);
         Gl.BindSampler(TextureSlots.AaEdges, _sampler);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaArea); Gl.BindTexture(Gl.TEXTURE_2D, MotionVectors.Tex);
@@ -113,6 +120,13 @@ internal static unsafe class TaaStage
         Gl.Uniform1i(_locHist, (int)TextureSlots.AaEdges);
         Gl.Uniform1i(_locVel, (int)TextureSlots.AaArea);
         Gl.Uniform1f(_locBlend, _valid ? PostChain.TaaBlend : 1f);
+        // Upsampling: the current frame is render-sized and read bilinearly at the jitter-shifted position
+        // of each display pixel, so it takes the history's LINEAR sampler for this draw (Run unbinds it).
+        bool up = PostStack.Upsampling;
+        if (up) Gl.BindSampler(TextureSlots.PostHdr, _sampler);
+        Gl.Uniform1i(_locUpsample, up ? 1 : 0);
+        // NDC jitter to render pixels: +j in NDC moved the image +j * size/2 pixels (Frame.cs, proj.M31)
+        Gl.Uniform2f(_locJitterPx, PostChain.JitterX * 0.5f * _curW, PostChain.JitterY * 0.5f * _curH);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.BindSampler(TextureSlots.AaEdges, 0);
         Gl.BindSampler(TextureSlots.AaArea, 0);
@@ -138,6 +152,8 @@ internal static unsafe class TaaStage
         uniform sampler2D uHist;     // last frame's history, LINEAR
         uniform sampler2D uVel;      // #388: prev - cur, render pixels, render size
         uniform float uBlend;        // the current frame's share at rest; 1 = no history
+        uniform vec2 uJitterPx;      // this frame's projection jitter in RENDER pixels
+        uniform int uUpsample;       // 1: uCur is render-sized, the history and this draw are display-sized
 
         // Catmull-Rom through five bilinear taps (the 9-texel cubic with the corner taps folded): a bilinear
         // history resample every frame is the blur a naive TAA is known for, and this is the standard cure.
@@ -165,8 +181,26 @@ internal static unsafe class TaaStage
         {
             // from vUV, not gl_FragCoord: the stack draws at the DISPLAY viewport, whose origin need not be 0
             ivec2 sz = textureSize(uCur, 0);
-            ivec2 pix = clamp(ivec2(vUV * vec2(sz)), ivec2(0), sz - 1);
-            vec4 c = texelFetch(uCur, pix, 0);
+            vec2 hsz = vec2(textureSize(uHist, 0));
+            ivec2 pix;
+            vec4 c;
+            float conf = 1.0;
+            if (uUpsample != 0)
+            {
+                // this display pixel's clean render position, shifted to where THIS frame drew it: a texel
+                // at render position t holds the scene at t - jitter, so the clean point sits at t + jitter
+                vec2 sp = vUV * vec2(sz) + uJitterPx;
+                pix = clamp(ivec2(floor(sp)), ivec2(0), sz - 1);
+                c = textureLod(uCur, sp / vec2(sz), 0.0);
+                // how close the frame's sample fell to this pixel: at a texel centre the frame speaks fully,
+                // between two texels the bilinear read is a blur and the history keeps more of its say
+                conf = 1.0 - smoothstep(0.0, 0.7071, length(fract(sp) - 0.5));
+            }
+            else
+            {
+                pix = clamp(ivec2(vUV * vec2(sz)), ivec2(0), sz - 1);
+                c = texelFetch(uCur, pix, 0);
+            }
             vec3 mn = c.rgb, mx = c.rgb;
             for (int y = -1; y <= 1; y++)
                 for (int x = -1; x <= 1; x++)
@@ -178,8 +212,9 @@ internal static unsafe class TaaStage
             vec2 huv = vUV + velPx / vec2(textureSize(uVel, 0));
             // a moving pixel takes more of the frame -- a walking camera converges in a few frames, not ten
             float a = min(0.5, uBlend + length(velPx) * 0.05);
+            if (uUpsample != 0) a = mix(a * 0.25, a, conf);
             if (any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) a = 1.0;
-            vec3 h = clamp(SowxHistory(huv, vec2(sz)), mn, mx);
+            vec3 h = clamp(SowxHistory(huv, hsz), mn, mx);
             frag = vec4(mix(h, c.rgb, a), c.a);
         }
         """;
@@ -193,11 +228,17 @@ internal static unsafe class TaaStage
         E(StageFs.Contains("vec4 SowxStage(vec4 c)") && ShaderContract.DisplaySafe(StageFs) && ShaderContract.SlotSafe(StageFs, "uHist"),
           "the stage is display space and reads the history");
         E(TaaFs.Contains("velPx / vec2(textureSize(uVel, 0))"), "velocity becomes uv through the VELOCITY target's size, not the frame's (#391)");
-        E(TaaFs.Contains("clamp(SowxHistory(huv, vec2(sz)), mn, mx)") && TaaFs.Contains("vec3 SowxHistory(vec2 uv, vec2 size)"),
-          "history is fetched Catmull-Rom and clamped to the 3x3 neighbourhood");
+        E(TaaFs.Contains("clamp(SowxHistory(huv, hsz), mn, mx)") && TaaFs.Contains("vec3 SowxHistory(vec2 uv, vec2 size)")
+          && TaaFs.Contains("vec2 hsz = vec2(textureSize(uHist, 0));"),
+          "history is fetched Catmull-Rom at ITS OWN size and clamped to the 3x3 neighbourhood");
+        // #391: the upsampling arm reads the render-sized frame at the jitter-shifted position, with the
+        // same sign the velocity pass takes the jitter back out with (ndc - uJitter: the frame is at +j).
+        E(TaaFs.Contains("vec2 sp = vUV * vec2(sz) + uJitterPx;") && TaaFs.Contains("c = textureLod(uCur, sp / vec2(sz), 0.0);"),
+          "upsampling samples the frame at clean position + jitter");
+        E(TaaFs.Contains("if (uUpsample != 0) a = mix(a * 0.25, a, conf);"), "a between-texel sample leans on the history");
+        E(ShaderContract.SlotSafe(TaaFs, "uCur", "uHist", "uVel"), "the resolve declares the samplers Prepare binds");
         E(TaaFs.Contains("min(0.5, uBlend + length(velPx) * 0.05)"), "a moving pixel converges faster than the resting share");
         E(TaaFs.Contains("a = 1.0;") && TaaFs.Contains("mix(h, c.rgb, a)"), "an off-screen history sample takes the current frame whole");
-        E(ShaderContract.SlotSafe(TaaFs, "uCur", "uHist", "uVel"), "the resolve declares the samplers Prepare binds");
         _valid = true; Reset(); E(!_valid, "Reset drops the history");
         log.Info(ok ? "TaaStage.SelfCheck: passed" : "TaaStage.SelfCheck: FAILED");
         return ok;

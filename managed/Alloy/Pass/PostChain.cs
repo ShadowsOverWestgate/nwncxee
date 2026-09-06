@@ -202,7 +202,7 @@ internal static unsafe class PostChain
     internal static string Describe() =>
         $"hdr {(_on ? "on" : "off")}  bloom {_bloom:F3}  threshold {_threshold:F2}  knee {_knee:F2}  " +
         $"exposure {_exposure:F2}  tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  acesmix {_acesMix:F2}  tmknee {_tmKnee:F2}  " +
-        $"dither {_dither:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(_motion ? "on" : "off")}  taa {(_taa ? "on" : "off")} (taablend {_taaBlend:F2}, aotemporal {SsaoPass.Temporal:F2})"
+        $"dither {_dither:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(_motion ? "on" : "off")}  taa {(_taa ? "on" : "off")} (taablend {_taaBlend:F2}, taau {(_taau ? 1 : 0)}, aotemporal {SsaoPass.Temporal:F2})"
         + (_viz > 0f ? $"  VIZ {_viz:F0}" : "")
         + (_clearViz ? "  CLEARVIZ (target cleared magenta)" : "")
         + " | " + PostStack.Describe();
@@ -228,6 +228,14 @@ internal static unsafe class PostChain
     /// a stage that failed to build never leaves the jitter running with nothing to average it.</summary>
     internal static bool TaaOn => _taa && !TaaStage.Failed && !MotionVectors.Failed;
     internal static float TaaBlend => _taaBlend;
+    /// <summary>Temporal upsampling: under a render scale below 1 with TAA on, the accumulator keeps its
+    /// history at DISPLAY size and reconstructs from the jittered render-size frames, instead of the resolve
+    /// upscaling bilinearly and TAA smoothing the result. <c>/post taau 0</c> is the A/B.</summary>
+    internal static bool TaaUpsample => _taau;
+    private static bool _taau = true;
+    /// <summary>This pass's projection jitter in NDC, as <see cref="Jitter"/> handed it out (0 with TAA off);
+    /// the accumulator reads it to place the current frame's samples on the display grid.</summary>
+    internal static float JitterX, JitterY;
     /// <summary>#389: the jitter sequence length -- Halton(2,3), eight points, then it repeats.</summary>
     internal const int JitterCount = 8;
     /// <summary>#389: this frame's sub-pixel jitter in NDC for a render target of <paramref name="w"/> x
@@ -271,6 +279,7 @@ internal static unsafe class PostChain
             case "scale":     old = _scale; _scale = Math.Clamp(v, MinScale, MaxScale); break;
             case "motion":    old = _motion ? 1f : 0f; _motion = v != 0f; break;
             case "taa":       old = _taa ? 1f : 0f; _taa = v != 0f; if (_taa) TaaStage.Reset(); break;
+            case "taau":      old = _taau ? 1f : 0f; _taau = v != 0f; TaaStage.Reset(); break;
             // Capped at 0.5: above it the accumulator stops averaging the jitter and the frame visibly
             // vibrates (live, at 1.0 -- "an earthquake"). Not an A/B for TAA off; /post taa 0 is.
             case "taablend":  old = _taaBlend; _taaBlend = Math.Clamp(v, 0.02f, 0.5f); break;
@@ -290,7 +299,7 @@ internal static unsafe class PostChain
         // viz has no boot value and never should: it is a debug VIEW, not a look setting, so "reset" means
         // off. Leaving it out is why /post reset could not undo a stray /post viz either.
         _viz = 0f; _clearViz = false;
-        _scale = _bootScale; _motion = false; _taa = false; _taaBlend = _bootTaaBlend;
+        _scale = _bootScale; _motion = false; _taa = false; _taaBlend = _bootTaaBlend; _taau = true;
         PostStack.ResetTuning();
         _log?.Info($"PostChain: /post reset -> {Describe()}");
     }
@@ -774,7 +783,12 @@ internal static unsafe class PostChain
     /// <paramref name="into"/> when it is non-zero -- <see cref="PostStack.Begin"/>'s framebuffer, when a
     /// display-space stage is live this frame -- and the dither goes with the 8-bit write, so it is the
     /// stack's last stage's when the stack takes the frame.</summary>
-    internal static void Composite(int* viewport, uint into)
+    internal static void Composite(int* viewport, uint into) => Composite(viewport, into, viewport);
+
+    /// <summary>...with the colour draw at <paramref name="rect"/>: the render viewport when the accumulator
+    /// upsamples (it reads the resolve at render size), the display viewport otherwise. The depth hand-back
+    /// is always at the display viewport.</summary>
+    internal static void Composite(int* viewport, uint into, int* rect)
     {
         if (!Armed) return;
         ResolveDepth(viewport[2], viewport[3]);
@@ -800,7 +814,7 @@ internal static unsafe class PostChain
         // dial reads as "how many quantisation steps of noise", which is the only unit it makes sense in.
         Gl.Uniform1f(_cDither, into != 0 ? 0f : DitherLsb);
         Gl.Uniform1i(_cViz, (int)_viz);
-        Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        Gl.Viewport(rect[0], rect[1], rect[2], rect[3]);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         // Hand the depth state back the way the colour passes left it -- the probe capture may still be
         // ahead of us in another pass order, and the engine's own draws follow the bracket.
@@ -1156,7 +1170,7 @@ internal static unsafe class PostChain
             // decision. A Tune that still accepted it would be a live half-stand-down.
             E(float.IsNaN(Tune("hdr", 0f)), "hdr is not tunable; it is the boot setting");
             foreach (string key in new[] { "bloom", "threshold", "knee", "tonemap", "tmknee", "exposure", "acesmix",
-                                          "dither", "viz", "scale", "motion", "taa", "taablend", "aotemporal" })
+                                          "dither", "viz", "scale", "motion", "taa", "taablend", "taau", "aotemporal" })
                 E(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
             // #389: TAA arms the motion pass and stands SMAA down; both toggle with the one key. The jitter
             // sequence is centred, one render pixel wide, and repeats -- and is exactly zero-width at no size.

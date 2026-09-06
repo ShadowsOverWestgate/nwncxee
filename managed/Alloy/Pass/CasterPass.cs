@@ -742,6 +742,8 @@ public sealed unsafe class CasterPass : IExtenderService
     /// what measures the GPU side.</summary>
     internal static int LastViews;
     internal static float LastShadowMs;
+    /// <summary>The period's average bake GPU time, for the [alloy] gpu total.</summary>
+    internal static double ShadowGpuMs => _qShadow.Measured ? _qShadow.Avg / 1e6 : 0.0;
     /// <summary>#151: GPU time of the whole shadow bracket. The CPU stopwatch only sees submission, and the
     /// live logs had ~12ms of frame time no CPU timer accounted for -- this query is what convicts or clears
     /// the pass, and it is the number #187's regression is read off.</summary>
@@ -761,6 +763,8 @@ public sealed unsafe class CasterPass : IExtenderService
         _mapSize = Settings.Int("csm_size", _mapSize, 256, 8192);
         _cascades = Settings.Int("csm_cascades", _cascades, 1, MaxCascades);
         _cubeLights = Settings.Int("cube_count", _cubeLights, 0, MaxCubes);
+        // the boot value of /shadow mask, for a first-frame A/B on a driver that faults before a command can be typed
+        _maskMode = Settings.Int("shadowmask", MaskBoot, -1, 2);
         _cubeSize = Settings.Int("cube_size", _cubeSize, 64, 2048);
         // #305: the dynamic pool's shape. Sizes an allocation, so config, not /shadow (ADR 0013).
         // The page DEFAULT is the cube budget itself: the first live run saturated a 16-page pool in a
@@ -2113,35 +2117,27 @@ public sealed unsafe class CasterPass : IExtenderService
     /// alpha 0.3 is solid and must keep its shadow, so only essentially-empty texels punch through there.</summary>
     private const float CutoutDiscard = 0.2f, EnvAlphaDiscard = 0.02f;
 
-    /// <summary>Does this texture actually carry coverage -- texels the colour pass discards? Asked of GL,
-    /// once per texture id, because nothing else answers it honestly. <c>Material::GetIsOpaque</c> @0x4c6190
-    /// short-circuits on an env map, on the gob alpha and on its own memo, and each short-circuit produces an
-    /// "opaque" verdict nobody ever checked a texel for. The internal format lies too, and that one cost a
-    /// round: the ivy of #126 is <c>tcm02_leaf01</c>, a 128x128 DXT1 the engine uploads to the RGB variant
-    /// (0x83F0, ALPHA_SIZE 0) -- no alpha by declaration, 48% of its blocks punchthrough-encoded, and the
-    /// engine punches holes in it all the same. So the question is put to the decoder: read the level back
-    /// through <c>glGetTexImage</c>, which runs the same decode path the sampler runs, and look for a texel
-    /// the engine's own 0.2 cutout would drop.
-    /// <para>ponytail: level 0 only, and the whole level rather than a sample -- one cold readback per
-    /// texture into a shared buffer, capped at <see cref="MaxReadback"/>; anything larger is assumed to carry
-    /// coverage (test rather than cast a possible slab). Sampling every 4th texel would quarter it, but a
-    /// sparse cutout -- a railing, a rope bridge -- is exactly what a sparse scan misses.</para>
-    /// <para>Open-address cache keyed on the GL id, cleared by <see cref="Release"/> -- an area transition,
-    /// a module unload or a lost context all free textures, and GL recycles the names.</para></summary>
+    /// <summary>Does this texture carry coverage? Once answered by a level-0 readback, because
+    /// <c>Material::GetIsOpaque</c> @0x4c6190 short-circuits on an env map, the gob alpha and its own memo,
+    /// and the internal format lies (the ivy of #126, <c>tcm02_leaf01</c>, is a DXT1 with ALPHA_SIZE 0 and 48%
+    /// punchthrough blocks). The same full-resolution question is now put to the decoded image at the upload
+    /// funnel, where a sparse cutout -- a railing, a rope bridge -- is still counted texel by texel.</summary>
     internal static bool TexHasAlpha(int tid) => TexHoles(tid) > 0f;
 
-    /// <summary>Fraction of level-0 texels the cutout drops; 0 = a slab. 1 for a texture the scan could not
-    /// read (cache row full, readback too wide): test rather than cast a possible slab.</summary>
+    /// <summary>Fraction of level-0 texels the cutout drops; 0 = a slab. 1 for a texture the funnel never
+    /// scanned: test rather than cast a possible slab. No readback: the answer was computed from the engine's
+    /// decoded image at upload (<see cref="TexScan"/>), which is what keeps a radeonsi engine context's
+    /// descriptors of the same texture honest.</summary>
     internal static float TexHoles(int tid)
     {
-        if (tid <= 0 || Gl.GetTexLevelParameteriv == null || Gl.GetTexImage == null) return 0f;
+        if (tid <= 0) return 0f;
         int h = (int)((uint)tid * 2654435761u % TexCacheSize);
         for (int probe = 0; probe < 8; probe++)
         {
             int k = (h + probe) % TexCacheSize;
             if (_texKey[k] == tid) return _texHoles[k];
             if (_texKey[k] != 0) continue;
-            float holes = ScanForCoverage(tid);
+            float holes = OwnedTextures.TryHoles(tid, out float f) ? f : 1f;
             _texKey[k] = tid; _texHoles[k] = holes;
             _texQueried++;
             if (holes > 0f) _texWithAlpha++;
@@ -2150,48 +2146,6 @@ public sealed unsafe class CasterPass : IExtenderService
         return 1f;
     }
 
-    /// <summary>Alpha below this in ANY texel means the colour pass drops texels here, so the depth pass must
-    /// too. The engine's own <c>fAlphaDiscardValue</c> (inc_common.shd:593) -- not a margin below it: a
-    /// texture whose minimum alpha sits exactly at the cutout has no dropped texels.</summary>
-    private const float CoverageAlpha = 0.2f;
-    /// <summary>Widest level-0 readback attempted, in texels. 2048x2048 RGBA8 = 16 MB, one shared buffer.</summary>
-    private const int MaxReadback = 2048 * 2048;
-
-    private static float ScanForCoverage(int tid)
-    {
-        int saved; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &saved);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
-        int w = 0, h = 0, asize = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_ALPHA_SIZE, &asize);
-        float holes = 1f;
-        if (w > 0 && h > 0 && (long)w * h <= MaxReadback)
-        {
-            _readback ??= new byte[MaxReadback * 4];
-            fixed (byte* p = _readback)
-            {
-                Gl.GetTexImage(Gl.TEXTURE_2D, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
-                int cut = (int)(CoverageAlpha * 255f);
-                long dropped = 0, n = (long)w * h * 4;
-                for (long i = 3; i < n; i += 4) if (p[i] < cut) dropped++;
-                holes = dropped / (float)((long)w * h);
-            }
-        }
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
-        if (_scanDiagLeft > 0)
-        {
-            _scanDiagLeft--;
-            _log?.Info($"CasterPass: coverage scan tid={tid} {w}x{h} declared-alpha-bits={asize} -> holes={holes:0.00}");
-        }
-        return holes;
-    }
-
-    /// <summary>ponytail: one buffer for every scan, never freed once minted. 16 MB resident for the life of
-    /// the process against a readback that happens a few hundred times a session; free it in Release() only
-    /// if a memory ceiling ever names it.</summary>
-    private static byte[]? _readback;
-    private static int _scanDiagLeft = 40;
 
     private const int TexCacheSize = 2048;
     private static readonly int[] _texKey = new int[TexCacheSize];
@@ -2956,7 +2910,9 @@ public sealed unsafe class CasterPass : IExtenderService
             // passes sample the owned copy, which may be a BCn transcode whose block-quantized alpha sits on
             // the other side of the cutout from the engine's raw original.
             int drawTex = _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
-            int masked = drawTex != 0 && _progMask != 0 && TexHasAlpha(drawTex) ? drawTex : 0;
+            // mode 0 never masks, so it never reads a texture back either (the scan is a glGetTexImage of
+            // the owned name in the 4.6 context; shadowmask=0 in sowx.cfg is the boot-time A/B for it)
+            int masked = drawTex != 0 && _progMask != 0 && _maskMode != 0 && TexHasAlpha(drawTex) ? drawTex : 0;
             if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
             // The mask MODE is decided here, in the key, not at the draw: a masked texture the mode draws
             // solid merges into its (VAO, prim) batch instead of costing one indirect call per view per

@@ -538,7 +538,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Post, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -550,6 +550,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>Open a term's elapsed query unless another is already open -- the guard that keeps the
     /// brackets serial. A term whose query declined the frame (result not ready) is simply not measured.</summary>
+    /// <summary>Every term's period average summed, shadows excluded (the bake has its own query).</summary>
+    private static double GpuTermsTotal()
+    { double s = 0; for (int t = 0; t < (int)GpuTerm.Count; t++) s += GpuMs((GpuTerm)t); return s; }
+
     internal static void GpuBegin(GpuTerm t)
     { if (_qOpen < 0 && _qTerm[(int)t].Begin(Gl.TIME_ELAPSED)) _qOpen = (int)t; }
 
@@ -913,7 +917,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // never arm on a broken contract: the misrender either predicts must not ship
         // #242: the split joins that chain for the same reason -- a record that stopped carrying a
         // per-frame field renders stale state and says nothing at all.
-        if (!SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log)
+        if (!SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
             || !RunsSelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
             || !ShaderContract.SelfCheck(log)) return;
@@ -1084,6 +1088,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // early-Z for parts BEHIND the aperture, which under a roof is the hole itself.
             case "prepasskey": old = _prepassKey ? 1f : 0f; _prepassKey = v != 0f; break;
             case "prepassfeat": old = _prepassFeat ? 1f : 0f; _prepassFeat = v != 0f; break;
+            case "gpumeter": old = GpuQuery.Enabled ? 1f : 0f; GpuQuery.Enabled = v != 0f; break;
             // #336 step 4: the visible set's A/B -- 0 walks the whole order every pass.
             case "vislist":  old = _visList ? 1f : 0f; _visList = v != 0f; break;
             // Whether a TILE gob's parts may dissolve. 0 = vanilla, where the aperture stops at every gob
@@ -1758,7 +1763,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $"/ particles {GpuMs(GpuTerm.Particles):F2}" +
                          (_qPartSamples.Measured && _lastPixels > 0 ? $" (overdraw x{_qPartSamples.Avg / _lastPixels:F2})" : "") +
                          (_qTerm[(int)GpuTerm.Motion].Measured ? $" / motion {GpuMs(GpuTerm.Motion):F2}" : "") +
-                         $" / post {GpuMs(GpuTerm.Post):F2}" : "") +
+                         $" / post {GpuMs(GpuTerm.Post):F2}" +
+                         // The terms no pass owned: the cull dispatches, the hi-Z build, beams, the water
+                         // copy -- and the total, to read against the [gl46] gpu-span. Span minus total is
+                         // idle-or-unbracketed; it is idle if it shrinks when the frame goes GPU-bound.
+                         $" / cull {GpuMs(GpuTerm.Cull):F2} / hiz {GpuMs(GpuTerm.HiZ):F2} / beams {GpuMs(GpuTerm.Beams):F2}" +
+                         $" / water copy {GpuMs(GpuTerm.WaterCopy):F2} (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.
                    $", probe {(EnvProbe.Ready ? $"ready ({EnvProbe.Captures} captures)" : "none yet")}" +

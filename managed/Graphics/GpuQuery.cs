@@ -8,6 +8,9 @@ namespace Sowx.Graphics;
 /// for the session. Same rule as <c>AlloyLights.Build</c>, for the same reason.</para></summary>
 public unsafe struct GpuQuery
 {
+    /// <summary>The meters' kill switch (<c>/draw gpumeter 0</c>): every Begin declines, so no query is
+    /// issued or harvested. The A/B for what the ~100 query calls a frame cost the submitting thread.</summary>
+    public static bool Enabled = true;
     private uint _q0, _q1;
     private bool _p0, _p1;
     private int _at;
@@ -16,6 +19,7 @@ public unsafe struct GpuQuery
 
     public bool Begin(uint target)
     {
+        if (!Enabled) return false;
         if (Gl.GenQueries == null || Gl.GetQueryObjectui64v == null || Gl.GetQueryObjectiv == null) return false;
         if (_q0 == 0) { uint* q = stackalloc uint[2]; Gl.GenQueries(2, q); _q0 = q[0]; _q1 = q[1]; }
         if (_q0 == 0 || _q1 == 0) return false;

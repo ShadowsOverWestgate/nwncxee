@@ -98,7 +98,7 @@ internal static unsafe class FrameSnapshot
     }
 
     internal static string Describe()
-        => $"water {(On ? "on" : "off")} (vanilla fswater)  noise tid {_noiseTid} on unit {NoiseUnit}" +
+        => $"water {(On ? "on" : "off")} (vanilla fswater)  noise tid {_noiseTid} on unit {NoiseUnit}  rect {(Rect ? 1 : 0)} (last copy {LastRectFrac * 100f:F0}% of the frame)" +
            (_diagLeft > 0 ? $"  DIAG {_diagLeft} left" : "");
 
     /// <summary>Live tuning behind <c>/water</c>; returns the old value, NaN for an unknown key. Same
@@ -110,6 +110,7 @@ internal static unsafe class FrameSnapshot
         switch (key)
         {
             case "on":    old = On ? 1f : 0f; On = v > 0f; break;
+            case "rect":  old = Rect ? 1f : 0f; Rect = v > 0f; break;
             // A budget of readbacks, not a switch: v is how many copies to diagnose from here.
             case "diag":  old = _diagLeft; _diagLeft = v > 0f ? (int)v : 0; break;
             default: return float.NaN;
@@ -122,7 +123,7 @@ internal static unsafe class FrameSnapshot
     /// and never should -- a readback is a live request, so reset spends none.</summary>
     internal static void ResetTuning()
     {
-        On = true;
+        On = true; Rect = true;
         _diagLeft = 0;
         _log?.Info($"FrameSnapshot: /water reset -> {Describe()}");
     }
@@ -147,7 +148,18 @@ internal static unsafe class FrameSnapshot
     /// <para>Returns false, having logged once, whenever the copy cannot be taken. That is a full stand-down
     /// and not a degraded draw: <see cref="Ready"/> stays false, the Alloy water stage does not run, and the
     /// engine's bucket-6 walk (with its own copy) is left to draw water exactly as before #129.</para></summary>
-    internal static bool Copy(int* viewport)
+    /// <summary>Copy only the rows and columns the water can cover (<c>/water rect 0</c> = whole frame).</summary>
+    internal static bool Rect { get; private set; } = true;
+    /// <summary>Margin around the water's screen rectangle, as a fraction of the viewport height.</summary>
+    internal const float RectMargin = 0.05f;
+    /// <summary>The last copy's rectangle as a fraction of the frame; 1 = a whole-frame copy.</summary>
+    internal static float LastRectFrac { get; private set; } = 1f;
+
+    internal static bool Copy(int* viewport) => Copy(viewport, 0, 0, viewport[2], viewport[3]);
+
+    /// <summary>The copy over one rectangle of the frame, source and destination at the same coordinates so
+    /// the stage's gl_FragCoord read stays 1:1. Texels outside the rectangle keep the previous copy.</summary>
+    internal static bool Copy(int* viewport, int x0, int y0, int x1, int y1)
     {
         Ready = false;
         if (!On || _down.Failed) return false;
@@ -171,7 +183,8 @@ internal static unsafe class FrameSnapshot
         if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, (uint)src);
         Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fbo);
-        Gl.BlitFramebuffer(0, 0, w, h, 0, 0, w, h, Gl.COLOR_BUFFER_BIT | _depMask, (uint)Gl.NEAREST);
+        Gl.BlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, Gl.COLOR_BUFFER_BIT | _depMask, (uint)Gl.NEAREST);
+        LastRectFrac = (float)(x1 - x0) * (y1 - y0) / ((float)w * h);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)src);
         // ...and the blit is CHECKED, because its whole-or-nothing failure mode is silent and total. A depth
         // blit between mismatched formats raises INVALID_OPERATION and discards the entire call -- colour

@@ -110,6 +110,7 @@ public sealed unsafe partial class AlloyRenderer
             PostChain.Jitter(_frameSeq, PostChain.RenderSize(t.Vp2), PostChain.RenderSize(t.Vp3), out jx, out jy);
             proj.M31 += jx * proj.M34; proj.M32 += jy * proj.M34;
         }
+        PostChain.JitterX = jx; PostChain.JitterY = jy;
         _projMtx = proj;   // #347: what a spliced stock file reads as m_proj
         Matrix4x4 vp = view * proj;
         // every froxel input comes off THIS pass's projection, never the capture side (see TryPerspective)
@@ -215,7 +216,11 @@ public sealed unsafe partial class AlloyRenderer
                     // down for the whole pass rather than leaving a stale list armed behind it.
                     if (CullPass.Begin(_capturing ? 0 : groups, cullDraws, src,
                                        lodScale, _gOpaqueEnd, _eyePos))
+                    {
+                        GpuBegin(GpuTerm.Cull);
                         CullPass.Dispatch(CullPass.PhasePrepass, &vp, hiZ: false, PassGen);
+                        GpuEnd(GpuTerm.Cull);
+                    }
                 FrameZones.Add(FrameZones.Zone.Cull, tCull);
                 // #322: the loop's own CPU work, with the brackets that fire inside it (multidraw issue,
                 // the colour cull dispatch, post, the probe capture) subtracted out -- same parent/child
@@ -239,11 +244,22 @@ public sealed unsafe partial class AlloyRenderer
                             // on purpose -- a pyramid carried from last frame pops at the silhouette of
                             // every moving occluder, and the prepass depth is already paid for (#119).
                             if (DepthResource.Filled(PassGen))
+                            {
+                                long tHiz = FrameZones.Now;
+                                GpuBegin(GpuTerm.HiZ);
                                 CullPass.BuildHiZ(PostChain.DepthTex, viewport[2], viewport[3], viewport,
                                                   PostChain.Fbo, PassGen);
+                                GpuEnd(GpuTerm.HiZ);
+                                FrameZones.Add(FrameZones.Zone.Hiz, tHiz);
+                            }
                             // /grass ao 2: the blades occlude -- their depth lands ahead of the SSAO read,
                             // after the pyramid so a blade never culls what stands behind it
-                            if (GrassField.OccludesAo) GrassField.DrawDepth(&vp, viewport, near, far);
+                            if (GrassField.OccludesAo)
+                            {
+                                long tGrass = FrameZones.Now;
+                                GrassField.DrawDepth(&vp, viewport, near, far);
+                                FrameZones.Add(FrameZones.Zone.Grass, tGrass);
+                            }
                             FrameZones.Add(FrameZones.Zone.Prepass, tPre);
                             break;
                         case PassId.AmbientOcclusion:
@@ -267,7 +283,9 @@ public sealed unsafe partial class AlloyRenderer
                             // case: a frame graph without a prepass in it must still leave the colour pass a
                             // list to draw, and hi-Z simply stands down when there is no depth to build from.
                             long tCull2 = FrameZones.Now;
+                            GpuBegin(GpuTerm.Cull);
                             CullPass.Dispatch(CullPass.PhaseColour, &vp, hiZ: DepthResource.Filled(PassGen), PassGen);
+                            GpuEnd(GpuTerm.Cull);
                             FrameZones.Add(FrameZones.Zone.Cull, tCull2);
                             OpaqueOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
                             // The GPU-side cluster stats belong to the SCREEN's build. Harvested here rather
@@ -277,7 +295,9 @@ public sealed unsafe partial class AlloyRenderer
                             { _takeOverflow = false; _clusterOverflow += AlloyLights.TakeClusterOverflow(); }
                             break;
                         case PassId.GrassOwned:
+                            long tGrassDraw = FrameZones.Now;
                             GrassField.Draw(&vp, viewport, near, far, lightingOn, SsaoPass.Live && !_capturing);   // brackets its own two GPU terms
+                            FrameZones.Add(FrameZones.Zone.Grass, tGrassDraw);
                             // Grass draws unblended by construction and toggles GL_BLEND itself; hand the
                             // tracked state back exactly as it was, or the next pass's own bookkeeping
                             // (IssueBatches reads _blendOn as "what is already set") starts from a lie.
@@ -297,7 +317,6 @@ public sealed unsafe partial class AlloyRenderer
                             GpuEnd(GpuTerm.Blended);
                             break;
                         case PassId.FbCopy:
-                            GpuBegin(GpuTerm.Water);
                             // Only when there is water to read it. The copy is a full-screen blit of colour
                             // AND depth -- cheap, but not free, and every frame without a water surface on
                             // screen would be paying for a texture nothing samples.
@@ -307,11 +326,16 @@ public sealed unsafe partial class AlloyRenderer
                                 // not care, but leaving the tracked state honest does -- IssueBatches below
                                 // reads _blendOn as "what is already set".
                                 long tBlit = FrameZones.Now;
-                                FrameSnapshot.Copy(viewport);
+                                GpuBegin(GpuTerm.WaterCopy);
+                                if (perspective && WaterRect(&vp, viewport, p00, p11, out int rx0, out int ry0, out int rx1, out int ry1))
+                                    FrameSnapshot.Copy(viewport, rx0, ry0, rx1, ry1);
+                                else FrameSnapshot.Copy(viewport);
+                                GpuEnd(GpuTerm.WaterCopy);
                                 FrameZones.Add(FrameZones.Zone.Blit, tBlit);
                             }
                             break;
                         case PassId.WaterOwned:
+                            GpuBegin(GpuTerm.Water);
                             WaterOwnedPass(_gBlendEnd, _gWaterEnd, &vp, (float*)&view, (float*)&proj,
                                            viewport, near, far);
                             GpuEnd(GpuTerm.Water);
@@ -327,7 +351,9 @@ public sealed unsafe partial class AlloyRenderer
                         case PassId.BeamsOwned:
                             // Beams bind a program and a VAO of their own and hand the state back exactly as
                             // the additive arm left it; nothing here tracks _blendOn on their behalf.
+                            GpuBegin(GpuTerm.Beams);
                             Beams.Draw(&view, &proj);
+                            GpuEnd(GpuTerm.Beams);
                             break;
                         case PassId.ParticlesOwned:
                             // Particles bind a program, a VAO and a buffer of their own and hand the state
@@ -372,14 +398,16 @@ public sealed unsafe partial class AlloyRenderer
                             // viewport and the sRGB-encode state the pass was entered with.
                             PostChain.Bloom();
                             // #375: Begin binds its own framebuffer to attach; the engine's comes back for the depth hand-back
-                            uint into = PostStack.Begin(display[2], display[3]);
+                            // #391/#389: the stack is told both sizes; when it upsamples, the resolve's
+                            // colour draw lands at the render viewport and the taa stage writes the display.
+                            uint into = PostStack.Begin(viewport[2], viewport[3], display[2], display[3]);
                             RebindFrameTarget();
-                            PostChain.Composite(display, into);
+                            PostChain.Composite(display, into, PostStack.Upsampling ? viewport : display);
                             break;
                         case PassId.PostStack:
                             if (!postOpen) break;
                             // The last live stage rebinds the engine's target itself; a no-op with none.
-                            PostStack.Run(display);
+                            PostStack.Run(display, PostStack.Upsampling ? viewport : display);
                             // #232 second mode: the owned outline+fill highlight, drawn into the finished
                             // display-space frame with the depth Composite blitted to it. Not a FrameGraph
                             // slot of its own: it is part of finishing the post output, like Bloom.
@@ -418,6 +446,65 @@ public sealed unsafe partial class AlloyRenderer
     /// The cutout class the ADR makes a measurement question is still not owned.
     /// <para>Publishes <see cref="DepthResource"/> on the way out: the buffer is the deliverable, not a
     /// private optimisation.</para></summary>
+    /// <summary>The screen rectangle this pass's water draws can cover, from their cull spheres projected
+    /// through the pass camera, with a margin for the water stage's refraction offset. False = take the whole
+    /// frame: a sphere without finite bounds, one crossing the near plane, or the dial off.</summary>
+    private static bool WaterRect(Matrix4x4* vp, int* viewport, float p00, float p11,
+                                  out int x0, out int y0, out int x1, out int y1)
+    {
+        x0 = y0 = x1 = y1 = 0;
+        if (!FrameSnapshot.Rect) return false;
+        float vw = viewport[2], vh = viewport[3];
+        float minx = vw, miny = vh, maxx = 0f, maxy = 0f;
+        fixed (float* sph = _dSph)
+            for (int g = _gBlendEnd; g < _gWaterEnd; g++)
+                for (int d = _gStart[g], e = d + _gLen[g]; d < e; d++)
+                {
+                    float* s = sph + (long)_dSlot[d] * 4;
+                    if (s[3] >= NeverCull || !SphereRect(vp, vw, vh, p00, p11, s[0], s[1], s[2], s[3],
+                                                          out float ax, out float ay, out float bx, out float by))
+                        return false;
+                    minx = MathF.Min(minx, ax); maxx = MathF.Max(maxx, bx);
+                    miny = MathF.Min(miny, ay); maxy = MathF.Max(maxy, by);
+                }
+        // the refraction reads a few pixels around the surface; a texel past the margin is last frame's
+        float m = vh * FrameSnapshot.RectMargin;
+        x0 = Math.Max((int)(minx - m), 0); y0 = Math.Max((int)(miny - m), 0);
+        x1 = Math.Min((int)(maxx + m) + 1, viewport[2]); y1 = Math.Min((int)(maxy + m) + 1, viewport[3]);
+        return x1 > x0 && y1 > y0;
+    }
+
+    /// <summary>One sphere's screen extent in pixels: the centre through the row-vector view-projection, the
+    /// radius scaled by the projection's diagonal at the centre's clip depth. False when the sphere reaches
+    /// the near plane, where the extent is unbounded.</summary>
+    internal static bool SphereRect(Matrix4x4* vp, float vw, float vh, float p00, float p11,
+                                    float x, float y, float z, float r,
+                                    out float x0, out float y0, out float x1, out float y1)
+    {
+        x0 = y0 = x1 = y1 = 0f;
+        var clip = Vector4.Transform(new Vector4(x, y, z, 1f), *vp);
+        if (clip.W <= r) return false;
+        float cx = (clip.X / clip.W * 0.5f + 0.5f) * vw, cy = (clip.Y / clip.W * 0.5f + 0.5f) * vh;
+        float ex = r * p00 / clip.W * 0.5f * vw, ey = r * p11 / clip.W * 0.5f * vh;
+        x0 = cx - ex; x1 = cx + ex; y0 = cy - ey; y1 = cy + ey;
+        return true;
+    }
+
+    /// <summary>Off-device: a unit sphere ten units down the view axis under a 90-degree lens covers the
+    /// middle tenth of the frame, and a sphere on the near plane is refused.</summary>
+    private static bool SphereRectSelfCheck(ExtenderLog log)
+    {
+        var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 2f, 1f, 0.1f, 100f);
+        var vp = Matrix4x4.Identity * proj;
+        bool ok = SphereRect(&vp, 1000f, 1000f, proj.M11, proj.M22, 0f, 0f, -10f, 1f,
+                             out float x0, out float y0, out float x1, out float y1)
+                  && MathF.Abs(x0 - 450f) < 1f && MathF.Abs(x1 - 550f) < 1f
+                  && MathF.Abs(y0 - 450f) < 1f && MathF.Abs(y1 - 550f) < 1f
+                  && !SphereRect(&vp, 1000f, 1000f, proj.M11, proj.M22, 0f, 0f, -0.5f, 1f, out _, out _, out _, out _);
+        if (!ok) log.Info($"AlloyRenderer.SphereRectSelfCheck: FAILED ({x0:F1},{y0:F1})-({x1:F1},{y1:F1})");
+        return ok;
+    }
+
     private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport)
     {
         if (!_depthPrepass || !EnsureDepthProgram()) return;

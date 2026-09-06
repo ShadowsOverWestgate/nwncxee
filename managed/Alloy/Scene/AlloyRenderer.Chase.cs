@@ -244,6 +244,17 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
+    /// <summary>The engine's visible-gob list for this frame (<c>gobbucket</c>, filled by ManageSceneBSP's
+    /// view-volume filter), when the anchor sample found it sane. False = walk the whole scene instead.</summary>
+    internal static bool VisibleGobs(out IntPtr* items, out int n)
+    {
+        items = null; n = 0;
+        if (_gobBucket == null || _visAll) return false;
+        n = *(int*)(_gobBucket + BucketCount);
+        items = *(IntPtr**)(_gobBucket + BucketItems);
+        return n >= 0 && n <= VisLoadCap && (n == 0 || items != null);
+    }
+
     private static void ResolveChase(ExtenderLog log)
     {
         _gobBucket = (byte*)Native.Sym(SymbolMap.GobBucket);

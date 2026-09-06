@@ -94,7 +94,7 @@ public sealed unsafe class NameplateService : IExtenderService
         _plates = new Window(0, 0, 0, 0)
         {
             Focusable = false,
-            DrawContent = Draw,
+            DrawContent = static () => { long t = FrameZones.Now; Draw(); FrameZones.Add(FrameZones.Zone.Plates, t); },
             OnMouseButton = OnPlateClick,
         };
         UiHost.SendToBack(_plates);   // plates paint UNDER the chat box and the dialog panel

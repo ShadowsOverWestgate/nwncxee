@@ -245,6 +245,9 @@ internal static unsafe partial class GrassField
     /// <para>Retuned after the first live look: at gain 1 a blade was flung a full blade-height sideways and
     /// pressed flat, which read as a blast crater rather than parted grass.</para>
     private static float _pushGain = BootPush, _pushRadius = BootPushRadius, _pushExtent = BootPushExtent;
+    /// <summary>Push field from the engine's visible-gob list (1) or every gob in the scene (0, the A/B).</summary>
+    private static bool _pushVis = true;
+    private static long _pushWalked, _pushWalkedAll;
     /// <summary>Object culling: <c>_cull</c> 0 disables it, <c>_cullShrink</c> scales the footprint the gob's
     /// own bounding-box extent gives (below 1 so grass fringes an object rather than stopping at a hard
     /// line), and <c>_cullMax</c> caps the half-extent in world units (0 = uncapped) for the one case the
@@ -671,8 +674,17 @@ internal static unsafe partial class GrassField
         IntPtr scene = SceneWalk.WorldScene;
         if (_pushGain > 0f && _pushRadius > 0f && scene != IntPtr.Zero)
         {
-            IntPtr* gobs = *(IntPtr**)(scene + SceneLayout.SceneGobs);
-            int count = *(int*)(scene + SceneLayout.SceneGobCount);
+            // The pushers are the gobs in view: a walk of EVERY gob in the scene (thousands, a part-tree
+            // walk for each inside the extent) read 0,5ms a frame with no grass on screen. The engine's own
+            // visible list is a few hundred; a pusher behind the camera pushes grass nobody sees.
+            IntPtr* gobs; int count;
+            if (!_pushVis || !AlloyRenderer.VisibleGobs(out gobs, out count))
+            {
+                gobs = *(IntPtr**)(scene + SceneLayout.SceneGobs);
+                count = *(int*)(scene + SceneLayout.SceneGobCount);
+                _pushWalkedAll++;
+            }
+            _pushWalked += count;
             float r = _pushRadius, rTex = r * _pushPerUnit;
             // ponytail: no cheap pre-reject before Footprint. `reach` depends on the footprint, and with
             // `_cullMax` at its default 0 (uncapped) there is no sound bound to test against first -- a
@@ -1773,6 +1785,7 @@ internal static unsafe partial class GrassField
             case "edge": old = _edge; _edge = v; break;
             case "push": old = _pushGain; _pushGain = v; break;
             case "pushradius": old = _pushRadius; _pushRadius = v; break;
+            case "pushvis": old = _pushVis ? 1f : 0f; _pushVis = v != 0f; break;
             case "pushextent": old = _pushExtent; _pushExtent = v; break;
             case "cull": old = _cull; _cull = v; break;
             case "cullshrink": old = _cullShrink; _cullShrink = v; break;
@@ -1816,7 +1829,7 @@ internal static unsafe partial class GrassField
     // ---- diagnostics -------------------------------------------------------------------------
 
     internal static void ResetPeriod()
-    { _frames = 0; _draws = 0; _visible = 0; _culled = 0; _baked = 0; _disabled = 0; _blades = 0; }
+    { _frames = 0; _draws = 0; _visible = 0; _culled = 0; _baked = 0; _disabled = 0; _blades = 0; _pushWalked = 0; _pushWalkedAll = 0; }
 
     internal static string Stats()
     {
@@ -1843,7 +1856,8 @@ internal static unsafe partial class GrassField
                // A material a server removed is skipped here rather than never baked -- so it shows up as
                // resident blades that never draw, which without this reads as culling gone wrong.
                (_disabled == 0 ? "" : $", {(float)_disabled / _frames:F0} patches/frame on DISABLED materials") +
-               $", {_pushers} gobs displacing, {_cullers} culling" +
+               $", {_pushers} gobs displacing, {_cullers} culling (push field walked {(float)_pushWalked / Math.Max(_frames, 1):F0} gobs/frame" +
+               $"{(_pushWalkedAll > 0 ? $", {_pushWalkedAll} frames over the whole scene" : ", visible list")})" +
                // Non-solid gobs are the target reticle and the spell VFX. A zero here on a client that is
                // clearly targeting something means PartTriMesh::GetIsOpaque did not resolve and everything
                // counts as solid again.

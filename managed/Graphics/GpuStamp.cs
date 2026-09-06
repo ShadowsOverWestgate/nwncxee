@@ -21,6 +21,7 @@ public unsafe struct GpuStamp
     /// frame (false) if it is not ready yet rather than stall -- same rule as <see cref="GpuQuery"/>.</summary>
     public bool Begin()
     {
+        if (!GpuQuery.Enabled) return false;
         if (Gl.QueryCounter == null || Gl.GenQueries == null || Gl.GetQueryObjectui64v == null || Gl.GetQueryObjectiv == null) return false;
         if (_q[0] == 0) { fixed (uint* q = _q) Gl.GenQueries(Depth * 2, q); if (_q[0] == 0) return false; }
         if (_pending[_at] != 0)

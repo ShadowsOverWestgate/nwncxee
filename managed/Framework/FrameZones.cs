@@ -77,6 +77,14 @@ public static class FrameZones
         /// 1-in-<c>AlloyRenderer.ChaseEvery</c> and extrapolated -- which of the route's per-part reads
         /// carries Scan.</summary>
         Ident, Fade,
+        /// <summary>Inside <see cref="Prepass"/> (NOT subtracted): the hi-Z pyramid build's CPU side --
+        /// the prepass zone read 0,6ms at a render scale where its GPU work was nothing.</summary>
+        Hiz,
+        /// <summary>Inside <see cref="Ui"/> (NOT subtracted): the nameplate window's draw.</summary>
+        Plates,
+        /// <summary>Inside <see cref="Prepass"/> and <see cref="Passes"/> (NOT subtracted): the grass pass CPU
+        /// -- the bin-bucket walk and instance staging in Prepare, and both draws.</summary>
+        Grass,
         /// <summary>#322: nested in <see cref="Shadow"/>: the LightManager master-list walk.</summary>
         Lwalk,
         /// <summary>#322: nested in <see cref="Shadow"/>: <c>CasterPass.OnPassSlot</c> -- cube ranking,

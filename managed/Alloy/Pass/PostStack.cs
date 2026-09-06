@@ -170,18 +170,29 @@ internal static unsafe class PostStack
     /// colour should go into (its first ping-pong texture attached). 0 = no stage: the resolve draws into
     /// the engine's target as before. Binds its own framebuffer to attach, so the caller rebinds the
     /// engine's target after it -- which the depth hand-back needs anyway.</summary>
-    internal static uint Begin(int w, int h)
+    internal static uint Begin(int w, int h) => Begin(w, h, w, h);
+
+    /// <summary>Is this frame's stack upsampling: the resolve and every stage but the last at render size,
+    /// the taa stage's history and its write at display size. Decided in <see cref="Begin"/>.</summary>
+    internal static bool Upsampling { get; private set; }
+
+    /// <summary>...with the render size apart from the display size. The stages are asked about the DISPLAY
+    /// size (the taa history lives there); the ping-pong is at render size only when the taa stage is live
+    /// and the dial is on, so a frame whose taa stage is not ready falls back to the bilinear upscale.</summary>
+    internal static uint Begin(int rw, int rh, int dw, int dh)
     {
-        _pending = 0;
+        _pending = 0; Upsampling = false;
         if (!_on || _targetBad || _gspI == null) return 0;
         if (!_built) EnsurePrograms();
+        bool taaLive = false;
         foreach (Stage st in _stages)
         {
-            st.Live = !st.Failed && st.Prog != 0 && st.Active() && (st.Ready == null || st.Ready(w, h));
-            if (st.Live) _pending++;
+            st.Live = !st.Failed && st.Prog != 0 && st.Active() && (st.Ready == null || st.Ready(dw, dh));
+            if (st.Live) { _pending++; if (st.Name == "taa") taaLive = true; }
         }
         if (_pending == 0) return 0;
-        if (!EnsureTargets(w, h)) { _pending = 0; return 0; }
+        Upsampling = taaLive && PostChain.TaaUpsample && (rw != dw || rh != dh);
+        if (!EnsureTargets(Upsampling ? rw : dw, Upsampling ? rh : dh)) { _pending = 0; Upsampling = false; return 0; }
         AttachWrite(_tex0);
         return _fbo;
     }
@@ -196,7 +207,11 @@ internal static unsafe class PostStack
     /// <summary>Run the live stages in order over the resolved frame. Every stage but the last draws into
     /// the other ping-pong texture; the last rebinds the engine's target (which the resolve would have
     /// written into) and carries the resolve's dither, so the frame is quantised exactly once.</summary>
-    internal static void Run(int* viewport)
+    internal static void Run(int* viewport) => Run(viewport, viewport);
+
+    /// <summary>...with every stage but the last drawing at <paramref name="stageVp"/> (the render viewport
+    /// when upsampling) and the last at <paramref name="viewport"/>, the display.</summary>
+    internal static void Run(int* viewport, int* stageVp)
     {
         if (_pending == 0) return;
         Gl.BindVertexArray(PostChain.FullscreenVao);
@@ -219,7 +234,8 @@ internal static unsafe class PostStack
             Gl.Uniform1i(st.LocDepth, (int)TextureSlots.PostBloom);
             Gl.Uniform1f(st.LocDither, last ? PostChain.DitherLsb : 0f);
             if (st.Value != null) Gl.Uniform1f(st.LocParam, st.Value());
-            Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            int* v = last ? viewport : stageVp;
+            Gl.Viewport(v[0], v[1], v[2], v[3]);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
             if (st.Prepare != null) Gl.BindSampler(TextureSlots.PostHdr, 0);
             (read, write) = (write, read);

@@ -33,7 +33,25 @@ public sealed unsafe class EngineZonesService : IExtenderService
             SymbolMap.ManageSceneBSP, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnBsp);
         _buckets = (delegate* unmanaged<IntPtr, long>)hooks.Install(
             SymbolMap.AddPartsToDrawBuckets, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnBuckets);
-        log.Info("EngineZones: timing the engine loop's net / resman / AI / GUI steps and resource demands into [zones] (config enginezones=0 disables)");
+        // 2 by default (2026-09-06, live: Buckets 0,7 -> 0,2-0,3ms, gob parts intact); 0 is the A/B, 1 the
+        // experiment that empties the world of gob parts.
+        int skip = Settings.Int("skipbuckets", 2, 0, 2);
+        _skipBuckets = skip == 1;
+        _bucketsCadence = skip == 2;
+        if (_bucketsCadence)
+        {
+            _meshBuckets = (byte*)Native.Sym(SymbolMap.MeshBuckets); _fadeBuckets = (byte*)Native.Sym(SymbolMap.FadeBuckets);
+            _capBuckets = (byte*)Native.Sym(SymbolMap.CapBuckets); _staticShadowBucket = (byte*)Native.Sym(SymbolMap.StaticShadowBucket);
+            _meshShadowBucket = (byte*)Native.Sym(SymbolMap.MeshShadowBucket);
+            string missing = (_meshBuckets == null ? " meshbuckets" : "") + (_fadeBuckets == null ? " fadebuckets" : "")
+                           + (_capBuckets == null ? " capbuckets" : "") + (_staticShadowBucket == null ? " staticshadowbucket" : "")
+                           + (_meshShadowBucket == null ? " meshshadowbucket" : "");
+            if (missing.Length > 0)
+            { _bucketsCadence = false; log.Info($"EngineZones: skipbuckets=2 refused -- unresolved:{missing}"); }
+        }
+        log.Info("EngineZones: timing the engine loop's net / resman / AI / GUI steps and resource demands into [zones] (config enginezones=0 disables)" +
+                 (_skipBuckets ? " -- EXPERIMENT skipbuckets=1: the world scene's AddPartsToDrawBuckets is SKIPPED while Alloy draws (expect no gob parts)" : "") +
+                 (_bucketsCadence ? $" -- skipbuckets=2: the tile-part loops of AddPartsToDrawBuckets run every {BucketsEvery}th frame while Alloy draws (skipbuckets=0 restores them)" : ""));
     }
 
     private static delegate* unmanaged<IntPtr, IntPtr, long> _demand;
@@ -51,10 +69,54 @@ public sealed unsafe class EngineZonesService : IExtenderService
         return r;
     }
 
+    /// <summary>EXPERIMENT (docs/research/engine-scene-walk-bypass.md §5 step 1): <c>skipbuckets=1</c> in
+    /// sowx.cfg skips the world scene's draw-bucket build while Alloy draws the frame. Expected to freeze
+    /// every gob part's transform (the build is the sole writer of the model matrix Alloy draws with), which
+    /// is the measurement: Ai drops by the Buckets figure, and what breaks names the load-bearing half.
+    /// Never on a GUI panel's scene and never while the engine renders (vanilla=1).</summary>
+    private static bool _skipBuckets;
+    private static long _bucketsSkipped;
+    /// <summary><c>skipbuckets=2</c>: the six flat loops over the BSP walk's tile-part lists (matrix rewrite
+    /// of STATIC parts plus the filing of buckets nothing reads) run every <see cref="BucketsEvery"/>th frame;
+    /// the gob loop (ProcessGob, the attached-hierarchy sync, the part-tree matrix walk creatures and
+    /// placeables live by) and the beam loop run every frame. Done by zeroing the lists' counts ahead of
+    /// the call on the other frames; the visit callback refills them next frame. A freshly spawned tile's
+    /// parts carry no matrix until the next full frame. ponytail: a fixed cadence, no knob.</summary>
+    private static bool _bucketsCadence;
+    private const int BucketsEvery = 8;
+    private static int _bucketsFrame;
+    private static byte* _meshBuckets, _fadeBuckets, _capBuckets, _staticShadowBucket, _meshShadowBucket;
+
+    /// <summary>meshbuckets and fadebuckets are <c>List&lt;Bucket&gt;</c> objects in .bss -- CExoArrayList
+    /// {items at +0, count at +8, alloc at +0xc} -- whose 16-byte {items, count} pairs live on the HEAP,
+    /// indexed by texture id (ClearBuckets @0x47f4e0, CheckBucketArraySize @0x47f420, alloc &gt;= 5000). The
+    /// first cut of this treated the .bss symbol as the inline pair array and zeroed past the object into
+    /// AurGetCompressedImage's function pointer (two crashes, 2026-09-06). Every count on the heap pairs is
+    /// cleared, as the engine's own clear does; the three single lists carry their count at +8 in .bss.</summary>
+    private static void ThinTileLists()
+    {
+        if (_meshBuckets == null) return;
+        ClearPairCounts(_meshBuckets);
+        ClearPairCounts(_fadeBuckets);
+        *(int*)(_capBuckets + 8) = 0;
+        *(int*)(_staticShadowBucket + 8) = 0;
+        *(int*)(_meshShadowBucket + 8) = 0;
+    }
+
+    private static void ClearPairCounts(byte* list)
+    {
+        byte* pairs = *(byte**)list;
+        int alloc = *(int*)(list + 0xc);
+        if (pairs == null) return;
+        for (int k = 0; k < alloc; k++) *(int*)(pairs + (long)k * 16 + 8) = 0;
+    }
+
     [UnmanagedCallersOnly]
     private static long OnBuckets(IntPtr scene)
     {
         bool world = *(IntPtr*)(scene + Sowx.Alloy.SceneLayout.SceneBspRoot) != IntPtr.Zero;
+        if (world && _skipBuckets && Sowx.Alloy.AlloyGate.Alloy) { _bucketsSkipped++; return 0; }
+        if (world && _bucketsCadence && Sowx.Alloy.AlloyGate.Alloy && (++_bucketsFrame % BucketsEvery) != 0) ThinTileLists();
         long t = world ? FrameZones.Now : 0;
         long r = _buckets != null ? _buckets(scene) : 0;
         if (world) FrameZones.Add(FrameZones.Zone.Buckets, t);

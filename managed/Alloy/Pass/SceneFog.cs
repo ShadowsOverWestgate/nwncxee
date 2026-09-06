@@ -125,33 +125,10 @@ internal static unsafe class SceneFog
         ok = false;
         for (int i = 0; i < _cacheUsed; i++)
             if (_cacheTid[i] == tid) { ok = _cacheOk[i]; return _cacheCol[i]; }
-        if (Gl.GetTexImage == null || Gl.GetTexParameteriv == null || Gl.GetTexLevelParameteriv == null)
-            return default;
-
-        int saved; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &saved);
-        Gl.BindTexture(Gl.TEXTURE_2D, tid);
-        int maxLevel = 0;
-        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, &maxLevel);
-        int lod = maxLevel < 20 ? maxLevel : 20, w = 0, h = 0;
-        for (; lod > 0; lod--)
-        {
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, lod, Gl.TEXTURE_WIDTH, &w);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, lod, Gl.TEXTURE_HEIGHT, &h);
-            if (w > 0 && h > 0 && w * h <= 64) break;
-        }
+        // no readback: the mean was taken from the decoded image at the upload funnel (TexScan)
         Vector3 c = default;
-        if (lod > 0 && w > 0 && h > 0)
-        {
-            byte* px = stackalloc byte[64 * 4];
-            Gl.GetTexImage(Gl.TEXTURE_2D, lod, Gl.RGBA, Gl.UNSIGNED_BYTE, px);
-            int n = w * h, r = 0, g = 0, b = 0;
-            for (int i = 0; i < n; i++) { r += px[i * 4]; g += px[i * 4 + 1]; b += px[i * 4 + 2]; }
-            // Display space in the file, linear in the frame -- the same curve the unlit sky stage applies
-            // to the texel it draws.
-            c = new Vector3(Lin(r / (255f * n)), Lin(g / (255f * n)), Lin(b / (255f * n)));
-            ok = true;
-        }
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
+        if (OwnedTextures.TryMean((int)tid, out Vector3 m))
+        { c = new Vector3(Lin(m.X), Lin(m.Y), Lin(m.Z)); ok = true; }
         if (_cacheUsed < CacheN)
         { _cacheTid[_cacheUsed] = tid; _cacheCol[_cacheUsed] = c; _cacheOk[_cacheUsed] = ok; _cacheUsed++; }
         return c;

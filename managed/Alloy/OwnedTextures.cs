@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Numerics;
 using System.Threading;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -394,6 +396,8 @@ internal static unsafe class OwnedTextures
         uint err = Gl.GetError();          // read BEFORE Measure, whose own queries would mask it
         long bytes = err == 0 ? Measure() : 0;
         bool wantBcn = err == 0 && _bcn && *(int*)((byte*)tex + OffCompressedSize) == 0;
+        TexScan.Result scan = default;
+        bool scanned = err == 0 && TexScan.Scan(tex, cell, CoverageAlpha, wantBcn, out scan);
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
 
         if (err != 0)
@@ -423,7 +427,9 @@ internal static unsafe class OwnedTextures
         Replace(key, etid, dst, bytes);
         Census(tex, bytes, 0, n, cell);
         HighWater();
-        if (wantBcn) EnqueueTranscode(key, etid, dst, bytes);
+        if (scanned) _stats[dst] = new Stat { Holes = scan.Holes, Mean = scan.Mean, MeanOk = scan.MeanOk };
+        else _stats.Remove(dst);
+        if (wantBcn && scan.Rgba != null) EnqueueTranscode(key, etid, dst, bytes, scan.Rgba, scan.W, scan.H, scan.Mips);
         return true;
     }
 
@@ -437,6 +443,36 @@ internal static unsafe class OwnedTextures
     /// leaves the delete to the engine's own DeleteTextures, which <see cref="FilterRetire"/> then passes to the
     /// driver because the name is no longer in <see cref="_owned"/>. The VRAM note undercounts these zombies.</summary>
     private static readonly HashSet<uint> _engineHeld = new();
+
+    /// <summary>What the funnel-side scan (<see cref="TexScan"/>) learned about each owned name: the cutout
+    /// hole fraction and the mean colour. Replaces every GPU readback the consumers used to make. Keyed by
+    /// the owned name; removed with the name.</summary>
+    private struct Stat { public float Holes; public Vector3 Mean; public bool MeanOk; }
+    private static readonly Dictionary<uint, Stat> _stats = new();
+    /// <summary>The hole fraction of an owned name (or of the owned copy behind an engine tid). False = the
+    /// name never came through the funnel; the caller tests rather than casts a possible slab.</summary>
+    internal static bool TryHoles(int tid, out float holes)
+    {
+        holes = 1f;
+        if (!TryStat(tid, out Stat st)) return false;
+        holes = st.Holes;
+        return true;
+    }
+    /// <summary>The mean colour of an owned name, 0..1 in the texture's own encoding.</summary>
+    internal static bool TryMean(int tid, out Vector3 mean)
+    {
+        mean = default;
+        if (!TryStat(tid, out Stat st) || !st.MeanOk) return false;
+        mean = st.Mean;
+        return true;
+    }
+    private static bool TryStat(int tid, out Stat st)
+    {
+        if (tid > 0 && _stats.TryGetValue((uint)tid, out st)) return true;
+        if (tid > 0 && _index.TryGetValue(tid, out ulong key) && _res.TryGetValue(key, out Entry e) && _stats.TryGetValue(e.Owned, out st)) return true;
+        st = default;
+        return false;
+    }
 
     // ---- #386: PREFETCH -- build a texture when its part ENROLS, not when the camera first sees it ----
 
@@ -714,18 +750,23 @@ internal static unsafe class OwnedTextures
     /// budget for stage 1; <c>bcn=0</c> still disables the transcode.
     /// ponytail: PBOs and fences are not re-minted across a context loss; the jobs in flight are dropped there
     /// and the textures stay raw.</summary>
-    private struct Trans { public ulong Key; public int Etid; public uint Src; public long Bytes; }
+    private struct Trans { public ulong Key; public int Etid; public uint Src; public long Bytes; public byte[]? Pixels; public int W, H; public bool Mips; }
+    /// <summary>RGBA copies waiting in the queue; past this the texture stays raw rather than holding the
+    /// area's whole decoded set in memory at load.</summary>
+    private const long TransPixelCap = 256L << 20;
+    private static long _transPixelBytes;
+    /// <summary>The caster pass's cutout threshold, the alpha under which a texel is a hole.</summary>
+    internal const float CoverageAlpha = 0.2f;
     private const int TransQueue = 1024;
     private static readonly Trans[] _transQ = new Trans[TransQueue];
     private static int _transN, _transHead;
     private static long _transDone, _transDropped, _transStale, _transFailed;
     private static int TranscodeBudget = 1;
 
-    private const int JobFree = 0, JobReading = 1, JobEncoding = 2, JobEncoded = 3;
+    private const int JobFree = 0, JobEncoding = 2, JobEncoded = 3;
     private sealed class TransJob
     {
         public ulong Key; public int Etid; public uint Src; public long Bytes;
-        public uint Pbo; public long PboBytes; public IntPtr Fence;
         public int Levels; public readonly int[] Lw = new int[MaxLevels], Lh = new int[MaxLevels];
         public readonly long[] Off = new long[MaxLevels];
         public byte[] Pixels = Array.Empty<byte>(), Blocks = Array.Empty<byte>();
@@ -737,12 +778,14 @@ internal static unsafe class OwnedTextures
     private static readonly TransJob[] _jobs = new TransJob[TransJobs];
     private static Thread? _encoder;
     private static readonly SemaphoreSlim _encodeWake = new(0, int.MaxValue);
-    private const uint STREAM_READ = 0x88E1;
 
-    private static void EnqueueTranscode(ulong key, int etid, uint src, long bytes)
+    private static void ReturnPixels(in Trans t) { if (t.Pixels != null) ArrayPool<byte>.Shared.Return(t.Pixels); }
+
+    private static void EnqueueTranscode(ulong key, int etid, uint src, long bytes, byte[] pixels, int w, int h, bool mips)
     {
-        if (_transN >= TransQueue) { _transDropped++; return; }   // stays raw, as bcn=0 would leave it
-        _transQ[(_transHead + _transN++) % TransQueue] = new Trans { Key = key, Etid = etid, Src = src, Bytes = bytes };
+        if (_transN >= TransQueue || _transPixelBytes + pixels.Length > TransPixelCap) { _transDropped++; ArrayPool<byte>.Shared.Return(pixels); return; }   // stays raw, as bcn=0 would leave it
+        _transQ[(_transHead + _transN++) % TransQueue] = new Trans { Key = key, Etid = etid, Src = src, Bytes = bytes, Pixels = pixels, W = w, H = h, Mips = mips };
+        _transPixelBytes += pixels.Length;
         _inFlight.Add(key);
     }
 
@@ -751,9 +794,7 @@ internal static unsafe class OwnedTextures
     /// bind cache and pixel-store state are restored around every stage.</summary>
     private static void DripTranscodes()
     {
-        if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.GetIntegerv == null || Gl.GetTexImage == null
-            || Gl.CompressedTexImage2D == null || Gl.MapBufferRange == null || Gl.UnmapBuffer == null
-            || Gl.FenceSync == null || Gl.ClientWaitSync == null || Gl.BufferData == null) return;
+        if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.GetIntegerv == null || Gl.CompressedTexImage2D == null) return;
         if (_transN == 0 && !AnyJob()) return;
         long t0 = FrameZones.Now;
         for (int j = 0; j < TransJobs; j++)
@@ -762,7 +803,6 @@ internal static unsafe class OwnedTextures
             var job = _jobs[j];
             long ts = FrameZones.Now;
             if (job.State == JobEncoded) { UploadJob(job); FrameZones.Add(FrameZones.Zone.BcnUp, ts); }
-            else if (job.State == JobReading) { CollectJob(job); FrameZones.Add(FrameZones.Zone.BcnMap, ts); }
         }
         for (int spent = 0; spent < TranscodeBudget && _transN > 0; spent++)
         {
@@ -770,10 +810,13 @@ internal static unsafe class OwnedTextures
             for (int j = 0; j < TransJobs && job == null; j++) if (_jobs[j].State == JobFree) job = _jobs[j];
             if (job == null) break;
             Trans t = _transQ[_transHead];
+            _transQ[_transHead] = default;   // the queue holds no pixels past this point
             _transHead = (_transHead + 1) % TransQueue; _transN--;
-            if (!_res.TryGetValue(t.Key, out Entry e) || e.Owned != t.Src) { _transStale++; _inFlight.Remove(t.Key); spent--; continue; }
+            _transPixelBytes -= t.Pixels?.Length ?? 0;
+            if (!_res.TryGetValue(t.Key, out Entry e) || e.Owned != t.Src) { _transStale++; _inFlight.Remove(t.Key); spent--; ReturnPixels(t); continue; }
             long tr = FrameZones.Now;
             StartJob(job, t);
+            ReturnPixels(t);
             FrameZones.Add(FrameZones.Zone.BcnRead, tr);
             if (job.State == JobFree) _inFlight.Remove(t.Key);   // refused or failed at start: raw, and warm-eligible again
         }
@@ -786,33 +829,17 @@ internal static unsafe class OwnedTextures
         return false;
     }
 
-    /// <summary>Stage 1: level dimensions, sampler state and the readback of every level into the job's PBO,
-    /// behind a fence. Nothing here waits: with a PACK buffer bound the readback is a GPU-side copy.</summary>
+    /// <summary>Stage the job from the funnel's RGBA copy: lay the chain out, copy level 0, take the filter
+    /// state off the source name, and hand the encoder the mip build with the encode. No readback.</summary>
     private static void StartJob(TransJob job, in Trans t)
     {
         job.Key = t.Key; job.Etid = t.Etid; job.Src = t.Src; job.Bytes = t.Bytes;
+        if (t.Pixels == null || t.W < TranscodeFloor || t.H < TranscodeFloor) { _transStale++; return; }
+        long total;
+        fixed (int* lw = job.Lw, lh = job.Lh) fixed (long* off = job.Off)
+            job.Levels = TexScan.Chain(t.W, t.H, t.Mips, MaxLevels, lw, lh, off, out total);
         int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
-        DrainErrors();
         Gl.BindTexture(Gl.TEXTURE_2D, t.Src);
-        int w0 = 0, h0 = 0, green = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w0);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h0);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_GREEN_SIZE, &green);
-        // Single-channel levels keep their sampler swizzle contract with the raw layout; tiny sheets are
-        // one BCn block each (see TranscodeFloor). Both stay raw.
-        if (w0 < TranscodeFloor || h0 < TranscodeFloor || green == 0)
-        { Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind); _transStale++; return; }
-        job.Levels = 0;
-        long total = 0;
-        for (; job.Levels < MaxLevels; job.Levels++)
-        {
-            int w = 0, h = 0;
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, job.Levels, Gl.TEXTURE_WIDTH, &w);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, job.Levels, Gl.TEXTURE_HEIGHT, &h);
-            if (w <= 0 || h <= 0) break;
-            job.Lw[job.Levels] = w; job.Lh[job.Levels] = h; job.Off[job.Levels] = total;
-            total += (long)w * h * 4;
-        }
         fixed (int* mn = &job.MinF, mg = &job.MagF, ws = &job.WrapS, wt = &job.WrapT, ml = &job.MaxLevel, an = &job.Aniso)
         {
             Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, mn);
@@ -822,54 +849,9 @@ internal static unsafe class OwnedTextures
             Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, ml);
             Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_ANISOTROPY, an);
         }
-        // The whole pixel-store surface the readback depends on: a stale PACK_ROW_LENGTH strides it past
-        // the buffer, and the engine's own pack binding must come back exactly.
-        int svAlign, svRow, svSkipR, svSkipP, svPackBuf;
-        Gl.GetIntegerv(Gl.PACK_ALIGNMENT, &svAlign);
-        Gl.GetIntegerv(Gl.PACK_ROW_LENGTH, &svRow);
-        Gl.GetIntegerv(Gl.PACK_SKIP_ROWS, &svSkipR);
-        Gl.GetIntegerv(Gl.PACK_SKIP_PIXELS, &svSkipP);
-        Gl.GetIntegerv(Gl.PIXEL_PACK_BUFFER_BINDING, &svPackBuf);
-        Gl.PixelStorei(Gl.PACK_ALIGNMENT, 1);
-        Gl.PixelStorei(Gl.PACK_ROW_LENGTH, 0);
-        Gl.PixelStorei(Gl.PACK_SKIP_ROWS, 0);
-        Gl.PixelStorei(Gl.PACK_SKIP_PIXELS, 0);
-        if (job.Pbo == 0) { uint b; Gl.GenBuffers(1, &b); job.Pbo = b; job.PboBytes = 0; }
-        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, job.Pbo);
-        if (job.PboBytes < total) { Gl.BufferData(Gl.PIXEL_PACK_BUFFER, (IntPtr)total, null, STREAM_READ); job.PboBytes = total; }
-        for (int i = 0; i < job.Levels; i++)
-            Gl.GetTexImage(Gl.TEXTURE_2D, i, Gl.RGBA, Gl.UNSIGNED_BYTE, (void*)job.Off[i]);
-        job.Fence = Gl.FenceSync(Gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, (uint)svPackBuf);
-        Gl.PixelStorei(Gl.PACK_ALIGNMENT, svAlign);
-        Gl.PixelStorei(Gl.PACK_ROW_LENGTH, svRow);
-        Gl.PixelStorei(Gl.PACK_SKIP_ROWS, svSkipR);
-        Gl.PixelStorei(Gl.PACK_SKIP_PIXELS, svSkipP);
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
-        if (Gl.GetError() != 0 || job.Fence == IntPtr.Zero) { if (job.Fence != IntPtr.Zero) Gl.DeleteSync(job.Fence); job.Fence = IntPtr.Zero; _transFailed++; return; }
         if (job.Pixels.Length < total) job.Pixels = new byte[total];   // cold: grows to the largest texture seen
-        job.State = JobReading;
-    }
-
-    /// <summary>Stage 2: the fence signalled, so the PBO holds the levels -- map, copy out, wake the encoder.
-    /// A fence still pending costs one query and the job waits another frame.</summary>
-    private static void CollectJob(TransJob job)
-    {
-        uint r = Gl.ClientWaitSync(job.Fence, 0, 0);
-        if (r != Gl.ALREADY_SIGNALED && r != Gl.CONDITION_SATISFIED) return;
-        Gl.DeleteSync(job.Fence); job.Fence = IntPtr.Zero;
-        long total = job.Off[job.Levels - 1] + (long)job.Lw[job.Levels - 1] * job.Lh[job.Levels - 1] * 4;
-        int svPackBuf; Gl.GetIntegerv(Gl.PIXEL_PACK_BUFFER_BINDING, &svPackBuf);
-        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, job.Pbo);
-        void* p = Gl.MapBufferRange(Gl.PIXEL_PACK_BUFFER, IntPtr.Zero, (IntPtr)total, Gl.MAP_READ_BIT);
-        bool ok = p != null;
-        if (ok)
-        {
-            fixed (byte* dst = job.Pixels) Buffer.MemoryCopy(p, dst, job.Pixels.Length, total);
-            ok = Gl.UnmapBuffer(Gl.PIXEL_PACK_BUFFER) != 0;
-        }
-        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, (uint)svPackBuf);
-        if (!ok) { _transFailed++; job.State = JobFree; _inFlight.Remove(job.Key); return; }
+        Buffer.BlockCopy(t.Pixels, 0, job.Pixels, 0, t.W * t.H * 4);
         long blk = 0;
         for (int i = 0; i < job.Levels; i++) blk += BcnEncode.LevelSize(job.Lw[i], job.Lh[i], true);
         if (job.Blocks.Length < blk) job.Blocks = new byte[blk];
@@ -881,10 +863,6 @@ internal static unsafe class OwnedTextures
         }
         _encodeWake.Release();
     }
-
-    /// <summary>Stage 3, off the engine thread: BC1 or BC3 from the texels (an opaque level 0 cannot grow
-    /// transparency in its mips), every level encoded into the job's block buffer. Touches nothing but the
-    /// job it was woken for; the state flip is the hand-off in both directions.</summary>
     private static void EncodeLoop()
     {
         while (true)
@@ -896,7 +874,9 @@ internal static unsafe class OwnedTextures
                 if (job == null || job.State != JobEncoding) continue;
                 fixed (byte* px = job.Pixels)
                 fixed (byte* blocks = job.Blocks)
+                fixed (int* lw = job.Lw, lh = job.Lh) fixed (long* offs = job.Off)
                 {
+                    TexScan.BuildMips(px, job.Levels, lw, lh, offs);
                     bool bc3 = false;
                     for (long i = 3, end = (long)job.Lw[0] * job.Lh[0] * 4; i < end; i += 4)
                         if (px[i] != 255) { bc3 = true; break; }
@@ -1304,7 +1284,7 @@ internal static unsafe class OwnedTextures
     private static void Discard(Entry e)
     {
         if (e.Owned == 0) return;
-        _owned.Remove(e.Owned);
+        _owned.Remove(e.Owned); _stats.Remove(e.Owned);
         if (_engineHeld.Contains(e.Owned)) _pendingHandles.Add(e.Owned);   // the engine deletes it; we only drop the handle
         else _pending.Add(e.Owned);
         _bytes -= e.Bytes;
@@ -1465,7 +1445,7 @@ internal static unsafe class OwnedTextures
             // The engine is deleting this very name NOW (its cell was ours): a second delete from Drain lands
             // on whatever the driver has since given that name to -- immediate on Mesa, which is the
             // corrupted-UI-texture class. The handle is forgotten without GL: its texture is already gone.
-            if (e.Owned == (uint)name) { _owned.Remove(e.Owned); _bytes -= e.Bytes; _pendingForget.Add(e.Owned); }
+            if (e.Owned == (uint)name) { _owned.Remove(e.Owned); _stats.Remove(e.Owned); _bytes -= e.Bytes; _pendingForget.Add(e.Owned); }
             else Discard(e);
         }
     }
@@ -1659,6 +1639,7 @@ internal static unsafe class OwnedTextures
         }
 
         Replace(q.Key, (int)q.Src, dst, Measure());
+        _stats[dst] = new Stat { Holes = 0f };   // PLT composites are opaque; unscanned would read as masked
         _pltCopied++;
         HighWater();
     }
@@ -1673,13 +1654,14 @@ internal static unsafe class OwnedTextures
         _borrowed.Clear();
         _pending.Clear(); _pendingForget.Clear(); foreach (var d in _deferred) d.Clear();   // the names died with the context
         _pltQ.Clear();   // #360: queued sources are names in a context that no longer exists
-        _transN = 0; _transHead = 0;   // the queue names owned textures of the dead context
+        for (int i = 0; i < _transN; i++) ReturnPixels(_transQ[(_transHead + i) % TransQueue]);
+        _transN = 0; _transHead = 0; _transPixelBytes = 0; Array.Clear(_transQ);   // the queue names owned textures of the dead context
+        _stats.Clear();
         _meta.Clear(); _inFlight.Clear(); _pendingHandles.Clear(); _idleBytes = 0; _evictDue = false;
         _prefetchN = 0; _prefetchHead = 0; _prefetchSeen.Clear(); _engineHeld.Clear();
         for (int j = 0; j < TransJobs; j++)
             if (_jobs[j] != null)
-            {   // the encoder never touches Pbo or Fence, so both reset on a job still encoding; its upload then finds no live key and drops out
-                _jobs[j].Pbo = 0; _jobs[j].PboBytes = 0; _jobs[j].Fence = IntPtr.Zero;
+            {   // a job still encoding finishes on its thread; its upload then finds no live key and drops out
                 if (_jobs[j].State != JobEncoding) _jobs[j].State = JobFree;
             }
         _bytes = 0;
@@ -1701,6 +1683,7 @@ internal static unsafe class OwnedTextures
     /// it. The upload itself needs a client; #227 can only be re-tested live.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
+        if (!TexScan.SelfCheck(log)) return false;
         bool wasArmed = _armed;
         long savedRetired = _retired;
         var savedRes = new Dictionary<ulong, Entry>(_res);

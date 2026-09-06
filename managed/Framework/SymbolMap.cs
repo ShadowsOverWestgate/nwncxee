@@ -988,6 +988,14 @@ internal static unsafe class SymbolMap
     /// docs/research/engine-scene-walk-bypass.md.</summary>
     public const string ManageSceneBSP         = "_Z14ManageSceneBSPP5Scene";
     public const string AddPartsToDrawBuckets  = "_ZN5Scene21AddPartsToDrawBucketsEv";
+    /// <summary>The BSP visit callback's per-frame tile-part lists that AddPartsToDrawBuckets' six flat loops
+    /// consume. meshbuckets/fadebuckets are <c>List&lt;Bucket&gt;</c> objects (CExoArrayList: items at +0,
+    /// count at +8, alloc at +0xc) whose 16-byte {items, count} pairs live on the heap, one per texture id
+    /// (ClearBuckets @0x47f4e0). The shadow and cap lists are single CExoArrayLists (count at +8). The
+    /// .bss neighbours are the texture globals and the AurGet*Image function pointers: a write past the
+    /// 16-byte object is a decoder crash. staticbeambucket is left alone: Beams.Enroll re-reads bucket 15.</summary>
+    public const string MeshBuckets = "meshbuckets", FadeBuckets = "fadebuckets", CapBuckets = "capbuckets",
+                        StaticShadowBucket = "staticshadowbucket", MeshShadowBucket = "meshshadowbucket";
     public const string ResManRelease      = "_ZN10CExoResMan7ReleaseEP4CRes";
     public const string ResManReleaseObj   = "_ZN10CExoResMan16ReleaseResObjectEP4CResb";
 
