@@ -1287,7 +1287,7 @@ internal static unsafe class OwnedTextures
         if (e.Owned == 0) return;
         _owned.Remove(e.Owned); _stats.Remove(e.Owned);
         if (_engineHeld.Contains(e.Owned)) _pendingHandles.Add(e.Owned);   // the engine deletes it; we only drop the handle
-        else _pending.Add(e.Owned);
+        else { _pending.Add(e.Owned); _pendingMarked = false; }
         _bytes -= e.Bytes;
     }
 
@@ -1503,19 +1503,7 @@ internal static unsafe class OwnedTextures
         // handle (it used to remove from a set already dropped and cleared). Then the per-slot marks for the
         // whole batch, then the drops -- no epoch bump anywhere on this path.
         if (_evictDue) Evict();
-        if (_pendingForget.Count > 0)
-        {
-            foreach (uint f in _pendingForget) _pendingHandles.Add(f);   // for the record marks below
-            AlloyRenderer.NoteOwnedNamesRetired(_pending, _pendingHandles);
-            foreach (uint f in _pendingForget) { _pendingHandles.Remove(f); AlloyRenderer.ForgetHandle(f); }
-            _pendingForget.Clear();
-        }
-        else AlloyRenderer.NoteOwnedNamesRetired(_pending, _pendingHandles);
-        if (_pendingHandles.Count > 0)
-        {
-            foreach (uint h in _pendingHandles) AlloyRenderer.DropHandle(h);
-            _pendingHandles.Clear();
-        }
+        DropDeadHandles();
         // this drain's names are held; the ones queued DeferFrames drains ago go now
         int slot = _drainSeq++ % _deferred.Length;
         List<uint> due = _deferred[(slot + _deferred.Length - DeferFrames) % _deferred.Length];
@@ -1535,6 +1523,32 @@ internal static unsafe class OwnedTextures
         due.Clear();
         _log?.Info($"OwnedTextures: {(delete ? "released" : "retired (kept alive)")} {n} owned textures (engine names retired so far: {_retired})");
     }
+
+    /// <summary>The handle half of <see cref="Drain"/>, callable ahead of it: the caster bake runs BEFORE the
+    /// colour bracket's drain in the same frame, and the engine deletes textures on area load before either --
+    /// so a bake that samples the handle table must first drop (and zero out of the records) every handle
+    /// whose texture died since the last drain. Idempotent within a frame: the sets are cleared as they are
+    /// processed, and the deferred names are marked once per addition. Inside a 4.6 bracket.</summary>
+    internal static void DropDeadHandles()
+    {
+        if (_pendingForget.Count == 0 && _pendingHandles.Count == 0 && _pendingMarked) return;
+        if (_pendingForget.Count > 0)
+        {
+            foreach (uint f in _pendingForget) _pendingHandles.Add(f);   // for the record marks below
+            AlloyRenderer.NoteOwnedNamesRetired(_pending, _pendingHandles);
+            foreach (uint f in _pendingForget) { _pendingHandles.Remove(f); AlloyRenderer.ForgetHandle(f); }
+            _pendingForget.Clear();
+        }
+        else AlloyRenderer.NoteOwnedNamesRetired(_pending, _pendingHandles);
+        _pendingMarked = true;
+        if (_pendingHandles.Count > 0)
+        {
+            foreach (uint h in _pendingHandles) AlloyRenderer.DropHandle(h);
+            _pendingHandles.Clear();
+        }
+    }
+    /// <summary>Every name in <c>_pending</c> has had its records marked; cleared by the one adder.</summary>
+    private static bool _pendingMarked;
 
     /// <summary>#360: adopt every queued GPU composite. Runs from <see cref="Drain"/>, i.e. inside the 4.6
     /// bracket, which is the only place <c>glCopyImageSubData</c> is legal and the first place the source is

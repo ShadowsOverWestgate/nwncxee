@@ -693,6 +693,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             {
                 if (gl && _hRes[h] && _hVal[h] != 0 && Gl.MakeTextureHandleNonResidentARB != null)
                     Gl.MakeTextureHandleNonResidentARB(_hVal[h]);
+                ZeroHandle(_hVal[h]);
                 _hTid[h] = HandleTombstone; _hVal[h] = 0; _hRes[h] = false;
                 return;
             }

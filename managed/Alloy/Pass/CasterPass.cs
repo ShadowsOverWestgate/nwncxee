@@ -1317,6 +1317,8 @@ public sealed unsafe class CasterPass : IExtenderService
         // build would then skip BOTH the solve and the upload and skin against last frame's GPU block.
         if (!GlContextService.Enter()) { AlloyRenderer.PosedByShadow = false; return; }
         AlloyRenderer.ShadowPoseUpload();   // the GL half of ShadowPose above: this frame's bones, uploaded
+        OwnedTextures.DropDeadHandles();        // the colour drain is AFTER this bracket; textures die on area load before both
+        AlloyRenderer.UploadHandlesForBake();   // a handle dropped since the last colour upload must not be sampled below
         // #260: the bake and the colour pass read the SAME buffer -- the pool's, which Alloy uploaded at the
         // engine's own commit -- so there is nothing to bring into agreement here any more. What closes is
         // the dirty window, and this bracket runs after the sweep has already read _vDirty off it.
@@ -2028,6 +2030,8 @@ public sealed unsafe class CasterPass : IExtenderService
                    // terms after it.
                    $", {_texWithAlpha}/{_texQueried} caster textures carry alpha -> " +
                    $"{_submitMasked} alpha-tested depth draws this period" +
+                   $", {AlloyRenderer.HandlesZeroed} handle entries zeroed under a dying texture and " +
+                   $"{AlloyRenderer.BakeHandleUploads} bakes uploaded the handle table ahead of the colour bracket (since boot)" +
                    (_maskNoTex + _maskNoProg == 0 ? ""
                     : $" ({_maskNoTex} masked casters have no diffuse this frame, " +
                       $"{_maskNoProg} no cutout program -- each casts nothing)"));
@@ -3160,7 +3164,14 @@ public sealed unsafe class CasterPass : IExtenderService
         uniform float uAlphaCut;
         in vec2 vUV;
         flat in int vDraw;
-        void main() { if (texture(uTex, vUV).a <= uAlphaCut) discard; }
+        void main()
+        {
+        #ifdef SOWX_BINDLESS
+            // a handle zeroed under a dying texture: opaque until the record is re-resolved, never sampled
+            if (uTexH[vDraw << 3] == uvec2(0u)) return;
+        #endif
+            if (texture(uTex, vUV).a <= uAlphaCut) discard;
+        }
         """;
     private static readonly string CastMaskHFs = AlloyRenderer.BindlessFs(CastMaskHFsSrc);
     private static readonly string CastLayerMaskHVs = CastLayerMaskVs

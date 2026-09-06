@@ -1155,6 +1155,7 @@ public sealed unsafe partial class AlloyRenderer
                         // which is a BLACK texture, not a missing one, and the reason that gate exists.
                         hh[0] = Handle(tid, main);
                         for (int t = 0; t < MapSlots; t++) hh[1 + t] = Handle(slotTid[t], main);
+                        _texHDirty = true;
                     }
                 }
                 // #243: the cull's bounds ride the same edge as the record -- a part that did not move did

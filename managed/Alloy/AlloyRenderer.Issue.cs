@@ -111,24 +111,7 @@ public sealed unsafe partial class AlloyRenderer
         }
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDraw, _drawBuf);
-        if (_bindless)
-        {
-            if (_texHBuf == 0) { uint b; Gl.GenBuffers(1, &b); _texHBuf = b; }
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _texHBuf);
-            if (grew)
-                Gl.BufferData(Gl.SHADER_STORAGE_BUFFER,
-                              (IntPtr)((long)cap * 8 * sizeof(ulong)), null, Gl.DYNAMIC_DRAW);
-            fixed (ulong* p = _dTexH)
-            {
-                if (whole)
-                    Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
-                                     (IntPtr)((long)cap * 8 * sizeof(ulong)), p);
-                else
-                    UploadRuns(p, 8 * sizeof(ulong));
-            }
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
-            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindTexH, _texHBuf);
-        }
+        if (_bindless) UploadHandles(cap, whole);
         if (grew) _recCapGpu = cap;
         _recDirtyN = 0; _recDirtyAll = false;
         // ...and the one array that IS per draw and per pass. Four bytes each, orphaned like the records
@@ -140,6 +123,43 @@ public sealed unsafe partial class AlloyRenderer
         fixed (int* p = _dSlot) Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, sSize, p);
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDrawIdx, _slotBuf);
+    }
+
+    /// <summary>The handle table alone. Its capacity is tracked apart from the draw records' so the bake can
+    /// bring it up to date on a frame the colour bracket has not reached (or refused).</summary>
+    private static void UploadHandles(int cap, bool whole)
+    {
+        if (_texHBuf == 0) { uint b; Gl.GenBuffers(1, &b); _texHBuf = b; }
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _texHBuf);
+        if (cap > _texHCapGpu)
+        {
+            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)cap * 8 * sizeof(ulong)), null, Gl.DYNAMIC_DRAW);
+            _texHCapGpu = cap; whole = true;
+        }
+        fixed (ulong* p = _dTexH)
+        {
+            if (whole)
+                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)cap * 8 * sizeof(ulong)), p);
+            else
+                UploadRuns(p, 8 * sizeof(ulong));
+        }
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindTexH, _texHBuf);
+        _texHDirty = false;
+    }
+    private static int _texHCapGpu;
+
+    /// <summary>Called by the caster bake, inside its bracket, before its first view: the standing staging
+    /// samples the GPU handle table by record slot, so a handle dropped since the last colour upload must
+    /// not still be there. Leaves the dirty list for the colour bracket, which uploads the records too.</summary>
+    internal static void UploadHandlesForBake()
+    {
+        if (!_bindless || !_texHDirty) return;
+        int cap = _recOwnCap + MaxSkyDraws;
+        bool whole = _recDirtyAll || _recDirtyN > _drawN / 4 || cap > _texHCapGpu;
+        if (!whole) Array.Sort(_recDirty, 0, Math.Min(_recDirtyN, _recDirty.Length));
+        UploadHandles(cap, whole);
+        BakeHandleUploads++;
     }
 
     /// <summary>#243: put the CPU-staged per-draw index array back on <see cref="BindDrawIdx"/>. The cull

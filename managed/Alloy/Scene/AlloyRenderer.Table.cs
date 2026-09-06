@@ -337,6 +337,7 @@ public sealed unsafe partial class AlloyRenderer
                 if (hh[0] == 0) continue;
                 hh[0] = HandleFor(_recTid[i]);
                 for (int s = 0; s < MapSlots; s++) hh[1 + s] = _recTidS[i * MapSlots + s] != 0 ? HandleFor(_recTidS[i * MapSlots + s]) : 0;
+                _texHDirty = true;
                 MarkRecordDirty(i);
             }
         }
@@ -380,6 +381,33 @@ public sealed unsafe partial class AlloyRenderer
         foreach (uint n in names) _nameMark[n] = 0;
         foreach (uint n in handles) _nameMark[n] = 0;
     }
+    /// <summary>A handle that just died must leave every record block NOW, not at the next colour build: the
+    /// caster bake samples the GPU handle table off a STANDING staging, and under single upload the engine
+    /// deletes the texture in its own context before any drain runs. On radeonsi a sample through a dead
+    /// handle is a GPU page fault and a hard reset (the Sencliff crash); NVIDIA reads garbage silently.
+    /// Cold: once per retired name, the same scan class as <see cref="NoteOwnedNamesRetired"/>. The zeroed
+    /// block reads opaque in the handle-masked depth stage until the colour side re-resolves the record.</summary>
+    private static void ZeroHandle(ulong v)
+    {
+        if (v == 0) return;
+        int n = _ownCount * 8;
+        for (int j = 0; j < n; j++)
+        {
+            if (_dTexH[j] != v) continue;
+            _dTexH[j] = 0;
+            // the full re-resolve, not ApplySwaps: that one skips a block whose slot 0 reads 0 as "unlit"
+            _recTexStale[j >> 3] = true;
+            MarkRecordDirty(j >> 3);
+            _texHDirty = true;
+            HandlesZeroed++;
+        }
+    }
+    /// <summary>Handle table entries zeroed under a dying handle (the hazard count), and bakes that found
+    /// handle changes the colour bracket had not uploaded yet (the window count). Both on the [casters] line.</summary>
+    internal static long HandlesZeroed, BakeHandleUploads;
+    /// <summary>The handle table changed since its last upload. Apart from the shared record dirty list,
+    /// which movers touch every frame -- the bake must not pay a handle upload for a matrix write.</summary>
+    private static bool _texHDirty;
     private static readonly byte[] _nameMark = new byte[1 << 20];
     private static readonly int[] _recTidS = new int[MaxOwned * MapSlots];
     private static readonly int[] _recSlotMask = new int[MaxOwned];
