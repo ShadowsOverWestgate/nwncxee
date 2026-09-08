@@ -51,6 +51,9 @@ Launch from Steam as normal. To uninstall, clear that line.
 NWN_BIN="/path/to/bin/linux-x86/nwmain-linux" ./sowx-launch
 ```
 
+**DM client:** put `-dmc` before `%command%` (Steam) or after `./sowx-launch`
+(no Steam); any leading dash option is forwarded to the client the same way.
+
 The extender is optional: run the stock client and you play vanilla. Linux
 only for now. See `sow-client-extender/README.txt` in the release for the same
 steps offline.

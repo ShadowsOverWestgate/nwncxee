@@ -7,6 +7,8 @@
 #             Steam hands us the real game command as our arguments; we add the
 #             extender to the environment, then exec that command unchanged.
 #   Manual -- run with no game arguments and set NWN_BIN=/path/to/nwmain-linux.
+#   Either way, leading dash options are forwarded to the client, e.g. -dmc
+#   for the DM client:  "/abs/sowx-launch" -dmc %command%   or   ./sowx-launch -dmc
 #
 # Why an absolute LD_PRELOAD via a symlink:
 #   NWN runs inside the Steam Linux Runtime (a container). The container FORWARDS
@@ -39,13 +41,19 @@ export SOWX_MANAGED="$LINK/sowx_managed.so"
 # The runtime lets the environment override the GC mode built into sowx_managed.so; keep ours.
 unset DOTNET_gcServer DOTNET_GCHeapCount DOTNET_gcConcurrent DOTNET_GCgen0size
 
+# Leading dash options (e.g. -dmc) are the client's; what follows is the command.
+CLIENT_ARGS=""
+while [ "$#" -gt 0 ] && [ "${1#-}" != "$1" ]; do
+    CLIENT_ARGS="$CLIENT_ARGS $1"; shift
+done
+
 # Steam mode: it handed us the real command as our arguments.
 if [ "$#" -gt 0 ]; then
-    exec "$@"
+    exec "$@" $CLIENT_ARGS
 fi
 
 # Manual mode: launch the client ourselves.
 GAME_BIN="${NWN_BIN:?set NWN_BIN=/path/to/nwmain-linux, or launch via Steam Launch Options}"
 [ -f "$GAME_BIN" ] || { echo "client not found: $GAME_BIN" >&2; exit 1; }
 cd "$(dirname "$GAME_BIN")"
-exec "./$(basename "$GAME_BIN")"
+exec "./$(basename "$GAME_BIN")" $CLIENT_ARGS
