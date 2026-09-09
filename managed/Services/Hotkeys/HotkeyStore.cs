@@ -20,8 +20,17 @@ namespace Sowx.Services.Hotkeys;
 /// </remarks>
 public static class HotkeyStore
 {
-    /// <summary>The ACTIVE server's consented keys, or empty when no recognised token is active. Read on the hot path; swapped atomically.</summary>
+    /// <summary>The keys captured right now: what the server last asked for, narrowed to what the
+    /// player has consented to. Read on the hot path; swapped atomically.</summary>
     public static volatile HashSet<int> Armed = new();
+
+    /// <summary>
+    /// What the player has consented to for the ACTIVE server - the persisted list, and the only
+    /// thing a prompt is measured against. A server asking for fewer keys arms fewer keys; it does
+    /// not un-consent the rest, or a character with no bindings would wipe the consent every other
+    /// one relies on. Only the player shrinks this, through the manager window.
+    /// </summary>
+    public static volatile HashSet<int> Consented = new();
 
     /// <summary>Bumped on every change to Armed, so HotkeyManagerService rebakes its labels only when it changes.</summary>
     public static volatile int Version;
@@ -82,6 +91,7 @@ public static class HotkeyStore
         // Startup publishes EMPTY -- nothing is armed until a login presents a recognised token.
         _activeToken = null;
         Armed = new HashSet<int>();
+        Consented = new HashSet<int>();
         Version++;
 
         if (legacy > 0)
@@ -95,6 +105,7 @@ public static class HotkeyStore
     {
         _activeToken = null;
         Armed = new HashSet<int>();
+        Consented = new HashSet<int>();
         Version++;
     }
 
@@ -109,10 +120,11 @@ public static class HotkeyStore
         string tok = tokenHex.Trim().ToLowerInvariant();
         _activeToken = tok;
         bool known = _sections.TryGetValue(tok, out HashSet<int>? keys);
-        Armed = known ? new HashSet<int>(keys!) : new HashSet<int>();
+        Consented = known ? new HashSet<int>(keys!) : new HashSet<int>();
+        Armed = new HashSet<int>(Consented);
         Version++;
         log.Info(known
-            ? $"HotkeyStore: token recognised -- restored {Armed.Count} consented key(s)"
+            ? $"HotkeyStore: token recognised -- restored {Consented.Count} consented key(s)"
             : "HotkeyStore: token not recognised -- armed set empty, awaiting fresh consent");
         return known;
     }
@@ -134,7 +146,10 @@ public static class HotkeyStore
             set = _sections[_activeToken] = new HashSet<int>();
         set.UnionWith(keys);
 
-        Armed = new HashSet<int>(set);
+        Consented = new HashSet<int>(set);
+        var armed = new HashSet<int>(Armed);
+        armed.UnionWith(keys);
+        Armed = armed;
         Version++;
         Save(log);
         log.Info($"HotkeyStore: player armed {keys.Count} new key(s) for this server; {set.Count} total");
@@ -142,17 +157,29 @@ public static class HotkeyStore
     }
 
     /// <summary>
-    /// Replace the ACTIVE server's set wholesale and persist. Used for silent removals and the
-    /// manager's unbind/revoke-all. No active token -> no-op.
+    /// Replace the ACTIVE server's consent wholesale and persist - the player revoking, through the
+    /// manager window. A server may not reach this: its proposals go through
+    /// <see cref="Capture"/>, which never writes the file. No active token -> no-op.
     /// </summary>
     public static void Set(HashSet<int> keys, ExtenderLog log)
     {
         EnsureLoaded(log);
         if (_activeToken == null) return;
         _sections[_activeToken] = new HashSet<int>(keys);
+        Consented = new HashSet<int>(keys);
         Armed = new HashSet<int>(keys);
         Version++;
         Save(log);
+    }
+
+    /// <summary>
+    /// What the server last asked to capture, already narrowed to consented keys by the caller.
+    /// Session state only: nothing here changes what the player has consented to.
+    /// </summary>
+    public static void Capture(HashSet<int> keys)
+    {
+        Armed = new HashSet<int>(keys);
+        Version++;
     }
 
     /// <summary>A fresh, crypto-random 128-bit token as 32 lowercase hex chars.</summary>
@@ -166,9 +193,9 @@ public static class HotkeyStore
     public static void SelfCheck(ExtenderLog log)
     {
         string ghost = new string('f', 32);                       // a token no server was ever granted
-        bool unknownEmpty = !Activate(ghost, log) && Armed.Count == 0;   // unknown -> empty
+        bool unknownEmpty = !Activate(ghost, log) && Armed.Count == 0 && Consented.Count == 0;
         BeginSession();                                           // reset to the real startup posture
-        bool freshEmpty = Armed.Count == 0 && _activeToken == null;
+        bool freshEmpty = Armed.Count == 0 && Consented.Count == 0 && _activeToken == null;
         bool tokenOk = Mint().Length == 32;
         log.Info(unknownEmpty && freshEmpty && tokenOk
             ? "HotkeyStore: fail-closed self-check passed"

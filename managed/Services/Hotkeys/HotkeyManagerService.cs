@@ -152,7 +152,7 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
 
     private static void UnbindOne(int code)
     {
-        var next = new HashSet<int>(HotkeyStore.Armed);
+        var next = new HashSet<int>(HotkeyStore.Consented);
         if (!next.Remove(code)) return;
         HotkeyStore.Set(next, _log!);                        // bumps Version -> rebake next frame
         HotkeyConsent.Revoke(new[] { code });                // server forgets the binding
@@ -166,7 +166,7 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
         long now = Environment.TickCount64;
         if (_confirmDeadline == 0 || now >= _confirmDeadline) { _confirmDeadline = now + ConfirmMs; return; }
 
-        var all = HotkeyStore.Armed;
+        var all = HotkeyStore.Consented;
         if (all.Count > 0)
         {
             HotkeyConsent.Revoke(all);                       // one Revoke carrying every key
@@ -180,14 +180,18 @@ public sealed unsafe class HotkeyManagerService : IExtenderService
     private static void BindMore() =>
         ClientApi.Send(HotkeyProtocol.OpenUiMajor, HotkeyProtocol.OpenUiMinor, null, 0);
 
-    /// <summary>Rebuild the baked key list only when the armed set changed. Cold path -- allocation is fine.</summary>
+    /// <summary>
+    /// Rebuild the baked key list only when the set changed. It lists what the player has consented
+    /// to, not what is captured this second: the window is where consent is revoked, and a key the
+    /// current character has no binding for is still consented and must be revocable.
+    /// </summary>
     private static void EnsureBaked()
     {
         int v = HotkeyStore.Version;
         if (v == _bakedVersion) return;
         FreeKeys();
 
-        var armed = HotkeyStore.Armed;                       // immutable snapshot
+        var armed = HotkeyStore.Consented;                   // immutable snapshot
         _count = armed.Count;
         if (_count > 0)
         {

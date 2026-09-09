@@ -55,42 +55,44 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
     }
 
     /// <summary>
-    /// Apply a proposed armed set. The set is a PROPOSAL: removals (shrinking capture) apply
-    /// silently; additions (growing capture) require an explicit OK in the client-owned consent modal.
+    /// Apply a proposed armed set. The set is a PROPOSAL measured against what the player has
+    /// CONSENTED to, not against what is currently captured: capture shrinks silently, but a server
+    /// asking for fewer keys never un-consents the rest. It is the same server across a character
+    /// swap, and the character being swapped to may have no bindings at all - taking that as a
+    /// revocation wiped the stored consent and re-prompted on the way back.
     /// </summary>
     private static void HandleArmSet(byte* data, uint size)
     {
         var proposed = Parse(data, size);
 
-        var (rejected, retained, additions) = Plan(HotkeyStore.Armed, proposed, MaxArmed);
+        var (rejected, capture, additions) = Plan(HotkeyStore.Consented, proposed, MaxArmed);
         if (rejected)
         {
             _log?.Info($"ServerLink: refusing oversized arm set ({proposed.Count} > {MaxArmed})");
             return;
         }
 
-        if (retained != null)                       // some keys were removed -- apply now, no consent needed
-            HotkeyStore.Set(retained, _log!);
+        HotkeyStore.Capture(capture);               // consented keys only; session state, never the file
         if (additions.Count > 0)                    // new keys -- ask the player before arming any of them
             HotkeyConsent.Prompt(additions);
     }
 
     /// <summary>
     /// Pure consent policy, isolated so <see cref="SelfCheck"/> can prove the fail-closed defaults.
-    /// rejected = over cap (arm nothing); retained = survivors after silent removals (null if none
-    /// removed); additions = proposed keys not yet armed (these need consent).
+    /// rejected = over cap (arm nothing); capture = what may be armed right now (proposed keys the
+    /// player has consented to); additions = proposed keys not yet consented (these need consent).
     /// </summary>
-    private static (bool rejected, HashSet<int>? retained, HashSet<int> additions) Plan(
-        HashSet<int> current, HashSet<int> proposed, int cap)
+    private static (bool rejected, HashSet<int> capture, HashSet<int> additions) Plan(
+        HashSet<int> consented, HashSet<int> proposed, int cap)
     {
-        if (proposed.Count > cap) return (true, null, new HashSet<int>());
+        if (proposed.Count > cap) return (true, new HashSet<int>(), new HashSet<int>());
 
-        var retained = new HashSet<int>(current);
-        retained.IntersectWith(proposed);           // current minus anything no longer proposed
+        var capture = new HashSet<int>(proposed);
+        capture.IntersectWith(consented);           // never capture a key the player did not allow
         var additions = new HashSet<int>(proposed);
-        additions.ExceptWith(current);              // proposed minus what's already armed
+        additions.ExceptWith(consented);            // proposed minus what is already consented
 
-        return (false, retained.Count == current.Count ? null : retained, additions);
+        return (false, capture, additions);
     }
 
     /// <summary>
@@ -130,18 +132,22 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
     /// </summary>
     private static void SelfCheck()
     {
-        var cur = new HashSet<int> { 1, 2, 3 };
+        var consented = new HashSet<int> { 1, 2, 3 };
 
-        // pure addition: 4 must land in additions, nothing retained/removed
-        var (r1, ret1, add1) = Plan(cur, new HashSet<int> { 1, 2, 3, 4 }, MaxArmed);
-        bool ok = !r1 && ret1 == null && add1.SetEquals(new HashSet<int> { 4 });
+        // pure addition: 4 needs consent, the rest capture as before
+        var (r1, cap1, add1) = Plan(consented, new HashSet<int> { 1, 2, 3, 4 }, MaxArmed);
+        bool ok = !r1 && cap1.SetEquals(new HashSet<int> { 1, 2, 3 }) && add1.SetEquals(new HashSet<int> { 4 });
 
-        // removal + addition: 3 dropped silently (retained = {1,2}), 9 needs consent
-        var (r2, ret2, add2) = Plan(cur, new HashSet<int> { 1, 2, 9 }, MaxArmed);
-        ok &= !r2 && ret2 != null && ret2.SetEquals(new HashSet<int> { 1, 2 }) && add2.SetEquals(new HashSet<int> { 9 });
+        // removal + addition: 3 stops being captured, 9 needs consent
+        var (r2, cap2, add2) = Plan(consented, new HashSet<int> { 1, 2, 9 }, MaxArmed);
+        ok &= !r2 && cap2.SetEquals(new HashSet<int> { 1, 2 }) && add2.SetEquals(new HashSet<int> { 9 });
+
+        // a character with no bindings captures nothing and asks for nothing -- consent survives
+        var (r4, cap4, add4) = Plan(consented, new HashSet<int>(), MaxArmed);
+        ok &= !r4 && cap4.Count == 0 && add4.Count == 0;
 
         // over cap: reject wholesale, arm nothing
-        var (r3, _, add3) = Plan(cur, new HashSet<int> { 1, 2, 3, 4, 5 }, 4);
+        var (r3, _, add3) = Plan(consented, new HashSet<int> { 1, 2, 3, 4, 5 }, 4);
         ok &= r3 && add3.Count == 0;
 
         _log?.Info(ok ? "ServerLink: consent policy self-check passed"

@@ -136,7 +136,7 @@ internal static unsafe class HotkeyConsent
     // keys. The server persists it per player and presents it back next login (PresentToken).
     private static void SendGrantToken(string tokenHex)
     {
-        string csv = string.Join(",", HotkeyStore.Armed);
+        string csv = string.Join(",", HotkeyStore.Consented);
         ClientApi.SendAscii(HotkeyProtocol.GrantTokenMajor, HotkeyProtocol.GrantTokenMinor, $"{tokenHex};{csv}");
     }
 
