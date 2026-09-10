@@ -53,7 +53,7 @@ There is also a headless trigger for offline work: put `dumpshaders=1` in
 
 ### Sizing tokens
 
-Dumped files contain `$CAP$`, `$GROUP$`, `$SRGB$` and `$BAND$` unexpanded. **Leave them
+Dumped files contain `$CAP$`, `$SORT$`, `$GROUP$`, `$SRGB$`, `$BAND$` and `$AA$` unexpanded. **Leave them
 that way.** The extender expands them when it compiles, for an override exactly as for
 its own embedded default, so a file that keeps the tokens stays correct when those sizes
 change on the C# side. Freezing today's numbers into your copy is how it goes stale.

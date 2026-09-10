@@ -41,6 +41,11 @@ internal static unsafe class AlloyLights
     /// <summary>Boot-tunable (<c>clustercap=</c>, #402/#404): it sizes the cluster build's per-lane sort
     /// array, the scratch candidate for the radeonsi fault; 128 is the shipped value.</summary>
     internal static readonly int ClusterCap = Settings.Int("clustercap", 128, 8, 128);
+    /// <summary>#410: the cluster build's per-lane sort array size, deliberately NOT <see cref="ClusterCap"/>.
+    /// A dynamically-indexed private array past ~64 entries spills to scratch (32 KB/wave at 128), and on
+    /// radeonsi that scratch read faulted on area entry (#401). <c>bincap</c> never indexes past 16; 32 is
+    /// clear of the spill threshold. Compile-time shape, not a knob.</summary>
+    internal const int SortCap = 32;
     /// <summary>Compute workgroup size; the dispatch is 1D over clusters and decodes (x,y,z) from the id.</summary>
     internal const int GroupSize = 64;
     /// <summary>SSBO binding points, shared by the compute and the lit fragment program.</summary>
@@ -227,7 +232,7 @@ internal static unsafe class AlloyLights
             case "shadowcap": old = _shadowCap; _shadowCap = Math.Clamp(v, 0f, 2f); break;   // 0 = every light; the shader keeps 2 candidates
             case "binreach": old = _binReach; _binReach = Math.Clamp(v, 0.1f, 4f); break;
             case "reachfade": old = _reachFade; _reachFade = v != 0f ? 1f : 0f; break;
-            case "bincap":   old = _binCap; _binCap = Math.Clamp(MathF.Round(v), 0f, ClusterCap); break;
+            case "bincap":   old = _binCap; _binCap = Math.Clamp(MathF.Round(v), 0f, SortCap); break;
             case "shadownear": old = _shadowNear; _shadowNear = v; break;
             case "hot":     old = _hot; _hot = v; break;
             case "hotsize": old = _hotSize; _hotSize = v; break;
@@ -977,7 +982,7 @@ internal static unsafe class AlloyLights
         {
             spec = vec3(0.0);
             uint cl = SowxCluster(viewDepth);
-            uint n = uClCount[cl];
+            uint n = min(uClCount[cl], SOWX_CLUSTER_CAP);
             uint base = cl * SOWX_CLUSTER_CAP;
             vec3 acc = vec3(0.0);
             // #336: /light shadowcap -- the cube taps a fragment may pay, chosen PER FRAGMENT by reach
@@ -1285,6 +1290,7 @@ internal static unsafe class AlloyLights
         uniform int uBinCap;
         uniform vec2 uAtten;
         const uint CAP = $CAP$u;
+        const uint SORT = $SORT$u;
 
         void main()
         {
@@ -1318,8 +1324,8 @@ internal static unsafe class AlloyLights
             uint dropped = 0u;
             // EXPERIMENT (/light bincap): keep only the K strongest, by the engine's curve at the froxel's
             // nearest point times luma -- the ordering the per-fragment body would find, made once per froxel.
-            uint K = uBinCap <= 0 ? CAP : min(uint(uBinCap), CAP);
-            float sc[CAP];
+            uint K = uBinCap <= 0 ? CAP : min(uint(uBinCap), SORT);
+            float sc[SORT];
             vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
             for (int i = 0; i < uLightCount; i++)
             {

@@ -22,7 +22,7 @@ internal static class ShaderStages
         // Dumped from sow-client-extender's embedded default by /dumpshaders -- the stage THIS build
         // compiles, so it is current by construction. Drop it in a hak or override as <resref>.shd to
         // replace that stage; the extender falls back to the embedded default if it fails to build.
-        // $CAP$ / $GROUP$ / $SRGB$ / $BAND$ are expanded by the extender on load -- leave them as tokens.
+        // $CAP$ / $SORT$ / $GROUP$ / $SRGB$ / $BAND$ / $AA$ are expanded by the extender on load -- leave them as tokens.
         // The contract an override has to keep: docs/shader-overrides.md.
 
 
