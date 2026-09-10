@@ -557,6 +557,9 @@ internal static unsafe class SymbolMap
     /// SysV's classification of a 12-byte three-float struct, so a plain sequential struct of three floats
     /// matches it on both ends.</para></summary>
     public const string GetEmitterLighting = "_ZN12LightManager18GetEmitterLightingE6VectorP4ListIP9PartLightE";
+    /// <summary>LightManager::GetLensFlareLights() @0x4c1d80 -- the list (items at +0, count at +8) of every
+    /// light node with <c>lensflares 1</c>; <c>Scene::RenderLensFlares</c> is its one consumer. Read by <see cref="Halos"/>.</summary>
+    public const string GetLensFlareLights = "_ZN12LightManager18GetLensFlareLightsEv";
     /// <summary>#131: the <c>currentscene</c> global @0x19ab950 -- <c>RenderEmitter</c> reads the light list
     /// for the tint at <c>*currentscene + 0x158</c>. Read live at build time for the same reason
     /// <see cref="Beams"/> reads its own Scene: an area transition frees the list.</summary>

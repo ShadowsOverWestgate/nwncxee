@@ -362,7 +362,7 @@ internal static class ShaderContract
                   // ...and the fallback pair, so a program that never gets uAtten falls back instead of
                   // dividing every light by zero and rendering the world white.
                   && AlloyLights.FragmentLib.Contains("uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0)")
-                  && AlloyLights.LocalShadowLib.Contains("if (m < uLocalSoft.y) return 1.0;")
+                  && AlloyLights.LocalShadowLib.Contains("if (onMover > 0.5 && m < uLocalSoft.y) return 1.0;")
                   // ...and every one of them must read "off" from the ZERO a program that never sets the
                   // uniform leaves behind, or a stale content override (#92) does something wrong rather
                   // than something old. This is the whole reason none of them rides in uFalloff's spare lane.

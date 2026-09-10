@@ -1261,6 +1261,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // culled classification the engine builds ahead of RSP. Read here rather than enrolled on an
             // edge, in engine context, because that is what the beam VAO harvest needs.
             Beams.Enroll(scene);
+            Halos.Enroll(scene);
             // #261: the sky's three gobs are not in Scene+0x130 either -- they hang off Scene+0x18/+0x38 and
             // only Scene::RenderSkyBoxes ever walked them. Same slot, same reason as beams.
             SkyBox.Enroll(scene);
@@ -1856,6 +1857,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         SkyBox.ResetPeriod();
         GrassField.ResetPeriod();
         Beams.ResetPeriod();
+        Halos.ResetPeriod();
         Particles.ResetPeriod();
         _watchSubmitted = 0;
         _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = 0; _skipLod = 0;

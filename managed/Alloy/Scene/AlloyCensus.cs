@@ -37,6 +37,8 @@ internal static unsafe class AlloyCensus
         // thing we are debugging" and no warm-up rule can make it so.
         _dumpTex = Settings.Text("dumptex", "");
         if (_dumpTex.Length == 0) _dumpTex = null;
+        _skipTex = Settings.Text("skiptex", "");
+        if (_skipTex.Length == 0) _skipTex = null;
     }
 
     /// <summary>#126: the material's blend pair -- source factor at +0x90, destination at +0x94, both
@@ -94,6 +96,9 @@ internal static unsafe class AlloyCensus
     /// <summary><c>dumptex</c> (sowx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
     /// time, for as long as it takes the camera to find them.</summary>
     internal static string? _dumpTex;
+    /// <summary><c>skiptex</c> (sowx.cfg): refuse every part whose diffuse texture name contains this. Under the
+    /// M4 shim a refused part draws nowhere -- colour, prepass, casters -- so this is the "is it that part" A/B.</summary>
+    internal static string? _skipTex;
     private static int _classDiagLeft = 8;
     /// <summary>Table slot of the part <c>dumptex</c> last matched, published by the census for enrollment to
     /// recognise without dereferencing anything. -1 until the camera finds it.</summary>
@@ -261,6 +266,8 @@ internal static unsafe class AlloyCensus
         // #91: a part recorded from another Scene (a GUI 3D panel) must never enter the world table -- the
         // Alloy block draws the whole table in one go, so one foreign part is area geometry in a portrait.
         if (_pScene[e] != _ownScene) { Bump(ref _ownRejScene); return Gate("scene"); }
+        if (_skipTex != null && _pTex0[e] != IntPtr.Zero
+            && TexName(_pTex0[e]).Contains(_skipTex, StringComparison.OrdinalIgnoreCase)) return Gate("skiptex");
         // #338: the gate every Part*::Draw override runs before it draws (PartTriMesh, PartAnimMesh,
         // PartAABB, PartDanglyMesh, PartSkin all call PartTriMesh::IsPartRenderable @0x450e60), and that
         // Scene::AddPartsTreeToDrawBuckets @0x460880 runs before every colour-bucket add. Alloy walks the

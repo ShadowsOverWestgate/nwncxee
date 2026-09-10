@@ -168,7 +168,7 @@ internal static unsafe class AlloyLights
     /// line. 0 = the disc everywhere. ponytail: a hard threshold, no fade band across it.</summary>
     private static float _discPx = 3f;
     /// <summary>#139: self-shadow near-field skip, as a multiple of <see cref="_srcRadius"/>. A world point
-    /// closer to the light than this is reported lit outright -- a carried torch sits INSIDE the hand and
+    /// closer to the light than this is reported lit outright, on creature (mover) fragments only -- a carried torch sits INSIDE the hand and
     /// forearm holding it, and a punctual shadow test there shadows the carrier from its own light.</summary>
     private static float _shadowNear = 1f;
     /// <summary>Scales on the captured area terms, so daylight and interior fill can be dialled apart from
@@ -776,7 +776,9 @@ internal static unsafe class AlloyLights
             // #139: inside the source sphere there is nothing to occlude. A carried torch sits INSIDE the
             // hand and forearm holding it, so a punctual test there shadows the carrier from its own light
             // -- and at that range one cube texel spans most of the arm, which is the blocky self-shadow.
-            if (m < uLocalSoft.y) return 1.0;
+            // CARRIER ONLY: on the ground this box (Chebyshev, world-aligned) drew as a lit diamond around
+            // every fire placeable -- the sun's shadow apparently cut out in a square.
+            if (onMover > 0.5 && m < uLocalSoft.y) return 1.0;
             float texel = 2.0 * m * uLocalPlane.y;
             // The acne offset/bias must clear the COARSEST map that will answer this fragment: a light with
             // an occupied dynamic page samples that page too, at (typically) half the static resolution.

@@ -95,6 +95,9 @@ internal enum PassId
     /// the per-emitter fallback, and it is worth paying -- the alternative is an all-or-none rule that hands
     /// back a whole screen of effects because one of them named a custom shader.</para></summary>
     ParticlesOwned,
+    /// <summary>Procedural light halos (<see cref="Halos"/>): vanilla's lens flares, step 29, right after the
+    /// particles. Additive, no depth write; occlusion is the shader's own depth read.</summary>
+    HalosOwned,
     /// <summary>#121: the per-area IBL probe capture. Last in the colour bracket by necessity -- it draws
     /// the same staged batches six more times and rebuilds the light clusters per face, so it has to run
     /// after every on-screen pass that reads them. Skipped on all but the handful of frames
@@ -174,6 +177,7 @@ internal static class FrameGraph
         (PassId.AdditiveOwned,   Bracket.Colour),
         (PassId.BeamsOwned,      Bracket.Colour),
         (PassId.ParticlesOwned,  Bracket.Colour),
+        (PassId.HalosOwned,      Bracket.Colour),
         (PassId.ProbeCapture,    Bracket.Colour),
         (PassId.PostProcess,     Bracket.Colour),
         (PassId.PostStack,       Bracket.Colour),

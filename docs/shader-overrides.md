@@ -6,7 +6,7 @@ replaced at runtime by a `.shd` resource of the same name — a customization su
 for people who want the look to be theirs.
 
 This document is the contract that surface comes with: what an override is, what the
-twenty-three stages are, and precisely what the extender refuses and why.
+twenty-five stages are, and precisely what the extender refuses and why.
 
 ## What an override is, and what it is not
 
@@ -90,7 +90,7 @@ Practical requirements, none of which the extender can check for you:
 A build failure of any kind rebuilds the embedded stage and says so in the log, so a bad
 module costs a log line rather than the frame.
 
-## The twenty-three stages
+## The twenty-five stages
 
 | resref | stage | what it does |
 | --- | --- | --- |
@@ -117,6 +117,8 @@ module costs a log line rather than the frame.
 | `cx_taa_fs` | fragment | #389: the taa stage's copy-out of the history `TaaStage.Prepare` resolved (`uHist`). The accumulator itself is embedded, not overridable. |
 | `cx_ssao_fs` | fragment | Ambient occlusion (#379, ADR 0021): GTAO visibility from the prepass depth, R8, read by the lit stage's ambient term. Not a post stage: runs before the colour pass. |
 | `cx_ssaoblur_fs` | fragment | The depth-aware 4x4 blur that folds the AO pass's dither pattern away. |
+| `cx_halo_vs` | vertex | Procedural light halos: one instanced billboard per `lensflares 1` light (SSBO binding 5: position/radius, linear colour/flareradius). Reach fades to zero at `flareradius`. |
+| `cx_halo_fs` | fragment | The halo look: gaussian core, soft skirt, faint streaks, chromatic spread, and the per-pixel occlusion against `uSceneDepth` (soft over one radius). Additive over the linear frame, so no encode. |
 
 One more file appears in the dump: `cx_ownlit_fs.bindless.shd`. It is **reference
 only** — the lit stage after the extender's own bindless rewrite. The dot makes it

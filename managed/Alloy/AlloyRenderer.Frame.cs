@@ -392,6 +392,9 @@ public sealed unsafe partial class AlloyRenderer
                             if (partCounting) _qPartSamples.End(Gl.SAMPLES_PASSED);
                             GpuEnd(GpuTerm.Particles);
                             break;
+                        case PassId.HalosOwned:
+                            Halos.Draw(&view, &proj, viewport);
+                            break;
                         case PassId.ProbeCapture:
                             if (!lightingOn) break;
                             CaptureProbe(_gOpaqueEnd, far);

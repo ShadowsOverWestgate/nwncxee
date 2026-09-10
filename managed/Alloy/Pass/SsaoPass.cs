@@ -47,13 +47,14 @@ internal static unsafe class SsaoPass
 
     /// <summary>World-space radius (NWN units are metres: a creature stands two of them). 0.6 is contact
     /// occlusion -- corners, feet, the underside of furniture -- not a room-scale gloom.</summary>
-    private static float _radius = 2f;
+    private static float _radius = 0.6f;
     /// <summary>The visibility exponent at stock intensity (GTAO's finalValuePower); the option scales it.</summary>
-    private static float _power = 10f;
-    /// <summary>Slices and steps per side. #390: 2x1 (4 depth fetches a pixel) under the temporal
-    /// accumulator, which converges on what 3x3 (18 fetches) drew in one frame; <c>/ao temporal 0 dirs 3
-    /// steps 3</c> is that single-frame look exactly.</summary>
-    private static float _dirs = 2f, _steps = 1f;
+    private static float _power = 2.2f;
+    /// <summary>Slices and steps per side. #390: 1x3 (6 depth fetches a pixel) under the temporal
+    /// accumulator, which converges on what 3x3 (18 fetches) drew in one frame. Only SLICES average across
+    /// frames: the horizon is a max over steps, so fewer steps per frame is biased low, not noisy (the
+    /// lost-power regression). <c>/ao temporal 0 dirs 3 steps 3</c> is the single-frame look exactly.</summary>
+    private static float _dirs = 1f, _steps = 3f;
     /// <summary>#390: the history's share of the blend (0.8 = a five-frame accumulation); 0 is the single-frame
     /// pass, with no history target, no per-frame noise phase and no reprojection -- today's path verbatim.</summary>
     private static float _temporal = 0.8f, _bootTemporal = 0.8f;
@@ -68,7 +69,7 @@ internal static unsafe class SsaoPass
     /// default, vanilla's post-multiply) is the only setting the effect is visible indoors at; 0 restores the
     /// ADR's original ambient-only rule.</summary>
     private static float _direct = 1f;
-    private static float _bootRadius = 2f, _bootPower = 10f, _bootDirs = 2f, _bootSteps = 1f, _bootMaxPx = 96f, _bootBlur = 1f, _bootDirect = 1f;
+    private static float _bootRadius = 0.6f, _bootPower = 2.2f, _bootDirs = 1f, _bootSteps = 3f, _bootMaxPx = 96f, _bootBlur = 1f, _bootDirect = 1f;
 
     /// <summary>The lit stage's <c>uAoDirect</c>, read at every lit program bind.</summary>
     internal static float Direct => _direct;
@@ -484,12 +485,19 @@ internal static unsafe class SsaoPass
             float raw = textureLod(uRaw, vUV, 0.0).r;
             float depth = textureLod(uDepth, vUV, 0.0).r;
             float dist = depth >= 1.0 ? 0.0 : SowxViewDist(depth);
+            ivec2 hsz = textureSize(uHist, 0);
             vec2 huv = vUV + textureLod(uVel, vUV, 0.0).rg / vec2(textureSize(uVel, 0));
             float w = uWeight;
             if (dist <= 0.0 || any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) w = 0.0;
             vec2 h = textureLod(uHist, huv, 0.0).rg;
-            w *= 1.0 - clamp(abs(h.g - dist) / (0.1 * max(dist, 1e-3)), 0.0, 1.0);
-            // the neighbourhood clamp: history outside the blurred estimate's 3x3 range is stale, not signal
+            // the depth test reads the NEAREST texel: LINEAR blends near and far at a silhouette and rejected
+            // every edge pixel every frame (the fluorescent-edge flicker)
+            float hd = texelFetch(uHist, clamp(ivec2(huv * vec2(hsz)), ivec2(0), hsz - 1), 0).g;
+            w *= 1.0 - clamp(abs(hd - dist) / (0.1 * max(dist, 1e-3)), 0.0, 1.0);
+            // the neighbourhood clamp: history outside the blurred estimate's 3x3 range is stale, not signal.
+            // ponytail: fixed pad, not a variance clip -- a tight clamp on a six-fetch estimate yanks the
+            // history every frame at edges where the depth-aware blur left the 3x3 unsmoothed
+            const float PAD = 0.1;
             ivec2 pix = ivec2(gl_FragCoord.xy), sz = textureSize(uRaw, 0);
             float mn = raw, mx = raw;
             for (int y = -1; y <= 1; y++)
@@ -498,7 +506,7 @@ internal static unsafe class SsaoPass
                     float n = texelFetch(uRaw, clamp(pix + ivec2(x, y), ivec2(0), sz - 1), 0).r;
                     mn = min(mn, n); mx = max(mx, n);
                 }
-            frag = vec2(mix(raw, clamp(h.r, mn, mx), w), dist);
+            frag = vec2(mix(raw, clamp(h.r, mn - PAD, mx + PAD), w), dist);
         }
         """;
 
@@ -531,13 +539,13 @@ internal static unsafe class SsaoPass
             E(Describe().Contains("radius") && Describe().Contains("power") && Describe().Contains("temporal"), "/ao reports its dials");
             // #390: the accumulator reprojects in the velocity target's own units, tests the history's depth,
             // and at temporal 0 the raw stage's noise phase is the single-frame one exactly.
-            E(TemporalFs.Contains("/ vec2(textureSize(uVel, 0))") && TemporalFs.Contains("abs(h.g - dist)")
-              && TemporalFs.Contains("clamp(h.r, mn, mx)")
+            E(TemporalFs.Contains("/ vec2(textureSize(uVel, 0))") && TemporalFs.Contains("abs(hd - dist)") && TemporalFs.Contains("texelFetch(uHist,")
+              && TemporalFs.Contains("clamp(h.r, mn - PAD, mx + PAD)")
               && ShaderContract.SlotSafe(TemporalFs, "uRaw", "uHist", "uVel", "uDepth"), "the temporal stage reprojects through the velocity target, rejects a depth mismatch and clamps to the neighbourhood");
             E(fs.Contains("fract(b / 16.0 + float(uFrame) * 0.618034)"), "the raw stage's noise phase is uFrame-rotated, 0 = today's pattern");
             float tp = _temporal; Tune("temporal", 0.5f); E(_temporal == 0.5f && !_histValid, "/ao temporal sets and drops the history");
             Tune("temporal", 0f); E(!TemporalWanted, "temporal 0 asks for no velocity target"); _temporal = tp;
-            E(_bootDirs == 2f && _bootSteps == 1f && _bootTemporal > 0f, "the reduced sample count ships WITH the accumulator on, never alone");
+            E(_bootDirs == 1f && _bootSteps == 3f && _bootTemporal > 0f, "slices are what the accumulator averages; the per-frame horizon keeps its full step count");
         }
         finally { _log = quiet; }
         log.Info(ok ? "SsaoPass.SelfCheck: passed" : "SsaoPass.SelfCheck: FAILED");

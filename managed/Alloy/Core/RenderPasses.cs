@@ -114,6 +114,16 @@ internal static class RenderPasses
         }, log);
         r.Register(new PassLifecycle
         {
+            Name = "halos",
+            Install = Halos.Install,
+            ContextLost = Halos.ContextLost,
+            Stats = _ => Halos.Stats(),
+            Describe = Halos.Describe,
+            Tune = Halos.Tune,
+            Reset = Halos.ResetTuning,
+        }, log);
+        r.Register(new PassLifecycle
+        {
             Name = "particles",
             Install = Particles.Install,
             SelfCheck = Particles.SelfCheck,

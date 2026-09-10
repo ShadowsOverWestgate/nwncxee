@@ -45,6 +45,7 @@ SOURCES = [
     "managed/Alloy/Pass/SmaaLib.cs",   # before SmaaStage: the harvest folds references in list order
     "managed/Alloy/Pass/SmaaStage.cs",
     "managed/Alloy/Pass/SsaoPass.cs",
+    "managed/Alloy/Pass/Halos.cs",
     "managed/Alloy/Pass/FrameSnapshot.cs",
     "managed/Alloy/Pass/MotionVectors.cs",
     "managed/Alloy/Pass/TaaStage.cs",
@@ -423,6 +424,7 @@ def programs(c, s):
         "post stack aa blend": (s["cx_post_vs"], s["cx_smaablend_fs"]),
         "ssao visibility": (s["cx_post_vs"], s["cx_ssao_fs"]),
         "ssao blur": (s["cx_post_vs"], s["cx_ssaoblur_fs"]),
+        "halos": (s["cx_halo_vs"], s["cx_halo_fs"]),
         "ssao temporal": (c["FullscreenVs"], c["TemporalFs"]),
         "motion vectors": (c["FullscreenVs"], c["CameraFs"]),
         "mover motion": (c["MotionVs"], c["MotionFs"]),
