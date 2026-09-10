@@ -95,6 +95,8 @@ internal static unsafe class EnvProbe
     {
         _log = log;
         Size = Settings.Int("probe_size", Size, 16, 1024);
+        // #404: probe=0 skips every capture from boot (the /probe on toggle, as a config key).
+        _on = Settings.Bool("probe", _on);
         _bootGain = Gain; _bootAreaWide = AreaWide;
     }
 

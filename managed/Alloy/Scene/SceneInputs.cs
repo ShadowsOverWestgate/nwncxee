@@ -36,6 +36,9 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static float _focusDist = FocusDistBoot;
     private static ExtenderLog? _log;
     private static bool _enabled, _diag;
+    /// <summary>#404: how far <see cref="FrameStart"/> runs, for one-restart bisection on radeonsi.
+    /// 1 = light walk only, 2 = + focus, 3 = + cube bind, 4 = + caster bake (full). Boot only.</summary>
+    private static int _stage = 4;
 
     /// <summary>The one "we own shadows this frame" predicate: armed, in a module, and the frame latched
     /// owned (#86). No GL term any more -- this service stopped touching GL when the maps moved to
@@ -115,6 +118,8 @@ public sealed unsafe class SceneInputs : IExtenderService
         // Config bucket (ADR 0013): this arms the feed's hooks, so it is a boot decision. Everything the
         // walk merely LOOKS at -- radii, cull mode, the diagnostics -- is /shadow's.
         _enabled = Settings.Bool("shadows", true);
+        _stage = Settings.Int("shadowstage", 4, 1, 4);
+        if (_stage < 4) log.Info($"SceneInputs: shadowstage={_stage} -- the shadows feed stops after {(_stage == 1 ? "the light walk" : _stage == 2 ? "the focus" : "the cube bind (no bake)")}");
 
         ShadowMath.SelfCheck(log);   // pure math, runs headless
         FadeSelfCheck(log);          // ...and so does the fade-out bookkeeping
@@ -225,8 +230,10 @@ public sealed unsafe class SceneInputs : IExtenderService
         long tShadow = FrameZones.Now;
         WalkMasterList(*(IntPtr*)(scene + SceneLightManager));
         FrameZones.Add(FrameZones.Zone.Lwalk, tShadow);
+        if (_stage < 2) { _passDoneThisFrame = true; return; }
         // The shadow focus every Alloy view fits around.
         ShadowFocus();
+        if (_stage < 3) { _passDoneThisFrame = true; return; }
         // #282: the interior flag used to be decided in the ManageSceneBSP hook that carried the re-walk.
         // It is not re-walk work -- it is what tells CasterPass there is no sun to fit -- so it moved here,
         // still once per presented frame and still ahead of the bake that reads it.
@@ -242,7 +249,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // #118: the world-caster bake, so the cascades and cubes are baked before the colour pass that
         // samples them.
         long tBake = FrameZones.Now;
-        CasterPass.OnPassSlot();
+        if (_stage >= 4) CasterPass.OnPassSlot();
         FrameZones.Add(FrameZones.Zone.Bake, tBake);
         // AFTER the bake, so a light and the cube it points at come from the SAME bake. Binding before it
         // would map this frame's lights onto last frame's slot assignment, and the nearest-first cube sort

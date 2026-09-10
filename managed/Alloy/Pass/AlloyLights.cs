@@ -38,7 +38,9 @@ internal static unsafe class AlloyLights
     /// plus SSBO bytes (3,5MB -> 7MB). <para>ponytail: fixed capacity, no per-cluster compaction pass. Overflow is counted and
     /// logged; if 128 ever fires, the upgrade is a two-pass count-then-fill build with a compacted offset
     /// table.</para></summary>
-    internal const int ClusterCap = 128;
+    /// <summary>Boot-tunable (<c>clustercap=</c>, #402/#404): it sizes the cluster build's per-lane sort
+    /// array, the scratch candidate for the radeonsi fault; 128 is the shipped value.</summary>
+    internal static readonly int ClusterCap = Settings.Int("clustercap", 128, 8, 128);
     /// <summary>Compute workgroup size; the dispatch is 1D over clusters and decodes (x,y,z) from the id.</summary>
     internal const int GroupSize = 64;
     /// <summary>SSBO binding points, shared by the compute and the lit fragment program.</summary>
