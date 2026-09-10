@@ -270,6 +270,8 @@ public sealed unsafe partial class AlloyRenderer
     /// every frame by the batch key (a bind-path batch cuts on its textures) even when the record itself
     /// does not move.</summary>
     private static readonly int[] _recTid = new int[MaxOwned];
+    /// <summary>#331: the CycleTID controller behind the diffuse, or zero. A step marks the record texture-stale.</summary>
+    private static readonly IntPtr[] _recCtl = new IntPtr[MaxOwned];
     /// <summary>The record's owned texture name RETIRED under it (the transcode drip swapping a raw upload for
     /// its compressed copy): the engine pointer is unchanged, so the pointer compare alone would keep the
     /// record sampling a handle the drain has since dropped. Routed and re-resolved regardless of the

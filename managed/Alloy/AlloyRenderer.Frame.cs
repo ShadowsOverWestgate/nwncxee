@@ -181,6 +181,7 @@ public sealed unsafe partial class AlloyRenderer
             FrameZones.Add(FrameZones.Zone.Post, tPostBegin);
             if (!postOk) { GlContextService.Leave(); return; }
             GpuFrameStart();
+            TickCycleTextures();
             long tBuild = FrameZones.Now;
             int groups = BuildBatches(lightingOn);
             FrameZones.Add(FrameZones.Zone.Build, tBuild);

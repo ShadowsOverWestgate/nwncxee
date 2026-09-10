@@ -72,6 +72,9 @@ public static unsafe class AurTex
     /// <summary>This texture's GL id, or 0 if the pointer is null or no longer a texture. Hot -- called per
     /// Alloy part per frame.</summary>
     public static int Tid(IntPtr tex) => Live(tex) ? _getTid(tex) : 0;
+    /// <summary>The guard alone, for a caller about to read the object through an engine call other than
+    /// <c>AurTextureGetTID</c> (#331's controller lookup).</summary>
+    public static bool IsLive(IntPtr tex) => Live(tex);
 
     /// <summary>A resman texture's GL id by RESREF -- the resolve and the guard in one call, for the handful
     /// of engine textures an owned pass wants by name rather than off a material (#339's <c>solid_noise</c>,

@@ -572,6 +572,18 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#242: this record moved and has to reach the GPU again. Overflow is not a silent drop -- it
     /// promotes the frame to a wholesale upload, which is correct and merely more expensive.</summary>
     private static void MarkRecordDirty(int slot) => MarkRecordDirty(slot, ref _stageCounters[0]);
+
+    /// <summary>#331: advance every cycle texture behind an owned record. A step is picked up inline by the
+    /// stage's texDirty test; a DROPPED controller (its ref died) un-registers its records here (cold) so
+    /// they re-resolve and re-register with a live ref. Main thread, before the batch build.</summary>
+    private static void TickCycleTextures()
+    {
+        CycleTextures.Tick();
+        var dropped = CycleTextures.Dropped;
+        if (dropped.Length == 0) return;
+        for (int i = 0; i < _ownCount; i++)
+            if (_recCtl[i] != IntPtr.Zero && dropped.IndexOf(_recCtl[i]) >= 0) { _recCtl[i] = IntPtr.Zero; _recTexStale[i] = true; }
+    }
     private static void MarkRecordDirty(int slot, ref StageCounters c)
     {
         c.RecWritten++;
@@ -952,23 +964,25 @@ public sealed unsafe partial class AlloyRenderer
             if (verified) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
             else
             {
-                // texture: the engine name is re-fetched per frame -- CAurTexture* is BORROWED, freed on
-                // area transitions (never cache the pointer), and the per-frame fetch is exactly what keeps
-                // animated textures cycling. #211 then maps that name to OUR copy, which cannot be freed
-                // under the draw; an animated texture cycles engine names, so each animation frame gets its
-                // own copy.
+                // texture: the engine name is re-fetched -- CAurTexture* is BORROWED, freed on area
+                // transitions (never cache the pointer). #211 then maps that name to OUR copy, which cannot
+                // be freed under the draw; every cell of a cycle texture is adopted at upload, so a step
+                // resolves to a copy already resident.
                 // #242: the POINTER is compared per frame; only a change re-resolves it to a tid and a
                 // bindless handle. That is the ADR 0017 split's per-frame half -- the fetch stays, the two
                 // hash probes behind it do not.
                 // #336: ...on the colour cadence. The #330 RE found a cycling texture rewrites the GL name
-                // INSIDE the CAurTexture (basic+0x6c), never the pointer -- the animated frame reaches the
-                // record through the copy retire and its epoch bump, not through this compare. What the
-                // compare does catch is a material re-bind (a re-skin, an equip: cold), which can wait
-                // eight frames. A slot with no record yet, or under /draw poll 1, still reads every frame.
+                // INSIDE the CAurTexture (basic+0x6c), never the pointer -- so this compare never sees a
+                // cycle. #331: the step reaches the record through TickCycleTextures (Alloy calls the
+                // engine's Control itself; the M4 shim removed the Bind tail that used to) and the IsDirty
+                // term below. What the compare does catch is a material re-bind (a re-skin, an equip: cold),
+                // which can wait eight frames. A slot with no record yet, or under /draw poll 1, still reads
+                // every frame.
                 bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero;
                 var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);
                 if (aur.IsNull) { Inc(ref _skipTex); Inc(ref _skipTexNone); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no diffuse texture"); return Skipped; }
-                texDirty = stale || aur.Ptr != _recAur[i] || _recTexStale[i];
+                texDirty = stale || aur.Ptr != _recAur[i] || _recTexStale[i]
+                           || (_recCtl[i] != IntPtr.Zero && CycleTextures.IsDirty(_recCtl[i]));
                 // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
                 // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
                 // frame. The DIFFUSE compare above stays per frame; it is the animated one.
@@ -1060,6 +1074,9 @@ public sealed unsafe partial class AlloyRenderer
                     if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
                     // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
                     if (lit && _aoTest && !mapsMeanNothing) { slotTid[AoSlot] = tid; slots |= AoBit; }
+                    // #331: registered on a pointer change only -- a cycle STEP re-resolves every record on
+                    // the sheet, and re-asking the engine for a controller already on file would cost that
+                    if (aur.Ptr != _recAur[i] || _recCtl[i] == IntPtr.Zero) _recCtl[i] = CycleTextures.Register(aur.Ptr);
                     _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _recTexStale[i] = false;
                     for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
                 }

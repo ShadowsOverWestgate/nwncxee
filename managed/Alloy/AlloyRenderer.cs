@@ -977,6 +977,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (!AlloyCensus.GobSelfCheck(log)) return;
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
+        CycleTextures.Attach(log);   // #331
         ResolveChase(log);   // #330: the three engine sets the chase is bounded by; unresolved = unbounded
         _mtxStacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
         _runtime = (byte*)Native.Sym(SymbolMap.GlShaderRuntimeData);
@@ -1790,7 +1791,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // while the world renders is the whole reason this is a roll-call and not a fixed list --
                    // the frame looks fine, just 8-bit and un-bloomed, and only the clause says so.
                    PassRegistry.Global.Stats(_frames) + ", " +
-                   $"enrolls={_enrolls} revokes={_revokes}; " +
+                   $"enrolls={_enrolls} revokes={_revokes}; cycle={CycleTextures.Count} steps={CycleTextures.Steps}" + (CycleTextures.Overflow == 0 ? "" : $" overflow={CycleTextures.Overflow}") + (CycleTextures.OtherClass == 0 ? "" : $" otherctl={CycleTextures.OtherClass}") + "; " +
                    // #119: the prepass's own cost, and what it bought. samples/px is the overdraw figure --
                    // run the same scene with /draw prepass 0 and the difference IS the pass's worth.
                    (!_depthPrepass ? "prepass OFF (/draw prepass 1 restores it)"

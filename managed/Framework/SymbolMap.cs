@@ -950,6 +950,13 @@ internal static unsafe class SymbolMap
     // directly -- no decode, no upload. See ConvertPortrait for the H/L/M/S/T size suffixes.
     public const string AurTextureGet    = "_Z13AurTextureGetPKcP11CAurTextureS0_Piib";
     public const string AurTextureGetTID = "_Z16AurTextureGetTIDP11CAurTexture";
+    /// <summary>#331: <c>AurTextureGetController(CAurTexture*)</c> @0x485350 -- resolves ref -> basic and returns
+    /// <c>basic+0x38</c>, the texture's animation controller (or null).</summary>
+    public const string AurTextureGetController = "_Z23AurTextureGetControllerP11CAurTexture";
+    /// <summary>#331: the one controller class whose Control() (vtable slot +0x10) only rewrites a GL name.</summary>
+    public const string CycleTidControllerVtbl = "_ZTV25CycleTIDTextureController";
+    /// <summary>#331: the engine's int gate on every controller tick (the Bind tail reads it).</summary>
+    public const string EnableTextureControllers = "enabletexturecontrollers";
     /// <summary>The two texture vtables, which is the whole of "is this pointer still a texture" --
     /// see <see cref="AurTex"/>. Data symbols, never called: what is read is the value a live object's
     /// first word holds, i.e. the symbol plus the Itanium ABI's 0x10.</summary>
