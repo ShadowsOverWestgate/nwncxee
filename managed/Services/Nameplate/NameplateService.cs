@@ -28,6 +28,12 @@ public sealed unsafe class NameplateService : IExtenderService
     private static bool _configLoaded, _configDirty;
     private static bool _armed, _wasInModule, _suppressed;
 
+    /// <summary>Whether the vanilla text-bubble mode-0 suppression is in force. While it is -- and only while
+    /// it is -- the engine refreshes every bubble-owning object's projected screen anchor every tick
+    /// (docs/re/nameplate.md §D), which is the anchor <c>CombatTextService</c> reads. It checks this before
+    /// swallowing anything, so a stood-down nameplate feature stands the combat text down with it.</summary>
+    public static bool Suppressing => _armed;
+
     private static readonly PlateTable _table = new();
     private static Window? _plates;
     private static Window? _panelWindow;
@@ -588,6 +594,36 @@ public sealed unsafe class NameplateService : IExtenderService
         }
     }
 
+    /// <summary>One line of a plate NAME. Same glyphs as <see cref="EmitString"/>, except that a char the
+    /// name's own <c>&lt;cRGB&gt;</c> tags coloured wins over the reaction colour -- the fallback rule
+    /// <see cref="EmitRuns"/> already applies to an override's untagged runs, now applied to the name too.
+    /// <paramref name="colours"/> is indexed by char of <c>Entry.Name</c>, so the line's own char offset is
+    /// passed in rather than assumed to be zero.</summary>
+    private static void EmitNameLine(ref int n, GlyphAtlas atlas, ReadOnlySpan<char> s, uint[]? colours,
+                                     int offset, float penX, float baseline,
+                                     float r, float g, float b, float a)
+    {
+        if (colours == null) { EmitString(ref n, atlas, s, penX, baseline, r, g, b, a, 0f); return; }
+        int ci = 0;
+        while (ci < s.Length)
+        {
+            Rune.DecodeFromUtf16(s.Slice(ci), out Rune ru, out int used);
+            int at = offset + ci;
+            uint c = at < colours.Length ? colours[at] : PlateLayout.Plain;
+            float cr = r, cg = g, cb = b;
+            if (c != PlateLayout.Plain)
+            { cr = ((c >> 16) & 0xFF) / 255f; cg = ((c >> 8) & 0xFF) / 255f; cb = (c & 0xFF) / 255f; }
+            ci += used;
+            if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
+            if (_cfg.Outline)
+                for (int o = 0; o < OutlineOffsets.Length; o += 2)
+                    EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1],
+                              0f, 0f, 0f, a, 0f);
+            EmitGlyph(ref n, gl, penX, baseline, cr, cg, cb, a, 0f);
+            penX += gl.Advance;
+        }
+    }
+
     /// <summary>Emit one run of already-parsed, per-rune-coloured text and return the pen. The one place
     /// colour runs become glyphs: the bubble's wrapped spans and the plate's override lines both come through
     /// here, so an override's <c>&lt;cRGB&gt;</c> tags render exactly as a chat line's do.
@@ -770,7 +806,7 @@ public sealed unsafe class NameplateService : IExtenderService
             float lx = PlateLayout.LineX(colX, m.TextW, lw + (prefixed || suffixed ? ov.SpliceW : 0f));
             float by = y + m.NameY + i * lineH + atlas.Ascent;
             if (prefixed) { EmitSplice(ref n, atlas, e, ov, lx, by, a); lx += ov.SpliceW; }
-            EmitString(ref n, atlas, line, lx, by, nc.r, nc.g, nc.b, a, 0f);
+            EmitNameLine(ref n, atlas, line, e.NameColours, e.NameStart[i], lx, by, nc.r, nc.g, nc.b, a);
             float penX = lx + lw;
             if (e.NameTruncated && i == nameLines - 1)
                 EmitString(ref n, atlas, PlateTable.Ellipsis,

@@ -1,4 +1,5 @@
 using Sowx.Framework;
+using Sowx.Services.Chat.Core;
 using Sowx.Ui;
 
 namespace Sowx.Services.Nameplate;
@@ -297,11 +298,20 @@ public static class PlateLayout
     /// (<c>PlateTable.EnsureWrap</c>) and would double-break; the upgrade path is to run this over the bubble
     /// runes before the wrap, once someone wants a builder-authored break there too.</para>
     /// </summary>
-    public static string BreakName(string s)
+    public static string BreakName(string s) => BreakName(s, null, out _);
+
+    /// <summary>As <see cref="BreakName(string)"/>, carrying a per-char colour array through the same rewrite
+    /// so the two can never drift out of alignment. <paramref name="colours"/> is indexed by char of
+    /// <paramref name="s"/>; the returned array is indexed by char of the returned string. A whitespace char
+    /// the rewrite INSERTS takes the colour of the char that follows it, which is invisible but keeps the
+    /// index arithmetic honest.</summary>
+    public static string BreakName(string s, uint[]? colours, out uint[]? outColours)
     {
+        outColours = colours;
         if (!NeedsBreak(s)) return s;
 
         var sb = new System.Text.StringBuilder(s.Length);
+        var cols = colours == null ? null : new System.Collections.Generic.List<uint>(s.Length);
         int spaces = 0;
         bool brk = false, any = false;
         for (int i = 0; i < s.Length; i++)
@@ -318,16 +328,69 @@ public static class PlateLayout
             }
             if (c == ' ') { spaces++; continue; }
 
+            uint col = cols == null ? 0u : i < colours!.Length ? colours[i] : Plain;
             if (any)
             {
-                if (brk || spaces >= SpacesPerBreak) sb.Append('\n');
-                else for (int k = 0; k < spaces; k++) sb.Append(' ');
+                if (brk || spaces >= SpacesPerBreak) { sb.Append('\n'); cols?.Add(col); }
+                else for (int k = 0; k < spaces; k++) { sb.Append(' '); cols?.Add(col); }
             }
             spaces = 0; brk = false;
-            sb.Append(c); any = true;
+            sb.Append(c); cols?.Add(col); any = true;
         }
+        outColours = cols?.ToArray();
         return sb.ToString();
     }
+
+    /// <summary>The packed RGB that means "no colour tag covered this char" -- white, i.e. take whatever
+    /// colour the caller was going to use anyway.
+    /// <para>An explicit <c>&lt;cÿÿÿ&gt;</c> therefore reads as untagged and a hostile creature whose name a
+    /// builder deliberately whitened still draws in the red reaction tint. A sentinel outside the 24-bit range
+    /// does NOT fix that: <see cref="ColorRunParser"/> hands back the default colour and an explicit white as
+    /// the same <c>(1,1,1)</c> run, so the distinction is already gone before this sees it. The chat
+    /// renderer's own <c>EmitRuns</c> collides identically, and inventing a second convention here would only
+    /// make the two disagree. Fixing it properly means teaching the parser to report tag DEPTH.</para></summary>
+    public const uint Plain = 0xffffffu;
+
+    /// <summary>
+    /// Strip the Aurora inline colour grammar out of a name and hand back the colour each surviving char was
+    /// under, packed 0xRRGGBB. Null out-array means "every char was plain" -- the overwhelmingly common name,
+    /// which costs one <c>IndexOf</c> and allocates nothing.
+    /// <para>This is what makes a nameplate respect colour codes: without it the tags reach the glyph emit and
+    /// draw as literal <c>&lt;c???&gt;</c> text. The grammar itself is not re-implemented here -- the chat
+    /// box's <see cref="ColorRunParser"/> is the one parser, and this only flattens its runs.</para>
+    /// </summary>
+    public static string StripColours(string raw, out uint[]? colours)
+    {
+        colours = null;
+        if (raw.Length == 0 || raw.IndexOf('<') < 0) return raw;
+
+        ColorRun[] runs = ColorRunParser.Parse(raw);
+        int len = 0;
+        bool any = false;
+        for (int i = 0; i < runs.Length; i++)
+        {
+            len += runs[i].Text.Length;
+            if (Pack(runs[i]) != Plain) any = true;
+        }
+        if (len == 0) return "";
+
+        var sb = new System.Text.StringBuilder(len);
+        uint[]? cols = any ? new uint[len] : null;
+        int n = 0;
+        for (int i = 0; i < runs.Length; i++)
+        {
+            ColorRun run = runs[i];
+            uint c = Pack(run);
+            sb.Append(run.Text);
+            if (cols != null) for (int k = 0; k < run.Text.Length; k++) cols[n + k] = c;
+            n += run.Text.Length;
+        }
+        colours = cols;
+        return sb.ToString();
+    }
+
+    private static uint Pack(in ColorRun r) =>
+        ((uint)(r.R * 255f + 0.5f) << 16) | ((uint)(r.G * 255f + 0.5f) << 8) | (uint)(r.B * 255f + 0.5f);
 
     /// <summary>Consecutive spaces that stand in for a line break. Three, per the report: two is a normal
     /// wide gap, three is someone pushing text onto the next line.</summary>
@@ -888,6 +951,30 @@ public static class PlateLayout
         E(BreakName("   a   ") == "a", "leading and trailing whitespace is trimmed outright");
         E(BreakName("- {Ministry of Culture} -          Events Board!")
           == "- {Ministry of Culture} -\nEvents Board!", "the reported padded name splits into header + line");
+
+        // ---- StripColours + the colour-carrying BreakName ----
+        string tagged = "<c" + (char)0x10 + (char)0x20 + (char)0x30 + ">Bob</c> the <c"
+                      + (char)0xff + (char)0x00 + (char)0x00 + ">Red</c>";
+        string bare = StripColours(tagged, out uint[]? bc);
+        E(bare == "Bob the Red", "the colour tags leave the drawable string");
+        E(bc != null && bc.Length == bare.Length, "one colour per char of the stripped string");
+        E(bc![0] == 0x102030u && bc[3] == Plain && bc[8] == 0xff0000u,
+          "each char carries the colour whose tag covered it, and untagged chars stay plain");
+        E(ReferenceEquals(StripColours(plain, out uint[]? nc2), plain) && nc2 == null,
+          "a name with no '<' is returned as-is and allocates no colour array");
+        E(StripColours("<c" + (char)1 + (char)1 + (char)1 + "></c>", out _) == "",
+          "a name that is nothing but tags strips to nothing");
+
+        string cbSrc = StripColours("<c" + (char)0x10 + (char)0x20 + (char)0x30 + ">hdr</c>   aaa bbb",
+                                    out uint[]? cbCols);
+        string cbOut = BreakName(cbSrc, cbCols, out uint[]? cbOutCols);
+        E(cbOut == "hdr\naaa bbb", "the stripped name still breaks where its author asked");
+        E(cbOutCols != null && cbOutCols.Length == cbOut.Length,
+          "the colour array survives the break, index for index");
+        E(cbOutCols![0] == 0x102030u && cbOutCols[2] == 0x102030u && cbOutCols[4] == Plain,
+          "and every surviving char kept the colour it had before the rewrite");
+        E(BreakName(cbSrc, null, out uint[]? cbNone) == cbOut && cbNone == null,
+          "a null colour array stays null through the same rewrite");
 
         // ---- SplitLines ----
         var ls = new int[4]; var ll = new int[4];

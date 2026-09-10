@@ -251,6 +251,23 @@ internal static unsafe class SymbolMap
     /// <c>Camera::GetPosition()</c> reads. Never the Alloy CameraPos global: at present time that is the UI
     /// frame's camera at (0,0,742).</summary>
     public const string GetModuleCamera = "_ZN13CClientExoApp15GetModuleCameraEv";
+    // ---- combat text: damage numbers + floating combat text (docs/re/combat-text.md).
+    //      Client-side classes: Linux-only (no _win entries -> skip-with-log, feature stands down). ----
+    /// <summary>CNWCObject::ShowFloatyText(CExoString, Vector, CExoString, int) @0x7e7010 -- the ONE funnel
+    /// every damage number and combat-text banner passes through (CC messages, the creature floaty-text
+    /// update, whirlwind, and every <c>AddFeedbackMessage</c> site). Skipping it means the engine never
+    /// allocates a <c>CGuiInGameFloatyText</c> at all, so its one-at-a-time drip (<c>obj+0x98</c>) retires
+    /// with it. ABI (verified by disassembly @0x8e7010): <c>(this /*rdi*/, CExoString* text /*rsi, the
+    /// by-value string lowered to a hidden pointer*/, Vector colour /*xmm0 = (r,g), xmm1 = b*/,
+    /// CExoString* font /*rdx*/, int background /*ecx*/)</c>. The font resref is the class discriminator:
+    /// <c>fnt_floaty_smal</c> = a damage number, "" = a banner.</summary>
+    public const string ShowFloatyText = "_ZN10CNWCObject14ShowFloatyTextE10CExoString6VectorS0_i";
+    /// <summary>CTlkTable::GetSimpleString(unsigned int) @0x541fe0 -- strref to text. Returns a CExoString by
+    /// value, i.e. <b>sret</b>: <c>(CExoString* out /*rdi*/, CTlkTable* this /*rsi*/, uint strref /*edx*/)</c>,
+    /// and the buffer it writes is CALLER-OWNED (zero the struct first, free it after). Used once, cold, to
+    /// resolve the two critical-hit strrefs the client formats its crit banner from.</summary>
+    public const string TlkGetSimpleString = "_ZN9CTlkTable15GetSimpleStringEj";
+
     /// <summary>RenderInterface::GetViewPort(float*) @0x45d0b0 -- tail-jumps to GLRender::GetViewPort, which
     /// widens the four ints of <c>GLRender::m_viewport</c> into the caller's float[4] {x, y, w, h}. The same
     /// call <c>Camera::MapToScreen</c> falls back to when the camera carries no viewport of its own.</summary>
@@ -259,6 +276,8 @@ internal static unsafe class SymbolMap
     // data globals
     public const string AppManager = "g_pAppManager";
     public const string GuiMan     = "g_pGuiMan";
+    /// <summary>CTlkTable* global; the <c>this</c> for <see cref="TlkGetSimpleString"/>.</summary>
+    public const string TlkTable   = "g_pTlkTable";
     /// <summary>The client's nuklear context (NUI edit-focus probe). Client global -- no Windows anchor.</summary>
     public const string Nuklear    = "g_pNuklear";
     /// <summary>CExoBase* global; deref for the instance whose CExoString@0x38 is the resolved user directory.</summary>

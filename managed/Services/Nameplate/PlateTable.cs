@@ -118,6 +118,11 @@ public sealed class PlateTable
         /// own breaks and everything reading the string (the <c>/tell</c> prefill) is unaffected.</para></summary>
         public readonly int[] NameStart = new int[MaxWrapped];
         public readonly int[] NameLen = new int[MaxWrapped];
+        /// <summary>Per-char packed 0xRRGGBB for <see cref="Name"/>, or null when the name carried no colour
+        /// tags (the common case, and the one that allocates nothing). Index-aligned with the string, so the
+        /// wrap -- which only ever SLICES it -- keeps them in step. <see cref="PlateLayout.Plain"/> means
+        /// "use whatever colour the plate was going to draw with".</summary>
+        public uint[]? NameColours;
         public int NameLineCount;
         /// <summary>The name wrapped past <see cref="MaxWrapped"/> lines, so the last kept line ends in
         /// <see cref="Ellipsis"/> (already trimmed to leave room for it).</summary>
@@ -236,6 +241,7 @@ public sealed class PlateTable
         public byte Reaction;
         public bool IsPlate;
         public string? Name;
+        public uint[]? NameColours;
         public string? Portrait;
         public ColorRun[]? Runs;
         public float DecaySec;
@@ -268,18 +274,22 @@ public sealed class PlateTable
         p.Type = type;
         p.Reaction = NameplateNative.Reaction(obj, type);
         p.IsPlate = true;
-        p.Name = ResolveName(obj, type, p.Id);
+        p.Name = ResolveName(obj, type, p.Id, out uint[]? cols);
+        p.NameColours = cols;
         p.Portrait = NameplateNative.Portrait(obj);
         Bank(in p);
     }
 
     /// <summary>The creature's stats name, else the engine's own object name -- placeables, doors and items
     /// have no creature stats and would otherwise plate as an empty box. COLD.</summary>
-    private static string ResolveName(IntPtr obj, byte type, uint id)
+    private static string ResolveName(IntPtr obj, byte type, uint id, out uint[]? colours)
     {
         string n = NameplateNative.CreatureName(obj, type);
         if (n.Length == 0) n = NameplateNative.ObjectName(id);
-        return PlateLayout.BreakName(n);   // COLD: the only place a name acquires its line breaks
+        // COLD, and the only place a name acquires either its colours or its line breaks. Strip first: the
+        // break rules count spaces, and a `<cRGB>` tag's raw bytes can BE spaces.
+        n = PlateLayout.StripColours(n, out uint[]? cols);
+        return PlateLayout.BreakName(n, cols, out colours);
     }
 
     /// <summary>Set an entry's name and re-index its lines together. The one writer of <see cref="Entry.Name"/>:
@@ -290,10 +300,11 @@ public sealed class PlateTable
     /// freshly resolved name, and <c>ShowFeedbackBubbleText</c> can be re-entered for an object already
     /// hovered -- the Tab path bypasses the <c>creature+0x468</c> guard that stops the hover path repeating
     /// (docs/re/nameplate.md §6.3) -- so re-invalidating on each would rewrap, and allocate, for nothing.</para></summary>
-    internal static void SetName(Entry e, string name)
+    internal static void SetName(Entry e, string name, uint[]? colours = null)
     {
-        if (string.Equals(e.Name, name, StringComparison.Ordinal)) return;
+        if (string.Equals(e.Name, name, StringComparison.Ordinal)) { e.NameColours = colours; return; }
         e.Name = name;
+        e.NameColours = colours;
         e.NameLineCount = PlateLayout.SplitLines(name, e.NameStart, e.NameLen, MaxWrapped);
         e.NameTruncated = false;
         e.NameWrapWidth = -1f;   // invalidate the wrap cache: the content changed
@@ -337,7 +348,8 @@ public sealed class PlateTable
         p.Type = type;
         p.Reaction = NameplateNative.Reaction(obj, type);
         p.IsPlate = false;
-        p.Name = ResolveName(obj, type, p.Id);
+        p.Name = ResolveName(obj, type, p.Id, out uint[]? cols);
+        p.NameColours = cols;
         p.Portrait = NameplateNative.Portrait(obj);
         p.Runs = ColorRunParser.Parse(text);   // the Aurora colour grammar, parsed HERE: cold, off the frame
         p.DecaySec = decaySec;
@@ -410,7 +422,7 @@ public sealed class PlateTable
         if (e == null) return;
         e.Type = p.Type;
         e.Reaction = p.Reaction;
-        if (p.Name != null) SetName(e, p.Name);
+        if (p.Name != null) SetName(e, p.Name, p.NameColours);
         if (p.Portrait != null && p.Portrait.Length != 0) e.PortraitResref = p.Portrait;
         if (p.IsPlate || p.Runs == null) return;
 
