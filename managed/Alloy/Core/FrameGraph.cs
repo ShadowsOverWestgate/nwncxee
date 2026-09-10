@@ -37,22 +37,21 @@ internal enum PassId
     /// after <c>RenderSkyBoxes</c>; unblended it would be correct on either side of the sky, and this side
     /// costs only the sky pixels the foliage then covers.</summary>
     CutoutOwned,
+    /// <summary>#127: Alloy grass -- GPU-instanced blades over the engine's own bin geometry, replacing
+    /// <c>Scene::DoBinBucket</c> outright. A cutout class: alpha discard, depth write ON, GL_BLEND OFF, so
+    /// no grass fragment is ever partially transparent AND depth-writing and #106's punch-through cannot
+    /// occur. Draws after the opaque set (early-Z has the world's depth in hand) and after the cutout class:
+    /// its root blend reads a copy of the frame under each blade, and a ground tile is a cutout when its
+    /// texture carries alpha -- taken before that pass, the copy under those roots held the clear colour.
+    /// BEFORE the blended class, because <see cref="OitPass"/> writes no depth: grass drawn after it would
+    /// paint over every translucent object standing in it. The cost is a tile fading under a close camera
+    /// (a blended part while it fades), whose root copy now misses the fade.</summary>
+    GrassOwned,
     /// <summary>#126: the blended class -- genuine alpha, sorted back-to-front per part, depth writes off.
     /// Sits here because ADR 0011 puts blended after the opaque set and BEFORE the framebuffer copy the
     /// FB-sampling and water classes will read (#128): fade is a blended-class member, and moving it ahead
     /// of the copy is what lets one copy serve both classes instead of the engine's two.</summary>
     BlendedOwned,
-    /// <summary>#127: Alloy grass -- GPU-instanced blades over the engine's own bin geometry, replacing
-    /// <c>Scene::DoBinBucket</c> outright. A cutout class: alpha discard, depth write ON, GL_BLEND OFF, so
-    /// no grass fragment is ever partially transparent AND depth-writing and #106's punch-through cannot
-    /// occur. Draws after the opaque set (early-Z has the world's depth in hand) AND after the cutout and
-    /// blended classes: its root blend reads a copy of the frame under each blade, and a ground tile is a
-    /// cutout when its texture carries alpha and a BLENDED part while it fades under a close camera -- taken
-    /// before either pass, the copy under those roots held the clear colour (a flicker that followed the
-    /// tile fade). The blended class writes depth, so the blades still test against it.
-    /// Vanilla draws grass before the creatures and placeables standing in it; the Alloy frame simply does
-    /// not reproduce that order.</summary>
-    GrassOwned,
     /// <summary>#129: the ONE framebuffer copy of the Alloy frame -- colour and depth of everything drawn so
     /// far, snapshotted into <see cref="FrameSnapshot"/>'s own pair of textures so the water stage can march them.
     /// <para>Here, and exactly once, because of what is on either side. Behind it: the opaque set, the sky
@@ -168,8 +167,8 @@ internal static class FrameGraph
         (PassId.OpaqueOwned,     Bracket.Colour),
         (PassId.SkyOwned,        Bracket.Colour),
         (PassId.CutoutOwned,     Bracket.Colour),
-        (PassId.BlendedOwned,    Bracket.Colour),
         (PassId.GrassOwned,      Bracket.Colour),
+        (PassId.BlendedOwned,    Bracket.Colour),
         (PassId.FbCopy,          Bracket.Colour),
         (PassId.WaterOwned,      Bracket.Colour),
         (PassId.AdditiveOwned,   Bracket.Colour),
