@@ -195,6 +195,13 @@ internal static class RenderPasses
         }, log);
         r.Register(new PassLifecycle
         {
+            Name = "oit",
+            Attach = OitPass.Init,
+            ContextLost = OitPass.ContextLost,
+            Stats = OitPass.Stats,
+        }, log);
+        r.Register(new PassLifecycle
+        {
             Name = "ao",
             Attach = SsaoPass.Attach,
             SelfCheck = l => SsaoPass.SelfCheck(l),

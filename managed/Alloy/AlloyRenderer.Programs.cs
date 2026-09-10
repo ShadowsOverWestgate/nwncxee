@@ -140,7 +140,7 @@ public sealed unsafe partial class AlloyRenderer
             if (prog == 0) { _progFailed = true; AlloyGate.Fail("an Alloy program did not build"); return false; }
             _prog46 = prog;
             _locVp = GlProgram.Loc(prog, "uVP"); _locBase = GlProgram.Loc(prog, "uDrawBase");
-            _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz");
+            _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz"); _locOit = GlProgram.Loc(prog, "uOit");
             _locCut = GlProgram.Loc(prog, "uAlphaCut");
             _locTint = GlProgram.Loc(prog, "uTint");
             _locFeat = FeatLocs(prog);
@@ -347,7 +347,7 @@ public sealed unsafe partial class AlloyRenderer
         L.Atten = GlProgram.Loc(prog, "uAtten"); L.Hot = GlProgram.Loc(prog, "uHot");
         L.WrapN = GlProgram.Loc(prog, "uWrapN"); L.Sss = GlProgram.Loc(prog, "uSss");
         L.Reach = GlProgram.Loc(prog, "uReach");
-        L.Viz = GlProgram.Loc(prog, "uViz");
+        L.Viz = GlProgram.Loc(prog, "uViz"); L.Oit = GlProgram.Loc(prog, "uOit");
         L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunVp = GlProgram.Loc(prog, "uSunVp");
         L.SunTexel = GlProgram.Loc(prog, "uSunTexel"); L.SunBias = GlProgram.Loc(prog, "uSunBias");
         L.SunCount = GlProgram.Loc(prog, "uSunCascades");

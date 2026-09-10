@@ -318,6 +318,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// content override (#92) that predates them, and simply do not get uploaded.</summary>
     internal struct LitLoc
     {
+        public int Oit;
         public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade,
@@ -372,6 +373,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// without this there is nothing to point the feature at.</summary>
     private static bool _aoTest = DefAoTest;
     private static int _locViz = -1;
+    private static int _locOit = -1;
     /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
     /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
     private static int _locTint = -1;
@@ -381,6 +383,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// target is linear too, so the capture and the frame want the same values and the fullbright stage
     /// stopped needing the flag at all.</summary>
     private static bool _capturing;
+    internal static bool Capturing => _capturing;
     /// <summary>GL_BLEND as the pass last set it, so <see cref="IssueBatches"/>' per-batch toggle starts from
     /// the truth instead of assuming.</summary>
     private static bool _blendOn;
@@ -559,7 +562,51 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>Frame start: a term still open from the last frame (an early return between its Begin and
     /// End) is closed here, or every later Begin is refused and the line reads zero for the session.</summary>
-    private static void GpuFrameStart() { if (_qOpen >= 0) GpuEnd((GpuTerm)_qOpen); }
+    private static void GpuFrameStart()
+    {
+        if (_qOpen >= 0) GpuEnd((GpuTerm)_qOpen);
+        GpuSpanStamp(0);
+    }
+
+    /// <summary>Whole-bracket GPU span: TIMESTAMP at frame start and after the pass loop, two frames in flight.
+    /// The terms are serial elapsed queries and only cover what is bracketed; this is the number they are
+    /// measured against, so the unmeasured remainder has a size.</summary>
+    private static readonly uint[] _qSpan = new uint[4];
+    private static readonly bool[] _qSpanPending = new bool[2];
+    private static int _qSpanAt;
+    private static double _spanSum; private static int _spanN;
+    internal static double GpuSpanMs => _spanN == 0 ? 0.0 : _spanSum / _spanN / 1e6;
+
+    private static void GpuSpanStamp(int which)
+    {
+        if (!GpuQuery.Enabled || Gl.QueryCounter == null || Gl.GenQueries == null || Gl.GetQueryObjectui64v == null) return;
+        if (_qSpan[0] == 0) fixed (uint* q = _qSpan) Gl.GenQueries(4, q);
+        if (which == 0)
+        {
+            int prev = 1 - _qSpanAt;
+            if (_qSpanPending[prev])
+            {
+                int ready; Gl.GetQueryObjectiv(_qSpan[prev * 2 + 1], Gl.QUERY_RESULT_AVAILABLE, &ready);
+                if (ready != 0)
+                {
+                    ulong t0, t1;
+                    Gl.GetQueryObjectui64v(_qSpan[prev * 2], Gl.QUERY_RESULT, &t0);
+                    Gl.GetQueryObjectui64v(_qSpan[prev * 2 + 1], Gl.QUERY_RESULT, &t1);
+                    _qSpanPending[prev] = false;
+                    if (t1 > t0 && t1 - t0 < 10_000_000_000UL) { _spanSum += t1 - t0; _spanN++; }
+                }
+            }
+            if (_qSpanPending[_qSpanAt]) return;
+            Gl.QueryCounter(_qSpan[_qSpanAt * 2], Gl.TIMESTAMP);
+        }
+        else if (!_qSpanPending[_qSpanAt])
+        {
+            Gl.QueryCounter(_qSpan[_qSpanAt * 2 + 1], Gl.TIMESTAMP);
+            _qSpanPending[_qSpanAt] = true;
+            _qSpanAt = 1 - _qSpanAt;
+        }
+    }
+    internal static void GpuSpanEnd() => GpuSpanStamp(1);
 
     /// <summary>Close the term if it is the open one; a no-op for a term that never opened.</summary>
     internal static void GpuEnd(GpuTerm t)
@@ -1028,7 +1075,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
         $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  " +
         $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
-        $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
+        $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  blendprepass {(_blendPrepass ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
         $"fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  " +
         // #336: the one number that says whether a fog cull has anything to cull -- the far plane Alloy
         // inherits from the engine VP, against the fog the shaders already fade to.
@@ -1061,6 +1108,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         {
             case "light":    old = _lighting ? 1f : 0f; _lighting = v != 0f; break;
             case "prepass":  old = _depthPrepass ? 1f : 0f; _depthPrepass = v != 0f; break;
+            case "washtest": old = _washTest ? 1f : 0f; _washTest = v != 0f; break;
+            case "oit":      old = _oitWanted ? 1f : 0f; _oitWanted = v != 0f; break;
+            case "oitviz":   old = OitPass.Viz; OitPass.Viz = Math.Clamp((int)v, 0, 3); break;
             case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
             case "threads":  old = _stageThreads; _stageThreads = Math.Clamp((int)v, 0, StagePool.MaxChunks - 1); StagePool.Rearm(); break;
             case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
@@ -1089,6 +1139,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // early-Z for parts BEHIND the aperture, which under a roof is the hole itself.
             case "prepasskey": old = _prepassKey ? 1f : 0f; _prepassKey = v != 0f; break;
             case "prepassfeat": old = _prepassFeat ? 1f : 0f; _prepassFeat = v != 0f; break;
+            case "blendprepass": old = _blendPrepass ? 1f : 0f; _blendPrepass = v != 0f; break;
+            case "blenddiag": old = _blendDiag ? 1f : 0f; _blendDiag = v != 0f; break;
             case "gpumeter": old = GpuQuery.Enabled ? 1f : 0f; GpuQuery.Enabled = v != 0f; break;
             // #336 step 4: the visible set's A/B -- 0 walks the whole order every pass.
             case "vislist":  old = _visList ? 1f : 0f; _visList = v != 0f; break;
@@ -1769,7 +1821,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          // copy -- and the total, to read against the [gl46] gpu-span. Span minus total is
                          // idle-or-unbracketed; it is idle if it shrinks when the frame goes GPU-bound.
                          $" / cull {GpuMs(GpuTerm.Cull):F2} / hiz {GpuMs(GpuTerm.HiZ):F2} / beams {GpuMs(GpuTerm.Beams):F2}" +
-                         $" / water copy {GpuMs(GpuTerm.WaterCopy):F2} (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2})" : "") +
+                         $" / water copy {GpuMs(GpuTerm.WaterCopy):F2} (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.
                    $", probe {(EnvProbe.Ready ? $"ready ({EnvProbe.Captures} captures)" : "none yet")}" +
@@ -1814,7 +1866,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Array.Clear(_drawsByClass);
         _clusterOverflow = 0;
         _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset();
-        for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset();
+        for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset(); _spanSum = 0; _spanN = 0;
     }
 
     /// <summary>The unmatched total, split by the bucket the parts were captured in -- only the buckets that

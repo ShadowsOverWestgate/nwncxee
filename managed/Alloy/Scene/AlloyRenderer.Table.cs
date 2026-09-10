@@ -64,6 +64,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#126: the material's Aurora blend pair, translated to GL at bind time. Only the blending
     /// classes read it.</summary>
     private static readonly byte[] _oSrc = new byte[MaxOwned], _oDst = new byte[MaxOwned];
+    /// <summary><see cref="AlloyCandidate.Wash"/>: blended with the depth mask off. Batch key term.</summary>
+    private static readonly byte[] _oWash = new byte[MaxOwned], _gWash = new byte[MaxOwned];
     /// <summary>#292: this part's material said <c>twosided</c>, so it draws with face culling OFF. The
     /// engine's default -- and what a part with no material gets -- is culling ON, which is why this is the
     /// exception flag rather than a cull flag.</summary>
@@ -501,6 +503,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#292: this batch draws with face culling off. A batch key term rather than a per-draw one:
     /// culling is fixed-function GL state and one multidraw cannot vary it.</summary>
     private static readonly bool[] _gNoCull = new bool[MaxOwned];
+    /// <summary>The run gob of a blended batch (zero for gobless geometry): consecutive batches with the same
+    /// non-zero tag are one creature, prepassed and coloured together so its parts read at one alpha while
+    /// two creatures still composite through each other.</summary>
+    private static readonly IntPtr[] _gGob = new IntPtr[MaxOwned];
     /// <summary>#126: where the opaque set ends and where the blended run ends, in batch indices. Each pass
     /// draws exactly its own range -- the depth prepass and the probe capture take the opaque prefix.</summary>
     private static int _gOpaqueEnd, _gBlendEnd, _gWaterEnd;

@@ -63,9 +63,17 @@ internal static class TextureSlots
     internal const uint WaterEnv = Probe;
     /// <summary>The frame snapshot the water stage refracts through: colour then depth.</summary>
     internal const uint SnapshotColor = 13, SnapshotDepth = 14;
+    /// <summary>The OIT resolve's accumulation pair. The snapshot's units: the resolve runs before the water
+    /// copy is taken, and FrameSnapshot.Bind re-binds its own textures before any water draw.</summary>
+    internal const uint OitAccum = SnapshotColor, OitReveal = SnapshotDepth;
     /// <summary>The GRASS program's SSAO read: <see cref="Ssao"/>'s unit is its sun-dyn array there, so it takes
     /// the snapshot-depth unit instead (free on grass: it samples no snapshot).</summary>
     internal const uint GrassSsao = SnapshotDepth;
+    /// <summary>The frame copy the grass root blend reads. The last material-map unit (<see cref="MapBase"/>+6):
+    /// the grass program binds no material maps, and every unit from <see cref="PostHdr"/> up is taken in
+    /// that program by the light rig (<see cref="LocalShadowDyn"/> on 11 was the first attempt, and the blade
+    /// sampled a shadow cube).</summary>
+    internal const uint GrassGround = MapBase + 6;
     /// <summary>#379: the screen-space visibility the lit stage reads. Shares <see cref="SnapshotColor"/>'s
     /// unit: the snapshot takes it at FbCopy and lit additive draws follow, so the lit program REBINDS it at
     /// every program bind (<see cref="SsaoPass.BindForDraw"/>) rather than trusting the pass's own bind.
@@ -142,6 +150,7 @@ internal static class TextureSlots
         E(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSsao;"), $"{Ssao} uSsao (lit program)");
         E(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SsaoDepth} uSceneDepth (lit program)");
         E(GrassField.GrassVs.Contains("uniform sampler2D uPushTex;"), $"{GrassPush} uPushTex (grass program)");
+        E(GrassField.GrassFsHead.Contains("uniform sampler2D uGround;"), $"{GrassGround} uGround (grass program)");
         // #339: the water stage no longer samples the probe -- vanilla's reflection falls back to the
         // shaded surface, not to a cube -- so the lit stage is the only consumer left.
         E(AlloyRenderer.OwnedLitFsHead.Contains("uniform samplerCube uProbe;"), $"{Probe} uProbe");

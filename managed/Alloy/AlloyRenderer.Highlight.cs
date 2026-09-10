@@ -384,13 +384,14 @@ public sealed unsafe partial class AlloyRenderer
     /// the whole prepass already rests on.</para>
     /// <para>Still out, and both are silhouette holes rather than timing: DISPLACING batches, whose colour
     /// stage moves vertices this one does not, so nothing would match under either test; and everything past
-    /// <see cref="_gOpaqueEnd"/>, which writes no depth to match against.</para></summary>
+    /// <see cref="_gBlendEnd"/> (water and additive), which writes no depth to match against.</para></summary>
     private static void DrawTargets(int groups, IntPtr* targets, byte* targetRoot, byte* rootHit, int nT,
                                     float* cols)
     {
         uint boundVao = 0;
         int boundCull = -1, boundColor = -1, boundCut = -1;
-        int end = groups < _gOpaqueEnd ? groups : _gOpaqueEnd;
+        // The blended class writes depth too now (TransparentPass depthWrite), so a translucent creature matches.
+        int end = groups < _gBlendEnd ? groups : _gBlendEnd;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
         for (int g = 0; g < end; g++)

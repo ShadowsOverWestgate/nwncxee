@@ -47,6 +47,9 @@ internal static unsafe class AlloyCensus
     /// <summary>#126: the three <c>.mtr</c> keywords on the SharedMaterial that steer bucket membership
     /// (<c>SharedMaterial::ParseField</c> @0x4c6760): <c>transparency</c> at +0x1f0, <c>sample_framebuffer</c>
     /// at +0x1f4 (1 = bucket 5, 2 = water) and <c>volumetric</c> at +0x1f8.</summary>
+    /// <summary><c>gradedblend</c> in sowx.cfg: the graded-alpha fraction at or above which a cutout diffuse
+    /// draws in the blended class instead. 1 = never (the #357 alpha-test-only behaviour).</summary>
+    internal static readonly float GradedBlend = Settings.Float("gradedblend", 0.3f, 0f, 1f);
     internal const int SharedTransparency = 0x1f0, SharedSampleFb = 0x1f4, SharedVolumetric = 0x1f8;
     /// <summary>#292: the <c>twosided</c> keyword, parsed by the same <c>SharedMaterial::ParseField</c>
     /// @0x4c6760 to <c>this+0x1f1</c> as a bool -- the byte immediately after <c>transparency</c>, not a
@@ -91,6 +94,7 @@ internal static unsafe class AlloyCensus
     /// <summary><c>dumptex</c> (sowx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
     /// time, for as long as it takes the camera to find them.</summary>
     internal static string? _dumpTex;
+    private static int _classDiagLeft = 8;
     /// <summary>Table slot of the part <c>dumptex</c> last matched, published by the census for enrollment to
     /// recognise without dereferencing anything. -1 until the camera finds it.</summary>
     internal static int _watchEntry = -1;
@@ -307,6 +311,15 @@ internal static unsafe class AlloyCensus
               : (int)AlloyClasses.Of(water, c.Dst == BlendOne, Engine.IsOpaque(p),
                     !s.IsNull && s.Transparency,
                     p.Alpha < 1f);
+        // A cutout whose diffuse is mostly GRADED alpha (a light shaft, a ground decal) is a wash vanilla
+        // blends in bucket 3; alpha-tested it is a solid slab with a ragged 0.2 rim. Blend it instead.
+        c.Wash = false;
+        bool gradedOk = OwnedTextures.TryGraded(_pTex0[e], out float graded);
+        if (c.Cls == (int)AlloyClass.Cutout && gradedOk && graded >= GradedBlend)
+        { c.Cls = (int)AlloyClass.Blended; c.Wash = true; }
+        if (_dumpTex != null && !_ownDry && _pTex0[e] != IntPtr.Zero && _classDiagLeft > 0
+            && TexName(_pTex0[e]).Contains(_dumpTex, StringComparison.OrdinalIgnoreCase) && --_classDiagLeft >= 0)
+            _log?.Info($"[dumpframe] CLASS entry={e} tex={TexName(_pTex0[e])} scanned={gradedOk} graded={graded:F2} opaque={Engine.IsOpaque(p)} transparency={!s.IsNull && s.Transparency} alpha={p.Alpha:F2} dst={c.Dst} -> cls={(AlloyClass)c.Cls}");
         if (!_ownDry) _ownByClass[c.Cls]++;
         if (v == IntPtr.Zero || vd.Mode != 1 || _pTex0[e] == IntPtr.Zero)
         { Refuse(ref _ownRejVdo, c, RejVdo); return Gate("vdo"); }

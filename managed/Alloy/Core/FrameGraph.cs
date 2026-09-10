@@ -25,13 +25,6 @@ internal enum PassId
     /// frame the way vanilla's FB effect does (ADR 0021).</summary>
     AmbientOcclusion,
     OpaqueOwned,
-    /// <summary>#127: Alloy grass -- GPU-instanced blades over the engine's own bin geometry, replacing
-    /// <c>Scene::DoBinBucket</c> outright. A cutout class: alpha discard, depth write ON, GL_BLEND OFF, so
-    /// no grass fragment is ever partially transparent AND depth-writing and #106's punch-through cannot
-    /// occur. Here because it draws WITH the opaque set (after it, so early-Z has the world's depth in hand)
-    /// and before the sky, which then rejects behind every blade. Vanilla draws grass before the creatures
-    /// and placeables standing in it; the Alloy frame simply does not reproduce that order.</summary>
-    GrassOwned,
     /// <summary>#125: the per-area skybox, replayed from <see cref="SkyBox"/>'s capture of the engine's own
     /// draw. Here because ADR 0011 puts it AFTER the opaque set -- so the prepass depth rejects every sky
     /// pixel the world covered before it shades -- and BEFORE the BLENDING classes, cutout
@@ -49,6 +42,17 @@ internal enum PassId
     /// FB-sampling and water classes will read (#128): fade is a blended-class member, and moving it ahead
     /// of the copy is what lets one copy serve both classes instead of the engine's two.</summary>
     BlendedOwned,
+    /// <summary>#127: Alloy grass -- GPU-instanced blades over the engine's own bin geometry, replacing
+    /// <c>Scene::DoBinBucket</c> outright. A cutout class: alpha discard, depth write ON, GL_BLEND OFF, so
+    /// no grass fragment is ever partially transparent AND depth-writing and #106's punch-through cannot
+    /// occur. Draws after the opaque set (early-Z has the world's depth in hand) AND after the cutout and
+    /// blended classes: its root blend reads a copy of the frame under each blade, and a ground tile is a
+    /// cutout when its texture carries alpha and a BLENDED part while it fades under a close camera -- taken
+    /// before either pass, the copy under those roots held the clear colour (a flicker that followed the
+    /// tile fade). The blended class writes depth, so the blades still test against it.
+    /// Vanilla draws grass before the creatures and placeables standing in it; the Alloy frame simply does
+    /// not reproduce that order.</summary>
+    GrassOwned,
     /// <summary>#129: the ONE framebuffer copy of the Alloy frame -- colour and depth of everything drawn so
     /// far, snapshotted into <see cref="FrameSnapshot"/>'s own pair of textures so the water stage can march them.
     /// <para>Here, and exactly once, because of what is on either side. Behind it: the opaque set, the sky
@@ -162,10 +166,10 @@ internal static class FrameGraph
         (PassId.DepthPrepass,    Bracket.Colour),
         (PassId.AmbientOcclusion, Bracket.Colour),
         (PassId.OpaqueOwned,     Bracket.Colour),
-        (PassId.GrassOwned,      Bracket.Colour),
         (PassId.SkyOwned,        Bracket.Colour),
         (PassId.CutoutOwned,     Bracket.Colour),
         (PassId.BlendedOwned,    Bracket.Colour),
+        (PassId.GrassOwned,      Bracket.Colour),
         (PassId.FbCopy,          Bracket.Colour),
         (PassId.WaterOwned,      Bracket.Colour),
         (PassId.AdditiveOwned,   Bracket.Colour),

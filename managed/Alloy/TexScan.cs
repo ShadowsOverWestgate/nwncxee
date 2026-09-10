@@ -22,11 +22,16 @@ internal static unsafe class TexScan
     private const int VtPixels = 0x68, VtWidth = 0x78, VtHeight = 0x80, VtBpp = 0x88, VtNumX = 0x90, VtNumY = 0x98,
                       VtCompressed = 0xa8, VtHeaderSkip = 0xb8, VtMipmaps = 0xc0, VtFormat = 0xd8;
     private const int FmtDxt1 = 7, FmtDxt5 = 8;
+    /// <summary>The last engine format code the compressed branch did not recognise; for the funnel diagnostic.</summary>
+    internal static int LastRefusedFormat = -1;
 
     internal struct Result
     {
         /// <summary>Fraction of texels whose alpha falls under the cutout threshold; 0 = a slab.</summary>
         public float Holes;
+        /// <summary>Fraction of texels whose alpha is neither under the cutout threshold nor opaque (&gt;= 248):
+        /// the part of the image a 0.2 alpha test turns into solid that vanilla's blend keeps soft.</summary>
+        public float Graded;
         /// <summary>Mean colour, 0..1 in the texture's own (sRGB) encoding; valid when <see cref="MeanOk"/>.</summary>
         public Vector3 Mean;
         public bool MeanOk;
@@ -61,7 +66,7 @@ internal static unsafe class TexScan
             r.W = w; r.H = h;
             if (fmt == FmtDxt1) ScanDxt(data, w, h, false, cut, ref r);
             else if (fmt == FmtDxt5) ScanDxt(data, w, h, true, cut, ref r);
-            else return false;
+            else { LastRefusedFormat = fmt; return false; }
             return true;
         }
         int bpp = I(tex, VtBpp), nx = Math.Max(I(tex, VtNumX), 1), ny = Math.Max(I(tex, VtNumY), 1);
@@ -91,14 +96,15 @@ internal static unsafe class TexScan
     /// colour on a stride so a 2k sheet costs a few hundred adds.</summary>
     private static void ScanRaw(byte* px, long stride, int bpp, int x0, int y0, int cw, int ch, int cut, ref Result r)
     {
-        long dropped = 0;
+        long dropped = 0, graded = 0;
         if (bpp == 4)
             for (int y = 0; y < ch; y++)
             {
                 byte* s = px + (y0 + y) * stride + (long)x0 * 4 + 3;
-                for (int x = 0; x < cw; x++, s += 4) if (*s < cut) dropped++;
+                for (int x = 0; x < cw; x++, s += 4) { if (*s < cut) dropped++; else if (*s < OpaqueAlpha) graded++; }
             }
         r.Holes = dropped / (float)((long)cw * ch);
+        r.Graded = graded / (float)((long)cw * ch);
         int step = Math.Max(1, Math.Max(cw, ch) / 64);
         long rs = 0, gs = 0, bs = 0, n = 0;
         for (int y = 0; y < ch; y += step)
@@ -117,7 +123,7 @@ internal static unsafe class TexScan
     private static void ScanDxt(byte* data, int w, int h, bool dxt5, int cut, ref Result r)
     {
         int bw = (w + 3) / 4, bh = (h + 3) / 4, bytes = dxt5 ? 16 : 8;
-        long dropped = 0, rs = 0, gs = 0, bs = 0;
+        long dropped = 0, graded = 0, rs = 0, gs = 0, bs = 0;
         int* alpha = stackalloc int[8];
         for (int by = 0; by < bh; by++)
             for (int bx = 0; bx < bw; bx++)
@@ -144,13 +150,17 @@ internal static unsafe class TexScan
                     if (x >= w || y >= h) continue;
                     int a = dxt5 ? alpha[(int)((abits >> (3 * t)) & 7)]
                                  : (c0 <= c1 && ((idx >> (2 * t)) & 3) == 3 ? 0 : 255);
-                    if (a < cut) dropped++;
+                    if (a < cut) dropped++; else if (a < OpaqueAlpha) graded++;
                 }
             }
         long blocks = (long)bw * bh;
         r.Holes = dropped / (float)((long)w * h);
+        r.Graded = graded / (float)((long)w * h);
         if (blocks > 0) { r.Mean = new Vector3(rs / (510f * blocks), gs / (510f * blocks), bs / (510f * blocks)); r.MeanOk = true; }
     }
+
+    /// <summary>Alpha at or above this counts as opaque for <see cref="Result.Graded"/>.</summary>
+    private const int OpaqueAlpha = 248;
 
     private static int Expand5(int v) => (v << 3) | (v >> 2);
     private static int Expand6(int v) => (v << 2) | (v >> 4);

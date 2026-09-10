@@ -56,7 +56,7 @@ public sealed unsafe partial class AlloyRenderer
                 bool dis = alpha >= 1f && Dissolves(i, tri, ref _stageCounters[0]);
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Fade, tFade, ChaseEvery);
                 if (alpha < 1f)
-                { _ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = EyeDist2(i); nb++; continue; }
+                { _ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = BlendKey(i); nb++; continue; }
                 if (dis) { _orderTmp[nd++] = i; continue; }
                 _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = false; n++;
             }
@@ -70,7 +70,7 @@ public sealed unsafe partial class AlloyRenderer
             if (!RouteLive(list[k], k, sph, out int i, out IntPtr tri)) continue;
             _blend[nb] = i;
             _blendAlpha[nb] = LiveAlpha(i, tri);
-            _blendKey[nb] = EyeDist2(i); nb++;
+            _blendKey[nb] = BlendKey(i); nb++;
         }
         }
         SortBlended(_blend, _blendKey, _blendAlpha, nb);
@@ -291,6 +291,28 @@ public sealed unsafe partial class AlloyRenderer
     /// Derived exactly as the caster cull derives it and for the same reason (live-verified there): a
     /// matrix-class part's centre is its model matrix translation, and everything else is world-space
     /// geometry whose bbox centre already is the answer.</summary>
+    /// <summary>The blended sort key: a gob part sorts by its RUN gob's distance (see <see cref="RunGob"/>),
+    /// so every part of one creature carries the same key and the stable sort lands them contiguous -- one
+    /// run the frame can depth-prepass and colour as a unit. A gobless part keeps its own centre.</summary>
+    private static float BlendKey(int i)
+    {
+        IntPtr g = RunGob(i);
+        if (g == IntPtr.Zero) return EyeDist2(i);
+        float* p = new GobRef(g).Position;
+        float dx = p[0] - _eyePos.X, dy = p[1] - _eyePos.Y, dz = p[2] - _eyePos.Z;
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    /// <summary>The gob a blended part composites WITH: its fade owner when it has one (an attached weapon
+    /// or shield rides its creature), else its own gob. Zero for tile geometry.</summary>
+    private static IntPtr RunGob(int i)
+    {
+        IntPtr g = _oGob[i];
+        if (g == IntPtr.Zero) return g;
+        GobRef owner = new GobRef(g).FadeOwner;
+        return owner.IsNull ? g : owner.Ptr;
+    }
+
     private static float EyeDist2(int i)
     {
         float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
@@ -592,6 +614,7 @@ public sealed unsafe partial class AlloyRenderer
         int keyVao = -1, keyTex = -1, keyFeat = -1, keyCls = -1, keyBlend = -1;
         uint keyMode = 0;
         bool keyLit = false, keyDis = false, keyNoCull = false;
+        IntPtr keyGob = IntPtr.Zero;
         // #322 step 1: attribute the Build monolith before drawing any phase boundary -- Scan is the
         // routing walk, Restage everything after it. No behaviour change; the [zones] line gains the split.
         long tScan = FrameZones.Now;
@@ -676,10 +699,13 @@ public sealed unsafe partial class AlloyRenderer
             if (_oBone[i] >= 0) feat = (int)ShaderFeature.Skin;
             // #124: ...and the dissolve bit (dis, above) joins it for the same reason -- the keyhole stage discards.
             // #126: the class and the blend pair are GL state, which one multidraw cannot vary inside.
-            int blend = AlloyClasses.Blends(cls) ? (_oSrc[i] << 8) | _oDst[i] : 0;
+            int blend = AlloyClasses.Blends(cls) ? (_oWash[i] << 16) | (_oSrc[i] << 8) | _oDst[i] : 0;
             // #292: ...and so is face culling, for exactly the same reason. Sorted under the lit bit
             // (SortKeyOf), so this cuts at most twice per class rather than once per interleaved part.
             bool noCull = _oNoCull[i];
+            // A blended batch never straddles two creatures: the frame prepasses and colours each run of
+            // one gob's batches as a unit, so the gob is a key term here and a tag on the batch.
+            IntPtr gobKey = cls == (int)AlloyClass.Blended ? RunGob(i) : IntPtr.Zero;
             // #153: under bindless a LIT batch no longer splits on its textures -- the handles ride the
             // record, so one multidraw spans every texture in the class. Feat/dis stay in the key only for
             // the depth prepass's whole-batch drop; unlit parts keep the bind path and the full key.
@@ -694,7 +720,7 @@ public sealed unsafe partial class AlloyRenderer
             }
             if (!sameSlots || lit != keyLit || v != keyVao || tidKey != keyTex || mode != keyMode
                 || feat != keyFeat || dis != keyDis || cls != keyCls || blend != keyBlend
-                || noCull != keyNoCull)
+                || noCull != keyNoCull || gobKey != keyGob)
             {
                 // #292 (AC6): what the cull term cost. Counted as the batches it OPENED on its own -- every
                 // other key term agreed and only the culling state differed -- so the line reports the split
@@ -718,12 +744,12 @@ public sealed unsafe partial class AlloyRenderer
                 _gStart[groups] = n; _gLen[groups] = 0;
                 _gLit[groups] = lit; _gVao[groups] = v; _gTex[groups] = tid; _gMode[groups] = mode;
                 _gFeat[groups] = feat; _gDis[groups] = dis;
-                _gCls[groups] = (byte)cls; _gSrc[groups] = _oSrc[i]; _gDst[groups] = _oDst[i];
-                _gNoCull[groups] = noCull;
+                _gCls[groups] = (byte)cls; _gSrc[groups] = _oSrc[i]; _gDst[groups] = _oDst[i]; _gWash[groups] = _oWash[i];
+                _gNoCull[groups] = noCull; _gGob[groups] = gobKey;
                 for (int s = 0; s < MapSlots; s++) _gTexN[groups * MapSlots + s] = slotTid[s];
                 groups++;
                 keyLit = lit; keyVao = v; keyTex = tidKey; keyMode = mode; keyFeat = feat; keyDis = dis;
-                keyCls = cls; keyBlend = blend; keyNoCull = noCull;
+                keyCls = cls; keyBlend = blend; keyNoCull = noCull; keyGob = gobKey;
             }
             W(i, "SUBMITTED");
             if (AlloyCensus.WatchTex[_oEntry[i]]) _watchSubmitted++;
@@ -1369,6 +1395,9 @@ public sealed unsafe partial class AlloyRenderer
         Gl.UseProgram(_prog46);
         Gl.Uniform1i(_locTex, 0);
         Gl.Uniform1i(_locViz, _lightViz);
+        // uOit is program state and the OIT pass left it at 1: the dome would land as a near-zero weighted
+        // accumulation write (gl_FragCoord.z = 1) -- a black sky.
+        Gl.Uniform1i(_locOit, 0);
         Gl.UniformMatrix4fv(_locVp, 1, 0, (float*)vp);
         UploadFeatureTerms(_locFeat, viewport);
         Gl.Uniform1f(_locCut, -1f);          // the engine draws the sky with the discard off

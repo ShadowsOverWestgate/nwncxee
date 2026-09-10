@@ -427,8 +427,13 @@ internal static unsafe class OwnedTextures
         Replace(key, etid, dst, bytes);
         Census(tex, bytes, 0, n, cell);
         HighWater();
-        if (scanned) _stats[dst] = new Stat { Holes = scan.Holes, Mean = scan.Mean, MeanOk = scan.MeanOk };
+        if (scanned) _stats[dst] = new Stat { Holes = scan.Holes, Graded = scan.Graded, Mean = scan.Mean, MeanOk = scan.MeanOk };
         else _stats.Remove(dst);
+        // A graded diffuse arriving AFTER its part enrolled was classed Cutout without it: re-walk so the
+        // class is asked again. ponytail: a full walk per such texture; a per-part dirty list if it shows in Enroll.
+        if (scanned && scan.Graded >= AlloyCensus.GradedBlend) SceneWalk.Dirty = true;
+        if (AlloyCensus._dumpTex != null && AlloyCensus.TexName(tex).Contains(AlloyCensus._dumpTex, StringComparison.OrdinalIgnoreCase))
+            _log?.Info($"[dumpframe] SCAN tex={AlloyCensus.TexName(tex)} cell={cell} scanned={scanned} compressed={*(int*)((byte*)tex + OffCompressedSize) != 0} refusedFmt={TexScan.LastRefusedFormat} holes={scan.Holes:F2} graded={scan.Graded:F2} {scan.W}x{scan.H} owned={dst}");
         if (wantBcn && scan.Rgba != null) EnqueueTranscode(key, etid, dst, bytes, scan.Rgba, scan.W, scan.H, scan.Mips);
         return true;
     }
@@ -447,7 +452,7 @@ internal static unsafe class OwnedTextures
     /// <summary>What the funnel-side scan (<see cref="TexScan"/>) learned about each owned name: the cutout
     /// hole fraction and the mean colour. Replaces every GPU readback the consumers used to make. Keyed by
     /// the owned name; removed with the name.</summary>
-    private struct Stat { public float Holes; public Vector3 Mean; public bool MeanOk; }
+    private struct Stat { public float Holes; public float Graded; public Vector3 Mean; public bool MeanOk; }
     private static readonly Dictionary<uint, Stat> _stats = new();
     /// <summary>The hole fraction of an owned name (or of the owned copy behind an engine tid). False = the
     /// name never came through the funnel; the caller tests rather than casts a possible slab.</summary>
@@ -456,6 +461,16 @@ internal static unsafe class OwnedTextures
         holes = 1f;
         if (!TryStat(tid, out Stat st)) return false;
         holes = st.Holes;
+        return true;
+    }
+    /// <summary>The graded-alpha fraction (see <see cref="TexScan.Result.Graded"/>) of the owned texture behind an
+    /// engine texture object. False = not scanned yet; the caller keeps its default class.</summary>
+    internal static bool TryGraded(IntPtr tex, out float graded)
+    {
+        graded = 0f;
+        // The engine's own getter: the census hands the CAurTexture wrapper, and the GL id lives on its basic.
+        if (tex == IntPtr.Zero || !TryStat(AurTex.Tid(tex), out Stat st)) return false;
+        graded = st.Graded;
         return true;
     }
     /// <summary>The mean colour of an owned name, 0..1 in the texture's own encoding.</summary>

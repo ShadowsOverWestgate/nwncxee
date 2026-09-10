@@ -47,9 +47,9 @@ internal static unsafe class SsaoPass
 
     /// <summary>World-space radius (NWN units are metres: a creature stands two of them). 0.6 is contact
     /// occlusion -- corners, feet, the underside of furniture -- not a room-scale gloom.</summary>
-    private static float _radius = 0.6f;
+    private static float _radius = 2f;
     /// <summary>The visibility exponent at stock intensity (GTAO's finalValuePower); the option scales it.</summary>
-    private static float _power = 2.2f;
+    private static float _power = 10f;
     /// <summary>Slices and steps per side. #390: 2x1 (4 depth fetches a pixel) under the temporal
     /// accumulator, which converges on what 3x3 (18 fetches) drew in one frame; <c>/ao temporal 0 dirs 3
     /// steps 3</c> is that single-frame look exactly.</summary>
@@ -68,7 +68,7 @@ internal static unsafe class SsaoPass
     /// default, vanilla's post-multiply) is the only setting the effect is visible indoors at; 0 restores the
     /// ADR's original ambient-only rule.</summary>
     private static float _direct = 1f;
-    private static float _bootRadius = 0.6f, _bootPower = 2.2f, _bootDirs = 2f, _bootSteps = 1f, _bootMaxPx = 96f, _bootBlur = 1f, _bootDirect = 1f;
+    private static float _bootRadius = 2f, _bootPower = 10f, _bootDirs = 2f, _bootSteps = 1f, _bootMaxPx = 96f, _bootBlur = 1f, _bootDirect = 1f;
 
     /// <summary>The lit stage's <c>uAoDirect</c>, read at every lit program bind.</summary>
     internal static float Direct => _direct;

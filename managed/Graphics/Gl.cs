@@ -28,7 +28,8 @@ public static unsafe class Gl
     /// (far 1000.0) beneath the world's, so it can cross the world far plane; clamping keeps the far-plane
     /// fragments rather than letting them clip into a hole at the horizon.</summary>
     public const uint DEPTH_CLAMP = 0x864F;
-    public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303;
+    public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE_MINUS_SRC_COLOR = 0x0301;
+    public const uint COLOR_ATTACHMENT1 = 0x8CE1;
     public const uint POLYGON_OFFSET_FILL = 0x8037;
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
     public const uint BYTE = 0x1400;
@@ -204,6 +205,10 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, void> Enable, Disable, ActiveTexture, UseProgram, BindVertexArray,
                                                   CullFace;
     public static delegate* unmanaged<uint, uint, void> BindTexture, BindBuffer, BlendFunc;
+    /// <summary>glBlendFunci (GL 4.0): a blend pair per draw buffer -- the OIT accumulation pair needs two.</summary>
+    public static delegate* unmanaged<uint, uint, uint, void> BlendFunci;
+    /// <summary>glDrawBuffers: which colour attachments the bound FBO writes.</summary>
+    public static delegate* unmanaged<int, uint*, void> DrawBuffers;
     public static delegate* unmanaged<int, uint*, void> GenTextures, GenVertexArrays, GenBuffers, DeleteBuffers;
     /// <summary>#212: glCopyBufferSubData (GL 3.1) -- readTarget, writeTarget, readOffset, writeOffset, size.
     /// The GPU-side buffer copy owned geometry is made of.</summary>
@@ -443,6 +448,8 @@ public static unsafe class Gl
         Disable = (delegate* unmanaged<uint, void>)P("glDisable");
         CullFace = (delegate* unmanaged<uint, void>)P("glCullFace");
         BlendFunc = (delegate* unmanaged<uint, uint, void>)P("glBlendFunc");
+        BlendFunci = (delegate* unmanaged<uint, uint, uint, void>)P("glBlendFunci");
+        DrawBuffers = (delegate* unmanaged<int, uint*, void>)P("glDrawBuffers");
         ActiveTexture = (delegate* unmanaged<uint, void>)P("glActiveTexture");
         UseProgram = (delegate* unmanaged<uint, void>)P("glUseProgram");
         BindVertexArray = (delegate* unmanaged<uint, void>)P("glBindVertexArray");

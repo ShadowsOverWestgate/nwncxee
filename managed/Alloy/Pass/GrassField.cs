@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -146,10 +147,10 @@ internal static unsafe partial class GrassField
     /// the code defaults now that the dials are chat commands (ADR 0013): there is no earlier value to
     /// capture, so the constants are the single source for both the field initialisers and the reset.</summary>
     private const float BootDensity = 2f, BootWind = 1f, BootWindSpeed = 0.001f,
-                        BootSoften = 0f, BootAniso = 8f, BootEdge = 1f,
+                        BootSoften = 0f, BootAniso = 8f, BootEdge = 2f,
                         BootPush = 0.15f, BootPushRadius = 1f, BootPushExtent = 64f,
                         BootCull = 1f, BootCullShrink = 0.8f, BootCullMax = 0f,
-                        BootLod = 25f, BootLodMin = 0.02f, BootLodWidth = 0.5f, BootLodHeight = 0.25f,
+                        BootLod = 40f, BootLodMin = 0.02f, BootLodWidth = 0.5f, BootLodHeight = 0.25f,
                         BootShade = 40f, BootFar = 0f, BootTuft = 3f;
 
     /// <summary>The RESOLUTION latch: a grass global, the texture loader or a hook that did not come up, so
@@ -196,9 +197,23 @@ internal static unsafe partial class GrassField
     private const int BootAo = 2;
     /// <summary>Darkening at the blade root, 0..1: the cheapest grounding there is. <c>/grass rootao X</c>.</summary>
     private static float _rootAo = BootRootAo;
-    private const float BootRootAo = 0.3f;
+    /// <summary>The fraction of a blade's height that fades into the ground under its root, 0..1.
+    /// <c>/grass gtint X</c>; 0 turns the frame copy off with it.</summary>
+    private static float _groundTint = 0.15f;
+    /// <summary>Lines left for the copy's framebuffer diagnostic (<c>/grass gtint</c> re-arms three).</summary>
+    private static int _groundDiag = 3;
+    /// <summary><c>/grass gviz N</c>: 1 = every blade paints the copy texel behind it (the scene should show through),
+    /// 2 = the copy's centre texel, 3 = gl_FragCoord over the copy size as red/green, 4 = a normalized texture() read.</summary>
+    private static int _groundViz;
+    /// <summary><c>/grass softedge</c>: on a single-sampled target the colour pass BLENDS the silhouette ramp
+    /// (alpha = coverage) over the prepass depth instead of dithering it -- the masked-core-plus-blended-fringe
+    /// foliage technique. Needs the prepass; off, the dither carries the edge as before.</summary>
+    private static bool _softEdge = true;
+    private const float BootRootAo = 0f;   // vanilla has no root darkening; the ground tint grounds the blade
     private static int _prepGen = -1, _depthGen = -1, _seen;
-    internal static bool OccludesAo => _ao >= 2 && _on && !_off && _prepass;
+    /// <summary>Off while the root blend is on: blade depth landing ahead of the opaque colour pass leaves the
+    /// terrain unpainted under every blade, and the blend then reads the clear colour (the blue-white roots).</summary>
+    internal static bool OccludesAo => _ao >= 2 && _on && !_off && _prepass && _groundTint <= 0f;
     /// <summary>#196: does cascade <paramref name="i"/> take the blades as casters this frame?</summary>
     internal static bool CastsInto(int i) => i < _shadowCascades && _shadowN > 0 && _on && !_off && _progDepth != 0;
     /// <summary>CPU-side instance stream. Allocated once, cold: the draw path never allocates.</summary>
@@ -267,6 +282,7 @@ internal static unsafe partial class GrassField
 
     // period counters
     private static int _frames, _draws, _visible, _culled, _baked, _refused, _disabled;
+    private static int _mipsBuilt;
     private static long _blades;
     /// <summary>Cap latches, cleared with the tables in <see cref="Forget"/> rather than per period: they
     /// describe the resident field, not the frame, and a cap that stops being reported reads as headroom
@@ -280,7 +296,7 @@ internal static unsafe partial class GrassField
 
     private struct Loc
     {
-        public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, Ssao, SsaoOn, RootAo;
+        public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, Ssao, SsaoOn, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge;
         public int PushTex, PushGain, PushWindow;
         public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN, Sss, Reach;
         public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn, SunFocus, SunRadius;
@@ -606,6 +622,7 @@ internal static unsafe partial class GrassField
         return p;
     }
 
+
     private static byte* GrassInfo(int mat)
     {
         byte* recs = *(byte**)(_grassInfo + ListPtr);
@@ -906,10 +923,12 @@ internal static unsafe partial class GrassField
         float* pw = stackalloc float[3] { _pushOriginX, _pushOriginY, _pushPerUnit / PushRes };
         Gl.BindVertexArray(_vao);
         bool prepass = _prepass && _progDepth != 0;
+        bool soft = _softEdge && prepass && !msaa;
         if (stage == 1 && !prepass) { Gl.BindVertexArray(0); return; }
         if (prepass && stage != 2)
         {
             Gl.UseProgram(_progDepth);
+            Gl.Uniform1i(_locD.SoftEdge, soft ? 1 : 0);
             SharedUniforms(in _locD, in _featLocD, vp, &eye, nearDist, farDist, msaa, pw, viewport, vlit: false);
             new PassState(depth: true, depthWrite: true, cull: false).Apply();
             Gl.ColorMask(0, 0, 0, 0);
@@ -933,6 +952,29 @@ internal static unsafe partial class GrassField
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.Uniform1i(_loc.SsaoOn, ao ? 1 : 0);
         Gl.Uniform1f(_loc.RootAo, _rootAo);
+        Gl.Uniform1f(_loc.GroundTint, _groundTint);
+        // The frame as it stands before the grass, for the root blend. One blit; the water pass takes its
+        // own later. Skipped outright when the dial is off.
+        bool ground = _groundTint > 0f && FrameSnapshot.Copy(viewport);
+        Gl.Uniform1i(_loc.GroundOn, ground ? 1 : 0);
+        Gl.Uniform1i(_loc.GroundViz, _groundViz);
+        Gl.Uniform1i(_loc.SoftEdge, soft ? 1 : 0);
+        if (ground && _groundDiag > 0)
+        {
+            _groundDiag--;
+            int fb; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &fb);
+            int saved; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &saved);
+            Gl.BindTexture(Gl.TEXTURE_2D, FrameSnapshot.ColorTex);
+            int tw = 0, th = 0, fmt = 0;
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &tw);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &th);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, 0x1003 /*TEXTURE_INTERNAL_FORMAT*/, &fmt);
+            Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
+            _log?.Info($"[grassground] copy taken from fbo {fb} (post hdr fbo {PostChain.Fbo}) at {viewport[2]}x{viewport[3]}, "
+                     + $"copy tex {FrameSnapshot.ColorTex} {tw}x{th} fmt 0x{fmt:x} on unit {TextureSlots.GrassGround} (loc {_loc.Ground}), "
+                     + $"copies so far {FrameSnapshot.Copies}, pass gen {AlloyRenderer.PassGen}, capturing {AlloyRenderer.Capturing}");
+            FrameSnapshot.Compare((uint)fb, viewport[2], viewport[3], "before draw");
+        }
         if (lightingOn)
         {
             AlloyLights.BindForDraw();
@@ -959,11 +1001,25 @@ internal static unsafe partial class GrassField
         // geometry is genuinely two-sided -- a blade is a single card seen from both faces -- so this
         // reproduces the engine, it does not miss it. There is no material behind a blade to read `twosided`
         // off; the class IS the decision.
-        new PassState(depth: true, depthWrite: !prepass, cull: false).Apply();
+        new PassState(depth: true, depthWrite: !prepass, cull: false, blend: soft,
+                      blendSrc: Gl.SRC_ALPHA, blendDst: Gl.ONE_MINUS_SRC_ALPHA).Apply();
         if (msaa) Gl.Enable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
         AlloyRenderer.GpuBegin(AlloyRenderer.GpuTerm.Grass);
         DrawPatches(n, tids, in _loc, depth: false);
         AlloyRenderer.GpuEnd(AlloyRenderer.GpuTerm.Grass);
+        if (ground && _groundDiag > 0)
+        {
+            int bound = 0, samp = 0, uval = -1, act = 0;
+            Gl.GetIntegerv(0x84E0 /*ACTIVE_TEXTURE*/, &act);
+            Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.GrassGround);
+            Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &bound);
+            Gl.GetIntegerv(0x8919 /*SAMPLER_BINDING*/, &samp);
+            Gl.ActiveTexture((uint)act);
+            if (Gl.GetUniformiv != null) Gl.GetUniformiv(_prog, _loc.Ground, &uval);
+            _log?.Info($"[grassground] after draw: unit {TextureSlots.GrassGround} holds tex {bound} sampler obj {samp}, uGround = {uval}, viz {_groundViz}, active unit was 0x{act:x}");
+            int fb2; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &fb2);
+            FrameSnapshot.Compare((uint)fb2, viewport[2], viewport[3], "after draw");
+        }
         if (msaa) Gl.Disable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
         if (_sampMip != 0) Gl.BindSampler(0, 0);
         Gl.BindVertexArray(0);
@@ -1012,6 +1068,7 @@ internal static unsafe partial class GrassField
             fixed (float* pub = CasterPass.CascadeVp) vp = *(Matrix4x4*)(pub + i * 16);
             SharedUniforms(in _locD, in _featLocD, &vp, &eye, _shadowNear, _shadowFar, false, pw, viewport, vlit: false);
             Gl.Uniform1i(_locD.Cast, 1);
+            Gl.Uniform1i(_locD.SoftEdge, 0);
             DrawPatches(_shadowN, tids, in _locD, depth: true, cast: true);
             _shadowDraws++;
             if (_dumpShadow) { _dumpShadow = false; DumpLayer(tex, i, size); }
@@ -1069,6 +1126,13 @@ internal static unsafe partial class GrassField
     /// skips the material colours the colour pass alone shades with.</summary>
     private static void DrawPatches(int n, int* tids, in Loc loc, bool depth, bool cast = false)
     {
+        // Bound LAST, after the light rig's own binds, on a unit the rig never touches.
+        if (!depth)
+        {
+            Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.GrassGround);
+            Gl.BindTexture(Gl.TEXTURE_2D, FrameSnapshot.ColorTex);
+            Gl.ActiveTexture(Gl.TEXTURE0);
+        }
         int boundMat = -1, boundTex = 0;
         for (int i = 0; i < n; i++)
         {
@@ -1106,6 +1170,16 @@ internal static unsafe partial class GrassField
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
         int w = 0;
         Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_WIDTH, &w);
+        // A chain-less copy (a single-level upload) is BUILT one, not sampled flat: level 0 on every far
+        // blade is the crawling aliasing in the distance. Once per texture; the MAX_LEVEL cap comes off
+        // first because a capped chain stops where the cap says.
+        if (w <= 0 && Gl.GenerateMipmap != null)
+        {
+            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, 1000);   // the cap, not the chain
+            Gl.GenerateMipmap(Gl.TEXTURE_2D);
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_WIDTH, &w);
+            if (w > 0) _mipsBuilt++;
+        }
         bool has = w > 0;
         if (_mipCount < MaxGrassMaterials)
         { _mipTid[_mipCount] = tid; _mipHas[_mipCount] = has; _mipCount++; }
@@ -1156,7 +1230,12 @@ internal static unsafe partial class GrassField
     /// its distance, so this holds the blades PER PIXEL constant -- floored at <see cref="_lodMin"/>. The
     /// vertex stage's <c>SowxGrassKeep</c> is this function character for character.</summary>
     /// <summary>The cut-off: <see cref="_far"/> when set, else the player's own option.</summary>
-    private static float FarDist() => _far > 0f ? _far : MathF.Sqrt(MathF.Max(*_farDist, 0f));
+    /// <summary>The cut-off radius: <c>/grass far</c> when set, else the engine's option -- but never under
+    /// <see cref="MinFar"/>. The option defaults to 30u (900 squared), sized for vanilla's per-blade alpha
+    /// fade; under the ladder a far blade is nearly free, and a field that thins from 25u and is gone at 30u
+    /// reads as the ground darkening a few steps ahead of the player.</summary>
+    private static float FarDist() => _far > 0f ? _far : MathF.Max(MathF.Sqrt(MathF.Max(*_farDist, 0f)), MinFar);
+    private const float MinFar = 90f;
 
     internal static float Keep(float d)
     {
@@ -1373,7 +1452,7 @@ internal static unsafe partial class GrassField
             Fade = GlProgram.Loc(prog, "uFade"), Tex = GlProgram.Loc(prog, "uTex"),
             Lod = GlProgram.Loc(prog, "uLod"), Shade = GlProgram.Loc(prog, "uShade"),
             Tuft = GlProgram.Loc(prog, "uTuft"), VLit = GlProgram.Loc(prog, "uVLit"), Cast = GlProgram.Loc(prog, "uCast"), CastWidth = GlProgram.Loc(prog, "uCastWidth"),
-            Ssao = GlProgram.Loc(prog, "uSsao"), SsaoOn = GlProgram.Loc(prog, "uSsaoOn"), RootAo = GlProgram.Loc(prog, "uRootAo"),
+            Ssao = GlProgram.Loc(prog, "uSsao"), SsaoOn = GlProgram.Loc(prog, "uSsaoOn"), RootAo = GlProgram.Loc(prog, "uRootAo"), GroundTint = GlProgram.Loc(prog, "uGroundTint"), Ground = GlProgram.Loc(prog, "uGround"), GroundOn = GlProgram.Loc(prog, "uGroundOn"), GroundViz = GlProgram.Loc(prog, "uGroundViz"), SoftEdge = GlProgram.Loc(prog, "uSoftEdge"),
             MatAmb = GlProgram.Loc(prog, "uMatAmbient"), MatDif = GlProgram.Loc(prog, "uMatDiffuse"),
             Lit = GlProgram.Loc(prog, "uLit"), WindGain = GlProgram.Loc(prog, "uWindGain"),
             WindSpeed = GlProgram.Loc(prog, "uWindSpeed"),
@@ -1414,6 +1493,7 @@ internal static unsafe partial class GrassField
         Gl.Uniform1i(l.CubeDynTex, (int)AlloyRenderer.CubeDynUnit);
         Gl.Uniform1i(l.PushTex, (int)PushUnit);
         Gl.Uniform1i(l.Ssao, (int)TextureSlots.GrassSsao);
+        Gl.Uniform1i(l.Ground, (int)TextureSlots.GrassGround);
     }
 
     // ---- shaders -----------------------------------------------------------------------------
@@ -1468,6 +1548,7 @@ internal static unsafe partial class GrassField
         out float vDist;
         flat out uint vSeed;
         out float vRoot;               // 0 at the root, 1 at the tip: the root-darkening ramp
+        out float vLookDown;           // 1 when the eye looks DOWN onto this root, 0 when level or below it
         // #355: the depth prepass and the colour pass are two programs over this one text; equal depth is
         // what lets the colour pass test LEQUAL with depth writes off.
         invariant gl_Position;
@@ -1492,6 +1573,9 @@ internal static unsafe partial class GrassField
         {
             vCellUv = vec2(0.0); vCellBase = vec2(0.0); vTuft = 1.0; vLight = vec3(0.0); vRoot = aPos.z;
             float dist = distance(uEyePos, iPos.xyz);
+            // The root blend reads the pixel behind the blade, which is ground only when the eye is above the
+            // root: from below (a cliff seen from its foot) that pixel is sky, and the blade would levitate.
+            vLookDown = smoothstep(0.02, 0.12, (uEyePos.z - iPos.z) / max(distance(uEyePos.xy, iPos.xy), 0.001));
             float kv = SowxGrassKeep(dist);
             // A blade past its own keep edge is gone; one AT the edge thins out over the last 20% of the
             // prefix so the count changing under a moving camera never pops. Culled before rasterisation.
@@ -1596,6 +1680,11 @@ internal static unsafe partial class GrassField
         {
             vec2 gx = dFdx(vCellUv) * vec2(vTuft, 1.0) * 0.5, gy = dFdy(vCellUv) * vec2(vTuft, 1.0) * 0.5;
             vec2 uv = vCellBase + vec2(fract(vCellUv.x * vTuft), vCellUv.y) * 0.5;
+            // The cell edge, inset by one texel OF THE MIP THIS FOOTPRINT SELECTS: a coarse level's filter
+            // reaches across the atlas seam otherwise, and the card's top row takes the next cell's colour --
+            // the black dashes riding the far field's tips.
+            vec2 inset = exp2(textureQueryLod(uTex, uv).x) / vec2(textureSize(uTex, 0));
+            uv = clamp(uv, vCellBase + inset, vCellBase + 0.5 - inset);
             return textureGrad(uTex, uv, gx, gy);
         }
         """;
@@ -1627,12 +1716,18 @@ internal static unsafe partial class GrassField
         uniform int uLit;                       // 0 = no cluster build this pass: ambient + sun only
         uniform int uVLit;                      // 1 = vLight carries the cluster loop's answer from the vertex stage
         uniform int uMsaa;                      // 1 = the target is multisampled, so alpha-to-coverage is live
+        uniform int uSoftEdge;                  // 1 = blended fringe: the ramp goes out as alpha, not as dither
         uniform float uEdge;                    // cutout ramp width, in units of the analytic one-pixel edge
         uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
         uniform sampler2D uSsao;                // the frame's screen-space visibility, at gl_FragCoord
         uniform int uSsaoOn;                    // 1 = read it (the ground's answer under a blade the prepass skipped)
         uniform float uRootAo;                  // darkening at the root, 0..1
+        uniform float uGroundTint;              // fraction of the blade's height that fades into the ground under its root
+        uniform sampler2D uGround;              // the frame as it stood before the grass: the lit, fogged ground
+        uniform int uGroundOn;                  // 1 = the copy was taken this pass
+        uniform int uGroundViz;                 // /grass gviz 1: paint the fetched copy texel over the whole blade
         in float vRoot;
+        in float vLookDown;
         out vec4 frag;
 
         // The engine's own cutout threshold (fAlphaDiscardValue under RenderInterface::Enable(1)).
@@ -1671,8 +1766,8 @@ internal static unsafe partial class GrassField
             // Where the target is multisampled, alpha-to-coverage resolves the edge properly and the dither
             // is left to carry the distance fade alone. Where it is not, the one dither carries both -- still
             // strictly softer than the hard step, and still never a semi-transparent depth-writing fragment.
-            float keep = uMsaa != 0 ? vFade : cov * vFade;
-            if (keep <= 0.0) discard;
+            float keep = (uMsaa != 0 || uSoftEdge != 0) ? vFade : cov * vFade;
+            if (keep <= 0.0 || cov <= 0.0) discard;
             if (keep < 1.0 && SowxGrassDither() > keep) discard;
 
             vec3 N = normalize(vNrm);
@@ -1689,18 +1784,39 @@ internal static unsafe partial class GrassField
                 vec3 point = (uLit != 0 && near) ? SowxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0);
                 sunpoint = sun + point;
             }
-            // the 0.15 floor and the sun-facing wrap are inc_lighting.shd:679, as the Alloy lit stage runs it
-            vec3 ambient = uAreaAmbient * uMatAmbient * mix(0.15, 1.0, ndl);
+            // vanilla (inc_lighting.shd:411/:520): the ground's vertex colour joins the DIFFUSE sum as
+            // StaticLight, and the ambient term carries no NdotL factor in the forced-vertex-lighting path
+            vec3 ambient = uAreaAmbient * uMatAmbient;
             // the field's own occlusion: GTAO on the ambient term as the lit stage takes it (ADR 0021), and a
             // root ramp on everything -- a blade is lit at its tip and buried at its base
-            if (uSsaoOn != 0) ambient *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
+            // ...on the NEAR blades only: past the shading cut a blade is a few pixels against the ground,
+            // and the AO taps read the ground's occlusion of it -- which is how a field went dark with distance
+            if (uSsaoOn != 0 && near) ambient *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
             vec3 lit = albedo * (ambient + sunpoint * uMatDiffuse) * mix(1.0 - uRootAo, 1.0, vRoot);
+
             // vanilla grass runs fsgrass, which is the stock lit shader with KEYHOLING 1 and FOG 1 -- so the
             // camera dissolve and the scene fog both apply, and dropping them would fill a low camera shot
             // with undissolved grass. Grass always dissolves: it has no per-part CanDissolve to read.
             float kh = SowxKeyhole(1.0, vWorld, vDepth);
             if (kh < 0.0) discard;
-            frag = vec4(SowxDisplayOverlays(SowxFog(lit * kh, vWorld, vDepth)), uMsaa != 0 ? cov : 1.0);
+            vec3 col = SowxFog(lit * kh, vWorld, vDepth);
+            // Sprouting from the ground: the blade's base takes the colour the frame already has BEHIND
+            // this fragment -- lit, shadowed and fogged terrain, pavement, whatever is there -- and fades to
+            // its own colour over the lower uGroundTint of its height. Read at gl_FragCoord, as the water
+            // stage reads the same copy: the pixel the blade is about to cover, no projection to get wrong.
+            // A tuft on stone is grey at the base and green at the tip. /grass gtint 0 is the blade alone.
+            if (uGroundViz != 0)
+            {
+                ivec2 gs = textureSize(uGround, 0);
+                if (uGroundViz == 1) frag = vec4(texelFetch(uGround, ivec2(gl_FragCoord.xy), 0).rgb, 1.0);
+                else if (uGroundViz == 2) frag = vec4(texelFetch(uGround, gs / 2, 0).rgb, 1.0);
+                else if (uGroundViz == 3) frag = vec4(gl_FragCoord.xy / vec2(gs), 0.0, 1.0);
+                else frag = vec4(texture(uGround, gl_FragCoord.xy / vec2(gs)).rgb, 1.0);
+                return;
+            }
+            if (uGroundOn != 0 && uGroundTint > 0.0)
+                col = mix(texelFetch(uGround, ivec2(gl_FragCoord.xy), 0).rgb, col, max(smoothstep(0.0, uGroundTint, vRoot), 1.0 - vLookDown));
+            frag = vec4(SowxDisplayOverlays(col), uSoftEdge != 0 ? min(cov * 2.0, 1.0) : (uMsaa != 0 ? cov : 1.0));
         }
         """;
 
@@ -1720,6 +1836,7 @@ internal static unsafe partial class GrassField
         """ + AlloyRenderer.FeatDecl + AlloyRenderer.KeyFogDecl + """
         uniform sampler2D uTex;
         uniform int uMsaa;
+        uniform int uSoftEdge;                  // 1 = depth for the opaque core only; the fringe blends without depth
         uniform int uCast;                      // 1 = a shadow view: no keyhole (its depth term is the camera's)
         uniform float uEdge;
         uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
@@ -1744,8 +1861,9 @@ internal static unsafe partial class GrassField
             // step, which SMAA does resolve. Both stages must agree on the fragment set, so both carry this.
             float edge = mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
             float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
-            float keep = uMsaa != 0 ? vFade : cov * vFade;
+            float keep = (uMsaa != 0 || uSoftEdge != 0) ? vFade : cov * vFade;
             if (keep <= 0.0) discard;
+            if (uSoftEdge != 0 && cov < 0.5) discard;
             if (keep < 1.0 && SowxGrassDither() > keep) discard;
             if (uCast == 0 && SowxKeyhole(1.0, vWorld, vDepth) < 0.0) discard;
             frag = vec4(0.0, 0.0, 0.0, uMsaa != 0 ? cov : 1.0);
@@ -1760,7 +1878,7 @@ internal static unsafe partial class GrassField
            $"soften {_lodBias:0.##} aniso {_appliedAniso:0.#}x edge {_edge:0.##} " +
            $"push x{_pushGain:0.##} r{_pushRadius:0.##} over {_pushExtent:0.#}u " +
            $"cull {(_cull > 0f ? $"on shrink {_cullShrink:0.##}" + (_cullMax > 0f ? $" max {_cullMax:0.#}u" : "") : "off")} " +
-           $"lod {_lod:0.#}u min {_lodMin:0.###} w{_lodWidth:0.##} h{_lodHeight:0.##} shade {_shade:0.#}u tuft {_tuft:0} vlight {(_vlit ? 1 : 0)} shadow {_shadowCascades} castwidth {_castWidth:0.#} ({_shadowDraws} cascade draws, {_shadowPatches} patches, {_shadowBlades} blades) ao {_ao} rootao {_rootAo:0.##} far {(_far > 0f ? $"{_far:0.#}u" : "engine")} prepass {(_prepass ? (_progDepth != 0 ? "on" : "UNAVAILABLE") : "off")} " +
+           $"lod {_lod:0.#}u min {_lodMin:0.###} w{_lodWidth:0.##} h{_lodHeight:0.##} shade {_shade:0.#}u tuft {_tuft:0} vlight {(_vlit ? 1 : 0)} shadow {_shadowCascades} castwidth {_castWidth:0.#} ({_shadowDraws} cascade draws, {_shadowPatches} patches, {_shadowBlades} blades) ao {_ao} rootao {_rootAo:0.##} gtint {_groundTint:0.##} softedge {(_softEdge ? 1 : 0)} far {(_far > 0f ? $"{_far:0.#}u" : "engine")} prepass {(_prepass ? (_progDepth != 0 ? "on" : "UNAVAILABLE") : "off")} " +
            $"({_pushers} displacing, {_cullers} culling, {_reticles} non-solid skipped) " +
            $"({_patchCount} patches, {_instCount} blades resident; " +
            $"{(_samples > 1 ? $"{_samples}x MSAA, alpha-to-coverage live" : "no MSAA, dithered edge")}" +
@@ -1800,6 +1918,9 @@ internal static unsafe partial class GrassField
             case "vlight": old = _vlit ? 1f : 0f; _vlit = v > 0f; break;
             case "ao": old = _ao; _ao = Math.Clamp((int)v, 0, 2); break;
             case "rootao": old = _rootAo; _rootAo = Math.Clamp(v, 0f, 1f); break;
+            case "gtint": old = _groundTint; _groundTint = Math.Clamp(v, 0f, 1f); _groundDiag = 3; break;
+            case "gviz": old = _groundViz; _groundViz = (int)v; _groundDiag = 3; break;
+            case "softedge": old = _softEdge ? 1f : 0f; _softEdge = v != 0f; break;
             case "castwidth": old = _castWidth; _castWidth = Math.Clamp(v, 0.5f, 8f); break;
             case "dumpshadow": old = 0f; _dumpShadow = v != 0f; break;
             case "shadow": old = _shadowCascades; _shadowCascades = Math.Clamp((int)v, 0, CasterPass.MaxCascades); break;
@@ -1849,7 +1970,7 @@ internal static unsafe partial class GrassField
                // The two facts that decide how the cutout edge is resolved, and neither is visible anywhere
                // else: with no MSAA the edge is dithered rather than coverage-resolved, and a texture with
                // no mip chain gets the flat sampler (so anisotropy and the soften bias do nothing on it).
-               $", {(_samples > 1 ? $"{_samples}x MSAA (A2C)" : "no MSAA (dithered edge)")}" +
+               $", {(_samples > 1 ? $"{_samples}x MSAA (A2C)" : "no MSAA (dithered edge)")}, mips built {_mipsBuilt}" +
                $", aniso {_appliedAniso:0.#}x" + (_anyFlat ? ", A GRASS TEXTURE HAS NO MIPS" : "") +
                // Zero displacers with creatures on screen means the gob list, not the field: the shader term
                // is doing its job over a map nothing was splatted into, which no other number distinguishes.

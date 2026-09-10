@@ -641,7 +641,19 @@ public sealed unsafe partial class AlloyRenderer
     /// resolve's own guard enforces -- the fix could not live there.</summary>
     internal const string SkyDecodeFs = """
         #version 460 core
-        out vec4 frag;
+        layout(location = 0) out vec4 frag;
+        layout(location = 1) out float oReveal;
+        // OIT (OitPass): 1 = write the weighted-blended accumulation pair instead of a composited colour.
+        uniform int uOit;
+        vec4 SowxOitOut(vec4 c)
+        {
+            if (uOit == 0) { oReveal = 1.0; return c; }
+            float a = clamp(c.a, 0.0, 1.0);
+            // McGuire & Bavoil eq. 9: near-and-opaque weighs most; clamped so fp16 neither under- nor overflows.
+            float w = clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
+            oReveal = a;
+            return vec4(c.rgb * a, a) * w;
+        }
         uniform sampler2D uHdr;
         void main()
         {
@@ -705,7 +717,19 @@ public sealed unsafe partial class AlloyRenderer
         // skyfade gob is. A uniform rather than a per-draw record field because the whole unlit class shares
         // one value and the sky changes it at most once per role.
         uniform vec3 uTint;
-        out vec4 frag;
+        layout(location = 0) out vec4 frag;
+        layout(location = 1) out float oReveal;
+        // OIT (OitPass): 1 = write the weighted-blended accumulation pair instead of a composited colour.
+        uniform int uOit;
+        vec4 SowxOitOut(vec4 c)
+        {
+            if (uOit == 0) { oReveal = 1.0; return c; }
+            float a = clamp(c.a, 0.0, 1.0);
+            // McGuire & Bavoil eq. 9: near-and-opaque weighs most; clamped so fp16 neither under- nor overflows.
+            float w = clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
+            oReveal = a;
+            return vec4(c.rgb * a, a) * w;
+        }
         void main()
         {
             if (uViz == 4) { frag = vec4(1.0, 0.0, 1.0, 1.0); return; }
@@ -716,7 +740,7 @@ public sealed unsafe partial class AlloyRenderer
             // spelled out because this stage does not include that lib.
             vec3 tinted = t.rgb * uTint;
             vec3 rgb = pow(max(tinted, vec3(0.0)), vec3($SRGB$));
-            frag = vec4(rgb, t.a * vAlpha);
+            frag = SowxOitOut(vec4(rgb, t.a * vAlpha));
         }
         """;
 
@@ -939,7 +963,19 @@ public sealed unsafe partial class AlloyRenderer
         // #126: the engine's fAlphaDiscardValue, per batch -- 0.2 on the cutout and blended classes,
         // -1.0 (no test) on opaque and additive.
         uniform float uAlphaCut;
-        out vec4 frag;
+        layout(location = 0) out vec4 frag;
+        layout(location = 1) out float oReveal;
+        // OIT (OitPass): 1 = write the weighted-blended accumulation pair instead of a composited colour.
+        uniform int uOit;
+        vec4 SowxOitOut(vec4 c)
+        {
+            if (uOit == 0) { oReveal = 1.0; return c; }
+            float a = clamp(c.a, 0.0, 1.0);
+            // McGuire & Bavoil eq. 9: near-and-opaque weighs most; clamped so fp16 neither under- nor overflows.
+            float w = clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
+            oReveal = a;
+            return vec4(c.rgb * a, a) * w;
+        }
 
         // Slot mask bits, matching AlloyRenderer's 1 << (slot - 1).
         const int SOWX_SLOT_NORMAL = 1, SOWX_SLOT_SPEC = 2, SOWX_SLOT_ROUGH = 4,
@@ -1363,6 +1399,10 @@ public sealed unsafe partial class AlloyRenderer
             // Specular and self-illumination land AFTER the albedo multiply: a highlight is light off the
             // surface, not light through it (inc_lighting.shd:615 `ColorIO.rgb += SpecularColor *
             // SpecularLight`, and the texUnit5 add just above it).
+            // inc_lighting.shd:672-677: "Specularity ignores material transparency" -- vanilla pre-divides the
+            // specular by the alpha it is about to be blended by, so a ghosted creature keeps its highlights.
+            float partA = coverage * d.rot.w;
+            if (partA < 1.0 && partA > 0.001) specLight /= max(partA, 0.1);
             vec3 lit = albedo * total + specLight;
             if ((slots & SOWX_SLOT_ILLUM) != 0) lit += SowxLinear(texture(uIllumTex, uv, uLodBias).rgb);
             // #132: everything from here down stays LINEAR -- the screen and the probe want the same values
@@ -1383,7 +1423,7 @@ public sealed unsafe partial class AlloyRenderer
             // #132: linear out. No encode, no shoulder -- the resolve owns both for the whole frame.
             // #346/#347: the display-space overlays go on LAST, after the fog, exactly where
             // inc_standard.shd puts them -- noir, racial vision, then the targeting shape.
-            frag = vec4(SowxDisplayOverlays(SowxFog(lit * kh, vWorld, vDepth)), coverage * d.rot.w);
+            frag = SowxOitOut(vec4(SowxDisplayOverlays(SowxFog(lit * kh, vWorld, vDepth)), coverage * d.rot.w));
         }
         """;
 }

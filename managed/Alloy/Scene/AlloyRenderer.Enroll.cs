@@ -436,7 +436,7 @@ public sealed unsafe partial class AlloyRenderer
         _oItem[i] = c.Item; _oPrim[i] = c.Prim; _oVao[i] = v; _oMx[i] = c.Mx; _oLit[i] = lit;
         _oRotBits[i] = c.RotBits;
         _oTexKey[i] = TexKey(c.Tex0);
-        _oCls[i] = (byte)c.Cls; _oSrc[i] = (byte)c.Src; _oDst[i] = (byte)c.Dst;
+        _oCls[i] = (byte)c.Cls; _oSrc[i] = (byte)c.Src; _oDst[i] = (byte)c.Dst; _oWash[i] = c.Wash ? (byte)1 : (byte)0;
         _oNoCull[i] = c.TwoSided;
         _oBucket[i] = (byte)c.Bucket; _oGob[i] = c.Gob; _oLodRoot[i] = c.LodRoot;
         // Sampled HERE, cold, and never re-read: the walk has just proved this gob live, where the route

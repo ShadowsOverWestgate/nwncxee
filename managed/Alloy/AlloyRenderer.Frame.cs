@@ -313,7 +313,29 @@ public sealed unsafe partial class AlloyRenderer
                             break;
                         case PassId.BlendedOwned:
                             GpuBegin(GpuTerm.Blended);
-                            TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                            // Per CREATURE: every batch tagged with one run gob is prepassed then coloured
+                            // before the next creature's, in order of first appearance in the back-to-front
+                            // range, so a translucent creature behind another still shows through it. The
+                            // batches of one creature need not be contiguous -- the staging order interleaves
+                            // them (see the [blendrun] line) -- so each pass filters on the tag. Gobless batches
+                            // (fading tiles, windows) go first, unfiltered by prepass.
+                            // OIT (OitPass): the whole class in one unsorted, non-depth-writing pass into the
+                            // accumulation pair, composited once. The per-creature run loop and its one-layer
+                            // depth sweep are gone with it: with no depth written, no layer can hide another.
+                            if (_oitWanted && _gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
+                            {
+                                _oitOn = true;
+                                TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                                _oitOn = false;
+                                OitPass.End(viewport);
+                                _blendOn = true;
+                                {
+                                    _onlyHosted = true;
+                                    TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                                    _onlyHosted = false;
+                                }
+                            }
+                            else TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far, depthWrite: true);
                             GpuEnd(GpuTerm.Blended);
                             break;
                         case PassId.FbCopy:
@@ -421,6 +443,7 @@ public sealed unsafe partial class AlloyRenderer
                             break;
                     }
                 }
+                GpuSpanEnd();
                 FrameZones.Add(FrameZones.Zone.Passes, tPasses,
                                FrameZones.Ticks(FrameZones.Zone.Issue) - issue0
                                + FrameZones.Ticks(FrameZones.Zone.Cull) - cull0
@@ -506,6 +529,88 @@ public sealed unsafe partial class AlloyRenderer
         return ok;
     }
 
+    /// <summary>Uniform transparency for the blended class: a depth-only sweep over its range BEFORE the
+    /// colour draw, so the colour pass's LEQUAL keeps exactly ONE layer per pixel -- the nearest. Without it
+    /// the back-to-front sort composites a creature's body, armour and cloak on top of one another, and a
+    /// torso under three layers reads near-opaque while a leg under one stays see-through. Vanilla's
+    /// unsorted, depth-writing bucket lands on the nearest layer by accident; this lands on it by
+    /// construction. Two sweeps as the opaque prepass: plain, then keyhole-dissolving under its own program.
+    /// <para>Scoped to one creature's run of batches by the caller, so a creature behind another still
+    /// composites through it. <c>/draw blendprepass 0</c> stands it down.</para></summary>
+    private static void BlendedDepthPrepass(int from, int to, Matrix4x4* vp, int* viewport)
+    {
+        if (to <= from || !_blendPrepass || !EnsureDepthProgram()) return;
+        bool indirect = CullPass.Active;
+        if (indirect) CullPass.BindForDraw(CullPass.PhasePrepass);
+        Gl.ColorMask(0, 0, 0, 0);
+        Gl.DepthMask(1);
+        Gl.DepthFunc(Gl.LESS);
+        Gl.Disable(Gl.BLEND); _blendOn = false;
+        uint boundVao = 0;
+        int boundCull = -1;
+        fixed (int* counts = _dCount, bases = _dBase)
+        fixed (nint* offs = _dOff)
+        for (int sweep = 0; sweep < 2; sweep++)
+        {
+            bool dis = sweep == 1;
+            if (dis && _progDepthKey == 0) break;
+            bool bound = false;
+            for (int g = from; g < to; g++)
+            {
+                if (_onlyGobSet && _gGob[g] != _onlyGob) continue;
+                if (ShaderFeatures.OutOfPrepass(_gFeat[g]) || _gDis[g] != dis) continue;
+                // A wash writes no depth in its colour draw, so it takes none here either: a tile's light
+                // shaft is its own run (tile parts carry the tile gob), and this sweep would stamp its solid
+                // silhouette over every wash run that follows -- the floor decal under it.
+                if (_gWash[g] != 0) continue;
+                if (!bound)
+                {
+                    bound = true;
+                    Gl.UseProgram(dis ? _progDepthKey : _progDepth);
+                    Gl.UniformMatrix4fv(dis ? _depthKeyVp : _depthVp, 1, 0, (float*)vp);
+                    if (dis) UploadFeatureTerms(_depthKeyFeat, viewport);
+                }
+                int s = _gStart[g];
+                Gl.Uniform1i(dis ? _depthKeyBase : _depthBase, s);
+                int wantCull = _gNoCull[g] ? 0 : 1;
+                if (wantCull != boundCull)
+                {
+                    boundCull = wantCull;
+                    if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
+                    else Gl.Disable(Gl.CULL_FACE);
+                }
+                uint vao = VaoName(_gVao[g], _gCls[g]);
+                if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+                if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
+                else
+                    Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
+                                                   (void**)(offs + s), _gLen[g], bases + s);
+                _blendPrepassDraws += _gLen[g];
+            }
+        }
+        if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
+        Gl.ColorMask(1, 1, 1, 1);
+        Gl.DepthFunc(Gl.LEQUAL);
+    }
+    /// <summary><c>/draw blendprepass</c>: the blended class's one-layer depth sweep (default on).</summary>
+    internal static bool _blendPrepass = true;
+    /// <summary><c>/draw blenddiag</c>: once per 300 frames, one log line per blended run -- its gob tag and
+    /// every batch's feature, length and cull -- so a creature that composites in pieces names the batch
+    /// that fell out of its run.</summary>
+    internal static bool _blendDiag = true;
+    private static void BlendRunDiag(IntPtr tag, int rs, int re)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"[blendrun] gob={tag:x}:");
+        for (int g = rs; g < re; g++)
+        {
+            if (_gGob[g] != tag) continue;
+            sb.Append($" [{g} feat={(ShaderFeature)_gFeat[g]} n={_gLen[g]} dis={(_gDis[g] ? 1 : 0)} nocull={(_gNoCull[g] ? 1 : 0)} vao={_gVao[g]}]");
+        }
+        _log?.Info(sb.ToString());
+    }
+    private static int _blendPrepassDraws;
+
     private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport)
     {
         if (!_depthPrepass || !EnsureDepthProgram()) return;
@@ -549,7 +654,12 @@ public sealed unsafe partial class AlloyRenderer
                 // into a rectangle. ADR 0011 leaves cutouts-in-the-prepass a MEASUREMENT question (they cost
                 // a texture fetch per fragment to save shading later); this is the measurement's off side,
                 // and _prepassSkipped is what says how much overdraw it leaves on the table.
-                if (_gCls[g] == (byte)AlloyClass.Cutout) { if (sweep == 0) skipped += _gLen[g]; continue; }
+                // ...and the blending classes: prepassed, a blended part's SOLID silhouette lands in the depth
+                // buffer (and the hi-Z pyramid) before any colour pass, and every blended surface behind it
+                // is rejected -- a floor decal under a light shaft, a translucent creature behind a window.
+                // ADR 0011: blended tests against the OPAQUE set's depth; the per-creature one-layer sweep is
+                // BlendedDepthPrepass's job, and water writes its own depth in its own pass.
+                if (_gCls[g] >= (byte)AlloyClass.Cutout) { if (sweep == 0) skipped += _gLen[g]; continue; }
                 if (_gDis[g] != dis) continue;
                 if (dis && _progDepthKey == 0) { skipped += _gLen[g]; continue; }
                 if (!bound)

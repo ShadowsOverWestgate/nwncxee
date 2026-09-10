@@ -195,6 +195,12 @@ public sealed unsafe partial class AlloyRenderer
     /// around the range rather than for the whole bracket -- the sky, grass, beam and particle passes bind
     /// buffers of their own in between, and finding an indirect buffer still bound under one of them is a
     /// class of bug that shows up as a wrong batch rather than as an error.</summary>
+    /// <summary>The blended pass's per-creature filter: when set, only batches tagged with this run gob
+    /// issue; when zero, only UNTAGGED ones. Zero-valued and unset (<see cref="_onlyGobSet"/> false) issues
+    /// everything, which is every other pass.</summary>
+    private static IntPtr _onlyGob;
+    private static bool _onlyGobSet;
+
     private static void IssueColour(int from, int to, Matrix4x4* vp, int* viewport, float near, float far)
     {
         bool indirect = CullPass.Active;
@@ -251,6 +257,9 @@ public sealed unsafe partial class AlloyRenderer
         // GL_BLEND as this pass found it: DrawOwned's preamble disables it, and TransparentPass enables it
         // before its own range, so the first batch of either kind agrees with the state already set.
         bool boundBlend = _blendOn;
+        byte boundMask = _passDepthMask;
+        bool boundTest = true;
+        bool boundOffset = false;
         // #292: face culling, per batch. -1 rather than a guess at the preamble's state: the sky, grass,
         // particle and beam passes all leave their own culling behind them, and a probe capture re-enters
         // this loop six more times, so the first batch of every entry issues the call rather than trusting
@@ -270,11 +279,21 @@ public sealed unsafe partial class AlloyRenderer
         fixed (nint* offs = _dOff)
         for (int g = from; g < groups; g++)
         {
+            if (_onlyGobSet && _gGob[g] != _onlyGob) continue;
             bool water = _gCls[g] == (byte)AlloyClass.Water;
             bool lit = _gLit[g];
             // #350: a hosted feature draws through the second lit program (3); everything else lit through
             // the first (1). Batches are cut on the feature id, so this is one switch per hosted batch.
             bool hosted = lit && !water && _progLitHost != 0 && ShaderFeatures.Hosted(_gFeat[g]);
+            // A hosted content program declares no revealage output: under OIT it would leave that buffer
+            // undefined (NaN, which the resolve and the bloom then spread as white patches and blue blotches).
+            // Those batches sit the accumulation out and draw after the resolve the plain-blend way.
+            // ...and so does any pair that is not SrcAlpha/OneMinusSrcAlpha: weighted blending can represent
+            // only that one. SoW's veil (a modulating fog dome around the player) fed through it composites
+            // the veil's colour over the whole view instead of darkening by it.
+            bool oitOut = hosted || _gSrc[g] != AuroraSrcAlpha || _gDst[g] != AuroraOneMinusSrcAlpha;
+            if (_oitOn && oitOut) continue;
+            if (_onlyHosted && !oitOut) continue;
             int wantProg = water ? 2 : hosted ? 3 : lit ? 1 : 0;
             if (boundProg != wantProg)
             {
@@ -314,6 +333,7 @@ public sealed unsafe partial class AlloyRenderer
                     AlloyLights.SetDrawUniforms(L.Grid, L.Tile, L.Z, L.Falloff, L.Wrap,
                                                 L.Atten, L.Hot, L.WrapN, L.Sss, viewport, near, far, L.Reach);
                     Gl.Uniform1i(L.Viz, viz);
+                    Gl.Uniform1i(L.Oit, _oitOn ? 1 : 0);
                     Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
                     UploadFeatureTerms(L.Feat, viewport);
                     UploadAreaTerms(L);
@@ -332,6 +352,7 @@ public sealed unsafe partial class AlloyRenderer
                     float* white = stackalloc float[3] { 1f, 1f, 1f };
                     Gl.Uniform3fv(_locTint, 1, white);    // ...and white, which is Mat()'s ordinary branch
                     Gl.Uniform1i(_locViz, viz);
+                    Gl.Uniform1i(_locOit, _oitOn ? 1 : 0);
                     Gl.UniformMatrix4fv(_locVp, 1, 0, vpRaw);
                     UploadFeatureTerms(_locFeat, viewport);
                 }
@@ -362,10 +383,25 @@ public sealed unsafe partial class AlloyRenderer
                 boundBlend = blend;
                 if (blend) Gl.Enable(Gl.BLEND); else Gl.Disable(Gl.BLEND);
             }
-            if (blend)
+            // Under OIT the pair is per draw buffer and set once by OitPass.Begin; glBlendFunc would clobber both.
+            if (blend && !_oitOn)
             {
                 uint src = BlendGl(_gSrc[g]), dst = BlendGl(_gDst[g]);
                 if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
+            }
+            bool wash = blend && _gWash[g] != 0;
+            byte mask = wash ? (byte)0 : _passDepthMask;
+            if (mask != boundMask) { Gl.DepthMask(mask); boundMask = mask; }
+            bool test = !(wash && !_washTest);
+            if (test != boundTest) { if (test) Gl.Enable(Gl.DEPTH_TEST); else Gl.Disable(Gl.DEPTH_TEST); boundTest = test; }
+            // A wash is routinely a decal lying ON an opaque surface (a floor lattice at +0.005), and its
+            // depth comes from a different program than the prepass wrote the floor's with: LEQUAL alone
+            // z-fights at range. Pull it toward the eye by the same offset the highlight mask uses.
+            if (wash != boundOffset)
+            {
+                if (wash && Gl.PolygonOffset != null) { Gl.PolygonOffset(WashOffsetFactor, WashOffsetUnits); Gl.Enable(Gl.POLYGON_OFFSET_FILL); }
+                else Gl.Disable(Gl.POLYGON_OFFSET_FILL);
+                boundOffset = wash;
             }
             // #292: the engine's own per-material decision, reproduced. Sub-list 1 of
             // Scene::RenderDrawBucket @0x46d060 draws under Disable(CULL_FACE); everything else draws under
@@ -419,7 +455,29 @@ public sealed unsafe partial class AlloyRenderer
         // Hand the per-batch toggling back to the pass level: the next pass reads this rather than assuming
         // what the last batch left bound.
         _blendOn = boundBlend;
+        if (boundMask != _passDepthMask) Gl.DepthMask(_passDepthMask);
+        if (!boundTest) Gl.Enable(Gl.DEPTH_TEST);
+        if (boundOffset) Gl.Disable(Gl.POLYGON_OFFSET_FILL);
     }
+
+    /// <summary>Polygon offset for wash batches (see the wash note in the issue loop).</summary>
+    private const float WashOffsetFactor = -1f, WashOffsetUnits = -2f;
+
+    /// <summary><c>/draw washtest 0</c>: wash batches draw with the depth TEST off too. A/B instrument, not a look.</summary>
+    private static bool _washTest = true;
+
+    /// <summary>The depth mask the current pass set before <see cref="IssueColour"/>; a wash batch drops it
+    /// to 0 for its own draws and the loop restores it. 1 everywhere but the transparent passes.</summary>
+    private static byte _passDepthMask = 1;
+    /// <summary>The blended range is being drawn into OitPass's accumulation pair: programs write the pair,
+    /// and the per-batch blend pair stays off the state.</summary>
+    private static bool _oitOn;
+    /// <summary><c>/draw oit 0</c>: the blended class goes back to the sorted, depth-writing pass. A/B instrument.</summary>
+    private static bool _oitWanted = true;
+    /// <summary>The post-resolve sweep for the batches OIT skipped: hosted programs only.</summary>
+    private static bool _onlyHosted;
+    /// <summary>Aurora blend-mode indices (see <see cref="BlendGl"/>) of the one pair OIT accumulates.</summary>
+    private const byte AuroraSrcAlpha = 0, AuroraOneMinusSrcAlpha = 1;
 
     /// <summary>ADR 0011 steps 4 and 7 (#126): the blending classes. Blended draws sorted back-to-front with
     /// the depth mask OFF -- which is what makes grass's punch-through structurally impossible rather than
@@ -444,14 +502,21 @@ public sealed unsafe partial class AlloyRenderer
     /// over a blended or additive surface seen against the sky. The first resolves when the dynamic classes
     /// are owned (#127), the second when the skybox is (#125); neither is a #126 regression to chase, and
     /// both are why ADR 0011's frame anchor is a named exit criterion rather than a detail.</para></summary>
-    private static void TransparentPass(int from, int to, Matrix4x4* vp, int* viewport, float near, float far)
+    /// <para><paramref name="depthWrite"/>: the engine's own rule, <c>Material::SetBlendingMode</c> @0x4c5c50 --
+    /// depth writes ON for every blend pair but additive (src 0 / dst 2), OFF for additive. The blended class
+    /// therefore writes depth: a translucent creature's back parts are rejected by its front ones instead of
+    /// compositing N times, and the outline mask has a depth to match at <c>GL_EQUAL</c>.</para>
+    private static void TransparentPass(int from, int to, Matrix4x4* vp, int* viewport, float near, float far,
+                                        bool depthWrite = false)
     {
         if (to <= from) return;
-        Gl.DepthMask(0);
+        _passDepthMask = depthWrite ? (byte)1 : (byte)0;
+        Gl.DepthMask(_passDepthMask);
         Gl.Enable(Gl.BLEND); _blendOn = true;
         // #290: the same compacted list the opaque pass drew from, whose batches in THIS range were placed
         // by the sort dispatch -- back-to-front from this pass's eye, measured on the GPU.
         IssueColour(from, to, vp, viewport, near, far);
+        _passDepthMask = 1;
     }
 
     /// <summary>ADR 0011 <see cref="PassId.WaterOwned"/> (#129): the water class, drawn from the one

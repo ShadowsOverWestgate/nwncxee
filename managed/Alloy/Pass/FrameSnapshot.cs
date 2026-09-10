@@ -227,7 +227,7 @@ internal static unsafe class FrameSnapshot
         Gl.ReadPixels(x, y, 1, 1, Gl.DEPTH_COMPONENT, Gl.FLOAT, &dd);
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src);
         uint err = Gl.GetError == null ? 0 : Gl.GetError();
-        _log?.Info($"[waterdiag] centre pixel ({x},{y}) -- source rgb({sc[0]:F4},{sc[1]:F4},{sc[2]:F4}) " +
+        _log?.Info($"[waterdiag] src fbo {src} (post hdr fbo {PostChain.Fbo}, copy fbo {_fbo}) centre pixel ({x},{y}) -- source rgb({sc[0]:F4},{sc[1]:F4},{sc[2]:F4}) " +
                    $"depth {sd:F6} | copy rgb({dc[0]:F4},{dc[1]:F4},{dc[2]:F4}) depth {dd:F6} | " +
                    // The COLOUR pair is the verdict. A blit is all-or-nothing, so colour landing means the
                    // whole call landed -- and reading depth back out of the source FBO proved unreliable
@@ -239,6 +239,35 @@ internal static unsafe class FrameSnapshot
 
     /// <summary>Bind the copy on <see cref="ColorUnit"/>/<see cref="DepthUnit"/> and leave unit 0 current --
     /// the diffuse rebinds there, and every other pass in the frame assumes it.</summary>
+    /// <summary>The colour copy's GL name for a reader outside the water program (grass), 0 until a copy has landed.</summary>
+    internal static uint ColorTex => Ready ? _colTex : 0;
+
+    /// <summary>Diag: a 3x3 grid of colour texels read from the copy and from <paramref name="src"/>, printed
+    /// side by side with the scissor state and the source's colour attachment name.</summary>
+    internal static void Compare(uint src, int w, int h, string tag)
+    {
+        if (Gl.ReadPixels == null || Gl.ReadBuffer == null || _fbo == 0) return;
+        int sc = Gl.IsEnabled(Gl.SCISSOR_TEST);
+        int* box = stackalloc int[4]; Gl.GetIntegerv(Gl.SCISSOR_BOX, box);
+        int name = 0;
+        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src);
+        if (src != 0) Gl.GetFramebufferAttachmentParameteriv(Gl.READ_FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"[grassground] {tag}: src fbo {src} colour0 = tex {name}, copy tex {_colTex}, scissor {sc} box {box[0]},{box[1]} {box[2]}x{box[3]} |");
+        float* a = stackalloc float[4]; float* b = stackalloc float[4];
+        for (int j = 1; j <= 3; j++) for (int i = 1; i <= 3; i++)
+        {
+            int x = w * i / 4, y = h * j / 4;
+            Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src); if (src != 0) Gl.ReadBuffer(Gl.COLOR_ATTACHMENT0);
+            Gl.ReadPixels(x, y, 1, 1, Gl.RGBA, Gl.FLOAT, a);
+            Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fbo); Gl.ReadBuffer(Gl.COLOR_ATTACHMENT0);
+            Gl.ReadPixels(x, y, 1, 1, Gl.RGBA, Gl.FLOAT, b);
+            sb.Append($" ({x},{y}) src {a[0]:F2},{a[1]:F2},{a[2]:F2} copy {b[0]:F2},{b[1]:F2},{b[2]:F2}{(a[0]==b[0]&&a[1]==b[1]&&a[2]==b[2] ? "" : " DIFF")};");
+        }
+        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, src);
+        _log?.Info(sb.ToString());
+    }
+
     internal static void Bind()
     {
         Gl.ActiveTexture(Gl.TEXTURE0 + ColorUnit);
