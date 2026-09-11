@@ -131,6 +131,12 @@ name a known ceiling + its upgrade path.
   are cold -- fine. Frame/GL hooks are hot -- be careful.
 - **Reuse an existing message opcode; don't invent one.** That is what keeps the
   extender optional (unknown packets are ignored server-side).
+- **Windows is a supported OS, not a follow-up.** A new hook or engine-memory read
+  ships with its Windows resolution or it is not PR-ready: a symbol gets its `_win`
+  entry (`Nm` for a name export, `At` for an anchored RVA), an offset gets a
+  `Diverges`/`Same` row in `EngineLayout`. Deliberately Linux-only work is allowed
+  and says so on its own line -- what is forbidden is the silent absence, where
+  "never looked" and "decided" are the same missing key.
 - **Shaders for what shaders reach; extender for what they can't.** Lighting/color
   = `.shd` overrides via hak/NWSync (see `sow-topdata`). Shadows, render bugs,
   fixed-function state = engine-internal, needs a GL hook.

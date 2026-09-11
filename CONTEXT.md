@@ -85,6 +85,9 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Diverges / Same / Unresolved** — the three, and only three, resolutions an offset can carry.
   *Same* means measured on both and equal; *Unresolved* means nobody looked on Windows yet, and is
   counted on both platforms (only the gate is Windows-only). The pair exists so "verified identical" and "never looked" stop being one bare `const`.
+- **Candidate** — an extractor's ranked guess at where a field sits on the other platform. It names
+  the function to open next; it is never a resolution on its own. A candidate becomes a row only by
+  clearing the bar in `docs/engine-layout.md`. Avoid: match, hit, result.
 - **Probe** — an assertion a resolved offset makes about live memory (the dword is 0 or 1; the
   vtable slot holds a code address), checked once at the first instance so a wrong offset stands
   the feature down instead of rendering garbage. Avoid: validation, sanity check.

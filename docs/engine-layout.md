@@ -202,7 +202,48 @@ A caller that passes no class still asks about the whole table.
 
 Anchors are handwritten, like `docs/windows-symbols.md`. There is no generator:
 #431's extractor produces **candidates**, and a candidate becomes a row here only
-once it has been read in a function pair and, where it can, probed.
+once it clears the bar below.
+
+## The bar: what a candidate has to survive to become a row
+
+Settled in #445, after three batches had answered it by practice. A candidate is
+an extractor's ranked guess; it tells you which function to open and is never
+itself a resolution. A **row** needs all three of these:
+
+1. **A same-role function on each build.** Same class, same job, identified by
+   name or signature — not by ordinal position in a list, because MSVC reverses
+   an overload set (#433, and #443 caught it firing on
+   `CAurTexture::GetCompressedSize`).
+2. **The field's role pinned by evidence other than its position.** What the
+   caller does with it: a stride multiply, a constant it is compared against, a
+   store run in a constructor, the argument slot it is passed in. Two fields that
+   look alike at neighbouring offsets are two fields at least as often as they
+   are one mistake (#441's `PartLight` fades, #443's two `CAurTextureBasic` names).
+3. **A probe where a predicate exists.** `Expect.Byte01` and `Expect.VtblSlot`
+   cost nothing to declare. Where neither fits, the row is still a row — the
+   probe is a check on the reading, not the reading itself.
+
+"Function pair" means a pair **you read**, off the raw `FN` lines of both
+decompilations. It does not mean a pair a tool validated: a strict
+length-and-shape filter rejects a pair the moment the two decompilers split one
+store differently, which is why `field-diff.py`'s pairing half was retired in
+#445 and only its class histogram kept.
+
+Three things that are never a resolution, each of them a mistake already made
+here:
+
+- **Interpolating across a segment boundary.** A class diverges in 2-3 contiguous
+  segments (#430); a row that falls in the gap between two measured segments is
+  unresolved, full stop. `PartTriMesh.selfIllum` is deliberately unresolved for
+  this reason, and the one wrong top-1 answer in #431's ground truth
+  (`Camera+0x4d4`) is this mistake.
+- **Set corroboration.** "The other six fields of this class paired at delta 0,
+  so this one does too" is not a measurement (#436).
+- **A verdict inherited from a base or passed to a subclass.** The cause of the
+  divergence is base tail-padding reuse, which predicts that sibling subclasses
+  get *different* deltas (#430). A class verdict does not travel in either
+  direction.
+
 
 ### Alloy: the renderer, textures, buffers and shim (#443)
 
