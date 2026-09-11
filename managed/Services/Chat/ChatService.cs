@@ -1306,6 +1306,29 @@ public sealed unsafe class ChatService : IExtenderService
         _ = hooks.Install(SymbolMap.ShowChatPrompt,     (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnOpenShow);
         _ = hooks.Install(SymbolMap.PrepChatPromptForTell, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnOpenTell);
         _ = hooks.Install(SymbolMap.ChatPromptSetFocus, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnOpenSetFocus);
+        // Where the vanilla prompt is still shown (Windows: its Show suppression is Linux-only, #419) a click on
+        // it captures the keyboard (CGuiEdit::HandleLMouseDown -> CGuiMan::CaptureKeyboard + KeyboardModeOn) and
+        // Enter then goes to that capture instead of the chat keybind that opens our box. This event fires right
+        // after the capture: hand it back. Never fires where the prompt is suppressed.
+        _guiManSym = Native.Sym(SymbolMap.GuiMan);
+        _releaseKeyboard = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GuiManReleaseKeyboard);
+        _ = hooks.Install(SymbolMap.ChatHandleLMouseDown, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVanillaPromptClick);
+    }
+
+    private static IntPtr _guiManSym;
+    private static delegate* unmanaged<IntPtr, IntPtr, void> _releaseKeyboard;
+    /// <summary>CGuiMan's keyboard-capture object (decomp-verified on both builds: CaptureKeyboard stores here).</summary>
+    private const int GuiManKeyboardCaptureOff = 0x50;
+
+    [UnmanagedCallersOnly]
+    private static void OnVanillaPromptClick(IntPtr self)
+    {
+        if (_guiManSym == IntPtr.Zero || _releaseKeyboard == null) return;
+        IntPtr gm = *(IntPtr*)_guiManSym;
+        if (gm == IntPtr.Zero) return;
+        IntPtr captured = *(IntPtr*)(gm + GuiManKeyboardCaptureOff);
+        if (captured != IntPtr.Zero) _releaseKeyboard(gm, captured);
+        _log?.Info("[chat] vanilla prompt clicked -- keyboard capture released (prompt is unsuppressed on this build)");
     }
 
     /// <summary>The one chat input line; the native shell drives it, all logic is in Core.</summary>
@@ -1563,7 +1586,9 @@ public sealed unsafe class ChatService : IExtenderService
                     }
                     else _log?.Info($"[chat] tell dropped: sender symbols unresolved");
                     break;
-                default: _log?.Info($"[chat] send dropped (ch={ch}): sender symbol unresolved"); break;
+                // A slash line that reached here missed dispatch: log its first token (never the rest -- /tell carries content).
+                default: _log?.Info($"[chat] send dropped (ch={ch}): sender symbol unresolved" +
+                                    (text.StartsWith('/') ? $" -- undispatched command token '{text.Split(' ', 2)[0]}' len={text.Length}" : "")); break;
             }
         }
         finally { Native.FreeExoString(exo); }

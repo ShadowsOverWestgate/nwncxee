@@ -205,6 +205,8 @@ public sealed unsafe class UiInputService : IExtenderService
                 {
                     byte btn = *(byte*)(ev + SdlEvButtonOff);
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    if (KeyDiag)
+                        _log?.Info($"[keydiag] mouse btn={btn} at ({mx},{my}) owner={UiHost.AnyKeyboardOwner} kbmode={KeyboardModeActive()}");
                     // NUI draws over us -> it gets the press. Blur first: this is a click elsewhere, and
                     // FocusAt (skipped here) is what would otherwise have released our windows' focus.
                     if (NuiHovered()) { UiHost.Blur(); break; }

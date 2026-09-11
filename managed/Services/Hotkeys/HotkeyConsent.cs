@@ -38,6 +38,8 @@ internal static unsafe class HotkeyConsent
 
     // The keys awaiting the player's answer. Non-null == a modal is currently open.
     private static HashSet<int>? _pending;
+    // /consent probe open: the answer is logged, never granted/revoked (no cfg write, no packet).
+    private static bool _probe;
 
     public static void Init(ExtenderLog log)
     {
@@ -54,7 +56,18 @@ internal static unsafe class HotkeyConsent
     }
 
     /// <summary>Called on login; fail-closed -- any pending (unconfirmed) keys are dropped, never armed.</summary>
-    public static void Reset() => _pending = null;
+    public static void Reset() { _pending = null; _probe = false; }
+
+    /// <summary>The <c>/consent</c> body (#418): spawn the modal with a fake key set so the whole native round
+    /// trip (operator new, ctor, Activate, on-close callback, self-free) runs without a server. The answer is
+    /// only logged. The one place the port touches the engine allocator, so it gets its own probe.</summary>
+    public static string Probe()
+    {
+        var fake = new HashSet<int> { 'f' | HotkeyProtocol.ModCtrl, HotkeyProtocol.MouseBase + 3 };
+        if (!Prompt(fake)) return "[consent] modal not shown -- see the log";
+        _probe = true;
+        return "[consent] modal up: answer it, then read the log";
+    }
 
     /// <summary>
     /// Ask the player to consent to arming `additions`. Returns true only if the modal was shown.
@@ -107,7 +120,16 @@ internal static unsafe class HotkeyConsent
     {
         var answered = _pending;
         _pending = null;
+        // The engine's modal leaves keyboard mode ON after it closes, which eats the next Enter (#418 trace);
+        // release it unless one of our windows is typing.
+        if (!Sowx.Ui.UiHost.AnyKeyboardOwner) Sowx.Ui.UiHost.KeyboardGate?.Invoke(false);
         if (answered == null) return;
+        if (_probe)
+        {
+            _probe = false;
+            _log?.Info($"HotkeyConsent: probe answered result={result} ({(result == 1 ? "OK" : "deny")}); nothing granted");
+            return;
+        }
         if (result == 1)
         {
             // Record consent under this server's token (minting one if none), then hand the token +

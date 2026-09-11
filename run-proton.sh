@@ -11,8 +11,9 @@ PROTON="${PROTON:-$HOME/.steam/root/steamapps/common/Proton - Experimental/proto
 [ -f "$PROTON" ] || { echo "!! no proton at $PROTON (set PROTON)" >&2; exit 1; }
 cp sow-client-extender-win/*.dll "$GAME/"
 PFX="$PWD/build/proton-pfx"; mkdir -p "$PFX"
+# The engine picks "Neverwinter Nights.0" (its .N instance suffix) under Proton, so seed the cfg in both.
 DOCS="$PFX/pfx/drive_c/users/steamuser/Documents/Neverwinter Nights"
-mkdir -p "$DOCS"; [ -f "$DOCS/sowx.cfg" ] || printf 'logs=1\n' > "$DOCS/sowx.cfg"
+for d in "$DOCS" "$DOCS.0"; do mkdir -p "$d"; [ -f "$d/sowx.cfg" ] || printf 'logs=1\n' > "$d/sowx.cfg"; done
 rm -f "$DOCS/sowx.log"
 # Wine prefers its builtin version.dll; n,b makes the proxy beside nwmain.exe win.
 cd "$GAME" && STEAM_COMPAT_DATA_PATH="$PFX" STEAM_COMPAT_CLIENT_INSTALL_PATH="$HOME/.steam/root" \

@@ -276,6 +276,9 @@ internal static unsafe class SymbolMap
     // data globals
     public const string AppManager = "g_pAppManager";
     public const string GuiMan     = "g_pGuiMan";
+    /// <summary><c>CGuiMan::ReleaseKeyboard(CGuiObject*)</c>: clears the keyboard-capture slot (CGuiMan+0x50, same on
+    /// both builds) and runs the object's lose-focus virtual (an edit's -> KeyboardModeOff).</summary>
+    public const string GuiManReleaseKeyboard = "_ZN7CGuiMan15ReleaseKeyboardEP10CGuiObject";
     /// <summary>CTlkTable* global; the <c>this</c> for <see cref="TlkGetSimpleString"/>.</summary>
     public const string TlkTable   = "g_pTlkTable";
     /// <summary>The client's nuklear context (NUI edit-focus probe). Client global -- no Windows anchor.</summary>
@@ -1123,6 +1126,11 @@ internal static unsafe class SymbolMap
         // CExoInput, name-exported on Windows. (Chat also uses ExoInput but stays Linux-only for now.)
         [ExoInput]        = Nm("?g_pExoInput@@3PEAVCExoInput@@EA"),
         [GetKeyboardMode] = Nm("?GetKeyboardMode@CExoInput@@QEAAHXZ"),
+        // The framework keyboard gate (UiInputService.KbGate): without these the engine mode never toggles, so
+        // typed letters drive WASD and a stuck-on mode eats the Enter that reopens the box (#418).
+        [KeyboardModeOn]  = Nm("?KeyboardModeOn@CExoInput@@QEAAXXZ"),
+        [KeyboardModeOff] = Nm("?KeyboardModeOff@CExoInput@@QEAAXXZ"),
+        [GuiManReleaseKeyboard] = Nm("?ReleaseKeyboard@CGuiMan@@QEAAXPEAVCGuiObject@@@Z"),
     };
 
     // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the static file base.

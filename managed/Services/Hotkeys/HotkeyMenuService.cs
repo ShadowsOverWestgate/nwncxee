@@ -31,6 +31,9 @@ public sealed unsafe class HotkeyMenuService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        // Retired by #422; until that lands it stays Linux-only: the +0x4b0 wrapper and the Itanium vtable slot
+        // below are not the MSVC layout, and the RVA hook fires on Windows (ESC crashed the client, #418).
+        if (OperatingSystem.IsWindows()) { log.Info("HotkeyMenuService: standing down on Windows (Options-panel button retired, #422)"); return; }
         _closeMenu = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.OptionsHandleXButton);
         _postOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.PostAttachmentInitialize, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPostAttach);

@@ -86,6 +86,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // exactly what a session opening it wants to find out.
         CommandRegistry.Global.Register("/keydiag", "toggle raw-key diagnostics (logs every keydown)",
                                         _ => ToggleKeyDiag());
+        if (Settings.Bool("keydiag", false)) ToggleKeyDiag();   // boot switch for when chat itself is the question
 
         // Default (#64): the framework input layer owns raw capture. Hotkeys become a chord consumer at tier 2 --
         // fired only when no window consumed the key and the chord gate is clear (the arbiter's job now). Install

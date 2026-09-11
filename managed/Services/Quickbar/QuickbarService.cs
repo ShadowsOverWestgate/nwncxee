@@ -216,6 +216,7 @@ public sealed unsafe class QuickbarService : IExtenderService
             int vpW = _vpW > 0 ? _vpW : TextRig.ViewportW;
             int vpH = _vpH > 0 ? _vpH : TextRig.ViewportH;
             _settings.OpenAt(vpW, vpH, _config);
+            _log?.Info($"[settings] opened at viewport {vpW}x{vpH} (guiman {_vpW}x{_vpH}, rig {TextRig.ViewportW}x{TextRig.ViewportH})");
         }
         RebuildChrome();
         ChatService.RequestRebuild();

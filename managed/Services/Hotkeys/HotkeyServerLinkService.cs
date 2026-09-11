@@ -25,6 +25,8 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         _log = log;
         HotkeyConsent.Init(_log!);
         SelfCheck();   // the fail-closed consent policy is security-critical; verify it at startup
+        CommandRegistry.Global.Register("/consent", "spawn the native consent modal with fake keys (allocator probe)",
+                                        _ => HotkeyConsent.Probe());
         _inboundOrig = (delegate* unmanaged<IntPtr, byte*, uint, uint>)hooks.Install(
             SymbolMap.HandleServerToPlayerMessage, (IntPtr)(delegate* unmanaged<IntPtr, byte*, uint, uint>)&OnInbound);
     }
