@@ -58,7 +58,7 @@ internal static unsafe class AlloyCensus
 
     /// <summary>The stride between the three resref slots <see cref="EngineLayout.SharedVsName"/> names
     /// (VS at +0x188, FS at +0x199, GS at +0x1aa), and the length of each inline NUL-terminated buffer.</summary>
-    internal const int SharedNameLen = 0x11;
+    internal static readonly int SharedNameLen = EngineLayout.SharedNameLen;
 
     /// <summary><c>dumptex</c> (sowx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
     /// time, for as long as it takes the camera to find them.</summary>

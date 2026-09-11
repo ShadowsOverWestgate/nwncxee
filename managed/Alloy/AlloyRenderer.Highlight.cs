@@ -25,16 +25,17 @@ namespace Sowx.Alloy;
 public sealed unsafe partial class AlloyRenderer
 {
     /// <summary><c>Scene</c>'s highlight state, as <c>Scene::AddHighlightGob</c> @0x462280 lays it out:
-    /// a <c>CExoArrayList&lt;Gob*&gt;</c> at +0x80 (data ptr +0x80, count +0x88) and a parallel RGB
-    /// <c>Vector</c> array whose data pointer sits at +0x90, stride 0xc.</summary>
-    internal const int SceneHlGobs = 0x80, SceneHlCount = 0x88, SceneHlColors = 0x90;
+    /// a <c>CExoArrayList&lt;Gob*&gt;</c> (data ptr, then count) and a parallel RGB <c>Vector</c> array,
+    /// stride 0xc.</summary>
+    internal static readonly int SceneHlGobs = EngineLayout.SceneHiliteGobs,
+        SceneHlCount = EngineLayout.SceneHiliteCount, SceneHlColors = EngineLayout.SceneHiliteColors;
 
-    /// <summary>Gob field offsets <c>Scene::DoHighlightGob</c> @0x470fc0 reads when it recurses into a
-    /// highlighted gob's attached children: +0x1c is the visible byte, +0x68 a pointer whose +0x8e bit 0
-    /// marks the child as skipped, and vtable displacement 0x228 fills a malloc'd {Gob** data, int count}
-    /// pair (per the @0x470fc0 decompilation -- NOT the head/tail list Gob::CollectLights uses) the caller
-    /// frees.</summary>
-    private const int GobVisible = 0x1c, GobSkipPtr = 0x68, GobSkipFlag = 0x8e, VtGobChildren = 0x228;
+    /// <summary>Gob fields <c>Scene::DoHighlightGob</c> @0x470fc0 reads when it recurses into a highlighted
+    /// gob's attached children: the propagate-highlight byte, the node pointer whose owner-flags bit 0 marks
+    /// the child as skipped, and the vtable slot that fills a malloc'd {Gob** data, int count} pair the
+    /// caller frees.</summary>
+    private static readonly int GobPropagate = EngineLayout.GobPropagateHilite, GobSkipPtr = EngineLayout.GobNode,
+        GobSkipFlag = EngineLayout.NodeOwnerFlags, VtGobChildren = EngineLayout.GobAttachedGobsSlot;
 
     /// <summary>Ceilings: highlighted ROOT gobs per frame, and (roots + attached children) in total.
     /// Roots beyond the cap stay unhandled and get the engine glow instead of silently vanishing.
@@ -52,7 +53,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <c>::UpdateSelfIlluminationPulse</c> all call <c>Hilite(colour, 3, 1)</c>. Lowest-wins is why a
     /// Tab over a glowing creature shows the Tab colour.</para></summary>
     private const int HiliteChannels = 5;
-    private const int AbActive = 0x9c, AbGlow = 0xb0, AbGob = 0xc8;
+    private static readonly int AbActive = EngineLayout.AnimHiliteActive, AbGlow = EngineLayout.AnimHiliteGlow,
+                               AbGob = EngineLayout.AnimHiliteGob;
 
     /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
     /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. Everything
@@ -303,7 +305,7 @@ public sealed unsafe partial class AlloyRenderer
                 IntPtr k = kids[c];
                 IntPtr skip = *(IntPtr*)(k + GobSkipPtr);
                 if (skip != IntPtr.Zero && (*(byte*)(skip + GobSkipFlag) & 1) != 0) continue;
-                if (*(byte*)(k + GobVisible) == 0) continue;
+                if (*(byte*)(k + GobPropagate) == 0) continue;
                 targetRoot[nT] = (byte)i;
                 targets[nT++] = k;
             }

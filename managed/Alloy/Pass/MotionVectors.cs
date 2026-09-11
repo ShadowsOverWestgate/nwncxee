@@ -23,7 +23,7 @@ namespace Sowx.Alloy;
 internal static unsafe class MotionVectors
 {
     /// <summary><c>GL_RG16F</c>, absent from <see cref="Gl"/>.</summary>
-    private const uint Rg16F = 0x822F;
+    private const uint Rg16F = 0x822F;   // not-an-offset: GL internal-format enum
 
     private static ExtenderLog? _log;
     private static uint _fbo, _tex, _prog;

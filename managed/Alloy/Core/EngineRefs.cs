@@ -92,7 +92,7 @@ internal readonly unsafe ref struct MaterialRef
         }
         return new(*(IntPtr*)(_p + slot * MatSlotStride));
     }
-    private const int MatSlotStride = 0x10, SharedSlot0 = 8 + 13 * MatSlotStride;
+    private static readonly int MatSlotStride = EngineLayout.MatSlotStride, SharedSlot0 = EngineLayout.SharedSlot0;
 }
 
 internal readonly unsafe ref struct SharedRef

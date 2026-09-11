@@ -155,23 +155,25 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal const int MaxBoneSlots = 512;
     /// <summary>aurMatrixStack layout (Ghidra GLRender::PushMatrix/PopMatrix/aurMatrixStack::SetIdentity):
     /// stride 0x58 per stack, top matrix (row-major float[16]) at +0x18. Modes: PROJECTION=0, VIEW=1.</summary>
-    internal const int StackStride = 0x58, StackTop = 0x18, ModeProjection = 0, ModeView = 1;
+    internal static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
+    internal const int ModeProjection = 0, ModeView = 1;
     /// <summary>The part's MdlNode (part+0x8) and its material colours, from Ghidra
     /// <c>PartTriMesh::MatStatic</c> @0x450560, which calls <c>SetMaterialv(prop 1, node+0xf4)</c>,
     /// <c>SetMaterialv(prop 2, node+0xe8)</c> and <c>SetMaterialv(prop 3, part+0x7c)</c>. Prop 3 takes the
     /// self-illumination colour, so the enum runs ambient/diffuse/emissive -- and node+0xe8 is the one
     /// carrying the part's alpha (part+0xa0), which in fixed-function material setup is the DIFFUSE term.
     /// Distinct from the bucket node at part+0x88.</summary>
-    internal const int PartMdlNode = 0x8, MdlDiffuse = 0xe8, MdlAmbient = 0xf4;
+    internal static readonly int PartMdlNode = EngineLayout.PartNodeLink, MdlDiffuse = EngineLayout.MdlDiffuse,
+                                MdlAmbient = EngineLayout.MdlAmbient;
     /// <summary>Self-illumination colour (3 floats) at part+0x7c -- MatStatic's prop-3 material term. It is
     /// applied whenever <c>part+0x94 == 0</c>, and LightPartTriMesh (@0x47a6a0) clears that byte on every
     /// part under <c>g_bFullDynamicLighting</c>, so under the modern renderer it applies ALWAYS.</summary>
-    internal const int PartSelfIllum = 0x7c;
+    internal static readonly int PartSelfIllum = EngineLayout.PartSelfIllum;
     /// <summary>#120: the material's parsed .mtr parameter list, <c>List&lt;MaterialParameter&gt;</c> at
     /// mat+0x118 -- Ghidra <c>Material::CheckAndBindCustomShader</c> @0x4c62f0 passes exactly
     /// <c>(this + 0x118)</c> to <c>SharedMaterial::BindShaderParameters</c>, which reads the element pointer
     /// at +0 and the count at +8. So the count sits at mat+0x120.</summary>
-    internal const int MatParams = 0x118, MatParamCount = 0x120;
+    internal static readonly int MatParams = EngineLayout.MatParams, MatParamCount = EngineLayout.MatParamCount;
     /// <summary>MaterialParameter layout, from <c>Material::SetMaterialParam</c> @0x4c5d70 (the name is
     /// <c>strncasecmp</c>'d over 0x40 bytes from the record's start) and BindShaderParameters (value floats at
     /// +0x44, the two cached uniform locations at +0x54/+0x58, the type discriminator at +0x5c, the component
@@ -179,14 +181,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <para>The type discriminator selects how +0x44 is READ, not where the value lives: 0 takes it as a
     /// <c>float*</c> with <paramref name="ParamComps"/> components, 1 as a single <c>int</c>, both off the
     /// same address.</para></summary>
-    internal const int ParamValue = 0x44, ParamType = 0x5c, ParamComps = 0x60, ParamStride = 100;
+    internal static readonly int ParamValue = EngineLayout.ParamValue, ParamType = EngineLayout.ParamType,
+                                ParamComps = EngineLayout.ParamComps, ParamStride = EngineLayout.ParamStride;
     /// <summary>A parameter list longer than this is not a .mtr, it is a bad pointer -- refuse it rather than
     /// walk off into the heap. Real materials declare a handful.</summary>
     internal const int MaxParams = 64;
     /// <summary>The SharedMaterial's own parameter list -- the one the .mtr's <c>parameter float &lt;Name&gt;
     /// &lt;value&gt;</c> lines are parsed onto. Ghidra <c>Material::SetMaterialParam</c> @0x4c5d70 walks
     /// <c>*(shared+0x1d0)</c> for <c>*(int*)(shared+0x1d8)</c> records of the same 100-byte layout.</summary>
-    internal const int SharedParams = 0x1d0, SharedParamCount = 0x1d8;
+    internal static readonly int SharedParams = EngineLayout.SharedParams,
+                                SharedParamCount = EngineLayout.SharedParamCount;
     /// <summary>#120 texture slots the Alloy lit program binds beyond the diffuse: 1 normal, 2 specular,
     /// 3 roughness, 4 height, 5 self-illumination (the stock map, inc_material.shd's header comment).
     /// They resolve through <c>Material::GetTexture</c> exactly as slot 0 does -- a SharedMaterial's own
@@ -227,11 +231,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// Most areas leave it null, and that is why vanilla cobblestone does not reflect the sky: nothing is
     /// bound, so the ambient-specular sample reads nothing. It is the switch, not the texture -- what gets
     /// sampled here is the probe.</summary>
-    internal const int SceneEnvMap = 0x1e8;
-    internal const uint GlUnsignedShort = 0x1403;
+    internal static readonly int SceneEnvMap = EngineLayout.SceneEnvMap;
+    internal const uint GlUnsignedShort = 0x1403;   // not-an-offset: GL enum
     /// <summary>The GL blend factors <see cref="BlendGl"/> maps the Aurora ones onto.</summary>
-    internal const uint GlZero = 0, GlOne = 1, GlSrcColor = 0x0300, GlSrcAlpha = 0x0302,
-                       GlOneMinusSrcAlpha = 0x0303, GlDstColor = 0x0306, GlOneMinusDstAlpha = 0x0305;
+    internal const uint GlZero = 0, GlOne = 1, GlSrcColor = 0x0300, GlSrcAlpha = 0x0302,   // not-an-offset: GL blend-factor enums
+                       GlOneMinusSrcAlpha = 0x0303, GlDstColor = 0x0306, GlOneMinusDstAlpha = 0x0305;   // not-an-offset: as above
     /// <summary>Engine attribute locations, fixed for every engine program (Ghidra
     /// <c>GLRender::ConnectShaderData</c>: one glBindAttribLocation table before every link -- 0 vPos,
     /// 1 vTcIn, 2 vColor, 7 vNormal). They say which engine VAO slot holds each stream.</summary>
@@ -838,7 +842,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX / _CURRENT_AVAILABLE_VIDMEM_NVX /
     /// GL_TEXTURE_FREE_MEMORY_ATI.</summary>
-    private const uint GpuMemTotalNvx = 0x9047, GpuMemCurrentNvx = 0x9049, TexFreeMemoryAti = 0x87FC;
+    private const uint GpuMemTotalNvx = 0x9047, GpuMemCurrentNvx = 0x9049, TexFreeMemoryAti = 0x87FC;   // not-an-offset: GL vendor-extension query enums
 
     private static bool _vramProbed, _vramNvx;
     private static string? _vramExt;
@@ -1922,8 +1926,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// were authored, which is the pre-#123 look, not a misrender.</summary>
     private static byte* _runtime;
 
-    internal const int RtTimeOfDay = 0x18, RtAreaWind = 0x28, RtAreaFlags = 0x3c,
-                      RtPlayerPos = 0x4c, RtCamPos = 0x64;
+    internal static readonly int RtTimeOfDay = EngineLayout.RtTimeOfDay, RtAreaWind = EngineLayout.RtAreaWind,
+        RtAreaFlags = EngineLayout.RtAreaFlags, RtPlayerPos = EngineLayout.RtPlayerPos,
+        RtCamPos = EngineLayout.RtCamPos;
 
     /// <summary>#347: the camera's PIVOT, as the engine's own stages read it under the name
     /// <c>cameraFocus</c> -- <c>GLRender::SetUniforms</c> @0x4cf359 uploads
@@ -1931,10 +1936,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// name. Not the camera POSITION (<see cref="RtCamPos"/>, +0x64): in chase cam the pivot sits on the
     /// controlled character at roughly chest height, which is why content measures a sight range against it
     /// and not against the eye.</summary>
-    internal const int RtCamFocus = 0x90;
+    internal static readonly int RtCamFocus = EngineLayout.RtCamFocus;
     /// <summary>#124's two more fields of the same struct, from the same pairing: <c>cameraPitch</c> at
     /// +0x84 and <c>playerCameraDist</c> at +0x8c. Both feed the keyhole aperture.</summary>
-    internal const int RtCamPitch = 0x84, RtCamDist = 0x8c;
+    internal static readonly int RtCamPitch = EngineLayout.RtCamPitch, RtCamDist = EngineLayout.RtCamDist;
     /// <summary>#124: the keyhole diameter pair inside
     /// <see cref="SymbolMap.GlGlobalShaderConstantsF"/>. Stored unordered -- SetUniforms uploads min as
     /// <c>keyholeDiameterMin</c> and max as <c>keyholeDiameterMax</c>, so the ordering happens here too.</summary>

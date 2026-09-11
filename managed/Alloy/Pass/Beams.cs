@@ -62,7 +62,7 @@ internal static unsafe class Beams
     /// <summary>Fallback alpha when <c>projectionalpha</c> does not resolve -- the value the engine's own
     /// initialiser writes.</summary>
     private const float DefaultAlpha = 0.2f;
-    private const uint GlUnsignedShort = 0x1403;
+    private const uint GlUnsignedShort = 0x1403;   // not-an-offset: GL enum
     /// <summary>The engine attribute locations a beam VDO carries, from <c>GLRender::ConnectShaderData</c>'s
     /// bind table @0x4ce8e0: <c>vPos</c> at 0 and <c>fProjectionFrontal</c> at 10. That pair is why beams
     /// cannot ride <c>AlloyRenderer</c>'s VAO cache -- it harvests position/UV/normal and refuses a VDO
@@ -72,7 +72,7 @@ internal static unsafe class Beams
     private const uint LocPos = 0, LocFrontal = 1;
     /// <summary>Aurora blend factors <c>RenderBeams</c> sets: <c>SetBlendFunc(0, 2)</c> =
     /// (GL_SRC_ALPHA, GL_ONE).</summary>
-    private const uint GlSrcAlpha = 0x0302, GlOne = 1;
+    private const uint GlSrcAlpha = 0x0302, GlOne = 1;   // not-an-offset: GL blend-factor enums
     /// <summary>A handful of static volumes per area; past this a beam is left to the engine.</summary>
     private const int MaxBeams = 2048, MaxVdos = 512;
     /// <summary>The matrix stack: model is index 2, stride 0x58, top at +0x18 (same layout
@@ -81,7 +81,7 @@ internal static unsafe class Beams
     private const int ModeModel = 2;
     private static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
     /// <summary>The embedded <c>DrawBucketManager</c> and the bucket <c>RenderBeams</c> asks it for.</summary>
-    private const int BeamBucket = 0xf;
+    private const int BeamBucket = 0xf;   // not-an-offset: a draw-bucket index, not a place in memory
     private static readonly int SceneDrawBuckets = EngineLayout.SceneDrawBuckets;
     /// <summary>Part vtable slot 0x90, <c>Part::AsPartBeam</c> -- dumped from <c>_ZTV8PartBeam</c>, and the
     /// call <c>RenderBeams</c> @0x46ad90 makes on every bucket item before touching it as a beam.</summary>
@@ -452,7 +452,7 @@ internal static unsafe class Beams
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"Beams.SelfCheck FAIL: {w}"); } }
 
-        const int SceneBytes = 0x80;
+        const int SceneBytes = 0x80;   // not-an-offset: the fake Scene this self-check stack-allocates
         int LightBytes = LightDir + 12;
         byte* scene = stackalloc byte[SceneBytes];
         for (int i = 0; i < SceneBytes; i++) scene[i] = 0;

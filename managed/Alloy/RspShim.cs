@@ -60,8 +60,10 @@ internal static unsafe class RspShim
     /// Called through the LIVE vptr, as RSP does, so a derived Scene's override is honoured -- and every one
     /// of these targets is a patched hook site, so the anchor, the bucket gate and the emitter suppression
     /// all fire from here for free.</summary>
-    private const int VtDoBinBucket = 0x1c0, VtRenderBeams = 0x1d8, VtDoEmitterBucket = 0x1e8,
-                      VtRenderLensFlares = 0x230, VtFadeDoors = 0x260, VtDoFog = 0x280;
+    private static readonly int VtDoBinBucket = EngineLayout.SceneDoBinBucketSlot,
+        VtRenderBeams = EngineLayout.SceneRenderBeamsSlot, VtDoEmitterBucket = EngineLayout.SceneDoEmitterBucketSlot,
+        VtRenderLensFlares = EngineLayout.SceneRenderLensFlaresSlot, VtFadeDoors = EngineLayout.SceneFadeDoorsSlot,
+        VtDoFog = EngineLayout.SceneDoFogSlot;
 
     /// <summary>#232/#233: the overlay slots RSP calls between bucket 7 and the shadow block, at 0x46e9fb
     /// and 0x46ea15/0x46ee97. RSP calls them UNCONDITIONALLY -- the punch list's "gate" column describes
@@ -70,22 +72,26 @@ internal static unsafe class RspShim
     /// <para>The third slot RSP calls here, <c>Scene::DoTriggerBucket</c> (0x1f0, punch-list item 14), is
     /// NOT replicated: it draws the entries whose <c>PartTrigger+0xd8</c> is clear, and every trigger the
     /// client displays has it set. See the punch list for the chain that proves it.</para></summary>
-    private const int VtDoHighlightGob = 0x1b8, VtDoHighlightTriggers = 0x1f8;
+    private static readonly int VtDoHighlightGob = EngineLayout.SceneDoHighlightGobSlot,
+                               VtDoHighlightTriggers = EngineLayout.SceneDoHighlightTriggersSlot;
 
     /// <summary>#235: <c>LightManager</c> vptr displacement of <c>EnableLights()</c>, RSP's very first call
     /// (@0x46e6a5). Verified against <c>_ZTV12LightManager</c> @0x186e2a0, not taken from the ADR.</summary>
-    private const int VtEnableLights = 0x18;
+    private static readonly int VtEnableLights = EngineLayout.LightMgrEnableLightsSlot;
 
-    /// <summary>Count of highlight gobs (<c>Scene+0x88</c>); the array is at <c>+0x80</c> and its colours at
-    /// <c>+0x90</c>, both read by <c>Scene::DoHighlightGob</c> itself.</summary>
-    private const int SceneHighlightGobs = 0x88;
+    /// <summary>Count of highlight gobs; the array and its colours sit either side of it, all three read by
+    /// <c>Scene::DoHighlightGob</c> itself.</summary>
+    private static readonly int SceneHighlightGobs = EngineLayout.SceneHiliteCount;
 
     /// <summary><c>CExoArrayList&lt;Part*&gt;</c> count, at <c>+8</c> of the list head.</summary>
-    private const int ListCount = 8;
+    private static readonly int ListCount = EngineLayout.ListItemCount;
 
     /// <summary>Scene -&gt; LightManager* and Scene -&gt; the focus position, read off the
-    /// <c>focuslighting</c> block at 0x46ebd7..0x46ec46.</summary>
-    private const int SceneLightManager = 0x158, SceneFocusPos = 0x190;
+    /// <c>focuslighting</c> block at 0x46ebd7..0x46ec46. The focus position is the same field
+    /// <c>RenderSkyBoxes</c> parks every sky gob on (<see cref="EngineLayout.SceneSkyPos"/>), which is why
+    /// the sky follows the camera.</summary>
+    private static readonly int SceneLightManager = EngineLayout.SceneLightManager,
+                               SceneFocusPos = EngineLayout.SceneSkyPos;
 
     /// <summary>A three-float value classified the way SysV classifies it -- xmm0 carries x and y, xmm1
     /// carries z. Same reason <c>Particles.V3</c> exists: <c>Vector3</c>'s ABI is the runtime's to choose.</summary>
@@ -394,7 +400,7 @@ internal static unsafe class RspShim
     /// follows always issues the real call and leaves cache and GL in agreement, whichever state it found.
     /// Caps 5, 1 and 2 are cache/uniform-sequence writes with no GL call behind them, so for those the cache IS
     /// the state and the early-out is the correct answer -- they stay a straight replay.</para></summary>
-    private const int CapBlend = 0, CapDepthTest = 0xb;
+    private const int CapBlend = 0, CapDepthTest = 0xb;   // not-an-offset: engine RenderInterface cap enum, an argument to Enable/Disable
 
     private static void Epilogue()
     {

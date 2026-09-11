@@ -80,7 +80,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <see cref="SelfCheck"/> caught that; the slack is what makes the test conservative in practice and not
     /// just on paper.</summary>
     internal const float FaceConeSlope = 1.4143f;
-    internal const uint GlUnsignedShort = 0x1403;
+    internal const uint GlUnsignedShort = 0x1403;   // not-an-offset: GL enum
 
     /// <summary>Cascade ceiling. The receiver's <c>uSunVp</c> array is sized from this, so raising it means
     /// raising both -- <see cref="SelfCheck"/> pins them together.</summary>

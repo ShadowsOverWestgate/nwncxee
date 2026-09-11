@@ -1,0 +1,5 @@
+{
+  // build/proton-pfx/pfx/dosdevices/z: is a symlink to /, so a symlink-following
+  // file walk from the repo root scans the whole machine. Stops rg --follow.
+  "search.followSymlinks": false
+}

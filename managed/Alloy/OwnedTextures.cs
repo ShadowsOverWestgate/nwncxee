@@ -257,7 +257,8 @@ internal static unsafe class OwnedTextures
     /// <summary><c>CAurTextureBasic+0x84</c>: the texture's own format/kind word. <c>glImageBasic</c>
     /// @0x48bd67 takes the GPU-composite branch on <c>== 4</c> and nothing else, so 4 is the PLT marker and
     /// this is the ONLY test that separates a build Alloy must copy from one it has already uploaded.</summary>
-    private const int OffPltKind = 0x84, PltKind = 4;
+    private static readonly int OffPltKind = EngineLayout.TexBasicPltKind;
+    private const int PltKind = 4;
 
     /// <summary>One finished GPU composite, waiting for a context that may copy it. Deliberately holds NO
     /// <c>CAurTexture*</c>: the identity is already resolved to a content key here, so nothing in the queue
@@ -319,17 +320,18 @@ internal static unsafe class OwnedTextures
 
     /// <summary><c>CAurTextureBasic+0x50</c>: <c>uint*</c>, the <c>numX*numY</c> GL names
     /// <c>glImageBasic</c> @0x48bcf0 generates and binds one per cell.</summary>
-    private const int OffCellNames = 0x50;
+    private static readonly int OffCellNames = EngineLayout.TexBasicCellNames;
     /// <summary><c>CAurTextureBasic+0xa8</c>: <c>char[0x20]</c>, the resolved texture name
     /// <c>LoadImage</c> @0x487980 fills and <c>CAurTexture::Restore</c> @0x48e300 re-acquires by. Stable
     /// across a delete/rebuild, which is what makes it an identity.</summary>
-    private const int OffName = 0xa8;
+    private static readonly int OffName = EngineLayout.TexBasicResolvedName;
     /// <summary><c>CAurTextureBasic+0x48</c> / <c>+0xd4</c>: the PLT scheme array (<c>int*</c>) and its
     /// <c>short</c> count -- the other half of the engine's own texture identity.</summary>
-    private const int OffSchemes = 0x48, OffSchemeCount = 0xd4;
+    private static readonly int OffSchemes = EngineLayout.TexBasicSchemes,
+                               OffSchemeCount = EngineLayout.TexBasicSchemeCount;
     /// <summary><c>CAurTextureBasic+0xca</c> / <c>+0xcc</c>: the <c>short</c> atlas grid the engine
     /// de-atlases into one GL texture per cell.</summary>
-    private const int OffNumX = 0xca, OffNumY = 0xcc;
+    private static readonly int OffNumX = EngineLayout.TexBasicNumX, OffNumY = EngineLayout.TexBasicNumY;
 
     /// <summary>The engine is about to upload cell <paramref name="cell"/> of <paramref name="tex"/> into the
     /// GL name it has bound. Let that happen, then do it again into a texture of ours.
@@ -582,9 +584,12 @@ internal static unsafe class OwnedTextures
     private static readonly HashSet<ulong> _inFlight = new();
     private static delegate* unmanaged<IntPtr, void> _origBuildAndStoreTexture;
     private static delegate* unmanaged<nuint, IntPtr> _znam;
-    private const int OffImage = 0x58, OffGlId = 0x6c, OffWidth = 0x74, OffHeight = 0x78, OffBpp = 0x7c,
-                      OffAlphaMean = 0x30, OffController = 0x38, OffPltMarker = 0x84,
-                      FlagCube = 0xe3, FlagImageBuilt = 0xe6, FlagNoImage = 0xe7, FlagNeverBuild = 0xe8;
+    private static readonly int OffImage = EngineLayout.TexBasicImage, OffGlId = EngineLayout.TexBasicGlId,
+        OffWidth = EngineLayout.TexBasicWidth, OffHeight = EngineLayout.TexBasicHeight,
+        OffBpp = EngineLayout.TexBasicBpp, OffAlphaMean = EngineLayout.TexBasicAlphaMean,
+        OffController = EngineLayout.TexBasicController, OffPltMarker = EngineLayout.TexBasicPltKind,
+        FlagCube = EngineLayout.TexBasicFlagCube, FlagImageBuilt = EngineLayout.TexBasicFlagBuilt,
+        FlagNoImage = EngineLayout.TexBasicFlagNoImage, FlagNeverBuild = EngineLayout.TexBasicFlagNeverBuild;
     private const int PltMarker = 4;
 
     /// <summary>Is this a texture the cache may stand in for? Plain 2D, no PLT scheme, no animation
@@ -993,7 +998,7 @@ internal static unsafe class OwnedTextures
     /// <c>GetCompressedSize</c> @0x484b00 verdict that picks <c>glTexImage2D</c> over
     /// <c>glCompressedTexImage2D</c> -- versus the already-BCn path. The uncompressed share is the whole
     /// BCn-transcode prize; the issue forbids building the transcode without this line.</summary>
-    private const int OffCompressedSize = 0x70;
+    private static readonly int OffCompressedSize = EngineLayout.TexBasicCompressedSize;
     private static int _censusRaw, _censusBcn, _censusTrans;
     private static long _censusRawBytes, _censusBcnBytes, _censusSaved;
     /// <summary>#266's number, measured before anything is built: per area, how many textures are
@@ -1269,7 +1274,8 @@ internal static unsafe class OwnedTextures
     /// <summary>The fields <see cref="UnbuiltDiag"/> reads off a <c>CAurTextureBasic</c>, all four of them
     /// written by <c>ConstructImage</c> @0x48a5d0 and cleared by <c>Reset</c> @0x4858c0: the PLT layer scheme,
     /// the decoded image, the constructed latch, and the "no image and no controller" verdict.</summary>
-    private const int BasicScheme = 0x48, BasicImage = 0x58, BasicBuilt = 0xe6, BasicInvalid = 0xe7;
+    private static readonly int BasicScheme = EngineLayout.TexBasicSchemes, BasicImage = EngineLayout.TexBasicImage,
+        BasicBuilt = EngineLayout.TexBasicFlagBuilt, BasicInvalid = EngineLayout.TexBasicFlagNoImage;
     private static int _unbuiltDiagLeft = 8;
     private static readonly HashSet<string> _unbuiltDiagSeen = new();
 
@@ -1737,7 +1743,7 @@ internal static unsafe class OwnedTextures
         // The content key is the identity; the engine name is an index onto it. Two names may resolve one
         // resource, and one name resolves a different resource after a re-upload. The key itself is the
         // engine's hash, so it needs a client -- what is asserted here is the table it drives.
-        const ulong k0 = 0x5AF300000000UL, k1 = k0 | 1;
+        const ulong k0 = 0x5AF300000000UL, k1 = k0 | 1;   // not-an-offset: splitmix64 mixing constants
         Replace(k0, 13, 99, 4096);
         _index[14] = k0;                                             // a second live name onto one resource
         ok &= Draw(13) == 99 && Draw(14) == 99 && Borrowed == 1;

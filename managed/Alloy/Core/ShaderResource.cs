@@ -14,10 +14,10 @@ internal static unsafe class ShaderResource
     /// <summary>Resource type of a .shd, read off the client's own <c>CResHelper&lt;CResSHD, 2069&gt;</c>.</summary>
     private const ushort ResTypeShd = 2069;
     /// <summary>sizeof(CRes): what <c>CExoResMan::Get</c> passes to operator new before <c>CRes::CRes</c>.</summary>
-    private const int SizeOfCRes = 0x60;
+    private static readonly int SizeOfCRes = EngineLayout.SizeOfCRes;
     /// <summary>CRes::GetData / CRes::GetSize field offsets. A serviced .shd is the raw file bytes --
     /// <c>CResSHD::OnResourceServiced</c> only mirrors these two into its own pair.</summary>
-    private const int CResData = 0x20, CResSize = 0x30;
+    private static readonly int CResData = EngineLayout.CResData, CResSize = EngineLayout.CResSize;
     /// <summary>A CResRef is 16 bytes of null-padded ASCII; longer names cannot address a resource.</summary>
     internal const int ResRefBytes = 16;
 
@@ -84,7 +84,7 @@ internal static unsafe class ShaderResource
 
     /// <summary>SPIR-V's magic word, little-endian. A module that reads byte-swapped was produced for the
     /// other endianness and GL will not take it, so it is refused rather than converted.</summary>
-    private const uint SpirvMagic = 0x07230203;
+    private const uint SpirvMagic = 0x07230203;   // not-an-offset: the SPIR-V file magic
 
     private static bool IsSpirv(byte[] b) =>
         b.Length >= 4 && (uint)(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) == SpirvMagic;

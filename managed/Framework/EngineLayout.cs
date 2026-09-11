@@ -407,17 +407,23 @@ public static unsafe class EngineLayout
     /// @0x450960 picks for an opaque part that cannot dissolve): those stay null until <c>Init</c> runs,
     /// whereas the names are parsed the moment the .mtr loads. An empty VS name is the real "pure texture
     /// redirect" test -- such a shared material adds no program at all.</para></summary>
-    public static readonly int SharedVsName = Unresolved("SharedMaterial", "vsName", 0x188);
+    /// <para>#443: resolved. Both constructors write the three resref buffers at 0x188 / 0x199 / 0x1aa --
+    /// #441 read Windows' extra stores at 0x190/0x1a1/0x1b2 as an unexplained +0x8 and rightly refused the
+    /// whole class on it, but they are MSVC splitting each 17-byte copy into two 8-byte stores. With that
+    /// explained, the constructor IS a pair, and it measures this row, <see cref="SharedTransparency"/>,
+    /// <see cref="SharedTwoSided"/>, <see cref="SharedSampleFb"/> and <see cref="SharedVolumetric"/>
+    /// together.</para>
+    public static readonly int SharedVsName = Same("SharedMaterial", "vsName", 0x188);
     /// <inheritdoc cref="SharedVsName"/>
-    public static readonly int SharedFsName = Unresolved("SharedMaterial", "fsName", 0x199);
+    public static readonly int SharedFsName = Same("SharedMaterial", "fsName", 0x199);
     /// <summary>#126: the three <c>.mtr</c> keywords that steer bucket membership
     /// (<c>SharedMaterial::ParseField</c> @0x4c6760): <c>transparency</c>, <c>sample_framebuffer</c>
     /// (1 = bucket 5, 2 = water) and <c>volumetric</c>.</summary>
-    public static readonly int SharedTransparency = Unresolved("SharedMaterial", "transparency", 0x1f0);
+    public static readonly int SharedTransparency = Same("SharedMaterial", "transparency", 0x1f0);
     /// <inheritdoc cref="SharedTransparency"/>
-    public static readonly int SharedSampleFb = Unresolved("SharedMaterial", "sampleFb", 0x1f4);
+    public static readonly int SharedSampleFb = Same("SharedMaterial", "sampleFb", 0x1f4);
     /// <inheritdoc cref="SharedTransparency"/>
-    public static readonly int SharedVolumetric = Unresolved("SharedMaterial", "volumetric", 0x1f8);
+    public static readonly int SharedVolumetric = Same("SharedMaterial", "volumetric", 0x1f8);
     /// <summary>#292: the <c>twosided</c> keyword, parsed by the same <c>SharedMaterial::ParseField</c>
     /// @0x4c6760 as a bool -- the byte immediately after <c>transparency</c>, not a second field of it. This,
     /// and NOT <c>MdlNodeEmitter+0x164</c>, is what decides face culling on the world path.
@@ -426,8 +432,11 @@ public static unsafe class EngineLayout
     /// <c>sub = twosided ? (volumetric ? 0 : 1) : 0</c> -- and <c>Scene::RenderDrawBucket</c> @0x46d060
     /// draws sub-list 1 under <c>Disable(3)</c> (cap 3 = GL_CULL_FACE), sub-list 2 under
     /// <c>Enable(3) + SetCullFace(0)</c>, and leaves <c>Enable(3) + SetCullFace(1)</c> behind on every exit.
-    /// So the vanilla default is CULLING ON, back faces, and two states is the whole vocabulary here.</para></summary>
-    public static readonly int SharedTwoSided = Unresolved("SharedMaterial", "twoSided", 0x1f1);
+    /// So the vanilla default is CULLING ON, back faces, and two states is the whole vocabulary here.</para>
+    /// <para>Windows covers this byte with the SAME 2-byte store that writes <see cref="SharedTransparency"/>
+    /// at 0x1f0, which is the shape <c>CAurTextureBasic::Reset</c> shows at 0xe6/0xe7 -- a merged store over
+    /// an adjacent pair, not one wider field.</para></summary>
+    public static readonly int SharedTwoSided = Same("SharedMaterial", "twoSided", 0x1f1);
 
     /// <summary>CAurTextureBasic's 32-byte name field (Ghidra CAurTextureBasic::CAurTextureBasic @0x487250:
     /// <c>strncpy(this + 0x88, name, 0x1f)</c>). #430 read all thirteen of the class's functions by hand:
@@ -841,27 +850,33 @@ public static unsafe class EngineLayout
     /// <summary>The two <c>List&lt;MaterialParameter&gt;</c> the .mtr's declared values reach. Shared first,
     /// instance second, so a per-part override still wins -- the instance list is only SIZED to the shared
     /// count and carries defaults until something overrides.
-    /// <para>Material pairs at 0x0/0x40/0x50/0xd0 and nothing near 0x118, so this is unmeasured.</para></summary>
-    public static readonly int MatParams = Unresolved("Material", "params", 0x118);
+    /// <para>#443 resolved what #441 could not: <c>Material::InitSharedMaterial</c> writes the pointer at
+    /// +0x118 and the count at +0x120 on BOTH builds, and Windows <c>CheckAndBindCustomShader</c> reads the
+    /// same pair Linux's <c>SetMaterialParam</c> does. Two function pairs, no inference.</para></summary>
+    public static readonly int MatParams = Same("Material", "params", 0x118);
     /// <inheritdoc cref="MatParams"/>
-    public static readonly int MatParamCount = Unresolved("Material", "paramCount", 0x120);
-    /// <summary>The shared half of <see cref="MatParams"/>. In the same SharedMaterial region #436 refused
-    /// to resolve on neighbour corroboration, and this batch does not either.</summary>
-    public static readonly int SharedParams = Unresolved("SharedMaterial", "params", 0x1d0);
+    public static readonly int MatParamCount = Same("Material", "paramCount", 0x120);
+    /// <summary>The shared half of <see cref="MatParams"/>. <c>SharedMaterial::Init</c> reads
+    /// <c>1d8:4 / 1d0:8</c> on both builds, and Windows <c>ParseField</c> reads the same pair -- a direct
+    /// pairing, not the neighbour corroboration #436 and #441 rightly refused.</summary>
+    public static readonly int SharedParams = Same("SharedMaterial", "params", 0x1d0);
     /// <inheritdoc cref="SharedParams"/>
-    public static readonly int SharedParamCount = Unresolved("SharedMaterial", "paramCount", 0x1d8);
+    public static readonly int SharedParamCount = Same("SharedMaterial", "paramCount", 0x1d8);
 
     /// <summary>One <c>MaterialParameter</c>: name at +0, value at +0x44, type at +0x5c (0 = float),
-    /// component count at +0x60 as a ushort, 100 bytes a record. Nothing takes one as <c>this</c>
-    /// (<c>Parse(char const*, MaterialParameter&amp;)</c> @0x4c5310 takes it as argument 2), so the sweep
-    /// cannot reach it.</summary>
-    public static readonly int ParamValue = Unresolved("MaterialParameter", "value", 0x44);
+    /// component count at +0x60 as a ushort, 100 bytes a record.
+    /// <para>Nothing takes one as <c>this</c>, so no class sweep reaches it -- #443 read it out of
+    /// <c>SharedMaterial::BindShaderParameters</c> instead, decompiled on both builds
+    /// (@0x4c5480 / @0x82aa0). That one function walks the whole record: <c>+0x5c</c> the discriminator,
+    /// <c>+0x44</c> the value, <c>+0x60</c> the ushort component count, <c>+0x54/+0x58</c> the two cached
+    /// uniform locations, and <c>lVar += 100</c> a record -- byte for byte the same on both.</para></summary>
+    public static readonly int ParamValue = Same("MaterialParameter", "value", 0x44);
     /// <inheritdoc cref="ParamValue"/>
-    public static readonly int ParamType = Unresolved("MaterialParameter", "type", 0x5c);
+    public static readonly int ParamType = Same("MaterialParameter", "type", 0x5c);
     /// <inheritdoc cref="ParamValue"/>
-    public static readonly int ParamComps = Unresolved("MaterialParameter", "comps", 0x60);
+    public static readonly int ParamComps = Same("MaterialParameter", "comps", 0x60);
     /// <inheritdoc cref="ParamValue"/>
-    public static readonly int ParamStride = Unresolved("MaterialParameter", "stride", 100);
+    public static readonly int ParamStride = Same("MaterialParameter", "stride", 100);
 
     /// <summary>CNWCArea -&gt; tile grid width (+0xc) and height (+0x10): <c>CNWCArea::LoadBorder</c>
     /// @0x70a5c0 multiplies exactly these for the tile count and bounds its strip loops on them. No
@@ -883,10 +898,299 @@ public static unsafe class EngineLayout
     /// <inheritdoc cref="ListItems"/>
     public static readonly int ListItemCount = Same("(abi)", "list.count", 0x8);
 
-    // ponytail: the rest of the Alloy offsets land here one subsystem at a time (#429 section 2) -- batch 1 was
-    // the Scene walk (#436), batch 2 the passes (#441); AlloyRenderer, OwnedTextures/OwnedBuffers/TexScan,
-    // DrawFunnel/RspShim and the Core/Services/Ui residue are what is left. A second tested
-    // client build gets its own pinned key plus its own values below; today there is exactly one per OS.
+
+    // ================= Alloy: the renderer, textures, buffers and shim (#443, batch 3 of #429 section 2) ==
+    // The last of section 2. Measured 2026-09-12: one FieldDump.java cycle over CNWCAnimBase/CRes/
+    // CAurTexture/Material (.scratch/443), the earlier #436/#441 dumps re-read for the classes they already
+    // covered, tools/ghidra/DecompOne.java for the three functions no class sweep reaches
+    // (SharedMaterial::BindShaderParameters, GLRender::SetUniforms, GLRender::UnlockPool), and
+    // tools/abi/vtable-slots.py for every vtbl row. Decompiler evidence: a CANDIDATE until probed.
+
+    // ---- CAurTextureBasic (identical 0x28..0xec; #436 read the class by hand, this batch pairs the rest) ----
+
+    /// <summary>The decoded image buffer. <c>ConstructImage</c> fills it, <c>FreeImage</c> releases it, and
+    /// <c>BuildAndStoreTexture</c> refuses without it -- all three read +0x58 on both builds.</summary>
+    public static readonly int TexBasicImage = Same("CAurTextureBasic", "image", 0x58);
+
+    /// <summary>The GL name the engine bound for a single-cell texture. <c>Reset</c> clears it and
+    /// <c>glImageBasic</c> writes it, both at +0x6c on both builds.</summary>
+    public static readonly int TexBasicGlId = Same("CAurTextureBasic", "glId", 0x6c);
+
+    /// <summary>#265's discriminator: the compressed byte count, zero for a sheet that came down the
+    /// UNCOMPRESSED path. <c>ConstructImage</c> writes it, <c>BuildAndStoreTexture</c> and
+    /// <c>GetMemoryUsage</c> read it -- +0x70 on both.</summary>
+    public static readonly int TexBasicCompressedSize = Same("CAurTextureBasic", "compressedSize", 0x70);
+
+    /// <summary>Sheet dimensions and bytes per texel. <c>CheckAttributes</c> reads and rewrites all three
+    /// on both builds, which is as clean a pair as this class offers.</summary>
+    public static readonly int TexBasicWidth = Same("CAurTextureBasic", "width", 0x74);
+    /// <inheritdoc cref="TexBasicWidth"/>
+    public static readonly int TexBasicHeight = Same("CAurTextureBasic", "height", 0x78);
+    /// <inheritdoc cref="TexBasicWidth"/>
+    public static readonly int TexBasicBpp = Same("CAurTextureBasic", "bpp", 0x7c);
+
+    /// <summary>The format/kind word, 4 for a PLT. <c>glImageBasic</c> takes the GPU-composite branch on
+    /// <c>== 4</c> and nothing else, so this is the ONLY test separating a build Alloy must copy from one it
+    /// has already uploaded (#282). <c>FreeImage</c> and <c>glImageBasic</c> read +0x84 on both.</summary>
+    public static readonly int TexBasicPltKind = Same("CAurTextureBasic", "pltKind", 0x84);
+
+    /// <summary><c>uint*</c>, the <c>numX*numY</c> GL names <c>glImageBasic</c> generates, one per cell.
+    /// <c>Reset</c> frees and nulls it at +0x50 on both builds.</summary>
+    public static readonly int TexBasicCellNames = Same("CAurTextureBasic", "cellNames", 0x50);
+
+    /// <summary>The PLT layer scheme (<c>int*</c>) and its <c>short</c> count -- the other half of the
+    /// engine's own texture identity. <c>SetScheme</c> writes both and <c>CalculateHashID</c> reads both,
+    /// at +0x48/+0xd4 on either build.</summary>
+    public static readonly int TexBasicSchemes = Same("CAurTextureBasic", "schemes", 0x48);
+    /// <inheritdoc cref="TexBasicSchemes"/>
+    public static readonly int TexBasicSchemeCount = Same("CAurTextureBasic", "schemeCount", 0xd4);
+
+    /// <summary>The <c>short</c> atlas grid the engine de-atlases into one GL texture per cell.
+    /// <c>Reset</c> and the destructor read both on both builds (MSVC emits them in the other order, which
+    /// is scheduling, not layout).</summary>
+    public static readonly int TexBasicNumX = Same("CAurTextureBasic", "numX", 0xca);
+    /// <inheritdoc cref="TexBasicNumX"/>
+    public static readonly int TexBasicNumY = Same("CAurTextureBasic", "numY", 0xcc);
+
+    /// <summary>The mean-alpha cache and the animation controller pointer. The constructor writes the whole
+    /// 0x28..0x37 region on both builds (Linux as two 8-byte stores, Windows as four dwords -- the #441
+    /// lesson), <c>ConstructImage</c> rewrites +0x30 and <c>ParseField</c> walks +0x38, both at both
+    /// ends.</summary>
+    public static readonly int TexBasicAlphaMean = Same("CAurTextureBasic", "alphaMean", 0x30);
+    /// <inheritdoc cref="TexBasicAlphaMean"/>
+    public static readonly int TexBasicController = Same("CAurTextureBasic", "controller", 0x38);
+
+    /// <summary>The RESOLVED texture name -- <c>char[0x20]</c> that <c>LoadImage</c> fills and
+    /// <c>CAurTexture::Restore</c> re-acquires by, stable across a delete/rebuild, which is what makes it an
+    /// identity (#210).
+    /// <para>NOT <see cref="TexBasicName"/>: there are two 32-byte name fields, the constructor's requested
+    /// name at +0x88 and this one at +0xa8, and both constructors write both runs (0x88..0xa7 and
+    /// 0xa8..0xc7). #441's rule again -- two files naming "the name" at different offsets were two fields,
+    /// not one error.</para></summary>
+    public static readonly int TexBasicResolvedName = Same("CAurTextureBasic", "resolvedName", 0xa8);
+
+    /// <summary>The four state bytes <c>UnbuiltDiag</c> reads: cube map, image constructed, "no image and no
+    /// controller", and never-build. <c>Reset</c> writes 0xe6/0xe7 (Windows as ONE 2-byte store over the
+    /// pair), <c>BuildAndStoreTexture</c> reads 0xe6/0xe8 and <c>glImageBasic</c> 0xe3 -- all on both
+    /// builds.</summary>
+    public static readonly int TexBasicFlagCube = Same("CAurTextureBasic", "flagCube", 0xe3);
+    /// <inheritdoc cref="TexBasicFlagCube"/>
+    public static readonly int TexBasicFlagBuilt = Same("CAurTextureBasic", "flagBuilt", 0xe6);
+    /// <inheritdoc cref="TexBasicFlagCube"/>
+    public static readonly int TexBasicFlagNoImage = Same("CAurTextureBasic", "flagNoImage", 0xe7);
+    /// <inheritdoc cref="TexBasicFlagCube"/>
+    public static readonly int TexBasicFlagNeverBuild = Same("CAurTextureBasic", "flagNeverBuild", 0xe8);
+
+    // ---- CAurTexture's vtable: the ten accessors TexScan reads a sheet through (#219) ----
+    // All -8 for #433's virtual-destructor reason EXCEPT GetCompressedSize(), where MSVC's overload
+    // REVERSAL cancels the shift exactly. That is the trap #433 named, caught here by measuring rather
+    // than by applying the rule: tools/abi/vtable-slots.py CAurTexture prints both tables.
+
+    /// <summary><c>GetImage()</c> -- the pixel pointer every scan starts from.</summary>
+    public static readonly int TexGetImageSlot = Diverges("CAurTexture", "vtbl.GetImage", linux: 0x68, win: 0x60, Expect.VtblSlot);
+    /// <summary><c>GetWidth()</c> / <c>GetHeight()</c> / <c>GetBPP()</c> -- the sheet's shape.</summary>
+    public static readonly int TexGetWidthSlot = Diverges("CAurTexture", "vtbl.GetWidth", linux: 0x78, win: 0x70, Expect.VtblSlot);
+    /// <inheritdoc cref="TexGetWidthSlot"/>
+    public static readonly int TexGetHeightSlot = Diverges("CAurTexture", "vtbl.GetHeight", linux: 0x80, win: 0x78, Expect.VtblSlot);
+    /// <inheritdoc cref="TexGetWidthSlot"/>
+    public static readonly int TexGetBppSlot = Diverges("CAurTexture", "vtbl.GetBPP", linux: 0x88, win: 0x80, Expect.VtblSlot);
+    /// <summary><c>GetNumX()</c> / <c>GetNumY()</c> -- the atlas grid an uncompressed sheet is cut on.</summary>
+    public static readonly int TexGetNumXSlot = Diverges("CAurTexture", "vtbl.GetNumX", linux: 0x90, win: 0x88, Expect.VtblSlot);
+    /// <inheritdoc cref="TexGetNumXSlot"/>
+    public static readonly int TexGetNumYSlot = Diverges("CAurTexture", "vtbl.GetNumY", linux: 0x98, win: 0x90, Expect.VtblSlot);
+    /// <summary><c>GetCompressedSize()</c>, the no-argument overload -- and the one slot in this table that
+    /// does NOT move. MSVC emits the overload set <c>(int,int)</c>-then-<c>()</c> where Itanium emits
+    /// <c>()</c>-then-<c>(int,int)</c>, so the swap gives back exactly the pointer the virtual destructor
+    /// took away. Identify it by signature; "the Nth GetCompressedSize" is meaningless.</summary>
+    public static readonly int TexCompressedSizeSlot = Same("CAurTexture", "vtbl.GetCompressedSize", 0xa8, Expect.VtblSlot);
+    /// <summary><c>GetNumMipHeaderBytes()</c> -- the header run to skip before the first texel.</summary>
+    public static readonly int TexHeaderSkipSlot = Diverges("CAurTexture", "vtbl.GetNumMipHeaderBytes", linux: 0xb8, win: 0xb0, Expect.VtblSlot);
+    /// <summary><c>GetMipMap()</c>.</summary>
+    public static readonly int TexMipMapSlot = Diverges("CAurTexture", "vtbl.GetMipMap", linux: 0xc0, win: 0xb8, Expect.VtblSlot);
+    /// <summary><c>GetCompressionFormat()</c> -- the index into <c>textureFormatTranslationTable</c>
+    /// @0x12f5080 where 7 = DXT1 and 8 = DXT5.</summary>
+    public static readonly int TexFormatSlot = Diverges("CAurTexture", "vtbl.GetCompressionFormat", linux: 0xd8, win: 0xd0, Expect.VtblSlot);
+
+    // ---- Scene's vtable: the slots RspShim calls through (#132/#232/#233/#235) ----
+    // Displacements from the loaded vptr, exactly as Scene::RenderSinglePass uses them. All -8.
+
+    /// <summary><c>Scene::DoBinBucket()</c> -- the per-bucket draw RSP runs for each of the sixteen.</summary>
+    public static readonly int SceneDoBinBucketSlot = Diverges("Scene", "vtbl.DoBinBucket", linux: 0x1c0, win: 0x1b8, Expect.VtblSlot);
+    /// <summary><c>Scene::RenderBeams()</c> (#130).</summary>
+    public static readonly int SceneRenderBeamsSlot = Diverges("Scene", "vtbl.RenderBeams", linux: 0x1d8, win: 0x1d0, Expect.VtblSlot);
+    /// <summary><c>Scene::DoEmitterBucket()</c> (#131).</summary>
+    public static readonly int SceneDoEmitterBucketSlot = Diverges("Scene", "vtbl.DoEmitterBucket", linux: 0x1e8, win: 0x1e0, Expect.VtblSlot);
+    /// <summary><c>Scene::RenderLensFlares()</c>.</summary>
+    public static readonly int SceneRenderLensFlaresSlot = Diverges("Scene", "vtbl.RenderLensFlares", linux: 0x230, win: 0x228, Expect.VtblSlot);
+    /// <summary><c>Scene::FadeDoors()</c> -- #132's frame anchor: the one RSP item that runs every frame.</summary>
+    public static readonly int SceneFadeDoorsSlot = Diverges("Scene", "vtbl.FadeDoors", linux: 0x260, win: 0x258, Expect.VtblSlot);
+    /// <summary><c>Scene::DoFog()</c>.</summary>
+    public static readonly int SceneDoFogSlot = Diverges("Scene", "vtbl.DoFog", linux: 0x280, win: 0x278, Expect.VtblSlot);
+    /// <summary><c>Scene::DoHighlightGob()</c> and <c>Scene::DoHighlightTriggers(bool)</c> -- #232/#233's
+    /// two overlays, which RSP calls unconditionally and which self-gate inside.</summary>
+    public static readonly int SceneDoHighlightGobSlot = Diverges("Scene", "vtbl.DoHighlightGob", linux: 0x1b8, win: 0x1b0, Expect.VtblSlot);
+    /// <inheritdoc cref="SceneDoHighlightGobSlot"/>
+    public static readonly int SceneDoHighlightTriggersSlot = Diverges("Scene", "vtbl.DoHighlightTriggers", linux: 0x1f8, win: 0x1f0, Expect.VtblSlot);
+
+    /// <summary><c>LightManager::EnableLights()</c> -- RSP's very first call, and load-bearing: #234 found
+    /// the owned pass dark without it.</summary>
+    public static readonly int LightMgrEnableLightsSlot = Diverges("LightManager", "vtbl.EnableLights", linux: 0x18, win: 0x10, Expect.VtblSlot);
+
+    /// <summary><c>Gob::GetAttachedGobs(List&lt;CAurObject*&gt;&amp;)</c> -- fills a malloc'd
+    /// {Gob** data, int count} the caller frees. NOT the head/tail list <c>Gob::CollectLights</c> walks.</summary>
+    public static readonly int GobAttachedGobsSlot = Diverges("Gob", "vtbl.GetAttachedGobs", linux: 0x228, win: 0x220, Expect.VtblSlot);
+
+    // ---- the Scene highlight list, and the gob flag the walk reads (#232) ----
+
+    /// <summary><c>Scene</c>'s highlight state as <c>Scene::AddHighlightGob</c> lays it out: a
+    /// <c>CExoArrayList&lt;Gob*&gt;</c> (items +0x80, count +0x88) and a parallel RGB <c>Vector</c> array at
+    /// +0x90, stride 0xc. <c>Scene::DoHighlightGob</c> reads all three at both ends, and both constructors
+    /// write all three -- two pairs.</summary>
+    public static readonly int SceneHiliteGobs = Same("Scene", "hiliteGobs", 0x80);
+    /// <inheritdoc cref="SceneHiliteGobs"/>
+    public static readonly int SceneHiliteCount = Same("Scene", "hiliteCount", 0x88);
+    /// <inheritdoc cref="SceneHiliteGobs"/>
+    public static readonly int SceneHiliteColors = Same("Scene", "hiliteColors", 0x90);
+
+    /// <summary>The gob byte <c>Scene::DoHighlightGob</c> tests before recursing into attached children.
+    /// <c>Gob::SetPropagateHighlightEffects</c> is its only writer on either build, which is also what
+    /// NAMES it: the pre-#443 comment called it "the visible byte", and the visible byte is
+    /// <see cref="GobVisible"/> at +0x1a4.</summary>
+    public static readonly int GobPropagateHilite = Same("Gob", "propagateHilite", 0x1c);
+
+    // ---- CNWCAnimBase: the highlight CHANNELS (#336) ----
+    // No CNWC* class is name-exported on Windows, so none of these three can be paired by the class sweep --
+    // they need #420's RVA path. Unresolved is the honest verdict, and it is what keeps the owned outline
+    // from arming on a build where the channel it reads is somewhere else.
+
+    /// <summary>A hilite is written into one of five channel slots -- active flag at +0x9c[ch], colour at
+    /// +0x60[ch] (12 bytes), "also add a glow gob" at +0xb0[ch] -- and <c>RefreshHilite</c> takes the LOWEST
+    /// active slot as the winner. Tab and mouseover arrive on channel 2, every VFX on 3, which is why a Tab
+    /// over a glowing creature shows the Tab colour. The Linux constructor writes +0x9c and +0xc8.</summary>
+    public static readonly int AnimHiliteActive = Unresolved("CNWCAnimBase", "hiliteActive", 0x9c);
+    /// <inheritdoc cref="AnimHiliteActive"/>
+    public static readonly int AnimHiliteGlow = Unresolved("CNWCAnimBase", "hiliteGlow", 0xb0);
+    /// <summary>The gob the winning channel is published against.</summary>
+    public static readonly int AnimHiliteGob = Unresolved("CNWCAnimBase", "hiliteGob", 0xc8);
+
+    // ---- GLRender's pool descriptor table (#260) ----
+
+    /// <summary>The 0x20-byte pool descriptor <c>GLRender::RequestPool</c> callocs: host shadow at +0,
+    /// byte size +8, GL name +0xc, target index +0x10, lock flags +0x11, usage word +0x14, "uploaded once"
+    /// +0x18, "named" +0x19.
+    /// <para>Paired whole. Linux <c>GLRender::UnlockPool</c> @0x4cfc80 indexes
+    /// <c>DAT_01ae5480 + i*0x20</c> and tests every one of those fields; the Windows UnlockPool forwards to
+
+    /// eight displacements, same bit tests (<c>lockFlags &amp; 0x18</c>, <c>usage &gt;&gt; 8 &amp; 1</c>,
+    /// <c>usage &amp; 2</c>).</para></summary>
+    public static readonly int PoolStride = Same("GLRender", "poolStride", 0x20);
+    /// <inheritdoc cref="PoolStride"/>
+    public static readonly int PoolSize = Same("GLRender", "poolSize", 0x08);
+    /// <inheritdoc cref="PoolStride"/>
+    public static readonly int PoolName = Same("GLRender", "poolName", 0x0c);
+    /// <inheritdoc cref="PoolStride"/>
+    public static readonly int PoolTarget = Same("GLRender", "poolTarget", 0x10);
+    /// <inheritdoc cref="PoolStride"/>
+    public static readonly int PoolLockFlags = Same("GLRender", "poolLockFlags", 0x11);
+    /// <inheritdoc cref="PoolStride"/>
+    public static readonly int PoolUsage = Same("GLRender", "poolUsage", 0x14);
+    /// <inheritdoc cref="PoolStride"/>
+    public static readonly int PoolUploaded = Same("GLRender", "poolUploaded", 0x18);
+    /// <inheritdoc cref="PoolStride"/>
+    public static readonly int PoolNamed = Same("GLRender", "poolNamed", 0x19);
+
+    /// <summary>The descriptor count, one pointer above the table base. The same {base, count} pair on both:
+    /// Linux reads the two adjacent globals <c>DAT_01ae5480</c>/<c>DAT_01ae5488</c>, Windows reads
+
+    public static readonly int PoolTableCount = Same("GLRender", "poolTableCount", 0x08);
+
+    /// <summary>Byte offset from <see cref="SymbolMap.GlPoolTableAnchor"/> to that {base, count} pair.
+    /// <para>Unresolved and likely to stay so in this form: on Windows the pair is its own static
+    /// (rva 0x128ead8) passed BY POINTER into the pool helper, not a fixed distance from any symbol we
+    /// anchor on -- so what Windows needs is its own anchor in <c>SymbolMap._win</c>, not a Windows value
+    /// for this row.</para></summary>
+    public static readonly int PoolTableAnchorOffset = Unresolved("GLRender", "poolTableAnchorOffset", 0x236c);
+
+    // ---- GLRender::m_shaderExposedRuntimeData (#123/#124/#347) ----
+    // The struct the engine's own SetUniforms uploads its scalar shader inputs from. Nothing takes it as
+    // `this`, so it is read here the way #441 read the fade fields: off GLRender::SetUniforms decompiled on
+    // both builds (@0x4ccbf0 / @0xb8380). The symbol is exported at Linux 0x19e1ea0 and Windows rva
+    // 0x128ea10, and every displacement below appears in SetUniforms on BOTH builds at the SAME offset --
+    // the field-by-field pairing this batch could not get out of the PROG_FIXED slot map alone.
+
+    /// <summary>Time of day, 0..1 -- what the sky and the wind phase run off.</summary>
+    public static readonly int RtTimeOfDay = Same("ShaderExposedRuntimeData", "timeOfDay", 0x18);
+    /// <summary>The area wind vector (#123).</summary>
+    public static readonly int RtAreaWind = Same("ShaderExposedRuntimeData", "areaWind", 0x28);
+    /// <summary>The area flag word the roof-fade and interior tests read.</summary>
+    public static readonly int RtAreaFlags = Same("ShaderExposedRuntimeData", "areaFlags", 0x3c);
+    /// <summary>The controlled character's position.</summary>
+    public static readonly int RtPlayerPos = Same("ShaderExposedRuntimeData", "playerPos", 0x4c);
+    /// <summary>The camera EYE position.</summary>
+    public static readonly int RtCamPos = Same("ShaderExposedRuntimeData", "camPos", 0x64);
+    /// <summary>Camera pitch and player-camera distance -- #124's keyhole aperture inputs.</summary>
+    public static readonly int RtCamPitch = Same("ShaderExposedRuntimeData", "camPitch", 0x84);
+    /// <inheritdoc cref="RtCamPitch"/>
+    public static readonly int RtCamDist = Same("ShaderExposedRuntimeData", "camDist", 0x8c);
+    /// <summary>#347: the camera PIVOT, uploaded under the name <c>cameraFocus</c>. Not the eye
+    /// (<see cref="RtCamPos"/>): in chase cam the pivot sits on the controlled character at roughly chest
+    /// height, which is what content measures a sight range against.</summary>
+    public static readonly int RtCamFocus = Same("ShaderExposedRuntimeData", "camFocus", 0x90);
+
+    // ---- the rest ----
+
+    /// <summary>The part's self-illumination colour, <c>PartTriMesh::MatStatic</c>'s prop-3 material term.
+    /// <para>Unresolved on purpose, and it is the one row in this batch #430's segment model cannot reach:
+    /// PartTriMesh's measured segments are +0x4 across the bbox (<see cref="PartBboxMin"/> 0x64 -&gt; 0x68)
+    /// and +0x8 from <see cref="PartNode"/> (0x88 -&gt; 0x90) up. +0x7c falls in the GAP between them --
+    /// Windows <c>WithinRange</c> reads the six bbox floats at 0x68..0x7c, so Windows +0x7c is bbox, and
+    /// whether the four bytes the boundary adds land before or after this field is not measured by
+    /// anything. Interpolating a segment across its own boundary is exactly the Camera +0x4d4 mistake.</para></summary>
+    public static readonly int PartSelfIllum = Unresolved("PartTriMesh", "selfIllum", 0x7c);
+
+    /// <summary>The node material colours <c>PartTriMesh::MatStatic</c> @0x450560 hands to
+    /// <c>SetMaterialv</c>: prop 2 takes +0xe8 and prop 1 takes +0xf4, so the enum runs
+    /// ambient/diffuse/emissive and +0xe8 is the DIFFUSE term -- the one carrying the part's alpha in
+    /// fixed-function material setup. Both <c>MdlNodeTriMesh</c> constructors write the same run
+    /// (0xe8, 0xf0, 0xf4, 0xfc, 0x100, 0x108, 0x10c) on both builds.
+    /// <para>Filed under the subclass that declares them, not <c>MdlNode</c>: #436's rule is that a class
+    /// verdict does not travel, and it does not travel downward either.</para></summary>
+    public static readonly int MdlDiffuse = Same("MdlNodeTriMesh", "diffuse", 0xe8);
+    /// <inheritdoc cref="MdlDiffuse"/>
+    public static readonly int MdlAmbient = Same("MdlNodeTriMesh", "ambient", 0xf4);
+
+    /// <summary>Stride between the texture slots of a <c>Material</c> -- a <c>SafePointer</c>, pointer plus
+    /// a refcount int. The constructor writes slots at 0x00/0x10/../0x60 on both builds and Windows
+    /// <c>ClearTextures</c> walks each one's +8 refcount, so 0x10 is measured rather than assumed.</summary>
+    public static readonly int MatSlotStride = Same("Material", "slotStride", 0x10);
+
+    /// <summary>Where a <c>SharedMaterial</c>'s own eleven texture slots begin -- they win over the
+    /// Material's three. <c>SharedMaterial::BindAllStandardTextures</c> reads +0xd8 on both builds; the
+    /// stride between slots is <see cref="MatSlotStride"/>, measured on the Material array.</summary>
+    public static readonly int SharedSlot0 = Same("SharedMaterial", "slot0", 0xd8);
+
+    /// <summary>Stride between the three shader-name resref slots <see cref="SharedVsName"/> names, and the
+    /// length of each inline NUL-terminated buffer.
+    /// <para>The SharedMaterial constructor writes them at 0x188 / 0x199 / 0x1aa on BOTH builds -- 0x11
+    /// apart either way. #441 read Windows' extra stores at 0x190/0x1a1/0x1b2 as an unexplained +0x8; they
+    /// are MSVC splitting each 17-byte copy into two 8-byte stores, the same shape #441 itself identified
+    /// in the CAurTextureBasic constructor.</para></summary>
+    public static readonly int SharedNameLen = Same("SharedMaterial", "resrefStride", 0x11);
+
+    /// <summary><c>sizeof(CRes)</c> -- what <c>CExoResMan::Get</c> passes to operator new. Both
+    /// constructors' highest write is <c>0x58:8</c>, so the object is 0x60 on both.</summary>
+    public static readonly int SizeOfCRes = Same("CRes", "sizeof", 0x60);
+    /// <summary><c>CRes::GetData</c> and <c>CRes::GetSize</c> -- the raw file bytes of a serviced .shd and
+    /// their length. One-line accessors reading +0x20 and +0x30 on both builds: the cleanest pair in the
+    /// batch.</summary>
+    public static readonly int CResData = Same("CRes", "data", 0x20);
+    /// <inheritdoc cref="CResData"/>
+    public static readonly int CResSize = Same("CRes", "size", 0x30);
+
+    // Section 2 is closed: batch 1 took the Scene walk (#436), batch 2 the passes (#441), batch 3 the
+    // renderer, textures, buffers and shim (#443), and build.sh now refuses a bare hex offset under
+    // managed/Alloy/. A second tested client build gets its own pinned key plus its own values below;
+    // today there is exactly one per OS.
 
     // ================= engine constants that are not offsets =================
     // They rode into this table with #436 because the file they lived in was the offset file. They are

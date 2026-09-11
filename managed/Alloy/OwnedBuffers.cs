@@ -300,7 +300,7 @@ internal static unsafe class OwnedBuffers
         byte* table = *(byte**)_table;
         uint count = *(uint*)(_table + PoolCountOffset);
         if (table == null || token >= count) return null;
-        return table + (nuint)token * PoolStride;
+        return table + (nuint)token * (nuint)PoolStride;
     }
 
     /// <summary>#284: does this pool token already name a GL buffer? The VAO drip needs it because
@@ -401,25 +401,30 @@ internal static unsafe class OwnedBuffers
     private const long OneMiB = 1024 * 1024;
     /// <summary>The engine's "this VDO has no such pool" token (<c>VertexDataObject::AddItem</c> tests it at
     /// +0x24 and +0x30), and equally <c>UnlockPool</c>'s first refusal.</summary>
-    private const uint NoPool = 0xFFFFFFFF;
+    private const uint NoPool = EngineLayout.VdoNoPool;
     /// <summary>The size <c>GLRender::UnlockPool</c> reads as "the whole pool": both of its
     /// <c>glBufferSubData</c> sites substitute the pool's own byte count for it (@0x4cfda1/0x4cfda3 and
     /// @0x4cfe7d/0x4cfe7f).</summary>
-    private const uint WholePool = 0xFFFFFFFF;
+    private const uint WholePool = 0xFFFFFFFF;   // not-an-offset: the "whole pool" size sentinel UnlockPool substitutes for
     /// <summary>Byte offset from <see cref="SymbolMap.GlPoolTableAnchor"/> to the table base pointer, and
-    /// from there to the descriptor count -- the two globals <c>GLRender::UnlockPool</c> indexes through.</summary>
-    private const int PoolTableOffset = 0x236c, PoolCountOffset = 8;
+    /// from there to the descriptor count -- the two globals <c>GLRender::UnlockPool</c> indexes through.
+    /// The anchor offset is Windows-unresolved on purpose; see the row.</summary>
+    private static readonly int PoolTableOffset = EngineLayout.PoolTableAnchorOffset,
+                               PoolCountOffset = EngineLayout.PoolTableCount;
     /// <summary>The 0x20-byte pool descriptor (<c>GLRender::RequestPool</c> @0x4d1ec0 callocs 0x20 apiece):
     /// host shadow, byte size, GL name, target index, lock flags, usage word, "uploaded once", "named".</summary>
-    private const int PoolStride = 0x20, PoolSize = 0x08, PoolName = 0x0c,
-                      PoolLockFlags = 0x11, PoolUsage = 0x14, PoolUploaded = 0x18, PoolNamed = 0x19;
+    private static readonly int PoolStride = EngineLayout.PoolStride, PoolSize = EngineLayout.PoolSize,
+        PoolName = EngineLayout.PoolName, PoolLockFlags = EngineLayout.PoolLockFlags,
+        PoolUsage = EngineLayout.PoolUsage, PoolUploaded = EngineLayout.PoolUploaded,
+        PoolNamed = EngineLayout.PoolNamed;
     /// <summary>Lock-flag bits that make <c>UnlockPool</c> do nothing at all.</summary>
-    private const byte LockNoUpload = 0x18;
+    private const byte LockNoUpload = 0x18;   // not-an-offset: bits inside the lock-flags byte
     /// <summary>Usage bits from <c>RequestPool</c>'s third argument: 0x100 = the sub-data path (the three
     /// per-VDO pools are 0x100/0x100/0x102), 0x2 = dynamic.</summary>
-    private const uint UsageSubData = 0x100, UsageDynamic = 0x2;
+    private const uint UsageSubData = 0x100, UsageDynamic = 0x2;   // not-an-offset: bits inside the usage word
     /// <summary>Pool tokens on a <c>VertexDataObject</c>: element, static vertex, dynamic vertex.</summary>
-    private const int VdoElemToken = 0x18, VdoStaticToken = 0x24, VdoDynamicToken = 0x30;
+    private static readonly int VdoElemToken = EngineLayout.VdoElemToken,
+        VdoStaticToken = EngineLayout.VdoVertToken, VdoDynamicToken = EngineLayout.VdoDynToken;
 
     /// <summary>ADR 0016's measurement, and the only VRAM number this ticket ships. Called once a frame from
     /// inside the bracket, NOT from the upload funnel: the mark is RECORDED there (two compares) and the line

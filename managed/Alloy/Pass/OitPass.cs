@@ -14,7 +14,7 @@ namespace Sowx.Alloy;
 /// when the frame has no owned depth to attach (post not resolving) or a target refused.</para></summary>
 internal static unsafe class OitPass
 {
-    private const uint R16F = 0x822D, RGBA32F = 0x8814;
+    private const uint R16F = 0x822D, RGBA32F = 0x8814;   // not-an-offset: GL internal-format enums
     private static uint _fbo, _accum, _reveal, _prog;
     private static int _w, _h, _uAccum, _uReveal, _uViz;
     /// <summary><c>/draw oitviz</c>: 1 = revealage as grey, 2 = accumulated mean colour, 3 = accumulated weight/10. Unblended.</summary>

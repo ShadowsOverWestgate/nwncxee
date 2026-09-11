@@ -29,7 +29,7 @@ internal static unsafe class Halos
     private static readonly int NdFlareRadius = EngineLayout.FlareRadius, NdFlareCount = EngineLayout.FlareCount,
                                NdFlareSizes = EngineLayout.FlareSizes, NdFlareShifts = EngineLayout.FlareShifts;
     private static readonly int SceneLightManager = EngineLayout.SceneLightManager;
-    private const uint BindHalos = 5, GlTriangleStrip = 0x0005;
+    private const uint BindHalos = 5, GlTriangleStrip = 0x0005;   // not-an-offset: GL primitive-mode enum
     /// <summary>Two vec4 per halo: (pos.xyz, world radius), (linear rgb with the engine fade folded in, flareradius).</summary>
     private const int Floats = 8;
     private const int InitialHalos = 64;

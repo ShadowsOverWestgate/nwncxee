@@ -29,11 +29,11 @@ internal static unsafe class PostStack
     private const uint PostMaskParam = 2;
     /// <summary><c>GetGlobalShaderParamf(0x0b)</c>: the gamma option, uploaded to stock programs as the
     /// <c>Gamma</c> uniform. Clamped to [0, 1000] by the setter.</summary>
-    private const uint GammaParam = 0x0b;
+    private const uint GammaParam = 0x0b;   // not-an-offset: engine shader-param index
     /// <summary><c>POSTPROCESSING_GAMMA 0x0010</c> in <c>inc_postpr.shd</c> -- the same value in both stock
     /// shader generations (base_shaders.bif and ovr.bif) and in sow-topdata's fork; SetGamma sets it iff
     /// |g - 2.2| &gt;= 9e-5.</summary>
-    internal const int MaskGamma = 0x10;
+    internal const int MaskGamma = 0x10;   // not-an-offset: engine FB-effect mask bit
     /// <summary><c>POSTPROCESSING_TOON 0x0020</c> -- the client's Toon video option; see
     /// <see cref="ToonStage"/> for the engine setter this was read off.</summary>
     internal const int MaskToon = ToonStage.MaskToon;

@@ -197,7 +197,7 @@ internal static unsafe class Particles
     /// <c>SetBlendFunc(0, 2)</c>. Both int arguments come from the DISASSEMBLY -- the decompiler drops the
     /// second and renders both arms as <c>SetBlendFunc(0)</c>, the int-valued twin of the trap
     /// <see cref="Beams"/>'s <c>projectionWorldZClip</c> fell into.</summary>
-    private const uint GlSrcAlpha = 0x0302, GlOneMinusSrcAlpha = 0x0303, GlOne = 1;
+    private const uint GlSrcAlpha = 0x0302, GlOneMinusSrcAlpha = 0x0303, GlOne = 1;   // not-an-offset: GL blend-factor enums
     /// <summary>The alpha-discard threshold a punch-through emitter draws under. It is
     /// <c>fAlphaDiscardValue</c> under <c>RenderInterface::Enable(1)</c>, the same 0.2 every other cutout
     /// class in the Alloy pass uses (<see cref="AlloyClasses.Discard"/>); the other two blend classes draw
@@ -274,7 +274,7 @@ internal static unsafe class Particles
     /// groups the sort may reorder. The count itself is bounded by <see cref="MaxRecs"/>, so the bit is
     /// free -- and it is the ONLY thing that decides a reorder, which is what keeps the classes separable.
     /// </summary>
-    private const uint SortFlag = 0x80000000u;
+    private const uint SortFlag = 0x80000000u;   // not-an-offset: a sort-key bit of ours
 
     /// <summary>Emitters tracked at once. Past this an emitter is declined and, since #264 deleted the
     /// engine walk, does not draw at all (#285) -- which is the whole cost of the cap.</summary>

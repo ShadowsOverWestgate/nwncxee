@@ -203,3 +203,50 @@ A caller that passes no class still asks about the whole table.
 Anchors are handwritten, like `docs/windows-symbols.md`. There is no generator:
 #431's extractor produces **candidates**, and a candidate becomes a row here only
 once it has been read in a function pair and, where it can, probed.
+
+### Alloy: the renderer, textures, buffers and shim (#443)
+
+The last of #429 section 2: **73 new rows, 5 of them `Unresolved`, and six of
+#441's `SharedMaterial` rows plus its two `Material`, two `SharedMaterial` and
+four `MaterialParameter` rows resolved** — 308 rows and 46 unresolved in total.
+Measured 2026-09-12. `build.sh` now refuses a bare hex integer constant under
+`managed/Alloy/`, which is what closes the section.
+
+Four instruments, and which rows came off which:
+
+| instrument | what it answered |
+|---|---|
+| `tools/ghidra/FieldDump.java`, one cycle, classes `CNWCAnimBase CRes CAurTexture Material` (`.scratch/443`) | `CRes` (0x20/0x30, one-line accessors on both), `Material` (0x118/0x120 via `InitSharedMaterial`), `CAurTexture` (`GetReferencedTexture` reads `+0x18` on both), and `CNWCAnimBase` — which dumps **empty** on Windows, so its three channel rows stay unresolved |
+| the #436 / #441 dumps, re-read | every `CAurTextureBasic` row, `Scene`'s highlight triple, `Gob+0x1c`, `MdlNodeTriMesh` 0xe8/0xf4, `Material`'s 0x10 slot stride, `SharedMaterial`'s 0xd8 and 0x11 |
+| `tools/ghidra/DecompOne.java` on both builds | the three functions no class sweep reaches: `SharedMaterial::BindShaderParameters` (@`0x4c5480` / @`0x82aa0`) for the whole `MaterialParameter` record; `GLRender::UnlockPool` (@`0x4cfc80` / @`0xbbad0`, which forwards to a helper @`0x140bbaf0`) for the pool descriptor; `GLRender::SetUniforms` (@`0x4ccbf0` / @`0xb8380`) for `m_shaderExposedRuntimeData` |
+| `tools/abi/vtable-slots.py` | all twenty vtable rows — ten `CAurTexture` accessors, eight `Scene` slots, `LightManager::EnableLights`, `Gob::GetAttachedGobs` |
+
+Three things the batch learned that the offset hunt (#429 section 3) inherits:
+
+- **The overload swap can cancel the −8.** Every vtable row in this batch is −8
+  on Windows for #433's virtual-destructor reason *except*
+  `CAurTexture::GetCompressedSize()`, which is `0xa8` on **both**: MSVC emits the
+  overload set `(int,int)`-then-`()` where Itanium emits `()`-then-`(int,int)`,
+  and the swap gives back exactly the pointer the destructor took away. The rule
+  is a hypothesis; the table is the measurement.
+- **Pair a struct reached through a global by SYMBOL ADDRESS, not by slot.**
+  `GLRender::SetUniforms` compares each `PROG_FIXED` cache slot against one field
+  of `m_shaderExposedRuntimeData`, and in the scalar block `0x10..0x5c` the slot
+  index happens to equal the field offset — above it, it does not. The first
+  attempt here paired a `DAT_01aaf6xx` cluster that looked like the struct and is
+  a different global. Resolve the exported symbol first (Linux `0x19e1ea0`,
+  Windows rva `0x128ea10`; Ghidra's Linux addresses are `nm + 0x100000`), then
+  ask whether `base + off` is touched on both.
+- **MSVC splits a 17-byte copy into 8 + 8 + 1.** That is the whole of #441's
+  unexplained `SharedMaterial` "+0x8": the stores at `0x190`/`0x1a1`/`0x1b2` are
+  the second halves of the resrefs at `0x188`/`0x199`/`0x1aa`, whose stride is
+  `0x11` on both builds. With that explained the constructor is a pair, and six
+  rows #441 refused are now measured.
+
+What is still `Unresolved` here, and why it is the honest answer:
+
+| row | why |
+|---|---|
+| `CNWCAnimBase` `hiliteActive` / `hiliteGlow` / `hiliteGob` | no `CNWC*` class is name-exported on Windows; needs #420's RVA path |
+| `PartTriMesh` `selfIllum` `+0x7c` | it falls in the GAP between PartTriMesh's two measured segments (`+0x4` across the bbox, `+0x8` from `0x88` up). Windows `WithinRange` reads the bbox at `0x68..0x7c`, so `+0x7c` is bbox there, and nothing measures where the boundary's four bytes land. Interpolating across a segment boundary is the Camera `+0x4d4` mistake |
+| `GLRender` `poolTableAnchorOffset` `0x236c` | Windows reaches the `{base, count}` pair as its own static (rva `0x128ead8`) passed *by pointer* into the pool helper, not at a fixed distance from any symbol. What Windows needs is its own anchor in `SymbolMap._win`, not a Windows value for this row |

@@ -19,8 +19,11 @@ namespace Sowx.Alloy;
 /// image. The engine never uploads DXT3.</para></summary>
 internal static unsafe class TexScan
 {
-    private const int VtPixels = 0x68, VtWidth = 0x78, VtHeight = 0x80, VtBpp = 0x88, VtNumX = 0x90, VtNumY = 0x98,
-                      VtCompressed = 0xa8, VtHeaderSkip = 0xb8, VtMipmaps = 0xc0, VtFormat = 0xd8;
+    private static readonly int VtPixels = EngineLayout.TexGetImageSlot, VtWidth = EngineLayout.TexGetWidthSlot,
+        VtHeight = EngineLayout.TexGetHeightSlot, VtBpp = EngineLayout.TexGetBppSlot,
+        VtNumX = EngineLayout.TexGetNumXSlot, VtNumY = EngineLayout.TexGetNumYSlot,
+        VtCompressed = EngineLayout.TexCompressedSizeSlot, VtHeaderSkip = EngineLayout.TexHeaderSkipSlot,
+        VtMipmaps = EngineLayout.TexMipMapSlot, VtFormat = EngineLayout.TexFormatSlot;
     private const int FmtDxt1 = 7, FmtDxt5 = 8;
     /// <summary>The last engine format code the compressed branch did not recognise; for the funnel diagnostic.</summary>
     internal static int LastRefusedFormat = -1;

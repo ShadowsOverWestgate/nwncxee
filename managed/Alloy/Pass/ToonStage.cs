@@ -30,7 +30,7 @@ internal static unsafe class ToonStage
 {
     /// <summary><c>POSTPROCESSING_TOON 0x0020</c> in <c>inc_postpr.shd</c>; confirmed as the bit the
     /// engine's own setter ORs in (<c>or $0x20</c> @0x66ae7c).</summary>
-    internal const int MaskToon = 0x20;
+    internal const int MaskToon = 0x20;   // not-an-offset: engine FB-effect mask bit
 
     private static ExtenderLog? _log;
     private static Matrix4x4 _proj;

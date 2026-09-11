@@ -254,7 +254,7 @@ internal static unsafe class SsaoPass
     }
 
     /// <summary><c>GL_RG16F</c>, absent from <see cref="Gl"/>.</summary>
-    private const uint Rg16F = 0x822F;
+    private const uint Rg16F = 0x822F;   // not-an-offset: GL internal-format enum
 
     private static bool EnsureTargets(int w, int h)
     {
