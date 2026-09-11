@@ -19,7 +19,7 @@ public static unsafe class Affinity
     /// <summary>Pin the calling thread to one CPU. False if the kernel refused.</summary>
     public static bool PinThis(int cpu)
     {
-        if (cpu < 0 || cpu >= MaskBytes * 8) return false;
+        if (OperatingSystem.IsWindows() || cpu < 0 || cpu >= MaskBytes * 8) return false;
         byte* m = stackalloc byte[MaskBytes];
         for (int i = 0; i < MaskBytes; i++) m[i] = 0;
         m[cpu >> 3] = (byte)(1 << (cpu & 7));
@@ -29,6 +29,7 @@ public static unsafe class Affinity
     /// <summary>Let the calling thread run anywhere: for a worker created by a pinned thread.</summary>
     public static void ClearThis()
     {
+        if (OperatingSystem.IsWindows()) return;
         int n = Math.Min(Environment.ProcessorCount, MaskBytes * 8);
         byte* m = stackalloc byte[MaskBytes];
         for (int i = 0; i < MaskBytes; i++) m[i] = 0;
@@ -36,5 +37,5 @@ public static unsafe class Affinity
         sched_setaffinity(0, MaskBytes, m);
     }
 
-    public static int CurrentCpu => sched_getcpu();
+    public static int CurrentCpu => OperatingSystem.IsWindows() ? -1 : sched_getcpu();
 }

@@ -65,6 +65,18 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Extender-optional** — a stock client plays vanilla; the extender only ever reuses
   existing wire opcodes, so an un-extended client loses nothing.
 
+## Platform port
+
+- **Resolution** — how a Linux symbol lands on Windows: by *Name* (an MSVC export), by *RVA*
+  (a build-locked offset from the module base), or *Skip* (no Windows anchor). Avoid: mapping.
+- **Build lock** — the one PE stamp the RVAs were read from. A different stamp turns every RVA
+  resolution into Skip. Avoid: version pin.
+- **Stand down** — a feature whose required symbols do not all resolve runs vanilla, logged with
+  the cause (Skip by design, or Skip by rot). Never half-live: a feature stands down as a unit,
+  the same word the post stack uses. Avoid: degrade, fall back.
+- **Anchor** — the compiler-invariant evidence (a unique string, an immediate constant, an exported
+  neighbour) that ties a Windows RVA to its Linux symbol.
+
 ## UI framework
 
 - **UI framework** (`Sowx.Ui`) — the shared layer every windowed feature builds on. Owns

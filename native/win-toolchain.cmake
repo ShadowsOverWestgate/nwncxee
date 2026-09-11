@@ -1,0 +1,12 @@
+# CMake toolchain: clang-cl + lld-link on Linux against a lowercase-mirrored Windows SDK (build-win.sh).
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR AMD64)
+set(CMAKE_C_COMPILER clang-cl)
+set(CMAKE_CXX_COMPILER clang-cl)
+set(CMAKE_LINKER lld-link)
+set(CMAKE_AR llvm-lib)
+set(CMAKE_RC_COMPILER llvm-rc)
+set(CMAKE_C_FLAGS_INIT "/I${WINSDK}/inc/um /I${WINSDK}/inc/shared /I${WINSDK}/inc/ucrt /I${WINSDK}/inc/msvc -Xclang -ivfsoverlay -Xclang ${WINSDK}/vfs.yaml -w")
+set(CMAKE_CXX_FLAGS_INIT "/I${WINSDK}/inc/um /I${WINSDK}/inc/shared /I${WINSDK}/inc/ucrt /I${WINSDK}/inc/msvc -Xclang -ivfsoverlay -Xclang ${WINSDK}/vfs.yaml -w")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "/LIBPATH:${WINSDK}/lib")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "/LIBPATH:${WINSDK}/lib")

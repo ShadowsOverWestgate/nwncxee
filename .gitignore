@@ -5,3 +5,5 @@ bin/
 obj/
 build-managed.log
 __pycache__/
+sow-client-extender-win/
+build-managed-win.log

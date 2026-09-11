@@ -1,0 +1,37 @@
+diff --git a/src/funchook_windows.c b/src/funchook_windows.c
+index 77978e5..4fbec62 100644
+--- a/src/funchook_windows.c
++++ b/src/funchook_windows.c
+@@ -117,6 +117,32 @@ static int alloc_page_info(funchook_t *funchook, page_list_t **pl_out, void *hin
+             }
+         }
+         hint = (void*)((size_t)mbi.BaseAddress + mbi.RegionSize);
++        /* sowx: the upward walk has left rel32 range (a multi-GB reservation sits right above the
++         * target -- the NativeAOT GC under Wine). Walk DOWN from the target instead; the rel32
++         * jump would otherwise be silently truncated and fault at the first call. */
++        if ((size_t)hint - (size_t)old_hint > 0x7ff00000) {
++            hint = (void*)((size_t)old_hint - 1);
++            while (1) {
++                if (VirtualQuery(hint, &mbi, sizeof(mbi)) == 0 ||
++                    (size_t)old_hint - (size_t)mbi.BaseAddress > 0x7ff00000) {
++                    funchook_set_error_message(funchook, "No free memory within rel32 range of %p", old_hint);
++                    return FUNCHOOK_ERROR_MEMORY_ALLOCATION;
++                }
++                funchook_log(funchook, "  process map (down): "ADDR_FMT"-"ADDR_FMT" %s\n",
++                             (size_t)mbi.BaseAddress, (size_t)mbi.BaseAddress + mbi.RegionSize,
++                             (mbi.State == MEM_FREE) ? "free" : "used");
++                if (mbi.State == MEM_FREE && mbi.RegionSize >= allocation_unit) {
++                    size_t addr = ROUND_DOWN((size_t)mbi.BaseAddress + mbi.RegionSize - allocation_unit, allocation_unit);
++                    if (addr >= (size_t)mbi.BaseAddress) {
++                        hint = (void*)addr;
++                        funchook_log(funchook, "  change hint address (down) from %p to %p\n", old_hint, hint);
++                        break;
++                    }
++                }
++                hint = (void*)((size_t)mbi.BaseAddress - 1);
++            }
++            break;
++        }
+     }
+ #else
+     hint = NULL;

@@ -297,6 +297,7 @@ public static class FrameZones
 
     private static unsafe void ReadSched()
     {
+        if (OperatingSystem.IsWindows()) return;   // #48: the SCHEDULER column is Linux-only (glibc + /proc)
         byte* ru = stackalloc byte[160];
         if (GetRUsage(RusageThread, ru) != 0) return;
         long* q = (long*)ru;
@@ -606,13 +607,18 @@ public static class FrameZones
         if (!r) log.Info("FrameZones.SelfCheck: FAILED -- the period line or its reset drifted");
         // the scheduler column: getrusage must resolve and this thread must have run, and the hitch frame above
         // must have been blamed on the one zone it spent (Alloy) rather than read as diffuse
-        r &= line.Contains("sched all|hitch: cpu") && _scNow[(int)Sc.Cpu] > 0 && line.Contains("blame: Alloy 1");
-        // the thread table: two reads (the first only primes), the second must list this thread by name
-        ThreadsLine();
-        long spinTo = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 50; while (Stopwatch.GetTimestamp() < spinTo) { }   // 20ms of CPU, so this thread crosses the 5ms filter
-        string thr = ThreadsLine() + BoxLine();
-        r &= !thr.Contains("n/a") && thr.Contains("/c");
-        if (!r) log.Info("FrameZones.SelfCheck: FAILED -- thread/box table: " + thr);
+        r &= line.Contains("sched all|hitch: cpu") && line.Contains("blame: Alloy 1");
+        // the scheduler, thread and box columns are Linux-only (glibc + /proc); Windows reads them as n/a (#48)
+        if (!OperatingSystem.IsWindows())
+        {
+            r &= _scNow[(int)Sc.Cpu] > 0;
+            // the thread table: two reads (the first only primes), the second must list this thread by name
+            ThreadsLine();
+            long spinTo = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 50; while (Stopwatch.GetTimestamp() < spinTo) { }   // 20ms of CPU, so this thread crosses the 5ms filter
+            string thr = ThreadsLine() + BoxLine();
+            r &= !thr.Contains("n/a") && thr.Contains("/c");
+            if (!r) log.Info("FrameZones.SelfCheck: FAILED -- thread/box table: " + thr);
+        }
         if (!r) log.Info($"FrameZones.SelfCheck: FAILED -- sched/blame columns ({line.Substring(Math.Max(0, line.IndexOf("|| blame")))})");
         log.Info(ok && s && w && t && h && r ? "FrameZones.SelfCheck: passed"
                                    : "FrameZones.SelfCheck: see failures above");

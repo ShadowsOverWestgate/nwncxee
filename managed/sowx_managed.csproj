@@ -8,8 +8,8 @@
     <PublishAot>true</PublishAot>
     <NativeLib>Shared</NativeLib>
     <AssemblyName>sowx_managed</AssemblyName>
-    <!-- CI overrides with `dotnet publish -r win-x64`; NativeAOT needs a Windows
-         toolchain to emit the .dll, so the Windows leg runs on a Windows runner. -->
+    <!-- `dotnet publish -r win-x64` cross-compiles the .dll on Linux (unsupported by
+         Microsoft, works): see the win-x64 block below and build-win.sh. -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">linux-x64</RuntimeIdentifier>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Keep the symbol table in the .so: a NativeAOT crash report is a list of module offsets, and
@@ -35,6 +35,20 @@
   <ItemGroup>
     <EmbeddedResource Include="Alloy/Pass/SmaaArea.bin" LogicalName="SmaaArea" />
     <EmbeddedResource Include="Alloy/Pass/SmaaSearch.bin" LogicalName="SmaaSearch" />
+  </ItemGroup>
+
+  <!-- Windows cross-compile (NativeAOT #48). Lifts the SDK's cross-OS refusal; ILC emits a
+       COFF .obj on Linux and lld-link links it (build-win.sh passes CppLinker, which the
+       ILCompiler targets would otherwise reset to `link`). WinLib is a lowercase symlink
+       mirror of the Win10 SDK um/ucrt + MSVC x64 libs (lld-link is case-sensitive here). -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <DisableUnsupportedError>true</DisableUnsupportedError>
+    <IlcUseEnvironmentalTools>true</IlcUseEnvironmentalTools>
+    <EnableSourceLink>false</EnableSourceLink>
+    <WinLib Condition="'$(WinLib)' == ''">$(MSBuildThisFileDirectory)../build/winsdk/lib</WinLib>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <AdditionalNativeLibraryDirectories Include="$(WinLib)" />
   </ItemGroup>
 
 </Project>

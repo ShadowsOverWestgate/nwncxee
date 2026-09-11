@@ -38,6 +38,14 @@ Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./sow-client-extender/so
 
 First build clones+builds the funchook submodule (git submodule --init).
 
+Windows leg (#48), cross-built on Linux -- no Windows box involved:
+
+    ./build-win.sh      # version.dll + funchook.dll + sowx_managed.dll -> sow-client-extender-win/
+    ./run-proton.sh     # drops them beside bin/win32/nwmain.exe, runs it under Proton (throwaway prefix)
+
+Needs clang-cl/lld-link/llvm-lib and a Windows 10 SDK + MSVC lib tree (default: the mounted
+Windows partition; `SDK`/`MSVC` override). Alloy stands down on Windows (ServiceHost gate).
+
 ## Tuning knobs (ADR 0013)
 
 There are no `SOWX_*` environment variables. Every knob is either a **chat command**

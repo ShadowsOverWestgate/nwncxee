@@ -10,8 +10,9 @@ namespace Sowx.Framework;
 /// queued microseconds before a crash can be lost; the engine's own crash file is the forensic record.</para></summary>
 public sealed class ExtenderLog
 {
-    private static readonly string LogPath =
-        Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", "sowx.log");
+    private static readonly string LogPath = OperatingSystem.IsWindows()
+        ? Path.Combine(Native.DefaultUserDirectory(), "sowx.log")
+        : Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", "sowx.log");
 
     /// <summary>The one gate every line passes: <c>logs=1</c> in sowx.cfg keeps it open, the default closes it
     /// once <see cref="Settings.Load"/> has read the file, so a stock install writes only the boot lines. Off

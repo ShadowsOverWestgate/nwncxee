@@ -13,6 +13,14 @@ public static class ServiceHost
     // whole (TrimmerRootAssembly), so no service type or its ctor is ever removed.
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Assembly is rooted; nothing trimmed.")]
     [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "Assembly is rooted; parameterless ctors preserved.")]
+    /// <summary>#48: Alloy is Linux-only. It stands down on Windows HERE, by an explicit gate, never by
+    /// <c>SymbolMap._win</c> omission: its whole symbol surface is name-exported on Windows, so a table fill
+    /// would arm 530 struct offsets read from the Linux binary. The 4.6 context service is Alloy's
+    /// prerequisite and goes with it.</summary>
+    private static bool LinuxOnly(Type t) =>
+        t.Namespace?.StartsWith("Sowx.Alloy", StringComparison.Ordinal) == true
+        || t == typeof(Sowx.Graphics.GlContextService);
+
     public static void Run()
     {
         var log = new ExtenderLog();
@@ -23,11 +31,11 @@ public static class ServiceHost
                      .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?
                      .InformationalVersion ?? "unknown"));
         log.Info($"host: GC server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} cpus={Environment.ProcessorCount}");
-        var hooks = new HookService(log);
         // ADR 0013 bucket 2, and this is as early as it goes: ahead of DISCOVERY, not just ahead of
         // Initialize. Constructing a service runs its type initializer, and GameGate latches `lockchat` in
         // one -- so a load after this line would pin the opt-out to its default and no-op it silently.
         Settings.Load(log);
+        var hooks = new HookService(log);   // after Load: it reads hookdebug
 
         // OrderBy(Name): Assembly.GetTypes() order is not stable across builds/runtimes,
         // so sort for deterministic init order. Replace with an explicit list if a real
@@ -36,10 +44,11 @@ public static class ServiceHost
             .Where(t => typeof(IExtenderService).IsAssignableFrom(t)
                         && t is { IsAbstract: false, IsInterface: false })
             .OrderBy(t => t.Name)
+            .Where(t => !OperatingSystem.IsWindows() || !LinuxOnly(t))
             .Select(t => (IExtenderService)Activator.CreateInstance(t)!)
             .ToList();
 
-        log.Info($"host: {all.Count} service(s) discovered");
+        log.Info($"host: {all.Count} service(s) discovered" + (OperatingSystem.IsWindows() ? " (Alloy stood down: Windows, #48)" : ""));
         // Shared engine accessors, before any service can reach for one. AurTex is the only real init-time
         // dependency in this host so far -- four services call it and none of them owns it.
         AurTex.Attach(log);

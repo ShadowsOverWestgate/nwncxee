@@ -104,6 +104,8 @@ public static unsafe class Native
     /// </remarks>
     public static string DefaultUserDirectory()
     {
+        if (OperatingSystem.IsWindows())
+            return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Neverwinter Nights");
         string? xdg = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
         string data = string.IsNullOrEmpty(xdg)
             ? System.IO.Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", ".local", "share")

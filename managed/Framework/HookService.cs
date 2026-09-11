@@ -17,6 +17,7 @@ public sealed class HookService : IDisposable
     [DllImport(Lib)] private static extern int funchook_install(IntPtr fh, int flags);
     [DllImport(Lib)] private static extern int funchook_uninstall(IntPtr fh, int flags);
     [DllImport(Lib)] private static extern int funchook_destroy(IntPtr fh);
+    [DllImport(Lib)] private static extern int funchook_set_debug_file([MarshalAs(UnmanagedType.LPStr)] string name);
 
     private readonly ExtenderLog _log;
     private readonly IntPtr _fh;
@@ -25,6 +26,10 @@ public sealed class HookService : IDisposable
     public HookService(ExtenderLog log)
     {
         _log = log;
+        // hookdebug=1: funchook's own trace (prologue decode, trampoline bytes, page protects) beside the log.
+        // The forensic for a hook that installs clean and faults at its first call (#48 under Wine).
+        if (Settings.Bool("hookdebug", false))
+            funchook_set_debug_file(Path.Combine(Native.DefaultUserDirectory(), "funchook.log"));
         _fh = funchook_create();
         SelfCheck(log);
     }
