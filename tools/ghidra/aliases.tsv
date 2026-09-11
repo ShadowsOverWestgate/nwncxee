@@ -1,0 +1,5 @@
+# Single-inheritance bases, declared -- the pairer does NOT infer a class hierarchy.
+# "base derived..." folds each derived class's evidence into the base, which is valid only
+# where the base subobject sits at offset 0 of the derived one. CNWCItem is NOT listed: it is
+# multiply inherited and its CNWCObject base sits at +0x48 (Linux) with no Windows twin.
+CNWCObject	CNWCCreature	CNWCPlaceable	CNWCDoor	CNWCTrigger	CNWCWaypoint	CNWCStore	CNWCEncounter

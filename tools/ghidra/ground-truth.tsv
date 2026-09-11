@@ -1,0 +1,48 @@
+# Offsets already established by hand in #419 / #420 and recorded in docs/windows-symbols.md
+# (build 0x68e408bc). class <TAB> linux <TAB> windows <TAB> kind <TAB> note
+# Both the SHIFTED and the IDENTICAL rows matter: a pairer that guesses one delta per class
+# gets the identical ones wrong, which is the failure mode that would poison the sweep.
+CNWCObject	0x8	0x8	field	id
+CNWCObject	0xc	0xc	field	type
+CNWCObject	0x38	0x38	field	position
+CNWCObject	0xb8	0xb8	field	bubble
+CNWCObject	0x104	0x104	field	retired
+CNWCObject	0x124	0x124	field	override mode
+CNWCObject	0x128	0x128	field	override text
+CNWCObject	0x130	0x130	field	override len
+CNWCCreature	0x3a8	0x388	field	reaction
+CNWCCreature	0x3d0	0x3b0	field	stats
+CNWCCreature	0x468	0x448	field	plated
+CNWCCreature	0x478	0x458	field	area
+CNWCPlaceable	0x218	0x1f8	field	plated
+CNWCItem	0x284	0x264	field	plated, from the CNWCObject subobject
+CNWCCreatureStats	0x20	0x20	field	first name
+CNWCCreatureStats	0x28	0x28	field	first name len
+CNWCCreatureStats	0x30	0x30	field	last name
+CNWCCreatureStats	0x38	0x38	field	last name len
+CNWCCreatureStats	0x40	0x40	field	override name
+CNWCCreatureStats	0x48	0x48	field	override name len
+CGuiInGamePopUpBubble	0x14c	0x144	field	live text
+CGuiInGamePopUpBubble	0x150	0x148	field	mode
+CGuiInGamePopUpBubble	0x154	0x14c	field	anchor x
+CGuiInGamePopUpBubble	0x158	0x150	field	anchor y
+CNWCModule	0xf8	0xf8	field	area
+CNWCModule	0xe8	0xe8	field	camera
+CNWCArea	0x118	0x118	field	area id
+Camera	0xb0	0xb0	field	position
+Camera	0xbc	0xbc	field	orientation
+Camera	0x4d4	0x4d8	field	viewport rect
+CClientExoAppInternal	0x30	0x30	field	module
+CClientExoAppInternal	0x38	0x38	field	player list
+CClientExoAppInternal	0x40	0x40	field	player count
+CClientExoAppInternal	0x48	0x48	field	local creature id
+CClientExoAppInternal	0x180	0x180	field	mouse-over feedback word
+CNWCPlayer	0x8	0x8	field	player id
+CNWCPlayer	0x10	0x10	field	name
+CNWCPlayer	0x18	0x18	field	name len
+CNWCPlayer	0x34	0x34	field	creature id
+CGuiInGameChatWindow	0xc58	0xae0	field	filter mask
+CGuiInGameChatWindow	0xc68	0xaf0	field	shown flag
+CGuiInGameChatPrompt	0x230	0x200	field	shown flag
+CGuiInGameChatPrompt	0x100	0xf8	field	embedded edit
+CNWCObject	0x1d8	0x1d0	vslot	GetPortrait(uchar)

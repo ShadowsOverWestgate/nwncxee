@@ -1,0 +1,50 @@
+# Hand-anchored function pairs: a Linux qualified name and the Windows ENTRY ADDRESS
+# (image base 0x140000000 + the RVA recorded in docs/windows-symbols.md, build 0x68e408bc).
+# MSVC name-exports the shared engine classes only, so every CNWC*/CGui* pair has to come
+# from here rather than from a name match. Anchors are DATA -- they rot with the build.
+CNWCMessage::HandleServerToPlayerMessage	1407a41a0
+CNWCMessage::HandleServerToPlayerLogin	1407a31b0
+CNWCMessage::SendPlayerToServerMessage	1407c25c0
+CNWCMessage::SendPlayerToServerDeviceAdvertiseProperty	1407bbac0
+CClientExoApp::GetNWCMessage	1406abf90
+COptionsPanel::PostAttachmentInitialize	140830b50
+COptionsPanel::HandleSaveCharButton	14082fb60
+CGuiInGame::SetFocusChatPrompt	1406fae30
+CGuiInGameChatPrompt::HandleEnter	14087b0d0
+CGuiInGameChatPrompt::HandleEsc	14087b390
+CGuiInGameChatPrompt::HandleLMouseDownGuiEvent	14087b450
+CGuiInGameChatPrompt::HandleLoseKeyboardFocusLMouseDownGuiEvent	14087b4b0
+CGuiInGame::AppendToMsgBuffer	1406f68d0
+CGuiInGameChatWindow::AppendToChatBuffer	140879080
+CGuiInGameChatWindow::SetFilter	14087a0e0
+CGuiInGameChatWindow::Show	14087a940
+CGuiInGameChatPrompt::Show	14087cc00
+CGuiInGameChatPrompt::SetFocus	14087cb30
+CGuiInGame::ShowChatPrompt	1406fb480
+CGuiInGame::PrepChatPromptForTellToPlayer	1406f9ec0
+CGuiInGame::NotifyServerAboutGuiEvent	1406f9bd0
+CClientExoApp::GetPlayerByPlayerName	1406ac120
+CClientExoApp::GetPlayerByCreatureName	1406ac080
+CClientExoApp::GetModule	1406abea0
+CNWCMessage::SendPlayerToServerChat_Talk	1407ba7e0
+CNWCMessage::HandleServerToPlayerChat	14077c140
+CGuiInGame::CloseDialog	1406f6d80
+CGuiInGame::ShowDialogEntry	1406fb560
+CGuiInGame::ShowDialogReplies	1406fb8e0
+CGuiInGame::ShowReplyChosen	1406fbbc0
+CNWCMessage::SendPlayerToServerDialog_Reply	1407bbc50
+CClientExoApp::GetGameObject	1406abb60
+CClientExoApp::GetObjectName	1406abfc0
+CGuiInGamePopUpBubble::SetChatBubbleMode	1406e90e0
+CNWCObject::SetPopUpBubbleText	140766450
+CNWCCreature::ShowFeedbackBubbleText	14080b240
+CNWCPlaceable::ShowFeedbackBubbleText	140871b60
+CNWCItem::ShowFeedbackBubbleText	14083f230
+CNWCObject::ShowFloatyText	140766a70
+CClientExoAppInternal::GetObjectName	1406d83f0
+CClientExoAppInternal::GetGameObject	1406d81f0
+CNWCObject::UpdatePopUpBubble	140766ea0
+CNWCCreature::UpdatePopUpBubble	1408107a0
+CGuiInGamePopUpBubble::Show	1406e9820
+CNWCMessage::HandleServerToPlayerModuleUpdate_Time	1407a58e0
+CNWCCreatureStats::GetFullName	1407f3f00
