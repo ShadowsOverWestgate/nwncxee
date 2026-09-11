@@ -142,6 +142,59 @@ inherit:
   offsets are nearly all shared, and the shape of what is not shared says the class
   moved.
 
+### Alloy: the passes (#441)
+
+111 more rows, 22 of them `Unresolved` — 235 rows and 55 unresolved in total.
+Measured 2026-09-12 with the same `tools/ghidra/FieldDump.java` over both
+programs (`.scratch/441`), class list
+
+    PartEmitter MdlNodeEmitter Particle ChunkyParticle TileData CAurTriangleBin
+    CAurTriangleList CAurGrassInfo PartBeam MdlNodeLight Scene PartLight Gob Part
+    MdlNode Material aurMatrixStack MdlNodeTriMesh GLRender SharedMaterial
+
+The method changed in one way, and it is the batch's most reusable finding:
+**read the function pairs directly rather than through `field-diff.py`.** The
+script drops a pair the moment the two decompilers split one 8-byte store
+differently (`length-mismatch`, `shape-mismatch`), which is most of them — it
+reported *three* validated pairs for `PartEmitter` and two mapped offsets for
+`Particle`. The same dumps, read by hand, resolve both classes completely.
+
+Roughly a quarter of the directory's raw hex needed no measurement at all: it was
+already a row. `Beams` and `Particles` each carried their own copy of the matrix
+stack, `SkyBox` its own `GobAlpha`/`GobPos`/`PartParent`, `GrassField` its own
+`PartChildren`/`PartChildCount`/`Part+0x96`, `Halos` and `Particles` their own
+`Scene+0x158`, `GrassField.Border` its own `MdlNodeTriMesh+0x280`.
+
+| Class | Verdict | Anchor |
+|---|---|---|
+| `PartEmitter` | **five segments**: `0x0..0x50` 0, `0x64..0xd8` `+0x4`, `0xf8..0x158` `+0x8`, `0x188..0x1a8` 0, `0x1c0`+ `-0x8` | eight function pairs (`RenderEmitter`, `RenderNothing`, `GetTileAlpha`, `chkRandom`, `chkParticleLife`, `moveParticle`, `moveParticleP2PGrav`, `moveParticleP2PBezier`); the `-0x8` is corroborated by the object's own end (`0x1f8` → `0x1f0`) |
+| `Particle` | identical `0x0..0x77` | the ctor touches the same thirteen offsets on both, `initialize` the same twenty-two |
+| `PartBeam` | identical at `0xa0`/`0xa8` | its whole `Draw` is two reads, and they pair at delta 0 — it does **not** inherit `PartTriMesh`'s `+0x8` |
+| `PartLight` | `+0x4` block confirmed at `0xa0` → `0xa4` | the ctor's run is `0x64..0xb7` → `0x68..0xbb`, uniform |
+| `MdlNodeEmitter` | `+0x4` at `0xa4`/`0xb0` and at `0x170` | 22 Enable/Is accessors all pair the flags word `0x170` → `0x174`; the ctor brackets the UV grid. `0x164` stays **unresolved** — the ctor's map is order-preserving everywhere except there |
+| `MdlNodeLight` | **unresolved** | none of its nine functions pairs on either build |
+| `MdlNodeTriMesh` | identical at `0xb0`/`0xb8` | `InternalGenVertices` pairs both at delta 0 |
+| `TileData` | identical `0x0..0x57` and `0x7c..0xcb` | the ctor writes `0x0..0xcb` on both and agrees store for store *outside* `0x58..0x7c`, where MSVC splits three of Linux's 8-byte stores — which is exactly where #436 left `TileFade`/`TilePendingFade` unresolved |
+| `CAurTriangleBin` | identical | nine functions pair, every one at delta 0 |
+| `CAurTriangleList` | identical `0x0..0x60` | seven paired functions, bracketing `0x40` between `0x3c` and `0x48` |
+| `CAurGrassInfo` | identical `0x0..0x50` | its ctor is the class's ONLY function; one anchor rather than a pair, because there is no second function to be had. Its `0x54` stride is the batch's one ABI argument: last member a byte at `0x50`, largest a float, **no base class** — and base tail-padding reuse needs a base |
+| `aurMatrixStack` | identical, and so is its SIZE | all seven functions pair, and the union of what they touch is `0x18..0x57` on both and nothing else — which measures the top and the `0x58` stride together |
+| `Scene` | four more spans inside #436's identical run | `0x190` paired twice; `0x18`/`0x38`/`0x40`/`0x50`/`0x60` inside it. `0x1e8` is above `0x1e0` and stays **unresolved**, like `0x208` |
+| `Gob` | `0x160`/`0x16c` paired by `GetBoundingBox`, `0x450` three times | and `Gob::GetAdjustedScale` `0x2d8` → `0x2d0`, from `tools/abi/vtable-slots.py` |
+| `MaxFace`, `VertexPool`, `MaterialParameter`, `GLRender::PROG_FIXED` | **unresolved** | nothing takes one as `this`, so the sweep cannot reach them — the same shape as `DrawBucket`'s stride |
+| `CNWCArea` | **unresolved** | no `CNWC*` class is name-exported on Windows; needs #420's RVA path |
+
+One premise this batch came in with was **wrong**, and the correction is worth
+keeping: `Halos` read `PartLight+0xa0` as a fade and the table had `LightFade` at
+`+0x90`, which looked like one field written down twice. It is two fields.
+`Scene::RenderLensFlares` @`0x471860` integrates `+0xa0` toward 1.0 while a light
+is unoccluded and multiplies the flare colour by it;
+`LightManager::ControlLightsFade` @`0x4c2050` scales the area terms by `+0x90`;
+and the `PartLight` constructor stores eight bytes at `0x8c` and again at `0x9c`,
+so both dwords exist. The same shape repeated at `TileData`: `PartEmitter`'s fade
+owner reads `+0xc8`, `HandleFadingInBucket` drives `+0x70`/`+0x74`, and those are
+three distinct floats.
+
 `Require` takes the classes a feature reads, so an unmeasured renderer class
 cannot stand an unrelated feature down: `NameplateService` asks about
 `CNWCObject`/`CNWCCreature`/`CNWCPlaceable`, `DialogService` about `CNWCObject`.

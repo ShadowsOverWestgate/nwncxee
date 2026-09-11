@@ -70,44 +70,46 @@ internal static unsafe class Particles
     // ---- PartEmitter, from PartEmitter::RenderEmitter @0x4ad4c0 and PartEmitter::Initialize @0x4aaaa0 ----
 
     /// <summary>The MdlNodeEmitter this emitter instantiates -- the model-side flags live there.</summary>
-    private const int EmNode = 0x08;
+    private static readonly int EmNode = EngineLayout.PartNodeLink;
     /// <summary>The owning Gob. Null is legal (a free-standing emitter); when set, its vtable slot +0x2d8
     /// supplies the scale every size term is multiplied by.</summary>
-    private const int EmGob = 0x50;
+    private static readonly int EmGob = EngineLayout.PartGob;
     /// <summary>Blend mode: 1 = punch-through, 0 = normal alpha, anything else = additive. This is the field
     /// the ticket's "preserve the punch-through mode" is about, and unlike grass its depth write is
     /// deliberate.</summary>
-    private const int EmBlend = 0x64;
+    private static readonly int EmBlend = EngineLayout.EmBlend;
     /// <summary>Alpha at the end and the start of life (in that order in memory).</summary>
-    private const int EmAlphaEnd = 0x68, EmAlphaStart = 0x6c;
+    private static readonly int EmAlphaEnd = EngineLayout.EmAlphaEnd, EmAlphaStart = EngineLayout.EmAlphaStart;
     /// <summary>Colour at the end and the start of life, three floats each.</summary>
-    private const int EmColorEnd = 0x78, EmColorStart = 0x84;
+    private static readonly int EmColorEnd = EngineLayout.EmColorEnd, EmColorStart = EngineLayout.EmColorStart;
     /// <summary>The second fade owner the early-out tests, alongside the Gob's own (see
     /// <see cref="GobFadeOwner"/>).</summary>
-    private const int EmTileOwner = 0xf8;
+    private static readonly int EmTileOwner = EngineLayout.EmTileOwner;
     /// <summary>UV-grid animation: frames per second, then the end and start frame indices. A zero fps or
     /// equal ends means the frame index never advances.</summary>
-    private const int EmFps = 0x98, EmFrameEnd = 0x9c, EmFrameStart = 0xa0;
+    private static readonly int EmFps = EngineLayout.EmFps, EmFrameEnd = EngineLayout.EmFrameEnd,
+                               EmFrameStart = EngineLayout.EmFrameStart;
     /// <summary>Particle lifetime. Zero draws nothing at all -- the engine's own early-out.</summary>
-    private const int EmLife = 0xa8;
+    private static readonly int EmLife = EngineLayout.EmLife;
     /// <summary>Quad half-extents before the 0.5 and the Gob scale: X at start/end, then Y at start/end.
     /// </summary>
-    private const int EmSizeStartX = 0xc0, EmSizeEndX = 0xc4, EmSizeStartY = 0xc8, EmSizeEndY = 0xcc;
+    private static readonly int EmSizeStartX = EngineLayout.EmSizeStartX, EmSizeEndX = EngineLayout.EmSizeEndX,
+                               EmSizeStartY = EngineLayout.EmSizeStartY, EmSizeEndY = EngineLayout.EmSizeEndY;
     /// <summary><c>Particle**</c>, and the count. The array is dense: index i is drawn as quad i.</summary>
-    private const int EmParts = 0x188, EmCount = 0x190;
+    private static readonly int EmParts = EngineLayout.EmParts, EmCount = EngineLayout.EmCount;
     /// <summary>Render type -- which billboard basis the quads get. See <see cref="Basis"/>.</summary>
-    private const int EmType = 0x1a8;
+    private static readonly int EmType = EngineLayout.EmType;
     /// <summary>The Material whose slot-0 texture every quad samples.</summary>
-    private const int EmMaterial = 0x1c0;
+    private static readonly int EmMaterial = EngineLayout.EmMaterial;
     /// <summary>Interpolation domain (a SHORT, not an int): 0 interpolates over the particle's INDEX in the
     /// array, non-zero over its age. Reading it as an int folds in the two bytes above and turns every
     /// index-interpolated emitter into an age-interpolated one.</summary>
-    private const int EmLifeInterp = 0x1d4;
+    private static readonly int EmLifeInterp = EngineLayout.EmLifeInterp;
     /// <summary>The emitter's own orientation quaternion, stored (w, x, y, z) -- the basis render type 1
     /// billboards against.</summary>
-    private const int EmOrient = 0x1d8;
+    private static readonly int EmOrient = EngineLayout.EmOrient;
     /// <summary>Emitter world position, the point the tint is sampled at.</summary>
-    private const int EmPos = 0x1e8;
+    private static readonly int EmPos = EngineLayout.EmPos;
 
     // ---- Material, for #148's emissive parameter. Same records AlloyRenderer.ReadMaterial walks. ----
 
@@ -115,11 +117,12 @@ internal static unsafe class Particles
     /// declared values reach. Shared first, instance second, so a per-part override still wins -- the
     /// instance list is only SIZED to the shared count and carries defaults until something overrides.
     /// </summary>
-    private const int MatParams = 0x118, MatParamCount = 0x120,
-                      SharedParams = 0x1d0, SharedParamCount = 0x1d8;
+    private static readonly int MatParams = EngineLayout.MatParams, MatParamCount = EngineLayout.MatParamCount,
+                               SharedParams = EngineLayout.SharedParams, SharedParamCount = EngineLayout.SharedParamCount;
     /// <summary>MaterialParameter: name at +0, value at +0x44, type at +0x5c (0 = float), component count at
     /// +0x60 as a ushort, 100 bytes a record.</summary>
-    private const int ParamValue = 0x44, ParamType = 0x5c, ParamComps = 0x60, ParamStride = 100;
+    private static readonly int ParamValue = EngineLayout.ParamValue, ParamType = EngineLayout.ParamType,
+                               ParamComps = EngineLayout.ParamComps, ParamStride = EngineLayout.ParamStride;
     /// <summary>A list longer than this is a bad pointer, not a .mtr.</summary>
     private const int MaxParams = 64;
     /// <summary>#148: the .mtr parameter an effect declares to say how bright it really is. Named the way
@@ -134,47 +137,48 @@ internal static unsafe class Particles
     /// factor itself at owner+0xc8. Below 1.0 the engine draws the emitter not at all -- so an emitter in a
     /// fading tile is DECLINED rather than owned, and the engine's own early-out draws the same nothing.
     /// </summary>
-    private const int GobFadeOwner = 0x1a8, FadeFactor = 0xc8;
+    private static readonly int GobFadeOwner = EngineLayout.GobTileData, FadeFactor = EngineLayout.TileGeomFade;
     /// <summary>Gob vtable slot for the scale every size term is multiplied by.</summary>
-    private const int GobScaleSlot = 0x2d8;
+    private static readonly int GobScaleSlot = EngineLayout.GobAdjustedScaleSlot;
 
     // ---- MdlNodeEmitter ----
 
     /// <summary>UV grid: columns then rows. Zero means one, and a grid of 1x1 skips the animation entirely.
     /// </summary>
-    private const int NodeGridX = 0xa8, NodeGridY = 0xac;
+    private static readonly int NodeGridX = EngineLayout.EmitterGridX, NodeGridY = EngineLayout.EmitterGridY;
     /// <summary>Non-zero DISABLES back-face culling (the engine reads it as
     /// <c>if (node+0x164 == 0) Enable(CULL_FACE) else Disable(CULL_FACE)</c>). Reproduced rather than assumed
     /// off, because the quad winding below is the engine's own.</summary>
-    private const int NodeNoCull = 0x164;
+    private static readonly int NodeNoCull = EngineLayout.EmitterNoCull;
 
     // ---- Particle ----
 
     /// <summary>Position, and the position the previous simulation step left. The previous one is only read
     /// by the motion-blurred type, where it is the far edge of a stretched quad.</summary>
-    private const int PPos = 0x10, PPrevPos = 0x64;
+    private static readonly int PPos = EngineLayout.ParticlePos, PPrevPos = EngineLayout.ParticlePrevPos;
     /// <summary>Roll about the billboard normal, in radians (the engine feeds it to <c>sincosf</c> after
     /// halving, i.e. as a quaternion half-angle).</summary>
-    private const int PRoll = 0x1c;
+    private static readonly int PRoll = EngineLayout.ParticleRoll;
     /// <summary>The particle's own orientation quaternion, (w, x, y, z) -- render type 5's whole basis.
     /// </summary>
-    private const int PQuat = 0x34;
+    private static readonly int PQuat = EngineLayout.ParticleQuat;
     /// <summary>UV-grid frame index, and the age at which it last advanced. Both are WRITTEN by the vertex
     /// build: owning the build means owning that advance, or every animated particle freezes.</summary>
-    private const int PFrame = 0x44, PFrameTime = 0x48;
+    private static readonly int PFrame = EngineLayout.ParticleFrame, PFrameTime = EngineLayout.ParticleFrameTime;
     /// <summary>The splat normal, used as the billboard's reference axis on a splat emitter.</summary>
-    private const int PSplatNormal = 0x4c;
+    private static readonly int PSplatNormal = EngineLayout.ParticleSplatNormal;
     /// <summary>Splat flag (one byte) and age.</summary>
-    private const int PSplat = 0x70, PAge = 0x74;
+    private static readonly int PSplat = EngineLayout.ParticleSplat, PAge = EngineLayout.ParticleAge;
 
     // ---- Camera / Scene ----
 
     /// <summary>The camera's orientation quaternion at <c>*CurrentCamera + 0xbc</c>, stored (w, x, y, z).
     /// Read at the Alloy slot, which runs inside the world Scene's own render, so it is that Scene's camera
     /// and not the UI frame's (the trap #99 named applies at PRESENT time, not here).</summary>
-    private const int CamQuat = 0xbc;
-    /// <summary>The Scene's <c>List&lt;PartLight*&gt;</c> the tint lookup scans.</summary>
-    private const int SceneLights = 0x158;
+    private static readonly int CamQuat = EngineLayout.CamRot;
+    /// <summary>The Scene's LightManager, whose master list the tint lookup scans -- a
+    /// <c>LightManager*</c>, not a light list (#441 corrected the name).</summary>
+    private static readonly int SceneLights = EngineLayout.SceneLightManager;
 
     // ---- the engine's own literals, read out of .rodata rather than guessed ----
 
@@ -249,7 +253,8 @@ internal static unsafe class Particles
     /// <summary>The engine's software matrix stack: model is index 2, stride 0x58, top at +0x18. Named
     /// rather than open-coded because <see cref="Beams"/> and <see cref="SkyBox"/> name the same trio, and a
     /// layout correction that misses one site is the kind that is found by looking at the screen.</summary>
-    private const int ModeModel = 2, StackStride = 0x58, StackTop = 0x18;
+    private const int ModeModel = 2;
+    private static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
     /// <summary>The SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
     /// 5-7 the caster's, 12-16 <see cref="CullPass"/>'s; 10/11 are the record and index buffers the vertex
     /// stage names, and #288's two descriptor buffers take the next free pair above the cull's.</summary>

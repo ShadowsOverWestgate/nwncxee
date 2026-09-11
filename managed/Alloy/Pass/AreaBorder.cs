@@ -25,7 +25,7 @@ internal static unsafe class AreaBorder
     internal const int DefaultRing = 15, MaxRing = 40;
     /// <summary>CNWCArea -&gt; tile grid width (+0xc) and height (+0x10): LoadBorder multiplies exactly these
     /// for the tile count and bounds its strip loops on them.</summary>
-    private const int AreaWidth = 0xc, AreaHeight = 0x10;
+    private static readonly int AreaWidth = EngineLayout.AreaTileWidth, AreaHeight = EngineLayout.AreaTileHeight;
     /// <summary><c>CNWTile::TILE_WIDTH</c> / <c>TILE_LENGTH</c> @0x1311850 = 10.0, and the half-tile the border
     /// loop adds (DAT_013ee9e8 = 5.0): grid <c>(i, j)</c> spawns at <c>(i*10+5, j*10+5)</c>.</summary>
     internal const float TileSize = 10f, TileHalf = 5f;

@@ -525,7 +525,367 @@ public static unsafe class EngineLayout
     /// <c>tools/abi/vtable-slots.py</c>, which is how #433's nine slots were read on both sides.</summary>
     public static readonly int VtblSymbolHeader = Diverges("(abi)", "vtblSymbolHeader", linux: 0x10, win: 0x0);
 
-    // ponytail: the rest of the Alloy offsets land here one subsystem at a time (#429 section 2). A second tested
+    // ================= Alloy: the passes (#441, batch 2 of #429 section 2) =================
+    // Measured 2026-09-12, same tooling as #436 (tools/ghidra/FieldDump.java over both programs, .scratch/441)
+    // but read per function pair rather than through field-diff.py's strict filter, which rejects a pair the
+    // moment the two decompilers split one 8-byte store differently. Reading the pairs by hand is what
+    // resolved PartEmitter, the class #430 named as the worst case.
+    // Every value here is decompiler evidence -- a CANDIDATE until a runtime probe says otherwise.
+
+    // ---- Part: the base fields the pass walkers read (identical 0x0..0x58, #436) ----
+
+    /// <summary>Part -&gt; its MdlNode. <c>PartEmitter::Initialize</c> @0x4aaaa0 reads it as
+    /// <c>MdlNodeEmitter*</c> and <c>Scene::RenderLensFlares</c> @0x471860 as the light's node -- one field,
+    /// whichever subclass of node the part instantiates.</summary>
+    public static readonly int PartNodeLink = Same("Part", "node", 0x8);
+    /// <summary>Part -&gt; uniform scale, the third term <c>Part::GetWorld</c> composes beside
+    /// <see cref="PartPos"/> and <see cref="PartRot"/>. Paired directly on <c>Part::PostProcess</c>.</summary>
+    public static readonly int PartScale = Same("Part", "scale", 0x2c);
+    /// <summary>Part -&gt; the draw gate <c>Gob::PartDraw</c> reads before descending. Inside Part's measured
+    /// identical run, not paired on its own.</summary>
+    public static readonly int PartVisible = Same("Part", "visible", 0x34);
+
+    // ---- PartBeam (its whole Draw is two reads, and they pair at delta 0) ----
+
+    /// <summary>The only two fields <c>PartBeam::Draw</c> @0x450120 reads -- the body is
+    /// <c>RenderVertexData(part+0xa0, part+0xa8, 4, 0xffffffff)</c>, so the beam capture needs no funnel arm.
+    /// One validated pair, and it maps both offsets at delta 0 -- PartBeam does NOT inherit PartTriMesh's
+    /// +0x8 (#430's rule that a class verdict does not travel, running the other way).</summary>
+    public static readonly int BeamVdo = Same("PartBeam", "vdo", 0xa0);
+    /// <inheritdoc cref="BeamVdo"/>
+    public static readonly int BeamItem = Same("PartBeam", "item", 0xa8);
+
+    // ---- PartLight: one more field in the +0x4 block ----
+
+    /// <summary>The lens-flare occlusion fade, and NOT <see cref="LightFade"/>: two distinct floats.
+    /// <c>Scene::RenderLensFlares</c> @0x471860 integrates this one toward 1.0 at <c>3/s</c> while the light
+    /// is unoccluded and multiplies the flare colour by it, while <c>LightManager::ControlLightsFade</c>
+    /// @0x4c2050 scales the area terms by +0x90. #441 opened expecting one of the two to be wrong; the
+    /// <c>PartLight</c> constructor @0x43d1d0 stores 8 bytes at 0x8c and again at 0x9c, so both dwords exist.
+    /// Windows by the class's uniform +0x4: the ctor's whole run moves 0x64..0xb7 to 0x68..0xbb.</summary>
+    public static readonly int LightFlareFade = Diverges("PartLight", "flareFade", linux: 0xa0, win: 0xa4);
+
+    // ---- PartEmitter: four segments and a sign change (#430's worst case, now measured) ----
+    // Anchored on eight function pairs (RenderEmitter, RenderNothing, GetTileAlpha, chkRandom,
+    // chkParticleLife, moveParticle, moveParticleP2PGrav, moveParticleP2PBezier):
+    //   0x00..0x50  delta 0     0x64..0xd8  +0x4     0xf8..0x158  +0x8
+    //   0x188..0x1a8 delta 0    0x1c0 and up  -0x8
+    // The -0x8 is corroborated by the object's own end: moveParticle pairs 0x1f8 -> 0x1f0.
+
+    /// <summary>Blend mode: 1 = punch-through, 0 = normal alpha, anything else = additive.</summary>
+    public static readonly int EmBlend = Diverges("PartEmitter", "blend", linux: 0x64, win: 0x68);
+    /// <summary>Alpha at the end and the start of life (in that order in memory).</summary>
+    public static readonly int EmAlphaEnd = Diverges("PartEmitter", "alphaEnd", linux: 0x68, win: 0x6c);
+    /// <inheritdoc cref="EmAlphaEnd"/>
+    public static readonly int EmAlphaStart = Diverges("PartEmitter", "alphaStart", linux: 0x6c, win: 0x70);
+    /// <summary>Colour at the end and the start of life, three floats each.</summary>
+    public static readonly int EmColorEnd = Diverges("PartEmitter", "colorEnd", linux: 0x78, win: 0x7c);
+    /// <inheritdoc cref="EmColorEnd"/>
+    public static readonly int EmColorStart = Diverges("PartEmitter", "colorStart", linux: 0x84, win: 0x88);
+    /// <summary>UV-grid animation: frames per second, then the end and start frame indices. A zero fps or
+    /// equal ends means the frame index never advances.</summary>
+    public static readonly int EmFps = Diverges("PartEmitter", "fps", linux: 0x98, win: 0x9c);
+    /// <inheritdoc cref="EmFps"/>
+    public static readonly int EmFrameEnd = Diverges("PartEmitter", "frameEnd", linux: 0x9c, win: 0xa0);
+    /// <inheritdoc cref="EmFps"/>
+    public static readonly int EmFrameStart = Diverges("PartEmitter", "frameStart", linux: 0xa0, win: 0xa4);
+    /// <summary>Particle lifetime. Zero draws nothing at all -- the engine's own early-out.</summary>
+    public static readonly int EmLife = Diverges("PartEmitter", "life", linux: 0xa8, win: 0xac);
+    /// <summary>Quad half-extents before the 0.5 and the Gob scale: X at start/end, then Y at start/end.
+    /// All four move together in <c>RenderEmitter</c>'s own read run.</summary>
+    public static readonly int EmSizeStartX = Diverges("PartEmitter", "sizeStartX", linux: 0xc0, win: 0xc4);
+    /// <inheritdoc cref="EmSizeStartX"/>
+    public static readonly int EmSizeEndX = Diverges("PartEmitter", "sizeEndX", linux: 0xc4, win: 0xc8);
+    /// <inheritdoc cref="EmSizeStartX"/>
+    public static readonly int EmSizeStartY = Diverges("PartEmitter", "sizeStartY", linux: 0xc8, win: 0xcc);
+    /// <inheritdoc cref="EmSizeStartX"/>
+    public static readonly int EmSizeEndY = Diverges("PartEmitter", "sizeEndY", linux: 0xcc, win: 0xd0);
+    /// <summary>The second fade owner the draw early-out tests, beside the Gob's own
+    /// <see cref="GobTileData"/>. The only witness of the +0x8 segment's low end, and it has three
+    /// (GetTileAlpha, RenderNothing, RenderEmitter all pair 0xf8 -&gt; 0x100).</summary>
+    public static readonly int EmTileOwner = Diverges("PartEmitter", "tileOwner", linux: 0xf8, win: 0x100);
+    /// <summary><c>Particle**</c>, and the count. The array is dense: index i is drawn as quad i.</summary>
+    public static readonly int EmParts = Same("PartEmitter", "parts", 0x188);
+    /// <inheritdoc cref="EmParts"/>
+    public static readonly int EmCount = Same("PartEmitter", "count", 0x190);
+    /// <summary>Render type -- which billboard basis the quads get.</summary>
+    public static readonly int EmType = Same("PartEmitter", "type", 0x1a8);
+    /// <summary>The Material whose slot-0 texture every quad samples. First field of the -0x8 segment.</summary>
+    public static readonly int EmMaterial = Diverges("PartEmitter", "material", linux: 0x1c0, win: 0x1b8);
+    /// <summary>Interpolation domain (a SHORT, not an int): 0 interpolates over the particle's INDEX in the
+    /// array, non-zero over its age. Reading it as an int folds in the two bytes above and turns every
+    /// index-interpolated emitter into an age-interpolated one.</summary>
+    public static readonly int EmLifeInterp = Diverges("PartEmitter", "lifeInterp", linux: 0x1d4, win: 0x1cc);
+    /// <summary>The emitter's own orientation quaternion, stored (w, x, y, z).</summary>
+    public static readonly int EmOrient = Diverges("PartEmitter", "orient", linux: 0x1d8, win: 0x1d0);
+    /// <summary>Emitter world position, the point the particle tint is sampled at.</summary>
+    public static readonly int EmPos = Diverges("PartEmitter", "pos", linux: 0x1e8, win: 0x1e0);
+
+    // ---- Particle (identical 0x0..0x77) ----
+    // Two anchors, and both are exact: Particle::Particle touches the same thirteen offsets on both builds,
+    // and Particle::initialize the same twenty-two -- including every offset below.
+
+    /// <summary>Position, and the position the previous simulation step left. The previous one is only read
+    /// by the motion-blurred type, where it is the far edge of a stretched quad.</summary>
+    public static readonly int ParticlePos = Same("Particle", "pos", 0x10);
+    /// <inheritdoc cref="ParticlePos"/>
+    public static readonly int ParticlePrevPos = Same("Particle", "prevPos", 0x64);
+    /// <summary>Roll about the billboard normal, in radians (the engine feeds it to <c>sincosf</c> after
+    /// halving, i.e. as a quaternion half-angle).</summary>
+    public static readonly int ParticleRoll = Same("Particle", "roll", 0x1c);
+    /// <summary>The particle's own orientation quaternion, (w, x, y, z) -- render type 5's whole basis.</summary>
+    public static readonly int ParticleQuat = Same("Particle", "quat", 0x34);
+    /// <summary>UV-grid frame index, and the age at which it last advanced. Both are WRITTEN by the vertex
+    /// build: owning the build means owning that advance, or every animated particle freezes.</summary>
+    public static readonly int ParticleFrame = Same("Particle", "frame", 0x44);
+    /// <inheritdoc cref="ParticleFrame"/>
+    public static readonly int ParticleFrameTime = Same("Particle", "frameTime", 0x48);
+    /// <summary>The splat normal, used as the billboard's reference axis on a splat emitter.</summary>
+    public static readonly int ParticleSplatNormal = Same("Particle", "splatNormal", 0x4c);
+    /// <summary>Splat flag (one byte) and age.</summary>
+    public static readonly int ParticleSplat = Same("Particle", "splat", 0x70);
+    /// <inheritdoc cref="ParticleSplat"/>
+    public static readonly int ParticleAge = Same("Particle", "age", 0x74);
+
+    // ---- MdlNodeEmitter (a +0x4 segment, and a boundary nobody has pinned) ----
+
+    /// <summary>UV grid: columns then rows. Zero means one, and a grid of 1x1 skips the animation entirely.
+    /// <para>Windows from the constructor, which pairs 0xa4 -&gt; 0xa8 and 0xb0 -&gt; 0xb4 and so brackets
+    /// both of these inside one +0x4 run; every one of the class's 22 Enable/Is accessors pairs its flags
+    /// word 0x170 -&gt; 0x174, which is the same +0x4 higher up.</para></summary>
+    public static readonly int EmitterGridX = Diverges("MdlNodeEmitter", "gridX", linux: 0xa8, win: 0xac);
+    /// <inheritdoc cref="EmitterGridX"/>
+    public static readonly int EmitterGridY = Diverges("MdlNodeEmitter", "gridY", linux: 0xac, win: 0xb0);
+    /// <summary>Non-zero DISABLES back-face culling (the engine reads it as
+    /// <c>if (node+0x164 == 0) Enable(CULL_FACE) else Disable(CULL_FACE)</c>).
+    /// <para>Unresolved on purpose: the constructor's map is order-preserving everywhere except right here --
+    /// its 0x154 -&gt; 0x158 and 0x16c -&gt; 0x170 are +0x4, but that leaves Linux's 0x164 facing Windows'
+    /// 0x160, which is backwards. One of the two decompilers split a store; until a second function reads
+    /// this field, the honest answer is that nobody knows.</para></summary>
+    public static readonly int EmitterNoCull = Unresolved("MdlNodeEmitter", "noCull", 0x164);
+
+    // ---- MdlNodeLight: the lens-flare declaration (no validated pair on either build) ----
+
+    /// <summary>The light node's flare parameters, all read by <c>Scene::RenderLensFlares</c> @0x471860:
+    /// <c>flareradius</c>, the flare count, the <c>flaresizes</c> float array and the
+    /// <c>flarecolorshifts</c> vec3 array.
+    /// <para>MdlNodeLight decompiles to no validated function pair on either build -- every one of its nine
+    /// functions is length-mismatched or fails -- so all four are unmeasured on Windows.</para></summary>
+    public static readonly int FlareRadius = Unresolved("MdlNodeLight", "flareRadius", 0x9c);
+    /// <inheritdoc cref="FlareRadius"/>
+    public static readonly int FlareCount = Unresolved("MdlNodeLight", "flareCount", 0xa8);
+    /// <inheritdoc cref="FlareRadius"/>
+    public static readonly int FlareSizes = Unresolved("MdlNodeLight", "flareSizes", 0xc0);
+    /// <inheritdoc cref="FlareRadius"/>
+    public static readonly int FlareShifts = Unresolved("MdlNodeLight", "flareShifts", 0xd0);
+
+    // ---- MdlNodeTriMesh: the faces the grass binner reads ----
+
+    /// <summary>MdlNodeTriMesh -&gt; faces (items +0xb0, count +0xb8), the array <c>Scene::AddFacesToBins</c>
+    /// @0x460ef0 and <c>CAurTriangleList::AddTriangle</c> @0x4b5650 bin the engine's own grass from.
+    /// <c>InternalGenVertices</c> pairs both offsets at delta 0, and <c>BuildVertexIndices</c> agrees.</summary>
+    public static readonly int MeshFaces = Same("MdlNodeTriMesh", "faces", 0xb0);
+    /// <inheritdoc cref="MeshFaces"/>
+    public static readonly int MeshFaceCount = Same("MdlNodeTriMesh", "faceCount", 0xb8);
+
+    /// <summary>One <c>MaxFace</c> record: material index at +0x10, the three vertex indices as u16 at
+    /// +0x1a/+0x1c/+0x1e, 0x20 bytes a record.
+    /// <para>A record LAYOUT with no functions of its own -- nothing takes a <c>MaxFace*</c> as <c>this</c> --
+    /// so nothing pairs it, exactly like <see cref="BucketStride"/>. Unresolved.</para></summary>
+    public static readonly int FaceStride = Unresolved("MaxFace", "stride", 0x20);
+    /// <inheritdoc cref="FaceStride"/>
+    public static readonly int FaceVertA = Unresolved("MaxFace", "vertA", 0x1a);
+    /// <inheritdoc cref="FaceStride"/>
+    public static readonly int FaceVertB = Unresolved("MaxFace", "vertB", 0x1c);
+    /// <inheritdoc cref="FaceStride"/>
+    public static readonly int FaceVertC = Unresolved("MaxFace", "vertC", 0x1e);
+    /// <summary>Stride of the host-side shadow of a vertex pool: positions 12 bytes apart. Same kind of
+    /// unowned record as <see cref="FaceStride"/>.</summary>
+    public static readonly int PoolPosStride = Unresolved("VertexPool", "posStride", 0xc);
+
+    // ---- Scene: four more spans inside the identical 0x0..0x1e0 run (#436) ----
+
+    /// <summary>The skybox state <c>Scene::RenderSkyBoxes</c> @0x466910, <c>SetSkyBox</c> @0x45e260 and
+    /// <c>SetSkyAlpha</c> @0x45f100 share: four skybox gobs from +0x18, the cross-fade gob at +0x38, the fade
+    /// parameter t at +0x40, the current and desired slot indices (-1 = none) at +0x44/+0x48, and the
+    /// "skybox off" byte at +0x4c that <c>TurnOffSkyBox</c> sets.</summary>
+    public static readonly int SceneSkyGobs = Same("Scene", "skyGobs", 0x18);
+    /// <inheritdoc cref="SceneSkyGobs"/>
+    public static readonly int SceneSkyFadeGob = Same("Scene", "skyFadeGob", 0x38);
+    /// <inheritdoc cref="SceneSkyGobs"/>
+    public static readonly int SceneSkyT = Same("Scene", "skyT", 0x40);
+    /// <inheritdoc cref="SceneSkyGobs"/>
+    public static readonly int SceneSkyCur = Same("Scene", "skyCur", 0x44);
+    /// <inheritdoc cref="SceneSkyGobs"/>
+    public static readonly int SceneSkyDesired = Same("Scene", "skyDesired", 0x48);
+    /// <inheritdoc cref="SceneSkyGobs"/>
+    public static readonly int SceneSkyOff = Same("Scene", "skyOff", 0x4c);
+    /// <summary>Where <c>RenderSkyBoxes</c> parks every sky gob: <c>Gob::SetPosition(Scene+0x190)</c>, a
+    /// <c>Vector</c>, called once per gob per frame right before <c>Gob::Render</c>. Paired twice.</summary>
+    public static readonly int SceneSkyPos = Same("Scene", "skyPos", 0x190);
+    /// <summary>Scene -&gt; the light a shadow view is currently being baked for.</summary>
+    public static readonly int SceneCurrentLight = Same("Scene", "currentLight", 0x50);
+    /// <summary>Scene's shadow-light list (<c>PartLight**</c> at +0x60, count at +0x68) -- the one
+    /// <c>Scene::RenderBeams</c> @0x46aba0 scans for the beam direction. NOT the LightManager's master list
+    /// at <see cref="LmMasterData"/>, and not <see cref="SceneLightManager"/>.</summary>
+    public static readonly int SceneShadowLights = Same("Scene", "shadowLights", 0x60);
+    /// <inheritdoc cref="SceneShadowLights"/>
+    public static readonly int SceneShadowLightCount = Same("Scene", "shadowLightCount", 0x68);
+    /// <summary><c>Scene+0x1e8</c>: the scene's environment map, a <c>SafePointer&lt;CAurTexture&gt;</c> whose
+    /// first word is the borrowed texture. <c>Scene::Render</c> @0x5762d0 fills it once per scene from the
+    /// TILESET's own resref (<c>CNWTileSet::GetEnvMapResRef</c>) and falls back to
+    /// <c>AurTextureGetFallbackEnvironmentMap</c> when the tileset names none.
+    /// <para>Eight bytes above the measured identical run, in the same unmeasured region as
+    /// <see cref="SceneDrawBuckets"/> -- and the Windows Scene functions touch 0x1f0 and 0x200 that Linux's
+    /// do not.</para></summary>
+    public static readonly int SceneEnvMap = Unresolved("Scene", "envMap", 0x1e8);
+
+    // ---- Gob: four more fields and one vtable slot ----
+
+    /// <summary>Gob -&gt; its cached bounding box, min at +0x160 and max at +0x16c.
+    /// <c>Gob::GetBoundingBox</c> @0x436ee0 is a plain read of exactly these two, no recompute, and it pairs
+    /// at delta 0. Only the EXTENT is used (the pair's space is not established, and the extent is the same
+    /// either way); it is centred on <see cref="GobPosition"/>, which is unambiguously world.</summary>
+    public static readonly int GobBoundsMin = Same("Gob", "boundsMin", 0x160);
+    /// <inheritdoc cref="GobBoundsMin"/>
+    public static readonly int GobBoundsMax = Same("Gob", "boundsMax", 0x16c);
+    /// <summary>The "visible" byte <c>Gob::Render</c> gates on.</summary>
+    public static readonly int GobVisible = Same("Gob", "visible", 0x1a4);
+    /// <summary>Gob -&gt; the attachment link whose chain multiplies a further lerped scale into the gob's
+    /// own. Paired three times at delta 0, and the highest Gob field #436 measured.</summary>
+    public static readonly int GobAttach = Same("Gob", "attach", 0x450);
+    /// <summary><c>Gob::GetAdjustedScale() const</c> -- the scale every emitter size term is multiplied by.
+    /// Printed on both sides by <c>tools/abi/vtable-slots.py Gob</c>; -8, like every other slot (#433).</summary>
+    public static readonly int GobAdjustedScaleSlot =
+        Diverges("Gob", "vtbl.GetAdjustedScale", linux: 0x2d8, win: 0x2d0, Expect.VtblSlot);
+
+    // ---- TileData: three fields the constructor pairs exactly ----
+    // TileData::TileData writes 0x0..0xcb on both builds and agrees store for store outside 0x58..0x7c,
+    // where MSVC splits three of Linux's 8-byte stores. That murky window is exactly where #436 left
+    // TileFade/TilePendingFade unresolved, and it is why these three are resolvable and those two are not.
+
+    /// <summary>TileData -&gt; its surviving parts (<c>CExoArrayList&lt;Part*&gt;</c>, items +0x30, count
+    /// +0x38): the array <c>Scene::SpawnTile</c> @0x474470 walks and <c>ProcessStaticParts</c> @0x470970
+    /// fills.</summary>
+    public static readonly int TileParts = Same("TileData", "parts", 0x30);
+    /// <inheritdoc cref="TileParts"/>
+    public static readonly int TilePartCount = Same("TileData", "partCount", 0x38);
+    /// <summary>The fade factor <c>PartEmitter::RenderEmitter</c> @0x4ad4c0 declines on: below 1.0 the engine
+    /// draws the emitter not at all. Reached through <see cref="GobTileData"/> or
+    /// <see cref="EmTileOwner"/>. A THIRD float, distinct from <see cref="TileFade"/> and
+    /// <see cref="TilePendingFade"/>, which <c>HandleFadingInBucket</c> @0x47f670 drives.</summary>
+    public static readonly int TileGeomFade = Same("TileData", "geomFade", 0xc8);
+
+    // ---- the grass classes ----
+
+    /// <summary><c>CAurTriangleBin</c>: the triangle-list array at +0x38 and its count at +0x40, from
+    /// <c>RenderGrassPolys</c> @0x4b5410. Nine of the class's functions pair, every one at delta 0.</summary>
+    public static readonly int BinLists = Same("CAurTriangleBin", "lists", 0x38);
+    /// <inheritdoc cref="BinLists"/>
+    public static readonly int BinListCount = Same("CAurTriangleBin", "listCount", 0x40);
+
+    /// <summary><c>CAurTriangleList</c>: the flat vertex array (three vec3 per face, stride 0x24) with its
+    /// FLOAT count at +8, the parallel per-face blade counts at +0x30 with their count at +0x38, and the
+    /// grass material index at +0x40 -- <c>RenderGrassPolys</c> compares exactly that against the material it
+    /// is drawing. Seven paired functions, all delta 0, bracketing 0x40 between 0x3c and 0x48.</summary>
+    public static readonly int ListVerts = Same("CAurTriangleList", "verts", 0x00);
+    /// <inheritdoc cref="ListVerts"/>
+    public static readonly int ListVertFloats = Same("CAurTriangleList", "vertFloats", 0x08);
+    /// <inheritdoc cref="ListVerts"/>
+    public static readonly int ListBlades = Same("CAurTriangleList", "blades", 0x30);
+    /// <inheritdoc cref="ListVerts"/>
+    public static readonly int ListBladeCount = Same("CAurTriangleList", "bladeCount", 0x38);
+    /// <inheritdoc cref="ListVerts"/>
+    public static readonly int ListMat = Same("CAurTriangleList", "mat", 0x40);
+
+    /// <summary><c>CAurGrassInfo</c>, 0x54 bytes: 32-char texture name, density, blade height (the quad is
+    /// height wide AND height tall), diffuse and ambient colours, and the four 2x2-atlas selection
+    /// probabilities. Read live off <c>g_GrassInfo</c> -- a server <c>AddGrassOverride</c> rewrites them.
+    /// <para>The class has exactly one function, its constructor, and it writes the same offsets on both
+    /// builds -- 0x0 and 0x50 as single bytes, 0x20..0x4f as floats (Windows splits the 8-byte stores at
+    /// 0x40 and 0x48, which is a decompiler difference, not a layout one). One anchor rather than #430's
+    /// preferred pair, because there is no second function to be had.</para></summary>
+    public static readonly int GrassInfoName = Same("CAurGrassInfo", "name", 0x00);
+    /// <summary>Blades per face in <c>AddTriangle</c> are <c>|cross| * 0.5 * density</c>, i.e. face area
+    /// times this.</summary>
+    public static readonly int GrassInfoDensity = Same("CAurGrassInfo", "density", 0x20);
+    /// <inheritdoc cref="GrassInfoName"/>
+    public static readonly int GrassInfoHeight = Same("CAurGrassInfo", "height", 0x24);
+    /// <inheritdoc cref="GrassInfoName"/>
+    public static readonly int GrassInfoDiffuse = Same("CAurGrassInfo", "diffuse", 0x28);
+    /// <inheritdoc cref="GrassInfoName"/>
+    public static readonly int GrassInfoAmbient = Same("CAurGrassInfo", "ambient", 0x34);
+    /// <inheritdoc cref="GrassInfoName"/>
+    public static readonly int GrassInfoProb = Same("CAurGrassInfo", "prob", 0x40);
+    /// <inheritdoc cref="GrassInfoName"/>
+    public static readonly int GrassInfoInUse = Same("CAurGrassInfo", "inUse", 0x50);
+    /// <summary>Record size of <see cref="GrassInfoName"/>'s class -- the stride <c>g_GrassInfo</c> is
+    /// indexed by. A SIZE, and the one row here resting on an ABI argument rather than a reading: the ctor
+    /// puts the last member (a byte) at 0x50 on both, the largest member is a float, and the class has no
+    /// base -- and base tail-padding reuse, #430's whole cause of divergence, needs a base to reuse.</summary>
+    public static readonly int GrassInfoStride = Same("CAurGrassInfo", "stride", 0x54);
+
+    // ---- aurMatrixStack ----
+
+    /// <summary>The engine's software matrix stack: the top matrix's 16 floats at +0x18, and 0x58 bytes to
+    /// the next stack (PROJECTION=0, VIEW=1, MODEL=2 inside <c>m_aurMtxStack</c>).
+    /// <para>All seven of the class's functions pair, and the union of what they touch is 0x18..0x57 on both
+    /// builds and nothing else -- which measures the top AND the stride, since the stride is the class's own
+    /// size.</para></summary>
+    public static readonly int MtxStackTop = Same("aurMatrixStack", "top", 0x18);
+    /// <inheritdoc cref="MtxStackTop"/>
+    public static readonly int MtxStackStride = Same("aurMatrixStack", "stride", 0x58);
+
+    // ---- classes the pass reads that no sweep can pair ----
+
+    /// <summary>The two <c>List&lt;MaterialParameter&gt;</c> the .mtr's declared values reach. Shared first,
+    /// instance second, so a per-part override still wins -- the instance list is only SIZED to the shared
+    /// count and carries defaults until something overrides.
+    /// <para>Material pairs at 0x0/0x40/0x50/0xd0 and nothing near 0x118, so this is unmeasured.</para></summary>
+    public static readonly int MatParams = Unresolved("Material", "params", 0x118);
+    /// <inheritdoc cref="MatParams"/>
+    public static readonly int MatParamCount = Unresolved("Material", "paramCount", 0x120);
+    /// <summary>The shared half of <see cref="MatParams"/>. In the same SharedMaterial region #436 refused
+    /// to resolve on neighbour corroboration, and this batch does not either.</summary>
+    public static readonly int SharedParams = Unresolved("SharedMaterial", "params", 0x1d0);
+    /// <inheritdoc cref="SharedParams"/>
+    public static readonly int SharedParamCount = Unresolved("SharedMaterial", "paramCount", 0x1d8);
+
+    /// <summary>One <c>MaterialParameter</c>: name at +0, value at +0x44, type at +0x5c (0 = float),
+    /// component count at +0x60 as a ushort, 100 bytes a record. Nothing takes one as <c>this</c>
+    /// (<c>Parse(char const*, MaterialParameter&amp;)</c> @0x4c5310 takes it as argument 2), so the sweep
+    /// cannot reach it.</summary>
+    public static readonly int ParamValue = Unresolved("MaterialParameter", "value", 0x44);
+    /// <inheritdoc cref="ParamValue"/>
+    public static readonly int ParamType = Unresolved("MaterialParameter", "type", 0x5c);
+    /// <inheritdoc cref="ParamValue"/>
+    public static readonly int ParamComps = Unresolved("MaterialParameter", "comps", 0x60);
+    /// <inheritdoc cref="ParamValue"/>
+    public static readonly int ParamStride = Unresolved("MaterialParameter", "stride", 100);
+
+    /// <summary>CNWCArea -&gt; tile grid width (+0xc) and height (+0x10): <c>CNWCArea::LoadBorder</c>
+    /// @0x70a5c0 multiplies exactly these for the tile count and bounds its strip loops on them. No
+    /// <c>CNWC*</c> class is name-exported on Windows, so this needs #420's RVA path, not the class
+    /// sweep.</summary>
+    public static readonly int AreaTileWidth = Unresolved("CNWCArea", "tileWidth", 0xc);
+    /// <inheritdoc cref="AreaTileWidth"/>
+    public static readonly int AreaTileHeight = Unresolved("CNWCArea", "tileHeight", 0x10);
+
+    /// <summary>The GL program id inside a <c>GLRender::PROG_FIXED</c> record, from
+    /// <c>GLRender::SetProgram</c> @0x4cf940's own <c>mov 0x64(%rax),%eax</c>. Every function that touches a
+    /// PROG_FIXED takes it as an ARGUMENT rather than <c>this</c>, so the sweep never reaches it.</summary>
+    public static readonly int ProgFixedId = Unresolved("GLRender::PROG_FIXED", "programId", 0x64);
+
+    /// <summary>A <c>List&lt;T&gt;</c> / <c>CExoArrayList&lt;T&gt;</c> in this engine is {element pointer,
+    /// count}: the symbol's own address is the list, not the elements. Both builds, every paired list in the
+    /// #436 and #441 sweeps.</summary>
+    public static readonly int ListItems = Same("(abi)", "list.items", 0x0);
+    /// <inheritdoc cref="ListItems"/>
+    public static readonly int ListItemCount = Same("(abi)", "list.count", 0x8);
+
+    // ponytail: the rest of the Alloy offsets land here one subsystem at a time (#429 section 2) -- batch 1 was
+    // the Scene walk (#436), batch 2 the passes (#441); AlloyRenderer, OwnedTextures/OwnedBuffers/TexScan,
+    // DrawFunnel/RspShim and the Core/Services/Ui residue are what is left. A second tested
     // client build gets its own pinned key plus its own values below; today there is exactly one per OS.
 
     // ================= engine constants that are not offsets =================

@@ -51,7 +51,7 @@ internal static unsafe class FrameSnapshot
     /// <c>AurTextureGetFallbackEnvironmentMap</c> when the tileset names none -- so it is present even where
     /// the MATERIAL has no env map, which is the case the <c>[water]</c> census line's <c>env=False</c>
     /// reports and which made this term look inapplicable.</summary>
-    private const int SceneEnvMap = 0x1e8;
+    private static readonly int SceneEnvMap = EngineLayout.SceneEnvMap;
 
     /// <summary><c>/water on 0</c> stands the class down; <c>/water on 1</c> brings it back at the next
     /// pass. Armed and idling rather than un-installed, so the toggle is live either way.</summary>

@@ -38,7 +38,8 @@ public sealed unsafe class ShadowService : IExtenderService
 {
     private const int ShadowDraws = 5;
 
-    private const int SceneCurrentLight = 0x50;  // Scene's "current shadow light" slot, set per-light by RenderShadows.
+    /// <summary>Scene's "current shadow light" slot, set per-light by RenderShadows.</summary>
+    private static readonly int SceneCurrentLight = EngineLayout.SceneCurrentLight;
 
     /// <summary>Config <c>noshadows</c>: 0 = never suppress (pure vanilla stencil), 1 = always suppress the
     /// sun/moon and keep point-light stencils, 2 = full kill, <see cref="ModeAuto"/> = the default -- suppress

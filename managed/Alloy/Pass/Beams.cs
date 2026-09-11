@@ -36,15 +36,15 @@ internal static unsafe class Beams
     /// <summary>The only two fields <c>PartBeam::Draw</c> @0x450120 reads -- its whole body is
     /// <c>RenderVertexData(part+0xa0, part+0xa8, 4, 0xffffffff)</c>. So the capture needs no funnel arm: the
     /// draw's arguments are readable straight off the part.</summary>
-    private const int PartVdo = 0xa0, PartItem = 0xa8;
+    private static readonly int PartVdo = EngineLayout.BeamVdo, PartItem = EngineLayout.BeamItem;
     /// <summary>The Aurora primitive id <c>PartBeam::Draw</c> hard-codes.</summary>
     private const int BeamPrim = 4;
-    /// <summary>Scene's shadow-light list, the one <c>RenderBeams</c> scans for the beam direction:
-    /// <c>PartLight**</c> at +0x60, count at +0x68.</summary>
-    private const int SceneLights = 0x60, SceneLightCount = 0x68;
-    /// <summary>The PartLight live flag at +0x74 -- the one field of the light <c>RenderBeams</c>'s scan
-    /// reads that no other walker does. Range, kind and direction are shared, in <see cref="EngineLayout"/>.</summary>
-    private const int LightLive = 0x74;
+    /// <summary>Scene's shadow-light list, the one <c>RenderBeams</c> scans for the beam direction.</summary>
+    private static readonly int SceneLights = EngineLayout.SceneShadowLights,
+                               SceneLightCount = EngineLayout.SceneShadowLightCount;
+    /// <summary>The flag <c>RenderBeams</c>'s scan skips a light on when it is zero. One field with two
+    /// readers: <see cref="EngineLayout.LightCastShadows"/> is the same dword.</summary>
+    private static readonly int LightLive = EngineLayout.LightCastShadows;
     /// <summary><c>projectionWorldZClip</c>: the world z every back-facing beam vertex is extruded down to.
     /// <para><c>RenderBeams</c> @0x46add0 is <c>movss xmm0,[0x12f04a4]; mov edi,1; call SetShaderParamf</c> --
     /// the <c>edi</c> is the shader-constant INDEX and the value is the .rodata float, <b>-20.0</b>. Read the
@@ -78,9 +78,11 @@ internal static unsafe class Beams
     /// <summary>The matrix stack: model is index 2, stride 0x58, top at +0x18 (same layout
     /// <see cref="SkyBox"/> reads). Read once per enrollment -- see the class remarks for why the top is the
     /// same value at the Alloy slot as it is at <c>RenderBeams</c>'s.</summary>
-    private const int ModeModel = 2, StackStride = 0x58, StackTop = 0x18;
+    private const int ModeModel = 2;
+    private static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
     /// <summary>The embedded <c>DrawBucketManager</c> and the bucket <c>RenderBeams</c> asks it for.</summary>
-    private const int SceneDrawBuckets = 0x208, BeamBucket = 0xf;
+    private const int BeamBucket = 0xf;
+    private static readonly int SceneDrawBuckets = EngineLayout.SceneDrawBuckets;
     /// <summary>Part vtable slot 0x90, <c>Part::AsPartBeam</c> -- dumped from <c>_ZTV8PartBeam</c>, and the
     /// call <c>RenderBeams</c> @0x46ad90 makes on every bucket item before touching it as a beam.</summary>
     private static readonly int PartVtblAsPartBeam = Sowx.Framework.EngineLayout.PartAsPartBeamSlot;

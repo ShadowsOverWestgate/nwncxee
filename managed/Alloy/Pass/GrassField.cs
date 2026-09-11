@@ -45,21 +45,24 @@ internal static unsafe partial class GrassField
     /// face, stride 0x24) with its FLOAT count at +8, the parallel per-face blade counts at +0x30 with their
     /// count at +0x38, and the grass material index at +0x40 (<c>RenderGrassPolys</c> compares exactly that
     /// against the material it is drawing).</summary>
-    private const int ListVerts = 0x00, ListVertFloats = 0x08, ListBlades = 0x30, ListBladeCount = 0x38,
-                      ListMat = 0x40;
+    private static readonly int ListVerts = EngineLayout.ListVerts, ListVertFloats = EngineLayout.ListVertFloats,
+                               ListBlades = EngineLayout.ListBlades, ListBladeCount = EngineLayout.ListBladeCount,
+                               ListMat = EngineLayout.ListMat;
     /// <summary><c>CAurTriangleBin</c> layout, from <c>RenderGrassPolys</c> @0x4b5410: the triangle-list
     /// array at +0x38 and its count at +0x40. (The constructor @0x4b4ba0 also stores the BSP cell's own
     /// min/max at +0x0c / +0x18; the patch bounds are the blades' own extent instead -- see
     /// <see cref="Bake"/>.)</summary>
-    private const int BinLists = 0x38, BinListCount = 0x40;
+    private static readonly int BinLists = EngineLayout.BinLists, BinListCount = EngineLayout.BinListCount;
     /// <summary><c>CAurGrassInfo</c>, 0x54 bytes: 32-char texture name, density, blade height (the quad is
     /// height wide AND height tall), diffuse and ambient colours, and the four 2x2-atlas selection
     /// probabilities. Read live off <c>g_GrassInfo</c> -- a server <c>AddGrassOverride</c> rewrites them.</summary>
-    private const int InfoStride = 0x54, InfoName = 0x00, InfoHeight = 0x24, InfoDiffuse = 0x28,
-                      InfoAmbient = 0x34, InfoProb = 0x40, InfoInUse = 0x50;
+    private static readonly int InfoStride = EngineLayout.GrassInfoStride, InfoName = EngineLayout.GrassInfoName,
+                               InfoHeight = EngineLayout.GrassInfoHeight, InfoDiffuse = EngineLayout.GrassInfoDiffuse,
+                               InfoAmbient = EngineLayout.GrassInfoAmbient, InfoProb = EngineLayout.GrassInfoProb,
+                               InfoInUse = EngineLayout.GrassInfoInUse;
     /// <summary>A <c>List&lt;T&gt;</c> / <c>CExoArrayList&lt;T&gt;</c> in this engine is {element pointer,
     /// count}: the symbol's own address is the list, not the elements.</summary>
-    private const int ListPtr = 0x00, ListCount = 0x08;
+    private static readonly int ListPtr = EngineLayout.ListItems, ListCount = EngineLayout.ListItemCount;
 
     /// <summary>Patches (one per visible bin x grass material) the cache holds, and the open-addressed slot
     /// table that interns them by <c>CAurTriangleList*</c> (power of two, ~2x for a 0.5 load factor).</summary>
@@ -83,23 +86,24 @@ internal static unsafe partial class GrassField
     /// this is a bad pointer, not a model.</summary>
     private const int MaxPartDepth = 12, MaxPartChildren = 4096;
 
-    // ---- the gob-footprint struct layout (#127), Ghidra-verified; shared Gob fields live in SceneLayout ----
+    // ---- the gob-footprint struct layout (#127); every offset below is a row in EngineLayout (#441) ----
     /// <summary>Gob -&gt; its cached bounding box, min at +0x160 and max at +0x16c. <c>Gob::GetBoundingBox</c>
     /// @0x436ee0 is a plain read of exactly these two, no recompute. Only the EXTENT is used (the pair's
     /// space -- model or world -- is not established, and the extent is the same either way); it is centred
     /// on <see cref="EngineLayout.GobPosition"/>, which is unambiguously world.</summary>
-    private const int GobBoxMin = 0x160, GobBoxMax = 0x16c;
+    private static readonly int GobBoxMin = EngineLayout.GobBoundsMin, GobBoxMax = EngineLayout.GobBoundsMax;
     /// <summary>The MdlNode <c>Gob::SetAsCharacter</c> writes through (<see cref="EngineLayout.GobNode"/>), and
     /// the byte it writes: <c>node+0x8e = 4</c>. The only positive "this gob is a creature" mark found in the
     /// client. Used to keep creatures OUT of the grass cull -- they bend grass, they do not erase it.</summary>
-    private const int NodeCharacterKind = 0x8e, NodeCharacterValue = 4;
+    private const int NodeCharacterValue = 4;
+    private static readonly int NodeCharacterKind = EngineLayout.NodeOwnerFlags;
     /// <summary>A Part's child array (+0x38) and its count (+0x40), and the vtable slot (+0x60) that yields the
     /// part's <c>PartTriMesh*</c> or null. Straight out of <c>Gob::ContainsNonSolids</c> @0x43f250 and
     /// <c>Gob::ContainsWater</c> @0x43f2f0, which walk exactly this shape. <see cref="PartTriMeshLive"/> is the
     /// byte ContainsNonSolids gates the trimesh on before testing its opacity.</summary>
     private static readonly int PartAsTriMeshVtbl = Sowx.Framework.EngineLayout.PartAsTriMeshSlot;
-    private const int PartChildren = 0x38, PartChildCount = 0x40,
-                      PartTriMeshLive = 0x96;
+    private static readonly int PartChildren = EngineLayout.PartChildren, PartChildCount = EngineLayout.PartChildCount,
+                               PartTriMeshLive = EngineLayout.PartRenderFlag;
     /// <summary>Vertices in the blade template: two quads crossed at 90 degrees, six vertices each. Vanilla
     /// draws ONE flat card per blade, which reads as a paper cutout from the side; a cross costs one extra
     /// quad per blade and is the cheapest thing that makes grass look like grass from any angle.</summary>

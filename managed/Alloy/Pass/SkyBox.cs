@@ -50,28 +50,32 @@ internal static unsafe class SkyBox
     /// <c>SetSkyAlpha</c> @0x45f100: four skybox gobs from +0x18, the cross-fade gob at +0x38, the fade
     /// parameter t at +0x40, the current and desired slot indices (-1 = none) at +0x44/+0x48, and the
     /// "skybox off" byte at +0x4c that <c>TurnOffSkyBox</c> sets.</summary>
-    private const int SceneGobs = 0x18, SceneFadeGob = 0x38, SceneT = 0x40, SceneCur = 0x44,
-                      SceneDesired = 0x48, SceneOff = 0x4c;
+    private static readonly int SceneGobs = EngineLayout.SceneSkyGobs, SceneFadeGob = EngineLayout.SceneSkyFadeGob,
+                               SceneT = EngineLayout.SceneSkyT, SceneCur = EngineLayout.SceneSkyCur,
+                               SceneDesired = EngineLayout.SceneSkyDesired, SceneOff = EngineLayout.SceneSkyOff;
     /// <summary>The alpha multiplier <c>PartTriMesh::Mat</c> reads off the instance, and the field
     /// <c>RenderSkyBoxes</c> writes the cross-fade into. Same offset <c>EngineLayout.GobAlpha</c> names.</summary>
-    private const int GobAlpha = 0x108;
+    private static readonly int GobAlpha = EngineLayout.GobAlpha;
     /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1), stride 0x58, top at
     /// +0x18. <c>RenderSkyBoxes</c> replaces the PROJECTION (push/identity/SetPerspectiveTransform @0x466aa2)
     /// and leaves the model stack alone, so this top is the base every composed sky matrix sits on -- and it
     /// is the same value at the Alloy slot, because every engine walk brackets its own model writes with
     /// Push/PopCurrentMatrix.</summary>
-    private const int ModeModel = 2, StackStride = 0x58, StackTop = 0x18;
+    private const int ModeModel = 2;
+    private static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
     /// <summary>Where <c>RenderSkyBoxes</c> parks every sky gob: <c>Gob::SetPosition(Scene+0x190)</c>, a
     /// <c>Vector</c>, called once per gob per frame right before <c>Gob::Render</c>.</summary>
-    private const int SceneSkyPos = 0x190;
+    private static readonly int SceneSkyPos = EngineLayout.SceneSkyPos;
     /// <summary>Gob fields: the position <c>SetPosition</c> writes (+0xa8, the additive term of
     /// <c>GetAdjustedPosition</c>), the "visible" byte <c>Gob::Render</c> gates on (+0x1a4), and the
     /// attachment link (+0x450) whose chain multiplies a further lerped scale into the gob's own.</summary>
-    private const int GobPos = 0xa8, GobVisible = 0x1a4, GobAttach = 0x450;
+    private static readonly int GobPos = EngineLayout.GobPosition, GobVisible = EngineLayout.GobVisible,
+                               GobAttach = EngineLayout.GobAttach;
     /// <summary>Part fields <c>Gob::PartDraw</c> and <c>Part::GetWorld</c> read: the draw gate at +0x34, the
     /// uniform scale at +0x2c and the parent link at +0x48. Position (+0x10) and orientation (+0x1c) are the
     /// other two, and <c>GetWorld</c> composes those for us.</summary>
-    private const int PartVisible = 0x34, PartScale = 0x2c, PartParent = 0x48;
+    private static readonly int PartVisible = EngineLayout.PartVisible, PartScale = EngineLayout.PartScale,
+                               PartParent = EngineLayout.PartParent;
     /// <summary>Part vtable slot 0x60, <c>Part::AsPartTriMesh</c> -- the same discriminator
     /// <see cref="SceneWalk"/> uses, and the one that keeps a sky gob's lights and dummies out of the
     /// table.</summary>
@@ -130,7 +134,7 @@ internal static unsafe class SkyBox
     private static delegate* unmanaged<IntPtr, void> _setUniforms;
     private static delegate* unmanaged<uint, void> _useProgram;
     /// <summary>Program id inside PROG_FIXED, from <c>SetProgram</c>'s own <c>mov 0x64(%rax),%eax</c>.</summary>
-    private const int ProgId = 0x64;
+    private static readonly int ProgId = EngineLayout.ProgFixedId;
 
     /// <summary>#136: true only while <see cref="RspShim"/> is running the sky's SIMULATION vcall. The
     /// swallow reads it to tell a sky draw from every other engine draw in the window -- there is no other

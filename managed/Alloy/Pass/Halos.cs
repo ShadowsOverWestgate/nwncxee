@@ -19,13 +19,16 @@ internal static unsafe class Halos
 {
     internal const string ShdHaloVs = "cx_halo_vs", ShdHaloFs = "cx_halo_fs";
 
-    /// <summary>PartLight fields (Ghidra RenderLensFlares): the MdlNode, the colour, the integrated occlusion
-    /// fade (0..1) and the world position.</summary>
-    private const int PlNode = 0x8, PlColor = 0x64, PlFade = 0xa0, PlPos = 0xac;
+    /// <summary>PartLight fields (Ghidra <c>Scene::RenderLensFlares</c>): the MdlNode, the colour, the
+    /// integrated occlusion fade (0..1) and the world position. The fade is the flare's own, NOT the shadow
+    /// fade -- see <see cref="EngineLayout.LightFlareFade"/>.</summary>
+    private static readonly int PlNode = EngineLayout.PartNodeLink, PlColor = EngineLayout.LightColour,
+                               PlFade = EngineLayout.LightFlareFade, PlPos = EngineLayout.LightDir;
     /// <summary>Light MdlNode fields (same function): <c>flareradius</c>, the flare count, the
     /// <c>flaresizes</c> float array and the <c>flarecolorshifts</c> vec3 array.</summary>
-    private const int NdFlareRadius = 0x9c, NdFlareCount = 0xa8, NdFlareSizes = 0xc0, NdFlareShifts = 0xd0;
-    private const int SceneLightManager = 0x158;
+    private static readonly int NdFlareRadius = EngineLayout.FlareRadius, NdFlareCount = EngineLayout.FlareCount,
+                               NdFlareSizes = EngineLayout.FlareSizes, NdFlareShifts = EngineLayout.FlareShifts;
+    private static readonly int SceneLightManager = EngineLayout.SceneLightManager;
     private const uint BindHalos = 5, GlTriangleStrip = 0x0005;
     /// <summary>Two vec4 per halo: (pos.xyz, world radius), (linear rgb with the engine fade folded in, flareradius).</summary>
     private const int Floats = 8;

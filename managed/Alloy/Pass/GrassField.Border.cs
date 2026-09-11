@@ -17,25 +17,29 @@ namespace Sowx.Alloy;
 /// texture set per area -- if a custom tileset ever names its meadow something else.</para></summary>
 internal static unsafe partial class GrassField
 {
-    /// <summary>The synthetic list block: the header mirrors the <c>CAurTriangleList</c> fields Bake reads
-    /// (<see cref="ListVerts"/> .. <see cref="ListMat"/>), the face vertices and blade counts follow it.</summary>
-    private const int BorderHeader = 0x48;
+    /// <summary>Size of the synthetic list block's header: OUR allocation, not an engine offset, but it has
+    /// to clear every <c>CAurTriangleList</c> field Bake reads (<see cref="ListVerts"/> .. <see cref="ListMat"/>),
+    /// so it is derived from the last of them rather than written down twice.</summary>
+    private static readonly int BorderHeader = (EngineLayout.ListMat + 4 + 7) & ~7;
     private const int MaxBorderLists = 16384, MaxBorderFaces = 4096;
     /// <summary>TileData -&gt; its surviving parts (<c>CExoArrayList&lt;Part*&gt;</c>, items +0x30, count +0x38):
     /// the array <c>Scene::SpawnTile</c> @0x474470 walks and <c>ProcessStaticParts</c> @0x470970 fills.</summary>
-    private const int TileDataParts = 0x30, TileDataPartCount = 0x38;
+    private static readonly int TileDataParts = EngineLayout.TileParts,
+                               TileDataPartCount = EngineLayout.TilePartCount;
     /// <summary>MdlNodeTriMesh -&gt; faces (+0xb0, count +0xb8, 0x20-byte <c>MaxFace</c>: material int at +0x10,
     /// vertex indices as three u16 at +0x1a/+0x1c/+0x1e) and its vertex pool id (+0x280), whose host shadow
     /// holds positions 12 bytes apart. All read off <c>Scene::AddFacesToBins</c> @0x460ef0 and
     /// <c>CAurTriangleList::AddTriangle</c> @0x4b5650, which bin the engine's own grass from exactly these.</summary>
-    private const int NodeFaces = 0xb0, NodeFaceCount = 0xb8, NodePool = 0x280,
-                      FaceStride = 0x20, FaceA = 0x1a, FaceB = 0x1c, FaceC = 0x1e, PoolStride = 0xc;
+    private static readonly int NodeFaces = EngineLayout.MeshFaces, NodeFaceCount = EngineLayout.MeshFaceCount,
+                               NodePool = EngineLayout.MdlRestPool, FaceStride = EngineLayout.FaceStride,
+                               FaceA = EngineLayout.FaceVertA, FaceB = EngineLayout.FaceVertB,
+                               FaceC = EngineLayout.FaceVertC, PoolStride = EngineLayout.PoolPosStride;
     /// <summary>The tileset's own grass material: <c>CNWCArea::LoadArea</c> registers the <c>.set</c>'s
     /// <c>[GRASS]</c> block as <c>AurGrassAddInfo(3, ...)</c>; server overrides take other slots.</summary>
     private const int TilesetGrassMaterial = 3;
     /// <summary>CAurGrassInfo -&gt; density (+0x20): blades per face in <c>AddTriangle</c> are
     /// <c>|cross| * 0.5 * density</c>, i.e. face area times it.</summary>
-    private const int InfoDensity = 0x20;
+    private static readonly int InfoDensity = EngineLayout.GrassInfoDensity;
     /// <summary>A face is ground when its unit normal's |z| clears this. Grass stands upright from wherever
     /// its root is, so a wall-ish face with a grass texture (a raised tile's skirt) would sprout sideways.</summary>
     private const float MinUpNormal = 0.5f;
