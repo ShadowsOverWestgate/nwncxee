@@ -8,3 +8,4 @@ __pycache__/
 sow-client-extender-win/
 build-managed-win.log
 sow-client-extender-win.zip
+.scratch/*

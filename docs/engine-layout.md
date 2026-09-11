@@ -5,8 +5,10 @@
 question: the Linux client is built by GCC on the Itanium C++ ABI, the Windows
 client by MSVC, and the two disagree about where a field sits inside a class.
 
-`managed/Framework/EngineLayout.cs` is the single table. Every offset the
-extender reads is declared there and read at the use site as a plain field.
+`managed/Framework/EngineLayout.cs` is the single table. Every offset the extender reads
+is declared there and read at the use site as a plain field. Vtable **slots** ride it too;
+why they diverge, and the handler-signature audit that goes with them, is
+`docs/engine-abi.md`.
 
 ## The three forms, and there is no fourth
 
@@ -83,6 +85,14 @@ failing case by feeding a `Byte01` offset a 2.
 | `CNWCObject` | `vtbl.GetPortrait` | `0x1d8` | `0x1d0` | #420: slot counted in the Windows class, not reused from Linux |
 | `CNWCCreature` | `plated` | `0x468` | `0x448` | top of `ShowFeedbackBubbleText` — Linux @`0x71a81e`, Windows @`0x80b240` |
 | `CNWCPlaceable` | `plated` | `0x218` | `0x1f8` | same, Linux @`0x7ea8b8`, Windows @`0x871b60` |
+| `Part` | `vtbl.AsPartTriMesh` | `0x60` | `0x58` | #433: both vtables dumped, `tools/abi/vtable-slots.py` |
+| `Part` | `vtbl.AsPartBeam` | `0x90` | `0x88` | same |
+| `Part` | `vtbl.PostProcess` | `0xe0` | `0xd8` | same |
+| `CAurTexture` | `vtbl.AsCAurTextureBasic` | `0x10` | `0x08` | same |
+| `CAurTexture` | `vtbl.GetReferencedTexture` | `0x18` | `0x10` | same |
+| `VertexPrimitive` | `vtbl.SetupArrays` | `0x38` | `0x30` | same |
+| `CAurBehavior` | `vtbl.AsBehaviorCameraFollow` | `0x48` | `0x40` | same |
+| `CycleTIDTextureController` | `vtbl.Control` | `0x10` | `0x08` | same |
 
 Anchors are handwritten, like `docs/windows-symbols.md`. There is no generator:
 #431's extractor produces **candidates**, and a candidate becomes a row here only

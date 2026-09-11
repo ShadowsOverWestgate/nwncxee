@@ -130,7 +130,7 @@ internal static class SceneLayout
     /// (disassembled: rsi is dead from entry). Pass the part twice, as the engine does.</para>
     /// <para>VIRTUAL on purpose, and the vptr must be proven to be <c>PartSkin</c>'s exactly: on any other
     /// part this slot is <c>Part::PostProcess</c>, which recurses the whole subtree.</para></summary>
-    public const int PartVtblPostProcess = 0xe0;
+    public static readonly int PartVtblPostProcess = Sowx.Framework.EngineLayout.PartPostProcessSlot;
     /// <summary>#256: the primitive-type index on the MdlNode (<c>AlloyRenderer.PartMdlNode</c>), argument 3 of the engine's own
     /// <c>RenderVertexData</c> call. Read out of <c>RenderFlat</c> @0x450eb0:
 
@@ -161,7 +161,7 @@ internal static class SceneLayout
     /// <para>Idempotent: the body's first act is an early-out when the primitive is already set up
     /// (<c>+0x64</c> set, VDO non-null, <c>+0x84</c> clear), so a call on a bound primitive is a compare.</para>
     /// ABI: <c>(VertexPrimitive* /*rdi*/)</c>, no arguments, no return.</summary>
-    public const int VpVtblSetupArrays = 0x38;
+    public static readonly int VpVtblSetupArrays = Sowx.Framework.EngineLayout.VpSetupArraysSlot;
     /// <summary>Part -&gt; texture-rotation angle (degrees, float; Ghidra PartTriMesh::RotateTexture
     /// @0x44fff0): TransformTextureMatrix pushes it before every draw -- NWN's tile-texture 0/90/180/270
     /// anti-repetition scheme. Part of the group key (raw bits), else a batch renders every member under the

@@ -206,8 +206,8 @@ internal static unsafe class OwnedTextures
         // ConstructImage is the hold alone, so it stays gated on the flag actually being there to hold.
         // Attach ran first (AlloyRenderer wires the pass table before it installs it), so a null _pltOnGpu
         // means the symbol did not resolve -- already logged there, with its reason.
-        _origGlImageBasic = (delegate* unmanaged<IntPtr, byte, void>)hooks.Install(
-            SymbolMap.AurTextureGlImageBasic, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnGlImageBasic);
+        _origGlImageBasic = (delegate* unmanaged<IntPtr, byte, int>)hooks.Install(
+            SymbolMap.AurTextureGlImageBasic, (IntPtr)(delegate* unmanaged<IntPtr, byte, int>)&OnGlImageBasic);
         if (_pltOnGpu != null)
             _origConstructImage = (delegate* unmanaged<IntPtr, void>)hooks.Install(
                 SymbolMap.AurTextureConstructImage, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnConstructImage);
@@ -226,7 +226,7 @@ internal static unsafe class OwnedTextures
     }
 
     private static delegate* unmanaged<IntPtr, void> _origConstructImage;
-    private static delegate* unmanaged<IntPtr, byte, void> _origGlImageBasic;
+    private static delegate* unmanaged<IntPtr, byte, int> _origGlImageBasic;
 
     /// <summary>#358: the engine is about to decide whether to composite this texture's PLT layers on the
     /// CPU. Cold -- once per texture build -- and the whole body is one predicted compare.</summary>
@@ -243,12 +243,15 @@ internal static unsafe class OwnedTextures
     /// before the original runs -- it is what that call is about to branch on -- and the queue is filled
     /// after, when the cells carry names. Cold: once per texture build.</para></summary>
     [UnmanagedCallersOnly]
-    private static void OnGlImageBasic(IntPtr tex, byte useSubImage)
+    private static int OnGlImageBasic(IntPtr tex, byte useSubImage)
     {
         if (_pltWanted) KeepPltOnCpu();
         bool gpu = _pltOnGpu != null && *_pltOnGpu != 0;
-        if (_origGlImageBasic != null) _origGlImageBasic(tex, useSubImage);
+        // glImageBasic returns int (#433: the MSVC export encodes the return type Itanium drops), and
+        // the caller propagates it -- so the trampoline's value must be carried, not dropped into work.
+        int r = _origGlImageBasic != null ? _origGlImageBasic(tex, useSubImage) : 0;
         if (gpu) QueuePltCopy(tex);
+        return r;
     }
 
     /// <summary><c>CAurTextureBasic+0x84</c>: the texture's own format/kind word. <c>glImageBasic</c>

@@ -11,7 +11,7 @@ internal static unsafe class BucketGate
 {
     /// <summary>Bucket-item vtable slot the RenderDrawBucket loop devirts to get the PartTriMesh from the
     /// bucket's Part (Ghidra @0x56d118: <c>(**(code**)(*part+0x60))(part)</c>).</summary>
-    internal const int PartVtblGetTriMesh = 0x60;
+    internal static readonly int PartVtblGetTriMesh = Sowx.Framework.EngineLayout.PartAsTriMeshSlot;
 
     /// <summary>Bucket-array geometry, from <c>GetDrawBucketByItemType</c> @0x47bd60 (stride 0x10, three
     /// phases per item type) and <c>GetNextItem</c> @0x47be90 (items at +0, count at +8).</summary>

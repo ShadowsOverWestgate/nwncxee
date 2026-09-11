@@ -75,7 +75,7 @@ internal static unsafe class SkyBox
     /// <summary>Part vtable slot 0x60, <c>Part::AsPartTriMesh</c> -- the same discriminator
     /// <see cref="SceneWalk"/> uses, and the one that keeps a sky gob's lights and dummies out of the
     /// table.</summary>
-    private const int PartVtblAsTriMesh = 0x60;
+    private static readonly int PartVtblAsTriMesh = Sowx.Framework.EngineLayout.PartAsTriMeshSlot;
     /// <summary>A skybox model is a handful of parts and there are at most three gobs in play -- 11 was the
     /// most ever logged. Sized as a ceiling anyway (one Part struct is small), because a sky handed back for
     /// want of a slot is a whole-screen artifact.</summary>

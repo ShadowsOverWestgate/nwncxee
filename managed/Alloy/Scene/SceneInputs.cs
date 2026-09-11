@@ -69,7 +69,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>Behavior-host vtable slot for <c>AsBehaviorCameraFollow()</c> -- pure <c>return this</c> for a follow
     /// cam, null otherwise (a base-class type filter). Replicated exactly from ManageSceneBSP's own devirt call, so
     /// non-follow cameras (free-cam/cutscene) safely yield null.</summary>
-    private const int BehaviorAsFollowVtbl = 0x48;
+    private static readonly int BehaviorAsFollowVtbl = Sowx.Framework.EngineLayout.BehaviorAsFollowSlot;
     /// <summary>CAurBehaviorCameraFollow -&gt; <c>SafePointer&lt;CAurObject&gt;</c> to the followed object (the PC);
     /// raw pointer at +0. Its <see cref="SceneLayout.GobPosition"/> (+0xa8) is exactly what
     /// GetTargetWorldPosition returns.</summary>

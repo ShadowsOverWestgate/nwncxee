@@ -46,6 +46,35 @@ public static unsafe class EngineLayout
     /// differently, so this is a vtable index, not a field (#420).</summary>
     public static readonly int GetPortraitSlot = Diverges("CNWCObject", "vtbl.GetPortrait", linux: 0x1d8, win: 0x1d0, Expect.VtblSlot);
 
+    // ---- vtable slots Alloy calls through (#433) ----
+    // Every one is -8 on Windows and for one reason: Itanium gives a virtual destructor TWO slots
+    // (complete + deleting), MSVC gives it one, so everything declared after it shifts by a pointer.
+    // Measured, not assumed -- tools/abi/vtable-slots.py prints both tables side by side.
+
+    /// <summary>Part::AsPartTriMesh() -- the type filter SkyBox/BucketGate/GrassField run a part through.</summary>
+    public static readonly int PartAsTriMeshSlot = Diverges("Part", "vtbl.AsPartTriMesh", linux: 0x60, win: 0x58, Expect.VtblSlot);
+
+    /// <summary>Part::AsPartBeam() -- same filter for the beam overlays (#130).</summary>
+    public static readonly int PartAsPartBeamSlot = Diverges("Part", "vtbl.AsPartBeam", linux: 0x90, win: 0x88, Expect.VtblSlot);
+
+    /// <summary>Part::PostProcess(Part*).</summary>
+    public static readonly int PartPostProcessSlot = Diverges("Part", "vtbl.PostProcess", linux: 0xe0, win: 0xd8, Expect.VtblSlot);
+
+    /// <summary>CAurTexture::AsCAurTextureBasic().</summary>
+    public static readonly int TexAsBasicSlot = Diverges("CAurTexture", "vtbl.AsCAurTextureBasic", linux: 0x10, win: 0x08, Expect.VtblSlot);
+
+    /// <summary>CAurTexture::GetReferencedTexture() -- the indirection every tid read goes through first.</summary>
+    public static readonly int TexReferencedSlot = Diverges("CAurTexture", "vtbl.GetReferencedTexture", linux: 0x18, win: 0x10, Expect.VtblSlot);
+
+    /// <summary>VertexPrimitive::SetupArrays() -- virtual on purpose: Skinned/Anim/Dangly each override it.</summary>
+    public static readonly int VpSetupArraysSlot = Diverges("VertexPrimitive", "vtbl.SetupArrays", linux: 0x38, win: 0x30, Expect.VtblSlot);
+
+    /// <summary>CAurBehavior::AsBehaviorCameraFollow() -- the camera-follow type filter (#65).</summary>
+    public static readonly int BehaviorAsFollowSlot = Diverges("CAurBehavior", "vtbl.AsBehaviorCameraFollow", linux: 0x48, win: 0x40, Expect.VtblSlot);
+
+    /// <summary>CycleTIDTextureController::Control() -- one animated-texture tick.</summary>
+    public static readonly int CycleControlSlot = Diverges("CycleTIDTextureController", "vtbl.Control", linux: 0x10, win: 0x08, Expect.VtblSlot);
+
     // ponytail: the 530 Alloy offsets land here one subsystem at a time (#429 section 2). A second tested
     // client build gets its own pinned key plus its own values below; today there is exactly one per OS.
 

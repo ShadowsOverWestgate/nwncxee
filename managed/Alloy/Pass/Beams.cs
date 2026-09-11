@@ -83,7 +83,7 @@ internal static unsafe class Beams
     private const int SceneDrawBuckets = 0x208, BeamBucket = 0xf;
     /// <summary>Part vtable slot 0x90, <c>Part::AsPartBeam</c> -- dumped from <c>_ZTV8PartBeam</c>, and the
     /// call <c>RenderBeams</c> @0x46ad90 makes on every bucket item before touching it as a beam.</summary>
-    private const int PartVtblAsPartBeam = 0x90;
+    private static readonly int PartVtblAsPartBeam = Sowx.Framework.EngineLayout.PartAsPartBeamSlot;
 
     /// <summary>One enrolled beam. Rebuilt from the bucket every frame, so there is no liveness field: an
     /// entry exists exactly while the engine's own classification holds it.</summary>

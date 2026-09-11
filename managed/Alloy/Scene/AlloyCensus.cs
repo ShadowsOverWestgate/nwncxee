@@ -917,7 +917,8 @@ internal static unsafe class AlloyCensus
     /// <summary>CAurTextureBasic's 32-byte name field (Ghidra CAurTextureBasic::CAurTextureBasic @0x487250:
     /// <c>strncpy(this + 0x88, name, 0x1f)</c>). Reached the way AurTextureMessage @0x488b10 reaches it --
     /// vtable slot 0x18 resolves a reference texture to the real one, slot 0x10 is AsCAurTextureBasic.</summary>
-    internal const int TexBasicName = 0x88, TexVtblAsBasic = 0x10, TexVtblReferenced = 0x18;
+    internal const int TexBasicName = 0x88;
+    internal static readonly int TexVtblAsBasic = Sowx.Framework.EngineLayout.TexAsBasicSlot, TexVtblReferenced = Sowx.Framework.EngineLayout.TexReferencedSlot;
 
     /// <summary>Triage: every gob term the gate and the fold read, printed rather than reduced to a bool.
     /// "The instance modulates" is not actionable; "it modulates because its owner's fade bit is set" is.</summary>

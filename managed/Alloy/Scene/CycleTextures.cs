@@ -83,7 +83,7 @@ internal static unsafe class CycleTextures
                     continue;
                 }
                 int old = AurTex.Tid(r);
-                ((delegate* unmanaged<IntPtr, void>)*(IntPtr*)(*(IntPtr*)ctl + 0x10))(ctl);   // Control(), vtable slot 2
+                ((delegate* unmanaged<IntPtr, void>)*(IntPtr*)(*(IntPtr*)ctl + Sowx.Framework.EngineLayout.CycleControlSlot))(ctl);
                 if (AurTex.Tid(r) != old) { _dirty[_dirtyN++] = ctl; Steps++; }
             }
         }

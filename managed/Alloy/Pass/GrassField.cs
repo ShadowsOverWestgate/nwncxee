@@ -97,7 +97,8 @@ internal static unsafe partial class GrassField
     /// part's <c>PartTriMesh*</c> or null. Straight out of <c>Gob::ContainsNonSolids</c> @0x43f250 and
     /// <c>Gob::ContainsWater</c> @0x43f2f0, which walk exactly this shape. <see cref="PartTriMeshLive"/> is the
     /// byte ContainsNonSolids gates the trimesh on before testing its opacity.</summary>
-    private const int PartChildren = 0x38, PartChildCount = 0x40, PartAsTriMeshVtbl = 0x60,
+    private static readonly int PartAsTriMeshVtbl = Sowx.Framework.EngineLayout.PartAsTriMeshSlot;
+    private const int PartChildren = 0x38, PartChildCount = 0x40,
                       PartTriMeshLive = 0x96;
     /// <summary>Vertices in the blade template: two quads crossed at 90 degrees, six vertices each. Vanilla
     /// draws ONE flat card per blade, which reads as a paper cutout from the side; a cross costs one extra
