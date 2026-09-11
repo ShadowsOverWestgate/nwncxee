@@ -78,6 +78,21 @@ deriving anything — required, or the RVAs point into a different build.
 | `…Chat_TellName(CExoString const&, CExoString const&)` | `0x7ba9b0` | major 9 minor 4 after `WriteBOOL(1)`, two strings |
 | `…Chat_Party` | `0x7ba620` | major 9 minor 6 |
 | `…Chat_DungeonMaster` | `0x7ba540` | major 9 minor 0xe |
+| `CNWCMessage::HandleServerToPlayerChat` | `0x77c140` | `case 9` of the mapped HandleServerToPlayerMessage dispatch (`0x7a41a0`); also references the `"HandleServerToPlayerChat"` string directly |
+| `CNWCMessage::HandleServerToPlayerDialog` (not hooked; the anchor for the four below) | `0x7962f0` | `case 0x14` of the same dispatch |
+| `CGuiInGame::CloseDialog` | `0x6f6d80` | the Dialog handler's minor-5 branch: `GetInGameGui` (`0x6abbc0`) + `Initialized` (`0x6f9a90`) guard, then this. Body: panel at `gui+0x70` (same), `ResetGuiState(0x298)` |
+| `CGuiInGame::ShowDialogEntry` | `0x6fb560` | minor-1 branch, `(gui, &str, oid, oid)` after `ReadCExoLocStringClient` |
+| `CGuiInGame::ShowDialogReplies` | `0x6fb8e0` | minor-2 branch; body writes `panel+0x134` and `panel+0xbc0` (Linux `+0x144` / `+0xd08`) then `FixDialogSize` |
+| `CGuiInGame::ShowReplyChosen` | `0x6fbbc0` | minor-3 branch; **destroys its by-value `CExoString` at the tail** -- the skip must too |
+| `CNWCMessage::SendPlayerToServerDialog_Reply` | `0x7bbc50` | caller of SendPlayerToServerMessage with major `0x14` minor `3`; `CreateWriteMessage(9)`, OBJECTID + DWORD + BYTE + DWORD |
+| `CClientExoApp::GetGameObject` | `0x6abb60` | forwarder to `Internal::GetGameObject` `0x6d81f0`; the Dialog handler calls it with `GetPlayerCreature()+0xdc` exactly like Linux |
+| `CClientExoApp::GetObjectName` | `0x6abfc0` | forwarder to `Internal::GetObjectName` `0x6d83f0` = the one `Internal` caller of `C2DA::GetINTEntry(int, CExoString const&, int*)` (exported, `0x1a7010`) with the `"StrRef"` column; out-param order `(this, id, CExoString*)` unchanged |
+| `CGuiInGamePopUpBubble::SetChatBubbleMode(int)` | `0x6e90e0` | callee of the console wrapper anchored by `"SetChatBubbleMode 0/1/2: Off, text-only, or full background"` (`0x6e9060`); walks the bubble list writing `+0x114` / `+0x148` (Linux `+0x11c` / `+0x150`) |
+| `CNWCObject::SetPopUpBubbleText(CExoString, int, float, float)` | `0x766450` | the common callee of the three ShowFeedbackBubbleText bodies and the chat handler; checks `this+0x104 == 1` (retired) first; **frees its by-value `CExoString`** (forwarded, never skipped) |
+| `CNWCCreature::ShowFeedbackBubbleText` | `0x80b240` | caller of exported `CTlkTable::GetSimpleString` building the `"STRING_REF"` 2DA column; sets `this+0x448 = 1` (Linux `+0x468`) |
+| `CNWCPlaceable::ShowFeedbackBubbleText` | `0x871b60` | SetPopUpBubbleText caller with the `+0x1f8 = 1` / `bubble+0x144 = 0` shape (Linux `+0x218`) |
+| `CNWCItem::ShowFeedbackBubbleText` | `0x83f230` | SetPopUpBubbleText caller with `+0x264 = 1`; **MSVC passes the `CNWCObject` subobject as `this`** (the body does `this-0x48` for `CNWCItem::GetName`), so no thunk to avoid |
+| `CNWCObject::ShowFloatyText(CExoString, Vector, CExoString, int)` | `0x766a70` | callee of `HandleServerToPlayerCreatureUpdate_FloatyText` (`0x781a10`, tracy source-location struct at `0xe3e988` referencing the `__FUNCSIG__` string). **Win64: the `Vector` arrives as a pointer** (12-byte aggregate); both strings are callee-owned |
 | `CAurTexture::vftable` / `CAurTextureBasic::vftable` (data) | `0xd90c70` / `0xd90d90` | RTTI type descriptors `.?AVCAurTexture@@` / `.?AVCAurTextureBasic@@` -> complete-object locator -> vftable (Ghidra names them). MSVC's symbol is the object's first word: no Itanium `+0x10` skew (`AurTex.Attach`) |
 
 **By name — client-native features (verified in the `0x68e408bc` export table):**
@@ -92,6 +107,13 @@ deriving anything — required, or the RVAs point into a different build.
 | `CGuiPanel::Deactivate(int)` | `?Deactivate@CGuiPanel@@QEAAXH@Z` |
 | `RenderInterface::ResetRenderStates()` / `BindBuffer(uint,uint)` | `?ResetRenderStates@RenderInterface@@SAXXZ` / `?BindBuffer@RenderInterface@@SAXII@Z` |
 | `stbtt_InitFont` … `stbtt_MakeCodepointBitmap` (6) | same C names |
+| `g_pTlkTable` (data) | `?g_pTlkTable@@3PEAVCTlkTable@@EA` |
+| `CTlkTable::GetSimpleString(uint)` -> `CExoString` | `?GetSimpleString@CTlkTable@@QEAA?AVCExoString@@I@Z` -- sret pointer is the 2nd arg on Win64 |
+| `RenderInterface::GetViewPort(float*)` | `?GetViewPort@RenderInterface@@SAXPEAM@Z` |
+
+**Not anchored, optional:** `CGuiInGameChatDialog::ForceDialogVisible(float)` is an empty body on both builds
+(MSVC folds/inlines it); `CClientExoApp::GetModuleCamera()` is inlined at every Windows call site, so both
+platforms read `GetModule()+0xe8` directly.
 | `SDL_GL_GetProcAddress`, `SDL_GetMouseState`, `SDL_StartTextInput`, `SDL_Get/SetClipboardText`, `SDL_free` | same C names |
 
 ## Chat raw offsets (#419) -- decomp-diffed against `0x68e408bc`
@@ -105,6 +127,22 @@ deriving anything — required, or the RVAs point into a different build.
 | `CNWCModule` hour / minutes-per-hour | `+0x16c` / `+0x15c` | same (`+0x15c` by adjacent layout, `+0x160..+0x170` identical) | `ModuleUpdate_Time` `0x7a58e0` |
 | `CGuiInGameChatWindow` filter / shown | `+0xc58` / `+0xc68` | **`+0xae0` / `+0xaf0`** | SetFilter / Show above. Nothing reads them on Windows today |
 | `CGuiInGameChatPrompt` shown / edit | `+0x230` / `+0x100` | **`+0x200` / `+0xf8`** | Show / SetFocus above |
+
+## Nameplate / combat text / dialog raw offsets (#420) -- decomp-diffed against `0x68e408bc`
+
+| Struct / field | Linux | Windows | Where seen |
+|---|---|---|---|
+| `CNWCObject` id / type / pos / bubble / retired / override mode+text+len | `+0x8` / `+0xc` / `+0x38` / `+0xb8` / `+0x104` / `+0x124`,`+0x128`,`+0x130` | same | `SetPopUpBubbleText` `0x766450`, `Creature::ShowFeedbackBubbleText` `0x80b240`, `Object::UpdatePopUpBubble` `0x766ea0`, `Internal::GetObjectName` `0x6d83f0` |
+| `CNWCCreature` reaction / stats / plated / area | `+0x3a8` / `+0x3d0` / `+0x468` / `+0x478` | **`+0x388` / `+0x3b0` / `+0x448` / `+0x458`** | `0x80b240`; `Creature::UpdatePopUpBubble` `0x8107a0` (`this+0x458 == module[0xf8][0x118]`) |
+| `CNWCPlaceable` plated | `+0x218` | **`+0x1f8`** | `0x871b60` |
+| `CNWCItem` plated (from the `CNWCObject` subobject) | `+0x2cc-0x48` | **`+0x264`** | `0x83f230` |
+| `CNWCCreatureStats` first / last / override name (+len) / damage byte | `+0x20`,`+0x28` / `+0x30`,`+0x38` / `+0x40`,`+0x48` / `+0x8e` | same | `CNWCCreatureStats::GetFullName` `0x7f3f00`; `0x80b240` |
+| `CGuiInGamePopUpBubble` live-text / mode / anchor x,y | `+0x14c` / `+0x150` / `+0x154`,`+0x158` | **`+0x144` / `+0x148` / `+0x14c`,`+0x150`** | `SetChatBubbleMode` `0x6e90e0`; `Show(Vector)` `0x6e9820` |
+| `CNWCModule` area / camera | `+0xf8` / `+0xe8` | same | every `GetModule()` reader |
+| `CNWCArea` id | `+0x118` | same | `0x8107a0` |
+| `Camera` position / orientation / viewport rect | `+0xb0` / `+0xbc` / `+0x4d4` | same / same / **`+0x4d8`** | exported `Camera::GetPosition` `0x58e10`, `SetOrientation` `0x5b6d0`, `SetViewPort` `0x5b810` |
+| `CClientExoAppInternal` mouse-over feedback word | `+0x180` | same | the `ui.mouseover-feedback` setter lambda `0x6bdb20` |
+| `GetPortrait(uchar)` virtual slot | `+0x1d8` | **`+0x1d0`** | the chat handler `0x77c140` and `0x766450` call it `(this, sret, 1)` -- **sret is the 2nd arg on Win64** |
 
 **Win64 by-value conventions that differ from SysV** (every hook or call on this page was checked against them):
 a non-trivial class (`CExoString`) arrives as a pointer to a copy **the callee destroys** -- a skipped body must run the

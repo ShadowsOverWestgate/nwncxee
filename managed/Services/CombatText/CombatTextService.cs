@@ -44,7 +44,19 @@ public sealed unsafe class CombatTextService : IExtenderService
     [StructLayout(LayoutKind.Sequential)]
     public struct Vec3 { public float X, Y, Z; }
 
-    private static delegate* unmanaged<IntPtr, IntPtr, Vec3, IntPtr, int, void> _origShowFloaty;
+#if WINDOWS
+    /// <summary>Win64 passes any by-value aggregate over 8 bytes as a pointer to a caller-made copy.</summary>
+    private struct ColourArg { public Vec3* P; }
+#else
+    private struct ColourArg { public Vec3 V; }
+#endif
+
+    private static delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void> _origShowFloaty;
+
+    /// <summary>The ShowFloatyText unit (#420): the funnel itself plus the TLK pair the crit banner is
+    /// recognised through. Nameplates are a runtime prerequisite (checked per call, not here).</summary>
+    private static readonly string[] RequiredSymbols =
+    { SymbolMap.ShowFloatyText, SymbolMap.TlkTable, SymbolMap.TlkGetSimpleString, SymbolMap.ExoStringDtor };
 
     /// <summary>Set by a critical-hit banner; the next damage number to arrive inside
     /// <see cref="CombatTextConfig.CritWindowMs"/> is styled as that crit's and clears it.
@@ -67,10 +79,11 @@ public sealed unsafe class CombatTextService : IExtenderService
 
         if (!GameGate.OwnsFramePresent)
         { log.Info("CombatTextService: standing down (framework not owning frame present)"); return; }
+        if (!SymbolMap.Require(log, "CombatTextService", RequiredSymbols)) return;   // #420: whole or nothing
 
-        _origShowFloaty = (delegate* unmanaged<IntPtr, IntPtr, Vec3, IntPtr, int, void>)hooks.Install(
+        _origShowFloaty = (delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void>)hooks.Install(
             SymbolMap.ShowFloatyText,
-            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, Vec3, IntPtr, int, void>)&OnShowFloatyText);
+            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void>)&OnShowFloatyText);
         if (_origShowFloaty == null)
         {
             log.Info("CombatTextService: standing down (ShowFloatyText unresolved) -- vanilla damage numbers "
@@ -98,9 +111,14 @@ public sealed unsafe class CombatTextService : IExtenderService
     /// that is the whole opt-out, and it is also what keeps an element we could not have anchored from being
     /// lost between the two renderers.</para></summary>
     [UnmanagedCallersOnly]
-    private static void OnShowFloatyText(IntPtr self, IntPtr text, Vec3 colour, IntPtr font, int background)
+    private static void OnShowFloatyText(IntPtr self, IntPtr text, ColourArg colourArg, IntPtr font, int background)
     {
         CombatTextConfig cfg = _cfg;   // one read: LoadConfig replaces the reference on the render thread
+#if WINDOWS
+        Vec3 colour = *colourArg.P;   // Win64: a 12-byte Vector by value arrives as a pointer
+#else
+        Vec3 colour = colourArg.V;
+#endif
         // Hand back to vanilla unless we can actually draw this one BETTER. Swallowing an element we then
         // fail to place would lose it outright, so every reason it might not reach the screen is tested here,
         // on the cold path, and not in the draw:
@@ -111,18 +129,20 @@ public sealed unsafe class CombatTextService : IExtenderService
         if (!_armed || !_configLoaded || !cfg.On || self == IntPtr.Zero
             || !NameplateService.Suppressing || NameplateNative.Bubble(self) == IntPtr.Zero)
         {
-            if (_origShowFloaty != null) _origShowFloaty(self, text, colour, font, background);
+            if (_origShowFloaty != null) _origShowFloaty(self, text, colourArg, font, background);
             return;
         }
 
         try
         {
             string body = NameplateNative.ReadExo(text);
+            string fontName = NameplateNative.ReadExo(font);
+            if (OperatingSystem.IsWindows()) { Native.DestroyExoString(text); Native.DestroyExoString(font); }   // Win64: the swallowed callee owned both copies
             if (body.Length == 0) return;                 // an empty floaty draws nothing in either renderer
 
             long now = Environment.TickCount64;
             FloatyKind kind;
-            if (CombatTextNative.IsDamageFont(NameplateNative.ReadExo(font)))
+            if (CombatTextNative.IsDamageFont(fontName))
             {
                 bool crit = now < _critUntilMs;
                 if (crit) _critUntilMs = 0;               // one banner decorates one number

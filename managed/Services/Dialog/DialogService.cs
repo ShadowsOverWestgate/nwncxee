@@ -140,6 +140,7 @@ public sealed unsafe class DialogService : IExtenderService
             log.Info("DialogService: standing down (framework not owning frame present); vanilla dialog intact");
             return;
         }
+        if (!SymbolMap.Require(log, "DialogService", RequiredSymbols)) return;   // #420: whole or nothing
 
         // Second UiHost consumer (#63/#64): Dialog draws through the same z-ordered roll-call ChatService does,
         // as a rect-less window (Focusable=false) whose content-draw IS Draw and whose input delegates ARE its
@@ -253,8 +254,20 @@ public sealed unsafe class DialogService : IExtenderService
         return 0;
     }
 
+    /// <summary>The dialog unit (#420). Optional and NOT listed: ForceDialogVisible (an empty body on both
+    /// builds, no Windows anchor), GetObjectName + GetGameObject (title band falls back to no name/portrait).</summary>
+    private static readonly string[] RequiredSymbols =
+    {
+        SymbolMap.ShowDialogEntry, SymbolMap.ShowDialogReplies, SymbolMap.ShowReplyChosen, SymbolMap.CloseDialog,
+        SymbolMap.SendDialogReply, SymbolMap.AppManager, SymbolMap.ExoStringDtor,
+    };
+
     [UnmanagedCallersOnly]
-    private static long OnReplyChosen(IntPtr self, uint a, uint b, IntPtr exo) => 0;
+    private static long OnReplyChosen(IntPtr self, uint a, uint b, IntPtr exo)
+    {
+        if (OperatingSystem.IsWindows()) Native.DestroyExoString(exo);   // Win64: the skipped callee owned the copy
+        return 0;
+    }
 
     [UnmanagedCallersOnly]
     private static long OnForceVisible(IntPtr self, float duration) => 0;
@@ -1157,7 +1170,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
         (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ExoStringDtor);
 
-    private const int GetPortraitVtblOff = 0x1d8;
+    private static readonly int GetPortraitVtblOff = OperatingSystem.IsWindows() ? 0x1d0 : 0x1d8;   // MSVC slot order
     private const byte PortraitSizeMedium = 3;
 
     /// <summary>Resolve a speaker object id to its portrait resref (with size suffix), or "" for a speaker with
@@ -1179,7 +1192,9 @@ public sealed unsafe class DialogService : IExtenderService
         if (getPortrait == null) return "";
         byte* buf = stackalloc byte[32];
         for (int i = 0; i < 32; i++) buf[i] = 0;
-        getPortrait((IntPtr)buf, obj, PortraitSizeMedium);
+        // sret: Itanium puts the hidden buffer FIRST, Win64 puts it after `this`.
+        if (OperatingSystem.IsWindows()) getPortrait(obj, (IntPtr)buf, PortraitSizeMedium);
+        else getPortrait((IntPtr)buf, obj, PortraitSizeMedium);
         int n = 0; while (n < 16 && buf[n] != 0) n++;
         return n == 0 ? "" : Encoding.ASCII.GetString(buf, n);
     }

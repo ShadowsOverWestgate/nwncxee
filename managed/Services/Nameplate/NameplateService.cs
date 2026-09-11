@@ -18,7 +18,7 @@ namespace Sowx.Services.Nameplate;
 /// which stops it drawing either element while leaving every piece of state we poll intact -- including the
 /// projected screen anchor, which under mode 0 is refreshed every tick for every bubble-owning object.</para>
 /// <para>Nothing here reads the Alloy camera: the plate anchor is the engine's own projection, and the
-/// distance fade reads the LIVE game camera off <c>CClientExoApp::GetModuleCamera()</c>.</para>
+/// distance fade reads the LIVE game camera off the module (<c>CNWCModule+0xe8</c>).</para>
 /// </summary>
 public sealed unsafe class NameplateService : IExtenderService
 {
@@ -54,6 +54,16 @@ public sealed unsafe class NameplateService : IExtenderService
     /// handler, and a stale byte would mis-style it.</summary>
     private static int _channel = -1;
 
+    /// <summary>The nameplate unit (#420): every symbol the plates cannot run without. Optional and NOT listed:
+    /// HandleServerToPlayerChat (per-channel styling degrades to one style), GetViewPort (falls back to the
+    /// camera rect), GetObjectName (names fall back to the creature stats read).</summary>
+    private static readonly string[] RequiredSymbols =
+    {
+        SymbolMap.SetChatBubbleMode, SymbolMap.SetPopUpBubbleText, SymbolMap.CreatureShowFeedbackBubbleText,
+        SymbolMap.PlaceableShowFeedbackBubbleText, SymbolMap.ItemShowFeedbackBubbleText,
+        SymbolMap.AppManager, SymbolMap.GetGameObject, SymbolMap.GetModule, SymbolMap.ExoStringDtor,
+    };
+
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
@@ -66,6 +76,7 @@ public sealed unsafe class NameplateService : IExtenderService
 
         if (!GameGate.OwnsFramePresent)
         { log.Info("NameplateService: standing down (framework not owning frame present)"); return; }
+        if (!SymbolMap.Require(log, "NameplateService", RequiredSymbols)) return;   // #420: whole or nothing
 
         // ORDER: the two critical symbols first, so nothing else installs if either refuses.
         _origSetMode = (delegate* unmanaged<int, void>)hooks.Install(
@@ -397,7 +408,7 @@ public sealed unsafe class NameplateService : IExtenderService
 
     /// <summary>COLD, one shot per <c>/nameplate probe</c>: every term of the anchor conversion, so a residual
     /// offset can be settled from a single log rather than another disassembly session. Logs the raw
-    /// <c>+0x154</c>/<c>+0x158</c> floats, what they converted to, both viewports, the GUI scale, and the
+    /// bubble-anchor floats, what they converted to, both viewports, the GUI scale, and the
     /// behind-camera dot product for every tracked slot -- including the ones the frame gates rejected.</summary>
     private static void Probe(float vpW, float vpH)
     {
@@ -412,7 +423,7 @@ public sealed unsafe class NameplateService : IExtenderService
         float gui = Metrics.GameUiScale;
 
         log.Info($"[nameplate probe] draw={vpW}x{vpH} used={(hasRect ? "" : "MISSING ")}({rx},{ry},{rw},{rh}) "
-               + $"cam+0x4d4={(hasCamRect ? "" : "MISSING ")}({mx},{my},{mw},{mh}) "
+               + $"camvp={(hasCamRect ? "" : "MISSING ")}({mx},{my},{mw},{mh}) "
                + $"glvp={(hasGl ? "" : "MISSING ")}({gx},{gy},{gw},{gh}) "
                + $"guiscale={gui.ToString("F3", CultureInfo.InvariantCulture)} "
                + $"campos={(hasCam ? $"({cx},{cy},{cz})" : "MISSING")} "

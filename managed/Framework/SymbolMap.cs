@@ -110,8 +110,8 @@ internal static unsafe class SymbolMap
     // null); we capture the already-decoded data and render our own overlay. The message layer
     // (HandleServerToPlayerDialog) runs unmodified -> VO, camera, speaker tracking preserved. CloseDialog is
     // call-through (panel null -> it guards and just runs ResetGuiState). Replies go out via
-    // SendPlayerToServerDialog_Reply (major 0x14, minor 0x03) with ClientApi.Message() as `this`. Linux-only
-    // for now (client GUI / CNWCMessage -> no Windows anchors; skip + log there).
+    // SendPlayerToServerDialog_Reply (major 0x14, minor 0x03) with ClientApi.Message() as `this`. RVA on
+    // Windows (#420); ForceDialogVisible is an empty body on both builds and has no Windows anchor (optional).
     public const string ShowDialogEntry   = "_ZN10CGuiInGame15ShowDialogEntryERK10CExoStringjj";
     public const string ShowDialogReplies = "_ZN10CGuiInGame17ShowDialogRepliesEiP10CExoStringPjiji";
     public const string ShowReplyChosen   = "_ZN10CGuiInGame15ShowReplyChosenEjj10CExoString";
@@ -225,8 +225,7 @@ internal static unsafe class SymbolMap
     /// z at +0xac per sow-codebase CNWSObject notes).</summary>
     public const string GetPlayerCreature = "_ZN13CClientExoApp17GetPlayerCreatureEv";
 
-    // ---- overhead nameplate / chat bubble (docs/re/nameplate.md). All client-side classes: Linux-only
-    //      (no _win entries -> skip-with-log on Windows, which stands the whole feature down there). ----
+    // ---- overhead nameplate / chat bubble (docs/re/nameplate.md). Client-side classes: RVA on Windows (#420). ----
     /// <summary>CGuiInGamePopUpBubble::SetChatBubbleMode(int) @0x6a0be0 -- STATIC (mode in edi, no `this`).
     /// Mode 0 sets every bubble's <c>+0x150</c>, and every path that could activate the panel is guarded on
     /// it: the engine stops drawing both the plate and the bubble while still building the state and
@@ -251,13 +250,7 @@ internal static unsafe class SymbolMap
     /// esi and the SetPopUpBubbleText for that line runs on the same stack, so it latches the channel for
     /// per-channel bubble styling. ABI: <c>(this /*rdi*/, uchar channel /*esi*/)</c>.</summary>
     public const string HandleServerToPlayerChat = "_ZN11CNWCMessage24HandleServerToPlayerChatEh";
-    /// <summary>CClientExoApp::GetModuleCamera() @0x6377b0 -- null-safe <c>GetModule()-&gt;[0xe8]</c>, the LIVE
-    /// game camera (class <c>Camera</c>). Its world position is a plain field at <c>+0xb0</c>, which is all
-    /// <c>Camera::GetPosition()</c> reads. Never the Alloy CameraPos global: at present time that is the UI
-    /// frame's camera at (0,0,742).</summary>
-    public const string GetModuleCamera = "_ZN13CClientExoApp15GetModuleCameraEv";
-    // ---- combat text: damage numbers + floating combat text (docs/re/combat-text.md).
-    //      Client-side classes: Linux-only (no _win entries -> skip-with-log, feature stands down). ----
+    // ---- combat text: damage numbers + floating combat text (docs/re/combat-text.md). RVA on Windows (#420). ----
     /// <summary>CNWCObject::ShowFloatyText(CExoString, Vector, CExoString, int) @0x7e7010 -- the ONE funnel
     /// every damage number and combat-text banner passes through (CC messages, the creature floaty-text
     /// update, whirlwind, and every <c>AddFeedbackMessage</c> site). Skipping it means the engine never
@@ -1185,6 +1178,27 @@ internal static unsafe class SymbolMap
         [SendChatTellId]         = At(0x7ba8c0),   // minor 4, WriteBOOL(0) + WriteDWORD(id)
         [SendChatParty]          = At(0x7ba620),   // minor 6
         [SendChatDM]             = At(0x7ba540),   // minor 0xe
+
+        // --- nameplates / combat text / dialog (#420), build 0x68e408bc. Anchors in docs/windows-symbols.md.
+        //     Win64 ABI: sret comes AFTER `this` (GetSimpleString, the GetPortrait virtual); a by-value Vector
+        //     arrives as a pointer; a by-value CExoString is the callee's to destroy. ---
+        [TlkTable]           = Nm("?g_pTlkTable@@3PEAVCTlkTable@@EA"),
+        [TlkGetSimpleString] = Nm("?GetSimpleString@CTlkTable@@QEAA?AVCExoString@@I@Z"),
+        [GetViewPort]        = Nm("?GetViewPort@RenderInterface@@SAXPEAM@Z"),
+        [GetGameObject]      = At(0x6abb60),
+        [GetObjectName]      = At(0x6abfc0),
+        [ShowDialogEntry]    = At(0x6fb560),
+        [ShowDialogReplies]  = At(0x6fb8e0),
+        [ShowReplyChosen]    = At(0x6fbbc0),   // destroys its by-value CExoString: a skip must too
+        [CloseDialog]        = At(0x6f6d80),
+        [SendDialogReply]    = At(0x7bbc50),
+        [SetChatBubbleMode]  = At(0x6e90e0),
+        [CreatureShowFeedbackBubbleText]  = At(0x80b240),   // plated flag +0x448
+        [PlaceableShowFeedbackBubbleText] = At(0x871b60),   // +0x1f8
+        [ItemShowFeedbackBubbleText]      = At(0x83f230),   // `this` = the CNWCObject subobject, flag +0x264
+        [SetPopUpBubbleText] = At(0x766450),
+        [HandleServerToPlayerChat] = At(0x77c140),   // major 9
+        [ShowFloatyText]     = At(0x766a70),
     };
 
     // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the static file base.

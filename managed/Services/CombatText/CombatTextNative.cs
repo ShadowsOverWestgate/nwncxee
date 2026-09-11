@@ -85,7 +85,8 @@ public static unsafe class CombatTextNative
     {
         byte* exo = stackalloc byte[ExoScratch];
         for (int i = 0; i < ExoScratch; i++) exo[i] = 0;   // the callee frees a non-null buf: never hand it garbage
-        _getSimple((IntPtr)exo, tlk, strref);
+        // sret: Itanium puts the hidden buffer FIRST, Win64 puts it after `this`.
+        if (OperatingSystem.IsWindows()) _getSimple(tlk, (IntPtr)exo, strref); else _getSimple((IntPtr)exo, tlk, strref);
 
         byte* buf = *(byte**)exo;
         uint len = *(uint*)(exo + 8);
