@@ -838,7 +838,7 @@ public sealed unsafe partial class AlloyRenderer
 
     private static void CaptureProbeInner(int groups, float far)
     {
-        IntPtr bsp = _enrollScene != IntPtr.Zero ? *(IntPtr*)(_enrollScene + SceneLayout.SceneBspRoot) : IntPtr.Zero;
+        IntPtr bsp = _enrollScene != IntPtr.Zero ? *(IntPtr*)(_enrollScene + EngineLayout.SceneBspRoot) : IntPtr.Zero;
         if (!EnvProbe.Wanted(_eyePos, bsp, _frameSeq)) return;
         if (!EnvProbe.Begin(_eyePos, bsp, _frameSeq, far, ProbeClear())) return;
 

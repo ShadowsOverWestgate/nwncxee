@@ -3,7 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -445,7 +445,7 @@ public sealed unsafe partial class AlloyRenderer
         // guard), so a per-frame deref would be a new way to touch a freed gob. A gob does not become a
         // tile or stop being one.
         _oTileGob[i] = c.Gob != IntPtr.Zero && *(IntPtr*)(c.Gob + GobTileData) != IntPtr.Zero;
-        for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBoxMin + b * 4);   // #336: +0x64..+0x78
+        for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBboxMin + b * 4);   // #336: +0x64..+0x78
         // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
         // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
         if (!kept) _oBone[i] = -1;

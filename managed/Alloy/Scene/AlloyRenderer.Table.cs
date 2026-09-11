@@ -30,7 +30,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#128: the Gob this part instances off, zero for static geometry. The key the all-owned-or-none
     /// sweep groups by -- never dereferenced here, only compared.</summary>
     private static readonly IntPtr[] _oGob = new IntPtr[MaxOwned];
-    /// <summary>Is this part's gob a TILE gob (<see cref="SceneLayout.GobTileData"/>)? Sampled at
+    /// <summary>Is this part's gob a TILE gob (<see cref="EngineLayout.GobTileData"/>)? Sampled at
     /// enrolment because that is the one place the gob is known live. See <c>Dissolves</c>.</summary>
     private static readonly bool[] _oTileGob = new bool[MaxOwned];
     /// <summary>#336: see <c>AlloyCandidate.LodRoot</c>.</summary>

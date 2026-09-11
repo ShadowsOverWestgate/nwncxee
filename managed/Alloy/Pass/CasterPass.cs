@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Alloy;
 using Sowx.Graphics;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 

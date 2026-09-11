@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -63,17 +63,10 @@ public sealed unsafe class SceneInputs : IExtenderService
     // `/shadow nearradius` dials went with the work they gated.
 
     // ---- the camera-follow anchor chain (#65) ----
-    /// <summary>CAurCamera -&gt; current behavior host (<c>CurrentCamera[0x8b]</c> == +0x458), a <c>CAurBehavior*</c>;
-    /// its vtable+<see cref="BehaviorAsFollowVtbl"/> is <c>AsBehaviorCameraFollow()</c>.</summary>
-    private const int CameraBehaviorHost = 0x458;
     /// <summary>Behavior-host vtable slot for <c>AsBehaviorCameraFollow()</c> -- pure <c>return this</c> for a follow
     /// cam, null otherwise (a base-class type filter). Replicated exactly from ManageSceneBSP's own devirt call, so
     /// non-follow cameras (free-cam/cutscene) safely yield null.</summary>
     private static readonly int BehaviorAsFollowVtbl = Sowx.Framework.EngineLayout.BehaviorAsFollowSlot;
-    /// <summary>CAurBehaviorCameraFollow -&gt; <c>SafePointer&lt;CAurObject&gt;</c> to the followed object (the PC);
-    /// raw pointer at +0. Its <see cref="SceneLayout.GobPosition"/> (+0xa8) is exactly what
-    /// GetTargetWorldPosition returns.</summary>
-    private const int BehaviorTargetObj = 0x20;
 
     // One map centre per presented frame, shared by the re-walk and published as FrameInputs.Focus for
     // CasterPass's cascade fit. Player-anchored when the controlled creature is reachable, else the
@@ -84,8 +77,6 @@ public sealed unsafe class SceneInputs : IExtenderService
     // HandleServerToPlayerArea chain); CNWCArea+8 = the ARE Flags DWORD (CNWSArea::PackAreaIntoMessage writes
     // m_nFlags@+8 -> CNWCArea::LoadArea reads it into +8), bit 0 = interior.
     private static bool _interior;                    // current area is interior (recomputed once per frame)
-    private const int ModuleCurrentArea = 0xf8;       // CNWCModule: current CNWCArea*
-    private const int AreaFlags = 0x8;                // CNWCArea: ARE Flags DWORD; bit 0 = interior
     private static IntPtr _appMgr;                    // &g_pAppManager (deref per use)
     private static delegate* unmanaged<IntPtr, IntPtr> _getModule;
     private static bool _interiorLogged;              // log interior/exterior transitions
@@ -263,22 +254,6 @@ public sealed unsafe class SceneInputs : IExtenderService
         _passDoneThisFrame = true;
     }
 
-    // LightManager layout (Ghidra: AddLight / GetShadowLights / SetupLightsForThisPositionAndRadius): the MASTER
-    // CExoArrayList<PartLight*> sits at this+0x10 (data) / +0x18 (count) -- every registered light in the loaded
-    // area, creation order (stable). PartLight fields: castShadows +0x74, type +0x80 (0 = point/directional),
-    // enable flags +0x84/+0x88 (either set = active), range +0x70, intensity +0xa4,
-    // RGB +0x64, world pos +0xac. Directional (sun/moon) excluded by range, like ShadowService.
-    private const int LmMasterData = 0x10, LmMasterCount = 0x18;
-    private const int PlCastShadows = 0x74, PlType = 0x80, PlFlagA = 0x84, PlFlagB = 0x88;
-    /// <summary>The MDL light node's <c>radius</c> (+0x70) and <c>shadowradius</c> (+0x78) controllers
-    /// (Ghidra <c>MdlNodeLight::InternalParseField</c> @0x44baf0 binds both names to those offsets;
-    /// <c>PartLight::PartLight</c> @0x43d1d0 defaults 0x78 to -1). Only 0x70 reaches the engine's lighting --
-    /// 0x78 is a shadow-only override its STENCIL paths consult, and #186 stopped it sizing the Alloy cubes.
-    /// It is read here for the diagnostic dumps and nothing else.</summary>
-    private const int PlRange = 0x70, PlRangeAlt = 0x78, PlIntensity = 0xa4, PlColor = 0x64, PlPos = 0xac;
-    /// <summary>Engine shadow-fade weight (GetShadowLights decrements it per frame for deprioritized
-    /// lights). Diagnostic only -- printed by the masterlight dump.</summary>
-    private const int PlFade = 0x90;
 
     // ---- #336: the fade-out the engine has no edge for ----
     // A light that APPEARS ramps: the engine grows its intensity, and since the lit radius is
@@ -410,7 +385,6 @@ public sealed unsafe class SceneInputs : IExtenderService
             FrameInputs.RecordAreaLight(_ghostId[i], new Vector3(pw.X, pw.Y, pw.Z), pw.W * k, _ghostCol[i] * k);
         }
     }
-    private const float PlDirectionalRange = 1000f;
     /// <summary>RenderInterface::GetGlobalShaderParamf -- param 0x12 = the engine's light-radius multiplier.</summary>
     private static delegate* unmanaged<uint, float> _getGspF;
     /// <summary>GetLightAdjustedRadius -- the engine's own lit-radius calculation, called rather than
@@ -429,9 +403,6 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static int _lightsCulled;
     private static bool _lightDiag;
 
-    /// <summary>Scene -&gt; LightManager* (Ghidra <c>Scene::RenderSinglePass</c> @0x56e5f0 calls
-    /// <c>GetShadowLights(*(this + 0x158))</c>).</summary>
-    private const int SceneLightManager = 0x158;
 
     /// <summary>Record EVERY shadow-worthy point light from the LightManager's master list into
     /// <see cref="FrameInputs"/> -- the area-wide, camera-independent snapshot feeding the Alloy pass's
@@ -473,21 +444,21 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (p == null) continue;
             if (walkDiag && FrameInputs.HasCamera)
             {
-                var wp = new Vector3(*(float*)(p + PlPos), *(float*)(p + PlPos + 4), *(float*)(p + PlPos + 8));
+                var wp = new Vector3(*(float*)(p + LightDir), *(float*)(p + LightDir + 4), *(float*)(p + LightDir + 8));
                 float wd = (wp - FrameInputs.CameraPos).Length();
                 if (wd < 40f)
-                    _log?.Info($"SceneInputs: masterlight d={wd:F1} pos=({wp.X:F0},{wp.Y:F0},{wp.Z:F1}) type={*(int*)(p + PlType)} cast={*(int*)(p + PlCastShadows)} flags={*(int*)(p + PlFlagA)}/{*(int*)(p + PlFlagB)} range={*(float*)(p + PlRange):F1} alt={*(float*)(p + PlRangeAlt):F1} inten={*(float*)(p + PlIntensity):F2} fade={*(float*)(p + PlFade):F2} rgb=({*(float*)(p + PlColor):F2},{*(float*)(p + PlColor + 4):F2},{*(float*)(p + PlColor + 8):F2}) adjR={(_getAdjRadius != null ? _getAdjRadius((IntPtr)p) : -1f):F2}");
+                    _log?.Info($"SceneInputs: masterlight d={wd:F1} pos=({wp.X:F0},{wp.Y:F0},{wp.Z:F1}) type={*(int*)(p + LightKind)} cast={*(int*)(p + LightCastShadows)} flags={*(int*)(p + LightFlagA)}/{*(int*)(p + LightFlagB)} range={*(float*)(p + LightRange):F1} alt={*(float*)(p + LightRangeAlt):F1} inten={*(float*)(p + LightIntensity):F2} fade={*(float*)(p + LightFade):F2} rgb=({*(float*)(p + LightColour):F2},{*(float*)(p + LightColour + 4):F2},{*(float*)(p + LightColour + 8):F2}) adjR={(_getAdjRadius != null ? _getAdjRadius((IntPtr)p) : -1f):F2}");
             }
-            if (*(int*)(p + PlFlagA) == 0 && *(int*)(p + PlFlagB) == 0) continue;
-            float range = *(float*)(p + PlRange);
-            if (range <= 0f || range >= PlDirectionalRange) continue;
-            float inten = *(float*)(p + PlIntensity);
+            if (*(int*)(p + LightFlagA) == 0 && *(int*)(p + LightFlagB) == 0) continue;
+            float range = *(float*)(p + LightRange);
+            if (range <= 0f || range >= DirectionalRange) continue;
+            float inten = *(float*)(p + LightIntensity);
             if (inten <= 0f) continue;
-            float r = *(float*)(p + PlColor), g = *(float*)(p + PlColor + 4), b = *(float*)(p + PlColor + 8);
+            float r = *(float*)(p + LightColour), g = *(float*)(p + LightColour + 4), b = *(float*)(p + LightColour + 8);
             if (r == 0f && g == 0f && b == 0f) continue;
-            if (*(int*)(p + PlType) != 0) continue;
-            float alt = *(float*)(p + PlRangeAlt);
-            var pos = new Vector3(*(float*)(p + PlPos), *(float*)(p + PlPos + 4), *(float*)(p + PlPos + 8));
+            if (*(int*)(p + LightKind) != 0) continue;
+            float alt = *(float*)(p + LightRangeAlt);
+            var pos = new Vector3(*(float*)(p + LightDir), *(float*)(p + LightDir + 4), *(float*)(p + LightDir + 8));
             // Vanilla lit radius (Ghidra GetLightAdjustedRadius @0x5c0c10): range * intensity, an
             // overbright boost by the max color channel (with the color normalized down to match), then
             // the GLOBAL radius multiplier (shader param 0x12). Uploading raw +0x70 shrank every lit
@@ -563,7 +534,7 @@ public sealed unsafe class SceneInputs : IExtenderService
                 if (FrameInputs.LightCount == snapIdx) snapIdx = -1;   // snapshot full: the light was dropped
             }
             if (_torchDiag) TrackNearest(p, pos, range, alt, inten, color, adjR, upW, culled, snapIdx);
-            if (*(int*)(p + PlCastShadows) == 0) continue;
+            if (*(int*)(p + LightCastShadows) == 0) continue;
             // #186: the cube's reach is the LIT radius exactly -- the same sphere the receiver's attenuation
             // has support over, and the same one the engine lights with. Ghidra: SetLightGL @0x4c0e60 uploads
             // GetLightAdjustedRadius(pl)^2 as the light's range (property 4), and inc_lighting.shd's
@@ -736,7 +707,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         if (behavior == IntPtr.Zero) return null;   // non-follow camera -> caller uses sticky/camera-ground
         IntPtr target = *(IntPtr*)((byte*)behavior + BehaviorTargetObj);
         if (target == IntPtr.Zero) return null;
-        float* p = (float*)((byte*)target + SceneLayout.GobPosition);
+        float* p = (float*)((byte*)target + EngineLayout.GobPosition);
         return new Vector3(p[0], p[1], p[2]);
     }
 

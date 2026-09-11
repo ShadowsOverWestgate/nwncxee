@@ -1,7 +1,7 @@
 using System;
 using System.Numerics;
 using Sowx.Framework;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -35,24 +35,6 @@ namespace Sowx.Alloy;
 /// </summary>
 internal static unsafe class FrameRead
 {
-    // Camera layout -- Camera::GetPosition @0x4813f0, GetOrientation @0x4aa610, GetViewAngle @0x434b10,
-    // GetClipDist @0x4aa700, SetViewPort @0x4a38a0.
-    private const int CamPos = 0xb0, CamRot = 0xbc, CamViewAngle = 0x4c4,
-                      CamNear = 0x4cc, CamFar = 0x4d0, CamViewW = 0x4dc, CamViewH = 0x4e0;
-
-    // Scene fog block -- Scene::DoFog @0x45f1b0.
-    private const int SceneFogEnable = 0x140, SceneFogStart = 0x144, SceneFogEnd = 0x148, SceneFogColor = 0x14c;
-
-    /// <summary>Scene -&gt; LightManager* (<c>Scene::RenderSinglePass</c> @0x46e5f0 calls
-    /// <c>GetShadowLights(*(this + 0x158))</c>).</summary>
-    private const int SceneLightManager = 0x158;
-
-    // LightManager::ControlLightsFade @0x4c2050: +0xa0 is the area AMBIENT PartLight*, +0x98 the area
-    // DIFFUSE (the sun/moon) -- the two it pushes with index -1 -- and +0x90 is the fade weight it scales
-    // them by. Which term a light drives is still decided by its own type@0x80, as SetLightGL decides it.
-    private const int LmAreaAmbient = 0xa0, LmAreaDiffuse = 0x98;
-    private const int PlFade = 0x90, PlColor = 0x64;
-
     /// <summary>Accept only clearly downward-travelling light as the sun (NWN is Z-up). A horizontal or
     /// below-horizon directional would light undersides and read as garbage in the cascades.</summary>
     private const float DownwardZ = -0.05f;
@@ -164,8 +146,8 @@ internal static unsafe class FrameRead
     private static void ApplyAreaTerm(byte* p)
     {
         int type = *(int*)(p + LightKind);
-        float fade = *(float*)(p + PlFade);
-        float* c = (float*)(p + PlColor);
+        float fade = *(float*)(p + LightFade);
+        float* c = (float*)(p + LightColour);
         var col = new Vector3(MathF.Pow(MathF.Max(c[0] * fade, 0f), AlloyLights.SrgbGamma),
                               MathF.Pow(MathF.Max(c[1] * fade, 0f), AlloyLights.SrgbGamma),
                               MathF.Pow(MathF.Max(c[2] * fade, 0f), AlloyLights.SrgbGamma));

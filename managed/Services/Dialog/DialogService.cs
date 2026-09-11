@@ -141,7 +141,7 @@ public sealed unsafe class DialogService : IExtenderService
             return;
         }
         if (!SymbolMap.Require(log, "DialogService", RequiredSymbols)) return;   // #420: whole or nothing
-        if (!EngineLayout.Require(log, "DialogService")) return;                 // #432: it reads the portrait slot
+        if (!EngineLayout.Require(log, "DialogService", "CNWCObject")) return;                 // #432: it reads the portrait slot
 
         // Second UiHost consumer (#63/#64): Dialog draws through the same z-ordered roll-call ChatService does,
         // as a rect-less window (Focusable=false) whose content-draw IS Draw and whose input delegates ARE its

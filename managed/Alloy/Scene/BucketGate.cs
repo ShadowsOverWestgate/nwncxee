@@ -1,3 +1,5 @@
+using static Sowx.Framework.EngineLayout;
+
 namespace Sowx.Alloy;
 
 /// <summary>The geometry of the engine's finished draw buckets at <c>Scene+0x208</c>, and nothing else.
@@ -15,5 +17,5 @@ internal static unsafe class BucketGate
 
     /// <summary>Bucket-array geometry, from <c>GetDrawBucketByItemType</c> @0x47bd60 (stride 0x10, three
     /// phases per item type) and <c>GetNextItem</c> @0x47be90 (items at +0, count at +8).</summary>
-    internal const int BucketPhases = 3, BucketStride = 0x10, BucketCount = 8;
+    internal const int BucketPhases = 3, BucketCount = 8;
 }

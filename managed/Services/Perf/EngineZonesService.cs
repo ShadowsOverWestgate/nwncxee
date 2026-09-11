@@ -62,7 +62,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
     [UnmanagedCallersOnly]
     private static long OnBsp(IntPtr scene)
     {
-        bool world = *(IntPtr*)(scene + Sowx.Alloy.SceneLayout.SceneBspRoot) != IntPtr.Zero;
+        bool world = *(IntPtr*)(scene + Sowx.Framework.EngineLayout.SceneBspRoot) != IntPtr.Zero;
         long t = world ? FrameZones.Now : 0;
         long r = _bsp != null ? _bsp(scene) : 0;
         if (world) FrameZones.Add(FrameZones.Zone.Bsp, t);
@@ -114,7 +114,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
     [UnmanagedCallersOnly]
     private static long OnBuckets(IntPtr scene)
     {
-        bool world = *(IntPtr*)(scene + Sowx.Alloy.SceneLayout.SceneBspRoot) != IntPtr.Zero;
+        bool world = *(IntPtr*)(scene + Sowx.Framework.EngineLayout.SceneBspRoot) != IntPtr.Zero;
         if (world && _skipBuckets && Sowx.Alloy.AlloyGate.Alloy) { _bucketsSkipped++; return 0; }
         if (world && _bucketsCadence && Sowx.Alloy.AlloyGate.Alloy && (++_bucketsFrame % BucketsEvery) != 0) ThinTileLists();
         long t = world ? FrameZones.Now : 0;

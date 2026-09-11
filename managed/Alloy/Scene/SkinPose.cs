@@ -1,4 +1,5 @@
 using System;
+using Sowx.Framework;
 
 namespace Sowx.Alloy;
 
@@ -51,27 +52,27 @@ internal static unsafe class SkinPose
         IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
         // No node is not a repairable state -- PostProcess dereferences it unguarded -- so it is never noted.
         if (node == IntPtr.Zero) { NoBind++; return false; }
-        int bones = *(short*)(node + SceneLayout.SkinBoneCount);
-        IntPtr bindRot = *(IntPtr*)(node + SceneLayout.SkinBindRot);
-        IntPtr bindPos = *(IntPtr*)(node + SceneLayout.SkinBindPos);
+        int bones = *(short*)(node + EngineLayout.SkinBoneCount);
+        IntPtr bindRot = *(IntPtr*)(node + EngineLayout.SkinBindRot);
+        IntPtr bindPos = *(IntPtr*)(node + EngineLayout.SkinBindPos);
         if (bones <= 0 || bindRot == IntPtr.Zero || bindPos == IntPtr.Zero)
         { NoBind++; NoteUnprepared(part); return false; }
 
         // RenderSkinned's first act: the inverse of the root -> this-part chain, accumulated from the LEAF
         // upward, which is what makes the gathered transforms land in the skinmesh's own space.
-        float* p = (float*)(part + SceneLayout.PartPos);
-        float* q = (float*)(part + SceneLayout.PartRot);
+        float* p = (float*)(part + EngineLayout.PartPos);
+        float* q = (float*)(part + EngineLayout.PartRot);
         QConj(q, out float aw, out float ax, out float ay, out float az);
         QRot(aw, ax, ay, az, -p[0], -p[1], -p[2], out float px, out float py, out float pz);
         IntPtr root = part;
         int rise = 0;
-        for (IntPtr up = *(IntPtr*)(part + SceneLayout.PartParent); up != IntPtr.Zero;
-             up = *(IntPtr*)(up + SceneLayout.PartParent))
+        for (IntPtr up = *(IntPtr*)(part + EngineLayout.PartParent); up != IntPtr.Zero;
+             up = *(IntPtr*)(up + EngineLayout.PartParent))
         {
             if (++rise > MaxDepth) { Overflow++; return false; }
             root = up;
-            float* up_ = (float*)(up + SceneLayout.PartPos);
-            QConj((float*)(up + SceneLayout.PartRot), out float cw, out float cx, out float cy, out float cz);
+            float* up_ = (float*)(up + EngineLayout.PartPos);
+            QConj((float*)(up + EngineLayout.PartRot), out float cw, out float cx, out float cy, out float cz);
             QRot(cw, cx, cy, cz, -up_[0], -up_[1], -up_[2], out float tx, out float ty, out float tz);
             QRot(aw, ax, ay, az, tx, ty, tz, out float rx, out float ry, out float rz);
             px += rx; py += ry; pz += rz;
@@ -86,7 +87,7 @@ internal static unsafe class SkinPose
         // lists; -1 (and anything past what was gathered) is an unused slot. The lists are mutated in place
         // exactly as the engine mutates them -- one gathered index is addressed by at most one slot, so the
         // difference is unobservable, but replicating it removes the question.
-        short* map = (short*)(node + SceneLayout.SkinBoneMap);
+        short* map = (short*)(node + EngineLayout.SkinBoneMap);
         bool sawZero = false;
         fixed (float* gp = _gPos)
         fixed (float* gr = _gRot)
@@ -175,9 +176,9 @@ internal static unsafe class SkinPose
     /// part the same vtable slot is <c>Part::PostProcess</c> @0x436e10, which recurses the whole subtree. The
     /// node is re-read cold: a sibling part sharing the <c>MdlNodeSkin</c> may have prepared it already,
     /// which is a win and not a call. And a node with no temporary arrays left
-    /// (<see cref="SceneLayout.SkinTempArrays"/>) can never be prepared by anything -- counted, not retried.
+    /// (<see cref="EngineLayout.SkinTempArrays"/>) can never be prepared by anything -- counted, not retried.
     /// <para>Called as the engine calls it: the part as both arguments (see
-    /// <see cref="SceneLayout.PartVtblPostProcess"/> for the ABI). Side effect worth naming, because it is on
+    /// <see cref="EngineLayout.PartPostProcessSlot"/> for the ABI). Side effect worth naming, because it is on
     /// a borrowed object: <c>PostProcess</c> opens with <c>Gob::Reset</c> @0x499bd0 on <c>part+0x50</c>, so
     /// repairing a live creature resets its gob -- exactly what the engine's own first draw did.</para></summary>
     private static void Prepare(int e, IntPtr part)
@@ -185,12 +186,12 @@ internal static unsafe class SkinPose
         if (!PartTable.EntryLive(e, part) || !PartTable.Skinned(e)) { _prepDead++; return; }
         IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
         if (node == IntPtr.Zero) { _prepDead++; return; }
-        if (*(short*)(node + SceneLayout.SkinBoneCount) > 0) { _prepWon++; return; }
-        if (*(IntPtr*)(node + SceneLayout.SkinTempArrays) == IntPtr.Zero) { _prepNoData++; return; }
+        if (*(short*)(node + EngineLayout.SkinBoneCount) > 0) { _prepWon++; return; }
+        if (*(IntPtr*)(node + EngineLayout.SkinTempArrays) == IntPtr.Zero) { _prepNoData++; return; }
         _prepCalls++;
-        IntPtr slot = *(IntPtr*)(*(IntPtr*)part + SceneLayout.PartVtblPostProcess);
+        IntPtr slot = *(IntPtr*)(*(IntPtr*)part + EngineLayout.PartPostProcessSlot);
         ((delegate* unmanaged<IntPtr, IntPtr, void>)slot)(part, part);
-        if (*(short*)(node + SceneLayout.SkinBoneCount) > 0) _prepWon++;
+        if (*(short*)(node + EngineLayout.SkinBoneCount) > 0) _prepWon++;
     }
 
     /// <summary>The part table was wiped, so every queued index names a record that no longer exists. The
@@ -216,8 +217,8 @@ internal static unsafe class SkinPose
                                float qw, float qx, float qy, float qz)
     {
         if (_gFull) return;
-        float* lp = (float*)(part + SceneLayout.PartPos);
-        float* lq = (float*)(part + SceneLayout.PartRot);
+        float* lp = (float*)(part + EngineLayout.PartPos);
+        float* lq = (float*)(part + EngineLayout.PartRot);
         QRot(qw, qx, qy, qz, lp[0], lp[1], lp[2], out float rx, out float ry, out float rz);
         px += rx; py += ry; pz += rz;
         QMul(qw, qx, qy, qz, lq[0], lq[1], lq[2], lq[3], out qw, out qx, out qy, out qz);
@@ -226,8 +227,8 @@ internal static unsafe class SkinPose
         _gPos[i * 3] = px; _gPos[i * 3 + 1] = py; _gPos[i * 3 + 2] = pz;
         _gRot[i * 4] = qw; _gRot[i * 4 + 1] = qx; _gRot[i * 4 + 2] = qy; _gRot[i * 4 + 3] = qz;
 
-        IntPtr* kids = *(IntPtr**)(part + SceneLayout.PartChildren);
-        int n = *(int*)(part + SceneLayout.PartChildCount);
+        IntPtr* kids = *(IntPtr**)(part + EngineLayout.PartChildren);
+        int n = *(int*)(part + EngineLayout.PartChildCount);
         if (kids == null) return;
         IntPtr myNode = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
         _gDepth++;
@@ -236,7 +237,7 @@ internal static unsafe class SkinPose
             IntPtr kid = kids[k];
             if (kid == IntPtr.Zero) continue;
             IntPtr kn = *(IntPtr*)(kid + AlloyRenderer.PartMdlNode);
-            if (kn == IntPtr.Zero || *(IntPtr*)(kn + SceneLayout.MdlNodeParent) != myNode) continue;
+            if (kn == IntPtr.Zero || *(IntPtr*)(kn + EngineLayout.MdlNodeParent) != myNode) continue;
             Gather(kid, px, py, pz, qw, qx, qy, qz);
         }
         _gDepth--;

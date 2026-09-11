@@ -87,9 +87,9 @@ internal static unsafe partial class GrassField
     /// <summary>Gob -&gt; its cached bounding box, min at +0x160 and max at +0x16c. <c>Gob::GetBoundingBox</c>
     /// @0x436ee0 is a plain read of exactly these two, no recompute. Only the EXTENT is used (the pair's
     /// space -- model or world -- is not established, and the extent is the same either way); it is centred
-    /// on <see cref="SceneLayout.GobPosition"/>, which is unambiguously world.</summary>
+    /// on <see cref="EngineLayout.GobPosition"/>, which is unambiguously world.</summary>
     private const int GobBoxMin = 0x160, GobBoxMax = 0x16c;
-    /// <summary>The MdlNode <c>Gob::SetAsCharacter</c> writes through (<see cref="SceneLayout.GobNode"/>), and
+    /// <summary>The MdlNode <c>Gob::SetAsCharacter</c> writes through (<see cref="EngineLayout.GobNode"/>), and
     /// the byte it writes: <c>node+0x8e = 4</c>. The only positive "this gob is a creature" mark found in the
     /// client. Used to keep creatures OUT of the grass cull -- they bend grass, they do not erase it.</summary>
     private const int NodeCharacterKind = 0x8e, NodeCharacterValue = 4;
@@ -698,8 +698,8 @@ internal static unsafe partial class GrassField
             IntPtr* gobs; int count;
             if (!_pushVis || !AlloyRenderer.VisibleGobs(out gobs, out count))
             {
-                gobs = *(IntPtr**)(scene + SceneLayout.SceneGobs);
-                count = *(int*)(scene + SceneLayout.SceneGobCount);
+                gobs = *(IntPtr**)(scene + EngineLayout.SceneGobs);
+                count = *(int*)(scene + EngineLayout.SceneGobCount);
                 _pushWalkedAll++;
             }
             _pushWalked += count;
@@ -715,9 +715,9 @@ internal static unsafe partial class GrassField
                 if (gob == IntPtr.Zero) continue;
                 // Same guard the shadow feed used: a gob with no part tree has no geometry to stand in the
                 // grass with, so it must not dent it.
-                IntPtr tree = *(IntPtr*)(gob + SceneLayout.GobPartTree);
+                IntPtr tree = *(IntPtr*)(gob + EngineLayout.GobPartTree);
                 if (tree == IntPtr.Zero) continue;
-                float* pos = (float*)(gob + SceneLayout.GobPosition);
+                float* pos = (float*)(gob + EngineLayout.GobPosition);
                 float gx = (pos[0] - _pushOriginX) * _pushPerUnit, gy = (pos[1] - _pushOriginY) * _pushPerUnit;
                 // The cull footprint can be much larger than the push radius, so the window test uses
                 // whichever of the two actually reaches.
@@ -792,7 +792,7 @@ internal static unsafe partial class GrassField
     {
         // A creature is marked by Gob::SetAsCharacter @0x444790, which writes node+0x8e = 4. This is exactly
         // as strong as the engine's own writer: nothing else found writes that byte.
-        IntPtr node = *(IntPtr*)(gob + SceneLayout.GobNode);
+        IntPtr node = *(IntPtr*)(gob + EngineLayout.GobNode);
         if (node != IntPtr.Zero
             && *(byte*)(node + NodeCharacterKind) == NodeCharacterValue) return false;
         float* mn = (float*)(gob + GobBoxMin), mx = (float*)(gob + GobBoxMax);

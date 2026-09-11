@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -26,7 +26,7 @@ namespace Sowx.Alloy;
 /// shadow needs <c>DoGobShadows</c> (builds the volume into shadow buckets) + <c>RenderDynamicShadows</c>
 /// (draws the buckets into stencil) + <c>RenderShadowPlanes</c> (the stencil-gated darkening quad).
 /// The sun/moon is the light whose range (<c>PartLight+0x70</c>) exceeds
-/// <see cref="SceneLayout.DirectionalRange"/> (sun ~100000, points ~10). <c>RenderShadowPlanes</c> is called through in
+/// <see cref="EngineLayout.DirectionalRange"/> (sun ~100000, points ~10). <c>RenderShadowPlanes</c> is called through in
 /// every mode but the full kill, because it is stencil-gated (<c>SetStencilFunc</c> before its quad) -- a
 /// suppressed volume sets no bit, so its resolve paints nothing where it was suppressed and paints normally
 /// where it was not, which is exactly what per-light suppression needs.</para>
@@ -115,7 +115,7 @@ public sealed unsafe class ShadowService : IExtenderService
     }
 
     /// <summary>True when this light is the sun/moon (directional): its range exceeds
-    /// <see cref="SceneLayout.DirectionalRange"/>. Null-safe (a null light is treated as non-directional so the
+    /// <see cref="EngineLayout.DirectionalRange"/>. Null-safe (a null light is treated as non-directional so the
     /// caller can choose the safe branch).</summary>
     private static bool IsDirectional(IntPtr light)
         => light != IntPtr.Zero && *(float*)((byte*)light + LightRange) > DirectionalRange;

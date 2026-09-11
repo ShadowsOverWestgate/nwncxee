@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 using static Sowx.Alloy.PartTable;
 
 namespace Sowx.Alloy;
@@ -130,7 +130,7 @@ internal static unsafe class SceneWalk
         _countPart = (int*)Native.Sym(SymbolMap.CountPart);
         _bspTraverse = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, void>)Native.Sym(SymbolMap.BspTraverse);
         IntPtr sv = Native.Sym(SymbolMap.PartSkinVtbl);
-        _skinVtbl = sv == IntPtr.Zero ? IntPtr.Zero : sv + 0x10;
+        _skinVtbl = sv == IntPtr.Zero ? IntPtr.Zero : sv + VtblSymbolHeader;
         Ready = _sequence != null && _bspTraverse != null && _skinVtbl != IntPtr.Zero;
         if (!Ready)
             log.Info("SceneWalk: " + (_sequence == null ? SymbolMap.SceneSequence
@@ -179,9 +179,6 @@ internal static unsafe class SceneWalk
         { _sinceCheck = 0; _lastMiss = CrossCheck(scene + SceneDrawBuckets, out _lastSample); }
     }
 
-    /// <summary>Scene -&gt; the embedded <c>DrawBucketManager</c> (0x310 bytes, constructed in place by
-    /// <c>Scene::Scene</c> @0x4724f0; every <c>AddPartToBucket</c> call passes <c>this+0x208</c>).</summary>
-    private const int SceneDrawBuckets = 0x208;
     private static int _lastMiss, _sinceCheck;
 
     /// <summary>#264: <c>SetupArrays</c> calls left this frame. It is the geometry upload for a part -- tangent
@@ -302,7 +299,7 @@ internal static unsafe class SceneWalk
         // reached it by arriving through PartTriMesh::Draw. Enumeration has no such guarantee, and the cost
         // of skipping the question is a SIGSEGV rather than a wrong pixel: PartTriMesh::GetIsOpaque @0x43cee0
         // reads *(this+0x50) as a Gob* and chases *(gob+0x68)+0x8e, and on a PartLight that offset holds the
-        // light's float range (SceneLayout.LightRange).
+        // light's float range (EngineLayout.LightRange).
         // Asked the engine's own way -- vtable slot 0x60 is AsPartTriMesh, which returns null for every other
         // class (SceneBSPAddPart @0x47ca10 discriminates with exactly this call, and BucketGate already
         // resolves every bucket item through it). The RETURNED pointer is the record key, because that is
@@ -365,7 +362,7 @@ internal static unsafe class SceneWalk
     /// <summary>Read the draw arguments off the VertexPrimitive and intern the group. Null VDO or item -1 is
     /// not a failure -- <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 has not run for this part yet, so
     /// the record simply stays unbound and is retried by <see cref="Rebind"/>. See
-    /// <see cref="SceneLayout.VpVdo"/> for why this is a field read at all.</summary>
+    /// <see cref="EngineLayout.VpVdo"/> for why this is a field read at all.</summary>
     /// <summary>#317: may this record spend a <c>SetupArrays</c> attempt in this generation? Untried
     /// records go straight through -- the load frame must still bind the world in one pass -- and a retry
     /// waits <see cref="PartTable.SetupRearmGens"/> generations so the empty tiles do not re-ask in a
@@ -395,7 +392,7 @@ internal static unsafe class SceneWalk
             if (!SetupDue(e) || _setupLeft <= 0) { _pState[e] = StUnbound; if (wasBound) NoteChanged(e); return false; }
             _pSetupTries[e]++; _pSetupGen[e] = Gen;
             _setupLeft--; _setups++;
-            ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)vp + VpVtblSetupArrays)))(vp);
+            ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)vp + VpSetupArraysSlot)))(vp);
             vdo = *(IntPtr*)(vp + VpVdo);
             item = *(int*)(vp + VpItem);
             if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; _noGeom++; if (wasBound) NoteChanged(e); return false; }
@@ -619,7 +616,7 @@ internal static unsafe class SceneWalk
         for (int id = 0; id < BucketTypes; id++)
             for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
             {
-                IntPtr bucket = mgr + (id * BucketGate.BucketPhases + phase) * BucketGate.BucketStride;
+                IntPtr bucket = mgr + (id * BucketGate.BucketPhases + phase) * EngineLayout.BucketStride;
                 IntPtr* items = *(IntPtr**)bucket;
                 int count = *(int*)(bucket + BucketGate.BucketCount);
                 if (items == null) continue;

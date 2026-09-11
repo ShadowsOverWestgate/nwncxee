@@ -3,7 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -1331,7 +1331,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _inColourPass = prev;
     }
 
-    /// <summary>Is this the world Scene? A Scene's static tile BSP (<see cref="SceneLayout.SceneBspRoot"/>) is
+    /// <summary>Is this the world Scene? A Scene's static tile BSP (<see cref="EngineLayout.SceneBspRoot"/>) is
     /// written by <c>Scene::InitBSP</c> alone (@0x46c330; <c>Scene::Scene</c> zeroes it, and every
     /// <c>SceneBSPAdd*</c> only inserts into an existing root). A GUI 3D panel's Scene -- which reaches the
     /// same <c>Scene::RenderSinglePass</c> through <c>Camera::RenderScene</c>, off <c>Camera+0x90</c> -- is
@@ -1339,7 +1339,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// camera + SetAmbient, no InitBSP, so its root stays null. This is also the engine's own test --
     /// <c>ManageSceneBSP</c> @0x47fa80 early-outs on exactly it.</summary>
     internal static bool IsWorldScene(IntPtr scene) =>
-        scene != IntPtr.Zero && *(IntPtr*)(scene + SceneLayout.SceneBspRoot) != IntPtr.Zero;
+        scene != IntPtr.Zero && *(IntPtr*)(scene + EngineLayout.SceneBspRoot) != IntPtr.Zero;
 
     /// <summary>#216: the terms <see cref="AlloyGate"/> reads out of this class. <c>_armed</c> is "the hooks
     /// installed"; the capability pair is "a program built and the multidraw entry points exist", both of

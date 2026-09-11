@@ -192,15 +192,15 @@ internal static unsafe partial class GrassField
         return seen;
     }
 
-    /// <summary>The #338 gate, <c>PartTriMesh::IsPartRenderable</c> @0x450e60 as <see cref="SceneLayout"/>
+    /// <summary>The #338 gate, <c>PartTriMesh::IsPartRenderable</c> @0x450e60 as <see cref="EngineLayout"/>
     /// spells it: a merged-away part (CombineParts) fails it, and its geometry lives on in the part that
     /// absorbed it -- reading both would scatter every face twice.</summary>
     private static bool Renderable(IntPtr part)
     {
-        if (*(byte*)(part + SceneLayout.PartRenderFlag) == 0) return false;
+        if (*(byte*)(part + EngineLayout.PartRenderFlag) == 0) return false;
         IntPtr n = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
-        if (n == IntPtr.Zero || *(int*)(n + SceneLayout.MdlRenderGate) == 0) return false;
-        if (*(short*)(n + SceneLayout.MdlRenderKind) == 0) return *(IntPtr*)(n + SceneLayout.MdlRenderGeom) != IntPtr.Zero;
+        if (n == IntPtr.Zero || *(int*)(n + EngineLayout.MdlRenderGate) == 0) return false;
+        if (*(short*)(n + EngineLayout.MdlRenderKind) == 0) return *(IntPtr*)(n + EngineLayout.MdlRenderGeom) != IntPtr.Zero;
         return true;
     }
 

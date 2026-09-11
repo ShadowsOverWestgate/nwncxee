@@ -1,5 +1,6 @@
 using System;
 using Sowx.Framework;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -40,7 +41,7 @@ internal static unsafe class CycleTextures
         _getController = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.AurTextureGetController);
         IntPtr v = Native.Sym(SymbolMap.CycleTidControllerVtbl);
         // Itanium ABI: an object's first word is the vtable symbol + 0x10.
-        _vtbl = v == IntPtr.Zero ? IntPtr.Zero : v + 0x10;
+        _vtbl = v == IntPtr.Zero ? IntPtr.Zero : v + EngineLayout.VtblSymbolHeader;
         _enabled = (int*)Native.Sym(SymbolMap.EnableTextureControllers);
         if (!Ready) log.Info("CycleTextures: AurTextureGetController or the CycleTID vtable unresolved -- cycle textures stay frozen on Alloy parts");
     }

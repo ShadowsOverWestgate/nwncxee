@@ -1,7 +1,7 @@
 using System;
 using Sowx.Framework;
 using Sowx.Graphics;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -147,7 +147,7 @@ public sealed unsafe partial class AlloyRenderer
     /// and refusing it would park a VDO with no dynamic stream in <c>deferred</c> for ever under a reason
     /// ("pools not resident") that was never true of it.</summary>
     private static bool PoolReady(uint token)
-        => token == SceneLayout.VdoNoPool || OwnedBuffers.PoolHasName(token);
+        => token == EngineLayout.VdoNoPool || OwnedBuffers.PoolHasName(token);
 
     /// <summary>Lines the drip may spend saying it worked. Matched to <see cref="HarvestReportCap"/>: the
     /// refusals it answers are capped there, so this cannot outlive them.</summary>

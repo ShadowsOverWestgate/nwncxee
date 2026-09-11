@@ -78,7 +78,7 @@ public sealed unsafe class NameplateService : IExtenderService
         if (!GameGate.OwnsFramePresent)
         { log.Info("NameplateService: standing down (framework not owning frame present)"); return; }
         if (!SymbolMap.Require(log, "NameplateService", RequiredSymbols)) return;   // #420: whole or nothing
-        if (!EngineLayout.Require(log, "NameplateService")) return;                 // #432: same, for offsets
+        if (!EngineLayout.Require(log, "NameplateService", "CNWCObject", "CNWCCreature", "CNWCPlaceable")) return;                 // #432: same, for offsets
 
         // ORDER: the two critical symbols first, so nothing else installs if either refuses.
         _origSetMode = (delegate* unmanaged<int, void>)hooks.Install(

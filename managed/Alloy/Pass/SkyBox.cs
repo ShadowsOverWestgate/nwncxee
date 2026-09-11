@@ -3,7 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -53,7 +53,7 @@ internal static unsafe class SkyBox
     private const int SceneGobs = 0x18, SceneFadeGob = 0x38, SceneT = 0x40, SceneCur = 0x44,
                       SceneDesired = 0x48, SceneOff = 0x4c;
     /// <summary>The alpha multiplier <c>PartTriMesh::Mat</c> reads off the instance, and the field
-    /// <c>RenderSkyBoxes</c> writes the cross-fade into. Same offset <c>AlloyCensus.GobAlpha</c> names.</summary>
+    /// <c>RenderSkyBoxes</c> writes the cross-fade into. Same offset <c>EngineLayout.GobAlpha</c> names.</summary>
     private const int GobAlpha = 0x108;
     /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1), stride 0x58, top at
     /// +0x18. <c>RenderSkyBoxes</c> replaces the PROJECTION (push/identity/SetPerspectiveTransform @0x466aa2)
@@ -279,7 +279,7 @@ internal static unsafe class SkyBox
     /// <para>Reads the gob only to compare a byte; the pointer is the one <see cref="Roles"/> just took off
     /// the Scene, so it is live for the length of the staging walk.</para></summary>
     internal static bool FogTinted(IntPtr gob)
-        => gob != IntPtr.Zero && *(byte*)(gob + GobFogTint) != 0;
+        => gob != IntPtr.Zero && *(byte*)(gob + GobSceneTint) != 0;
 
     internal static int Roles(IntPtr scene, Span<Role> into)
     {

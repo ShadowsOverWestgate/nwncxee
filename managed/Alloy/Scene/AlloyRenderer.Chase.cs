@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using Sowx.Framework;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -71,9 +72,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The last cached factor per slot, and whether one was ever read for this tenant.</summary>
     private static readonly float[] _oFadeF = new float[MaxOwned];
     private static readonly bool[] _fadeKnown = new bool[MaxOwned];
-    /// <summary><c>TileData+0x74</c>: the pending factor the fade handlers step; committed into
-    /// <see cref="PartTable.TileFade"/> at the top of <c>ManageSceneBSP</c> @0x47fa80.</summary>
-    private const int TilePendingFade = 0x74, TileStubBytes = TilePendingFade + sizeof(float);
+    /// <summary>Bytes of the TileData stub the self-check hands the fade walk: enough to hold
+    /// <see cref="EngineLayout.TilePendingFade"/>.</summary>
+    private static readonly int TileStubBytes = TilePendingFade + sizeof(float);
     /// <summary>The first pending tile's live and pending factors this sample, for the period line -- a tile
     /// that pends forever is the one number that explains a fade cache that never serves.</summary>
     private static float _movLive, _movPending;
@@ -136,9 +137,9 @@ public sealed unsafe partial class AlloyRenderer
         IntPtr cam = PartTable.KeyholeArmed ? PartTable.CurrentCamera : IntPtr.Zero;
         _khCam = cam != IntPtr.Zero;
         if (!_khCam) return;
-        _khOn = *(byte*)(cam + PartTable.CamKeyholeState);
-        for (int k = 0; k < 4; k++) _khPlane[k] = *(float*)(cam + PartTable.CamKeyholeState + 4 + k * 4);
-        _khCut = *(float*)(cam + PartTable.CamKeyholeState + 20);
+        _khOn = *(byte*)(cam + EngineLayout.CamKeyholeState);
+        for (int k = 0; k < 4; k++) _khPlane[k] = *(float*)(cam + EngineLayout.CamKeyholeState + 4 + k * 4);
+        _khCut = *(float*)(cam + EngineLayout.CamKeyholeState + 20);
     }
 
     /// <summary>#336 step 4: the VISIBLE SET -- per class, in enrollment order, the slots the route walk
@@ -327,7 +328,7 @@ public sealed unsafe partial class AlloyRenderer
         {
             IntPtr tile = items[k];
             if (tile == IntPtr.Zero) continue;
-            float live = *(float*)(tile + PartTable.TileFade), pending = *(float*)(tile + TilePendingFade);
+            float live = *(float*)(tile + EngineLayout.TileFade), pending = *(float*)(tile + TilePendingFade);
             if (live == pending) continue;
             if (_movCount == 0) { _movLive = live; _movPending = pending; }
             if (!MovSlot(tile, true)) return false;
@@ -394,7 +395,7 @@ public sealed unsafe partial class AlloyRenderer
     /// the parts that need their own identity -- the window that lights up at night (note the
     /// <c>AnimateStaticLight</c> behaviour <c>ProcessStaticObject</c> @0x5619e0 attaches to exactly this),
     /// the vine that danglies -- and a plain part list for the static remainder. So a tileset window IS a
-    /// gob part. <see cref="SceneLayout.GobTileData"/> identifies that half positively, and it dissolves
+    /// gob part. <see cref="EngineLayout.GobTileData"/> identifies that half positively, and it dissolves
     /// with the wall it belongs to. <c>/draw gobkey 0</c> is the vanilla A/B.</para>
     private static bool Dissolves(int i, IntPtr tri, ref StageCounters c)
     {
@@ -500,7 +501,7 @@ public sealed unsafe partial class AlloyRenderer
         E(!full, "a full set reports the overflow");
 
         ulong* key = stackalloc ulong[PartTable.CamKeyholeWords + 1];
-        const int camBytes = PartTable.CamKeyholeState + PartTable.CamKeyholeWords * 8;
+        int camBytes = EngineLayout.CamKeyholeState + PartTable.CamKeyholeWords * 8;
         byte* cam = stackalloc byte[camBytes];
         new Span<byte>(cam, camBytes).Clear();
         new Span<ulong>(key, PartTable.CamKeyholeWords + 1).Clear();
@@ -517,7 +518,7 @@ public sealed unsafe partial class AlloyRenderer
         items[0] = (IntPtr)tile;
         byte* bucket = stackalloc byte[BucketBytes];
         *(IntPtr**)(bucket + BucketItems) = items; *(int*)(bucket + BucketCount) = 1;
-        *(float*)(tile + PartTable.TileFade) = 1f; *(float*)(tile + TilePendingFade) = 1f;
+        *(float*)(tile + EngineLayout.TileFade) = 1f; *(float*)(tile + TilePendingFade) = 1f;
         _visSeq++; _movCountPrev = _movCount = 0; _fadeAll = false;
         E(MarkPendingTiles(bucket) && _movCount == 0 && !TileMoving((IntPtr)tile), "a settled tile pends nothing");
         *(float*)(tile + TilePendingFade) = 0.5f;

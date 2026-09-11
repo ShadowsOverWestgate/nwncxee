@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 using static Sowx.Alloy.BucketGate;
 namespace Sowx.Alloy;
 
@@ -43,7 +43,6 @@ internal static unsafe class PartTable
     /// <c>fadebuckets</c>, and <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 puts those in bucket 8. Since
     /// #126 bucket 8 is suppressible and the fade is a per-frame overlay on the Alloy blended class
     /// (<see cref="TileFadeFactor"/>).</para></summary>
-    internal const int TileFade = 0x70;
 
     /// <summary>Recorded-part capacity: the reason the renderer can hold a whole object-dense area rather
     /// than the first 4096 parts of one. A cap that cannot hold the area is a rendering fault, not a saving.
@@ -64,12 +63,9 @@ internal static unsafe class PartTable
     internal static IntPtr _camSlot;   // &CurrentCamera; live CAurCamera* is *_camSlot
     /// <summary>The live <c>CAurCamera*</c>, or zero before the symbol resolved or while no camera renders.</summary>
     internal static IntPtr CurrentCamera => _camSlot == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)_camSlot;
-    /// <summary>#330: every camera field <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 reads -- the enable
-    /// byte at +0xe50, the aperture plane at +0xe54..+0xe60 and the height cut at +0xe64 -- as one 24-byte
-    /// span (the 3 bytes of padding after the enable byte ride along; comparing more is only more
-    /// conservative). <c>Camera::RenderScene</c> @0x4a7920 is their only writer, every frame, ahead of the
-    /// FadeDoors anchor, so a snapshot compare at the anchor is a camera-dirty bit with no hook.</summary>
-    internal const int CamKeyholeState = 0xe50, CamKeyholeWords = 3;
+    /// <summary>Length of the <see cref="EngineLayout.CamKeyholeState"/> span, in 8-byte words -- the 3
+    /// bytes of padding after the enable byte ride along, and comparing more is only more conservative.</summary>
+    internal const int CamKeyholeWords = 3;
 
     internal static delegate* unmanaged<IntPtr, byte> _isOpaque, _hasEnvMap, _hasBumpyShiny;
     internal static delegate* unmanaged<IntPtr, int, long> _getTexture;
@@ -91,7 +87,7 @@ internal static unsafe class PartTable
         _hasEnvMap = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.MatHasEnvMap);
         _hasBumpyShiny = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.MatHasBumpyShinyMap);
         IntPtr dv = Native.Sym(SymbolMap.PartDanglyMeshVtbl);
-        _danglyVtbl = dv == IntPtr.Zero ? IntPtr.Zero : dv + 0x10;
+        _danglyVtbl = dv == IntPtr.Zero ? IntPtr.Zero : dv + VtblSymbolHeader;
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _bumpyWater = (int*)Native.Sym(SymbolMap.EnableBumpyWater);
@@ -152,7 +148,7 @@ internal static unsafe class PartTable
     /// <para>#317: but "marks itself done" was read off the comment, not the binary, and the binary says
     /// otherwise. <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 takes its no-geometry exit when the
     /// vertex or index totals summed off the <c>MdlNodeTriMesh</c> list are zero, and that exit leaves
-    /// <see cref="SceneLayout.VpVdo"/> NULL -- so the function's own entry guard
+    /// <see cref="EngineLayout.VpVdo"/> NULL -- so the function's own entry guard
     /// (<c>vp+0x64 &amp;&amp; vp+0x58 &amp;&amp; !vp+0x84</c>) fails on the next call and the ENGINE redoes
     /// the work. Only Alloy latched. A part whose model geometry is not resident yet therefore answered
     /// zero once and stayed invisible for the session, while vanilla re-asked and drew it -- and the one
@@ -312,7 +308,7 @@ internal static unsafe class PartTable
     }
 
     /// <summary>#338: is this part something the engine would ever draw? <c>PartTriMesh::IsPartRenderable</c>
-    /// @0x450e60, reproduced from the decompile documented on <see cref="SceneLayout.PartRenderFlag"/>.
+    /// @0x450e60, reproduced from the decompile documented on <see cref="EngineLayout.PartRenderFlag"/>.
     /// <para>Every <c>Part*::Draw</c> override runs this first -- TriMesh, AnimMesh, AABB, DanglyMesh and
     /// Skin all call it (objdump xref) -- and so does the colour-bucket add. A part that fails it is drawn
     /// from NO engine path, which is why refusing it costs no caster: it was never drawn to begin with.
@@ -325,11 +321,11 @@ internal static unsafe class PartTable
     /// emissive all zero) Z-fighting the real surface.</para></summary>
     internal static bool IsRenderable(IntPtr part)
     {
-        if (part == IntPtr.Zero || *(byte*)(part + SceneLayout.PartRenderFlag) == 0) return false;
+        if (part == IntPtr.Zero || *(byte*)(part + EngineLayout.PartRenderFlag) == 0) return false;
         IntPtr n = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
-        if (n == IntPtr.Zero || *(int*)(n + SceneLayout.MdlRenderGate) == 0) return false;
-        return *(short*)(n + SceneLayout.MdlRenderKind) != 0
-               || *(IntPtr*)(n + SceneLayout.MdlRenderGeom) != IntPtr.Zero;
+        if (n == IntPtr.Zero || *(int*)(n + EngineLayout.MdlRenderGate) == 0) return false;
+        return *(short*)(n + EngineLayout.MdlRenderKind) != 0
+               || *(IntPtr*)(n + EngineLayout.MdlRenderGeom) != IntPtr.Zero;
     }
 
     /// <summary>Off-device: the four branches of the renderable rule over a fake part + node. A rule that
@@ -342,16 +338,16 @@ internal static unsafe class PartTable
         for (int i = 0; i < 0x300; i++) node[i] = 0;
         IntPtr p = (IntPtr)part;
         bool ok = !IsRenderable(IntPtr.Zero) && !IsRenderable(p);          // flag clear, and a null part
-        part[SceneLayout.PartRenderFlag] = 1;
+        part[EngineLayout.PartRenderFlag] = 1;
         ok &= !IsRenderable(p);                                            // flag set, no node
         *(IntPtr*)(part + AlloyRenderer.PartMdlNode) = (IntPtr)node;
         ok &= !IsRenderable(p);                                            // node, gate 0
-        *(int*)(node + SceneLayout.MdlRenderGate) = 1;
+        *(int*)(node + EngineLayout.MdlRenderGate) = 1;
         ok &= !IsRenderable(p);                                            // kind 0 and no geometry
-        *(IntPtr*)(node + SceneLayout.MdlRenderGeom) = (IntPtr)1;
+        *(IntPtr*)(node + EngineLayout.MdlRenderGeom) = (IntPtr)1;
         ok &= IsRenderable(p);                                             // kind 0 but geometry present
-        *(IntPtr*)(node + SceneLayout.MdlRenderGeom) = IntPtr.Zero;
-        *(short*)(node + SceneLayout.MdlRenderKind) = 1;
+        *(IntPtr*)(node + EngineLayout.MdlRenderGeom) = IntPtr.Zero;
+        *(short*)(node + EngineLayout.MdlRenderKind) = 1;
         ok &= IsRenderable(p);                                             // kind set: geometry not asked
         if (!ok) log.Info("PartTable.RenderableSelfCheck: FAILED -- the IsPartRenderable rule disagrees with the decompile");
         return ok;

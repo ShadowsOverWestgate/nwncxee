@@ -3,7 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -43,7 +43,7 @@ internal static unsafe class Beams
     /// <c>PartLight**</c> at +0x60, count at +0x68.</summary>
     private const int SceneLights = 0x60, SceneLightCount = 0x68;
     /// <summary>The PartLight live flag at +0x74 -- the one field of the light <c>RenderBeams</c>'s scan
-    /// reads that no other walker does. Range, kind and direction are shared, in <see cref="SceneLayout"/>.</summary>
+    /// reads that no other walker does. Range, kind and direction are shared, in <see cref="EngineLayout"/>.</summary>
     private const int LightLive = 0x74;
     /// <summary><c>projectionWorldZClip</c>: the world z every back-facing beam vertex is extruded down to.
     /// <para><c>RenderBeams</c> @0x46add0 is <c>movss xmm0,[0x12f04a4]; mov edi,1; call SetShaderParamf</c> --
@@ -161,7 +161,7 @@ internal static unsafe class Beams
         IntPtr mgr = scene + SceneDrawBuckets;
         for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
         {
-            IntPtr bucket = mgr + (BeamBucket * BucketGate.BucketPhases + phase) * BucketGate.BucketStride;
+            IntPtr bucket = mgr + (BeamBucket * BucketGate.BucketPhases + phase) * EngineLayout.BucketStride;
             IntPtr* items = *(IntPtr**)bucket;
             int n = *(int*)(bucket + BucketGate.BucketCount);
             if (items == null) continue;
@@ -450,7 +450,8 @@ internal static unsafe class Beams
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"Beams.SelfCheck FAIL: {w}"); } }
 
-        const int SceneBytes = 0x80, LightBytes = LightDir + 12;
+        const int SceneBytes = 0x80;
+        int LightBytes = LightDir + 12;
         byte* scene = stackalloc byte[SceneBytes];
         for (int i = 0; i < SceneBytes; i++) scene[i] = 0;
         byte* a = stackalloc byte[LightBytes];

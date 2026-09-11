@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
 using Sowx.Graphics;
-using static Sowx.Alloy.SceneLayout;
+using static Sowx.Framework.EngineLayout;
 using static Sowx.Alloy.PartTable;
 using static Sowx.Alloy.BucketGate;
 using static Sowx.Alloy.TexProbe;
@@ -41,32 +41,12 @@ internal static unsafe class AlloyCensus
         if (_skipTex.Length == 0) _skipTex = null;
     }
 
-    /// <summary>#126: the material's blend pair -- source factor at +0x90, destination at +0x94, both
-    /// <c>Aurora::AuroraBlendModes</c> (Ghidra <c>Material::SetBlendingMode</c> @0x4c5c50 does
-    /// <c>SetBlendFunc(*(mat+0x90), *(mat+0x94))</c>). <c>dst == 2</c> is <c>GL_ONE</c>, which is the
-    /// engine's own additive test and the one pair it turns the depth mask off for.</summary>
-    internal const int MatSrcBlend = 0x90, MatDstBlend = 0x94, BlendOne = 2;
-    /// <summary>#126: the three <c>.mtr</c> keywords on the SharedMaterial that steer bucket membership
-    /// (<c>SharedMaterial::ParseField</c> @0x4c6760): <c>transparency</c> at +0x1f0, <c>sample_framebuffer</c>
-    /// at +0x1f4 (1 = bucket 5, 2 = water) and <c>volumetric</c> at +0x1f8.</summary>
+    /// <summary><c>dst == 2</c> is <c>GL_ONE</c>: the engine's own additive test on
+    /// <see cref="EngineLayout.MatDstBlend"/>, and the one pair it turns the depth mask off for.</summary>
+    internal const int BlendOne = 2;
     /// <summary><c>gradedblend</c> in sowx.cfg: the graded-alpha fraction at or above which a cutout diffuse
     /// draws in the blended class instead. 1 = never (the #357 alpha-test-only behaviour).</summary>
     internal static readonly float GradedBlend = Settings.Float("gradedblend", 0.3f, 0f, 1f);
-    internal const int SharedTransparency = 0x1f0, SharedSampleFb = 0x1f4, SharedVolumetric = 0x1f8;
-    /// <summary>#292: the <c>twosided</c> keyword, parsed by the same <c>SharedMaterial::ParseField</c>
-    /// @0x4c6760 to <c>this+0x1f1</c> as a bool -- the byte immediately after <c>transparency</c>, not a
-    /// second field of it. This, and NOT <c>MdlNode+0x164</c>, is what decides face culling on the world
-    /// path: that offset is <c>MdlNodeEmitter</c>'s and belongs to the particle pass alone.
-    /// <para>The engine spends it at BUCKET-FILL time, not at draw time.
-    /// <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 files each part in one of three sub-lists --
-    /// <c>sub = twosided ? (volumetric ? 0 : 1) : 0</c> -- and <c>Scene::RenderDrawBucket</c> @0x46d060
-    /// draws sub-list 1 under <c>Disable(3)</c> (cap 3 = GL_CULL_FACE), sub-list 2 under
-    /// <c>Enable(3) + SetCullFace(0)</c>, and leaves <c>Enable(3) + SetCullFace(1)</c> behind on every exit
-    /// -- which is the state sub-list 0 draws in. So the vanilla default is CULLING ON, back faces.</para>
-    /// <para>Sub-list 2 is the twosided-AND-volumetric double-file (bucket 3 front-culled, then its own
-    /// bucket back-culled); it cannot reach Alloy, because a volumetric material is refused outright above.
-    /// Two states is the whole vocabulary here.</para></summary>
-    internal const int SharedTwoSided = 0x1f1;
     /// <summary>The tilefade cap bucket -- Tracy scope "Tilefade Cap", fed from <c>capbuckets</c>.</summary>
     internal const int CapBucket = 7;
     /// <summary>#134: the dynamic gob pair (#103's taxonomy). Everything instanced lands in one of these two
@@ -76,22 +56,9 @@ internal static unsafe class AlloyCensus
     /// instance's geometry across two renderers.</summary>
     internal const int GobOpaqueBucket = 2, GobBlendBucket = 3;
 
-    /// <summary>#123: the <c>customShaderVS</c>/<c>FS</c> resrefs the .mtr named, as inline 17-byte NUL-
-    /// terminated buffers. Ghidra <c>SharedMaterial::ParseField</c> @0x4c6760 parses them to exactly
-    /// <c>this+0x188</c> and <c>this+0x199</c> (GS at +0x1aa, hence the 0x11 stride), and
-    /// <c>SharedMaterial::Init</c> @0x4c6ff0 hands those same three addresses to
-    /// <c>GetCustomShaderProgram</c>, which confirms them.
-    /// <para>This is what a material is classified by, NOT the compiled programs it caches at +0x1c0 (the
-    /// discard-capable build) and +0x1c8 (the NO_DISCARD, Early-Z-friendly one that
-    /// <c>PartTriMesh::Mat</c> @0x450960 picks for an opaque part that cannot dissolve). Those are filled in
-    /// by Init and stay null until it runs, whereas the names are parsed the moment the .mtr loads. An empty
-    /// VS name is the real "pure texture redirect" test: such a shared material adds no program at all, and
-    /// the Alloy pass reproduces it exactly.</para></summary>
-    internal const int SharedVsName = 0x188, SharedNameLen = 0x11;
-    /// <summary>#125: <c>customShaderFS</c>, the next 17-byte resref slot after
-    /// <see cref="SharedVsName"/> (SharedMaterial::ParseField @0x4c6760 writes +0x188/+0x199/+0x1aa for
-    /// VS/FS/GS). A material can name a fragment shader and no vertex shader.</summary>
-    internal const int SharedFsName = 0x199;
+    /// <summary>The stride between the three resref slots <see cref="EngineLayout.SharedVsName"/> names
+    /// (VS at +0x188, FS at +0x199, GS at +0x1aa), and the length of each inline NUL-terminated buffer.</summary>
+    internal const int SharedNameLen = 0x11;
 
     /// <summary><c>dumptex</c> (sowx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
     /// time, for as long as it takes the camera to find them.</summary>
@@ -412,16 +379,10 @@ internal static unsafe class AlloyCensus
         return $"{(ok ? "ownable-but-not-enrolled" : _ownGate ?? "?")} cls={cls}";
     }
 
-    /// <summary>Gob fields that change how a part shades, all read by <c>PartTriMesh::Mat</c> @0x450960
-    /// except the env override, which <c>PartTriMesh::Draw</c> @0x4513d0 reads to reroute the whole draw to
-    /// <c>RenderEnvironmentMapped</c>. The two flags ARM a modulation; the values beside them are the
-    /// modulation, and <c>gob+0xfc</c> is the colour whose 12 bytes end exactly where the alpha begins.</summary>
-    internal const int GobHighlight = 0x18, GobSceneTint = 0x19, GobColourMul = 0xf6, GobSelfIllum = 0xf8,
-                      GobFadeOwner = 0x68, GobEnvOverride = 0x480,
-                      GobColour = 0xfc, GobAlpha = 0x108, GobFadeAlpha = 0x10c, GobEmissive = 0x110;
-    /// <summary>The byte on the gob's owner (<c>gob+0x68</c>) whose bit 3 arms a second alpha multiply
-    /// (<c>gob+0x10c</c>) -- Ghidra <c>PartTriMesh::Mat</c>: <c>if ((*(*(gob+0x68)+0x8e) &amp; 8) != 0)</c>.</summary>
-    internal const int GobOwnerFlags = 0x8e, GobOwnerFadeBit = 8;
+    /// <summary>The bit in <see cref="EngineLayout.NodeOwnerFlags"/> that arms a second alpha multiply by
+    /// <see cref="EngineLayout.GobFadeAlpha"/> -- Ghidra <c>PartTriMesh::Mat</c>:
+    /// <c>if ((*(*(gob+0x68)+0x8e) &amp; 8) != 0)</c>.</summary>
+    internal const int GobOwnerFadeBit = 8;
 
     /// <summary>#128/#285: does this instance carry state no Alloy program can reproduce? ONE case now --
     /// the SCENE TINT (<c>gob+0x19</c>), which <c>PartTriMesh::Mat</c> @0x450960 draws as
@@ -740,9 +701,9 @@ internal static unsafe class AlloyCensus
         // whole creature into the transparent run, and the one term whose flag is not on the object it scales
         *(float*)(gob + GobFadeAlpha) = 0.5f;
         E(GobAlphaMul(p) == 0.5f, "the fade alpha is dead without its owner");
-        *(IntPtr*)(gob + GobFadeOwner) = (IntPtr)owner;
+        *(IntPtr*)(gob + GobNode) = (IntPtr)owner;
         E(GobAlphaMul(p) == 0.5f, "...and dead without the owner's fade bit");
-        owner[GobOwnerFlags] = GobOwnerFadeBit;
+        owner[NodeOwnerFlags] = GobOwnerFadeBit;
         E(GobAlphaMul(p) == 0.25f, "both multiplies compose");
 
         *(short*)(gob + GobSelfIllum) = 1;
@@ -914,10 +875,6 @@ internal static unsafe class AlloyCensus
         $"{_ownSharedShader} approximated" +
         (_unknownCount == 0 ? "" : $" ({string.Join(", ", _unknown, 0, _unknownCount)})");
 
-    /// <summary>CAurTextureBasic's 32-byte name field (Ghidra CAurTextureBasic::CAurTextureBasic @0x487250:
-    /// <c>strncpy(this + 0x88, name, 0x1f)</c>). Reached the way AurTextureMessage @0x488b10 reaches it --
-    /// vtable slot 0x18 resolves a reference texture to the real one, slot 0x10 is AsCAurTextureBasic.</summary>
-    internal const int TexBasicName = 0x88;
     internal static readonly int TexVtblAsBasic = Sowx.Framework.EngineLayout.TexAsBasicSlot, TexVtblReferenced = Sowx.Framework.EngineLayout.TexReferencedSlot;
 
     /// <summary>Triage: every gob term the gate and the fold read, printed rather than reduced to a bool.
@@ -931,7 +888,7 @@ internal static unsafe class AlloyCensus
         return $"gobmod=hl{*(byte*)(gob + GobHighlight)}/tint{*(byte*)(gob + GobSceneTint)}" +
                $"/col{*(short*)(gob + GobColourMul)}/emi{*(short*)(gob + GobSelfIllum)}" +
                $"/env{(g.EnvOverride != IntPtr.Zero ? 1 : 0)}" +
-               $"/own{(owner == IntPtr.Zero ? -1 : *(byte*)(owner + GobOwnerFlags) & GobOwnerFadeBit)}" +
+               $"/own{(owner == IntPtr.Zero ? -1 : *(byte*)(owner + NodeOwnerFlags) & GobOwnerFadeBit)}" +
                $" gmul=a{g.Alpha:0.00}/a2{g.FadeAlpha:0.00}" +
                $" gcol={g.Colour[0]:0.00},{g.Colour[1]:0.00},{g.Colour[2]:0.00}" +
                $" gemi={g.Emissive[0]:0.00},{g.Emissive[1]:0.00},{g.Emissive[2]:0.00}";

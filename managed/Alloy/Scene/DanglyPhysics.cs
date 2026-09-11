@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Numerics;
 using Sowx.Framework;
+using static Sowx.Framework.EngineLayout;
 
 namespace Sowx.Alloy;
 
@@ -36,25 +37,6 @@ namespace Sowx.Alloy;
 /// </remarks>
 internal static unsafe class DanglyPhysics
 {
-    // MdlNodeDanglyMesh, from MdlNodeDanglyMesh::InternalParseField @0x44da00.
-    private const int MdlConstraints = 0x2c8, MdlConstraintCount = 0x2d0;
-    private const int MdlDisplacement = 0x2d8, MdlTightness = 0x2dc, MdlPeriod = 0x2e0;
-    // MdlNodeTriMesh: the pool token holding the REST positions, and the vertex count.
-    private const int MdlRestPool = 0x280, MdlVertexCount = 0x284;
-    // PartDanglyMesh's own mutable state: last frame's world pose. The quaternion is w FIRST.
-    private const int PartPrevPos = 0xb4, PartPrevRot = 0xc0;
-    private const int PartVertexPrim = 0x88;
-    // VertexPrimitive: the VDO and the item index its dynamic fork lives in.
-    private const int VpVdo = 0x58, VpItem = 0x60;
-    /// <summary>VertexPrimitive vtable slot 5. Returns the <c>VertexPrimitiveDangly</c> view whose
-    /// <c>+0xa0</c> is the velocity array -- NOT the VertexPrimitive itself (verified at 0x49bd85: the
-    /// engine calls this and indexes +0xa0 off the RESULT).</summary>
-    private const int VpAsDanglySlot = 0x28;
-    private const int VpdVelocity = 0xa0;
-    /// <summary>Scene vtable slot 81 -- <c>Scene::IsAnimating</c> @0x45e000. Vanilla gates the whole solve
-    /// on it, which is what stops cloaks swaying behind a paused menu.</summary>
-    private const int SceneIsAnimatingSlot = 0x288;
-
     /// <summary>One world unit of movement in a frame is a teleport: snap flat to rest and skip the sim.
     /// Vanilla's threshold, kept so a door-to-door transition behaves the same.</summary>
     private const float TeleportDist = 1.0f;
@@ -232,7 +214,7 @@ internal static unsafe class DanglyPhysics
         if (isAnimating(scene) == 0) { Down(part, dt, solves: false); return; }
 
         IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
-        IntPtr vp = *(IntPtr*)(part + PartVertexPrim);
+        IntPtr vp = *(IntPtr*)(part + PartNode);
         if (node == IntPtr.Zero || vp == IntPtr.Zero) { Down(part, dt); return; }
 
         int item = *(int*)(vp + VpItem);
