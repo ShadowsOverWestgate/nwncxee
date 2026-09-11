@@ -141,6 +141,7 @@ public sealed unsafe class DialogService : IExtenderService
             return;
         }
         if (!SymbolMap.Require(log, "DialogService", RequiredSymbols)) return;   // #420: whole or nothing
+        if (!EngineLayout.Require(log, "DialogService")) return;                 // #432: it reads the portrait slot
 
         // Second UiHost consumer (#63/#64): Dialog draws through the same z-ordered roll-call ChatService does,
         // as a rect-less window (Focusable=false) whose content-draw IS Draw and whose input delegates ARE its
@@ -1170,7 +1171,6 @@ public sealed unsafe class DialogService : IExtenderService
     private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
         (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ExoStringDtor);
 
-    private static readonly int GetPortraitVtblOff = OperatingSystem.IsWindows() ? 0x1d0 : 0x1d8;   // MSVC slot order
     private const byte PortraitSizeMedium = 3;
 
     /// <summary>Resolve a speaker object id to its portrait resref (with size suffix), or "" for a speaker with
@@ -1188,7 +1188,7 @@ public sealed unsafe class DialogService : IExtenderService
 
         // CResRef is 17 bytes (char[16] + a length byte at +0x10); a 16-byte buffer smashes the stack canary
         // (the SIGABRT that once crashed the client). Over-allocate to 32.
-        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)*(IntPtr*)(vtbl + GetPortraitVtblOff);
+        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)*(IntPtr*)(vtbl + EngineLayout.GetPortraitSlot);
         if (getPortrait == null) return "";
         byte* buf = stackalloc byte[32];
         for (int i = 0; i < 32; i++) buf[i] = 0;

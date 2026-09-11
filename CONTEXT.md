@@ -76,6 +76,18 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   the same word the post stack uses. Avoid: degrade, fall back.
 - **Anchor** — the compiler-invariant evidence (a unique string, an immediate constant, an exported
   neighbour) that ties a Windows RVA to its Linux symbol.
+- **Engine layout** — where a *field* sits inside an engine class, as opposed to where a *function*
+  sits in the image (that is Resolution, above). One table, `EngineLayout`, keyed (os, build).
+  Avoid: offsets, struct map.
+- **Build key** — the linker's identity for a client build: the ELF `.note.gnu.build-id`, the PE
+  CodeView PDB GUID. Not a content hash, so a rewrapped Steam/GOG copy of one build is one key.
+  Distinct from the older **Build lock**, which is the PE TimeDateStamp guarding SymbolMap's RVAs.
+- **Diverges / Same / Unresolved** — the three, and only three, resolutions an offset can carry.
+  *Same* means measured on both and equal; *Unresolved* means nobody looked on Windows yet, and is
+  counted on both platforms (only the gate is Windows-only). The pair exists so "verified identical" and "never looked" stop being one bare `const`.
+- **Probe** — an assertion a resolved offset makes about live memory (the dword is 0 or 1; the
+  vtable slot holds a code address), checked once at the first instance so a wrong offset stands
+  the feature down instead of rendering garbage. Avoid: validation, sanity check.
 
 ## UI framework
 

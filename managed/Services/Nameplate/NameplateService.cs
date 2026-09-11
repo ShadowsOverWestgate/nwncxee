@@ -67,6 +67,7 @@ public sealed unsafe class NameplateService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        NameplateNative.UseLog(log);
         // Every pure piece self-checks BEFORE any stand-down return -- run-demo's only gate.
         NameplateConfig.SelfCheck(log);
         PlateLayout.SelfCheck(log);
@@ -77,6 +78,7 @@ public sealed unsafe class NameplateService : IExtenderService
         if (!GameGate.OwnsFramePresent)
         { log.Info("NameplateService: standing down (framework not owning frame present)"); return; }
         if (!SymbolMap.Require(log, "NameplateService", RequiredSymbols)) return;   // #420: whole or nothing
+        if (!EngineLayout.Require(log, "NameplateService")) return;                 // #432: same, for offsets
 
         // ORDER: the two critical symbols first, so nothing else installs if either refuses.
         _origSetMode = (delegate* unmanaged<int, void>)hooks.Install(

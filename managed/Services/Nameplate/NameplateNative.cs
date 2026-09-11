@@ -18,10 +18,20 @@ public static unsafe class NameplateNative
     // Offsets that differ on Windows are `IsWindows() ? win : linux` (#420, decomp-diffed against the same
     // build); a plain const is identical on both.
     private static readonly bool Win = OperatingSystem.IsWindows();
+
+    /// <summary>Set once by the service so the one-shot layout probe has somewhere to complain.</summary>
+    private static ExtenderLog? _log;
+    private static bool _probed;
+
+    /// <summary>Set when a layout probe rejects a live instance: the offsets this file reads do not describe
+    /// this client. Every read below then answers "nothing" rather than a number off a moved field -- a probe
+    /// that only logs is not a stand-down.</summary>
+    private static bool _layoutRot;
+
+    /// <summary>Hand this file the log. From <c>NameplateService.Initialize</c>, before any hook fires.</summary>
+    public static void UseLog(ExtenderLog log) => _log = log;
     /// <summary>uint object id.</summary>
     private const int ObjId = 0x08;
-    /// <summary>Object type byte: 5 creature, 6 item, 9 placeable, 0xa door.</summary>
-    private const int ObjType = 0x0c;
     /// <summary>World position x/y/z (three floats).</summary>
     private const int ObjPosX = 0x38;
     /// <summary>CGuiInGamePopUpBubble* (nullable).</summary>
@@ -39,10 +49,6 @@ public static unsafe class NameplateNative
     private const int ObjOverrideMode = 0x124, ObjOverrideText = 0x128, ObjOverrideLen = 0x130;
 
     // ---- per-class "the feedback plate is currently shown for me" flag ----
-    /// <summary>CNWCCreature + 0x468, set at the top of its ShowFeedbackBubbleText (disasm @0x71a81e).</summary>
-    private static readonly int CreaturePlated = Win ? 0x448 : 0x468;
-    /// <summary>CNWCPlaceable + 0x218 (disasm @0x7ea8b8).</summary>
-    private static readonly int PlaceablePlated = Win ? 0x1f8 : 0x218;
     /// <summary>CNWCItem is multiply inherited: the flag is at CNWCItem+0x2cc (disasm @0x7ceaa2) and the
     /// CNWCObject base sits at CNWCItem+0x48 (the <c>lea 0x48(%rbx)</c> feeding SetPopUpBubbleText at
     /// 0x7cebec, matching the <c>_ZThn72_</c> thunk's <c>sub $0x48,%rdi</c>). So from a CNWCObject* the
@@ -99,8 +105,6 @@ public static unsafe class NameplateNative
     /// plates even with the option off.</summary>
     private const int InternalFeedbackWord = 0x180;
 
-    /// <summary>Virtual slot of <c>GetPortrait(unsigned char)</c> (MSVC orders the table differently).</summary>
-    private static readonly int GetPortraitVtblOff = Win ? 0x1d0 : 0x1d8;
     /// <summary>CNWCModule + 0xe8 = the live <c>Camera*</c> -- what <c>CClientExoApp::GetModuleCamera()</c>
     /// returns (disasm @0x63a930); read directly because MSVC inlined that accessor out of existence.</summary>
     private const int ModuleCameraOff = 0xe8;
@@ -147,7 +151,7 @@ public static unsafe class NameplateNative
     }
 
     public static uint IdOf(IntPtr obj) => obj == IntPtr.Zero ? 0u : *(uint*)(obj + ObjId);
-    public static byte TypeOf(IntPtr obj) => obj == IntPtr.Zero ? (byte)0 : *(byte*)(obj + ObjType);
+    public static byte TypeOf(IntPtr obj) => obj == IntPtr.Zero ? (byte)0 : *(byte*)(obj + EngineLayout.ObjType);
 
     /// <summary>Object type bytes we care about.</summary>
     public const byte TypeCreature = 5, TypeItem = 6, TypePlaceable = 9, TypeDoor = 0xa;
@@ -199,10 +203,22 @@ public static unsafe class NameplateNative
     public static bool Plated(IntPtr obj, byte type)
     {
         if (obj == IntPtr.Zero) return false;
+        if (!_probed && type == TypeCreature)
+        {
+            _probed = true;
+            // #432: the plate flag and the portrait slot are this file's two probe-able offsets, and a
+            // creature is the one instance that carries both.
+            if (!EngineLayout.Probe("CNWCCreature", obj, _log) | !EngineLayout.Probe("CNWCObject", obj, _log))
+            {
+                _layoutRot = true;
+                _log?.Always("nameplate: standing down as a unit -- engine layout probe failed on this build");
+            }
+        }
+        if (_layoutRot) return false;
         int off = type switch
         {
-            TypeCreature => CreaturePlated,
-            TypePlaceable => PlaceablePlated,
+            TypeCreature => EngineLayout.CreaturePlated,
+            TypePlaceable => EngineLayout.PlaceablePlated,
             TypeItem => ItemPlated,
             _ => 0,
         };
@@ -446,10 +462,10 @@ public static unsafe class NameplateNative
     /// <see cref="PortraitSizePlate"/>. "" when the object has no portrait. COLD.</summary>
     public static string Portrait(IntPtr obj)
     {
-        if (obj == IntPtr.Zero) return "";
+        if (obj == IntPtr.Zero || _layoutRot) return "";
         IntPtr vtbl = *(IntPtr*)obj;
         if (vtbl == IntPtr.Zero) return "";
-        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)*(IntPtr*)(vtbl + GetPortraitVtblOff);
+        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)*(IntPtr*)(vtbl + EngineLayout.GetPortraitSlot);
         if (getPortrait == null) return "";
         byte* buf = stackalloc byte[ResRefScratch];
         for (int i = 0; i < ResRefScratch; i++) buf[i] = 0;

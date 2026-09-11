@@ -62,6 +62,8 @@ public static class ServiceHost
         ExtenderLog.SelfCheck(log);   // the disabled log evaluates nothing, the enabled one reaches the file
         Settings.SelfCheck(log);   // #183: parse degrade, range rejection, and that /knobs lists only real keys
         KnobSurface.Register();
+        EngineLayout.SelfCheck(log);   // #432: the three resolution forms, the counter, and a probe that fires
+        EngineLayout.Register();
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
         foreach (IExtenderService service in all)
         {
