@@ -76,4 +76,34 @@ cp build/version.dll build/funchook.dll build/win/sowx_managed.dll "$OUT/"
 # The UI font travels with the DLL (#419): Windows ships no font with the gear/arrow/pin glyphs. Bitstream Vera licence.
 FONT=$(ls /usr/share/fonts/TTF/DejaVuSans.ttf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf 2>/dev/null | head -1)
 [ -n "$FONT" ] && cp "$FONT" "$OUT/" || echo "!! DejaVuSans.ttf not found; Windows falls back to Segoe UI Symbol / Arial" >&2
-echo ">> artifacts:"; ls -1 "$OUT"
+STAMP=$(grep -oE 'WindowsBuildStamp = 0x[0-9a-f]+' managed/Framework/SymbolMap.cs | grep -oE '0x[0-9a-f]+')
+cat > "$OUT/README.txt" <<EOF
+Sowx client extender for Windows -- $SOWX_VERSION, pinned to nwmain.exe build $STAMP
+
+INSTALL
+  1. Copy every file in this folder next to nwmain.exe:
+       <Steam>\\steamapps\\common\\Neverwinter Nights\\bin\\win32\\
+     (version.dll is the loader; funchook.dll, sowx_managed.dll and DejaVuSans.ttf ride beside it.)
+  2. Create sowx.cfg NEXT TO nwn.ini -- usually Documents\\Neverwinter Nights\\, but if the game uses an
+     instance folder (Neverwinter Nights.0) put it there, wherever nwn.ini actually is. One line:
+       logs=1
+     Do this BEFORE the first launch: without it the log is silent after boot.
+  3. Launch the game normally (Steam or nwmain.exe). No launch options needed.
+
+WHAT WORKING LOOKS LIKE
+  Documents\\Neverwinter Nights\\sowx.log (always the unsuffixed folder) contains
+    UiHostService: first frame presented -- hook is LIVE
+  and one "armed" / "hooks installed" line per feature (Chat, Nameplate, CombatText, Dialog).
+  A message box "Sowx: client build changed, extender standing down" means Beamdog patched the
+  client since build $STAMP; the game runs vanilla and the extender needs re-deriving.
+
+UNINSTALL
+  Delete version.dll from bin\\win32\\ (the other files are inert without it).
+
+REPORTING
+  Send back sowx.log (and funchook.log if you added hookdebug=1 to sowx.cfg), plus what you did
+  right before anything went wrong. An unsigned 9 MB DLL may trip Defender: restore it and add an
+  exclusion for the bin\\win32 folder.
+EOF
+python3 -c "import shutil; shutil.make_archive('$OUT', 'zip', '.', '$OUT')"
+echo ">> artifacts ($OUT/, sow-client-extender-win.zip):"; ls -1 "$OUT"

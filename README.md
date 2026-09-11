@@ -66,4 +66,8 @@ the log deliberately lands in `$HOME`, not `/tmp`.
 ## Status
 
 Framework verified end-to-end under NativeAOT (DI + discovery + funchook).
-Linux only for now; Windows/macOS loaders are the next port (see `CLAUDE.md`).
+Windows runs the feature tier (chat, hotkeys, nameplates, combat text, dialog):
+build it with `./build-win.sh`, which stages `sow-client-extender-win/` plus a
+zip with install notes for a tester. The renderer (Alloy) stays Linux-only, and
+the Windows build is pinned to one client build -- a patched client puts up one
+message box and runs vanilla (`docs/windows-symbols.md`). macOS is unported.

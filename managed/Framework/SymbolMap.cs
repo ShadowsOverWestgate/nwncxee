@@ -1256,12 +1256,12 @@ internal static unsafe class SymbolMap
     {
         foreach (string sym in symbols)
         {
-            if (Resolve(sym, null) != IntPtr.Zero) continue;
+            if (Resolve(sym, log) != IntPtr.Zero) continue;
             string why = !OperatingSystem.IsWindows() ? "not exported by this client build"
                 : !_win.TryGetValue(sym, out Win w) || (w.Name is null && w.Rva == 0) ? "no Windows anchor (by design)"
                 : w.Name is not null ? $"Windows export {w.Name} missing"
-                : "nwmain.exe build stamp mismatch (rot: re-derive, docs/windows-symbols.md)";
-            log.Info($"{feature}: standing down as a unit -- {sym}: {why}");
+                : $"nwmain.exe build 0x{_stamp:x8} != expected 0x{WindowsBuildStamp:x8} (rot: re-derive, docs/windows-symbols.md)";
+            log.Always($"{feature}: standing down as a unit -- {sym}: {why}");
             return false;
         }
         return true;
@@ -1276,13 +1276,49 @@ internal static unsafe class SymbolMap
         if (_buildOk is bool cached) return cached;
         byte* b = (byte*)Base;
         int lfanew = *(int*)(b + 0x3c);                 // DOS header e_lfanew
-        uint stamp = *(uint*)(b + lfanew + 4 + 4);      // PE sig(4) + COFF: TimeDateStamp at +4
-        bool ok = stamp == WindowsBuildStamp;
+        _stamp = *(uint*)(b + lfanew + 4 + 4);          // PE sig(4) + COFF: TimeDateStamp at +4
+        bool ok = _stamp == WindowsBuildStamp;
         if (!ok)
-            log?.Info($"symbol: nwmain.exe build 0x{stamp:x8} != expected 0x{WindowsBuildStamp:x8}; " +
+        {
+            log?.Info($"symbol: nwmain.exe build 0x{_stamp:x8} != expected 0x{WindowsBuildStamp:x8}; " +
                       "RVA hooks disabled -- re-derive (docs/windows-symbols.md)");
+            RotNotice();
+        }
         _buildOk = ok;
         return ok;
     }
+
+    /// <summary>The observed PE TimeDateStamp, so the unit-gate line can name the build even when the first
+    /// resolver ran without a log.</summary>
+    private static uint _stamp;
+
+    /// <summary>
+    /// #421: how a player finds out. Under rot every tier-B unit stands down, so there is no chatbox and no
+    /// engine chat path (AppendToMsgBuffer is itself an RVA) to put a line on; the one surface that survives
+    /// is user32. Once per session, on its own thread -- a modal parks the thread that raised it, and service
+    /// init must not wait for a player to click OK. The game continues vanilla either way.
+    /// </summary>
+    private static void RotNotice()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        // An escaping exception on a bare thread kills the process -- the one outcome the build lock exists
+        // to prevent. Nothing here is worth a crash.
+        new System.Threading.Thread(() =>
+        {
+            try
+            {
+                MessageBoxW(IntPtr.Zero,
+                    $"Sowx: client build changed, extender standing down.\n\nnwmain.exe build 0x{_stamp:x8}, " +
+                    $"extender expects 0x{WindowsBuildStamp:x8}. The game runs vanilla.",
+                    "Sowx", MB_ICONWARNING);
+            }
+            catch { }
+        }) { IsBackground = true, Name = "sowx-rot-notice" }.Start();
+    }
+
+    private const uint MB_ICONWARNING = 0x30;
+
+    [DllImport("user32", CharSet = CharSet.Unicode)]
+    private static extern int MessageBoxW(IntPtr owner, string text, string caption, uint type);
 
 }

@@ -28,6 +28,13 @@ public sealed class ExtenderLog
     public void Info(string message)
     {
         if (!Enabled) return;
+        Always(message);
+    }
+
+    /// <summary>A boot line that bypasses the <c>logs</c> gate: a feature standing down is the line a stock
+    /// install's bug report needs, and a stock install has the gate closed.</summary>
+    public void Always(string message)
+    {
         _queue.Enqueue($"{DateTime.Now:O} [sowx] {message}");
         if (_writer == null)
         {

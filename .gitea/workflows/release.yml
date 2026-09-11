@@ -1,11 +1,13 @@
 # A v* tag builds the Linux extender and attaches it (+ SHA256SUMS) to its
 # Gitea release. Tag-gated, never on PR (AGENTS.md CI law).
 #
-# Windows is NOT built here: NativeAOT cannot cross-compile (Microsoft Learn)
-# and there is no Windows runner (sow-platform gitea-runner.nix has none). Build
-# version.dll by hand with build.ps1 on a Windows box and attach it to the same
-# release. Record the client build stamp (SymbolMap.WindowsBuildStamp) in the
-# release body: the Windows artifact is pinned to one client build.
+# Windows is NOT built here: there is no Windows runner (sow-platform
+# gitea-runner.nix has none) and the cross-build needs clang-cl/lld-link plus a
+# Windows 10 SDK + MSVC lib tree that the nix shell does not carry. Hand-build per
+# release: ./build-win.sh on Linux stages sow-client-extender-win/ (version.dll +
+# funchook.dll + sowx_managed.dll + font + README) and zips it; attach the zip to
+# the same release. Record the client build stamp (SymbolMap.WindowsBuildStamp) in
+# the release body: the Windows artifact is pinned to one client build (#421).
 name: release
 
 on:

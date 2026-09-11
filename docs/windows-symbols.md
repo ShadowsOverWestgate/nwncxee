@@ -206,12 +206,35 @@ binding NUI (`HotkeyMenuService.OnHotkeysButton`), so the button is never dead.
 | `CClientExoApp::OnLostFocus` | same | stuck-key clear on focus loss lost; self-heals on next full press |
 | `g_pNuklear` (data) | client global, not exported; data symbols aren't string-anchorable | NUI-typing gate lost; a hotkey pressed while typing in a NUI field may fire |
 
+## Reading the tester's log (#421)
+
+No debugger on the tester's side: `sowx.log` (in `Documents\Neverwinter Nights\`, beside `nwn.ini`)
+has to answer "which symbol is wrong" on its own. `sowx.cfg` goes beside `nwn.ini` (the engine may use a
+`Neverwinter Nights.0` instance folder; `sowx.log` always lands in the unsuffixed one). `logs=1` must be set **before launch**
+-- the gate closes at `settings:` and everything after is silent except the stand-down lines.
+
+| Line | Meaning |
+|---|---|
+| `host: N service(s) discovered (Alloy stood down: Windows, #48)` | the DLL loaded and Windows was detected |
+| `<Feature>: standing down as a unit -- <symbol>: nwmain.exe build 0x… != expected 0x68e408bc` | **rot**: Beamdog shipped a new client; every RVA row needs re-deriving. Written even under `logs=0`, once per feature; the player also gets a message box |
+| `<Feature>: standing down as a unit -- <symbol>: no Windows anchor (by design)` | a Linux-only feature; expected, not a bug |
+| `<Feature>: standing down as a unit -- <symbol>: Windows export ?…@@… missing` | the export table changed: a "By name" row is stale |
+| `ChatService: inbound tap installed (AppendToMsgBuffer, Win64 CResRef* ABI)`, `NameplateService: armed`, `CombatTextService: armed`, `DialogService: hooks installed` | each tier-B unit passed its gate |
+| `UiHostService: first frame presented -- hook is LIVE` | the present hook fires; the port is live |
+| a crash with no line after `armed` | a hook that installs clean and faults on first call: an **offset**, not a symbol. Set `hookdebug=1` (funchook's trace lands in `funchook.log`) and look up the feature's row in the offset tables above |
+| in-game `/nameplate probe` | one line per plate with every term of the anchor conversion (viewport source, offsets read) -- the offset probe for the plate/bubble rows |
+| in-game `/consent probe` | opens the consent panel on the game's own allocator and logs the answer, granting nothing -- the probe for the `operator new` RVA |
+
 ## Regenerating after a client patch
 
 Both binaries are analyzed in the one Ghidra project `~/ghidra/nwn-linux.rep`
-(programs `nwmain-linux`, `nwmain.exe`). The derivation scripts (Java GhidraScripts,
-run via `analyzeHeadless … -process nwmain.exe -postScript`) live in this repo's
-history under the scratchpad; the method is:
+(programs `nwmain-linux`, `nwmain.exe`). The tables above ARE the regen path: each RVA
+row's "How anchored" column is the recipe for that symbol, and each offset row names
+the function it was read from. There is no automation (decision, #3: Beamdog patches
+about once every three years). The Ghidra scripts used (`~/ghidra_scripts`: TracyFn
+= tracy string -> srcloc struct -> function, Qwords = MSVC vtable dump, GrepDecomp =
+regex over a decompiled name range) run via `analyzeHeadless … -process nwmain.exe
+-postScript`; the method is:
 
 1. Confirm the two binaries are the same build (`build.txt`), update the build lock.
 2. **String anchors** — a target referencing a unique string maps to the lone
@@ -222,5 +245,8 @@ history under the scratchpad; the method is:
    enum/major they pass (e.g. the chat handlers' `NotifyServerAboutGuiEvent(…,1/2,…)`).
 5. **Decompile-diff** — confirm each candidate against the named Linux original.
 
+6. Update `WindowsBuildStamp`, then the boot log under Proton (`./build-win.sh &&
+   ./run-proton.sh`) must show every unit `armed` and none standing down.
+
 Names resolve directly on the Windows side after Ghidra applies the ~16k exports;
-only the ~12 client-class targets need the steps above.
+only the 50 RVA rows above need the steps.
