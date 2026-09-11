@@ -62,20 +62,36 @@ public sealed unsafe class QuickbarService : IExtenderService
         _log = log;
         QuickbarConfig.SelfCheck(log);
         QuickbarSettings.SelfCheck(log);
-        CommandRegistry.Global.Register("/settings", "toggle the quickbar settings panel",
-            _ => { ToggleSettings(); return null; });
-        CommandRegistry.Global.Register("/compass", "toggle the compass", _ => { ToggleCompass(); return null; });
-
-        IntPtr tramp = hooks.Install(
-            SymbolMap.QuickbarReposition,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnReposition);
-        log.Info(tramp != IntPtr.Zero
-            ? "QuickbarService: Reposition hook installed"
-            : "QuickbarService: Reposition hook not installed (symbol unresolved)");
-
+        // Stand down as a UNIT, #48's rule: every knob here ends in one of these three symbols, so a build
+        // that resolves none of them would offer a settings panel whose every control silently does nothing.
+        // Not OS-gated -- gated on the symbols, so the Windows anchors landing is all it takes to switch on.
         _setPosScreen = (delegate* unmanaged<IntPtr, int, int, void>)Native.Sym(SymbolMap.SetPositionScreen);
         _hideCompass = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.HideCompass);
         _showCompass = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ShowCompass);
+        IntPtr tramp = hooks.Install(
+            SymbolMap.QuickbarReposition,
+            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnReposition);
+        if (tramp == IntPtr.Zero || _setPosScreen == null)
+        {
+            string missing = (tramp == IntPtr.Zero ? "CPanelQuickBar::Reposition " : "")
+                           + (_setPosScreen == null ? "CGuiPanel::SetPositionScreen " : "");
+            log.Always($"QuickbarService: standing down as a unit -- no anchor for {missing}" +
+                       "(docs/windows-symbols.md); /settings and /compass answer instead of acting");
+            // Registered even while stood down, and deliberately: an UNREGISTERED slash command is sent
+            // verbatim as chat (CommandRegistry's "unknown slash sent verbatim", which is what lets a
+            // server own its own commands) -- so dropping these would SPEAK "/settings" to everyone in
+            // earshot. A command that explains itself is not a control that does nothing.
+            CommandRegistry.Global.Register("/settings", "quickbar settings (unavailable on this client)",
+                _ => $"The quickbar is unavailable on this client: no anchor for {missing.Trim()}.");
+            CommandRegistry.Global.Register("/compass", "toggle the compass (unavailable on this client)",
+                _ => $"The compass toggle is unavailable on this client: no anchor for {missing.Trim()}.");
+            return;
+        }
+        log.Info("QuickbarService: Reposition hook installed");
+
+        CommandRegistry.Global.Register("/settings", "toggle the quickbar settings panel",
+            _ => { ToggleSettings(); return null; });
+        CommandRegistry.Global.Register("/compass", "toggle the compass", _ => { ToggleCompass(); return null; });
 
         // Register a framework Window so the input layer routes mouse events to the settings panel (#64). The
         // quickbar draws through ChatService's frame list (no DrawContent here); it only needs input + a hit-test

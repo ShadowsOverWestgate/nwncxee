@@ -6,6 +6,9 @@ set -e
 cd "$(dirname "$0")"
 B="$PWD/sow-client-extender"
 
+# Same reason as run-proton.sh: this runs the STAGED artifacts, so without a build it happily
+# smoke-tests the previous edit. ~20s when nothing changed; SOWX_NO_BUILD=1 to run what is staged.
+[ -n "$SOWX_NO_BUILD" ] || ./build.sh
 [ -f "$B/libsowx.so" ] || { echo "run ./build.sh first"; exit 1; }
 # ExtenderLog writes to $HOME/sowx.log, which is where a real SESSION's log lives too -- a headless run
 # here would truncate the log the last game session left behind, which is the only evidence a live-verified

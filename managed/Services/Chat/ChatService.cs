@@ -633,6 +633,27 @@ public sealed unsafe class ChatService : IExtenderService
     /// the box in-game (or the attribution overlay on the main menu). Hot + zero-alloc in the steady state: the
     /// bootstrap, session reset, and scale re-bake are all edge-gated (rare). Draws through ChatRenderer, which
     /// keeps chat's live-verified cold->hot frame hand-off internally.</summary>
+    /// <summary>Pull every chat window back inside the live viewport. The rect is restored from
+    /// <c>sowx-chat.cfg</c> in absolute pixels, so a client that comes up smaller than the one that wrote it --
+    /// windowed after fullscreen, a different monitor, a Proton prefix -- lands the box past the edge, where it
+    /// draws every frame and nobody can see or drag it back. Same <see cref="Window.ClampAxis"/> Dialog uses.
+    /// Viewport is whatever the last draw measured, so this is a no-op on the very first frame.</summary>
+    private static void KeepOnScreen()
+    {
+        float vpW = TextRig.ViewportW, vpH = TextRig.ViewportH;
+        if (_layout == null || vpW <= 0f || vpH <= 0f) return;
+        ChatWindow[] wins = _layout.Windows;
+        for (int i = 0; i < wins.Length; i++)
+        {
+            ChatWindow w = wins[i];
+            float x = Window.ClampAxis(w.X, w.W, vpW), y = Window.ClampAxis(w.Y, w.H, vpH);
+            if (x == w.X && y == w.Y) continue;
+            _log?.Info($"[chat] window {i} was off-screen at ({w.X},{w.Y}) in {vpW}x{vpH} -- pulled to ({x},{y})");
+            w.X = x; w.Y = y;
+            DirtyAll();
+        }
+    }
+
     private static void OnFrame()
     {
         if (!_booted)
@@ -670,6 +691,7 @@ public sealed unsafe class ChatService : IExtenderService
                 Rebuild();   // re-lay the chrome at the new scale
             }
             PollGameClock();
+            KeepOnScreen();
             Quickbar.QuickbarService.Tick(Metrics.GameUiScale);
             ChatRenderer.Draw();
             // Dialog draws itself now: it registers its own framework Window and UiHostService's z-order roll-call

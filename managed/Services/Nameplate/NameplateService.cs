@@ -195,27 +195,36 @@ public sealed unsafe class NameplateService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnSetPopUpBubbleText(IntPtr self, IntPtr exo, int forceShow, float perChar, float fixedSec)
     {
-        if (_origBubbleText != null) _origBubbleText(self, exo, forceShow, perChar, fixedSec);
-        if (!_armed || self == IntPtr.Zero) return;
-
         NameplateConfig cfg = _cfg;   // one read: LoadConfig replaces the reference on the render thread
-        if (cfg.On && cfg.Mode != 0)
+        bool bank = _armed && self != IntPtr.Zero && cfg.On && cfg.Mode != 0;
+        // BEFORE the forward: the Win64 callee destroys its by-value CExoString and the caller sees it zeroed
+        // on return (docs/windows-symbols.md), so a read afterwards yields "" and no line is ever banked --
+        // which is bubbles working on Linux, where the CALLER owns the copy, and silently dead on Windows.
+        string text = bank && _inPlate == 0 ? NameplateNative.ReadExo(exo) : "";
+
+        if (_origBubbleText != null) _origBubbleText(self, exo, forceShow, perChar, fixedSec);
+        if (!bank) { if (_armed && self != IntPtr.Zero) NameplateNative.ClearLiveTextLatch(self); return; }
+
+        byte type = NameplateNative.TypeOf(self);
+        if (_inPlate > 0)
+            _table.Note(self, type);
+        else if (text.Length != 0)
+            _table.NoteBubble(self, type, text, NameplateNative.Decay(text.Length, perChar, fixedSec),
+                              _channel, Environment.TickCount64);
+        // One line, first chat bubble only: the decision tree for "no bubbles" is exactly len and decay, and
+        // its ABSENCE says the hook never ran for chat at all. Cold (one call per spoken line) and silent
+        // without logs=1.
+        if (_inPlate == 0 && !_bubbleSeen)
         {
-            byte type = NameplateNative.TypeOf(self);
-            if (_inPlate > 0)
-            {
-                _table.Note(self, type);
-            }
-            else
-            {
-                string text = NameplateNative.ReadExo(exo);
-                if (text.Length != 0)
-                    _table.NoteBubble(self, type, text, NameplateNative.Decay(text.Length, perChar, fixedSec),
-                                      _channel, Environment.TickCount64);
-            }
+            _bubbleSeen = true;
+            _log?.Info($"[nameplate] first bubble: type={type} len={text.Length} " +
+                       $"decay={NameplateNative.Decay(text.Length, perChar, fixedSec)} ch={_channel} " +
+                       $"perChar={perChar} fixed={fixedSec}");
         }
         NameplateNative.ClearLiveTextLatch(self);
     }
+
+    private static bool _bubbleSeen;
 
     /// <summary>Hook 4 (optional). Latch the channel byte for the <c>SetPopUpBubbleText</c> that runs on the
     /// same stack, and drop it again on return so a quick-chat line cannot inherit it.</summary>

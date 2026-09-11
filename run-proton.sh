@@ -9,6 +9,11 @@ GAME="${NWN_WIN:-~/gry/steam/Neverwinter Nights/bin/win32}"
 PROTON="${PROTON:-$HOME/.steam/root/steamapps/common/Proton - Experimental/proton}"
 [ -f "$GAME/nwmain.exe" ] || { echo "!! no nwmain.exe under $GAME (set NWN_WIN)" >&2; exit 1; }
 [ -f "$PROTON" ] || { echo "!! no proton at $PROTON (set PROTON)" >&2; exit 1; }
+# Build first, always. This script COPIES the DLLs, so without it a run silently tests whatever
+# build-win.sh last produced -- and since ./build.sh does not touch the Windows leg, "edit, build, run
+# proton" tested a stale DLL and cost a whole diagnosis. ~20s when nothing changed; SOWX_NO_BUILD=1 to
+# run exactly what is staged (bisecting, or a zip someone sent you).
+[ -n "$SOWX_NO_BUILD" ] || ./build-win.sh
 cp sow-client-extender-win/*.dll sow-client-extender-win/*.ttf "$GAME/"
 PFX="$PWD/build/proton-pfx"; mkdir -p "$PFX"
 # The engine picks "Neverwinter Nights.0" (its .N instance suffix) under Proton, so seed the cfg in both.
