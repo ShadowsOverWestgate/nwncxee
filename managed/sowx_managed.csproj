@@ -42,6 +42,7 @@
        ILCompiler targets would otherwise reset to `link`). WinLib is a lowercase symlink
        mirror of the Win10 SDK um/ucrt + MSVC x64 libs (lld-link is case-sensitive here). -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
     <DisableUnsupportedError>true</DisableUnsupportedError>
     <IlcUseEnvironmentalTools>true</IlcUseEnvironmentalTools>
     <EnableSourceLink>false</EnableSourceLink>

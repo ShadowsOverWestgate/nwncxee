@@ -22,6 +22,7 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        if (!SymbolMap.Require(log, "HotkeyHandshakeService", HotkeyProtocol.RequiredSymbols)) return;
         _advertise = (delegate* unmanaged<IntPtr, IntPtr, int, void>)Native.Sym(SymbolMap.SendDeviceAdvertiseProperty);
         _loginOrig = (delegate* unmanaged<IntPtr, byte, uint>)hooks.Install(
             SymbolMap.HandleServerToPlayerLogin, (IntPtr)(delegate* unmanaged<IntPtr, byte, uint>)&OnLogin);

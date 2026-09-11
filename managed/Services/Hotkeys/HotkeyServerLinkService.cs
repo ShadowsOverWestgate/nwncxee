@@ -23,6 +23,7 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        if (!SymbolMap.Require(log, "HotkeyServerLinkService", HotkeyProtocol.RequiredSymbols)) return;
         HotkeyConsent.Init(_log!);
         SelfCheck();   // the fail-closed consent policy is security-critical; verify it at startup
         CommandRegistry.Global.Register("/consent", "spawn the native consent modal with fake keys (allocator probe)",

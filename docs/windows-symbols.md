@@ -58,6 +58,27 @@ deriving anything — required, or the RVAs point into a different build.
 | `CGuiInGameChatPrompt::HandleLoseKeyboardFocusLMouseDownGuiEvent` | `0x87b4b0` | Notify event enum **2** (matches Linux) |
 | `TurnOffKeyboardModal()` | `0x6e5d80` | decompile of `CGuiEdit::SetFocus` (exported): the call right after `CExoInput::KeyboardModeOn`; body reads `*(*g_pAppManager+8)`, resets modal keys, clears the WASD drive latch + sends `AbortDriveControl` (#34) |
 | `operator new(size_t)` (consent modal alloc) | `0xc10324` | `_malloc_base` + `_callnewh` loop (VS2017/2019 release); the exact allocator the ExitButton `CPanelOkCancel` spawn calls |
+| `CGuiInGame::AppendToMsgBuffer` | `0x6f68d0` | unique strings `"[CHAT WINDOW TEXT] [%s] %s\n"` + `"AppendToMsgBuffer"` (guiingame.cpp:0x2a3). **Win64 ABI: 6th arg is `CResRef*`** (17-byte aggregate -> pointer to a caller copy) |
+| `CGuiInGameChatWindow::AppendToChatBuffer` | `0x879080` | the 6-arg callee AppendToMsgBuffer calls twice (once per window); shares `"BUT_CHAT_REPLY"` with SetFilter |
+| `CGuiInGameChatWindow::SetFilter` | `0x87a0e0` | the other `"BUT_CHAT_REPLY"` user; 3 args, writes the filter mask `this+0xae0` first (Linux `+0xc58`) |
+| `CGuiInGameChatWindow::Show` | `0x87a940` | caller of `CGuiPanel::Activate` (exported) with the `if(+0xaf0) return; Activate; +0xaf0=1` shape (Linux flag `+0xc68`); called from ShowMsgWindow only |
+| `CGuiInGameChatPrompt::Show` | `0x87cc00` | same shape on flag `+0x200` (Linux `+0x230`); its lone caller is ShowChatPrompt |
+| `CGuiInGameChatPrompt::CGuiInGameChatPrompt()` | `0x87abb0` | the `+0x200` Activate shape that RETURNS `this` and is stored to `gui+0x18` by its caller. **MSVC inlined Show here**, so Windows hooks the ctor and Deactivates after it |
+| `CGuiInGameChatPrompt::SetFocus` | `0x87cb30` | callee of PrepChatPromptForTell (below) and of the mapped SetFocusChatPrompt; calls `CGuiEdit::SetFocus` (exported) then NotifyServerAboutGuiEvent(…,1,…,0x7f000000). Embedded edit at `+0xf8` (Linux `+0x100`) |
+| `CGuiInGame::ShowChatPrompt` | `0x6fb480` | the one caller of ChatPrompt::Show, forwarding `*(this+0x18)` |
+| `CGuiInGame::PrepChatPromptForTellToPlayer` | `0x6f9ec0` | unique string `"/tp \"%s\" "`; reads `player+0x10` (name) |
+| `CGuiInGame::NotifyServerAboutGuiEvent` | `0x6f9bd0` | 5-arg callee of ChatPrompt::SetFocus; GetPlayerCreature + GetNWCMessage (mapped `0x6abf90`) guards |
+| `CClientExoApp::GetPlayerByPlayerName` | `0x6ac120` | ParseChatString (`"tellplayer"` string, `0x87b590`) calls it once between the two ByCreatureName calls, matching the Linux order; body copies the string and walks `intern+0x38/+0x40` comparing `player+0x10/+0x18` |
+| `CClientExoApp::GetPlayerByCreatureName` | `0x6ac080` | ParseChatString's first and third lookup; inner walk compares `player+0x40/+0x48` |
+| `CClientExoApp::GetModule` | `0x6abea0` | forwarder to `*(intern+0x30)`; ConnectToServer (caller of exported `CGuiMan::EscapeAllModalPanels`) reads `GetModule()+0xf8` through it, and the tracy-anchored `HandleServerToPlayerModuleUpdate_Time` (`0x7a58e0`) writes `+0x160..+0x16c` on its result |
+| `CNWCMessage::SendPlayerToServerChat_Talk` | `0x7ba7e0` | caller of SendPlayerToServerMessage with major 9 minor 1 |
+| `…Chat_Shout` | `0x7ba700` | major 9 minor 2 |
+| `…Chat_Whisper` | `0x7baab0` | major 9 minor 3 |
+| `…Chat_Tell(uint, CExoString)` | `0x7ba8c0` | major 9 minor 4 after `WriteBOOL(0)` + `WriteDWORD(id)` |
+| `…Chat_TellName(CExoString const&, CExoString const&)` | `0x7ba9b0` | major 9 minor 4 after `WriteBOOL(1)`, two strings |
+| `…Chat_Party` | `0x7ba620` | major 9 minor 6 |
+| `…Chat_DungeonMaster` | `0x7ba540` | major 9 minor 0xe |
+| `CAurTexture::vftable` / `CAurTextureBasic::vftable` (data) | `0xd90c70` / `0xd90d90` | RTTI type descriptors `.?AVCAurTexture@@` / `.?AVCAurTextureBasic@@` -> complete-object locator -> vftable (Ghidra names them). MSVC's symbol is the object's first word: no Itanium `+0x10` skew (`AurTex.Attach`) |
 
 **By name — client-native features (verified in the `0x68e408bc` export table):**
 
@@ -68,6 +89,27 @@ deriving anything — required, or the RVAs point into a different build.
 | `g_pGuiMan` (data) | `?g_pGuiMan@@3PEAVCGuiMan@@EA` |
 | `CAurora::GetGUIScale()` → float (GUI-scale multiplier) | `?GetGUIScale@CAurora@@SAMXZ` (export ord. 8543) |
 | `SDL_GetKeyName` | `SDL_GetKeyName` |
+| `CGuiPanel::Deactivate(int)` | `?Deactivate@CGuiPanel@@QEAAXH@Z` |
+| `RenderInterface::ResetRenderStates()` / `BindBuffer(uint,uint)` | `?ResetRenderStates@RenderInterface@@SAXXZ` / `?BindBuffer@RenderInterface@@SAXII@Z` |
+| `stbtt_InitFont` … `stbtt_MakeCodepointBitmap` (6) | same C names |
+| `SDL_GL_GetProcAddress`, `SDL_GetMouseState`, `SDL_StartTextInput`, `SDL_Get/SetClipboardText`, `SDL_free` | same C names |
+
+## Chat raw offsets (#419) -- decomp-diffed against `0x68e408bc`
+
+| Struct / field | Linux | Windows | Where seen |
+|---|---|---|---|
+| `CClientExoAppInternal` player list ptr / count | `+0x38` / `+0x40` | same | `Internal::GetPlayerBy*` walks (`0x6d8a20`, `0x6d8910`, `0x6d89c0`, `0x6d89f0`) |
+| `CClientExoAppInternal` local creature id | `+0x48` | same | `Internal::GetPlayerCreature` `0x6d8ad0` |
+| `CClientExoAppInternal` module | `+0x30` | same | `Internal::GetModule` `0x6d8300` via `CClientExoApp::GetModule` |
+| `CNWCPlayer` id / name / name len / creature id | `+0x8` / `+0x10` / `+0x18` / `+0x34` | same | `GetPlayerByPlayerID` `0x6d89f0`, `GetPlayerByGameObjectID` `0x6d89c0`, name walk `0x6d8a20` |
+| `CNWCModule` hour / minutes-per-hour | `+0x16c` / `+0x15c` | same (`+0x15c` by adjacent layout, `+0x160..+0x170` identical) | `ModuleUpdate_Time` `0x7a58e0` |
+| `CGuiInGameChatWindow` filter / shown | `+0xc58` / `+0xc68` | **`+0xae0` / `+0xaf0`** | SetFilter / Show above. Nothing reads them on Windows today |
+| `CGuiInGameChatPrompt` shown / edit | `+0x230` / `+0x100` | **`+0x200` / `+0xf8`** | Show / SetFocus above |
+
+**Win64 by-value conventions that differ from SysV** (every hook or call on this page was checked against them):
+a non-trivial class (`CExoString`) arrives as a pointer to a copy **the callee destroys** -- a skipped body must run the
+dtor or it leaks (`Native.DestroyExoString`); a call site that passed a `NewExoString` sees it zeroed on return, and the
+later `FreeExoString` is a null-safe no-op. A 17-byte `CResRef` arrives as a pointer to a copy (SysV: 16 bytes in memory).
 
 ## Consent modal — PORTED to Windows (decomp-verified, build `0x68e408bc`)
 

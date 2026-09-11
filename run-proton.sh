@@ -9,7 +9,7 @@ GAME="${NWN_WIN:-~/gry/steam/Neverwinter Nights/bin/win32}"
 PROTON="${PROTON:-$HOME/.steam/root/steamapps/common/Proton - Experimental/proton}"
 [ -f "$GAME/nwmain.exe" ] || { echo "!! no nwmain.exe under $GAME (set NWN_WIN)" >&2; exit 1; }
 [ -f "$PROTON" ] || { echo "!! no proton at $PROTON (set PROTON)" >&2; exit 1; }
-cp sow-client-extender-win/*.dll "$GAME/"
+cp sow-client-extender-win/*.dll sow-client-extender-win/*.ttf "$GAME/"
 PFX="$PWD/build/proton-pfx"; mkdir -p "$PFX"
 # The engine picks "Neverwinter Nights.0" (its .N instance suffix) under Proton, so seed the cfg in both.
 DOCS="$PFX/pfx/drive_c/users/steamuser/Documents/Neverwinter Nights"

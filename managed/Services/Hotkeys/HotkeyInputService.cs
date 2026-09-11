@@ -79,6 +79,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        if (!SymbolMap.Require(log, "HotkeyInputService", HotkeyProtocol.RequiredSymbols)) return;
         // No HotkeyStore.Load here: our loader runs pre-main, so the engine user dir (where the cfg lives)
         // isn't resolvable yet. The store lazy-loads on the first login-path call. SelfCheck is in-memory.
         HotkeyStore.SelfCheck(_log!);   // fail-closed default is security-critical; verify at startup

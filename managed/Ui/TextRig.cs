@@ -28,6 +28,11 @@ public static unsafe class TextRig
     /// ponytail: fixed list; a fontconfig query is the ceiling if a distro ships none of these.</summary>
     private static readonly string[] FontCandidates =
     {
+        // The copy shipped beside the extender wins (#419): Windows fonts lack the gear/arrow/pin glyphs, and
+        // the Linux paths below resolve through Wine's Z: drive under Proton, masking a missing Windows font.
+        Path.Combine(AppContext.BaseDirectory, "DejaVuSans.ttf"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "seguisym.ttf"),   // has the symbols
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "arial.ttf"),
         "/usr/share/fonts/TTF/DejaVuSans.ttf",                         // Arch
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",            // Debian/Ubuntu + Steam runtime
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",                     // Fedora

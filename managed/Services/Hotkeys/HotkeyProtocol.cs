@@ -13,6 +13,22 @@ namespace Sowx.Services.Hotkeys;
 /// </remarks>
 internal static class HotkeyProtocol
 {
+    /// <summary>The hotkey unit (#419): every symbol the four Hotkey* services cannot run without. Each service
+    /// checks it first, so one unresolved member stands the whole feature down. Optional members are NOT here:
+    /// OnGainFocus/OnLostFocus (stuck-key clear), g_pNuklear (NUI typing gate), the chat-prompt handlers
+    /// (lockchat-only typing observer).</summary>
+    public static readonly string[] RequiredSymbols =
+    {
+        Sowx.Framework.SymbolMap.HandleServerToPlayerMessage, Sowx.Framework.SymbolMap.HandleServerToPlayerLogin,
+        Sowx.Framework.SymbolMap.SendPlayerToServerMessage, Sowx.Framework.SymbolMap.SendDeviceAdvertiseProperty,
+        Sowx.Framework.SymbolMap.GetNWCMessage, Sowx.Framework.SymbolMap.AppManager,
+        Sowx.Framework.SymbolMap.OkCancelCtor, Sowx.Framework.SymbolMap.OkCancelActivate,
+        Sowx.Framework.SymbolMap.GuiMan, Sowx.Framework.SymbolMap.OperatorNew,
+        Sowx.Framework.SymbolMap.HandleWMKeyDown, Sowx.Framework.SymbolMap.WinMessageHandler,
+        Sowx.Framework.SymbolMap.ExoInput, Sowx.Framework.SymbolMap.GetKeyboardMode,
+        Sowx.Framework.SymbolMap.SdlGetModState, Sowx.Framework.SymbolMap.SdlGetKeyName,
+    };
+
     public const byte KeyPressMajor = 0x36, KeyPressMinor = 0x40;
     public const byte OpenUiMajor   = 0x36, OpenUiMinor   = 0x41;
     public const byte ArmSetMajor   = 0x36, ArmSetMinor   = 0x42;

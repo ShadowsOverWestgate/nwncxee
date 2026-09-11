@@ -73,4 +73,7 @@ SDK_LIB="$WABS/lib" ./build-win-proxy.sh >/dev/null
 OUT=sow-client-extender-win
 rm -rf "$OUT" && mkdir -p "$OUT"
 cp build/version.dll build/funchook.dll build/win/sowx_managed.dll "$OUT/"
+# The UI font travels with the DLL (#419): Windows ships no font with the gear/arrow/pin glyphs. Bitstream Vera licence.
+FONT=$(ls /usr/share/fonts/TTF/DejaVuSans.ttf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf 2>/dev/null | head -1)
+[ -n "$FONT" ] && cp "$FONT" "$OUT/" || echo "!! DejaVuSans.ttf not found; Windows falls back to Segoe UI Symbol / Arial" >&2
 echo ">> artifacts:"; ls -1 "$OUT"

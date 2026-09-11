@@ -53,7 +53,9 @@ public static unsafe class AurTex
             return;
         }
         // Itanium ABI: the vtable SYMBOL points at the RTTI pair; an object's first word is symbol + 0x10.
-        _vtbl = v + 0x10; _vtblBasic = b + 0x10;
+        // MSVC's vftable symbol is the first word itself (#419).
+        int skew = OperatingSystem.IsWindows() ? 0 : 0x10;
+        _vtbl = v + skew; _vtblBasic = b + skew;
         Ready = true;
     }
 

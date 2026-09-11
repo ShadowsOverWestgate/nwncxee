@@ -46,6 +46,11 @@ internal static unsafe class SymbolMap
     //      keyboard-mode gate (cross-platform) reads them, and both are name-exported on Windows. ----
     /// <summary>CGuiInGame::ShowChatPrompt() -- a chat opener we skip to suppress vanilla focus.</summary>
     public const string ShowChatPrompt = "_ZN10CGuiInGame14ShowChatPromptEv";
+    /// <summary>CGuiInGameChatPrompt::CGuiInGameChatPrompt() -- hooked on WINDOWS ONLY (#419): MSVC inlined Show into
+    /// it, so the prompt is activated at birth there; Linux's ctor calls Show, which the skip already covers.</summary>
+    public const string ChatPromptCtor = "_ZN20CGuiInGameChatPromptC1Ev";
+    /// <summary>CGuiPanel::Deactivate(int) -- what vanilla Hide pairs with Activate; undoes the ctor-inlined Show.</summary>
+    public const string GuiPanelDeactivate = "_ZN9CGuiPanel10DeactivateEi";
     /// <summary>CGuiInGame::PrepChatPromptForTellToPlayer(CNWCPlayer*) -- (this, player) chat opener; skipped.</summary>
     public const string PrepChatPromptForTell = "_ZN10CGuiInGame29PrepChatPromptForTellToPlayerEP10CNWCPlayer";
     /// <summary>CExoInput* global; deref for the instance to drive KeyboardModeOn/Off.</summary>
@@ -1131,6 +1136,55 @@ internal static unsafe class SymbolMap
         [KeyboardModeOn]  = Nm("?KeyboardModeOn@CExoInput@@QEAAXXZ"),
         [KeyboardModeOff] = Nm("?KeyboardModeOff@CExoInput@@QEAAXXZ"),
         [GuiManReleaseKeyboard] = Nm("?ReleaseKeyboard@CGuiMan@@QEAAXPEAVCGuiObject@@@Z"),
+
+        // --- the Sowx window rig (#419): glyph bake, GL loader, engine state hand-back, SDL text/clipboard.
+        //     All extern "C" or shared-engine statics, name-exported. Portraits stay Linux-only: the CAurTexture
+        //     vtables AurTex keys on resolve by RVA below. ---
+        [StbttInitFont]              = Nm("stbtt_InitFont"),
+        [StbttScaleForPixelHeight]   = Nm("stbtt_ScaleForPixelHeight"),
+        [StbttGetFontVMetrics]       = Nm("stbtt_GetFontVMetrics"),
+        [StbttGetCodepointHMetrics]  = Nm("stbtt_GetCodepointHMetrics"),
+        [StbttGetCodepointBitmapBox] = Nm("stbtt_GetCodepointBitmapBox"),
+        [StbttMakeCodepointBitmap]   = Nm("stbtt_MakeCodepointBitmap"),
+        [SdlGlGetProcAddress]        = Nm("SDL_GL_GetProcAddress"),
+        [SdlGetMouseState]           = Nm("SDL_GetMouseState"),
+        [SdlStartTextInput]          = Nm("SDL_StartTextInput"),
+        [SdlGetClipboardText]        = Nm("SDL_GetClipboardText"),
+        [SdlSetClipboardText]        = Nm("SDL_SetClipboardText"),
+        [SdlFree]                    = Nm("SDL_free"),
+        [RiResetRenderStates]        = Nm("?ResetRenderStates@RenderInterface@@SAXXZ"),
+        [RiBindBuffer]               = Nm("?BindBuffer@RenderInterface@@SAXII@Z"),
+        [GuiPanelDeactivate]         = Nm("?Deactivate@CGuiPanel@@QEAAXH@Z"),
+        // Portraits: the texture guard keys on the two vftables. Not exported; RVAs from the RTTI type descriptors
+        // (`.?AVCAurTexture@@` / `.?AVCAurTextureBasic@@` -> complete-object locator -> vftable). MSVC's symbol
+        // IS the object's first word (no Itanium +0x10 RTTI skew) -- AurTex.Attach knows.
+        [AurTextureGet]              = Nm("?AurTextureGet@@YAPEAVCAurTexture@@PEBDPEAV1@0PEAHH_N@Z"),
+        [AurTextureGetTID]           = Nm("?AurTextureGetTID@@YAIPEAVCAurTexture@@@Z"),
+        [AurTextureVtbl]             = At(0xd90c70),
+        [AurTextureBasicVtbl]        = At(0xd90d90),
+
+        // --- chat (#419): client GUI + CNWCMessage senders, RVA, build 0x68e408bc. Anchors in docs/windows-symbols.md.
+        //     Win64 ABI notes: every by-value CExoString arrives as a pointer the CALLEE destroys; CResRef too. ---
+        [AppendToMsgBuffer]      = At(0x6f68d0),
+        [AppendToChatBuffer]     = At(0x879080),
+        [ChatWindowSetFilter]    = At(0x87a0e0),
+        [ChatWindowShow]         = At(0x87a940),   // shown flag +0xaf0 (Linux +0xc68)
+        [ChatPromptShow]         = At(0x87cc00),   // shown flag +0x200 (Linux +0x230)
+        [ChatPromptSetFocus]     = At(0x87cb30),
+        [ChatPromptCtor]         = At(0x87abb0),
+        [ShowChatPrompt]         = At(0x6fb480),
+        [PrepChatPromptForTell]  = At(0x6f9ec0),
+        [NotifyServerGuiEvent]   = At(0x6f9bd0),
+        [GetPlayerByPlayerName]  = At(0x6ac120),
+        [GetPlayerByCreatureName]= At(0x6ac080),
+        [GetModule]              = At(0x6abea0),
+        [SendChatTalk]           = At(0x7ba7e0),   // major 9 minor 1
+        [SendChatShout]          = At(0x7ba700),   // minor 2
+        [SendChatWhisper]        = At(0x7baab0),   // minor 3
+        [SendChatTell]           = At(0x7ba9b0),   // minor 4, WriteBOOL(1) + two strings (TellName)
+        [SendChatTellId]         = At(0x7ba8c0),   // minor 4, WriteBOOL(0) + WriteDWORD(id)
+        [SendChatParty]          = At(0x7ba620),   // minor 6
+        [SendChatDM]             = At(0x7ba540),   // minor 0xe
     };
 
     // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the static file base.
@@ -1175,6 +1229,28 @@ internal static unsafe class SymbolMap
             return IntPtr.Zero;
         }
         return BuildMatches(log) ? Base + w.Rva : IntPtr.Zero;   // RVA path is build-locked
+    }
+
+    /// <summary>
+    /// Unit gate (#419): a feature names the symbols it cannot run without; if any fails to resolve the WHOLE
+    /// feature stands down, with one line naming the first missing symbol and the cause -- a symbol with no
+    /// Windows anchor is by design, a stamp mismatch is rot. Optional members are simply not listed. Call at
+    /// the top of <c>Initialize</c>, before the first <c>Install</c>: a per-symbol skip after that is exactly
+    /// the half-live feature (input hooked, render not) this exists to prevent.
+    /// </summary>
+    public static bool Require(ExtenderLog log, string feature, params string[] symbols)
+    {
+        foreach (string sym in symbols)
+        {
+            if (Resolve(sym, null) != IntPtr.Zero) continue;
+            string why = !OperatingSystem.IsWindows() ? "not exported by this client build"
+                : !_win.TryGetValue(sym, out Win w) || (w.Name is null && w.Rva == 0) ? "no Windows anchor (by design)"
+                : w.Name is not null ? $"Windows export {w.Name} missing"
+                : "nwmain.exe build stamp mismatch (rot: re-derive, docs/windows-symbols.md)";
+            log.Info($"{feature}: standing down as a unit -- {sym}: {why}");
+            return false;
+        }
+        return true;
     }
 
     /// <summary>

@@ -42,6 +42,15 @@ public static unsafe class Native
         return exo;
     }
 
+    /// <summary>Run the engine's CExoString dtor on a string the ENGINE allocated (frees the buffer, leaves the
+    /// 16-byte shell). For a Win64 by-value arg a skipped callee would otherwise leak (#419).</summary>
+    public static void DestroyExoString(IntPtr exo)
+    {
+        if (exo == IntPtr.Zero || _exoDtor == null) return;
+        _exoDtor(exo);
+        *(long*)exo = 0; *(long*)(exo + 8) = 0;   // the engine's own destroy-and-null shape; callers reuse the shell
+    }
+
     public static void FreeExoString(IntPtr exo)
     {
         if (exo == IntPtr.Zero) return;

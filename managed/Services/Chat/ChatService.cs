@@ -57,11 +57,31 @@ public sealed unsafe class ChatService : IExtenderService
             log.Info("ChatService: lockchat set -- standing down, vanilla chat left intact");
             return;
         }
+        if (!SymbolMap.Require(log, "ChatService", RequiredSymbols)) return;   // #419: whole or nothing
         InitMessageCore(log, hooks);   // build slice #18
         InitRender(log, hooks);        // build slice #21: own SwapBuffers -> draw the window (bakes the atlas)
         InitSuppression(log, hooks);   // build slice #23: neutralize vanilla chat rendering
         InitEditControl(log, hooks);   // build slice #20
     }
+
+    /// <summary>The chat unit (#419): every symbol the chatbox cannot run without -- ingest tap, vanilla
+    /// suppression, openers, senders, name lookups, SDL text/clipboard, the glyph bake and the GL loader. One
+    /// unresolved member stands the whole feature down (a half-live chatbox is worse than vanilla). Optional and
+    /// NOT listed: AurTextureGet (portraits), GetModule (game-time stamps fall back to wall clock).</summary>
+    private static readonly string[] RequiredSymbols =
+    {
+        SymbolMap.AppendToMsgBuffer, SymbolMap.AppendToChatBuffer, SymbolMap.ChatWindowSetFilter,
+        SymbolMap.ChatWindowShow, SymbolMap.ChatPromptShow, SymbolMap.SetFocusChatPrompt, SymbolMap.ShowChatPrompt,
+        SymbolMap.PrepChatPromptForTell, SymbolMap.ChatPromptSetFocus, SymbolMap.ChatPromptCtor, SymbolMap.GuiPanelDeactivate,
+        SymbolMap.SendChatTalk, SymbolMap.SendChatShout, SymbolMap.SendChatWhisper, SymbolMap.SendChatParty,
+        SymbolMap.SendChatDM, SymbolMap.SendChatTell, SymbolMap.SendChatTellId, SymbolMap.NotifyServerGuiEvent,
+        SymbolMap.GetPlayerByPlayerName, SymbolMap.GetPlayerByCreatureName, SymbolMap.AppManager,
+        SymbolMap.SwapBuffers,
+        SymbolMap.SdlStartTextInput, SymbolMap.SdlGetClipboardText, SymbolMap.SdlSetClipboardText, SymbolMap.SdlFree,
+        SymbolMap.SdlGlGetProcAddress, SymbolMap.StbttInitFont, SymbolMap.StbttScaleForPixelHeight,
+        SymbolMap.StbttGetFontVMetrics, SymbolMap.StbttGetCodepointHMetrics, SymbolMap.StbttGetCodepointBitmapBox,
+        SymbolMap.StbttMakeCodepointBitmap,
+    };
 
     /// <summary>Backlog every ingested line lands in; tab views read from it (slice #19).</summary>
     private static readonly ChatStore _store = new();
@@ -73,12 +93,17 @@ public sealed unsafe class ChatService : IExtenderService
 
     /// <summary>16-byte CResRef by value. Only r9 is free when it's passed, so SysV puts the whole
     /// struct on the stack (r9 unused) -- declaring it as a struct makes NativeAOT lower it that way.
-    /// Passing it as two ulongs instead splits it r9+stack and corrupts the forwarded call.</summary>
+    /// Passing it as two ulongs instead splits it r9+stack and corrupts the forwarded call.
+
+    /// and the callee copies the 17th byte), so there the slot is an <c>IntPtr</c> forwarded untouched.</summary>
     [StructLayout(LayoutKind.Sequential, Size = 16)]
     private struct CResRef16 { public ulong Lo; public ulong Hi; }
-
+#if WINDOWS
+    private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, IntPtr, void> _tapOrig;
+#else
     // AppendToMsgBuffer(this, CExoString* text, uint channel, uint playerId, int hasPortrait, CResRef).
     private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef16, void> _tapOrig;
+#endif
 
     /// <summary>Slice #18: cold inbound tap on AppendToMsgBuffer -&gt; parse -&gt; ChatStore.Append.</summary>
     private static void InitMessageCore(ExtenderLog log, HookService hooks)
@@ -86,22 +111,41 @@ public sealed unsafe class ChatService : IExtenderService
         ColorRunParser.SelfCheck(log);
         ChatStore.SelfCheck(log);
 
+#if WINDOWS
+        _tapOrig = (delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, IntPtr, void>)hooks.Install(
+            SymbolMap.AppendToMsgBuffer,
+            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, IntPtr, void>)&OnAppend);
+#else
         _tapOrig = (delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef16, void>)hooks.Install(
             SymbolMap.AppendToMsgBuffer,
             (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef16, void>)&OnAppend);
+#endif
         log.Info(_tapOrig != null
+#if WINDOWS
+            ? "ChatService: inbound tap installed (AppendToMsgBuffer, Win64 CResRef* ABI)"
+#else
             ? "ChatService: inbound tap installed (AppendToMsgBuffer)"
+#endif
             : "ChatService: inbound tap not installed (Install returned Zero: symbol unresolved or already hooked)");
     }
 
     [UnmanagedCallersOnly]
+#if WINDOWS
+    private static void OnAppend(IntPtr self, IntPtr text, uint channel, uint playerId,
+                                 int hasPortrait, IntPtr portraitPtr)
+    {
+        CResRef16 portrait = portraitPtr != IntPtr.Zero ? *(CResRef16*)portraitPtr : default;
+        string raw = ReadExo(text);   // BEFORE the forward: the Win64 callee destroys its by-value CExoString
+        if (_tapOrig != null) _tapOrig(self, text, channel, playerId, hasPortrait, portraitPtr); // vanilla chat still needs it
+#else
     private static void OnAppend(IntPtr self, IntPtr text, uint channel, uint playerId,
                                  int hasPortrait, CResRef16 portrait)
     {
+        string raw = ReadExo(text);
         if (_tapOrig != null) _tapOrig(self, text, channel, playerId, hasPortrait, portrait); // vanilla chat still needs it
+#endif
         try
         {
-            string raw = ReadExo(text);
             string portraitRef = hasPortrait != 0 ? ResRef(portrait) : "";
             // Outbound Tell echoes: tag with the recipient so pinned tabs show both sides.
             string tellRecip = (channel & 0x002) != 0 && _playerResolver?.LocalIngestId() == playerId
@@ -652,7 +696,17 @@ public sealed unsafe class ChatService : IExtenderService
     {
         if (Locked) return;   // lockchat: leave vanilla chat drawing untouched (framework stood down)
         var skip = (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnSuppressed;
-        _ = hooks.Install(SymbolMap.AppendToChatBuffer,  skip);   // text: new lines
+        _ = hooks.Install(SymbolMap.AppendToChatBuffer, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, long>)&OnSuppressedExo);   // text: new lines
+        if (OperatingSystem.IsWindows())
+        {
+            // MSVC inlined CGuiInGameChatPrompt::Show into the prompt's ctor (#419), so the skip on Show alone
+            // leaves the "Talk:" prompt activated from birth: undo it right after construction (= vanilla Hide).
+            _promptCtorOrig = (delegate* unmanaged<IntPtr, IntPtr>)hooks.Install(SymbolMap.ChatPromptCtor,
+                (IntPtr)(delegate* unmanaged<IntPtr, IntPtr>)&OnPromptCtor);
+            _panelDeactivate = (delegate* unmanaged<IntPtr, int, void>)Native.Sym(SymbolMap.GuiPanelDeactivate);
+            // ponytail: CGuiInGameChatWindow::DoSplitScreen (0x879560) also inlines Show, so toggling the
+            // split-chat option activates the docked window on Windows; hook it the same way if anyone trips it.
+        }
         _ = hooks.Install(SymbolMap.ChatWindowSetFilter, skip);   // text: backlog re-render + reply buttons
         _ = hooks.Install(SymbolMap.ChatWindowShow,      skip);   // chrome: docked message panels
         _ = hooks.Install(SymbolMap.ChatPromptShow,      skip);   // chrome: the "Talk:" input prompt
@@ -664,6 +718,32 @@ public sealed unsafe class ChatService : IExtenderService
     // the Itanium mangling hides each real return type, so leave rax = 0 (reads as false/null/nothing-done)
     // in case a caller consumes it. One handler serves every single-`this` suppression target.
     [UnmanagedCallersOnly] private static long OnSuppressed(IntPtr self) => 0;
+
+    /// <summary>Skip for a target taking a by-value CExoString. Win64 hands the callee a copy IT must destroy
+    /// (decomp: every such body ends in delete[] + zero), so a skipped body would leak one buffer per line;
+    /// SysV's caller destroys, so there the arg is left alone.</summary>
+    [UnmanagedCallersOnly] private static long OnSuppressedExo(IntPtr self, IntPtr exo)
+    {
+        if (OperatingSystem.IsWindows()) Native.DestroyExoString(exo);
+        return 0;
+    }
+
+    private static delegate* unmanaged<IntPtr, IntPtr> _promptCtorOrig;
+    private static delegate* unmanaged<IntPtr, int, void> _panelDeactivate;
+    /// <summary>CGuiInGameChatPrompt's shown flag on the Windows build (Linux +0x230; decomp of Show/ctor).</summary>
+    private const int WinPromptShownOff = 0x200;
+
+    [UnmanagedCallersOnly]
+    private static IntPtr OnPromptCtor(IntPtr self)
+    {
+        IntPtr r = _promptCtorOrig != null ? _promptCtorOrig(self) : self;
+        if (_panelDeactivate != null && *(int*)(self + WinPromptShownOff) != 0)
+        {
+            _panelDeactivate(self, 0);
+            *(int*)(self + WinPromptShownOff) = 0;
+        }
+        return r;
+    }
 
     /// <summary>New line ingested: auto-open Tell routing (#46), then compensate every window whose active
     /// tab matches (scroll hold / slide-in), then publish ONCE. Cold (network thread).</summary>
@@ -1306,29 +1386,6 @@ public sealed unsafe class ChatService : IExtenderService
         _ = hooks.Install(SymbolMap.ShowChatPrompt,     (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnOpenShow);
         _ = hooks.Install(SymbolMap.PrepChatPromptForTell, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnOpenTell);
         _ = hooks.Install(SymbolMap.ChatPromptSetFocus, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnOpenSetFocus);
-        // Where the vanilla prompt is still shown (Windows: its Show suppression is Linux-only, #419) a click on
-        // it captures the keyboard (CGuiEdit::HandleLMouseDown -> CGuiMan::CaptureKeyboard + KeyboardModeOn) and
-        // Enter then goes to that capture instead of the chat keybind that opens our box. This event fires right
-        // after the capture: hand it back. Never fires where the prompt is suppressed.
-        _guiManSym = Native.Sym(SymbolMap.GuiMan);
-        _releaseKeyboard = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GuiManReleaseKeyboard);
-        _ = hooks.Install(SymbolMap.ChatHandleLMouseDown, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVanillaPromptClick);
-    }
-
-    private static IntPtr _guiManSym;
-    private static delegate* unmanaged<IntPtr, IntPtr, void> _releaseKeyboard;
-    /// <summary>CGuiMan's keyboard-capture object (decomp-verified on both builds: CaptureKeyboard stores here).</summary>
-    private const int GuiManKeyboardCaptureOff = 0x50;
-
-    [UnmanagedCallersOnly]
-    private static void OnVanillaPromptClick(IntPtr self)
-    {
-        if (_guiManSym == IntPtr.Zero || _releaseKeyboard == null) return;
-        IntPtr gm = *(IntPtr*)_guiManSym;
-        if (gm == IntPtr.Zero) return;
-        IntPtr captured = *(IntPtr*)(gm + GuiManKeyboardCaptureOff);
-        if (captured != IntPtr.Zero) _releaseKeyboard(gm, captured);
-        _log?.Info("[chat] vanilla prompt clicked -- keyboard capture released (prompt is unsuppressed on this build)");
     }
 
     /// <summary>The one chat input line; the native shell drives it, all logic is in Core.</summary>
@@ -1412,6 +1469,7 @@ public sealed unsafe class ChatService : IExtenderService
                 for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
                 text = sb.ToString();
             }
+            if (OperatingSystem.IsWindows()) Native.DestroyExoString(exo);   // Win64: the callee owns the copy
         }
         var (ch, tellTarget, _) = ChatCommands.Parse(text.TrimEnd());
         if (ch == Channel.Tell && !string.IsNullOrEmpty(tellTarget))
