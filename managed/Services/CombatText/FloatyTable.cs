@@ -129,9 +129,11 @@ public sealed class FloatyTable
         /// <summary>The engine's <c>Vector</c> colour argument, used for runes the parser left plain white --
         /// the same fallback rule the chat renderer applies to a channel tint.</summary>
         public float BaseR = 1f, BaseG = 1f, BaseB = 1f;
-        /// <summary>Cached text width in atlas px at scale 1, invalidated by an atlas re-bake.</summary>
+        /// <summary>Cached text width in the measured face's px at scale 1, invalidated by an atlas re-bake or by
+        /// the peak face changing height (#471: a lowered ceiling can hand back an already-baked face, no epoch bump).</summary>
         public float MeasuredW = -1f;
         public int MeasureEpoch = -1;
+        public float MeasurePx;
     }
 
     private struct Pending

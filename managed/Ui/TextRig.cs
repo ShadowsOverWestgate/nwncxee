@@ -22,12 +22,10 @@ namespace Sowx.Ui;
 /// </summary>
 public static unsafe class TextRig
 {
-    /// <summary>The UI typeface, embedded in the image (third_party/dejavu, Bitstream Vera licence).
-    /// Shipped rather than searched: Windows fonts lack the gear/arrow/pin glyphs, the distro paths
-    /// resolve through Wine's Z: drive under Proton and mask a missing Windows font, and a per-machine
-    /// font meant per-machine metrics. The name is the <see cref="_fontBytes"/> key, not a path --
-    /// <see cref="Face(string, float)"/> finds it cached and never stats it.</summary>
-    private const string DefaultFace = "DejaVuSans";
+    /// <summary>The UI typeface's <see cref="FontRegistry"/> name: the embedded DejaVuSans (third_party/dejavu,
+    /// Bitstream Vera licence) unless <c>font.default=</c> overrides it (#470). Shipped rather than searched:
+    /// Windows fonts lack the gear/arrow/pin glyphs, and a per-machine font meant per-machine metrics.</summary>
+    private const string DefaultFace = FontRegistry.DefaultName;
 
     private const float FontPx = 18f;
     private const int AtlasSize = 512;
@@ -35,24 +33,23 @@ public static unsafe class TextRig
 
     // ponytail: static ranges; dynamic on-demand atlas is the ceiling. DejaVuSans covers all four
     // (no CJK -- DejaVu ships none, so CJK is out of scope for v1).
-    private static readonly (int lo, int hi)[] Ranges =
+    private static readonly (int lo, int hi, string name)[] Ranges =
     {
-        (0x0020, 0x007E),   // Basic Latin
-        (0x00A0, 0x00FF),   // Latin-1 Supplement (accented Latin, ß, etc.)
-        (0x0100, 0x017F),   // Latin Extended-A (Ć, œ, ...)
-        (0x0400, 0x04FF),   // Cyrillic
-        (0x25AA, 0x25AA),   // ▪ tab pin/keep button (#46)
-        (0x25BE, 0x25BE),   // ▾ channel-dropdown arrow
-        (0x2699, 0x2699),   // ⚙ gear (chat options)
+        (0x0020, 0x007E, "Basic Latin"),
+        (0x00A0, 0x00FF, "Latin-1"),
+        (0x0100, 0x017F, "Latin Extended-A"),
+        (0x0400, 0x04FF, "Cyrillic"),
+        (0x25AA, 0x25AA, "▪ pin"),
+        (0x25BE, 0x25BE, "▾ arrow"),
+        (0x2699, 0x2699, "⚙ gear"),
     };
 
     private static ExtenderLog? _log;
     private static AtlasSheet? _sheet;         // the one bitmap every face lives in; swapped whole on re-bake
-    private static string? _fontPath;          // the default typeface
+    private static string? _defaultName;          // the default typeface
     private static float _bakedPx;             // glyph height the default face was baked at
     /// <summary>Faces the sheet is baked from; index 0 is the default. Extra faces are appended by <see cref="Face"/>.</summary>
     private static readonly List<FaceRequest> _requests = new();
-    private static readonly Dictionary<string, byte[]> _fontBytes = new();
 
     /// <summary>The default UI face (null until <see cref="Init"/>, or when stbtt is absent under run-demo).</summary>
     public static GlyphAtlas? Atlas => _sheet?.Default;
@@ -60,25 +57,61 @@ public static unsafe class TextRig
     /// <summary>A face of the default typeface at <paramref name="px"/>. COLD on a miss: the first request re-bakes
     /// the whole sheet (allocates heavily), so ask in <c>Initialize</c>, never on the present thread. The returned
     /// object is epoch-scoped: re-fetch when <see cref="AtlasEpoch"/> changes. Null when headless or refused.</summary>
-    public static GlyphAtlas? Face(float px) => _fontPath == null ? null : Face(_fontPath, px);
+    public static GlyphAtlas? Face(float px) => _defaultName == null ? null : Face(_defaultName, px);
 
     /// <summary>Hot, alloc-free lookup of an already-baked default-typeface face; null on a miss (never bakes).</summary>
     public static GlyphAtlas? BakedFace(float px)
-        => _sheet != null && _fontPath != null && _sheet.TryFace(_fontPath, px, out GlyphAtlas f) ? f : null;
+        => _sheet != null && _defaultName != null && _sheet.TryFace(_defaultName, px, out GlyphAtlas f) ? f : null;
 
-    /// <summary>A face of <paramref name="typeface"/> (a TTF path) at <paramref name="px"/>; see <see cref="Face(float)"/>.</summary>
+    /// <summary>Hot, alloc-free lookup of an already-baked face of a registry name; null on a miss (never bakes).</summary>
+    public static GlyphAtlas? BakedFace(string typeface, float px)
+        => _sheet != null && _sheet.TryFace(FontRegistry.Effective(typeface), px, out GlyphAtlas f) ? f : null;
+
+    /// <summary>A face of the <see cref="FontRegistry"/> name <paramref name="typeface"/> at <paramref name="px"/>;
+    /// see <see cref="Face(float)"/>. An unknown or refused name is the default typeface (#470).</summary>
     public static GlyphAtlas? Face(string typeface, float px)
     {
+        lock (_bakeLock) return FaceLocked(typeface, px);
+    }
+
+    /// <summary>Serialises the cold mutators of <see cref="_requests"/> (<see cref="Face(string, float)"/>,
+    /// <see cref="ReleaseFace"/>, <see cref="SetFont"/>): the input thread and a pool-thread peak-face re-request
+    /// can otherwise interleave on the list mid-bake.</summary>
+    private static readonly object _bakeLock = new();
+
+    private static GlyphAtlas? FaceLocked(string typeface, float px)
+    {
         if (_sheet == null || _log == null) return null;
+        typeface = FontRegistry.Effective(typeface);
         if (_sheet.TryFace(typeface, px, out GlyphAtlas f)) return f;
-        if (!_fontBytes.TryGetValue(typeface, out byte[]? bytes))
-        {
-            if (!File.Exists(typeface)) { _log.Info($"TextRig: typeface not found: {typeface}"); return null; }
-            _fontBytes[typeface] = bytes = File.ReadAllBytes(typeface);
-        }
+        byte[]? bytes = FontRegistry.Bytes(typeface);
+        if (bytes == null) return null;
         _requests.Add(new FaceRequest(typeface, bytes, px));
         if (!Rebake()) { _requests.RemoveAt(_requests.Count - 1); return null; }
         return _sheet.TryFace(typeface, px, out f) ? f : null;
+    }
+
+    /// <summary>Drop a default-typeface face request a caller no longer needs (#471: a superseded peak face), so the
+    /// sheet stops carrying it from the next re-bake on. Cold; no bake of its own -- the face stays usable until then.
+    /// The default face (index 0) is never dropped.</summary>
+    public static void ReleaseFace(float px)
+    {
+        if (_defaultName == null) return;
+        lock (_bakeLock) for (int i = _requests.Count - 1; i >= 1; i--)
+            if (_requests[i].Typeface == _defaultName && _requests[i].Px == px) _requests.RemoveAt(i);
+    }
+
+    /// <summary>Raised COLD after <see cref="SetFont"/> swaps in a re-baked sheet, so a face derived from the UI size
+    /// (the floaty peak face) can re-request itself at the new height. ponytail: that re-request is a second full
+    /// bake per slider tick; folding derived sizes into the first bake is the upgrade if the tick ever feels slow.</summary>
+    public static event Action? FontChanged;
+
+    /// <summary>Baked faces of a registry name, for <c>/knobs</c>.</summary>
+    private static int FacesOf(string name)
+    {
+        int n = 0;
+        lock (_bakeLock) for (int i = 0; i < _requests.Count; i++) if (_requests[i].Typeface == name) n++;
+        return n;
     }
 
     /// <summary>Bake <see cref="_requests"/> into a fresh sheet and swap it in; on refusal the old sheet stays.
@@ -145,14 +178,12 @@ public static unsafe class TextRig
     public static void Init(ExtenderLog log)
     {
         _log = log;
-        if (_sheet != null || _fontPath != null) return;   // idempotent: probe and ChatService may both call
-        using Stream? font = typeof(TextRig).Assembly.GetManifestResourceStream(DefaultFace);
-        if (font == null) { log.Info($"TextRig: embedded font {DefaultFace} missing from the image"); return; }
-        var bytes = new byte[font.Length];
-        font.ReadExactly(bytes);
-        log.Info($"TextRig: using embedded font {DefaultFace} ({bytes.Length} bytes)");
-        _fontPath = DefaultFace;
-        _fontBytes[DefaultFace] = bytes;
+        if (_sheet != null || _defaultName != null) return;   // idempotent: probe and ChatService may both call
+        FontRegistry.Load(log);
+        KnobSurface.Note(() => FontRegistry.Report(FacesOf));
+        byte[]? bytes = FontRegistry.Bytes(DefaultFace);
+        if (bytes == null) { log.Info("TextRig: no default font (embedded DejaVuSans missing from the image)"); return; }
+        _defaultName = DefaultFace;
         _bakedPx = FontPx;
         _requests.Add(new FaceRequest(DefaultFace, bytes, FontPx));
         _sheet = AtlasSheet.Bake(_requests, Ranges, AtlasSize, log);
@@ -173,9 +204,12 @@ public static unsafe class TextRig
         if (_sheet == null || _log == null) return;
         px = px < MinFontPx ? MinFontPx : px > AtlasMaxPx ? AtlasMaxPx : px;   // effective px (font * UI scale)
         if (System.Math.Abs(px - _bakedPx) < 0.5f) return;   // integer-ish sizes: ignore sub-pixel churn
-        FaceRequest old = _requests[0];
-        _requests[0] = old with { Px = px };
-        if (Rebake()) _bakedPx = px; else _requests[0] = old;
+        lock (_bakeLock)   // reentrant: FontChanged's peak-face re-request takes it again
+        {
+            FaceRequest old = _requests[0];
+            _requests[0] = old with { Px = px };
+            if (Rebake()) { _bakedPx = px; FontChanged?.Invoke(); } else _requests[0] = old;
+        }
     }
 
     internal static void BindText(float* proj)
@@ -465,13 +499,16 @@ public static unsafe class TextRig
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, _tex);
         Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 1);
-        // #468: LINEAR so scaled/animated text resamples smoothly; the 1px gutter keeps level-0 neighbours apart.
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR_MIPMAP_LINEAR);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, a.Mips.Length);   // must equal the uploaded chain, or the texture is incomplete and samples black
         fixed (byte* px = a.Pixels)
             Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.R8, a.Side, a.Side, 0, Gl.RED, Gl.UNSIGNED_BYTE, px);
+        for (int l = 1; l < AtlasSheet.MipLevels && l - 1 < a.Mips.Length; l++)
+            fixed (byte* px = a.Mips[l - 1])
+                Gl.TexImage2D(Gl.TEXTURE_2D, l, (int)Gl.R8, a.Side >> l, a.Side >> l, 0, Gl.RED, Gl.UNSIGNED_BYTE, px);
         // #237: back to the GL default, in the ENGINE's context, or every engine texture upload after this
         // one reads its rows one byte at a time. GLRender::CreateTexture @0x4ca2b0 -- the CAurTexture upload
         // path, and the one an area transition runs for every texture it loads -- calls glTexImage2D with no
@@ -479,7 +516,7 @@ public static unsafe class TextRig
         // restore when the caller asks for 4 (`if (align != 4)`). Both assume the default is still in place.
         Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 4);
         _texUp = true;
-        _log?.Info($"TextRig: atlas uploaded as GL tex {_tex} ({a.Side}², {a.FaceCount} face(s))");
+        _log?.Info($"TextRig: atlas uploaded as GL tex {_tex} ({a.Side}², {a.FaceCount} face(s), {AtlasSheet.MipLevels} levels, {a.Bytes / 1024} KB R8)");
     }
 
     /// <summary>Create a VAO + its own VBO wired to the text vertex layout (pos2, uv2, rgb3, alpha1).

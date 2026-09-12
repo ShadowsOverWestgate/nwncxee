@@ -109,6 +109,18 @@ public static class Settings
 
     private static string? Raw(string key) => _values.TryGetValue(key, out string? v) ? v : null;
 
+    /// <summary>Every set key starting with <paramref name="prefix"/> (case-folded), with its value RAW --
+    /// not lowercased, because the values are paths. Each is recorded for <c>/knobs</c> like any read.</summary>
+    public static List<(string Key, string Value)> Prefixed(string prefix)
+    {
+        var r = new List<(string, string)>();
+        foreach (var kv in _values)
+            if (kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && kv.Value.Length > 0)
+                r.Add((Record(kv.Key.ToLowerInvariant(), "", kv.Value, kv.Key.ToLowerInvariant()), kv.Value));
+        r.Sort((a, b) => string.CompareOrdinal(a.Item1, b.Item1));
+        return r;
+    }
+
     /// <summary>Note the read for <c>/knobs</c>. Replaces rather than appends when a key is read twice --
     /// two subsystems legitimately read the same gate (<c>shadows</c> does), and the surface should say what
     /// is set, not how many places looked.</summary>
@@ -159,6 +171,11 @@ public static class Settings
             "enumeration carries the key, the default and the effective value");
         E(_read.Count == before + 2, "a key read repeatedly is enumerated once, not once per reader");
 
+        _values["sowx-selfcheck-pfx.Mixed"] = "/Case/Kept.ttf";
+        var pf = Prefixed("sowx-selfcheck-pfx.");
+        E(pf.Count == 1 && pf[0].Key == "sowx-selfcheck-pfx.mixed" && pf[0].Value == "/Case/Kept.ttf",
+            "a prefixed read keeps the value's case and folds the key");
+        _values.Remove("sowx-selfcheck-pfx.Mixed");
         _values.Remove("sowx-selfcheck-probe");
         // The check reads against the LIVE table, so its probes have to leave it -- /knobs is the surface
         // whose whole claim is that everything it lists is real.

@@ -68,6 +68,38 @@ public sealed unsafe class CombatTextService : IExtenderService
     /// <c>CNWCMessage::HandleServerToPlayerCCMessage</c> and latch the real attack-result byte.</para></summary>
     private static long _critUntilMs;
 
+    /// <summary>Glyph height of the face the animation samples (#471): the largest an element ever gets --
+    /// effective UI px × the spawn pop × the bigger of the crit and banner multipliers -- so every frame is a
+    /// minification. Capped at <see cref="TextRig.AtlasMaxPx"/>: past it (UI 18px needs critscale &gt; 3.05)
+    /// the top of the pop magnifies again. Written cold; read on the frame.</summary>
+    private static volatile float _peakPx;
+
+    /// <summary>The peak height for the current UI size and multipliers.</summary>
+    private static float PeakPx(CombatTextConfig cfg)
+    {
+        float px = PeakPxRaw(cfg);
+        return px > TextRig.AtlasMaxPx ? TextRig.AtlasMaxPx : px;
+    }
+
+    /// <summary>The uncapped peak, so the status line can say when the cap is in force.</summary>
+    private static float PeakPxRaw(CombatTextConfig cfg)
+    {
+        float m = cfg.CritScale > cfg.TextScale ? cfg.CritScale : cfg.TextScale;
+        return MathF.Round(Metrics.DesignFontPx * Metrics.Scale * FloatyAnim.PopFrom * m);
+    }
+
+    /// <summary>COLD: (re)bake the peak face, dropping the previous one so the sheet does not accumulate every
+    /// ceiling ever tried. Runs at arm time, after a multiplier change, and after a UI font change.</summary>
+    private static void RequestPeakFace()
+    {
+        float px = PeakPx(_cfg);
+        if (px == _peakPx && TextRig.BakedFace(px) != null) return;
+        float old = _peakPx;
+        if (old != 0f && old != px) TextRig.ReleaseFace(old);
+        _peakPx = TextRig.Face(px) != null ? px : 0f;
+        _log?.Info($"CombatTextService: peak face {(_peakPx > 0f ? $"{_peakPx}px" : "unavailable, drawing from the UI face")}");
+    }
+
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
@@ -98,6 +130,8 @@ public sealed unsafe class CombatTextService : IExtenderService
 
         CommandRegistry.Global.Register("/combattext", "report or tune the damage numbers and combat text",
                                         Cmd, "/ct");
+        TextRig.FontChanged += RequestPeakFace;
+        RequestPeakFace();
         _armed = true;
         log.Info("CombatTextService: armed (vanilla floaty text swallowed at ShowFloatyText)");
     }
@@ -191,7 +225,12 @@ public sealed unsafe class CombatTextService : IExtenderService
     private static void Draw()
     {
         if (!_armed) return;
-        if (!_configLoaded) LoadConfig();
+        if (!_configLoaded)
+        {
+            LoadConfig();
+            // ponytail: pool thread so the cold bake leaves the frame; TextRig's bake lock orders it against SetFont.
+            if (_configLoaded && PeakPx(_cfg) != _peakPx) System.Threading.ThreadPool.QueueUserWorkItem(_ => RequestPeakFace());
+        }
 
         // Session reset: object ids are only unique within a module, so a number carried across an unload
         // would land on whatever inherits the id, and the TLK may have been swapped under us.
@@ -213,6 +252,11 @@ public sealed unsafe class CombatTextService : IExtenderService
         bool hasFwd = NameplateNative.CameraForward(out float fx, out float fy, out float fz);
         float gui = Metrics.GameUiScale;
         float ui = Metrics.Scale;
+        float uiPx = Metrics.DesignFontPx * ui;
+        float peakPx = _peakPx;
+        GlyphAtlas face = TextRig.BakedFace(peakPx) ?? atlas;
+        float facePx = face == atlas ? uiPx : peakPx;
+        float down = uiPx / facePx;
 
         int n = 0;
         for (int i = 0; i < count; i++)
@@ -234,8 +278,9 @@ public sealed unsafe class CombatTextService : IExtenderService
             Place(s, now, ui, atlas.LineHeight, ref x, ref y, out float scale, out float alpha);
             if (alpha <= 0f) continue;
 
-            float w = Measure(s, atlas) * scale;
-            EmitSlot(ref n, atlas, s, x - w * 0.5f, y, scale, alpha);
+            float k = scale * down;
+            float w = Measure(s, face, facePx) * k;
+            EmitSlot(ref n, face, s, x - w * 0.5f, y, k, scale, alpha);
         }
 
         if (n > 0) TextRig.DrawBatch(_verts, n / VertexBatch.Floats);
@@ -279,23 +324,27 @@ public sealed unsafe class CombatTextService : IExtenderService
         }
     }
 
-    /// <summary>Text width at scale 1, cached per slot and invalidated by an atlas re-bake.</summary>
-    private static float Measure(FloatyTable.Slot s, GlyphAtlas atlas)
+    /// <summary>Text width in <paramref name="atlas"/>'s px at scale 1, cached per slot and invalidated by an atlas
+    /// re-bake or a change of measured face height.</summary>
+    private static float Measure(FloatyTable.Slot s, GlyphAtlas atlas, float facePx)
     {
-        if (s.MeasuredW >= 0f && s.MeasureEpoch == TextRig.AtlasEpoch) return s.MeasuredW;
+        if (s.MeasuredW >= 0f && s.MeasureEpoch == TextRig.AtlasEpoch && s.MeasurePx == facePx) return s.MeasuredW;
         float w = 0f;
         for (int r = 0; r < s.Runs.Length; r++)
             foreach (Rune ru in s.Runs[r].Text.EnumerateRunes()) w += atlas.AdvanceOf(ru);
         s.MeasuredW = w;
         s.MeasureEpoch = TextRig.AtlasEpoch;
+        s.MeasurePx = facePx;
         return w;
     }
 
+    /// <summary><paramref name="scale"/> is the quad factor on the face's glyphs; <paramref name="anim"/> is the
+    /// animation scale relative to the UI size, which is what the outline halo grows with.</summary>
     private static void EmitSlot(ref int n, GlyphAtlas atlas, FloatyTable.Slot s,
-                                 float penX, float baseline, float scale, float alpha)
+                                 float penX, float baseline, float scale, float anim, float alpha)
     {
         // The halo grows with the element: a 1px outline behind a 1.7x crit is a grey fringe, not an outline.
-        float halo = scale < 1f ? 1f : scale;
+        float halo = anim < 1f ? 1f : anim;
         for (int r = 0; r < s.Runs.Length; r++)
         {
             ColorRun run = s.Runs[r];
@@ -349,7 +398,7 @@ public sealed unsafe class CombatTextService : IExtenderService
                  + $"shake={F(_cfg.CritShakePx)}px@{F(_cfg.CritShakeHz)}Hz "
                  + $"text={F(_cfg.TextMs)}ms x{F(_cfg.TextScale)} outline={_cfg.Outline} "
                  + $"critwindow={F(_cfg.CritWindowMs)}ms | live={_table.LiveCount} overflow={_table.Overflow} "
-                 + $"critstrings={(CombatTextNative.CritResolved ? "resolved" : "unresolved")}";
+                 + $"critstrings={(CombatTextNative.CritResolved ? "resolved" : "unresolved")} peakface={F(_peakPx)}px{(PeakPxRaw(_cfg) > TextRig.AtlasMaxPx ? " (capped)" : "")}";
 
         switch (a[0])
         {
@@ -372,6 +421,7 @@ public sealed unsafe class CombatTextService : IExtenderService
                      + "critscale|shake|shakehz|textms|textscale|critwindow|outline> <value>";
         }
         SaveConfig();
+        if (a[0] is "critscale" or "textscale") RequestPeakFace();   // cold: the command runs on the input thread
         return Cmd("");
     }
 

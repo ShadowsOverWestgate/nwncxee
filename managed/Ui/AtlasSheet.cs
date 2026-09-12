@@ -16,8 +16,13 @@ public sealed unsafe class AtlasSheet
 {
     /// <summary>ponytail: opaque stbtt_fontinfo is ~180B; over-allocate. Ceiling: bind the real struct.</summary>
     private const int FontInfoBytes = 1024;
-    /// <summary>1px gutter so bilinear sampling at level 0 never bleeds a neighbour.</summary>
-    public const int Pad = 1;
+    /// <summary>Mip levels the sheet carries (0..2), the stated cap (#471): animated text minifies from its
+    /// peak face by at most ~4x, and each extra level costs another doubling of <see cref="Pad"/>.</summary>
+    public const int MipLevels = 3;
+    /// <summary>Inter-glyph gutter, in level-0 texels. With an unaligned 2x2 box filter, at level L a glyph's edge
+    /// block straddles up to 2^L-1 texels into the gutter and bilinear reaches another 2^L, so pad >= 2^(L+1):
+    /// 8 for the deepest level (2). Level 0 alone needed only 1 (#468).</summary>
+    public const int Pad = 1 << MipLevels;
     /// <summary>Side of the solid-white block chrome rects sample. Bilinear at the block centre is 1.0 with
     /// 1.5 texels of margin, so vertex rounding cannot pull in a transparent neighbour (#468).</summary>
     private const int SolidSide = 4;
@@ -27,6 +32,11 @@ public sealed unsafe class AtlasSheet
 
     public byte[] Pixels = Array.Empty<byte>();
     public int Side;
+    /// <summary>Levels 1..<see cref="MipLevels"/>-1, box-filtered from <see cref="Pixels"/> on the CPU (no
+    /// glGenerateMipmap: it respecifies the texture, the AMD/Mesa mip trap). <c>Mips[0]</c> is level 1.</summary>
+    public byte[][] Mips = Array.Empty<byte[]>();
+    /// <summary>Bytes of every level at R8: side² × (1 + 1/4 + 1/16).</summary>
+    public int Bytes { get { int n = 0; for (int l = 0; l < MipLevels; l++) n += (Side >> l) * (Side >> l); return n; } }
     private readonly Dictionary<(string, float), GlyphAtlas> _faces = new();
 
     /// <summary>The face the first request baked -- what <c>TextRig.Atlas</c> hands a caller that asks for nothing.</summary>
@@ -66,6 +76,36 @@ public sealed unsafe class AtlasSheet
     private static readonly delegate* unmanaged<byte*, byte*, int, int, int, float, float, int, void> _makeBitmap =
         (delegate* unmanaged<byte*, byte*, int, int, int, float, float, int, void>)Native.Sym(SymbolMap.StbttMakeCodepointBitmap);
 
+    private static readonly delegate* unmanaged<byte*, int, int> _findGlyph =
+        (delegate* unmanaged<byte*, int, int>)Native.Sym(SymbolMap.StbttFindGlyphIndex);
+
+    /// <summary>#470: a codepoint the typeface has no glyph for (index 0) is filled from the default typeface's face
+    /// at the same px -- same sheet, so the copied UVs are valid -- never baked as a .notdef box. Logged per range so
+    /// the gap is named; a hole in the default itself stays an advance-only blank.</summary>
+    private static void FillMissing(IReadOnlyList<FaceRequest> reqs, GlyphAtlas[] faces,
+                                    List<(int Face, int Cp, int Range, float Advance)> missing,
+                                    Dictionary<float, int> defaultByPx, (int lo, int hi, string name)[] ranges, ExtenderLog log)
+    {
+        if (missing.Count == 0) return;
+        var perFace = new int[reqs.Count, ranges.Length];
+        foreach ((int f, int cp, int ri, float adv) in missing)
+        {
+            perFace[f, ri]++;
+            int d = defaultByPx[reqs[f].Px];
+            if (d != f && faces[d].TryGet(cp, out Glyph g)) faces[f].Store(cp, g);
+            else faces[f].Store(cp, new Glyph { Advance = adv });
+        }
+        for (int f = 0; f < reqs.Count; f++)
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int ri = 0; ri < ranges.Length; ri++)
+                if (perFace[f, ri] > 0) sb.Append(sb.Length == 0 ? "" : ", ").Append($"{ranges[ri].name} {perFace[f, ri]}/{ranges[ri].hi - ranges[ri].lo + 1}");
+            if (sb.Length > 0)
+                log.Info($"AtlasSheet: face {reqs[f].Typeface} @ {reqs[f].Px}px missed {sb}" +
+                         (defaultByPx[reqs[f].Px] != f ? $" (filled from {reqs[0].Typeface})" : " (default face: left blank)"));
+        }
+    }
+
     /// <summary>One measured glyph awaiting placement: its face, codepoint, box, and (after packing) its texel origin.</summary>
     private struct Box { public int Face, Cp, W, H, X0, Y0, X, Y; public float Advance, Scale; }
 
@@ -90,7 +130,7 @@ public sealed unsafe class AtlasSheet
     /// <paramref name="startSide"/>. Cold. Null if stbtt isn't linked in (headless), a font fails to init, or the
     /// packed side would exceed <see cref="MaxSide"/> -- the caller keeps whatever sheet it had.
     /// </summary>
-    public static AtlasSheet? Bake(IReadOnlyList<FaceRequest> reqs, (int lo, int hi)[] ranges, int startSide, ExtenderLog log)
+    public static AtlasSheet? Bake(IReadOnlyList<FaceRequest> reqs, (int lo, int hi, string name)[] ranges, int startSide, ExtenderLog log)
     {
         if (_initFont == null || _scaleForPx == null || _makeBitmap == null)
         {
@@ -98,7 +138,14 @@ public sealed unsafe class AtlasSheet
             return null;
         }
         if (reqs.Count == 0) return null;
-        reqs = reqs.DistinctBy(r => (r.Typeface, r.Px)).ToList();   // SetFont may land the default on an extra face's size
+        var list = reqs.DistinctBy(r => (r.Typeface, r.Px)).ToList();   // SetFont may land the default on an extra face's size
+        // #470: every extra face gets a default-typeface twin at its px, the source of its coverage fills.
+        var defaultByPx = new Dictionary<float, int>();
+        for (int i = 0; i < list.Count; i++) if (list[i].Typeface == list[0].Typeface) defaultByPx[list[i].Px] = i;
+        for (int i = 0; i < list.Count; i++)
+            if (!defaultByPx.ContainsKey(list[i].Px)) { defaultByPx[list[i].Px] = list.Count; list.Add(list[0] with { Px = list[i].Px }); }
+        reqs = list;
+        var missing = new List<(int Face, int Cp, int Range, float Advance)>();
 
         var sheet = new AtlasSheet();
         var faces = new GlyphAtlas[reqs.Count];
@@ -125,12 +172,13 @@ public sealed unsafe class AtlasSheet
                 int adv = 0, lsb = 0;
                 if (_hmetrics != null) { _hmetrics(fi, ' ', &adv, &lsb); face.SpaceAdvance = adv * scale; }
 
-                foreach ((int lo, int hi) in ranges)
-                    for (int cp = lo; cp <= hi; cp++)
+                for (int ri = 0; ri < ranges.Length; ri++)
+                    for (int cp = ranges[ri].lo; cp <= ranges[ri].hi; cp++)
                     {
                         int ax = 0, al = 0;
                         if (_hmetrics != null) _hmetrics(fi, cp, &ax, &al);
                         float advance = ax * scale;
+                        if (_findGlyph != null && _findGlyph(fi, cp) == 0) { missing.Add((f, cp, ri, advance)); continue; }
                         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
                         if (_bitmapBox != null) _bitmapBox(fi, cp, scale, scale, &x0, &y0, &x1, &y1);
                         int gw = x1 - x0, gh = y1 - y0;
@@ -163,11 +211,14 @@ public sealed unsafe class AtlasSheet
                     });
                 }
 
+            sheet.Mips = BuildMips(sheet.Pixels, side);
+            FillMissing(reqs, faces, missing, defaultByPx, ranges, log);
+
             for (int f = 0; f < reqs.Count; f++)
             {
                 faces[f].SolidU = su; faces[f].SolidV = sv;
                 sheet._faces[(reqs[f].Typeface, reqs[f].Px)] = faces[f];
-                log.Info($"AtlasSheet: face {System.IO.Path.GetFileName(reqs[f].Typeface)} @ {reqs[f].Px}px: {faces[f].Count} glyphs (lineH={faces[f].LineHeight:F1})");
+                log.Info($"AtlasSheet: face {reqs[f].Typeface} @ {reqs[f].Px}px: {faces[f].Count} glyphs (lineH={faces[f].LineHeight:F1})");
             }
             sheet.Default = faces[0];
             log.Info($"AtlasSheet: {reqs.Count} face(s) packed into {side}²");
@@ -178,6 +229,26 @@ public sealed unsafe class AtlasSheet
             foreach (IntPtr p in infos) if (p != IntPtr.Zero) Marshal.FreeHGlobal(p);
             foreach (IntPtr p in fonts) if (p != IntPtr.Zero) Marshal.FreeHGlobal(p);
         }
+    }
+
+    /// <summary>2x2 box filter, level by level, down to <see cref="MipLevels"/>-1. Pure: the self-check drives it.</summary>
+    internal static byte[][] BuildMips(byte[] level0, int side)
+    {
+        var mips = new byte[MipLevels - 1][];
+        byte[] src = level0; int s = side;
+        for (int l = 0; l < mips.Length; l++)
+        {
+            int d = s >> 1;
+            var dst = new byte[d * d];
+            for (int y = 0; y < d; y++)
+                for (int x = 0; x < d; x++)
+                {
+                    int i = (2 * y) * s + 2 * x;
+                    dst[y * d + x] = (byte)((src[i] + src[i + 1] + src[i + s] + src[i + s + 1] + 2) >> 2);
+                }
+            mips[l] = dst; src = dst; s = d;
+        }
+        return mips;
     }
 
     /// <summary>Test-only: register a face without a native bake.</summary>
@@ -197,11 +268,27 @@ public sealed unsafe class AtlasSheet
         var boxes = new Box[100];
         for (int i = 0; i < boxes.Length; i++) { boxes[i].W = 10; boxes[i].H = 10; }
         int side = Pack(boxes, 64, out int sx, out int sy);
-        E(side == 128, $"grow: expected 128, got {side}");
+        E(side == 256, $"grow: expected 256, got {side}");
         E(sx == 0 && sy == 0, "solid block is the first placement");
         E(boxes[0].X == SolidSide + Pad && boxes[0].Y == 0, "first glyph sits right of the solid block");
         var seen = new HashSet<(int, int)>();
         foreach (Box b in boxes) E(seen.Add((b.X, b.Y)) && b.X + b.W <= side && b.Y + b.H <= side, "placements unique and in bounds");
+
+        // #471: the gutter's side cost on a realistic set (one 18px face is ~600 glyph boxes), and the box filter.
+        var dense = new Box[600];
+        for (int i = 0; i < dense.Length; i++) { dense[i].W = 12; dense[i].H = 14; }
+        int padded = Pack(dense, 64, out _, out _);
+        int unpadded = (int)System.Math.Ceiling(System.Math.Sqrt(600 * 13 * 15));
+        log.Info($"AtlasSheet.SelfCheck: 600 12x14 boxes pack into {padded}² at Pad={Pad} (~{unpadded}² of area at a 1px gutter)");
+        E(padded > 0, "padded pack fits under the ceiling");
+        var lv0 = new byte[8 * 8];
+        for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) lv0[i * 8 + j] = 255;   // top-left 4x4 solid
+        byte[][] mips = BuildMips(lv0, 8);
+        E(mips.Length == MipLevels - 1 && mips[0].Length == 16 && mips[1].Length == 4, "level sizes 4² and 2²");
+        E(mips[0][0] == 255 && mips[0][1] == 255 && mips[0][2] == 0 && mips[0][4] == 255 && mips[0][5] == 255, "level 1 keeps the solid 2x2 and zero elsewhere");
+        E(mips[1][0] == 255 && mips[1][1] == 0 && mips[1][3] == 0, "level 2 is one solid texel");
+        lv0[1] = 0; lv0[8] = 0; lv0[9] = 0;
+        E(BuildMips(lv0, 8)[0][0] == 64, "box filter averages with rounding (255/4 -> 64)");
 
         var big = new Box[1]; big[0].W = big[0].H = MaxSide + 1;
         E(Pack(big, 64, out _, out _) == 0, "past the ceiling is a refusal");

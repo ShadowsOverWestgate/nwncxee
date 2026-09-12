@@ -112,7 +112,7 @@ deriving anything — required, or the RVAs point into a different build.
 | `SDL_GetKeyName` | `SDL_GetKeyName` |
 | `CGuiPanel::Deactivate(int)` | `?Deactivate@CGuiPanel@@QEAAXH@Z` |
 | `RenderInterface::ResetRenderStates()` / `BindBuffer(uint,uint)` | `?ResetRenderStates@RenderInterface@@SAXXZ` / `?BindBuffer@RenderInterface@@SAXII@Z` |
-| `stbtt_InitFont` … `stbtt_MakeCodepointBitmap` (6) | same C names |
+| `stbtt_InitFont` … `stbtt_FindGlyphIndex` (7) | same C names |
 | `g_pTlkTable` (data) | `?g_pTlkTable@@3PEAVCTlkTable@@EA` |
 | `CTlkTable::GetSimpleString(uint)` -> `CExoString` | `?GetSimpleString@CTlkTable@@QEAA?AVCExoString@@I@Z` -- sret pointer is the 2nd arg on Win64 |
 | `RenderInterface::GetViewPort(float*)` | `?GetViewPort@RenderInterface@@SAXPEAM@Z` |

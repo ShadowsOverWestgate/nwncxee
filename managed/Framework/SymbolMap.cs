@@ -293,6 +293,7 @@ internal static unsafe class SymbolMap
     public const string StbttGetCodepointHMetrics  = "stbtt_GetCodepointHMetrics";
     public const string StbttGetCodepointBitmapBox = "stbtt_GetCodepointBitmapBox";
     public const string StbttMakeCodepointBitmap   = "stbtt_MakeCodepointBitmap";
+    public const string StbttFindGlyphIndex        = "stbtt_FindGlyphIndex";
     // The client runs an OpenGL 3.3 CORE context (verified: SDL_GL_SetAttribute PROFILE_MASK=CORE),
     // so the owned draw is shader+VAO+VBO. Modern GL (>=1.3) resolves through this exported SDL entry.
     public const string SdlGlGetProcAddress = "SDL_GL_GetProcAddress";
@@ -1140,6 +1141,7 @@ internal static unsafe class SymbolMap
         [StbttGetCodepointHMetrics]  = Nm("stbtt_GetCodepointHMetrics"),
         [StbttGetCodepointBitmapBox] = Nm("stbtt_GetCodepointBitmapBox"),
         [StbttMakeCodepointBitmap]   = Nm("stbtt_MakeCodepointBitmap"),
+        [StbttFindGlyphIndex]        = Nm("stbtt_FindGlyphIndex"),
         [SdlGlGetProcAddress]        = Nm("SDL_GL_GetProcAddress"),
         [SdlGetMouseState]           = Nm("SDL_GetMouseState"),
         [SdlStartTextInput]          = Nm("SDL_StartTextInput"),

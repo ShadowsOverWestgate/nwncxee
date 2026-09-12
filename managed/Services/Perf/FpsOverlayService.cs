@@ -34,11 +34,24 @@ public sealed class FpsOverlayService : IExtenderService
     /// <summary>#469: the readout's own face, so it stays this size whatever the chat font is set to. Requested
     /// cold in <see cref="Toggle"/> (a miss bakes); <see cref="Bake"/> re-fetches by epoch and falls back to the default face.</summary>
     private const float FacePx = 14f;
+    /// <summary>Registry name of the readout's typeface; <c>/fps font &lt;name&gt;</c> changes it (cold).</summary>
+    private static string _face = FontRegistry.DefaultName;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        CommandRegistry.Global.Register("/fps", "toggle the FPS overlay", _ => { Toggle(); return null; });
+        CommandRegistry.Global.Register("/fps", "toggle the FPS overlay; `font <name>` draws it in a sowx.cfg typeface (#470)", args =>
+        {
+            string[] a = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (a.Length == 2 && a[0].Equals("font", StringComparison.OrdinalIgnoreCase))
+            {
+                _face = a[1];
+                if (_visible) TextRig.Face(_face, FacePx);
+                return $"[fps] font {_face} -> {FontRegistry.Effective(_face)}";
+            }
+            Toggle();
+            return null;
+        });
         ServerPing.SelfCheck(log);
         if (GameGate.Locked) return;
         new Window(0, 0, 0, 0) { Focusable = false, DrawContent = Draw };
@@ -50,7 +63,7 @@ public sealed class FpsOverlayService : IExtenderService
     {
         _visible = !_visible;
         _last = 0; _sum = 0; _max = 0; _n = 0; _vertCount = 0;
-        if (_visible) TextRig.Face(FacePx);
+        if (_visible) TextRig.Face(_face, FacePx);
         _log?.Info($"FpsOverlayService: /fps -> {(_visible ? "on" : "off")}");
     }
 
@@ -83,7 +96,7 @@ public sealed class FpsOverlayService : IExtenderService
     /// line of atlas glyphs. Zero-alloc -- digits are written straight into the char buffer.</summary>
     private static void Bake(float fps, float avgMs, float maxMs)
     {
-        GlyphAtlas? atlas = TextRig.BakedFace(FacePx) ?? TextRig.Atlas;
+        GlyphAtlas? atlas = TextRig.BakedFace(_face, FacePx) ?? TextRig.Atlas;
         if (atlas == null) { _vertCount = 0; return; }
 
         ServerPing.Refresh();

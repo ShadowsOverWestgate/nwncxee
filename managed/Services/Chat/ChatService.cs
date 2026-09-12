@@ -51,6 +51,7 @@ public sealed unsafe class ChatService : IExtenderService
         ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
         ChatConfig.SelfCheck(log);     // config round-trip + legacy-file migration proof (off-device)
         TextRig.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
+        FontRegistry.SelfCheck(log);
         SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
         if (Locked)   // lockchat: install nothing -> vanilla chat intact
         {
