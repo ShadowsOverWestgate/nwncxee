@@ -86,6 +86,24 @@ public sealed unsafe partial class AlloyRenderer
         return false;
     }
 
+    /// <summary>#144 retry: weld a newly enrolled gob part's per-face normals on the pools' host shadows.
+    /// Cold -- once per newcomer, on the enrollment walk -- and refused silently when any range or pool
+    /// will not resolve, exactly as the staging walk refuses the same part.</summary>
+    private static void WeldNormals(IntPtr vdoPtr, int item, int s)
+    {
+        if (NormalWeld.Angle <= 0f || !_vLit[s]) return;
+        var vdo = new VdoRef(vdoPtr);
+        long elem = vdo.ElemItems, vert = vdo.VertItems;
+        if (elem == 0 || vert == 0 || item < 0 || item >= vdo.ElemCount || item >= vdo.VertCount) return;
+        int count = *(int*)(elem + item * 8 + 4);
+        long first = (uint)*(int*)(elem + item * 8);
+        int baseVertex = *(int*)(vert + item * 8);
+        byte* elemHost = OwnedBuffers.PoolHost(vdo.ElemToken);
+        byte* vertHost = OwnedBuffers.PoolHostByName(_vNrm[s].Buf, vdo.VertToken, vdo.DynToken);
+        if (elemHost == null || vertHost == null || count <= 0) { NormalWeld.Refused++; return; }
+        NormalWeld.Run(elemHost, vertHost, first, count, baseVertex, in _vPos[s], in _vNrm[s]);
+    }
+
     /// <summary>#284: RESIDENCY IS ALLOY'S TO DRIVE, part two. A <c>VertexDataObject</c>'s GL VAO is created
     /// LAZILY, by the engine's draw: <c>VertexDataObjectBase</c>'s constructor zeroes +0xc and the ONLY other
     /// writer of that field in the binary is <c>GLRender::SetVertexDataObject</c> @0x4cff30, whose

@@ -445,6 +445,9 @@ public sealed unsafe partial class AlloyRenderer
         // guard), so a per-frame deref would be a new way to touch a freed gob. A gob does not become a
         // tile or stop being one.
         _oTileGob[i] = c.Gob != IntPtr.Zero && *(IntPtr*)(c.Gob + GobTileData) != IntPtr.Zero;
+        // #144 retry: gob parts only (heads, bodies, placeables -- the low-poly flat-normal content);
+        // tiles carry deliberate creases by the tens of thousands of verts and stay as authored.
+        if (!kept && lit && c.Gob != IntPtr.Zero && !_oTileGob[i]) WeldNormals(c.Vdo, c.Item, v);
         for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBboxMin + b * 4);   // #336: +0x64..+0x78
         // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
         // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.

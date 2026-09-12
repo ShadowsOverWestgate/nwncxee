@@ -315,6 +315,24 @@ internal static unsafe class OwnedBuffers
         return p != null && *(uint*)(p + PoolName) != 0;
     }
 
+    /// <summary>The host shadow of the pool this token names, or null. #144 retry: the normal weld reads
+    /// and rewrites vertex bytes here, the same block <see cref="Upload"/> pushes, so nothing is read back.</summary>
+    internal static byte* PoolHost(uint token)
+    {
+        byte* p = Pool(token);
+        return p == null ? null : *(byte**)p;
+    }
+
+    /// <summary>The host shadow behind a GL buffer name, looked up among a VDO's two vertex pools -- a
+    /// stream's <c>Buf</c> is a pool NAME, and which pool holds it is the descriptor's to say.</summary>
+    internal static byte* PoolHostByName(uint name, uint tokA, uint tokB)
+    {
+        byte* a = Pool(tokA), b = Pool(tokB);
+        if (a != null && *(uint*)(a + PoolName) == name) return *(byte**)a;
+        if (b != null && *(uint*)(b + PoolName) == name) return *(byte**)b;
+        return null;
+    }
+
     /// <summary>The engine is deleting this GL buffer name -- <c>DeletePool</c> @0x4d1d80 routes here for
     /// every named pool it releases, which is the pool's death and ours. The name and the token both go back
     /// into circulation, so the row must go with them.

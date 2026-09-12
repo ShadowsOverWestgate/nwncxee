@@ -136,8 +136,9 @@ internal static unsafe class AlloyLights
     /// <para>This is what the community's GL 3.3 "light wrapping" shaders do, and the reason they exist:
     /// NWN's meshes are low-poly with smoothed vertex normals, so the terminator crosses a whole facet as
     /// one straight hard crease. Unlike <see cref="_wrap"/> it does NOT fall off with distance -- the
-    /// facets are the same size however far away the light is.</para></summary>
-    private static float _wrapN = 0.25f;
+    /// facets are the same size however far away the light is. Ships at 1 (was 0.25, imperceptible live);
+    /// it widens the terminator band only -- a per-face normal jump is <see cref="NormalWeld"/>'s.</para></summary>
+    private static float _wrapN = 1f;
     /// <summary>#375 follow-up: the stock SUBSURFACE term's wrap. sow-topdata's inc_lighting.shd at
     /// SHADER_QUALITY_MODE &gt; 1 adds, per light and on top of the Lambert term,
     /// <c>L * att * max(0, dot(Nvertex, L) + w) * 2/(2 + PI*w)</c> (LIGHT_SUBSURFACE_SCATTERING_WRAP 0.38,
@@ -195,7 +196,7 @@ internal static unsafe class AlloyLights
     /// hardcoded defaults -- otherwise a reset would silently discard the launch config.</summary>
     private static float _bootGain = 1f, _bootRadius = 1f, _bootPow = 1f,
                          _bootAmbient = 1f, _bootSun = 1f, _bootOver = 1f;
-    private static float _bootHot = 0f, _bootHotSize = 0.15f, _bootWrapN = 0.25f, _bootSss = 0.25f;
+    private static float _bootHot = 0f, _bootHotSize = 0.15f, _bootWrapN = 1f, _bootSss = 0.25f;
     private static float _bootWrap = 1f, _bootShadowSoft = 0f, _bootShadowNear = 1f, _bootDiscPx = 3f;
 
     /// <summary>Current tuning, one line, for the <c>/light</c> echo and the arm-time log.</summary>

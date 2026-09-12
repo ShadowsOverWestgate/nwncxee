@@ -1076,7 +1076,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>The Alloy pass's live dials, for the <c>/draw</c> echo and the arm-time line.</summary>
     internal static string DescribeTuning() =>
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
-        $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  " +
+        $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  weld {NormalWeld.Angle:F0}deg ({NormalWeld.Parts} parts, {NormalWeld.Welded} welded/{NormalWeld.Kept} kept/{NormalWeld.Refused} refused; newcomers only)  " +
         $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
         $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  blendprepass {(_blendPrepass ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
         $"fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  " +
@@ -1128,6 +1128,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // #336's A/B: 0 = cull at the engine's far plane, as before. "Something vanished at the fog line"
             // needs a bisect, and this is the known-good half of it.
             case "fogcull":  old = CullPass.FogCull ? 1f : 0f; CullPass.FogCull = v != 0f; break;
+            case "weld":     old = NormalWeld.Angle; NormalWeld.Angle = Math.Clamp(v, 0f, 180f); break;
             case "hldiag":   old = HlDiag ? 1f : 0f; HlDiag = v != 0f; break;
             // #350: the scriptable block as the client table holds it NOW -- the numbers a hosted content
             // stage gates on (snow, wet, rain). A print, not a dial; the value is ignored.
