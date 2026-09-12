@@ -152,7 +152,7 @@ internal static unsafe partial class GrassField
     /// the code defaults now that the dials are chat commands (ADR 0013): there is no earlier value to
     /// capture, so the constants are the single source for both the field initialisers and the reset.</summary>
     private const float BootDensity = 2f, BootWind = 1f, BootWindSpeed = 0.001f,
-                        BootSoften = 0f, BootAniso = 8f, BootEdge = 2f,
+                        BootSoften = 1f, BootAniso = 8f, BootEdge = 2f,
                         BootPush = 0.15f, BootPushRadius = 1f, BootPushExtent = 64f,
                         BootCull = 1f, BootCullShrink = 0.8f, BootCullMax = 0f,
                         BootLod = 40f, BootLodMin = 0.02f, BootLodWidth = 0.5f, BootLodHeight = 0.25f,
@@ -1515,7 +1515,7 @@ internal static unsafe partial class GrassField
         uniform int uCast;             // 1 = a shadow view
         uniform float uCastWidth;      // blade width multiplier in a shadow view: a 2-texel blade filters to nothing
         uniform int uLit;              // 0 = no cluster build this pass
-        uniform float uShade;          // past this, ambient + unshadowed sun only (no rig at all)
+        uniform float uShade;          // past this, the sun goes unshadowed (the per-vertex rig still runs)
         uniform vec3 uAreaAmbient;
         uniform vec3 uAreaDiffuse;
         uniform vec3 uAreaDir;
@@ -1644,7 +1644,9 @@ internal static unsafe partial class GrassField
             // The cluster loop per vertex: the blade's normal is flat, so the point-light sample point moves
             // from the pixel to the vertex. The SUN's shadow stays per fragment (#196): a neighbouring
             // blade's shadow is thinner than the gap between two vertices and averaged away here.
-            if (uVLit != 0 && dist <= uShade)
+            // Not gated by uShade: past it only the SHADOW taps stop. A blade is a handful of vertices, and
+            // without its point lights a night field past 40u went black under lit lamps.
+            if (uVLit != 0)
             {
                 sowxClusterXY = (gl_Position.xy / max(gl_Position.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
                 vLight = uLit != 0 ? SowxClusteredDiffuse(vWorld, vNrm, vDepth) : vec3(0.0);
@@ -1665,9 +1667,17 @@ internal static unsafe partial class GrassField
             // The cell edge, inset by one texel OF THE MIP THIS FOOTPRINT SELECTS: a coarse level's filter
             // reaches across the atlas seam otherwise, and the card's top row takes the next cell's colour --
             // the black dashes riding the far field's tips.
-            vec2 inset = exp2(textureQueryLod(uTex, uv).x) / vec2(textureSize(uTex, 0));
+            float lod = textureQueryLod(uTex, uv).x;
+            vec2 inset = exp2(lod) / vec2(textureSize(uTex, 0));
             uv = clamp(uv, vCellBase + inset, vCellBase + 0.5 - inset);
-            return textureGrad(uTex, uv, gx, gy);
+            vec4 t = textureGrad(uTex, uv, gx, gy);
+            // #371: the chain is a plain box average of straight-alpha texels over black backing, so every
+            // coarser level's colour is pulled toward black by its transparent neighbours -- the soften
+            // darkening. Dividing by the level's alpha recovers the alpha-weighted mean; level 0 is exact as
+            // sampled, so the correction ramps in with the level actually selected. The gain is capped at 2x:
+            // uncapped, near-transparent fringe texels blow up into bright sparks (the ratio is noise there).
+            t.rgb /= mix(1.0, max(t.a, 0.5), clamp(lod, 0.0, 1.0));
+            return t;
         }
         """;
 
@@ -1683,7 +1693,7 @@ internal static unsafe partial class GrassField
 
         """ + AlloyRenderer.FeatDecl + AlloyRenderer.KeyFogDecl + """
         uniform sampler2D uTex;
-        uniform float uShade;                   // #355: past this, ambient + unshadowed sun only
+        uniform float uShade;                   // #355: past this, no shadow or per-fragment cluster taps
         // #347: what VanillaEnvFs aliases as texUnit6. Declared, never bound and never sampled here --
         // nothing spliced into this stage reads it since #350. It is present so a content file that names
         // texUnit6 still COMPILES; an unused sampler is dead-code eliminated and its location resolves to
@@ -1757,7 +1767,7 @@ internal static unsafe partial class GrassField
             // cannot be seen on it and are not taken. Divergent, but blades cluster by distance.
             bool near = vDist <= uShade;
             vec3 sunpoint;
-            if (uVLit != 0) sunpoint = near ? uAreaDiffuse * (ndl * SowxSunShadow(vWorld, N, ndl, ndl)) + vLight : uAreaDiffuse * ndl;
+            if (uVLit != 0) sunpoint = uAreaDiffuse * (near ? ndl * SowxSunShadow(vWorld, N, ndl, ndl) : ndl) + vLight;
             else
             {
                 vec3 sun = uAreaDiffuse * (near ? ndl * SowxSunShadow(vWorld, N, ndl, ndl) : ndl);
