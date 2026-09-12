@@ -440,6 +440,9 @@ public sealed unsafe class SceneInputs : IExtenderService
                        $"diffuse=({FrameInputs.AreaDiffuse.X:F3},{FrameInputs.AreaDiffuse.Y:F3},{FrameInputs.AreaDiffuse.Z:F3}) " +
                        $"dir=({FrameInputs.AreaDiffuseDir.X:F3},{FrameInputs.AreaDiffuseDir.Y:F3},{FrameInputs.AreaDiffuseDir.Z:F3}) " +
                        $"hasAmb={FrameInputs.HasAreaAmbient} hasDif={FrameInputs.HasAreaDiffuse} | ENGINE {FrameRead.EngineAreaTerms()}");
+        // the fog cut's metric, once per frame (PlayerPos is an engine-memory read)
+        float fogOpaque = CullPass.FogCull ? SceneFog.OpaqueDistance() : float.PositiveInfinity;
+        Vector3 fogOrigin = SceneFog.Origin(out _);
         for (int i = 0; i < count; i++)
         {
             byte* p = (byte*)*((IntPtr*)data + i);
@@ -513,12 +516,14 @@ public sealed unsafe class SceneInputs : IExtenderService
                 // #336: a light whose whole lit sphere sits past the fog's opaque distance shades nothing
                 // visible, and this same predicate gates its cube BAKE -- which is what stopped the fully
                 // fogged half of the street from baking six 512 faces apiece.
-                float cullFar = CullPass.FogCull
-                    ? MathF.Min(FrameInputs.CamFar, SceneFog.OpaqueDistance()) : FrameInputs.CamFar;
+                float cullFar = FrameInputs.CamFar;
                 bool vis = _lightCullMode == 1 || _focus == default
                     ? (pos - FrameInputs.CameraPos).LengthSquared() < (cullFar + slackR) * (cullFar + slackR)
                     : ShadowMath.SphereInCameraFrustum(pos, slackR, FrameInputs.CameraPos, _focus,
                                                        FrameInputs.CamFovy, FrameInputs.CamAspect, FrameInputs.CamNear, cullFar);
+                // ...measured the way the fog is, from SceneFog.Origin (the view-depth fallback keeps the
+                // old camera-radius approximation).
+                if (vis && fogOpaque < float.PositiveInfinity && (pos - fogOrigin).Length() - slackR > fogOpaque) vis = false;
                 if (!vis)
                 {
                     _lightsCulled++;

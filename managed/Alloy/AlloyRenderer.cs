@@ -381,6 +381,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
     /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
     private static int _locTint = -1;
+    private static int _locSkyFog;
     /// <summary>#121: this draw is going into the <see cref="EnvProbe"/> cube, not onto the screen. The lit
     /// and water stages read it, so a capture never samples the probe -- which is currently an attachment of
     /// the framebuffer being drawn into. Since #132 it says nothing about COLOUR SPACE any more: the screen
@@ -1910,7 +1911,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#341 adds the eye and the four fog-target terms: the fog colour is direction-dependent
     /// now, so every stage that fogs uploads the same five values through <see cref="UploadFog"/>.</summary>
     internal unsafe struct FeatLoc { internal int Time, Wind, Flags, Cam, CamFocus, Player, Fog, FogColor, KhDia, KhCam,
-                                       Pixel, Eye, FogSky, FogSkyColor, FogSun, FogSunColor, LodBias,
+                                       Pixel, Eye, FogSky, FogSkyColor, FogSun, FogSunColor, FogOrigin, LodBias,
                                        TgtShapeL, TgtSelfL, TgtObjL, TgtSizeXL, TgtSizeYL, TgtRangeL,
                                        TgtColL, TgtWorldL, ProjL;
         /// <summary>#551: the WHOLE scriptable block, by location. Picking entries one feature at a time

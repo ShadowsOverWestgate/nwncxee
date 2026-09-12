@@ -143,6 +143,7 @@ public sealed unsafe partial class AlloyRenderer
             _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz"); _locOit = GlProgram.Loc(prog, "uOit");
             _locCut = GlProgram.Loc(prog, "uAlphaCut");
             _locTint = GlProgram.Loc(prog, "uTint");
+            _locSkyFog = GlProgram.Loc(prog, "uSkyFog");
             _locFeat = FeatLocs(prog);
             _log?.Info("AlloyRenderer: fullbright program ready (4.6 context)");
         }
@@ -405,6 +406,7 @@ public sealed unsafe partial class AlloyRenderer
         FogSkyColor = GlProgram.Loc(prog, "uFogSkyColor"),
         FogSun = GlProgram.Loc(prog, "uFogSun"),
         FogSunColor = GlProgram.Loc(prog, "uFogSunColor"),
+        FogOrigin = GlProgram.Loc(prog, "uFogOrigin"),
         // #346: the ENGINE's own uniform names, because the stage compiles the engine's own file. Renaming
         // any of these means editing spliced content, which is the drift the bridge exists to end.
         TgtShapeL = GlProgram.Loc(prog, "targetShape"),

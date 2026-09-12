@@ -1418,6 +1418,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.UniformMatrix4fv(_locVp, 1, 0, (float*)vp);
         UploadFeatureTerms(_locFeat, viewport);
         Gl.Uniform1f(_locCut, -1f);          // the engine draws the sky with the discard off
+        Gl.Uniform1f(_locSkyFog, SceneFog.SkyBand);
         // DEPTH_CLAMP because the composed matrices sit under the ENGINE's sky projection (RenderSkyBoxes
         // replaces it with its own near/far) and are drawn under the world's: the dome can cross the world
         // far plane, and clipped it reads as a hole at the horizon with nothing in the log.
@@ -1451,6 +1452,7 @@ public sealed unsafe partial class AlloyRenderer
             Gl.MultiDrawElementsBaseVertex(_skMode[i], counts + s, GlUnsignedShort, (void**)(offs + s), 1, bases + s);
             _batches++; _draws++;
         }
+        Gl.Uniform1f(_locSkyFog, 0f);   // program state outlives the pass: no later unlit draw inherits the band
         // #136: the hosted-program parts last, inside the same depth/cull/blend preamble.
         SkyEnginePass();
         if (_seN > 0 && _progSkyDecode != 0 && Gl.TextureBarrier != null && PostChain.HdrTex != 0)

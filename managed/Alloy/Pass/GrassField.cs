@@ -873,6 +873,10 @@ internal static unsafe partial class GrassField
         // by count from _lod outward, and a blade the ramp would have dithered is simply not drawn instead.
         float nearDist = farDist * 0.85f;
         if (farDist <= nearDist) farDist = nearDist + 1f;
+        // A patch wholly past the fog's opaque distance is a fully-fogged pixel the ground already is; the
+        // engine's grass option runs to 173u and the fog end is commonly 125u, so it was never cut.
+        float opaque = CullPass.FogCull ? SceneFog.OpaqueDistance() : float.PositiveInfinity;
+        Vector3 fogOrigin = SceneFog.Origin(out _);
 
         // Every grass texture resolved BEFORE anything else: AurTextureGet's create path (first sight of a
         // resref) can touch GL and rebind buffers, and it must not do that between our binds. Re-fetched
@@ -904,7 +908,7 @@ internal static unsafe partial class GrassField
             if (q.Seen != _frame || q.Count <= 0) continue;
             if (q.Mat < 0 || q.Mat >= MaxGrassMaterials || !live[q.Mat]) { _disabled++; continue; }
             float d = BoxDistance(q.Min, q.Max, eye);
-            if (d > farDist || !Visible(q.Min, q.Max, planes)) { _culled++; continue; }
+            if (d > farDist || BoxDistance(q.Min, q.Max, fogOrigin) > opaque || !Visible(q.Min, q.Max, planes)) { _culled++; continue; }
             _vis[n] = p;
             // material first (a switch costs a texture bind), then near-to-far inside it. The multiplier
             // is 1e5 rather than 1e6 so a float still resolves single world units inside a material.

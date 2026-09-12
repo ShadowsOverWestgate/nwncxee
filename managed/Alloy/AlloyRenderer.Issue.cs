@@ -351,6 +351,7 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.Uniform1i(_locTex, 0);
                     float* white = stackalloc float[3] { 1f, 1f, 1f };
                     Gl.Uniform3fv(_locTint, 1, white);    // ...and white, which is Mat()'s ordinary branch
+                    Gl.Uniform1f(_locSkyFog, 0f);
                     Gl.Uniform1i(_locViz, viz);
                     Gl.Uniform1i(_locOit, _oitOn ? 1 : 0);
                     Gl.UniformMatrix4fv(_locVp, 1, 0, vpRaw);

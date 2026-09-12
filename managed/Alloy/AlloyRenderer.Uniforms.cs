@@ -82,6 +82,8 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform4fv(loc.Fog, 1, px);
         UploadFogColour(loc.FogColor);
         fixed (Vector3* eye = &_eyePos) Gl.Uniform3fv(loc.Eye, 1, (float*)eye);
+        Vector3 origin = SceneFog.Origin(out bool radial);
+        Gl.Uniform4f(loc.FogOrigin, origin.X, origin.Y, origin.Z, radial ? 1f : 0f);
         // The height layer is anchored to the player's feet: an area carries no ground plane to read, and
         // the runtime block is where the engine keeps the one position that tracks them.
         float playerZ = _runtime == null ? 0f : ((float*)(_runtime + RtPlayerPos))[2];

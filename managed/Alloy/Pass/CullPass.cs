@@ -79,7 +79,7 @@ internal static unsafe class CullPass
     private static uint _prog, _progHiZ, _progSort;
     private static bool _failed;
     private static int _uDrawN, _uPlanes, _uHiZ, _uVP, _uPyr, _uPyrSize, _uMaxLod;
-    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye, _uFogCull;
+    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye, _uFogCull, _uFogOrigin;
     private static int _sDrawN, _sCompactBelow;
     private static int _hSrc, _hLevel;
 
@@ -150,7 +150,11 @@ internal static unsafe class CullPass
     /// fogged geometry or the fog-tinted skyfade band. So the test is two conditions, not one -- past the
     /// opaque distance AND entirely below the eye's own height -- which a frustum plane cannot express and
     /// the dispatch can, because it has the sphere. The ground, which is where the measured win was, is
-    /// exactly the half that survives.</para></summary>
+    /// exactly the half that survives.</para>
+    /// <para>What a downward ray reaches is no longer an assumption: the sky stage fogs every ray at or
+    /// below the horizon to the same fully-fogged colour (<see cref="SceneFog.SkyBand"/>), so culled ground
+    /// under a kept building reveals the colour it had. And the distance is measured the way the fog is --
+    /// radially from <see cref="SceneFog.Origin"/> when that is the player, view depth otherwise.</para></summary>
     internal static bool FogCull = DefFogCull;
     internal const bool DefFogCull = true;
 
@@ -240,6 +244,7 @@ internal static unsafe class CullPass
         _uCompactBelow = GlProgram.Loc(_prog, "uCompactBelow");
         _uEye = GlProgram.Loc(_prog, "uEye");
         _uFogCull = GlProgram.Loc(_prog, "uFogCull");
+        _uFogOrigin = GlProgram.Loc(_prog, "uFogOrigin");
         _sDrawN = GlProgram.Loc(_progSort, "uDrawN");
         _sCompactBelow = GlProgram.Loc(_progSort, "uCompactBelow");
         _hSrc = GlProgram.Loc(_progHiZ, "uSrc");
@@ -369,6 +374,8 @@ internal static unsafe class CullPass
         // is provably fogged out.
         float opaque = FogCull ? SceneFog.OpaqueDistance() : float.PositiveInfinity;
         Gl.Uniform1f(_uFogCull, float.IsInfinity(opaque) ? 0f : opaque);
+        Vector3 origin = SceneFog.Origin(out bool radial);
+        Gl.Uniform4f(_uFogOrigin, origin.X, origin.Y, origin.Z, radial ? 1f : 0f);
         bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0 && _pyrGen == gen;
         Gl.Uniform1i(_uHiZ, useHiZ ? 1 : 0);
         if (useHiZ)
@@ -884,6 +891,7 @@ internal static unsafe class CullPass
         uniform int uCompactBelow;
         uniform vec3 uEye;
         uniform float uFogCull;  // #341: fog-opaque distance, or 0 for no fog cull
+        uniform vec4 uFogOrigin; // xyz = the player's feet, w = 1 radial from it, 0 = view depth (as the fog)
 
         // One pyramid tap, addressed through the LEVEL-0 grid rather than the level's own.
         // This is the fix for #243's first live bug. `textureLod(uv, L)` maps uv across the width of level
@@ -961,10 +969,13 @@ internal static unsafe class CullPass
                 if (keep && !sorted && SowxSubPixel(s.xyz, s.w)) keep = false;
                 if (keep && uHiZ != 0 && SowxOccluded(s.xyz, s.w)) keep = false;
                 // #341: past the fog's opaque distance AND entirely below the eye -- see CullPass.FogCull
-                // for why both. The clip w of the centre is the same view depth the fog ramps on, and the
-                // radius is subtracted so a sphere reaching back inside the fog is kept whole.
-                if (keep && uFogCull > 0.0 && s.z + s.w < uEye.z
-                    && (uVP * vec4(s.xyz, 1.0)).w - s.w > uFogCull) keep = false;
+                // for why both. The distance is the fog's own metric (SowxFogFactor), and the radius is
+                // subtracted so a sphere reaching back inside the fog is kept whole.
+                if (keep && uFogCull > 0.0 && s.z + s.w < uEye.z)
+                {
+                    float d = uFogOrigin.w > 0.0 ? length(s.xyz - uFogOrigin.xyz) : (uVP * vec4(s.xyz, 1.0)).w;
+                    if (d - s.w > uFogCull) keep = false;
+                }
             }
             if (sorted)
             {

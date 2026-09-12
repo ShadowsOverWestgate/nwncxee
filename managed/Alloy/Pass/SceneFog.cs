@@ -50,9 +50,19 @@ internal static unsafe class SceneFog
     /// <summary>How high above the layer floor <see cref="OpaqueDistance"/> is willing to assume geometry
     /// reaches. Only used while <see cref="HeightK"/> is on: see that method.</summary>
     internal static float CullZ = DefCullZ;
+    /// <summary>Fog measured radially from the player's feet rather than in the camera's view depth, so
+    /// zooming the camera out does not push the fog with it. The cull, the light cut and the grass cut
+    /// measure the same way through <see cref="Origin"/>, or a cut shows where the fog is not yet total.
+    /// Diverges from vanilla on purpose; <c>/fog origin 0</c> is the engine's metric.</summary>
+    internal static bool OriginPlayer = DefOriginPlayer;
+    /// <summary>The sky stage's horizon band, in ray elevation (dir.z): rays at or below the horizon are
+    /// fully fogged, fading to the raw dome this far above it. It is what makes the dome's lower half the
+    /// colour culled ground had converged to. 0 = the dome is not fogged at all (the #341 seam is back).</summary>
+    internal static float SkyBand = DefSkyBand;
 
     internal const float DefSkyMix = 0.75f, DefSunAmount = 0.35f, DefSunExp = 8f,
-                         DefHeightK = 0f, DefFloorOffset = 0f, DefCullZ = 30f;
+                         DefHeightK = 0f, DefFloorOffset = 0f, DefCullZ = 30f, DefSkyBand = 0.15f;
+    internal const bool DefOriginPlayer = true;
 
     /// <summary>The sky colour the fog converges to, LINEAR. Zero until a sky texture has been read, which
     /// is what <see cref="_haveSky"/> reports and what makes the term stand down to the author's colour.
@@ -191,9 +201,10 @@ internal static unsafe class SceneFog
     /// <summary>The distance past which a fragment is FULLY fogged, and therefore the distance the cull may
     /// throw geometry away at (<see cref="CullPass.FogCull"/>). Infinity means "nothing is provably opaque",
     /// which stands the fog cull down.
-    /// <para>With the plain ramp that distance IS <c>FogEnd</c>, which is what #336 culled at. The height
-    /// falloff breaks that: fog thinned by height reaches 1.0 further out, and how much further depends on
-    /// the fragment's own Z, which a far PLANE cannot ask. So the plane is placed for geometry
+    /// <para>With the plain ramp that distance IS <c>FogEnd</c>, which is what #336 culled at, measured the
+    /// way the fog is (<see cref="Origin"/>). The height falloff breaks that: fog thinned by height reaches
+    /// 1.0 further out, and how much further depends on the fragment's own Z, which a distance cannot ask.
+    /// So the cut is placed for geometry
     /// <see cref="CullZ"/> above the layer floor and anything higher than that is the ceiling this trades
     /// against -- a tower top past that distance can be culled while still a shade short of opaque. The
     /// number is on <see cref="Describe"/> next to the camera's own far plane, because past that the whole
@@ -208,6 +219,16 @@ internal static unsafe class SceneFog
         return FrameInputs.FogStart + span * MathF.Exp(HeightK * MathF.Max(CullZ, 0f));
     }
 
+    /// <summary>Where the fog is measured from. <paramref name="radial"/> is true when it is the player's
+    /// feet (a sphere); false means the engine's view depth and the point returned is the pass eye, which is
+    /// what a radial test against it degrades to.</summary>
+    internal static Vector3 Origin(out bool radial)
+    {
+        Vector3 p = AlloyRenderer.PlayerPos;
+        radial = OriginPlayer && p != default;
+        return radial ? p : AlloyRenderer.EyePos;
+    }
+
     internal static string Describe()
     {
         float opaque = OpaqueDistance();
@@ -215,7 +236,7 @@ internal static unsafe class SceneFog
                $"{_sky.X:F2},{_sky.Y:F2},{_sky.Z:F2})  sun {SunAmount:F2} exp {SunExp:F1}  " +
                $"height {HeightK:F3}/unit floor {FloorOffset:F1}  " +
                $"[opaque {(float.IsInfinity(opaque) ? "--" : opaque.ToString("F0"))} " +
-               $"cullz {CullZ:F0} camfar {FrameInputs.CamFar:F0}]";
+               $"cullz {CullZ:F0} camfar {FrameInputs.CamFar:F0}]  origin {(OriginPlayer ? "player" : "camera")} skyband {SkyBand:F2}";
     }
 
     internal static float Tune(string key, float v)
@@ -230,6 +251,8 @@ internal static unsafe class SceneFog
             case "height": old = HeightK; HeightK = v; break;
             case "floor":  old = FloorOffset; FloorOffset = v; break;
             case "cullz":  old = CullZ; CullZ = v; break;
+            case "origin": old = OriginPlayer ? 1f : 0f; OriginPlayer = v > 0f; break;
+            case "skyband": old = SkyBand; SkyBand = v; break;
             default: return float.NaN;
         }
         _log?.Info($"SceneFog: /fog {key} {v:F3} (was {old:F3}) -> {Describe()}");
@@ -240,6 +263,7 @@ internal static unsafe class SceneFog
     {
         SkyMix = DefSkyMix; SunAmount = DefSunAmount; SunExp = DefSunExp;
         HeightK = DefHeightK; FloorOffset = DefFloorOffset; CullZ = DefCullZ;
+        OriginPlayer = DefOriginPlayer; SkyBand = DefSkyBand;
     }
 
     /// <summary>Off-device: the two pieces that are arithmetic rather than GL. The cull distance is the one
@@ -279,6 +303,12 @@ internal static unsafe class SceneFog
         SkyfadeTint(rgb);
         E(MathF.Abs(rgb[0] - 0.5f) < 1e-4f,
           "no sky staged leaves the band on the author's colour whatever the mix says");
+
+        // /fog origin 0 is the engine's metric: view depth, measured from the pass eye -- not a sphere
+        // around wherever the player happens to stand.
+        bool origWas = OriginPlayer; OriginPlayer = false;
+        E(!(Origin(out bool radial) != AlloyRenderer.EyePos) && !radial, "origin 0 is view depth from the pass eye");
+        OriginPlayer = origWas;
 
         FrameInputs.FogOn = onWas; FrameInputs.FogStart = sWas; FrameInputs.FogEnd = eWas;
         FrameInputs.FogColor = cWas;

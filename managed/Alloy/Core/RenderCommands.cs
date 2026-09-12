@@ -27,8 +27,9 @@ internal static class RenderCommands
     // which is the only thing keeping cloaks out of the wearer's legs, so it trades sway for clipping.
     private const string DanglyKeys = "on|gravity|wind|turb|turbfreq|turbspeed|vary|breeze|body|cage|hz|steps";
     // #341: the fog TARGET. "height" is the one that changes density rather than colour, and it
-    // boots at 0 for that reason; "cullz" is the assumption the fog cull is allowed to make.
-    private const string FogKeys = "sky|sun|sunexp|height|floor|cullz";
+    // boots at 0 for that reason; "cullz" is the assumption the fog cull is allowed to make. "origin" 1 =
+    // radial from the player (0 = the engine's view depth); "skyband" = the dome's horizon fog, 0 = off.
+    private const string FogKeys = "sky|sun|sunexp|height|floor|cullz|origin|skyband";
     // #379: the screen-space ambient occlusion pass; the ON/OFF is the client's own SSAO option, "on" here is
     // the bypass for an A/B.
     private const string AoKeys = "on|radius|power|dirs|steps|maxpx|blur|direct|temporal";

@@ -339,8 +339,11 @@ internal static class ShaderContract
                   // not a convenience -- a stage that passed the wrong point fogs toward the sky over
                   // somewhere else. And the ramp stays the area author's: the factor is still the engine's
                   // linear lerp between fogParams.y and its reciprocal span, with the height layer as a
-                  // MULTIPLIER on it rather than a second curve.
-                  && FogFs.Contains("float f = (depth - uFogParams.y) * uFogParams.w;")
+                  // MULTIPLIER on it rather than a second curve. What the ramp is measured ALONG is the one
+                  // thing that changed: radial from the player when uFogOrigin.w says so, else view depth --
+                  // and CullPass measures the same way (its own SelfCheck), or the cut shows.
+                  && FogFs.Contains("float d = uFogOrigin.w > 0.0 ? distance(world, uFogOrigin.xyz) : depth;")
+                  && FogFs.Contains("float f = (d - uFogParams.y) * uFogParams.w;")
                   && FogFs.Contains("f *= exp(-max(world.z - uFogSky.z, 0.0) * uFogSky.y);")
                   // ...and the sky and sun pulls are scaled by the fog itself, so a lightly fogged surface
                   // keeps the colour the area builder set and only a saturated one converges on the sky.
@@ -374,8 +377,11 @@ internal static class ShaderContract
                   // base_shaders.bif compiles FOG 0 and KEYHOLING 0 -- fst/fst_sm/fsglu (textured) and
                   // fs/fstc (untextured) alike -- so an unlit part that fogged or dissolved here would be
                   // doing to a part something vanilla never does to it. Asserted rather than commented:
-                  // both are one line to add back and neither would look obviously wrong.
-                  && !OwnedFs.Contains("SowxKeyhole") && !OwnedFs.Contains("SowxFog")
+                  // both are one line to add back and neither would look obviously wrong. What it DOES
+                  // carry is the fog's mix alone, for the sky's horizon band (SceneFog.SkyBand) -- an
+                  // elevation term, never the distance ramp.
+                  && !OwnedFs.Contains("SowxKeyhole") && !OwnedFs.Contains("SowxFogFactor") && !OwnedFs.Contains("SowxFog(")
+                  && OwnedFs.Contains("if (uSkyFog > 0.0 && uFogParams.x != 0.0)")
                   // ...and the prepass punches the SAME aperture the colour pass will. Both stages call the
                   // one SowxKeyhole out of KeyFogFs, so they cannot drift by a constant -- but a stage that
                   // lost the call writes depth over fragments the colour pass then discards, and the room

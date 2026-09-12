@@ -187,6 +187,7 @@ public sealed unsafe partial class AlloyRenderer
         uniform vec3 uFogSkyColor;     // #341: LINEAR sky colour the fog converges toward
         uniform vec4 uFogSun;          // #341: (world direction toward the sun, in-scatter exponent)
         uniform vec3 uFogSunColor;     // #341: LINEAR sun colour, already scaled by the in-scatter strength
+        uniform vec4 uFogOrigin;       // fog origin: xyz = the player's feet, w = 1 radial from it, 0 = view depth
 
         """;
 
@@ -295,19 +296,31 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>The ramp is untouched engine: <c>GetFog</c>'s linear lerp between the area author's start and
     /// end, in view depth. What #341 changes is the two ends of it -- the target colour is built per ray
     /// instead of being one constant, and the factor can be thinned by height.</para></summary>
-    internal const string FogFs = """
+    internal const string FogFs = FogMixFs + """
 
         /// How fogged this fragment is, 0..1. The area author's ramp, times the height layer.
         float SowxFogFactor(vec3 world, float depth)
         {
             if (uFogParams.x == 0.0) return 0.0;
-            float f = (depth - uFogParams.y) * uFogParams.w;
+            // radial from the player (uFogOrigin.w == 1), so zooming the camera out does not move the fog;
+            // else the engine's own view depth. CullPass measures the same way, or the cut shows.
+            float d = uFogOrigin.w > 0.0 ? distance(world, uFogOrigin.xyz) : depth;
+            float f = (d - uFogParams.y) * uFogParams.w;
             if (f <= 0.0) return 0.0;
             // #341: fog as a LAYER, thinning above uFogSky.z. Off (uFogSky.y == 0) is the boot default and
             // the author's ramp alone -- this is the one term here that changes density rather than colour.
             if (uFogSky.y > 0.0) f *= exp(-max(world.z - uFogSky.z, 0.0) * uFogSky.y);
             return min(f, 1.0);
         }
+        vec3 SowxFog(vec3 lin, vec3 world, float depth) { return SowxFogMix(lin, world, SowxFogFactor(world, depth)); }
+
+        """;
+
+    /// <summary>The fog's target colour and the lerp, with the FACTOR left to the caller. The sky stage
+    /// takes this half alone: vanilla compiles every unlit stage FOG 0, so the fullbright stage must never
+    /// fog by distance -- it fogs the dome by ELEVATION, which is the one term the distance ramp cannot
+    /// reach (<see cref="SceneFog.SkyBand"/>).</summary>
+    internal const string FogMixFs = """
 
         /// The LINEAR colour a fogged fragment mixes toward along this ray. Three weights, all of them
         /// direction or depth -- none touches the ramp:
@@ -332,9 +345,8 @@ public sealed unsafe partial class AlloyRenderer
         /// it builds up late and then slams, where the engine's ramp is even. #132 moved this across the
         /// encode and #336 moved it back; #341 keeps it there and fixes what batch 2 left half-done, which
         /// was a display-space source mixed toward a LINEAR target. Both ends are encoded here, once.
-        vec3 SowxFog(vec3 lin, vec3 world, float depth)
+        vec3 SowxFogMix(vec3 lin, vec3 world, float f)
         {
-            float f = SowxFogFactor(world, depth);
             if (f <= 0.0) return lin;
             vec3 g = vec3(1.0 / $SRGB$);
             vec3 disp = mix(pow(max(lin, vec3(0.0)), g),
@@ -681,6 +693,7 @@ public sealed unsafe partial class AlloyRenderer
         invariant gl_Position;
         out vec2 vUV;
         flat out float vAlpha;         // #126: the per-draw alpha multiplier, forwarded rather than re-read
+        out vec3 vWorld;               // the sky band's ray
 
         """ + FeatVs + BoneVs + """
         void main()
@@ -698,6 +711,7 @@ public sealed unsafe partial class AlloyRenderer
             else gl_Position = uVP * d.model * pos;
             vUV = vec2(d.rot.x * aUV.x - d.rot.y * aUV.y, d.rot.y * aUV.x + d.rot.x * aUV.y);
             vAlpha = d.rot.w;
+            vWorld = (d.model * pos).xyz;
         }
         """;
     /// <summary>The unlit variant: the engine draws these parts with lighting disabled (MatStatic's flat-white
@@ -706,9 +720,15 @@ public sealed unsafe partial class AlloyRenderer
         #version 460 core
         in vec2 vUV;
         flat in float vAlpha;
+        in vec3 vWorld;
         uniform sampler2D uTex;
         uniform float uLodBias;        // #391
         uniform int uViz;
+        // The sky draws set this to the horizon band's width in ray-elevation (dir.z): every ray at or
+        // below the horizon is FULLY fogged, fading to the raw dome by that much above it. 0 = an ordinary
+        // unlit part, which is never fogged. Culled ground reveals the dome's lower half, and this is what
+        // makes that half the exact colour the ground had converged to (CullPass.FogCull).
+        uniform float uSkyFog;
         // #126: the engine's fAlphaDiscardValue -- 0.2 on the classes it draws under Enable(1), -1.0 (i.e.
         // no test at all) on the rest. A uniform here because the class is a per-batch fact.
         uniform float uAlphaCut;
@@ -721,6 +741,8 @@ public sealed unsafe partial class AlloyRenderer
         layout(location = 1) out float oReveal;
         // OIT (OitPass): 1 = write the weighted-blended accumulation pair instead of a composited colour.
         uniform int uOit;
+
+        """ + FogDecl + FogMixFs + """
         vec4 SowxOitOut(vec4 c)
         {
             if (uOit == 0) { oReveal = 1.0; return c; }
@@ -740,6 +762,9 @@ public sealed unsafe partial class AlloyRenderer
             // spelled out because this stage does not include that lib.
             vec3 tinted = t.rgb * uTint;
             vec3 rgb = pow(max(tinted, vec3(0.0)), vec3($SRGB$));
+            // the sky's horizon band only -- an unlit PART is never fogged (vanilla compiles it FOG 0)
+            if (uSkyFog > 0.0 && uFogParams.x != 0.0)
+                rgb = SowxFogMix(rgb, vWorld, 1.0 - smoothstep(0.0, uSkyFog, normalize(vWorld - uEyePos).z));
             frag = SowxOitOut(vec4(rgb, t.a * vAlpha));
         }
         """;
