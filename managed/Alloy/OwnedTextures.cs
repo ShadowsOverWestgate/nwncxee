@@ -461,13 +461,13 @@ internal static unsafe class OwnedTextures
     /// the owned name; removed with the name.</summary>
     private struct Stat { public float Holes; public float Graded; public Vector3 Mean; public bool MeanOk; }
     private static readonly Dictionary<uint, Stat> _stats = new();
-    /// <summary>The hole fraction of an owned name (or of the owned copy behind an engine tid). False = the
-    /// name never came through the funnel; the caller tests rather than casts a possible slab.</summary>
-    internal static bool TryHoles(int tid, out float holes)
+    /// <summary>The hole and graded-alpha fractions of an owned name (or of the owned copy behind an engine
+    /// tid). False = the name never came through the funnel; the caller tests rather than casts a possible slab.</summary>
+    internal static bool TryHoles(int tid, out float holes, out float graded)
     {
-        holes = 1f;
+        holes = 1f; graded = 0f;
         if (!TryStat(tid, out Stat st)) return false;
-        holes = st.Holes;
+        holes = st.Holes; graded = st.Graded;
         return true;
     }
     /// <summary>The graded-alpha fraction (see <see cref="TexScan.Result.Graded"/>) of the owned texture behind an

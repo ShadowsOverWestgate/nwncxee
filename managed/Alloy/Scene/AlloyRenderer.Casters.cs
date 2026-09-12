@@ -206,6 +206,9 @@ public sealed unsafe partial class AlloyRenderer
         /// <summary>The material's diffuse alpha is REFLECTIVITY rather than coverage (env-mapped), so its
         /// cutout runs at the threshold that only drops empty texels.</summary>
         public bool EnvAlpha;
+        /// <summary>#363: a blended part -- it casts at its record alpha (<c>rot.w</c>), so it takes the masked
+        /// stage whatever its diffuse says.</summary>
+        public bool Blended;
         /// <summary>The record changed on its last build -- the matrix, the fade, a material colour.</summary>
         public bool RecMoved;
         /// <summary>A <c>PartDanglyMesh</c> the solve displaced this frame or last -- a mover no record compare
@@ -223,9 +226,9 @@ public sealed unsafe partial class AlloyRenderer
     internal static bool TryCaster(int slot, out CasterFacts f)
     {
         f = default;
-        // Only the two classes that can honestly write a binary depth: a blended part is by definition partly
-        // see-through and an additive one emits light. Same rule the caster census applied.
-        if (_oTri[slot] == IntPtr.Zero || _oCls[slot] > (byte)AlloyClass.Cutout) return false;
+        // Opaque, cutout and (#363) blended -- the last at its alpha, through the masked stage's dither. An
+        // additive part emits light and water is its own pass. Same rule the caster census applied.
+        if (_oTri[slot] == IntPtr.Zero || _oCls[slot] > (byte)AlloyClass.Blended) return false;
         // #328: tenancy and tile fade, as the level the record write left -- deliberately NOT the record
         // epoch, see _oEnrollGen for the once-a-second flicker asking the wider question produced.
         if (!_castOk[slot]) { CasterNoRecord++; return false; }
@@ -237,7 +240,9 @@ public sealed unsafe partial class AlloyRenderer
     internal static bool TryCasterGeom(int slot, out CasterFacts f)
     {
         f = default;
-        if (_oTri[slot] == IntPtr.Zero || _oCls[slot] > (byte)AlloyClass.Cutout) return false;
+        if (_oTri[slot] == IntPtr.Zero || _oCls[slot] > (byte)AlloyClass.Blended) return false;
+        f.Blended = _oCls[slot] == (byte)AlloyClass.Blended;
+        if (f.Blended && _oBone[slot] >= 0) return false;   // posed: no mask stage, see SetCastOk
         f.Vdo = _oVdo[slot]; f.Mat = _oMat[slot];
         f.Item = _oItem[slot]; f.Prim = _oPrim[slot]; f.Vao = _oVao[slot];
         f.EnvAlpha = (_oSlots[slot] & EnvSlot) != 0;

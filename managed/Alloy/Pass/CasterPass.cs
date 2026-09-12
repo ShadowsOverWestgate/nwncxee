@@ -264,6 +264,17 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary><c>/shadow maskholes X</c>: the hole fraction (texels under the cutout) from which mode 2 masks.</summary>
     private static float _maskHoles = MaskHolesBoot;
     private const float MaskHolesBoot = 0.65f;
+    /// <summary>#363 <c>/shadow maskgraded X</c>: the graded-alpha fraction from which a diffuse counts as
+    /// glass and takes the masked stage regardless of its holes. Boot = the census's blend threshold, so a
+    /// soft-edged leaf card stays on the hole gate.</summary>
+    private static float _maskGraded = AlloyCensus.GradedBlend;
+    /// <summary>#363 <c>/shadow maskdither N</c>: the shadow-texel block the masked stage's ordered discard
+    /// steps on (1 = per texel, the receiver's PCF averages it; 2 = 2x2 clumps read softer but blotchier);
+    /// 0 = off. Never per-frame: the maps are cached, and a jittering pattern is a permanent mover.</summary>
+    private static int _maskDither = MaskDitherBoot;
+    private const int MaskDitherBoot = 1;
+    /// <summary>Past this the blocks read as a pattern, not a shadow.</summary>
+    private const int MaskDitherMax = 16;
     /// <summary>Frames a cube slot's shadow takes to fade in after its first bake and out after its light
     /// drops from the budget; 0 = pop. A draining slot keeps its depth and its light id and takes no newcomer
     /// until it reaches zero, so the receiver keeps finding it through CubeSlotOf.</summary>
@@ -443,7 +454,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _liveIdxCount[live] = idxCount; _liveFirst[live] = first; _liveBaseVert[live] = baseVert;
         _liveVao[live] = f.Vao; _livePrim[live] = f.Prim; _liveItem[live] = f.Item;
         _liveTex[live] = AlloyRenderer.VdoHasUv(f.Vao) ? MaskTid(f.Mat) : 0;
-        _liveCut[live] = f.EnvAlpha ? EnvAlphaDiscard : CutoutDiscard;
+        _liveCut[live] = f.EnvAlpha ? EnvAlphaDiscard : CutoutDiscard; _liveBlend[live] = f.Blended;
         _liveDyn[live] = false; _liveVisit[live] = 0;
         _liveOff[live] = true; _liveGenOf[live] = AlloyRenderer.SlotEnrollGen(slot);
         _liveIdx[slot] = live; _liveIdxSeq[slot] = _collectSeq;
@@ -621,6 +632,8 @@ public sealed unsafe class CasterPass : IExtenderService
     private static readonly int[] _liveTex = new int[MaxCasters];
     /// <summary>...and the discard threshold that goes with it, staged into the per-caster record.</summary>
     private static readonly float[] _liveCut = new float[MaxCasters];
+    /// <summary>#363: a blended-class caster; routed to the masked stage so its record alpha dithers.</summary>
+    private static readonly bool[] _liveBlend = new bool[MaxCasters];
     /// <summary>Creature casters occupy the head of the live list (#100 stages them first); the static world
     /// follows. Submit uses the split to report what a view actually took.</summary>
     private static int _liveCreatures;
@@ -656,12 +669,12 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>The masked (alpha-tested) depth program and its uniforms. Zero = it could not build, and
     /// masked casters then stay out of every bake.</summary>
     private static uint _progMask;
-    private static int _locMaskVp = -1, _locMaskTex = -1, _locMaskCut = -1;
+    private static int _locMaskVp = -1, _locMaskTex = -1, _locMaskCut = -1, _locMaskDither = -1, _locMaskEnv = -1;
     /// <summary>The masked depth program that samples the mask through the record's bindless handle
     /// (<c>uTexH</c> slot 0) instead of a bound unit, so masked batches no longer split per texture.
     /// Built only when the renderer's bindless path is armed; <c>/shadow maskh 0</c> is the A/B.</summary>
     private static uint _progMaskH, _progLayerMaskH;
-    private static int _locMaskHVp = -1, _locMaskHCut = -1, _locLayerMaskHCut = -1;
+    private static int _locMaskHVp = -1, _locMaskHCut = -1, _locLayerMaskHCut = -1, _locMaskHDither = -1, _locLayerMaskHDither = -1, _locMaskHEnv = -1, _locLayerMaskHEnv = -1;
     private static bool _maskH = true;
     private static bool HandleMaskReady => _maskH && _progMaskH != 0 && (_progLayer == 0 || _progLayerMaskH != 0);
     private static bool _maskHFailed;
@@ -677,7 +690,7 @@ public sealed unsafe class CasterPass : IExtenderService
         {
             _progMaskH = GlProgram.Graphics(CastMaskHVs, CastMaskHFs, _log, "CasterPass handle-masked depth program");
             if (_progMaskH == 0) { _maskHFailed = true; return; }
-            _locMaskHVp = GlProgram.Loc(_progMaskH, "uVP"); _locMaskHCut = GlProgram.Loc(_progMaskH, "uAlphaCut");
+            _locMaskHVp = GlProgram.Loc(_progMaskH, "uVP"); _locMaskHCut = GlProgram.Loc(_progMaskH, "uAlphaCut"); _locMaskHDither = GlProgram.Loc(_progMaskH, "uDither"); _locMaskHEnv = GlProgram.Loc(_progMaskH, "uEnvAlpha");
             _listVer++;
             _log?.Info("CasterPass: handle-sampled masks armed -- masked batches merge per VAO (/shadow maskh 0 is the A/B)");
         }
@@ -685,7 +698,7 @@ public sealed unsafe class CasterPass : IExtenderService
         {
             _progLayerMaskH = GlProgram.Graphics(CastLayerMaskHVs, CastMaskHFs, _log, "CasterPass layered handle-masked depth program");
             if (_progLayerMaskH == 0) { _maskHFailed = true; return; }
-            _locLayerMaskHCut = GlProgram.Loc(_progLayerMaskH, "uAlphaCut");
+            _locLayerMaskHCut = GlProgram.Loc(_progLayerMaskH, "uAlphaCut"); _locLayerMaskHDither = GlProgram.Loc(_progLayerMaskH, "uDither"); _locLayerMaskHEnv = GlProgram.Loc(_progLayerMaskH, "uEnvAlpha");
             _listVer++;
         }
     }
@@ -705,7 +718,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>0 = not yet probed, 1 = the extension is present, -1 = absent (said once; per-view path).</summary>
     private static int _layerProbe;
     private static uint _progLayer, _progLayerMask;
-    private static int _locLayerMaskTex = -1, _locLayerMaskCut = -1;
+    private static int _locLayerMaskTex = -1, _locLayerMaskCut = -1, _locLayerMaskDither = -1, _locLayerMaskEnv = -1;
     private static bool _layerProgFailed;
     /// <summary>The frame's queued stale views. 1024 covers the ceiling population (4 + 4 cascades and
     /// 64 x 6 x 2 cube faces); an overflow renders inline through the per-view path rather than dropping.</summary>
@@ -811,7 +824,7 @@ public sealed unsafe class CasterPass : IExtenderService
     internal static string Describe()
         => $"dist {_maxDist:F0} rebake {(_rebake ? 1 : 0)} " +
            $"gather {CasterGather.Mode} split {(_split ? 1 : 0)} layered {(_layerDial ? 1 : 0)} " +
-           $"refreshall {(_refreshAll ? 1 : 0)} dynhold {_dynHold} dynevents {(_dynEvents ? 1 : 0)} dynranks {_dynRanks} dynfull {_dynFull} sunfull {_sunFull} sunlatch {_sunLatch} itemdirty {(_itemDirty ? 1 : 0)} staticcap {_staticCap} flipcollect {(FlipCollect ? 1 : 0)} mask {_maskMode} maskholes {_maskHoles:0.##} maskh {(_maskH ? 1 : 0)} fade {_fadeFrames} fadeslots {_fadeSlots} " +
+           $"refreshall {(_refreshAll ? 1 : 0)} dynhold {_dynHold} dynevents {(_dynEvents ? 1 : 0)} dynranks {_dynRanks} dynfull {_dynFull} sunfull {_sunFull} sunlatch {_sunLatch} itemdirty {(_itemDirty ? 1 : 0)} staticcap {_staticCap} flipcollect {(FlipCollect ? 1 : 0)} mask {_maskMode} maskholes {_maskHoles:0.##} maskgraded {_maskGraded:0.##} maskdither {_maskDither} maskh {(_maskH ? 1 : 0)} fade {_fadeFrames} fadeslots {_fadeSlots} " +
            $"({_cascades}x{_mapSize} cascades{(_sunSplitCfg ? " + dyn mirror" : "")}, " +
            $"{_cubeLights}x{_cubeSize} cubes, " +
            $"{_cubeDynPages}x{_cubeDynSize} dynamic pool pages)";
@@ -868,6 +881,8 @@ public sealed unsafe class CasterPass : IExtenderService
             case "flipcollect": { float o = FlipCollect ? 1 : 0; FlipCollect = v != 0; return o; }
             case "mask": { float o = _maskMode; _maskMode = Math.Clamp((int)v, -1, 2); _listVer++; return o; }
             case "maskholes": { float o = _maskHoles; _maskHoles = Math.Clamp(v, 0f, 1f); _listVer++; return o; }
+            case "maskgraded": { float o = _maskGraded; _maskGraded = Math.Clamp(v, 0f, 1f); _listVer++; return o; }
+            case "maskdither": { float o = _maskDither; _maskDither = Math.Clamp((int)v, 0, MaskDitherMax); _listVer++; _invalidate = true; return o; }
             case "maskh": { float o = _maskH ? 1 : 0; _maskH = v != 0f; _listVer++; return o; }
             case "fade": { float o = _fadeFrames; _fadeFrames = Math.Max((int)v, 0); return o; }
             case "fadeslots": { float o = _fadeSlots; _fadeSlots = Math.Max((int)v, 0); return o; }
@@ -897,7 +912,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _maskH = true; _listVer++; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; }
+    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _maskGraded = AlloyCensus.GradedBlend; _maskDither = MaskDitherBoot; _maskH = true; _listVer++; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -980,12 +995,20 @@ public sealed unsafe class CasterPass : IExtenderService
         // ...and the cutout stage really discards, at the engine's own threshold. A masked batch drawn by a
         // stage that lost the test writes the whole quad into the shadow map, which is the artefact the
         // masked path exists to remove and looks exactly like the pass working.
-        bool ok = CastMaskFs.Contains("if (texture(uTex, vUV).a <= uAlphaCut) discard;")
+        bool ok = CastMaskFs.Contains("if (t <= uAlphaCut) discard;")
                   && CastMaskFs.Contains("uniform float uAlphaCut;")
+                  && CastMaskFs.Contains("uniform int uDither;") && CastMaskHFs.Contains("uniform int uDither;")
+                  // #363: the stochastic discard, on the SAME sampled alpha, in both mask stages
+                  && CastMaskFs.Contains("if (uDither > 0 && sowxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;")
+                  && CastMaskHFs.Contains("if (uDither > 0 && sowxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;")
                   // The handle-masked stages: the same discard, the mask off the record's handle block at
                   // slot 0, the record index from gl_BaseInstance in both packings.
                   && CastMaskHFs != CastMaskHFsSrc
-                  && CastMaskHFs.Contains("if (texture(uTex, vUV).a <= uAlphaCut) discard;")
+                  && CastMaskHFs.Contains("if (t <= uAlphaCut) discard;")
+                  // ...and both dither on the colour pass's blend weight, the record alpha included
+                  && CastMaskFs.Contains("float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;")
+                  && CastMaskHFs.Contains("float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;")
+                  && CastMaskVs.Contains("vAlpha = d.rot.w;") && CastLayerMaskVs.Contains("vAlpha = d.rot.w;")
                   && CastMaskHFs.Contains($"binding = {AlloyRenderer.BindTexH}")
                   && CastMaskHFs.Contains("(vDraw << 3) + 0]")
                   && CastMaskHVs.Contains("vDraw = gl_BaseInstance;")
@@ -2086,7 +2109,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // inheriting the previous texture's verdict is a wasted fetch in one direction and, in the other, a
         // foliage texture classified as having no alpha: the solid slab back again, intermittently and only
         // after an area transition. That is not a bug anyone would trace.
-        Array.Clear(_texKey); Array.Clear(_texHoles);
+        Array.Clear(_texKey); Array.Clear(_texHoles); Array.Clear(_texGraded);
         _texQueried = 0; _texWithAlpha = 0;
         // #241/#302: the recorded faces describe a world that just went away, and the previous-frame slot
         // list names ownership slots the next enrollment is free to hand to different parts. Both have to go,
@@ -2127,22 +2150,28 @@ public sealed unsafe class CasterPass : IExtenderService
     /// punchthrough blocks). The same full-resolution question is now put to the decoded image at the upload
     /// funnel, where a sparse cutout -- a railing, a rope bridge -- is still counted texel by texel.</summary>
     internal static bool TexHasAlpha(int tid) => TexHoles(tid) > 0f;
+    /// <summary>#363: fraction of level-0 texels that are neither cutout nor opaque -- a glass-imitating
+    /// diffuse at alpha ~0.5. At or above <see cref="_maskGraded"/> the caster takes the masked stage whatever
+    /// its hole fraction, and the stage's stochastic discard turns that alpha into a partial shadow.</summary>
+    internal static float TexGraded(int tid) { TexStat(tid, out float g); return g; }
 
     /// <summary>Fraction of level-0 texels the cutout drops; 0 = a slab. 1 for a texture the funnel never
     /// scanned: test rather than cast a possible slab. No readback: the answer was computed from the engine's
     /// decoded image at upload (<see cref="TexScan"/>), which is what keeps a radeonsi engine context's
     /// descriptors of the same texture honest.</summary>
-    internal static float TexHoles(int tid)
+    internal static float TexHoles(int tid) => TexStat(tid, out _);
+    private static float TexStat(int tid, out float graded)
     {
+        graded = 0f;
         if (tid <= 0) return 0f;
         int h = (int)((uint)tid * 2654435761u % TexCacheSize);
         for (int probe = 0; probe < 8; probe++)
         {
             int k = (h + probe) % TexCacheSize;
-            if (_texKey[k] == tid) return _texHoles[k];
+            if (_texKey[k] == tid) { graded = _texGraded[k]; return _texHoles[k]; }
             if (_texKey[k] != 0) continue;
-            float holes = OwnedTextures.TryHoles(tid, out float f) ? f : 1f;
-            _texKey[k] = tid; _texHoles[k] = holes;
+            float holes = OwnedTextures.TryHoles(tid, out float f, out graded) ? f : 1f;
+            _texKey[k] = tid; _texHoles[k] = holes; _texGraded[k] = graded;
             _texQueried++;
             if (holes > 0f) _texWithAlpha++;
             return holes;
@@ -2153,7 +2182,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     private const int TexCacheSize = 2048;
     private static readonly int[] _texKey = new int[TexCacheSize];
-    private static readonly float[] _texHoles = new float[TexCacheSize];
+    private static readonly float[] _texHoles = new float[TexCacheSize], _texGraded = new float[TexCacheSize];
     private static int _texQueried, _texWithAlpha;
 
     /// <summary>This frame's GL texture id for a masked caster's diffuse, 0 if it does not resolve. Cold
@@ -2203,7 +2232,7 @@ public sealed unsafe class CasterPass : IExtenderService
             {
                 _locMaskVp = GlProgram.Loc(_progMask, "uVP");
                 _locMaskTex = GlProgram.Loc(_progMask, "uTex");
-                _locMaskCut = GlProgram.Loc(_progMask, "uAlphaCut");
+                _locMaskCut = GlProgram.Loc(_progMask, "uAlphaCut"); _locMaskDither = GlProgram.Loc(_progMask, "uDither"); _locMaskEnv = GlProgram.Loc(_progMask, "uEnvAlpha");
             }
             else _log?.Info("CasterPass: the masked depth program failed to build -- cutout casters cast no " +
                             "shadow at all this session (they would otherwise cast their whole quad)");
@@ -2288,7 +2317,7 @@ public sealed unsafe class CasterPass : IExtenderService
         }
         _progLayer = p; _progLayerMask = pm;
         _locLayerMaskTex = GlProgram.Loc(pm, "uTex");
-        _locLayerMaskCut = GlProgram.Loc(pm, "uAlphaCut");
+        _locLayerMaskCut = GlProgram.Loc(pm, "uAlphaCut"); _locLayerMaskDither = GlProgram.Loc(pm, "uDither"); _locLayerMaskEnv = GlProgram.Loc(pm, "uEnvAlpha");
         _log?.Info("CasterPass: layered bake armed -- every stale view in one command buffer per target, " +
                    "gl_Layer from the view table (/shadow layered 0 is the per-view A/B)");
     }
@@ -2395,7 +2424,11 @@ public sealed unsafe class CasterPass : IExtenderService
                 boundCut = -1f;
             }
             if (mode != 0 && _gCut[g] != boundCut)
-            { boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locLayerMaskCut : _locLayerMaskHCut, boundCut); }
+            {
+                boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locLayerMaskCut : _locLayerMaskHCut, boundCut);
+                Gl.Uniform1i(mode == 1 ? _locLayerMaskDither : _locLayerMaskHDither, _maskDither);
+                Gl.Uniform1i(mode == 1 ? _locLayerMaskEnv : _locLayerMaskHEnv, boundCut == EnvAlphaDiscard ? 1 : 0);
+            }
             if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
             CasterGather.DrawLayer(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g], vn);
@@ -2488,7 +2521,7 @@ public sealed unsafe class CasterPass : IExtenderService
                 // Review: the triage counter lost its writer in the rework -- a masked-eligible caster whose
                 // diffuse did not resolve THIS frame casts solid, and this is the number that says how often.
                 if (_liveTex[live] == 0 && !f.Skinned && AlloyRenderer.VdoHasUv(f.Vao)) _maskNoTex++;
-                _liveCut[live] = f.EnvAlpha ? EnvAlphaDiscard : CutoutDiscard;
+                _liveCut[live] = f.EnvAlpha ? EnvAlphaDiscard : CutoutDiscard; _liveBlend[live] = f.Blended;
                 // Review: a caster ABSENT last frame is a mover on return, whatever its record says -- a
                 // transient TryRange or VAO failure longer than the one-frame ghost+hadMover cover would
                 // otherwise re-appear into views that never re-bake its shadow back.
@@ -2916,13 +2949,18 @@ public sealed unsafe class CasterPass : IExtenderService
             int drawTex = _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
             // mode 0 never masks, so it never reads a texture back either (the scan is a glGetTexImage of
             // the owned name in the 4.6 context; shadowmask=0 in sowx.cfg is the boot-time A/B for it)
-            int masked = drawTex != 0 && _progMask != 0 && _maskMode != 0 && TexHasAlpha(drawTex) ? drawTex : 0;
+            // #363: a translucent diffuse (glass) has no holes at all; it qualifies on its graded fraction
+            // instead and skips the mode-2 hole gate, which would hand it straight back to the solid stage.
+            bool glass = drawTex != 0 && _maskDither > 0 && (_liveBlend[i] || TexGraded(drawTex) >= _maskGraded);
+            int masked = drawTex != 0 && _progMask != 0 && _maskMode != 0 && (glass || TexHasAlpha(drawTex)) ? drawTex : 0;
             if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
             // The mask MODE is decided here, in the key, not at the draw: a masked texture the mode draws
             // solid merges into its (VAO, prim) batch instead of costing one indirect call per view per
             // texture. The knobs bump _listVer so a change re-stages.
-            if (masked != 0 && (_maskMode == 0 || (_maskMode == 2 && TexHoles(masked) < _maskHoles))) masked = 0;
+            if (masked != 0 && (_maskMode == 0 || (_maskMode == 2 && !glass && TexHoles(masked) < _maskHoles))) masked = 0;
             if (masked != 0 && _maskMode < 0) continue;
+            // a blended caster the mask stage cannot take (no diffuse, no UVs, mask off) casts nothing, as before #363
+            if (_liveBlend[i] && masked == 0) continue;
             if (masked != 0) maskedN++;
             // A record with a resident handle samples its mask through the handle block, so the texture
             // leaves the key. Handle 0 is a BLACK texture (every fragment discards), hence the guard: such a
@@ -2995,7 +3033,11 @@ public sealed unsafe class CasterPass : IExtenderService
                 boundCut = -1f;
             }
             if (mode != 0 && _gCut[g] != boundCut)
-            { boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locMaskCut : _locMaskHCut, boundCut); }
+            {
+                boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locMaskCut : _locMaskHCut, boundCut);
+                Gl.Uniform1i(mode == 1 ? _locMaskDither : _locMaskHDither, _maskDither);
+                Gl.Uniform1i(mode == 1 ? _locMaskEnv : _locMaskHEnv, boundCut == EnvAlphaDiscard ? 1 : 0);
+            }
             if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
             CasterGather.Draw(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g]);
@@ -3128,11 +3170,13 @@ public sealed unsafe class CasterPass : IExtenderService
         uniform mat4 uVP;
         invariant gl_Position;
         out vec2 vUV;
+        flat out float vAlpha;
         void main()
         {
             SowxDraw d = uDraw[gl_BaseInstance];
             gl_Position = uVP * d.model * vec4(aPos, 1.0);
             vUV = aUV;
+            vAlpha = d.rot.w;
         }
         """;
     /// <summary>...and the cutout itself, at the engine's own <c>fAlphaDiscardValue</c> -- a per-BATCH
@@ -3144,12 +3188,37 @@ public sealed unsafe class CasterPass : IExtenderService
     /// it is REFLECTIVITY -- <c>fEnvMapLevel = 1 - alpha</c>, inc_standard.shd:248 -- so solid geometry
     /// authored as very shiny sits at alpha &lt;= 0.2 by design, and only essentially-empty texels may punch
     /// through there.</para></summary>
+    /// <summary>#363: after the cutout, the stochastic discard on the COLOUR pass's blend weight -- coverage
+    /// (1 on env-alpha batches, where the diffuse alpha is reflectivity) times the record's <c>rot.w</c> --
+    /// in <c>uDither</c>-texel blocks. That is what turns a translucent diffuse, or a half-alpha part, into a
+    /// partial shadow of the same strength.</summary>
+    private const string DitherLib = """
+        uniform int uDither;
+        uniform int uEnvAlpha;
+        // #363: ordered 4x4 Bayer threshold in (0, 1) -- alpha 1 never discards, and EVERY 4x4 block drops
+        // exactly the alpha fraction, which is what reads as a uniformly fainter shadow (white noise reads
+        // as blotches: a 4x4 patch of it lands anywhere between a quarter and three quarters)
+        float sowxHash(uvec2 p)
+        {
+            const float m[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
+            return (m[(p.y & 3u) * 4u + (p.x & 3u)] + 0.5) / 16.0;
+        }
+        """;
     private const string CastMaskFs = """
         #version 460 core
         uniform sampler2D uTex;
         uniform float uAlphaCut;
+        """ + DitherLib + """
         in vec2 vUV;
-        void main() { if (texture(uTex, vUV).a <= uAlphaCut) discard; }
+        flat in float vAlpha;
+        void main()
+        {
+            float t = texture(uTex, vUV).a;
+            if (t <= uAlphaCut) discard;
+            // the colour pass's own blend weight: coverage (1 where the diffuse alpha is reflectivity) x rot.w
+            float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;
+            if (uDither > 0 && sowxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
+        }
         """;
 
     /// <summary>The handle-sampling pair: <see cref="CastMaskVs"/> carrying the record index out, and
@@ -3162,7 +3231,9 @@ public sealed unsafe class CasterPass : IExtenderService
         #version 460 core
         uniform sampler2D uTex;
         uniform float uAlphaCut;
+        """ + DitherLib + """
         in vec2 vUV;
+        flat in float vAlpha;
         flat in int vDraw;
         void main()
         {
@@ -3170,7 +3241,11 @@ public sealed unsafe class CasterPass : IExtenderService
             // a handle zeroed under a dying texture: opaque until the record is re-resolved, never sampled
             if (uTexH[vDraw << 3] == uvec2(0u)) return;
         #endif
-            if (texture(uTex, vUV).a <= uAlphaCut) discard;
+            float t = texture(uTex, vUV).a;
+            if (t <= uAlphaCut) discard;
+            // the colour pass's own blend weight: coverage (1 where the diffuse alpha is reflectivity) x rot.w
+            float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;
+            if (uDither > 0 && sowxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
         }
         """;
     private static readonly string CastMaskHFs = AlloyRenderer.BindlessFs(CastMaskHFsSrc);
@@ -3218,6 +3293,7 @@ public sealed unsafe class CasterPass : IExtenderService
         """ + CasterGather.ViewTblDecl + """
         invariant gl_Position;
         out vec2 vUV;
+        flat out float vAlpha;
         void main()
         {
             int vi = gl_BaseInstance >> 18;
@@ -3226,6 +3302,7 @@ public sealed unsafe class CasterPass : IExtenderService
             mat4 uVP = uViewTbl[vi].vp;
             gl_Position = uVP * d.model * vec4(aPos, 1.0);
             vUV = aUV;
+            vAlpha = d.rot.w;
         }
         """;
 }

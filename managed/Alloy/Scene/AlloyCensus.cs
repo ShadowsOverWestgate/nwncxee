@@ -37,6 +37,7 @@ internal static unsafe class AlloyCensus
         // thing we are debugging" and no warm-up rule can make it so.
         _dumpTex = Settings.Text("dumptex", "");
         if (_dumpTex.Length == 0) _dumpTex = null;
+        if (_dumpTex != null) log.Info($"AlloyCensus: dumptex watch \"{_dumpTex}\" (64 CLASS lines, SCAN/ENROLL/DRAW breadcrumbs)");
         _skipTex = Settings.Text("skiptex", "");
         if (_skipTex.Length == 0) _skipTex = null;
     }
@@ -66,7 +67,7 @@ internal static unsafe class AlloyCensus
     /// <summary><c>skiptex</c> (sowx.cfg): refuse every part whose diffuse texture name contains this. Under the
     /// M4 shim a refused part draws nowhere -- colour, prepass, casters -- so this is the "is it that part" A/B.</summary>
     internal static string? _skipTex;
-    private static int _classDiagLeft = 8;
+    private static int _classDiagLeft = 64;
     /// <summary>Table slot of the part <c>dumptex</c> last matched, published by the census for enrollment to
     /// recognise without dereferencing anything. -1 until the camera finds it.</summary>
     internal static int _watchEntry = -1;
@@ -291,9 +292,12 @@ internal static unsafe class AlloyCensus
         bool gradedOk = OwnedTextures.TryGraded(_pTex0[e], out float graded);
         if (c.Cls == (int)AlloyClass.Cutout && gradedOk && graded >= GradedBlend)
         { c.Cls = (int)AlloyClass.Blended; c.Wash = true; }
-        if (_dumpTex != null && !_ownDry && _pTex0[e] != IntPtr.Zero && _classDiagLeft > 0
-            && TexName(_pTex0[e]).Contains(_dumpTex, StringComparison.OrdinalIgnoreCase) && --_classDiagLeft >= 0)
-            _log?.Info($"[dumpframe] CLASS entry={e} tex={TexName(_pTex0[e])} scanned={gradedOk} graded={graded:F2} opaque={Engine.IsOpaque(p)} transparency={!s.IsNull && s.Transparency} alpha={p.Alpha:F2} dst={c.Dst} -> cls={(AlloyClass)c.Cls}");
+        // dumptex=- names the parts with NO diffuse; dumptex=env every MATERIAL-env-mapped part (a glass sphere, #363; the gob override is every creature)
+        if (_dumpTex != null && !_ownDry && _classDiagLeft > 0
+            && (_dumpTex == "env" ? Engine.HasEnvMap(m)
+                                  : TexName(_pTex0[e]).Contains(_dumpTex, StringComparison.OrdinalIgnoreCase))
+            && --_classDiagLeft >= 0)
+            _log?.Info($"[dumpframe] CLASS entry={e} tex={TexName(_pTex0[e])} slots={SlotNames(m)} scanned={gradedOk} graded={graded:F2} opaque={Engine.IsOpaque(p)} env={Engine.HasEnvMap(m)}/{GobHasEnvMap(c.Gob)} transparency={!s.IsNull && s.Transparency} alpha={p.Alpha:F2} blend={m.SrcBlend}/{m.DstBlend} dst={c.Dst} -> cls={(AlloyClass)c.Cls}");
         if (!_ownDry) _ownByClass[c.Cls]++;
         if (v == IntPtr.Zero || vd.Mode != 1 || _pTex0[e] == IntPtr.Zero)
         { Refuse(ref _ownRejVdo, c, RejVdo); return Gate("vdo"); }
@@ -916,6 +920,13 @@ internal static unsafe class AlloyCensus
 
     internal static readonly HashSet<string> _waterMats = new();
 
+    /// <summary>Every bound material slot as <c>n:name</c>, for the class diagnostic.</summary>
+    private static string SlotNames(MaterialRef m)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < 8; i++) { var t = m.Texture(i); if (!t.IsNull) sb.Append(i).Append(':').Append(TexName(t.Ptr)).Append(' '); }
+        return sb.Length == 0 ? "none" : sb.ToString().TrimEnd();
+    }
     internal static string TexName(IntPtr tex)
     {
         if (tex == IntPtr.Zero) return "-";

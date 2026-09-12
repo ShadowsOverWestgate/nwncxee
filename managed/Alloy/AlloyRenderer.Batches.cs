@@ -1212,7 +1212,10 @@ public sealed unsafe partial class AlloyRenderer
                 if (casterMoved || newTenant) _recMovedAt[i] = _frameSeq;
                 // #328: ...and the admission level beside it, on the same edge: a record landed for this
                 // tenant, so the slot casts unless its tile is fading or its class cannot write depth.
-                SetCastOk(i, !_oFading[i] && _oCls[i] <= (byte)AlloyClass.Cutout, ref c);
+                // #363: an unskinned blended part casts too, at its record alpha through the masked stage's
+                // dither; a posed one has no mask stage and would cast its bind pose solid.
+                SetCastOk(i, !_oFading[i] && (_oCls[i] <= (byte)AlloyClass.Cutout
+                                              || (_oCls[i] == (byte)AlloyClass.Blended && _oBone[i] < 0)), ref c);
             }
             _pkDis[k] = dis ? (byte)1 : (byte)0;
             return Staged;
