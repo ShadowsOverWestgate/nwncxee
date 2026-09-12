@@ -596,7 +596,7 @@ public static unsafe class Gl
     }
 
     /// <summary>Resolve one entry point by ASCII name (gl* names are ASCII, so byte-cast is exact).</summary>
-    private static IntPtr P(string name)
+    internal static IntPtr P(string name)
     {
         Span<byte> b = stackalloc byte[name.Length + 1];
         for (int i = 0; i < name.Length; i++) b[i] = (byte)name[i];

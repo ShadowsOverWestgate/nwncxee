@@ -15,11 +15,10 @@ public static class ServiceHost
     [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "Assembly is rooted; parameterless ctors preserved.")]
     /// <summary>#48: Alloy is Linux-only. It stands down on Windows HERE, by an explicit gate, never by
     /// <c>SymbolMap._win</c> omission: its whole symbol surface is name-exported on Windows, so a table fill
-    /// would arm 530 struct offsets read from the Linux binary. The 4.6 context service is Alloy's
-    /// prerequisite and goes with it.</summary>
+    /// would arm 530 struct offsets read from the Linux binary. #455: the 4.6 context service is no longer
+    /// with it -- it has a WGL path and verifies on Windows with Alloy still down.</summary>
     private static bool LinuxOnly(Type t) =>
-        t.Namespace?.StartsWith("Sowx.Alloy", StringComparison.Ordinal) == true
-        || t == typeof(Sowx.Graphics.GlContextService);
+        t.Namespace?.StartsWith("Sowx.Alloy", StringComparison.Ordinal) == true;
 
     public static void Run()
     {

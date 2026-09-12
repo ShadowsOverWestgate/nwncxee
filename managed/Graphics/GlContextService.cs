@@ -109,13 +109,34 @@ public sealed unsafe class GlContextService : IExtenderService
     [DllImport("libdl.so.2")] private static extern IntPtr dlsym(IntPtr handle, string name);
     private static IntPtr Dl(string n) => dlsym(IntPtr.Zero, n);
 
+    /// <summary>#455: the WGL mirror of the GLX handles above. Lazy-bound like <c>libdl.so.2</c> is on
+    /// Windows, so neither import is resolved on the platform that never calls it. There is no FBConfig
+    /// step: the window's pixel format is already set by the engine.</summary>
+    [DllImport("opengl32.dll")] private static extern IntPtr wglGetCurrentDC();
+    [DllImport("opengl32.dll")] private static extern IntPtr wglGetCurrentContext();
+    [DllImport("opengl32.dll")] private static extern int wglMakeCurrent(IntPtr hdc, IntPtr ctx);
+    [DllImport("opengl32.dll")] private static extern int wglDeleteContext(IntPtr ctx);
+    [DllImport("opengl32.dll")] private static extern IntPtr wglGetProcAddress(string name);
+
+    private static readonly bool Win = OperatingSystem.IsWindows();
+
+    /// <summary>Resolve a GL entry point. Windows goes through the client's SDL loader rather than
+    /// <c>wglGetProcAddress</c>, which returns null for the GL 1.1 names (<c>glGetString</c>, <c>glFlush</c>,
+    /// <c>glEnable</c>) that live in opengl32 itself.</summary>
     private static IntPtr GP(string name)
     {
+        if (Win) return Gl.P(name);
         Span<byte> b = stackalloc byte[name.Length + 1];
         for (int i = 0; i < name.Length; i++) b[i] = (byte)name[i];
         b[name.Length] = 0;
         fixed (byte* p = b) return _glxGetProc(p);
     }
+
+    /// <summary>Make <paramref name="ctx"/> current on the engine's drawable; 0 = refused. The one place
+    /// the two windowing APIs differ in the hot bracket.</summary>
+    private static int MakeCur(IntPtr ctx) => Win ? wglMakeCurrent(_drw, ctx) : _makeCur(_dpy, _drw, ctx);
+
+    private static void Destroy(IntPtr ctx) { if (Win) wglDeleteContext(ctx); else _destroy(_dpy, ctx); }
 
     [UnmanagedCallersOnly]
     private static int XErrorNoop(IntPtr dpy, IntPtr ev) => 0;   // default handler exits the client
@@ -149,64 +170,36 @@ public sealed unsafe class GlContextService : IExtenderService
     }
 
     /// <summary>Create the 4.6 core context share-listed with the engine's, on the engine's own
-    /// FBConfig/drawable (the #70 recipe). Cold, one-shot; any missing piece is a clean disable.</summary>
+    /// drawable (the #70 recipe). Cold, one-shot; any missing piece is a clean disable.</summary>
     private static void Create()
     {
         var log = _log!;
         if (!Gl.Init(log)) { Fail("Gl.Init"); return; }
+        if (!(Win ? ResolveWin() : ResolveGlx())) return;
+        if (_engCtx == IntPtr.Zero) { _tried = false; return; }   // no context yet -- retry next frame
 
-        _glxGetProc = (delegate* unmanaged<byte*, IntPtr>)Dl("glXGetProcAddressARB");
-        var getCtx = (delegate* unmanaged<IntPtr>)Dl("glXGetCurrentContext");
-        var getDpy = (delegate* unmanaged<IntPtr>)Dl("glXGetCurrentDisplay");
-        var getDrw = (delegate* unmanaged<IntPtr>)Dl("glXGetCurrentDrawable");
-        _makeCur = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, int>)Dl("glXMakeCurrent");
-        _destroy = (delegate* unmanaged<IntPtr, IntPtr, void>)Dl("glXDestroyContext");
-        var queryDrw = (delegate* unmanaged<IntPtr, IntPtr, int, uint*, void>)Dl("glXQueryDrawable");
-        var chooseFbc = (delegate* unmanaged<IntPtr, int, int*, int*, IntPtr>)Dl("glXChooseFBConfig");
-        var xDefScreen = (delegate* unmanaged<IntPtr, int>)Dl("XDefaultScreen");
-        var xSetErr = (delegate* unmanaged<IntPtr, IntPtr>)Dl("XSetErrorHandler");
-        var xSync = (delegate* unmanaged<IntPtr, int, int>)Dl("XSync");
-        var xFree = (delegate* unmanaged<IntPtr, int>)Dl("XFree");
-        if (_glxGetProc == null || getCtx == null || getDpy == null || getDrw == null || _makeCur == null
-            || _destroy == null || queryDrw == null || chooseFbc == null || xDefScreen == null || xSetErr == null)
-        { Fail("a GLX/X11 entry point did not resolve"); return; }
-
-        var createCtx = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, int, int*, IntPtr>)GP("glXCreateContextAttribsARB");
         _fenceSync = (delegate* unmanaged<uint, uint, IntPtr>)GP("glFenceSync");
         _waitSync = (delegate* unmanaged<IntPtr, uint, ulong, void>)GP("glWaitSync");
         _deleteSync = (delegate* unmanaged<IntPtr, void>)GP("glDeleteSync");
         _flush = (delegate* unmanaged<void>)GP("glFlush");
         var getString = (delegate* unmanaged<uint, byte*>)GP("glGetString");
-        if (createCtx == null || _fenceSync == null || _waitSync == null || _deleteSync == null || _flush == null)
+        if (_fenceSync == null || _waitSync == null || _deleteSync == null || _flush == null)
         { Fail("a GL entry point did not resolve"); return; }
 
-        _dpy = getDpy(); _drw = getDrw(); _engCtx = getCtx();
-        if (_engCtx == IntPtr.Zero) { _tried = false; return; }   // no context yet -- retry next frame
-
-        uint fbcId = 0;
-        queryDrw(_dpy, _drw, GLX_FBCONFIG_ID, &fbcId);
-        int n = 0;
-        int* pick = stackalloc int[3] { GLX_FBCONFIG_ID, (int)fbcId, 0 };
-        IntPtr fbcArr = chooseFbc(_dpy, xDefScreen(_dpy), pick, &n);
-        if (fbcArr == IntPtr.Zero || n == 0) { Fail($"FBConfig id {fbcId} not found"); return; }
-        IntPtr fbc = *(IntPtr*)fbcArr;
-        if (xFree != null) xFree(fbcArr);
-
+        // WGL_CONTEXT_* are numerically identical to the GLX_CONTEXT_* values above (wglext.h), so one
+        // attribute list serves both.
         int* attribs = stackalloc int[9] {
             GLX_CONTEXT_MAJOR_VERSION_ARB, 4, GLX_CONTEXT_MINOR_VERSION_ARB, 6,
             GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
             _debug ? GLX_CONTEXT_FLAGS_ARB : 0, _debug ? GLX_CONTEXT_DEBUG_BIT_ARB : 0, 0 };
-        IntPtr oldHandler = xSetErr((IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int>)&XErrorNoop);
-        IntPtr ctx = createCtx(_dpy, fbc, _engCtx, 1, attribs);
-        if (xSync != null) xSync(_dpy, 0);
-        xSetErr(oldHandler);
+        IntPtr ctx = Win ? CreateWin(attribs) : CreateGlx(attribs);
         if (ctx == IntPtr.Zero) { Fail("4.6 core share-listed context creation returned null"); return; }
 
-        if (_makeCur(_dpy, _drw, ctx) == 0)
+        if (MakeCur(ctx) == 0)
         {
-            _destroy(_dpy, ctx);
-            _makeCur(_dpy, _drw, _engCtx);
-            Fail("glXMakeCurrent(4.6 ctx, engine drawable) refused");
+            Destroy(ctx);
+            MakeCur(_engCtx);
+            Fail("MakeCurrent(4.6 ctx, engine drawable) refused");
             return;
         }
         string ver = getString != null ? CStr(getString(GL_VERSION)) : "?";
@@ -214,12 +207,77 @@ public sealed unsafe class GlContextService : IExtenderService
         _zink = renderer.Contains("zink", StringComparison.OrdinalIgnoreCase);
         bool dbg = _debug && ArmDebug();
         while (Gl.GetError() != 0) { }   // fresh-context error queue starts clean
-        _makeCur(_dpy, _drw, _engCtx);
+        MakeCur(_engCtx);
 
         Context = ctx;
         Available = true;
         log.Info($"GlContextService: 4.6 core context LIVE (0x{ctx:x}, GL_VERSION='{ver}') -- bracket every frame" +
                  (dbg ? "; DEBUG context, KHR_debug messages go to this log (gldebug=1)" : ""));
+    }
+
+    /// <summary>GLX side: the display/drawable/context the engine is currently on, plus the entry points
+    /// only this path uses. False = a clean disable (<see cref="Fail"/> already called).</summary>
+    private static bool ResolveGlx()
+    {
+        _glxGetProc = (delegate* unmanaged<byte*, IntPtr>)Dl("glXGetProcAddressARB");
+        var getCtx = (delegate* unmanaged<IntPtr>)Dl("glXGetCurrentContext");
+        var getDpy = (delegate* unmanaged<IntPtr>)Dl("glXGetCurrentDisplay");
+        var getDrw = (delegate* unmanaged<IntPtr>)Dl("glXGetCurrentDrawable");
+        _makeCur = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, int>)Dl("glXMakeCurrent");
+        _destroy = (delegate* unmanaged<IntPtr, IntPtr, void>)Dl("glXDestroyContext");
+        if (_glxGetProc == null || getCtx == null || getDpy == null || getDrw == null || _makeCur == null
+            || _destroy == null || Dl("glXQueryDrawable") == IntPtr.Zero || Dl("glXChooseFBConfig") == IntPtr.Zero
+            || Dl("XDefaultScreen") == IntPtr.Zero || Dl("XSetErrorHandler") == IntPtr.Zero)
+        { Fail("a GLX/X11 entry point did not resolve"); return false; }
+
+        _dpy = getDpy(); _drw = getDrw(); _engCtx = getCtx();
+        return true;
+    }
+
+    /// <summary>WGL side: the engine's current DC and context. No FBConfig equivalent -- the window's
+    /// pixel format is already set by the engine, and the share context is an argument to
+    /// <c>wglCreateContextAttribsARB</c> rather than a separate <c>wglShareLists</c> step.</summary>
+    private static bool ResolveWin()
+    {
+        _drw = wglGetCurrentDC(); _engCtx = wglGetCurrentContext();
+        if (_drw == IntPtr.Zero) { _tried = false; return false; }   // no window yet -- retry next frame
+        return true;
+    }
+
+    private static IntPtr CreateGlx(int* attribs)
+    {
+        var queryDrw = (delegate* unmanaged<IntPtr, IntPtr, int, uint*, void>)Dl("glXQueryDrawable");
+        var chooseFbc = (delegate* unmanaged<IntPtr, int, int*, int*, IntPtr>)Dl("glXChooseFBConfig");
+        var xDefScreen = (delegate* unmanaged<IntPtr, int>)Dl("XDefaultScreen");
+        var xSetErr = (delegate* unmanaged<IntPtr, IntPtr>)Dl("XSetErrorHandler");
+        var xSync = (delegate* unmanaged<IntPtr, int, int>)Dl("XSync");
+        var xFree = (delegate* unmanaged<IntPtr, int>)Dl("XFree");
+        var createCtx = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, int, int*, IntPtr>)GP("glXCreateContextAttribsARB");
+        if (createCtx == null) { Fail("glXCreateContextAttribsARB did not resolve"); return IntPtr.Zero; }
+
+        uint fbcId = 0;
+        queryDrw(_dpy, _drw, GLX_FBCONFIG_ID, &fbcId);
+        int n = 0;
+        int* pick = stackalloc int[3] { GLX_FBCONFIG_ID, (int)fbcId, 0 };
+        IntPtr fbcArr = chooseFbc(_dpy, xDefScreen(_dpy), pick, &n);
+        if (fbcArr == IntPtr.Zero || n == 0) { Fail($"FBConfig id {fbcId} not found"); return IntPtr.Zero; }
+        IntPtr fbc = *(IntPtr*)fbcArr;
+        if (xFree != null) xFree(fbcArr);
+
+        IntPtr oldHandler = xSetErr((IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int>)&XErrorNoop);
+        IntPtr ctx = createCtx(_dpy, fbc, _engCtx, 1, attribs);
+        if (xSync != null) xSync(_dpy, 0);
+        xSetErr(oldHandler);
+        return ctx;
+    }
+
+    private static IntPtr CreateWin(int* attribs)
+    {
+        IntPtr p = wglGetProcAddress("wglCreateContextAttribsARB");
+        // WGL reports "unsupported" as 0, 1, 2, 3 or -1, not null alone.
+        if ((long)p is >= -1 and <= 3) { Fail("wglCreateContextAttribsARB did not resolve"); return IntPtr.Zero; }
+        var createCtx = (delegate* unmanaged<IntPtr, IntPtr, int*, IntPtr>)p;
+        return createCtx(_drw, _engCtx, attribs);
     }
 
     /// <summary>Open the context-switch bracket (hot, zero-alloc): fence the engine's queued commands,
@@ -231,7 +289,7 @@ public sealed unsafe class GlContextService : IExtenderService
         if (!Available) return false;
         IntPtr fIn = _fenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         _flush();
-        if (_makeCur(_dpy, _drw, Context) == 0) { _switchFails++; if (fIn != IntPtr.Zero) _deleteSync(fIn); return false; }
+        if (MakeCur(Context) == 0) { _switchFails++; if (fIn != IntPtr.Zero) _deleteSync(fIn); return false; }
         if (fIn != IntPtr.Zero) { _waitSync(fIn, 0, TimeoutIgnored); _deleteSync(fIn); }
         if (!_stamped) { _span.LastMs = -1; _stamped = _span.Begin(); if (_span.LastMs >= 0) FrameZones.Gpu(_span.LastMs, GpuStamp.Age); }
         return true;
@@ -247,7 +305,7 @@ public sealed unsafe class GlContextService : IExtenderService
 
         IntPtr fOut = _fenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         _flush();
-        if (_makeCur(_dpy, _drw, _engCtx) == 0)
+        if (MakeCur(_engCtx) == 0)
         {
             // cannot leave the engine on the wrong context -- disable rather than risk the present
             Fail("glXMakeCurrent back to engine context refused");

@@ -75,7 +75,7 @@ does not freeze" self-check now pins.
 
 Three checks cannot be asked before the frame is taken — an offset viewport, an incomplete HDR framebuffer,
 and an engine depth attachment whose format the owned depth texture cannot be matched to (all `PostChain`) —
-plus a `glXMakeCurrent` that refuses mid-frame (`AlloyRenderer.NoFrameBehindUs`).
+plus a `MakeCurrent` that refuses mid-frame (`glXMakeCurrent`, or `wglMakeCurrent` on Windows) (`AlloyRenderer.NoFrameBehindUs`).
 
 All four call `AlloyGate.Fail` — and so does every capability latch that can only be taken *after* the freeze:
 `AlloyRenderer` when the multidraw entry points are missing, its program builder when a program does not link,
