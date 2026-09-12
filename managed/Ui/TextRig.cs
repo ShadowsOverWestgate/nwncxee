@@ -22,25 +22,13 @@ namespace Sowx.Ui;
 /// </summary>
 public static unsafe class TextRig
 {
-    /// <summary>Font search order, first existing wins. DejaVu preferred (covers our four ranges incl.
-    /// Cyrillic); Liberation/FreeSans are the near-universal Linux fallbacks. The Steam Linux Runtime
-    /// (Steam Deck) ships the Debian-style truetype/dejavu path, not the Arch-style TTF one.
-    /// ponytail: fixed list; a fontconfig query is the ceiling if a distro ships none of these.</summary>
-    private static readonly string[] FontCandidates =
-    {
-        // The copy shipped beside the extender wins (#419): Windows fonts lack the gear/arrow/pin glyphs, and
-        // the Linux paths below resolve through Wine's Z: drive under Proton, masking a missing Windows font.
-        Path.Combine(AppContext.BaseDirectory, "DejaVuSans.ttf"),
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "seguisym.ttf"),   // has the symbols
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "arial.ttf"),
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",                         // Arch
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",            // Debian/Ubuntu + Steam runtime
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",                     // Fedora
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-        "/usr/share/fonts/gnu-free/FreeSans.ttf",
-    };
+    /// <summary>The UI typeface, embedded in the image (third_party/dejavu, Bitstream Vera licence).
+    /// Shipped rather than searched: Windows fonts lack the gear/arrow/pin glyphs, the distro paths
+    /// resolve through Wine's Z: drive under Proton and mask a missing Windows font, and a per-machine
+    /// font meant per-machine metrics. The name is the <see cref="_fontBytes"/> key, not a path --
+    /// <see cref="Face(string, float)"/> finds it cached and never stats it.</summary>
+    private const string DefaultFace = "DejaVuSans";
+
     private const float FontPx = 18f;
     private const int AtlasSize = 512;
     private const int Floats = VertexBatch.Floats;   // x,y,u,v,r,g,b,a
@@ -158,13 +146,15 @@ public static unsafe class TextRig
     {
         _log = log;
         if (_sheet != null || _fontPath != null) return;   // idempotent: probe and ChatService may both call
-        string? fontPath = Array.Find(FontCandidates, File.Exists);
-        if (fontPath == null) { log.Info($"TextRig: no font found (tried {FontCandidates.Length} paths)"); return; }
-        log.Info($"TextRig: using font {fontPath}");
-        _fontPath = fontPath;
-        _fontBytes[fontPath] = File.ReadAllBytes(fontPath);
+        using Stream? font = typeof(TextRig).Assembly.GetManifestResourceStream(DefaultFace);
+        if (font == null) { log.Info($"TextRig: embedded font {DefaultFace} missing from the image"); return; }
+        var bytes = new byte[font.Length];
+        font.ReadExactly(bytes);
+        log.Info($"TextRig: using embedded font {DefaultFace} ({bytes.Length} bytes)");
+        _fontPath = DefaultFace;
+        _fontBytes[DefaultFace] = bytes;
         _bakedPx = FontPx;
-        _requests.Add(new FaceRequest(fontPath, _fontBytes[fontPath], FontPx));
+        _requests.Add(new FaceRequest(DefaultFace, bytes, FontPx));
         _sheet = AtlasSheet.Bake(_requests, Ranges, AtlasSize, log);
         log.Info(_sheet != null ? "TextRig: atlas ready" : "TextRig: atlas bake unavailable");
     }

@@ -31,10 +31,26 @@
     <TrimmerRootAssembly Include="sowx_managed" />
   </ItemGroup>
 
-  <!-- SMAA's precomputed area/search tables (third_party/smaa/LICENSE.txt), read once per context. -->
+  <!-- SMAA's precomputed area/search tables (third_party/smaa/LICENSE.txt), read once per context, and the
+       UI typeface (third_party/dejavu/LICENSE.txt). All three ride inside the image so the shipped artifact
+       is one file per platform and the glyphs are the same on every machine. -->
   <ItemGroup>
     <EmbeddedResource Include="Alloy/Pass/SmaaArea.bin" LogicalName="SmaaArea" />
     <EmbeddedResource Include="Alloy/Pass/SmaaSearch.bin" LogicalName="SmaaSearch" />
+    <EmbeddedResource Include="../third_party/dejavu/DejaVuSans.ttf" LogicalName="DejaVuSans" />
+  </ItemGroup>
+
+  <!-- funchook is linked IN, not shipped beside us: DirectPInvoke turns the DllImport("funchook") calls in
+       HookService into direct calls against the static library the build scripts stage here. -->
+  <ItemGroup>
+    <DirectPInvoke Include="funchook" />
+    <!-- distorm is funchook's bundled length-disassembler; the shared build hid it, the static one does not. -->
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' != 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/libfunchook.a" />
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' != 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/libdistorm.a" />
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/funchook.lib" />
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/distorm.lib" />
+    <!-- funchook's Windows page walk uses GetMappedFileNameA; the shared build pulled this in itself. -->
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="psapi.lib" />
   </ItemGroup>
 
   <!-- Windows cross-compile (NativeAOT #48). Lifts the SDK's cross-OS refusal; ILC emits a
@@ -50,6 +66,9 @@
   </PropertyGroup>
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
     <AdditionalNativeLibraryDirectories Include="$(WinLib)" />
+    <!-- The proxy half of version.dll: the version.dll export forwarders (as .drectve directives, which is
+         the only form that survives with backslashes intact) and the CRT initializer that starts us. -->
+    <NativeLibrary Include="$(MSBuildThisFileDirectory)../build/bootstrap_win.obj" />
   </ItemGroup>
 
 </Project>

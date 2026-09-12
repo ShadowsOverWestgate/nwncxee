@@ -1,22 +1,26 @@
-// Windows sibling of bootstrap.c. Windows has no LD_PRELOAD, so we get loaded as a
-// PROXY DLL: build this as `version.dll`, drop it next to nwmain.exe, and the game
-// loads it (nwmain.exe imports VERSION.dll: GetFileVersionInfoA/SizeA, VerQueryValueA)
-// before the real one. We forward every version.dll export to the system copy so the
-// game's version calls still work, and in DllMain we start the managed extender --
-// exactly what the LD_PRELOAD ctor does.
+// The Windows half of the load path. Unlike bootstrap.c this is NOT a separate module: it is compiled to
+// an .obj and linked INTO sowx_managed.dll, which then ships as `version.dll`. One file next to nwmain.exe
+// is the whole install.
 //
-// Build here (Linux cross, clang-cl + lld-link) or on Windows (MSVC) -- see
-// build-win-proxy.sh. The forwards below are the whole proxy mechanism.
+// Windows has no LD_PRELOAD, so we get loaded as a PROXY DLL: nwmain.exe imports VERSION.dll
+// (GetFileVersionInfoA/SizeA, VerQueryValueA), so a version.dll beside the exe is loaded before the real
+// one. We forward every version.dll export to the system copy so the game's version calls still work, and
+// start the managed extender on the way past -- exactly what the LD_PRELOAD ctor does.
 //
-// ponytail: no <windows.h>/<stdlib.h>. The handful of kernel32 calls are declared
-// inline so this compiles with clang-cl on Linux -- no MSVC VCTools/CRT headers
-// needed (Arch has the Win10 SDK but not vcruntime.h). Add the real headers back
-// only if this ever grows past a dozen Win32 calls.
+// Why a CRT initializer and not DllMain: the NativeAOT image already owns DllMain (it initializes the
+// runtime there), and a second definition would not link. The .CRT$XCU table runs during that same
+// DLL_PROCESS_ATTACH, which is early enough to be sure we run and late enough to have a thread to start.
 //
-// ponytail: forwards hard-code System32\version.<fn>. Correct for a 64-bit DLL in the
-// 64-bit client; if we ever ship 32-bit, forward to SysWOW64 instead.
+// ponytail: no <windows.h>/<stdlib.h>. The handful of kernel32 calls are declared inline so this compiles
+// with clang-cl on Linux -- no MSVC VCTools/CRT headers needed (Arch has the Win10 SDK but not vcruntime.h).
+// Add the real headers back only if this ever grows past a dozen Win32 calls.
+//
+// ponytail: forwards hard-code System32\version.<fn>. Correct for a 64-bit DLL in the 64-bit client; if we
+// ever ship 32-bit, forward to SysWOW64 instead.
 
-// Forward all of version.dll to the real one so the host's version queries still work.
+// Forward all of version.dll to the real one so the host's version queries still work. These must stay
+// #pragma directives: routed through an MSBuild <LinkerArg> instead, the backslashes come out as forward
+// slashes and the NT loader cannot resolve the forward.
 #pragma comment(linker, "/export:GetFileVersionInfoA=C:\\Windows\\System32\\version.GetFileVersionInfoA")
 #pragma comment(linker, "/export:GetFileVersionInfoW=C:\\Windows\\System32\\version.GetFileVersionInfoW")
 #pragma comment(linker, "/export:GetFileVersionInfoExA=C:\\Windows\\System32\\version.GetFileVersionInfoExA")
@@ -40,54 +44,35 @@
 typedef int                 BOOL;
 typedef unsigned long       DWORD;
 typedef void               *HANDLE;
-typedef void               *HMODULE;
-typedef void               *HINSTANCE;
 typedef void               *LPVOID;
-typedef const char         *LPCSTR;
-typedef char               *LPSTR;
 typedef unsigned long long  SIZE_T;
 typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID);
-typedef void  (*SOWX_INIT)(void);
 
-#define DLL_PROCESS_ATTACH 1
-
-__declspec(dllimport) BOOL    WINAPI DisableThreadLibraryCalls(HMODULE);
-__declspec(dllimport) HANDLE  WINAPI CreateThread(LPVOID, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, DWORD *);
-__declspec(dllimport) BOOL    WINAPI CloseHandle(HANDLE);
-__declspec(dllimport) HMODULE WINAPI LoadLibraryA(LPCSTR);
-__declspec(dllimport) LPVOID  WINAPI GetProcAddress(HMODULE, LPCSTR);
-__declspec(dllimport) DWORD   WINAPI GetEnvironmentVariableA(LPCSTR, LPSTR, DWORD);
-__declspec(dllimport) void    WINAPI OutputDebugStringA(LPCSTR);
+__declspec(dllimport) HANDLE WINAPI CreateThread(LPVOID, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, DWORD *);
+__declspec(dllimport) BOOL   WINAPI CloseHandle(HANDLE);
 // ---------------------------------------------------------------------------
+
+/// The managed entry point, exported by the NativeAOT half of this same DLL.
+extern void SowxInit(void);
 
 static DWORD WINAPI sowx_start(LPVOID unused)
 {
     (void) unused;
-    // Off the loader lock: LoadLibrary + NativeAOT init + funchook installs cannot
-    // run inside DllMain without risking a loader-lock deadlock. DllMain kicks this
-    // thread and returns; it runs once the loader releases.
-    char buf[260];
-    DWORD n = GetEnvironmentVariableA("SOWX_MANAGED", buf, sizeof(buf));
-    LPCSTR path = (n > 0 && n < sizeof(buf)) ? buf : "sowx_managed.dll"; // app dir / PATH
-
-    HMODULE h = LoadLibraryA(path);
-    if (!h) { OutputDebugStringA("[sowx] LoadLibrary(sowx_managed.dll) failed\n"); return 1; }
-
-    SOWX_INIT init = (SOWX_INIT) GetProcAddress(h, "SowxInit");
-    if (!init) { OutputDebugStringA("[sowx] GetProcAddress(SowxInit) failed\n"); return 1; }
-
-    init();
+    // Off the loader lock: NativeAOT runtime startup and the funchook installs cannot run inside
+    // DLL_PROCESS_ATTACH without risking a loader-lock deadlock. A thread created there does not run
+    // until the loader releases, which is also after the image's own DllMain has started the runtime.
+    SowxInit();
     return 0;
 }
 
-BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
+static int sowx_boot(void)
 {
-    (void) reserved;
-    if (reason == DLL_PROCESS_ATTACH)
-    {
-        DisableThreadLibraryCalls(inst);
-        HANDLE t = CreateThread(0, 0, sowx_start, 0, 0, 0);
-        if (t) CloseHandle(t);
-    }
-    return 1; // TRUE
+    HANDLE t = CreateThread(0, 0, sowx_start, 0, 0, 0);
+    if (t) CloseHandle(t);
+    return 0;
 }
+
+// The CRT initializer table. `read` + the allocate pragma is the documented way to place a function
+// pointer there without a CRT; the linker walks .CRT$XC* in name order during process attach.
+#pragma section(".CRT$XCU", long, read)
+__declspec(allocate(".CRT$XCU")) int (*sowx_boot_)(void) = sowx_boot;

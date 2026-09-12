@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
-# Cross-build the Windows leg on Linux (#48 M1): funchook.dll + sowx_managed.dll + version.dll.
+# Cross-build the Windows leg on Linux (#48 M1): one version.dll, the NativeAOT image itself, with
+# funchook, the UI font and the export-forwarding proxy all linked in.
 # Needs clang-cl, lld-link, llvm-lib, cmake, the .NET SDK, and a Windows 10 SDK + MSVC lib/include
 # tree (default: the mounted Windows partition). Nothing here is supported by Microsoft; it works
 # because ILC emits COFF on any host and lld-link links it.
@@ -43,20 +44,25 @@ PY
 fi
 WABS=$(cd "$W" && pwd)
 
-if [ ! -f build/funchook.dll ]; then
+if [ ! -f build/funchook.lib ] || [ ! -f build/distorm.lib ]; then
   # funchook's Windows page allocator only walks UP from the target; with the NativeAOT GC reservation
   # sitting right above nwmain.exe (Wine) it leaves rel32 range and the jump truncates. Applied in place,
   # idempotent; the submodule stays dirty on purpose.
   if git -C third_party/funchook apply --check ../../native/funchook-win-rel32.patch 2>/dev/null; then
     git -C third_party/funchook apply ../../native/funchook-win-rel32.patch
   fi
-  echo ">> building funchook.dll (clang-cl cross)..."
+  echo ">> building funchook.lib (clang-cl cross)..."
+  # Static: it is linked into sowx_managed.dll (DirectPInvoke; see the csproj), not shipped beside it.
   cmake -S third_party/funchook -B build/funchook-win -DCMAKE_TOOLCHAIN_FILE="$PWD/native/win-toolchain.cmake" \
-    -DWINSDK="$WABS" -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DFUNCHOOK_BUILD_SHARED=ON -DFUNCHOOK_BUILD_STATIC=OFF \
+    -DWINSDK="$WABS" -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DFUNCHOOK_BUILD_SHARED=OFF -DFUNCHOOK_BUILD_STATIC=ON \
     -DFUNCHOOK_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release >/dev/null
   cmake --build build/funchook-win -j >/dev/null
-  cp build/funchook-win/funchook.dll build/
+  cp build/funchook-win/funchook.lib build/funchook-win/distorm.lib build/
 fi
+
+echo ">> compiling the version.dll proxy half (native/bootstrap_win.c -> .obj)..."
+# Linked INTO sowx_managed.dll by the publish below, which is why it is compiled first.
+clang-cl -c -O2 -GS- native/bootstrap_win.c -Fo:build/bootstrap_win.obj
 
 # #456: the Windows symbol gate runs BEFORE the build, not as a report nobody reads. It checks every Nm row
 # names a real export, every At row lands in the image, and -- the clause the #456 crash bought -- that every
@@ -77,43 +83,50 @@ if ! dotnet publish managed/sowx_managed.csproj -c Release -r win-x64 -o build/w
   echo ">> managed win build FAILED:"; grep -E "error" build-managed-win.log | head -20; exit 1
 fi
 
-echo ">> building version.dll proxy..."
-SDK_LIB="$WABS/lib" ./build-win-proxy.sh >/dev/null
-
 OUT=sow-client-extender-win
 rm -rf "$OUT" && mkdir -p "$OUT"
-cp build/version.dll build/funchook.dll build/win/sowx_managed.dll "$OUT/"
-# The UI font travels with the DLL (#419): Windows ships no font with the gear/arrow/pin glyphs. Bitstream Vera licence.
-FONT=$(ls /usr/share/fonts/TTF/DejaVuSans.ttf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf 2>/dev/null | head -1)
-[ -n "$FONT" ] && cp "$FONT" "$OUT/" || echo "!! DejaVuSans.ttf not found; Windows falls back to Segoe UI Symbol / Arial" >&2
+# One file. funchook, the UI font and the proxy all ride inside the image; the name is the whole trick,
+# since nwmain.exe imports VERSION.dll and the loader takes the copy beside the exe first.
+cp build/win/sowx_managed.dll "$OUT/version.dll"
 STAMP=$(grep -oE 'WindowsBuildStamp = 0x[0-9a-f]+' managed/Framework/SymbolMap.cs | grep -oE '0x[0-9a-f]+')
 cat > "$OUT/README.txt" <<EOF
 Sowx client extender for Windows -- $SOWX_VERSION, pinned to nwmain.exe build $STAMP
 
+Optional add-on for the Neverwinter Nights: Enhanced Edition client. Run the stock client and you
+play vanilla -- nothing here is required.
+
 INSTALL
-  1. Copy every file in this folder next to nwmain.exe:
+  1. Unpack this archive into the folder holding nwmain.exe:
        <Steam>\\steamapps\\common\\Neverwinter Nights\\bin\\win32\\
-     (version.dll is the loader; funchook.dll, sowx_managed.dll and DejaVuSans.ttf ride beside it.)
-  2. Create sowx.cfg NEXT TO nwn.ini -- usually Documents\\Neverwinter Nights\\, but if the game uses an
-     instance folder (Neverwinter Nights.0) put it there, wherever nwn.ini actually is. One line:
-       logs=1
-     Do this BEFORE the first launch: without it the log is silent after boot.
-  3. Launch the game normally (Steam or nwmain.exe). No launch options needed.
+  2. Launch the game normally (Steam or nwmain.exe). No launch options needed.
+
+  That is the whole install: one file, version.dll. The game loads it, and it carries everything
+  else inside it.
+
+UNINSTALL
+  Delete version.dll from bin\\win32\\.
 
 WHAT WORKING LOOKS LIKE
-  Documents\\Neverwinter Nights\\sowx.log (always the unsuffixed folder) contains
-    UiHostService: first frame presented -- hook is LIVE
-  and one "armed" / "hooks installed" line per feature (Chat, Nameplate, CombatText, Dialog).
+  The extender's native chatbox, bottom-left, instead of the stock one.
+
   A message box "Sowx: client build changed, extender standing down" means Beamdog patched the
   client since build $STAMP; the game runs vanilla and the extender needs re-deriving.
 
-UNINSTALL
-  Delete version.dll from bin\\win32\\ (the other files are inert without it).
+REPORTING A PROBLEM
+  The extender is silent by default. To get a log, create a file named sowx.cfg NEXT TO nwn.ini --
+  usually Documents\\Neverwinter Nights\\, but if the game uses an instance folder
+  (Neverwinter Nights.0) put it there, wherever nwn.ini actually is. One line:
 
-REPORTING
-  Send back sowx.log (and funchook.log if you added hookdebug=1 to sowx.cfg), plus what you did
-  right before anything went wrong. An unsigned 9 MB DLL may trip Defender: restore it and add an
-  exclusion for the bin\\win32 folder.
+     logs=1
+
+  Play again, then send back Documents\\Neverwinter Nights\\sowx.log (always the unsuffixed
+  folder) plus what you did right before anything went wrong. Add hookdebug=1 to sowx.cfg for
+  funchook.log as well.
+
+  Defender may quarantine version.dll -- an unsigned 10 MB DLL wearing a system DLL's name is
+  what a hijack looks like from the outside. Restore that entry and add an exclusion for the
+  bin\\win32 folder.
 EOF
-python3 -c "import shutil; shutil.make_archive('$OUT', 'zip', '.', '$OUT')"
+# Contents, not the folder: the README says "unpack here" and that has to be true.
+python3 -c "import shutil; shutil.make_archive('$OUT', 'zip', '$OUT')"
 echo ">> artifacts ($OUT/, sow-client-extender-win.zip):"; ls -1 "$OUT"

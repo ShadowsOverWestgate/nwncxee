@@ -33,22 +33,23 @@ above).
 
 1. Find the game folder: in Steam, right-click *Neverwinter Nights* ->
    Manage -> Browse local files.
-2. Unpack the tarball into `bin/linux-x86/` there. You now have a
-   `bin/linux-x86/sow-client-extender/` folder.
+2. Unpack the archive straight into `bin/linux-x86/` there, beside
+   `nwmain-linux`.
 3. Right-click *Neverwinter Nights* -> Properties -> General -> Launch
    Options, and paste this exactly (no editing -- it is a path relative to the
    `bin/linux-x86` folder, which Steam uses as the working directory):
 
 ```
-./sow-client-extender/sowx-launch %command%
+./sowx-launch %command%
 ```
 
 Launch from Steam as normal. To uninstall, clear that line.
 
-**No Steam:** point the launcher at the client binary:
+**No Steam:** unpack the same way and run the launcher -- with no arguments it
+starts the `nwmain-linux` sitting next to it:
 
 ```sh
-NWN_BIN="/path/to/bin/linux-x86/nwmain-linux" ./sowx-launch
+./sowx-launch
 ```
 
 **DM client:** put `-dmc` before `%command%` (Steam) or after `./sowx-launch`

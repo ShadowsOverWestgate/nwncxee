@@ -32,7 +32,8 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily)
     ./run-demo.sh       # boots the framework in a stub host + proves the rot refusal (no game needed)
     ./sym.sh [-m] <pat> # search client symbols; -m = mangled (for Install)
 
-`build.sh` stages a runtime folder `sow-client-extender/` (launcher + 3 `.so`).
+`build.sh` stages a runtime folder `sow-client-extender/` (launcher + 2 `.so`) and a flat zip
+of its contents -- the install is "unpack into bin/linux-x86".
 Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./sow-client-extender/sowx-launch`
 (Steam: put `"<abs>/sowx-launch" %command%` in the game Launch Options.)
 
@@ -40,7 +41,7 @@ First build clones+builds the funchook submodule (git submodule --init).
 
 Windows leg (#48), cross-built on Linux -- no Windows box involved:
 
-    ./build-win.sh      # version.dll + funchook.dll + sowx_managed.dll -> sow-client-extender-win/
+    ./build-win.sh      # one version.dll (the AOT image IS the proxy) -> sow-client-extender-win/
     ./run-proton.sh     # drops them beside bin/win32/nwmain.exe, runs it under Proton (throwaway prefix)
 
 Needs clang-cl/lld-link/llvm-lib and a Windows 10 SDK + MSVC lib tree (default: the mounted

@@ -6,7 +6,8 @@
 #               "/abs/path/to/sowx-launch" %command%
 #             Steam hands us the real game command as our arguments; we add the
 #             extender to the environment, then exec that command unchanged.
-#   Manual -- run with no game arguments and set NWN_BIN=/path/to/nwmain-linux.
+#   Manual -- run with no game arguments. The client is the nwmain-linux sitting
+#             next to us; NWN_BIN overrides that if the layout is unusual.
 #   Either way, leading dash options are forwarded to the client, e.g. -dmc
 #   for the DM client:  "/abs/sowx-launch" -dmc %command%   or   ./sowx-launch -dmc
 #
@@ -52,8 +53,8 @@ if [ "$#" -gt 0 ]; then
     exec "$@" $CLIENT_ARGS
 fi
 
-# Manual mode: launch the client ourselves.
-GAME_BIN="${NWN_BIN:?set NWN_BIN=/path/to/nwmain-linux, or launch via Steam Launch Options}"
-[ -f "$GAME_BIN" ] || { echo "client not found: $GAME_BIN" >&2; exit 1; }
+# Manual mode: launch the client ourselves. Unpacked in place, it is our neighbour.
+GAME_BIN="${NWN_BIN:-$DIR/nwmain-linux}"
+[ -f "$GAME_BIN" ] || { echo "client not found: $GAME_BIN (set NWN_BIN if it lives elsewhere)" >&2; exit 1; }
 cd "$(dirname "$GAME_BIN")"
 exec "./$(basename "$GAME_BIN")" $CLIENT_ARGS

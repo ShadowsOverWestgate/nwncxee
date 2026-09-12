@@ -808,9 +808,8 @@ one-shot (`_portraitDrew`, `_announced`) or an `n % LogEveryNth` counter.
 
 ### Font + atlas
 
-`TextRig.Init` (`managed/Ui/TextRig.cs:109`) picks the first existing font from a fixed list
-(DejaVuSans preferred, Liberation/FreeSans fallback) and bakes a single-channel (R8) atlas with the
-client's own `stb_truetype` exports. Ranges baked (`TextRig.cs:44`): Basic Latin, Latin-1 Supplement,
+`TextRig.Init` (`managed/Ui/TextRig.cs`) reads DejaVuSans out of the image (an embedded resource,
+no font search) and bakes a single-channel (R8) atlas with the client's own `stb_truetype` exports. Ranges baked (`TextRig.cs:44`): Basic Latin, Latin-1 Supplement,
 Latin Extended-A, Cyrillic, plus ▪ ▾ ⚙. **No CJK.**
 
 The atlas is baked at the **effective** px (`font size × game UI scale`) and re-baked cold by

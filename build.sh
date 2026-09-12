@@ -3,13 +3,14 @@ set -e
 cd "$(dirname "$0")"
 mkdir -p build
 
-if [ ! -f build/libfunchook.so ]; then
+if [ ! -f build/libfunchook.a ] || [ ! -f build/libdistorm.a ]; then
   echo ">> building funchook (once)..."
+  # Static, and PIC because it gets linked into the shared sowx_managed.so (DirectPInvoke; see the csproj).
   cmake -S third_party/funchook -B build/funchook \
-    -DFUNCHOOK_BUILD_SHARED=ON -DFUNCHOOK_BUILD_STATIC=OFF \
+    -DFUNCHOOK_BUILD_SHARED=OFF -DFUNCHOOK_BUILD_STATIC=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DFUNCHOOK_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release >/dev/null
   cmake --build build/funchook -j >/dev/null
-  cp -a build/funchook/libfunchook.so* build/
+  cp -a build/funchook/libfunchook.a build/funchook/libdistorm.a build/
 fi
 
 # #206: the extraction boundary. managed/Alloy/Scene/ holds the RE knowledge -- which engine field means
@@ -65,16 +66,15 @@ echo ">> building native bootstrap (libsowx.so)..."
 cc -shared -fPIC -O2 -o build/libsowx.so native/bootstrap.c -ldl
 
 echo ">> staging runtime dir (sow-client-extender/)..."
-# One ready-to-run/ship folder: the wrapper loads the .so files beside it.
-# cp -L on libfunchook resolves the SOVERSION symlink to a real file named
-# libfunchook.so -- DllImport("funchook") needs that exact name.
+# One ready-to-run/ship folder: the wrapper loads the .so files beside it. The zip holds its
+# CONTENTS, not the folder, so "unpack into bin/linux-x86" is literally the whole install.
 OUT=sow-client-extender
 rm -rf "$OUT" && mkdir -p "$OUT"
 cp -a build/libsowx.so build/sowx_managed.so "$OUT/"
-cp -aL build/libfunchook.so "$OUT/libfunchook.so"
 cp packaging/sowx-launch "$OUT/sowx-launch"
 cp packaging/README.txt "$OUT/README.txt"
 chmod +x "$OUT/sowx-launch"
 
-echo ">> artifacts:"
+python3 -c "import shutil; shutil.make_archive('$OUT', 'zip', '$OUT')"
+echo ">> artifacts ($OUT/, sow-client-extender.zip):"
 ls -1 "$OUT"
