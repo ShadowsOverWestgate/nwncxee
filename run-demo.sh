@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
-# Proves the extender loads and runs C# inside a foreign process -- using
-# /usr/bin/env as a stand-in so no game/X11/GL is needed to see it work.
-# (`true` is a shell builtin, so it spawns no process to preload into.)
+# Proves the extender loads and runs C# inside a foreign process -- using a linked-here stub host so no
+# game/X11/GL is needed to see it work. The stub carries the client's build-id because #457's rot gate
+# refuses an unknown host before discovery; /usr/bin/env is then run as the rot case.
 set -e
 cd "$(dirname "$0")"
 B="$PWD/sow-client-extender"
@@ -21,8 +21,17 @@ LOG="$DEMOHOME/sowx.log"
 # destroys the evidence you were about to read. (It has: a large-area diagnosis was mid-flight.)
 [ -f "$LOG" ] && mv -f "$LOG" "$LOG.prev"
 
-echo ">> launching /usr/bin/env with the extender preloaded..."
-HOME="$DEMOHOME" SOWX_MANAGED="$B/sowx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" /usr/bin/env >/dev/null
+# #457: rot stands the WHOLE extender down, before discovery, keyed on the host's .note.gnu.build-id.
+# /usr/bin/env is by definition a wrong build, so a demo that ran in it would prove the refusal and nothing
+# else -- and every SelfCheck suite lives inside a service's Initialize. So the demo links a do-nothing host
+# carrying the client's build-id and runs in that. The key comes from EngineLayout, never a second copy.
+BID=$(grep -oP 'LinuxBuildId = "\K[0-9a-f]+' managed/Framework/EngineLayout.cs)
+[ -n "$BID" ] || { echo ">> FAIL: no LinuxBuildId in managed/Framework/EngineLayout.cs"; exit 1; }
+STUB="$DEMOHOME/demo-host"
+echo 'int main(void){return 0;}' | cc -x c - -o "$STUB" -Wl,--build-id=0x"$BID"
+
+echo ">> launching the demo host with the extender preloaded..."
+HOME="$DEMOHOME" SOWX_MANAGED="$B/sowx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" "$STUB" >/dev/null
 
 echo
 echo ">> $LOG (written from C#):"
@@ -40,6 +49,22 @@ if grep -qE 'SelfCheck.*FAIL' "$LOG"; then
   echo ">> FAIL: a SelfCheck suite failed:"; grep -E 'SelfCheck.*FAIL' "$LOG"; exit 1
 fi
 echo ">> $(grep -c 'SelfCheck' "$LOG") SelfCheck lines, none failed."
+
+# The other half of #457: the refusal itself, run for real rather than asserted in a unit. /usr/bin/env IS
+# the rot case -- a host the offsets were never measured against -- so the gate must discover nothing.
+ROTHOME="${TMPDIR:-/tmp}/sowx-demo-rot"
+rm -rf "$ROTHOME"; mkdir -p "$ROTHOME"
+HOME="$ROTHOME" SOWX_MANAGED="$B/sowx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libsowx.so" /usr/bin/env >/dev/null
+echo
+echo ">> rot case ($ROTHOME/sowx.log):"
+grep 'host:' "$ROTHOME/sowx.log" || true
+if ! grep -q 'standing down WHOLE' "$ROTHOME/sowx.log"; then
+  echo ">> FAIL: rot gate did not stand the extender down in a foreign host"; exit 1
+fi
+if ! grep -q '0 service(s) discovered, 0 hook(s) installed' "$ROTHOME/sowx.log"; then
+  echo ">> FAIL: the rot line did not report zero services and zero hooks"; exit 1
+fi
+echo ">> rot: extender stood down whole, nothing discovered."
 
 echo
 echo "Attach to the real client with the launcher:"

@@ -293,7 +293,7 @@ has to answer "which symbol is wrong" on its own. `sowx.cfg` goes beside `nwn.in
 | Line | Meaning |
 |---|---|
 | `host: N service(s) discovered (Alloy stood down: Windows, #48)` | the DLL loaded and Windows was detected |
-| `<Feature>: standing down as a unit -- <symbol>: nwmain.exe build 0x… != expected 0x68e408bc` | **rot**: Beamdog shipped a new client; every RVA row needs re-deriving. Written even under `logs=0`, once per feature; the player also gets a message box |
+| `<Feature>: standing down as a unit -- <symbol>: nwmain.exe build 0x… != expected 0x68e408bc` | **rot** reaching the RVA guard. Unreachable in practice since `#457`: the build-key gate in `ServiceHost.Run` refuses the same client before discovery, so the player sees `host: client build changed, extender standing down WHOLE` and the message box instead. This line survives as the second check, not the first |
 | `<Feature>: standing down as a unit -- <symbol>: no Windows anchor (by design)` | a Linux-only feature; expected, not a bug |
 | `<Feature>: standing down as a unit -- <symbol>: Windows export ?…@@… missing` | the export table changed: a "By name" row is stale |
 | `ChatService: inbound tap installed (AppendToMsgBuffer, Win64 CResRef* ABI)`, `NameplateService: armed`, `CombatTextService: armed`, `DialogService: hooks installed` | each tier-B unit passed its gate |

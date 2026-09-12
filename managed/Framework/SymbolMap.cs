@@ -1506,7 +1506,9 @@ internal static unsafe class SymbolMap
         {
             log?.Info($"symbol: nwmain.exe build 0x{_stamp:x8} != expected 0x{WindowsBuildStamp:x8}; " +
                       "RVA hooks disabled -- re-derive (docs/windows-symbols.md)");
-            RotNotice();
+            // #457: no RotNotice here. The key gate in ServiceHost.Run refuses the same client before a
+            // symbol is ever resolved, so this branch can no longer be the first to notice rot -- the popup
+            // belongs where the policy is.
         }
         _buildOk = ok;
         return ok;
@@ -1517,12 +1519,13 @@ internal static unsafe class SymbolMap
     private static uint _stamp;
 
     /// <summary>
-    /// #421: how a player finds out. Under rot every tier-B unit stands down, so there is no chatbox and no
-    /// engine chat path (AppendToMsgBuffer is itself an RVA) to put a line on; the one surface that survives
-    /// is user32. Once per session, on its own thread -- a modal parks the thread that raised it, and service
-    /// init must not wait for a player to click OK. The game continues vanilla either way.
+    /// #421: how a player finds out. Under rot the whole extender stands down (#457), so there is no chatbox
+    /// and no engine chat path (AppendToMsgBuffer is itself an RVA) to put a line on; the one surface that
+    /// survives is user32. A Steam-launched version.dll proxy has no other surface at all. Once per session,
+    /// on its own thread -- a modal parks the thread that raised it, and boot must not wait for a player to
+    /// click OK. The game continues vanilla either way.
     /// </summary>
-    private static void RotNotice()
+    internal static void RotNotice(string text)
     {
         if (!OperatingSystem.IsWindows()) return;
         // An escaping exception on a bare thread kills the process -- the one outcome the build lock exists
@@ -1531,10 +1534,7 @@ internal static unsafe class SymbolMap
         {
             try
             {
-                MessageBoxW(IntPtr.Zero,
-                    $"Sowx: client build changed, extender standing down.\n\nnwmain.exe build 0x{_stamp:x8}, " +
-                    $"extender expects 0x{WindowsBuildStamp:x8}. The game runs vanilla.",
-                    "Sowx", MB_ICONWARNING);
+                MessageBoxW(IntPtr.Zero, text, "Sowx", MB_ICONWARNING);
             }
             catch { }
         }) { IsBackground = true, Name = "sowx-rot-notice" }.Start();

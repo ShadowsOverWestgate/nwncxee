@@ -30,6 +30,23 @@ public static class ServiceHost
                      .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?
                      .InformationalVersion ?? "unknown"));
         log.Info($"host: GC server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} cpus={Environment.ProcessorCount}");
+        // #457: the one rot gate, and the whole extender is behind it -- both platforms, ahead of DISCOVERY
+        // rather than ahead of Initialize, because constructing a service runs its type initializer and a
+        // type initializer is enough to latch engine state. Nothing constructed, nothing hooked, so no
+        // feature can half-fire against a client these offsets were never measured against. The build key is
+        // the linker's build identity, the only lock that exists on both platforms (EngineLayout).
+        if (!EngineLayout.KeyOk)
+        {
+            string rot = $"client build changed, extender standing down WHOLE -- including the Alloy renderer. " +
+                         $"Observed build {EngineLayout.BuildKey}, expected {EngineLayout.ExpectedKey}. " +
+                         "The game runs vanilla (re-measure: docs/engine-layout.md).";
+            log.Always("host: " + rot);
+            log.Always("host: 0 service(s) discovered, 0 hook(s) installed");
+            SymbolMap.RotNotice("Sowx: " + rot);   // Windows-only: a version.dll proxy has no log the player reads
+            ExtenderLog.Flush();   // Always only enqueues, and nothing else in this process will drain it
+            return;
+        }
+
         // ADR 0013 bucket 2, and this is as early as it goes: ahead of DISCOVERY, not just ahead of
         // Initialize. Constructing a service runs its type initializer, and GameGate latches `lockchat` in
         // one -- so a load after this line would pin the opt-out to its default and no-op it silently.

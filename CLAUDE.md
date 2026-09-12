@@ -29,7 +29,7 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily)
 ## Build & run
 
     ./build.sh          # needs: .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake
-    ./run-demo.sh       # boots the framework in /usr/bin/env (no game needed)
+    ./run-demo.sh       # boots the framework in a stub host + proves the rot refusal (no game needed)
     ./sym.sh [-m] <pat> # search client symbols; -m = mangled (for Install)
 
 `build.sh` stages a runtime folder `sow-client-extender/` (launcher + 3 `.so`).

@@ -1287,10 +1287,19 @@ public static unsafe class EngineLayout
     /// line can name what was actually loaded.</summary>
     public static string BuildKey => _key ??= OperatingSystem.IsWindows() ? WindowsKey() : LinuxKey();
 
-    /// <summary>Does the running client match the build these offsets were measured against?</summary>
-    public static bool KeyOk => string.Equals(BuildKey, Expected, StringComparison.OrdinalIgnoreCase);
+    /// <summary>Does the running client match the build these offsets were measured against? #457: this is
+    /// the extender's one rot policy -- <see cref="ServiceHost.Run"/> asks it before discovery and stands the
+    /// whole unit down, so no per-feature gate can be the first to notice.</summary>
+    public static bool KeyOk => KeyMatches(ExpectedKey);
 
-    private static string Expected => OperatingSystem.IsWindows() ? WindowsBuildId : LinuxBuildId;
+    /// <summary>The comparison behind <see cref="KeyOk"/>, taking the expected key -- so the self-check can
+    /// prove the REFUSING case, which is the case the gate exists for and the one no live run reaches.</summary>
+    public static bool KeyMatches(string expected) =>
+        string.Equals(BuildKey, expected, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The key this table was measured against, for the platform we are running on. Public so the
+    /// host's rot line can name it (#457).</summary>
+    public static string ExpectedKey => OperatingSystem.IsWindows() ? WindowsBuildId : LinuxBuildId;
 
     /// <summary>Offsets still carrying no Windows resolution. Zero is the section-3 finish line. Counted on
     /// BOTH platforms -- the migration is worked on Linux, and a counter that only moves on Windows is not
@@ -1301,7 +1310,8 @@ public static unsafe class EngineLayout
     /// Unit gate, the <see cref="SymbolMap.Require"/> pattern for layout rather than symbols: a feature that
     /// reads engine memory calls this at the top of <c>Initialize</c> and stands down whole if the answer is
     /// no. Reading a field at an offset measured on a different build is how a port renders garbage instead
-    /// of failing.
+    /// of failing. #457: the <c>KeyOk</c> branch below is unreachable in practice -- the host refuses a
+    /// rotten build before discovery -- so what this gate is actually for is the unresolved-row count.
     /// </summary>
     /// <param name="classes">The engine classes this feature reads. Empty means "every row", which is only
     /// right for a feature that reads the whole table -- #436: once Alloy's offsets landed here, an
@@ -1310,7 +1320,7 @@ public static unsafe class EngineLayout
     {
         if (!KeyOk)
         {
-            log.Always($"{feature}: standing down as a unit -- client build {BuildKey} != {Expected} " +
+            log.Always($"{feature}: standing down as a unit -- client build {BuildKey} != {ExpectedKey} " +
                        "(rot: re-measure, docs/engine-layout.md)");
             return false;
         }
@@ -1327,7 +1337,7 @@ public static unsafe class EngineLayout
     /// <summary>Join <c>/knobs</c>. Once, from the host.</summary>
     public static void Register() => KnobSurface.Note(() =>
         $"engine layout: {_rows.Count} offset(s), {UnresolvedCount} unresolved; " +
-        $"build {BuildKey}{(KeyOk ? "" : $" != expected {Expected} -- ROT")}");
+        $"build {BuildKey}{(KeyOk ? "" : $" != expected {ExpectedKey} -- ROT")}");
 
     // ================= probes =================
 
@@ -1531,6 +1541,10 @@ public static unsafe class EngineLayout
         if (!Probe("SelfCheckProbe", (IntPtr)fake, null)) { log.Always("layout selfcheck FAIL: good probe rejected"); return; }
         _rows.Add(new Row("SelfCheckProbe", "bad", 0x40, Expect.Byte01, false));
         if (Probe("SelfCheckProbe", (IntPtr)fake, null)) { log.Always("layout selfcheck FAIL: bad probe accepted"); return; }
+
+        // #457: the rot gate refuses a key it was not measured against. The passing direction is whatever
+        // the host it boots in happens to be; only this direction is assertable off-device.
+        if (KeyMatches("not-a-build-key")) { log.Always("layout selfcheck FAIL: rot gate accepted a wrong build key"); return; }
 
         _rows.RemoveRange(before, _rows.Count - before);
         UnresolvedCount = unresolvedBefore;

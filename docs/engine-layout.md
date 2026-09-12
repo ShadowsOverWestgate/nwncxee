@@ -46,19 +46,30 @@ hash: a rewrapped Steam/GOG/Beamdog copy of the same build is the same client.
 
 Read at runtime from the running program: `/proc/self/exe` `PT_NOTE` on Linux,
 the loaded image's `DataDirectory[6]` debug directory on Windows. A mismatch is
-**rot**: every feature that reads engine memory stands down as a unit with one
-line naming the build that was actually loaded. This is `#48`'s rot policy
-widened from Windows-only to both platforms — on Linux that is new, and a client
-patch now costs nameplates until the table is re-measured, which is the intended
-trade against rendering garbage off a moved field.
+**rot**: the **whole extender** stands down, both platforms, with one
+`ExtenderLog.Always` line naming the build that was actually loaded (`#457`).
+The gate is `EngineLayout.KeyOk`, asked once in `ServiceHost.Run` **before
+discovery** — not before `Initialize`, because constructing a service runs its
+type initializer and a type initializer is enough to latch engine state. Zero
+services constructed, zero hooks installed, the game runs vanilla. On Windows
+the same text also goes to `SymbolMap.RotNotice`'s message box, because a
+Steam-launched `version.dll` proxy has no log the player will read.
+
+No partial behaviours: a feature that asks neither gate used to keep running
+against a client it was never measured against, which is rot arriving as garbage
+in some features instead of as a refusal. On Linux the lock itself is new
+(`#432`), so a client patch now costs the chatbox, combat text and Alloy, not
+just nameplates — the intended trade against rendering garbage off a moved
+field, and the reason adding a tested build's key unblocks every feature at once.
 
 There is exactly one row per OS. A second tested build gets its own pinned key
 and its own values; hunting offsets for a build nobody has tested is not work.
 
-**Two locks exist today.** `SymbolMap` pins the PE `TimeDateStamp` for its RVAs;
-this pins the PDB GUID. They gate different things and agree in practice (same
-PE). Collapsing them onto one key is a follow-up, not a reason to rewire a
-live-verified gate.
+**Two checks, one policy.** `SymbolMap` still pins the PE `TimeDateStamp` for its
+RVAs; this pins the build key. Since `#457` the stamp can never be the *first*
+thing to notice rot — nothing gets as far as resolving a symbol — so the two
+locks were settled without collapsing either: `KeyOk` is the policy, the stamp
+stays the RVA-path guard.
 
 ## Probes
 
