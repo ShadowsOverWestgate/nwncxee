@@ -862,10 +862,6 @@ internal static unsafe class SymbolMap
     /// float[16] model matrix (the layout MultMatrix/MakeMatrix4x4 use). Translation at floats [12,13,14]. Hooked
     /// (call-through) so the cube pass can read each caster part's world position and sphere-cull it per light.</summary>
     public const string SetModelMatrix = "_ZN8GLRender14SetModelMatrixERK9Matrix4x4";
-    /// <summary>GLRender::RenderVertexData(VertexDataObject*, uint, Aurora::AuroraPrimitiveTypes, uint, uint)
-    /// @0x4d0570 -- STATIC (no this): the terminal per-part draw. Hooked to SKIP (early-return) a caster the cube
-    /// pass sphere-culled out of the current light's range. ABI: rdi=vdo, esi, edx=primType, ecx, r8d.</summary>
-    public const string RenderVertexData = "_ZN8GLRender16RenderVertexDataEP16VertexDataObjectjN6Aurora20AuroraPrimitiveTypesEjj";
     /// <summary>Global <c>g_nEnableBumpyWater</c> @0x19ace10 (B) -- the int
     /// <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 ANDs with <c>Material::HasBumpyShinyMap</c> before
     /// routing a part to draw bucket 6. Data symbol; read, never write.</summary>
@@ -1058,9 +1054,6 @@ internal static unsafe class SymbolMap
     /// neither do we.</summary>
     public const string AurResFree = "_Z10AurResFreePv";
     public const string CResCtor           = "_ZN4CResC1Ev";
-    /// <summary>libstdc++ <c>operator new(size_t)</c>: the CRes we hand the resman is freed by the engine's
-    /// own delete, so it must come from the engine's allocator. Linux shares one heap, so this is that.</summary>
-    public const string CxxOperatorNew     = "_Znwm";
 
     /// <summary>
     /// PE TimeDateStamp of the nwmain.exe the RVAs were read from. A client patch shifts
@@ -1068,14 +1061,22 @@ internal static unsafe class SymbolMap
     /// </summary>
     public const uint WindowsBuildStamp = 0x68e408bc;
 
-    // Windows resolution for a symbol. Exactly one path applies:
-    //   Name != null : name-exported (MSVC mangling) -- resolve like Linux
-    //   Rva  != 0    : not exported -- absolute = runtime module base + Rva (build-locked)
-    //   absent       : no Windows resolution -- skip with a log line (graceful no-op)
-    private readonly record struct Win(string? Name, int Rva);
+    /// <summary>A symbol's Windows resolution. Four forms and no fifth -- the point of #447: a missing key
+    /// used to mean both "never looked" and "deliberately Linux-only", so the absence could not be counted.
+    /// Now every constant has a row, <see cref="Nm"/>/<see cref="At"/> resolve, <see cref="LinuxOnly"/> is a
+    /// decision, and <see cref="Hole"/> is the only form that counts against the port.</summary>
+    private readonly record struct Win(string? Name, int Rva, string? Why, bool Counted);
 
-    private static Win Nm(string msvc) => new(msvc, 0);
-    private static Win At(int rva) => new(null, rva);
+    /// <summary>Name-exported on Windows: resolve the MSVC mangling the way Linux resolves Itanium.</summary>
+    private static Win Nm(string msvc) => new(msvc, 0, null, false);
+    /// <summary>Not exported: absolute = runtime module base + RVA, build-locked by the PE stamp.</summary>
+    private static Win At(int rva) => new(null, rva, null, false);
+    /// <summary>A decision: this symbol is not wanted on Windows, and <paramref name="why"/> says why. Does
+    /// not count -- CLAUDE.md's rule is that the absence be DECLARED, not that it be filled.</summary>
+    private static Win LinuxOnly(string why) => new(null, 0, why, false);
+    /// <summary>Not yet anchored. Counts, and is printed by <c>/knobs</c> beside EngineLayout's unresolved
+    /// offsets: parity is the constraint (#445), so a named instrument is a waypoint, never an exit.</summary>
+    private static Win Hole(string why) => new(null, 0, why, true);
 
     /// <summary>Linux name -> Windows resolution. Only symbols that DO resolve on Windows are listed: a
     /// missing key and an explicit <c>default</c> entry take the same branch in <see cref="Resolve"/> and emit
@@ -1206,7 +1207,223 @@ internal static unsafe class SymbolMap
         [RefreshHilite]    = At(0x966170),   // its own ExoLog nwcanimbase.cpp:0x123a; channels +0x9c/+0xb0/+0xc8
         [AreaLoadBorder]   = At(0x7dea10),   // __FUNCSIG__ "int __cdecl CNWCArea::LoadBorder(class CGuiAreaLoadscreen *,float)"
         [AreaReloadBorder] = At(0x7e1e40),   // HandleServerToPlayerArea's flag-bit-2 branch; deletes (vt+0x50) + respawns (vt+0x30)
+
+        // --- #447: the rest of the table. The 142 Nm rows below are MECHANICAL -- MSVC mangling carries the
+        //     return type Itanium drops (#433), so llvm-undname over nwmain.exe's 18237 exports pairs on
+        //     (qualified name + parameter list) with nothing left ambiguous; the pass reproduces all 39
+        //     hand-derived Nm rows above exactly, which is what licenses the other 142. The At rows and the
+        //     two declared absences are per-row measurements or decisions; see the ticket.
+        [AddPartsToDrawBuckets] = Nm("?AddPartsToDrawBuckets@Scene@@QEAAXXZ"),
+        [AurResFree] = Nm("?AurResFree@@YAXPEAX@Z"),
+        [AurResGet] = Nm("?AurResGet@@YAPEAXPEBD0PEAH_N@Z"),
+        [AurResGetData] = Nm("?AurResGetData@@YAPEADH@Z"),
+        [AurTextureBindInUnit] = Nm("?BindInUnit@CAurTexture@@UEAAXIH@Z"),
+        [AurTextureBuildAndStore] = Nm("?BuildAndStore@CAurTexture@@QEAAXXZ"),
+        [AurTextureBuildAndStoreTexture] = Nm("?BuildAndStoreTexture@CAurTextureBasic@@QEAAXXZ"),
+        [AurTextureCalcHash] = Nm("?AurTextureCalculateHashID@@YAIPEBDFPEAH@Z"),
+        [AurTextureConstructImage] = Nm("?ConstructImage@CAurTextureBasic@@QEAAXXZ"),
+        [AurTextureGetController] = Nm("?AurTextureGetController@@YAPEAVTextureController@@PEAVCAurTexture@@@Z"),
+        [AurTextureGlImageBasic] = Nm("?glImageBasic@CAurTextureBasic@@QEAAH_N@Z"),
+        [AurTextureNullPtr] = Nm("?m_pNullTexture@CAurTextureBasic@@2V?$SafePointer@VCAurTexture@@@@A"),
+        [BinBucket] = Nm("?binbucket@@3V?$List@PEAVCAurTriangleBin@@@@A"),
+        [CapBuckets] = Nm("?capbuckets@@3PAVBucket@@A"),
+        [FadeBuckets] = Nm("?fadebuckets@@3V?$List@VBucket@@@@A"),
+        [FadingInBucket] = Nm("?fadinginbucket@@3V?$List@PEAVTileData@@@@A"),
+        [MeshShadowBucket] = Nm("?meshshadowbucket@@3V?$List@PEAVPartTriMesh@@@@A"),
+        [StaticShadowBucket] = Nm("?staticshadowbucket@@3V?$List@PEAVPartShadow@@@@A"),
+        [BspTraverse] = Nm("?BSPTraverse@@YAXPEAVBSPNode@@P6AX0PEAX@Z1@Z"),
+        [CResCtor] = Nm("??0CRes@@QEAA@XZ"),
+        [ChatDoFullScreen] = LinuxOnly("#14 chat-render probe, no caller"),
+        [ChatDoSplitScreen] = LinuxOnly("#14 chat-render probe, no caller"),
+        [ClientAiUpdateState] = Hole("CClientAIMaster is not exported (only CServerAIMaster is)"),
+        [CountPart] = Nm("?countpart@@3HA"),
+        [CurrentCamera] = Nm("?CurrentCamera@@3PEAVCamera@@EA"),
+        [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),
+        [CycleTidControllerVtbl] = At(0xd905c0),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
+        [DoBinBucket] = Nm("?DoBinBucket@Scene@@EEAAXXZ"),
+        [DoDynamicMeshProjections] = Nm("?DoDynamicMeshProjections@Scene@@EEAAXPEAVPartLight@@@Z"),
+        [DoGobShadows] = Nm("?DoGobShadows@Scene@@EEAAXPEAVPartLight@@@Z"),
+        [EmitterGetGobAlpha] = Nm("?GetGobAlpha@PartEmitter@@AEAAMXZ"),
+        [EmitterGetTileAlpha] = Nm("?GetTileAlpha@PartEmitter@@AEAAMXZ"),
+        [EmitterIsSplat] = Nm("?IsSplat@MdlNodeEmitter@@QEAA_NXZ"),
+        [EmitterIsTinted] = Nm("?IsTinted@MdlNodeEmitter@@QEAA_NXZ"),
+        [EnableBeams] = Nm("?enablebeams@@3HA"),
+        [EnableBumpyWater] = Nm("?g_nEnableBumpyWater@@3HA"),
+        [EnableFBEffects] = Nm("?enableFBeffects@@3HA"),
+        [EnableTextureControllers] = Nm("?enabletexturecontrollers@@3HA"),
+        [ExoResMan] = Nm("?g_pExoResMan@@3PEAVCExoResMan@@EA"),
+        [FadeDoors] = Nm("?FadeDoors@Scene@@UEAAXXZ"),
+        [FadingOutBucket] = Nm("?fadingoutbucket@@3V?$List@PEAVTileData@@@@A"),
+        [FbEffectsMask] = Nm("?m_nFramebufferEffectsEnabled@Camera@@1IA"),
+        [FlagCurrentTransformDirty] = Nm("?FlagCurrentTransformDirty@GLRender@@CAXXZ"),
+        [FocusLighting] = Nm("?focuslighting@@3VVector@@A"),
+        [ForceDialogVisible] = LinuxOnly("empty body on both builds; nothing to skip"),
+        [FullDynamicLighting] = Nm("?g_bFullDynamicLighting@@3HA"),
+        [GetCanKeyholeDissolve] = Nm("?GetCanKeyholeDissolve@Camera@@QEAA_NPEBVPartTriMesh@@@Z"),
+        [GetEmitterLighting] = Nm("?GetEmitterLighting@LightManager@@QEAA?AVVector@@V2@PEAV?$List@PEAVPartLight@@@@@Z"),
+        [GetLensFlareLights] = Nm("?GetLensFlareLights@LightManager@@QEAAAEAV?$List@PEAVPartLight@@@@XZ"),
+        [GetLightAdjustedRadius] = Nm("?GetLightAdjustedRadius@@YAMPEBVPartLight@@@Z"),
+        [GetNetLayer] = Hole("CClientExoApp is not exported (only CServerExoApp is)"),
+        [GetPlayerCreature] = LinuxOnly("#14 chat-render probe, no caller"),
+        [GetServerNetworkAddress] = Nm("?GetServerNetworkAddress@CNetLayer@@QEAA?AVCExoString@@XZ"),
+        [GlActiveTextureStage] = Nm("?m_activeTextureStage@GLRender@@0IA"),
+        [GlArrayBufferBound] = Nm("?m_nArrayBufferBound@GLRender@@0IA"),
+        [GlBoundTextures] = Nm("?m_boundTextures@GLRender@@0PAUBoundTexture@1@A"),
+        [GlCurrentCustomProgram] = Nm("?m_pCurrentCustomProgram@GLRender@@0PEAUPROG_FIXED@1@EA"),
+        [GlDeleteBuffer] = Nm("?DeleteBuffer@GLRender@@CAXI@Z"),
+        [GlEnabledTextureStages] = Nm("?m_bEnabledTextureStages@GLRender@@0IA"),
+        [GlGetPool] = Nm("?GetPool@GLRender@@CAPEBXI@Z"),
+        [GlGlobalShaderConstantsF] = Nm("?m_globalShaderConstantsf@GLRender@@0PAMA"),
+        [GlGlobalShaderConstantsI] = Nm("?m_globalShaderConstantsi@GLRender@@0PAHA"),
+        [GlGlobalShaderConstantsV] = Nm("?m_globalShaderConstantsv@GLRender@@0PAVVector@@A"),
+        [GlGlobalShaderConstantsV4] = Nm("?m_globalShaderConstantsv4@GLRender@@0PAVVector4@@A"),
+        [GlMaxElementIndices] = Nm("?GetVertexBufferMaxElementIndices@GLRender@@CAHXZ"),
+        [GlMaxElementVertices] = Nm("?GetVertexBufferMaxElementVertices@GLRender@@CAHXZ"),
+        [GlOrphanBuffers] = Nm("?g_bOrphanBuffersBeforeWrite@@3HA"),
+        [GlPoolTableAnchor] = At(0x128ead8),   // the {base,count} pair itself -- GetPoolBuffer loads it, UnlockPool leas it
+        [GlRenderBones] = Nm("?m_bones@GLRender@@0PAVMatrix4x4@@A"),
+        [GlRenderVertexData] = Nm("?RenderVertexData@GLRender@@CAXPEAVVertexDataObject@@IW4AuroraPrimitiveTypes@Aurora@@II@Z"),
+        [GlRenderVertexStreamData] = Nm("?RenderVertexStreamData@GLRender@@CAXPEAVVertexStreamDataObject@@W4AuroraPrimitiveTypes@Aurora@@II@Z"),
+        [GlSetUniforms] = Nm("?SetUniforms@GLRender@@CAXAEAUPROG_FIXED@1@@Z"),
+        [GlSetVertexDataObject] = Nm("?SetVertexDataObject@GLRender@@CAXPEAVVertexDataObject@@@Z"),
+        [GlShaderRuntimeData] = Nm("?m_shaderExposedRuntimeData@GLRender@@0UShaderExposedRuntimeData@1@A"),
+        [GlTotalMemPool] = Nm("?totalmempool@@3HA"),
+        [GlUnlockPool] = Nm("?UnlockPool@GLRender@@CAXIII@Z"),
+        [GlUseProgramConditionally] = Nm("?GlUseProgramConditionally@GLRender@@CAXI@Z"),
+        [GobBucket] = Nm("?gobbucket@@3V?$List@PEAVGob@@@@A"),
+        [GobCollectLights] = Nm("?CollectLights@Gob@@QEAAXAEAV?$List@PEAVPartLight@@@@@Z"),
+        [GobGetAdjustedScale] = Nm("?GetAdjustedScale@Gob@@UEBAMXZ"),
+        [GrassEnabled] = Nm("?m_bGrassIsEnabled@Scene@@0_NA"),
+        [GrassFarDistance] = Nm("?m_fGrassFarRenderDistance@Scene@@0MA"),
+        [GrassInfo] = Nm("?g_GrassInfo@@3V?$List@VCAurGrassInfo@@@@A"),
+        [GrassNearRadius] = Nm("?m_fNearRadiusSquared@CAurTriangleBin@@2MA"),
+        [GuiUpdateAndRender] = Nm("?UpdateAndRender@CGuiMan@@QEAAXM@Z"),
+        [HideCompass] = Hole("quickbar anchors -- #439"),
+        [LightAreaAmbient] = Nm("?m_lightAreaAmbient@GLRender@@0VVector@@A"),
+        [LightAreaDiffuse] = Nm("?m_lightAreaDiffuse@GLRender@@0VVector@@A"),
+        [LightAreaDiffuseDir] = Nm("?m_lightAreaDiffuseDirection@GLRender@@0VVector@@A"),
+        [LightManagerOnlyGob] = Nm("?m_pOnlyGob@LightManager@@0PEAVGob@@EA"),
+        [LoadMatrixIdentity] = Nm("?LoadMatrixIdentity@RenderInterface@@SAXXZ"),
+        [MAurMtxStack] = Nm("?m_aurMtxStack@@3PAVaurMatrixStack@@A"),
+        [MCurrentMatrix] = Nm("?m_nCurrentMatrix@GLRender@@0IA"),
+        [ManageSceneBSP] = Nm("?ManageSceneBSP@@YAXPEAVScene@@@Z"),
+        [MatGetTexture] = Nm("?GetTexture@Material@@QEAAPEAVCAurTexture@@H@Z"),
+        [MatHasBumpyShinyMap] = Nm("?HasBumpyShinyMap@Material@@QEAA_NXZ"),
+        [MatHasEnvMap] = Nm("?HasEnvMap@Material@@QEAA_NXZ"),
+        [MeshBuckets] = Nm("?meshbuckets@@3V?$List@VBucket@@@@A"),
+        [MsaaSamples] = Nm("?g_nMSAA@@3HA"),
+        [MultMatrix] = Nm("?MultMatrix@RenderInterface@@SAXPEAM@Z"),
+        [NetProcessReceivedFrames] = Nm("?ProcessReceivedFrames@CNetLayer@@QEAAXH@Z"),
+        [NkBegin] = Hole("nuklear is not exported by nwmain.exe"),
+        [NkButtonLabel] = Hole("nuklear is not exported by nwmain.exe"),
+        [NkEnd] = Hole("nuklear is not exported by nwmain.exe"),
+        [NkLabel] = Hole("nuklear is not exported by nwmain.exe"),
+        [NkLayoutRowDynamic] = Hole("nuklear is not exported by nwmain.exe"),
+        [NkSdlCopyEvent] = Hole("nuklear is not exported by nwmain.exe"),
+        [NkSdlRender] = Hole("nuklear is not exported by nwmain.exe"),
+        [NkWindowIsAnyHovered] = Hole("nuklear is not exported by nwmain.exe"),
+        [NkWindowIsClosed] = Hole("nuklear is not exported by nwmain.exe"),
+        [Nuklear] = Hole("nuklear is not exported by nwmain.exe"),
+        [OnGainFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
+        [OnLostFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
+        [OptionsHandleXButton] = Hole("COptionsPanel is not exported; the menu stays open"),
+        [PartAnimate] = Nm("?Animate@Part@@UEAAXM@Z"),
+        [PartDanglyAnimate] = Nm("?Animate@PartDanglyMesh@@UEAAXM@Z"),
+        [PartDanglyMeshVtbl] = At(0xd88698),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
+        [PartDtor] = Nm("??1Part@@UEAA@XZ"),
+        [PartEmitterDtor] = Nm("??1PartEmitter@@UEAA@XZ"),
+        [PartGetIsOpaque] = Nm("?GetIsOpaque@PartTriMesh@@QEAA_NXZ"),
+        [PartGetWorld] = Nm("?GetWorld@Part@@UEAAXAEAVVector@@AEAVQuaternion@@@Z"),
+        [PartSkinVtbl] = At(0xd88438),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
+        [PltOnGpu] = Nm("?g_bGeneratePLTOnGPU@@3HA"),
+        [PopCurrentMatrix] = Nm("?PopCurrentMatrix@RenderInterface@@SAXXZ"),
+        [PrimTypeTranslationTable] = At(0xd8ad20),   // the {0,1,3,4,5,6,2} run in .rdata; RenderVertexData leas it three times
+        [ProjectionAlpha] = Nm("?projectionalpha@@3MA"),
+        [PushCurrentMatrix] = Nm("?PushCurrentMatrix@RenderInterface@@SAXXZ"),
+        [QuickbarReposition] = Hole("quickbar anchors -- #439"),
+        [ReloadGrass] = Nm("?ReloadGrass@Scene@@UEAAXXZ"),
+        [RenderDrawBucket] = Nm("?RenderDrawBucket@Scene@@QEAAXH@Z"),
+        [RenderDynamicShadows] = Nm("?RenderDynamicShadows@Scene@@QEAAXXZ"),
+        [RenderEmitter] = Nm("?RenderEmitter@PartEmitter@@QEAAXXZ"),
+        [RenderShadowPlanes] = Nm("?RenderShadowPlanes@Scene@@QEAAXHH@Z"),
+        [RenderSinglePass] = Nm("?RenderSinglePass@Scene@@UEAAXXZ"),
+        [RenderSkyBoxes] = Nm("?RenderSkyBoxes@Scene@@QEAAXXZ"),
+        [RenderStaticShadows] = Nm("?RenderStaticShadows@Scene@@EEAAXXZ"),
+        [ResManDemand] = Nm("?Demand@CExoResMan@@QEAAPEAXPEAVCRes@@@Z"),
+        [ResManExists] = Nm("?Exists@CExoResMan@@QEAAHAEBVCResRef@@GPEAI@Z"),
+        [ResManGetResObject] = Nm("?GetResObject@CExoResMan@@QEAAPEAVCRes@@AEBVCResRef@@G@Z"),
+        [ResManRelease] = Nm("?Release@CExoResMan@@QEAAHPEAVCRes@@@Z"),
+        [ResManReleaseObj] = Nm("?ReleaseResObject@CExoResMan@@QEAAHPEAVCRes@@_N@Z"),
+        [ResManSetResObject] = Nm("?SetResObject@CExoResMan@@QEAAXAEBVCResRef@@GPEAVCRes@@@Z"),
+        [ResManUpdate] = Nm("?Update@CExoResMan@@QEAAXI@Z"),
+        [RiCreateTexture] = Nm("?CreateTexture@RenderInterface@@SAXPEAVCAurTexture@@_NH@Z"),
+        [RiDeleteTextures] = Nm("?DeleteTextures@RenderInterface@@SAXIPEBI@Z"),
+        [RiDisable] = Nm("?Disable@RenderInterface@@SAXW4AuroraEnableEnums@Aurora@@@Z"),
+        [RiEnable] = Nm("?Enable@RenderInterface@@SAXW4AuroraEnableEnums@Aurora@@@Z"),
+        [RiGetGlobalShaderParamf] = Nm("?GetGlobalShaderParamf@RenderInterface@@SAMW4AurGlobalShaderParamf_t@Aurora@@@Z"),
+        [RiGetGlobalShaderParami] = Nm("?GetGlobalShaderParami@RenderInterface@@SAHW4AurGlobalShaderParami_t@Aurora@@@Z"),
+        [RiIsEnabled] = Nm("?IsEnabled@RenderInterface@@SAEW4AuroraEnableEnums@Aurora@@@Z"),
+        [RiSetBlendFunc] = Nm("?SetBlendFunc@RenderInterface@@SAXW4AuroraBlendModes@Aurora@@0@Z"),
+        [RiSetModelMatrix] = Nm("?SetModelMatrix@RenderInterface@@SAXAEBVMatrix4x4@@@Z"),
+        [SceneBspGetTileData] = Nm("?SceneBSPGetTileData@@YAPEAVTileData@@PEAVScene@@AEBVVector@@@Z"),
+        [SceneDeleteTile] = Nm("?DeleteTile@Scene@@UEAAXAEBVVector@@@Z"),
+        [SceneFocusObject] = Nm("?m_pFocusObject@Scene@@0V?$SafePointer@VCAurObject@@@@A"),
+        [SceneGetWindVector] = Nm("?GetWindVector@Scene@@QEAA?AVVector@@AEBV2@M@Z"),
+        [SceneInitBsp] = Nm("?InitBSP@Scene@@UEAAXHHH_NM@Z"),
+        [SceneSequence] = Nm("?Sequence@Scene@@2IA"),
+        [SceneSpawnTile] = Nm("?SpawnTile@Scene@@UEAAPEAVCAurObject@@PEBDAEBVVector@@HHPEAVQuaternion@@@Z"),
+        [SetMatrixMode] = Nm("?SetMatrixMode@RenderInterface@@SAXW4AuroraTransStates@Aurora@@@Z"),
+        [SetModelMatrix] = Nm("?SetModelMatrix@GLRender@@CAXAEBVMatrix4x4@@@Z"),
+        [SetMouseCursor] = Hole("CCachedMouseCursorManager is not exported"),
+        [SetOrthoTransform] = Nm("?SetOrthoTransform@RenderInterface@@SAXNNNNNN@Z"),
+        [SetPositionScreen] = Nm("?SetPositionScreen@CGuiPanel@@QEAAXHH@Z"),
+        [SetPriMsgFilter] = LinuxOnly("#14 chat-render probe, no caller"),
+        [ShowCompass] = Hole("quickbar anchors -- #439"),
+        [SsaoIntensity] = Nm("?ssao_intensity@@3MA"),
+        [ToonColorEdge] = Nm("?toon_color_edge_threshold@@3MA"),
+        [ToonDepthEdge] = Nm("?toon_depth_edge_threshold@@3MA"),
+        [ToonEdgeHardness] = Nm("?toon_edge_hardness@@3MA"),
+        [TriggerBucket] = Nm("?triggerbucket@@3V?$List@PEAVPartTrigger@@@@A"),
+        [UpdateMouseCursorAppearance] = Hole("CClientExoAppInternal is not exported"),
+        [VdoCommitItemDynamicData] = Nm("?CommitItemDynamicData@VertexDataObject@@QEAAXII@Z"),
+        [VdoGetItemDynamicData] = Nm("?GetItemDynamicData@VertexDataObject@@QEAAPEAEI@Z"),
+        [VdoRepack] = Nm("?Repack@VertexDataObject@@QEAAXXZ"),
+        [VertexPrimGenVelocity] = Nm("?GenerateVelocityArray@VertexPrimitiveDangly@@QEAAXXZ"),
+        [ViewportSetViewport] = Nm("?SetViewport@CGuiViewport@@QEAAXHHHH@Z"),
     };
+
+    /// <summary>Why a symbol does not resolve on Windows, in the words of its own row. A key that is missing
+    /// entirely is the form <c>build.sh</c> forbids, so it reads as the bug it is rather than as a decision.</summary>
+    private static string Why(Win w) =>
+        w.Why is null ? "no row in the Windows table -- undeclared (build.sh gate)"
+        : w.Counted ? $"not yet anchored: {w.Why}"
+        : $"Linux-only by design: {w.Why}";
+
+    /// <summary>Symbols declared as holes: an absence that is counted, not decided. The finish line is zero,
+    /// exactly as <see cref="EngineLayout.UnresolvedCount"/> is for offsets.</summary>
+    public static int HoleCount
+    {
+        get
+        {
+            int n = 0;
+            foreach (Win w in _win.Values) if (w.Counted) n++;
+            return n;
+        }
+    }
+
+    /// <summary>Join <c>/knobs</c>, beside the layout counter. Once, from the host.</summary>
+    public static void Register() => KnobSurface.Note(() =>
+    {
+        int nm = 0, at = 0, only = 0;
+        foreach (Win w in _win.Values)
+        {
+            if (w.Name is not null) nm++;
+            else if (w.Rva != 0) at++;
+            else if (!w.Counted) only++;
+        }
+        return $"windows symbols: {_win.Count} row(s), {nm} exported + {at} anchored, " +
+               $"{only} Linux-only by design, {HoleCount} not yet anchored";
+    });
 
     // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the static file base.
     private static readonly IntPtr Base = NativeLibrary.GetMainProgramHandle();
@@ -1240,7 +1457,7 @@ internal static unsafe class SymbolMap
 
         if (!_win.TryGetValue(linux, out Win w) || (w.Name is null && w.Rva == 0))
         {
-            log?.Info($"symbol: no Windows resolution for {linux}; skipping");
+            log?.Info($"symbol: no Windows resolution for {linux} ({Why(w)}); skipping");
             return IntPtr.Zero;
         }
         if (w.Name is not null)
@@ -1265,7 +1482,7 @@ internal static unsafe class SymbolMap
         {
             if (Resolve(sym, log) != IntPtr.Zero) continue;
             string why = !OperatingSystem.IsWindows() ? "not exported by this client build"
-                : !_win.TryGetValue(sym, out Win w) || (w.Name is null && w.Rva == 0) ? "no Windows anchor (by design)"
+                : !_win.TryGetValue(sym, out Win w) || (w.Name is null && w.Rva == 0) ? Why(w)
                 : w.Name is not null ? $"Windows export {w.Name} missing"
                 : $"nwmain.exe build 0x{_stamp:x8} != expected 0x{WindowsBuildStamp:x8} (rot: re-derive, docs/windows-symbols.md)";
             log.Always($"{feature}: standing down as a unit -- {sym}: {why}");

@@ -34,6 +34,24 @@ if grep -rnE '(const|readonly)[[:space:]]+(int|uint|long|ulong|byte|ushort|short
   exit 1
 fi
 
+# #447 (#429 section 3): a symbol's Windows resolution is DECLARED, never absent. A missing _win key used to
+# mean both "never looked" and "deliberately Linux-only"; now every `public const string` in SymbolMap.cs
+# carries a row -- Nm(), At(), LinuxOnly("why") or Hole("why") -- and only Hole counts against the port.
+# The census must see EVERY declarator, not the first per line: `public const string A = "a", B = "b";`
+# and its continuation lines hid five constants from the first draft of this gate (and from the sweep that
+# filled the table), which the Proton log then reported as unresolved. Read declarators, not lines.
+missing=$(comm -23 \
+  <(tr '\n' ' ' < managed/Framework/SymbolMap.cs | grep -oP 'public const string\s+\K[^;]*' \
+      | grep -oP '(\w+)(?=\s*=\s*")' | sort -u) \
+  <(sed -n '/Dictionary<string, Win> _win/,/^    };/p' managed/Framework/SymbolMap.cs \
+      | grep -oP '^\s*\[\K\w+' | sort -u))
+if [ -n "$missing" ]; then
+  echo "!! symbol constant with no Windows row (#447):" >&2
+  echo "$missing" | sed 's/^/!!   /' >&2
+  echo "!! every symbol in SymbolMap.cs resolves to Nm(), At(), LinuxOnly(\"why\") or Hole(\"why\")." >&2
+  exit 1
+fi
+
 echo ">> building managed lib (C# NativeAOT -> sowx_managed.so)..."
 SOWX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
 # Quiet on success, but NEVER swallow a failure: discarding stderr here once hid a compile error behind a

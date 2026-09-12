@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Assert every Nm(...) row in SymbolMap._win names a real nwmain.exe export, and every At(...)
+row points inside the image. Alloy stands down under Proton, so no Nm row is exercised at runtime
+yet -- this is the only instrument that says the 142 mechanical rows of #447 (and the 39 that
+predate them) are not typos.
+
+    tools/abi/check-win-symbols.py          # exit 1 on the first bad row
+Env: NWN_WIN_EXE overrides the default Steam path.
+"""
+import os, pathlib, re, struct, sys
+
+EXE = os.environ.get("NWN_WIN_EXE",
+    "~/gry/steam/Neverwinter Nights/bin/win32/nwmain.exe")
+SRC = pathlib.Path(__file__).resolve().parents[2] / "managed/Framework/SymbolMap.cs"
+
+
+def pe_exports(path):
+    d = pathlib.Path(path).read_bytes()
+    pe = struct.unpack_from("<I", d, 0x3C)[0]
+    nsec, optsz = struct.unpack_from("<H", d, pe + 6)[0], struct.unpack_from("<H", d, pe + 20)[0]
+    secs = [struct.unpack_from("<III", d, pe + 24 + optsz + i * 40 + 12) for i in range(nsec)]
+    size = max(va + sz for va, sz, _ in secs)
+
+    def foff(rva):
+        for va, sz, praw in secs:
+            if va <= rva < va + sz:
+                return praw + (rva - va)
+        return None
+
+    e = foff(struct.unpack_from("<I", d, pe + 24 + 112)[0])
+    nnam = struct.unpack_from("<I", d, e + 24)[0]
+    anam = struct.unpack_from("<I", d, e + 32)[0]
+    names = set()
+    for i in range(nnam):
+        o = foff(struct.unpack_from("<I", d, foff(anam) + 4 * i)[0])
+        names.add(d[o:d.index(b"\0", o)].decode())
+    return names, size
+
+
+def main():
+    names, size = pe_exports(EXE)
+    body = re.search(r"Dictionary<string, Win> _win = new\(\)\s*\{(.*?)\n    \};", SRC.read_text(), re.S).group(1)
+    bad = 0
+    nm = at = 0
+    for key, kind, arg in re.findall(r"\[(\w+)\]\s*=\s*(Nm|At)\((\"[^\"]+\"|0x[0-9a-fA-F]+)\)", body):
+        if kind == "Nm":
+            nm += 1
+            if arg.strip('"') not in names:
+                print(f"MISSING EXPORT  {key} -> {arg}"); bad += 1
+        else:
+            at += 1
+            if not 0 < int(arg, 16) < size:
+                print(f"RVA OUT OF IMAGE  {key} -> {arg}"); bad += 1
+    print(f"{nm} Nm row(s), {at} At row(s), {bad} bad")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -26,7 +26,10 @@ internal static unsafe class ServerPing
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
     private static readonly delegate* unmanaged<IntPtr, IntPtr> _getNetLayer =
         (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetNetLayer);
-    /// <summary>CNetLayer::GetServerNetworkAddress() returns by value: (CExoString* out, CNetLayer* this).</summary>
+    /// <summary>CNetLayer::GetServerNetworkAddress() returns by value: (CExoString* out, CNetLayer* this).
+    /// <para>Linux order. Unreachable on Windows today -- <c>GetNetLayer</c> is a declared hole, so the gate
+    /// below returns before this is called -- but whoever anchors it must swap the arguments: Win64 puts the
+    /// sret pointer AFTER <c>this</c> (#420), and the callee, not the caller, destroys the string.</para></summary>
     private static readonly delegate* unmanaged<IntPtr, IntPtr, void> _serverAddress =
         (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GetServerNetworkAddress);
     private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =

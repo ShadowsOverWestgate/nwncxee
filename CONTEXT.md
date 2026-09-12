@@ -85,6 +85,11 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Diverges / Same / Unresolved** — the three, and only three, resolutions an offset can carry.
   *Same* means measured on both and equal; *Unresolved* means nobody looked on Windows yet, and is
   counted on both platforms (only the gate is Windows-only). The pair exists so "verified identical" and "never looked" stop being one bare `const`.
+- **Nm / At / LinuxOnly / Hole** — the four, and only four, Windows resolutions a *symbol* can
+  carry, the same argument one step up from offsets. *Nm* is a name export, *At* a build-locked RVA,
+  *LinuxOnly* a decision with its reason, *Hole* an absence with its reason. Only *Hole* counts, and
+  a constant with no row at all is what `build.sh` refuses — before this, a missing key was both
+  "never looked" and "decided".
 - **Candidate** — an extractor's ranked guess at where a field sits on the other platform. It names
   the function to open next; it is never a resolution on its own. A candidate becomes a row only by
   clearing the bar in `docs/engine-layout.md`. Avoid: match, hit, result.

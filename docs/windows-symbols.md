@@ -119,6 +119,52 @@ deriving anything — required, or the RVAs point into a different build.
 platforms read `GetModule()+0xe8` directly.
 | `SDL_GL_GetProcAddress`, `SDL_GetMouseState`, `SDL_StartTextInput`, `SDL_Get/SetClipboardText`, `SDL_free` | same C names |
 
+## The four forms, and how the table was filled (#447)
+
+Every `public const string` in `SymbolMap.cs` has a row in `_win`. There is no fifth
+form and no absence — `build.sh` refuses a constant without one, because a missing key
+used to mean *both* "never looked" and "deliberately Linux-only".
+
+| Form | Meaning | Counted? |
+|---|---|---|
+| `Nm("?Foo@Bar@@…")` | name-exported; resolved like Linux | no |
+| `At(0x…)` | not exported; module base + RVA, build-locked | no |
+| `LinuxOnly("why")` | a decision: not wanted on Windows | no |
+| `Hole("why")` | not yet anchored | **yes** |
+
+`/knobs` prints the tally beside `EngineLayout`'s unresolved offsets, and `Resolve`'s skip
+line quotes the row's own words, so a log reader can tell a decision from a gap.
+
+**The 142 `Nm` rows are mechanical, not hand-derived.** MSVC mangling encodes the return
+type Itanium drops (#433), so `llvm-undname` over the 18237 PE exports and `llvm-cxxfilt`
+over the Linux names pair on one key — qualified name plus parameter list, with return type,
+`__cdecl`, `class`/`struct`, `__ptr64` and the `__int64`/`long long` spellings normalised
+away. Nothing came back ambiguous. The licence for trusting it: run the same pass over the
+39 rows already derived by hand and it reproduces **all 39 exactly**, wrong on none.
+
+`tools/abi/check-win-symbols.py` is the standing check — every `Nm` row is a real export,
+every `At` RVA lands inside the image (181 / 58, 0 bad). Alloy stands down under Proton, so
+nothing exercises an Alloy `Nm` row at runtime yet; this is the only instrument that does.
+
+**Measured per row, not paired:**
+
+| Symbol | Windows | How |
+|---|---|---|
+| `PartSkin::vftable` | `0xd88438` | RTTI type descriptor → complete-object locator → vftable, via `tools/abi/vtable-slots.py` (which re-derives the checked-in `CAurTexture` `0xd90c70` independently) |
+| `PartDanglyMesh::vftable` | `0xd88698` | same |
+| `CycleTIDTextureController::vftable` | `0xd905c0` | same |
+| `primTypeTranslationTable` | `0xd8ad20` | the `{0,1,3,4,5,6,2}` dword run in `.rdata`, one hit in the image; `GLRender::RenderVertexData` @`0xb59b0` `lea`s it three times |
+| `GLRender` pool `{base,count}` pair | `0x128ead8` | `GetPoolBuffer` @`0xb3cb0` loads it with `mov rax,[rip+0x11dae19]` then indexes `pool*0x20+0xc`; `UnlockPool` @`0xbbad0` `lea`s the same address into the helper. Linux has no symbol on the pair and steps `noemittervar+0x236c`, so `EngineLayout.PoolTableAnchorOffset` is `Diverges(linux: 0x236c, win: 0x0)` — the row wanted an *anchor*, not a value |
+
+**The 18 declared holes** are every symbol that still has none, and not one of them is
+Alloy's: nuklear (10 — the library is linked but exports nothing), `CPanelQuickBar`
++ `CGuiInGame::Show/HideCompass` (3, #439), `CCachedMouseCursorManager::SetMouseCursor`
+and `CClientExoAppInternal::UpdateMouseCursorAppearance` (2), `COptionsPanel::HandleXButton`,
+`CClientAIMaster::UpdateState` and `CClientExoApp::GetNetLayer`. The last two are worth a
+note for anyone hunting them: the *server* twins **are** exported (`CServerAIMaster`,
+`CServerExoApp`) because the client exe carries the single-player server, so a name search
+finds a function with the right name and the wrong class.
+
 ## Chat raw offsets (#419) -- decomp-diffed against `0x68e408bc`
 
 | Struct / field | Linux | Windows | Where seen |

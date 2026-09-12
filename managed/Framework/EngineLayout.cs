@@ -1169,11 +1169,13 @@ public static unsafe class EngineLayout
     public static readonly int PoolTableCount = Same("GLRender", "poolTableCount", 0x08);
 
     /// <summary>Byte offset from <see cref="SymbolMap.GlPoolTableAnchor"/> to that {base, count} pair.
-    /// <para>Unresolved and likely to stay so in this form: on Windows the pair is its own static
-    /// (rva 0x128ead8) passed BY POINTER into the pool helper, not a fixed distance from any symbol we
-    /// anchor on -- so what Windows needs is its own anchor in <c>SymbolMap._win</c>, not a Windows value
-    /// for this row.</para></summary>
-    public static readonly int PoolTableAnchorOffset = Unresolved("GLRender", "poolTableAnchorOffset", 0x236c);
+    /// <para>#447: the row wanted an ANCHOR, not a value, and it got one. Linux has no symbol on the pair,
+    /// so it anchors on <c>noemittervar</c> and steps 0x236c; Windows names the pair itself
+    /// (<c>At(0x128ead8)</c>, measured off <c>GLRender::GetPoolBuffer</c>'s <c>mov rax,[rip+…]</c> and
+    /// <c>UnlockPool</c>'s <c>lea rcx,[rip+…]</c>), so the step is zero. Same two globals, two ways of
+    /// naming them -- which is what <c>Diverges</c> is for.</para></summary>
+    public static readonly int PoolTableAnchorOffset =
+        Diverges("GLRender", "poolTableAnchorOffset", linux: 0x236c, win: 0x0);
 
     // ---- GLRender::m_shaderExposedRuntimeData (#123/#124/#347) ----
     // The struct the engine's own SetUniforms uploads its scalar shader inputs from. Nothing takes it as

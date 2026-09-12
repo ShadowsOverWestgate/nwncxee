@@ -64,6 +64,7 @@ public static class ServiceHost
         KnobSurface.Register();
         EngineLayout.SelfCheck(log);   // #432: the three resolution forms, the counter, and a probe that fires
         EngineLayout.Register();
+        SymbolMap.Register();
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
         foreach (IExtenderService service in all)
         {

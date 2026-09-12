@@ -37,7 +37,7 @@ internal static unsafe class ShaderResource
     private static readonly delegate* unmanaged<IntPtr, void> _cresCtor =
         (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.CResCtor);
     private static readonly delegate* unmanaged<IntPtr, IntPtr> _operatorNew =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.CxxOperatorNew);
+        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.OperatorNew);
 
     /// <summary>The GLSL a content author supplied for <paramref name="resref"/>, or null when nothing in
     /// the resource chain provides it (the common case: everyone runs the embedded defaults).
