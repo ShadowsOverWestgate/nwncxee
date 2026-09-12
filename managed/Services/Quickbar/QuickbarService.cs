@@ -23,14 +23,10 @@ public sealed unsafe class QuickbarService : IExtenderService
     private const int QuickbarModelW = 800;
     private const int QuickbarBaseH = 36;
 
-    /// <summary>CGuiManager viewport width/height offsets (int32 pair).</summary>
-    private const int GuiManVpWOff = 0xb8, GuiManVpHOff = 0xbc;
-    /// <summary>CClientExoAppInternal → CGuiInGame* offset.</summary>
-    private const int InGameGuiOff = 0x90;
-    /// <summary>CGuiInGame → CPanelQuickBar* offset.</summary>
-    private const int QuickbarPanelOff = 0x60;
-    /// <summary>CClientExoApp → CClientExoAppInternal* offset.</summary>
-    private const int ExoAppInternalOff = 0x8;
+    private static readonly int GuiManVpWOff = EngineLayout.GuiManVpW, GuiManVpHOff = EngineLayout.GuiManVpH;
+    private static readonly int InGameGuiOff = EngineLayout.InternalInGameGui;
+    private static readonly int QuickbarPanelOff = EngineLayout.InGameGuiQuickbar;
+    private static readonly int ExoAppInternalOff = EngineLayout.ExoAppInternal;
 
     private static QuickbarConfig _config = new();
     private static readonly QuickbarSettings _settings = new();

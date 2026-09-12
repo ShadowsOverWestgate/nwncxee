@@ -571,6 +571,20 @@ public static unsafe class EngineLayout
     /// <c>*(this+0x20) + 0xa8</c> (#448; the Windows half returns the Vector through the sret pointer).</summary>
     public static readonly int BehaviorTargetObj = Same("CAurBehaviorCameraFollow", "target", 0x20);
 
+    /// <summary>CClientExoApp -&gt; CClientExoAppInternal*. #439: <c>CClientExoApp::GetInGameGui</c> (Linux
+    /// @0x737c70, Windows rva 0x6abbc0) is one line on both builds, <c>*(*(this+8) + 0x90)</c>.</summary>
+    public static readonly int ExoAppInternal = Same("CClientExoApp", "internal", 0x8);
+    /// <summary>CClientExoAppInternal -&gt; CGuiInGame*. Same one-line getter as <see cref="ExoAppInternal"/>.</summary>
+    public static readonly int InternalInGameGui = Same("CClientExoAppInternal", "inGameGui", 0x90);
+    /// <summary>CGuiInGame -&gt; CPanelQuickBar*. #439: <c>CGuiInGame::Initialize</c> (Linux @0x772600) and its
+    /// Windows twin (rva 0x6f9190, the one caller of the CPanelQuickBar ctor) both store the freshly built
+    /// panel to +0x60 and then write <c>+0x28 = 1</c>.</summary>
+    public static readonly int InGameGuiQuickbar = Same("CGuiInGame", "quickbar", 0x60);
+    /// <summary>CGuiMan viewport width / height (int32 pair). #439: <c>CGuiMan::SetGuiSize</c> (exported,
+    /// Linux @0x67efc0 / Windows rva 0x1f6640) stores its two args to +0xb8 / +0xbc on both.</summary>
+    public static readonly int GuiManVpW = Same("CGuiMan", "vpWidth", 0xb8);
+    public static readonly int GuiManVpH = Same("CGuiMan", "vpHeight", 0xbc);
+
     /// <summary>What to add to a vtable SYMBOL to reach slot 0. Itanium puts offset-to-top and the typeinfo
     /// pointer in front of the function pointers, so <c>_ZTV&lt;class&gt;</c> is two words short of the
     /// table; MSVC's <c>??_7&lt;class&gt;@@6B@</c> already points at slot 0. Measured by construction in

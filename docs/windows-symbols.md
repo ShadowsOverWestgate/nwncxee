@@ -96,6 +96,9 @@ deriving anything — required, or the RVAs point into a different build.
 | `CNWCAnimBase::RefreshHilite` | `0x966170` | its own `ExoLog::Emit` call — file `game\\clientcore\\nwcanimbase.cpp`, line `0x123a`, `"Attempting to unhighlight a gob in a null scene"` — plus the tracy zone string `"RefreshHilite"`. Structure confirmed against Linux `0x9cb260`: the same 5-channel loop, lowest-active-wins, then `Scene::AddHighlightGob` |
 | `CNWCArea::LoadBorder` | `0x7dea10` | `__FUNCSIG__` string `"int __cdecl CNWCArea::LoadBorder(class CGuiAreaLoadscreen *,float)"` via its tracy srcloc struct. **Win64 ABI: the `float` is the 3rd arg slot = `xmm2`**, not `xmm0` |
 | `CNWCArea::ReloadBorder` | `0x7e1e40` | no string of its own; anchored through its ONE caller, `CNWCMessage::HandleServerToPlayerArea` (`0x76d910`, `__FUNCSIG__`-anchored), whose tail is three flag-bit branches in the same order on both builds — bit 1, bit 4, then bit 2 → this. Body confirmed: walks the scene at `area+0x248` calling `DeleteTile` then `SpawnTile` |
+| `CPanelQuickBar::Reposition()` | `0x860010` | #439: RTTI vftable `0xe52900` (`tools/abi/vtable-slots.py`) slot `+0x120` = Linux `+0x128` − 8 (#433). Body confirmed: reads `g_pGuiMan+0xb8`, spawns `"GUI_QBAR_ENDS"` once, ends in `SetPositionScreen((w-800)/2, 0)`; the CAurObject vcall inside shows the same skew (Linux `+0xa0`, Windows `+0x98`) |
+| `CGuiInGame::ShowCompass()` | `0x6fb490` | #439: the one user of `"pnl_compass"` + `"Viewport_Compass"`; builds the `CGuiCompassPanel` into `gui+0x68` (same), then `ResetGuiState(0x1000)` (`0x6fa7b0`) |
+| `CGuiInGame::HideCompass()` | `0x6f9060` | #439: the `'0'` branch of the `"usage: GuiCompass [0|1]"` console handler (`0x6f3f80`, whose `'1'` branch is ShowCompass above). Body: deleting-dtor vcall on `gui+0x68`, null it, `ResetGuiState(0x1000)` |
 | `CAurTexture::vftable` / `CAurTextureBasic::vftable` (data) | `0xd90c70` / `0xd90d90` | RTTI type descriptors `.?AVCAurTexture@@` / `.?AVCAurTextureBasic@@` -> complete-object locator -> vftable (Ghidra names them). MSVC's symbol is the object's first word: no Itanium `+0x10` skew (`AurTex.Attach`) |
 
 **By name — client-native features (verified in the `0x68e408bc` export table):**
@@ -156,9 +159,8 @@ nothing exercises an Alloy `Nm` row at runtime yet; this is the only instrument 
 | `primTypeTranslationTable` | `0xd8ad20` | the `{0,1,3,4,5,6,2}` dword run in `.rdata`, one hit in the image; `GLRender::RenderVertexData` @`0xb59b0` `lea`s it three times |
 | `GLRender` pool `{base,count}` pair | `0x128ead8` | `GetPoolBuffer` @`0xb3cb0` loads it with `mov rax,[rip+0x11dae19]` then indexes `pool*0x20+0xc`; `UnlockPool` @`0xbbad0` `lea`s the same address into the helper. Linux has no symbol on the pair and steps `noemittervar+0x236c`, so `EngineLayout.PoolTableAnchorOffset` is `Diverges(linux: 0x236c, win: 0x0)` — the row wanted an *anchor*, not a value |
 
-**The 18 declared holes** are every symbol that still has none, and not one of them is
-Alloy's: nuklear (10 — the library is linked but exports nothing), `CPanelQuickBar`
-+ `CGuiInGame::Show/HideCompass` (3, #439), `CCachedMouseCursorManager::SetMouseCursor`
+**The 15 declared holes** are every symbol that still has none, and not one of them is
+Alloy's: nuklear (10 — the library is linked but exports nothing), `CCachedMouseCursorManager::SetMouseCursor`
 and `CClientExoAppInternal::UpdateMouseCursorAppearance` (2), `COptionsPanel::HandleXButton`,
 `CClientAIMaster::UpdateState` and `CClientExoApp::GetNetLayer`. The last two are worth a
 note for anyone hunting them: the *server* twins **are** exported (`CServerAIMaster`,
@@ -176,6 +178,9 @@ finds a function with the right name and the wrong class.
 | `CNWCModule` hour / minutes-per-hour | `+0x16c` / `+0x15c` | same (`+0x15c` by adjacent layout, `+0x160..+0x170` identical) | `ModuleUpdate_Time` `0x7a58e0` |
 | `CGuiInGameChatWindow` filter / shown | `+0xc58` / `+0xc68` | **`+0xae0` / `+0xaf0`** | SetFilter / Show above. Nothing reads them on Windows today |
 | `CGuiInGameChatPrompt` shown / edit | `+0x230` / `+0x100` | **`+0x200` / `+0xf8`** | Show / SetFocus above |
+| `CClientExoApp` internal / `CClientExoAppInternal` in-game gui | `+0x8` / `+0x90` | same | `CClientExoApp::GetInGameGui` (`0x737c70` / rva `0x6abbc0`), one line on both (#439) |
+| `CGuiInGame` quickbar panel | `+0x60` | same | `CGuiInGame::Initialize` (`0x772600` / rva `0x6f9190`): the CPanelQuickBar ctor's one caller stores to `+0x60` then `+0x28 = 1` (#439) |
+| `CGuiMan` viewport width / height | `+0xb8` / `+0xbc` | same | `CGuiMan::SetGuiSize` (exported; `0x67efc0` / rva `0x1f6640`) stores its two args there (#439) |
 
 ## CNWC\* layout rows Alloy reads (#446) -- decomp-diffed against `0x68e408bc`
 

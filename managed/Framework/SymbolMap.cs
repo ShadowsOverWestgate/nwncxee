@@ -171,7 +171,7 @@ internal static unsafe class SymbolMap
     public const string UpdateMouseCursorAppearance = "_ZN21CClientExoAppInternal27UpdateMouseCursorAppearanceEi";
     public const string SetMouseCursor = "_ZN25CCachedMouseCursorManager14SetMouseCursorEiiiii";
 
-    // quickbar positioning. Quickbar and compass alike are client GUI: no Windows anchor yet -> skip + log.
+    // quickbar positioning (client GUI, Windows = RVA rows, #439)
     public const string QuickbarReposition = "_ZN14CPanelQuickBar10RepositionEv";
     public const string SetPositionScreen  = "_ZN9CGuiPanel17SetPositionScreenEii";
     // compass hide/show (CGuiInGame methods, take `this`)
@@ -1298,7 +1298,7 @@ internal static unsafe class SymbolMap
         [GrassInfo] = Nm("?g_GrassInfo@@3V?$List@VCAurGrassInfo@@@@A"),
         [GrassNearRadius] = Nm("?m_fNearRadiusSquared@CAurTriangleBin@@2MA"),
         [GuiUpdateAndRender] = Nm("?UpdateAndRender@CGuiMan@@QEAAXM@Z"),
-        [HideCompass] = Hole("quickbar anchors -- #439"),
+        [HideCompass] = At(0x6f9060),
         [LightAreaAmbient] = Nm("?m_lightAreaAmbient@GLRender@@0VVector@@A"),
         [LightAreaDiffuse] = Nm("?m_lightAreaDiffuse@GLRender@@0VVector@@A"),
         [LightAreaDiffuseDir] = Nm("?m_lightAreaDiffuseDirection@GLRender@@0VVector@@A"),
@@ -1340,7 +1340,7 @@ internal static unsafe class SymbolMap
         [PrimTypeTranslationTable] = At(0xd8ad20),   // the {0,1,3,4,5,6,2} run in .rdata; RenderVertexData leas it three times
         [ProjectionAlpha] = Nm("?projectionalpha@@3MA"),
         [PushCurrentMatrix] = Nm("?PushCurrentMatrix@RenderInterface@@SAXXZ"),
-        [QuickbarReposition] = Hole("quickbar anchors -- #439"),
+        [QuickbarReposition] = At(0x860010),
         [ReloadGrass] = Nm("?ReloadGrass@Scene@@UEAAXXZ"),
         [RenderDrawBucket] = Nm("?RenderDrawBucket@Scene@@QEAAXH@Z"),
         [RenderDynamicShadows] = Nm("?RenderDynamicShadows@Scene@@QEAAXXZ"),
@@ -1378,7 +1378,7 @@ internal static unsafe class SymbolMap
         [SetOrthoTransform] = Nm("?SetOrthoTransform@RenderInterface@@SAXNNNNNN@Z"),
         [SetPositionScreen] = Nm("?SetPositionScreen@CGuiPanel@@QEAAXHH@Z"),
         [SetPriMsgFilter] = LinuxOnly("#14 chat-render probe, no caller"),
-        [ShowCompass] = Hole("quickbar anchors -- #439"),
+        [ShowCompass] = At(0x6fb490),
         [SsaoIntensity] = Nm("?ssao_intensity@@3MA"),
         [ToonColorEdge] = Nm("?toon_color_edge_threshold@@3MA"),
         [ToonDepthEdge] = Nm("?toon_depth_edge_threshold@@3MA"),
