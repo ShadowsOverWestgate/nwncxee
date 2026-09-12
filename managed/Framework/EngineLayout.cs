@@ -112,9 +112,10 @@ public static unsafe class EngineLayout
 
     /// <summary>Scene -&gt; the embedded <c>DrawBucketManager</c> (0x310 bytes, constructed in place by
     /// <c>Scene::Scene</c> @0x4724f0; every <c>AddPartToBucket</c> call passes <c>this+0x208</c>).
-    /// <para>Above the measured 0x0..0x1e0 identical run, so Windows is unmeasured -- the Windows Scene
-    /// functions touch 0x1f0 and 0x200 that Linux's do not, which is exactly the region in question.</para></summary>
-    public static readonly int SceneDrawBuckets = Unresolved("Scene", "drawBuckets", 0x208);
+    /// <para>#448: <c>Scene::Scene</c> (@0x4724f0 / rva 0xc0ca0) constructs it in place at <c>this+0x208</c>
+    /// on BOTH builds, and the ctor's store run 0x178..0x1f8 below it is store-for-store identical -- so the
+    /// region #443 called unmeasured is measured, and Scene does not diverge here.</para></summary>
+    public static readonly int SceneDrawBuckets = Same("Scene", "drawBuckets", 0x208);
 
     /// <summary>Scene vtable slot 81 -- <c>Scene::IsAnimating</c> @0x45e000. Vanilla gates the whole dangly
     /// solve on it, which is what stops cloaks swaying behind a paused menu. Both tables printed by
@@ -179,25 +180,29 @@ public static unsafe class EngineLayout
     /// <summary>The byte on whatever <c>gob+0x68</c> points at, whose bit 3 arms a second alpha multiply by
     /// <see cref="GobFadeAlpha"/> -- Ghidra <c>PartTriMesh::Mat</c>:
     /// <c>if ((*(*(gob+0x68)+0x8e) &amp; 8) != 0)</c>.
-    /// <para>Filed under <c>Model</c> rather than <c>MdlNode</c> because <c>Gob::GetModelName</c> @0x437270
-    /// reads a name off that same field -- but NEITHER class is confirmed, and no function of any class in
-    /// the #436 sweep touches +0x8e on either build. #430 lists <c>Model</c> as unresolved for want of
-    /// paired functions, so this row is unresolved twice over: the class and the offset.</para></summary>
-    public static readonly int NodeOwnerFlags = Unresolved("Model", "ownerFlags", 0x8e);
+    /// <para>#448 settled both halves. The class is <c>Model</c>: <c>Model::Model</c> (@0x43a850 / rva
+    /// 0x87bc0) writes this byte inside its own store run, immediately below the reference count that
+    /// <c>Model::AddRef</c> reads (Linux 0x90, Windows 0x94). The offset is read directly on both builds by
+    /// <c>PartTriMesh::Mat</c> (@0x450960 / rva 0xa2f50) as the same <c>&amp; 8</c> test on
+    /// <c>gob+0x68</c>.</para></summary>
+    public static readonly int NodeOwnerFlags = Diverges("Model", "ownerFlags", linux: 0x8e, win: 0x92);
     /// <summary>#262: MdlNode -&gt; its parent MdlNode. <c>GatherBones</c> @0x482b10 admits a child part only
     /// when this matches the walked part's own node, which is what keeps the traversal INDEX equal to the
     /// engine's.</summary>
     public static readonly int MdlNodeParent = Same("MdlNode", "parent", 0x60);
     /// <summary>MdlNode -&gt; model matrix (row-major float[16]). RenderDrawBucket @0x46d060 passes exactly
-    /// that address to <c>RenderInterface::SetModelMatrix</c>. Below MdlNode's measured 0x58..0x98 run and
-    /// touched by no paired MdlNode function, so Windows is unmeasured.</summary>
-    public static readonly int NodeMatrix = Unresolved("MdlNode", "matrix", 0x18);
+    /// that address to <c>RenderInterface::SetModelMatrix</c>. #448: <c>Scene::RenderDrawBucket</c>
+    /// (@0x46d060 / rva 0xcd210) passes <c>node+0x18</c> to <c>SetModelMatrix</c> under the same
+    /// <c>node+0x80 &amp; 0x1e</c> gate on both builds, and <c>MdlNode::MdlNode</c> (@0x43aab0 / rva 0x87290)
+    /// has an identical 0x0..0x98 store run.</summary>
+    public static readonly int NodeMatrix = Same("MdlNode", "matrix", 0x18);
     /// <summary>MdlNode -&gt; matrix flags; only a matrix-class part (<c>node+0x80 &amp; 0x1e</c>) gets its
     /// matrix pushed.</summary>
     public static readonly int NodeFlags = Same("MdlNode", "flags", 0x80);
     /// <summary>#256: the primitive-type index, argument 3 of the engine's own <c>RenderVertexData</c> call.
-    /// Read out of <c>RenderFlat</c> @0x450eb0. Far above MdlNode's measured run.</summary>
-    public static readonly int MdlPrimType = Unresolved("MdlNode", "primType", 0x270);
+    /// Read out of <c>RenderFlat</c> (@0x450eb0 / rva 0xa4710) as <c>node+0x270</c> on both builds -- Ghidra
+    /// even types the Windows read <c>AuroraPrimitiveTypes*</c> (#448).</summary>
+    public static readonly int MdlPrimType = Same("MdlNode", "primType", 0x270);
 
     /// <summary>#338: the render gate <c>PartTriMesh::IsPartRenderable</c> @0x450e60 reads off the part's
     /// node -- zero here refuses the draw outright.</summary>
@@ -218,27 +223,37 @@ public static unsafe class EngineLayout
     /// <summary>#262: bone count on a <c>MdlNodeSkin</c>, a SHORT (zero = not prepared yet).</summary>
     public static readonly int SkinBoneCount = Same("MdlNodeSkin", "boneCount", 0x284);
     /// <summary>#262: data pointer of the inverse bind-pose <c>CExoArrayList&lt;Quaternion&gt;</c>, indexed by
-    /// GATHERED index. Written by <c>PartSkin::PostProcess</c> @0x483120. MdlNodeSkin yielded one validated
-    /// function pair, which reached 0x278/0x284 and nothing higher.</summary>
-    public static readonly int SkinBindRot = Unresolved("MdlNodeSkin", "bindRot", 0x2f0);
+    /// GATHERED index. #448: <c>PartSkin::PostProcess</c> (@0x483120 / rva 0xdf860) adds to the
+    /// <c>CExoArrayList&lt;Quaternion&gt;</c> at <c>node+0x2f0</c> and the <c>&lt;Vector&gt;</c> one at
+    /// <c>node+0x300</c> on both builds, in the same gather loop.</summary>
+    public static readonly int SkinBindRot = Same("MdlNodeSkin", "bindRot", 0x2f0);
     /// <summary>#262: the <c>&lt;Vector&gt;</c> half of <see cref="SkinBindRot"/>.</summary>
-    public static readonly int SkinBindPos = Unresolved("MdlNodeSkin", "bindPos", 0x300);
-    /// <summary>#262: the 64-entry <c>short</c> map from bone slot to gathered index. No Windows MdlNodeSkin
-    /// function touches this offset at all, which is a positive hint that it moved.</summary>
-    public static readonly int SkinBoneMap = Unresolved("MdlNodeSkin", "boneMap", 0x320);
+    public static readonly int SkinBindPos = Same("MdlNodeSkin", "bindPos", 0x300);
+    /// <summary>#262: the 64-entry <c>short</c> map from bone slot to gathered index. #448: no MdlNodeSkin
+    /// METHOD touches it on either build because the only reader is the free function
+    /// <c>ExecuteSkinGPU</c> (@0x482800 / rva 0xdeb90), whose 64-iteration stride-2 walk starts at
+    /// <c>node+800</c> on both.</summary>
+    public static readonly int SkinBoneMap = Same("MdlNodeSkin", "boneMap", 0x320);
 
     /// <summary>The dangly solve's own parameters, from <c>MdlNodeDanglyMesh::InternalParseField</c>
-    /// @0x44da00: the per-vertex constraint array and its count, then displacement, tightness and period.
-    /// MdlNodeDanglyMesh pairs only as far as 0x284; nothing above it is measured on Windows.</summary>
-    public static readonly int MdlConstraints = Unresolved("MdlNodeDanglyMesh", "constraints", 0x2c8);
+    /// (@0x44da00 / rva 0x99e20): the per-vertex constraint array and its count, then displacement,
+    /// tightness and period. #448: the four parsed fields sit at the same offsets on both builds, each pinned
+    /// by its own <c>.mdl</c> field-name string (<c>displacement</c> 0x2d8, <c>tightness</c> 0x2dc,
+    /// <c>period</c> 0x2e0, <c>constraints</c> the <c>List&lt;float&gt;</c> at 0x2c8), and
+    /// <c>PartDanglyMesh::Animate</c> (@0x49bbb0 / rva 0x4ef50) reads all four back at those offsets.
+    /// <see cref="MdlConstraintCount"/> is that list's own count: <c>List&lt;T&gt;</c> is
+    /// <c>{data +0, count +8}</c> on both builds, measured on a <c>List</c> the decompiler TYPES as one --
+    /// <c>ExecuteSkinGPU</c>'s <c>List&lt;Vector&gt;*</c> parameter, whose count it reads at <c>+8</c> on each
+    /// build.</summary>
+    public static readonly int MdlConstraints = Same("MdlNodeDanglyMesh", "constraints", 0x2c8);
     /// <inheritdoc cref="MdlConstraints"/>
-    public static readonly int MdlConstraintCount = Unresolved("MdlNodeDanglyMesh", "constraintCount", 0x2d0);
+    public static readonly int MdlConstraintCount = Same("MdlNodeDanglyMesh", "constraintCount", 0x2d0);
     /// <inheritdoc cref="MdlConstraints"/>
-    public static readonly int MdlDisplacement = Unresolved("MdlNodeDanglyMesh", "displacement", 0x2d8);
+    public static readonly int MdlDisplacement = Same("MdlNodeDanglyMesh", "displacement", 0x2d8);
     /// <inheritdoc cref="MdlConstraints"/>
-    public static readonly int MdlTightness = Unresolved("MdlNodeDanglyMesh", "tightness", 0x2dc);
+    public static readonly int MdlTightness = Same("MdlNodeDanglyMesh", "tightness", 0x2dc);
     /// <inheritdoc cref="MdlConstraints"/>
-    public static readonly int MdlPeriod = Unresolved("MdlNodeDanglyMesh", "period", 0x2e0);
+    public static readonly int MdlPeriod = Same("MdlNodeDanglyMesh", "period", 0x2e0);
 
     // ---- Part (identical 0x0..0x58) ----
 
@@ -295,11 +310,13 @@ public static unsafe class EngineLayout
     public static readonly int PartTexRotate = Diverges("PartTriMesh", "texRotate", linux: 0xb0, win: 0xb8);
 
     /// <summary>PartDanglyMesh's own mutable state: last frame's world pose (the quaternion is w FIRST).
-    /// PartDanglyMesh yielded no validated function pair on either side, so neither field is measured on
-    /// Windows -- and this is one of the classes where the +0x8 of its PartTriMesh base need not carry.</summary>
-    public static readonly int PartPrevPos = Unresolved("PartDanglyMesh", "prevPos", 0xb4);
+    /// <para>#448: <c>PartDanglyMesh::Animate</c> (@0x49bbb0 / rva 0x4ef50) is the pair -- it reads the three
+    /// position floats, tests the quaternion's x/y/z against zero and stores both back, identically shaped on
+    /// each build, at +0xb4/+0xc0 on Linux and +0xc0/+0xcc on Windows. The class's own fields shift +0xc, not
+    /// the +0x8 of its PartTriMesh base.</para></summary>
+    public static readonly int PartPrevPos = Diverges("PartDanglyMesh", "prevPos", linux: 0xb4, win: 0xc0);
     /// <inheritdoc cref="PartPrevPos"/>
-    public static readonly int PartPrevRot = Unresolved("PartDanglyMesh", "prevRot", 0xc0);
+    public static readonly int PartPrevRot = Diverges("PartDanglyMesh", "prevRot", linux: 0xc0, win: 0xcc);
 
     // ---- PartLight (own block from 0x64 runs +0x4; 0x64/0x68/0x6c paired, the rest is that segment) ----
 
@@ -450,9 +467,13 @@ public static unsafe class EngineLayout
     /// @0x45bac0 sets to 1 for modes 1 and 2. <c>GetElementArrayBuffer</c> @0x45b320 returns 0 while it is
     /// clear, which sends <c>GLRender::BindBuffer</c> @0x4d04a0 down its unbind branch mid-build.</summary>
     public static readonly int VdoIndexed = Same("VertexDataObject", "indexed", 0x8);
-    /// <summary>The VAO id. It sits between the two measured segments and no paired Linux function touches
-    /// it, so its Windows home is unmeasured.</summary>
-    public static readonly int VdoVao = Unresolved("VertexDataObject", "vao", 0xc);
+    /// <summary>The VAO id. #448: <c>GLRender::SetVertexDataObject</c> (@0x4cff30 / rva 0xba770) reads
+    /// <c>vdo+0xc</c>, calls <c>glGenVertexArrays(1, &amp;it)</c> when it is zero, stores it back to
+    /// <c>vdo+0xc</c> and binds it -- at the same offset on both builds. It is below the divergence boundary:
+    /// everything from Linux 0x14 up is +4 on Windows (MSVC does not reuse <c>VertexDataObjectBase</c>'s tail
+    /// padding), which is what the identical <c>3</c>/<c>-1</c> initializer pattern in the two constructors
+    /// and the <c>GetElementArrayBuffer</c> pair both say.</summary>
+    public static readonly int VdoVao = Same("VertexDataObject", "vao", 0xc);
     /// <summary>VDO mode (1 = indexed static).</summary>
     public static readonly int VdoMode = Diverges("VertexDataObject", "mode", linux: 0x14, win: 0x18);
     /// <summary>#284: the three pool tokens whose GL names the lazy VAO build captures, and the attribute
@@ -483,39 +504,55 @@ public static unsafe class EngineLayout
     /// <summary>#256: the draw arguments as FIELDS -- <c>RenderFlat</c> @0x450eb0 calls
     /// <c>RenderVertexData(*(vp+0x58), *(uint*)(vp+0x60), ...)</c>, and every draw path reaches it. A part
     /// whose geometry has never been uploaded reads a null VDO and an item of -1: not an error, "not
-    /// resident yet". VertexPrimitive decompiles to no validated pair on either build.</summary>
-    public static readonly int VpVdo = Unresolved("VertexPrimitive", "vdo", 0x58);
+    /// resident yet". #448: <c>RenderFlat</c> (@0x450eb0 / rva 0xa4710) passes <c>vp+0x58</c> and
+    /// <c>vp+0x60</c> as those same two arguments on both builds, and <c>PartDanglyMesh::Animate</c> reads
+    /// the pair again at the same offsets -- the class needs no method of its own to be measured.</summary>
+    public static readonly int VpVdo = Same("VertexPrimitive", "vdo", 0x58);
     /// <inheritdoc cref="VpVdo"/>
-    public static readonly int VpItem = Unresolved("VertexPrimitive", "item", 0x60);
+    public static readonly int VpItem = Same("VertexPrimitive", "item", 0x60);
     /// <summary>VertexPrimitive vtable slot 5 -- returns the <c>VertexPrimitiveDangly</c> view whose
     /// <see cref="VpdVelocity"/> is the velocity array, NOT the VertexPrimitive itself (verified at
     /// 0x49bd85: the engine calls this and indexes +0xa0 off the RESULT). Both tables printed by
     /// <c>tools/abi/vtable-slots.py VertexPrimitive</c>: -8, like the other eight.</summary>
     public static readonly int VpAsDanglySlot = Diverges("VertexPrimitive", "vtbl.AsDangly", linux: 0x28, win: 0x20, Expect.VtblSlot);
-    /// <summary>The engine's own per-vertex velocity array, which the dangly solve integrates in place.</summary>
-    public static readonly int VpdVelocity = Unresolved("VertexPrimitiveDangly", "velocity", 0xa0);
+    /// <summary>The engine's own per-vertex velocity array, which the dangly solve integrates in place.
+    /// #448: <c>PartDanglyMesh::Animate</c> (@0x49bbb0 / rva 0x4ef50) null-checks <c>vpd+0xa0</c>, calls
+    /// <c>GenerateVelocityArray</c> when it is null and then indexes it by vertex -- at 0xa0 on both.</summary>
+    public static readonly int VpdVelocity = Same("VertexPrimitiveDangly", "velocity", 0xa0);
 
     /// <summary>#256: the BSP node's inventory pointer, and inside it the
     /// <c>CExoArrayList&lt;PartTriMesh*&gt;</c> of tile geometry (items +0x20, count +0x28).
     /// <c>SceneBSPAddPart</c> @0x47ca10 files a plain <c>PartTriMesh</c> at exactly
-    /// <c>*(BSPFitBox(...)+0x70) + 0x20</c>. BSPNode has too few functions to pair on either build.</summary>
-    public static readonly int BspNodeData = Unresolved("BSPNode", "data", 0x70);
+    /// <c>*(BSPFitBox(...)+0x70) + 0x20</c>. #448: <c>SceneBSPAddPart</c> (@0x47ca10 / rva 0xdcfd0) is a
+    /// function pair on its whole body -- every one of its seven bucket writes goes through
+    /// <c>node+0x70</c> at the same sub-offset on both builds, the <c>PartTriMesh</c> list at <c>+0x20</c>
+    /// included. The count is the <c>CExoArrayList&lt;T&gt;</c>'s own, <c>{data +0, count +8}</c>, measured
+    /// once per build on a container the decompiler types: Linux in <c>Scene::RenderLensFlares</c>, which
+    /// walks <c>GetLensFlareLights</c>'s <c>CExoArrayList&lt;PartLight*&gt;</c> by <c>+8</c>; Windows in
+    /// <c>PartSkin::PostProcess</c>, which inlines <c>CExoArrayList&lt;Vector&gt;::Allocate</c> on
+    /// <c>node+0x300</c> and bumps that list's count at <c>node+0x308</c>.</summary>
+    public static readonly int BspNodeData = Same("BSPNode", "data", 0x70);
     /// <inheritdoc cref="BspNodeData"/>
-    public static readonly int BspDataTriMesh = Unresolved("BSPNode", "triMesh", 0x20);
+    public static readonly int BspDataTriMesh = Same("BSPNode", "triMesh", 0x20);
     /// <inheritdoc cref="BspNodeData"/>
-    public static readonly int BspDataTriMeshCount = Unresolved("BSPNode", "triMeshCount", 0x28);
+    public static readonly int BspDataTriMeshCount = Same("BSPNode", "triMeshCount", 0x28);
 
     /// <summary>The live tile-fade factor the <c>HandleFadingIn/OutBucket</c> step writes and the top of
-    /// <c>ManageSceneBSP</c> @0x47fa80 commits (#330), and the pending factor beside it. TileData pairs on
-    /// neither build, and Windows touches 0x64/0x6c/0x74 where Linux touches 0x78.</summary>
-    public static readonly int TileFade = Unresolved("TileData", "fade", 0x70);
+    /// <c>ManageSceneBSP</c> (@0x47fa80 / rva 0xdb320) commits (#330), and the pending factor beside it.
+    /// #448: that commit is one statement, <c>*(int*)(tile+0x70) = *(int*)(tile+0x74)</c>, inside the same
+    /// loop over <c>scene+0x1a8</c> bounded by <c>scene+0x1b0</c> and beside the same <c>tile+0xc0 = 4</c>
+    /// store -- identical on both builds. TileData needs no method of its own.</summary>
+    public static readonly int TileFade = Same("TileData", "fade", 0x70);
     /// <inheritdoc cref="TileFade"/>
-    public static readonly int TilePendingFade = Unresolved("TileData", "pendingFade", 0x74);
+    public static readonly int TilePendingFade = Same("TileData", "pendingFade", 0x74);
 
     /// <summary>The 48 <c>DrawBucket</c> records at <see cref="SceneDrawBuckets"/> are 0x10 apart --
-    /// <c>GetDrawBucketByItemType</c> @0x47bd60's <c>(type*3 + sub)*0x10</c> stride. A record SIZE, which
-    /// MSVC is free to disagree about exactly like a field offset.</summary>
-    public static readonly int BucketStride = Unresolved("DrawBucket", "stride", 0x10);
+    /// <c>GetDrawBucketByItemType</c> (@0x47bd60 / rva 0xd94d0)'s <c>(type*3 + sub)*0x10</c> stride. A record
+    /// SIZE, which MSVC is free to disagree about exactly like a field offset -- so #448 read it on the
+    /// Windows caller rather than carrying it over: both that accessor and
+    /// <c>DrawBucketManager::AddPartToBucket</c> (@0x47be30 / rva 0xd75a0) are one-line functions with the
+    /// same <c>*0x10</c> on each build.</summary>
+    public static readonly int BucketStride = Same("DrawBucket", "stride", 0x10);
 
     /// <summary>CNWCModule -&gt; the player's current CNWCArea* (the engine's own
     /// HandleServerToPlayerArea chain). #446: <c>CNWCCreature::UpdatePopUpBubble</c> (Linux @0x72e600,
@@ -529,8 +566,10 @@ public static unsafe class EngineLayout
     /// both builds.</summary>
     public static readonly int AreaFlags = Same("CNWCArea", "flags", 0x8);
     /// <summary>CAurBehaviorCameraFollow -&gt; <c>SafePointer&lt;CAurObject&gt;</c> to the followed object
-    /// (the PC); raw pointer at +0. Its <see cref="GobPosition"/> is what GetTargetWorldPosition returns.</summary>
-    public static readonly int BehaviorTargetObj = Unresolved("CAurBehaviorCameraFollow", "target", 0x20);
+    /// (the PC); raw pointer at +0. Its <see cref="GobPosition"/> is what GetTargetWorldPosition returns --
+    /// and that accessor (@0x4a03a0 / rva 0x56540) is the whole measurement: one line on each build reading
+    /// <c>*(this+0x20) + 0xa8</c> (#448; the Windows half returns the Vector through the sret pointer).</summary>
+    public static readonly int BehaviorTargetObj = Same("CAurBehaviorCameraFollow", "target", 0x20);
 
     /// <summary>What to add to a vtable SYMBOL to reach slot 0. Itanium puts offset-to-top and the typeinfo
     /// pointer in front of the function pointers, so <c>_ZTV&lt;class&gt;</c> is two words short of the
@@ -671,26 +710,31 @@ public static unsafe class EngineLayout
     public static readonly int EmitterGridY = Diverges("MdlNodeEmitter", "gridY", linux: 0xac, win: 0xb0);
     /// <summary>Non-zero DISABLES back-face culling (the engine reads it as
     /// <c>if (node+0x164 == 0) Enable(CULL_FACE) else Disable(CULL_FACE)</c>).
-    /// <para>Unresolved on purpose: the constructor's map is order-preserving everywhere except right here --
-    /// its 0x154 -&gt; 0x158 and 0x16c -&gt; 0x170 are +0x4, but that leaves Linux's 0x164 facing Windows'
-    /// 0x160, which is backwards. One of the two decompilers split a store; until a second function reads
-    /// this field, the honest answer is that nobody knows.</para></summary>
-    public static readonly int EmitterNoCull = Unresolved("MdlNodeEmitter", "noCull", 0x164);
+    /// <para>#448 found the second reader the ctor's ambiguity was waiting on: <c>PartEmitter::RenderEmitter</c>
+    /// (@0x4ad4c0 / rva 0x62900) and <c>RenderStandard</c> (@0x4af4c0 / rva 0x643b0) both branch on
+    /// <c>*(int*)(node + off) == 0</c> into <c>Enable(3)</c>/<c>Disable(3)</c>, at 0x164 on Linux and 0x168
+    /// on Windows. That is +0x4, the same as the ctor's 0x154 and 0x16c neighbours -- so the store the
+    /// Windows decompiler folded onto 0x160 was the artefact, not the map.</para></summary>
+    public static readonly int EmitterNoCull = Diverges("MdlNodeEmitter", "noCull", linux: 0x164, win: 0x168);
 
     // ---- MdlNodeLight: the lens-flare declaration (no validated pair on either build) ----
 
     /// <summary>The light node's flare parameters, all read by <c>Scene::RenderLensFlares</c> @0x471860:
     /// <c>flareradius</c>, the flare count, the <c>flaresizes</c> float array and the
     /// <c>flarecolorshifts</c> vec3 array.
-    /// <para>MdlNodeLight decompiles to no validated function pair on either build -- every one of its nine
-    /// functions is length-mismatched or fails -- so all four are unmeasured on Windows.</para></summary>
-    public static readonly int FlareRadius = Unresolved("MdlNodeLight", "flareRadius", 0x9c);
+    /// <para>#448: MdlNodeLight still pairs on none of its own nine functions, and it did not need to --
+    /// <c>Scene::RenderLensFlares</c> (@0x471860 / rva 0xcea90) reads all four off <c>light+8</c> on both
+    /// builds, each pinned by its arithmetic: the radius is both the distance cutoff and the normalising
+    /// divisor, the count is the loop bound, the sizes array scales the screen offset and the shifts array is
+    /// added to the colour as three floats. The class diverges in two segments -- the radius is +0x4, the
+    /// three above it +0x8.</para></summary>
+    public static readonly int FlareRadius = Diverges("MdlNodeLight", "flareRadius", linux: 0x9c, win: 0xa0);
     /// <inheritdoc cref="FlareRadius"/>
-    public static readonly int FlareCount = Unresolved("MdlNodeLight", "flareCount", 0xa8);
+    public static readonly int FlareCount = Diverges("MdlNodeLight", "flareCount", linux: 0xa8, win: 0xb0);
     /// <inheritdoc cref="FlareRadius"/>
-    public static readonly int FlareSizes = Unresolved("MdlNodeLight", "flareSizes", 0xc0);
+    public static readonly int FlareSizes = Diverges("MdlNodeLight", "flareSizes", linux: 0xc0, win: 0xc8);
     /// <inheritdoc cref="FlareRadius"/>
-    public static readonly int FlareShifts = Unresolved("MdlNodeLight", "flareShifts", 0xd0);
+    public static readonly int FlareShifts = Diverges("MdlNodeLight", "flareShifts", linux: 0xd0, win: 0xd8);
 
     // ---- MdlNodeTriMesh: the faces the grass binner reads ----
 
@@ -703,18 +747,25 @@ public static unsafe class EngineLayout
 
     /// <summary>One <c>MaxFace</c> record: material index at +0x10, the three vertex indices as u16 at
     /// +0x1a/+0x1c/+0x1e, 0x20 bytes a record.
-    /// <para>A record LAYOUT with no functions of its own -- nothing takes a <c>MaxFace*</c> as <c>this</c> --
-    /// so nothing pairs it, exactly like <see cref="BucketStride"/>. Unresolved.</para></summary>
-    public static readonly int FaceStride = Unresolved("MaxFace", "stride", 0x20);
+    /// <para>A record LAYOUT with no functions of its own -- nothing takes a <c>MaxFace*</c> as <c>this</c>.
+    /// #448 read it on the CALLER instead: <c>MdlNodeTriMesh::BuildVertexIndices</c> (@0x455af0 / rva
+    /// 0xa5e20) walks <c>node+0xb0</c> in <c>0x20</c>-byte steps and copies the three <c>u16</c>s at
+    /// +0x1a/+0x1c/+0x1e into the index buffer, three per face, on both builds. The stride is a SIZE, so it
+    /// is read off the Windows arithmetic and never carried over.</para></summary>
+    public static readonly int FaceStride = Same("MaxFace", "stride", 0x20);
     /// <inheritdoc cref="FaceStride"/>
-    public static readonly int FaceVertA = Unresolved("MaxFace", "vertA", 0x1a);
+    public static readonly int FaceVertA = Same("MaxFace", "vertA", 0x1a);
     /// <inheritdoc cref="FaceStride"/>
-    public static readonly int FaceVertB = Unresolved("MaxFace", "vertB", 0x1c);
+    public static readonly int FaceVertB = Same("MaxFace", "vertB", 0x1c);
     /// <inheritdoc cref="FaceStride"/>
-    public static readonly int FaceVertC = Unresolved("MaxFace", "vertC", 0x1e);
+    public static readonly int FaceVertC = Same("MaxFace", "vertC", 0x1e);
     /// <summary>Stride of the host-side shadow of a vertex pool: positions 12 bytes apart. Same kind of
-    /// unowned record as <see cref="FaceStride"/>.</summary>
-    public static readonly int PoolPosStride = Unresolved("VertexPool", "posStride", 0xc);
+    /// unowned record as <see cref="FaceStride"/>, and read the same way -- on the caller. The tangent-basis
+    /// worker (Linux @0x456190, reached from <c>MdlNodeTriMesh::CalculateTangentSpaceBasis</c> @0x457710;
+    /// Windows inlined into rva 0xa6130) locks <c>node+0x280</c> and indexes it <c>* 0xc</c> with +0/+4/+8 on
+    /// both builds, and resizes it to twelve bytes a vertex on each -- Linux as <c>count * 0xc</c>, Windows as
+    /// the strength-reduced <c>(count + count * 2) * 4</c> (#448).</summary>
+    public static readonly int PoolPosStride = Same("VertexPool", "posStride", 0xc);
 
     // ---- Scene: four more spans inside the identical 0x0..0x1e0 run (#436) ----
 
@@ -748,10 +799,11 @@ public static unsafe class EngineLayout
     /// first word is the borrowed texture. <c>Scene::Render</c> @0x5762d0 fills it once per scene from the
     /// TILESET's own resref (<c>CNWTileSet::GetEnvMapResRef</c>) and falls back to
     /// <c>AurTextureGetFallbackEnvironmentMap</c> when the tileset names none.
-    /// <para>Eight bytes above the measured identical run, in the same unmeasured region as
-    /// <see cref="SceneDrawBuckets"/> -- and the Windows Scene functions touch 0x1f0 and 0x200 that Linux's
-    /// do not.</para></summary>
-    public static readonly int SceneEnvMap = Unresolved("Scene", "envMap", 0x1e8);
+    /// <para>#448: <c>Scene::Render</c> (@0x4762d0 / rva 0xcc730) assigns the <c>SafePointer&lt;CAurTexture&gt;</c>
+    /// at <c>this+0x1e8</c> from <c>GetEnvMapResRef</c> and falls back to
+    /// <c>AurTextureGetFallbackEnvironmentMap</c> at the same offset on both builds; <c>RenderFlat</c> binds
+    /// <c>currentscene+0x1e8</c> on both. The Scene ctor zeroes 0x1e8 on both.</para></summary>
+    public static readonly int SceneEnvMap = Same("Scene", "envMap", 0x1e8);
 
     // ---- Gob: four more fields and one vtable slot ----
 
@@ -892,9 +944,11 @@ public static unsafe class EngineLayout
     public static readonly int AreaTileHeight = Same("CNWCArea", "tileHeight", 0x10);
 
     /// <summary>The GL program id inside a <c>GLRender::PROG_FIXED</c> record, from
-    /// <c>GLRender::SetProgram</c> @0x4cf940's own <c>mov 0x64(%rax),%eax</c>. Every function that touches a
-    /// PROG_FIXED takes it as an ARGUMENT rather than <c>this</c>, so the sweep never reaches it.</summary>
-    public static readonly int ProgFixedId = Unresolved("GLRender::PROG_FIXED", "programId", 0x64);
+    /// <c>GLRender::SetProgram</c> (@0x4cf940 / rva 0xb7a40). Every function that touches a PROG_FIXED takes
+    /// it as an ARGUMENT rather than <c>this</c>, so the sweep never reaches it -- #448 read the caller: on
+    /// both builds <c>SetProgram</c> takes <c>prog+0x64</c> as the id it hands to <c>glUseProgram</c>, and
+    /// the stock-shader table it indexes has the same <c>0x1ef8</c> record stride on each.</summary>
+    public static readonly int ProgFixedId = Same("GLRender::PROG_FIXED", "programId", 0x64);
 
     /// <summary>A <c>List&lt;T&gt;</c> / <c>CExoArrayList&lt;T&gt;</c> in this engine is {element pointer,
     /// count}: the symbol's own address is the list, not the elements. Both builds, every paired list in the
@@ -1150,13 +1204,14 @@ public static unsafe class EngineLayout
     // ---- the rest ----
 
     /// <summary>The part's self-illumination colour, <c>PartTriMesh::MatStatic</c>'s prop-3 material term.
-    /// <para>Unresolved on purpose, and it is the one row in this batch #430's segment model cannot reach:
-    /// PartTriMesh's measured segments are +0x4 across the bbox (<see cref="PartBboxMin"/> 0x64 -&gt; 0x68)
-    /// and +0x8 from <see cref="PartNode"/> (0x88 -&gt; 0x90) up. +0x7c falls in the GAP between them --
-    /// Windows <c>WithinRange</c> reads the six bbox floats at 0x68..0x7c, so Windows +0x7c is bbox, and
-    /// whether the four bytes the boundary adds land before or after this field is not measured by
-    /// anything. Interpolating a segment across its own boundary is exactly the Camera +0x4d4 mistake.</para></summary>
-    public static readonly int PartSelfIllum = Unresolved("PartTriMesh", "selfIllum", 0x7c);
+    /// <para>#443 filed this in the GAP between PartTriMesh's +0x4 bbox segment and its +0x8 node segment,
+    /// because interpolating across a boundary is the Camera +0x4d4 mistake. #448 measured it instead of
+    /// interpolating: <c>PartTriMesh::Mat</c> (@0x450960 / rva 0xa2f50) loads three floats off this field
+    /// into the emission scratch and hands them to <c>SetMaterialv(0, 3)</c> on both builds -- Linux from
+    /// 0x7c, Windows from 0x80. So the field is +0x4 with the bbox, and the extra four bytes the boundary
+    /// adds are the alignment pad Windows needs between the float block ending at 0x8c and the 8-aligned
+    /// <see cref="PartNode"/> pointer at 0x90; the constructors' store runs say the same.</para></summary>
+    public static readonly int PartSelfIllum = Diverges("PartTriMesh", "selfIllum", linux: 0x7c, win: 0x80);
 
     /// <summary>The node material colours <c>PartTriMesh::MatStatic</c> @0x450560 hands to
     /// <c>SetMaterialv</c>: prop 2 takes +0xe8 and prop 1 takes +0xf4, so the enum runs

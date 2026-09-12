@@ -288,8 +288,8 @@ What is still `Unresolved` here, and why it is the honest answer:
 
 | row | why |
 |---|---|
-| `CNWCAnimBase` `hiliteActive` / `hiliteGlow` / `hiliteGob` | no `CNWC*` class is name-exported on Windows; needs #420's RVA path |
-| `PartTriMesh` `selfIllum` `+0x7c` | it falls in the GAP between PartTriMesh's two measured segments (`+0x4` across the bbox, `+0x8` from `0x88` up). Windows `WithinRange` reads the bbox at `0x68..0x7c`, so `+0x7c` is bbox there, and nothing measures where the boundary's four bytes land. Interpolating across a segment boundary is the Camera `+0x4d4` mistake |
+| `CNWCAnimBase` `hiliteActive` / `hiliteGlow` / `hiliteGob` | no `CNWC*` class is name-exported on Windows; needs #420's RVA path. **Resolved in #446** — an export is not an anchor |
+| `PartTriMesh` `selfIllum` `+0x7c` | it falls in the GAP between PartTriMesh's two measured segments (`+0x4` across the bbox, `+0x8` from `0x88` up). Windows `WithinRange` reads the bbox at `0x68..0x7c`, so `+0x7c` is bbox there, and nothing measures where the boundary's four bytes land. Interpolating across a segment boundary is the Camera `+0x4d4` mistake. **Resolved in #448 by measuring instead of interpolating** — `PartTriMesh::Mat` reads it |
 | `GLRender` `poolTableAnchorOffset` `0x236c` | Windows reaches the `{base, count}` pair as its own static (rva `0x128ead8`) passed *by pointer* into the pool helper, not at a fixed distance from any symbol. What Windows needs is its own anchor in `SymbolMap._win`, not a Windows value for this row |
 
 ### The seven CNWC* rows (#446)
@@ -332,3 +332,83 @@ Three things worth keeping:
   `DeleteTile`/`SpawnTile` `0x58`/`0x38` → `0x50`/`0x30`. All measured in passing, none
   a row here; the two `Scene` readings agree with the eight `Scene` `vtbl.*` rows that
   are.
+
+
+### The 38 DecompOne rows (#448)
+
+Section 3, T2 — the biggest and most mechanical of the three. All 38 are now
+`Diverges` or `Same`: **39 unresolved → 1**, the one left being #447's
+`poolTableAnchorOffset`, which wants a symbol anchor rather than a value. 308 rows in
+the table. Measured 2026-09-12 against build `5fe6e02d…`.
+
+The ticket sorted the 38 into three shapes — a measured class with the row above its
+measured run (D), a class that pairs on nothing by tool (C), and a record nothing takes
+as `this` (B). **All three collapsed into the same instrument**: name the one function
+that touches the field, `DecompOne` it on both builds, read the offset. Three headless
+runs covered everything — 32 functions, then 9, then 4 — plus one `FieldDump` cycle
+over six classes for the constructor store runs.
+
+| rows | verdict | the function that measured them |
+|---|---|---|
+| `Scene` `drawBuckets` `0x208`, `envMap` `0x1e8` | `Same` | `Scene::Scene` constructs `DrawBucketManager` in place at `this+0x208` on both, with an identical `0x178..0x1f8` store run below it; `Scene::Render` assigns the `SafePointer<CAurTexture>` at `0x1e8` from `GetEnvMapResRef` on both |
+| `MdlNode` `matrix` `0x18`, `primType` `0x270` | `Same` | `Scene::RenderDrawBucket` passes `node+0x18` to `SetModelMatrix`; `RenderFlat` passes `node+0x270` as argument 3 of `RenderVertexData` |
+| `MdlNodeSkin` `bindRot` `0x2f0`, `bindPos` `0x300` | `Same` | `PartSkin::PostProcess` — the gather loop adds to both lists at those offsets |
+| `MdlNodeSkin` `boneMap` `0x320` | `Same` | `ExecuteSkinGPU`, a **free function**: 64 iterations, stride 2, from `node+800` |
+| `MdlNodeDanglyMesh` ×5 (`0x2c8`…`0x2e0`) | `Same` | `MdlNodeDanglyMesh::InternalParseField`, each field pinned by its own `.mdl` keyword string; `PartDanglyMesh::Animate` reads all four back. `constraintCount` is the `List<T>`'s own `+8`, measured on `ExecuteSkinGPU`'s typed `List<Vector>*` parameter on both builds |
+| `PartDanglyMesh` `prevPos`, `prevRot` | `Diverges` `0xb4`/`0xc0` → `0xc0`/`0xcc` | `PartDanglyMesh::Animate` — same three-float read, same x/y/z-against-zero test, same store-back |
+| `VertexPrimitive` `vdo` `0x58`, `item` `0x60` | `Same` | `RenderFlat` passes both as the `RenderVertexData` arguments; `Animate` reads the pair again |
+| `VertexPrimitiveDangly` `velocity` `0xa0` | `Same` | `Animate` null-checks it, calls `GenerateVelocityArray`, then indexes it |
+| `BSPNode` `data` `0x70`, `triMesh` `0x20`, `triMeshCount` `0x28` | `Same` | `SceneBSPAddPart` pairs on its whole body — seven bucket writes, same sub-offsets. The count is `CExoArrayList`'s own `+8`, read once per build on a container the decompiler types: `GetLensFlareLights`' list on Linux, `CExoArrayList<Vector>::Allocate` at `node+0x300` on Windows |
+| `TileData` `fade` `0x70`, `pendingFade` `0x74` | `Same` | `ManageSceneBSP`'s commit is one statement, `tile+0x70 = tile+0x74`, in the same loop over `scene+0x1a8` |
+| `DrawBucket` `stride` `0x10` | `Same` | `GetDrawBucketByItemType` and `AddPartToBucket`, one line each, same `*0x10` |
+| `CAurBehaviorCameraFollow` `target` `0x20` | `Same` | `GetTargetWorldPosition`, one line each |
+| `MdlNodeLight` ×4 (flares) | `Diverges`, **two segments** | `Scene::RenderLensFlares`: radius `0x9c`→`0xa0` (+4), count/sizes/shifts `0xa8`/`0xc0`/`0xd0`→`0xb0`/`0xc8`/`0xd8` (+8) |
+| `MdlNodeEmitter` `noCull` | `Diverges` `0x164` → `0x168` | `PartEmitter::RenderEmitter` and `RenderStandard` both branch on it into `Enable(3)`/`Disable(3)` |
+| `Model` `ownerFlags` | `Diverges` `0x8e` → `0x92` | `PartTriMesh::Mat`'s `& 8` test on `gob+0x68`; the class pinned by `Model::Model`'s store run and `Model::AddRef`'s count (`0x90`→`0x94`) |
+| `PartTriMesh` `selfIllum` | `Diverges` `0x7c` → `0x80` | `PartTriMesh::Mat` loads three floats into the emission scratch and hands them to `SetMaterialv(0, 3)` |
+| `VertexDataObject` `vao` `0xc` | `Same` | `GLRender::SetVertexDataObject`: `glGenVertexArrays` when `vdo+0xc` is zero, store back, bind |
+| `MaxFace` ×4 (`0x1a`/`0x1c`/`0x1e`, stride `0x20`) | `Same` | `MdlNodeTriMesh::BuildVertexIndices` walks `node+0xb0` in `0x20` steps, three `u16`s per face |
+| `VertexPool` `posStride` `0xc` | `Same` | the tangent-basis worker locks `node+0x280` and indexes `* 0xc` on both, and resizes to twelve bytes a vertex on each — Linux `count * 0xc`, Windows the strength-reduced `(count + count * 2) * 4` |
+| `GLRender::PROG_FIXED` `programId` `0x64` | `Same` | `GLRender::SetProgram` hands `prog+0x64` to `glUseProgram` |
+
+Five findings the rest of the port inherits:
+
+- **"No validated pair" was never a property of the binary, and neither is "no method
+  of its own".** Sixteen Kind-C rows were filed because `field-diff.py` paired the class
+  on nothing; every one of them is measured by a function that takes some *other* class
+  as `this` — `SceneBSPAddPart` for `BSPNode`, `ManageSceneBSP` for `TileData`,
+  `Scene::RenderLensFlares` for `MdlNodeLight`, `PartDanglyMesh::Animate` for
+  `VertexPrimitive`. **The unit that pairs is the FUNCTION, not the class.** Kind B
+  (records nothing takes as `this`) is the same observation one step further, and it is
+  the shape that reached `MaxFace`, `DrawBucket` and `PROG_FIXED`.
+- **The three rows the ticket said only #431's unbuilt call-result lever could reach —
+  `VertexDataObject.vao`, `PartDanglyMesh.prevPos`/`prevRot` — all came off a named
+  function.** The lever stays unbuilt; nothing now wants it.
+- **A gap between two segments can be measured rather than interpolated, and then it
+  explains itself.** `PartTriMesh.selfIllum` is `+0x4` with the bbox segment; the extra
+  four bytes the `+0x8` boundary adds are the **alignment pad** Windows needs between a
+  float block ending at `0x8c` and the 8-aligned `node` pointer at `0x90`. The
+  prohibition on interpolating stands — what is new is that the boundary itself is
+  readable, so a gap row is a *waypoint*, not an exit.
+- **Base tail padding is visible in a constructor's initializer VALUES.**
+  `VertexDataObject`'s two ctors write the same `3` and `-1` pattern four bytes apart
+  from Linux `0x14` up and not below it, which places the boundary exactly at the end of
+  `VertexDataObjectBase` — Itanium reuses its tail padding, MSVC rounds the base to its
+  alignment. That is #430's mechanism caught in the act, and it is why `vao` at `0xc` is
+  `Same` while everything above it in the same class is `+4`.
+- **A one-line accessor is a whole measurement.** `GetTargetWorldPosition`,
+  `GetDrawBucketByItemType` and `AddPartToBucket` are single expressions on both builds;
+  they need no corroboration and they cost one `DecompOne` each.
+
+**No probes.** `Expect.Byte01` fits none of the 38 — the two flag-ish rows are a flags
+byte read with `& 8` (`Model.ownerFlags`) and an `int` compared to zero
+(`MdlNodeEmitter.noCull`), neither of which a first-sighting `0-or-1` check would
+distinguish from a wrong offset — and none of the 38 is a vtable slot. Bar item 3 is
+"a probe **where a predicate exists**"; here none does, and saying so is the reading.
+
+**No plaza A/B is owed.** `Same` returns the Linux value unchanged and `Diverges`
+returns its `linux:` arm there, so the Linux build is bit-identical: verified
+mechanically — every one of the 309 rows resolves to the same Linux value before and
+after, and `run-demo.sh` reports `308 offset(s), 1 unresolved`. Alloy still stands down
+under Proton, so not one of the 38 is read on Windows yet; that is the map's standing
+fog entry, not this ticket's.
