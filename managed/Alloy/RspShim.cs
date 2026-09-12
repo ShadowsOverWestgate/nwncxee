@@ -33,9 +33,10 @@ namespace Sowx.Alloy;
 /// BOTTOM of the chain so it reports what actually reached the original rather than restating the swallow.
 /// The funnels STAY after #264: the shim still calls the emitter, sky, beam and lens-flare virtuals for
 /// their simulation, and every one of those draws for itself.</para>
-/// <para>Behind <c>ownframe</c> in <c>sowx.cfg</c>, default ON since #218 closed M4 (ADR 0013 bucket 2: an
-/// arming decision, not a look). Set it to 0 and nothing here installs, so the pre-cutover frame is
-/// unchanged by construction -- that is the escape hatch, not the default.</para>
+/// <para>Always on (#458 deleted the <c>ownframe</c> knob: submitting inside the engine's frame was unusably
+/// slow, not a fallback). <c>vanilla=1</c> is the escape hatch, and it takes the whole Alloy path down. A
+/// shim that cannot arm is an <see cref="AlloyGate"/> refusal, so an unarmed shim never has Alloy drawing
+/// inside <c>RenderSinglePass</c>.</para>
 /// <para>Dropped on this path, by design and filed as #217's punch list: personal space, paths, drawable
 /// squares and light ranges (all four reachable-but-never-issued), the stencil-shadow block, and
 /// <c>Camera::DoFrameBufferEffects</c>/<c>CopyRenderSubframe</c>. Anything only the engine drew goes with
@@ -50,10 +51,6 @@ namespace Sowx.Alloy;
 /// this repo forbids. If <c>PartLight+0xa8</c>'s frozen shadow-fade weight ever surfaces, close it with RE.</para></summary>
 internal static unsafe class RspShim
 {
-    /// <summary>The config key. Read once, at Initialize; there is no runtime toggle -- <c>vanilla=1</c> is
-    /// the escape hatch, and it takes the whole Alloy path down including this.</summary>
-    internal const string Key = "ownframe";
-
     /// <summary>Scene vtable slot DISPLACEMENTS, i.e. the offsets from the loaded vptr exactly as
     /// <c>Scene::RenderSinglePass</c> @0x46e5f0 uses them (the byte offset into <c>_ZTV5Scene</c> is 0x10
     /// more, for offset-to-top + typeinfo). Verified against the table rather than taken from the ADR.
@@ -97,7 +94,6 @@ internal static unsafe class RspShim
     private static ExtenderLog? _log;
     /// <summary>#456: the LightManager layout probe's one-shot latch.</summary>
     private static bool _probedLightMgr;
-    private static bool _enabled;
     private static delegate* unmanaged<IntPtr, void> _skyBoxes;
     private static delegate* unmanaged<IntPtr, IntPtr, void> _collectLights;
     private static IntPtr* _focusObject;
@@ -132,8 +128,9 @@ internal static unsafe class RspShim
     /// default framebuffer is only worth its blit on the frames an overlay will use it.</summary>
     internal static bool WantsEngineOverlays;
 
-    /// <summary>Did the key arm and every ENGINE symbol resolve? Necessary, not sufficient --
-    /// <see cref="Run"/> is reachable only through this AND <see cref="Ready"/>.</summary>
+    /// <summary>Did every ENGINE symbol resolve and both draw funnels hook? Necessary, not sufficient --
+    /// <see cref="Run"/> is reachable only through this AND <see cref="Ready"/>. False is an
+    /// <see cref="AlloyGate"/> refusal: the frame is then the engine's whole, not Alloy-inside-RSP.</summary>
     internal static bool Armed { get; private set; }
 
     /// <summary>...and is GL up yet? <see cref="Gl"/>'s entry points are resolved lazily on the first frame
@@ -197,11 +194,6 @@ internal static unsafe class RspShim
     {
         _log = log;
         if (!_checkOk) return;   // SelfCheck runs unconditionally, early in AlloyRenderer.Initialize
-        _enabled = Settings.Bool(Key, true);
-        // Key off installs NOTHING: the pre-cutover frame is then byte-for-byte unchanged because there is
-        // no layer in the chain to be wrong about, not because a flag was checked.
-        if (!_enabled) return;
-
         _skyBoxes = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.RenderSkyBoxes);
         _collectLights = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GobCollectLights);
         EmitterLighting.Resolve();
@@ -226,8 +218,8 @@ internal static unsafe class RspShim
                         : _triggerBucket == null ? SymbolMap.TriggerBucket : null;
         if (missing != null)
         {
-            log.Info($"RspShim: {Key}=1 but {missing} did not resolve -- the cutover stands down and "
-                   + "Scene::RenderSinglePass keeps running");
+            log.Info($"RspShim: {missing} did not resolve -- the shim stands down and with it the whole "
+                   + "Alloy path (AlloyGate refuses an unarmed shim); the engine renders");
             return;
         }
 
@@ -254,11 +246,11 @@ internal static unsafe class RspShim
         KnobSurface.Note(static () => !Armed ? null
             : "the client's Sharpen video option is INERT this session: it gates "
             + "Camera::DoFrameBufferEffects, which lived inside Scene::RenderSinglePass and went with it "
-            + "when ownframe=1 took the frame. Gamma, anti-aliasing and SSAO are NOT on this list -- Alloy "
-            + "serves them (#375, #377, #379); the rest is #352's hosted chain. Set ownframe=0 or vanilla=1 to get them back.");
+            + "when the shim took the frame. Gamma, anti-aliasing and SSAO are NOT on this list -- Alloy "
+            + "serves them (#375, #377, #379); the rest is #352's hosted chain. Set vanilla=1 to get them back.");
         FrameRegistry.Global.Register(FramePhase.PostPresent, 30, Period, "RspShim.period", log);
-        log.Info($"RspShim: ARMED -- {Key}=1, Scene::RenderSinglePass replaced by the mutate-only shim on "
-               + "the Alloy path ([rspshim] every 900 frames; vanilla=1 or ownframe=0 restores it)");
+        log.Info("RspShim: ARMED -- Scene::RenderSinglePass replaced by the mutate-only shim on "
+               + "the Alloy path ([rspshim] every 900 frames; vanilla=1 restores it)");
     }
 
     /// <summary>The shim. Runs in ENGINE context, in place of <c>Scene::RenderSinglePass</c>.

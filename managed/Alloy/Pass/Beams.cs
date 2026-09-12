@@ -303,10 +303,6 @@ internal static unsafe class Beams
     internal static void Draw(Matrix4x4* view, Matrix4x4* proj)
     {
         if (_disabled || _off || _failed || _count == 0 || Gl.MultiDrawElementsBaseVertex == null) return;
-        // #261: the engine's own beam draw is only silent under the cutover (the shim swallows the draw
-        // funnels). With ownframe=0 there is no colour mask left to suppress it with, so the owned pass
-        // stands aside and the engine draws its beams at its own step -- one pre-cutover frame, unchanged.
-        if (!RspShim.Armed) return;
         // The player's own switch, honoured the way grass honours "Grass Mode": beams off means the owned
         // pass draws nothing AND suppresses nothing, so the console variable keeps meaning what it says.
         if (_enable != null && *_enable == 0) return;

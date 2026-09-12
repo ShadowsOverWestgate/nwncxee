@@ -52,6 +52,7 @@ a frame that is rendering vanilla anyway. It freezes the moment it stops being t
 | 3 | `hdr=0` in `sowx.cfg` — the Alloy stages have no display-space variant | Choice |
 | 4 | `gl46=0` or `lockchat` in `sowx.cfg` — an opt-out, kept ahead of the capability block so it is not reported as a device verdict | Choice |
 | 5 | `AlloyRenderer` never armed (hooks did not install) — **after** every opt-out above, because each of them returns from `Initialize` before `_armed` is set, so asking this first reports the mechanism instead of the request | Idle |
+| 5a | the `RenderSinglePass` shim never armed (an engine symbol or draw funnel did not resolve) — same placement, one layer down; since #458 there is no Alloy-inside-the-engine's-frame mode to fall back to | Idle |
 | 6 | no module loaded | Idle |
 | 7 | no GL 4.6 share-listed context — ADR 0010's macOS/old-driver case; the context creation *is* the check | Incapable |
 | 8 | a program did not build, or `glMultiDrawElementsBaseVertex`/`glBindBufferBase` missing | Incapable |

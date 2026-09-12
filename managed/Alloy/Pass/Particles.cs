@@ -570,8 +570,8 @@ internal static unsafe class Particles
     /// <summary>The engine's own walk, once per emitter per frame, in its own sorted order. Two jobs: learn
     /// the population (and its transform), and decline to run the original for an emitter the owned pass
     /// already drew this pass.
-    /// <para>#261 moved that walk ahead of the frame anchor, so the stamp it tests is one pass old under the
-    /// cutover -- hence the two-armed test below. Getting that wrong is not cosmetic: the funnels swallow
+    /// <para>#261 moved that walk ahead of the frame anchor, so the stamp it tests is one pass old.
+    /// Getting that wrong is not cosmetic: the funnels swallow
     /// the engine's DRAW, not its build, and the build is what this class costs. Skipping the original is
     /// safe by precedent, since the pre-#261 order skipped it on every steady-state frame.</para></summary>
     [UnmanagedCallersOnly]
@@ -590,13 +590,9 @@ internal static unsafe class Particles
 
         int slot = Capture(em);
         // #261: the decline is what skips the ENGINE's own vertex build, which is this class's whole cost --
-        // the funnels only swallow the draw. Hoisting this walk ahead of the anchor moved it one pass
-        // earlier than the stamp, so under the cutover the test is "drawn in the pass just gone". At
-        // ownframe=0 the walk is still at RSP's step 28, after the draw, so the exact-generation arm is the
-        // one that fires and that path is unchanged.
-        if (slot >= 0 && (_tab[slot].IssuedGen == AlloyRenderer.PassGen
-                          || (RspShim.Armed && _tab[slot].IssuedGen == AlloyRenderer.PassGen - 1)))
-        { _suppressed++; return; }
+        // the funnels only swallow the draw. The shim runs this walk ahead of the anchor, so the stamp it
+        // tests is one pass old: "drawn in the pass just gone".
+        if (slot >= 0 && _tab[slot].IssuedGen == AlloyRenderer.PassGen - 1) { _suppressed++; return; }
         _origRender(em);
     }
 

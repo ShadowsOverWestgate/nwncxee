@@ -239,10 +239,10 @@ why anchoring there worked at all.
 
 ## Step 9 (#218): the flip, and what the flip does not settle
 
-`ownframe` defaults to **1** since #218. The escape hatches are unchanged and both frame-atomic:
-`ownframe=0` in `sowx.cfg` installs nothing at all, and `/vanilla` takes the whole Alloy path down
-per frame — the shim's gate is `RspShim.Armed && RspShim.Ready && AlloyGate.Alloy`, so the config
-key being on is never on its own enough to take a frame.
+`ownframe` defaulted to **1** since #218 and was **deleted** by #458: submitting inside the engine's
+frame was unusably slow, not a fallback. `vanilla=1` is the one escape hatch and takes the whole Alloy
+path down; an unarmed shim is now an `AlloyGate` refusal, so the shim's gate is
+`RspShim.Ready && AlloyGate.Alloy`.
 
 The bar's resource half is now asserted rather than assumed. `RspShim.Bar` runs on the first frame
 the shim takes and logs `[bar]`: the render target and depth buffer are Alloy-generated names

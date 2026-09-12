@@ -126,6 +126,10 @@ internal static class AlloyGate
         // misdirection this chain exists to prevent.
         if (!AlloyRenderer.ArmedForFrame)
         { why = "the Alloy renderer never armed (its hooks did not install)"; return AlloyStand.Idle; }
+        // #458: same shape, one layer down. Alloy drawing inside the engine's RenderSinglePass was the
+        // ownframe=0 mode, deleted as unusable -- so a shim that could not arm stands the whole path down.
+        if (!RspShim.Armed)
+        { why = "the RenderSinglePass shim never armed (an engine symbol or draw funnel did not resolve)"; return AlloyStand.Idle; }
         // ...and ahead of it for the OTHER reason: the capability terms below are only answerable on a warm
         // client. The 4.6 context is created from a present inside a world frame, so asking them at the main
         // menu answers "no 4.6 context on this device" every single boot -- which is what the pre-#263 chain

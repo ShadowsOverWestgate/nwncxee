@@ -1233,10 +1233,6 @@ public sealed unsafe partial class AlloyRenderer
         IntPtr scene = SkyBox.Scene;
         // #91's rule again: only the enrolled world Scene's sky, never a GUI 3D panel's.
         if (scene == IntPtr.Zero || scene != _enrollScene) return;
-        // #261: the engine's sky draw is only silent under the cutover (the shim swallows the draw funnels).
-        // With ownframe=0 there is no colour mask left to suppress it with, so the owned sky stands aside
-        // and the engine paints its own at its own step -- one pre-cutover frame, unchanged.
-        if (!RspShim.Armed) return;
         Span<SkyBox.Role> roles = stackalloc SkyBox.Role[3];
         int nr = SkyBox.Roles(scene, roles);
         SkyBox.NoteRoles(roles, nr);

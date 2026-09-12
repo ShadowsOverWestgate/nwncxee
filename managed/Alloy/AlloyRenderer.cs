@@ -1327,14 +1327,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             _inColourPass = prevShim;
             return;
         }
-        // Only a colour RenderSinglePass OF THE WORLD SCENE may draw Alloy parts. RenderDrawBucket's other
-        // caller is Scene::RenderDynamicGeometry (buckets 2,3; objdump: those two callers and no more), and
-        // drawing from there stamps a part "drawn" outside the colour walk, which then suppresses parts
-        // nobody drew. A GUI 3D panel is the same hazard one level up: same virtuals, different Scene (#91).
-        bool prev = _inColourPass;
-        _inColourPass = world;
         if (_origRsp != null) _origRsp(scene);
-        _inColourPass = prev;
     }
 
     /// <summary>Is this the world Scene? A Scene's static tile BSP (<see cref="EngineLayout.SceneBspRoot"/>) is
@@ -1357,14 +1350,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// draw leaves the world as bare clear colour under the 2D UI, with nothing behind it -- so every
     /// refusal <see cref="DrawOwned"/> can answer from state that outlives the pass is asked here first.
     /// <para><c>PostChain.On</c> is the <c>hdr=0</c> case and <see cref="PartTable"/><c>.Active</c> the
-    /// <c>drawhooks=off</c>/<c>=stats</c> one: both are supported settings that, paired with
-    /// <c>ownframe=1</c>, would otherwise produce a permanently empty world with no reason given.
+    /// <c>drawhooks=off</c>/<c>=stats</c> one: both are supported settings that would otherwise produce a
+    /// permanently empty world with no reason given.
     /// <c>PartTable.Active</c> is read HERE rather than at the shim's install because DrawFunnelService
     /// initializes after this service (discovery is alphabetical) and has not set it yet.</para>
     /// <para>What this canNOT cover is the gamma refusal, which is re-asked per pass inside the anchor,
     /// after that pass's engine frame is already gone. ADR 0016 scopes exactly that to step 7 (#216): every
     /// refusal becomes frame-start-only, because there is no mid-frame fallback once the shim is in.</para></summary>
-    private static bool Armed4Shim => RspShim.Armed && RspShim.Ready && AlloyGate.Alloy;
+    private static bool Armed4Shim => RspShim.Ready && AlloyGate.Alloy;   // AlloyGate.Alloy implies RspShim.Armed (#458)
 
     /// <summary>#215: consecutive enrollments forced by an empty ownership set, and the ceiling on them.
     /// #256: what they now wait for is RESIDENCY -- the first walk of a Scene records parts whose
@@ -1374,6 +1367,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static IntPtr _forcedScene;
     private const int MaxForcedEnrolls = 8;
 
+    /// <summary>Inside <see cref="RspShim.Run"/>, i.e. a world colour pass that is Alloy's. The anchor draws
+    /// only then: since #458 there is no Alloy drawing inside the engine's own RenderSinglePass.</summary>
     private static bool _inColourPass;
     /// <summary>Scene the ownership table was enrolled from. The Alloy block draws only into a bucket walk of
     /// THIS Scene, which is what makes one-owner true by construction rather than by the colour-pass gate

@@ -47,13 +47,8 @@ public sealed unsafe partial class AlloyRenderer
             _tgtVpW = FrameInputs.CamViewW; _tgtVpH = FrameInputs.CamViewH;
             _tgtUiScale = Sowx.Ui.Metrics.GameUiScale; _tgtScene = _enrollScene;
             ReadTarget(out _target);
-            // Latch ONLY the cutover's answer. A non-zero fbo means the latch would be holding engine GL
-            // NAMES, and a name is exactly what the owned-resource lifetimes doc says never to key a table
-            // on: the engine recreates its render targets on a device reset (alt-tab, workspace switch) and
-            // the numbers can come back identical while the objects behind them are gone. That path
-            // (ownframe=0) keeps the per-frame queries it always had; under the cutover the
-            // engine has no world FBO at all, so there is no name here to go stale.
-            _tgtValid = _target.Fbo == 0;
+            // #458: the shim binds FBO 0 before the anchor, so there is no engine name here to go stale.
+            _tgtValid = true;
             FboTopology(in _target);
         }
         else if (_frameSeq % LogEvery == 0)

@@ -105,7 +105,7 @@ internal static unsafe class Halos
     /// back blend off, depth test on, depth mask on.</summary>
     internal static void Draw(Matrix4x4* view, Matrix4x4* proj, int* viewport)
     {
-        if (_count == 0 || !RspShim.Armed || !EnsureProgram()) return;
+        if (_count == 0 || !EnsureProgram()) return;
         if (!SceneDepth.Take(viewport)) return;
         if (_count > _ssboCap)
         {
