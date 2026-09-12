@@ -76,6 +76,7 @@ public static class ServiceHost
         EngineLayout.Register();
         SymbolMap.Register();
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
+        Sowx.Ui.AtlasSheet.SelfCheck(log);   // #469: pack-and-grow, ceiling refusal, face lookup -- no GL, no stbtt
         foreach (IExtenderService service in all)
         {
             try { service.Initialize(log, hooks); }

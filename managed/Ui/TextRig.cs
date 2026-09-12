@@ -59,12 +59,51 @@ public static unsafe class TextRig
     };
 
     private static ExtenderLog? _log;
-    private static GlyphAtlas? _atlas;
-    private static byte[]? _fontBytes;         // kept so a settings change can re-bake at a new size
-    private static float _bakedPx;             // glyph height the current atlas was baked at
+    private static AtlasSheet? _sheet;         // the one bitmap every face lives in; swapped whole on re-bake
+    private static string? _fontPath;          // the default typeface
+    private static float _bakedPx;             // glyph height the default face was baked at
+    /// <summary>Faces the sheet is baked from; index 0 is the default. Extra faces are appended by <see cref="Face"/>.</summary>
+    private static readonly List<FaceRequest> _requests = new();
+    private static readonly Dictionary<string, byte[]> _fontBytes = new();
 
-    /// <summary>The baked atlas (null until <see cref="Init"/>, or when stbtt is absent under run-demo).</summary>
-    public static GlyphAtlas? Atlas => _atlas;
+    /// <summary>The default UI face (null until <see cref="Init"/>, or when stbtt is absent under run-demo).</summary>
+    public static GlyphAtlas? Atlas => _sheet?.Default;
+
+    /// <summary>A face of the default typeface at <paramref name="px"/>. COLD on a miss: the first request re-bakes
+    /// the whole sheet (allocates heavily), so ask in <c>Initialize</c>, never on the present thread. The returned
+    /// object is epoch-scoped: re-fetch when <see cref="AtlasEpoch"/> changes. Null when headless or refused.</summary>
+    public static GlyphAtlas? Face(float px) => _fontPath == null ? null : Face(_fontPath, px);
+
+    /// <summary>Hot, alloc-free lookup of an already-baked default-typeface face; null on a miss (never bakes).</summary>
+    public static GlyphAtlas? BakedFace(float px)
+        => _sheet != null && _fontPath != null && _sheet.TryFace(_fontPath, px, out GlyphAtlas f) ? f : null;
+
+    /// <summary>A face of <paramref name="typeface"/> (a TTF path) at <paramref name="px"/>; see <see cref="Face(float)"/>.</summary>
+    public static GlyphAtlas? Face(string typeface, float px)
+    {
+        if (_sheet == null || _log == null) return null;
+        if (_sheet.TryFace(typeface, px, out GlyphAtlas f)) return f;
+        if (!_fontBytes.TryGetValue(typeface, out byte[]? bytes))
+        {
+            if (!File.Exists(typeface)) { _log.Info($"TextRig: typeface not found: {typeface}"); return null; }
+            _fontBytes[typeface] = bytes = File.ReadAllBytes(typeface);
+        }
+        _requests.Add(new FaceRequest(typeface, bytes, px));
+        if (!Rebake()) { _requests.RemoveAt(_requests.Count - 1); return null; }
+        return _sheet.TryFace(typeface, px, out f) ? f : null;
+    }
+
+    /// <summary>Bake <see cref="_requests"/> into a fresh sheet and swap it in; on refusal the old sheet stays.
+    /// Every face's UVs move, so one epoch bump invalidates all cached glyph geometry.</summary>
+    private static bool Rebake()
+    {
+        AtlasSheet? baked = AtlasSheet.Bake(_requests, Ranges, AtlasSize, _log!);
+        if (baked == null) return false;
+        _sheet = baked;
+        _texUp = false;   // the hot Draw uploads the new sheet bitmap on the next frame
+        AtlasEpoch++;     // cached-geometry consumers rebuild: their glyph UVs went stale
+        return true;
+    }
 
     /// <summary>Injected log (set in <see cref="Init"/>); the chat draw path reads it via this.</summary>
     internal static ExtenderLog? Log => _log;
@@ -76,7 +115,7 @@ public static unsafe class TextRig
     /// <summary>Last swap-time viewport (px), published each hot frame for cold consumers (the settings window
     /// clamps itself on-screen with these). 0 until the first frame draws.</summary>
     public static volatile int ViewportW, ViewportH;
-    public static bool Ready => _atlas != null;
+    public static bool Ready => _sheet != null;
 
     // GL objects (created lazily on the first drawn frame; no context exists at init). _vbo is the shared
     // draw rig ChatRenderer's Draw/DrawOverlay upload through; internal so it can bind it directly.
@@ -118,14 +157,16 @@ public static unsafe class TextRig
     public static void Init(ExtenderLog log)
     {
         _log = log;
-        if (_atlas != null) return;   // idempotent: probe and ChatService may both call
+        if (_sheet != null || _fontPath != null) return;   // idempotent: probe and ChatService may both call
         string? fontPath = Array.Find(FontCandidates, File.Exists);
         if (fontPath == null) { log.Info($"TextRig: no font found (tried {FontCandidates.Length} paths)"); return; }
         log.Info($"TextRig: using font {fontPath}");
-        _fontBytes = File.ReadAllBytes(fontPath);
+        _fontPath = fontPath;
+        _fontBytes[fontPath] = File.ReadAllBytes(fontPath);
         _bakedPx = FontPx;
-        _atlas = GlyphAtlas.Bake(_fontBytes, FontPx, Ranges, AtlasSize, log);
-        log.Info(_atlas != null ? "TextRig: atlas ready" : "TextRig: atlas bake unavailable");
+        _requests.Add(new FaceRequest(fontPath, _fontBytes[fontPath], FontPx));
+        _sheet = AtlasSheet.Bake(_requests, Ranges, AtlasSize, log);
+        log.Info(_sheet != null ? "TextRig: atlas ready" : "TextRig: atlas bake unavailable");
     }
 
     /// <summary>Smallest glyph height the picker offers, and the largest the *slider* offers.</summary>
@@ -134,28 +175,17 @@ public static unsafe class TextRig
     /// 32 (effective = font * GUIScale) without the slider itself going that high; caps the atlas size.</summary>
     public const float AtlasMaxPx = 96f;
 
-    /// <summary>Atlas side for a glyph height: glyph area scales with px², so the side scales with px. Round up
-    /// to a 128 multiple, floored at the built-in <see cref="AtlasSize"/> (GL3.3 core allows NPOT, but a tidy
-    /// multiple keeps the bitmap cache-friendly).</summary>
-    private static int AtlasSizeFor(float px)
-    {
-        int s = ((int)(AtlasSize * px / FontPx) + 127) / 128 * 128;
-        return s < AtlasSize ? AtlasSize : s;
-    }
-
     /// <summary>Re-bake the atlas at a new glyph height (cold, on a settings change) and flag the GL texture
     /// for re-upload next frame. No-op when unchanged (debounced for sub-pixel slider drags) or headless.
     /// Swaps the atlas reference atomically; the caller re-publishes the frame so its UVs/metrics match.</summary>
     public static void SetFont(float px)
     {
-        if (_fontBytes == null || _log == null) return;
+        if (_sheet == null || _log == null) return;
         px = px < MinFontPx ? MinFontPx : px > AtlasMaxPx ? AtlasMaxPx : px;   // effective px (font * UI scale)
         if (System.Math.Abs(px - _bakedPx) < 0.5f) return;   // integer-ish sizes: ignore sub-pixel churn
-        GlyphAtlas? baked = GlyphAtlas.Bake(_fontBytes, px, Ranges, AtlasSizeFor(px), _log);
-        if (baked == null) return;
-        _atlas = baked; _bakedPx = px;
-        _texUp = false;   // the hot Draw uploads the new atlas bitmap on the next frame
-        AtlasEpoch++;     // cached-geometry consumers (attribution overlay) rebuild: their glyph UVs went stale
+        FaceRequest old = _requests[0];
+        _requests[0] = old with { Px = px };
+        if (Rebake()) _bakedPx = px; else _requests[0] = old;
     }
 
     internal static void BindText(float* proj)
@@ -439,18 +469,19 @@ public static unsafe class TextRig
 
     internal static void UploadTexture()
     {
-        GlyphAtlas? a = _atlas;   // snapshot: a cold SetFont swap must not pair one atlas's Pixels with another's W/H
+        AtlasSheet? a = _sheet;   // snapshot: a cold re-bake swap must not pair one sheet's Pixels with another's side
         if (a == null) return;
         if (_tex == 0) { uint t; Gl.GenTextures(1, &t); _tex = t; }   // create once; a re-bake respecifies the same id (no leak)
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, _tex);
         Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 1);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
+        // #468: LINEAR so scaled/animated text resamples smoothly; the 1px gutter keeps level-0 neighbours apart.
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
         fixed (byte* px = a.Pixels)
-            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.R8, a.Width, a.Height, 0, Gl.RED, Gl.UNSIGNED_BYTE, px);
+            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.R8, a.Side, a.Side, 0, Gl.RED, Gl.UNSIGNED_BYTE, px);
         // #237: back to the GL default, in the ENGINE's context, or every engine texture upload after this
         // one reads its rows one byte at a time. GLRender::CreateTexture @0x4ca2b0 -- the CAurTexture upload
         // path, and the one an area transition runs for every texture it loads -- calls glTexImage2D with no
@@ -458,7 +489,7 @@ public static unsafe class TextRig
         // restore when the caller asks for 4 (`if (align != 4)`). Both assume the default is still in place.
         Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 4);
         _texUp = true;
-        _log?.Info($"TextRig: atlas uploaded as GL tex {_tex} ({a.Width}x{a.Height})");
+        _log?.Info($"TextRig: atlas uploaded as GL tex {_tex} ({a.Side}², {a.FaceCount} face(s))");
     }
 
     /// <summary>Create a VAO + its own VBO wired to the text vertex layout (pos2, uv2, rgb3, alpha1).
@@ -509,7 +540,7 @@ public static unsafe class TextRig
     public static void DrawBatch(float[] verts, int count, float alpha = 1f, float offX = 0f, float offY = 0f,
                                  bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
-        if (verts == null || count == 0 || _atlas == null || _log == null || alpha <= 0f) return;
+        if (verts == null || count == 0 || _sheet == null || _log == null || alpha <= 0f) return;
         if (!Gl.Init(_log)) return;
         _textAlpha = alpha < 1f ? alpha : 1f;   // read by BindText; restored to 1 before returning
         _texOffX = offX; _texOffY = offY;       // ditto -- restored to (0,0) before returning
@@ -556,7 +587,7 @@ public static unsafe class TextRig
     public static void DrawPortrait(string resref, float x, float y, float w, float h, float alpha = 1f,
                                     bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
-        if (string.IsNullOrEmpty(resref) || _atlas == null || _log == null || alpha <= 0f) return;
+        if (string.IsNullOrEmpty(resref) || _sheet == null || _log == null || alpha <= 0f) return;
         if (_aurGet == null || !Sowx.Framework.AurTex.Ready) return;
         if (!Gl.Init(_log)) return;
         if (!EnsurePortraitProgram()) return;
@@ -592,7 +623,7 @@ public static unsafe class TextRig
         bool samp = EnsurePortraitSampler();
         if (samp) Gl.BindSampler(0, _psamp);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
-        // Unbind is load-bearing, not tidiness: unit 0 is the glyph atlas's unit too, and the atlas is NEAREST.
+        // Unbind is load-bearing, not tidiness: a sampler left on unit 0 would override the glyph atlas's own filter/wrap state.
         if (samp) Gl.BindSampler(0, 0);
     }
 

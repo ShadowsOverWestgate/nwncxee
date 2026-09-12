@@ -31,6 +31,9 @@ public sealed class FpsOverlayService : IExtenderService
     private static readonly float[] _verts = new float[(96 + 1) * 6 * VertexBatch.Floats];
     private static int _vertCount;
     private static float _bakedW, _bakedH;
+    /// <summary>#469: the readout's own face, so it stays this size whatever the chat font is set to. Requested
+    /// cold in <see cref="Toggle"/> (a miss bakes); <see cref="Bake"/> re-fetches by epoch and falls back to the default face.</summary>
+    private const float FacePx = 14f;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
@@ -47,6 +50,7 @@ public sealed class FpsOverlayService : IExtenderService
     {
         _visible = !_visible;
         _last = 0; _sum = 0; _max = 0; _n = 0; _vertCount = 0;
+        if (_visible) TextRig.Face(FacePx);
         _log?.Info($"FpsOverlayService: /fps -> {(_visible ? "on" : "off")}");
     }
 
@@ -79,7 +83,7 @@ public sealed class FpsOverlayService : IExtenderService
     /// line of atlas glyphs. Zero-alloc -- digits are written straight into the char buffer.</summary>
     private static void Bake(float fps, float avgMs, float maxMs)
     {
-        GlyphAtlas? atlas = TextRig.Atlas;
+        GlyphAtlas? atlas = TextRig.BakedFace(FacePx) ?? TextRig.Atlas;
         if (atlas == null) { _vertCount = 0; return; }
 
         ServerPing.Refresh();

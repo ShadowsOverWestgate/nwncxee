@@ -366,7 +366,7 @@ public static unsafe class ChatRenderer
             Gl.BindTexture(Gl.TEXTURE_2D, (uint)tids[i]);
             Gl.DrawArrays(Gl.TRIANGLES, i * 6, 6);
         }
-        // Unbind before the body-tail text draw below re-uses unit 0 for the NEAREST glyph atlas.
+        // Unbind before the body-tail text draw below re-uses unit 0 for the glyph atlas (a sampler would override its filter state).
         if (samp) Gl.BindSampler(0, 0);
         if (!_portraitDrew) { _portraitDrew = true; _log?.Info($"[chat] portrait first-draw tid={tids[0]} ({drawn} shown)"); }
     }
@@ -416,15 +416,10 @@ public static unsafe class ChatRenderer
             TextRig.Ortho(m, vp[2], vp[3]);
 
             TextRig.BindText(m);
-            // LINEAR smooths the synthetic-italic shear (NEAREST creates hard stairstepping).
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
             Gl.BindBuffer(Gl.ARRAY_BUFFER, TextRig._vbo);
             fixed (float* p = _attrVerts)
                 Gl.BufferData(Gl.ARRAY_BUFFER, (System.IntPtr)(_attrVerts.Length * sizeof(float)), p, Gl.DYNAMIC_DRAW);
             Gl.DrawArrays(Gl.TRIANGLES, 0, _attrCount);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
 
             // Overlay re-specifies the shared VBO; invalidate the settled-frame cache so Draw()
             // re-uploads on the next in-game frame instead of reading stale attribution data.
