@@ -66,9 +66,6 @@ internal static class TextureSlots
     /// <summary>The OIT resolve's accumulation pair. The snapshot's units: the resolve runs before the water
     /// copy is taken, and FrameSnapshot.Bind re-binds its own textures before any water draw.</summary>
     internal const uint OitAccum = SnapshotColor, OitReveal = SnapshotDepth;
-    /// <summary>The GRASS program's SSAO read: <see cref="Ssao"/>'s unit is its sun-dyn array there, so it takes
-    /// the snapshot-depth unit instead (free on grass: it samples no snapshot).</summary>
-    internal const uint GrassSsao = SnapshotDepth;
     /// <summary>The frame copy the grass root blend reads. The last material-map unit (<see cref="MapBase"/>+6):
     /// the grass program binds no material maps, and every unit from <see cref="PostHdr"/> up is taken in
     /// that program by the light rig (<see cref="LocalShadowDyn"/> on 11 was the first attempt, and the blade

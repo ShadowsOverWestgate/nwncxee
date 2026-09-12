@@ -45,8 +45,9 @@ between the depth prepass and the opaque pass; the lit stage reads the R8 result
   screen-space term compose, and the cost is 18 depth fetches a pixel plus a 16-tap blur at
   default quality (`/ao dirs`, `/ao steps` trade it).
 - Grass and water do not read it: grass has its own ambient path and water is a later pass with
-  a different program. If blades over an occluded floor read too bright, the grass stage takes
-  the same fetch.
+  a different program. (The grass stage did take the fetch for a while; #478 removed it -- blades
+  are not in the prepass depth, so the pixel's occlusion was the surface behind the blade and the
+  scene showed through the field. The root blend grounds a blade instead.)
 - `/draw viz 8` (the `occl` view) now shows the screen-space term too.
 - Half-resolution with a bilateral upsample is the known upgrade if the pass shows in the GPU
   line at 4K; the ceiling is noted on the pass.

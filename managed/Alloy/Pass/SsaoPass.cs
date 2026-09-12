@@ -39,10 +39,6 @@ internal static unsafe class SsaoPass
     private static int _runs, _temporalRuns;
     /// <summary>True from this frame's pass until the next: the lit stage may read the texture.</summary>
     internal static bool Live { get; private set; }
-    /// <summary>This frame's visibility texture (0 until built); the grass program binds it on its own unit.
-    /// #390: the accumulated history when the temporal stage ran (its red channel is the visibility), else the
-    /// blurred single-frame estimate.</summary>
-    internal static uint OutTex => _liveOut;
     private static uint _liveOut;
 
     /// <summary>World-space radius (NWN units are metres: a creature stands two of them). 0.6 is contact

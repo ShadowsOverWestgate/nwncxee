@@ -254,14 +254,6 @@ public sealed unsafe partial class AlloyRenderer
                                 GpuEnd(GpuTerm.HiZ);
                                 FrameZones.Add(FrameZones.Zone.Hiz, tHiz);
                             }
-                            // /grass ao 2: the blades occlude -- their depth lands ahead of the SSAO read,
-                            // after the pyramid so a blade never culls what stands behind it
-                            if (GrassField.OccludesAo)
-                            {
-                                long tGrass = FrameZones.Now;
-                                GrassField.DrawDepth(&vp, viewport, near, far);
-                                FrameZones.Add(FrameZones.Zone.Grass, tGrass);
-                            }
                             FrameZones.Add(FrameZones.Zone.Prepass, tPre);
                             break;
                         case PassId.AmbientOcclusion:
@@ -298,7 +290,7 @@ public sealed unsafe partial class AlloyRenderer
                             break;
                         case PassId.GrassOwned:
                             long tGrassDraw = FrameZones.Now;
-                            GrassField.Draw(&vp, viewport, near, far, lightingOn, SsaoPass.Live && !_capturing);   // brackets its own two GPU terms
+                            GrassField.Draw(&vp, viewport, near, far, lightingOn);   // brackets its own two GPU terms
                             FrameZones.Add(FrameZones.Zone.Grass, tGrassDraw);
                             // Grass draws unblended by construction and toggles GL_BLEND itself; hand the
                             // tracked state back exactly as it was, or the next pass's own bookkeeping
