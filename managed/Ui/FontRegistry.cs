@@ -13,6 +13,9 @@ namespace Sowx.Ui;
 public static class FontRegistry
 {
     public const string DefaultName = "default";
+    /// <summary>The embedded DejaVuSans under its own reserved name: always loaded, never overridable from the
+    /// cfg, because it is the chrome's icon source whatever <c>default</c> is bound to (#425).</summary>
+    public const string EmbeddedName = "embedded";
     private const string EmbeddedResource = "DejaVuSans";
     private const string Prefix = "font.";
 
@@ -39,6 +42,7 @@ public static class FontRegistry
         {
             string name = key.Substring(Prefix.Length);
             if (name.Length == 0) continue;
+            if (name.Equals(EmbeddedName, StringComparison.OrdinalIgnoreCase)) { log.Info($"FontRegistry: {EmbeddedName} is reserved for the embedded font; {key} ignored"); continue; }
             var e = new Entry { Name = name, Source = path };
             string? full = Resolve(path);
             if (full == null) e.Refusal = "not found";
@@ -51,12 +55,17 @@ public static class FontRegistry
             log.Info(e.Refusal == null ? $"FontRegistry: {name} = {e.Source} ({e.Bytes!.Length} bytes)"
                                        : $"FontRegistry: {name} = {e.Source} REFUSED ({e.Refusal}); falls back to {DefaultName}");
         }
+        var emb = new Entry { Name = EmbeddedName, Source = "embedded " + EmbeddedResource };
+        using (Stream? font = typeof(FontRegistry).Assembly.GetManifestResourceStream(EmbeddedResource))
+        {
+            if (font == null) emb.Refusal = "resource missing from the image";
+            else { emb.Bytes = new byte[font.Length]; font.ReadExactly(emb.Bytes); }
+        }
+        _entries[EmbeddedName] = emb;
         if (!_entries.TryGetValue(DefaultName, out Entry? d) || d.Refusal != null)
         {
-            var e = new Entry { Name = DefaultName, Source = "embedded " + EmbeddedResource };
-            using Stream? font = typeof(FontRegistry).Assembly.GetManifestResourceStream(EmbeddedResource);
-            if (font == null) e.Refusal = "resource missing from the image";
-            else { e.Bytes = new byte[font.Length]; font.ReadExactly(e.Bytes); }
+            // The default shares the embedded array: Bake tells "default IS the embedded font" by reference.
+            var e = new Entry { Name = DefaultName, Source = emb.Source, Bytes = emb.Bytes, Refusal = emb.Refusal };
             if (d != null) { log.Info($"FontRegistry: {DefaultName} override refused ({d.Refusal}); using the embedded font"); e.Source = $"{e.Source} ({d.Source} REFUSED: {d.Refusal})"; }
             _entries[DefaultName] = e;
         }
@@ -103,6 +112,7 @@ public static class FontRegistry
         E(Effective("no-such-face") == DefaultName, "an unknown name resolves to the default");
         E(Resolve("/nonexistent/sowx-selfcheck.ttf") == null, "a rooted missing path is refused");
         E(Bytes("no-such-face") == Bytes(DefaultName), "unknown-name bytes are the default's");
+        E(_entries.ContainsKey(EmbeddedName), "the embedded font is always declared");
         log.Info(ok ? "FontRegistry.SelfCheck OK" : "FontRegistry.SelfCheck FAILED");
     }
 }

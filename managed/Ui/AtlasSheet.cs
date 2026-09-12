@@ -81,17 +81,19 @@ public sealed unsafe class AtlasSheet
 
     /// <summary>#470: a codepoint the typeface has no glyph for (index 0) is filled from the default typeface's face
     /// at the same px -- same sheet, so the copied UVs are valid -- never baked as a .notdef box. Logged per range so
-    /// the gap is named; a hole in the default itself stays an advance-only blank.</summary>
+    /// the gap is named; a hole in the default itself stays an advance-only blank. Icon rows (#425) fill from the
+    /// icon font's face instead and are not a coverage gap: every face routes them there by design.</summary>
     private static void FillMissing(IReadOnlyList<FaceRequest> reqs, GlyphAtlas[] faces,
                                     List<(int Face, int Cp, int Range, float Advance)> missing,
-                                    Dictionary<float, int> defaultByPx, (int lo, int hi, string name)[] ranges, ExtenderLog log)
+                                    Dictionary<float, int> defaultByPx, Dictionary<float, int> iconByPx,
+                                    (int lo, int hi, string name, bool icon)[] ranges, ExtenderLog log)
     {
         if (missing.Count == 0) return;
         var perFace = new int[reqs.Count, ranges.Length];
         foreach ((int f, int cp, int ri, float adv) in missing)
         {
-            perFace[f, ri]++;
-            int d = defaultByPx[reqs[f].Px];
+            int d = (ranges[ri].icon ? iconByPx : defaultByPx)[reqs[f].Px];
+            if (!ranges[ri].icon || d == f) perFace[f, ri]++;
             if (d != f && faces[d].TryGet(cp, out Glyph g)) faces[f].Store(cp, g);
             else faces[f].Store(cp, new Glyph { Advance = adv });
         }
@@ -127,10 +129,13 @@ public sealed unsafe class AtlasSheet
 
     /// <summary>
     /// Bake every request (first = default) over the given codepoint ranges into one sheet, starting at
-    /// <paramref name="startSide"/>. Cold. Null if stbtt isn't linked in (headless), a font fails to init, or the
-    /// packed side would exceed <see cref="MaxSide"/> -- the caller keeps whatever sheet it had.
+    /// <paramref name="startSide"/>. Rows flagged <c>icon</c> are taken from <paramref name="icon"/> for EVERY face
+    /// (#425); when the default typeface IS that font (the same byte array) its twins are the source and nothing
+    /// extra is baked. Cold. Null if stbtt isn't linked in (headless), a font fails to init, or the packed side
+    /// would exceed <see cref="MaxSide"/> -- the caller keeps whatever sheet it had.
     /// </summary>
-    public static AtlasSheet? Bake(IReadOnlyList<FaceRequest> reqs, (int lo, int hi, string name)[] ranges, int startSide, ExtenderLog log)
+    public static AtlasSheet? Bake(IReadOnlyList<FaceRequest> reqs, (int lo, int hi, string name, bool icon)[] ranges,
+        (string Name, byte[]? Font) icon, int startSide, ExtenderLog log)
     {
         if (_initFont == null || _scaleForPx == null || _makeBitmap == null)
         {
@@ -144,6 +149,16 @@ public sealed unsafe class AtlasSheet
         for (int i = 0; i < list.Count; i++) if (list[i].Typeface == list[0].Typeface) defaultByPx[list[i].Px] = i;
         for (int i = 0; i < list.Count; i++)
             if (!defaultByPx.ContainsKey(list[i].Px)) { defaultByPx[list[i].Px] = list.Count; list.Add(list[0] with { Px = list[i].Px }); }
+        // #425: the icon rows' source face per px -- the default's twins when the default is the icon font, else
+        // an icon-font twin per px (only a font.default= override pays for these).
+        Dictionary<float, int> iconByPx = defaultByPx;
+        if (icon.Font != null && !ReferenceEquals(icon.Font, list[0].Font))
+        {
+            iconByPx = new Dictionary<float, int>();
+            for (int i = 0; i < list.Count; i++) if (list[i].Typeface == icon.Name) iconByPx[list[i].Px] = i;
+            foreach (float px in defaultByPx.Keys)
+                if (!iconByPx.ContainsKey(px)) { iconByPx[px] = list.Count; list.Add(new FaceRequest(icon.Name, icon.Font, px)); }
+        }
         reqs = list;
         var missing = new List<(int Face, int Cp, int Range, float Advance)>();
 
@@ -178,6 +193,7 @@ public sealed unsafe class AtlasSheet
                         int ax = 0, al = 0;
                         if (_hmetrics != null) _hmetrics(fi, cp, &ax, &al);
                         float advance = ax * scale;
+                        if (ranges[ri].icon && f != iconByPx[r.Px]) { missing.Add((f, cp, ri, advance)); continue; }   // routed, not measured
                         if (_findGlyph != null && _findGlyph(fi, cp) == 0) { missing.Add((f, cp, ri, advance)); continue; }
                         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
                         if (_bitmapBox != null) _bitmapBox(fi, cp, scale, scale, &x0, &y0, &x1, &y1);
@@ -212,7 +228,7 @@ public sealed unsafe class AtlasSheet
                 }
 
             sheet.Mips = BuildMips(sheet.Pixels, side);
-            FillMissing(reqs, faces, missing, defaultByPx, ranges, log);
+            FillMissing(reqs, faces, missing, defaultByPx, iconByPx, ranges, log);
 
             for (int f = 0; f < reqs.Count; f++)
             {
@@ -299,6 +315,18 @@ public sealed unsafe class AtlasSheet
         E(sheet.Default == a, "first face is the default");
         E(sheet.TryFace("ui.ttf", 14f, out GlyphAtlas f) && f == b2, "face lookup by (typeface, px)");
         E(!sheet.TryFace("ui.ttf", 20f, out _), "unbaked face misses");
+
+        // #425: icon rows fill from the icon font's face, text rows from the default's; a routed icon is no coverage gap.
+        var rq = new[] { new FaceRequest("arial", new byte[1], 18f), new FaceRequest("embedded", new byte[1], 18f), new FaceRequest("extra", new byte[1], 18f) };
+        var fc = new[] { new GlyphAtlas(), new GlyphAtlas(), new GlyphAtlas() };
+        fc[0].Store('a', new Glyph { W = 3, Advance = 3 });
+        fc[1].Store(0x2699, new Glyph { W = 5, Advance = 7 });
+        var rg = new[] { (0x0061, 0x0061, "a", false), (0x2699, 0x2699, "gear", true) };
+        var miss = new List<(int, int, int, float)> { (0, 0x2699, 1, 1f), (2, 0x2699, 1, 1f), (2, 'a', 0, 1f) };
+        FillMissing(rq, fc, miss, new() { [18f] = 0 }, new() { [18f] = 1 }, rg, log);
+        E(fc[0].TryGet(0x2699, out Glyph g0) && g0.W == 5 && g0.Advance == 7, "the default face takes its gear from the icon font");
+        E(fc[2].TryGet(0x2699, out Glyph g2) && g2.W == 5, "an extra face takes its gear from the icon font too");
+        E(fc[2].TryGet('a', out Glyph ga) && ga.W == 3, "a text gap still fills from the default face");
 
         log.Info(ok ? "AtlasSheet.SelfCheck OK" : "AtlasSheet.SelfCheck FAILED");
     }

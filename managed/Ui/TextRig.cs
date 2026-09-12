@@ -24,24 +24,30 @@ public static unsafe class TextRig
 {
     /// <summary>The UI typeface's <see cref="FontRegistry"/> name: the embedded DejaVuSans (third_party/dejavu,
     /// Bitstream Vera licence) unless <c>font.default=</c> overrides it (#470). Shipped rather than searched:
-    /// Windows fonts lack the gear/arrow/pin glyphs, and a per-machine font meant per-machine metrics.</summary>
+    /// a per-machine font meant per-machine metrics. Whatever it is bound to only ever decides how TEXT looks --
+    /// the chrome's icons come from <see cref="Icons"/> (#425).</summary>
     private const string DefaultFace = FontRegistry.DefaultName;
+
+    /// <summary>The icon source every face draws the <c>icon</c> rows of <see cref="Ranges"/> from: the embedded
+    /// DejaVu, so a configured typeface (Windows' Arial has none of these symbols, #419) cannot lose the chrome.</summary>
+    private static (string Name, byte[]? Font) Icons => (FontRegistry.EmbeddedName, FontRegistry.Bytes(FontRegistry.EmbeddedName));
 
     private const float FontPx = 18f;
     private const int AtlasSize = 512;
     private const int Floats = VertexBatch.Floats;   // x,y,u,v,r,g,b,a
 
-    // ponytail: static ranges; dynamic on-demand atlas is the ceiling. DejaVuSans covers all four
-    // (no CJK -- DejaVu ships none, so CJK is out of scope for v1).
-    private static readonly (int lo, int hi, string name)[] Ranges =
+    // ponytail: static ranges; dynamic on-demand atlas is the ceiling. Text rows come from the face's own
+    // typeface (no CJK -- DejaVu ships none, so CJK is out of scope for v1); icon rows from Icons, always.
+    // The close button × is U+00D7 inside Latin-1, so it is text: a font that covers Latin-1 has it.
+    private static readonly (int lo, int hi, string name, bool icon)[] Ranges =
     {
-        (0x0020, 0x007E, "Basic Latin"),
-        (0x00A0, 0x00FF, "Latin-1"),
-        (0x0100, 0x017F, "Latin Extended-A"),
-        (0x0400, 0x04FF, "Cyrillic"),
-        (0x25AA, 0x25AA, "▪ pin"),
-        (0x25BE, 0x25BE, "▾ arrow"),
-        (0x2699, 0x2699, "⚙ gear"),
+        (0x0020, 0x007E, "Basic Latin", false),
+        (0x00A0, 0x00FF, "Latin-1", false),
+        (0x0100, 0x017F, "Latin Extended-A", false),
+        (0x0400, 0x04FF, "Cyrillic", false),
+        (0x25AA, 0x25AA, "▪ pin", true),
+        (0x25BE, 0x25BE, "▾ arrow", true),
+        (0x2699, 0x2699, "⚙ gear", true),
     };
 
     private static ExtenderLog? _log;
@@ -118,7 +124,7 @@ public static unsafe class TextRig
     /// Every face's UVs move, so one epoch bump invalidates all cached glyph geometry.</summary>
     private static bool Rebake()
     {
-        AtlasSheet? baked = AtlasSheet.Bake(_requests, Ranges, AtlasSize, _log!);
+        AtlasSheet? baked = AtlasSheet.Bake(_requests, Ranges, Icons, AtlasSize, _log!);
         if (baked == null) return false;
         _sheet = baked;
         _texUp = false;   // the hot Draw uploads the new sheet bitmap on the next frame
@@ -186,7 +192,7 @@ public static unsafe class TextRig
         _defaultName = DefaultFace;
         _bakedPx = FontPx;
         _requests.Add(new FaceRequest(DefaultFace, bytes, FontPx));
-        _sheet = AtlasSheet.Bake(_requests, Ranges, AtlasSize, log);
+        _sheet = AtlasSheet.Bake(_requests, Ranges, Icons, AtlasSize, log);
         log.Info(_sheet != null ? "TextRig: atlas ready" : "TextRig: atlas bake unavailable");
     }
 
