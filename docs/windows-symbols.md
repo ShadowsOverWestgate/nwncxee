@@ -93,6 +93,9 @@ deriving anything — required, or the RVAs point into a different build.
 | `CNWCPlaceable::ShowFeedbackBubbleText` | `0x871b60` | SetPopUpBubbleText caller with the `+0x1f8 = 1` / `bubble+0x144 = 0` shape (Linux `+0x218`) |
 | `CNWCItem::ShowFeedbackBubbleText` | `0x83f230` | SetPopUpBubbleText caller with `+0x264 = 1`; **MSVC passes the `CNWCObject` subobject as `this`** (the body does `this-0x48` for `CNWCItem::GetName`), so no thunk to avoid |
 | `CNWCObject::ShowFloatyText(CExoString, Vector, CExoString, int)` | `0x766a70` | callee of `HandleServerToPlayerCreatureUpdate_FloatyText` (`0x781a10`, tracy source-location struct at `0xe3e988` referencing the `__FUNCSIG__` string). **Win64: the `Vector` arrives as a pointer** (12-byte aggregate); both strings are callee-owned |
+| `CNWCAnimBase::RefreshHilite` | `0x966170` | its own `ExoLog::Emit` call — file `game\\clientcore\\nwcanimbase.cpp`, line `0x123a`, `"Attempting to unhighlight a gob in a null scene"` — plus the tracy zone string `"RefreshHilite"`. Structure confirmed against Linux `0x9cb260`: the same 5-channel loop, lowest-active-wins, then `Scene::AddHighlightGob` |
+| `CNWCArea::LoadBorder` | `0x7dea10` | `__FUNCSIG__` string `"int __cdecl CNWCArea::LoadBorder(class CGuiAreaLoadscreen *,float)"` via its tracy srcloc struct. **Win64 ABI: the `float` is the 3rd arg slot = `xmm2`**, not `xmm0` |
+| `CNWCArea::ReloadBorder` | `0x7e1e40` | no string of its own; anchored through its ONE caller, `CNWCMessage::HandleServerToPlayerArea` (`0x76d910`, `__FUNCSIG__`-anchored), whose tail is three flag-bit branches in the same order on both builds — bit 1, bit 4, then bit 2 → this. Body confirmed: walks the scene at `area+0x248` calling `DeleteTile` then `SpawnTile` |
 | `CAurTexture::vftable` / `CAurTextureBasic::vftable` (data) | `0xd90c70` / `0xd90d90` | RTTI type descriptors `.?AVCAurTexture@@` / `.?AVCAurTextureBasic@@` -> complete-object locator -> vftable (Ghidra names them). MSVC's symbol is the object's first word: no Itanium `+0x10` skew (`AurTex.Attach`) |
 
 **By name — client-native features (verified in the `0x68e408bc` export table):**
@@ -127,6 +130,34 @@ platforms read `GetModule()+0xe8` directly.
 | `CNWCModule` hour / minutes-per-hour | `+0x16c` / `+0x15c` | same (`+0x15c` by adjacent layout, `+0x160..+0x170` identical) | `ModuleUpdate_Time` `0x7a58e0` |
 | `CGuiInGameChatWindow` filter / shown | `+0xc58` / `+0xc68` | **`+0xae0` / `+0xaf0`** | SetFilter / Show above. Nothing reads them on Windows today |
 | `CGuiInGameChatPrompt` shown / edit | `+0x230` / `+0x100` | **`+0x200` / `+0xf8`** | Show / SetFocus above |
+
+## CNWC\* layout rows Alloy reads (#446) -- decomp-diffed against `0x68e408bc`
+
+The seven `EngineLayout` rows whose owning class has no Windows name export, so the
+class sweep dumps it empty. Each was read off a function on **both** builds, using the
+three anchors above.
+
+| Struct / field | Linux | Windows | Where seen |
+|---|---|---|---|
+| `CNWCModule` current area | `+0xf8` | same | `CNWCCreature::UpdatePopUpBubble` (`0x72e600` / rva `0x8107a0`): dereferenced, then `area+0x118` compared against the creature's own area id |
+| `CNWCArea` flags (bit 0 = interior) | `+0x8` | same | `CNWCArea::LoadArea` (`0x70e010` / rva `0x7dba70`): three `ReadINT`s into `0x2a0`/`0x2a4`/`0x2a8`, then the next `ReadDWORD` into `+8`. **Wire order is the pin** — no compiler may reorder it |
+| `CNWCArea` tile width / height | `+0xc` / `+0x10` | same | `CNWCArea::LoadBorder` (`0x70a5c0` / rva `0x7dea10`): `+0xc` is the row-index multiplier, `+0x10` the row loop bound; `(height-1)*width` appears in both |
+| `CNWCArea` tile array (0x60 stride) / scene | `+0x298` / `+0x248` | same | the same `LoadBorder`; `ReloadBorder` reaches the scene virtuals through `+0x248` on both |
+| `CNWCAnimBase` hilite active / glow / gob | `+0x9c[ch]` / `+0xb0[ch]` / `+0xc8` | same | `RefreshHilite` (`0x9cb260` / rva `0x966170`): flags stride 4 over 5 channels, colour `+0x60[ch]` stride 12, gob the guarded pointer |
+
+**No probe on the hilite rows.** `CNWCAnimBase::Hilite` writes the global `HiliteEnabled`
+into the active flag rather than a literal `1`, and a fresh `CNWCAnimBase` has every
+channel zeroed — an `Expect.Byte01` would pass on any offset that happens to read zero,
+and a probe that cannot fail is not a probe.
+
+#433's −8 virtual-destructor rule fires three more times in passing, on three
+different classes: `RefreshHilite` calls **Gob** slots `0x180`/`0x188`/`0x220` (the
+highlight gob at `+0xc8`, not the scene) where Windows calls `0x178`/`0x180`/`0x218`;
+it calls **Scene** `AddHighlightGob`/`RemoveHighlightGob` at `0x120`/`0x128` where
+Windows calls `0x118`/`0x120`; and `ReloadBorder` calls **Scene** `DeleteTile`/`SpawnTile`
+at `0x58`/`0x38` where Windows calls `0x50`/`0x30`. None is a row here, but the two
+`Scene` readings land on the same class as the eight measured `Scene` `vtbl.*` rows and
+agree with them.
 
 ## Nameplate / combat text / dialog raw offsets (#420) -- decomp-diffed against `0x68e408bc`
 

@@ -518,12 +518,16 @@ public static unsafe class EngineLayout
     public static readonly int BucketStride = Unresolved("DrawBucket", "stride", 0x10);
 
     /// <summary>CNWCModule -&gt; the player's current CNWCArea* (the engine's own
-    /// HandleServerToPlayerArea chain). No <c>CNWC*</c> class is name-exported on Windows, so this needs
-    /// #420's RVA path rather than the class sweep.</summary>
-    public static readonly int ModuleCurrentArea = Unresolved("CNWCModule", "currentArea", 0xf8);
+    /// HandleServerToPlayerArea chain). #446: <c>CNWCCreature::UpdatePopUpBubble</c> (Linux @0x72e600,
+    /// Windows rva 0x8107a0) dereferences it and compares the area's id at +0x118 against the creature's
+    /// own area id -- a pointer deref, not a position guess, and the same offset on both.</summary>
+    public static readonly int ModuleCurrentArea = Same("CNWCModule", "currentArea", 0xf8);
     /// <summary>CNWCArea -&gt; the ARE Flags DWORD, bit 0 = interior (<c>CNWSArea::PackAreaIntoMessage</c>
-    /// writes <c>m_nFlags</c>@+8 -&gt; <c>CNWCArea::LoadArea</c> reads it into +8). RVA path, as above.</summary>
-    public static readonly int AreaFlags = Unresolved("CNWCArea", "flags", 0x8);
+    /// writes <c>m_nFlags</c>@+8 -&gt; <c>CNWCArea::LoadArea</c> reads it into +8). #446: the role is pinned
+    /// by the WIRE ORDER, which no compiler may reorder -- <c>LoadArea</c> (Linux @0x70e010, Windows rva
+    /// 0x7dba70) reads three INTs into 0x2a0/0x2a4/0x2a8 and then the next DWORD into +8, identically on
+    /// both builds.</summary>
+    public static readonly int AreaFlags = Same("CNWCArea", "flags", 0x8);
     /// <summary>CAurBehaviorCameraFollow -&gt; <c>SafePointer&lt;CAurObject&gt;</c> to the followed object
     /// (the PC); raw pointer at +0. Its <see cref="GobPosition"/> is what GetTargetWorldPosition returns.</summary>
     public static readonly int BehaviorTargetObj = Unresolved("CAurBehaviorCameraFollow", "target", 0x20);
@@ -879,12 +883,13 @@ public static unsafe class EngineLayout
     public static readonly int ParamStride = Same("MaterialParameter", "stride", 100);
 
     /// <summary>CNWCArea -&gt; tile grid width (+0xc) and height (+0x10): <c>CNWCArea::LoadBorder</c>
-    /// @0x70a5c0 multiplies exactly these for the tile count and bounds its strip loops on them. No
-    /// <c>CNWC*</c> class is name-exported on Windows, so this needs #420's RVA path, not the class
-    /// sweep.</summary>
-    public static readonly int AreaTileWidth = Unresolved("CNWCArea", "tileWidth", 0xc);
+    /// (Linux @0x70a5c0, Windows rva 0x7dea10) multiplies exactly these for the tile count and bounds its
+    /// strip loops on them. #446: width is the row-index MULTIPLIER and height the loop bound on both --
+    /// <c>(height - 1) * width</c> is the last row's first tile in either decompilation, and the record it
+    /// indexes is the same 0x60-byte stride off the tile array at CNWCArea+0x298.</summary>
+    public static readonly int AreaTileWidth = Same("CNWCArea", "tileWidth", 0xc);
     /// <inheritdoc cref="AreaTileWidth"/>
-    public static readonly int AreaTileHeight = Unresolved("CNWCArea", "tileHeight", 0x10);
+    public static readonly int AreaTileHeight = Same("CNWCArea", "tileHeight", 0x10);
 
     /// <summary>The GL program id inside a <c>GLRender::PROG_FIXED</c> record, from
     /// <c>GLRender::SetProgram</c> @0x4cf940's own <c>mov 0x64(%rax),%eax</c>. Every function that touches a
@@ -1059,19 +1064,24 @@ public static unsafe class EngineLayout
     public static readonly int GobPropagateHilite = Same("Gob", "propagateHilite", 0x1c);
 
     // ---- CNWCAnimBase: the highlight CHANNELS (#336) ----
-    // No CNWC* class is name-exported on Windows, so none of these three can be paired by the class sweep --
-    // they need #420's RVA path. Unresolved is the honest verdict, and it is what keeps the owned outline
-    // from arming on a build where the channel it reads is somewhere else.
+    // No CNWC* class is name-exported on Windows, so the class sweep dumps it EMPTY. #446 took #420's RVA
+    // path instead: CNWCAnimBase::RefreshHilite is Linux @0x9cb260 / Windows rva 0x966170, paired on its own
+    // ExoLog line ("nwcanimbase.cpp", 0x123a, "Attempting to unhighlight a gob in a null scene"), and all
+    // three offsets are read off that one body on each build. No probe: Hilite writes the global
+    // HiliteEnabled into the active flag rather than a literal 1, and a fresh CNWCAnimBase has every channel
+    // zeroed -- a Byte01 here would pass on any offset that happens to be zero, and a probe that cannot fail
+    // is not a probe.
 
     /// <summary>A hilite is written into one of five channel slots -- active flag at +0x9c[ch], colour at
     /// +0x60[ch] (12 bytes), "also add a glow gob" at +0xb0[ch] -- and <c>RefreshHilite</c> takes the LOWEST
     /// active slot as the winner. Tab and mouseover arrive on channel 2, every VFX on 3, which is why a Tab
     /// over a glowing creature shows the Tab colour. The Linux constructor writes +0x9c and +0xc8.</summary>
-    public static readonly int AnimHiliteActive = Unresolved("CNWCAnimBase", "hiliteActive", 0x9c);
+    public static readonly int AnimHiliteActive = Same("CNWCAnimBase", "hiliteActive", 0x9c);
     /// <inheritdoc cref="AnimHiliteActive"/>
-    public static readonly int AnimHiliteGlow = Unresolved("CNWCAnimBase", "hiliteGlow", 0xb0);
-    /// <summary>The gob the winning channel is published against.</summary>
-    public static readonly int AnimHiliteGob = Unresolved("CNWCAnimBase", "hiliteGob", 0xc8);
+    public static readonly int AnimHiliteGlow = Same("CNWCAnimBase", "hiliteGlow", 0xb0);
+    /// <summary>The gob the winning channel is published against. Both builds guard the whole body on it
+    /// being non-null and hand it to the scene's highlight virtual, so it is a pointer, not a slot.</summary>
+    public static readonly int AnimHiliteGob = Same("CNWCAnimBase", "hiliteGob", 0xc8);
 
     // ---- GLRender's pool descriptor table (#260) ----
 

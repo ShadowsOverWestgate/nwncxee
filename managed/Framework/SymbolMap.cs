@@ -1199,6 +1199,13 @@ internal static unsafe class SymbolMap
         [SetPopUpBubbleText] = At(0x766450),
         [HandleServerToPlayerChat] = At(0x77c140),   // major 9
         [ShowFloatyText]     = At(0x766a70),
+
+        // --- #446: the three CNWC* anchors Alloy's highlight and border ring hook. No CNWC* class is
+        //     name-exported on Windows, so each was anchored by a compiler-invariant string and confirmed
+        //     against the named Linux original (docs/windows-symbols.md).
+        [RefreshHilite]    = At(0x966170),   // its own ExoLog nwcanimbase.cpp:0x123a; channels +0x9c/+0xb0/+0xc8
+        [AreaLoadBorder]   = At(0x7dea10),   // __FUNCSIG__ "int __cdecl CNWCArea::LoadBorder(class CGuiAreaLoadscreen *,float)"
+        [AreaReloadBorder] = At(0x7e1e40),   // HandleServerToPlayerArea's flag-bit-2 branch; deletes (vt+0x50) + respawns (vt+0x30)
     };
 
     // Runtime base of nwmain (ASLR-relocated); RVAs are added to this, never the static file base.

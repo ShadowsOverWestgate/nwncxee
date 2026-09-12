@@ -291,3 +291,44 @@ What is still `Unresolved` here, and why it is the honest answer:
 | `CNWCAnimBase` `hiliteActive` / `hiliteGlow` / `hiliteGob` | no `CNWC*` class is name-exported on Windows; needs #420's RVA path |
 | `PartTriMesh` `selfIllum` `+0x7c` | it falls in the GAP between PartTriMesh's two measured segments (`+0x4` across the bbox, `+0x8` from `0x88` up). Windows `WithinRange` reads the bbox at `0x68..0x7c`, so `+0x7c` is bbox there, and nothing measures where the boundary's four bytes land. Interpolating across a segment boundary is the Camera `+0x4d4` mistake |
 | `GLRender` `poolTableAnchorOffset` `0x236c` | Windows reaches the `{base, count}` pair as its own static (rva `0x128ead8`) passed *by pointer* into the pool helper, not at a fixed distance from any symbol. What Windows needs is its own anchor in `SymbolMap._win`, not a Windows value for this row |
+
+### The seven CNWC* rows (#446)
+
+Section 3, T1. Seven `Unresolved` rows whose owning class has **no Windows name
+export**, so #431's class sweep dumps it empty: `CNWCAnimBase` ×3 (the highlight
+channels), `CNWCArea` ×3 (flags, tile width/height), `CNWCModule` ×1 (current area).
+All seven are now `Same` — 46 unresolved → 39 — and the three anchors they were read
+from are in `docs/windows-symbols.md`.
+
+The instrument was #420's, unchanged: anchor the Windows RVA of a function that
+touches the field, `DecompOne` it on both builds, read the offset off it. What made it
+cheap was that **`nwmain.exe` keeps its `__FUNCSIG__` and `ExoLog` strings even for
+classes it does not export** — `"int __cdecl CNWCArea::LoadBorder(class
+CGuiAreaLoadscreen *,float)"` sits in the tracy source-location struct of the one
+function that is `LoadBorder`. So "not name-exported" is not the same as "not
+anchorable", and T1 was the shortest of the three section-3 tickets rather than the
+longest the ticket predicted.
+
+| Class | Verdict | Anchor |
+|---|---|---|
+| `CNWCAnimBase` | identical at `0x60`/`0x9c`/`0xb0`/`0xc8` | `RefreshHilite`, one body per build, paired on its own `nwcanimbase.cpp:0x123a` `ExoLog` line. Role by the loop: flags stride 4 over 5 channels, colour stride 12, gob the guarded pointer |
+| `CNWCArea` | identical at `0x8`, `0xc`, `0x10`, `0x248`, `0x298` | `LoadArea` for `+0x8` (wire order), `LoadBorder` for the grid (`(height-1)*width`), `ReloadBorder` for the scene pointer |
+| `CNWCModule` | identical at `0xf8` | `CNWCCreature::UpdatePopUpBubble` dereferences it and compares `area+0x118` |
+
+Three things worth keeping:
+
+- **A string anchor survives a missing export.** The whole "CNWC* is unreachable on
+  Windows" premise (`#441`, `#443`, and this ticket's own framing) was about the *class
+  sweep*, and it silently became a claim about the binary. It is not: three of the four
+  anchors here came straight out of the string table.
+- **Wire order is a role pin.** `CNWCArea+0x8` has no arithmetic to read it by — it is
+  a flags DWORD that `LoadArea` only stores. What pins it is the *sequence* of
+  `CNWMessage::Read*` calls around it, which is the message format and therefore
+  identical by construction on any build that talks to the same server.
+- **The −8 vtable rule fired three more times, on three classes** — and naming them
+  right matters, because `RefreshHilite`'s `this+0xc8` is the **Gob**, not the scene.
+  Gob `0x180`/`0x188`/`0x220` → `0x178`/`0x180`/`0x218`; Scene
+  `AddHighlightGob`/`RemoveHighlightGob` `0x120`/`0x128` → `0x118`/`0x120`; Scene
+  `DeleteTile`/`SpawnTile` `0x58`/`0x38` → `0x50`/`0x30`. All measured in passing, none
+  a row here; the two `Scene` readings agree with the eight `Scene` `vtbl.*` rows that
+  are.
