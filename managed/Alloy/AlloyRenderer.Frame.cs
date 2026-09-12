@@ -220,7 +220,8 @@ public sealed unsafe partial class AlloyRenderer
                                        lodScale, _gOpaqueEnd, _eyePos))
                     {
                         GpuBegin(GpuTerm.Cull);
-                        CullPass.Dispatch(CullPass.PhasePrepass, &vp, hiZ: false, PassGen);
+                        // #489: hiZ here means the PRIOR pass's pyramid; Dispatch stands it down when none is resident.
+                        CullPass.Dispatch(CullPass.PhasePrepass, &vp, hiZ: true, PassGen);
                         GpuEnd(GpuTerm.Cull);
                     }
                 FrameZones.Add(FrameZones.Zone.Cull, tCull);
@@ -241,18 +242,30 @@ public sealed unsafe partial class AlloyRenderer
                     {
                         case PassId.DepthPrepass:
                             long tPre = FrameZones.Now;
-                            DepthPrepassPass(_gOpaqueEnd, &vp, viewport);
+                            DepthPrepassPass(_gOpaqueEnd, &vp, viewport, CullPass.PhasePrepass);
                             // #243: the pyramid, from the depth that pass just wrote. Inside the same frame
-                            // on purpose -- a pyramid carried from last frame pops at the silhouette of
-                            // every moving occluder, and the prepass depth is already paid for (#119).
+                            // on purpose -- the colour cull tests it, and a pyramid carried from last frame
+                            // pops at the silhouette of every moving occluder.
                             if (DepthResource.Filled(PassGen))
                             {
                                 long tHiz = FrameZones.Now;
                                 GpuBegin(GpuTerm.HiZ);
                                 CullPass.BuildHiZ(PostChain.DepthTex, viewport[2], viewport[3], viewport,
-                                                  PostChain.Fbo, PassGen);
+                                                  PostChain.Fbo, PassGen, &vp);
                                 GpuEnd(GpuTerm.HiZ);
                                 FrameZones.Add(FrameZones.Zone.Hiz, tHiz);
+                                // #489: phase two -- what phase one's STALE pyramid rejected, re-tested
+                                // against the fresh one and drawn now, so a wrong rejection never reaches
+                                // the screen. Skipped whole when phase one was frustum-only (nothing marked).
+                                if (CullPass.RetestPending)
+                                {
+                                    GpuBegin(GpuTerm.Cull);
+                                    CullPass.Dispatch(CullPass.PhaseRetest, &vp, hiZ: true, PassGen);
+                                    GpuEnd(GpuTerm.Cull);
+                                    GpuBegin(GpuTerm.PrepassRetest);
+                                    DepthPrepassPass(_gOpaqueEnd, &vp, viewport, CullPass.PhaseRetest);
+                                    GpuEnd(GpuTerm.PrepassRetest);
+                                }
                             }
                             FrameZones.Add(FrameZones.Zone.Prepass, tPre);
                             break;
@@ -608,19 +621,28 @@ public sealed unsafe partial class AlloyRenderer
     }
     private static int _blendPrepassDraws;
 
-    private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport)
+    /// <summary>The depth prepass over the opaque range, submitting cull output set <paramref name="phase"/>.
+    /// #489: called twice under the cull -- <see cref="CullPass.PhasePrepass"/> for phase one's survivors,
+    /// then <see cref="CullPass.PhaseRetest"/> for the re-tested rejects. The second call is bracketed by
+    /// the caller's <see cref="GpuTerm.PrepassRetest"/>, under which the sweep terms here are refused (one
+    /// query open at a time), and it adds nothing to the staged counters, which are the ceiling and would
+    /// otherwise double.</summary>
+    private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport, int phase)
     {
         if (!_depthPrepass || !EnsureDepthProgram()) return;
+        bool retest = phase == CullPass.PhaseRetest;
         int skipped = 0, drawn = 0;
-        Array.Clear(_gPrepassed, 0, groups);
-        GpuBegin(GpuTerm.Prepass);
-        // #243: the FRUSTUM-only list. The prepass is what the hi-Z pyramid is built from, so it cannot be
-        // culled against the pyramid it produces -- and it must not be: a part the prepass skips is one the
-        // pyramid does not know about, which only ever makes the colour cull more conservative.
-        // The dispatch spans every batch since #290; this loop still walks the opaque range alone, so the
-        // blending batches' commands in this phase's buffer are simply never submitted.
         bool indirect = CullPass.Active;
-        if (indirect) CullPass.BindForDraw(CullPass.PhasePrepass);
+        if (!indirect && retest) return;
+        if (!retest) Array.Clear(_gPrepassed, 0, groups);
+        GpuBegin(GpuTerm.Prepass);
+        // #243: a list the pyramid did not produce. The prepass is what the hi-Z pyramid is built from, so
+        // it cannot be culled against the pyramid it produces; #489 tests phase one against the PRIOR
+        // pass's pyramid instead and corrects that pyramid's rejections in phase two. A part the prepass
+        // skips is one the pyramid does not know about, which only ever makes the colour cull more
+        // conservative. The dispatch spans every batch since #290; this loop still walks the opaque range
+        // alone, so the blending batches' commands in this phase's buffer are simply never submitted.
+        if (indirect) CullPass.BindForDraw(phase);
         Gl.ColorMask(0, 0, 0, 0);
         Gl.DepthFunc(Gl.LESS);
         uint boundVao = 0;
@@ -668,7 +690,7 @@ public sealed unsafe partial class AlloyRenderer
                 }
                 int s = _gStart[g];
                 _gPrepassed[g] = true;
-                if (dis) _prepassKeyed += _gLen[g];
+                if (dis && !retest) _prepassKeyed += _gLen[g];
                 Gl.Uniform1i(dis ? _depthKeyBase : _depthBase, s);
                 int wantCull = _gNoCull[g] ? 0 : 1;
                 if (wantCull != boundCull)
@@ -733,7 +755,7 @@ public sealed unsafe partial class AlloyRenderer
                 else
                     Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
                                                    (void**)(offs + s), _gLen[g], bases + s);
-                drawn += _gLen[g]; skipped -= _gLen[g]; _prepassFeatDraws += _gLen[g];
+                drawn += _gLen[g]; skipped -= _gLen[g]; if (!retest) _prepassFeatDraws += _gLen[g];
             }
             GpuEnd(GpuTerm.PrepassFeat);
         }
@@ -744,8 +766,7 @@ public sealed unsafe partial class AlloyRenderer
         // #243: under the cull this is what was STAGED, not what the GPU kept -- the count that decides is in
         // the parameter buffer and does not come back. The period line's cull clause carries the kept figure;
         // this one is the ceiling it culls from, and reading it as "draws" would overstate the pass.
-        _prepassDraws += drawn;
-        _prepassSkipped += skipped;
+        if (!retest) { _prepassDraws += drawn; _prepassSkipped += skipped; }
         // #214: OUR depth attachment, not the engine's -- a texture by construction, so consumers get a
         // sampleable name rather than whatever the engine happened to allocate.
         DepthResource.Publish((int)Gl.ATTACHMENT_TEXTURE, (int)PostChain.DepthTex, viewport, PassGen);

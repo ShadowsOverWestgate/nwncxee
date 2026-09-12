@@ -545,7 +545,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -1077,7 +1077,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static string DescribeTuning() =>
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
         $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  weld {NormalWeld.Angle:F0}deg ({NormalWeld.Parts} parts, {NormalWeld.Welded} welded/{NormalWeld.Kept} kept/{NormalWeld.Refused} refused; newcomers only)  " +
-        $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
+        $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  retest {(CullPass.Retest ? 1 : 0)}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
         $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  blendprepass {(_blendPrepass ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
         $"fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  hlglow {(RspShim.GlowReplay ? 1 : 0)}  " +
         // #336: the one number that says whether a fog cull has anything to cull -- the far plane Alloy
@@ -1122,6 +1122,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // not there. Off puts both passes back on the staged BaseVertex submission with NO cull at all
             // (#264 deleted the engine walk that used to gate them) -- slow, and the honest control.
             case "cull":     old = CullPass.Mode; CullPass.Mode = Math.Clamp((int)v, 0, CullPass.ModeHiZ); break;
+            // #489's A/B: 0 = the prepass dispatch is frustum-only again (the pre-#489 prepass), 1 = phase
+            // one against the prior pass's pyramid, phase two re-tests its rejects against the fresh one.
+            case "retest":   old = CullPass.Retest ? 1f : 0f; CullPass.Retest = v != 0f; break;
             // #287: LOD selection, in pixels of projected radius. It rides the cull dispatch, so /draw cull 0
             // stands it down too -- this dial only says how aggressive it is while the cull is running.
             case "lod":      old = CullPass.LodPx; CullPass.LodPx = MathF.Max(v, 0f); break;
@@ -1169,7 +1172,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
         _sunWorldBias = DefSunBias; _lightViz = DefViz; CullPass.Mode = DefCull; CullPass.LodPx = DefLod;
-        CullPass.FogCull = CullPass.DefFogCull; HlChannels = DefHlChannels;
+        CullPass.FogCull = CullPass.DefFogCull; CullPass.Retest = CullPass.DefRetest; HlChannels = DefHlChannels;
         _fullPoll = DefPoll; _prepassKey = DefPrepassKey; _prepassFeat = DefPrepassFeat; _visList = DefVisList; _stageThreads = DefThreads;
         // #242: AFTER the dials, the way Tune does it. /draw runs on the input thread, so a bump published
         // ahead of the assignments lets a staging walk rebuild against the OLD dial and stamp the NEW epoch
@@ -1189,16 +1192,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyRenderer.TuneSelfCheck FAIL: {w}"); } }
 
         bool li = _lighting, dp = _depthPrepass, ao = _aoTest;
-        int cu = CullPass.Mode;
+        int cu = CullPass.Mode; bool rt = CullPass.Retest;
         float lp = CullPass.LodPx;
         bool fp = _fullPoll, pk = _prepassKey, vl = _visList;
         float cb = _sunWorldBias;
         int vz = _lightViz;
 
-        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull", "lod", "poll", "prepasskey", "vislist", "threads" })
+        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull", "retest", "lod", "poll", "prepasskey", "vislist", "threads" })
             E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
         E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1 && CullPass.Mode == 1
-          && CullPass.LodPx == 1f && _fullPoll && _prepassKey && _visList && _stageThreads == 1,
+          && CullPass.Retest && CullPass.LodPx == 1f && _fullPoll && _prepassKey && _visList && _stageThreads == 1,
           "every key lands on its own field");
         E(Tune("light", 0f) == 1f && !_lighting, "a boolean dial takes 0 and reports its old value as 1");
         E(Tune("viz", LightVizMax + 5f) == 1f && _lightViz == LightVizMax,
@@ -1208,17 +1211,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         ResetTuning();
         E(_lighting == DefLighting && _depthPrepass == DefPrepass && _aoTest == DefAoTest
           && _sunWorldBias == DefSunBias && _lightViz == DefViz && CullPass.Mode == DefCull
-          && CullPass.LodPx == DefLod && _fullPoll == DefPoll && _prepassKey == DefPrepassKey && _visList == DefVisList,
+          && CullPass.Retest == CullPass.DefRetest && CullPass.LodPx == DefLod && _fullPoll == DefPoll && _prepassKey == DefPrepassKey && _visList == DefVisList,
           "reset returns every dial to its boot value");
         E(DescribeTuning().Contains("light") && DescribeTuning().Contains("prepass")
           && DescribeTuning().Contains("viz")
           && DescribeTuning().Contains("aotest") && DescribeTuning().Contains("csmbias")
-          && DescribeTuning().Contains("cull") && DescribeTuning().Contains("lod")
+          && DescribeTuning().Contains("cull") && DescribeTuning().Contains("retest") && DescribeTuning().Contains("lod")
           && DescribeTuning().Contains("poll") && DescribeTuning().Contains("prepasskey") && DescribeTuning().Contains("vislist"),
           "the echo names every key the command accepts");
 
         _lighting = li; _depthPrepass = dp; _aoTest = ao; _sunWorldBias = cb; _lightViz = vz;
-        CullPass.Mode = cu; CullPass.LodPx = lp; _fullPoll = fp; _prepassKey = pk; _visList = vl;
+        CullPass.Mode = cu; CullPass.Retest = rt; CullPass.LodPx = lp; _fullPoll = fp; _prepassKey = pk; _visList = vl;
         CullPass.SelfCheck(log);
         _log = quiet;
         log.Info(ok ? "AlloyRenderer.TuneSelfCheck: passed"
@@ -1801,7 +1804,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                     : $"prepass {(float)_prepassDraws / _frames:F0} draws/frame" +
                       (_prepassKeyed == 0 ? "" : $" ({(float)_prepassKeyed / _frames:F0} of them dissolving, keyhole stage)") +
                       (_prepassSkipped == 0 ? "" : $" (+{(float)_prepassSkipped / _frames:F0} excluded, displacing/skinned or cutout)") +
+                      // #489 (AC2): the GPU's kept figures under the staged ceiling -- phase one plus phase
+                      // two, and phase two's own share -- with phase two's submission as its own term.
+                      (CullPass.CullFrames == 0 ? "" : $" (cull kept {(float)CullPass.PrepassKept / CullPass.CullFrames:F0}, of which retest {(float)CullPass.RetestKept / CullPass.CullFrames:F0})") +
                       (_qTerm[(int)GpuTerm.Prepass].Measured ? $" in {GpuMs(GpuTerm.Prepass):F3}ms" : "") +
+                      (_qTerm[(int)GpuTerm.PrepassRetest].Measured ? $" + retest {GpuMs(GpuTerm.PrepassRetest):F3}ms" : "") +
                       (_qTerm[(int)GpuTerm.PrepassKey].Measured ? $" + keyhole sweep {GpuMs(GpuTerm.PrepassKey):F3}ms" : "") +
                       (_qTerm[(int)GpuTerm.PrepassFeat].Measured ? $" + cutout/displaced sweep {GpuMs(GpuTerm.PrepassFeat):F3}ms ({(float)_prepassFeatDraws / _frames:F0} draws)" : "") +
                       (_qTerm[(int)GpuTerm.Ao].Measured ? $" + ao {GpuMs(GpuTerm.Ao):F3}ms" : "") +

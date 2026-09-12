@@ -162,6 +162,7 @@ public sealed unsafe partial class AlloyRenderer
         // objects can only be deleted inside the bracket, so the rebuild happens there (EnsureVao).
         for (int v = 0; v < _vdoCount; v++) { _vVdo[v] = IntPtr.Zero; _vStale[v] = true; }
         PassRegistry.Global.Revoke();
+        CullPass.Revoke();
         CycleTextures.Clear();
         if (_ownCount == 0) return;
         for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero) Revoke(i);

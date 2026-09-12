@@ -14,15 +14,21 @@ namespace Sowx.Alloy;
 /// sphere against this pass's frustum (and, for the colour pass, against a hi-Z pyramid), compacts the
 /// survivors into an indirect command buffer and writes a per-batch count. Submission is
 /// <c>glMultiDrawElementsIndirectCount</c>, so the count never comes back to the CPU.</para>
-/// <para><b>Same-frame, not reprojected.</b> The pyramid is built from #119's depth prepass INSIDE the
-/// frame that consumes it: dispatch A (frustum only) feeds the prepass, the prepass depth becomes the
-/// pyramid, dispatch B (frustum + hi-Z) feeds the colour pass. Reprojection was rejected because it buys
-/// nothing here -- the prepass depth is already paid for, and a pyramid one frame stale is exactly the
-/// silhouette-popping artefact the ticket names. What the prepass leaves out (cutouts, discarding classes
-/// it drops, everything the engine still draws) only leaves the pyramid holding the FARTHER depth that is
-/// actually behind them, and a farther max culls less. The direction that matters, and that #243's first
-/// live run got wrong: the test is <c>objectNear &gt; maxSceneDepth</c>, so anything that LOWERS the max
-/// culls MORE. Over-covering the sampled region is safe; under-covering it is the bug.</para>
+/// <para><b>Same-frame for the colour pass; two-phase for the prepass (#489).</b> The pyramid is built
+/// from #119's depth prepass INSIDE the frame that consumes it, and the colour dispatch (frustum + hi-Z)
+/// tests against that fresh pyramid. #243 rejected a reprojected cull because a pyramid one frame stale
+/// pops silhouettes; #489 keeps the objection and answers it: the prepass dispatch is TWO phases. Phase one
+/// tests each draw against the PREVIOUS pass's pyramid in that pyramid's own clip space (the sphere is
+/// projected with the view-projection the pyramid was built under, which is exact for anything that did
+/// not move) and marks every draw the stale pyramid rejected; the prepass draws the survivors, the pyramid
+/// is rebuilt, and phase two re-tests ONLY the marked draws against the fresh pyramid and draws whichever
+/// now pass. A wrong stale rejection is corrected in the same frame, so nothing visible can pop; a draw the
+/// frustum, the LOD or the fog dropped is not marked, because those verdicts were same-frame already.</para>
+/// <para>What the prepass leaves out (cutouts, discarding classes it drops, everything the engine still
+/// draws) only leaves the pyramid holding the FARTHER depth that is actually behind them, and a farther max
+/// culls less. The direction that matters, and that #243's first live run got wrong: the test is
+/// <c>objectNear &gt; maxSceneDepth</c>, so anything that LOWERS the max culls MORE. Over-covering the
+/// sampled region is safe; under-covering it is the bug.</para>
 /// <para>#287 adds LOD selection to the same dispatch (<see cref="LodPx"/>) and deletes the per-pass CPU
 /// rebuild of its source list: the batch walk stages the six-uint record where it already stages the draw's
 /// count, offset and base, and this class uploads it. What is left on the CPU is the batch CUT alone, whose
@@ -54,7 +60,7 @@ internal static unsafe class CullPass
     /// 10/11 <see cref="Particles"/>. Everything here is private to the dispatch except
     /// <see cref="AlloyRenderer.BindDrawIdx"/>, which the compacted slot buffer takes at DRAW time.</summary>
     internal const uint BindSrc = 12, BindSphere = 13, BindCmd = 14, BindOutSlot = 15, BindCount = 16,
-                        BindKey = 17;
+                        BindKey = 17, BindRej = 21;
 
     /// <summary>Uints per source record: index count, first index, base vertex, record slot, batch, and the
     /// batch's output base. Six rather than five because the batch's start offset is what turns an
@@ -72,29 +78,51 @@ internal static unsafe class CullPass
     /// <summary>Compute workgroup size; the dispatch is 1D over draws.</summary>
     private const int GroupSize = 64;
 
-    /// <summary>The two dispatch phases, and the two output sets they fill.</summary>
-    internal const int PhasePrepass = 0, PhaseColour = 1;
+    /// <summary>The three dispatch phases, and the three output sets they fill. <see cref="PhaseRetest"/> is
+    /// #489's second prepass phase: its own set, because <c>MultiDrawElementsIndirectCount</c> takes a CPU
+    /// byte offset for the start and phase one's count never comes back to say where its survivors end.</summary>
+    internal const int PhasePrepass = 0, PhaseColour = 1, PhaseRetest = 2;
+    private const int Phases = 3;
+    /// <summary>The shader's <c>uRej</c> mode per phase: the colour phase ignores the verdict buffer, phase
+    /// one WRITES it, phase two READS it and tests only the marked draws.</summary>
+    private const int RejOff = 0, RejWrite = 1, RejRead = 2;
+
+    /// <summary>#489: run the prepass's second phase (<c>/draw retest</c>). Off = phase one tests the
+    /// frustum alone, exactly the pre-#489 prepass, which is the before half of the ticket's measurement.</summary>
+    internal static bool Retest = DefRetest;
+    internal const bool DefRetest = true;
+    /// <summary>#489: phase one of this pass tested against a stale pyramid, so it may have marked rejects
+    /// and phase two has something to re-test. False when there was no pyramid to reproject (first pass,
+    /// after <see cref="Revoke"/>, after a resize) -- phase one was frustum-only and marked nothing.</summary>
+    internal static bool RetestPending;
 
     private static ExtenderLog? _log;
     private static uint _prog, _progHiZ, _progSort;
     private static bool _failed;
     private static int _uDrawN, _uPlanes, _uHiZ, _uVP, _uPyr, _uPyrSize, _uMaxLod;
-    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye, _uFogCull, _uFogOrigin;
+    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye, _uFogCull, _uFogOrigin, _uPyrVP, _uRej;
     private static int _sDrawN, _sCompactBelow;
     private static int _hSrc, _hLevel;
 
-    private static uint _srcBuf, _sphBuf, _keyBuf;
-    private static readonly uint[] _cmdBuf = new uint[2];
-    private static readonly uint[] _slotBuf = new uint[2];
-    private static readonly uint[] _cntBuf = new uint[2];
+    private static uint _srcBuf, _sphBuf, _keyBuf, _rejBuf;
+    private static readonly uint[] _cmdBuf = new uint[Phases];
+    private static readonly uint[] _slotBuf = new uint[Phases];
+    private static readonly uint[] _cntBuf = new uint[Phases];
     private static int _cmdCap, _cntCap, _sphCap;
 
     private static uint _pyrTex, _pyrFbo, _pyrVao;
     private static int _pyrW, _pyrH, _pyrLevels;
-    /// <summary>The pass generation the pyramid was last BUILT for. Not "a pyramid exists": a declined build
-    /// (no depth texture, a zero viewport) would otherwise leave the previous frame's pyramid armed, which
-    /// is the reprojected cull this pass exists to not be.</summary>
+    /// <summary>The pass generation the pyramid was last BUILT for -- what gates the colour dispatch and
+    /// phase two, which must test the FRESH pyramid. Not "a pyramid exists": a declined build (no depth
+    /// texture, a zero viewport) would otherwise hand the same-frame test the previous frame's pyramid.</summary>
     private static int _pyrGen = -1;
+    /// <summary>#489: a pyramid from a PRIOR pass is resident and <see cref="_pyrVp"/> is the
+    /// view-projection it was built under, so phase one may reproject against it. Deliberately separate
+    /// from <see cref="_pyrGen"/>: a declined build resets that, and phase one wants exactly the pyramid a
+    /// decline leaves behind. Cleared where the texels stop being a scene -- a recreate, a context loss,
+    /// the world edge (<see cref="Revoke"/>).</summary>
+    private static bool _pyrStale;
+    private static Matrix4x4 _pyrVp;
 
     /// <summary>#243 (AC5): what the last readable dispatch actually kept. Copied out of the count buffer
     /// three frames late through a small ring, so the period line can report culled-vs-drawn without a
@@ -108,6 +136,11 @@ internal static unsafe class CullPass
     private static uint[] _counts = new uint[1024];
     private static int _readSeq, _readCap;
     internal static long CulledDraws, KeptDraws, CullFrames;
+    /// <summary>#489 (AC2): what the prepass's two phases kept, the same three-frames-late way. The staged
+    /// figure the period line already prints is the ceiling; these are the GPU's counts under it.</summary>
+    internal static long PrepassKept, RetestKept;
+    /// <summary>Count words per ring slot: one range per phase, back to back.</summary>
+    private const int RingPhases = Phases;
     /// <summary>Colour-phase dispatches between two <see cref="Sample"/> calls. <c>CullFrames</c> counts
     /// samples, so the period averages are unchanged by the cadence.</summary>
     private const int SamplePeriod = 60;
@@ -198,12 +231,18 @@ internal static unsafe class CullPass
     internal static void ContextLost()
     {
         _prog = 0; _progHiZ = 0; _progSort = 0; _failed = false;
-        _srcBuf = 0; _sphBuf = 0; _keyBuf = 0; _cmdCap = 0; _cntCap = 0; _sphCap = 0;
+        _srcBuf = 0; _sphBuf = 0; _keyBuf = 0; _rejBuf = 0; _cmdCap = 0; _cntCap = 0; _sphCap = 0;
         Array.Clear(_cmdBuf); Array.Clear(_slotBuf); Array.Clear(_cntBuf);
         Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); _readCap = 0;
         _pyrTex = 0; _pyrFbo = 0; _pyrVao = 0; _pyrW = 0; _pyrH = 0; _pyrLevels = 0; _pyrGen = -1;
+        _pyrStale = false; RetestPending = false;
         _phase = -1; _compactBelow = 0;
     }
+
+    /// <summary>#489: the world edge (area transition, module unload). The resident pyramid is a scene that
+    /// no longer exists, so the next pass's phase one is frustum-only rather than reprojecting against it.
+    /// Phase two would correct the rejections anyway; this only spares it the whole area's worth.</summary>
+    internal static void Revoke() { _pyrStale = false; RetestPending = false; }
 
     /// <summary>Everything the dispatch needs from GL. #264 promoted this to a BOOT term: with the engine's
     /// bucket walk deleted there is no other visibility test in the frame, so a driver that cannot run the
@@ -245,6 +284,8 @@ internal static unsafe class CullPass
         _uEye = GlProgram.Loc(_prog, "uEye");
         _uFogCull = GlProgram.Loc(_prog, "uFogCull");
         _uFogOrigin = GlProgram.Loc(_prog, "uFogOrigin");
+        _uPyrVP = GlProgram.Loc(_prog, "uPyrVP");
+        _uRej = GlProgram.Loc(_prog, "uRej");
         _sDrawN = GlProgram.Loc(_progSort, "uDrawN");
         _sCompactBelow = GlProgram.Loc(_progSort, "uCompactBelow");
         _hSrc = GlProgram.Loc(_progHiZ, "uSrc");
@@ -275,15 +316,17 @@ internal static unsafe class CullPass
                               float lodScale, int compactBelow, Vector3 eye)
     {
         _phase = -1;
+        RetestPending = false;   // a pass that declines below must not inherit the last one's phase two
         if (Mode <= ModeOff || drawN <= 0 || groups <= 0 || _sphBuf == 0 || !Ensure()) return false;
         // The per-batch count array is indexed by batch; the zero-fill in Dispatch is what resets it. GROWN
         // rather than capped: a refusal here would be a refusal AFTER the staging walk had already dropped
         // the engine's visibility gate on the strength of Ready, and the frame would then draw the whole
         // area unculled -- the cap has to not exist rather than be generous.
-        if (groups > _counts.Length)
+        // #489: RingPhases ranges of counts per sample, so the ring read never outgrows it mid-frame.
+        if (RingPhases * groups > _counts.Length)
         {
             int cap = _counts.Length;
-            while (cap < groups) cap *= 2;
+            while (cap < RingPhases * groups) cap *= 2;
             _counts = new uint[cap];
         }
 
@@ -300,12 +343,15 @@ internal static unsafe class CullPass
 
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _sphBuf);
 
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < Phases; i++)
         {
             Ensure(ref _cmdBuf[i], (long)drawN * CmdUints * sizeof(uint), drawN > _cmdCap);
             Ensure(ref _slotBuf[i], (long)drawN * sizeof(uint), drawN > _cmdCap);
             Ensure(ref _cntBuf[i], (long)groups * sizeof(uint), groups > _cntCap);
         }
+        // #489: phase one's per-draw verdict, read back by phase two. One word per draw, written for EVERY
+        // draw of phase one so a mark from an older list cannot linger under a shorter one.
+        Ensure(ref _rejBuf, (long)drawN * sizeof(uint), drawN > _cmdCap);
         // #290: the sort's scratch -- one key per draw, negative for a draw the cull dropped. One buffer
         // rather than a key array beside a keep array: distances are never negative, so the sign IS the
         // verdict, and the rank scan reads one word per neighbour instead of two.
@@ -347,12 +393,24 @@ internal static unsafe class CullPass
     }
 
     /// <summary>Run one dispatch into output set <paramref name="phase"/>. <paramref name="hiZ"/> false is
-    /// the frustum-only pass the depth prepass consumes; true adds the occlusion test against the pyramid
-    /// the prepass just filled.</summary>
+    /// a frustum-only dispatch; true adds the occlusion test -- for <see cref="PhaseColour"/> and
+    /// <see cref="PhaseRetest"/> against the pyramid this pass just built (<paramref name="gen"/> gates it),
+    /// for <see cref="PhasePrepass"/> against the PRIOR pass's pyramid in its own clip space (#489), which
+    /// also marks the rejects phase two re-tests.</summary>
     internal static void Dispatch(int phase, Matrix4x4* vp, bool hiZ, int gen)
     {
+        bool stale = phase == PhasePrepass;
+        if (stale) RetestPending = false;
         if (_phase == -1 || _drawN <= 0) return;
         Gl.ZeroBuffer(_cntBuf[phase], (long)_groups * sizeof(uint));
+        bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0
+                      && (stale ? Retest && _pyrStale : _pyrGen == gen);
+        if (stale)
+        {
+            RetestPending = useHiZ;
+            // A frame without a phase two leaves phase two's counts from an older frame; Sample would read them.
+            if (!useHiZ) Gl.ZeroBuffer(_cntBuf[PhaseRetest], (long)_groups * sizeof(uint));
+        }
 
         Gl.UseProgram(_prog);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
@@ -361,8 +419,13 @@ internal static unsafe class CullPass
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _slotBuf[phase]);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCount, _cntBuf[phase]);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindKey, _keyBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRej, _rejBuf);
         Gl.Uniform1i(_uDrawN, _drawN);
         Gl.UniformMatrix4fv(_uVP, 1, 0, (float*)vp);
+        // The pyramid's own clip space: this pass's for the same-frame phases, the prior pass's for phase one.
+        if (stale && useHiZ) fixed (Matrix4x4* pv = &_pyrVp) Gl.UniformMatrix4fv(_uPyrVP, 1, 0, (float*)pv);
+        else Gl.UniformMatrix4fv(_uPyrVP, 1, 0, (float*)vp);
+        Gl.Uniform1i(_uRej, stale ? RejWrite : phase == PhaseRetest ? RejRead : RejOff);
         float* planes = stackalloc float[24];
         Planes((float*)vp, planes, _eye);
         Gl.Uniform4fv(_uPlanes, 6, planes);
@@ -376,7 +439,6 @@ internal static unsafe class CullPass
         Gl.Uniform1f(_uFogCull, float.IsInfinity(opaque) ? 0f : opaque);
         Vector3 origin = SceneFog.Origin(out bool radial);
         Gl.Uniform4f(_uFogOrigin, origin.X, origin.Y, origin.Z, radial ? 1f : 0f);
-        bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0 && _pyrGen == gen;
         Gl.Uniform1i(_uHiZ, useHiZ ? 1 : 0);
         if (useHiZ)
         {
@@ -392,7 +454,9 @@ internal static unsafe class CullPass
         // #290: the sort is a SECOND dispatch, and the barrier between them is load-bearing -- a draw ranks
         // itself against keys every other invocation of the first dispatch wrote, so none of them may still
         // be in flight. One pass cannot do both: a rank needs the whole batch's verdicts decided.
-        if (_compactBelow < _groups)
+        // #489: phase two has no sorted draws to place -- the prepass never submits them, and the shader
+        // returns early on every one.
+        if (_compactBelow < _groups && phase != PhaseRetest)
         {
             Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
             Gl.UseProgram(_progSort);
@@ -462,7 +526,8 @@ internal static unsafe class CullPass
     /// is behind the FARTHEST scene depth anywhere in the region it covers.
     /// <para>Restores the framebuffer, viewport and program the caller had -- the colour bracket is mid-pass
     /// and everything it set is still live.</para></summary>
-    internal static void BuildHiZ(uint depthTex, int w, int h, int* viewport, uint restoreFbo, int gen)
+    internal static void BuildHiZ(uint depthTex, int w, int h, int* viewport, uint restoreFbo, int gen,
+                                  Matrix4x4* vp)
     {
         _pyrGen = -1;
         if (_phase == -1 || _progHiZ == 0 || depthTex == 0 || w <= 0 || h <= 0) return;
@@ -505,6 +570,9 @@ internal static unsafe class CullPass
         Gl.Enable(Gl.DEPTH_TEST);
         Gl.DepthMask(1);
         _pyrGen = gen;
+        // #489: and it is next pass's stale pyramid, under THIS (jittered) view-projection -- the one the
+        // depth it reduces was drawn with.
+        _pyrVp = *vp; _pyrStale = true;
     }
 
     private static bool EnsurePyramid(int w, int h)
@@ -512,6 +580,7 @@ internal static unsafe class CullPass
         w = Math.Max(w, 1); h = Math.Max(h, 1);
         if (_pyrTex != 0 && w == _pyrW && h == _pyrH) return true;
         if (_pyrTex != 0) { uint t = _pyrTex; Gl.DeleteTextures(1, &t); _pyrTex = 0; }
+        _pyrStale = false;
         int levels = 1;
         while ((w >> levels) > 0 || (h >> levels) > 0) levels++;
         uint tex; Gl.GenTextures(1, &tex);
@@ -543,26 +612,33 @@ internal static unsafe class CullPass
         Ensure(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
                _readBuf[w] == 0 || _counts.Length > _readCap);
         _readCap = _counts.Length;
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, _cntBuf[PhaseColour]);
+        // #489: the three phases' counts back to back -- colour, then prepass phase one, then phase two.
         Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _readBuf[w]);
-        Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, IntPtr.Zero, IntPtr.Zero, bytes);
+        for (int ph = 0; ph < RingPhases; ph++)
+        {
+            Gl.BindBuffer(Gl.COPY_READ_BUFFER, _cntBuf[ph == 0 ? PhaseColour : ph == 1 ? PhasePrepass : PhaseRetest]);
+            Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, IntPtr.Zero, (IntPtr)((long)ph * _groups * sizeof(uint)), bytes);
+        }
         Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
         Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
         _readN[w] = _groups; _readDrawN[w] = _drawN;
         if (_readBuf[r] == 0 || _readN[r] <= 0) return;
         Gl.BindBuffer(Gl.COPY_READ_BUFFER, _readBuf[r]);
         fixed (uint* c = _counts)
-            Gl.GetBufferSubData(Gl.COPY_READ_BUFFER, IntPtr.Zero, (IntPtr)((long)_readN[r] * sizeof(uint)), c);
+            Gl.GetBufferSubData(Gl.COPY_READ_BUFFER, IntPtr.Zero, (IntPtr)((long)RingPhases * _readN[r] * sizeof(uint)), c);
         Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
-        long kept = 0;
-        for (int i = 0; i < _readN[r]; i++) kept += _counts[i];
+        long kept = 0, pre = 0, re = 0;
+        for (int i = 0; i < _readN[r]; i++)
+        { kept += _counts[i]; pre += _counts[_readN[r] + i]; re += _counts[2 * _readN[r] + i]; }
         // Against the draw count of the frame that WROTE those counts, not this frame's.
         KeptDraws += Math.Min(kept, _readDrawN[r]);
         CulledDraws += Math.Max(_readDrawN[r] - kept, 0);
+        PrepassKept += Math.Min(pre + re, _readDrawN[r]);
+        RetestKept += Math.Min(re, _readDrawN[r]);
         CullFrames++;
     }
 
-    internal static void ResetStats() { CulledDraws = 0; KeptDraws = 0; CullFrames = 0; }
+    internal static void ResetStats() { CulledDraws = 0; KeptDraws = 0; CullFrames = 0; PrepassKept = 0; RetestKept = 0; }
 
     /// <summary>The six frustum planes of a row-major <c>view*proj</c>, Gribb-Hartmann, normalised so the
     /// plane distance is in world units and the sphere test is a plain compare. Row-major here means the
@@ -741,6 +817,37 @@ internal static unsafe class CullPass
         E(cnt[1] == 1 && outSlot[gStart[1]] == 4,
           "an absurd LOD threshold still cannot touch a NeverCull record");
         E(cnt[2] == 3, "...nor anything in a SORTED batch, which runs no LOD test at all");
+
+        // #489: the two prepass phases. A stale pyramid says draws 0, 2 and 6 are hidden -- 2 wrongly, and
+        // 6 is in the SORTED batch, which phase one must not test. Phase one draws the rest and marks
+        // exactly the hi-Z rejects; the fresh pyramid then admits 2, and phase two draws it and nothing else.
+        bool* occ = stackalloc bool[drawN];
+        uint* rej = stackalloc uint[drawN];
+        uint* cmd2 = stackalloc uint[drawN * CmdUints];
+        int* out2 = stackalloc int[drawN];
+        uint* cnt2 = stackalloc uint[groups];
+        occ[0] = true; occ[2] = true; occ[6] = true;
+        Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd, outSlot, cnt,
+                rejMode: RejWrite, rej: rej, occ: occ);
+        E(cnt[0] == 0 && cnt[1] == 3, "phase one draws what the stale pyramid and the frustum admit");
+        E(rej[0] == 1 && rej[2] == 1 && rej[1] == 0 && rej[3] == 0 && rej[4] == 0 && rej[5] == 0,
+          "phase one marks the stale hi-Z rejects and NOT the frustum's");
+        E(rej[6] == 0 && cnt[2] == 3, "a sorted draw is never hi-Z tested in phase one, so it is never marked");
+        occ[2] = false;
+        Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd2, out2, cnt2,
+                rejMode: RejRead, rej: rej, occ: occ);
+        E(cnt2[0] == 1 && out2[0] == 2, "phase two draws exactly the draw the stale pyramid wrongly rejected");
+        E(cnt2[1] == 0 && cnt2[2] == 0, "...and nothing phase one already drew, nor any sorted draw");
+        E(Agrees(src, drawN, groups, gStart, cmd2, out2, cnt2, log), "...as its own staged record");
+        // The property the ticket promises: phase one plus phase two IS the fresh-pyramid list.
+        Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd, outSlot, cnt, occ: occ);
+        E(cnt[0] == 1 && outSlot[0] == 2 && cnt[1] == 3,
+          "the union of the two phases is what a same-frame test against the fresh pyramid draws");
+        // A stale rejection the fresh pyramid confirms stays out, but a frustum reject is never re-tested.
+        occ[0] = true; rej[1] = 1;   // a forged mark on the off-frustum draw
+        Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd2, out2, cnt2,
+                rejMode: RejRead, rej: rej, occ: occ);
+        E(cnt2[0] == 1 && out2[0] == 2, "phase two still applies the frustum, and a confirmed occlusion stays culled");
         return ok;
     }
 
@@ -752,7 +859,8 @@ internal static unsafe class CullPass
     /// out identical either way, and that is asserted rather than assumed.</para></summary>
     private static void Emulate(uint* src, float* sph, int drawN, int groups, float* planes, Matrix4x4 vp,
                                 float lodPx, float lodScale, int compactBelow, Vector3 eye, float* key,
-                                uint* cmd, int* outSlot, uint* cnt, bool scramble = false)
+                                uint* cmd, int* outSlot, uint* cnt, bool scramble = false,
+                                int rejMode = 0, uint* rej = null, bool* occ = null)
     {
         for (int g = 0; g < groups; g++) cnt[g] = 0;
         for (int q = 0; q < drawN; q++)
@@ -760,11 +868,13 @@ internal static unsafe class CullPass
             int i = scramble ? drawN - 1 - q : q;
             uint* b = src + (long)i * SrcUints;
             bool sorted = b[4] >= (uint)compactBelow;
+            if (rejMode == RejRead && (sorted || rej[i] == 0u)) continue;
             int slot = (int)b[3];
             float* s = sph + (long)slot * 4;
             var c = new Vector3(s[0], s[1], s[2]);
             float r = s[3];
             bool keep = true;
+            bool hiz = false;
             if (r < 1e29f)
             {
                 for (int p = 0; p < 6 && keep; p++)
@@ -775,7 +885,10 @@ internal static unsafe class CullPass
                     float w = Vector4.Transform(new Vector4(c, 1f), vp).W;
                     if (w > 0f && r * lodScale < lodPx * w) keep = false;
                 }
+                // occ stands in for SowxOccluded: the pyramid's verdict per slot, which has no CPU model.
+                if (keep && occ != null && !(sorted && rejMode == RejWrite) && occ[slot]) { keep = false; hiz = true; }
             }
+            if (rejMode == RejWrite) rej[i] = hiz ? 1u : 0u;
             if (sorted)
             {
                 Vector3 d = c - eye;
@@ -879,10 +992,17 @@ internal static unsafe class CullPass
         layout(std430, binding = 15) writeonly buffer SowxCullOutIdx { int  uOut[]; };
         layout(std430, binding = 16) buffer SowxCullCount            { uint uCnt[]; };
         layout(std430, binding = 17) buffer SowxCullKey              { float uKey[]; };
+        layout(std430, binding = 21) buffer SowxCullRej              { uint uRejBuf[]; };
         uniform int uDrawN;
         uniform vec4 uPlanes[6];
         uniform mat4 uVP;
         uniform int uHiZ;
+        // #489: the pyramid's OWN view-projection -- this pass's for the same-frame phases, the prior
+        // pass's for phase one, which tests the sphere in the clip space the pyramid was built in.
+        uniform mat4 uPyrVP;
+        // #489: 0 = colour phase; 1 = prepass phase one (WRITE the hi-Z verdict per draw);
+        // 2 = prepass phase two (only a marked draw is tested, against the fresh pyramid).
+        uniform int uRej;
         uniform sampler2D uPyramid;
         uniform vec2 uPyrSize;
         uniform float uMaxLod;
@@ -926,7 +1046,7 @@ internal static unsafe class CullPass
             for (int i = 0; i < 8; i++)
             {
                 vec3 o = vec3((i & 1) != 0 ? r : -r, (i & 2) != 0 ? r : -r, (i & 4) != 0 ? r : -r);
-                vec4 cp = uVP * vec4(c + o, 1.0);
+                vec4 cp = uPyrVP * vec4(c + o, 1.0);
                 // Straddling the eye plane: the screen box is meaningless there, so do not cull.
                 if (cp.w <= 0.0) return false;
                 vec3 ndc = cp.xyz / cp.w;
@@ -955,9 +1075,13 @@ internal static unsafe class CullPass
             // and measures its key, and the second dispatch places it. Everything below compacts here, as
             // it has since #243, because opaque draws have no order to preserve.
             bool sorted = batch >= uint(uCompactBelow);
+            // #489: phase two is the marked rejects alone. Sorted batches are never re-tested because phase
+            // one never hi-Z tests them (below), so a mark on one cannot exist.
+            if (uRej == 2 && (sorted || uRejBuf[i] == 0u)) return;
             int slot = int(uSrc[b + 3u]);
             vec4 s = uSph[slot];
             bool keep = true;
+            bool hiz = false;
             if (s.w < 1e29)
             {
                 for (int p = 0; p < 6 && keep; p++)
@@ -967,7 +1091,11 @@ internal static unsafe class CullPass
                 // sprite, and thinning it by projected radius would delete lights the frustum and the
                 // pyramid both agree are visible.
                 if (keep && !sorted && SowxSubPixel(s.xyz, s.w)) keep = false;
-                if (keep && uHiZ != 0 && SowxOccluded(s.xyz, s.w)) keep = false;
+                // #489: a SORTED draw is not tested against the stale pyramid. The blended prepass draws
+                // phase one's placement of it as a creature's self-depth layer, and phase two does not
+                // restore sorted draws -- so a stale rejection there would be the one-frame pop this exists
+                // to prevent.
+                if (keep && uHiZ != 0 && !(sorted && uRej == 1) && SowxOccluded(s.xyz, s.w)) { keep = false; hiz = true; }
                 // #341: past the fog's opaque distance AND entirely below the eye -- see CullPass.FogCull
                 // for why both. The distance is the fog's own metric (SowxFogFactor), and the radius is
                 // subtracted so a sphere reaching back inside the fog is kept whole.
@@ -977,6 +1105,9 @@ internal static unsafe class CullPass
                     if (d - s.w > uFogCull) keep = false;
                 }
             }
+            // #489: the mark is "rejected by the stale hi-Z and nothing else" -- a frustum, LOD or fog
+            // verdict is same-frame and needs no second look.
+            if (uRej == 1) uRejBuf[i] = hiz ? 1u : 0u;
             if (sorted)
             {
                 // The key, and the verdict carried in its sign: squared distance from this pass's eye,
