@@ -44,7 +44,7 @@ jobs:
       - name: Build + package
         run: |
           nix shell nixpkgs#dotnet-sdk_10 nixpkgs#cmake nixpkgs#gnumake nixpkgs#clang \
-            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#gnutar nixpkgs#gzip \
+            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#gnutar nixpkgs#gzip nixpkgs#python3 \
             nixpkgs#coreutils --command bash -c '
               set -euo pipefail
               ./build.sh

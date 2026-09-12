@@ -26,7 +26,7 @@ jobs:
       - name: Build + load smoke
         run: |
           nix shell nixpkgs#dotnet-sdk_10 nixpkgs#cmake nixpkgs#gnumake nixpkgs#clang \
-            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc --command bash -c '
+            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#python3 --command bash -c '
               set -euo pipefail
               ./build.sh
               ./run-demo.sh
