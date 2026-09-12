@@ -277,6 +277,11 @@ internal static unsafe class SymbolMap
     /// <summary><c>CGuiMan::ReleaseKeyboard(CGuiObject*)</c>: clears the keyboard-capture slot (CGuiMan+0x50, same on
     /// both builds) and runs the object's lose-focus virtual (an edit's -> KeyboardModeOff).</summary>
     public const string GuiManReleaseKeyboard = "_ZN7CGuiMan15ReleaseKeyboardEP10CGuiObject";
+    /// <summary><c>CGuiObject* CGuiMan::GuiObjectHitCheck(int x, int y, int fresh, int mask)</c>: the engine's own
+    /// "which GUI object is under this point" test (#451). fresh=0 returns the object cached at CGuiMan+0x78 when one
+    /// is (x, y and mask then ignored); the mask only filters the secondary layer list, not the primary scene hit.
+    /// Pass it exactly as the engine's own handlers do: press (mouseX, mouseY, 0, 1), wheel (…, 0, 8). Same on both builds.</summary>
+    public const string GuiObjectHitCheck = "_ZN7CGuiMan17GuiObjectHitCheckEiiii";
     /// <summary>CTlkTable* global; the <c>this</c> for <see cref="TlkGetSimpleString"/>.</summary>
     public const string TlkTable   = "g_pTlkTable";
     /// <summary>The client's nuklear context (NUI edit-focus probe). Client global -- no Windows anchor.</summary>
@@ -1137,6 +1142,7 @@ internal static unsafe class SymbolMap
         [KeyboardModeOn]  = Nm("?KeyboardModeOn@CExoInput@@QEAAXXZ"),
         [KeyboardModeOff] = Nm("?KeyboardModeOff@CExoInput@@QEAAXXZ"),
         [GuiManReleaseKeyboard] = Nm("?ReleaseKeyboard@CGuiMan@@QEAAXPEAVCGuiObject@@@Z"),
+        [GuiObjectHitCheck] = Nm("?GuiObjectHitCheck@CGuiMan@@QEAAPEAVCGuiObject@@HHHH@Z"),
 
         // --- the Sowx window rig (#419): glyph bake, GL loader, engine state hand-back, SDL text/clipboard.
         //     All extern "C" or shared-engine statics, name-exported. Portraits stay Linux-only: the CAurTexture

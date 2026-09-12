@@ -48,6 +48,8 @@ public sealed unsafe class UiInputService : IExtenderService
     private static delegate* unmanaged<void> _turnOffModal;
     private static delegate* unmanaged<int*, int*, uint> _sdlGetMouseState;
     private static delegate* unmanaged<IntPtr, int> _nkAnyHovered;   // nk_window_is_any_hovered
+    private static IntPtr _guiManGlobal;                                // &g_pGuiMan
+    private static delegate* unmanaged<IntPtr, int, int, int, int, IntPtr> _guiHitCheck;   // CGuiMan::GuiObjectHitCheck
     private static delegate* unmanaged<IntPtr, void> _nkCopyEvent;   // nk_sdl_copy_event
     private static bool _kbHeld;   // our view of the engine keyboard-capture gate; edges drive the modal reset
 
@@ -77,6 +79,8 @@ public sealed unsafe class UiInputService : IExtenderService
         _turnOffModal    = (delegate* unmanaged<void>)Native.Sym(SymbolMap.TurnOffKeyboardModal);
         _sdlGetMouseState = (delegate* unmanaged<int*, int*, uint>)Native.Sym(SymbolMap.SdlGetMouseState);
         _nkAnyHovered    = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.NkWindowIsAnyHovered);
+        _guiManGlobal    = Native.Sym(SymbolMap.GuiMan);
+        _guiHitCheck     = (delegate* unmanaged<IntPtr, int, int, int, int, IntPtr>)Native.Sym(SymbolMap.GuiObjectHitCheck);
         _nkCopyEvent     = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.NkSdlCopyEvent);
 
         UiHost.KeyboardGate = KbGate;   // centralized engine keyboard gate (#64 AC3): one owner for all consumers
@@ -205,11 +209,13 @@ public sealed unsafe class UiInputService : IExtenderService
                 {
                     byte btn = *(byte*)(ev + SdlEvButtonOff);
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
+                    IntPtr gui = VanillaGuiAt(GuiPressMask);
                     if (KeyDiag)
-                        _log?.Info($"[keydiag] mouse btn={btn} at ({mx},{my}) owner={UiHost.AnyKeyboardOwner} kbmode={KeyboardModeActive()}");
-                    // NUI draws over us -> it gets the press. Blur first: this is a click elsewhere, and
-                    // FocusAt (skipped here) is what would otherwise have released our windows' focus.
-                    if (NuiHovered()) { UiHost.Blur(); break; }
+                        _log?.Info($"[keydiag] mouse btn={btn} at ({mx},{my}) owner={UiHost.AnyKeyboardOwner} kbmode={KeyboardModeActive()} gui=0x{gui:x}");
+                    // NUI (or a vanilla GUI object: radial menu, tooltip, panel; #451) draws over us -> it gets the
+                    // press. Blur first: this is a click elsewhere, and FocusAt (skipped here) is what would
+                    // otherwise have released our windows' focus.
+                    if (NuiHovered() || gui != IntPtr.Zero) { UiHost.Blur(); break; }
                     if (!UiHost.HoverToFocus) UiHost.FocusAt(mx, my);   // click-to-focus (default)
                     if (UiHost.DispatchMouseButton(true, btn, mx, my)) return 0;
                     if (ChordGateClear()) UiHost.FireMouseChords(btn, RawMods());
@@ -223,7 +229,7 @@ public sealed unsafe class UiInputService : IExtenderService
                     break;
                 }
                 case SdlMouseWheel:
-                    if (NuiHovered()) break;                           // ...and the scroll
+                    if (NuiHovered() || VanillaGuiAt(GuiWheelMask) != IntPtr.Zero) break;   // ...and the scroll
                     if (UiHost.DispatchMouseWheel(*(int*)(ev + SdlEvWheelYOff))) return 0;
                     break;
             }
@@ -297,6 +303,22 @@ public sealed unsafe class UiInputService : IExtenderService
         if (_nuklearGlobal == IntPtr.Zero || _nkAnyHovered == null) return false;
         IntPtr ctx = *(IntPtr*)_nuklearGlobal;
         return ctx != IntPtr.Zero && _nkAnyHovered(ctx) != 0;
+    }
+
+    /// <summary>Interactivity masks <c>CGuiMan::HandleLMouseDown</c> / <c>HandleMouseWheel</c> pass to the hit check.</summary>
+    private const int GuiPressMask = 1, GuiWheelMask = 8;
+
+    /// <summary>The vanilla GUI object under the engine's tracked pointer, or null (#451). Exactly the call the
+    /// engine's own press/wheel handler is about to make, so "would the engine find something" is answered by
+    /// the engine. Acquisition edges only, like <see cref="NuiHovered"/>.
+    /// ponytail: while our motion handler swallows motion the engine's tracked position goes stale; if that
+    /// bites live, pass fresh=1 with the SDL coords (Y flipped via GuiManVpH) instead.</summary>
+    private static IntPtr VanillaGuiAt(int mask)
+    {
+        if (_guiManGlobal == IntPtr.Zero || _guiHitCheck == null) return IntPtr.Zero;
+        IntPtr gm = *(IntPtr*)_guiManGlobal;
+        if (gm == IntPtr.Zero) return IntPtr.Zero;
+        return _guiHitCheck(gm, *(int*)(gm + EngineLayout.GuiManMouseX), *(int*)(gm + EngineLayout.GuiManMouseY), 0, mask);
     }
 
     private static bool NuiEditFocused()

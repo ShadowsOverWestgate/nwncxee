@@ -584,6 +584,10 @@ public static unsafe class EngineLayout
     /// Linux @0x67efc0 / Windows rva 0x1f6640) stores its two args to +0xb8 / +0xbc on both.</summary>
     public static readonly int GuiManVpW = Same("CGuiMan", "vpWidth", 0xb8);
     public static readonly int GuiManVpH = Same("CGuiMan", "vpHeight", 0xbc);
+    /// <summary>CGuiMan's tracked mouse position (int32 pair, engine GUI space: Y flipped), the point its own
+    /// press/wheel handlers hit-test. #451: <c>CGuiMan::HandleLMouseDown</c> reads +0xd4/+0xd8 on both builds.</summary>
+    public static readonly int GuiManMouseX = Same("CGuiMan", "mouseX", 0xd4);
+    public static readonly int GuiManMouseY = Same("CGuiMan", "mouseY", 0xd8);
 
     /// <summary>What to add to a vtable SYMBOL to reach slot 0. Itanium puts offset-to-top and the typeinfo
     /// pointer in front of the function pointers, so <c>_ZTV&lt;class&gt;</c> is two words short of the
