@@ -1079,7 +1079,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  weld {NormalWeld.Angle:F0}deg ({NormalWeld.Parts} parts, {NormalWeld.Welded} welded/{NormalWeld.Kept} kept/{NormalWeld.Refused} refused; newcomers only)  " +
         $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
         $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  blendprepass {(_blendPrepass ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
-        $"fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  " +
+        $"fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  hlglow {(RspShim.GlowReplay ? 1 : 0)}  " +
         // #336: the one number that says whether a fog cull has anything to cull -- the far plane Alloy
         // inherits from the engine VP, against the fog the shaders already fade to.
         $"[camfar {FrameInputs.CamFar:F0} fog {(FrameInputs.FogOn ? 1 : 0)} {FrameInputs.FogStart:F0}..{FrameInputs.FogEnd:F0}]";
@@ -1135,6 +1135,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "consts":   old = 0f; _log?.Info("AlloyRenderer: " + DescribeScriptables()); break;
             // Bitmask over CNWCAnimBase's five hilite channels; bit 3 is the VFX one, off by default.
             case "hlchan":   old = HlChannels; HlChannels = (int)v; break;
+            // #462: the Windows A/B. 0 skips the engine's DoHighlightGob replay; what is left on a Tab is the
+            // emissive/colour-shift fold alone (the outline is off there: QuickbarService stands down).
+            case "hlglow":   old = RspShim.GlowReplay ? 1f : 0f; RspShim.GlowReplay = v != 0f; break;
             // #330: the bounded chase's A/B -- 1 re-reads every engine term every frame AND audits what the
             // caches would have served (the poll-miss counters on the [alloy] line, which must read 0).
             case "poll":     old = _fullPoll ? 1f : 0f; _fullPoll = v != 0f; break;

@@ -429,6 +429,10 @@ internal static unsafe class RspShim
     /// @0x80eff0 -- and every path through that function ends at the same
     /// <c>AurPartTriggerSetHighlight(t, true, …, true)</c>, DM branch included. So the complement is always
     /// empty and the call would draw nothing.</para></summary>
+    /// <summary>#462: <c>/draw hlglow 0</c> skips the engine's <c>DoHighlightGob</c> replay (the trigger
+    /// stencil pass still runs), isolating the glow from the gob's emissive/colour-shift fold.</summary>
+    internal static bool GlowReplay = true;
+
     private static void EngineOverlays(IntPtr vptr, IntPtr scene)
     {
         // The custom-program LATCH, cleared before any engine draw issues again. Both funnels open with
@@ -446,7 +450,8 @@ internal static unsafe class RspShim
         // refused (no depth blit, program failure) still gets the full engine glow instead of nothing.
         bool ownedHighlight = AlloyRenderer.TakeHighlightDrawn();
         if (!WantsEngineOverlays || !PostChain.DefaultDepthOk) return;
-        if (!ownedHighlight) Vt(vptr, VtDoHighlightGob, scene);
+        if (!GlowReplay) { }
+        else if (!ownedHighlight) Vt(vptr, VtDoHighlightGob, scene);
         else GlowRemainder(vptr, scene);
         // The trigger highlight is a STENCIL pass and needs one: SetShadowStencilBuffer @0x460c30 is
         // ClearStencilValue(0x7f) + SetStencilMask(0xff) + Clear(4), so it clears whatever framebuffer is

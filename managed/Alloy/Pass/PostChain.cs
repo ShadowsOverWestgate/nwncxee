@@ -482,6 +482,17 @@ internal static unsafe class PostChain
         if (Gl.BlitFramebuffer == null || _depthTex == 0) return;
         int dst; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &dst);
         if (dst == 0) { DefaultDepthOk = RspShim.WantsEngineOverlays && BlitDepthToDefault(dstW, dstH); return; }
+        // #462: on Windows the frame lands in PresentTarget's texture, and HandBack blits the owned depth
+        // into the real default framebuffer after the bracket -- so this IS the default-target case, with the
+        // hand-back done by the engine context instead of here. Without this branch DefaultDepthOk never
+        // armed on Windows and the engine's highlight glow never drew there.
+        if (dst == PresentTarget.Fbo46)
+        {
+            if (_defaultOk == null) _defaultOk = DefaultFormat() != 0;
+            DefaultDepthOk = RspShim.WantsEngineOverlays && _defaultOk == true;
+            DefaultStencilOk = DefaultDepthOk && _defaultHasStencil;
+            return;
+        }
         DefaultDepthOk = false;   // an engine attachment: ResolveDepth's own hand-back, not the overlays'
         uint err = BlitDepthInto((uint)dst, dstW, dstH);
         if (err == 0) return;
