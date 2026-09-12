@@ -77,6 +77,12 @@ public sealed unsafe partial class AlloyRenderer
         _origRefreshHilite(animBase);
         if (animBase == IntPtr.Zero) return;
         IntPtr gob = *(IntPtr*)(animBase + AbGob);
+        // #456: the trace goes AHEAD of the early return, not after it. Sited below, "no [hldiag] lines at
+        // all" reads as "the hook never fired" when it may equally be "fired, published no gob" -- and on
+        // Windows those two have completely different causes. The engine's own body takes the same branch
+        // on a null here (win rva 0x966170: `mov rcx,[rcx+0xc8]` / `test rcx,rcx` / `je`), so a null is a
+        // legitimate state and the only way to tell them apart is to count the calls.
+        if (HlDiag) _log?.Info($"[hldiag] enter animBase={animBase:x} gob={gob:x}");
         if (gob == IntPtr.Zero) return;
         int win = -1;
         for (int c = 0; c < HiliteChannels && win < 0; c++)

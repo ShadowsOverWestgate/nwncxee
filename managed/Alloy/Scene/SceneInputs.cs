@@ -35,6 +35,8 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>How far ahead of the camera the map centre marches (<c>/shadow focusdist</c>).</summary>
     private static float _focusDist = FocusDistBoot;
     private static ExtenderLog? _log;
+    /// <summary>#456: the CAurBehavior layout probe's one-shot latch.</summary>
+    private static bool _probedBehavior;
     private static bool _enabled, _diag;
     /// <summary>#404: how far <see cref="FrameStart"/> runs, for one-restart bisection on radeonsi.
     /// 1 = light walk only, 2 = + focus, 3 = + cube bind, 4 = + caster bake (full). Boot only.</summary>
@@ -701,6 +703,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         if (host == IntPtr.Zero) return null;
         IntPtr vtbl = *(IntPtr*)host;
         if (vtbl == IntPtr.Zero) return null;
+        AlloyProbe.Once(ref _probedBehavior, "CAurBehavior", host, _log);
         var asFollow = (delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)((byte*)vtbl + BehaviorAsFollowVtbl));
         if (asFollow == null) return null;
         IntPtr behavior = asFollow(host);

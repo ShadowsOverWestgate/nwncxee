@@ -63,6 +63,21 @@ internal static unsafe class DanglyPhysics
     private static delegate* unmanaged<IntPtr, void> _genVelocity;
     private static delegate* unmanaged<IntPtr, float, void> _childAnimate;
     private static delegate* unmanaged<IntPtr, Vector3*, float, Vector3> _getWind;
+    /// <summary><c>Scene::GetWindVector</c> returns <c>Vector</c> BY VALUE, so it takes a hidden return
+    /// buffer -- and the two platforms put that buffer in different argument slots: Itanium
+    /// <c>(sret, this, ...)</c>, Win64 <c>(this, sret, ...)</c>. Measured, rva 0xc9b90:
+    /// <c>mov rcx,[rcx+0x160]</c> reads the Scene, <c>mov rbx,rdx</c> ... <c>mov rax,rbx</c> returns the
+    /// buffer that arrived in rdx. Same function, second declaration (#456).</summary>
+    private static delegate* unmanaged<IntPtr, Vector3*, Vector3*, float, void> _getWindWin;
+
+    /// <summary>The wind at <paramref name="pos"/>, through whichever order this platform uses.</summary>
+    private static Vector3 Wind(IntPtr scene, Vector3* pos, float dt)
+    {
+        if (!OperatingSystem.IsWindows()) return _getWind(scene, pos, dt);
+        Vector3 r = default;
+        _getWindWin(scene, &r, pos, dt);
+        return r;
+    }
     private static bool _armed;
 
     // The dials. All taste, all live, so all commands and none in sowx.cfg (ADR 0013).
@@ -124,6 +139,7 @@ internal static unsafe class DanglyPhysics
         _genVelocity = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.VertexPrimGenVelocity);
         _childAnimate = (delegate* unmanaged<IntPtr, float, void>)Native.Sym(SymbolMap.PartAnimate);
         _getWind = (delegate* unmanaged<IntPtr, Vector3*, float, Vector3>)Native.Sym(SymbolMap.SceneGetWindVector);
+        _getWindWin = (delegate* unmanaged<IntPtr, Vector3*, Vector3*, float, void>)_getWind;
 
         if (_pCurrentScene == null || _getWorld == null || _getPool == null || _getItemDyn == null
             || _commitItemDyn == null || _genVelocity == null || _childAnimate == null || _getWind == null)
@@ -287,7 +303,7 @@ internal static unsafe class DanglyPhysics
         // with vanilla's clamped dt. Not WindManager+0x20: the Scene's manager is default-constructed with a
         // ZERO base vector and nothing but the setglobalwind console command ever writes it, so every bit of
         // felt wind in normal play is the point-source term this call composes in.
-        Vector3 windW = _getWind(scene, &wpos, Math.Clamp(dt, MinChildDt, MaxChildDt));
+        Vector3 windW = Wind(scene, &wpos, Math.Clamp(dt, MinChildDt, MaxChildDt));
         if (!float.IsFinite(windW.X) || !float.IsFinite(windW.Y) || !float.IsFinite(windW.Z)) windW = Vector3.Zero;
         // The breeze wanders rather than blowing down a fixed axis -- a banner pinned to one compass
         // direction forever reads as a bug, and the wander is two trig calls per PART.

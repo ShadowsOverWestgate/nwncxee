@@ -93,16 +93,13 @@ internal static unsafe class RspShim
     private static readonly int SceneLightManager = EngineLayout.SceneLightManager,
                                SceneFocusPos = EngineLayout.SceneSkyPos;
 
-    /// <summary>A three-float value classified the way SysV classifies it -- xmm0 carries x and y, xmm1
-    /// carries z. Same reason <c>Particles.V3</c> exists: <c>Vector3</c>'s ABI is the runtime's to choose.</summary>
-    [StructLayout(LayoutKind.Sequential)]
-    private struct V3 { public float X, Y, Z; }
 
     private static ExtenderLog? _log;
+    /// <summary>#456: the LightManager layout probe's one-shot latch.</summary>
+    private static bool _probedLightMgr;
     private static bool _enabled;
     private static delegate* unmanaged<IntPtr, void> _skyBoxes;
     private static delegate* unmanaged<IntPtr, IntPtr, void> _collectLights;
-    private static delegate* unmanaged<V3, IntPtr, IntPtr, V3> _emitterLighting;
     private static IntPtr* _focusObject;
     private static float* _focusLighting;
     private static IntPtr* _vdoSlot, _vdoBottomSlot;
@@ -207,7 +204,7 @@ internal static unsafe class RspShim
 
         _skyBoxes = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.RenderSkyBoxes);
         _collectLights = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GobCollectLights);
-        _emitterLighting = (delegate* unmanaged<V3, IntPtr, IntPtr, V3>)Native.Sym(SymbolMap.GetEmitterLighting);
+        EmitterLighting.Resolve();
         _focusObject = (IntPtr*)Native.Sym(SymbolMap.SceneFocusObject);
         _focusLighting = (float*)Native.Sym(SymbolMap.FocusLighting);
         _fullDynamicLighting = (int*)Native.Sym(SymbolMap.FullDynamicLighting);
@@ -222,7 +219,7 @@ internal static unsafe class RspShim
         // place that knows which one. glBindFramebuffer is deliberately NOT here -- see Ready.
         string? missing = _skyBoxes == null ? SymbolMap.RenderSkyBoxes
                         : _collectLights == null ? SymbolMap.GobCollectLights
-                        : _emitterLighting == null ? SymbolMap.GetEmitterLighting
+                        : !EmitterLighting.Ready ? SymbolMap.GetEmitterLighting
                         : _focusObject == null ? SymbolMap.SceneFocusObject
                         : _focusLighting == null ? SymbolMap.FocusLighting
                         : _fullDynamicLighting == null ? SymbolMap.FullDynamicLighting
@@ -302,6 +299,9 @@ internal static unsafe class RspShim
         if (*_fullDynamicLighting != 0)
         {
             IntPtr lm = *(IntPtr*)(scene + SceneLightManager);
+            // #456: the EIGHTH VtblSlot class -- the ticket's list of seven missed it, and a slot Alloy
+            // calls every frame is exactly what the probe vocabulary reaches.
+            AlloyProbe.Once(ref _probedLightMgr, "LightManager", lm, _log);
             if (lm != IntPtr.Zero) Vt(*(IntPtr*)lm, VtEnableLights, lm);
         }
         InWindow = true;
@@ -359,6 +359,10 @@ internal static unsafe class RspShim
         Vt(vptr, VtRenderLensFlares, scene);   // flare occlusion fade
         InWindow = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        // #456: HERE and not one line earlier -- the bracket has closed, so this is the ENGINE's context and
+        // its framebuffer 0 is the one about to be presented. Everything the engine draws below (overlays,
+        // the 2D UI) then lands on top of the owned frame instead of beside it.
+        PresentTarget.HandBack();
         long s6 = Stopwatch.GetTimestamp(); _stepTicks[4] += s6 - s5;
         EngineOverlays(vptr, scene);
         Epilogue();
@@ -529,8 +533,8 @@ internal static unsafe class RspShim
         IntPtr* list = stackalloc IntPtr[2];
         list[0] = IntPtr.Zero; list[1] = IntPtr.Zero;
         _collectLights(focus, (IntPtr)list);
-        V3 result = _emitterLighting(*(V3*)(scene + SceneFocusPos),
-                                     *(IntPtr*)(scene + SceneLightManager), (IntPtr)list);
+        EmitterLighting.V3 result = EmitterLighting.At(*(EmitterLighting.V3*)(scene + SceneFocusPos),
+                                                       *(IntPtr*)(scene + SceneLightManager), (IntPtr)list);
         _focusLighting[0] = result.X; _focusLighting[1] = result.Y; _focusLighting[2] = result.Z;
         if (list[0] != IntPtr.Zero) NativeMemory.Free((void*)list[0]);
     }

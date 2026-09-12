@@ -331,6 +331,11 @@ internal static unsafe class PostChain
     /// self-consistent Alloy variant: encoding at the resolve would disagree with the engine, and not
     /// encoding would leave every Alloy surface a gamma dark beside it. Standing down is the honest
     /// answer, and it is re-asked per pass, so flipping the setting back recovers.</para></summary>
+    /// <summary>#456: the framebuffer the last composite wrote into -- 0 is the default framebuffer, which
+    /// is the case the Windows black frames are about. Published so the probe line can say whether a black
+    /// frame is a frame that went somewhere else or a frame that was lost.</summary>
+    internal static uint LastInto;
+
     internal static bool Precheck(int engFbo, int depthName, int* viewport)
     {
         // config hdr=0 is a deliberate setting and Attach already said so; it is not a refusal to report.
@@ -822,6 +827,7 @@ internal static unsafe class PostChain
         Gl.BindVertexArray(0);
         Armed = false;
         Resolves++;
+        LastInto = into;
     }
 
     /// <summary>The one term the [alloy] period line carries: did the resolve run, and how often. Resets the

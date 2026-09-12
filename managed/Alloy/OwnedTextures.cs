@@ -93,6 +93,8 @@ internal static unsafe class OwnedTextures
     /// allocate on a hot-adjacent path.</summary>
     private static readonly List<uint> _pending = new(1024);
     private static ExtenderLog? _log;
+    /// <summary>#456: the CAurTexture layout probe's one-shot latch.</summary>
+    private static bool _probedTex;
     private static bool _armed;
     /// <summary>Is the owned-texture path live? Read by the handle cache, which changes its invalidation
     /// discipline entirely on the answer (see <c>AlloyRenderer.WipeHandles</c>).</summary>
@@ -518,6 +520,8 @@ internal static unsafe class OwnedTextures
         // first run dedupe'd on the reference and drowned the queue (12612 dropped, 5 built): resolve to the
         // basic, and only an UNBUILT one is worth a slot. Tid() re-proves the pointer first (#138).
         if (AurTex.Tid(tex) != 0) return;
+        // #456: CAurTexture carries fourteen vtable-slot rows and this is the first place Alloy devirts one.
+        AlloyProbe.Once(ref _probedTex, "CAurTexture", tex, _log);
         IntPtr real = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)tex + AlloyCensus.TexVtblReferenced))(tex);
         if (real == IntPtr.Zero) real = tex;
         if (_nullTex != null && real == *_nullTex) return;

@@ -35,8 +35,13 @@ internal static unsafe class CycleTextures
 
     internal static bool Ready => _getController != null && _vtbl != IntPtr.Zero;
 
+    /// <summary>#456: the controller layout probe's one-shot latch, and the log it reports through.</summary>
+    private static bool _probedCtl;
+    private static ExtenderLog? _log;
+
     internal static void Attach(ExtenderLog log)
     {
+        _log = log;
         if (Ready) return;
         _getController = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.AurTextureGetController);
         IntPtr v = Native.Sym(SymbolMap.CycleTidControllerVtbl);
@@ -83,6 +88,7 @@ internal static unsafe class CycleTextures
                     if (_droppedN < Cap) _dropped[_droppedN++] = ctl;
                     continue;
                 }
+                AlloyProbe.Once(ref _probedCtl, "CycleTIDTextureController", ctl, _log);
                 int old = AurTex.Tid(r);
                 ((delegate* unmanaged<IntPtr, void>)*(IntPtr*)(*(IntPtr*)ctl + Sowx.Framework.EngineLayout.CycleControlSlot))(ctl);
                 if (AurTex.Tid(r) != old) { _dirty[_dirtyN++] = ctl; Steps++; }

@@ -83,14 +83,20 @@ public static unsafe class AurTex
     /// which is the wave field vanilla's water shader samples). Re-resolves every call and caches NOTHING:
     /// the pointer is borrowed and the engine frees it on an area transition. Cold-ish -- once per pass, not
     /// per part -- and allocates nothing (the name is marshalled on the stack).</summary>
-    public static int TidByName(string resref)
+    public static int TidByName(string resref) => Tid(FindByName(resref));
+
+    /// <summary>...and the CAurTexture the resman answered with, which is what a caller needs to ask the
+    /// object its own name (#456: Windows and Linux resolve <c>solid_noise</c> to different-looking
+    /// textures, and only the object can say whether that is a different RESOURCE or a different upload).
+    /// Borrowed, never cached -- the engine frees it on an area transition.</summary>
+    public static IntPtr FindByName(string resref)
     {
-        if (!Ready || _aurGet == null || resref.Length == 0) return 0;
+        if (!Ready || _aurGet == null || resref.Length == 0) return IntPtr.Zero;
         byte* name = stackalloc byte[17];   // 16 resref bytes + NUL
         int n = resref.Length < 16 ? resref.Length : 16;
         for (int i = 0; i < n; i++) name[i] = (byte)resref[i];
         name[n] = 0;
-        return Tid(_aurGet(name, IntPtr.Zero, null, null, 0, 0));
+        return _aurGet(name, IntPtr.Zero, null, null, 0, 0);
     }
 
     /// <summary>Is this pointer a live <c>CAurTextureBasic</c> specifically? <see cref="Live"/> admits both

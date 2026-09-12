@@ -150,6 +150,7 @@ internal static unsafe class SceneWalk
     internal static void Tick(IntPtr scene)
     {
         if (!Ready || scene == IntPtr.Zero) return;
+        AlloyProbe.Once(ref _probedScene, "Scene", scene, _log);
         WorldScene = AlloyRenderer.IsWorldScene(scene) ? scene : IntPtr.Zero;
         _framesSinceLog++;
         int seq = *_sequence;
@@ -180,6 +181,9 @@ internal static unsafe class SceneWalk
     }
 
     private static int _lastMiss, _sinceCheck;
+
+    /// <summary>#456: the first-sighting layout probes this file owns, one latch each.</summary>
+    private static bool _probedScene, _probedGob, _probedPart, _probedVp;
 
     /// <summary>#264: <c>SetupArrays</c> calls left this frame. It is the geometry upload for a part -- tangent
     /// basis, VDO item allocation, the pool write -- so a fresh area with nine thousand unbound records would
@@ -222,6 +226,7 @@ internal static unsafe class SceneWalk
             {
                 IntPtr gob = gobs[i];
                 if (gob == IntPtr.Zero) continue;
+                AlloyProbe.Once(ref _probedGob, "Gob", gob, _log);
                 // All THREE LOD roots, which is the whole point (see GobLodRoot1): Gob::SetLODModel rotates
                 // them with no notice of any kind, so enumerating only the active one would go stale the
                 // moment the camera crossed an LOD radius.
@@ -375,6 +380,10 @@ internal static unsafe class SceneWalk
     {
         IntPtr part = _pPart[e], vp = _pNode[e];
         if (vp == IntPtr.Zero) return false;
+        // #456: the two classes whose vtable slots this function devirts through, probed at the first record
+        // that carries both -- TryBind reads the VertexPrimitive fields and calls SetupArrays off its vtable.
+        AlloyProbe.Once(ref _probedPart, "Part", part, _log);
+        AlloyProbe.Once(ref _probedVp, "VertexPrimitive", vp, _log);
         bool wasBound = _pState[e] == StStale;   // only a formerly bound entry's failure is a change the delta must see
         IntPtr vdo = *(IntPtr*)(vp + VpVdo);
         int item = *(int*)(vp + VpItem);

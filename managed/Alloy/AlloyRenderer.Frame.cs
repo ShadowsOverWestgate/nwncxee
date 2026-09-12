@@ -74,6 +74,9 @@ public sealed unsafe partial class AlloyRenderer
         int engFbo = t.Fbo, colorType = t.ColorType, colorName = t.ColorName,
             depthType = t.DepthType, depthName = t.DepthName;
         bool srgb = t.Srgb;
+        // #456: sized to the DEFAULT framebuffer and only when the engine renders to it -- an engine FBO is
+        // a shared attachment and has never had this problem. Before any pass binds a target.
+        if (engFbo == 0) PresentTarget.Ensure(display[2], display[3], PostChain.DepthTex);
         float* engClear = stackalloc float[4] { t.Clear0, t.Clear1, t.Clear2, t.Clear3 };
         float engClearDepth = t.ClearDepth;
         // ...and the refusals that need no bracket at all, ahead of the preamble they would otherwise

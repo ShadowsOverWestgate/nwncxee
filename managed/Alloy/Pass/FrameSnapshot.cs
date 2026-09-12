@@ -98,7 +98,13 @@ internal static unsafe class FrameSnapshot
     }
 
     internal static string Describe()
-        => $"water {(On ? "on" : "off")} (vanilla fswater)  noise tid {_noiseTid} on unit {NoiseUnit}  rect {(Rect ? 1 : 0)} (last copy {LastRectFrac * 100f:F0}% of the frame)" +
+        // #456: the noise texture DESCRIBED, not just named. A bound-but-incomplete texture (a mipmapped
+        // min filter with no mips) samples as a constant, and a constant wave field is a flat sea -- which
+        // is indistinguishable from "bound and fine" if all the line prints is the id.
+        => $"water {(On ? "on" : "off")} (vanilla fswater)  noise tid {_noiseTid} on unit {NoiseUnit} "
+         + $"resolved=\"{_noiseName}\" {_noiseEng} "
+         + $"{(_noiseTid == 0 ? "" : TexProbe.TexFormat(_noiseTid) + " " + TexProbe.TexTopMip(_noiseTid) + " ")}"
+         + $"rect {(Rect ? 1 : 0)} (last copy {LastRectFrac * 100f:F0}% of the frame)" +
            (_diagLeft > 0 ? $"  DIAG {_diagLeft} left" : "");
 
     /// <summary>Live tuning behind <c>/water</c>; returns the old value, NaN for an unknown key. Same
@@ -277,7 +283,12 @@ internal static unsafe class FrameSnapshot
         // #339: re-resolved every bind and never cached -- a CAurTexture* is borrowed and the engine frees
         // it on an area transition (see AurTex). A miss binds nothing, which reads as a dead-flat sea rather
         // than as a wrong one, so it is logged once.
-        int noise = Sowx.Framework.AurTex.TidByName(NoiseResref);
+        // #456: the RESOLVED name, not the one we asked for. Windows returns a 512x350 RGBA texture where
+        // Linux returns 1024x1024 compressed, so the open question is whether the resman handed back a
+        // different RESOURCE or the same one built differently -- and only the object's own name says which.
+        IntPtr noisePtr = Sowx.Framework.AurTex.FindByName(NoiseResref);
+        int noise = Sowx.Framework.AurTex.Tid(noisePtr);
+        if (noise != _noiseTid) { _noiseName = AlloyCensus.TexName(noisePtr); _noiseEng = TexScan.Describe(noisePtr); }
         _noiseTid = noise;
         // A zero here is "not uploaded YET" as often as "not there": AurTextureGet's create path queues the
         // upload on the engine's RefreshTextures list, so the first bind after a load legitimately misses.
@@ -353,6 +364,10 @@ internal static unsafe class FrameSnapshot
     /// <summary>The GL id the noise texture last resolved to, on the <c>/water</c> line. Zero with water on
     /// screen is the whole diagnosis of a flat sea: no noise, no wave amplitude.</summary>
     private static int _noiseTid;
+    /// <summary>#456: what the resman actually handed back for <c>solid_noise</c>.</summary>
+    private static string _noiseName = "?";
+    /// <summary>The engine's own account of the noise texture, latched with the name (#456).</summary>
+    private static string _noiseEng = "eng=?";
 
     /// <summary>Size the copy pair to the pass. The DEPTH half is allocated from what the engine's own
     /// attachment reports rather than from a guess: <c>glBlitFramebuffer</c> requires the two depth formats

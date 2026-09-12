@@ -44,7 +44,8 @@ Windows leg (#48), cross-built on Linux -- no Windows box involved:
     ./run-proton.sh     # drops them beside bin/win32/nwmain.exe, runs it under Proton (throwaway prefix)
 
 Needs clang-cl/lld-link/llvm-lib and a Windows 10 SDK + MSVC lib tree (default: the mounted
-Windows partition; `SDK`/`MSVC` override). Alloy stands down on Windows (ServiceHost gate).
+Windows partition; `SDK`/`MSVC` override). Alloy renders on Windows too (#456); its Windows
+refusal, if any, is `EngineLayout.Require` -- an unresolved offset row anywhere stands it down.
 
 ## Tuning knobs (ADR 0013)
 
@@ -134,7 +135,10 @@ name a known ceiling + its upgrade path.
 - **Windows is a supported OS, not a follow-up.** A new hook or engine-memory read
   ships with its Windows resolution or it is not PR-ready: a symbol gets its `_win`
   entry (`Nm` for a name export, `At` for an anchored RVA), an offset gets a
-  `Diverges`/`Same` row in `EngineLayout`. Deliberately Linux-only work is allowed
+  `Diverges`/`Same` row in `EngineLayout`, and **a call that returns a class by value
+  gets its `sret` argument order** -- Itanium passes `(sret, this, ...)`, Win64 passes
+  `(this, sret, ...)`, so one order declared for both hands the engine your stack frame
+  as `this` (#456). `tools/abi/check-win-symbols.py` finds these; `build-win.sh` runs it. Deliberately Linux-only work is allowed
   and says so on its own line -- what is forbidden is the silent absence, where
   "never looked" and "decided" are the same missing key.
 - **Shaders for what shaders reach; extender for what they can't.** Lighting/color

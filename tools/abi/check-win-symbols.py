@@ -7,7 +7,7 @@ predate them) are not typos.
     tools/abi/check-win-symbols.py          # exit 1 on the first bad row
 Env: NWN_WIN_EXE overrides the default Steam path.
 """
-import os, pathlib, re, struct, sys
+import os, pathlib, re, struct, subprocess, sys
 
 EXE = os.environ.get("NWN_WIN_EXE",
     "~/gry/steam/Neverwinter Nights/bin/win32/nwmain.exe")
@@ -37,14 +37,72 @@ def pe_exports(path):
     return names, size
 
 
+# #456: a member function returning a class BY VALUE takes a hidden return buffer, and the two platforms
+# order it differently -- Itanium (sret, this, ...), Win64 (this, sret, ...). Declaring one order on both
+# hands the engine our own stack frame as `this`. The MSVC mangling is the only place that fact is written
+# down (Itanium drops the return type), so this is the only mechanical way to find these.
+#
+# INSTANCE members only: @@QEAA/@@AEAA/@@IEAA (and their const forms). A free (@@YA) or static (@@SA)
+# function puts sret first on BOTH platforms, so "fixing" one would be introducing the bug.
+INSTANCE = re.compile(r"@@[QAI]E[AB]A")
+
+# Each row here has had its argument order decided AT THE CALL SITE. Value = where to look.
+SRET_HANDLED = {
+    "GetEmitterLighting":      "managed/Alloy/Core/EmitterLighting.cs",
+    "SceneGetWindVector":      "managed/Alloy/Scene/DanglyPhysics.cs (Wind)",
+    "TlkGetSimpleString":      "managed/Services/CombatText/CombatTextNative.cs",
+    "GetServerNetworkAddress": "managed/Services/Perf/ServerPing.cs",
+}
+
+
+def demangle(mangled):
+    out = subprocess.run(["llvm-undname", mangled], capture_output=True, text=True).stdout.splitlines()
+    hit = [l.strip() for l in out if l.strip() and l.strip() != mangled]
+    return hit[-1] if hit else ""
+
+
+def returns_class_by_value(dem):
+    """True if the demangled signature returns a class/struct by value (not a pointer or reference)."""
+    if "__cdecl" not in dem:
+        return False
+    head = re.sub(r"^(public|private|protected):\s*", "", dem.split("__cdecl")[0].strip())
+    head = re.sub(r"^(virtual|static)\s+", "", head).strip()
+    return bool(re.match(r"^(class|struct)\s", head)) and not head.endswith(("*", "&"))
+
+
+def check_sret(rows):
+    """Every instance member returning a class by value must be in SRET_HANDLED."""
+    bad = 0
+    seen = set()
+    for key, mangled in rows:
+        if not INSTANCE.search(mangled):
+            continue
+        dem = demangle(mangled)
+        if not returns_class_by_value(dem):
+            continue
+        seen.add(key)
+        if key not in SRET_HANDLED:
+            print(f"UNHANDLED sret ORDER  {key}\n      {dem}\n"
+                  f"      Win64 passes (this, sret, ...); Itanium (sret, this, ...). Branch at the call\n"
+                  f"      site, then add {key!r} to SRET_HANDLED in this file.")
+            bad += 1
+    for key in SRET_HANDLED.keys() - seen:
+        print(f"STALE SRET_HANDLED  {key} no longer returns a class by value -- drop the entry")
+        bad += 1
+    print(f"{len(seen)} by-value-return row(s), {bad} bad")
+    return bad
+
+
 def main():
     names, size = pe_exports(EXE)
     body = re.search(r"Dictionary<string, Win> _win = new\(\)\s*\{(.*?)\n    \};", SRC.read_text(), re.S).group(1)
     bad = 0
     nm = at = 0
+    nm_rows = []
     for key, kind, arg in re.findall(r"\[(\w+)\]\s*=\s*(Nm|At)\((\"[^\"]+\"|0x[0-9a-fA-F]+)\)", body):
         if kind == "Nm":
             nm += 1
+            nm_rows.append((key, arg.strip('"')))
             if arg.strip('"') not in names:
                 print(f"MISSING EXPORT  {key} -> {arg}"); bad += 1
         else:
@@ -52,6 +110,7 @@ def main():
             if not 0 < int(arg, 16) < size:
                 print(f"RVA OUT OF IMAGE  {key} -> {arg}"); bad += 1
     print(f"{nm} Nm row(s), {at} At row(s), {bad} bad")
+    bad += check_sret(nm_rows)
     return 1 if bad else 0
 
 

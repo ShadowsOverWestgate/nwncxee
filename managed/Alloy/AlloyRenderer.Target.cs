@@ -194,7 +194,14 @@ public sealed unsafe partial class AlloyRenderer
     /// cheaper half of that trade.</para></summary>
     private static bool BindTarget(int engFbo, int colorType, int colorName, int depthType, int depthName)
     {
-        if (engFbo == 0) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); return true; }
+        // #456: "same drawable, shared" is true under GLX and FALSE under WGL -- measured, half the frames.
+        // Where a present texture exists, the 4.6 context writes that instead and the engine context blits
+        // it after the bracket (PresentTarget). Zero here means Linux, or a target that would not build.
+        if (engFbo == 0)
+        {
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, PresentTarget.Fbo46);
+            return true;
+        }
         if (_fbo46 == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo46 = f; }
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo46);
         Attach(Gl.COLOR_ATTACHMENT0, colorType, (uint)colorName);

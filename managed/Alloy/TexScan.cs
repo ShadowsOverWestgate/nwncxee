@@ -47,6 +47,16 @@ internal static unsafe class TexScan
         public bool Mips;
     }
 
+    /// <summary>What the ENGINE says this texture is, straight off its own virtuals -- the counterpart to
+    /// <see cref="TexProbe.TexFormat"/>, which says what GL holds. When the two disagree the upload is the
+    /// suspect; when they agree the resource is (#456).</summary>
+    internal static string Describe(IntPtr tex)
+    {
+        if (tex == IntPtr.Zero) return "eng=?";
+        return $"eng {I(tex, VtWidth)}x{I(tex, VtHeight)} bpp={I(tex, VtBpp)} cells={I(tex, VtNumX)}x{I(tex, VtNumY)} "
+             + $"cmp={I(tex, VtCompressed)} fmt={I(tex, VtFormat)} mips={I(tex, VtMipmaps) & 0xff} img={(P(tex, VtPixels) != IntPtr.Zero ? 1 : 0)}";
+    }
+
     private static IntPtr P(IntPtr t, int slot) => ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)t + slot)))(t);
     private static int I(IntPtr t, int slot) => ((delegate* unmanaged<IntPtr, int>)(*(IntPtr*)(*(IntPtr*)t + slot)))(t);
 

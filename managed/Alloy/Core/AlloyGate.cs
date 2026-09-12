@@ -52,6 +52,9 @@ internal static class AlloyGate
     private static string _decidedWhy = "";
     /// <summary>A failure taken after the decision froze on Alloy. Reported, never acted on.</summary>
     private static string _failed = "";
+    /// <summary>#456: does every engine offset Alloy reads carry a resolution for the platform we booted on?
+    /// Asked once at <see cref="Arm"/> -- the answer is a property of the build, not of the frame.</summary>
+    private static bool _layoutOk = true;
     private static ExtenderLog? _log;
 
     private const string NoModule = "no module is loaded";
@@ -112,6 +115,12 @@ internal static class AlloyGate
         // ahead of the capability block: an opt-out reported as "this device cannot" misdirects the report
         if (GlContextService.OptedOut)
         { why = "gl46=0 (or lockchat) in sowx.cfg"; return AlloyStand.Choice; }
+        // #456: the first capability term, and the only one answerable cold -- it is a fact about the binary,
+        // so it is asked ahead of everything that needs a warm client. Incapable rather than Choice: the
+        // player asked for nothing here.
+        if (!_layoutOk)
+        { why = "an engine offset Alloy reads has no resolution for this platform (docs/engine-layout.md)";
+          return AlloyStand.Incapable; }
         // ...and only now. EVERY opt-out above returns from Initialize before _armed is set, so asking
         // "never armed" ahead of them reports the mechanism instead of the request -- which is the ADR 0010
         // misdirection this chain exists to prevent.
@@ -184,6 +193,11 @@ internal static class AlloyGate
     internal static void Arm(ExtenderLog log)
     {
         _log = log;
+        // #456: the EMPTY class set -- every row in the table, not the classes Alloy names. An explicit list
+        // would be a second copy of the table that drifts. The consequence, said out loud because the next
+        // person to hit it will not be an Alloy dev: a future Unresolved row ANYWHERE, a 2D class included,
+        // stands Alloy down on Windows. Sound only because CLAUDE.md makes Unresolved a transient state.
+        _layoutOk = EngineLayout.Require(log, "Alloy");
         _optedOut = Settings.Bool(VanillaKey, false);
         log.Info(_optedOut
             ? $"[alloygate] {VanillaKey}=1 -- the engine renders everything this session ({VanillaKey}=0 in "
@@ -201,7 +215,9 @@ internal static class AlloyGate
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyGate.SelfCheck FAIL: {w}"); } }
 
         (bool optedOut, bool frozen, AlloyStand decided, string decidedWhy, string failed, AlloyStand stand,
-         string why) saved = (_optedOut, _frozen, _decided, _decidedWhy, _failed, _stand, _why);
+         string why, bool layoutOk) saved =
+            (_optedOut, _frozen, _decided, _decidedWhy, _failed, _stand, _why, _layoutOk);
+        _layoutOk = true;   // #456: the check drives Evaluate, and a real stand-down here is not its subject
         // Fail() speaks to the chatbox as well as the log, and the sink is independent of _log: without
         // this the check would put a fabricated failure notice on screen the moment service init order
         // happens to put a sink in place first.
@@ -237,7 +253,7 @@ internal static class AlloyGate
         }
         finally
         {
-            (_optedOut, _frozen, _decided, _decidedWhy, _failed, _stand, _why) = saved;
+            (_optedOut, _frozen, _decided, _decidedWhy, _failed, _stand, _why, _layoutOk) = saved;
             _log = quiet; Notice.Sink = sink;
         }
 

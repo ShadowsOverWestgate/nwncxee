@@ -920,6 +920,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #170: ahead of every stand-down, matching the host's unconditional calls. The verdict must
         // outlive a renderer that never armed -- /vanilla is the report it drives.
         AlloyGate.Arm(log);
+        PresentTarget.Attach(log);
         // #263: the config half of the verdict is the FIRST stand-down, ahead of every Attach and every
         // Install. Steps 4-7 replace engine paths rather than watching them -- Alloy performs the pool
         // upload, mints the texture handles, forces PLT compositing to the CPU -- so arming them in a
@@ -1626,6 +1627,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         ForgetTarget();
         DepthResource.Revoke();
         CullPass.ContextLost();
+        PresentTarget.ContextLost();   // #456: names only -- the images died with the context
     }
 
     /// <summary>Frame tick from the present (after the bucket walks). Module unload, a PartTable

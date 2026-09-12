@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using Sowx.Framework;
+using Sowx.Graphics;
 
 namespace Sowx.Ui;
 
@@ -52,6 +53,24 @@ public sealed unsafe class UiHostService : IExtenderService
     private static bool _announced;
     private const uint GlArrayBuffer = 0x8892;
 
+    /// <summary>#456: presents left to sample. Costs a pipeline stall each, so it is a knob that runs out.</summary>
+    private static int _presentProbe;
+
+    private static uint PresentPixel()
+    {
+        if (Gl.ReadPixels == null) return 0;
+        int* vp = stackalloc int[4];
+        Gl.GetIntegerv(Gl.VIEWPORT, vp);
+        if (vp[2] <= 16 || vp[3] <= 16) return 0;
+        uint px = 0;
+        int prev; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &prev);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        Gl.ReadPixels(vp[0] + vp[2] / 2, vp[1] + vp[3] / 2, 1, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, &px);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
+        for (int i = 0; i < 4 && Gl.GetError != null && Gl.GetError() != 0; i++) { }
+        return px;
+    }
+
     /// <summary>The frame present: announce once, run the frame phases, then present. The window roll-call
     /// itself happens earlier, at <see cref="OnNkRender"/>, so the windows land below NUI; it falls back to
     /// here only when that chain never installed. Hot (every frame) and zero-alloc.</summary>
@@ -62,6 +81,7 @@ public sealed unsafe class UiHostService : IExtenderService
         {
             _announced = true;
             _log?.Info("UiHostService: first frame presented -- hook is LIVE");
+            _presentProbe = Settings.Int("presentprobe", 0, 0, 200);
             int pin = Settings.Int("pin", -1, -1, 1023);
             if (pin >= 0) _log?.Info($"UiHostService: main thread pin={pin} -> {(Affinity.PinThis(pin) ? "pinned" : "REFUSED")} (was on cpu {Affinity.CurrentCpu})");
         }
@@ -82,6 +102,18 @@ public sealed unsafe class UiHostService : IExtenderService
         // #238: the present is its own zone. It is the discriminator the other brackets cannot supply --
         // a frame that spends its time HERE is waiting on the GPU or on vsync, which is a different problem
         // from every zone that measures our own CPU work.
+        // #456: the black-frame discriminator, and the only one that is free of the two-context question --
+        // this read is in the ENGINE's context, at the last instruction before the present, so what it sees
+        // IS what the swap is about to show. A bright value on a frame that displays black means the swap
+        // presented a buffer nobody drew; alternating values mean the frame was lost before it got here.
+        // Only in a module: the main menu presents for a minute before a save is loaded, and a budget spent
+        // there is 60 samples of a static background -- which is what the first run of this probe measured.
+        if (_presentProbe > 0 && GameGate.InModule)
+        {
+            _presentProbe--;
+            _log?.Always($"[presentprobe] fb0 centre before swap: 0x{PresentPixel():x8}"
+                       + $"  into={Sowx.Alloy.PostChain.LastInto} resolves={Sowx.Alloy.PostChain.Resolves}");
+        }
         long tSwap = FrameZones.Now;
         if (_swapOrig != null) _swapOrig(window); // present
         FrameZones.Add(FrameZones.Zone.Present, tSwap);

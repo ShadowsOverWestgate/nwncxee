@@ -58,6 +58,16 @@ if [ ! -f build/funchook.dll ]; then
   cp build/funchook-win/funchook.dll build/
 fi
 
+# #456: the Windows symbol gate runs BEFORE the build, not as a report nobody reads. It checks every Nm row
+# names a real export, every At row lands in the image, and -- the clause the #456 crash bought -- that every
+# instance member returning a class by value has had its (this, sret) argument order decided at the call site.
+if command -v llvm-undname >/dev/null 2>&1 && [ -f "${NWN_WIN_EXE:-~/gry/steam/Neverwinter Nights/bin/win32/nwmain.exe}" ]; then
+  echo ">> checking Windows symbol rows..."
+  ./tools/abi/check-win-symbols.py || { echo "!! symbol rows are wrong -- fix them before shipping a DLL" >&2; exit 1; }
+else
+  echo ">> skipping the symbol check (no llvm-undname, or no nwmain.exe to check against)" >&2
+fi
+
 echo ">> building sowx_managed.dll (NativeAOT win-x64, lld-link)..."
 SOWX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
 # CppLinker must be a global property: the ILCompiler targets reset it to `link` otherwise.

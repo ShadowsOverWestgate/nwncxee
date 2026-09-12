@@ -26,10 +26,11 @@ internal static unsafe class ServerPing
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
     private static readonly delegate* unmanaged<IntPtr, IntPtr> _getNetLayer =
         (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetNetLayer);
-    /// <summary>CNetLayer::GetServerNetworkAddress() returns by value: (CExoString* out, CNetLayer* this).
-    /// <para>Linux order. Unreachable on Windows today -- <c>GetNetLayer</c> is a declared hole, so the gate
-    /// below returns before this is called -- but whoever anchors it must swap the arguments: Win64 puts the
-    /// sret pointer AFTER <c>this</c> (#420), and the callee, not the caller, destroys the string.</para></summary>
+    /// <summary>CNetLayer::GetServerNetworkAddress() returns by value, so it takes a hidden return buffer:
+    /// Itanium orders it <c>(sret, this)</c>, Win64 <c>(this, sret)</c>.
+    /// <para>#456 swapped it rather than leaving the note: unreachable today (<c>GetNetLayer</c> is a
+    /// declared hole, so the gate below returns first), but "correct once someone anchors the symbol" is
+    /// cheaper written now than remembered later. The callee, not the caller, destroys the string.</para></summary>
     private static readonly delegate* unmanaged<IntPtr, IntPtr, void> _serverAddress =
         (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GetServerNetworkAddress);
     private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
@@ -62,7 +63,7 @@ internal static unsafe class ServerPing
 
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;   // the dtor below frees whatever buffer lands here
-        _serverAddress((IntPtr)exo, net);
+        if (OperatingSystem.IsWindows()) _serverAddress(net, (IntPtr)exo); else _serverAddress((IntPtr)exo, net);
         long ep = Parse(*(byte**)exo, (int)*(uint*)(exo + 8));
         _exoDtor((IntPtr)exo);
         return ep;

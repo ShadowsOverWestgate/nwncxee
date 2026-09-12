@@ -73,6 +73,11 @@ public sealed unsafe class GlContextService : IExtenderService
     private static delegate* unmanaged<IntPtr, uint, ulong, void> _waitSync;
     private static delegate* unmanaged<IntPtr, void> _deleteSync;
     private static delegate* unmanaged<void> _flush;
+    /// <summary>#456: the <c>glsync=1</c> ordering primitive. <c>glFinish</c> is the only barrier that is
+    /// unconditionally correct across two contexts sharing one drawable -- it returns when the commands have
+    /// actually EXECUTED, where the fence pair only promises the GPU will order them. Costs a full pipeline
+    /// stall per switch, so it is the diagnosis and, if it is also the cure, a decision to take deliberately.</summary>
+    private static delegate* unmanaged<void> _finish;
 
     private static int _frames, _err46, _errEng, _switchFails;
 
@@ -101,6 +106,18 @@ public sealed unsafe class GlContextService : IExtenderService
         _disabled = !Settings.Bool("gl46", true) || GameGate.Locked;
         OptedOut = _disabled;
         _debug = Settings.Bool("gldebug", false);
+        // #456: does the 4.6 context's DEFAULT FRAMEBUFFER address the same surface the engine presents?
+        // On GLX both contexts name one drawable and the question never arises. Under WGL the pairing is
+        // Wine's to make, and if the two contexts track their own back buffer against a shared chain, the
+        // owned frame lands in whichever one Alloy happens to hold -- half the presents, which reads as a
+        // black frame every other frame. One pixel read either side of the switch answers it; the read
+        // stalls the pipeline, so it is a knob and it stops on its own.
+        _swapProbe = Settings.Int("swapprobe", 0);
+        // #456: how the bracket orders the two contexts against one drawable. 0 = the fence pair
+        // (glFenceSync/glWaitSync, a GPU-side wait that costs nothing on the CPU). 1 = glFinish, which
+        // stalls until the work is done. If the black frames go away at 1, the frames were racing the
+        // present and the fence pair is not the barrier this drawable needs on this platform.
+        _syncMode = Settings.Int("glsync", 0, 0, 1);
         log.Info(_disabled
             ? "GlContextService: stood down (gl46=0 or lockchat in sowx.cfg)"
             : "GlContextService: armed -- 4.6 share-listed context on first presented frame");
@@ -182,6 +199,7 @@ public sealed unsafe class GlContextService : IExtenderService
         _waitSync = (delegate* unmanaged<IntPtr, uint, ulong, void>)GP("glWaitSync");
         _deleteSync = (delegate* unmanaged<IntPtr, void>)GP("glDeleteSync");
         _flush = (delegate* unmanaged<void>)GP("glFlush");
+        _finish = (delegate* unmanaged<void>)GP("glFinish");
         var getString = (delegate* unmanaged<uint, byte*>)GP("glGetString");
         if (_fenceSync == null || _waitSync == null || _deleteSync == null || _flush == null)
         { Fail("a GL entry point did not resolve"); return; }
@@ -287,28 +305,76 @@ public sealed unsafe class GlContextService : IExtenderService
     public static bool Enter()
     {
         if (!Available) return false;
-        IntPtr fIn = _fenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        _flush();
-        if (MakeCur(Context) == 0) { _switchFails++; if (fIn != IntPtr.Zero) _deleteSync(fIn); return false; }
-        if (fIn != IntPtr.Zero) { _waitSync(fIn, 0, TimeoutIgnored); _deleteSync(fIn); }
+        // Latch the probe pixel here, in the ENGINE context, where the viewport is the window.
+        if (_swapProbe > 0 && GameGate.InModule)
+        {
+            int* vp = stackalloc int[4];
+            Gl.GetIntegerv(Gl.VIEWPORT, vp);
+            if (vp[2] > 16 && vp[3] > 16) { _probeX = vp[0] + vp[2] / 2; _probeY = vp[1] + vp[3] / 2; }
+        }
+        if (_syncMode == 1)
+        {
+            if (_finish != null) _finish();
+            if (MakeCur(Context) == 0) { _switchFails++; return false; }
+        }
+        else
+        {
+            IntPtr fIn = _fenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+            _flush();
+            if (MakeCur(Context) == 0) { _switchFails++; if (fIn != IntPtr.Zero) _deleteSync(fIn); return false; }
+            if (fIn != IntPtr.Zero) { _waitSync(fIn, 0, TimeoutIgnored); _deleteSync(fIn); }
+        }
         if (!_stamped) { _span.LastMs = -1; _stamped = _span.Begin(); if (_span.LastMs >= 0) FrameZones.Gpu(_span.LastMs, GpuStamp.Age); }
         return true;
     }
 
     /// <summary>Close the bracket: drain glGetError on the 4.6 side (an error can never leak across the
     /// boundary unnoticed), fence, switch back to the engine context, server-wait, drain again.</summary>
+    /// <summary>#456: frames of <c>swapprobe</c> left. The probe reads the SAME pixel of framebuffer 0 twice
+    /// -- once in the 4.6 context, once in the engine's, with nothing drawn between -- so a difference is
+    /// the two contexts disagreeing about what framebuffer 0 IS, and nothing else.</summary>
+    private static int _swapProbe;
+    private static int _syncMode;
+
+    /// <summary>The pixel both sides read, in WINDOW coordinates, latched in <see cref="Enter"/> from the
+    /// engine context. It must not come from the current viewport: <see cref="Leave"/> also closes the
+    /// shadow-bake bracket, whose viewport is a shadow map, and "the centre of the viewport" is then a
+    /// different pixel on each side of the switch -- which is a probe that reports a difference it created.</summary>
+    private static int _probeX, _probeY;
+
+    private static uint ProbeCentrePixel()
+    {
+        if (Gl.ReadPixels == null) return 0;
+        uint px = 0;
+        int prev; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &prev);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        Gl.ReadPixels(_probeX, _probeY, 1, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, &px);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
+        for (int i = 0; i < 4 && Gl.GetError != null && Gl.GetError() != 0; i++) { }
+        return px;
+    }
+
     public static void Leave()
     {
         int guard = 0;
         while (Gl.GetError() != 0 && ++guard < 16) _err46++;
         if (_stamped) _span.End();
 
-        IntPtr fOut = _fenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        _flush();
+        // Read BEFORE the switch, with the owned frame's resolve already in framebuffer 0. glReadPixels is
+        // itself the sync -- it cannot return pixels the queue has not produced -- so no explicit finish.
+        uint alloySide = 0;
+        if (_swapProbe > 0 && GameGate.InModule)
+        {
+            alloySide = ProbeCentrePixel();
+        }
+
+        IntPtr fOut = IntPtr.Zero;
+        if (_syncMode == 1) { if (_finish != null) _finish(); }
+        else { fOut = _fenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0); _flush(); }
         if (MakeCur(_engCtx) == 0)
         {
             // cannot leave the engine on the wrong context -- disable rather than risk the present
-            Fail("glXMakeCurrent back to engine context refused");
+            Fail("MakeCurrent back to the engine context refused");
             return;
         }
         if (fOut != IntPtr.Zero) { _waitSync(fOut, 0, TimeoutIgnored); _deleteSync(fOut); }
@@ -316,6 +382,12 @@ public sealed unsafe class GlContextService : IExtenderService
         while (Gl.GetError() != 0 && ++guard < 16) _errEng++;
         _worked = true;
 
+        if (_swapProbe > 0 && GameGate.InModule)
+        {
+            _swapProbe--;
+            _log?.Always($"[swapprobe] fb0 centre: 4.6 ctx 0x{alloySide:x8}, engine ctx 0x{ProbeCentrePixel():x8}"
+                       + " -- equal means one surface, different means two");
+        }
         if (++_frames >= LogEvery)
         {
             _log?.Info($"GlContextService: [gl46] {_frames} brackets (>= 1/frame; +1 per Alloy pass), " +

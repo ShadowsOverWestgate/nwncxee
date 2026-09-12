@@ -13,13 +13,6 @@ public static class ServiceHost
     // whole (TrimmerRootAssembly), so no service type or its ctor is ever removed.
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Assembly is rooted; nothing trimmed.")]
     [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "Assembly is rooted; parameterless ctors preserved.")]
-    /// <summary>#48: Alloy is Linux-only. It stands down on Windows HERE, by an explicit gate, never by
-    /// <c>SymbolMap._win</c> omission: its whole symbol surface is name-exported on Windows, so a table fill
-    /// would arm 530 struct offsets read from the Linux binary. #455: the 4.6 context service is no longer
-    /// with it -- it has a WGL path and verifies on Windows with Alloy still down.</summary>
-    private static bool LinuxOnly(Type t) =>
-        t.Namespace?.StartsWith("Sowx.Alloy", StringComparison.Ordinal) == true;
-
     public static void Run()
     {
         var log = new ExtenderLog();
@@ -60,11 +53,12 @@ public static class ServiceHost
             .Where(t => typeof(IExtenderService).IsAssignableFrom(t)
                         && t is { IsAbstract: false, IsInterface: false })
             .OrderBy(t => t.Name)
-            .Where(t => !OperatingSystem.IsWindows() || !LinuxOnly(t))
             .Select(t => (IExtenderService)Activator.CreateInstance(t)!)
             .ToList();
 
-        log.Info($"host: {all.Count} service(s) discovered" + (OperatingSystem.IsWindows() ? " (Alloy stood down: Windows, #48)" : ""));
+        // #456: nothing is filtered here any more. Alloy was the last Linux-only namespace and it came off
+        // with the stand-down lift; its Windows refusal, if any, is EngineLayout.Require inside AlloyGate.
+        log.Info($"host: {all.Count} service(s) discovered");
         // Shared engine accessors, before any service can reach for one. AurTex is the only real init-time
         // dependency in this host so far -- four services call it and none of them owns it.
         AurTex.Attach(log);

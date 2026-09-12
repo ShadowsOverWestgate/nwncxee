@@ -371,7 +371,6 @@ internal static unsafe class Particles
     private const int EngTexStages = 16;
     private static delegate* unmanaged<IntPtr, float> _tileAlpha, _gobAlpha;
     private static delegate* unmanaged<IntPtr, byte> _isSplat, _isTinted;
-    private static delegate* unmanaged<V3, IntPtr, int, V3> _emitterLight;
     private static IntPtr* _currentScene, _currentCamera;
     private static byte* _stacks;
 
@@ -523,13 +522,6 @@ internal static unsafe class Particles
     /// particle arrays whose emitters the unload freed.</summary>
     private static IntPtr _scene;
 
-    /// <summary>A three-float value passed and returned the way SysV classifies it: xmm0 carries x and y,
-    /// xmm1 carries z. <see cref="SymbolMap.GetEmitterLighting"/> documents why this is spelled out rather
-    /// than borrowed from <see cref="Vector3"/>, whose ABI the runtime is free to treat as a hardware vector.
-    /// </summary>
-    [StructLayout(LayoutKind.Sequential)]
-    private struct V3 { public float X, Y, Z; }
-
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
@@ -548,13 +540,13 @@ internal static unsafe class Particles
         _gobAlpha = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.EmitterGetGobAlpha);
         _isSplat = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.EmitterIsSplat);
         _isTinted = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.EmitterIsTinted);
-        _emitterLight = (delegate* unmanaged<V3, IntPtr, int, V3>)Native.Sym(SymbolMap.GetEmitterLighting);
+        EmitterLighting.Resolve();
         _currentScene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
         _currentCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
         _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
 
         if (_getTexture == null || _bindInUnit == null || _tileAlpha == null || _gobAlpha == null || _isSplat == null
-            || _isTinted == null || _emitterLight == null || _currentScene == null
+            || _isTinted == null || !EmitterLighting.Ready || _currentScene == null
             || _currentCamera == null || _stacks == null || !AurTex.Ready)
         {
             _off = true;
@@ -1100,7 +1092,7 @@ internal static unsafe class Particles
         Vector3 cStart = *(Vector3*)(em + EmColorStart), cEnd = *(Vector3*)(em + EmColorEnd);
         if (tinted)
         {
-            V3 wp = *(V3*)(em + EmPos);
+            EmitterLighting.V3 wp = *(EmitterLighting.V3*)(em + EmPos);
             IntPtr scene = *_currentScene;
             IntPtr lights = scene != IntPtr.Zero ? *(IntPtr*)(scene + SceneLights) : IntPtr.Zero;
             // The engine does not null-check the list because at its call site there always is one. Ours
@@ -1108,7 +1100,7 @@ internal static unsafe class Particles
             // unconditionally, so a null would be a wild read rather than a black tint.
             if (lights != IntPtr.Zero)
             {
-                V3 t = _emitterLight(wp, lights, 0);
+                EmitterLighting.V3 t = EmitterLighting.At(wp, lights, IntPtr.Zero);
                 cStart = new Vector3(cStart.X * t.X, cStart.Y * t.Y, cStart.Z * t.Z);
                 cEnd = new Vector3(cEnd.X * t.X, cEnd.Y * t.Y, cEnd.Z * t.Z);
             }
