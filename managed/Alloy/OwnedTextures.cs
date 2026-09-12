@@ -122,6 +122,9 @@ internal static unsafe class OwnedTextures
     {
         _log = log;
         _hash = (delegate* unmanaged<IntPtr, short, int*, int>)Native.Sym(SymbolMap.AurTextureCalcHash);
+        _engBoundTex = (uint*)Native.Sym(SymbolMap.GlBoundTextures);
+        if (_engBoundTex == null)
+            log.Info("OwnedTextures: GLRender::m_boundTextures unresolved -- a name that dies outside the engine's DeleteTextures leaves its bind cache stale (#461)");
         // #284: resolved whatever `ownedtex` says. A texture with no GL id is a hole in the owned draw under
         // either key -- the retry is about the ENGINE's build having never run, not about who owns the copy.
         _buildAndStore = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.AurTextureBuildAndStore);
@@ -195,7 +198,7 @@ internal static unsafe class OwnedTextures
         // ADR 0023: the build itself, so a warm resource skips the read, the decode and the upload.
         _origBuildAndStoreTexture = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.AurTextureBuildAndStoreTexture, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnBuildAndStoreTexture);
-        _znam = (delegate* unmanaged<nuint, IntPtr>)Native.Sym("_Znam");   // the engine's operator new[]: Reset frees the cell array with delete[]
+        _znam = (delegate* unmanaged<nuint, IntPtr>)Native.Sym(SymbolMap.OperatorNewArray);
         log.Info(_origBuildAndStoreTexture != null && _znam != null
             ? $"OwnedTextures: watching CAurTextureBasic::BuildAndStoreTexture -- a resident texture is handed back without a read, decode or upload (texcache_mb {(_budgetCfgMb < 0 ? "auto" : _budgetCfgMb.ToString())})"
             : "OwnedTextures: BuildAndStoreTexture not hooked or operator new[] unresolved -- textures are kept across the world edge but every build is cold");
@@ -335,6 +338,23 @@ internal static unsafe class OwnedTextures
     /// de-atlases into one GL texture per cell.</summary>
     private static readonly int OffNumX = EngineLayout.TexBasicNumX, OffNumY = EngineLayout.TexBasicNumY;
 
+    /// <summary><c>GLRender::m_boundTextures</c>: 16 <c>{target, name}</c> entries the engine's cache-checked
+    /// binds early-out on. #461: <c>GLRender::DeleteTextures</c> zeroes the entry naming a deleted texture on
+    /// BOTH platforms, so a name that dies without passing through it -- Alloy's raw delete in
+    /// <see cref="Adopt"/>, or one <see cref="FilterRetire"/> withholds -- leaves the engine believing it is
+    /// still bound. The driver reissues the name, the engine's bind of it is skipped, and its next
+    /// <c>DirectCreateTexture</c> re-specifies level 0 of whatever is REALLY bound: the water noise.</summary>
+    private static uint* _engBoundTex;
+    private const int EngTexStages = 16;
+
+    /// <summary>What the engine's own DeleteTextures would have done with this name. Cold; 16 compares.</summary>
+    private static void ScrubEngineBoundCache(uint name)
+    {
+        if (_engBoundTex == null) return;
+        for (int i = 0; i < EngTexStages; i++)
+            if (_engBoundTex[i * 2 + 1] == name) _engBoundTex[i * 2 + 1] = 0;
+    }
+
     /// <summary>The engine is about to upload cell <paramref name="cell"/> of <paramref name="tex"/> into the
     /// GL name it has bound. Let that happen, then do it again into a texture of ours.
     /// <para>Cold -- once per texture per (re)build, never per frame -- so the allocations a Dictionary
@@ -424,7 +444,7 @@ internal static unsafe class OwnedTextures
             cells[cell] = dst;
             if (cell == 0) *(int*)((byte*)tex + OffGlId) = (int)dst;
             uint old = (uint)etid;
-            if (!_owned.Contains(old) && Gl.DeleteTextures != null) Gl.DeleteTextures(1, &old);
+            if (!_owned.Contains(old) && Gl.DeleteTextures != null) { Gl.DeleteTextures(1, &old); ScrubEngineBoundCache(old); }
             else _engineHeld.Remove(old);   // a refresh INTO our name: the engine will never return the old one, so Discard deletes it
             _engineHeld.Add(dst);
             _borrowed.Remove(etid);
@@ -1434,7 +1454,7 @@ internal static unsafe class OwnedTextures
             uint name = names[i];
             _engineHeld.Remove(name);
             bool ours = _owned.Contains(name);
-            if (ours) { kept++; _cacheKept++; }   // the GL name survives; only its INDEX entry retires below
+            if (ours) { kept++; _cacheKept++; ScrubEngineBoundCache(name); }   // the GL name survives; only its INDEX entry retires below -- and the engine's cache must not say it is bound (#461)
             else
             {
                 if (pass != null) pass[passN] = name;

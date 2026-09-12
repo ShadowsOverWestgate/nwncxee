@@ -390,6 +390,12 @@ internal static unsafe class SymbolMap
     /// for the same reason and on the same terms as <see cref="AurTextureConstructImage"/>.
     /// <para>ABI: <c>(CAurTextureBasic* /*rdi*/, bool useSubImage /*sil*/)</c>, no return.</para></summary>
     public const string AurTextureGlImageBasic = "_ZN16CAurTextureBasic12glImageBasicEb";
+    /// <summary>The engine's <c>operator new[]</c> -- what ADR 0023's warm hand-back allocates the cell-name
+    /// array with, because <c>CAurTextureBasic::Reset</c> frees it with the engine's <c>delete[]</c>. #461:
+    /// Windows resolves it to the exported <c>MaxTree::operator new</c> @0x8a060, which is <c>_malloc_base</c>
+    /// on the same statically linked UCRT heap that <c>Reset</c>'s <c>_free_base</c> @0xc10370 returns to.
+    /// Unresolved here meant every Windows build was cold, which is the churn behind #461.</summary>
+    public const string OperatorNewArray = "_Znam";
 
     // ---- shadow replacement (#65). Linux-only; no _win entries -> skip-with-log on Windows. ----
     // The three self-contained shadow sub-passes Scene::RenderShadows dispatches. No-op'ing these
@@ -1226,6 +1232,7 @@ internal static unsafe class SymbolMap
         [AurTextureConstructImage] = Nm("?ConstructImage@CAurTextureBasic@@QEAAXXZ"),
         [AurTextureGetController] = Nm("?AurTextureGetController@@YAPEAVTextureController@@PEAVCAurTexture@@@Z"),
         [AurTextureGlImageBasic] = Nm("?glImageBasic@CAurTextureBasic@@QEAAH_N@Z"),
+        [OperatorNewArray] = Nm("??2MaxTree@@SAPEAX_K@Z"),
         [AurTextureNullPtr] = Nm("?m_pNullTexture@CAurTextureBasic@@2V?$SafePointer@VCAurTexture@@@@A"),
         [BinBucket] = Nm("?binbucket@@3V?$List@PEAVCAurTriangleBin@@@@A"),
         [CapBuckets] = Nm("?capbuckets@@3PAVBucket@@A"),
