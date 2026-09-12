@@ -6,7 +6,7 @@ using Sowx.Graphics;
 
 namespace Sowx.Alloy;
 
-/// <summary>#173: FRAMEBUFFER PLUMBING. Mirroring the engine's draw target into the owned 4.6 context (framebuffer objects do not share across contexts; their attachments do) and reporting what it was made of.</summary>
+/// <summary>#173/#467: FRAMEBUFFER PLUMBING. The engine's target is the default framebuffer by construction (the shim binds FBO 0 at the anchor); this latches its viewport, sRGB state and clear values, and binds the 4.6-side equivalent.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>#257: where the engine wants this frame's result. Every field is a GL query answer, latched
@@ -14,7 +14,6 @@ public sealed unsafe partial class AlloyRenderer
     private struct Target
     {
         internal int Vp0, Vp1, Vp2, Vp3;
-        internal int Fbo, ColorType, ColorName, DepthType, DepthName;
         internal bool Srgb;
         internal float Clear0, Clear1, Clear2, Clear3, ClearDepth;
     }
@@ -49,19 +48,17 @@ public sealed unsafe partial class AlloyRenderer
             ReadTarget(out _target);
             // #458: the shim binds FBO 0 before the anchor, so there is no engine name here to go stale.
             _tgtValid = true;
-            FboTopology(in _target);
         }
         else if (_frameSeq % LogEvery == 0)
         {
             ReadTarget(out Target now);
             if (!Same(in now, in _target))
             {
-                _log?.Info($"AlloyRenderer: target self-check DRIFT -- latched fbo {_target.Fbo} vp " +
-                           $"{_target.Vp2}x{_target.Vp3} srgb {_target.Srgb}, GL says fbo {now.Fbo} vp " +
+                _log?.Info($"AlloyRenderer: target self-check DRIFT -- latched vp " +
+                           $"{_target.Vp2}x{_target.Vp3} srgb {_target.Srgb}, GL says vp " +
                            $"{now.Vp2}x{now.Vp3} srgb {now.Srgb}; adopting the live answer. The latch " +
                            "generation key is missing an edge.");
                 _target = now;
-                FboTopology(in _target);
             }
         }
         // The clear values are NOT latched, and the reason is the one #257 kept verbatim: a GL share list
@@ -73,12 +70,9 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     private static bool Same(in Target a, in Target b)
-        => a.Vp0 == b.Vp0 && a.Vp1 == b.Vp1 && a.Vp2 == b.Vp2 && a.Vp3 == b.Vp3
-        && a.Fbo == b.Fbo && a.ColorType == b.ColorType && a.ColorName == b.ColorName
-        && a.DepthType == b.DepthType && a.DepthName == b.DepthName && a.Srgb == b.Srgb;
+        => a.Vp0 == b.Vp0 && a.Vp1 == b.Vp1 && a.Vp2 == b.Vp2 && a.Vp3 == b.Vp3 && a.Srgb == b.Srgb;
 
-    /// <summary>Where the engine wants the result: viewport, framebuffer, its attachments and the sRGB
-    /// encode state. Alloy draws in its own share-listed 4.6 context (GlContextService), so it cannot
+    /// <summary>Where the engine wants the result: viewport and the sRGB encode state. Alloy draws in its own share-listed 4.6 context (GlContextService), so it cannot
     /// desync GLRender's state and has nothing to restore -- it still has to be TOLD this much.</summary>
     private static void ReadTarget(out Target t)
     {
@@ -86,16 +80,6 @@ public sealed unsafe partial class AlloyRenderer
         int* vp = stackalloc int[4];
         Gl.GetIntegerv(Gl.VIEWPORT, vp);
         t.Vp0 = vp[0]; t.Vp1 = vp[1]; t.Vp2 = vp[2]; t.Vp3 = vp[3];
-        int fbo; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &fbo);
-        t.Fbo = fbo;
-        if (fbo != 0)
-        {
-            int v;
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &v); t.ColorType = v;
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &v); t.ColorName = v;
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &v); t.DepthType = v;
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &v); t.DepthName = v;
-        }
         t.Srgb = Gl.IsEnabled(Gl.FRAMEBUFFER_SRGB) != 0;
         ReadClear(ref t);
     }
@@ -112,49 +96,6 @@ public sealed unsafe partial class AlloyRenderer
         t.Clear0 = c[0]; t.Clear1 = c[1]; t.Clear2 = c[2]; t.Clear3 = c[3];
         float d; Gl.GetFloatv(Gl.DEPTH_CLEAR_VALUE, &d); t.ClearDepth = d;
     }
-
-    /// <summary>#151: settle the AA question with the actual FBO topology. The user sees "MSAA on" in the
-    /// game options while the Alloy frame draws into PostChain's single-sample RGBA16F target -- whether the
-    /// ENGINE's world FBO is itself multisampled here decides where anti-aliasing has to be put back. Runs
-    /// only when the latch is (re-)taken, and capped, so a ping-ponging engine cannot spam the log.</summary>
-    private static void FboTopology(in Target t)
-    {
-        int sig = t.Fbo ^ t.ColorName << 8 ^ t.DepthName << 16 ^ t.ColorType << 24 ^ t.DepthType << 28;
-        if (t.Fbo == 0 || sig == _fboDiagSig || _fboDiagLeft <= 0) return;
-        _fboDiagSig = sig;
-        _fboDiagLeft--;
-        int cs = AttachmentSamples(t.ColorType, t.ColorName), ds = AttachmentSamples(t.DepthType, t.DepthName);
-        int ctxSamples = 0; Gl.GetIntegerv(Gl.SAMPLES, &ctxSamples);
-        _log?.Info($"AlloyRenderer: FBO topology -- engine fbo {t.Fbo}, colour {TypeName(t.ColorType)} " +
-                   $"{t.ColorName} ({cs}x), depth {TypeName(t.DepthType)} {t.DepthName} ({ds}x), " +
-                   $"GL_SAMPLES here {ctxSamples}; the Alloy HDR target is 1x by construction, so owned " +
-                   $"passes are anti-aliased only if the engine attachment they END UP in is multisampled");
-    }
-
-    /// <summary>Sample count of an existing FBO attachment, by its reported object type; 1 = single-sampled
-    /// (or unqueryable, which for this diagnostic reads the same).</summary>
-    private static int AttachmentSamples(int type, int name)
-    {
-        int n = 0;
-        if (type == (int)Gl.RENDERBUFFER && Gl.GetRenderbufferParameteriv != null && name != 0)
-        {
-            int prev; Gl.GetIntegerv(Gl.RENDERBUFFER_BINDING, &prev);
-            Gl.BindRenderbuffer(Gl.RENDERBUFFER, (uint)name);
-            Gl.GetRenderbufferParameteriv(Gl.RENDERBUFFER, Gl.RENDERBUFFER_SAMPLES, &n);
-            Gl.BindRenderbuffer(Gl.RENDERBUFFER, (uint)prev);
-        }
-        else if (type == (int)Gl.ATTACHMENT_TEXTURE && Gl.GetTexLevelParameteriv != null && name != 0)
-        {
-            // asking TEXTURE_2D_MULTISAMPLE about a plain TEXTURE_2D raises GL_INVALID_OPERATION and writes
-            // nothing, which leaves n = 0 -> reported as 1x. Drained here, or it counts on the [gl46] line.
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D_MULTISAMPLE, 0, Gl.TEXTURE_SAMPLES, &n);
-            for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
-        }
-        return n <= 0 ? 1 : n;
-    }
-
-    internal static string TypeName(int type)
-        => type == (int)Gl.RENDERBUFFER ? "renderbuffer" : type == (int)Gl.ATTACHMENT_TEXTURE ? "texture" : $"type 0x{type:x}";
 
     /// <summary>#375: the target block the colour pass was ENTERED with, copied at the top of the pass. A
     /// second <see cref="ThisFrameTarget"/> call mid-pass is not a read of the same answer: on a self-check
@@ -173,48 +114,12 @@ public sealed unsafe partial class AlloyRenderer
     internal static void RebindFrameTarget()
     {
         ref Target t = ref _passTarget;
-        BindTarget(t.Fbo, t.ColorType, t.ColorName, t.DepthType, t.DepthName);
+        BindTarget();
         if (t.Srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
     }
 
-    /// <summary>Bind the 4.6-side draw target: default framebuffer when the engine draws to 0 (same
-    /// drawable, shared), else a mirror FBO over the engine FBO's attachments (textures/renderbuffers
-    /// share; FBO containers do not). Incomplete mirror = clean skip, and since #264 that means the 3D world does not draw at all.
-    /// <para>Re-attached and re-checked EVERY pass rather than cached on attachment name/type. GL reuses
-    /// freed object names, and an FBO attachment references the object, not the name -- so when the engine
-    /// recreates its render targets (focus loss / alt-tab / workspace switch reruns its device reset) the
-    /// names can come back identical while our attachments still point at destroyed objects. Cached, that
-    /// reads as "unchanged, still complete" and we draw into a dead target forever while still stamping the
-    /// parts as drawn, so the walk suppresses geometry nobody rendered. Three GL calls per pass is the
-    /// cheaper half of that trade.</para></summary>
-    private static bool BindTarget(int engFbo, int colorType, int colorName, int depthType, int depthName)
-    {
-        // #456: "same drawable, shared" is true under GLX and FALSE under WGL -- measured, half the frames.
-        // Where a present texture exists, the 4.6 context writes that instead and the engine context blits
-        // it after the bracket (PresentTarget). Zero here means Linux, or a target that would not build.
-        if (engFbo == 0)
-        {
-            Gl.BindFramebuffer(Gl.FRAMEBUFFER, PresentTarget.Fbo46);
-            return true;
-        }
-        if (_fbo46 == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo46 = f; }
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo46);
-        Attach(Gl.COLOR_ATTACHMENT0, colorType, (uint)colorName);
-        Attach(Gl.DEPTH_ATTACHMENT, depthType, (uint)depthName);
-        bool bad = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE;
-        if (bad != _mirrorBad)
-        {
-            _mirrorBad = bad;
-            _log?.Info(bad
-                ? "AlloyRenderer: engine-FBO mirror incomplete -- Alloy draws skipped, so the 3D world is NOT DRAWN"
-                : "AlloyRenderer: engine-FBO mirror complete again -- Alloy draws resumed");
-        }
-        return !bad;
-    }
-
-    private static void Attach(uint attachment, int type, uint name)
-    {
-        if (type == (int)Gl.RENDERBUFFER) Gl.FramebufferRenderbuffer(Gl.FRAMEBUFFER, attachment, Gl.RENDERBUFFER, name);
-        else Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, attachment, Gl.TEXTURE_2D, name, 0);
-    }
+    /// <summary>Bind the 4.6-side draw target. #456: "same drawable, shared" is true under GLX and FALSE
+    /// under WGL -- where a present texture exists, the 4.6 context writes that instead and the engine
+    /// context blits it after the bracket (PresentTarget).</summary>
+    private static void BindTarget() => Gl.BindFramebuffer(Gl.FRAMEBUFFER, PresentTarget.Fbo46);
 }

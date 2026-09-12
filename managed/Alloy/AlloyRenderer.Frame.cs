@@ -9,8 +9,8 @@ namespace Sowx.Alloy;
 /// <summary>#173: the FRAME DISPATCH. What the Alloy bracket does once per pass and in what order: the prepass, the opaque block, the pass-slot walk that hands each ADR 0011 slot to its owner, and the probe capture that rides the same staged batches. Hot: nothing on this path allocates.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>The Alloy opaque block (hot, zero-alloc): view*proj off the matrix stacks and the mirror-FBO
-    /// inputs once, then -- inside the #80 bracket -- <see cref="BuildBatches"/> revalidates every Alloy part
+    /// <summary>The Alloy opaque block (hot, zero-alloc): view*proj off the matrix stacks and the target
+    /// block once, then -- inside the #80 bracket -- <see cref="BuildBatches"/> revalidates every Alloy part
     /// and stages its draw (texture id re-fetched every frame per the borrowed-pointer rule, which is also what
     /// keeps animated textures cycling), and <see cref="IssueBatches"/> submits the result as one multidraw per
     /// (program, VDO, texture, primitive) group. Anything that fails revalidation falls straight back to the
@@ -71,17 +71,14 @@ public sealed unsafe partial class AlloyRenderer
         // allocations, so an offset would only mean drawing into their corner).
         int* display = stackalloc int[4] { t.Vp0, t.Vp1, t.Vp2, t.Vp3 };
         int* viewport = stackalloc int[4] { 0, 0, PostChain.RenderSize(t.Vp2), PostChain.RenderSize(t.Vp3) };
-        int engFbo = t.Fbo, colorType = t.ColorType, colorName = t.ColorName,
-            depthType = t.DepthType, depthName = t.DepthName;
         bool srgb = t.Srgb;
-        // #456: sized to the DEFAULT framebuffer and only when the engine renders to it -- an engine FBO is
-        // a shared attachment and has never had this problem. Before any pass binds a target.
-        if (engFbo == 0) PresentTarget.Ensure(display[2], display[3], PostChain.DepthTex);
+        // #456: sized to the DEFAULT framebuffer, before any pass binds a target.
+        PresentTarget.Ensure(display[2], display[3], PostChain.DepthTex);
         float* engClear = stackalloc float[4] { t.Clear0, t.Clear1, t.Clear2, t.Clear3 };
         float engClearDepth = t.ClearDepth;
         // ...and the refusals that need no bracket at all, ahead of the preamble they would otherwise
         // waste -- PoseSkinned alone solves every Alloy skinmesh's pose.
-        if (!PostChain.Precheck(engFbo, depthName, display)) return;
+        if (!PostChain.Precheck(display)) return;
         // Only now: a pass about to hand the frame back would have the engine solve each of these poses
         // again on its own walk, so the solve is not worth doing for it. #262: the solve no longer enters
         // engine code at all, but it still reads engine animation state, so it stays on this side.
@@ -138,8 +135,9 @@ public sealed unsafe partial class AlloyRenderer
         ApplySwaps();   // #386: swapped texture names take their new handles here, in the context that owns residency
         OwnedBuffers.HighWater();    // ...and report the mark the funnel recorded, where a string is affordable
         FrameZones.Add(FrameZones.Zone.Own, tOwn);
-        if (EnsureProgram() && BindTarget(engFbo, colorType, colorName, depthType, depthName))
+        if (EnsureProgram())
         {
+            BindTarget();
             // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both
             // colour-bracket passes draw the same staged batches, and building twice would revalidate (and
             // re-stamp OwnGen for) every Alloy part twice. The passes come off FrameGraph, not off call order.
@@ -180,7 +178,7 @@ public sealed unsafe partial class AlloyRenderer
             // Alloy stages to fall back to, so the whole pass stands down and the engine renders it vanilla.
             // Staging first would stamp OwnGen on parts the iterator then suppresses and nobody draws.
             long tPostBegin = FrameZones.Now;
-            bool postOk = PostChain.Begin(_fbo46, depthType, depthName, viewport, engClear, engClearDepth);
+            bool postOk = PostChain.Begin(viewport, engClear, engClearDepth);
             FrameZones.Add(FrameZones.Zone.Post, tPostBegin);
             if (!postOk) { GlContextService.Leave(); return; }
             GpuFrameStart();
@@ -404,7 +402,7 @@ public sealed unsafe partial class AlloyRenderer
                             CaptureProbe(_gOpaqueEnd, far);
                             // The capture bound its own framebuffer and viewport; whatever runs after the
                             // bracket must find the engine's target again, not a 128px cube face.
-                            BindTarget(engFbo, colorType, colorName, depthType, depthName);
+                            BindTarget();
                             Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
                             if (srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
                             break;

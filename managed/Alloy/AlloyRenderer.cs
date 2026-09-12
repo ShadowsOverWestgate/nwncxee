@@ -274,7 +274,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static bool DrewThisPass => _drawnPass == PassGen;
 
     // 4.6-side objects (touched only inside the bracket)
-    private static uint _prog46, _progLit46, _progDepth, _progDepthKey, _fbo46;
+    private static uint _prog46, _progLit46, _progDepth, _progDepthKey;
     /// <summary>The feature-aware depth stage: the lit program's OWN compiled vertex text (override or
     /// embedded, so its displacement is the colour pass's character for character) over an alpha-testing
     /// fragment stage. Takes the cutout class and the wind-displaced batches the plain prepass skips.</summary>
@@ -401,7 +401,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// submission cannot run at all. Latched, and EndFrame disarms on it by name rather than drawing nothing
     /// forever while the iterator keeps suppressing parts.</summary>
     private static bool _batchUnavailable;
-    private static bool _mirrorBad;
     /// <summary><c>/draw light 0</c> forces every Alloy part back to the #82 fullbright variant (the lighting A/B).</summary>
     private static bool _lighting = DefLighting;
     /// <summary>RenderInterface::IsEnabled -- queried for cap 5 (LIGHTING) once per Alloy pass.</summary>
@@ -618,9 +617,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     { if (_qOpen == (int)t) { _qTerm[(int)t].End(Gl.TIME_ELAPSED); _qOpen = -1; } }
 
     private static double GpuMs(GpuTerm t) => _qTerm[(int)t].Avg / 1e6;
-
-    /// <summary>One-shot FBO-topology report (#151, the "does AA even apply to us" question).</summary>
-    private static int _fboDiagSig = -1, _fboDiagLeft = 8;
 
     /// <summary>The read-only half of <see cref="HandleFor"/>: the handle if one was minted, 0 otherwise. Safe
     /// off the main thread as long as nothing mints during the stage, which nothing does.</summary>
@@ -1604,7 +1600,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
     internal static void ContextLost()
     {
-        _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progDepth = 0; _progDepthKey = 0; _progDepthFeat = 0; _progWater = 0; _fbo46 = 0; _progSkyDecode = 0;
+        _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progDepth = 0; _progDepthKey = 0; _progDepthFeat = 0; _progWater = 0; _progSkyDecode = 0;
         HighlightContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         MotionContextLost();

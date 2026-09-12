@@ -85,7 +85,7 @@ public static unsafe class Gl
     public const uint FRAMEBUFFER_BINDING = 0x8CA6, DEPTH_WRITEMASK = 0x0B72, DEPTH_FUNC = 0x0B74, DEPTH_RANGE = 0x0B70;
     // FBO / depth-pass (shadow map, #65 slice 3).
     public const uint FRAMEBUFFER = 0x8D40, DEPTH_ATTACHMENT = 0x8D00, FRAMEBUFFER_COMPLETE = 0x8CD5;
-    // Alloy world draw (#81): engine-VAO attribute harvest + engine-FBO mirroring in the 4.6 context.
+    // Alloy world draw (#81): engine-VAO attribute harvest in the 4.6 context.
     public const uint ELEMENT_ARRAY_BUFFER = 0x8893, ELEMENT_ARRAY_BUFFER_BINDING = 0x8895;
     public const uint VERTEX_ATTRIB_ARRAY_ENABLED = 0x8622, VERTEX_ATTRIB_ARRAY_SIZE = 0x8623,
                       VERTEX_ATTRIB_ARRAY_STRIDE = 0x8624, VERTEX_ATTRIB_ARRAY_TYPE = 0x8625,

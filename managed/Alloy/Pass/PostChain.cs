@@ -84,17 +84,9 @@ internal static unsafe class PostChain
     private static int _scratchW, _scratchH;
     private static uint _scratchFormat;
     private static uint _depFormat;
-    /// <summary>The engine depth attachment whose hand-back the driver refused, as
-    /// <see cref="AttachmentKey"/> -- NOT a global latch. The engine's target is a per-pass fact (a GUI 3D
-    /// panel or a reflection subframe renders to a different one than the world pass does), and it is also
-    /// what the user changes when the log line tells them to try MSAA off: keyed, a new attachment is tried
-    /// again, and only the one that actually failed keeps standing down.</summary>
-    private static ulong _handbackBad;
-    /// <summary>Cached <see cref="ProbeEngineDepth"/> answer and the attachment it was asked about. The
-    /// probe is a bind round-trip plus queries and Begin runs every pass of every frame; both sibling probes
-    /// in this codebase (<see cref="SceneDepth"/>, <see cref="FrameSnapshot"/>) cache for the same reason.</summary>
-    private static ulong _probedAttach;
-    private static uint _probedFormat;
+    /// <summary>The owned depth format whose hand-back the driver refused -- keyed rather than a global
+    /// latch, so a device reset that changes the default framebuffer's depth format gets a fresh attempt.</summary>
+    private static uint _handbackBad;
     private static int _depW, _depH;
     /// <summary>The framebuffer the Alloy colour passes draw into, for the one pass that has to leave it and
     /// come back: #222's sky scratch. Read-only on purpose -- binding it is <see cref="Begin"/>'s job.</summary>
@@ -311,7 +303,7 @@ internal static unsafe class PostChain
         _fbo = 0; _hdrTex = 0; _bloomTex = 0; _depthTex = 0; _w = 0; _h = 0; _levels = 0;
         _scratchFbo = 0; _scratchTex = 0; _scratchW = 0; _scratchH = 0; _scratchFormat = 0;
         _depFormat = 0; _depW = 0; _depH = 0;
-        _handbackBad = 0; _probedAttach = 0; _probedFormat = 0;
+        _handbackBad = 0;
         _defaultProbed = false; _defaultFormat = 0; _defaultOk = null;
         _progDown = 0; _progUp = 0; _progComposite = 0; _vao = 0;
         _progFailed = false; Armed = false; _down.Forget();
@@ -336,18 +328,14 @@ internal static unsafe class PostChain
     /// frame is a frame that went somewhere else or a frame that was lost.</summary>
     internal static uint LastInto;
 
-    internal static bool Precheck(int engFbo, int depthName, int* viewport)
+    internal static bool Precheck(int* viewport)
     {
         // config hdr=0 is a deliberate setting and Attach already said so; it is not a refusal to report.
         if (!_on || _down.Failed) return false;
-        // An offset viewport would break the resolve's 1:1 UV mapping, and the default framebuffer's depth
-        // cannot be an FBO attachment at all. Both are refusals, not workarounds.
-        // #215: under the shim the default framebuffer IS the target, every frame and on purpose -- there is
-        // no engine world FBO left to resolve into. Keyed on the shim WINDOW rather than on its setting: with
-        // the key on but the shim branch not taken, the engine is still drawing this pass and the refusal is
-        // still the right answer.
-        if ((engFbo == 0 || depthName == 0) && !RspShim.InWindow)
-            return Refuse("the engine renders to the default framebuffer");
+        // #215/#467: the default framebuffer IS the target, every frame and on purpose. Keyed on the shim
+        // WINDOW rather than on its setting: with the key on but the shim branch not taken, the engine is
+        // still drawing this pass and the refusal is still the right answer.
+        if (!RspShim.InWindow) return Refuse("the engine renders to the default framebuffer");
         if (viewport[0] != 0 || viewport[1] != 0) return Refuse("the engine's viewport is offset");
         if (GammaOff())   // #216 asks this at the latch too; kept for the pre-cutover and subframe passes
             return Refuse("the engine's gamma pipeline is off (GetGlobalShaderParami(0) == 0), and the "
@@ -363,15 +351,12 @@ internal static unsafe class PostChain
     /// <summary>Point the Alloy colour passes at the HDR target for this pass. #132: a false answer stands
     /// the whole Alloy frame down to vanilla, so this is asked BEFORE anything is staged -- there is no
     /// display-space variant of the Alloy stages left to draw with.
-    /// <para><paramref name="mirrorFbo"/> is the caller's engine-FBO mirror, NOT the engine's own name:
-    /// framebuffer objects do not share across contexts, which is why that mirror exists at all. It is only
-    /// a completeness/refusal witness now; the target's own starting content comes from the engine's clear
-    /// COLOUR rather than from a blit of its clear. At the #132 anchor the engine's colour buffer holds
-    /// nothing but that clear (Camera::InitializeFrameBufferResources has just run Clear(7) and no draw has
-    /// followed), and a blit would copy a display-space value into a linear target -- wrong by a gamma on
-    /// every area that clears to something other than black.</para></summary>
-    internal static bool Begin(uint mirrorFbo, int depthType, int depthName, int* viewport, float* clearRgba,
-                               double clearDepth)
+    /// <para>The target's own starting content comes from the engine's clear COLOUR rather than from a blit
+    /// of its clear. At the #132 anchor the engine's colour buffer holds nothing but that clear
+    /// (Camera::InitializeFrameBufferResources has just run Clear(7) and no draw has followed), and a blit
+    /// would copy a display-space value into a linear target -- wrong by a gamma on every area that clears
+    /// to something other than black.</para></summary>
+    internal static bool Begin(int* viewport, float* clearRgba, double clearDepth)
     {
         Armed = false;
         if (!_on || _down.Failed) return false;
@@ -384,16 +369,12 @@ internal static unsafe class PostChain
         if (!EnsurePrograms()) return false;
         if (!EnsureTargets(viewport[2], viewport[3])) return false;
 
-        // #214: the engine's attachment is no longer shared -- it is only the format the owned depth
-        // texture has to MATCH, because the resolve blits ours back into it and a depth blit cannot convert.
-        uint depthFmt = ProbeEngineDepth(depthType, depthName);
-        if (depthFmt == 0) return Refuse("the engine's depth attachment holds no depth format the owned "
-                                       + "depth texture can be matched to");
-        // ...and the hand-back has to be possible for THIS attachment: a pass that draws a frame whose depth
-        // never reaches the engine leaves the engine's own residual draws testing against a stale buffer.
-        // Asked after the probe, so the format is part of the key -- turning MSAA off (or any device reset
-        // that rebuilds the engine's target) presents a different attachment and gets a fresh attempt.
-        if (_handbackBad != 0 && _handbackBad == AttachmentKey(depthType, depthName, depthFmt)) return false;
+        // #214/#467: the owned depth matches FB0's format so the overlay hand-back is a legal blit (a depth
+        // blit cannot convert); D24 if FB0 has none. A refused hand-back stands this format down, keyed, so a
+        // device reset that changes it gets a fresh attempt.
+        uint fb0 = DefaultFormat();
+        uint depthFmt = fb0 != 0 ? fb0 : Gl.DEPTH_COMPONENT24;
+        if (_handbackBad != 0 && _handbackBad == depthFmt) return false;
         if (!EnsureDepth(depthFmt, viewport[2], viewport[3])) return false;
 
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
@@ -404,7 +385,7 @@ internal static unsafe class PostChain
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
         if (status != Gl.FRAMEBUFFER_COMPLETE)
         {
-            Gl.BindFramebuffer(Gl.FRAMEBUFFER, mirrorFbo);
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, PresentTarget.Fbo46);
             return Refuse($"the HDR framebuffer is incomplete (0x{status:x})");
         }
 
@@ -439,13 +420,10 @@ internal static unsafe class PostChain
     /// panels -- still depth-test against the world this pass rendered, so a frame that skipped this would
     /// show them punching through walls. Legal because <see cref="EnsureDepth"/> matched the format;
     /// NEAREST because a depth blit may not filter.
-    /// <para>The caller has the engine mirror bound as the draw target, which is the whole point of doing
+    /// <para>The caller has the frame target bound as the draw target, which is the whole point of doing
     /// it here rather than in the caller.</para>
-    /// <para>Whether a 1x source may blit into a MULTISAMPLED engine attachment is asked of the DRIVER
-    /// rather than pre-refused: the engine's world FBO is 8x on any client with MSAA on, and before #214 a
-    /// 1x colour texture beside an 8x shared depth made the target INCOMPLETE, so those clients rendered
-    /// vanilla outright. Owned depth makes the target complete, and this blit is the one remaining question
-    /// -- so it is attempted and the error checked, which is ground truth on the driver in front of us.</para></summary>
+    /// <para>Whether the blit is legal for the target in front of us is asked of the DRIVER rather than
+    /// pre-refused: it is attempted and the error checked.</para></summary>
     /// <summary>The blit both hand-backs are: drain the error queue so what comes back is ours, copy the
     /// owned depth into <paramref name="dst"/>, restore the draw binding. Returns the GL error, 0 for
     /// success. The two callers differ only in what a failure costs them.</summary>
@@ -502,27 +480,16 @@ internal static unsafe class PostChain
     private static void ResolveDepth(int dstW, int dstH)
     {
         if (Gl.BlitFramebuffer == null || _depthTex == 0) return;
-        // Taken before the blit can invalidate anything: this is the attachment the hand-back is ABOUT.
-        ulong key = _probedAttach | (ulong)_depFormat << 48;
         int dst; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &dst);
         if (dst == 0) { DefaultDepthOk = RspShim.WantsEngineOverlays && BlitDepthToDefault(dstW, dstH); return; }
         DefaultDepthOk = false;   // an engine attachment: ResolveDepth's own hand-back, not the overlays'
         uint err = BlitDepthInto((uint)dst, dstW, dstH);
         if (err == 0) return;
-        // Drop the probe cache so the next pass asks the attachment again rather than trusting the answer
-        // that produced this: a device reset (alt-tab, resolution change) can swap the engine's attachment
-        // for one of a different format while keeping its name, and that is precisely the case that must get
-        // a fresh attempt rather than inherit this refusal.
-        uint chosen = _depFormat;
-        _probedAttach = 0; _probedFormat = 0;
-        // ...and stand THIS attachment down. The frame already drew with depth the engine never received, so
-        // its residual draws are testing against a stale buffer; a second one would be a choice. Keyed, not
-        // global: the next distinct engine target -- including the one the user gets by turning MSAA off --
-        // is tried on its own merits.
-        _handbackBad = key;
-        _ = Refuse($"the depth resolve blit raised 0x{err:x} (owned depth format 0x{chosen:x}) -- the owned "
-                 + "depth cannot be handed back to this engine target, so the Alloy frame stands down for "
-                 + "it. A multisampled engine attachment is the likely cause: try MSAA off.");
+        // Stand THIS format down: the frame already drew with depth the engine never received, and a
+        // second one would be a choice. A device reset that changes the format is tried on its own merits.
+        _handbackBad = _depFormat;
+        _ = Refuse($"the depth resolve blit raised 0x{err:x} (owned depth format 0x{_depFormat:x}) -- the "
+                 + "owned depth cannot be handed back to the frame target, so the Alloy frame stands down.");
     }
 
     /// <summary>#232/#233: true when the frame's owned depth reached the DEFAULT framebuffer, so the
@@ -546,7 +513,7 @@ internal static unsafe class PostChain
     private static bool _defaultHasStencil;
 
     /// <summary>The default framebuffer's depth format as its bit widths and component type describe it
-    /// (the ladder <see cref="ProbeEngineDepth"/> ends in); 0 = no depth. Under the M4 shim the owned depth
+    /// (the ladder <see cref="DefaultFormat"/> reads); 0 = no depth. Under the M4 shim the owned depth
     /// is ALLOCATED to this, so the hand-back is the format-matched blit GL 4.6 18.3.1 requires: the author's
     /// driver tolerated D24 into D24S8, and Mesa raises no error for the mismatch either -- it just does
     /// what it likes with it (docs/research/opengl-46-portability-audit.md, E4).</summary>
@@ -611,79 +578,6 @@ internal static unsafe class PostChain
                  + "engine highlight overlays (#232/#233) stand down for this session");
         return false;
     }
-
-    /// <summary>What the engine's depth attachment actually holds, asked of the OBJECT rather than of the
-    /// attachment's bit widths -- #129's finding, reproduced: a packed D24S8 reads as a plain 24-bit depth
-    /// through the attachment query, after which the blit mismatches and is discarded whole and silently.
-    /// 0 = nothing this can match.
-    /// <para>Unrecognised formats fall back to the attachment's BIT WIDTHS rather than refusing. Sharing
-    /// never had to know the format, so an unsized <c>DEPTH_COMPONENT</c> (or a sized variant not listed
-    /// here) would otherwise stand the whole Alloy frame down for a session on that driver. A wrong guess
-    /// degrades to <see cref="ResolveDepth"/>'s blit-error path, which re-probes -- strictly better.</para></summary>
-    private static uint ProbeEngineDepth(int type, int name)
-    {
-        int fmt = 0;
-        // #215: no engine attachment to match under the shim -- ResolveDepth no-ops on a default-framebuffer
-        // target and there are no residual engine world draws to hand depth back to, so the owned depth is
-        // free to pick its own format.
-        if (name == 0)
-        {
-            if (!RspShim.InWindow) return 0;
-            uint fb0 = DefaultFormat();   // match FB0 so the overlay hand-back is a legal blit; D24 if it has none
-            return fb0 != 0 ? fb0 : Gl.DEPTH_COMPONENT24;
-        }
-        ulong attach = (uint)name | (ulong)(uint)type << 32;
-        if (attach == _probedAttach && _probedFormat != 0) return _probedFormat;
-        _probedAttach = attach;
-        if (type == (int)Gl.RENDERBUFFER)
-        {
-            if (Gl.GetRenderbufferParameteriv == null || Gl.BindRenderbuffer == null) return _probedFormat = 0;
-            Gl.BindRenderbuffer(Gl.RENDERBUFFER, (uint)name);
-            Gl.GetRenderbufferParameteriv(Gl.RENDERBUFFER, Gl.RENDERBUFFER_INTERNAL_FORMAT, &fmt);
-            Gl.BindRenderbuffer(Gl.RENDERBUFFER, 0);
-        }
-        else
-        {
-            if (Gl.GetTexLevelParameteriv == null) return _probedFormat = 0;
-            Gl.ActiveTexture(Gl.TEXTURE0);
-            Gl.BindTexture(Gl.TEXTURE_2D, (uint)name);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
-            Gl.BindTexture(Gl.TEXTURE_2D, 0);
-        }
-        // Probing raises rather than answers where an object does not carry the parameter; drain so the next
-        // real failure is not read as this one.
-        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
-        switch ((uint)fmt)
-        {
-            case Gl.DEPTH_COMPONENT16: case Gl.DEPTH_COMPONENT24: case Gl.DEPTH_COMPONENT32:
-            case Gl.DEPTH_COMPONENT32F: case Gl.DEPTH24_STENCIL8: case Gl.DEPTH32F_STENCIL8:
-                return _probedFormat = (uint)fmt;
-        }
-        // Off the bound framebuffer, which is the caller's engine mirror carrying this very attachment
-        // (BindTarget runs before Begin). Bound to something else, the query answers 0 and we refuse --
-        // which is exactly what this path replaced, so a wrong binding costs nothing extra.
-        int bits = 0, stencil = 0, comp = 0;
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
-            Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
-            Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencil);
-        // The one distinction bit widths cannot make: DEPTH_COMPONENT32 and DEPTH_COMPONENT32F both report
-        // 32, and a depth blit between them is INVALID_OPERATION. Unanswered reads as fixed-point, which is
-        // the commoner attachment of the two.
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
-            Gl.FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &comp);
-        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
-        return _probedFormat = bits <= 0 ? 0
-             : stencil > 0 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH32F_STENCIL8 : Gl.DEPTH24_STENCIL8)
-             : bits >= 32 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH_COMPONENT32F : Gl.DEPTH_COMPONENT32)
-             : bits >= 24 ? Gl.DEPTH_COMPONENT24 : Gl.DEPTH_COMPONENT16;
-    }
-
-    /// <summary>Identity of an engine depth attachment: what the probe caches on and what a refused
-    /// hand-back is keyed to. Name and type alone would not do -- GL reuses freed object names, and the
-    /// format is exactly what changes under a device reset that keeps one.</summary>
-    private static ulong AttachmentKey(int type, int name, uint fmt)
-        => (uint)name | (ulong)(uint)type << 32 | (ulong)fmt << 48;
 
     /// <summary>Alloy's own depth attachment, sized to the target and format-matched to the engine's.
     /// Keyed on the FORMAT as well as the size, because a device reset can hand back a differently formatted

@@ -425,8 +425,8 @@ internal static unsafe class FrameSnapshot
         Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
             src == 0 ? Gl.STENCIL : Gl.STENCIL_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencil);
         // THE OBJECT'S OWN FORMAT, not the attachment's bit widths -- and this is the whole finding. Every
-        // framebuffer that can be bound here when the engine renders to an FBO attaches its depth at
-        // DEPTH_ATTACHMENT alone (AlloyRenderer.BindTarget and PostChain.Begin both do; neither ever uses
+        // owned framebuffer that can be bound here attaches its depth at
+        // DEPTH_ATTACHMENT alone (PostChain.Begin does; nothing ever uses
         // DEPTH_STENCIL_ATTACHMENT). So the STENCIL_ATTACHMENT query answers nothing, and a packed D24S8
         // engine depth reads as a plain 24-bit one. The blit then mismatches and is discarded whole.
         if (src != 0)
