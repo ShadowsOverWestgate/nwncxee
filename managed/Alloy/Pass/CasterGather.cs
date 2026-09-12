@@ -75,11 +75,19 @@ internal static unsafe class CasterGather
     /// bisect step is <c>noshadows=0</c>, which hands the whole shadow question back to the engine's
     /// stencil.</summary>
     internal static int Mode = 1;
+    /// <summary>#488: live dial behind <c>/shadow receiver</c>: 1 = a view flagged as re-baked under this
+    /// frame's camera also rejects casters whose shadow volume cannot reach the camera frustum; 0 = the
+    /// light-cone tests alone. Inside <see cref="Mode"/>'s gate, so <c>/shadow gather 0</c> still disables
+    /// everything. Its own dial because the Bake A/B has to isolate this term from the cone cull.</summary>
+    internal static int Receiver = 1;
+    /// <summary>#488: this frame's receiver frustum, six planes as <c>ShadowMath.ReceiverPlanes</c> writes
+    /// them (already pushed out by the camera epoch's slack). Filled by <c>CasterPass</c> once per frame.</summary>
+    internal static readonly float[] Planes = new float[24];
 
     private static ExtenderLog? _log;
     private static uint _prog;
     private static bool _failed;
-    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uCull, _uSet;
+    private static int _uDrawN, _uPoint, _uFocus, _uDir, _uReach, _uAlong, _uCull, _uSet, _uRx, _uGroups, _uPlanes;
 
     private static uint _srcBuf;
     private static int _srcCap;
@@ -98,11 +106,20 @@ internal static unsafe class CasterGather
     private static uint[] _counts = new uint[1024];
     private static int _readSeq;
     private static bool _dispatched;
+    /// <summary>The count buffer the last dispatch (per-view or layered) wrote, and how many views it
+    /// covered -- what <see cref="Sample"/> copies aside. The layered path is the default one, so a sample
+    /// of the per-view buffer alone would read nothing all session.</summary>
+    private static uint _sampleBuf;
+    private static int _sampleViews, _sampleRxViews;
+    private static readonly int[] _readViews = new int[3], _readRxViews = new int[3];
 
     /// <summary>Views dispatched, batches submitted, and the latent sample's tally (survivors and staged
     /// draws of one view per frame, three frames late) -- the gather's half of the caster pass's period
     /// line.</summary>
     internal static long Views, Batches, SampledKept, SampledStaged, Samples;
+    /// <summary>#488: of the sampled view's staged draws, how many the receiver-frustum test rejected
+    /// (the word after the per-batch counts, <c>uCnt[uGroups]</c>).</summary>
+    internal static long SampledRx;
     /// <summary>Frames whose staged source matched the persistent buffer byte for byte, so nothing was
     /// uploaded -- the number that says #303's "the per-frame upload is gone" is actually true.</summary>
     internal static long UploadsSkipped, Uploads;
@@ -123,8 +140,8 @@ internal static unsafe class CasterGather
         _layerProg = 0; _layerFailed = false; _viewBuf = 0; _viewCap = 0;
         _lyCmdCap = 0; _lyCntCap = 0; _lyAt = 0;
         Array.Clear(_lyCmd); Array.Clear(_lyCnt);
-        Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); Array.Clear(_readCap);
-        _drawN = 0; _groups = 0; _dispatched = false;
+        Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); Array.Clear(_readCap); Array.Clear(_readViews); Array.Clear(_readRxViews);
+        _drawN = 0; _groups = 0; _dispatched = false; _sampleBuf = 0; _sampleViews = 0;
     }
 
     /// <summary>Everything the dispatch needs from GL, checked once and latched: a missing entry point is a
@@ -149,6 +166,9 @@ internal static unsafe class CasterGather
         _uAlong = GlProgram.Loc(_prog, "uAlong");
         _uCull = GlProgram.Loc(_prog, "uCull");
         _uSet = GlProgram.Loc(_prog, "uSet");
+        _uRx = GlProgram.Loc(_prog, "uRx");
+        _uGroups = GlProgram.Loc(_prog, "uGroups");
+        _uPlanes = GlProgram.Loc(_prog, "uPlanes");
         _log?.Info("CasterGather: armed -- shadow caster selection in compute over the shared SowxCullSphere " +
                    "bounds, glMultiDrawElementsIndirectCount submission (/shadow gather 0 disables the cull)");
         return true;
@@ -194,7 +214,7 @@ internal static unsafe class CasterGather
         for (int i = 0; i < Rotation; i++)
         {
             Ensure(ref _cmdBuf[i], (long)drawN * CmdBytes, drawN > _cmdCap);
-            Ensure(ref _cntBuf[i], (long)groups * sizeof(uint), groups > _cntCap);
+            Ensure(ref _cntBuf[i], (long)(groups + 1) * sizeof(uint), groups > _cntCap);
         }
         if (drawN > _cmdCap) _cmdCap = drawN;
         if (groups > _cntCap) _cntCap = groups;
@@ -215,10 +235,10 @@ internal static unsafe class CasterGather
     /// cascade fit's axis test; a <see cref="AlloyRenderer.NeverCull"/> sphere is exempt from the reach
     /// tests -- the same exemption, from the same buffer, the colour cull applies.</summary>
     internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, bool point,
-                                  int set = SetAll)
+                                  int set = SetAll, bool receiver = false)
     {
         _at = (_at + 1) % Rotation;
-        Gl.ZeroBuffer(_cntBuf[_at], (long)_groups * sizeof(uint));
+        Gl.ZeroBuffer(_cntBuf[_at], (long)(_groups + 1) * sizeof(uint));
 
         Gl.UseProgram(_prog);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
@@ -229,6 +249,9 @@ internal static unsafe class CasterGather
         Gl.Uniform1i(_uPoint, point ? 1 : 0);
         Gl.Uniform1i(_uCull, Mode != 0 ? 1 : 0);
         Gl.Uniform1i(_uSet, set);
+        Gl.Uniform1i(_uRx, receiver && Receiver != 0 ? 1 : 0);
+        Gl.Uniform1i(_uGroups, _groups);
+        fixed (float* pl = Planes) Gl.Uniform4fv(_uPlanes, 6, pl);
         float* v = stackalloc float[3];
         v[0] = focus.X; v[1] = focus.Y; v[2] = focus.Z;
         Gl.Uniform3fv(_uFocus, 1, v);
@@ -243,7 +266,7 @@ internal static unsafe class CasterGather
         Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _cmdBuf[_at]);
         Gl.BindBuffer(Gl.PARAMETER_BUFFER, _cntBuf[_at]);
         Views++;
-        _dispatched = true;
+        _dispatched = true; _sampleBuf = _cntBuf[_at]; _sampleViews = 1; _sampleRxViews = receiver ? 1 : 0;
     }
 
     /// <summary>One batch, out of the compacted list the dispatch just wrote. <paramref name="start"/> is the
@@ -272,16 +295,16 @@ internal static unsafe class CasterGather
     /// deleting shadows shows in it immediately.</summary>
     internal static void Sample()
     {
-        if (!_dispatched || _groups <= 0) return;
+        if (!_dispatched || _groups <= 0 || _sampleBuf == 0) return;
         // Sample-only entry points: a driver without them loses the figure, never the shadows.
         if (Gl.CopyBufferSubData == null || Gl.GetBufferSubData == null) return;
         _dispatched = false;
         int w = _readSeq % 3, r = (_readSeq + 1) % 3;
         _readSeq++;
-        if (_groups > _counts.Length)
+        if (_groups + 1 > _counts.Length)
         {
             int cap = _counts.Length;
-            while (cap < _groups) cap *= 2;
+            while (cap < _groups + 1) cap *= 2;
             _counts = new uint[cap];
         }
         // Capacity is PER RING SLOT: after a growth the other two slots still hold their old size, and a
@@ -292,22 +315,26 @@ internal static unsafe class CasterGather
         // No extra barrier: the dispatch's own MemoryBarrier names BUFFER_UPDATE_BARRIER_BIT, which is the
         // bit that orders shader-storage writes before buffer-copy reads, and it stands between the last
         // dispatch's atomicAdds and this copy in command order.
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, _cntBuf[_at]);
+        Gl.BindBuffer(Gl.COPY_READ_BUFFER, _sampleBuf);
         Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _readBuf[w]);
         Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, IntPtr.Zero, IntPtr.Zero,
-                             (IntPtr)((long)_groups * sizeof(uint)));
+                             (IntPtr)((long)(_groups + 1) * sizeof(uint)));
         Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
         Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
-        _readN[w] = _groups; _readDrawN[w] = _drawN;
+        _readN[w] = _groups; _readDrawN[w] = _drawN; _readViews[w] = _sampleViews; _readRxViews[w] = _sampleRxViews;
         if (_readBuf[r] == 0 || _readN[r] <= 0) return;
         Gl.BindBuffer(Gl.COPY_READ_BUFFER, _readBuf[r]);
         fixed (uint* c = _counts)
-            Gl.GetBufferSubData(Gl.COPY_READ_BUFFER, IntPtr.Zero, (IntPtr)((long)_readN[r] * sizeof(uint)), c);
+            Gl.GetBufferSubData(Gl.COPY_READ_BUFFER, IntPtr.Zero, (IntPtr)((long)(_readN[r] + 1) * sizeof(uint)), c);
         Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
         long kept = 0;
         for (int i = 0; i < _readN[r]; i++) kept += _counts[i];
-        // Against the draw count of the frame that WROTE those counts, not this frame's.
-        SampledKept += Math.Min(kept, _readDrawN[r]);
+        // Against the draw count of the frame that WROTE those counts, not this frame's; a layered chunk's
+        // counts cover every view it dispatched, so they are averaged back to one view -- the receiver
+        // tally over the views that carried the flag.
+        int views = Math.Max(_readViews[r], 1), rxViews = Math.Max(_readRxViews[r], 1);
+        SampledKept += Math.Min(kept / views, _readDrawN[r]);
+        SampledRx += Math.Min(_counts[_readN[r]] / rxViews, _readDrawN[r]);
         SampledStaged += _readDrawN[r];
         Samples++;
     }
@@ -330,13 +357,13 @@ internal static unsafe class CasterGather
     /// <summary>The view table's GLSL declaration, shared by the layered dispatch and both layered depth
     /// stages -- <c>AlloyRenderer.DrawBufDecl</c>'s pattern, so the three cannot drift apart.</summary>
     internal const string ViewTblDecl = """
-        struct SowxView { mat4 vp; vec4 a; vec4 b; vec4 c; };   // a = focus/reach, b = dir/along, c = spare/point/set/layer
+        struct SowxView { mat4 vp; vec4 a; vec4 b; vec4 c; };   // a = focus/reach, b = dir/along, c = receiver/point/set/layer
         layout(std430, binding = 20) readonly buffer SowxBakeViews { SowxView uViewTbl[]; };
         """;
 
     private static uint _layerProg;
     private static bool _layerFailed;
-    private static int _luDrawN, _luViewN, _luCull;
+    private static int _luDrawN, _luViewN, _luCull, _luRx, _luGroups, _luPlanes;
     private static uint _viewBuf;
     private static int _viewCap;
     private static readonly uint[] _lyCmd = new uint[Rotation], _lyCnt = new uint[Rotation];
@@ -358,6 +385,9 @@ internal static unsafe class CasterGather
         _luDrawN = GlProgram.Loc(_layerProg, "uDrawN");
         _luViewN = GlProgram.Loc(_layerProg, "uViewN");
         _luCull = GlProgram.Loc(_layerProg, "uCull");
+        _luRx = GlProgram.Loc(_layerProg, "uRx");
+        _luGroups = GlProgram.Loc(_layerProg, "uGroups");
+        _luPlanes = GlProgram.Loc(_layerProg, "uPlanes");
         return true;
     }
 
@@ -380,11 +410,11 @@ internal static unsafe class CasterGather
         for (int i = 0; i < Rotation; i++)
         {
             Ensure(ref _lyCmd[i], cmds * CmdBytes, growCmd);
-            Ensure(ref _lyCnt[i], (long)_groups * sizeof(uint), growCnt);
+            Ensure(ref _lyCnt[i], (long)(_groups + 1) * sizeof(uint), growCnt);
         }
         if (growCmd) _lyCmdCap = cmds;
         if (growCnt) _lyCntCap = _groups;
-        Gl.ZeroBuffer(_lyCnt[_lyAt], (long)_groups * sizeof(uint));
+        Gl.ZeroBuffer(_lyCnt[_lyAt], (long)(_groups + 1) * sizeof(uint));
 
         Gl.UseProgram(_layerProg);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
@@ -395,11 +425,17 @@ internal static unsafe class CasterGather
         Gl.Uniform1i(_luDrawN, _drawN);
         Gl.Uniform1i(_luViewN, viewN);
         Gl.Uniform1i(_luCull, Mode != 0 ? 1 : 0);
+        Gl.Uniform1i(_luRx, Receiver != 0 ? 1 : 0);
+        Gl.Uniform1i(_luGroups, _groups);
+        fixed (float* pl = Planes) Gl.Uniform4fv(_luPlanes, 6, pl);
         Gl.DispatchCompute((uint)((_drawN + GroupSize - 1) / GroupSize), (uint)viewN, 1);
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.COMMAND_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
         Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, _lyCmd[_lyAt]);
         Gl.BindBuffer(Gl.PARAMETER_BUFFER, _lyCnt[_lyAt]);
         LayerDispatches++; LayerViews += viewN;
+        int rxViews = 0;
+        for (int i = 0; i < viewN; i++) if (views[i * ViewFloats + 24] != 0f) rxViews++;
+        _dispatched = true; _sampleBuf = _lyCnt[_lyAt]; _sampleViews = viewN; _sampleRxViews = rxViews;
         return true;
     }
 
@@ -445,6 +481,22 @@ internal static unsafe class CasterGather
         uniform vec3 uDir;
         uniform float uReach;
         uniform float uAlong;
+        uniform int uRx;
+        uniform int uGroups;
+
+        // #488: the receiver cull. The shadow volume is bounded by the hull of two spheres (the caster's own
+        // and the extrusion's end) and misses the camera frustum only when BOTH sit wholly outside ONE
+        // plane. Conservative: a rejected caster casts on no visible pixel.
+        uniform vec4 uPlanes[6];
+        bool SowxShadowMisses(vec3 p0, float r0, vec3 p1, float r1)
+        {
+            for (int i = 0; i < 6; i++)
+            {
+                vec4 pl = uPlanes[i];
+                if (dot(pl.xyz, p0) + pl.w < -r0 && dot(pl.xyz, p1) + pl.w < -r1) return true;
+            }
+            return false;
+        }
 
         bool SowxFaceCulls(float dSq, float t, float r)
         {
@@ -471,20 +523,27 @@ internal static unsafe class CasterGather
                 float r = s.w;
                 vec3 d = s.xyz - uFocus;
                 float t = dot(d, uDir);
-                bool offAxis, offEnds;
+                bool offAxis, offEnds, rx = uRx != 0;
+                vec3 p1 = s.xyz; float r0 = r, r1 = r;
                 if (uPoint != 0)
                 {
                     float dSq = dot(d, d);
                     offAxis = dSq > (uReach + r) * (uReach + r);
                     offEnds = SowxFaceCulls(dSq, t, r);
+                    // the tangent cone from the light, out to its reach; a light inside the caster keeps it
+                    float dist = sqrt(dSq);
+                    if (dist <= r) rx = false;
+                    else { float k = 1.0 / (dist - r); r0 = r * dist * k; r1 = r * uReach * k; p1 = uFocus + d * (uReach / dist); }
                 }
                 else
                 {
                     vec3 perp = d - t * uDir;
                     offAxis = dot(perp, perp) > (uReach + r) * (uReach + r);
                     offEnds = abs(t) > uAlong + r;
+                    p1 = s.xyz + uDir * max(0.0, uAlong - t);
                 }
                 if (offAxis || offEnds) return;
+                if (rx && SowxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }
             }
             uint o = uSrc[b + 5u] + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
@@ -515,6 +574,22 @@ internal static unsafe class CasterGather
         uniform int uDrawN;
         uniform int uViewN;
         uniform int uCull;
+        uniform int uRx;
+        uniform int uGroups;
+
+        // #488: the receiver cull. The shadow volume is bounded by the hull of two spheres (the caster's own
+        // and the extrusion's end) and misses the camera frustum only when BOTH sit wholly outside ONE
+        // plane. Conservative: a rejected caster casts on no visible pixel.
+        uniform vec4 uPlanes[6];
+        bool SowxShadowMisses(vec3 p0, float r0, vec3 p1, float r1)
+        {
+            for (int i = 0; i < 6; i++)
+            {
+                vec4 pl = uPlanes[i];
+                if (dot(pl.xyz, p0) + pl.w < -r0 && dot(pl.xyz, p1) + pl.w < -r1) return true;
+            }
+            return false;
+        }
 
         bool SowxFaceCulls(float dSq, float t, float r)
         {
@@ -542,20 +617,26 @@ internal static unsafe class CasterGather
                 float reach = uViewTbl[vi].a.w;
                 vec3 dir = uViewTbl[vi].b.xyz;
                 float t = dot(d, dir);
-                bool offAxis, offEnds;
+                bool offAxis, offEnds, rx = uRx != 0 && vc.x != 0.0;
+                vec3 p1 = s.xyz; float r0 = r, r1 = r;
                 if (vc.y != 0.0)
                 {
                     float dSq = dot(d, d);
                     offAxis = dSq > (reach + r) * (reach + r);
                     offEnds = SowxFaceCulls(dSq, t, r);
+                    float dist = sqrt(dSq);
+                    if (dist <= r) rx = false;
+                    else { float k = 1.0 / (dist - r); r0 = r * dist * k; r1 = r * reach * k; p1 = uViewTbl[vi].a.xyz + d * (reach / dist); }
                 }
                 else
                 {
                     vec3 perp = d - t * dir;
                     offAxis = dot(perp, perp) > (reach + r) * (reach + r);
                     offEnds = abs(t) > uViewTbl[vi].b.w + r;
+                    p1 = s.xyz + dir * max(0.0, uViewTbl[vi].b.w - t);
                 }
                 if (offAxis || offEnds) return;
+                if (rx && SowxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }
             }
             uint o = uSrc[b + 5u] * uint(uViewN) + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
@@ -583,6 +664,13 @@ internal static unsafe class CasterGather
            && LayerCs.Contains($"uCmd[q + 4u] = uint(slot) | (vi << {ViewShift}u);")
            && LayerCs.Contains("uint o = uSrc[b + 5u] * uint(uViewN) + atomicAdd(uCnt[uSrc[b + 4u]], 1u);")
            && LayerCs.Contains($"binding = {BindView}")
+           // #488: the receiver cull is per-VIEW flagged (c.x), inside the uCull gate, and conservative in
+           // the two-spheres form; a rejection tallies past the batch counts, never into one
+           && LayerCs.Contains("bool offAxis, offEnds, rx = uRx != 0 && vc.x != 0.0;")
+           && LayerCs.Contains("if (dot(pl.xyz, p0) + pl.w < -r0 && dot(pl.xyz, p1) + pl.w < -r1) return true;")
+           && LayerCs.Contains("if (rx && SowxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }")
+           && LayerCs.Contains("if (dist <= r) rx = false;")
+           && LayerCs.Contains("p1 = s.xyz + dir * max(0.0, uViewTbl[vi].b.w - t);")
            && LayerCs.Contains($"binding = {BindSrc}") && LayerCs.Contains($"binding = {BindCmd}")
            && LayerCs.Contains($"binding = {BindCount}");
 
@@ -601,6 +689,12 @@ internal static unsafe class CasterGather
            && GatherCs.Contains($"binding = {CullPass.BindSphere}") && GatherCs.Contains("SowxCullSphere")
            && GatherCs.Contains("if (uCull != 0 && s.w < 1e29)")
            && GatherCs.Contains("uCmd[q + 4u] = uint(slot);")
+           // #488: same receiver cull, flagged per dispatch
+           && GatherCs.Contains("bool offAxis, offEnds, rx = uRx != 0;")
+           && GatherCs.Contains("if (dot(pl.xyz, p0) + pl.w < -r0 && dot(pl.xyz, p1) + pl.w < -r1) return true;")
+           && GatherCs.Contains("if (rx && SowxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }")
+           && GatherCs.Contains("if (dist <= r) rx = false;")
+           && GatherCs.Contains("p1 = s.xyz + uDir * max(0.0, uAlong - t);")
            // #305: the set filter reads the staged dynamic flag at the 7-uint stride, in BOTH directions --
            // a filter that lost either arm bakes the same caster into both arrays, and min() then hides it.
            && GatherCs.Contains("uint b = i * 7u;") && SrcUints == 7

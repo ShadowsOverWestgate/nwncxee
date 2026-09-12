@@ -1,3 +1,4 @@
+using System;
 using System.Numerics;
 using Sowx.Framework;
 
@@ -150,21 +151,94 @@ public static class ShadowMath
     {
         Vector3 fwd = lookAt - camPos;
         if (fwd.LengthSquared() < 1e-8f) return true;
-        fwd = Vector3.Normalize(fwd);
-        Vector3 right = Vector3.Cross(fwd, new Vector3(0f, 0f, 1f));
-        // straight-down camera: pick any horizontal right axis (roll-free by construction)
-        right = right.LengthSquared() < 1e-6f ? new Vector3(1f, 0f, 0f) : Vector3.Normalize(right);
-        Vector3 up = Vector3.Cross(right, fwd);
+        CameraBasis(fwd, fovy, aspect, out fwd, out Vector3 right, out Vector3 up, out float tanX, out float tanY);
         Vector3 d = p - camPos;
         Vector3 v = new(Vector3.Dot(d, right), Vector3.Dot(d, up), 0f);
         float depth = Vector3.Dot(d, fwd);
         if (depth + r < near || depth - r > far) return false;
-        float halfY = fovy * (fovy > 3.2f ? MathF.PI / 360f : 0.5f);
-        float tanY = MathF.Tan(halfY);
-        float tanX = tanY * aspect;
         if ((MathF.Abs(v.X) - depth * tanX) / MathF.Sqrt(1f + tanX * tanX) > r) return false;
         if ((MathF.Abs(v.Y) - depth * tanY) / MathF.Sqrt(1f + tanY * tanY) > r) return false;
         return true;
+    }
+
+    /// <summary>The roll-free camera basis (world is Z-up) and the half-fov tangents, shared by every
+    /// camera-frustum test here. <paramref name="fovy"/> is degrees as SetPerspective delivers it (values
+    /// &lt;= 3.2 = radians, defensively).</summary>
+    private static void CameraBasis(Vector3 camFwd, float fovy, float aspect,
+                                    out Vector3 fwd, out Vector3 right, out Vector3 up, out float tanX, out float tanY)
+    {
+        fwd = Vector3.Normalize(camFwd);
+        right = Vector3.Cross(fwd, new Vector3(0f, 0f, 1f));
+        // straight-down camera: pick any horizontal right axis (roll-free by construction)
+        right = right.LengthSquared() < 1e-6f ? new Vector3(1f, 0f, 0f) : Vector3.Normalize(right);
+        up = Vector3.Cross(right, fwd);
+        float halfY = fovy * (fovy > 3.2f ? MathF.PI / 360f : 0.5f);
+        tanY = MathF.Tan(halfY);
+        tanX = tanY * aspect;
+    }
+
+    /// <summary>#488: the camera frustum as six inward-facing planes (xyz = unit normal, w = offset, so
+    /// <c>dot(n, p) + w</c> is the signed distance) from the same roll-free basis
+    /// <see cref="SphereInCameraFrustum"/> builds, each pushed OUT by <paramref name="slack"/> world units.
+    /// Order: near, far, left, right, bottom, top. A degenerate forward writes a frustum that keeps
+    /// everything (all w = +inf).</summary>
+    public static void ReceiverPlanes(Vector3 camPos, Vector3 camFwd, float fovy, float aspect, float near,
+                                      float far, float slack, Span<float> planes)
+    {
+        if (camFwd.LengthSquared() < 1e-8f)
+        {
+            for (int i = 0; i < 6; i++) { planes[i * 4] = 0f; planes[i * 4 + 1] = 0f; planes[i * 4 + 2] = 1f; planes[i * 4 + 3] = float.PositiveInfinity; }
+            return;
+        }
+        CameraBasis(camFwd, fovy, aspect, out Vector3 fwd, out Vector3 right, out Vector3 up, out float tanX, out float tanY);
+        Put(planes, 0, fwd, -Vector3.Dot(fwd, camPos) - near + slack);
+        Put(planes, 1, -fwd, Vector3.Dot(fwd, camPos) + far + slack);
+        // side planes pass through the eye: n = normalize(fwd * tan -/+ axis), w = -dot(n, eye)
+        Vector3 nl = Vector3.Normalize(fwd * tanX + right), nr = Vector3.Normalize(fwd * tanX - right);
+        Vector3 nb = Vector3.Normalize(fwd * tanY + up), nt = Vector3.Normalize(fwd * tanY - up);
+        Put(planes, 2, nl, slack - Vector3.Dot(nl, camPos)); Put(planes, 3, nr, slack - Vector3.Dot(nr, camPos));
+        Put(planes, 4, nb, slack - Vector3.Dot(nb, camPos)); Put(planes, 5, nt, slack - Vector3.Dot(nt, camPos));
+    }
+
+    private static void Put(Span<float> planes, int i, Vector3 n, float w)
+    { planes[i * 4] = n.X; planes[i * 4 + 1] = n.Y; planes[i * 4 + 2] = n.Z; planes[i * 4 + 3] = w; }
+
+    /// <summary>#488: can a caster's shadow reach the receiver frustum? The C# twin of the gather
+    /// dispatch's test, term for term: the shadow volume is bounded by the convex hull of two spheres --
+    /// the caster's own at <paramref name="p0"/>/<paramref name="r0"/> and the extrusion's end at
+    /// <paramref name="p1"/>/<paramref name="r1"/> -- and that hull misses the frustum only if BOTH spheres
+    /// sit wholly outside ONE plane. Conservative: a caster this rejects casts on no visible pixel; one it
+    /// keeps may still not.</summary>
+    public static bool ShadowReaches(ReadOnlySpan<float> planes, Vector3 p0, float r0, Vector3 p1, float r1)
+    {
+        for (int i = 0; i < 6; i++)
+        {
+            Vector3 n = new(planes[i * 4], planes[i * 4 + 1], planes[i * 4 + 2]);
+            float w = planes[i * 4 + 3];
+            if (Vector3.Dot(n, p0) + w < -r0 && Vector3.Dot(n, p1) + w < -r1) return false;
+        }
+        return true;
+    }
+
+    /// <summary>#488: the sun extrusion -- the caster swept along the light to the fit's far extent
+    /// (<paramref name="along"/> from <paramref name="focus"/>), radius unchanged.</summary>
+    public static bool SunShadowReaches(ReadOnlySpan<float> planes, Vector3 c, float r, Vector3 dir, Vector3 focus, float along)
+    {
+        float t = Vector3.Dot(c - focus, dir);
+        return ShadowReaches(planes, c, r, c + dir * MathF.Max(0f, along - t), r);
+    }
+
+    /// <summary>#488: the local-light extrusion -- the tangent cone from the light through the caster, out
+    /// to the light's reach. The cone is wider than the caster at the caster's own depth
+    /// (<c>dist * tan(a) &gt; r</c>), so both end radii are inflated by <c>dist / (dist - r)</c>; a light
+    /// inside the caster keeps it.</summary>
+    public static bool CubeShadowReaches(ReadOnlySpan<float> planes, Vector3 c, float r, Vector3 light, float reach)
+    {
+        Vector3 d = c - light;
+        float dist = d.Length();
+        if (dist <= r) return true;
+        float k = 1f / (dist - r);
+        return ShadowReaches(planes, c, r * dist * k, light + d * (reach / dist), r * reach * k);
     }
 
     /// <summary>A ground-ish focus point for the shadow map: march from the camera along its forward until it
@@ -338,6 +412,27 @@ public static class ShadowMath
             Quaternion look = Quaternion.CreateFromRotationMatrix(camInv);
             Check(Vector3.Dot(FrameRead.ViewForward(look), fwd) > 0.999f,
                   "scene cam: the camera quaternion gives the same forward as the inverted view");
+
+            // #488: the receiver cull. Camera at the origin looking +X, 90deg fov, square, far 100: the
+            // frustum is |y|,|z| <= x. Sun straight down (-Z).
+            Span<float> pl = stackalloc float[24];
+            ReceiverPlanes(Vector3.Zero, Vector3.UnitX, 90f, 1f, 0.1f, 100f, 0f, pl);
+            Vector3 down = new(0f, 0f, -1f);
+            Check(ShadowReaches(pl, new Vector3(50f, 0f, 0f), 1f, new Vector3(50f, 0f, 0f), 1f), "receiver: a caster inside the frustum reaches");
+            Check(!SunShadowReaches(pl, new Vector3(-20f, 0f, 0f), 1f, down, Vector3.Zero, 200f), "receiver: a caster behind the camera with a downward sun cannot reach");
+            Check(SunShadowReaches(pl, new Vector3(50f, 0f, 80f), 1f, down, Vector3.Zero, 200f), "receiver: a caster above the frustum shades down into it");
+            Check(!SunShadowReaches(pl, new Vector3(50f, 0f, 80f), 1f, down, new Vector3(50f, 0f, 85f), 20f), "receiver: ...unless the fit's extent ends before it gets there");
+            Check(!SunShadowReaches(pl, new Vector3(50f, 0f, -80f), 1f, down, Vector3.Zero, 200f), "receiver: a caster below the frustum shading further down cannot reach");
+            Check(SunShadowReaches(pl, new Vector3(50f, 0f, -80f), 1f, new Vector3(0f, 0f, 1f), Vector3.Zero, 200f), "receiver: ...but shading up it does");
+            // cube: light beside the frustum, caster between it and the frustum -> the cone widens in
+            Check(CubeShadowReaches(pl, new Vector3(50f, 70f, 0f), 1f, new Vector3(50f, 80f, 0f), 60f), "receiver: a local-light cone widening toward the frustum reaches");
+            Check(!CubeShadowReaches(pl, new Vector3(50f, 90f, 0f), 1f, new Vector3(50f, 80f, 0f), 60f), "receiver: ...one pointing away does not");
+            Check(!CubeShadowReaches(pl, new Vector3(50f, 70f, 0f), 1f, new Vector3(50f, 80f, 0f), 15f), "receiver: ...nor one whose reach ends short");
+            Check(CubeShadowReaches(pl, new Vector3(50f, 70f, 0f), 5f, new Vector3(50f, 72f, 0f), 60f), "receiver: a light inside the caster keeps it");
+            ReceiverPlanes(Vector3.Zero, Vector3.UnitX, 90f, 1f, 0.1f, 100f, 30f, pl);
+            Check(ShadowReaches(pl, new Vector3(-20f, 0f, 0f), 1f, new Vector3(-20f, 0f, 0f), 1f), "receiver: slack pushes every plane out");
+            ReceiverPlanes(Vector3.Zero, Vector3.Zero, 90f, 1f, 0.1f, 100f, 0f, pl);
+            Check(ShadowReaches(pl, new Vector3(-500f, 0f, 0f), 1f, new Vector3(-500f, 0f, 0f), 1f), "receiver: a degenerate camera keeps everything");
 
             log.Info("ShadowMath.SelfCheck: passed");
         }

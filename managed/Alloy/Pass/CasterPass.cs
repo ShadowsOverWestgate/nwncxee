@@ -495,6 +495,35 @@ public sealed unsafe class CasterPass : IExtenderService
     private static bool _sunScanned, _sunRan, _cubeRan;
     /// <summary>#282: this frame's blanket-invalidate verdict, snapshot before either pass runs.</summary>
     private static bool _frameInvalidate;
+
+    /// <summary>#488: the receiver epoch. The frustum a per-frame view was culled against goes stale as the
+    /// camera moves, and a dyn face with no event in it HOLDS -- so the planes are built from the EPOCH's
+    /// camera pose, pushed out by the pose's worst-case drift (<see cref="RxPosStep"/> + far x
+    /// <see cref="RxAngle"/>); the frame the live camera has moved past that step or turned past that angle
+    /// opens a new epoch and forces every dyn view. Like the blanket invalidate, the force stands until a
+    /// frame whose scans reached every view -- a stalled scan leaves the views after it un-forced.</summary>
+    private const float RxPosStep = 4f, RxAngle = 5f * MathF.PI / 180f;
+    private static Vector3 _rxPos, _rxFwd;
+    private static float _rxFar, _rxFov, _rxAspect;
+    private static bool _rxValid, _rxForce, _rxPending;
+    /// <summary>Receiver epochs this period -- forced dyn re-bakes charged to the camera.</summary>
+    private static long _rxEpochs;
+
+    /// <summary>#488: once per frame, ahead of the passes -- publish this frame's receiver planes and decide
+    /// whether the epoch moved.</summary>
+    private static void ReceiverFrame()
+    {
+        Vector3 pos = FrameInputs.SceneCamPos, fwd = FrameInputs.SceneCamFwd;
+        float far = FrameInputs.CamFar, fov = FrameInputs.CamFovy, aspect = FrameInputs.CamAspect;
+        if (!FrameInputs.HasSceneCam || !FrameInputs.HasPerspective || fwd.LengthSquared() < 1e-8f) fwd = Vector3.Zero;
+        else fwd = Vector3.Normalize(fwd);
+        bool moved = !_rxValid || (pos - _rxPos).LengthSquared() > RxPosStep * RxPosStep
+                     || Vector3.Dot(fwd, _rxFwd) < MathF.Cos(RxAngle) || far != _rxFar || fov != _rxFov || aspect != _rxAspect;
+        if (moved) { _rxPos = pos; _rxFwd = fwd; _rxFar = far; _rxFov = fov; _rxAspect = aspect; _rxValid = true; _rxEpochs++; _rxPending = true; }
+        _rxForce = _rxPending;
+        // a degenerate (no-camera) forward writes planes that keep everything
+        ShadowMath.ReceiverPlanes(_rxPos, _rxFwd, _rxFov, _rxAspect, FrameInputs.CamNear, _rxFar, RxPosStep + _rxFar * RxAngle, CasterGather.Planes);
+    }
     private static long _cubeBakedSlots, _cubeSkippedSlots, _cubeOffSlots, _moverSum, _ghostSum;
     /// <summary>#241: movers BY REASON. A skip count that stays at zero says the predicate is not paying;
     /// only this says why -- a world whose matrices all jitter, a shared vertex pool marked dirty by one
@@ -730,6 +759,10 @@ public sealed unsafe class CasterPass : IExtenderService
     private static readonly int[] _qSize = new int[MaxBakeViews], _qLayer = new int[MaxBakeViews],
                                   _qSet = new int[MaxBakeViews];
     private static readonly bool[] _qPoint = new bool[MaxBakeViews];
+    /// <summary>#488: this queued view is re-baked under THIS frame's camera, so the receiver-frustum cull
+    /// may apply. Never set on a held (static-set) view: it would be culled against a frustum the camera
+    /// has since left.</summary>
+    private static readonly bool[] _qRx = new bool[MaxBakeViews];
     private static readonly Matrix4x4[] _qVp = new Matrix4x4[MaxBakeViews];
     private static readonly Vector3[] _qFocus = new Vector3[MaxBakeViews], _qDir = new Vector3[MaxBakeViews];
     private static readonly float[] _qReach = new float[MaxBakeViews], _qAlong = new float[MaxBakeViews];
@@ -823,7 +856,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// to the map sizes.</summary>
     internal static string Describe()
         => $"dist {_maxDist:F0} rebake {(_rebake ? 1 : 0)} " +
-           $"gather {CasterGather.Mode} split {(_split ? 1 : 0)} layered {(_layerDial ? 1 : 0)} " +
+           $"gather {CasterGather.Mode} receiver {CasterGather.Receiver} split {(_split ? 1 : 0)} layered {(_layerDial ? 1 : 0)} " +
            $"refreshall {(_refreshAll ? 1 : 0)} dynhold {_dynHold} dynevents {(_dynEvents ? 1 : 0)} dynranks {_dynRanks} dynfull {_dynFull} sunfull {_sunFull} sunlatch {_sunLatch} itemdirty {(_itemDirty ? 1 : 0)} staticcap {_staticCap} flipcollect {(FlipCollect ? 1 : 0)} mask {_maskMode} maskholes {_maskHoles:0.##} maskgraded {_maskGraded:0.##} maskdither {_maskDither} maskh {(_maskH ? 1 : 0)} fade {_fadeFrames} fadeslots {_fadeSlots} " +
            $"({_cascades}x{_mapSize} cascades{(_sunSplitCfg ? " + dyn mirror" : "")}, " +
            $"{_cubeLights}x{_cubeSize} cubes, " +
@@ -846,6 +879,10 @@ public sealed unsafe class CasterPass : IExtenderService
                 float og = CasterGather.Mode;
                 CasterGather.Mode = v != 0f ? 1 : 0;
                 return og;
+            case "receiver":
+                float orx = CasterGather.Receiver;
+                CasterGather.Receiver = v != 0f ? 1 : 0;
+                return orx;
             case "rebake":
                 float orb = _rebake ? 1f : 0f;
                 _rebake = v != 0f;
@@ -912,7 +949,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     /// <summary>Back to the boot values.</summary>
     internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _maskGraded = AlloyCensus.GradedBlend; _maskDither = MaskDitherBoot; _maskH = true; _listVer++; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; }
+    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _maskGraded = AlloyCensus.GradedBlend; _maskDither = MaskDitherBoot; _maskH = true; _listVer++; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; CasterGather.Receiver = 1; }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -1355,6 +1392,7 @@ public sealed unsafe class CasterPass : IExtenderService
         CasterGather.Stand();
         _gStaged = false;
         _qN = 0;
+        ReceiverFrame();
         if (sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0))
         {
             if (EnsureCommon() && CasterGather.Ensure()) { EnsureLayered(); EnsureHandleMask(); _gStaged = GatherStage(); }
@@ -1400,7 +1438,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // ...and only now may the frame's invalidation be consumed: every pass that ran reached every one of
         // its views, so each of them recorded this frame's movers against its own slots.
         if ((_sunRan || _cubeRan) && (!_sunRan || _sunScanned) && (!_cubeRan || _cubeScanned))
-            _invalidate = false;
+        { _invalidate = false; _rxPending = false; }
         // #303: the culled-vs-drawn sample -- a latent copy of the last view's survivor counts, read back
         // frames later, so the figure reaches the period line without a readback on the draw path.
         CasterGather.Sample();
@@ -1535,14 +1573,14 @@ public sealed unsafe class CasterPass : IExtenderService
                 bool grass = GrassField.CastsInto(i);
                 hasDyn |= grass;
                 if (!hasDyn || !_sunBaked[i]) _sunDynValid[i] = false;
-                else if (_dynEvents && !invalidate && !grass && _sunDynValid[i] && _sunDynVp[i] == vp
+                else if (_dynEvents && !invalidate && !_rxForce && !grass && _sunDynValid[i] && _sunDynVp[i] == vp
                          && !EventInFit(c, dir, radius, margin))
                     SunDynMask[i] = 1f;
                 // The cadence ladder: a far cascade's dynamic layer holds one frame under the same fit.
-                else if (i >= _sunFull && !invalidate && _sunDynValid[i] && _sunDynVp[i] == vp && ((_frameSeq + i) & 1) != 0)
+                else if (i >= _sunFull && !invalidate && !_rxForce && _sunDynValid[i] && _sunDynVp[i] == vp && ((_frameSeq + i) & 1) != 0)
                 { SunDynMask[i] = 1f; _sunDynSkipped++; }
                 else if (RenderView(SunDynTex, _mapSize, i, &vp, dir, c, radius, margin, point: false,
-                                    set: CasterGather.SetDynamic))
+                                    set: CasterGather.SetDynamic, receiver: true))
                 { SunDynMask[i] = 1f; _sunDynBakedViews++; _sunDynValid[i] = true; _sunDynVp[i] = vp; _sunDynRebaked[i] = grass; }
                 else _sunDynValid[i] = false;
             }
@@ -1885,7 +1923,7 @@ public sealed unsafe class CasterPass : IExtenderService
                 // slack lets differ from pos by under a texel. A roamer publishes pos itself.
                 Vector3 dpos = roam ? pos : new Vector3(_cubeKeyPos[slot * 3], _cubeKeyPos[slot * 3 + 1], _cubeKeyPos[slot * 3 + 2]);
                 int now = _dynEvents && !roam ? EventFaceMask(dpos, far) : AllFaces;
-                bool forced = invalidate || slotChanged || roam;
+                bool forced = invalidate || slotChanged || roam || _rxForce;
                 int bake = forced ? AllFaces : now | _dynPageMask[page];
                 // The cadence ladder: a far light's page holds one frame, carrying its events forward. Keyed on
                 // the FORCING terms, not on the mask -- with animated props on every face the mask is all six
@@ -1904,7 +1942,7 @@ public sealed unsafe class CasterPass : IExtenderService
                     Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(dpos, f, CubeNear, far);
                     dynWhole = RenderView(CubeDynTex, _cubeDynSize, page * CubeFaces + f, &vp,
                                           ShadowMath.CubeFaceForward(f), dpos, far, 0f, point: true,
-                                          set: roam ? CasterGather.SetAll : CasterGather.SetDynamic);
+                                          set: roam ? CasterGather.SetAll : CasterGather.SetDynamic, receiver: true);
                     _cubeDynBakedFaces++;
                 }
                 _dynPageMask[page] = dynWhole ? now : bake;
@@ -2040,8 +2078,9 @@ public sealed unsafe class CasterPass : IExtenderService
                    // frames later, so it costs no stall on the draw path.
                    (CasterGather.Samples > 0
                     ? $", sampled view kept {(float)CasterGather.SampledKept / CasterGather.Samples:F0}/" +
-                      $"{(float)CasterGather.SampledStaged / CasterGather.Samples:F0} staged draws " +
-                      "(latent sample)"
+                      $"{(float)CasterGather.SampledStaged / CasterGather.Samples:F0} staged draws, " +
+                      $"{(float)CasterGather.SampledRx / CasterGather.Samples:F0} receiver-culled " +
+                      $"(latent sample; {_rxEpochs} camera epochs forced the dyn views)"
                     : "") +
                    $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
                    (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
@@ -2069,7 +2108,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _noRecordSum = 0;
         _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0; _collects = 0;
         CasterGather.Views = 0; CasterGather.Batches = 0;
-        CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0;
+        CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0; CasterGather.SampledRx = 0; _rxEpochs = 0;
         CasterGather.UploadsSkipped = 0; CasterGather.Uploads = 0;
     }
 
@@ -2400,7 +2439,7 @@ public sealed unsafe class CasterPass : IExtenderService
         fixed (Matrix4x4* m = &_qVp[k]) Buffer.MemoryCopy(m, r, 64, 64);
         r[16] = _qFocus[k].X; r[17] = _qFocus[k].Y; r[18] = _qFocus[k].Z; r[19] = _qReach[k];
         r[20] = _qDir[k].X; r[21] = _qDir[k].Y; r[22] = _qDir[k].Z; r[23] = _qAlong[k];
-        r[24] = 0f;   // spare (held the #151 shadow-LOD radius until its removal)
+        r[24] = _qRx[k] ? 1f : 0f;   // #488: the receiver cull applies to this view
         r[25] = _qPoint[k] ? 1f : 0f;
         r[26] = _qSet[k];
         r[27] = _qLayer[k];
@@ -2778,7 +2817,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// shadows frozen where the geometry no longer is.</para></summary>
     private static bool RenderView(uint tex, int size, int layer,
                                    Matrix4x4* vp, Vector3 lightDir, Vector3 focus, float reach, float margin,
-                                   bool point, int set = CasterGather.SetAll)
+                                   bool point, int set = CasterGather.SetAll, bool receiver = false)
     {
         // zeroed ahead of every early-out: a view that bakes nothing staged no creatures, and a stale count
         // would be re-added per cube face
@@ -2795,11 +2834,11 @@ public sealed unsafe class CasterPass : IExtenderService
             _submitCreatures = _gCreatures;
             _qTex[_qN] = tex; _qSize[_qN] = size; _qLayer[_qN] = layer; _qVp[_qN] = *vp;
             _qFocus[_qN] = focus; _qDir[_qN] = lightDir; _qReach[_qN] = reach; _qAlong[_qN] = reach + margin;
-            _qPoint[_qN] = point; _qSet[_qN] = set;
+            _qPoint[_qN] = point; _qSet[_qN] = set; _qRx[_qN] = receiver;
             _qN++;
             return true;
         }
-        return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point, set);
+        return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point, set, receiver);
     }
 
     /// <summary>The target textures <see cref="BeginTarget"/> has verified complete -- the sun array, the
@@ -3007,13 +3046,13 @@ public sealed unsafe class CasterPass : IExtenderService
     /// survived.</summary>
     private static bool GatherSubmit(uint tex, int size, int layer, Matrix4x4* vp,
                                      Vector3 lightDir, Vector3 focus, float reach, float margin, bool point,
-                                     int set)
+                                     int set, bool receiver)
     {
         // PRE-cull figures: the survivors are the GPU's, and asking would be the readback this pass exists
         // to not do -- the latent sample on the period line is what reports them.
         _submitCreatures = _gCreatures;
         if (!BeginTarget(tex, size, layer)) return false;
-        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, point, set);
+        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, point, set, receiver);
         // unit 0 is where the cutout stage samples; nothing else in this bracket moves the active unit
         Gl.ActiveTexture(Gl.TEXTURE0);
         int boundVao = -1, boundMode = -1, boundTex = -1;
