@@ -305,10 +305,23 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The gob a blended part composites WITH: its fade owner when it has one (an attached weapon
     /// or shield rides its creature), else its own gob. Zero for tile geometry.</summary>
+    /// <summary>The gob a blended part composites WITH: its fade owner, else the root of its attachment chain
+    /// (#490: a creature's body parts and held items are gobs attached to the creature's, and one ghosted
+    /// creature is one layer, not one per part). Bounded climb; a cycle is not a shape the engine builds.</summary>
     private static IntPtr RunGob(int i)
     {
         IntPtr g = _oGob[i];
         if (g == IntPtr.Zero) return g;
+        // Climb FIRST: an attached gob's node pointer is the part it hangs on (a head keys on the neck, each
+        // weapon piece on a hand), so the owner rule below applies to the root, not to the attachment.
+        for (int hop = 0; hop < 8; hop++)
+        {
+            IntPtr behavior = *(IntPtr*)(g + EngineLayout.GobAttach);
+            if (behavior == IntPtr.Zero) break;
+            IntPtr parent = *(IntPtr*)(behavior + EngineLayout.BehaviorTarget);
+            if (parent == IntPtr.Zero) break;
+            g = parent;
+        }
         GobRef owner = new GobRef(g).FadeOwner;
         return owner.IsNull ? g : owner.Ptr;
     }

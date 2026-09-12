@@ -329,7 +329,8 @@ public sealed unsafe partial class AlloyRenderer
                             // OIT (OitPass): the whole class in one unsorted, non-depth-writing pass into the
                             // accumulation pair, composited once. The per-creature run loop and its one-layer
                             // depth sweep are gone with it: with no depth written, no layer can hide another.
-                            if (_oitWanted && _gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
+                            // /draw oit 2 (#490) sorts per pixel through linked lists on the same bracket.
+                            if (_gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
                             {
                                 _oitOn = true;
                                 TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);

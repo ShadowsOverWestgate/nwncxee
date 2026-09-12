@@ -141,6 +141,8 @@ public sealed unsafe partial class AlloyRenderer
             _prog46 = prog;
             _locVp = GlProgram.Loc(prog, "uVP"); _locBase = GlProgram.Loc(prog, "uDrawBase");
             _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz"); _locOit = GlProgram.Loc(prog, "uOit");
+            _locOitDim = GlProgram.Loc(prog, "uOitDim"); _locOitBias = GlProgram.Loc(prog, "uOitBias"); _locOitGob = GlProgram.Loc(prog, "uOitGob");
+            Gl.UseProgram(prog); Gl.Uniform1i(GlProgram.Loc(prog, "uOitDepth"), (int)TextureSlots.OitDepth);
             _locCut = GlProgram.Loc(prog, "uAlphaCut");
             _locTint = GlProgram.Loc(prog, "uTint");
             _locSkyFog = GlProgram.Loc(prog, "uSkyFog");
@@ -348,7 +350,7 @@ public sealed unsafe partial class AlloyRenderer
         L.Atten = GlProgram.Loc(prog, "uAtten"); L.Hot = GlProgram.Loc(prog, "uHot");
         L.WrapN = GlProgram.Loc(prog, "uWrapN"); L.Sss = GlProgram.Loc(prog, "uSss");
         L.Reach = GlProgram.Loc(prog, "uReach");
-        L.Viz = GlProgram.Loc(prog, "uViz"); L.Oit = GlProgram.Loc(prog, "uOit");
+        L.Viz = GlProgram.Loc(prog, "uViz"); L.Oit = GlProgram.Loc(prog, "uOit"); L.OitDim = GlProgram.Loc(prog, "uOitDim"); L.OitBias = GlProgram.Loc(prog, "uOitBias"); L.OitGob = GlProgram.Loc(prog, "uOitGob");
         L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunVp = GlProgram.Loc(prog, "uSunVp");
         L.SunTexel = GlProgram.Loc(prog, "uSunTexel"); L.SunBias = GlProgram.Loc(prog, "uSunBias");
         L.SunCount = GlProgram.Loc(prog, "uSunCascades");
@@ -376,6 +378,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(L.CubeTex, (int)CubeUnit);
         Gl.Uniform1i(L.CubeDynTex, (int)CubeDynUnit);
         Gl.Uniform1i(L.Probe, (int)EnvProbe.ProbeUnit);
+        Gl.Uniform1i(GlProgram.Loc(prog, "uOitDepth"), (int)TextureSlots.OitDepth);
         Gl.Uniform1i(L.Ssao, (int)TextureSlots.Ssao);
         Gl.Uniform1i(GlProgram.Loc(prog, "uSceneDepth"), (int)TextureSlots.SsaoDepth);
         // #120's five map samplers, for the same reason: left at their default they would all point at unit

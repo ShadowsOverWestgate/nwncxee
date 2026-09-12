@@ -322,7 +322,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// content override (#92) that predates them, and simply do not get uploaded.</summary>
     internal struct LitLoc
     {
-        public int Oit;
+        public int Oit, OitDim, OitBias, OitGob;
         public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade,
@@ -377,7 +377,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// without this there is nothing to point the feature at.</summary>
     private static bool _aoTest = DefAoTest;
     private static int _locViz = -1;
-    private static int _locOit = -1;
+    private static int _locOit = -1, _locOitDim = -1, _locOitBias = -1, _locOitGob = -1;
     /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
     /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
     private static int _locTint = -1;
@@ -1079,7 +1079,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  weld {NormalWeld.Angle:F0}deg ({NormalWeld.Parts} parts, {NormalWeld.Welded} welded/{NormalWeld.Kept} kept/{NormalWeld.Refused} refused; newcomers only)  " +
         $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  retest {(CullPass.Retest ? 1 : 0)}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
         $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  blendprepass {(_blendPrepass ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
-        $"fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  hlglow {(RspShim.GlowReplay ? 1 : 0)}  " +
+        $"oit {OitPass.Mode}  fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  hlglow {(RspShim.GlowReplay ? 1 : 0)}  " +
         // #336: the one number that says whether a fog cull has anything to cull -- the far plane Alloy
         // inherits from the engine VP, against the fog the shaders already fade to.
         $"[camfar {FrameInputs.CamFar:F0} fog {(FrameInputs.FogOn ? 1 : 0)} {FrameInputs.FogStart:F0}..{FrameInputs.FogEnd:F0}]";
@@ -1112,8 +1112,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             case "light":    old = _lighting ? 1f : 0f; _lighting = v != 0f; break;
             case "prepass":  old = _depthPrepass ? 1f : 0f; _depthPrepass = v != 0f; break;
             case "washtest": old = _washTest ? 1f : 0f; _washTest = v != 0f; break;
-            case "oit":      old = _oitWanted ? 1f : 0f; _oitWanted = v != 0f; break;
-            case "oitviz":   old = OitPass.Viz; OitPass.Viz = Math.Clamp((int)v, 0, 3); break;
+            case "oit":      old = OitPass.Mode; OitPass.Mode = Math.Clamp((int)v, 0, 2); break;
+            case "oitviz":   old = OitPass.Viz; OitPass.Viz = Math.Clamp((int)v, 0, 5); break;
             case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
             case "threads":  old = _stageThreads; _stageThreads = Math.Clamp((int)v, 0, StagePool.MaxChunks - 1); StagePool.Rearm(); break;
             case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;

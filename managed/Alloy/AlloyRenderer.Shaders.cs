@@ -645,6 +645,48 @@ public sealed unsafe partial class AlloyRenderer
 
         """;
 
+
+    /// <summary>The blended class's output stage, shared by every program the class draws through. <c>uOit</c>
+    /// 0 = a composited colour; 1 = the weighted-blended accumulation pair (<see cref="OitPass"/>);
+    /// 2 = the pair AND a (colour, depth) node appended to the pixel's linked list (#490). The list's depth
+    /// test is done here against the opaque depth: an SSBO append is a side effect, and the GL may run
+    /// this stage before its own depth test. The node's alpha is the same coverage x rot.w the caster
+    /// pass dithers on (#363), so the shadow strength is the same in every mode.</summary>
+    internal const string OitOutFs = """
+        layout(location = 1) out float oReveal;
+        uniform int uOit;
+        uniform sampler2D uOitDepth;
+        layout(std430, binding = 22) buffer SowxOitHeads { uint uOitCount; uint uOitHead[]; };
+        layout(std430, binding = 23) writeonly buffer SowxOitNodes { uvec4 uOitNode[]; };
+        uniform ivec2 uOitDim;   // (head-table stride in pixels, node capacity)
+        uniform float uOitBias;  // a wash batch's polygon offset, which gl_FragCoord.z need not carry
+        uniform int uOitGob;     // the batch's object id (1..255, 0 = none): one object composites as ONE layer
+        vec4 SowxOitOut(vec4 c)
+        {
+            if (uOit == 0) { oReveal = 1.0; return c; }
+            float a = clamp(c.a, 0.0, 1.0);
+            ivec2 px = ivec2(gl_FragCoord.xy);
+            if (uOit == 2)
+            {
+                // mode 2 draws with the GL depth test OFF and no depth attached: this compare is the test,
+                // for the pair too, so the depth texture is never sampled while it is also an attachment
+                if (gl_FragCoord.z - uOitBias > texelFetch(uOitDepth, px, 0).r) discard;
+                uint i = atomicAdd(uOitCount, 1u) + 1u;   // 1-based: 0 is the empty head after the clear
+                if (i <= uint(uOitDim.y))
+                {
+                    uint prev = atomicExchange(uOitHead[px.y * uOitDim.x + px.x], i);
+                    // 24-bit depth over an 8-bit object id: the resolve sorts on the whole word, depth first
+                    uint key = (uint(clamp(gl_FragCoord.z, 0.0, 1.0) * 16777215.0) << 8) | uint(uOitGob);
+                    uOitNode[i] = uvec4(prev, key, packHalf2x16(c.rg), packHalf2x16(vec2(c.b, a)));
+                }
+            }
+            // McGuire & Bavoil eq. 9: near-and-opaque weighs most; clamped so fp16 neither under- nor overflows.
+            float w = clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
+            oReveal = a;
+            return vec4(c.rgb * a, a) * w;
+        }
+        """;
+
     /// <summary>#136's known ceiling, closed: the hosted sky program is the ENGINE's and writes DISPLAY space
     /// into Alloy's LINEAR target, so the resolve encoded it a second time and the sky read brighter than
     /// vanilla. This runs right after the hosted draw, over the pixels it wrote (the depth range and LEQUAL
@@ -654,18 +696,8 @@ public sealed unsafe partial class AlloyRenderer
     internal const string SkyDecodeFs = """
         #version 460 core
         layout(location = 0) out vec4 frag;
-        layout(location = 1) out float oReveal;
-        // OIT (OitPass): 1 = write the weighted-blended accumulation pair instead of a composited colour.
-        uniform int uOit;
-        vec4 SowxOitOut(vec4 c)
-        {
-            if (uOit == 0) { oReveal = 1.0; return c; }
-            float a = clamp(c.a, 0.0, 1.0);
-            // McGuire & Bavoil eq. 9: near-and-opaque weighs most; clamped so fp16 neither under- nor overflows.
-            float w = clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
-            oReveal = a;
-            return vec4(c.rgb * a, a) * w;
-        }
+
+        """ + OitOutFs + """
         uniform sampler2D uHdr;
         void main()
         {
@@ -738,20 +770,8 @@ public sealed unsafe partial class AlloyRenderer
         // one value and the sky changes it at most once per role.
         uniform vec3 uTint;
         layout(location = 0) out vec4 frag;
-        layout(location = 1) out float oReveal;
-        // OIT (OitPass): 1 = write the weighted-blended accumulation pair instead of a composited colour.
-        uniform int uOit;
 
-        """ + FogDecl + FogMixFs + """
-        vec4 SowxOitOut(vec4 c)
-        {
-            if (uOit == 0) { oReveal = 1.0; return c; }
-            float a = clamp(c.a, 0.0, 1.0);
-            // McGuire & Bavoil eq. 9: near-and-opaque weighs most; clamped so fp16 neither under- nor overflows.
-            float w = clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
-            oReveal = a;
-            return vec4(c.rgb * a, a) * w;
-        }
+        """ + FogDecl + FogMixFs + OitOutFs + """
         void main()
         {
             if (uViz == 4) { frag = vec4(1.0, 0.0, 1.0, 1.0); return; }
@@ -989,18 +1009,8 @@ public sealed unsafe partial class AlloyRenderer
         // -1.0 (no test) on opaque and additive.
         uniform float uAlphaCut;
         layout(location = 0) out vec4 frag;
-        layout(location = 1) out float oReveal;
-        // OIT (OitPass): 1 = write the weighted-blended accumulation pair instead of a composited colour.
-        uniform int uOit;
-        vec4 SowxOitOut(vec4 c)
-        {
-            if (uOit == 0) { oReveal = 1.0; return c; }
-            float a = clamp(c.a, 0.0, 1.0);
-            // McGuire & Bavoil eq. 9: near-and-opaque weighs most; clamped so fp16 neither under- nor overflows.
-            float w = clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
-            oReveal = a;
-            return vec4(c.rgb * a, a) * w;
-        }
+
+        """ + OitOutFs + """
 
         // Slot mask bits, matching AlloyRenderer's 1 << (slot - 1).
         const int SOWX_SLOT_NORMAL = 1, SOWX_SLOT_SPEC = 2, SOWX_SLOT_ROUGH = 4,

@@ -41,6 +41,7 @@ SOURCES = [
     "managed/Alloy/Pass/CasterPass.cs",
     "managed/Alloy/Pass/GrassField.cs",
     "managed/Alloy/Pass/PostChain.cs",
+    "managed/Alloy/Pass/OitPass.cs",
     "managed/Alloy/Pass/PostStack.cs",
     "managed/Alloy/Pass/SmaaLib.cs",   # before SmaaStage: the harvest folds references in list order
     "managed/Alloy/Pass/SmaaStage.cs",
@@ -436,6 +437,8 @@ def programs(c, s):
         "grass depth prepass": (s["cx_grass_vs"], c["GrassDepthFs"]),
         "clustered light build": (s["cx_cluster_cs"],),
         "sky decode": (c["FullscreenVs"], c["SkyDecodeFs"]),
+        "oit resolve": (c["FullscreenVs"], c["OitResolveFs"]),
+        "oit clear": (c["FullscreenVs"], c["OitClearFs"]),
     }
 
 

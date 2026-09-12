@@ -837,6 +837,11 @@ public static unsafe class EngineLayout
     /// <summary>Gob -&gt; the attachment link whose chain multiplies a further lerped scale into the gob's
     /// own. Paired three times at delta 0, and the highest Gob field #436 measured.</summary>
     public static readonly int GobAttach = Same("Gob", "attach", 0x450);
+    /// <summary>CAurBehavior -&gt; the SafePointer&lt;CAurObject&gt; naming the object the behaviour hangs its gob
+    /// off: the parent for the five CAurBehaviorAttach* classes (body parts, held items), the follow target
+    /// for the camera ones, zero for Navigate. The raw pointer is the SafePointer's first word. Both ctors
+    /// write it at +0x20 (Linux @0x5a2d50, Windows @0x140053b30, #490).</summary>
+    public static readonly int BehaviorTarget = Same("CAurBehavior", "target", 0x20);
     /// <summary><c>Gob::GetAdjustedScale() const</c> -- the scale every emitter size term is multiplied by.
     /// Printed on both sides by <c>tools/abi/vtable-slots.py Gob</c>; -8, like every other slot (#433).</summary>
     public static readonly int GobAdjustedScaleSlot =

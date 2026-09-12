@@ -66,6 +66,9 @@ internal static class TextureSlots
     /// <summary>The OIT resolve's accumulation pair. The snapshot's units: the resolve runs before the water
     /// copy is taken, and FrameSnapshot.Bind re-binds its own textures before any water draw.</summary>
     internal const uint OitAccum = SnapshotColor, OitReveal = SnapshotDepth;
+    /// <summary>#490: the opaque depth the linked-list append tests against, bound for the accumulate only --
+    /// the reveal unit, which is free until the resolve rebinds it.</summary>
+    internal const uint OitDepth = OitReveal;
     /// <summary>The frame copy the grass root blend reads. The last material-map unit (<see cref="MapBase"/>+6):
     /// the grass program binds no material maps, and every unit from <see cref="PostHdr"/> up is taken in
     /// that program by the light rig (<see cref="LocalShadowDyn"/> on 11 was the first attempt, and the blade
@@ -155,6 +158,8 @@ internal static class TextureSlots
         E(FrameSnapshot.FsHead.Contains("uniform sampler2D uEnvMap;"), $"{WaterEnv} uEnvMap (water program)");
         E(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbColor;"), $"{SnapshotColor} uFbColor");
         E(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbDepth;"), $"{SnapshotDepth} uFbDepth");
+        E(AlloyRenderer.OitOutFs.Contains("uniform sampler2D uOitDepth;"), $"{OitDepth} uOitDepth (blended output)");
+        E(AlloyRenderer.OitOutFs.Contains("uniform ivec2 uOitDim;") && AlloyRenderer.OitOutFs.Contains("uniform float uOitBias;") && AlloyRenderer.OitOutFs.Contains("uniform int uOitGob;"), "uOitDim/uOitBias/uOitGob are what OitPass.Upload and IssueColour write");
         E(Particles.ParticleFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SceneDepth} uSceneDepth");
 
         // ...and the units themselves. MapSamplers is what the lit program's bind loop walks, so a name added

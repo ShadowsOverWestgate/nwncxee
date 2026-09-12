@@ -260,13 +260,15 @@ public sealed unsafe partial class AlloyRenderer
         byte boundMask = _passDepthMask;
         bool boundTest = true;
         bool boundOffset = false;
+        float boundOitBias = -1f;   // per program: reset on bind, so a wash batch's bias never leaks across
+        int boundOitGob = -1;
         // #292: face culling, per batch. -1 rather than a guess at the preamble's state: the sky, grass,
         // particle and beam passes all leave their own culling behind them, and a probe capture re-enters
         // this loop six more times, so the first batch of every entry issues the call rather than trusting
         // what someone else set.
         int boundCull = -1;
         float boundCut = float.NaN;   // per PROGRAM: reset on every UseProgram below
-        int litBase = -1, litCut = -1; // the bound lit program's, whichever of the two it is
+        int litBase = -1, litCut = -1, litOitBias = -1, litOitGob = -1; // the bound lit program's, whichever of the two it is
         int litSsaoOn = -1, litAoDirect = -1;
         // #379 follow-up: SSAO is per BATCH, not per program bind. The visibility buffer is computed from
         // the DEPTH PREPASS, and a batch the prepass skipped (cutout, an out-of-prepass feature, the whole
@@ -333,7 +335,7 @@ public sealed unsafe partial class AlloyRenderer
                     AlloyLights.SetDrawUniforms(L.Grid, L.Tile, L.Z, L.Falloff, L.Wrap,
                                                 L.Atten, L.Hot, L.WrapN, L.Sss, viewport, near, far, L.Reach);
                     Gl.Uniform1i(L.Viz, viz);
-                    Gl.Uniform1i(L.Oit, _oitOn ? 1 : 0);
+                    OitPass.Upload(L.Oit, L.OitDim, _oitOn);
                     Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
                     UploadFeatureTerms(L.Feat, viewport);
                     UploadAreaTerms(L);
@@ -341,7 +343,7 @@ public sealed unsafe partial class AlloyRenderer
                     UploadLocalCubes(L);
                     UploadProbe(L);
                     SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
-                    litBase = L.Base; litCut = L.Cut;
+                    litBase = L.Base; litCut = L.Cut; litOitBias = L.OitBias; litOitGob = L.OitGob; boundOitBias = -1f; boundOitGob = -1;
                     litSsaoOn = L.SsaoOn; litAoDirect = L.AoDirect;
                     boundSsao = -1;
                 }
@@ -353,7 +355,7 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.Uniform3fv(_locTint, 1, white);    // ...and white, which is Mat()'s ordinary branch
                     Gl.Uniform1f(_locSkyFog, 0f);
                     Gl.Uniform1i(_locViz, viz);
-                    Gl.Uniform1i(_locOit, _oitOn ? 1 : 0);
+                    OitPass.Upload(_locOit, _locOitDim, _oitOn); boundOitBias = -1f; boundOitGob = -1;
                     Gl.UniformMatrix4fv(_locVp, 1, 0, vpRaw);
                     UploadFeatureTerms(_locFeat, viewport);
                 }
@@ -403,6 +405,13 @@ public sealed unsafe partial class AlloyRenderer
                 if (wash && Gl.PolygonOffset != null) { Gl.PolygonOffset(WashOffsetFactor, WashOffsetUnits); Gl.Enable(Gl.POLYGON_OFFSET_FILL); }
                 else Gl.Disable(Gl.POLYGON_OFFSET_FILL);
                 boundOffset = wash;
+            }
+            if (_oitOn)
+            {
+                float bias = wash ? OitPass.WashBias : 0f;
+                if (bias != boundOitBias) { Gl.Uniform1f(lit ? litOitBias : _locOitBias, bias); boundOitBias = bias; }
+                int gid = OitPass.GobId(_gGob[g]);
+                if (gid != boundOitGob) { Gl.Uniform1i(lit ? litOitGob : _locOitGob, gid); boundOitGob = gid; }
             }
             // #292: the engine's own per-material decision, reproduced. Sub-list 1 of
             // Scene::RenderDrawBucket @0x46d060 draws under Disable(CULL_FACE); everything else draws under
@@ -473,8 +482,6 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The blended range is being drawn into OitPass's accumulation pair: programs write the pair,
     /// and the per-batch blend pair stays off the state.</summary>
     private static bool _oitOn;
-    /// <summary><c>/draw oit 0</c>: the blended class goes back to the sorted, depth-writing pass. A/B instrument.</summary>
-    private static bool _oitWanted = true;
     /// <summary>The post-resolve sweep for the batches OIT skipped: hosted programs only.</summary>
     private static bool _onlyHosted;
     /// <summary>Aurora blend-mode indices (see <see cref="BlendGl"/>) of the one pair OIT accumulates.</summary>
