@@ -22,7 +22,8 @@ if [ ! -f build/funchook.lib ] || [ ! -f build/distorm.lib ]; then
 fi
 
 echo ">> compiling the version.dll proxy half (native/bootstrap_win.c -> .obj)..."
-cl /nologo /c /O2 /GS- native/bootstrap_win.c /Fobuild/bootstrap_win.obj
+# Dash flags: Git Bash rewrites /nologo-style args into C:/Program Files/Git/nologo paths.
+cl -nologo -c -O2 -GS- native/bootstrap_win.c -Fobuild/bootstrap_win.obj
 
 # tools/abi/check-win-symbols.py needs llvm-undname and a real nwmain.exe; a CI runner has neither.
 echo ">> skipping the symbol check (no nwmain.exe here; build-win.sh runs it on the dev box)" >&2
