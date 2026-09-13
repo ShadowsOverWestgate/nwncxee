@@ -27,8 +27,8 @@ Clone with submodules (funchook): `git clone --recursive`, or
 ## Install & play
 
 Grab the archive for your platform (`sowx-linux-x64-<tag>.zip` or
-`sowx-windows-x64-<tag>.zip`) from the public releases page:
-https://github.com/ShadowsOverWestgate/sow-client-extender-releases/releases
+`sowx-windows-x64-<tag>.zip`) from the releases page:
+https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender/releases
 (or build it yourself, see above). Each zip carries its own `README.txt` with
 the full install steps; the Linux ones are repeated below.
 

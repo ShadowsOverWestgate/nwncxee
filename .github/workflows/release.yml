@@ -1,6 +1,9 @@
-# GitHub side of releases (map #1). A v* tag mirrored from Gitea builds the Linux
-# extender on ubuntu-latest and publishes it (+ SHA256SUMS) to the PUBLIC
-# releases-only repo, since this mirror is private (#508). Tag-gated, never on PR.
+# GitHub side of releases (map #1, #524). A v* tag mirrored from Gitea builds the
+# Linux extender on ubuntu-latest and the Windows one on windows-latest, then
+# uploads both zips + SHA256SUMS to the GITEA release for the tag over its REST
+# API. GitHub is only the worker (it has the Windows runner); players download from
+# https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender/releases, which
+# only works while that repo stays publicly readable. Tag-gated, never on PR.
 #
 # Windows is a NATIVE build on windows-latest (#504, build-win-native.sh); the Linux cross-build
 # (build-win.sh) is a dev tool and never ships. Both zips are published together by the publish job.
@@ -16,7 +19,11 @@ name: release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch: # re-run for an existing tag: gh workflow run release --ref vX.Y.Z
+  # Re-run / backfill an existing tag from main's workflow file (the file at an old
+  # tag is the old publish): gh workflow run release --ref main -f tag=vX.Y.Z
+  workflow_dispatch:
+    inputs:
+      tag: { description: existing v* tag to (re)publish, required: true }
 
 permissions:
   contents: read
@@ -26,7 +33,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASES_REPO: ShadowsOverWestgate/sow-client-extender-releases
+  TAG: ${{ inputs.tag || github.ref_name }}
+  GITEA_API: https://git.westgate.pw/api/v1/repos/ShadowsOverWestgate/sow-client-extender
 
 jobs:
   linux:
@@ -35,14 +43,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Validate tag
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] \
             || { printf "unsupported release tag: %s\n" "$TAG" >&2; exit 1; }
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ env.TAG }}
           fetch-depth: 0 # build.sh stamps the version from `git describe --tags`
           submodules: recursive # funchook pulls diStorm3 as a nested submodule
 
@@ -56,8 +63,6 @@ jobs:
           sudo apt-get install -y -q clang lld zlib1g-dev cmake
 
       - name: Build + package
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           ./build.sh
@@ -79,6 +84,7 @@ jobs:
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ env.TAG }}
           fetch-depth: 0
           submodules: recursive
 
@@ -92,8 +98,6 @@ jobs:
       # runner has neither, so the script skips it. It runs on the dev box via build-win.sh.
       - name: Build + package
         shell: bash
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           ./build-win-native.sh
@@ -109,19 +113,35 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { ref: "${{ env.TAG }}" }
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { path: dist, merge-multiple: true }
 
-      - name: Publish to the public releases repo
+      # Idempotent: GET-first because POST on a tag that already has a release is 409,
+      # and same-name assets are deleted before re-upload so workflow_dispatch re-runs
+      # replace instead of failing. Also re-PATCHes prerelease (old runs left rc tags false).
+      - name: Publish to the Gitea release
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-          TAG: ${{ github.ref_name }}
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
         run: |
           set -euo pipefail
           ( cd dist && sha256sum *.zip > SHA256SUMS )
           stamp=$(grep -oE "WindowsBuildStamp = 0x[0-9a-f]+" managed/Framework/SymbolMap.cs | grep -oE "0x[0-9a-f]+")
           sed "s/@VERSION@/${TAG}/g; s/@STAMP@/${stamp}/g" packaging/RELEASE-BODY.md > body.md
-          pre=(); [[ "$TAG" == *-rc* ]] && pre=(--prerelease)
-          gh release create "$TAG" dist/* --repo "$RELEASES_REPO" \
-            --title "$TAG" --notes-file body.md "${pre[@]}"
+          pre=false; [[ "$TAG" == *-rc* ]] && pre=true
+          api() { curl -sSf -H "Authorization: token $GITEA_TOKEN" "$@"; }
+          payload=$(jq -n --arg tag "$TAG" --argjson pre "$pre" --rawfile body body.md \
+            '{tag_name:$tag, name:$tag, body:$body, prerelease:$pre, draft:false}')
+          if id=$(api "$GITEA_API/releases/tags/$TAG" 2>/dev/null | jq -r .id); then
+            api -X PATCH -H "Content-Type: application/json" -d "$payload" "$GITEA_API/releases/$id" > /dev/null
+          else
+            id=$(api -X POST -H "Content-Type: application/json" -d "$payload" "$GITEA_API/releases" | jq -r .id)
+          fi
+          for f in dist/*; do
+            name=$(basename "$f")
+            api "$GITEA_API/releases/$id/assets" | jq -r --arg n "$name" '.[] | select(.name==$n) | .id' \
+              | while read -r aid; do api -X DELETE "$GITEA_API/releases/$id/assets/$aid"; done
+            api -X POST -F "attachment=@$f" "$GITEA_API/releases/$id/assets?name=$name" > /dev/null
+          done
+          echo "published $TAG (release $id) with: $(ls dist | tr '\n' ' ')"

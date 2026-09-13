@@ -1,7 +1,8 @@
 # Pull-request validation: build the extender and prove it loads C# into a
 # foreign process (run-demo.sh, no game needed). There is no unit-test project
-# yet, so the build + load smoke IS the gate. Releases are built and published
-# by GitHub Actions on the mirror (.github/workflows/release.yml, map #1).
+# yet, so the build + load smoke IS the gate. Releases are built by GitHub
+# Actions on the mirror (.github/workflows/release.yml, map #1) and published to
+# this repo's Gitea release page (#524).
 name: ci
 
 on:
