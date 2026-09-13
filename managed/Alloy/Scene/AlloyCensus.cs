@@ -927,10 +927,7 @@ internal static unsafe class AlloyCensus
     private static string SlotNames(MaterialRef m)
     {
         var sb = new System.Text.StringBuilder();
-        // Engine slots past the Material's own three are only real on a SharedMaterial: on a plain one
-        // Material::GetTexture's unbounded read hands back whatever field sits at mat+i*0x10 (crash 1789305736).
-        int top = m.Shared.IsNull ? 3 : 11;
-        for (int i = 0; i < top; i++) { var t = m.Texture(i); if (!t.IsNull && AurTex.IsLive(t.Ptr)) sb.Append(i).Append(':').Append(TexName(t.Ptr)).Append(' '); }
+        for (int i = 0; i < MaterialExtraSlots.First; i++) { var t = m.Texture(i); if (!t.IsNull && AurTex.IsLive(t.Ptr)) sb.Append(i).Append(':').Append(TexName(t.Ptr)).Append(' '); }
         for (int i = MaterialExtraSlots.First; i < MaterialExtraSlots.First + MaterialExtraSlots.Count; i++)
         { var t = m.TextureAt(i); if (!t.IsNull && AurTex.IsLive(t.Ptr)) sb.Append(i).Append(':').Append(TexName(t.Ptr)).Append(' '); }
         return sb.Length == 0 ? "none" : sb.ToString().TrimEnd();

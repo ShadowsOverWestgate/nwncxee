@@ -1003,12 +1003,6 @@ internal static unsafe class SymbolMap
     /// <summary>The two texture vtables, which is the whole of "is this pointer still a texture" --
     /// see <see cref="AurTex"/>. Data symbols, never called: what is read is the value a live object's
     /// first word holds, i.e. the symbol plus the Itanium ABI's 0x10.</summary>
-    /// <summary>#259: AurTextureCalculateHashID(const char* name, short nSchemes, int* schemes) @0x4857b0 --
-    /// the engine's OWN identity for a texture, and therefore Alloy's. <c>CAurTextureBasic::CalculateHashID</c>
-    /// @0x485890 is exactly <c>(basic+0xa8, *(short*)(basic+0xd4), *(int**)(basic+0x48))</c> cached at
-    /// <c>basic+0xd8</c>, and <c>AurTextureFind</c> looks textures up by it. The scheme array is what keeps
-    /// two PLT skins sharing one resref from being one resource -- the collision a name-only key would have.</summary>
-    public const string AurTextureCalcHash = "_Z25AurTextureCalculateHashIDPKcsPi";
     /// <summary>#284: <c>CAurTexture::BuildAndStore()</c> @0x48bc80 -- the engine's ON-DEMAND texture build,
     /// and the only retry that exists. It resolves the reference/basic pair (vtable 0x18 then 0x10) and calls
     /// <c>CAurTextureBasic::Reset</c> @0x4858c0 followed by <c>BuildAndStoreTexture</c> @0x48b320. Reset is
@@ -1249,7 +1243,6 @@ internal static unsafe class SymbolMap
         [AurTextureBindInUnit] = Nm("?BindInUnit@CAurTexture@@UEAAXIH@Z"),
         [AurTextureBuildAndStore] = Nm("?BuildAndStore@CAurTexture@@QEAAXXZ"),
         [AurTextureBuildAndStoreTexture] = Nm("?BuildAndStoreTexture@CAurTextureBasic@@QEAAXXZ"),
-        [AurTextureCalcHash] = Nm("?AurTextureCalculateHashID@@YAIPEBDFPEAH@Z"),
         [AurTextureConstructImage] = Nm("?ConstructImage@CAurTextureBasic@@QEAAXXZ"),
         [AurTextureGetController] = Nm("?AurTextureGetController@@YAPEAVTextureController@@PEAVCAurTexture@@@Z"),
         [AurTextureGlImageBasic] = Nm("?glImageBasic@CAurTextureBasic@@QEAAH_N@Z"),

@@ -121,7 +121,6 @@ internal static unsafe class OwnedTextures
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _hash = (delegate* unmanaged<IntPtr, short, int*, int>)Native.Sym(SymbolMap.AurTextureCalcHash);
         _engBoundTex = (uint*)Native.Sym(SymbolMap.GlBoundTextures);
         if (_engBoundTex == null)
             log.Info("OwnedTextures: GLRender::m_boundTextures unresolved -- a name that dies outside the engine's DeleteTextures leaves its bind cache stale (#461)");
@@ -137,7 +136,7 @@ internal static unsafe class OwnedTextures
             log.Info("OwnedTextures: CAurTexture::BuildAndStore unresolved -- a texture whose build lost its "
                    + "race with the resource loader stays without a GL id, and its part is not drawn (#284)");
         bool wanted = Settings.Bool("ownedtex", true);
-        _armed = wanted && _hash != null;
+        _armed = wanted;
         // ADR 0013 config bucket: a capability decision about how the ENGINE loads content, not a look dial.
         // Costs a CPU composite per character texture at load -- which is what the engine did for years --
         // and buys every PLT-skinned creature a place in the owned set.
@@ -177,9 +176,7 @@ internal static unsafe class OwnedTextures
                    + "by a GPU-side copy at the bracket, keyed on the same content identity as an upload (#360)");
         log.Info(_armed
             ? "OwnedTextures: armed -- Alloy uploads from the engine's decoded pixels (ownedtex=0 to draw from engine ids)"
-            : wanted
-              ? "OwnedTextures: stood down -- AurTextureCalculateHashID unresolved, so there is no identity to key resources on and owned draws sample engine texture ids"
-              : "OwnedTextures: stood down (ownedtex=0) -- owned draws sample engine texture ids");
+            : "OwnedTextures: stood down (ownedtex=0) -- owned draws sample engine texture ids");
     }
 
     /// <summary>Chain the two engine funnels this table lives on: the UPLOAD (#259, where decoded pixels
@@ -302,6 +299,7 @@ internal static unsafe class OwnedTextures
         uint* cells = *(uint**)((byte*)tex + OffCellNames);
         if (cells == null) return;
         int n = *(short*)((byte*)tex + OffNumX) * *(short*)((byte*)tex + OffNumY);
+        if (n > MaxCells) return;
         for (int cell = 0; cell < n; cell++)
         {
             int etid = (int)cells[cell];
@@ -390,7 +388,7 @@ internal static unsafe class OwnedTextures
 
         uint* cells = *(uint**)((byte*)tex + OffCellNames);
         int n = *(short*)((byte*)tex + OffNumX) * *(short*)((byte*)tex + OffNumY);
-        if (cells == null || cell < 0 || cell >= n) return false;
+        if (cells == null || cell < 0 || cell >= n || n > MaxCells) return false;
         int etid = (int)cells[cell];
         if (etid <= 0) return false;
         // A cell already naming an owned texture is the engine re-uploading INTO our name (a Restore after a
@@ -664,7 +662,7 @@ internal static unsafe class OwnedTextures
         uint[]? big = cells > 64 ? new uint[cells] : null;
         for (int c = 0; c < cells; c++)
         {
-            ulong k = (k0 & ~0xFFFFFFFFUL) | (uint)c;
+            ulong k = (k0 & ~CellMask) | (uint)c;
             if (_inFlight.Contains(k) || !_res.TryGetValue(k, out Entry e)) { _cacheMisses++; return false; }
             if (big != null) big[c] = e.Owned; else names[c] = e.Owned;
         }
@@ -675,7 +673,7 @@ internal static unsafe class OwnedTextures
             uint name = big != null ? big[c] : names[c];
             ((uint*)arr)[c] = name;
             _engineHeld.Add(name);
-            ulong k = (k0 & ~0xFFFFFFFFUL) | (uint)c;
+            ulong k = (k0 & ~CellMask) | (uint)c;
             _index[(int)name] = k;
             Entry e = _res[k];
             if (e.Idle != 0) { _idleBytes -= e.Bytes; _res[k] = new Entry(e.Owned, e.Bytes, e.Gen, 0); _pendingHandles.Remove(e.Owned); }   // live again: its handle must not be dropped under a record
@@ -723,7 +721,7 @@ internal static unsafe class OwnedTextures
         {
             if (_bytes <= budget) break;
             _res.Remove(kv.Key);
-            _meta.Remove(kv.Key & ~0xFFFFFFFFUL);
+            _meta.Remove(kv.Key & ~CellMask);
             _idleBytes -= kv.Value.Bytes;
             Discard(kv.Value);   // the record marks land in Drain, once for the whole batch
             n++;
@@ -774,6 +772,16 @@ internal static unsafe class OwnedTextures
         ok &= *(int*)(obj + OffGlId) == 7 && *(short*)(obj + OffNumX) == 2 && *(short*)(obj + OffNumY) == 1
               && *(int*)(obj + OffWidth) == 64 && *(int*)(obj + OffHeight) == 32 && obj[FlagImageBuilt] == 1
               && *(IntPtr*)(obj + OffImage) == IntPtr.Zero && *(float*)(obj + OffAlphaMean) == 0.5f;
+        // the key: an anagram family (the engine's hash folds these to ONE value) is two resources, case is
+        // not, and the cell lives in the low field
+        byte* obj2 = stackalloc byte[0x100];
+        new Span<byte>(obj2, 0x100).Clear();
+        static void Name(byte* o, string n) { for (int i = 0; i < n.Length; i++) o[OffName + i] = (byte)n[i]; o[OffName + n.Length] = 0; }
+        Name(obj, "tex_core_0145_d"); Name(obj2, "tex_core_0154_d");
+        ok &= Key((IntPtr)obj, 0) != Key((IntPtr)obj2, 0);
+        Name(obj2, "TEX_CORE_0145_D");
+        ok &= Key((IntPtr)obj, 0) == Key((IntPtr)obj2, 0) && (Key((IntPtr)obj, 3) & CellMask) == 3
+              && (Key((IntPtr)obj, 3) & ~CellMask) == Key((IntPtr)obj, 0);
 
         _res.Clear(); foreach (var kv in svRes) _res[kv.Key] = kv.Value;
         _index.Clear(); foreach (var kv in svIdx) _index[kv.Key] = kv.Value;
@@ -782,7 +790,7 @@ internal static unsafe class OwnedTextures
         if (_pending.Count > svPend) _pending.RemoveRange(svPend, _pending.Count - svPend);
         _pendingHandles.Remove(101); _pendingHandles.Remove(102);
         _bytes = svBytes; _idleBytes = svIdle; _budgetBytes = svBudget; _budgetCfgMb = svCfg;
-        log.Info(ok ? "OwnedTextures.SelfCheckCache: passed" : "OwnedTextures.SelfCheckCache: FAILED -- keep/evict/filter/fill drifted");
+        log.Info(ok ? "OwnedTextures.SelfCheckCache: passed" : "OwnedTextures.SelfCheckCache: FAILED -- keep/evict/filter/fill/key drifted");
     }
 
     /// <summary>The TRANSCODE DRIP. The BCn transcode used to run inline in the upload funnel -- a readback
@@ -1363,17 +1371,34 @@ internal static unsafe class OwnedTextures
         if (_res.Count > _peakCount) _peakCount = _res.Count;
     }
 
-    /// <summary>A resource's identity: the ENGINE's own hash for the texture, folded with the cell index.
-    /// <c>CAurTextureBasic::CalculateHashID</c> @0x485890 hashes the resolved name at <c>+0xa8</c> together
-    /// with the PLT scheme array at <c>+0x48</c>/<c>+0xd4</c>, and <c>AurTextureFind</c> looks textures up by
-    /// it -- so it is exactly "which texture is this" as the engine itself answers it, and two PLT skins
-    /// sharing one resref are two resources rather than one. The cell occupies the low half whole, so an
-    /// atlas cell can never collide with another texture's hash.
-    /// <para>Cold: once per cell per (re)upload, and it costs one engine call rather than a string walk.</para></summary>
-    private static ulong Key(IntPtr tex, int cell) => ((ulong)(uint)_hash(tex + OffName,
-        *(short*)((byte*)tex + OffSchemeCount), *(int**)((byte*)tex + OffSchemes)) << 32) | (uint)cell;
-
-    private static delegate* unmanaged<IntPtr, short, int*, int> _hash;
+    /// <summary>A resource's identity: a 64-bit FNV-1a over the resolved name at <c>+0xa8</c> (ASCII
+    /// lower-cased, as the engine's <c>AurTextureFind</c> compares it) and the PLT scheme array at
+    /// <c>+0x48</c>/<c>+0xd4</c> (two skins sharing one resref are two resources), with the atlas cell in
+    /// the low <see cref="CellMask"/> bits. NOT the engine's own <c>AurTextureCalculateHashID</c>: that is a
+    /// per-character PRODUCT modulo a prime, so every anagram family collides (<c>tex_core_0145_d</c>,
+    /// <c>_0154_d</c>, <c>_0415_d</c>... one value; 2,202 such values across the base game + SoW haks), and
+    /// the engine only survives it by <c>strcasecmp</c>-ing after the hash match. Keyed on that hash alone,
+    /// the second texture of a family was handed the first one's image at every funnel -- warm hand-back,
+    /// <see cref="Replace"/>, the transcode queue -- which drew as many unrelated objects wearing one texture.
+    /// <para>Cold: once per cell per (re)upload.</para></summary>
+    private static ulong Key(IntPtr tex, int cell)
+    {
+        const ulong Prime = 0x100000001B3UL;   // not-an-offset: FNV-1a 64 prime
+        ulong h = 0xCBF29CE484222325UL;   // not-an-offset: FNV-1a 64 basis
+        for (byte* p = (byte*)tex + OffName; *p != 0; p++)
+        {
+            uint c = *p; if (c - 'A' < 26) c += 32;
+            h = (h ^ c) * Prime;
+        }
+        short n = *(short*)((byte*)tex + OffSchemeCount);
+        int* sch = *(int**)((byte*)tex + OffSchemes);
+        h = (h ^ (uint)n) * Prime;
+        for (int i = 0; sch != null && i < n; i++) h = (h ^ (uint)sch[i]) * Prime;
+        return (h & ~CellMask) | ((ulong)(uint)cell & CellMask);
+    }
+    /// <summary>The atlas cell's field in a key; <see cref="MaxCells"/> is what the funnels refuse past it.</summary>
+    private const ulong CellMask = 0xFFFF;   // not-an-offset: key bit field
+    private const int MaxCells = (int)CellMask + 1;
 
     /// <summary>How much VRAM the texture currently bound to <c>GL_TEXTURE_2D</c> occupies, over every level
     /// that has storage. A block format answers directly; anything else is width*height*(sum of the channel

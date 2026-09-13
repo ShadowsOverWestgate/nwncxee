@@ -20,8 +20,8 @@ same thing. The GL objects are untouched: they belong to the context, and rebuil
 area transition would be a stall for nothing.
 
 `OwnedTextures` (#259) is the one row with **no `Revoke` slot at all**, and the reason generalises. Its
-resources are keyed on the engine's own texture identity (`AurTextureCalculateHashID` over the resolved
-name at `basic+0xa8` and the PLT schemes at `+0x48`/`+0xd4`, folded with the atlas cell), so a part-table
+resources are keyed on texture identity (a 64-bit hash of the resolved name at `basic+0xa8`, lower-cased,
+and the PLT schemes at `+0x48`/`+0xd4`, with the atlas cell in the low 16 bits), so a part-table
 wipe or a `/vanilla` toggle invalidates nothing in them. More to the point, they are populated *only* at
 the engine's upload funnel — so wiping them on an edge the engine does not rebuild across would leave
 every texture borrowed for the rest of the session, with no path back.

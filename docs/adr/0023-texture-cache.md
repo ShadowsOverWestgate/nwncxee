@@ -1,6 +1,9 @@
 # ADR 0023: Textures are cached across the world edge, and a resident texture is never rebuilt
 
-Status: accepted (2026-09-05). Live-UNVERIFIED. `texcache_mb` in sowx.cfg (-1 = a quarter of probed VRAM, 0 = off).
+Status: accepted (2026-09-05). Live-UNVERIFIED. Amended 2026-09-13: the key was the engine's
+`AurTextureCalculateHashID`, which is anagram-blind (a per-character product mod a prime; the engine
+`strcasecmp`s after it, this cache did not), so `tex_core_0154_d` was handed `tex_core_0145_d`'s image.
+Now a 64-bit FNV-1a over the lower-cased name + schemes; `tools/texhash/aurhash-collisions.py` is the proof. `texcache_mb` in sowx.cfg (-1 = a quarter of probed VRAM, 0 = off).
 
 ## Context
 
@@ -11,8 +14,8 @@ texture, 11-41 demands per hitch frame. The engine's texture budget is a 2002 de
 skin every district uses, reads, decodes and uploads the same texture again. An 8 GB card holds
 the whole module many times over; the geometry pools sit at 96 MiB.
 
-`OwnedTextures` already keyed its resources on CONTENT (`AurTextureCalculateHashID` over the
-resolved name and PLT schemes, folded with the atlas cell), not on a GL name. Only its lifetime
+`OwnedTextures` already keyed its resources on CONTENT (a hash over the resolved name and PLT
+schemes, folded with the atlas cell), not on a GL name. Only its lifetime
 was wrong: the engine's `DeleteTextures` funnel, the area transition, discarded the resource
 along with the index entry that pointed at it.
 

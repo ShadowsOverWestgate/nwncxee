@@ -90,8 +90,14 @@ internal readonly unsafe ref struct MaterialRef
             IntPtr over = *(IntPtr*)(shared + SharedSlot0 + slot * MatSlotStride);
             if (over != IntPtr.Zero) return new(over);
         }
+        // the engine's fallback is unbounded: past the Material's own slots it hands back whatever field
+        // sits at mat+slot*0x10 (crashes 1789305736, 1789311470 dereferenced it as a texture)
+        if (slot >= OwnSlots) return new(IntPtr.Zero);
         return new(*(IntPtr*)(_p + slot * MatSlotStride));
     }
+    /// <summary>Slots a plain <c>Material</c> owns itself (<c>BindAllStandardTextures</c> @0x4c6e30 stops at
+    /// i &lt; 3); anything higher is real only in a SharedMaterial's table.</summary>
+    private const int OwnSlots = 3;
     /// <summary>#275: map slot <paramref name="s"/> (0-based, <see cref="AlloyRenderer.MapSlots"/> wide) by its
     /// SOURCE: the AO slot lives in the extender-owned <c>texture11</c>, every other one is engine slot s+1.
     /// The only accessor the map block reads through, so no caller has to know which is which.</summary>

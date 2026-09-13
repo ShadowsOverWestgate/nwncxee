@@ -152,7 +152,7 @@ internal static unsafe partial class GrassField
     /// the code defaults now that the dials are chat commands (ADR 0013): there is no earlier value to
     /// capture, so the constants are the single source for both the field initialisers and the reset.</summary>
     private const float BootDensity = 2f, BootWind = 1f, BootWindSpeed = 0.001f,
-                        BootSoften = 1f, BootAniso = 8f, BootEdge = 2f,
+                        BootSoften = 0f, BootAniso = 8f, BootEdge = 2f,
                         BootPush = 0.15f, BootPushRadius = 1f, BootPushExtent = 64f,
                         BootCull = 1f, BootCullShrink = 0.8f, BootCullMax = 0f,
                         BootLod = 40f, BootLodMin = 0.02f, BootLodWidth = 0.5f, BootLodHeight = 0.25f,
