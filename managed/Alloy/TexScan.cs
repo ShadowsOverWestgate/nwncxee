@@ -178,7 +178,7 @@ internal static unsafe class TexScan
     private static int Expand5(int v) => (v << 3) | (v >> 2);
     private static int Expand6(int v) => (v << 2) | (v >> 4);
 
-    /// <summary>Box-filter mip chain in place: level i+1 written from level i. <paramref name="off"/> and the
+    /// <summary>Box-filter mip chain in place, colour alpha-weighted (#499): level i+1 written from level i. <paramref name="off"/> and the
     /// sizes are the chain the caller laid out with <see cref="Chain"/>.</summary>
     internal static void BuildMips(byte* px, int levels, int* lw, int* lh, long* off)
     {
@@ -195,7 +195,13 @@ internal static unsafe class TexScan
                     byte* p00 = s + ((long)y0 * sw + x0) * 4, p01 = s + ((long)y0 * sw + x1) * 4;
                     byte* p10 = s + ((long)y1 * sw + x0) * 4, p11 = s + ((long)y1 * sw + x1) * 4;
                     byte* o = d + ((long)y * dw + x) * 4;
-                    for (int k = 0; k < 4; k++) o[k] = (byte)((p00[k] + p01[k] + p10[k] + p11[k] + 2) >> 2);
+                    // #499: alpha-weighted colour -- a transparent texel's (black) colour must not darken the
+                    // level. Alpha itself is the plain mean; a fully transparent box keeps the plain mean too.
+                    int wa = p00[3] + p01[3] + p10[3] + p11[3];
+                    for (int k = 0; k < 3; k++)
+                        o[k] = wa == 0 ? (byte)((p00[k] + p01[k] + p10[k] + p11[k] + 2) >> 2)
+                                       : (byte)((p00[k] * p00[3] + p01[k] * p01[3] + p10[k] * p10[3] + p11[k] * p11[3] + wa / 2) / wa);
+                    o[3] = (byte)((wa + 2) >> 2);
                 }
             }
         }
@@ -244,6 +250,12 @@ internal static unsafe class TexScan
         n = Chain(2, 2, true, 16, lw, lh, off, out _);
         BuildMips(px, n, lw, lh, off);
         E(px[16] == 128 && px[17] == 255 && px[18] == 0 && px[19] == 255, $"box mip: {px[16]},{px[17]},{px[18]},{px[19]}");
+        // #499: a transparent black texel must not pull the level's colour toward black -- the alpha-weighted
+        // mean keeps the covered colour, and only the alpha averages down.
+        for (int i = 0; i < 4; i++) { px[i * 4] = 200; px[i * 4 + 1] = 100; px[i * 4 + 2] = 0; px[i * 4 + 3] = 255; }
+        px[12] = 0; px[13] = 0; px[14] = 0; px[15] = 0;
+        BuildMips(px, n, lw, lh, off);
+        E(px[16] == 200 && px[17] == 100 && px[18] == 0 && px[19] == 191, $"alpha-weighted mip: {px[16]},{px[17]},{px[18]},{px[19]}");
         log.Info(ok ? "TexScan.SelfCheck: passed" : "TexScan.SelfCheck: FAILED");
         return ok;
     }

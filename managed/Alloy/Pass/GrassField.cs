@@ -1667,17 +1667,12 @@ internal static unsafe partial class GrassField
             // The cell edge, inset by one texel OF THE MIP THIS FOOTPRINT SELECTS: a coarse level's filter
             // reaches across the atlas seam otherwise, and the card's top row takes the next cell's colour --
             // the black dashes riding the far field's tips.
-            float lod = textureQueryLod(uTex, uv).x;
-            vec2 inset = exp2(lod) / vec2(textureSize(uTex, 0));
+            vec2 inset = exp2(textureQueryLod(uTex, uv).x) / vec2(textureSize(uTex, 0));
             uv = clamp(uv, vCellBase + inset, vCellBase + 0.5 - inset);
-            vec4 t = textureGrad(uTex, uv, gx, gy);
-            // #371: the chain is a plain box average of straight-alpha texels over black backing, so every
-            // coarser level's colour is pulled toward black by its transparent neighbours -- the soften
-            // darkening. Dividing by the level's alpha recovers the alpha-weighted mean; level 0 is exact as
-            // sampled, so the correction ramps in with the level actually selected. The gain is capped at 2x:
-            // uncapped, near-transparent fringe texels blow up into bright sparks (the ratio is noise there).
-            t.rgb /= mix(1.0, max(t.a, 0.5), clamp(lod, 0.0, 1.0));
-            return t;
+            // #371/#499: the soften darkening is fixed where the mips are BUILT (TexScan.BuildMips averages
+            // colour alpha-weighted); an in-shader division by the level's alpha over-brightened straight-alpha
+            // atlases 1.25x field-wide and 2x on the fringe, which read as fullbright, jagged grass.
+            return textureGrad(uTex, uv, gx, gy);
         }
         """;
 
