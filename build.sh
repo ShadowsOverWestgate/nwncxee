@@ -72,7 +72,8 @@ OUT=sow-client-extender
 rm -rf "$OUT" && mkdir -p "$OUT"
 cp -a build/libsowx.so build/sowx_managed.so "$OUT/"
 cp packaging/sowx-launch "$OUT/sowx-launch"
-cp packaging/README.txt "$OUT/README.txt"
+sed "s/@VERSION@/$SOWX_VERSION/g" packaging/README.txt > "$OUT/README.txt"
+packaging/licenses.sh "$OUT/LICENSES.txt"
 chmod +x "$OUT/sowx-launch"
 
 python3 -c "import shutil; shutil.make_archive('$OUT', 'zip', '$OUT')"

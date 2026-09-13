@@ -89,7 +89,8 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 # since nwmain.exe imports VERSION.dll and the loader takes the copy beside the exe first.
 cp build/win/sowx_managed.dll "$OUT/version.dll"
 STAMP=$(grep -oE 'WindowsBuildStamp = 0x[0-9a-f]+' managed/Framework/SymbolMap.cs | grep -oE '0x[0-9a-f]+')
-cat > "$OUT/README.txt" <<EOF
+sed "s/@VERSION@/$SOWX_VERSION/g; s/@STAMP@/$STAMP/g" packaging/README-win.txt > "$OUT/README.txt"
+packaging/licenses.sh "$OUT/LICENSES.txt"
 Sowx client extender for Windows -- $SOWX_VERSION, pinned to nwmain.exe build $STAMP
 
 Optional add-on for the Neverwinter Nights: Enhanced Edition client. Run the stock client and you

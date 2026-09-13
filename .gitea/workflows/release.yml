@@ -1,13 +1,11 @@
 # A v* tag builds the Linux extender and attaches it (+ SHA256SUMS) to its
 # Gitea release. Tag-gated, never on PR (AGENTS.md CI law).
 #
-# Windows is NOT built here: there is no Windows runner (sow-platform
-# gitea-runner.nix has none) and the cross-build needs clang-cl/lld-link plus a
-# Windows 10 SDK + MSVC lib tree that the nix shell does not carry. Hand-build per
-# release: ./build-win.sh on Linux stages sow-client-extender-win/ (version.dll +
-# funchook.dll + sowx_managed.dll + font + README) and zips it; attach the zip to
-# the same release. Record the client build stamp (SymbolMap.WindowsBuildStamp) in
-# the release body: the Windows artifact is pinned to one client build (#421).
+# Windows is NOT built here: the release artifact is a native build on a Windows
+# runner (GitHub Actions, map #1 / #504). build-win.sh is a developer tool only.
+# The release body comes from packaging/RELEASE-BODY.md and names the pinned
+# client build (SymbolMap.WindowsBuildStamp), since the Windows artifact is
+# locked to one client build (#421).
 name: release
 
 on:
@@ -42,18 +40,21 @@ jobs:
             || { printf "unsupported release tag: %s\n" "$TAG" >&2; exit 1; }
 
       - name: Build + package
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           nix shell nixpkgs#dotnet-sdk_10 nixpkgs#cmake nixpkgs#gnumake nixpkgs#clang \
-            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#gnutar nixpkgs#gzip nixpkgs#python3 \
+            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#python3 nixpkgs#gnused nixpkgs#gnugrep \
             nixpkgs#coreutils --command bash -c '
               set -euo pipefail
               ./build.sh
               rm -rf dist && mkdir -p dist
-              # build.sh stages a ready-to-run sow-client-extender/ folder (the
-              # wrapper + the 3 .so files, symlinks already resolved). Ship that
-              # whole folder so the player unpacks and runs sowx-launch.
-              tar czf dist/sowx-linux-x64.tar.gz sow-client-extender
-              ( cd dist && sha256sum sowx-linux-x64.tar.gz > SHA256SUMS )
+              # build.sh zips the CONTENTS of sow-client-extender/ (flat), so
+              # "unpack into bin/linux-x86" is literally the whole install.
+              mv sow-client-extender.zip "dist/sowx-linux-x64-${TAG}.zip"
+              ( cd dist && sha256sum *.zip > SHA256SUMS )
+              stamp=$(grep -oE "WindowsBuildStamp = 0x[0-9a-f]+" managed/Framework/SymbolMap.cs | grep -oE "0x[0-9a-f]+")
+              sed "s/@VERSION@/${TAG}/g; s/@STAMP@/${stamp}/g" packaging/RELEASE-BODY.md > body.md
             '
 
       - name: Upload to Gitea release
@@ -63,14 +64,14 @@ jobs:
           REPO: ${{ github.repository }}
           SERVER: ${{ github.server_url }}
         run: |
-          nix shell nixpkgs#curl nixpkgs#coreutils nixpkgs#gnugrep --command bash -c '
+          nix shell nixpkgs#curl nixpkgs#coreutils nixpkgs#gnugrep nixpkgs#python3 --command bash -c '
             set -euo pipefail
             api="${SERVER}/api/v1/repos/${REPO}"
             auth="Authorization: token ${TOKEN}"
+            payload=$(python3 -c "import json,sys,os; print(json.dumps({\"tag_name\":os.environ[\"TAG\"],\"name\":os.environ[\"TAG\"],\"body\":open(\"body.md\").read()}))")
             # Create the release (ignore "already exists"), then read its id.
             curl -fsS -X POST -H "$auth" -H "Content-Type: application/json" \
-              "${api}/releases" \
-              -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\"}" || true
+              "${api}/releases" -d "$payload" || true
             id="$(curl -fsS -H "$auth" "${api}/releases/tags/${TAG}" \
               | grep -o "\"id\":[0-9]*" | head -1 | cut -d: -f2)"
             for f in dist/*; do
