@@ -296,7 +296,8 @@ public sealed unsafe partial class AlloyRenderer
             bool oitOut = hosted || _gSrc[g] != AuroraSrcAlpha || _gDst[g] != AuroraOneMinusSrcAlpha;
             if (_oitOn && oitOut) continue;
             if (_onlyHosted && !oitOut) continue;
-            int wantProg = water ? 2 : hosted ? 3 : lit ? 1 : 0;
+            bool lists = lit && !water && !hosted && _oitOn && OitPass.Linked;   // the append twin, bracket only
+            int wantProg = water ? 2 : hosted ? 3 : lists ? 4 : lit ? 1 : 0;
             if (boundProg != wantProg)
             {
                 boundProg = wantProg;
@@ -327,8 +328,8 @@ public sealed unsafe partial class AlloyRenderer
                 }
                 else if (lit)
                 {
-                    ref LitLoc L = ref (hosted ? ref _litH : ref _lit);
-                    Gl.UseProgram(hosted ? _progLitHost : _progLit46);
+                    ref LitLoc L = ref (hosted ? ref _litH : ref (lists ? ref _litL : ref _lit));
+                    Gl.UseProgram(hosted ? _progLitHost : lists ? _progLitList : _progLit46);
                     Gl.Uniform1i(L.Tex, 0);
                     Gl.UniformMatrix4fv(L.Vp, 1, 0, vpRaw);
                     AlloyLights.BindForDraw();

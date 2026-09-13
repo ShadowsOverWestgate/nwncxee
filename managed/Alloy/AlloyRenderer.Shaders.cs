@@ -656,8 +656,13 @@ public sealed unsafe partial class AlloyRenderer
         layout(location = 1) out float oReveal;
         uniform int uOit;
         uniform sampler2D uOitDepth;
+        // The lists block is compiled in ONLY for the OIT bracket's twin program (OitPass.WithLists): an SSBO
+        // atomic in a fragment stage is a side effect, and the driver then runs every fragment before the depth
+        // test -- even down a dead uOit branch -- which costs the opaque pass its early-Z (measured 5x on NVIDIA).
+        #ifdef SOWX_OIT_LISTS
         layout(std430, binding = 22) buffer SowxOitHeads { uint uOitCount; uint uOitHead[]; };
         layout(std430, binding = 23) writeonly buffer SowxOitNodes { uvec4 uOitNode[]; };
+        #endif
         uniform ivec2 uOitDim;   // (head-table stride in pixels, node capacity)
         uniform float uOitBias;  // a wash batch's polygon offset, which gl_FragCoord.z need not carry
         uniform int uOitGob;     // the batch's object id (1..255, 0 = none): one object composites as ONE layer
@@ -666,6 +671,7 @@ public sealed unsafe partial class AlloyRenderer
             if (uOit == 0) { oReveal = 1.0; return c; }
             float a = clamp(c.a, 0.0, 1.0);
             ivec2 px = ivec2(gl_FragCoord.xy);
+        #ifdef SOWX_OIT_LISTS
             if (uOit == 2)
             {
                 // mode 2 draws with the GL depth test OFF and no depth attached: this compare is the test,
@@ -680,6 +686,7 @@ public sealed unsafe partial class AlloyRenderer
                     uOitNode[i] = uvec4(prev, key, packHalf2x16(c.rg), packHalf2x16(vec2(c.b, a)));
                 }
             }
+        #endif
             // McGuire & Bavoil eq. 9: near-and-opaque weighs most; clamped so fp16 neither under- nor overflows.
             float w = clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 * pow(1.0 - gl_FragCoord.z * 0.9, 3.0), 1e-2, 3e3);
             oReveal = a;

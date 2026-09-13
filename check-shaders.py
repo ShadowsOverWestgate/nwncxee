@@ -415,6 +415,7 @@ def programs(c, s):
         "caster depth": (s["cx_cast_vs"], s["cx_cast_fs"]),
         "caster depth (alpha-tested)": (c["CastMaskVs"], c["CastMaskFs"]),
         "clustered lit": (s["cx_ownlit_vs"], s["cx_ownlit_fs"]),
+        "clustered lit (OIT lists)": (s["cx_ownlit_vs"], s["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define SOWX_OIT_LISTS 1\n", 1)),
         "post bloom downsample": (s["cx_post_vs"], s["cx_bloomdn_fs"]),
         "post bloom upsample": (s["cx_post_vs"], s["cx_bloomup_fs"]),
         "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),
@@ -446,6 +447,30 @@ def programs(c, s):
 EXTS = {1: ("comp",), 2: ("vert", "frag"), 4: ("vert", "tesc", "tese", "frag")}
 
 
+SIDE_EFFECTS = re.compile(r"\b(atomic\w*|imageStore|imageAtomic\w*|gl_FragDepth)\b|\blayout\([^)]*\)\s*(?!readonly)(?:coherent\s+|volatile\s+|restrict\s+)*buffer\b")
+
+
+def check_early_z(progs):
+    """A fragment-stage side effect (SSBO/image store or atomic, gl_FragDepth) costs the program its early-Z,
+    so it may reach ONLY the OIT-lists twin: every other stage an opaque draw uses must preprocess clean.
+    (The fullbright stage takes the block at RUNTIME through OitPass.WithLists -- a deliberate exception.)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        def effects(name):
+            src = progs[name][1]
+            for tok, val in TOKENS.items():
+                src = src.replace(tok, val)
+            p = os.path.join(tmp, "ez.frag"); open(p, "w").write(src)
+            r = subprocess.run(["glslangValidator", "-E", p], capture_output=True, text=True)
+            return sorted({m.group(0).split("(")[0].strip() for m in SIDE_EFFECTS.finditer(r.stdout)})
+        bad = 0
+        for name, want in (("clustered lit", False), ("clustered lit (OIT lists)", True), ("sky decode", False), ("owned water", False)):
+            got = effects(name)
+            ok = bool(got) == want
+            print(f"early-z: {name}: {'ok' if ok else 'FAILED'} ({'side effects: ' + ', '.join(got) if got else 'no side effects'})")
+            bad |= not ok
+        return bad
+
+
 def main():
     c = harvest()
     s = composition(c)
@@ -470,6 +495,7 @@ def main():
                 bad = 1
                 print(r.stdout, r.stderr)
     print(f"{len(progs)} programs, {len(s)} overridable stages composed from ShaderStages.Source")
+    bad |= check_early_z(progs)
     bad |= check_material(c, s)
     return bad
 

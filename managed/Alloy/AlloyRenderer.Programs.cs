@@ -111,8 +111,9 @@ public sealed unsafe partial class AlloyRenderer
         _spliceStale = false;
         if (_progLit46 != 0) Gl.DeleteProgram(_progLit46);
         if (_progLitHost != 0) Gl.DeleteProgram(_progLitHost);
+        if (_progLitList != 0) Gl.DeleteProgram(_progLitList);
         if (_progWater != 0) Gl.DeleteProgram(_progWater);
-        _progLit46 = 0; _progLitHost = 0; _progWater = 0;
+        _progLit46 = 0; _progLitHost = 0; _progLitList = 0; _progWater = 0; OitPass.ListsArmed = false;
         _litFailed = false; _waterFailed = false;
         GrassField.DropProgram();
         SceneWalk.Dirty = true;
@@ -124,15 +125,17 @@ public sealed unsafe partial class AlloyRenderer
         if (_spliceStale) DropSpliced();
         if (_prog46 == 0 && !_progFailed)
         {
+            // ponytail: one cheap stage keeps the lists block (no early-Z for unlit parts); twin it as the lit one if it ever shows
+            string fbFs = OitPass.WithLists(ShaderStages.Source(ShdFullbrightFs));
             uint prog = GlProgram.Graphics(ShdFullbrightVs, ShaderStages.Source(ShdFullbrightVs),
-                                           ShdFullbrightFs, ShaderStages.Source(ShdFullbrightFs),
+                                           ShdFullbrightFs, fbFs,
                                            _log, "AlloyRenderer fullbright program",
                                            out string vsSrc, out string fsSrc);
             if (prog != 0 && !(ShaderContract.RecordSafe(vsSrc) && ShaderContract.RecordSafe(fsSrc) && ShaderContract.CutoutSafe(vsSrc, fsSrc)
                                && ShaderContract.SlotIndexSafe(vsSrc)   // #242
                                && ShaderContract.SkinSafe(vsSrc, _skinning) && ShaderContract.LinearSafe(fsSrc)))
             {
-                prog = RebuildEmbedded(prog, OwnedVs, OwnedFs, "fullbright", ref vsSrc);
+                prog = RebuildEmbedded(prog, OwnedVs, fbFs, "fullbright", ref vsSrc);
             }
             _vsDepthSafe &= ShaderContract.DepthSafe(vsSrc);
             // #263: programs build on first use, i.e. inside the first frame the verdict already froze on.
@@ -286,6 +289,7 @@ public sealed unsafe partial class AlloyRenderer
         uint prog = GlProgram.Graphics(ShdLitVs, ShaderStages.Source(ShdLitVs), ShdLitFs, litFs,
                                        _log, "AlloyRenderer clustered lit program",
                                        out string vsSrc, out string fsSrc, host: false);
+        string finalFs = fsSrc;
         if (prog != 0 && !(ShaderContract.RecordSafe(vsSrc) && ShaderContract.RecordSafe(fsSrc) && ShaderContract.CutoutSafe(vsSrc, fsSrc)
                            && ShaderContract.SlotIndexSafe(vsSrc)   // #242
                            && ShaderContract.SkinSafe(vsSrc, _skinning) && ShaderContract.LinearSafe(fsSrc)
@@ -295,6 +299,7 @@ public sealed unsafe partial class AlloyRenderer
                            && (!_bindless || fsSrc.Contains("SowxTexH"))))
         {
             prog = RebuildEmbedded(prog, OwnedLitVs, litFs, "clustered lit", ref vsSrc);
+            finalFs = litFs;
         }
         // a content override without the handle block compiled fine but still samples bound units: the
         // C# side must keep binding for it, so the whole bindless path stands down for the session
@@ -314,6 +319,14 @@ public sealed unsafe partial class AlloyRenderer
         }
         _progLit46 = prog;
         _lit = LitLocs(prog);
+        // The OIT-lists twin: the same text that just compiled, plus the append block, bound only inside a mode-2
+        // bracket. Verified on the text because a content override may carry no block at all.
+        string listFs = OitPass.WithLists(finalFs);
+        uint pl = listFs.Contains("atomicAdd(uOitCount") ? GlProgram.Graphics(vsSrc, listFs, _log, "AlloyRenderer lit program (OIT lists)", host: false) : 0;
+        _progLitList = pl;
+        if (pl != 0) _litL = LitLocs(pl);
+        else _log?.Info("AlloyRenderer: lit OIT-lists twin unavailable -- /draw oit 2 resolves the weighted way");
+        OitPass.ListsArmed = pl != 0;
         // #350: the SECOND lit program, the one with the content bodies in. Same text, hosted regions spliced
         // instead of stubbed; same contracts, because it draws the same records. Optional twice over: hostfs=0,
         // no hosted feature, or a failed build all leave it 0 and hosted materials on the plain path.

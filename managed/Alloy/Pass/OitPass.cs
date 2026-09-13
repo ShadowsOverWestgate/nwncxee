@@ -49,6 +49,18 @@ internal static unsafe class OitPass
     /// <summary><c>/draw oit</c>: 0 = the sorted, depth-writing pass (A/B instrument), 1 = weighted blended, 2 = linked lists
     /// (default since the plaza A/B measured it at parity with 1; 1 is the fallback a refused pool lands on).</summary>
     internal static int Mode = 2;
+    /// <summary>True while the lit twin that carries the append block (<see cref="WithLists"/>) exists. Without it
+    /// mode 2 stands down to the weighted pair: a linked resolve over lists nothing appended to draws nothing.</summary>
+    internal static bool ListsArmed;
+    /// <summary>True inside a bracket that is resolving through the lists: IssueColour binds the twin then.</summary>
+    internal static bool Linked => _linked;
+    /// <summary>The define that compiles the append block into a fragment stage, after its #version line.</summary>
+    internal static string WithLists(string fs)
+    {
+        int v = fs.IndexOf("#version", StringComparison.Ordinal);
+        if (v < 0) return fs;
+        return fs.Insert(fs.IndexOf('\n', v) + 1, "#define SOWX_OIT_LISTS 1\n");
+    }
     private static uint _fbo, _accum, _reveal, _prog, _nodes;
     /// <summary>The head table, cleared on the GPU by <see cref="_progClear"/> (a full-screen draw writing zeros)
     /// rather than by glClearBufferSubData: any CPU-issued write to a buffer the GPU still holds is an implicit
@@ -92,7 +104,7 @@ internal static unsafe class OitPass
         if (_failed || Mode == 0 || depthTex == 0 || Gl.BlendFunci == null || Gl.DrawBuffers == null) return false;
         int w = viewport[0] + viewport[2], h = viewport[1] + viewport[3];
         if (!EnsureTargets(w, h) || !EnsurePrograms()) return false;
-        _linked = Mode == 2 && EnsureLists(w, h);
+        _linked = Mode == 2 && ListsArmed && EnsureLists(w, h);
         _gobN = 0;
         int cur; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &cur); _restoreFbo = cur;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);

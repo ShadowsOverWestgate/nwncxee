@@ -332,7 +332,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach;
         public FeatLoc Feat;
     }
-    private static LitLoc _lit, _litH;
+    private static LitLoc _lit, _litH, _litL;
+    /// <summary>The lit program WITH the OIT append block (OitPass.WithLists), or 0. Bound only for lit batches inside a
+    /// linked-list bracket; every other lit draw keeps early-Z through <see cref="_progLit46"/>.</summary>
+    private static uint _progLitList;
     /// <summary>#350: the lit program WITH the hosted content bodies, or 0 (hosting off, no hosted feature, or
     /// its build failed -- hosted materials then draw the plain lit path through <see cref="_progLit46"/>).</summary>
     private static uint _progLitHost;
@@ -1610,7 +1613,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
     internal static void ContextLost()
     {
-        _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progDepth = 0; _progDepthKey = 0; _progDepthFeat = 0; _progWater = 0; _progSkyDecode = 0;
+        _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progLitList = 0; OitPass.ListsArmed = false; _progDepth = 0; _progDepthKey = 0; _progDepthFeat = 0; _progWater = 0; _progSkyDecode = 0;
         HighlightContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         MotionContextLost();
