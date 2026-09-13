@@ -140,7 +140,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary>Keys <c>/shadow</c> accepts. The first two are <see cref="CasterPass"/>'s, the rest this
     /// feed's -- one command over the whole shadow path, because a player tuning it is looking at one thing.</summary>
-    private const string ShadowKeys = "dist|lod|rebake|gather|split|layered|refreshall|dynhold|dynevents|dynranks|movers|focusdist|lightcull|diag|lightdiag|torchdiag|trace|mask|maskholes|maskh|fade|fadeslots|staticcap|flipcollect";
+    private const string ShadowKeys = "dist|lod|rebake|gather|split|layered|refreshall|dynhold|dynevents|dynranks|movers|focusdist|lightcull|diag|lightdiag|torchdiag|trace|mask|maskholes|maskh|fade|fadeslots|staticcap|flipcollect|contact|contactsteps|contactfar";
 
     /// <summary>ADR 0013 bucket 1, in the shape <c>RenderCommands.Tune</c> established: <c>/shadow</c> reports,
     /// <c>/shadow &lt;key&gt; &lt;value&gt;</c> sets, <c>/shadow reset</c> restores the boot values. Every one
@@ -154,6 +154,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         {
             ResetTuning();
             CasterPass.ResetTuning();
+            ContactShadow.ResetTuning();
             return $"[shadow] reset -> {Describe()}";
         }
         if (a.Length != 2 || !float.TryParse(a[1], System.Globalization.NumberStyles.Float,
@@ -163,6 +164,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
         float old = Tune(a[0], v);
         if (float.IsNaN(old)) old = CasterPass.Tune(a[0], v);
+        if (float.IsNaN(old)) old = ContactShadow.Tune(a[0], v);
         return float.IsNaN(old)
             ? $"[shadow] unknown knob \"{a[0]}\" -- try {ShadowKeys.Replace('|', ' ')}"
             : $"[shadow] {a[0]} {F(v)} (was {F(old)}) -> {Describe()}";
@@ -172,7 +174,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     internal static string Describe()
         => $"feed {(_enabled ? "on" : "off")} focusdist {_focusDist:F0} " +
            $"lightcull {_lightCullMode} " +
-           $"diag {B(_diag)}{B(_lightDiag)}{B(_torchDiag)}{B(_trace)} | {CasterPass.Describe()}";
+           $"diag {B(_diag)}{B(_lightDiag)}{B(_torchDiag)}{B(_trace)} | {CasterPass.Describe()} | {ContactShadow.Describe()}";
 
     private static char B(bool f) => f ? '1' : '0';
 

@@ -329,7 +329,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade,
-                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach;
+                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach, Contact, ContactFar;
         public FeatLoc Feat;
     }
     private static LitLoc _lit, _litH, _litL;
@@ -382,7 +382,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 38;
+    internal const int LightVizMax = 39;
     private static int _lightViz = DefViz;
     /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The

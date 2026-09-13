@@ -1011,6 +1011,9 @@ public sealed unsafe partial class AlloyRenderer
         uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
         uniform int uSsaoOn;           // >0 when this BATCH is in the depth SsaoPass read; <0 names why not (viz 35)
         uniform sampler2D uSceneDepth; // the prepass depth SsaoPass read, to check the pixel is OURS (viz 37)
+        uniform mat4 uVP;              // contact shadows: the vertex stage's own view*proj, to re-project the march
+        uniform vec4 uContact;         // x = march length in world units (0 = off), y = steps, z/w = uProj[2].z / uProj[3].z
+        uniform float uContactFar;     // view distance the term has faded out by (fade over its last quarter)
         uniform float uAoDirect;       // /ao direct: how much of the occlusion the DIRECT terms take (0 = ADR 0021)
         // #126: the engine's fAlphaDiscardValue, per batch -- 0.2 on the cutout and blended classes,
         // -1.0 (no test) on opaque and additive.
@@ -1058,6 +1061,40 @@ public sealed unsafe partial class AlloyRenderer
         // inc_standard.shd:250-252: the albedo is desaturated toward this grey in proportion to reflectivity,
         // so the reflection is not counted twice. DISPLAY space -- the engine does it before the :253 linearise.
         const vec3 SOWX_ENV_GREY = vec3(0.666667);
+
+        float SowxContactDist(float depth) { return uContact.w / (depth * 2.0 - 1.0 + uContact.z); }
+        // Screen-space contact shadow: march from the fragment toward the sun through the depth copy. A
+        // surface nearer than the ray point by less than a step's worth is a blocker, weighted by how close
+        // to the fragment it was hit, so the term is a soft contact darkening rather than a hard edge -- no
+        // per-pixel jitter, because without TAA jitter reads as stipple. The start is pushed off the surface
+        // along the light by one step so the ray never re-samples the face it left.
+        // Nothing here reads the NORMAL: on a low-poly mesh every normal-dependent term (an offset along N,
+        // a facing gate, a grazing fade) jumps at a facet edge and cuts the shadow along it; the sun term's
+        // own ndl scaling is what fades a turned-away face. 1 = clear, 0 = blocked at the contact.
+        float SowxContactShadow(vec3 worldPos)
+        {
+            if (uContact.x <= 0.0 || vDepth >= uContactFar) return 1.0;
+            int steps = int(uContact.y);
+            vec2 size = vec2(textureSize(uSceneDepth, 0).xy);
+            float stepLen = uContact.x / float(steps);
+            vec3 start = worldPos + uAreaDir * stepLen;
+            float shade = 0.0;
+            for (int i = 0; i < steps; i++)
+            {
+                vec4 clip = uVP * vec4(start + uAreaDir * (stepLen * float(i)), 1.0);
+                if (clip.w <= 0.0) break;
+                vec3 ndc = clip.xyz / clip.w;
+                if (any(greaterThan(abs(ndc.xy), vec2(1.0)))) break;
+                float rayDist = SowxContactDist(ndc.z * 0.5 + 0.5);
+                float sceneDist = SowxContactDist(texelFetch(uSceneDepth, ivec2((ndc.xy * 0.5 + 0.5) * size), 0).r);
+                float dz = rayDist - sceneDist;
+                // a blocker is anything from just in front of the ray to a march length in front of it: a foot
+                // or a barrel base is far thicker than a step, and a thin window steps straight over them
+                float thick = uContact.x + 0.002 * rayDist;
+                if (dz > 0.0 && dz < thick) shade = max(shade, 1.0 - float(i) / float(steps));
+            }
+            return 1.0 - shade * (1.0 - smoothstep(uContactFar * 0.75, uContactFar, vDepth));
+        }
         """;
     /// <summary>#122: material synthesis -- what a part gets for every stock .mtr parameter it does NOT
     /// declare. Lifted out of the fragment main so it is a pure function of already-sampled values: that is
@@ -1307,6 +1344,16 @@ public sealed unsafe partial class AlloyRenderer
             // the wrapped value, not the raw one -- a fragment the wrap has just lit must still be able to
             // be in shadow, or the band the wrap opens up glows through every caster
             float sunVis = SowxSunShadow(vWorld, N, sunNdl, sunRaw);
+            if (d.emi.w > 0.5) sunVis *= SowxContactShadow(vWorld);   // receivers are tileset parts only (emi.w)
+            // 39 = the contact term: grey = the march result on a receiver (white clear, black blocked);
+            //      red = not a receiver (emi.w 0); blue = the march is off (uContact.x 0: knob, or no depth copy)
+            if (uViz == 39)
+            {
+                frag = uContact.x <= 0.0 ? vec4(0.0, 0.0, 1.0, 1.0)
+                     : d.emi.w <= 0.5 ? vec4(1.0, 0.0, 0.0, 1.0)
+                     : vec4(vec3(SowxContactShadow(vWorld)), 1.0);
+                return;
+            }
             // 3 = sun visibility alone: white lit, black shadowed. A frame that looks unshadowed reads here
             //     as "the cascades are empty" or "nothing selected a cascade", which the composite cannot say.
             if (uViz == 3) { frag = vec4(vec3(sunVis), 1.0); return; }

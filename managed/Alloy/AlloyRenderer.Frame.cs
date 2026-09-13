@@ -281,6 +281,7 @@ public sealed unsafe partial class AlloyRenderer
                                 GpuEnd(GpuTerm.Motion);
                                 motionRan = true;
                             }
+                            ContactShadow.Take(viewport, &proj, DepthResource.Filled(PassGen) && !_capturing);
                             GpuBegin(GpuTerm.Ao);
                             SsaoPass.Run(PostChain.DepthTex, DepthResource.Filled(PassGen), &proj, viewport, PostChain.Fbo, _frameSeq);
                             GpuEnd(GpuTerm.Ao);

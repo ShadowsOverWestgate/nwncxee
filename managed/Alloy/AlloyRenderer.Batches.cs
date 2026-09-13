@@ -481,7 +481,12 @@ public sealed unsafe partial class AlloyRenderer
         // dangly mesh names one of those forks.
         r[43] = PartTable.IsDangly(_oTri[i]) ? -1f : _oFeat[fo + 3];
         if (!lit) return;
-        r[23] = 1f; r[27] = 1f; r[31] = 1f;
+        r[23] = 1f; r[27] = 1f;
+        // emi.w: the contact-shadow RECEIVER flag -- 1 on tileset geometry, 0 on an object. A depth march
+        // on a low-poly creature or cloak reads its own facets as blockers; the ground under it does not.
+        // Static geometry (no gob at all) IS the tileset: only an object instances off a gob, and the gob'd
+        // half a SpawnTile split leaves is caught by the tile-gob test.
+        r[31] = _oGob[i] == IntPtr.Zero || _oTileGob[i] ? 1f : 0f;
         int o = i * 8;
         r[32] = _oParam[o]; r[33] = _oParam[o + 1]; r[34] = _oParam[o + 2];
         r[36] = _oParam[o + 4]; r[37] = _oParam[o + 5]; r[38] = _oParam[o + 6]; r[39] = _oParam[o + 7];

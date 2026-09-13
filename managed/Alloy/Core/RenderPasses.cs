@@ -212,6 +212,12 @@ internal static class RenderPasses
         }, log);
         r.Register(new PassLifecycle
         {
+            Name = "contact",
+            SelfCheck = ContactShadow.SelfCheck,
+            Describe = ContactShadow.Describe,
+        }, log);
+        r.Register(new PassLifecycle
+        {
             Name = "ao",
             Attach = SsaoPass.Attach,
             SelfCheck = l => SsaoPass.SelfCheck(l),
