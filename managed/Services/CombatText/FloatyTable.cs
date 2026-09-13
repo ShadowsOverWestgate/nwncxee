@@ -10,8 +10,6 @@ public enum FloatyKind : byte
 {
     /// <summary>A damage number. Scrolls up and fades.</summary>
     Damage,
-    /// <summary>A damage number the crit latch claimed. Sticky: bigger, does not scroll, shakes.</summary>
-    Crit,
     /// <summary>A combat-text banner (<c>*Sneak Attack!*</c>). Punches in, drifts, fades.</summary>
     Banner,
 }
@@ -58,18 +56,6 @@ public static class FloatyAnim
         return 1f + (PopFrom - 1f) * (1f - EaseOut(u));
     }
 
-    /// <summary>Damped shake offset in px at a given age. Amplitude decays linearly to zero over the life, so
-    /// a crit rattles hard on arrival and is still by the time it fades. The two axes run at different
-    /// frequencies on purpose -- equal ones trace a diagonal line instead of a jitter.</summary>
-    public static void Shake(long ageMs, float t, float ampPx, float hz, out float dx, out float dy)
-    {
-        float damp = 1f - t;
-        if (damp <= 0f || ampPx <= 0f || hz <= 0f) { dx = 0f; dy = 0f; return; }
-        float s = ageMs * 0.001f * hz * (float)(Math.PI * 2.0);
-        dx = ampPx * damp * MathF.Sin(s);
-        dy = ampPx * damp * 0.6f * MathF.Cos(s * 1.7f);
-    }
-
 
     public static void SelfCheck(ExtenderLog log)
     {
@@ -83,13 +69,6 @@ public static class FloatyAnim
         ok &= Fade(0f) == 1f && Fade(HoldFraction) == 1f && Near(Fade(1f), 0f);
         ok &= Fade((1f + HoldFraction) * 0.5f) is > 0.4f and < 0.6f;
         ok &= Near(Pop(0), PopFrom) && Pop((long)PopMs) == 1f && Pop(99999) == 1f && Pop(60) > 1f;
-
-        Shake(0, 0f, 4f, 10f, out float sx, out float sy);
-        ok &= MathF.Abs(sx) < Eps && sy > 0f;        // sin(0)=0, cos(0)=1
-        Shake(50, 1f, 4f, 10f, out sx, out sy);
-        ok &= sx == 0f && sy == 0f;                  // fully damped at the end of life
-        Shake(50, 0.5f, 0f, 10f, out sx, out sy);
-        ok &= sx == 0f && sy == 0f;                  // zero amplitude is off, not NaN
 
         log.Info(ok ? "FloatyAnim.SelfCheck: passed" : "FloatyAnim.SelfCheck: FAILED");
     }
@@ -244,7 +223,7 @@ public sealed class FloatyTable
 
     private void Admit(in Pending p, long nowMs, in CombatTextConfig cfg)
     {
-        bool number = p.Kind is FloatyKind.Damage or FloatyKind.Crit;
+        bool number = p.Kind is FloatyKind.Damage;
         int onTarget = 0;
         Slot? oldest = null;
         Slot? free = null;
@@ -254,7 +233,7 @@ public sealed class FloatyTable
             Slot s = _slots[i];
             if (!s.Used) { free ??= s; continue; }
             if (s.Id != p.Id) continue;
-            if (number != (s.Kind is FloatyKind.Damage or FloatyKind.Crit)) continue;
+            if (number != (s.Kind is FloatyKind.Damage)) continue;
             onTarget++;
             if (oldest == null || s.Seq < oldest.Seq) oldest = s;
         }
@@ -269,12 +248,7 @@ public sealed class FloatyTable
         slot.Kind = p.Kind;
         slot.SpawnMs = nowMs;
         slot.Seq = _seq++;
-        slot.LifeMs = p.Kind switch
-        {
-            FloatyKind.Crit => cfg.CritMs,
-            FloatyKind.Banner => cfg.TextMs,
-            _ => cfg.RiseMs,
-        };
+        slot.LifeMs = p.Kind == FloatyKind.Banner ? cfg.TextMs : cfg.RiseMs;
         // At the cap the evicted slot's row is INHERITED, not pinned to the last one: pinning it puts every
         // survivor of a long fight on the same line and they pile back up.
         slot.Stack = onTarget >= cfg.Max ? slot.Stack : onTarget;
@@ -294,7 +268,7 @@ public sealed class FloatyTable
     public static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;
-        var cfg = new CombatTextConfig { Max = 3, RiseMs = 1000f, CritMs = 1000f, TextMs = 1000f };
+        var cfg = new CombatTextConfig { Max = 3, RiseMs = 1000f, TextMs = 1000f };
         var t = new FloatyTable();
         ColorRun[] R(string s) => new[] { new ColorRun(s, 1f, 1f, 1f) };
 
@@ -315,9 +289,9 @@ public sealed class FloatyTable
         ok &= t.Advance(1000, cfg) == 0;                    // everything expires at its life
         ok &= t.Advance(2000, cfg) == 0;                    // and a retired slot stays retired
 
-        t.Note(9u, FloatyKind.Crit, R("42"), 1f, 1f, 1f, 0);
+        t.Note(9u, FloatyKind.Damage, R("42"), 1f, 1f, 1f, 0);
         t.Advance(0, cfg);
-        ok &= t.LiveCount == 1 && t.Live[0].Kind == FloatyKind.Crit && t.Live[0].LifeMs == cfg.CritMs;
+        ok &= t.LiveCount == 1 && t.Live[0].LifeMs == cfg.RiseMs;
         t.Clear();
         ok &= t.Advance(0, cfg) == 0;
 

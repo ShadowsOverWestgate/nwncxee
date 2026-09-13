@@ -53,24 +53,13 @@ public sealed unsafe class CombatTextService : IExtenderService
 
     private static delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void> _origShowFloaty;
 
-    /// <summary>The ShowFloatyText unit (#420): the funnel itself plus the TLK pair the crit banner is
-    /// recognised through. Nameplates are a runtime prerequisite (checked per call, not here).</summary>
-    private static readonly string[] RequiredSymbols =
-    { SymbolMap.ShowFloatyText, SymbolMap.TlkTable, SymbolMap.TlkGetSimpleString, SymbolMap.ExoStringDtor };
-
-    /// <summary>Set by a critical-hit banner; the next damage number to arrive inside
-    /// <see cref="CombatTextConfig.CritWindowMs"/> is styled as that crit's and clears it.
-    /// <para>ponytail: temporal, because it has to be. The banner rides the ATTACKER
-    /// (<c>GetCreatureByGameObjectID(attackerId)</c>) and the number rides the TARGET
-    /// (<c>GetGameObject(targetId)</c>), and they arrive in two different CC messages, so there is no id to
-    /// correlate on at this seam. In a crowded melee a crit can therefore decorate the wrong number. The
-    /// upgrade path is to read the CC message payload ourselves in a hook on
-    /// <c>CNWCMessage::HandleServerToPlayerCCMessage</c> and latch the real attack-result byte.</para></summary>
-    private static long _critUntilMs;
+    /// <summary>The ShowFloatyText unit (#420): the funnel itself. Nameplates are a runtime prerequisite
+    /// (checked per call, not here).</summary>
+    private static readonly string[] RequiredSymbols = { SymbolMap.ShowFloatyText, SymbolMap.ExoStringDtor };
 
     /// <summary>Glyph height of the face the animation samples (#471): the largest an element ever gets --
-    /// effective UI px × the spawn pop × the bigger of the crit and banner multipliers -- so every frame is a
-    /// minification. Capped at <see cref="TextRig.AtlasMaxPx"/>: past it (UI 18px needs critscale &gt; 3.05)
+    /// effective UI px × the spawn pop × the banner multiplier -- so every frame is a
+    /// minification. Capped at <see cref="TextRig.AtlasMaxPx"/>: past it (UI 18px needs textscale &gt; 3.05)
     /// the top of the pop magnifies again. Written cold; read on the frame.</summary>
     private static volatile float _peakPx;
 
@@ -84,8 +73,7 @@ public sealed unsafe class CombatTextService : IExtenderService
     /// <summary>The uncapped peak, so the status line can say when the cap is in force.</summary>
     private static float PeakPxRaw(CombatTextConfig cfg)
     {
-        float m = cfg.CritScale > cfg.TextScale ? cfg.CritScale : cfg.TextScale;
-        return MathF.Round(Metrics.DesignFontPx * Metrics.Scale * FloatyAnim.PopFrom * m);
+        return MathF.Round(Metrics.DesignFontPx * Metrics.Scale * FloatyAnim.PopFrom * cfg.TextScale);
     }
 
     /// <summary>COLD: (re)bake the peak face, dropping the previous one so the sheet does not accumulate every
@@ -175,22 +163,7 @@ public sealed unsafe class CombatTextService : IExtenderService
             if (body.Length == 0) return;                 // an empty floaty draws nothing in either renderer
 
             long now = Environment.TickCount64;
-            FloatyKind kind;
-            if (CombatTextNative.IsDamageFont(fontName))
-            {
-                bool crit = now < _critUntilMs;
-                if (crit) _critUntilMs = 0;               // one banner decorates one number
-                kind = crit ? FloatyKind.Crit : FloatyKind.Damage;
-            }
-            else if (CombatTextNative.IsCritBanner(body))
-            {
-                // The crit banner is NOT drawn: it exists only to tell us the number that follows is a crit,
-                // and the number's own size and shake say it far better than a second line of text would.
-                _critUntilMs = now + (long)cfg.CritWindowMs;
-                return;
-            }
-            else kind = FloatyKind.Banner;
-
+            FloatyKind kind = CombatTextNative.IsDamageFont(fontName) ? FloatyKind.Damage : FloatyKind.Banner;
             _table.Note(NameplateNative.IdOf(self), kind, ColorRunParser.Parse(body),
                         colour.X, colour.Y, colour.Z, now);
         }
@@ -233,8 +206,8 @@ public sealed unsafe class CombatTextService : IExtenderService
         }
 
         // Session reset: object ids are only unique within a module, so a number carried across an unload
-        // would land on whatever inherits the id, and the TLK may have been swapped under us.
-        if (_wasInModule && !GameGate.InModule) { _table.Clear(); CombatTextNative.Forget(); _critUntilMs = 0; }
+        // would land on whatever inherits the id.
+        if (_wasInModule && !GameGate.InModule) _table.Clear();
         _wasInModule = GameGate.InModule;
 
         long now = Environment.TickCount64;
@@ -286,9 +259,8 @@ public sealed unsafe class CombatTextService : IExtenderService
         if (n > 0) TextRig.DrawBatch(_verts, n / VertexBatch.Floats);
     }
 
-    /// <summary>Where and how big one element is this frame, per kind. The one place the four behaviours the
-    /// feature promises are chosen: a damage number scrolls and fades, a crit sticks and shakes, a banner
-    /// punches in and drifts.</summary>
+    /// <summary>Where and how big one element is this frame, per kind. The one place the behaviours the
+    /// feature promises are chosen: a damage number scrolls and fades, a banner punches in and drifts.</summary>
     private static void Place(FloatyTable.Slot s, long now, float ui, float lineH,
                               ref float x, ref float y, out float scale, out float alpha)
     {
@@ -307,13 +279,6 @@ public sealed unsafe class CombatTextService : IExtenderService
         {
             case FloatyKind.Damage:
                 y -= _cfg.RisePx * ui * FloatyAnim.EaseOut(t);
-                break;
-
-            case FloatyKind.Crit:
-                // Sticky: no rise at all, so the eye has somewhere fixed to land.
-                scale *= _cfg.CritScale;
-                FloatyAnim.Shake(age, t, _cfg.CritShakePx * ui, _cfg.CritShakeHz, out float dx, out float dy);
-                x += dx; y += dy;
                 break;
 
             case FloatyKind.Banner:
@@ -343,7 +308,7 @@ public sealed unsafe class CombatTextService : IExtenderService
     private static void EmitSlot(ref int n, GlyphAtlas atlas, FloatyTable.Slot s,
                                  float penX, float baseline, float scale, float anim, float alpha)
     {
-        // The halo grows with the element: a 1px outline behind a 1.7x crit is a grey fringe, not an outline.
+        // The halo grows with the element: a 1px outline behind a 1.3x banner is a grey fringe, not an outline.
         float halo = anim < 1f ? 1f : anim;
         for (int r = 0; r < s.Runs.Length; r++)
         {
@@ -394,11 +359,8 @@ public sealed unsafe class CombatTextService : IExtenderService
         if (a.Length == 0)
             return $"[combattext] on={_cfg.On} max={_cfg.Max} rise={F(_cfg.RiseMs)}ms/{F(_cfg.RisePx)}px "
                  + $"stack={F(_cfg.StackPx)}px lift={F(_cfg.BannerLiftPx)}px "
-                 + $"crit={F(_cfg.CritMs)}ms x{F(_cfg.CritScale)} "
-                 + $"shake={F(_cfg.CritShakePx)}px@{F(_cfg.CritShakeHz)}Hz "
                  + $"text={F(_cfg.TextMs)}ms x{F(_cfg.TextScale)} outline={_cfg.Outline} "
-                 + $"critwindow={F(_cfg.CritWindowMs)}ms | live={_table.LiveCount} overflow={_table.Overflow} "
-                 + $"critstrings={(CombatTextNative.CritResolved ? "resolved" : "unresolved")} peakface={F(_peakPx)}px{(PeakPxRaw(_cfg) > TextRig.AtlasMaxPx ? " (capped)" : "")}";
+                 + $"| live={_table.LiveCount} overflow={_table.Overflow} peakface={F(_peakPx)}px{(PeakPxRaw(_cfg) > TextRig.AtlasMaxPx ? " (capped)" : "")}";
 
         switch (a[0])
         {
@@ -408,20 +370,15 @@ public sealed unsafe class CombatTextService : IExtenderService
             case "risepx": _cfg.RisePx = ClampF(a, _cfg.RisePx, CombatTextConfig.RiseMin, CombatTextConfig.RiseMax); break;
             case "stack": _cfg.StackPx = ClampF(a, _cfg.StackPx, CombatTextConfig.StackMin, CombatTextConfig.StackMax); break;
             case "lift": _cfg.BannerLiftPx = ClampF(a, _cfg.BannerLiftPx, CombatTextConfig.LiftMin, CombatTextConfig.LiftMax); break;
-            case "critms": _cfg.CritMs = ClampF(a, _cfg.CritMs, CombatTextConfig.LifeMin, CombatTextConfig.LifeMax); break;
-            case "critscale": _cfg.CritScale = ClampF(a, _cfg.CritScale, CombatTextConfig.ScaleMin, CombatTextConfig.ScaleMax); break;
-            case "shake": _cfg.CritShakePx = ClampF(a, _cfg.CritShakePx, CombatTextConfig.ShakeMin, CombatTextConfig.ShakeMax); break;
-            case "shakehz": _cfg.CritShakeHz = ClampF(a, _cfg.CritShakeHz, CombatTextConfig.HzMin, CombatTextConfig.HzMax); break;
             case "textms": _cfg.TextMs = ClampF(a, _cfg.TextMs, CombatTextConfig.LifeMin, CombatTextConfig.LifeMax); break;
             case "textscale": _cfg.TextScale = ClampF(a, _cfg.TextScale, CombatTextConfig.ScaleMin, CombatTextConfig.ScaleMax); break;
-            case "critwindow": _cfg.CritWindowMs = ClampF(a, _cfg.CritWindowMs, CombatTextConfig.WindowMin, CombatTextConfig.WindowMax); break;
             case "outline": _cfg.Outline = Flag(a); break;
             default:
-                return "[combattext] usage: /combattext | /combattext <on|max|risems|risepx|stack|lift|critms|"
-                     + "critscale|shake|shakehz|textms|textscale|critwindow|outline> <value>";
+                return "[combattext] usage: /combattext | /combattext <on|max|risems|risepx|stack|lift|"
+                     + "textms|textscale|outline> <value>";
         }
         SaveConfig();
-        if (a[0] is "critscale" or "textscale") RequestPeakFace();   // cold: the command runs on the input thread
+        if (a[0] is "textscale") RequestPeakFace();   // cold: the command runs on the input thread
         return Cmd("");
     }
 
