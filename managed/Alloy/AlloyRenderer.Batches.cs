@@ -1000,7 +1000,7 @@ public sealed unsafe partial class AlloyRenderer
                 // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
                 // frame. The DIFFUSE compare above stays per frame; it is the animated one.
                 for (int s = 0; !texDirty && lit && colour && s < MapSlots; s++)
-                    if ((_oSlots[i] & SlotBit(s)) != 0 && mat.Texture(s + 1).Ptr != _recAurS[i * MapSlots + s])
+                    if ((_oSlots[i] & SlotBit(s)) != 0 && mat.MapTexture(s).Ptr != _recAurS[i * MapSlots + s])
                         texDirty = true;
                 if (!texDirty) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
                 else
@@ -1070,7 +1070,7 @@ public sealed unsafe partial class AlloyRenderer
                         _recAurS[i * MapSlots + s] = IntPtr.Zero;
                         if (lit && !mapsMeanNothing && (_oSlots[i] & SlotBit(s)) != 0)
                         {
-                            var sa = mat.Texture(s + 1);
+                            var sa = mat.MapTexture(s);
                             int t;
                             if (main) t = sa.OwnedTid();
                             else if (!OwnedTextures.TryDraw(AurTex.Tid(sa.Ptr), out t)) { c = snap; return Deferred; }
@@ -1085,7 +1085,7 @@ public sealed unsafe partial class AlloyRenderer
                         }
                     }
                     if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
-                    // #146's zero-content test path, see _aoTest. Stands in for a texture7 nothing ships yet.
+                    // #146's zero-content test path, see _aoTest. Stands in for a texture11 nothing ships yet.
                     if (lit && _aoTest && !mapsMeanNothing) { slotTid[AoSlot] = tid; slots |= AoBit; }
                     // #331: registered on a pointer change only -- a cycle STEP re-resolves every record on
                     // the sheet, and re-asking the engine for a controller already on file would cost that

@@ -161,7 +161,7 @@ internal static unsafe class FrameDump
         for (int s = 0; s < AlloyRenderer.MapSlots; s++)
         {
             if (s != 0) b.Append('|');
-            b.Append(Slot(mat, s + 1, (slots & AlloyRenderer.SlotBit(s)) != 0));
+            b.Append(Slot(mat, s == AlloyRenderer.AoSlot ? AlloyRenderer.AoTexture : s + 1, (slots & AlloyRenderer.SlotBit(s)) != 0));
         }
     }
 
@@ -241,7 +241,7 @@ internal static unsafe class FrameDump
     private static string Slot(IntPtr mat, int slot, bool declared)
     {
         if (!declared || mat == IntPtr.Zero) return "-";
-        TextureRef t = new MaterialRef(mat).Texture(slot);
+        TextureRef t = new MaterialRef(mat).TextureAt(slot);
         return t.IsNull ? "-" : t.ResolveName();
     }
 

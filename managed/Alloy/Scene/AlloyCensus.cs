@@ -46,8 +46,11 @@ internal static unsafe class AlloyCensus
     /// <see cref="EngineLayout.MatDstBlend"/>, and the one pair it turns the depth mask off for.</summary>
     internal const int BlendOne = 2;
     /// <summary><c>gradedblend</c> in sowx.cfg: the graded-alpha fraction at or above which a cutout diffuse
-    /// draws in the blended class instead. 1 = never (the #357 alpha-test-only behaviour).</summary>
-    internal static readonly float GradedBlend = Settings.Float("gradedblend", 0.3f, 0f, 1f);
+    /// draws in the blended class instead. 1 = never (the #357 alpha-test-only behaviour).
+    /// <para>0.15, not the 0.3 it shipped at: the tcn01 splotch decals (dark grime with a soft alpha skirt,
+    /// which vanilla blends) scan at 0.29-0.30 and drawn alpha-tested their skirt is solid black; ivy sits
+    /// at 0.45+ and was already over, and a binary-alpha tree is under 0.05 either way.</para></summary>
+    internal static readonly float GradedBlend = Settings.Float("gradedblend", 0.15f, 0f, 1f);
     /// <summary>The tilefade cap bucket -- Tracy scope "Tilefade Cap", fed from <c>capbuckets</c>.</summary>
     internal const int CapBucket = 7;
     /// <summary>#134: the dynamic gob pair (#103's taxonomy). Everything instanced lands in one of these two
@@ -924,7 +927,12 @@ internal static unsafe class AlloyCensus
     private static string SlotNames(MaterialRef m)
     {
         var sb = new System.Text.StringBuilder();
-        for (int i = 0; i < 8; i++) { var t = m.Texture(i); if (!t.IsNull) sb.Append(i).Append(':').Append(TexName(t.Ptr)).Append(' '); }
+        // Engine slots past the Material's own three are only real on a SharedMaterial: on a plain one
+        // Material::GetTexture's unbounded read hands back whatever field sits at mat+i*0x10 (crash 1789305736).
+        int top = m.Shared.IsNull ? 3 : 11;
+        for (int i = 0; i < top; i++) { var t = m.Texture(i); if (!t.IsNull && AurTex.IsLive(t.Ptr)) sb.Append(i).Append(':').Append(TexName(t.Ptr)).Append(' '); }
+        for (int i = MaterialExtraSlots.First; i < MaterialExtraSlots.First + MaterialExtraSlots.Count; i++)
+        { var t = m.TextureAt(i); if (!t.IsNull && AurTex.IsLive(t.Ptr)) sb.Append(i).Append(':').Append(TexName(t.Ptr)).Append(' '); }
         return sb.Length == 0 ? "none" : sb.ToString().TrimEnd();
     }
     internal static string TexName(IntPtr tex)

@@ -752,6 +752,21 @@ internal static unsafe class SymbolMap
     /// mat+0xd0 wins, else own slot at mat+i*0x10). Batch group key = material CONTENT (each part owns
     /// its Material instance, so pointer identity shatters groups to size 1).</summary>
     public const string MatGetTexture = "_ZN8Material10GetTextureEi";
+    /// <summary>#275: <c>SharedMaterial::ParseField(char const*)</c> @0x4c6760 -- one <c>.mtr</c> line. The
+    /// engine's chain ends at <c>texture10</c>; the hook keeps <c>texture11+</c> in a side table.</summary>
+    public const string SharedMaterialParseField = "_ZN14SharedMaterial10ParseFieldEPKc";
+    /// <summary>#275: <c>SharedMaterial::Init(char const*)</c> @0x4c6ff0 -- after the parse, where the
+    /// engine loads its own slots (<c>LoadTextureArray</c>, which MSVC inlines here -- hence Init, not it).</summary>
+    public const string SharedMaterialInit = "_ZN14SharedMaterial4InitEPKc";
+    /// <summary>#275: <c>SharedMaterial::~SharedMaterial()</c> @0x4c5260 (D1 = D2), the side table's death
+    /// notice. Called from <c>RemoveRef</c> (last Material gone) and <c>RefreshSharedMaterial</c>.</summary>
+    public const string SharedMaterialDtor = "_ZN14SharedMaterialD2Ev";
+    /// <summary>#275: <c>LoadTexture(char const*)</c> @0x4c50f0 -- <c>AurTextureGetReference</c> (an ADDREF'd
+    /// reference, unlike <see cref="AurTextureGet"/>), or the NULL texture for an empty/"NULL" name.</summary>
+    public const string LoadTexture = "_Z11LoadTexturePKc";
+    /// <summary>#275: <c>AurTextureRelease(CAurTexture*)</c> @0x486010 -- the release the destructor pairs
+    /// with <see cref="LoadTexture"/>.</summary>
+    public const string AurTextureRelease = "_Z17AurTextureReleaseP11CAurTexture";
     /// <summary>Part::~Part() @0x437720 (D1 and D2 share the address) -- the BASE destructor every part
     /// class tail-jumps to: PartSkin and PartDanglyMesh jump to PartTriMesh::~PartTriMesh, which jumps here
     /// with <c>this</c> unchanged (verified in the disassembly, no thunk adjust). #145: the one event that
@@ -1346,6 +1361,14 @@ internal static unsafe class SymbolMap
         [PartDanglyAnimate] = Nm("?Animate@PartDanglyMesh@@UEAAXM@Z"),
         [PartDanglyMeshVtbl] = At(0xd88698),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [PartDtor] = Nm("??1Part@@UEAA@XZ"),
+        // #275: ParseField and Init are called (not inlined) on Windows -- CreateSharedMaterial/GetSharedMaterial.
+        [SharedMaterialParseField] = Nm("?ParseField@SharedMaterial@@QEAAXPEBD@Z"),
+        [SharedMaterialInit] = Nm("?Init@SharedMaterial@@QEAAXPEBD@Z"),
+        // The exported ??1SharedMaterial has NO callers: MSVC inlined it into the scalar deleting destructor
+        // (this, flags), which RemoveRef and RefreshSharedMaterial call -- the same two callers as Linux D2.
+        [SharedMaterialDtor] = At(0x81f80),
+        [LoadTexture] = Nm("?LoadTexture@@YAPEAVCAurTexture@@PEBD@Z"),
+        [AurTextureRelease] = Nm("?AurTextureRelease@@YAXPEAVCAurTexture@@@Z"),
         [PartEmitterDtor] = Nm("??1PartEmitter@@UEAA@XZ"),
         [PartGetIsOpaque] = Nm("?GetIsOpaque@PartTriMesh@@QEAA_NXZ"),
         [PartGetWorld] = Nm("?GetWorld@Part@@UEAAXAEAVVector@@AEAVQuaternion@@@Z"),

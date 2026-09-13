@@ -92,6 +92,13 @@ internal readonly unsafe ref struct MaterialRef
         }
         return new(*(IntPtr*)(_p + slot * MatSlotStride));
     }
+    /// <summary>#275: map slot <paramref name="s"/> (0-based, <see cref="AlloyRenderer.MapSlots"/> wide) by its
+    /// SOURCE: the AO slot lives in the extender-owned <c>texture11</c>, every other one is engine slot s+1.
+    /// The only accessor the map block reads through, so no caller has to know which is which.</summary>
+    internal TextureRef MapTexture(int s) => TextureAt(s == AlloyRenderer.AoSlot ? AlloyRenderer.AoTexture : s + 1);
+    /// <summary>#275: a <c>.mtr</c> slot by its index, engine (<c>texture0..10</c>) or extender-owned (11+).</summary>
+    internal TextureRef TextureAt(int n)
+        => n >= MaterialExtraSlots.First ? MaterialExtraSlots.Texture(Shared.Ptr, n) : Texture(n);
     private static readonly int MatSlotStride = EngineLayout.MatSlotStride, SharedSlot0 = EngineLayout.SharedSlot0;
 }
 

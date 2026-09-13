@@ -795,9 +795,8 @@ public sealed unsafe partial class AlloyRenderer
         // snow overlay. A material with nothing bound there leaves the bit clear and its stage samples
         // nothing, which is vanilla's own texture6Bound test.
         if (ShaderFeatures.ReadsAuxSlot(feat) && !matRef.Texture(FlowSlot + 1).IsNull) mask |= 1 << FlowSlot;
-        // #146: ...and slot 7 for the AO map, inside the SAME shared-material gate the loop above needs --
-        // on a plain Material, GetTexture(7) is an unbounded read of whatever field sits at mat+0x70.
-        if (top == PbrSlots && !matRef.Texture(AoSlot + 1).IsNull) mask |= AoBit;
+        // #146/#275: ...and the AO map from the extender-owned texture11 (a SharedMaterial-only table).
+        if (top == PbrSlots && !matRef.MapTexture(AoSlot).IsNull) mask |= AoBit;
         _oSlots[i] = mask;
 
         int f = i * 4;

@@ -201,14 +201,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <see cref="ShaderFeature.Flowmap"/> part -- slot 6 is not part of the stock vocabulary, so probing it
     /// on every shared material would split batches over a texture nothing samples.</summary>
     internal const int FlowSlot = 5;
-    /// <summary>#146: texture slot 7, the ambient-occlusion map -- a baked visibility term in .r, sampled
-    /// straight onto the ambient. Not stock vocabulary either (the stock set stops at texture5 and #123 took
-    /// texture6), so this is the extender's convention, named the same way the flowmap's texture6 is; the
+    /// <summary>#146: map slot 6 of the block, the ambient-occlusion map -- a baked visibility term in .r,
+    /// sampled straight onto the ambient. #275: sourced from <c>.mtr</c> <see cref="AoTexture"/> (texture11),
+    /// past the engine's own vocabulary, so it can never collide with a community model's texture7; the
     /// engine's own FB-effect SSAO is a screen-space pass that keeps running underneath it, untouched.
     /// <para>Unlike the flow map this is probed on EVERY shared material -- there is no shader feature that
     /// announces it. That costs one <c>Material::GetTexture</c> per enrolled part, and a batch split only
     /// where a material actually declares one.</para></summary>
     internal const int AoSlot = 6, MapSlots = TextureSlots.MapCount;
+    /// <summary>#275: the <c>.mtr</c> line the AO map is declared on -- the first extender-owned slot
+    /// (<see cref="MaterialExtraSlots.First"/>). A stock client parses and drops it.</summary>
+    internal const int AoTexture = MaterialExtraSlots.First;
     /// <summary>#146: the AO slot's MASK bit -- 1 &lt;&lt; 7, deliberately NOT <c>1 &lt;&lt; AoSlot</c>. Every
     /// other slot's bit is its index, but bit 6 was <see cref="EnvSlot"/> before this ticket and the lit
     /// stage is content-overridable: a hak shipped against an older build still reads 64 as "env-mapped".
@@ -373,7 +376,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
     /// frame looks WRONG on purpose (the diffuse's red channel is not an occlusion map); what it proves is
-    /// that a material which does declare one will be sampled. No shipped content uses texture7 yet, so
+    /// that a material which does declare one will be sampled. No shipped content uses texture11 yet, so
     /// without this there is nothing to point the feature at.</summary>
     private static bool _aoTest = DefAoTest;
     private static int _locViz = -1;
