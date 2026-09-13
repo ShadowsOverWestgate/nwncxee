@@ -15,7 +15,7 @@ internal static class RenderCommands
     private static ExtenderLog? _log;
 
     private const string LightKeys = "gain|radius|falloff|ambient|sun|overbright|wrap|wrapndl|sss|shadowsoft|discpx|shadowcap|shadownear|hot|hotsize|fadeout";
-    private const string GrassKeys = "on|density|wind|windspeed|soften|aniso|edge|push|pushradius|pushvis|pushextent|cull|cullshrink|cullmax|lod|lodmin|lodwidth|lodheight|shade|far|prepass|ao|rootao|gtint|gviz|softedge";
+    private const string GrassKeys = "on|density|wind|windspeed|soften|aniso|edge|push|pushradius|pushvis|pushextent|cull|cullshrink|cullmax|lod|lodmin|lodwidth|lodheight|shade|far|prepass|ao|rootao|gtint|gviz|softedge|dumpmips";
     private const string ParticleKeys = "on|diag|soft|lit|shadows|viz|grid|guard|sort";
     private const string HaloKeys = "on|size|gain|viz";
     // hdr is NOT here: it stands the whole Alloy frame down, which is a boot decision (config hdr=0).

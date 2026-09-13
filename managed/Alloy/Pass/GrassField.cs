@@ -152,7 +152,7 @@ internal static unsafe partial class GrassField
     /// the code defaults now that the dials are chat commands (ADR 0013): there is no earlier value to
     /// capture, so the constants are the single source for both the field initialisers and the reset.</summary>
     private const float BootDensity = 2f, BootWind = 1f, BootWindSpeed = 0.001f,
-                        BootSoften = 0f, BootAniso = 8f, BootEdge = 2f,
+                        BootSoften = 0.5f, BootAniso = 8f, BootEdge = 2f,
                         BootPush = 0.15f, BootPushRadius = 1f, BootPushExtent = 64f,
                         BootCull = 1f, BootCullShrink = 0.8f, BootCullMax = 0f,
                         BootLod = 40f, BootLodMin = 0.02f, BootLodWidth = 0.5f, BootLodHeight = 0.25f,
@@ -286,11 +286,9 @@ internal static unsafe partial class GrassField
     /// describe the resident field, not the frame, and a cap that stops being reported reads as headroom
     /// that is not there.</summary>
     private static bool _capped, _patchCapped;
-    private static int _samples = 1, _mipCount;
+    private static int _samples = 1;
     private static float _appliedAniso = 1f;
     private static bool _anyFlat;
-    private static readonly int[] _mipTid = new int[MaxGrassMaterials];
-    private static readonly bool[] _mipHas = new bool[MaxGrassMaterials];
 
     private struct Loc
     {
@@ -876,6 +874,7 @@ internal static unsafe partial class GrassField
             IntPtr tex = !live[m] ? IntPtr.Zero : _aurGet(info + InfoName, IntPtr.Zero, null, null, 0, 0);
             tids[m] = OwnedTextures.Draw(AurTex.Tid(tex));
         }
+        if (_dumpMips) { _dumpMips = false; DumpMips(tids, live); }
         EnsureSamplers();
         int samples = 0;
         Gl.GetIntegerv(Gl.SAMPLES, &samples);
@@ -1143,31 +1142,79 @@ internal static unsafe partial class GrassField
         }
     }
 
-    /// <summary>Does this texture carry a mip level 1? A texture with none is mipmap-INCOMPLETE under a
-    /// mipmap min filter and samples as black, so the answer picks the sampler. Cached per texture id: the
-    /// id is re-resolved every frame (#33) but its mip chain is a property of the upload, and a reload that
-    /// reuses the id also rebuilds the same chain.</summary>
+    /// <summary><c>/grass dumpmips</c>: one-shot readback of every level of every live grass atlas, as
+    /// <c>sowx-grassmip-{material}-L{level}.ppm</c> (rgb) + <c>.pgm</c> (alpha) in the user directory. The
+    /// ground truth for what the blades sample; cold path, allocates.</summary>
+    private static bool _dumpMips;
+    private static void DumpMips(int* tids, bool* live)
+    {
+        if (Gl.GetTexImage == null) { _log?.Info("[grass] dumpmips: glGetTexImage unavailable"); return; }
+        for (int m = 0; m < MaxGrassMaterials; m++)
+        {
+            if (!live[m] || tids[m] == 0) continue;
+            Gl.BindTexture(Gl.TEXTURE_2D, (uint)tids[m]);
+            for (int l = 0; l < 16; l++)
+            {
+                int w = 0, h = 0, fmt = 0;
+                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, l, Gl.TEXTURE_WIDTH, &w);
+                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, l, Gl.TEXTURE_HEIGHT, &h);
+                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, l, 0x1003 /*TEXTURE_INTERNAL_FORMAT*/, &fmt);
+                if (w <= 0 || h <= 0) break;
+                var px = new byte[w * h * 4];
+                fixed (byte* pp = px) Gl.GetTexImage(Gl.TEXTURE_2D, l, Gl.RGBA, Gl.UNSIGNED_BYTE, pp);
+                var rgb = new byte[w * h * 3]; var a = new byte[w * h];
+                for (int i = 0; i < w * h; i++) { rgb[i*3] = px[i*4]; rgb[i*3+1] = px[i*4+1]; rgb[i*3+2] = px[i*4+2]; a[i] = px[i*4+3]; }
+                string b = Native.ConfigPath($"sowx-grassmip-{m}-L{l}");
+                using (var f = File.Create(b + ".ppm")) { var hd = System.Text.Encoding.ASCII.GetBytes($"P6\n{w} {h}\n255\n"); f.Write(hd); f.Write(rgb); }
+                using (var f = File.Create(b + ".pgm")) { var hd = System.Text.Encoding.ASCII.GetBytes($"P5\n{w} {h}\n255\n"); f.Write(hd); f.Write(a); }
+                _log?.Info($"[grass] dumpmips: material {m} tid {tids[m]} level {l} {w}x{h} fmt 0x{fmt:x} -> {b}.ppm/.pgm");
+            }
+        }
+        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+    }
+
+    /// <summary>Every grass atlas samples an Alloy-built chain: level 0 read back through the driver's own
+    /// decode, mips averaged alpha-weighted (<see cref="TexScan.BuildMips"/>), the whole texture respecified
+    /// RGBA8. Ground truth from <c>/grass dumpmips</c>: a DDS ships a box chain over black transparent
+    /// texels (alpha-weighted luminance 59 -> 27 by level 3 on a 256px cell), and the transcode never
+    /// touches a stored chain -- so the mid-field blade, a few pixels on that cell, sampled a third of its
+    /// colour as an opaque cutout. The rebuild is marked by MAX_LEVEL == levels-1 on an RGBA8 texture, which
+    /// a fresh engine upload (same tid after an area transition) never carries, so the per-frame check is two
+    /// level queries and the rebuild re-fires exactly when the engine replaced the storage.</summary>
     private static bool HasMips(int tid)
     {
-        for (int i = 0; i < _mipCount; i++) if (_mipTid[i] == tid) return _mipHas[i];
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
-        int w = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_WIDTH, &w);
-        // A chain-less copy (a single-level upload) is BUILT one, not sampled flat: level 0 on every far
-        // blade is the crawling aliasing in the distance. Once per texture; the MAX_LEVEL cap comes off
-        // first because a capped chain stops where the cap says.
-        if (w <= 0 && Gl.GenerateMipmap != null)
+        int w0 = 0, h0 = 0, fmt = 0, cap = 0, w1 = 0;
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w0);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h0);
+        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, 0x1003 /*TEXTURE_INTERNAL_FORMAT*/, &fmt);
+        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, &cap);
+        int* lw = stackalloc int[16], lh = stackalloc int[16]; long* off = stackalloc long[16];
+        long total = 0;
+        int n = w0 > 0 ? TexScan.Chain(w0, h0, true, 16, lw, lh, off, out total) : 0;
+        if (n > 0 && fmt == (int)Gl.RGBA8 && cap == n - 1) return true;   // the marker: already ours
+        if (n == 0 || Gl.GetTexImage == null || Gl.TexImage2D == null)
         {
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, 1000);   // the cap, not the chain
-            Gl.GenerateMipmap(Gl.TEXTURE_2D);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_WIDTH, &w);
-            if (w > 0) _mipsBuilt++;
+            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_WIDTH, &w1);
+            _anyFlat |= w1 <= 0;
+            return w1 > 0;
         }
-        bool has = w > 0;
-        if (_mipCount < MaxGrassMaterials)
-        { _mipTid[_mipCount] = tid; _mipHas[_mipCount] = has; _mipCount++; }
-        _anyFlat |= !has;
-        return has;
+        // ponytail: cold one-shot per upload, allocates; the AMD GetTexImage trap (#396) was the per-upload
+        // coverage scan, not a handful of grass atlases -- revisit if a radeonsi client faults here.
+        var px = new byte[total];
+        fixed (byte* pp = px)
+        {
+            Gl.GetTexImage(Gl.TEXTURE_2D, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, pp);
+            TexScan.BuildMips(pp, n, lw, lh, off);
+            Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 1);
+            for (int l = 0; l < n; l++)
+                Gl.TexImage2D(Gl.TEXTURE_2D, l, (int)Gl.RGBA8, lw[l], lh[l], 0, Gl.RGBA, Gl.UNSIGNED_BYTE, pp + off[l]);
+            Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 4);
+        }
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, n - 1);
+        _mipsBuilt++;
+        _log?.Info($"[grass] rebuilt the mip chain of tid {tid}: {w0}x{h0} fmt 0x{fmt:x} -> RGBA8, {n} levels alpha-weighted");
+        return true;
     }
 
     /// <summary>The two samplers, and the dials they carry. Anisotropy is the one that matters for grass:
@@ -1743,10 +1790,10 @@ internal static unsafe partial class GrassField
             // stepped silhouette into a shaded one. It must be computed BEFORE any discard: derivatives are
             // only defined in uniform control flow.
             float aw = max(fwidth(texel.a), 1e-5);
-            // A far blade is one or two pixels wide, so the one-pixel ramp spans the WHOLE blade and the dither
-            // that carries it reads as floating pixels SMAA cannot resolve; past the ladder the edge is a hard
-            // step, which SMAA does resolve. Both stages must agree on the fragment set, so both carry this.
-            float edge = mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
+            // Only the DITHER path hardens the far edge: there a one-pixel ramp on a one-pixel blade reads as
+            // floating pixels. Blended (softedge) or A2C, the ramp is the anti-aliasing -- a hard step on a
+            // one-pixel blade is sub-pixel noise SMAA never sees an edge run in. Both stages carry this.
+            float edge = (uMsaa != 0 || uSoftEdge != 0) ? uEdge : mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
             float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
             // Where the target is multisampled, alpha-to-coverage resolves the edge properly and the dither
             // is left to carry the distance fade alone. Where it is not, the one dither carries both -- still
@@ -1839,10 +1886,10 @@ internal static unsafe partial class GrassField
         {
             vec4 texel = SowxGrassTexel();
             float aw = max(fwidth(texel.a), 1e-5);
-            // A far blade is one or two pixels wide, so the one-pixel ramp spans the WHOLE blade and the dither
-            // that carries it reads as floating pixels SMAA cannot resolve; past the ladder the edge is a hard
-            // step, which SMAA does resolve. Both stages must agree on the fragment set, so both carry this.
-            float edge = mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
+            // Only the DITHER path hardens the far edge: there a one-pixel ramp on a one-pixel blade reads as
+            // floating pixels. Blended (softedge) or A2C, the ramp is the anti-aliasing -- a hard step on a
+            // one-pixel blade is sub-pixel noise SMAA never sees an edge run in. Both stages carry this.
+            float edge = (uMsaa != 0 || uSoftEdge != 0) ? uEdge : mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
             float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
             float keep = (uMsaa != 0 || uSoftEdge != 0) ? vFade : cov * vFade;
             if (keep <= 0.0) discard;
@@ -1882,6 +1929,7 @@ internal static unsafe partial class GrassField
             case "wind": old = _windGain; _windGain = v; break;
             case "windspeed": old = _windSpeed; _windSpeed = v; break;
             case "soften": old = _lodBias; _lodBias = v; _samplerDirty = true; break;
+            case "dumpmips": old = 0f; _dumpMips = true; break;
             case "aniso": old = _aniso; _aniso = v; _samplerDirty = true; break;
             case "edge": old = _edge; _edge = v; break;
             case "push": old = _pushGain; _pushGain = v; break;
