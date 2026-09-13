@@ -382,7 +382,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 39;
+    internal const int LightVizMax = 40;   // 40 = the #493 vis-ID target (IdTarget.VizMode)
     private static int _lightViz = DefViz;
     /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -1092,7 +1092,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
         $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  weld {NormalWeld.Angle:F0}deg ({NormalWeld.Parts} parts, {NormalWeld.Welded} welded/{NormalWeld.Kept} kept/{NormalWeld.Refused} refused; newcomers only)  " +
         $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  retest {(CullPass.Retest ? 1 : 0)}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
-        $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  blendprepass {(_blendPrepass ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
+        $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  idtarget {(IdTarget.On ? 1 : 0)}  blendprepass {(_blendPrepass ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
         $"oit {OitPass.Mode}  fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  hlglow {(RspShim.GlowReplay ? 1 : 0)}  " +
         // #336: the one number that says whether a fog cull has anything to cull -- the far plane Alloy
         // inherits from the engine VP, against the fog the shaders already fade to.
@@ -1163,6 +1163,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // early-Z for parts BEHIND the aperture, which under a roof is the hole itself.
             case "prepasskey": old = _prepassKey ? 1f : 0f; _prepassKey = v != 0f; break;
             case "prepassfeat": old = _prepassFeat ? 1f : 0f; _prepassFeat = v != 0f; break;
+            // #493: the vis-ID attachment's A/B -- 0 = the prepass writes depth alone, as before.
+            case "idtarget": old = IdTarget.On ? 1f : 0f; IdTarget.On = v != 0f; break;
             case "blendprepass": old = _blendPrepass ? 1f : 0f; _blendPrepass = v != 0f; break;
             case "blenddiag": old = _blendDiag ? 1f : 0f; _blendDiag = v != 0f; break;
             case "gpumeter": old = GpuQuery.Enabled ? 1f : 0f; GpuQuery.Enabled = v != 0f; break;

@@ -259,6 +259,8 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, uint*, void> GenSamplers;
     /// <summary>glClearBufferfv: clear one attachment of the bound FBO without touching the clear-colour state.</summary>
     public static delegate* unmanaged<uint, int, float*, void> ClearBufferfv;
+    /// <summary>glClearBufferuiv: the integer-attachment clear (a float clear on an R32UI target is undefined).</summary>
+    public static delegate* unmanaged<uint, int, uint*, void> ClearBufferuiv;
     public static delegate* unmanaged<uint, uint, void> BindSampler;
     public static delegate* unmanaged<uint, uint, int, void> SamplerParameteri;
     public static delegate* unmanaged<uint, uint, float, void> SamplerParameterf;
@@ -487,6 +489,7 @@ public static unsafe class Gl
         TextureView = (delegate* unmanaged<uint, uint, uint, uint, uint, uint, uint, uint, void>)P("glTextureView");
         GenSamplers = (delegate* unmanaged<int, uint*, void>)P("glGenSamplers");
         ClearBufferfv = (delegate* unmanaged<uint, int, float*, void>)P("glClearBufferfv");
+        ClearBufferuiv = (delegate* unmanaged<uint, int, uint*, void>)P("glClearBufferuiv");
         BindSampler = (delegate* unmanaged<uint, uint, void>)P("glBindSampler");
         SamplerParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glSamplerParameteri");
         SamplerParameterf = (delegate* unmanaged<uint, uint, float, void>)P("glSamplerParameterf");

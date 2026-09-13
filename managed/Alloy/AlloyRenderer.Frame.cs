@@ -433,6 +433,8 @@ public sealed unsafe partial class AlloyRenderer
                                 PostChain.Adapt();
                                 GpuEnd(GpuTerm.Exposure);
                             }
+                            // #493: the vis-ID viz over the finished frame, before the resolve reads it.
+                            if (_lightViz == IdTarget.VizMode && !_capturing) IdTarget.Paint(viewport);
                             GpuBegin(GpuTerm.Post);
                             // Bloom runs against the HDR target and binds its own attachments; the engine's
                             // target has to come back before the composite writes into it, and with it the
@@ -653,7 +655,13 @@ public sealed unsafe partial class AlloyRenderer
         // conservative. The dispatch spans every batch since #290; this loop still walks the opaque range
         // alone, so the blending batches' commands in this phase's buffer are simply never submitted.
         if (indirect) CullPass.BindForDraw(phase);
-        Gl.ColorMask(0, 0, 0, 0);
+        // #493: the vis-ID attachment rides these draws; draw buffer 0 is NONE under it, so the colour mask
+        // stays open for attachment 1 alone. A probe capture is its own target and never gets one.
+        // Re-attached for the retest too (End detached it after phase one): with the mask open and no
+        // attachment 1, the stage's output would land undefined in the colour attachment.
+        bool idsWanted = !_capturing && PostChain.Armed;
+        bool ids = idsWanted && IdTarget.Begin(viewport[2], viewport[3], clear: !retest);
+        if (ids) Gl.ColorMask(1, 1, 1, 1); else Gl.ColorMask(0, 0, 0, 0);
         Gl.DepthFunc(Gl.LESS);
         uint boundVao = 0;
         // #292: the prepass makes the SAME per-batch cull decision as the colour pass, off the same
@@ -770,6 +778,7 @@ public sealed unsafe partial class AlloyRenderer
             GpuEnd(GpuTerm.PrepassFeat);
         }
         if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
+        if (idsWanted) IdTarget.End();   // unconditional past Begin: the draw-buffer state is the FBO's
         Gl.ColorMask(1, 1, 1, 1);
         // Counted from what this loop submitted, not from the pass's total draw count: since #126 that total
         // spans the blending classes too, and the prepass walks the opaque range alone.

@@ -265,7 +265,7 @@ internal static class ShaderContract
                   && DrawBufDecl.Contains($"binding = {BindDrawIdx}")
                   && DrawBufDecl.Contains("int SowxSlot(int draw) { return uDrawIdx[draw]; }")
                   && OwnedVs.Contains("uDraw[SowxSlot(uDrawBase + gl_DrawID)]")
-                  && DepthVs.Contains("uDraw[SowxSlot(uDrawBase + gl_DrawID)]")
+                  && DepthVs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
                   && OwnedLitVs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
                   && DepthKeyVs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
                   && FrameSnapshot.Vs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")

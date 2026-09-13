@@ -203,6 +203,16 @@ internal static class RenderPasses
             Revoke = MotionVectors.Revoke,
             Stats = MotionVectors.Stats,
         }, log);
+        // #493: the vis-ID target the prepass writes beside its depth; a frame-sized GL object, so it goes
+        // with the context.
+        r.Register(new PassLifecycle
+        {
+            Name = "idtarget",
+            Attach = IdTarget.Attach,
+            SelfCheck = l => IdTarget.SelfCheck(l),
+            ContextLost = IdTarget.Forget,
+            Stats = IdTarget.Stats,
+        }, log);
         r.Register(new PassLifecycle
         {
             Name = "oit",

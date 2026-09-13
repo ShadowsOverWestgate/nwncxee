@@ -808,9 +808,12 @@ public sealed unsafe partial class AlloyRenderer
         uniform mat4 uVP;
         uniform int uDrawBase;
         invariant gl_Position;
+        flat out int vDraw;
         void main()
         {
-            SowxDraw d = uDraw[SowxSlot(uDrawBase + gl_DrawID)];
+            int id = SowxSlot(uDrawBase + gl_DrawID);
+            SowxDraw d = uDraw[id];
+            vDraw = id;   // #493: the record slot the vis-ID target packs
             // #262: the skinned arm, and it goes through the same `pos` TEMP the colour stages use so the
             // assigning statement is character for character theirs -- ShaderContract asserts that one
             // literal against all four stages. #119's `invariant gl_Position` is the only reason this stage
@@ -825,7 +828,10 @@ public sealed unsafe partial class AlloyRenderer
         """;
     internal const string DepthFs = """
         #version 460 core
-        void main() { }
+        flat in int vDraw;
+
+        """ + IdTarget.OutDecl + """
+        void main() { oVisId = SowxVisId(vDraw, gl_PrimitiveID); }
         """;
 
     /// <summary>The feature prepass's fragment stage: the cutout test the colour stages make, and nothing else.
@@ -838,12 +844,13 @@ public sealed unsafe partial class AlloyRenderer
         in vec2 vUV;
         flat in int vDraw;
 
-        """ + DrawBufDecl + """
+        """ + DrawBufDecl + IdTarget.OutDecl + """
         uniform sampler2D uTex;
         uniform float uAlphaCut;
         uniform float uLodBias;        // #391: the SAME bias as the colour cutout, or the two tests disagree (#119)
         void main()
         {
+            oVisId = SowxVisId(vDraw, gl_PrimitiveID);
             if (uAlphaCut < 0.0) return;
             if ((int(uDraw[vDraw].pbr.w) & 64) != 0) return;
             if (texture(uTex, vUV, uLodBias).a <= uAlphaCut) discard;
@@ -897,12 +904,13 @@ public sealed unsafe partial class AlloyRenderer
         in float vDepth;
         flat in int vDraw;
 
-        """ + DrawBufDecl + FeatDecl + KeyFogDecl + """
+        """ + DrawBufDecl + FeatDecl + KeyFogDecl + IdTarget.OutDecl + """
 
         """ + KeyholeFs + """
         void main()
         {
             if (SowxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth) < 0.0) discard;
+            oVisId = SowxVisId(vDraw, gl_PrimitiveID);
         }
         """;
 
