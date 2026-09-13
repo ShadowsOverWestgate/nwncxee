@@ -122,6 +122,35 @@ internal static unsafe class PostChain
     /// It is also what makes <c>tonemap aces</c> usable -- the Narkowicz fit sits below NWN's radiance
     /// levels unexposed and darkens a dim interior.</summary>
     private static float _exposure = 1f;
+    /// <summary>#491: auto-exposure (histogram eye adaptation), <c>/post auto 1</c>. A compute histogram of
+    /// log2 luminance over the HDR target -- the same linear value <c>uExposure</c> multiplies, so the target
+    /// is scene-referred and not gamma-bent -- gives a log-average; a one-thread dispatch eases a gain toward
+    /// <c>AutoKey / average</c> and the resolve multiplies it in AFTER <c>uExposure</c>. On by default (xtul's
+    /// call, 2026-09-13); <c>/post auto 0</c> is bit-exact the fixed-exposure image (no dispatch, no uniform read).</summary>
+    private static bool _auto = true, _bootAuto;
+    /// <summary>The auto gain's clamps, and the adaptation rates in 1/s: <c>autospeed</c> when the gain is
+    /// RISING (walking into the dark, the slow one), <c>autodown</c> when it is falling (into the light, the
+    /// fast one -- the brief over-exposure that settles is this rate). Exponential ease, so the settle time
+    /// is about 3/rate seconds.
+    /// <para>The clamps bound the AUTO factor, not the total: the frame sees <c>exposure * gain</c>.</para></summary>
+    private static float _autoMin = 0.5f, _autoMax = 2f, _autoSpeed = 1f, _autoDown = 3f;
+    private static float _bootAutoMin, _bootAutoMax, _bootAutoSpeed, _bootAutoDown;
+    /// <summary>The mid-grey the log-average is steered to, in the linear scale the resolve works in.</summary>
+    private const float AutoKey = 0.18f;
+    /// <summary>The histogram's log2-luminance range; below the floor is bin 0, which the average ignores.</summary>
+    private const float AutoLogMin = -12f, AutoLogMax = 4f;
+    private const int AutoBins = 64;
+    /// <summary>SSBO layout: <see cref="AutoBins"/> uint bins, then the float gain. 0 gain = "unset, snap".</summary>
+    private const int AutoBufBytes = AutoBins * 4 + 4;
+    private const uint BindExposure = 24;   // 21-23 are CullPass/OitPass (#489/#490)
+    private static uint _autoBuf, _progHist, _progAdapt;
+    private static bool _autoFailed;
+    private static int _hSrc, _hRange, _aRange, _aParams, _aRates, _cAuto;
+    private static long _autoTicks;
+    /// <summary>Set by <see cref="Adapt"/>, consumed by the next <see cref="Composite"/> and cleared at every
+    /// pass start (<see cref="Precheck"/>): the gain applies only on the pass that adapted, so a GUI panel's
+    /// resolve keeps the fixed exposure and a pass that ended without a resolve leaks nothing forward.</summary>
+    private static bool _autoThisPass;
     /// <summary>How much of the ACES curve <c>tonemap aces</c> applies, mixed in LINEAR against the shoulder
     /// path. 1 is the full Narkowicz fit; its toe crushes NWN's dim interiors (0.01 linear comes out 2.6x
     /// darker) so that only specular survives on a character in the dark, which reads as "glossy". 0.5 --
@@ -182,6 +211,7 @@ internal static unsafe class PostChain
         _bootBloom = _bloom; _bootThreshold = _threshold; _bootKnee = _knee;
         _bootTmKnee = _tmKnee; _bootMode = _mode; _bootDither = _dither; _bootExposure = _exposure; _bootAcesMix = _acesMix;
         _bootTaaBlend = _taaBlend;
+        _bootAuto = _auto; _bootAutoMin = _autoMin; _bootAutoMax = _autoMax; _bootAutoSpeed = _autoSpeed; _bootAutoDown = _autoDown;
         _gammaParam = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
         if (_gammaParam == null)
             log.Info("PostChain: RenderInterface::GetGlobalShaderParami unresolved -- the resolve encodes "
@@ -193,7 +223,7 @@ internal static unsafe class PostChain
 
     internal static string Describe() =>
         $"hdr {(_on ? "on" : "off")}  bloom {_bloom:F3}  threshold {_threshold:F2}  knee {_knee:F2}  " +
-        $"exposure {_exposure:F2}  tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  acesmix {_acesMix:F2}  tmknee {_tmKnee:F2}  " +
+        $"exposure {_exposure:F2} (auto {(_auto ? "on" : "off")}: min {_autoMin:F2} max {_autoMax:F2} speed {_autoSpeed:F2} down {_autoDown:F2})  tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  acesmix {_acesMix:F2}  tmknee {_tmKnee:F2}  " +
         $"dither {_dither:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(_motion ? "on" : "off")}  taa {(_taa ? "on" : "off")} (taablend {_taaBlend:F2}, taau {(_taau ? 1 : 0)}, aotemporal {SsaoPass.Temporal:F2})"
         + (_viz > 0f ? $"  VIZ {_viz:F0}" : "")
         + (_clearViz ? "  CLEARVIZ (target cleared magenta)" : "")
@@ -264,6 +294,11 @@ internal static unsafe class PostChain
             case "tonemap":   old = _mode; _mode = (int)v; break;
             case "tmknee":    old = _tmKnee; _tmKnee = v; break;
             case "exposure":  old = _exposure; _exposure = v; break;
+            case "auto":      old = _auto ? 1f : 0f; _auto = v != 0f; _autoTicks = 0; break;
+            case "automin":   old = _autoMin; _autoMin = MathF.Max(v, 0.01f); break;
+            case "automax":   old = _autoMax; _autoMax = v; break;
+            case "autospeed": old = _autoSpeed; _autoSpeed = v; break;
+            case "autodown":  old = _autoDown; _autoDown = v; break;
             case "acesmix":   old = _acesMix; _acesMix = v; break;
             case "dither":    old = _dither; _dither = v; break;
             case "viz":       old = _viz; _viz = v; break;
@@ -292,6 +327,8 @@ internal static unsafe class PostChain
         // off. Leaving it out is why /post reset could not undo a stray /post viz either.
         _viz = 0f; _clearViz = false;
         _scale = _bootScale; _motion = false; _taa = false; _taaBlend = _bootTaaBlend; _taau = true;
+        _auto = _bootAuto; _autoMin = _bootAutoMin; _autoMax = _bootAutoMax; _autoSpeed = _bootAutoSpeed; _autoDown = _bootAutoDown;
+        _autoTicks = 0;
         PostStack.ResetTuning();
         _log?.Info($"PostChain: /post reset -> {Describe()}");
     }
@@ -307,7 +344,139 @@ internal static unsafe class PostChain
         _defaultProbed = false; _defaultFormat = 0; _defaultOk = null;
         _progDown = 0; _progUp = 0; _progComposite = 0; _vao = 0;
         _progFailed = false; Armed = false; _down.Forget();
+        _autoBuf = 0; _progHist = 0; _progAdapt = 0; _autoFailed = false; _autoTicks = 0; _autoThisPass = false;
     }
+
+    /// <summary>#491: the adaptation runs this pass -- armed, the HDR target up, and not a pass that already
+    /// stood it down. The caller adds "world scene, not a probe capture".</summary>
+    internal static bool AutoWanted => _auto && Armed && !_autoFailed;
+
+    /// <summary>#491: histogram the HDR target and ease the gain. Two dispatches, no readback: the gain
+    /// stays on the GPU and the resolve reads it from the SSBO. dt is the wall clock since the last adapt,
+    /// capped so a hitch or a pause does not snap. ponytail: bloom is not in the histogram (it runs under
+    /// the Post GPU term, and TIME_ELAPSED cannot nest); it is a ~6% highlight term the log-average barely sees.</summary>
+    internal static void Adapt()
+    {
+        if (!AutoWanted) return;
+        if (_autoBuf == 0 && !EnsureAuto()) return;
+        long now = FrameZones.Now;
+        float dt = _autoTicks == 0 ? 0f : MathF.Min((float)(now - _autoTicks) / System.Diagnostics.Stopwatch.Frequency, 0.1f);
+        bool snap = _autoTicks == 0;
+        _autoTicks = now;
+        if (snap) Gl.ZeroBuffer(_autoBuf, AutoBufBytes);
+        else Gl.ZeroBuffer(_autoBuf, AutoBins * 4);
+        float inv = 1f / (AutoLogMax - AutoLogMin);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindExposure, _autoBuf);
+        Gl.UseProgram(_progHist);
+        Gl.ActiveTexture(Gl.TEXTURE0 + HdrUnit);
+        Gl.BindTexture(Gl.TEXTURE_2D, _hdrTex);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        Gl.Uniform1i(_hSrc, (int)HdrUnit);
+        Gl.Uniform2f(_hRange, AutoLogMin, inv);
+        Gl.DispatchCompute((uint)((_w + 15) / 16), (uint)((_h + 15) / 16), 1);
+        Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
+        Gl.UseProgram(_progAdapt);
+        Gl.Uniform2f(_aRange, AutoLogMin, AutoLogMax - AutoLogMin);
+        Gl.Uniform4f(_aParams, dt, MathF.Min(_autoMin, _autoMax), MathF.Max(_autoMin, _autoMax), AutoKey);
+        Gl.Uniform2f(_aRates, _autoSpeed, _autoDown);
+        Gl.DispatchCompute(1, 1, 1);
+        Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
+        Gl.UseProgram(0);
+        _autoThisPass = true;
+    }
+
+    /// <summary>#491: the SSBO and the two compute programs. A miss makes <c>auto</c> inert with one log line --
+    /// an optional look, not a frame requirement, so never a refusal.</summary>
+    private static bool EnsureAuto()
+    {
+        if (Gl.DispatchCompute == null || Gl.MemoryBarrier == null || Gl.ClearBufferSubData == null || Gl.BindBufferBase == null)
+        { _autoFailed = true; _log?.Info("PostChain: compute/SSBO entry points unresolved -- /post auto is inert"); return false; }
+        _progHist = GlProgram.Compute(AutoHistCs, _log, "PostChain exposure histogram");
+        _progAdapt = GlProgram.Compute(AutoAdaptCs, _log, "PostChain exposure adapt");
+        if (_progHist == 0 || _progAdapt == 0)
+        { _autoFailed = true; _log?.Info("PostChain: an exposure program did not build -- /post auto is inert"); return false; }
+        _hSrc = GlProgram.Loc(_progHist, "uHdr"); _hRange = GlProgram.Loc(_progHist, "uRange");
+        _aRange = GlProgram.Loc(_progAdapt, "uRange"); _aParams = GlProgram.Loc(_progAdapt, "uParams");
+        _aRates = GlProgram.Loc(_progAdapt, "uRates");
+        uint b; Gl.GenBuffers(1, &b); _autoBuf = b;
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _autoBuf);
+        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)AutoBufBytes, null, Gl.DYNAMIC_DRAW);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        _log?.Info($"PostChain: auto-exposure armed -- {AutoBins}-bin log2 histogram over [{AutoLogMin}, {AutoLogMax}], key {AutoKey}");
+        return true;
+    }
+
+    /// <summary>#491: the SSBO block the three programs share. Bin 0 is "below the floor" and ignored.</summary>
+    private const string AutoBufLib = """
+        layout(std430, binding = 24) buffer SowxExposure { uint uHistBin[64]; float uAutoGain; };
+        """;
+
+    /// <summary>The resolve's view of the same block: it only reads the gain.</summary>
+    private const string AutoBufLibRead = """
+        layout(std430, binding = 24) readonly buffer SowxExposure { uint uHistBin[64]; float uAutoGain; };
+        """;
+
+    /// <summary>#491: 16x16 tiles, a shared-memory histogram per tile, 64 atomics per tile into the SSBO.</summary>
+    internal const string AutoHistCs = """
+        #version 460 core
+        layout(local_size_x = 16, local_size_y = 16) in;
+        uniform sampler2D uHdr;
+        uniform vec2 uRange;   // (log2 floor, 1 / log2 span)
+
+        """ + AutoBufLib + """
+
+        shared uint sBin[64];
+        void main()
+        {
+            uint li = gl_LocalInvocationIndex;
+            if (li < 64u) sBin[li] = 0u;
+            barrier();
+            ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+            if (all(lessThan(p, textureSize(uHdr, 0))))
+            {
+                float l = dot(texelFetch(uHdr, p, 0).rgb, vec3(0.2126, 0.7152, 0.0722));
+                uint b = 0u;
+                if (l > 1e-5) b = min(uint(clamp((log2(l) - uRange.x) * uRange.y, 0.0, 1.0) * 62.0), 61u) + 1u;
+                atomicAdd(sBin[b], 1u);
+            }
+            barrier();
+            if (li < 64u && sBin[li] != 0u) atomicAdd(uHistBin[li], sBin[li]);
+        }
+        """;
+
+    /// <summary>#491: one thread reduces the bins to a log-average and eases the gain. A zero gain (fresh
+    /// buffer, or /post auto just armed) snaps to the target instead of easing from nothing.</summary>
+    internal const string AutoAdaptCs = """
+        #version 460 core
+        layout(local_size_x = 1) in;
+        uniform vec2 uRange;    // (log2 floor, log2 span)
+        uniform vec4 uParams;   // dt, min gain, max gain, key
+        uniform vec2 uRates;    // 1/s: gain rising, gain falling
+
+        """ + AutoBufLib + """
+
+        void main()
+        {
+            float sum = 0.0, n = 0.0;
+            for (int i = 1; i < 64; i++)
+            {
+                float c = float(uHistBin[i]);
+                sum += c * (float(i - 1) + 0.5) / 62.0;
+                n += c;
+            }
+            if (n <= 0.0) { if (uAutoGain <= 0.0) uAutoGain = clamp(1.0, uParams.y, uParams.z); return; }
+            float avg = exp2(uRange.x + sum / n * uRange.y);
+            float target = clamp(uParams.w / avg, uParams.y, uParams.z);
+            float g = uAutoGain;
+            if (g <= 0.0) g = target;
+            else
+            {
+                float rate = target > g ? uRates.x : uRates.y;
+                g += (target - g) * (1.0 - exp(-rate * uParams.x));
+            }
+            uAutoGain = g;
+        }
+        """;
 
     /// <summary>#132: the refusals that are decidable WITHOUT the 4.6 bracket, asked in ENGINE context
     /// before the Alloy pass pays for its preamble. False stands the whole pass down to vanilla.
@@ -330,6 +499,7 @@ internal static unsafe class PostChain
 
     internal static bool Precheck(int* viewport)
     {
+        _autoThisPass = false;
         // config hdr=0 is a deliberate setting and Attach already said so; it is not a refusal to report.
         if (!_on || _down.Failed) return false;
         // #215/#467: the default framebuffer IS the target, every frame and on purpose. Keyed on the shim
@@ -719,6 +889,9 @@ internal static unsafe class PostChain
         Gl.Uniform1i(_cMode, _mode);
         Gl.Uniform1f(_cKnee, _tmKnee);
         Gl.Uniform1f(_cExposure, _exposure);
+        bool auto = _autoThisPass; _autoThisPass = false;
+        if (auto) Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindExposure, _autoBuf);
+        Gl.Uniform1i(_cAuto, auto ? 1 : 0);
         Gl.Uniform1f(_cAcesMix, _acesMix);
         // ...in LSBs of the 8-bit target this writes into, converted here rather than in the shader so the
         // dial reads as "how many quantisation steps of noise", which is the only unit it makes sense in.
@@ -852,6 +1025,7 @@ internal static unsafe class PostChain
         _cStrength = GlProgram.Loc(_progComposite, "uStrength"); _cMode = GlProgram.Loc(_progComposite, "uMode");
         _cKnee = GlProgram.Loc(_progComposite, "uKnee");
         _cExposure = GlProgram.Loc(_progComposite, "uExposure");
+        _cAuto = GlProgram.Loc(_progComposite, "uAuto");
         _cAcesMix = GlProgram.Loc(_progComposite, "uAcesMix");
         _cDither = GlProgram.Loc(_progComposite, "uDither");
         _cViz = GlProgram.Loc(_progComposite, "uViz");
@@ -1000,11 +1174,12 @@ internal static unsafe class PostChain
         uniform int uMode;
         uniform float uKnee;
         uniform float uExposure;  // scene-referred gain before the tonemap; 1 = identity
+        uniform int uAuto;        // #491: 1 = multiply the adapted gain from the SSBO in as well
         uniform float uAcesMix;   // mode 2: ACES mixed against the shoulder, in linear; 1 = full ACES
         uniform float uDither;   // one LSB of the output target, or 0
         uniform int uViz;        // 0 = the frame; 1 = bloom only; 2 = HDR only; 3 = bloom x20; 4 = motion vectors
 
-        """ + PostColorLib + PostDitherLib + """
+        """ + PostColorLib + PostDitherLib + AutoBufLibRead + """
 
         vec3 SowxShoulder(vec3 c, float k)
         {
@@ -1043,6 +1218,7 @@ internal static unsafe class PostChain
             vec3 c = texture(uHdr, vUV).rgb;
             if (uStrength > 0.0) c += textureLod(uBloom, vUV, 0.0).rgb * uStrength;
             c *= uExposure;
+            if (uAuto != 0) c *= uAutoGain;
             if (uMode == 1) c = SowxShoulder(c, uKnee);
             // ACES against the SHOULDER, not the raw value: the shoulder is the identity below its knee, so
             // the mix keeps the darks the ACES toe would crush and takes only the roll-off and colour.
@@ -1128,6 +1304,30 @@ internal static unsafe class PostChain
               && ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
               < ResolveFs.IndexOf("vec3 outc = SowxEncode(c);", StringComparison.Ordinal),
               "exposure is applied in linear, before the tonemap and the encode");
+            // #491: the auto gain is a second scene-referred multiply, right after the fixed one; with uAuto 0
+            // the line is skipped, which is what makes "off" bit-exact rather than "times a gain of 1".
+            E(ResolveFs.IndexOf("if (uAuto != 0) c *= uAutoGain;", StringComparison.Ordinal)
+              > ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
+              && ResolveFs.IndexOf("if (uAuto != 0) c *= uAutoGain;", StringComparison.Ordinal)
+              < ResolveFs.IndexOf("if (uMode == 1) c = SowxShoulder", StringComparison.Ordinal),
+              "the auto-exposure gain multiplies in linear, after the fixed exposure and before the tonemap");
+            E(_auto && !AutoWanted, "auto-exposure boots on, but wants nothing without an armed HDR target");
+            Tune("auto", 0f); E(Describe().Contains("auto off"), "/post auto 0 disarms it and Describe says so");
+            Tune("auto", 1f); E(Describe().Contains("auto on"), "/post auto 1 arms it again");
+            Tune("automin", 0.3f); Tune("automax", 5f); Tune("autospeed", 2f); Tune("autodown", 6f);
+            E(_autoMin == 0.3f && _autoMax == 5f && _autoSpeed == 2f && _autoDown == 6f, "the four auto dials read back");
+            ResetTuning(); E(_auto == _bootAuto && _autoMin == _bootAutoMin && _autoDown == _bootAutoDown, "/post reset disarms auto and restores its dials");
+            // The shader bin count is literal text; this ties it to the C# constant the buffer is sized from.
+            E(AutoBufLib.Contains($"[{AutoBins}]") && AutoBufLibRead.Contains($"[{AutoBins}]")
+              && AutoHistCs.Contains($"* {AutoBins - 2}.0), {AutoBins - 3}u") && AutoAdaptCs.Contains($"/ {AutoBins - 2}.0"),
+              "the shader bin literals match AutoBins");
+            // Live, 2026-09-13: a raw string drops its last newline, so a lib joined after a trailing line
+            // comment is commented out with it. The joined text must put the block on its own line.
+            E(AutoHistCs.Contains("\nlayout(std430") && AutoAdaptCs.Contains("\nlayout(std430")
+              && AutoHistCs.Contains("};\nshared uint") && AutoAdaptCs.Contains("};\nvoid main"),
+              "the exposure SSBO block sits on its own line in both compute stages");
+            E(AutoHistCs.Contains("texelFetch(uHdr, p, 0)") && AutoAdaptCs.Contains("uParams.w / avg"),
+              "the histogram reads the linear HDR texel and the adapt steers key / average");
             E(ResolveFs.Contains("mix(SowxShoulder(c, uKnee), SowxAces(c), uAcesMix)"),
               "ACES is mixed against the shoulder, so the darks below the knee are never crushed past the mix");
             // The resolve is the ONLY place the Alloy frame meets 8-bit, so it is the only place a dither

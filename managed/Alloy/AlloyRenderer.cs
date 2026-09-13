@@ -545,7 +545,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Exposure, Post, Cull, HiZ, Beams, WaterCopy, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -1827,6 +1827,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $"/ particles {GpuMs(GpuTerm.Particles):F2}" +
                          (_qPartSamples.Measured && _lastPixels > 0 ? $" (overdraw x{_qPartSamples.Avg / _lastPixels:F2})" : "") +
                          (_qTerm[(int)GpuTerm.Motion].Measured ? $" / motion {GpuMs(GpuTerm.Motion):F2}" : "") +
+                         (_qTerm[(int)GpuTerm.Exposure].Measured ? $" / exposure {GpuMs(GpuTerm.Exposure):F3}" : "") +
                          $" / post {GpuMs(GpuTerm.Post):F2}" +
                          // The terms no pass owned: the cull dispatches, the hi-Z build, beams, the water
                          // copy -- and the total, to read against the [gl46] gpu-span. Span minus total is

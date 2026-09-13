@@ -425,6 +425,13 @@ public sealed unsafe partial class AlloyRenderer
                                 MoverMotionPass(&vp, jx, jy, viewport);
                                 GpuEnd(GpuTerm.Motion);
                             }
+                            // #491: its own term ahead of Post (queries cannot nest); world scene only.
+                            if (PostChain.AutoWanted && !_capturing && IsWorldScene(_enrollScene))
+                            {
+                                GpuBegin(GpuTerm.Exposure);
+                                PostChain.Adapt();
+                                GpuEnd(GpuTerm.Exposure);
+                            }
                             GpuBegin(GpuTerm.Post);
                             // Bloom runs against the HDR target and binds its own attachments; the engine's
                             // target has to come back before the composite writes into it, and with it the
