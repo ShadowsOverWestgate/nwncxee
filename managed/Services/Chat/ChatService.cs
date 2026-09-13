@@ -148,9 +148,10 @@ public sealed unsafe class ChatService : IExtenderService
         try
         {
             string portraitRef = hasPortrait != 0 ? ResRef(portrait) : "";
-            // Outbound Tell echoes: tag with the recipient so pinned tabs show both sides.
+            // Outbound Tell echoes: the server sends back a plain tell with speaker = self and no recipient
+            // anywhere in it (nwserver SendServerToPlayerChatMessage case 4), so the name comes from what we sent.
             string tellRecip = (channel & 0x002) != 0 && _playerResolver?.LocalIngestId() == playerId
-                ? ParseTellRecipient(raw) : "";
+                ? TellTarget.TakeEcho(raw) : "";
             // ponytail: senderName "" -- the tap doesn't carry it (inline in raw). SenderName component is the ceiling.
             var line = new ChatLine(channel, "", playerId, portraitRef,
                 ColorRunParser.Parse(raw), DateTime.UtcNow, raw, GameNow(), tellRecip);
@@ -202,32 +203,6 @@ public sealed unsafe class ChatService : IExtenderService
         return Encoding.ASCII.GetString(b.Slice(0, n));
     }
 
-    /// <summary>Extract the recipient name from an outbound Tell echo. The engine formats these as
-    /// <c>[Tell] [To Name]: text</c> (with embedded color codes); returns "" if the pattern is absent.</summary>
-    private static string ParseTellRecipient(string raw)
-    {
-        int idx = raw.IndexOf("[To ", StringComparison.Ordinal);
-        if (idx < 0) return "";
-        int nameStart = idx + 4;
-        int nameEnd = raw.IndexOf(']', nameStart);
-        return nameEnd > nameStart ? StripColorTags(raw.Substring(nameStart, nameEnd - nameStart)) : "";
-    }
-
-    /// <summary>Strip Aurora inline color tags (<c>&lt;cRGB&gt;</c> / <c>&lt;/c&gt;</c>) from a string.</summary>
-    private static string StripColorTags(string s)
-    {
-        if (s.IndexOf('<') < 0) return s;
-        var sb = new StringBuilder(s.Length);
-        int i = 0;
-        while (i < s.Length)
-        {
-            if (i + 5 < s.Length && s[i] == '<' && s[i + 1] == 'c' && s[i + 5] == '>') { i += 6; continue; }
-            if (i + 3 < s.Length && s[i] == '<' && s[i + 1] == '/' && s[i + 2] == 'c' && s[i + 3] == '>') { i += 4; continue; }
-            sb.Append(s[i]); i++;
-        }
-        return sb.ToString();
-    }
-
     // ---- slice #21: window + owned render -----------------------------------------------------
 
     /// <summary>The chat window layout (#37/#41): the ordered window list ChatService drives for draw,
@@ -248,7 +223,8 @@ public sealed unsafe class ChatService : IExtenderService
 
     /// <summary>Native player roster resolver: CClientExoApp::GetPlayerByCreatureName first (pinned tab
     /// names are character names), then GetPlayerByPlayerName; reads the player ID at CNWCPlayer+0x8.
-    /// Cold (send path only).</summary>
+    /// Every name this hands out is the CHARACTER name: pins from the player list, nameplates, portraits
+    /// and incoming tells must all live in one name space or a reply opens a second tab. Cold.</summary>
     // ponytail: exact-case match (engine strcmp); own roster walk (+0x38/+0x40) with case-folding if players trip
     private sealed class NativePlayerResolver : IPlayerResolver
     {
@@ -258,10 +234,11 @@ public sealed unsafe class ChatService : IExtenderService
         // CNWCPlayer field offsets (verified via Ghidra decompilation).
         // +0x8  = the player ID: what vanilla ParseChatString reads (-1 = invalid) and passes to
         //         SendPlayerToServerChat_Tell, and what AppendToMsgBuffer passes as playerId.
-        // +0x10 = player name (char*), +0x18 = name length.
-        private const int IngestPlayerIdOff = 0x8;
-        private const int PlayerNameOff = 0x10;
-        private const int PlayerNameLenOff = 0x18;
+        // +0x40/+0x48 = character name (the one GetPlayerByCreatureName compares); +0x10/+0x18 is the
+        // player/account name, which is NOT what the player list, nameplates or the roster show.
+        private static readonly int IngestPlayerIdOff = EngineLayout.PlayerId;
+        private static readonly int PlayerNameOff = EngineLayout.PlayerCreatureName;
+        private static readonly int PlayerNameLenOff = EngineLayout.PlayerCreatureNameLen;
 
         public NativePlayerResolver(delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByName,
                                     delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByCreatureName)
@@ -293,15 +270,13 @@ public sealed unsafe class ChatService : IExtenderService
             finally { Native.FreeExoString(exo); }
         }
 
-        // CClientExoAppInternal offsets for the player list (from GetPlayerByPlayerName_internal decompilation).
-        private const int InternalOff = 0x8;
-        private const int ListPtrOff = 0x38;
-        private const int ListCountOff = 0x40;
-        // Local-player identification (from GetPlayerCreatureId + GetPlayerByGameObjectID disasm).
-        private const int LocalCreatureIdOff = 0x48;   // CClientExoAppInternal: game object ID of your creature
-        private const int PlayerCreatureIdOff = 0x34;   // CNWCPlayer: creature object ID per player entry
+        private static readonly int InternalOff = EngineLayout.ExoAppInternal;
+        private static readonly int ListPtrOff = EngineLayout.InternalPlayers;
+        private static readonly int ListCountOff = EngineLayout.InternalPlayerCount;
+        private static readonly int LocalCreatureIdOff = EngineLayout.InternalPlayerCreatureId;
+        private static readonly int PlayerCreatureIdOff = EngineLayout.PlayerCreatureId;
 
-        /// <summary>Read the player name for an ingest PlayerId (+0x8), or null if the player is gone.</summary>
+        /// <summary>Read the character name for an ingest PlayerId (+0x8), or null if the player is gone.</summary>
         public string? NameOf(uint playerId)
         {
             IntPtr app = App();
@@ -369,8 +344,8 @@ public sealed unsafe class ChatService : IExtenderService
     // hour edge (PollGameClock, per frame) and interpolate a sub-hour minute at ingest.
     private static readonly delegate* unmanaged<IntPtr, IntPtr> _getModule =
         (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
-    private const int ModuleHourOff = 0x16c;            // CNWCModule: server-synced game hour (u32, 0..23)
-    private const int ModuleMinutesPerHourOff = 0x15c;  // CNWCModule: real minutes per game hour (byte, module setting)
+    private static readonly int ModuleHourOff = EngineLayout.ModuleHour;
+    private static readonly int ModuleMinutesPerHourOff = EngineLayout.ModuleMinutesPerHour;
 
     private static int _gmHour = -1;    // last polled server game hour (0..23); -1 = none seen -> local fallback
     private static long _gmHourMs;      // TickCount64 when _gmHour last changed (sub-hour interpolation anchor)
@@ -753,8 +728,7 @@ public sealed unsafe class ChatService : IExtenderService
 
     private static delegate* unmanaged<IntPtr, IntPtr> _promptCtorOrig;
     private static delegate* unmanaged<IntPtr, int, void> _panelDeactivate;
-    /// <summary>CGuiInGameChatPrompt's shown flag on the Windows build (Linux +0x230; decomp of Show/ctor).</summary>
-    private const int WinPromptShownOff = 0x200;
+    private static readonly int WinPromptShownOff = EngineLayout.ChatPromptShown;
 
     [UnmanagedCallersOnly]
     private static IntPtr OnPromptCtor(IntPtr self)
@@ -1179,6 +1153,9 @@ public sealed unsafe class ChatService : IExtenderService
     private static void StartTellTo(string name, uint? playerId)
     {
         if (_layout == null) return;
+        // One pin name space: whatever the caller typed or read, a live player pins under the roster's
+        // character name -- the same bytes incoming-tell routing produces, or a reply opens a second tab.
+        if (playerId is uint p) name = _playerResolver?.NameOf(p) ?? name;
         if (_config.TellOpen == TellAutoOpen.Off)
         {
             Open();
@@ -1461,14 +1438,14 @@ public sealed unsafe class ChatService : IExtenderService
     {
         if (player != IntPtr.Zero)
         {
-            IntPtr buf = *(IntPtr*)(player + 0x10);
-            uint len = *(uint*)(player + 0x18);
+            IntPtr buf = *(IntPtr*)(player + EngineLayout.PlayerCreatureName);
+            uint len = *(uint*)(player + EngineLayout.PlayerCreatureNameLen);
             if (buf != IntPtr.Zero && len > 0 && len <= 128)
             {
                 var sb = new StringBuilder((int)len);
                 for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
                 string name = sb.ToString();
-                uint ingestId = *(uint*)(player + 0x8);
+                uint ingestId = *(uint*)(player + EngineLayout.PlayerId);
                 StartTellTo(name, ingestId);
                 return;
             }
@@ -1656,12 +1633,14 @@ public sealed unsafe class ChatService : IExtenderService
                     if (_playerResolver?.Resolve(tellName) is uint pid && _sendTellId != null)
                     {
                         _log?.Info($"[chat] tell SENDING via id: name=\"{tellName}\" pid={pid}");
+                        TellTarget.Sent(_playerResolver.NameOf(pid) ?? tellName, text);   // canonical pin name
                         _sendTellId(msg, pid, exo);
                     }
                     else if (_sendTell != null)
                     {
                         IntPtr nameExo = Native.NewExoString(tellName);
                         _log?.Info($"[chat] tell SENDING via TellName fallback: name=\"{tellName}\"");
+                        TellTarget.Sent(tellName, text);
                         try { _sendTell(msg, nameExo, exo); }
                         finally { Native.FreeExoString(nameExo); }
                     }

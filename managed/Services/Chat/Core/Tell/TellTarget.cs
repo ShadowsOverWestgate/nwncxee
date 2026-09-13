@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Sowx.Framework;
 
@@ -29,11 +30,54 @@ public static class TellTarget
             : tab.PinnedName.Length > 0 ? tab.PinnedName : null;
     }
 
+    /// <summary>Outbound tells awaiting their server echo, oldest first: (canonical recipient, text).</summary>
+    private static readonly ConcurrentQueue<(string Name, string Text)> _pending = new();
+    private const int MaxPending = 8;
+
+    /// <summary>Record a tell about to go out so its echo can be tagged with the recipient. The echo the
+    /// server returns is a plain tell from yourself; nothing in it names who it went to.</summary>
+    public static void Sent(string recipient, string text)
+    {
+        // Compare in the engine's own byte space: ingest reads the echo one char per byte, so store what
+        // NewExoString will put on the wire, not the managed string.
+        _pending.Enqueue((recipient, System.Text.Encoding.Latin1.GetString(System.Text.Encoding.UTF8.GetBytes(text))));
+        while (_pending.Count > MaxPending) _pending.TryDequeue(out _);
+    }
+
+    /// <summary>Recipient for an arriving self-tell line, or "" when none is pending. Matches by text so a
+    /// dropped echo (target gone before the server fanned out) cannot shift every later echo onto the
+    /// wrong pin; entries older than the match are discarded as dropped.</summary>
+    // ponytail: identical texts to two targets in flight resolve oldest-first; fine for humans typing.
+    public static string TakeEcho(string raw)
+    {
+        foreach (var e in _pending)
+            if (raw.Contains(e.Text, StringComparison.Ordinal))
+            {
+                while (_pending.TryDequeue(out var d)) if (d.Equals(e)) return e.Name;
+                break;
+            }
+        return "";
+    }
+
     /// <summary>Off-device proof of the three AC cases + edge cases.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"TellTarget.SelfCheck FAIL: {w}"); } }
+
+        // Echo ledger: text-matched, oldest dropped entries discarded, nothing pending = "".
+        while (_pending.TryDequeue(out _)) { }
+        E(TakeEcho("Me: [Tell] hi") == "", "no pending echo = empty");
+        Sent("Alice", "hi"); Sent("Bob", "yo"); Sent("Carol", "sup");
+        E(TakeEcho("<cRGB>Me</c>: [Tell] yo") == "Bob", "echo matched by text, not by order");
+        E(TakeEcho("Me: [Tell] hi") == "", "entries older than a match are dropped echoes");
+        E(TakeEcho("Me: [Tell] sup") == "Carol", "later entry survives");
+        E(TakeEcho("Me: [Tell] sup") == "", "consumed once");
+        for (int i = 0; i < 20; i++) Sent("X" + i, "t" + i);
+        E(TakeEcho("t0") == "" && TakeEcho("t19") == "X19", "ledger is capped");
+        Sent("Zośka", "cześć");
+        E(TakeEcho(System.Text.Encoding.Latin1.GetString(System.Text.Encoding.UTF8.GetBytes("Me: [Powiedz] cześć"))) == "Zośka",
+          "text with bytes above 0x7f matches its byte-per-char echo");
 
         var roster = new FakeRoster();
         roster.Players["Alice"] = 42u;

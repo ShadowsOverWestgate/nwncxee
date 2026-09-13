@@ -7,8 +7,8 @@ public interface IPlayerResolver
     /// <summary>Name → live PlayerId, or null when the player is offline / unknown.</summary>
     uint? Resolve(string name);
 
-    /// <summary>PlayerId → player name, or null when the id is stale / unknown. Used by portrait
-    /// click-to-tell to recover the name from a ChatLine's connection-scoped id.</summary>
+    /// <summary>PlayerId → CHARACTER name (never the account name), or null when the id is stale / unknown.
+    /// The one name space every Tell pin lives in; portrait click-to-tell and incoming-tell routing both use it.</summary>
     string? NameOf(uint playerId) => null;
 
     /// <summary>The local player's ingest-space playerId, or null off-module / pre-load. Used to

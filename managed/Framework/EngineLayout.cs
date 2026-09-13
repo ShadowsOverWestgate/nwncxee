@@ -576,6 +576,36 @@ public static unsafe class EngineLayout
     public static readonly int ExoAppInternal = Same("CClientExoApp", "internal", 0x8);
     /// <summary>CClientExoAppInternal -&gt; CGuiInGame*. Same one-line getter as <see cref="ExoAppInternal"/>.</summary>
     public static readonly int InternalInGameGui = Same("CClientExoAppInternal", "inGameGui", 0x90);
+    /// <summary>CNWCPlayer -&gt; character (creature) name CExoString. <c>CClientExoAppInternal::GetPlayerByCreatureName</c>
+    /// (Linux @0x642350, Windows rva 0x6d8910) strcmp()s <c>*(player+0x40)</c> after comparing the length at +0x48
+    /// on both builds; the player/account name is the +0x10/+0x18 pair (<c>GetPlayerByPlayerName</c>, rva 0x6d8a20).</summary>
+    public static readonly int PlayerCreatureName = Same("CNWCPlayer", "creatureName", 0x40);
+    /// <summary>CNWCPlayer -&gt; character name length (the CExoString's second word). See <see cref="PlayerCreatureName"/>.</summary>
+    public static readonly int PlayerCreatureNameLen = Same("CNWCPlayer", "creatureNameLen", 0x48);
+    /// <summary>CNWCPlayer -&gt; the connection-scoped player id (what AppendToMsgBuffer passes and the id-based
+    /// tell send takes). <c>CClientExoAppInternal::GetPlayerByPlayerID</c> (Linux nm 0x63f1b0, Windows rva
+    /// 0x6d89f0) is a list walk comparing <c>*(player+0x8)</c> on both builds.</summary>
+    public static readonly int PlayerId = Same("CNWCPlayer", "playerId", 0x8);
+    /// <summary>CNWCPlayer -&gt; that player's creature object id. <c>CClientExoAppInternal::GetPlayerByGameObjectID</c>
+    /// (Linux nm 0x63f280, Windows rva 0x6d89c0) compares <c>*(player+0x34)</c> on both builds.</summary>
+    public static readonly int PlayerCreatureId = Same("CNWCPlayer", "creatureId", 0x34);
+    /// <summary>CClientExoAppInternal -&gt; CNWCPlayer** roster base; count at <see cref="InternalPlayerCount"/>. Every
+    /// GetPlayerBy* walker above reads <c>*(internal+0x38)</c> .. <c>+ *(int*)(internal+0x40)</c> on both builds.</summary>
+    public static readonly int InternalPlayers = Same("CClientExoAppInternal", "players", 0x38);
+    /// <summary>CClientExoAppInternal -&gt; roster entry count (int). See <see cref="InternalPlayers"/>.</summary>
+    public static readonly int InternalPlayerCount = Same("CClientExoAppInternal", "playerCount", 0x40);
+    /// <summary>CClientExoAppInternal -&gt; the local player's creature object id. <c>CClientExoApp::GetPlayerCreatureId</c>
+    /// (Linux nm 0x6377a0, Windows rva 0x6ac1c0) is the one-liner <c>*(*(this+8)+0x48)</c> on both builds.</summary>
+    public static readonly int InternalPlayerCreatureId = Same("CClientExoAppInternal", "playerCreatureId", 0x48);
+    /// <summary>CNWCModule -&gt; server-synced game hour (u32). <c>CNWCMessage::HandleServerToPlayerModuleUpdate_Time</c>
+    /// (Linux nm 0x76c630, Windows rva 0x7a58e0) stores the flag-2 byte at <c>module+0x16c</c> on both builds.</summary>
+    public static readonly int ModuleHour = Same("CNWCModule", "hour", 0x16c);
+    /// <summary>CNWCModule -&gt; real minutes per game hour (byte). <c>CNWCModule::SetTimeOfDayState</c> (Linux nm
+    /// 0x7d96e0, Windows rva 0x7cfbb0) computes <c>+0x178 = byte[+0x15c] * 60.0</c> on both builds.</summary>
+    public static readonly int ModuleMinutesPerHour = Same("CNWCModule", "minutesPerHour", 0x15c);
+    /// <summary>CGuiInGameChatPrompt -&gt; shown flag (int). <c>CGuiInGameChatPrompt::Show</c> tests-then-sets it:
+    /// Linux nm 0x6779b0 at +0x230, Windows rva 0x87cc00 at +0x200 (the ctor zeroes the same slot).</summary>
+    public static readonly int ChatPromptShown = Diverges("CGuiInGameChatPrompt", "shown", linux: 0x230, win: 0x200);
     /// <summary>CGuiInGame -&gt; CPanelQuickBar*. #439: <c>CGuiInGame::Initialize</c> (Linux @0x772600) and its
     /// Windows twin (rva 0x6f9190, the one caller of the CPanelQuickBar ctor) both store the freshly built
     /// panel to +0x60 and then write <c>+0x28 = 1</c>.</summary>
