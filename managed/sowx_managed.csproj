@@ -59,13 +59,17 @@
        mirror of the Win10 SDK um/ucrt + MSVC x64 libs (lld-link is case-sensitive here). -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
     <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup>
+  <!-- Cross-host only: a native Windows build (build-win-native.sh, the release path) lets ILC find
+       link.exe itself; with IlcUseEnvironmentalTools a bare `link` resolves to Git Bash's coreutils link. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' and '$(OS)' != 'Windows_NT'">
     <DisableUnsupportedError>true</DisableUnsupportedError>
     <IlcUseEnvironmentalTools>true</IlcUseEnvironmentalTools>
     <EnableSourceLink>false</EnableSourceLink>
     <WinLib Condition="'$(WinLib)' == ''">$(MSBuildThisFileDirectory)../build/winsdk/lib</WinLib>
   </PropertyGroup>
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">
-    <AdditionalNativeLibraryDirectories Include="$(WinLib)" />
+    <AdditionalNativeLibraryDirectories Condition="'$(WinLib)' != ''" Include="$(WinLib)" />
     <!-- The proxy half of version.dll: the version.dll export forwarders (as .drectve directives, which is
          the only form that survives with backslashes intact) and the CRT initializer that starts us. -->
     <NativeLibrary Include="$(MSBuildThisFileDirectory)../build/bootstrap_win.obj" />

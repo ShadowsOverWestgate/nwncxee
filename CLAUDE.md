@@ -39,9 +39,10 @@ Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./sow-client-extender/so
 
 First build clones+builds the funchook submodule (git submodule --init).
 
-Windows leg (#48), cross-built on Linux -- no Windows box involved:
+Windows leg (#48), cross-built on Linux -- no Windows box involved (dev loop only):
 
     ./build-win.sh      # one version.dll (the AOT image IS the proxy) -> sow-client-extender-win/
+    ./build-win-native.sh  # same, natively under MSVC + Git Bash: what the release workflow ships (#504)
     ./run-proton.sh     # drops them beside bin/win32/nwmain.exe, runs it under Proton (throwaway prefix)
 
 Needs clang-cl/lld-link/llvm-lib and a Windows 10 SDK + MSVC lib tree (default: the mounted

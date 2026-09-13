@@ -91,43 +91,6 @@ cp build/win/sowx_managed.dll "$OUT/version.dll"
 STAMP=$(grep -oE 'WindowsBuildStamp = 0x[0-9a-f]+' managed/Framework/SymbolMap.cs | grep -oE '0x[0-9a-f]+')
 sed "s/@VERSION@/$SOWX_VERSION/g; s/@STAMP@/$STAMP/g" packaging/README-win.txt > "$OUT/README.txt"
 packaging/licenses.sh "$OUT/LICENSES.txt"
-Sowx client extender for Windows -- $SOWX_VERSION, pinned to nwmain.exe build $STAMP
-
-Optional add-on for the Neverwinter Nights: Enhanced Edition client. Run the stock client and you
-play vanilla -- nothing here is required.
-
-INSTALL
-  1. Unpack this archive into the folder holding nwmain.exe:
-       <Steam>\\steamapps\\common\\Neverwinter Nights\\bin\\win32\\
-  2. Launch the game normally (Steam or nwmain.exe). No launch options needed.
-
-  That is the whole install: one file, version.dll. The game loads it, and it carries everything
-  else inside it.
-
-UNINSTALL
-  Delete version.dll from bin\\win32\\.
-
-WHAT WORKING LOOKS LIKE
-  The extender's native chatbox, bottom-left, instead of the stock one.
-
-  A message box "Sowx: client build changed, extender standing down" means Beamdog patched the
-  client since build $STAMP; the game runs vanilla and the extender needs re-deriving.
-
-REPORTING A PROBLEM
-  The extender is silent by default. To get a log, create a file named sowx.cfg NEXT TO nwn.ini --
-  usually Documents\\Neverwinter Nights\\, but if the game uses an instance folder
-  (Neverwinter Nights.0) put it there, wherever nwn.ini actually is. One line:
-
-     logs=1
-
-  Play again, then send back Documents\\Neverwinter Nights\\sowx.log (always the unsuffixed
-  folder) plus what you did right before anything went wrong. Add hookdebug=1 to sowx.cfg for
-  funchook.log as well.
-
-  Defender may quarantine version.dll -- an unsigned 10 MB DLL wearing a system DLL's name is
-  what a hijack looks like from the outside. Restore that entry and add an exclusion for the
-  bin\\win32 folder.
-EOF
 # Contents, not the folder: the README says "unpack here" and that has to be true.
 python3 -c "import shutil; shutil.make_archive('$OUT', 'zip', '$OUT')"
 echo ">> artifacts ($OUT/, sow-client-extender-win.zip):"; ls -1 "$OUT"

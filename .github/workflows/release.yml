@@ -2,7 +2,8 @@
 # extender on ubuntu-latest and publishes it (+ SHA256SUMS) to the PUBLIC
 # releases-only repo, since this mirror is private (#508). Tag-gated, never on PR.
 #
-# Windows is added later as a second job in this file (#504, native MSVC build).
+# Windows is a NATIVE build on windows-latest (#504, build-win-native.sh); the Linux cross-build
+# (build-win.sh) is a dev tool and never ships. Both zips are published together by the publish job.
 # The release body comes from packaging/RELEASE-BODY.md and names the pinned
 # client build (SymbolMap.WindowsBuildStamp), since the Windows artifact is
 # locked to one client build (#421).
@@ -64,9 +65,53 @@ jobs:
           # build.sh zips the CONTENTS of sow-client-extender/ (flat), so
           # "unpack into bin/linux-x86" is literally the whole install.
           mv sow-client-extender.zip "dist/sowx-linux-x64-${TAG}.zip"
-          ( cd dist && sha256sum *.zip > SHA256SUMS )
-          stamp=$(grep -oE "WindowsBuildStamp = 0x[0-9a-f]+" managed/Framework/SymbolMap.cs | grep -oE "0x[0-9a-f]+")
-          sed "s/@VERSION@/${TAG}/g; s/@STAMP@/${stamp}/g" packaging/RELEASE-BODY.md > body.md
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: { name: linux, path: dist/*.zip, if-no-files-found: error }
+
+  windows:
+    if: github.server_url == 'https://github.com'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      # Git for Windows defaults to autocrlf=true; a CRLF submodule tree makes the LF funchook patch not apply.
+      - run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # The symbol gate (tools/abi/check-win-symbols.py) needs llvm-undname and a real nwmain.exe; the
+      # runner has neither, so the script skips it. It runs on the dev box via build-win.sh.
+      - name: Build + package
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ./build-win-native.sh
+          mkdir -p dist && mv sow-client-extender-win.zip "dist/sowx-windows-x64-${TAG}.zip"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: { name: windows, path: dist/*.zip, if-no-files-found: error }
+
+  publish:
+    if: github.server_url == 'https://github.com'
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: { path: dist, merge-multiple: true }
 
       - name: Publish to the public releases repo
         env:
@@ -74,6 +119,9 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          ( cd dist && sha256sum *.zip > SHA256SUMS )
+          stamp=$(grep -oE "WindowsBuildStamp = 0x[0-9a-f]+" managed/Framework/SymbolMap.cs | grep -oE "0x[0-9a-f]+")
+          sed "s/@VERSION@/${TAG}/g; s/@STAMP@/${stamp}/g" packaging/RELEASE-BODY.md > body.md
           pre=(); [[ "$TAG" == *-rc* ]] && pre=(--prerelease)
           gh release create "$TAG" dist/* --repo "$RELEASES_REPO" \
             --title "$TAG" --notes-file body.md "${pre[@]}"
