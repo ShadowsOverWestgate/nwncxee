@@ -300,7 +300,7 @@ internal static unsafe class AlloyCensus
             && (_dumpTex == "env" ? Engine.HasEnvMap(m)
                                   : TexName(_pTex0[e]).Contains(_dumpTex, StringComparison.OrdinalIgnoreCase))
             && --_classDiagLeft >= 0)
-            _log?.Info($"[dumpframe] CLASS entry={e} tex={TexName(_pTex0[e])} slots={SlotNames(m)} scanned={gradedOk} graded={graded:F2} opaque={Engine.IsOpaque(p)} env={Engine.HasEnvMap(m)}/{GobHasEnvMap(c.Gob)} transparency={!s.IsNull && s.Transparency} alpha={p.Alpha:F2} blend={m.SrcBlend}/{m.DstBlend} dst={c.Dst} -> cls={(AlloyClass)c.Cls}");
+            _log?.Info($"[dumpframe] CLASS entry={e} tex={TexName(_pTex0[e])} slots={SlotNames(m)} scanned={gradedOk} graded={graded:F2} opaque={Engine.IsOpaque(p)} env={Engine.HasEnvMap(m)}/{GobHasEnvMap(c.Gob)} transparency={!s.IsNull && s.Transparency} alpha={p.Alpha:F2} blend={m.SrcBlend}/{m.DstBlend} dst={c.Dst} -> cls={(AlloyClass)c.Cls} {PartForensic(e)}");
         if (!_ownDry) _ownByClass[c.Cls]++;
         if (v == IntPtr.Zero || vd.Mode != 1 || _pTex0[e] == IntPtr.Zero)
         { Refuse(ref _ownRejVdo, c, RejVdo); return Gate("vdo"); }
@@ -339,6 +339,11 @@ internal static unsafe class AlloyCensus
         if (elem == 0 || it < 0 || it >= vd.ElemCount || it >= vd.VertCount)
         { Refuse(ref _ownRejItem, c, RejItem); return Gate("item"); }
         if (*(int*)(elem + it * 8 + 4) <= 0) { Refuse(ref _ownRejItem, c, RejItem); return Gate("item-range"); }
+        // #397: the stock ashlw_072.mdl carries ShLwMain_070 AND ShLwMain_072 -- two coincident meshes, same
+        // parent, same local transform, same counts, different diffuse. The engine draws both in tree order
+        // and the LATER one wins the depth tie every frame; Alloy's order is not tree order, so the shield
+        // flickered. Refuse the earlier twin, as the engine's tie does.
+        if (c.Gob != IntPtr.Zero && DupSibling(part, e, vd, it)) { Bump(ref _ownRejDupSibling); return Gate("dup-sibling"); }
 
         c.Bucket = _pBucket[e];
         c.Tri = part; c.Node = _pNode[e]; c.Mat = mat; c.Vdo = v; c.Tex0 = _pTex0[e];
@@ -822,6 +827,48 @@ internal static unsafe class AlloyCensus
         return ok;
     }
 
+    /// <summary>#397: does a LATER sibling of <paramref name="part"/> draw the same geometry at the same
+    /// place? Same parent, byte-equal local pos/rot/scale, a renderable visible tri-mesh, and the same element
+    /// and vertex item counts. Gob parts only (tiles are BSP items), and only parents with a small fan-out.
+    /// ponytail: an intentional coincident overlay (a decal mesh over its base) with EQUAL counts would lose
+    /// its base here; dup-sibling on the rejects line says how often this fires.</summary>
+    private static bool DupSibling(IntPtr part, int e, in VdoRef vd, int it)
+    {
+        IntPtr parent = *(IntPtr*)(part + EngineLayout.PartParent);
+        if (parent == IntPtr.Zero) return false;
+        IntPtr* kids = *(IntPtr**)(parent + EngineLayout.PartChildren);
+        int n = *(int*)(parent + EngineLayout.PartChildCount);
+        if (kids == null || n < 2 || n > DupSiblingMaxFanOut) return false;
+        int mine = -1;
+        for (int i = 0; i < n; i++) if (kids[i] == part) { mine = i; break; }
+        if (mine < 0) return false;
+        long elem = vd.ElemItems, vert = vd.VertItems;
+        int myElems = *(int*)(elem + it * 8 + 4), myVerts = vert != 0 ? *(int*)(vert + it * 8 + 4) : 0;
+        for (int j = mine + 1; j < n; j++)
+        {
+            IntPtr sib = kids[j];
+            if (sib == IntPtr.Zero || sib == part) continue;
+            IntPtr tri = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)sib + BucketGate.PartVtblGetTriMesh)))(sib);
+            if (tri == IntPtr.Zero || *(byte*)(tri + EngineLayout.PartVisible) == 0 || !PartTable.IsRenderable(tri)) continue;
+            // pos (3), rot (4), scale (1) sit contiguously from PartPos: one 32-byte compare
+            if (!new ReadOnlySpan<byte>((void*)(part + EngineLayout.PartPos), DupSiblingXformBytes)
+                    .SequenceEqual(new ReadOnlySpan<byte>((void*)(tri + EngineLayout.PartPos), DupSiblingXformBytes))) continue;
+            int es = PartTable.Find(tri);
+            if (es < 0 || _pVdo[es] == IntPtr.Zero || _pItem[es] < 0) continue;
+            var sv = new VdoRef(_pVdo[es]); int si = _pItem[es];
+            long se = sv.ElemItems, svv = sv.VertItems;
+            if (se == 0 || si >= sv.ElemCount) continue;
+            if (*(int*)(se + si * 8 + 4) != myElems) continue;
+            if (svv != 0 && vert != 0 && *(int*)(svv + si * 8 + 4) != myVerts) continue;
+            if (WatchedEntry(e)) _log?.Info($"[dumpframe] ENROLL dup-sibling: entry={e} loses to entry={es} (the later twin)");
+            return true;
+        }
+        return false;
+    }
+    private const int DupSiblingMaxFanOut = 32;   // not-an-offset: sibling scan bound
+    private const int DupSiblingXformBytes = 32;   // not-an-offset: pos+rot+scale span from PartPos (0x10..0x30)
+    internal static int _ownRejDupSibling;
+
     // per-gate enrollment forensics: which predicate is eating the candidates? (cold, scan-scoped)
     internal static int _ownSeen, _ownRejStaleMoved, _ownRejBucket, _ownRejVdo, _ownRejGob, _ownRejFbSample,
                       _ownRejUnrenderable,
@@ -837,7 +884,7 @@ internal static unsafe class AlloyCensus
         _ownSeen = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
             _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing =
-            _ownRejUnrenderable = 0;
+            _ownRejUnrenderable = _ownRejDupSibling = 0;
         Array.Clear(_instWhy); Array.Clear(_instWhyN);
         Array.Clear(_ownByClass); Array.Clear(OwnRefusedByClass); Array.Clear(OwnRejByReason);
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
@@ -862,7 +909,7 @@ internal static unsafe class AlloyCensus
     internal static string OwnScanDiag() =>
         $"active={_ownSeen} rejects: stale-identity={_ownRejStaleMoved} bucket={_ownRejBucket} vdo={_ownRejVdo} " +
         $"scene-tint={_ownRejGob} item={_ownRejItem} foreign-scene={_ownRejScene} " +
-        $"unrenderable={_ownRejUnrenderable} " +
+        $"unrenderable={_ownRejUnrenderable} dup-sibling={_ownRejDupSibling} " +
         // #128: the instanced population's own fate. "Creatures are not owned" reads identically to
         // "creatures are not in the table"; these three tell them apart without another round trip.
         $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan " +
@@ -932,6 +979,31 @@ internal static unsafe class AlloyCensus
         { var t = m.TextureAt(i); if (!t.IsNull && AurTex.IsLive(t.Ptr)) sb.Append(i).Append(':').Append(TexName(t.Ptr)).Append(' '); }
         return sb.Length == 0 ? "none" : sb.ToString().TrimEnd();
     }
+    /// <summary>#397: where a watched part sits -- its node name, the ancestor chain with each part's
+    /// <c>+0x34</c> visible byte, the gob, and whether the gob's append-roots list holds it. Two parts
+    /// naming one attach node is the doubled-shield shape. Cold: dumptex lines only.</summary>
+    private static string PartForensic(int e)
+    {
+        IntPtr part = _pPart[e];
+        if (part == IntPtr.Zero) return "part=0";
+        static string Nm(IntPtr p) { IntPtr n = *(IntPtr*)(p + EngineLayout.PartNodeLink); return n == IntPtr.Zero ? "?" : Marshal.PtrToStringAnsi(n + MdlNodeName) ?? "?"; }
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"part=0x{part:x} name={Nm(part)} vis=");
+        IntPtr gob = *(IntPtr*)(part + EngineLayout.PartGob);
+        int depth = 0; string chain = "";
+        for (IntPtr p = part; p != IntPtr.Zero && depth < 16; p = *(IntPtr*)(p + EngineLayout.PartParent), depth++)
+        { sb.Append(*(byte*)(p + EngineLayout.PartVisible)); if (depth == 1) chain = Nm(p); }
+        sb.Append($" parent={chain} gob=0x{gob:x}");
+        if (gob != IntPtr.Zero)
+        {
+            IntPtr* roots = *(IntPtr**)(gob + EngineLayout.GobAppendRoots);
+            int n = *(int*)(gob + EngineLayout.GobAppendCount), at = -1;
+            for (int i = 0; roots != null && i < n; i++) if (roots[i] == part || roots[i] == *(IntPtr*)(part + EngineLayout.PartParent)) at = i;
+            sb.Append($" appendroots={n} self-or-parent-at={at} root=0x{_pRoot[e]:x} bsp={_pBsp[e]}");
+        }
+        return sb.ToString();
+    }
+
     internal static string TexName(IntPtr tex)
     {
         if (tex == IntPtr.Zero) return "-";

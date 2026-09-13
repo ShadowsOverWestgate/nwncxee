@@ -190,6 +190,9 @@ public static unsafe class EngineLayout
     /// when this matches the walked part's own node, which is what keeps the traversal INDEX equal to the
     /// engine's.</summary>
     public static readonly int MdlNodeParent = Same("MdlNode", "parent", 0x60);
+    /// <summary>MdlNode -&gt; the node name (<c>char[]</c>) <c>FindPart</c> @0x43c5b0 strcasecmp-s through
+    /// <see cref="PartNodeLink"/>. #397 forensics only.</summary>
+    public static readonly int MdlNodeName = Same("MdlNode", "name", 0x38);
     /// <summary>MdlNode -&gt; model matrix (row-major float[16]). RenderDrawBucket @0x46d060 passes exactly
     /// that address to <c>RenderInterface::SetModelMatrix</c>. #448: <c>Scene::RenderDrawBucket</c>
     /// (@0x46d060 / rva 0xcd210) passes <c>node+0x18</c> to <c>SetModelMatrix</c> under the same

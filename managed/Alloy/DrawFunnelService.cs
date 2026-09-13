@@ -76,6 +76,11 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // against fields that a freed block may still be holding); this one is told.
         _origPartDtor = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.PartDtor, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPartDtor);
+        // #397 diagnostic: the equipment-swap pair, cold, first GobWatchMax events per session.
+        _origAppend = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, int>)hooks.Install(
+            SymbolMap.GobAppend, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr, int>)&OnGobAppend);
+        _origAmputate = (delegate* unmanaged<IntPtr, IntPtr, int>)hooks.Install(
+            SymbolMap.GobAmputate, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int>)&OnGobAmputate);
         // The record tables arm here, and the census and the gate ride on them.
         PartTable.Active = _repackSlot != null && _origPartDtor != null;
         log.Info(PartTable.Active
@@ -86,6 +91,31 @@ public sealed unsafe class DrawFunnelService : IExtenderService
               ? "DrawFunnels: Part::~Part unhooked -- Alloy stands down rather than track parts it "
                 + "cannot be told the death of"
               : "DrawFunnels: hook install failed -- Alloy unavailable");
+    }
+
+    private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, int> _origAppend;
+    private static delegate* unmanaged<IntPtr, IntPtr, int> _origAmputate;
+    private static int _gobWatchLeft = GobWatchMax;
+    private const int GobWatchMax = 200;
+
+    /// <summary>#397: an item model appended to a gob. Cold (an equip), allocates the two strings for the
+    /// line; the guard's doubled shield is two of these with no Amputate that found the first.</summary>
+    [UnmanagedCallersOnly]
+    private static int OnGobAppend(IntPtr gob, IntPtr model, IntPtr node)
+    {
+        int r = _origAppend != null ? _origAppend(gob, model, node) : 0;
+        if (_gobWatchLeft > 0) { _gobWatchLeft--; _log?.Info($"[gobwatch] Append gob=0x{gob:x} model={Marshal.PtrToStringAnsi(model)} node={Marshal.PtrToStringAnsi(node)} -> {r} (roots now {*(int*)(gob + GobAppendCount)})"); }
+        return r;
+    }
+
+    /// <summary>#397: the counterpart. A 0 return is a name the tree does not hold: nothing was removed.</summary>
+    [UnmanagedCallersOnly]
+    private static int OnGobAmputate(IntPtr gob, IntPtr name)
+    {
+        int before = *(int*)(gob + GobAppendCount);
+        int r = _origAmputate != null ? _origAmputate(gob, name) : 0;
+        if (_gobWatchLeft > 0) { _gobWatchLeft--; _log?.Info($"[gobwatch] Amputate gob=0x{gob:x} name={Marshal.PtrToStringAnsi(name)} -> {r} (roots {before} -> {*(int*)(gob + GobAppendCount)})"); }
+        return r;
     }
 
     /// <summary>Chain priority (#88): Repack is shared, and we sit under the shadow pipeline.</summary>

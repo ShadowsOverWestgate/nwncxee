@@ -117,6 +117,9 @@ internal static unsafe class SceneWalk
     // printing a session total beside a per-LogEvery rate is how "walk=0,04ms" comes to mean a mean that
     // has not moved since an area load an hour ago.
     private static long _walks, _bumps, _spill, _overflow, _nonMesh;
+    /// <summary>#397: subtrees the walk pruned on the engine's <c>part+0x34</c> draw gate (a hidden
+    /// appended item, a hidden body part). Their records lapse as unreachable and re-enrol when shown.</summary>
+    private static long _hidden;
     private static long _framesSinceLog, _bumpsSinceLog, _walkTicks, _walksSinceLog, _added, _swept, _bound;
     private static int _lastWalked, _lastRoots, _lastLodAltGobs;
     /// <summary>The tree the walk is inside, for <c>_pRoot</c>, and whether its gob carries LOD alternates.</summary>
@@ -281,6 +284,12 @@ internal static unsafe class SceneWalk
         while (sp > 0)
         {
             IntPtr part = _stack[--sp];
+            // #397: the engine's own gate. Scene::AddPartsTreeToDrawBuckets @0x460880 and Gob::PartDraw
+            // @0x451d50 both return on part+0x34 == 0 BEFORE descending, so a hidden part hides its subtree --
+            // an equipment swap leaves the old item appended and hidden, not amputated, and a walk that read
+            // only the mesh part drew both shields coincident. Tile parts (SceneBSPAddPart @0x47ca10) never
+            // consult the byte, so the BSP walk does not either.
+            if (!_walkingBsp && *(byte*)(part + EngineLayout.PartVisible) == 0) { _hidden++; continue; }
             Visit(part);
             IntPtr* kids = *(IntPtr**)(part + PartChildren);
             int n = *(int*)(part + PartChildCount);
@@ -606,7 +615,7 @@ internal static unsafe class SceneWalk
                  + $"unbound={_unboundCount} (gob={unboundGob} tile={unboundTile}) "
                  + $"+{_added} added/-{_swept} swept/{_bound} bound/{_setups} set-up this period "
                  + $"no-geometry={_noGeom} "
-                 + $"non-mesh={_nonMesh} table-full={_spill} stack-overflow={_overflow} "
+                 + $"non-mesh={_nonMesh} hidden={_hidden} table-full={_spill} stack-overflow={_overflow} "
                  // The two validators. countpart is an UPPER bound, never an equality: it counts every Part
                  // in every scene, GUI 3D panels included. bucket-miss is the sharp one -- it must be 0.
                  + $"countpart={cp} bucket-miss={_lastMiss} sample-class={_lastSample}";

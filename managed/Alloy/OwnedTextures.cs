@@ -304,6 +304,7 @@ internal static unsafe class OwnedTextures
         {
             int etid = (int)cells[cell];
             if (etid <= 0) continue;
+            FreshName((uint)etid);
             _pltQ.Add(new PltCopy((uint)etid, Key(tex, cell)));
         }
     }
@@ -391,6 +392,7 @@ internal static unsafe class OwnedTextures
         if (cells == null || cell < 0 || cell >= n || n > MaxCells) return false;
         int etid = (int)cells[cell];
         if (etid <= 0) return false;
+        FreshName((uint)etid);
         // A cell already naming an owned texture is the engine re-uploading INTO our name (a Restore after a
         // warm hand-back, or a refresh): fresh storage under a new name, exactly as a re-upload always was.
 
@@ -633,7 +635,7 @@ internal static unsafe class OwnedTextures
     /// funnel as an owned resource.</summary>
     private static void Capture(IntPtr tex)
     {
-        if (!AurTex.IsBasic(tex) || !Plain(tex) || *(IntPtr*)((byte*)tex + OffImage) != IntPtr.Zero) return;
+        if (!AurTex.IsBasic(tex) || !Plain(tex) || *(IntPtr*)((byte*)tex + OffImage) != IntPtr.Zero || *((byte*)tex + OffName) == 0) return;
         uint* cells = *(uint**)((byte*)tex + OffCellNames);
         int nx = *(short*)((byte*)tex + OffNumX), ny = *(short*)((byte*)tex + OffNumY);
         if (cells == null || nx <= 0 || ny <= 0 || *((byte*)tex + FlagImageBuilt) == 0) return;
@@ -653,7 +655,7 @@ internal static unsafe class OwnedTextures
     /// DeleteTextures -- where <see cref="OnDeleteTextures"/> keeps them. Refuses on any doubt.</summary>
     private static bool TryWarm(IntPtr tex)
     {
-        if (_znam == null || !AurTex.IsBasic(tex)) return false;
+        if (_znam == null || !AurTex.IsBasic(tex) || *((byte*)tex + OffName) == 0) return false;   // +0xa8 is empty until LoadImage copies +0x88: no identity yet
         ulong k0 = Key(tex, 0);
         if (!_meta.TryGetValue(k0, out TexMeta m)) { _cacheMisses++; return false; }
         int cells = m.NumX * m.NumY;
@@ -703,8 +705,9 @@ internal static unsafe class OwnedTextures
     private static void Evict()
     {
         _evictDue = false;
-        long budget = Budget();
-        if (budget <= 0 || _bytes <= budget) return;
+        bool all = _flushAll; _flushAll = false;
+        long budget = all ? 0 : Budget();
+        if (!all && (budget <= 0 || _bytes <= budget)) return;
         var referenced = new HashSet<ulong>(_index.Values);
         var idle = new List<KeyValuePair<ulong, Entry>>();
         foreach (var kv in _res)
@@ -719,7 +722,7 @@ internal static unsafe class OwnedTextures
         int n = 0;
         foreach (var kv in idle)
         {
-            if (_bytes <= budget) break;
+            if (!all && _bytes <= budget) break;
             _res.Remove(kv.Key);
             _meta.Remove(kv.Key & ~CellMask);
             _idleBytes -= kv.Value.Bytes;
@@ -730,11 +733,24 @@ internal static unsafe class OwnedTextures
         FrameZones.Count(FrameZones.Ev.TexEvict, n);
     }
 
+    /// <summary>#397: the MODULE edge. The cache is keyed on resref + schemes, and two modules ship different
+    /// pixels under one resref (a singleplayer module's stock tileset, then the server's hak retexture) -- so
+    /// a resource that outlives its module is handed to the next one wearing the wrong image. Meta goes now
+    /// (no warm hand-back can happen from here on), the idle bytes on the next drain. Names the index still
+    /// references (GUI textures that survive the unload) stay: they draw what they name.</summary>
+    internal static void ModuleUnloaded()
+    {
+        _meta.Clear();
+        _flushAll = true; _evictDue = true; _cacheFlushes++;
+    }
+    private static bool _flushAll;
+    private static long _cacheFlushes;
+
     internal static string CacheNote()
     {
         long b = Budget();
         return $"texcache: {_bytes / OneMiB} MiB resident ({_idleBytes / OneMiB} idle) of {(b > 0 ? (b / OneMiB).ToString() : b == 0 ? "off" : "unprobed")} MiB, " +
-               $"{_cacheHits} warm builds, {_cacheMisses} misses, {_cacheKept} kept across the world edge, {_cacheEvicted} evicted, {_meta.Count} keys known";
+               $"{_cacheHits} warm builds, {_cacheMisses} misses, {_cacheKept} kept across the world edge, {_cacheEvicted} evicted, {_meta.Count} keys known, {_indexStale} stale index hits, {_cacheFlushes} module flushes";
     }
 
     /// <summary>Keep-then-evict, the delete filter, and the warm fill over a stand-in object.</summary>
@@ -762,6 +778,12 @@ internal static unsafe class OwnedTextures
         Evict();
         ok &= !_res.ContainsKey(kA) && _res.ContainsKey(kB) && _res[kB].Idle == 0 && _bytes == 600 * 1024
               && _idleBytes == 0 && !_pendingHandles.Contains(102);
+        // #397: the module edge flushes every idle resource under ANY budget and forgets every key's meta
+        _meta[kB & ~CellMask] = default; _budgetBytes = 1L << 40;
+        uint* dead2 = stackalloc uint[1] { 13 };
+        FilterRetire(1, dead2, out _);
+        ModuleUnloaded(); Evict();
+        ok &= !_res.ContainsKey(kB) && _meta.Count == 0 && _bytes == 0 && !_flushAll;
         _dripFrame = svDrip;
         // the warm fill over a stand-in object
         byte* obj = stackalloc byte[0x100];
@@ -1537,6 +1559,27 @@ internal static unsafe class OwnedTextures
     /// the whole of #220.</summary>
     internal static bool IsOwned(int name) => name > 0 && _owned.Contains((uint)name);
 
+    /// <summary>#397: a name Alloy itself deletes leaves the index NOW. The driver reissues a freed name at
+    /// once, and an index entry that outlived its texture handed the next engine texture wearing that name --
+    /// one Alloy never adopted, so <see cref="Draw"/> resolved it through the index -- the OLD resource's
+    /// image. The engine's own deletes retire through <see cref="FilterRetire"/> / <see cref="Retire"/>.</summary>
+    private static void Forget(uint name) { _index.Remove((int)name); _borrowed.Remove((int)name); }
+    /// <summary>#397: fresh engine names that arrived at a funnel still indexed -- entries that outlived their
+    /// texture. Expected 0; anything else names a delete path <see cref="Forget"/> does not cover.</summary>
+    private static long _indexStale;
+    /// <summary>#397: which textures reach a draw without ever passing the upload funnel -- the class a stale
+    /// index entry could misdirect. First few per session, at the enrolment that noticed the borrow.</summary>
+    internal static void NoteBorrowedName(IntPtr tex, int tid)
+    {
+        if (_borrowDiagLeft <= 0) return;
+        _borrowDiagLeft--;
+        _log?.Info($"OwnedTextures: BORROWED tid {tid} = {AlloyCensus.TexName(tex)} -- never came through the upload funnel");
+    }
+    private static int _borrowDiagLeft = 12;
+    /// <summary>The engine just generated <paramref name="name"/> (GenTextures in glImageBasic), so an index
+    /// entry on it can only be stale: drop it, count it. An OWNED name here is a refresh into our own name.</summary>
+    private static void FreshName(uint name) { if (!_owned.Contains(name) && _index.Remove((int)name)) _indexStale++; }
+
     /// <summary><see cref="Draw"/> without the borrowed-set write: false when Draw would have recorded a
     /// borrow (a mutation, possibly an allocation), so a worker defers that part to the main thread.</summary>
     internal static bool TryDraw(int engineTid, out int draw)
@@ -1591,6 +1634,7 @@ internal static unsafe class OwnedTextures
             uint name = due[i];
             if (_handleDrop) AlloyRenderer.DropHandle(name);   // residency first: a resident handle outlives its texture
             else AlloyRenderer.ForgetHandle(name);
+            Forget(name);
             if (delete && Gl.DeleteTextures != null) Gl.DeleteTextures(1, &name);
         }
         due.Clear();
@@ -1814,6 +1858,15 @@ internal static unsafe class OwnedTextures
               && !IsOwned(100) && _pending.Count == savedPending + 2 && Borrowed == 0;
         ok &= Draw(13) == 13 && Draw(14) == 14 && Borrowed == 2 && !_res.ContainsKey(k1);
         _pending.RemoveRange(savedPending, 2);
+
+        // #397: the single-upload shape, where the engine name IS the owned name. A refresh into our own name
+        // retires 100 and Drain deletes it; the driver reissues a freed name at once, so an index entry that
+        // outlives the texture hands the next engine texture wearing 100 the OLD resource's image.
+        Replace(k1, 100, 100, 64); Replace(k1, 101, 101, 64);
+        ok &= Draw(101) == 101 && _pending[^1] == 100;
+        Forget(100);   // what Drain does with a name it deletes
+        ok &= !_index.ContainsKey(100) && Draw(100) == 100 && Borrowed == 3 && Draw(101) == 101;
+        _pending.RemoveRange(savedPending, _pending.Count - savedPending);
 
         // #284: the re-arm ledger, which is pure bookkeeping and therefore the half of the retry that CAN be
         // asserted without a client -- the build itself needs one. What it pins is the correction the live run

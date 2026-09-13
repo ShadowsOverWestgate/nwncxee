@@ -1010,8 +1010,10 @@ public sealed unsafe partial class AlloyRenderer
                 if (!texDirty) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
                 else
                 {
+                    int bb = OwnedTextures.Borrowed;
                     if (main) tid = aur.OwnedTid();
                     else if (!OwnedTextures.TryDraw(AurTex.Tid(aur.Ptr), out tid)) { c = snap; return Deferred; }
+                    if (main && OwnedTextures.Borrowed != bb) OwnedTextures.NoteBorrowedName(aur.Ptr, tid);
                     // #317: and NOTE it, because this is the only place that still knows. AlloyCensus does
                     // the same at enrollment on the stated grounds that "enrollment is the Alloy-owned edge
                     // that notices" -- but enrollment is edge-triggered (#256), so a part that enrolls once
@@ -1077,8 +1079,10 @@ public sealed unsafe partial class AlloyRenderer
                         {
                             var sa = mat.MapTexture(s);
                             int t;
+                            int bbs = OwnedTextures.Borrowed;
                             if (main) t = sa.OwnedTid();
                             else if (!OwnedTextures.TryDraw(AurTex.Tid(sa.Ptr), out t)) { c = snap; return Deferred; }
+                            if (main && OwnedTextures.Borrowed != bbs) OwnedTextures.NoteBorrowedName(sa.Ptr, t);
                             // ...and the same rule per slot, but a slot drops out of the mask instead of
                             // taking the part with it -- an unowned normal map costs that one map, not the
                             // whole draw.

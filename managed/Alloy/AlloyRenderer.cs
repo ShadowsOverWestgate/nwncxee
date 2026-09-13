@@ -1666,7 +1666,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         }
         if (!GlContextService.Available) { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost(); }
         bool inModule = GameGate.InModule;
-        if (_wasInModule && !inModule) { RevokeAll("module unload"); _spliceStale = true; }
+        if (_wasInModule && !inModule) { RevokeAll("module unload"); _spliceStale = true; OwnedTextures.ModuleUnloaded(); }
         _wasInModule = inModule;
         if (_tableGen != PartTable.TableGen) { RevokeAll("part table wiped"); _tableGen = PartTable.TableGen; }
 

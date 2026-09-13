@@ -773,6 +773,11 @@ internal static unsafe class SymbolMap
     /// says a recorded part is GONE. Without it the part table holds the pointer until something happens to
     /// notice, and the owned pass chases it into freed memory.</summary>
     public const string PartDtor = "_ZN4PartD2Ev";
+    /// <summary>#397 diagnostic: <c>Gob::Append(char const*, char const*)</c> @0x4422a0 (model, attach
+    /// node) and <c>Gob::Amputate(char const*)</c> @0x443fa0 -- the equipment-swap pair. Logged cold to say
+    /// whether a swap amputates what it appended. Linux-only: no Windows anchor derived (skip + log there).</summary>
+    public const string GobAppend = "_ZN3Gob6AppendEPKcS1_";
+    public const string GobAmputate = "_ZN3Gob8AmputateEPKc";
     /// <summary>VertexDataObject::Repack() @0x45c270 -- compacts tombstoned items (RemoveItem only zeroes
     /// sizes), MOVING the surviving items' indices and offsets. Triggered by AddItem on fragmentation, so
     /// streaming fires it mid-play; every batch member of that VDO must recapture its item.</summary>
@@ -1354,6 +1359,8 @@ internal static unsafe class SymbolMap
         [PartDanglyAnimate] = Nm("?Animate@PartDanglyMesh@@UEAAXM@Z"),
         [PartDanglyMeshVtbl] = At(0xd88698),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [PartDtor] = Nm("??1Part@@UEAA@XZ"),
+        [GobAppend] = LinuxOnly("#397 diagnostic watch; no swap forensics on Windows yet"),
+        [GobAmputate] = LinuxOnly("#397 diagnostic watch; no swap forensics on Windows yet"),
         // #275: ParseField and Init are called (not inlined) on Windows -- CreateSharedMaterial/GetSharedMaterial.
         [SharedMaterialParseField] = Nm("?ParseField@SharedMaterial@@QEAAXPEBD@Z"),
         [SharedMaterialInit] = Nm("?Init@SharedMaterial@@QEAAXPEBD@Z"),
