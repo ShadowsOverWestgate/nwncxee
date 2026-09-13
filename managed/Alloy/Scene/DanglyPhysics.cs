@@ -127,6 +127,9 @@ internal static unsafe class DanglyPhysics
     private static float _still = 0.01f;
 
     private static int _parts, _verts, _moved;
+    /// <summary>#492's measurement: solve ticks per period and the single worst call. Excludes the early
+    /// hand-backs and the engine's child animate, so it is the term a compute solve would remove.</summary>
+    private static long _ticks, _peakTicks;
 
     internal static void Install(ExtenderLog log, HookService hooks)
     {
@@ -168,10 +171,11 @@ internal static unsafe class DanglyPhysics
     /// exactly once per period and nothing else reads them.</summary>
     internal static string Stats(int frames)
     {
-        if (frames <= 0 || _parts == 0) { _parts = 0; _verts = 0; return ""; }
+        if (frames <= 0 || _parts == 0) { _parts = 0; _verts = 0; _moved = 0; _ticks = 0; _peakTicks = 0; return ""; }
+        double toMs = 1000.0 / Stopwatch.Frequency;
         string s = $"dangly {(float)_parts / frames:F1} parts/f, {(float)_verts / frames:F0} verts/f, " +
-                   $"{(float)_moved / frames:F1} moved/f";
-        _parts = 0; _verts = 0; _moved = 0;
+                   $"{(float)_moved / frames:F1} moved/f, solve {_ticks * toMs / frames:F3} ms/f (peak call {_peakTicks * toMs:F3} ms)";
+        _parts = 0; _verts = 0; _moved = 0; _ticks = 0; _peakTicks = 0;
         return s;
     }
 
@@ -253,6 +257,7 @@ internal static unsafe class DanglyPhysics
         float* dst = (float*)_getItemDyn(vdo, (uint)item);
         if (rest == null || dst == null) { Down(part, dt); return; }
 
+        long t0 = Stopwatch.GetTimestamp();
         Vector3 wpos;
         float* wrot = stackalloc float[4];
         _getWorld(part, &wpos, wrot);
@@ -392,6 +397,8 @@ internal static unsafe class DanglyPhysics
 
         _commitItemDyn(vdo, (uint)item, 0xffffffff);
         StorePose(part, wpos, wrot);
+        long dtTicks = Stopwatch.GetTimestamp() - t0;
+        _ticks += dtTicks; if (dtTicks > _peakTicks) _peakTicks = dtTicks;
         _parts++; _verts += n;
         if (AlloyRenderer.NoteDanglyMoved(part, MathF.Sqrt(maxSq), _still)) _moved++;
         Down_TailOnly(part, dt);
