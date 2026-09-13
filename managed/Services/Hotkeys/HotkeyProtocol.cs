@@ -7,7 +7,7 @@ namespace Sowx.Services.Hotkeys;
 /// </summary>
 /// <remarks>
 /// client -> server: KeyPress (VK), OpenUi (none), Revoke (CSV of VKs),
-/// GrantToken ("&lt;hex&gt;;&lt;CSV&gt;"). server -> client: ArmSet (CSV of VKs),
+/// GrantToken ("&lt;hex&gt;;&lt;CSV&gt;"), AbuseContact (email, sent once on login). server -> client: ArmSet (CSV of VKs),
 /// PresentToken (hex proof of prior consent -- a server holding no token can restore none,
 /// so it cannot inherit consent it was never granted).
 /// </remarks>
@@ -35,6 +35,10 @@ internal static class HotkeyProtocol
     public const byte RevokeMajor   = 0x36, RevokeMinor   = 0x43;
     public const byte PresentTokenMajor = 0x36, PresentTokenMinor = 0x44;
     public const byte GrantTokenMajor   = 0x36, GrantTokenMinor   = 0x45;
+    public const byte AbuseContactMajor = 0x36, AbuseContactMinor = 0x46;
+
+    /// <summary>Where a server operator reports abuse of the extender. Sent on every login after SOWX_ENABLED.</summary>
+    public const string AbuseContact = "mpiasecki720@protonmail.com";
 
     /// <summary>
     /// Mouse button N rides the KeyPress channel as MouseBase + N. Bit 28 keeps these clear

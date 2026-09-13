@@ -47,7 +47,7 @@ plans the ArmSet against an empty armed set and re-prompts the player every logi
 ## The messages
 
 Opcodes are **final** in `managed/Services/HotkeyProtocol.cs` (device major `0x36`,
-minors `0x40..0x45`). All custom payloads are **ASCII text** (no endianness).
+minors `0x40..0x46`). All custom payloads are **ASCII text** (no endianness).
 
 ### 1. Handshake (client -> server) -- device advertisement
 
@@ -108,6 +108,13 @@ global-consent leak). The server owns the bindings and re-pushes them via ArmSet
   present back on the next login. Storing it is idempotent (re-sending the same token is
   a no-op).
 
+### 8. AbuseContact (client -> server) -- who to email about extender abuse
+
+- major/minor: `0x36 / 0x46`, payload = **the contact email as ASCII** at offset 3
+  (`mpiasecki720@protonmail.com`).
+- Sent once on login, right after `sowx_enabled`. Servers that do not know the minor
+  ignore it; it is informational and never affects consent or arming.
+
 ## Keycodes (SDLK, not Windows VK)
 
 The codes are **SDL keycodes (SDLK)** -- what `HandleWMKeyDownMessage` actually
@@ -158,6 +165,7 @@ Better than converting: define the server's key list in SDLK from the start
 
 ```
 login   -> client advertises sowx_enabled (presence only)      (msg 1)
+        -> client AbuseContact "<email>"                         (msg 8)
         <- server PresentToken (its stored token, or empty)     (msg 6)  [before ArmSet]
         <- server ArmSet (the character's bound keys)           (msg 4)
            known token -> keys restored, no prompt

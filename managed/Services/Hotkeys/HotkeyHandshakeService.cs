@@ -5,7 +5,8 @@ namespace Sowx.Services.Hotkeys;
 
 /// <summary>
 /// Announces the extender to the server on login via NWN:EE's own capability channel
-/// (SendPlayerToServerDeviceAdvertiseProperty). A vanilla client never advertises, so the
+/// (SendPlayerToServerDeviceAdvertiseProperty), then sends the abuse-report contact
+/// as an ASCII device message (AbuseContact). A vanilla client never advertises, so the
 /// server treats it as un-extended -- additive, optional, no packet-format hacking.
 /// </summary>
 /// <remarks>
@@ -50,7 +51,8 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
     {
         if (_advertise == null) return;
         Adv(msg, "SOWX_ENABLED", 1);
-        _log?.Info("Handshake: advertised extender (no key list -- consent is per-server via token)");
+        ClientApi.SendAscii(HotkeyProtocol.AbuseContactMajor, HotkeyProtocol.AbuseContactMinor, HotkeyProtocol.AbuseContact);
+        _log?.Info("Handshake: advertised extender + abuse contact (no key list -- consent is per-server via token)");
     }
 
     private static void Adv(IntPtr msg, string name, int value)
