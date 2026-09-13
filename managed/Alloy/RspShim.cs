@@ -240,14 +240,9 @@ internal static unsafe class RspShim
         Armed = true;
         // "ARMED" is the engine half; the frame does not become Alloy's until Ready as well, which is a
         // first-frame away and logs its own line.
-        // #234: the cutover takes Camera::DoFrameBufferEffects with RenderSinglePass, and with it the two
-        // client video options that gated it. /knobs is where ADR 0013 says a knob has to be visible, so
-        // the layer that removed them says so there rather than leaving them silently inert.
-        KnobSurface.Note(static () => !Armed ? null
-            : "the client's Sharpen video option is INERT this session: it gates "
-            + "Camera::DoFrameBufferEffects, which lived inside Scene::RenderSinglePass and went with it "
-            + "when the shim took the frame. Gamma, anti-aliasing and SSAO are NOT on this list -- Alloy "
-            + "serves them (#375, #377, #379); the rest is #352's hosted chain. Set vanilla=1 to get them back.");
+        // #234/#352: the cutover took Camera::DoFrameBufferEffects with RenderSinglePass; every client video
+        // option it gated is served by the Alloy post stack now (gamma #375, aa #377, ssao #379, the rest of
+        // the fsfbpostpr chain #352), and each of those notes itself on /knobs.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 30, Period, "RspShim.period", log);
         log.Info("RspShim: ARMED -- Scene::RenderSinglePass replaced by the mutate-only shim on "
                + "the Alloy path ([rspshim] every 900 frames; vanilla=1 restores it)");

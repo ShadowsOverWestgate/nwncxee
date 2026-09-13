@@ -1237,6 +1237,19 @@ public static unsafe class EngineLayout
     // 0x128ea10, and every displacement below appears in SetUniforms on BOTH builds at the SAME offset --
     // the field-by-field pairing this batch could not get out of the PROG_FIXED slot map alone.
 
+    // #352: the module calendar the content post chain reads (rays/flare derive the sun from it). Paired
+    // by NAME through ConnectShaderData's slot map: slot +0xb08 is "moduleHour" and SetUniforms feeds it the
+    // struct's first int; +0xb04 "moduleDay" <- +0x04, +0xb00 "moduleMonth" <- +0x08, +0xb0c
+    // "moduleTimeIntoTransition" <- +0x10 (float). Identical displacements in the Windows SetUniforms
+    // (@0xb8380, _m_shaderExposedRuntimeData rva 0x128ea10).
+    /// <summary><c>moduleHour</c>, the calendar hour the shaders see.</summary>
+    public static readonly int RtModuleHour = Same("ShaderExposedRuntimeData", "moduleHour", 0x00);
+    /// <summary><c>moduleDay</c>.</summary>
+    public static readonly int RtModuleDay = Same("ShaderExposedRuntimeData", "moduleDay", 0x04);
+    /// <summary><c>moduleMonth</c>.</summary>
+    public static readonly int RtModuleMonth = Same("ShaderExposedRuntimeData", "moduleMonth", 0x08);
+    /// <summary><c>moduleTimeIntoTransition</c> (float), seconds into the current hour transition.</summary>
+    public static readonly int RtModuleTimeIntoTransition = Same("ShaderExposedRuntimeData", "moduleTimeIntoTransition", 0x10);
     /// <summary>Time of day, 0..1 -- what the sky and the wind phase run off.</summary>
     public static readonly int RtTimeOfDay = Same("ShaderExposedRuntimeData", "timeOfDay", 0x18);
     /// <summary>The area wind vector (#123).</summary>

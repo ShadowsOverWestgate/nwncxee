@@ -47,6 +47,11 @@ internal static unsafe class PostStack
     /// (<c>DoFrameBufferEffects</c> returns at once when it is 0). Null reads as on.</summary>
     private static int* _fbEffects;
     private static bool _on = true;
+    /// <summary>#352: <c>Camera::m_nFramebufferEffectsEnabled</c>, whose bit 2 is the engine's own "the post
+    /// program runs" answer. Null (unresolved) reads as off.</summary>
+    private static uint* _fbMask;
+    /// <summary>#352: <c>/post fbpost 0</c>, the A/B for the hosted content chain alone.</summary>
+    private static bool _fbPostOn = true;
     /// <summary>Latched: the display-space target could not be completed on this context. Distinct from the
     /// <c>/post stack</c> bypass, which is a live choice; this clears only with the context.</summary>
     private static bool _targetBad;
@@ -88,6 +93,14 @@ internal static unsafe class PostStack
             Active = static () => ToonActive(Mask()),
             Prepare = &ToonStage.Prepare,
         },
+        // #352: the content's post chain where vanilla ran it -- after gamma and toon (inc_postpr's own order
+        // with those bits stripped) and before the anti-aliaser, which wants the ink and CA in front of it.
+        new()
+        {
+            Name = "fbpost", Resref = FbPostStage.ShdFs, Fs = FbPostStage.FbPostFs,
+            Active = static () => FbPostActive(),
+            Prepare = &FbPostStage.Prepare,
+        },
         // #389: TAA ahead of SMAA in the table, exclusive with it in practice -- SmaaStage.Active is false
         // while TAA is on, so whichever runs is the last stage and writes the engine's target.
         new()
@@ -104,11 +117,12 @@ internal static unsafe class PostStack
         },
     };
 
+    /// <summary>#352: the hosted-chain stage, the one the stack drops and rebuilds on its own.</summary>
+    private static readonly Stage _fbpost = Array.Find(_stages, static s => s.Name == "fbpost")!;
     private static uint _fbo;
     private static uint _tex0, _tex1;
     private static int _w, _h;
     private static int _pending;
-    private static bool _built;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -116,6 +130,8 @@ internal static unsafe class PostStack
         _gspI = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
         _gspF = (delegate* unmanaged<uint, float>)Native.Sym(SymbolMap.RiGetGlobalShaderParamf);
         _fbEffects = (int*)Native.Sym(SymbolMap.EnableFBEffects);
+        _fbMask = (uint*)Native.Sym(SymbolMap.FbEffectsMask);
+        FbPostStage.Attach(log);
         SmaaStage.Attach(log);
         TaaStage.Attach(log);
         ToonStage.Attach(log);
@@ -144,6 +160,17 @@ internal static unsafe class PostStack
                          : !_on ? "BYPASSED by /post stack 0"
                          : ToonActive(Mask()) ? "on -- " + ToonStage.Describe()
                          : "off -- " + ToonStage.Describe() + " (/post toonbands, toonink, toonedge)")}");
+        KnobSurface.Note(static () => _fbMask == null ? "the engine's post program (fsfbpostpr, the content's inc_postpr chain) "
+            + "is NOT hosted: Camera::m_nFramebufferEffectsEnabled is unresolved (#352)"
+            : "the engine's post program (fsfbpostpr: the content's inc_postpr chain -- status overlay, grade, noir, "
+            + "rays, flare; plus the client's Sharpen and Vibrance options) is the Alloy post stack's (#352): "
+            + $"{(_fbpost.Failed ? "the fbpost stage is DOWN -- inc_postpr is not in this module's chain, or the spliced text did not build; the chain is off under Alloy"
+                : _targetBad ? "the stack's target is incomplete on this device -- the chain is off"
+                : !_on ? "BYPASSED by /post stack 0"
+                : !_fbPostOn ? "BYPASSED by /post fbpost 0"
+                : FbPostActive() ? $"hosted after the resolve (mask 0x{FbPostStage.BuildMask:x} of the client's 0x{Mask():x}; "
+                                   + "depth of field and dynamic contrast are NOT hosted -- their stock text has a vertex half)"
+                : "off -- the engine would not run it either (option mask 0 and run-shader-even-with-no-effects off)")}");
         log.Info($"PostStack: attached -- {Describe()}");
     }
 
@@ -155,6 +182,11 @@ internal static unsafe class PostStack
     private static bool GammaActive(int mask) => GammaBit(mask) && (_fbEffects == null || *_fbEffects != 0);
     /// <summary>The cel stage's gate, the engine's: the Toon option bit, under the same console gate.</summary>
     private static bool ToonActive(int mask) => (mask & MaskToon) != 0 && (_fbEffects == null || *_fbEffects != 0);
+    /// <summary>#352: the hosted chain's gate, the engine's: effect 2's bit, under the console gate.</summary>
+    private static bool FbPostActive()
+        => _fbPostOn && _fbMask != null && (*_fbMask & FbPostStage.EffectPost) != 0 && (_fbEffects == null || *_fbEffects != 0);
+    /// <summary>The client's shader quality option (int param 7), the preamble's <c>SHADER_QUALITY_MODE</c>.</summary>
+    private static int Quality() => _gspI == null ? 0 : _gspI(FbPostStage.QualityParam);
 
     internal static string Describe()
     {
@@ -163,7 +195,8 @@ internal static unsafe class PostStack
         foreach (Stage st in _stages)
             s += $"  {st.Name} {(st.Failed ? "FAILED" : st.Active() ? "live" : "idle")}"
                + (st.Name == "gamma" ? $" (g {Gamma():F2})" : st.Name == "aa" ? " " + SmaaStage.Describe()
-                  : st.Name == "toon" ? " (" + ToonStage.Describe() + ")" : "");
+                  : st.Name == "toon" ? " (" + ToonStage.Describe() + ")"
+                  : st.Name == "fbpost" ? $" ({(FbPostStage.BuildMask < 0 ? "unbuilt" : $"mask 0x{FbPostStage.BuildMask:x}")}{(_fbPostOn ? "" : ", /post fbpost 0")})" : "");
         return s;
     }
 
@@ -171,6 +204,13 @@ internal static unsafe class PostStack
     /// every stage for a live A/B against the bare resolve. Returns NaN for an unknown key.</summary>
     internal static float Tune(string key, float v)
     {
+        if (key == "fbpost")
+        {
+            float was = _fbPostOn ? 1f : 0f;
+            _fbPostOn = v != 0f;
+            _log?.Info($"PostStack: /post fbpost {v:F0} (was {was:F0}) -> {Describe()}");
+            return was;
+        }
         if (key != "stack") return ToonStage.Tune(key, v);
         float old = _on ? 1f : 0f;
         _on = v != 0f;
@@ -178,13 +218,14 @@ internal static unsafe class PostStack
         return old;
     }
 
-    internal static void ResetTuning() { _on = true; ToonStage.ResetTuning(); }
+    internal static void ResetTuning() { _on = true; _fbPostOn = true; ToonStage.ResetTuning(); }
 
     /// <summary>Context loss: forget every GL name.</summary>
     internal static void Forget()
     {
-        _fbo = 0; _tex0 = 0; _tex1 = 0; _w = 0; _h = 0; _pending = 0; _built = false; _targetBad = false;
+        _fbo = 0; _tex0 = 0; _tex1 = 0; _w = 0; _h = 0; _pending = 0; _targetBad = false;
         foreach (Stage st in _stages) { st.Prog = 0; st.Failed = false; st.Live = false; }
+        FbPostStage.Forget();
         SmaaStage.Forget();
         TaaStage.Forget();
         ToonStage.Forget();
@@ -193,7 +234,9 @@ internal static unsafe class PostStack
     /// <summary>Decide this frame's stack and, if any stage is live, hand back the framebuffer the resolve's
     /// colour should go into (its first ping-pong texture attached). 0 = no stage: the resolve draws into
     /// the engine's target as before. Binds its own framebuffer to attach, so the caller rebinds the
-    /// engine's target after it -- which the depth hand-back needs anyway.</summary>
+    /// engine's target after it -- which the depth hand-back needs anyway.
+    /// <para>#352: the hosted chain is built against the option mask as the engine's preamble is, so a moved
+    /// option drops it here to rebuild on this frame (the engine reloads its shaders on the same change).</para></summary>
     internal static uint Begin(int w, int h) => Begin(w, h, w, h);
 
     /// <summary>Is this frame's stack upsampling: the resolve and every stage but the last at render size,
@@ -207,10 +250,11 @@ internal static unsafe class PostStack
     {
         _pending = 0; Upsampling = false;
         if (!_on || _targetBad || _gspI == null) return 0;
-        if (!_built) EnsurePrograms();
+        if (FbPostStage.Stale(Mask(), Quality())) Drop(_fbpost, "the client's post options changed");
         bool taaLive = false;
         foreach (Stage st in _stages)
         {
+            if (st.Prog == 0 && !st.Failed) Build(st);
             st.Live = !st.Failed && st.Prog != 0 && st.Active() && (st.Ready == null || st.Ready(dw, dh));
             if (st.Live) { _pending++; if (st.Name == "taa") taaLive = true; }
         }
@@ -248,7 +292,8 @@ internal static unsafe class PostStack
         {
             if (!st.Live) continue;
             bool last = --left == 0;
-            if (st.Prepare != null) st.Prepare(read, st.Prog, viewport);
+            int* v = last ? viewport : stageVp;
+            if (st.Prepare != null) st.Prepare(read, st.Prog, v);
             if (last) AlloyRenderer.RebindFrameTarget();
             else AttachWrite(write);
             Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.PostHdr);
@@ -258,7 +303,6 @@ internal static unsafe class PostStack
             Gl.Uniform1i(st.LocDepth, (int)TextureSlots.PostBloom);
             Gl.Uniform1f(st.LocDither, last ? PostChain.DitherLsb : 0f);
             if (st.Value != null) Gl.Uniform1f(st.LocParam, st.Value());
-            int* v = last ? viewport : stageVp;
             Gl.Viewport(v[0], v[1], v[2], v[3]);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
             if (st.Prepare != null) Gl.BindSampler(TextureSlots.PostHdr, 0);
@@ -313,36 +357,66 @@ internal static unsafe class PostStack
         return true;
     }
 
-    /// <summary>Build every stage once per context. A stage that fails -- or whose override breaks the
-    /// display-space contract and whose embedded text then fails too -- is dropped with a named line; the
-    /// stack runs the rest and the frame keeps its resolve. That is the whole stand-down.</summary>
-    private static void EnsurePrograms()
+    /// <summary>Build one stage, on its first frame and again after <see cref="Drop"/>. A stage that fails --
+    /// or whose override breaks the display-space contract and whose embedded text then fails too -- is
+    /// dropped with a named line until the context or the module changes; the stack runs the rest and the
+    /// frame keeps its resolve. That is the whole stand-down.</summary>
+    private static void Build(Stage st)
     {
-        _built = true;
-        string vs = ShaderStages.Source(PostChain.ShdPostVs);
-        foreach (Stage st in _stages)
+        string vs = ShaderStages.Source(PostChain.ShdPostVs), fs = ShaderStages.Source(st.Resref);
+        if (st == _fbpost)
         {
-            st.Prog = GlProgram.Graphics(PostChain.ShdPostVs, vs, st.Resref, ShaderStages.Source(st.Resref),
-                                         _log, $"PostStack {st.Name}", out _, out string src);
-            if (st.Prog != 0 && !(ShaderContract.DisplaySafe(src) && ShaderContract.SlotSafe(src, "uSrc")))
-            {
-                Gl.DeleteProgram(st.Prog);
-                _log?.Info($"PostStack: the {st.Name} override is refused -- it converts colour space (the stack "
-                         + "is display space end to end) or dropped uSrc. Rebuilding from the embedded default.");
-                st.Prog = GlProgram.Graphics(PostChain.FullscreenVs, PostStageHead + st.Fs + PostStageMain, _log,
-                                             $"PostStack {st.Name} (embedded)");
-            }
-            if (st.Prog == 0)
+            // #352 AC: a chain with no inc_postpr (any non-SoW module, or vanillabridge=0) would compile the
+            // pass-through stub and run a no-op draw every frame while reporting itself hosted. Splice first;
+            // an untouched text means every region missed, and that is a stand-down, not a stage.
+            FbPostStage.Arm(Mask(), Quality());
+            string spliced = VanillaShader.Splice(fs, _log, "PostStack fbpost");
+            if (spliced == fs)
             {
                 st.Failed = true;
-                _log?.Info($"PostStack: the {st.Name} stage did not build -- DROPPED from the stack; the frame "
-                         + "resolves without it (bloom + resolve only, never vanilla)");
-                continue;
+                _log?.Info("PostStack: the fbpost stage stands DOWN -- inc_postpr is not in this module's resource "
+                         + "chain (or vanillabridge=0); nothing to host, so the stack runs without it");
+                return;
             }
-            st.LocSrc = GlProgram.Loc(st.Prog, "uSrc"); st.LocDepth = GlProgram.Loc(st.Prog, "uDepth");
-            st.LocDither = GlProgram.Loc(st.Prog, "uDither");
-            st.LocParam = st.Param == null ? -1 : GlProgram.Loc(st.Prog, st.Param);
+            fs = spliced;
         }
+        st.Prog = GlProgram.Graphics(PostChain.ShdPostVs, vs, st.Resref, fs,
+                                     _log, $"PostStack {st.Name}", out _, out string src);
+        if (st.Prog != 0 && !(ShaderContract.DisplaySafe(src) && ShaderContract.SlotSafe(src, "uSrc")))
+        {
+            Gl.DeleteProgram(st.Prog);
+            _log?.Info($"PostStack: the {st.Name} override is refused -- it converts colour space (the stack "
+                     + "is display space end to end) or dropped uSrc. Rebuilding from the embedded default.");
+            st.Prog = GlProgram.Graphics(PostChain.FullscreenVs, PostStageHead + st.Fs + PostStageMain, _log,
+                                         $"PostStack {st.Name} (embedded)");
+        }
+        if (st.Prog == 0)
+        {
+            st.Failed = true;
+            _log?.Info($"PostStack: the {st.Name} stage did not build -- DROPPED from the stack; the frame "
+                     + "resolves without it (bloom + resolve only, never vanilla)");
+            return;
+        }
+        st.LocSrc = GlProgram.Loc(st.Prog, "uSrc"); st.LocDepth = GlProgram.Loc(st.Prog, "uDepth");
+        st.LocDither = GlProgram.Loc(st.Prog, "uDither");
+        st.LocParam = st.Param == null ? -1 : GlProgram.Loc(st.Prog, st.Param);
+    }
+
+    /// <summary>Forget a stage's program and its failure latch, so the next <see cref="Begin"/> rebuilds it.
+    /// Inside the bracket (GL is current); the module-unload edge only sets the renderer's flag.</summary>
+    private static void Drop(Stage st, string why)
+    {
+        if (st.Prog != 0) Gl.DeleteProgram(st.Prog);
+        st.Prog = 0; st.Failed = false; st.Live = false;
+        if (st == _fbpost) FbPostStage.DropProgram();
+        _log?.Info($"PostStack: the {st.Name} stage is dropped to rebuild -- {why}");
+    }
+
+    /// <summary>#352: from <c>AlloyRenderer.DropSpliced</c> on the module-unload edge: the hosted chain is
+    /// spliced from the resource chain, so it has a module lifetime like the lit program's regions.</summary>
+    internal static void DropSpliced()
+    {
+        if (_fbpost.Prog != 0 || _fbpost.Failed) Drop(_fbpost, "module changed, rebuilds from this module's resource chain");
     }
 
     /// <summary>The gamma stage's resref (#92 override point), same rules as every post-chain stage.</summary>
@@ -424,6 +498,13 @@ internal static unsafe class PostStack
             E(_stages[1].Name == "toon" && !ToonActive(0) && ToonActive(MaskToon), "the toon stage's gate is the option bit");
             E(!float.IsNaN(PostChain.Tune("toonbands", 4f)), "/post toonbands reaches the toon stage through PostChain");
             E(ToonStage.SelfCheck(log), "the toon stage's own checks");
+            E(_fbpost == _stages[2] && _fbpost.Prepare != null, "the hosted chain is stage 2, after gamma and toon, with its uploads");
+            E(FbPostStage.SelfCheck(log), "the hosted chain's own checks");
+            E(VanillaShader.Splice(FbPostStage.FbPostFs, null, "x", fromContent: false) == FbPostStage.FbPostFs,
+              "a chain with no inc_postpr leaves the text untouched, which is what Build reads as the stand-down");
+            E(!float.IsNaN(PostChain.Tune("fbpost", 0f)) && !_fbPostOn, "/post fbpost reaches the stack through PostChain");
+            PostChain.ResetTuning();
+            E(_fbPostOn, "/post reset turns the fbpost bypass off");
             E(SmaaStage.SelfCheck(log), "the aa stage's own checks");
             E(TaaStage.SelfCheck(log), "the taa stage's own checks");
             E(_stages[^1].Name == "aa", "aa is the LAST stage: it smooths what the frame actually shows");

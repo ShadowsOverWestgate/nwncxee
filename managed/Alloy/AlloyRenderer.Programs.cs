@@ -116,8 +116,9 @@ public sealed unsafe partial class AlloyRenderer
         _progLit46 = 0; _progLitHost = 0; _progLitList = 0; _progWater = 0; OitPass.ListsArmed = false;
         _litFailed = false; _waterFailed = false;
         GrassField.DropProgram();
+        PostStack.DropSpliced();
         SceneWalk.Dirty = true;
-        _log?.Info("AlloyRenderer: module changed -- the spliced programs (lit, hosted lit, water, grass) are dropped and rebuild from this module's resource chain");
+        _log?.Info("AlloyRenderer: module changed -- the spliced programs (lit, hosted lit, water, grass, post) are dropped and rebuild from this module's resource chain");
     }
 
     private static bool EnsureProgram()

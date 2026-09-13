@@ -156,7 +156,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>The noir and vision gates are integers a server script sets. Zero is "off" and is what an
     /// unresolved constant table leaves them at, which is the correct answer for a client that cannot read
     /// them rather than a feature stuck on.</para></summary>
-    private static void UploadVanillaEnv(in FeatLoc loc)
+    internal static void UploadVanillaEnv(in FeatLoc loc)
     {
         fixed (Matrix4x4* m = &_projMtx) Gl.UniformMatrix4fv(loc.ProjL, 1, 0, (float*)m);
         if (_shaderConstI == null || _shaderConstF == null || _shaderConstV4 == null) return;

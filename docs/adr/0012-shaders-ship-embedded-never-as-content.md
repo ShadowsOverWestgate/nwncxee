@@ -1,6 +1,7 @@
 # 0012 — Shaders ship embedded, never as content
 
-Status: accepted (2026-08-24 grilling). Supersedes the shipping half of #92; constrains ADR 0009's
+Status: superseded by [0024](0024-hak-shipped-alloy-overrides.md) (2026-09-13) -- the ban on hak-shipped overrides is lifted; the embedded defaults, the dump and the guards stay.
+Originally: accepted (2026-08-24 grilling). Supersedes the shipping half of #92; constrains ADR 0009's
 Alloy pipeline and everything downstream of it.
 
 ## Context

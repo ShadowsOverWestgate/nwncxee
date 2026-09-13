@@ -14,20 +14,23 @@ An override is a **customization**. You take the stage this build compiles, edit
 and place it where your client can see it. The extender picks it up instead of its own
 copy.
 
-An override is **not a delivery channel.** Shipping `sowx_*.shd` inside a hak, an
-`override/` directory or an NWSync manifest as a way of getting extender shaders to
-players is **not supported** — see [ADR 0012](adr/0012-shaders-ship-embedded-never-as-content.md).
-The reason is drift, and it is not hypothetical:
+A hak is a supported place for one. A module that wants Alloy to look its way ships
+`cx_*.shd` in its hak (or NWSync) and every extended player gets that look; a stock client
+ignores the files. See [ADR 0024](adr/0024-hak-shipped-alloy-overrides.md), which
+supersedes 0012's ban.
 
-- A shipped `.shd` is a **copy of a layout that lives in C#.** When the per-draw record
-  grew in #120, every shipped copy went on reading each draw out of its neighbour's slot
-  and the world rendered black and streaked, with nothing in the log.
-- **On a server, the hak wins** over a local `override/` directory. A hak that has not
-  caught up with the extender is that failure on live content while a singleplayer test
-  looks correct.
+What shipping costs is **drift**, and it is not hypothetical: when the per-draw record grew
+in #120, every shipped copy went on reading each draw out of its neighbour's slot and the
+world rendered black and streaked. Three things keep that in hand, and a shipped override
+depends on all three:
 
-So: the extender ships the defaults, you replace them locally if you want to. Content
-that carries them is content that will one day be older than the client reading it.
+- **Start from `/dumpshaders`, re-dump after each extender update.** The dump is what this
+  build compiles, so the diff against your copy is exactly the drift.
+- **Keep the sizing tokens.** They are expanded on load, so a size change on the C# side
+  never stales a file that kept them.
+- **The guards below.** A shipped stage that disagrees with the record, cutout, skin or
+  linear contract is thrown away for the embedded one with a log line, not rendered wrong.
+  What they cannot catch is a feature the embedded stage gained and your copy did not.
 
 ## Getting a starting point
 

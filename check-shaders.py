@@ -51,11 +51,14 @@ SOURCES = [
     "managed/Alloy/Pass/MotionVectors.cs",
     "managed/Alloy/Pass/TaaStage.cs",
     "managed/Alloy/Pass/ToonStage.cs",
+    "managed/Alloy/Pass/FbPostStage.cs",
     "managed/Alloy/AlloyRenderer.Motion.cs",
     "managed/Alloy/AlloyRenderer.Highlight.cs",
 ]
 # ShaderResource.Tokens' three sizing tokens. Any legal value compiles the same shapes.
-TOKENS = {"$CAP$": "128", "$SORT$": "32", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3"}
+TOKENS = {"$CAP$": "128", "$SORT$": "32", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3",
+          # #352: the hosted post chain built with sharpen + vibrance on (the two hosted option bits), high quality
+          "$POSTMASK$": "9", "$SQM$": "2"}
 STAGES = "managed/Alloy/Core/ShaderStages.cs"
 DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*(?:const|readonly) string (\w+) = (.*)$")
 PIECE = re.compile(r'"""\n(.*?)\n\s*"""|([A-Za-z_]\w*)', re.S)
@@ -110,8 +113,14 @@ def harvest():
 # can find one. Set SOWX_CONTENT_SHD to point elsewhere; missing is not an error, it is the stub's case.
 CONTENT_SHD = os.environ.get("SOWX_CONTENT_SHD",
                              os.path.expanduser("~/repos/sow-topdata/assets/shaders"))
+# #352: the ENGINE's own includes a content file reaches (inc_random, inc_framebuffer, inc_postpr_debug),
+# which the runtime resolves off the resource chain and a content checkout never carries. An extracted
+# ovr.bif tree; missing means those includes drop, as an absent chain file would.
+STOCK_SHD = os.environ.get("SOWX_STOCK_SHD", os.path.expanduser("~/nwnexplorer/shaders"))
 VANILLA = re.compile(r"^([ \t]*)// \$VANILLA(-HOST)? (\w+)\n(.*?)^[ \t]*// \$VANILLA-END[ \t]*$",
                      re.S | re.M)
+# Mirrors VanillaShader.Skip: includes the stage's own environment stands in for, never followed.
+SKIP = re.compile(r"^[ \t]*// \$VANILLA-SKIP (.*)$", re.M)
 
 
 # Mirrors VanillaShader.Supplied: the engine's uniform/varying interface, which the renderer's own
@@ -123,9 +132,12 @@ SUBSTITUTED = {"inc_standard": "VanillaStandardFs"}
 
 
 def find_shd(name):
-    for root, _, files in os.walk(CONTENT_SHD):
-        if name + ".shd" in files:
-            return os.path.join(root, name + ".shd")
+    for base in (CONTENT_SHD, STOCK_SHD):
+        if not os.path.isdir(base):
+            continue
+        for root, _, files in os.walk(base):
+            if name + ".shd" in files:
+                return os.path.join(root, name + ".shd")
     return None
 
 
@@ -184,6 +196,8 @@ def host(stock, resref, done, consts):
 def splice(src, seen, consts):
     """Replace each marked region with the content repo's copy of that .shd, where one exists."""
     done = set()
+    for m in SKIP.finditer(src):
+        done.update(m.group(1).split())
     def one(m):
         indent, hosted, resref, stub = m.group(1), m.group(2), m.group(3), m.group(4)
         hit = find_shd(resref)
@@ -421,6 +435,7 @@ def programs(c, s):
         "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),
         "post stack gamma": (s["cx_post_vs"], s["cx_postgam_fs"]),
         "post stack toon": (s["cx_post_vs"], s["cx_toon_fs"]),
+        "post stack fbpost (hosted content chain)": (s["cx_post_vs"], s["cx_fbpost_fs"]),
         "post stack aa edges": (s["cx_post_vs"], s["cx_smaaedge_fs"]),
         "post stack aa weights": (s["cx_post_vs"], s["cx_smaawgt_fs"]),
         "post stack aa blend": (s["cx_post_vs"], s["cx_smaablend_fs"]),

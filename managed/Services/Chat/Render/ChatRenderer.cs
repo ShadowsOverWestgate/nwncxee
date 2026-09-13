@@ -438,7 +438,7 @@ public static unsafe class ChatRenderer
         int plus = version.IndexOf('+');
         if (plus >= 0) version = version.Substring(0, plus);
 
-        string prefix = $"SoW Client Extender {version}. ";
+        string prefix = $"NWN:EE Client Extender {version}. ";
         const string italic = "Wonderbringer, let it turn true.";
 
         var batch = new VertexBatch(atlas.SolidU, atlas.SolidV);

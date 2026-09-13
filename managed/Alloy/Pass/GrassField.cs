@@ -1181,6 +1181,9 @@ internal static unsafe partial class GrassField
     /// colour as an opaque cutout. The rebuild is marked by MAX_LEVEL == levels-1 on an RGBA8 texture, which
     /// a fresh engine upload (same tid after an area transition) never carries, so the per-frame check is two
     /// level queries and the rebuild re-fires exactly when the engine replaced the storage.</summary>
+    /// <summary><c>GL_TEXTURE_IMMUTABLE_FORMAT</c>: 1 on a texture whose storage came from <c>glTexStorage2D</c>.</summary>
+    private const uint TextureImmutableFormat = 0x912F;   // not-an-offset: GL enum
+
     private static bool HasMips(int tid)
     {
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
@@ -1193,6 +1196,13 @@ internal static unsafe partial class GrassField
         long total = 0;
         int n = w0 > 0 ? TexScan.Chain(w0, h0, true, 16, lw, lh, off, out total) : 0;
         if (n > 0 && fmt == (int)Gl.RGBA8 && cap == n - 1) return true;   // the marker: already ours
+        // The BCn transcode drip (#265) re-creates an uncompressed atlas as IMMUTABLE storage, which TexImage2D
+        // cannot respecify: the rebuild below failed silently every frame (a readback sync + the mip loop +
+        // ten refused uploads, 22k times a minute on SoW = 144 -> 30 fps). Its chain is already
+        // TexScan.BuildMips' alpha-weighted one, so there is nothing to rebuild.
+        int immutable = 0;
+        Gl.GetTexParameteriv(Gl.TEXTURE_2D, TextureImmutableFormat, &immutable);
+        if (immutable != 0) return n > 0;
         if (n == 0 || Gl.GetTexImage == null || Gl.TexImage2D == null)
         {
             Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_WIDTH, &w1);

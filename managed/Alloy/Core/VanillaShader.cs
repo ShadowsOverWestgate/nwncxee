@@ -68,6 +68,12 @@ internal static unsafe class VanillaShader
     /// the wrapper defines, so a missing or broken file is the plain lit path for that feature.</summary>
     private const string Host = "// $VANILLA-HOST ";
 
+    /// <summary>#352: the SKIP marker. <c>// $VANILLA-SKIP a b c</c> names includes the stage's own environment
+    /// stands in for, so the resolver never follows them -- per stage, where <see cref="Supplied"/> is every
+    /// stage's. The hosted post chain is the customer: <c>inc_postpr</c> pulls <c>inc_lighting</c> and
+    /// <c>inc_fog</c> under <c>LIGHTING 1</c>, which are the engine's forward pipeline, not a post term.</summary>
+    private const string Skip = "// $VANILLA-SKIP ";
+
     /// <summary>The common prefix of all three markers -- what the region scan searches for, so a plain and
     /// a host region are found in document order by one search.</summary>
     private const string Marker = "// $VANILLA";
@@ -90,6 +96,12 @@ internal static unsafe class VanillaShader
             bool hosted = string.CompareOrdinal(src, at, Host, 0, Host.Length) == 0;
             if (!hosted && string.CompareOrdinal(src, at, Begin, 0, Begin.Length) != 0)
             {
+                if (string.CompareOrdinal(src, at, Skip, 0, Skip.Length) == 0)
+                {
+                    int skipEol = src.IndexOf('\n', at);
+                    foreach (var n in src[(at + Skip.Length)..(skipEol < 0 ? src.Length : skipEol)].Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                        seen.Add(n);
+                }
                 at = src.IndexOf(Marker, at + Marker.Length, StringComparison.Ordinal);
                 continue;
             }
@@ -260,7 +272,7 @@ internal static unsafe class VanillaShader
     /// <para>Guarded by <see cref="MaxDepth"/> and a visited list: the files carry <c>#ifndef INC_x</c>
     /// guards of their own, so including one twice is already a no-op in GLSL, and this makes it a no-op in
     /// bytes too. A cycle would otherwise be an infinite loop inside a shader compile.</para></summary>
-    private const int MaxDepth = 4, MaxIncludes = 32;
+    private const int MaxDepth = 4, MaxIncludes = 64;
 
     /// <summary>Includes the ENVIRONMENT supplies, and which must therefore never be followed.
     /// <c>inc_common</c>/<c>inc_uniforms</c> are the engine's whole uniform and varying interface, written
@@ -286,7 +298,8 @@ internal static unsafe class VanillaShader
             if (!t.StartsWith("#include", StringComparison.Ordinal)) { sb.Append(line).Append('\n'); continue; }
             int a = t.IndexOf('"'), b = a < 0 ? -1 : t.IndexOf('"', a + 1);
             string? name = a >= 0 && b > a ? t[(a + 1)..b] : null;
-            if (name == null || seen.Count >= MaxIncludes || seen.Contains(name)) continue;
+            if (name == null || seen.Contains(name)) continue;
+            if (seen.Count >= MaxIncludes) { log?.Info($"{what}: include cap {MaxIncludes} reached -- {name} dropped"); continue; }
             if (Array.IndexOf(Supplied, name) >= 0) continue;
             seen.Add(name);
             string? body = name == Substituted ? AlloyRenderer.VanillaStandardFs

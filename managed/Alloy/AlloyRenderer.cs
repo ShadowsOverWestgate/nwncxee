@@ -354,6 +354,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// origin until it does.</summary>
     internal static Vector3 PlayerPos =>
         _runtime == null ? default : *(Vector3*)(_runtime + RtPlayerPos);
+    /// <summary>#352: the module calendar the runtime block carries, what the shaders read as <c>moduleHour</c>
+    /// and friends. Zero before the struct resolves.</summary>
+    internal static int ModuleHour => _runtime == null ? 0 : *(int*)(_runtime + EngineLayout.RtModuleHour);
+    internal static int ModuleDay => _runtime == null ? 0 : *(int*)(_runtime + EngineLayout.RtModuleDay);
+    internal static int ModuleMonth => _runtime == null ? 0 : *(int*)(_runtime + EngineLayout.RtModuleMonth);
+    internal static float ModuleTimeIntoTransition => _runtime == null ? 0f : *(float*)(_runtime + EngineLayout.RtModuleTimeIntoTransition);
+    /// <summary>#352: the presented-frame counter, what a hosted content chain gets as <c>sceneCurrentFrame</c>.</summary>
+    internal static int FrameSeq => _frameSeq;
     /// <summary><c>/draw viz N</c>. 1..3 and 6 attribute a dim (or a too-shiny) frame to a lighting TERM instead
     /// of guessing from the composite; 5 is the local-cube term alone; 4 is the coverage map -- Alloy draws
     /// paint flat (cyan lit / magenta fullbright) and everything still textured is geometry the engine's own
