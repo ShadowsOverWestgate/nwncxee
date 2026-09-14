@@ -42,9 +42,9 @@ public sealed unsafe class CameraService : IExtenderService
     private static bool _configLoaded, _dirty;
 
     /// <summary>Why the layer is (or is not) touching the pose this frame.</summary>
-    private enum Gate { Active, NoModule, NotWorldCamera, Dialog, Cutscene, ClearView, Attached, Locked, Mode }
+    internal enum Gate { Active, NoModule, NotWorldCamera, Dialog, Cutscene, ClearView, Attached, Locked, Mode }
 
-    private static readonly string[] GateNames =
+    internal static readonly string[] GateNames =
         { "active", "no module", "not the world camera", "dialog camera", "cutscene", "clear-view pending",
           "attached elsewhere", "server lock", "unknown camera mode" };
 
@@ -171,7 +171,7 @@ public sealed unsafe class CameraService : IExtenderService
         if (target != IntPtr.Zero && !float.IsNaN(_distAfter) && *(float*)(self + ZoomVelOff) == 0f
             && *(float*)(self + DistOff) < _distAfter - 1e-4f) { if (_offsetOn) _pullInsOffset++; else _pullIns++; }
         // Before the solve: the velocity is consumed by this call (the engine's chase writes it in the same slot).
-        if (target != IntPtr.Zero && _probeOk) Recenter(self, dt);
+        if (target != IntPtr.Zero && _probeOk && !FreeCameraService.Active) Recenter(self, dt);
         int r = ((delegate* unmanaged<IntPtr, float, int>)(*_next))(self, dt);
         _calls++;
         if (target == IntPtr.Zero) { _distAfter = float.NaN; return r; }
@@ -209,6 +209,12 @@ public sealed unsafe class CameraService : IExtenderService
         _yaw = *(float*)(self + YawOff); _pitch = *(float*)(self + PitchOff); _dist = *(float*)(self + DistOff);
         _fovRead = *(float*)(cam + CamFovOff);
         _pos = *(Vector3*)(cam + CamPosOff);
+        if (FreeCameraService.Active)
+        {
+            // #543: the free camera owns the pose; the frame it lets go is a weld (snap + cut) like any gate's.
+            FreeCameraService.Frame(cam, g, dt);
+            if (FreeCameraService.Active) { _welded = true; _wantNoCollision = true; _offsetOn = false; _arm = 1f; _fovWritten = float.NaN; return; }
+        }
         if (g != Gate.Active) { _welded = true; _offsetOn = _wantNoCollision = false; _arm = 1f; return; }
 
         // §9.2: anything rewriting the view angle between our writes shows up here.
@@ -319,7 +325,7 @@ public sealed unsafe class CameraService : IExtenderService
     /// <summary>The chase drivers' locomotion set (walk / run / their variants), both builds.</summary>
     private static bool Locomotion(short anim) => anim is 2 or 3 or 4 or 0x4e or 0x4f or (>= 0x54 and <= 0x57);
 
-    private static IntPtr PlayerCreature()
+    internal static IntPtr PlayerCreature()
     {
         IntPtr app = App();
         if (app == IntPtr.Zero) return IntPtr.Zero;
@@ -349,7 +355,7 @@ public sealed unsafe class CameraService : IExtenderService
     private static bool Locked(IntPtr self, int clampOff, int minOff) =>
         *(float*)(self + clampOff) != 0f && *(float*)(self + minOff) >= *(float*)(self + minOff + 4);
 
-    private static IntPtr App()
+    internal static IntPtr App()
     {
         IntPtr mgr = *(IntPtr*)_appMgr;
         return mgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)mgr;
@@ -359,6 +365,13 @@ public sealed unsafe class CameraService : IExtenderService
     /// ponytail: reads the last Control's verdict; a GUI 3D panel's camera (NotWorldCamera) is not a gate here
     /// because its Control interleaves with the world's and would flap the flag every frame.</summary>
     public static bool GateUp => _live && _probeOk && _gate is not (Gate.Active or Gate.NotWorldCamera);
+    /// <summary>#543: the last Control's verdict by name, and whether the layer is live at all.</summary>
+    internal static string GateName => GateNames[(int)_gate];
+    internal static bool Live => _live && _probeOk;
+    /// <summary>#543: the pose the layer last wrote (the rendered one: lag, curve, offset and arm included), the
+    /// seed for a free camera that must not jump on entry.</summary>
+    internal static void Rendered(out Vector3 pos, out float yaw, out float pitch, out float fov)
+    { pos = _pos; yaw = _sYaw; pitch = _outPitch; fov = _fovRead; }
 
     /// <summary>#540: the live preferences and the mode byte the last Control saw (-1 before the first).</summary>
     internal static CameraConfig Config => _cfg;
@@ -377,7 +390,7 @@ public sealed unsafe class CameraService : IExtenderService
     // is the Hamilton product. So yaw 0 / pitch p puts the camera at focus + dist*(0, -sin p, cos p): south
     // of the focus, looking north, pitch measured from vertical.
 
-    private static Quaternion Pose(float yawDeg, float pitchDeg)
+    internal static Quaternion Pose(float yawDeg, float pitchDeg)
     {
         (float sy, float cy) = MathF.SinCos(yawDeg * Deg * 0.5f);
         (float sp, float cp) = MathF.SinCos(pitchDeg * Deg * 0.5f);
@@ -386,7 +399,7 @@ public sealed unsafe class CameraService : IExtenderService
     }
 
     /// <summary>The unit the camera sits along from the focus: <c>q * +Z</c>, Control's own expansion.</summary>
-    private static Vector3 Forward(in Quaternion q) =>
+    internal static Vector3 Forward(in Quaternion q) =>
         new(2f * (q.X * q.Z + q.W * q.Y), 2f * (q.Y * q.Z - q.W * q.X), 1f - 2f * (q.X * q.X + q.Y * q.Y));
 
     /// <summary>The camera's right: <c>q * +X</c>. Pitch is about X, so this stays horizontal at every pitch.</summary>

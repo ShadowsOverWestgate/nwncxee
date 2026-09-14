@@ -93,6 +93,41 @@ public sealed class Recenter
     }
 }
 
+/// <summary>#543: the free camera's feel and its one arming limit, the leash.</summary>
+public sealed class FreeCamera
+{
+    /// <summary>Fly speed, world units per second (shift = 4x; the wheel scales it).</summary>
+    public float Speed = 8f;
+    /// <summary>Vertical FOV while free; 0 = whatever the camera had on entry.</summary>
+    public float Fov;
+    /// <summary>Roll on entry, degrees (Z/X roll live).</summary>
+    public float Roll;
+    /// <summary>Leash radius from the player's creature, world units, when the server set no camera max distance.
+    /// Capped at the engine's own 25 m max-dist default (what top-down at max zoom already surveys); a server
+    /// raises it through <c>SetCameraLimits</c>, never the client.</summary>
+    public float Leash = LeashMax;
+    /// <summary>Mouse-look sensitivity multiplier on top of <c>mouselook_sens</c>.</summary>
+    public float Sens = 1f;
+    /// <summary>Keyboard turn (the engine's turn keys) in degrees per second.</summary>
+    public float Turn = 90f;
+
+    public const float LeashMax = 25f;
+
+    public bool Set(string key, float v)
+    {
+        switch (key)
+        {
+            case "speed": Speed = System.Math.Clamp(v, 0.1f, 200f); return true;
+            case "fov": Fov = v == 0 ? 0 : System.Math.Clamp(v, CameraMode.FovMin, CameraMode.FovMax); return true;
+            case "roll": Roll = System.Math.Clamp(v, -180f, 180f); return true;
+            case "leash": Leash = System.Math.Clamp(v, 1f, LeashMax); return true;
+            case "sens": Sens = System.Math.Clamp(v, 0.05f, 20f); return true;
+            case "turn": Turn = System.Math.Clamp(v, 10f, 720f); return true;
+        }
+        return false;
+    }
+}
+
 /// <summary>Persisted camera-layer preferences, flat <c>mode.key=value</c> in <c>sowx-camera.cfg</c> beside
 /// <c>nwn.ini</c> (written by <c>/camera</c>, never hand-required). Every numeric key is clamped on parse.</summary>
 public sealed class CameraConfig
@@ -102,6 +137,7 @@ public sealed class CameraConfig
     public readonly CameraMode[] Modes = { new(), new() { Drive = 0f, Recenter = 0f }, new() };
     public readonly SpringArm Arm = new();
     public readonly Recenter Recenter = new();
+    public readonly FreeCamera Free = new();
     /// <summary>#540: most drive packets per second a heading change may raise (the engine's own keep-alive is 2/s).</summary>
     public float DriveHz = 10f;
     public const float DriveHzMin = 1f, DriveHzMax = 60f;
@@ -121,7 +157,8 @@ public sealed class CameraConfig
         }
         sb.Append($"arm.margin={F(Arm.Margin)}\narm.in={F(Arm.RateIn)}\narm.out={F(Arm.RateOut)}\narm.radius={F(Arm.Radius)}\n")
           .Append($"drive.hz={F(DriveHz)}\ndrive.turn={F(DriveTurn)}\n")
-          .Append($"recenter.rate={F(Recenter.Rate)}\nrecenter.deadzone={F(Recenter.DeadZone)}\nrecenter.grace={F(Recenter.Grace)}\nrecenter.idle={F(Recenter.Idle)}\nrecenter.idlerate={F(Recenter.IdleRate)}\n");
+          .Append($"recenter.rate={F(Recenter.Rate)}\nrecenter.deadzone={F(Recenter.DeadZone)}\nrecenter.grace={F(Recenter.Grace)}\nrecenter.idle={F(Recenter.Idle)}\nrecenter.idlerate={F(Recenter.IdleRate)}\n")
+          .Append($"free.speed={F(Free.Speed)}\nfree.fov={F(Free.Fov)}\nfree.roll={F(Free.Roll)}\nfree.leash={F(Free.Leash)}\nfree.sens={F(Free.Sens)}\nfree.turn={F(Free.Turn)}\n");
         return sb.ToString();
     }
 
@@ -138,6 +175,7 @@ public sealed class CameraConfig
             if (dot < 0 || !TryF(val, out float v)) return;
             if (key[..dot] == "arm") { cfg.Arm.Set(key[(dot + 1)..], v); return; }
             if (key[..dot] == "recenter") { cfg.Recenter.Set(key[(dot + 1)..], v); return; }
+            if (key[..dot] == "free") { cfg.Free.Set(key[(dot + 1)..], v); return; }
             if (key == "drive.hz") { cfg.DriveHz = System.Math.Clamp(v, DriveHzMin, DriveHzMax); return; }
             if (key == "drive.turn") { cfg.DriveTurn = System.Math.Clamp(v, 0f, DriveTurnMax); return; }
             int m = System.Array.IndexOf(ModeNames, key[..dot]);
@@ -151,7 +189,8 @@ public sealed class CameraConfig
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"CameraConfig.SelfCheck FAIL: {w}"); } }
-        var c = Parse("topdown.fov=60\nchase.lagpos=0.3\nstiff.pitchcurve=99\nchase.pitchref=abc\nnope.fov=1\nchase.offsetx=-1.5\narm.margin=0.5\ntopdown.drive=1\ndrive.hz=500\nrecenter.grace=2\nstiff.recenter=0\n");
+        var c = Parse("topdown.fov=60\nchase.lagpos=0.3\nstiff.pitchcurve=99\nchase.pitchref=abc\nnope.fov=1\nchase.offsetx=-1.5\narm.margin=0.5\ntopdown.drive=1\ndrive.hz=500\nrecenter.grace=2\nstiff.recenter=0\nfree.speed=12\nfree.leash=90\n");
+        E(c.Free.Speed == 12f && c.Free.Leash == FreeCamera.LeashMax && new CameraConfig().Free.Leash == FreeCamera.LeashMax, "free keys parse, the leash never exceeds the engine's 25");
         E(c.Modes[0].OffsetX == -1.5f && c.Arm.Margin == 0.5f, "offset and arm keys parse");
         E(c.Recenter.Grace == 2f && c.Modes[2].Recenter == 0f && c.Modes[0].Recenter == 1f && new CameraConfig().Modes[1].Recenter == 0f, "recenter keys parse, top-down defaults off");
         E(c.Modes[1].Drive == 1f && c.DriveHz == DriveHzMax && new CameraConfig().Modes[1].Drive == 0f && new CameraConfig().Modes[0].Drive == 1f, "drive keys parse, top-down defaults off");

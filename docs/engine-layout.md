@@ -384,6 +384,16 @@ No new function: the same two chase drivers and the one solve. Read on both buil
 | `CAurBehaviorCameraFollow` | `yawVel 0x58`, `yawImpulse 0x88` | `TurnCamera(deg, 0/1)` (Linux @`0x7d8960`, Windows rva `0x7cfe60`) adds into `+0x58` / `+0x88`; the chase drivers write `+0x58`; `Control` integrates and zeroes both at the same offsets on both builds |
 | `CNWCObject` | `animation 0x5c` (short) | `GetCurrentAnimation` is `*(short*)(this+0x5c)` on both (Linux @`0x7e3f70`, Windows rva `0x7630d0` -- the chase driver's own callee, nine times per call for the locomotion test) |
 
+### The free-camera rows (#543)
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CNWCCreature` | `combatState 0x1f4 / 0x1d4` | `SetCombatState(int)` (Linux @`0x722160`, Windows rva `0x80a230`): the first store in both bodies; the Windows body is the callee right after the `+0x37c/+0x37e/+0x380/+0x388/+0x384` cluster in the Windows `HandleServerToPlayerCreatureUpdate_Update` (`0x781e80`, `ScanOffsets 37c 37e 380 388 384` = 1 hit), the same cluster Linux writes at `+0x39c..` before its call |
+| `CNWCObject` | `position 0x38` | `SetPosition(Vector)` Linux @`0x7e9180` writes `+0x38..+0x40`; the orientation row at the same `+0x44` on both builds pins it |
+| `CNWCModule` | `cameraMaxDist 0x2b8` | `SetCameraLimits(float,float,float,float)` Linux @`0x7def00` / Windows rva `0x7cf9d0`: four consecutive stores `+0x2ac..+0x2b8`, the ctor seeds `-1` |
+| `CClientExoAppInternal` | `inGameGui 0x90` | `CClientExoApp::GetInGameGui` is `*(*(app+8)+0x90)` on both (Linux @`0x637c70`, Windows rva `0x6abbc0`) |
+| `CGuiInGame` | `toggledOff 0x3d4 / 0x374` (probed 0/1) | `ToggleOff` / `UnToggleOff` (Linux @`0x66dda0` / `0x66e930`, Windows rva `0x6fc6f0` / `0x6fc900`) test and write it first; reached from the anchored message dispatch, case 0x33 -> cutscene handler -> minor 7 |
+
 ### The 38 DecompOne rows (#448)
 
 Section 3, T2 — the biggest and most mechanical of the three. All 38 are now

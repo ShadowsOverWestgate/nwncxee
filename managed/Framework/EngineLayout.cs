@@ -1412,6 +1412,9 @@ public static unsafe class EngineLayout
     /// <summary>CNWCObject -&gt; orientation Vector (x, y, z); position is the Vector at +0x38. UpdateDriveMode reads
     /// +0x44/+0x48 for the wire angle and TurnOnSpot rotates +0x44..+0x4c on both builds.</summary>
     public static readonly int ObjOrientation = Same("CNWCObject", "orientation", 0x44);
+    /// <summary>CNWCObject -&gt; position Vector, the 12 bytes before <see cref="ObjOrientation"/> (<c>SetPosition</c>
+    /// Linux @0x7e9180 writes +0x38..+0x40; the Windows orientation row at the same +0x44 pins it).</summary>
+    public static readonly int ObjPosition = Same("CNWCObject", "position", 0x38);
     /// <summary>CNWCObject -&gt; current animation (short): <c>GetCurrentAnimation</c> is <c>*(short*)(this+0x5c)</c> on
     /// both builds (Linux @0x7e3f70, Windows rva 0x7630d0, the chase driver's own callee). Locomotion = 2, 3, 4,
     /// 0x4e, 0x4f, 0x54..0x57 (the chase drivers' test).</summary>
@@ -1437,6 +1440,17 @@ public static unsafe class EngineLayout
     /// <summary>CNWCModule -&gt; "creature was idle" (int 0/1) the chase drivers set on a non-locomotion animation and
     /// consume (clearing <see cref="ModuleChaseSuppressed"/>) on the first locomotion frame after.</summary>
     public static readonly int ModuleChaseWasIdle = Same("CNWCModule", "chaseWasIdle", 0x27c, Expect.Byte01);
+    /// <summary>CNWCModule -&gt; the server's <c>SetCameraLimits</c> max distance (float; -1 = not set, use the client
+    /// config). Linux @0x7def00 writes +0x2ac..+0x2b8 (min pitch, max pitch, min dist, max dist); Windows rva
+    /// 0x7cf9d0 the same four. #543's leash radius when set.</summary>
+    public static readonly int ModuleCameraMaxDist = Same("CNWCModule", "cameraMaxDist", 0x2b8);
+    /// <summary>CNWCCreature -&gt; combat state int, server-fed: <c>SetCombatState(int)</c> (Linux @0x722160, Windows
+    /// rva 0x80a230, the callee right after the +0x39c/+0x37c cluster in HandleServerToPlayerCreatureUpdate_Update)
+    /// stores it first thing. #543 stands the free camera down on it.</summary>
+    public static readonly int CreatureCombatState = Diverges("CNWCCreature", "combatState", linux: 0x1f4, win: 0x1d4);
+    /// <summary>CGuiInGame -&gt; "toggled off" int: <c>ToggleOff</c> returns early when set, <c>UnToggleOff</c> when
+    /// clear, and <c>SetCutsceneMode</c> reads it to know whether the exit should un-toggle. Linux +0x3d4, Windows +0x374.</summary>
+    public static readonly int GuiInGameToggledOff = Diverges("CGuiInGame", "toggledOff", linux: 0x3d4, win: 0x374, Expect.Byte01);
 
     /// <summary>Gob -&gt; the kind of game object behind <c>SetExternalData</c>: 5 creature
     /// (<c>CNWCCreature::LoadModel</c> @0x72a4b0), 9 placeable (@0x7ec500), 10 door (@0x755ec0), through

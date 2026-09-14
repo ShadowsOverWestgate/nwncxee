@@ -40,7 +40,7 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     /// <summary>Middle-drag's degrees per pixel at 1920 wide: turn = dx * -75 * 0.2 / (W/1920/0.01), tilt =
     /// -dy * 75 * 0.15 / (W/1080/0.01), both over the viewport WIDTH (engine's own formula, W/1080 included).</summary>
-    private const float TurnPerPx = -288f, TiltPerPx = -121.5f;
+    internal const float TurnPerPx = -288f, TiltPerPx = -121.5f;
 
     private enum State { Idle, Pending, Looking }
     private static State _state;
@@ -52,6 +52,9 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     private static float _sens = 1f, _threshold = 4f;
     private static bool _invert, _rightLook;
+    /// <summary>#543: the free camera's look shares the sensitivity, invert and viewport scale.</summary>
+    internal static float Sens => _sens;
+    internal static bool Invert => _invert;
     private static int _looks, _clicks;
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -112,7 +115,7 @@ public sealed unsafe class MouseLookService : IExtenderService
                     _setRelative(1);
                     return 0;   // this event's delta already moved the (soon warped-back) cursor; start clean
                 }
-                if (CameraService.GateUp) { Release(); return 0; }
+                if (CameraService.GateUp || FreeCameraService.Active) { Release(); return 0; }
                 IntPtr module = CameraService.Module();
                 if (module != IntPtr.Zero)
                 {
@@ -160,7 +163,7 @@ public sealed unsafe class MouseLookService : IExtenderService
         _state = State.Idle;
     }
 
-    private static float ViewportWidth()
+    internal static float ViewportWidth()
     {
         IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
         int w = gm != IntPtr.Zero ? *(int*)(gm + EngineLayout.GuiManVpW) : 0;

@@ -1,0 +1,313 @@
+using System;
+using System.Numerics;
+using System.Runtime.InteropServices;
+using Sowx.Alloy;
+using Sowx.Framework;
+using Sowx.Services.Chat;
+using Sowx.Ui;
+
+namespace Sowx.Services.Camera;
+
+/// <summary>
+/// The free camera (#543, map #535): <c>/camera free</c> detaches the camera for screenshots. The engine's drive
+/// keys (forward/back, strafe, turn -- the player's own bindings, read from the engine's key table) fly and turn
+/// it, Space/C lift and lower it, Z/X roll it, Shift is 4x, the wheel scales the speed, right-drag is mouse-look
+/// (the same scale as #539); Escape or <c>/camera free</c> again returns. The pose is written where
+/// <see cref="CameraService"/> writes it, after Control, so picking, nameplates and combat text follow; the
+/// behavior's own yaw/pitch/dist are never touched, so the exit lands on the engine's previous pose and both
+/// transitions are cuts (<see cref="AlloyRenderer.CameraCut"/>, no motion-vector ghost). The in-game GUI is
+/// hidden through the engine's own <c>CGuiInGame::ToggleOff</c> (what the server's HideGui message calls) and
+/// restored on exit; the extender's own windows (chat) stay, since they are the way back.
+/// <para><b>Limits</b> (docs/research/free-camera-cheating.md §5, all client-side, no opcode): a leash of the
+/// server's <c>SetCameraLimits</c> max distance when set, else <c>free.leash</c> (capped at the engine's 25 m
+/// default) around the player's creature -- the camera stops at it and a chat line says so once per contact;
+/// stand-down (exit, with the reason on screen) on every CameraService gate -- dialog, cutscene, clear-view,
+/// attach, a server lock -- and while the creature's server-fed combat state is set; entry refuses on the same.
+/// While free the drive sees no keys (<see cref="CameraDriveService"/>), left and middle clicks in the world are
+/// swallowed (no click-to-move, no engine orbit) and the engine's chase is held down.</para>
+/// <para>Hot: <see cref="Frame"/> runs inside Control (pointer reads, float math); the event handler is the
+/// outermost <c>WinMessageHandler</c> chain layer (cold); notices are built on the frame-end tick.</para>
+/// </summary>
+public sealed unsafe class FreeCameraService : IExtenderService
+{
+    private static ExtenderLog? _log;
+    private static IntPtr* _next;
+    private static delegate* unmanaged<IntPtr, void> _toggleOff, _unToggleOff;
+    private static delegate* unmanaged<int, int> _setRelative;
+    private static delegate* unmanaged<IntPtr, int, int, void> _warp;
+
+    private const uint SdlWindowEvent = 0x200, SdlKeyDown = 0x300, SdlKeyUp = 0x301, SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402, SdlMouseWheel = 0x403;
+    /// <summary>SDL_KeyboardEvent: repeat byte at +0xd, keysym.scancode at +0x10; button/motion rows as MouseLook's; wheel y at +0x14.</summary>
+    private const int EvWindowKindOff = 0xc, EvRepeatOff = 0xd, EvScancodeOff = 0x10, EvButtonOff = 0x10, EvXOff = 0x14, EvYOff = 0x18, EvXRelOff = 0x1c, EvYRelOff = 0x20, EvWheelYOff = 0x14;
+    private const byte SdlWindowFocusLost = 0xd, SdlButtonLeft = 1, SdlButtonMiddle = 2, SdlButtonRight = 3;
+    /// <summary>SDL scancodes (layout-independent): Escape, Space, C, Z, X, left/right Shift.</summary>
+    private const int ScEscape = 41, ScSpace = 44, ScC = 6, ScZ = 29, ScX = 27, ScLShift = 225, ScRShift = 229;
+    private const int Fwd = 0, Back = 1, TurnL = 2, TurnR = 3, StrafeL = 4, StrafeR = 5;
+    private const float Deg = MathF.PI / 180f, PitchFloor = 1f, PitchCeil = 179f, FastMul = 4f, RollRate = 60f;
+
+    private static readonly int CombatOff = EngineLayout.CreatureCombatState;
+    private static readonly int PosOff = EngineLayout.ObjPosition;
+    private static readonly int MaxDistOff = EngineLayout.ModuleCameraMaxDist;
+    private static readonly int ModCameraOff = EngineLayout.ModuleCamera;
+    private static readonly int ModChaseOffOff = EngineLayout.ModuleChaseSuppressed;
+    private static readonly int ModWasIdleOff = EngineLayout.ModuleChaseWasIdle;
+    private static readonly int CamPosOff = EngineLayout.CamPos;
+    private static readonly int CamRotOff = EngineLayout.CamRot;
+    private static readonly int CamFovOff = EngineLayout.CamViewAngle;
+    private static readonly int InternalOff = EngineLayout.ExoAppInternal;
+    private static readonly int KeysOff = EngineLayout.InternalDriveKeys;
+    private static readonly int GuiOff = EngineLayout.InternalInGameGui;
+    private static readonly int ToggledOff = EngineLayout.GuiInGameToggledOff;
+
+    /// <summary>Why the free camera left (or refused), for the frame-end notice.</summary>
+    private enum Why { None, User, Gate, Combat, NoCreature, Leash }
+    private static readonly string[] WhyNames = { "", "", "camera held down", "in combat", "no player creature", "at the leash" };
+
+    /// <summary>Set by the command, cleared by <see cref="Leave"/>; every consumer reads it hot.</summary>
+    public static bool Active { get; private set; }
+    private static bool _armed, _weHidUi, _looking, _leashed, _up, _down, _rollL, _rollR, _fast;
+    private static byte _ate;
+    private static Vector3 _pos;
+    private static float _yaw, _pitch, _roll, _fov, _leashR;
+    private static int _originX, _originY, _mx, _my;
+    private static Why _pending;
+    private static CameraService.Gate _exitGate;
+    private static int _entries, _leashHits;
+
+    public void Initialize(ExtenderLog log, HookService hooks)
+    {
+        _log = log;
+        SelfCheck(log);
+        if (!EngineLayout.Require(log, "FreeCamera", "CNWCCreature", "CNWCObject", "CNWCModule", "CClientExoAppInternal", "CGuiInGame", "Camera")) return;
+        if (!SymbolMap.Require(log, "FreeCamera", SymbolMap.WinMessageHandler, SymbolMap.GuiInGameToggleOff, SymbolMap.GuiInGameUnToggleOff,
+                               SymbolMap.SdlSetRelativeMouseMode, SymbolMap.SdlWarpMouseInWindow, SymbolMap.GetModule, SymbolMap.AppManager, SymbolMap.GetGameObject)) return;
+        _toggleOff = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GuiInGameToggleOff);
+        _unToggleOff = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GuiInGameUnToggleOff);
+        _setRelative = (delegate* unmanaged<int, int>)Native.Sym(SymbolMap.SdlSetRelativeMouseMode);
+        _warp = (delegate* unmanaged<IntPtr, int, int, void>)Native.Sym(SymbolMap.SdlWarpMouseInWindow);
+        _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 110);
+        if (_next == null) { log.Info("FreeCamera: standing down (WinMessageHandler chain refused)"); return; }
+        _armed = true;
+        if (GameGate.OwnsFramePresent)
+            FrameRegistry.Global.Register(FramePhase.PostPresent, 51, OnFrameEnd, "FreeCamera", log);
+        CameraCommand.Register("free", "free camera on/off (Escape returns); `free speed|fov|roll|leash|sens|turn <n>` fly units/s, vertical FOV (0 = keep), roll deg, leash m (<= 25, the server's max-dist wins when set), look multiplier, keyboard turn deg/s", Free);
+        CameraCommand.Report(Report);
+        log.Info("FreeCamera: /camera free armed (outermost WinMessageHandler layer)");
+    }
+
+    // ---- the hot half: once per Control while active ------------------------------------------
+
+    /// <summary>Move, turn, leash and write the pose; leave on any gate or combat. <paramref name="g"/> is this
+    /// Control's verdict: a GUI panel's camera is skipped, every other non-Active verdict ends the free camera.</summary>
+    internal static void Frame(IntPtr cam, CameraService.Gate g, float dt)
+    {
+        if (g == CameraService.Gate.NotWorldCamera) return;
+        if (g != CameraService.Gate.Active) { _exitGate = g; Leave(Why.Gate); return; }
+        IntPtr cre = CameraService.PlayerCreature();
+        if (cre == IntPtr.Zero) { Leave(Why.NoCreature); return; }
+        if (*(int*)(cre + CombatOff) != 0) { Leave(Why.Combat); return; }
+        IntPtr module = CameraService.Module();
+        *(int*)(module + ModChaseOffOff) = 1;
+        *(int*)(module + ModWasIdleOff) = 0;
+
+        FreeCamera k = CameraService.Config.Free;
+        int* keys = (int*)(*(IntPtr*)(CameraService.App() + InternalOff) + KeysOff);
+        float f = (keys[Fwd] != 0 ? 1f : 0f) - (keys[Back] != 0 ? 1f : 0f);
+        float s = (keys[StrafeR] != 0 ? 1f : 0f) - (keys[StrafeL] != 0 ? 1f : 0f);
+        float t = (keys[TurnL] != 0 ? 1f : 0f) - (keys[TurnR] != 0 ? 1f : 0f);
+        float v = (_up ? 1f : 0f) - (_down ? 1f : 0f);
+        float r = (_rollR ? 1f : 0f) - (_rollL ? 1f : 0f);
+        _yaw = Wrap(_yaw + t * k.Turn * dt);
+        _roll = Wrap(_roll + r * RollRate * dt);
+        Quaternion flat = CameraService.Pose(_yaw, _pitch);
+        // Forward(q) points from the focus TO the camera; the view looks the other way. Up is the world's.
+        Vector3 want = _pos + (-CameraService.Forward(flat) * f + CameraService.Right(flat) * s + Vector3.UnitZ * v) * (k.Speed * (_fast ? FastMul : 1f) * dt);
+        float serverMax = *(float*)(module + MaxDistOff);
+        _leashR = serverMax >= 0f ? serverMax : k.Leash;
+        Vector3 anchor = *(Vector3*)(cre + PosOff);
+        Vector3 d = want - anchor;
+        float len = d.Length();
+        if (len > _leashR)
+        {
+            want = anchor + d * (_leashR / len);
+            if (!_leashed) { _leashed = true; _leashHits++; if (_pending == Why.None) _pending = Why.Leash; }
+        }
+        else _leashed = false;
+        _pos = want;
+
+        Quaternion q = PoseRoll(_yaw, _pitch, _roll);
+        float* rot = (float*)(cam + CamRotOff);
+        rot[0] = q.W; rot[1] = q.X; rot[2] = q.Y; rot[3] = q.Z;
+        *(Vector3*)(cam + CamPosOff) = _pos;
+        *(float*)(cam + CamFovOff) = _fov;
+    }
+
+    /// <summary>The pose rolled about its own view axis: <c>qZ(yaw) * qX(pitch) * qZ(roll)</c>, Hamilton (System.Numerics'
+    /// operator* is the Hamilton product, the expansion <see cref="CameraService.Pose"/> writes out). The camera's local
+    /// Z is the focus-to-camera line, so a local-Z turn is a true roll; the engine's own <c>YawPitchRoll</c> third
+    /// term is about local Y and would be a head-turn, not a roll.</summary>
+    private static Quaternion PoseRoll(float yawDeg, float pitchDeg, float rollDeg)
+    {
+        if (rollDeg == 0f) return CameraService.Pose(yawDeg, pitchDeg);
+        (float sr, float cr) = MathF.SinCos(rollDeg * Deg * 0.5f);
+        return CameraService.Pose(yawDeg, pitchDeg) * new Quaternion(0f, 0f, sr, cr);
+    }
+
+    private static float Wrap(float deg) => deg - 360f * MathF.Round(deg / 360f);
+
+    /// <summary>End the free camera: GUI back if this session hid it, cursor released, the notice queued. Safe hot
+    /// (engine and SDL calls only); the pose snaps back through CameraService's weld on the next Control.</summary>
+    private static void Leave(Why why)
+    {
+        if (!Active) return;
+        Active = false;
+        StopLook();
+        _up = _down = _rollL = _rollR = false; _ate = 0;
+        if (_weHidUi) { IntPtr gui = Gui(); if (gui != IntPtr.Zero) _unToggleOff(gui); _weHidUi = false; }
+        if (why != Why.User) _pending = why;
+        AlloyRenderer.CameraCut();
+    }
+
+    private static IntPtr Gui()
+    {
+        IntPtr app = CameraService.App();
+        return app == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(*(IntPtr*)(app + InternalOff) + GuiOff);
+    }
+
+    // ---- the cold half: input -----------------------------------------------------------------
+
+    [UnmanagedCallersOnly]
+    private static int OnWinMessage(IntPtr ev)
+    {
+        if (!Active || ev == IntPtr.Zero) return Forward(ev);
+        switch (*(uint*)ev)
+        {
+            case SdlKeyDown:
+            case SdlKeyUp:
+                if (ChatService.WantsKey) break;
+                bool down = *(uint*)ev == SdlKeyDown;
+                switch (*(int*)(ev + EvScancodeOff))
+                {
+                    case ScEscape: if (down && *(byte*)(ev + EvRepeatOff) == 0) Leave(Why.User); return 0;
+                    case ScSpace: _up = down; return 0;
+                    case ScC: _down = down; return 0;
+                    case ScZ: _rollL = down; return 0;
+                    case ScX: _rollR = down; return 0;
+                    case ScLShift: case ScRShift: _fast = down; break;   // observed, not eaten
+                }
+                break;
+            case SdlMouseDown:
+            {
+                byte b = *(byte*)(ev + EvButtonOff);
+                int mx = *(int*)(ev + EvXOff), my = *(int*)(ev + EvYOff);
+                if (b is not (SdlButtonLeft or SdlButtonMiddle or SdlButtonRight) || _looking) break;
+                if (UiInputService.EngineGuiWantsPress() || UiHost.HitTest(mx, my) != null) break;
+                _ate |= (byte)(1 << b);
+                if (b == SdlButtonRight) { _looking = true; _originX = mx; _originY = my; _setRelative(1); }
+                return 0;   // left: no click-to-move; middle: the engine's orbit would move the behavior, not us
+            }
+            case SdlMouseUp:
+            {
+                byte b = *(byte*)(ev + EvButtonOff);
+                if ((_ate & (1 << b)) == 0) break;
+                _ate &= (byte)~(1 << b);
+                if (b == SdlButtonRight) StopLook();
+                return 0;
+            }
+            case SdlMouseMotion:
+                if (!_looking) { _mx = *(int*)(ev + EvXOff); _my = *(int*)(ev + EvYOff); break; }
+                {
+                    float kx = MouseLookService.Sens * CameraService.Config.Free.Sens / MouseLookService.ViewportWidth();
+                    _yaw = Wrap(_yaw + *(int*)(ev + EvXRelOff) * MouseLookService.TurnPerPx * kx);
+                    _pitch = Math.Clamp(_pitch + *(int*)(ev + EvYRelOff) * MouseLookService.TiltPerPx * kx * (MouseLookService.Invert ? -1f : 1f), PitchFloor, PitchCeil);
+                }
+                return 0;
+            case SdlMouseWheel:
+                if (UiHost.HitTest(_mx, _my) != null) break;
+                CameraService.Edit().Free.Set("speed", CameraService.Config.Free.Speed * (*(int*)(ev + EvWheelYOff) > 0 ? 1.25f : 0.8f));
+                return 0;
+            case SdlWindowEvent:
+                if (*(byte*)(ev + EvWindowKindOff) == SdlWindowFocusLost) { StopLook(); _up = _down = _rollL = _rollR = _fast = false; }
+                break;
+        }
+        return Forward(ev);
+    }
+
+    private static void StopLook()
+    {
+        if (!_looking) return;
+        _looking = false;
+        _setRelative(0);
+        _warp(IntPtr.Zero, _originX, _originY);
+    }
+
+    private static int Forward(IntPtr ev) => ((delegate* unmanaged<IntPtr, int>)(*_next))(ev);
+
+    private static void OnFrameEnd()
+    {
+        if (_pending == Why.None) return;
+        Why w = _pending; _pending = Why.None;
+        string why = w == Why.Gate ? CameraService.GateName : WhyNames[(int)w];
+        Notice.Show(_log, w == Why.Leash
+            ? FormattableString.Invariant($"[camera] free camera at the leash: {_leashR:0.#} m from your character ({(*(float*)(CameraService.Module() + MaxDistOff) >= 0f ? "the server's camera limit" : "free.leash")})")
+            : $"[camera] free camera off: {why}");
+    }
+
+    // ---- /camera free (cold) ----
+
+    private static string Free(string args)
+    {
+        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (p.Length == 2 && CameraConfig.TryF(p[1], out float v))
+        {
+            if (!CameraService.Edit().Free.Set(p[0], v)) return "[camera] free speed|fov|roll|leash|sens|turn <n>";
+            if (Active && p[0] == "fov") _fov = v > 0 ? CameraService.Config.Free.Fov : _fov;
+            if (Active && p[0] == "roll") _roll = CameraService.Config.Free.Roll;
+            return Report();
+        }
+        if (p.Length != 0) return "[camera] free, or free speed|fov|roll|leash|sens|turn <n>";
+        if (Active) { Leave(Why.User); return "[camera] free camera off"; }
+        if (!_armed) return "[camera] free camera refused: not armed on this platform (see the log)";
+        if (!CameraService.Live) return "[camera] free camera refused: no live camera yet -- log in first";
+        if (CameraService.GateUp) return $"[camera] free camera refused: {CameraService.GateName}";
+        IntPtr cre = CameraService.PlayerCreature();
+        if (cre == IntPtr.Zero) return "[camera] free camera refused: no player creature";
+        if (*(int*)(cre + CombatOff) != 0) return "[camera] free camera refused: in combat (the limit set by the cheating research; try again after the fight)";
+        IntPtr module = CameraService.Module();
+        if (module == IntPtr.Zero || *(IntPtr*)(module + ModCameraOff) == IntPtr.Zero) return "[camera] free camera refused: no world camera";
+        FreeCamera k = CameraService.Edit().Free;
+        CameraService.Rendered(out _pos, out _yaw, out _pitch, out float fov);
+        _pitch = Math.Clamp(_pitch, PitchFloor, PitchCeil);
+        _fov = k.Fov > 0 ? k.Fov : fov;
+        _roll = k.Roll;
+        _leashed = false; _pending = Why.None; _ate = 0;
+        IntPtr gui = Gui();
+        if (gui != IntPtr.Zero && *(int*)(gui + ToggledOff) == 0) { _toggleOff(gui); _weHidUi = true; }
+        Active = true; _entries++;
+        AlloyRenderer.CameraCut();
+        return FormattableString.Invariant($"[camera] free camera on: move keys fly, Space/C up/down, Z/X roll, Shift fast, wheel = speed, right-drag looks; leash {(*(float*)(module + MaxDistOff) >= 0f ? *(float*)(module + MaxDistOff) : k.Leash):0.#} m; Escape or /camera free returns");
+    }
+
+    private static string Report()
+    {
+        FreeCamera k = CameraService.Config.Free;
+        return FormattableString.Invariant(
+            $"[camera] free: {(Active ? $"ON at ({_pos.X:0.0}, {_pos.Y:0.0}, {_pos.Z:0.0}) yaw {_yaw:0.#} pitch {_pitch:0.#} roll {_roll:0.#} fov {_fov:0.#}{(_leashed ? " AT THE LEASH" : "")}" : "off")} | speed {k.Speed:0.##} fov {(k.Fov > 0 ? k.Fov.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) : "keep")} roll {k.Roll:0.#} leash {k.Leash:0.#} sens {k.Sens:0.##} turn {k.Turn:0} | {_entries} entr{(_entries == 1 ? "y" : "ies")}, {_leashHits} leash contact(s)");
+    }
+
+    /// <summary>The roll term against the roll-free pose, off-device: zero roll is bit-identical, and a 90° roll
+    /// tips the camera's right onto the vertical (the sign is the knob's to have).</summary>
+    public static void SelfCheck(ExtenderLog log)
+    {
+        bool ok = true;
+        void E(bool c, string w) { if (!c) { ok = false; log.Info($"FreeCamera.SelfCheck FAIL: {w}"); } }
+        E(PoseRoll(30f, 60f, 0f) == CameraService.Pose(30f, 60f), "no roll is the engine's pose");
+        Vector3 right = CameraService.Right(PoseRoll(0f, 90f, 90f));
+        E(MathF.Abs(MathF.Abs(right.Z) - 1f) < 1e-4f && MathF.Abs(right.X) < 1e-4f, "a 90 roll tips right onto the vertical");
+        Vector3 look = -CameraService.Forward(PoseRoll(0f, 90f, 90f));
+        E((look - new Vector3(0f, 1f, 0f)).Length() < 1e-4f, "roll keeps the view direction");
+        E(MathF.Abs(PoseRoll(45f, 70f, 33f).Length() - 1f) < 1e-5f, "the rolled pose is a unit quaternion");
+        E(Wrap(370f) == 10f && Wrap(-190f) == 170f, "yaw wraps");
+        log.Info(ok ? "FreeCamera.SelfCheck: passed" : "FreeCamera.SelfCheck: FAILED");
+    }
+}

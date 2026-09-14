@@ -1012,6 +1012,12 @@ internal static unsafe class SymbolMap
     /// <summary>SDL2 cursor capture for mouse-look (#539): relative mode hides the cursor and streams raw deltas.</summary>
     public const string SdlSetRelativeMouseMode = "SDL_SetRelativeMouseMode";
     public const string SdlWarpMouseInWindow = "SDL_WarpMouseInWindow";
+    /// <summary><c>CGuiInGame::ToggleOff()</c> @0x66dda0 / <c>UnToggleOff()</c> @0x66e930 -- the engine's own
+    /// hide/show of the whole in-game GUI (every panel, quick chat, the NUI scope), the pair the server's
+    /// Cutscene_HideGui message (major 0x33 minor 7) and <c>SetCutsceneMode</c> call. The free camera (#543)
+    /// hides the UI through exactly these; <c>this</c> = <c>CClientExoAppInternal+0x90</c>.</summary>
+    public const string GuiInGameToggleOff = "_ZN10CGuiInGame9ToggleOffEv";
+    public const string GuiInGameUnToggleOff = "_ZN10CGuiInGame11UnToggleOffEv";
 
     /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
     /// being previewed in isolation. <c>Scene::DoFog</c> @0x45f1b0 reads it: with a gob set, the fog colour
@@ -1305,6 +1311,10 @@ internal static unsafe class SymbolMap
         [UpdateDriveMode] = At(0x6f1e40),   // #540: the one function carrying both 499999 and 250000 (ScanOffsets)
         [SdlSetRelativeMouseMode] = Nm("SDL_SetRelativeMouseMode"),
         [SdlWarpMouseInWindow] = Nm("SDL_WarpMouseInWindow"),
+        // #543: CGuiInGame is not exported; both reached from the anchored HandleServerToPlayerMessage (0x7a41a0)
+        // case 0x33 -> cutscene handler 0x786450 -> minor 7's ToggleOff / UnToggleOff arms, bodies identical to Linux.
+        [GuiInGameToggleOff] = At(0x6fc6f0),
+        [GuiInGameUnToggleOff] = At(0x6fc900),
         [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),
         [CycleTidControllerVtbl] = At(0xd905c0),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [DoBinBucket] = Nm("?DoBinBucket@Scene@@EEAAXXZ"),

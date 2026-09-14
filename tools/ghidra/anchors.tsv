@@ -50,3 +50,9 @@ CNWCMessage::HandleServerToPlayerModuleUpdate_Time	1407a58e0
 CNWCCreatureStats::GetFullName	1407f3f00
 CNWCModule::TurnCamera	1407cfe60
 CNWCModule::TiltCamera	1407cfdb0
+CNWCMessage::HandleServerToPlayerCutscene	140786450
+CClientExoApp::GetInGameGui	1406abbc0
+CGuiInGame::ToggleOff	1406fc6f0
+CGuiInGame::UnToggleOff	1406fc900
+CNWCMessage::HandleServerToPlayerCreatureUpdate_Update	140781e80
+CNWCCreature::SetCombatState	14080a230

@@ -58,10 +58,10 @@ public sealed unsafe class CameraDriveService : IExtenderService
     private const int WireTenths = 3600;
     private const float Deg = MathF.PI / 180f;
 
-    private enum Why { Active, Idle, Probe, NoMode, Off, Gate, NoCamera, NoCreature, NotDrivable, Cancelled }
+    private enum Why { Active, Idle, Probe, NoMode, Off, Gate, NoCamera, NoCreature, NotDrivable, Cancelled, Free }
     private static readonly string[] WhyNames =
         { "active", "no key held", "layout probe failed", "no live camera mode", "off for this mode", "camera held down",
-          "no world camera", "no player creature", "creature not drivable", "forward and back cancel" };
+          "no world camera", "no player creature", "creature not drivable", "forward and back cancel", "free camera" };
 
     private static bool _live, _probeOk, _active, _engineAborts;
     /// <summary>#541: the drive is running without a forward component (strafe/turn keys alone, or back), so the
@@ -100,6 +100,17 @@ public sealed unsafe class CameraDriveService : IExtenderService
             _log?.Info(_probeOk ? "CameraDrive: first UpdateDriveMode -- hook is LIVE" : "CameraDrive: layout probe failed -- engine drive untouched");
         }
         int* keys = (int*)(app + KeysOff);
+        if (FreeCameraService.Active)
+        {
+            // #543: the keys fly the camera; the engine sees none held (a drive under way is aborted, once).
+            _why = Why.Free; NoForward = false;
+            if (_active) { _active = false; ClientApi.Send(MajorInput, MinorAbortDrive, null, 0); _aborts++; }
+            int a0 = *(int*)(app + AutoRunOff), s0 = keys[0], s1 = keys[1], s2 = keys[2], s3 = keys[3], s4 = keys[4], s5 = keys[5];
+            *(int*)(app + AutoRunOff) = 0; keys[0] = keys[1] = keys[2] = keys[3] = keys[4] = keys[5] = 0;
+            _orig(app);
+            *(int*)(app + AutoRunOff) = a0; keys[0] = s0; keys[1] = s1; keys[2] = s2; keys[3] = s3; keys[4] = s4; keys[5] = s5;
+            return;
+        }
         int autoRun = *(int*)(app + AutoRunOff);
         bool held = autoRun != 0;
         for (int k = 0; k < KeyCount; k++) held |= keys[k] != 0;
