@@ -173,8 +173,10 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   differing is what "restart to apply" means.
 - **Tier** — how visible a knob is: **User** (shown, with help text), **Advanced** (shown under a
   collapsed *Advanced* section of its submenu; expert dials), **Chat-only** (diagnostics and
-  bisect switches: reachable by chat command, listed by `/knobs`, never a panel row). Absence from
-  the panel is a declared tier, never an omission.
+  bisect switches: reachable by chat command, listed by `/knobs`, never a panel row), **Hidden**
+  (persisted only — no row, no command, not listed: state a feature edits on its own surface, such
+  as the chat window's position and tabs). Absence from the panel is a declared tier, never an
+  omission. A submenu's **Reset to defaults** covers its rows (User and Advanced) only.
 - **Effect** — when a change takes hold: **live** (immediately, the default and the goal) or
   **restart** (written now, read at the next launch — boot decisions and engine-path replacements).
   The row says which. Live wins wherever it can without costing the frame.
@@ -188,8 +190,11 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   Off by default: a server may use the same command names for its own ends, so commands fall
   through to the server unless the user opts in. `/settings` is the sole exemption.
 - **Settings file** — `cx.cfg`, the one file every knob persists to, dotted keys sorted
-  alphabetically, written by the panel and hand-editable. The per-feature `cx-<feature>.cfg` files
-  are retired into it. The hotkey consent store is state, not settings, and stays its own file.
+  alphabetically, written by the panel and hand-editable. It holds only knobs that differ from
+  their default (a reset removes the key), plus any key no declaration claims, kept verbatim. It is
+  read once at launch and regenerated on every write, so hand edits happen with the client closed.
+  The per-feature `cx-<feature>.cfg` files are retired into it. The hotkey consent store is state,
+  not settings, and stays its own file.
 - **Dropdown** — the enumerated-choice control: click to open a list, pick one. Replaces the
   cycle button, which hid the choices and needed N clicks to reach one.
 - **Tooltip** — the help text behind a faint "(?)" beside a row's label, shown on hover. Every
