@@ -55,7 +55,9 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly bool[] _disVerdict = new bool[MaxOwned];
 
     /// <summary>The part's TileData (part+0x98, spawn-time), so the fade question is answered from the
-    /// moving-tile set without dereferencing the part.</summary>
+    /// moving-tile set without dereferencing the part. #546: a tile GOB part (window, vine) carries no
+    /// part+0x98; its gob's <see cref="EngineLayout.GobTileData"/> stands in, which is the owner
+    /// <c>Gob::ProxyPartDraw</c> @0x4520c0 fogs it by.</summary>
     private static readonly IntPtr[] _oTile = new IntPtr[MaxOwned];
     /// <summary>The part was filed in the BSP (mesh-bucket loop territory) rather than reached through a gob
     /// tree. Its matrix rewrite does not depend on <c>gobbucket</c>, so it is chased every frame.</summary>
@@ -436,16 +438,25 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>#126/#330: the tile fade factor this part draws at, served from the slot while its tile is
-    /// not in the moving set.</summary>
+    /// not in the moving set; times the tile's fog-of-war ramp (#546), read live every frame because
+    /// <c>ManageSceneBSP</c>'s visitor @0x481000 ramps it outside the fading buckets the moving set is
+    /// built from. Vanilla draws an unexplored interior tile fogged to black (<c>RenderDrawBucket</c>
+    /// @0x46d060: fog colour x f^2, fog end x f); Alloy fades it by alpha instead, at the same 4/s rate.
+    /// ponytail: alpha, not fog-to-black -- a per-draw fog scale in the record is the upgrade if the
+    /// 0,25 s see-through fade-in ever reads wrong.</summary>
     private static float TileFade(int i, IntPtr tri)
     {
-        bool cached = _fadeKnown[i] && !TileMoving(_oTile[i]);
-        if (cached && !_fullPoll) { _fadeServed++; return _oFadeF[i]; }
+        IntPtr owner = _oTile[i];
+        float fog = owner == IntPtr.Zero ? 1f : *(float*)(owner + TileGeomFade);
+        if (fog <= 0f) return 0f;
+        if (fog > 1f) fog = 1f;
+        bool cached = _fadeKnown[i] && !TileMoving(owner);
+        if (cached && !_fullPoll) { _fadeServed++; return _oFadeF[i] * fog; }
         float f = PartTable.TileFadeFactor(tri);
         _fadeRead++;
         if (cached && f != _oFadeF[i]) _pollMissFade++;
         _oFadeF[i] = f; _fadeKnown[i] = true;
-        return f;
+        return f * fog;
     }
 
     /// <summary>A re-tenanted slot's caches describe the previous tenant.</summary>
@@ -531,6 +542,22 @@ public sealed unsafe partial class AlloyRenderer
         E(!MarkPendingTiles(null), "an unresolved bucket reads as every tile moving");
         *(IntPtr**)(bucket + BucketItems) = null; *(int*)(bucket + BucketCount) = 0;
         E(MarkPendingTiles(bucket), "...but an EMPTY one (null items, count 0) marks nothing and stays bounded");
+
+        // #546: the fog-of-war ramp rides the served factor, live, and 0 is a skip even from a warm cache
+        byte* fogTile = stackalloc byte[TileGeomFade + sizeof(float)];
+        new Span<byte>(fogTile, TileGeomFade + sizeof(float)).Clear();
+        byte* fogTri = stackalloc byte[PartTile + sizeof(IntPtr)];
+        new Span<byte>(fogTri, PartTile + sizeof(IntPtr)).Clear();
+        *(IntPtr*)(fogTri + PartTile) = (IntPtr)fogTile;
+        int slot = MaxOwned - 1; IntPtr wasTile = _oTile[slot]; bool wasKnown = _fadeKnown[slot]; float wasF = _oFadeF[slot];
+        _oTile[slot] = (IntPtr)fogTile; _fadeKnown[slot] = false; _fadeAll = false;
+        *(float*)(fogTile + EngineLayout.TileFade) = 1f; *(float*)(fogTile + TileGeomFade) = 1f;
+        E(TileFade(slot, (IntPtr)fogTri) == 1f && _fadeKnown[slot], "an explored tile fades at its own factor");
+        *(float*)(fogTile + TileGeomFade) = 0.5f;
+        E(TileFade(slot, (IntPtr)fogTri) == 0.5f, "a tile exploring in is served half from the warm cache");
+        *(float*)(fogTile + TileGeomFade) = 0f;
+        E(TileFade(slot, (IntPtr)fogTri) == 0f, "an unexplored tile is 0, cache or not");
+        _oTile[slot] = wasTile; _fadeKnown[slot] = wasKnown; _oFadeF[slot] = wasF;
 
         // the resume rule: a gap in the sample frames chases everything once
         int wasFrame = _frameSeq;

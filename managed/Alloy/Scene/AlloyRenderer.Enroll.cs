@@ -462,7 +462,8 @@ public sealed unsafe partial class AlloyRenderer
         float ex = hi[0] - lo[0], ey = hi[1] - lo[1], ez = hi[2] - lo[2];
         _oR[i] = 0.5f * MathF.Sqrt(ex * ex + ey * ey + ez * ez);
         // #330: spawn-time fields the chase keys on without touching the part again.
-        _oTile[i] = tri.Tile; _oBsp[i] = PartTable._pBsp[e];
+        _oTile[i] = tri.Tile != IntPtr.Zero ? tri.Tile : _oTileGob[i] ? *(IntPtr*)(c.Gob + GobTileData) : IntPtr.Zero;
+        _oBsp[i] = PartTable._pBsp[e];
         // #308 follow-up: a kept slot's record survives the scan, but the .mtr CONTENT under a stable
         // Material* can still move (the engine exports runtime SetMaterialParam mutators). ReadMaterial
         // rewrites the CPU arrays either way; snapshot them first and unstamp on any drift, which is

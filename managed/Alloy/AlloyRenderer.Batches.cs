@@ -52,6 +52,9 @@ public sealed unsafe partial class AlloyRenderer
                 // #328: the tile term is kept apart -- it is the one alpha term the shadow side refuses on (a
                 // part fading by its OWN alpha still casts), and this is the frame's one chase of it.
                 float fade = TileFade(i, tri);
+                // #546: an unexplored tile (fog-of-war ramp at 0) is not drawn at all, as vanilla skips a
+
+                if (fade <= 0f) { _oFading[i] = true; continue; }
                 _oFading[i] = fade < 1f;
                 float alpha = PartAlphaCached(i, tri) * fade * (_oGob[i] != IntPtr.Zero ? AlloyCensus.GobAlphaMul(tri) : 1f);
                 bool dis = alpha >= 1f && Dissolves(i, tri, ref _stageCounters[0]);
@@ -73,8 +76,10 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = from; k < to; k++)
         {
             if (!RouteLive(list[k], k, sph, out int i, out IntPtr tri)) continue;
+            float alpha = LiveAlpha(i, tri);
+            if (alpha <= 0f && _oTile[i] != IntPtr.Zero) continue;   // #546
             _blend[nb] = i;
-            _blendAlpha[nb] = LiveAlpha(i, tri);
+            _blendAlpha[nb] = alpha;
             _blendKey[nb] = BlendKey(i); nb++;
         }
         }
@@ -89,8 +94,10 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = from; k < to; k++)
         {
             if (!RouteLive(list[k], k, sph, out int i, out IntPtr tri)) continue;
+            float alpha = LiveAlpha(i, tri);
+            if (alpha <= 0f && _oTile[i] != IntPtr.Zero) continue;   // #546
             _pass[n] = i; _passCls[n] = (byte)AlloyClass.Water;
-            _passAlpha[n] = LiveAlpha(i, tri);
+            _passAlpha[n] = alpha;
             n++;
         }
         }
@@ -99,11 +106,13 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = from; k < to; k++)
         {
             if (!RouteLive(list[k], k, sph, out int i, out IntPtr tri)) continue;
-            _pass[n] = i; _passCls[n] = (byte)AlloyClass.Additive;
             // Additive fades too: the engine routes an additive part on a fading tile into bucket 8 like any
             // other, and IterSight suppresses it there, so a glow left at full brightness through a fade
             // would be ours to explain.
-            _passAlpha[n] = LiveAlpha(i, tri);
+            float alpha = LiveAlpha(i, tri);
+            if (alpha <= 0f && _oTile[i] != IntPtr.Zero) continue;   // #546
+            _pass[n] = i; _passCls[n] = (byte)AlloyClass.Additive;
+            _passAlpha[n] = alpha;
             n++;
         }
         }

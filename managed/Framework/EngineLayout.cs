@@ -959,6 +959,11 @@ public static unsafe class EngineLayout
     /// <see cref="EmTileOwner"/>. A THIRD float, distinct from <see cref="TileFade"/> and
     /// <see cref="TilePendingFade"/>, which <c>HandleFadingInBucket</c> @0x47f670 drives.</summary>
     public static readonly int TileGeomFade = Same("TileData", "geomFade", 0xc8);
+    /// <summary>#546: the fog-of-war flag <c>AuroraSetTileFoggedByWar</c> @0x453320 writes (one byte, with
+    /// <see cref="TileGeomFade"/> zeroed beside it); while set, the @0x481000 visitor holds the ramp at 0.
+    /// Alloy reads the ramp, not the flag: the flag has no expression the ramp does not already carry.
+    /// Same on Windows by the ctor pairing (identical stores over 0x7c..0xcb).</summary>
+    public static readonly int TileFoggedByWar = Same("TileData", "foggedByWar", 0xc4);
 
     // ---- the grass classes ----
 
