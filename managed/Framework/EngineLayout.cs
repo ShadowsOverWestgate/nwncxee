@@ -574,6 +574,57 @@ public static unsafe class EngineLayout
     /// <c>*(this+0x20) + 0xa8</c> (#448; the Windows half returns the Vector through the sret pointer).</summary>
     public static readonly int BehaviorTargetObj = Same("CAurBehaviorCameraFollow", "target", 0x20);
 
+    // ---- the camera solve (#536): CAurBehaviorCameraFollow::Control decompiled on both builds (Linux
+    //      @0x4a2290, Windows @0x140055100, name-exported) reads every field below at the same offset ----
+
+    /// <summary>CAurBehavior -&gt; owner <c>CAurObject*</c> (= <c>Camera+8</c>). Both ctors store it at +0x18.</summary>
+    public static readonly int BehaviorOwner = Same("CAurBehavior", "owner", 0x18);
+    /// <summary>CAurBehaviorCameraFollow -&gt; smoothed focus Vector (+0x30..+0x38), written back at the end of Control.</summary>
+    public static readonly int FollowFocus = Same("CAurBehaviorCameraFollow", "focus", 0x30);
+    /// <summary>CAurBehaviorCameraFollow -&gt; orbit distance (float).</summary>
+    public static readonly int FollowDist = Same("CAurBehaviorCameraFollow", "dist", 0x48);
+    /// <summary>CAurBehaviorCameraFollow -&gt; yaw, degrees, 0 = looking along +Y.</summary>
+    public static readonly int FollowYaw = Same("CAurBehaviorCameraFollow", "yaw", 0x54);
+    /// <summary>CAurBehaviorCameraFollow -&gt; pitch, degrees from vertical (1 = top-down, 89 = horizontal).</summary>
+    public static readonly int FollowPitch = Same("CAurBehaviorCameraFollow", "pitch", 0x5c);
+    /// <summary>CAurBehaviorCameraFollow -&gt; yaw / pitch / dist clamp-enabled flags (floats, 0 or 1). Set by
+    /// the server's LockCamera* and the lockcamera console var; the same words the photo mode locks with.</summary>
+    public static readonly int FollowYawClamp = Same("CAurBehaviorCameraFollow", "yawClamp", 0x64);
+    /// <inheritdoc cref="FollowYawClamp"/>
+    public static readonly int FollowPitchClamp = Same("CAurBehaviorCameraFollow", "pitchClamp", 0x70);
+    /// <inheritdoc cref="FollowYawClamp"/>
+    public static readonly int FollowDistClamp = Same("CAurBehaviorCameraFollow", "distClamp", 0x7c);
+    /// <summary>The clamp ranges: yaw +0x68/+0x6c, pitch +0x74/+0x78, dist +0x80/+0x84 (min, max). The mode
+    /// reset pushes the client's [camera.limits] into them with the clamp ENABLED, so "enabled" is normal play;
+    /// a server lock writes min = max = the current value (the Windows handler's lock arms, rva 0x77a7f0).</summary>
+    public static readonly int FollowYawMin = Same("CAurBehaviorCameraFollow", "yawMin", 0x68);
+    /// <inheritdoc cref="FollowYawMin"/>
+    public static readonly int FollowPitchMin = Same("CAurBehaviorCameraFollow", "pitchMin", 0x74);
+    /// <inheritdoc cref="FollowYawMin"/>
+    public static readonly int FollowDistMin = Same("CAurBehaviorCameraFollow", "distMin", 0x80);
+
+    /// <summary>CNWCModule -&gt; the module <c>Camera*</c>. <c>GetModuleCamera</c> (Linux @0x63a930) and the
+    /// Windows camera message handler (rva 0x77a7f0) both read <c>GetModule()+0xe8</c>.</summary>
+    public static readonly int ModuleCamera = Same("CNWCModule", "camera", 0xe8);
+    /// <summary>CNWCModule -&gt; attached object id (<c>SetCameraFollow</c>: Linux @0x7d8540, Windows rva
+    /// 0x7cf6f0, reached from the camera message's AttachCamera arm; both write +0x124 and +0x140).</summary>
+    public static readonly int ModuleCameraAttached = Same("CNWCModule", "cameraAttached", 0x124);
+    /// <summary>CNWCModule -&gt; find-clear-view pending (int 0/1). See <see cref="ModuleCameraAttached"/>.</summary>
+    public static readonly int ModuleFindClearView = Same("CNWCModule", "findClearView", 0x140, Expect.Byte01);
+    /// <summary>CNWCModule -&gt; dialog camera state byte: 0 none, 1 framing, 2 returning (<c>SetDialogCamera</c>:
+    /// Linux @0x7da240, Windows rva 0x7cfa90, reached from the dialog message handler).</summary>
+    public static readonly int ModuleDialogCamera = Same("CNWCModule", "dialogCamera", 0x258);
+    /// <summary>CNWCModule -&gt; cutscene transition rate (float; 0 = no cutscene interpolation running).
+    /// <c>SetCutsceneCamera</c>: Linux @0x7dd370, Windows rva 0x7cfa00, the camera message's SetCameraFacing tail.</summary>
+    public static readonly int ModuleCutsceneRate = Same("CNWCModule", "cutsceneRate", 0x298);
+    /// <summary>CClientExoAppInternal -&gt; <c>CClientOptions*</c> (first word). <c>CClientExoApp::GetClientOptions</c>
+    /// is <c>*(*(this+8))</c> on both builds (Linux @0x637ea0, Windows rva 0x6ab9b0).</summary>
+    public static readonly int InternalClientOptions = Same("CClientExoAppInternal", "clientOptions", 0x0);
+    /// <summary>CClientOptions -&gt; camera mode byte: 0 chase, 1 top-down, 2 stiff chase. Read at +0x1d by
+    /// <c>SetCameraFollow</c>/<c>UpdateCameraFollow</c> on Linux and by the Windows camera message handler's
+    /// lock arms (<c>*(byte*)(opts+0x1d) &lt; 3</c>).</summary>
+    public static readonly int OptionsCameraMode = Same("CClientOptions", "cameraMode", 0x1d);
+
     /// <summary>CClientExoApp -&gt; CClientExoAppInternal*. #439: <c>CClientExoApp::GetInGameGui</c> (Linux
     /// @0x737c70, Windows rva 0x6abbc0) is one line on both builds, <c>*(*(this+8) + 0x90)</c>.</summary>
     public static readonly int ExoAppInternal = Same("CClientExoApp", "internal", 0x8);

@@ -345,6 +345,21 @@ Three things worth keeping:
   are.
 
 
+### The camera layer rows (#536)
+
+Eighteen `Same` rows, measured by decompiling both builds directly (no pairer: the
+behavior class is name-exported on both, and `CNWCModule`'s camera functions hang off
+the anchored `HandleServerToPlayerMessage` dispatch). Provenance is
+`docs/research/custom-camera.md` §9.4; the Windows entry points it names are the
+anchors.
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CAurBehavior` | `owner 0x18` | both ctors store the argument there |
+| `CAurBehaviorCameraFollow` | `focus 0x30`, `dist 0x48`, `yaw 0x54`, `pitch 0x5c`, `yawClamp 0x64`, `pitchClamp 0x70`, `distClamp 0x7c`, `yawMin 0x68`, `pitchMin 0x74`, `distMin 0x80` (max = min + 4) | `Control` (Linux @`0x4a2290`, Windows @`0x140055100`), one body per build reading every field |
+| `CNWCModule` | `camera 0xe8`, `cameraAttached 0x124`, `findClearView 0x140` (probed 0/1), `dialogCamera 0x258`, `cutsceneRate 0x298` | `SetCameraFollow` rva `0x7cf6f0`, `SetDialogCamera` rva `0x7cfa90`, `SetCutsceneCamera` rva `0x7cfa00`, reached from the camera (`0x77a7f0`) and dialog (`0x7962f0`) message handlers |
+| `CClientExoAppInternal` / `CClientOptions` | `clientOptions 0x0` / `cameraMode 0x1d` | `GetClientOptions` is `**(app+8)` on both (`0x637ea0` / rva `0x6ab9b0`); the byte is read at `+0x1d` by `SetCameraFollow` and by the lock arms of the Windows camera handler |
+
 ### The 38 DecompOne rows (#448)
 
 Section 3, T2 — the biggest and most mechanical of the three. All 38 are now

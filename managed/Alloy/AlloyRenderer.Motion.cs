@@ -24,6 +24,11 @@ public sealed unsafe partial class AlloyRenderer
     private static int _mvVp, _mvPrevVp, _mvJitter, _mvSize, _mvBase;
     private static bool _mvBuilt, _mvFailed;
 
+    /// <summary>#536: a camera CUT -- the camera layer snapping after a stand-down gate lifts, or a mode
+    /// switch. Drops the reprojection history so neither the motion vectors nor TAA carry one frame of the
+    /// wrong camera. Flag writes only; safe from any point of the frame.</summary>
+    public static void CameraCut() { MotionVectors.Revoke(); TaaStage.Reset(); }
+
     private static void NoteMoverDraw(int n)
     {
         if (_mvN < MaxMoverDraws) _mvDraw[_mvN++] = n; else _mvOverflow++;

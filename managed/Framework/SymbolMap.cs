@@ -982,6 +982,12 @@ internal static unsafe class SymbolMap
     /// </summary>
     public const string CurrentCamera = "CurrentCamera";
 
+    /// <summary><c>CAurBehaviorCameraFollow::Control(float dt)</c> @0x4a2290 -- the camera solve (#536). Integrates
+    /// yaw/pitch/dist, lerps the focus and writes the pose (Camera+0xb0/+0xbc) through the owner Gob's vtable;
+    /// every engine reader, Alloy included, is downstream of those two fields. <c>this</c> = the behavior; the
+    /// owner at +0x18 is <c>Camera+8</c>. Returns int. Chained by CameraService (post-adjusts the answer).</summary>
+    public const string CameraFollowControl = "_ZN24CAurBehaviorCameraFollow7ControlEf";
+
     /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
     /// being previewed in isolation. <c>Scene::DoFog</c> @0x45f1b0 reads it: with a gob set, the fog colour
     /// it pushes is black rather than the area's, which #257 replicates when it reads the fog block direct.</summary>
@@ -1266,6 +1272,7 @@ internal static unsafe class SymbolMap
         [ClientAiUpdateState] = Hole("CClientAIMaster is not exported (only CServerAIMaster is)"),
         [CountPart] = Nm("?countpart@@3HA"),
         [CurrentCamera] = Nm("?CurrentCamera@@3PEAVCamera@@EA"),
+        [CameraFollowControl] = Nm("?Control@CAurBehaviorCameraFollow@@UEAAHM@Z"),
         [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),
         [CycleTidControllerVtbl] = At(0xd905c0),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [DoBinBucket] = Nm("?DoBinBucket@Scene@@EEAAXXZ"),

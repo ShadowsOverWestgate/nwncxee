@@ -35,6 +35,7 @@ deriving anything — required, or the RVAs point into a different build.
 | `HandleWMKeyDownMessage(uint,uint)` | `?HandleWMKeyDownMessage@@YAHII@Z` |
 | `WinMessageHandler(SDL_Event*)` | `?WinMessageHandler@@YAHPEATSDL_Event@@@Z` |
 | `GLRender::SwapBuffers(SDL_Window*)` | `?SwapBuffers@GLRender@@CAXPEAUSDL_Window@@@Z` |
+| `CAurBehaviorCameraFollow::Control(float)` | `?Control@CAurBehaviorCameraFollow@@UEAAHM@Z` (#536; returns `int`, no by-value crossing) |
 | `CAuroraStringWrapper::SetText(uint)` | `?SetText@CAuroraStringWrapper@@QEAAXI@Z` |
 | `CExoString::InitFromCharArray` | `?InitFromCharArray@CExoString@@AEAAAEAV1@PEBDI@Z` |
 | `CExoString::~CExoString` | `??1CExoString@@QEAA@XZ` |
