@@ -126,7 +126,7 @@ public sealed unsafe class CameraService : IExtenderService
         CameraCommand.Register("arm", "`arm margin|in|out|radius <n>` the offset camera's spring arm: stop short of a hit by margin, ease rates per second (in 0 = snap), ray fan half-width", Arm);
         CameraCommand.Register("reset", "restore the engine feel for the current mode", _ => Reset());
         CameraCommand.Report(Report);
-        KnobSurface.Note(() => $"camera feel (per mode: fov, lag, pitch curve, offset; spring arm) in {_file.Path}");
+        KnobSurface.Note(() => $"camera feel (per mode: fov, lag, pitch curve, offset, drive; spring arm, drive.hz) in {_file.Path}");
         SceneRay.Init();
         log.Info("CameraService: chained on CAurBehaviorCameraFollow::Control");
     }
@@ -253,6 +253,12 @@ public sealed unsafe class CameraService : IExtenderService
     /// because its Control interleaves with the world's and would flap the flag every frame.</summary>
     public static bool GateUp => _live && _probeOk && _gate is not (Gate.Active or Gate.NotWorldCamera);
 
+    /// <summary>#540: the live preferences and the mode byte the last Control saw (-1 before the first).</summary>
+    internal static CameraConfig Config => _cfg;
+    internal static int Mode => _mode;
+    /// <summary>The preferences for editing: loaded from the file if not yet, and marked for the frame-end save.</summary>
+    internal static CameraConfig Edit() { if (!_configLoaded) LoadConfig(); _dirty = true; return _cfg; }
+
     internal static IntPtr Module()
     {
         IntPtr app = App();
@@ -277,7 +283,7 @@ public sealed unsafe class CameraService : IExtenderService
         new(2f * (q.X * q.Z + q.W * q.Y), 2f * (q.Y * q.Z - q.W * q.X), 1f - 2f * (q.X * q.X + q.Y * q.Y));
 
     /// <summary>The camera's right: <c>q * +X</c>. Pitch is about X, so this stays horizontal at every pitch.</summary>
-    private static Vector3 Right(in Quaternion q) =>
+    internal static Vector3 Right(in Quaternion q) =>
         new(1f - 2f * (q.Y * q.Y + q.Z * q.Z), 2f * (q.X * q.Y + q.W * q.Z), 2f * (q.X * q.Z - q.W * q.Y));
 
     /// <summary>The offset floor: the arm never pulls the camera closer than this fraction of its rig.</summary>

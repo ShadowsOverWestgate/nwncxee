@@ -14,6 +14,10 @@ namespace Sowx.Services.Camera;
 /// engine-owned); released under the threshold it is replayed as press+release, so the radial menu opens
 /// exactly as before, just on release. A press over the engine GUI (NUI, radial, any panel) or over one of our
 /// windows passes through untouched -- the engine's radial path is never hooked. Opt-in: <c>mouselook=1</c>.
+/// <para>Middle-drag, the engine's own orbit, gets the same capture unconditionally: the engine turns on ABSOLUTE
+/// cursor deltas, so a vanilla drag stalls at the window edge. The press and release are forwarded (the engine
+/// keeps its middle-held bookkeeping), every motion in between is swallowed and fed as relative deltas, and the
+/// release is forwarded at the press position (a button event is also a mouse-move to the engine).</para>
 /// <para>Outermost layer of the <c>WinMessageHandler</c> chain, above <see cref="UiInputService"/>; per-event
 /// state is static and the handler allocates nothing. Capture releases on button-up, on window focus loss and
 /// when <see cref="CameraService.GateUp"/> (dialog / cutscene / lock) comes up.</para>
@@ -30,7 +34,7 @@ public sealed unsafe class MouseLookService : IExtenderService
     // ---- SDL_Event layout (same rows UiInputService reads; motion adds the relative pair) ----
     private const uint SdlWindowEvent = 0x200, SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402;
     private const int EvWindowKindOff = 0xc, EvButtonOff = 0x10, EvXOff = 0x14, EvYOff = 0x18, EvXRelOff = 0x1c, EvYRelOff = 0x20;
-    private const byte SdlWindowFocusLost = 0xd, SdlButtonRight = 3;
+    private const byte SdlWindowFocusLost = 0xd, SdlButtonMiddle = 2, SdlButtonRight = 3;
     /// <summary><c>sizeof(SDL_Event)</c> in SDL2: the held press is copied whole for the replay.</summary>
     private const int SdlEventSize = 56;
 
@@ -40,19 +44,20 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     private enum State { Idle, Pending, Looking }
     private static State _state;
+    private static byte _button;
     private static int _originX, _originY;
     /// <summary>The held right press, copied whole at capture and replayed on a still release. One block for
     /// the life of the hook (a fixed buffer cannot be a static field), so the handler still allocates nothing.</summary>
     private static byte* _held;
 
     private static float _sens = 1f, _threshold = 4f;
-    private static bool _invert;
+    private static bool _invert, _rightLook;
     private static int _looks, _clicks;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        if (!Settings.Bool("mouselook", false)) { log.Info("MouseLook: off (opt in with mouselook=1)"); return; }
+        _rightLook = Settings.Bool("mouselook", false);
         _sens = Settings.Float("mouselook_sens", 1f, 0.05f, 20f);
         _threshold = Settings.Int("mouselook_threshold", 4, 0, 100);
         _invert = Settings.Bool("mouselook_invert", false);
@@ -70,7 +75,9 @@ public sealed unsafe class MouseLookService : IExtenderService
         _held = (byte*)NativeMemory.AllocZeroed(SdlEventSize);
         CameraCommand.Register("look", "mouse-look on right-drag: reports sensitivity / invert / threshold (sowx.cfg: mouselook, mouselook_sens, mouselook_invert, mouselook_threshold)",
                                _ => Report());
-        log.Info($"MouseLook: right-drag orbits (sensitivity {_sens}, invert {_invert}, threshold {_threshold}px); radial menu = a still right-click");
+        log.Info(_rightLook
+            ? $"MouseLook: right-drag orbits (sensitivity {_sens}, invert {_invert}, threshold {_threshold}px); radial menu = a still right-click; middle-drag captured"
+            : "MouseLook: middle-drag captured (cursor held in place); right-drag off (opt in with mouselook=1)");
     }
 
     [UnmanagedCallersOnly]
@@ -80,10 +87,18 @@ public sealed unsafe class MouseLookService : IExtenderService
         switch (*(uint*)ev)
         {
             case SdlMouseDown:
-                if (*(byte*)(ev + EvButtonOff) != SdlButtonRight || _state != State.Idle) break;
+                byte b = *(byte*)(ev + EvButtonOff);
+                if (_state != State.Idle || (b != SdlButtonMiddle && !(b == SdlButtonRight && _rightLook))) break;
                 int mx = *(int*)(ev + EvXOff), my = *(int*)(ev + EvYOff);
                 if (UiInputService.EngineGuiWantsPress() || UiHost.HitTest(mx, my) != null) break;   // the GUI's press
-                _originX = mx; _originY = my;
+                _originX = mx; _originY = my; _button = b;
+                if (b == SdlButtonMiddle)
+                {
+                    // The engine's own orbit button: it keeps the press, we keep the cursor.
+                    _state = State.Looking; _looks++;
+                    _setRelative(1);
+                    return Forward(ev);
+                }
                 Buffer.MemoryCopy((void*)ev, _held, SdlEventSize, SdlEventSize);
                 _state = State.Pending;
                 return 0;
@@ -108,7 +123,16 @@ public sealed unsafe class MouseLookService : IExtenderService
                 }
                 return 0;
             case SdlMouseUp:
-                if (*(byte*)(ev + EvButtonOff) != SdlButtonRight || _state == State.Idle) break;
+                if (_state == State.Idle || *(byte*)(ev + EvButtonOff) != _button) break;
+                if (_button == SdlButtonMiddle)
+                {
+                    // CExoInputInternal::AddEvent turns a button event's x/y into a mouse-move BEFORE the button
+                    // action, and the engine's orbit is still armed on the up: under relative mode that x/y is
+                    // SDL's drifted, window-clamped position, so the up would carry the whole drag as one turn.
+                    Release();
+                    *(int*)(ev + EvXOff) = _originX; *(int*)(ev + EvYOff) = _originY;
+                    return Forward(ev);
+                }
                 if (_state == State.Pending)
                 {
                     // A click, not a drag: the engine sees press then release, and opens the radial as it always did.
@@ -146,5 +170,5 @@ public sealed unsafe class MouseLookService : IExtenderService
     private static int Forward(IntPtr ev) => ((delegate* unmanaged<IntPtr, int>)(*_next))(ev);
 
     private static string Report() =>
-        FormattableString.Invariant($"[camera] mouse-look: sensitivity {_sens:0.##} invert {(_invert ? 1 : 0)} threshold {_threshold:0}px | {_looks} look(s), {_clicks} replayed click(s), state {_state}");
+FormattableString.Invariant($"[camera] mouse-look: right-drag {(_rightLook ? "on" : "off")}, middle-drag captured; sensitivity {_sens:0.##} invert {(_invert ? 1 : 0)} threshold {_threshold:0}px | {_looks} look(s), {_clicks} replayed click(s), state {_state}");
 }

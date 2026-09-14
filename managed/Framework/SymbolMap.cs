@@ -1003,6 +1003,12 @@ internal static unsafe class SymbolMap
     /// dialog "user turned" bookkeeping (+0x134, +0x280) is kept. Middle-drag calls exactly these.</summary>
     public const string TurnCamera = "_ZN10CNWCModule10TurnCameraEfi";
     public const string TiltCamera = "_ZN10CNWCModule10TiltCameraEfi";
+    /// <summary><c>CClientExoAppInternal::UpdateDriveMode()</c> @0x65f780 -- the per-frame drive step (#540). Reads the
+    /// key booleans at +0x1b8.. and the "input changed" latch at +0x1b0, derives the wire heading from the player
+    /// creature's orientation (+0x44/+0x48, <c>round(atan2 * 10)</c>), sends <c>DriveControl</c> on the latch or the
+    /// 500 ms keep-alive, snaps the local facing and runs the prediction. Pre-hooked by CameraDriveService, which
+    /// writes the orientation and the key set it wants the engine to act on.</summary>
+    public const string UpdateDriveMode = "_ZN21CClientExoAppInternal15UpdateDriveModeEv";
     /// <summary>SDL2 cursor capture for mouse-look (#539): relative mode hides the cursor and streams raw deltas.</summary>
     public const string SdlSetRelativeMouseMode = "SDL_SetRelativeMouseMode";
     public const string SdlWarpMouseInWindow = "SDL_WarpMouseInWindow";
@@ -1296,6 +1302,7 @@ internal static unsafe class SymbolMap
         // +0x280) with tools/ghidra/ScanOffsets.java -- bodies decompile identical to Linux, vtable slots -8.
         [TurnCamera] = At(0x7cfe60),
         [TiltCamera] = At(0x7cfdb0),
+        [UpdateDriveMode] = At(0x6f1e40),   // #540: the one function carrying both 499999 and 250000 (ScanOffsets)
         [SdlSetRelativeMouseMode] = Nm("SDL_SetRelativeMouseMode"),
         [SdlWarpMouseInWindow] = Nm("SDL_WarpMouseInWindow"),
         [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),

@@ -1387,6 +1387,46 @@ public static unsafe class EngineLayout
     /// (byte)+0x2bc &amp; 2</c> before dispatching on <c>CClientOptions+0x1d</c> (#537).</summary>
     public static readonly int ModuleCameraFlags = Same("CNWCModule", "cameraFlags", 0x2bc);
 
+    // ---- camera-relative drive (#540): UpdateDriveMode's own fields. Linux @0x65f780 and Windows rva 0x6f1e40
+    //      read every one of these at the SAME offsets (one decompile per build, tools/ghidra/DecompOne.java);
+    //      the creature rows below are the two the function gates on, shifted -0x20 on Windows like `plated`. ----
+
+    /// <summary>CClientExoAppInternal -&gt; "drive input changed" latch (int 0/1): HandleInputEvent raises it on
+    /// any drive key edge, UpdateDriveMode sends <c>DriveControl</c> while it is up and clears it.</summary>
+    public static readonly int InternalDriveChanged = Same("CClientExoAppInternal", "driveChanged", 0x1b0, Expect.Byte01);
+    /// <summary>CClientExoAppInternal -&gt; auto-run toggle (int 0/1); counts as forward held.</summary>
+    public static readonly int InternalDriveAutoRun = Same("CClientExoAppInternal", "driveAutoRun", 0x1b4, Expect.Byte01);
+    /// <summary>CClientExoAppInternal -&gt; six int key booleans in a row: forward, backward, turn left, turn right,
+    /// strafe left, strafe right (+0x1b8..+0x1cc). <c>ClearDriveMode</c> zeroes +0x1b4..+0x1cf in one go.</summary>
+    public static readonly int InternalDriveKeys = Same("CClientExoAppInternal", "driveKeys", 0x1b8, Expect.Byte01);
+    /// <summary>CClientExoAppInternal -&gt; microsecond stamp of the last drive packet (the 500 ms keep-alive
+    /// compares against it); rewritten on every send, so a change across the call means a packet went out.</summary>
+    public static readonly int InternalDriveLastSend = Same("CClientExoAppInternal", "driveLastSend", 0x1a0);
+    /// <summary>CNWCObject -&gt; orientation Vector (x, y, z); position is the Vector at +0x38. UpdateDriveMode reads
+    /// +0x44/+0x48 for the wire angle and TurnOnSpot rotates +0x44..+0x4c on both builds.</summary>
+    public static readonly int ObjOrientation = Same("CNWCObject", "orientation", 0x44);
+    /// <summary>CNWCCreature -&gt; control flag byte; UpdateDriveMode and DrivePlayer both refuse unless bit 2 is set
+    /// (player-controlled). Linux +0x39c, Windows +0x37c.</summary>
+    public static readonly int CreatureDriveFlags = Diverges("CNWCCreature", "driveFlags", linux: 0x39c, win: 0x37c);
+    /// <summary>CNWCCreature -&gt; int that must be non-zero for drive input to act at all (UpdateDriveMode's second
+    /// gate). Linux +0x43c, Windows +0x41c.</summary>
+    public static readonly int CreatureDriveEnabled = Diverges("CNWCCreature", "driveEnabled", linux: 0x43c, win: 0x41c);
+    /// <summary>CNWCCreature -&gt; the local facing target Vector the model turns toward: DrivePlayer's ±30° turn arm
+    /// writes it alone, and UpdateDriveMode writes it together with <see cref="CreatureFacingTargetB"/> right after
+    /// every drive packet. Linux +0x2c8, Windows +0x2a8.</summary>
+    public static readonly int CreatureFacingTarget = Diverges("CNWCCreature", "facingTarget", linux: 0x2c8, win: 0x2a8);
+    /// <summary>CNWCCreature -&gt; the second Vector of that pair (+0x2d4 / +0x2b4), written with the same direction on
+    /// the send path and by TurnOnSpot; its own reader is not identified.</summary>
+    public static readonly int CreatureFacingTargetB = Diverges("CNWCCreature", "facingTargetB", linux: 0x2d4, win: 0x2b4);
+    /// <summary>CNWCModule -&gt; "chase suppressed" (int 0/1): <c>UpdateCameraModeChaseCam/EQ</c> set it the frame the
+    /// user moved the camera (+0x134) and skip the chase while it holds; cleared on the creature's next
+    /// idle-to-locomotion edge, which <see cref="ModuleChaseWasIdle"/> records. Same on Windows (rva 0x7d0d00 /
+    /// 0x7d1c90 read all four).</summary>
+    public static readonly int ModuleChaseSuppressed = Same("CNWCModule", "chaseSuppressed", 0x13c, Expect.Byte01);
+    /// <summary>CNWCModule -&gt; "creature was idle" (int 0/1) the chase drivers set on a non-locomotion animation and
+    /// consume (clearing <see cref="ModuleChaseSuppressed"/>) on the first locomotion frame after.</summary>
+    public static readonly int ModuleChaseWasIdle = Same("CNWCModule", "chaseWasIdle", 0x27c, Expect.Byte01);
+
     /// <summary>Gob -&gt; the kind of game object behind <c>SetExternalData</c>: 5 creature
     /// (<c>CNWCCreature::LoadModel</c> @0x72a4b0), 9 placeable (@0x7ec500), 10 door (@0x755ec0), through
     /// vtable <c>SetExternalDataType</c>. The accessor pair is one line on both builds: Linux @0x444720,

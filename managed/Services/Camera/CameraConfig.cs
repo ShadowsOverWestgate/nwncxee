@@ -27,6 +27,8 @@ public sealed class CameraMode
     public float OffsetX;
     /// <summary>#538: vertical offset, world units up. 0 = the engine's own orbit.</summary>
     public float OffsetY;
+    /// <summary>#540: camera-relative WASD (1) or the engine's facing-relative drive (0). Top-down defaults off.</summary>
+    public float Drive = 1f;
 
     public const float FovMin = 10f, FovMax = 120f;
     public const float LagMax = 2f;
@@ -66,8 +68,14 @@ public sealed class CameraConfig
 {
     public static readonly string[] ModeNames = { "chase", "topdown", "stiff" };
 
-    public readonly CameraMode[] Modes = { new(), new(), new() };
+    public readonly CameraMode[] Modes = { new(), new() { Drive = 0f }, new() };
     public readonly SpringArm Arm = new();
+    /// <summary>#540: most drive packets per second a heading change may raise (the engine's own keep-alive is 2/s).</summary>
+    public float DriveHz = 10f;
+    public const float DriveHzMin = 1f, DriveHzMax = 60f;
+    /// <summary>#540: how fast the drive heading turns toward the keys, degrees per second (0 = snap).</summary>
+    public float DriveTurn = 540f;
+    public const float DriveTurnMax = 3600f;
 
     public string ToText()
     {
@@ -77,9 +85,10 @@ public sealed class CameraConfig
             CameraMode c = Modes[m]; string n = ModeNames[m];
             sb.Append($"{n}.fov={F(c.Fov)}\n{n}.lagpos={F(c.LagPos)}\n{n}.lagrot={F(c.LagRot)}\n{n}.lagzoom={F(c.LagZoom)}\n")
               .Append($"{n}.pitchcurve={F(c.PitchCurve)}\n{n}.pitchref={F(c.PitchRef)}\n")
-              .Append($"{n}.offsetx={F(c.OffsetX)}\n{n}.offsety={F(c.OffsetY)}\n");
+              .Append($"{n}.offsetx={F(c.OffsetX)}\n{n}.offsety={F(c.OffsetY)}\n{n}.drive={F(c.Drive)}\n");
         }
-        sb.Append($"arm.margin={F(Arm.Margin)}\narm.in={F(Arm.RateIn)}\narm.out={F(Arm.RateOut)}\narm.radius={F(Arm.Radius)}\n");
+        sb.Append($"arm.margin={F(Arm.Margin)}\narm.in={F(Arm.RateIn)}\narm.out={F(Arm.RateOut)}\narm.radius={F(Arm.Radius)}\n")
+          .Append($"drive.hz={F(DriveHz)}\ndrive.turn={F(DriveTurn)}\n");
         return sb.ToString();
     }
 
@@ -95,6 +104,8 @@ public sealed class CameraConfig
             int dot = key.IndexOf('.');
             if (dot < 0 || !TryF(val, out float v)) return;
             if (key[..dot] == "arm") { cfg.Arm.Set(key[(dot + 1)..], v); return; }
+            if (key == "drive.hz") { cfg.DriveHz = System.Math.Clamp(v, DriveHzMin, DriveHzMax); return; }
+            if (key == "drive.turn") { cfg.DriveTurn = System.Math.Clamp(v, 0f, DriveTurnMax); return; }
             int m = System.Array.IndexOf(ModeNames, key[..dot]);
             if (m < 0) return;
             cfg.Modes[m].Set(key[(dot + 1)..], v);
@@ -106,8 +117,9 @@ public sealed class CameraConfig
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"CameraConfig.SelfCheck FAIL: {w}"); } }
-        var c = Parse("topdown.fov=60\nchase.lagpos=0.3\nstiff.pitchcurve=99\nchase.pitchref=abc\nnope.fov=1\nchase.offsetx=-1.5\narm.margin=0.5\n");
+        var c = Parse("topdown.fov=60\nchase.lagpos=0.3\nstiff.pitchcurve=99\nchase.pitchref=abc\nnope.fov=1\nchase.offsetx=-1.5\narm.margin=0.5\ntopdown.drive=1\ndrive.hz=500\n");
         E(c.Modes[0].OffsetX == -1.5f && c.Arm.Margin == 0.5f, "offset and arm keys parse");
+        E(c.Modes[1].Drive == 1f && c.DriveHz == DriveHzMax && new CameraConfig().Modes[1].Drive == 0f && new CameraConfig().Modes[0].Drive == 1f, "drive keys parse, top-down defaults off");
         E(c.Modes[1].Fov == 60f && c.Modes[0].Fov == 0f, "a mode key lands on its mode only");
         E(c.Modes[0].LagPos == 0.3f, "lag parses");
         E(c.Modes[2].PitchCurve == CameraMode.CurveMax, "out-of-range is clamped");
@@ -132,6 +144,7 @@ public static class CameraModeExt
             case "pitchref": c.PitchRef = System.Math.Clamp(v, CameraMode.RefMin, CameraMode.RefMax); return true;
             case "offsetx": c.OffsetX = System.Math.Clamp(v, -CameraMode.OffsetMax, CameraMode.OffsetMax); return true;
             case "offsety": c.OffsetY = System.Math.Clamp(v, -CameraMode.OffsetMax, CameraMode.OffsetMax); return true;
+            case "drive": c.Drive = v != 0 ? 1f : 0f; return true;
         }
         return false;
     }

@@ -360,6 +360,21 @@ anchors.
 | `CNWCModule` | `camera 0xe8`, `cameraAttached 0x124`, `findClearView 0x140` (probed 0/1), `dialogCamera 0x258`, `cutsceneRate 0x298` | `SetCameraFollow` rva `0x7cf6f0`, `SetDialogCamera` rva `0x7cfa90`, `SetCutsceneCamera` rva `0x7cfa00`, reached from the camera (`0x77a7f0`) and dialog (`0x7962f0`) message handlers |
 | `CClientExoAppInternal` / `CClientOptions` | `clientOptions 0x0` / `cameraMode 0x1d` | `GetClientOptions` is `**(app+8)` on both (`0x637ea0` / rva `0x6ab9b0`); the byte is read at `+0x1d` by `SetCameraFollow` and by the lock arms of the Windows camera handler |
 
+### The drive rows (#540)
+
+One function per build, `CClientExoAppInternal::UpdateDriveMode` (Linux @`0x65f780`, Windows rva
+`0x6f1e40`, found by its cadence constants -- `docs/windows-symbols.md`), decompiled on both and
+read side by side. The `CClientExoAppInternal` fields are identical; the two `CNWCCreature` gates
+carry the class's known `-0x20` Windows shift (the same delta as `plated`).
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CClientExoAppInternal` | `driveChanged 0x1b0` (probed 0/1), `driveAutoRun 0x1b4` (probed), `driveKeys 0x1b8` (probed; six ints: forward, back, turn L/R, strafe L/R), `driveLastSend 0x1a0` | the function's own reads on both builds: the latch tested first, the seven key ints in the keep-alive OR, `+0x1a0` stamped on every send and compared against 499999 |
+| `CNWCObject` | `orientation 0x44` | both builds `atan2(+0x48, +0x44)` for the wire angle and copy `+0x44..+0x4c` into the TurnOnSpot rotation |
+| `CNWCCreature` | `driveFlags 0x39c / 0x37c` (bit 2), `driveEnabled 0x43c / 0x41c` | the two early-outs at the top of the function on each build (`& 2 == 0` then `== 0`), in the same order |
+| `CNWCCreature` | `facingTarget 0x2c8 / 0x2a8`, `facingTargetB 0x2d4 / 0x2b4` | the pair both builds write with the quantized direction right after the DriveControl send and in the TurnOnSpot arm; `DrivePlayer` writes the first alone for its ±30° turn |
+| `CNWCModule` | `chaseSuppressed 0x13c` (probed 0/1), `chaseWasIdle 0x27c` (probed) | `UpdateCameraModeChaseCam` / `EQ` (Linux @`0x7dddd0` / `0x7de660`, Windows rva `0x7d0d00` / `0x7d1c90`, found by `ScanOffsets 134 138 13c 27c 144 100`): `+0x13c` set with `+0x138 = 0` when `+0x134` (camera moved) holds, cleared with `+0x27c` on the idle-to-locomotion edge, both builds the same four fields |
+
 ### The 38 DecompOne rows (#448)
 
 Section 3, T2 — the biggest and most mechanical of the three. All 38 are now
