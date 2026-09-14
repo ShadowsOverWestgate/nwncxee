@@ -17,7 +17,9 @@ namespace Sowx.Services.Camera;
 /// pull-in predicts from the un-offset pose, so it is switched off through <see cref="SettleCollision"/> while
 /// an offset is active; at 0 0 the pose is #536's, bit for bit, and the engine's collision is left alone).
 /// The behavior's own yaw/pitch/dist are never written, so dialog framing, cutscenes, Store/RestoreCameraFacing
-/// and the server's locks keep reading the truth.
+/// and the server's locks keep reading the truth. #541 is the one exception, and it goes through the engine's own
+/// input channel: the auto-recenter (<see cref="Recenter"/>) adds a yaw <i>velocity</i> before Control, the same
+/// field the engine's chase drivers write, with those drivers held down by the two module flags they honour.
 /// <para><b>Stand-down gates</b>, checked every call and reported by <c>/camera</c>: not the module camera (a
 /// GUI panel's), dialog camera, cutscene interpolation, clear-view pending, attached to something other than the
 /// player, any server lock (photo mode locks all three axes), unknown mode byte. When a gate is up the engine's
@@ -32,6 +34,8 @@ public sealed unsafe class CameraService : IExtenderService
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
     private static readonly delegate* unmanaged<IntPtr, IntPtr> _getModule =
         (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
+    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
+        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
 
     private static CameraConfig _cfg = new();
     private static readonly ConfigFile _file = new("sowx-camera.cfg");
@@ -52,6 +56,18 @@ public sealed unsafe class CameraService : IExtenderService
     /// <summary>The spring arm's fraction of the focus-&gt;camera segment the camera sits at (1 = the full offset rig).</summary>
     private static float _arm = 1f;
     private static bool _offsetOn, _wantNoCollision, _weSetFlag;
+
+    // ---- #541 recenter state: the policy's clocks ----
+    private static float _grace, _idle, _recenterVel;
+    private static bool _pursuing;
+    /// <summary>Why the recenter did nothing on the last call, for /camera.</summary>
+    private enum Hold { Recentering, Off, NoCreature, Orbiting, Grace, Lateral, DeadZone, Idle, Centered }
+    private static readonly string[] HoldNames =
+        { "recentering", "off for this mode", "no player creature", "orbiting", "orbit grace", "strafing or backing", "in the dead-zone", "idle", "centered" };
+    private static Hold _hold = Hold.Off;
+    /// <summary>Degrees of error beyond which a swing already under way keeps its side (a target straight behind
+    /// the camera has no short way round).</summary>
+    private const float TieZone = 150f;
 
     // ---- lag state, keyed by the behavior object: SetFollow replaces it on every attach / transition ----
     private static IntPtr _lastSelf;
@@ -74,6 +90,8 @@ public sealed unsafe class CameraService : IExtenderService
     private static readonly int DistOff = EngineLayout.FollowDist;
     private static readonly int ZoomVelOff = EngineLayout.FollowZoomVel;
     private static readonly int YawOff = EngineLayout.FollowYaw;
+    private static readonly int YawVelOff = EngineLayout.FollowYawVel;
+    private static readonly int YawImpulseOff = EngineLayout.FollowYawImpulse;
     private static readonly int PitchOff = EngineLayout.FollowPitch;
     private static readonly int YawClampOff = EngineLayout.FollowYawClamp;
     private static readonly int PitchClampOff = EngineLayout.FollowPitchClamp;
@@ -90,6 +108,11 @@ public sealed unsafe class CameraService : IExtenderService
     private static readonly int ModDialogOff = EngineLayout.ModuleDialogCamera;
     private static readonly int ModCutsceneOff = EngineLayout.ModuleCutsceneRate;
     private static readonly int ModFlagsOff = EngineLayout.ModuleCameraFlags;
+    private static readonly int ModChaseOffOff = EngineLayout.ModuleChaseSuppressed;
+    private static readonly int ModWasIdleOff = EngineLayout.ModuleChaseWasIdle;
+    private static readonly int ObjTypeOff = EngineLayout.ObjType;
+    private static readonly int OriOff = EngineLayout.ObjOrientation;
+    private static readonly int AnimOff = EngineLayout.ObjAnimation;
     private static readonly int InternalOff = EngineLayout.ExoAppInternal;
     private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
     private static readonly int OptionsOff = EngineLayout.InternalClientOptions;
@@ -100,8 +123,14 @@ public sealed unsafe class CameraService : IExtenderService
     private const int CameraFromOwner = 8;
 
     private const float Deg = MathF.PI / 180f;
-    /// <summary>The engine's own pitch limits (settings.tml [camera.limits]); the curve never leaves them.</summary>
-    private const float PitchFloor = 1f, PitchCeil = 89f;
+    /// <summary>Pitch limits when the behavior's own clamp is off: the full sphere short of the poles.</summary>
+    private const float PitchFloor = 0.5f, PitchCeil = 179.5f;
+    /// <summary>The recenter's ease: velocity = error * this, capped at the rate knob, so the swing slows into place
+    /// instead of the engine's hard stop at 1°.</summary>
+    private const float EaseGain = 3f;
+    /// <summary>Where a recenter stops, degrees (the engine's own threshold).</summary>
+    private const float Settled = 1f;
+    private const byte TypeCreature = 5;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
@@ -109,9 +138,9 @@ public sealed unsafe class CameraService : IExtenderService
         CameraConfig.SelfCheck(log);
         SelfCheck(log);
         if (!EngineLayout.Require(log, "CameraService", "CAurBehavior", "CAurBehaviorCameraFollow", "CNWCModule",
-                                  "CClientExoAppInternal", "CClientOptions", "Camera")) return;
+                                  "CClientExoAppInternal", "CClientOptions", "Camera", "CNWCObject")) return;
         if (!SymbolMap.Require(log, "CameraService", SymbolMap.CameraFollowControl, SymbolMap.AppManager,
-                               SymbolMap.GetModule)) return;
+                               SymbolMap.GetModule, SymbolMap.GetGameObject)) return;
 
         _next = hooks.Chain(SymbolMap.CameraFollowControl,
                             (IntPtr)(delegate* unmanaged<IntPtr, float, int>)&OnControl, 10);
@@ -124,9 +153,10 @@ public sealed unsafe class CameraService : IExtenderService
         CameraCommand.Register("pitchcurve", "`pitchcurve <deg/unit> [ref]` pitch added per unit of distance past ref", PitchCurve);
         CameraCommand.Register("offset", "`offset <x> <y>` rig offset from the focus in world units, right and up (0 0 = the engine's orbit)", Offset);
         CameraCommand.Register("arm", "`arm margin|in|out|radius <n>` the offset camera's spring arm: stop short of a hit by margin, ease rates per second (in 0 = snap), ray fan half-width", Arm);
+        CameraCommand.Register("recenter", "`recenter 0|1` auto-recenter behind the movement for the current mode; `recenter rate|deadzone|grace|idle|idlerate <n>` swing deg/s, start threshold deg, seconds after an orbit, seconds still before the soft recenter (0 = never), its deg/s", RecenterKnob);
         CameraCommand.Register("reset", "restore the engine feel for the current mode", _ => Reset());
         CameraCommand.Report(Report);
-        KnobSurface.Note(() => $"camera feel (per mode: fov, lag, pitch curve, offset, drive; spring arm, drive.hz) in {_file.Path}");
+        KnobSurface.Note(() => $"camera feel (per mode: fov, lag, pitch curve, offset, drive, recenter; spring arm, drive.hz, recenter.*) in {_file.Path}");
         SceneRay.Init();
         log.Info("CameraService: chained on CAurBehaviorCameraFollow::Control");
     }
@@ -140,6 +170,8 @@ public sealed unsafe class CameraService : IExtenderService
         IntPtr target = *(IntPtr*)(self + TargetOff);
         if (target != IntPtr.Zero && !float.IsNaN(_distAfter) && *(float*)(self + ZoomVelOff) == 0f
             && *(float*)(self + DistOff) < _distAfter - 1e-4f) { if (_offsetOn) _pullInsOffset++; else _pullIns++; }
+        // Before the solve: the velocity is consumed by this call (the engine's chase writes it in the same slot).
+        if (target != IntPtr.Zero && _probeOk) Recenter(self, dt);
         int r = ((delegate* unmanaged<IntPtr, float, int>)(*_next))(self, dt);
         _calls++;
         if (target == IntPtr.Zero) { _distAfter = float.NaN; return r; }
@@ -203,7 +235,11 @@ public sealed unsafe class CameraService : IExtenderService
         else { _sYaw = _yaw; _sPitch = _pitch; }
         _sDist = m.LagZoom > 0 ? SmoothDamp(_sDist, _dist, ref _vDist, m.LagZoom, dt) : _dist;
 
-        float pitch = Math.Clamp(_sPitch + m.PitchCurve * (_sDist - m.PitchRef), PitchFloor, PitchCeil);
+        // The curve stays inside the behavior's own pitch range (settings.tml [camera.limits] lands there), not a
+        // range of ours: a max past 90 is the player's to have.
+        float lo = PitchFloor, hi = PitchCeil;
+        if (*(float*)(self + PitchClampOff) != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
+        float pitch = Math.Clamp(_sPitch + m.PitchCurve * (_sDist - m.PitchRef), lo, hi);
         _outPitch = pitch;
         Quaternion q = Pose(_sYaw, pitch);
         Vector3 pos = _sFocus + _sDist * Forward(q);
@@ -218,6 +254,77 @@ public sealed unsafe class CameraService : IExtenderService
         _pos = pos;
         if (m.Fov > 0) { *(float*)(cam + CamFovOff) = m.Fov; _fovWritten = m.Fov; }
         else _fovWritten = float.NaN;
+    }
+
+    /// <summary>#541: the auto-recenter, in place of the engine's chase (Nesky's rules). Runs before Control on the
+    /// world camera's behavior: the engine's own chase is held down through the two module flags it honours
+    /// (<see cref="EngineLayout.ModuleChaseSuppressed"/> up, its idle edge down), so its 30°-then-snap never fires,
+    /// and the policy adds a yaw velocity in the slot it would have used. Moving (a locomotion animation on the
+    /// player) eases the camera behind the creature's facing -- which is the movement direction for both
+    /// click-to-move and #540's drive -- at most <c>recenter.rate</c> deg/s once the error leaves the dead-zone;
+    /// standing still for <c>recenter.idle</c> seconds eases it there at <c>recenter.idlerate</c>. Any yaw the user
+    /// put in this frame (an impulse or a velocity already in the behavior: mouse-look, middle-drag, the turn
+    /// keys) suspends it and starts the grace clock; a drive with no forward component (strafe, back-pedal) holds it
+    /// (a spiral is not a recenter, and a 180° swing has no side to take).
+    /// Dialog, cutscene, locks and the rest are the same gates as the pose rewrite (<see cref="Check"/>, run here
+    /// too so a gate that went up this frame is honoured before, not after, the solve).</summary>
+    private static void Recenter(IntPtr self, float dt)
+    {
+        Gate g = Check(self, *(IntPtr*)(self + OwnerOff) - CameraFromOwner, out int mode);
+        if (g != Gate.Active) { if (g != Gate.NotWorldCamera) { _pursuing = false; _recenterVel = 0f; } return; }
+        CameraMode m = _cfg.Modes[mode];
+        if (m.Recenter == 0f) { _hold = Hold.Off; _pursuing = false; return; }
+        Recenter r = _cfg.Recenter;
+        IntPtr module = Module();
+        *(int*)(module + ModChaseOffOff) = 1;
+        *(int*)(module + ModWasIdleOff) = 0;
+        float* vel = (float*)(self + YawVelOff);
+        if (*vel != 0f || *(float*)(self + YawImpulseOff) != 0f)
+        {
+            _grace = r.Grace; _idle = 0f; _pursuing = false; _recenterVel = 0f; _hold = Hold.Orbiting; return;
+        }
+        if (_grace > 0f) { _grace -= dt; _idle = 0f; _hold = Hold.Grace; return; }
+        IntPtr cre = PlayerCreature();
+        if (cre == IntPtr.Zero) { _hold = Hold.NoCreature; return; }
+        float rate;
+        if (Locomotion(*(short*)(cre + AnimOff)))
+        {
+            _idle = 0f;
+            if (CameraDriveService.NoForward) { _pursuing = false; _hold = Hold.Lateral; return; }
+            rate = r.Rate;
+        }
+        else
+        {
+            _idle += dt;
+            if (r.Idle <= 0f || _idle < r.Idle) { _pursuing = false; _hold = Hold.Idle; return; }
+            rate = r.IdleRate;
+        }
+        float* ori = (float*)(cre + OriOff);
+        float delta = Wrap(FacingYaw(ori[0], ori[1]) - *(float*)(self + YawOff));
+        float abs = MathF.Abs(delta);
+        // Near 180 the short way flips sign frame to frame; once swinging, keep the side already taken.
+        if (abs > TieZone && _recenterVel != 0f) delta = MathF.CopySign(abs, _recenterVel);
+        if (abs <= Settled) { _pursuing = false; _recenterVel = 0f; _hold = Hold.Centered; return; }
+        if (!_pursuing && abs < r.DeadZone && rate == r.Rate) { _hold = Hold.DeadZone; return; }
+        _pursuing = true;
+        _recenterVel = Math.Clamp(delta * EaseGain, -rate, rate);
+        *vel = _recenterVel;
+        _hold = Hold.Recentering;
+    }
+
+    /// <summary>The engine's <c>Yaw(Vector)</c> @0x5b6cc0: <c>atan2(-x, y)</c> in degrees, so a facing of +Y is
+    /// yaw 0 -- the behavior's own convention (Camera::GetYaw reads +0x54 and the chase subtracts the two).</summary>
+    private static float FacingYaw(float x, float y) => x == 0f && y == 0f ? 0f : MathF.Atan2(-x, y) / Deg;
+
+    /// <summary>The chase drivers' locomotion set (walk / run / their variants), both builds.</summary>
+    private static bool Locomotion(short anim) => anim is 2 or 3 or 4 or 0x4e or 0x4f or (>= 0x54 and <= 0x57);
+
+    private static IntPtr PlayerCreature()
+    {
+        IntPtr app = App();
+        if (app == IntPtr.Zero) return IntPtr.Zero;
+        IntPtr cre = _getGameObject(app, *(uint*)(*(IntPtr*)(app + InternalOff) + PlayerIdOff));
+        return cre != IntPtr.Zero && *(byte*)(cre + ObjTypeOff) == TypeCreature ? cre : IntPtr.Zero;
     }
 
     private static Gate Check(IntPtr self, IntPtr cam, out int mode)
@@ -387,10 +494,12 @@ public sealed unsafe class CameraService : IExtenderService
             Inv($"; {mode}: fov {(m.Fov > 0 ? m.Fov.ToString("0.#", CultureInfo.InvariantCulture) : "engine")} lag {m.LagPos:0.##}/{m.LagRot:0.##}/{m.LagZoom:0.##} pitchcurve {m.PitchCurve:0.##}@{m.PitchRef:0.#}")
           + Inv($" offset {m.OffsetX:0.##} {m.OffsetY:0.##}")
           + (_offsetOn ? Inv($" arm {_arm:0.00} (margin {_cfg.Arm.Margin:0.##} in {_cfg.Arm.RateIn:0.#} out {_cfg.Arm.RateOut:0.#} radius {_cfg.Arm.Radius:0.##})") : "");
+        string recenter = m == null ? "" : m.Recenter == 0f ? "; recenter off" :
+            Inv($"; recenter {HoldNames[(int)_hold]}{(_hold == Hold.Recentering ? Inv($" {_recenterVel:+0;-0} deg/s") : "")} (rate {_cfg.Recenter.Rate:0} deadzone {_cfg.Recenter.DeadZone:0} grace {_cfg.Recenter.Grace:0.#} idle {_cfg.Recenter.Idle:0.#}@{_cfg.Recenter.IdleRate:0})");
         string curve = _gate == Gate.Active && _outPitch != _pitch ? Inv($"->{_outPitch:0.#}") : "";
         string zoom = _gate == Gate.Active && MathF.Abs(_sDist - _dist) > 0.05f ? Inv($"->{_sDist:0.#}") : "";
         return Inv($"[camera] pos ({_pos.X:0.0}, {_pos.Y:0.0}, {_pos.Z:0.0}) yaw {_yaw:0.#} pitch {_pitch:0.#}{curve} dist {_dist:0.#}{zoom} fov {_fovRead:0.#}")
-             + $" | {(_gate == Gate.Active ? "active" : "held down: " + GateNames[(int)_gate])}{knobs}";
+             + $" | {(_gate == Gate.Active ? "active" : "held down: " + GateNames[(int)_gate])}{knobs}{recenter}";
     }
 
     private static string Knob(string key, string args)
@@ -450,6 +559,21 @@ public sealed unsafe class CameraService : IExtenderService
         return Report();
     }
 
+    private static string RecenterKnob(string args)
+    {
+        if (!_configLoaded) LoadConfig();
+        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (p.Length == 1 && CameraConfig.TryF(p[0], out float on))
+        {
+            if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
+            _cfg.Modes[_mode].Set("recenter", on); _dirty = true;
+            return Report();
+        }
+        if (p.Length < 2 || !CameraConfig.TryF(p[1], out float v) || !_cfg.Recenter.Set(p[0], v)) return "[camera] recenter 0|1, or recenter rate|deadzone|grace|idle|idlerate <n>";
+        _dirty = true;
+        return Report();
+    }
+
     private static string Reset()
     {
         if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
@@ -474,6 +598,10 @@ public sealed unsafe class CameraService : IExtenderService
         E(Near(Right(Pose(0, 90)), new Vector3(1, 0, 0)) && Near(Right(Pose(0, 30)), new Vector3(1, 0, 0)), "right is +X looking north at any pitch");
         E(Near(Right(Pose(90, 60)), new Vector3(0, 1, 0)) || Near(Right(Pose(90, 60)), new Vector3(0, -1, 0)), "right turns with yaw");
         E(MathF.Abs(Wrap(350f - 10f) + 20f) < 1e-5f, "yaw lag takes the short way round");
+        E(FacingYaw(0, 1) == 0f && MathF.Abs(FacingYaw(1, 0) + 90f) < 1e-4f && MathF.Abs(FacingYaw(-1, 0) - 90f) < 1e-4f,
+          "facing north is yaw 0, east -90, west +90 (the engine's Yaw(Vector))");
+        E(Locomotion(2) && Locomotion(0x57) && !Locomotion(0) && !Locomotion(0x58), "the locomotion set");
+        E(Math.Clamp(120f * EaseGain, -60f, 60f) == 60f && MathF.Abs(Math.Clamp(5f * EaseGain, -60f, 60f) - 15f) < 1e-5f, "the ease caps at the rate and slows near the target");
         float v = 0, x = 0;
         for (int i = 0; i < 240; i++) x = SmoothDamp(x, 1f, ref v, 0.2f, 1f / 60f);
         E(MathF.Abs(x - 1f) < 1e-3f, "the spring settles on its target");

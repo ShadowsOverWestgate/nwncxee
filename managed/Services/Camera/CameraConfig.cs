@@ -29,6 +29,9 @@ public sealed class CameraMode
     public float OffsetY;
     /// <summary>#540: camera-relative WASD (1) or the engine's facing-relative drive (0). Top-down defaults off.</summary>
     public float Drive = 1f;
+    /// <summary>#541: the layer's auto-recenter (1) in place of the engine's chase, or the engine's own (0).
+    /// Top-down defaults off (the engine leaves its yaw where the player put it, and so do we).</summary>
+    public float Recenter = 1f;
 
     public const float FovMin = 10f, FovMax = 120f;
     public const float LagMax = 2f;
@@ -62,14 +65,43 @@ public sealed class SpringArm
     }
 }
 
+/// <summary>#541: the auto-recenter policy, one set for every mode that has it on.</summary>
+public sealed class Recenter
+{
+    /// <summary>Fastest swing behind the movement direction, deg/s (the ease slows it near the target).</summary>
+    public float Rate = 60f;
+    /// <summary>Degrees off the movement direction the camera may sit before a recenter starts.</summary>
+    public float DeadZone = 15f;
+    /// <summary>Seconds after the last orbit input during which no recenter runs.</summary>
+    public float Grace = 1.5f;
+    /// <summary>Seconds of standing still before the soft recenter to the facing; 0 = never.</summary>
+    public float Idle = 5f;
+    /// <summary>The soft recenter's fastest swing, deg/s.</summary>
+    public float IdleRate = 30f;
+
+    public bool Set(string key, float v)
+    {
+        switch (key)
+        {
+            case "rate": Rate = System.Math.Clamp(v, 1f, 720f); return true;
+            case "deadzone": DeadZone = System.Math.Clamp(v, 0f, 180f); return true;
+            case "grace": Grace = System.Math.Clamp(v, 0f, 30f); return true;
+            case "idle": Idle = System.Math.Clamp(v, 0f, 600f); return true;
+            case "idlerate": IdleRate = System.Math.Clamp(v, 1f, 720f); return true;
+        }
+        return false;
+    }
+}
+
 /// <summary>Persisted camera-layer preferences, flat <c>mode.key=value</c> in <c>sowx-camera.cfg</c> beside
 /// <c>nwn.ini</c> (written by <c>/camera</c>, never hand-required). Every numeric key is clamped on parse.</summary>
 public sealed class CameraConfig
 {
     public static readonly string[] ModeNames = { "chase", "topdown", "stiff" };
 
-    public readonly CameraMode[] Modes = { new(), new() { Drive = 0f }, new() };
+    public readonly CameraMode[] Modes = { new(), new() { Drive = 0f, Recenter = 0f }, new() };
     public readonly SpringArm Arm = new();
+    public readonly Recenter Recenter = new();
     /// <summary>#540: most drive packets per second a heading change may raise (the engine's own keep-alive is 2/s).</summary>
     public float DriveHz = 10f;
     public const float DriveHzMin = 1f, DriveHzMax = 60f;
@@ -85,10 +117,11 @@ public sealed class CameraConfig
             CameraMode c = Modes[m]; string n = ModeNames[m];
             sb.Append($"{n}.fov={F(c.Fov)}\n{n}.lagpos={F(c.LagPos)}\n{n}.lagrot={F(c.LagRot)}\n{n}.lagzoom={F(c.LagZoom)}\n")
               .Append($"{n}.pitchcurve={F(c.PitchCurve)}\n{n}.pitchref={F(c.PitchRef)}\n")
-              .Append($"{n}.offsetx={F(c.OffsetX)}\n{n}.offsety={F(c.OffsetY)}\n{n}.drive={F(c.Drive)}\n");
+              .Append($"{n}.offsetx={F(c.OffsetX)}\n{n}.offsety={F(c.OffsetY)}\n{n}.drive={F(c.Drive)}\n{n}.recenter={F(c.Recenter)}\n");
         }
         sb.Append($"arm.margin={F(Arm.Margin)}\narm.in={F(Arm.RateIn)}\narm.out={F(Arm.RateOut)}\narm.radius={F(Arm.Radius)}\n")
-          .Append($"drive.hz={F(DriveHz)}\ndrive.turn={F(DriveTurn)}\n");
+          .Append($"drive.hz={F(DriveHz)}\ndrive.turn={F(DriveTurn)}\n")
+          .Append($"recenter.rate={F(Recenter.Rate)}\nrecenter.deadzone={F(Recenter.DeadZone)}\nrecenter.grace={F(Recenter.Grace)}\nrecenter.idle={F(Recenter.Idle)}\nrecenter.idlerate={F(Recenter.IdleRate)}\n");
         return sb.ToString();
     }
 
@@ -104,6 +137,7 @@ public sealed class CameraConfig
             int dot = key.IndexOf('.');
             if (dot < 0 || !TryF(val, out float v)) return;
             if (key[..dot] == "arm") { cfg.Arm.Set(key[(dot + 1)..], v); return; }
+            if (key[..dot] == "recenter") { cfg.Recenter.Set(key[(dot + 1)..], v); return; }
             if (key == "drive.hz") { cfg.DriveHz = System.Math.Clamp(v, DriveHzMin, DriveHzMax); return; }
             if (key == "drive.turn") { cfg.DriveTurn = System.Math.Clamp(v, 0f, DriveTurnMax); return; }
             int m = System.Array.IndexOf(ModeNames, key[..dot]);
@@ -117,8 +151,9 @@ public sealed class CameraConfig
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"CameraConfig.SelfCheck FAIL: {w}"); } }
-        var c = Parse("topdown.fov=60\nchase.lagpos=0.3\nstiff.pitchcurve=99\nchase.pitchref=abc\nnope.fov=1\nchase.offsetx=-1.5\narm.margin=0.5\ntopdown.drive=1\ndrive.hz=500\n");
+        var c = Parse("topdown.fov=60\nchase.lagpos=0.3\nstiff.pitchcurve=99\nchase.pitchref=abc\nnope.fov=1\nchase.offsetx=-1.5\narm.margin=0.5\ntopdown.drive=1\ndrive.hz=500\nrecenter.grace=2\nstiff.recenter=0\n");
         E(c.Modes[0].OffsetX == -1.5f && c.Arm.Margin == 0.5f, "offset and arm keys parse");
+        E(c.Recenter.Grace == 2f && c.Modes[2].Recenter == 0f && c.Modes[0].Recenter == 1f && new CameraConfig().Modes[1].Recenter == 0f, "recenter keys parse, top-down defaults off");
         E(c.Modes[1].Drive == 1f && c.DriveHz == DriveHzMax && new CameraConfig().Modes[1].Drive == 0f && new CameraConfig().Modes[0].Drive == 1f, "drive keys parse, top-down defaults off");
         E(c.Modes[1].Fov == 60f && c.Modes[0].Fov == 0f, "a mode key lands on its mode only");
         E(c.Modes[0].LagPos == 0.3f, "lag parses");
@@ -145,6 +180,7 @@ public static class CameraModeExt
             case "offsetx": c.OffsetX = System.Math.Clamp(v, -CameraMode.OffsetMax, CameraMode.OffsetMax); return true;
             case "offsety": c.OffsetY = System.Math.Clamp(v, -CameraMode.OffsetMax, CameraMode.OffsetMax); return true;
             case "drive": c.Drive = v != 0 ? 1f : 0f; return true;
+            case "recenter": c.Recenter = v != 0 ? 1f : 0f; return true;
         }
         return false;
     }

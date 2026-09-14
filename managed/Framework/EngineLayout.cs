@@ -590,6 +590,13 @@ public static unsafe class EngineLayout
     public static readonly int FollowZoomVel = Same("CAurBehaviorCameraFollow", "zoomVel", 0x4c);
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw, degrees, 0 = looking along +Y.</summary>
     public static readonly int FollowYaw = Same("CAurBehaviorCameraFollow", "yaw", 0x54);
+    /// <summary>CAurBehaviorCameraFollow -&gt; yaw velocity, deg/s: Control adds <c>v*dt</c> and zeroes it. The
+    /// engine's chase drivers (Linux @0x7dddd0 / @0x7de660, Windows rva 0x7d0d00 / 0x7d1c90) and
+    /// <c>TurnCamera(deg, 0)</c> (Linux @0x7d8960, Windows 0x7cfe60) write it at +0x58 on both builds (#541).</summary>
+    public static readonly int FollowYawVel = Same("CAurBehaviorCameraFollow", "yawVel", 0x58);
+    /// <summary>CAurBehaviorCameraFollow -&gt; yaw impulse, degrees added once: <c>TurnCamera(deg, 1)</c> (the drag
+    /// paths) accumulates it at +0x88 on both builds; Control consumes and zeroes it.</summary>
+    public static readonly int FollowYawImpulse = Same("CAurBehaviorCameraFollow", "yawImpulse", 0x88);
     /// <summary>CAurBehaviorCameraFollow -&gt; pitch, degrees from vertical (1 = top-down, 89 = horizontal).</summary>
     public static readonly int FollowPitch = Same("CAurBehaviorCameraFollow", "pitch", 0x5c);
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw / pitch / dist clamp-enabled flags (floats, 0 or 1). Set by
@@ -1405,6 +1412,10 @@ public static unsafe class EngineLayout
     /// <summary>CNWCObject -&gt; orientation Vector (x, y, z); position is the Vector at +0x38. UpdateDriveMode reads
     /// +0x44/+0x48 for the wire angle and TurnOnSpot rotates +0x44..+0x4c on both builds.</summary>
     public static readonly int ObjOrientation = Same("CNWCObject", "orientation", 0x44);
+    /// <summary>CNWCObject -&gt; current animation (short): <c>GetCurrentAnimation</c> is <c>*(short*)(this+0x5c)</c> on
+    /// both builds (Linux @0x7e3f70, Windows rva 0x7630d0, the chase driver's own callee). Locomotion = 2, 3, 4,
+    /// 0x4e, 0x4f, 0x54..0x57 (the chase drivers' test).</summary>
+    public static readonly int ObjAnimation = Same("CNWCObject", "animation", 0x5c);
     /// <summary>CNWCCreature -&gt; control flag byte; UpdateDriveMode and DrivePlayer both refuse unless bit 2 is set
     /// (player-controlled). Linux +0x39c, Windows +0x37c.</summary>
     public static readonly int CreatureDriveFlags = Diverges("CNWCCreature", "driveFlags", linux: 0x39c, win: 0x37c);

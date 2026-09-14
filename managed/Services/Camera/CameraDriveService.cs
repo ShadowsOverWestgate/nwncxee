@@ -64,6 +64,10 @@ public sealed unsafe class CameraDriveService : IExtenderService
           "no world camera", "no player creature", "creature not drivable", "forward and back cancel" };
 
     private static bool _live, _probeOk, _active, _engineAborts;
+    /// <summary>#541: the drive is running without a forward component (strafe/turn keys alone, or back), so the
+    /// movement is a deliberate sidestep or back-pedal the recenter must not swing behind -- a strafe would
+    /// become a spiral and a back-pedal a 180° swing that has no side to take.</summary>
+    internal static bool NoForward { get; private set; }
     private static Why _why = Why.Idle;
     private static int _sentTenths = -1, _tenths;
     /// <summary>The slewed heading in degrees, East 0 CCW; seeded from the creature's facing when a drive starts.</summary>
@@ -111,6 +115,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
             if (f == 0f && s == 0f) why = Why.Cancelled;
         }
         _why = why;
+        NoForward = why == Why.Active && f <= 0f;
         if (why != Why.Active)
         {
             if (_active && !held)
