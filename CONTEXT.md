@@ -208,6 +208,12 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   user can pick.
 - **Per-window state** — what a chat window keeps for itself (rect, tabs, colours, animation,
   timestamps, lock): edited on the window's own gear, never a panel row. Hidden-tier settings.
+- **Camera mode group** — one knob group per engine camera mode (chase, top-down, stiff chase),
+  identical rows with per-mode values, each with its own master: off means the stock camera runs
+  untouched in that mode. Tuning shared by the modes (recenter, drive, walls) is its own group,
+  never a mode's.
+- **Action row** — a panel row that does something when pressed instead of holding a value (enter
+  the free camera, dump a frame). Never persisted; the reset leaves it alone. Avoid: button knob.
 
 ## Rendering (Alloy)
 
