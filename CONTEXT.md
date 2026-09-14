@@ -215,7 +215,13 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   untouched in that mode. Tuning shared by the modes (recenter, drive, walls) is its own group,
   never a mode's.
 - **Action row** — a panel row that does something when pressed instead of holding a value (enter
-  the free camera, dump a frame). Never persisted; the reset leaves it alone. Avoid: button knob.
+  the free camera, revoke every approved hotkey). Never persisted; the reset leaves it alone; and it
+  stays live under an off master toggle — a value row greys, an action row does not. Avoid: button knob.
+- **Link row** — a read-only panel row holding an address (the releases page); pressing it copies the
+  address to the clipboard rather than opening anything. Not a knob.
+- **Consent store** — the per-server record of hotkeys the player approved, one token per server,
+  kept in its own file as state. **Revoke** forgets this server's approvals and tells it to unbind;
+  **Forget every server** wipes the whole store. Never a knob; never reset by the panel.
 
 ## Rendering (Alloy)
 
