@@ -248,7 +248,12 @@ public sealed unsafe class CameraService : IExtenderService
         return mgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)mgr;
     }
 
-    private static IntPtr Module()
+    /// <summary>#539: a gate the mouse-look must let go for -- dialog, cutscene, clear-view, attach, a server lock.
+    /// ponytail: reads the last Control's verdict; a GUI 3D panel's camera (NotWorldCamera) is not a gate here
+    /// because its Control interleaves with the world's and would flap the flag every frame.</summary>
+    public static bool GateUp => _live && _probeOk && _gate is not (Gate.Active or Gate.NotWorldCamera);
+
+    internal static IntPtr Module()
     {
         IntPtr app = App();
         return app == IntPtr.Zero ? IntPtr.Zero : _getModule(app);

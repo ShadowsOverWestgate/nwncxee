@@ -41,21 +41,26 @@ public sealed unsafe class UiInputService : IExtenderService
     private static bool _focused = true;
     private static readonly HashSet<uint> _keysDown = new();   // held keys, for the auto-repeat gate on chords
 
-    private static IntPtr _nuklearGlobal, _exoInputGlobal, _appMgr;
+    private static IntPtr _exoInputGlobal, _appMgr;
+    // Resolved at type init, not Initialize: the engine-GUI probes serve MouseLookService under lockchat too (#539).
+    private static readonly IntPtr _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);
+    private static readonly delegate* unmanaged<IntPtr, int> _nkAnyHovered =
+        (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.NkWindowIsAnyHovered);   // nk_window_is_any_hovered
+    private static readonly IntPtr _guiManGlobal = Native.Sym(SymbolMap.GuiMan);         // &g_pGuiMan
+    private static readonly delegate* unmanaged<IntPtr, int, int, int, int, IntPtr> _guiHitCheck =
+        (delegate* unmanaged<IntPtr, int, int, int, int, IntPtr>)Native.Sym(SymbolMap.GuiObjectHitCheck);   // CGuiMan::GuiObjectHitCheck
     private static delegate* unmanaged<IntPtr, int> _getKbMode;
     private static delegate* unmanaged<int> _modState;
     private static delegate* unmanaged<IntPtr, void> _kbOn, _kbOff;
     private static delegate* unmanaged<void> _turnOffModal;
     private static delegate* unmanaged<int*, int*, uint> _sdlGetMouseState;
-    private static delegate* unmanaged<IntPtr, int> _nkAnyHovered;   // nk_window_is_any_hovered
-    private static IntPtr _guiManGlobal;                                // &g_pGuiMan
-    private static delegate* unmanaged<IntPtr, int, int, int, int, IntPtr> _guiHitCheck;   // CGuiMan::GuiObjectHitCheck
     private static delegate* unmanaged<IntPtr, void> _nkCopyEvent;   // nk_sdl_copy_event
     private static bool _kbHeld;   // our view of the engine keyboard-capture gate; edges drive the modal reset
 
     // Trampolines to the engine originals.
     private static delegate* unmanaged<uint, uint, int> _keyOrig;
-    private static delegate* unmanaged<IntPtr, int> _winMsgOrig;
+    /// <summary>Chain slot on the SDL pump (#539: MouseLookService sits above us); <c>*_winMsg</c> is the next layer.</summary>
+    private static IntPtr* _winMsg;
     private static delegate* unmanaged<IntPtr, void> _gainOrig, _lostOrig;
     private static delegate* unmanaged<IntPtr, int, void> _origUpdateCursor;
     private static delegate* unmanaged<IntPtr, int, int, int, int, int, void> _origSetCursor;
@@ -69,7 +74,6 @@ public sealed unsafe class UiInputService : IExtenderService
             return;
         }
 
-        _nuklearGlobal   = Native.Sym(SymbolMap.Nuklear);
         _exoInputGlobal  = Native.Sym(SymbolMap.ExoInput);
         _appMgr          = Native.Sym(SymbolMap.AppManager);
         _getKbMode       = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.GetKeyboardMode);
@@ -78,15 +82,12 @@ public sealed unsafe class UiInputService : IExtenderService
         _kbOff           = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOff);
         _turnOffModal    = (delegate* unmanaged<void>)Native.Sym(SymbolMap.TurnOffKeyboardModal);
         _sdlGetMouseState = (delegate* unmanaged<int*, int*, uint>)Native.Sym(SymbolMap.SdlGetMouseState);
-        _nkAnyHovered    = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.NkWindowIsAnyHovered);
-        _guiManGlobal    = Native.Sym(SymbolMap.GuiMan);
-        _guiHitCheck     = (delegate* unmanaged<IntPtr, int, int, int, int, IntPtr>)Native.Sym(SymbolMap.GuiObjectHitCheck);
         _nkCopyEvent     = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.NkSdlCopyEvent);
 
         UiHost.KeyboardGate = KbGate;   // centralized engine keyboard gate (#64 AC3): one owner for all consumers
 
         _keyOrig    = (delegate* unmanaged<uint, uint, int>)hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
-        _winMsgOrig = (delegate* unmanaged<IntPtr, int>)hooks.Install(SymbolMap.WinMessageHandler,     (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
+        _winMsg     = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 0);
         _gainOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnGainFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
         _lostOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnLostFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
 
@@ -105,9 +106,9 @@ public sealed unsafe class UiInputService : IExtenderService
                 log.Info("UiInputService: cursor fold disabled (SetMouseCursor hook unavailable)");
         }
 
-        log.Info(_winMsgOrig != null
+        log.Info(_winMsg != null
             ? "UiInputService: input capture owned (keys/mouse/focus) -- routing through the UiHost arbiter"
-            : "UiInputService: input capture not installed (Install returned Zero: symbol unresolved or already hooked)");
+            : "UiInputService: input capture not installed (Chain refused: symbol unresolved or single-owned)");
     }
 
     // ---- the centralized keyboard gate (was ChatService.KeyboardMode) --------------------------
@@ -234,7 +235,7 @@ public sealed unsafe class UiInputService : IExtenderService
                     break;
             }
         }
-        return _winMsgOrig != null ? _winMsgOrig(ev) : 0;
+        return _winMsg != null ? ((delegate* unmanaged<IntPtr, int>)(*_winMsg))(ev) : 0;
     }
 
     // ---- focus edges ----------------------------------------------------------------------------
@@ -307,6 +308,10 @@ public sealed unsafe class UiInputService : IExtenderService
 
     /// <summary>Interactivity masks <c>CGuiMan::HandleLMouseDown</c> / <c>HandleMouseWheel</c> pass to the hit check.</summary>
     private const int GuiPressMask = 1, GuiWheelMask = 8;
+
+    /// <summary>Would the ENGINE's GUI take a press right now -- a NUI window under the pointer or a vanilla GUI
+    /// object at its tracked position? The engine gets first refusal on a right-drag (#539).</summary>
+    internal static bool EngineGuiWantsPress() => NuiHovered() || VanillaGuiAt(GuiPressMask) != IntPtr.Zero;
 
     /// <summary>The vanilla GUI object under the engine's tracked pointer, or null (#451). Exactly the call the
     /// engine's own press/wheel handler is about to make, so "would the engine find something" is answered by

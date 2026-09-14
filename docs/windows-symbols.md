@@ -72,6 +72,8 @@ deriving anything — required, or the RVAs point into a different build.
 | `CClientExoApp::GetPlayerByPlayerName` | `0x6ac120` | ParseChatString (`"tellplayer"` string, `0x87b590`) calls it once between the two ByCreatureName calls, matching the Linux order; body copies the string and walks `intern+0x38/+0x40` comparing `player+0x10/+0x18` |
 | `CClientExoApp::GetPlayerByCreatureName` | `0x6ac080` | ParseChatString's first and third lookup; inner walk compares `player+0x40/+0x48` |
 | `CClientExoApp::GetModule` | `0x6abea0` | forwarder to `*(intern+0x30)`; ConnectToServer (caller of exported `CGuiMan::EscapeAllModalPanels`) reads `GetModule()+0xf8` through it, and the tracy-anchored `HandleServerToPlayerModuleUpdate_Time` (`0x7a58e0`) writes `+0x160..+0x16c` on its result |
+| `CNWCModule::TurnCamera(float,int)` | `0x7cfe60` | #539: `CNWCModule` has 0 exports; found by offset signature with `tools/ghidra/ScanOffsets.java` (`+0x2bc` flag byte & 0x10, behavior `+0x58`/`+0x88` yaw velocity/impulse, `+0x134 \|= 1`, `+0x280 = 1`) -- 3 hits, the only one in the camera-setter cluster (SetCameraLimits `0x7cf9d0`..); body decompiles identical to Linux with vtable slots `-8` |
+| `CNWCModule::TiltCamera(float,int)` | `0x7cfdb0` | same scan on the pitch rows (`+0x2bc` & 0x20, `+0x60`/`+0x8c`, `+0x134`); sits 0xb0 below TurnCamera as on Linux (0x7d88a0 / 0x7d8960) |
 | `CNWCMessage::SendPlayerToServerChat_Talk` | `0x7ba7e0` | caller of SendPlayerToServerMessage with major 9 minor 1 |
 | `…Chat_Shout` | `0x7ba700` | major 9 minor 2 |
 | `…Chat_Whisper` | `0x7baab0` | major 9 minor 3 |

@@ -48,3 +48,5 @@ CNWCCreature::UpdatePopUpBubble	1408107a0
 CGuiInGamePopUpBubble::Show	1406e9820
 CNWCMessage::HandleServerToPlayerModuleUpdate_Time	1407a58e0
 CNWCCreatureStats::GetFullName	1407f3f00
+CNWCModule::TurnCamera	1407cfe60
+CNWCModule::TiltCamera	1407cfdb0

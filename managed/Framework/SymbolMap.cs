@@ -997,6 +997,16 @@ internal static unsafe class SymbolMap
     /// owner at +0x18 is <c>Camera+8</c>. Returns int. Chained by CameraService (post-adjusts the answer).</summary>
     public const string CameraFollowControl = "_ZN24CAurBehaviorCameraFollow7ControlEf";
 
+    /// <summary><c>CNWCModule::TurnCamera(float deg, int impulse)</c> @0x7d8960 / <c>TiltCamera</c> @0x7d88a0 -- the
+    /// engine's own orbit input (#539). impulse=1 adds to the behavior's one-shot yaw/pitch impulse (+0x88/+0x8c),
+    /// consumed by the next Control; the flag byte (+0x2bc bit 0x10 / 0x20) refuses a server-disabled axis and the
+    /// dialog "user turned" bookkeeping (+0x134, +0x280) is kept. Middle-drag calls exactly these.</summary>
+    public const string TurnCamera = "_ZN10CNWCModule10TurnCameraEfi";
+    public const string TiltCamera = "_ZN10CNWCModule10TiltCameraEfi";
+    /// <summary>SDL2 cursor capture for mouse-look (#539): relative mode hides the cursor and streams raw deltas.</summary>
+    public const string SdlSetRelativeMouseMode = "SDL_SetRelativeMouseMode";
+    public const string SdlWarpMouseInWindow = "SDL_WarpMouseInWindow";
+
     /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
     /// being previewed in isolation. <c>Scene::DoFog</c> @0x45f1b0 reads it: with a gob set, the fog colour
     /// it pushes is black rather than the area's, which #257 replicates when it reads the fog block direct.</summary>
@@ -1282,6 +1292,12 @@ internal static unsafe class SymbolMap
         [CountPart] = Nm("?countpart@@3HA"),
         [CurrentCamera] = Nm("?CurrentCamera@@3PEAVCamera@@EA"),
         [CameraFollowControl] = Nm("?Control@CAurBehaviorCameraFollow@@UEAAHM@Z"),
+        // CNWCModule has 0 exports; both found by offset signature (+0x2bc flag, +0x134, +0x88/+0x8c impulse,
+        // +0x280) with tools/ghidra/ScanOffsets.java -- bodies decompile identical to Linux, vtable slots -8.
+        [TurnCamera] = At(0x7cfe60),
+        [TiltCamera] = At(0x7cfdb0),
+        [SdlSetRelativeMouseMode] = Nm("SDL_SetRelativeMouseMode"),
+        [SdlWarpMouseInWindow] = Nm("SDL_WarpMouseInWindow"),
         [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),
         [CycleTidControllerVtbl] = At(0xd905c0),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [DoBinBucket] = Nm("?DoBinBucket@Scene@@EEAAXXZ"),

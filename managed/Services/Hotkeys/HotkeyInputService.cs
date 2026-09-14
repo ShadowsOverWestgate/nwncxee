@@ -71,7 +71,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private static delegate* unmanaged<int> _modState;   // SDL_GetModState()
 
     private static delegate* unmanaged<uint, uint, int> _keyOrig;
-    private static delegate* unmanaged<IntPtr, int> _winMsgOrig;
+    private static IntPtr* _winMsg;   // chain slot on the SDL pump (#539 shares it); *_winMsg = the next layer
     private static delegate* unmanaged<IntPtr, void> _gainOrig, _lostOrig;
     // Observer-mode chat-focus trampolines (default mode only; unused when ChatService owns input).
     private static delegate* unmanaged<IntPtr, void> _chatOnOrig, _clickOrig, _enterOrig, _escOrig, _loseOrig;
@@ -108,7 +108,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         _modState = (delegate* unmanaged<int>)Native.Sym(SymbolMap.SdlGetModState);   // live modifier state at capture
 
         _keyOrig    = (delegate* unmanaged<uint, uint, int>)hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
-        _winMsgOrig = (delegate* unmanaged<IntPtr, int>)hooks.Install(SymbolMap.WinMessageHandler,     (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage);
+        _winMsg     = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 0);
         _gainOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnGainFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
         _lostOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnLostFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
         // Chat typing gate. By default ChatService owns input: it SKIPS the chat-focus openers (suppressing
@@ -304,7 +304,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
                     break;
             }
         }
-        return _winMsgOrig != null ? _winMsgOrig(ev) : 0;
+        return _winMsg != null ? ((delegate* unmanaged<IntPtr, int>)(*_winMsg))(ev) : 0;
     }
 
     private static void Send(int code)
