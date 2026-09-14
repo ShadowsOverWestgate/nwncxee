@@ -150,6 +150,46 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   second abstraction. A non-focusable Window is skipped by focus hit-testing but still
   drawn and still drives the cursor.
 
+## Settings
+
+- **Knob** — one user-adjustable value the extender exposes, declared once by the feature that owns
+  it: what it is called, what kind of control edits it, its range or choices, its default, its
+  **tier**, its **effect**, and its **placement**. A knob that is not declared does not exist —
+  nothing can list, edit, or persist it. Avoid: option, setting, tunable (when the declaration is meant).
+- **Settings panel** — the one window every knob is edited in. Three columns: **category**,
+  **submenu**, the submenu's knobs. Reached two ways only: the `/settings` chat command in game,
+  and the **gear** at the main menu. Every feature's former settings icon and per-feature panel is
+  gone; the panel is the single place.
+- **Category / submenu** — the two-level tree the panel navigates: a category (UI, Graphics,
+  Camera, General, Hotkeys) holds submenus (UI → Chat, Camera → Chase); a submenu holds knobs
+  under optional section headers. A knob's **placement** names its submenu; the key it persists
+  under is independent of it.
+- **Tier** — how visible a knob is: **User** (shown, with help text), **Advanced** (shown under a
+  collapsed *Advanced* section of its submenu; expert dials), **Chat-only** (diagnostics and
+  bisect switches: reachable by chat command, listed by `/knobs`, never a panel row). Absence from
+  the panel is a declared tier, never an omission.
+- **Effect** — when a change takes hold: **live** (immediately, the default and the goal) or
+  **restart** (written now, read at the next launch — boot decisions and engine-path replacements).
+  The row says which. Live wins wherever it can without costing the frame.
+- **Feature master toggle** — the first row of a feature's submenu: "Enable <feature>". Off means
+  the feature stands aside and the client behaves vanilla for that feature; the rows below grey out.
+  A feature's effect (live / restart) is its master toggle's effect.
+- **Layout-affecting knob** — a knob whose change re-lays-out the UI that edits it (font size, UI
+  scale). Always a stepped choice (a **dropdown**), never a slider: a slider that moves the
+  slider under the pointer defeats the user's intent.
+- **Command gate** — the one config knob that makes the extender's chat commands live at all.
+  Off by default: a server may use the same command names for its own ends, so commands fall
+  through to the server unless the user opts in. `/settings` is the sole exemption.
+- **Settings file** — `cx.cfg`, the one file every knob persists to, dotted keys sorted
+  alphabetically, written by the panel and hand-editable. The per-feature `cx-<feature>.cfg` files
+  are retired into it. The hotkey consent store is state, not settings, and stays its own file.
+- **Dropdown** — the enumerated-choice control: click to open a list, pick one. Replaces the
+  cycle button, which hid the choices and needed N clicks to reach one.
+- **Tooltip** — the help text behind a faint "(?)" beside a row's label, shown on hover. Every
+  User-tier knob has one.
+- **Off-default marker** — the visible sign on a row that its value differs from the declaration's
+  default; the submenu's **Reset to defaults** clears every one of them at once.
+
 ## Rendering (Alloy)
 
 - **Builder intent** — the part of an area's authored lighting that Alloy must preserve regardless
@@ -189,11 +229,9 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   overridable resref, into the client's user directory. The starting point for a **shader override**,
   and current by construction because it dumps what is compiled in. Distinct from vanilla shaders,
   which CX never modifies.
-- **Tuning knob** — a runtime-adjustable value the extender exposes, in exactly one of three kinds: a
-  **chat command** (tunable while looking at its effect — look, debug visualisation, per-pass
-  toggles), a **config setting** (must be decided before the first frame, or describes the machine
-  rather than the look), or *deleted* (a bisect switch whose ticket has closed). Environment
-  variables are not a kind; a knob with no kind does not ship.
+- **Tuning knob** — see **Knob** under *Settings*. (Formerly: a value in exactly one of three
+  kinds — chat command, config setting, deleted. Superseded by the unified settings model, where a
+  knob is one declaration and the chat command and the settings panel are two views of it.)
 - **Render mode** — which renderer draws the 3D scene: the *owned* mode (Alloy) or the
   *vanilla* mode (the engine's own path). Both ship permanently; a device that cannot run the
   Alloy mode still runs every other extender feature. The mode is whole-scene — never a
