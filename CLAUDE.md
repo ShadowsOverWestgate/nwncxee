@@ -51,14 +51,15 @@ Needs clang-cl/lld-link/llvm-lib and a Windows 10 SDK + MSVC lib tree (default: 
 Windows partition; `SDK`/`MSVC` override). Alloy renders on Windows too (#456); its Windows
 refusal, if any, is `EngineLayout.Require` -- an unresolved offset row anywhere stands it down.
 
-## Tuning knobs (ADR 0013)
+## Tuning knobs (ADR 0025, amending 0013)
 
-There are no `CX_*` environment variables. Every knob is either a **chat command**
-(`/light`, `/grass`, `/post`, `/draw`, `/water`, `/probe`, `/shadow`, `/particles`,
-`/sky`, `/beams`, `/fps`, `/keydiag`, `/nameplate`, `/combattext`) or a **config setting** in
-`cx.cfg`, in the client's user directory beside `nwn.ini` and the per-feature
-cfgs -- capability gates, buffer sizes, arming decisions. `/knobs` prints both,
-and the exact path it read. Adding a knob means picking one of the two; there is no third place to put it.
+There are no `CX_*` environment variables. A knob is **one declaration** (`Knob<T>` in a
+`KnobGroup`: key, label, kind, range, default, tier, effect, help); the settings panel row,
+the `cx.cfg` key and the `/<group> <knob> <value>` chat command are three views of it.
+Nothing else creates a knob. The panel (`/settings`, or the gear at the main menu) is the
+primary surface; chat commands are gated by `general.commands` (off by default, `/settings`
+exempt). `cx.cfg` is the one file, in the client's user directory beside `nwn.ini`; `/knobs`
+(and General → Debug info) prints every declaration. Spec: `docs/spec/unified-settings.md`.
 
 The one exemption is `CX_MANAGED`, which the native bootstrap reads before any
 managed code exists.
@@ -203,8 +204,8 @@ in `managed/Ui/`, the frame host that owns the `SwapBuffers` present, computes t
 in-game gate + UI-scale sync, and drives the `UiHost` window registry's draw
 roll-call each frame; #62). Chat renders as one registered `Window` whose
 content-draw slot runs the chatbox. The minimal hook-pattern example now lives in
-`docs/hook-pattern.md` (#158); under the `lockchat=1` opt-out nothing hooks the
-present at all and the client renders vanilla.
+`docs/hook-pattern.md` (#158). There is no whole-extender opt-out (ADR 0025): every
+feature has a master toggle, and "no CX" is an uninstall.
 
 Linux only. Windows = proxy DLL or rename-launcher; macOS = `DYLD_INSERT_LIBRARIES`,
 blocked by the notarized app's hardened runtime until re-signed (do last).
