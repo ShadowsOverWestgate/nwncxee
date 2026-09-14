@@ -1053,6 +1053,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _enrollDelta = Settings.Bool("enrolldelta", true);
         _isEnabled = (delegate* unmanaged<int, byte>)Native.Sym(SymbolMap.RiIsEnabled);
         ResolveVaoDrip(log);
+        OccludeInit(log);   // #537
         // Hook install is its own walk, and it stays HERE rather than joining Attach above: a pass that hooks
         // the engine on a client where the Alloy renderer cannot arm would be suppressing draws nothing
         // replaces. Everything above this line has already returned in that case.

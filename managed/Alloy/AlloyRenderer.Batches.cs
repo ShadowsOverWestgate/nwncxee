@@ -31,6 +31,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         int n = 0, nb = 0;
         PrepareVisible();
+        OccludeFrame();   // #537: the hit fan this walk tags occluders from
         fixed (float* sph = _dSph)
         {
         for (int c = (int)AlloyClass.Opaque; c <= (int)AlloyClass.Cutout; c++)
@@ -57,6 +58,10 @@ public sealed unsafe partial class AlloyRenderer
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Fade, tFade, ChaseEvery);
                 if (alpha < 1f)
                 { _ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = BlendKey(i); nb++; continue; }
+                // #537: an occluder rides the keyhole sweep too -- same depth holes, same stage; the sign of
+                // rot.z remembers whether the aperture itself was allowed (StagePart reads _occKey).
+                _occKey[i] = dis;
+                if (OccludeVerdict(i)) dis = true;
                 if (dis) { _orderTmp[nd++] = i; continue; }
                 _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = false; n++;
             }
@@ -930,7 +935,7 @@ public sealed unsafe partial class AlloyRenderer
             // Keeping the flag off them also keeps them out of the prepass exclusion below, which they would
             // otherwise pay for a discard their stage does not have.
             bool dis = cls <= (int)AlloyClass.Cutout ? _passDis[k] : Dissolves(i, tri, ref c);
-            float dissolve = dis ? 1f : 0f;
+            float dissolve = cls <= (int)AlloyClass.Cutout ? OccludeDissolve(i, _occKey[i]) : dis ? 1f : 0f;
             if (dis) c.OwnDissolve++;
             // #242: this slot's persistent record. Three states, cheapest first -- already verified by an
             // earlier pass THIS frame (nothing to re-read at all), unchanged since the last frame (the

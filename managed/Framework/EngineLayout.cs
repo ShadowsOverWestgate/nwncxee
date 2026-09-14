@@ -1374,6 +1374,41 @@ public static unsafe class EngineLayout
     /// <inheritdoc cref="CResData"/>
     public static readonly int CResSize = Same("CRes", "size", 0x30);
 
+    // ---- the occlusion fade (#537): the camera flags, the hit record, the gob's object kind ----
+
+    /// <summary>CNWCModule -&gt; the <c>CAMERA_FLAG_*</c> bitmask the server's <c>SetCameraFlags</c> lands in;
+    /// bit <see cref="CameraFlagDisableCollision"/> is what <c>UpdateCameraCollision</c> tests. Paired on
+    /// that function: Linux @0x7dce30 and Windows rva 0x7d07d0 both read <c>+0x140 == 0 &amp;&amp;
+    /// (byte)+0x2bc &amp; 2</c> before dispatching on <c>CClientOptions+0x1d</c> (#537).</summary>
+    public static readonly int ModuleCameraFlags = Same("CNWCModule", "cameraFlags", 0x2bc);
+
+    /// <summary>Gob -&gt; the kind of game object behind <c>SetExternalData</c>: 5 creature
+    /// (<c>CNWCCreature::LoadModel</c> @0x72a4b0), 9 placeable (@0x7ec500), 10 door (@0x755ec0), through
+    /// vtable <c>SetExternalDataType</c>. The accessor pair is one line on both builds: Linux @0x444720,
+    /// Windows rva 0x48450 read <c>+0x498</c>.</summary>
+    public static readonly int GobExternalType = Same("Gob", "externalType", 0x498);
+    /// <summary>The <see cref="GobExternalType"/> a creature's gob carries.</summary>
+    public const int GobKindCreature = 5;
+
+    /// <summary>CHitInfo, the record <c>Scene::HitCheck</c> fills. <c>Reset</c> (@0x45fa90 / rva 0xd3090)
+    /// writes the mode at +0 and zeroes the ignore count at +0x18; <c>ClearOutput</c> (@0x45fa20 / rva
+    /// 0xc5a90) clears the kind at +0x24, the hit point at +0x28 and the SafePointer'd gob at +0x48;
+    /// <c>Scene::HitCheckGob</c> (@0x45f860 / rva 0xc9f50) walks the gob array at +0x10 for +0x18 entries
+    /// to skip. Identical on both builds. The object is 0x80 bytes (Reset's highest store is +0x7d).</summary>
+    public static readonly int HitInfoMode = Same("CHitInfo", "mode", 0x0);
+    /// <inheritdoc cref="HitInfoMode"/>
+    public static readonly int HitInfoIgnoreList = Same("CHitInfo", "ignoreList", 0x10);
+    /// <inheritdoc cref="HitInfoMode"/>
+    public static readonly int HitInfoIgnoreCount = Same("CHitInfo", "ignoreCount", 0x18);
+    /// <inheritdoc cref="HitInfoMode"/>
+    public static readonly int HitInfoKind = Same("CHitInfo", "kind", 0x24);
+    /// <inheritdoc cref="HitInfoMode"/>
+    public static readonly int HitInfoPoint = Same("CHitInfo", "point", 0x28);
+    /// <inheritdoc cref="HitInfoMode"/>
+    public static readonly int HitInfoGob = Same("CHitInfo", "gob", 0x48);
+    /// <inheritdoc cref="HitInfoMode"/>
+    public const int SizeOfHitInfo = 0x80;
+
     // Section 2 is closed: batch 1 took the Scene walk (#436), batch 2 the passes (#441), batch 3 the
     // renderer, textures, buffers and shim (#443), and build.sh now refuses a bare hex offset under
     // managed/Alloy/. A second tested client build gets its own pinned key plus its own values below;
@@ -1390,6 +1425,10 @@ public static unsafe class EngineLayout
     /// <summary>Range that tells a directional (sun/moon) light from a placed one: directionals carry
     /// ~100000, points ~10. Read off <see cref="LightRange"/> by everything that has to tell them apart.</summary>
     public const float DirectionalRange = 1000f;
+
+    /// <summary><c>CAMERA_FLAG_DISABLE_COLLISION</c> (nwscript.nss), the <see cref="ModuleCameraFlags"/> bit
+    /// <c>UpdateCameraCollision</c> refuses on (#537).</summary>
+    public const int CameraFlagDisableCollision = 0x02;
 
     // ================= build key =================
 

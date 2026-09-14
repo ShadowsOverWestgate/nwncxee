@@ -449,7 +449,7 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>A re-tenanted slot's caches describe the previous tenant.</summary>
-    private static void UnstampChase(int i) { _disGen[i] = 0; _fadeKnown[i] = false; _alphaKnown[i] = false; }
+    private static void UnstampChase(int i) { _disGen[i] = 0; _fadeKnown[i] = false; _alphaKnown[i] = false; _occFade[i] = 0f; }
 
     /// <summary>A pass skipped a part without running its record block, so the engine may move that part
     /// unobserved before the next build: the next sample chases everything once.</summary>

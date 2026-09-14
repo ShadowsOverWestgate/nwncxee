@@ -707,6 +707,15 @@ internal static unsafe class SymbolMap
     /// <para>Returns a <c>Vector</c> BY VALUE with no sret -- verified at the call site: <c>rdi</c> is the
     /// scene and <c>rsi</c> the position (0x49beaf/0x49bea8), so SysV puts x,y in xmm0 and z in xmm1.</para></summary>
     public const string SceneGetWindVector = "_ZN5Scene13GetWindVectorERK6Vectorf";
+    /// <summary><c>int Scene::HitCheck(Vector from, Vector to, Vector* hit, CHitInfo* info)</c> @0x462960 --
+    /// the engine's own segment test, tile BSP parts first then every gob (<c>info+0</c> == 0), nearest hit
+    /// wins; the camera's pull-in is built on it. <c>Vector</c> is BY VALUE and returns <c>int</c>, so no
+    /// sret: SysV puts each in xmm pairs, Win64 hands a pointer to a copy -- one blittable struct declaration
+    /// lowers to both (#537).</summary>
+    public const string SceneHitCheck = "_ZN5Scene8HitCheckE6VectorS0_PS0_P8CHitInfo";
+    /// <summary><c>CHitInfo::Reset(int mode, long mask, int box)</c> @0x45fa90 -- (re)initialises a hit
+    /// record, unlinking the SafePointer a previous hit left in it (#537).</summary>
+    public const string HitInfoReset = "_ZN8CHitInfo5ResetEili";
     /// <summary><c>Part::Animate(float)</c> @0x49ad00 -- walks the part's children (Part+0x38 pointer,
     /// Part+0x40 count) and calls +0xd8 on each. The dangly solve TAIL-CALLS it, so a replacement that
     /// skips the original must call it or the whole subtree freezes.</summary>
@@ -1414,6 +1423,8 @@ internal static unsafe class SymbolMap
         [SceneDeleteTile] = Nm("?DeleteTile@Scene@@UEAAXAEBVVector@@@Z"),
         [SceneFocusObject] = Nm("?m_pFocusObject@Scene@@0V?$SafePointer@VCAurObject@@@@A"),
         [SceneGetWindVector] = Nm("?GetWindVector@Scene@@QEAA?AVVector@@AEBV2@M@Z"),
+        [SceneHitCheck] = Nm("?HitCheck@Scene@@UEAAHVVector@@0PEAV2@PEAVCHitInfo@@@Z"),
+        [HitInfoReset] = Nm("?Reset@CHitInfo@@QEAAXH_JH@Z"),
         [SceneInitBsp] = Nm("?InitBSP@Scene@@UEAAXHHH_NM@Z"),
         [SceneSequence] = Nm("?Sequence@Scene@@2IA"),
         [SceneSpawnTile] = Nm("?SpawnTile@Scene@@UEAAPEAVCAurObject@@PEBDAEBVVector@@HHPEAVQuaternion@@@Z"),
