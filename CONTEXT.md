@@ -201,6 +201,13 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   User-tier knob has one.
 - **Off-default marker** — the visible sign on a row that its value differs from the declaration's
   default; the submenu's **Reset to defaults** clears every one of them at once.
+- **Point (pt)** — the unit CX text size is stated in: 1 pt = 1 design pixel before GUI scale.
+  Not a typographic point; no screen DPI is assumed. Box sizes and distances stay in design px.
+- **Panel face** — the one fixed text size the settings panel draws itself in (scaled by GUI
+  scale, never by the user's text-size knob), so the panel supports one size, not every size a
+  user can pick.
+- **Per-window state** — what a chat window keeps for itself (rect, tabs, colours, animation,
+  timestamps, lock): edited on the window's own gear, never a panel row. Hidden-tier settings.
 
 ## Rendering (Alloy)
 
