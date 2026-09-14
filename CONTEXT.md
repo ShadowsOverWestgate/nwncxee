@@ -160,10 +160,17 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   **submenu**, the submenu's knobs. Reached two ways only: the `/settings` chat command in game,
   and the **gear** at the main menu. Every feature's former settings icon and per-feature panel is
   gone; the panel is the single place.
+- **Knob group** — the unit a feature declares its knobs in. One identity wears five hats: the
+  group is the **submenu** the knobs appear in, the chat command that edits them, the reset unit,
+  and the first segment of every knob's key (`grass.density`, `chase.fov`, `chat.font` — keys are
+  two levels, group then knob). A group may carry a **feature master toggle** and may name a
+  parent group whose master greys it out. Avoid: feature (when the declaration unit is meant), pass.
 - **Category / submenu** — the two-level tree the panel navigates: a category (UI, Graphics,
-  Camera, General, Hotkeys) holds submenus (UI → Chat, Camera → Chase); a submenu holds knobs
-  under optional section headers. A knob's **placement** names its submenu; the key it persists
-  under is independent of it.
+  Camera, General, Hotkeys) holds submenus (UI → Chat, Camera → Chase); a submenu is one knob
+  group, its knobs under optional section headers.
+- **Boot value** — what a knob was when the client launched, as distinct from its current value.
+  A **restart**-effect feature reads its boot value; the panel edits the current one, and the two
+  differing is what "restart to apply" means.
 - **Tier** — how visible a knob is: **User** (shown, with help text), **Advanced** (shown under a
   collapsed *Advanced* section of its submenu; expert dials), **Chat-only** (diagnostics and
   bisect switches: reachable by chat command, listed by `/knobs`, never a panel row). Absence from
