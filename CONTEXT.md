@@ -63,7 +63,8 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Typing state** (`IsTyping`) — whether the chatbox owns the keyboard. While true,
   gameplay hotkeys are suppressed and keys route to the edit control.
 - **Suppression set** — the engine hooks skipped so the extender's chatbox replaces
-  the vanilla one; reversible via the `lockchat=1` opt-out in `cx.cfg`.
+  the vanilla one; installed only while the Chat feature's master toggle is on (a restart
+  effect), so "chat off" is the stock chat window untouched.
 
 ## Framework
 
@@ -182,7 +183,8 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   The row says which. Live wins wherever it can without costing the frame.
 - **Feature master toggle** — the first row of a feature's submenu: "Enable <feature>". Off means
   the feature stands aside and the client behaves vanilla for that feature; the rows below grey out.
-  A feature's effect (live / restart) is its master toggle's effect.
+  A feature's effect (live / restart) is its master toggle's effect. There is no whole-extender
+  toggle: "everything off" is every master off, and "no CX" is an uninstall.
 - **Layout-affecting knob** — a knob whose change re-lays-out the UI that edits it (font size, UI
   scale). Always a stepped choice (a **dropdown**), never a slider: a slider that moves the
   slider under the pointer defeats the user's intent.
