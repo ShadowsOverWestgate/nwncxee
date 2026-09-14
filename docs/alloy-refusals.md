@@ -1,7 +1,7 @@
 # The Alloy refusal set
 
 #263 (ADR 0018 strand 1 step 8). **The renderer is chosen once per session, not once per frame.** The config
-half is `vanilla=1` in `sowx.cfg`, read at `AlloyGate.Arm` (`managed/Alloy/Core/AlloyGate.cs`) before anything
+half is `vanilla=1` in `cx.cfg`, read at `AlloyGate.Arm` (`managed/Alloy/Core/AlloyGate.cs`) before anything
 installs; the capability half is asked from the present's `Start` phase and frozen the moment it answers.
 After that the only term that still moves is whether there is a world frame at all. Every render site reads
 `AlloyGate.Alloy`; nothing decides for itself.
@@ -47,10 +47,10 @@ a frame that is rendering vanilla anyway. It freezes the moment it stops being t
 
 | # | Refusal | Verdict |
 | --- | --- | --- |
-| 1 | `vanilla=1` in `sowx.cfg` | Choice |
-| 2 | `drawhooks` off in `sowx.cfg` | Choice |
-| 3 | `hdr=0` in `sowx.cfg` — the Alloy stages have no display-space variant | Choice |
-| 4 | `gl46=0` or `lockchat` in `sowx.cfg` — an opt-out, kept ahead of the capability block so it is not reported as a device verdict | Choice |
+| 1 | `vanilla=1` in `cx.cfg` | Choice |
+| 2 | `drawhooks` off in `cx.cfg` | Choice |
+| 3 | `hdr=0` in `cx.cfg` — the Alloy stages have no display-space variant | Choice |
+| 4 | `gl46=0` or `lockchat` in `cx.cfg` — an opt-out, kept ahead of the capability block so it is not reported as a device verdict | Choice |
 | 5 | `AlloyRenderer` never armed (hooks did not install) — **after** every opt-out above, because each of them returns from `Initialize` before `_armed` is set, so asking this first reports the mechanism instead of the request | Idle |
 | 5a | the `RenderSinglePass` shim never armed (an engine symbol or draw funnel did not resolve) — same placement, one layer down; since #458 there is no Alloy-inside-the-engine's-frame mode to fall back to | Idle |
 | 6 | no module loaded | Idle |
@@ -99,7 +99,7 @@ engine's stencil shadows back) and `SceneInputs`.
 
 Neither needs fault-injection machinery, and none is shipped:
 
-- **No 4.6 context.** `gl46=0` in `sowx.cfg` takes the same branch the device check takes (verdict `Choice`,
+- **No 4.6 context.** `gl46=0` in `cx.cfg` takes the same branch the device check takes (verdict `Choice`,
   reason named) and proves the whole fallback lands in vanilla. The `Incapable` wording differs; the path does
   not.
 - **Program link failure.** `/dumpshaders`, then break one stage in the dump directory (an undeclared
@@ -157,7 +157,7 @@ vanilla. There is no walk. A decline is geometry that nothing renders, so each b
 ### Counted, not owned
 
 - **The scene tint** (`gob+0x19`). `Mat`'s tint branch is `SetColor4f(currentscene+0x14c..0x154)` under
-  `Disable(5)`: the surface replaced by one unlit colour, which is not arithmetic on any term the SowxDraw
+  `Disable(5)`: the surface replaced by one unlit colour, which is not arithmetic on any term the CxDraw
   record carries. Rare, and expressible only by a program variant nothing else would use.
   **Counted** as `scene-tint=` on the census line (enrollment) and `instance-state` on the `[alloy]` line
   (draw loop).

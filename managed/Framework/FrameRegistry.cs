@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>Where in the frame present a participant runs. The host walks the phases in this order, with the
-/// window roll-call and the present itself between them (see <c>Sowx.Ui.UiHostService.OnSwap</c>).</summary>
+/// window roll-call and the present itself between them (see <c>CX.Ui.UiHostService.OnSwap</c>).</summary>
 public enum FramePhase
 {
     /// <summary>Before the session gate is recomputed: the frame's mode latch and its edge work.</summary>

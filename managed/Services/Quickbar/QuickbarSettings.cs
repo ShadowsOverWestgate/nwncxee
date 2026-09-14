@@ -1,7 +1,7 @@
-using Sowx.Framework;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Ui;
 
-namespace Sowx.Services.Quickbar;
+namespace CX.Services.Quickbar;
 
 /// <summary>The quickbar-side consumer of the shared <see cref="SettingsPanel"/>: a small floating panel opened
 /// by <c>/settings</c>. It owns the content only -- position cycle, black bars, hide quickbar, hide compass,

@@ -1,7 +1,7 @@
 using System;
-using Sowx.Graphics;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#171: the Alloy pass's embedded GLSL and the predicates that vet a content override against it.
 /// Split out of the render service so the control flow there reads as control flow; the constants are
@@ -51,12 +51,12 @@ public sealed unsafe partial class AlloyRenderer
     /// by name). Upgrade path if a real client ever hits it: probe the limit and put the fullbright variant's
     /// records in a UBO, which has a required vertex-stage minimum of 12 blocks.</para></summary>
     internal const string DrawBufDecl = """
-        struct SowxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; mat4 prev; };
-        layout(std430, binding = 4) readonly buffer SowxDrawBuf { SowxDraw uDraw[]; };
-        layout(std430, binding = 9) readonly buffer SowxDrawIdxBuf { int uDrawIdx[]; };
+        struct CxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; mat4 prev; };
+        layout(std430, binding = 4) readonly buffer CxDrawBuf { CxDraw uDraw[]; };
+        layout(std430, binding = 9) readonly buffer CxDrawIdxBuf { int uDrawIdx[]; };
         // #242: the record slot draw n reads. Records are indexed by OWNERSHIP slot and persist across
         // frames; draw order is per pass, so the two are different numbers and this is the map between them.
-        int SowxSlot(int draw) { return uDrawIdx[draw]; }
+        int CxSlot(int draw) { return uDrawIdx[draw]; }
 
         """;
 
@@ -64,16 +64,16 @@ public sealed unsafe partial class AlloyRenderer
     /// is staged into <c>d.feat.x</c> and compared against these, so <see cref="SelfCheck"/> asserts the two
     /// agree rather than trusting a comment to keep them in step.</summary>
     internal const string FeatDecl = """
-        #define SOWX_FEAT_WINDGRASS 1
-        #define SOWX_FEAT_WINDLEAF  2
-        #define SOWX_FEAT_WINDPLANT 3
-        #define SOWX_FEAT_ROOFKN    4
-        #define SOWX_FEAT_ROOFKNM   5
-        #define SOWX_FEAT_FLOWMAP   7
-        #define SOWX_FEAT_SKIN      8
-        #define SOWX_FEAT_NOIRWET   9
-        #define SOWX_FEAT_NOIRGLOSS 10
-        #define SOWX_FEAT_GROUNDWEATHER 11
+        #define CX_FEAT_WINDGRASS 1
+        #define CX_FEAT_WINDLEAF  2
+        #define CX_FEAT_WINDPLANT 3
+        #define CX_FEAT_ROOFKN    4
+        #define CX_FEAT_ROOFKNM   5
+        #define CX_FEAT_FLOWMAP   7
+        #define CX_FEAT_SKIN      8
+        #define CX_FEAT_NOIRWET   9
+        #define CX_FEAT_NOIRGLOSS 10
+        #define CX_FEAT_GROUNDWEATHER 11
         uniform int uTimeOfDay;        // worldtimerTimeOfDay, the engine's own int
         uniform float uLodBias;        // #391: log2(render scale), <= 0; every material sample takes it
         uniform vec3 uAreaWind;        // areaGlobalWind
@@ -112,12 +112,12 @@ public sealed unsafe partial class AlloyRenderer
     internal const string BoneVs = """
         layout(location = 8) in vec4 aBoneIdx;
         layout(location = 9) in vec4 aBoneWeight;
-        layout(std430, binding = 7) readonly buffer SowxBoneBuf { mat4 uBone[]; };
+        layout(std430, binding = 7) readonly buffer CxBoneBuf { mat4 uBone[]; };
 
         // -1 for every draw that is not a posed skinmesh, which is nearly all of them.
-        int SowxBoneBase(SowxDraw d) { return int(d.feat.x) == SOWX_FEAT_SKIN ? int(d.feat.y) : -1; }
+        int CxBoneBase(CxDraw d) { return int(d.feat.x) == CX_FEAT_SKIN ? int(d.feat.y) : -1; }
 
-        mat4 SowxSkinMat(int bb)
+        mat4 CxSkinMat(int bb)
         {
             mat4 m = mat4(0.0);
             if (aBoneWeight.x > 0.0) m  = uBone[bb + int(aBoneIdx.x)] * aBoneWeight.x;
@@ -133,37 +133,37 @@ public sealed unsafe partial class AlloyRenderer
         // MUST mirror ShaderFeatures.Displaces: this predicate decides which parts take the displaced clip
         // expression, and that one decides which parts the CPU keeps out of the prepass. Disagree and a part
         // sits in the prepass computing a clip expression the prepass never compiled.
-        bool SowxDisplaces(int feat) { return feat >= SOWX_FEAT_WINDGRASS && feat <= SOWX_FEAT_ROOFKNM; }
+        bool CxDisplaces(int feat) { return feat >= CX_FEAT_WINDGRASS && feat <= CX_FEAT_ROOFKNM; }
 
-        vec4 SowxFeatPos(SowxDraw d, vec3 aPos, out float anchorZ)
+        vec4 CxFeatPos(CxDraw d, vec3 aPos, out float anchorZ)
         {
             vec4 pos = vec4(aPos, 1.0);
             anchorZ = (d.model * pos).z;
             int feat = int(d.feat.x);
-            if (feat >= SOWX_FEAT_WINDGRASS && feat <= SOWX_FEAT_WINDPLANT)
+            if (feat >= CX_FEAT_WINDGRASS && feat <= CX_FEAT_WINDPLANT)
             {
                 float wind = sqrt(dot(uAreaWind.x, uAreaWind.y));
                 if (wind == 0.0) wind = 0.356;
-                bool plant = feat == SOWX_FEAT_WINDPLANT;
+                bool plant = feat == CX_FEAT_WINDPLANT;
                 float strength = d.feat.z / (plant ? 1000.0 : 100.0);
-                float speed = d.feat.y * (feat == SOWX_FEAT_WINDGRASS ? 20000.0 : 7000.0);
+                float speed = d.feat.y * (feat == CX_FEAT_WINDGRASS ? 20000.0 : 7000.0);
                 float phase = (d.model * pos).y * (plant ? 2.0 : 1.0) * float(uTimeOfDay) / speed;
                 float force = sin(phase) * strength;
                 // leaves have no roots to anchor, so a flat multiplier where the others take a gradient
-                force *= feat == SOWX_FEAT_WINDLEAF ? 5.0 : clamp(aPos.z, 0.0, 1.0) * 10.0;
+                force *= feat == CX_FEAT_WINDLEAF ? 5.0 : clamp(aPos.z, 0.0, 1.0) * 10.0;
                 pos.x += force * wind;
                 pos.y += force * wind;
                 if (plant) pos.z += force * wind / 4.0;
-                else if (feat == SOWX_FEAT_WINDLEAF) pos.z += force * wind / 2.0;
+                else if (feat == CX_FEAT_WINDLEAF) pos.z += force * wind / 2.0;
                 // the tileset-mesh lift: grass and plant meshes are authored under the walkmesh so the
                 // toolset will not collide with them. The leaf shader declares no such uniform, and its
                 // record's w carries nothing.
-                if (!(feat == SOWX_FEAT_WINDLEAF) && d.feat.w != 0.0) pos.z += d.feat.w;
+                if (!(feat == CX_FEAT_WINDLEAF) && d.feat.w != 0.0) pos.z += d.feat.w;
             }
-            else if (feat == SOWX_FEAT_ROOFKN || feat == SOWX_FEAT_ROOFKNM)
+            else if (feat == CX_FEAT_ROOFKN || feat == CX_FEAT_ROOFKNM)
             {
                 // roofknm measures the clip height from the PLAYER, roofkn from the world
-                float clip = d.feat.z + (feat == SOWX_FEAT_ROOFKNM ? uPlayerPos.z : 0.0);
+                float clip = d.feat.z + (feat == CX_FEAT_ROOFKNM ? uPlayerPos.z : 0.0);
                 bool interior = uAreaFlags == 1 || uAreaFlags == 3 || uAreaFlags == 5 || uAreaFlags == 7;
                 if ((uCamPos.z < clip || d.feat.w == 1.0) && interior) pos.z += d.feat.y;
                 else pos.z -= 500.0;   // out of sight under the floor, for pits and open water
@@ -204,9 +204,9 @@ public sealed unsafe partial class AlloyRenderer
     internal const string NoiseLib = """
         // Ashima Arts' simplex noise, as the engine ships it in inc_common.shd -- the dissolve edge IS this
         // pattern, so an approximation reads as a different effect rather than a slightly different one.
-        vec4 SowxPermute(vec4 x) { return mod((x * 34.0 + 1.0) * x, 289.0); }
+        vec4 CxPermute(vec4 x) { return mod((x * 34.0 + 1.0) * x, 289.0); }
 
-        float SowxNoise3D(vec3 v)
+        float CxNoise3D(vec3 v)
         {
             const vec2 C = vec2(0.16666667, 0.33333333);
             const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
@@ -220,7 +220,7 @@ public sealed unsafe partial class AlloyRenderer
             vec3 x2 = x0 - i2 + 2.0 * C.xxx;
             vec3 x3 = x0 - 1.0 + 3.0 * C.xxx;
             i = mod(i, 289.0);
-            vec4 p = SowxPermute(SowxPermute(SowxPermute(
+            vec4 p = CxPermute(CxPermute(CxPermute(
                        i.z + vec4(0.0, i1.z, i2.z, 1.0))
                      + i.y + vec4(0.0, i1.y, i2.y, 1.0))
                      + i.x + vec4(0.0, i1.x, i2.x, 1.0));
@@ -264,39 +264,39 @@ public sealed unsafe partial class AlloyRenderer
 
         // inc_keyhole.shd's own constants. FLOOR_OFFSET is the height above the player below which nothing
         // dissolves -- it is what stops the floor under the PC being punched out along with the wall.
-        const float SOWX_KH_FLOOR = 1.0, SOWX_KH_BLACK = 0.8, SOWX_KH_NOISE = 0.35,
-                    SOWX_KH_PUNCH = 0.3, SOWX_KH_SIZE = 12.5;
+        const float CX_KH_FLOOR = 1.0, CX_KH_BLACK = 0.8, CX_KH_NOISE = 0.35,
+                    CX_KH_PUNCH = 0.3, CX_KH_SIZE = 12.5;
         // #537: the occlusion fade's height cut, below which an occluder's fragments stay solid -- the floor a
         // CombineParts-merged wall shares a draw with must not dither under the player's feet.
-        const float SOWX_OCC_FLOOR = 0.25;
-        const int SOWX_BAYER4[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-        float SowxDither4(vec2 px) { ivec2 p = ivec2(px) & 3; return (float(SOWX_BAYER4[p.y * 4 + p.x]) + 0.5) / 16.0; }
+        const float CX_OCC_FLOOR = 0.25;
+        const int CX_BAYER4[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
+        float CxDither4(vec2 px) { ivec2 p = ivec2(px) & 3; return (float(CX_BAYER4[p.y * 4 + p.x]) + 0.5) / 16.0; }
 
         /// Returns the LINEAR colour multiplier the dissolve border wants, or a negative value meaning
         /// "punch through" -- the caller discards. 1.0 = this fragment is not in the aperture at all.
         /// #537: |dissolve| strictly inside (0,1) is an OCCLUDER's coverage -- a screen-door over the fragments
         /// between the camera and the player (nearer than the focus, above the feet); the sign says whether the
         /// aperture applies on top (positive) or not (negative: the CPU refused the keyhole for this part).
-        float SowxKeyhole(float dissolve, vec3 world, float depth)
+        float CxKeyhole(float dissolve, vec3 world, float depth)
         {
             float cov = abs(dissolve);
-            if (cov > 0.0 && cov < 1.0 && depth < uKeyholeCam.x && world.z > uPlayerPos.z + SOWX_OCC_FLOOR
-                && SowxDither4(gl_FragCoord.xy) >= cov) return -1.0;
+            if (cov > 0.0 && cov < 1.0 && depth < uKeyholeCam.x && world.z > uPlayerPos.z + CX_OCC_FLOOR
+                && CxDither4(gl_FragCoord.xy) >= cov) return -1.0;
             // vDepth is -vPosView.z, so every sign below is the engine's with that substitution made.
             float off = depth - uKeyholeCam.x + (90.0 - uKeyholeCam.y) / 45.0;
             if (dissolve <= 0.0 || off >= 0.0) return 1.0;
-            float r = clamp((uKeyholeDia.y - uKeyholeDia.x) * uKeyholeDia.x * SOWX_KH_SIZE / depth
+            float r = clamp((uKeyholeDia.y - uKeyholeDia.x) * uKeyholeDia.x * CX_KH_SIZE / depth
                             + uKeyholeDia.x, uKeyholeDia.x, uKeyholeDia.y);
             float r2 = r * r;
             vec2 cv = vec2(2.0 * gl_FragCoord.x * uPixel.x - 1.0, 2.0 * gl_FragCoord.y * uPixel.y - 1.0);
             if (uPixel.x < uPixel.y) cv.x *= uPixel.z; else cv.y /= uPixel.z;
             float d2 = dot(cv, cv);
             if (d2 >= r2) return 1.0;
-            float noise = SowxNoise3D(world) * 0.5 + 0.5;
-            float lvl = 1.0 - d2 / r2 - noise * SOWX_KH_NOISE + 0.5 / off;
-            lvl *= clamp(world.z - SOWX_KH_FLOOR - uPlayerPos.z, 0.0, 1.0);
-            if (lvl >= SOWX_KH_PUNCH) return -1.0;
-            if (lvl > 0.0) return 1.0 - SOWX_KH_BLACK * (lvl * lvl / (SOWX_KH_PUNCH * SOWX_KH_PUNCH));
+            float noise = CxNoise3D(world) * 0.5 + 0.5;
+            float lvl = 1.0 - d2 / r2 - noise * CX_KH_NOISE + 0.5 / off;
+            lvl *= clamp(world.z - CX_KH_FLOOR - uPlayerPos.z, 0.0, 1.0);
+            if (lvl >= CX_KH_PUNCH) return -1.0;
+            if (lvl > 0.0) return 1.0 - CX_KH_BLACK * (lvl * lvl / (CX_KH_PUNCH * CX_KH_PUNCH));
             return 1.0;
         }
 
@@ -310,7 +310,7 @@ public sealed unsafe partial class AlloyRenderer
     internal const string FogFs = FogMixFs + """
 
         /// How fogged this fragment is, 0..1. The area author's ramp, times the height layer.
-        float SowxFogFactor(vec3 world, float depth)
+        float CxFogFactor(vec3 world, float depth)
         {
             if (uFogParams.x == 0.0) return 0.0;
             // radial from the player (uFogOrigin.w == 1), so zooming the camera out does not move the fog;
@@ -323,7 +323,7 @@ public sealed unsafe partial class AlloyRenderer
             if (uFogSky.y > 0.0) f *= exp(-max(world.z - uFogSky.z, 0.0) * uFogSky.y);
             return min(f, 1.0);
         }
-        vec3 SowxFog(vec3 lin, vec3 world, float depth) { return SowxFogMix(lin, world, SowxFogFactor(world, depth)); }
+        vec3 CxFog(vec3 lin, vec3 world, float depth) { return CxFogMix(lin, world, CxFogFactor(world, depth)); }
 
         """;
 
@@ -343,7 +343,7 @@ public sealed unsafe partial class AlloyRenderer
         ///    where the fog is total, which is the one place the seam exists;
         ///  - the sun, added rather than mixed: looking into the sun through fog is BRIGHTER than the fog,
         ///    and a mix could only ever tint it.
-        vec3 SowxFogColourLin(vec3 world, float f)
+        vec3 CxFogColourLin(vec3 world, float f)
         {
             vec3 dir = normalize(world - uEyePos);
             float w = uFogSky.x * smoothstep(-0.35, 0.0, dir.z) * f;
@@ -356,12 +356,12 @@ public sealed unsafe partial class AlloyRenderer
         /// it builds up late and then slams, where the engine's ramp is even. #132 moved this across the
         /// encode and #336 moved it back; #341 keeps it there and fixes what batch 2 left half-done, which
         /// was a display-space source mixed toward a LINEAR target. Both ends are encoded here, once.
-        vec3 SowxFogMix(vec3 lin, vec3 world, float f)
+        vec3 CxFogMix(vec3 lin, vec3 world, float f)
         {
             if (f <= 0.0) return lin;
             vec3 g = vec3(1.0 / $SRGB$);
             vec3 disp = mix(pow(max(lin, vec3(0.0)), g),
-                            pow(max(SowxFogColourLin(world, f), vec3(0.0)), g), f);
+                            pow(max(CxFogColourLin(world, f), vec3(0.0)), g), f);
             return pow(max(disp, vec3(0.0)), vec3($SRGB$));
         }
 
@@ -378,17 +378,17 @@ public sealed unsafe partial class AlloyRenderer
     /// twice in one compilation unit is a compile error, not a warning.
     /// <para>Macros where Alloy already carries the value under its own name, so a splice costs no extra
     /// upload; uniforms only where it does not.</para>
-    /// <para><b><c>SOWX_ALLOY</c> is the contract with the content repo.</b> A stock file that needs to do
+    /// <para><b><c>CX_ALLOY</c> is the contract with the content repo.</b> A stock file that needs to do
     /// something different when Alloy is the renderer -- because Alloy replaced the engine machinery it
     /// would otherwise read -- branches on this. Old content that has never heard of it compiles exactly as
     /// it does for the engine, which is why the extender and the hak can land in either order.</para>
     /// <para><c>LIGHTING 0</c> is that case's first customer. The engine's forward light arrays
     /// (<c>numLights</c>, <c>lightPosition[]</c>) do not exist here -- Alloy's lights are an SSBO the
     /// clustered pass walks -- so every stock block guarded on them compiles out, and where a file wants a
-    /// light term anyway it asks <see cref="SowxVisionLight"/> for Alloy's.</para></summary>
+    /// light term anyway it asks <see cref="CxVisionLight"/> for Alloy's.</para></summary>
     internal const string VanillaEnvDefs = """
 
-        #define SOWX_ALLOY 1
+        #define CX_ALLOY 1
         #define POSITION_WORLD 1
         #define POSITION_VIEW  0
         #define LIGHTING 0
@@ -428,7 +428,7 @@ public sealed unsafe partial class AlloyRenderer
         #define fogColor vec4(pow(max(uFogColor.rgb, vec3(0.0)), vec3(1.0 / $SRGB$)), 1.0)
         // The renderer's own encode exponent, for content that has a display-space number to apply to a
         // linear value.
-        #define SOWX_GAMMA $SRGB$
+        #define CX_GAMMA $SRGB$
         // #350: inc_material's own resolution of the material terms. A stage that declares one as a
         // constant shadows the macro for its own text; a stage that declares none reads and WRITES the
         // globals, which is what td_ground_fs's min()/max() idiom does.
@@ -448,10 +448,10 @@ public sealed unsafe partial class AlloyRenderer
     /// snowfield with the snow at 0. The scriptable block still has to come from somewhere, and stock gets
     /// it through this include.</summary>
     internal const string VanillaStandardFs = """
-        #ifndef SOWX_INC_STANDARD
-        #define SOWX_INC_STANDARD
+        #ifndef CX_INC_STANDARD
+        #define CX_INC_STANDARD
         #include "inc_scriptable"
-        void SetupStandardShaderInputs() { FragmentColor *= SowxHostTexel; }
+        void SetupStandardShaderInputs() { FragmentColor *= CxHostTexel; }
         void ApplyStandardShader() { }
         #endif
 
@@ -483,7 +483,7 @@ public sealed unsafe partial class AlloyRenderer
         // Alloy's linear albedo with the coverage in .a, sampled before the body runs. .rgb is read back
         // as the albedo.
         vec4 FragmentColor;
-        vec4 SowxHostTexel;
+        vec4 CxHostTexel;
         // ...and the material terms as inc_material's generated globals: filled from Alloy's synthesis
         // before a hosted body runs, read back after it (see the MATERIAL_*_VALUE macros above).
         float fRoughness, fSpecularity, fMetallicness;
@@ -514,11 +514,11 @@ public sealed unsafe partial class AlloyRenderer
         /// answer holds a distance veil OPEN -- so a lit tavern read as an unlit one and the veil crushed it
         /// to black. A floor at grazing incidence to a wall lantern, or anything the lantern's own cube
         /// shadows, lost the light entirely.</para>
-        float SowxVisionLight()
+        float CxVisionLight()
         {
-            uint cl = SowxCluster(vDepth);
+            uint cl = CxCluster(vDepth);
             uint n = uClCount[cl];
-            uint base = cl * SOWX_CLUSTER_CAP;
+            uint base = cl * CX_CLUSTER_CAP;
             vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
             float lit = 0.0;
             for (uint k = 0u; k < n; k++)
@@ -531,7 +531,7 @@ public sealed unsafe partial class AlloyRenderer
                 if (dd > rr) continue;
                 float f2 = dd / rr;
                 float att = (1.0 - f2) / (at.x + at.y * f2);
-                vec3 c = SowxLinear(uLights[li * 2u + 1u].rgb);
+                vec3 c = CxLinear(uLights[li * 2u + 1u].rgb);
                 lit = max(lit, att * dot(c, vec3(0.299, 0.587, 0.114)));
             }
             return lit;
@@ -560,7 +560,7 @@ public sealed unsafe partial class AlloyRenderer
     internal const string HookFs = """
 
         // $VANILLA cx_lit_hooks
-        vec3 SowxDisplayHook(vec3 c) { return c; }
+        vec3 CxDisplayHook(vec3 c) { return c; }
         // $VANILLA-END
 
         """;
@@ -577,20 +577,20 @@ public sealed unsafe partial class AlloyRenderer
     internal const string HostFs = """
 
         // $VANILLA-HOST fs_noirwet
-        void SowxHost_fs_noirwet() { }
+        void CxHost_fs_noirwet() { }
         // $VANILLA-END
         // $VANILLA-HOST fs_noirgloss
-        void SowxHost_fs_noirgloss() { }
+        void CxHost_fs_noirgloss() { }
         // $VANILLA-END
         // $VANILLA-HOST td_ground_fs
-        void SowxHost_td_ground_fs() { }
+        void CxHost_td_ground_fs() { }
         // $VANILLA-END
 
-        bool SowxHostSurface(int feat)
+        bool CxHostSurface(int feat)
         {
-            if (feat == SOWX_FEAT_NOIRWET) SowxHost_fs_noirwet();
-            else if (feat == SOWX_FEAT_NOIRGLOSS) SowxHost_fs_noirgloss();
-            else if (feat == SOWX_FEAT_GROUNDWEATHER) SowxHost_td_ground_fs();
+            if (feat == CX_FEAT_NOIRWET) CxHost_fs_noirwet();
+            else if (feat == CX_FEAT_NOIRGLOSS) CxHost_fs_noirgloss();
+            else if (feat == CX_FEAT_GROUNDWEATHER) CxHost_td_ground_fs();
             else return false;
             return true;
         }
@@ -630,7 +630,7 @@ public sealed unsafe partial class AlloyRenderer
         /// (#222's trap), and bracketing them together costs one encode instead of three.
         /// <para>The shape goes last on purpose, and the content says why: it is UI drawn on the ground, and
         /// a caster has to read its colour over a monochrome scene.</para>
-        vec3 SowxDisplayOverlays(vec3 lin)
+        vec3 CxDisplayOverlays(vec3 lin)
         {
             float strength = GetTargetGroundHighlightStrength();
             vec4 c = vec4(pow(max(lin, vec3(0.0)), vec3(1.0 / $SRGB$)), 1.0);
@@ -638,7 +638,7 @@ public sealed unsafe partial class AlloyRenderer
             // then the ENGINE's targeting shape last -- inc_standard.shd's own order, and its own reason:
             // the shape is UI drawn on the ground, and a caster has to read its colour over a monochrome
             // scene.
-            c.rgb = SowxDisplayHook(c.rgb);
+            c.rgb = CxDisplayHook(c.rgb);
             ApplyTargetGroundHighlight(c, strength);
             return pow(max(c.rgb, vec3(0.0)), vec3($SRGB$));
         }
@@ -647,10 +647,10 @@ public sealed unsafe partial class AlloyRenderer
         /// targeting shape. `fswater.shd` is the case and the reason: its tail calls ApplyNoirDesat and
         /// ApplyRacialVision and stops there, so adding the shape to Alloy's water would paint a reticle
         /// vanilla never painted. Same encode bracket, one term short.
-        vec3 SowxDisplayContent(vec3 lin)
+        vec3 CxDisplayContent(vec3 lin)
         {
             vec3 c = pow(max(lin, vec3(0.0)), vec3(1.0 / $SRGB$));
-            c = SowxDisplayHook(c);
+            c = CxDisplayHook(c);
             return pow(max(c, vec3(0.0)), vec3($SRGB$));
         }
 
@@ -670,19 +670,19 @@ public sealed unsafe partial class AlloyRenderer
         // The lists block is compiled in ONLY for the OIT bracket's twin program (OitPass.WithLists): an SSBO
         // atomic in a fragment stage is a side effect, and the driver then runs every fragment before the depth
         // test -- even down a dead uOit branch -- which costs the opaque pass its early-Z (measured 5x on NVIDIA).
-        #ifdef SOWX_OIT_LISTS
-        layout(std430, binding = 22) buffer SowxOitHeads { uint uOitCount; uint uOitHead[]; };
-        layout(std430, binding = 23) writeonly buffer SowxOitNodes { uvec4 uOitNode[]; };
+        #ifdef CX_OIT_LISTS
+        layout(std430, binding = 22) buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
+        layout(std430, binding = 23) writeonly buffer CxOitNodes { uvec4 uOitNode[]; };
         #endif
         uniform ivec2 uOitDim;   // (head-table stride in pixels, node capacity)
         uniform float uOitBias;  // a wash batch's polygon offset, which gl_FragCoord.z need not carry
         uniform int uOitGob;     // the batch's object id (1..255, 0 = none): one object composites as ONE layer
-        vec4 SowxOitOut(vec4 c)
+        vec4 CxOitOut(vec4 c)
         {
             if (uOit == 0) { oReveal = 1.0; return c; }
             float a = clamp(c.a, 0.0, 1.0);
             ivec2 px = ivec2(gl_FragCoord.xy);
-        #ifdef SOWX_OIT_LISTS
+        #ifdef CX_OIT_LISTS
             if (uOit == 2)
             {
                 // mode 2 draws with the GL depth test OFF and no depth attached: this compare is the test,
@@ -748,16 +748,16 @@ public sealed unsafe partial class AlloyRenderer
         """ + FeatVs + BoneVs + """
         void main()
         {
-            SowxDraw d = uDraw[SowxSlot(uDrawBase + gl_DrawID)];
+            CxDraw d = uDraw[CxSlot(uDrawBase + gl_DrawID)];
             float anchorZ;
-            vec4 pos = SowxFeatPos(d, aPos, anchorZ);
-            int bb = SowxBoneBase(d);
-            if (bb >= 0) pos = SowxSkinMat(bb) * vec4(aPos, 1.0);
+            vec4 pos = CxFeatPos(d, aPos, anchorZ);
+            int bb = CxBoneBase(d);
+            if (bb >= 0) pos = CxSkinMat(bb) * vec4(aPos, 1.0);
             // The skinned arm takes the DISPLACED expression, not a third one, and takes it first: a skinned
             // position cannot be the literal clip expression the prepass compiled, which is why #137 keeps
             // this class out of the prepass (ShaderFeatures.OutOfPrepass says so in one place for both).
             if (bb >= 0) gl_Position = uVP * d.model * pos;
-            else if (!SowxDisplaces(int(d.feat.x))) gl_Position = uVP * d.model * vec4(aPos, 1.0);
+            else if (!CxDisplaces(int(d.feat.x))) gl_Position = uVP * d.model * vec4(aPos, 1.0);
             else gl_Position = uVP * d.model * pos;
             vUV = vec2(d.rot.x * aUV.x - d.rot.y * aUV.y, d.rot.y * aUV.x + d.rot.x * aUV.y);
             vAlpha = d.rot.w;
@@ -796,14 +796,14 @@ public sealed unsafe partial class AlloyRenderer
             vec4 t = texture(uTex, vUV, uLodBias);
             if (uAlphaCut >= 0.0 && t.a <= uAlphaCut) discard;
             // #132: the target is LINEAR, so the texel's display-space encode comes off here too -- the
-            // probe and the frame want the same thing now. Same exponent AlloyLights.SowxLinear uses,
+            // probe and the frame want the same thing now. Same exponent AlloyLights.CxLinear uses,
             // spelled out because this stage does not include that lib.
             vec3 tinted = t.rgb * uTint;
             vec3 rgb = pow(max(tinted, vec3(0.0)), vec3($SRGB$));
             // the sky's horizon band only -- an unlit PART is never fogged (vanilla compiles it FOG 0)
             if (uSkyFog > 0.0 && uFogParams.x != 0.0)
-                rgb = SowxFogMix(rgb, vWorld, 1.0 - smoothstep(0.0, uSkyFog, normalize(vWorld - uEyePos).z));
-            frag = SowxOitOut(vec4(rgb, t.a * vAlpha));
+                rgb = CxFogMix(rgb, vWorld, 1.0 - smoothstep(0.0, uSkyFog, normalize(vWorld - uEyePos).z));
+            frag = CxOitOut(vec4(rgb, t.a * vAlpha));
         }
         """;
 
@@ -822,8 +822,8 @@ public sealed unsafe partial class AlloyRenderer
         flat out int vDraw;
         void main()
         {
-            int id = SowxSlot(uDrawBase + gl_DrawID);
-            SowxDraw d = uDraw[id];
+            int id = CxSlot(uDrawBase + gl_DrawID);
+            CxDraw d = uDraw[id];
             vDraw = id;   // #493: the record slot the vis-ID target packs
             // #262: the skinned arm, and it goes through the same `pos` TEMP the colour stages use so the
             // assigning statement is character for character theirs -- ShaderContract asserts that one
@@ -831,8 +831,8 @@ public sealed unsafe partial class AlloyRenderer
             // exists to be careful about, and everywhere else in this renderer that promise is kept by
             // identical TEXT rather than by an equivalent expression tree.
             vec4 pos = vec4(aPos, 1.0);
-            int bb = SowxBoneBase(d);
-            if (bb >= 0) pos = SowxSkinMat(bb) * vec4(aPos, 1.0);
+            int bb = CxBoneBase(d);
+            if (bb >= 0) pos = CxSkinMat(bb) * vec4(aPos, 1.0);
             if (bb >= 0) gl_Position = uVP * d.model * pos;
             else gl_Position = uVP * d.model * vec4(aPos, 1.0);
         }
@@ -842,13 +842,13 @@ public sealed unsafe partial class AlloyRenderer
         flat in int vDraw;
 
         """ + IdTarget.OutDecl + """
-        void main() { oVisId = SowxVisId(vDraw, gl_PrimitiveID); }
+        void main() { oVisId = CxVisId(vDraw, gl_PrimitiveID); }
         """;
 
     /// <summary>The feature prepass's fragment stage: the cutout test the colour stages make, and nothing else.
     /// Same texel (unit 0, the batch's diffuse, the lit stage's rotated <c>vUV</c>), same threshold
     /// (<c>AlloyClasses.Discard</c>), same env exemption (an env-mapped material's alpha is reflectivity, not
-    /// coverage -- <c>SOWX_SLOT_ENV</c>). A negative cut (an opaque displaced batch) tests nothing. Flowmap
+    /// coverage -- <c>CX_SLOT_ENV</c>). A negative cut (an opaque displaced batch) tests nothing. Flowmap
     /// batches slide their diffuse uv and stay out on the CPU side, so the fetch here is never wrong for them.</summary>
     internal const string DepthFeatFs = """
         #version 460 core
@@ -861,7 +861,7 @@ public sealed unsafe partial class AlloyRenderer
         uniform float uLodBias;        // #391: the SAME bias as the colour cutout, or the two tests disagree (#119)
         void main()
         {
-            oVisId = SowxVisId(vDraw, gl_PrimitiveID);
+            oVisId = CxVisId(vDraw, gl_PrimitiveID);
             if (uAlphaCut < 0.0) return;
             if ((int(uDraw[vDraw].pbr.w) & 64) != 0) return;
             if (texture(uTex, vUV, uLodBias).a <= uAlphaCut) discard;
@@ -890,11 +890,11 @@ public sealed unsafe partial class AlloyRenderer
         flat out int vDraw;
         void main()
         {
-            int id = SowxSlot(uDrawBase + gl_DrawID);
-            SowxDraw d = uDraw[id];
+            int id = CxSlot(uDrawBase + gl_DrawID);
+            CxDraw d = uDraw[id];
             vec4 pos = vec4(aPos, 1.0);
-            int bb = SowxBoneBase(d);   // #262: a dissolving skinmesh takes the same arm DepthVs does
-            if (bb >= 0) pos = SowxSkinMat(bb) * vec4(aPos, 1.0);
+            int bb = CxBoneBase(d);   // #262: a dissolving skinmesh takes the same arm DepthVs does
+            if (bb >= 0) pos = CxSkinMat(bb) * vec4(aPos, 1.0);
             if (bb >= 0) gl_Position = uVP * d.model * pos;
             else gl_Position = uVP * d.model * vec4(aPos, 1.0);
             // vWorld feeds the APERTURE, and it has to be the position the colour stage discards on or the
@@ -903,7 +903,7 @@ public sealed unsafe partial class AlloyRenderer
             // METRES from bind pose, so it stops being a speck: the prepass would keep a fragment the colour
             // pass discards, write cloak depth over it, and LEQUAL would cull the room behind the character.
             // Hence `pos`, which is the skinned position when there is one and aPos when there is not.
-            // The remaining gap is the DISPLACED case (SowxFeatPos), and those never reach this stage.
+            // The remaining gap is the DISPLACED case (CxFeatPos), and those never reach this stage.
             vWorld = (d.model * pos).xyz;
             vDepth = gl_Position.w;
             vDraw = id;
@@ -920,8 +920,8 @@ public sealed unsafe partial class AlloyRenderer
         """ + KeyholeFs + """
         void main()
         {
-            if (SowxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth) < 0.0) discard;
-            oVisId = SowxVisId(vDraw, gl_PrimitiveID);
+            if (CxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth) < 0.0) discard;
+            oVisId = CxVisId(vDraw, gl_PrimitiveID);
         }
         """;
 
@@ -948,14 +948,14 @@ public sealed unsafe partial class AlloyRenderer
         """ + FeatVs + BoneVs + """
         void main()
         {
-            int id = SowxSlot(uDrawBase + gl_DrawID);
-            SowxDraw d = uDraw[id];
-            vec4 pos = SowxFeatPos(d, aPos, vAnchorZ);
+            int id = CxSlot(uDrawBase + gl_DrawID);
+            CxDraw d = uDraw[id];
+            vec4 pos = CxFeatPos(d, aPos, vAnchorZ);
             // #137: a posed skinmesh REPLACES the feature position -- the two never coexist (see
             // ShaderFeature.Skin) -- and the same blended matrix then carries the normal, so a cloak is lit
             // off the surface it actually has rather than the one it had in bind pose.
-            int bb = SowxBoneBase(d);
-            mat4 skin = bb >= 0 ? SowxSkinMat(bb) : mat4(1.0);
+            int bb = CxBoneBase(d);
+            mat4 skin = bb >= 0 ? CxSkinMat(bb) : mat4(1.0);
             if (bb >= 0) pos = skin * vec4(aPos, 1.0);
             vec4 world = d.model * pos;
             // The undisplaced branch is written out in full rather than folded into the line below, because
@@ -969,7 +969,7 @@ public sealed unsafe partial class AlloyRenderer
             // The skinned arm takes the DISPLACED expression, not a third one, and takes it first -- see
             // the fullbright stage for why, and ShaderFeatures.OutOfPrepass for the prepass side of it.
             if (bb >= 0) gl_Position = uVP * d.model * pos;
-            else if (!SowxDisplaces(int(d.feat.x))) gl_Position = uVP * d.model * vec4(aPos, 1.0);
+            else if (!CxDisplaces(int(d.feat.x))) gl_Position = uVP * d.model * vec4(aPos, 1.0);
             else gl_Position = uVP * d.model * pos;
             vDepth = gl_Position.w;
             // shaded at the DISPLACED position, which is where the vanilla shaders light a swaying plant too
@@ -1002,7 +1002,7 @@ public sealed unsafe partial class AlloyRenderer
         in vec3 vNrm;
         in float vDepth;
         in float vAnchorZ;             // #123: undisplaced world height, for the roof anchor discard
-        flat in int vDraw;             // this fragment's SowxDraw record: the material colours live there now
+        flat in int vDraw;             // this fragment's CxDraw record: the material colours live there now
 
         """ + DrawBufDecl + FeatDecl + KeyFogDecl + """
         uniform sampler2D uTex;
@@ -1042,46 +1042,46 @@ public sealed unsafe partial class AlloyRenderer
         """ + OitOutFs + """
 
         // Slot mask bits, matching AlloyRenderer's 1 << (slot - 1).
-        const int SOWX_SLOT_NORMAL = 1, SOWX_SLOT_SPEC = 2, SOWX_SLOT_ROUGH = 4,
-                  SOWX_SLOT_HEIGHT = 8, SOWX_SLOT_ILLUM = 16;
+        const int CX_SLOT_NORMAL = 1, CX_SLOT_SPEC = 2, CX_SLOT_ROUGH = 4,
+                  CX_SLOT_HEIGHT = 8, CX_SLOT_ILLUM = 16;
         // #146: bit 6, texture slot 7 -- the AO map. It multiplies the SAME occlusion factor the height
         // map's local term feeds, so a material carrying both gets one combined ambient scale.
-        const int SOWX_SLOT_AO = 128;
+        const int CX_SLOT_AO = 128;
         /// the depth encode's own rounding, nothing more: #119 makes a prepassed fragment's depth EQUAL
-        const float SOWX_AO_DEPTH_EPS = 1e-5;
+        const float CX_AO_DEPTH_EPS = 1e-5;
         // Synthesis floors for a material that declares nothing, read straight off the OLD-generation
         // inc_material.shd the installed client actually runs (#107 §11): fSpecularityMin 0.04 (the old gen's
         // name -- the split-include fork calls it fGeneratedSpecularityMin), fGeneratedRoughnessMin 0.125
         // unconditionally, fGeneratedRoughnessMax 0.6 at SHADER_QUALITY_MODE > 1 (0.65 below it, and the
         // Alloy lobe is GGX + Schlick geometric shadowing unconditionally, which IS that setting), and the
         // specular-map metallicness curve (fMetallicnessModifier 3.0 * fGeneratedMetallicnessOffset 0.2 = 0.6).
-        const float SOWX_SPEC_MIN = 0.04, SOWX_ROUGH_MAX = 0.6, SOWX_ROUGH_MIN = 0.125;
+        const float CX_SPEC_MIN = 0.04, CX_ROUGH_MAX = 0.6, CX_ROUGH_MIN = 0.125;
         // metallicness curve, both of the old gen's branches: scale * specularity - scale * offset, where the
         // offset is 0.2 with a specular map and fGeneratedSpecularityMin without one.
-        const float SOWX_METAL_SCALE_MAP = 3.0, SOWX_METAL_BIAS_MAP = 0.6,
-                    SOWX_METAL_SCALE_BARE = 10.0, SOWX_METAL_BIAS_BARE = 0.4;
+        const float CX_METAL_SCALE_MAP = 3.0, CX_METAL_BIAS_MAP = 0.6,
+                    CX_METAL_SCALE_BARE = 10.0, CX_METAL_BIAS_BARE = 0.4;
         // ApplyColorSpace(0.5) at the engine's 2.2 gamma -- the mid-grey inc_material.shd divides the
         // albedo's peak channel by when it synthesises a specular colour.
-        const float SOWX_MID_GREY = 0.2176;
+        const float CX_MID_GREY = 0.2176;
         // #121: bit 5 of the same slot mask -- the material declares an env map (Material::HasEnvMap, i.e.
         // mat+0x40). NO texture is bound for it: the probe replaces what it held. What survives is the
         // engine's own "this is shiny" flag on 2002 content, which drives the synthesis below.
-        const int SOWX_SLOT_ENV = 64;
+        const int CX_SLOT_ENV = 64;
         // #123: bit 5, texture slot 6 -- the flow map, and the only slot outside the stock five. Enrolled
         // only on a flowmap part, so on everything else this bit is clear and uFlowTex is never sampled.
-        const int SOWX_SLOT_FLOW = 32;
+        const int CX_SLOT_FLOW = 32;
         // inc_material.shd:143-144 -- an env-mapped material with no specular map takes its specularity from
         // the diffuse alpha (fEnvMapLevel = 1 - alpha), and its roughness down toward the floor with it.
         // TWO modifiers, not one: fLegacyEnvMapSpecularityModifier 8.0 and fLegacyEnvMapRoughnessModifier
         // 3.0 (:60-62). Sharing 8.0 would saturate the roughness curve at envLevel 0.125 and render every
         // legacy shiny surface at the floor. 3.0 is the OLD generation's value, which is the one this client
         // runs (#107 s11); the split-include fork in sow-topdata says 2.5.
-        const float SOWX_ENV_SPEC_MAX = 0.98, SOWX_ENV_SPEC_SCALE = 8.0, SOWX_ENV_ROUGH_SCALE = 3.0;
+        const float CX_ENV_SPEC_MAX = 0.98, CX_ENV_SPEC_SCALE = 8.0, CX_ENV_ROUGH_SCALE = 3.0;
         // inc_standard.shd:250-252: the albedo is desaturated toward this grey in proportion to reflectivity,
         // so the reflection is not counted twice. DISPLAY space -- the engine does it before the :253 linearise.
-        const vec3 SOWX_ENV_GREY = vec3(0.666667);
+        const vec3 CX_ENV_GREY = vec3(0.666667);
 
-        float SowxContactDist(float depth) { return uContact.w / (depth * 2.0 - 1.0 + uContact.z); }
+        float CxContactDist(float depth) { return uContact.w / (depth * 2.0 - 1.0 + uContact.z); }
         // Screen-space contact shadow: march from the fragment toward the sun through the depth copy. A
         // surface nearer than the ray point by less than a step's worth is a blocker, weighted by how close
         // to the fragment it was hit, so the term is a soft contact darkening rather than a hard edge -- no
@@ -1090,7 +1090,7 @@ public sealed unsafe partial class AlloyRenderer
         // Nothing here reads the NORMAL: on a low-poly mesh every normal-dependent term (an offset along N,
         // a facing gate, a grazing fade) jumps at a facet edge and cuts the shadow along it; the sun term's
         // own ndl scaling is what fades a turned-away face. 1 = clear, 0 = blocked at the contact.
-        float SowxContactShadow(vec3 worldPos)
+        float CxContactShadow(vec3 worldPos)
         {
             if (uContact.x <= 0.0 || vDepth >= uContactFar) return 1.0;
             int steps = int(uContact.y);
@@ -1104,8 +1104,8 @@ public sealed unsafe partial class AlloyRenderer
                 if (clip.w <= 0.0) break;
                 vec3 ndc = clip.xyz / clip.w;
                 if (any(greaterThan(abs(ndc.xy), vec2(1.0)))) break;
-                float rayDist = SowxContactDist(ndc.z * 0.5 + 0.5);
-                float sceneDist = SowxContactDist(texelFetch(uSceneDepth, ivec2((ndc.xy * 0.5 + 0.5) * size), 0).r);
+                float rayDist = CxContactDist(ndc.z * 0.5 + 0.5);
+                float sceneDist = CxContactDist(texelFetch(uSceneDepth, ivec2((ndc.xy * 0.5 + 0.5) * size), 0).r);
                 float dz = rayDist - sceneDist;
                 // a blocker is anything from just in front of the ray to a march length in front of it: a foot
                 // or a barrel base is far thicker than a step, and a thin window steps straight over them
@@ -1129,11 +1129,11 @@ public sealed unsafe partial class AlloyRenderer
     internal const string MaterialLib = """
 
         /// (Specularity, Roughness, Metallicness) -- declared wins, then the map, then the generated floor.
-        vec3 SowxSynthPbr(vec3 declared, int slots, float envLevel, float specTexel, float roughTexel)
+        vec3 CxSynthPbr(vec3 declared, int slots, float envLevel, float specTexel, float roughTexel)
         {
-            float envShiny = min(envLevel * SOWX_ENV_SPEC_SCALE, 1.0);
-            float envRough = min(envLevel * SOWX_ENV_ROUGH_SCALE, 1.0);
-            bool sm = (slots & SOWX_SLOT_SPEC) != 0;
+            float envShiny = min(envLevel * CX_ENV_SPEC_SCALE, 1.0);
+            float envRough = min(envLevel * CX_ENV_ROUGH_SCALE, 1.0);
+            bool sm = (slots & CX_SLOT_SPEC) != 0;
             float spec = declared.x;
             if (spec <= 0.0)
             {
@@ -1141,8 +1141,8 @@ public sealed unsafe partial class AlloyRenderer
                 // #121: env map + no specular map = legacy "shiny" content, and this is the engine's own
                 // translation of it (inc_material.shd, "mainly for the sake of enabling specularity on
                 // legacy content").
-                else if (envShiny > 0.0) spec = mix(SOWX_SPEC_MIN, SOWX_ENV_SPEC_MAX, envShiny);
-                else spec = SOWX_SPEC_MIN;
+                else if (envShiny > 0.0) spec = mix(CX_SPEC_MIN, CX_ENV_SPEC_MAX, envShiny);
+                else spec = CX_SPEC_MIN;
             }
             float rough = declared.y;
             if (rough <= 0.0)
@@ -1150,16 +1150,16 @@ public sealed unsafe partial class AlloyRenderer
                 // A ROUGHNESS MAP IS DECLARED CONTENT: it is taken whole, and the env curve below never
                 // touches it -- stock applies that curve only where the roughness was generated
                 // (inc_material.shd puts the min() inside the specular-map branch, not after it).
-                if ((slots & SOWX_SLOT_ROUGH) != 0) rough = roughTexel;
+                if ((slots & CX_SLOT_ROUGH) != 0) rough = roughTexel;
                 else
                 {
                     // a specular map with no roughness map is pre-PBR content: translate rather than trust it
-                    rough = sm ? mix(SOWX_ROUGH_MIN, SOWX_ROUGH_MAX, (1.0 - spec) * (1.0 - spec))
-                               : SOWX_ROUGH_MAX;
+                    rough = sm ? mix(CX_ROUGH_MIN, CX_ROUGH_MAX, (1.0 - spec) * (1.0 - spec))
+                               : CX_ROUGH_MAX;
                     // ...and the env map drives it toward the same floor, on TOP of that translation. With
                     // no maps at all the min() is stock's bare assignment: the mix never exceeds the max.
                     if (envLevel > 0.0)
-                        rough = min(rough, mix(SOWX_ROUGH_MAX, SOWX_ROUGH_MIN, envRough));
+                        rough = min(rough, mix(CX_ROUGH_MAX, CX_ROUGH_MIN, envRough));
                 }
             }
             float metal = declared.z;
@@ -1167,22 +1167,22 @@ public sealed unsafe partial class AlloyRenderer
             // without (fMetallicnessModifier * fGeneratedMetallicnessOffset). Collapsing them to one branch
             // would generate visibly different metal for content that declares Specularity but ships no map.
             if (metal <= 0.0)
-                metal = clamp((sm ? SOWX_METAL_SCALE_MAP : SOWX_METAL_SCALE_BARE) * spec
-                              - (sm ? SOWX_METAL_BIAS_MAP : SOWX_METAL_BIAS_BARE), 0.0, 1.0);
+                metal = clamp((sm ? CX_METAL_SCALE_MAP : CX_METAL_SCALE_BARE) * spec
+                              - (sm ? CX_METAL_BIAS_MAP : CX_METAL_BIAS_BARE), 0.0, 1.0);
             return vec3(spec, rough, metal);
         }
 
         /// The material's specular colour: CustomSpecularColor where declared (w = the CPU-side "not black"
         /// test, which is stock's own sentinel), else generated off the albedo.
-        vec3 SowxSpecColor(vec4 declared, vec3 base, float metal, int slots)
+        vec3 CxSpecColor(vec4 declared, vec3 base, float metal, int slots)
         {
-            if (declared.w > 0.0) return SowxLinear(declared.rgb);
+            if (declared.w > 0.0) return CxLinear(declared.rgb);
             // stock takes plain white as the non-metal base once a height map is bound -- the peak-channel
             // rescue below is for flat content, and a height-mapped material already carries its crevices
-            if ((slots & SOWX_SLOT_HEIGHT) != 0) return mix(vec3(1.0), base, metal);
+            if ((slots & CX_SLOT_HEIGHT) != 0) return mix(vec3(1.0), base, metal);
             // non-metals should be white, but dark diffuse texels stand in for crevices, so the peak channel
             // scales it -- inc_material.shd's own reasoning, in its own words
-            return mix(vec3(min(1.0, max(base.r, max(base.g, base.b)) / SOWX_MID_GREY)), base, metal);
+            return mix(vec3(min(1.0, max(base.r, max(base.g, base.b)) / CX_MID_GREY)), base, metal);
         }
         """;
 
@@ -1200,32 +1200,32 @@ public sealed unsafe partial class AlloyRenderer
             // 5 = the LOCAL cube term alone: white lit, black occluded, flat white where no cube-bearing
             //     light reaches. A pillar that casts nothing here is not writing depth; one that is black
             //     here but bright in the composite is being washed out by a second light.
-            if (uViz == 5) { frag = vec4(vec3(SowxLocalShadowViz(vWorld, N, vDepth)), 1.0); return; }
-            if (uViz == 1) { frag = vec4(SowxClusteredDiffuse(vWorld, N, vDepth), 1.0); return; }
+            if (uViz == 5) { frag = vec4(vec3(CxLocalShadowViz(vWorld, N, vDepth)), 1.0); return; }
+            if (uViz == 1) { frag = vec4(CxClusteredDiffuse(vWorld, N, vDepth), 1.0); return; }
             if (uViz == 2)
             {
-                float n = float(uClCount[SowxCluster(vDepth)]) / float(SOWX_CLUSTER_CAP);
+                float n = float(uClCount[CxCluster(vDepth)]) / float(CX_CLUSTER_CAP);
                 frag = vec4(n, 1.0 - n, 0.0, 1.0);
                 return;
             }
-            SowxDraw d = uDraw[vDraw];
+            CxDraw d = uDraw[vDraw];
             int feat = int(d.feat.x);
             // #123, shd_roofkn's fragment half: the toolset "vertex anchor" is a scrap of mesh authored high
             // above the walkmesh with its normals pointing down, so the toolset can transform the roof
             // without letting the builder collide with it. It must never be seen in game. roofknm dropped it.
-            if (feat == SOWX_FEAT_ROOFKN && vAnchorZ > 100.0) discard;
+            if (feat == CX_FEAT_ROOFKN && vAnchorZ > 100.0) discard;
             // #330: the keyhole verdict FIRST. It used to sit at the very end, so every fragment inside the
             // aperture paid the whole lit stage -- the cluster loop and the cube taps -- and then discarded;
             // under a keyhole through stacked roofs that was every layer at every pixel of the hole. The
             // probe capture never dissolves (a hole baked into the cube is permanent in every reflection).
-            float kh = uCapture != 0 ? 1.0 : SowxKeyhole(d.rot.z, vWorld, vDepth);
+            float kh = uCapture != 0 ? 1.0 : CxKeyhole(d.rot.z, vWorld, vDepth);
             if (kh < 0.0) discard;
             int slots = int(d.pbr.w);
             // 22 = normal-map coverage: magenta where the material's map REACHED the shader, grey where it
             // did not. The one thing viz 7 cannot say, because a mesh normal and a mapped one paint the same
             // way there -- and a map that dropped out at the per-slot re-fetch looks exactly like content
             // that never declared one.
-            if (uViz == 22) { frag = vec4((slots & SOWX_SLOT_NORMAL) != 0 ? vec3(1.0, 0.0, 1.0) : vec3(0.25), 1.0); return; }
+            if (uViz == 22) { frag = vec4((slots & CX_SLOT_NORMAL) != 0 ? vec3(1.0, 0.0, 1.0) : vec3(0.25), 1.0); return; }
             vec2 uv = vUV;
             // #123, shd_flowmap: the RG map is a per-texel flow DIRECTION, and the diffuse slides along it in
             // two half-offset phases blended by their own distance from the midpoint -- the blend is what
@@ -1239,7 +1239,7 @@ public sealed unsafe partial class AlloyRenderer
             // That is two more taps on flowmap fragments; do it here if static ripples ever read wrong.
             vec2 uvA = uv, uvB = uv;
             float flowMix = 0.0;
-            if (feat == SOWX_FEAT_FLOWMAP && (slots & SOWX_SLOT_FLOW) != 0)
+            if (feat == CX_FEAT_FLOWMAP && (slots & CX_SLOT_FLOW) != 0)
             {
                 vec2 flow = texture(uFlowTex, uv, uLodBias).rg * 2.0 - 1.0;
                 float t1 = (float(uTimeOfDay) / 1000.0) / 5.0;
@@ -1253,7 +1253,7 @@ public sealed unsafe partial class AlloyRenderer
             // #146: outside the normal/height branch below -- a material may declare an AO map and nothing
             // else, and the engine's screen-space SSAO (an FB effect, downstream of this pass entirely) does
             // not see the contact detail a baked map carries.
-            if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv, uLodBias).r;
+            if ((slots & CX_SLOT_AO) != 0) occl *= texture(uAoTex, uv, uLodBias).r;
             // #379: ...and the screen-space term beside it, a lighting input like the map (ADR 0021)
             // ...and only where the visibility at this pixel was computed from THIS surface. The buffer comes
             // from the depth prepass, so a fragment the prepass never drew -- a blended door, anything the
@@ -1261,9 +1261,9 @@ public sealed unsafe partial class AlloyRenderer
             // stands behind it. #119 makes the two passes agree on gl_Position character-for-character, so
             // for a prepassed fragment this equality is exact and the epsilon is only for the depth encode.
             float aoDz = abs(texelFetch(uSceneDepth, ivec2(gl_FragCoord.xy), 0).r - gl_FragCoord.z);
-            bool aoMine = uSsaoOn > 0 && aoDz < SOWX_AO_DEPTH_EPS;
+            bool aoMine = uSsaoOn > 0 && aoDz < CX_AO_DEPTH_EPS;
             if (aoMine) occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
-            if ((slots & (SOWX_SLOT_NORMAL | SOWX_SLOT_HEIGHT)) != 0)
+            if ((slots & (CX_SLOT_NORMAL | CX_SLOT_HEIGHT)) != 0)
             {
                 // Cotangent frame from screen-space derivatives (Mikkelsen), NOT the engine's vTangent /
                 // fHandedness streams at attribute locations 4/5 (GLRender::ConnectShaderData's bind table).
@@ -1286,7 +1286,7 @@ public sealed unsafe partial class AlloyRenderer
                 // on the bitangent alone. Carry the sign here and the two frames agree on every face.
                 float uvDet = du1.x * du2.y - du1.y * du2.x;
                 float inv = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-12)) * (uvDet < 0.0 ? -1.0 : 1.0);
-                if ((slots & SOWX_SLOT_HEIGHT) != 0)
+                if ((slots & CX_SLOT_HEIGHT) != 0)
                 {
                     // inc_material.shd's SetupOcclusion: the height against a blurrier tap of itself IS the
                     // local self-occlusion (fOcclusionVicinityRange 2.0, base 1.0, modifier 0.0).
@@ -1295,7 +1295,7 @@ public sealed unsafe partial class AlloyRenderer
                     float o = texture(uHeightTex, uv, 2.0 + uLodBias).r - texture(uHeightTex, uv, uLodBias).r;
                     occl *= 1.0 - clamp(o, 0.0, 0.99);
                 }
-                if ((slots & SOWX_SLOT_NORMAL) != 0)
+                if ((slots & CX_SLOT_NORMAL) != 0)
                 {
                     vec3 nm;
                     nm.xy = texture(uNrmTex, uv, uLodBias).rg * 2.0 - 1.0;
@@ -1322,7 +1322,7 @@ public sealed unsafe partial class AlloyRenderer
             if (uViz == 8) { frag = vec4(vec3(occl), 1.0); return; }
             if (uViz == 38)
             {   // lights per pixel, from the froxel this fragment reads: black 0, blue 8, green 16, yellow 24, red 32+
-                float t = clamp(float(uClCount[SowxCluster(vDepth)]) / 32.0, 0.0, 1.0);
+                float t = clamp(float(uClCount[CxCluster(vDepth)]) / 32.0, 0.0, 1.0);
                 vec3 h = t < 0.25 ? mix(vec3(0.0), vec3(0.0, 0.0, 1.0), t * 4.0)
                        : t < 0.5 ? mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), (t - 0.25) * 4.0)
                        : t < 0.75 ? mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), (t - 0.5) * 4.0)
@@ -1359,18 +1359,18 @@ public sealed unsafe partial class AlloyRenderer
                 frag = vec4(c, 1.0); return;
             }
             float sunRaw = clamp(dot(N, uAreaDir), 0.0, 1.0);
-            float sunNdl = SowxWrap(dot(N, uAreaDir), uWrapN);
+            float sunNdl = CxWrap(dot(N, uAreaDir), uWrapN);
             // the wrapped value, not the raw one -- a fragment the wrap has just lit must still be able to
             // be in shadow, or the band the wrap opens up glows through every caster
-            float sunVis = SowxSunShadow(vWorld, N, sunNdl, sunRaw);
-            if (d.emi.w > 0.5) sunVis *= SowxContactShadow(vWorld);   // receivers are tileset parts only (emi.w)
+            float sunVis = CxSunShadow(vWorld, N, sunNdl, sunRaw);
+            if (d.emi.w > 0.5) sunVis *= CxContactShadow(vWorld);   // receivers are tileset parts only (emi.w)
             // 39 = the contact term: grey = the march result on a receiver (white clear, black blocked);
             //      red = not a receiver (emi.w 0); blue = the march is off (uContact.x 0: knob, or no depth copy)
             if (uViz == 39)
             {
                 frag = uContact.x <= 0.0 ? vec4(0.0, 0.0, 1.0, 1.0)
                      : d.emi.w <= 0.5 ? vec4(1.0, 0.0, 0.0, 1.0)
-                     : vec4(vec3(SowxContactShadow(vWorld)), 1.0);
+                     : vec4(vec3(CxContactShadow(vWorld)), 1.0);
                 return;
             }
             // 3 = sun visibility alone: white lit, black shadowed. A frame that looks unshadowed reads here
@@ -1392,7 +1392,7 @@ public sealed unsafe partial class AlloyRenderer
             // invisible it drew -- the #294 crystal reads bright and solid in vanilla and as a ghost here.
             // CasterPass already knew this and lowered its own env threshold for the same reason; the
             // colour path's turn.
-            float coverage = (slots & SOWX_SLOT_ENV) != 0 ? 1.0 : texel.a;
+            float coverage = (slots & CX_SLOT_ENV) != 0 ? 1.0 : texel.a;
             // #126: the cutout, on the FINAL diffuse alpha and ahead of every other branch -- a discarded
             // fragment must cost neither the material synthesis nor a probe sample, and the probe capture
             // has to punch the same holes the screen does or the cube reflects solid foliage.
@@ -1400,30 +1400,30 @@ public sealed unsafe partial class AlloyRenderer
             // #121: the diffuse ALPHA is the reflectivity mask on env-mapped content (inc_standard.shd:248,
             // fEnvMapLevel = 1 - alpha). A diffuse with no alpha channel reads 1.0, i.e. level 0 -- which is
             // why this costs nothing on the parts that are not env-mapped.
-            float envLevel = (slots & SOWX_SLOT_ENV) != 0 ? 1.0 - texel.a : 0.0;
-            texel.rgb = mix(texel.rgb, SOWX_ENV_GREY, envLevel);
-            vec3 albedo = SowxLinear(texel.rgb);
+            float envLevel = (slots & CX_SLOT_ENV) != 0 ? 1.0 - texel.a : 0.0;
+            texel.rgb = mix(texel.rgb, CX_ENV_GREY, envLevel);
+            vec3 albedo = CxLinear(texel.rgb);
             // #122: the maps are sampled here and the synthesis itself is a pure function -- it has to fold
             // to a constant off-device (check-shaders.py) for the declared-beats-synthesised rule to be
             // checkable at all. A slot with nothing bound is not sampled, exactly as before.
-            float specTexel = (slots & SOWX_SLOT_SPEC) != 0 ? texture(uSpecTex, uv, uLodBias).r : 0.0;
-            float roughTexel = (slots & SOWX_SLOT_ROUGH) != 0 ? texture(uRoughTex, uv, uLodBias).r : 0.0;
-            vec3 pbr = SowxSynthPbr(d.pbr.xyz, slots, envLevel, specTexel, roughTexel);
+            float specTexel = (slots & CX_SLOT_SPEC) != 0 ? texture(uSpecTex, uv, uLodBias).r : 0.0;
+            float roughTexel = (slots & CX_SLOT_ROUGH) != 0 ? texture(uRoughTex, uv, uLodBias).r : 0.0;
+            vec3 pbr = CxSynthPbr(d.pbr.xyz, slots, envLevel, specTexel, roughTexel);
             // #350: the material's own custom FS, hosted, AFTER synthesis -- the point its stock body runs,
             // with SetupStandardShaderInputs's outputs in the engine's own names. The material globals are
             // filled first because the weather ground READS them before it writes them
             // (`min(MATERIAL_ROUGHNESS_VALUE, WET_ROUGHNESS)` is a comparison); the specular colour is
             // synthesised from the PRE-body albedo because SetupSpecularity runs before the body in stock.
-            SowxHostTexel = vec4(albedo, coverage);
+            CxHostTexel = vec4(albedo, coverage);
             FragmentColor = vec4(1.0);      // stock main's own opener, for a body that skips it
             vFragmentNormal = N;
             vSurfaceNormal = normalize(vNrm);
             vViewToSurface_n = normalize(vWorld - uEyePos);
             fSpecularity = pbr.x; fRoughness = pbr.y; fMetallicness = pbr.z;
-            SpecularColor = SowxSpecColor(d.spc, albedo * matDiffuse, pbr.z, slots);
+            SpecularColor = CxSpecColor(d.spc, albedo * matDiffuse, pbr.z, slots);
             // 30 = the hosted body BYPASSED: the plain lit path for every hosted material, the A/B for
             //      "the look is wrong" vs "the handoff is wrong".
-            if (uViz != 30 && SowxHostSurface(feat))
+            if (uViz != 30 && CxHostSurface(feat))
             {
                 albedo = FragmentColor.rgb;
                 N = normalize(vFragmentNormal);
@@ -1452,8 +1452,8 @@ public sealed unsafe partial class AlloyRenderer
             vec3 pointSpec;
             // #308 follow-up: 1 on a creature fragment (skinmesh, or the dangly marker in feat.w) -- the
             // local receiver's carrier-band gate, so a creature takes no dyn-pool self-shadow up close.
-            float onMover = (int(d.feat.x) == SOWX_FEAT_SKIN || d.feat.w < 0.0) ? 1.0 : 0.0;
-            vec3 point = SowxClusteredLight(vWorld, N, V, vDepth, onMover, rough, spec, pointSpec);
+            float onMover = (int(d.feat.x) == CX_FEAT_SKIN || d.feat.w < 0.0) ? 1.0 : 0.0;
+            vec3 point = CxClusteredLight(vWorld, N, V, vDepth, onMover, rough, spec, pointSpec);
             // The engine's split: every light accumulates its own lobe, then ONE view-side normalisation
             // (fSpecularBaseModifier) and the material's specular colour scale the sum
             // (inc_lighting.shd:456 and :615). fSpecularity is already inside the lobe via the Fresnel term.
@@ -1463,8 +1463,8 @@ public sealed unsafe partial class AlloyRenderer
             // 0 is ADR 0021 untouched, 1 occludes the direct terms outright. The probe term below picks it
             // up through `diffuse` at no extra cost.
             float dirOcc = mix(1.0, occl, uAoDirect);
-            vec3 specLight = (sunSpec * SowxSpecLobe(N, V, uAreaDir, rough, spec) + pointSpec)
-                             * (specColor * SowxSpecBase(max(dot(N, V), 0.0), rough)) * dirOcc;
+            vec3 specLight = (sunSpec * CxSpecLobe(N, V, uAreaDir, rough, spec) + pointSpec)
+                             * (specColor * CxSpecBase(max(dot(N, V), 0.0), rough)) * dirOcc;
             vec3 diffuse = (sun + sunSss + point) * dirOcc;
             // the 0.15 ambient floor and the sun-facing wrap are inc_lighting.shd:679 verbatim; the height
             // map's occlusion scales the AMBIENT, which is the term it is actually occluding
@@ -1488,7 +1488,7 @@ public sealed unsafe partial class AlloyRenderer
             // city cobblestone, which vanilla plainly does not do: its authored spheremap is a dim texel,
             // while the probe carries real scene radiance. /probe areawide 1 opts back into the engine's
             // rule (uSceneEnv); the default is the case the reflection exists for.
-            if (uCapture == 0 && uProbeMips > 0.0 && (uSceneEnv != 0 || (slots & SOWX_SLOT_ENV) != 0))
+            if (uCapture == 0 && uProbeMips > 0.0 && (uSceneEnv != 0 || (slots & CX_SLOT_ENV) != 0))
             {
                 vec3 env = textureLod(uProbe, reflect(-V, N), rough * (uProbeMips - 1.0)).rgb;
                 specLight += (ambient + diffuse) * env * F0 * uProbeGain;
@@ -1512,7 +1512,7 @@ public sealed unsafe partial class AlloyRenderer
             float partA = coverage * d.rot.w;
             if (partA < 1.0 && partA > 0.001) specLight /= max(partA, 0.1);
             vec3 lit = albedo * total + specLight;
-            if ((slots & SOWX_SLOT_ILLUM) != 0) lit += SowxLinear(texture(uIllumTex, uv, uLodBias).rgb);
+            if ((slots & CX_SLOT_ILLUM) != 0) lit += CxLinear(texture(uIllumTex, uv, uLodBias).rgb);
             // #132: everything from here down stays LINEAR -- the screen and the probe want the same values
             // now, and PostChain's resolve does the frame's one encode. The probe never wanted anything else
             // (#121: glGenerateMipmap filters what is STORED, and filtering display-space values darkens
@@ -1531,7 +1531,7 @@ public sealed unsafe partial class AlloyRenderer
             // #132: linear out. No encode, no shoulder -- the resolve owns both for the whole frame.
             // #346/#347: the display-space overlays go on LAST, after the fog, exactly where
             // inc_standard.shd puts them -- noir, racial vision, then the targeting shape.
-            frag = SowxOitOut(vec4(SowxDisplayOverlays(SowxFog(lit * kh, vWorld, vDepth)), coverage * d.rot.w));
+            frag = CxOitOut(vec4(CxDisplayOverlays(CxFog(lit * kh, vWorld, vDepth)), coverage * d.rot.w));
         }
         """;
 }

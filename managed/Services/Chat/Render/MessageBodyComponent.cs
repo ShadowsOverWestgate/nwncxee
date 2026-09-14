@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Text;
-using Sowx.Services.Chat.Core;
+using CX.Services.Chat.Core;
 
-namespace Sowx.Services.Chat.Render;
+namespace CX.Services.Chat.Render;
 
 /// <summary>The message text itself, each colour run in its parsed RGB.</summary>
 // ponytail: SenderName is the next text component -- it's "" per #18's deferral (the tap doesn't carry

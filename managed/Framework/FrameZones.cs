@@ -2,7 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>#238 (AC1): where the frame actually goes, on the CPU, end to end. The perf tickets before this
 /// one could only report the pieces they happened to bracket -- ~13ms of a measured 150ms frame -- and every

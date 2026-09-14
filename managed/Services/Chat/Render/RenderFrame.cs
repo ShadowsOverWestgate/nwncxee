@@ -1,9 +1,9 @@
 using System.Collections.Generic;
-using Sowx.Ui;
+using CX.Ui;
 
-using Sowx.Services.Chat.Core.Model;
+using CX.Services.Chat.Core.Model;
 
-namespace Sowx.Services.Chat.Render;
+namespace CX.Services.Chat.Render;
 
 /// <summary>One built chatbox frame: the interleaved verts + the metadata the animated draw needs. The
 /// body slice [<see cref="BodyStart"/>,<see cref="BodyEnd"/>) is the only part that fades/slides and is

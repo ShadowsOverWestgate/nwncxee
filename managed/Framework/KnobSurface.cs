@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// <c>/knobs</c>: print what is tunable (#183). ADR 0013's last consequence — before the two buckets
@@ -40,7 +40,8 @@ public static class KnobSurface
     {
         var sb = new StringBuilder();
         var cmds = CommandRegistry.Global.Commands;
-        sb.Append($"[knobs] {cmds.Count} command(s):");
+        sb.Append("[knobs] NWNCX:EE (CX) -- the extender's knobs");
+        sb.Append($"\n[knobs] {cmds.Count} command(s):");
         for (int i = 0; i < cmds.Count; i++)
         {
             sb.Append("\n  ").Append(cmds[i].Name);

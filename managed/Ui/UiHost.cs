@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>Which layer of the fixed input precedence consumes a key (US #8).</summary>
 public enum InputLayer

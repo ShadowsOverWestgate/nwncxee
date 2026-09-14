@@ -1,11 +1,11 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #130 (map #68, spec #114 M3, ADR 0011) and #261 (M5 strand 1 step 6): volumetric light beams, enumerated
@@ -85,7 +85,7 @@ internal static unsafe class Beams
     private static readonly int SceneDrawBuckets = EngineLayout.SceneDrawBuckets;
     /// <summary>Part vtable slot 0x90, <c>Part::AsPartBeam</c> -- dumped from <c>_ZTV8PartBeam</c>, and the
     /// call <c>RenderBeams</c> @0x46ad90 makes on every bucket item before touching it as a beam.</summary>
-    private static readonly int PartVtblAsPartBeam = Sowx.Framework.EngineLayout.PartAsPartBeamSlot;
+    private static readonly int PartVtblAsPartBeam = CX.Framework.EngineLayout.PartAsPartBeamSlot;
 
     /// <summary>One enrolled beam. Rebuilt from the bucket every frame, so there is no liveness field: an
     /// entry exists exactly while the engine's own classification holds it.</summary>
@@ -524,16 +524,16 @@ internal static unsafe class Beams
         uniform float uZClip;    // projectionWorldZClip
 
         // Constant value inherited from old NWN (fMinOffset, vs_beamvol.shd).
-        const float SOWX_BEAM_MIN_OFFSET = 0.1;
+        const float CX_BEAM_MIN_OFFSET = 0.1;
 
         void main()
         {
             vec3 wp = (uModel * aPos).xyz;
             vec3 vp = (uView * vec4(wp, 1.0)).xyz;
             vec3 dir = uProjSrc.xyz;
-            float off = SOWX_BEAM_MIN_OFFSET;
+            float off = CX_BEAM_MIN_OFFSET;
             if (aFrontal <= 0.0)
-                off = max(SOWX_BEAM_MIN_OFFSET, (uZClip - wp.z) / dir.z);
+                off = max(CX_BEAM_MIN_OFFSET, (uZClip - wp.z) / dir.z);
             vp += off * (mat3(uView) * dir);
             gl_Position = uProj * vec4(vp, 1.0);
         }

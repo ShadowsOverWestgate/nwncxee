@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using Sowx.Services.Chat.Core;
+using CX.Framework;
+using CX.Services.Chat.Core;
 
-namespace Sowx.Services.CombatText;
+namespace CX.Services.CombatText;
 
 /// <summary>What a captured <c>ShowFloatyText</c> turned out to be. The discriminator is the FONT resref the
 /// engine passes: damage numbers ask for <c>fnt_floaty_smal</c>, every combat-text banner passes "".</summary>

@@ -1,12 +1,12 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Alloy;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Alloy;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #93 (map #68, spec #78 M2): the one Alloy submission path every rigid shadow caster goes through.
@@ -21,7 +21,7 @@ namespace Sowx.Alloy;
 /// and <c>/shadow rebake 0</c> is the A/B back to #187's bake-everything-every-frame.
 /// <para>#303: selection and submission are <see cref="CasterGather"/>'s compute dispatch alone -- the CPU
 /// per-view walk and its persistent-mapped rings are deleted. The dispatch culls against
-/// <see cref="CullPass"/>'s shared <c>SowxCullSphere</c> buffer (one set of bounds, one set of exemptions,
+/// <see cref="CullPass"/>'s shared <c>CxCullSphere</c> buffer (one set of bounds, one set of exemptions,
 /// for the shadow cull and the colour cull alike) and writes indirect commands whose <c>baseInstance</c> IS
 /// the ownership slot, so the depth stages read <c>uDraw[gl_BaseInstance]</c> directly. gl_BaseInstance
 /// rather than gl_DrawID because compaction renumbers gl_DrawID and nothing else; <see cref="SelfCheck"/>
@@ -1036,8 +1036,8 @@ public sealed unsafe class CasterPass : IExtenderService
                   && CastMaskFs.Contains("uniform float uAlphaCut;")
                   && CastMaskFs.Contains("uniform int uDither;") && CastMaskHFs.Contains("uniform int uDither;")
                   // #363: the stochastic discard, on the SAME sampled alpha, in both mask stages
-                  && CastMaskFs.Contains("if (uDither > 0 && sowxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;")
-                  && CastMaskHFs.Contains("if (uDither > 0 && sowxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;")
+                  && CastMaskFs.Contains("if (uDither > 0 && cxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;")
+                  && CastMaskHFs.Contains("if (uDither > 0 && cxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;")
                   // The handle-masked stages: the same discard, the mask off the record's handle block at
                   // slot 0, the record index from gl_BaseInstance in both packings.
                   && CastMaskHFs != CastMaskHFsSrc
@@ -1049,7 +1049,7 @@ public sealed unsafe class CasterPass : IExtenderService
                   && CastMaskHFs.Contains($"binding = {AlloyRenderer.BindTexH}")
                   && CastMaskHFs.Contains("(vDraw << 3) + 0]")
                   && CastMaskHVs.Contains("vDraw = gl_BaseInstance;")
-                  && CastMaskHVs.Contains("SowxDraw d = uDraw[gl_BaseInstance];")
+                  && CastMaskHVs.Contains("CxDraw d = uDraw[gl_BaseInstance];")
                   && CastLayerMaskHVs.Contains("vDraw = gl_BaseInstance & 0x3ffff;")
                   && CastLayerMaskHVs.Contains("uDraw[gl_BaseInstance & 0x3ffff]")
                   && CmdBytes == 20
@@ -1059,14 +1059,14 @@ public sealed unsafe class CasterPass : IExtenderService
                   // #303: BOTH depth stages read the model matrix out of ALLOY's record, at the ownership
                   // slot baseInstance carries -- no shadow-side record block exists at all. A stage that went back to a matrix of its own would bake a world one data
                   // plane out of step with the one being drawn, and nothing would say so.
-                  && CastVs.Contains("SowxDraw d = uDraw[gl_BaseInstance];")
-                  && CastMaskVs.Contains("SowxDraw d = uDraw[gl_BaseInstance];")
+                  && CastVs.Contains("CxDraw d = uDraw[gl_BaseInstance];")
+                  && CastMaskVs.Contains("CxDraw d = uDraw[gl_BaseInstance];")
                   && !CastVs.Contains("c.model") && !CastMaskVs.Contains("c.model")
                   && AlloyRenderer.DrawBufDecl.Contains($"binding = {BindDraw}")
                   // #96 through #302: the bone base is the RECORD's, at the colour path's binding, and the
                   // stage must still treat a negative base as rigid and guard every weighted lane.
                   && AlloyRenderer.BoneVs.Contains($"binding = {BindBones}")
-                  && CastVs.Contains("int bb = SowxBoneBase(d);")
+                  && CastVs.Contains("int bb = CxBoneBase(d);")
                   && CastVs.Contains("if (bb >= 0)") && AlloyRenderer.BoneVs.Contains("aBoneWeight.w > 0.0")
                   && AlloyRenderer.BoneCount == 64
                   // #119's standing constraint: the rigid arm is the prepass's clip expression verbatim,
@@ -1125,11 +1125,11 @@ public sealed unsafe class CasterPass : IExtenderService
                   && MaxBakeViews <= 1 << (30 - CasterGather.ViewShift)
                   && CastLayerVs.Contains($"binding = {CasterGather.BindView}")
                   && CastLayerMaskVs.Contains($"binding = {CasterGather.BindView}")
-                  && CastLayerVs.Contains("int bb = SowxBoneBase(d);")
+                  && CastLayerVs.Contains("int bb = CxBoneBase(d);")
                   && ShaderContract.DepthSafe(CastLayerVs) && ShaderContract.DepthSafe(CastLayerMaskVs)
                   && !CastLayerVs.Contains("discard")
                   && CasterGather.LayerSafe()
-                  // #303: the gather dispatch culls the CPU reference's tests over the SHARED SowxCullSphere
+                  // #303: the gather dispatch culls the CPU reference's tests over the SHARED CxCullSphere
                   // buffer, conservative in the direction that costs a draw -- a cull that rejects a visible
                   // caster deletes a shadow; one that admits an invisible one costs a draw. GLSL cannot be
                   // run headless, so what is pinned is that every term is present and spelled from these same
@@ -2066,7 +2066,7 @@ public sealed unsafe class CasterPass : IExtenderService
                    $", refresh visited {(float)_visitSum / _frames:F0} of {(float)_liveSum / _frames:F0} casters/frame " +
                    $"({(float)_touchedSum / _frames:F0} records touched by the colour build, dynamic hold {_dynHold} frames)" +
                    (_refreshAll ? " (refreshall 1: every caster)" : "") +
-                   $", caster selection in compute over the shared SowxCullSphere bounds " +
+                   $", caster selection in compute over the shared CxCullSphere bounds " +
                    $"(cull {(CasterGather.Mode != 0 ? "on" : "OFF -- /shadow gather 1")})" +
                    (CasterGather.Views > 0
                     ? $" -- {(float)CasterGather.Views / _frames:F1} dispatches/frame over " +
@@ -2936,7 +2936,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>One staged draw, written into the source record. Its own function because
     /// <see cref="SelfCheck"/> runs it: a field landing one slot over is a caster baking at its neighbour's
     /// matrix, and none of it needs a GL context to be wrong.
-    /// <para>#303: word 3 is the OWNERSHIP SLOT -- the dispatch culls <c>SowxCullSphere[slot]</c> (the colour
+    /// <para>#303: word 3 is the OWNERSHIP SLOT -- the dispatch culls <c>CxCullSphere[slot]</c> (the colour
     /// cull's own bounds and exemptions) and writes it as <c>baseInstance</c>, which the depth stages read
     /// <c>uDraw</c> through. There is no per-draw shadow record left at all.</para></summary>
     private static void StageOne(uint* src, int d, int i, int g, int start)
@@ -2987,7 +2987,7 @@ public sealed unsafe class CasterPass : IExtenderService
             // the other side of the cutout from the engine's raw original.
             int drawTex = _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
             // mode 0 never masks, so it never reads a texture back either (the scan is a glGetTexImage of
-            // the owned name in the 4.6 context; shadowmask=0 in sowx.cfg is the boot-time A/B for it)
+            // the owned name in the 4.6 context; shadowmask=0 in cx.cfg is the boot-time A/B for it)
             // #363: a translucent diffuse (glass) has no holes at all; it qualifies on its graded fraction
             // instead and skips the mode-2 hole gate, which would hand it straight back to the solid stage.
             bool glass = drawTex != 0 && _maskDither > 0 && (_liveBlend[i] || TexGraded(drawTex) >= _maskGraded);
@@ -3146,14 +3146,14 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>Resrefs the caster pass looks up before falling back to the GLSL below (#92).</summary>
     internal const string ShdCastVs = "cx_cast_vs", ShdCastFs = "cx_cast_fs";
 
-    /// <summary>#161: the caster vertex stage's half of the override contract. #303 retired the SowxCaster
+    /// <summary>#161: the caster vertex stage's half of the override contract. #303 retired the CxCaster
     /// block with the staging that filled it, so what an override has to keep is two things: it reads Alloy's
     /// record through <c>uDraw[gl_BaseInstance]</c> (the ownership slot the gather wrote as baseInstance),
     /// and it keeps #96's skinning branch. A stage that lost the branch links perfectly, the bone attributes
     /// simply go unread, and every creature casts its BIND POSE while it animates.</summary>
     private static bool CastVsSafe(string vs)
         => vs.Contains("uDraw[gl_BaseInstance]") && vs.Contains("uBone")
-           && !vs.Contains("SowxCaster");
+           && !vs.Contains("CxCaster");
 
     /// <summary>#161: the caster fragment stage must stay inert. It runs into a depth-only FBO, so the only
     /// two things it can say that matter are <c>discard</c> -- which writes no depth, i.e. the caster casts no
@@ -3169,7 +3169,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// with rather than a second copy of them. gl_BaseInstance and NOT gl_DrawID: compaction renumbers
     /// gl_DrawID and nothing else. So the model matrix and #96's bone base are the SAME numbers the colour pass draws
     /// with rather than a second copy of them. The skinning branch mirrors the colour stage's arm term for
-    /// term (<c>SowxBoneBase</c> / <c>SowxSkinMat</c>, shared source, not a re-spelling), and the rigid arm is
+    /// term (<c>CxBoneBase</c> / <c>CxSkinMat</c>, shared source, not a re-spelling), and the rigid arm is
     /// <see cref="AlloyRenderer.ClipExpr"/> character-for-character under <c>invariant gl_Position</c> --
     /// #119's standing constraint, which the depth prepass compares against.</summary>
     internal const string CastVs = """
@@ -3181,9 +3181,9 @@ public sealed unsafe class CasterPass : IExtenderService
         invariant gl_Position;
         void main()
         {
-            SowxDraw d = uDraw[gl_BaseInstance];
-            int bb = SowxBoneBase(d);
-            if (bb >= 0) gl_Position = uVP * d.model * (SowxSkinMat(bb) * vec4(aPos, 1.0));
+            CxDraw d = uDraw[gl_BaseInstance];
+            int bb = CxBoneBase(d);
+            if (bb >= 0) gl_Position = uVP * d.model * (CxSkinMat(bb) * vec4(aPos, 1.0));
             else gl_Position = uVP * d.model * vec4(aPos, 1.0);
         }
         """;
@@ -3212,7 +3212,7 @@ public sealed unsafe class CasterPass : IExtenderService
         flat out float vAlpha;
         void main()
         {
-            SowxDraw d = uDraw[gl_BaseInstance];
+            CxDraw d = uDraw[gl_BaseInstance];
             gl_Position = uVP * d.model * vec4(aPos, 1.0);
             vUV = aUV;
             vAlpha = d.rot.w;
@@ -3237,7 +3237,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // #363: ordered 4x4 Bayer threshold in (0, 1) -- alpha 1 never discards, and EVERY 4x4 block drops
         // exactly the alpha fraction, which is what reads as a uniformly fainter shadow (white noise reads
         // as blotches: a 4x4 patch of it lands anywhere between a quarter and three quarters)
-        float sowxHash(uvec2 p)
+        float cxHash(uvec2 p)
         {
             const float m[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
             return (m[(p.y & 3u) * 4u + (p.x & 3u)] + 0.5) / 16.0;
@@ -3256,7 +3256,7 @@ public sealed unsafe class CasterPass : IExtenderService
             if (t <= uAlphaCut) discard;
             // the colour pass's own blend weight: coverage (1 where the diffuse alpha is reflectivity) x rot.w
             float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;
-            if (uDither > 0 && sowxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
+            if (uDither > 0 && cxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
         }
         """;
 
@@ -3276,7 +3276,7 @@ public sealed unsafe class CasterPass : IExtenderService
         flat in int vDraw;
         void main()
         {
-        #ifdef SOWX_BINDLESS
+        #ifdef CX_BINDLESS
             // a handle zeroed under a dying texture: opaque until the record is re-resolved, never sampled
             if (uTexH[vDraw << 3] == uvec2(0u)) return;
         #endif
@@ -3284,7 +3284,7 @@ public sealed unsafe class CasterPass : IExtenderService
             if (t <= uAlphaCut) discard;
             // the colour pass's own blend weight: coverage (1 where the diffuse alpha is reflectivity) x rot.w
             float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;
-            if (uDither > 0 && sowxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
+            if (uDither > 0 && cxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
         }
         """;
     private static readonly string CastMaskHFs = AlloyRenderer.BindlessFs(CastMaskHFsSrc);
@@ -3310,11 +3310,11 @@ public sealed unsafe class CasterPass : IExtenderService
         void main()
         {
             int vi = gl_BaseInstance >> 18;
-            SowxDraw d = uDraw[gl_BaseInstance & 0x3ffff];
+            CxDraw d = uDraw[gl_BaseInstance & 0x3ffff];
             gl_Layer = int(uViewTbl[vi].c.w);
             mat4 uVP = uViewTbl[vi].vp;
-            int bb = SowxBoneBase(d);
-            if (bb >= 0) gl_Position = uVP * d.model * (SowxSkinMat(bb) * vec4(aPos, 1.0));
+            int bb = CxBoneBase(d);
+            if (bb >= 0) gl_Position = uVP * d.model * (CxSkinMat(bb) * vec4(aPos, 1.0));
             else gl_Position = uVP * d.model * vec4(aPos, 1.0);
         }
         """;
@@ -3336,7 +3336,7 @@ public sealed unsafe class CasterPass : IExtenderService
         void main()
         {
             int vi = gl_BaseInstance >> 18;
-            SowxDraw d = uDraw[gl_BaseInstance & 0x3ffff];
+            CxDraw d = uDraw[gl_BaseInstance & 0x3ffff];
             gl_Layer = int(uViewTbl[vi].c.w);
             mat4 uVP = uViewTbl[vi].vp;
             gl_Position = uVP * d.model * vec4(aPos, 1.0);

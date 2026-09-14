@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#208: the texture-unit contract, written down once. Which sampler lives on which GL texture unit
 /// is shared between this renderer and the <c>cx_*.shd</c> stages a content repo may override, and until now

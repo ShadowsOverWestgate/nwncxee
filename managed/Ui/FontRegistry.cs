@@ -1,12 +1,12 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>
 /// The typefaces the UI may ask for by short name (#470). <c>font.&lt;name&gt;=&lt;path&gt;</c> in
-/// <c>sowx.cfg</c>; <c>default</c> is the embedded DejaVuSans unless <c>font.default=</c> overrides it. A
+/// <c>cx.cfg</c>; <c>default</c> is the embedded DejaVuSans unless <c>font.default=</c> overrides it. A
 /// relative path is looked up beside the extender (the process directory: nwmain sits next to
-/// <c>version.dll</c> / the <c>.so</c>, #474) and then in the user directory beside <c>sowx.cfg</c> -- the
+/// <c>version.dll</c> / the <c>.so</c>, #474) and then in the user directory beside <c>cx.cfg</c> -- the
 /// form that survives Proton, where an absolute Linux path names nothing. A name that fails to load is a
 /// logged refusal and resolves to the default face; it never yields a missing-text frame.
 /// </summary>
@@ -110,7 +110,7 @@ public static class FontRegistry
         Load(log);
         E(_entries.ContainsKey(DefaultName), "default is always declared");
         E(Effective("no-such-face") == DefaultName, "an unknown name resolves to the default");
-        E(Resolve("/nonexistent/sowx-selfcheck.ttf") == null, "a rooted missing path is refused");
+        E(Resolve("/nonexistent/cx-selfcheck.ttf") == null, "a rooted missing path is refused");
         E(Bytes("no-such-face") == Bytes(DefaultName), "unknown-name bytes are the default's");
         E(_entries.ContainsKey(EmbeddedName), "the embedded font is always declared");
         log.Info(ok ? "FontRegistry.SelfCheck OK" : "FontRegistry.SelfCheck FAILED");

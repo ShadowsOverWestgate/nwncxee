@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Hotkeys;
+namespace CX.Services.Hotkeys;
 
 /// <summary>
 /// Client-owned consent gate. A server ArmSet that ADDS keys raises the engine's own native
@@ -122,7 +122,7 @@ internal static unsafe class HotkeyConsent
         _pending = null;
         // The engine's modal leaves keyboard mode ON after it closes, which eats the next Enter (#418 trace);
         // release it unless one of our windows is typing.
-        if (!Sowx.Ui.UiHost.AnyKeyboardOwner) Sowx.Ui.UiHost.KeyboardGate?.Invoke(false);
+        if (!CX.Ui.UiHost.AnyKeyboardOwner) CX.Ui.UiHost.KeyboardGate?.Invoke(false);
         if (answered == null) return;
         if (_probe)
         {

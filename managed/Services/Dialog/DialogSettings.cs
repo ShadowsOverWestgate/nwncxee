@@ -1,8 +1,8 @@
 using System.Collections.Generic;
-using Sowx.Framework;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Ui;
 
-namespace Sowx.Services.Dialog;
+namespace CX.Services.Dialog;
 
 /// <summary>The dialog settings panel: the dialog-side consumer of the shared <see cref="SettingsPanel"/>. It
 /// owns the content only -- which rows exist (Lock, Font size, Max height, Justify, Animations and the two

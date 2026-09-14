@@ -1,8 +1,8 @@
-using Sowx.Framework;
-using Sowx.Services.Chat.Core;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Services.Chat.Core;
+using CX.Ui;
 
-namespace Sowx.Services.Nameplate;
+namespace CX.Services.Nameplate;
 
 /// <summary>One plate's laid-out boxes, in the same screen-px space the caller draws in. Sizes come out of
 /// <see cref="PlateLayout.Measure"/>: the glyph metrics handed in already carry <see cref="Metrics.Scale"/>

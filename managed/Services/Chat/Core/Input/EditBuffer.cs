@@ -1,7 +1,7 @@
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// The chat input line as pure Unicode state: text, a caret, an optional selection
@@ -187,7 +187,7 @@ public sealed class EditBuffer
     /// <summary>
     /// Off-device proof of the editing contract: insert-at-caret, backspace/delete,
     /// caret movement, select+replace, and history recall. Logs one PASS/FAIL line so
-    /// <c>run-demo.sh</c> surfaces it in the sowx log with no game running.
+    /// <c>run-demo.sh</c> surfaces it in cx.log with no game running.
     /// </summary>
     public static void SelfCheck(ExtenderLog log)
     {

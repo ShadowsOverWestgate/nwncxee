@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// The slash-command surface (#165; bucket 1 of ADR 0013). Services register their own commands during

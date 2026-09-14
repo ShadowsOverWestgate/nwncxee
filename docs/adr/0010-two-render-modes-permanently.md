@@ -46,7 +46,7 @@ indefinitely, and no milestone may remove it.
   report.
 
 Out of scope here, and noted only so it is not mistaken for part of this decision: a settings
-UI letting players enable and disable sowx modules individually, with the Alloy renderer gated
+UI letting players enable and disable cx modules individually, with the Alloy renderer gated
 behind the device check. That is wanted eventually; nothing in this ADR waits on it.
 
 ## Consequences
@@ -80,7 +80,7 @@ side lives in the unrelated `GlContextService.Available` / `gl46` path.
 `RenderMode` held only the override; the frame verdict combined them once per frame, `/vanilla` reports
 both, and a capability dropout raises an on-screen notice naming the reason.
 **Collapsed 2026-08-29 by #263**: the amendment at the top of this ADR is paid here — `RenderMode` is deleted,
-the request is the `vanilla` key in `sowx.cfg`, and `AlloyGate` decides once per session and freezes. The two
+the request is the `vanilla` key in `cx.cfg`, and `AlloyGate` decides once per session and freezes. The two
 pieces of state are still separate (`OptedOut` vs `Capable`), which is what this bullet asked for. See
 `docs/alloy-refusals.md`.
 The rest of this paragraph is the history that got there. That was tolerable while the

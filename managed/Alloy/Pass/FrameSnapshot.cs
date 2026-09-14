@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #129 (map #68, spec #114 M3): the Alloy frame's ONE framebuffer copy, and the water stage that reads it.
@@ -286,8 +286,8 @@ internal static unsafe class FrameSnapshot
         // #456: the RESOLVED name, not the one we asked for. Windows returns a 512x350 RGBA texture where
         // Linux returns 1024x1024 compressed, so the open question is whether the resman handed back a
         // different RESOURCE or the same one built differently -- and only the object's own name says which.
-        IntPtr noisePtr = Sowx.Framework.AurTex.FindByName(NoiseResref);
-        int noise = Sowx.Framework.AurTex.Tid(noisePtr);
+        IntPtr noisePtr = CX.Framework.AurTex.FindByName(NoiseResref);
+        int noise = CX.Framework.AurTex.Tid(noisePtr);
         if (noise != _noiseTid) { _noiseName = AlloyCensus.TexName(noisePtr); _noiseEng = TexScan.Describe(noisePtr); }
         _noiseTid = noise;
         // A zero here is "not uploaded YET" as often as "not there": AurTextureGet's create path queues the
@@ -324,7 +324,7 @@ internal static unsafe class FrameSnapshot
         if (_pCurrentScene == null) return 0;
         IntPtr scene = *_pCurrentScene;
         if (scene == IntPtr.Zero) return 0;
-        return Sowx.Framework.AurTex.Tid(*(IntPtr*)(scene + SceneEnvMap));
+        return CX.Framework.AurTex.Tid(*(IntPtr*)(scene + SceneEnvMap));
     }
 
     /// <summary>Is the environment term live this pass? The stage reads it as a switch, because a missing
@@ -539,14 +539,14 @@ internal static unsafe class FrameSnapshot
         // #339's own criterion, as a text check: the shading is stock fswater's, not a look of ours. The
         // march is vanilla's GetRayIntersectCoords, the wave field reads the ENGINE's noise texture, and the
         // reflection's fallback is the shaded surface -- a probe here would be the custom look coming back.
-        E(fs.Contains("SowxRayIntersect("), "the stage marches with stock's own ray intersection");
+        E(fs.Contains("CxRayIntersect("), "the stage marches with stock's own ray intersection");
         E(fs.Contains("texture(uNoise,"), "the wave field reads the engine's noise texture");
         E(!fs.Contains("uProbe"), "the probe is NOT the reflection's fallback -- vanilla falls back to the surface");
         // Colour space: since #132 the whole Alloy frame is linear, so the copy is linear and a decode on
         // read would be a second linearisation. Sampling it in the wrong space is a whole-image error that
         // reads as "the reflection is washed out" (or "far too dark") rather than as a bug, so it is
         // asserted rather than left to the next reader of the shader text.
-        E(fs.Contains("return texture(uFbColor, uv).rgb;") && !fs.Contains("SowxLinear(texture(uFbColor"),
+        E(fs.Contains("return texture(uFbColor, uv).rgb;") && !fs.Contains("CxLinear(texture(uFbColor"),
           "the copy is sampled as LINEAR, with no decode");
         // Ordering: FbCopy immediately precedes WaterOwned, and both sit between the blended class and
         // additive. That IS the ticket's "one copy, vanilla's placement" -- it is not an implementation
@@ -620,8 +620,8 @@ internal static unsafe class FrameSnapshot
 
         void main()
         {
-            int id = SowxSlot(uDrawBase + gl_DrawID);
-            SowxDraw d = uDraw[id];
+            int id = CxSlot(uDrawBase + gl_DrawID);
+            CxDraw d = uDraw[id];
             vWorld = (d.model * vec4(aPos, 1.0)).xyz;
             vNrm = mat3(d.model) * aNrm;
             vUV = vec2(d.rot.x * aUV.x - d.rot.y * aUV.y, d.rot.y * aUV.x + d.rot.x * aUV.y);
@@ -654,7 +654,7 @@ internal static unsafe class FrameSnapshot
         uniform sampler2D uFlowTex;
         // #129: the one framebuffer copy, taken at PassId.FbCopy. Since #132 its colour is LINEAR -- the
         // copy is of PostChain's own target, every Alloy stage writes linear into it, and the single encode
-        // happens later at the resolve. Depth is the raw window-space buffer, which SowxSceneZ linearises
+        // happens later at the resolve. Depth is the raw window-space buffer, which CxSceneZ linearises
         // with this pass's own near/far rather than with an engine uniform.
         uniform sampler2D uFbColor;
         uniform sampler2D uFbDepth;
@@ -684,25 +684,25 @@ internal static unsafe class FrameSnapshot
         out vec4 frag;
 
         // inc_water.shd's config block, verbatim.
-        const float SOWX_ANIMATION_SPEED = 1.0;
-        const int SOWX_WAVE_ITERATIONS = 3;
-        const float SOWX_WATER_TRANSPARENCY_FACTOR = 0.25;
-        const float SOWX_WATER_SPECULARITY = 0.02;
-        const int SOWX_WATER_REFRACTION_ITERATIONS = 5;
-        const float SOWX_WATER_REFRACTION_MAX_RANGE = 4.0;
+        const float CX_ANIMATION_SPEED = 1.0;
+        const int CX_WAVE_ITERATIONS = 3;
+        const float CX_WATER_TRANSPARENCY_FACTOR = 0.25;
+        const float CX_WATER_SPECULARITY = 0.02;
+        const int CX_WATER_REFRACTION_ITERATIONS = 5;
+        const float CX_WATER_REFRACTION_MAX_RANGE = 4.0;
         // fswater.shd's own displacement search, at SHADER_QUALITY_MODE 2.
-        const float SOWX_VECTOR_LIMIT = 0.01;
-        const int SOWX_DISPLACEMENT_ITERATIONS = 4;
+        const float CX_VECTOR_LIMIT = 0.01;
+        const int CX_DISPLACEMENT_ITERATIONS = 4;
         // inc_material.shd's environment LOD ramp, applied as a texture BIAS exactly as stock does
         // (texture2D's third argument is a bias, not a level).
-        const float SOWX_ENV_LOD_MOD = 30.0, SOWX_ENV_LOD_OFF = -1.0, SOWX_ENV_LOD_MAX = 10.0;
+        const float CX_ENV_LOD_MOD = 30.0, CX_ENV_LOD_OFF = -1.0, CX_ENV_LOD_MAX = 10.0;
         // inc_lighting.shd's fAngleMin, which every N.V here is floored at.
-        const float SOWX_ANGLE_MIN_W = 0.01;
+        const float CX_ANGLE_MIN_W = 0.01;
         // LIGHT_SUBSURFACE_SCATTERING_WRAP at this quality mode, and inc_lighting.shd:554's energy
         // preservation for it -- 2*(1+w)/(2+PI*w), which is 0.778 at w=1 and is what stops a wrapped
         // diffuse from adding light the surface never received.
-        const float SOWX_SSS_WRAP = 1.0;
-        const float SOWX_SSS_ENERGY = 2.0 * (1.0 + SOWX_SSS_WRAP) / (2.0 + 3.14159265 * SOWX_SSS_WRAP);
+        const float CX_SSS_WRAP = 1.0;
+        const float CX_SSS_ENERGY = 2.0 * (1.0 + CX_SSS_WRAP) / (2.0 + 3.14159265 * CX_SSS_WRAP);
 
         """;
 
@@ -725,11 +725,11 @@ internal static unsafe class FrameSnapshot
     /// ponytail: no ripple sources. Add them when the engine's wind-source array has a reader (#340).</para></summary>
     internal const string FsMain = """
 
-        float SowxSqr(float x) { return x * x; }
+        float CxSqr(float x) { return x * x; }
 
         /// Window-space depth from the copy, linearised to a POSITIVE view-space distance -- stock's
         /// GetDepth, reconstructed from this pass's own near/far rather than from an engine uniform.
-        float SowxSceneZ(vec2 uv)
+        float CxSceneZ(vec2 uv)
         {
             float d = texture(uFbDepth, uv).x * 2.0 - 1.0;
             float n = uNearFar.x, f = uNearFar.y;
@@ -738,7 +738,7 @@ internal static unsafe class FrameSnapshot
 
         /// The copy's colour. #132: linear already, so NO decode -- stock's ApplyColorSpace on this read is
         /// the one line of it that must not survive the port.
-        vec3 SowxFbColor(vec2 uv)
+        vec3 CxFbColor(vec2 uv)
         {
             return texture(uFbColor, uv).rgb;
         }
@@ -761,16 +761,16 @@ internal static unsafe class FrameSnapshot
 
         /// vswater.shd's SetupVertexWind. Stock runs it per VERTEX and interpolates the results; every one
         /// of them is a per-frame constant, so computing it here is the same value and one varying fewer.
-        void SowxSetupVertexWind()
+        void CxSetupVertexWind()
         {
-            fTick = float(uTimeOfDay) * (0.001 * SOWX_ANIMATION_SPEED);
+            fTick = float(uTimeOfDay) * (0.001 * CX_ANIMATION_SPEED);
             fAreaWindForce = dot(uAreaWind, uAreaWind);
             vAreaWindDirection = fAreaWindForce > 0.0 ? uAreaWind * inversesqrt(fAreaWindForce)
                                                       : vec3(0.707, 0.707, 0.0);
             fAreaWindForce += 0.05;
         }
 
-        void SowxSetupWind(float fFragmentDepthOffset)
+        void CxSetupWind(float fFragmentDepthOffset)
         {
             fMainWaveAmplitude = 0.4 * fAreaWindForce;
             fMainWavePeriod = 2.0 / (fAreaWindForce + 1.0);
@@ -784,9 +784,9 @@ internal static unsafe class FrameSnapshot
             vAreaWindDirectionDistorted.xy += vec2(vAreaWindDirection.x, -vAreaWindDirection.y)
                                             * fArealVariation * 0.05;
             fArealVariation *= fArealVariation;
-            fMainWaveAmplitude *= SowxSqr(1.0 - fArealVariation);
+            fMainWaveAmplitude *= CxSqr(1.0 - fArealVariation);
             // Reduce at vertical.
-            fMainWaveAmplitude *= max(SowxSqr(vSurfaceNormalWorld.z) * 101.0 - 100.0, 0.0);
+            fMainWaveAmplitude *= max(CxSqr(vSurfaceNormalWorld.z) * 101.0 - 100.0, 0.0);
 
             float fAmplitudeNoise = texture(uNoise, fMainWavePeriod * 0.01 * vWorld.xy
                                                   - 0.005 * fTick * fMainWaveSpeed * vAreaWindDirection.xy).r;
@@ -796,7 +796,7 @@ internal static unsafe class FrameSnapshot
             fMainWaveAmplitude *= min(1.0, fSurfaceNdotV * fFragmentDepthOffset);
         }
 
-        float SowxMainWaveOffset(inout vec3 vPos)
+        float CxMainWaveOffset(inout vec3 vPos)
         {
             // ponytail: stock calls SetupLocalWind(vPos) here for the windPointSources splash rings. No feed
             // for that array yet (#340); the offset it would add is zero.
@@ -812,25 +812,25 @@ internal static unsafe class FrameSnapshot
                                         vAreaWindDirectionDistorted.xy) * fMainWavePeriod,
                                   2.0) - 1.0);
             fWave *= fWave;
-            fWave = 2.0 * fWave - SowxSqr(fWave);
-            fWaveOffset += fMainWaveAmplitude * SowxSqr(fMainWaveNoise) * (fWave - 0.5);
+            fWave = 2.0 * fWave - CxSqr(fWave);
+            fWaveOffset += fMainWaveAmplitude * CxSqr(fMainWaveNoise) * (fWave - 0.5);
             return fWaveOffset;
         }
 
-        float SowxWavesOffset(vec3 vPos)
+        float CxWavesOffset(vec3 vPos)
         {
             const vec2 vRotate = vec2(-0.5735764363, 0.819152044);
             const mat2 M = mat2(vRotate, vec2(-vRotate.y, vRotate.x));
             vec2 vDirection = -vAreaWindDirection.xy;
 
-            float fWave = SowxMainWaveOffset(vPos);
+            float fWave = CxMainWaveOffset(vPos);
 
             float fNoiseFrequency = 0.25;
             float fAmplitude = 0.005;
             float fSpeed = 0.14;
 
             vPos.xy += vPos.z * 0.1;
-            for (int i = 0; i < SOWX_WAVE_ITERATIONS; i++)
+            for (int i = 0; i < CX_WAVE_ITERATIONS; i++)
             {
                 fWave -= fAmplitude
                        * abs(texture(uNoise, vPos.xy * fNoiseFrequency + vDirection.xy * fTick * fSpeed).r * 2.0 - 1.0)
@@ -844,7 +844,7 @@ internal static unsafe class FrameSnapshot
 
         /// The surface normal, in WORLD space -- stock builds it here and converts to view afterwards; the
         /// Alloy lighting libs want world, so the conversion is the one that goes away.
-        vec3 SowxWaterNormal(vec3 vPos)
+        vec3 CxWaterNormal(vec3 vPos)
         {
             vec3 vTangent = vec3(1.0, 0.0, 0.0);
             vec3 vBitangent = vec3(0.0, 1.0, 0.0);
@@ -856,9 +856,9 @@ internal static unsafe class FrameSnapshot
             }
 
             float fOffset = 0.05;
-            float w0 = SowxWavesOffset(vPos);
-            float wx = SowxWavesOffset(vPos + vTangent * fOffset);
-            float wy = SowxWavesOffset(vPos + vBitangent * fOffset);
+            float w0 = CxWavesOffset(vPos);
+            float wx = CxWavesOffset(vPos + vTangent * fOffset);
+            float wy = CxWavesOffset(vPos + vBitangent * fOffset);
 
             vec3 vNormal = cross(vTangent * fOffset + vSurfaceNormalWorld * (wx - w0),
                                  vBitangent * fOffset + vSurfaceNormalWorld * (wy - w0));
@@ -870,7 +870,7 @@ internal static unsafe class FrameSnapshot
         /// Stock's march, verbatim in method: step along the view-space ray, read the copy's depth at the
         /// projected point, and feed the signed depth difference back as the next step so the iteration
         /// converges on the crossing. Returns (uv, hit view distance, relative error).
-        vec4 SowxRayIntersect(vec3 vPosViewOrigin, vec3 vRay, float fDepthOffset, float fMaxDistance, int nIterations)
+        vec4 CxRayIntersect(vec3 vPosViewOrigin, vec3 vRay, float fDepthOffset, float fMaxDistance, int nIterations)
         {
             vec2 vRayIntersectionCoords = vec2(-1.0);
 
@@ -907,7 +907,7 @@ internal static unsafe class FrameSnapshot
                 if (vRayCoordsThis.x > 1.0 || vRayCoordsThis.x < 0.0
                     || vRayCoordsThis.y > 1.0 || vRayCoordsThis.y < 0.0) break;
 
-                float fSampleDepth = SowxSceneZ(vRayCoordsThis);
+                float fSampleDepth = CxSceneZ(vRayCoordsThis);
                 fDepthDelta = fSampleDepth + (vPosViewOrigin.z + vRayThis.z);
 
                 if (abs(fDepthDelta) / (fDistance + 1.0) <= abs(fDepthDeltaMin))
@@ -923,13 +923,13 @@ internal static unsafe class FrameSnapshot
             return vec4(vRayIntersectionCoords.x, vRayIntersectionCoords.y, -fRayIntersectionDepth, fDepthDeltaMin);
         }
 
-        vec4 SowxReflectionCoords(vec3 vPosViewThis, vec3 vReflect, float fDepthOffset)
+        vec4 CxReflectionCoords(vec3 vPosViewThis, vec3 vReflect, float fDepthOffset)
         {
             const int nIterations = 10;
             float fDepthMax = mix(mix(uNearFar.y, 0.0, 0.5 + 0.5 * vReflect.z), 100.0, 0.1);
             float fDepthDeltaMax = fDepthMax + vPosViewThis.z;
             float fMaxDistance = clamp(abs(fDepthDeltaMax), 1.0, 30.0);
-            vec4 c = SowxRayIntersect(vPosViewThis, vReflect, fDepthOffset, fMaxDistance, nIterations);
+            vec4 c = CxRayIntersect(vPosViewThis, vReflect, fDepthOffset, fMaxDistance, nIterations);
             return vec4(c.xyz, clamp(abs(c.w / 0.2), 0.0, 1.0));
         }
 
@@ -937,14 +937,14 @@ internal static unsafe class FrameSnapshot
         /// coordinates, used only to reject a reflection off a surface facing away from the ray. Central
         /// differences here rather than stock's nearest-neighbour pick -- the projection helpers its version
         /// leans on are a bigger port than the term is worth.
-        vec3 SowxCopyNormal(vec2 uv)
+        vec3 CxCopyNormal(vec2 uv)
         {
             vec2 px = uPixel.xy;
             // View position from a depth sample: the ray through this pixel, scaled to the sampled distance.
             vec3 dir = vec3((2.0 * uv.x - 1.0) / uProj[0][0], (2.0 * uv.y - 1.0) / uProj[1][1], -1.0);
-            vec3 p  = dir * SowxSceneZ(uv);
-            vec3 dx = vec3((2.0 * (uv.x + px.x) - 1.0) / uProj[0][0], dir.y, -1.0) * SowxSceneZ(uv + vec2(px.x, 0.0)) - p;
-            vec3 dy = vec3(dir.x, (2.0 * (uv.y + px.y) - 1.0) / uProj[1][1], -1.0) * SowxSceneZ(uv + vec2(0.0, px.y)) - p;
+            vec3 p  = dir * CxSceneZ(uv);
+            vec3 dx = vec3((2.0 * (uv.x + px.x) - 1.0) / uProj[0][0], dir.y, -1.0) * CxSceneZ(uv + vec2(px.x, 0.0)) - p;
+            vec3 dy = vec3(dir.x, (2.0 * (uv.y + px.y) - 1.0) / uProj[1][1], -1.0) * CxSceneZ(uv + vec2(0.0, px.y)) - p;
             return normalize(cross(dx, dy));
         }
 
@@ -952,7 +952,7 @@ internal static unsafe class FrameSnapshot
         /// environment with, from the VIEW-space fragment normal and the view position. Verbatim -- the
         /// half-offset and the 0.25 in the y term are the engine's own framing of its env textures, and a
         /// "tidier" projection here is a different reflection.
-        vec2 SowxEnvCoords(vec3 nView, vec3 posView)
+        vec2 CxEnvCoords(vec3 nView, vec3 posView)
         {
             vec2 vEnvReflect = nView.xy / (1.0 + abs(nView.z));
             vEnvReflect += 0.5 * (posView.xy / (-posView.z + 0.2));
@@ -960,22 +960,22 @@ internal static unsafe class FrameSnapshot
         }
 
         /// The fog AMOUNT alone -- stock scales the refraction's transparency by (1 - GetFogAlpha), so the
-        /// riverbed stops showing through where the fog has already swallowed it. Same expression SowxFog
+        /// riverbed stops showing through where the fog has already swallowed it. Same expression CxFog
         /// uses; only the mix is different.
-        float SowxFogAlpha(float depth)
+        float CxFogAlpha(float depth)
         {
             return uFogParams.x == 0.0 ? 0.0 : clamp((depth - uFogParams.y) * uFogParams.w, 0.0, 1.0);
         }
 
         void main()
         {
-            SowxDraw d = uDraw[vDraw];
+            CxDraw d = uDraw[vDraw];
             // /draw viz 4 is the coverage view: cyan is Alloy lit and magenta owned-fullbright, so
             // water takes BLUE.
             if (uViz == 4) { frag = vec4(0.0, 0.0, 1.0, 1.0); return; }
 
             vSurfaceNormalWorld = normalize(vNrm);
-            SowxSetupVertexWind();
+            CxSetupVertexWind();
 
             vec3 V = normalize(uEyePos - vWorld);
             vec2 vScreenCoords = gl_FragCoord.xy * uPixel.xy;
@@ -986,27 +986,27 @@ internal static unsafe class FrameSnapshot
             // exactly this reason: a water material's texture is a ripple pattern, and sampling it per
             // fragment paints that pattern onto a surface whose shape comes from the wave field instead.
             vec4 baseTexel = textureLod(uTex, vec2(0.5), 20.0);
-            vec4 WaterBaseColor = vec4(SowxLinear(baseTexel.rgb), baseTexel.a);
+            vec4 WaterBaseColor = vec4(CxLinear(baseTexel.rgb), baseTexel.a);
 
-            float fScreenFBDepth = SowxSceneZ(vScreenCoords);
-            fSurfaceNdotV = max(dot(vSurfaceNormalWorld, V), SOWX_ANGLE_MIN_W);
-            SowxSetupWind(fScreenFBDepth + vPosView.z);
+            float fScreenFBDepth = CxSceneZ(vScreenCoords);
+            fSurfaceNdotV = max(dot(vSurfaceNormalWorld, V), CX_ANGLE_MIN_W);
+            CxSetupWind(fScreenFBDepth + vPosView.z);
 
             // The displacement search: where on the (raised) wave surface this pixel's ray actually lands.
             // Stock's iteration, unchanged -- it is what turns a fragment-side wave field into something with
             // parallax instead of a texture painted flat on the plane.
             vec3 vWaterSurfaceCoords = vWorld;
             vec3 vCameraToWorld_n = normalize(vWorld - uEyePos);
-            float fDisplaceFactor = 1.0 / (vCameraToWorld_n.z > 0.0 ? vCameraToWorld_n.z + SOWX_VECTOR_LIMIT
-                                                                    : vCameraToWorld_n.z - SOWX_VECTOR_LIMIT);
+            float fDisplaceFactor = 1.0 / (vCameraToWorld_n.z > 0.0 ? vCameraToWorld_n.z + CX_VECTOR_LIMIT
+                                                                    : vCameraToWorld_n.z - CX_VECTOR_LIMIT);
             vec2 vWorldOffset = vCameraToWorld_n.xy * fDisplaceFactor;
 
-            float fDistance = SowxMainWaveOffset(vWaterSurfaceCoords);
+            float fDistance = CxMainWaveOffset(vWaterSurfaceCoords);
             float fSegmentSize = 1.0;
             vWaterSurfaceCoords.xy = vWorld.xy + vWorldOffset * fDistance;
-            for (int n = 1; n < SOWX_DISPLACEMENT_ITERATIONS; n++)
+            for (int n = 1; n < CX_DISPLACEMENT_ITERATIONS; n++)
             {
-                float fMainWaveOffset = SowxMainWaveOffset(vWaterSurfaceCoords);
+                float fMainWaveOffset = CxMainWaveOffset(vWaterSurfaceCoords);
                 fSegmentSize *= 0.5;
                 fDistance += (fMainWaveOffset - fDistance) * fSegmentSize;
                 vWaterSurfaceCoords.xy = vWorld.xy + vWorldOffset * fDistance;
@@ -1016,7 +1016,7 @@ internal static unsafe class FrameSnapshot
             vViewToSurface_n = normalize(vPosViewThis);
             float fDepthOffset = fScreenFBDepth + vPosViewThis.z;
 
-            vec3 N = SowxWaterNormal(vWaterSurfaceCoords);
+            vec3 N = CxWaterNormal(vWaterSurfaceCoords);
             vec3 vFragmentNormal = normalize(mat3(uView) * N);
 
             // ---- lighting: stock's ComputeLighting, answered by the froxel walk ----------------------
@@ -1024,15 +1024,15 @@ internal static unsafe class FrameSnapshot
             // fSpecularity = 1.0 -- stock sets it to one on purpose and factors water's real F0 in at the
             // composite, through the Fresnel term. Doing it in both places is the double-count to avoid.
             float fRoughness = 0.00025 + 0.00025 * -vPosView.z;
-            float NdotV = max(dot(N, V), SOWX_ANGLE_MIN_W);
+            float NdotV = max(dot(N, V), CX_ANGLE_MIN_W);
             float sunRaw = clamp(dot(N, uAreaDir), 0.0, 1.0);
-            float sunVis = SowxSunShadow(vWorld, N, sunRaw, sunRaw);
+            float sunVis = CxSunShadow(vWorld, N, sunRaw, sunRaw);
 
             vec3 pointSpec;
-            vec3 pointDiffuse = SowxClusteredLight(vWorld, N, V, vDepth, 0.0, fRoughness, 1.0, pointSpec);
+            vec3 pointDiffuse = CxClusteredLight(vWorld, N, V, vDepth, 0.0, fRoughness, 1.0, pointSpec);
             // FragmentColor in stock: lighting on a BLACK albedo, so what survives is the specular alone.
-            vec3 ShadedColor = (uAreaDiffuse * (sunRaw * sunVis) * SowxSpecLobe(N, V, uAreaDir, fRoughness, 1.0)
-                                + pointSpec) * SowxSpecBase(NdotV, fRoughness);
+            vec3 ShadedColor = (uAreaDiffuse * (sunRaw * sunVis) * CxSpecLobe(N, V, uAreaDir, fRoughness, 1.0)
+                                + pointSpec) * CxSpecBase(NdotV, fRoughness);
             // ...plus the ENVIRONMENT term, which is the largest single thing the first cut of this port was
             // missing (inc_lighting.shd:454-513). Stock adds `(AmbientLight + DiffuseLight) * envTexel *
             // fEnvironmentSpecularity` into the specular light, and for water that last factor is exactly
@@ -1044,8 +1044,8 @@ internal static unsafe class FrameSnapshot
             vec3 DiffuseLight = uAreaDiffuse * (sunRaw * sunVis) + pointDiffuse;
             if (uEnvOk != 0)
             {
-                float envLod = clamp(fRoughness * SOWX_ENV_LOD_MOD + SOWX_ENV_LOD_OFF, 0.0, SOWX_ENV_LOD_MAX);
-                vec3 envTexel = SowxLinear(texture(uEnvMap, SowxEnvCoords(vFragmentNormal, vPosViewThis), envLod).rgb);
+                float envLod = clamp(fRoughness * CX_ENV_LOD_MOD + CX_ENV_LOD_OFF, 0.0, CX_ENV_LOD_MAX);
+                vec3 envTexel = CxLinear(texture(uEnvMap, CxEnvCoords(vFragmentNormal, vPosViewThis), envLod).rgb);
                 ShadedColor += (uAreaAmbient + DiffuseLight) * envTexel;
             }
             // inc_lighting's SubsurfaceLight (its assembly at :545-555): the wrapped per-light sum, plus
@@ -1055,9 +1055,9 @@ internal static unsafe class FrameSnapshot
             // ponytail: no materialFrontDiffuse tint on the sum, which stock applies. The record carries that
             // colour in d.dif -- but only on a LIT batch, and an unlit water batch would read a stale slot of
             // any magnitude. Stock water materials are white there; tint it from d.dif if one ever is not.
-            float sunWrap = (sunRaw + SOWX_SSS_WRAP) / (1.0 + SOWX_SSS_WRAP);
+            float sunWrap = (sunRaw + CX_SSS_WRAP) / (1.0 + CX_SSS_WRAP);
             vec3 SubsurfaceLight = (uAreaDiffuse * (sunWrap * sunVis) + pointDiffuse + uAreaAmbient)
-                                 * SOWX_SSS_ENERGY;
+                                 * CX_SSS_ENERGY;
 
             // ---- refraction: the floor, seen through the surface -------------------------------------
             vec3 vRefraction = refract(vViewToSurface_n, vFragmentNormal, 1.0 / 1.33333);
@@ -1066,32 +1066,32 @@ internal static unsafe class FrameSnapshot
             vec3 vRefractSurface = refract(vViewToSurface_n, normalize(mat3(uView) * vSurfaceNormalWorld), 1.0 / 1.33333);
             vRefraction = vViewToSurface_n + (vRefraction - vRefractSurface);
 
-            vec4 vRefractionCoords = SowxRayIntersect(vPosViewThis, vRefraction, fDepthOffset,
-                                                      SOWX_WATER_REFRACTION_MAX_RANGE,
-                                                      SOWX_WATER_REFRACTION_ITERATIONS);
+            vec4 vRefractionCoords = CxRayIntersect(vPosViewThis, vRefraction, fDepthOffset,
+                                                      CX_WATER_REFRACTION_MAX_RANGE,
+                                                      CX_WATER_REFRACTION_ITERATIONS);
             float fRefractionModifier = clamp(1.0 + 10.0 * vRefractionCoords.w, 0.0, 1.0);
-            vec3 ColorRefraction = SowxFbColor(mix(vScreenCoords, vRefractionCoords.xy, fRefractionModifier));
+            vec3 ColorRefraction = CxFbColor(mix(vScreenCoords, vRefractionCoords.xy, fRefractionModifier));
 
             float fRefractionTransparency = WaterBaseColor.a < 1.0
                 ? exp2(-mix(fDepthOffset,
-                            clamp(vPosViewThis.z - vRefractionCoords.z, 0.0, SOWX_WATER_REFRACTION_MAX_RANGE),
+                            clamp(vPosViewThis.z - vRefractionCoords.z, 0.0, CX_WATER_REFRACTION_MAX_RANGE),
                             fRefractionModifier)
-                       * SOWX_WATER_TRANSPARENCY_FACTOR * WaterBaseColor.a / (1.0 - WaterBaseColor.a))
+                       * CX_WATER_TRANSPARENCY_FACTOR * WaterBaseColor.a / (1.0 - WaterBaseColor.a))
                 : 0.0;
             ColorRefraction *= pow(fRefractionTransparency, fSurfaceNdotV);
-            fRefractionTransparency *= 1.0 - SowxFogAlpha(vDepth);
+            fRefractionTransparency *= 1.0 - CxFogAlpha(vDepth);
 
             // ---- reflection: the same march, out to the horizon --------------------------------------
             vec3 ColorReflection;
             vec3 ColorLiquid = WaterBaseColor.rgb * SubsurfaceLight;
             vec3 vReflect = reflect(vViewToSurface_n, vFragmentNormal);
-            vec4 vReflectedCoords = SowxReflectionCoords(vPosViewThis, vReflect, fDepthOffset);
+            vec4 vReflectedCoords = CxReflectionCoords(vPosViewThis, vReflect, fDepthOffset);
             float fReflectionMod = clamp(1.0 - vReflectedCoords.w, 0.0, 1.0);
             if (vReflectedCoords.x >= 0.0)
             {
-                ColorReflection = SowxFbColor(clamp(vReflectedCoords.xy, vec2(0.001), vec2(0.999)));
-                vec3 vReflectedNormal = SowxCopyNormal(clamp(vReflectedCoords.xy, vec2(0.001), vec2(0.999)));
-                fReflectionMod *= 1.0 - SowxFogAlpha(-vReflectedCoords.z);
+                ColorReflection = CxFbColor(clamp(vReflectedCoords.xy, vec2(0.001), vec2(0.999)));
+                vec3 vReflectedNormal = CxCopyNormal(clamp(vReflectedCoords.xy, vec2(0.001), vec2(0.999)));
+                fReflectionMod *= 1.0 - CxFogAlpha(-vReflectedCoords.z);
                 ColorReflection = mix(vec3(0.0), ColorReflection,
                                       clamp(0.1 - 4.0 * dot(vReflectedNormal, vReflect), 0.0, 1.0));
                 // The miss and the reject both land on the SHADED surface, which is vanilla's flat-horizon
@@ -1105,7 +1105,7 @@ internal static unsafe class FrameSnapshot
 
             // ---- composite ---------------------------------------------------------------------------
             ColorLiquid = mix(ColorLiquid, ColorRefraction, fRefractionTransparency);
-            float fFresnelSpecularity = mix(SOWX_WATER_SPECULARITY, 1.0, SowxFresnel(NdotV));
+            float fFresnelSpecularity = mix(CX_WATER_SPECULARITY, 1.0, CxFresnel(NdotV));
             vec3 lit = ColorLiquid + ColorReflection * fFresnelSpecularity;
 
             // #129's term views, kept: water composites four things that can each be wrong on their own and
@@ -1115,7 +1115,7 @@ internal static unsafe class FrameSnapshot
             if (uViz == 9)  { frag = vec4(ColorLiquid, 1.0); return; }
             if (uViz == 10) { frag = vec4(ColorReflection, 1.0); return; }
             if (uViz == 11) { frag = vec4(vec3(fFresnelSpecularity), 1.0); return; }
-            if (uViz == 12) { frag = vec4(SowxFbColor(vScreenCoords), 1.0); return; }
+            if (uViz == 12) { frag = vec4(CxFbColor(vScreenCoords), 1.0); return; }
             if (uViz == 13) { frag = vec4(vec3(clamp(fScreenFBDepth / 100.0, 0.0, 1.0)), 1.0); return; }
             if (uViz == 20) { frag = vec4(N * 0.5 + 0.5, 1.0); return; }
             // 28 = the environment term alone -- the scene env map through the wave normal, times the light
@@ -1123,9 +1123,9 @@ internal static unsafe class FrameSnapshot
             if (uViz == 28)
             {
                 frag = vec4(uEnvOk != 0
-                            ? SowxLinear(texture(uEnvMap, SowxEnvCoords(vFragmentNormal, vPosViewThis),
-                                                 clamp(fRoughness * SOWX_ENV_LOD_MOD + SOWX_ENV_LOD_OFF,
-                                                       0.0, SOWX_ENV_LOD_MAX)).rgb)
+                            ? CxLinear(texture(uEnvMap, CxEnvCoords(vFragmentNormal, vPosViewThis),
+                                                 clamp(fRoughness * CX_ENV_LOD_MOD + CX_ENV_LOD_OFF,
+                                                       0.0, CX_ENV_LOD_MAX)).rgb)
                             : vec3(0.0), 1.0);
                 return;
             }
@@ -1197,12 +1197,12 @@ internal static unsafe class FrameSnapshot
             }
             if (uCapture != 0) { frag = vec4(lit, 1.0); return; }
 
-            float kh = SowxKeyhole(d.rot.z, vWorld, vDepth);
+            float kh = CxKeyhole(d.rot.z, vWorld, vDepth);
             if (kh < 0.0) discard;
             // Stock's own `FragmentColor.a = 1.0`: everything behind the surface has already been
             // composited in by the refraction term, so letting the framebuffer show through counts the
             // floor twice. rot.w is below 1 only on a fading tile.
-            frag = vec4(SowxDisplayContent(SowxFog(lit * kh, vWorld, vDepth)), d.rot.w);
+            frag = vec4(CxDisplayContent(CxFog(lit * kh, vWorld, vDepth)), d.rot.w);
         }
         """;
 }

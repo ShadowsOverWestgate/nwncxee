@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#353: grass on the area border ring. Vanilla never grows any there, and not by a flag: the engine
 /// bins grass from WALKMESH faces only (<c>Scene::AddFacesToBins</c> @0x460ef0 gates on <c>AsPartAABB</c>),

@@ -2,10 +2,10 @@ using System.Collections.Generic;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #127 (map #68, spec #114 M3): grass, as a REPLACEMENT class. Not a faster reproduction of
@@ -101,7 +101,7 @@ internal static unsafe partial class GrassField
     /// part's <c>PartTriMesh*</c> or null. Straight out of <c>Gob::ContainsNonSolids</c> @0x43f250 and
     /// <c>Gob::ContainsWater</c> @0x43f2f0, which walk exactly this shape. <see cref="PartTriMeshLive"/> is the
     /// byte ContainsNonSolids gates the trimesh on before testing its opacity.</summary>
-    private static readonly int PartAsTriMeshVtbl = Sowx.Framework.EngineLayout.PartAsTriMeshSlot;
+    private static readonly int PartAsTriMeshVtbl = CX.Framework.EngineLayout.PartAsTriMeshSlot;
     private static readonly int PartChildren = EngineLayout.PartChildren, PartChildCount = EngineLayout.PartChildCount,
                                PartTriMeshLive = EngineLayout.PartRenderFlag;
     /// <summary>Vertices in the blade template: two quads crossed at 90 degrees, six vertices each. Vanilla
@@ -1143,7 +1143,7 @@ internal static unsafe partial class GrassField
     }
 
     /// <summary><c>/grass dumpmips</c>: one-shot readback of every level of every live grass atlas, as
-    /// <c>sowx-grassmip-{material}-L{level}.ppm</c> (rgb) + <c>.pgm</c> (alpha) in the user directory. The
+    /// <c>cx-grassmip-{material}-L{level}.ppm</c> (rgb) + <c>.pgm</c> (alpha) in the user directory. The
     /// ground truth for what the blades sample; cold path, allocates.</summary>
     private static bool _dumpMips;
     private static void DumpMips(int* tids, bool* live)
@@ -1164,7 +1164,7 @@ internal static unsafe partial class GrassField
                 fixed (byte* pp = px) Gl.GetTexImage(Gl.TEXTURE_2D, l, Gl.RGBA, Gl.UNSIGNED_BYTE, pp);
                 var rgb = new byte[w * h * 3]; var a = new byte[w * h];
                 for (int i = 0; i < w * h; i++) { rgb[i*3] = px[i*4]; rgb[i*3+1] = px[i*4+1]; rgb[i*3+2] = px[i*4+2]; a[i] = px[i*4+3]; }
-                string b = Native.ConfigPath($"sowx-grassmip-{m}-L{l}");
+                string b = Native.ConfigPath($"cx-grassmip-{m}-L{l}");
                 using (var f = File.Create(b + ".ppm")) { var hd = System.Text.Encoding.ASCII.GetBytes($"P6\n{w} {h}\n255\n"); f.Write(hd); f.Write(rgb); }
                 using (var f = File.Create(b + ".pgm")) { var hd = System.Text.Encoding.ASCII.GetBytes($"P5\n{w} {h}\n255\n"); f.Write(hd); f.Write(a); }
                 _log?.Info($"[grass] dumpmips: material {m} tid {tids[m]} level {l} {w}x{h} fmt 0x{fmt:x} -> {b}.ppm/.pgm");
@@ -1268,7 +1268,7 @@ internal static unsafe partial class GrassField
     /// <summary>The fraction of a patch's blades drawn at distance <paramref name="d"/>: all of them inside
     /// <see cref="_lod"/>, then <c>(lod/d)^2</c> -- the screen area a patch covers falls with the square of
     /// its distance, so this holds the blades PER PIXEL constant -- floored at <see cref="_lodMin"/>. The
-    /// vertex stage's <c>SowxGrassKeep</c> is this function character for character.</summary>
+    /// vertex stage's <c>CxGrassKeep</c> is this function character for character.</summary>
     /// <summary>The cut-off: <see cref="_far"/> when set, else the player's own option.</summary>
     /// <summary>The cut-off radius: <c>/grass far</c> when set, else the engine's option -- but never under
     /// <see cref="MinFar"/>. The option defaults to 30u (900 squared), sized for vanilla's per-blade alpha
@@ -1447,7 +1447,7 @@ internal static unsafe partial class GrassField
         string fs = EmbeddedFs, vs = ShaderStages.Source(ShdGrassVs);
         uint prog = GlProgram.Graphics(ShdGrassVs, vs, ShdGrassFs, fs, _log,
                                        "GrassField instanced grass", out _, out string fsSrc);
-        // #132: an override written before the linear flip still ends in SowxRevert, links cleanly, and
+        // #132: an override written before the linear flip still ends in CxRevert, links cleanly, and
         // gets encoded a second time by the resolve -- a washed-out lawn, silently. Rebuilt from the
         // embedded text rather than logged and shipped, like every other Alloy stage's guard.
         if (prog != 0 && !(ShaderContract.LinearSafe(fsSrc) && ShaderContract.SlotSafe(fsSrc, "uTex")))
@@ -1594,15 +1594,15 @@ internal static unsafe partial class GrassField
 
         // #355: the fraction of a patch's blades that draw at this distance -- GrassField.Keep, character
         // for character, so the CPU's prefix count and this blade's own verdict agree.
-        float SowxGrassKeep(float d)
+        float CxGrassKeep(float d)
         {
             if (d <= uLod.x) return 1.0;
             float r = uLod.x / d;
             return max(uLod.y, r * r);
         }
 
-        vec2 sowxClusterXY;
-        #define SOWX_CLUSTER_XY sowxClusterXY
+        vec2 cxClusterXY;
+        #define CX_CLUSTER_XY cxClusterXY
 
         """;
 
@@ -1615,7 +1615,7 @@ internal static unsafe partial class GrassField
             // The root blend reads the pixel behind the blade, which is ground only when the eye is above the
             // root: from below (a cliff seen from its foot) that pixel is sky, and the blade would levitate.
             vLookDown = smoothstep(0.02, 0.12, (uEyePos.z - iPos.z) / max(distance(uEyePos.xy, iPos.xy), 0.001));
-            float kv = SowxGrassKeep(dist);
+            float kv = CxGrassKeep(dist);
             // A blade past its own keep edge is gone; one AT the edge thins out over the last 20% of the
             // prefix so the count changing under a moving camera never pops. Culled before rasterisation.
             float lod = clamp((kv * 1.2 - iParam.z) / (kv * 0.2), 0.0, 1.0);
@@ -1705,8 +1705,8 @@ internal static unsafe partial class GrassField
             // without its point lights a night field past 40u went black under lit lamps.
             if (uVLit != 0)
             {
-                sowxClusterXY = (gl_Position.xy / max(gl_Position.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
-                vLight = uLit != 0 ? SowxClusteredDiffuse(vWorld, vNrm, vDepth) : vec3(0.0);
+                cxClusterXY = (gl_Position.xy / max(gl_Position.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
+                vLight = uLit != 0 ? CxClusteredDiffuse(vWorld, vNrm, vDepth) : vec3(0.0);
             }
         }
         """;
@@ -1717,7 +1717,7 @@ internal static unsafe partial class GrassField
         in vec2 vCellUv;
         flat in vec2 vCellBase;
         flat in float vTuft;
-        vec4 SowxGrassTexel()
+        vec4 CxGrassTexel()
         {
             vec2 gx = dFdx(vCellUv) * vec2(vTuft, 1.0) * 0.5, gy = dFdy(vCellUv) * vec2(vTuft, 1.0) * 0.5;
             vec2 uv = vCellBase + vec2(fract(vCellUv.x * vTuft), vCellUv.y) * 0.5;
@@ -1773,7 +1773,7 @@ internal static unsafe partial class GrassField
         out vec4 frag;
 
         // The engine's own cutout threshold (fAlphaDiscardValue under RenderInterface::Enable(1)).
-        const float SOWX_GRASS_CUT = 0.2;
+        const float CX_GRASS_CUT = 0.2;
 
         """ + GrassFetch;
 
@@ -1786,7 +1786,7 @@ internal static unsafe partial class GrassField
         // Interleaved gradient noise (Jimenez): a hash with no visible tiling and no texture fetch. The
         // instance seed decorrelates neighbouring blades, so the dither reads as thinning grass rather than
         // as a screen-space grid crawling over it.
-        float SowxGrassDither()
+        float CxGrassDither()
         {
             vec2 p = gl_FragCoord.xy + vec2(float(vSeed & 63u), float((vSeed >> 6) & 63u));
             return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
@@ -1794,7 +1794,7 @@ internal static unsafe partial class GrassField
 
         void main()
         {
-            vec4 texel = SowxGrassTexel();
+            vec4 texel = CxGrassTexel();
             // COVERAGE, not a binary test. fwidth is the alpha's rate of change across this pixel, so the
             // ramp is exactly one pixel wide wherever the blade edge lands -- which is what turns a stair-
             // stepped silhouette into a shaded one. It must be computed BEFORE any discard: derivatives are
@@ -1804,26 +1804,26 @@ internal static unsafe partial class GrassField
             // floating pixels. Blended (softedge) or A2C, the ramp is the anti-aliasing -- a hard step on a
             // one-pixel blade is sub-pixel noise SMAA never sees an edge run in. Both stages carry this.
             float edge = (uMsaa != 0 || uSoftEdge != 0) ? uEdge : mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
-            float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
+            float cov = clamp((texel.a - CX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
             // Where the target is multisampled, alpha-to-coverage resolves the edge properly and the dither
             // is left to carry the distance fade alone. Where it is not, the one dither carries both -- still
             // strictly softer than the hard step, and still never a semi-transparent depth-writing fragment.
             float keep = (uMsaa != 0 || uSoftEdge != 0) ? vFade : cov * vFade;
             if (keep <= 0.0 || cov <= 0.0) discard;
-            if (keep < 1.0 && SowxGrassDither() > keep) discard;
+            if (keep < 1.0 && CxGrassDither() > keep) discard;
 
             vec3 N = normalize(vNrm);
-            vec3 albedo = SowxLinear(texel.rgb);
+            vec3 albedo = CxLinear(texel.rgb);
             float ndl = clamp(dot(N, uAreaDir), 0.0, 1.0);
             // #355: a far blade is a few pixels; the cascade and cluster taps (the frame's costliest term)
             // cannot be seen on it and are not taken. Divergent, but blades cluster by distance.
             bool near = vDist <= uShade;
             vec3 sunpoint;
-            if (uVLit != 0) sunpoint = uAreaDiffuse * (near ? ndl * SowxSunShadow(vWorld, N, ndl, ndl) : ndl) + vLight;
+            if (uVLit != 0) sunpoint = uAreaDiffuse * (near ? ndl * CxSunShadow(vWorld, N, ndl, ndl) : ndl) + vLight;
             else
             {
-                vec3 sun = uAreaDiffuse * (near ? ndl * SowxSunShadow(vWorld, N, ndl, ndl) : ndl);
-                vec3 point = (uLit != 0 && near) ? SowxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0);
+                vec3 sun = uAreaDiffuse * (near ? ndl * CxSunShadow(vWorld, N, ndl, ndl) : ndl);
+                vec3 point = (uLit != 0 && near) ? CxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0);
                 sunpoint = sun + point;
             }
             // vanilla (inc_lighting.shd:411/:520): the ground's vertex colour joins the DIFFUSE sum as
@@ -1837,9 +1837,9 @@ internal static unsafe partial class GrassField
             // vanilla grass runs fsgrass, which is the stock lit shader with KEYHOLING 1 and FOG 1 -- so the
             // camera dissolve and the scene fog both apply, and dropping them would fill a low camera shot
             // with undissolved grass. Grass always dissolves: it has no per-part CanDissolve to read.
-            float kh = SowxKeyhole(1.0, vWorld, vDepth);
+            float kh = CxKeyhole(1.0, vWorld, vDepth);
             if (kh < 0.0) discard;
-            vec3 col = SowxFog(lit * kh, vWorld, vDepth);
+            vec3 col = CxFog(lit * kh, vWorld, vDepth);
             // Sprouting from the ground: the blade's base takes the colour the frame already has BEHIND
             // this fragment -- lit, shadowed and fogged terrain, pavement, whatever is there -- and fades to
             // its own colour over the lower uGroundTint of its height. Read at gl_FragCoord, as the water
@@ -1856,7 +1856,7 @@ internal static unsafe partial class GrassField
             }
             if (uGroundOn != 0 && uGroundTint > 0.0)
                 col = mix(texelFetch(uGround, ivec2(gl_FragCoord.xy), 0).rgb, col, max(smoothstep(0.0, uGroundTint, vRoot), 1.0 - vLookDown));
-            frag = vec4(SowxDisplayOverlays(col), uSoftEdge != 0 ? min(cov * 2.0, 1.0) : (uMsaa != 0 ? cov : 1.0));
+            frag = vec4(CxDisplayOverlays(col), uSoftEdge != 0 ? min(cov * 2.0, 1.0) : (uMsaa != 0 ? cov : 1.0));
         }
         """;
 
@@ -1884,9 +1884,9 @@ internal static unsafe partial class GrassField
 
         """ + AlloyRenderer.KeyholeFs + GrassFetch + """
 
-        const float SOWX_GRASS_CUT = 0.2;
+        const float CX_GRASS_CUT = 0.2;
 
-        float SowxGrassDither()
+        float CxGrassDither()
         {
             vec2 p = gl_FragCoord.xy + vec2(float(vSeed & 63u), float((vSeed >> 6) & 63u));
             return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
@@ -1894,18 +1894,18 @@ internal static unsafe partial class GrassField
 
         void main()
         {
-            vec4 texel = SowxGrassTexel();
+            vec4 texel = CxGrassTexel();
             float aw = max(fwidth(texel.a), 1e-5);
             // Only the DITHER path hardens the far edge: there a one-pixel ramp on a one-pixel blade reads as
             // floating pixels. Blended (softedge) or A2C, the ramp is the anti-aliasing -- a hard step on a
             // one-pixel blade is sub-pixel noise SMAA never sees an edge run in. Both stages carry this.
             float edge = (uMsaa != 0 || uSoftEdge != 0) ? uEdge : mix(uEdge, 0.01, smoothstep(0.5 * uLod.x, uLod.x, vDist));
-            float cov = clamp((texel.a - SOWX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
+            float cov = clamp((texel.a - CX_GRASS_CUT) / (aw * edge) + 0.5, 0.0, 1.0);
             float keep = (uMsaa != 0 || uSoftEdge != 0) ? vFade : cov * vFade;
             if (keep <= 0.0) discard;
             if (uSoftEdge != 0 && cov < 0.5) discard;
-            if (keep < 1.0 && SowxGrassDither() > keep) discard;
-            if (uCast == 0 && SowxKeyhole(1.0, vWorld, vDepth) < 0.0) discard;
+            if (keep < 1.0 && CxGrassDither() > keep) discard;
+            if (uCast == 0 && CxKeyhole(1.0, vWorld, vDepth) < 0.0) discard;
             frag = vec4(0.0, 0.0, 0.0, uMsaa != 0 ? cov : 1.0);
         }
         """;

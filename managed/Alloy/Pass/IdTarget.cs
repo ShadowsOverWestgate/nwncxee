@@ -1,7 +1,7 @@
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #493, visibility-buffer slice 1: the vis-ID target. Alongside the depth prepass the opaque range writes a
@@ -47,11 +47,11 @@ internal static unsafe class IdTarget
     /// fragment stage so the three write the identical word.</summary>
     internal const string OutDecl = """
         layout(location = 1) out uint oVisId;
-        uint SowxVisId(int slot, int prim) { return (uint(slot + 1) << 14) | (uint(prim) & 0x3FFFu); }
+        uint CxVisId(int slot, int prim) { return (uint(slot + 1) << 14) | (uint(prim) & 0x3FFFu); }
 
         """;
 
-    /// <summary>C# twin of <c>SowxVisId</c>, for the self-check and a later CPU readback.</summary>
+    /// <summary>C# twin of <c>CxVisId</c>, for the self-check and a later CPU readback.</summary>
     internal static uint Pack(int slot, int prim) => ((uint)(slot + 1) << PrimBits) | ((uint)prim & ((1u << PrimBits) - 1));
     internal static int Slot(uint id) => (int)(id >> PrimBits) - 1;
     internal static int Prim(uint id) => (int)(id & ((1u << PrimBits) - 1));
@@ -157,7 +157,7 @@ internal static unsafe class IdTarget
         in vec2 vUV;
         out vec4 frag;
         uniform usampler2D uId;
-        uint SowxHash(uint x)
+        uint CxHash(uint x)
         {
             x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x;
         }
@@ -165,7 +165,7 @@ internal static unsafe class IdTarget
         {
             uint id = texelFetch(uId, ivec2(gl_FragCoord.xy), 0).r;
             if (id == 0u) { frag = vec4(0.0, 0.0, 0.0, 1.0); return; }
-            uint h = SowxHash(id);
+            uint h = CxHash(id);
             frag = vec4(vec3(h & 0xFFu, (h >> 8) & 0xFFu, (h >> 16) & 0xFFu) / 255.0 * 0.8 + 0.1, 1.0);
         }
         """;
@@ -183,8 +183,8 @@ internal static unsafe class IdTarget
         E(OutDecl.Contains("<< 14") && PrimBits == 14, "the GLSL pack and PrimBits agree");
         E(AlloyRenderer.DepthFs.Contains(OutDecl) && AlloyRenderer.DepthKeyFs.Contains(OutDecl) && AlloyRenderer.DepthFeatFs.Contains(OutDecl),
           "every depth fragment stage declares the vis-ID output");
-        E(AlloyRenderer.DepthFs.Contains("oVisId = SowxVisId(vDraw, gl_PrimitiveID);") && AlloyRenderer.DepthKeyFs.Contains("oVisId = SowxVisId(vDraw, gl_PrimitiveID);")
-          && AlloyRenderer.DepthFeatFs.Contains("oVisId = SowxVisId(vDraw, gl_PrimitiveID);"), "...and writes the record slot, not the draw index");
+        E(AlloyRenderer.DepthFs.Contains("oVisId = CxVisId(vDraw, gl_PrimitiveID);") && AlloyRenderer.DepthKeyFs.Contains("oVisId = CxVisId(vDraw, gl_PrimitiveID);")
+          && AlloyRenderer.DepthFeatFs.Contains("oVisId = CxVisId(vDraw, gl_PrimitiveID);"), "...and writes the record slot, not the draw index");
         E(AlloyRenderer.DepthVs.Contains("flat out int vDraw;") && AlloyRenderer.DepthVs.Contains("vDraw = id;"), "DepthVs hands the slot down");
         E(VizMode <= AlloyRenderer.LightVizMax, "the viz mode is inside LightVizMax (or /draw viz clamps it away)");
         E(VizFs.Contains("usampler2D") && VizFs.Contains("texelFetch"), "the viz reads the integer target unfiltered");

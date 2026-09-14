@@ -1,6 +1,6 @@
 using System;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// #216: a line the PLAYER has to see, not just one the log records. The extender's own log is a file nobody

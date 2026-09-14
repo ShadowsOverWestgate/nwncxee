@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// Fixed-capacity ring of <see cref="ChatLine"/>s (overwrites oldest). Tab views are materialised at

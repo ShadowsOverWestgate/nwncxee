@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>The chat-bar focus/unfocus signal vanilla sends the server, as pure logic: a single latch
 /// that decides whether an open/close of our chat entry is a state CHANGE worth putting on the wire.

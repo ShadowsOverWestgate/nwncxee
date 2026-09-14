@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>The GL brackets (#80 context enter/leave) the Alloy frame is allowed per frame. ADR 0011 costs
 /// the M3 graph at exactly two, so a third one appearing is a design change, not an implementation detail.

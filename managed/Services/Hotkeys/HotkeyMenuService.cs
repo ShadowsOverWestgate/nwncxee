@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Hotkeys;
+namespace CX.Services.Hotkeys;
 
 /// <summary>
 /// The Options-menu entry point. Repurposes the in-game Esc-menu's "Save Character" button

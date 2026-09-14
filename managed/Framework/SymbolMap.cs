@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// The one place that knows a symbol's identity and how it resolves per platform. Each
@@ -1058,7 +1058,7 @@ internal static unsafe class SymbolMap
     /// <para>Deleting the GL names is why a caller must first prove there is something to rebuild: called on
     /// a texture that already has an id, or on the shared null texture, Reset is pure destruction.</para>
     /// <para>Expensive -- a decode plus a fresh upload through <c>RenderInterface::CreateTexture</c>, i.e.
-    /// the funnel <see cref="Sowx.Alloy.OwnedTextures"/> adopts from -- so it is dripped, never swept.
+    /// the funnel <see cref="CX.Alloy.OwnedTextures"/> adopts from -- so it is dripped, never swept.
     /// ABI: <c>(CAurTexture* /*rdi*/) -> void</c>. Needs a live GL context.</para></summary>
     public const string AurTextureBuildAndStore = "_ZN11CAurTexture13BuildAndStoreEv";
     public const string AurTextureVtbl = "_ZTV11CAurTexture";
@@ -1195,7 +1195,7 @@ internal static unsafe class SymbolMap
         [GuiManReleaseKeyboard] = Nm("?ReleaseKeyboard@CGuiMan@@QEAAXPEAVCGuiObject@@@Z"),
         [GuiObjectHitCheck] = Nm("?GuiObjectHitCheck@CGuiMan@@QEAAPEAVCGuiObject@@HHHH@Z"),
 
-        // --- the Sowx window rig (#419): glyph bake, GL loader, engine state hand-back, SDL text/clipboard.
+        // --- the CX window rig (#419): glyph bake, GL loader, engine state hand-back, SDL text/clipboard.
         //     All extern "C" or shared-engine statics, name-exported. Portraits stay Linux-only: the CAurTexture
         //     vtables AurTex keys on resolve by RVA below. ---
         [StbttInitFont]              = Nm("stbtt_InitFont"),
@@ -1623,10 +1623,10 @@ internal static unsafe class SymbolMap
         {
             try
             {
-                MessageBoxW(IntPtr.Zero, text, "Sowx", MB_ICONWARNING);
+                MessageBoxW(IntPtr.Zero, text, "NWNCX:EE", MB_ICONWARNING);
             }
             catch { }
-        }) { IsBackground = true, Name = "sowx-rot-notice" }.Start();
+        }) { IsBackground = true, Name = "cx-rot-notice" }.Start();
     }
 
     private const uint MB_ICONWARNING = 0x30;

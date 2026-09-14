@@ -1,8 +1,8 @@
 using System;
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Nameplate;
+namespace CX.Services.Nameplate;
 
 /// <summary>
 /// Every native read the overhead plate/bubble needs, in one place. No UI types, no GL: a service

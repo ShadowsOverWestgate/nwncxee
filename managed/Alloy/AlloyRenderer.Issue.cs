@@ -1,10 +1,10 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#173: BATCH ISSUE. Uploading the staged per-draw records and bone snapshots, then submitting the built groups as one multidraw per (program, VDO, texture, primitive) cut -- and the blended and water variants that ride the same records under different GL state. Hot: nothing on this path allocates.</summary>
 public sealed unsafe partial class AlloyRenderer

@@ -2,18 +2,18 @@ using System;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
-using Sowx.Framework;
-using Sowx.Graphics;
-using Sowx.Services.Chat;
-using Sowx.Services.Chat.Core;
+using CX.Framework;
+using CX.Graphics;
+using CX.Services.Chat;
+using CX.Services.Chat.Core;
 
-using Sowx.Ui;
+using CX.Ui;
 
-namespace Sowx.Services.Nameplate;
+namespace CX.Services.Nameplate;
 
 /// <summary>
 /// The overhead nameplate and chat bubble: one <see cref="Window"/> that draws every world-anchored plate
-/// and bubble, four cold hooks that feed it, a <c>/nameplate</c> command and <c>sowx-nameplate.cfg</c>.
+/// and bubble, four cold hooks that feed it, a <c>/nameplate</c> command and <c>cx-nameplate.cfg</c>.
 /// <para>Vanilla is suppressed by putting the engine in text-bubble mode 0 (the supported "Off" setting),
 /// which stops it drawing either element while leaving every piece of state we poll intact -- including the
 /// projected screen anchor, which under mode 0 is refreshed every tick for every bubble-owning object.</para>
@@ -24,7 +24,7 @@ public sealed unsafe class NameplateService : IExtenderService
 {
     private static ExtenderLog? _log;
     private static NameplateConfig _cfg = new();
-    private static readonly ConfigFile _file = new("sowx-nameplate.cfg");
+    private static readonly ConfigFile _file = new("cx-nameplate.cfg");
     private static bool _configLoaded, _configDirty;
     private static bool _armed, _wasInModule, _suppressed;
 
@@ -1037,7 +1037,7 @@ public sealed unsafe class NameplateService : IExtenderService
             PortraitDiag(tid, _portraitRef[i]);
             tids[drawn] = tid;
             TextRig.FillQuad(verts + drawn * VertexBatch.Floats * 6,
-                             new Sowx.Services.Chat.Core.Model.PortraitQuad(
+                             new CX.Services.Chat.Core.Model.PortraitQuad(
                                  _portraitRect[o], _portraitRect[o + 1], _portraitRect[o + 2], _portraitRect[o + 3],
                                  _portraitRef[i], default),
                              0f, _portraitRect[o + 4]);
@@ -1134,7 +1134,7 @@ public sealed unsafe class NameplateService : IExtenderService
         if (_panelWindow != null) _panelWindow.SuppressChords = _settings is { IsOpen: true };
     }
 
-    /// <summary>Keyboard while the settings panel is open, the shape <see cref="Sowx.Services.Dialog"/>'s panel
+    /// <summary>Keyboard while the settings panel is open, the shape <see cref="CX.Services.Dialog"/>'s panel
     /// uses: an in-progress value-box edit takes digits / dot / minus / backspace, Return commits and persists,
     /// Esc cancels the edit and then closes the panel. Every key is consumed while the panel is up -- without
     /// that, typing <c>1.5</c> into a slider's box also fires quickslots 1 and 5.</summary>

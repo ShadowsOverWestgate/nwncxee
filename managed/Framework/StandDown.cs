@@ -1,4 +1,4 @@
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// One pass's fallback-to-vanilla latch: dedupe the reason, log it once, return false (#174). Written five

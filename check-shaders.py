@@ -13,7 +13,7 @@ here by construction. Only program *linkage* -- which stages link together, incl
 ones that have no resref -- lives below. `ShaderResource.Tokens`' sizing tokens are expanded with
 stand-in values, since only the shapes matter here.
 
-Why a second copy of a composition is never tolerable: a `SowxDraw` record layout that lives in C#
+Why a second copy of a composition is never tolerable: a `CxDraw` record layout that lives in C#
 was, until ADR 0012, also hand-copied into shipped `cx_*.shd`. When the record grew in #120 the
 stale copies read every draw out of a neighbour's slot and the world went black. Nothing ships a copy
 now, and nothing here restates one either.
@@ -111,13 +111,13 @@ def harvest():
 # the engine's own copy of that file replaces the region. The fallback inside it is a STUB -- the feature
 # off -- so compiling that proves only that the world still renders. What is worth checking offline is the
 # real content file against Alloy's environment, which is why this splices from a content checkout when it
-# can find one. Set SOWX_CONTENT_SHD to point elsewhere; missing is not an error, it is the stub's case.
-CONTENT_SHD = os.environ.get("SOWX_CONTENT_SHD",
+# can find one. Set CX_CONTENT_SHD to point elsewhere; missing is not an error, it is the stub's case.
+CONTENT_SHD = os.environ.get("CX_CONTENT_SHD",
                              os.path.expanduser("~/repos/sow-topdata/assets/shaders"))
 # #352: the ENGINE's own includes a content file reaches (inc_random, inc_framebuffer, inc_postpr_debug),
 # which the runtime resolves off the resource chain and a content checkout never carries. An extracted
 # ovr.bif tree; missing means those includes drop, as an absent chain file would.
-STOCK_SHD = os.environ.get("SOWX_STOCK_SHD", os.path.expanduser("~/nwnexplorer/shaders"))
+STOCK_SHD = os.environ.get("CX_STOCK_SHD", os.path.expanduser("~/nwnexplorer/shaders"))
 VANILLA = re.compile(r"^([ \t]*)// \$VANILLA(-HOST)? (\w+)\n(.*?)^[ \t]*// \$VANILLA-END[ \t]*$",
                      re.S | re.M)
 # Mirrors VanillaShader.Skip: includes the stage's own environment stands in for, never followed.
@@ -181,14 +181,14 @@ def host(stock, resref, done, consts):
     text = "\n".join(expand(stock, done, consts))
     if not MAIN_FN.search(text):
         return None
-    text = MAIN_FN.sub(f"void SowxHostMain_{resref}()", text, count=1)
+    text = MAIN_FN.sub(f"void CxHostMain_{resref}()", text, count=1)
     text = re.sub(r"\bgl_FragColor\b", "FragmentColor", text)
     env = OWN_DEFINE.findall(consts["VanillaEnvDefs"])
     text = re.sub(r"^[ \t]*uniform\b[^;\n]*\b(?:" + "|".join(env) + r")[ \t]*;[^\n]*\n?", "", text, flags=re.M)
     own = list(dict.fromkeys(OWN_DEFINE.findall(stock)))
     undef = "".join(f"#undef {n}\n" for n in own)
     return (undef + text + "\n"
-            + f"void SowxHost_{resref}()\n{{\n    SowxHostMain_{resref}();\n"
+            + f"void CxHost_{resref}()\n{{\n    CxHostMain_{resref}();\n"
             + "    fSpecularity = MATERIAL_SPECULARITY_VALUE;\n    fRoughness = MATERIAL_ROUGHNESS_VALUE;\n"
             + "    fMetallicness = MATERIAL_METALLICNESS_VALUE;\n    SpecularColor = MATERIAL_SPECULAR_COLOR_VALUE;\n}\n"
             + undef + consts["VanillaEnvDefs"])
@@ -315,7 +315,7 @@ def stock_spec_color(base, metal, slots):
 # constant -- no texture fetch, no uniform.
 def material_cases():
     def pbr(declared, slots, env, st=0.0, rt=0.0):
-        return f"SowxSynthPbr(vec3({declared[0]}, {declared[1]}, {declared[2]}), {slots}, {env}, {st}, {rt})"
+        return f"CxSynthPbr(vec3({declared[0]}, {declared[1]}, {declared[2]}), {slots}, {env}, {st}, {rt})"
 
     cases = []
     for label, declared, slots, env, st, rt in [
@@ -340,13 +340,13 @@ def material_cases():
         ("height-mapped takes white as its base", 0.1, 0.25, SLOT_HEIGHT),
     ]:
         cases.append((label,
-                      f"SowxSpecColor(vec4(0.0), vec3({base}), {metal}, {slots}).r",
+                      f"CxSpecColor(vec4(0.0), vec3({base}), {metal}, {slots}).r",
                       stock_spec_color(base, metal, slots)))
     # ...and the declared colour wins outright: 3.0 only if all three channels come back as
     # CustomSpecularColor itself. Compared per channel because a vec3 `==` lowers to OpAll, which is the one
     # step spirv-opt will not fold.
-    got = "SowxSpecColor(vec4(0.3, 0.6, 0.9, 1.0), vec3(0.1), 0.0, 0)"
-    want = "SowxLinear(vec3(0.3, 0.6, 0.9))"
+    got = "CxSpecColor(vec4(0.3, 0.6, 0.9, 1.0), vec3(0.1), 0.0, 0)"
+    want = "CxLinear(vec3(0.3, 0.6, 0.9))"
     cases.append(("declared CustomSpecularColor wins",
                   " + ".join(f"float({got}.{ch} == {want}.{ch})" for ch in "rgb"), 3.0))
     return cases
@@ -354,8 +354,8 @@ def material_cases():
 
 def fold(prelude, expr, tmp):
     """Compile a fragment stage whose only output is `expr` and read the constant it folds to."""
-    src = (prelude + "\nlayout(location = 0) out vec4 sowxProbe;\n"
-           "void main() { sowxProbe = vec4(" + expr + "); }\n")
+    src = (prelude + "\nlayout(location = 0) out vec4 cxProbe;\n"
+           "void main() { cxProbe = vec4(" + expr + "); }\n")
     frag, spv = os.path.join(tmp, "fold.frag"), os.path.join(tmp, "fold.spv")
     open(frag, "w").write(src)
     for cmd in (["glslangValidator", "-G", frag, "-o", spv], ["spirv-opt", "-O", spv, "-o", spv],
@@ -366,7 +366,7 @@ def fold(prelude, expr, tmp):
     dis = r.stdout
     consts = dict(re.findall(r"(%\S+) = OpConstant %float ([-\d.e+]+)", dis))
     comp = dict(re.findall(r"(%\S+) = OpConstantComposite %v4float (%\S+)", dis))
-    m = re.search(r"OpStore %sowxProbe (%\S+)", dis)
+    m = re.search(r"OpStore %cxProbe (%\S+)", dis)
     if not m:
         return None, "no store to the probe output -- did the expression get optimised away?"
     v = m.group(1)
@@ -430,7 +430,7 @@ def programs(c, s):
         "caster depth": (s["cx_cast_vs"], s["cx_cast_fs"]),
         "caster depth (alpha-tested)": (c["CastMaskVs"], c["CastMaskFs"]),
         "clustered lit": (s["cx_ownlit_vs"], s["cx_ownlit_fs"]),
-        "clustered lit (OIT lists)": (s["cx_ownlit_vs"], s["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define SOWX_OIT_LISTS 1\n", 1)),
+        "clustered lit (OIT lists)": (s["cx_ownlit_vs"], s["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_OIT_LISTS 1\n", 1)),
         "post bloom downsample": (s["cx_post_vs"], s["cx_bloomdn_fs"]),
         "post bloom upsample": (s["cx_post_vs"], s["cx_bloomup_fs"]),
         "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),

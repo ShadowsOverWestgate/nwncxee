@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Per-face normals welded into smooth ones, once per newly enrolled gob part (#144 retry).
 /// NWN heads and many placeables ship every triangle with its own three vertices and a flat normal, so a

@@ -1,4 +1,4 @@
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #119 (map #68, spec #114 M3): the depth buffer <see cref="PassId.DepthPrepass"/> fills, published rather
@@ -32,7 +32,7 @@ internal static class DepthResource
     internal static unsafe void Publish(int type, int name, int* viewport, int gen)
     {
         Name = (uint)name;
-        IsTexture = type != (int)Sowx.Graphics.Gl.RENDERBUFFER && name != 0;
+        IsTexture = type != (int)CX.Graphics.Gl.RENDERBUFFER && name != 0;
         FilledX = viewport[0]; FilledY = viewport[1];
         FilledWidth = viewport[2]; FilledHeight = viewport[3];
         Gen = gen;

@@ -1,12 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using Sowx.Framework;
-using Sowx.Services.Chat.Core;
+using CX.Framework;
+using CX.Services.Chat.Core;
 
-using Sowx.Ui;
+using CX.Ui;
 
-namespace Sowx.Services.Nameplate;
+namespace CX.Services.Nameplate;
 
 /// <summary>
 /// The id-keyed table of overhead elements: what the hooks recorded, cold-resolved once, and what the

@@ -1,10 +1,10 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
-using static Sowx.Alloy.BucketGate;
-namespace Sowx.Alloy;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
+using static CX.Alloy.BucketGate;
+namespace CX.Alloy;
 
 /// <summary>#188: the part table -- every recorded part, its parallel columns, the group registry they key
 /// into, and the identity/lifetime machinery (record slots, sightings, death, wipe, pressure) that the

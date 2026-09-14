@@ -1,4 +1,4 @@
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>One baked glyph: atlas tex-coords, pixel size, bearings, and scaled advance.</summary>
 public struct Glyph

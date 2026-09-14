@@ -1,4 +1,4 @@
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// Implement this and the host discovers, constructs, and initializes it

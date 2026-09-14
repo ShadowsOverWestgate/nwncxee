@@ -1,11 +1,11 @@
 using System.Runtime.InteropServices;
 using System.Text;
-using Sowx.Framework;
-using Sowx.Services.Chat.Core;
-using Sowx.Services.Chat.Render;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Services.Chat.Core;
+using CX.Services.Chat.Render;
+using CX.Ui;
 
-namespace Sowx.Services.Chat;
+namespace CX.Services.Chat;
 
 /// <summary>
 /// Native-C# chatbox (map #13, architecture #17). One <see cref="IExtenderService"/>;
@@ -27,7 +27,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// routes keys/text into ChatService and suppresses gameplay hotkeys whenever this is true.</summary>
     public static bool WantsKey => IsTyping || _settings.Editing;
 
-    /// <summary>Chat opt-OUT (#23, the extender-optional guarantee): <c>lockchat=1</c> in <c>sowx.cfg</c>
+    /// <summary>Chat opt-OUT (#23, the extender-optional guarantee): <c>lockchat=1</c> in <c>cx.cfg</c>
     /// stands the whole chatbox down -- no tap, render, input capture, or suppression -- so vanilla chat runs
     /// untouched. <see cref="Initialize"/> early-returns on it. One knob, one reader: the framework gate owns
     /// the value (#182).</summary>
@@ -163,7 +163,7 @@ public sealed unsafe class ChatService : IExtenderService
             long n = ++_ingestCount;
             // One-shot thread-model probe (#33 follow-up): is ingest really a separate thread from the frame
             // present? If ingest tid == swap tid the "cold network thread" comments are wrong and the store
-            // races don't exist. Compare the two [chatthread] lines in a live sowx.log.
+            // races don't exist. Compare the two [chatthread] lines in a live cx.log.
             if (n == 1)
             {
                 int itid = Environment.CurrentManagedThreadId;
@@ -395,7 +395,7 @@ public sealed unsafe class ChatService : IExtenderService
 
     /// <summary>Persisted chat config file (rect, toggles, colours, anim, input side, timestamp). Key=value,
     /// migrates the legacy positional rect on read (see <see cref="ChatConfig"/>).</summary>
-    private static readonly ConfigFile _file = new("sowx-chat.cfg");
+    private static readonly ConfigFile _file = new("cx-chat.cfg");
     private static ChatConfig _config = new();
 
     /// <summary>Restore the config from disk and apply it to all windows (rect/toggles/input side/send
@@ -610,7 +610,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// bootstrap, session reset, and scale re-bake are all edge-gated (rare). Draws through ChatRenderer, which
     /// keeps chat's live-verified cold->hot frame hand-off internally.</summary>
     /// <summary>Pull every chat window back inside the live viewport. The rect is restored from
-    /// <c>sowx-chat.cfg</c> in absolute pixels, so a client that comes up smaller than the one that wrote it --
+    /// <c>cx-chat.cfg</c> in absolute pixels, so a client that comes up smaller than the one that wrote it --
     /// windowed after fullscreen, a different monitor, a Proton prefix -- lands the box past the edge, where it
     /// draws every frame and nobody can see or drag it back. Same <see cref="Window.ClampAxis"/> Dialog uses.
     /// Viewport is whatever the last draw measured, so this is a no-op on the very first frame.</summary>
@@ -1348,7 +1348,7 @@ public sealed unsafe class ChatService : IExtenderService
     /// <summary>Slice #20: EditBuffer + IsTyping + focus suppression. Filled by build slice 3.</summary>
     private static void InitEditControl(ExtenderLog log, HookService hooks)
     {
-        EditBuffer.SelfCheck(log);     // off-device proof; surfaces in run-demo's sowx log
+        EditBuffer.SelfCheck(log);     // off-device proof; surfaces in run-demo's cx.log
         ChatCommands.SelfCheck(log);   // slash-command grammar (#25)
         TypingSignal.SelfCheck(log);   // chat-bar focus/unfocus latch (off-device)
         RegisterCommands();            // #165: chat's own commands go on the shared registry like anyone's

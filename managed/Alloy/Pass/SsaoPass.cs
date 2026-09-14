@@ -1,8 +1,8 @@
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Screen-space ambient occlusion as a LIGHTING INPUT, not a post stage (ADR 0021). The client's
 /// SSAO option (settings.tml <c>graphics.fbo.ssao.enabled</c>) is bit 0 of the static
@@ -334,17 +334,17 @@ internal static unsafe class SsaoPass
     /// projection -- the same two coefficients the particle fade linearises with, so nothing can drift.</summary>
     internal const string SsaoLib = """
         uniform sampler2D uDepth;    // the frame depth after the prepass
-        uniform mat4 uProj;          // this pass's projection, raw engine bytes (see SowxViewDist)
+        uniform mat4 uProj;          // this pass's projection, raw engine bytes (see CxViewDist)
 
         // Positive view distance: z_clip = z_v*M22 + M32, w_clip = -z_v, so z_v = -M32 / (ndc + M22).
-        float SowxViewDist(float depth)
+        float CxViewDist(float depth)
         {
             return uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z);
         }
         // View-space position (camera at the origin looking down -z) of the pixel at uv.
-        vec3 SowxViewPos(vec2 uv)
+        vec3 CxViewPos(vec2 uv)
         {
-            float dist = SowxViewDist(textureLod(uDepth, uv, 0.0).r);
+            float dist = CxViewDist(textureLod(uDepth, uv, 0.0).r);
             vec2 n = uv * 2.0 - 1.0;
             return vec3(n.x * dist / uProj[0].x, n.y * dist / uProj[1].y, -dist);
         }
@@ -372,10 +372,10 @@ internal static unsafe class SsaoPass
         // 4x4 ordered pattern (Bayer), so the blur's 4x4 window sees every slice and step phase once.
         const float BAYER[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
 
-        vec3 SowxViewNormal(vec2 uv, vec3 P)
+        vec3 CxViewNormal(vec2 uv, vec3 P)
         {
-            vec3 Pr = SowxViewPos(uv + vec2(uRt.x, 0.0)), Pl = SowxViewPos(uv - vec2(uRt.x, 0.0));
-            vec3 Pu = SowxViewPos(uv + vec2(0.0, uRt.y)), Pd = SowxViewPos(uv - vec2(0.0, uRt.y));
+            vec3 Pr = CxViewPos(uv + vec2(uRt.x, 0.0)), Pl = CxViewPos(uv - vec2(uRt.x, 0.0));
+            vec3 Pu = CxViewPos(uv + vec2(0.0, uRt.y)), Pd = CxViewPos(uv - vec2(0.0, uRt.y));
             vec3 dx = abs(Pr.z - P.z) < abs(P.z - Pl.z) ? Pr - P : P - Pl;
             vec3 dy = abs(Pu.z - P.z) < abs(P.z - Pd.z) ? Pu - P : P - Pd;
             return normalize(cross(dx, dy));
@@ -385,8 +385,8 @@ internal static unsafe class SsaoPass
         {
             float depth = textureLod(uDepth, vUV, 0.0).r;
             if (depth >= 1.0) { frag = 1.0; return; }
-            vec3 P = SowxViewPos(vUV);
-            vec3 N = SowxViewNormal(vUV, P);
+            vec3 P = CxViewPos(vUV);
+            vec3 N = CxViewNormal(vUV, P);
             vec3 V = normalize(-P);
             float dist = -P.z;
             // world radius -> pixels: ndc spans 2 over h pixels, and x_ndc = x_v * M11 / dist
@@ -419,7 +419,7 @@ internal static unsafe class SsaoPass
                     float t = (float(j) + fract(noiseStep + float(s) * 0.618034)) / float(uSteps);
                     t = t * t + minS;
                     vec2 off = omega * (t * rPx) * uRt.xy;
-                    vec3 S0 = SowxViewPos(vUV + off) - P, S1 = SowxViewPos(vUV - off) - P;
+                    vec3 S0 = CxViewPos(vUV + off) - P, S1 = CxViewPos(vUV - off) - P;
                     float l0 = max(length(S0), 1e-5), l1 = max(length(S1), 1e-5);
                     float w0 = clamp(l0 * falloffMul + falloffAdd, 0.0, 1.0), w1 = clamp(l1 * falloffMul + falloffAdd, 0.0, 1.0);
                     hc0 = max(hc0, mix(low0, dot(S0, V) / l0, w0));
@@ -448,13 +448,13 @@ internal static unsafe class SsaoPass
         void main()
         {
             ivec2 pix = ivec2(gl_FragCoord.xy);
-            float d0 = SowxViewDist(texelFetch(uDepth, pix, 0).r);
+            float d0 = CxViewDist(texelFetch(uDepth, pix, 0).r);
             float sum = 0.0, wsum = 0.0;
             for (int y = -1; y <= 2; y++)
                 for (int x = -1; x <= 2; x++)
                 {
                     ivec2 p = clamp(pix + ivec2(x, y), ivec2(0), textureSize(uSrc, 0) - 1);
-                    float d = SowxViewDist(texelFetch(uDepth, p, 0).r);
+                    float d = CxViewDist(texelFetch(uDepth, p, 0).r);
                     float w = clamp(1.0 - abs(d - d0) / (0.05 * d0), 0.0, 1.0);
                     sum += texelFetch(uSrc, p, 0).r * w;
                     wsum += w;
@@ -480,7 +480,7 @@ internal static unsafe class SsaoPass
         {
             float raw = textureLod(uRaw, vUV, 0.0).r;
             float depth = textureLod(uDepth, vUV, 0.0).r;
-            float dist = depth >= 1.0 ? 0.0 : SowxViewDist(depth);
+            float dist = depth >= 1.0 ? 0.0 : CxViewDist(depth);
             ivec2 hsz = textureSize(uHist, 0);
             vec2 huv = vUV + textureLod(uVel, vUV, 0.0).rg / vec2(textureSize(uVel, 0));
             float w = uWeight;
@@ -516,7 +516,7 @@ internal static unsafe class SsaoPass
         try
         {
             string fs = ShaderStages.Source(ShdSsaoFs), bl = ShaderStages.Source(ShdSsaoBlurFs);
-            E(fs.Contains("float SowxViewDist(float depth)") && bl.Contains("float SowxViewDist(float depth)"), "both stages carry the reconstruction");
+            E(fs.Contains("float CxViewDist(float depth)") && bl.Contains("float CxViewDist(float depth)"), "both stages carry the reconstruction");
             E(fs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is the particle fade's (uProj[3].z / (ndc + uProj[2].z))");
             E(ShaderContract.SlotSafe(fs, "uDepth") && ShaderContract.SlotSafe(bl, "uSrc", "uDepth"), "the samplers the C# side binds are declared");
             E(EffectSsao == 1u, "FramebufferEffect 0 is SSAO (CClientOptions::SetEnableFBEffectSSAO -> SetFBEffectEnabled(0, on))");
@@ -526,7 +526,7 @@ internal static unsafe class SsaoPass
               && AlloyRenderer.OwnedLitFsMain.Contains("vec3 diffuse = (sun + sunSss + point) * dirOcc;"),
               "/ao direct is the only route to the DIRECT terms, and 0 leaves them exactly as ADR 0021 had them");
             E(_bootDirect == 1f, "...and it ships at 1: ambient-only is invisible in a dark-ambient area (ADR 0021, amended)");
-            E(AlloyRenderer.OwnedLitFsMain.Contains("bool aoMine = uSsaoOn > 0 && aoDz < SOWX_AO_DEPTH_EPS;")
+            E(AlloyRenderer.OwnedLitFsMain.Contains("bool aoMine = uSsaoOn > 0 && aoDz < CX_AO_DEPTH_EPS;")
               && AlloyRenderer.OwnedLitFsMain.Contains("if (aoMine) occl *="),
               "the fetch is per FRAGMENT: the pixel's occlusion must have been computed from this surface's own depth");
             E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");

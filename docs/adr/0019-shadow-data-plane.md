@@ -19,8 +19,8 @@ Every one of those now duplicates something Alloy keeps current:
 |---|---|---|
 | its own caster table + 60-frame enrolment | the ownership table, scanned on its own cadence | #238 |
 | its own motion memo, ghost sweep, `TableMoved`/`TableVanish` | the record's exact previous-value compare | #242 |
-| its own `Collect()` into `_liveModel`/`_gRec` | the persistent `SowxDraw` record, written movers-only | #242 |
-| its own bounding-sphere derivation | `SowxCullSphere`, per ownership slot | #243 |
+| its own `Collect()` into `_liveModel`/`_gRec` | the persistent `CxDraw` record, written movers-only | #242 |
+| its own bounding-sphere derivation | `CxCullSphere`, per ownership slot | #243 |
 | its own VDO slot map, VAO cache and repack hook | `OwnedBuffers` + the colour path's VAOs | #260 |
 | its own bone ring and skin capture | `SkinPose` → `_oBone` → the record's `feat.y` | #262 |
 
@@ -32,13 +32,13 @@ M5 and never to the shadow path. This is that application.
 **A shadow caster is an ownership slot.** `Collect()` selects out of `AlloyRenderer`'s draw order and
 resolves nothing that Alloy already resolved; the depth stages read `uDraw[slot]` through exactly the
 indirection the colour stages use. The shadow-only record is reduced to the two things that
-genuinely are not in `SowxDraw`, and there is no third format.
+genuinely are not in `CxDraw`, and there is no third format.
 
 Four consequences are load-bearing enough to record.
 
 ### 1. What the record carries, and what it does not
 
-`SowxDraw` carries the model matrix and — via `SowxBoneBase(d)`, i.e. `feat.x == SOWX_FEAT_SKIN ?
+`CxDraw` carries the model matrix and — via `CxBoneBase(d)`, i.e. `feat.x == CX_FEAT_SKIN ?
 feat.y : -1` — the bone base. Those come from the record.
 
 The **index range** does not live in the GLSL record on either path; it lives in the VDO item tables,
@@ -46,14 +46,14 @@ which move under `Repack`, and both paths re-read it live. The ticket's phrasing
 all four") is loose: the honest statement is *the record buffer plus the ownership table's per-slot
 state*, and `_oVdo`/`_oItem` are as much Alloy's state as `_dData` is.
 
-The **cutout threshold** is not in `SowxDraw` at all — the colour path spends it as a per-batch
+The **cutout threshold** is not in `CxDraw` at all — the colour path spends it as a per-batch
 uniform, `uAlphaCut`. The bake does the same: two thresholds exist (0.2 coverage, 0.02 for an
 env-mapped material whose diffuse alpha is reflectivity), the batch key carries which, and the
 uniform is set per batch. Copying the colour path's own spelling is the point; inventing a per-draw
 field for it would be the split being deleted, one field wide.
 
-What is left of `SowxCaster` is `vec4 bounds; vec4 aux;` — the world sphere and the ownership slot,
-plus the gather's LOD-exemption flag. The sphere stays because `SowxCullSphere` deliberately exempts
+What is left of `CxCaster` is `vec4 bounds; vec4 aux;` — the world sphere and the ownership slot,
+plus the gather's LOD-exemption flag. The sphere stays because `CxCullSphere` deliberately exempts
 skinned, dangly and displacing parts with an infinite radius: right for a culler, useless for a
 re-bake predicate, which has to *locate* a mover to name the views it dirties. `WriteCasterSphere`
 writes the geometric sphere on the same edge, from the same terms. `ShaderContract`'s second-stride
@@ -254,8 +254,8 @@ lights in rooms, not a 4-km open world, and no resolution complaint was ever mad
 the healthy half. Escalation path if a resolution ceiling appears: make R2's static array's
 allocation sparse, not restart.
 
-**A slim caster-only record.** Rebuilds the split being deleted. What survives in `SowxCaster` is
-bounded by "not in `SowxDraw` and genuinely view-varying", and each field is justified above.
+**A slim caster-only record.** Rebuilds the split being deleted. What survives in `CxCaster` is
+bounded by "not in `CxDraw` and genuinely view-varying", and each field is justified above.
 
 **Keeping the old staging alive behind a dial.** A dual path *is* the second data plane. The A/B is
 therefore across commits — `f0723d5` is the "before" build — and there is no runtime toggle to hunt

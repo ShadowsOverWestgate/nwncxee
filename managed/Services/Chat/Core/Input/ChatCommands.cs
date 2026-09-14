@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// Parses a leading channel slash-command off a submitted line (#25). Pure -- text in, (channel, rest)
@@ -46,7 +46,7 @@ public static class ChatCommands
 
     private static readonly char[] Whitespace = { ' ', '\t' };
 
-    /// <summary>Off-device proof of the command grammar (surfaces in run-demo's sowx log).</summary>
+    /// <summary>Off-device proof of the command grammar (surfaces in run-demo's cx.log).</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;

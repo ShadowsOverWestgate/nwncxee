@@ -1,14 +1,14 @@
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
-using Sowx.Framework;
-using Sowx.Services.Chat.Core;
-using Sowx.Ui;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Services.Chat.Core;
+using CX.Ui;
+using CX.Graphics;
 
-using Sowx.Services.Chat.Core.Model;
+using CX.Services.Chat.Core.Model;
 
-namespace Sowx.Services.Chat.Render;
+namespace CX.Services.Chat.Render;
 
 /// <summary>
 /// Chat-coupled owned-render pass (map #13). Owns the per-window <see cref="Frame"/> publish/animation
@@ -94,7 +94,7 @@ public static unsafe class ChatRenderer
     /// <summary>Clear the drawn batch (e.g. probe demo off).</summary>
     public static void Clear() => _frames = System.Array.Empty<Frame>();
 
-    // ---- demo (probe rig: `~sowx text`) -------------------------------------------------------
+    // ---- demo (probe rig: `~cx text`) -------------------------------------------------------
 
     private static bool _demoOn;
     private const string Demo =
@@ -327,7 +327,7 @@ public static unsafe class ChatRenderer
                                       bool animEnabled, double holdSec, double fadeSec)
     {
         int k = quads.Count;
-        if (k == 0 || TextRig._aurGet == null || !Sowx.Framework.AurTex.Ready) return;
+        if (k == 0 || TextRig._aurGet == null || !CX.Framework.AurTex.Ready) return;
         if (!TextRig.EnsurePortraitProgram()) return;
         if (!TextRig._pvaoUp) TextRig.SetupPortraitVao();
         if (k > MaxPortraitsPerFrame) { _log?.Info($"[chat] portrait cap hit ({k}>{MaxPortraitsPerFrame})"); k = MaxPortraitsPerFrame; }

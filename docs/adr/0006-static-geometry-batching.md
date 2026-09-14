@@ -97,7 +97,7 @@ construction, not by reimplementation.
   all other members early-out before their per-part state churn. Groups draw inside the same
   bucket/phase they came from.
 - Invalidation: area change wipes everything (VDO lifetime); any member's re-record (engine
-  re-uploaded an item) invalidates its group; `SOWX_BATCH=0` kill switch; per-group disable for
+  re-uploaded an item) invalidates its group; `CX_BATCH=0` kill switch; per-group disable for
   bisection.
 - Our own shadow depth passes also run `RenderDrawBucket` — the suppression must be gated to the
   camera pass (the shadow pass wants the vanilla per-part walk, or its own batch instance later).
@@ -133,7 +133,7 @@ depth pass, retiring `Scene::AddPartsToDrawBuckets`' per-frame BSP re-walk.
 - Opaque + depth-tested + same state + same target =\> draw order within a phase is irrelevant
   except exact-duplicate z (engine draws them in a fixed order today; merged order is the same
   recorded order).
-- A/B: `SOWX_BATCH=0` vs 1 screenshot diffs in a fixed camera save; any pixel diff outside
+- A/B: `CX_BATCH=0` vs 1 screenshot diffs in a fixed camera save; any pixel diff outside
   temporal effects fails the phase.
 - The recorded state snapshot is never *applied* by us — the engine applies it (first member);
   we only suppress redundant re-application. Skew impossible by design.

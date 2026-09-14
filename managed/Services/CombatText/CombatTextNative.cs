@@ -1,10 +1,10 @@
 using System;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.CombatText;
+namespace CX.Services.CombatText;
 
 /// <summary>
-/// The raw client reads this feature needs on top of <see cref="Sowx.Services.Nameplate.NameplateNative"/>
+/// The raw client reads this feature needs on top of <see cref="CX.Services.Nameplate.NameplateNative"/>
 /// (which already owns the object, camera and screen-anchor accessors).
 /// </summary>
 public static class CombatTextNative

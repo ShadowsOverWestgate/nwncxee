@@ -1,4 +1,4 @@
-SoW client extender for Linux -- @VERSION@
+NWNCX:EE (CX) -- client extender for Linux -- @VERSION@
 
 Optional add-on for the Neverwinter Nights: Enhanced Edition client. Run the
 stock client and you play vanilla -- nothing here is required.
@@ -13,9 +13,9 @@ INSTALL
   3. Steam: right-click "Neverwinter Nights" -> Properties -> General ->
      Launch Options, and paste this line exactly as written:
 
-       ./sowx-launch %command%
+       ./cx-launch %command%
 
-     Not on Steam: run ./sowx-launch from bin/linux-x86. With no arguments it
+     Not on Steam: run ./cx-launch from bin/linux-x86. With no arguments it
      starts the nwmain-linux beside it.
   4. Start the game.
 
@@ -24,18 +24,18 @@ INSTALL
 
 UNINSTALL
   Clear the Launch Options line. That alone is enough: the files do nothing
-  without it. To remove them too, delete sowx-launch, libsowx.so,
-  sowx_managed.so, README.txt and LICENSES.txt from bin/linux-x86.
+  without it. To remove them too, delete cx-launch, libcx.so,
+  cx_managed.so, README.txt and LICENSES.txt from bin/linux-x86.
 
 WHAT WORKING LOOKS LIKE
   The extender's own chatbox, bottom-left, instead of the stock one.
 
 REPORTING A PROBLEM
-  The extender is silent by default. To get a log, create a file named sowx.cfg
+  The extender is silent by default. To get a log, create a file named cx.cfg
   next to nwn.ini -- usually ~/.local/share/Neverwinter Nights/ -- holding one
   line:
 
      logs=1
 
-  Play again, then send back ~/sowx.log along with what you did right before
+  Play again, then send back ~/cx.log along with what you did right before
   anything went wrong.

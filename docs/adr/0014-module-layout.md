@@ -12,7 +12,7 @@ came first, so `Ui/` became the home for anything drawn; the renderer arrived la
 Measured on 2026-08-24:
 
 - **`Ui/Gl.cs` is the renderer's OpenGL entry-point table.** Of ~2,000 `Gl.*` call sites, **79% are
-  in `Render`/`Shadow`/`Perf`** and 20% in UI. Fourteen renderer files carry `using Sowx.Ui` for no
+  in `Render`/`Shadow`/`Perf`** and 20% in UI. Fourteen renderer files carry `using CX.Ui` for no
   reason other than to reach it, while its own siblings `GlProgram.cs` and `GlContextService.cs` sit
   in `Services/Render` — the GL trio split across two folders.
 - **Strip `Gl` out and the real Render→Ui edge is two symbols**: `UiHost.InModule` and
@@ -41,7 +41,7 @@ Measured on 2026-08-24:
 
 Two rules carry the weight:
 
-- **`Sowx.Ui` and `Sowx.Render` are peers.** Both depend on `Sowx.Gl` and `Sowx.Framework`; neither
+- **`CX.Ui` and `CX.Render` are peers.** Both depend on `CX.Gl` and `CX.Framework`; neither
   depends on the other. `Gl` moves out of `Ui`; the session gates move to `Framework`.
 - **The framework names no service.** `UiHostService`'s frame roll-call becomes a participant
   registry that services join at `Initialize`, mirroring the window registry beside it. The per-frame
@@ -56,7 +56,7 @@ Windows support of the Alloy pipeline stays deferred (ADR 0009/0010), but the po
 not a maybe, so **nothing in this layout may foreclose it.** Two constraints, both of which this
 decision happens to serve:
 
-- **`Sowx.Gl` is the platform seam.** GL entry points are resolved through GLX today and must be
+- **`CX.Gl` is the platform seam.** GL entry points are resolved through GLX today and must be
   resolvable through WGL later. Isolating the loader in its own module is what makes that a change in
   one place rather than fourteen. No `Render` or `Ui` module may resolve a GL symbol itself.
 - **`SymbolMap` stays one platform surface.** It carries both the Linux mangled names and the Windows
@@ -82,18 +82,18 @@ decision happens to serve:
 
 ## Implementation note (#169, 2026-08-26)
 
-The GL module ships as `Graphics/` / `namespace Sowx.Graphics`, not `Gl/` / `Sowx.Gl`. The sketched name
-does not compile: from any namespace nested under `Sowx`, the bare identifier `Gl` binds to the *namespace*
-`Sowx.Gl` before any type or `using`, so every one of the ~2,000 `Gl.*` call sites fails with CS0234.
-Enclosing-namespace members also outrank alias directives, so a `global using Gl = Sowx.Gl.Gl;` does not
+The GL module ships as `Graphics/` / `namespace CX.Graphics`, not `Gl/` / `CX.Gl`. The sketched name
+does not compile: from any namespace nested under `CX`, the bare identifier `Gl` binds to the *namespace*
+`CX.Gl` before any type or `using`, so every one of the ~2,000 `Gl.*` call sites fails with CS0234.
+Enclosing-namespace members also outrank alias directives, so a `global using Gl = CX.Gl.Gl;` does not
 rescue it. Both were verified against the compiler. Renaming the class instead would have meant rewriting
 every call site, which this decision explicitly defers to the later renaming pass.
 
 The session gates land as `Framework/GameGate`, which also took `Locked` / `OwnsFramePresent` off
-`UiHostService` — the `SOWX_LOCKCHAT` pivot is read by render, shadow and perf code and was the last
+`UiHostService` — the `CX_LOCKCHAT` pivot is read by render, shadow and perf code and was the last
 `UiHostService` reference outside `Ui/`.
 
-Two `using Sowx.Ui` imports survive outside `Ui/`, both named in place: `Perf/FpsOverlayService` is a genuine
+Two `using CX.Ui` imports survive outside `Ui/`, both named in place: `Perf/FpsOverlayService` is a genuine
 UI client (it draws through the text rig and registers a window), and `Shadow/ShadowFeedService` registers a
 zero-size `Window` purely to get a per-frame draw slot — #170's participant registry is what removes that one.
 `ShaderResource` stays in `Render/`: `GlProgram` reaches it for override lookup and `$TOKEN$` expansion, and
@@ -101,7 +101,7 @@ both are content/render concerns rather than platform ones, so the GLX/WGL seam 
 
 ## Implementation note (#175/#176, 2026-08-26)
 
-The layout landed with `Render/` carrying the three internal folders and ONE namespace (`Sowx.Services.Render`)
+The layout landed with `Render/` carrying the three internal folders and ONE namespace (`CX.Services.Render`)
 rather than one namespace per folder: the folders are navigation, the namespace is the layer, and splitting the
 namespace would have meant a `using` churn across every file for no layering gain. `Shadow/` is gone --
 `CasterPass`, `CasterCandidate` and `ShadowService` to `Render/Pass/`, `ShadowMath` and `FrameInputs` (was

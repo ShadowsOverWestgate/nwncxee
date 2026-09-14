@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>A face to bake: TTF bytes (keyed by their path) at a pixel height.</summary>
 public readonly record struct FaceRequest(string Typeface, byte[] Font, float Px);

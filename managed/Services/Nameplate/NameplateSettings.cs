@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
-using Sowx.Framework;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Ui;
 
-namespace Sowx.Services.Nameplate;
+namespace CX.Services.Nameplate;
 
 /// <summary>The nameplate-side consumer of the shared <see cref="SettingsPanel"/>: it owns the row list and what
 /// each press writes to the live <see cref="NameplateConfig"/>, nothing else. The model is the getter handed in

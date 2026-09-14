@@ -1,12 +1,12 @@
 using System.Globalization;
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Dialog;
+namespace CX.Services.Dialog;
 
 /// <summary>
 /// Persisted dialog-window state: rect (position + width), lock, and the animation knobs. Flat
-/// <c>key=value</c>, its own file (<c>sowx-dialog.cfg</c>) -- the dialog is not a chat window, so it doesn't
+/// <c>key=value</c>, its own file (<c>cx-dialog.cfg</c>) -- the dialog is not a chat window, so it doesn't
 /// share <see cref="Chat.Core.ChatConfig"/>'s per-window model. Font size stays global (one shared atlas), so
 /// it is NOT stored here. Pure -- no native refs -- so it round-trips off-device in <see cref="SelfCheck"/>.
 /// </summary>

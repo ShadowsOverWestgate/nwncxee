@@ -120,7 +120,7 @@ compare against. Their verdicts:
 
 | Handler | Reached by | Verdict |
 |---|---|---|
-| `Entry.SowxInit` | `bootstrap.c` via `dlsym`/`GetProcAddress` | **ours on both ends**; the native bootstrap declares the same `void(void)` |
+| `Entry.CxInit` | `bootstrap.c` via `dlsym`/`GetProcAddress` | **ours on both ends**; the native bootstrap declares the same `void(void)` |
 | `GlContextService.XErrorNoop` | `XSetErrorHandler` | **Linux-only** — Xlib does not exist on the Windows leg |
 | `GlContextService.OnDebugMessage` | `glDebugMessageCallback` | identical: `GLDEBUGPROC` is `APIENTRY`, which is `__stdcall` on Win32 and plain on x64 — one convention on Win64 |
 | `HotkeyConsent.OnAnswer` | the engine, through `CPanelOkCancel+0x88` | `(void*, int)`, verified by #48's consent port, which runs on Windows |

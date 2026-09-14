@@ -36,7 +36,7 @@ point of use, by one of two mechanisms — never by trusting the field it came f
 
 1. **Vtable check** (for objects that have one). The engine has exactly two texture vtables, so "is
    this still a texture" is two compares against `_ZTV11CAurTexture` / `_ZTV16CAurTextureBasic`
-   (+0x10, Itanium ABI). `Sowx.Framework.AurTex` is the one front door to `AurTextureGetTID`; every
+   (+0x10, Itanium ABI). `CX.Framework.AurTex` is the one front door to `AurTextureGetTID`; every
    material-derived call site routes through it (Alloy colour diffuse + five PBR slots, Alloy sky,
    `CasterPass` masked casters, `GrassField`, the Alloy census, chat portraits).
    A refusal costs that part its Alloy draw for the frame — the engine draws it, i.e. vanilla — and

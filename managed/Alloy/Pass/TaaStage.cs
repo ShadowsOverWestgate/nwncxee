@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#389: temporal anti-aliasing as a post-stack stage. The projection is jittered by a sub-pixel
 /// Halton(2,3) offset every frame (<see cref="PostChain.Jitter"/>, applied at the one site Alloy reads it),
@@ -26,7 +26,7 @@ internal static unsafe class TaaStage
     /// <summary>The stage's fragment text: the new history, as-is (display space in, display space out).</summary>
     internal const string StageFs = """
         uniform sampler2D uHist;     // this frame's resolved history (Prepare wrote it)
-        vec4 SowxStage(vec4 c)
+        vec4 CxStage(vec4 c)
         {
             return vec4(texture(uHist, vUV).rgb, c.a);
         }
@@ -157,7 +157,7 @@ internal static unsafe class TaaStage
 
         // Catmull-Rom through five bilinear taps (the 9-texel cubic with the corner taps folded): a bilinear
         // history resample every frame is the blur a naive TAA is known for, and this is the standard cure.
-        vec3 SowxHistory(vec2 uv, vec2 size)
+        vec3 CxHistory(vec2 uv, vec2 size)
         {
             vec2 pos = uv * size;
             vec2 center = floor(pos - 0.5) + 0.5;
@@ -214,7 +214,7 @@ internal static unsafe class TaaStage
             float a = min(0.5, uBlend + length(velPx) * 0.05);
             if (uUpsample != 0) a = mix(a * 0.25, a, conf);
             if (any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) a = 1.0;
-            vec3 h = clamp(SowxHistory(huv, hsz), mn, mx);
+            vec3 h = clamp(CxHistory(huv, hsz), mn, mx);
             frag = vec4(mix(h, c.rgb, a), c.a);
         }
         """;
@@ -225,10 +225,10 @@ internal static unsafe class TaaStage
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"TaaStage.SelfCheck FAIL: {w}"); } }
-        E(StageFs.Contains("vec4 SowxStage(vec4 c)") && ShaderContract.DisplaySafe(StageFs) && ShaderContract.SlotSafe(StageFs, "uHist"),
+        E(StageFs.Contains("vec4 CxStage(vec4 c)") && ShaderContract.DisplaySafe(StageFs) && ShaderContract.SlotSafe(StageFs, "uHist"),
           "the stage is display space and reads the history");
         E(TaaFs.Contains("velPx / vec2(textureSize(uVel, 0))"), "velocity becomes uv through the VELOCITY target's size, not the frame's (#391)");
-        E(TaaFs.Contains("clamp(SowxHistory(huv, hsz), mn, mx)") && TaaFs.Contains("vec3 SowxHistory(vec2 uv, vec2 size)")
+        E(TaaFs.Contains("clamp(CxHistory(huv, hsz), mn, mx)") && TaaFs.Contains("vec3 CxHistory(vec2 uv, vec2 size)")
           && TaaFs.Contains("vec2 hsz = vec2(textureSize(uHist, 0));"),
           "history is fetched Catmull-Rom at ITS OWN size and clamped to the 3x3 neighbourhood");
         // #391: the upsampling arm reads the render-sized frame at the jitter-shifted position, with the

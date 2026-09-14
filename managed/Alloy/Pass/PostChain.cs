@@ -1,9 +1,9 @@
 using System;
 using System.Globalization;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #139: the Alloy colour pass's HDR target and the post chain that resolves it -- bloom, tonemap, encode.
@@ -176,7 +176,7 @@ internal static unsafe class PostChain
     private static int _mode = Aces;
     /// <summary>#391: the RENDER scale -- the owned 3D frame's size as a fraction of the display target's,
     /// per axis. Below 1 the world renders at fewer pixels and the resolve upscales it (bilinear); above 1 it
-    /// is supersampling. The engine's 2D UI never sees it. Boot value from <c>renderscale</c> in sowx.cfg,
+    /// is supersampling. The engine's 2D UI never sees it. Boot value from <c>renderscale</c> in cx.cfg,
     /// live through <c>/post scale</c>; clamped to <see cref="MinScale"/>..<see cref="MaxScale"/> at both
     /// doors because a 0x0 target is a refusal, not a look.</summary>
     private static float _scale = 1f, _bootScale = 1f;
@@ -408,12 +408,12 @@ internal static unsafe class PostChain
 
     /// <summary>#491: the SSBO block the three programs share. Bin 0 is "below the floor" and ignored.</summary>
     private const string AutoBufLib = """
-        layout(std430, binding = 24) buffer SowxExposure { uint uHistBin[64]; float uAutoGain; };
+        layout(std430, binding = 24) buffer CxExposure { uint uHistBin[64]; float uAutoGain; };
         """;
 
     /// <summary>The resolve's view of the same block: it only reads the gain.</summary>
     private const string AutoBufLibRead = """
-        layout(std430, binding = 24) readonly buffer SowxExposure { uint uHistBin[64]; float uAutoGain; };
+        layout(std430, binding = 24) readonly buffer CxExposure { uint uHistBin[64]; float uAutoGain; };
         """;
 
     /// <summary>#491: 16x16 tiles, a shared-memory histogram per tile, 64 atomics per tile into the SSBO.</summary>
@@ -1062,7 +1062,7 @@ internal static unsafe class PostChain
     /// asked in <see cref="Precheck"/>, which stands the whole Alloy pass down when it is off. This stage
     /// only ever runs on a frame whose stages linearised, so it always has an encode to undo.</para></summary>
     private const string PostColorLib = """
-        vec3 SowxEncode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(1.0 / $SRGB$)); }
+        vec3 CxEncode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(1.0 / $SRGB$)); }
         """;
 
     /// <summary>The frame's one dither, shared by the resolve and every <see cref="PostStack"/> stage: the
@@ -1072,12 +1072,12 @@ internal static unsafe class PostChain
     /// modulated by where the signal sits inside its step, so bands survive faintly; the triangular sum
     /// decorrelates the error outright. <c>lsb</c> is one LSB of the target, or 0 for an intermediate.</summary>
     internal const string PostDitherLib = """
-        float SowxNoise(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-        vec3 SowxDither(vec3 c, vec2 px, float lsb)
+        float CxNoise(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+        vec3 CxDither(vec3 c, vec2 px, float lsb)
         {
             if (lsb <= 0.0) return c;
-            float r1 = SowxNoise(px);
-            float r2 = SowxNoise(px + vec2(17.31, 47.13));
+            float r1 = CxNoise(px);
+            float r2 = CxNoise(px + vec2(17.31, 47.13));
             return c + (r1 + r2 - 1.0) * lsb;
         }
         """;
@@ -1181,7 +1181,7 @@ internal static unsafe class PostChain
 
         """ + PostColorLib + PostDitherLib + AutoBufLibRead + """
 
-        vec3 SowxShoulder(vec3 c, float k)
+        vec3 CxShoulder(vec3 c, float k)
         {
             if (k <= 0.0) return c;
             vec3 t = max(c - vec3(k), vec3(0.0));
@@ -1192,7 +1192,7 @@ internal static unsafe class PostChain
             return min(c, vec3(k)) + m * t / (m + t);
         }
 
-        vec3 SowxAces(vec3 c)
+        vec3 CxAces(vec3 c)
         {
             const float a = 2.51, b = 0.03, d = 2.43, e = 0.59, f = 0.14;
             return clamp((c * (a * c + b)) / (c * (d * c + e) + f), 0.0, 1.0);
@@ -1206,10 +1206,10 @@ internal static unsafe class PostChain
             if (uViz == 1 || uViz == 3)
             {
                 vec3 b = textureLod(uBloom, vUV, 0.0).rgb * uStrength * (uViz == 3 ? 20.0 : 1.0);
-                frag = vec4(SowxEncode(b), 1.0);
+                frag = vec4(CxEncode(b), 1.0);
                 return;
             }
-            if (uViz == 2) { frag = vec4(SowxEncode(texture(uHdr, vUV).rgb), 1.0); return; }
+            if (uViz == 2) { frag = vec4(CxEncode(texture(uHdr, vUV).rgb), 1.0); return; }
             // #388: the velocity target on the bloom unit. Mid-grey is zero motion; +-32 render pixels of
             // motion is a full swing of red (x) or green (y), so a pan paints one flat colour over static
             // geometry and standing still paints flat grey.
@@ -1219,14 +1219,14 @@ internal static unsafe class PostChain
             if (uStrength > 0.0) c += textureLod(uBloom, vUV, 0.0).rgb * uStrength;
             c *= uExposure;
             if (uAuto != 0) c *= uAutoGain;
-            if (uMode == 1) c = SowxShoulder(c, uKnee);
+            if (uMode == 1) c = CxShoulder(c, uKnee);
             // ACES against the SHOULDER, not the raw value: the shoulder is the identity below its knee, so
             // the mix keeps the darks the ACES toe would crush and takes only the roll-off and colour.
-            else if (uMode == 2) c = mix(SowxShoulder(c, uKnee), SowxAces(c), uAcesMix);
-            vec3 outc = SowxEncode(c);
+            else if (uMode == 2) c = mix(CxShoulder(c, uKnee), CxAces(c), uAcesMix);
+            vec3 outc = CxEncode(c);
             // Dithered in DISPLAY space, after the encode: this is where the frame meets 8 bits (or, when
             // the post stack takes it, uDither is 0 and the stack's last stage dithers instead).
-            outc = SowxDither(outc, gl_FragCoord.xy, uDither);
+            outc = CxDither(outc, gl_FragCoord.xy, uDither);
             // The alpha channel passes through untouched: the Alloy blended classes wrote real coverage
             // there and the engine's own later passes are entitled to find it, tonemapping or not.
             frag = vec4(outc, texture(uHdr, vUV).a);
@@ -1300,16 +1300,16 @@ internal static unsafe class PostChain
             // Exposure is scene-referred: it multiplies the linear frame BEFORE the tonemap and the encode,
             // never the display value -- a gain after the encode is a gamma-wrong brightness slider.
             E(ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
-              < ResolveFs.IndexOf("if (uMode == 1) c = SowxShoulder", StringComparison.Ordinal)
+              < ResolveFs.IndexOf("if (uMode == 1) c = CxShoulder", StringComparison.Ordinal)
               && ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
-              < ResolveFs.IndexOf("vec3 outc = SowxEncode(c);", StringComparison.Ordinal),
+              < ResolveFs.IndexOf("vec3 outc = CxEncode(c);", StringComparison.Ordinal),
               "exposure is applied in linear, before the tonemap and the encode");
             // #491: the auto gain is a second scene-referred multiply, right after the fixed one; with uAuto 0
             // the line is skipped, which is what makes "off" bit-exact rather than "times a gain of 1".
             E(ResolveFs.IndexOf("if (uAuto != 0) c *= uAutoGain;", StringComparison.Ordinal)
               > ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
               && ResolveFs.IndexOf("if (uAuto != 0) c *= uAutoGain;", StringComparison.Ordinal)
-              < ResolveFs.IndexOf("if (uMode == 1) c = SowxShoulder", StringComparison.Ordinal),
+              < ResolveFs.IndexOf("if (uMode == 1) c = CxShoulder", StringComparison.Ordinal),
               "the auto-exposure gain multiplies in linear, after the fixed exposure and before the tonemap");
             E(_auto && !AutoWanted, "auto-exposure boots on, but wants nothing without an armed HDR target");
             Tune("auto", 0f); E(Describe().Contains("auto off"), "/post auto 0 disarms it and Describe says so");
@@ -1328,27 +1328,27 @@ internal static unsafe class PostChain
               "the exposure SSBO block sits on its own line in both compute stages");
             E(AutoHistCs.Contains("texelFetch(uHdr, p, 0)") && AutoAdaptCs.Contains("uParams.w / avg"),
               "the histogram reads the linear HDR texel and the adapt steers key / average");
-            E(ResolveFs.Contains("mix(SowxShoulder(c, uKnee), SowxAces(c), uAcesMix)"),
+            E(ResolveFs.Contains("mix(CxShoulder(c, uKnee), CxAces(c), uAcesMix)"),
               "ACES is mixed against the shoulder, so the darks below the knee are never crushed past the mix");
             // The resolve is the ONLY place the Alloy frame meets 8-bit, so it is the only place a dither
             // can go. A resolve that lost it would band again, and the symptom (faint contour stripes over
             // smooth gradients) reads as a lighting bug rather than as a missing line here.
-            E(PostDitherLib.Contains("(r1 + r2 - 1.0) * lsb") && ResolveFs.Contains("SowxDither(outc, gl_FragCoord.xy, uDither)"),
+            E(PostDitherLib.Contains("(r1 + r2 - 1.0) * lsb") && ResolveFs.Contains("CxDither(outc, gl_FragCoord.xy, uDither)"),
               "the resolve dithers with a TRIANGULAR pdf -- two samples summed, not one");
-            E(ResolveFs.IndexOf("vec3 outc = SowxEncode(c);", StringComparison.Ordinal)
-              < ResolveFs.IndexOf("SowxDither(outc, gl_FragCoord.xy, uDither)", StringComparison.Ordinal),
+            E(ResolveFs.IndexOf("vec3 outc = CxEncode(c);", StringComparison.Ordinal)
+              < ResolveFs.IndexOf("CxDither(outc, gl_FragCoord.xy, uDither)", StringComparison.Ordinal),
               "...and it dithers in DISPLAY space, after the encode -- dithering before it is shaped by the "
               + "curve and stops matching the quantisation step it exists to break up");
             // #132: this resolve is the frame's ONLY encode, and it is gated on the engine's own
             // GAMMA_CORRECTION. A resolve that read the HDR colour through a decode would be undoing an
             // encode nobody applies any more -- the #102 failure, whole-frame and in the other direction.
-            E(!ResolveFs.Contains("SowxLinear") && !BloomDownFs.Contains("SowxLinear"),
+            E(!ResolveFs.Contains("CxLinear") && !BloomDownFs.Contains("CxLinear"),
               "nothing in the chain decodes: the target is linear");
             // ...and it is UNCONDITIONAL in the stage, because the gate lives in Precheck. A stage that
             // grew its own switch would be half a gate: the Alloy DECODES cannot be switched per pass, so
             // an encode that turned itself off would leave every Alloy surface a gamma dark beside the
             // engine's. The refusal is the only self-consistent answer, and this asserts the pairing.
-            E(ResolveFs.Contains("vec3 outc = SowxEncode(c);") && !PostColorLib.Contains("uniform"),
+            E(ResolveFs.Contains("vec3 outc = CxEncode(c);") && !PostColorLib.Contains("uniform"),
               "the resolve's encode is unconditional -- the gamma gate is Precheck's refusal, not a switch");
 
             _bootBloom = 0.5f; _bootMode = Aces; _bootScale = 0.75f;

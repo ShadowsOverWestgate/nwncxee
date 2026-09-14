@@ -1,10 +1,10 @@
 using System.Collections.Generic;
 using System.Text;
-using Sowx.Framework;
-using Sowx.Services.Chat.Core;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Services.Chat.Core;
+using CX.Ui;
 
-namespace Sowx.Services.Chat.Render;
+namespace CX.Services.Chat.Render;
 
 /// <summary>Row alignment for wrapped text: given one laid-out row, returns how far to shift it
 /// (<paramref name="xOff"/>) and how much to pad each interior space (<paramref name="spaceExtra"/>).

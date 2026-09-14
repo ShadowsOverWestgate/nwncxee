@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>Immutable snapshot of pass-1 wrap results (block heights + content height). Swapped atomically
 /// behind <see cref="ChatWindow.WrapCache"/> so concurrent builds (ingest, input) never see a torn state.</summary>

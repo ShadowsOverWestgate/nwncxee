@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// The "hard work" contributors don't touch: discover every IExtenderService,
@@ -9,7 +9,7 @@ namespace Sowx.Framework;
 /// </summary>
 public static class ServiceHost
 {
-    // Reflection over our own assembly is trim-safe here: the csproj roots sowx_managed
+    // Reflection over our own assembly is trim-safe here: the csproj roots cx_managed
     // whole (TrimmerRootAssembly), so no service type or its ctor is ever removed.
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Assembly is rooted; nothing trimmed.")]
     [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "Assembly is rooted; parameterless ctors preserved.")]
@@ -19,7 +19,7 @@ public static class ServiceHost
         // Which build produced the lines below. build.sh already stamps this from `git describe`, and a log
         // that does not say it is a log you cannot act on: half a debugging round trip is spent establishing
         // whether the run even contains the fix being discussed.
-        log.Info("sowx build " + (Assembly.GetExecutingAssembly()
+        log.Info("NWNCX:EE build " + (Assembly.GetExecutingAssembly()
                      .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()?
                      .InformationalVersion ?? "unknown"));
         log.Info($"host: GC server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} cpus={Environment.ProcessorCount}");
@@ -35,7 +35,7 @@ public static class ServiceHost
                          "The game runs vanilla (re-measure: docs/engine-layout.md).";
             log.Always("host: " + rot);
             log.Always("host: 0 service(s) discovered, 0 hook(s) installed");
-            SymbolMap.RotNotice("Sowx: " + rot);   // Windows-only: a version.dll proxy has no log the player reads
+            SymbolMap.RotNotice("NWNCX:EE: " + rot);   // Windows-only: a version.dll proxy has no log the player reads
             ExtenderLog.Flush();   // Always only enqueues, and nothing else in this process will drain it
             return;
         }
@@ -76,7 +76,7 @@ public static class ServiceHost
         EngineLayout.Register();
         SymbolMap.Register();
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
-        Sowx.Ui.AtlasSheet.SelfCheck(log);   // #469: pack-and-grow, ceiling refusal, face lookup -- no GL, no stbtt
+        CX.Ui.AtlasSheet.SelfCheck(log);   // #469: pack-and-grow, ceiling refusal, face lookup -- no GL, no stbtt
         foreach (IExtenderService service in all)
         {
             try { service.Initialize(log, hooks); }

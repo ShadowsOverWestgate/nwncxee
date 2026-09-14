@@ -3,9 +3,9 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Perf;
+namespace CX.Services.Perf;
 
 /// <summary>
 /// Round-trip time to the connected server, shown by the <c>/fps</c> overlay. The client keeps no live
@@ -49,7 +49,7 @@ internal static unsafe class ServerPing
     {
         Interlocked.Exchange(ref _endpoint, ReadEndpoint());
         if (_thread != null) return;
-        _thread = new Thread(Loop) { IsBackground = true, Name = "sowx-ping" };
+        _thread = new Thread(Loop) { IsBackground = true, Name = "cx-ping" };
         _thread.Start();
     }
 

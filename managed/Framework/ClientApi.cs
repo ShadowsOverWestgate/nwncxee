@@ -1,4 +1,4 @@
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// Small shared bridge to the client's message object, so services don't each re-resolve

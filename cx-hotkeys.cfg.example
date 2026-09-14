@@ -1,4 +1,4 @@
-# sowx hotkeys -- armed keys.  Copy to  ~/.config/sowx-hotkeys.cfg
+# CX hotkeys -- armed keys.  Copy to  ~/.config/cx-hotkeys.cfg
 #
 # One SDL keycode (SDLK) per line. These are the keys you consent to have sent to
 # the server when pressed. The server decides what each key does (the client does

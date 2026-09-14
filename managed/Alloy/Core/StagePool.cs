@@ -1,9 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.Threading;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>The stage's worker pool: N persistent threads plus the main thread, each running one static
 /// chunk of <see cref="AlloyRenderer.StageRange"/>. No Parallel.For and no ThreadPool -- both allocate per
@@ -129,7 +129,7 @@ internal static class StagePool
         if (_threads[w] != null) return;
         _go[w] = new SemaphoreSlim(0, 1);
         _seenAtStart[w] = Volatile.Read(ref _gen);
-        var t = new Thread(Loop) { IsBackground = true, Name = $"sowx-stage-{w}" };
+        var t = new Thread(Loop) { IsBackground = true, Name = $"cx-stage-{w}" };
         _threads[w] = t;
         t.Start(w);
     }

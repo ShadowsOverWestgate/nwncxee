@@ -428,7 +428,7 @@ if (AlloyGate.OptedOut)
 { log.Info("AlloyRenderer: stood down (vanilla=1) -- the engine owns every resource this session"); return; }
 ```
 
-So under `vanilla=1` in `sowx.cfg`, `FrameRead.Tick` never runs and `FrameInputs` stays empty —
+So under `vanilla=1` in `cx.cfg`, `FrameRead.Tick` never runs and `FrameInputs` stays empty —
 **neither option A nor B has a camera.**
 
 The clean split, and it costs nothing: discovery is **name-sorted**, and `Alloy…` sorts before
@@ -547,10 +547,10 @@ self-check off device — put a `NameplateAnim.SelfCheck` beside `ChatAnim.SelfC
 
 **Two buckets, and env vars are not one.** Note the exact split — the task framing slightly conflates them:
 
-- **`sowx.cfg`** (`managed/Framework/Settings.cs`) is the **boot** config: hand-edited, **never written
+- **`cx.cfg`** (`managed/Framework/Settings.cs`) is the **boot** config: hand-edited, **never written
   back**, read pre-main via `Settings.Bool/Int/Float/Text`, and **it is what `/knobs` lists**. Only put a
   boot gate here (e.g. `nameplates=0`).
-- **`sowx-<feature>.cfg`** (`managed/Framework/ConfigFile.cs`) is a per-feature **preference** file the
+- **`cx-<feature>.cfg`** (`managed/Framework/ConfigFile.cs`) is a per-feature **preference** file the
   feature reads and writes. It does **not** appear in `/knobs`.
 - **Chat commands** (`managed/Framework/CommandRegistry.cs`) are bucket 1: anything you tune while
   looking at it. These DO appear in `/knobs`.
@@ -602,7 +602,7 @@ private static string? Cmd(string args)
 Note `CultureInfo.InvariantCulture` — `Settings.Float` documents that locale-sensitive parsing silently
 dropped dot-decimals under comma-decimal desktops.
 
-### (b) `sowx-nameplate.cfg` — the persisted preferences
+### (b) `cx-nameplate.cfg` — the persisted preferences
 
 The whole pattern is `QuickbarService` + `QuickbarConfig`.
 
@@ -610,7 +610,7 @@ Owner fields, `managed/Services/Quickbar/QuickbarService.cs:47-49`:
 
 ```csharp
 private static QuickbarConfig _config = new();
-private static readonly ConfigFile _file = new("sowx-quickbar.cfg");
+private static readonly ConfigFile _file = new("cx-quickbar.cfg");
 private static bool _configLoaded;
 ```
 
@@ -640,7 +640,7 @@ The config type — copy `managed/Services/Quickbar/QuickbarConfig.cs` verbatim 
 `ConfigFile.ForEachPair(text, (key,val) => switch …)` (`ConfigFile.cs:100`), plus a
 `SelfCheck(ExtenderLog)` asserting round-trip **and** defaults. That SelfCheck is your only test (§11).
 
-### (c) Boot gate in `sowx.cfg`, if you need one
+### (c) Boot gate in `cx.cfg`, if you need one
 
 `managed/Framework/Settings.cs`:
 
@@ -1002,7 +1002,7 @@ there is no key-up route to windows. Two options, in preference order:
 ## 11. Build / verify loop
 
 ```sh
-./build.sh          # .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake; stages sow-client-extender/
+./build.sh          # .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake; stages cx-linux-x64/
 ./run-demo.sh       # boots the framework inside /usr/bin/env — no game, no X11, no GL
 ./sym.sh [-m] <pat> # symbol search; -m = mangled, for HookService.Install
 ```
@@ -1052,10 +1052,10 @@ Call it from `Initialize`, **before** any stand-down return, so a headless run s
 ### Live verification
 
 ```sh
-NWN_BIN=/path/to/bin/linux-x86/nwmain-linux ./sow-client-extender/sowx-launch
+NWN_BIN=/path/to/bin/linux-x86/nwmain-linux ./cx-linux-x64/cx-launch
 ```
 
-The log is `$HOME/sowx.log`. Strings to grep:
+The log is `$HOME/cx.log`. Strings to grep:
 
 | grep | means |
 |---|---|
@@ -1069,7 +1069,7 @@ The log is `$HOME/sowx.log`. Strings to grep:
 
 Every service logs a one-line verdict at init saying what it installed or why it stood down. Copy that.
 
-`/knobs` in-game prints every registered command and every `sowx.cfg` setting plus the file path it read.
+`/knobs` in-game prints every registered command and every `cx.cfg` setting plus the file path it read.
 
 ---
 
@@ -1270,6 +1270,6 @@ If a truly per-frame wrap is ever needed, the fix is a caller-owned `LineSpan[]`
    (§7, §14).
 9. Outlined text on by default (§8); portraits via `AurTex`/`TextRig`, batched like
    `ChatRenderer.DrawPortraits` (§9).
-10. `/nameplate` command + `sowx-nameplate.cfg` via `ConfigFile` with the deferred first-frame load (§5).
+10. `/nameplate` command + `cx-nameplate.cfg` via `ConfigFile` with the deferred first-frame load (§5).
 11. `SettingsPanel` rows reusing `SetAct.ToggleBit` + `Bit` discriminators where possible (§6).
 12. A `SelfCheck` for **every** pure piece — it is the only test that exists (§11).

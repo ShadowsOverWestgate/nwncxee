@@ -1,7 +1,7 @@
 using System;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#193: the engine's C++ classes as C# types. Every pointer the renderer walks is an
 /// <c>IntPtr</c>; three different classes wear the same one, and nothing stopped a <c>SharedMaterial*</c>

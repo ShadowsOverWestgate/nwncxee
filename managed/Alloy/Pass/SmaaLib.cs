@@ -1,4 +1,4 @@
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>SMAA v2.8 (Jimenez, Echevarria, Masia, Navarro, Gutierrez 2013; MIT-style, notice retained
 /// below and in third_party/smaa/LICENSE.txt): the reference <c>SMAA.hlsl</c> verbatim, which compiles as

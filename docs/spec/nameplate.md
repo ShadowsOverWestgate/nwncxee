@@ -5,12 +5,12 @@ Two world-anchored overhead elements sharing one anchor per object, mutually exc
 - **plate** — portrait + name + health band, while the object is hovered or Tab-highlighted
 - **bubble** — what the object just said, when no plate is up
 
-Vanilla is suppressed; we draw both ourselves in the Sowx UI. Full RE: `docs/re/nameplate.md`.
+Vanilla is suppressed; we draw both ourselves in the CX UI. Full RE: `docs/re/nameplate.md`.
 Managed seam guide: `docs/agents/nameplate-seam.md`. Both are authoritative — read them.
 
 ## Namespace / layout
 
-All new code under `managed/Services/Nameplate/`, namespace `Sowx.Services.Nameplate`.
+All new code under `managed/Services/Nameplate/`, namespace `CX.Services.Nameplate`.
 
 | file | owner | contents |
 | --- | --- | --- |

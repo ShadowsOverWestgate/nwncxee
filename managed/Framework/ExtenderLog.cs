@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>Injected logger. Writes stderr + a log file. Under the Steam Linux Runtime the game
 /// runs in a container with a private /tmp, so the file lands in $HOME (mapped into the container,
@@ -11,10 +11,10 @@ namespace Sowx.Framework;
 public sealed class ExtenderLog
 {
     private static readonly string LogPath = OperatingSystem.IsWindows()
-        ? Path.Combine(Native.DefaultUserDirectory(), "sowx.log")
-        : Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", "sowx.log");
+        ? Path.Combine(Native.DefaultUserDirectory(), "cx.log")
+        : Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", "cx.log");
 
-    /// <summary>The one gate every line passes: <c>logs=1</c> in sowx.cfg keeps it open, the default closes it
+    /// <summary>The one gate every line passes: <c>logs=1</c> in cx.cfg keeps it open, the default closes it
     /// once <see cref="Settings.Load"/> has read the file, so a stock install writes only the boot lines. Off
     /// means off at the CALL SITE too: an interpolated argument goes through <see cref="Line"/>, whose holes
     /// the compiler never evaluates when this is false -- a period census that is never walked, not a string
@@ -35,10 +35,10 @@ public sealed class ExtenderLog
     /// install's bug report needs, and a stock install has the gate closed.</summary>
     public void Always(string message)
     {
-        _queue.Enqueue($"{DateTime.Now:O} [sowx] {message}");
+        _queue.Enqueue($"{DateTime.Now:O} [cx] {message}");
         if (_writer == null)
         {
-            _writer = new Thread(Drain) { IsBackground = true, Name = "sowx-log" };
+            _writer = new Thread(Drain) { IsBackground = true, Name = "cx-log" };
             _writer.Start();
         }
         _wake.Set();

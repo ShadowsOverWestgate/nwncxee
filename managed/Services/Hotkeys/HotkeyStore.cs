@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Hotkeys;
+namespace CX.Services.Hotkeys;
 
 /// <summary>
 /// The consent list and its persistence -- scoped PER SERVER by a client-minted token. Consent is a
@@ -13,7 +13,7 @@ namespace Sowx.Services.Hotkeys;
 /// </summary>
 /// <remarks>
 /// Effective armed set is per session: empty at startup and every login until a recognised token is
-/// presented. Cfg is sowx-hotkeys.cfg in the client's user directory (see <see cref="Path"/>) --
+/// presented. Cfg is cx-hotkeys.cfg in the client's user directory (see <see cref="Path"/>) --
 /// [token=&lt;hex&gt;] sections, one SDL keycode per
 /// line (SDLK, NOT Windows VK: f=102 not 70, F1=1073741882). Static, not DI: the hot key handler
 /// reads Armed directly; swaps publish an immutable snapshot atomically.
@@ -40,7 +40,7 @@ public static class HotkeyStore
     // The token presented by the current server this session, or null if none/unrecognised-and-unconsented.
     private static string? _activeToken;
 
-    public static string Path => Native.ConfigPath("sowx-hotkeys.cfg");
+    public static string Path => Native.ConfigPath("cx-hotkeys.cfg");
 
     private static bool _loaded;
 
@@ -62,10 +62,11 @@ public static class HotkeyStore
         int legacy = 0;
         try
         {
-            if (File.Exists(Path))
+            string readPath = ConfigFile.ReadPath("cx-hotkeys.cfg", log);
+            if (File.Exists(readPath))
             {
                 HashSet<int>? cur = null;   // null until the first [token=] header
-                foreach (string raw in File.ReadAllLines(Path))
+                foreach (string raw in File.ReadAllLines(readPath))
                 {
                     string line = raw;
                     int hash = line.IndexOf('#');
@@ -213,7 +214,7 @@ public static class HotkeyStore
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
             var lines = new List<string>
             {
-                "# sowx hotkeys -- per-server consent. One [token=<hex>] section per server;",
+                "# CX hotkeys -- per-server consent. One [token=<hex>] section per server;",
                 "# one SDL keycode per line under it. Deleting a section revokes that server's consent.",
             };
             foreach (var (tok, keys) in _sections)

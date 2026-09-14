@@ -48,7 +48,7 @@ so owning the UI system is that backend's prerequisite. It belongs to ADR 0004's
   mapping, `gl_Layer` from VS — without touching the engine's context. Engine UI keeps rendering
   in its own context untouched.
 - **Frame graph:** depth prepass → light clustering (32-light UBO today; clustered forward+ as
-  the light count grows) → opaque forward+ pass (Alloy programs, SowxLights/SowxCubes UBOs from
+  the light count grows) → opaque forward+ pass (Alloy programs, CxLights/CxCubes UBOs from
   ADR 0007) → shadow system (cube/CSM atlas, Alloy multidraw submission, layered rendering in
   the 4.6 context) → transparents → post (HDR tonemap; the engine already renders to RGB16F).
 - **Submission:** persistent caster/drawable cache (part-keyed, ADR 0008 pattern) feeding

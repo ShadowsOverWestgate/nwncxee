@@ -1,4 +1,4 @@
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>
 /// One baked <b>face</b> -- a (typeface, pixel height) pair: its glyph table, line height, ascent and

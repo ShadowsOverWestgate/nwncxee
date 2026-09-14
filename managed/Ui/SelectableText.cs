@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>The framework text layer's opt-in select-and-copy capability (spec #63). Any content that lays out a
 /// run of runes can hold one of these to make that run selectable: it owns the selection state (anchor/cursor rune

@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>A span of plain text with its active Aurora color (channels normalised to 0..1).</summary>
 public readonly struct ColorRun

@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #388: camera motion vectors. Once per frame, after the opaque depth is final, every render pixel is

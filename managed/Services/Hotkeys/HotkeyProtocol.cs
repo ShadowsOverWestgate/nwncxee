@@ -1,4 +1,4 @@
-namespace Sowx.Services.Hotkeys;
+namespace CX.Services.Hotkeys;
 
 /// <summary>
 /// The wire contract between this client extender and the SoW server (sow-codebase).
@@ -19,14 +19,14 @@ internal static class HotkeyProtocol
     /// (lockchat-only typing observer).</summary>
     public static readonly string[] RequiredSymbols =
     {
-        Sowx.Framework.SymbolMap.HandleServerToPlayerMessage, Sowx.Framework.SymbolMap.HandleServerToPlayerLogin,
-        Sowx.Framework.SymbolMap.SendPlayerToServerMessage, Sowx.Framework.SymbolMap.SendDeviceAdvertiseProperty,
-        Sowx.Framework.SymbolMap.GetNWCMessage, Sowx.Framework.SymbolMap.AppManager,
-        Sowx.Framework.SymbolMap.OkCancelCtor, Sowx.Framework.SymbolMap.OkCancelActivate,
-        Sowx.Framework.SymbolMap.GuiMan, Sowx.Framework.SymbolMap.OperatorNew,
-        Sowx.Framework.SymbolMap.HandleWMKeyDown, Sowx.Framework.SymbolMap.WinMessageHandler,
-        Sowx.Framework.SymbolMap.ExoInput, Sowx.Framework.SymbolMap.GetKeyboardMode,
-        Sowx.Framework.SymbolMap.SdlGetModState, Sowx.Framework.SymbolMap.SdlGetKeyName,
+        CX.Framework.SymbolMap.HandleServerToPlayerMessage, CX.Framework.SymbolMap.HandleServerToPlayerLogin,
+        CX.Framework.SymbolMap.SendPlayerToServerMessage, CX.Framework.SymbolMap.SendDeviceAdvertiseProperty,
+        CX.Framework.SymbolMap.GetNWCMessage, CX.Framework.SymbolMap.AppManager,
+        CX.Framework.SymbolMap.OkCancelCtor, CX.Framework.SymbolMap.OkCancelActivate,
+        CX.Framework.SymbolMap.GuiMan, CX.Framework.SymbolMap.OperatorNew,
+        CX.Framework.SymbolMap.HandleWMKeyDown, CX.Framework.SymbolMap.WinMessageHandler,
+        CX.Framework.SymbolMap.ExoInput, CX.Framework.SymbolMap.GetKeyboardMode,
+        CX.Framework.SymbolMap.SdlGetModState, CX.Framework.SymbolMap.SdlGetKeyName,
     };
 
     public const byte KeyPressMajor = 0x36, KeyPressMinor = 0x40;
@@ -37,7 +37,7 @@ internal static class HotkeyProtocol
     public const byte GrantTokenMajor   = 0x36, GrantTokenMinor   = 0x45;
     public const byte AbuseContactMajor = 0x36, AbuseContactMinor = 0x46;
 
-    /// <summary>Where a server operator reports abuse of the extender. Sent on every login after SOWX_ENABLED.</summary>
+    /// <summary>Where a server operator reports abuse of the extender. Sent on every login after CX_ENABLED.</summary>
     public const string AbuseContact = "mpiasecki720@protonmail.com";
 
     /// <summary>

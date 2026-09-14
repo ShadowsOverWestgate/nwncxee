@@ -1,9 +1,9 @@
 using System;
 using System.Linq;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 using static AlloyRenderer;
 
@@ -31,13 +31,13 @@ internal static class ShaderContract
     /// with nothing at all in the log. <see cref="SelfCheck"/> cannot catch it -- it only sees the embedded
     /// text. Counted rather than matched character-for-character, so an override may still reformat or
     /// rename the fields.</summary>
-    public static bool RecordSafe(string src) => RecordSafe(src, "SowxDraw", AlloyRenderer.DrawFloats);
+    public static bool RecordSafe(string src) => RecordSafe(src, "CxDraw", AlloyRenderer.DrawFloats);
 
     /// <summary>#161: the same count, for any per-draw record a C# stride stages.
-    /// <para>#302 retired its second caller. The caster pass staged a <c>SowxCaster</c> of its own -- a
+    /// <para>#302 retired its second caller. The caster pass staged a <c>CxCaster</c> of its own -- a
     /// parallel record carrying a second copy of the model matrix, the bone base and the cutout -- and this
     /// overload existed to police a stride that could silently desync from it. The shadow bake reads
-    /// <c>SowxDraw</c> now, so there is one stride and one guard; what is left of SowxCaster is bounds and a
+    /// <c>CxDraw</c> now, so there is one stride and one guard; what is left of CxCaster is bounds and a
     /// slot index, with nothing an override can misread into a neighbour's material.</para>
     /// <para><paramref name="floats"/> is the whole stride. #392 appended a second <c>mat4</c> (the
     /// previous model matrix), so the count is by FIELD SIZE now -- a vec4-only count was blind to exactly
@@ -74,42 +74,42 @@ internal static class ShaderContract
         "x", null, "selfcheck", new System.Collections.Generic.List<string>()) ?? "";
 
     /// <summary>#137: does this VERTEX stage carry the skinning branch? Same shape, same reason, as
-    /// <see cref="CutoutSafe"/> -- and the same trap. A <c>sowx_*_vs</c> written before #137 links
+    /// <see cref="CutoutSafe"/> -- and the same trap. A <c>cx_*_vs</c> written before #137 links
     /// perfectly: <see cref="RecordSafe"/> passes (the record did not grow, the bone base rides in
     /// <c>feat.y</c>), <see cref="DepthSafe"/> passes (the clip expression did not change), and the missing
     /// bone attributes are simply disabled. What ships is then a skinned draw taking
-    /// <c>!SowxDisplaces(8)</c> -- the literal clip expression -- and rendering the robe in its BIND POSE at
+    /// <c>!CxDisplaces(8)</c> -- the literal clip expression -- and rendering the robe in its BIND POSE at
     /// the node matrix, silently.
     /// <para>Not academic, and not only a developer's problem: on a server the HAK wins over a local
     /// override directory, so a HAK that has not caught up with the extender is exactly this case on live
     /// content while a singleplayer test looks right. Checked only while the class is armed -- an override
     /// predating #137 is perfectly correct when nothing skins.</para></summary>
-    public static bool SkinSafe(string vs, bool skinning) => !skinning || vs.Contains("SOWX_FEAT_SKIN");
+    public static bool SkinSafe(string vs, bool skinning) => !skinning || vs.Contains("CX_FEAT_SKIN");
 
     /// <summary>#132: does this FRAGMENT stage write LINEAR? Same shape and same trap as
     /// <see cref="CutoutSafe"/> and <see cref="SkinSafe"/>, and the one with the widest blast radius yet: a
-    /// <c>sowx_*_fs</c> written before #132 ends in <c>SowxRevert(...)</c>, links perfectly (the record did
+    /// <c>cx_*_fs</c> written before #132 ends in <c>CxRevert(...)</c>, links perfectly (the record did
     /// not grow, the clip expression did not change, <c>uSoftClip</c> at -1 is a legal no-op) and writes
     /// display-space values into a target the resolve then encodes a SECOND time. The frame is washed out,
     /// end to end, and nothing says so.
     /// <para>On a server the HAK wins over a local override directory, so a HAK that has not caught up with
     /// the extender is exactly this case on live content while a singleplayer test looks right -- which is
     /// why the answer is to rebuild from the embedded text rather than to log and carry on.</para></summary>
-    public static bool LinearSafe(string fs) => !fs.Contains("SowxRevert") && !fs.Contains("SowxSoftClip");
+    public static bool LinearSafe(string fs) => !fs.Contains("CxRevert") && !fs.Contains("CxSoftClip");
 
     /// <summary>#132's guard from the other end, for the ONE stage that encodes: the resolve. Every other
     /// Alloy fragment stage must not encode (<see cref="LinearSafe"/>); this one must, and must not decode
-    /// first. A pre-#132 resolve override opens with <c>SowxLinear</c> on a target that is already linear and
+    /// first. A pre-#132 resolve override opens with <c>CxLinear</c> on a target that is already linear and
     /// comes out a gamma dark; one that dropped the encode leaves the whole frame linear and comes out washed
     /// out. Both link cleanly and say nothing, so both rebuild from the embedded text.
     /// <para>Named terms, like every other guard here -- an override may restyle the tonemap and the dither
     /// around them, but not the colour-space decision the rest of the pipeline is built on.</para></summary>
-    public static bool ResolveSafe(string fs) => !fs.Contains("SowxLinear") && fs.Contains("SowxEncode");
+    public static bool ResolveSafe(string fs) => !fs.Contains("CxLinear") && fs.Contains("CxEncode");
 
     /// <summary>#375: the guard for a <see cref="PostStack"/> stage, which runs AFTER the resolve on a
     /// display-space image and hands one on: it must neither encode (a second encode, a gamma too bright) nor
     /// decode (the frame goes linear and a gamma dark). Named terms, like the two above.</summary>
-    public static bool DisplaySafe(string fs) => !fs.Contains("SowxLinear") && !fs.Contains("SowxEncode");
+    public static bool DisplaySafe(string fs) => !fs.Contains("CxLinear") && !fs.Contains("CxEncode");
 
     /// <summary>#208: does this FRAGMENT stage still declare the samplers the C# side binds units to? Same
     /// shape and same trap as <see cref="CutoutSafe"/>: <see cref="TextureSlots.Check"/> polices the EMBEDDED
@@ -140,7 +140,7 @@ internal static class ShaderContract
     /// <see cref="RecordSafe"/> cannot see the difference. Stages with no <c>gl_DrawID</c> at all -- every
     /// fragment stage, which receives the resolved slot in <c>vDraw</c> -- pass trivially.</para></summary>
     public static bool SlotIndexSafe(string src)
-        => !src.Contains("gl_DrawID") || src.Contains("SowxSlot(uDrawBase + gl_DrawID)");
+        => !src.Contains("gl_DrawID") || src.Contains("CxSlot(uDrawBase + gl_DrawID)");
 
     /// <summary>The lit stage's whole sampler set: the diffuse, the map ladder and the probe cube.</summary>
     public static bool LitSlotSafe(string fs)
@@ -168,16 +168,16 @@ internal static class ShaderContract
                   // #123: the feature ids are a contract between the ShaderFeature enum (staged into
                   // d.feat.x) and the GLSL that switches on it. Drift renders the wrong effect on the wrong
                   // content -- roofs swaying, plants dropping 500m -- with nothing in the log.
-                  && FeatDecl.Contains($"SOWX_FEAT_WINDGRASS {(int)ShaderFeature.WindGrass}")
-                  && FeatDecl.Contains($"SOWX_FEAT_WINDLEAF  {(int)ShaderFeature.WindLeaf}")
-                  && FeatDecl.Contains($"SOWX_FEAT_WINDPLANT {(int)ShaderFeature.WindPlant}")
-                  && FeatDecl.Contains($"SOWX_FEAT_ROOFKN    {(int)ShaderFeature.RoofKn}")
-                  && FeatDecl.Contains($"SOWX_FEAT_ROOFKNM   {(int)ShaderFeature.RoofKnM}")
-                  && FeatDecl.Contains($"SOWX_FEAT_FLOWMAP   {(int)ShaderFeature.Flowmap}")
-                  && FeatDecl.Contains($"SOWX_FEAT_SKIN      {(int)ShaderFeature.Skin}")
-                  && FeatDecl.Contains($"SOWX_FEAT_NOIRWET   {(int)ShaderFeature.NoirWet}")
-                  && FeatDecl.Contains($"SOWX_FEAT_NOIRGLOSS {(int)ShaderFeature.NoirGloss}")
-                  && FeatDecl.Contains($"SOWX_FEAT_GROUNDWEATHER {(int)ShaderFeature.GroundWeather}")
+                  && FeatDecl.Contains($"CX_FEAT_WINDGRASS {(int)ShaderFeature.WindGrass}")
+                  && FeatDecl.Contains($"CX_FEAT_WINDLEAF  {(int)ShaderFeature.WindLeaf}")
+                  && FeatDecl.Contains($"CX_FEAT_WINDPLANT {(int)ShaderFeature.WindPlant}")
+                  && FeatDecl.Contains($"CX_FEAT_ROOFKN    {(int)ShaderFeature.RoofKn}")
+                  && FeatDecl.Contains($"CX_FEAT_ROOFKNM   {(int)ShaderFeature.RoofKnM}")
+                  && FeatDecl.Contains($"CX_FEAT_FLOWMAP   {(int)ShaderFeature.Flowmap}")
+                  && FeatDecl.Contains($"CX_FEAT_SKIN      {(int)ShaderFeature.Skin}")
+                  && FeatDecl.Contains($"CX_FEAT_NOIRWET   {(int)ShaderFeature.NoirWet}")
+                  && FeatDecl.Contains($"CX_FEAT_NOIRGLOSS {(int)ShaderFeature.NoirGloss}")
+                  && FeatDecl.Contains($"CX_FEAT_GROUNDWEATHER {(int)ShaderFeature.GroundWeather}")
                   // #137: the skinning half. The binding point and the two attribute locations live twice
                   // (C# consts, literal GLSL) and neither disagreement is visible -- a wrong binding reads an
                   // empty block and collapses the mesh to the origin, a wrong location reads whatever stream
@@ -187,7 +187,7 @@ internal static class ShaderContract
                   && BoneVs.Contains($"layout(location = {LocBoneIdx}) in vec4 aBoneIdx;")
                   && BoneVs.Contains($"layout(location = {LocBoneW}) in vec4 aBoneWeight;")
                   && BoneVs.Contains("aBoneWeight.w > 0.0")
-                  && BoneVs.Contains("int(d.feat.x) == SOWX_FEAT_SKIN ? int(d.feat.y) : -1")
+                  && BoneVs.Contains("int(d.feat.x) == CX_FEAT_SKIN ? int(d.feat.y) : -1")
                   && BoneFloats * sizeof(float) == 4096
                   // ...and both stages take the skinned arm BEFORE the displaced test, which is what keeps
                   // the literal clip expression below reachable for every part that is still in the prepass.
@@ -199,8 +199,8 @@ internal static class ShaderContract
                   // that lets the skinmesh class back into the prepass -- a skinned batch whose prepass had
                   // no bone arm would write a BIND-POSE silhouette and LEQUAL would punch the cloak full of
                   // holes, so the two must move together or not at all.
-                  && OwnedVs.Contains("SOWX_FEAT_SKIN") && OwnedLitVs.Contains("SOWX_FEAT_SKIN")
-                  && DepthVs.Contains("SOWX_FEAT_SKIN") && DepthKeyVs.Contains("SOWX_FEAT_SKIN")
+                  && OwnedVs.Contains("CX_FEAT_SKIN") && OwnedLitVs.Contains("CX_FEAT_SKIN")
+                  && DepthVs.Contains("CX_FEAT_SKIN") && DepthKeyVs.Contains("CX_FEAT_SKIN")
                   // ...and the assigning statement is the SAME LITERAL in all four stages, which is the form
                   // of `invariant gl_Position` this renderer keeps everywhere else. An equivalent expression
                   // tree would probably do; "probably" is not what #119 is for.
@@ -240,10 +240,10 @@ internal static class ShaderContract
                   // ...and the GLSL predicate picking the displaced clip expression mirrors Displaces(). If it
                   // ever says "any feature" again, nokeyhole and flowmap sit in the prepass computing a clip
                   // expression the prepass never compiled -- the #119 hole, with nothing in the log.
-                  && FeatVs.Contains("bool SowxDisplaces(int feat) { return feat >= SOWX_FEAT_WINDGRASS "
-                                     + "&& feat <= SOWX_FEAT_ROOFKNM; }")
-                  && OwnedLitVs.Contains("if (!SowxDisplaces(int(d.feat.x))) " + ClipExpr)
-                  && OwnedVs.Contains("if (!SowxDisplaces(int(d.feat.x))) " + ClipExpr)
+                  && FeatVs.Contains("bool CxDisplaces(int feat) { return feat >= CX_FEAT_WINDGRASS "
+                                     + "&& feat <= CX_FEAT_ROOFKNM; }")
+                  && OwnedLitVs.Contains("if (!CxDisplaces(int(d.feat.x))) " + ClipExpr)
+                  && OwnedVs.Contains("if (!CxDisplaces(int(d.feat.x))) " + ClipExpr)
                   // ...and the map slots must stay BELOW the probe's unit. A samplerCube and a sampler2D
                   // pointed at one image unit is INVALID_OPERATION: every lit batch is dropped, and the log
                   // says nothing at all. #123 grew the slots into exactly that collision once.
@@ -252,9 +252,9 @@ internal static class ShaderContract
                   // copy of AoSlot/EnvSlot. Drift there is silent twice over: an AO bit that reads as the env
                   // bit turns every AO material legacy-shiny, and a lost multiply just renders unoccluded --
                   // which is what shipped content looks like today, so nothing would look wrong.
-                  && OwnedLitFsHead.Contains($"SOWX_SLOT_AO = {AoBit};")
-                  && OwnedLitFsHead.Contains($"SOWX_SLOT_ENV = {EnvSlot};")
-                  && OwnedLitFsMain.Contains("if ((slots & SOWX_SLOT_AO) != 0) occl *= texture(uAoTex, uv, uLodBias).r;")
+                  && OwnedLitFsHead.Contains($"CX_SLOT_AO = {AoBit};")
+                  && OwnedLitFsHead.Contains($"CX_SLOT_ENV = {EnvSlot};")
+                  && OwnedLitFsMain.Contains("if ((slots & CX_SLOT_AO) != 0) occl *= texture(uAoTex, uv, uLodBias).r;")
                   && OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl")
                   && OwnedVs.Contains("uDrawBase + gl_DrawID") && OwnedLitVs.Contains("uDrawBase + gl_DrawID")
                   // #242: ...and every one of them reaches its record THROUGH the draw-to-slot index. The
@@ -263,17 +263,17 @@ internal static class ShaderContract
                   // part, which is a misrender with nothing in the log. The binding lives twice (this const,
                   // that literal) for the same reason BindDraw does.
                   && DrawBufDecl.Contains($"binding = {BindDrawIdx}")
-                  && DrawBufDecl.Contains("int SowxSlot(int draw) { return uDrawIdx[draw]; }")
-                  && OwnedVs.Contains("uDraw[SowxSlot(uDrawBase + gl_DrawID)]")
-                  && DepthVs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
-                  && OwnedLitVs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
-                  && DepthKeyVs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
-                  && FrameSnapshot.Vs.Contains("int id = SowxSlot(uDrawBase + gl_DrawID);")
+                  && DrawBufDecl.Contains("int CxSlot(int draw) { return uDrawIdx[draw]; }")
+                  && OwnedVs.Contains("uDraw[CxSlot(uDrawBase + gl_DrawID)]")
+                  && DepthVs.Contains("int id = CxSlot(uDrawBase + gl_DrawID);")
+                  && OwnedLitVs.Contains("int id = CxSlot(uDrawBase + gl_DrawID);")
+                  && DepthKeyVs.Contains("int id = CxSlot(uDrawBase + gl_DrawID);")
+                  && FrameSnapshot.Vs.Contains("int id = CxSlot(uDrawBase + gl_DrawID);")
                   // ...and the guard that says the same thing about a stage this file never sees. It must
                   // refuse the pre-#242 spelling, which is the one an override written yesterday carries.
                   && SlotIndexSafe(OwnedVs) && SlotIndexSafe(OwnedLitVs) && SlotIndexSafe(FrameSnapshot.Vs)
                   && SlotIndexSafe(OwnedFs) && SlotIndexSafe(FrameSnapshot.Fs)
-                  && !SlotIndexSafe("SowxDraw d = uDraw[uDrawBase + gl_DrawID];")
+                  && !SlotIndexSafe("CxDraw d = uDraw[uDrawBase + gl_DrawID];")
                   // #119: the prepass depth is only re-testable by the colour pass while all three stages
                   // compute the SAME clip expression and declare it invariant. Drift either and lit
                   // surfaces lose fragments to LEQUAL -- a hole, with nothing in the log.
@@ -287,28 +287,28 @@ internal static class ShaderContract
                   // is PostChain's resolve. Both halves are silent when they drift: a stage that stopped
                   // linearising its texel renders washed out, one that re-encoded renders twice-encoded, and
                   // neither says anything. So assert both, including the absence.
-                  && OwnedLitFsMain.Contains("SowxLinear(texel.rgb)")
-                  && !OwnedLitFsMain.Contains("SowxRevert")
-                  && !AlloyLights.FragmentLib.Contains("SowxRevert")
+                  && OwnedLitFsMain.Contains("CxLinear(texel.rgb)")
+                  && !OwnedLitFsMain.Contains("CxRevert")
+                  && !AlloyLights.FragmentLib.Contains("CxRevert")
                   // #120: the lobe the whole ticket exists to restore, and the one-walk light function it
                   // rides in. A stage that lost either still compiles and still renders -- flat, exactly as
                   // it did before.
-                  && AlloyLights.FragmentLib.Contains("float SowxSpecLobe(")
-                  && AlloyLights.FragmentLib.Contains("float SowxSpecBase(")
-                  && OwnedLitFsMain.Contains("sunSpec * SowxSpecLobe(N, V, uAreaDir")
+                  && AlloyLights.FragmentLib.Contains("float CxSpecLobe(")
+                  && AlloyLights.FragmentLib.Contains("float CxSpecBase(")
+                  && OwnedLitFsMain.Contains("sunSpec * CxSpecLobe(N, V, uAreaDir")
                   // ...fed the RAW dot. #143's wrap is diffuse-only; a lobe on the wrapped dot lights the
                   // side of a glossy surface the sun cannot reach, and only at uWrapN > 0 -- invisible at
                   // the default.
                   && OwnedLitFsMain.Contains("vec3 sunSpec = uAreaDiffuse * (sunRaw * sunVis);")
                   // ...and the base modifier really is applied to the SUM, once. Folding it per light is
                   // silent and wrong by exactly the light count.
-                  && OwnedLitFsMain.Contains("* (specColor * SowxSpecBase(")
-                  && AlloyLights.FragmentLib.Contains("vec3 SowxClusteredLight(")
+                  && OwnedLitFsMain.Contains("* (specColor * CxSpecBase(")
+                  && AlloyLights.FragmentLib.Contains("vec3 CxClusteredLight(")
                   // #143: the wrapped-diffuse helper, and the sun actually going THROUGH it --
                   // a lit tail that keeps the raw dot is the punctual terminator back with no other sign.
-                  && AlloyLights.FragmentLib.Contains("float SowxWrap(float ndl, float w)")
+                  && AlloyLights.FragmentLib.Contains("float CxWrap(float ndl, float w)")
                   && AlloyLights.FragmentLib.Contains("max(s, uWrapN)")
-                  && OwnedLitFsMain.Contains("SowxWrap(dot(N, uAreaDir), uWrapN)")
+                  && OwnedLitFsMain.Contains("CxWrap(dot(N, uAreaDir), uWrapN)")
                   // ...while the ambient hemisphere keeps the RAW dot -- that line is inc_lighting.shd:679
                   // verbatim and wrapping it would drift the Alloy pass off the engine's own ambient.
                   && OwnedLitFsMain.Contains("mix(0.15, 1.0, sunRaw)")
@@ -327,14 +327,14 @@ internal static class ShaderContract
                   // the (ambient + diffuse) factor is what made every stone surface read as wet.
                   && OwnedLitFsMain.Contains("(ambient + diffuse) * env * F0 * uProbeGain")
                   // ...and the gate that keeps it off the parts the engine binds no env texture for at all.
-                  && OwnedLitFsMain.Contains("uSceneEnv != 0 || (slots & SOWX_SLOT_ENV) != 0")
+                  && OwnedLitFsMain.Contains("uSceneEnv != 0 || (slots & CX_SLOT_ENV) != 0")
                   // #124/#132: the dissolve and the fog, and the order they apply in. Both are LINEAR now --
                   // #124 welded the engine's keyhole-then-encode-then-fog order and #132 unwelded it, so the
                   // whole tail is one linear expression and the encode is the resolve's. Swap the two and
                   // the world still renders, just with fog that dissolves and a border that does not darken;
                   // nothing says so in the log.
-                  && KeyFogFs.Contains("float SowxKeyhole(") && KeyFogFs.Contains("vec3 SowxFog(")
-                  && OwnedLitFsMain.Contains("SowxFog(lit * kh, vWorld, vDepth)")
+                  && KeyFogFs.Contains("float CxKeyhole(") && KeyFogFs.Contains("vec3 CxFog(")
+                  && OwnedLitFsMain.Contains("CxFog(lit * kh, vWorld, vDepth)")
                   // #341: the fog target is direction-dependent, so the WORLD position is an argument and
                   // not a convenience -- a stage that passed the wrong point fogs toward the sky over
                   // somewhere else. And the ramp stays the area author's: the factor is still the engine's
@@ -372,7 +372,7 @@ internal static class ShaderContract
                   && AlloyLights.LocalShadowLib.Contains("if (uLocalSoft.x <= 0.0 || (uLocalSoft.z > 0.0 && texel * uLocalSoft.x < viewDepth * uLocalSoft.z)) return mix(1.0, v, uLocalFade[slot]);")
                   // ...and the dissolve has to reach the fragment stage at all: it rides in rot.z, which was
                   // a dead float, so a stage reading the wrong lane dissolves nothing and says nothing.
-                  && OwnedLitFsMain.Contains("SowxKeyhole(d.rot.z, vWorld, vDepth)")
+                  && OwnedLitFsMain.Contains("CxKeyhole(d.rot.z, vWorld, vDepth)")
                   // ...and the FULLBRIGHT stage must have NEITHER. Every unlit fragment stage in
                   // base_shaders.bif compiles FOG 0 and KEYHOLING 0 -- fst/fst_sm/fsglu (textured) and
                   // fs/fstc (untextured) alike -- so an unlit part that fogged or dissolved here would be
@@ -380,14 +380,14 @@ internal static class ShaderContract
                   // both are one line to add back and neither would look obviously wrong. What it DOES
                   // carry is the fog's mix alone, for the sky's horizon band (SceneFog.SkyBand) -- an
                   // elevation term, never the distance ramp.
-                  && !OwnedFs.Contains("SowxKeyhole") && !OwnedFs.Contains("SowxFogFactor") && !OwnedFs.Contains("SowxFog(")
+                  && !OwnedFs.Contains("CxKeyhole") && !OwnedFs.Contains("CxFogFactor") && !OwnedFs.Contains("CxFog(")
                   && OwnedFs.Contains("if (uSkyFog > 0.0 && uFogParams.x != 0.0)")
                   // ...and the prepass punches the SAME aperture the colour pass will. Both stages call the
-                  // one SowxKeyhole out of KeyFogFs, so they cannot drift by a constant -- but a stage that
+                  // one CxKeyhole out of KeyFogFs, so they cannot drift by a constant -- but a stage that
                   // lost the call writes depth over fragments the colour pass then discards, and the room
                   // behind the wall goes dark with nothing in the log.
-                  && DepthKeyFs.Contains("float SowxKeyhole(")
-                  && DepthKeyFs.Contains("SowxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth)")
+                  && DepthKeyFs.Contains("float CxKeyhole(")
+                  && DepthKeyFs.Contains("CxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth)")
                   // #126: the cutout, in both colour stages -- and spelled the engine's way, so a stage that
                   // kept the uniform but lost the >= 0.0 guard would discard every fragment of the OPAQUE
                   // set (which passes -1.0) and render an empty world.
@@ -398,7 +398,7 @@ internal static class ShaderContract
                   // engine spends it once: inc_standard.shd:289 multiplies only .rgb through there. A stage
                   // that loses this line spends it twice and every reflective surface draws as a ghost --
                   // which is invisible in a screenshot of anything that is not shiny, hence the guard.
-                  && OwnedLitFsMain.Contains("float coverage = (slots & SOWX_SLOT_ENV) != 0 ? 1.0 : texel.a;")
+                  && OwnedLitFsMain.Contains("float coverage = (slots & CX_SLOT_ENV) != 0 ? 1.0 : texel.a;")
                   // ...and the per-draw alpha reaching the framebuffer, which is the whole of the blended
                   // class: a stage writing a constant 1.0 there renders every transparent surface solid.
                   && OwnedFs.Contains("t.a * vAlpha") && OwnedVs.Contains("vAlpha = d.rot.w;")
@@ -415,7 +415,7 @@ internal static class ShaderContract
                   // #153: the bindless rewrite must produce a complete swap on the embedded lit stage --
                   // extension + handle block in, every bound-sampler declaration out -- and must leave
                   // foreign text (no known decls) untouched rather than half-rewritten.
-                  && BindlessFs(OwnedLitFsHead + MaterialLib).Contains("SowxTexH")
+                  && BindlessFs(OwnedLitFsHead + MaterialLib).Contains("CxTexH")
                   && BindlessFs(OwnedLitFsHead + MaterialLib).Contains("GL_ARB_bindless_texture")
                   && !BindlessFs(OwnedLitFsHead + MaterialLib).Contains("uniform sampler2D uTex;")
                   && !BindlessFs(OwnedLitFsHead + MaterialLib).Contains("uniform sampler2D uAoTex;")
@@ -427,24 +427,24 @@ internal static class ShaderContract
                   && RecordSafe(FrameSnapshot.Vs) && RecordSafe(FrameSnapshot.Fs)
                   // ...and it REFUSES a record that disagrees. A predicate that only ever returns true is
                   // precisely the silent failure it was written to prevent, and nothing else would notice.
-                  && !RecordSafe("struct SowxDraw { mat4 model; vec4 rot; };")
+                  && !RecordSafe("struct CxDraw { mat4 model; vec4 rot; };")
                   // #392: ...and the pre-#392 record, which counts the same vec4s and differs only by the
                   // trailing mat4 -- the growth a vec4-only count could not see.
-                  && !RecordSafe("struct SowxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; };")
+                  && !RecordSafe("struct CxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; };")
                   && RecordSafe("void main() { }")   // a stage that declares no record cannot disagree
                   // #161: the resolve's inverted colour-space guard, both directions. It is the frame's one
                   // encode, so it must hold on the embedded text and must catch a stage that decodes first
                   // (pre-#132) or performs no encode at all -- each of which washes out the whole frame.
                   && ResolveSafe(PostChain.ResolveFs)
-                  && !ResolveSafe(PostChain.ResolveFs.Replace("SowxEncode", "SowxLinear"))
-                  && !ResolveSafe(PostChain.ResolveFs.Replace("SowxEncode", "SowxPassthrough"))
+                  && !ResolveSafe(PostChain.ResolveFs.Replace("CxEncode", "CxLinear"))
+                  && !ResolveSafe(PostChain.ResolveFs.Replace("CxEncode", "CxPassthrough"))
                   // ...and the bloom chain runs in the same linear space every other Alloy stage writes.
                   && LinearSafe(PostChain.BloomDownFs) && LinearSafe(PostChain.BloomUpFs)
                   // ...and the four text-matching guards REFUSE, not just accept. A predicate that only ever
                   // returns true is the silent failure it was written to prevent, and the embedded text can
                   // never exercise the refusing direction on its own.
-                  && !LinearSafe("void main() { frag = SowxRevert(c); }")
-                  && !LinearSafe("void main() { frag = SowxSoftClip(c); }")
+                  && !LinearSafe("void main() { frag = CxRevert(c); }")
+                  && !LinearSafe("void main() { frag = CxSoftClip(c); }")
                   && !CutoutSafe(OwnedVs, OwnedFs.Replace("uAlphaCut", "uNothing"))
                   && !CutoutSafe(OwnedVs.Replace("vAlpha", "vNothing"), OwnedFs)
                   // SkinSafe's refusing direction is NOT assertable here: it short-circuits on _skinning,
@@ -496,56 +496,56 @@ internal static class ShaderContract
                   && VanillaShader.HasSplice(TargetFs)
                   && TargetFs.Contains("float GetTargetGroundHighlightStrength()")
                   && TargetFs.Contains("void ApplyTargetGroundHighlight(inout vec4")
-                  && TargetFs.Contains("SowxDisplayOverlays")
+                  && TargetFs.Contains("CxDisplayOverlays")
                   // #347/#348: the CONTENT hook region, and the two signatures that are its whole contract.
                   // A missing one is not a missing feature -- it is a lit program that does not link, which
                   // takes the world with it.
                   && VanillaShader.HasSplice(HookFs)
-                  && HookFs.Contains("vec3 SowxDisplayHook(vec3 c)")
+                  && HookFs.Contains("vec3 CxDisplayHook(vec3 c)")
                   // #350: the surface hook is GONE -- a material's own FS is hosted instead. Its
                   // reappearance would be the content contract this ticket deleted coming back.
-                  && !HookFs.Contains("SowxSurfaceHook")
+                  && !HookFs.Contains("CxSurfaceHook")
                   // ...and the hosted regions: one per FsNames entry, each with its stub and its dispatcher
                   // arm, and no region the table does not name. Drift here is a feature that silently draws
                   // the plain lit path, or a link error that takes the world with it.
                   && VanillaShader.HasHost(HostFs)
-                  && HostFs.Contains("bool SowxHostSurface(int feat)")
+                  && HostFs.Contains("bool CxHostSurface(int feat)")
                   && ShaderFeatures.FsNames.Length == ShaderFeatures.VsNames.Length
                   && ShaderFeatures.FsNames.All(n => n.Length == 0
-                         || (HostFs.Contains("// $VANILLA-HOST " + n + "\n") && HostFs.Contains("void SowxHost_" + n + "() { }")
-                             && HostFs.Contains("SowxHost_" + n + "();")))
+                         || (HostFs.Contains("// $VANILLA-HOST " + n + "\n") && HostFs.Contains("void CxHost_" + n + "() { }")
+                             && HostFs.Contains("CxHost_" + n + "();")))
                   && HostFs.Split("// $VANILLA-HOST ").Length - 1 == ShaderFeatures.FsNames.Count(n => n.Length > 0)
-                  && OwnedLitFsMain.Contains("SowxHostSurface(feat))")
+                  && OwnedLitFsMain.Contains("CxHostSurface(feat))")
                   // ...and what a hosted body reads and writes, under the engine's own names.
                   && VanillaEnvFs.Contains("vec4 FragmentColor;")
                   && VanillaEnvFs.Contains("#define MATERIAL_ROUGHNESS_VALUE fRoughness")
                   && VanillaEnvFs.Contains("vec3 SpecularColor;")
-                  && VanillaStandardFs.Contains("void SetupStandardShaderInputs() { FragmentColor *= SowxHostTexel; }")
-                  && VanillaEnvFs.Contains("vec4 SowxHostTexel;")
-                  && OwnedLitFsMain.Contains("SowxHostTexel = vec4(albedo, coverage);")
+                  && VanillaStandardFs.Contains("void SetupStandardShaderInputs() { FragmentColor *= CxHostTexel; }")
+                  && VanillaEnvFs.Contains("vec4 CxHostTexel;")
+                  && OwnedLitFsMain.Contains("CxHostTexel = vec4(albedo, coverage);")
                   && VanillaStandardFs.Contains("void ApplyStandardShader() { }")
                   && VanillaStandardFs.Contains("#include \"inc_scriptable\"")
                   // ...and the rewrite itself, on a synthetic stage: main renamed, gl_FragColor redirected,
                   // the stage's own defines scoped, an environment-supplied declaration dropped.
-                  && HostSample.Contains("void SowxHostMain_x()")
+                  && HostSample.Contains("void CxHostMain_x()")
                   && HostSample.Contains("FragmentColor = FragmentColor;")
                   && !HostSample.Contains("gl_FragColor")
                   && HostSample.Contains("#undef LIGHTING\n#undef FOO\n")
                   && HostSample.Split("#undef FOO").Length == 3
                   && !HostSample.Contains("uniform sampler2D")
-                  && HostSample.Contains("void SowxHost_x()")
+                  && HostSample.Contains("void CxHost_x()")
                   && HostSample.Contains("fRoughness = MATERIAL_ROUGHNESS_VALUE;")
                   && HostSample.EndsWith(VanillaEnvDefs)
                   // ...and the environment they share, ahead of all three. Declared twice (once per file)
                   // it would be a compile error, declared nowhere a link error; this is the one copy.
-                  && VanillaEnvFs.Contains("#define SOWX_ALLOY")
+                  && VanillaEnvFs.Contains("#define CX_ALLOY")
                   && VanillaEnvFs.Contains("uniform mat4 m_proj")
                   // #551: the environment must NOT declare the scriptable block. Every spliced file
                   // includes inc_scriptable for it and the bridge resolves that include, so a declaration
                   // here is a redefinition -- which fails the whole lit program, not just the feature.
                   && !VanillaEnvFs.Contains("uniform float scriptableFloat")
                   && !VanillaEnvFs.Contains("uniform int scriptableInt")
-                  && VanillaEnvFs.Contains("float SowxVisionLight()")
+                  && VanillaEnvFs.Contains("float CxVisionLight()")
                   // #347: the stage identity a spliced file branches on. Asserted because its absence is
                   // SILENT -- an undefined SHADER_TYPE makes `#if SHADER_TYPE == 2` read 0, so a content
                   // file's fragment half preprocesses away and its hook becomes an empty function that

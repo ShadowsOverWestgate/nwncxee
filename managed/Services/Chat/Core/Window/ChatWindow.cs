@@ -1,8 +1,8 @@
 using System.Collections.Generic;
-using Sowx.Framework;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Ui;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// A movable/resizable chat window: rectangle, tabs, and the pointer drag/resize state machine (all

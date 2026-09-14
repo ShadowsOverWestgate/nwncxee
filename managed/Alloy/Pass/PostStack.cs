@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #375: the display-space post stack -- the ordered set of full-screen stages that run AFTER
@@ -445,7 +445,7 @@ internal static unsafe class PostStack
     /// vec3(Gamma/2.2))</c>. Alpha passes through, as the stock stage leaves it.</summary>
     internal const string GammaStageFs = """
         uniform float uGamma;        // the client's gamma option, the engine's global float param 0x0b
-        vec4 SowxStage(vec4 c)
+        vec4 CxStage(vec4 c)
         {
             c.rgb = pow(max(c.rgb, vec3(0.0)), vec3(uGamma / 2.2));
             return c;
@@ -458,8 +458,8 @@ internal static unsafe class PostStack
 
         void main()
         {
-            vec4 c = SowxStage(texture(uSrc, vUV));
-            frag = vec4(SowxDither(c.rgb, gl_FragCoord.xy, uDither), c.a);
+            vec4 c = CxStage(texture(uSrc, vUV));
+            frag = vec4(CxDither(c.rgb, gl_FragCoord.xy, uDither), c.a);
         }
         """;
 
@@ -476,12 +476,12 @@ internal static unsafe class PostStack
             {
                 string src = ShaderStages.Source(st.Resref);
                 E(src.Length > 0 && st.Resref.Length <= ShaderResource.ResRefBytes, $"{st.Name}: resref composes");
-                E(src.Contains("vec4 SowxStage(vec4 c)"), $"{st.Name}: declares SowxStage");
+                E(src.Contains("vec4 CxStage(vec4 c)"), $"{st.Name}: declares CxStage");
                 E(ShaderContract.DisplaySafe(src) && ShaderContract.SlotSafe(src, "uSrc"),
                   $"{st.Name}: display space end to end, and reads uSrc");
                 if (st.Param != null) E(src.Contains($"uniform float {st.Param};"), $"{st.Name}: declares its param {st.Param}");
-                E(src.IndexOf("SowxStage(texture(uSrc, vUV))", StringComparison.Ordinal)
-                  < src.IndexOf("SowxDither(c.rgb", StringComparison.Ordinal), $"{st.Name}: dithers AFTER the stage");
+                E(src.IndexOf("CxStage(texture(uSrc, vUV))", StringComparison.Ordinal)
+                  < src.IndexOf("CxDither(c.rgb", StringComparison.Ordinal), $"{st.Name}: dithers AFTER the stage");
             }
             // The whole point: the same expression as inc_postpr_gam.shd, exponent Gamma/2.2, so a client at
             // 2.2 is the identity and every other value moves the Alloy frame exactly as it moves vanilla's.

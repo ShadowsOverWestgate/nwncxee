@@ -1,16 +1,16 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using Sowx.Services.Quickbar;
+using CX.Framework;
+using CX.Graphics;
+using CX.Services.Quickbar;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#232's second mode: the OWNED highlight. Instead of replaying the engine's
 /// <c>Scene::DoHighlightGob</c> glow (gob geometry through <c>WritePartHighlightVertices</c>), redraw the
 /// highlighted object flat: a 50%-alpha fill over its visible surface plus a thick, smooth silhouette
-/// outline. Opt-in from <c>/settings</c> ("Outline highlight", persisted in <c>sowx-quickbar.cfg</c>); when
+/// outline. Opt-in from <c>/settings</c> ("Outline highlight", persisted in <c>cx-quickbar.cfg</c>); when
 /// it draws, <see cref="RspShim.EngineOverlays"/> narrows the engine glow to the gobs this pass could NOT
 /// cover (see <see cref="HandledCount"/>).
 /// <para>Runs right after <see cref="PostChain"/>'s composite: the target framebuffer holds the finished

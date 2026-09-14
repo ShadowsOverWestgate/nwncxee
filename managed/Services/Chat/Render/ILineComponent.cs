@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Text;
-using Sowx.Services.Chat.Core;
+using CX.Services.Chat.Core;
 
-namespace Sowx.Services.Chat.Render;
+namespace CX.Services.Chat.Render;
 
 /// <summary>A stateless render component: contributes glyphs+colours for one line when its
 /// <see cref="Bit"/> is set in the window's toggle bitset. Extensibility bought with structure.</summary>

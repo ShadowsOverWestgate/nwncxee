@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>Pure send-decision for Tell tabs (ADR 0002): typed target beats pin; pin resolves via
 /// <see cref="IPlayerResolver"/>; unresolvable targets drop (never rerouted).</summary>

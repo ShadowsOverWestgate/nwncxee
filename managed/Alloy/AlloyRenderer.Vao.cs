@@ -1,9 +1,9 @@
 using System;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#206: the VAO half of enrollment, moved out of <c>Alloy/Scene/</c> so that directory holds no
 /// GL. Harvesting an engine VDO's attribute formats is a query against the live GL context and building the

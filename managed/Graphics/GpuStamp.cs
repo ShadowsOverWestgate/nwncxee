@@ -1,4 +1,4 @@
-namespace Sowx.Graphics;
+namespace CX.Graphics;
 
 /// <summary>#324: a GPU timestamp pair per frame, ring-buffered so the read never stalls. Unlike
 /// <see cref="GpuQuery"/> (TIME_ELAPSED, which cannot nest) two stamps can bracket a span that already

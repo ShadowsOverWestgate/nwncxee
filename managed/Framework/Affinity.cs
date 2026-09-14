@@ -1,9 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
-/// <summary>The main-thread pin (<c>pin=N</c> in sowx.cfg, -1 = off). The scheduler trace showed the kernel's
+/// <summary>The main-thread pin (<c>pin=N</c> in cx.cfg, -1 = off). The scheduler trace showed the kernel's
 /// <c>migration/N</c> threads taking the core from the game's main thread ~90 times in 8s -- the load balancer
 /// moving it between cores, each move a cold cache and the doubled cycle count the hitch rows carry. A pinned
 /// thread cannot be migrated. Pinned at the FIRST FRAME, not at load: a thread inherits its creator's mask,

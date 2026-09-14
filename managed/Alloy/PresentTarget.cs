@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #456: the surface Alloy's frame lands on when the engine renders to the DEFAULT framebuffer, on a

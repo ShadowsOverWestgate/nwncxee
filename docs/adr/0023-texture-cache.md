@@ -3,7 +3,7 @@
 Status: accepted (2026-09-05). Live-UNVERIFIED. Amended 2026-09-13: the key was the engine's
 `AurTextureCalculateHashID`, which is anagram-blind (a per-character product mod a prime; the engine
 `strcasecmp`s after it, this cache did not), so `tex_core_0154_d` was handed `tex_core_0145_d`'s image.
-Now a 64-bit FNV-1a over the lower-cased name + schemes; `tools/texhash/aurhash-collisions.py` is the proof. `texcache_mb` in sowx.cfg (-1 = a quarter of probed VRAM, 0 = off).
+Now a 64-bit FNV-1a over the lower-cased name + schemes; `tools/texhash/aurhash-collisions.py` is the proof. `texcache_mb` in cx.cfg (-1 = a quarter of probed VRAM, 0 = off).
 
 ## Context
 

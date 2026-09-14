@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Cel shading as a post-stack stage, on the client's own Toon video option
 /// (<c>CClientOptions::SetEnableFBEffectToon</c> @0x66ae70 ORs 0x20 into the option mask
@@ -117,7 +117,7 @@ internal static unsafe class ToonStage
     /// <summary>The stage text. Display space in, display space out; the size comes off the depth texture
     /// (the render target's, which is also the ping-pong's under TAA upsampling) so nothing can drift.</summary>
     internal const string StageFs = """
-        uniform mat4 uProj;          // this frame's projection, raw engine bytes (see SowxViewDist)
+        uniform mat4 uProj;          // this frame's projection, raw engine bytes (see CxViewDist)
         uniform float uBands;        // luminance steps; at 1 (the default) the posterise is off
         uniform float uInk;          // outline strength, 0..1; 0 when the option's Edge Hardness is 0
         uniform float uEdge;         // outline half-width in pixels
@@ -125,19 +125,19 @@ internal static unsafe class ToonStage
         uniform float uColorThresh;  // Toon Color Edge Threshold: the residual as a luminance step
         uniform float uHardness;     // Toon Edge Hardness: 0 = a wide soft ramp, 1 = a hard line
 
-        float SowxLuma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+        float CxLuma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
         // Positive view distance: z_clip = z_v*M22 + M32, w_clip = -z_v, so z_v = -M32 / (ndc + M22).
-        float SowxViewDist(float depth)
+        float CxViewDist(float depth)
         {
             return uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z);
         }
 
-        vec4 SowxStage(vec4 c)
+        vec4 CxStage(vec4 c)
         {
             if (uBands >= 2.0)
             {
-                float lum = SowxLuma(c.rgb);
+                float lum = CxLuma(c.rgb);
                 // The half shift puts the levels at band CENTRES and the transitions at the boundaries: the
                 // darkest band is 0.5/uBands, not 0, so the shadows land on a dark step instead of crushing
                 // to black, and pure white still reaches 1.0.
@@ -161,14 +161,14 @@ internal static unsafe class ToonStage
                 // is. Zero on a plane at any angle; a silhouette or a crease -- a break in the depth gradient
                 // -- is the whole residual. Over the threshold as a FRACTION of view distance, so the slider
                 // holds from the boots to the horizon.
-                float d0 = SowxViewDist(z0);
-                float e = max(abs(SowxViewDist(zx) - d0), abs(SowxViewDist(zy) - d0)) / (d0 * uDepthThresh);
+                float d0 = CxViewDist(z0);
+                float e = max(abs(CxViewDist(zx) - d0), abs(CxViewDist(zy) - d0)) / (d0 * uDepthThresh);
                 // The colour edge is the same plane fit over display luminance, and it is the half that
                 // inks a drawn detail on flat geometry. At the option's stock 1.0 a full-range luminance
                 // step is needed, so it stays out of the way until the slider comes down.
-                float l0 = SowxLuma(texture(uSrc, vUV).rgb);
-                float lx = (SowxLuma(texture(uSrc, vUV - vec2(o.x, 0.0)).rgb) + SowxLuma(texture(uSrc, vUV + vec2(o.x, 0.0)).rgb)) * 0.5;
-                float ly = (SowxLuma(texture(uSrc, vUV - vec2(0.0, o.y)).rgb) + SowxLuma(texture(uSrc, vUV + vec2(0.0, o.y)).rgb)) * 0.5;
+                float l0 = CxLuma(texture(uSrc, vUV).rgb);
+                float lx = (CxLuma(texture(uSrc, vUV - vec2(o.x, 0.0)).rgb) + CxLuma(texture(uSrc, vUV + vec2(o.x, 0.0)).rgb)) * 0.5;
+                float ly = (CxLuma(texture(uSrc, vUV - vec2(0.0, o.y)).rgb) + CxLuma(texture(uSrc, vUV + vec2(0.0, o.y)).rgb)) * 0.5;
                 e = max(e, max(abs(lx - l0), abs(ly - l0)) / uColorThresh);
                 // Hardness is the ramp either side of the threshold: soft and wide at 0, a hard line at 1.
                 float soft = mix(0.9, 0.02, uHardness);
@@ -189,7 +189,7 @@ internal static unsafe class ToonStage
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"ToonStage.SelfCheck FAIL: {w}"); } }
         E(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd, and the engine setter's `or $0x20`)");
         E(StageFs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is SSAO's");
-        E(StageFs.Contains("SowxViewDist(zx) - d0"), "the ink is a plane fit against the neighbours' prediction");
+        E(StageFs.Contains("CxViewDist(zx) - d0"), "the ink is a plane fit against the neighbours' prediction");
         // ...and the prediction is made in RAW depth, which is the property the string cannot assert. A plane
         // is affine in window z, so the average of two neighbours IS the centre; average linearised distances
         // instead and the same plane reads as an edge, which is the bug this replaced.

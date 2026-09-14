@@ -1,10 +1,10 @@
 using System;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using static Sowx.Framework.EngineLayout;
-using static Sowx.Alloy.PartTable;
+using CX.Framework;
+using static CX.Framework.EngineLayout;
+using static CX.Alloy.PartTable;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#256 (M5 strand 1 step 1): Alloy enumerates the world. The part table is filled by walking the
 /// engine's authoritative containers -- <c>Scene+0x130</c> (every gob), each gob's three LOD part-tree roots

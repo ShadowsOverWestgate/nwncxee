@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Why a frame is not Alloy's. Three states rather than a bool, because a bug report has to
 /// distinguish them: ADR 0010's fourth bullet is exactly "this machine cannot run it" vs "this player chose
@@ -21,7 +21,7 @@ internal enum AlloyStand
 
 /// <summary>
 /// #263 (ADR 0018 strand 1 step 8): the ONE place a frame is decided to be Alloy's or the engine's, and it
-/// decides ONCE. The config half is <c>vanilla=1</c> in <c>sowx.cfg</c>; the capability half is asked at the
+/// decides ONCE. The config half is <c>vanilla=1</c> in <c>cx.cfg</c>; the capability half is asked at the
 /// first present and frozen the moment it answers. After that nothing re-asks, so the two resource worlds
 /// are never warm at once -- which is what makes exclusive residency ownership (steps 4-7) affordable.
 /// </summary>
@@ -37,7 +37,7 @@ internal enum AlloyStand
 /// </remarks>
 internal static class AlloyGate
 {
-    /// <summary>The <c>sowx.cfg</c> key. Config bucket (ADR 0013) and restart-only by construction: it
+    /// <summary>The <c>cx.cfg</c> key. Config bucket (ADR 0013) and restart-only by construction: it
     /// decides what installs, and half of what installs suppresses an engine path Alloy replaces.</summary>
     internal const string VanillaKey = "vanilla";
 
@@ -87,7 +87,7 @@ internal static class AlloyGate
         if (_failed.Length != 0) return;
         _failed = why;
         _log?.Info($"[alloygate] HARD FAILURE -- {why}");
-        Notice.Show(_log, $"Alloy renderer failed: {why}. Set {VanillaKey}=1 in sowx.cfg and restart to "
+        Notice.Show(_log, $"Alloy renderer failed: {why}. Set {VanillaKey}=1 in cx.cfg and restart to "
                         + "play on the engine renderer.");
     }
 
@@ -107,14 +107,14 @@ internal static class AlloyGate
     private static AlloyStand Evaluate(out string why)
     {
         if (_optedOut)
-        { why = $"{VanillaKey}=1 in sowx.cfg -- the engine renderer was asked for"; return AlloyStand.Choice; }
+        { why = $"{VanillaKey}=1 in cx.cfg -- the engine renderer was asked for"; return AlloyStand.Choice; }
         if (!PartTable.Active)
-        { why = "drawhooks is off in sowx.cfg, so nothing is enrolled to draw"; return AlloyStand.Choice; }
+        { why = "drawhooks is off in cx.cfg, so nothing is enrolled to draw"; return AlloyStand.Choice; }
         if (!PostChain.Configured)
-        { why = "hdr=0 in sowx.cfg, and the Alloy stages have no display-space variant"; return AlloyStand.Choice; }
+        { why = "hdr=0 in cx.cfg, and the Alloy stages have no display-space variant"; return AlloyStand.Choice; }
         // ahead of the capability block: an opt-out reported as "this device cannot" misdirects the report
         if (GlContextService.OptedOut)
-        { why = "gl46=0 (or lockchat) in sowx.cfg"; return AlloyStand.Choice; }
+        { why = "gl46=0 (or lockchat) in cx.cfg"; return AlloyStand.Choice; }
         // #456: the first capability term, and the only one answerable cold -- it is a fact about the binary,
         // so it is asked ahead of everything that needs a warm client. Incapable rather than Choice: the
         // player asked for nothing here.
@@ -205,8 +205,8 @@ internal static class AlloyGate
         _optedOut = Settings.Bool(VanillaKey, false);
         log.Info(_optedOut
             ? $"[alloygate] {VanillaKey}=1 -- the engine renders everything this session ({VanillaKey}=0 in "
-              + "sowx.cfg and restart for the Alloy renderer)"
-            : $"[alloygate] Alloy requested ({VanillaKey}=1 in sowx.cfg and restart for the engine renderer)");
+              + "cx.cfg and restart for the Alloy renderer)"
+            : $"[alloygate] Alloy requested ({VanillaKey}=1 in cx.cfg and restart for the engine renderer)");
         SelfCheck(log);
         FrameRegistry.Global.Register(FramePhase.Start, 1, OnFrameStart, "AlloyGate.verdict", log);
     }

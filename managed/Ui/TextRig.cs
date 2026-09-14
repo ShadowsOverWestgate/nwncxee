@@ -1,11 +1,11 @@
 using System.Runtime.InteropServices;
 using System.Text;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-using Sowx.Services.Chat.Core.Model;
+using CX.Services.Chat.Core.Model;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>
 /// The UI's GL RIG, not a renderer (#176): it owns the shared GL objects -- a stb_truetype glyph
@@ -18,7 +18,7 @@ namespace Sowx.Ui;
 /// allocating nothing in steady state. The client GL context is CORE (no fixed-function/immediate
 /// mode), so everything is shader-driven; blend/depth/cull/scissor are snapshot-restored so the
 /// engine's own state cache stays consistent. The chat-coupled Publish/RenderFrame draw path lives
-/// in <see cref="Sowx.Services.Chat.Render.ChatRenderer"/>, which drives these primitives.
+/// in <see cref="CX.Services.Chat.Render.ChatRenderer"/>, which drives these primitives.
 /// </summary>
 public static unsafe class TextRig
 {
@@ -244,7 +244,7 @@ public static unsafe class TextRig
         // A non-null texture whose TID is still 0 is simply "not uploaded yet"; a portrait still streaming
         // in appears once ready. AurTextureGet only returns Zero for an empty name (guarded upstream:
         // hasPortrait requires a non-empty resref), so the Zero branch is effectively unreachable.
-        return Sowx.Framework.AurTex.Tid(tex);
+        return CX.Framework.AurTex.Tid(tex);
     }
 
     /// <summary>NWN portrait resrefs are a base plus one size letter -- the suffix table in
@@ -283,11 +283,11 @@ public static unsafe class TextRig
         if (at >= 0)
         {
             int tid;
-            fixed (byte* p = name) tid = Sowx.Framework.AurTex.Tid(_aurGet(p, IntPtr.Zero, null, null, 0, 0));
+            fixed (byte* p = name) tid = CX.Framework.AurTex.Tid(_aurGet(p, IntPtr.Zero, null, null, 0, 0));
             if (tid != 0) return tid;
             FillCName(resref, name);                            // no medium variant: ask for exactly what we were given
         }
-        fixed (byte* q = name) return Sowx.Framework.AurTex.Tid(_aurGet(q, IntPtr.Zero, null, null, 0, 0));
+        fixed (byte* q = name) return CX.Framework.AurTex.Tid(_aurGet(q, IntPtr.Zero, null, null, 0, 0));
     }
 
     /// <summary>Self-check for the resref -&gt; C-string marshalling that feeds AurTextureGet: truncation at 16
@@ -621,7 +621,7 @@ public static unsafe class TextRig
                                     bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
         if (string.IsNullOrEmpty(resref) || _sheet == null || _log == null || alpha <= 0f) return;
-        if (_aurGet == null || !Sowx.Framework.AurTex.Ready) return;
+        if (_aurGet == null || !CX.Framework.AurTex.Ready) return;
         if (!Gl.Init(_log)) return;
         if (!EnsurePortraitProgram()) return;
         int tid = ResolvePortraitTid(resref);

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// Bucket 2 of ADR 0013: the boot config. One flat <c>key=value</c> file holding every knob that must be
@@ -23,9 +23,9 @@ namespace Sowx.Framework;
 /// </remarks>
 public static class Settings
 {
-    /// <summary>The boot config file. Feature preference files are <c>sowx-&lt;feature&gt;.cfg</c> and are
+    /// <summary>The boot config file. Feature preference files are <c>cx-&lt;feature&gt;.cfg</c> and are
     /// written by their features; this one is hand-edited and never written back.</summary>
-    public const string FileName = "sowx.cfg";
+    public const string FileName = "cx.cfg";
 
     /// <summary>One setting as it was read: what was asked for, what the code would have used, what it used.</summary>
     public readonly record struct Known(string Key, string Default, string Value);
@@ -54,8 +54,7 @@ public static class Settings
         Loaded = true;
         // ReadTextNow, not ConfigFile.Load: the deferral gate exists for files read from a live frame, and
         // waiting for the engine user dir here would mean the capability gates never see their own settings.
-        _path = Native.ConfigPath(FileName);
-        ConfigFile.ForEachPair(ConfigFile.ReadTextNow(FileName, log), (k, v) => _values[k] = v);
+        ConfigFile.ForEachPair(ConfigFile.ReadTextNow(FileName, log, out _path), (k, v) => _values[k] = v);
         if (_values.Count > 0) log?.Info($"settings: {_values.Count} key(s) from {_path}");
         // Off-device (run-demo: no engine symbols resolve) the log stays open -- it is the self-check gate.
         bool logs = Bool("logs", false) || Native.Sym(SymbolMap.AppManager) == IntPtr.Zero;
@@ -144,39 +143,39 @@ public static class Settings
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"Settings.SelfCheck FAIL: {w}"); } }
 
         int before = _read.Count;
-        E(Bool("sowx-selfcheck-absent", true), "an absent bool falls back");
-        E(Int("sowx-selfcheck-absent", 7) == 7, "an absent int falls back");
-        E(Float("sowx-selfcheck-absent", 1.5f) == 1.5f, "an absent float falls back");
-        E(Text("sowx-selfcheck-absent", "d") == "d", "an absent string falls back");
+        E(Bool("cx-selfcheck-absent", true), "an absent bool falls back");
+        E(Int("cx-selfcheck-absent", 7) == 7, "an absent int falls back");
+        E(Float("cx-selfcheck-absent", 1.5f) == 1.5f, "an absent float falls back");
+        E(Text("cx-selfcheck-absent", "d") == "d", "an absent string falls back");
         E(_read.Count == before + 1, "every read is enumerable, present or not (one key, four reads)");
 
-        _values["sowx-selfcheck-probe"] = "on";
-        E(Bool("sowx-selfcheck-probe", false), "\"on\" reads as true");
-        _values["sowx-selfcheck-probe"] = "off";
-        E(!Bool("sowx-selfcheck-probe", true), "\"off\" reads as false");
-        _values["sowx-selfcheck-probe"] = "maybe";
-        E(Bool("sowx-selfcheck-probe", true), "an unrecognised bool falls back rather than reading false");
+        _values["cx-selfcheck-probe"] = "on";
+        E(Bool("cx-selfcheck-probe", false), "\"on\" reads as true");
+        _values["cx-selfcheck-probe"] = "off";
+        E(!Bool("cx-selfcheck-probe", true), "\"off\" reads as false");
+        _values["cx-selfcheck-probe"] = "maybe";
+        E(Bool("cx-selfcheck-probe", true), "an unrecognised bool falls back rather than reading false");
 
-        _values["sowx-selfcheck-probe"] = "9";
-        E(Int("sowx-selfcheck-probe", 2, 0, 4) == 2, "an out-of-range int is refused, not clamped");
-        E(Int("sowx-selfcheck-probe", 2, 0, 16) == 9, "an in-range int is taken");
-        _values["sowx-selfcheck-probe"] = "0,5";
-        E(Float("sowx-selfcheck-probe", 1f) == 1f, "a comma-decimal float is refused under any locale");
-        _values["sowx-selfcheck-probe"] = "0.5";
-        E(Float("sowx-selfcheck-probe", 1f) == 0.5f, "a dot-decimal float is taken under any locale");
-        _values["sowx-selfcheck-probe"] = "-1";
-        E(Float("sowx-selfcheck-probe", 1f, 0f) == 1f, "a negative below the floor is refused");
+        _values["cx-selfcheck-probe"] = "9";
+        E(Int("cx-selfcheck-probe", 2, 0, 4) == 2, "an out-of-range int is refused, not clamped");
+        E(Int("cx-selfcheck-probe", 2, 0, 16) == 9, "an in-range int is taken");
+        _values["cx-selfcheck-probe"] = "0,5";
+        E(Float("cx-selfcheck-probe", 1f) == 1f, "a comma-decimal float is refused under any locale");
+        _values["cx-selfcheck-probe"] = "0.5";
+        E(Float("cx-selfcheck-probe", 1f) == 0.5f, "a dot-decimal float is taken under any locale");
+        _values["cx-selfcheck-probe"] = "-1";
+        E(Float("cx-selfcheck-probe", 1f, 0f) == 1f, "a negative below the floor is refused");
 
-        E(_read[^1].Key == "sowx-selfcheck-probe" && _read[^1].Default == "1" && _read[^1].Value == "1",
+        E(_read[^1].Key == "cx-selfcheck-probe" && _read[^1].Default == "1" && _read[^1].Value == "1",
             "enumeration carries the key, the default and the effective value");
         E(_read.Count == before + 2, "a key read repeatedly is enumerated once, not once per reader");
 
-        _values["sowx-selfcheck-pfx.Mixed"] = "/Case/Kept.ttf";
-        var pf = Prefixed("sowx-selfcheck-pfx.");
-        E(pf.Count == 1 && pf[0].Key == "sowx-selfcheck-pfx.mixed" && pf[0].Value == "/Case/Kept.ttf",
+        _values["cx-selfcheck-pfx.Mixed"] = "/Case/Kept.ttf";
+        var pf = Prefixed("cx-selfcheck-pfx.");
+        E(pf.Count == 1 && pf[0].Key == "cx-selfcheck-pfx.mixed" && pf[0].Value == "/Case/Kept.ttf",
             "a prefixed read keeps the value's case and folds the key");
-        _values.Remove("sowx-selfcheck-pfx.Mixed");
-        _values.Remove("sowx-selfcheck-probe");
+        _values.Remove("cx-selfcheck-pfx.Mixed");
+        _values.Remove("cx-selfcheck-probe");
         // The check reads against the LIVE table, so its probes have to leave it -- /knobs is the surface
         // whose whole claim is that everything it lists is real.
         _read.RemoveRange(before, _read.Count - before);

@@ -1,6 +1,7 @@
-# sow-client-extender
+# NWNCX:EE (CX)
 
-Optional, drop-in extender for the NWN:EE client, with feature logic in **C#**.
+NWNCX:EE -- **CX** for short -- is an optional, drop-in extender for the NWN:EE client,
+with feature logic in **C#**. Repo: `sow-client-extender`.
 Attach it for extra features; run the stock client and you play vanilla. New
 client->server packets the server doesn't recognize are ignored, so an
 un-extended client loses nothing.
@@ -16,7 +17,7 @@ navigation, and how to add a service.
 ./run-demo.sh   # boots the framework in /usr/bin/env -- no game needed
 ```
 
-`build.sh` stages a ready-to-run `sow-client-extender/` folder: the launcher
+`build.sh` stages a ready-to-run `cx-linux-x64/` folder: the launcher
 plus the three `.so` files. `run-demo.sh` shows the host boot, discover
 services, and install hooks. Against the real client, `ChatService` logs
 `first frame presented -- hook is LIVE`.
@@ -26,8 +27,8 @@ Clone with submodules (funchook): `git clone --recursive`, or
 
 ## Install & play
 
-Grab the archive for your platform (`sowx-linux-x64-<tag>.zip` or
-`sowx-windows-x64-<tag>.zip`) from the releases page:
+Grab the archive for your platform (`cx-linux-x64-<tag>.zip` or
+`cx-windows-x64-<tag>.zip`) from the releases page:
 https://git.westgate.pw/ShadowsOverWestgate/sow-client-extender/releases
 (or build it yourself, see above). Each zip carries its own `README.txt` with
 the full install steps; the Linux ones are repeated below.
@@ -43,7 +44,7 @@ the full install steps; the Linux ones are repeated below.
    `bin/linux-x86` folder, which Steam uses as the working directory):
 
 ```
-./sowx-launch %command%
+./cx-launch %command%
 ```
 
 Launch from Steam as normal. To uninstall, clear that line.
@@ -52,18 +53,18 @@ Launch from Steam as normal. To uninstall, clear that line.
 starts the `nwmain-linux` sitting next to it:
 
 ```sh
-./sowx-launch
+./cx-launch
 ```
 
-**DM client:** put `-dmc` before `%command%` (Steam) or after `./sowx-launch`
+**DM client:** put `-dmc` before `%command%` (Steam) or after `./cx-launch`
 (no Steam); any leading dash option is forwarded to the client the same way.
 
 The extender is optional: run the stock client and you play vanilla. Linux
-only for now. See `sow-client-extender/README.txt` in the release for the same
+only for now. See `README.txt` in the release for the same
 steps offline.
 
 Did it work? In game you get a native chatbox (bottom-left). The extender logs
-to `~/sowx.log` -- look for `window render installed` and `using font`. Under
+to `~/cx.log` -- look for `window render installed` and `using font`. Under
 the Steam Linux Runtime the game runs in a container with a private `/tmp`, so
 the log deliberately lands in `$HOME`, not `/tmp`.
 
@@ -71,7 +72,7 @@ the log deliberately lands in `$HOME`, not `/tmp`.
 
 Framework verified end-to-end under NativeAOT (DI + discovery + funchook).
 Windows runs the feature tier (chat, hotkeys, nameplates, combat text, dialog):
-build it with `./build-win.sh`, which stages `sow-client-extender-win/` plus a
+build it with `./build-win.sh`, which stages `cx-windows-x64/` plus a
 zip with install notes for a tester. The renderer (Alloy) stays Linux-only, and
 the Windows build is pinned to one client build -- a patched client puts up one
 message box and runs vanilla (`docs/windows-symbols.md`). macOS is unported.

@@ -1,8 +1,8 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// Pure light-space matrix math for the shadow-map pipeline (#65). No engine/GL deps -- exercised

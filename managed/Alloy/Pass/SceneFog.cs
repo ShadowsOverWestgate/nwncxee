@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #341: the scene fog's TARGET COLOUR, and the terms that shape it. The area author still owns the ramp --

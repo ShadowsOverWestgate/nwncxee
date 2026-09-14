@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>
 /// The shared settings panel: a floating, title-draggable panel of typed <see cref="SetRow"/>s (checkboxes,

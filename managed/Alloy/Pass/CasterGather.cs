@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #286 (M5 strand 2, ADR 0018): shadow caster selection in compute, in <see cref="CullPass"/>'s shape.
@@ -11,11 +11,11 @@ namespace Sowx.Alloy;
 /// uniforms, one dispatch that tests each caster against that view and compacts the survivors into an
 /// indirect command buffer, and one <c>glMultiDrawElementsIndirectCount</c> per batch. No count ever comes
 /// back to the CPU on the draw path.
-/// <para>#303: the bounds are <see cref="CullPass"/>'s own <c>SowxCullSphere</c> buffer, indexed by
+/// <para>#303: the bounds are <see cref="CullPass"/>'s own <c>CxCullSphere</c> buffer, indexed by
 /// ownership slot -- the shadow cull and the colour cull test ONE set of spheres, with one set of
 /// exemptions (a <see cref="AlloyRenderer.NeverCull"/> radius -- posed skinmesh, dangly mesh, displacing
 /// feature, degenerate bounds -- passes every reach test, exactly as
-/// the colour dispatch spells it). The per-draw <c>SowxCaster</c> record died with that: <c>baseInstance</c>
+/// the colour dispatch spells it). The per-draw <c>CxCaster</c> record died with that: <c>baseInstance</c>
 /// carries the ownership slot itself and the depth stages read <c>uDraw[gl_BaseInstance]</c> directly.</para>
 /// <para>#303: the source buffer is PERSISTENT. The staging walk still runs per frame (index ranges are
 /// re-read live because Repack moves them), but the upload is skipped whenever the staged bytes match what
@@ -169,7 +169,7 @@ internal static unsafe class CasterGather
         _uRx = GlProgram.Loc(_prog, "uRx");
         _uGroups = GlProgram.Loc(_prog, "uGroups");
         _uPlanes = GlProgram.Loc(_prog, "uPlanes");
-        _log?.Info("CasterGather: armed -- shadow caster selection in compute over the shared SowxCullSphere " +
+        _log?.Info("CasterGather: armed -- shadow caster selection in compute over the shared CxCullSphere " +
                    "bounds, glMultiDrawElementsIndirectCount submission (/shadow gather 0 disables the cull)");
         return true;
     }
@@ -357,8 +357,8 @@ internal static unsafe class CasterGather
     /// <summary>The view table's GLSL declaration, shared by the layered dispatch and both layered depth
     /// stages -- <c>AlloyRenderer.DrawBufDecl</c>'s pattern, so the three cannot drift apart.</summary>
     internal const string ViewTblDecl = """
-        struct SowxView { mat4 vp; vec4 a; vec4 b; vec4 c; };   // a = focus/reach, b = dir/along, c = receiver/point/set/layer
-        layout(std430, binding = 20) readonly buffer SowxBakeViews { SowxView uViewTbl[]; };
+        struct CxView { mat4 vp; vec4 a; vec4 b; vec4 c; };   // a = focus/reach, b = dir/along, c = receiver/point/set/layer
+        layout(std430, binding = 20) readonly buffer CxBakeViews { CxView uViewTbl[]; };
         """;
 
     private static uint _layerProg;
@@ -458,7 +458,7 @@ internal static unsafe class CasterGather
     /// <summary>The cull. One thread per staged draw; a survivor appends into its batch's own output region
     /// with an <c>atomicAdd</c>, so every batch keeps its boundaries and only its interior order moves (depth
     /// draws are order-independent).
-    /// <para>#303: the bounds come from <c>SowxCullSphere</c> -- the colour cull's own buffer, indexed by the
+    /// <para>#303: the bounds come from <c>CxCullSphere</c> -- the colour cull's own buffer, indexed by the
     /// ownership slot the source carries -- and a <c>NeverCull</c> radius (&gt;= 1e29, the exemption the
     /// colour dispatch also tests) skips every test: unknown or unbounded means CAST. Both view tests are the
     /// CPU reference's, term for term. The cone test is conservative BY CONSTRUCTION -- it circumscribes the
@@ -469,10 +469,10 @@ internal static unsafe class CasterGather
         #version 460 core
         layout(local_size_x = 64) in;   // GroupSize
 
-        layout(std430, binding = 13) readonly buffer SowxCullSphere { vec4 uSph[]; };
-        layout(std430, binding = 17) readonly buffer SowxGatherSrc  { uint uSrc[]; };
-        layout(std430, binding = 18) writeonly buffer SowxGatherCmd { uint uCmd[]; };
-        layout(std430, binding = 19) buffer SowxGatherCount         { uint uCnt[]; };
+        layout(std430, binding = 13) readonly buffer CxCullSphere { vec4 uSph[]; };
+        layout(std430, binding = 17) readonly buffer CxGatherSrc  { uint uSrc[]; };
+        layout(std430, binding = 18) writeonly buffer CxGatherCmd { uint uCmd[]; };
+        layout(std430, binding = 19) buffer CxGatherCount         { uint uCnt[]; };
         uniform int uDrawN;
         uniform int uPoint;
         uniform int uCull;
@@ -488,7 +488,7 @@ internal static unsafe class CasterGather
         // and the extrusion's end) and misses the camera frustum only when BOTH sit wholly outside ONE
         // plane. Conservative: a rejected caster casts on no visible pixel.
         uniform vec4 uPlanes[6];
-        bool SowxShadowMisses(vec3 p0, float r0, vec3 p1, float r1)
+        bool CxShadowMisses(vec3 p0, float r0, vec3 p1, float r1)
         {
             for (int i = 0; i < 6; i++)
             {
@@ -498,7 +498,7 @@ internal static unsafe class CasterGather
             return false;
         }
 
-        bool SowxFaceCulls(float dSq, float t, float r)
+        bool CxFaceCulls(float dSq, float t, float r)
         {
             if (t < -r) return true;
             float lim = t * @SLOPE@ + 2.0 * r;
@@ -529,7 +529,7 @@ internal static unsafe class CasterGather
                 {
                     float dSq = dot(d, d);
                     offAxis = dSq > (uReach + r) * (uReach + r);
-                    offEnds = SowxFaceCulls(dSq, t, r);
+                    offEnds = CxFaceCulls(dSq, t, r);
                     // the tangent cone from the light, out to its reach; a light inside the caster keeps it
                     float dist = sqrt(dSq);
                     if (dist <= r) rx = false;
@@ -543,7 +543,7 @@ internal static unsafe class CasterGather
                     p1 = s.xyz + uDir * max(0.0, uAlong - t);
                 }
                 if (offAxis || offEnds) return;
-                if (rx && SowxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }
+                if (rx && CxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }
             }
             uint o = uSrc[b + 5u] + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
@@ -565,10 +565,10 @@ internal static unsafe class CasterGather
         #version 460 core
         layout(local_size_x = 64, local_size_y = 1) in;   // GroupSize
 
-        layout(std430, binding = 13) readonly buffer SowxCullSphere { vec4 uSph[]; };
-        layout(std430, binding = 17) readonly buffer SowxGatherSrc  { uint uSrc[]; };
-        layout(std430, binding = 18) writeonly buffer SowxGatherCmd { uint uCmd[]; };
-        layout(std430, binding = 19) buffer SowxGatherCount         { uint uCnt[]; };
+        layout(std430, binding = 13) readonly buffer CxCullSphere { vec4 uSph[]; };
+        layout(std430, binding = 17) readonly buffer CxGatherSrc  { uint uSrc[]; };
+        layout(std430, binding = 18) writeonly buffer CxGatherCmd { uint uCmd[]; };
+        layout(std430, binding = 19) buffer CxGatherCount         { uint uCnt[]; };
 
         """ + ViewTblDecl + """
         uniform int uDrawN;
@@ -581,7 +581,7 @@ internal static unsafe class CasterGather
         // and the extrusion's end) and misses the camera frustum only when BOTH sit wholly outside ONE
         // plane. Conservative: a rejected caster casts on no visible pixel.
         uniform vec4 uPlanes[6];
-        bool SowxShadowMisses(vec3 p0, float r0, vec3 p1, float r1)
+        bool CxShadowMisses(vec3 p0, float r0, vec3 p1, float r1)
         {
             for (int i = 0; i < 6; i++)
             {
@@ -591,7 +591,7 @@ internal static unsafe class CasterGather
             return false;
         }
 
-        bool SowxFaceCulls(float dSq, float t, float r)
+        bool CxFaceCulls(float dSq, float t, float r)
         {
             if (t < -r) return true;
             float lim = t * @SLOPE@ + 2.0 * r;
@@ -623,7 +623,7 @@ internal static unsafe class CasterGather
                 {
                     float dSq = dot(d, d);
                     offAxis = dSq > (reach + r) * (reach + r);
-                    offEnds = SowxFaceCulls(dSq, t, r);
+                    offEnds = CxFaceCulls(dSq, t, r);
                     float dist = sqrt(dSq);
                     if (dist <= r) rx = false;
                     else { float k = 1.0 / (dist - r); r0 = r * dist * k; r1 = r * reach * k; p1 = uViewTbl[vi].a.xyz + d * (reach / dist); }
@@ -636,7 +636,7 @@ internal static unsafe class CasterGather
                     p1 = s.xyz + dir * max(0.0, uViewTbl[vi].b.w - t);
                 }
                 if (offAxis || offEnds) return;
-                if (rx && SowxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }
+                if (rx && CxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }
             }
             uint o = uSrc[b + 5u] * uint(uViewN) + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
@@ -654,7 +654,7 @@ internal static unsafe class CasterGather
         => LayerCs.Contains($"float lim = t * {Slope} + 2.0 * r;")
            && LayerCs.Contains("offEnds = abs(t) > uViewTbl[vi].b.w + r;")
            && LayerCs.Contains("offAxis = dot(perp, perp) > (reach + r) * (reach + r);")
-           && LayerCs.Contains($"binding = {CullPass.BindSphere}") && LayerCs.Contains("SowxCullSphere")
+           && LayerCs.Contains($"binding = {CullPass.BindSphere}") && LayerCs.Contains("CxCullSphere")
            && LayerCs.Contains("if (uCull != 0 && s.w < 1e29)")
            && LayerCs.Contains("uint b = i * 7u;")
            && LayerCs.Contains("if (set == 1 && uSrc[b + 6u] != 0u) return;")
@@ -668,7 +668,7 @@ internal static unsafe class CasterGather
            // the two-spheres form; a rejection tallies past the batch counts, never into one
            && LayerCs.Contains("bool offAxis, offEnds, rx = uRx != 0 && vc.x != 0.0;")
            && LayerCs.Contains("if (dot(pl.xyz, p0) + pl.w < -r0 && dot(pl.xyz, p1) + pl.w < -r1) return true;")
-           && LayerCs.Contains("if (rx && SowxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }")
+           && LayerCs.Contains("if (rx && CxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }")
            && LayerCs.Contains("if (dist <= r) rx = false;")
            && LayerCs.Contains("p1 = s.xyz + dir * max(0.0, uViewTbl[vi].b.w - t);")
            && LayerCs.Contains($"binding = {BindSrc}") && LayerCs.Contains($"binding = {BindCmd}")
@@ -686,13 +686,13 @@ internal static unsafe class CasterGather
            && GatherCs.Contains("offEnds = abs(t) > uAlong + r;")
            && GatherCs.Contains("offAxis = dot(perp, perp) > (uReach + r) * (uReach + r);")
            // #303: the shared bounds, at the colour cull's own binding, with its own exemption value.
-           && GatherCs.Contains($"binding = {CullPass.BindSphere}") && GatherCs.Contains("SowxCullSphere")
+           && GatherCs.Contains($"binding = {CullPass.BindSphere}") && GatherCs.Contains("CxCullSphere")
            && GatherCs.Contains("if (uCull != 0 && s.w < 1e29)")
            && GatherCs.Contains("uCmd[q + 4u] = uint(slot);")
            // #488: same receiver cull, flagged per dispatch
            && GatherCs.Contains("bool offAxis, offEnds, rx = uRx != 0;")
            && GatherCs.Contains("if (dot(pl.xyz, p0) + pl.w < -r0 && dot(pl.xyz, p1) + pl.w < -r1) return true;")
-           && GatherCs.Contains("if (rx && SowxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }")
+           && GatherCs.Contains("if (rx && CxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }")
            && GatherCs.Contains("if (dist <= r) rx = false;")
            && GatherCs.Contains("p1 = s.xyz + uDir * max(0.0, uAlong - t);")
            // #305: the set filter reads the staged dynamic flag at the 7-uint stride, in BOTH directions --

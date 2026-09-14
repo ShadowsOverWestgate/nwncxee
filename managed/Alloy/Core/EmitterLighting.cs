@@ -1,8 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// <c>LightManager::GetEmitterLighting</c>, and the ABI it needs on each platform. Both callers -- the

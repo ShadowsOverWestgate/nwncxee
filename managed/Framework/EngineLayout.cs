@@ -4,7 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// Every engine-memory constant the extender reads -- struct field offsets and vtable slots -- in one

@@ -1,8 +1,8 @@
 using System.Numerics;
 using System;
-using Sowx.Graphics;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#206: the two texture readbacks the census triage prints, on the submission side of the
 /// extraction boundary. They belong to no pass -- they are pure GL queries -- but they are the reason

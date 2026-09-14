@@ -1,10 +1,10 @@
 using System.Globalization;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Nameplate;
+namespace CX.Services.Nameplate;
 
 /// <summary>Persisted overhead-nameplate / chat-bubble preferences. Flat <c>key=value</c> in
-/// <c>sowx-nameplate.cfg</c>, stored in the engine's user directory (next to nwn.ini). Every numeric key is
+/// <c>cx-nameplate.cfg</c>, stored in the engine's user directory (next to nwn.ini). Every numeric key is
 /// clamped on parse, so a hand-edited file can only ever produce a drawable config.</summary>
 public sealed class NameplateConfig
 {
@@ -39,7 +39,7 @@ public sealed class NameplateConfig
     public int BubbleQueue = 2;
 
     /// <summary>Max width of BOTH a bubble box and a plate's name column, design px before
-    /// <see cref="Sowx.Ui.Metrics.Scale"/>. One knob for one thing -- the widest an overhead element's text is
+    /// <see cref="CX.Ui.Metrics.Scale"/>. One knob for one thing -- the widest an overhead element's text is
     /// allowed to get -- kept under the <c>bubblewidth</c> key so existing cfg files keep working.
     /// Paragraph-length emotes are what the ceiling is for, and 260 wrapped them into a narrow column.</summary>
     public float BubbleWidth = 300f;

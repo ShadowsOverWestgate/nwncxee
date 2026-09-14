@@ -4,6 +4,14 @@ Glossary for the client extender. Domain vocabulary only — no implementation
 detail, no decisions (those live in the Gitea tracker: wayfinder map #13 and its
 tickets). Terms crystallised while charting the native chatbox reimplementation.
 
+## Product
+
+- **NWNCX:EE** — the product's full name; **CX** is the shorthand (#530). Every user- and
+  operator-visible surface says one of the two: `cx.cfg`, `cx.log`, `cx-launch`, `cx_managed.so`,
+  the `cx_*.shd` stages, the `cx-<os>-x64` release zips, the `CX.*` C# namespaces. The
+  `CX*`/`CX_*` identifiers in C# and GLSL are internal glue — never shown, never renamed.
+  **cx** survives only as that glue and as the pre-rename config stem the read-fallback honours.
+
 ## Chatbox
 
 - **ChatLine** — one retained chat message: `channel`, `senderName`, `playerId`,
@@ -55,7 +63,7 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Typing state** (`IsTyping`) — whether the chatbox owns the keyboard. While true,
   gameplay hotkeys are suppressed and keys route to the edit control.
 - **Suppression set** — the engine hooks skipped so the extender's chatbox replaces
-  the vanilla one; reversible via the `lockchat=1` opt-out in `sowx.cfg`.
+  the vanilla one; reversible via the `lockchat=1` opt-out in `cx.cfg`.
 
 ## Framework
 
@@ -99,7 +107,7 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 
 ## UI framework
 
-- **UI framework** (`Sowx.Ui`) — the shared layer every windowed feature builds on. Owns
+- **UI framework** (`CX.Ui`) — the shared layer every windowed feature builds on. Owns
   the frame present, the render toolkit, input/focus arbitration, and the cursor. A
   feature supplies **content**; the framework supplies everything a window needs but
   shouldn't reinvent. Formerly all of this lived under the **Chatbox**; Chat is now just
@@ -171,16 +179,16 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   This is the shader that ships: it travels with the renderer it agrees with, so the per-draw record,
   the uniform blocks and the clip expression can never disagree with the CPU side. Every overridable
   stage has one.
-- **Shader override** — a `sowx_*.shd` a *user* places where the engine's resman will serve it
+- **Shader override** — a `cx_*.shd` a *user* places where the engine's resman will serve it
   (`development/`, `override/`, a hak), replacing that stage's **embedded stage** at load. A
-  first-class customization surface — sowx ships defaults and lets them be replaced — and explicitly
+  first-class customization surface — CX ships defaults and lets them be replaced — and explicitly
   **not** a delivery channel: no content repo ever ships one, because a shipped copy is a second copy
   of a contract that lives in C#. Refused by the stage guards when it breaks that contract; a refused
   or uncompilable override falls back to the embedded stage with a log line.
 - **Shader dump** — the current **embedded stages** written out as editable `.shd` files, one per
   overridable resref, into the client's user directory. The starting point for a **shader override**,
   and current by construction because it dumps what is compiled in. Distinct from vanilla shaders,
-  which sowx never modifies.
+  which CX never modifies.
 - **Tuning knob** — a runtime-adjustable value the extender exposes, in exactly one of three kinds: a
   **chat command** (tunable while looking at its effect — look, debug visualisation, per-pass
   toggles), a **config setting** (must be decided before the first frame, or describes the machine
@@ -189,7 +197,7 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Render mode** — which renderer draws the 3D scene: the *owned* mode (Alloy) or the
   *vanilla* mode (the engine's own path). Both ship permanently; a device that cannot run the
   Alloy mode still runs every other extender feature. The mode is whole-scene — never a
-  per-class mixture — and it is **chosen once per session** (`vanilla=1` in `sowx.cfg`,
+  per-class mixture — and it is **chosen once per session** (`vanilla=1` in `cx.cfg`,
   restart required), because Alloy's residency is exclusive and the two resource worlds
   cannot both be warm. `/vanilla` reports which one is running and why.
 - **Permanent engine resident** — a responsibility the engine keeps for good, not one staged

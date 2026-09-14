@@ -1,6 +1,6 @@
 using System;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#82: one part offered to the Alloy world pass at enrollment. Everything the Alloy draw needs
 /// that is stable for the lifetime of the ownership -- the per-frame values (texture id, index range, model

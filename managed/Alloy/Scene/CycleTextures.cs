@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#331: the cycle-texture tick the M4 shim removed. A <c>.txi proceduretype cycle</c> texture is
 /// advanced by <c>CycleTIDTextureController::Control</c> @0x4d6c90, which rewrites the GL name INSIDE the
@@ -90,7 +90,7 @@ internal static unsafe class CycleTextures
                 }
                 AlloyProbe.Once(ref _probedCtl, "CycleTIDTextureController", ctl, _log);
                 int old = AurTex.Tid(r);
-                ((delegate* unmanaged<IntPtr, void>)*(IntPtr*)(*(IntPtr*)ctl + Sowx.Framework.EngineLayout.CycleControlSlot))(ctl);
+                ((delegate* unmanaged<IntPtr, void>)*(IntPtr*)(*(IntPtr*)ctl + CX.Framework.EngineLayout.CycleControlSlot))(ctl);
                 if (AurTex.Tid(r) != old) { _dirty[_dirtyN++] = ctl; Steps++; }
             }
         }

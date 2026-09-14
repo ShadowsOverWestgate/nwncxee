@@ -1,11 +1,11 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#173: BATCH BUILDING. Revalidating every Alloy part against the live scene, routing it to this pass's class, sorting the blended remainder back-to-front, and staging the per-draw records and multidraw commands the issue phase submits. Hot: nothing on this path allocates.</summary>
 public sealed unsafe partial class AlloyRenderer
@@ -1077,7 +1077,7 @@ public sealed unsafe partial class AlloyRenderer
                     // fragment of the mesh -- so the normal, specular, roughness, height and AO slots stop
                     // carrying material detail and start carrying whichever pixel happens to sit in the
                     // corner of the sheet. That is not the .mtr's intent, it is an artifact of sampling a 2D
-                    // map with nothing to sample it by, and it is load-bearing: SowxSynthPbr takes a declared
+                    // map with nothing to sample it by, and it is load-bearing: CxSynthPbr takes a declared
                     // roughness WHOLE, so one dark corner texel makes a frosted crystal a mirror.
                     // The env flag survives -- it is keyed on the normal and the reflection vector, not on
                     // uv -- and so does the diffuse, which the engine reads at the same constant for the same

@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>
 /// Accumulates interleaved 8-float vertices (x,y,u,v,r,g,b,a) for the owned GL text/UI pass.

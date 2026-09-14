@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Optional, drop-in **client** extender for NWN:EE. Feature logic in C# (NativeAOT);
+**NWNCX:EE** (**CX** for short): optional, drop-in **client** extender for NWN:EE. Feature logic in C# (NativeAOT);
 a thin native bootstrap gets it loaded. Optional by design: run the stock client
 and you play vanilla. New client->server packets the server doesn't recognize are
 ignored, so an un-extended client loses nothing.
@@ -9,12 +9,14 @@ This is the **client** (`nwmain`), not the server. Server hooking lives in
 `sow-codebase`; do not conflate the two.
 
 The OpenGL 4.6 renderer is called **Alloy** (`managed/Alloy/`, namespace
-`Sowx.Alloy`) -- one of the family: Anvil on the server backend, Crucible the
+`CX.Alloy`) -- one of the family: Anvil on the server backend, Crucible the
 module builder, Alloy the renderer. "Alloy" is the term for what it draws, and
 **vanilla** is the contrast: an Alloy part is one Alloy submits, a vanilla one is
-one the engine draws. Sowx stays the product name (`sowx.cfg`, `sowx_managed.so`,
-and the `sowx_*.shd` stage names, which are the override contract with
-`sow-topdata` and do NOT get renamed).
+one the engine draws. The product is **NWNCX:EE** (full name) / **CX** (shorthand):
+`cx.cfg`, `cx.log`, `cx-launch`, `cx_managed.so`, and the `cx_*.shd` stage names,
+which are the override contract with `sow-topdata`, and the C# namespaces are
+`CX.*`. The `CX*`/`CX_*` identifiers in C# and GLSL are internal glue -- not
+user-visible, not renamed (#530).
 
 ## Agent skills
 
@@ -32,16 +34,16 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily)
     ./run-demo.sh       # boots the framework in a stub host + proves the rot refusal (no game needed)
     ./sym.sh [-m] <pat> # search client symbols; -m = mangled (for Install)
 
-`build.sh` stages a runtime folder `sow-client-extender/` (launcher + 2 `.so`) and a flat zip
+`build.sh` stages a runtime folder `cx-linux-x64/` (launcher + 2 `.so`) and a flat zip
 of its contents -- the install is "unpack into bin/linux-x86".
-Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./sow-client-extender/sowx-launch`
-(Steam: put `"<abs>/sowx-launch" %command%` in the game Launch Options.)
+Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./cx-linux-x64/cx-launch`
+(Steam: put `"<abs>/cx-launch" %command%` in the game Launch Options.)
 
 First build clones+builds the funchook submodule (git submodule --init).
 
 Windows leg (#48), cross-built on Linux -- no Windows box involved (dev loop only):
 
-    ./build-win.sh      # one version.dll (the AOT image IS the proxy) -> sow-client-extender-win/
+    ./build-win.sh      # one version.dll (the AOT image IS the proxy) -> cx-windows-x64/
     ./build-win-native.sh  # same, natively under MSVC + Git Bash: what the release workflow ships (#504)
     ./run-proton.sh     # drops them beside bin/win32/nwmain.exe, runs it under Proton (throwaway prefix)
 
@@ -51,23 +53,23 @@ refusal, if any, is `EngineLayout.Require` -- an unresolved offset row anywhere 
 
 ## Tuning knobs (ADR 0013)
 
-There are no `SOWX_*` environment variables. Every knob is either a **chat command**
+There are no `CX_*` environment variables. Every knob is either a **chat command**
 (`/light`, `/grass`, `/post`, `/draw`, `/water`, `/probe`, `/shadow`, `/particles`,
 `/sky`, `/beams`, `/fps`, `/keydiag`, `/nameplate`, `/combattext`) or a **config setting** in
-`sowx.cfg`, in the client's user directory beside `nwn.ini` and the per-feature
+`cx.cfg`, in the client's user directory beside `nwn.ini` and the per-feature
 cfgs -- capability gates, buffer sizes, arming decisions. `/knobs` prints both,
 and the exact path it read. Adding a knob means picking one of the two; there is no third place to put it.
 
-The one exemption is `SOWX_MANAGED`, which the native bootstrap reads before any
+The one exemption is `CX_MANAGED`, which the native bootstrap reads before any
 managed code exists.
 
 ## Architecture
 
 Load path (the "hard work", you never touch it):
 
-    LD_PRELOAD libsowx.so  (native/bootstrap.c: constructor fires on load)
-      -> dlopen sowx_managed.so  (C# NativeAOT shared lib)
-      -> SowxInit()  ->  ServiceHost.Run()
+    LD_PRELOAD libcx.so  (native/bootstrap.c: constructor fires on load)
+      -> dlopen cx_managed.so  (C# NativeAOT shared lib)
+      -> CxInit()  ->  ServiceHost.Run()
                            - discover every IExtenderService (reflection, sorted by name)
                            - construct each + Initialize(log, hooks)
                            - HookService.Commit() installs all hooks at once
@@ -75,7 +77,7 @@ Load path (the "hard work", you never touch it):
 Navigation:
 
     managed/
-      Entry.cs                 [UnmanagedCallersOnly] SowxInit -> ServiceHost.Run()
+      Entry.cs                 [UnmanagedCallersOnly] CxInit -> ServiceHost.Run()
       Framework/               the plumbing -- rarely edited
         IExtenderService.cs      the one contract you implement
         ServiceHost.cs           discovery + lifecycle
@@ -83,7 +85,7 @@ Navigation:
                                  Chain(symbol, handler, priority) for shared symbols (#88)
         ExtenderLog.cs           inject this for logging
       Services/                business logic -- this is where you work
-      Alloy/                   the renderer (#198). Core/ Scene/ Pass/ under namespace Sowx.Alloy
+      Alloy/                   the renderer (#198). Core/ Scene/ Pass/ under namespace CX.Alloy
     docs/hook-pattern.md       example: a real hook + trampoline
     docs/owned-resource-lifetimes.md  what creates/revokes each owned table, and Revoke vs ContextLost
     docs/alloy-refusals.md     why a frame is the engine's: the frame-start verdict and its reason set
@@ -195,7 +197,7 @@ The client is already imported and analyzed:
 ## Status
 
 Framework works end-to-end under NativeAOT (DI + discovery + funchook install
-all verified via `run-demo.sh`). A live hook proves out via `sowx-launch` --
+all verified via `run-demo.sh`). A live hook proves out via `cx-launch` --
 watch for "first frame presented -- hook is LIVE" (now emitted by `UiHostService`
 in `managed/Ui/`, the frame host that owns the `SwapBuffers` present, computes the
 in-game gate + UI-scale sync, and drives the `UiHost` window registry's draw

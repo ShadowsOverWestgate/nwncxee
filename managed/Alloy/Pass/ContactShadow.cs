@@ -1,8 +1,8 @@
 using System.Numerics;
-using Sowx.Graphics;
-using Sowx.Framework;
+using CX.Graphics;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Screen-space contact shadows for the sun: the lit stage marches a few steps from the fragment
 /// toward <c>uAreaDir</c> through this frame's depth copy and darkens the sun term where a nearer surface
@@ -80,9 +80,9 @@ internal static unsafe class ContactShadow
         E(head.Contains("smoothstep(uContactFar * 0.75, uContactFar, vDepth)"), "the term fades out over the last quarter of contactfar");
         E(head.Contains("uniform vec4 uContact;") && head.Contains("uniform mat4 uVP;"), "the lit fragment stage declares the march terms and the projection");
         E(head.Contains("uContact.w / (depth * 2.0 - 1.0 + uContact.z)"), "the linearisation is SsaoPass's (uProj[3].z / (ndc + uProj[2].z))");
-        E(main.Contains("if (d.emi.w > 0.5) sunVis *= SowxContactShadow(vWorld);"), "the term scales the SUN visibility, on tileset receivers only (emi.w)");
+        E(main.Contains("if (d.emi.w > 0.5) sunVis *= CxContactShadow(vWorld);"), "the term scales the SUN visibility, on tileset receivers only (emi.w)");
         E(TextureSlots.SceneDepth == TextureSlots.SsaoDepth, "the copy binds on the unit uSceneDepth reads");
-        E(head.Contains("float SowxContactShadow(vec3 worldPos)"), "the term reads no normal: a normal-dependent term cuts along every facet edge of a low-poly mesh");
+        E(head.Contains("float CxContactShadow(vec3 worldPos)"), "the term reads no normal: a normal-dependent term cuts along every facet edge of a low-poly mesh");
         E(!head.Contains("gl_FragCoord.xy, vec2(0.06711056"), "no per-pixel jitter: without TAA it reads as stipple");
         E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
         float l = _len; Tune("contact", 0f); E(!On, "contact 0 is off"); _len = l;

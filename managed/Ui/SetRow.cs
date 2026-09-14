@@ -1,4 +1,4 @@
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>One laid-out settings row: its kind, action, label, computed geometry, and the current value the
 /// renderer reads. Built by the consumer's layout pass and published to <see cref="SettingsPanel"/>, which

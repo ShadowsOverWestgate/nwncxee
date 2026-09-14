@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#302: the SHADOW pass's view of the ownership table. Alloy already keeps every fact a depth bake
 /// needs -- the model matrix in the persistent record, the bone base in <c>feat.y</c>, the index range in the

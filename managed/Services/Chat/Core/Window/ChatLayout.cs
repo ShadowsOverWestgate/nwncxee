@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// The ordered window list ChatService drives for draw/input/persistence (#36/#37/#41). Index 0 is the

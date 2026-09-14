@@ -52,7 +52,7 @@ if [ ! -f build/funchook.lib ] || [ ! -f build/distorm.lib ]; then
     git -C third_party/funchook apply ../../native/funchook-win-rel32.patch
   fi
   echo ">> building funchook.lib (clang-cl cross)..."
-  # Static: it is linked into sowx_managed.dll (DirectPInvoke; see the csproj), not shipped beside it.
+  # Static: it is linked into cx_managed.dll (DirectPInvoke; see the csproj), not shipped beside it.
   cmake -S third_party/funchook -B build/funchook-win -DCMAKE_TOOLCHAIN_FILE="$PWD/native/win-toolchain.cmake" \
     -DWINSDK="$WABS" -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DFUNCHOOK_BUILD_SHARED=OFF -DFUNCHOOK_BUILD_STATIC=ON \
     -DFUNCHOOK_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release >/dev/null
@@ -61,7 +61,7 @@ if [ ! -f build/funchook.lib ] || [ ! -f build/distorm.lib ]; then
 fi
 
 echo ">> compiling the version.dll proxy half (native/bootstrap_win.c -> .obj)..."
-# Linked INTO sowx_managed.dll by the publish below, which is why it is compiled first.
+# Linked INTO cx_managed.dll by the publish below, which is why it is compiled first.
 clang-cl -c -O2 -GS- native/bootstrap_win.c -Fo:build/bootstrap_win.obj
 
 # #456: the Windows symbol gate runs BEFORE the build, not as a report nobody reads. It checks every Nm row
@@ -74,23 +74,23 @@ else
   echo ">> skipping the symbol check (no llvm-undname, or no nwmain.exe to check against)" >&2
 fi
 
-echo ">> building sowx_managed.dll (NativeAOT win-x64, lld-link)..."
-SOWX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
+echo ">> building cx_managed.dll (NativeAOT win-x64, lld-link)..."
+CX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
 # CppLinker must be a global property: the ILCompiler targets reset it to `link` otherwise.
-if ! dotnet publish managed/sowx_managed.csproj -c Release -r win-x64 -o build/win \
+if ! dotnet publish managed/cx_managed.csproj -c Release -r win-x64 -o build/win \
      -p:CppLinker=lld-link -p:CppLibCreator=llvm-lib -p:WinLib="$WABS/lib" \
-     -p:InformationalVersion="$SOWX_VERSION" > build-managed-win.log 2>&1; then
+     -p:InformationalVersion="$CX_VERSION" > build-managed-win.log 2>&1; then
   echo ">> managed win build FAILED:"; grep -E "error" build-managed-win.log | head -20; exit 1
 fi
 
-OUT=sow-client-extender-win
+OUT=cx-windows-x64
 rm -rf "$OUT" && mkdir -p "$OUT"
 # One file. funchook, the UI font and the proxy all ride inside the image; the name is the whole trick,
 # since nwmain.exe imports VERSION.dll and the loader takes the copy beside the exe first.
-cp build/win/sowx_managed.dll "$OUT/version.dll"
+cp build/win/cx_managed.dll "$OUT/version.dll"
 STAMP=$(grep -oE 'WindowsBuildStamp = 0x[0-9a-f]+' managed/Framework/SymbolMap.cs | grep -oE '0x[0-9a-f]+')
-sed "s/@VERSION@/$SOWX_VERSION/g; s/@STAMP@/$STAMP/g" packaging/README-win.txt > "$OUT/README.txt"
+sed "s/@VERSION@/$CX_VERSION/g; s/@STAMP@/$STAMP/g" packaging/README-win.txt > "$OUT/README.txt"
 packaging/licenses.sh "$OUT/LICENSES.txt"
 # Contents, not the folder: the README says "unpack here" and that has to be true.
 python3 -c "import shutil; shutil.make_archive('$OUT', 'zip', '$OUT')"
-echo ">> artifacts ($OUT/, sow-client-extender-win.zip):"; ls -1 "$OUT"
+echo ">> artifacts ($OUT/, $OUT.zip):"; ls -1 "$OUT"

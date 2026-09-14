@@ -1,6 +1,6 @@
-using Sowx.Graphics;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#207: an owned pass's fixed-function preamble, as a value. Every pass used to open with the same
 /// six or seven <c>Gl.Enable</c>/<c>Disable</c> lines in its own order, which made "what state does this pass

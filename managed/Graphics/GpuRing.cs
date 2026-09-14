@@ -1,6 +1,6 @@
 using System;
 
-namespace Sowx.Graphics;
+namespace CX.Graphics;
 
 /// <summary>
 /// Persistent-mapped ring storage: immutable buffer storage the CPU keeps a live pointer into, divided into

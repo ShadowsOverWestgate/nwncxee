@@ -1,9 +1,9 @@
 using System.Globalization;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.CombatText;
+namespace CX.Services.CombatText;
 
-/// <summary>Persisted combat-text preferences, flat <c>key=value</c> in <c>sowx-combattext.cfg</c> beside
+/// <summary>Persisted combat-text preferences, flat <c>key=value</c> in <c>cx-combattext.cfg</c> beside
 /// <c>nwn.ini</c>. Every numeric key is clamped on parse, so a hand-edited file can only ever produce a
 /// drawable config. Vanilla's own two knobs (<c>ui.floating-text-feedback</c> and
 /// <c>ui.floating-text-feedback-damage-totals-only</c>) are NOT duplicated here: the engine still composes

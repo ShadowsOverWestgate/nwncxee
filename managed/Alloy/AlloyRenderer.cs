@@ -1,11 +1,11 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// <para>#173: this file is the SERVICE -- hook install, the frame anchor, the pass-generation clock, the
@@ -48,7 +48,7 @@ namespace Sowx.Alloy;
 /// <para>Ownership lives as a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>).
 /// The table is rebuilt wholesale at a frame boundary
 /// (enrollment, on a scene-walk delta, before the Alloy block) -- that is the frame-atomic
-/// swap. The only mid-frame mutation is revocation. <c>vanilla=1</c> in sowx.cfg is the kill switch, and
+/// swap. The only mid-frame mutation is revocation. <c>vanilla=1</c> in cx.cfg is the kill switch, and
 /// since #263 it is restart-only. Hot path allocates nothing.</para>
 /// <para>#128: CREATURES join it, and they arrive by relaxing two things rather than by a new path. The
 /// engine draws them from <c>Scene::RenderDynamicGeometry</c> -- buckets 2 and 3, but through the same
@@ -116,7 +116,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// which turns the last key into a bucket every unseen texture shares and costs the sort its whole
     /// point. Cheap to fix -- the tables are one int and one short per slot.</para></summary>
     internal const int MaxMats = 16384, MatHashBits = 15, MatHash = 1 << MatHashBits;
-    /// <summary>Floats per SowxDraw record: std430 <c>mat4 + vec4 rot + vec4 amb + vec4 dif + vec4 emi
+    /// <summary>Floats per CxDraw record: std430 <c>mat4 + vec4 rot + vec4 amb + vec4 dif + vec4 emi
     /// + vec4 pbr + vec4 spc + vec4 feat + mat4 prev</c> = 240 bytes (#392 grew it from 176), whose alignment
     /// (16) already divides the size, so the array stride is 240 with no padding.</summary>
     internal const int DrawFloats = 60;
@@ -538,7 +538,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _log?.Info($"AlloyRenderer: [texskip] \"{nm}\" tid={tid} owned={owned} -- "
                    + (owned ? "Alloy owns it but GetTextureHandleARB minted nothing"
                             : "never reached the upload funnel, so it is BORROWED and bindless will not vouch for it")
-                   + "; #285: every lit part using it is NOT DRAWN (bindless=0 in sowx.cfg is the A/B)");
+                   + "; #285: every lit part using it is NOT DRAWN (bindless=0 in cx.cfg is the A/B)");
     }
     /// <summary>Monotonic presented-frame counter: the light SSBO uploads once per frame, not once per pass.</summary>
     private static int _frameSeq;
@@ -893,8 +893,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         string[] names = { "uTex", "uFlowTex", "uNrmTex", "uSpecTex", "uRoughTex", "uHeightTex", "uIllumTex", "uAoTex" };
         int[] slot = { 0, 6, 1, 2, 3, 4, 5, 7 };
         var sb = new System.Text.StringBuilder(
-            "#define SOWX_BINDLESS 1\n#extension GL_ARB_bindless_texture : require\n" +
-            $"layout(std430, binding = {BindTexH}) readonly buffer SowxTexH {{ uvec2 uTexH[]; }};\n");
+            "#define CX_BINDLESS 1\n#extension GL_ARB_bindless_texture : require\n" +
+            $"layout(std430, binding = {BindTexH}) readonly buffer CxTexH {{ uvec2 uTexH[]; }};\n");
         for (int i = 0; i < names.Length; i++)
             sb.Append($"#define {names[i]} sampler2D(uTexH[(vDraw << 3) + {slot[i]}])\n");
         string outFs = fs;
@@ -974,7 +974,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // Every pass's own check. Advisory by convention -- the checks that GATE arming are the contract ones
         // below, which the passes do not own.
         PassRegistry.Global.RunSelfChecks(log);
-        // #179: SOWX_OWNDRAW is gone rather than moved -- the vanilla setting is the same switch, and it
+        // #179: CX_OWNDRAW is gone rather than moved -- the vanilla setting is the same switch, and it
         // stands the shadow and residency sides down too (#263).
         if (GameGate.Locked)
         { log.Info("AlloyRenderer: stood down (lockchat)"); return; }
@@ -1063,11 +1063,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         RspShim.Install(log, hooks);
         _armed = _origRsp != null && _origFade != null;
         if (_armed) log.Info(_skinning
-            ? "AlloyRenderer: #262 skinmeshes owned -- posed per frame from engine animation state, no draw re-entry (ownskin=0 in sowx.cfg disables)"
+            ? "AlloyRenderer: #262 skinmeshes owned -- posed per frame from engine animation state, no draw re-entry (ownskin=0 in cx.cfg disables)"
             : "AlloyRenderer: skinmeshes stay engine-drawn (cloaks, robes, tails)");
         if (_armed) log.Info($"AlloyRenderer: /draw {DescribeTuning()}");
         log.Info(_armed
-            ? "AlloyRenderer: armed -- Alloy world pass at the #132 frame anchor, Scene::FadeDoors (vanilla=1 in sowx.cfg disables)"
+            ? "AlloyRenderer: armed -- Alloy world pass at the #132 frame anchor, Scene::FadeDoors (vanilla=1 in cx.cfg disables)"
             : $"AlloyRenderer: {(_origRsp == null ? "RenderSinglePass" : "Scene::FadeDoors")} hook failed -- Alloy world pass unavailable");
     }
 

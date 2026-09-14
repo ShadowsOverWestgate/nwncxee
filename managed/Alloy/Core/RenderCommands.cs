@@ -1,8 +1,8 @@
 using System;
 using System.Globalization;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// The renderer's own slash commands (#165): the live-tuning dials and the shader dump, registered into
@@ -43,7 +43,7 @@ internal static class RenderCommands
         // 0010) because half of what Alloy installs replaces an engine path rather than watching it, so the
         // two resource worlds cannot both be warm. The reply still names BOTH pieces of state (ADR 0010) --
         // without the capability clause, "I set vanilla=1 and nothing changed" reads the same as "this
-        // machine cannot run the Alloy renderer" -- and it names the file to edit, since sowx.cfg is
+        // machine cannot run the Alloy renderer" -- and it names the file to edit, since cx.cfg is
         // hand-edited and never written back.
         r.Register("/vanilla", "report which renderer this session is running, and how to change it", _ =>
             $"rendering: {(AlloyGate.Alloy ? "ALLOY" : "VANILLA")}"

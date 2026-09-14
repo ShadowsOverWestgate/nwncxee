@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#275: <c>.mtr</c> texture slots past the engine's ceiling. <c>SharedMaterial::ParseField</c>
 /// @0x4c6760 is a flat strcasecmp chain ending at <c>texture10</c>, and the storage behind it is inline and

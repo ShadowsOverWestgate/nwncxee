@@ -1,11 +1,11 @@
-# Chat's UI concerns extracted into a `Sowx.Ui` framework
+# Chat's UI concerns extracted into a `CX.Ui` framework
 
 The frame present (`SwapBuffers`), the render toolkit, input capture, focus/keyboard
 arbitration, and the cursor were all owned by the Chat service purely because Chat was
 the first feature with a UI — leaving other services (Dialog, and a growing list to come)
-to reach into `Sowx.Services.Chat.*` and re-solve input arbitration by hand, which
+to reach into `CX.Services.Chat.*` and re-solve input arbitration by hand, which
 stalled development more than once. We are lifting those concerns into a first-class
-top-level `Sowx.Ui` framework: a `UiHostService` owns the frame and drives a registry of
+top-level `CX.Ui` framework: a `UiHostService` owns the frame and drives a registry of
 first-class `Window`s (chrome/drag/resize/focus/hit-test/cursor shared by the framework,
 *content* supplied by each service), and the framework owns raw input capture with a fixed
 **input precedence** — focused Window content → registered chord consumers → engine

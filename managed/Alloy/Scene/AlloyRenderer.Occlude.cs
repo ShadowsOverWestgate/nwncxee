@@ -3,11 +3,11 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Services.Camera;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Services.Camera;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#537: occlusion fade instead of the camera pull-in. The engine's answer to a wall between the
 /// camera and the player is <c>UpdateNormalCameraCollision</c> zooming in; this keeps the distance and
@@ -16,7 +16,7 @@ namespace Sowx.Alloy;
 /// pull-in uses, <see cref="OccHitsPerRay"/> hits each, so at most 15 calls), and every hit is remembered
 /// as a point plus the gob it landed on. The route walk then tags a tile part whose enrolment box holds a
 /// hit point, or a gob part whose gob was hit, with a coverage that eases toward <see cref="_occFloor"/>;
-/// the record carries it in <c>rot.z</c> (|value| in (0,1), see <c>SowxKeyhole</c>), the part rides the
+/// the record carries it in <c>rot.z</c> (|value| in (0,1), see <c>CxKeyhole</c>), the part rides the
 /// keyhole prepass sweep so its depth has the same holes, and the vis-ID target and the caster pass see it
 /// whole. Creatures are never faded; the player's own gob is on the hit record's ignore list.
 /// <para>The engine's pull-in is switched off by <see cref="CameraFlagDisableCollision"/> in

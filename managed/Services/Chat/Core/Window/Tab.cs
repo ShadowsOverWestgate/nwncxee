@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// One chat tab: a pure <em>receive</em> filter into the shared <see cref="ChatStore"/> plus its own

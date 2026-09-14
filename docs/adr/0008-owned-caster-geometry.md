@@ -19,7 +19,7 @@ A 6-index draw in the hi bake cost 0.45 ms; the average draw was 362 indices. Th
 draw), not raster or geometry. Every cube face re-ran the engine's bucket walk, multiplying that
 churn ×6 faces ×buckets. CPU-side timers never saw it — the cost is GPU/driver-side.
 
-`SOWX_LOCALHISLOTS=0` merely removes the biggest instance; the disease scales with any shadow
+`CX_LOCALHISLOTS=0` merely removes the biggest instance; the disease scales with any shadow
 work routed through the engine's per-part path. The fix is to stop asking the engine to draw.
 
 ## Decision
@@ -46,7 +46,7 @@ gone — #93 folded Alloy submission into `CasterPass` and #98 renamed what was 
    CPU test per record.
 3. GL program saved/restored; `SetVertexDataObject(null)` on exit. Repack invalidates cached
    items; module unload wipes the cache; any capacity overflow falls back to the legacy bake
-   wholesale. `SOWX_OWNCAST=0` kill switch.
+   wholesale. `CX_OWNCAST=0` kill switch.
 
 The hi static bake drops from ~450 engine draws ×5 faces to ~a handful of multidraw calls
 per face.

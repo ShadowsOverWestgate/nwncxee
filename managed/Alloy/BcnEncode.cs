@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #265: CPU BC1/BC3 block encoders for the transcode of the engine's uncompressed texture path.

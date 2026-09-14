@@ -1,12 +1,12 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
-using static Sowx.Alloy.PartTable;
-using static Sowx.Alloy.BucketGate;
-using static Sowx.Alloy.TexProbe;
-namespace Sowx.Alloy;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
+using static CX.Alloy.PartTable;
+using static CX.Alloy.BucketGate;
+using static CX.Alloy.TexProbe;
+namespace CX.Alloy;
 
 /// <summary>#188: the ownership census -- which recorded parts the Alloy passes MAY take, and why the rest
 /// were passed over. The ownership columns (<see cref="OwnFlag"/>, <see cref="OwnGen"/>,
@@ -24,7 +24,7 @@ internal static unsafe class AlloyCensus
 {
     internal static ExtenderLog? _log;
 
-    /// <summary>Read <c>dumptex</c> out of <c>sowx.cfg</c> and arm the enrollment watch.
+    /// <summary>Read <c>dumptex</c> out of <c>cx.cfg</c> and arm the enrollment watch.
     /// <para>#264 took <c>dumpframe</c> with the engine walk it censused: its row was one per part the ENGINE
     /// drew, and the engine draws no part of the world any more. What survives is the half that never needed
     /// a draw -- <see cref="WatchAccepted"/> adopts the watch at enrollment, and the ENROLL/DRAW breadcrumbs
@@ -45,7 +45,7 @@ internal static unsafe class AlloyCensus
     /// <summary><c>dst == 2</c> is <c>GL_ONE</c>: the engine's own additive test on
     /// <see cref="EngineLayout.MatDstBlend"/>, and the one pair it turns the depth mask off for.</summary>
     internal const int BlendOne = 2;
-    /// <summary><c>gradedblend</c> in sowx.cfg: the graded-alpha fraction at or above which a cutout diffuse
+    /// <summary><c>gradedblend</c> in cx.cfg: the graded-alpha fraction at or above which a cutout diffuse
     /// draws in the blended class instead. 1 = never (the #357 alpha-test-only behaviour).
     /// <para>0.15, not the 0.3 it shipped at: the tcn01 splotch decals (dark grime with a soft alpha skirt,
     /// which vanilla blends) scan at 0.29-0.30 and drawn alpha-tested their skirt is solid black; ivy sits
@@ -64,10 +64,10 @@ internal static unsafe class AlloyCensus
     /// (VS at +0x188, FS at +0x199, GS at +0x1aa), and the length of each inline NUL-terminated buffer.</summary>
     internal static readonly int SharedNameLen = EngineLayout.SharedNameLen;
 
-    /// <summary><c>dumptex</c> (sowx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
+    /// <summary><c>dumptex</c> (cx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
     /// time, for as long as it takes the camera to find them.</summary>
     internal static string? _dumpTex;
-    /// <summary><c>skiptex</c> (sowx.cfg): refuse every part whose diffuse texture name contains this. Under the
+    /// <summary><c>skiptex</c> (cx.cfg): refuse every part whose diffuse texture name contains this. Under the
     /// M4 shim a refused part draws nowhere -- colour, prepass, casters -- so this is the "is it that part" A/B.</summary>
     internal static string? _skipTex;
     private static int _classDiagLeft = 64;
@@ -399,7 +399,7 @@ internal static unsafe class AlloyCensus
     /// <summary>#128/#285: does this instance carry state no Alloy program can reproduce? ONE case now --
     /// the SCENE TINT (<c>gob+0x19</c>), which <c>PartTriMesh::Mat</c> @0x450960 draws as
     /// <c>SetColor4f(currentscene+0x14c..0x154)</c> under <c>Disable(5)</c>: the whole surface replaced by one
-    /// unlit colour, which is not arithmetic on any term the SowxDraw record carries. COUNTED, not owned --
+    /// unlit colour, which is not arithmetic on any term the CxDraw record carries. COUNTED, not owned --
     /// see <c>instance-state</c> on the [alloy] line and <c>scene-tint</c> on the census line.
     /// <para>#285: the HIGHLIGHT (<c>gob+0x18</c>) came OUT. Before #264 a refusal fell through to the
     /// engine's bucket walk and the part drew vanilla-highlighted; there is no walk, so refusing it made a
@@ -409,7 +409,7 @@ internal static unsafe class AlloyCensus
     /// <c>SetColor4f(1,1,1,alpha)</c>, the part going flat-white-unlit under the cursor. A lit part under a
     /// glow beats no part at all.</para>
     /// <para>Everything else <c>PartTriMesh::Mat</c> @0x450960 does with a gob is arithmetic on terms the
-    /// SowxDraw record already carries -- an alpha multiply, a component-wise colour multiply and a self-illum
+    /// CxDraw record already carries -- an alpha multiply, a component-wise colour multiply and a self-illum
     /// add -- so #128 FOLDS them (see <see cref="GobAlphaMul"/> and its two neighbours) rather than refusing
     /// the part. That fold is what makes creatures ownable at all: a creature fades through <c>gob+0x108</c>,
     /// so under #134's rule "modulating" and "on screen and interesting" were the same population.</para>
@@ -929,7 +929,7 @@ internal static unsafe class AlloyCensus
         $"{_ownSharedShader} approximated" +
         (_unknownCount == 0 ? "" : $" ({string.Join(", ", _unknown, 0, _unknownCount)})");
 
-    internal static readonly int TexVtblAsBasic = Sowx.Framework.EngineLayout.TexAsBasicSlot, TexVtblReferenced = Sowx.Framework.EngineLayout.TexReferencedSlot;
+    internal static readonly int TexVtblAsBasic = CX.Framework.EngineLayout.TexAsBasicSlot, TexVtblReferenced = CX.Framework.EngineLayout.TexReferencedSlot;
 
     /// <summary>Triage: every gob term the gate and the fold read, printed rather than reduced to a bool.
     /// "The instance modulates" is not actionable; "it modulates because its owner's fade bit is set" is.</summary>

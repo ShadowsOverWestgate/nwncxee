@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>Resolves between player names and live connection-scoped PlayerIds. The client implementation
 /// walks the engine's player roster; tests inject a fake.</summary>

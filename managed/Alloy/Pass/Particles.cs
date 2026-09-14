@@ -2,11 +2,11 @@ using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #131 (map #68, spec #114 M3, ADR 0011): particles. The engine keeps spawn, movement and life; the owned
@@ -379,13 +379,13 @@ internal static unsafe class Particles
     /// and <c>/particles on 1</c> must never clear it.</summary>
     private static bool _off, _failed;
     /// <summary>The per-pass toggle, live behind <c>/particles on 0|1</c>. Default ON, matching what
-    /// <c>SOWX_PARTICLES</c> unset did -- #183's bar is that the default frame is unchanged, and the pass
+    /// <c>CX_PARTICLES</c> unset did -- #183's bar is that the default frame is unchanged, and the pass
     /// was armed on a plain launch. The stray-rays bug is still open; <c>/particles on 0</c> is now the way
     /// to compare against vanilla in the same session rather than a relaunch.
     /// <para>#288 changed neither this nor the two bisect dials, and did not fix that bug. It states the
     /// position: the pass is ARMED by default, not stood down as #148's ticket text still claims, and the
     /// re-measure is <c>/particles grid</c> and <c>/particles guard</c> -- what the abolished
-    /// <c>SOWX_PARTGRID</c> became under ADR 0013.</para></summary>
+    /// <c>CX_PARTGRID</c> became under ADR 0013.</para></summary>
     private static bool _on = BootOn;
     private static uint _prog, _vao, _recBuf, _idxBuf;
     /// <summary>#288: the index-build/sort compute program and its two descriptor buffers.</summary>
@@ -1948,37 +1948,37 @@ internal static unsafe class Particles
         int iLit = ParticleFsMain.IndexOf("albedo *= vLight;", StringComparison.Ordinal);
         int iSoft = ParticleFsMain.IndexOf("if (uSoftOn != 0", StringComparison.Ordinal);
         int iEmis = ParticleFsMain.IndexOf("c.rgb *= uEmissive;", StringComparison.Ordinal);
-        int iFog = ParticleFsMain.IndexOf("SowxFogFactor(vWorld, vViewZ)", StringComparison.Ordinal);
+        int iFog = ParticleFsMain.IndexOf("CxFogFactor(vWorld, vViewZ)", StringComparison.Ordinal);
         E(iDiscard >= 0 && iLit > iDiscard && iSoft > iLit && iEmis > iSoft && iFog > iEmis,
           "the fragment stage runs discard -> light -> soften -> emit -> fog, in that order");
         // ...and the decode, which since #132 is unconditional: the Alloy target is LINEAR, so every
         // particle's texel loses its display-space encode whether or not it is lit. A stage that kept the
         // decode inside the `uLit` branch would composite additive plumes with the wrong curve, and the
         // symptom is a plume that looks merely 'a bit off' rather than obviously broken.
-        E(ParticleFsMain.Contains("vec3 albedo = SowxLinear(c.rgb);")
-          && !ParticleFsMain.Contains("SowxRevert"),
+        E(ParticleFsMain.Contains("vec3 albedo = CxLinear(c.rgb);")
+          && !ParticleFsMain.Contains("CxRevert"),
           "the stage decodes to linear once, for every particle, and never re-encodes");
         // The three libraries the composed stage stands on. A rename upstream would otherwise surface as a
         // shader that fails to link at the first emitter, on the user's machine and not here.
         // #336: the rig runs in the vertex stage, which has no gl_FragCoord -- it must hand the cluster lookup
         // its own tile coordinate BEFORE the library that reads it composes in, and the library must take it.
-        E(ParticleVsHead.Contains("#define SOWX_CLUSTER_XY sowxClusterXY")
-          && ParticleVsMain.Contains("if (uLit != 0)") && ParticleVsMain.Contains("sowxClusterXY = (cc.xy")
-          && ParticleVsMain.Contains("SowxClusteredDiffuse(") && ParticleVsMain.Contains("SowxSunShadow(")
-          && AlloyLights.FragmentLib.Contains("#ifndef SOWX_CLUSTER_XY")
-          && !ParticleFsMain.Contains("SowxClusteredDiffuse(") && !ParticleFsMain.Contains("gl_FragCoord.xy - uTile"),
+        E(ParticleVsHead.Contains("#define CX_CLUSTER_XY cxClusterXY")
+          && ParticleVsMain.Contains("if (uLit != 0)") && ParticleVsMain.Contains("cxClusterXY = (cc.xy")
+          && ParticleVsMain.Contains("CxClusteredDiffuse(") && ParticleVsMain.Contains("CxSunShadow(")
+          && AlloyLights.FragmentLib.Contains("#ifndef CX_CLUSTER_XY")
+          && !ParticleFsMain.Contains("CxClusteredDiffuse(") && !ParticleFsMain.Contains("gl_FragCoord.xy - uTile"),
           "the light rig runs per vertex, on a cluster tile the vertex stage computes from its own NDC");
-        E(AlloyLights.FragmentLib.Contains("vec3 SowxClusteredDiffuse(")
-          && AlloyLights.FragmentLib.Contains("vec3 SowxLinear(")
-          && AlloyLights.SunShadowLib.Contains("SowxSunShadow(")
+        E(AlloyLights.FragmentLib.Contains("vec3 CxClusteredDiffuse(")
+          && AlloyLights.FragmentLib.Contains("vec3 CxLinear(")
+          && AlloyLights.SunShadowLib.Contains("CxSunShadow(")
           && AlloyLights.SunShadowLib.Contains("(1.0 - uSunMedia)")
           && AlloyLights.LocalShadowLib.Contains("(1.0 - uLocalMedia)"),
           "the composed light libraries still declare what this stage calls");
         // #261: the stage expands from the record buffer, so what has to hold is the BINDINGS and the
         // record size -- a stage that names a different binding than the C# side binds draws nothing, and a
         // layout that drifts from RecFloats reads every particle's fields out of its neighbour.
-        E(ParticleVsHead.Contains($"binding = {BindRecs}) readonly buffer SowxParticleBuf")
-          && ParticleVsHead.Contains($"binding = {BindIdx}) readonly buffer SowxParticleIdx")
+        E(ParticleVsHead.Contains($"binding = {BindRecs}) readonly buffer CxParticleBuf")
+          && ParticleVsHead.Contains($"binding = {BindIdx}) readonly buffer CxParticleIdx")
           && ParticleVsMain.Contains("gl_VertexID / 6")
           && RecFloats == 24,
           "the vertex stage expands from the record and index buffers this pass binds");
@@ -1988,12 +1988,12 @@ internal static unsafe class Particles
           "punch-through draws FIRST: it writes depth, so the blended classes get to test against it");
 
         // a dispatch naming a different binding or cap than the CPU staged for reads someone else's buffer
-        E(ParticleCs.Contains($"binding = {BindRecs}) readonly buffer SowxParticleBuf")
-          && ParticleCs.Contains($"binding = {BindIdx}) buffer SowxParticleIdx")
-          && ParticleCs.Contains($"binding = {BindSpans}) readonly buffer SowxSpanBuf")
-          && ParticleCs.Contains($"binding = {BindGroups}) readonly buffer SowxGroupBuf"),
+        E(ParticleCs.Contains($"binding = {BindRecs}) readonly buffer CxParticleBuf")
+          && ParticleCs.Contains($"binding = {BindIdx}) buffer CxParticleIdx")
+          && ParticleCs.Contains($"binding = {BindSpans}) readonly buffer CxSpanBuf")
+          && ParticleCs.Contains($"binding = {BindGroups}) readonly buffer CxGroupBuf"),
           "the compute stage names the four bindings this pass binds");
-        E(ParticleCs.Contains($"local_size_x = {SortLocal}") && ParticleCs.Contains($"SOWX_SORT_CAP = {SortCap}u"),
+        E(ParticleCs.Contains($"local_size_x = {SortLocal}") && ParticleCs.Contains($"CX_SORT_CAP = {SortCap}u"),
           "the compute stage's workgroup size and shared-array cap are the ones the CPU dispatches for");
         E(ParticleCs.Contains("0x80000000u") && SortFlag == 0x80000000u && MaxRecs < SortFlag,
           "the sort flag rides a bit the particle count can never reach");
@@ -2092,7 +2092,7 @@ internal static unsafe class Particles
         #version 460 core
         layout(local_size_x = 256) in;
 
-        struct SowxParticle
+        struct CxParticle
         {
             vec4 posCol;
             vec4 farColFar;
@@ -2101,18 +2101,18 @@ internal static unsafe class Particles
             vec4 centre;
             vec4 uv;
         };
-        layout(std430, binding = 10) readonly buffer SowxParticleBuf { SowxParticle particles[]; };
-        layout(std430, binding = 11) buffer SowxParticleIdx { uint partIdx[]; };
+        layout(std430, binding = 10) readonly buffer CxParticleBuf { CxParticle particles[]; };
+        layout(std430, binding = 11) buffer CxParticleIdx { uint partIdx[]; };
         // (record base, particles, index offset, -), one per emitter the pass placed
-        layout(std430, binding = 17) readonly buffer SowxSpanBuf { uvec4 spans[]; };
+        layout(std430, binding = 17) readonly buffer CxSpanBuf { uvec4 spans[]; };
         // (first span, spans, index offset, particles | 0x80000000 when this group may be reordered)
-        layout(std430, binding = 18) readonly buffer SowxGroupBuf { uvec4 groups[]; };
+        layout(std430, binding = 18) readonly buffer CxGroupBuf { uvec4 groups[]; };
 
         uniform vec3 uEye;
 
-        const uint SOWX_SORT_CAP = 2048u;
-        shared float sKey[SOWX_SORT_CAP];
-        shared uint  sVal[SOWX_SORT_CAP];
+        const uint CX_SORT_CAP = 2048u;
+        shared float sKey[CX_SORT_CAP];
+        shared uint  sVal[CX_SORT_CAP];
 
         void main()
         {
@@ -2188,13 +2188,13 @@ internal static unsafe class Particles
     /// <para>#336: the light rig runs HERE, six times a particle, not once a fragment. A torch's smoke at
     /// the camera covers the screen more than once over, and the cube taps per fragment were the whole
     /// 5ms that equipping one cost; a media particle has no detail a per-vertex term loses. The cluster
-    /// lookup takes its screen tile from this vertex's own NDC (SOWX_CLUSTER_XY) since there is no
+    /// lookup takes its screen tile from this vertex's own NDC (CX_CLUSTER_XY) since there is no
     /// gl_FragCoord to read; the libraries compose between the head and the main.</para></summary>
     private const string ParticleVsHead = """
         #version 460 core
 
         // #261: one particle. Six vec4, std430 -- see Particles.RecFloats for the C# side of this layout.
-        struct SowxParticle
+        struct CxParticle
         {
             vec4 posCol;      // xyz = near centre (world), w = RGBA8 colour as raw bits
             vec4 farColFar;   // xyz = far centre (world),  w = the far end's colour
@@ -2203,8 +2203,8 @@ internal static unsafe class Particles
             vec4 centre;      // xyz = the particle's OWN centre, which the facing direction is taken from
             vec4 uv;          // u0, u1, v0, v1
         };
-        layout(std430, binding = 10) readonly buffer SowxParticleBuf { SowxParticle particles[]; };
-        layout(std430, binding = 11) readonly buffer SowxParticleIdx { uint partIdx[]; };
+        layout(std430, binding = 10) readonly buffer CxParticleBuf { CxParticle particles[]; };
+        layout(std430, binding = 11) readonly buffer CxParticleIdx { uint partIdx[]; };
 
         uniform mat4 uView;
         uniform mat4 uProj;
@@ -2224,15 +2224,15 @@ internal static unsafe class Particles
         uniform vec3 uAreaDiffuse;
         uniform vec3 uAreaDir;
 
-        vec2 sowxClusterXY;
-        #define SOWX_CLUSTER_XY sowxClusterXY
+        vec2 cxClusterXY;
+        #define CX_CLUSTER_XY cxClusterXY
 
         """;
 
     /// <summary>The vertex main, composed after <see cref="AlloyLights"/>'s three libraries.</summary>
     private const string ParticleVsMain = """
 
-        vec3 SowxSafeNorm(vec3 v)
+        vec3 CxSafeNorm(vec3 v)
         {
             float l = dot(v, v);
             return l > 0.0 ? v * inversesqrt(l) : vec3(0.0);
@@ -2241,7 +2241,7 @@ internal static unsafe class Particles
         void main()
         {
             int corner = gl_VertexID % 6;
-            SowxParticle p = particles[partIdx[gl_VertexID / 6]];
+            CxParticle p = particles[partIdx[gl_VertexID / 6]];
 
             // (A, B, C, C, B, D) as sign pairs: sx picks the right axis, sy picks the up axis AND which
             // end of a stretched pair the vertex sits on.
@@ -2253,14 +2253,14 @@ internal static unsafe class Particles
             vec3 base = near ? p.posCol.xyz : p.farColFar.xyz;
             vec3 world = base + sg.x * p.rightSoft.xyz + sg.y * p.upType.xyz;
 
-            vec3 rn = SowxSafeNorm(p.rightSoft.xyz);
-            vec3 un = SowxSafeNorm(p.upType.xyz);
-            vec3 facing = SowxSafeNorm(uEye - p.centre.xyz);
+            vec3 rn = CxSafeNorm(p.rightSoft.xyz);
+            vec3 un = CxSafeNorm(p.upType.xyz);
+            vec3 facing = CxSafeNorm(uEye - p.centre.xyz);
 
             vColor = unpackUnorm4x8(floatBitsToUint(near ? p.posCol.w : p.farColFar.w));
             vUv = vec2(sg.x > 0.0 ? p.uv.y : p.uv.x, near ? p.uv.w : p.uv.z);
             vWorld = world;
-            vNrm = SowxSafeNorm(sg.x * rn + sg.y * un + facing);
+            vNrm = CxSafeNorm(sg.x * rn + sg.y * un + facing);
             vSoft = p.rightSoft.w;
             vType = int(p.upType.w);
             vec4 vp = uView * vec4(world, 1.0);
@@ -2278,10 +2278,10 @@ internal static unsafe class Particles
                 // light list from its neighbours -- a vertex popping dark as the smoke drifts, i.e. flicker.
                 vec4 cv = uView * vec4(p.centre.xyz, 1.0);
                 vec4 cc = uProj * cv;
-                sowxClusterXY = (cc.xy / max(cc.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
+                cxClusterXY = (cc.xy / max(cc.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
                 float ndl = clamp(dot(vNrm, uAreaDir), 0.0, 1.0);
-                vec3 sun = uAreaDiffuse * (ndl * SowxSunShadow(world, vNrm, ndl, ndl));
-                vec3 point = SowxClusteredDiffuse(world, vNrm, max(-cv.z, 1e-3));
+                vec3 sun = uAreaDiffuse * (ndl * CxSunShadow(world, vNrm, ndl, ndl));
+                vec3 point = CxClusteredDiffuse(world, vNrm, max(-cv.z, 1e-3));
                 // the 0.15 floor and the sun-facing wrap are inc_lighting.shd:679, as every other owned
                 // stage runs them
                 vLight = uAreaAmbient * mix(0.15, 1.0, ndl) + sun + point;
@@ -2325,7 +2325,7 @@ internal static unsafe class Particles
         uniform mat4 uProj;
 
         // #336: the light rig's terms are the VERTEX stage's now; this stage only applies vLight. The
-        // libraries still compose in below for SowxLinear.
+        // libraries still compose in below for CxLinear.
         uniform int uViz;           // /particles viz: 1 = tint by render type, 2 = flat, no texture
 
         out vec4 frag;
@@ -2341,7 +2341,7 @@ internal static unsafe class Particles
         // come out of the PROJECTION MATRIX rather than from near/far uniforms -- it is the matrix this draw
         // is actually using, so the linearisation cannot drift from the pass's own frustum the way a pair of
         // separately-uploaded planes can.
-        float SowxSceneViewZ(vec2 uv)
+        float CxSceneViewZ(vec2 uv)
         {
             float ndc = texture(uSceneDepth, uv).r * 2.0 - 1.0;
             return uProj[3].z / (ndc + uProj[2].z);
@@ -2370,7 +2370,7 @@ internal static unsafe class Particles
             // every particle, lit or not. An additive plume that stayed display-space would add the wrong
             // curve into a linear frame, which is exactly the compositing error the whole-frame resolve
             // exists to make impossible.
-            vec3 albedo = SowxLinear(c.rgb);
+            vec3 albedo = CxLinear(c.rgb);
             // #336: lit per vertex; vLight is 1.0 on an unlit draw
             albedo *= vLight;
             c.rgb = albedo;
@@ -2380,7 +2380,7 @@ internal static unsafe class Particles
             // the stock stage uses and what makes the contact read as a dissolve.
             if (uSoftOn != 0 && vSoft > 0.0)
             {
-                float gap = SowxSceneViewZ(gl_FragCoord.xy / vec2(textureSize(uSceneDepth, 0))) - vViewZ;
+                float gap = CxSceneViewZ(gl_FragCoord.xy / vec2(textureSize(uSceneDepth, 0))) - vViewZ;
                 float k = clamp(gap * vSoft, 0.0, 1.0);
                 c.a *= k * k;
             }
@@ -2393,9 +2393,9 @@ internal static unsafe class Particles
             // #341: the SAME fog the world pass runs -- ramp, height layer, sky-matched target and all.
             // An emitter that fogged toward a different colour than the terrain behind it is a smoke plume
             // that reads as a different weather.
-            float f = SowxFogFactor(vWorld, vViewZ);
+            float f = CxFogFactor(vWorld, vViewZ);
             if (uAdditive != 0) c.a *= 1.0 - f;
-            else c.rgb = SowxFog(c.rgb, vWorld, vViewZ);
+            else c.rgb = CxFog(c.rgb, vWorld, vViewZ);
             frag = c;
         }
         """;

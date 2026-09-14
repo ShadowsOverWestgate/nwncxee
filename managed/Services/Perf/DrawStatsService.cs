@@ -1,12 +1,12 @@
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Services.Perf;
+namespace CX.Services.Perf;
 
 /// <summary>
-/// ADR 0006 phase 0: per-frame draw-path histogram. Opt-in via <c>drawhooks=stats</c> in <c>sowx.cfg</c> (off = no
+/// ADR 0006 phase 0: per-frame draw-path histogram. Opt-in via <c>drawhooks=stats</c> in <c>cx.cfg</c> (off = no
 /// hooks, zero cost). Config and not a chat command (ADR 0013): it and <c>DrawFunnelService</c> hook the same
 /// symbols, so which of them arms is decided once, at install, and cannot be flipped mid-session.
 /// <para>Call-through hooks on <c>GLRender::RenderVertexData</c> (every GL draw the engine submits)

@@ -1,4 +1,4 @@
-SoW client extender for Windows -- @VERSION@, pinned to nwmain.exe build @STAMP@
+NWNCX:EE (CX) -- client extender for Windows -- @VERSION@, pinned to nwmain.exe build @STAMP@
 
 Optional add-on for the Neverwinter Nights: Enhanced Edition client. Run the stock client and you
 play vanilla -- nothing here is required.
@@ -19,13 +19,13 @@ WHAT WORKING LOOKS LIKE
   You'll see an attribution text in top left corner in the main menu.
 
 REPORTING A PROBLEM
-  The extender is silent by default. To get a log, create a file named sowx.cfg next to nwn.ini -
+  The extender is silent by default. To get a log, create a file named cx.cfg next to nwn.ini -
   usually Documents\Neverwinter Nights\. Add these two lines:
 
      logs=1
      hookdebug=1
 
-  Play again, then send back Documents\Neverwinter Nights\sowx.log plus what you did right before 
+  Play again, then send back Documents\Neverwinter Nights\cx.log plus what you did right before 
   anything went wrong.
 
   Defender may quarantine version.dll - it's a false alarm, add to Defender's exceptions.

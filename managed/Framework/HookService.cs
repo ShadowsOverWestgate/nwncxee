@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// Wraps funchook. A service calls <see cref="Install"/> in its Initialize; the host

@@ -1,6 +1,6 @@
 using System;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #123: which SoW custom shader a part's SharedMaterial asks for, recognised by name so the Alloy pass can
@@ -10,7 +10,7 @@ namespace Sowx.Alloy;
 /// one of them differs from stock by a handful of lines: a sine displacement, a camera-height branch, a
 /// keyhole define, an RG-map UV offset. The ids below are those lines, not those files.</para>
 /// <para>The value IS the shader-side switch: it is staged into the per-draw record verbatim, so the GLSL
-/// <c>SOWX_FEAT_*</c> constants and this enum are one contract (<c>SelfCheck</c> asserts it).</para>
+/// <c>CX_FEAT_*</c> constants and this enum are one contract (<c>SelfCheck</c> asserts it).</para>
 /// </summary>
 internal enum ShaderFeature
 {
@@ -112,7 +112,7 @@ internal static class ShaderFeatures
     /// <para>#137 also excluded the skinmesh class, reading #119's constraint as "a skinned position cannot
     /// be the prepass's expression". #262 corrected that: the constraint is that the two stages compute
     /// <c>gl_Position</c> from a character-for-character IDENTICAL expression under <c>invariant</c>, and
-    /// identical is exactly what the depth stage now has -- the same <c>SowxSkinMat</c> text, over the same
+    /// identical is exactly what the depth stage now has -- the same <c>CxSkinMat</c> text, over the same
     /// <c>uBone</c> binding, in the same product order (<see cref="AlloyRenderer.DepthVs"/>). The
     /// displacing forks stay out because their prepass has no such arm: its depth would be the part's
     /// UNDISPLACED silhouette and the colour pass's LEQUAL would then kill real fragments.</para>

@@ -13,9 +13,9 @@ single-hooks (#88).
 
 ```csharp
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Example;
+namespace CX.Services.Example;
 
 public sealed unsafe class ExampleService : IExtenderService
 {

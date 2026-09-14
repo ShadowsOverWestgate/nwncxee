@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #352: the content's own full-screen post chain -- the engine's <c>fsfbpostpr</c> program, framebuffer
@@ -129,7 +129,7 @@ internal static unsafe class FbPostStage
         // #352: the engine's post program (fsfbpostpr = inc_postpr + main), hosted. What is ahead of the
         // region is the ENVIRONMENT: the names inc_common/inc_uniforms give a fragment post stage, from
         // Alloy's values. Between the markers is the resource chain's inc_postpr; the stub is a pass-through.
-        #define SOWX_ALLOY 1
+        #define CX_ALLOY 1
         #define SHADER_TYPE 2
         #define GAMMA_CORRECTION 1
         #define SHADER_QUALITY_MODE $SQM$
@@ -168,7 +168,7 @@ internal static unsafe class FbPostStage
         vec4 FS_PostProcess() { return texture(uSrc, vUV); }
         // $VANILLA-END
 
-        vec4 SowxStage(vec4 c)
+        vec4 CxStage(vec4 c)
         {
             vec4 o = FS_PostProcess();
             o.a = c.a;

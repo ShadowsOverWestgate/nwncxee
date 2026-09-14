@@ -1,8 +1,8 @@
 using System;
-using Sowx.Framework;
-using Sowx.Alloy;   // ShaderResource: override lookup + $TOKEN$ expansion, both content/render concerns
+using CX.Framework;
+using CX.Alloy;   // ShaderResource: override lookup + $TOKEN$ expansion, both content/render concerns
 
-namespace Sowx.Graphics;
+namespace CX.Graphics;
 
 /// <summary>Shader-object plumbing shared by the Alloy pass's programs (#83): compile, link, uniform lookup.
 /// Alloc-free apart from the log strings on the failure paths, which are cold by construction -- a program

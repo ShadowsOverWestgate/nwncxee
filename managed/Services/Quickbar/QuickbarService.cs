@@ -1,10 +1,10 @@
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Services.Chat;
-using Sowx.Services.Chat.Render;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Services.Chat;
+using CX.Services.Chat.Render;
+using CX.Ui;
 
-namespace Sowx.Services.Quickbar;
+namespace CX.Services.Quickbar;
 
 /// <summary>
 /// Quickbar chrome service: replaces the native <c>CPanelQuickBar::Reposition</c> to fix centering,
@@ -30,7 +30,7 @@ public sealed unsafe class QuickbarService : IExtenderService
 
     private static QuickbarConfig _config = new();
     private static readonly QuickbarSettings _settings = new();
-    private static readonly ConfigFile _file = new("sowx-quickbar.cfg");
+    private static readonly ConfigFile _file = new("cx-quickbar.cfg");
 
     private static volatile int _vpW, _vpH;
     private static float _guiScale = 1f;

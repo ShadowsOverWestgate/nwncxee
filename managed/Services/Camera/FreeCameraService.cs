@@ -1,12 +1,12 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Alloy;
-using Sowx.Framework;
-using Sowx.Services.Chat;
-using Sowx.Ui;
+using CX.Alloy;
+using CX.Framework;
+using CX.Services.Chat;
+using CX.Ui;
 
-namespace Sowx.Services.Camera;
+namespace CX.Services.Camera;
 
 /// <summary>
 /// The free camera (#543, map #535): <c>/camera free</c> detaches the camera for screenshots. The engine's drive

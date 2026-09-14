@@ -1,13 +1,13 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
-using static Sowx.Alloy.PartTable;
-using static Sowx.Alloy.BucketGate;
-using static Sowx.Alloy.AlloyCensus;
-namespace Sowx.Alloy;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
+using static CX.Alloy.PartTable;
+using static CX.Alloy.BucketGate;
+using static CX.Alloy.AlloyCensus;
+namespace CX.Alloy;
 
 /// <summary>#264: the two engine notices Alloy still needs, and nothing else. Was <c>BatchService</c>, This was <c>BatchService</c>,
 /// ADR 0006's extender-owned multidraw submission; the #215 cutover made <c>RspShim</c> own the frame, and a
@@ -26,13 +26,13 @@ namespace Sowx.Alloy;
 /// pose-swallow window that used to share it: nothing re-enters a draw to produce a pose any more.</item>
 /// <item><c>VertexDataObject::Repack</c> -- the layout-change edge no scene epoch reports.</item>
 /// </list>
-/// <para>Armed by <c>drawhooks</c> in <c>sowx.cfg</c> (the default arms this service, <c>stats</c> hands the
+/// <para>Armed by <c>drawhooks</c> in <c>cx.cfg</c> (the default arms this service, <c>stats</c> hands the
 /// draw hooks to <c>DrawStatsService</c>, anything else disables both -- one mode, because both hook the
 /// same symbols). Hot and alloc-free throughout.</para></summary>
 public sealed unsafe class DrawFunnelService : IExtenderService
 {
     /// <summary>#182: the ONE key that says who owns the draw hooks. <c>batch</c> (default) = this service
-    /// -- the value keeps its name after #258 deleted the batcher, because it is a <c>sowx.cfg</c> contract
+    /// -- the value keeps its name after #258 deleted the batcher, because it is a <c>cx.cfg</c> contract
     /// with existing installs (ADR 0013) and renaming it would silently disarm them. Reads as:
     /// <c>stats</c> = <c>DrawStatsService</c>'s histogram, anything else = neither. It is one mode rather than
     /// two booleans because the two arm the same symbols and cannot coexist; and it is config rather than a
@@ -55,7 +55,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         { log.Info($"DrawFunnels: standing down ({AlloyGate.VanillaKey}=1) -- the engine renders this session"); return; }
         string mode = Settings.Text(DrawModeKey, DrawModeBatch);
         if (mode != DrawModeBatch)
-        { log.Info($"DrawFunnels: standing down (sowx.cfg drawhooks={mode})"); return; }
+        { log.Info($"DrawFunnels: standing down (cx.cfg drawhooks={mode})"); return; }
 
         PartTable.Log = log;
         AlloyCensus.Configure(log);
@@ -84,7 +84,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // The record tables arm here, and the census and the gate ride on them.
         PartTable.Active = _repackSlot != null && _origPartDtor != null;
         log.Info(PartTable.Active
-            ? "DrawFunnels: engine draw funnels armed (sowx.cfg drawhooks=off disables; [funnels] every 900 frames)"
+            ? "DrawFunnels: engine draw funnels armed (cx.cfg drawhooks=off disables; [funnels] every 900 frames)"
             : _origPartDtor == null
               // #145: deliberate. Without the death notice, every liveness test left is an inference, and
               // the one the Alloy pass used walked a freed part into a freelist word.

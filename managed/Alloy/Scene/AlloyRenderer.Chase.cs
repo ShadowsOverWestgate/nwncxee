@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#330: the engine chase, BOUNDED. Restage used to re-read every owned part's borrowed engine
 /// state every frame -- node matrix, keyhole verdict, tile fade -- which made it O(world) whatever the
@@ -415,7 +415,7 @@ public sealed unsafe partial class AlloyRenderer
             // and ComputePartBBox @0x561370 -- the only thing that fills them -- runs from Scene::SpawnTile
             // alone, so tile geometry has a world box and a placeable has six zeros. That is also why the
             // engine's own test refuses gob parts outright. Nothing is lost by skipping it: the CPU verdict
-            // is an ENABLE bit and SowxKeyhole owns the whole shape of the hole -- the in-front-of-the-player
+            // is an ENABLE bit and CxKeyhole owns the whole shape of the hole -- the in-front-of-the-player
             // depth test, the screen aperture and the floor cut are all per fragment. Over-enabling costs a
             // batch split, never a wrong pixel.
             return _khCam && _khOn != 0;

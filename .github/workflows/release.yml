@@ -67,9 +67,9 @@ jobs:
           set -euo pipefail
           ./build.sh
           rm -rf dist && mkdir -p dist
-          # build.sh zips the CONTENTS of sow-client-extender/ (flat), so
+          # build.sh zips the CONTENTS of cx-linux-x64/ (flat), so
           # "unpack into bin/linux-x86" is literally the whole install.
-          mv sow-client-extender.zip "dist/sowx-linux-x64-${TAG}.zip"
+          mv cx-linux-x64.zip "dist/cx-linux-x64-${TAG}.zip"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: linux, path: dist/*.zip, if-no-files-found: error }
@@ -101,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           ./build-win-native.sh
-          mkdir -p dist && mv sow-client-extender-win.zip "dist/sowx-windows-x64-${TAG}.zip"
+          mkdir -p dist && mv cx-windows-x64.zip "dist/cx-windows-x64-${TAG}.zip"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: windows, path: dist/*.zip, if-no-files-found: error }

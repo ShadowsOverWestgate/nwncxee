@@ -1,4 +1,4 @@
-namespace Sowx.Graphics;
+namespace CX.Graphics;
 
 /// <summary>
 /// Allocating the textures an Alloy pass renders to or copies into (#174). Three passes wrote this out

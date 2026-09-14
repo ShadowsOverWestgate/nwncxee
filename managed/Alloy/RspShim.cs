@@ -2,11 +2,11 @@ using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using Sowx.Services.Perf;
+using CX.Framework;
+using CX.Graphics;
+using CX.Services.Perf;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#215 (ADR 0016 step 6): the CUTOVER. On the Alloy path, in a world frame, the engine's
 /// <c>Scene::RenderSinglePass</c> is not called at all -- this runs in its place, calls RSP's per-frame

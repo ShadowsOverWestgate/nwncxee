@@ -1,10 +1,10 @@
 using System;
 using System.Globalization;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #83 (map #68, spec #77 M1, frame graph #75): the clustered forward+ light rig for the Alloy world pass.
@@ -733,14 +733,14 @@ internal static unsafe class AlloyLights
 
         // Sample point pushed along the normal by this many cube texels -- the same acne fight the sun
         // cascades run, scaled by the texel a face actually spans at this distance rather than a constant.
-        const float SOWX_LOCAL_NORMAL_OFFSET = 2.0;
+        const float CX_LOCAL_NORMAL_OFFSET = 2.0;
         // Depth bias in WORLD units along the face's major axis, applied before the projection so it stays a
         // constant distance whatever the light's reach is.
-        const float SOWX_LOCAL_BIAS = 0.05;
+        const float CX_LOCAL_BIAS = 0.05;
         // #308 follow-up (acne): the sun receiver's slope terms, same reasoning -- a face lit at grazing
         // incidence needs offset and bias that grow with tan(theta), or the terminator stair-steps.
-        const float SOWX_LOCAL_SLOPE_OFFSET = 1.5;
-        const float SOWX_LOCAL_SLOPE_MAX = 4.0;
+        const float CX_LOCAL_SLOPE_OFFSET = 1.5;
+        const float CX_LOCAL_SLOPE_MAX = 4.0;
         // #308 follow-up: fragments ON A CREATURE (skinmesh or dangly -- exactly the classes the caster
         // walk puts in the dynamic set every frame) skip the dyn-pool tap when they stand within this many
         // times the near-field skip (uLocalSoft.y) of the light. In that band the pool's blocker is the
@@ -748,7 +748,7 @@ internal static unsafe class AlloyLights
         // resolution -- so creature self-shadowing from a carried light is OFF, while the creature's shadow
         // on the GROUND (a static fragment, never gated) and every static-map shadow stay untouched.
         // Scales with /light shadownear, so the cutoff is tunable live.
-        const float SOWX_LOCAL_DYN_NEAR = 3.0;
+        const float CX_LOCAL_DYN_NEAR = 3.0;
         // #148: 0 = this fragment is a SURFACE, and the normal offset above is the acne fight it needs.
         // 1 = it is a point inside a VOLUME -- a particle -- where the offset is not merely useless but
         // actively harmful: a billboard's normal faces the CAMERA, not away from any geometry, so offsetting
@@ -765,7 +765,7 @@ internal static unsafe class AlloyLights
         // ShadowMath's SelfCheck welds that round-trip headless, so a convention slip fails there, not here.
         // `ndlRaw` is the caller's geometric dot(N, L) -- already in hand at every lit call site -- for the
         // slope terms; recomputing it here cost a normalize per fragment per shadowing light.
-        float SowxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover, float viewDepth)
+        float CxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover, float viewDepth)
         {
             if (uLocalCubes <= 0 || slot < 0 || slot >= uLocalCubes) return 1.0;
             vec4 L = uLocalLight[slot];
@@ -773,7 +773,7 @@ internal static unsafe class AlloyLights
             vec3 d = worldPos - L.xyz;
             float m = max(max(abs(d.x), abs(d.y)), abs(d.z));
             // outside the recorded shell there is no depth to compare against, and lit is the safe answer
-            if (far <= near || m <= near + SOWX_LOCAL_BIAS || m >= far) return 1.0;
+            if (far <= near || m <= near + CX_LOCAL_BIAS || m >= far) return 1.0;
             // #139: inside the source sphere there is nothing to occlude. A carried torch sits INSIDE the
             // hand and forearm holding it, so a punctual test there shadows the carrier from its own light
             // -- and at that range one cube texel spans most of the arm, which is the blocky self-shadow.
@@ -794,18 +794,18 @@ internal static unsafe class AlloyLights
             // to fight and a pinned-at-max slope would only punch the bias through thin casters.
             float slope = ndlRaw <= 0.0 ? 0.0
                           : min(sqrt(max(1.0 - ndlRaw * ndlRaw, 0.0)) / max(ndlRaw, 0.1),
-                                SOWX_LOCAL_SLOPE_MAX) * (1.0 - uLocalMedia);
-            d += N * (biasTexel * (SOWX_LOCAL_NORMAL_OFFSET * (1.0 - uLocalMedia)
-                                   + SOWX_LOCAL_SLOPE_OFFSET * slope));
+                                CX_LOCAL_SLOPE_MAX) * (1.0 - uLocalMedia);
+            d += N * (biasTexel * (CX_LOCAL_NORMAL_OFFSET * (1.0 - uLocalMedia)
+                                   + CX_LOCAL_SLOPE_OFFSET * slope));
             // the bias moves the compare point TOWARD the light, never away: the test is `ref <= stored` =
             // lit, and a fragment lying on its own recorded surface stores exactly its own depth. Pushing
             // the reference the other way makes every lit surface shadow itself.
-            m = clamp(max(max(abs(d.x), abs(d.y)), abs(d.z)) - SOWX_LOCAL_BIAS * (1.0 + slope), near, far);
+            m = clamp(max(max(abs(d.x), abs(d.y)), abs(d.z)) - CX_LOCAL_BIAS * (1.0 + slope), near, far);
             float ref = far / (far - near) * (1.0 - near / m);
             float vs = texture(uLocalShadow, vec4(d, float(slot)), ref);
             // #308 follow-up: the dyn tap stands down for a CREATURE fragment inside the carrier band --
-            // see SOWX_LOCAL_DYN_NEAR. Ground and static receivers pass onMover 0 and are never gated.
-            bool dyn = pg > 0.5 && !(onMover > 0.5 && m < SOWX_LOCAL_DYN_NEAR * uLocalSoft.y);
+            // see CX_LOCAL_DYN_NEAR. Ground and static receivers pass onMover 0 and are never gated.
+            bool dyn = pg > 0.5 && !(onMover > 0.5 && m < CX_LOCAL_DYN_NEAR * uLocalSoft.y);
             float vd = dyn ? texture(uLocalDynShadow, vec4(d, pg - 1.0), ref) : 1.0;
             float v = min(vs, vd);
             // #326: one tap when the disc is under its pixel budget on screen (z = px / lod scale) -- four of
@@ -846,9 +846,9 @@ internal static unsafe class AlloyLights
         """;
 
     internal const string FragmentLib = """
-        layout(std430, binding = 0) readonly buffer SowxLightBuf { vec4 uLights[]; };
-        layout(std430, binding = 1) readonly buffer SowxClusterCount { uint uClCount[]; };
-        layout(std430, binding = 2) readonly buffer SowxClusterIdx { uint uClIdx[]; };
+        layout(std430, binding = 0) readonly buffer CxLightBuf { vec4 uLights[]; };
+        layout(std430, binding = 1) readonly buffer CxClusterCount { uint uClCount[]; };
+        layout(std430, binding = 2) readonly buffer CxClusterIdx { uint uClIdx[]; };
         uniform ivec3 uGrid;
         uniform vec4 uTile;            // xy = viewport origin in window pixels, zw = pixels per tile
         uniform vec2 uZ;
@@ -877,15 +877,15 @@ internal static unsafe class AlloyLights
         // #375 follow-up: the stock subsurface term as (wrap, energy) -- AlloyLights._sss. (0, 0) on a stage
         // that never declares it, which is the Lambert term alone.
         uniform vec2 uSss;
-        const uint SOWX_CLUSTER_CAP = $CAP$u;
-        const int SOWX_CAP_MAX = 2;   // #336: the shadow cap's ceiling -- two NAMED candidates, no arrays
+        const uint CX_CLUSTER_CAP = $CAP$u;
+        const int CX_CAP_MAX = 2;   // #336: the shadow cap's ceiling -- two NAMED candidates, no arrays
         // The engine's own sRGB->linear conversion (Ghidra RenderInterface::GetColorSpaceFromSRGB: powf(c,
         // 2.2) per channel, identity at 0 and 1). Textures and material colours both arrive non-linear --
         // the stock shaders apply the same curve via ApplyColorSpace before lighting them.
         // ponytail: unconditional. The engine gates it on GetGlobalShaderParami(0), the gamma pipeline the
         // ship config runs and the shipped .shd assume (GAMMA_CORRECTION 1); plumb that param through if a
         // legacy-pipeline build ever needs the Alloy path.
-        vec3 SowxLinear(vec3 c) { return pow(max(c, vec3(0.0)), vec3($SRGB$)); }
+        vec3 CxLinear(vec3 c) { return pow(max(c, vec3(0.0)), vec3($SRGB$)); }
 
         // #143: energy-conserving wrapped diffuse. NWN's meshes are low-poly with smoothed vertex normals,
         // so a punctual terminator lands mid-facet as a straight hard crease -- the artifact the community's
@@ -895,7 +895,7 @@ internal static unsafe class AlloyLights
         // ponytail: one global wrap for every material. The modern refinement is pre-integrated skin
         // (Penner 2011) -- a curvature-driven terminator LUT -- but it is per-material by nature and NWN
         // carries no "this part is skin" tag; on armour and stone it reads wrong. Tag materials first.
-        float SowxWrap(float ndl, float w)
+        float CxWrap(float ndl, float w)
         {
             return w <= 0.0 ? clamp(ndl, 0.0, 1.0) : clamp((ndl + w) / (1.0 + w), 0.0, 1.0);
         }
@@ -913,13 +913,13 @@ internal static unsafe class AlloyLights
         // on the projection's handedness convention). Must mirror the compute pass's slice mapping exactly.
         // gl_FragCoord is WINDOW-relative, so the viewport origin comes out first -- the engine's reflection
         // subframes do not all render at (0,0). A VERTEX stage composing this library (#336: particles light
-        // per vertex) has no gl_FragCoord and defines SOWX_CLUSTER_XY itself, in tile units, before the lib.
-        #ifndef SOWX_CLUSTER_XY
-        #define SOWX_CLUSTER_XY ((gl_FragCoord.xy - uTile.xy) / uTile.zw)
+        // per vertex) has no gl_FragCoord and defines CX_CLUSTER_XY itself, in tile units, before the lib.
+        #ifndef CX_CLUSTER_XY
+        #define CX_CLUSTER_XY ((gl_FragCoord.xy - uTile.xy) / uTile.zw)
         #endif
-        uint SowxCluster(float viewDepth)
+        uint CxCluster(float viewDepth)
         {
-            vec2 tile = SOWX_CLUSTER_XY;
+            vec2 tile = CX_CLUSTER_XY;
             int gx = clamp(int(tile.x), 0, uGrid.x - 1);
             int gy = clamp(int(tile.y), 0, uGrid.y - 1);
             float k = log(max(viewDepth, uZ.x) / uZ.x) / log(uZ.y / uZ.x);
@@ -929,11 +929,11 @@ internal static unsafe class AlloyLights
 
         // fAngleMin (inc_lighting.shd:88): the floor the engine clamps N.V to before the view-side
         // normalisation divides by it.
-        const float SOWX_ANGLE_MIN = 0.01;
+        const float CX_ANGLE_MIN = 0.01;
 
         // Schlick's Fresnel, the pow-5 form the ship quality mode takes (inc_lighting.shd GetFresnel,
         // SHADER_QUALITY_MODE > 1; the lower modes use pow 4).
-        float SowxFresnel(float c)
+        float CxFresnel(float c)
         {
             float f = 1.0 - c;
             float sq = f * f;
@@ -949,44 +949,44 @@ internal static unsafe class AlloyLights
         // convention, so the remap shaded a 0.24-roughness stone as a 0.06 one: a far tighter, far brighter
         // highlight on every part carrying a specular map, which is ~100% of SoW's.
         // <para>Two halves, split the way the engine splits them: this per-LIGHT one, and the view-side
-        // normalisation in SowxSpecBase, which is common to every light and applied once (the engine's
+        // normalisation in CxSpecBase, which is common to every light and applied once (the engine's
         // fSpecularBaseModifier). fSpecularity rides in through the Fresnel term and must NOT be multiplied
         // in again -- inc_lighting.shd:600-602 scales by it only when SPECULAR_FRESNEL != 1.</para>
         // Returns the lobe per unit IRRADIANCE -- the caller has already folded N.L and attenuation into the
         // light term it multiplies this by.
         // ponytail: the low-quality branches (Blinn-Phong, no shadowing, the simplified Fresnel) are not
         // reproduced. Add them if a device that cannot run the ship mode ever needs to match its own vanilla.
-        float SowxSpecLobe(vec3 N, vec3 V, vec3 L, float rough, float spec)
+        float CxSpecLobe(vec3 N, vec3 V, vec3 L, float rough, float spec)
         {
             vec3 H = normalize(V + L);
             float NdotH = clamp(dot(N, H), 0.0, 1.0);
             float VdotH = clamp(dot(H, V), 0.0, 1.0);
             float NdotL = clamp(dot(N, L), 0.0, 1.0);
             float a2 = rough * rough;
-            // GGX distribution minus its alpha^2 numerator, which lives in SowxSpecBase
+            // GGX distribution minus its alpha^2 numerator, which lives in CxSpecBase
             float den = 1.0 - NdotH * NdotH * (1.0 - a2);
             float d = 1.0 / max(den * den, 1e-8);
             d *= 1.0 / mix(NdotL, 1.0, rough);          // geometric shadowing, light side
-            return d * mix(spec, 1.0, SowxFresnel(VdotH));
+            return d * mix(spec, 1.0, CxFresnel(VdotH));
         }
 
         // The half that does not vary per light: alpha^2/4 and the view-side shadowing term.
-        float SowxSpecBase(float NdotV, float rough)
+        float CxSpecBase(float NdotV, float rough)
         {
-            return rough * rough * 0.25 / mix(max(NdotV, SOWX_ANGLE_MIN), 1.0, rough);
+            return rough * rough * 0.25 / mix(max(NdotV, CX_ANGLE_MIN), 1.0, rough);
         }
 
         // Diffuse AND specular contribution of every light binned into this fragment's cluster, in ONE walk:
         // both terms want the same per-light colour, attenuation, N.L and cube-shadow fetch, and running the
         // cluster twice would pay for all four again. World space throughout: the Alloy pass has world
         // positions and normals in hand, so there is no eye-space round trip.
-        vec3 SowxClusteredLight(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,
+        vec3 CxClusteredLight(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,
                                 float rough, float specularity, out vec3 spec)
         {
             spec = vec3(0.0);
-            uint cl = SowxCluster(viewDepth);
-            uint n = min(uClCount[cl], SOWX_CLUSTER_CAP);
-            uint base = cl * SOWX_CLUSTER_CAP;
+            uint cl = CxCluster(viewDepth);
+            uint n = min(uClCount[cl], CX_CLUSTER_CAP);
+            uint base = cl * CX_CLUSTER_CAP;
             vec3 acc = vec3(0.0);
             // #336: /light shadowcap -- the cube taps a fragment may pay, chosen PER FRAGMENT by reach
             // (f2 = dd/rr, the attenuation's own term): the capN lights reaching this fragment most
@@ -995,7 +995,7 @@ internal static unsafe class AlloyLights
             // cube lights overlapped. The candidates are kept sorted; an evicted one is added unshadowed.
             // EXPERIMENT: the candidates used to be five local arrays indexed by a runtime variable in a
             // while loop -- what a shader compiler spills to scratch memory. Two named slots, A the strongest.
-            int capN = int(min(uLocalSoft.w, float(SOWX_CAP_MAX)));
+            int capN = int(min(uLocalSoft.w, float(CX_CAP_MAX)));
             float aF2 = 1e30, bF2 = 1e30; int aSlot = -1, bSlot = -1; float aNdl = 0.0, bNdl = 0.0;
             vec3 aLit = vec3(0.0), aSpc = vec3(0.0), bLit = vec3(0.0), bSpc = vec3(0.0);
             for (uint k = 0u; k < n; k++)
@@ -1016,7 +1016,7 @@ internal static unsafe class AlloyLights
                 // The walk already divided an overbright colour down by its max channel (spending the
                 // surplus on radius, as GetLightAdjustedColor does), so every channel is <= 1 here and the
                 // plain sRGB curve is the right linearization.
-                vec3 c = SowxLinear(c0);
+                vec3 c = CxLinear(c0);
                 // #140: the ENGINE's curve, range-normalised -- inc_lighting.shd's ComputePointLightSource
                 // at GAMMA_CORRECTION == 1, verbatim. The authored range IS the shape here, which is the
                 // whole reason a dim cave glow and a torch can share one formula: the glow's R is small and
@@ -1058,17 +1058,17 @@ internal static unsafe class AlloyLights
                 float s = uWrap <= 0.0 ? 0.0 : clamp(uWrap * uFalloff.y * invD, 0.0, 1.0);
                 // max, not sum: at arm's length the sphere term is already at full strength and adding the
                 // #143 floor on top of it would wrap past the point of looking lit at all.
-                float ndl = SowxWrap(dot(N, L), max(s, uWrapN));
+                float ndl = CxWrap(dot(N, L), max(s, uWrapN));
                 if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
                 vec3 dif = c * (max(att, 0.0) * ndl);
-                vec3 spc = dif * SowxSpecLobe(N, V, L, rough, specularity);
+                vec3 spc = dif * CxSpecLobe(N, V, L, rough, specularity);
                 // ponytail: a light behind the surface (ndl <= 0, continued above) skips its subsurface leak
                 // rather than being fetched unshadowed; stock has no shadow to lose there, Alloy does
                 vec3 unsh = dif + c * (max(att, 0.0) * max(dot(N, L) + uSss.x, 0.0) * uSss.y);
                 if (slot < 0) { acc += unsh; spec += spc; continue; }
                 if (capN <= 0)
                 {
-                    float sh = SowxLocalShadow(slot, worldPos, N, dot(N, L), onMover, viewDepth);
+                    float sh = CxLocalShadow(slot, worldPos, N, dot(N, L), onMover, viewDepth);
                     acc += unsh * sh; spec += spc * sh;
                     continue;
                 }
@@ -1089,32 +1089,32 @@ internal static unsafe class AlloyLights
             }
             if (aSlot >= 0)
             {
-                float sh = SowxLocalShadow(aSlot, worldPos, N, aNdl, onMover, viewDepth);
+                float sh = CxLocalShadow(aSlot, worldPos, N, aNdl, onMover, viewDepth);
                 acc += aLit * sh; spec += aSpc * sh;
             }
             if (bSlot >= 0)
             {
-                float sh = SowxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth);
+                float sh = CxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth);
                 acc += bLit * sh; spec += bSpc * sh;
             }
             return acc;
         }
 
         // The diffuse half alone, for <c>/draw viz 1</c> and anything that has no material in hand.
-        vec3 SowxClusteredDiffuse(vec3 worldPos, vec3 N, float viewDepth)
+        vec3 CxClusteredDiffuse(vec3 worldPos, vec3 N, float viewDepth)
         {
             vec3 spec;
-            return SowxClusteredLight(worldPos, N, N, viewDepth, 0.0, 1.0, 0.0, spec);
+            return CxClusteredLight(worldPos, N, N, viewDepth, 0.0, 1.0, 0.0, spec);
         }
 
         /// Darkest local-cube term over this fragment's cluster -- white lit, black fully occluded, and
         /// exactly 1.0 where no light in reach carries a cube. <c>/draw viz 5</c>. The composite cannot answer
         /// "is the cube occluding anything?" because a lit neighbour washes the term out; this can.
-        float SowxLocalShadowViz(vec3 worldPos, vec3 N, float viewDepth)
+        float CxLocalShadowViz(vec3 worldPos, vec3 N, float viewDepth)
         {
-            uint cl = SowxCluster(viewDepth);
-            uint n = min(uClCount[cl], SOWX_CLUSTER_CAP);
-            uint base = cl * SOWX_CLUSTER_CAP;
+            uint cl = CxCluster(viewDepth);
+            uint n = min(uClCount[cl], CX_CLUSTER_CAP);
+            uint base = cl * CX_CLUSTER_CAP;
             float vis = 1.0;
             for (uint k = 0u; k < n; k++)
             {
@@ -1124,7 +1124,7 @@ internal static unsafe class AlloyLights
                 if (slot < 0) continue;
                 vec3 d = pr.xyz - worldPos;
                 if (dot(d, d) > pr.w * pr.w) continue;
-                vis = min(vis, SowxLocalShadow(slot, worldPos, N, dot(N, normalize(d)), 0.0, viewDepth));
+                vis = min(vis, CxLocalShadow(slot, worldPos, N, dot(N, normalize(d)), 0.0, viewDepth));
             }
             return vis;
         }
@@ -1156,31 +1156,31 @@ internal static unsafe class AlloyLights
 
         // Cascade edge kept clear of the PCF kernel: a fragment whose taps would straddle the border falls
         // through to the next cascade instead of sampling past the map and reading "unshadowed".
-        const float SOWX_SUN_BORDER = 0.985;
+        const float CX_SUN_BORDER = 0.985;
         // #308 follow-up (the "scanline"): the cascade handoff is a 4x jump in texel size, offset and bias,
         // so the shadow visibly re-draws along the selection boundary -- and under the latched fits that
         // boundary leaps several units at every re-latch. The fix is a cross-fade to the next cascade whose
         // weight is a pure function of the fragment's distance from the LIVE fit focus -- never anything
         // latched: a weight keyed on the latched fit jumps at every re-latch, which reads as the whole band
-        // flickering while walking. Fade runs from SOWX_SUN_FADE_LO to SOWX_SUN_FADE_HI of the cascade's
+        // flickering while walking. Fade runs from CX_SUN_FADE_LO to CX_SUN_FADE_HI of the cascade's
         // radius; full handover at 90% keeps the weight saturated before the latched fit (drift <= 5% of
         // the radius, CasterPass.SunFitSlack) can run out under the fragment. Both uniforms unset (a stale
         // content override) read 0, and a zero radius disables the blend -- the pre-fade hard handoff.
-        const float SOWX_SUN_FADE_LO = 0.70;
-        const float SOWX_SUN_FADE_HI = 0.90;
+        const float CX_SUN_FADE_LO = 0.70;
+        const float CX_SUN_FADE_HI = 0.90;
         uniform vec3 uSunFocus;      // the LIVE fit focus this frame
         uniform vec4 uSunRadius;     // per-cascade fit radius
         // Sample point pushed along the normal by this many texels. Normal offset does what a depth bias
         // cannot: it scales with the texel a slope actually spans, so acne goes without the detached-shadow
         // peter-panning a bias big enough for grazing light would cost.
-        const float SOWX_SUN_NORMAL_OFFSET = 2.0;
+        const float CX_SUN_NORMAL_OFFSET = 2.0;
         // #308 follow-up (acne): the constant offset above is sized for a face the light hits square-on. A
         // face lit at grazing incidence spans tan(theta) texels of DEPTH per texel of map, so the terminator
         // marches across it in texel-sized stair steps unless the offset grows with the slope. Extra texels
         // of push per unit of tan(theta), and the clamp that keeps a fully edge-on face (tan -> inf) from
         // being lifted into the next caster over.
-        const float SOWX_SUN_SLOPE_OFFSET = 1.5;
-        const float SOWX_SUN_SLOPE_MAX = 4.0;
+        const float CX_SUN_SLOPE_OFFSET = 1.5;
+        const float CX_SUN_SLOPE_MAX = 4.0;
         // #148: 0 = this fragment is a SURFACE, and the normal offset above is the acne fight it needs.
         // 1 = it is a point inside a VOLUME -- a particle -- where the offset is not merely useless but
         // actively harmful: a billboard's normal faces the CAMERA, not away from any geometry, so offsetting
@@ -1193,11 +1193,11 @@ internal static unsafe class AlloyLights
 
         // The fragment in cascade i's NDC, sampled from a point pushed along the normal by that cascade's
         // texel-scaled acne offset -- so each cascade tests the surface it can actually resolve.
-        vec3 SowxSunNdc(int i, vec3 worldPos, vec3 N, float slope)
+        vec3 CxSunNdc(int i, vec3 worldPos, vec3 N, float slope)
         {
             vec4 clip = uSunVp[i] * vec4(worldPos + N * (uSunTexel[i]
-                            * (SOWX_SUN_NORMAL_OFFSET * (1.0 - uSunMedia)
-                               + SOWX_SUN_SLOPE_OFFSET * slope)), 1.0);
+                            * (CX_SUN_NORMAL_OFFSET * (1.0 - uSunMedia)
+                               + CX_SUN_SLOPE_OFFSET * slope)), 1.0);
             return clip.xyz / clip.w;
         }
 
@@ -1206,7 +1206,7 @@ internal static unsafe class AlloyLights
         // dynamic half is the player's own shadow and a harder edge on exactly that shadow is the
         // regression the split must not have. The depth bias grows on the slope: the stored depth inside
         // one grazing texel varies by tan(theta) texels' worth of world depth, so the flat bias under-covers it.
-        float SowxSunTaps(int i, vec3 ndc, float slope, vec2 texel)
+        float CxSunTaps(int i, vec3 ndc, float slope, vec2 texel)
         {
             vec2 uv = ndc.xy * 0.5 + 0.5;
             float layer = float(i);
@@ -1231,7 +1231,7 @@ internal static unsafe class AlloyLights
         // `ndl` gates: the lit stage passes its WRAPPED value so a wrap-lit terminator fragment can still be
         // shadowed. `ndlRaw` is the geometric dot for the slope terms -- the wrap inflates it exactly where
         // grazing incidence needs the extra bias, so the two must stay separate arguments.
-        float SowxSunShadow(vec3 worldPos, vec3 N, float ndl, float ndlRaw)
+        float CxSunShadow(vec3 worldPos, vec3 N, float ndl, float ndlRaw)
         {
             if (uSunCascades <= 0 || ndl <= 0.0) return 1.0;
             vec2 texel = 1.0 / vec2(textureSize(uSunShadow, 0).xy);
@@ -1241,25 +1241,25 @@ internal static unsafe class AlloyLights
             // surface to grow acne on, and a slope pinned at max there punches the bias through doors and
             // thin casters exactly inside the band the wrapped gate exists to keep shadowable.
             float slope = ndlRaw <= 0.0 ? 0.0
-                          : min(sqrt(max(1.0 - ndlRaw * ndlRaw, 0.0)) / max(ndlRaw, 0.1), SOWX_SUN_SLOPE_MAX)
+                          : min(sqrt(max(1.0 - ndlRaw * ndlRaw, 0.0)) / max(ndlRaw, 0.1), CX_SUN_SLOPE_MAX)
                             * (1.0 - uSunMedia);
             for (int i = 0; i < uSunCascades; i++)
             {
-                vec3 ndc = SowxSunNdc(i, worldPos, N, slope);
-                if (any(greaterThan(abs(ndc.xy), vec2(SOWX_SUN_BORDER))) || abs(ndc.z) > 1.0) continue;
-                float v = SowxSunTaps(i, ndc, slope, texel);
+                vec3 ndc = CxSunNdc(i, worldPos, N, slope);
+                if (any(greaterThan(abs(ndc.xy), vec2(CX_SUN_BORDER))) || abs(ndc.z) > 1.0) continue;
+                float v = CxSunTaps(i, ndc, slope, texel);
                 // The handoff gradient: fade toward the next cascade's answer over a world-space band tied
                 // to the live focus, so the 4x resolution/bias jump never draws a line and never jumps.
                 float R = uSunRadius[i];
                 float f = R > 0.0
-                          ? clamp((distance(worldPos, uSunFocus) - SOWX_SUN_FADE_LO * R)
-                                  / ((SOWX_SUN_FADE_HI - SOWX_SUN_FADE_LO) * R), 0.0, 1.0)
+                          ? clamp((distance(worldPos, uSunFocus) - CX_SUN_FADE_LO * R)
+                                  / ((CX_SUN_FADE_HI - CX_SUN_FADE_LO) * R), 0.0, 1.0)
                           : 0.0;
                 if (f > 0.0 && i + 1 < uSunCascades)
                 {
-                    vec3 n2 = SowxSunNdc(i + 1, worldPos, N, slope);
-                    if (all(lessThan(abs(n2.xy), vec2(SOWX_SUN_BORDER))) && abs(n2.z) <= 1.0)
-                        v = mix(v, SowxSunTaps(i + 1, n2, slope, texel), f);
+                    vec3 n2 = CxSunNdc(i + 1, worldPos, N, slope);
+                    if (all(lessThan(abs(n2.xy), vec2(CX_SUN_BORDER))) && abs(n2.z) <= 1.0)
+                        v = mix(v, CxSunTaps(i + 1, n2, slope, texel), f);
                 }
                 return v;
             }

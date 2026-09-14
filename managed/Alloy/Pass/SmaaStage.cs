@@ -1,8 +1,8 @@
 using System.Reflection;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Anti-aliasing as a post-stack stage (ADR 0020). The client's anti-aliasing option
 /// (settings.tml <c>graphics.video.anti-aliasing.mode</c>, nwn.ini "AntiAliasing Mode", values 0/2/4/8/16 =
@@ -208,10 +208,10 @@ internal static unsafe class SmaaStage
         uniform vec4 uRt;            // (1/w, 1/h, w, h) of the frame -- SMAA_RT_METRICS
         #define SMAA_RT_METRICS uRt
         #define SMAA_GLSL_4 1
-        #define SOWX_AA_LEVEL $AA$
-        #if SOWX_AA_LEVEL >= 3
+        #define CX_AA_LEVEL $AA$
+        #if CX_AA_LEVEL >= 3
         #define SMAA_PRESET_ULTRA 1
-        #elif SOWX_AA_LEVEL == 2
+        #elif CX_AA_LEVEL == 2
         #define SMAA_PRESET_HIGH 1
         #else
         #define SMAA_PRESET_MEDIUM 1
@@ -264,7 +264,7 @@ internal static unsafe class SmaaStage
         uniform sampler2D uBlend;    // pass 2's weights
 
         """ + SmaaDefs + """
-        vec4 SowxStage(vec4 c)
+        vec4 CxStage(vec4 c)
         {
             vec4 off;
             SMAANeighborhoodBlendingVS(vUV, off);
@@ -284,7 +284,7 @@ internal static unsafe class SmaaStage
             E(ShaderStages.Source(r).Contains("#define SMAA_GLSL_4 1") && ShaderStages.Source(r).Contains("float2 SMAALumaEdgeDetectionPS("),
               $"{r} carries the port + library");
         foreach (string r in new[] { ShdEdgeFs, ShdWeightFs })
-            E(ShaderResource.Tokens(ShaderStages.Source(r)).Contains($"#define SOWX_AA_LEVEL {Level}\n"), $"{r} takes the preset from $AA$");
+            E(ShaderResource.Tokens(ShaderStages.Source(r)).Contains($"#define CX_AA_LEVEL {Level}\n"), $"{r} takes the preset from $AA$");
         E(ShaderContract.SlotSafe(ShaderStages.Source(ShdWeightFs), "uEdges", "uArea", "uSearch"), "the weight pass binds its three tables");
         using (Stream? a = typeof(SmaaStage).Assembly.GetManifestResourceStream("SmaaArea"))
         using (Stream? s = typeof(SmaaStage).Assembly.GetManifestResourceStream("SmaaSearch"))

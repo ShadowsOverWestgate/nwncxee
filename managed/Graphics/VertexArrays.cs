@@ -1,6 +1,6 @@
 using System;
 
-namespace Sowx.Graphics;
+namespace CX.Graphics;
 
 /// <summary>
 /// One vertex attribute's format and source buffer, as read off an engine VAO. Replaces the five parallel

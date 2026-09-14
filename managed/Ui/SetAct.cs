@@ -1,4 +1,4 @@
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>What a settings row edits. The row carries the extras each needs (bit, colour key, slider range);
 /// <see cref="SettingsPanel"/> only uses it as part of a row's identity key, and the consumer switches on it in

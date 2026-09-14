@@ -1,12 +1,12 @@
 using System;
 using System.Globalization;
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Content-overridable GLSL (#92): the Alloy pipeline asks for each of its shaders by
-/// <c>sowx_*</c> resref and gets whatever a hak, <c>override/</c> or NWSync supplies -- or null, which
+/// <c>cx_*</c> resref and gets whatever a hak, <c>override/</c> or NWSync supplies -- or null, which
 /// means the caller builds from its embedded default. Cold by construction: a program builds once per
 /// session, so the string this allocates never lands in a frame.</summary>
 internal static unsafe class ShaderResource
@@ -41,7 +41,7 @@ internal static unsafe class ShaderResource
 
     /// <summary>The GLSL a content author supplied for <paramref name="resref"/>, or null when nothing in
     /// the resource chain provides it (the common case: everyone runs the embedded defaults).
-    /// <para><b>OUR resrefs only</b> -- <c>sowx_*</c>/<c>cx_*</c>, which nothing else in the client ever
+    /// <para><b>OUR resrefs only</b> -- <c>cx_*</c>, which nothing else in the client ever
     /// looks up. Where no <c>CRes</c> exists yet this makes a BARE one and registers it, and the engine
     /// reads a <c>.shd</c> back through <c>CResHelper&lt;CResSHD, 2069&gt;</c>, casting whatever the key
     /// table holds. Point this at a resref the engine also loads and its next shader compile stores through
@@ -54,7 +54,7 @@ internal static unsafe class ShaderResource
         if (IsSpirv(b))
         {
             log?.Info($"shader override: {resref}.shd is a SPIR-V module -- "
-                    + (SpirvArmed ? "taken as a binary stage" : "IGNORED, set spirv=1 in sowx.cfg to accept it"));
+                    + (SpirvArmed ? "taken as a binary stage" : "IGNORED, set spirv=1 in cx.cfg to accept it"));
             return null;
         }
         // A BOM ahead of #version is a compile error, and an editor on Windows writes one without asking.

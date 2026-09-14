@@ -1,10 +1,10 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#173: UNIFORM UPLOAD. The per-pass scene terms every Alloy stage shares -- area light, wind, fog, sun cascades, local cubes, the env probe -- pushed to whichever program's locations the caller names, so the lit, water and grass stages upload the same values through one implementation.</summary>
 public sealed unsafe partial class AlloyRenderer

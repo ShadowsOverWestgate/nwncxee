@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#192: a one-shot dump of what the Alloy colour pass actually submits, as a file two runs of the
 /// same area from the same camera can be diffed against. Armed by <c>/framedump</c>, consumed by the very

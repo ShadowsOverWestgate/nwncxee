@@ -1,9 +1,9 @@
 using System;
 using System.IO;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>The overridable stage set: which resrefs exist, what GLSL the extender compiles for each, and
 /// the warning header a dumped copy carries. This is the authoritative composition table (ADR 0012) --
@@ -51,7 +51,7 @@ internal static class ShaderStages
         """;
 
     internal const string Record = """
-        // LOAD-BEARING: the SowxDraw struct below is the extender's per-draw SSBO record, and this file is a
+        // LOAD-BEARING: the CxDraw struct below is the extender's per-draw SSBO record, and this file is a
         // COPY of a layout that lives in C#. Drop or reorder a field and every draw reads its neighbour's.
         // The extender counts the vec4s and refuses a stage that disagrees. See docs/shader-overrides.md.
 
@@ -59,7 +59,7 @@ internal static class ShaderStages
         """;
 
     internal const string CasterRecord = """
-        // LOAD-BEARING: this stage reads ALLOY's per-draw record (SowxDraw) at gl_BaseInstance, which IS
+        // LOAD-BEARING: this stage reads ALLOY's per-draw record (CxDraw) at gl_BaseInstance, which IS
         // the ownership slot (#303 -- the gather dispatch writes it into every surviving command). Index it
         // any other way and every caster bakes at its neighbour's matrix. The skinning branch is
         // load-bearing too: without it every creature casts its bind pose. The extender refuses a stage
@@ -174,7 +174,7 @@ internal static class ShaderStages
         }
     }
 
-    /// <summary>The headless trigger: <c>dumpshaders=1</c> in <c>sowx.cfg</c> dumps once at SelfCheck, so
+    /// <summary>The headless trigger: <c>dumpshaders=1</c> in <c>cx.cfg</c> dumps once at SelfCheck, so
     /// the assembled stages -- including the bindless rewrite, which is a C# function and so out of reach of
     /// the offline checker -- can be compiled without a live client. Bucket 2 of ADR 0013: the decision has
     /// to be made before the first frame, so it cannot be a chat command.</summary>
@@ -194,7 +194,7 @@ internal static class ShaderStages
             ok &= src.Length > 0 && r.Length <= ShaderResource.ResRefBytes
                   && src.Contains("#version")
                   && header.Contains("docs/shader-overrides.md")
-                  && header.Contains(Record) == src.Contains("struct SowxDraw")
+                  && header.Contains(Record) == src.Contains("struct CxDraw")
                   && header.Contains(CasterRecord) == src.Contains("uDraw[gl_BaseInstance]")
                   && (header.Contains(Invariant) || header.Contains(SelfInvariant)) == src.Contains("invariant gl_Position;");
         }

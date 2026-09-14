@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#346: the VANILLA BRIDGE. An Alloy stage can name a stock <c>.shd</c> include and get the
 /// engine's own text spliced into it at compile time, so shading the game already expresses -- and that a
@@ -35,13 +35,13 @@ namespace Sowx.Alloy;
 internal static unsafe class VanillaShader
 {
     /// <summary>#346: the arming decision (ADR 0013 bucket 2 -- a capability gate, not a look), read once.
-    /// <c>vanillabridge=0</c> in <c>sowx.cfg</c> compiles every stage from its fallback stubs and asks the
+    /// <c>vanillabridge=0</c> in <c>cx.cfg</c> compiles every stage from its fallback stubs and asks the
     /// engine for nothing -- which turns off every feature the bridge carries, and nothing else. It exists because this path took the client down once already: reading a
     /// resource the engine owns is engine surgery, and a kill switch that needs no rebuild is what a
     /// player-facing failure wants.</summary>
     private static readonly bool _armed = Settings.Bool("vanillabridge", true);
 
-    /// <summary>#350: the hosting gate alone (ADR 0013 bucket 2). <c>hostfs=0</c> in <c>sowx.cfg</c> compiles
+    /// <summary>#350: the hosting gate alone (ADR 0013 bucket 2). <c>hostfs=0</c> in <c>cx.cfg</c> compiles
     /// every hosted region from its stub while the plain splices stay -- the A/B for "the lit program got
     /// slower for everyone": three content bodies inside one uber-program cost registers on every fragment,
     /// whether or not a material in the area ever takes that branch.</summary>
@@ -59,12 +59,12 @@ internal static unsafe class VanillaShader
 
     /// <summary>#350: the HOST marker. The region names a content FRAGMENT STAGE -- a material's own
     /// <c>customShaderFS</c> -- and Alloy runs that stage's pre-shading body from inside its lit program:
-    /// the file is spliced with its includes, its <c>main()</c> renamed to <c>SowxHostMain_&lt;resref&gt;</c>,
+    /// the file is spliced with its includes, its <c>main()</c> renamed to <c>CxHostMain_&lt;resref&gt;</c>,
     /// its <c>gl_FragColor</c> write redirected into <c>FragmentColor</c>, and the two calls Alloy owns
     /// (<c>SetupStandardShaderInputs</c>, <c>ApplyStandardShader</c>) resolved to no-ops by
     /// <see cref="AlloyRenderer.VanillaStandardFs"/> standing in for <c>inc_standard</c>. What is left
     /// between those two calls is the look, and the stage's <c>MATERIAL_*_VALUE</c> terms are read back off
-    /// the macros it declared. The stub between the markers is the same empty <c>SowxHost_&lt;resref&gt;</c>
+    /// the macros it declared. The stub between the markers is the same empty <c>CxHost_&lt;resref&gt;</c>
     /// the wrapper defines, so a missing or broken file is the plain lit path for that feature.</summary>
     private const string Host = "// $VANILLA-HOST ";
 
@@ -195,15 +195,15 @@ internal static unsafe class VanillaShader
             log?.Info($"{what}: {resref}.shd from the resource chain has no main() to host -- compiling the stub for this region");
             return null;
         }
-        text = MainFn.Replace(text, "void SowxHostMain_" + resref + "()", 1);
+        text = MainFn.Replace(text, "void CxHostMain_" + resref + "()", 1);
         text = Regex.Replace(text, @"\bgl_FragColor\b", "FragmentColor");
         text = EnvDecl.Replace(text, "");
         var own = OwnDefine.Matches(stock).Select(m => m.Groups[1].Value).Distinct().ToList();
         var sb = new StringBuilder(text.Length + 512);
         foreach (var n in own) sb.Append("#undef ").Append(n).Append('\n');
         sb.Append(text).Append('\n');
-        sb.Append("void SowxHost_").Append(resref).Append("()\n{\n")
-          .Append("    SowxHostMain_").Append(resref).Append("();\n")
+        sb.Append("void CxHost_").Append(resref).Append("()\n{\n")
+          .Append("    CxHostMain_").Append(resref).Append("();\n")
           .Append("    fSpecularity = MATERIAL_SPECULARITY_VALUE;\n")
           .Append("    fRoughness = MATERIAL_ROUGHNESS_VALUE;\n")
           .Append("    fMetallicness = MATERIAL_METALLICNESS_VALUE;\n")

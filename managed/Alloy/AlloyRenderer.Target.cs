@@ -1,10 +1,10 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#173/#467: FRAMEBUFFER PLUMBING. The engine's target is the default framebuffer by construction (the shim binds FBO 0 at the anchor); this latches its viewport, sRGB state and clear values, and binds the 4.6-side equivalent.</summary>
 public sealed unsafe partial class AlloyRenderer
@@ -40,11 +40,11 @@ public sealed unsafe partial class AlloyRenderer
     private static ref Target ThisFrameTarget()
     {
         bool gen = !_tgtValid || _tgtVpW != FrameInputs.CamViewW || _tgtVpH != FrameInputs.CamViewH
-                   || _tgtUiScale != Sowx.Ui.Metrics.GameUiScale || _tgtScene != _enrollScene;
+                   || _tgtUiScale != CX.Ui.Metrics.GameUiScale || _tgtScene != _enrollScene;
         if (gen)
         {
             _tgtVpW = FrameInputs.CamViewW; _tgtVpH = FrameInputs.CamViewH;
-            _tgtUiScale = Sowx.Ui.Metrics.GameUiScale; _tgtScene = _enrollScene;
+            _tgtUiScale = CX.Ui.Metrics.GameUiScale; _tgtScene = _enrollScene;
             ReadTarget(out _target);
             // #458: the shim binds FBO 0 before the anchor, so there is no engine name here to go stale.
             _tgtValid = true;

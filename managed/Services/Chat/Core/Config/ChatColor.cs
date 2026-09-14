@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>Stable keys for the user-themeable chrome colours. Values live in the config as RGBA8
 /// (<c>0xRRGGBBAA</c>) overrides; the defaults + the mapping onto individual widgets live in

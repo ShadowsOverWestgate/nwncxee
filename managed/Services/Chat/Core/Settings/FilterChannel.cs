@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>GUIINGAME_MESSAGE_* flag values read from the binary's rodata. The channel value from the
 /// ingest hook IS the flag, and both <see cref="Tab.Matches"/> and <see cref="ChatStore"/> filter via

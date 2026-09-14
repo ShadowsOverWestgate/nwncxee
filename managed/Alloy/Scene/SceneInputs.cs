@@ -1,10 +1,10 @@
 using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// What feeds the Alloy shadow pipeline: the light walk and the caster walk. It renders nothing --
@@ -68,7 +68,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>Behavior-host vtable slot for <c>AsBehaviorCameraFollow()</c> -- pure <c>return this</c> for a follow
     /// cam, null otherwise (a base-class type filter). Replicated exactly from ManageSceneBSP's own devirt call, so
     /// non-follow cameras (free-cam/cutscene) safely yield null.</summary>
-    private static readonly int BehaviorAsFollowVtbl = Sowx.Framework.EngineLayout.BehaviorAsFollowSlot;
+    private static readonly int BehaviorAsFollowVtbl = CX.Framework.EngineLayout.BehaviorAsFollowSlot;
 
     // One map centre per presented frame, shared by the re-walk and published as FrameInputs.Focus for
     // CasterPass's cascade fit. Player-anchored when the controlled creature is reachable, else the
@@ -426,7 +426,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // 0x12/0x13/0x14 and derives lightFalloffFactor and lightMaxIntensityInv from exactly these).
         // Read every capture rather than once: they are graphics settings and the player can change them.
         if (_getGspF != null)
-            Sowx.Alloy.AlloyLights.LatchAtten(_getGspF(0x13), _getGspF(0x14), radiusMult);
+            CX.Alloy.AlloyLights.LatchAtten(_getGspF(0x13), _getGspF(0x14), radiusMult);
         // BOTH snapshots restart here, not at the frame edge. CasterPass consumes the local-light set later
         // in this same pass slot, and the roll-call this service's frame edge rides runs at the present --
         // resetting there handed the cube pass an empty set every frame. The walk is once-per-frame and
@@ -437,7 +437,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         if (walkDiag) _walkDiagTick = 0;
         if (walkDiag)
             _log?.Info($"SceneInputs: [lightdiag] radiusMult(0x12)={radiusMult:F3} minI(0x13)={(_getGspF != null ? _getGspF(0x13) : -1f):F3} " +
-                       $"maxI(0x14)={(_getGspF != null ? _getGspF(0x14) : -1f):F3} -> atten {Sowx.Alloy.AlloyLights.Atten.X:F3}/{Sowx.Alloy.AlloyLights.Atten.Y:F3} " +
+                       $"maxI(0x14)={(_getGspF != null ? _getGspF(0x14) : -1f):F3} -> atten {CX.Alloy.AlloyLights.Atten.X:F3}/{CX.Alloy.AlloyLights.Atten.Y:F3} " +
                        $"| area ambient=({FrameInputs.AreaAmbient.X:F3},{FrameInputs.AreaAmbient.Y:F3},{FrameInputs.AreaAmbient.Z:F3}) " +
                        $"diffuse=({FrameInputs.AreaDiffuse.X:F3},{FrameInputs.AreaDiffuse.Y:F3},{FrameInputs.AreaDiffuse.Z:F3}) " +
                        $"dir=({FrameInputs.AreaDiffuseDir.X:F3},{FrameInputs.AreaDiffuseDir.Y:F3},{FrameInputs.AreaDiffuseDir.Z:F3}) " +
@@ -494,9 +494,9 @@ public sealed unsafe class SceneInputs : IExtenderService
                 //
                 // The ^(1/SrgbGamma) pre-compensates the receiver's own pow(c, 2.2), so this lands there as a
                 // clean linear-space multiply and the hue comes through exactly.
-                float boost = 1f + (maxc - 1f) * Sowx.Alloy.AlloyLights.OverbrightScale;
+                float boost = 1f + (maxc - 1f) * CX.Alloy.AlloyLights.OverbrightScale;
                 if (boost < 0f) boost = 0f;
-                float k = MathF.Pow(boost, 1f / Sowx.Alloy.AlloyLights.SrgbGamma) / maxc;
+                float k = MathF.Pow(boost, 1f / CX.Alloy.AlloyLights.SrgbGamma) / maxc;
                 r *= k; g *= k; b *= k;
             }
             float upW = adjR;

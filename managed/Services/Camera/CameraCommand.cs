@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Camera;
+namespace CX.Services.Camera;
 
 /// <summary>
 /// The one <c>/camera</c> command, shared by every camera ticket of map #535. <see cref="CommandRegistry"/>

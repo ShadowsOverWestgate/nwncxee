@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// The vanilla-shadow suppression seam (#65), and since #97 the WHOLE of what the extender does to the
@@ -63,7 +63,7 @@ public sealed unsafe class ShadowService : IExtenderService
 
     /// <summary>#86: true while the frame is latched vanilla -- every handler then calls straight through, so
     /// the engine's own stencil shadows come back with the rest of vanilla rendering.</summary>
-    private static bool Vanilla => !Sowx.Alloy.AlloyGate.Alloy;
+    private static bool Vanilla => !CX.Alloy.AlloyGate.Alloy;
 
     private static delegate* unmanaged<IntPtr, void> _staticOrig;
     private static delegate* unmanaged<IntPtr, void> _dynOrig;

@@ -3,13 +3,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
-using Sowx.Framework;
-using Sowx.Services.Chat;
-using Sowx.Services.Chat.Core;
-using Sowx.Services.Chat.Render;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Services.Chat;
+using CX.Services.Chat.Core;
+using CX.Services.Chat.Render;
+using CX.Ui;
 
-namespace Sowx.Services.Dialog;
+namespace CX.Services.Dialog;
 
 /// <summary>
 /// Native-C# NPC conversation UI (#dialog), the chatbox pattern applied to dialogs: SkipOriginal the
@@ -83,7 +83,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static readonly DialogSettings _settings = new();
     private static volatile DialogFrame? _settingsFrame;
     private static DialogConfig _cfg = new();
-    private static readonly ConfigFile _file = new("sowx-dialog.cfg");
+    private static readonly ConfigFile _file = new("cx-dialog.cfg");
 
     // ---- grab / pointer (input thread) ----
     private enum Grab { None, Move, Resize, Scroll, SelectText }

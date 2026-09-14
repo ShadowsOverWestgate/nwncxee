@@ -1,7 +1,7 @@
 using System;
 using System.Numerics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// This frame's CONSTANTS: the engine state every Alloy pass shades and fits against -- camera, area

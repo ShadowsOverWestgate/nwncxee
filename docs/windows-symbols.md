@@ -297,9 +297,9 @@ binding NUI (`HotkeyMenuService.OnHotkeysButton`), so the button is never dead.
 
 ## Reading the tester's log (#421)
 
-No debugger on the tester's side: `sowx.log` (in `Documents\Neverwinter Nights\`, beside `nwn.ini`)
-has to answer "which symbol is wrong" on its own. `sowx.cfg` goes beside `nwn.ini` (the engine may use a
-`Neverwinter Nights.0` instance folder; `sowx.log` always lands in the unsuffixed one). `logs=1` must be set **before launch**
+No debugger on the tester's side: `cx.log` (in `Documents\Neverwinter Nights\`, beside `nwn.ini`)
+has to answer "which symbol is wrong" on its own. `cx.cfg` goes beside `nwn.ini` (the engine may use a
+`Neverwinter Nights.0` instance folder; `cx.log` always lands in the unsuffixed one). `logs=1` must be set **before launch**
 -- the gate closes at `settings:` and everything after is silent except the stand-down lines.
 
 | Line | Meaning |

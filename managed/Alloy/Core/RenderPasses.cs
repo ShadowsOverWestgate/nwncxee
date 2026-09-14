@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// Every Alloy pass's lifecycle, declared once (#175). This is the file the acceptance criterion means by

@@ -7,13 +7,13 @@
 
     <PublishAot>true</PublishAot>
     <NativeLib>Shared</NativeLib>
-    <AssemblyName>sowx_managed</AssemblyName>
+    <AssemblyName>cx_managed</AssemblyName>
     <!-- `dotnet publish -r win-x64` cross-compiles the .dll on Linux (unsupported by
          Microsoft, works): see the win-x64 block below and build-win.sh. -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">linux-x64</RuntimeIdentifier>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Keep the symbol table in the .so: a NativeAOT crash report is a list of module offsets, and
-         without this addr2line resolves every one of them to the nearest EXPORT (i.e. SowxInit) and the
+         without this addr2line resolves every one of them to the nearest EXPORT (i.e. CxInit) and the
          backtrace says nothing. Costs size in a file nobody ships to players. -->
     <StripSymbols>false</StripSymbols>
     <!-- The live scheduler trace showed ".NET Server GC" threads preempting the game's main thread 43 times in
@@ -28,7 +28,7 @@
        reflection, so their constructors must survive trimming. Trimming a tiny
        extender saves nothing; rooting it removes all reflection/AOT fragility. -->
   <ItemGroup>
-    <TrimmerRootAssembly Include="sowx_managed" />
+    <TrimmerRootAssembly Include="cx_managed" />
   </ItemGroup>
 
   <!-- SMAA's precomputed area/search tables (third_party/smaa/LICENSE.txt), read once per context, and the

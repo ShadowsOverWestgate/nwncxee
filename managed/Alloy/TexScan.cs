@@ -1,9 +1,9 @@
 using System;
 using System.Buffers;
 using System.Numerics;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>What the texture consumers used to read back from the GPU, computed instead from the engine's
 /// decoded image at the upload funnel, where it is still in memory: the cutout hole fraction the caster

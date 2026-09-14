@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #243 (ADR 0017 step 3): Alloy's own visibility. Until this existed the only visibility input the colour
@@ -170,7 +170,7 @@ internal static unsafe class CullPass
     /// <summary>The boot threshold, and #152's own: one pixel of projected radius.</summary>
     internal const float DefLodPx = 1.0f;
 
-    /// <summary>#336: drop geometry the fog has already painted over. <c>SowxFog</c> clamps its lerp, so a
+    /// <summary>#336: drop geometry the fog has already painted over. <c>CxFog</c> clamps its lerp, so a
     /// fragment past <see cref="SceneFog.OpaqueDistance"/> is EXACTLY the fully-fogged colour -- it is drawn,
     /// lit, prepassed and shadowed to produce a pixel the fog would have painted anyway. Measured: camfar 215
     /// against a fog end of 125, so two thirds of the ground area in the frustum was past it.
@@ -363,7 +363,7 @@ internal static unsafe class CullPass
         return true;
     }
 
-    /// <summary>#303: the per-ownership-slot <c>SowxCullSphere</c> upload, hoisted out of <see cref="Begin"/>
+    /// <summary>#303: the per-ownership-slot <c>CxCullSphere</c> upload, hoisted out of <see cref="Begin"/>
     /// and out of the Mode gate: the shadow gather culls against this same buffer, so it must stay current
     /// under <c>/draw cull 0</c> and during a probe capture alike. The spheres are indexed by RECORD slot,
     /// exactly as the records are, and go up whole -- four floats against the record's forty-four, changing
@@ -885,7 +885,7 @@ internal static unsafe class CullPass
                     float w = Vector4.Transform(new Vector4(c, 1f), vp).W;
                     if (w > 0f && r * lodScale < lodPx * w) keep = false;
                 }
-                // occ stands in for SowxOccluded: the pyramid's verdict per slot, which has no CPU model.
+                // occ stands in for CxOccluded: the pyramid's verdict per slot, which has no CPU model.
                 if (keep && occ != null && !(sorted && rejMode == RejWrite) && occ[slot]) { keep = false; hiz = true; }
             }
             if (rejMode == RejWrite) rej[i] = hiz ? 1u : 0u;
@@ -986,13 +986,13 @@ internal static unsafe class CullPass
     private const string CullCs = """
         #version 460 core
         layout(local_size_x = 64) in;   // GroupSize
-        layout(std430, binding = 12) readonly buffer SowxCullSrc     { uint uSrc[]; };
-        layout(std430, binding = 13) readonly buffer SowxCullSphere  { vec4 uSph[]; };
-        layout(std430, binding = 14) writeonly buffer SowxCullCmd    { uint uCmd[]; };
-        layout(std430, binding = 15) writeonly buffer SowxCullOutIdx { int  uOut[]; };
-        layout(std430, binding = 16) buffer SowxCullCount            { uint uCnt[]; };
-        layout(std430, binding = 17) buffer SowxCullKey              { float uKey[]; };
-        layout(std430, binding = 21) buffer SowxCullRej              { uint uRejBuf[]; };
+        layout(std430, binding = 12) readonly buffer CxCullSrc     { uint uSrc[]; };
+        layout(std430, binding = 13) readonly buffer CxCullSphere  { vec4 uSph[]; };
+        layout(std430, binding = 14) writeonly buffer CxCullCmd    { uint uCmd[]; };
+        layout(std430, binding = 15) writeonly buffer CxCullOutIdx { int  uOut[]; };
+        layout(std430, binding = 16) buffer CxCullCount            { uint uCnt[]; };
+        layout(std430, binding = 17) buffer CxCullKey              { float uKey[]; };
+        layout(std430, binding = 21) buffer CxCullRej              { uint uRejBuf[]; };
         uniform int uDrawN;
         uniform vec4 uPlanes[6];
         uniform mat4 uVP;
@@ -1022,7 +1022,7 @@ internal static unsafe class CullPass
         // distant tile's bounding cube IS a large screen box -- which is why the artefact was distant
         // tileset geometry vanishing while near geometry (whose box leaves the screen and exits above)
         // stayed. Converting to a level-0 texel first and shifting keeps the correspondence exact.
-        float SowxPyr(vec2 uv, int lod)
+        float CxPyr(vec2 uv, int lod)
         {
             ivec2 lsz = max(ivec2(uPyrSize) >> lod, ivec2(1));
             ivec2 t = clamp(ivec2(uv * uPyrSize) >> lod, ivec2(0), lsz - ivec2(1));
@@ -1032,14 +1032,14 @@ internal static unsafe class CullPass
         // #287: LOD selection. The sphere's screen radius is r * uLodScale / depth, and the clip w of its
         // centre IS that depth under a perspective projection -- so no eye position and no view matrix reach
         // this shader. A scale of zero means the pass is not perspective and the test cannot be trusted.
-        bool SowxSubPixel(vec3 c, float r)
+        bool CxSubPixel(vec3 c, float r)
         {
             if (uLodPx <= 0.0 || uLodScale <= 0.0) return false;
             float w = (uVP * vec4(c, 1.0)).w;
             return w > 0.0 && r * uLodScale < uLodPx * w;
         }
 
-        bool SowxOccluded(vec3 c, float r)
+        bool CxOccluded(vec3 c, float r)
         {
             vec2 lo = vec2(1e30), hi = vec2(-1e30);
             float near = 1e30;
@@ -1060,8 +1060,8 @@ internal static unsafe class CullPass
             // A level whose neighbourhood covers the box. Rounding UP over-covers, which only ever raises
             // the max it compares against, so it errs toward drawing.
             int lod = int(clamp(ceil(log2(max(max(px.x, px.y), 1.0))), 0.0, uMaxLod));
-            float d = max(max(SowxPyr(uv0, lod), SowxPyr(vec2(uv1.x, uv0.y), lod)),
-                          max(SowxPyr(vec2(uv0.x, uv1.y), lod), SowxPyr(uv1, lod)));
+            float d = max(max(CxPyr(uv0, lod), CxPyr(vec2(uv1.x, uv0.y), lod)),
+                          max(CxPyr(vec2(uv0.x, uv1.y), lod), CxPyr(uv1, lod)));
             return near * 0.5 + 0.5 > d;
         }
 
@@ -1090,14 +1090,14 @@ internal static unsafe class CullPass
                 // larger on screen than its bounding radius -- a torch flame or a spell mote is a bloomed
                 // sprite, and thinning it by projected radius would delete lights the frustum and the
                 // pyramid both agree are visible.
-                if (keep && !sorted && SowxSubPixel(s.xyz, s.w)) keep = false;
+                if (keep && !sorted && CxSubPixel(s.xyz, s.w)) keep = false;
                 // #489: a SORTED draw is not tested against the stale pyramid. The blended prepass draws
                 // phase one's placement of it as a creature's self-depth layer, and phase two does not
                 // restore sorted draws -- so a stale rejection there would be the one-frame pop this exists
                 // to prevent.
-                if (keep && uHiZ != 0 && !(sorted && uRej == 1) && SowxOccluded(s.xyz, s.w)) { keep = false; hiz = true; }
+                if (keep && uHiZ != 0 && !(sorted && uRej == 1) && CxOccluded(s.xyz, s.w)) { keep = false; hiz = true; }
                 // #341: past the fog's opaque distance AND entirely below the eye -- see CullPass.FogCull
-                // for why both. The distance is the fog's own metric (SowxFogFactor), and the radius is
+                // for why both. The distance is the fog's own metric (CxFogFactor), and the radius is
                 // subtracted so a sphere reaching back inside the fog is kept whole.
                 if (keep && uFogCull > 0.0 && s.z + s.w < uEye.z)
                 {
@@ -1148,10 +1148,10 @@ internal static unsafe class CullPass
     private const string SortCs = """
         #version 460 core
         layout(local_size_x = 64) in;   // GroupSize
-        layout(std430, binding = 12) readonly buffer SowxCullSrc     { uint uSrc[]; };
-        layout(std430, binding = 14) writeonly buffer SowxCullCmd    { uint uCmd[]; };
-        layout(std430, binding = 15) writeonly buffer SowxCullOutIdx { int  uOut[]; };
-        layout(std430, binding = 17) readonly buffer SowxCullKey     { float uKey[]; };
+        layout(std430, binding = 12) readonly buffer CxCullSrc     { uint uSrc[]; };
+        layout(std430, binding = 14) writeonly buffer CxCullCmd    { uint uCmd[]; };
+        layout(std430, binding = 15) writeonly buffer CxCullOutIdx { int  uOut[]; };
+        layout(std430, binding = 17) readonly buffer CxCullKey     { float uKey[]; };
         uniform int uDrawN;
         uniform int uCompactBelow;
 

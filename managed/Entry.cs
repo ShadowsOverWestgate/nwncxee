@@ -1,11 +1,11 @@
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx;
+namespace CX;
 
 public static class Entry
 {
     /// <summary>Native bootstrap calls this once on load; it just starts the host.</summary>
-    [UnmanagedCallersOnly(EntryPoint = "SowxInit")]
-    public static void SowxInit() => ServiceHost.Run();
+    [UnmanagedCallersOnly(EntryPoint = "CxInit")]
+    public static void CxInit() => ServiceHost.Run();
 }

@@ -1,6 +1,6 @@
 using System;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
 /// A safe front door to <c>AurTextureGetTID</c>. A <c>CAurTexture*</c> is BORROWED -- the engine frees it on

@@ -1,7 +1,7 @@
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Order-independent transparency for the blended class, two modes behind <c>/draw oit</c>.
 /// <para>Mode 1: weighted blended (McGuire &amp; Bavoil 2013). The class draws in ONE pass, unsorted,
@@ -43,7 +43,7 @@ internal static unsafe class OitPass
     }
     /// <summary>The head table: the node count, then one head per pixel.</summary>
     private static long HeadBytes(int w, int h) => 4L + 4L * w * h;
-    /// <summary><c>oitlayers</c> in sowx.cfg: node pool capacity as an average of nodes per pixel. 16 bytes a
+    /// <summary><c>oitlayers</c> in cx.cfg: node pool capacity as an average of nodes per pixel. 16 bytes a
     /// node, so 3 at 1080p is ~100 MB, allocated only once mode 2 is first used.</summary>
     private static readonly int Layers = Settings.Int("oitlayers", 3, 1, 32);
     /// <summary><c>/draw oit</c>: 0 = the sorted, depth-writing pass (A/B instrument), 1 = weighted blended, 2 = linked lists
@@ -59,7 +59,7 @@ internal static unsafe class OitPass
     {
         int v = fs.IndexOf("#version", StringComparison.Ordinal);
         if (v < 0) return fs;
-        return fs.Insert(fs.IndexOf('\n', v) + 1, "#define SOWX_OIT_LISTS 1\n");
+        return fs.Insert(fs.IndexOf('\n', v) + 1, "#define CX_OIT_LISTS 1\n");
     }
     private static uint _fbo, _accum, _reveal, _prog, _nodes;
     /// <summary>The head table, cleared on the GPU by <see cref="_progClear"/> (a full-screen draw writing zeros)
@@ -318,7 +318,7 @@ internal static unsafe class OitPass
         #version 460 core
         out vec4 frag;
         uniform int uStride;
-        layout(std430, binding = 22) writeonly buffer SowxOitHeads { uint uOitCount; uint uOitHead[]; };
+        layout(std430, binding = 22) writeonly buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
         void main()
         {
             ivec2 p = ivec2(gl_FragCoord.xy);
@@ -336,8 +336,8 @@ internal static unsafe class OitPass
         uniform int uViz;
         uniform int uMode;
         uniform ivec2 uOitDim;   // (head-table stride, node capacity)
-        layout(std430, binding = 22) readonly buffer SowxOitHeads { uint uOitCount; uint uOitHead[]; };
-        layout(std430, binding = 23) readonly buffer SowxOitNodes { uvec4 uOitNode[]; };
+        layout(std430, binding = 22) readonly buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
+        layout(std430, binding = 23) readonly buffer CxOitNodes { uvec4 uOitNode[]; };
         // ponytail: 16 sorted layers a pixel; past that the far end composites unsorted. Raise if glass stacks deeper.
         const int K = 16;
         const int VizWalk = 64;   // uViz 4: nodes walked per pixel before the grey saturates

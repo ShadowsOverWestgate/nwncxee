@@ -4,7 +4,7 @@ Status: accepted (2026-08-24 grilling).
 
 ## Context
 
-The extender carries **149 distinct `SOWX_*` environment variables**, read at **78 sites**, parsed by
+The extender carries **149 distinct `CX_*` environment variables**, read at **78 sites**, parsed by
 **four near-identical private `Env(name, fallback)` helpers** (`WaterPass.cs:125`, `PostChain.cs:129`,
 `OwnedLights.cs:352`, `CasterPass.cs:787`). Modules reach across subsystems to borrow one:
 `GrassField` (14 sites), `OwnedDrawService.cs:851` and `EnvProbe.cs:95` all call
@@ -36,7 +36,7 @@ A knob with no bucket does not ship.
 
 ## Consequences
 
-- `SOWX_DUMP_SHADERS` is replaced by `/dumpshaders` (ADR 0012) with a config-file or launcher-flag
+- `CX_DUMP_SHADERS` is replaced by `/dumpshaders` (ADR 0012) with a config-file or launcher-flag
   trigger for the headless case. It is the worked example of the policy.
 - The four duplicate `Env` parsers collapse into one module, and the cross-subsystem borrowing goes
   with them. This subsumes the `Tunables` item in the architecture review's pass-lifecycle candidate,

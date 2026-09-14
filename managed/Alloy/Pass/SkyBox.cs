@@ -1,11 +1,11 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #125 (map #68, spec #114 M3, ADR 0011 "Skybox draws after opaque, before blended"): the per-area skybox,
@@ -79,7 +79,7 @@ internal static unsafe class SkyBox
     /// <summary>Part vtable slot 0x60, <c>Part::AsPartTriMesh</c> -- the same discriminator
     /// <see cref="SceneWalk"/> uses, and the one that keeps a sky gob's lights and dummies out of the
     /// table.</summary>
-    private static readonly int PartVtblAsTriMesh = Sowx.Framework.EngineLayout.PartAsTriMeshSlot;
+    private static readonly int PartVtblAsTriMesh = CX.Framework.EngineLayout.PartAsTriMeshSlot;
     /// <summary>A skybox model is a handful of parts and there are at most three gobs in play -- 11 was the
     /// most ever logged. Sized as a ceiling anyway (one Part struct is small), because a sky handed back for
     /// want of a slot is a whole-screen artifact.</summary>

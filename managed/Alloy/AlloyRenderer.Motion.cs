@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#392: object motion vectors for matrix movers. After <see cref="MotionVectors"/> has painted the
 /// camera field, every record whose model matrix changed THIS frame is drawn once more into the velocity
@@ -119,7 +119,7 @@ public sealed unsafe partial class AlloyRenderer
         out vec4 vPrev;
         void main()
         {
-            SowxDraw d = uDraw[SowxSlot(uDrawBase + gl_DrawID)];
+            CxDraw d = uDraw[CxSlot(uDrawBase + gl_DrawID)];
             gl_Position = uVP * d.model * vec4(aPos, 1.0);
             vCur = gl_Position;
             vPrev = uPrevVP * d.prev * vec4(aPos, 1.0);

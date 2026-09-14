@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>The in-game world clock captured when a line was ingested. <see cref="Valid"/> is false when the
 /// world timer wasn't up (e.g. main menu) -- the timestamp then falls back to local. Captured at ingest, not

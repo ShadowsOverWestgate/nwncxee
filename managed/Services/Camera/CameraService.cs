@@ -2,10 +2,10 @@ using System;
 using System.Globalization;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Alloy;
-using Sowx.Framework;
+using CX.Alloy;
+using CX.Framework;
 
-namespace Sowx.Services.Camera;
+namespace CX.Services.Camera;
 
 /// <summary>
 /// The camera layer (#536, map #535, ADR: docs/research/custom-camera.md §8 option A). Chains on the engine's
@@ -38,7 +38,7 @@ public sealed unsafe class CameraService : IExtenderService
         (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
 
     private static CameraConfig _cfg = new();
-    private static readonly ConfigFile _file = new("sowx-camera.cfg");
+    private static readonly ConfigFile _file = new("cx-camera.cfg");
     private static bool _configLoaded, _dirty;
 
     /// <summary>Why the layer is (or is not) touching the pose this frame.</summary>

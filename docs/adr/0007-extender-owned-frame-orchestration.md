@@ -1,7 +1,7 @@
 # 0007 — Extender-owned frame orchestration
 
 Status: phase 1 (the deterministic per-frame pass slot) still live; phases 2-3 **retired** by #87 —
-the receiver-uniform upload, SowxLights/SowxCubes injection and the OwnedShade program takeover were
+the receiver-uniform upload, CxLights/CxCubes injection and the OwnedShade program takeover were
 deleted once the Alloy pass (ADR 0009 M1) became the only custom lighting code. Kept as the record of
 why the pass slot exists and what the engine-program route cost.
 
@@ -66,23 +66,23 @@ exact compiled source, hak overrides included), linked under the engine's fixed 
 (Ghidra `GLRender::ConnectShaderData` @0x5ce8a0: 0=vPos 1=vTcIn 2=vColor 3=vCustomColor
 4=vTangent 5=fHandedness 6=vStaticLightDir 7=vNormal 8=vIndex 9=vWeight 10=fProjectionFrontal
 11-13=vTcIn1-3), active uniforms mirrored engine->clone once per frame. Pixel-identical by
-construction (`SOWX_OWNSHADE=0` reverts), but the program is now ours to modify.
+construction (`CX_OWNSHADE=0` reverts), but the program is now ours to modify.
 
 Slice 2 (implemented): clones register as receiver programs, so the pass-slot upload feeds them
-every sowx* lighting/shadow uniform DIRECTLY; the per-frame mirror skips sowx* (one full mirror at
+every cx* lighting/shadow uniform DIRECTLY; the per-frame mirror skips cx* (one full mirror at
 clone time bridges to the first upload). Lighting state on Alloy programs no longer round-trips
 through the engine program at all. Non-lighting uniforms (matrices, fog, wind) stay mirrored --
 they are engine *state*, not engine *cadence*, and owning them buys no debuggability yet.
 
-Slice 3 (implemented): link-time TAKEOVER (default, `SOWX_OWNSHADE=2`; `1` = slice-2 behavior,
+Slice 3 (implemented): link-time TAKEOVER (default, `CX_OWNSHADE=2`; `1` = slice-2 behavior,
 `0` = off). Key Ghidra fact: `GLRender::ConnectShaderData` @0x4ce8e0 binds the fixed attribute
 map, links, and resolves EVERY engine uniform location against the program id at
 `PROG_FIXED+0x64`. So at `LoadShader` return we compile a clone of the program's exact readback
 source (patches applied), write the clone's id into the record, and call `ConnectShaderData`
 again -- the ENGINE re-wires itself onto our program and drives it for every draw: no mirroring,
-whole-scene consistency, source owned. Scoped to fragment sources containing `sowxAreaLight`
+whole-scene consistency, source owned. Scoped to fragment sources containing `cxAreaLight`
 (scene receivers); failures restore the engine id and re-wire back. Source patches are the
-no-hak-deploy shader channel (first knob: `SOWX_LIGHTBOOST` scales the overbright multiplier).
+no-hak-deploy shader channel (first knob: `CX_LIGHTBOOST` scales the overbright multiplier).
 A relink of a taken-over record hands the clone back to the engine (detected + left alone;
 re-takeover on next LoadShader).
 
@@ -98,14 +98,14 @@ re-takeover on next LoadShader).
 
 ### Phase 4 — modern data path (slice 1 implemented: lighting UBO)
 
-Alloy programs read the whole area-light snapshot from ONE std140 uniform block (`SowxLights`:
+Alloy programs read the whole area-light snapshot from ONE std140 uniform block (`CxLights`:
 vec4 posRange[128], vec4 colorSlot[128], vec4 meta) filled by a single `glBufferSubData` per
 frame at the pass slot -- replacing ~130 uniform calls x ~70 receiver programs per upload and
 making extender/shader capacity skew (the 0x502 class) structurally impossible. Enabled by the
-`SOWX_UBO` define takeover injects after `#version`; shaders without the branch (old hak) and
+`CX_UBO` define takeover injects after `#version`; shaders without the branch (old hak) and
 non-taken-over programs keep the individual-uniform path, detected per program at resolve
-(`glGetUniformBlockIndex`). Slice 2: the per-slot cube state (six 32-element `sowxLocal*` arrays + count/near/bias) moved into
-a second block, `SowxCubes` (binding 7) -- declared with IDENTICAL member names/types as the
+(`glGetUniformBlockIndex`). Slice 2: the per-slot cube state (six 32-element `cxLocal*` arrays + count/near/bias) moved into
+a second block, `CxCubes` (binding 7) -- declared with IDENTICAL member names/types as the
 individual uniforms (std140 pads vec3/float/int array elements to a 16-byte stride, mirrored by
 the staging layout; int members are raw int bits), so zero shader-logic changes. The depth-pass
 receiver mute becomes one 4-byte buffer write instead of a per-program loop. Remaining

@@ -1,7 +1,7 @@
 using System.Globalization;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Camera;
+namespace CX.Services.Camera;
 
 /// <summary>Per-engine-camera-mode feel: the three things <see cref="CameraService"/> changes about the engine's
 /// answer. One block per mode byte (0 chase, 1 top-down, 2 stiff chase), so top-down can pitch toward the map
@@ -128,7 +128,7 @@ public sealed class FreeCamera
     }
 }
 
-/// <summary>Persisted camera-layer preferences, flat <c>mode.key=value</c> in <c>sowx-camera.cfg</c> beside
+/// <summary>Persisted camera-layer preferences, flat <c>mode.key=value</c> in <c>cx-camera.cfg</c> beside
 /// <c>nwn.ini</c> (written by <c>/camera</c>, never hand-required). Every numeric key is clamped on parse.</summary>
 public sealed class CameraConfig
 {

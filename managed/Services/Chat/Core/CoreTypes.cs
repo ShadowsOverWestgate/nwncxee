@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 // The chat core's one-line enums and structs, collected (#158). A type only belongs here while its whole
 // declaration fits on one line; anything that grows a body goes back to its own file.

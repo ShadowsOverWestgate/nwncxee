@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>Procedural light halos: the Alloy replacement for vanilla's lens-flare quads. The population is
 /// the engine's own <c>LightManager::GetLensFlareLights</c> list (every light node with <c>lensflares 1</c>),
@@ -186,7 +186,7 @@ internal static unsafe class Halos
     /// gone at <c>flareradius</c>. Occlusion is the fragment stage's, per pixel.</summary>
     internal const string HaloVs = """
         #version 460 core
-        layout(std430, binding = 5) readonly buffer SowxHaloBuf { vec4 uHalos[]; };   // (pos, radius), (rgb, flareradius)
+        layout(std430, binding = 5) readonly buffer CxHaloBuf { vec4 uHalos[]; };   // (pos, radius), (rgb, flareradius)
         uniform mat4 uView;
         uniform mat4 uProj;
         uniform float uGain;
@@ -228,7 +228,7 @@ internal static unsafe class Halos
         out vec4 frag;
 
         // The scene's view-space DISTANCE (positive) under this fragment, from the depth copy -- the particle pass's own form.
-        float SowxSceneViewZ(vec2 uv)
+        float CxSceneViewZ(vec2 uv)
         {
             float ndc = texture(uSceneDepth, uv).r * 2.0 - 1.0;
             return uProj[3].z / (ndc + uProj[2].z);
@@ -239,7 +239,7 @@ internal static unsafe class Halos
             float r = length(vUV);
             if (r >= 1.0) discard;
             // Per-pixel occlusion: a surface nearer than the light hides this pixel, softly over one radius.
-            float sceneDepth = SowxSceneViewZ(gl_FragCoord.xy / vec2(textureSize(uSceneDepth, 0)));   // positive distance
+            float sceneDepth = CxSceneViewZ(gl_FragCoord.xy / vec2(textureSize(uSceneDepth, 0)));   // positive distance
             float lightDepth = -vViewZ;
             float vis = clamp((sceneDepth - (lightDepth - vRadius)) / max(vRadius, 1e-3), 0.0, 1.0);
             if (uViz == 1) { frag = vec4(vec3(vis), 1.0); return; }

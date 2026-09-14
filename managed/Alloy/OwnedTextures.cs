@@ -4,10 +4,10 @@ using System.Numerics;
 using System.Threading;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #259 (map #68, ADR 0018 M5 strand 1): the textures Alloy DRAWS FROM, which are Alloy's own -- uploaded
@@ -156,7 +156,7 @@ internal static unsafe class OwnedTextures
         _handleDrop = Settings.Bool("handledrop", true);
         if (_armed)
             log.Info(_bcn
-                ? "OwnedTextures: BCn transcode armed -- uncompressed uploads are re-encoded BC1/BC3 (bcn=0 in sowx.cfg to keep them raw)"
+                ? "OwnedTextures: BCn transcode armed -- uncompressed uploads are re-encoded BC1/BC3 (bcn=0 in cx.cfg to keep them raw)"
                 : "OwnedTextures: BCn transcode off (bcn=0) -- uncompressed uploads stay raw");
         // #360: RESOLVED whenever the table is armed, FORCED only when the knob says so. The flag is now
         // read as well as written -- it is what says whether a finished build went down the GPU branch and
@@ -465,7 +465,7 @@ internal static unsafe class OwnedTextures
         return true;
     }
 
-    /// <summary>#386: <c>texsingle</c> in sowx.cfg (boot 1) -- one upload per texture instead of the engine's
+    /// <summary>#386: <c>texsingle</c> in cx.cfg (boot 1) -- one upload per texture instead of the engine's
     /// copy plus Alloy's. 0 is the double path as #259 shipped it.</summary>
     private static bool _single = true;
     private static long _singleUploads;
@@ -522,7 +522,7 @@ internal static unsafe class OwnedTextures
     /// the engine's own <c>BuildAndStore</c> (the #284 retry path, with its liveness guards), a few per
     /// frame, so the burst a turn used to pay -- 11-41 demands on one frame -- is spread over the frames
     /// after enrolment, before the camera gets there. A build lands in the cache, so the engine's own
-    /// first-sight build is then a warm hit. <c>texprefetch</c> in sowx.cfg is the per-frame budget (0 = off).
+    /// first-sight build is then a warm hit. <c>texprefetch</c> in cx.cfg is the per-frame budget (0 = off).
     /// The seen-set is keyed on the BORROWED pointer and cleared when it grows large: a recycled address
     /// costs one texture its prefetch (it builds at first sight, as before), never a wild call -- the drip
     /// re-proves the pointer through <see cref="AurTex"/> before touching it.</summary>
@@ -573,7 +573,7 @@ internal static unsafe class OwnedTextures
     // ---- ADR 0023: the texture CACHE -- the delete funnel is the world edge for the INDEX, not the resource ----
 
     /// <summary>VRAM the cache may hold, in bytes. 0 = the pre-ADR-0023 behaviour (a retired index entry
-    /// discards its resource). <c>texcache_mb</c> in sowx.cfg; -1 (the default) = a quarter of the probe's
+    /// discards its resource). <c>texcache_mb</c> in cx.cfg; -1 (the default) = a quarter of the probe's
     /// reported VRAM, 1024 MiB when the device answers no memory query. Resolved lazily: the probe runs on
     /// the first presented frame, after this table is attached.</summary>
     private static long _budgetBytes = -1;
@@ -823,7 +823,7 @@ internal static unsafe class OwnedTextures
     /// fence; (2) frames later, once the fence signals, the PBO is mapped and copied out; (3) an encoder
     /// THREAD encodes the levels; (4) the blocks are uploaded into a NEW name that <see cref="Replace"/>
     /// swaps in. The raw upload draws meanwhile, the old name retires through the ordinary discard path,
-    /// and a transcode that fails leaves the raw one standing. <c>bcndrip</c> in sowx.cfg is the per-frame
+    /// and a transcode that fails leaves the raw one standing. <c>bcndrip</c> in cx.cfg is the per-frame
     /// budget for stage 1; <c>bcn=0</c> still disables the transcode.
     /// ponytail: PBOs and fences are not re-minted across a context loss; the jobs in flight are dropped there
     /// and the textures stay raw.</summary>
@@ -935,7 +935,7 @@ internal static unsafe class OwnedTextures
         job.State = JobEncoding;
         if (_encoder == null)
         {
-            _encoder = new Thread(EncodeLoop) { IsBackground = true, Name = "sowx-bcn", Priority = ThreadPriority.BelowNormal };
+            _encoder = new Thread(EncodeLoop) { IsBackground = true, Name = "cx-bcn", Priority = ThreadPriority.BelowNormal };
             _encoder.Start();
         }
         _encodeWake.Release();

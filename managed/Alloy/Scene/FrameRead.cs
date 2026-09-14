@@ -1,9 +1,9 @@
 using System;
 using System.Numerics;
-using Sowx.Framework;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#257 (M5 strand 1 step 2): the frame constants, READ. Camera, area terms, sun and fog come out
 /// of the engine's own state once per world frame, at a slot Alloy picks -- not harvested off a rendering

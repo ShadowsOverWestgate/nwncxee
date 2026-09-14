@@ -1,10 +1,10 @@
 using System;
 using System.IO;
 
-namespace Sowx.Framework;
+namespace CX.Framework;
 
 /// <summary>
-/// One sowx <c>*.cfg</c> file, and the only place that knows how to load or save one (#164). Owns three
+/// One CX <c>*.cfg</c> file, and the only place that knows how to load or save one (#164). Owns three
 /// things every feature used to re-roll: the pre-main deferral rule, read-with-degrade + write-if-changed,
 /// and the flat <c>key=value</c> line walk (<see cref="ForEachPair"/>).
 /// </summary>
@@ -48,7 +48,7 @@ public sealed class ConfigFile
         _loaded = true;
         try
         {
-            string p = Path;
+            string p = ReadPath(_fileName, log);
             if (File.Exists(p)) applyText(File.ReadAllText(p));
         }
         catch (Exception e) { log?.Info($"config: {_fileName} load failed: {e.Message}"); }
@@ -80,16 +80,31 @@ public sealed class ConfigFile
     /// which has no other way to see that a refused save stayed retryable.</summary>
     internal string SavedText => _savedText;
 
-    /// <summary>Read a cfg's text WITHOUT the deferral gate, "" when absent or unreadable. Only for a
-    /// decision that must be made pre-main (ShaderStages' dump trigger); everything else uses <see cref="Load"/>.</summary>
-    public static string ReadTextNow(string fileName, ExtenderLog? log)
+    /// <summary>Read a cfg's text WITHOUT the deferral gate, "" when absent or unreadable; <paramref name="path"/>
+    /// is the file consulted (<see cref="ReadPath"/>). Only for a decision that must be made pre-main (the boot
+    /// settings); everything else uses <see cref="Load"/>.</summary>
+    public static string ReadTextNow(string fileName, ExtenderLog? log, out string path)
     {
-        try
-        {
-            string p = Native.ConfigPath(fileName);
-            return File.Exists(p) ? File.ReadAllText(p) : "";
-        }
+        path = ReadPath(fileName, log);
+        try { return File.Exists(path) ? File.ReadAllText(path) : ""; }
         catch (Exception e) { log?.Info($"config: {fileName} unreadable -- {e.Message}"); return ""; }
+    }
+
+    /// <summary>The stem every cfg carried before #530; a pre-rename install has its files under it.</summary>
+    private const string LegacyStem = "sowx";
+
+    /// <summary>The path a READ takes (#530): the <c>cx</c> file when it exists, else the <c>sowx</c>-stem
+    /// sibling a pre-rename install left, else the <c>cx</c> path (absent). Saves never come here, so the
+    /// first write lands under the new stem and the legacy file stops being consulted -- one read-fallback,
+    /// not a copy step.</summary>
+    public static string ReadPath(string fileName, ExtenderLog? log)
+    {
+        string p = Native.ConfigPath(fileName);
+        if (File.Exists(p) || !fileName.StartsWith("cx", StringComparison.Ordinal)) return p;
+        string legacy = Native.ConfigPath(LegacyStem + fileName.Substring(2));
+        if (!File.Exists(legacy)) return p;
+        log?.Always($"config: {fileName} absent, reading pre-rename {legacy} (#530; the next save writes {fileName})");
+        return legacy;
     }
 
     /// <summary>
@@ -131,7 +146,7 @@ public sealed class ConfigFile
         ForEachPair("", (_, _) => E(false, "empty text yields no pairs"));
 
         // The whole point of the module: pre-main, a load is a no-op that stays retryable.
-        var f = new ConfigFile("sowx-selfcheck-never-written.cfg");
+        var f = new ConfigFile("cx-selfcheck-never-written.cfg");
         bool applied = false;
         bool latched = f.Load(log, _ => applied = true);
         E(Ready || (!latched && !f.Loaded && !applied), "pre-main load is a no-op and stays retryable");
@@ -141,12 +156,12 @@ public sealed class ConfigFile
         // not possible -- UserDirectory() re-resolves from g_pExoBase whenever the cache is null.
         if (!Ready)
         {
-            var g = new ConfigFile("sowx-selfcheck-save.cfg");
+            var g = new ConfigFile("cx-selfcheck-save.cfg");
             g.Save("k=v", log);
             E(g.SavedText.Length == 0, "save while the user dir is unresolved writes nothing and does not latch");
             E(!File.Exists(g.Path), "refused save leaves no file under the pre-main fallback path");
 
-            string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "sowx-selfcheck-userdir");
+            string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "cx-selfcheck-userdir");
             Native.ForceUserDirectory(tmp);
             g.Save("k=v", log);
             E(File.Exists(g.Path) && File.ReadAllText(g.Path) == "k=v", "the same text writes once the user dir resolves");

@@ -1,14 +1,14 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#353: the area border ring, widened. The engine pads every area with five tiles of unwalkable
 /// edge geometry (<c>CNWCArea::LoadBorder</c> @0x70a5c0, hard-coded <c>-5..-1</c> / <c>+4</c> in four strip
 /// loops); this replays the OUTERMOST engine tile of every strip further out, to <c>border</c> tiles
-/// (<c>sowx.cfg</c>, default 15). Sound because the edge model is chosen per row/column from the nearest real
+/// (<c>cx.cfg</c>, default 15). Sound because the edge model is chosen per row/column from the nearest real
 /// tile's corner and edge types, so every tile along a strip's outward axis is the same model at the same
 /// height -- the ring is widened, not re-derived.
 /// <para>Three hooks carry it: <c>Scene::InitBSP</c> widens the tile BSP to match (its leaves CLAMP, so a
@@ -70,7 +70,7 @@ internal static unsafe class AreaBorder
             log.Info("AreaBorder: a border hook did not install -- the ring stays the engine's");
             return;
         }
-        log.Info($"AreaBorder: armed -- border ring {_ring} tiles (sowx.cfg border=N)");
+        log.Info($"AreaBorder: armed -- border ring {_ring} tiles (cx.cfg border=N)");
     }
 
     [UnmanagedCallersOnly]

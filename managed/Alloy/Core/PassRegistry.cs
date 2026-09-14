@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// One Alloy pass's lifecycle, as the eight slots every pass was hand-writing (#175). A null slot means the

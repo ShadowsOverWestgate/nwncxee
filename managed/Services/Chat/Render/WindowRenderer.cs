@@ -1,11 +1,11 @@
 using System.Collections.Generic;
 using System.Text;
-using Sowx.Services.Chat.Core;
-using Sowx.Ui;
+using CX.Services.Chat.Core;
+using CX.Ui;
 
-using Sowx.Services.Chat.Core.Model;
+using CX.Services.Chat.Core.Model;
 
-namespace Sowx.Services.Chat.Render;
+namespace CX.Services.Chat.Render;
 
 /// <summary>
 /// Builds one <see cref="VertexBatch"/> for a <see cref="ChatWindow"/> each time something changes
@@ -376,7 +376,7 @@ public static class WindowRenderer
     /// <summary>Off-device proof of the portrait-gutter emission: an icon quad is produced for a line that
     /// carries a resref (anchored to its top visual row, in the left gutter) and none for a line without.
     /// Uses a stub atlas (zero-advance glyphs -&gt; one wrap row); real wrapping needs the native bake.</summary>
-    public static void SelfCheck(Sowx.Framework.ExtenderLog log)
+    public static void SelfCheck(CX.Framework.ExtenderLog log)
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"WindowRenderer.SelfCheck FAIL: {w}"); } }

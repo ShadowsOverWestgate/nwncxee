@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #126 (map #68, spec #114 M3, ADR 0011 "Transparency: classify, don't sort everything"): which Alloy pass

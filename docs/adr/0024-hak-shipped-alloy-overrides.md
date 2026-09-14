@@ -21,7 +21,7 @@ default embedded.**
 - The embedded copy is the fallback, never absent: a hak override that fails to build or
   trips a guard costs a log line and the frame is drawn from the embedded stage.
 - Drift is the shipper's to manage, with the tools 0012 built: re-dump after each extender
-  update and diff, keep the sizing tokens, read `sowx.log` for guard lines. The guards catch
+  update and diff, keep the sizing tokens, read `cx.log` for guard lines. The guards catch
   layout drift; feature drift (a stage that gained code the copy lacks) is caught by the diff.
 - The extender does not version-check content. A `cx_` stage that builds and passes the guards
   runs, whatever build it was written against.
@@ -31,5 +31,5 @@ default embedded.**
 - `docs/shader-overrides.md` describes the hak workflow instead of forbidding it.
 - The design taxes 0012 called payable (`AoBit` displaced to bit 7, new uniforms degrading to
   location -1) stay: they exist precisely so a stale shipped copy fails soft.
-- sow-topdata may carry `cx_*.shd` again. Its validator's `is_sowx` special case, if
+- sow-topdata may carry `cx_*.shd` again. Its validator's `is_cx` special case, if
   restored, should compare against a fresh dump rather than a hand-kept table.

@@ -9,22 +9,22 @@
 #include <unistd.h>
 
 __attribute__((constructor))
-static void sowx_bootstrap(void)
+static void cx_bootstrap(void)
 {
-    fprintf(stderr, "[sowx] bootstrap: loaded into pid %d\n", getpid());
+    fprintf(stderr, "[cx] bootstrap: loaded into pid %d\n", getpid());
 
-    const char *path = getenv("SOWX_MANAGED");
-    if (!path) path = "sowx_managed.so"; // resolved via LD_LIBRARY_PATH / rpath
+    const char *path = getenv("CX_MANAGED");
+    if (!path) path = "cx_managed.so"; // resolved via LD_LIBRARY_PATH / rpath
 
     void *h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
     if (!h) {
-        fprintf(stderr, "[sowx] bootstrap: dlopen(%s) failed: %s\n", path, dlerror());
+        fprintf(stderr, "[cx] bootstrap: dlopen(%s) failed: %s\n", path, dlerror());
         return;
     }
 
-    void (*init)(void) = (void (*)(void)) dlsym(h, "SowxInit");
+    void (*init)(void) = (void (*)(void)) dlsym(h, "CxInit");
     if (!init) {
-        fprintf(stderr, "[sowx] bootstrap: dlsym(SowxInit) failed: %s\n", dlerror());
+        fprintf(stderr, "[cx] bootstrap: dlsym(CxInit) failed: %s\n", dlerror());
         return;
     }
 

@@ -1,7 +1,7 @@
 using System;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// Time-driven chatbox animation state + curves (map #13 polish). Pure math + a few static floats, no

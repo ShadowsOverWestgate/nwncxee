@@ -37,7 +37,7 @@ in its own frame-graph slot (`PassId.PostStack`), on a ping-pong pair of RGBA16F
   to 8 bits exactly once, wherever that write happens.
 - A stage is one table entry: a resref, its embedded fragment text, a per-frame `Active` read from
   the engine's own globals, and its uniform. The stage contract is `uSrc` (previous output, unit
-  `PostHdr`), `uDepth` (the frame's depth, unit `PostBloom`), `uDither`, and a `vec4 SowxStage(vec4)`
+  `PostHdr`), `uDepth` (the frame's depth, unit `PostBloom`), `uDither`, and a `vec4 CxStage(vec4)`
   the shared main calls. No stage encodes or decodes (`ShaderContract.DisplaySafe`).
 - **Stand-down is per stage, never per frame.** A stage that does not build is dropped with a named
   log line and the rest run; an empty stack is the resolve writing straight to the engine, byte for

@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>
 /// The framework's raw-input layer (spec #64): owns the SDL/engine input hooks and feeds every captured event
@@ -248,7 +248,7 @@ public sealed unsafe class UiInputService : IExtenderService
 
     /// <summary>Focus-mode pref (AC #6), restored on the first cursor update that <see cref="ConfigFile"/>'s
     /// deferral gate lets through -- Initialize runs pre-main, where the engine user dir is unresolved.</summary>
-    private static readonly ConfigFile _prefs = new("sowx-ui.cfg");
+    private static readonly ConfigFile _prefs = new("cx-ui.cfg");
     private static void LoadPrefs()
     {
         if (!_prefs.Load(_log, ApplyPrefs)) return;

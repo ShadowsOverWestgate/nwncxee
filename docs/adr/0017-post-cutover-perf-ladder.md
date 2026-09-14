@@ -132,7 +132,7 @@ back-to-front and stay on the `BaseVertex` path untouched. Cutout batches blend 
 indirect path — overlapping graded edges can therefore composite differently frame to frame. Named,
 not hidden; `/draw cull 0` is the A/B.
 
-**Bounds are a separate buffer, not a wider record.** The 176-byte `SowxDraw` record is pinned by
+**Bounds are a separate buffer, not a wider record.** The 176-byte `CxDraw` record is pinned by
 `ShaderContract` and copied into every override, so the world sphere (centre + radius per ownership
 slot) rides its own SSBO, written on the same edge the record is. Three classes are exempted with an
 infinite radius rather than bounded: posed skinmeshes, dangly meshes, and displacing features — each

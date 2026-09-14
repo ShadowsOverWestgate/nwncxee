@@ -1,10 +1,10 @@
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Services.Chat;
-using Sowx.Services.Dialog;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Services.Chat;
+using CX.Services.Dialog;
+using CX.Ui;
 
-namespace Sowx.Services.Hotkeys;
+namespace CX.Services.Hotkeys;
 
 /// <summary>
 /// The runtime pipeline: a bound key press -> a debounced packet to the server's toolbar
@@ -136,7 +136,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private static string ToggleKeyDiag()
     {
         _keyDiag = !_keyDiag;
-        Sowx.Ui.UiInputService.KeyDiag = _keyDiag;
+        CX.Ui.UiInputService.KeyDiag = _keyDiag;
         return $"[keydiag] raw-key logging {(_keyDiag ? "ON -- every keydown is logged" : "off")}";
     }
 

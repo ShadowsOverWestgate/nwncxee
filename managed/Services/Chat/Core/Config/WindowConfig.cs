@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>Per-window persisted state: rect, render toggles, input side, send channel, look settings (colours,
 /// animation, outline, timestamps), and an ordered tab list. Nullable fields fall back to the global

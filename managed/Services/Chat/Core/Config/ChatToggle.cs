@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>Render-component toggle bits (see the render pipeline in WindowRenderer).</summary>
 public static class ChatToggle

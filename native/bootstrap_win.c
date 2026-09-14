@@ -1,5 +1,5 @@
 // The Windows half of the load path. Unlike bootstrap.c this is NOT a separate module: it is compiled to
-// an .obj and linked INTO sowx_managed.dll, which then ships as `version.dll`. One file next to nwmain.exe
+// an .obj and linked INTO cx_managed.dll, which then ships as `version.dll`. One file next to nwmain.exe
 // is the whole install.
 //
 // Windows has no LD_PRELOAD, so we get loaded as a PROXY DLL: nwmain.exe imports VERSION.dll
@@ -53,21 +53,21 @@ __declspec(dllimport) BOOL   WINAPI CloseHandle(HANDLE);
 // ---------------------------------------------------------------------------
 
 /// The managed entry point, exported by the NativeAOT half of this same DLL.
-extern void SowxInit(void);
+extern void CxInit(void);
 
-static DWORD WINAPI sowx_start(LPVOID unused)
+static DWORD WINAPI cx_start(LPVOID unused)
 {
     (void) unused;
     // Off the loader lock: NativeAOT runtime startup and the funchook installs cannot run inside
     // DLL_PROCESS_ATTACH without risking a loader-lock deadlock. A thread created there does not run
     // until the loader releases, which is also after the image's own DllMain has started the runtime.
-    SowxInit();
+    CxInit();
     return 0;
 }
 
-static int sowx_boot(void)
+static int cx_boot(void)
 {
-    HANDLE t = CreateThread(0, 0, sowx_start, 0, 0, 0);
+    HANDLE t = CreateThread(0, 0, cx_start, 0, 0, 0);
     if (t) CloseHandle(t);
     return 0;
 }
@@ -75,4 +75,4 @@ static int sowx_boot(void)
 // The CRT initializer table. `read` + the allocate pragma is the documented way to place a function
 // pointer there without a CRT; the linker walks .CRT$XC* in name order during process attach.
 #pragma section(".CRT$XCU", long, read)
-__declspec(allocate(".CRT$XCU")) int (*sowx_boot_)(void) = sowx_boot;
+__declspec(allocate(".CRT$XCU")) int (*cx_boot_)(void) = cx_boot;

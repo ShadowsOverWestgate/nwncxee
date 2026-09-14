@@ -1,4 +1,4 @@
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>
 /// Global layout scale for EVERY window the UI host draws -- chat, dialog, quickbar, the settings panel and

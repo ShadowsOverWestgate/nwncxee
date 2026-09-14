@@ -1,4 +1,4 @@
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>A rectangular sub-area (absolute screen px) of a <see cref="Window"/> that requests a
 /// <see cref="CursorKind"/> when the pointer is over it -- links, edit fields, and other content affordances.

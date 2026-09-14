@@ -50,7 +50,7 @@ Per frame (`Scene::RenderSinglePass`):
 ## Why it fails us
 
 Steps 2–4 are a stencil-shadow-era budget optimizer: camera-dependent selection,
-distance gating, per-light fades. Under sowx cube shadows this made the tracked
+distance gating, per-light fades. Under cx cube shadows this made the tracked
 light set churn with player movement (the #65 120-light interior: slots
 evict/re-bake constantly, cubes sit inert). The per-frame registry hold-down
 (tier 1, shipped) masks the churn but the feed is still the prioritizer's output.

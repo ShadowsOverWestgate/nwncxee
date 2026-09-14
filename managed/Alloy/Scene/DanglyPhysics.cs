@@ -1,10 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.Numerics;
-using Sowx.Framework;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// Replaces the engine's dangly-mesh solve with a substepped one that has gravity and treats wind as a
@@ -80,7 +80,7 @@ internal static unsafe class DanglyPhysics
     }
     private static bool _armed;
 
-    // The dials. All taste, all live, so all commands and none in sowx.cfg (ADR 0013).
+    // The dials. All taste, all live, so all commands and none in cx.cfg (ADR 0013).
     private static bool _on = true;
     /// <summary>World units/s^2 down. Low by default ON PURPOSE: rest poses are authored already hanging,
     /// so gravity sags every cloak BELOW its authored rest by g*w/k at equilibrium. This is the dial that

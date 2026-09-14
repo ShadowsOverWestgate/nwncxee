@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Render;
+namespace CX.Services.Chat.Render;
 
 /// <summary>The vertex range [<see cref="Start"/>,<see cref="End"/>) (vertex indices) of one visible chat
 /// line's body geometry, plus its message time. The draw walks these to apply the per-line fade and the

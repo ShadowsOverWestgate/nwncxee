@@ -43,7 +43,7 @@ update it. Each file opens with a short header naming the constraints that stage
 and pointing back here.
 
 There is also a headless trigger for offline work: put `dumpshaders=1` in
-`sowx.cfg` in the same directory, and the dump runs at startup.
+`cx.cfg` in the same directory, and the dump runs at startup.
 
 ### The workflow
 
@@ -51,7 +51,7 @@ There is also a headless trigger for offline work: put `dumpshaders=1` in
 2. Edit `cx_shader_dump/<resref>.shd`.
 3. Place it where your client's resource chain will find it — an `override/` directory
    for local play, a hak for a module you control.
-4. Restart the client and read `~/sowx.log`. An override that loaded says so:
+4. Restart the client and read `~/cx.log`. An override that loaded says so:
    `shader override: <resref>.shd from resman (N bytes)`.
 
 ### Sizing tokens
@@ -64,7 +64,7 @@ change on the C# side. Freezing today's numbers into your copy is how it goes st
 ### SPIR-V stages
 
 A `.shd` may hold a **SPIR-V module** instead of GLSL text — same resref, same resource
-chain, sniffed by its magic word. It is off by default; put `spirv=1` in `sowx.cfg` to
+chain, sniffed by its magic word. It is off by default; put `spirv=1` in `cx.cfg` to
 accept one.
 
 It is off by default because a module is unauditable. Everything the text path does for
@@ -149,13 +149,13 @@ built on.
 ### Record — the per-draw SSBO layout
 
 **Applies to:** `cx_own_vs`, `cx_ownlit_vs`, `cx_ownlit_fs`, both `cx_water_*`
-(as `SowxDraw`); `cx_cast_vs` (as `SowxCaster` *and* `SowxDraw`).
+(as `CxDraw`); `cx_cast_vs` (as `CxCaster` *and* `CxDraw`).
 
-**Rejects:** a `struct SowxDraw` declaring a different number of trailing `vec4` fields
+**Rejects:** a `struct CxDraw` declaring a different number of trailing `vec4` fields
 than the C# stride stages. Counted, not compared, so renaming or reformatting the fields
 is fine. A stage that declares no record at all cannot disagree and passes.
 
-`cx_cast_vs` (#302) carries three terms of its own: `struct SowxCaster` must be exactly
+`cx_cast_vs` (#302) carries three terms of its own: `struct CxCaster` must be exactly
 two `vec4`s and no `mat4` (the 2026-08-30 misrender was precisely a leftover `mat4` --
 a 96-byte GPU stride over a 32-byte stage, every caster baking at a random part's
 matrix); the stage must read Alloy's record through the ownership slot, spelled
@@ -187,7 +187,7 @@ surface solid.
 
 **Applies to:** `cx_own_vs`, `cx_ownlit_vs`, and only while skinned parts are armed.
 
-**Rejects:** a vertex stage with no `SOWX_FEAT_SKIN` branch.
+**Rejects:** a vertex stage with no `CX_FEAT_SKIN` branch.
 
 **Why:** a vertex stage predating skinning links perfectly and the missing bone
 attributes are simply disabled — so a robe renders in its **bind pose** at the node
@@ -198,7 +198,7 @@ matrix, silently.
 **Applies to:** every Alloy fragment stage except the resolve — `cx_own_fs`,
 `cx_ownlit_fs`, `cx_water_fs`, `cx_grass_fs`, `cx_bloomdn_fs`, `cx_bloomup_fs`.
 
-**Rejects:** any use of `SowxRevert` or `SowxSoftClip`.
+**Rejects:** any use of `CxRevert` or `CxSoftClip`.
 
 **Why:** the Alloy frame is linear end to end and the resolve encodes it once. A stage
 that encodes as well hands display-space values to a target that gets encoded a second
@@ -212,8 +212,8 @@ space ...` for grass.
 
 **Applies to:** `cx_resolve_fs`, the one stage that must encode.
 
-**Rejects:** a stage that calls `SowxLinear` (decoding a target that is already linear —
-the frame comes out a gamma dark), or one with no `SowxEncode` at all (the frame stays
+**Rejects:** a stage that calls `CxLinear` (decoding a target that is already linear —
+the frame comes out a gamma dark), or one with no `CxEncode` at all (the frame stays
 linear and washes out).
 
 Tonemap and dither around those terms as you like. The colour-space decision is not
@@ -223,11 +223,11 @@ yours to change; the rest of the pipeline is built on it.
 
 **Applies to:** `cx_postgam_fs`, `cx_toon_fs`, `cx_smaablend_fs`, `cx_taa_fs`, and every stage the display-space post stack grows (ADR 0020). The aa stage's two own passes (`cx_smaaedge_fs`, `cx_smaawgt_fs`) are plain fullscreen programs: no `uSrc` contract, but they must keep the sampler names the C# side binds units to.
 
-**Rejects:** a stage that calls `SowxEncode` (a second encode, a gamma too bright) or `SowxLinear`
+**Rejects:** a stage that calls `CxEncode` (a second encode, a gamma too bright) or `CxLinear`
 (the frame goes linear, a gamma dark), or one that dropped the `uSrc` sampler the stack binds the
 previous output to.
 
-The contract a stage keeps: declare `vec4 SowxStage(vec4 c)` over the display-space input and hand
+The contract a stage keeps: declare `vec4 CxStage(vec4 c)` over the display-space input and hand
 display space on; the shared main dithers after it. `uDepth` carries the frame's depth for a stage
 that wants it. A stage whose override AND embedded text both fail is dropped from the stack with
 `PostStack: the <name> stage did not build -- DROPPED`, and the frame resolves without it.

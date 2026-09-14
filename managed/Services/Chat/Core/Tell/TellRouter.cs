@@ -1,6 +1,6 @@
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>Pure routing decision for incoming Tells (#46): given a mode, a layout snapshot, and the
 /// sender name, decide whether to create a tab, a window, or do nothing. Self-checks off-device.</summary>

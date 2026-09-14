@@ -1,8 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Perf;
+namespace CX.Services.Perf;
 
 /// <summary>#336 step 5: split the [zones] line's <c>other</c> column. Four timing hooks on the engine main
 /// loop's non-render steps (see <see cref="FrameZones.Zone.Net"/>); each calls the original through its
@@ -62,7 +62,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
     [UnmanagedCallersOnly]
     private static long OnBsp(IntPtr scene)
     {
-        bool world = *(IntPtr*)(scene + Sowx.Framework.EngineLayout.SceneBspRoot) != IntPtr.Zero;
+        bool world = *(IntPtr*)(scene + CX.Framework.EngineLayout.SceneBspRoot) != IntPtr.Zero;
         long t = world ? FrameZones.Now : 0;
         long r = _bsp != null ? _bsp(scene) : 0;
         if (world) FrameZones.Add(FrameZones.Zone.Bsp, t);
@@ -70,7 +70,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
     }
 
     /// <summary>EXPERIMENT (docs/research/engine-scene-walk-bypass.md §5 step 1): <c>skipbuckets=1</c> in
-    /// sowx.cfg skips the world scene's draw-bucket build while Alloy draws the frame. Expected to freeze
+    /// cx.cfg skips the world scene's draw-bucket build while Alloy draws the frame. Expected to freeze
     /// every gob part's transform (the build is the sole writer of the model matrix Alloy draws with), which
     /// is the measurement: Ai drops by the Buckets figure, and what breaks names the load-bearing half.
     /// Never on a GUI panel's scene and never while the engine renders (vanilla=1).</summary>
@@ -114,9 +114,9 @@ public sealed unsafe class EngineZonesService : IExtenderService
     [UnmanagedCallersOnly]
     private static long OnBuckets(IntPtr scene)
     {
-        bool world = *(IntPtr*)(scene + Sowx.Framework.EngineLayout.SceneBspRoot) != IntPtr.Zero;
-        if (world && _skipBuckets && Sowx.Alloy.AlloyGate.Alloy) { _bucketsSkipped++; return 0; }
-        if (world && _bucketsCadence && Sowx.Alloy.AlloyGate.Alloy && (++_bucketsFrame % BucketsEvery) != 0) ThinTileLists();
+        bool world = *(IntPtr*)(scene + CX.Framework.EngineLayout.SceneBspRoot) != IntPtr.Zero;
+        if (world && _skipBuckets && CX.Alloy.AlloyGate.Alloy) { _bucketsSkipped++; return 0; }
+        if (world && _bucketsCadence && CX.Alloy.AlloyGate.Alloy && (++_bucketsFrame % BucketsEvery) != 0) ThinTileLists();
         long t = world ? FrameZones.Now : 0;
         long r = _buckets != null ? _buckets(scene) : 0;
         if (world) FrameZones.Add(FrameZones.Zone.Buckets, t);

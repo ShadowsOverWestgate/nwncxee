@@ -1,8 +1,8 @@
 using System.Collections.Generic;
 using System.Text;
-using Sowx.Services.Chat.Core;
+using CX.Services.Chat.Core;
 
-namespace Sowx.Services.Chat.Render;
+namespace CX.Services.Chat.Render;
 
 /// <summary>Prepend a grey timestamp to the line, in the configured <see cref="TsFormat"/> and from the
 /// configured <see cref="TsSource"/> (game time falls back to local when the line carries none). The style

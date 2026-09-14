@@ -11,11 +11,11 @@ Client extender (this repo, done):
 - Options-menu "Hotkeys" button (repurposed SaveCharButton).
 - Runtime capture: a pressed **armed** key -> a packet to the server, gated on
   window focus + "not typing in chat", debounced 250 ms.
-- Handshake: advertises extender **presence only** (`sowx_enabled`) on login. It does
+- Handshake: advertises extender **presence only** (`cx_enabled`) on login. It does
   **not** advertise the armed set -- consent is per-server (see below), so telling every
   server the keys to harvest was a leak. The server re-pushes its set via ArmSet.
 - Persists consent **per server**, scoped by a client-minted token
-  (`sowx-hotkeys.cfg` in the client's NWN user directory, one `[token=<hex>]` section per server).
+  (`cx-hotkeys.cfg` in the client's NWN user directory, one `[token=<hex>]` section per server).
 
 Server (sow-codebase, done):
 - Builds the arming **NUI** (it knows the toolbar/ability layout to show).
@@ -55,7 +55,7 @@ On login accepted, the client advertises via the stock device channel
 (`SendPlayerToServerDeviceAdvertiseProperty`, major `0x36` / minor `1`). The server
 stores it as `player.propertyMap[lowercased name] = int` (on `CNWSPlayer`, offset `0xe0`):
 
-- `sowx_enabled = 1`      -- the extender is present; only now offer the feature.
+- `cx_enabled = 1`      -- the extender is present; only now offer the feature.
 
 The client advertises **only** presence -- never the armed key list (that was the old
 global-consent leak). The server owns the bindings and re-pushes them via ArmSet.
@@ -80,7 +80,7 @@ global-consent leak). The server owns the bindings and re-pushes them via ArmSet
   enter, to restore the vault-persisted set). The client computes the delta:
   **removals** (armed now, not in the new set) apply silently; **additions** raise
   the client-owned consent modal and only arm on the player's OK.
-- Only send this to clients that advertised `sowx_enabled = 1`.
+- Only send this to clients that advertised `cx_enabled = 1`.
 
 ### 5. Revoke (client -> server) -- forget these keys
 
@@ -96,7 +96,7 @@ global-consent leak). The server owns the bindings and re-pushes them via ArmSet
 
 - major/minor: `0x36 / 0x44`, payload = **the token hex** the client granted last time
   (e.g. `"a1b2...d6"`). Empty payload = "I hold no token".
-- Sent on login **before** ArmSet, only to clients that advertised `sowx_enabled = 1`.
+- Sent on login **before** ArmSet, only to clients that advertised `cx_enabled = 1`.
 - Client response: recognised token -> restore that server's consented keys (no prompt);
   unrecognised/empty -> armed set stays empty, awaiting fresh consent.
 
@@ -112,7 +112,7 @@ global-consent leak). The server owns the bindings and re-pushes them via ArmSet
 
 - major/minor: `0x36 / 0x46`, payload = **the contact email as ASCII** at offset 3
   (`mpiasecki720@protonmail.com`).
-- Sent once on login, right after `sowx_enabled`. Servers that do not know the minor
+- Sent once on login, right after `cx_enabled`. Servers that do not know the minor
   ignore it; it is informational and never affects consent or arming.
 
 ## Keycodes (SDLK, not Windows VK)
@@ -164,7 +164,7 @@ Better than converting: define the server's key list in SDLK from the start
 ## Flow
 
 ```
-login   -> client advertises sowx_enabled (presence only)      (msg 1)
+login   -> client advertises cx_enabled (presence only)      (msg 1)
         -> client AbuseContact "<email>"                         (msg 8)
         <- server PresentToken (its stored token, or empty)     (msg 6)  [before ArmSet]
         <- server ArmSet (the character's bound keys)           (msg 4)

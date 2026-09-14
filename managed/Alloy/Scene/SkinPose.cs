@@ -1,7 +1,7 @@
 using System;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#262: a skinned part's bone matrices, solved from the engine's ANIMATION STATE rather than
 /// produced as a side effect of re-entering <c>PartSkin::Draw</c>.

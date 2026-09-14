@@ -1,6 +1,6 @@
-using static Sowx.Framework.EngineLayout;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>The geometry of the engine's finished draw buckets at <c>Scene+0x208</c>, and nothing else.
 /// <para>#188 put four hooks here -- <c>Scene::RenderDrawBucket</c>, the <c>GetFirstItem</c>/<c>GetNextItem</c>
@@ -13,7 +13,7 @@ internal static unsafe class BucketGate
 {
     /// <summary>Bucket-item vtable slot the RenderDrawBucket loop devirts to get the PartTriMesh from the
     /// bucket's Part (Ghidra @0x56d118: <c>(**(code**)(*part+0x60))(part)</c>).</summary>
-    internal static readonly int PartVtblGetTriMesh = Sowx.Framework.EngineLayout.PartAsTriMeshSlot;
+    internal static readonly int PartVtblGetTriMesh = CX.Framework.EngineLayout.PartAsTriMeshSlot;
 
     /// <summary>Bucket-array geometry, from <c>GetDrawBucketByItemType</c> @0x47bd60 (stride 0x10, three
     /// phases per item type) and <c>GetNextItem</c> @0x47be90 (items at +0, count at +8).</summary>

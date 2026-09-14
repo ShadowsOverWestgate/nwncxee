@@ -1,6 +1,6 @@
 using System;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// One ingested chat line. A <c>class</c> (not struct): ingest is a cold network-thread path where

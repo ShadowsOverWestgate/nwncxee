@@ -214,7 +214,7 @@ why anchoring there worked at all.
 ## Consequences
 
 - **Owning the UI system is the hard prerequisite for any Vulkan backend.** GL cannot draw into a
-  Vulkan swapchain; a Vulkan backend needs every pixel, UI included. The panel-by-panel `Sowx.Ui`
+  Vulkan swapchain; a Vulkan backend needs every pixel, UI included. The panel-by-panel `CX.Ui`
   work (ADR 0004, with the chatbox as the shipped precedent) is therefore not a modding nicety but
   the longest-lead item in the project, and it should run **in parallel** with M4 rather than after
   it. Nothing in M4 blocks it.

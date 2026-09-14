@@ -1,10 +1,10 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#173: the FRAME DISPATCH. What the Alloy bracket does once per pass and in what order: the prepass, the opaque block, the pass-slot walk that hands each ADR 0011 slot to its owner, and the probe capture that rides the same staged batches. Hot: nothing on this path allocates.</summary>
 public sealed unsafe partial class AlloyRenderer
@@ -166,7 +166,7 @@ public sealed unsafe partial class AlloyRenderer
             // and then never drawn -- so the decision is made before BuildBatches, which skips the class
             // outright when it is false.
             // ...and on the LIGHT RIG, for a reason the class check cannot supply: the water stage calls
-            // SowxClusteredLight unconditionally, and the cluster buffers are only meaningful once THIS
+            // CxClusteredLight unconditionally, and the cluster buffers are only meaningful once THIS
             // pass's build has run. BuildBatches skips lit batches on !lightingOn, but a water batch is
             // keyed on its class rather than on _gLit, so without this term /draw light 0 (or a failed
             // lit program, or a build that refused) would leave the water program reading undefined

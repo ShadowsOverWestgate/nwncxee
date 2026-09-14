@@ -1,7 +1,7 @@
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// Parses the Aurora inline color grammar into <see cref="ColorRun"/>s once at ingest.

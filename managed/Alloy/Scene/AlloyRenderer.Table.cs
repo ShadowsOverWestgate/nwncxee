@@ -1,9 +1,9 @@
 using System.Collections.Generic;
 using System;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#173: the OWNERSHIP TABLE and the staging tables built from it. Every one is a fixed-capacity
 /// parallel array indexed by Alloy slot (or by VDO slot, or by batch group), allocated once at type init and

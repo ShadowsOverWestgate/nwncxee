@@ -1,15 +1,15 @@
 #!/usr/bin/env sh
-# SoW client extender launcher. Lives next to the .so files it loads.
+# NWNCX:EE launcher (CX). Lives next to the .so files it loads.
 #
 # Two ways to run:
 #   Steam  -- Launch Options (quote it; the game path has a space):
-#               "/abs/path/to/sowx-launch" %command%
+#               "/abs/path/to/cx-launch" %command%
 #             Steam hands us the real game command as our arguments; we add the
 #             extender to the environment, then exec that command unchanged.
 #   Manual -- run with no game arguments. The client is the nwmain-linux sitting
 #             next to us; NWN_BIN overrides that if the layout is unusual.
 #   Either way, leading dash options are forwarded to the client, e.g. -dmc
-#   for the DM client:  "/abs/sowx-launch" -dmc %command%   or   ./sowx-launch -dmc
+#   for the DM client:  "/abs/cx-launch" -dmc %command%   or   ./cx-launch -dmc
 #
 # Why an absolute LD_PRELOAD via a symlink:
 #   NWN runs inside the Steam Linux Runtime (a container). The container FORWARDS
@@ -26,20 +26,20 @@
 #   Replacing it strips the overlay and the game misbehaves.
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-[ -f "$DIR/libsowx.so" ] || { echo "libsowx.so not found next to this launcher ($DIR)" >&2; exit 1; }
+[ -f "$DIR/libcx.so" ] || { echo "libcx.so not found next to this launcher ($DIR)" >&2; exit 1; }
 
 # Space-free absolute path the container can resolve. Fall back to DIR if we
 # cannot make the symlink (e.g. no $HOME) -- fine when DIR itself has no space.
 # ponytail: assumes $HOME has no space (true for ~every Linux home). If it does,
 # the symlink path inherits it and LD_PRELOAD re-hits the split -- ceiling: mint
-# the link under a fixed space-free root like /tmp/sowx-$UID if that ever bites.
-LINK="${XDG_DATA_HOME:-$HOME/.local/share}/sowx"
+# the link under a fixed space-free root like /tmp/cx-$UID if that ever bites.
+LINK="${XDG_DATA_HOME:-$HOME/.local/share}/cx"
 mkdir -p "$(dirname "$LINK")" 2>/dev/null || true
 ln -sfn "$DIR" "$LINK" 2>/dev/null || LINK="$DIR"
 
-export LD_PRELOAD="$LINK/libsowx.so${LD_PRELOAD:+ $LD_PRELOAD}"
-export SOWX_MANAGED="$LINK/sowx_managed.so"
-# The runtime lets the environment override the GC mode built into sowx_managed.so; keep ours.
+export LD_PRELOAD="$LINK/libcx.so${LD_PRELOAD:+ $LD_PRELOAD}"
+export CX_MANAGED="$LINK/cx_managed.so"
+# The runtime lets the environment override the GC mode built into cx_managed.so; keep ours.
 unset DOTNET_gcServer DOTNET_GCHeapCount DOTNET_gcConcurrent DOTNET_GCgen0size
 
 # Leading dash options (e.g. -dmc) are the client's; what follows is the command.

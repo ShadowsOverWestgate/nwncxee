@@ -1,7 +1,7 @@
 using System.Text;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// UTF-8-aware line wrapping at an arbitrary pixel width. Pure Core (no native refs):
@@ -67,7 +67,7 @@ public static class TextWrapper
     }
 
     /// <summary>
-    /// Runnable proof (run-demo prints it to /tmp/sowx.log): a fixed 10px/rune advance must
+    /// Runnable proof (run-demo prints it to /tmp/cx.log): a fixed 10px/rune advance must
     /// word-wrap, hard-break an over-long word, and count a Cyrillic rune as one advance.
     /// </summary>
     public static void SelfCheck(ExtenderLog log)

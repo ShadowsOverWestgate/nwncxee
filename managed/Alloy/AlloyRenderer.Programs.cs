@@ -1,10 +1,10 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#173: PROGRAM BUILD. Linking the Alloy stages -- fullbright, depth, lit and water -- from the embedded text or a content override (#92), and rebuilding from the embedded text whenever an override fails a ShaderContract predicate. Cold: once per program per context.</summary>
 public sealed unsafe partial class AlloyRenderer
@@ -95,7 +95,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.DeleteProgram(stale);
         _log?.Info($"AlloyRenderer: a content .shd for the {what} program disagrees with the pass -- either " +
                    $"it declares a per-draw record that is not the {DrawFloats * sizeof(float)}-byte one being " +
-                   "staged (#92 override vs #120's grown SowxDraw), or it predates #126 and carries no " +
+                   "staged (#92 override vs #120's grown CxDraw), or it predates #126 and carries no " +
                    "uAlphaCut/per-draw alpha (which would render every cutout and blended surface solid). " +
                    "Ignoring it and building the embedded stages, which agree. Regenerate the override from " +
                    "the current embedded stage to get it back.");
@@ -263,9 +263,9 @@ public sealed unsafe partial class AlloyRenderer
             int want = Settings.Int("bindless", -1, -1, 1);
             bool zinkVeto = want < 0 && GlContextService.Zink;
             _bindless = want != 0 && !zinkVeto && HasBindless();
-            if (zinkVeto) _log?.Info("AlloyRenderer: zink renderer -- bindless texturing stood down (bindless=1 in sowx.cfg forces it)");
+            if (zinkVeto) _log?.Info("AlloyRenderer: zink renderer -- bindless texturing stood down (bindless=1 in cx.cfg forces it)");
             _log?.Info(_bindless
-                ? "AlloyRenderer: ARB_bindless_texture armed -- lit batches merge across textures (bindless=0 in sowx.cfg reverts)"
+                ? "AlloyRenderer: ARB_bindless_texture armed -- lit batches merge across textures (bindless=0 in cx.cfg reverts)"
                 : "AlloyRenderer: bindless texturing unavailable or vetoed -- per-batch texture binds");
         }
         if (!_limitsProbed)
@@ -297,14 +297,14 @@ public sealed unsafe partial class AlloyRenderer
                            // #208: ...and the sampler declarations the unit table binds against, which only
                            // the compiled source can answer for. Bound-sampler check, so bindless skips it.
                            && (_bindless || ShaderContract.LitSlotSafe(fsSrc))
-                           && (!_bindless || fsSrc.Contains("SowxTexH"))))
+                           && (!_bindless || fsSrc.Contains("CxTexH"))))
         {
             prog = RebuildEmbedded(prog, OwnedLitVs, litFs, "clustered lit", ref vsSrc);
             finalFs = litFs;
         }
         // a content override without the handle block compiled fine but still samples bound units: the
         // C# side must keep binding for it, so the whole bindless path stands down for the session
-        if (prog != 0 && _bindless && !fsSrc.Contains("SowxTexH") && !litFs.Contains("SowxTexH"))
+        if (prog != 0 && _bindless && !fsSrc.Contains("CxTexH") && !litFs.Contains("CxTexH"))
         {
             _bindless = false;
             _log?.Info("AlloyRenderer: lit stage carries no handle block -- bindless stands down, binds resume");
@@ -337,7 +337,7 @@ public sealed unsafe partial class AlloyRenderer
             uint ph = GlProgram.Graphics(ShdLitVs, ShaderStages.Source(ShdLitVs), ShdLitFs, litFs,
                                          _log, "AlloyRenderer hosted lit program", out _, out string hfs, host: true);
             if (ph != 0 && !(ShaderContract.RecordSafe(hfs) && ShaderContract.LinearSafe(hfs)
-                             && (!_bindless || hfs.Contains("SowxTexH"))))
+                             && (!_bindless || hfs.Contains("CxTexH"))))
             {
                 Gl.DeleteProgram(ph); ph = 0;
                 _log?.Info("AlloyRenderer: hosted lit program failed its contracts -- hosted materials draw the plain lit path");

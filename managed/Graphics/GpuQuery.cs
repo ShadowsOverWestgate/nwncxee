@@ -1,4 +1,4 @@
-namespace Sowx.Graphics;
+namespace CX.Graphics;
 
 /// <summary>Double-buffered GPU query: begin on the slot whose result has already been harvested, so the
 /// readback never stalls the pass waiting for a result the GPU has not produced.

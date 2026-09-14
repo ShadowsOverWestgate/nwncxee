@@ -1,12 +1,12 @@
 build/
-sow-client-extender/
+cx-linux-x64/
 dist/
 bin/
 obj/
 build-managed.log
 __pycache__/
-sow-client-extender-win/
+cx-windows-x64/
 build-managed-win.log
-sow-client-extender-win.zip
+cx-windows-x64.zip
 .scratch/*
-sow-client-extender.zip
+cx-linux-x64.zip

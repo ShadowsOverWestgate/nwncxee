@@ -1,8 +1,8 @@
 using System.Collections.Generic;
-using Sowx.Framework;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Ui;
 
-namespace Sowx.Services.Chat.Core;
+namespace CX.Services.Chat.Core;
 
 /// <summary>
 /// The chat settings window: the chat-side consumer of the shared <see cref="SettingsPanel"/>. It owns the

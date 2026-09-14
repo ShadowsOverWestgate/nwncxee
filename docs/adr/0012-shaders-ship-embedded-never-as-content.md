@@ -7,7 +7,7 @@ Alloy pipeline and everything downstream of it.
 ## Context
 
 Every Alloy stage exists twice: as a `const string` raw literal in `managed/Alloy/*.cs`,
-and as a `sowx_*.shd` shipped in `sow-topdata`'s hak. The override wins at runtime, so the shipped
+and as a `cx_*.shd` shipped in `sow-topdata`'s hak. The override wins at runtime, so the shipped
 copy is the one that runs.
 
 The two copies travel on channels with very different speeds. Content is one tag push away from
@@ -36,15 +36,15 @@ purely so a hak shipped against an older build does not misread slot 64 as env-m
 
 **The extender ships every shader embedded. No content repo ever carries a copy.**
 
-- A shader is *code*, not data. `cx_ownlit_fs` declares the `SowxDraw` struct whose layout lives in
+- A shader is *code*, not data. `cx_ownlit_fs` declares the `CxDraw` struct whose layout lives in
   a C# file, reads uniform blocks the C# fills, and honours a clip expression the depth prepass
   depends on character-for-character. It ships with the renderer it agrees with, or the agreement is
   unenforceable.
-- **The override read path stays, and is first-class.** Sowx ships defaults and lets a user replace
+- **The override read path stays, and is first-class.** CX ships defaults and lets a user replace
   them; that is a core property of the tool, not a delivery mechanism. `ShaderResource.Override` and
   the five `*Safe` guards are therefore load-bearing and stay.
 - **The two roles are now distinct.** *Shipping* a shader is forbidden; *overriding* one is
-  supported. Nothing in a hak, NWSync repo, or content release may carry a `sowx_*` resref.
+  supported. Nothing in a hak, NWSync repo, or content release may carry a `cx_*` resref.
 - **The dump is how a customizer starts.** A `/dumpshaders` chat command writes every overridable
   resref to `<user directory>/cx_shader_dump/`, plus the bindless variant. Because it dumps what is
   compiled in, the starting point is current by construction — the drift class is structurally
@@ -57,7 +57,7 @@ purely so a hak shipped against an older build does not misread slot 64 as env-m
   (`cx_post_vs`, `cx_bloomdn_fs`, `cx_bloomup_fs`, `cx_resolve_fs`, `cx_cast_vs`,
   `cx_cast_fs`) were overridable at runtime but never shipped, never dumped and never guarded;
   they join the contract and gain guard coverage.
-- `/dumpshaders` replaces `SOWX_DUMP_SHADERS` (ADR 0013). The headless path it served — the only
+- `/dumpshaders` replaces `CX_DUMP_SHADERS` (ADR 0013). The headless path it served — the only
   offline compile check on the `BindlessFs` rewrite, which `check-shaders.py` cannot reproduce
   because it is a C# function rather than a constant — moves to a launcher flag or config line.
 - Dumped files keep their load-bearing warnings, trimmed to the constraint plus a pointer. A dumped
@@ -69,5 +69,5 @@ purely so a hak shipped against an older build does not misread slot 64 as env-m
 - The design taxes above can be paid off. `AoBit`'s displacement and the degrade-to--1 discipline
   guard against a *shipped* stale copy; with none shipped, an override is a user's own doing and
   fails loudly at the guards instead. Removing them is not urgent and is out of scope here.
-- Existing `sowx_*.shd` in `sow-topdata` are deleted, along with the `is_sowx` special case in its
+- Existing `cx_*.shd` in `sow-topdata` are deleted, along with the `is_cx` special case in its
   `validate-shaders.py` and that directory's README. Handled manually, outside the rework spec.

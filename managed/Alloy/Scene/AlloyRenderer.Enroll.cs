@@ -1,11 +1,11 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using CX.Graphics;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>#173: the OWNERSHIP WALK. One pass over the scene's parts decides what the Alloy renderer takes this generation -- material read, feature classification, texture and VDO interning, the per-VDO attribute harvest and the 4.6-side VAO built over it -- and revocation is its inverse. Everything here is cold: it runs on an enrollment edge, never per frame.</summary>
 public sealed unsafe partial class AlloyRenderer
@@ -122,7 +122,7 @@ public sealed unsafe partial class AlloyRenderer
     private static int _walkAt = -1;
     /// <summary>#329: candidates this walk may process per frame; int.MaxValue for an unbudgeted one.</summary>
     private static int _walkBudget;
-    /// <summary>#329: <c>enrollbudget</c> in sowx.cfg -- candidates per frame, 0 = the whole walk in one frame.
+    /// <summary>#329: <c>enrollbudget</c> in cx.cfg -- candidates per frame, 0 = the whole walk in one frame.
     /// 12ms walks measured at ~15k candidates put one candidate near 0,8us, so 1500 is ~1,2ms of walk plus the
     /// finish frame's sweeps and radix. Enrolment lag in a big area is the accepted cost (#329).
     /// ponytail: a fixed count, so the finish frame (sweeps, radix, MeshCensus) is unbudgeted and the
@@ -214,7 +214,7 @@ public sealed unsafe partial class AlloyRenderer
     /// not touched, hashed, re-read or compared, and the order is rebuilt by the O(live) radix. Falls back to
     /// the full walk on a new scene, a wiped table, an overflowed change list, or any REFUSAL -- the
     /// all-owned-or-none sweeps (instance, blended class) need the full scan's tallies. <c>enrolldelta=0</c>
-    /// in sowx.cfg is the A/B. Runs in one frame: the change set is a few hundred parts at most.</summary>
+    /// in cx.cfg is the A/B. Runs in one frame: the change set is a few hundred parts at most.</summary>
     private static bool TryEnrollDelta(IntPtr scene)
     {
         bool newScene = scene != _enrollScene;

@@ -1,10 +1,10 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Services.Nameplate;
+using CX.Framework;
+using CX.Services.Nameplate;
 
-namespace Sowx.Services.Camera;
+namespace CX.Services.Camera;
 
 /// <summary>
 /// Camera-relative WASD (#540, map #535; docs/research/custom-camera.md §10). Pre-hooks the engine's per-frame

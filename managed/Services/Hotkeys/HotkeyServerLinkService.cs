@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Services.Hotkeys;
+namespace CX.Services.Hotkeys;
 
 /// <summary>
 /// Receives the armed-key set from the server (a server-authored NUI arms keys; the server

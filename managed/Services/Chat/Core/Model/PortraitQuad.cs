@@ -1,4 +1,4 @@
-namespace Sowx.Services.Chat.Core.Model;
+namespace CX.Services.Chat.Core.Model;
 
 /// <summary>A speaker-portrait draw request: a pixel rect, the resref to load it from, and the line's
 /// message time (so the portrait fades with its text). Emitted cold by <c>WindowRenderer</c>

@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>A first-class UI window: rect, z-order, focus/keyboard state, capability flags, and the cursor
 /// regions under it. Constructing one registers it with <see cref="UiHost"/> (no discovery interface). The

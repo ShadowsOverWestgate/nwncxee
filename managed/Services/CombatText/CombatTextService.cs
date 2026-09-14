@@ -2,12 +2,12 @@ using System;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
-using Sowx.Framework;
-using Sowx.Services.Chat.Core;
-using Sowx.Services.Nameplate;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Services.Chat.Core;
+using CX.Services.Nameplate;
+using CX.Ui;
 
-namespace Sowx.Services.CombatText;
+namespace CX.Services.CombatText;
 
 /// <summary>
 /// Damage numbers and floating combat text, drawn by our own 2D UI instead of the engine's
@@ -32,7 +32,7 @@ public sealed unsafe class CombatTextService : IExtenderService
 {
     private static ExtenderLog? _log;
     private static CombatTextConfig _cfg = new();
-    private static readonly ConfigFile _file = new("sowx-combattext.cfg");
+    private static readonly ConfigFile _file = new("cx-combattext.cfg");
     private static bool _configLoaded, _armed, _wasInModule;
 
     private static readonly FloatyTable _table = new();

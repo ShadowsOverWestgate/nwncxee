@@ -1,9 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Graphics;
+using CX.Framework;
+using CX.Graphics;
 
-namespace Sowx.Ui;
+namespace CX.Ui;
 
 /// <summary>The framework's frame owner (ADR 0004, spec #62; ADR 0014 amendment, #170). Owns the single
 /// <c>SwapBuffers</c> present, computes the in-game gate and syncs the game UI scale once per frame, then drives
@@ -112,7 +112,7 @@ public sealed unsafe class UiHostService : IExtenderService
         {
             _presentProbe--;
             _log?.Always($"[presentprobe] fb0 centre before swap: 0x{PresentPixel():x8}"
-                       + $"  into={Sowx.Alloy.PostChain.LastInto} resolves={Sowx.Alloy.PostChain.Resolves}");
+                       + $"  into={CX.Alloy.PostChain.LastInto} resolves={CX.Alloy.PostChain.Resolves}");
         }
         long tSwap = FrameZones.Now;
         if (_swapOrig != null) _swapOrig(window); // present
@@ -184,7 +184,7 @@ public sealed unsafe class UiHostService : IExtenderService
                 // #238: NOT inside the null-conditional -- Period() carries the period reset, and `?.` skips
                 // argument evaluation, so a null log would desync it from the _fs* counters reset below
                 // permanently (every later line would then average since boot).
-                string zones = FrameZones.Period() + Sowx.Graphics.GlContextService.GpuSpanLine();
+                string zones = FrameZones.Period() + CX.Graphics.GlContextService.GpuSpanLine();
                 _log?.Info(zones);                 // ...and where that frame went
                 _fsSum = 0; _fsN = 0; _fsMax = 0; _fsOver7 = 0; _fsOver17 = 0;
             }

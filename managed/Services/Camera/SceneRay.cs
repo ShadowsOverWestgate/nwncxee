@@ -1,10 +1,10 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using static Sowx.Framework.EngineLayout;
+using CX.Framework;
+using static CX.Framework.EngineLayout;
 
-namespace Sowx.Services.Camera;
+namespace CX.Services.Camera;
 
 /// <summary>One segment test through the engine's own <c>Scene::HitCheck</c> -- tile BSP parts then gobs,
 /// nearest hit wins -- with the one <c>CHitInfo</c> both camera users share (#537 occlusion fade, #538

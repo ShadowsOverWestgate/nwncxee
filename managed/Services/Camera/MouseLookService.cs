@@ -1,9 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
-using Sowx.Framework;
-using Sowx.Ui;
+using CX.Framework;
+using CX.Ui;
 
-namespace Sowx.Services.Camera;
+namespace CX.Services.Camera;
 
 /// <summary>
 /// Mouse-look on right-drag (#539, map #535). The engine's only mouse orbit is middle-drag
@@ -76,7 +76,7 @@ public sealed unsafe class MouseLookService : IExtenderService
         _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 100);
         if (_next == null) { log.Info("MouseLook: standing down (WinMessageHandler chain refused)"); return; }
         _held = (byte*)NativeMemory.AllocZeroed(SdlEventSize);
-        CameraCommand.Register("look", "mouse-look on right-drag: reports sensitivity / invert / threshold (sowx.cfg: mouselook, mouselook_sens, mouselook_invert, mouselook_threshold)",
+        CameraCommand.Register("look", "mouse-look on right-drag: reports sensitivity / invert / threshold (cx.cfg: mouselook, mouselook_sens, mouselook_invert, mouselook_threshold)",
                                _ => Report());
         log.Info(_rightLook
             ? $"MouseLook: right-drag orbits (sensitivity {_sens}, invert {_invert}, threshold {_threshold}px); radial menu = a still right-click; middle-drag captured"

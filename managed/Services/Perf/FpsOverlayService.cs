@@ -1,9 +1,9 @@
 using System;
-using Sowx.Framework;
-using Sowx.Ui;      // a genuine UI client: draws through the text rig and registers a UiHost window
-using Sowx.Alloy;
+using CX.Framework;
+using CX.Ui;      // a genuine UI client: draws through the text rig and registers a UiHost window
+using CX.Alloy;
 
-namespace Sowx.Services.Perf;
+namespace CX.Services.Perf;
 
 /// <summary>
 /// #79 (map #68, spec #77 M1): always-available on-screen FPS + frame-time readout -- the measurement
@@ -40,7 +40,7 @@ public sealed class FpsOverlayService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        CommandRegistry.Global.Register("/fps", "toggle the FPS overlay; `font <name>` draws it in a sowx.cfg typeface (#470)", args =>
+        CommandRegistry.Global.Register("/fps", "toggle the FPS overlay; `font <name>` draws it in a cx.cfg typeface (#470)", args =>
         {
             string[] a = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (a.Length == 2 && a[0].Equals("font", StringComparison.OrdinalIgnoreCase))

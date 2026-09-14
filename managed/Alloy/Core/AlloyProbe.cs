@@ -1,7 +1,7 @@
 using System;
-using Sowx.Framework;
+using CX.Framework;
 
-namespace Sowx.Alloy;
+namespace CX.Alloy;
 
 /// <summary>
 /// #456: the first-sighting layout probe, as Alloy calls it. <see cref="EngineLayout.Probe"/> walks the whole
