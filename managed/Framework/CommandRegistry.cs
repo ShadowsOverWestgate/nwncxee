@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 
 namespace CX.Framework;
 
@@ -20,7 +21,8 @@ public sealed class CommandRegistry
     /// <param name="Name">Canonical name, with the leading slash.</param>
     /// <param name="Aliases">Extra names that dispatch to the same handler.</param>
     /// <param name="Help">One line describing the command; the listing a /help would print.</param>
-    public sealed record Command(string Name, string[] Aliases, string Help, Handler Run);
+    /// <param name="Exempt">Dispatches even while <see cref="Gate"/> is closed: <c>/settings</c>, the one door in.</param>
+    public sealed record Command(string Name, string[] Aliases, string Help, Handler Run, bool Exempt = false);
 
     /// <summary>The one live registry every service registers into.</summary>
     public static readonly CommandRegistry Global = new();
@@ -36,18 +38,29 @@ public sealed class CommandRegistry
     /// services, and the command it costs would otherwise just not exist with no diagnostic anywhere.</summary>
     public ExtenderLog? Log;
 
+    /// <summary>The command gate (spec §4.1, <c>general.commands</c>): while it answers false, every command
+    /// that is not <see cref="Command.Exempt"/> is unknown to <see cref="Lookup"/>, so BOTH entry points --
+    /// the CX chatbox and the vanilla prompt chain -- fall through and the line goes to the server as chat.
+    /// Null = open (the SelfCheck's private instance). The one place the gate lives.</summary>
+    public Func<bool>? Gate;
+
     /// <summary>Register a command. Names are normalised: a leading slash is added if missing and the whole
     /// name is lowercased. Returns false and changes nothing if the name or any alias is already taken --
     /// first registration wins, so a later service can never silently steal an existing command. A refusal is
     /// logged, so a caller that discards the return value still leaves a trace.</summary>
     public bool Register(string name, string help, Handler run, params string[] aliases)
+        => Register(name, help, run, exempt: false, aliases);
+
+    /// <summary><see cref="Register(string, string, Handler, string[])"/> with <paramref name="exempt"/>: the command
+    /// dispatches even while <see cref="Gate"/> is closed.</summary>
+    public bool Register(string name, string help, Handler run, bool exempt, params string[] aliases)
     {
         string canon = Norm(name);
         string[] alt = Array.ConvertAll(aliases, Norm);
         if (_byName.ContainsKey(canon)) return Refuse(canon, canon);
         foreach (string a in alt) if (_byName.ContainsKey(a)) return Refuse(canon, a);
 
-        var cmd = new Command(canon, alt, help, run);
+        var cmd = new Command(canon, alt, help, run, exempt);
         _byName[canon] = cmd;
         foreach (string a in alt) _byName[a] = cmd;
         _all.Add(cmd);
@@ -63,17 +76,33 @@ public sealed class CommandRegistry
     public bool TryDispatch(string text, out string? reply)
     {
         reply = null;
-        if (text.Length < 2 || text[0] != '/') return false;
-        // The whole line is lowercased, arguments included -- the if-chain this replaced did the same, and the
-        // knob keys depend on it (`/light GAIN 2` must reach AlloyLights as "gain").
-        string cmd = text.Trim().ToLowerInvariant();
-        int sp = cmd.IndexOf(' ');
-        string name = sp < 0 ? cmd : cmd[..sp];
-        if (!_byName.TryGetValue(name, out Command? c)) return false;
+        if (!Lookup(text, out string cmd, out int sp, out Command? c)) return false;
         reply = c.Run(sp < 0 ? "" : cmd[(sp + 1)..].TrimStart());
         // A command WITH arguments is a knob change; the log is what ties a period's numbers to its setting.
         if (sp >= 0 && reply != null) Log?.Info($"[cmd] {cmd} -> {(reply.Length > 240 ? reply[..240] : reply)}");
         return true;
+    }
+
+    /// <summary>Whether <see cref="TryDispatch"/> WOULD handle <paramref name="text"/>, running nothing. #580: the
+    /// vanilla prompt has to close before a handler runs (a handler may take the keyboard), so the decision and the
+    /// dispatch are two calls there.</summary>
+    public bool Knows(string text) => Lookup(text, out _, out _, out _);
+
+    /// <summary>The one parse both entry points share: first token of the trimmed, lowercased line names the
+    /// command; a closed <see cref="Gate"/> then hides everything but an exempt command.</summary>
+    private bool Lookup(string text, out string cmd, out int sp, [NotNullWhen(true)] out Command? c)
+    {
+        cmd = ""; sp = -1; c = null;
+        if (text.Length < 2 || text[0] != '/') return false;
+        // The whole line is lowercased, arguments included -- the if-chain this replaced did the same, and the
+        // knob keys depend on it (`/light GAIN 2` must reach AlloyLights as "gain").
+        cmd = text.Trim().ToLowerInvariant();
+        sp = cmd.IndexOf(' ');
+        string name = sp < 0 ? cmd : cmd[..sp];
+        if (!_byName.TryGetValue(name, out c)) return false;
+        if (c.Exempt || Gate == null || Gate()) return true;
+        c = null;
+        return false;
     }
 
     private bool Refuse(string canon, string taken)
@@ -115,6 +144,9 @@ public sealed class CommandRegistry
         E(!r.TryDispatch("/", out _), "a bare slash is not a command");
         E(!r.TryDispatch("hello", out _), "plain text is not a command");
         E(!r.TryDispatch("/probefoo", out _), "the name must match the whole first token");
+        seen = null;
+        E(r.Knows("/probe x") && r.Knows("/PB") && !r.Knows("/nosuch") && !r.Knows("hello") && seen == null,
+            "Knows answers what TryDispatch would, and runs nothing");
 
         E(!r.Register("/probe", "dupe", _ => "stolen"), "a duplicate name is refused");
         E(!r.Register("/pb", "dupe", _ => "stolen"), "a duplicate alias is refused");
@@ -127,6 +159,17 @@ public sealed class CommandRegistry
         E(r.Commands[0].Aliases.Length == 2 && r.Commands[0].Aliases[0] == "/pb"
             && r.Commands[0].Aliases[1] == "/pb2", "enumeration carries the normalised aliases");
         E(r.Commands[1].Name == "/silent", "enumeration is in registration order");
+
+        bool open = false;
+        r.Gate = () => open;
+        E(r.Register("/door", "door help", _ => "opened", exempt: true), "an exempt command registers");
+        seen = null;
+        E(!r.TryDispatch("/probe x", out reply) && reply == null && seen == null && !r.Knows("/probe"),
+            "a closed gate hides a command from both entry points and runs nothing");
+        E(r.TryDispatch("/door", out reply) && reply == "opened" && r.Knows("/door"), "an exempt command passes a closed gate");
+        open = true;
+        E(r.TryDispatch("/probe x", out _) && seen == "x", "an open gate dispatches as before");
+        E(r.Commands.Count == 3 && r.Commands[2].Exempt && !r.Commands[0].Exempt, "enumeration carries the exemption");
 
         log.Info(ok ? "CommandRegistry.SelfCheck: passed" : "CommandRegistry.SelfCheck: FAILED");
     }

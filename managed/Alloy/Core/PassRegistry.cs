@@ -5,7 +5,7 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// One Alloy pass's lifecycle, as the eight slots every pass was hand-writing (#175). A null slot means the
+/// One Alloy pass's lifecycle, as the seven slots every pass was hand-writing (#175). A null slot means the
 /// pass genuinely does not have that concern -- which is now visible in one place rather than being a gap
 /// nobody notices until the pass misbehaves.
 /// </summary>
@@ -17,8 +17,7 @@ namespace CX.Alloy;
 /// </remarks>
 public sealed class PassLifecycle
 {
-    /// <summary>The pass, as it names itself in the log. Also the <c>/pass</c>-style lookup key for
-    /// <see cref="PassRegistry.Find"/>.</summary>
+    /// <summary>The pass, as it names itself in the log. Also the lookup key for <see cref="PassRegistry.Find"/>.</summary>
     public required string Name { get; init; }
 
     /// <summary>Take the log and read the boot knobs. Runs once, at Initialize, before any check.</summary>
@@ -47,15 +46,6 @@ public sealed class PassLifecycle
 
     /// <summary>One clause of the period report, given the frame count of the period.</summary>
     public Func<int, string>? Stats { get; init; }
-
-    /// <summary>The pass's live tuning state, for its chat command.</summary>
-    public Func<string>? Describe { get; init; }
-
-    /// <summary>Set one named dial, returning its old value (NaN = unknown key).</summary>
-    public Func<string, float, float>? Tune { get; init; }
-
-    /// <summary>Put every dial back to its boot value.</summary>
-    public Action? Reset { get; init; }
 }
 
 /// <summary>
@@ -138,8 +128,7 @@ internal sealed class PassRegistry
         return outp;
     }
 
-    /// <summary>The pass registered under <paramref name="name"/>, or null. What lets one chat-command
-    /// handler serve every tunable pass instead of one near-identical handler each.</summary>
+    /// <summary>The pass registered under <paramref name="name"/>, or null.</summary>
     internal PassLifecycle? Find(string name)
     {
         var a = _isSealed ? _sealed : (IReadOnlyList<PassLifecycle>)_pending;

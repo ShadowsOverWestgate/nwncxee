@@ -8,7 +8,7 @@ the server side must implement to match the client.
 ## Split of responsibilities
 
 Client extender (this repo, done):
-- Options-menu "Hotkeys" button (repurposed SaveCharButton).
+- The settings panel's Hotkeys rows (`/settings` → Hotkeys): "Bind keys on this server…" sends OpenUi.
 - Runtime capture: a pressed **armed** key -> a packet to the server, gated on
   window focus + "not typing in chat", debounced 250 ms.
 - Handshake: advertises extender **presence only** (`cx_enabled`) on login. It does
@@ -63,7 +63,7 @@ global-consent leak). The server owns the bindings and re-pushes them via ArmSet
 ### 2. OpenUi (client -> server) -- "player clicked Hotkeys"
 
 - major/minor: `OpenUiMajor/Minor`, **no payload**.
-- Sent when the player clicks the Options-menu "Hotkeys" button.
+- Sent when the player presses "Bind keys on this server…" in the settings panel (or `/hotkeys bind`).
 - Server response: `NuiCreate` the arming window for that player.
 
 ### 3. KeyPress (client -> server) -- an armed key was pressed

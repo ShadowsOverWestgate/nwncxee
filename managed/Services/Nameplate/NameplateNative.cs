@@ -197,6 +197,19 @@ public static unsafe class NameplateNative
         if (b != IntPtr.Zero) *(int*)(b + BubbleLiveText) = 0;
     }
 
+    private static readonly delegate* unmanaged<IntPtr, void> _unToggleOff =
+        (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GuiPanelUnToggleOff);
+
+    /// <summary>Clear the bubble's hide bit so <c>UpdatePopUpBubble</c> projects its anchor again (#591). A bubble
+    /// that idled under the vanilla mode carries the bit (<c>ToggleOff</c>), and the mode-0 walk only deactivates
+    /// it; under mode 0 the panel is never active, so <c>CGuiPanel::UnToggleOff</c> is the bit clear and nothing
+    /// else. Cold: once per hover, spoken line or floaty, from the hooks.</summary>
+    public static void UnfreezeAnchor(IntPtr obj)
+    {
+        IntPtr b = Bubble(obj);
+        if (b != IntPtr.Zero && _unToggleOff != null) _unToggleOff(b);
+    }
+
     /// <summary>Is the engine currently showing its feedback plate for this object? The per-class flag set at
     /// the top of <c>ShowFeedbackBubbleText</c> and cleared in <c>MouseOff</c> -- the pollable "hovered or
     /// Tab-highlighted" state, which is why acceptance §1/§8 need no key tracking of our own.</summary>

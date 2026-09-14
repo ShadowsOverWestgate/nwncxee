@@ -175,12 +175,10 @@ but nothing calls `EngineLayout.Probe` for `Part`, `CAurTexture`, `VertexPrimiti
 `CNWCCreature`/`CNWCObject`. Wiring the five first-sighting calls is the sharp piece of
 #429's "expanding the probe vocabulary".
 
-**The one unmeasured slot.** `HotkeyMenuService.SetTextFromCharVtblOffset = 0xd8` is read
-off the object at `CAuroraStringWrapper+0x10`, whose class this audit did not pin down; the
-Windows vftable at that displacement holds unrelated `CGuiObject` methods, so `-8` is **not**
-safe to assume here. The service already stands down on Windows for exactly this reason
-(#418/#422), so nothing is live — but it is the only vtable slot in the repo with no
-Windows value, and it stays that way until #422 retires the button.
+**The one unmeasured slot** was `HotkeyMenuService.SetTextFromCharVtblOffset = 0xd8`, read off
+the object at `CAuroraStringWrapper+0x10`, whose class this audit did not pin down. The service
+and the slot were deleted with the nuklear hotkey manager (#592), so every vtable slot the repo
+reads now has a Windows value.
 
 ### Two traps the dumps exposed
 

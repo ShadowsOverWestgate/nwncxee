@@ -394,6 +394,65 @@ No new function: the same two chase drivers and the one solve. Read on both buil
 | `CClientExoAppInternal` | `inGameGui 0x90` | `CClientExoApp::GetInGameGui` is `*(*(app+8)+0x90)` on both (Linux @`0x637c70`, Windows rva `0x6abbc0`) |
 | `CGuiInGame` | `toggledOff 0x3d4 / 0x374` (probed 0/1) | `ToggleOff` / `UnToggleOff` (Linux @`0x66dda0` / `0x66e930`, Windows rva `0x6fc6f0` / `0x6fc900`) test and write it first; reached from the anchored message dispatch, case 0x33 -> cutscene handler -> minor 7 |
 
+### The dialog-master row (#591)
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CGuiInGame` | `dialog 0x70` | the stock `CGuiInGameChatDialog*`: `ShowDialogReplies` (Linux @`0x770c30`, Windows rva `0x6fb8e0`) is `if (*(this+0x70)) ...` on both, `CloseDialog` (Linux @`0x770320`, rva `0x6f6d80`) virtual-deletes it, stores 0 to `+0x70` and calls `ResetGuiState(this, 0x298)` on both |
+
+### The vanilla-prompt rows (#580)
+
+Read off `CGuiInGameChatPrompt::HandleEnter` on both builds (Linux nm `0x679c50`, Windows rva
+`0x87b0d0`, the At row the hotkey observer already hooks) and `CGuiEdit::GetText` (exported on both,
+Linux nm `0x592680`, Windows `0x1e93b0`), `tools/ghidra/DecompOne.java` on each program.
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CGuiInGameChatPrompt` | `edit 0x100 / 0xf8` | HandleEnter hands `this+off` to `GetText`, `SetCaretPos` and `LoseFocus` on both builds (the `+0xf8` the #419 table already had from `SetFocus`) |
+| `CGuiEdit` | `string 0x90` | `GetText` reads `m_pString` at `this+0x90` on both, and HandleEnter's inlined `SetText` reads the same word through the prompt (`+0x190` / `+0x188` = edit + `0x90`) |
+| `CAurString` | `vtbl.SetText 0xd8 / 0xd0` | the clear call in HandleEnter: `(*m_pString)[0xd8](m_pString, "")` on Linux, `[0xd0]` on Windows; the Linux slot is the `StringGob` secondary-base thunk `_ZThn1216_N9StringGob7SetTextEPKc` in `_ZTV9StringGob` (offset-to-top -1216), so `m_pString` is the `CAurString` interface pointer and the slot is called through it, never on the `StringGob` primary table |
+### The stock-settings reader rows (#571)
+
+Three `Same` rows for `StockConfig`, measured by decompiling both builds directly
+(`CExoConfig` and `CExoBase` are name-exported on both):
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CExoBase` | `config 0x0` | both ctors store the freshly built `CExoConfig` in the first word (Linux `CExoBase::CExoBase`, Windows @`0x140114b00`); every engine `Get` caller loads `**g_pExoBase` for `this` (Linux `CGuiInGame::InitializeUserOptions` @`0x66e24a`, Windows `CAurora::ComputeDesiredGUIScale` @`0x140074f70`) |
+| `CExoConfig` | `initializing 0x0`, `workingTable 0x28` (committed table at `0x38`, not a row) | `Get<bool>` on both builds (Linux @`0x4efce0`, Windows @`0x140119650`): `*this != 0 \|\| committed` picks `+0x38`, else `+0x28`; `CExoConfig::Initialize` @`0x4e2800` sets the byte for its duration and clones `+0x38` into `+0x28` before clearing it -- the ctor leaves `+0x28` null, which is the reader's "not yet" test |
+
+The `std::string` argument is not a row: it is a header the reader forges in the running
+platform's layout, and the callee reads are the two library comparators (libstdc++
+`basic_string::compare` @`0x4318d0` reads `ptr@0`/`len@8`; MSVC `std::less<string>` @`0x140130ad0`
+reads `size@0x10`, `res@0x18`, and the pointer at `+0` when `res > 15`).
+
+### The main-menu rows (#593)
+
+Two `Same` rows for the main-menu gate, read off `CClientExoAppInternal::DisplayMainMenu` on both builds
+(Linux nm `0x63c320`, Windows rva `0x6d74f0` -- the caller of the `CMainMenuPanel` ctor, itself the only
+referrer of `"PRE_MAIN"`; `docs/research/main-menu-surface.md`), by objdump of each:
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CClientExoAppInternal` | `mainMenuPanel 0x98` | `DisplayMainMenu` returns when `+0x98` is non-null, else `new`s the panel (`0x840` bytes on Linux, `0x758` on Windows) and stores it there before `CGuiPanel::Activate`; `DestroyMainMenuPanel` (Linux nm `0x63a650`) deactivates, deletes and nulls the same word |
+| `CClientExoAppInternal` | `reachedMainMenu 0x5f0` (probed 0/1) | the same function's first write, `mov dword [this+0x5f0], 1`, on both builds; `CClientExoApp::GetReachedMainMenu` (Linux nm `0x638cf0`) reads it through `+0x8` |
+
+### The in-game Options rows (#593 follow-up: the gear under the ESC menu)
+
+The frame gate's raw constants became rows, plus the two the in-game gear needs. Read by `DecompOne` on both
+builds; the Windows `CGuiInGame::HandleOptionsButton` (rva `0x6f86c0`) is the caller of the `COptionsPanel` ctor
+(rva `0x822ce0`, the only referrer of `"OPTIONS_MAIN"`) that also stores the panel's close callback.
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CClientExoAppInternal` | `optionsPanelOpen 0x604` (probed 0/1) | `CClientExoApp::SetOptionsPanelOpen(int)` (Linux nm `0x638d30`, Windows rva `0x6acbf0`) is the one store, `*(*(this+8)+0x604) = arg` on both; `HandleOptionsButton` passes 1, `HandleOptionsPanelClose` (Linux @`0x76ea50`, rva `0x6f8820`) passes 0; the ctor zeroes it |
+| `CGuiInGame` | `chatWindow 0x8` | `AppendToMsgBuffer` (Linux @`0x76d550`, Windows rva `0x6f68d0`) loads `this[1]` first thing on both and hands it to `AppendToChatBuffer`; `PrimaryMsgWindowIsVisible` (Linux @`0x76e380`) forwards it to `IsVisible` |
+| `CGuiInGame` | `optionsPanel 0xd8` | `HandleOptionsButton` (Linux @`0x76de30`, rva `0x6f86c0`) toggles a non-null `+0xd8` closed via `HandleIngameExit`, else `new`s the panel (`0xc00` bytes Linux, `0xac0` Windows) into `+0xd8`, sets its owner/callback at `+0x80/+0x88` and activates; `HandleOptionsPanelClose` nulls `+0xd8` first thing on both, before `CGuiPanel::Deactivate` deletes the panel |
+| `CGuiPanel` | `state 0xb8 / 0xb0` | exported `Hide` / `UnHide` / `Activate` (Linux @`0x687160` / `0x687740` / `0x6878b0`, Windows rva `0x1fc800` / `0x1fd0d0` / `0x1fbe70`): `Hide` ORs 2, `UnHide` clears 2, `Activate` ORs 1 and picks its event on `== 1`, `ForceVisible` clears 6; the scene view behind it sits at `+0xc0` / `+0xb8` (the `UnToggleOff` bodies read it through the HUD panel) |
+
+`toggledOff 0x3d4 / 0x374` (#543's row) is what the gate reads for the H key now; the raw `0x3d4` it read
+before was wrong on Windows.
+
 ### The 38 DecompOne rows (#448)
 
 Section 3, T2 — the biggest and most mechanical of the three. All 38 are now

@@ -11,7 +11,7 @@ namespace CX.Alloy;
 /// lists itself, from the edge tiles' RENDER faces -- the up-facing ones whose diffuse texture is a grass
 /// ground texture -- laid out exactly as <see cref="Bake"/> reads an engine <c>CAurTriangleList</c>, so the
 /// scatter, the culling and the draw are the same code for both.
-/// <para>ponytail: "grass ground texture" is a name-substring test (<c>bordergrasstex</c>, default
+/// <para>ponytail: "grass ground texture" is a name-substring test (<c>grass.bordertex</c>, default
 /// <c>grass</c>); every stock tileset with grass names its ground <c>*grass*</c>. The principled source is
 /// the real tiles' walkmesh -- correlate each grass walk face with the render face beneath it and learn the
 /// texture set per area -- if a custom tileset ever names its meadow something else.</para></summary>
@@ -58,8 +58,9 @@ internal static unsafe partial class GrassField
 
     private static void BorderInstall(ExtenderLog log)
     {
-        _borderGrass = Settings.Bool("bordergrass", true);
-        _borderTex = Settings.Text("bordergrasstex", "grass").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        // Restart knobs: Boot, not V -- the ring is binned at area load from what this session started with.
+        _borderGrass = Grass.Border.Boot;
+        _borderTex = Grass.BorderTex.Boot.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         _bspTile = (delegate* unmanaged<IntPtr, Vector3*, IntPtr>)Native.Sym(SymbolMap.SceneBspGetTileData);
         _getPool = (delegate* unmanaged<uint, byte*>)Native.Sym(SymbolMap.GlGetPool);
         _getWorld = (delegate* unmanaged<IntPtr, Vector3*, float*, void>)Native.Sym(SymbolMap.PartGetWorld);

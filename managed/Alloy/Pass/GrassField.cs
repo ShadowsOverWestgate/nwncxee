@@ -109,7 +109,7 @@ internal static unsafe partial class GrassField
     /// quad per blade and is the cheapest thing that makes grass look like grass from any angle.</summary>
     private const int TemplateVerts = 12;
     /// <summary>The grass displacement field: a top-down RG8 push map rebuilt on the CPU every frame around
-    /// the player. 128 texels over <see cref="_pushExtent"/> world units is ~0.25u per texel at the default
+    /// the player. 128 texels over <see cref="Grass.PushExtent"/> world units is ~0.25u per texel at the default
     /// 64u window -- fine enough to shape a footfall, small enough (32KB) that the rebuild and the upload are
     /// both noise. Vanilla's "creature wind" is a CPU rewrite of the affected bins' vertex data; this is one
     /// vertex-shader texture fetch instead, and it costs the same whether one creature is walking through the
@@ -148,23 +148,10 @@ internal static unsafe partial class GrassField
     private static delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet;
     private static byte* _binBucket, _grassInfo, _grassEnabled;
     private static float* _farDist, _nearRadius;
-    /// <summary>Boot values for <see cref="ResetTuning"/> -- what <c>/grass reset</c> restores. These ARE
-    /// the code defaults now that the dials are chat commands (ADR 0013): there is no earlier value to
-    /// capture, so the constants are the single source for both the field initialisers and the reset.</summary>
-    private const float BootDensity = 2f, BootWind = 1f, BootWindSpeed = 0.001f,
-                        BootSoften = 0.5f, BootAniso = 8f, BootEdge = 2f,
-                        BootPush = 0.15f, BootPushRadius = 1f, BootPushExtent = 64f,
-                        BootCull = 1f, BootCullShrink = 0.8f, BootCullMax = 0f,
-                        BootLod = 40f, BootLodMin = 0.02f, BootLodWidth = 0.5f, BootLodHeight = 0.25f,
-                        BootShade = 40f, BootFar = 0f, BootTuft = 3f;
-
     /// <summary>The RESOLUTION latch: a grass global, the texture loader or a hook that did not come up, so
-    /// this client cannot run the Alloy pass at all. Separate from <see cref="_on"/> on purpose --
-    /// <c>/grass on 1</c> must never re-enable a pass that could not arm.</summary>
+    /// this client cannot run the Alloy pass at all. Separate from <see cref="Grass.Enabled"/> on purpose --
+    /// <c>/grass enabled 1</c> must never re-enable a pass that could not arm.</summary>
     private static bool _off;
-    /// <summary>The per-pass toggle, live behind <c>/grass on 0|1</c>. On by default: the Alloy field is the
-    /// shipped look, and turning it off hands grass back to the engine's own path for a comparison.</summary>
-    private static bool _on = true;
     private static readonly StandDown _down = new("GrassField");
 
     /// <summary>Baked patches. <see cref="Patch.List"/> is an IDENTITY, never dereferenced outside the frame
@@ -180,40 +167,26 @@ internal static unsafe partial class GrassField
     private static readonly Patch[] _patches = new Patch[MaxPatches];
     private static readonly int[] _slot = new int[PatchHash];
     private static int _patchCount, _instCount;
-    /// <summary>#196: sun cascades (nearest first) the blades are drawn into as casters; 0 = grass casts
-    /// nothing. <c>/grass shadow N</c>. The draw reuses the depth prepass program under the cascade's
+    /// <summary>#196: <see cref="Grass.Shadow"/> sun cascades (nearest first) the blades are drawn into as
+    /// casters; 0 = grass casts nothing. The draw reuses the depth prepass program under the cascade's
     /// matrix on LAST frame's visible list (the caster pass runs ahead of the colour pass), and only into a
     /// cascade the frame re-baked, so the shadow follows the sway at the static cascade's own cadence.</summary>
-    private static int _shadowCascades = BootShadow;
-    private const int BootShadow = 1;
     private static int _shadowN;
     private static Vector3 _shadowEye;
     private static float _shadowNear, _shadowFar;
     private static long _shadowDraws, _shadowPatches, _shadowBlades;
-    /// <summary>Blade width multiplier in the cast view. <c>/grass castwidth X</c>.</summary>
-    private static float _castWidth = BootCastWidth;
-    private const float BootCastWidth = 1f;
-    /// <summary><c>/grass dumpshadow 1</c>: write the next cast layer back as a PGM beside the shader dump.</summary>
+    /// <summary><c>/grass dumpshadow</c>: write the next cast layer back as a PGM beside the shader dump.
+    /// The render thread consumes it; the button only raises it.</summary>
     private static bool _dumpShadow;
     private static int _dumpN;
-    /// <summary>Darkening at the blade root, 0..1: the cheapest grounding there is. <c>/grass rootao X</c>.</summary>
-    private static float _rootAo = BootRootAo;
-    /// <summary>The fraction of a blade's height that fades into the ground under its root, 0..1.
-    /// <c>/grass gtint X</c>; 0 turns the frame copy off with it.</summary>
-    private static float _groundTint = 0.15f;
-    /// <summary>Lines left for the copy's framebuffer diagnostic (<c>/grass gtint</c> re-arms three).</summary>
+    /// <summary>Lines left for the copy's framebuffer diagnostic (<see cref="Grass.GTint"/> and
+    /// <see cref="Grass.GViz"/> re-arm three). GViz: 1 = every blade paints the copy texel behind it (the
+    /// scene should show through), 2 = the copy's centre texel, 3 = gl_FragCoord over the copy size as
+    /// red/green, 4 = a normalized texture() read.</summary>
     private static int _groundDiag = 3;
-    /// <summary><c>/grass gviz N</c>: 1 = every blade paints the copy texel behind it (the scene should show through),
-    /// 2 = the copy's centre texel, 3 = gl_FragCoord over the copy size as red/green, 4 = a normalized texture() read.</summary>
-    private static int _groundViz;
-    /// <summary><c>/grass softedge</c>: on a single-sampled target the colour pass BLENDS the silhouette ramp
-    /// (alpha = coverage) over the prepass depth instead of dithering it -- the masked-core-plus-blended-fringe
-    /// foliage technique. Needs the prepass; off, the dither carries the edge as before.</summary>
-    private static bool _softEdge = true;
-    private const float BootRootAo = 0f;   // vanilla has no root darkening; the ground tint grounds the blade
     private static int _prepGen = -1, _seen;
     /// <summary>#196: does cascade <paramref name="i"/> take the blades as casters this frame?</summary>
-    internal static bool CastsInto(int i) => i < _shadowCascades && _shadowN > 0 && _on && !_off && _progDepth != 0;
+    internal static bool CastsInto(int i) => i < Grass.Shadow.V && _shadowN > 0 && Grass.Enabled.V && !_off && _progDepth != 0;
     /// <summary>CPU-side instance stream. Allocated once, cold: the draw path never allocates.</summary>
     private static float[]? _inst;
     private static int _uploaded;
@@ -235,48 +208,15 @@ internal static unsafe partial class GrassField
     private static int _pushers, _cullers, _reticles;
     private static delegate* unmanaged<IntPtr, byte> _isOpaque;
     private static int _drawnGen = -1, _frame;
-    /// <summary>Set from the chat thread by <c>/grass</c>; consumed by the render thread at the top of
-    /// <see cref="Draw"/>. The tables it clears are the render thread's, so the flag is the handoff --
-    /// clearing them where the command runs would race a live bake.</summary>
+    /// <summary>Set from the chat thread by a <see cref="Grass.Density"/> set; consumed by the render thread
+    /// at the top of <see cref="Draw"/>. The tables it clears are the render thread's, so the flag is the
+    /// handoff -- clearing them where the command runs would race a live bake.</summary>
     private static volatile bool _rebake;
-    /// <summary>Scatter and sway dials (live: <c>/grass density|wind|windspeed</c>).
-    /// <para>ponytail: the sway RATE is a dial rather than a derivation. uTimeOfDay is the engine's own
-    /// worldtimerTimeOfDay int and the stock wind shaders divide it by five-digit constants that are
-    /// themselves per-material .mtr parameters -- there is no one right divisor to inherit. 0.001 reads as a
-    /// light breeze if the field is milliseconds; <c>/grass windspeed</c> is the knob if it is not.</para></summary>
-    private static float _density = BootDensity, _windGain = BootWind, _windSpeed = BootWindSpeed;
-    /// <summary>Softening dials (live: <c>/grass soften|aniso|edge</c>). <c>_lodBias</c> is a mip bias on the
-    /// diffuse -- the literal blur knob, and the one to reach for LAST because a positive bias on a 2x2 atlas
-    /// starts averaging neighbouring blade variants together. <c>_aniso</c> is the one that actually earns its
-    /// keep here: grass is looked at edge-on, which is precisely the case isotropic filtering handles worst.
-    /// <c>_edge</c> widens the analytic cutout ramp beyond its natural one-pixel width.</summary>
-    private static float _lodBias = BootSoften, _aniso = BootAniso, _edge = BootEdge;
+    /// <summary>The dials live in <see cref="Grass"/> (ADR 0025); what stays here is the render-thread state
+    /// a set arms (<see cref="SamplerDirty"/>, <see cref="Rebake"/>, <see cref="GroundDiag"/>).</summary>
     private static float _appliedScaleBias;
     private static bool _samplerDirty = true;
-    /// <summary>Displacement dials (live: <c>/grass push|pushradius|pushextent</c>). <c>_pushGain</c> 0
-    /// disables the whole field, including its rebuild and upload.</summary>
-    /// <para>Retuned after the first live look: at gain 1 a blade was flung a full blade-height sideways and
-    /// pressed flat, which read as a blast crater rather than parted grass.</para>
-    private static float _pushGain = BootPush, _pushRadius = BootPushRadius, _pushExtent = BootPushExtent;
-    /// <summary>Push field from the engine's visible-gob list (1) or every gob in the scene (0, the A/B).</summary>
-    private static bool _pushVis = true;
     private static long _pushWalked, _pushWalkedAll;
-    /// <summary>Object culling: <c>_cull</c> 0 disables it, <c>_cullShrink</c> scales the footprint the gob's
-    /// own bounding-box extent gives (below 1 so grass fringes an object rather than stopping at a hard
-    /// line), and <c>_cullMax</c> caps the half-extent in world units (0 = uncapped) for the one case the
-    /// gob box handles badly -- a tree, whose box is its CANOPY while only its trunk touches the ground.</summary>
-    private static float _cull = BootCull, _cullShrink = BootCullShrink, _cullMax = BootCullMax;
-    /// <summary>#355 the distance ladder. <c>_lod</c> is the radius inside which every blade draws; past it
-    /// a patch draws the <c>Keep</c> prefix of its shuffled blades (never below <c>_lodMin</c>), and the
-    /// survivors widen by <c>keep^-_lodWidth</c> and grow by <c>keep^-_lodHeight</c> so the ground stays
-    /// covered. <c>_shade</c> is where the fragment stage stops taking the cluster and cascade taps.
-    /// <c>_far</c> overrides the player's grass-distance option when positive (the engine clamps that option
-    /// at 173u; the field can go further, since the bin walk lists every frustum-visible bin).</summary>
-    private static float _lod = BootLod, _lodMin = BootLodMin, _lodWidth = BootLodWidth,
-                         _lodHeight = BootLodHeight, _shade = BootShade, _far = BootFar, _tuft = BootTuft;
-    /// <summary><c>/grass vlight</c>: the light rig (sun cascade taps + cluster) runs per VERTEX of the blade
-    /// (boot) rather than per fragment; a blade's normal is flat, so only the sample point moves.</summary>
-    private static bool _vlit = true;
 
     // period counters
     private static int _frames, _draws, _visible, _culled, _baked, _refused, _disabled;
@@ -301,14 +241,17 @@ internal static unsafe partial class GrassField
     private static Loc _loc;
     private static AlloyRenderer.FeatLoc _featLoc, _featLocD;
     private static Loc _locD;
-    /// <summary>#355: the grass depth prepass. With <c>discard</c> in the stage and depth writes on, the
-    /// hardware cannot reject a hidden fragment before shading it, so every blade fragment behind another
-    /// blade still took the full light and shadow taps. The prepass lays the field's depth down with an
-    /// alpha-only stage first; the colour pass then tests LEQUAL with depth writes OFF, and early-Z discards
-    /// the hidden fragments before the taps. Both stages run the same vertex text under
-    /// <c>invariant gl_Position</c> and make the same keep decision, so the depths are equal. Toggle for A/B:
-    /// <c>/grass prepass 0</c>.</summary>
-    private static bool _prepass = true;
+    /// <summary>#355: the grass depth prepass (<see cref="Grass.Prepass"/>). With <c>discard</c> in the
+    /// stage and depth writes on, the hardware cannot reject a hidden fragment before shading it, so every
+    /// blade fragment behind another blade still took the full light and shadow taps. The prepass lays the
+    /// field's depth down with an alpha-only stage first; the colour pass then tests LEQUAL with depth writes
+    /// OFF, and early-Z discards the hidden fragments before the taps. Both stages run the same vertex text
+    /// under <c>invariant gl_Position</c> and make the same keep decision, so the depths are equal.</summary>
+    internal static void Rebake() => _rebake = true;
+    internal static void SamplerDirty() => _samplerDirty = true;
+    internal static void GroundDiag() => _groundDiag = 3;
+    internal static void DumpMipsNext() => _dumpMips = true;
+    internal static void DumpShadowNext() => _dumpShadow = true;
 
     // ---- install -----------------------------------------------------------------------------
 
@@ -409,12 +352,12 @@ internal static unsafe partial class GrassField
     /// number per frame), then every patch sighted this frame is culled, sorted and issued.</summary>
     private static bool Gate()
     {
-        if (_off || !_on || _down.Failed || _binBucket == null) return false;
+        if (_off || !Grass.Enabled.V || _down.Failed || _binBucket == null) return false;
         if (*_grassEnabled == 0) return false;
         if (Gl.DrawArraysInstancedBaseInstance == null || Gl.VertexAttribDivisor == null)
         { _down.Fail(_log, "no instanced-draw entry point", "grass stays vanilla"); return false; }
         if (!EnsureProgram() || !EnsureBuffers()) return false;
-        return _density > 0f;
+        return Grass.Density.V > 0f;
     }
 
     /// <summary>Once per PassGen: bake, upload, push map. The seen count is kept for a second caller.</summary>
@@ -436,7 +379,7 @@ internal static unsafe partial class GrassField
     {
         // Toggle-off returns WITHOUT stamping the generation: the class goes back to the ENGINE, which is
         // the opposite of the density-0 branch below (nobody draws it, and the stamp is what keeps it that way).
-        if (_off || !_on || _down.Failed || _binBucket == null) return;
+        if (_off || !Grass.Enabled.V || _down.Failed || _binBucket == null) return;
         if (*_grassEnabled == 0) return;      // the player's "Grass Mode" option: off means off, both paths
         if (Gl.DrawArraysInstancedBaseInstance == null || Gl.VertexAttribDivisor == null)
         { _down.Fail(_log, "no instanced-draw entry point", "grass stays vanilla"); return; }
@@ -444,7 +387,7 @@ internal static unsafe partial class GrassField
         // Density 0 means the player asked for no grass. Stamp the generation and stop: the class is still
         // OWNED (so the engine does not draw it back), and Collect never runs -- otherwise every frame would
         // re-attempt a bake budget's worth of patches that scatter nothing.
-        if (_density <= 0f) { _drawnGen = AlloyRenderer.PassGen; return; }
+        if (Grass.Density.V <= 0f) { _drawnGen = AlloyRenderer.PassGen; return; }
 
         int n = Prepare();
         if (n == 0) { _drawnGen = AlloyRenderer.PassGen; return; }
@@ -548,7 +491,7 @@ internal static unsafe partial class GrassField
         Vector3 min = new(float.MaxValue), max = new(float.MinValue);
         for (int f = 0; f < faces; f++)
         {
-            int want = (int)(blades[f] * _density);
+            int want = (int)(blades[f] * Grass.Density.V);
             if (want <= 0) continue;
             if (want > MaxBladesPerFace) want = MaxBladesPerFace;
             float* v = verts + f * 9;
@@ -658,7 +601,7 @@ internal static unsafe partial class GrassField
         // Neutral is 128,128 for the direction and 0 for the flatten -- not one byte value, so it comes from
         // a template rather than an Array.Fill.
         Array.Copy(_pushClear!, _push, _push.Length);
-        float extent = MathF.Max(_pushExtent, 1f);
+        float extent = MathF.Max(Grass.PushExtent.V, 1f);
         _pushPerUnit = PushRes / extent;
         Vector3 centre = AlloyRenderer.PlayerPos;
         // Snapped to the texel grid: an origin that slides sub-texel makes every blade's sampled push
@@ -674,22 +617,22 @@ internal static unsafe partial class GrassField
         // makes it a fact about the area, and a creature just off-camera bends the grass it is standing in
         // whether or not anything meant to draw it. Scene+0x130 is the same list SceneWalk enumerates.
         IntPtr scene = SceneWalk.WorldScene;
-        if (_pushGain > 0f && _pushRadius > 0f && scene != IntPtr.Zero)
+        if (Grass.Push.V > 0f && Grass.PushRadius.V > 0f && scene != IntPtr.Zero)
         {
             // The pushers are the gobs in view: a walk of EVERY gob in the scene (thousands, a part-tree
             // walk for each inside the extent) read 0,5ms a frame with no grass on screen. The engine's own
             // visible list is a few hundred; a pusher behind the camera pushes grass nobody sees.
             IntPtr* gobs; int count;
-            if (!_pushVis || !AlloyRenderer.VisibleGobs(out gobs, out count))
+            if (!Grass.PushVis.V || !AlloyRenderer.VisibleGobs(out gobs, out count))
             {
                 gobs = *(IntPtr**)(scene + EngineLayout.SceneGobs);
                 count = *(int*)(scene + EngineLayout.SceneGobCount);
                 _pushWalkedAll++;
             }
             _pushWalked += count;
-            float r = _pushRadius, rTex = r * _pushPerUnit;
+            float r = Grass.PushRadius.V, rTex = r * _pushPerUnit;
             // ponytail: no cheap pre-reject before Footprint. `reach` depends on the footprint, and with
-            // `_cullMax` at its default 0 (uncapped) there is no sound bound to test against first -- a
+            // `cullmax` at its default 0 (uncapped) there is no sound bound to test against first -- a
             // guess that is too tight drops a cart-sized hole. So the whole area's gobs pay one bounded
             // pointer chase each, a few thousand derefs a frame with no allocation. Cap `/grass cullmax`
             // and hoist the window test above Footprint if that ever shows up in a profile.
@@ -706,7 +649,7 @@ internal static unsafe partial class GrassField
                 // The cull footprint can be much larger than the push radius, so the window test uses
                 // whichever of the two actually reaches.
                 float hx = 0f, hy = 0f;
-                bool cull = _cull > 0f && Footprint(gob, ref hx, ref hy);
+                bool cull = Grass.Cull.V && Footprint(gob, ref hx, ref hy);
                 float reach = MathF.Max(rTex, MathF.Max(hx, hy) * _pushPerUnit);
                 if (gx < -reach || gy < -reach || gx > PushRes + reach || gy > PushRes + reach) continue;
                 // A gob with no OPAQUE geometry is not standing in the grass, it is drawn over it: target
@@ -780,11 +723,11 @@ internal static unsafe partial class GrassField
         if (node != IntPtr.Zero
             && *(byte*)(node + NodeCharacterKind) == NodeCharacterValue) return false;
         float* mn = (float*)(gob + GobBoxMin), mx = (float*)(gob + GobBoxMax);
-        hx = (mx[0] - mn[0]) * 0.5f * _cullShrink;
-        hy = (mx[1] - mn[1]) * 0.5f * _cullShrink;
+        hx = (mx[0] - mn[0]) * 0.5f * Grass.CullShrink.V;
+        hy = (mx[1] - mn[1]) * 0.5f * Grass.CullShrink.V;
         // A degenerate or absurd box is a field that was never filled, not a very large object.
         if (!(hx > 0.01f) || !(hy > 0.01f) || hx > 500f || hy > 500f) return false;
-        if (_cullMax > 0f) { hx = MathF.Min(hx, _cullMax); hy = MathF.Min(hy, _cullMax); }
+        if (Grass.CullMax.V > 0f) { hx = MathF.Min(hx, Grass.CullMax.V); hy = MathF.Min(hy, Grass.CullMax.V); }
         return true;
     }
 
@@ -849,7 +792,7 @@ internal static unsafe partial class GrassField
         Vector3 eye = AlloyRenderer.EyePos;
         float farDist = FarDist();
         // #355: the dither ramp is the CUT-OFF's edge now, not the whole range -- the ladder thins the field
-        // by count from _lod outward, and a blade the ramp would have dithered is simply not drawn instead.
+        // by count from the lod radius outward, and a blade the ramp would have dithered is simply not drawn instead.
         float nearDist = farDist * 0.85f;
         if (farDist <= nearDist) farDist = nearDist + 1f;
         // A patch wholly past the fog's opaque distance is a fully-fogged pixel the ground already is; the
@@ -911,8 +854,8 @@ internal static unsafe partial class GrassField
         }
         float* pw = stackalloc float[3] { _pushOriginX, _pushOriginY, _pushPerUnit / PushRes };
         Gl.BindVertexArray(_vao);
-        bool prepass = _prepass && _progDepth != 0;
-        bool soft = _softEdge && prepass && !msaa;
+        bool prepass = Grass.Prepass.V && _progDepth != 0;
+        bool soft = Grass.SoftEdge.V && prepass && !msaa;
         if (prepass)
         {
             Gl.UseProgram(_progDepth);
@@ -930,16 +873,16 @@ internal static unsafe partial class GrassField
         }
 
         Gl.UseProgram(_prog);
-        SharedUniforms(in _loc, in _featLoc, vp, &eye, nearDist, farDist, msaa, pw, viewport, vlit: _vlit && lightingOn);
-        Gl.Uniform1f(_loc.Shade, _shade);
+        SharedUniforms(in _loc, in _featLoc, vp, &eye, nearDist, farDist, msaa, pw, viewport, vlit: Grass.VLight.V && lightingOn);
+        Gl.Uniform1f(_loc.Shade, Grass.Shade.V);
         Gl.Uniform1i(_loc.Lit, lightingOn ? 1 : 0);
-        Gl.Uniform1f(_loc.RootAo, _rootAo);
-        Gl.Uniform1f(_loc.GroundTint, _groundTint);
+        Gl.Uniform1f(_loc.RootAo, Grass.RootAo.V);
+        Gl.Uniform1f(_loc.GroundTint, Grass.GTint.V);
         // The frame as it stands before the grass, for the root blend. One blit; the water pass takes its
         // own later. Skipped outright when the dial is off.
-        bool ground = _groundTint > 0f && FrameSnapshot.Copy(viewport);
+        bool ground = Grass.GTint.V > 0f && FrameSnapshot.Copy(viewport);
         Gl.Uniform1i(_loc.GroundOn, ground ? 1 : 0);
-        Gl.Uniform1i(_loc.GroundViz, _groundViz);
+        Gl.Uniform1i(_loc.GroundViz, Grass.GViz.V);
         Gl.Uniform1i(_loc.SoftEdge, soft ? 1 : 0);
         if (ground && _groundDiag > 0)
         {
@@ -998,7 +941,7 @@ internal static unsafe partial class GrassField
             Gl.GetIntegerv(0x8919 /*SAMPLER_BINDING*/, &samp);
             Gl.ActiveTexture((uint)act);
             if (Gl.GetUniformiv != null) Gl.GetUniformiv(_prog, _loc.Ground, &uval);
-            _log?.Info($"[grassground] after draw: unit {TextureSlots.GrassGround} holds tex {bound} sampler obj {samp}, uGround = {uval}, viz {_groundViz}, active unit was 0x{act:x}");
+            _log?.Info($"[grassground] after draw: unit {TextureSlots.GrassGround} holds tex {bound} sampler obj {samp}, uGround = {uval}, viz {Grass.GViz.V}, active unit was 0x{act:x}");
             int fb2; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &fb2);
             FrameSnapshot.Compare((uint)fb2, viewport[2], viewport[3], "after draw");
         }
@@ -1008,13 +951,13 @@ internal static unsafe partial class GrassField
     }
 
     /// <summary>#196: draw last frame's visible blades into every re-baked sun cascade under
-    /// <see cref="_shadowCascades"/>, as alpha-tested depth. Called by the caster pass after its layered
+    /// <see cref="Grass.Shadow"/>, as alpha-tested depth. Called by the caster pass after its layered
     /// flush, with its framebuffer; leaves FBO 0 bound.</summary>
     internal static void DrawShadows(uint fbo, uint tex, int size, bool[] rebaked, int cascades)
     {
-        int want = Math.Min(_shadowCascades, cascades);
-        if (want <= 0 || _shadowN <= 0 || _progDepth == 0 || _vao == 0 || _off || !_on || _down.Failed) return;
-        if (_binBucket == null || *_grassEnabled == 0 || _density <= 0f) return;
+        int want = Math.Min(Grass.Shadow.V, cascades);
+        if (want <= 0 || _shadowN <= 0 || _progDepth == 0 || _vao == 0 || _off || !Grass.Enabled.V || _down.Failed) return;
+        if (_binBucket == null || *_grassEnabled == 0 || Grass.Density.V <= 0f) return;
         bool any = false;
         for (int i = 0; i < want && !any; i++) any = rebaked[i];
         if (!any) return;
@@ -1085,20 +1028,20 @@ internal static unsafe partial class GrassField
                                        float nearDist, float farDist, bool msaa, float* pw, int* viewport, bool vlit)
     {
         Gl.UniformMatrix4fv(loc.Vp, 1, 0, (float*)vp);
-        Gl.Uniform1f(loc.Tuft, _tuft);
+        Gl.Uniform1f(loc.Tuft, Grass.Tuft.V);
         Gl.Uniform1i(loc.VLit, vlit ? 1 : 0);   // the depth program never lights: its vertex stage skips the rig
         Gl.Uniform1i(loc.Cast, 0);
-        Gl.Uniform1f(loc.CastWidth, _castWidth);
+        Gl.Uniform1f(loc.CastWidth, Grass.CastWidth.V);
         Gl.Uniform3fv(loc.Eye, 1, (float*)eye);
         Gl.Uniform2f(loc.Fade, nearDist, farDist);
-        Gl.Uniform4f(loc.Lod, _lod, _lodMin, _lodWidth, _lodHeight);
+        Gl.Uniform4f(loc.Lod, Grass.Lod.V, Grass.LodMin.V, Grass.LodWidth.V, Grass.LodHeight.V);
         Gl.Uniform1i(loc.Tex, 0);
-        Gl.Uniform1f(loc.WindGain, _windGain);
-        Gl.Uniform1f(loc.WindSpeed, _windSpeed);
+        Gl.Uniform1f(loc.WindGain, Grass.Wind.V);
+        Gl.Uniform1f(loc.WindSpeed, Grass.WindSpeed.V);
         Gl.Uniform1i(loc.Msaa, msaa ? 1 : 0);
-        Gl.Uniform1f(loc.Edge, MathF.Max(_edge, 0.01f));
+        Gl.Uniform1f(loc.Edge, MathF.Max(Grass.Edge.V, 0.01f));
         Gl.Uniform1i(loc.PushTex, (int)PushUnit);
-        Gl.Uniform1f(loc.PushGain, _pushTex == 0 ? 0f : _pushGain);
+        Gl.Uniform1f(loc.PushGain, _pushTex == 0 ? 0f : Grass.Push.V);
         Gl.Uniform3fv(loc.PushWindow, 1, pw);
         AlloyRenderer.UploadFeatureTerms(feat, viewport);
     }
@@ -1249,7 +1192,7 @@ internal static unsafe partial class GrassField
         _samplerDirty = false; _appliedScaleBias = scaleBias;
         float maxAniso = 1f;
         if (Gl.GetFloatv != null) { float v; Gl.GetFloatv(Gl.MAX_TEXTURE_MAX_ANISOTROPY, &v); if (v > 1f) maxAniso = v; }
-        float aniso = MathF.Min(MathF.Max(_aniso, 1f), maxAniso);
+        float aniso = MathF.Min(Grass.Aniso.V, maxAniso);
         for (int i = 0; i < 2; i++)
         {
             uint sm = i == 0 ? _sampMip : _sampFlat;
@@ -1258,7 +1201,7 @@ internal static unsafe partial class GrassField
             Gl.SamplerParameteri(sm, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
             Gl.SamplerParameteri(sm, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
             Gl.SamplerParameterf(sm, Gl.TEXTURE_MAX_ANISOTROPY, aniso);
-            Gl.SamplerParameterf(sm, Gl.TEXTURE_LOD_BIAS, _lodBias + scaleBias);
+            Gl.SamplerParameterf(sm, Gl.TEXTURE_LOD_BIAS, Grass.Soften.V + scaleBias);
         }
         _appliedAniso = aniso;
     }
@@ -1266,22 +1209,22 @@ internal static unsafe partial class GrassField
     // ---- the distance ladder (#355) ----------------------------------------------------------
 
     /// <summary>The fraction of a patch's blades drawn at distance <paramref name="d"/>: all of them inside
-    /// <see cref="_lod"/>, then <c>(lod/d)^2</c> -- the screen area a patch covers falls with the square of
-    /// its distance, so this holds the blades PER PIXEL constant -- floored at <see cref="_lodMin"/>. The
+    /// <see cref="Grass.Lod"/>, then <c>(lod/d)^2</c> -- the screen area a patch covers falls with the square of
+    /// its distance, so this holds the blades PER PIXEL constant -- floored at <see cref="Grass.LodMin"/>. The
     /// vertex stage's <c>CxGrassKeep</c> is this function character for character.</summary>
-    /// <summary>The cut-off: <see cref="_far"/> when set, else the player's own option.</summary>
+    /// <summary>The cut-off: <see cref="Grass.Far"/> when set, else the player's own option.</summary>
     /// <summary>The cut-off radius: <c>/grass far</c> when set, else the engine's option -- but never under
     /// <see cref="MinFar"/>. The option defaults to 30u (900 squared), sized for vanilla's per-blade alpha
     /// fade; under the ladder a far blade is nearly free, and a field that thins from 25u and is gone at 30u
     /// reads as the ground darkening a few steps ahead of the player.</summary>
-    private static float FarDist() => _far > 0f ? _far : MathF.Max(MathF.Sqrt(MathF.Max(*_farDist, 0f)), MinFar);
+    private static float FarDist() => Grass.Far.V > 0f ? Grass.Far.V : MathF.Max(MathF.Sqrt(MathF.Max(*_farDist, 0f)), MinFar);
     private const float MinFar = 90f;
 
     internal static float Keep(float d)
     {
-        if (d <= _lod) return 1f;
-        float r = _lod / d;
-        return MathF.Max(_lodMin, r * r);
+        if (d <= Grass.Lod.V) return 1f;
+        float r = Grass.Lod.V / d;
+        return MathF.Max(Grass.LodMin.V, r * r);
     }
 
     /// <summary>Fisher-Yates over <paramref name="count"/> instance records of <see cref="InstFloats"/> floats
@@ -1914,78 +1857,15 @@ internal static unsafe partial class GrassField
 
     /// <summary>One line for the <c>/grass</c> echo and the arm-time log.</summary>
     internal static string Describe()
-        => $"{(_off ? "UNAVAILABLE" : _on ? "on" : "off")} density x{_density:0.##} wind x{_windGain:0.##} windspeed {_windSpeed:0.####} " +
-           $"soften {_lodBias:0.##} aniso {_appliedAniso:0.#}x edge {_edge:0.##} " +
-           $"push x{_pushGain:0.##} r{_pushRadius:0.##} over {_pushExtent:0.#}u " +
-           $"cull {(_cull > 0f ? $"on shrink {_cullShrink:0.##}" + (_cullMax > 0f ? $" max {_cullMax:0.#}u" : "") : "off")} " +
-           $"lod {_lod:0.#}u min {_lodMin:0.###} w{_lodWidth:0.##} h{_lodHeight:0.##} shade {_shade:0.#}u tuft {_tuft:0} vlight {(_vlit ? 1 : 0)} shadow {_shadowCascades} castwidth {_castWidth:0.#} ({_shadowDraws} cascade draws, {_shadowPatches} patches, {_shadowBlades} blades) rootao {_rootAo:0.##} gtint {_groundTint:0.##} softedge {(_softEdge ? 1 : 0)} far {(_far > 0f ? $"{_far:0.#}u" : "engine")} prepass {(_prepass ? (_progDepth != 0 ? "on" : "UNAVAILABLE") : "off")} " +
+        => $"{(_off ? "UNAVAILABLE" : Grass.Enabled.V ? "on" : "off")} density x{Grass.Density.V:0.##} wind x{Grass.Wind.V:0.##} windspeed {Grass.WindSpeed.V:0.####} " +
+           $"soften {Grass.Soften.V:0.##} aniso {_appliedAniso:0.#}x edge {Grass.Edge.V:0.##} " +
+           $"push x{Grass.Push.V:0.##} r{Grass.PushRadius.V:0.##} over {Grass.PushExtent.V:0.#}u " +
+           $"cull {(Grass.Cull.V ? $"on shrink {Grass.CullShrink.V:0.##}" + (Grass.CullMax.V > 0f ? $" max {Grass.CullMax.V:0.#}u" : "") : "off")} " +
+           $"lod {Grass.Lod.V:0.#}u min {Grass.LodMin.V:0.###} w{Grass.LodWidth.V:0.##} h{Grass.LodHeight.V:0.##} shade {Grass.Shade.V:0.#}u tuft {Grass.Tuft.V:0} vlight {(Grass.VLight.V ? 1 : 0)} shadow {Grass.Shadow.V} castwidth {Grass.CastWidth.V:0.#} ({_shadowDraws} cascade draws, {_shadowPatches} patches, {_shadowBlades} blades) rootao {Grass.RootAo.V:0.##} gtint {Grass.GTint.V:0.##} softedge {(Grass.SoftEdge.V ? 1 : 0)} far {(Grass.Far.V > 0f ? $"{Grass.Far.V:0.#}u" : "engine")} prepass {(Grass.Prepass.V ? (_progDepth != 0 ? "on" : "UNAVAILABLE") : "off")} " +
            $"({_pushers} displacing, {_cullers} culling, {_reticles} non-solid skipped) " +
            $"({_patchCount} patches, {_instCount} blades resident; " +
            $"{(_samples > 1 ? $"{_samples}x MSAA, alpha-to-coverage live" : "no MSAA, dithered edge")}" +
            $"{(_anyFlat ? ", A TEXTURE HAS NO MIPS" : "")}) {DescribeBorder()}";
-
-    /// <summary>Live dial behind <c>/grass &lt;key&gt; &lt;value&gt;</c>. Returns the old value, or NaN for an
-    /// unknown key. Density is the one that matters for #127's acceptance criterion: it is a CLIENT knob, not
-    /// something baked at area load, so changing it re-scatters the field on the next frame rather than at the
-    /// next area transition.</summary>
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            // The toggle cannot clear _off: a client whose grass globals never resolved stays vanilla.
-            case "on": old = _on ? 1f : 0f; _on = v > 0f; break;
-            case "density": old = _density; _density = v; _rebake = true; break;
-            case "wind": old = _windGain; _windGain = v; break;
-            case "windspeed": old = _windSpeed; _windSpeed = v; break;
-            case "soften": old = _lodBias; _lodBias = v; _samplerDirty = true; break;
-            case "dumpmips": old = 0f; _dumpMips = true; break;
-            case "aniso": old = _aniso; _aniso = v; _samplerDirty = true; break;
-            case "edge": old = _edge; _edge = v; break;
-            case "push": old = _pushGain; _pushGain = v; break;
-            case "pushradius": old = _pushRadius; _pushRadius = v; break;
-            case "pushvis": old = _pushVis ? 1f : 0f; _pushVis = v != 0f; break;
-            case "pushextent": old = _pushExtent; _pushExtent = v; break;
-            case "cull": old = _cull; _cull = v; break;
-            case "cullshrink": old = _cullShrink; _cullShrink = v; break;
-            case "cullmax": old = _cullMax; _cullMax = v; break;
-            case "lod": old = _lod; _lod = MathF.Max(v, 1f); break;
-            case "lodmin": old = _lodMin; _lodMin = Math.Clamp(v, 0.001f, 1f); break;
-            case "lodwidth": old = _lodWidth; _lodWidth = Math.Clamp(v, 0f, 1f); break;
-            case "lodheight": old = _lodHeight; _lodHeight = Math.Clamp(v, 0f, 1f); break;
-            case "shade": old = _shade; _shade = v; break;
-            case "far": old = _far; _far = v; break;
-            case "tuft": old = _tuft; _tuft = Math.Clamp(MathF.Round(v), 1f, 8f); break;
-            case "vlight": old = _vlit ? 1f : 0f; _vlit = v > 0f; break;
-            case "rootao": old = _rootAo; _rootAo = Math.Clamp(v, 0f, 1f); break;
-            case "gtint": old = _groundTint; _groundTint = Math.Clamp(v, 0f, 1f); _groundDiag = 3; break;
-            case "gviz": old = _groundViz; _groundViz = (int)v; _groundDiag = 3; break;
-            case "softedge": old = _softEdge ? 1f : 0f; _softEdge = v != 0f; break;
-            case "castwidth": old = _castWidth; _castWidth = Math.Clamp(v, 0.5f, 8f); break;
-            case "dumpshadow": old = 0f; _dumpShadow = v != 0f; break;
-            case "shadow": old = _shadowCascades; _shadowCascades = Math.Clamp((int)v, 0, CasterPass.MaxCascades); break;
-            case "prepass": old = _prepass ? 1f : 0f; _prepass = v > 0f; break;
-            default: return float.NaN;
-        }
-        _log?.Info($"GrassField: /grass {key} {v:F3} (was {old:F3}) -> {Describe()}");
-        return old;
-    }
-
-    /// <summary>Every dial back to its boot value, the toggle included. The two side effects are not
-    /// optional: density owns the resident scatter and the sampler dials own two sampler objects, so a reset
-    /// that skipped them would report values the frame is not drawing with.</summary>
-    internal static void ResetTuning()
-    {
-        _on = true;
-        _density = BootDensity; _windGain = BootWind; _windSpeed = BootWindSpeed;
-        _lodBias = BootSoften; _aniso = BootAniso; _edge = BootEdge;
-        _pushGain = BootPush; _pushRadius = BootPushRadius; _pushExtent = BootPushExtent;
-        _cull = BootCull; _cullShrink = BootCullShrink; _cullMax = BootCullMax;
-        _lod = BootLod; _lodMin = BootLodMin; _lodWidth = BootLodWidth; _lodHeight = BootLodHeight;
-        _shade = BootShade; _far = BootFar; _prepass = true; _tuft = BootTuft; _vlit = true;
-        _rebake = true; _samplerDirty = true;
-        _log?.Info($"GrassField: /grass reset -> {Describe()}");
-    }
 
     // ---- diagnostics -------------------------------------------------------------------------
 
@@ -1995,7 +1875,7 @@ internal static unsafe partial class GrassField
     internal static string Stats()
     {
         if (_off) return "grass vanilla (Alloy pass unavailable)";
-        if (!_on) return "grass vanilla (/grass on 0)";
+        if (!Grass.Enabled.V) return "grass vanilla (/grass enabled 0)";
         if (_down.Failed) return "grass VANILLA (Alloy program unavailable)";
         if (_frames == 0) return "grass idle";
         return $"grass {_patchCount} patches / {_instCount} blades resident, " +
@@ -2052,9 +1932,9 @@ internal static unsafe partial class GrassField
         E((int)(7 * 2f) == 14 && (int)(7 * 0.5f) == 3, "the density dial multiplies the tileset's own count");
 
         // #355: the ladder is continuous at its knee, falls as 1/d^2, and never drops below its floor
-        E(Keep(_lod) == 1f && Keep(_lod * 0.5f) == 1f, "inside the full-density radius every blade draws");
-        E(MathF.Abs(Keep(_lod * 2f) - MathF.Max(0.25f, _lodMin)) < 1e-6f, "twice the radius keeps a quarter");
-        E(Keep(_lod * 1000f) == _lodMin, "and the floor holds far out");
+        E(Keep(Grass.Lod.V) == 1f && Keep(Grass.Lod.V * 0.5f) == 1f, "inside the full-density radius every blade draws");
+        E(MathF.Abs(Keep(Grass.Lod.V * 2f) - MathF.Max(0.25f, Grass.LodMin.V)) < 1e-6f, "twice the radius keeps a quarter");
+        E(Keep(Grass.Lod.V * 1000f) == Grass.LodMin.V, "and the floor holds far out");
         bool mono = true;
         for (float d = 1f, prev = 1f; d < 400f; d += 1f) { float k = Keep(d); if (k > prev) mono = false; prev = k; }
         E(mono, "keep never rises with distance");
@@ -2136,21 +2016,16 @@ internal static unsafe partial class GrassField
         CullRect(f, cx, cy, 0f, 3f);
         E(A(64, 64) == 0, "a degenerate footprint culls nothing rather than dividing by it");
 
-        // ---- the toggle (#180). _off is the resolution latch and _on is the player's dial; they are two
-        // flags on purpose, because /grass on 1 on a client whose grass globals never came up would run the
-        // pass over null pointers.
-        bool on0 = _on, off0 = _off;
-        float dens0 = _density;
-        _density = 99f;
-        ResetTuning();
-        E(_density == BootDensity && _on, "reset restores the boot density and leaves the pass on");
-        E(_rebake && _samplerDirty, "reset re-bakes the field and rebuilds the samplers, not just the numbers");
-        E(Tune("on", 0f) == 1f && !_on, "the toggle sets, and reports its old value");
+        // ---- the toggle (#180). _off is the resolution latch and Grass.Enabled is the player's dial; they are
+        // two flags on purpose, because /grass enabled 1 on a client whose grass globals never came up would
+        // run the pass over null pointers. Direct field writes, not sets: a set arms the cx.cfg writer, and
+        // this runs at boot against the real user's file.
+        bool on0 = Grass.Enabled.V, off0 = _off;
+        Grass.Enabled.V = false;
         E(Stats().Contains("vanilla"), "with the toggle off the pass reports itself as vanilla");
-        _off = true;
-        Tune("on", 1f);
-        E(_off, "arming from chat cannot clear the resolution latch");
-        _off = off0; _on = on0; _density = dens0;
+        _off = true; Grass.Enabled.V = true;
+        E(_off && !CastsInto(0), "arming from chat cannot clear the resolution latch");
+        _off = off0; Grass.Enabled.V = on0;
 
         log.Info(ok ? "GrassField.SelfCheck: passed" : "GrassField.SelfCheck: FAILED");
     }

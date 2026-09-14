@@ -19,7 +19,7 @@ namespace CX.Alloy;
 /// runs before the engine's residual walk, and under #139 it holds LINEAR HDR while glass draws into the
 /// display-space target after the resolve. "Exactly one copy" therefore means one OWNED copy and zero engine
 /// water copies; the bucket-5 one goes when the class does.</para>
-/// <para><c>/water on 0</c> stands the whole thing down: no copy, no Alloy water program, and
+/// <para><c>water.enabled</c> off stands the whole thing down: no copy, no Alloy water program, and
 /// <see cref="BucketGate"/> leaves bucket 6 to the engine exactly as before #129. Every look dial here is
 /// a <c>/water</c> key (ADR 0013 bucket 1); the one boot decision is the tessellation segment count, which
 /// is geometry rather than look and lives in the config file.</para>
@@ -53,9 +53,9 @@ internal static unsafe class FrameSnapshot
     /// reports and which made this term look inapplicable.</summary>
     private static readonly int SceneEnvMap = EngineLayout.SceneEnvMap;
 
-    /// <summary><c>/water on 0</c> stands the class down; <c>/water on 1</c> brings it back at the next
-    /// pass. Armed and idling rather than un-installed, so the toggle is live either way.</summary>
-    internal static bool On { get; private set; } = true;
+    /// <summary><c>water.enabled</c> off stands the class down; on brings it back at the next pass. Armed
+    /// and idling rather than un-installed, so the toggle is live either way.</summary>
+    internal static bool On => Water.Enabled.V;
 
     /// <summary>The class can still work in this context: switched on, and nothing permanent has gone wrong.
     /// Read BEFORE the batch build, which is why it cannot simply be <see cref="Ready"/> -- staging has to
@@ -81,11 +81,6 @@ internal static unsafe class FrameSnapshot
     private static uint _depFormat, _depMask;
     private static bool _hdr;
     private static readonly StandDown _down = new("FrameSnapshot");
-    /// <summary>Diagnostic readbacks still owed, as <c>/water diag &lt;n&gt;</c> asked for. A BUDGET, not a
-    /// boolean -- it counts down, and a session that never reaches the water pass keeps owing them. Ask for a
-    /// few rather than one: the first copy after the request can land before the area has anything in it, and
-    /// one all-black reading proves nothing.</summary>
-    private static int _diagLeft;
     private static ExtenderLog? _log;
 
     internal static void Attach(ExtenderLog log)
@@ -105,34 +100,7 @@ internal static unsafe class FrameSnapshot
          + $"resolved=\"{_noiseName}\" {_noiseEng} "
          + $"{(_noiseTid == 0 ? "" : TexProbe.TexFormat(_noiseTid) + " " + TexProbe.TexTopMip(_noiseTid) + " ")}"
          + $"rect {(Rect ? 1 : 0)} (last copy {LastRectFrac * 100f:F0}% of the frame)" +
-           (_diagLeft > 0 ? $"  DIAG {_diagLeft} left" : "");
-
-    /// <summary>Live tuning behind <c>/water</c>; returns the old value, NaN for an unknown key. Same
-    /// no-lock reasoning as <see cref="PostChain.Tune"/>: independent floats, written from the input
-    /// thread, re-read per pass.</summary>
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "on":    old = On ? 1f : 0f; On = v > 0f; break;
-            case "rect":  old = Rect ? 1f : 0f; Rect = v > 0f; break;
-            // A budget of readbacks, not a switch: v is how many copies to diagnose from here.
-            case "diag":  old = _diagLeft; _diagLeft = v > 0f ? (int)v : 0; break;
-            default: return float.NaN;
-        }
-        _log?.Info($"FrameSnapshot: /water {key} {v:F2} (was {old:F2}) -> {Describe()}");
-        return old;
-    }
-
-    /// <summary>Put every <c>/water</c> dial back to its boot value. The diagnostic budget has no boot value
-    /// and never should -- a readback is a live request, so reset spends none.</summary>
-    internal static void ResetTuning()
-    {
-        On = true; Rect = true;
-        _diagLeft = 0;
-        _log?.Info($"FrameSnapshot: /water reset -> {Describe()}");
-    }
+           (Water.Diag.V > 0 ? $"  DIAG {Water.Diag.V} left" : "");
 
     /// <summary>Drop every GL object (context loss / disarm). Names mean nothing once the context is gone, so
     /// this forgets rather than deletes -- same rule as <see cref="PostChain.Forget"/>.</summary>
@@ -155,7 +123,7 @@ internal static unsafe class FrameSnapshot
     /// and not a degraded draw: <see cref="Ready"/> stays false, the Alloy water stage does not run, and the
     /// engine's bucket-6 walk (with its own copy) is left to draw water exactly as before #129.</para></summary>
     /// <summary>Copy only the rows and columns the water can cover (<c>/water rect 0</c> = whole frame).</summary>
-    internal static bool Rect { get; private set; } = true;
+    internal static bool Rect => Water.Rect.V;
     /// <summary>Margin around the water's screen rectangle, as a fraction of the viewport height.</summary>
     internal const float RectMargin = 0.05f;
     /// <summary>The last copy's rectangle as a fraction of the frame; 1 = a whole-frame copy.</summary>
@@ -205,7 +173,8 @@ internal static unsafe class FrameSnapshot
         }
         Copies++;
         Ready = true;
-        if (_diagLeft > 0) { _diagLeft--; Diagnose((uint)src, w, h); }
+        // water.diag is a BUDGET of readbacks: a Set, so the file follows the countdown (Timer.Change, no alloc).
+        if (Water.Diag.V > 0) { Water.Diag.Set(Water.Diag.V - 1); Diagnose((uint)src, w, h); }
         return true;
     }
 
@@ -406,7 +375,7 @@ internal static unsafe class FrameSnapshot
             return Fail($"the copy framebuffer is incomplete (0x{status:x})");
         }
         _log?.Info($"FrameSnapshot: framebuffer copy {w}x{h}, colour {(hdr ? "RGBA16F" : "RGBA8")}, " +
-                   $"depth 0x{_depFormat:x} -- one copy per frame, /water on 0 disables");
+                   $"depth 0x{_depFormat:x} -- one copy per frame, /water enabled 0 disables");
         return true;
     }
 
@@ -496,29 +465,22 @@ internal static unsafe class FrameSnapshot
 
     private static int _todLast;
 
-    /// <summary>The <c>/water</c> dial table, off-device: every key reachable, an unknown key reported, and
-    /// -- the one that bites -- every knob the check drove restored. A knob left at its test value ships as
-    /// the boot value, which is exactly how <c>/post viz</c> once booted every session into a debug view.</summary>
+    /// <summary>The <c>water</c> knobs, off-device: the master stands the class down without touching the
+    /// stand-down latch, and the diagnostic budget has no boot value -- a readback is a live request.</summary>
     private static void CheckTuning(Action<bool, string> e)
     {
-        ExtenderLog? quiet = _log; _log = null;
-        bool on = On; int diag = _diagLeft;
+        bool on = Water.Enabled.V; int diag = Water.Diag.V;
         try
         {
-            e(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
-            foreach (string key in new[] { "on", "diag" })
-                e(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
-            e(_diagLeft == 1, "diag is a BUDGET: the value set is the number of readbacks owed");
-            e(Describe().Contains("DIAG"), "...and Describe says how many are left while any are");
-            e(Tune("on", 0f) == 1f && !On && !Usable,
-              "/water on 0 stands the class down without touching the stand-down latch");
-            ResetTuning();
-            e(On && _diagLeft == 0, "reset re-arms the class and spends no diagnostic readbacks");
+            Water.Diag.V = 1;
+            e(Describe().Contains("DIAG 1 left"), "diag is a BUDGET: Describe says how many readbacks are owed while any are");
+            Water.Enabled.V = false;
+            e(!On && !Usable, "water.enabled off stands the class down without touching the stand-down latch");
+            e(Water.Enabled.Default && Water.Diag.Default == 0, "reset re-arms the class and spends no diagnostic readbacks");
         }
         finally
         {
-            On = on; _diagLeft = diag;
-            _log = quiet;
+            Water.Enabled.V = on; Water.Diag.V = diag;
         }
     }
 
@@ -565,7 +527,7 @@ internal static unsafe class FrameSnapshot
         E(add >= 0 && add > water, "additive is NOT in the copy, and composites over the water");
         E(ColorUnit > EnvProbe.ProbeUnit && DepthUnit > ColorUnit,
           "the copy's units sit above the probe cube's -- two sampler types on one unit drops the draw");
-        // #339: every view the stage implements is REACHABLE. /draw viz clamps to AlloyRenderer.LightVizMax,
+        // #339: every view the stage implements is REACHABLE. /alloy viz clamps to AlloyRenderer.LightVizMax,
         // silently -- a view above it paints the highest one instead, which looks like a working instrument
         // answering the wrong question. Read off the stage text so adding a view and forgetting the ceiling
         // fails here rather than in a screenshot.
@@ -577,7 +539,7 @@ internal static unsafe class FrameSnapshot
             if (n > highest) highest = n;
         }
         E(highest <= AlloyRenderer.LightVizMax,
-          $"the stage's highest view ({highest}) is above /draw viz's ceiling ({AlloyRenderer.LightVizMax})");
+          $"the stage's highest view ({highest}) is above /alloy viz's ceiling ({AlloyRenderer.LightVizMax})");
         E(NoiseUnit != ColorUnit && NoiseUnit != DepthUnit && NoiseUnit != TextureSlots.Diffuse,
           "the noise texture has a unit of its own");
 
@@ -970,7 +932,7 @@ internal static unsafe class FrameSnapshot
         void main()
         {
             CxDraw d = uDraw[vDraw];
-            // /draw viz 4 is the coverage view: cyan is Alloy lit and magenta owned-fullbright, so
+            // /alloy viz 4 is the coverage view: cyan is Alloy lit and magenta owned-fullbright, so
             // water takes BLUE.
             if (uViz == 4) { frag = vec4(0.0, 0.0, 1.0, 1.0); return; }
 

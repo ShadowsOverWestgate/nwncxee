@@ -22,7 +22,7 @@ area transition would be a stall for nothing.
 `OwnedTextures` (#259) is the one row with **no `Revoke` slot at all**, and the reason generalises. Its
 resources are keyed on texture identity (a 64-bit hash of the resolved name at `basic+0xa8`, lower-cased,
 and the PLT schemes at `+0x48`/`+0xd4`, with the atlas cell in the low 16 bits), so a part-table
-wipe or a `/vanilla` toggle invalidates nothing in them. More to the point, they are populated *only* at
+wipe or an `alloy.enabled` toggle invalidates nothing in them. More to the point, they are populated *only* at
 the engine's upload funnel — so wiping them on an edge the engine does not rebuild across would leave
 every texture borrowed for the rest of the session, with no path back.
 
@@ -122,7 +122,7 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Ownership table `_oTri/_oGob/_oVdo/_oEntry` | `AlloyRenderer.Enroll` | `RevokeAll` | `AlloyRenderer.cs:995,1003,1005,1007` + per-part `Revoke(i)` on repack (`:951`) and identity change (`Batches.cs:234`) | via `RevokeAll` |
 | Part table (`PartTable`) | `SceneWalk.Enrol` + `SceneWalk.TryBind` (#256; #258 folded the group intern into the record) | `WipeTables` / `Die` / `SceneWalk.Sweep` | `PartTable.cs`, `OnPartDtor`, `SceneWalk.cs` | none — CPU only |
 | VAO cache `_vVdo/_vStale` | `EnsureVao` | `RevokeAll` retires the slots | `Enroll.cs` | GL names zeroed by `AlloyRenderer.ContextLost` |
-| Bindless handle cache `_hTid` | `AlloyRenderer.Issue` staging | `WipeHandles` — **only while `ownedtex=0`** (#220); armed, see the row below | `Enroll.cs:26` (release) and `:62` (enrollment) | `AlloyRenderer.ForgetHandles` |
+| Bindless handle cache `_hTid` | `AlloyRenderer.Issue` staging | `WipeHandles` — **only while `alloy.ownedtex=0`** (#220); armed, see the row below | `Enroll.cs:26` (release) and `:62` (enrollment) | `AlloyRenderer.ForgetHandles` |
 | Water planes (`WaterBodies`) | plane measurement during enrollment | `WaterBodies.Clear` | registry `Revoke` slot | none — CPU only |
 | Sky parts (`SkyBox`) | `OnPartDraw` capture window | `SkyBox.Forget`; per-part `SkyBox.Revoke` | registry `Revoke`; `DrawFunnelService.cs:371`; scene change `SkyBox.cs:136` | none — holds no GL |
 | Beam parts + VAO slots (`Beams`) | bucket-15 capture | `Beams.Forget` | registry `Revoke`; scene change `Beams.cs:173`; repack `:405` | `Beams.ContextLost` |
@@ -130,7 +130,7 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Grass patches + slot map (`GrassField`) | bin scatter | `GrassField.Forget` | registry `Revoke`; `Scene::ReloadGrass` `GrassField.cs:305` | `GrassField.ContextLost` |
 | Env cube freshness + BSP key (`EnvProbe`) | `EnvProbe` capture | `EnvProbe.Revoke` | registry `Revoke` | `EnvProbe.Forget` |
 | Caster set + skin records + texture-alpha verdicts (`CasterPass`) | `CasterPass.Enroll` | `Release` | `CasterPass.cs:1003,1005,1008` | routes through the same `Release` — see below |
-| Owned textures (`OwnedTextures`) | the engine's upload funnel, `RenderInterface::CreateTexture` → `Adopt`; and, with `pltcpu=0`, a GPU-PLT composite queued at `glImageBasic` → `DrainPltCopies` (#360) | a re-upload through the same funnel, or the engine's `RenderInterface::DeleteTextures` → `Retire`. **No registry `Revoke`** — see above | the two hooks (`OwnedTextures.Install`). Both only **queue** — `OwnedTextures.Drain` deletes, off `GlContextService.InBracket` | `OwnedTextures.ContextLost` drops resources, index, owned-set and queue, deletes nothing |
+| Owned textures (`OwnedTextures`) | the engine's upload funnel, `RenderInterface::CreateTexture` → `Adopt`; and, with `alloy.pltcpu=0`, a GPU-PLT composite queued at `glImageBasic` → `DrainPltCopies` (#360) | a re-upload through the same funnel, or the engine's `RenderInterface::DeleteTextures` → `Retire`. **No registry `Revoke`** — see above | the two hooks (`OwnedTextures.Install`). Both only **queue** — `OwnedTextures.Drain` deletes, off `GlContextService.InBracket` | `OwnedTextures.ContextLost` drops resources, index, owned-set and queue, deletes nothing |
 | Owned vertex/index pools (`OwnedBuffers`) | the engine's upload funnel, `GLRender::UnlockPool` → `Take` (#260 — the buffer is *minted* there, into the engine's own pool descriptor) | the engine's `GLRender::DeleteBuffer`, which `DeletePool` @0x4d1d80 routes to for every named pool → `Retire`. **No registry `Revoke` deletion** — the buffer is the pool's and the engine frees it on that same edge; `OwnedBuffers.Revoke` only reports | the delete hook (`OwnedBuffers.Install`). Nothing is queued and nothing is deleted by Alloy — a second `glDeleteBuffers` on a recycled name would take out the pool that inherited it | `OwnedBuffers.ContextLost` drops both tables and the dirty list, deletes nothing |
 | Caster VAOs over those pools (`CasterPass._vVao46`) | `CasterPass.EnsureVao`, inside the shadow bracket | slots retired by `CasterPass.Release` (`_vStale`), names deleted by the next `EnsureVao` | `CasterPass.Lifecycle` — the same three edges `RevokeAll` watches, and it runs from the pass slot, ahead of the present that revokes | kept, like the pass's other GL names — see below |
 | Extra `.mtr` slots texture11+ (`MaterialExtraSlots`, #275) | `SharedMaterial::ParseField` hook records the name, `SharedMaterial::Init` hook loads it (`LoadTexture` = an ADDREF'd `AurTextureGetReference`) | `SharedMaterial::~SharedMaterial` hook: `AurTextureRelease` per still-live pointer, entry freed. **No registry `Revoke`** -- the reference lives exactly as long as the engine's own eleven do | the three hooks (`MaterialExtraSlots.Initialize`) | none -- holds no GL; the texture is the engine's |
@@ -161,7 +161,7 @@ to `[reg+0x58|0x88|0xb0]` in the binary; the full tables are on the ticket):
 | `part+0xb0` texture rotation | `SetPartTextureRotate` @0x461670, once, from `SpawnPartsForTile` | enrolment sees the final value |
 
 So the per-frame compare `IdentityOk` used to run bought nothing; it is now an **audit** on the colour
-cadence (every 8 frames per slot, every frame under `/draw poll 1`) and its hit counter is the
+cadence (every 8 frames per slot, every frame under `/alloy poll 1`) and its hit counter is the
 `identity N` figure on the [alloy] line. A non-zero steady value there means the scan missed a writer
 (a LEA-then-store, a `memcpy` over the struct) and that writer becomes the edge to hook.
 

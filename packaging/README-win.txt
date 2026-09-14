@@ -22,8 +22,8 @@ REPORTING A PROBLEM
   The extender is silent by default. To get a log, create a file named cx.cfg next to nwn.ini -
   usually Documents\Neverwinter Nights\. Add these two lines:
 
-     logs=1
-     hookdebug=1
+     general.logs=1
+     general.hookdebug=1
 
   Play again, then send back Documents\Neverwinter Nights\cx.log plus what you did right before 
   anything went wrong.

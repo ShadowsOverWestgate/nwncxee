@@ -91,11 +91,11 @@ internal static unsafe class OwnedBuffers
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _armed = Settings.Bool("ownedgeom", true);
+        _armed = Renderer.OwnedGeom.Boot;
         log.Info(_armed
             ? "OwnedBuffers: armed -- Alloy mints and uploads every engine vertex/index pool from its host "
-              + "shadow, and the engine's own upload is suppressed (ownedgeom=0 to leave uploads to the engine)"
-            : "OwnedBuffers: stood down (ownedgeom=0) -- the engine uploads its own pools, Alloy draws from them");
+              + "shadow, and the engine's own upload is suppressed (alloy.ownedgeom=0 to leave uploads to the engine)"
+            : "OwnedBuffers: stood down (alloy.ownedgeom=0) -- the engine uploads its own pools, Alloy draws from them");
     }
 
     /// <summary>The two engine edges: the upload funnel, which Alloy now PERFORMS rather than observes, and
@@ -111,13 +111,13 @@ internal static unsafe class OwnedBuffers
         if (_origDelete == null) log.Info("OwnedBuffers: GLRender::DeleteBuffer did not resolve -- no buffer death notice for the VAO caches");
         // Whether or not the takeover is armed: the shared-VDO capacity is the engine's own pooling, and a
         // Mesa answer of 3000 fragments it 350x against NVIDIA's (see SymbolMap.GlMaxElementVertices).
-        _maxElements = Settings.Int("maxelements", MaxElementsDefault, 0, 1 << 24);
+        _maxElements = Renderer.MaxElements.Boot;
         if (_maxElements > 0)
         {
             bool a = hooks.Install(SymbolMap.GlMaxElementVertices, (IntPtr)(delegate* unmanaged<int>)&OnMaxElements) != IntPtr.Zero;
             bool b = hooks.Install(SymbolMap.GlMaxElementIndices, (IntPtr)(delegate* unmanaged<int>)&OnMaxElements) != IntPtr.Zero;
             log.Info(a && b
-                ? $"OwnedBuffers: shared-VDO capacity pinned to {_maxElements} vertices/indices regardless of the driver's GL_MAX_ELEMENTS answer (maxelements=0 restores it)"
+                ? $"OwnedBuffers: shared-VDO capacity pinned to {_maxElements} vertices/indices regardless of the driver's GL_MAX_ELEMENTS answer (alloy.maxelements=0 restores it)"
                 : "OwnedBuffers: GetVertexBufferMaxElement* did not resolve -- the driver's GL_MAX_ELEMENTS answer sizes the shared VDOs");
         }
         if (!_armed) return;
@@ -141,7 +141,7 @@ internal static unsafe class OwnedBuffers
 
     /// <summary>NVIDIA's GL_MAX_ELEMENTS answer, which the engine has always pooled under there. The value is a
     /// glDrawRangeElements hint in GL, never a buffer limit, and the pools grow by doubling past it anyway.</summary>
-    private const int MaxElementsDefault = 1 << 20;
+    internal const int MaxElementsDefault = 1 << 20;
     private static int _maxElements;
 
     /// <summary>Replaces both <c>GLRender::GetVertexBufferMaxElement*</c> wholesale; the engine's cached copy

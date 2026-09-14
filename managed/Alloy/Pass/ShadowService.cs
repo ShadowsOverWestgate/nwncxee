@@ -13,7 +13,7 @@ namespace CX.Alloy;
 /// an Alloy shadow cube. So the engine's own shadows return by themselves wherever the replacement is not on
 /// screen -- a disarmed pass, a vanilla-latched frame, an interior with no sun, a torch past the cube budget --
 /// and the two never both darken the same surface.
-/// The <c>noshadows</c> config setting overrides it: <c>0</c> leaves vanilla wholly alone, <c>1</c> is the unconditional
+/// The <c>shadow.mode</c> knob overrides it: <c>0</c> leaves vanilla wholly alone, <c>1</c> is the unconditional
 /// <b>selective</b> mode (sun/moon suppressed, point-light stencil volumes kept), <c>2</c> the unconditional
 /// <b>full kill</b>. Both overrides are kept for A/B.</para>
 /// Every mode leaves <c>Scene::RenderShadows</c> itself untouched so it keeps managing all
@@ -41,11 +41,11 @@ public sealed unsafe class ShadowService : IExtenderService
     /// <summary>Scene's "current shadow light" slot, set per-light by RenderShadows.</summary>
     private static readonly int SceneCurrentLight = EngineLayout.SceneCurrentLight;
 
-    /// <summary>Config <c>noshadows</c>: 0 = never suppress (pure vanilla stencil), 1 = always suppress the
+    /// <summary><c>shadow.mode</c> (Restart): 0 = never suppress (pure vanilla stencil), 1 = always suppress the
     /// sun/moon and keep point-light stencils, 2 = full kill, <see cref="ModeAuto"/> = the default -- suppress
     /// each half exactly while the owned replacement for it is on screen.</summary>
     private static int _mode = ModeAuto;
-    private const int ModeAuto = 3;
+    internal const int ModeAuto = 3;
 
     /// <summary>#97: the vanilla sun/moon stencil is suppressed while <see cref="CasterPass"/>'s cascades are
     /// fresh, and the point-light stencils while its cubes are. Data-driven rather than a flag, so the engine's
@@ -74,12 +74,12 @@ public sealed unsafe class ShadowService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         // Default AUTO since #97: M2 re-owns shadow receiving, so this seam is live again -- but keyed on
-        // whether the Alloy maps are actually on screen, never on a bare flag. noshadows=0 opts out
+        // whether the Alloy maps are actually on screen, never on a bare flag. shadow.mode=0 opts out
         // entirely, 1/2 remain the unconditional A/B overrides.
-        // Config, not a command: 0 skips the hook install outright, and a mode change is a different set of
-        // engine draws being suppressed -- a boot decision on both counts.
-        _mode = Settings.Int("noshadows", ModeAuto, 0, ModeAuto);
-        if (_mode == 0) { log.Info("ShadowService: noshadows=0 -- vanilla stencil shadows left untouched"); return; }
+        // Restart, read through Boot: 0 skips the hook install outright, and a mode change is a different set
+        // of engine draws being suppressed -- a boot decision on both counts.
+        _mode = Shadows.Mode.Boot;
+        if (_mode == 0) { log.Info("ShadowService: shadow.mode=0 -- vanilla stencil shadows left untouched"); return; }
 
         int hooked = 0;
         // Static/directional environment stencil: suppressed in BOTH modes (the map replaces sun/moon
@@ -109,7 +109,7 @@ public sealed unsafe class ShadowService : IExtenderService
             2 => "FULL KILL (all stencil shadows suppressed)",
             _ => "AUTO (each half suppressed only while the Alloy map replacing it is fresh)",
         };
-        string via = _mode == ModeAuto ? "default" : $"noshadows={_mode}";
+        string via = _mode == ModeAuto ? "default" : $"shadow.mode={_mode}";
         log.Info(hooked == ShadowDraws ? $"ShadowService: {via} -- {what} (5/5 draws hooked)"
             : hooked > 0 ? $"ShadowService: {via} -- PARTIAL ({hooked}/{ShadowDraws} draws hooked); some shadows will render wrong"
             : $"ShadowService: {via} but no shadow symbol resolved -- disabled (headless/non-client?)");

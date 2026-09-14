@@ -26,9 +26,8 @@ public sealed class HookService : IDisposable
     public HookService(ExtenderLog log)
     {
         _log = log;
-        // hookdebug=1: funchook's own trace (prologue decode, trampoline bytes, page protects) beside the log.
-        // The forensic for a hook that installs clean and faults at its first call (#48 under Wine).
-        if (Settings.Bool("hookdebug", false))
+        // funchook's own trace beside the log (a hook that faults at first call, #48); this first touch of General declares the group.
+        if (General.HookDebug.Boot)
             funchook_set_debug_file(Path.Combine(Native.DefaultUserDirectory(), "funchook.log"));
         _fh = funchook_create();
         SelfCheck(log);

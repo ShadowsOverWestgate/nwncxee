@@ -6,7 +6,7 @@ namespace CX.Alloy;
 
 /// <summary>Per-face normals welded into smooth ones, once per newly enrolled gob part (#144 retry).
 /// NWN heads and many placeables ship every triangle with its own three vertices and a flat normal, so a
-/// terminator on them is a solid wedge no wrap width can soften (<c>/draw viz 7</c> shows the wedges).
+/// terminator on them is a solid wedge no wrap width can soften (<c>/alloy viz 7</c> shows the wedges).
 /// The weld runs on the engine's permanent host shadow -- the bytes #260's upload funnel already pushes --
 /// so there is no GPU readback; the one GL call is a sub-data upload of the touched vertex span.
 /// <para>Crease-preserving: a vertex takes the area-weighted sum of every face at its bitwise-equal
@@ -18,9 +18,9 @@ namespace CX.Alloy;
 /// twice near the threshold can drift by one face. Track welded ranges by (vdo,item) if it ever shows.</para></summary>
 internal static unsafe class NormalWeld
 {
-    /// <summary>Crease threshold in degrees; 0 disables. <c>/draw weld</c>. Applies to parts enrolled after
+    /// <summary>Crease threshold in degrees; 0 disables. <c>/alloy weld</c>. Applies to parts enrolled after
     /// the change, so a re-tune shows on the next area load or relogin.</summary>
-    internal static float Angle = 60f;
+    internal static float Angle => Renderer.Weld.V;
 
     /// <summary>Corner ceiling per part: ushort indices bound a part to 65536 distinct vertices, and a gob
     /// part's index count sits far under this. A part over it is left alone and counted.</summary>
@@ -158,15 +158,16 @@ internal static unsafe class NormalWeld
         {
             var bind = Gl.BindBuffer; var sub = Gl.BufferSubData;
             Gl.BindBuffer = &NoBind; Gl.BufferSubData = &NoSub;
+            // Plain field writes on the knob: nothing runs, nothing is written to the file.
             float save = Angle; int logLeft = _logLeft;
-            Angle = 60f; Run((byte*)e, (byte*)v, 0, 6, 0, pos, nrm);
+            Renderer.Weld.V = 60f; Run((byte*)e, (byte*)v, 0, 6, 0, pos, nrm);
             // shared verts (1,0,0) and (0,1,0) now carry the same blended normal on both triangles
             ok &= MathF.Abs(verts[1 * 6 + 5] - verts[3 * 6 + 5]) < 1e-6f && verts[1 * 6 + 4] < -0.1f;
             ok &= verts[0 * 6 + 5] == 1f;                                   // unshared corner untouched
             float once = verts[1 * 6 + 5];
             Run((byte*)e, (byte*)v, 0, 6, 0, pos, nrm);                     // idempotent on the welded result
             ok &= verts[1 * 6 + 5] == once;
-            Angle = save; Gl.BindBuffer = bind; Gl.BufferSubData = sub;
+            Renderer.Weld.V = save; Gl.BindBuffer = bind; Gl.BufferSubData = sub;
             _logLeft = logLeft; Parts = Welded = Kept = Refused = 0;
         }
         log.Info(ok ? "NormalWeld.SelfCheck: passed" : "NormalWeld.SelfCheck FAIL");

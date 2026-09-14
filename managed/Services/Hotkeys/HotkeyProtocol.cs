@@ -1,3 +1,5 @@
+using CX.Framework;
+
 namespace CX.Services.Hotkeys;
 
 /// <summary>
@@ -16,7 +18,7 @@ internal static class HotkeyProtocol
     /// <summary>The hotkey unit (#419): every symbol the four Hotkey* services cannot run without. Each service
     /// checks it first, so one unresolved member stands the whole feature down. Optional members are NOT here:
     /// OnGainFocus/OnLostFocus (stuck-key clear), g_pNuklear (NUI typing gate), the chat-prompt handlers
-    /// (lockchat-only typing observer).</summary>
+    /// (the vanilla-prompt typing observer, chat master off).</summary>
     public static readonly string[] RequiredSymbols =
     {
         CX.Framework.SymbolMap.HandleServerToPlayerMessage, CX.Framework.SymbolMap.HandleServerToPlayerLogin,
@@ -37,8 +39,9 @@ internal static class HotkeyProtocol
     public const byte GrantTokenMajor   = 0x36, GrantTokenMinor   = 0x45;
     public const byte AbuseContactMajor = 0x36, AbuseContactMinor = 0x46;
 
-    /// <summary>Where a server operator reports abuse of the extender. Sent on every login after CX_ENABLED.</summary>
-    public const string AbuseContact = "mpiasecki720@protonmail.com";
+    /// <summary>Where a server operator reports abuse of the extender. Sent on every login after CX_ENABLED.
+    /// <see cref="Product.Contact"/>: the same address <c>/about</c> prints.</summary>
+    public const string AbuseContact = Product.Contact;
 
     /// <summary>
     /// Mouse button N rides the KeyPress channel as MouseBase + N. Bit 28 keeps these clear

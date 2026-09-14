@@ -31,9 +31,7 @@ namespace CX.Services.CombatText;
 public sealed unsafe class CombatTextService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static CombatTextConfig _cfg = new();
-    private static readonly ConfigFile _file = new("cx-combattext.cfg");
-    private static bool _configLoaded, _armed, _wasInModule;
+    private static bool _armed, _wasInModule;
 
     private static readonly FloatyTable _table = new();
     private static Window? _window;
@@ -64,23 +62,22 @@ public sealed unsafe class CombatTextService : IExtenderService
     private static volatile float _peakPx;
 
     /// <summary>The peak height for the current UI size and multipliers.</summary>
-    private static float PeakPx(CombatTextConfig cfg)
+    private static float PeakPx()
     {
-        float px = PeakPxRaw(cfg);
+        float px = PeakPxRaw();
         return px > TextRig.AtlasMaxPx ? TextRig.AtlasMaxPx : px;
     }
 
     /// <summary>The uncapped peak, so the status line can say when the cap is in force.</summary>
-    private static float PeakPxRaw(CombatTextConfig cfg)
-    {
-        return MathF.Round(Metrics.DesignFontPx * Metrics.Scale * FloatyAnim.PopFrom * cfg.TextScale);
-    }
+    private static float PeakPxRaw()
+        => MathF.Round(Metrics.DesignFontPx * Metrics.Scale * FloatyAnim.PopFrom * CombatTextKnobs.BannerSize.V);
 
     /// <summary>COLD: (re)bake the peak face, dropping the previous one so the sheet does not accumulate every
-    /// ceiling ever tried. Runs at arm time, after a multiplier change, and after a UI font change.</summary>
-    private static void RequestPeakFace()
+    /// ceiling ever tried. Runs at arm time, on a <c>combattext.bannersize</c> set, and after a UI font change.</summary>
+    internal static void RequestPeakFace()
     {
-        float px = PeakPx(_cfg);
+        if (!_armed) return;
+        float px = PeakPx();
         if (px == _peakPx && TextRig.BakedFace(px) != null) return;
         float old = _peakPx;
         if (old != 0f && old != px) TextRig.ReleaseFace(old);
@@ -92,13 +89,11 @@ public sealed unsafe class CombatTextService : IExtenderService
     {
         _log = log;
         // Every pure piece self-checks BEFORE any stand-down return -- run-demo's only gate.
-        CombatTextConfig.SelfCheck(log);
         FloatyAnim.SelfCheck(log);
         FloatyTable.SelfCheck(log);
         CombatTextNative.SelfCheck(log);
+        UiCategory.Declare();   // the UI groups declare in panel order whether or not the hook arms
 
-        if (!GameGate.OwnsFramePresent)
-        { log.Info("CombatTextService: standing down (framework not owning frame present)"); return; }
         if (!SymbolMap.Require(log, "CombatTextService", RequiredSymbols)) return;   // #420: whole or nothing
 
         _origShowFloaty = (delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void>)hooks.Install(
@@ -116,11 +111,10 @@ public sealed unsafe class CombatTextService : IExtenderService
         _window = new Window(0, 0, 0, 0) { Focusable = false, DrawContent = Draw };
         UiHost.SendToBack(_window);
 
-        CommandRegistry.Global.Register("/combattext", "report or tune the damage numbers and combat text",
-                                        Cmd, "/ct");
+        CombatTextKnobs.G.Status = Status;
         TextRig.FontChanged += RequestPeakFace;
-        RequestPeakFace();
         _armed = true;
+        RequestPeakFace();
         log.Info("CombatTextService: armed (vanilla floaty text swallowed at ShowFloatyText)");
     }
 
@@ -135,7 +129,6 @@ public sealed unsafe class CombatTextService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnShowFloatyText(IntPtr self, IntPtr text, ColourArg colourArg, IntPtr font, int background)
     {
-        CombatTextConfig cfg = _cfg;   // one read: LoadConfig replaces the reference on the render thread
 #if WINDOWS
         Vec3 colour = *colourArg.P;   // Win64: a 12-byte Vector by value arrives as a pointer
 #else
@@ -144,11 +137,11 @@ public sealed unsafe class CombatTextService : IExtenderService
         // Hand back to vanilla unless we can actually draw this one BETTER. Swallowing an element we then
         // fail to place would lose it outright, so every reason it might not reach the screen is tested here,
         // on the cold path, and not in the draw:
-        //   - the config has not loaded yet, so an `on=0` file has not been honoured
+        //   - the master is off
         //   - the nameplate feature is stood down, so nothing keeps the object's screen anchor fresh
         //   - the object owns no chat bubble, so it has no anchor at all (a placeable or door taking damage:
         //     only creatures get one, via CNWCCreature::SetName -- docs/re/nameplate.md §D)
-        if (!_armed || !_configLoaded || !cfg.On || self == IntPtr.Zero
+        if (!_armed || !CombatTextKnobs.Enabled.V || self == IntPtr.Zero
             || !NameplateService.Suppressing || NameplateNative.Bubble(self) == IntPtr.Zero)
         {
             if (_origShowFloaty != null) _origShowFloaty(self, text, colourArg, font, background);
@@ -157,6 +150,7 @@ public sealed unsafe class CombatTextService : IExtenderService
 
         try
         {
+            NameplateNative.UnfreezeAnchor(self);   // #591: a bubble that idled under vanilla has a frozen anchor
             string body = NameplateNative.ReadExo(text);
             string fontName = NameplateNative.ReadExo(font);
             if (OperatingSystem.IsWindows()) { Native.DestroyExoString(text); Native.DestroyExoString(font); }   // Win64: the swallowed callee owned both copies
@@ -175,17 +169,6 @@ public sealed unsafe class CombatTextService : IExtenderService
         }
     }
 
-    // ---- config ------------------------------------------------------------------------------
-
-    private static void LoadConfig()
-    {
-        if (!_file.Load(_log, t => _cfg = CombatTextConfig.Parse(t))) return;
-        _configLoaded = true;
-        _file.Baseline(_cfg.ToText());
-    }
-
-    private static void SaveConfig() => _file.Save(_cfg.ToText(), _log);
-
     // ---- the per-frame draw ------------------------------------------------------------------
 
     /// <summary>Element geometry, reused. Doubling is a guard, not a path.</summary>
@@ -198,12 +181,6 @@ public sealed unsafe class CombatTextService : IExtenderService
     private static void Draw()
     {
         if (!_armed) return;
-        if (!_configLoaded)
-        {
-            LoadConfig();
-            // ponytail: pool thread so the cold bake leaves the frame; TextRig's bake lock orders it against SetFont.
-            if (_configLoaded && PeakPx(_cfg) != _peakPx) System.Threading.ThreadPool.QueueUserWorkItem(_ => RequestPeakFace());
-        }
 
         // Session reset: object ids are only unique within a module, so a number carried across an unload
         // would land on whatever inherits the id.
@@ -211,8 +188,8 @@ public sealed unsafe class CombatTextService : IExtenderService
         _wasInModule = GameGate.InModule;
 
         long now = Environment.TickCount64;
-        int count = _table.Advance(now, _cfg);   // BEFORE every early return: the hook ring is fixed-size
-        if (count == 0 || !GameGate.InGame || !_cfg.On) return;
+        int count = _table.Advance(now, CombatTextKnobs.Max.V, CombatTextKnobs.Life.V, CombatTextKnobs.BannerLife.V);   // BEFORE every early return: the hook ring is fixed-size
+        if (count == 0 || !GameGate.InGame || !CombatTextKnobs.Enabled.V) return;
 
         GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null || !NameplateNative.Ready) return;
@@ -271,20 +248,20 @@ public sealed unsafe class CombatTextService : IExtenderService
 
         // Everything on one head is a column. The step is the larger of the knob and a line of text, so a
         // bigger font never lets two rows grow into each other.
-        float step = _cfg.StackPx * ui;
+        float step = CombatTextKnobs.Stack.V * ui;
         if (step < lineH) step = lineH;
         y -= s.Stack * step;
 
         switch (s.Kind)
         {
             case FloatyKind.Damage:
-                y -= _cfg.RisePx * ui * FloatyAnim.EaseOut(t);
+                y -= CombatTextKnobs.Rise.V * ui * FloatyAnim.EaseOut(t);
                 break;
 
             case FloatyKind.Banner:
                 // Banners have their own column, lifted clear of the damage one.
-                scale *= _cfg.TextScale;
-                y -= _cfg.BannerLiftPx * ui + (_cfg.RisePx * 0.35f) * ui * FloatyAnim.EaseOut(t);
+                scale *= CombatTextKnobs.BannerSize.V;
+                y -= CombatTextKnobs.Lift.V * ui + (CombatTextKnobs.Rise.V * 0.35f) * ui * FloatyAnim.EaseOut(t);
                 break;
         }
     }
@@ -320,7 +297,7 @@ public sealed unsafe class CombatTextService : IExtenderService
             foreach (Rune ru in run.Text.EnumerateRunes())
             {
                 if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru) * scale; continue; }
-                if (_cfg.Outline)
+                if (CombatTextKnobs.Outline.V)
                     for (int o = 0; o < OutlineOffsets.Length; o += 2)
                         EmitGlyph(ref n, gl, penX + OutlineOffsets[o] * halo,
                                   baseline + OutlineOffsets[o + 1] * halo, scale, 0f, 0f, 0f, alpha);
@@ -351,46 +328,10 @@ public sealed unsafe class CombatTextService : IExtenderService
     private static void Vtx(ref int n, float x, float y, float u, float v, float r, float g, float b, float a)
     { float[] q = _verts; q[n++] = x; q[n++] = y; q[n++] = u; q[n++] = v; q[n++] = r; q[n++] = g; q[n++] = b; q[n++] = a; }
 
-    // ---- the command -------------------------------------------------------------------------
-
-    private static string? Cmd(string args)
-    {
-        string[] a = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (a.Length == 0)
-            return $"[combattext] on={_cfg.On} max={_cfg.Max} rise={F(_cfg.RiseMs)}ms/{F(_cfg.RisePx)}px "
-                 + $"stack={F(_cfg.StackPx)}px lift={F(_cfg.BannerLiftPx)}px "
-                 + $"text={F(_cfg.TextMs)}ms x{F(_cfg.TextScale)} outline={_cfg.Outline} "
-                 + $"| live={_table.LiveCount} overflow={_table.Overflow} peakface={F(_peakPx)}px{(PeakPxRaw(_cfg) > TextRig.AtlasMaxPx ? " (capped)" : "")}";
-
-        switch (a[0])
-        {
-            case "on": _cfg.On = Flag(a); break;
-            case "max": _cfg.Max = CombatTextConfig.Clamp(Num(a, _cfg.Max), CombatTextConfig.MaxMin, CombatTextConfig.MaxMax); break;
-            case "risems": _cfg.RiseMs = ClampF(a, _cfg.RiseMs, CombatTextConfig.LifeMin, CombatTextConfig.LifeMax); break;
-            case "risepx": _cfg.RisePx = ClampF(a, _cfg.RisePx, CombatTextConfig.RiseMin, CombatTextConfig.RiseMax); break;
-            case "stack": _cfg.StackPx = ClampF(a, _cfg.StackPx, CombatTextConfig.StackMin, CombatTextConfig.StackMax); break;
-            case "lift": _cfg.BannerLiftPx = ClampF(a, _cfg.BannerLiftPx, CombatTextConfig.LiftMin, CombatTextConfig.LiftMax); break;
-            case "textms": _cfg.TextMs = ClampF(a, _cfg.TextMs, CombatTextConfig.LifeMin, CombatTextConfig.LifeMax); break;
-            case "textscale": _cfg.TextScale = ClampF(a, _cfg.TextScale, CombatTextConfig.ScaleMin, CombatTextConfig.ScaleMax); break;
-            case "outline": _cfg.Outline = Flag(a); break;
-            default:
-                return "[combattext] usage: /combattext | /combattext <on|max|risems|risepx|stack|lift|"
-                     + "textms|textscale|outline> <value>";
-        }
-        SaveConfig();
-        if (a[0] is "textscale") RequestPeakFace();   // cold: the command runs on the input thread
-        return Cmd("");
-    }
-
-    private static bool Flag(string[] a) => a.Length < 2 || a[1] is "1" or "on" or "true" or "yes";
-    private static int Num(string[] a, int fallback) => a.Length > 1 && int.TryParse(a[1], out int v) ? v : fallback;
-
-    private static float ClampF(string[] a, float fallback, float lo, float hi)
-    {
-        float v = a.Length > 1 && float.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float p)
-                  ? p : fallback;
-        return CombatTextConfig.Clamp(v, lo, hi);
-    }
+    /// <summary>The bare <c>/combattext</c> line: the rows, then the table's live counters and the peak face.</summary>
+    private static string Status()
+        => $"{CombatTextKnobs.G.Report()} | live={_table.LiveCount} overflow={_table.Overflow} "
+         + $"peakface={F(_peakPx)}px{(PeakPxRaw() > TextRig.AtlasMaxPx ? " (capped)" : "")}";
 
     private static string F(float v) => v.ToString("0.##", CultureInfo.InvariantCulture);
 }

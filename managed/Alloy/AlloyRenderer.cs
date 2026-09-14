@@ -284,8 +284,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static uint _progDepthFeat;
     private static int _depthFeatVp = -1, _depthFeatBase = -1, _depthFeatTex = -1, _depthFeatCut = -1;
     private static FeatLoc _depthFeatFeat;
-    private static bool _depthFeatFailed, _prepassFeat = DefPrepassFeat;
-    private const bool DefPrepassFeat = true;
+    private static bool _depthFeatFailed;
+    private static bool _prepassFeat => Renderer.PrepassFeat.V;
     /// <summary>The vertex source the lit / fullbright programs actually compiled with (an override wins).</summary>
     private static string? _litVsSrc;
     /// <summary>#350: the spliced programs were built against a resource chain that is gone. Every program
@@ -308,8 +308,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>The depth prepass could not build (or glColorMask is missing) -- latched, and the colour pass
     /// simply shades every fragment as it did before #119.</summary>
     private static bool _depthFailed;
-    /// <summary><c>/draw prepass 0</c>: skip the prepass, which is the A/B for its own acceptance number.</summary>
-    private static bool _depthPrepass = DefPrepass;
+    /// <summary><c>/alloy prepass 0</c>: skip the prepass, which is the A/B for its own acceptance number.</summary>
+    private static bool _depthPrepass => Renderer.Prepass.V;
     /// <summary>Every Alloy vertex stage that ran carries <see cref="ClipExpr"/> under an invariant
     /// qualifier. False = a #92 override rewrote one, and the prepass cannot re-test its depth.</summary>
     private static bool _vsDepthSafe = true;
@@ -362,7 +362,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static float ModuleTimeIntoTransition => _runtime == null ? 0f : *(float*)(_runtime + EngineLayout.RtModuleTimeIntoTransition);
     /// <summary>#352: the presented-frame counter, what a hosted content chain gets as <c>sceneCurrentFrame</c>.</summary>
     internal static int FrameSeq => _frameSeq;
-    /// <summary><c>/draw viz N</c>. 1..3 and 6 attribute a dim (or a too-shiny) frame to a lighting TERM instead
+    /// <summary><c>/alloy viz N</c>. 1..3 and 6 attribute a dim (or a too-shiny) frame to a lighting TERM instead
     /// of guessing from the composite; 5 is the local-cube term alone; 4 is the coverage map -- Alloy draws
     /// paint flat (cyan lit / magenta fullbright) and everything still textured is geometry the engine's own
     /// GL 3.3 walk drew, which no other signal makes visible. Each mode is documented where it branches, in
@@ -383,13 +383,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
     internal const int LightVizMax = 40;   // 40 = the #493 vis-ID target (IdTarget.VizMode)
-    private static int _lightViz = DefViz;
-    /// <summary><c>/draw aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
+    private static int _lightViz => Renderer.Viz.V;
+    /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
     /// frame looks WRONG on purpose (the diffuse's red channel is not an occlusion map); what it proves is
     /// that a material which does declare one will be sampled. No shipped content uses texture11 yet, so
     /// without this there is nothing to point the feature at.</summary>
-    private static bool _aoTest = DefAoTest;
+    private static bool _aoTest => Renderer.AoTest.V;
     private static int _locViz = -1;
     private static int _locOit = -1, _locOitDim = -1, _locOitBias = -1, _locOitGob = -1;
     /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
@@ -415,8 +415,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// submission cannot run at all. Latched, and EndFrame disarms on it by name rather than drawing nothing
     /// forever while the iterator keeps suppressing parts.</summary>
     private static bool _batchUnavailable;
-    /// <summary><c>/draw light 0</c> forces every Alloy part back to the #82 fullbright variant (the lighting A/B).</summary>
-    private static bool _lighting = DefLighting;
+    /// <summary><c>/alloy light 0</c> forces every Alloy part back to the #82 fullbright variant (the lighting A/B).</summary>
+    private static bool _lighting => Renderer.Light.V;
     /// <summary>RenderInterface::IsEnabled -- queried for cap 5 (LIGHTING) once per Alloy pass.</summary>
     private static delegate* unmanaged<int, byte> _isEnabled;
     /// <summary>The AuroraEnableEnums value for lighting. <c>MatStatic</c>/<c>RenderFlat</c> both branch on
@@ -546,7 +546,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static bool _takeOverflow, _ambientFallbackLogged, _loggedOnce;
     private static uint _clusterOverflow;
     /// <summary>#119 measurement: prepass GPU time, and the fragments the COLOUR pass actually shaded.
-    /// samples/screen-pixel is the overdraw figure, and its move with <c>/draw prepass</c> is what the prepass
+    /// samples/screen-pixel is the overdraw figure, and its move with <c>/alloy prepass</c> is what the prepass
     /// is worth -- both are period averages on the [alloy] line.</summary>
     /// <summary>...and the shading pass's own GPU time. Frame time cannot answer "is the prepass worth it"
     /// on a vsync-capped display -- both modes sit on the cap and the saving becomes headroom -- so the A/B
@@ -924,12 +924,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        // #165: ahead of every stand-down and every check below -- /vanilla reports the renderer for a
+        // #165: ahead of every stand-down and every check below -- /alloy reports the renderer for a
         // misrendering session, so it must exist even in a session whose renderer never armed.
-        RenderCommands.Register(log);
+        RenderCommands.Register();
         CullPass.Init(log);
         // #170: ahead of every stand-down, matching the host's unconditional calls. The verdict must
-        // outlive a renderer that never armed -- /vanilla is the report it drives.
+        // outlive a renderer that never armed -- /alloy is the report it drives.
         AlloyGate.Arm(log);
         PresentTarget.Attach(log);
         // #263: the config half of the verdict is the FIRST stand-down, ahead of every Attach and every
@@ -938,11 +938,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // session the engine is going to render is not a wasted hook, it is a broken world. Restart-only
         // (ADR 0018's amendment to ADR 0010) is exactly what buys the two worlds never being warm at once.
         if (AlloyGate.OptedOut)
-        { log.Info("AlloyRenderer: stood down (vanilla=1) -- the engine owns every resource this session"); return; }
+        { log.Info("AlloyRenderer: stood down (alloy.enabled=0) -- the engine owns every resource this session"); return; }
         FrameRegistry.Global.Register(FramePhase.PostPresent, 20, EndFrame, "AlloyRenderer.endFrame", log);
         // #175: the whole pass roll-call, in one walk over one declared table. Attach is ahead of every check
         // because #129's asserts that the ownable-bucket list AGREES with whether Alloy water can draw -- and
-        // /water on 0 is exactly the case where it must, so water's knobs have to be read first.
+        // water.enabled off is exactly the case where it must, so water's knobs have to be read first.
         RenderPasses.Register(log);
         PassRegistry.SelfCheck(log);
         PassRegistry.Global.Attach(log);
@@ -976,17 +976,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         PassRegistry.Global.RunSelfChecks(log);
         // #179: CX_OWNDRAW is gone rather than moved -- the vanilla setting is the same switch, and it
         // stands the shadow and residency sides down too (#263).
-        if (GameGate.Locked)
-        { log.Info("AlloyRenderer: stood down (lockchat)"); return; }
         // never arm on a broken contract: the misrender either predicts must not ship
         // #242: the split joins that chain for the same reason -- a record that stopped carrying a
         // per-frame field renders stale state and says nothing at all.
+        // #571: the stock-settings reader forges a std::string for the engine; a header packed wrong is a
+        // crash on the first world frame, not a misrender, so it joins the gating chain.
+        StockConfig.Attach(log);
         if (!SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
             || !RunsSelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
-            || !ShaderContract.SelfCheck(log)) return;
+            || !ShaderContract.SelfCheck(log)
+            || !StockConfig.SelfCheck(log)) return;
         // NOT in the chain above: those two guard what reaches the screen, and this one guards a debug dump.
-        // A regression in the canonicaliser should cost /framedump, not drop every user back to vanilla.
+        // A regression in the canonicaliser should cost /alloy framedump, not drop every user back to vanilla.
         FrameDump.SelfCheck(log);
         // #128: same rule. A wrong gob offset draws a creature at the wrong alpha and a leaky refused-gob set
         // half-owns one -- both misrenders, neither of which errors.
@@ -1041,16 +1043,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _commitSlot = hooks.Chain(SymbolMap.VdoCommitItemDynamicData,   // the item-level vertex-dirty signal
             (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, void>)&OnCommitItemDynamicData, CommitPriority);
         if (_commitSlot == null) log.Info("AlloyRenderer: CommitItemDynamicData unhooked -- vertex-dirty stays per pool buffer");
-        // #179: the six look/debug dials above are /draw's, not the environment's -- the code defaults ARE
-        // the boot values and nothing here reads a knob for them any more.
         // #137: the skinmesh class. Config bucket (ADR 0013): a capability gate that decides what the vertex
         // stages are BUILT from, so it cannot move mid-session and is not a command. #262 dropped its second
         // term -- the pose no longer comes out of GLRender::m_bones, so that symbol resolving proves nothing.
         // A failed check disarms the class rather than posing a crowd from a transposed matrix -- the engine
         // still draws every cloak in that case.
-        _skinning = Settings.Bool("ownskin", true) && _skinMathOk;
-        _enrollBudget = Settings.Int("enrollbudget", _enrollBudget, 0);
-        _enrollDelta = Settings.Bool("enrolldelta", true);
+        _skinning = Renderer.OwnSkin.Boot && _skinMathOk;
+        _enrollBudget = Renderer.EnrollBudget.Boot;
+        _enrollDelta = Renderer.EnrollDelta.Boot;
         _isEnabled = (delegate* unmanaged<int, byte>)Native.Sym(SymbolMap.RiIsEnabled);
         ResolveVaoDrip(log);
         OccludeInit(log);   // #537
@@ -1063,41 +1063,21 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         RspShim.Install(log, hooks);
         _armed = _origRsp != null && _origFade != null;
         if (_armed) log.Info(_skinning
-            ? "AlloyRenderer: #262 skinmeshes owned -- posed per frame from engine animation state, no draw re-entry (ownskin=0 in cx.cfg disables)"
+            ? "AlloyRenderer: #262 skinmeshes owned -- posed per frame from engine animation state, no draw re-entry (alloy.ownskin=0 in cx.cfg disables)"
             : "AlloyRenderer: skinmeshes stay engine-drawn (cloaks, robes, tails)");
-        if (_armed) log.Info($"AlloyRenderer: /draw {DescribeTuning()}");
         log.Info(_armed
-            ? "AlloyRenderer: armed -- Alloy world pass at the #132 frame anchor, Scene::FadeDoors (vanilla=1 in cx.cfg disables)"
+            ? "AlloyRenderer: armed -- Alloy world pass at the #132 frame anchor, Scene::FadeDoors (alloy.enabled=0 in cx.cfg disables)"
             : $"AlloyRenderer: {(_origRsp == null ? "RenderSinglePass" : "Scene::FadeDoors")} hook failed -- Alloy world pass unavailable");
     }
 
-    /// <summary>#179: the boot values <c>/draw reset</c> returns to. Consts rather than a captured snapshot,
-    /// because with the env reads gone the code default IS the boot value -- and a const cannot drift from
-    /// the field initialiser the way a hand-copied literal did.</summary>
-    private const bool DefLighting = true, DefPrepass = true, DefAoTest = false;
-    private const int DefCull = CullPass.ModeHiZ;
-    private const float DefLod = CullPass.DefLodPx;
-    private const float DefSunBias = 0.06f;
-    private const int DefViz = 0;
-    private const bool DefPoll = false;
     /// <summary>Boot worker count for the stage: six, xtul's call. Live-verified 2026-09-05 on 12 cores: audit
     /// 0/0/0/0/0, Build 2,6 -> 1,9ms. A woken worker spins up to 4ms, so on a machine with fewer than eight cores
-    /// this oversubscribes; /draw threads N is the dial.</summary>
-    private const int DefThreads = 6;
-    /// <summary>#336: does the prepass run its keyhole sweep? See <c>/draw prepasskey</c>.</summary>
-    private static bool _prepassKey = DefPrepassKey;
-    private const bool DefPrepassKey = true;
-
-    /// <summary>The Alloy pass's live dials, for the <c>/draw</c> echo and the arm-time line.</summary>
-    internal static string DescribeTuning() =>
-        $"light {(_lighting ? 1 : 0)}  prepass {(_depthPrepass ? 1 : 0)}  " +
-        $"viz {_lightViz}/{LightVizMax}  threads {_stageThreads} ({(_stageFrames > 0 ? (float)_stageDeferred / _stageFrames : 0f):F1} deferred/frame; {StagePool.Stats()})  aotest {(_aoTest ? 1 : 0)}  csmbias {_sunWorldBias:F3}  weld {NormalWeld.Angle:F0}deg ({NormalWeld.Parts} parts, {NormalWeld.Welded} welded/{NormalWeld.Kept} kept/{NormalWeld.Refused} refused; newcomers only)  " +
-        $"cull {CullPass.Mode}/{CullPass.ModeHiZ}  retest {(CullPass.Retest ? 1 : 0)}  lod {CullPass.LodPx:F2}px  poll {(_fullPoll ? 1 : 0)}  " +
-        $"prepasskey {(_prepassKey ? 1 : 0)}  prepassfeat {(_prepassFeat ? 1 : 0)}  idtarget {(IdTarget.On ? 1 : 0)}  blendprepass {(_blendPrepass ? 1 : 0)}  vislist {(_visList ? 1 : 0)}  " +
-        $"oit {OitPass.Mode}  fogcull {(CullPass.FogCull ? 1 : 0)}  hlchan {Convert.ToString(HlChannels, 2).PadLeft(5, '0')}  hlglow {(RspShim.GlowReplay ? 1 : 0)}  " +
-        // #336: the one number that says whether a fog cull has anything to cull -- the far plane Alloy
-        // inherits from the engine VP, against the fog the shaders already fade to.
-        $"[camfar {FrameInputs.CamFar:F0} fog {(FrameInputs.FogOn ? 1 : 0)} {FrameInputs.FogStart:F0}..{FrameInputs.FogEnd:F0}]";
+    /// this oversubscribes; <c>/alloy threads N</c> is the dial.</summary>
+    internal const int DefThreads = 6;
+    /// <summary>#329: the <c>alloy.enrollbudget</c> default -- candidates per frame, 0 = the whole walk in one frame.</summary>
+    internal const int EnrollBudgetDefault = 1500;
+    /// <summary>#336: does the prepass run its keyhole sweep? See <c>/alloy prepasskey</c>.</summary>
+    private static bool _prepassKey => Renderer.PrepassKey.V;
 
     /// <summary>#350: <c>scriptableInt1..16</c> and <c>scriptableFloat1..16</c> out of the engine's own
     /// constant tables, exactly what <c>UploadVanillaEnv</c> writes. Cold; the input thread reading ints the
@@ -1112,138 +1092,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         return sb.ToString();
     }
 
-    /// <summary>Live tuning setter behind <c>/draw</c>. Returns the old value, or NaN for an unknown key.
-    /// <para>Same threading argument as <c>/light</c>: each dial is an independent field written from the
-    /// input thread and read by the render thread on its next pass, so a frame that catches one changed and
-    /// one not is one frame of a value the user is dragging anyway. Booleans are set as 0/1.</para>
-    /// <para>The viz ceiling is a REAL gate, not a formality: a value past it used to leave the mode at 0
-    /// doing nothing, with no line to say so -- #129's water views (9..13) read as "LIGHTVIZ is broken" for
-    /// exactly that reason. Clamped rather than refused, so the echo reports what is actually running.</para></summary>
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "light":    old = _lighting ? 1f : 0f; _lighting = v != 0f; break;
-            case "prepass":  old = _depthPrepass ? 1f : 0f; _depthPrepass = v != 0f; break;
-            case "washtest": old = _washTest ? 1f : 0f; _washTest = v != 0f; break;
-            case "oit":      old = OitPass.Mode; OitPass.Mode = Math.Clamp((int)v, 0, 2); break;
-            case "oitviz":   old = OitPass.Viz; OitPass.Viz = Math.Clamp((int)v, 0, 5); break;
-            case "viz":      old = _lightViz; _lightViz = Math.Clamp((int)v, 0, LightVizMax); break;
-            case "threads":  old = _stageThreads; _stageThreads = Math.Clamp((int)v, 0, StagePool.MaxChunks - 1); StagePool.Rearm(); break;
-            case "aotest":   old = _aoTest ? 1f : 0f; _aoTest = v != 0f; break;
-            case "csmbias":  old = _sunWorldBias; _sunWorldBias = v; break;
-            // #243 (AC5): the A/B for a cull, which is the one system whose bug is geometry that is simply
-            // not there. Off puts both passes back on the staged BaseVertex submission with NO cull at all
-            // (#264 deleted the engine walk that used to gate them) -- slow, and the honest control.
-            case "cull":     old = CullPass.Mode; CullPass.Mode = Math.Clamp((int)v, 0, CullPass.ModeHiZ); break;
-            // #489's A/B: 0 = the prepass dispatch is frustum-only again (the pre-#489 prepass), 1 = phase
-            // one against the prior pass's pyramid, phase two re-tests its rejects against the fresh one.
-            case "retest":   old = CullPass.Retest ? 1f : 0f; CullPass.Retest = v != 0f; break;
-            // #287: LOD selection, in pixels of projected radius. It rides the cull dispatch, so /draw cull 0
-            // stands it down too -- this dial only says how aggressive it is while the cull is running.
-            case "lod":      old = CullPass.LodPx; CullPass.LodPx = MathF.Max(v, 0f); break;
-            // #336's A/B: 0 = cull at the engine's far plane, as before. "Something vanished at the fog line"
-            // needs a bisect, and this is the known-good half of it.
-            case "fogcull":  old = CullPass.FogCull ? 1f : 0f; CullPass.FogCull = v != 0f; break;
-            case "weld":     old = NormalWeld.Angle; NormalWeld.Angle = Math.Clamp(v, 0f, 180f); break;
-            case "hldiag":   old = HlDiag ? 1f : 0f; HlDiag = v != 0f; break;
-            // #350: the scriptable block as the client table holds it NOW -- the numbers a hosted content
-            // stage gates on (snow, wet, rain). A print, not a dial; the value is ignored.
-            case "consts":   old = 0f; _log?.Info("AlloyRenderer: " + DescribeScriptables()); break;
-            // Bitmask over CNWCAnimBase's five hilite channels; bit 3 is the VFX one, off by default.
-            case "hlchan":   old = HlChannels; HlChannels = (int)v; break;
-            // #462: the Windows A/B. 0 skips the engine's DoHighlightGob replay; what is left on a Tab is the
-            // emissive/colour-shift fold alone (the outline is off there: QuickbarService stands down).
-            case "hlglow":   old = RspShim.GlowReplay ? 1f : 0f; RspShim.GlowReplay = v != 0f; break;
-            // #330: the bounded chase's A/B -- 1 re-reads every engine term every frame AND audits what the
-            // caches would have served (the poll-miss counters on the [alloy] line, which must read 0).
-            case "poll":     old = _fullPoll ? 1f : 0f; _fullPoll = v != 0f; break;
-            // #336: the keyhole prepass sweep's A/B. Off = dissolving parts skip the prepass and write their
-            // depth in the colour pass instead; they discard in both stages, so the sweep only ever bought
-            // early-Z for parts BEHIND the aperture, which under a roof is the hole itself.
-            case "prepasskey": old = _prepassKey ? 1f : 0f; _prepassKey = v != 0f; break;
-            case "prepassfeat": old = _prepassFeat ? 1f : 0f; _prepassFeat = v != 0f; break;
-            // #493: the vis-ID attachment's A/B -- 0 = the prepass writes depth alone, as before.
-            case "idtarget": old = IdTarget.On ? 1f : 0f; IdTarget.On = v != 0f; break;
-            case "blendprepass": old = _blendPrepass ? 1f : 0f; _blendPrepass = v != 0f; break;
-            case "blenddiag": old = _blendDiag ? 1f : 0f; _blendDiag = v != 0f; break;
-            case "gpumeter": old = GpuQuery.Enabled ? 1f : 0f; GpuQuery.Enabled = v != 0f; break;
-            // #336 step 4: the visible set's A/B -- 0 walks the whole order every pass.
-            case "vislist":  old = _visList ? 1f : 0f; _visList = v != 0f; break;
-            // Whether a TILE gob's parts may dissolve. 0 = vanilla, where the aperture stops at every gob
-            // and the windows stay floating in the hole it punched.
-            case "gobkey":   old = GobKeyhole ? 1f : 0f; GobKeyhole = v != 0f; break;
-            default: return float.NaN;
-        }
-        // #242: a dial can change what a record MEANS (aotest fills a slot, viz changes nothing in the
-        // record but costs nothing to be safe about), and a persistent record built under the old dial would
-        // survive the change. One dirty-all on a chat command is free.
-        InvalidateRecords();
-        _log?.Info($"AlloyRenderer: /draw {key} {v:F2} (was {old:F2}) -> {DescribeTuning()}");
-        return old;
-    }
-
-    /// <summary>Put every <c>/draw</c> dial back to the value this session booted with.</summary>
-    internal static void ResetTuning()
-    {
-        _lighting = DefLighting; _depthPrepass = DefPrepass; _aoTest = DefAoTest;
-        _sunWorldBias = DefSunBias; _lightViz = DefViz; CullPass.Mode = DefCull; CullPass.LodPx = DefLod;
-        CullPass.FogCull = CullPass.DefFogCull; CullPass.Retest = CullPass.DefRetest; HlChannels = DefHlChannels;
-        _fullPoll = DefPoll; _prepassKey = DefPrepassKey; _prepassFeat = DefPrepassFeat; _visList = DefVisList; _stageThreads = DefThreads;
-        // #242: AFTER the dials, the way Tune does it. /draw runs on the input thread, so a bump published
-        // ahead of the assignments lets a staging walk rebuild against the OLD dial and stamp the NEW epoch
-        // -- wrong until something else invalidates, worst case a whole enrollment away.
-        InvalidateRecords();
-        _log?.Info($"AlloyRenderer: /draw reset -> {DescribeTuning()}");
-    }
-
-    /// <summary>Headless check of the <c>/draw</c> contract: every documented key is reachable, an unknown one
-    /// is reported rather than silently ignored, the viz ceiling clamps instead of no-opping, and reset
-    /// returns the boot values. Restores whatever it touched -- it runs before the first frame, so a dial left
-    /// at 3 would be a debug view nobody asked for.</summary>
-    internal static void TuneSelfCheck(ExtenderLog log)
-    {
-        ExtenderLog? quiet = _log; _log = null;
-        bool ok = float.IsNaN(Tune("nope", 1f));
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyRenderer.TuneSelfCheck FAIL: {w}"); } }
-
-        bool li = _lighting, dp = _depthPrepass, ao = _aoTest;
-        int cu = CullPass.Mode; bool rt = CullPass.Retest;
-        float lp = CullPass.LodPx;
-        bool fp = _fullPoll, pk = _prepassKey, vl = _visList;
-        float cb = _sunWorldBias;
-        int vz = _lightViz;
-
-        foreach (string key in new[] { "light", "prepass", "viz", "aotest", "csmbias", "cull", "retest", "lod", "poll", "prepasskey", "vislist", "threads" })
-            E(!float.IsNaN(Tune(key, 1f)), $"'{key}' is reachable");
-        E(_lighting && _depthPrepass && _aoTest && _sunWorldBias == 1f && _lightViz == 1 && CullPass.Mode == 1
-          && CullPass.Retest && CullPass.LodPx == 1f && _fullPoll && _prepassKey && _visList && _stageThreads == 1,
-          "every key lands on its own field");
-        E(Tune("light", 0f) == 1f && !_lighting, "a boolean dial takes 0 and reports its old value as 1");
-        E(Tune("viz", LightVizMax + 5f) == 1f && _lightViz == LightVizMax,
-          "a viz mode past the ceiling clamps to it rather than silently doing nothing");
-        E(Tune("viz", -3f) == LightVizMax && _lightViz == 0, "...and a negative one clamps to off");
-
-        ResetTuning();
-        E(_lighting == DefLighting && _depthPrepass == DefPrepass && _aoTest == DefAoTest
-          && _sunWorldBias == DefSunBias && _lightViz == DefViz && CullPass.Mode == DefCull
-          && CullPass.Retest == CullPass.DefRetest && CullPass.LodPx == DefLod && _fullPoll == DefPoll && _prepassKey == DefPrepassKey && _visList == DefVisList,
-          "reset returns every dial to its boot value");
-        E(DescribeTuning().Contains("light") && DescribeTuning().Contains("prepass")
-          && DescribeTuning().Contains("viz")
-          && DescribeTuning().Contains("aotest") && DescribeTuning().Contains("csmbias")
-          && DescribeTuning().Contains("cull") && DescribeTuning().Contains("retest") && DescribeTuning().Contains("lod")
-          && DescribeTuning().Contains("poll") && DescribeTuning().Contains("prepasskey") && DescribeTuning().Contains("vislist"),
-          "the echo names every key the command accepts");
-
-        _lighting = li; _depthPrepass = dp; _aoTest = ao; _sunWorldBias = cb; _lightViz = vz;
-        CullPass.Mode = cu; CullPass.Retest = rt; CullPass.LodPx = lp; _fullPoll = fp; _prepassKey = pk; _visList = vl;
-        CullPass.SelfCheck(log);
-        _log = quiet;
-        log.Info(ok ? "AlloyRenderer.TuneSelfCheck: passed"
-                    : "AlloyRenderer.TuneSelfCheck: FAILED -- the /draw knob table drifted from its keys");
-    }
+    /// <summary>The <c>alloy.consts</c> button: the scriptable block as the client table holds it NOW -- the
+    /// numbers a hosted content stage gates on (snow, wet, rain).</summary>
+    internal static void LogScriptables() => _log?.Info("AlloyRenderer: " + DescribeScriptables());
 
     /// <summary>#132's anchor site. After-original: <c>Scene::FadeDoors</c> is engine bookkeeping the owned
     /// pass reads, so it has to have run. A failed install leaves <see cref="_origFade"/> null and the pass
@@ -1272,6 +1123,15 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         PassGen++;   // unconditionally: a stale generation would keep the iterator skipping parts nobody draws
         bool world = IsWorldScene(scene);
+        // #571: the stock graphics snapshot is retaken on a new world Scene (boot, every area edge), ahead of
+        // and regardless of the verdict -- the verdict reads it. A toggle the player flips off AFTER the
+        // decision froze has nothing behind it (exclusive residency), so it is the gamma precedent's Fail.
+        if (world)
+        {
+            StockConfig.OnScene(scene);
+            if (AlloyGate.Alloy && !StockConfig.EnhancedLighting)
+                AlloyGate.Fail("Enhanced Lighting was turned off in Game Options (graphics.lighting.enhanced) and Alloy has no vertex-lit path");
+        }
         if (world && AlloyGate.Alloy)
         {
             // saturating, never wrapping: an unchecked ++ past int.MaxValue lands on int.MinValue and the
@@ -1667,7 +1527,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         }
         if (!GlContextService.Available) { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost(); }
         bool inModule = GameGate.InModule;
-        if (_wasInModule && !inModule) { RevokeAll("module unload"); _spliceStale = true; OwnedTextures.ModuleUnloaded(); }
+        if (_wasInModule && !inModule) { RevokeAll("module unload"); _spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); }
         _wasInModule = inModule;
         if (_tableGen != PartTable.TableGen) { RevokeAll("part table wiped"); _tableGen = PartTable.TableGen; }
 
@@ -1747,7 +1607,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // three frames behind the dispatch, so nothing on the submission path waits for it. The
                    // "not running" reading is deliberately distinct from a cull that kept everything: one is
                    // "this instrument has nothing to say", the other is a finding about the area.
-                   (CullPass.Mode <= CullPass.ModeOff ? "cull OFF (/draw cull 2 arms it), "
+                   (CullPass.Mode <= CullPass.ModeOff ? "cull OFF (/alloy cull 2 arms it), "
                       : !CullPass.Ready ? "cull unavailable -- no compute or no indirect-count, "
                       : CullPass.CullFrames == 0 ? "cull armed, no counts read back yet, "
                       : $"cull keeps {(float)CullPass.KeptDraws / CullPass.CullFrames:F0}/frame and drops " +
@@ -1815,8 +1675,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    PassRegistry.Global.Stats(_frames) + ", " +
                    $"enrolls={_enrolls} revokes={_revokes}; cycle={CycleTextures.Count} steps={CycleTextures.Steps}" + (CycleTextures.Overflow == 0 ? "" : $" overflow={CycleTextures.Overflow}") + (CycleTextures.OtherClass == 0 ? "" : $" otherctl={CycleTextures.OtherClass}") + "; " +
                    // #119: the prepass's own cost, and what it bought. samples/px is the overdraw figure --
-                   // run the same scene with /draw prepass 0 and the difference IS the pass's worth.
-                   (!_depthPrepass ? "prepass OFF (/draw prepass 1 restores it)"
+                   // run the same scene with /alloy prepass 0 and the difference IS the pass's worth.
+                   (!_depthPrepass ? "prepass OFF (/alloy prepass 1 restores it)"
                     : _progDepth == 0 ? "prepass unavailable"
                     : $"prepass {(float)_prepassDraws / _frames:F0} draws/frame" +
                       (_prepassKeyed == 0 ? "" : $" ({(float)_prepassKeyed / _frames:F0} of them dissolving, keyhole stage)") +
@@ -1829,7 +1689,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                       (_qTerm[(int)GpuTerm.PrepassKey].Measured ? $" + keyhole sweep {GpuMs(GpuTerm.PrepassKey):F3}ms" : "") +
                       (_qTerm[(int)GpuTerm.PrepassFeat].Measured ? $" + cutout/displaced sweep {GpuMs(GpuTerm.PrepassFeat):F3}ms ({(float)_prepassFeatDraws / _frames:F0} draws)" : "") +
                       (_qTerm[(int)GpuTerm.Ao].Measured ? $" + ao {GpuMs(GpuTerm.Ao):F3}ms" : "") +
-                      (!_prepassKey ? " (keyhole sweep OFF -- /draw prepasskey 1)" : "")) +
+                      (!_prepassKey ? " (keyhole sweep OFF -- /alloy prepasskey 1)" : "")) +
                    (_qSamples.Measured && _lastPixels > 0
                        ? $", shaded {_qSamples.Avg / 1e6:F2}M samples/frame over {_lastPixels / 1e6f:F2}Mpx " +
                          $"(overdraw x{_qSamples.Avg / _lastPixels:F2})"
@@ -1857,7 +1717,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // Which parts the probe reaches: with no area env map it is the env-mapped materials
                    // alone, which is what vanilla binds a texture for.
                    $" {(_sceneEnv && EnvProbe.AreaWide ? "area-wide" : "env-mapped parts only")}" +
-                   (_sceneEnv && !EnvProbe.AreaWide ? " (area declares one; /probe areawide 1 honours it)" : "") + "; " +
+                   (_sceneEnv && !EnvProbe.AreaWide ? " (area declares one; /light probeareawide 1 honours it)" : "") + "; " +
                    AlloyLights.Diag(_clusterOverflow) +
                    // The coverage question -- "what is the engine still drawing, and why?" -- was only
                    // answerable from the one-shot enroll diag, which a healthy session prints once at startup
@@ -2008,7 +1868,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                         SunDynUnit = TextureSlots.SunShadowDyn, SunDynUnitGrass = TextureSlots.SunShadowDynGrass;
     /// <summary>Shadow depth bias in WORLD units, sent per cascade as a fraction of that cascade's published
     /// depth range so it stays a constant world distance whatever the fit. Small because the receiver's normal
-    /// offset carries most of the acne fight; <c>/draw csmbias</c> tunes it.</summary>
-    private static float _sunWorldBias = DefSunBias;
+    /// offset carries most of the acne fight; <c>/shadow csmbias</c> tunes it.</summary>
+    private static float _sunWorldBias => Shadows.CsmBias.V;
 
 }

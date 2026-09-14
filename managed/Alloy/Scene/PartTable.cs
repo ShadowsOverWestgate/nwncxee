@@ -212,7 +212,7 @@ internal static unsafe class PartTable
     internal static int EntryCount => MaxParts;
     /// <summary>Are the CAPTURE hooks in? False = no tables, so the census has nothing to classify, the gate
     /// nothing to suppress and the Alloy world pass nothing to enroll from -- which it reports rather than
-    /// sitting at zero silently, because <c>drawhooks=off</c> otherwise disables the Alloy pass too.
+    /// sitting at zero silently, because <c>alloy.drawhooks=stats</c> otherwise disables the Alloy pass too.
     /// <para>#188: this is deliberately NOT "some pass is armed" -- a pass that stands down must not take
     /// the table, the census and the gate with it.</para></summary>
     internal static bool Active;

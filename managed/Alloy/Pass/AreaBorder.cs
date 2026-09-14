@@ -48,8 +48,9 @@ internal static unsafe class AreaBorder
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _ring = Settings.Int("border", DefaultRing, EngineRing, MaxRing);
-        if (_ring == EngineRing) { log.Info("AreaBorder: border=5 is the engine's own ring -- nothing to widen"); return; }
+        // Restart knob: Boot -- the ring is binned at area load from what this session started with.
+        _ring = Renderer.Border.Boot;
+        if (_ring == EngineRing) { log.Info("AreaBorder: alloy.border=5 is the engine's own ring -- nothing to widen"); return; }
         _tileData = (delegate* unmanaged<IntPtr, Vector3*, IntPtr>)Native.Sym(SymbolMap.SceneBspGetTileData);
         _origLoad = (delegate* unmanaged<IntPtr, IntPtr, float, int>)hooks.Install(
             SymbolMap.AreaLoadBorder, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, float, int>)&OnLoadBorder);

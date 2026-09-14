@@ -637,11 +637,43 @@ public static unsafe class EngineLayout
     /// lock arms (<c>*(byte*)(opts+0x1d) &lt; 3</c>).</summary>
     public static readonly int OptionsCameraMode = Same("CClientOptions", "cameraMode", 0x1d);
 
+    // ---- #571: the stock settings.tml reader (StockConfig) ----
+    /// <summary>CExoBase -&gt; <c>CExoConfig*</c> (first word). Both ctors store the freshly constructed config
+    /// there (Linux <c>CExoBase::CExoBase</c> @0x4dd1c0 region, Windows @0x140114b00 <c>*(this) = new CExoConfig</c>),
+    /// and every engine <c>Get</c> caller loads <c>**g_pExoBase</c> for <c>this</c> (Linux
+    /// <c>CGuiInGame::InitializeUserOptions</c> @0x66e24a, Windows <c>CAurora::ComputeDesiredGUIScale</c> @0x140074f70).</summary>
+    public static readonly int ExoBaseConfig = Same("CExoBase", "config", 0x0);
+    /// <summary>CExoConfig -&gt; the "initializing" byte. <c>Initialize</c> (Linux @0x4e2800) sets it for its own
+    /// duration and clears it at the end; while set, <c>Get</c> reads the committed table regardless of its
+    /// bool. Same test at <c>*this</c> in both builds' <c>Get&lt;bool&gt;</c> (@0x4efce0 / @0x140119650).</summary>
+    public static readonly int ExoConfigInitializing = Same("CExoConfig", "initializing", 0x0);
+    /// <summary>CExoConfig -&gt; the WORKING cpptoml table (<c>shared_ptr</c>, pointer word first): what the engine's
+    /// own <c>Get(key, false)</c> callers read, and what the options panel edits before <c>Commit</c> copies it
+    /// into the committed table at +0x38. Null between the ctor and <c>Initialize</c> (the ctor zeroes it,
+    /// Initialize clones the committed table into it) -- the reader's "not yet" test. Same in both
+    /// <c>Get&lt;bool&gt;</c> bodies.</summary>
+    public static readonly int ExoConfigWorkingTable = Same("CExoConfig", "workingTable", 0x28);
+
     /// <summary>CClientExoApp -&gt; CClientExoAppInternal*. #439: <c>CClientExoApp::GetInGameGui</c> (Linux
     /// @0x737c70, Windows rva 0x6abbc0) is one line on both builds, <c>*(*(this+8) + 0x90)</c>.</summary>
     public static readonly int ExoAppInternal = Same("CClientExoApp", "internal", 0x8);
     /// <summary>CClientExoAppInternal -&gt; CGuiInGame*. Same one-line getter as <see cref="ExoAppInternal"/>.</summary>
     public static readonly int InternalInGameGui = Same("CClientExoAppInternal", "inGameGui", 0x90);
+    /// <summary>CClientExoAppInternal -&gt; the live <c>CMainMenuPanel*</c> (#593). <c>DisplayMainMenu</c> (Linux nm
+    /// 0x63c320, Windows rva 0x6d74f0) returns when it is non-null, else news the panel and stores it here;
+    /// <c>DestroyMainMenuPanel</c> (Linux nm 0x63a650) deactivates, deletes and nulls it. Non-null = the main menu is
+    /// up (it stays up under the pregame Options modal, which only hides the panel).</summary>
+    public static readonly int InternalMainMenuPanel = Same("CClientExoAppInternal", "mainMenuPanel", 0x98);
+    /// <summary>CClientExoAppInternal -&gt; "reached the main menu" latch (int 0/1): the same <c>DisplayMainMenu</c>
+    /// sets it to 1 on the first display on both builds, <c>CClientExoApp::GetReachedMainMenu</c> (Linux nm 0x638cf0)
+    /// reads it, nothing clears it -- past-the-intro, not menu-is-up.</summary>
+    public static readonly int InternalReachedMainMenu = Same("CClientExoAppInternal", "reachedMainMenu", 0x5f0, Expect.Byte01);
+    /// <summary>CClientExoAppInternal -&gt; "the in-game Options panel is open" int (#593 follow-up: the gear in
+    /// game). <c>CClientExoApp::SetOptionsPanelOpen(int)</c> (Linux nm 0x638d30, Windows rva 0x6acbf0) is the one
+    /// store, <c>*(*(this+8)+0x604) = arg</c> on both builds; <c>CGuiInGame::HandleOptionsButton</c> passes 1 after
+    /// activating the panel and <c>HandleOptionsPanelClose</c> (the panel's close callback) passes 0. Stays 1 under
+    /// the Game/Video/Controls sub-panels, which only hide the Options panel.</summary>
+    public static readonly int InternalOptionsPanelOpen = Same("CClientExoAppInternal", "optionsPanelOpen", 0x604, Expect.Byte01);
     /// <summary>CNWCPlayer -&gt; character (creature) name CExoString. <c>CClientExoAppInternal::GetPlayerByCreatureName</c>
     /// (Linux @0x642350, Windows rva 0x6d8910) strcmp()s <c>*(player+0x40)</c> after comparing the length at +0x48
     /// on both builds; the player/account name is the +0x10/+0x18 pair (<c>GetPlayerByPlayerName</c>, rva 0x6d8a20).</summary>
@@ -672,10 +704,40 @@ public static unsafe class EngineLayout
     /// <summary>CGuiInGameChatPrompt -&gt; shown flag (int). <c>CGuiInGameChatPrompt::Show</c> tests-then-sets it:
     /// Linux nm 0x6779b0 at +0x230, Windows rva 0x87cc00 at +0x200 (the ctor zeroes the same slot).</summary>
     public static readonly int ChatPromptShown = Diverges("CGuiInGameChatPrompt", "shown", linux: 0x230, win: 0x200);
+    /// <summary>CGuiInGameChatPrompt -&gt; the embedded CGuiEdit (#580). <c>HandleEnter</c> (Linux nm 0x679c50, Windows
+    /// rva 0x87b0d0) hands <c>this+off</c> to <c>CGuiEdit::GetText</c>, <c>SetCaretPos</c> and <c>LoseFocus</c> on both.</summary>
+    public static readonly int ChatPromptEdit = Diverges("CGuiInGameChatPrompt", "edit", linux: 0x100, win: 0xf8);
+    /// <summary>CGuiEdit -&gt; <c>CAurString* m_pString</c>, the text object <c>CGuiEdit::GetText</c> (exported on both,
+    /// Linux nm 0x592680 / Windows 0x1e93b0) reads its lines from; HandleEnter clears it through the same pointer.</summary>
+    public static readonly int GuiEditString = Same("CGuiEdit", "string", 0x90);
+    /// <summary>Virtual slot of <c>CAurString::SetText(const char*)</c> -- the clear HandleEnter runs on the edit's string
+    /// (Linux <c>*vtbl+0xd8</c> = the <c>StringGob</c> thunk <c>_ZThn1216_N9StringGob7SetTextEPKc</c>; Windows <c>+0xd0</c>,
+    /// MSVC's single-slot virtual destructor). Both read off the HandleEnter bodies.</summary>
+    public static readonly int AurStringSetTextSlot = Diverges("CAurString", "vtbl.SetText", linux: 0xd8, win: 0xd0, Expect.VtblSlot);
     /// <summary>CGuiInGame -&gt; CPanelQuickBar*. #439: <c>CGuiInGame::Initialize</c> (Linux @0x772600) and its
     /// Windows twin (rva 0x6f9190, the one caller of the CPanelQuickBar ctor) both store the freshly built
     /// panel to +0x60 and then write <c>+0x28 = 1</c>.</summary>
     public static readonly int InGameGuiQuickbar = Same("CGuiInGame", "quickbar", 0x60);
+    /// <summary>CGuiInGame -&gt; the stock <c>CGuiInGameChatDialog*</c>, null while no engine conversation panel is
+    /// up (#591). <c>ShowDialogEntry</c> news it into +0x70 when null, <c>ShowDialogReplies</c> (Linux @0x770c30,
+    /// Windows rva 0x6fb8e0) is a no-op on null +0x70, and <c>CloseDialog</c> (Linux @0x770320, rva 0x6f6d80)
+    /// virtual-deletes it, nulls +0x70 and runs <c>ResetGuiState(0x298)</c> -- all on both builds.</summary>
+    public static readonly int InGameGuiDialog = Same("CGuiInGame", "dialog", 0x70);
+    /// <summary>CGuiInGame -&gt; the primary <c>CGuiInGameChatWindow*</c>, null until a module loads (the in-module
+    /// signal the frame gate reads). <c>AppendToMsgBuffer</c> (Linux @0x76d550, Windows rva 0x6f68d0) loads it as
+    /// <c>this[1]</c> first thing on both builds; <c>PrimaryMsgWindowIsVisible</c> (Linux @0x76e380) forwards it.</summary>
+    public static readonly int InGameGuiChatWindow = Same("CGuiInGame", "chatWindow", 0x8);
+    /// <summary>CGuiInGame -&gt; the live in-game <c>COptionsPanel*</c> (the ESC menu), null while it is down.
+    /// <c>HandleOptionsButton</c> (Linux @0x76de30, Windows rva 0x6f86c0 -- the caller of the ctor that owns
+    /// <c>"OPTIONS_MAIN"</c>) toggles an existing +0xd8 closed, else news the panel (0xc00 bytes Linux, 0xac0 Windows)
+    /// into +0xd8 and activates it; <c>HandleOptionsPanelClose</c> (Linux @0x76ea50, rva 0x6f8820) nulls it before
+    /// <c>CGuiPanel::Deactivate</c> deletes the panel. Both builds, same word.</summary>
+    public static readonly int InGameGuiOptionsPanel = Same("CGuiInGame", "optionsPanel", 0xd8);
+    /// <summary>CGuiPanel -&gt; state bits: 1 active, 2 hidden (<c>Hide</c>/<c>UnHide</c>), 4 force-hidden (<c>ForceVisible</c>
+    /// clears both); the engine's own "shown" test is <c>== 1</c> (<c>Activate</c>'s event choice, <c>Hide</c>'s scene
+    /// detach). Exported <c>Hide</c>/<c>UnHide</c>/<c>Activate</c> read it at Linux +0xb8 (@0x687160 / 0x687740 / 0x6878b0),
+    /// Windows +0xb0 (rva 0x1fc800 / 0x1fd0d0 / 0x1fbe70); the scene view behind it is +0xc0 / +0xb8.</summary>
+    public static readonly int GuiPanelState = Diverges("CGuiPanel", "state", linux: 0xb8, win: 0xb0);
     /// <summary>CGuiMan viewport width / height (int32 pair). #439: <c>CGuiMan::SetGuiSize</c> (exported,
     /// Linux @0x67efc0 / Windows rva 0x1f6640) stores its two args to +0xb8 / +0xbc on both.</summary>
     public static readonly int GuiManVpW = Same("CGuiMan", "vpWidth", 0xb8);

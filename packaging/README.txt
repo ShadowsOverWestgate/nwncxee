@@ -35,7 +35,7 @@ REPORTING A PROBLEM
   next to nwn.ini -- usually ~/.local/share/Neverwinter Nights/ -- holding one
   line:
 
-     logs=1
+     general.logs=1
 
   Play again, then send back ~/cx.log along with what you did right before
   anything went wrong.

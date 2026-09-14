@@ -377,7 +377,7 @@ public sealed class PlateTable
     /// <summary>Apply everything the hooks banked, without walking the table. The frame calls this even on the
     /// frames it decides not to draw: the ring is fixed-size, so a draw decision that skipped the drain would
     /// let it fill and turn <see cref="Overflow"/> into a count of frames rather than of refused candidates.</summary>
-    /// <param name="animMs">the fade a line evicted by a newcomer gets (<c>NameplateConfig.AnimMs</c>): the box
+    /// <param name="animMs">the fade a line evicted by a newcomer gets (<c>nameplate.anim</c>): the box
     /// reflows at that cadence, so the line leaving it does too.</param>
     public void Drain(int queueCap, float animMs)
     {
@@ -502,7 +502,7 @@ public sealed class PlateTable
     /// evicts on a miss, reads the anchor / flags / damage byte, applies the distance fade, and leaves the
     /// survivors compacted into <see cref="Visible"/>. Allocates nothing.</summary>
     /// <param name="dtMs">ms since the previous refresh; drives every ease. Clamped at zero by the math.</param>
-    /// <param name="animMs">the entry fade/slide interval (<c>NameplateConfig.AnimMs</c>).</param>
+    /// <param name="animMs">the entry fade/slide interval (<c>nameplate.anim</c>).</param>
     /// <param name="maxDist">metres; 0 = unlimited.</param>
     /// <param name="fadeDist">the fade band before <paramref name="maxDist"/>.</param>
     public void Refresh(long nowMs, long dtMs, float animMs, float maxDist, float fadeDist, int queueCap,
@@ -782,7 +782,7 @@ public sealed class PlateTable
         for (int i = 0; i < MaxLines; i++)
             E(fq.Lines[i].Alpha == 0f && !fq.Lines[i].Fading, "a released slot keeps no residual line alpha");
 
-        E(NameplateConfig.QueueMax == MaxLines, "the config's queue ceiling is exactly what the table can hold");
+        E(NameplateKnobs.Queue.Values[^1] == MaxLines && NameplateKnobs.Lines.Max == MaxWrapped, "the knobs' ceilings are exactly what the table can hold");
 
         // ---- FadingOut / SortKey: what separation takes part, and in what order ----
         var fo = new Entry { Used = true, Id = 5 };

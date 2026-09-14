@@ -9,11 +9,14 @@ namespace CX.Services.Camera;
 /// Mouse-look on right-drag (#539, map #535). The engine's only mouse orbit is middle-drag
 /// (<c>PerformX/YMouseMoveAction</c> with the middle-held flag calling <c>CNWCModule::Turn/TiltCamera(deg, 1)</c>);
 /// this makes right-drag the same orbit with the cursor captured. The right press is HELD (not forwarded) until
-/// the drag decides: past <c>mouselook_threshold</c> pixels it becomes a look (SDL relative mode, every motion
+/// the drag decides: past <c>mouselook.threshold</c> pixels it becomes a look (SDL relative mode, every motion
 /// event swallowed and fed to the engine's impulse path, so locks, limits and dialog bookkeeping stay
 /// engine-owned); released under the threshold it is replayed as press+release, so the radial menu opens
 /// exactly as before, just on release. A press over the engine GUI (NUI, radial, any panel) or over one of our
-/// windows passes through untouched -- the engine's radial path is never hooked. Opt-in: <c>mouselook=1</c>.
+/// windows passes through untouched -- the engine's radial path is never hooked. Opt-in: <c>mouselook.right</c>.
+/// The knobs are the <see cref="MouseLook"/> group, read live. The master (<c>mouselook.enabled</c>, #584) is the
+/// whole service: off, every event is forwarded untouched -- the stock middle-drag orbit, no capture -- and a drag
+/// under way is released on the off edge (<see cref="MasterChanged"/>). Live both ways.
 /// <para>Middle-drag, the engine's own orbit, gets the same capture unconditionally: the engine turns on ABSOLUTE
 /// cursor deltas, so a vanilla drag stalls at the window edge. The press and release are forwarded (the engine
 /// keeps its middle-held bookkeeping), every motion in between is swallowed and fed as relative deltas, and the
@@ -50,20 +53,13 @@ public sealed unsafe class MouseLookService : IExtenderService
     /// the life of the hook (a fixed buffer cannot be a static field), so the handler still allocates nothing.</summary>
     private static byte* _held;
 
-    private static float _sens = 1f, _threshold = 4f;
-    private static bool _invert, _rightLook;
-    /// <summary>#543: the free camera's look shares the sensitivity, invert and viewport scale.</summary>
-    internal static float Sens => _sens;
-    internal static bool Invert => _invert;
     private static int _looks, _clicks;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _rightLook = Settings.Bool("mouselook", false);
-        _sens = Settings.Float("mouselook_sens", 1f, 0.05f, 20f);
-        _threshold = Settings.Int("mouselook_threshold", 4, 0, 100);
-        _invert = Settings.Bool("mouselook_invert", false);
+        CameraKnobs.Declare();
+        MouseLook.G.Status = Report;
         if (!EngineLayout.Require(log, "MouseLook", "CGuiMan")) return;
         if (!SymbolMap.Require(log, "MouseLook", SymbolMap.WinMessageHandler, SymbolMap.TurnCamera, SymbolMap.TiltCamera,
                                SymbolMap.SdlSetRelativeMouseMode, SymbolMap.SdlWarpMouseInWindow,
@@ -76,22 +72,22 @@ public sealed unsafe class MouseLookService : IExtenderService
         _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 100);
         if (_next == null) { log.Info("MouseLook: standing down (WinMessageHandler chain refused)"); return; }
         _held = (byte*)NativeMemory.AllocZeroed(SdlEventSize);
-        CameraCommand.Register("look", "mouse-look on right-drag: reports sensitivity / invert / threshold (cx.cfg: mouselook, mouselook_sens, mouselook_invert, mouselook_threshold)",
-                               _ => Report());
-        log.Info(_rightLook
-            ? $"MouseLook: right-drag orbits (sensitivity {_sens}, invert {_invert}, threshold {_threshold}px); radial menu = a still right-click; middle-drag captured"
-            : "MouseLook: middle-drag captured (cursor held in place); right-drag off (opt in with mouselook=1)");
+        log.Info(!MouseLook.Enabled.V ? "MouseLook: chained, mouselook.enabled=0 -- the stock middle-drag runs until it is turned on"
+            : MouseLook.Right.V
+            ? $"MouseLook: right-drag orbits (sensitivity {MouseLook.Sens.V}, invert {MouseLook.Invert.V}, threshold {MouseLook.Threshold.V}px); radial menu = a still right-click; middle-drag captured"
+            : "MouseLook: middle-drag captured (cursor held in place); right-drag off (opt in with /mouselook right 1)");
     }
 
     [UnmanagedCallersOnly]
     private static int OnWinMessage(IntPtr ev)
     {
         if (ev == IntPtr.Zero) return Forward(ev);
+        if (!MouseLook.Enabled.V) { if (_state != State.Idle) Release(); return Forward(ev); }
         switch (*(uint*)ev)
         {
             case SdlMouseDown:
                 byte b = *(byte*)(ev + EvButtonOff);
-                if (_state != State.Idle || (b != SdlButtonMiddle && !(b == SdlButtonRight && _rightLook))) break;
+                if (_state != State.Idle || (b != SdlButtonMiddle && !(b == SdlButtonRight && MouseLook.Right.V))) break;
                 int mx = *(int*)(ev + EvXOff), my = *(int*)(ev + EvYOff);
                 if (UiInputService.EngineGuiWantsPress() || UiHost.HitTest(mx, my) != null) break;   // the GUI's press
                 _originX = mx; _originY = my; _button = b;
@@ -110,7 +106,8 @@ public sealed unsafe class MouseLookService : IExtenderService
                 if (_state == State.Pending)
                 {
                     int dx = *(int*)(ev + EvXOff) - _originX, dy = *(int*)(ev + EvYOff) - _originY;
-                    if (dx * dx + dy * dy <= _threshold * _threshold) break;   // a still click so far: the engine tracks it
+                    int threshold = MouseLook.Threshold.V;
+                    if (dx * dx + dy * dy <= threshold * threshold) break;   // a still click so far: the engine tracks it
                     _state = State.Looking; _looks++;
                     _setRelative(1);
                     return 0;   // this event's delta already moved the (soon warped-back) cursor; start clean
@@ -120,9 +117,9 @@ public sealed unsafe class MouseLookService : IExtenderService
                 if (module != IntPtr.Zero)
                 {
                     float w = ViewportWidth();
-                    float k = _sens / w;
+                    float k = MouseLook.Sens.V / w;
                     _turn(module, *(int*)(ev + EvXRelOff) * TurnPerPx * k, 1);
-                    _tilt(module, *(int*)(ev + EvYRelOff) * TiltPerPx * k * (_invert ? -1f : 1f), 1);
+                    _tilt(module, *(int*)(ev + EvYRelOff) * TiltPerPx * k * (MouseLook.Invert.V ? -1f : 1f), 1);
                 }
                 return 0;
             case SdlMouseUp:
@@ -152,6 +149,11 @@ public sealed unsafe class MouseLookService : IExtenderService
         return Forward(ev);
     }
 
+    /// <summary>The master's <c>changed:</c> (#584): the off edge releases a look or a held press at once, so the
+    /// cursor is never left captured waiting for the next mouse event. Nothing on the on edge -- the next press
+    /// reads <c>MouseLook.Enabled.V</c>.</summary>
+    internal static void MasterChanged() { if (!MouseLook.Enabled.V) Release(); }
+
     /// <summary>End a look or a held press: cursor back where the drag began, relative mode off, state idle.</summary>
     private static void Release()
     {
@@ -172,6 +174,7 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     private static int Forward(IntPtr ev) => ((delegate* unmanaged<IntPtr, int>)(*_next))(ev);
 
+    /// <summary>The bare <c>/mouselook</c> line.</summary>
     private static string Report() =>
-FormattableString.Invariant($"[camera] mouse-look: right-drag {(_rightLook ? "on" : "off")}, middle-drag captured; sensitivity {_sens:0.##} invert {(_invert ? 1 : 0)} threshold {_threshold:0}px | {_looks} look(s), {_clicks} replayed click(s), state {_state}");
+        FormattableString.Invariant($"{(MouseLook.Enabled.V ? "on" : "OFF (the stock middle-drag)")}; right-drag {(MouseLook.Right.V ? "on" : "off")}, middle-drag {(MouseLook.Enabled.V ? "captured" : "stock")}; sensitivity {MouseLook.Sens.V:0.##} invert {(MouseLook.Invert.V ? 1 : 0)} threshold {MouseLook.Threshold.V}px | {_looks} look(s), {_clicks} replayed click(s), state {_state}");
 }

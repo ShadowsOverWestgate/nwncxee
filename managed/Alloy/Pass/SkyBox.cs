@@ -144,11 +144,10 @@ internal static unsafe class SkyBox
     private static Matrix4x4 _base = Matrix4x4.Identity;
     private static int _enrolled, _attached, _hosted;
     private static bool _off;
-    /// <summary>The player's own switch (<c>/sky</c>, ADR 0013 bucket 1). Distinct from <see cref="_off"/>,
-    /// which means "this session cannot own the sky at all": the hook is armed either way, so the toggle is
-    /// live rather than a relaunch. Volatile -- written from the command dispatch on the input thread, read
-    /// in the capture window on the render thread.</summary>
-    private static volatile bool _disabled;
+    /// <summary>The player's own switch (<c>effects.sky</c>). Distinct from <see cref="_off"/>, which means
+    /// "this session cannot own the sky at all": the hook is armed either way, so the toggle is live rather
+    /// than a relaunch.</summary>
+    private static bool Disabled => !Effects.Sky.V;
 
     /// <summary>The Scene whose sky was enrolled, for the Alloy pass to compare against its own.</summary>
     internal static IntPtr Scene;
@@ -182,7 +181,7 @@ internal static unsafe class SkyBox
     internal static void Enroll(IntPtr scene)
     {
         _count = 0;
-        if (_off || _disabled || scene == IntPtr.Zero) { Scene = IntPtr.Zero; return; }
+        if (_off || Disabled || scene == IntPtr.Zero) { Scene = IntPtr.Zero; return; }
         Scene = scene;
         _base = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
         Vector3 cam = *(Vector3*)(scene + SceneSkyPos);
@@ -355,15 +354,6 @@ internal static unsafe class SkyBox
         return n;
     }
 
-    /// <summary>The <c>/sky</c> body: flip the Alloy sky and say where it landed. Cold (input thread); the
-    /// render thread picks the flag up in its next enrollment.</summary>
-    internal static string Toggle()
-    {
-        if (_off) return "[sky] unavailable this session -- the sky stays vanilla";
-        _disabled = !_disabled;
-        return $"[sky] Alloy sky {(_disabled ? "off -- the engine draws it" : "on")}";
-    }
-
     /// <summary>Every enrolled identity is void: the parts belong to gobs the area unload freed.</summary>
     internal static void Forget()
     {
@@ -388,7 +378,7 @@ internal static unsafe class SkyBox
     private static int _roleN;
     private static readonly float[] _roleAlpha = new float[3];
 
-    internal static string Stats() => _disabled ? "sky off (/sky)" : _off ? "sky vanilla (unavailable)"
+    internal static string Stats() => Disabled ? "sky off (/effects sky 0)" : _off ? "sky vanilla (unavailable)"
         : $"sky {_count} parts, {_enrolled} enrolled" +
         $", roles {_roleN}" + (_roleN == 0 ? "" : " at alpha " +
             string.Join("/", System.Linq.Enumerable.Select(

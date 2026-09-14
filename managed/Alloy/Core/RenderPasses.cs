@@ -55,9 +55,6 @@ internal static class RenderPasses
             SelfCheck = l => FrameSnapshot.SelfCheck(l),
             ContextLost = FrameSnapshot.Forget,
             Stats = FrameSnapshot.Stats,
-            Describe = FrameSnapshot.Describe,
-            Tune = FrameSnapshot.Tune,
-            Reset = FrameSnapshot.ResetTuning,
         }, log);
         // not a draw pass either -- it replaces the engine's per-frame dangly SOLVE, which is a
         // separate pass from the dangly draw. No GL objects, so no ContextLost; no captured world state,
@@ -68,9 +65,6 @@ internal static class RenderPasses
             Install = DanglyPhysics.Install,
             SelfCheck = DanglyPhysics.SelfCheck,
             Stats = DanglyPhysics.Stats,
-            Describe = DanglyPhysics.Describe,
-            Tune = DanglyPhysics.Tune,
-            Reset = DanglyPhysics.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -91,9 +85,6 @@ internal static class RenderPasses
             // table and slot map straight across a part-table wipe. The registry is what makes that visible.
             Revoke = GrassField.Forget,
             Stats = _ => GrassField.Stats(),
-            Describe = GrassField.Describe,
-            Tune = GrassField.Tune,
-            Reset = GrassField.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -101,7 +92,6 @@ internal static class RenderPasses
             Install = AreaBorder.Install,
             SelfCheck = AreaBorder.SelfCheck,
             Stats = _ => AreaBorder.Stats(),
-            Describe = AreaBorder.Describe,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -118,9 +108,6 @@ internal static class RenderPasses
             Install = Halos.Install,
             ContextLost = Halos.ContextLost,
             Stats = _ => Halos.Stats(),
-            Describe = Halos.Describe,
-            Tune = Halos.Tune,
-            Reset = Halos.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -130,9 +117,6 @@ internal static class RenderPasses
             ContextLost = Particles.ContextLost,
             Revoke = Particles.Forget,
             Stats = _ => Particles.Stats(),
-            Describe = Particles.Describe,
-            Tune = Particles.Tune,
-            Reset = Particles.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -148,9 +132,6 @@ internal static class RenderPasses
             Attach = AlloyLights.Attach,
             SelfCheck = l => AlloyLights.SelfCheck(l),
             ContextLost = AlloyLights.Forget,
-            Describe = AlloyLights.Describe,
-            Tune = AlloyLights.Tune,
-            Reset = AlloyLights.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -161,9 +142,6 @@ internal static class RenderPasses
             // #209: was missing. The re-bake keys on a BSP POINTER, so a recycled address carried the
             // previous area's cube into the new one.
             Revoke = EnvProbe.Revoke,
-            Describe = EnvProbe.Describe,
-            Tune = EnvProbe.Tune,
-            Reset = EnvProbe.ResetTuning,
         }, log);
         // #341: the fog's TARGET, which is a look decision and therefore a set of dials -- the ramp itself
         // stays the area author's. No frame slot: every stage uploads it through UploadFeatureTerms.
@@ -173,9 +151,6 @@ internal static class RenderPasses
             Attach = SceneFog.Attach,
             SelfCheck = SceneFog.SelfCheck,
             Revoke = SceneFog.Revoke,
-            Describe = SceneFog.Describe,
-            Tune = SceneFog.Tune,
-            Reset = SceneFog.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -184,16 +159,11 @@ internal static class RenderPasses
             SelfCheck = l => PostChain.SelfCheck(l),
             ContextLost = PostChain.Forget,
             Stats = f => "post " + PostChain.Stats(f),
-            Describe = PostChain.Describe,
-            Tune = PostChain.Tune,
-            Reset = PostChain.ResetTuning,
         }, log);
-        // #375: the display-space stack after the resolve. No Describe/Tune slots of its own: /post is the
-        // one post command and PostChain's Describe/Tune/Reset fall through to it. No Revoke -- it captures
-        // nothing from the world; its inputs are the engine's option globals, read per frame.
-        // #388: the camera velocity target. No Describe/Tune: /post motion and /post viz 4 reach it through
-        // PostChain. Revoke resets the previous view-projection so the first frame after an area transition
-        // paints zero rather than a jump.
+        // #375: the display-space stack after the resolve; its dials are the post group's. No Revoke -- it
+        // captures nothing from the world; its inputs are the engine's option globals, read per frame.
+        // #388: the camera velocity target; post.motion and post.viz 4 reach it. Revoke resets the previous
+        // view-projection so the first frame after an area transition paints zero rather than a jump.
         r.Register(new PassLifecycle
         {
             Name = "motion",
@@ -224,7 +194,6 @@ internal static class RenderPasses
         {
             Name = "contact",
             SelfCheck = ContactShadow.SelfCheck,
-            Describe = ContactShadow.Describe,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -235,9 +204,6 @@ internal static class RenderPasses
             // #390: the visibility history is another area's after a transition.
             Revoke = SsaoPass.Revoke,
             Stats = SsaoPass.Stats,
-            Describe = SsaoPass.Describe,
-            Tune = SsaoPass.Tune,
-            Reset = SsaoPass.ResetTuning,
         }, log);
         r.Register(new PassLifecycle
         {
@@ -249,8 +215,8 @@ internal static class RenderPasses
             Revoke = TaaStage.Reset,
             Stats = PostStack.Stats,
         }, log);
-        // #179: the Alloy world pass's own dials, so /draw reaches them through the one command
-        // implementation. No Attach/Install slots -- AlloyRenderer IS the service that drives this walk, and
+        // #179: the Alloy world pass. Its dials are the alloy group's (ADR 0025), read straight off the
+        // knobs. No Attach/Install slots -- AlloyRenderer IS the service that drives this walk, and
         // it owns those edges directly. ContextLost is in the table anyway (#209): driving the walk is no
         // reason to be absent from it, and being absent is how this pass kept its own GL names through a
         // context loss while every pass it calls dropped theirs. No Revoke -- RevokeAll IS its world edge.
@@ -258,10 +224,7 @@ internal static class RenderPasses
         {
             Name = "draw",
             ContextLost = AlloyRenderer.ContextLost,
-            SelfCheck = l => { AlloyRenderer.TuneSelfCheck(l); AlloyRenderer.EnrollSelfCheck(l); },
-            Describe = AlloyRenderer.DescribeTuning,
-            Tune = AlloyRenderer.Tune,
-            Reset = AlloyRenderer.ResetTuning,
+            SelfCheck = l => { CullPass.SelfCheck(l); AlloyRenderer.EnrollSelfCheck(l); },
         }, log);
         // CasterPass is deliberately NOT here yet. It runs in the SHADOW bracket, installs through its own
         // service, and its stand-down is a latched Disarm rather than a context edge -- so it does not fit

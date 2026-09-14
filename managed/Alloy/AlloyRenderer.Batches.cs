@@ -155,7 +155,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#287: the cull's source list, one <see cref="CullPass.SrcUints"/>-uint record per DRAW of
     /// this pass, staged beside <c>_dCount/_dOff/_dBase/_dSlot</c> by the walk that already writes them.
     /// <para>It used to be rebuilt by a second walk inside <see cref="CullPass.Begin"/>. The four draw-args
-    /// columns cannot leave the CPU -- <c>/draw cull 0</c> has to fall back to
+    /// columns cannot leave the CPU -- <c>/alloy cull 0</c> has to fall back to
     /// <c>glMultiDrawElementsBaseVertex</c>, which takes CPU pointers -- but writing them twice can, and the
     /// two columns the second walk existed for (the draw's batch and that batch's output base) are both known
     /// at this store, because the cut has just placed the draw.</para></summary>
@@ -181,7 +181,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <c>SetPartTextureRotate</c> @0x461670, both on a tree <c>CreateInstanceTree</c> made moments before,
     /// never on a part that has been drawn. So <c>EntryLive</c> (the death notice) is the whole lifetime
     /// guard, and the compares run every <see cref="ColourCadence"/> frames per slot (every frame under
-    /// <c>/draw poll 1</c>) so a writer the scan could miss (a LEA-then-store, a memcpy) shows on the [alloy]
+    /// <c>/alloy poll 1</c>) so a writer the scan could miss (a LEA-then-store, a memcpy) shows on the [alloy]
     /// line as <c>identity N</c> within eight frames rather than never.</para></summary>
     private static bool IdentityOk(int i, IntPtr tri)
     {
@@ -280,7 +280,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#336: the part's own alpha, read off the part every frame for a gob part or a matrix-class
     /// part (the animated ones) and every <see cref="ColourCadence"/> frames for a still gobless part --
     /// the tile geometry that is the routed majority, whose +0xa0 only an MDL alpha controller writes.
-    /// Under <c>/draw poll 1</c> every frame reads and audits the cache.</summary>
+    /// Under <c>/alloy poll 1</c> every frame reads and audits the cache.</summary>
     private static float PartAlphaCached(int i, IntPtr tri)
     {
         bool poll = _oGob[i] != IntPtr.Zero || _oMx[i] || !_alphaKnown[i] || _fullPoll
@@ -632,7 +632,7 @@ public sealed unsafe partial class AlloyRenderer
     /// stable slots mean a re-tenant is a per-slot event, and <see cref="UnstampRecord"/> at the enroll
     /// walk is what invalidates it. See ADR 0017's "Step 2, as built".</summary>
     internal static void InvalidateRecords() => System.Threading.Interlocked.Increment(ref _recEpoch);
-                                              // Interlocked: /draw runs on the input thread
+                                              // Interlocked: /alloy runs on the input thread
 
     /// <summary>Phase A of the Alloy block: walk this pass's order (<see cref="RouteParts"/>), revalidate
     /// every part, and stage the survivors into the multidraw argument arrays plus one per-draw SSBO record
@@ -707,7 +707,8 @@ public sealed unsafe partial class AlloyRenderer
             }
             else
             {
-                if (chunks > 1) { _stageThreads = 0; _log?.Info("AlloyRenderer: /draw threads stood down by a StagePool fault; the frame re-staged serially (set /draw threads again to re-arm)"); }
+                // A plain field write, not a Set: no Changed, no cfg write -- the stand-down is this session's.
+                if (chunks > 1) { Renderer.Threads.V = 0; _log?.Info("AlloyRenderer: /alloy threads stood down by a StagePool fault; the frame re-staged serially (set /alloy threads again to re-arm)"); }
                 for (int k = 0; k < routed; k++) _pkVerdict[k] = StagePart(k, data, slotTid, lightingOn, ref _stageCounters[0], main: true);
             }
         }
@@ -891,8 +892,8 @@ public sealed unsafe partial class AlloyRenderer
     }
     private static int _stageRouted;
     private static bool _stageLighting;
-    /// <summary><c>/draw threads N</c>: worker threads beside the main thread for the stage. 0 = serial (boot).</summary>
-    private static int _stageThreads = DefThreads;
+    /// <summary><c>/alloy threads N</c>: worker threads beside the main thread for the stage. 0 = serial.</summary>
+    private static int _stageThreads => Renderer.Threads.V;
     private static long _stageDeferred, _stageFrames;
     private static readonly byte[] _pkVerdict = new byte[MaxOwned], _pkDis = new byte[MaxOwned];
     /// <summary>The per-part half of <see cref="BuildBatches"/>: chase the engine state a routed part depends on
@@ -958,7 +959,7 @@ public sealed unsafe partial class AlloyRenderer
             // glow), so it is read every ColourCadence frames per slot and reloaded from the record in
             // between. Everything fast-visible stays per frame: alpha, tile fade, the matrix, the DIFFUSE
             // pointer (animated textures), dissolve, instance state.
-            // #364: _fullPoll belongs here. `/draw poll 1` says it re-reads every engine term every frame
+            // #364: _fullPoll belongs here. `/alloy poll 1` says it re-reads every engine term every frame
             // and its audit counters must read 0 -- but this term sat outside it, so the slow-drift fold
             // stayed on its stagger under a full poll and the knob could not A/B a colour-cadence bug at all.
             //
@@ -1008,7 +1009,7 @@ public sealed unsafe partial class AlloyRenderer
                 // cycle. #331: the step reaches the record through TickCycleTextures (Alloy calls the
                 // engine's Control itself; the M4 shim removed the Bind tail that used to) and the IsDirty
                 // term below. What the compare does catch is a material re-bind (a re-skin, an equip: cold),
-                // which can wait eight frames. A slot with no record yet, or under /draw poll 1, still reads
+                // which can wait eight frames. A slot with no record yet, or under /alloy poll 1, still reads
                 // every frame.
                 bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero;
                 var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);

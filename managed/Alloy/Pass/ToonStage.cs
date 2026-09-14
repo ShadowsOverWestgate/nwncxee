@@ -39,9 +39,6 @@ internal static unsafe class ToonStage
     private static uint _prog;
     /// <summary>Stock defaults, and what the stage assumes if a slider's global is unresolved.</summary>
     private const float StockDepthEdge = 0.02f, StockColorEdge = 1f, StockHardness = 0.8f;
-    /// <summary>1 = no posterise: the option's own sliders are the default look, bands are opt-in.</summary>
-    private const float BootBands = 1f, BootInk = 1f, BootEdge = 1f;
-    private static float _bands = BootBands, _ink = BootInk, _edge = BootEdge;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -66,28 +63,12 @@ internal static unsafe class ToonStage
     /// <summary>The stock stage's own off switch: at hardness 0 it returns before inking anything.</summary>
     private static float Hardness => _hardness == null ? StockHardness : *_hardness;
 
+    /// <summary>The dials are <c>post.toonbands / toonink / toonedge</c>; 1 band = no posterise, the option's
+    /// own sliders are the default look. No knob for the thresholds or the hardness: those are the player's
+    /// own sliders (a knob the client already owns does not get a second home here).</summary>
     internal static string Describe()
-        => $"bands {_bands:F0} ink {(Hardness <= 0f ? "OFF (edge hardness 0)" : _ink.ToString("F2"))} "
-         + $"edge {_edge:F1}px | sliders: depth {DepthEdge:F3} colour {ColorEdge:F2} hardness {Hardness:F2}";
-
-    /// <summary>Behind <c>/post</c>, through <see cref="PostStack.Tune"/>. Returns the old value, NaN for a
-    /// key that is not ours. No key for the thresholds or the hardness: those are the player's own sliders
-    /// (ADR 0013 -- a knob the client already owns does not get a second home here).</summary>
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "toonbands": old = _bands; _bands = Math.Clamp(v, 1f, 32f); break;
-            case "toonink":   old = _ink; _ink = Math.Clamp(v, 0f, 1f); break;
-            case "toonedge":  old = _edge; _edge = Math.Clamp(v, 1f, 8f); break;
-            default: return float.NaN;
-        }
-        _log?.Info($"ToonStage: /post {key} {v:F2} (was {old:F2}) -> {Describe()}");
-        return old;
-    }
-
-    internal static void ResetTuning() { _bands = BootBands; _ink = BootInk; _edge = BootEdge; }
+        => $"bands {Post.ToonBands.V:F0} ink {(Hardness <= 0f ? "OFF (edge hardness 0)" : Post.ToonInk.V.ToString("F2"))} "
+         + $"edge {Post.ToonEdge.V:F1}px | sliders: depth {DepthEdge:F3} colour {ColorEdge:F2} hardness {Hardness:F2}";
 
     /// <summary>From <see cref="PostStack.Run"/>, ahead of the stage draw: the stage's own uniforms onto its
     /// own program, which the caller then draws with. The sliders are read here, so moving one in the video
@@ -106,9 +87,9 @@ internal static unsafe class ToonStage
         float hardness = Hardness;
         Gl.UseProgram(prog);
         fixed (Matrix4x4* p = &_proj) Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)p);
-        Gl.Uniform1f(_locBands, _bands);
-        Gl.Uniform1f(_locInk, hardness <= 0f ? 0f : _ink);
-        Gl.Uniform1f(_locEdge, _edge);
+        Gl.Uniform1f(_locBands, Post.ToonBands.V);
+        Gl.Uniform1f(_locInk, hardness <= 0f ? 0f : Post.ToonInk.V);
+        Gl.Uniform1f(_locEdge, Post.ToonEdge.V);
         Gl.Uniform1f(_locDepthThresh, MathF.Max(DepthEdge, 1e-4f));
         Gl.Uniform1f(_locColorThresh, MathF.Max(ColorEdge, 1e-4f));
         Gl.Uniform1f(_locHardness, Math.Clamp(hardness, 0f, 1f));
@@ -184,7 +165,6 @@ internal static unsafe class ToonStage
     /// and the three sliders it is the player's copy of.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        ResetTuning();
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"ToonStage.SelfCheck FAIL: {w}"); } }
         E(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd, and the engine setter's `or $0x20`)");
@@ -211,13 +191,9 @@ internal static unsafe class ToonStage
         E(StageFs.Contains("fwidth(t)"), "the band boundary is antialiased across one fwidth");
         E(StageFs.IndexOf("uBands >= 2.0", StringComparison.Ordinal) < StageFs.IndexOf("uInk > 0.0", StringComparison.Ordinal),
           "the bands run BEFORE the ink: ink on a banded colour is one line, and it stays out of the fwidth");
-        E(BootBands == 1f && !(BootBands >= 2f), "bands are OFF by default -- the sliders are the default look");
-        E(float.IsNaN(Tune("nope", 1f)) && float.IsNaN(Tune("toonsens", 1f)),
-          "a key that is not ours is reported, and the sliders have no second home under /post");
-        E(Tune("toonbands", 3f) == BootBands && _bands == 3f, "/post toonbands moves the stage");
-        E(Tune("toonedge", 99f) == BootEdge && _edge == 8f, "the edge width is clamped");
-        ResetTuning();
-        E(_bands == BootBands && _edge == BootEdge, "/post reset restores the boot values");
+        E(Post.ToonBands.Default == 1f && Post.ToonBands.Min == 1f, "bands are OFF by default -- the sliders are the default look");
+        E(Post.G.Get("toonsens") == null && Post.G.Get("toondepth") == null, "the sliders have no second home under /post");
+        E(Post.ToonEdge.TryParse("99", out float edge) && edge == 8f, "the edge width is clamped");
         log.Info(ok ? "ToonStage.SelfCheck: passed" : "ToonStage.SelfCheck: FAILED");
         return ok;
     }

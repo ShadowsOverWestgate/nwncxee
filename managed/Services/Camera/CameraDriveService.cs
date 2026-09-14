@@ -12,19 +12,20 @@ namespace CX.Services.Camera;
 /// knob is on, the player creature's orientation is written to camera yaw + key direction (W = the camera's
 /// forward, A/D and the strafe keys = its right, diagonals at 45°), forward is the only key the engine sees for
 /// the call, and the engine's "input changed" latch is raised when the heading moved past the wire's 0.1°
-/// quantum (at most <c>drive.hz</c> times a second). The engine then derives the packet angle from that
+/// quantum (at most <c>move.hz</c> times a second). The engine then derives the packet angle from that
 /// orientation, sends run-forward, snaps the local facing, predicts, keeps alive and aborts on release by itself,
 /// and the server adopts the world-space heading (§10.2): no server change, no new opcode. The one release the
 /// engine does not abort on is a turn key's (its key-up path aborts only for forward/back/strafe/auto-run), so
 /// that one sends the same <c>AbortDriveControl</c> (major 6, minor 0x21) from here.
-/// <para>The heading slews toward the keys at <c>drive.turn</c> deg/s (starting from the creature's facing), and
+/// <para>The heading slews toward the keys at <c>move.turn</c> deg/s (starting from the creature's facing), and
 /// the creature's local facing-target pair is written with it every frame so the model turns as smoothly as the
 /// wire does. While the drive is active the engine's chase cam stands down (<see cref="EngineLayout.ModuleChaseSuppressed"/>
 /// held up, its idle edge held down): a chase that swings the camera behind a creature strafing at 90° would turn
 /// "strafe" into a spiral, and a held mouse orbit must win over every other camera motion.</para>
 /// <para>Stands down (engine drive untouched) under every <see cref="CameraService"/> gate -- dialog, cutscene,
-/// clear-view, attached elsewhere, a server lock -- before the first camera solve, and when the creature's own
-/// drive gates are shut. Hot: once per frame from ProcessInput, pointer reads and one atan2, no allocation.</para>
+/// clear-view, attached elsewhere, a server lock -- under the mode's own master off (<c>&lt;mode&gt;.enabled</c>,
+/// #584: the stock character-relative drive), before the first camera solve, and when the creature's own drive
+/// gates are shut. Hot: once per frame from ProcessInput, pointer reads and one atan2, no allocation.</para>
 /// </summary>
 public sealed unsafe class CameraDriveService : IExtenderService
 {
@@ -58,10 +59,11 @@ public sealed unsafe class CameraDriveService : IExtenderService
     private const int WireTenths = 3600;
     private const float Deg = MathF.PI / 180f;
 
-    private enum Why { Active, Idle, Probe, NoMode, Off, Gate, NoCamera, NoCreature, NotDrivable, Cancelled, Free }
+    private enum Why { Active, Idle, Probe, NoMode, Off, Gate, NoCamera, NoCreature, NotDrivable, Cancelled, Free, Master }
     private static readonly string[] WhyNames =
         { "active", "no key held", "layout probe failed", "no live camera mode", "off for this mode", "camera held down",
-          "no world camera", "no player creature", "creature not drivable", "forward and back cancel", "free camera" };
+          "no world camera", "no player creature", "creature not drivable", "forward and back cancel", "free camera",
+          "CX camera off for this mode" };
 
     private static bool _live, _probeOk, _active, _engineAborts;
     /// <summary>#541: the drive is running without a forward component (strafe/turn keys alone, or back), so the
@@ -78,6 +80,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        CameraKnobs.Declare();
         SelfCheck(log);
         if (!EngineLayout.Require(log, "CameraDrive", "CClientExoAppInternal", "CNWCObject", "CNWCCreature", "CNWCModule", "Camera")) return;
         if (!SymbolMap.Require(log, "CameraDrive", SymbolMap.UpdateDriveMode, SymbolMap.AppManager, SymbolMap.GetGameObject,
@@ -85,8 +88,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         _orig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.UpdateDriveMode,
                                                                    (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnUpdateDriveMode);
         if (_orig == null) { log.Info("CameraDrive: standing down (UpdateDriveMode hook refused)"); return; }
-        CameraCommand.Register("drive", "`drive 0|1` camera-relative WASD for the current camera mode; `drive hz <n>` most heading packets per second; `drive turn <deg/s>` heading slew (0 = snap)", Drive);
-        CameraCommand.Report(Report);
+        KnobSurface.Note(Report);
         log.Info("CameraDrive: pre-hooked CClientExoAppInternal::UpdateDriveMode");
     }
 
@@ -147,7 +149,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         if (!_active) { _heading = Degrees(ori[0], ori[1]); _lastTick = now; }
         float dt = MathF.Min((now - _lastTick) * 0.001f, 0.1f);
         _lastTick = now;
-        _heading = Slew(_heading, Heading(r.X, r.Y, f, s), CameraService.Config.DriveTurn, dt);
+        _heading = Slew(_heading, Heading(r.X, r.Y, f, s), Move.Turn.V, dt);
         int tenths = Tenths(_heading);
         _tenths = tenths;
         (float sn, float cs) = MathF.SinCos(tenths * 0.1f * Deg);
@@ -162,7 +164,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         *(int*)(module + ModWasIdleOff) = 0;
 
         if (tenths != _sentTenths && *(int*)(app + ChangedOff) == 0
-            && now - _lastSendTick >= (long)(1000f / CameraService.Config.DriveHz)) { *(int*)(app + ChangedOff) = 1; _latches++; }
+            && now - _lastSendTick >= (long)(1000f / Move.Hz.V)) { *(int*)(app + ChangedOff) = 1; _latches++; }
 
         long sendBefore = *(long*)(app + LastSendOff);
         int k0 = keys[0], k1 = keys[1], k2 = keys[2], k3 = keys[3], k4 = keys[4], k5 = keys[5];
@@ -201,7 +203,9 @@ public sealed unsafe class CameraDriveService : IExtenderService
         cre = cam = IntPtr.Zero;
         int mode = CameraService.Mode;
         if (mode < 0) return Why.NoMode;
-        if (CameraService.Config.Modes[mode].Drive == 0f) return Why.Off;
+        CameraModeKnobs m = CameraModes.ByMode[mode];
+        if (!m.Enabled.V) return Why.Master;
+        if (!m.Drive.V) return Why.Off;
         if (CameraService.GateUp) return Why.Gate;
         IntPtr module = CameraService.Module();
         cam = module == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(module + ModCameraOff);
@@ -214,29 +218,14 @@ public sealed unsafe class CameraDriveService : IExtenderService
         return Why.Active;
     }
 
-    // ---- /camera drive (cold) ----
-
-    private static string Drive(string args)
-    {
-        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (p.Length == 2 && p[0] == "hz" && CameraConfig.TryF(p[1], out float hz))
-            CameraService.Edit().DriveHz = Math.Clamp(hz, CameraConfig.DriveHzMin, CameraConfig.DriveHzMax);
-        else if (p.Length == 2 && p[0] == "turn" && CameraConfig.TryF(p[1], out float turn))
-            CameraService.Edit().DriveTurn = Math.Clamp(turn, 0f, CameraConfig.DriveTurnMax);
-        else if (p.Length == 1 && CameraConfig.TryF(p[0], out float on))
-        {
-            if (CameraService.Mode < 0) return "[camera] no live camera mode yet -- log in first";
-            CameraService.Edit().Modes[CameraService.Mode].Set("drive", on);
-        }
-        return Report();
-    }
+    // ---- the /knobs note (cold) ----
 
     private static string Report()
     {
         int mode = CameraService.Mode;
-        string on = mode < 0 ? "?" : CameraService.Config.Modes[mode].Drive != 0f ? "on" : "off";
+        string on = mode < 0 ? "?" : !CameraModes.ByMode[mode].Enabled.V ? "off (master)" : CameraModes.ByMode[mode].Drive.V ? "on" : "off";
         return FormattableString.Invariant(
-            $"[camera] drive: {on} ({(mode < 0 ? "no mode" : CameraConfig.ModeNames[mode])}) heading {_tenths / 10f:0.0} | {(_why == Why.Active ? "active" : "held down: " + WhyNames[(int)_why])} | {_sends} send(s), {_latches} latch(es), {_aborts} abort(s), drive.hz {CameraService.Config.DriveHz:0.#} drive.turn {CameraService.Config.DriveTurn:0}");
+            $"camera drive: {on} ({(mode < 0 ? "no mode" : CameraModes.ByMode[mode].G.Name)}) heading {_tenths / 10f:0.0} | {(_why == Why.Active ? "active" : "held down: " + WhyNames[(int)_why])} | {_sends} send(s), {_latches} latch(es), {_aborts} abort(s), move.hz {Move.Hz.V:0.#} move.turn {Move.Turn.V:0}");
     }
 
     /// <summary>The heading maths off-device: the four cardinal keys against a camera looking north (right = +X).</summary>

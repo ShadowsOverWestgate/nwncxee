@@ -38,9 +38,9 @@ internal static unsafe class AlloyLights
     /// plus SSBO bytes (3,5MB -> 7MB). <para>ponytail: fixed capacity, no per-cluster compaction pass. Overflow is counted and
     /// logged; if 128 ever fires, the upgrade is a two-pass count-then-fill build with a compacted offset
     /// table.</para></summary>
-    /// <summary>Boot-tunable (<c>clustercap=</c>, #402/#404): it sizes the cluster build's per-lane sort
+    /// <summary>Boot-tunable (<c>alloy.clustercap</c>, #402/#404): it sizes the cluster build's per-lane sort
     /// array, the scratch candidate for the radeonsi fault; 128 is the shipped value.</summary>
-    internal static readonly int ClusterCap = Settings.Int("clustercap", 128, 8, 128);
+    internal static readonly int ClusterCap = Renderer.ClusterCap.Boot;
     /// <summary>#410: the cluster build's per-lane sort array size, deliberately NOT <see cref="ClusterCap"/>.
     /// A dynamically-indexed private array past ~64 entries spills to scratch (32 KB/wave at 128), and on
     /// radeonsi that scratch read faulted on area entry (#401). <c>bincap</c> never indexes past 16; 32 is
@@ -71,7 +71,9 @@ internal static unsafe class AlloyLights
     /// <see cref="_srcRadius"/> is no longer part of this curve at all -- since #139 it is the sphere-light
     /// wrap radius and the base of the self-shadow near-field skip.</para>
     /// </summary>
-    private static float _gain = 1f, _srcRadius = 1f, _falloffPow = 1f;
+    private static float _gain => Lighting.Gain.V;
+    private static float _srcRadius => Lighting.Radius.V;
+    private static float _falloffPow => Lighting.Falloff.V;
 
     /// <summary>#142: the near-field core, and the answer to "no light ever gets intense close up".
     /// <para>The engine's curve is a NEEDLE. With the live constants (mi 0.410, ff 136.334) the denominator
@@ -91,7 +93,8 @@ internal static unsafe class AlloyLights
     /// calibrating against a darkened frame, not against vanilla, and every placed light paid for it.</para>
     /// <para>0 disables it, which is #140's curve and is also what a content override (#92) that never
     /// declares <c>uHot</c> reads.</para></summary>
-    private static float _hot = 0f, _hotSize = 0.15f;
+    private static float _hot => Lighting.Hot.V;
+    private static float _hotSize => Lighting.HotSize.V;
 
     /// <summary>The engine's own two attenuation constants, latched per capture from
     /// <c>GLRender::m_globalShaderConstantsf</c> through <c>RenderInterface::GetGlobalShaderParamf</c> --
@@ -130,7 +133,7 @@ internal static unsafe class AlloyLights
     /// <para>This is the fix for the second half of the torch complaint: at arm's length a punctual light
     /// swings N.L across a whole low-poly facet in one polygon, which reads as the model being cut in half.
     /// The wrap converges to plain N.L with distance, so placed lights are untouched.</para></summary>
-    private static float _wrap = 1f;
+    private static float _wrap => Lighting.Wrap.V;
     /// <summary>#143 wrapped diffuse: the distance-INDEPENDENT terminator softening, applied to the sun and
     /// as a floor under <see cref="_wrap"/> on every point light. 0 restores the punctual N.L everywhere.
     /// <para>This is what the community's GL 3.3 "light wrapping" shaders do, and the reason they exist:
@@ -138,7 +141,7 @@ internal static unsafe class AlloyLights
     /// one straight hard crease. Unlike <see cref="_wrap"/> it does NOT fall off with distance -- the
     /// facets are the same size however far away the light is. Ships at 1 (was 0.25, imperceptible live);
     /// it widens the terminator band only -- a per-face normal jump is <see cref="NormalWeld"/>'s.</para></summary>
-    private static float _wrapN = 1f;
+    private static float _wrapN => Lighting.WrapNdl.V;
     /// <summary>#375 follow-up: the stock SUBSURFACE term's wrap. sow-topdata's inc_lighting.shd at
     /// SHADER_QUALITY_MODE &gt; 1 adds, per light and on top of the Lambert term,
     /// <c>L * att * max(0, dot(Nvertex, L) + w) * 2/(2 + PI*w)</c> (LIGHT_SUBSURFACE_SCATTERING_WRAP 0.38,
@@ -150,7 +153,7 @@ internal static unsafe class AlloyLights
     /// which halves the map's diffuse contrast ("PBR is gone", live). 0 is Lambert alone. Gated live
     /// on global int param 7, the client's shader-quality option, exactly where the stock preamble gates
     /// it.</summary>
-    private static float _sss = 0.25f;
+    private static float _sss => Lighting.Sss.V;
     /// <summary><c>GetGlobalShaderParami(7)</c> = the preamble's <c>SHADER_QUALITY_MODE</c>
     /// (LoadAndCompileSingleShader @0x4d34b0); the subsurface term compiles in above 1.</summary>
     private const uint QualityParam = 7;
@@ -162,19 +165,20 @@ internal static unsafe class AlloyLights
     /// <summary>#139: local-cube PCF radius, in cube texels at the sample distance. 0 = the single hardware
     /// PCF tap this shipped with; anything above widens the filter with four more taps on a disc
     /// perpendicular to the sample ray. Costs 4 extra cube fetches per shadowing light per fragment.</summary>
-    private static float _shadowSoft = 1.5f;
+    private static float _shadowSoft => Shadows.Soft.V;
     /// <summary>#326: the PCF disc's radius on SCREEN, in pixels, below which it stands down to the single
     /// hardware tap. #325 measured the cube taps as the colour pass's one big term and the disc is four of
     /// every five; its width scales with distance to the LIGHT, so the test is per fragment, not a view-depth
     /// line. 0 = the disc everywhere. ponytail: a hard threshold, no fade band across it.</summary>
-    private static float _discPx = 3f;
+    private static float _discPx => Shadows.DiscPx.V;
     /// <summary>#139: self-shadow near-field skip, as a multiple of <see cref="_srcRadius"/>. A world point
     /// closer to the light than this is reported lit outright, on creature (mover) fragments only -- a carried torch sits INSIDE the hand and
     /// forearm holding it, and a punctual shadow test there shadows the carrier from its own light.</summary>
-    private static float _shadowNear = 1f;
+    private static float _shadowNear => Shadows.Near.V;
     /// <summary>Scales on the captured area terms, so daylight and interior fill can be dialled apart from
     /// the point lights. 1.0 = the engine's own captured value, untouched.</summary>
-    internal static float AmbientScale = 1f, SunScale = 1f;
+    internal static float AmbientScale => Lighting.Ambient.V;
+    internal static float SunScale => Lighting.Sun.V;
     /// <summary>How much of an OVERBRIGHT light's surplus is kept as CENTRE INTENSITY, on top of the reach
     /// the engine already spent it on. Applied by the feed as <c>1 + (maxChannel - 1) * this</c>.
     /// <para>Overbright IS the carried-light discriminator and needs no other: module-placed lights are
@@ -191,95 +195,22 @@ internal static unsafe class AlloyLights
     /// a range-blind <c>1/d^4</c> curve under which no honest value reached anything, and it is what made a
     /// torch-bearer 210x brighter than any placed light at the same distance. The curve is fixed; the cope
     /// goes with it.</para></summary>
-    internal static float OverbrightScale = 0f;
-    /// <summary>Boot values, kept so <c>/light reset</c> returns to "env vars as launched" rather than to the
-    /// hardcoded defaults -- otherwise a reset would silently discard the launch config.</summary>
-    private static float _bootGain = 1f, _bootRadius = 1f, _bootPow = 1f,
-                         _bootAmbient = 1f, _bootSun = 1f, _bootOver = 1f;
-    private static float _bootHot = 0f, _bootHotSize = 0.15f, _bootWrapN = 1f, _bootSss = 0.25f;
-    private static float _bootWrap = 1f, _bootShadowSoft = 0f, _bootShadowNear = 1f, _bootDiscPx = 3f;
+    internal static float OverbrightScale => Lighting.Overbright.V;
 
-    /// <summary>Current tuning, one line, for the <c>/light</c> echo and the arm-time log.</summary>
-    internal static string Describe() =>
-        $"gain {_gain:F2}  wrapradius {_srcRadius:F2}  rimfade {_falloffPow:F2}  " +
-        $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  " +
-        $"ambient x{AmbientScale:F2}  sun x{SunScale:F2}  overbright x{OverbrightScale:F2}  " +
-        $"wrap {_wrap:F2}  wrapndl {_wrapN:F2}  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}  shadowsoft {_shadowSoft:F2}  discpx {_discPx:F1}  shadowcap {_shadowCap:F0}  binreach {_binReach:F2}  bincap {_binCap:F0}  reachfade {_reachFade:F0}  shadownear {_shadowNear:F2}  " +
-        // The engine's area terms are NOT echoed here: they live only during the world render, and a chat
-        // command runs after it, where they read zero. FrameRead.EngineAreaTerms is printed from the
-        // /shadow trace line instead, which is inside the pass slot.
-        $"hot {_hot:F2}  hotsize {_hotSize:F3}  fadeout {SceneInputs.FadeFrames}f";
+    /// <summary>The atten pair and the shader-quality gate, for the arm-time log.</summary>
+    internal static string DescribeAtten() =>
+        $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}";
 
-    /// <summary>Live tuning setter behind <c>/light</c>. Returns the old value, or NaN for an unknown key.
-    /// <para>Written from the input thread and read by the render thread next frame. That is safe WITHOUT a
-    /// lock only because each is an independent float: the shader re-reads them per upload, and a frame that
-    /// catches one changed and one not is a single frame of a value the user is dragging anyway.</para></summary>
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "gain":    old = _gain; _gain = v; break;
-            case "radius":  old = _srcRadius; _srcRadius = v; break;
-            case "falloff": old = _falloffPow; _falloffPow = v; break;
-            case "ambient": old = AmbientScale; AmbientScale = v; break;
-            case "sun":     old = SunScale; SunScale = v; break;
-            case "overbright": old = OverbrightScale; OverbrightScale = v; break;
-            case "wrap":    old = _wrap; _wrap = v; break;
-            case "wrapndl": old = _wrapN; _wrapN = v; break;
-            case "sss":     old = _sss; _sss = v; break;
-            case "shadowsoft": old = _shadowSoft; _shadowSoft = v; break;
-            case "discpx": old = _discPx; _discPx = v; break;
-            case "shadowcap": old = _shadowCap; _shadowCap = Math.Clamp(v, 0f, 2f); break;   // 0 = every light; the shader keeps 2 candidates
-            case "binreach": old = _binReach; _binReach = Math.Clamp(v, 0.1f, 4f); break;
-            case "reachfade": old = _reachFade; _reachFade = v != 0f ? 1f : 0f; break;
-            case "bincap":   old = _binCap; _binCap = Math.Clamp(MathF.Round(v), 0f, SortCap); break;
-            case "shadownear": old = _shadowNear; _shadowNear = v; break;
-            case "hot":     old = _hot; _hot = v; break;
-            case "hotsize": old = _hotSize; _hotSize = v; break;
-            // #336: frames a departed light takes to fade out. The ramp on the way IN is the engine's, so
-            // the two are not guaranteed to match in length -- this is the dial that makes them.
-            case "fadeout": old = SceneInputs.FadeFrames; SceneInputs.FadeFrames = Math.Max((int)v, 0); break;
-            default: return float.NaN;
-        }
-        _log?.Info($"AlloyLights: /light {key} {v:F2} (was {old:F2}) -> {Describe()}");
-        return old;
-    }
-
-    /// <summary>Headless check of the /light contract: every documented knob is reachable, an unknown one is
-    /// reported rather than silently ignored, and reset returns the BOOT values (not the hardcoded defaults,
-    /// which would quietly discard a launch config). Runs off-device; restores whatever it touched.</summary>
+    /// <summary>Headless check of the lighting maths: the subsurface term is the stock one, the attenuation
+    /// constants latch the way the engine computes them, and the curve has the shape the receiver assumes.
+    /// Runs off-device; restores whatever it touched.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        // #175: the check DRIVES the tuning path, and tuning logs a line each. Silenced for the duration --
-        // it used to be quiet only because Attach had not run yet and _log was still null, which is not a
-        // property to depend on: the pass roll-call attaches every pass before it checks any of them.
-        ExtenderLog? quiet = _log; _log = null;
         // The shader's curve, in C#, so the property checks below are about the SHAPE and not about a
         // second transcription of it: f2 in [0, 1], gain 1, rim-fade exponent 1.
         float Att(float f2, float gain) => gain * (1f - f2) / (_atten.X + _atten.Y * f2);
-        float g = _gain, r = _srcRadius, p = _falloffPow, am = AmbientScale, su = SunScale, ov = OverbrightScale;
-        float wr = _wrap, ss = _shadowSoft, sn = _shadowNear, ht = _hot, hs = _hotSize, wn = _wrapN, sf = _discPx, sc = _shadowCap;
-        float sv = _sss, bre = _binReach, bca = _binCap, rf = _reachFade;
-        float bg = _bootGain, br = _bootRadius, bp = _bootPow, ba = _bootAmbient, bs = _bootSun, bo = _bootOver;
-
-        _bootGain = 40f; _bootRadius = 0.7f; _bootPow = 2f; _bootAmbient = 1f; _bootSun = 1f; _bootOver = 1f;
-
-        bool ok = float.IsNaN(Tune("nope", 1f));                       // unknown knob is reported
+        bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyLights.SelfCheck FAIL: {w}"); } }
-        foreach (var key in new[] { "gain", "radius", "falloff", "ambient", "sun", "overbright",
-                                    "wrap", "wrapndl", "sss", "shadowsoft", "discpx", "shadowcap", "shadownear", "hot", "hotsize", "binreach", "bincap", "reachfade" })
-            ok &= !float.IsNaN(Tune(key, 3f));                          // every documented knob is reachable
-        ok &= _gain == 3f && _srcRadius == 3f && _falloffPow == 3f && AmbientScale == 3f && SunScale == 3f
-              && OverbrightScale == 3f && _wrap == 3f && _shadowSoft == 3f && _discPx == 3f && _shadowNear == 3f
-              && _hot == 3f && _hotSize == 3f && _wrapN == 3f && _shadowCap == 2f && _sss == 3f && _binReach == 3f && _binCap == 3f && _reachFade == 1f;
-        _bootGain = 7f;                                                 // reset must honour the BOOT value...
-        ResetTuning();
-        ok &= _gain == 7f && _srcRadius == 0.7f && AmbientScale == 1f;  // ...not the 40f literal
-        ok &= Describe().Contains("gain") && Describe().Contains("sun") && Describe().Contains("overbright")
-              && Describe().Contains("wrap") && Describe().Contains("shadowsoft")
-              && Describe().Contains("shadownear") && Describe().Contains("hot")
-              && Describe().Contains("wrapndl") && Describe().Contains("sss");
         // The subsurface term is the stock one or it is nothing: the energy factor is inc_lighting.shd's
         // fEnergyPreservation / (1 + w) and the wrap rides the MAPPED normal (stock: the vertex normal, which washes out normal maps).
         E(MathF.Abs(SssK(0.38f) - 0.6262f) < 1e-3f, "SssK(0.38) is 2/(2+PI*0.38) = 0.626");
@@ -311,43 +242,8 @@ internal static unsafe class AlloyLights
         LatchAtten(2f, 1f, 1f);
         E(_atten == wide, "...and so does a min above max, which would invert the falloff");
         _atten = savedAtten;
-        // _bootOver with the rest, and NOT because of symmetry: the clobber above used to be repaired by
-        // Attach re-latching it, and #175 put Attach FIRST. Miss it and /light reset snaps overbright to 1
-        // and silently discards a tuned overbright -- which is the very property this check asserts.
-        // The restore is CHECKED, not trusted. #175 turned a missed one into a live bug the moment Attach
-        // stopped running after this and quietly repairing it, and a seventh boot knob added later would do
-        // it again with nothing to say so. The sentinel is what makes the check bite: clobbering with the
-        // DEFAULT (as the block above does for ambient/sun/overbright) is indistinguishable from a correct
-        // restore, so the assertion has to start from a value no boot value can be.
-        const float Sentinel = -12345f;
-        _bootGain = Sentinel; _bootRadius = Sentinel; _bootPow = Sentinel;
-        _bootAmbient = Sentinel; _bootSun = Sentinel; _bootOver = Sentinel;
-        _bootGain = bg; _bootRadius = br; _bootPow = bp; _bootAmbient = ba; _bootSun = bs; _bootOver = bo;
-        // Asked through ResetTuning and Describe, NOT by re-listing the fields: an assertion written from the
-        // same list as the restore passes whatever that list forgets. Every boot value reaches a live knob
-        // through reset, and Describe prints every live knob, so a missed one surfaces as its own sentinel.
-        ResetTuning();
-        E(!Describe().Contains("-12345"),
-          "the check restores EVERY boot value it clobbered -- a missed one makes /light reset discard a tuned value");
-
-        _gain = g; _srcRadius = r; _falloffPow = p; AmbientScale = am; SunScale = su; OverbrightScale = ov;
-        _wrap = wr; _shadowSoft = ss; _shadowNear = sn; _hot = ht; _hotSize = hs; _wrapN = wn; _discPx = sf; _shadowCap = sc;
-        _sss = sv; _binReach = bre; _binCap = bca; _reachFade = rf;
-        _log = quiet;
-        log.Info(ok ? "AlloyLights.SelfCheck: passed"
-                    : "AlloyLights.SelfCheck: FAILED -- /light knob table drifted from its documented keys");
+        log.Info(ok ? "AlloyLights.SelfCheck: passed" : "AlloyLights.SelfCheck: FAILED");
         return ok;
-    }
-
-    /// <summary>Restore the values this session launched with (env vars included).</summary>
-    internal static void ResetTuning()
-    {
-        _gain = _bootGain; _srcRadius = _bootRadius; _falloffPow = _bootPow;
-        AmbientScale = _bootAmbient; SunScale = _bootSun; OverbrightScale = _bootOver;
-        _wrap = _bootWrap; _shadowSoft = _bootShadowSoft; _shadowNear = _bootShadowNear; _discPx = _bootDiscPx;
-        _hot = _bootHot; _hotSize = _bootHotSize; _wrapN = _bootWrapN; _shadowCap = _bootShadowCap; _sss = _bootSss;
-        _binReach = _bootBinReach; _binCap = _bootBinCap; _reachFade = _bootReachFade;
-        _log?.Info($"AlloyLights: /light reset -> {Describe()}");
     }
     /// <summary>What the shader is actually running, for the period log -- read where it is USED, not at
     /// arm time (the engine's globals are still zero then, which is how a live-looking log line reported a
@@ -391,16 +287,8 @@ internal static unsafe class AlloyLights
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        // #179 (ADR 0013): the thirteen light dials are pure look, so the code default IS the boot value and
-        // /light is the whole surface. The env block that used to sit here only ever set a value the command
-        // could already set, and could not be moved without a relaunch.
-        _bootHot = _hot; _bootHotSize = _hotSize; _bootWrapN = _wrapN; _bootSss = _sss;
         _gspI = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
-        _bootWrap = _wrap; _bootShadowSoft = _shadowSoft; _bootShadowNear = _shadowNear; _bootDiscPx = _discPx;
-        _bootShadowCap = _shadowCap;
-        _bootGain = _gain; _bootRadius = _srcRadius; _bootPow = _falloffPow;
-        _bootAmbient = AmbientScale; _bootSun = SunScale; _bootOver = OverbrightScale;
-        log.Info($"AlloyLights: {Describe()} -- /light retunes every dial live, /light reset restores these");
+        log.Info($"AlloyLights: {DescribeAtten()} -- /light retunes every dial live");
     }
 
     /// <summary>Drop every GL object (context loss / disarm). Safe to call outside the bracket only when the
@@ -513,7 +401,7 @@ internal static unsafe class AlloyLights
         Gl.Uniform2f(_locZ, near, far);
         Gl.Uniform1i(_locCount, _uploaded);
         Gl.Uniform1f(_locReach, _binReach);
-        Gl.Uniform1i(_locBinCap, (int)_binCap);
+        Gl.Uniform1i(_locBinCap, _binCap);
         Gl.Uniform2f(_locBinAtten, _atten.X, _atten.Y);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindLights, _bufLights);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, _bufCounts);
@@ -586,27 +474,25 @@ internal static unsafe class AlloyLights
 
     /// <summary>#139/#326: the local-cube receiver's three softness terms -- PCF radius in texels, the screen
     /// radius in pixels below which that disc stands down, and the world distance inside which a fragment is
-    /// reported lit outright. Read here so <c>/light</c> retunes all three live, like every other knob.</summary>
+    /// reported lit outright. Read here so <c>/shadow</c> retunes all three live, like every other knob.</summary>
     internal static float ShadowSoft => _shadowSoft;
     internal static float ShadowDiscPx => _discPx;
     /// <summary>#336: cube-shadow taps a fragment may pay, in cluster order; 0 = every shadowing light.</summary>
-    internal static float ShadowCap => _shadowCap;
-    private static float _shadowCap = 2f, _bootShadowCap = 2f;
+    internal static float ShadowCap => Shadows.Cap.V;
     /// <summary>EXPERIMENT: the fraction of a light's adjusted radius the cluster build bins it by. The
     /// engine's curve is under 1/255 of its peak past ~0.8R, so lights binned by the full R sit in froxels
     /// they cannot visibly light; every one of them still costs the full per-light body per fragment.
-    /// Read with <c>/draw viz 38</c> (lights per pixel). 1 = the full radius.</summary>
-    private static float _binReach = 0.8f, _bootBinReach = 0.8f;
+    /// Read with <c>/alloy viz 38</c> (lights per pixel). 1 = the full radius.</summary>
+    private static float _binReach => Lighting.BinReach.V;
     /// <summary><c>/light reachfade</c>: 1 = the lit stage windows every light to its binned reach (see
     /// <c>uReach</c>), 0 = the bin cut alone, as #384 shipped it.</summary>
-    private static float _reachFade = 1f, _bootReachFade = 1f;
-    internal static float ReachUniform => _reachFade != 0f ? _binReach : 0f;
+    internal static float ReachUniform => Lighting.ReachFade.V ? _binReach : 0f;
     internal static float BinReach => _binReach;
     /// <summary>EXPERIMENT: the most lights a froxel keeps -- the K strongest by the engine's curve at the
     /// froxel's nearest point times the colour's luma, vanilla's per-object list made per froxel. 0 = all.
     /// The seam risk is the one #336 met with a per-froxel shadow order: a light dropped in one froxel and
     /// kept in its neighbour draws a grid edge, so the weakest kept light must be invisible for the cap to be.</summary>
-    private static float _binCap = 16f, _bootBinCap = 16f;
+    private static int _binCap => Lighting.BinCap.V;
     /// <summary>Adjusted radius of the uploaded lights this frame -- min, mean, max -- for the period line.
     /// The plaza heatmap read 32+ lights per pixel; whether that is many lights or huge radii is this number.</summary>
     private static float _radMin, _radMean, _radMax;
@@ -644,7 +530,7 @@ internal static unsafe class AlloyLights
         $"{DescribeCurve()}, " +
         $"lights {LastLightCount} ({FrameInputs.LocalLightCount} flagged castShadows, " +
         $"{FrameInputs.LightsWithCube} with a cube; adjusted radius {_radMin:F1}/{_radMean:F1}/{_radMax:F1}u min/mean/max)" +
-        $", cluster build {LastBuildMs:F3}ms on {GridX}x{GridY}x{GridZ} (binreach {_binReach:F2}, bincap {_binCap:F0})" +
+        $", cluster build {LastBuildMs:F3}ms on {GridX}x{GridY}x{GridZ} (binreach {_binReach:F2}, bincap {_binCap})" +
         (overflow > 0 ? $", CLUSTER OVERFLOW {overflow}/period (cap {ClusterCap})" : "");
 
     private static bool Ensure()
@@ -747,7 +633,7 @@ internal static unsafe class AlloyLights
         // carrier's own body, whose pose-vs-bake mismatch is a flicker that cannot be made accurate at pool
         // resolution -- so creature self-shadowing from a carried light is OFF, while the creature's shadow
         // on the GROUND (a static fragment, never gated) and every static-map shadow stay untouched.
-        // Scales with /light shadownear, so the cutoff is tunable live.
+        // Scales with /shadow near, so the cutoff is tunable live.
         const float CX_LOCAL_DYN_NEAR = 3.0;
         // #148: 0 = this fragment is a SURFACE, and the normal offset above is the acne fight it needs.
         // 1 = it is a point inside a VOLUME -- a particle -- where the offset is not merely useless but
@@ -988,7 +874,7 @@ internal static unsafe class AlloyLights
             uint n = min(uClCount[cl], CX_CLUSTER_CAP);
             uint base = cl * CX_CLUSTER_CAP;
             vec3 acc = vec3(0.0);
-            // #336: /light shadowcap -- the cube taps a fragment may pay, chosen PER FRAGMENT by reach
+            // #336: /shadow cap -- the cube taps a fragment may pay, chosen PER FRAGMENT by reach
             // (f2 = dd/rr, the attenuation's own term): the capN lights reaching this fragment most
             // strongly get a cube fetch, the rest draw unshadowed. Per fragment, never per froxel -- a
             // per-froxel choice put the seam on the cluster grid, squares glued to the screen wherever four
@@ -1100,7 +986,7 @@ internal static unsafe class AlloyLights
             return acc;
         }
 
-        // The diffuse half alone, for <c>/draw viz 1</c> and anything that has no material in hand.
+        // The diffuse half alone, for <c>/alloy viz 1</c> and anything that has no material in hand.
         vec3 CxClusteredDiffuse(vec3 worldPos, vec3 N, float viewDepth)
         {
             vec3 spec;
@@ -1108,7 +994,7 @@ internal static unsafe class AlloyLights
         }
 
         /// Darkest local-cube term over this fragment's cluster -- white lit, black fully occluded, and
-        /// exactly 1.0 where no light in reach carries a cube. <c>/draw viz 5</c>. The composite cannot answer
+        /// exactly 1.0 where no light in reach carries a cube. <c>/alloy viz 5</c>. The composite cannot answer
         /// "is the cube occluding anything?" because a lit neighbour washes the term out; this can.
         float CxLocalShadowViz(vec3 worldPos, vec3 N, float viewDepth)
         {

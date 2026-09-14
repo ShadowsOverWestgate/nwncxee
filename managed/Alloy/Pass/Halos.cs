@@ -40,24 +40,17 @@ internal static unsafe class Halos
     private static int _count, _ssboCap;
     private static uint _prog, _buf;
     private static int _locView, _locProj, _locDepth, _locGain, _locViz;
-    private static int _viz;
     private static bool _failed, _off;
     private static int _drawn;
 
-    private static bool _on = true;
-    private static float _size = 0.6f, _gain = 1f;
-    private static bool _bootOn; private static float _bootSize, _bootGain;
-
+    /// <summary>The dials are <see cref="Effects"/>' <c>halos</c> / <c>halosize</c> / <c>halogain</c> /
+    /// <c>haloviz</c>: one live knob each, so a chat set is what the next launch reads.</summary>
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
         _getFlareLights = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetLensFlareLights);
-        _on = Settings.Bool("halos", true);
-        _size = Settings.Float("halosize", 0.6f);
-        _gain = Settings.Float("halogain", 1f);
-        _bootOn = _on; _bootSize = _size; _bootGain = _gain;
         if (_getFlareLights == null) { _off = true; log.Info("Halos: GetLensFlareLights unresolved -- no halos"); return; }
-        log.Info($"Halos: armed -- flare lights drawn as procedural halos (/halos; size {_size:F2} gain {_gain:F2})");
+        log.Info($"Halos: armed -- flare lights drawn as procedural halos (/effects; size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2})");
     }
 
     /// <summary>Once per world frame, engine context: snapshot the engine's flare-light list. Allocation-free
@@ -65,7 +58,7 @@ internal static unsafe class Halos
     internal static void Enroll(IntPtr scene)
     {
         _count = 0;
-        if (_off || !_on || scene == IntPtr.Zero) return;
+        if (_off || !Effects.Halos.V || scene == IntPtr.Zero) return;
         IntPtr lm = *(IntPtr*)(scene + SceneLightManager);
         if (lm == IntPtr.Zero) return;
         byte* list = (byte*)_getFlareLights(lm);
@@ -91,7 +84,7 @@ internal static unsafe class Halos
             if (shift != null) { r += shift[0]; g += shift[1]; b += shift[2]; }
             float* d = (float*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref _stage[_count * Floats]);
             d[0] = *(float*)(pl + PlPos); d[1] = *(float*)(pl + PlPos + 4); d[2] = *(float*)(pl + PlPos + 8);
-            d[3] = sz * _size;
+            d[3] = sz * Effects.HaloSize.V;
             d[4] = Lin(r) * fade; d[5] = Lin(g) * fade; d[6] = Lin(b) * fade;
             d[7] = *(float*)(nd + NdFlareRadius);
             _count++;
@@ -124,9 +117,9 @@ internal static unsafe class Halos
         Gl.UseProgram(_prog);
         Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
         Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
-        Gl.Uniform1i(_locViz, _viz);
+        Gl.Uniform1i(_locViz, Effects.HaloViz.V);
         Gl.Uniform1i(_locDepth, (int)SceneDepth.Unit);
-        Gl.Uniform1f(_locGain, _gain);
+        Gl.Uniform1f(_locGain, Effects.HaloGain.V);
         new PassState(depth: false, depthWrite: false, blend: true,
                       blendSrc: AlloyRenderer.GlOne, blendDst: AlloyRenderer.GlOne).Apply();
         Gl.BindVertexArray(EmptyVao());
@@ -163,24 +156,8 @@ internal static unsafe class Halos
 
     internal static void ContextLost() { _prog = 0; _buf = 0; _vao = 0; _ssboCap = 0; }
     internal static void ResetPeriod() => _drawn = 0;
-    internal static string Stats() => _off ? "halos unavailable" : !_on ? "halos off" : $"halos {_count} flare lights, {_drawn} drawn";
-    internal static string Describe() => $"{(_off ? "UNAVAILABLE" : _on ? "on" : "off")} size {_size:F2} gain {_gain:F2} viz {_viz}";
-
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "on": old = _on ? 1f : 0f; _on = v > 0f; break;
-            case "size": old = _size; _size = v; break;
-            case "gain": old = _gain; _gain = v; break;
-            case "viz": old = _viz; _viz = (int)v; break;
-            default: return float.NaN;
-        }
-        return old;
-    }
-
-    internal static void ResetTuning() { _on = _bootOn; _size = _bootSize; _gain = _bootGain; }
+    internal static string Stats() => _off ? "halos unavailable" : !Effects.Halos.V ? "halos off" : $"halos {_count} flare lights, {_drawn} drawn";
+    internal static string Describe() => $"{(_off ? "UNAVAILABLE" : Effects.Halos.V ? "on" : "off")} size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2} viz {Effects.HaloViz.V}";
 
     /// <summary>One instanced quad per halo, corners from gl_VertexID, view-aligned. Reach follows vanilla:
     /// gone at <c>flareradius</c>. Occlusion is the fragment stage's, per pixel.</summary>
@@ -215,7 +192,7 @@ internal static unsafe class Halos
     /// <summary>The look: a hot gaussian core, a soft skirt, a faint six-point streak and a slight chromatic
     /// spread (red skirt widest), times a per-pixel occlusion against the scene depth copy (soft over one
     /// radius, so a pillar clips the halo where it covers it). Linear, additive, no encode (#132).
-    /// <c>/halos viz 1</c> paints that visibility alone.</summary>
+    /// <c>/effects haloviz 1</c> paints that visibility alone.</summary>
     internal const string HaloFs = """
         #version 460 core
         in vec2 vUV;

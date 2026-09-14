@@ -35,17 +35,17 @@ namespace CX.Alloy;
 internal static unsafe class VanillaShader
 {
     /// <summary>#346: the arming decision (ADR 0013 bucket 2 -- a capability gate, not a look), read once.
-    /// <c>vanillabridge=0</c> in <c>cx.cfg</c> compiles every stage from its fallback stubs and asks the
+    /// <c>alloy.vanillabridge=0</c> in <c>cx.cfg</c> compiles every stage from its fallback stubs and asks the
     /// engine for nothing -- which turns off every feature the bridge carries, and nothing else. It exists because this path took the client down once already: reading a
     /// resource the engine owns is engine surgery, and a kill switch that needs no rebuild is what a
     /// player-facing failure wants.</summary>
-    private static readonly bool _armed = Settings.Bool("vanillabridge", true);
+    private static readonly bool _armed = Renderer.VanillaBridge.Boot;
 
-    /// <summary>#350: the hosting gate alone (ADR 0013 bucket 2). <c>hostfs=0</c> in <c>cx.cfg</c> compiles
+    /// <summary>#350: the hosting gate alone (a Restart knob). <c>alloy.hostfs=0</c> in <c>cx.cfg</c> compiles
     /// every hosted region from its stub while the plain splices stay -- the A/B for "the lit program got
     /// slower for everyone": three content bodies inside one uber-program cost registers on every fragment,
     /// whether or not a material in the area ever takes that branch.</summary>
-    private static readonly bool _hostArmed = Settings.Bool("hostfs", true);
+    private static readonly bool _hostArmed = Renderer.HostFs.Boot;
     internal static bool HostArmed => _hostArmed;
 
     /// <summary>The marker pair. Everything between them is REPLACED by the engine's copy of the named
@@ -135,7 +135,7 @@ internal static unsafe class VanillaShader
             {
                 sb.Append(stub);                                // the stub, unchanged
                 if (fromContent && stock == null)
-                    log?.Info($"{what}: {resref}.shd " + (!_armed ? "not asked for (vanillabridge=0)" : ask ? "not in the resource chain" : !_hostArmed ? "not hosted (hostfs=0)" : "not hosted on this retry")
+                    log?.Info($"{what}: {resref}.shd " + (!_armed ? "not asked for (alloy.vanillabridge=0)" : ask ? "not in the resource chain" : !_hostArmed ? "not hosted (alloy.hostfs=0)" : "not hosted on this retry")
                             + " -- compiling the fallback stub, so whatever it carried is off");
             }
             cursor = end;

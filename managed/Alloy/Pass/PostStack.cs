@@ -46,12 +46,9 @@ internal static unsafe class PostStack
     /// <summary><c>enableFBeffects</c>, the engine's console gate on the whole framebuffer-effect walk
     /// (<c>DoFrameBufferEffects</c> returns at once when it is 0). Null reads as on.</summary>
     private static int* _fbEffects;
-    private static bool _on = true;
     /// <summary>#352: <c>Camera::m_nFramebufferEffectsEnabled</c>, whose bit 2 is the engine's own "the post
     /// program runs" answer. Null (unresolved) reads as off.</summary>
     private static uint* _fbMask;
-    /// <summary>#352: <c>/post fbpost 0</c>, the A/B for the hosted content chain alone.</summary>
-    private static bool _fbPostOn = true;
     /// <summary>Latched: the display-space target could not be completed on this context. Distinct from the
     /// <c>/post stack</c> bypass, which is a live choice; this clears only with the context.</summary>
     private static bool _targetBad;
@@ -142,14 +139,14 @@ internal static unsafe class PostStack
             : $"the client's Gamma video option (settings.tml graphics.gamma = {Gamma():F2}) is the Alloy post "
             + $"stack's (#375): {(_stages[0].Failed ? "the gamma stage did NOT build and is dropped -- the option is inert"
                                 : _targetBad ? "the stack's target is incomplete on this device -- the option is inert"
-                                : !_on ? "BYPASSED by /post stack 0"
+                                : !Post.Stack.V ? "BYPASSED by /post stack 0"
                                 : GammaActive(Mask()) ? "pow(c, g/2.2) runs after the resolve"
                                 : "at 2.2 the engine skips the stage and so does Alloy")}");
         KnobSurface.Note(static () =>
             $"the client's Anti-Aliasing video option (settings.tml graphics.video.anti-aliasing.mode = {SmaaStage.Samples}) "
             + $"is the Alloy post stack's (#377): {(_stages[^1].Failed ? "the aa stage did NOT build and is dropped -- the option is inert"
                                                    : _targetBad ? "the stack's target is incomplete on this device -- the option is inert"
-                                                   : !_on ? "BYPASSED by /post stack 0"
+                                                   : !Post.Stack.V ? "BYPASSED by /post stack 0"
                                                    : SmaaStage.Active ? $"runs after the resolve {SmaaStage.Describe()}"
                                                    : $"off {SmaaStage.Describe()}")}");
         KnobSurface.Note(static () => _gspI == null ? null
@@ -157,7 +154,7 @@ internal static unsafe class PostStack
             + ".depth-edge-threshold, .color-edge-threshold, .edge-hardness) are the Alloy post stack's cel "
             + $"stage: {(_stages[1].Failed ? "the toon stage did NOT build and is dropped -- the option is inert"
                          : _targetBad ? "the stack's target is incomplete on this device -- the option is inert"
-                         : !_on ? "BYPASSED by /post stack 0"
+                         : !Post.Stack.V ? "BYPASSED by /post stack 0"
                          : ToonActive(Mask()) ? "on -- " + ToonStage.Describe()
                          : "off -- " + ToonStage.Describe() + " (/post toonbands, toonink, toonedge)")}");
         KnobSurface.Note(static () => _fbMask == null ? "the engine's post program (fsfbpostpr, the content's inc_postpr chain) "
@@ -166,8 +163,8 @@ internal static unsafe class PostStack
             + "rays, flare; plus the client's Sharpen and Vibrance options) is the Alloy post stack's (#352): "
             + $"{(_fbpost.Failed ? "the fbpost stage is DOWN -- inc_postpr is not in this module's chain, or the spliced text did not build; the chain is off under Alloy"
                 : _targetBad ? "the stack's target is incomplete on this device -- the chain is off"
-                : !_on ? "BYPASSED by /post stack 0"
-                : !_fbPostOn ? "BYPASSED by /post fbpost 0"
+                : !Post.Stack.V ? "BYPASSED by /post stack 0"
+                : !Post.FbPost.V ? "BYPASSED by /post fbpost 0"
                 : FbPostActive() ? $"hosted after the resolve (mask 0x{FbPostStage.BuildMask:x} of the client's 0x{Mask():x}; "
                                    + "depth of field and dynamic contrast are NOT hosted -- their stock text has a vertex half)"
                 : "off -- the engine would not run it either (option mask 0 and run-shader-even-with-no-effects off)")}");
@@ -184,41 +181,21 @@ internal static unsafe class PostStack
     private static bool ToonActive(int mask) => (mask & MaskToon) != 0 && (_fbEffects == null || *_fbEffects != 0);
     /// <summary>#352: the hosted chain's gate, the engine's: effect 2's bit, under the console gate.</summary>
     private static bool FbPostActive()
-        => _fbPostOn && _fbMask != null && (*_fbMask & FbPostStage.EffectPost) != 0 && (_fbEffects == null || *_fbEffects != 0);
+        => Post.FbPost.V && _fbMask != null && (*_fbMask & FbPostStage.EffectPost) != 0 && (_fbEffects == null || *_fbEffects != 0);
     /// <summary>The client's shader quality option (int param 7), the preamble's <c>SHADER_QUALITY_MODE</c>.</summary>
     private static int Quality() => _gspI == null ? 0 : _gspI(FbPostStage.QualityParam);
 
     internal static string Describe()
     {
         int mask = Mask();
-        string s = $"stack {(_targetBad ? "STOOD DOWN (incomplete target)" : _on ? "on" : "BYPASSED")}  mask 0x{mask:x}";
+        string s = $"stack {(_targetBad ? "STOOD DOWN (incomplete target)" : Post.Stack.V ? "on" : "BYPASSED")}  mask 0x{mask:x}";
         foreach (Stage st in _stages)
             s += $"  {st.Name} {(st.Failed ? "FAILED" : st.Active() ? "live" : "idle")}"
                + (st.Name == "gamma" ? $" (g {Gamma():F2})" : st.Name == "aa" ? " " + SmaaStage.Describe()
                   : st.Name == "toon" ? " (" + ToonStage.Describe() + ")"
-                  : st.Name == "fbpost" ? $" ({(FbPostStage.BuildMask < 0 ? "unbuilt" : $"mask 0x{FbPostStage.BuildMask:x}")}{(_fbPostOn ? "" : ", /post fbpost 0")})" : "");
+                  : st.Name == "fbpost" ? $" ({(FbPostStage.BuildMask < 0 ? "unbuilt" : $"mask 0x{FbPostStage.BuildMask:x}")}{(Post.FbPost.V ? "" : ", /post fbpost 0")})" : "");
         return s;
     }
-
-    /// <summary>Behind <c>/post</c>, through <see cref="PostChain.Tune"/>'s fallthrough: <c>stack 0</c> bypasses
-    /// every stage for a live A/B against the bare resolve. Returns NaN for an unknown key.</summary>
-    internal static float Tune(string key, float v)
-    {
-        if (key == "fbpost")
-        {
-            float was = _fbPostOn ? 1f : 0f;
-            _fbPostOn = v != 0f;
-            _log?.Info($"PostStack: /post fbpost {v:F0} (was {was:F0}) -> {Describe()}");
-            return was;
-        }
-        if (key != "stack") return ToonStage.Tune(key, v);
-        float old = _on ? 1f : 0f;
-        _on = v != 0f;
-        _log?.Info($"PostStack: /post stack {v:F0} (was {old:F0}) -> {Describe()}");
-        return old;
-    }
-
-    internal static void ResetTuning() { _on = true; _fbPostOn = true; ToonStage.ResetTuning(); }
 
     /// <summary>Context loss: forget every GL name.</summary>
     internal static void Forget()
@@ -249,7 +226,7 @@ internal static unsafe class PostStack
     internal static uint Begin(int rw, int rh, int dw, int dh)
     {
         _pending = 0; Upsampling = false;
-        if (!_on || _targetBad || _gspI == null) return 0;
+        if (!Post.Stack.V || _targetBad || _gspI == null) return 0;
         if (FbPostStage.Stale(Mask(), Quality())) Drop(_fbpost, "the client's post options changed");
         bool taaLive = false;
         foreach (Stage st in _stages)
@@ -320,7 +297,7 @@ internal static unsafe class PostStack
     {
         int n = _runs; _runs = 0;
         if (_targetBad) return "poststack STOOD DOWN (incomplete target)";
-        if (!_on) return "poststack BYPASSED (/post stack 1)";
+        if (!Post.Stack.V) return "poststack BYPASSED (/post stack 1)";
         if (n == 0) return "poststack idle";
         string live = "";
         foreach (Stage st in _stages) if (st.Live || st.Active()) live += (live.Length == 0 ? "" : "+") + st.Name;
@@ -489,33 +466,29 @@ internal static unsafe class PostStack
             E(MaskGamma == 0x10, "POSTPROCESSING_GAMMA is 0x10 (inc_postpr.shd)");
             E(GammaBit(MaskGamma) && !GammaBit(MaskGamma - 1) && !GammaBit(0), "the gate is the mask bit");
             E(MathF.Abs(MathF.Pow(0.5f, EngineGamma / 2.2f) - 0.5f) < 1e-6f, "2.2 is the identity");
-            E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
-            E(!float.IsNaN(PostChain.Tune("stack", 0f)) && !_on, "/post stack reaches the stack through PostChain");
-            PostChain.ResetTuning();
-            E(_on, "/post reset turns the bypass off");
+            Post.Stack.V = false; E(Begin(4, 4, 4, 4) == 0, "post.stack off bypasses the stack: Begin hands the frame back");
+            Post.Stack.V = true;
+            E(Post.Stack.Default && Post.FbPost.Default, "the stack and the hosted chain default ON: /post reset lifts both bypasses");
             E(PostChain.Describe().Contains("stack"), "/post reports the stack");
             E(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd)");
             E(_stages[1].Name == "toon" && !ToonActive(0) && ToonActive(MaskToon), "the toon stage's gate is the option bit");
-            E(!float.IsNaN(PostChain.Tune("toonbands", 4f)), "/post toonbands reaches the toon stage through PostChain");
             E(ToonStage.SelfCheck(log), "the toon stage's own checks");
             E(_fbpost == _stages[2] && _fbpost.Prepare != null, "the hosted chain is stage 2, after gamma and toon, with its uploads");
             E(FbPostStage.SelfCheck(log), "the hosted chain's own checks");
             E(VanillaShader.Splice(FbPostStage.FbPostFs, null, "x", fromContent: false) == FbPostStage.FbPostFs,
               "a chain with no inc_postpr leaves the text untouched, which is what Build reads as the stand-down");
-            E(!float.IsNaN(PostChain.Tune("fbpost", 0f)) && !_fbPostOn, "/post fbpost reaches the stack through PostChain");
-            PostChain.ResetTuning();
-            E(_fbPostOn, "/post reset turns the fbpost bypass off");
+            bool fb = Post.FbPost.V; Post.FbPost.V = false; E(!FbPostActive(), "post.fbpost off stands the hosted chain down"); Post.FbPost.V = fb;
             E(SmaaStage.SelfCheck(log), "the aa stage's own checks");
             E(TaaStage.SelfCheck(log), "the taa stage's own checks");
             E(_stages[^1].Name == "aa", "aa is the LAST stage: it smooths what the frame actually shows");
             // #389: ...and TAA is exclusive with it, so it is last whenever it is live -- its stage draw is
             // the dithered write and the history never carries the dither.
             E(_stages[^2].Name == "taa", "taa sits right before aa, and the two are never live together");
-            float taa = PostChain.Tune("taa", 1f);
+            bool taa = Post.Taa.V; Post.Taa.V = true;
             E(!SmaaStage.Active && _stages[^2].Active(), "with /post taa 1 the aa stage is idle and the taa stage live");
-            PostChain.Tune("taa", taa);
+            Post.Taa.V = taa;
         }
-        finally { _log = quiet; _on = true; }
+        finally { _log = quiet; Post.Stack.V = true; }
         log.Info(ok ? $"PostStack.SelfCheck: passed ({_stages.Length} stage(s))" : "PostStack.SelfCheck: FAILED");
         return ok;
     }

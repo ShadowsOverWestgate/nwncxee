@@ -14,8 +14,9 @@ public sealed class ExtenderLog
         ? Path.Combine(Native.DefaultUserDirectory(), "cx.log")
         : Path.Combine(Environment.GetEnvironmentVariable("HOME") ?? "/tmp", "cx.log");
 
-    /// <summary>The one gate every line passes: <c>logs=1</c> in cx.cfg keeps it open, the default closes it
-    /// once <see cref="Settings.Load"/> has read the file, so a stock install writes only the boot lines. Off
+    /// <summary>The one gate every line passes: <c>general.logs=1</c> in cx.cfg keeps it open, the default closes
+    /// it once <see cref="Settings.Load"/> has read the file, so a stock install writes only the boot lines;
+    /// <c>General.Logs</c> flips it live. Off
     /// means off at the CALL SITE too: an interpolated argument goes through <see cref="Line"/>, whose holes
     /// the compiler never evaluates when this is false -- a period census that is never walked, not a string
     /// that is thrown away. A silent default is what proves the log is not the hitch.</summary>

@@ -5,29 +5,32 @@ using System.Text;
 namespace CX.Framework;
 
 /// <summary>
-/// <c>/knobs</c>: print what is tunable (#183). ADR 0013's last consequence — before the two buckets
-/// existed nothing could enumerate what the extender could be told to do, because an environment variable
-/// leaves no trace of itself anywhere.
+/// <c>/knobs</c>: print what is tunable (#183). Spec §4.1: the <c>knobs</c> group (General → Debug info),
+/// zero knobs, whose status line is this report; the generated <c>/knobs</c> handler prints it, gated like
+/// every command.
 /// </summary>
 /// <remarks>
-/// Reads the two buckets rather than a third list of its own: <see cref="CommandRegistry.Commands"/> is
-/// bucket 1 and <see cref="Settings.All"/> is bucket 2. A knob that is not in one of them does not exist,
-/// which is the property the ADR wanted and a hand-maintained catalogue would quietly lose.
+/// The registry walk (ADR 0025: <see cref="KnobGroup.Walk"/>, one line per declared knob), then the Note
+/// suppliers. A knob that is in neither does not exist, which is the property the ADR wanted and a
+/// hand-maintained catalogue would quietly lose.
 /// </remarks>
 public static class KnobSurface
 {
-    /// <summary>Join the command surface. Once, from the host, after <see cref="Settings.Load"/>.
-    /// <para>Aliased <c>/cxhelp</c> and deliberately NOT <c>/help</c>. Registration happens before every
-    /// service, so first-registration-wins would hand <c>/help</c> to the client for good -- and a handled
-    /// command never reaches the send path, so a server's own <c>/help</c> would become unreachable with no
-    /// way out. Plenty of servers use it, SoW among them. The prefixed name is discoverable without claiming
-    /// a name that is not ours.</para></summary>
-    public static void Register() =>
-        CommandRegistry.Global.Register("/knobs", "list the commands and config settings this build has",
-                                        Report, "/cxhelp");
+    /// <summary>Declare the group, whose <see cref="KnobGroup.Status"/> is <see cref="Report"/>. Once, from the
+    /// host, after <see cref="Settings.Load"/> and after <see cref="General"/> has declared, so it walks third.
+    /// <para>Deliberately NOT <c>/help</c>. Registration happens before every service, so first-registration-wins
+    /// would hand <c>/help</c> to the client for good -- and a handled command never reaches the send path, so a
+    /// server's own <c>/help</c> would become unreachable with no way out. Plenty of servers use it, SoW among
+    /// them. The prefixed name is discoverable without claiming a name that is not ours.</para></summary>
+    public static void Register()
+    {
+        KnobGroup g = KnobGroup.Declare("knobs", "General", "Debug info",
+            header: "Every knob this build has, with its value, and what the framework found at boot.");
+        g.Status = Report;
+    }
 
-    /// <summary>#234: the third thing <c>/knobs</c> has to be able to say -- a knob of the CLIENT's that
-    /// this build TAKES AWAY. It is in neither bucket by construction, and a hand-written line here would
+    /// <summary>#234: the other thing <c>/knobs</c> has to be able to say -- a knob of the CLIENT's that
+    /// this build TAKES AWAY. It is not in the registry by construction, and a hand-written line here would
     /// be the catalogue the class exists to avoid, so the layer that removes the knob registers a supplier
     /// instead and the framework names nothing above it (ADR 0014). Returning null means "nothing to say
     /// this session", which is how a supplier reports live state rather than a fact.</summary>
@@ -35,24 +38,13 @@ public static class KnobSurface
 
     private static readonly List<Func<string?>> _notes = new();
 
-    /// <summary>Both buckets, one line each. Cold — one dispatch per typed line.</summary>
-    private static string Report(string args)
+    /// <summary>The walk, then the notes. Cold — one dispatch per typed line. The generated handler prefixes
+    /// the first line with <c>[knobs]</c>.</summary>
+    public static string Report()
     {
         var sb = new StringBuilder();
-        var cmds = CommandRegistry.Global.Commands;
-        sb.Append("[knobs] NWNCX:EE (CX) -- the extender's knobs");
-        sb.Append($"\n[knobs] {cmds.Count} command(s):");
-        for (int i = 0; i < cmds.Count; i++)
-        {
-            sb.Append("\n  ").Append(cmds[i].Name);
-            if (cmds[i].Aliases.Length > 0) sb.Append(" (").Append(string.Join(", ", cmds[i].Aliases)).Append(')');
-            sb.Append(" -- ").Append(cmds[i].Help);
-        }
-        var cfg = Settings.All;
-        sb.Append($"\n[knobs] {cfg.Count} setting(s) in {Settings.Path}:");
-        for (int i = 0; i < cfg.Count; i++)
-            sb.Append($"\n  {cfg[i].Key}={cfg[i].Value}")
-              .Append(cfg[i].Value == cfg[i].Default ? " (default)" : $" (default {cfg[i].Default})");
+        sb.Append(Product.Name).Append(' ').Append(Product.Version).Append(" -- the extender's knobs\n");
+        KnobGroup.Walk(sb);
         for (int i = 0; i < _notes.Count; i++)
         {
             string? note = _notes[i]();

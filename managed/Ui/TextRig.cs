@@ -45,7 +45,11 @@ public static unsafe class TextRig
         (0x00A0, 0x00FF, "Latin-1", false),
         (0x0100, 0x017F, "Latin Extended-A", false),
         (0x0400, 0x04FF, "Cyrillic", false),
+        (0x2013, 0x2014, "– — dashes", false),
+        (0x2026, 0x2026, "… ellipsis", false),
+        (0x21BB, 0x21BB, "↻ restart", true),
         (0x25AA, 0x25AA, "▪ pin", true),
+        (0x25B8, 0x25B8, "▸ disclosure", true),
         (0x25BE, 0x25BE, "▾ arrow", true),
         (0x2699, 0x2699, "⚙ gear", true),
     };
@@ -96,6 +100,28 @@ public static unsafe class TextRig
         if (!Rebake()) { _requests.RemoveAt(_requests.Count - 1); return null; }
         return _sheet.TryFace(typeface, px, out f) ? f : null;
     }
+
+    /// <summary>#593: the icon font's icon rows alone at <paramref name="px"/> -- the main-menu gear's sprite face,
+    /// past <see cref="AtlasMaxPx"/> where no text face is ever requested. Cold: a miss re-bakes the sheet, and a
+    /// new px drops the previous icon-only request so the sheet carries one. Null when headless or refused.</summary>
+    public static GlyphAtlas? IconFace(float px)
+    {
+        lock (_bakeLock)
+        {
+            if (_sheet == null || _log == null) return null;
+            (string name, byte[]? font) = Icons;
+            if (font == null) return null;
+            if (_sheet.TryFace(name, px, out GlyphAtlas f)) return f;
+            for (int i = _requests.Count - 1; i >= 1; i--) if (_requests[i].IconsOnly) _requests.RemoveAt(i);
+            _requests.Add(new FaceRequest(name, font, px, IconsOnly: true));
+            if (!Rebake()) { _requests.RemoveAt(_requests.Count - 1); return null; }
+            return _sheet.TryFace(name, px, out f) ? f : null;
+        }
+    }
+
+    /// <summary>Hot, alloc-free lookup of an already-baked <see cref="IconFace"/>; null on a miss (never bakes).</summary>
+    public static GlyphAtlas? BakedIconFace(float px)
+        => _sheet != null && _sheet.TryFace(Icons.Name, px, out GlyphAtlas f) ? f : null;
 
     /// <summary>Drop a default-typeface face request a caller no longer needs (#471: a superseded peak face), so the
     /// sheet stops carrying it from the next re-bake on. Cold; no bake of its own -- the face stays usable until then.
@@ -196,8 +222,8 @@ public static unsafe class TextRig
         log.Info(_sheet != null ? "TextRig: atlas ready" : "TextRig: atlas bake unavailable");
     }
 
-    /// <summary>Smallest glyph height the picker offers, and the largest the *slider* offers.</summary>
-    public const float MinFontPx = 10f, MaxFontPx = 32f;
+    /// <summary>The <c>ui.font</c> ladder (spec §4.2 Units): 6-32 pt, every point; 1 pt = 1 design px before GUI scale.</summary>
+    public const int MinFontPx = 6, MaxFontPx = 32;
     /// <summary>Atlas-bake ceiling. Above the slider max so the game's UI scale can push the effective px past
     /// 32 (effective = font * GUIScale) without the slider itself going that high; caps the atlas size.</summary>
     public const float AtlasMaxPx = 96f;
@@ -573,7 +599,16 @@ public static unsafe class TextRig
     public static void DrawBatch(float[] verts, int count, float alpha = 1f, float offX = 0f, float offY = 0f,
                                  bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
-        if (verts == null || count == 0 || _sheet == null || _log == null || alpha <= 0f) return;
+        if (verts == null) return;
+        DrawBatch(verts.AsSpan(), count, alpha, offX, offY, clip, cx, cy, cw, ch);
+    }
+
+    /// <summary><see cref="DrawBatch(float[], int, float, float, float, bool, int, int, int, int)"/> over a span: a
+    /// per-frame owner uploads straight from its <see cref="VertexBatch.AsSpan"/> with no copy.</summary>
+    public static void DrawBatch(ReadOnlySpan<float> verts, int count, float alpha = 1f, float offX = 0f, float offY = 0f,
+                                 bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
+    {
+        if (count == 0 || _sheet == null || _log == null || alpha <= 0f) return;
         if (!Gl.Init(_log)) return;
         _textAlpha = alpha < 1f ? alpha : 1f;   // read by BindText; restored to 1 before returning
         _texOffX = offX; _texOffY = offY;       // ditto -- restored to (0,0) before returning

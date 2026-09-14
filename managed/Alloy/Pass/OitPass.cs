@@ -3,7 +3,7 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>Order-independent transparency for the blended class, two modes behind <c>/draw oit</c>.
+/// <summary>Order-independent transparency for the blended class, two modes behind <c>/alloy oit</c>.
 /// <para>Mode 1: weighted blended (McGuire &amp; Bavoil 2013). The class draws in ONE pass, unsorted,
 /// depth-tested against the opaque set and writing no depth, into an accumulation pair -- premultiplied
 /// colour times a depth weight (RGBA32F, ONE/ONE) and a revealage product (R16F, ZERO/ONE_MINUS_SRC_COLOR)
@@ -45,10 +45,10 @@ internal static unsafe class OitPass
     private static long HeadBytes(int w, int h) => 4L + 4L * w * h;
     /// <summary><c>oitlayers</c> in cx.cfg: node pool capacity as an average of nodes per pixel. 16 bytes a
     /// node, so 3 at 1080p is ~100 MB, allocated only once mode 2 is first used.</summary>
-    private static readonly int Layers = Settings.Int("oitlayers", 3, 1, 32);
-    /// <summary><c>/draw oit</c>: 0 = the sorted, depth-writing pass (A/B instrument), 1 = weighted blended, 2 = linked lists
+    private static readonly int Layers = Renderer.OitLayers.Boot;
+    /// <summary><c>/alloy oit</c>: 0 = the sorted, depth-writing pass (A/B instrument), 1 = weighted blended, 2 = linked lists
     /// (default since the plaza A/B measured it at parity with 1; 1 is the fallback a refused pool lands on).</summary>
-    internal static int Mode = 2;
+    internal static int Mode => Renderer.Oit.V;
     /// <summary>True while the lit twin that carries the append block (<see cref="WithLists"/>) exists. Without it
     /// mode 2 stands down to the weighted pair: a linked resolve over lists nothing appended to draws nothing.</summary>
     internal static bool ListsArmed;
@@ -75,9 +75,9 @@ internal static unsafe class OitPass
     private static readonly IntPtr[] _fence = new IntPtr[ReadSlots];
     private static long _skippedReads, _frame;
     private static int _w, _h, _uAccum, _uReveal, _uViz, _uMode, _uDim, _cap;
-    /// <summary><c>/draw oitviz</c>: 1 = revealage as grey, 2 = accumulated mean colour, 3 = accumulated weight/10,
+    /// <summary><c>/alloy oitviz</c>: 1 = revealage as grey, 2 = accumulated mean colour, 3 = accumulated weight/10,
     /// 4 = list length/16 (mode 2), 5 = the nearest node's object id as a colour (mode 2). Unblended.</summary>
-    internal static int Viz;
+    internal static int Viz => Renderer.OitViz.V;
     private static bool _failed, _listsFailed, _linked, _engagedLogged;
     private static ExtenderLog? _log;
     private static long _runs, _linkedRuns, _overflowFrames, _nodesPeak, _nodesSum, _gobPeak, _gobZero;

@@ -34,7 +34,7 @@ internal static unsafe class GlProgram
         if (bvs != null || bfs != null)
         {
             // ponytail: the contracts see the EMBEDDED text, because a module cannot be read for them --
-            // the spirv=1 gate is the audit. Mixed GLSL+SPIR-V stages fail to link per GL 4.6 and land on
+            // the alloy.spirv=1 gate is the audit. Mixed GLSL+SPIR-V stages fail to link per GL 4.6 and land on
             // the same fallback below, so nothing special-cases them.
             vsSource = vs; fsSource = fs;
             uint v = bvs != null ? Binary(Gl.VERTEX_SHADER, bvs, log, what) : Compile(Gl.VERTEX_SHADER, vs, log, what, host);

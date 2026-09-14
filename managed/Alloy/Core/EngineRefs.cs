@@ -245,7 +245,7 @@ internal readonly unsafe ref struct TextureRef
     /// field read, so the pointer it hands back can outlive the object.</summary>
     internal int ResolveTid() => AurTex.Tid(_p);
     /// <summary>#211: the name an owned DRAW samples -- Alloy's own copy of this texture, or the engine's id
-    /// when <c>ownedtex=0</c> or the copy refused. Diagnostics stay on <see cref="ResolveTid"/>: they are
+    /// when <c>alloy.ownedtex=0</c> or the copy refused. Diagnostics stay on <see cref="ResolveTid"/>: they are
     /// asking about the engine's texture, not about what we draw. Must be called inside the 4.6 bracket.</summary>
     internal int OwnedTid() => OwnedTextures.Draw(AurTex.Tid(_p));
 }

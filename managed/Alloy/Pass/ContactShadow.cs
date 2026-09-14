@@ -18,14 +18,13 @@ namespace CX.Alloy;
 /// slope is the upgrade if thin casters (railings) show a detached shadow.</para></summary>
 internal static unsafe class ContactShadow
 {
-    /// <summary>World units (metres) the march covers; 0 = off. Boot 0.35: a step's height.</summary>
-    private static float _len = 0.35f;
+    /// <summary>World units (metres) the march covers; 0 = off. Default 0.35: a step's height.</summary>
+    private static float _len => Shadows.Contact.V;
     /// <summary>Depth fetches per fragment along the march.</summary>
-    private static float _steps = 12f;
+    private static float _steps => Shadows.ContactSteps.V;
     /// <summary>View distance (world units) the term has faded out by. Near the camera is where a contact
     /// reads; far away the march is cost and speckle for nothing.</summary>
-    private static float _far = 20f;
-    private const float LenBoot = 0.35f, StepsBoot = 12f, FarBoot = 20f;
+    private static float _far => Shadows.ContactFar.V;
 
     private static bool _armed;
     private static string _why = "never ran";
@@ -54,22 +53,6 @@ internal static unsafe class ContactShadow
         Gl.Uniform1f(locFar, _far);
     }
 
-    internal static string Describe() => $"contact {_len:F2} contactsteps {_steps:F0} contactfar {_far:F0} ({_why}; /draw viz 39)";
-
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "contact": old = _len; _len = MathF.Max(0f, v); return old;
-            case "contactsteps": old = _steps; _steps = MathF.Max(1f, MathF.Min(32f, MathF.Round(v))); return old;
-            case "contactfar": old = _far; _far = MathF.Max(1f, v); return old;
-            default: return float.NaN;
-        }
-    }
-
-    internal static void ResetTuning() { _len = LenBoot; _steps = StepsBoot; _far = FarBoot; }
-
     /// <summary>The lit stage carries the march, applies it to the sun term only, and linearises with the same
     /// form SsaoPass does.</summary>
     internal static void SelfCheck(ExtenderLog log)
@@ -84,8 +67,7 @@ internal static unsafe class ContactShadow
         E(TextureSlots.SceneDepth == TextureSlots.SsaoDepth, "the copy binds on the unit uSceneDepth reads");
         E(head.Contains("float CxContactShadow(vec3 worldPos)"), "the term reads no normal: a normal-dependent term cuts along every facet edge of a low-poly mesh");
         E(!head.Contains("gl_FragCoord.xy, vec2(0.06711056"), "no per-pixel jitter: without TAA it reads as stipple");
-        E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
-        float l = _len; Tune("contact", 0f); E(!On, "contact 0 is off"); _len = l;
+        float l = _len; Shadows.Contact.V = 0f; E(!On, "contact 0 is off"); Shadows.Contact.V = l;
         log.Info(ok ? "ContactShadow.SelfCheck: passed" : "ContactShadow.SelfCheck: FAILED");
     }
 }

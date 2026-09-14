@@ -71,15 +71,15 @@ internal static unsafe class CasterGather
 
     /// <summary>Live dial behind <c>/shadow gather</c>: 1 = the dispatch culls, 0 = the dispatch admits every
     /// staged caster into every view (#303: the CPU walk this used to fall back to is deleted, so the A/B is
-    /// now cull-on against cull-off, the same pair <c>/draw cull</c> spells for the colour path). The third
-    /// bisect step is <c>noshadows=0</c>, which hands the whole shadow question back to the engine's
+    /// now cull-on against cull-off, the same pair <c>/alloy cull</c> spells for the colour path). The third
+    /// bisect step is <c>shadow.mode=0</c>, which hands the whole shadow question back to the engine's
     /// stencil.</summary>
-    internal static int Mode = 1;
+    internal static int Mode => Shadows.Gather.V ? 1 : 0;
     /// <summary>#488: live dial behind <c>/shadow receiver</c>: 1 = a view flagged as re-baked under this
     /// frame's camera also rejects casters whose shadow volume cannot reach the camera frustum; 0 = the
     /// light-cone tests alone. Inside <see cref="Mode"/>'s gate, so <c>/shadow gather 0</c> still disables
     /// everything. Its own dial because the Bake A/B has to isolate this term from the cone cull.</summary>
-    internal static int Receiver = 1;
+    internal static int Receiver => Shadows.Receiver.V ? 1 : 0;
     /// <summary>#488: this frame's receiver frustum, six planes as <c>ShadowMath.ReceiverPlanes</c> writes
     /// them (already pushed out by the camera epoch's slack). Filled by <c>CasterPass</c> once per frame.</summary>
     internal static readonly float[] Planes = new float[24];

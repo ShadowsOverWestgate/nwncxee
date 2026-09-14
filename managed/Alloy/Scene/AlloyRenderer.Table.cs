@@ -444,7 +444,7 @@ public sealed unsafe partial class AlloyRenderer
     /// produces GL_INVALID_OPERATION in both directions -- residency is only ever ours to know.</summary>
     private static readonly bool[] _hRes = new bool[1 << HandleHashBits];
     /// <summary>#153: is the bindless path live? Extension present, entry points resolved, not vetoed by
-    /// bindless=0, and the LIT program's actual sources carry the handle block. When false everything
+    /// alloy.bindless=off, and the LIT program's actual sources carry the handle block. When false everything
     /// draws exactly as before -- per-batch texture binds.</summary>
     private static bool _bindless;
     private static bool _bindlessProbed, _limitsProbed;

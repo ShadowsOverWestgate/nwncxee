@@ -12,7 +12,8 @@ namespace CX.Services.Hotkeys;
 /// <remarks>
 /// Advertises ONLY CX_ENABLED=1, never the armed key list: consent is per-server under
 /// the token model, and advertising the list was the old global-consent leak. The server
-/// owns its bindings and re-pushes them via ArmSet.
+/// owns its bindings and re-pushes them via ArmSet. Advertises whatever <c>hotkeys.enabled</c>
+/// says (spec §4.5): the master gates the actions, never the handshake.
 /// </remarks>
 public sealed unsafe class HotkeyHandshakeService : IExtenderService
 {
@@ -37,11 +38,9 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
         if (subcmd == 5)                                    // 5 = login accepted / entering game
         {
             // Fresh session: drop any prior server's active consent and clear half-answered
-            // prompts / stale manager windows. Nothing is armed until the server presents a
-            // recognised token.
+            // prompts. Nothing is armed until the server presents a recognised token.
             HotkeyStore.BeginSession();
             HotkeyConsent.Reset();
-            HotkeyManagerService.Close();
             Advertise(msg);
         }
         return r;

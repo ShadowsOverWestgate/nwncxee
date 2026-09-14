@@ -40,6 +40,10 @@ deriving anything — required, or the RVAs point into a different build.
 | `CExoString::InitFromCharArray` | `?InitFromCharArray@CExoString@@AEAAAEAV1@PEBDI@Z` |
 | `CExoString::~CExoString` | `??1CExoString@@QEAA@XZ` |
 | `g_pAppManager` (data) | `?g_pAppManager@@3PEAVCAppManager@@EA` |
+| `CGuiEdit::GetText()` | `?GetText@CGuiEdit@@QEAA?AVCExoString@@XZ` (#580; returns `CExoString` by value -- sret AFTER `this` on Win64, `PromptCommandService.ReadLine` branches) |
+| `CExoConfig::Get<bool>(std::string const&, bool)` | `??$Get@_N@CExoConfig@@QEAA_NAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z` (#571; scalar return, no sret; the `std::string const&` is a pointer to a header `StockConfig` forges per ABI) |
+| `CExoConfig::Get<long>(std::string const&, bool)` | `??$Get@_J@CExoConfig@@QEAA_JAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z` (#571; `_J` = `__int64`, the same 64-bit instantiation) |
+| `CExoConfig::Get<double>(std::string const&, bool)` | `??$Get@N@CExoConfig@@QEAANAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z` (#571) |
 
 **By RVA (not exported; build `0x68e408bc`):**
 
@@ -49,9 +53,7 @@ deriving anything — required, or the RVAs point into a different build.
 | `CNWCMessage::HandleServerToPlayerLogin` | `0x7a31b0` | unique strings `"HandleServerToPlayerLogin"` + `"nNumClasses <= 8"` |
 | `CNWCMessage::SendPlayerToServerMessage` | `0x7c25c0` | tracy zone string `"SendPlayerToServerMessage"` |
 | `CNWCMessage::SendPlayerToServerDeviceAdvertiseProperty` | `0x7bbac0` | caller of SendMsg; write-sequence + `SendMsg(major 0x36)` |
-| `CClientExoApp::GetNWCMessage` | `0x6abf90` | decompile of HandleSaveCharButton (first call) |
-| `COptionsPanel::PostAttachmentInitialize` | `0x830b50` | button-name string cluster (`SaveCharButton`, `ResumeGameButton`, …) |
-| `COptionsPanel::HandleSaveCharButton` | `0x82fb60` | address-taken in PostAttach; `AddFeedbackMessage(0xd7)` + `Deactivate` |
+| `CClientExoApp::GetNWCMessage` | `0x6abf90` | decompile of `COptionsPanel::HandleSaveCharButton` @`0x82fb60` (first call; that handler is no longer hooked, #592) |
 | `CGuiInGame::SetFocusChatPrompt` | `0x6fae30` | decompile: reads `+0x18`, forwards to chat-prompt SetFocus |
 | `CGuiInGameChatPrompt::HandleEnter` | `0x87b0d0` | caller of `CGuiEdit::LoseFocus`; GetText+Find(`a`,`d`)+SetCaretPos |
 | `CGuiInGameChatPrompt::HandleEsc` | `0x87b390` | caller of LoseFocus, 4 callees, no GetText |
@@ -118,6 +120,7 @@ deriving anything — required, or the RVAs point into a different build.
 | `CAurora::GetGUIScale()` → float (GUI-scale multiplier) | `?GetGUIScale@CAurora@@SAMXZ` (export ord. 8543) |
 | `SDL_GetKeyName` | `SDL_GetKeyName` |
 | `CGuiPanel::Deactivate(int)` | `?Deactivate@CGuiPanel@@QEAAXH@Z` |
+| `CGuiPanel::UnToggleOff()` | `?UnToggleOff@CGuiPanel@@QEAAXXZ` |
 | `RenderInterface::ResetRenderStates()` / `BindBuffer(uint,uint)` | `?ResetRenderStates@RenderInterface@@SAXXZ` / `?BindBuffer@RenderInterface@@SAXII@Z` |
 | `stbtt_InitFont` … `stbtt_FindGlyphIndex` (7) | same C names |
 | `g_pTlkTable` (data) | `?g_pTlkTable@@3PEAVCTlkTable@@EA` |
@@ -273,19 +276,11 @@ Earlier notes in this doc claimed Windows offsets `+0x188/+0x270/+0x278` and tha
 were imported — **both were wrong** (the `0x270` was a `CClientExoApp` field in the ExitButton
 handler's player-loop, misattributed; there is no CRT DLL import). Corrected here from the decomps.
 
-**Client-native manager (nuklear) — NOT ported (a genuine RE session, not a table fill-in):**
-
-- **Nuklear widgets.** The `nk_sdl_*` backend IS anchorable — the exe carries Tracy signature
-  strings (`void __cdecl nk_sdl_render(float)`, …) and `…\lib\nuklear\nuklear.cpp`. But the six
-  **core widgets** (`nk_begin`, `nk_end`, `nk_label`, `nk_button_label`, `nk_layout_row_dynamic`,
-  `nk_window_is_closed`) have **no string anchors** → structural / call-graph matching against the
-  Linux versions. `g_pNuklear` is data (xref-anchored).
-- **`COptionsPanel::HandleXButton`** (menu close on the Hotkeys button): no export (COptionsPanel
-  exports nothing); RVA derivable from `PostAttachmentInitialize`'s handler-wiring cluster (like
-  SaveChar was). Without it the Options menu just stays open behind the manager — cosmetic.
-
-The manager is Linux-only for now; on Windows the Hotkeys button falls back to opening the server's
-binding NUI (`HotkeyMenuService.OnHotkeysButton`), so the button is never dead.
+**Client-native manager (nuklear) — deleted (#592).** The Hotkeys rows live in the settings panel
+now; the six core `nk_*` widget symbols, `COptionsPanel::PostAttachmentInitialize`,
+`HandleSaveCharButton` and `HandleXButton` left `SymbolMap` with it. `nk_sdl_render`, `g_pNuklear`,
+`nk_window_is_any_hovered` and `nk_sdl_copy_event` stay (the frame host's draw site and the
+NUI-typing / pointer-precedence gates), still unanchored on Windows.
 
 **Unresolved on Windows (skip + log, graceful):**
 
@@ -299,7 +294,7 @@ binding NUI (`HotkeyMenuService.OnHotkeysButton`), so the button is never dead.
 
 No debugger on the tester's side: `cx.log` (in `Documents\Neverwinter Nights\`, beside `nwn.ini`)
 has to answer "which symbol is wrong" on its own. `cx.cfg` goes beside `nwn.ini` (the engine may use a
-`Neverwinter Nights.0` instance folder; `cx.log` always lands in the unsuffixed one). `logs=1` must be set **before launch**
+`Neverwinter Nights.0` instance folder; `cx.log` always lands in the unsuffixed one). `general.logs=1` must be set **before launch**
 -- the gate closes at `settings:` and everything after is silent except the stand-down lines.
 
 | Line | Meaning |
@@ -310,9 +305,9 @@ has to answer "which symbol is wrong" on its own. `cx.cfg` goes beside `nwn.ini`
 | `<Feature>: standing down as a unit -- <symbol>: Windows export ?…@@… missing` | the export table changed: a "By name" row is stale |
 | `ChatService: inbound tap installed (AppendToMsgBuffer, Win64 CResRef* ABI)`, `NameplateService: armed`, `CombatTextService: armed`, `DialogService: hooks installed` | each tier-B unit passed its gate |
 | `UiHostService: first frame presented -- hook is LIVE` | the present hook fires; the port is live |
-| a crash with no line after `armed` | a hook that installs clean and faults on first call: an **offset**, not a symbol. Set `hookdebug=1` (funchook's trace lands in `funchook.log`) and look up the feature's row in the offset tables above |
+| a crash with no line after `armed` | a hook that installs clean and faults on first call: an **offset**, not a symbol. Set `general.hookdebug=1` (funchook's trace lands in `funchook.log`) and look up the feature's row in the offset tables above |
 | in-game `/nameplate probe` | one line per plate with every term of the anchor conversion (viewport source, offsets read) -- the offset probe for the plate/bubble rows |
-| in-game `/consent probe` | opens the consent panel on the game's own allocator and logs the answer, granting nothing -- the probe for the `operator new` RVA |
+| in-game `/hotkeys consent` | opens the consent panel on the game's own allocator and logs the answer, granting nothing -- the probe for the `operator new` RVA |
 
 ## Regenerating after a client patch
 

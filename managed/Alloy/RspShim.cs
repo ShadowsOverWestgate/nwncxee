@@ -245,7 +245,7 @@ internal static unsafe class RspShim
         // the fsfbpostpr chain #352), and each of those notes itself on /knobs.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 30, Period, "RspShim.period", log);
         log.Info("RspShim: ARMED -- Scene::RenderSinglePass replaced by the mutate-only shim on "
-               + "the Alloy path ([rspshim] every 900 frames; vanilla=1 restores it)");
+               + "the Alloy path ([rspshim] every 900 frames; alloy.enabled=0 restores it)");
     }
 
     /// <summary>The shim. Runs in ENGINE context, in place of <c>Scene::RenderSinglePass</c>.
@@ -424,9 +424,9 @@ internal static unsafe class RspShim
     /// @0x80eff0 -- and every path through that function ends at the same
     /// <c>AurPartTriggerSetHighlight(t, true, …, true)</c>, DM branch included. So the complement is always
     /// empty and the call would draw nothing.</para></summary>
-    /// <summary>#462: <c>/draw hlglow 0</c> skips the engine's <c>DoHighlightGob</c> replay (the trigger
+    /// <summary>#462: <c>/alloy hlglow 0</c> skips the engine's <c>DoHighlightGob</c> replay (the trigger
     /// stencil pass still runs), isolating the glow from the gob's emissive/colour-shift fold.</summary>
-    internal static bool GlowReplay = true;
+    internal static bool GlowReplay => Renderer.HlGlow.V;
 
     private static void EngineOverlays(IntPtr vptr, IntPtr scene)
     {

@@ -164,7 +164,7 @@ public sealed class FloatyTable
 
     /// <summary>HOT. Drain the ring into slots, retire the expired, and compact what is left into
     /// <see cref="Live"/>. Returns the live count.</summary>
-    public int Advance(long nowMs, in CombatTextConfig cfg)
+    public int Advance(long nowMs, int max, float lifeMs, float bannerMs)
     {
         // Retire BEFORE draining. A slot that dies this frame must not still be counted when the newcomer
         // arriving on the same frame picks its row, or the new number opens three rows above a head with
@@ -174,7 +174,7 @@ public sealed class FloatyTable
             Slot s = _slots[i];
             if (s.Used && nowMs - s.SpawnMs >= s.LifeMs) Retire(s);
         }
-        Drain(nowMs, cfg);
+        Drain(nowMs, max, lifeMs, bannerMs);
 
         _liveCount = 0;
         for (int i = 0; i < MaxSlots; i++)
@@ -205,7 +205,7 @@ public sealed class FloatyTable
         s.MeasureEpoch = -1;
     }
 
-    private void Drain(long nowMs, in CombatTextConfig cfg)
+    private void Drain(long nowMs, int max, float lifeMs, float bannerMs)
     {
         while (true)
         {
@@ -217,11 +217,13 @@ public sealed class FloatyTable
                 _ring[_tail] = default;
                 _tail = (_tail + 1) % Ring;
             }
-            Admit(p, nowMs, cfg);
+            Admit(p, nowMs, max, lifeMs, bannerMs);
         }
     }
 
-    private void Admit(in Pending p, long nowMs, in CombatTextConfig cfg)
+    /// <summary><paramref name="max"/> is the per-target, per-class cap; <paramref name="lifeMs"/> a number's life,
+    /// <paramref name="bannerMs"/> a banner's.</summary>
+    private void Admit(in Pending p, long nowMs, int max, float lifeMs, float bannerMs)
     {
         bool number = p.Kind is FloatyKind.Damage;
         int onTarget = 0;
@@ -240,7 +242,7 @@ public sealed class FloatyTable
 
         // The cap is per target and per class: a burst of damage types never buries the banner that explains it.
         Slot? slot = free;
-        if (onTarget >= cfg.Max) slot = oldest;       // at the cap the oldest gives way, newest always wins
+        if (onTarget >= max) slot = oldest;       // at the cap the oldest gives way, newest always wins
         if (slot == null) { System.Threading.Interlocked.Increment(ref _overflow); return; }     // the whole array is full of OTHER targets' text
 
         slot.Used = true;
@@ -248,10 +250,10 @@ public sealed class FloatyTable
         slot.Kind = p.Kind;
         slot.SpawnMs = nowMs;
         slot.Seq = _seq++;
-        slot.LifeMs = p.Kind == FloatyKind.Banner ? cfg.TextMs : cfg.RiseMs;
+        slot.LifeMs = p.Kind == FloatyKind.Banner ? bannerMs : lifeMs;
         // At the cap the evicted slot's row is INHERITED, not pinned to the last one: pinning it puts every
         // survivor of a long fight on the same line and they pile back up.
-        slot.Stack = onTarget >= cfg.Max ? slot.Stack : onTarget;
+        slot.Stack = onTarget >= max ? slot.Stack : onTarget;
         slot.Runs = p.Runs;
         slot.BaseR = p.R; slot.BaseG = p.G; slot.BaseB = p.B;
         slot.MeasuredW = -1f;
@@ -268,36 +270,35 @@ public sealed class FloatyTable
     public static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;
-        var cfg = new CombatTextConfig { Max = 3, RiseMs = 1000f, TextMs = 1000f };
         var t = new FloatyTable();
         ColorRun[] R(string s) => new[] { new ColorRun(s, 1f, 1f, 1f) };
 
         for (int i = 0; i < 5; i++) t.Note(7u, FloatyKind.Damage, R("" + i), 1f, 1f, 1f, 0);
-        ok &= t.Advance(0, cfg) == 3;                       // per-target cap holds
+        ok &= t.Advance(0, 3, 1000f, 1000f) == 3;                       // per-target cap holds
         ok &= t.Live[0].Runs[0].Text == "2" && t.Live[2].Runs[0].Text == "4";   // oldest evicted, newest kept
         // and the survivors still occupy DISTINCT rows after two evictions
         ok &= t.Live[0].Stack != t.Live[1].Stack && t.Live[1].Stack != t.Live[2].Stack
               && t.Live[0].Stack != t.Live[2].Stack;
 
         t.Note(8u, FloatyKind.Damage, R("x"), 1f, 1f, 1f, 0);
-        ok &= t.Advance(0, cfg) == 4;                       // a different target has its own cap
+        ok &= t.Advance(0, 3, 1000f, 1000f) == 4;                       // a different target has its own cap
 
         t.Note(7u, FloatyKind.Banner, R("*Sneak Attack!*"), 1f, 1f, 1f, 0);
-        ok &= t.Advance(0, cfg) == 5;                       // banners do not compete with numbers for the cap
+        ok &= t.Advance(0, 3, 1000f, 1000f) == 5;                       // banners do not compete with numbers for the cap
         ok &= t.Live[4].Stack == 0;                         // and open their own column, not the numbers' one
 
-        ok &= t.Advance(1000, cfg) == 0;                    // everything expires at its life
-        ok &= t.Advance(2000, cfg) == 0;                    // and a retired slot stays retired
+        ok &= t.Advance(1000, 3, 1000f, 1000f) == 0;                    // everything expires at its life
+        ok &= t.Advance(2000, 3, 1000f, 1000f) == 0;                    // and a retired slot stays retired
 
         t.Note(9u, FloatyKind.Damage, R("42"), 1f, 1f, 1f, 0);
-        t.Advance(0, cfg);
-        ok &= t.LiveCount == 1 && t.Live[0].LifeMs == cfg.RiseMs;
+        t.Advance(0, 3, 1000f, 1000f);
+        ok &= t.LiveCount == 1 && t.Live[0].LifeMs == 1000f;
         t.Clear();
-        ok &= t.Advance(0, cfg) == 0;
+        ok &= t.Advance(0, 3, 1000f, 1000f) == 0;
 
         // an empty parse is refused at the door rather than becoming an invisible slot
         t.Note(1u, FloatyKind.Damage, Array.Empty<ColorRun>(), 1f, 1f, 1f, 0);
-        ok &= t.Advance(0, cfg) == 0;
+        ok &= t.Advance(0, 3, 1000f, 1000f) == 0;
 
         log.Info(ok ? "FloatyTable.SelfCheck: passed" : "FloatyTable.SelfCheck: FAILED");
     }

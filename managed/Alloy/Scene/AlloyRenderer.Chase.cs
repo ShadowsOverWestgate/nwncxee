@@ -24,7 +24,7 @@ namespace CX.Alloy;
 /// <para>Every cache here is served only when the sample was taken on the immediately previous frame too --
 /// a frame Alloy did not build (a gate closed, a vanilla frame, a pass that skipped its records) is a frame
 /// the engine may have moved things unobserved, and the resume chases everything once.</para>
-/// <para><c>/draw poll 1</c> is the A/B and the soundness instrument: every cache is bypassed AND audited --
+/// <para><c>/alloy poll 1</c> is the A/B and the soundness instrument: every cache is bypassed AND audited --
 /// the live value is compared against what the cache would have served, and a disagreement counts. The
 /// three <c>POLL AUDIT</c> counters on the [alloy] line must read 0.</para></summary>
 public sealed unsafe partial class AlloyRenderer
@@ -89,8 +89,8 @@ public sealed unsafe partial class AlloyRenderer
     /// motion, so a part entering the view is routed the frame it appears rather than the frame after.</summary>
     private const float RouteSlackUnits = 3f;
 
-    /// <summary><c>/draw poll 1</c>: bypass every chase cache and audit it.</summary>
-    private static bool _fullPoll;
+    /// <summary><c>/alloy poll 1</c>: bypass every chase cache and audit it.</summary>
+    private static bool _fullPoll => Renderer.Poll.V;
     /// <summary>Period counters: per term, reads made vs reads the cache absorbed; the audit's misses; the
     /// BSP-filed gob parts the visited set cannot bound.</summary>
     private static long _mxChased, _mxCached, _disAsked, _disCached, _fadeRead, _fadeServed;
@@ -101,9 +101,9 @@ public sealed unsafe partial class AlloyRenderer
     /// only thing that says which.</summary>
     private static long _disNoLit, _disNoFeat, _disGobUnpierced;
 
-    /// <summary>Whether a TILE gob's parts may dissolve at all. <c>/draw gobkey 0</c> is the vanilla A/B:
+    /// <summary>Whether a TILE gob's parts may dissolve at all. <c>/alloy tiledissolve 0</c> is the vanilla A/B:
     /// off is the engine's own rule, where the aperture stops at every gob. See <see cref="Dissolves"/>.</summary>
-    internal static bool GobKeyhole = true;
+    internal static bool GobKeyhole => Renderer.TileDissolve.V;
     private static int _visGobsLast;
     /// <summary>#336: the part's world box at enrolment (six floats), for the dissolve verdict.</summary>
     private static readonly float[] _oBox = new float[MaxOwned * 6];
@@ -154,8 +154,8 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _visStart = new int[AlloyClasses.Count], _visEnd = new int[AlloyClasses.Count];
     private static readonly float[] _visPlanes = new float[24];
     private static int _visBuiltAt = int.MinValue, _visEnrollGen = -1, _visEpoch = -1;
-    private static bool _visFull = true, _visList = DefVisList;
-    private const bool DefVisList = true;
+    private static bool _visFull = true;
+    private static bool _visList => Renderer.VisList.V;
     private static long _visRebuilds;
     private const int VisEvery = 4;
     /// <summary>Plane drift that forces a rebuild: a normal component (about 0,6 degrees of turn) and a
@@ -389,7 +389,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>#336: ...and for a still gobless part -- the tile geometry that is most of the routed set -- the
     /// verdict is computed from the box captured at enrolment and the camera state read once per pass, so a
     /// walking camera (which changes the key every frame) costs no engine call and no part touch. A
-    /// matrix-class part may move its box and keeps the engine call. <c>/draw poll 1</c> asks the engine too
+    /// matrix-class part may move its box and keeps the engine call. <c>/alloy poll 1</c> asks the engine too
     /// and counts a disagreement.</para>
     /// <para>The engine refuses every gob part (the decompile's <c>part+0x50 == 0</c>) and so did this, which
     /// is why vanilla's aperture punches a wall and leaves its windows floating in the hole.
@@ -398,7 +398,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <c>AnimateStaticLight</c> behaviour <c>ProcessStaticObject</c> @0x5619e0 attaches to exactly this),
     /// the vine that danglies -- and a plain part list for the static remainder. So a tileset window IS a
     /// gob part. <see cref="EngineLayout.GobTileData"/> identifies that half positively, and it dissolves
-    /// with the wall it belongs to. <c>/draw gobkey 0</c> is the vanilla A/B.</para>
+    /// with the wall it belongs to. <c>/alloy tiledissolve 0</c> is the vanilla A/B.</para>
     private static bool Dissolves(int i, IntPtr tri, ref StageCounters c)
     {
         // Gate order is the census order: each counter must read "parts that would have dissolved but for

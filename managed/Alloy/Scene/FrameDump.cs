@@ -24,9 +24,19 @@ namespace CX.Alloy;
 /// sized for the part cap.</para></summary>
 internal static unsafe class FrameDump
 {
-    /// <summary>Set by <c>/framedump</c>, cleared by the frame that serves it. Not volatile-guarded beyond
+    /// <summary>Set by <c>/alloy framedump</c>, cleared by the frame that serves it. Not volatile-guarded beyond
     /// this: a missed pickup costs one more frame, and the command is idempotent.</summary>
     internal static bool Armed;
+
+    /// <summary>#192: the <c>alloy.framedump</c> button -- a one-shot ACTION. The next colour pass serves it;
+    /// the log line names what the PREVIOUS one wrote, because the render thread is the only place the
+    /// answer exists, and that is what turns "run it twice and diff" into a loop a human can drive.</summary>
+    internal static void Arm()
+    {
+        Armed = true;
+        string prev = LastDraws == 0 ? "" : $" (last: {LastDraws} draws, {LastDistinct} distinct keys, {LastGroups} groups minted)";
+        KnobGroup.Log?.Info($"[framedump] armed -- writing to {Dir} on the next Alloy pass{prev}");
+    }
 
     /// <summary>The number the batching walk cuts groups on run-length (#195): rows carry their FULL key, so
     /// the distinct-key count falls out of the same sort that makes the dump diffable. Kept after a dump so

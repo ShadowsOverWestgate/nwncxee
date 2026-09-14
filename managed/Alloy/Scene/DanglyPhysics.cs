@@ -80,52 +80,6 @@ internal static unsafe class DanglyPhysics
     }
     private static bool _armed;
 
-    // The dials. All taste, all live, so all commands and none in cx.cfg (ADR 0013).
-    private static bool _on = true;
-    /// <summary>World units/s^2 down. Low by default ON PURPOSE: rest poses are authored already hanging,
-    /// so gravity sags every cloak BELOW its authored rest by g*w/k at equilibrium. This is the dial that
-    /// makes existing content look wrong fastest.</summary>
-    private static float _gravity = 3.0f;
-    /// <summary>Wind acceleration per unit of the engine's wind vector. Vanilla's 20x was a gain on a
-    /// POSITION, so it carries no information about what a force should be -- this number is a guess that
-    /// wants tuning while looking at a windy area.</summary>
-    private static float _wind = 14f;
-    /// <summary>How much of the wind is gust rather than steady, 0-1.</summary>
-    private static float _turb = 0.7f;
-    /// <summary>Spatial and temporal frequency of the gust field. Together they set the apparent wavelength
-    /// and speed of the ripple crossing a cloak.</summary>
-    private static float _turbFreq = 0.9f, _turbSpeed = 2.6f;
-    /// <summary>Per-INSTANCE spread, 0-1: how far two copies of the same model drift apart in gust phase and
-    /// gust rate. Two banners built from one MdlNode are identical in every authored number, so without this
-    /// they animate in lockstep -- the tell that gives away a prop as a clone.</summary>
-    private static float _vary = 0.15f;
-    /// <summary>An ambient breeze added to the engine's wind, in the engine's own units. Not decoration:
-    /// <c>Gob::Animate</c> @0x49dc91 registers every animated gob as a wind POINT SOURCE, and the Scene's
-    /// base wind is zero unless something sets it -- so an area with no script-set wind and nobody moving
-    /// nearby has no wind at all, and the gust dials would multiply zero. Set 0 to feel only what the engine
-    /// reports.</summary>
-    private static float _breeze = 0.35f;
-    /// <summary>Body proxy: a vertex may never come closer to the part's own local Z axis than its REST
-    /// position was, times this. It is the cheap half of "respect geometry" -- a draped mesh's rest pose
-    /// already traces the body it hangs on, so the rest radius IS a body silhouette, free and per-vertex.
-    /// <para>The assumption it rests on -- that a dangly node's origin sits near the body axis it drapes --
-    /// is CONFIRMED live at 0.95, which is why that is the default. It knows nothing about walls, furniture
-    /// or the floor; only the cage bounds those, and consulting real world geometry per vertex per frame is
-    /// the general physics engine this design exists to avoid.</para></summary>
-    private static float _body = 0.95f;
-    /// <summary>Multiplier on vanilla's per-axis cage. 1 is vanilla's freedom of movement; past ~4 cloaks
-    /// start reaching the wearer's legs, because nothing here knows the legs are there.</summary>
-    private static float _cage = 3.5f;
-    /// <summary>Target substep rate. The substep COUNT is derived from the frame's dt, not accumulated --
-    /// Animate fires once per part per frame, so an accumulator would advance N times a frame.</summary>
-    private static float _hz = 120f;
-    private static float _maxSteps = 4f;
-    /// <summary>World units a vertex must move in one frame for the part to count as a shadow MOVER. Below
-    /// it the part keeps its static-cube shadow and does not re-bake a dynamic page. 1cm is well under a
-    /// 256px dynamic-page texel at any reach a cube light has (2*far/256 = 4cm at far 5u). Errs toward
-    /// moving: a swing is many texels a frame, a settled banner under a wandering breeze is under one.</summary>
-    private static float _still = 0.01f;
-
     private static int _parts, _verts, _moved;
     /// <summary>#492's measurement: solve ticks per period and the single worst call. Excludes the early
     /// hand-backs and the engine's child animate, so it is the term a compute solve would remove.</summary>
@@ -162,8 +116,8 @@ internal static unsafe class DanglyPhysics
         }
 
         _armed = true;
-        log.Info($"DanglyPhysics: armed -- substepped dangly at {_hz:F0}Hz with gravity {_gravity:F1}"
-                 + $" and wind as a force ({_wind:F0}x, {_turb * 100f:F0}% gust); /dangly on 0 for vanilla");
+        log.Info($"DanglyPhysics: armed -- substepped dangly at {Dangly.Hz.V:F0}Hz with gravity {Dangly.Gravity.V:F1}"
+                 + $" and wind as a force ({Dangly.Wind.V:F0}x, {Dangly.Turb.V * 100f:F0}% gust); /dangly enabled 0 for vanilla");
     }
 
     /// <summary>The period report, and the measurement the research note could not take: how many dangly
@@ -179,45 +133,11 @@ internal static unsafe class DanglyPhysics
         return s;
     }
 
+    /// <summary>The <c>/dangly</c> status line; the dials are <see cref="Dangly"/>'s.</summary>
     internal static string Describe()
-        => $"dangly {(_on && _armed ? "on" : _armed ? "off (vanilla solve)" : "unarmed")} "
-         + $"gravity {_gravity:F2} wind {_wind:F2} turb {_turb:F2} turbfreq {_turbFreq:F2} "
-         + $"turbspeed {_turbSpeed:F2} vary {_vary:F2} breeze {_breeze:F2} body {(_body > 0f ? _body.ToString("F2") : "off")} cage {_cage:F2} hz {_hz:F0} steps {_maxSteps:F0} still {_still:F3}";
-
-    /// <summary>Live tuning behind <c>/dangly</c>; returns the old value, NaN for an unknown key. Same
-    /// no-lock reasoning as the other passes: independent floats, written from the input thread, re-read
-    /// per part.</summary>
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "on":        old = _on ? 1f : 0f; _on = v > 0f; break;
-            case "gravity":   old = _gravity; _gravity = MathF.Max(v, 0f); break;
-            case "wind":      old = _wind; _wind = MathF.Max(v, 0f); break;
-            case "turb":      old = _turb; _turb = Math.Clamp(v, 0f, 1f); break;
-            case "turbfreq":  old = _turbFreq; _turbFreq = MathF.Max(v, 0f); break;
-            case "turbspeed": old = _turbSpeed; _turbSpeed = MathF.Max(v, 0f); break;
-            case "vary":      old = _vary; _vary = Math.Clamp(v, 0f, 1f); break;
-            case "breeze":    old = _breeze; _breeze = MathF.Max(v, 0f); break;
-            case "body":      old = _body; _body = Math.Clamp(v, 0f, 1f); break;
-            case "cage":      old = _cage; _cage = MathF.Max(v, 0.01f); break;
-            case "hz":        old = _hz; _hz = Math.Clamp(v, 30f, 480f); break;
-            case "steps":     old = _maxSteps; _maxSteps = Math.Clamp(MathF.Round(v), 1f, 16f); break;
-            case "still":     old = _still; _still = MathF.Max(v, 0f); break;
-            default: return float.NaN;
-        }
-        _log?.Info($"DanglyPhysics: /dangly {key} {v:F2} (was {old:F2}) -> {Describe()}");
-        return old;
-    }
-
-    internal static void ResetTuning()
-    {
-        _on = true; _gravity = 3.0f; _wind = 14f; _turb = 0.7f;
-        _turbFreq = 0.9f; _turbSpeed = 2.6f; _vary = 0.15f; _breeze = 0.35f; _body = 0.95f;
-        _cage = 3.5f; _hz = 120f; _maxSteps = 4f; _still = 0.01f;
-        _log?.Info($"DanglyPhysics: /dangly reset -> {Describe()}");
-    }
+        => $"dangly {(Dangly.Enabled.V && _armed ? "on" : _armed ? "off (vanilla solve)" : "unarmed")} "
+         + $"gravity {Dangly.Gravity.V:F2} wind {Dangly.Wind.V:F2} turb {Dangly.Turb.V:F2} turbfreq {Dangly.TurbFreq.V:F2} "
+         + $"turbspeed {Dangly.TurbSpeed.V:F2} vary {Dangly.Vary.V:F2} breeze {Dangly.Breeze.V:F2} body {(Dangly.Body.V > 0f ? Dangly.Body.V.ToString("F2") : "off")} cage {Dangly.Cage.V:F2} hz {Dangly.Hz.V:F0} steps {Dangly.Steps.V} still {Dangly.Still.V:F3}";
 
     /// <summary>The replacement solve. Every gate below hands the frame back to the engine rather than
     /// reproducing what it does in that case -- vanilla returns WITHOUT animating the part's children on
@@ -225,7 +145,7 @@ internal static unsafe class DanglyPhysics
     [System.Runtime.InteropServices.UnmanagedCallersOnly]
     private static void OnAnimate(IntPtr part, float dt)
     {
-        if (!_on) { Down(part, dt); return; }
+        if (!Dangly.Enabled.V) { Down(part, dt); return; }
 
         // The engine returns without integrating on these two (dangly-physics.md), so nothing moved.
         IntPtr scene = *_pCurrentScene;
@@ -274,7 +194,7 @@ internal static unsafe class DanglyPhysics
             new Span<float>(vel, n * 3).Clear();
             _commitItemDyn(vdo, (uint)item, 0xffffffff);
             StorePose(part, wpos, wrot);
-            AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, _still);
+            AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, Dangly.Still.V);
             Down_TailOnly(part, dt);
             return;
         }
@@ -295,7 +215,7 @@ internal static unsafe class DanglyPhysics
         // lockstep, which on a 10-unit tile grid is the common case, not the corner one.
         ulong hash = Mix((ulong)part);
         float phaseOff = (hash & 0xffff) * (MathF.Tau / 65535f);
-        float rateVar = 1f + ((((hash >> 16) & 0xffff) * (1f / 65535f)) - 0.5f) * 2f * _vary;
+        float rateVar = 1f + ((((hash >> 16) & 0xffff) * (1f / 65535f)) - 0.5f) * 2f * Dangly.Vary.V;
 
         // The part's own motion, carried into every vertex once rather than per substep. This is where all
         // the inertia comes from: without it a cloak sits perfectly still on a sprinting character.
@@ -312,9 +232,9 @@ internal static unsafe class DanglyPhysics
         if (!float.IsFinite(windW.X) || !float.IsFinite(windW.Y) || !float.IsFinite(windW.Z)) windW = Vector3.Zero;
         // The breeze wanders rather than blowing down a fixed axis -- a banner pinned to one compass
         // direction forever reads as a bug, and the wander is two trig calls per PART.
-        windW += new Vector3(MathF.Cos(t * BreezeTurn), MathF.Sin(t * BreezeTurn), 0f) * _breeze;
-        Vector3 windL = Qrot(iw, ix, iy, iz, windW) * _wind;
-        Vector3 gravL = Qrot(iw, ix, iy, iz, new Vector3(0f, 0f, -_gravity));
+        windW += new Vector3(MathF.Cos(t * BreezeTurn), MathF.Sin(t * BreezeTurn), 0f) * Dangly.Breeze.V;
+        Vector3 windL = Qrot(iw, ix, iy, iz, windW) * Dangly.Wind.V;
+        Vector3 gravL = Qrot(iw, ix, iy, iz, new Vector3(0f, 0f, -Dangly.Gravity.V));
         // A gust direction across the wind, so the flutter is a flap and not just a pulse along one axis.
         Vector3 gust = Vector3.Cross(windL, Qrot(iw, ix, iy, iz, Vector3.UnitZ));
         float gl = gust.Length();
@@ -323,8 +243,12 @@ internal static unsafe class DanglyPhysics
         // Substeps derived from the frame's dt, never accumulated: Animate fires once per PART per frame,
         // so an accumulator would advance N times a frame. Capping dt first is what bounds h to 1/hz -- a
         // loading hitch otherwise arrives as one 0.25s step and detonates the spring.
-        float sdt = MathF.Min(dt, _maxSteps / _hz);
-        int steps = Math.Clamp((int)MathF.Round(sdt * _hz), 1, (int)_maxSteps);
+        // Read once per part: the input thread may move a knob mid-loop, and one solve should see one value.
+        float hz = Dangly.Hz.V, turb = Dangly.Turb.V, turbFreq = Dangly.TurbFreq.V, turbSpeed = Dangly.TurbSpeed.V,
+              cage = Dangly.Cage.V, body = Dangly.Body.V;
+        int maxSteps = Dangly.Steps.V;
+        float sdt = MathF.Min(dt, maxSteps / hz);
+        int steps = Math.Clamp((int)MathF.Round(sdt * hz), 1, maxSteps);
         float h = sdt / steps;
         float disp = *(float*)(node + MdlDisplacement);
         float stiff = StiffnessGain * *(float*)(node + MdlTightness);
@@ -344,11 +268,11 @@ internal static unsafe class DanglyPhysics
             // The authored constraint IS the pinning field: 255 is welded, 0 is skipped. Same weight the
             // engine spends on its cage, spent here on how much force the vertex is allowed to feel.
             float w = 1f - c / ConstraintMax;
-            float phase = (r.X * 0.71f + r.Y * 1.31f + r.Z * 0.93f) * _turbFreq
-                        + phaseOff - t * _turbSpeed * rateVar;
+            float phase = (r.X * 0.71f + r.Y * 1.31f + r.Z * 0.93f) * turbFreq
+                        + phaseOff - t * turbSpeed * rateVar;
             float g = MathF.Sin(phase);
             float g2 = 1f - 2f * g * g;                 // cos(2*phase), free: no second sine
-            Vector3 acc = (windL * (1f + _turb * g) + gust * (_turb * g2) + gravL) * w;
+            Vector3 acc = (windL * (1f + turb * g) + gust * (turb * g2) + gravL) * w;
 
             float k = c * stiff;
             for (int s = 0; s < steps; s++)
@@ -360,7 +284,7 @@ internal static unsafe class DanglyPhysics
             float speed = v.Length();
             if (speed > MaxSpeed) v *= MaxSpeed / speed;
 
-            float cap = disp * w * _cage;
+            float cap = disp * w * cage;
             Vector3 d = p - r;
             p = r + new Vector3(Math.Clamp(d.X, -cap, cap),
                                 Math.Clamp(d.Y, -cap, cap),
@@ -368,9 +292,9 @@ internal static unsafe class DanglyPhysics
             // The body proxy, applied AFTER the cage: it only ever pushes a vertex further OUT, so leaving
             // the cage by a hair is the safe direction. Squared throughout -- the sqrt is paid only by the
             // vertices actually inside the body, which in a settled pose is none of them.
-            if (_body > 0f)
+            if (body > 0f)
             {
-                float minSq = (r.X * r.X + r.Y * r.Y) * _body * _body;
+                float minSq = (r.X * r.X + r.Y * r.Y) * body * body;
                 float pSq = p.X * p.X + p.Y * p.Y;
                 if (pSq < minSq && pSq > 1e-8f)
                 {
@@ -400,7 +324,7 @@ internal static unsafe class DanglyPhysics
         long dtTicks = Stopwatch.GetTimestamp() - t0;
         _ticks += dtTicks; if (dtTicks > _peakTicks) _peakTicks = dtTicks;
         _parts++; _verts += n;
-        if (AlloyRenderer.NoteDanglyMoved(part, MathF.Sqrt(maxSq), _still)) _moved++;
+        if (AlloyRenderer.NoteDanglyMoved(part, MathF.Sqrt(maxSq), Dangly.Still.V)) _moved++;
         Down_TailOnly(part, dt);
     }
 
@@ -416,7 +340,7 @@ internal static unsafe class DanglyPhysics
     /// over-reporting costs a bake, under-reporting freezes a shadow (ADR 0019).</summary>
     private static void Down(IntPtr part, float dt, bool solves = true)
     {
-        if (solves) AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, _still);
+        if (solves) AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, Dangly.Still.V);
         ((delegate* unmanaged<IntPtr, float, void>)(*_slot))(part, dt);
     }
 

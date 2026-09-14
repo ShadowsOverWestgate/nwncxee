@@ -3,8 +3,10 @@ using CX.Framework;
 
 namespace CX.Ui;
 
-/// <summary>A face to bake: TTF bytes (keyed by their path) at a pixel height.</summary>
-public readonly record struct FaceRequest(string Typeface, byte[] Font, float Px);
+/// <summary>A face to bake: TTF bytes (keyed by their path) at a pixel height. <paramref name="IconsOnly"/> bakes
+/// only the <c>icon</c> rows (#593: the main-menu gear's sprite face at 100+ px, where a text face would be the
+/// whole sheet); such a face is its own icon source and takes no part in the #470 coverage fills.</summary>
+public readonly record struct FaceRequest(string Typeface, byte[] Font, float Px, bool IconsOnly = false);
 
 /// <summary>
 /// The one shared single-channel glyph bitmap every face lives in (#469). Baked cold with the client's
@@ -146,9 +148,9 @@ public sealed unsafe class AtlasSheet
         var list = reqs.DistinctBy(r => (r.Typeface, r.Px)).ToList();   // SetFont may land the default on an extra face's size
         // #470: every extra face gets a default-typeface twin at its px, the source of its coverage fills.
         var defaultByPx = new Dictionary<float, int>();
-        for (int i = 0; i < list.Count; i++) if (list[i].Typeface == list[0].Typeface) defaultByPx[list[i].Px] = i;
+        for (int i = 0; i < list.Count; i++) if (!list[i].IconsOnly && list[i].Typeface == list[0].Typeface) defaultByPx[list[i].Px] = i;
         for (int i = 0; i < list.Count; i++)
-            if (!defaultByPx.ContainsKey(list[i].Px)) { defaultByPx[list[i].Px] = list.Count; list.Add(list[0] with { Px = list[i].Px }); }
+            if (!list[i].IconsOnly && !defaultByPx.ContainsKey(list[i].Px)) { defaultByPx[list[i].Px] = list.Count; list.Add(list[0] with { Px = list[i].Px }); }
         // #425: the icon rows' source face per px -- the default's twins when the default is the icon font, else
         // an icon-font twin per px (only a font.default= override pays for these).
         Dictionary<float, int> iconByPx = defaultByPx;
@@ -187,14 +189,20 @@ public sealed unsafe class AtlasSheet
                 int adv = 0, lsb = 0;
                 if (_hmetrics != null) { _hmetrics(fi, ' ', &adv, &lsb); face.SpaceAdvance = adv * scale; }
 
+                int iconSrc = r.IconsOnly ? f : iconByPx[r.Px];
                 for (int ri = 0; ri < ranges.Length; ri++)
                     for (int cp = ranges[ri].lo; cp <= ranges[ri].hi; cp++)
                     {
+                        if (r.IconsOnly && !ranges[ri].icon) continue;
                         int ax = 0, al = 0;
                         if (_hmetrics != null) _hmetrics(fi, cp, &ax, &al);
                         float advance = ax * scale;
-                        if (ranges[ri].icon && f != iconByPx[r.Px]) { missing.Add((f, cp, ri, advance)); continue; }   // routed, not measured
-                        if (_findGlyph != null && _findGlyph(fi, cp) == 0) { missing.Add((f, cp, ri, advance)); continue; }
+                        if (ranges[ri].icon && f != iconSrc) { missing.Add((f, cp, ri, advance)); continue; }   // routed, not measured
+                        if (_findGlyph != null && _findGlyph(fi, cp) == 0)
+                        {
+                            if (r.IconsOnly) { face.Store(cp, new Glyph { Advance = advance }); continue; }   // no fill source: blank
+                            missing.Add((f, cp, ri, advance)); continue;
+                        }
                         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
                         if (_bitmapBox != null) _bitmapBox(fi, cp, scale, scale, &x0, &y0, &x1, &y1);
                         int gw = x1 - x0, gh = y1 - y0;

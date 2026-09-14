@@ -13,31 +13,38 @@ namespace CX.Services.Nameplate;
 
 /// <summary>
 /// The overhead nameplate and chat bubble: one <see cref="Window"/> that draws every world-anchored plate
-/// and bubble, four cold hooks that feed it, a <c>/nameplate</c> command and <c>cx-nameplate.cfg</c>.
+/// and bubble, four cold hooks that feed it, and the <c>nameplate</c> group (<see cref="NameplateKnobs"/>: the
+/// panel rows, <c>/nameplate</c> and the <c>cx.cfg</c> keys) read on the frame.
 /// <para>Vanilla is suppressed by putting the engine in text-bubble mode 0 (the supported "Off" setting),
 /// which stops it drawing either element while leaving every piece of state we poll intact -- including the
 /// projected screen anchor, which under mode 0 is refreshed every tick for every bubble-owning object.</para>
+/// <para><c>nameplate.enabled</c> is live both ways (#591): the frame compares it with <see cref="_suppressed"/>
+/// and on the edge hands the engine mode 0 or its own last-requested mode back (<see cref="EngineMode"/>). While
+/// off the hooks forward the real mode, bank nothing and leave the engine's chat-wins latch alone, so the stock
+/// names and bubbles draw. On re-enable every bubble that idled under vanilla carries the hide bit; the hooks
+/// clear it per object (<see cref="NameplateNative.UnfreezeAnchor"/>) as the plate, line or floaty arrives.</para>
 /// <para>Nothing here reads the Alloy camera: the plate anchor is the engine's own projection, and the
 /// distance fade reads the LIVE game camera off the module (<c>CNWCModule+0xe8</c>).</para>
 /// </summary>
 public sealed unsafe class NameplateService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static NameplateConfig _cfg = new();
-    private static readonly ConfigFile _file = new("cx-nameplate.cfg");
-    private static bool _configLoaded, _configDirty;
-    private static bool _armed, _wasInModule, _suppressed;
+    private static bool _armed, _wasInModule;
+    /// <summary>The engine is at mode 0 by our hand. Written on the frame at the master's edge, read by the cold
+    /// hooks (forward 0 or the real mode; bank or not; clear the latch or not) and by <see cref="Suppressing"/>.</summary>
+    private static volatile bool _suppressed;
+    /// <summary>False when the chat handler did not hook: per-channel styling then degrades to one style
+    /// whatever <c>nameplate.channelstyle</c> says.</summary>
+    private static bool _chatHooked;
 
     /// <summary>Whether the vanilla text-bubble mode-0 suppression is in force. While it is -- and only while
     /// it is -- the engine refreshes every bubble-owning object's projected screen anchor every tick
     /// (docs/re/nameplate.md §D), which is the anchor <c>CombatTextService</c> reads. It checks this before
-    /// swallowing anything, so a stood-down nameplate feature stands the combat text down with it.</summary>
-    public static bool Suppressing => _armed;
+    /// swallowing anything, so a stood-down OR switched-off nameplate feature stands the combat text down with it.</summary>
+    public static bool Suppressing => _suppressed;
 
     private static readonly PlateTable _table = new();
     private static Window? _plates;
-    private static Window? _panelWindow;
-    private static NameplateSettings? _settings;
 
     // ---- trampolines -------------------------------------------------------------------------
     private static delegate* unmanaged<int, void> _origSetMode;
@@ -69,14 +76,11 @@ public sealed unsafe class NameplateService : IExtenderService
         _log = log;
         NameplateNative.UseLog(log);
         // Every pure piece self-checks BEFORE any stand-down return -- run-demo's only gate.
-        NameplateConfig.SelfCheck(log);
         PlateLayout.SelfCheck(log);
-        NameplateSettings.SelfCheck(log);
         NameplateNative.SelfCheck(log);
         PlateTable.SelfCheck(log);
+        UiCategory.Declare();   // the UI groups declare in panel order whether or not the hooks arm
 
-        if (!GameGate.OwnsFramePresent)
-        { log.Info("NameplateService: standing down (framework not owning frame present)"); return; }
         if (!SymbolMap.Require(log, "NameplateService", RequiredSymbols)) return;   // #420: whole or nothing
         if (!EngineLayout.Require(log, "NameplateService", "CNWCObject", "CNWCCreature", "CNWCPlaceable")) return;                 // #432: same, for offsets
 
@@ -104,10 +108,8 @@ public sealed unsafe class NameplateService : IExtenderService
         _origChat = (delegate* unmanaged<IntPtr, byte, void>)hooks.Install(
             SymbolMap.HandleServerToPlayerChat, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnServerChat);
 
-        if (_origChat == null)
-        { _cfg.ChannelStyle = false; log.Info("NameplateService: channel styling disabled (chat handler unhooked)"); }
-
-        _settings = new NameplateSettings(() => _cfg, () => _configDirty = true);
+        _chatHooked = _origChat != null;
+        if (!_chatHooked) log.Info("NameplateService: channel styling disabled (chat handler unhooked)");
 
         // No HitTestOverride: a plate must never answer UiHost.HitTest -- see OnPlateClick.
         _plates = new Window(0, 0, 0, 0)
@@ -118,54 +120,36 @@ public sealed unsafe class NameplateService : IExtenderService
         };
         UiHost.SendToBack(_plates);   // plates paint UNDER the chat box and the dialog panel
 
-        _panelWindow = new Window(0, 0, 0, 0)
-        {
-            Focusable = false,
-            DrawContent = DrawPanel,
-            OnMouseButton = OnPanelButton,
-            OnMouseMotion = OnPanelMotion,
-            OnKey = OnPanelKey,
-            HitTestOverride = (px, py) => _settings is { IsOpen: true } s && s.Contains(px, py),
-        };
-
-        CommandRegistry.Global.Register("/nameplate", "report or tune the overhead nameplates", Cmd, "/np");
+        NameplateKnobs.G.Status = Status;
         _armed = true;
-        log.Info("NameplateService: armed (vanilla bubbles suppressed via text-bubble mode 0)");
+        log.Info("NameplateService: armed (vanilla bubbles suppressed via text-bubble mode 0 while nameplate.enabled)");
     }
 
     // ---- hooks -------------------------------------------------------------------------------
 
-    /// <summary>Hook 1. <c>CGuiInGamePopUpBubble::SetChatBubbleMode(int)</c> is static, and it is BOTH our
-    /// suppression and the vanilla <c>ui.text-bubble-mode</c> parity knob: whatever the options screen (or
-    /// the debug console) asks for becomes OUR display mode, and the engine is always left at 0. That is
-    /// what makes mode 0 the only value the engine ever sees, so nothing of vanilla's ever draws.
-    /// <para>Two rules. Unarmed, the value passes through untouched -- a stand-down must leave vanilla exactly
-    /// as it found it, and this handler is live from <c>Commit</c> whether or not the rest of the service armed.
-    /// And the FIRST call is skipped: that is <c>DefineClientConfiguration</c>'s startup bind replaying
-    /// <c>ui.text-bubble-mode</c> from the engine's ini (docs/re/nameplate.md, <c>gh 0x9cb5b0</c>), which would
-    /// otherwise overwrite our own stored mode and rewrite the cfg on the first frame of every session.</para>
-    /// <para>Cold (config/options thread), so the mode is handed to the render thread through
-    /// <see cref="_pendingMode"/> rather than written into <see cref="_cfg"/>, which <see cref="LoadConfig"/>
-    /// replaces wholesale.</para></summary>
+    /// <summary>Hook 1. <c>CGuiInGamePopUpBubble::SetChatBubbleMode(int)</c> is static and is the suppression:
+    /// whatever the options screen (or the startup ini bind) asks for, the engine is left at 0 while
+    /// <see cref="_suppressed"/>, so nothing of vanilla's ever draws. The requested value is kept in
+    /// <see cref="EngineMode"/> -- what the off edge hands back (#591). Unarmed or off, the value passes through
+    /// untouched: a stand-down must leave vanilla exactly as it found it, and this handler is live from
+    /// <c>Commit</c> whether or not the rest of the service armed. Cold (config/options thread).</summary>
     [UnmanagedCallersOnly]
     private static void OnSetChatBubbleMode(int mode)
     {
         if (!_armed) { if (_origSetMode != null) _origSetMode(mode); return; }
-        _log?.Info($"[nameplate] text-bubble-mode {mode} requested (bound={_modeBound})");
-        if (mode >= NameplateConfig.ModeMin && mode <= NameplateConfig.ModeMax)
-        {
-            if (_modeBound) Interlocked.Exchange(ref _pendingMode, mode);
-            else _modeBound = true;
-        }
-        if (_origSetMode != null) _origSetMode(0);
+        _log?.Info($"[nameplate] text-bubble-mode {mode} requested");
+        EngineMode = mode;
+        if (_origSetMode != null) _origSetMode(_suppressed ? 0 : mode);
     }
 
-    /// <summary>Set once the engine's startup config bind has been seen; later calls are real user changes.</summary>
-    private static bool _modeBound;
+    /// <summary>The engine's own text-bubble mode as last requested (the ini bind, then the options screen),
+    /// never applied while suppressed.</summary>
+    internal static volatile int EngineMode = -1;
 
-    /// <summary>A user-requested display mode waiting for the render thread, or -1. The hook publishes,
-    /// <see cref="Draw"/> takes it with an exchange -- the one cross-thread field this service has.</summary>
-    private static int _pendingMode = -1;
+    /// <summary>The user's mode when none was ever requested through the hook: 2 (Full), the config bind's
+    /// default (docs/re/nameplate.md §D). Not expected on the LD_PRELOAD / proxy-DLL load path, where the hook
+    /// is live before the ini bind runs.</summary>
+    private const int DefaultEngineMode = 2;
 
     /// <summary>Hook 2 (x3). Flag the plate's own text so the shared sink below can tell it from chat, then
     /// let the original run -- it sets the per-class "plate is up" flag we poll every frame and drives the
@@ -189,21 +173,24 @@ public sealed unsafe class NameplateService : IExtenderService
     /// <para>The <c>+0x14c</c> reset at the tail is load-bearing. Under mode 0 nothing else ever clears that
     /// latch, and <c>MouseOver</c> refuses to build a plate while it is 1 -- without the reset a creature's
     /// plate dies permanently the first time it speaks. We enforce chat-wins ourselves instead.</para>
-    /// <para>Switched off, the suppression still stands -- the engine stays at mode 0 and the latch still has to
-    /// be cleared -- but nothing is banked, so neither the hook ring nor the table fills with candidates no frame
-    /// will ever draw.</para></summary>
+    /// <para>Both tail writes follow the LIVE state, not the master: under vanilla (<see cref="_suppressed"/>
+    /// false) the latch is the engine's own "chat wins over the plate" rule and stays; the hide-bit clear is the
+    /// re-enable remedy (<see cref="NameplateNative.UnfreezeAnchor"/>). Off, nothing is banked, so neither the hook
+    /// ring nor the table fills with candidates no frame will ever draw.</para></summary>
     [UnmanagedCallersOnly]
     private static void OnSetPopUpBubbleText(IntPtr self, IntPtr exo, int forceShow, float perChar, float fixedSec)
     {
-        NameplateConfig cfg = _cfg;   // one read: LoadConfig replaces the reference on the render thread
-        bool bank = _armed && self != IntPtr.Zero && cfg.On && cfg.Mode != 0;
+        bool live = _suppressed && self != IntPtr.Zero;
+        bool bank = live && NameplateKnobs.Enabled.V;
         // BEFORE the forward: the Win64 callee destroys its by-value CExoString and the caller sees it zeroed
         // on return (docs/windows-symbols.md), so a read afterwards yields "" and no line is ever banked --
         // which is bubbles working on Linux, where the CALLER owns the copy, and silently dead on Windows.
         string text = bank && _inPlate == 0 ? NameplateNative.ReadExo(exo) : "";
 
         if (_origBubbleText != null) _origBubbleText(self, exo, forceShow, perChar, fixedSec);
-        if (!bank) { if (_armed && self != IntPtr.Zero) NameplateNative.ClearLiveTextLatch(self); return; }
+        if (!live) return;
+        NameplateNative.UnfreezeAnchor(self);
+        if (!bank) { NameplateNative.ClearLiveTextLatch(self); return; }
 
         byte type = NameplateNative.TypeOf(self);
         if (_inPlate > 0)
@@ -236,20 +223,6 @@ public sealed unsafe class NameplateService : IExtenderService
         if (_origChat != null) _origChat(self, channel);
         _channel = prev;
     }
-
-    // ---- config ------------------------------------------------------------------------------
-
-    /// <summary>Stays retryable until <see cref="ConfigFile"/>'s deferral gate opens (our loader runs
-    /// pre-main), so the first-frame caller just keeps asking.</summary>
-    private static void LoadConfig()
-    {
-        if (!_file.Load(_log, t => _cfg = NameplateConfig.Parse(t))) return;
-        _configLoaded = true;
-        _file.Baseline(_cfg.ToText());
-        if (_settings != null) { _settings.Layout(); _panelDirty = true; }
-    }
-
-    private static void SaveConfig() { _file.Save(_cfg.ToText(), _log); _configDirty = false; }
 
     // ---- the per-frame draw ------------------------------------------------------------------
 
@@ -307,37 +280,36 @@ public sealed unsafe class NameplateService : IExtenderService
     private static long _animClockMs;
     private static bool _animPrimed;
 
-    /// <summary>Set by <c>/nameplate probe</c>; the next drawn frame dumps one line per tracked entry and
-    /// clears it. Cold by construction -- one invocation, one dump.</summary>
+    /// <summary>Set by the <c>nameplate.probe</c> button; the next drawn frame dumps one line per tracked entry
+    /// and clears it. Cold by construction -- one press, one dump.</summary>
     private static volatile bool _probe;
+
+    /// <summary>The <c>probe</c> button's press.</summary>
+    internal static void ArmProbe() => _probe = true;
 
     private static void Draw()
     {
-        if (!_configLoaded) LoadConfig();
-
         bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) _table.Clear();
         _wasInModule = inModule;
 
         if (!_armed) return;
-        if (!_suppressed && _origSetMode != null) { _suppressed = true; _origSetMode(0); }
-        ApplyPendingMode();
-        // A settings slider fires onChanged at drag rate, so a dirty flag is only banked while the pointer is
-        // down; the release path (and the command) is what actually writes.
-        if (_configDirty && _configLoaded && !_panelPress) SaveConfig();
+        bool want = NameplateKnobs.Enabled.V;
+        if (want != _suppressed) ApplyMaster(want);
 
-        _table.Drain(_cfg.BubbleQueue, _cfg.AnimMs);   // BEFORE every early return below: the hook ring is fixed-size
+        int queue = NameplateKnobs.Queue.V; float animMs = NameplateKnobs.Anim.V;
+        _table.Drain(queue, animMs);   // BEFORE every early return below: the hook ring is fixed-size
 
         _hitCount[_hitCur ^ 1] = 0;
         if (!GameGate.InGame) { Publish(0); return; }             // acceptance §11: GUI hidden -> nothing
         GlyphAtlas? atlas = TextRig.Atlas;
-        if (atlas == null || !_cfg.On || _cfg.Mode == 0) { Publish(0); return; }   // acceptance §2: mode 0 = nothing
+        if (atlas == null || !want) { Publish(0); return; }
 
         float vpW = TextRig.ViewportW, vpH = TextRig.ViewportH;
         long now = Environment.TickCount64;
         long dt = _animPrimed ? now - _animClockMs : 0L;
         _animClockMs = now; _animPrimed = true;
-        _table.Refresh(now, dt, _cfg.AnimMs, _cfg.MaxDistance, _cfg.FadeDistance, _cfg.BubbleQueue, vpW, vpH);
+        _table.Refresh(now, dt, animMs, NameplateKnobs.MaxDist.V, NameplateKnobs.FadeDist.V, queue, vpW, vpH);
         if (_probe) { _probe = false; Probe(vpW, vpH); }
 
         int count = _table.VisibleCount;
@@ -347,8 +319,8 @@ public sealed unsafe class NameplateService : IExtenderService
         // effective px. The upgrade path is a glyph emit of our own that scales the quad AND the advance.
         float scale = Metrics.Scale;
         float lineH = atlas.LineHeight;
-        bool portraits = _cfg.Portraits && _cfg.Mode == 2;
-        bool background = _cfg.Background && _cfg.Mode == 2;
+        bool portraits = NameplateKnobs.Portraits.V;
+        bool background = NameplateKnobs.Background.V;
 
         // Pass 1: measure and place every box at its anchor. The slide residual is NOT folded in yet -- it is
         // applied after separation, so a box easing into place cannot perturb the overlap tests.
@@ -404,7 +376,7 @@ public sealed unsafe class NameplateService : IExtenderService
             PlateTable.Entry e = _table.Visible[i];
             float a = _boxA[i];
             if (a <= 0f) continue;
-            if (!e.ShowBubble && e.Name.Length == 0 && !(_cfg.HealthBand && e.Damage >= 0)) continue;
+            if (!e.ShowBubble && e.Name.Length == 0 && !(NameplateKnobs.HealthBand.V && e.Damage >= 0)) continue;
             if (e.ShowBubble)
                 EmitBubble(ref n, su, sv, atlas, e, _boxX[i], _boxY[i], _boxW[i], _boxH[i], a, scale, lineH, background);
             else
@@ -417,7 +389,20 @@ public sealed unsafe class NameplateService : IExtenderService
         Publish(hitN);
     }
 
-    /// <summary>COLD, one shot per <c>/nameplate probe</c>: every term of the anchor conversion, so a residual
+    /// <summary>The master's edge, on the frame (the one thread the engine mode is written from): on = mode 0 and
+    /// the table starts empty, so every entry is re-noted through the hooks and its anchor unfrozen; off = the
+    /// engine's own mode back (one cold <c>ReloadModel</c> walk) and the table dropped, since nothing would keep
+    /// its entries' anchors fresh.</summary>
+    private static void ApplyMaster(bool on)
+    {
+        _suppressed = on;
+        _table.Clear();
+        int mode = on ? 0 : (EngineMode >= 0 ? EngineMode : DefaultEngineMode);
+        if (_origSetMode != null) _origSetMode(mode);
+        _log?.Info($"[nameplate] master {(on ? "on: engine at mode 0" : $"off: engine mode {mode} restored")}");
+    }
+
+    /// <summary>COLD, one shot per probe press: every term of the anchor conversion, so a residual
     /// offset can be settled from a single log rather than another disassembly session. Logs the raw
     /// bubble-anchor floats, what they converted to, both viewports, the GUI scale, and the
     /// behind-camera dot product for every tracked slot -- including the ones the frame gates rejected.</summary>
@@ -505,20 +490,20 @@ public sealed unsafe class NameplateService : IExtenderService
         return w;
     }
 
-    /// <summary>The max width a plate name column and a bubble box share -- one knob, <c>bubblewidth</c>.</summary>
-    private static float TextMaxW(float scale) => _cfg.BubbleWidth * scale;
+    /// <summary>The max width a plate name column and a bubble box share -- one knob, <c>nameplate.width</c>.</summary>
+    private static float TextMaxW(float scale) => NameplateKnobs.Width.V * scale;
 
     private static void MeasurePlate(PlateTable.Entry e, GlyphAtlas atlas, float scale, float lineH,
                                      bool portraits, out float w, out float h)
     {
-        bool band = _cfg.HealthBand && e.Damage >= 0;
+        bool band = NameplateKnobs.HealthBand.V && e.Damage >= 0;
         float nameW = MeasureName(e, atlas, TextMaxW(scale), out int nameLines);
         float bandW = band ? MeasureRunes(atlas, PlateLayout.BandText(e.Damage)) : 0f;
         bool portrait = portraits && e.PortraitResref.Length != 0;
         OverrideLayout ov = LayoutOverride(e, atlas, scale, nameLines, band, bandW);
         PlateMetrics m = PlateLayout.Measure(ov.ShowName ? nameW : 0f, ov.ShowName ? nameLines : 0,
                                              bandW, portrait, ov.ShowBand,
-                                             _cfg.HealthBar && e.Damage >= 0, lineH, scale,
+                                             NameplateKnobs.HealthBar.V && e.Damage >= 0, lineH, scale,
                                              ov.PreLines, ov.PostLines, ov.ExtraW);
         w = m.W; h = m.H;
     }
@@ -532,7 +517,7 @@ public sealed unsafe class NameplateService : IExtenderService
         for (int i = 0; i < e.LineCount; i++)
         {
             PlateTable.BubbleLine ln = e.Lines[i];
-            PlateTable.EnsureWrap(ln, atlas, maxW, TextRig.AtlasEpoch, _cfg.BubbleLines);
+            PlateTable.EnsureWrap(ln, atlas, maxW, TextRig.AtlasEpoch, NameplateKnobs.Lines.V);
             float bw = ln.WrapPixelW + pad * 2f;
             if (bw > w) w = bw;
             h += ln.SpanCount * lineH + pad * 2f + (i > 0 ? gap : 0f);
@@ -542,21 +527,9 @@ public sealed unsafe class NameplateService : IExtenderService
         h += TailH(scale);   // the band the tail hangs into; the box's own bottom edge stops above it
     }
 
-    /// <summary>The chrome the speech tail needs, or 0 when there is no box for it to hang off (text-only mode,
-    /// or the background turned off). A plate never gets one -- it is a label, not speech.</summary>
-    private static float TailH(float scale) => _cfg.Background && _cfg.Mode == 2 ? TailHeightPx * scale : 0f;
-
-    /// <summary>Adopt a display mode the options screen asked for while we were suppressing the engine. Render
-    /// thread only, so <see cref="_cfg"/> is never written from under <see cref="LoadConfig"/>.</summary>
-    private static void ApplyPendingMode()
-    {
-        int mode = Interlocked.Exchange(ref _pendingMode, -1);
-        if (mode < 0 || mode == _cfg.Mode) return;
-        _cfg.Mode = mode;
-        _configDirty = true;
-        _settings?.Layout();
-        _panelDirty = true;
-    }
+    /// <summary>The chrome the speech tail needs, or 0 when there is no box for it to hang off (the background
+    /// turned off). A plate never gets one -- it is a label, not speech.</summary>
+    private static float TailH(float scale) => NameplateKnobs.Background.V ? TailHeightPx * scale : 0f;
 
     // ---- emit --------------------------------------------------------------------------------
 
@@ -608,7 +581,7 @@ public sealed unsafe class NameplateService : IExtenderService
         foreach (Rune ru in s.EnumerateRunes())
         {
             if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
-            if (_cfg.Outline)
+            if (NameplateKnobs.Outline.V)
                 for (int o = 0; o < OutlineOffsets.Length; o += 2)
                     EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1], 0f, 0f, 0f, a, shear);
             EmitGlyph(ref n, gl, penX, baseline, r, g, b, a, shear);
@@ -637,7 +610,7 @@ public sealed unsafe class NameplateService : IExtenderService
             { cr = ((c >> 16) & 0xFF) / 255f; cg = ((c >> 8) & 0xFF) / 255f; cb = (c & 0xFF) / 255f; }
             ci += used;
             if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
-            if (_cfg.Outline)
+            if (NameplateKnobs.Outline.V)
                 for (int o = 0; o < OutlineOffsets.Length; o += 2)
                     EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1],
                               0f, 0f, 0f, a, 0f);
@@ -664,7 +637,7 @@ public sealed unsafe class NameplateService : IExtenderService
             if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
             if (c == 0xffffffu && fallbackRgb != 0u) c = fallbackRgb;
             float r = ((c >> 16) & 0xFF) / 255f, g = ((c >> 8) & 0xFF) / 255f, b = (c & 0xFF) / 255f;
-            if (_cfg.Outline)
+            if (NameplateKnobs.Outline.V)
                 for (int o = 0; o < OutlineOffsets.Length; o += 2)
                     EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1],
                               0f, 0f, 0f, a, shear);
@@ -751,7 +724,7 @@ public sealed unsafe class NameplateService : IExtenderService
         {
             PlateTable.BubbleLine ln = e.Paras[i];
             if (ln.Runes.Count == 0) continue;   // the empty segment that says "nothing glues here"
-            PlateTable.EnsureWrap(ln, atlas, maxW, TextRig.AtlasEpoch, _cfg.BubbleLines);
+            PlateTable.EnsureWrap(ln, atlas, maxW, TextRig.AtlasEpoch, NameplateKnobs.Lines.V);
             lines += ln.SpanCount;
             if (ln.WrapPixelW > extraW) extraW = ln.WrapPixelW;
         }
@@ -799,8 +772,8 @@ public sealed unsafe class NameplateService : IExtenderService
                                   PlateTable.Entry e, float x, float y, float a, float scale, float lineH,
                                   bool portraits, bool background, Hit[] hits, ref int hitN)
     {
-        bool band = _cfg.HealthBand && e.Damage >= 0;
-        bool bar = _cfg.HealthBar && e.Damage >= 0;
+        bool band = NameplateKnobs.HealthBand.V && e.Damage >= 0;
+        bool bar = NameplateKnobs.HealthBar.V && e.Damage >= 0;
         float nameW = MeasureName(e, atlas, TextMaxW(scale), out int nameLines);
         string bandText = band ? PlateLayout.BandText(e.Damage) : "";
         float bandW = band ? MeasureRunes(atlas, bandText) : 0f;
@@ -838,7 +811,7 @@ public sealed unsafe class NameplateService : IExtenderService
 
         // The name glyphs only, never the plate box or the override -- see OnPlateClick. Every line centres in
         // the text column, so the column IS the rect: a narrower one would miss the name it just moved.
-        if (_cfg.ClickToTell && ov.ShowName && e.Name.Length != 0 && nameW > 0f && hitN < hits.Length)
+        if (NameplateKnobs.ClickToTell.V && ov.ShowName && e.Name.Length != 0 && nameW > 0f && hitN < hits.Length)
             hits[hitN++] = new Hit { X = colX, Y = y + m.NameY, W = m.TextW,
                                      H = lineH * nameLines, Name = e.Name };
 
@@ -949,7 +922,7 @@ public sealed unsafe class NameplateService : IExtenderService
     /// DM variants 8..0x0e / 0x11..0x1e of the same. Off (or unlatched) is one neutral style.</summary>
     private static ChannelStyle StyleOf(int channel)
     {
-        if (!_cfg.ChannelStyle || channel < 0) return Neutral;
+        if (!_chatHooked || !NameplateKnobs.ChannelStyle.V || channel < 0) return Neutral;
         return channel switch
         {
             0x02 or 0x09 or 0x12 => new ChannelStyle(0xffd28cu, 1f, 0f),      // shout
@@ -1066,127 +1039,6 @@ public sealed unsafe class NameplateService : IExtenderService
         }
     }
 
-    // ---- settings panel ----------------------------------------------------------------------
-
-    private static VertexBatch? _panelBatch;
-    private static float[] _panelVerts = System.Array.Empty<float>();
-    private static int _panelCount;
-    /// <summary>The panel's geometry is rebuilt only on a real change (open, press, drag, relayout): the
-    /// batch's <c>ToArray</c> is a fresh array, so rebuilding it every frame would allocate on the render
-    /// thread for as long as the panel is open.</summary>
-    private static bool _panelDirty = true;
-
-    private static void DrawPanel()
-    {
-        NameplateSettings? s = _settings;
-        GlyphAtlas? atlas = TextRig.Atlas;
-        if (s == null || atlas == null || !s.IsOpen || !GameGate.InGame) return;
-        if (_panelDirty || _panelEpoch != TextRig.AtlasEpoch)
-        {
-            _panelDirty = false; _panelEpoch = TextRig.AtlasEpoch;
-            VertexBatch b = _panelBatch ??= new VertexBatch(atlas.SolidU, atlas.SolidV);
-            b.Reset(atlas.SolidU, atlas.SolidV);
-            s.Panel.Emit(b, atlas, atlas.LineHeight, new SettingsPanel.Palette
-            {
-                Body = (0.02f, 0.02f, 0.03f, 1f),
-                TitleBar = (0.10f, 0.12f, 0.16f, 1f),
-                Active = (0.20f, 0.34f, 0.52f, 0.95f),
-                TextRgb = 0xd8dee9u,
-            });
-            _panelVerts = b.ToArray();
-            _panelCount = b.VertexCount;
-        }
-        if (_panelCount > 0) TextRig.DrawBatch(_panelVerts, _panelCount);
-    }
-
-    private static int _panelEpoch = -1;
-
-    private static bool _panelPress;
-
-    private static bool OnPanelButton(bool down, int button, int x, int y)
-    {
-        NameplateSettings? s = _settings;
-        if (s == null || button != 1) return false;
-        if (down)
-        {
-            _panelPress = false;
-            if (!s.IsOpen) return false;
-            _panelPress = true;
-            s.MouseDown(x, y);
-            _panelDirty = true;
-            SyncPanelModal();     // a click-off or the close button may have just shut it
-            return true;
-        }
-        if (!_panelPress) return false;
-        _panelPress = false;
-        s.MouseUp();
-        _panelDirty = true;
-        if (_configDirty) SaveConfig();
-        SyncPanelModal();
-        return true;
-    }
-
-    /// <summary>Mirror the panel's open state onto the window's modal flag. Driven from the input thread at every
-    /// edge that can open or close it -- a render-thread sync would lag by a frame, and one frame is one keypress
-    /// leaking to a gameplay quickslot.</summary>
-    private static void SyncPanelModal()
-    {
-        if (_panelWindow != null) _panelWindow.SuppressChords = _settings is { IsOpen: true };
-    }
-
-    /// <summary>Keyboard while the settings panel is open, the shape <see cref="CX.Services.Dialog"/>'s panel
-    /// uses: an in-progress value-box edit takes digits / dot / minus / backspace, Return commits and persists,
-    /// Esc cancels the edit and then closes the panel. Every key is consumed while the panel is up -- without
-    /// that, typing <c>1.5</c> into a slider's box also fires quickslots 1 and 5.</summary>
-    private static bool OnPanelKey(uint sdlKey, int mods)
-    {
-        NameplateSettings? s = _settings;
-        if (s is not { IsOpen: true }) return false;
-        if (s.Editing)
-        {
-            sdlKey = NormalizeKeypad(sdlKey);
-            switch (sdlKey)
-            {
-                case KeyReturn: s.CommitEdit(); if (_configDirty) SaveConfig(); break;
-                case KeyEsc: s.CancelEdit(); break;
-                case KeyBackspace: s.EditBackspace(); break;
-                default:
-                    if ((sdlKey >= KeyDigit0 && sdlKey <= KeyDigit9) || sdlKey == KeyDot || sdlKey == KeyMinus)
-                        s.EditInsert(((char)sdlKey).ToString());
-                    break;
-            }
-            _panelDirty = true;
-            return true;
-        }
-        if (sdlKey == KeyEsc) { s.Close(); _panelDirty = true; SyncPanelModal(); }
-        return true;
-    }
-
-    private const uint KeyBackspace = 0x08, KeyReturn = 0x0D, KeyEsc = 0x1B,
-                       KeyMinus = 0x2D, KeyDot = 0x2E, KeyDigit0 = 0x30, KeyDigit9 = 0x39;
-
-    /// <summary>Numpad SDL keycodes (SDLK_KP_*, scancode-mask bit set) to their ASCII equivalents, so keypad
-    /// digits drive the value box exactly like the main row. Same table as the dialog panel's.</summary>
-    private static uint NormalizeKeypad(uint k) => k switch
-    {
-        0x40000058 => KeyReturn,                  // KP_ENTER
-        0x40000063 => KeyDot,                     // KP_PERIOD
-        0x40000056 => KeyMinus,                   // KP_MINUS
-        0x40000062 => KeyDigit0,                  // KP_0
-        >= 0x40000059 and <= 0x40000061 => k - 0x40000059 + KeyDigit1,   // KP_1..KP_9
-        _ => k,
-    };
-
-    private const uint KeyDigit1 = 0x31;
-
-    private static bool OnPanelMotion(int x, int y)
-    {
-        NameplateSettings? s = _settings;
-        if (s is not { IsOpen: true } || !s.MouseMove(x, y)) return false;
-        _panelDirty = true;
-        return true;
-    }
-
     // ---- input: click a plate -> /tell -------------------------------------------------------
 
     /// <summary>Set while a press landed on a plate name, so the matching release is consumed too and the engine
@@ -1197,7 +1049,7 @@ public sealed unsafe class NameplateService : IExtenderService
     /// (<see cref="ChatService.StartTell"/>) -- the same one the chat portrait click uses.
     /// <para>This window publishes NO hit-test override, so the pointer over a plate is not framework UI: the
     /// cursor stays the engine's and every click outside the narrow name box falls straight through to the game
-    /// world. Opt-in (<see cref="NameplateConfig.ClickToTell"/> ships off) because even the name box is world
+    /// world. Opt-in (<c>nameplate.clicktotell</c> ships off) because even the name box is world
     /// the player would otherwise have clicked.</para></summary>
     /// <summary>A plate name as one line again, for the chat entry: the name carries the LFs
     /// <c>PlateLayout.BreakName</c> put there, and an embedded newline in a <c>/tell</c> prefill is a bug.
@@ -1208,7 +1060,7 @@ public sealed unsafe class NameplateService : IExtenderService
     {
         if (button != 1) return false;
         if (!down) { bool had = _plateGrab; _plateGrab = false; return had; }
-        if (!_cfg.ClickToTell) return false;
+        if (!NameplateKnobs.ClickToTell.V) return false;
         int cur = _hitCur;
         Hit[] h = _hits[cur];
         int n = _hitCount[cur];
@@ -1218,69 +1070,7 @@ public sealed unsafe class NameplateService : IExtenderService
         return false;
     }
 
-    // ---- /nameplate --------------------------------------------------------------------------
-
-    private static string? Cmd(string args)
-    {
-        string[] a = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (a.Length == 0)
-        {
-            int word = NameplateNative.FeedbackWord();
-            return $"[nameplate] on={_cfg.On} mode={_cfg.Mode} outline={_cfg.Outline} bg={_cfg.Background} "
-                 + $"portraits={_cfg.Portraits} band={_cfg.HealthBand} bar={_cfg.HealthBar} "
-                 + $"maxdist={_cfg.MaxDistance.ToString("F0", CultureInfo.InvariantCulture)} "
-                 + $"fadedist={_cfg.FadeDistance.ToString("F0", CultureInfo.InvariantCulture)} "
-                 + $"lines={_cfg.BubbleLines} queue={_cfg.BubbleQueue} "
-                 + $"width={_cfg.BubbleWidth.ToString("F0", CultureInfo.InvariantCulture)} "
-                 + $"channelstyle={_cfg.ChannelStyle} clicktotell={_cfg.ClickToTell} "
-                 + $"anim={_cfg.AnimMs.ToString("F0", CultureInfo.InvariantCulture)}ms "
-                 + $"| tracked={_table.VisibleCount} overflow={_table.Overflow} feedbackword={word}";
-        }
-
-        switch (a[0])
-        {
-            case "settings":
-                _settings?.OpenAt(TextRig.ViewportW, TextRig.ViewportH);
-                _panelDirty = true; SyncPanelModal();
-                return "[nameplate] settings open";
-            case "on": _cfg.On = Flag(a); break;
-            case "mode": _cfg.Mode = Clamp(Num(a, _cfg.Mode), NameplateConfig.ModeMin, NameplateConfig.ModeMax); break;
-            case "outline": _cfg.Outline = Flag(a); break;
-            case "bg": case "background": _cfg.Background = Flag(a); break;
-            case "portraits": _cfg.Portraits = Flag(a); break;
-            case "band": _cfg.HealthBand = Flag(a); break;
-            case "bar": _cfg.HealthBar = Flag(a); break;
-            case "maxdist": _cfg.MaxDistance = ClampF(NumF(a, _cfg.MaxDistance), 0f, NameplateConfig.DistMax); break;
-            case "fadedist": _cfg.FadeDistance = ClampF(NumF(a, _cfg.FadeDistance), 0f, NameplateConfig.DistMax); break;
-            case "lines": _cfg.BubbleLines = Clamp(Num(a, _cfg.BubbleLines), NameplateConfig.LinesMin, NameplateConfig.LinesMax); break;
-            case "queue": _cfg.BubbleQueue = Clamp(Num(a, _cfg.BubbleQueue), NameplateConfig.QueueMin, NameplateConfig.QueueMax); break;
-            case "width": _cfg.BubbleWidth = ClampF(NumF(a, _cfg.BubbleWidth), NameplateConfig.WidthMin, NameplateConfig.WidthMax); break;
-            case "channelstyle": _cfg.ChannelStyle = Flag(a); break;
-            case "clicktotell": _cfg.ClickToTell = Flag(a); break;
-            case "anim": _cfg.AnimMs = ClampF(NumF(a, _cfg.AnimMs), NameplateConfig.AnimMin, NameplateConfig.AnimMax); break;
-            case "probe":
-                _probe = true;
-                return "[nameplate] probe armed -- the next drawn frame dumps the anchor conversion to the log "
-                     + "(needs to be in-game with the HUD up)";
-            default:
-                return "[nameplate] usage: /nameplate | /nameplate settings | /nameplate <on|mode|outline|bg|"
-                     + "portraits|band|bar|maxdist|fadedist|lines|queue|width|channelstyle|clicktotell|anim> <value>"
-                     + " | /nameplate probe"
-                     + " (width = the max text width for BOTH a bubble box and a plate name, design px)"
-                     + " (values clamp: mode 0-2, dist 0-100, width 120-480, anim 0-1000, queue 1-"
-                     + NameplateConfig.QueueMax + ", lines 1-" + NameplateConfig.LinesMax + ")";
-        }
-        SaveConfig();
-        _settings?.Layout();
-        _panelDirty = true;
-        return $"[nameplate] {a[0]} -> ok";
-    }
-
-    private static bool Flag(string[] a) => a.Length < 2 || a[1] != "0";
-    private static int Num(string[] a, int fallback)
-        => a.Length > 1 && int.TryParse(a[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int v) ? v : fallback;
-    private static float NumF(string[] a, float fallback)
-        => a.Length > 1 && float.TryParse(a[1], NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v : fallback;
-    private static int Clamp(int v, int lo, int hi) => v < lo ? lo : v > hi ? hi : v;
-    private static float ClampF(float v, float lo, float hi) => v < lo ? lo : v > hi ? hi : v;
+    /// <summary>The bare <c>/nameplate</c> line: the rows, then the table's live counters.</summary>
+    private static string Status()
+        => $"{NameplateKnobs.G.Report()} | tracked={_table.VisibleCount} overflow={_table.Overflow} feedbackword={NameplateNative.FeedbackWord()}";
 }

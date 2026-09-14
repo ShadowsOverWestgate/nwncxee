@@ -10,7 +10,7 @@ namespace CX.Alloy;
 /// <summary>#232's second mode: the OWNED highlight. Instead of replaying the engine's
 /// <c>Scene::DoHighlightGob</c> glow (gob geometry through <c>WritePartHighlightVertices</c>), redraw the
 /// highlighted object flat: a 50%-alpha fill over its visible surface plus a thick, smooth silhouette
-/// outline. Opt-in from <c>/settings</c> ("Outline highlight", persisted in <c>cx-quickbar.cfg</c>); when
+/// outline. Opt-in via <c>alloy.highlight=outline</c> (Renderer → Selection highlight); when
 /// it draws, <see cref="RspShim.EngineOverlays"/> narrows the engine glow to the gobs this pass could NOT
 /// cover (see <see cref="HandledCount"/>).
 /// <para>Runs right after <see cref="PostChain"/>'s composite: the target framebuffer holds the finished
@@ -59,8 +59,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
     /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. Everything
     /// unclaimed falls through to <see cref="RspShim"/>'s <c>GlowRemainder</c> and gets the engine glow.
-    /// <c>/draw hlchan</c>.</summary>
-    internal static int HlChannels = DefHlChannels;
+    /// <c>/alloy hlchan</c>.</summary>
+    internal static int HlChannels => Renderer.HlChan.V;
     internal const int DefHlChannels = 0b00111;
 
     /// <summary>Gobs whose winning channel the outline claims, refreshed from the engine's own verdict at
@@ -112,9 +112,9 @@ public sealed unsafe partial class AlloyRenderer
         return false;
     }
 
-    /// <summary><c>/draw hldiag 1</c>: name the winning channel and the verdict every time a highlight
+    /// <summary><c>/alloy hldiag 1</c>: name the winning channel and the verdict every time a highlight
     /// changes. The source is the question now, so the colour is not worth printing.</summary>
-    internal static bool HlDiag;
+    internal static bool HlDiag => Renderer.HlDiag.V;
 
     /// <summary>Outline thickness in pixels: the dilation radius the composite's ring taps sample at.</summary>
     private const float OutlinePx = 5f;
@@ -270,7 +270,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void OutlineHighlightPass(int groups, Matrix4x4* vp, float jx, float jy, int* viewport, int* display)
     {
         HandledCount = 0;
-        if (!QuickbarService.OutlineHighlight) return;
+        if (!Renderer.OutlineHighlight) return;
         IntPtr scene = _enrollScene;
         if (scene == IntPtr.Zero || *(int*)(scene + SceneHlCount) == 0) return;
         if (PostChain.DepthTex == 0) return;

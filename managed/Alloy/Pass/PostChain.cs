@@ -46,11 +46,11 @@ internal static unsafe class PostChain
     /// with a live sampler of a different type is INVALID_OPERATION. See <see cref="TextureSlots"/>.</summary>
     private const uint HdrUnit = TextureSlots.PostHdr, BloomUnit = TextureSlots.PostBloom;
 
-    /// <summary>Tonemap operators. <see cref="Shoulder"/> is the identity below its knee; <see cref="Aces"/>
-    /// (the default since the #375 follow-ups, at <see cref="_acesMix"/> against the shoulder) moves the
-    /// midtones, which is Alloy's own look decision -- under the M4 cutover nothing the engine draws shares
-    /// the resolved world any more, so there is no engine-drawn geometry left to disagree with.</summary>
-    private const int Off = 0, Shoulder = 1, Aces = 2;
+    /// <summary>Tonemap operators, <c>post.tonemap</c>'s stored index. Shoulder is the identity below its
+    /// knee; ACES (the default since the #375 follow-ups, at <c>post.acesmix</c> against the shoulder) moves
+    /// the midtones, which is Alloy's own look decision -- under the M4 cutover nothing the engine draws
+    /// shares the resolved world any more, so there is no engine-drawn geometry left to disagree with.</summary>
+    internal const int TonemapOff = 0, TonemapShoulder = 1, TonemapAces = 2;
 
     /// <summary>The Alloy colour passes of THIS pass are drawing into the HDR target. Since #132 the owned
     /// frame does not run at all when this is false -- there is no un-resolved variant of it.</summary>
@@ -113,28 +113,6 @@ internal static unsafe class PostChain
     private static delegate* unmanaged<uint, int> _gammaParam;
     private const uint GammaParam = 0;
 
-    // Dials. Tuned live through /post; the values here ARE the boot values (ADR 0013 bucket 1).
-    private static float _bloom = 0.06f, _threshold = 1f, _knee = 0.5f, _tmKnee = 0.8f;
-    /// <summary>Scene-referred exposure: one linear gain on the resolved frame (bloom included) BEFORE the
-    /// tonemap, so blacks stay put and the shoulder takes what it pushes past 1. 1.0 is the identity. This
-    /// is Alloy's own brightness decision rather than a port of anyone's chain: the stock SoW frame gets
-    /// its lift from two display-space ACES passes and a grade, which is not a scene-referred model at all.
-    /// It is also what makes <c>tonemap aces</c> usable -- the Narkowicz fit sits below NWN's radiance
-    /// levels unexposed and darkens a dim interior.</summary>
-    private static float _exposure = 1f;
-    /// <summary>#491: auto-exposure (histogram eye adaptation), <c>/post auto 1</c>. A compute histogram of
-    /// log2 luminance over the HDR target -- the same linear value <c>uExposure</c> multiplies, so the target
-    /// is scene-referred and not gamma-bent -- gives a log-average; a one-thread dispatch eases a gain toward
-    /// <c>AutoKey / average</c> and the resolve multiplies it in AFTER <c>uExposure</c>. On by default (xtul's
-    /// call, 2026-09-13); <c>/post auto 0</c> is bit-exact the fixed-exposure image (no dispatch, no uniform read).</summary>
-    private static bool _auto = true, _bootAuto;
-    /// <summary>The auto gain's clamps, and the adaptation rates in 1/s: <c>autospeed</c> when the gain is
-    /// RISING (walking into the dark, the slow one), <c>autodown</c> when it is falling (into the light, the
-    /// fast one -- the brief over-exposure that settles is this rate). Exponential ease, so the settle time
-    /// is about 3/rate seconds.
-    /// <para>The clamps bound the AUTO factor, not the total: the frame sees <c>exposure * gain</c>.</para></summary>
-    private static float _autoMin = 0.5f, _autoMax = 2f, _autoSpeed = 1f, _autoDown = 3f;
-    private static float _bootAutoMin, _bootAutoMax, _bootAutoSpeed, _bootAutoDown;
     /// <summary>The mid-grey the log-average is steered to, in the linear scale the resolve works in.</summary>
     private const float AutoKey = 0.18f;
     /// <summary>The histogram's log2-luminance range; below the floor is bin 0, which the average ignores.</summary>
@@ -151,48 +129,12 @@ internal static unsafe class PostChain
     /// pass start (<see cref="Precheck"/>): the gain applies only on the pass that adapted, so a GUI panel's
     /// resolve keeps the fixed exposure and a pass that ended without a resolve leaks nothing forward.</summary>
     private static bool _autoThisPass;
-    /// <summary>How much of the ACES curve <c>tonemap aces</c> applies, mixed in LINEAR against the shoulder
-    /// path. 1 is the full Narkowicz fit; its toe crushes NWN's dim interiors (0.01 linear comes out 2.6x
-    /// darker) so that only specular survives on a character in the dark, which reads as "glossy". 0.5 --
-    /// xtul's live call -- keeps ACES's highlight roll-off and colour while the shoulder, the identity
-    /// below its knee, holds the darks where they are.</summary>
-    private static float _acesMix = 0.5f;
-    /// <summary>Output dither, in LSBs of the 8-bit target the resolve writes into. 1.0 is the correct
-    /// value and not a taste setting: one LSB of triangular-PDF noise is exactly what decorrelates the
-    /// quantisation step, and it is the difference between a smooth gradient and a set of contour bands.
-    /// 0 disables it, which is only useful for showing what it fixes.</summary>
-    private static float _dither = 1f;
-    /// <summary><c>/post viz</c>: show one STAGE of the chain instead of the finished frame,
-    /// so "is this artifact in the bloom, in the frame the bloom was made from, or in the tonemap?" is a
-    /// look rather than an argument. 0 = off, 1 = the bloom contribution alone, 2 = the HDR colour alone
-    /// (no bloom, no tonemap), 3 = the bloom contribution amplified 20x, which is what makes faint
-    /// structure in a dim halo visible at all.</summary>
-    private static float _viz;
-    /// <summary><c>/post clearviz 1</c>: clear the HDR target to magenta instead of the engine's clear
-    /// colour. Nothing else in the frame can produce that value, so any magenta the finished frame shows is
-    /// a pixel NO pass covered -- which is the one question a shading view cannot answer. Debug only, and
-    /// deliberately not a boot value: <c>/post reset</c> turns it off with the other views.</summary>
-    private static bool _clearViz;
-    private static int _mode = Aces;
     /// <summary>#391: the RENDER scale -- the owned 3D frame's size as a fraction of the display target's,
     /// per axis. Below 1 the world renders at fewer pixels and the resolve upscales it (bilinear); above 1 it
-    /// is supersampling. The engine's 2D UI never sees it. Boot value from <c>renderscale</c> in cx.cfg,
-    /// live through <c>/post scale</c>; clamped to <see cref="MinScale"/>..<see cref="MaxScale"/> at both
-    /// doors because a 0x0 target is a refusal, not a look.</summary>
-    private static float _scale = 1f, _bootScale = 1f;
+    /// is supersampling. The engine's 2D UI never sees it. <c>alloy.scale</c>, live; the knob's range is
+    /// <see cref="MinScale"/>..<see cref="MaxScale"/> because a 0x0 target is a refusal, not a look.</summary>
+    private static float _scale => Renderer.Scale.V;
     internal const float MinScale = 0.25f, MaxScale = 2f;
-    /// <summary>#388: the camera motion-vector pass armed on its own, <c>/post motion 1</c>. Its consumers (TAA
-    /// #389, temporal GTAO #390) run it without this; <c>/post viz 4</c> runs it regardless to paint it.</summary>
-    private static bool _motion;
-    /// <summary>#389: temporal anti-aliasing, <c>/post taa 1</c>. Arms the sub-pixel jitter at the one site
-    /// Alloy reads the projection (Frame.cs) AND the accumulating stage; the two never ship apart. Off by
-    /// default until live-verified; SMAA stands aside while it is on.</summary>
-    private static bool _taa;
-    /// <summary>#389: the current frame's share of the TAA blend at rest (0.1 = a ten-frame history), <c>/post
-    /// taablend</c>, 0.02..0.5; motion adds to it in the stage.</summary>
-    private static float _taaBlend = 0.1f, _bootTaaBlend = 0.1f;
-    private static float _bootBloom, _bootThreshold, _bootKnee, _bootTmKnee, _bootDither, _bootExposure, _bootAcesMix;
-    private static int _bootMode;
 
     private static int _dSrc, _dLod, _dTexel, _dFirst, _dThresh;
     private static int _uSrc, _uLod, _uTexel;
@@ -202,37 +144,29 @@ internal static unsafe class PostChain
     {
         _log = log;
         // The one boot decision in this class: since #132 there is no Alloy frame without the resolve, so
-        // hdr=0 is not a look toggle but a stand-down of the whole Alloy frame -- config, not a /post key.
-        _on = Settings.Bool("hdr", true);
-        _scale = _bootScale = Settings.Float("renderscale", 1f, MinScale, MaxScale);
-        // #152 is the precedent this whole policy generalises (ADR 0013): a debug visualization is a live
-        // request, never a boot state -- a forgotten viz setting booted every session into the bloom-debug
-        // view until the user typed /post viz 0. Every look dial below is now the same shape.
-        _bootBloom = _bloom; _bootThreshold = _threshold; _bootKnee = _knee;
-        _bootTmKnee = _tmKnee; _bootMode = _mode; _bootDither = _dither; _bootExposure = _exposure; _bootAcesMix = _acesMix;
-        _bootTaaBlend = _taaBlend;
-        _bootAuto = _auto; _bootAutoMin = _autoMin; _bootAutoMax = _autoMax; _bootAutoSpeed = _autoSpeed; _bootAutoDown = _autoDown;
+        // alloy.hdr=0 is not a look toggle but a stand-down of the whole Alloy frame -- Restart, read through Boot.
+        _on = Renderer.Hdr.Boot;
         _gammaParam = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
         if (_gammaParam == null)
             log.Info("PostChain: RenderInterface::GetGlobalShaderParami unresolved -- the resolve encodes "
                    + "unconditionally, which is what this client measures anyway (#102)");
         log.Info(_on ? $"PostChain: armed -- {Describe()}; /post retunes every dial live"
-                     : "PostChain: config hdr=0 -- the Alloy frame stands down; the world renders vanilla");
+                     : "PostChain: alloy.hdr=0 -- the Alloy frame stands down; the world renders vanilla");
     }
 
-
+    /// <summary>The <c>/post</c> status line.</summary>
     internal static string Describe() =>
-        $"hdr {(_on ? "on" : "off")}  bloom {_bloom:F3}  threshold {_threshold:F2}  knee {_knee:F2}  " +
-        $"exposure {_exposure:F2} (auto {(_auto ? "on" : "off")}: min {_autoMin:F2} max {_autoMax:F2} speed {_autoSpeed:F2} down {_autoDown:F2})  tonemap {(_mode == Off ? "off" : _mode == Aces ? "aces" : "shoulder")}  acesmix {_acesMix:F2}  tmknee {_tmKnee:F2}  " +
-        $"dither {_dither:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(_motion ? "on" : "off")}  taa {(_taa ? "on" : "off")} (taablend {_taaBlend:F2}, taau {(_taau ? 1 : 0)}, aotemporal {SsaoPass.Temporal:F2})"
-        + (_viz > 0f ? $"  VIZ {_viz:F0}" : "")
-        + (_clearViz ? "  CLEARVIZ (target cleared magenta)" : "")
+        $"hdr {(_on ? "on" : "off")}  bloom {Post.Bloom.V:F3}{(StockConfig.HdrBloom ? "" : " (OFF: stock HDR/Bloom option)")}  threshold {Post.Threshold.V:F2}  knee {Post.Knee.V:F2}  " +
+        $"exposure {Post.Exposure.V:F2} (auto {(Post.Auto.V ? "on" : "off")}: min {Post.AutoMin.V:F2} max {Post.AutoMax.V:F2} speed {Post.AutoSpeed.V:F2} down {Post.AutoDown.V:F2})  tonemap {Post.Tonemap.Format()}  acesmix {Post.AcesMix.V:F2}  tmknee {Post.TmKnee.V:F2}  " +
+        $"dither {Post.Dither.V:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(Post.Motion.V ? "on" : "off")}  taa {(Post.Taa.V ? "on" : "off")} (taablend {Post.TaaBlend.V:F2}, taau {(Post.Taau.V ? 1 : 0)}, ao temporal {Ao.Temporal.V:F2})"
+        + (Post.Viz.V > 0 ? $"  VIZ {Post.Viz.V}" : "")
+        + (Post.ClearViz.V ? "  CLEARVIZ (target cleared magenta)" : "")
         + " | " + PostStack.Describe();
 
     /// <summary>The resolve's dither in the unit the shader takes: one LSB of the 8-bit target, or 0.
     /// #375: whichever stage WRITES that target applies it -- the resolve when the stack is empty, the
     /// stack's last stage otherwise -- so the frame is quantised exactly once.</summary>
-    internal static float DitherLsb => _dither / 255f;
+    internal static float DitherLsb => Post.Dither.V / 255f;
 
     /// <summary>#391: a display extent at the render scale, never below one pixel.</summary>
     internal static int RenderSize(int display) => Math.Max((int)MathF.Round(display * _scale), 1);
@@ -245,16 +179,17 @@ internal static unsafe class PostChain
 
     /// <summary>#388: whether the motion-vector pass runs this frame -- armed, the viz that paints it, or a
     /// consumer (TAA #389, temporal GTAO #390) that reprojects through it.</summary>
-    internal static bool MotionWanted => _motion || (int)_viz == VizMotion || TaaOn || SsaoPass.TemporalWanted;
+    internal static bool MotionWanted => Post.Motion.V || Post.Viz.V == VizMotion || TaaOn || SsaoPass.TemporalWanted;
     /// <summary>#389: TAA is on and its stage can build -- the gate the jitter and the accumulator share, so
     /// a stage that failed to build never leaves the jitter running with nothing to average it.</summary>
-    internal static bool TaaOn => _taa && !TaaStage.Failed && !MotionVectors.Failed;
-    internal static float TaaBlend => _taaBlend;
+    internal static bool TaaOn => Post.Taa.V && !TaaStage.Failed && !MotionVectors.Failed;
+    internal static float TaaBlend => Post.TaaBlend.V;
     /// <summary>Temporal upsampling: under a render scale below 1 with TAA on, the accumulator keeps its
     /// history at DISPLAY size and reconstructs from the jittered render-size frames, instead of the resolve
     /// upscaling bilinearly and TAA smoothing the result. <c>/post taau 0</c> is the A/B.</summary>
-    internal static bool TaaUpsample => _taau;
-    private static bool _taau = true;
+    internal static bool TaaUpsample => Post.Taau.V;
+    /// <summary><c>post.auto</c>'s Changed: the next adapt snaps rather than eases from a stale gain.</summary>
+    internal static void AutoRestart() => _autoTicks = 0;
     /// <summary>This pass's projection jitter in NDC, as <see cref="Jitter"/> handed it out (0 with TAA off);
     /// the accumulator reads it to place the current frame's samples on the display grid.</summary>
     internal static float JitterX, JitterY;
@@ -278,61 +213,6 @@ internal static unsafe class PostChain
     /// <summary><c>/post viz 4</c>: the velocity target, painted by the resolve in place of the frame.</summary>
     internal const int VizMotion = 4;
 
-    /// <summary>Live tuning behind <c>/post</c>; returns the old value, NaN for an unknown key. Same
-    /// no-lock reasoning as <see cref="AlloyLights.Tune"/>: independent floats, written from the input
-    /// thread, re-read per pass.</summary>
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            // No "hdr" key: it stands the whole Alloy frame down rather than changing a look, so it is a
-            // boot setting (config hdr=0) and Describe reports it read-only.
-            case "bloom":     old = _bloom; _bloom = v; break;
-            case "threshold": old = _threshold; _threshold = v; break;
-            case "knee":      old = _knee; _knee = v; break;
-            case "tonemap":   old = _mode; _mode = (int)v; break;
-            case "tmknee":    old = _tmKnee; _tmKnee = v; break;
-            case "exposure":  old = _exposure; _exposure = v; break;
-            case "auto":      old = _auto ? 1f : 0f; _auto = v != 0f; _autoTicks = 0; break;
-            case "automin":   old = _autoMin; _autoMin = MathF.Max(v, 0.01f); break;
-            case "automax":   old = _autoMax; _autoMax = v; break;
-            case "autospeed": old = _autoSpeed; _autoSpeed = v; break;
-            case "autodown":  old = _autoDown; _autoDown = v; break;
-            case "acesmix":   old = _acesMix; _acesMix = v; break;
-            case "dither":    old = _dither; _dither = v; break;
-            case "viz":       old = _viz; _viz = v; break;
-            case "clearviz":  old = _clearViz ? 1f : 0f; _clearViz = v != 0f; break;
-            case "scale":     old = _scale; _scale = Math.Clamp(v, MinScale, MaxScale); break;
-            case "motion":    old = _motion ? 1f : 0f; _motion = v != 0f; break;
-            case "taa":       old = _taa ? 1f : 0f; _taa = v != 0f; if (_taa) TaaStage.Reset(); break;
-            case "taau":      old = _taau ? 1f : 0f; _taau = v != 0f; TaaStage.Reset(); break;
-            // Capped at 0.5: above it the accumulator stops averaging the jitter and the frame visibly
-            // vibrates (live, at 1.0 -- "an earthquake"). Not an A/B for TAA off; /post taa 0 is.
-            case "taablend":  old = _taaBlend; _taaBlend = Math.Clamp(v, 0.02f, 0.5f); break;
-            // #390: the ticket's door for the AO history weight; /ao temporal is the same dial.
-            case "aotemporal": return SsaoPass.Tune("temporal", v);
-            // #375: the display-space stack's own keys, behind the same command.
-            default: return PostStack.Tune(key, v);
-        }
-        _log?.Info($"PostChain: /post {key} {v:F2} (was {old:F2}) -> {Describe()}");
-        return old;
-    }
-
-    internal static void ResetTuning()
-    {
-        _bloom = _bootBloom; _threshold = _bootThreshold; _knee = _bootKnee;
-        _tmKnee = _bootTmKnee; _mode = _bootMode; _dither = _bootDither; _exposure = _bootExposure; _acesMix = _bootAcesMix;
-        // viz has no boot value and never should: it is a debug VIEW, not a look setting, so "reset" means
-        // off. Leaving it out is why /post reset could not undo a stray /post viz either.
-        _viz = 0f; _clearViz = false;
-        _scale = _bootScale; _motion = false; _taa = false; _taaBlend = _bootTaaBlend; _taau = true;
-        _auto = _bootAuto; _autoMin = _bootAutoMin; _autoMax = _bootAutoMax; _autoSpeed = _bootAutoSpeed; _autoDown = _bootAutoDown;
-        _autoTicks = 0;
-        PostStack.ResetTuning();
-        _log?.Info($"PostChain: /post reset -> {Describe()}");
-    }
-
     /// <summary>Drop every GL object (context loss / disarm). Names are meaningless once the context is
     /// gone, so this only forgets them -- it never deletes.</summary>
     internal static void Forget()
@@ -349,7 +229,7 @@ internal static unsafe class PostChain
 
     /// <summary>#491: the adaptation runs this pass -- armed, the HDR target up, and not a pass that already
     /// stood it down. The caller adds "world scene, not a probe capture".</summary>
-    internal static bool AutoWanted => _auto && Armed && !_autoFailed;
+    internal static bool AutoWanted => Post.Auto.V && Armed && !_autoFailed;
 
     /// <summary>#491: histogram the HDR target and ease the gain. Two dispatches, no readback: the gain
     /// stays on the GPU and the resolve reads it from the SSBO. dt is the wall clock since the last adapt,
@@ -377,8 +257,8 @@ internal static unsafe class PostChain
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
         Gl.UseProgram(_progAdapt);
         Gl.Uniform2f(_aRange, AutoLogMin, AutoLogMax - AutoLogMin);
-        Gl.Uniform4f(_aParams, dt, MathF.Min(_autoMin, _autoMax), MathF.Max(_autoMin, _autoMax), AutoKey);
-        Gl.Uniform2f(_aRates, _autoSpeed, _autoDown);
+        Gl.Uniform4f(_aParams, dt, MathF.Min(Post.AutoMin.V, Post.AutoMax.V), MathF.Max(Post.AutoMin.V, Post.AutoMax.V), AutoKey);
+        Gl.Uniform2f(_aRates, Post.AutoSpeed.V, Post.AutoDown.V);
         Gl.DispatchCompute(1, 1, 1);
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
         Gl.UseProgram(0);
@@ -566,7 +446,7 @@ internal static unsafe class PostChain
         // OBJECTS, never per-context state, and glClearColor is per-context: querying it here would return
         // whatever THIS context was last set to -- (0,0,0,0) until the first probe capture, and EnvProbe's
         // own clear colour ever after.
-        if (_clearViz) Gl.ClearColor(1f, 0f, 1f, 1f);
+        if (Post.ClearViz.V) Gl.ClearColor(1f, 0f, 1f, 1f);
         else Gl.ClearColor(MathF.Pow(MathF.Max(clearRgba[0], 0f), AlloyLights.SrgbGamma),
                       MathF.Pow(MathF.Max(clearRgba[1], 0f), AlloyLights.SrgbGamma),
                       MathF.Pow(MathF.Max(clearRgba[2], 0f), AlloyLights.SrgbGamma), clearRgba[3]);
@@ -808,7 +688,10 @@ internal static unsafe class PostChain
     internal static void Bloom()
     {
         _bloomOk = false;
-        if (!Armed || _bloom <= 0f || _levels <= 0) return;
+        // #571: the stock "HDR / Bloom" option is a hard gate over /post bloom -- off means no bloom
+        // contribution, and the composite then reads strength 0. The HDR target itself stays: the Alloy
+        // stages have no display-space variant (AlloyGate's hdr=0 refusal says the same).
+        if (!Armed || Post.Bloom.V <= 0f || _levels <= 0 || !StockConfig.HdrBloom) return;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         new PassState(depth: false, depthWrite: false).Apply();
         Gl.BindVertexArray(_vao);
@@ -829,7 +712,7 @@ internal static unsafe class PostChain
             else { Gl.BindTexture(Gl.TEXTURE_2D, _bloomTex); Clamp(i - 1); Gl.Uniform1i(_dLod, i - 1); }
             Gl.Uniform1i(_dFirst, i == 0 ? 1 : 0);
             Gl.Uniform2f(_dTexel, 1f / sw, 1f / sh);
-            Gl.Uniform2f(_dThresh, _threshold, MathF.Max(_knee, 1e-4f));
+            Gl.Uniform2f(_dThresh, Post.Threshold.V, MathF.Max(Post.Knee.V, 1e-4f));
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         }
 
@@ -881,22 +764,22 @@ internal static unsafe class PostChain
         Gl.ActiveTexture(Gl.TEXTURE0 + BloomUnit);
         // #388: the velocity viz rides the bloom unit -- nothing else the resolve samples is free, and the
         // two views are exclusive by construction.
-        Gl.BindTexture(Gl.TEXTURE_2D, (int)_viz == VizMotion ? MotionVectors.Tex : _bloomOk ? _bloomTex : 0);
+        Gl.BindTexture(Gl.TEXTURE_2D, Post.Viz.V == VizMotion ? MotionVectors.Tex : _bloomOk ? _bloomTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.Uniform1i(_cHdr, (int)HdrUnit);
         Gl.Uniform1i(_cBloom, (int)BloomUnit);
-        Gl.Uniform1f(_cStrength, _bloomOk ? _bloom : 0f);
-        Gl.Uniform1i(_cMode, _mode);
-        Gl.Uniform1f(_cKnee, _tmKnee);
-        Gl.Uniform1f(_cExposure, _exposure);
+        Gl.Uniform1f(_cStrength, _bloomOk ? Post.Bloom.V : 0f);
+        Gl.Uniform1i(_cMode, Post.Tonemap.V);
+        Gl.Uniform1f(_cKnee, Post.TmKnee.V);
+        Gl.Uniform1f(_cExposure, Post.Exposure.V);
         bool auto = _autoThisPass; _autoThisPass = false;
         if (auto) Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindExposure, _autoBuf);
         Gl.Uniform1i(_cAuto, auto ? 1 : 0);
-        Gl.Uniform1f(_cAcesMix, _acesMix);
+        Gl.Uniform1f(_cAcesMix, Post.AcesMix.V);
         // ...in LSBs of the 8-bit target this writes into, converted here rather than in the shader so the
         // dial reads as "how many quantisation steps of noise", which is the only unit it makes sense in.
         Gl.Uniform1f(_cDither, into != 0 ? 0f : DitherLsb);
-        Gl.Uniform1i(_cViz, (int)_viz);
+        Gl.Uniform1i(_cViz, Post.Viz.V);
         Gl.Viewport(rect[0], rect[1], rect[2], rect[3]);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         // Hand the depth state back the way the colour passes left it -- the probe capture may still be
@@ -983,7 +866,7 @@ internal static unsafe class PostChain
     {
         Gl.DeleteProgram(stale);
         _log?.Info($"PostChain: the {what} override is refused -- {why}. Rebuilding from the embedded "
-                 + "default (regenerate the override with /dumpshaders to get it back).");
+                 + "default (regenerate the override with /alloy shaderdump to get it back).");
         return GlProgram.Graphics(FullscreenVs, fs, _log, $"PostChain {what} (embedded)");
     }
 
@@ -1233,37 +1116,32 @@ internal static unsafe class PostChain
         }
         """;
 
-    /// <summary>Off-device (run-demo.sh): the dial table is reachable and the shoulder really is the identity
-    /// below its knee -- which is the whole parity argument, and the one property no compile check covers.
-    /// Restores whatever it touched.</summary>
+    /// <summary>Off-device (run-demo.sh): the knob table has the shape the frame relies on and the shoulder
+    /// really is the identity below its knee -- which is the whole parity argument, and the one property no
+    /// compile check covers. Writes <c>V</c> directly (a Set would run Changed and arm the cfg writer) and
+    /// restores whatever it touched.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        // #175: the check DRIVES the tuning path, and tuning logs a line each. Silenced for the duration --
-        // it used to be quiet only because Attach had not run yet and _log was still null, which is not a
-        // property to depend on: the pass roll-call attaches every pass before it checks any of them.
         ExtenderLog? quiet = _log; _log = null;
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"PostChain.SelfCheck FAIL: {w}"); } }
 
-        float bl = _bloom, th = _threshold, kn = _knee, tk = _tmKnee, di = _dither, vz = _viz, sc = _scale, bsc = _bootScale;
-        bool mo = _motion, ta = _taa; float tb = _taaBlend;
-        int md = _mode; bool on = _on; bool armed = Armed;
-        float bb = _bootBloom, bt = _bootThreshold, bk = _bootKnee, btk = _bootTmKnee, bex = _bootExposure, ex = _exposure, bam = _bootAcesMix, am = _acesMix;
-        int bm = _bootMode;
+        float sc = _scale, tb = Post.TaaBlend.V, am = Post.AutoMin.V, ax = Post.AutoMax.V, asp = Post.AutoSpeed.V, ad = Post.AutoDown.V;
+        bool mo = Post.Motion.V, ta = Post.Taa.V, au = Post.Auto.V, on = _on, armed = Armed;
+        int vz = Post.Viz.V;
         try
         {
-            E(float.IsNaN(Tune("nope", 1f)), "an unknown knob is reported");
-            // hdr is CONFIG, not a /post key: it stands the whole Alloy frame down, which is a boot
-            // decision. A Tune that still accepted it would be a live half-stand-down.
-            E(float.IsNaN(Tune("hdr", 0f)), "hdr is not tunable; it is the boot setting");
-            foreach (string key in new[] { "bloom", "threshold", "knee", "tonemap", "tmknee", "exposure", "acesmix",
-                                          "dither", "viz", "scale", "motion", "taa", "taablend", "taau", "aotemporal" })
-                E(!float.IsNaN(Tune(key, 1f)), $"knob \"{key}\" is reachable");
+            E(Post.G.Get("hdr") == null && Post.G.Get("scale") == null && Post.G.Get("aotemporal") == null,
+              "hdr, scale and aotemporal are not post knobs: hdr is the Renderer's boot setting, the other two are alloy.scale and ao.temporal");
+            E(Post.Tonemap.Default == TonemapAces && Post.Tonemap.FormatDefault() == "aces" && Post.Tonemap.RangeText() == "off, shoulder, aces",
+              "the tonemap knob stores the operator index and formats its name");
+            E(Post.Tonemap.TryParse("shoulder", out int tm) && tm == TonemapShoulder && Post.Tonemap.TryParse("0", out tm) && tm == TonemapOff,
+              "...and parses a name or an index");
             // #389: TAA arms the motion pass and stands SMAA down; both toggle with the one key. The jitter
             // sequence is centred, one render pixel wide, and repeats -- and is exactly zero-width at no size.
-            Tune("motion", 0f); Tune("viz", 0f); Tune("taa", 1f);
+            Post.Motion.V = false; Post.Viz.V = 0; Post.Taa.V = true;
             E(TaaOn && MotionWanted && !SmaaStage.Active, "/post taa 1 arms the motion pass and stands SMAA down");
-            Tune("taa", 0f); E(!TaaOn && !MotionWanted, "/post taa 0 disarms both together");
+            Post.Taa.V = false; E(!TaaOn && !MotionWanted, "/post taa 0 disarms both together");
             float sx = 0f, sy = 0f, mx = 0f;
             for (int f = 0; f < JitterCount; f++)
             {
@@ -1276,22 +1154,20 @@ internal static unsafe class PostChain
             E(MathF.Abs(sx) * 500f / JitterCount < 0.1f && MathF.Abs(sy) * 250f / JitterCount < 0.1f, "the jitter sequence is centred within 0.1 px");
             E(mx <= 0.5f + 1e-4f, "...and stays within half a render pixel");
             E(j0x == j8x && j0y == j8y, "...and repeats every JitterCount frames");
-            Tune("taablend", 0f); E(_taaBlend >= 0.02f, "taablend never reaches 0: a frozen history would never converge");
-            Tune("taablend", 1f); E(_taaBlend == 0.5f, "...nor 1: that is the raw jitter with nothing averaging it");
-            Tune("aotemporal", 0f); E(SsaoPass.Temporal == 0f, "/post aotemporal reaches the AO history weight");
-            // #391: the scale is clamped at the command door too -- RenderCommands only refuses negatives,
-            // and a 0x0 target is a refusal wearing a knob's name. And the sizes it produces never hit 0.
-            Tune("scale", 0f); E(_scale == MinScale, "scale 0 clamps to the floor");
-            Tune("scale", 9f); E(_scale == MaxScale, "scale 9 clamps to the ceiling");
-            Tune("scale", 0.67f);
+            E(Post.TaaBlend.TryParse("0", out float blend) && blend == 0.02f, "taablend never reaches 0: a frozen history would never converge");
+            E(Post.TaaBlend.TryParse("1", out blend) && blend == 0.5f, "...nor 1: that is the raw jitter with nothing averaging it");
+            // #391: the render size and lod bias the scale produces never hit 0; the clamp itself is
+            // alloy.scale's range, MinScale..MaxScale. Plain field writes on the knob: nothing runs or is written.
+            E(Renderer.Scale.Min == MinScale && Renderer.Scale.Max == MaxScale, "alloy.scale spans exactly the resolve's range");
+            Renderer.Scale.V = 0.67f;
             E(RenderSize(2560) == 1715 && RenderSize(1) == 1, "render size rounds, never below one pixel");
             E(MathF.Abs(LodBias - MathF.Log2(0.67f)) < 1e-6f, "the lod bias is log2(scale) below 1");
-            Tune("scale", 1.5f); E(LodBias == 0f, "...and 0 above it: supersampling keeps its detail");
-            Tune("scale", 1f); E(RenderSize(2560) == 2560 && LodBias == 0f, "1.0 is pixel-identical");
+            Renderer.Scale.V = 1.5f; E(LodBias == 0f, "...and 0 above it: supersampling keeps its detail");
+            Renderer.Scale.V = 1f; E(RenderSize(2560) == 2560 && LodBias == 0f, "1.0 is pixel-identical");
             // #388: the viz runs the pass without arming it, and arming is what /post motion does.
-            Tune("motion", 0f); Tune("viz", 0f); E(!MotionWanted, "motion off and no viz: the pass sits out");
-            Tune("viz", VizMotion); E(MotionWanted, "viz 4 runs the pass unarmed");
-            Tune("viz", 0f); Tune("motion", 1f); E(MotionWanted, "/post motion 1 arms it");
+            Post.Motion.V = false; Post.Viz.V = 0; E(!MotionWanted, "motion off and no viz: the pass sits out");
+            Post.Viz.V = VizMotion; E(MotionWanted, "viz 4 runs the pass unarmed");
+            Post.Viz.V = 0; Post.Motion.V = true; E(MotionWanted, "/post motion 1 arms it");
             E(Describe().Contains("bloom") && Describe().Contains("tonemap") && Describe().Contains("dither")
               && Describe().Contains("exposure") && Describe().Contains("scale") && Describe().Contains("motion") && Describe().Contains("taa"),
               "Describe names every knob group");
@@ -1311,12 +1187,12 @@ internal static unsafe class PostChain
               && ResolveFs.IndexOf("if (uAuto != 0) c *= uAutoGain;", StringComparison.Ordinal)
               < ResolveFs.IndexOf("if (uMode == 1) c = CxShoulder", StringComparison.Ordinal),
               "the auto-exposure gain multiplies in linear, after the fixed exposure and before the tonemap");
-            E(_auto && !AutoWanted, "auto-exposure boots on, but wants nothing without an armed HDR target");
-            Tune("auto", 0f); E(Describe().Contains("auto off"), "/post auto 0 disarms it and Describe says so");
-            Tune("auto", 1f); E(Describe().Contains("auto on"), "/post auto 1 arms it again");
-            Tune("automin", 0.3f); Tune("automax", 5f); Tune("autospeed", 2f); Tune("autodown", 6f);
-            E(_autoMin == 0.3f && _autoMax == 5f && _autoSpeed == 2f && _autoDown == 6f, "the four auto dials read back");
-            ResetTuning(); E(_auto == _bootAuto && _autoMin == _bootAutoMin && _autoDown == _bootAutoDown, "/post reset disarms auto and restores its dials");
+            E(Post.Auto.Default && !AutoWanted, "auto-exposure boots on, but wants nothing without an armed HDR target");
+            Post.Auto.V = false; E(Describe().Contains("auto off"), "/post auto 0 disarms it and Describe says so");
+            Post.Auto.V = true; E(Describe().Contains("auto on"), "/post auto 1 arms it again");
+            E(Post.AutoMin.Default == 0.5f && Post.AutoMax.Default == 2f && Post.AutoSpeed.Default == 1f && Post.AutoDown.Default == 3f,
+              "the four auto dials boot at the #491 values");
+            E(Post.AutoMin.Min == 0.01f, "automin never reaches 0: the gain's floor is a divisor");
             // The shader bin count is literal text; this ties it to the C# constant the buffer is sized from.
             E(AutoBufLib.Contains($"[{AutoBins}]") && AutoBufLibRead.Contains($"[{AutoBins}]")
               && AutoHistCs.Contains($"* {AutoBins - 2}.0), {AutoBins - 3}u") && AutoAdaptCs.Contains($"/ {AutoBins - 2}.0"),
@@ -1351,13 +1227,9 @@ internal static unsafe class PostChain
             E(ResolveFs.Contains("vec3 outc = CxEncode(c);") && !PostColorLib.Contains("uniform"),
               "the resolve's encode is unconditional -- the gamma gate is Precheck's refusal, not a switch");
 
-            _bootBloom = 0.5f; _bootMode = Aces; _bootScale = 0.75f;
-            ResetTuning();
-            E(_bloom == 0.5f && _mode == Aces, "reset honours the BOOT values, not the hardcoded defaults");
-            E(_scale == 0.75f && !_motion && !_taa, "reset restores the boot scale (renderscale) and disarms motion and TAA");
-            // ...and clears the debug VIEW, which has no boot value. The loop above has just set viz to 1,
-            // so this is the live case: without it /post reset cannot undo a stray /post viz.
-            E(_viz == 0f, "reset turns the debug viz off");
+            // The debug VIEWS default off, so /post reset (every Default) clears a stray /post viz with the rest.
+            E(!Post.Motion.Default && !Post.Taa.Default && Post.Viz.Default == 0 && !Post.ClearViz.Default,
+              "motion, taa and both views default OFF: reset disarms them");
 
             // The shoulder, in C#, mirroring the GLSL: identity below the knee, and never past 1.
             static float Shoulder(float c, float k)
@@ -1374,22 +1246,10 @@ internal static unsafe class PostChain
         }
         finally
         {
-            // _viz with the rest, and it is the one that BIT: the loop above drives every knob including
-            // "viz", nothing restored it, and nothing else on the boot path writes it -- so every session
-            // came up in the bloom-debug view and the only way out was typing /post viz 0. The sentinel
-            // below is what stops the next knob doing the same silently.
-            const float Sentinel = -12345f;
-            _bloom = Sentinel; _threshold = Sentinel; _knee = Sentinel; _tmKnee = Sentinel;
-            _dither = Sentinel; _viz = Sentinel; _scale = Sentinel;
-            _bloom = bl; _threshold = th; _knee = kn; _tmKnee = tk; _mode = md; _on = on;
-            _dither = di; _viz = vz; _scale = sc; _bootScale = bsc; _motion = mo; _taa = ta; _taaBlend = tb;
-            SsaoPass.ResetTuning();
-            Armed = armed;
-            _bootBloom = bb; _bootThreshold = bt; _bootKnee = bk; _bootTmKnee = btk; _bootExposure = bex; _exposure = ex; _bootAcesMix = bam; _acesMix = am;
-            _bootMode = bm;
-            E(_bloom != Sentinel && _threshold != Sentinel && _knee != Sentinel && _tmKnee != Sentinel
-              && _dither != Sentinel && _viz != Sentinel && _scale != Sentinel,
-              "the check restores EVERY knob it drove -- a missed one ships its test value as the boot value");
+            // Every knob the check drove goes back: a missed one would ship its test value as the live value,
+            // which is how /post viz once booted every session into the bloom-debug view.
+            Renderer.Scale.V = sc; Post.TaaBlend.V = tb; Post.AutoMin.V = am; Post.AutoMax.V = ax; Post.AutoSpeed.V = asp; Post.AutoDown.V = ad;
+            Post.Motion.V = mo; Post.Taa.V = ta; Post.Auto.V = au; _on = on; Armed = armed; Post.Viz.V = vz;
             _log = quiet;
         }
         log.Info(ok ? "PostChain.SelfCheck: passed" : "PostChain.SelfCheck: FAILED");

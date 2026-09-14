@@ -7,6 +7,14 @@ Implementation guide for a NEW managed UI feature: world-anchored overhead eleme
 Everything below is what already exists, with file:line. Where something does **not** exist,
 it says so explicitly — those are the pieces the implementer has to build.
 
+> **Status (ADR 0025, #594).** The feature shipped (`managed/Services/Nameplate/`). The settings
+> model this guide was written against is gone: there is one `cx.cfg`, every knob is a
+> `KnobGroup` declaration (`NameplateKnobs`, group `nameplate`), the panel is `/settings`, and
+> the chat command is the generated `/nameplate`. So where the text below says `vanilla=1` read
+> `alloy.enabled=0`; `/np`, `cx-nameplate.cfg`, `ConfigFile.Load/Save`, `Settings.Bool/Int/Float/Text`,
+> the "two buckets" of ADR 0013 and the per-feature `SettingsPanel` gear no longer exist. §5 and §6
+> are kept as the record of the seam they described; build against `docs/spec/unified-settings.md`.
+
 ---
 
 ## 0. Executive summary of what is and isn't there
@@ -21,7 +29,7 @@ it says so explicitly — those are the pieces the implementer has to build.
 | `/command` + per-feature cfg + `/knobs` | **Exists** (`CommandRegistry`, `ConfigFile`, `Settings`) |
 | Settings panel rows | **Exists** (`SettingsPanel` + `SetRow`/`SetKind`/`SetAct`) |
 | World→screen projection helper | **DOES NOT EXIST.** This is the first world-anchored UI. See §3 |
-| Camera valid at present time | **Latched only**, and only when Alloy is not `vanilla=1`. See §3 |
+| Camera valid at present time | **Latched only**, and only when Alloy is not `alloy.enabled=0`. See §3 |
 | Speaker object id from chat ingest | **Not available** at the chat tap. Use the bubble hook instead. See §12 |
 | Depth occlusion (plate behind a wall) | Not available at UI draw time |
 | Any test framework | **None.** `run-demo.sh` greps the log for `SelfCheck.*FAIL`. That is the whole test surface |
@@ -84,8 +92,6 @@ public sealed unsafe class NameplateService : IExtenderService
     {
         _log = log;
         NameplateConfig.SelfCheck(log);          // run-demo's only gate — see §11
-        if (!GameGate.OwnsFramePresent)          // lockchat: stand down, vanilla intact
-        { log.Info("NameplateService: standing down (framework not owning frame present)"); return; }
 
         _window = new Window(0, 0, 0, 0)
         {
@@ -543,7 +549,7 @@ self-check off device — put a `NameplateAnim.SelfCheck` beside `ChatAnim.SelfC
 
 ---
 
-## 5. Config and knobs (ADR 0013)
+## 5. Config and knobs (ADR 0013 — superseded by ADR 0025, see the status note at the top)
 
 **Two buckets, and env vars are not one.** Note the exact split — the task framing slightly conflates them:
 
@@ -651,10 +657,10 @@ public static float Float(string key, float fallback, float min = float.MinValue
 public static string Text(string key, string fallback);
 ```
 
-Precedent, `managed/Framework/GameGate.cs`:
+Precedent, `managed/Graphics/GlContextService.cs`:
 
 ```csharp
-private static readonly bool _locked = Settings.Bool("lockchat", false);
+_disabled = !Settings.Bool("gl46", true);
 ```
 
 Every read is recorded and printed by `/knobs` (`managed/Framework/KnobSurface.cs:50`).

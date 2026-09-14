@@ -4,85 +4,27 @@ using System.IO;
 namespace CX.Framework;
 
 /// <summary>
-/// One CX <c>*.cfg</c> file, and the only place that knows how to load or save one (#164). Owns three
-/// things every feature used to re-roll: the pre-main deferral rule, read-with-degrade + write-if-changed,
-/// and the flat <c>key=value</c> line walk (<see cref="ForEachPair"/>).
+/// The CX <c>*.cfg</c> read helpers (#164): the pre-main deferral rule (<see cref="Ready"/>), the
+/// <c>sowx</c>-stem read fallback (<see cref="ReadPath"/>), the ungated read (<see cref="ReadTextNow"/>) and
+/// the flat <c>key=value</c> line walk (<see cref="ForEachPair"/>). The per-feature load/save half went with
+/// the per-feature cfgs (ADR 0025): <see cref="KnobFile"/> writes the one file.
 /// </summary>
 /// <remarks>
-/// The deferral rule, encoded structurally so a new caller cannot forget it: our loader runs BEFORE the
-/// engine's entry point, so <see cref="Native.UserDirectory"/> is null then and the config path would latch
-/// the pre-main fallback rather than whatever the engine resolved. <see cref="Load"/> therefore returns
-/// false and does nothing at all until the user dir resolves -- a no-op that stays retryable -- and latches
-/// exactly once when it does. Call it from a
-/// site that runs repeatedly (a frame, a cursor update); never from Initialize. For the same reason the
-/// resolved path is NEVER cached: only the file name is stored, and <see cref="Path"/> resolves per use.
+/// The deferral rule: our loader runs BEFORE the engine's entry point, so <see cref="Native.UserDirectory"/>
+/// is null then and a config path resolved at that moment would latch the pre-main fallback rather than
+/// whatever the engine resolved. A caller that must wait consults <see cref="Ready"/> from a site that runs
+/// repeatedly (a frame, a cursor update); never from Initialize. For the same reason no resolved path is ever
+/// cached here: <see cref="ReadPath"/> resolves per use.
 /// </remarks>
-public sealed class ConfigFile
+public static class ConfigFile
 {
-    private readonly string _fileName;
-    private string _savedText = "";
-    private bool _loaded;
-
-    public ConfigFile(string fileName) => _fileName = fileName;
-
-    /// <summary>Absolute path, resolved per use (see the deferral note on the type).</summary>
-    public string Path => Native.ConfigPath(_fileName);
-
-    /// <summary>True once <see cref="Load"/> has latched.</summary>
-    public bool Loaded => _loaded;
-
-    /// <summary>True when the engine user dir is resolvable, i.e. when a config load may latch. The one
-    /// expression of the pre-main rule; <see cref="Load"/> is the gate, this is for the odd caller whose
-    /// file format cannot use it (HotkeyStore's sectioned cfg).</summary>
+    /// <summary>True when the engine user dir is resolvable, i.e. when a deferred config read may latch. The
+    /// one expression of the pre-main rule (HotkeyStore's sectioned cfg).</summary>
     public static bool Ready => Native.UserDirectory() != null;
-
-    /// <summary>
-    /// Load once, or do nothing and stay retryable. Returns false while the user dir is unresolved or the
-    /// file has already been loaded; returns true exactly once, on the load that latched. <paramref name="applyText"/>
-    /// receives the whole file text and is NOT called for a missing or unreadable file (defaults stand), so a
-    /// true return means "latched", not "text was applied".
-    /// </summary>
-    public bool Load(ExtenderLog? log, Action<string> applyText)
-    {
-        if (_loaded || !Ready) return false;
-        _loaded = true;
-        try
-        {
-            string p = ReadPath(_fileName, log);
-            if (File.Exists(p)) applyText(File.ReadAllText(p));
-        }
-        catch (Exception e) { log?.Info($"config: {_fileName} load failed: {e.Message}"); }
-        return true;
-    }
-
-    /// <summary>Write <paramref name="text"/> iff it differs from what this file last held. Does nothing and
-    /// stays retryable while the user dir is unresolved, the same deferral rule <see cref="Load"/> honours (#190).
-    /// Creates the directory; an IO failure is logged and swallowed (a config write must never take the client down).</summary>
-    public void Save(string text, ExtenderLog? log)
-    {
-        if (!Ready) return;   // before the _savedText latch below, or a refused save is lost, not deferred (#190)
-        if (text == _savedText) return;
-        _savedText = text;   // set before the write: a failed write must not re-attempt every frame
-        try
-        {
-            string p = Path;
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(p)!);
-            File.WriteAllText(p, text);
-        }
-        catch (Exception e) { log?.Info($"config: {_fileName} save failed: {e.Message}"); }
-    }
-
-    /// <summary>Declare <paramref name="text"/> to be what is already on disk, so the next identical
-    /// <see cref="Save"/> is a no-op. For a loader that wants no write until the user actually changes something.</summary>
-    public void Baseline(string text) => _savedText = text;
-
-    /// <summary>What the last accepted <see cref="Save"/> wrote; "" until one is. For <see cref="SelfCheck"/>,
-    /// which has no other way to see that a refused save stayed retryable.</summary>
-    internal string SavedText => _savedText;
 
     /// <summary>Read a cfg's text WITHOUT the deferral gate, "" when absent or unreadable; <paramref name="path"/>
     /// is the file consulted (<see cref="ReadPath"/>). Only for a decision that must be made pre-main (the boot
-    /// settings); everything else uses <see cref="Load"/>.</summary>
+    /// settings).</summary>
     public static string ReadTextNow(string fileName, ExtenderLog? log, out string path)
     {
         path = ReadPath(fileName, log);
@@ -123,8 +65,7 @@ public sealed class ConfigFile
         }
     }
 
-    /// <summary>Off-device proof of the line walker's degrade behaviour and of the deferral gate. Runs at host
-    /// start, which is pre-main by construction, so the gate's "not yet" is the expected answer there.</summary>
+    /// <summary>Off-device proof of the line walker's degrade behaviour.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;
@@ -144,30 +85,6 @@ public sealed class ConfigFile
         E(seen.Count == 3 && seen[2] == ("x", "a=b"), "split at the FIRST separator only");
 
         ForEachPair("", (_, _) => E(false, "empty text yields no pairs"));
-
-        // The whole point of the module: pre-main, a load is a no-op that stays retryable.
-        var f = new ConfigFile("cx-selfcheck-never-written.cfg");
-        bool applied = false;
-        bool latched = f.Load(log, _ => applied = true);
-        E(Ready || (!latched && !f.Loaded && !applied), "pre-main load is a no-op and stays retryable");
-
-        // #190: the save half of the same rule -- refused while unready, and the SAME text still writes later.
-        // Guarded like the load case above: the "unresolved" half is only true pre-main, and forcing it is
-        // not possible -- UserDirectory() re-resolves from g_pExoBase whenever the cache is null.
-        if (!Ready)
-        {
-            var g = new ConfigFile("cx-selfcheck-save.cfg");
-            g.Save("k=v", log);
-            E(g.SavedText.Length == 0, "save while the user dir is unresolved writes nothing and does not latch");
-            E(!File.Exists(g.Path), "refused save leaves no file under the pre-main fallback path");
-
-            string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "cx-selfcheck-userdir");
-            Native.ForceUserDirectory(tmp);
-            g.Save("k=v", log);
-            E(File.Exists(g.Path) && File.ReadAllText(g.Path) == "k=v", "the same text writes once the user dir resolves");
-            try { File.Delete(g.Path); Directory.Delete(tmp); } catch { }
-            Native.ForceUserDirectory(null);
-        }
 
         log.Info(ok ? "ConfigFile.SelfCheck: passed" : "ConfigFile.SelfCheck: FAILED");
     }

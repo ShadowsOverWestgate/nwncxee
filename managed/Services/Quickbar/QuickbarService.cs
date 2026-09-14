@@ -9,9 +9,15 @@ namespace CX.Services.Quickbar;
 /// <summary>
 /// Quickbar chrome service: replaces the native <c>CPanelQuickBar::Reposition</c> to fix centering,
 /// suppress the buggy <c>GUI_QBAR_ENDS</c> model, and draw configurable full-width background bars
-/// via the existing GL pipeline. Settings opened by <c>/qbar</c> chat command (no cog icon — the panel
-/// is position-independent). Produces <see cref="RenderFrame"/>s consumed by <see cref="ChatService"/>
-/// alongside chat windows — no second SwapBuffers hook.
+/// via the existing GL pipeline. Its settings are the <c>quickbar</c> group (<see cref="QuickbarKnobs"/>)
+/// on the settings panel; the window-snapping knobs it applies each tick are the <c>ui</c> group's.
+/// Produces <see cref="RenderFrame"/>s consumed by <see cref="ChatService"/> alongside chat windows -- no
+/// second SwapBuffers hook.
+/// <para><c>quickbar.enabled</c> is live both ways (#591): off, <see cref="Place"/> keeps REPLACING the engine's
+/// Reposition with its own centre formula <c>((vpW-800)/2, 0)</c> and the chrome and compass rows are inert
+/// (the stock HUD: no bars, compass shown). Forwarding was rejected (spec §4.2): the engine body attaches
+/// <c>GUI_QBAR_ENDS</c> on its first run past 800 px and the flag it sets is never cleared, so a re-enable
+/// could not detach it until relog.</para>
 /// </summary>
 public sealed unsafe class QuickbarService : IExtenderService
 {
@@ -28,38 +34,33 @@ public sealed unsafe class QuickbarService : IExtenderService
     private static readonly int QuickbarPanelOff = EngineLayout.InGameGuiQuickbar;
     private static readonly int ExoAppInternalOff = EngineLayout.ExoAppInternal;
 
-    private static QuickbarConfig _config = new();
-    private static readonly QuickbarSettings _settings = new();
-    private static readonly ConfigFile _file = new("cx-quickbar.cfg");
-
     private static volatile int _vpW, _vpH;
     private static float _guiScale = 1f;
+    /// <summary>The snapping values the chrome was last built for (the grid overlay draws them).</summary>
+    private static bool _gridOn;
+    private static int _gridPx;
 
-    private static bool _dirty = true;
-    private static bool _configLoaded;
-    private static volatile bool _live;
+    private static volatile bool _dirty = true;
 
     // Compass hide/show engine calls.
     private static delegate* unmanaged<IntPtr, void> _hideCompass, _showCompass;
-    private static bool _compassApplied;
-    private static bool _qbPressConsumed;
+    private static bool _compassApplied = true;
 
     private static volatile RenderFrame[] _extraFrames = Array.Empty<RenderFrame>();
-    private static VertexBatch? _bandBatch, _settingsBatch;
-    /// <summary>Extra frames this service wants drawn (band under chat, settings on top).</summary>
+    private static VertexBatch? _bandBatch;
+    /// <summary>Extra frames this service wants drawn (the band under chat).</summary>
     public static RenderFrame[] ExtraFrames => _extraFrames;
 
-    /// <summary>#232 second mode, read at frame time by the Alloy outline-highlight pass (a bool field
-    /// read; no allocation, safe from the render thread).</summary>
-    public static bool OutlineHighlight => _config.OutlineHl;
+    /// <summary>A layout knob moved (the master, align, bars, hidden): the next in-game tick repositions the
+    /// quickbar and rebuilds the chrome. Cold, the setter's thread; the tick is the one place engine pointers are walked.</summary>
+    internal static void LayoutChanged() => _dirty = true;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        QuickbarConfig.SelfCheck(log);
-        QuickbarSettings.SelfCheck(log);
+        UiCategory.Declare();   // the UI groups declare in panel order whether or not the hook arms
         // Stand down as a UNIT, #48's rule: every knob here ends in one of these three symbols, so a build
-        // that resolves none of them would offer a settings panel whose every control silently does nothing.
+        // that resolves none of them would offer rows whose every control silently does nothing.
         // Not OS-gated -- gated on the symbols, so the Windows anchors landing is all it takes to switch on.
         _setPosScreen = (delegate* unmanaged<IntPtr, int, int, void>)Native.Sym(SymbolMap.SetPositionScreen);
         _hideCompass = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.HideCompass);
@@ -72,35 +73,20 @@ public sealed unsafe class QuickbarService : IExtenderService
             string missing = (tramp == IntPtr.Zero ? "CPanelQuickBar::Reposition " : "")
                            + (_setPosScreen == null ? "CGuiPanel::SetPositionScreen " : "");
             log.Always($"QuickbarService: standing down as a unit -- no anchor for {missing}" +
-                       "(docs/windows-symbols.md); /settings and /compass answer instead of acting");
-            // Registered even while stood down, and deliberately: an UNREGISTERED slash command is sent
-            // verbatim as chat (CommandRegistry's "unknown slash sent verbatim", which is what lets a
-            // server own its own commands) -- so dropping these would SPEAK "/settings" to everyone in
-            // earshot. A command that explains itself is not a control that does nothing.
-            CommandRegistry.Global.Register("/settings", "quickbar settings (unavailable on this client)",
-                _ => $"The quickbar is unavailable on this client: no anchor for {missing.Trim()}.");
-            CommandRegistry.Global.Register("/compass", "toggle the compass (unavailable on this client)",
-                _ => $"The compass toggle is unavailable on this client: no anchor for {missing.Trim()}.");
+                       "(docs/windows-symbols.md); the quickbar rows answer instead of acting");
+            QuickbarKnobs.G.Status = () => $"unavailable on this client: no anchor for {missing.Trim()}";
             return;
         }
         log.Info("QuickbarService: Reposition hook installed");
 
-        CommandRegistry.Global.Register("/settings", "toggle the quickbar settings panel",
-            _ => { ToggleSettings(); return null; });
-        CommandRegistry.Global.Register("/compass", "toggle the compass", _ => { ToggleCompass(); return null; });
-
-        // Register a framework Window so the input layer routes mouse events to the settings panel (#64). The
-        // quickbar draws through ChatService's frame list (no DrawContent here); it only needs input + a hit-test
-        // override (its panel is the only clickable region, and only while open). Skipped under LOCKCHAT, where
-        // the framework input layer is down and the quickbar is inert (Tick never runs).
-        if (GameGate.OwnsFramePresent)
-            _window = new Window(0, 0, 0, 0)
-            {
-                Focusable = false,
-                OnMouseButton = OnMouseButton,
-                OnMouseMotion = OnMouseMotion,
-                HitTestOverride = (px, py) => MouseOverUi((int)px, (int)py),
-            };
+        // A framework Window so the frame host runs the per-frame tick whether or not the chatbox is up. The
+        // chrome itself still draws through ChatService's frame list; the tick is the viewport/scale edges, the
+        // snapping knobs and the compass.
+        _window = new Window(0, 0, 0, 0)
+        {
+            Focusable = false,
+            DrawContent = () => { if (GameGate.InGame) Tick(Metrics.GameUiScale); else Sleep(); },
+        };
     }
 
     private static Window? _window;
@@ -110,8 +96,6 @@ public sealed unsafe class QuickbarService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnReposition(IntPtr self)
     {
-        if (!_configLoaded) LoadConfig();
-
         int vpW = 0;
         if (_guiMan != IntPtr.Zero)
         {
@@ -121,30 +105,29 @@ public sealed unsafe class QuickbarService : IExtenderService
         _vpW = vpW;
 
         if (_setPosScreen == null) return;
-
-        if (_config.Hidden)
-        {
-            _setPosScreen(self, -9999, -9999);
-        }
-        else
-        {
-            int x = _config.Align switch
-            {
-                QbarAlign.Left => 0,
-                QbarAlign.Right => vpW - QuickbarModelW,
-                _ => (vpW - QuickbarModelW) / 2,
-            };
-            _setPosScreen(self, x, 0);
-        }
+        Place(self, vpW);
         _dirty = true;
     }
 
-    /// <summary>Called each frame by ChatService to refresh viewport + rebuild chrome if dirty.</summary>
-    public static void Tick(float guiScale)
+    /// <summary>The one position rule: the stock centre when the master is off, off-screen when hidden, else
+    /// the aligned x at the bottom edge.</summary>
+    private static void Place(IntPtr qbar, int vpW)
     {
-        _live = true;
-        if (!_configLoaded) LoadConfig();
+        if (QuickbarKnobs.Enabled.V && QuickbarKnobs.Hidden.V) { _setPosScreen(qbar, -9999, -9999); return; }
+        _setPosScreen(qbar, AlignedX(vpW), 0);
+    }
 
+    private static int AlignedX(int vpW) => !QuickbarKnobs.Enabled.V ? (vpW - QuickbarModelW) / 2 : QuickbarKnobs.Alignment switch
+    {
+        QbarAlign.Left => 0,
+        QbarAlign.Right => vpW - QuickbarModelW,
+        _ => (vpW - QuickbarModelW) / 2,
+    };
+
+    /// <summary>The in-game frame tick (this window's content-draw): refresh viewport, apply the snapping knobs,
+    /// the compass, and -- when a knob or the viewport moved -- reposition the quickbar and rebuild the chrome.</summary>
+    private static void Tick(float guiScale)
+    {
         int vpW = 0, vpH = 0;
         if (_guiMan != IntPtr.Zero)
         {
@@ -157,9 +140,11 @@ public sealed unsafe class QuickbarService : IExtenderService
 
         ApplyCompass();
 
-        if (_config.GridOn && _config.GridPx > 0)
+        bool gridOn = UiKnobs.Snap.V; int gridPx = UiKnobs.GridPx.V;
+        if (gridOn != _gridOn || gridPx != _gridPx) { _gridOn = gridOn; _gridPx = gridPx; _dirty = true; }
+        if (gridOn && gridPx > 0)
         {
-            Chat.Core.ChatWindow.SnapPx = _config.GridPx;
+            Chat.Core.ChatWindow.SnapPx = gridPx;
             Chat.Core.ChatWindow.SnapCX = vpW / 2f;
             Chat.Core.ChatWindow.SnapCY = vpH / 2f;
         }
@@ -168,7 +153,7 @@ public sealed unsafe class QuickbarService : IExtenderService
             Chat.Core.ChatWindow.SnapPx = 0;
         }
 
-        if (_config.EdgeSnap && vpW > 0)
+        if (UiKnobs.EdgeSnap.V && vpW > 0)
         {
             Chat.Core.ChatWindow.EdgeThresh = Chat.Core.ChatWindow.EdgeMagnet;
             Chat.Core.ChatWindow.EdgeVpW = vpW;
@@ -179,92 +164,45 @@ public sealed unsafe class QuickbarService : IExtenderService
             Chat.Core.ChatWindow.EdgeThresh = 0;
         }
 
-        if (_dirty) { RebuildChrome(); ChatService.RequestRebuild(); }
+        if (_dirty) { _dirty = false; RepositionQuickbar(); RebuildChrome(); ChatService.RequestRebuild(); }
     }
 
     /// <summary>Go dormant off-module.</summary>
-    public static void Sleep()
+    private static void Sleep()
     {
-        _live = false;
-        _settings.Reset();
-        _compassApplied = false;
+        _compassApplied = true;
         _extraFrames = Array.Empty<RenderFrame>();
         Chat.Core.ChatWindow.SnapPx = 0;
         Chat.Core.ChatWindow.EdgeThresh = 0;
     }
-
-    /// <summary>True while the quickbar settings panel is open.</summary>
-    public static bool SettingsOpen => _settings.Open;
 
     /// <summary>The quickbar button-bar rect (bottom-centered/aligned 800x36), for window snapping. False when
     /// hidden or the viewport isn't known yet. The quickbar itself never drags -- it is only ever an obstacle.</summary>
     public static bool SnapRectOut(out (float X, float Y, float W, float H) r)
     {
         int vpW = _vpW, vpH = _vpH;
-        if (_config.Hidden || vpW <= 0 || vpH <= 0) { r = default; return false; }
-        float qW = QuickbarModelW, qH = QuickbarBaseH;
-        float qX = _config.Align switch { QbarAlign.Left => 0f, QbarAlign.Right => vpW - qW, _ => (vpW - qW) / 2f };
-        r = (qX, vpH - qH, qW, qH);
+        if ((QuickbarKnobs.Enabled.V && QuickbarKnobs.Hidden.V) || vpW <= 0 || vpH <= 0) { r = default; return false; }
+        r = (AlignedX(vpW), vpH - QuickbarBaseH, QuickbarModelW, QuickbarBaseH);
         return true;
     }
 
-    /// <summary>Toggle compass visibility (called from <c>/compass</c> chat command).</summary>
-    public static void ToggleCompass()
-    {
-        _config.CompassHidden = !_config.CompassHidden;
-        ApplyCompass();
-        SaveConfig();
-    }
-
-    /// <summary>Toggle the settings panel on/off (called from <c>/qbar</c> chat command).</summary>
-    public static void ToggleSettings()
-    {
-        if (_settings.Open)
-        {
-            _settings.Reset();
-        }
-        else
-        {
-            int vpW = _vpW > 0 ? _vpW : TextRig.ViewportW;
-            int vpH = _vpH > 0 ? _vpH : TextRig.ViewportH;
-            _settings.OpenAt(vpW, vpH, _config);
-            _log?.Info($"[settings] opened at viewport {vpW}x{vpH} (guiman {_vpW}x{_vpH}, rig {TextRig.ViewportW}x{TextRig.ViewportH})");
-        }
-        RebuildChrome();
-        ChatService.RequestRebuild();
-    }
-
-    /// <summary>Restore the settings. A no-op that stays retryable until <see cref="ConfigFile"/>'s deferral
-    /// gate opens (our loader runs pre-main), so the callers below just keep asking.</summary>
-    private static void LoadConfig()
-    {
-        if (!_file.Load(_log, ApplyText)) return;
-        _configLoaded = true;
-        _file.Baseline(_config.ToText());   // a load must not provoke a write of what is already on disk
-        _dirty = true;
-    }
-
-    private static void ApplyText(string text) => _config = QuickbarConfig.Parse(text);
-
-    private static void SaveConfig() => _file.Save(_config.ToText(), _log);
-
     /// <summary>Apply compass visibility to the engine. Edge-triggered: only calls Hide/Show when the
-    /// state changes (not every frame).</summary>
+    /// state changes (not every frame). Under an off master the row is inert: the stock compass shows.</summary>
     private static void ApplyCompass()
     {
-        bool want = _config.CompassHidden;
+        bool want = QuickbarKnobs.Compass.V || !QuickbarKnobs.Enabled.V;
         if (want == _compassApplied) return;
         IntPtr gui = LiveGuiInGame();
         if (gui == IntPtr.Zero) return;
         _compassApplied = want;
-        if (want && _hideCompass != null) _hideCompass(gui);
-        else if (!want && _showCompass != null) _showCompass(gui);
+        if (!want && _hideCompass != null) _hideCompass(gui);
+        else if (want && _showCompass != null) _showCompass(gui);
     }
 
-    /// <summary>Rebuild the chrome vertex batch: full-width band (if bars on and quickbar visible).</summary>
+    /// <summary>Rebuild the chrome vertex batch: full-width band (if bars on and quickbar visible) and the
+    /// snapping grid overlay.</summary>
     private static void RebuildChrome()
     {
-        _dirty = false;
         GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null || _vpW <= 0 || _vpH <= 0)
         {
@@ -276,16 +214,11 @@ public sealed unsafe class QuickbarService : IExtenderService
         VertexBatch b = _bandBatch ??= new VertexBatch(0, 0);
         b.Reset(atlas.SolidU, atlas.SolidV);
 
-        if (_config.Bars && !_config.Hidden)
+        if (QuickbarKnobs.Enabled.V && QuickbarKnobs.Bars.V && !QuickbarKnobs.Hidden.V)
         {
             float qW = QuickbarModelW;
             float qH = QuickbarBaseH;
-            float qX = _config.Align switch
-            {
-                QbarAlign.Left => 0f,
-                QbarAlign.Right => vpW - qW,
-                _ => (vpW - qW) / 2f,
-            };
+            float qX = AlignedX(vpW);
             float qY = vpH - qH;
 
             const float barR = 0f, barG = 0f, barB = 0f, barA = 0.55f;
@@ -295,9 +228,9 @@ public sealed unsafe class QuickbarService : IExtenderService
                 b.Rect(qX + qW, qY, (float)vpW, (float)vpH, barR, barG, barB, barA);
         }
 
-        if (_config.GridOn && _config.GridPx > 0)
+        if (_gridOn && _gridPx > 0)
         {
-            int gp = _config.GridPx;
+            int gp = _gridPx;
             float cx = vpW / 2f, cy = vpH / 2f;
             for (float lx = cx % gp; lx < vpW; lx += gp)
             {
@@ -312,103 +245,16 @@ public sealed unsafe class QuickbarService : IExtenderService
         }
 
         int vc = b.VertexCount;
-        var band = new RenderFrame { Verts = b.ToArray(), Count = vc, BodyStart = vc, BodyEnd = vc };
-
-        if (_settings.Open)
-        {
-            VertexBatch sb = _settingsBatch ??= new VertexBatch(0, 0);
-            sb.Reset(atlas.SolidU, atlas.SolidV);
-            EmitSettingsPanel(sb, atlas);
-            int svc = sb.VertexCount;
-            var settingsFrame = new RenderFrame { Verts = sb.ToArray(), Count = svc, BodyStart = svc, BodyEnd = svc };
-            _extraFrames = new[] { band, settingsFrame };
-        }
-        else
-        {
-            _extraFrames = vc > 0 ? new[] { band } : Array.Empty<RenderFrame>();
-        }
+        _extraFrames = vc > 0
+            ? new[] { new RenderFrame { Verts = b.ToArray(), Count = vc, BodyStart = vc, BodyEnd = vc } }
+            : Array.Empty<RenderFrame>();
     }
-
-    /// <summary>Hand the open panel to the shared <see cref="SettingsPanel"/> draw, in the quickbar's chrome
-    /// colours.</summary>
-    private static void EmitSettingsPanel(VertexBatch b, GlyphAtlas atlas)
-    {
-        float baseDrop = atlas.LineHeight;
-        _settings.Panel.Emit(b, atlas, baseDrop, new SettingsPanel.Palette
-        {
-            Body = (0.02f, 0.02f, 0.03f, 1f),
-            TitleBar = (0.10f, 0.12f, 0.16f, 1f),
-            Active = (0.20f, 0.34f, 0.52f, 0.95f),
-            TextRgb = 0xd8dee9u,
-        });
-    }
-
-    // ---- input (settings panel only — no cog, opened by /qbar command) ----
-
-    /// <summary>Handle a mouse button press/release. Only consumes when the settings panel is open.</summary>
-    public static bool OnMouseButton(bool down, int button, int x, int y)
-    {
-        if (!_live || button != 1) return false;
-
-        if (down)
-        {
-            _qbPressConsumed = false;
-            if (!_settings.Open) return false;
-            _qbPressConsumed = true;
-            QbarAlign alignBefore = _config.Align;
-            bool hiddenBefore = _config.Hidden;
-            bool compassBefore = _config.CompassHidden;
-            _settings.MouseDown(x, y, _config);
-            if (_config.Align != alignBefore || _config.Hidden != hiddenBefore) RepositionQuickbar();
-            if (_config.CompassHidden != compassBefore) ApplyCompass();
-            RebuildChrome();
-            ChatService.RequestRebuild();
-            return true;
-        }
-
-        if (!_qbPressConsumed) return false;
-        _qbPressConsumed = false;
-        _settings.MouseUp();
-        SaveConfig();
-        RebuildChrome();
-        ChatService.RequestRebuild();
-        return true;
-    }
-
-    /// <summary>Handle pointer motion. Only consumes when the settings panel is being dragged.</summary>
-    public static bool OnMouseMotion(int x, int y)
-    {
-        if (!_live || !_settings.Open) return false;
-        if (_settings.MouseMove(x, y))
-        {
-            RebuildChrome();
-            ChatService.RequestRebuild();
-            return true;
-        }
-        return false;
-    }
-
-    /// <summary>True when the pointer is over the quickbar settings panel.</summary>
-    public static bool MouseOverUi(int x, int y) => _live && _settings.Open && _settings.Contains(x, y);
 
     private static void RepositionQuickbar()
     {
         IntPtr qbar = LiveQuickbar();
         if (qbar == IntPtr.Zero || _setPosScreen == null) return;
-
-        if (_config.Hidden)
-        {
-            _setPosScreen(qbar, -9999, -9999);
-            return;
-        }
-        int vpW = _vpW;
-        int x = _config.Align switch
-        {
-            QbarAlign.Left => 0,
-            QbarAlign.Right => vpW - QuickbarModelW,
-            _ => (vpW - QuickbarModelW) / 2,
-        };
-        _setPosScreen(qbar, x, 0);
+        Place(qbar, _vpW);
     }
 
     private static IntPtr LiveQuickbar()

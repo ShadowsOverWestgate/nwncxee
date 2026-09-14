@@ -49,7 +49,7 @@ public sealed unsafe partial class AlloyRenderer
     /// the record in it was built for. NOT the record epoch, and the distinction is a live-diagnosed flicker:
     /// the epoch is bumped by every wholesale invalidation -- enrollment, but ALSO an animated texture
     /// retiring a copy (<c>Drain -&gt; DropHandle</c>, roughly once a second in a torch-lit area) and a
-    /// <c>/draw</c> dial -- and those non-enrollment bumps land AFTER the frame's record build, so the next
+    /// <c>/alloy</c> dial -- and those non-enrollment bumps land AFTER the frame's record build, so the next
     /// shadow bracket would see the whole table epoch-stale and refuse it: every shadow gone for one frame,
     /// once a second. What the bake actually must not trust is a record built for a DIFFERENT PART in the
     /// same slot, and only an enrollment can change that; so tenancy gets its own generation, bumped in

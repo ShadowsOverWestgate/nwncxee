@@ -18,7 +18,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
-        if (!Settings.Bool("enginezones", true)) { log.Info("EngineZones: off (config enginezones=0)"); return; }
+        if (!Alloy.Renderer.EngineZones.Boot) { log.Info("EngineZones: off (alloy.enginezones=0)"); return; }
         _net = (delegate* unmanaged<IntPtr, int, long>)hooks.Install(
             SymbolMap.NetProcessReceivedFrames, (IntPtr)(delegate* unmanaged<IntPtr, int, long>)&OnNet);
         _res = (delegate* unmanaged<IntPtr, uint, long>)hooks.Install(
@@ -35,7 +35,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
             SymbolMap.AddPartsToDrawBuckets, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnBuckets);
         // 2 by default (2026-09-06, live: Buckets 0,7 -> 0,2-0,3ms, gob parts intact); 0 is the A/B, 1 the
         // experiment that empties the world of gob parts.
-        int skip = Settings.Int("skipbuckets", 2, 0, 2);
+        int skip = Alloy.Renderer.SkipBuckets.Boot;
         _skipBuckets = skip == 1;
         _bucketsCadence = skip == 2;
         if (_bucketsCadence)
@@ -47,11 +47,11 @@ public sealed unsafe class EngineZonesService : IExtenderService
                            + (_capBuckets == null ? " capbuckets" : "") + (_staticShadowBucket == null ? " staticshadowbucket" : "")
                            + (_meshShadowBucket == null ? " meshshadowbucket" : "");
             if (missing.Length > 0)
-            { _bucketsCadence = false; log.Info($"EngineZones: skipbuckets=2 refused -- unresolved:{missing}"); }
+            { _bucketsCadence = false; log.Info($"EngineZones: alloy.skipbuckets=2 refused -- unresolved:{missing}"); }
         }
-        log.Info("EngineZones: timing the engine loop's net / resman / AI / GUI steps and resource demands into [zones] (config enginezones=0 disables)" +
-                 (_skipBuckets ? " -- EXPERIMENT skipbuckets=1: the world scene's AddPartsToDrawBuckets is SKIPPED while Alloy draws (expect no gob parts)" : "") +
-                 (_bucketsCadence ? $" -- skipbuckets=2: the tile-part loops of AddPartsToDrawBuckets run every {BucketsEvery}th frame while Alloy draws (skipbuckets=0 restores them)" : ""));
+        log.Info("EngineZones: timing the engine loop's net / resman / AI / GUI steps and resource demands into [zones] (config alloy.enginezones=0 disables)" +
+                 (_skipBuckets ? " -- EXPERIMENT alloy.skipbuckets=1: the world scene's AddPartsToDrawBuckets is SKIPPED while Alloy draws (expect no gob parts)" : "") +
+                 (_bucketsCadence ? $" -- alloy.skipbuckets=2: the tile-part loops of AddPartsToDrawBuckets run every {BucketsEvery}th frame while Alloy draws (alloy.skipbuckets=0 restores them)" : ""));
     }
 
     private static delegate* unmanaged<IntPtr, IntPtr, long> _demand;
@@ -69,14 +69,14 @@ public sealed unsafe class EngineZonesService : IExtenderService
         return r;
     }
 
-    /// <summary>EXPERIMENT (docs/research/engine-scene-walk-bypass.md §5 step 1): <c>skipbuckets=1</c> in
+    /// <summary>EXPERIMENT (docs/research/engine-scene-walk-bypass.md §5 step 1): <c>alloy.skipbuckets=1</c> in
     /// cx.cfg skips the world scene's draw-bucket build while Alloy draws the frame. Expected to freeze
     /// every gob part's transform (the build is the sole writer of the model matrix Alloy draws with), which
     /// is the measurement: Ai drops by the Buckets figure, and what breaks names the load-bearing half.
     /// Never on a GUI panel's scene and never while the engine renders (vanilla=1).</summary>
     private static bool _skipBuckets;
     private static long _bucketsSkipped;
-    /// <summary><c>skipbuckets=2</c>: the six flat loops over the BSP walk's tile-part lists (matrix rewrite
+    /// <summary><c>alloy.skipbuckets=2</c>: the six flat loops over the BSP walk's tile-part lists (matrix rewrite
     /// of STATIC parts plus the filing of buckets nothing reads) run every <see cref="BucketsEvery"/>th frame;
     /// the gob loop (ProcessGob, the attached-hierarchy sync, the part-tree matrix walk creatures and
     /// placeables live by) and the beam loop run every frame. Done by zeroing the lists' counts ahead of

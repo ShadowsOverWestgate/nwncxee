@@ -51,7 +51,7 @@ namespace CX.Alloy;
 /// bone block; the depth stage re-runs the same skinning off the same block and the same base.</para></para>
 /// <para>Gated on <see cref="AlloyGate.Alloy"/> so the vanilla verdict -- and every other frame-start
 /// refusal (#216) -- reverts it frame-atomically, along with the rest of the Alloy frame.
-/// The <c>casters=0</c> config setting is the kill switch (#302 retired <c>skincast</c>: the posed set is
+/// The <c>shadow.casters=0</c> config setting is the kill switch (#302 retired <c>skincast</c>: the posed set is
 /// Alloy's, so <c>skinning</c> is the one dial that decides it), and
 /// <c>/shadow</c> carries the look knobs. The frame path
 /// allocates nothing.</para>
@@ -85,15 +85,13 @@ public sealed unsafe class CasterPass : IExtenderService
     /// <summary>Cascade ceiling. The receiver's <c>uSunVp</c> array is sized from this, so raising it means
     /// raising both -- <see cref="SelfCheck"/> pins them together.</summary>
     internal const int MaxCascades = 4;
-    /// <summary>Cascades rendered per frame (config <c>csm_cascades</c>).</summary>
+    /// <summary>Cascades rendered per frame (<c>shadow.cascades</c>, Boot).</summary>
     private static int _cascades = 4;
-    /// <summary>Per-cascade face size in texels (config <c>csm_size</c>).</summary>
+    /// <summary>Per-cascade face size in texels (<c>shadow.size</c>, Boot).</summary>
     private static int _mapSize = 2048;
     /// <summary>World units the outermost cascade reaches (<c>/shadow dist</c>). Sun shadow cost is bound by
     /// this and nothing else: the fit follows the player, so an area ten times the size costs the same.</summary>
-    private static float _maxDist = MaxDistBoot;
-    /// <summary>Boot value of <see cref="_maxDist"/>, and what <c>/shadow reset</c> restores.</summary>
-    private const float MaxDistBoot = 120f;
+    private static float _maxDist => Shadows.Dist.V;
 
     /// <summary>The depth array holding the cascades (0 = none yet). Read by the Alloy colour pass, in the
     /// same 4.6 context, on the frame after the render.</summary>
@@ -111,16 +109,16 @@ public sealed unsafe class CasterPass : IExtenderService
     /// into the device units its comparison runs in.</summary>
     internal static readonly float[] CascadeRange = new float[MaxCascades];
     /// <summary>Local-light cube ceiling: how long the receiver's <c>uLocalLight</c> array is, and the most
-    /// <c>cube_count</c> may ask for. Raising it costs uniform slots only -- the cube array itself is
+    /// <c>shadow.cubes</c> may ask for. Raising it costs uniform slots only -- the cube array itself is
     /// sized from the CONFIGURED count, so an unused ceiling is free.</summary>
     internal const int MaxCubes = 64;
-    /// <summary>Local lights that get a shadow cube (config <c>cube_count</c>, 0 = off) and the per-face size
-    /// (config <c>cube_size</c>). The interim system's receiver could not go past 32 lights at all because it
+    /// <summary>Local lights that get a shadow cube (<c>shadow.cubes</c>, 0 = off) and the per-face size
+    /// (<c>shadow.cubesize</c>). The interim system's receiver could not go past 32 lights at all because it
     /// unrolled a sampler per slot, and a cube ARRAY has no such ceiling -- the cost is VRAM and nothing else.
     /// <para>#151 raised the default from 8 to 24: a torch-lit street routinely declares 60+ shadow-casting
     /// lights, and at 8 the budget's membership churned as the player walked, which is what read as shadows
     /// popping in and out. Since #187 every slot in the budget bakes six faces every frame, so this count IS
-    /// the pass's cost. Lower <c>cube_count</c> (or <c>cube_size</c>) on a small card.</para></summary>
+    /// the pass's cost. Lower <c>shadow.cubes</c> (or <c>shadow.cubesize</c>) on a small card.</para></summary>
     private static int _cubeLights = 32, _cubeSize = 512;
     /// <summary>Near plane shared by every cube face. Bigger is better depth precision; it also means a
     /// caster closer to the light than this is not recorded, so it stays small.</summary>
@@ -195,8 +193,8 @@ public sealed unsafe class CasterPass : IExtenderService
     // anywhere in the design (this is not #187's composite cache, whose per-view glCopyImageSubData is what
     // lost). Cubes only; the sun cascades keep the plain predicate.
 
-    /// <summary>Dynamic-pool face size (config <c>cube_dyn_size</c>) and page count (config
-    /// <c>cube_dyn_count</c>, 0 = no pool, split permanently off; defaults to the cube budget so the pool
+    /// <summary>Dynamic-pool face size (<c>shadow.dynsize</c>) and page count (config
+    /// <c>shadow.dyncount</c>, 0 = no pool, split permanently off; defaults to the cube budget so the pool
     /// never starves into the combined fallback). A PAGE is one light's six mover-only
     /// faces, claimed only while a mover stands inside that light -- the pool is per mover-bearing light,
     /// never a 1:1 mirror of the static array, which is what keeps its VRAM a fraction of the static
@@ -204,7 +202,7 @@ public sealed unsafe class CasterPass : IExtenderService
     private static int _cubeDynSize = 256, _cubeDynPages = 16;
     /// <summary><c>/shadow split 1|0</c>: the A/B. Off = one combined bake per cube on the plain #241
     /// predicate, exactly as before this ticket.</summary>
-    private static bool _split = true;
+    private static bool _split => Shadows.Split.V;
     /// <summary>The dynamic pool's cube array (0 = none yet), layer <c>6*page + face</c>.</summary>
     internal static uint CubeDynTex;
     /// <summary>Per cube slot: the pool PAGE holding its movers, PLUS ONE -- 0 means "no movers near this
@@ -231,8 +229,8 @@ public sealed unsafe class CasterPass : IExtenderService
     /// at full rate; far = an animated prop under a distant torch, whose shadow is a few texels wide and
     /// where a one-frame hold is invisible. A roam, an invalidation, a re-key or an unbaked page never skips;
     /// events on a skipped frame are carried in the page's pending mask and baked the next.</summary>
-    private static int _dynFull = DynFullBoot, _sunFull = SunFullBoot;
-    private const int DynFullBoot = 8, SunFullBoot = 2;
+    private static int _dynFull => Shadows.DynFull.V;
+    private static int _sunFull => Shadows.SunFull.V;
     /// <summary><c>/shadow sunlatch N</c>: static cascade fit RE-LATCHES per frame (0 = unbounded). The fit
     /// centre is the look focus, 14u ahead of the camera, so a turn drifts every cascade past its slack in
     /// a few degrees and re-bakes all four static layers (2048px, the whole caster world) on one frame.
@@ -241,59 +239,50 @@ public sealed unsafe class CasterPass : IExtenderService
     /// The outermost is exempt: past it there is no shadow at all, and under a sustained turn cascade 0
     /// would take the whole budget every frame.
     /// ponytail: a per-frame count, not a time budget; raise it if a cascade ever lags a fast turn.</summary>
-    private static int _sunLatch = SunLatchBoot;
-    private const int SunLatchBoot = 1;
+    private static int _sunLatch => Shadows.SunLatch.V;
     /// <summary><c>/shadow staticcap N</c>: static cube slot re-bakes per frame (0 = unbounded). A held slot
     /// republishes its standing page and stays stale -- its mover evidence carries in <c>_cubeHadMover</c> --
     /// so it bakes on a later frame, nearest rank first. Re-keys and blanket invalidates never hold. Six
     /// 512px faces of the whole static world per slot is the single biggest hitch term the ledger read
     /// (CubeStatic 22/frame in hitch rows against a 16 mean).</summary>
-    private static int _staticCap = StaticCapBoot;
+    private static int _staticCap => Shadows.StaticCap.V;
     /// <summary><c>/shadow flipcollect 1</c>: the A/B -- every stage cast-admission flip re-collects the caster
     /// list, as before the membership-neutral entries.</summary>
-    internal static bool FlipCollect;
-    /// <summary><c>/shadow mask N</c>: 1 = masked casters take the alpha-tested depth stage (boot); 0 = they
-    /// take the solid stage (prices the fetch + discard); -1 = they are not baked at all (prices their raster).
-    /// The two deltas split the alpha-tested shadow fill into its halves in one run.</summary>
-    /// <summary>Masked shadow depth: 1 = alpha-tested, 0 = the solid program for masked batches, -1 = skip
-    /// them, 2 = alpha-tested only where the texture's hole fraction reaches <see cref="_maskHoles"/> (a gate,
-    /// a railing), solid elsewhere (a leaf card). Boot 2: xtul read the solid canopy as the nicer look at no
-    /// cost, then the solid gate as a wall (2026-09-05).</summary>
-    private static int _maskMode = MaskBoot;
-    private const int MaskBoot = 2;
+    internal static bool FlipCollect => Shadows.FlipCollect.V;
+    /// <summary>Masked shadow depth (<c>/shadow mask</c>): 1 = alpha-tested, 0 = the solid program for masked
+    /// batches (prices the fetch + discard), -1 = skip them (prices their raster), 2 = alpha-tested only where
+    /// the texture's hole fraction reaches <see cref="_maskHoles"/> (a gate, a railing), solid elsewhere (a
+    /// leaf card). Default 2: xtul read the solid canopy as the nicer look at no cost, then the solid gate as
+    /// a wall (2026-09-05).</summary>
+    private static int _maskMode => Shadows.Mask.V;
     /// <summary><c>/shadow maskholes X</c>: the hole fraction (texels under the cutout) from which mode 2 masks.</summary>
-    private static float _maskHoles = MaskHolesBoot;
-    private const float MaskHolesBoot = 0.65f;
+    private static float _maskHoles => Shadows.MaskHoles.V;
     /// <summary>#363 <c>/shadow maskgraded X</c>: the graded-alpha fraction from which a diffuse counts as
-    /// glass and takes the masked stage regardless of its holes. Boot = the census's blend threshold, so a
+    /// glass and takes the masked stage regardless of its holes. Default = the census's blend threshold, so a
     /// soft-edged leaf card stays on the hole gate.</summary>
-    private static float _maskGraded = AlloyCensus.GradedBlend;
+    private static float _maskGraded => Shadows.MaskGraded.V;
     /// <summary>#363 <c>/shadow maskdither N</c>: the shadow-texel block the masked stage's ordered discard
     /// steps on (1 = per texel, the receiver's PCF averages it; 2 = 2x2 clumps read softer but blotchier);
     /// 0 = off. Never per-frame: the maps are cached, and a jittering pattern is a permanent mover.</summary>
-    private static int _maskDither = MaskDitherBoot;
-    private const int MaskDitherBoot = 1;
+    private static int _maskDither => Shadows.MaskDither.V;
     /// <summary>Past this the blocks read as a pattern, not a shadow.</summary>
-    private const int MaskDitherMax = 16;
+    internal const int MaskDitherMax = 16;
     /// <summary>Frames a cube slot's shadow takes to fade in after its first bake and out after its light
     /// drops from the budget; 0 = pop. A draining slot keeps its depth and its light id and takes no newcomer
     /// until it reaches zero, so the receiver keeps finding it through CubeSlotOf.</summary>
-    private static int _fadeFrames = FadeBoot;
-    private const int FadeBoot = 60;
+    private static int _fadeFrames => Shadows.Fade.V;
     /// <summary>Slots held back from the ranking while the fade is on, so a light leaving the budget has a
     /// slot to drain in. Without it a full budget (the plaza's 32/32) swaps every departure into a newcomer
     /// the same frame and the fade-out never runs. <c>/shadow fadeslots N</c>.</summary>
-    private static int _fadeSlots = FadeSlotsBoot;
-    private const int FadeSlotsBoot = 4;
+    private static int _fadeSlots => Shadows.FadeSlots.V;
     private static readonly float[] _cubeFade = new float[MaxCubes];
     /// <summary>Per-slot shadow strength for the receiver (uLocalFade), 0..1.</summary>
     internal static readonly float[] CubeFade = new float[MaxCubes];
     private static int _cubeTurnovers;
-    private const int StaticCapBoot = 3;
     private static long _cubeHeldSlots;
     /// <summary><c>/shadow itemdirty 0</c>: the A/B back to the per-pool-buffer vertex-dirty signal. See
     /// <c>AlloyRenderer.ItemDirty</c> for what the item-level one fixes.</summary>
-    private static bool _itemDirty = true;
+    private static bool _itemDirty => Shadows.ItemDirty.V;
     private static bool VertexDirty(int vao, int item) => _vDirty[vao] && (!_itemDirty || AlloyRenderer.ItemMoved(vao, item));
     private static long _cubeDynSkipped, _sunDynSkipped;
     private const int AllFaces = (1 << CubeFaces) - 1;
@@ -303,13 +292,12 @@ public sealed unsafe class CasterPass : IExtenderService
     private static readonly Matrix4x4[] _sunDynVp = new Matrix4x4[MaxCascades];
     /// <summary>#336's A/B: 0 = every dynamic view re-bakes every frame it has dynamic casters, as #305/#306
     /// shipped it.</summary>
-    private static bool _dynEvents = true;
+    private static bool _dynEvents => Shadows.DynEvents.V;
     /// <summary>#336: dynamic pages for the nearest <c>/shadow dynranks</c> cube lights only (rank = the
     /// nearest-first cube order). A far torch keeps its static cube and shadows no mover; with every face
     /// of every page stale every frame (the tileset's animated props), the page count is the view count.
     /// Boot = every cube.</summary>
-    private static int _dynRanks = DynRanksBoot;
-    private const int DynRanksBoot = 64;
+    private static int _dynRanks => Shadows.DynRanks.V;
     private static long _cubeDynBakedFaces;
     /// <summary>Slot is in COMBINED mode: it has movers but no pool page (pool exhausted), so it bakes both
     /// halves into the static array every frame -- the per-slot fallback to pre-split behaviour. A mode
@@ -360,7 +348,7 @@ public sealed unsafe class CasterPass : IExtenderService
 
     /// <summary>The sun's dynamic depth array (0 = none), one layer per cascade at the SAME face size as the
     /// static array -- the near cascade must carry the player's own shadow at full quality, and a mirror is
-    /// the shape with no per-layer resolution bookkeeping. Config <c>csm_dyn</c> 0 disables the sun split
+    /// the shape with no per-layer resolution bookkeeping. <c>shadow.sundyn</c> 0 disables the sun split
     /// permanently (the cubes keep theirs).</summary>
     internal static uint SunDynTex;
     /// <summary>Per cascade layer: 1 = the dynamic half holds a fresh mover bake this frame, 0 = sample the
@@ -385,7 +373,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// reuse rate actually is at walking speed (AC: a reading, not an argument).</summary>
     private static readonly long[] _sunStaticL = new long[MaxCascades];
     private static long _sunDynBakedViews;
-    /// <summary>Config <c>csm_dyn</c>: 0 = no sun dynamic array, the cascades keep the combined bake.</summary>
+    /// <summary><c>shadow.sundyn</c>: 0 = no sun dynamic array, the cascades keep the combined bake.</summary>
     private static bool _sunSplitCfg = true;
 
     /// <summary>Set by anything that makes every recorded face meaningless at once -- a tuning change, a
@@ -476,7 +464,7 @@ public sealed unsafe class CasterPass : IExtenderService
     private static readonly bool[] _vDirty = new bool[MaxVdos];
     /// <summary><c>/shadow rebake 0</c> turns the predicate off and bakes every slot every frame, as before
     /// #241. The live half of the self-check -- and the escape hatch if a shadow is ever seen to freeze.</summary>
-    private static bool _rebake = true;
+    private static bool _rebake => Shadows.Rebake.V;
     /// <summary>#241: did the last frame's slot scan reach every slot? Mover evidence lives in
     /// <see cref="_cubeHadMover"/>, which only the scan writes -- so a frame that collected movers and then
     /// did not scan (a ring stall broke the loop, the bracket was refused, the cubes were off) leaves slots
@@ -644,7 +632,7 @@ public sealed unsafe class CasterPass : IExtenderService
     private static readonly int[] _dPrevIdx = new int[MaxCasters];
     private static int _dPrevCount;
     /// <summary>#336's A/B: 1 = the refresh walks every caster as #328 shipped it.</summary>
-    private static bool _refreshAll;
+    private static bool _refreshAll => Shadows.RefreshAll.V;
     /// <summary>Casters the refresh visited, and records the colour build changed, summed over the period.</summary>
     private static long _visitSum, _touchedSum;
     /// <summary>#336: frames a caster stays in the DYNAMIC set after it last moved. The live read that
@@ -652,8 +640,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// casters between the two sets each frame -- every flip a static-set event re-baking the cube it stood
     /// in. A held caster costs nothing extra (the dynamic layer re-bakes every frame anyway); the flip back
     /// happens once, after the hold. <c>/shadow dynhold 0</c> is the old behaviour.</summary>
-    private static int _dynHold = DynHoldBoot;
-    private const int DynHoldBoot = 30;   // was 8: vertex-dirty items committing intermittently flipped sets and re-baked static cubes 15/frame
+    private static int _dynHold => Shadows.DynHold.V;   // default 30, was 8: vertex-dirty items committing intermittently flipped sets and re-baked static cubes 15/frame
     /// <summary>This frame's diffuse texture id for a MASKED caster (0 = not masked, or the texture did not
     /// resolve). Re-fetched every collect: a <c>CAurTexture*</c> is borrowed and freed on area transitions,
     /// so it is never cached -- and the per-frame fetch is what keeps an animated diffuse cutting the right
@@ -704,7 +691,7 @@ public sealed unsafe class CasterPass : IExtenderService
     /// Built only when the renderer's bindless path is armed; <c>/shadow maskh 0</c> is the A/B.</summary>
     private static uint _progMaskH, _progLayerMaskH;
     private static int _locMaskHVp = -1, _locMaskHCut = -1, _locLayerMaskHCut = -1, _locMaskHDither = -1, _locLayerMaskHDither = -1, _locMaskHEnv = -1, _locLayerMaskHEnv = -1;
-    private static bool _maskH = true;
+    private static bool _maskH => Shadows.MaskH.V;
     private static bool HandleMaskReady => _maskH && _progMaskH != 0 && (_progLayer == 0 || _progLayerMaskH != 0);
     private static bool _maskHFailed;
 
@@ -743,7 +730,7 @@ public sealed unsafe class CasterPass : IExtenderService
     // A/B (/shadow layered 0), which must produce identical shadows.
 
     /// <summary><c>/shadow layered 1|0</c>: the A/B. Off = one dispatch + one MDI set per view, as before.</summary>
-    private static bool _layerDial = true;
+    private static bool _layerDial => Shadows.Layered.V;
     /// <summary>0 = not yet probed, 1 = the extension is present, -1 = absent (said once; per-view path).</summary>
     private static int _layerProbe;
     private static uint _progLayer, _progLayerMask;
@@ -800,27 +787,24 @@ public sealed unsafe class CasterPass : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        if (!Settings.Bool("casters", true) || GameGate.Locked)
-        { log.Info("CasterPass: stood down (casters=0 or lockchat)"); return; }
+        if (!Shadows.Casters.Boot)
+        { log.Info("CasterPass: stood down (shadow.casters=0)"); return; }
         if (!SelfCheck(log)) return;
 
-        // Config bucket (ADR 0013): every one of these sizes an allocation or gates the arming, so it is a
-        // boot decision. The look knobs -- cascade distance and friends -- are /shadow's.
-        _mapSize = Settings.Int("csm_size", _mapSize, 256, 8192);
-        _cascades = Settings.Int("csm_cascades", _cascades, 1, MaxCascades);
-        _cubeLights = Settings.Int("cube_count", _cubeLights, 0, MaxCubes);
-        // the boot value of /shadow mask, for a first-frame A/B on a driver that faults before a command can be typed
-        _maskMode = Settings.Int("shadowmask", MaskBoot, -1, 2);
-        _cubeSize = Settings.Int("cube_size", _cubeSize, 64, 2048);
-        // #305: the dynamic pool's shape. Sizes an allocation, so config, not /shadow (ADR 0013).
-        // The page DEFAULT is the cube budget itself: the first live run saturated a 16-page pool in a
-        // 32-cube street and every overflow slot fell back to the combined bake -- the exact static-bake
-        // churn the split exists to remove, for 24 MB saved. Full coverage is the right default; shrink
-        // cube_dyn_count on a small card.
-        _cubeDynSize = Settings.Int("cube_dyn_size", _cubeDynSize, 64, 2048);
-        _cubeDynPages = Settings.Int("cube_dyn_count", _cubeLights, 0, MaxCubes);
-        // #306: the sun's half of the split sizes an allocation too (a csm_cascades x csm_size mirror).
-        _sunSplitCfg = Settings.Int("csm_dyn", 1, 0, 1) != 0;
+        // Restart knobs, read through Boot: every one of these sizes an allocation or gates the arming, so
+        // it is a boot decision. The look knobs -- cascade distance and friends -- are the group's Live rows.
+        _mapSize = Shadows.Size.Boot;
+        _cascades = Shadows.Cascades.Boot;
+        _cubeLights = Shadows.Cubes.Boot;
+        _cubeSize = Shadows.CubeSize.Boot;
+        // #305: the dynamic pool's shape. The page default is the cube budget itself: the first live run
+        // saturated a 16-page pool in a 32-cube street and every overflow slot fell back to the combined bake
+        // -- the exact static-bake churn the split exists to remove, for 24 MB saved. Shrink shadow.dyncount
+        // on a small card.
+        _cubeDynSize = Shadows.DynSize.Boot;
+        _cubeDynPages = Shadows.DynCount.Boot;
+        // #306: the sun's half of the split sizes an allocation too (a cascades x size mirror).
+        _sunSplitCfg = Shadows.SunDyn.Boot;
         _dynPageSlot = new int[Math.Max(_cubeDynPages, 1)];
         _dynPageMask = new int[_dynPageSlot.Length];
         _dynPageValid = new bool[_dynPageSlot.Length];
@@ -845,111 +829,17 @@ public sealed unsafe class CasterPass : IExtenderService
 
         _armed = true;
         log.Info($"CasterPass: armed -- Alloy multidraw-indirect caster submission into a {_cascades}x{_mapSize}" +
-                 $" sun cascade array out to {_maxDist:F0}u (config csm_cascades/csm_size, /shadow dist)" +
-                 $" and {_cubeLights}x{_cubeSize} local-light shadow cubes (config cube_count/cube_size)" +
+                 $" sun cascade array out to {_maxDist:F0}u (shadow.cascades/shadow.size, /shadow dist)" +
+                 $" and {_cubeLights}x{_cubeSize} local-light shadow cubes (shadow.cubes/shadow.cubesize)" +
                  ", posed casters bake from Alloy's own bone block" +
                  "; needs the part table, so unarmed draw funnels leave it with nothing to enroll");
     }
 
-    /// <summary>The caster pass's live dials, for <c>/shadow</c> (ADR 0013 bucket 1). Look judgements made
-    /// while walking around; none reallocates anything, which is what keeps them out of the config file next
-    /// to the map sizes.</summary>
-    internal static string Describe()
-        => $"dist {_maxDist:F0} rebake {(_rebake ? 1 : 0)} " +
-           $"gather {CasterGather.Mode} receiver {CasterGather.Receiver} split {(_split ? 1 : 0)} layered {(_layerDial ? 1 : 0)} " +
-           $"refreshall {(_refreshAll ? 1 : 0)} dynhold {_dynHold} dynevents {(_dynEvents ? 1 : 0)} dynranks {_dynRanks} dynfull {_dynFull} sunfull {_sunFull} sunlatch {_sunLatch} itemdirty {(_itemDirty ? 1 : 0)} staticcap {_staticCap} flipcollect {(FlipCollect ? 1 : 0)} mask {_maskMode} maskholes {_maskHoles:0.##} maskgraded {_maskGraded:0.##} maskdither {_maskDither} maskh {(_maskH ? 1 : 0)} fade {_fadeFrames} fadeslots {_fadeSlots} " +
-           $"({_cascades}x{_mapSize} cascades{(_sunSplitCfg ? " + dyn mirror" : "")}, " +
-           $"{_cubeLights}x{_cubeSize} cubes, " +
-           $"{_cubeDynPages}x{_cubeDynSize} dynamic pool pages)";
+    /// <summary>The <c>shadow.movers</c> button: dump one frame's movers on the next bake.</summary>
+    internal static void DumpMoversNext() => _dumpMovers = true;
 
-    /// <summary>Set one dial, returning its old value; NaN when the key is not ours, which is how the
-    /// dispatcher knows to try the scene feed's dials instead.</summary>
-    internal static float Tune(string key, float v)
-    {
-        switch (key)
-        {
-            case "dist":
-                float od = _maxDist;
-                _maxDist = MathF.Max(v, 1f);
-                _invalidate = true;
-                return od;
-            case "gather":
-                // #303's A/B: 1 = the dispatch culls, 0 = the dispatch admits every staged caster into every
-                // view. "A shadow is missing" needs a bisect, and cull-off is the known-good half of it.
-                float og = CasterGather.Mode;
-                CasterGather.Mode = v != 0f ? 1 : 0;
-                return og;
-            case "receiver":
-                float orx = CasterGather.Receiver;
-                CasterGather.Receiver = v != 0f ? 1 : 0;
-                return orx;
-            case "rebake":
-                float orb = _rebake ? 1f : 0f;
-                _rebake = v != 0f;
-                return orb;
-            case "split":
-                // #305's A/B: 0 = one combined bake per cube on the plain predicate. The blanket is set
-                // because the recorded faces (and _cubeHadMover's meaning) belong to the other mode.
-                float os = _split ? 1f : 0f;
-                _split = v != 0f;
-                _invalidate = true;
-                return os;
-            case "layered":
-                // #307's A/B: 0 = one dispatch and one MDI set per view. Same content either way, so no
-                // blanket is needed -- the recorded depth does not depend on which path baked it.
-                float oly = _layerDial ? 1f : 0f;
-                _layerDial = v != 0f;
-                return oly;
-            case "refreshall":
-                // #336's A/B: 1 = the standing-list refresh visits every caster. Same verdicts either way if
-                // the visit set is complete; a shadow that stops tracking only at 0 is a missing source.
-                float ora = _refreshAll ? 1f : 0f;
-                _refreshAll = v != 0f;
-                return ora;
-            case "dynhold":
-                float oh = _dynHold;
-                _dynHold = Math.Max((int)v, 0);
-                return oh;
-            case "movers":
-                _dumpMovers = v != 0f;
-                return 0f;
-            case "itemdirty": { float o = _itemDirty ? 1f : 0f; _itemDirty = v != 0f; _invalidate = true; return o; }
-            case "staticcap": { float o = _staticCap; _staticCap = Math.Max((int)v, 0); return o; }
-            case "flipcollect": { float o = FlipCollect ? 1 : 0; FlipCollect = v != 0; return o; }
-            case "mask": { float o = _maskMode; _maskMode = Math.Clamp((int)v, -1, 2); _listVer++; return o; }
-            case "maskholes": { float o = _maskHoles; _maskHoles = Math.Clamp(v, 0f, 1f); _listVer++; return o; }
-            case "maskgraded": { float o = _maskGraded; _maskGraded = Math.Clamp(v, 0f, 1f); _listVer++; return o; }
-            case "maskdither": { float o = _maskDither; _maskDither = Math.Clamp((int)v, 0, MaskDitherMax); _listVer++; _invalidate = true; return o; }
-            case "maskh": { float o = _maskH ? 1 : 0; _maskH = v != 0f; _listVer++; return o; }
-            case "fade": { float o = _fadeFrames; _fadeFrames = Math.Max((int)v, 0); return o; }
-            case "fadeslots": { float o = _fadeSlots; _fadeSlots = Math.Max((int)v, 0); return o; }
-            case "sunlatch": { float o = _sunLatch; _sunLatch = Math.Max((int)v, 0); return o; }
-            case "dynfull":
-                float odf = _dynFull;
-                _dynFull = Math.Max((int)v, 0);
-                return odf;
-            case "sunfull":
-                float osf = _sunFull;
-                _sunFull = Math.Max((int)v, 0);
-                return osf;
-            case "dynranks":
-                float odr = _dynRanks;
-                _dynRanks = Math.Max((int)v, 0);
-                _invalidate = true;
-                return odr;
-            case "dynevents":
-                // #336's A/B: 0 = a dynamic view re-bakes every frame it has dynamic casters (all six faces).
-                float oe = _dynEvents ? 1f : 0f;
-                _dynEvents = v != 0f;
-                _invalidate = true;
-                return oe;
-            default: return float.NaN;
-        }
-    }
-
-    /// <summary>Back to the boot values.</summary>
-    internal static void ResetTuning()
-    { _maxDist = MaxDistBoot; _rebake = true; _split = true; _layerDial = true; _refreshAll = false; _dynHold = DynHoldBoot; _dynEvents = true; _dynRanks = DynRanksBoot; _dynFull = DynFullBoot; _sunFull = SunFullBoot; _sunLatch = SunLatchBoot; _itemDirty = true; _staticCap = StaticCapBoot; FlipCollect = false; _maskMode = MaskBoot; _maskHoles = MaskHolesBoot; _maskGraded = AlloyCensus.GradedBlend; _maskDither = MaskDitherBoot; _maskH = true; _listVer++; _fadeFrames = FadeBoot; _fadeSlots = FadeSlotsBoot; _invalidate = true; CasterGather.Mode = 1; CasterGather.Receiver = 1; }
+    /// <summary>A mask dial moved: the caster list's per-record mask routing is stale.</summary>
+    internal static void ListChanged() => _listVer++;
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
@@ -1177,7 +1067,7 @@ public sealed unsafe class CasterPass : IExtenderService
         {   // #328: the predicate is ONE function for the full collect and the standing-list refresh. Pin
             // what it must say: a still caster is live but not a mover; one that starts moving is dynamic
             // AND a static-set event; one that keeps moving is dynamic only; an appearance is an event.
-            int hold = _dynHold; _dynHold = 0;
+            int hold = _dynHold; Shadows.DynHold.V = 0;   // plain knob writes: nothing runs, nothing is written
             _frameSeq = 9; _moverCount = _dMoverCount = _sMoverCount = 0;
             _dynStamp[5] = 0; _dynStamp[6] = 0; _dynStamp[7] = 8;
             Admit(0, 5, skinned: false, appeared: false, recMoved: false, dangly: false, vDirty: false);
@@ -1191,13 +1081,13 @@ public sealed unsafe class CasterPass : IExtenderService
             // #336: the hold. At 4 frames a caster last moved 3 frames ago is still dynamic and no event;
             // one that last moved 5 frames ago flips back -- once -- and is a static event; a flip that would
             // repeat every frame under vertex-dirty flapping is the churn this exists to stop.
-            _dynHold = 4; _moverCount = _dMoverCount = _sMoverCount = 0;
+            Shadows.DynHold.V = 4; _moverCount = _dMoverCount = _sMoverCount = 0;
             _dynStamp[5] = 6; _dynStamp[6] = 4;
             Admit(0, 5, skinned: false, appeared: false, recMoved: false, dangly: false, vDirty: false);
             Admit(1, 6, skinned: false, appeared: false, recMoved: false, dangly: false, vDirty: false);
             pred &= _moverCount == 0 && _dMoverCount == 1 && _dMoverIdx[0] == 0 && _sMoverCount == 1 && _sMoverIdx[0] == 1
                     && _liveDyn[0] && !_liveDyn[1];
-            _dynHold = hold;
+            Shadows.DynHold.V = hold;
             _frameSeq = 0; _moverCount = _dMoverCount = _sMoverCount = 0; _mvMatrix = 0; _mvAppear = 0;
             for (int q = 5; q <= 8; q++) { _dynStamp[q] = 0; _liveStamp[q] = 0; }
             _liveDyn[0] = _liveDyn[1] = _liveDyn[2] = false;
@@ -1219,7 +1109,7 @@ public sealed unsafe class CasterPass : IExtenderService
             long visits = _visitSum, touched = _touchedSum; _visitSum = 0;
             bool part = Refresh() && _visitSum == 2 && _liveVisit[0] != 12 && _liveVisit[1] == 12 && _liveVisit[2] == 12
                         && !_liveDyn[0] && _moverCount == 2;   // two visited, both skinned = both movers
-            _refreshAll = true; _frameSeq = 13; _visitSum = 0;
+            Shadows.RefreshAll.V = true; _frameSeq = 13; _visitSum = 0;
             bool all = Refresh() && _visitSum == 3;
             // A flip off is a ghost and a zero-count entry, not a re-collect; a flip back on is an appearance.
             AlloyRenderer.SelfCheckCastOk(21, false); _frameSeq = 14; _ghostCount = 0;
@@ -1229,13 +1119,13 @@ public sealed unsafe class CasterPass : IExtenderService
             // ...and an off-flip outside the stage (a freed slot) reaches the list through the off queue.
             // ...queued as the LIVE index: the slot is re-pointed at a new entry before the refresh runs, and
             // it is the old entry that must go off.
-            AlloyRenderer.SelfCheckCastOk(20, false); NoteSlotOff(20); _liveIdx[20] = 2; _frameSeq = 16; _refreshAll = false;
+            AlloyRenderer.SelfCheckCastOk(20, false); NoteSlotOff(20); _liveIdx[20] = 2; _frameSeq = 16; Shadows.RefreshAll.V = false;
             bool queued = Refresh() && _liveOff[0] && !_liveOff[2] && _offN == 0;
             _liveIdx[20] = 0;
-            _refreshAll = true;
+            Shadows.RefreshAll.V = true;
             all &= off && on && queued;
             _touchedSum = touched;
-            _refreshAll = false; _frameSeq = 0; _collectSeq = 0; _liveCount = 0; _liveCreatures = 0; _collectedAt = -1;
+            Shadows.RefreshAll.V = false; _frameSeq = 0; _collectSeq = 0; _liveCount = 0; _liveCreatures = 0; _collectedAt = -1;
             _dPrevCount = 0; _moverCount = _dMoverCount = _sMoverCount = 0; _mvMatrix = 0; _mvBone = 0; _liveSum = 0; _moverSum = 0; _degenSum = 0;
             _visitSum = visits;
             for (int q = 0; q < 3; q++) { _dynStamp[20 + q] = 0; _liveStamp[20 + q] = 0; _liveDyn[q] = false; _liveVisit[q] = 0; _liveIdxSeq[20 + q] = 0; _liveOff[q] = false; AlloyRenderer.SelfCheckCastOk(20 + q, false); }
@@ -1459,7 +1349,7 @@ public sealed unsafe class CasterPass : IExtenderService
         int done = 0, latched = 0;
         bool invalidate = _frameInvalidate;
         _sunRan = true; _sunScanned = true;
-        // #306: the split runs only when its array exists -- csm_dyn 0 or a refused allocation is the
+        // #306: the split runs only when its array exists -- shadow.sundyn 0 or a refused allocation is the
         // combined bake everywhere, exactly as /shadow split 0 spells it.
         bool split = _split && SunDynTex != 0;
         // The degrade window ticks once per sun frame. A layer whose static half re-baked on >= 90% of the
@@ -1715,7 +1605,7 @@ public sealed unsafe class CasterPass : IExtenderService
         bool nearestBaked = false;
         bool invalidate = _frameInvalidate;
         bool scannedAll = true;
-        // #305: the split runs only when its pool exists -- cube_dyn_count 0 or a refused allocation is the
+        // #305: the split runs only when its pool exists -- shadow.dyncount 0 or a refused allocation is the
         // combined bake everywhere, exactly as /shadow split 0 spells it.
         bool split = _split && _cubeDynPages > 0 && CubeDynTex != 0;
         // #322 review: one hidden UNBAKED slot per frame bakes anyway, nearest first -- the warm-up drain.
@@ -2030,7 +1920,7 @@ public sealed unsafe class CasterPass : IExtenderService
                     ? $"; static per layer {SunLayerReadout()} /frame, " +
                       $"{(float)_sunDynBakedViews / _frames:F1} dynamic bakes/frame ({(float)_sunDynSkipped / _frames:F1} held by cadence), " +
                       $"degraded-to-combined [{SunCombinedReadout()}]"
-                    : "; sun split OFF (csm_dyn 0)") + ") " +
+                    : "; sun split OFF (shadow.sundyn 0)") + ") " +
                    // #307: which submission path the views took, and what it cost.
                    (_layerDial
                     ? _layerProbe > 0 && _progLayer != 0
@@ -2257,7 +2147,7 @@ public sealed unsafe class CasterPass : IExtenderService
                          + "record through uDraw[gl_BaseInstance], has lost the skinning "
                          + "branch, or its fragment stage is not inert (a discard or a written gl_FragDepth "
                          + "silently removes or displaces every shadow). Rebuilding from the embedded stages "
-                         + "(regenerate the override with /dumpshaders to get it back).");
+                         + "(regenerate the override with /alloy shaderdump to get it back).");
                 p = GlProgram.Graphics(CastVs, CastFs, _log, "CasterPass depth program (embedded)");
             }
             if (p == 0) { _progFailed = true; Disarm("the caster depth program failed to build"); return false; }
@@ -2662,7 +2552,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _liveStamp[slot] = _frameSeq;
     }
 
-    /// <summary>#336: <c>/shadow movers 1</c> -- one frame's movers and static-set events grouped by diffuse
+    /// <summary>#336: <c>/shadow movers</c> -- one frame's movers and static-set events grouped by diffuse
     /// texture and reason, so "200 matrix movers a frame" has names. Cold and one-shot; allocates.</summary>
     private static bool _dumpMovers;
     private static void DumpMovers(bool refreshed)
@@ -2873,7 +2763,7 @@ public sealed unsafe class CasterPass : IExtenderService
         Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, tex, 0, layer);
         Gl.DrawBuffer(Gl.NONE); Gl.ReadBuffer(Gl.NONE);
         // Completeness is a property of the attachment's texture, not of the layer: checked on the first
-        // attach of each target (and every view under gldebug=1), not ~300 times a frame. Mesa charged
+        // attach of each target (and every view under alloy.gldebug=1), not ~300 times a frame. Mesa charged
         // 'about twelve calls per view including CheckFramebufferStatus' (mesa-amd-render-defects.md).
         if ((!FboChecked(tex) || GlContextService.Debug)
             && Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
@@ -2987,7 +2877,7 @@ public sealed unsafe class CasterPass : IExtenderService
             // the other side of the cutout from the engine's raw original.
             int drawTex = _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
             // mode 0 never masks, so it never reads a texture back either (the scan is a glGetTexImage of
-            // the owned name in the 4.6 context; shadowmask=0 in cx.cfg is the boot-time A/B for it)
+            // the owned name in the 4.6 context; /shadow mask skip is the A/B for it)
             // #363: a translucent diffuse (glass) has no holes at all; it qualifies on its graded fraction
             // instead and skips the mode-2 hole gate, which would hand it straight back to the solid stage.
             bool glass = drawTex != 0 && _maskDither > 0 && (_liveBlend[i] || TexGraded(drawTex) >= _maskGraded);

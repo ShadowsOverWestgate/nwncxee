@@ -47,7 +47,7 @@ namespace CX.Alloy;
 /// <c>uOut</c> rather than reorders.</para>
 /// <para>Cutout batches blend and ride the COMPACTING side -- overlapping cutouts can therefore composite in
 /// a different order from frame to frame. Named rather than hidden: they depth-write with a discard, so the
-/// visible consequence is at most a shimmer where two graded edges overlap, and <c>/draw cull 0</c> is the
+/// visible consequence is at most a shimmer where two graded edges overlap, and <c>/alloy cull 0</c> is the
 /// A/B that proves it either way.</para>
 /// <para>Stands down whole when 4.6 indirect-count or compute is missing, when the programs fail to build,
 /// or when the knob is off -- and standing down means the caller's existing <c>BaseVertex</c> submission,
@@ -87,9 +87,9 @@ internal static unsafe class CullPass
     /// one WRITES it, phase two READS it and tests only the marked draws.</summary>
     private const int RejOff = 0, RejWrite = 1, RejRead = 2;
 
-    /// <summary>#489: run the prepass's second phase (<c>/draw retest</c>). Off = phase one tests the
+    /// <summary>#489: run the prepass's second phase (<c>/alloy retest</c>). Off = phase one tests the
     /// frustum alone, exactly the pre-#489 prepass, which is the before half of the ticket's measurement.</summary>
-    internal static bool Retest = DefRetest;
+    internal static bool Retest => Renderer.Retest.V;
     internal const bool DefRetest = true;
     /// <summary>#489: phase one of this pass tested against a stale pyramid, so it may have marked rejects
     /// and phase two has something to re-test. False when there was no pyramid to reproject (first pass,
@@ -146,19 +146,19 @@ internal static unsafe class CullPass
     private const int SamplePeriod = 60;
     private static int _sampleTick;
 
-    /// <summary>Live dial behind <c>/draw cull</c>, and deliberately three-state rather than two: culling is
+    /// <summary>Live dial behind <c>/alloy cull</c>, and deliberately three-state rather than two: culling is
     /// the one system whose bug is invisible geometry, and "something is missing" has two possible authors
     /// here. <b>0</b> stands the whole pass down -- both submissions back on <c>BaseVertex</c> and, since
     /// #264 deleted the engine walk, EVERY owned part drawn every frame with no cull anywhere, which is slow
     /// and correct and is exactly what makes it the A/B for "is the cull eating this?"; <b>1</b> is the
     /// frustum test alone; <b>2</b> adds the hi-Z occlusion test. Reporting a hole means saying which of the
     /// three it survives.</summary>
-    internal static int Mode = ModeHiZ;
+    internal static int Mode => Renderer.Cull.V;
     internal const int ModeOff = 0, ModeFrustum = 1, ModeHiZ = 2;
 
     /// <summary>#287: LOD selection, in pixels. A draw whose bounding sphere projects to a screen radius
     /// smaller than this is dropped by the same dispatch that culls it -- the classic distance thinning NWN
-    /// never had. 0 disables it; <c>/draw lod</c> is the dial and <c>/draw cull 0</c> stands it down with
+    /// never had. 0 disables it; <c>/alloy lod</c> is the dial and <c>/alloy cull 0</c> stands it down with
     /// everything else, because it IS the cull shader.
     /// <para>#152 shipped this on the CPU and 73ea59b deleted it, measured: <c>LOD skipped 0 sub-pixel
     /// draws/frame</c> in every period of the live log, because the tile exemption it needed (a small TILE
@@ -166,7 +166,7 @@ internal static unsafe class CullPass
     /// camera sees. There is no exemption here. On the GPU the test is free, the hole it can leave is by
     /// construction under <see cref="LodPx"/> pixels wide, and the exempt population that remains is the one
     /// the cull already exempts -- <see cref="AlloyRenderer.NeverCull"/> bounds.</para></summary>
-    internal static float LodPx = DefLodPx;
+    internal static float LodPx => Renderer.Lod.V;
     /// <summary>The boot threshold, and #152's own: one pixel of projected radius.</summary>
     internal const float DefLodPx = 1.0f;
 
@@ -174,7 +174,7 @@ internal static unsafe class CullPass
     /// fragment past <see cref="SceneFog.OpaqueDistance"/> is EXACTLY the fully-fogged colour -- it is drawn,
     /// lit, prepassed and shadowed to produce a pixel the fog would have painted anyway. Measured: camfar 215
     /// against a fog end of 125, so two thirds of the ground area in the frustum was past it.
-    /// <c>/draw fogcull</c>.
+    /// <c>fog.cull</c>, off with the fog master.
     /// <para><b>#341: opaque is not enough -- what is BEHIND it has to be the same colour too</b>, and that
     /// is where the far-plane version of this was wrong. Culling a distant tower does not reveal more fog,
     /// it reveals the SKY, which is not fogged at all; the tower's fully-fogged silhouette simply vanishes
@@ -188,8 +188,7 @@ internal static unsafe class CullPass
     /// below the horizon to the same fully-fogged colour (<see cref="SceneFog.SkyBand"/>), so culled ground
     /// under a kept building reveals the colour it had. And the distance is measured the way the fog is --
     /// radially from <see cref="SceneFog.Origin"/> when that is the player, view depth otherwise.</para></summary>
-    internal static bool FogCull = DefFogCull;
-    internal const bool DefFogCull = true;
+    internal static bool FogCull => SceneFog.Cull;
 
     /// <summary>Pixels per unit of world radius at unit view depth -- <c>proj.M22 * viewportHeight / 2</c>,
     /// so <c>radius * this / depth</c> is the sphere's screen radius. Zero for a pass whose projection is not
@@ -199,7 +198,7 @@ internal static unsafe class CullPass
 
     /// <summary>#290: this pass's eye, the sort key's one input. The same quantity
     /// <c>AlloyRenderer.EyeDist2</c> measures from on the CPU, so the two orders agree and
-    /// <c>/draw cull 0</c> is a like-for-like A/B rather than a different sort.</summary>
+    /// <c>/alloy cull 0</c> is a like-for-like A/B rather than a different sort.</summary>
     private static Vector3 _eye;
 
     /// <summary>The pass can actually run: the programs built and every entry point it needs exists.</summary>
@@ -310,7 +309,7 @@ internal static unsafe class CullPass
     /// itself -- see <see cref="SrcUints"/>. Nothing per-draw is computed here any more; this is an upload
     /// and a set of buffer sizes.</para>
     /// <para>#303: the spheres are no longer a parameter -- <see cref="UploadSpheres"/> carries them, outside
-    /// the Mode gate, because the shadow gather culls against the same buffer whatever <c>/draw cull</c>
+    /// the Mode gate, because the shadow gather culls against the same buffer whatever <c>/alloy cull</c>
     /// says.</para></summary>
     internal static bool Begin(int groups, int drawN, uint* src,
                               float lodScale, int compactBelow, Vector3 eye)
@@ -365,7 +364,7 @@ internal static unsafe class CullPass
 
     /// <summary>#303: the per-ownership-slot <c>CxCullSphere</c> upload, hoisted out of <see cref="Begin"/>
     /// and out of the Mode gate: the shadow gather culls against this same buffer, so it must stay current
-    /// under <c>/draw cull 0</c> and during a probe capture alike. The spheres are indexed by RECORD slot,
+    /// under <c>/alloy cull 0</c> and during a probe capture alike. The spheres are indexed by RECORD slot,
     /// exactly as the records are, and go up whole -- four floats against the record's forty-four, changing
     /// on the same edges, so a dirty list here would be #242's machinery again for a fortieth of the
     /// traffic.</summary>
@@ -1173,7 +1172,7 @@ internal static unsafe class CullPass
                 float kj = uKey[j];
                 if (kj < 0.0) continue;
                 // Farther first. An exact tie falls to the lower staged index, which is the CPU sort's own
-                // stable order -- so the two agree draw for draw and /draw cull 0 is a like-for-like A/B.
+                // stable order -- so the two agree draw for draw and /alloy cull 0 is a like-for-like A/B.
                 if (kj > k || (kj == k && j < i)) rank++;
             }
             uint o = base + rank;

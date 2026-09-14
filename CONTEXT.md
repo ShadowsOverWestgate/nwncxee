@@ -203,6 +203,11 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   User-tier knob has one.
 - **Off-default marker** — the visible sign on a row that its value differs from the declaration's
   default; the submenu's **Reset to defaults** clears every one of them at once.
+- **Status line** — a group's one read-only line (Renderer's "Running: Alloy — …"): the panel
+  shows it at the top of the submenu and bare `/<group>` prints it. A group with no knobs (About,
+  Debug info) is its status line.
+- **Link row** — a row that is an address, not a value: pressing it copies the address to the
+  clipboard and the row flashes "copied". Like an **action row** it stays live under an off master.
 - **Point (pt)** — the unit CX text size is stated in: 1 pt = 1 design pixel before GUI scale.
   Not a typographic point; no screen DPI is assumed. Box sizes and distances stay in design px.
 - **Panel face** — the one fixed text size the settings panel draws itself in (scaled by GUI
@@ -222,6 +227,12 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Consent store** — the per-server record of hotkeys the player approved, one token per server,
   kept in its own file as state. **Revoke** forgets this server's approvals and tells it to unbind;
   **Forget every server** wipes the whole store. Never a knob; never reset by the panel.
+- **Stock setting** — a value the player set in the game's own Options (`settings.tml`, the
+  engine's `CExoConfig`), as opposed to a knob. Read-only to the extender, taken as a snapshot at
+  the world edges (`StockConfig`, #571). A stock **toggle** is a hard gate over the matching Alloy
+  stage where one exists (grass, keyholing, bloom, enhanced lighting); a stock **numeric** is not
+  imported where a knob already covers the same thing -- the knob wins. Avoid: engine option,
+  vanilla setting.
 
 ## Rendering (Alloy)
 
@@ -268,9 +279,9 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Render mode** — which renderer draws the 3D scene: the *owned* mode (Alloy) or the
   *vanilla* mode (the engine's own path). Both ship permanently; a device that cannot run the
   Alloy mode still runs every other extender feature. The mode is whole-scene — never a
-  per-class mixture — and it is **chosen once per session** (`vanilla=1` in `cx.cfg`,
+  per-class mixture — and it is **chosen once per session** (`alloy.enabled=0` in `cx.cfg`,
   restart required), because Alloy's residency is exclusive and the two resource worlds
-  cannot both be warm. `/vanilla` reports which one is running and why.
+  cannot both be warm. Bare `/alloy` reports which one is running and why.
 - **Permanent engine resident** — a responsibility the engine keeps for good, not one staged
   back to it during a migration: the 2D UI, resource loading, simulation state, and
   animation/bone state. Rendering is not on the list. The rule that draws the line is *the

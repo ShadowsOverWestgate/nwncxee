@@ -32,9 +32,6 @@ public static class HotkeyStore
     /// </summary>
     public static volatile HashSet<int> Consented = new();
 
-    /// <summary>Bumped on every change to Armed, so HotkeyManagerService rebakes its labels only when it changes.</summary>
-    public static volatile int Version;
-
     // tokenHex -> that server's consented keys. Loaded from the cfg; the active set is one of these.
     private static readonly Dictionary<string, HashSet<int>> _sections = new();
     // The token presented by the current server this session, or null if none/unrecognised-and-unconsented.
@@ -93,7 +90,6 @@ public static class HotkeyStore
         _activeToken = null;
         Armed = new HashSet<int>();
         Consented = new HashSet<int>();
-        Version++;
 
         if (legacy > 0)
             log.Info($"HotkeyStore: dropped {legacy} legacy global armed key(s) -- consent is now per-server; " +
@@ -107,7 +103,6 @@ public static class HotkeyStore
         _activeToken = null;
         Armed = new HashSet<int>();
         Consented = new HashSet<int>();
-        Version++;
     }
 
     /// <summary>
@@ -123,7 +118,6 @@ public static class HotkeyStore
         bool known = _sections.TryGetValue(tok, out HashSet<int>? keys);
         Consented = known ? new HashSet<int>(keys!) : new HashSet<int>();
         Armed = new HashSet<int>(Consented);
-        Version++;
         log.Info(known
             ? $"HotkeyStore: token recognised -- restored {Consented.Count} consented key(s)"
             : "HotkeyStore: token not recognised -- armed set empty, awaiting fresh consent");
@@ -151,7 +145,6 @@ public static class HotkeyStore
         var armed = new HashSet<int>(Armed);
         armed.UnionWith(keys);
         Armed = armed;
-        Version++;
         Save(log);
         log.Info($"HotkeyStore: player armed {keys.Count} new key(s) for this server; {set.Count} total");
         return _activeToken;
@@ -159,7 +152,7 @@ public static class HotkeyStore
 
     /// <summary>
     /// Replace the ACTIVE server's consent wholesale and persist - the player revoking, through the
-    /// manager window. A server may not reach this: its proposals go through
+    /// panel's revoke row. A server may not reach this: its proposals go through
     /// <see cref="Capture"/>, which never writes the file. No active token -> no-op.
     /// </summary>
     public static void Set(HashSet<int> keys, ExtenderLog log)
@@ -169,8 +162,22 @@ public static class HotkeyStore
         _sections[_activeToken] = new HashSet<int>(keys);
         Consented = new HashSet<int>(keys);
         Armed = new HashSet<int>(keys);
-        Version++;
         Save(log);
+    }
+
+    /// <summary>
+    /// Forget every server (spec §4.5): every token section wiped and the file rewritten empty, the active
+    /// server's session state emptied with them. No packet -- the caller sends today's Revoke-all first when in
+    /// session. The active token is kept, so a fresh consent this session lands under the token the server holds.
+    /// </summary>
+    public static void Forget(ExtenderLog log)
+    {
+        EnsureLoaded(log);
+        _sections.Clear();
+        Consented = new HashSet<int>();
+        Armed = new HashSet<int>();
+        Save(log);
+        log.Info("HotkeyStore: forgot every server -- every token section wiped");
     }
 
     /// <summary>
@@ -180,7 +187,6 @@ public static class HotkeyStore
     public static void Capture(HashSet<int> keys)
     {
         Armed = new HashSet<int>(keys);
-        Version++;
     }
 
     /// <summary>A fresh, crypto-random 128-bit token as 32 lowercase hex chars.</summary>
@@ -205,7 +211,7 @@ public static class HotkeyStore
 
     public static void Save(ExtenderLog log)
     {
-        // Same deferral rule as Load (#190). NOT retryable, unlike ConfigFile.Save: the callers are one-shot
+        // Same deferral rule as Load (#190). NOT retryable: the callers are one-shot
         // consent actions, so a grant made while the user dir is unresolved persists only in memory. Reachable
         // only if consent ever moves off the in-game modal, which runs long past pre-main.
         if (!ConfigFile.Ready) return;

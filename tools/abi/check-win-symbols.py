@@ -52,6 +52,7 @@ SRET_HANDLED = {
     "SceneGetWindVector":      "managed/Alloy/Scene/DanglyPhysics.cs (Wind)",
     "TlkGetSimpleString":      "managed/Services/CombatText/CombatTextNative.cs",
     "GetServerNetworkAddress": "managed/Services/Perf/ServerPing.cs",
+    "GuiEditGetText":          "managed/Services/Chat/PromptCommandService.cs",
 }
 
 

@@ -1,12 +1,11 @@
-using System;
-
 namespace CX.Framework;
 
 /// <summary>
 /// The game-session predicates every layer branches on (ADR 0014). These are not UI concepts -- they arm the
 /// entire 3D pipeline as much as they gate a chat box -- so they live in the framework and UI consumes them
 /// like everyone else. The frame host (<c>CX.Ui.UiHostService</c>) is the sole writer of
-/// <see cref="InGame"/> / <see cref="InModule"/>, once per frame; everything else reads.
+/// <see cref="InGame"/> / <see cref="InModule"/> / <see cref="AtMainMenu"/> / <see cref="OptionsOpen"/>, once per frame; everything else reads. There is no whole-framework
+/// opt-out any more (ADR 0025): every feature has its own master, and "no CX" is an uninstall.
 /// </summary>
 public static class GameGate
 {
@@ -20,17 +19,15 @@ public static class GameGate
     /// true->false edge as the module-unload signal (session reset) and the false state to draw menu overlays.</summary>
     public static volatile bool InModule;
 
-    /// <summary>Framework opt-OUT (#23, the extender-optional guarantee): <c>lockchat=1</c> in <c>cx.cfg</c>
-    /// stands the whole extender down -- the frame host installs no hook, so nothing owns the present and
-    /// vanilla rendering is untouched. The single pivot every service reads.
-    /// <para>Config, not a command (ADR 0013 bucket 2): it decides what hooks at boot, and it is read on
-    /// every content draw, so it latches into a field rather than re-reading per frame.</para></summary>
-    public static bool Locked => _locked;
+    /// <summary>The main menu is up (#593): no module and the engine's live <c>CMainMenuPanel</c> exists. False on
+    /// the loading screen, in character generation and the server browser (the menu panel is destroyed before
+    /// each); true under the pregame Options modal, which only hides the panel. The gear and the settings
+    /// panel draw on it; nothing else does.</summary>
+    public static volatile bool AtMainMenu;
 
-    private static readonly bool _locked = Settings.Bool("lockchat", false);
-
-    /// <summary>True when the framework owns the <c>SwapBuffers</c> present (the default path). False under
-    /// <c>lockchat</c>. Frame-present-coupled services (Dialog and friends) read this: funchook
-    /// single-hooks a symbol, so exactly one owner of SwapBuffers may install.</summary>
-    public static bool OwnsFramePresent => !Locked;
+    /// <summary>The in-game Options panel (the ESC menu) is up and showing (#593 follow-up): a module is loaded,
+    /// <c>CGuiInGame</c>'s live <c>COptionsPanel*</c> is non-null and its panel state is exactly "active" -- false
+    /// again while a Game/Video/Controls sub-panel hides it, and on Resume/Exit. The gear and the settings panel
+    /// draw on it, the way they draw on <see cref="AtMainMenu"/>; nothing else does.</summary>
+    public static volatile bool OptionsOpen;
 }

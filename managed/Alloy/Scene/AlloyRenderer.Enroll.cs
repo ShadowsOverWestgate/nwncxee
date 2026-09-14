@@ -198,7 +198,7 @@ public sealed unsafe partial class AlloyRenderer
     /// frame until the cursor runs off the table, then <see cref="EnrollFinish"/> in that last step. The
     /// 12ms every-tenth-frame hitch was the whole walk on one frame; a frame mid-walk draws from the previous
     /// complete census, since nothing the draw side reads is rebuilt before the finish. A wipe, an empty
-    /// census and <c>enrollbudget=0</c> walk unbudgeted -- there is nothing standing to draw from meanwhile.</para></summary>
+    /// census and <c>alloy.enrollbudget=0</c> walk unbudgeted -- there is nothing standing to draw from meanwhile.</para></summary>
     private static void Enroll(IntPtr scene)
     {
         if (!Walking(scene))
@@ -213,7 +213,7 @@ public sealed unsafe partial class AlloyRenderer
     /// (<see cref="SceneWalk.TakeChanges"/>), so only those are freed and re-seated; the 20k kept slots are
     /// not touched, hashed, re-read or compared, and the order is rebuilt by the O(live) radix. Falls back to
     /// the full walk on a new scene, a wiped table, an overflowed change list, or any REFUSAL -- the
-    /// all-owned-or-none sweeps (instance, blended class) need the full scan's tallies. <c>enrolldelta=0</c>
+    /// all-owned-or-none sweeps (instance, blended class) need the full scan's tallies. <c>alloy.enrolldelta=0</c>
     /// in cx.cfg is the A/B. Runs in one frame: the change set is a few hundred parts at most.</summary>
     private static bool TryEnrollDelta(IntPtr scene)
     {

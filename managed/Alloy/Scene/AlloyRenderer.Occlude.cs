@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.Globalization;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Framework;
@@ -15,21 +14,22 @@ namespace CX.Alloy;
 /// camera focus to the camera position is marched through <c>Scene::HitCheck</c> (the same engine test the
 /// pull-in uses, <see cref="OccHitsPerRay"/> hits each, so at most 15 calls), and every hit is remembered
 /// as a point plus the gob it landed on. The route walk then tags a tile part whose enrolment box holds a
-/// hit point, or a gob part whose gob was hit, with a coverage that eases toward <see cref="_occFloor"/>;
+/// hit point, or a gob part whose gob was hit, with a coverage that eases toward <c>walls.floor</c>;
 /// the record carries it in <c>rot.z</c> (|value| in (0,1), see <c>CxKeyhole</c>), the part rides the
 /// keyhole prepass sweep so its depth has the same holes, and the vis-ID target and the caster pass see it
 /// whole. Creatures are never faded; the player's own gob is on the hit record's ignore list.
 /// <para>The engine's pull-in is switched off by <see cref="CameraFlagDisableCollision"/> in
 /// <see cref="ModuleCameraFlags"/> -- the same client field the server's <c>SetCameraFlags</c> lands in.
-/// Only the bit this session set is ever cleared, and a value that already holds is not rewritten.</para></summary>
+/// Only the bit this session set is ever cleared, and a value that already holds is not rewritten.</para>
+/// <para>The knobs are the <see cref="Walls"/> group (spec §4.4), read live; the fade rate stays a const.</para></summary>
 public sealed unsafe partial class AlloyRenderer
 {
     private const int OccRays = 5, OccHitsPerRay = 3, OccMaxHits = OccRays * OccHitsPerRay;
     private const float OccNudge = SceneRay.Nudge;
-    private const float OccRadiusBoot = 0.5f, OccFloorBoot = 0.25f, OccRateBoot = 8f;
+    /// <summary>The fade's ease rate per second (a knob would only ever be set to this).</summary>
+    private const float OccRate = 8f;
 
-    private static bool _occFadeMode = true, _occArmed;
-    private static float _occRadius = OccRadiusBoot, _occFloor = OccFloorBoot, _occRate = OccRateBoot;
+    private static bool _occArmed;
     private static long _occLastTick;
     private static string _occWhy = "never ran";
 
@@ -51,35 +51,18 @@ public sealed unsafe partial class AlloyRenderer
 
     private static void OccludeInit(ExtenderLog log)
     {
-        _occFadeMode = Settings.Text("camera.occlude", "fade") != "pullin";
+        CameraKnobs.Declare();
         SceneRay.Init();
         _occCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
         _occAppMgr = Native.Sym(SymbolMap.AppManager);
         _occGetModule = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
         _occArmed = SceneRay.Armed && _occCamera != null && _occAppMgr != IntPtr.Zero && _occGetModule != null && _runtime != null;
         _occWhy = _occArmed ? "armed" : "symbols unresolved";
-        log.Info($"AlloyRenderer: /camera occlude {(_occFadeMode ? "fade" : "pullin")} ({_occWhy})");
-        CameraCommand.Register("occlude", "fade|pullin, radius N (ray fan half-width), floor N (alpha floor) -- occluders fade instead of the camera pulling in (#537)", OccludeCommand);
-        CameraCommand.Report(() => $"[camera] occlude {(_occFadeMode ? "fade" : "pullin")} radius {_occRadius:F2} floor {_occFloor:F2} " +
-                                   $"({_occWhy}; {(_occFrames == 0 ? 0 : _occCalls / _occFrames)} casts, {(_occFrames == 0 ? 0 : _occTagged / _occFrames)} parts tagged per frame)");
-    }
-
-    private static string OccludeCommand(string args)
-    {
-        int sp = args.IndexOf(' ');
-        string key = sp < 0 ? args : args[..sp];
-        string val = sp < 0 ? "" : args[(sp + 1)..].Trim();
-        switch (key)
-        {
-            case "fade": _occFadeMode = true; return "[camera] occlude fade" + (_occArmed ? "" : $" ({_occWhy})");
-            case "pullin": _occFadeMode = false; return "[camera] occlude pullin (engine collision)";
-            case "radius":
-            case "floor":
-                if (!float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float v)) return $"[camera] occlude {key} <number>";
-                if (key == "radius") _occRadius = Math.Clamp(v, 0f, 5f); else _occFloor = Math.Clamp(v, 0f, 1f);
-                return $"[camera] occlude {key} {v:F2}";
-            default: return "[camera] occlude fade|pullin|radius N|floor N";
-        }
+        log.Info($"AlloyRenderer: walls.fade {(Walls.Fade.V ? "on" : "off")} ({_occWhy})");
+        Walls.G.Status = () => FormattableString.Invariant(
+            $"fade {(Walls.Fade.V ? "on" : "off")} radius {Walls.Radius.V:F2} floor {Walls.Floor.V:F2} ({_occWhy}; ")
+            + $"{(_occFrames == 0 ? 0 : _occCalls / _occFrames)} casts, {(_occFrames == 0 ? 0 : _occTagged / _occFrames)} parts tagged per frame)"
+            + FormattableString.Invariant($" | arm {CameraService.ArmFraction:0.00} (margin {Walls.Margin.V:0.##} in {Walls.ArmIn.V:0.#} out {Walls.ArmOut.V:0.#} radius {Walls.ArmRadius.V:0.##})");
     }
 
     /// <summary>The CNWCModule, through the engine's own chain (the UiHostService gate's derefs).</summary>
@@ -105,7 +88,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The fade wants the engine's pull-in off; <see cref="CameraService.SettleCollision"/> is the
     /// one writer of the flag, so a spring-arm session ending cannot hand the pull-in back mid-fade.</summary>
-    public static bool OccludeFadeWanted => _occArmed && _occFadeMode;
+    public static bool OccludeFadeWanted => _occArmed && Walls.Fade.V;
 
     /// <summary>Once per frame, before the route walk: settle the collision flag, then cast the fan.</summary>
     private static void OccludeFrame()
@@ -114,7 +97,7 @@ public sealed unsafe partial class AlloyRenderer
         OccludeTick();
         if (!_occArmed) return;
         CameraService.SettleCollision(OccludeModule());
-        if (!_occFadeMode) return;
+        if (!Walls.Fade.V) return;
         IntPtr scene = SceneRay.WorldScene();
         if (scene == IntPtr.Zero) return;
         IntPtr player = OccludeTargetGob();
@@ -128,11 +111,12 @@ public sealed unsafe partial class AlloyRenderer
         Vector3 right = Vector3.Cross(d, Vector3.UnitZ);
         if (right.LengthSquared() < 1e-6f) right = Vector3.UnitX; else right = Vector3.Normalize(right);
         Vector3 up = Vector3.Cross(right, d);
+        float radius = Walls.Radius.V;
         for (int r = 0; r < OccRays; r++)
         {
             Vector3 o = r switch
             {
-                1 => right * _occRadius, 2 => -right * _occRadius, 3 => up * _occRadius, 4 => -up * _occRadius, _ => Vector3.Zero,
+                1 => right * radius, 2 => -right * radius, 3 => up * radius, 4 => -up * radius, _ => Vector3.Zero,
             };
             Vector3 from = focus + o, to = cam + o;
             for (int h = 0; h < OccHitsPerRay; h++)
@@ -179,7 +163,7 @@ public sealed unsafe partial class AlloyRenderer
                 }
             }
         }
-        float target = hit ? 1f - _occFloor : 0f;
+        float target = hit ? 1f - Walls.Floor.V : 0f;
         f += (target - f) * _occStep;
         if (MathF.Abs(target - f) < 0.005f) f = target;
         _occFade[i] = f;
@@ -195,7 +179,7 @@ public sealed unsafe partial class AlloyRenderer
         long now = Stopwatch.GetTimestamp();
         float dt = _occLastTick == 0 ? 1f / 60f : (float)((now - _occLastTick) / (double)Stopwatch.Frequency);
         _occLastTick = now;
-        _occStep = Math.Clamp(Math.Min(dt, 0.1f) * _occRate, 0f, 1f);
+        _occStep = Math.Clamp(Math.Min(dt, 0.1f) * OccRate, 0f, 1f);
     }
 
     /// <summary>The <c>rot.z</c> the record carries: the occluder's coverage when faded (signed by the keyhole

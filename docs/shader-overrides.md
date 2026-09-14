@@ -24,7 +24,7 @@ in #120, every shipped copy went on reading each draw out of its neighbour's slo
 world rendered black and streaked. Three things keep that in hand, and a shipped override
 depends on all three:
 
-- **Start from `/dumpshaders`, re-dump after each extender update.** The dump is what this
+- **Start from `/alloy shaderdump`, re-dump after each extender update.** The dump is what this
   build compiles, so the diff against your copy is exactly the drift.
 - **Keep the sizing tokens.** They are expanded on load, so a size change on the C# side
   never stales a file that kept them.
@@ -34,7 +34,8 @@ depends on all three:
 
 ## Getting a starting point
 
-Type **`/dumpshaders`** in-game. It writes every overridable stage as an editable `.shd`
+Type **`/alloy shaderdump`** in-game (chat commands need General → "Enable chat
+commands" in `/settings`, i.e. `general.commands=1`). It writes every overridable stage as an editable `.shd`
 into `cx_shader_dump/` inside the client's own user directory (next to `nwn.ini`).
 
 What you get is the stage **this build compiles** — dumped from the same text the
@@ -42,12 +43,12 @@ renderer uses, so it is current by construction rather than by somebody remember
 update it. Each file opens with a short header naming the constraints that stage carries
 and pointing back here.
 
-There is also a headless trigger for offline work: put `dumpshaders=1` in
+There is also a headless trigger for offline work: put `alloy.dumpshaders=1` in
 `cx.cfg` in the same directory, and the dump runs at startup.
 
 ### The workflow
 
-1. `/dumpshaders`.
+1. `/alloy shaderdump`.
 2. Edit `cx_shader_dump/<resref>.shd`.
 3. Place it where your client's resource chain will find it — an `override/` directory
    for local play, a hak for a module you control.
@@ -64,7 +65,7 @@ change on the C# side. Freezing today's numbers into your copy is how it goes st
 ### SPIR-V stages
 
 A `.shd` may hold a **SPIR-V module** instead of GLSL text — same resref, same resource
-chain, sniffed by its magic word. It is off by default; put `spirv=1` in `cx.cfg` to
+chain, sniffed by its magic word. It is off by default; put `alloy.spirv=1` in `cx.cfg` to
 accept one.
 
 It is off by default because a module is unauditable. Everything the text path does for

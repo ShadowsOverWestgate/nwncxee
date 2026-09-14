@@ -21,7 +21,7 @@ namespace CX.Alloy;
 /// <para>All of it runs in the one deterministic per-frame slot (ADR 0007 phase 1:
 /// <c>Scene::AddPartsToDrawBuckets</c>, after ManageSceneBSP and before any draw), and none of it touches
 /// GL -- it is also where this service drives <see cref="CasterPass.OnPassSlot"/> (#118), so the world casters
-/// bake ahead of the colour pass that samples them. The <c>shadows=0</c> config setting stands the whole thing down, which
+/// bake ahead of the colour pass that samples them. The <c>shadow.enabled=0</c> config setting stands the whole thing down, which
 /// since #118 also means CasterPass never ticks -- without this feed it had nothing to bake.</para>
 /// </summary>
 /// <remarks>
@@ -33,13 +33,14 @@ namespace CX.Alloy;
 public sealed unsafe class SceneInputs : IExtenderService
 {
     /// <summary>How far ahead of the camera the map centre marches (<c>/shadow focusdist</c>).</summary>
-    private static float _focusDist = FocusDistBoot;
+    private static float _focusDist => Shadows.FocusDist.V;
     private static ExtenderLog? _log;
     /// <summary>#456: the CAurBehavior layout probe's one-shot latch.</summary>
     private static bool _probedBehavior;
-    private static bool _enabled, _diag;
+    private static bool _enabled;
+    private static bool _diag => Shadows.Diag.V;
     /// <summary>#404: how far <see cref="FrameStart"/> runs, for one-restart bisection on radeonsi.
-    /// 1 = light walk only, 2 = + focus, 3 = + cube bind, 4 = + caster bake (full). Boot only.</summary>
+    /// 1 = light walk only, 2 = + focus, 3 = + cube bind, 4 = + caster bake (full). <c>shadow.stage</c>, Boot.</summary>
     private static int _stage = 4;
 
     /// <summary>The one "we own shadows this frame" predicate: armed, in a module, and the frame latched
@@ -83,12 +84,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static delegate* unmanaged<IntPtr, IntPtr> _getModule;
     private static bool _interiorLogged;              // log interior/exterior transitions
     /// <summary><c>/shadow trace 1</c>: periodic trace of the light walk -- allocates log strings; diagnosis only.</summary>
-    private static bool _trace;
-    /// <summary>Boot values of the <c>/shadow</c> dials -- the code defaults now that the env overrides are
-    /// gone (ADR 0013), and what <c>/shadow reset</c> restores.</summary>
-    private const float FocusDistBoot = 24f;
-    /// <summary>Boot value of <see cref="_lightCullMode"/> (see it for what the modes mean).</summary>
-    private const int LightCullBoot = 1;
+    private static bool _trace => Shadows.Trace.V;
 
     /// <summary>The one-time <c>[shadowdiag]</c> dumps, off by default.</summary>
     internal static bool Diag => _diag;
@@ -103,16 +99,12 @@ public sealed unsafe class SceneInputs : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        // Registered ahead of the stand-down, exactly as RenderCommands does: a session with the feed off
-        // should still answer /shadow with "off" rather than not know the command.
-        CommandRegistry.Global.Register("/shadow",
-            "report or tune the shadow feed and caster; /shadow reset restores boot values", ShadowCommand);
-
-        // Config bucket (ADR 0013): this arms the feed's hooks, so it is a boot decision. Everything the
-        // walk merely LOOKS at -- radii, cull mode, the diagnostics -- is /shadow's.
-        _enabled = Settings.Bool("shadows", true);
-        _stage = Settings.Int("shadowstage", 4, 1, 4);
-        if (_stage < 4) log.Info($"SceneInputs: shadowstage={_stage} -- the shadows feed stops after {(_stage == 1 ? "the light walk" : _stage == 2 ? "the focus" : "the cube bind (no bake)")}");
+        // Restart knobs (shadow.enabled, shadow.stage): this arms the feed's hooks, so it is a boot decision,
+        // read through Boot. Everything the walk merely LOOKS at -- radii, cull mode, the diagnostics -- is
+        // a Live knob of the same group, read per frame.
+        _enabled = Shadows.Enabled.Boot;
+        _stage = Shadows.Stage.Boot;
+        if (_stage < 4) log.Info($"SceneInputs: shadow.stage={_stage} -- the shadows feed stops after {(_stage == 1 ? "the light walk" : _stage == 2 ? "the focus" : "the cube bind (no bake)")}");
 
         ShadowMath.SelfCheck(log);   // pure math, runs headless
         FadeSelfCheck(log);          // ...and so does the fade-out bookkeeping
@@ -134,77 +126,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // The per-presented-frame edge. Was a zero-size UiHost Window abused as a draw slot (#169); #170 gives
         // it the real thing. Priority 0: it ran inside the window roll-call, i.e. before the #80 context bracket.
         FrameRegistry.Global.Register(FramePhase.PrePresent, 0, Draw, "SceneInputs.frameEdge", log);
-        log.Info("SceneInputs: light walk armed, feeding CasterPass (config shadows=0 disables)");
-        log.Info($"SceneInputs: effective tuning: {Describe()}");
-    }
-
-    /// <summary>Keys <c>/shadow</c> accepts. The first two are <see cref="CasterPass"/>'s, the rest this
-    /// feed's -- one command over the whole shadow path, because a player tuning it is looking at one thing.</summary>
-    private const string ShadowKeys = "dist|lod|rebake|gather|split|layered|refreshall|dynhold|dynevents|dynranks|movers|focusdist|lightcull|diag|lightdiag|torchdiag|trace|mask|maskholes|maskh|fade|fadeslots|staticcap|flipcollect|contact|contactsteps|contactfar";
-
-    /// <summary>ADR 0013 bucket 1, in the shape <c>RenderCommands.Tune</c> established: <c>/shadow</c> reports,
-    /// <c>/shadow &lt;key&gt; &lt;value&gt;</c> sets, <c>/shadow reset</c> restores the boot values. Every one
-    /// of these is judged while walking around -- a cull radius against pop-in, a diagnostic at the spot where
-    /// the bug happens -- which is exactly why none of them is a config setting.</summary>
-    private static string? ShadowCommand(string args)
-    {
-        string[] a = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (a.Length == 0) return $"[shadow] {Describe()}";
-        if (a.Length == 1 && a[0] == "reset")
-        {
-            ResetTuning();
-            CasterPass.ResetTuning();
-            ContactShadow.ResetTuning();
-            return $"[shadow] reset -> {Describe()}";
-        }
-        if (a.Length != 2 || !float.TryParse(a[1], System.Globalization.NumberStyles.Float,
-                                             System.Globalization.CultureInfo.InvariantCulture, out float v)
-            || (v < 0f && a[0] != "mask"))
-            return $"[shadow] usage: /shadow | /shadow <{ShadowKeys}> <value> | /shadow reset";
-
-        float old = Tune(a[0], v);
-        if (float.IsNaN(old)) old = CasterPass.Tune(a[0], v);
-        if (float.IsNaN(old)) old = ContactShadow.Tune(a[0], v);
-        return float.IsNaN(old)
-            ? $"[shadow] unknown knob \"{a[0]}\" -- try {ShadowKeys.Replace('|', ' ')}"
-            : $"[shadow] {a[0]} {F(v)} (was {F(old)}) -> {Describe()}";
-    }
-
-    /// <summary>The live tuning state, feed and caster on one line.</summary>
-    internal static string Describe()
-        => $"feed {(_enabled ? "on" : "off")} focusdist {_focusDist:F0} " +
-           $"lightcull {_lightCullMode} " +
-           $"diag {B(_diag)}{B(_lightDiag)}{B(_torchDiag)}{B(_trace)} | {CasterPass.Describe()} | {ContactShadow.Describe()}";
-
-    private static char B(bool f) => f ? '1' : '0';
-
-    /// <summary>Echo a set value in the same invariant form <c>/shadow</c> ACCEPTS, so a reported number can
-    /// be typed straight back in on a comma-decimal desktop.</summary>
-    private static string F(float v) => v.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
-
-    /// <summary>Set one of this feed's dials, returning its old value; NaN when the key is not ours, which is
-    /// how <see cref="ShadowCommand"/> knows to offer it to <see cref="CasterPass"/>.</summary>
-    private static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "focusdist": old = _focusDist; _focusDist = v; return old;
-            case "lightcull": old = _lightCullMode; _lightCullMode = (int)MathF.Min(v, 2f); return old;
-            case "diag": old = _diag ? 1f : 0f; _diag = v != 0f; return old;
-            case "lightdiag": old = _lightDiag ? 1f : 0f; _lightDiag = v != 0f; return old;
-            case "torchdiag": old = _torchDiag ? 1f : 0f; _torchDiag = v != 0f; return old;
-            case "trace": old = _trace ? 1f : 0f; _trace = v != 0f; return old;
-            default: return float.NaN;
-        }
-    }
-
-    /// <summary>Back to the boot values -- diagnostics off, radii as shipped.</summary>
-    private static void ResetTuning()
-    {
-        _focusDist = FocusDistBoot;
-        _lightCullMode = LightCullBoot;
-        _diag = _lightDiag = _torchDiag = _trace = false;
+        log.Info("SceneInputs: light walk armed, feeding CasterPass (shadow.enabled=0 disables)");
     }
 
     /// <summary>#257: the light feed's frame slot, called by <see cref="AlloyRenderer"/> at the frame
@@ -267,7 +189,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     // scaled down, which shrinks the pool back into the source on the same curve.
 
     /// <summary>Frames a departed light takes to fade. <c>/light fadeout</c>; 0 = pop, as before.</summary>
-    internal static int FadeFrames = FadeFramesBoot;
+    internal static int FadeFrames => Lighting.Fadeout.V;
     internal const int FadeFramesBoot = 20;
     /// <summary>Lights allowed to fade at once. More than this vanishing in ONE frame is a load edge -- an
     /// area transition unlinks the whole list -- and the ghosts are dropped rather than played out.</summary>
@@ -292,8 +214,9 @@ public sealed unsafe class SceneInputs : IExtenderService
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"SceneInputs.FadeSelfCheck FAIL: {w}"); } }
 
+        // Plain field writes on the knob, not Sets: nothing runs and nothing is written to the file.
         int fadeWas = FadeFrames, prevWas = _prevN, ghostWas = _ghostN;
-        FadeFrames = 3; _prevN = 0; _ghostN = 0;
+        Lighting.Fadeout.V = 3; _prevN = 0; _ghostN = 0;
 
         void Lit(params int[] ids)
         {
@@ -316,15 +239,15 @@ public sealed unsafe class SceneInputs : IExtenderService
         Lit(1, 2);
         E(_ghostN == 0 && FrameInputs.LightCount == 2, "a light that comes back drops its ghost");
         // The load edge: more leavers than the cap in one frame is an area transition, not a torch.
-        Lit(1, 2, 3, 4); FadeFrames = 3; _ghostN = 0;
+        Lit(1, 2, 3, 4); Lighting.Fadeout.V = 3; _ghostN = 0;
         var many = new int[MaxGhosts + 4];
         for (int i = 0; i < many.Length; i++) many[i] = 100 + i;
         Lit(many); Lit(1);
         E(_ghostN == 0, "a whole list vanishing at once fades nothing");
-        FadeFrames = 0; Lit(1, 2); Lit(1);
+        Lighting.Fadeout.V = 0; Lit(1, 2); Lit(1);
         E(_ghostN == 0 && FrameInputs.LightCount == 1, "fadeout 0 pops, as before");
 
-        FadeFrames = fadeWas; _prevN = prevWas; _ghostN = ghostWas;
+        Lighting.Fadeout.V = fadeWas; _prevN = prevWas; _ghostN = ghostWas;
         FrameInputs.BeginAreaLights(0);
         log.Info(ok ? "SceneInputs.FadeSelfCheck: passed" : "SceneInputs.FadeSelfCheck: FAILED -- see above");
     }
@@ -400,12 +323,12 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// only (default), 2 = camera-frustum sphere test (opt-in until live-proven -- the first frustum cut
     /// used the unverified view quaternion and blacked out every light off the torch). Shrinks the
     /// per-fragment Alloy loop light set.</summary>
-    private static int _lightCullMode = LightCullBoot;
+    private static int _lightCullMode => Shadows.LightCull.V;
 
     /// <summary>See <see cref="ShadowMath.FrustumCullSlack"/> -- shared with the cube-bake cull (#322).</summary>
     private const float FrustumCullSlack = ShadowMath.FrustumCullSlack;
     private static int _lightsCulled;
-    private static bool _lightDiag;
+    private static bool _lightDiag => Shadows.LightDiag.V;
 
 
     /// <summary>Record EVERY shadow-worthy point light from the LightManager's master list into
@@ -584,7 +507,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary><c>/shadow torchdiag 1</c>: settable at runtime, because the interesting spot is found by
     /// walking to it -- a boot-time flag meant relaunching in the wrong place.</summary>
-    private static bool _torchDiag;
+    private static bool _torchDiag => Shadows.TorchDiag.V;
     private static int _torchTick;
     /// <summary>Nearest-so-far distance^2 this walk. MUST start at +inf, not the default 0, or the first
     /// walk's comparison rejects every light.</summary>

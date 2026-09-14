@@ -6,11 +6,13 @@ using CX.Graphics;
 namespace CX.Ui;
 
 /// <summary>The framework's frame owner (ADR 0004, spec #62; ADR 0014 amendment, #170). Owns the single
-/// <c>SwapBuffers</c> present, computes the in-game gate and syncs the game UI scale once per frame, then drives
+/// <c>SwapBuffers</c> present, computes the in-game gate, syncs the game UI scale and keeps the shared glyph atlas
+/// at <c>ui.font × GUI scale</c> once per frame, then drives
 /// two registries and nothing else: the <see cref="UiHost"/> window roll-call in z-order, and the
 /// <see cref="FrameRegistry"/> phase walks around it. It names no service. Each service supplies its window's <see cref="Window.DrawContent"/>;
 /// the host never touches any service's rendering. Was Chat's <c>OnSwap</c> roll-call. Raw input capture is the
-/// sibling <c>UiInputService</c>'s job (#64); this service owns only the frame present.</summary>
+/// sibling <c>UiInputService</c>'s job (#64); this service owns only the frame present -- and the one piece of
+/// content that is the framework's own: the main-menu gear (#593, spec §3 Doors 2), the settings panel's second door.</summary>
 public sealed unsafe class UiHostService : IExtenderService
 {
     private static ExtenderLog? _log;
@@ -18,14 +20,16 @@ public sealed unsafe class UiHostService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        UiCategory.SelfCheck(log);   // declares the UI groups in panel order, then checks the #590 rows
         UiHost.SelfCheck(log);   // #61 arbiter + #62 draw roll-call proof (off-device)
         FrameZones.SelfCheck(log);   // #238 frame-split instrument (off-device)
-        SettingsPanel.SelfCheck(log);   // #166 shared settings panel: hit-test, drag, edit buffer (off-device)
-        if (GameGate.Locked)   // lockchat: install nothing -> vanilla rendering intact
-        {
-            log.Info("UiHostService: lockchat set -- framework stood down, vanilla rendering left intact");
-            return;
-        }
+        ScrollColumn.SelfCheck(log);    // #587 scroll column: offset, thumb, wheel, zero-alloc draw (off-device)
+        Dropdown.SelfCheck(log);        // #587 dropdown list: 27 entries, scroll, pick, outside press (off-device)
+        Tooltip.SelfCheck(log);         // #587 tooltip: dwell, tick, wrap, zero-alloc draw (off-device)
+        SettingsPanel.SelfCheck(log);   // #166 shared settings panel: hit-test, drag, edit buffer, #587 primitives (off-device)
+        MenuGear.SelfCheck(log);        // #593 main-menu gear: anchor, hover animation, zero-alloc emit (off-device)
+        TextRig.Init(log);   // the one glyph atlas every window draws from (null under run-demo: stbtt absent)
+        ApplyFont();         // ...baked at ui.font x GUI scale; declares the ui group
         _getGuiScale = (delegate* unmanaged<float>)Native.Sym(SymbolMap.GetGuiScale);
         _resetStates = (delegate* unmanaged<void>)Native.Sym(SymbolMap.RiResetRenderStates);
         _bindBuffer = (delegate* unmanaged<uint, uint, void>)Native.Sym(SymbolMap.RiBindBuffer);
@@ -36,13 +40,92 @@ public sealed unsafe class UiHostService : IExtenderService
             : "UiHostService: frame present not installed (Install returned Zero: symbol unresolved or already hooked)");
 
         // The roll-call's draw site. nk_sdl_render is nuklear's GL flush: run the windows just before it and
-        // they land under every NUI window and over the vanilla GUI panels. Chained, not Installed --
-        // HotkeyManagerService builds a nuklear window on the same symbol (#88). Higher priority = outer, so
-        // our raw GL and its resync are done before the manager adds its window to the queue.
+        // they land under every NUI window and over the vanilla GUI panels. Chained, not Installed (#88):
+        // the symbol is shared plumbing, and higher priority = outer keeps our raw GL and its resync first.
         _nkSlot = hooks.Chain(SymbolMap.NkSdlRender, (IntPtr)(delegate* unmanaged<float, void>)&OnNkRender, 20);
         log.Info(_nkSlot != null
             ? "UiHostService: window roll-call runs below NUI (chained on nk_sdl_render)"
             : "UiHostService: nk_sdl_render unavailable -- window roll-call stays at the present (above NUI)");
+
+        // #593: the gear's window. Its rect is the sprite's; it hits only while the main menu or the in-game Options
+        // panel is up, so in play and on the loading screen it is inert for the cursor pick, the click routing and
+        // the yield exemption.
+        _gearWindow = new Window(0, 0, 0, 0)
+        {
+            Focusable = false,
+            DrawContent = DrawGear,
+            OnMouseButton = OnGearButton,
+            OnMouseMotion = OnGearMotion,
+            HitTestOverride = (px, py) => GearSurface && _gear.Contains(px, py),
+        };
+        log.Info("UiHostService: settings gear registered (main menu + in-game Options; opens the settings panel)");
+    }
+
+    // ---- the main-menu gear (#593) ----
+    private static readonly MenuGear _gear = new();
+    private static Window? _gearWindow;
+    private static VertexBatch? _gearBatch;
+    private static float _gearFacePx;
+    private static int _gearEpoch = -1;
+    private static GlyphAtlas? _gearFace;
+    private static long _gearLast;
+    private static (int w, int h, float px) _gearAnchor;
+
+    /// <summary>Where the gear lives: the main menu (#593) or the in-game Options panel (its follow-up) -- the two
+    /// surfaces the settings panel has a door on.</summary>
+    private static bool GearSurface => GameGate.AtMainMenu || GameGate.OptionsOpen;
+
+    /// <summary>A press on the gear opens the panel (cold, input thread); anything else over it is swallowed so
+    /// the viewport-filling background never sees a press that started on the gear.</summary>
+    private static bool OnGearButton(bool down, int button, int x, int y)
+    {
+        if (!GearSurface || !_gear.Contains(x, y)) return false;
+        if (down && button == 1) { _log?.Info($"UiHostService: gear pressed ({(GameGate.AtMainMenu ? "main menu" : "Options panel")}) -- opening the settings panel"); KnobPanelService.Open(); }
+        return true;
+    }
+
+    /// <summary>Hover tracking only; motion is never consumed, so the engine's menu keeps its own pointer state.</summary>
+    private static bool OnGearMotion(int x, int y)
+    {
+        _gear.Hovered = GearSurface && _gear.Contains(x, y);
+        return false;
+    }
+
+    /// <summary>The gear's draw (render thread, on the menu and under the in-game Options panel only). The sprite
+    /// face is <see cref="MenuGear.FaceFor"/> the live GUI scale; a miss bakes it right here -- the same edge
+    /// <see cref="ApplyFont"/> re-bakes the text atlas on, and on both surfaces the world HUD is down. The anchor is computed from the live viewport and logged
+    /// on every change of (viewport, face); the engine-side pixel origin (<c>MapGuiSceneToScreen</c>) is the owed
+    /// live check. Zero-alloc once the face is baked.</summary>
+    private static void DrawGear()
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        float dt = _gearLast == 0 ? 0f : (now - _gearLast) / (float)System.Diagnostics.Stopwatch.Frequency;
+        _gearLast = now;
+        if (!GearSurface) { _gear.Hovered = false; _gear.Bright = 0f; _gear.Spin = 0f; return; }
+        if (_log == null || !Gl.Init(_log) || Gl.GetIntegerv == null || !TextRig.Ready) return;
+        float px = MenuGear.FaceFor(Metrics.GameUiScale);
+        if (px != _gearFacePx || _gearEpoch != TextRig.AtlasEpoch)
+        {
+            _gearFace = TextRig.BakedIconFace(px) ?? TextRig.IconFace(px);
+            _gearFacePx = px; _gearEpoch = TextRig.AtlasEpoch;
+        }
+        if (_gearFace == null || !_gearFace.TryGet(MenuGear.Codepoint, out Glyph g) || g.W <= 0) return;
+        int* vp = stackalloc int[4];
+        Gl.GetIntegerv(Gl.VIEWPORT, vp);
+        _gear.Layout(vp[2], vp[3], Metrics.GameUiScale, g);
+        if (_gearWindow != null) { _gearWindow.X = _gear.X; _gearWindow.Y = _gear.Y; _gearWindow.W = _gear.W; _gearWindow.H = _gear.H; }
+        if (_gearAnchor != (vp[2], vp[3], px))
+        {
+            _gearAnchor = (vp[2], vp[3], px);
+            _log.Info($"[menugear] anchor: viewport {vp[2]}x{vp[3]}, GUI scale {Metrics.GameUiScale:F2}, face {px}px -> "
+                    + $"gear {_gear.W}x{_gear.H}px at ({_gear.X},{_gear.Y}), inset {MenuGear.InsetPx * Metrics.GameUiScale}px from the lower-left; "
+                    + "the PNL_MAINMENU column's pixel origin (MapGuiSceneToScreen) is the owed live check");
+        }
+        _gear.Tick(dt);
+        VertexBatch b = _gearBatch ??= new VertexBatch(_gearFace.SolidU, _gearFace.SolidV);
+        b.Reset(_gearFace.SolidU, _gearFace.SolidV);
+        _gear.Emit(b, g);
+        TextRig.DrawBatch(b.AsSpan(), b.VertexCount);
     }
 
     private static delegate* unmanaged<IntPtr, void> _swapOrig;
@@ -81,8 +164,8 @@ public sealed unsafe class UiHostService : IExtenderService
         {
             _announced = true;
             _log?.Info("UiHostService: first frame presented -- hook is LIVE");
-            _presentProbe = Settings.Int("presentprobe", 0, 0, 200);
-            int pin = Settings.Int("pin", -1, -1, 1023);
+            _presentProbe = General.PresentProbe.Boot;
+            int pin = General.Pin.Boot;
             if (pin >= 0) _log?.Info($"UiHostService: main thread pin={pin} -> {(Affinity.PinThis(pin) ? "pinned" : "REFUSED")} (was on cpu {Affinity.CurrentCpu})");
         }
         FrameRegistry.Global.Run(FramePhase.Start);
@@ -136,7 +219,7 @@ public sealed unsafe class UiHostService : IExtenderService
     private static void DrawWindows()
     {
         RefreshGate();
-        if (GameGate.InGame) SyncUiScale();
+        SyncUiScale(); ApplyFont();   // #593: every frame, not only in game -- the menu gear and panel honour the UI scale
         long tUi = FrameZones.Now;
         UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
         FrameZones.Add(FrameZones.Zone.Ui, tUi);
@@ -193,52 +276,82 @@ public sealed unsafe class UiHostService : IExtenderService
         _fsLast = now;
     }
 
-    // In-game gate: draw when a module is loaded and no full-screen options menu / hidden HUD is up. The walk is
-    // verified against the disassembly of GetInGameGui and IsVisible -- every offset and the 4-byte width:
+    // In-game gate: draw when a module is loaded and no full-screen options menu / hidden-HUD is up. The walk is
+    // verified against the disassembly of GetInGameGui and IsVisible on both builds -- every hop is an EngineLayout row:
     //   mgr  = *g_pAppManager           (CAppManager*)
     //   app  = *mgr                     (CClientExoApp* at CAppManager+0)
     //   gui  = *(*(app+0x8)+0x90)       (CClientExoApp::GetInGameGui -- persists, non-null even on the menu)
-    //   win  = *(gui+0x8)               (CGuiInGame's chat window -- NULL until a module loads = the in-area signal)
+    //   win  = *(gui+chatWindow)        (CGuiInGame's chat window -- NULL until a module loads = the in-area signal)
     //   opt  = *(int*)(intern+0x604)    (CClientExoApp::SetOptionsPanelOpen flag -- 1 while the ESC menu is up)
-    //   hud  = *(int*)(gui+0x3d4)       (CGuiInGame::ToggleOff sets this; H key hides all HUD)
+    //   hud  = *(int*)(gui+toggledOff)  (CGuiInGame::ToggleOff sets this; H key hides all HUD)
+    //   menu = *(intern+0x98)           (the live CMainMenuPanel*, #593 -- non-null from DisplayMainMenu to DestroyMainMenuPanel)
+    //   pnl  = *(gui+optionsPanel)      (the live in-game COptionsPanel*, #593 follow-up -- HandleOptionsButton to HandleOptionsPanelClose)
     //   show = win != null && opt == 0 && hud == 0
+    //   options = win != null && pnl != null && *(uint*)(pnl+state) == 1   (active and not hidden by a sub-panel)
     // Chat suppresses CGuiInGameChatWindow::Show (#23), so the vanilla window never activates and its IsVisible
     // (win+0xc68) stays 0 -- module presence + no-ESC-menu is the in-area signal now. A null `win` is the
     // main-menu case (no module) => hidden. The [uigate] log fires only on a state transition (rare).
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    private const int ExoAppInternalOff = 0x8, InGameGuiOff = 0x90, ChatWindowOff = 0x8,
-                      OptionsPanelOpenOff = 0x604, GuiToggledOffOff = 0x3d4;
-    private static (IntPtr win, bool opt, bool hud) _gateSig;
+    private static (IntPtr win, bool opt, bool hud, bool menu, bool options) _gateSig;
 
-    /// <summary>Recompute the gate and publish it onto <see cref="GameGate.InGame"/> / <see cref="GameGate.InModule"/>.
+    /// <summary>Recompute the gate and publish it onto <see cref="GameGate.InGame"/> / <see cref="GameGate.InModule"/> /
+    /// <see cref="GameGate.AtMainMenu"/> / <see cref="GameGate.OptionsOpen"/>.
     /// Hot, zero-alloc: guarded pointer reads at each hop; log only on transition. The module-unload edge and
     /// scale reaction are the content's to observe (chat resets its session on the InModule true->false edge).</summary>
     private static void RefreshGate()
     {
         IntPtr mgr = _appMgr != IntPtr.Zero ? *(IntPtr*)_appMgr : IntPtr.Zero;
         IntPtr app = mgr != IntPtr.Zero ? *(IntPtr*)mgr : IntPtr.Zero;
-        IntPtr intern = app != IntPtr.Zero ? *(IntPtr*)(app + ExoAppInternalOff) : IntPtr.Zero;
-        IntPtr gui = intern != IntPtr.Zero ? *(IntPtr*)(intern + InGameGuiOff) : IntPtr.Zero;
-        IntPtr win = gui != IntPtr.Zero ? *(IntPtr*)(gui + ChatWindowOff) : IntPtr.Zero;
-        bool opt = intern != IntPtr.Zero && *(int*)(intern + OptionsPanelOpenOff) != 0;   // ESC/game menu up
-        bool hud = gui != IntPtr.Zero && *(int*)(gui + GuiToggledOffOff) != 0;            // H: HUD toggled off
+        IntPtr intern = app != IntPtr.Zero ? *(IntPtr*)(app + EngineLayout.ExoAppInternal) : IntPtr.Zero;
+        IntPtr gui = intern != IntPtr.Zero ? *(IntPtr*)(intern + EngineLayout.InternalInGameGui) : IntPtr.Zero;
+        IntPtr win = gui != IntPtr.Zero ? *(IntPtr*)(gui + EngineLayout.InGameGuiChatWindow) : IntPtr.Zero;
+        bool opt = intern != IntPtr.Zero && *(int*)(intern + EngineLayout.InternalOptionsPanelOpen) != 0;   // ESC/game menu up
+        bool hud = gui != IntPtr.Zero && *(int*)(gui + EngineLayout.GuiInGameToggledOff) != 0;              // H: HUD toggled off
         bool show = win != IntPtr.Zero && !opt && !hud;
+        bool menu = win == IntPtr.Zero && intern != IntPtr.Zero && *(IntPtr*)(intern + EngineLayout.InternalMainMenuPanel) != IntPtr.Zero;
+        IntPtr pnl = win != IntPtr.Zero ? *(IntPtr*)(gui + EngineLayout.InGameGuiOptionsPanel) : IntPtr.Zero;
+        bool options = pnl != IntPtr.Zero && *(uint*)(pnl + EngineLayout.GuiPanelState) == GuiPanelShown;
 
         GameGate.InModule = win != IntPtr.Zero;
         GameGate.InGame = show;
+        GameGate.AtMainMenu = menu;
+        GameGate.OptionsOpen = options;
 
-        var sig = (win, opt, hud);
+        var sig = (win, opt, hud, menu, options);
         if (sig != _gateSig)
         {
             _gateSig = sig;
-            _log?.Info($"[uigate] win=0x{win:x} opt={opt} hud={hud} -> inGame={show} inModule={win != IntPtr.Zero}");
+            bool reached = intern != IntPtr.Zero && *(int*)(intern + EngineLayout.InternalReachedMainMenu) != 0;
+            _log?.Info($"[uigate] win=0x{win:x} opt={opt} hud={hud} menu={menu} options={options} reached={reached} -> inGame={show} inModule={win != IntPtr.Zero}");
         }
     }
 
+    /// <summary>The <c>CGuiPanel</c> state word of a panel that is active and not hidden: the engine's own test in
+    /// <c>Hide</c>, <c>UnHide</c> and <c>Activate</c> (bit 1 active, bits 2/4 hidden).</summary>
+    private const uint GuiPanelShown = 1;
+
+    /// <summary>Effective glyph px the atlas is baked at: <c>ui.font × GUI scale</c>, or 0 before the first apply.</summary>
+    private static float _appliedPx;
+
+    /// <summary>Bake the shared atlas at <c>ui.font × GUI scale</c> and publish <see cref="Metrics.Scale"/> from it.
+    /// Runs on a <c>ui.font</c> set (the setter's thread, so a window rebuilding right after sees the new atlas)
+    /// and once per in-game frame for the GUI-scale edge; a no-op when nothing moved, so the frame path is two
+    /// float reads. Windows react to the <see cref="Metrics.Scale"/> change on their own draw.</summary>
+    internal static void ApplyFont()
+    {
+        float px = UiKnobs.Font.V * Metrics.GameUiScale;
+        px = px < TextRig.MinFontPx ? TextRig.MinFontPx : px > TextRig.AtlasMaxPx ? TextRig.AtlasMaxPx : px;
+        if (px == _appliedPx) return;
+        _appliedPx = px;
+        Metrics.Scale = px / Metrics.DesignFontPx;
+        TextRig.SetFont(px);
+    }
+
     /// <summary>Track the engine's live GUI scale (CAurora::GetGUIScale) into <see cref="Metrics.GameUiScale"/> so
-    /// windowed content scales with the game's UI-scaling option. A cheap float read every in-game frame; the
-    /// per-window re-bake/relayout is the content's reaction to the changed value (rare -- resolution change /
-    /// options slider), keeping this hot path zero-alloc in the steady state.</summary>
+    /// windowed content scales with the game's UI-scaling option. A cheap float read every frame -- the static it
+    /// reads is set from the resolution, valid before any module (#593); the per-window re-bake/relayout is the
+    /// content's reaction to the changed value (rare -- resolution change / options slider), keeping this hot path
+    /// zero-alloc in the steady state.</summary>
     private static void SyncUiScale()
     {
         if (_getGuiScale == null) return;

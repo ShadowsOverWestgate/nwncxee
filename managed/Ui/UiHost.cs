@@ -52,9 +52,9 @@ public static class UiHost
     private static readonly List<IChordConsumer> _chords = new();
     private static int _zCounter;
 
-    /// <summary>Focus-mode preference (AC #6): false = click-to-focus (default), true = hover-to-focus. A
-    /// framework-global set by the user config; the input layer loads it on the deferred first-frame path.</summary>
-    public static bool HoverToFocus;
+    /// <summary>Focus-mode preference (AC #6): false = click-to-focus (default), true = hover-to-focus. The
+    /// <c>ui.hoverfocus</c> knob is the storage; the setter is the SelfCheck's (a plain value write, no set).</summary>
+    public static bool HoverToFocus { get => UiKnobs.HoverFocus.V; set => UiKnobs.HoverFocus.V = value; }
 
     /// <summary>The engine keyboard-capture gate, owned by the framework input layer (#64). It drives
     /// <c>CExoInput::KeyboardMode{On,Off}</c> plus the drive-latch reset (<c>TurnOffKeyboardModal</c>, #34) on
@@ -175,13 +175,15 @@ public static class UiHost
     }
 
     /// <summary>Route the keyboard capture on/off for a window (#64): flip its <see cref="Window.WantsKeyboard"/>
-    /// and drive the centralized engine gate through <see cref="KeyboardGate"/>. There is one keyboard owner at
-    /// a time, so the framework need not resolve contention here. The gate itself edge-gates the drive-latch reset.
+    /// and drive the centralized engine gate through <see cref="KeyboardGate"/>. A release while another window
+    /// still owns the keyboard leaves the gate up (#588: <c>/settings</c> takes the keyboard inside chat's submit,
+    /// and chat releases its own right after). The gate itself edge-gates the drive-latch reset.
     /// Contract: a window that takes the keyboard MUST wire <see cref="Window.OnKey"/> -- the owner consumes every
     /// key (that is how it withholds gameplay keybinds), so an owner without a handler would swallow all input.</summary>
     public static void RequestKeyboard(Window w, bool on)
     {
         w.WantsKeyboard = on;
+        if (!on && AnyKeyboardOwner) return;
         KeyboardGate?.Invoke(on);
     }
 
@@ -559,6 +561,11 @@ public static class UiHost
                 E(gateCalls == 1 && gateLast && upper.WantsKeyboard, "RequestKeyboard(on) sets WantsKeyboard and drives the gate");
                 RequestKeyboard(upper, false);
                 E(gateCalls == 2 && !gateLast && !upper.WantsKeyboard, "RequestKeyboard(off) clears WantsKeyboard and drives the gate");
+                RequestKeyboard(lo, true); RequestKeyboard(upper, true);
+                RequestKeyboard(lo, false);
+                E(gateCalls == 4 && gateLast && upper.WantsKeyboard, "a release while another window owns the keyboard leaves the gate up");
+                RequestKeyboard(upper, false);
+                E(gateCalls == 5 && !gateLast, "the last owner's release drops the gate");
                 KeyboardGate = null;
 
                 // Chord suppression + fall-through fire.

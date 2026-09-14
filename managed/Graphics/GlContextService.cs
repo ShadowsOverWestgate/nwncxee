@@ -14,7 +14,7 @@ namespace CX.Graphics;
 /// engine context, server-wait, drain again -- 2 switches/frame, proving zero GL errors and no state
 /// leakage in live play. Per #70: buffers/fences share, VAOs do not -- own 4.6-side VAOs are the
 /// tracer-draw ticket's job, done inside the bracket via <see cref="Available"/>/<see cref="Context"/>.
-/// <para>Opt-out: <c>gl46=0</c> in <c>cx.cfg</c> (ADR 0013 bucket 2 -- the capability gate is
+/// <para>Opt-out: <c>alloy.gl46=0</c> in <c>cx.cfg</c> (ADR 0013 bucket 2 -- the capability gate is
 /// decided before the context is probed). Hot path allocates nothing (cached fn pointers, GL fence objects
 /// only); the ~900-frame stats line is the sole cold part.</para>
 /// </summary>
@@ -37,7 +37,7 @@ public sealed unsafe class GlContextService : IExtenderService
                        GL_DEBUG_TYPE_PORTABILITY = 0x824F, GL_DEBUG_TYPE_PERFORMANCE = 0x8250;
     private const int DebugIds = 64, DebugLines = 200;
 
-    /// <summary><c>gldebug=1</c> in <c>cx.cfg</c>: create the 4.6 context as a DEBUG context and route
+    /// <summary><c>alloy.gldebug=1</c> in <c>cx.cfg</c>: create the 4.6 context as a DEBUG context and route
     /// KHR_debug messages into the extender log. This is the only channel undefined behaviour reaches --
     /// <c>glGetError</c> has no code for it, and a non-debug context "may have zero debug output" (KHR_debug).
     /// Mesa reports a great deal here that NVIDIA never mentions, which is the point: the tester's driver
@@ -47,7 +47,7 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <see cref="DebugLines"/> per session; the other types log their first sighting per id. An allocation
     /// per logged line, accepted under the gate. Totals go on the [gl46] line.</summary>
     private static bool _debug;
-    /// <summary><c>gldebug=1</c>: the passes may spend on per-call validation the release path skips.</summary>
+    /// <summary><c>alloy.gldebug=1</c>: the passes may spend on per-call validation the release path skips.</summary>
     internal static bool Debug => _debug;
     private static readonly uint[] _dbgId = new uint[DebugIds];
     private static int _dbgN, _dbgLogged, _dbgTotal, _dbgDropped;
@@ -57,7 +57,7 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <summary>The GLX handle of the 4.6 core context (valid while <see cref="Available"/>).</summary>
     public static IntPtr Context;
 
-    /// <summary>#216: <c>gl46=0</c> (or <c>lockchat</c>) -- a CHOICE, not a verdict about the device. Kept
+    /// <summary>#216: <c>alloy.gl46=0</c> -- a CHOICE, not a verdict about the device. Kept
     /// apart from <c>_disabled</c>, which <see cref="Fail"/> also sets, or the frame verdict would report
     /// every driver failure as a config opt-out.</summary>
     public static bool OptedOut { get; private set; }
@@ -73,7 +73,7 @@ public sealed unsafe class GlContextService : IExtenderService
     private static delegate* unmanaged<IntPtr, uint, ulong, void> _waitSync;
     private static delegate* unmanaged<IntPtr, void> _deleteSync;
     private static delegate* unmanaged<void> _flush;
-    /// <summary>#456: the <c>glsync=1</c> ordering primitive. <c>glFinish</c> is the only barrier that is
+    /// <summary>#456: the <c>alloy.glsync=1</c> ordering primitive. <c>glFinish</c> is the only barrier that is
     /// unconditionally correct across two contexts sharing one drawable -- it returns when the commands have
     /// actually EXECUTED, where the fence pair only promises the GPU will order them. Costs a full pipeline
     /// stall per switch, so it is the diagnosis and, if it is also the cure, a decision to take deliberately.</summary>
@@ -103,23 +103,24 @@ public sealed unsafe class GlContextService : IExtenderService
         _log = log;
         // #170: the 4.6-context bracket wraps the present, so it is the LAST pre-present participant.
         FrameRegistry.Global.Register(FramePhase.PrePresent, 10, OnFrame, "GlContextService.bracket", log);
-        _disabled = !Settings.Bool("gl46", true) || GameGate.Locked;
+        // Restart knob: Boot, not V -- the context decision is this session's.
+        _disabled = !CX.Alloy.Renderer.Gl46.Boot;
         OptedOut = _disabled;
-        _debug = Settings.Bool("gldebug", false);
+        _debug = CX.Alloy.Renderer.GlDebug.Boot;
         // #456: does the 4.6 context's DEFAULT FRAMEBUFFER address the same surface the engine presents?
         // On GLX both contexts name one drawable and the question never arises. Under WGL the pairing is
         // Wine's to make, and if the two contexts track their own back buffer against a shared chain, the
         // owned frame lands in whichever one Alloy happens to hold -- half the presents, which reads as a
         // black frame every other frame. One pixel read either side of the switch answers it; the read
         // stalls the pipeline, so it is a knob and it stops on its own.
-        _swapProbe = Settings.Int("swapprobe", 0);
+        _swapProbe = CX.Alloy.Renderer.SwapProbe.Boot;
         // #456: how the bracket orders the two contexts against one drawable. 0 = the fence pair
         // (glFenceSync/glWaitSync, a GPU-side wait that costs nothing on the CPU). 1 = glFinish, which
         // stalls until the work is done. If the black frames go away at 1, the frames were racing the
         // present and the fence pair is not the barrier this drawable needs on this platform.
-        _syncMode = Settings.Int("glsync", 0, 0, 1);
+        _syncMode = CX.Alloy.Renderer.GlSync.Boot;
         log.Info(_disabled
-            ? "GlContextService: stood down (gl46=0 or lockchat in cx.cfg)"
+            ? "GlContextService: stood down (alloy.gl46=0 in cx.cfg)"
             : "GlContextService: armed -- 4.6 share-listed context on first presented frame");
     }
 
@@ -230,7 +231,7 @@ public sealed unsafe class GlContextService : IExtenderService
         Context = ctx;
         Available = true;
         log.Info($"GlContextService: 4.6 core context LIVE (0x{ctx:x}, GL_VERSION='{ver}') -- bracket every frame" +
-                 (dbg ? "; DEBUG context, KHR_debug messages go to this log (gldebug=1)" : ""));
+                 (dbg ? "; DEBUG context, KHR_debug messages go to this log (alloy.gldebug=1)" : ""));
     }
 
     /// <summary>GLX side: the display/drawable/context the engine is currently on, plus the entry points
@@ -406,7 +407,7 @@ public sealed unsafe class GlContextService : IExtenderService
         var control = (delegate* unmanaged<uint, uint, uint, int, uint*, byte, void>)GP("glDebugMessageControl");
         var enable = (delegate* unmanaged<uint, void>)GP("glEnable");
         if (callback == null || control == null || enable == null)
-        { _log?.Info("GlContextService: gldebug=1 but KHR_debug entry points did not resolve"); return false; }
+        { _log?.Info("GlContextService: alloy.gldebug=1 but KHR_debug entry points did not resolve"); return false; }
         enable(GL_DEBUG_OUTPUT);
         enable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
         control(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, null, 1);

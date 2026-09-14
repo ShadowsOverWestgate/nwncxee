@@ -1018,13 +1018,13 @@ public sealed unsafe partial class AlloyRenderer
         uniform vec3 uAreaAmbient;
         uniform vec3 uAreaDiffuse;
         uniform vec3 uAreaDir;         // world-space surface->light for the area directional (sun/moon)
-        uniform int uViz;              // /draw viz, see OwnedLitFsMain
+        uniform int uViz;              // /alloy viz, see OwnedLitFsMain
         // #121: the per-area IBL probe, holding LINEAR radiance (EnvProbe captures with uCapture = 1, which
         // is what skips the display-space encode below). uProbeMips 0 = nothing captured yet, so no ambient
         // specular at all -- the pre-#121 behaviour, never a half-written cube.
         uniform samplerCube uProbe;
         uniform float uProbeMips;
-        uniform float uProbeGain;      // /probe gain, the ambient-specular dial
+        uniform float uProbeGain;      // /light probegain, the ambient-specular dial
         uniform int uSceneEnv;         // does the AREA declare an env map (scene+0x1e8)? see below
         uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe
         uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
@@ -1190,7 +1190,7 @@ public sealed unsafe partial class AlloyRenderer
         void main()
         {
             vec3 N = normalize(vNrm);
-            // /draw viz: attribute a dim frame to a TERM instead of guessing from the composite.
+            // /alloy viz: attribute a dim frame to a TERM instead of guessing from the composite.
             // 1 = point-light diffuse alone (torch bright here but the frame dark => the torch is fine and
             //     something else lost intensity); 2 = cluster occupancy, green empty -> red full (a black
             //     froxel where the torch stands means the binning, not the light, is at fault).
@@ -1481,12 +1481,12 @@ public sealed unsafe partial class AlloyRenderer
             // (the split-sum form this first shipped as) makes a brick road reflect the sky like wet stone
             // and lights unlit corners out of the probe; this form cannot exceed the light that is there.
             // ponytail: no split-sum BRDF and no specular Fresnel (inc_lighting.shd:463, SPECULAR_FRESNEL).
-            // /probe gain is the dial if the term wants more presence than the engine gave it.
+            // /light probegain is the dial if the term wants more presence than the engine gave it.
             // ...and fed only where the material DECLARES an env map. RenderFlat @0x450eb0 also binds the
             // area's own env map (currentscene+0x1e8, verified) for plain parts, so being faithful to the
             // BINDING would put this term on everything in such an area -- and live that reflects the sky off
             // city cobblestone, which vanilla plainly does not do: its authored spheremap is a dim texel,
-            // while the probe carries real scene radiance. /probe areawide 1 opts back into the engine's
+            // while the probe carries real scene radiance. /light probeareawide 1 opts back into the engine's
             // rule (uSceneEnv); the default is the case the reflection exists for.
             if (uCapture == 0 && uProbeMips > 0.0 && (uSceneEnv != 0 || (slots & CX_SLOT_ENV) != 0))
             {

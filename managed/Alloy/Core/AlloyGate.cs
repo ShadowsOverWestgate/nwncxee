@@ -21,7 +21,7 @@ internal enum AlloyStand
 
 /// <summary>
 /// #263 (ADR 0018 strand 1 step 8): the ONE place a frame is decided to be Alloy's or the engine's, and it
-/// decides ONCE. The config half is <c>vanilla=1</c> in <c>cx.cfg</c>; the capability half is asked at the
+/// decides ONCE. The config half is <c>alloy.enabled=0</c> in <c>cx.cfg</c>; the capability half is asked at the
 /// first present and frozen the moment it answers. After that nothing re-asks, so the two resource worlds
 /// are never warm at once -- which is what makes exclusive residency ownership (steps 4-7) affordable.
 /// </summary>
@@ -32,15 +32,11 @@ internal enum AlloyStand
 /// and no way to warm one mid-session. Such a refusal is therefore a <see cref="Fail"/>: a log line, one
 /// on-screen notice naming the restart, and no mode change.</para>
 /// <para>ADR 0010 stands: both renderers ship, and a device that cannot run Alloy still runs every other
-/// extender feature. What is gone is <i>live toggling</i>, not the branch. <c>/vanilla</c> reports the two
-/// pieces of state and names the setting.</para>
+/// extender feature. What is gone is <i>live toggling</i>, not the branch. Bare <c>/alloy</c> reports the two
+/// pieces of state (<see cref="Renderer.Status"/>).</para>
 /// </remarks>
 internal static class AlloyGate
 {
-    /// <summary>The <c>cx.cfg</c> key. Config bucket (ADR 0013) and restart-only by construction: it
-    /// decides what installs, and half of what installs suppresses an engine path Alloy replaces.</summary>
-    internal const string VanillaKey = "vanilla";
-
     private static AlloyStand _stand = AlloyStand.Idle;
     private static string _why = "the first frame has not been latched yet";
     /// <summary>The config half, read once at <see cref="Arm"/>. Separate state from the capability half by
@@ -87,7 +83,7 @@ internal static class AlloyGate
         if (_failed.Length != 0) return;
         _failed = why;
         _log?.Info($"[alloygate] HARD FAILURE -- {why}");
-        Notice.Show(_log, $"Alloy renderer failed: {why}. Set {VanillaKey}=1 in cx.cfg and restart to "
+        Notice.Show(_log, $"Alloy renderer failed: {why}. Set {Renderer.Enabled.Key}=0 in cx.cfg and restart to "
                         + "play on the engine renderer.");
     }
 
@@ -107,14 +103,14 @@ internal static class AlloyGate
     private static AlloyStand Evaluate(out string why)
     {
         if (_optedOut)
-        { why = $"{VanillaKey}=1 in cx.cfg -- the engine renderer was asked for"; return AlloyStand.Choice; }
+        { why = "alloy.enabled=0 in cx.cfg -- the engine renderer was asked for"; return AlloyStand.Choice; }
         if (!PartTable.Active)
-        { why = "drawhooks is off in cx.cfg, so nothing is enrolled to draw"; return AlloyStand.Choice; }
+        { why = "alloy.drawhooks is not batch in cx.cfg, so nothing is enrolled to draw"; return AlloyStand.Choice; }
         if (!PostChain.Configured)
-        { why = "hdr=0 in cx.cfg, and the Alloy stages have no display-space variant"; return AlloyStand.Choice; }
+        { why = "alloy.hdr=0 in cx.cfg, and the Alloy stages have no display-space variant"; return AlloyStand.Choice; }
         // ahead of the capability block: an opt-out reported as "this device cannot" misdirects the report
         if (GlContextService.OptedOut)
-        { why = "gl46=0 (or lockchat) in cx.cfg"; return AlloyStand.Choice; }
+        { why = "alloy.gl46=0 in cx.cfg"; return AlloyStand.Choice; }
         // #456: the first capability term, and the only one answerable cold -- it is a fact about the binary,
         // so it is asked ahead of everything that needs a warm client. Incapable rather than Choice: the
         // player asked for nothing here.
@@ -150,6 +146,11 @@ internal static class AlloyGate
         { why = "the HDR target cannot arm on this device"; return AlloyStand.Incapable; }
         if (PostChain.GammaOff())
         { why = "the engine's gamma pipeline is off (GetGlobalShaderParami(0) == 0)"; return AlloyStand.Incapable; }
+        // #571: the same shape one option over. Stock "Enhanced Lighting" off is the engine's vertex-lit,
+        // static-baked path (g_bFullDynamicLighting = 0, FRAGMENT_LIGHTING 0); Alloy lights per fragment by
+        // construction and has no cheaper tier, so the honest answer to that choice is the engine's own frame.
+        if (!StockConfig.EnhancedLighting)
+        { why = "Enhanced Lighting is off in Game Options (graphics.lighting.enhanced) and Alloy has no vertex-lit path"; return AlloyStand.Incapable; }
         why = "";
         return AlloyStand.Alloy;
     }
@@ -193,7 +194,7 @@ internal static class AlloyGate
     }
 
     /// <summary>Read the config half and join the frame. Called from <c>AlloyRenderer.Initialize</c>, ahead
-    /// of every stand-down -- <c>/vanilla</c> reports this state even in a session that armed nothing.</summary>
+    /// of every stand-down -- bare <c>/alloy</c> reports this state even in a session that armed nothing.</summary>
     internal static void Arm(ExtenderLog log)
     {
         _log = log;
@@ -202,11 +203,12 @@ internal static class AlloyGate
         // person to hit it will not be an Alloy dev: a future Unresolved row ANYWHERE, a 2D class included,
         // stands Alloy down on Windows. Sound only because CLAUDE.md makes Unresolved a transient state.
         _layoutOk = EngineLayout.Require(log, "Alloy");
-        _optedOut = Settings.Bool(VanillaKey, false);
+        // Restart knob: Boot, not V -- the verdict is frozen for the session whatever the panel says later.
+        _optedOut = !Renderer.Enabled.Boot;
         log.Info(_optedOut
-            ? $"[alloygate] {VanillaKey}=1 -- the engine renders everything this session ({VanillaKey}=0 in "
+            ? "[alloygate] alloy.enabled=0 -- the engine renders everything this session (alloy.enabled=1 in "
               + "cx.cfg and restart for the Alloy renderer)"
-            : $"[alloygate] Alloy requested ({VanillaKey}=1 in cx.cfg and restart for the engine renderer)");
+            : "[alloygate] Alloy requested (alloy.enabled=0 in cx.cfg and restart for the engine renderer)");
         SelfCheck(log);
         FrameRegistry.Global.Register(FramePhase.Start, 1, OnFrameStart, "AlloyGate.verdict", log);
     }

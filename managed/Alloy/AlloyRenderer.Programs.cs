@@ -81,7 +81,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(_watFbDepth, (int)FrameSnapshot.DepthUnit);
         Gl.Uniform1i(_watNoise, (int)FrameSnapshot.NoiseUnit);
         Gl.Uniform1i(_watEnvMap, (int)FrameSnapshot.EnvUnit);
-        _log?.Info("AlloyRenderer: water program ready, vanilla fswater (/water on 0 disables) -- " + FrameSnapshot.Describe());
+        _log?.Info("AlloyRenderer: water program ready, vanilla fswater (/water enabled 0 disables) -- " + FrameSnapshot.Describe());
         return true;
     }
 
@@ -182,7 +182,7 @@ public sealed unsafe partial class AlloyRenderer
         _depthFeatVp = GlProgram.Loc(prog, "uVP"); _depthFeatBase = GlProgram.Loc(prog, "uDrawBase");
         _depthFeatTex = GlProgram.Loc(prog, "uTex"); _depthFeatCut = GlProgram.Loc(prog, "uAlphaCut");
         _depthFeatFeat = FeatLocs(prog);
-        _log?.Info("AlloyRenderer: feature depth prepass ready -- cutout and wind-displaced batches write depth (/draw prepassfeat 0 disables)");
+        _log?.Info("AlloyRenderer: feature depth prepass ready -- cutout and wind-displaced batches write depth (/alloy prepassfeat 0 disables)");
         return true;
     }
 
@@ -235,7 +235,7 @@ public sealed unsafe partial class AlloyRenderer
             _depthKeyBase = GlProgram.Loc(keyProg, "uDrawBase");
             _depthKeyFeat = FeatLocs(keyProg);
         }
-        _log?.Info("AlloyRenderer: depth prepass ready (/draw prepass 0 disables)" +
+        _log?.Info("AlloyRenderer: depth prepass ready (/alloy prepass 0 disables)" +
                    (keyProg != 0 ? "" : " -- WITHOUT the keyhole stage, so dissolving batches stay out of it"));
         return true;
     }
@@ -257,15 +257,15 @@ public sealed unsafe partial class AlloyRenderer
             _bindlessProbed = true;
             // Config bucket (ADR 0013): a capability gate that decides the lit stage's BUFFER LAYOUT, so it
             // is settled before the program is assembled and cannot be a command.
-            // bindless=-1 (auto): on wherever the extension exists EXCEPT zink, whose bindless bookkeeping faults on
+            // alloy.bindless=auto: on wherever the extension exists EXCEPT zink, whose bindless bookkeeping faults on
             // a worker thread once handles exist at all (five Zink crashes on 2026-09-05, with deletes, without
-            // deletes, without non-resident calls); bindless=1 forces it there, bindless=0 vetoes it anywhere
-            int want = Settings.Int("bindless", -1, -1, 1);
+            // deletes, without non-resident calls); alloy.bindless=on forces it there, alloy.bindless=off vetoes it anywhere
+            int want = Renderer.Bindless.Boot;
             bool zinkVeto = want < 0 && GlContextService.Zink;
             _bindless = want != 0 && !zinkVeto && HasBindless();
-            if (zinkVeto) _log?.Info("AlloyRenderer: zink renderer -- bindless texturing stood down (bindless=1 in cx.cfg forces it)");
+            if (zinkVeto) _log?.Info("AlloyRenderer: zink renderer -- bindless texturing stood down (alloy.bindless=on in cx.cfg forces it)");
             _log?.Info(_bindless
-                ? "AlloyRenderer: ARB_bindless_texture armed -- lit batches merge across textures (bindless=0 in cx.cfg reverts)"
+                ? "AlloyRenderer: ARB_bindless_texture armed -- lit batches merge across textures (alloy.bindless=off in cx.cfg reverts)"
                 : "AlloyRenderer: bindless texturing unavailable or vetoed -- per-batch texture binds");
         }
         if (!_limitsProbed)
@@ -326,10 +326,10 @@ public sealed unsafe partial class AlloyRenderer
         uint pl = listFs.Contains("atomicAdd(uOitCount") ? GlProgram.Graphics(vsSrc, listFs, _log, "AlloyRenderer lit program (OIT lists)", host: false) : 0;
         _progLitList = pl;
         if (pl != 0) _litL = LitLocs(pl);
-        else _log?.Info("AlloyRenderer: lit OIT-lists twin unavailable -- /draw oit 2 resolves the weighted way");
+        else _log?.Info("AlloyRenderer: lit OIT-lists twin unavailable -- /alloy oit 2 resolves the weighted way");
         OitPass.ListsArmed = pl != 0;
         // #350: the SECOND lit program, the one with the content bodies in. Same text, hosted regions spliced
-        // instead of stubbed; same contracts, because it draws the same records. Optional twice over: hostfs=0,
+        // instead of stubbed; same contracts, because it draws the same records. Optional twice over: alloy.hostfs=0,
         // no hosted feature, or a failed build all leave it 0 and hosted materials on the plain path.
         _progLitHost = 0;
         if (VanillaShader.HostArmed && System.Linq.Enumerable.Any(ShaderFeatures.FsNames, n => n.Length > 0))
@@ -387,7 +387,7 @@ public sealed unsafe partial class AlloyRenderer
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers
         // of different types pointing at one image unit: the draw raises INVALID_OPERATION and is dropped.
         // The fresh path alone is not enough, because a session that never renders a map (an interior start,
-        // cube_count=0) never reaches it, and then EVERY Alloy lit batch silently vanishes.
+        // shadow.cubes=0) never reaches it, and then EVERY Alloy lit batch silently vanishes.
         Gl.UseProgram(prog);
         Gl.Uniform1i(L.SunTex, (int)SunUnit);
         Gl.Uniform1i(L.SunDynTex, (int)SunDynUnit);

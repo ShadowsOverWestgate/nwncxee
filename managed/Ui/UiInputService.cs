@@ -16,10 +16,8 @@ namespace CX.Ui;
 /// CursorService: over any window's UI → the walk cursor).
 /// </summary>
 /// <remarks>
-/// Stands down under <c>lockchat</c> (<see cref="GameGate.OwnsFramePresent"/> false): installs no
-/// hooks and leaves <see cref="UiHost.KeyboardGate"/> null, so vanilla input is untouched and
-/// <c>HotkeyInputService</c> keeps its own raw capture for that path. State is static (the
-/// <c>[UnmanagedCallersOnly]</c> handlers demand it); the input hooks are cold, so they may allocate.
+/// State is static (the <c>[UnmanagedCallersOnly]</c> handlers demand it); the input hooks are cold, so they
+/// may allocate.
 /// </remarks>
 public sealed unsafe class UiInputService : IExtenderService
 {
@@ -42,7 +40,7 @@ public sealed unsafe class UiInputService : IExtenderService
     private static readonly HashSet<uint> _keysDown = new();   // held keys, for the auto-repeat gate on chords
 
     private static IntPtr _exoInputGlobal, _appMgr;
-    // Resolved at type init, not Initialize: the engine-GUI probes serve MouseLookService under lockchat too (#539).
+    // Resolved at type init, not Initialize: the engine-GUI probes serve MouseLookService before Initialize runs (#539).
     private static readonly IntPtr _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);
     private static readonly delegate* unmanaged<IntPtr, int> _nkAnyHovered =
         (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.NkWindowIsAnyHovered);   // nk_window_is_any_hovered
@@ -68,12 +66,6 @@ public sealed unsafe class UiInputService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        if (!GameGate.OwnsFramePresent)   // lockchat: framework stands down; HotkeyInputService owns capture
-        {
-            log.Info("UiInputService: lockchat set -- input capture left to the legacy path");
-            return;
-        }
-
         _exoInputGlobal  = Native.Sym(SymbolMap.ExoInput);
         _appMgr          = Native.Sym(SymbolMap.AppManager);
         _getKbMode       = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.GetKeyboardMode);
@@ -136,7 +128,7 @@ public sealed unsafe class UiInputService : IExtenderService
 
     /// <summary>Raw-key probe, reporting the framework-level gates. OFF by default -- it logs every keydown,
     /// so the whole point of the feature (not being a keylogger) forbids it as a default. Flipped by
-    /// <c>/keydiag</c>, which <c>HotkeyInputService</c> owns; volatile because the command runs on the input
+    /// <c>hotkeys.keydiag</c>, which <see cref="CX.Services.Hotkeys.Hotkeys"/> owns; volatile because the command runs on the input
     /// thread and the pump reads it on its own.</summary>
     internal static volatile bool KeyDiag;
 
@@ -211,12 +203,13 @@ public sealed unsafe class UiInputService : IExtenderService
                     byte btn = *(byte*)(ev + SdlEvButtonOff);
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
                     IntPtr gui = VanillaGuiAt(GuiPressMask);
+                    bool ours = MenuWindowAt(mx, my);
                     if (KeyDiag)
-                        _log?.Info($"[keydiag] mouse btn={btn} at ({mx},{my}) owner={UiHost.AnyKeyboardOwner} kbmode={KeyboardModeActive()} gui=0x{gui:x}");
+                        _log?.Info($"[keydiag] mouse btn={btn} at ({mx},{my}) owner={UiHost.AnyKeyboardOwner} kbmode={KeyboardModeActive()} gui=0x{gui:x} menuOurs={ours}");
                     // NUI (or a vanilla GUI object: radial menu, tooltip, panel; #451) draws over us -> it gets the
                     // press. Blur first: this is a click elsewhere, and FocusAt (skipped here) is what would
                     // otherwise have released our windows' focus.
-                    if (NuiHovered() || gui != IntPtr.Zero) { UiHost.Blur(); break; }
+                    if (NuiHovered() || (gui != IntPtr.Zero && !ours)) { UiHost.Blur(); break; }
                     if (!UiHost.HoverToFocus) UiHost.FocusAt(mx, my);   // click-to-focus (default)
                     if (UiHost.DispatchMouseButton(true, btn, mx, my)) return 0;
                     if (ChordGateClear()) UiHost.FireMouseChords(btn, RawMods());
@@ -230,7 +223,7 @@ public sealed unsafe class UiInputService : IExtenderService
                     break;
                 }
                 case SdlMouseWheel:
-                    if (NuiHovered() || VanillaGuiAt(GuiWheelMask) != IntPtr.Zero) break;   // ...and the scroll
+                    if (NuiHovered() || (VanillaGuiAt(GuiWheelMask) != IntPtr.Zero && !MenuWindowUnderPointer())) break;   // ...and the scroll
                     if (UiHost.DispatchMouseWheel(*(int*)(ev + SdlEvWheelYOff))) return 0;
                     break;
             }
@@ -246,24 +239,9 @@ public sealed unsafe class UiInputService : IExtenderService
     // ---- cursor fold (was CursorService) --------------------------------------------------------
     private static bool _forceDefault, _prevOverUi, _cursorFoldActive;
 
-    /// <summary>Focus-mode pref (AC #6), restored on the first cursor update that <see cref="ConfigFile"/>'s
-    /// deferral gate lets through -- Initialize runs pre-main, where the engine user dir is unresolved.</summary>
-    private static readonly ConfigFile _prefs = new("cx-ui.cfg");
-    private static void LoadPrefs()
-    {
-        if (!_prefs.Load(_log, ApplyPrefs)) return;
-        _log?.Info($"[ui] prefs: hoverToFocus={UiHost.HoverToFocus}");
-    }
-
-    private static void ApplyPrefs(string text) => ConfigFile.ForEachPair(text, (k, v) =>
-    {
-        if (k == "hoverToFocus") UiHost.HoverToFocus = v is "1" or "true";
-    });
-
     [UnmanagedCallersOnly]
     private static void OnUpdateCursor(IntPtr @this, int param1)
     {
-        LoadPrefs();   // gated + latched inside; a no-op after the first success
         if (!_cursorFoldActive)   // forcing half absent -> forward untouched, do no hit-test work
         {
             if (_origUpdateCursor != null) _origUpdateCursor(@this, param1);
@@ -312,6 +290,28 @@ public sealed unsafe class UiInputService : IExtenderService
     /// <summary>Would the ENGINE's GUI take a press right now -- a NUI window under the pointer or a vanilla GUI
     /// object at its tracked position? The engine gets first refusal on a right-drag (#539).</summary>
     internal static bool EngineGuiWantsPress() => NuiHovered() || VanillaGuiAt(GuiPressMask) != IntPtr.Zero;
+
+    /// <summary>#593: the exemption from the #451 yield. At the main menu the viewport-filling
+    /// <c>CMainMenuBackgroundPanel</c> accepts every interactivity bit, so <see cref="VanillaGuiAt"/> is non-null under
+    /// EVERY press and the yield would hand the gear's and the panel's presses to the engine. Over one of our windows
+    /// while the menu is up the press is ours; wherever our hit-test misses the engine's own buttons keep winning.
+    /// The in-game Options panel is the gear's second surface: a modal whose objects would take the yield the same
+    /// way, so the exemption covers it too -- the only windows that hit there are the gear, the settings panel and
+    /// a dialog (chat hit-tests on InGame, the rest are zero-rect). In play this never fires, so the #451 behaviour
+    /// there is untouched.</summary>
+    private static bool MenuWindowAt(int x, int y) => GearSurface && UiHost.HitTest(x, y) != null;
+
+    /// <summary>The two surfaces the gear and the settings panel stand on: the main menu and the in-game Options panel.</summary>
+    private static bool GearSurface => GameGate.AtMainMenu || GameGate.OptionsOpen;
+
+    /// <summary>The wheel event carries no position: the same exemption at SDL's pointer.</summary>
+    private static bool MenuWindowUnderPointer()
+    {
+        if (!GearSurface || _sdlGetMouseState == null) return false;
+        int mx = 0, my = 0;
+        _sdlGetMouseState(&mx, &my);
+        return UiHost.HitTest(mx, my) != null;
+    }
 
     /// <summary>The vanilla GUI object under the engine's tracked pointer, or null (#451). Exactly the call the
     /// engine's own press/wheel handler is about to make, so "would the engine find something" is answered by

@@ -19,7 +19,7 @@ internal static class ShaderStages
     internal static string DumpDir => Native.ConfigPath("cx_shader_dump");
 
     internal const string Banner = """
-        // Dumped from sow-client-extender's embedded default by /dumpshaders -- the stage THIS build
+        // Dumped from sow-client-extender's embedded default by /alloy shaderdump -- the stage THIS build
         // compiles, so it is current by construction. Drop it in a hak or override as <resref>.shd to
         // replace that stage (a hak reaches every player); the extender falls back to the embedded default if
         // it fails to build. Re-dump and diff after each extender update: that diff is your drift.
@@ -174,13 +174,25 @@ internal static class ShaderStages
         }
     }
 
-    /// <summary>The headless trigger: <c>dumpshaders=1</c> in <c>cx.cfg</c> dumps once at SelfCheck, so
+    /// <summary>The headless trigger: <c>alloy.dumpshaders=1</c> in <c>cx.cfg</c> dumps once at SelfCheck, so
     /// the assembled stages -- including the bindless rewrite, which is a C# function and so out of reach of
-    /// the offline checker -- can be compiled without a live client. Bucket 2 of ADR 0013: the decision has
-    /// to be made before the first frame, so it cannot be a chat command.</summary>
+    /// the offline checker -- can be compiled without a live client. A Restart knob: the decision has to be
+    /// made before the first frame.</summary>
     internal static void DumpIfConfigured(ExtenderLog? log)
     {
-        if (Settings.Bool("dumpshaders", false)) Dump(DumpDir, log);
+        if (Renderer.DumpShaders.Boot) Dump(DumpDir, log);
+    }
+
+    /// <summary>#160: the <c>alloy.shaderdump</c> button -- write every overridable stage to
+    /// <c>&lt;user directory&gt;/cx_shader_dump/</c> as an editable .shd, plus the bindless variant of the lit
+    /// stage. Dumping what is compiled in is what makes the starting point current by construction (ADR 0012);
+    /// the sizing tokens stay unexpanded, because the extender expands them on load for an override exactly
+    /// as for the embedded default.</summary>
+    internal static void DumpToLog()
+    {
+        ExtenderLog? log = KnobGroup.Log;
+        int n = Dump(DumpDir, log);
+        log?.Info(n < 0 ? $"[shaders] dump to {DumpDir} failed" : $"[shaders] {n} stages written to {DumpDir}");
     }
 
     /// <summary>Every resref composes to something, and a header claiming the per-draw record is on a stage

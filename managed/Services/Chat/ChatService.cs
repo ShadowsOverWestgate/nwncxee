@@ -20,27 +20,22 @@ public sealed unsafe class ChatService : IExtenderService
 
     /// <summary>Shared arbitration flag: <c>HotkeyInputService</c> reads this to
     /// suppress gameplay hotkeys while the chat edit control owns the keyboard.
-    /// Only ever set true in own-input mode (<see cref="OwnInput"/>).</summary>
+    /// Only ever set true with the chatbox up (<see cref="Enabled"/>).</summary>
     public static volatile bool IsTyping;
 
     /// <summary>The keyboard is wanted by chat typing OR an inline settings-field edit. HotkeyInputService
     /// routes keys/text into ChatService and suppresses gameplay hotkeys whenever this is true.</summary>
     public static bool WantsKey => IsTyping || _settings.Editing;
 
-    /// <summary>Chat opt-OUT (#23, the extender-optional guarantee): <c>lockchat=1</c> in <c>cx.cfg</c>
-    /// stands the whole chatbox down -- no tap, render, input capture, or suppression -- so vanilla chat runs
-    /// untouched. <see cref="Initialize"/> early-returns on it. One knob, one reader: the framework gate owns
-    /// the value (#182).</summary>
-    public static bool Locked => GameGate.Locked;
-
-    /// <summary>ChatService owns chat input and suppresses vanilla chat (the default). False under
-    /// <c>lockchat</c>, where HotkeyInputService instead observes the vanilla chat-focus hooks so
-    /// typing still gates gameplay hotkeys. The single pivot both services read.</summary>
-    public static bool OwnInput => !Locked;
+    /// <summary>The chat master, as it booted (<c>chat.enabled</c>, a Restart row -- ADR 0025). Off, the chatbox
+    /// installs nothing: no tap, render, input capture or suppression, so the stock chat window runs untouched
+    /// and HotkeyInputService observes the vanilla chat-focus hooks instead. The one pivot both services read.</summary>
+    public static bool Enabled => ChatKnobs.Enabled.Boot;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
+        UiCategory.Declare();
         ChatWindow.SelfCheck(log);     // slice #21 drag/resize/tab/scroll proof (off-device)
         ChatLayout.SelfCheck(log);     // #37 Main-undeletable / always->=1-tab / add-close window proof (off-device)
         SettingsWindow.SelfCheck(log); // settings window open/toggle/close/ownership proof (off-device)
@@ -49,13 +44,13 @@ public sealed unsafe class ChatService : IExtenderService
         WindowRenderer.SelfCheck(log); // #26 portrait-gutter emission proof (off-device)
         RowAlign.SelfCheck(log);       // shared row alignment/justify primitive proof (off-device)
         ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
-        ChatConfig.SelfCheck(log);     // config round-trip + legacy-file migration proof (off-device)
+        ChatConfig.SelfCheck(log);     // per-window pair round-trip proof (off-device)
         TextRig.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
         FontRegistry.SelfCheck(log);
         SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
-        if (Locked)   // lockchat: install nothing -> vanilla chat intact
+        if (!Enabled)   // chat.enabled=0 at boot: install nothing -> the stock chat window runs
         {
-            log.Info("ChatService: lockchat set -- standing down, vanilla chat left intact");
+            log.Info("ChatService: chat.enabled=0 -- standing down, vanilla chat left intact (/chat enabled 1 + relaunch)");
             return;
         }
         if (!SymbolMap.Require(log, "ChatService", RequiredSymbols)) return;   // #419: whole or nothing
@@ -393,22 +388,16 @@ public sealed unsafe class ChatService : IExtenderService
         return new GameStamp(hour, minute, second);
     }
 
-    /// <summary>Persisted chat config file (rect, toggles, colours, anim, input side, timestamp). Key=value,
-    /// migrates the legacy positional rect on read (see <see cref="ChatConfig"/>).</summary>
-    private static readonly ConfigFile _file = new("cx-chat.cfg");
-    private static ChatConfig _config = new();
-
-    /// <summary>Restore the config from disk and apply it to all windows (rect/toggles/input side/send
-    /// channel/tabs) + the render/anim/timestamp subsystems. Creates additional windows from the config
-    /// up to the cap. Returns false until <see cref="ConfigFile"/>'s deferral gate opens (pre-main), so the
-    /// frame path may call it every frame until it takes.</summary>
-    private static bool LoadConfig()
+    /// <summary>Restore the per-window state from the <c>chat</c> group's Hidden bag (bound from <c>cx.cfg</c>
+    /// pre-main, so this runs at Initialize) and apply it to every window (rect/toggles/input side/send
+    /// channel/tabs). Creates additional windows from the config up to the cap.</summary>
+    private static void LoadConfig()
     {
-        if (_layout == null) return false;
-        if (!_file.Load(_log, ApplyText)) return false;
-        for (int i = 0; i < _config.Windows.Count && i < ChatLayout.MaxWindows; i++)
+        if (_layout == null) return;
+        ChatConfig config = ChatConfig.From(ChatKnobs.Windows.Pairs);
+        for (int i = 0; i < config.Windows.Count && i < ChatLayout.MaxWindows; i++)
         {
-            var wc = _config.Windows[i];
+            var wc = config.Windows[i];
             ChatWindow win;
             if (i < _layout.Count)
             {
@@ -449,48 +438,15 @@ public sealed unsafe class ChatService : IExtenderService
                 win.SetTabs(tabs);
             }
         }
-        ApplyConfig();
-        _file.Baseline(_config.ToText());
-        return true;
     }
 
-    private static void ApplyText(string text) => _config = ChatConfig.Parse(text);
-
-    /// <summary>Push the global font setting onto the atlas + chrome scale. Per-window settings (palette,
-    /// outline, anim, timestamps) live on <see cref="ChatWindow"/> and are resolved per-build.</summary>
-    private static void ApplyConfig()
-    {
-        float fontPx = System.Math.Clamp(_config.FontPx, TextRig.MinFontPx, TextRig.MaxFontPx);
-        float effectivePx = System.Math.Clamp(fontPx * Metrics.GameUiScale, TextRig.MinFontPx, TextRig.AtlasMaxPx);
-        Metrics.Scale = effectivePx / Metrics.DesignFontPx;
-        TextRig.SetFont(effectivePx);
-    }
-
-    /// <summary>The global (shared-atlas) font pixel height. Read by the dialog settings panel, which surfaces
-    /// the same value the chat settings edit -- there is one atlas, so font size is not per-UI.</summary>
-    public static float GlobalFontPx => _config.FontPx;
-
-    /// <summary>Set the global font size + re-bake the atlas and relayout (mirrors the chat font slider's
-    /// per-motion path). Does NOT persist -- the caller saves on drag end, matching chat's save-on-mouse-up.</summary>
-    public static void SetGlobalFontPx(float px)
-    {
-        float c = System.Math.Clamp(px, TextRig.MinFontPx, TextRig.MaxFontPx);
-        if (c == _config.FontPx) return;
-        _config.FontPx = c;
-        ApplyConfig(); DirtyAll(); Rebuild();
-    }
-
-    /// <summary>Persist the chat config now (used by the dialog settings panel after its font slider, since the
-    /// font lives in the chat config -- one shared atlas). No-op write when nothing changed (text compare).</summary>
-    public static void SaveConfigNow() => SaveConfig();
-
-    /// <summary>Sync all window-owned fields into the config (truncating stale window entries from a prior
-    /// close) and write the file iff it changed. AC4: ephemeral (auto-created, unkept) tabs are excluded;
-    /// a non-Main window whose tabs are ALL ephemeral is dropped entirely.</summary>
+    /// <summary>Sync every window-owned field into the <c>chat</c> group's Hidden bag (a whole replace, so a
+    /// closed window's keys leave the file) and arm the <c>cx.cfg</c> writer. AC4: ephemeral (auto-created,
+    /// unkept) tabs are excluded; a non-Main window whose tabs are ALL ephemeral is dropped entirely.</summary>
     private static void SaveConfig()
     {
         if (_layout == null) return;
-        _config.Windows.Clear();
+        var config = new ChatConfig();
         ChatWindow[] wins = _layout.Windows;
         for (int i = 0; i < wins.Length; i++)
         {
@@ -522,33 +478,23 @@ public sealed unsafe class ChatService : IExtenderService
                 if (win.Tabs[j].Ephemeral) continue; // AC4: unkept tabs excluded
                 wc.Tabs.Add((win.Tabs[j].Label, win.Tabs[j].ChannelMask, win.Tabs[j].PinnedName, win.Tabs[j].Kept));
             }
-            _config.Windows.Add(wc);
+            config.Windows.Add(wc);
         }
-        _file.Save(_config.ToText(), _log);
+        ChatKnobs.Windows.Replace(config.Pairs());
     }
 
-    /// <summary>Slice #21: bake the atlas, build the window, observe ingest, and own SwapBuffers so the
-    /// box renders on a plain launch -- unless stood down under <c>lockchat</c>.</summary>
+    /// <summary>Slice #21: build the windows from the persisted state, observe ingest, and register the framework
+    /// Window whose content-draw is the whole chatbox. The atlas is the frame host's (<c>UiHostService</c> bakes
+    /// it at <c>ui.font</c>), so the first content draw is the first real build.</summary>
     private static void InitRender(ExtenderLog log, HookService hooks)
     {
-        // GATE: lockchat stands the chat content down (UiHostService also skips its frame hook, so nothing
-        // double-hooks SwapBuffers).
-        if (Locked)
-        {
-            log.Info("ChatService: render stood down (lockchat set)");
-            return;
-        }
-
-        TextRig.Init(log);   // cold atlas bake (null under run-demo: stbtt absent -> render no-ops)
         // Tabs are pure receive-filters now (#25); the send channel is the dropdown (window-level).
         // Default is a single All tab; the player adds per-channel tabs via the settings window (#39).
         _layout = new ChatLayout(new ChatWindow(60, 40, 520, 300,
         [
             new Tab("All",  0xffffffff),
         ]));
-        // Rect restore is deferred to the first frame (see OnFrame): Initialize runs pre-main, so the
-        // engine user dir -- where the cfg lives -- isn't resolvable here yet and LoadConfig would read
-        // the ~/.config fallback instead of the real path.
+        LoadConfig();   // the bag bound pre-main: rects, toggles, tabs are there at Initialize
         _store.AddObserver(OnIngest);  // new line -> slide-in/hold + rebuild (cold network thread)
         // #216: the chatbox is the extender's one text surface, so it is where any service's on-screen
         // notice lands -- an Alloy dropout above all. Set here rather than published as a chat API: Notice
@@ -573,14 +519,13 @@ public sealed unsafe class ChatService : IExtenderService
         };
         UiHost.AddChordConsumer(new SlashChord());   // "/" opens a command line
         log.Info("ChatService: registered as a framework Window (content-draw + routed input), \"/\" opens a command line");
-        Rebuild();   // show the empty box immediately, before any chat arrives
     }
 
     private static Window? _uiWindow;
-    private static bool _booted;                  // first-frame config-restore bootstrap done
+    private static bool _booted;                  // first-frame viewport relayout done
     private static int _swapTid;                  // managed thread id of the frame-present thread (probe, #33)
     private static bool _wasInModule;             // last frame's GameGate.InModule, for the module-unload edge
-    private static float _appliedUiScale = 1f;    // GameUiScale we last re-baked/relaid at (scale-change edge)
+    private static float _appliedScale = 1f;      // Metrics.Scale we last relaid at (font / GUI-scale edge)
 
     /// <summary>The chord-consumer face of chat: an unmodified "/" that has fallen past every window opens the
     /// command line. Priority 1, so a hotkey bound to the same key (Priority 2) wins it.</summary>
@@ -604,13 +549,8 @@ public sealed unsafe class ChatService : IExtenderService
         public void FireMouse(int button, int sdlMods) { }
     }
 
-    /// <summary>The chat window's per-frame content draw (invoked by UiHostService via <see cref="UiHost.DrawFrame"/>).
-    /// Runs the first-frame config restore once, reacts to the host-published gate + UI-scale edges, then draws
-    /// the box in-game (or the attribution overlay on the main menu). Hot + zero-alloc in the steady state: the
-    /// bootstrap, session reset, and scale re-bake are all edge-gated (rare). Draws through ChatRenderer, which
-    /// keeps chat's live-verified cold->hot frame hand-off internally.</summary>
     /// <summary>Pull every chat window back inside the live viewport. The rect is restored from
-    /// <c>cx-chat.cfg</c> in absolute pixels, so a client that comes up smaller than the one that wrote it --
+    /// <c>cx.cfg</c> in absolute pixels, so a client that comes up smaller than the one that wrote it --
     /// windowed after fullscreen, a different monitor, a Proton prefix -- lands the box past the edge, where it
     /// draws every frame and nobody can see or drag it back. Same <see cref="Window.ClampAxis"/> Dialog uses.
     /// Viewport is whatever the last draw measured, so this is a no-op on the very first frame.</summary>
@@ -630,6 +570,11 @@ public sealed unsafe class ChatService : IExtenderService
         }
     }
 
+    /// <summary>The chat window's per-frame content draw (invoked by UiHostService via <see cref="UiHost.DrawFrame"/>).
+    /// Lays out for the live viewport once, reacts to the host-published gate + scale edges, then draws the box
+    /// in-game (or the attribution overlay on the main menu). Hot + zero-alloc in the steady state: the bootstrap,
+    /// session reset and scale relayout are all edge-gated (rare). Draws through ChatRenderer, which keeps chat's
+    /// live-verified cold->hot frame hand-off internally.</summary>
     private static void OnFrame()
     {
         if (!_booted)
@@ -638,12 +583,8 @@ public sealed unsafe class ChatService : IExtenderService
             _swapTid = Environment.CurrentManagedThreadId;
             _log?.Info($"ChatService: first content draw [chatthread] swap tid={_swapTid}");
             _log?.Info($"ChatService: cfg dir = {Native.UserDirectory() ?? "(engine dir unresolved -> ~/.config fallback)"}");
-            Rebuild();   // re-layout for the live viewport width, config or not
+            Rebuild();   // re-layout for the live viewport width
         }
-        // Config restore is gated, not booted-keyed: ConfigFile.Load is a retryable no-op until the engine
-        // user dir resolves, and latches once. Both loads are cheap bool reads after that.
-        if (LoadConfig()) Rebuild();   // re-layout for the restored width + applied config
-        Dialog.DialogService.LoadConfigDeferred();   // same story for the dialog window's config
         // Module-unload edge (was inside the old InGame() gate): drop cached engine ptrs + stale state (#33).
         // It now fires once per frame on the render thread instead of possibly on the input thread; ResetSession
         // is documented idempotent and zero-alloc, so the move is safe.
@@ -653,11 +594,10 @@ public sealed unsafe class ChatService : IExtenderService
 
         if (GameGate.InGame)
         {
-            // UI-scale change edge (was SyncUiScale's reaction; UiHostService already published Metrics.GameUiScale).
-            if (System.Math.Abs(Metrics.GameUiScale - _appliedUiScale) >= 0.001f)
+            // Scale edge: the frame host re-baked the atlas (ui.font or the game's UI scale moved) -> relay the chrome.
+            if (Metrics.Scale != _appliedScale)
             {
-                _appliedUiScale = Metrics.GameUiScale;
-                ApplyConfig();
+                _appliedScale = Metrics.Scale;
                 if (_layout != null)
                 {
                     ChatWindow[] wins = _layout.Windows;
@@ -668,16 +608,12 @@ public sealed unsafe class ChatService : IExtenderService
             }
             PollGameClock();
             KeepOnScreen();
-            Quickbar.QuickbarService.Tick(Metrics.GameUiScale);
+            if (_settings.Open && _settings.TooltipTick()) Rebuild();   // #587: a hovered (?) marker's dwell elapsed
             ChatRenderer.Draw();
-            // Dialog draws itself now: it registers its own framework Window and UiHostService's z-order roll-call
-            // invokes its content-draw after ours (#63). No cross-call from here.
+            // Dialog and the quickbar draw themselves: each registers its own framework Window and UiHostService's
+            // z-order roll-call invokes their content-draw after ours (#63). No cross-call from here.
         }
-        else
-        {
-            Quickbar.QuickbarService.Sleep();
-            if (!inModule) ChatRenderer.DrawOverlay();   // main menu (no module): the attribution overlay
-        }
+        else if (!inModule) ChatRenderer.DrawOverlay();   // main menu (no module): the attribution overlay
     }
 
     /// <summary>Slice #23: neutralize vanilla chat so only our box draws. Two SkipOriginal groups:
@@ -688,11 +624,10 @@ public sealed unsafe class ChatService : IExtenderService
     /// input prompt never activate into the render tree (Show pairs with Activate, Hide with Deactivate).
     /// We do NOT call Hide: it clears the window's IsVisible flag (win+0xc68), and rather than mirror that
     /// flag <see cref="InGame"/> now gates on module-presence, so an un-shown vanilla window doesn't blank
-    /// our box. Input-side openers are skipped in <see cref="InitEditControl"/>. Skipped under the probe
-    /// (leaves vanilla drawing as its backdrop); never reached under <c>lockchat</c>.</summary>
+    /// our box. Input-side openers are skipped in <see cref="InitEditControl"/>. Never reached with the
+    /// master off.</summary>
     private static void InitSuppression(ExtenderLog log, HookService hooks)
     {
-        if (Locked) return;   // lockchat: leave vanilla chat drawing untouched (framework stood down)
         var skip = (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnSuppressed;
         _ = hooks.Install(SymbolMap.AppendToChatBuffer, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, long>)&OnSuppressedExo);   // text: new lines
         if (OperatingSystem.IsWindows())
@@ -789,8 +724,9 @@ public sealed unsafe class ChatService : IExtenderService
         if (name == null)
         { _log?.Info($"[chat] tell route: unresolvable pid=0x{line.PlayerId:x}"); return; }
 
-        var decision = TellRouter.Route(_config.TellOpen, _layout.Windows, _layout.FocusedIndex, name);
-        _log?.Info($"[chat] tell route: name=\"{name}\" mode={_config.TellOpen} -> {decision.Action} w={decision.WindowIndex} t={decision.TabIndex}");
+        TellAutoOpen mode = ChatKnobs.TellMode;
+        var decision = TellRouter.Route(mode, _layout.Windows, _layout.FocusedIndex, name);
+        _log?.Info($"[chat] tell route: name=\"{name}\" mode={mode} -> {decision.Action} w={decision.WindowIndex} t={decision.TabIndex}");
         switch (decision.Action)
         {
             case TellRoute.Exists:
@@ -1006,7 +942,7 @@ public sealed unsafe class ChatService : IExtenderService
             // Settings window is modal and owned by the focused window.
             if (_settings.Open)
             {
-                bool cs = _settings.MouseDown(x, y, fwin, _config);
+                bool cs = _settings.MouseDown(x, y, fwin);
                 if (_settings.CopyRequested >= 0)
                 {
                     int src = _settings.CopyRequested;
@@ -1015,9 +951,13 @@ public sealed unsafe class ChatService : IExtenderService
                     if ((uint)src < (uint)wins.Length)
                     {
                         fwin.CopySettingsFrom(wins[src]);
-                        _settings.Layout(fwin, _config);
+                        _settings.Layout(fwin);
                     }
                 }
+                // The two shared knobs the gear fronts: a pick is applied here, on the input thread (ui.font's
+                // Changed re-bakes the atlas before the Rebuild below).
+                if (_settings.TellOpenPicked >= 0) { ChatKnobs.TellOpen.Set(_settings.TellOpenPicked); _settings.TellOpenPicked = -1; }
+                if (_settings.FontPicked >= 0) { UiKnobs.Font.Set(_settings.FontPicked); _settings.FontPicked = -1; }
                 // #46: TellsHere exclusivity — clear all other windows when one turns it on.
                 if (_settings.TellsHereChanged)
                 {
@@ -1026,7 +966,7 @@ public sealed unsafe class ChatService : IExtenderService
                     for (int i = 0; i < wins.Length; i++)
                         if (wins[i] != fwin) wins[i].TellsHere = false;
                 }
-                ApplyConfig(); DirtyAll(); SyncFieldKeyboard();
+                DirtyAll(); SyncFieldKeyboard();
                 if (IsTyping && !fwin.HasSendable) CloseChat(false);
                 Rebuild(); return cs;
             }
@@ -1103,8 +1043,7 @@ public sealed unsafe class ChatService : IExtenderService
         {
             _layout.FocusedIndex = index;
             win.ChannelListOpen = false;
-            _settings.OpenAt(win, _config, TextRig.ViewportW, TextRig.ViewportH,
-                             winIndex: index, winCount: _layout.Count);
+            _settings.OpenAt(win, TextRig.ViewportW, TextRig.ViewportH, winIndex: index, winCount: _layout.Count);
             Rebuild(); return true;
         }
         // Portrait click: intercept before ChatWindow.MouseDown (which would consume it as a body no-op).
@@ -1156,7 +1095,8 @@ public sealed unsafe class ChatService : IExtenderService
         // One pin name space: whatever the caller typed or read, a live player pins under the roster's
         // character name -- the same bytes incoming-tell routing produces, or a reply opens a second tab.
         if (playerId is uint p) name = _playerResolver?.NameOf(p) ?? name;
-        if (_config.TellOpen == TellAutoOpen.Off)
+        TellAutoOpen mode = ChatKnobs.TellMode;
+        if (mode == TellAutoOpen.Off)
         {
             Open();
             string cmd = $"/t \"{name}\" ";
@@ -1168,7 +1108,7 @@ public sealed unsafe class ChatService : IExtenderService
             return;
         }
         // Route: find or create a pinned tab, switch to it, set channel to Tell, open input.
-        var decision = TellRouter.Route(_config.TellOpen, _layout.Windows, _layout.FocusedIndex, name);
+        var decision = TellRouter.Route(mode, _layout.Windows, _layout.FocusedIndex, name);
         switch (decision.Action)
         {
             case TellRoute.Exists:
@@ -1239,12 +1179,14 @@ public sealed unsafe class ChatService : IExtenderService
         if (_layout == null || !GameGate.InGame) return false;
         if (_settings.Open && _focused != null)
         {
-            if (_settings.MouseMove(x, y, _focused, _config))
+            // True = redraw needed: a title move (this window), a slider drag (the value applies live), or a
+            // hover change on a dropdown item / tooltip marker (#587: nothing applied, just the focused rebuild).
+            if (_settings.MouseMove(x, y, _focused))
             {
                 if (_settings.Moving)
                     _focused.Dirty = true;
-                else
-                { ApplyConfig(); DirtyAll(); }
+                else if (_settings.Dragging)
+                    DirtyAll();
                 Rebuild();
             }
             return true;
@@ -1311,7 +1253,7 @@ public sealed unsafe class ChatService : IExtenderService
     public static bool OnMouseWheel(int dy)
     {
         if (_layout == null || !GameGate.InGame) return false;
-        if (_settings.Open) return true;
+        if (_settings.Open) { if (_settings.MouseWheel(dy)) Rebuild(); return true; }   // #587: the panel / its open list scrolls
         // Find the topmost window under the pointer (focused draws last = checked first).
         ChatWindow[] wins = _layout.Windows;
         ChatWindow? hit = null; int hitIdx = -1;
@@ -1585,7 +1527,7 @@ public sealed unsafe class ChatService : IExtenderService
     private static void RegisterCommands()
     {
         var r = CommandRegistry.Global;
-        r.Register("/newwin", "open a new chat window", _ => { CreateWindow(); return null; }, "/nw");
+        r.Register("/newwin", "open a new chat window", _ => { CreateWindow(); return null; });
         r.Register("/closewin", "close the focused chat window", _ =>
         {
             if (_layout == null) return null;
@@ -1596,7 +1538,7 @@ public sealed unsafe class ChatService : IExtenderService
                 _log?.Info($"[chat] /closewin: window {idx} closed");
             }
             return null;
-        }, "/cw");
+        });
     }
 
     /// <summary>Put a line in the local chat store without touching the wire -- command feedback the player
@@ -1691,12 +1633,12 @@ public sealed unsafe class ChatService : IExtenderService
         {
             switch (key)
             {
-                case KeyReturn:    _settings.CommitEdit(_focused, _config); break;
+                case KeyReturn:    _settings.CommitEdit(_focused); break;
                 case KeyEsc:       _settings.CancelEdit(); break;
                 case KeyBackspace: _settings.EditBackspace(); break;
                 // other keys (nav/ctrl) are ignored while typing a number
             }
-            ApplyConfig(); DirtyAll();
+            DirtyAll();
             SaveConfig();   // a keyboard commit has no paired mouse-up to persist on
             SyncFieldKeyboard(); Rebuild();
             return;

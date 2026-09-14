@@ -37,7 +37,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     /// <c>stats</c> = <c>DrawStatsService</c>'s histogram, anything else = neither. It is one mode rather than
     /// two booleans because the two arm the same symbols and cannot coexist; and it is config rather than a
     /// command because both decide what installs, which only happens once.</summary>
-    internal const string DrawModeKey = "drawhooks", DrawModeBatch = "batch", DrawModeStats = "stats";
+    internal const string DrawModeBatch = "batch", DrawModeStats = "stats";
 
     private const int LogEvery = 900;
     private static ExtenderLog? _log;
@@ -50,12 +50,12 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // #170: ahead of every stand-down, as the host's unconditional call was. Priority pins it AFTER
         // DrawStats and BEFORE OwnedDraw -- alphabetical service discovery gives the wrong order on its own.
         FrameRegistry.Global.Register(FramePhase.PostPresent, 10, EndFrame, "DrawFunnels.endFrame", log);
-        // #263: read rather than asked of AlloyGate, so this does not depend on service discovery order.
-        if (Settings.Bool(AlloyGate.VanillaKey, false))
-        { log.Info($"DrawFunnels: standing down ({AlloyGate.VanillaKey}=1) -- the engine renders this session"); return; }
-        string mode = Settings.Text(DrawModeKey, DrawModeBatch);
+        // #263: read off the knob rather than asked of AlloyGate, so this does not depend on service discovery order.
+        if (!Renderer.Enabled.Boot)
+        { log.Info("DrawFunnels: standing down (alloy.enabled=0) -- the engine renders this session"); return; }
+        string mode = Renderer.DrawHooks.Boot;
         if (mode != DrawModeBatch)
-        { log.Info($"DrawFunnels: standing down (cx.cfg drawhooks={mode})"); return; }
+        { log.Info($"DrawFunnels: standing down (cx.cfg alloy.drawhooks={mode})"); return; }
 
         PartTable.Log = log;
         AlloyCensus.Configure(log);
@@ -84,7 +84,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // The record tables arm here, and the census and the gate ride on them.
         PartTable.Active = _repackSlot != null && _origPartDtor != null;
         log.Info(PartTable.Active
-            ? "DrawFunnels: engine draw funnels armed (cx.cfg drawhooks=off disables; [funnels] every 900 frames)"
+            ? "DrawFunnels: engine draw funnels armed (cx.cfg alloy.drawhooks=stats disables; [funnels] every 900 frames)"
             : _origPartDtor == null
               // #145: deliberate. Without the death notice, every liveness test left is an inference, and
               // the one the Alloy pass used walked a freed part into a freelist word.

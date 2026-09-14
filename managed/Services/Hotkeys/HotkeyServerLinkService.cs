@@ -6,7 +6,8 @@ namespace CX.Services.Hotkeys;
 /// <summary>
 /// Receives the armed-key set from the server (a server-authored NUI arms keys; the server
 /// sends the result here). Hooks the client's inbound dispatcher and intercepts only our
-/// ArmSet/PresentToken opcodes -- every other message passes straight through.
+/// ArmSet/PresentToken opcodes -- every other message passes straight through. Not gated by
+/// <c>hotkeys.enabled</c>: the set is consumed either way, so flipping the master back on needs no relog.
 /// </summary>
 public sealed unsafe class HotkeyServerLinkService : IExtenderService
 {
@@ -26,8 +27,6 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         if (!SymbolMap.Require(log, "HotkeyServerLinkService", HotkeyProtocol.RequiredSymbols)) return;
         HotkeyConsent.Init(_log!);
         SelfCheck();   // the fail-closed consent policy is security-critical; verify it at startup
-        CommandRegistry.Global.Register("/consent", "spawn the native consent modal with fake keys (allocator probe)",
-                                        _ => HotkeyConsent.Probe());
         _inboundOrig = (delegate* unmanaged<IntPtr, byte*, uint, uint>)hooks.Install(
             SymbolMap.HandleServerToPlayerMessage, (IntPtr)(delegate* unmanaged<IntPtr, byte*, uint, uint>)&OnInbound);
     }

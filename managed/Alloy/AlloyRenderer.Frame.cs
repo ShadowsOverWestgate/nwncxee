@@ -67,7 +67,7 @@ public sealed unsafe partial class AlloyRenderer
         HoldPassTarget(in t);   // #375: the ONE read per pass; the post stack rebinds from this copy
         // #391: TWO viewports. `display` is the engine's -- where the resolve, the post stack and the
         // depth hand-back go, and what the 2D UI draws at. `viewport` is the RENDER one every owned pass
-        // sizes from: the display scaled by /post scale, origin 0 (the owned targets are their own
+        // sizes from: the display scaled by alloy.scale, origin 0 (the owned targets are their own
         // allocations, so an offset would only mean drawing into their corner).
         int* display = stackalloc int[4] { t.Vp0, t.Vp1, t.Vp2, t.Vp3 };
         int* viewport = stackalloc int[4] { 0, 0, PostChain.RenderSize(t.Vp2), PostChain.RenderSize(t.Vp3) };
@@ -168,7 +168,7 @@ public sealed unsafe partial class AlloyRenderer
             // ...and on the LIGHT RIG, for a reason the class check cannot supply: the water stage calls
             // CxClusteredLight unconditionally, and the cluster buffers are only meaningful once THIS
             // pass's build has run. BuildBatches skips lit batches on !lightingOn, but a water batch is
-            // keyed on its class rather than on _gLit, so without this term /draw light 0 (or a failed
+            // keyed on its class rather than on _gLit, so without this term /alloy light 0 (or a failed
             // lit program, or a build that refused) would leave the water program reading undefined
             // BufferData contents -- an unbounded per-fragment light loop, not a dim sea.
             _waterArmed = FrameSnapshot.Usable && lightingOn && EnsureWaterProgram();
@@ -330,7 +330,7 @@ public sealed unsafe partial class AlloyRenderer
                             // OIT (OitPass): the whole class in one unsorted, non-depth-writing pass into the
                             // accumulation pair, composited once. The per-creature run loop and its one-layer
                             // depth sweep are gone with it: with no depth written, no layer can hide another.
-                            // /draw oit 2 (#490) sorts per pixel through linked lists on the same bracket.
+                            // /alloy oit 2 (#490) sorts per pixel through linked lists on the same bracket.
                             if (_gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
                             {
                                 _oitOn = true;
@@ -558,7 +558,7 @@ public sealed unsafe partial class AlloyRenderer
     /// unsorted, depth-writing bucket lands on the nearest layer by accident; this lands on it by
     /// construction. Two sweeps as the opaque prepass: plain, then keyhole-dissolving under its own program.
     /// <para>Scoped to one creature's run of batches by the caller, so a creature behind another still
-    /// composites through it. <c>/draw blendprepass 0</c> stands it down.</para></summary>
+    /// composites through it. <c>/alloy blendprepass 0</c> stands it down.</para></summary>
     private static void BlendedDepthPrepass(int from, int to, Matrix4x4* vp, int* viewport)
     {
         if (to <= from || !_blendPrepass || !EnsureDepthProgram()) return;
@@ -614,12 +614,12 @@ public sealed unsafe partial class AlloyRenderer
         Gl.ColorMask(1, 1, 1, 1);
         Gl.DepthFunc(Gl.LEQUAL);
     }
-    /// <summary><c>/draw blendprepass</c>: the blended class's one-layer depth sweep (default on).</summary>
-    internal static bool _blendPrepass = true;
-    /// <summary><c>/draw blenddiag</c>: once per 300 frames, one log line per blended run -- its gob tag and
+    /// <summary><c>/alloy blendprepass</c>: the blended class's one-layer depth sweep (default on).</summary>
+    private static bool _blendPrepass => Renderer.BlendPrepass.V;
+    /// <summary><c>/alloy blenddiag</c>: once per 300 frames, one log line per blended run -- its gob tag and
     /// every batch's feature, length and cull -- so a creature that composites in pieces names the batch
     /// that fell out of its run.</summary>
-    internal static bool _blendDiag = true;
+    private static bool _blendDiag => Renderer.BlendDiag.V;
     private static void BlendRunDiag(IntPtr tag, int rs, int re)
     {
         var sb = new System.Text.StringBuilder();
@@ -681,7 +681,7 @@ public sealed unsafe partial class AlloyRenderer
         {
             bool dis = sweep == 1;
             bool bound = false;
-            // #336: the keyhole sweep timed as its own term, and skippable (/draw prepasskey 0).
+            // #336: the keyhole sweep timed as its own term, and skippable (/alloy prepasskey 0).
             if (dis) { GpuEnd(GpuTerm.Prepass); if (!_prepassKey) break; GpuBegin(GpuTerm.PrepassKey); }
             for (int g = 0; g < groups; g++)
             {

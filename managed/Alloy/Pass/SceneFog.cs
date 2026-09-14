@@ -31,44 +31,35 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class SceneFog
 {
-    /// <summary>How far the fog target moves from the author's colour toward the sky. 0 = vanilla's flat
-    /// colour, which is what every knob here reduces to.</summary>
-    internal static float SkyMix = DefSkyMix;
-    /// <summary>Sun in-scatter: fog brightens toward the area's directional light. Strength, then the
-    /// exponent of the phase lobe -- a big exponent is a tight glow around the sun, a small one is a
-    /// half-sky wash.</summary>
-    internal static float SunAmount = DefSunAmount, SunExp = DefSunExp;
-    /// <summary>Height falloff, per world unit above <see cref="FloorOffset"/>. 0 = off, and off is the
-    /// default on purpose: this is a DENSITY the area author did not set, unlike everything else here.
-    /// </summary>
-    internal static float HeightK = DefHeightK;
-    /// <summary>World height the fog layer starts thinning above, as an offset from the player's feet. The
-    /// anchor is the player rather than an absolute Z because an area has no ground plane to read.
-    /// <para>ponytail: upward only -- the shared <c>/x key value</c> parser refuses a negative, so a floor
-    /// BELOW the feet needs that parser widened first.</para></summary>
-    internal static float FloorOffset = DefFloorOffset;
-    /// <summary>How high above the layer floor <see cref="OpaqueDistance"/> is willing to assume geometry
-    /// reaches. Only used while <see cref="HeightK"/> is on: see that method.</summary>
-    internal static float CullZ = DefCullZ;
-    /// <summary>Fog measured radially from the player's feet rather than in the camera's view depth, so
-    /// zooming the camera out does not push the fog with it. The cull, the light cut and the grass cut
-    /// measure the same way through <see cref="Origin"/>, or a cut shows where the fog is not yet total.
-    /// Diverges from vanilla on purpose; <c>/fog origin 0</c> is the engine's metric.</summary>
-    internal static bool OriginPlayer = DefOriginPlayer;
-    /// <summary>The sky stage's horizon band, in ray elevation (dir.z): rays at or below the horizon are
-    /// fully fogged, fading to the raw dome this far above it. It is what makes the dome's lower half the
-    /// colour culled ground had converged to. 0 = the dome is not fogged at all (the #341 seam is back).</summary>
-    internal static float SkyBand = DefSkyBand;
-
-    internal const float DefSkyMix = 0.75f, DefSunAmount = 0.35f, DefSunExp = 8f,
-                         DefHeightK = 0f, DefFloorOffset = 0f, DefCullZ = 30f, DefSkyBand = 0.15f;
-    internal const bool DefOriginPlayer = true;
+    /// <summary>The dials are <see cref="Fog"/>'s, read through these so <c>fog.enabled</c> off makes every
+    /// one read as 0 -- vanilla's flat colour, view-depth metric and no cull -- without a branch at each site.
+    /// <c>sky</c>: how far the target moves from the author's colour toward the sky; 0 = vanilla, which is what
+    /// every knob here reduces to. <c>sun</c>/<c>sunexp</c>: in-scatter strength and the phase lobe's
+    /// exponent (big = a tight glow, small = a half-sky wash). <c>height</c>: falloff per world unit above
+    /// <c>floor</c>, a DENSITY the area author did not set, hence 0 by default. <c>floor</c> is an offset from
+    /// the player's feet, upward only: an area has no ground plane to read. <c>cullz</c>: how high above the
+    /// layer floor <see cref="OpaqueDistance"/> assumes geometry reaches while the height falloff is on.
+    /// <c>origin</c>: fog measured radially from the player's feet rather than in view depth, so zooming out
+    /// does not push the fog; the cull, the light cut and the grass cut measure the same way through
+    /// <see cref="Origin"/>. <c>skyband</c>: the sky stage's horizon band in ray elevation -- rays at or
+    /// below the horizon fully fogged, fading to the raw dome this far above; 0 brings the #341 seam back.</summary>
+    internal static float SkyMix => Fog.Enabled.V ? Fog.Sky.V : 0f;
+    internal static float SunAmount => Fog.Enabled.V ? Fog.Sun.V : 0f;
+    internal static float SunExp => Fog.SunExp.V;
+    internal static float HeightK => Fog.Enabled.V ? Fog.Height.V : 0f;
+    internal static float FloorOffset => Fog.Floor.V;
+    internal static float CullZ => Fog.CullZ.V;
+    internal static bool OriginPlayer => Fog.Enabled.V && Fog.Origin.V;
+    internal static float SkyBand => Fog.Enabled.V ? Fog.SkyBand.V : 0f;
+    /// <summary>The cull's fog gate (<see cref="CullPass.FogCull"/>): off with the master, like every dial.</summary>
+    internal static bool Cull => Fog.Enabled.V && Fog.Cull.V;
 
     /// <summary>The sky colour the fog converges to, LINEAR. Zero until a sky texture has been read, which
     /// is what <see cref="_haveSky"/> reports and what makes the term stand down to the author's colour.
     /// </summary>
-    private static Vector3 _sky;
+    // _haveSky FIRST: ilc 10.0.11 fails codegen (recordRelocation InvalidCastException) on a Vector3 static at offset 0.
     private static bool _haveSky;
+    private static Vector3 _sky;
     private static Vector3 _acc; private static float _accW;
     private static uint _lastTid;
 
@@ -232,38 +223,11 @@ internal static unsafe class SceneFog
     internal static string Describe()
     {
         float opaque = OpaqueDistance();
-        return $"sky {SkyMix:F2} ({(_haveSky ? "dome texture" : "NO SKY STAGED -- author colour only")} " +
+        return (Fog.Enabled.V ? "" : "OFF (author's flat fog; every dial reads 0)  ") + $"sky {SkyMix:F2} ({(_haveSky ? "dome texture" : "NO SKY STAGED -- author colour only")} " +
                $"{_sky.X:F2},{_sky.Y:F2},{_sky.Z:F2})  sun {SunAmount:F2} exp {SunExp:F1}  " +
                $"height {HeightK:F3}/unit floor {FloorOffset:F1}  " +
                $"[opaque {(float.IsInfinity(opaque) ? "--" : opaque.ToString("F0"))} " +
                $"cullz {CullZ:F0} camfar {FrameInputs.CamFar:F0}]  origin {(OriginPlayer ? "player" : "camera")} skyband {SkyBand:F2}";
-    }
-
-    internal static float Tune(string key, float v)
-    {
-        float old;
-        switch (key)
-        {
-            case "sky":    old = SkyMix; SkyMix = MathF.Min(v, 1f); break;
-            case "sun":    old = SunAmount; SunAmount = v; break;
-            case "sunexp": old = SunExp; SunExp = MathF.Max(v, 1f); break;
-            // The one knob that changes DENSITY rather than colour, hence off by default.
-            case "height": old = HeightK; HeightK = v; break;
-            case "floor":  old = FloorOffset; FloorOffset = v; break;
-            case "cullz":  old = CullZ; CullZ = v; break;
-            case "origin": old = OriginPlayer ? 1f : 0f; OriginPlayer = v > 0f; break;
-            case "skyband": old = SkyBand; SkyBand = v; break;
-            default: return float.NaN;
-        }
-        _log?.Info($"SceneFog: /fog {key} {v:F3} (was {old:F3}) -> {Describe()}");
-        return old;
-    }
-
-    internal static void ResetTuning()
-    {
-        SkyMix = DefSkyMix; SunAmount = DefSunAmount; SunExp = DefSunExp;
-        HeightK = DefHeightK; FloorOffset = DefFloorOffset; CullZ = DefCullZ;
-        OriginPlayer = DefOriginPlayer; SkyBand = DefSkyBand;
     }
 
     /// <summary>Off-device: the two pieces that are arithmetic rather than GL. The cull distance is the one
@@ -276,43 +240,57 @@ internal static unsafe class SceneFog
 
         bool onWas = FrameInputs.FogOn; float sWas = FrameInputs.FogStart, eWas = FrameInputs.FogEnd;
         Vector3 cWas = FrameInputs.FogColor;
-        float kWas = HeightK, mixWas = SkyMix, zWas = CullZ;
-        bool haveWas = _haveSky; Vector3 skyWas = _sky;
+        float kWas = Fog.Height.V, mixWas = Fog.Sky.V, zWas = Fog.CullZ.V, sunWas = Fog.Sun.V, bandWas = Fog.SkyBand.V;
+        bool haveWas = _haveSky, enWas = Fog.Enabled.V, cullWas = Fog.Cull.V; Vector3 skyWas = _sky;
+        Fog.Enabled.V = true;
 
         FrameInputs.FogOn = false;
         E(float.IsPositiveInfinity(OpaqueDistance()), "fog off means no cull distance at all");
         FrameInputs.FogOn = true; FrameInputs.FogStart = 25f; FrameInputs.FogEnd = 125f;
-        HeightK = 0f;
+        Fog.Height.V = 0f;
         E(MathF.Abs(OpaqueDistance() - 125f) < 1e-3f, "the plain ramp is opaque at FogEnd, as #336 culled");
-        HeightK = 0.01f; CullZ = 30f;
+        Fog.Height.V = 0.01f; Fog.CullZ.V = 30f;
         // 25 + 100*exp(0.3) = 159.9: further out than FogEnd, never nearer.
         E(OpaqueDistance() > 125f, "height falloff pushes the opaque distance OUT, never in");
 
-        SkyMix = 0f; _haveSky = true; _sky = new Vector3(1f, 1f, 1f);
+        Fog.Sky.V = 0f; _haveSky = true; _sky = new Vector3(1f, 1f, 1f);
         FrameInputs.FogColor = new Vector3(0.5f, 0.25f, 0.125f);
         float* rgb = stackalloc float[3];
         SkyfadeTint(rgb);
         E(MathF.Abs(rgb[0] - 0.5f) < 1e-4f && MathF.Abs(rgb[2] - 0.125f) < 1e-4f,
           "sky 0 leaves the skyfade band on the author's own fog colour, byte for byte");
-        SkyMix = 1f; _sky = new Vector3(Lin(0.25f), Lin(0.5f), Lin(1f));
+        Fog.Sky.V = 1f; _sky = new Vector3(Lin(0.25f), Lin(0.5f), Lin(1f));
         SkyfadeTint(rgb);
         E(MathF.Abs(rgb[2] - 1f) < 1e-3f && MathF.Abs(rgb[0] - 0.25f) < 1e-3f,
           "sky 1 lands the band exactly on the sky colour, round-tripped through the encode");
 
-        SkyMix = 1f; _haveSky = false;
+        Fog.Sky.V = 1f; _haveSky = false;
         SkyfadeTint(rgb);
         E(MathF.Abs(rgb[0] - 0.5f) < 1e-4f,
           "no sky staged leaves the band on the author's colour whatever the mix says");
 
         // /fog origin 0 is the engine's metric: view depth, measured from the pass eye -- not a sphere
         // around wherever the player happens to stand.
-        bool origWas = OriginPlayer; OriginPlayer = false;
+        bool origWas = Fog.Origin.V; Fog.Origin.V = false;
         E(!(Origin(out bool radial) != AlloyRenderer.EyePos) && !radial, "origin 0 is view depth from the pass eye");
-        OriginPlayer = origWas;
+        Fog.Origin.V = true;
+
+        // The master: off, every dial reads as 0 -- the author's flat colour, view depth, no cull -- whatever
+        // the knobs hold, and the skyfade band is the author's colour byte for byte.
+        _haveSky = true; Fog.Sky.V = 1f; Fog.Sun.V = 1f; Fog.Height.V = 0.01f; Fog.SkyBand.V = 0.5f; Fog.Cull.V = true;
+        Fog.Enabled.V = false;
+        E(SkyMix == 0f && SunAmount == 0f && HeightK == 0f && SkyBand == 0f && !OriginPlayer && !Cull && !CullPass.FogCull,
+          "fog.enabled off: every dial reads 0 and the cull stands down");
+        E(MathF.Abs(OpaqueDistance() - 125f) < 1e-3f, "...and the opaque distance is the plain ramp's");
+        SkyfadeTint(rgb);
+        E(MathF.Abs(rgb[0] - 0.5f) < 1e-4f && MathF.Abs(rgb[2] - 0.125f) < 1e-4f, "...and the skyfade band is the author's colour");
+        Fog.Enabled.V = true;
+        E(SkyMix == 1f && SunAmount == 1f && HeightK == 0.01f && SkyBand == 0.5f && OriginPlayer && Cull, "fog.enabled on restores the dials");
+        Fog.Origin.V = origWas; Fog.Sun.V = sunWas; Fog.SkyBand.V = bandWas; Fog.Cull.V = cullWas;
 
         FrameInputs.FogOn = onWas; FrameInputs.FogStart = sWas; FrameInputs.FogEnd = eWas;
         FrameInputs.FogColor = cWas;
-        HeightK = kWas; SkyMix = mixWas; CullZ = zWas; _haveSky = haveWas; _sky = skyWas;
+        Fog.Height.V = kWas; Fog.Sky.V = mixWas; Fog.CullZ.V = zWas; Fog.Enabled.V = enWas; _haveSky = haveWas; _sky = skyWas;
         log.Info(ok ? "SceneFog.SelfCheck: passed" : "SceneFog.SelfCheck: FAILED");
     }
 }

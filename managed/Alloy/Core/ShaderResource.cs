@@ -54,7 +54,7 @@ internal static unsafe class ShaderResource
         if (IsSpirv(b))
         {
             log?.Info($"shader override: {resref}.shd is a SPIR-V module -- "
-                    + (SpirvArmed ? "taken as a binary stage" : "IGNORED, set spirv=1 in cx.cfg to accept it"));
+                    + (SpirvArmed ? "taken as a binary stage" : "IGNORED, set alloy.spirv=1 in cx.cfg to accept it"));
             return null;
         }
         // A BOM ahead of #version is a compile error, and an editor on Windows writes one without asking.
@@ -89,10 +89,9 @@ internal static unsafe class ShaderResource
     private static bool IsSpirv(byte[] b) =>
         b.Length >= 4 && (uint)(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) == SpirvMagic;
 
-    /// <summary>Bucket 2 gate (ADR 0013): binary shader stages are off unless the machine's owner says
-    /// otherwise, because nothing downstream can audit one.</summary>
-    internal static bool SpirvArmed => _spirv ??= Settings.Bool("spirv", false);
-    private static bool? _spirv;
+    /// <summary>Restart gate: binary shader stages are off unless the machine's owner says otherwise, because
+    /// nothing downstream can audit one.</summary>
+    internal static bool SpirvArmed => Renderer.Spirv.Boot;
 
     /// <summary>The raw bytes behind <paramref name="resref"/>.shd, or null when nothing supplies it.</summary>
     private static byte[]? Blob(string resref, ExtenderLog? log)

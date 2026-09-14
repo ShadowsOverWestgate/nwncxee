@@ -124,10 +124,9 @@ internal static unsafe class Beams
     private static float* _alpha;
     private static uint* _primTable;
     private static bool _off, _failed;
-    /// <summary>The player's own switch (<c>/beams</c>, ADR 0013 bucket 1). Distinct from <see cref="_off"/>,
-    /// which means the session cannot own beams at all: the hooks arm either way, so the toggle is live.
-    /// Volatile -- written from the command dispatch, read in the capture window on the render thread.</summary>
-    private static volatile bool _disabled;
+    /// <summary>The player's own switch (<c>effects.beams</c>). Distinct from <see cref="_off"/>, which means
+    /// the session cannot own beams at all: the hooks arm either way, so the toggle is live.</summary>
+    private static bool Disabled => !Effects.Beams.V;
     private static uint _prog;
     private static int _locModel = -1, _locView = -1, _locProj = -1, _locSrc = -1, _locZClip = -1, _locColor = -1;
     private static int _enrolled, _refused, _drawn;
@@ -145,7 +144,7 @@ internal static unsafe class Beams
         if (_stacks == null || _primTable == null)
         { _off = true; log.Info("Beams: matrix stack or prim table unresolved -- light beams stay vanilla"); return; }
         // #261: no hooks. The population is the engine's bucket 15, read at the Alloy slot.
-        log.Info("Beams: armed -- bucket-15 volumes enumerated and drawn by Alloy (/beams toggles)");
+        log.Info("Beams: armed -- bucket-15 volumes enumerated and drawn by Alloy (/effects beams toggles)");
     }
 
     /// <summary>#261: the population, read straight off the engine's bucket 15. Once per world frame, in
@@ -156,7 +155,7 @@ internal static unsafe class Beams
     /// reconciliation against what the engine walked -- the engine's walk IS this walk.</para></summary>
     internal static void Enroll(IntPtr scene)
     {
-        if (_off || _disabled || scene == IntPtr.Zero) return;
+        if (_off || Disabled || scene == IntPtr.Zero) return;
         if (scene != _scene) { Forget(); _scene = scene; }
         _count = 0;
         _model = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
@@ -302,7 +301,7 @@ internal static unsafe class Beams
     /// <see cref="AlloyRenderer"/>'s additive arm hands over and the probe capture after it needs.</para></summary>
     internal static void Draw(Matrix4x4* view, Matrix4x4* proj)
     {
-        if (_disabled || _off || _failed || _count == 0 || Gl.MultiDrawElementsBaseVertex == null) return;
+        if (Disabled || _off || _failed || _count == 0 || Gl.MultiDrawElementsBaseVertex == null) return;
         // The player's own switch, honoured the way grass honours "Grass Mode": beams off means the owned
         // pass draws nothing AND suppresses nothing, so the console variable keeps meaning what it says.
         if (_enable != null && *_enable == 0) return;
@@ -424,18 +423,9 @@ internal static unsafe class Beams
         _vdoCount = 0;
     }
 
-    /// <summary>The <c>/beams</c> body: flip the Alloy beam pass and say where it landed. Cold (input
-    /// thread); the render thread picks the flag up in its next enrollment.</summary>
-    internal static string Toggle()
-    {
-        if (_off) return "[beams] unavailable this session -- light beams stay vanilla";
-        _disabled = !_disabled;
-        return $"[beams] Alloy beams {(_disabled ? "off -- the engine draws them" : "on")}";
-    }
-
     internal static void ResetPeriod() { _enrolled = 0; _refused = 0; _drawn = 0; }
 
-    internal static string Stats() => _disabled ? "beams off (/beams)" : _off ? "beams vanilla (unavailable)"
+    internal static string Stats() => Disabled ? "beams off (/effects beams 0)" : _off ? "beams vanilla (unavailable)"
         : $"beams {_count} in bucket 15, {_enrolled} enrolled, {_drawn} drawn"
           + (_refused == 0 ? "" : $", {_refused} REFUSED (unindexed VDO, no attribute pair, or table full)");
 

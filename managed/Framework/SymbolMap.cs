@@ -40,6 +40,11 @@ internal static unsafe class SymbolMap
     public const string ChatHandleEnter      = "_ZN20CGuiInGameChatPrompt11HandleEnterEv";
     public const string ChatHandleEsc        = "_ZN20CGuiInGameChatPrompt9HandleEscEv";
     public const string ChatHandleLoseFocus  = "_ZN20CGuiInGameChatPrompt41HandleLoseKeyboardFocusLMouseDownGuiEventEv";
+    /// <summary>CGuiEdit::GetText() @0x592680 -- the prompt's typed line, joined from the edit's CAurString lines.
+    /// Returns a CExoString BY VALUE, i.e. <b>sret</b>: Itanium <c>(CExoString* out, CGuiEdit* this)</c>, Win64
+    /// <c>(this, out)</c>; the buffer it writes is CALLER-OWNED (zero the struct first, dtor it after). What
+    /// <c>HandleEnter</c> itself calls first, so the #580 chain reads exactly what vanilla would have sent.</summary>
+    public const string GuiEditGetText       = "_ZN8CGuiEdit7GetTextEv";
     // ---- chat edit control (build slice #20): focus suppression, keyboard-mode gate, SDL
     //      text-input + clipboard. Chatbox-specific symbols are Linux-only (no _win entries -> skip-with-log
     //      on Windows). EXCEPTIONS: ExoInput + GetKeyboardMode carry _win mappings -- the hotkey
@@ -81,12 +86,6 @@ internal static unsafe class SymbolMap
     public const string HandleServerToPlayerLogin   = "_ZN11CNWCMessage25HandleServerToPlayerLoginEh";
     public const string SendPlayerToServerMessage   = "_ZN11CNWCMessage25SendPlayerToServerMessageEhhPhj";
     public const string SendDeviceAdvertiseProperty = "_ZN11CNWCMessage41SendPlayerToServerDeviceAdvertisePropertyERK10CExoStringi";
-    // options panel (repurposed Save-Character button)
-    public const string PostAttachmentInitialize = "_ZN13COptionsPanel24PostAttachmentInitializeEv";
-    public const string HandleSaveCharButton     = "_ZN13COptionsPanel20HandleSaveCharButtonEv";
-    // Closes the options menu (what Resume calls). Client GUI, no Windows anchor yet -> skips there,
-    // and the menu simply stays open.
-    public const string OptionsHandleXButton     = "_ZN13COptionsPanel13HandleXButtonEv";
     // chat-render probe (#14) -- Linux-only throwaway; no Windows anchors (skip + log there).
     public const string AppendToMsgBuffer   = "_ZN10CGuiInGame17AppendToMsgBufferE10CExoStringjji7CResRef"; // inbound tap
     public const string SetPriMsgFilter     = "_ZN10CGuiInGame25SetPrimaryMsgWindowFilterEj";               // force backlog replay
@@ -191,21 +190,13 @@ internal static unsafe class SymbolMap
     public const string SdlGetKeyName   = "SDL_GetKeyName";
     public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
     public const string SdlGetMouseState = "SDL_GetMouseState";
-    // client-native manager: a window injected into the client's own nuklear pass via the
-    // per-frame nk_sdl_render hook. Core nk_* are plain C; the SDL glue is C++-linkage on this
-    // build (mangled), so nk_sdl_render must use its mangled name or the hook never installs. The
-    // manager is absent on Windows: no anchor, so the whole group skips + logs there.
+    // The SDL glue of the client's nuklear is C++-linkage on this build (mangled), so nk_sdl_render
+    // must use its mangled name or the hook never installs. Nothing nuklear is anchored on Windows.
     /// <summary>Nuklear's GL flush, called from <c>CGuiMan::UpdateAndRender</c> @0x5809fa straight after
     /// <c>Nui__Render()</c> (which only fills the command queue and touches no GL). Everything drawn before
     /// it lands UNDER every NUI window and over the vanilla GUI panels -- which is where the framework's own
     /// windows draw (<c>UiHostService</c>), not just where nuklear windows get built.</summary>
     public const string NkSdlRender        = "_Z13nk_sdl_renderf";
-    public const string NkBegin            = "nk_begin";
-    public const string NkEnd              = "nk_end";
-    public const string NkLayoutRowDynamic = "nk_layout_row_dynamic";
-    public const string NkLabel            = "nk_label";
-    public const string NkButtonLabel      = "nk_button_label";
-    public const string NkWindowIsClosed   = "nk_window_is_closed";
     /// <summary><c>int nk_window_is_any_hovered(nk_context*)</c> -- pointer precedence for the layering
     /// above. NUI draws on top of our windows, so it must get the click too.</summary>
     public const string NkWindowIsAnyHovered = "nk_window_is_any_hovered";
@@ -246,6 +237,13 @@ internal static unsafe class SymbolMap
     /// by-value string lowered to a hidden pointer*/, int forceShow /*edx*/, float perChar /*xmm0*/,
     /// float fixedSec /*xmm1*/)</c> -- Ghidra drops the two floats.</summary>
     public const string SetPopUpBubbleText = "_ZN10CNWCObject18SetPopUpBubbleTextE10CExoStringiff";
+    /// <summary>CGuiPanel::UnToggleOff() @0x5876a0 -- clears the hide bit (<c>+0xb8 &amp;= ~4</c>) and re-attaches the
+    /// model only when that leaves the panel at exactly state 1 (was 5: active AND hidden); on an inactive panel it is
+    /// the bit clear and nothing else. #591: the vanilla bubble idles with that bit set (<c>Show</c>/<c>Update</c> →
+    /// <c>ToggleOff</c>) and <c>UpdatePopUpBubble</c> early-outs on it, so after a vanilla interlude the mode-0
+    /// anchor stays frozen until the bit is cleared -- <c>SetChatBubbleMode(0)</c>'s walk only Deactivates
+    /// (<c>&amp;= ~1</c>). Called per bubble from the two cold hooks that read its anchor.</summary>
+    public const string GuiPanelUnToggleOff = "_ZN9CGuiPanel11UnToggleOffEv";
     /// <summary>CNWCMessage::HandleServerToPlayerChat(unsigned char) @0x75b280 -- the channel byte arrives in
     /// esi and the SetPopUpBubbleText for that line runs on the same stack, so it latches the channel for
     /// per-channel bubble styling. ABI: <c>(this /*rdi*/, uchar channel /*esi*/)</c>.</summary>
@@ -288,6 +286,16 @@ internal static unsafe class SymbolMap
     public const string Nuklear    = "g_pNuklear";
     /// <summary>CExoBase* global; deref for the instance whose CExoString@0x38 is the resolved user directory.</summary>
     public const string ExoBase    = "g_pExoBase";
+    /// <summary>#571: <c>CExoConfig::Get&lt;T&gt;(std::string const&amp;, bool)</c> @0x4efce0 / @0x4ef6a0 / @0x4f9120 --
+    /// the stock <c>settings.tml</c> reader. <c>this</c> is CExoBase's first member (<see cref="EngineLayout.ExoBaseConfig"/>);
+    /// the key is a <c>std::string</c> by const reference (a pointer on both ABIs, forged per platform by
+    /// <see cref="StockConfig"/>); the bool picks the committed table over the working one. A key with no
+    /// bind, or a bind of another type, answers the type's zero -- so a caller names the bound type, never
+    /// guesses it. Allocates (map lookup, cpptoml substrings): cold reads only. Windows exports the same
+    /// three instantiations (<c>_N</c>, <c>_J</c> = the 64-bit long, <c>N</c>).</summary>
+    public const string ExoConfigGetBool   = "_ZN10CExoConfig3GetIbEET_RKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEb";
+    public const string ExoConfigGetLong   = "_ZN10CExoConfig3GetIlEET_RKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEb";
+    public const string ExoConfigGetDouble = "_ZN10CExoConfig3GetIdEET_RKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEb";
 
     // ---- owned-render text (chatbox slice #19). Linux-only throwaway rig; no Windows anchors
     //      (Resolve returns Zero + logs on Windows, so the feature degrades gracefully there). ----
@@ -987,7 +995,7 @@ internal static unsafe class SymbolMap
     /// <para>#131 also reads the orientation QUATERNION at <c>*CurrentCamera + 0xbc</c>, stored
     /// (w, x, y, z) -- <c>PartEmitter::RenderEmitter</c> builds every billboard basis out of it.</para>
     /// <para>This SUPERSEDED the Scene "shadow gob" at Scene+0x58 as the anchor: that field's setter is
-    /// inlined in the vanilla shadow path, so it reads NULL under <c>noshadows</c> (live-confirmed).</para>
+    /// inlined in the vanilla shadow path, so it reads NULL under <c>shadow.mode=0</c> (live-confirmed).</para>
     /// </summary>
     public const string CurrentCamera = "CurrentCamera";
 
@@ -1156,16 +1164,17 @@ internal static unsafe class SymbolMap
         [ExoStringDtor]     = Nm("??1CExoString@@QEAA@XZ"),
         [AppManager]        = Nm("?g_pAppManager@@3PEAVCAppManager@@EA"),
         [ExoBase]           = Nm("?g_pExoBase@@3PEAVCExoBase@@EA"),   // userdir CExoString@0x38 identical on both builds
+        [ExoConfigGetBool]   = Nm("??$Get@_N@CExoConfig@@QEAA_NAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
+        [ExoConfigGetLong]   = Nm("??$Get@_J@CExoConfig@@QEAA_JAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
+        [ExoConfigGetDouble] = Nm("??$Get@N@CExoConfig@@QEAANAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
 
-        // --- not exported (client GUI / CNWCMessage / COptionsPanel): Windows RVA,
+        // --- not exported (client GUI / CNWCMessage): Windows RVA,
         //     build 0x68e408bc. See docs/windows-symbols.md for how each was anchored. ---
         [HandleServerToPlayerMessage] = At(0x7a41a0),
         [HandleServerToPlayerLogin]   = At(0x7a31b0),
         [SendPlayerToServerMessage]   = At(0x7c25c0),
         [SendDeviceAdvertiseProperty] = At(0x7bbac0),
         [GetNWCMessage]               = At(0x6abf90),
-        [PostAttachmentInitialize]    = At(0x830b50),
-        [HandleSaveCharButton]        = At(0x82fb60),
         [SetFocusChatPrompt]          = At(0x6fae30),
         [ChatHandleEnter]             = At(0x87b0d0),
         [ChatHandleEsc]               = At(0x87b390),
@@ -1194,6 +1203,8 @@ internal static unsafe class SymbolMap
         [KeyboardModeOff] = Nm("?KeyboardModeOff@CExoInput@@QEAAXXZ"),
         [GuiManReleaseKeyboard] = Nm("?ReleaseKeyboard@CGuiMan@@QEAAXPEAVCGuiObject@@@Z"),
         [GuiObjectHitCheck] = Nm("?GuiObjectHitCheck@CGuiMan@@QEAAPEAVCGuiObject@@HHHH@Z"),
+        // #580: the vanilla prompt's own text read; sret order branches at the call site (PromptCommandService).
+        [GuiEditGetText]  = Nm("?GetText@CGuiEdit@@QEAA?AVCExoString@@XZ"),
 
         // --- the CX window rig (#419): glyph bake, GL loader, engine state hand-back, SDL text/clipboard.
         //     All extern "C" or shared-engine statics, name-exported. Portraits stay Linux-only: the CAurTexture
@@ -1214,6 +1225,7 @@ internal static unsafe class SymbolMap
         [RiResetRenderStates]        = Nm("?ResetRenderStates@RenderInterface@@SAXXZ"),
         [RiBindBuffer]               = Nm("?BindBuffer@RenderInterface@@SAXII@Z"),
         [GuiPanelDeactivate]         = Nm("?Deactivate@CGuiPanel@@QEAAXH@Z"),
+        [GuiPanelUnToggleOff]        = Nm("?UnToggleOff@CGuiPanel@@QEAAXXZ"),
         // Portraits: the texture guard keys on the two vftables. Not exported; RVAs from the RTTI type descriptors
         // (`.?AVCAurTexture@@` / `.?AVCAurTextureBasic@@` -> complete-object locator -> vftable). MSVC's symbol
         // IS the object's first word (no Itanium +0x10 RTTI skew) -- AurTex.Attach knows.
@@ -1391,19 +1403,12 @@ internal static unsafe class SymbolMap
         [MsaaSamples] = Nm("?g_nMSAA@@3HA"),
         [MultMatrix] = Nm("?MultMatrix@RenderInterface@@SAXPEAM@Z"),
         [NetProcessReceivedFrames] = Nm("?ProcessReceivedFrames@CNetLayer@@QEAAXH@Z"),
-        [NkBegin] = Hole("nuklear is not exported by nwmain.exe"),
-        [NkButtonLabel] = Hole("nuklear is not exported by nwmain.exe"),
-        [NkEnd] = Hole("nuklear is not exported by nwmain.exe"),
-        [NkLabel] = Hole("nuklear is not exported by nwmain.exe"),
-        [NkLayoutRowDynamic] = Hole("nuklear is not exported by nwmain.exe"),
         [NkSdlCopyEvent] = Hole("nuklear is not exported by nwmain.exe"),
         [NkSdlRender] = Hole("nuklear is not exported by nwmain.exe"),
         [NkWindowIsAnyHovered] = Hole("nuklear is not exported by nwmain.exe"),
-        [NkWindowIsClosed] = Hole("nuklear is not exported by nwmain.exe"),
         [Nuklear] = Hole("nuklear is not exported by nwmain.exe"),
         [OnGainFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
         [OnLostFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
-        [OptionsHandleXButton] = Hole("COptionsPanel is not exported; the menu stays open"),
         [PartAnimate] = Nm("?Animate@Part@@UEAAXM@Z"),
         [PartDanglyAnimate] = Nm("?Animate@PartDanglyMesh@@UEAAXM@Z"),
         [PartDanglyMeshVtbl] = At(0xd88698),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)

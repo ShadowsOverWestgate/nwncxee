@@ -51,7 +51,7 @@ namespace CX.Alloy;
 /// <c>glTexStorage2D</c> + <c>glCopyImageSubData</c> at the bracket. That is #211's mechanism and NOT its
 /// bug: #211 keyed the copy on the engine's GL NAME, so a re-upload under a copied name served the stale
 /// image until the next world edge. This keys on the same content identity as an upload and re-copies at
-/// the engine's own rebuild funnel. Only reached with <c>pltcpu=0</c>; the default forces the CPU composite
+/// the engine's own rebuild funnel. Only reached with <c>alloy.pltcpu=0</c>; the default forces the CPU composite
 /// and this queue stays empty.</para>
 /// <para><b>Lifecycle</b> (docs/owned-resource-lifetimes.md), and this table has NO <c>Revoke</c> slot.
 /// Content-keyed resources survive a part-table wipe unchanged, and since they
@@ -135,29 +135,27 @@ internal static unsafe class OwnedTextures
         if (_buildAndStore == null)
             log.Info("OwnedTextures: CAurTexture::BuildAndStore unresolved -- a texture whose build lost its "
                    + "race with the resource loader stays without a GL id, and its part is not drawn (#284)");
-        bool wanted = Settings.Bool("ownedtex", true);
+        // Restart knobs, every one: capability decisions about how the ENGINE loads content, read through Boot.
+        // pltcpu costs a CPU composite per character texture at load -- which is what the engine did for years
+        // -- and buys every PLT-skinned creature a place in the owned set. bcn spends load-time CPU to shrink
+        // VRAM 3-4x on the uncompressed share the #265 census measured at ~2/3.
+        bool wanted = Renderer.OwnedTex.Boot;
         _armed = wanted;
-        // ADR 0013 config bucket: a capability decision about how the ENGINE loads content, not a look dial.
-        // Costs a CPU composite per character texture at load -- which is what the engine did for years --
-        // and buys every PLT-skinned creature a place in the owned set.
-        _pltWanted = Settings.Bool("pltcpu", true);
-        // ADR 0013 config bucket: a capability decision (spend load-time CPU to shrink VRAM 3-4x on the
-        // uncompressed share the #265 census measured at ~2/3), not a look dial. Settings read FIRST so the
-        // knob prints in /knobs even when ownedtex=0 stands the table down.
-        _bcnWanted = Settings.Bool("bcn", true);
+        _pltWanted = Renderer.PltCpu.Boot;
+        _bcnWanted = Renderer.Bcn.Boot;
         _bcn = _bcnWanted && _armed;
-        TranscodeBudget = Settings.Int("bcndrip", 1, 1, 64);
-        _budgetCfgMb = Settings.Int("texcache_mb", -1, -1, 1 << 20);
-        PrefetchBudget = Settings.Int("texprefetch", 2, 0, 64);
-        _single = Settings.Bool("texsingle", true);
+        TranscodeBudget = Renderer.BcnDrip.Boot;
+        _budgetCfgMb = Renderer.TexCache.Boot;
+        PrefetchBudget = Renderer.TexPrefetch.Boot;
+        _single = Renderer.TexSingle.Boot;
         // Zink bisect knobs: a handled texture's delete (auto = never on zink, whose bindless teardown faults on
         // a worker thread there) and the non-resident call ahead of it
-        _texDelete = Settings.Int("texdelete", -1, -1, 1);
-        _handleDrop = Settings.Bool("handledrop", true);
+        _texDelete = Renderer.TexDelete.Boot;
+        _handleDrop = Renderer.HandleDrop.Boot;
         if (_armed)
             log.Info(_bcn
-                ? "OwnedTextures: BCn transcode armed -- uncompressed uploads are re-encoded BC1/BC3 (bcn=0 in cx.cfg to keep them raw)"
-                : "OwnedTextures: BCn transcode off (bcn=0) -- uncompressed uploads stay raw");
+                ? "OwnedTextures: BCn transcode armed -- uncompressed uploads are re-encoded BC1/BC3 (alloy.bcn=0 in cx.cfg to keep them raw)"
+                : "OwnedTextures: BCn transcode off (alloy.bcn=0) -- uncompressed uploads stay raw");
         // #360: RESOLVED whenever the table is armed, FORCED only when the knob says so. The flag is now
         // read as well as written -- it is what says whether a finished build went down the GPU branch and
         // therefore needs adopting by copy rather than by upload.
@@ -166,17 +164,17 @@ internal static unsafe class OwnedTextures
         {
             log.Info(_pltOnGpu != null
                 ? "OwnedTextures: PLT compositing forced to the CPU -- player-character and tinted-creature "
-                + "textures reach the upload funnel and become ownable (pltcpu=0 adopts the GPU composite by copy instead)"
+                + "textures reach the upload funnel and become ownable (alloy.pltcpu=0 adopts the GPU composite by copy instead)"
                 : "OwnedTextures: g_bGeneratePLTOnGPU unresolved -- PLT textures stay GPU-composited, "
                 + "adopted by copy where that path is available and BORROWED where it is not (#360)");
             KeepPltOnCpu();
         }
         else if (_armed)
-            log.Info("OwnedTextures: PLT compositing left on the GPU (pltcpu=0) -- the composite is adopted "
+            log.Info("OwnedTextures: PLT compositing left on the GPU (alloy.pltcpu=0) -- the composite is adopted "
                    + "by a GPU-side copy at the bracket, keyed on the same content identity as an upload (#360)");
         log.Info(_armed
-            ? "OwnedTextures: armed -- Alloy uploads from the engine's decoded pixels (ownedtex=0 to draw from engine ids)"
-            : "OwnedTextures: stood down (ownedtex=0) -- owned draws sample engine texture ids");
+            ? "OwnedTextures: armed -- Alloy uploads from the engine's decoded pixels (alloy.ownedtex=0 to draw from engine ids)"
+            : "OwnedTextures: stood down (alloy.ownedtex=0) -- owned draws sample engine texture ids");
     }
 
     /// <summary>Chain the two engine funnels this table lives on: the UPLOAD (#259, where decoded pixels
@@ -197,7 +195,7 @@ internal static unsafe class OwnedTextures
             SymbolMap.AurTextureBuildAndStoreTexture, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnBuildAndStoreTexture);
         _znam = (delegate* unmanaged<nuint, IntPtr>)Native.Sym(SymbolMap.OperatorNewArray);
         log.Info(_origBuildAndStoreTexture != null && _znam != null
-            ? $"OwnedTextures: watching CAurTextureBasic::BuildAndStoreTexture -- a resident texture is handed back without a read, decode or upload (texcache_mb {(_budgetCfgMb < 0 ? "auto" : _budgetCfgMb.ToString())})"
+            ? $"OwnedTextures: watching CAurTextureBasic::BuildAndStoreTexture -- a resident texture is handed back without a read, decode or upload (alloy.texcache {(_budgetCfgMb < 0 ? "auto" : _budgetCfgMb.ToString())})"
             : "OwnedTextures: BuildAndStoreTexture not hooked or operator new[] unresolved -- textures are kept across the world edge but every build is cold");
         log.Info(_origDelete != null
             ? "OwnedTextures: watching RenderInterface::DeleteTextures -- a tid stops resolving the moment it stops meaning its resource"
@@ -363,7 +361,7 @@ internal static unsafe class OwnedTextures
     {
         long t0 = FrameZones.Now;
         // #386: ONE upload. Adopt uploads into Alloy's name and hands that name to the engine's cell array;
-        // only when it declines (or texsingle=0) does the engine's own copy get built.
+        // only when it declines (or alloy.texsingle=0) does the engine's own copy get built.
         bool handled = _single && Adopt(tex, cell, single: true);
         if (!handled)
         {
@@ -573,7 +571,7 @@ internal static unsafe class OwnedTextures
     // ---- ADR 0023: the texture CACHE -- the delete funnel is the world edge for the INDEX, not the resource ----
 
     /// <summary>VRAM the cache may hold, in bytes. 0 = the pre-ADR-0023 behaviour (a retired index entry
-    /// discards its resource). <c>texcache_mb</c> in cx.cfg; -1 (the default) = a quarter of the probe's
+    /// discards its resource). <c>alloy.texcache</c> in cx.cfg; auto (the default) = a quarter of the probe's
     /// reported VRAM, 1024 MiB when the device answers no memory query. Resolved lazily: the probe runs on
     /// the first presented frame, after this table is attached.</summary>
     private static long _budgetBytes = -1;
@@ -1126,7 +1124,7 @@ internal static unsafe class OwnedTextures
         _peakBytes = _bytes;
         _log?.Info($"OwnedTextures: [vram] high-water {_peakBytes / OneMiB}MiB across {_peakCount} " +
                    $"owned textures (uploads {_uploads}, re-uploads {_reuploads}, borrowed {_borrowed.Count}" +
-                   (_pltOnGpu == null ? _pltWanted ? ", GPU-PLT NOT FORCED OFF (symbol unresolved)" : ", pltcpu=0"
+                   (_pltOnGpu == null ? _pltWanted ? ", GPU-PLT NOT FORCED OFF (symbol unresolved)" : ", alloy.pltcpu=0"
                                       : _pltForced == 0 ? "" : $", GPU-PLT re-cleared {_pltForced}x")
                    // #360: the copy path is never silent -- a session that adopted nothing and a session
                    // that has no GPU composites to adopt must not read the same.
@@ -1628,7 +1626,7 @@ internal static unsafe class OwnedTextures
         int n = due.Count;
         // auto: deletes are only unsafe where zink's bindless bookkeeping is live -- vetoed bindless = no handles = safe
         bool delete = _texDelete == 1 || (_texDelete < 0 && !(GlContextService.Zink && AlloyRenderer.Bindless));
-        if (!delete && !_deleteNoted) { _deleteNoted = true; _log?.Info("OwnedTextures: owned textures are NEVER deleted this session (zink with bindless forced, or texdelete=0) -- names leak until the context goes"); }
+        if (!delete && !_deleteNoted) { _deleteNoted = true; _log?.Info("OwnedTextures: owned textures are NEVER deleted this session (zink with bindless forced, or alloy.texdelete=0) -- names leak until the context goes"); }
         for (int i = 0; i < n; i++)
         {
             uint name = due[i];

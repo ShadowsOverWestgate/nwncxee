@@ -1,5 +1,4 @@
 using System;
-using System.Globalization;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Alloy;
@@ -20,12 +19,16 @@ namespace CX.Services.Camera;
 /// and the server's locks keep reading the truth. #541 is the one exception, and it goes through the engine's own
 /// input channel: the auto-recenter (<see cref="Recenter"/>) adds a yaw <i>velocity</i> before Control, the same
 /// field the engine's chase drivers write, with those drivers held down by the two module flags they honour.
-/// <para><b>Stand-down gates</b>, checked every call and reported by <c>/camera</c>: not the module camera (a
+/// <para><b>Stand-down gates</b>, checked every call and reported under <c>/knobs</c>: not the module camera (a
 /// GUI panel's), dialog camera, cutscene interpolation, clear-view pending, attached to something other than the
-/// player, any server lock (photo mode locks all three axes), unknown mode byte. When a gate is up the engine's
-/// answer passes through untouched, and the frame after it lifts is a cut (<see cref="AlloyRenderer.CameraCut"/>).</para>
+/// player, any server lock (photo mode locks all three axes), unknown mode byte, and the ninth (#584): the mode's
+/// own master <c>&lt;mode&gt;.enabled</c> off, which is the stock camera for that mode -- feel, recenter and the
+/// drive all stand aside, and the view angle the layer wrote goes back to the first one read (the engine has no
+/// restorer for it). When a gate is up the engine's answer passes through untouched, and the frame after it
+/// lifts is a cut (<see cref="AlloyRenderer.CameraCut"/>).</para>
 /// <para><b>Hot.</b> Runs inside <c>CNWCArea::Update</c> once per world frame: pointer reads, float math, no
-/// allocation. The cfg load and every string live on the frame-end tick and the command.</para>
+/// allocation. The knobs are plain field reads (ADR 0025); every string lives on the frame-end tick and the
+/// <c>/knobs</c> note.</para>
 /// </summary>
 public sealed unsafe class CameraService : IExtenderService
 {
@@ -37,18 +40,14 @@ public sealed unsafe class CameraService : IExtenderService
     private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
         (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
 
-    private static CameraConfig _cfg = new();
-    private static readonly ConfigFile _file = new("cx-camera.cfg");
-    private static bool _configLoaded, _dirty;
-
     /// <summary>Why the layer is (or is not) touching the pose this frame.</summary>
-    internal enum Gate { Active, NoModule, NotWorldCamera, Dialog, Cutscene, ClearView, Attached, Locked, Mode }
+    internal enum Gate { Active, NoModule, NotWorldCamera, Dialog, Cutscene, ClearView, Attached, Locked, Mode, Off }
 
     internal static readonly string[] GateNames =
         { "active", "no module", "not the world camera", "dialog camera", "cutscene", "clear-view pending",
-          "attached elsewhere", "server lock", "unknown camera mode" };
+          "attached elsewhere", "server lock", "unknown camera mode", "CX camera off for this mode" };
 
-    // ---- last solve, for /camera (written hot, read cold) ----
+    // ---- last solve, for the /knobs note (written hot, read cold) ----
     private static Gate _gate = Gate.NoModule;
     private static int _mode = -1;
     private static float _yaw, _pitch, _dist, _fovRead, _outPitch;
@@ -60,7 +59,7 @@ public sealed unsafe class CameraService : IExtenderService
     // ---- #541 recenter state: the policy's clocks ----
     private static float _grace, _idle, _recenterVel;
     private static bool _pursuing;
-    /// <summary>Why the recenter did nothing on the last call, for /camera.</summary>
+    /// <summary>Why the recenter did nothing on the last call, for the /knobs note.</summary>
     private enum Hold { Recentering, Off, NoCreature, Orbiting, Grace, Lateral, DeadZone, Idle, Centered }
     private static readonly string[] HoldNames =
         { "recentering", "off for this mode", "no player creature", "orbiting", "orbit grace", "strafing or backing", "in the dead-zone", "idle", "centered" };
@@ -135,7 +134,7 @@ public sealed unsafe class CameraService : IExtenderService
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        CameraConfig.SelfCheck(log);
+        CameraKnobs.SelfCheck(log);
         SelfCheck(log);
         if (!EngineLayout.Require(log, "CameraService", "CAurBehavior", "CAurBehaviorCameraFollow", "CNWCModule",
                                   "CClientExoAppInternal", "CClientOptions", "Camera", "CNWCObject")) return;
@@ -146,17 +145,8 @@ public sealed unsafe class CameraService : IExtenderService
                             (IntPtr)(delegate* unmanaged<IntPtr, float, int>)&OnControl, 10);
         if (_next == null) { log.Info("CameraService: standing down (Control chain refused)"); return; }
 
-        if (GameGate.OwnsFramePresent)
-            FrameRegistry.Global.Register(FramePhase.PostPresent, 50, OnFrameEnd, "CameraService", log);
-        CameraCommand.Register("fov", "vertical FOV in degrees for the current camera mode (0 = engine's 45)", a => Knob("fov", a));
-        CameraCommand.Register("lag", "`lag <pos> [rot] [zoom]` seconds of position / rotation / zoom lag (0 = welded; zoom smooths the wheel's stepped notches)", Lag);
-        CameraCommand.Register("pitchcurve", "`pitchcurve <deg/unit> [ref]` pitch added per unit of distance past ref", PitchCurve);
-        CameraCommand.Register("offset", "`offset <x> <y>` rig offset from the focus in world units, right and up (0 0 = the engine's orbit)", Offset);
-        CameraCommand.Register("arm", "`arm margin|in|out|radius <n>` the offset camera's spring arm: stop short of a hit by margin, ease rates per second (in 0 = snap), ray fan half-width", Arm);
-        CameraCommand.Register("recenter", "`recenter 0|1` auto-recenter behind the movement for the current mode; `recenter rate|deadzone|grace|idle|idlerate <n>` swing deg/s, start threshold deg, seconds after an orbit, seconds still before the soft recenter (0 = never), its deg/s", RecenterKnob);
-        CameraCommand.Register("reset", "restore the engine feel for the current mode", _ => Reset());
-        CameraCommand.Report(Report);
-        KnobSurface.Note(() => $"camera feel (per mode: fov, lag, pitch curve, offset, drive, recenter; spring arm, drive.hz, recenter.*) in {_file.Path}");
+        FrameRegistry.Global.Register(FramePhase.PostPresent, 50, OnFrameEnd, "CameraService", log);
+        KnobSurface.Note(Report);
         SceneRay.Init();
         log.Info("CameraService: chained on CAurBehaviorCameraFollow::Control");
     }
@@ -212,16 +202,22 @@ public sealed unsafe class CameraService : IExtenderService
         if (FreeCameraService.Active)
         {
             // #543: the free camera owns the pose; the frame it lets go is a weld (snap + cut) like any gate's.
+            // _fovWritten is kept: Leave() puts the entry angle back, which is the layer's last write or nothing.
             FreeCameraService.Frame(cam, g, dt);
-            if (FreeCameraService.Active) { _welded = true; _wantNoCollision = true; _offsetOn = false; _arm = 1f; _fovWritten = float.NaN; return; }
+            if (FreeCameraService.Active) { _welded = true; _wantNoCollision = true; _offsetOn = false; _arm = 1f; return; }
         }
-        if (g != Gate.Active) { _welded = true; _offsetOn = _wantNoCollision = false; _arm = 1f; return; }
+        if (g != Gate.Active)
+        {
+            // Off is enterable by the free camera: the seed it reads (Rendered) must be the engine's pose, not a stale lag.
+            if (g == Gate.Off) { RestoreFov(cam); _sYaw = _yaw; _outPitch = _pitch; }
+            _welded = true; _offsetOn = _wantNoCollision = false; _arm = 1f; return;
+        }
 
         // §9.2: anything rewriting the view angle between our writes shows up here.
         if (!float.IsNaN(_fovWritten) && _fovRead != _fovWritten) _fovRewrites++;
         if (float.IsNaN(_fovFirst)) _fovFirst = _fovRead;
 
-        CameraMode m = _cfg.Modes[mode];
+        CameraModeKnobs m = CameraModes.ByMode[mode];
         Vector3 focus = *(Vector3*)(self + FocusOff);
         // A mode switch resets the engine's dist/pitch (+0x25c): that frame is a cut, not something to lag through.
         if (mode != _lastMode) { _lastMode = mode; _welded = true; }
@@ -232,34 +228,49 @@ public sealed unsafe class CameraService : IExtenderService
             _sYaw = _yaw; _sPitch = _pitch; _sDist = _dist; _sFocus = focus; _vYaw = _vPitch = _vDist = 0; _vFocus = default;
             AlloyRenderer.CameraCut();
         }
-        _sFocus = m.LagPos > 0 ? SmoothDamp(_sFocus, focus, ref _vFocus, m.LagPos, dt) : focus;
-        if (m.LagRot > 0)
+        float lagPos = m.LagPos.V, lagRot = m.LagRot.V, lagZoom = m.LagZoom.V;
+        _sFocus = lagPos > 0 ? SmoothDamp(_sFocus, focus, ref _vFocus, lagPos, dt) : focus;
+        if (lagRot > 0)
         {
-            _sYaw = SmoothDamp(_sYaw, _sYaw + Wrap(_yaw - _sYaw), ref _vYaw, m.LagRot, dt);
-            _sPitch = SmoothDamp(_sPitch, _pitch, ref _vPitch, m.LagRot, dt);
+            _sYaw = SmoothDamp(_sYaw, _sYaw + Wrap(_yaw - _sYaw), ref _vYaw, lagRot, dt);
+            _sPitch = SmoothDamp(_sPitch, _pitch, ref _vPitch, lagRot, dt);
         }
         else { _sYaw = _yaw; _sPitch = _pitch; }
-        _sDist = m.LagZoom > 0 ? SmoothDamp(_sDist, _dist, ref _vDist, m.LagZoom, dt) : _dist;
+        _sDist = lagZoom > 0 ? SmoothDamp(_sDist, _dist, ref _vDist, lagZoom, dt) : _dist;
 
         // The curve stays inside the behavior's own pitch range (settings.tml [camera.limits] lands there), not a
         // range of ours: a max past 90 is the player's to have.
         float lo = PitchFloor, hi = PitchCeil;
         if (*(float*)(self + PitchClampOff) != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
-        float pitch = Math.Clamp(_sPitch + m.PitchCurve * (_sDist - m.PitchRef), lo, hi);
+        float pitch = Math.Clamp(_sPitch + m.PitchCurve.V * (_sDist - m.PitchRef.V), lo, hi);
         _outPitch = pitch;
         Quaternion q = Pose(_sYaw, pitch);
         Vector3 pos = _sFocus + _sDist * Forward(q);
-        _offsetOn = m.OffsetX != 0f || m.OffsetY != 0f;
+        float offX = m.OffsetX.V, offY = m.OffsetY.V;
+        _offsetOn = offX != 0f || offY != 0f;
         _wantNoCollision = _offsetOn;
-        if (_offsetOn) pos = SpringArm(self, focus, pos + m.OffsetX * Right(q) + m.OffsetY * Vector3.UnitZ, dt);
+        if (_offsetOn) pos = SpringArm(self, focus, pos + offX * Right(q) + offY * Vector3.UnitZ, dt);
         else _arm = 1f;
         // Camera+0xbc holds (w, x, y, z): Control's own position formula reads it in that order.
         float* rot = (float*)(cam + CamRotOff);
         rot[0] = q.W; rot[1] = q.X; rot[2] = q.Y; rot[3] = q.Z;
         *(Vector3*)(cam + CamPosOff) = pos;
         _pos = pos;
-        if (m.Fov > 0) { *(float*)(cam + CamFovOff) = m.Fov; _fovWritten = m.Fov; }
-        else _fovWritten = float.NaN;
+        // No magic zero (ADR 0025): the slider is written whenever the layer drives the mode.
+        float fov = m.Fov.V;
+        *(float*)(cam + CamFovOff) = fov; _fovWritten = fov;
+    }
+
+    /// <summary>#584: the mode's master went off, or the mode changed into one whose master is off, with the layer's
+    /// view angle still in the camera. <c>Camera+0x4c4</c> has no engine restorer, so the first angle read goes back,
+    /// once, and the frame is a cut. NaN = the layer never wrote it (nothing to restore); the on edge needs nothing
+    /// here, <see cref="Adjust"/> writes the slider again on its first Active frame.</summary>
+    private static void RestoreFov(IntPtr cam)
+    {
+        if (float.IsNaN(_fovWritten)) return;
+        *(float*)(cam + CamFovOff) = _fovFirst;
+        _fovWritten = float.NaN;
+        AlloyRenderer.CameraCut();
     }
 
     /// <summary>#541: the auto-recenter, in place of the engine's chase (Nesky's rules). Runs before Control on the
@@ -273,21 +284,25 @@ public sealed unsafe class CameraService : IExtenderService
     /// keys) suspends it and starts the grace clock; a drive with no forward component (strafe, back-pedal) holds it
     /// (a spiral is not a recenter, and a 180° swing has no side to take).
     /// Dialog, cutscene, locks and the rest are the same gates as the pose rewrite (<see cref="Check"/>, run here
-    /// too so a gate that went up this frame is honoured before, not after, the solve).</summary>
+    /// too so a gate that went up this frame is honoured before, not after, the solve); under the mode's master off
+    /// the chase flags are not held either, so the engine's own chase runs (#584).</summary>
     private static void Recenter(IntPtr self, float dt)
     {
         Gate g = Check(self, *(IntPtr*)(self + OwnerOff) - CameraFromOwner, out int mode);
-        if (g != Gate.Active) { if (g != Gate.NotWorldCamera) { _pursuing = false; _recenterVel = 0f; } return; }
-        CameraMode m = _cfg.Modes[mode];
-        if (m.Recenter == 0f) { _hold = Hold.Off; _pursuing = false; return; }
-        Recenter r = _cfg.Recenter;
+        if (g != Gate.Active)
+        {
+            if (g != Gate.NotWorldCamera) { _pursuing = false; _recenterVel = 0f; }
+            if (g == Gate.Off) _hold = Hold.Off;
+            return;
+        }
+        if (!CameraModes.ByMode[mode].Recenter.V) { _hold = Hold.Off; _pursuing = false; return; }
         IntPtr module = Module();
         *(int*)(module + ModChaseOffOff) = 1;
         *(int*)(module + ModWasIdleOff) = 0;
         float* vel = (float*)(self + YawVelOff);
         if (*vel != 0f || *(float*)(self + YawImpulseOff) != 0f)
         {
-            _grace = r.Grace; _idle = 0f; _pursuing = false; _recenterVel = 0f; _hold = Hold.Orbiting; return;
+            _grace = Move.Grace.V; _idle = 0f; _pursuing = false; _recenterVel = 0f; _hold = Hold.Orbiting; return;
         }
         if (_grace > 0f) { _grace -= dt; _idle = 0f; _hold = Hold.Grace; return; }
         IntPtr cre = PlayerCreature();
@@ -297,13 +312,14 @@ public sealed unsafe class CameraService : IExtenderService
         {
             _idle = 0f;
             if (CameraDriveService.NoForward) { _pursuing = false; _hold = Hold.Lateral; return; }
-            rate = r.Rate;
+            rate = Move.Rate.V;
         }
         else
         {
             _idle += dt;
-            if (r.Idle <= 0f || _idle < r.Idle) { _pursuing = false; _hold = Hold.Idle; return; }
-            rate = r.IdleRate;
+            float idle = Move.Idle.V;
+            if (idle <= 0f || _idle < idle) { _pursuing = false; _hold = Hold.Idle; return; }
+            rate = Move.IdleRate.V;
         }
         float* ori = (float*)(cre + OriOff);
         float delta = Wrap(FacingYaw(ori[0], ori[1]) - *(float*)(self + YawOff));
@@ -311,7 +327,7 @@ public sealed unsafe class CameraService : IExtenderService
         // Near 180 the short way flips sign frame to frame; once swinging, keep the side already taken.
         if (abs > TieZone && _recenterVel != 0f) delta = MathF.CopySign(abs, _recenterVel);
         if (abs <= Settled) { _pursuing = false; _recenterVel = 0f; _hold = Hold.Centered; return; }
-        if (!_pursuing && abs < r.DeadZone && rate == r.Rate) { _hold = Hold.DeadZone; return; }
+        if (!_pursuing && abs < Move.DeadZone.V && rate == Move.Rate.V) { _hold = Hold.DeadZone; return; }
         _pursuing = true;
         _recenterVel = Math.Clamp(delta * EaseGain, -rate, rate);
         *vel = _recenterVel;
@@ -340,7 +356,7 @@ public sealed unsafe class CameraService : IExtenderService
         if (module == IntPtr.Zero) return Gate.NoModule;
         IntPtr intern = *(IntPtr*)(App() + InternalOff);
         IntPtr opts = *(IntPtr*)(intern + OptionsOff);
-        if (opts != IntPtr.Zero) mode = *(byte*)(opts + ModeOff);   // before the gates: /camera needs it held down too
+        if (opts != IntPtr.Zero) mode = *(byte*)(opts + ModeOff);   // before the gates: the drive needs it held down too
         if (*(IntPtr*)(module + ModCameraOff) != cam) return Gate.NotWorldCamera;
         if (*(byte*)(module + ModDialogOff) != 0) return Gate.Dialog;
         if (*(float*)(module + ModCutsceneOff) != 0f) return Gate.Cutscene;
@@ -349,7 +365,8 @@ public sealed unsafe class CameraService : IExtenderService
         // Clamps are ENABLED in normal play (the mode reset pushes [camera.limits] in); a lock is min == max.
         if (Locked(self, YawClampOff, YawMinOff) || Locked(self, PitchClampOff, PitchMinOff)
             || Locked(self, DistClampOff, DistMinOff)) return Gate.Locked;
-        return (uint)mode < 3u ? Gate.Active : Gate.Mode;
+        if ((uint)mode >= 3u) return Gate.Mode;
+        return CameraModes.ByMode[mode].Enabled.V ? Gate.Active : Gate.Off;
     }
 
     private static bool Locked(IntPtr self, int clampOff, int minOff) =>
@@ -363,8 +380,9 @@ public sealed unsafe class CameraService : IExtenderService
 
     /// <summary>#539: a gate the mouse-look must let go for -- dialog, cutscene, clear-view, attach, a server lock.
     /// ponytail: reads the last Control's verdict; a GUI 3D panel's camera (NotWorldCamera) is not a gate here
-    /// because its Control interleaves with the world's and would flap the flag every frame.</summary>
-    public static bool GateUp => _live && _probeOk && _gate is not (Gate.Active or Gate.NotWorldCamera);
+    /// because its Control interleaves with the world's and would flap the flag every frame, and a mode's master
+    /// off (<see cref="Gate.Off"/>) is not one either: mouse-look and the free camera have masters of their own.</summary>
+    public static bool GateUp => _live && _probeOk && _gate is not (Gate.Active or Gate.NotWorldCamera or Gate.Off);
     /// <summary>#543: the last Control's verdict by name, and whether the layer is live at all.</summary>
     internal static string GateName => GateNames[(int)_gate];
     internal static bool Live => _live && _probeOk;
@@ -373,11 +391,10 @@ public sealed unsafe class CameraService : IExtenderService
     internal static void Rendered(out Vector3 pos, out float yaw, out float pitch, out float fov)
     { pos = _pos; yaw = _sYaw; pitch = _outPitch; fov = _fovRead; }
 
-    /// <summary>#540: the live preferences and the mode byte the last Control saw (-1 before the first).</summary>
-    internal static CameraConfig Config => _cfg;
+    /// <summary>#540: the mode byte the last Control saw (-1 before the first).</summary>
     internal static int Mode => _mode;
-    /// <summary>The preferences for editing: loaded from the file if not yet, and marked for the frame-end save.</summary>
-    internal static CameraConfig Edit() { if (!_configLoaded) LoadConfig(); _dirty = true; return _cfg; }
+    /// <summary>The spring arm's current fraction of the offset rig, for the <c>/walls</c> status line.</summary>
+    internal static float ArmFraction => _arm;
 
     internal static IntPtr Module()
     {
@@ -413,11 +430,11 @@ public sealed unsafe class CameraService : IExtenderService
     /// <summary>#538: keep the offset camera out of walls. The pivot is the player, not the offset focus (an
     /// offset can put the focus itself inside a wall); a fan of <see cref="ArmRays"/> parallel segments from
     /// there to <paramref name="want"/> is marched through <see cref="SceneRay"/>, creatures skipped, and the
-    /// camera slides along the segment to the nearest hit minus the margin. Snaps (or eases, arm.in) in and
-    /// eases (arm.out) back out. At most 15 casts, only while an offset is on.</summary>
+    /// camera slides along the segment to the nearest hit minus the margin. Snaps (or eases, walls.armin) in
+    /// and eases (walls.armout) back out. At most 15 casts, only while an offset is on.</summary>
     private static Vector3 SpringArm(IntPtr self, Vector3 pivot, Vector3 want, float dt)
     {
-        SpringArm a = _cfg.Arm;
+        float radius = Walls.ArmRadius.V;
         Vector3 seg = want - pivot;
         float len = seg.Length();
         IntPtr scene = SceneRay.Armed ? SceneRay.WorldScene() : IntPtr.Zero;
@@ -432,7 +449,7 @@ public sealed unsafe class CameraService : IExtenderService
             float nearest = len;
             for (int r = 0; r < ArmRays; r++)
             {
-                Vector3 o = r switch { 1 => right * a.Radius, 2 => -right * a.Radius, 3 => up * a.Radius, 4 => -up * a.Radius, _ => Vector3.Zero };
+                Vector3 o = r switch { 1 => right * radius, 2 => -right * radius, 3 => up * radius, 4 => -up * radius, _ => Vector3.Zero };
                 Vector3 from = pivot + o, to = want + o;
                 for (int h = 0; h < ArmHops; h++)
                 {
@@ -443,9 +460,9 @@ public sealed unsafe class CameraService : IExtenderService
                 }
             }
             SceneRay.Release();
-            target = Math.Clamp((nearest - a.Margin) / len, ArmMin, 1f);
+            target = Math.Clamp((nearest - Walls.Margin.V) / len, ArmMin, 1f);
         }
-        float rate = target < _arm ? a.RateIn : a.RateOut;
+        float rate = target < _arm ? Walls.ArmIn.V : Walls.ArmOut.V;
         _arm = rate <= 0f ? target : _arm + (target - _arm) * Math.Clamp(rate * Math.Min(dt, 0.1f), 0f, 1f);
         if (MathF.Abs(target - _arm) < 0.002f) _arm = target;
         return pivot + seg * _arm;
@@ -475,8 +492,6 @@ public sealed unsafe class CameraService : IExtenderService
 
     private static void OnFrameEnd()
     {
-        if (!_configLoaded) LoadConfig();
-        else if (_dirty) { _file.Save(_cfg.ToText(), _log); _dirty = false; }
         int c = _calls; _calls = 0;
         if (c < _callsMin) _callsMin = c;
         if (c > _callsMax) _callsMax = c;
@@ -488,110 +503,24 @@ public sealed unsafe class CameraService : IExtenderService
         _frames = 0; _callsMin = int.MaxValue; _callsMax = 0; _pullIns = _pullInsOffset = 0;
     }
 
-    private static void LoadConfig()
-    {
-        if (!_file.Load(_log, t => _cfg = CameraConfig.Parse(t))) return;
-        _configLoaded = true;
-        _file.Baseline(_cfg.ToText());
-    }
-
-    // ---- /camera --------------------------------------------------------------------------------
+    // ---- the /knobs note (cold) ----------------------------------------------------------------
 
     private static string Inv(FormattableString f) => FormattableString.Invariant(f);
 
+    /// <summary>The layer's last solve: pose, gate, the live mode's knobs and the recenter's hold reason.</summary>
     private static string Report()
     {
-        string mode = _mode is >= 0 and < 3 ? CameraConfig.ModeNames[_mode] : "?";
-        CameraMode? m = _mode is >= 0 and < 3 ? _cfg.Modes[_mode] : null;
+        CameraModeKnobs? m = _mode is >= 0 and < 3 ? CameraModes.ByMode[_mode] : null;
         string knobs = m == null ? "" :
-            Inv($"; {mode}: fov {(m.Fov > 0 ? m.Fov.ToString("0.#", CultureInfo.InvariantCulture) : "engine")} lag {m.LagPos:0.##}/{m.LagRot:0.##}/{m.LagZoom:0.##} pitchcurve {m.PitchCurve:0.##}@{m.PitchRef:0.#}")
-          + Inv($" offset {m.OffsetX:0.##} {m.OffsetY:0.##}")
-          + (_offsetOn ? Inv($" arm {_arm:0.00} (margin {_cfg.Arm.Margin:0.##} in {_cfg.Arm.RateIn:0.#} out {_cfg.Arm.RateOut:0.#} radius {_cfg.Arm.Radius:0.##})") : "");
-        string recenter = m == null ? "" : m.Recenter == 0f ? "; recenter off" :
-            Inv($"; recenter {HoldNames[(int)_hold]}{(_hold == Hold.Recentering ? Inv($" {_recenterVel:+0;-0} deg/s") : "")} (rate {_cfg.Recenter.Rate:0} deadzone {_cfg.Recenter.DeadZone:0} grace {_cfg.Recenter.Grace:0.#} idle {_cfg.Recenter.Idle:0.#}@{_cfg.Recenter.IdleRate:0})");
+            Inv($"; {m.G.Name}: fov {m.Fov.V:0.#} lag {m.LagPos.V:0.##}/{m.LagRot.V:0.##}/{m.LagZoom.V:0.##} pitchcurve {m.PitchCurve.V:0.##}@{m.PitchRef.V:0.#}")
+          + Inv($" offset {m.OffsetX.V:0.##} {m.OffsetY.V:0.##}")
+          + (_offsetOn ? Inv($" arm {_arm:0.00} (margin {Walls.Margin.V:0.##} in {Walls.ArmIn.V:0.#} out {Walls.ArmOut.V:0.#} radius {Walls.ArmRadius.V:0.##})") : "");
+        string recenter = m == null ? "" : !m.Recenter.V ? "; recenter off" :
+            Inv($"; recenter {HoldNames[(int)_hold]}{(_hold == Hold.Recentering ? Inv($" {_recenterVel:+0;-0} deg/s") : "")} (rate {Move.Rate.V:0} deadzone {Move.DeadZone.V:0} grace {Move.Grace.V:0.#} idle {Move.Idle.V:0.#}@{Move.IdleRate.V:0})");
         string curve = _gate == Gate.Active && _outPitch != _pitch ? Inv($"->{_outPitch:0.#}") : "";
         string zoom = _gate == Gate.Active && MathF.Abs(_sDist - _dist) > 0.05f ? Inv($"->{_sDist:0.#}") : "";
-        return Inv($"[camera] pos ({_pos.X:0.0}, {_pos.Y:0.0}, {_pos.Z:0.0}) yaw {_yaw:0.#} pitch {_pitch:0.#}{curve} dist {_dist:0.#}{zoom} fov {_fovRead:0.#}")
+        return Inv($"camera: pos ({_pos.X:0.0}, {_pos.Y:0.0}, {_pos.Z:0.0}) yaw {_yaw:0.#} pitch {_pitch:0.#}{curve} dist {_dist:0.#}{zoom} fov {_fovRead:0.#}")
              + $" | {(_gate == Gate.Active ? "active" : "held down: " + GateNames[(int)_gate])}{knobs}{recenter}";
-    }
-
-    private static string Knob(string key, string args)
-    {
-        if (!_configLoaded) LoadConfig();
-        if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
-        CameraMode m = _cfg.Modes[_mode];
-        if (args.Length == 0 || !CameraConfig.TryF(args, out float v)) return Report();
-        m.Set(key, v); _dirty = true;
-        return Report();
-    }
-
-    private static string Lag(string args)
-    {
-        if (!_configLoaded) LoadConfig();
-        if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
-        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (p.Length == 0 || !CameraConfig.TryF(p[0], out float pos)) return Report();
-        CameraMode m = _cfg.Modes[_mode];
-        m.Set("lagpos", pos);
-        if (p.Length > 1 && CameraConfig.TryF(p[1], out float rot)) m.Set("lagrot", rot);
-        if (p.Length > 2 && CameraConfig.TryF(p[2], out float zoom)) m.Set("lagzoom", zoom);
-        _dirty = true;
-        return Report();
-    }
-
-    private static string PitchCurve(string args)
-    {
-        if (!_configLoaded) LoadConfig();
-        if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
-        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (p.Length == 0 || !CameraConfig.TryF(p[0], out float k)) return Report();
-        CameraMode m = _cfg.Modes[_mode];
-        m.Set("pitchcurve", k);
-        if (p.Length > 1 && CameraConfig.TryF(p[1], out float r)) m.Set("pitchref", r);
-        _dirty = true;
-        return Report();
-    }
-
-    private static string Offset(string args)
-    {
-        if (!_configLoaded) LoadConfig();
-        if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
-        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (p.Length < 2 || !CameraConfig.TryF(p[0], out float x) || !CameraConfig.TryF(p[1], out float y)) return Report();
-        CameraMode m = _cfg.Modes[_mode];
-        m.Set("offsetx", x); m.Set("offsety", y); _dirty = true;
-        return Report();
-    }
-
-    private static string Arm(string args)
-    {
-        if (!_configLoaded) LoadConfig();
-        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (p.Length < 2 || !CameraConfig.TryF(p[1], out float v) || !_cfg.Arm.Set(p[0], v)) return "[camera] arm margin|in|out|radius <n>";
-        _dirty = true;
-        return Report();
-    }
-
-    private static string RecenterKnob(string args)
-    {
-        if (!_configLoaded) LoadConfig();
-        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (p.Length == 1 && CameraConfig.TryF(p[0], out float on))
-        {
-            if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
-            _cfg.Modes[_mode].Set("recenter", on); _dirty = true;
-            return Report();
-        }
-        if (p.Length < 2 || !CameraConfig.TryF(p[1], out float v) || !_cfg.Recenter.Set(p[0], v)) return "[camera] recenter 0|1, or recenter rate|deadzone|grace|idle|idlerate <n>";
-        _dirty = true;
-        return Report();
-    }
-
-    private static string Reset()
-    {
-        if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
-        _cfg.Modes[_mode] = new CameraMode(); _dirty = true;
-        return Report();
     }
 
     /// <summary>The pose maths against Control's own arithmetic, off-device: the two things a wrong axis or a
@@ -614,6 +543,7 @@ public sealed unsafe class CameraService : IExtenderService
         E(FacingYaw(0, 1) == 0f && MathF.Abs(FacingYaw(1, 0) + 90f) < 1e-4f && MathF.Abs(FacingYaw(-1, 0) - 90f) < 1e-4f,
           "facing north is yaw 0, east -90, west +90 (the engine's Yaw(Vector))");
         E(Locomotion(2) && Locomotion(0x57) && !Locomotion(0) && !Locomotion(0x58), "the locomotion set");
+        E((int)Gate.Off == 9 && GateNames.Length == 10 && GateNames[(int)Gate.Off].Contains("off"), "the mode master is the last gate and has its name");
         E(Math.Clamp(120f * EaseGain, -60f, 60f) == 60f && MathF.Abs(Math.Clamp(5f * EaseGain, -60f, 60f) - 15f) < 1e-5f, "the ease caps at the rate and slows near the target");
         float v = 0, x = 0;
         for (int i = 0; i < 240; i++) x = SmoothDamp(x, 1f, ref v, 0.2f, 1f / 60f);

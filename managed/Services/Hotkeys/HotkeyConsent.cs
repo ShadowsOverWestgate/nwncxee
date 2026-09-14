@@ -38,7 +38,7 @@ internal static unsafe class HotkeyConsent
 
     // The keys awaiting the player's answer. Non-null == a modal is currently open.
     private static HashSet<int>? _pending;
-    // /consent probe open: the answer is logged, never granted/revoked (no cfg write, no packet).
+    // /hotkeys consent probe open: the answer is logged, never granted/revoked (no cfg write, no packet).
     private static bool _probe;
 
     public static void Init(ExtenderLog log)
@@ -55,10 +55,11 @@ internal static unsafe class HotkeyConsent
             _log?.Info("HotkeyConsent: native modal unavailable on this client -- new binds will be refused");
     }
 
-    /// <summary>Called on login; fail-closed -- any pending (unconfirmed) keys are dropped, never armed.</summary>
+    /// <summary>Called on login and on the master's off edge; fail-closed -- any pending (unconfirmed) keys are
+    /// dropped, never armed: an open modal's answer lands on a null <c>_pending</c> and is ignored.</summary>
     public static void Reset() { _pending = null; _probe = false; }
 
-    /// <summary>The <c>/consent</c> body (#418): spawn the modal with a fake key set so the whole native round
+    /// <summary>The <c>/hotkeys consent</c> body (#418): spawn the modal with a fake key set so the whole native round
     /// trip (operator new, ctor, Activate, on-close callback, self-free) runs without a server. The answer is
     /// only logged. The one place the port touches the engine allocator, so it gets its own probe.</summary>
     public static string Probe()
@@ -77,6 +78,11 @@ internal static unsafe class HotkeyConsent
     public static bool Prompt(HashSet<int> additions)
     {
         if (!_ready || additions.Count == 0) return false;
+        if (!Hotkeys.Enabled.V)
+        {
+            _log?.Info("HotkeyConsent: hotkeys.enabled is off; no approval asked, proposal dropped");
+            return false;
+        }
         if (_pending != null)
         {
             _log?.Info("HotkeyConsent: a consent prompt is already open; dropping this proposal");

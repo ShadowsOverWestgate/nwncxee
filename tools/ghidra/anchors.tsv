@@ -7,8 +7,6 @@ CNWCMessage::HandleServerToPlayerLogin	1407a31b0
 CNWCMessage::SendPlayerToServerMessage	1407c25c0
 CNWCMessage::SendPlayerToServerDeviceAdvertiseProperty	1407bbac0
 CClientExoApp::GetNWCMessage	1406abf90
-COptionsPanel::PostAttachmentInitialize	140830b50
-COptionsPanel::HandleSaveCharButton	14082fb60
 CGuiInGame::SetFocusChatPrompt	1406fae30
 CGuiInGameChatPrompt::HandleEnter	14087b0d0
 CGuiInGameChatPrompt::HandleEsc	14087b390

@@ -35,22 +35,22 @@ internal static unsafe class AlloyCensus
         // #134: aim the watch at a texture rather than at a moment. Five rolls in a row fired while the
         // camera was somewhere else, because "300 frames after the table settled" is not "standing at the
         // thing we are debugging" and no warm-up rule can make it so.
-        _dumpTex = Settings.Text("dumptex", "");
+        _dumpTex = Renderer.DumpTex.Boot.ToLowerInvariant();
         if (_dumpTex.Length == 0) _dumpTex = null;
         if (_dumpTex != null) log.Info($"AlloyCensus: dumptex watch \"{_dumpTex}\" (64 CLASS lines, SCAN/ENROLL/DRAW breadcrumbs)");
-        _skipTex = Settings.Text("skiptex", "");
+        _skipTex = Renderer.SkipTex.Boot.ToLowerInvariant();
         if (_skipTex.Length == 0) _skipTex = null;
     }
 
     /// <summary><c>dst == 2</c> is <c>GL_ONE</c>: the engine's own additive test on
     /// <see cref="EngineLayout.MatDstBlend"/>, and the one pair it turns the depth mask off for.</summary>
     internal const int BlendOne = 2;
-    /// <summary><c>gradedblend</c> in cx.cfg: the graded-alpha fraction at or above which a cutout diffuse
+    /// <summary><c>alloy.gradedblend</c> in cx.cfg: the graded-alpha fraction at or above which a cutout diffuse
     /// draws in the blended class instead. 1 = never (the #357 alpha-test-only behaviour).
     /// <para>0.15, not the 0.3 it shipped at: the tcn01 splotch decals (dark grime with a soft alpha skirt,
     /// which vanilla blends) scan at 0.29-0.30 and drawn alpha-tested their skirt is solid black; ivy sits
     /// at 0.45+ and was already over, and a binary-alpha tree is under 0.05 either way.</para></summary>
-    internal static readonly float GradedBlend = Settings.Float("gradedblend", 0.15f, 0f, 1f);
+    internal static readonly float GradedBlend = Renderer.GradedBlend.Boot;
     /// <summary>The tilefade cap bucket -- Tracy scope "Tilefade Cap", fed from <c>capbuckets</c>.</summary>
     internal const int CapBucket = 7;
     /// <summary>#134: the dynamic gob pair (#103's taxonomy). Everything instanced lands in one of these two
@@ -295,7 +295,7 @@ internal static unsafe class AlloyCensus
         bool gradedOk = OwnedTextures.TryGraded(_pTex0[e], out float graded);
         if (c.Cls == (int)AlloyClass.Cutout && gradedOk && graded >= GradedBlend)
         { c.Cls = (int)AlloyClass.Blended; c.Wash = true; }
-        // dumptex=- names the parts with NO diffuse; dumptex=env every MATERIAL-env-mapped part (a glass sphere, #363; the gob override is every creature)
+        // alloy.dumptex=- names the parts with NO diffuse; alloy.dumptex=env every MATERIAL-env-mapped part (a glass sphere, #363; the gob override is every creature)
         if (_dumpTex != null && !_ownDry && _classDiagLeft > 0
             && (_dumpTex == "env" ? Engine.HasEnvMap(m)
                                   : TexName(_pTex0[e]).Contains(_dumpTex, StringComparison.OrdinalIgnoreCase))

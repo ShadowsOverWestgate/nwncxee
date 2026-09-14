@@ -22,10 +22,10 @@ internal static unsafe class IdTarget
 {
     /// <summary>Bits the primitive id keeps below the slot.</summary>
     internal const int PrimBits = 14;
-    /// <summary><c>/draw viz</c> mode that paints the target.</summary>
+    /// <summary><c>/alloy viz</c> mode that paints the target.</summary>
     internal const int VizMode = 40;
-    /// <summary><c>/draw idtarget</c>: is the second attachment written at all (default on).</summary>
-    internal static bool On = true;
+    /// <summary><c>/alloy idtarget</c>: is the second attachment written at all (default on).</summary>
+    internal static bool On => Renderer.IdTarget.V;
 
     private static ExtenderLog? _log;
     private static uint _tex, _prog;
@@ -186,7 +186,7 @@ internal static unsafe class IdTarget
         E(AlloyRenderer.DepthFs.Contains("oVisId = CxVisId(vDraw, gl_PrimitiveID);") && AlloyRenderer.DepthKeyFs.Contains("oVisId = CxVisId(vDraw, gl_PrimitiveID);")
           && AlloyRenderer.DepthFeatFs.Contains("oVisId = CxVisId(vDraw, gl_PrimitiveID);"), "...and writes the record slot, not the draw index");
         E(AlloyRenderer.DepthVs.Contains("flat out int vDraw;") && AlloyRenderer.DepthVs.Contains("vDraw = id;"), "DepthVs hands the slot down");
-        E(VizMode <= AlloyRenderer.LightVizMax, "the viz mode is inside LightVizMax (or /draw viz clamps it away)");
+        E(VizMode <= AlloyRenderer.LightVizMax, "the viz mode is inside LightVizMax (or /alloy viz clamps it away)");
         E(VizFs.Contains("usampler2D") && VizFs.Contains("texelFetch"), "the viz reads the integer target unfiltered");
         log.Info(ok ? "IdTarget.SelfCheck: passed" : "IdTarget.SelfCheck: FAILED");
         return ok;

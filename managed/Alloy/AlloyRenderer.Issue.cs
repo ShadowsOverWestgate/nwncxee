@@ -221,12 +221,12 @@ public sealed unsafe partial class AlloyRenderer
     /// of the prepass's three exclusions caught it? The prepass walks the opaque range and skips the cutout
     /// class and every out-of-prepass feature, so those three are the same three here -- a batch outside them
     /// must not consume the visibility buffer at all. The reason travels to the lit stage as the sign of
-    /// <c>uSsaoOn</c> (which tests <c>&gt; 0</c>) so <c>/draw viz 35</c> can name it on the pixel, rather than
+    /// <c>uSsaoOn</c> (which tests <c>&gt; 0</c>) so <c>/alloy viz 35</c> can name it on the pixel, rather than
     /// leaving "the door has no AO" and "the door CANNOT have AO" the same picture.</summary>
     internal const int AoIn = 1, AoCutout = -1, AoOutOfPrepass = -2, AoBlended = -3, AoKeyhole = -4;
 
     /// <summary>Membership is MEASURED (<see cref="_gPrepassed"/>, written by the prepass as it walks); only
-    /// the reason a batch is out is inferred, and only to colour <c>/draw viz 35</c>. Predicting membership
+    /// the reason a batch is out is inferred, and only to colour <c>/alloy viz 35</c>. Predicting membership
     /// from the class was the bug this replaces.</summary>
     private static int AoWhy(int g)
         => _gPrepassed[g] ? AoIn
@@ -239,7 +239,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far,
                                           bool indirect)
     {
-        // A probe capture must not carry the debug viz through: /draw viz would bake flat cyan (or a
+        // A probe capture must not carry the debug viz through: /alloy viz would bake flat cyan (or a
         // cluster heat map) into the cube and leave it there for every frame that samples it afterwards.
         int viz = _capturing ? 0 : _lightViz;
         // Which program is bound, -1 for neither yet. In the opaque range this switches once (lit batches
@@ -475,8 +475,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Polygon offset for wash batches (see the wash note in the issue loop).</summary>
     private const float WashOffsetFactor = -1f, WashOffsetUnits = -2f;
 
-    /// <summary><c>/draw washtest 0</c>: wash batches draw with the depth TEST off too. A/B instrument, not a look.</summary>
-    private static bool _washTest = true;
+    /// <summary><c>/alloy washtest 0</c>: wash batches draw with the depth TEST off too. A/B instrument, not a look.</summary>
+    private static bool _washTest => Renderer.WashTest.V;
 
     /// <summary>The depth mask the current pass set before <see cref="IssueColour"/>; a wash batch drops it
     /// to 0 for its own draws and the loop restores it. 1 everywhere but the transparent passes.</summary>

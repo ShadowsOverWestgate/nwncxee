@@ -18,16 +18,23 @@ namespace CX.Services.Dialog;
 /// SwapBuffers pass ChatService owns. The message layer (<c>HandleServerToPlayerDialog</c>) runs
 /// unmodified, so voice-over, dialog camera, and speaker tracking are preserved for free.
 ///
-/// The window is movable/resizable (a slim title bar carrying the speaker name + gear drags it; a
-/// bottom-right grip sets width + the height breakpoint), lockable, and scrolls: it auto-stretches to fit
-/// content up to <c>_maxBodyH</c>, past which a scrollbar appears. Two independent fades: the whole window
-/// fades in/out on open/close, while the text content cross-fades and the window height eases on each new
-/// node. The gear opens a small settings panel (lock, font, max-height, animation toggle + fade knobs).
+/// The window is movable/resizable (a slim title bar carrying the speaker name drags it; a bottom-right
+/// grip sets width + the height breakpoint), lockable, and scrolls: it auto-stretches to fit content up to
+/// <c>dialog.maxheight</c>, past which a scrollbar appears. Two independent fades: the whole window fades
+/// in/out on open/close, while the text content cross-fades and the window height eases on each new node.
+/// Every setting is a <see cref="DialogKnobs"/> row on the settings panel; the rect is Hidden state the drags
+/// write. The shared atlas re-bake (<c>ui.font</c>) re-lays the open window through <see cref="TextRig.FontChanged"/>.
 ///
 /// Hooks: ShowDialogEntry / ShowDialogReplies (skip + capture), ShowReplyChosen (skip), CloseDialog
 /// (call-through: ResetGuiState). Replies go out via SendPlayerToServerDialog_Reply (major 0x14 / minor
 /// 0x03) with the live CNWCMessage as <c>this</c>. State is static (the <c>[UnmanagedCallersOnly]</c>
 /// handlers demand it); content laid out cold in the hooks / input handlers, drawn + animated hot.
+/// <para><c>dialog.enabled</c> is live per node (#591): <see cref="OnShowEntry"/> decides who owns the node it
+/// opens and the other hooks follow that decision (<see cref="_engineOwns"/>). Off, every hook forwards and the
+/// stock <c>CGuiInGameChatDialog</c> runs; the engine no-ops replies on a null panel, so the flip can only
+/// happen where the panel is (re)made. On with the stock panel still up, the node is taken over through the
+/// engine's own <c>CloseDialog</c> -- a pure GUI teardown (virtual delete, null <c>+0x70</c>,
+/// <c>ResetGuiState(0x298)</c>; Ghidra, both builds), no wire traffic.</para>
 /// </summary>
 public sealed unsafe class DialogService : IExtenderService
 {
@@ -57,18 +64,12 @@ public sealed unsafe class DialogService : IExtenderService
     // capability (#63). Dialog turns it on for its NPC body; Ctrl+C copies the selected runes, else the whole node.
     private static readonly SelectableText _sel = new();
 
-    // ---- window rect (user-controlled; derived from the viewport each Rebuild until first moved/resized) ----
-    private static bool _placed, _locked;
-    private static float _winX, _winY, _winW;
+    // ---- window rect: DialogKnobs.X/Y/W once Placed, else derived from the viewport each Rebuild ----
     /// <summary>Other windows' rects captured at move-drag start, for window-to-window snapping.</summary>
     private static (float X, float Y, float W, float H)[] _snapRects = System.Array.Empty<(float, float, float, float)>();
-    private static volatile float _maxBodyH = 320f;     // breakpoint: content taller than this scrolls
-    private const float MinW = 320f, MinMaxBodyH = 120f;
+    private const float MinW = 320f;
 
     // ---- animation ----
-    private static volatile bool _animEnabled = true;
-    private static volatile float _fadeInMs = 180f, _fadeOutMs = 140f;
-    private static volatile bool _justify;   // justify body + reply text to the panel width
     private static volatile bool _visible;              // logical open state (drives the window fade)
     private static volatile float _winAlphaTarget;      // 1 = open, 0 = closing
     private static volatile float _contentAlphaTarget = 1f;  // 1 = shown, 0 = fading out (a reply was picked)
@@ -78,12 +79,6 @@ public sealed unsafe class DialogService : IExtenderService
     private static long _animClockMs; private static bool _animPrimed;
     private static int _lastOpenGen, _lastContentGen;
     private static volatile float _bodyHPub;            // last eased body height, for input-thread geometry
-
-    // ---- settings panel + persisted config ----
-    private static readonly DialogSettings _settings = new();
-    private static volatile DialogFrame? _settingsFrame;
-    private static DialogConfig _cfg = new();
-    private static readonly ConfigFile _file = new("cx-dialog.cfg");
 
     // ---- grab / pointer (input thread) ----
     private enum Grab { None, Move, Resize, Scroll, SelectText }
@@ -96,7 +91,7 @@ public sealed unsafe class DialogService : IExtenderService
 
     /// <summary>Hot-drawable snapshot. Content geometry is <em>content-relative</em> (y=0 at the content top);
     /// Draw offsets it by <c>bodyTop - scroll</c> and scissors it to the body. Chrome (bg/border/scrollbar/grip)
-    /// is emitted per-frame in Draw at the eased height; only the fixed title glyphs (name + gear) are baked here.</summary>
+    /// is emitted per-frame in Draw at the eased height; only the fixed title glyphs (the name) are baked here.</summary>
     private sealed class DialogFrame
     {
         public float[] ContentVerts = System.Array.Empty<float>();
@@ -104,7 +99,7 @@ public sealed unsafe class DialogService : IExtenderService
         public HitRect[] Hits = System.Array.Empty<HitRect>();   // reply rows, in content coords
         public string PortraitResref = "";
         public float Pcx, Pcy, Pw, Ph;                           // portrait rect: x screen, y content-relative
-        public float[] TitleVerts = System.Array.Empty<float>(); // name + gear glyphs, screen coords
+        public float[] TitleVerts = System.Array.Empty<float>(); // name glyphs, screen coords
         public int TitleCount;
         public float ContentH;
         public float PanelX, PanelY, PanelW, TitleH;
@@ -124,6 +119,14 @@ public sealed unsafe class DialogService : IExtenderService
     public static bool IsOpen => _visible;
 
     private static delegate* unmanaged<IntPtr, void> _closeOrig;
+    private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, long> _entryOrig;
+    private static delegate* unmanaged<IntPtr, int, IntPtr, IntPtr, int, uint, int, long> _repliesOrig;
+    private static delegate* unmanaged<IntPtr, uint, uint, IntPtr, long> _chosenOrig;
+    private static delegate* unmanaged<IntPtr, float, long> _forceOrig;
+    /// <summary>The current node is the stock panel's: decided at <see cref="OnShowEntry"/> from
+    /// <c>dialog.enabled</c>, followed by the replies / chosen / force hooks until the next entry.</summary>
+    private static volatile bool _engineOwns;
+    private static readonly int InGameGuiDialogOff = EngineLayout.InGameGuiDialog;
     private static delegate* unmanaged<IntPtr, uint, uint, byte, uint, void> _sendReply;
     private static Window? _window;   // the framework Window Dialog draws through (#63)
 
@@ -132,16 +135,10 @@ public sealed unsafe class DialogService : IExtenderService
         _log = log;
         SelfCheck(log);
         SelectableText.SelfCheck(log);
-        DialogSettings.SelfCheck(log);
-        DialogConfig.SelfCheck(log);
+        UiCategory.Declare();   // the UI groups declare in panel order whether or not the hooks arm
 
-        if (!GameGate.OwnsFramePresent)
-        {
-            log.Info("DialogService: standing down (framework not owning frame present); vanilla dialog intact");
-            return;
-        }
         if (!SymbolMap.Require(log, "DialogService", RequiredSymbols)) return;   // #420: whole or nothing
-        if (!EngineLayout.Require(log, "DialogService", "CNWCObject")) return;                 // #432: it reads the portrait slot
+        if (!EngineLayout.Require(log, "DialogService", "CNWCObject", "CGuiInGame")) return;   // #432: the portrait slot + the stock panel slot
 
         // Second UiHost consumer (#63/#64): Dialog draws through the same z-ordered roll-call ChatService does,
         // as a rect-less window (Focusable=false) whose content-draw IS Draw and whose input delegates ARE its
@@ -161,16 +158,17 @@ public sealed unsafe class DialogService : IExtenderService
         };
 
         _sendReply = (delegate* unmanaged<IntPtr, uint, uint, byte, uint, void>)Native.Sym(SymbolMap.SendDialogReply);
+        TextRig.FontChanged += Rebuild;   // ui.font: the open window re-lays out on the new atlas (cold, the setter's thread)
 
-        _ = hooks.Install(SymbolMap.ShowDialogEntry,
+        _entryOrig = (delegate* unmanaged<IntPtr, IntPtr, uint, uint, long>)hooks.Install(SymbolMap.ShowDialogEntry,
             (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, uint, uint, long>)&OnShowEntry);
-        _ = hooks.Install(SymbolMap.ShowDialogReplies,
+        _repliesOrig = (delegate* unmanaged<IntPtr, int, IntPtr, IntPtr, int, uint, int, long>)hooks.Install(SymbolMap.ShowDialogReplies,
             (IntPtr)(delegate* unmanaged<IntPtr, int, IntPtr, IntPtr, int, uint, int, long>)&OnShowReplies);
-        _ = hooks.Install(SymbolMap.ShowReplyChosen,
+        _chosenOrig = (delegate* unmanaged<IntPtr, uint, uint, IntPtr, long>)hooks.Install(SymbolMap.ShowReplyChosen,
             (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, IntPtr, long>)&OnReplyChosen);
         _closeOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
             SymbolMap.CloseDialog, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnCloseDialog);
-        _ = hooks.Install(SymbolMap.ForceDialogVisible,
+        _forceOrig = (delegate* unmanaged<IntPtr, float, long>)hooks.Install(SymbolMap.ForceDialogVisible,
             (IntPtr)(delegate* unmanaged<IntPtr, float, long>)&OnForceVisible);
 
         log.Info(_sendReply != null
@@ -178,25 +176,25 @@ public sealed unsafe class DialogService : IExtenderService
             : "DialogService: hooks attempted but reply sender unresolved (run-demo / non-Linux) -- render only");
     }
 
-    /// <summary>Deferred config load: <see cref="ConfigFile"/>'s gate keeps this a no-op until the engine user
-    /// dir resolves (Initialize runs pre-main), then latches once. ChatService calls it every frame.</summary>
-    public static void LoadConfigDeferred()
-    {
-        if (!_file.Load(_log, ApplyText)) return;
-        _locked = _cfg.Locked;
-        _animEnabled = _cfg.AnimEnabled;
-        _fadeInMs = _cfg.FadeInMs;
-        _fadeOutMs = _cfg.FadeOutMs;
-        _maxBodyH = _cfg.MaxBodyH;
-        _justify = _cfg.Justify;
-        if (_cfg.Placed) { _placed = true; _winX = _cfg.X; _winY = _cfg.Y; _winW = _cfg.W; }
-    }
-
     // ---- hooks (cold: the message thread) -----------------------------------------------------
 
+    /// <summary>The ownership boundary (#591). Off: the node is the stock panel's -- CX's window fades if it was
+    /// up and the engine call runs, making its panel at <c>+0x70</c> if it has none. On: CX's; a stock panel still
+    /// up from an off interlude is torn down first through the engine's own <c>CloseDialog</c>.</summary>
     [UnmanagedCallersOnly]
     private static long OnShowEntry(IntPtr self, IntPtr text, uint dialogId, uint speakerId)
     {
+        if (!DialogKnobs.Enabled.V)
+        {
+            _engineOwns = true;
+            if (_visible) SoftClose();
+            return _entryOrig != null ? _entryOrig(self, text, dialogId, speakerId) : 0;
+        }
+        if (_engineOwns)
+        {
+            _engineOwns = false;
+            if (*(IntPtr*)(self + InGameGuiDialogOff) != IntPtr.Zero && _closeOrig != null) _closeOrig(self);
+        }
         try
         {
             _npcText = ReadExo(text);
@@ -228,6 +226,8 @@ public sealed unsafe class DialogService : IExtenderService
     private static long OnShowReplies(IntPtr self, int numReplies, IntPtr replies, IntPtr indices,
                                       int numOldReplies, uint pageId, int continueFlag)
     {
+        if (_engineOwns)
+            return _repliesOrig != null ? _repliesOrig(self, numReplies, replies, indices, numOldReplies, pageId, continueFlag) : 0;
         try
         {
             int n = numReplies < 0 ? 0 : numReplies;
@@ -266,13 +266,17 @@ public sealed unsafe class DialogService : IExtenderService
     [UnmanagedCallersOnly]
     private static long OnReplyChosen(IntPtr self, uint a, uint b, IntPtr exo)
     {
+        if (_engineOwns && _chosenOrig != null) return _chosenOrig(self, a, b, exo);   // the callee destroys the copy
         if (OperatingSystem.IsWindows()) Native.DestroyExoString(exo);   // Win64: the skipped callee owned the copy
         return 0;
     }
 
     [UnmanagedCallersOnly]
-    private static long OnForceVisible(IntPtr self, float duration) => 0;
+    private static long OnForceVisible(IntPtr self, float duration)
+        => _engineOwns && _forceOrig != null ? _forceOrig(self, duration) : 0;
 
+    /// <summary>Call-through on both paths: the engine deletes its panel (a no-op on null) and resets its modal
+    /// state; CX's window fades if it was up.</summary>
     [UnmanagedCallersOnly]
     private static void OnCloseDialog(IntPtr self)
     {
@@ -299,38 +303,36 @@ public sealed unsafe class DialogService : IExtenderService
     public static bool OnMouseMotion(int x, int y)
     {
         _lastMx = x; _lastMy = y;
-        if (_settings.Open)
-        {
-            if (_settings.MouseMove(x, y)) AfterSettingsInput();
-            return true;
-        }
         if (!_open) return false;
         switch (_grab)
         {
             case Grab.Move:
             {
-                _winX = x - _gx; _winY = y - _gy;
+                float wx = x - _gx, wy = y - _gy;
                 DialogFrame? mf = _frame;
-                float ph = mf != null ? mf.TitleH + _bodyHPub : _maxBodyH;
-                float pw = mf?.PanelW ?? _winW;
-                Chat.Core.ChatWindow.SnapRect(ref _winX, ref _winY, pw, ph);
+                float ph = mf != null ? mf.TitleH + _bodyHPub : DialogKnobs.MaxHeight.V;
+                float pw = mf?.PanelW ?? DialogKnobs.W.V;
+                Chat.Core.ChatWindow.SnapRect(ref wx, ref wy, pw, ph);
                 if (Chat.Core.ChatWindow.EdgeThresh > 0)
-                    Chat.Core.ChatWindow.SnapToRects(ref _winX, ref _winY, pw, ph, _snapRects);
+                    Chat.Core.ChatWindow.SnapToRects(ref wx, ref wy, pw, ph, _snapRects);
+                DialogKnobs.X.V = wx; DialogKnobs.Y.V = wy;   // plain writes while dragging; the release is the set
                 Rebuild(); return true;
             }
             case Grab.Resize:
             {
-                _winW = System.Math.Max(MinW, _gw + (x - _gx));
-                _maxBodyH = System.Math.Max(MinMaxBodyH, _gh + (y - _gy));
+                float wx = DialogKnobs.X.V, wy = DialogKnobs.Y.V;
+                float ww = System.Math.Max(MinW, _gw + (x - _gx));
+                float mh = System.Math.Max(DialogKnobs.MaxHMin, _gh + (y - _gy));
                 float sp = Chat.Core.ChatWindow.SnapPx;
                 if (sp > 0)   // grid-snap the bottom-right corner to the same lattice the move uses
                 {
                     float cx = Chat.Core.ChatWindow.SnapCX, cy = Chat.Core.ChatWindow.SnapCY;
-                    float rx = cx + (float)System.Math.Round((_winX + _winW - cx) / sp) * sp;
-                    float ry = cy + (float)System.Math.Round((_winY + _maxBodyH - cy) / sp) * sp;
-                    _winW = System.Math.Max(MinW, rx - _winX);
-                    _maxBodyH = System.Math.Max(MinMaxBodyH, ry - _winY);
+                    float rx = cx + (float)System.Math.Round((wx + ww - cx) / sp) * sp;
+                    float ry = cy + (float)System.Math.Round((wy + mh - cy) / sp) * sp;
+                    ww = System.Math.Max(MinW, rx - wx);
+                    mh = System.Math.Max(DialogKnobs.MaxHMin, ry - wy);
                 }
+                DialogKnobs.W.V = ww; DialogKnobs.MaxHeight.V = System.Math.Min((int)MathF.Round(mh), DialogKnobs.MaxHMax);
                 Rebuild(); return true;
             }
             case Grab.SelectText:
@@ -359,18 +361,11 @@ public sealed unsafe class DialogService : IExtenderService
         return false;
     }
 
-    /// <summary>Pointer button. Settings panel is modal while open. Otherwise, while a dialog is open, the left
-    /// button is consumed (modal): it opens the gear, grabs the scrollbar/grip/title (unless locked), or picks
-    /// the reply under it. Owns the button pair via <see cref="_pressConsumed"/> so a matching up is never dropped.</summary>
+    /// <summary>Pointer button. While a dialog is open, the left button is consumed (modal): it grabs the
+    /// scrollbar/grip/title (unless locked), or picks the reply under it. Owns the button pair via
+    /// <see cref="_pressConsumed"/> so a matching up is never dropped; a finished move/resize is the rect's set.</summary>
     public static bool OnMouseButton(bool down, int button, int x, int y)
     {
-        if (_settings.Open)
-        {
-            if (down) { _pressConsumed = true; _settings.MouseDown(x, y); AfterSettingsInput(); }
-            else { _pressConsumed = false; if (_settings.MouseUp()) { SaveConfig(); ChatService.SaveConfigNow(); } }
-            return true;
-        }
-
         if (!_open || button != 1)
         {
             // Await-node gap (window still visible + opaque after a pick): swallow left clicks that land ON the
@@ -386,14 +381,13 @@ public sealed unsafe class DialogService : IExtenderService
             if (f != null)
             {
                 float titleH = f.TitleH;
-                float gearX = f.PanelX + f.PanelW - titleH;
-                if (In(gearX, f.PanelY, titleH, titleH, x, y)) { _pressConsumed = true; OpenSettings(f); return true; }
+                bool locked = DialogKnobs.Lock.V;
                 if (OverThumb(f, x, y)) { _pressConsumed = true; _grab = Grab.Scroll; _gy = y; _gScroll = _scroll; return true; }
-                if (!_locked && OverGrip(f, x, y))
-                { _pressConsumed = true; SeedRect(f); _grab = Grab.Resize; _gx = x; _gy = y; _gw = _winW; _gh = _maxBodyH; return true; }
-                if (!_locked && In(f.PanelX, f.PanelY, f.PanelW - titleH, titleH, x, y))
+                if (!locked && OverGrip(f, x, y))
+                { _pressConsumed = true; SeedRect(f); _grab = Grab.Resize; _gx = x; _gy = y; _gw = DialogKnobs.W.V; _gh = DialogKnobs.MaxHeight.V; return true; }
+                if (!locked && In(f.PanelX, f.PanelY, f.PanelW, titleH, x, y))
                 {
-                    _pressConsumed = true; SeedRect(f); _grab = Grab.Move; _gx = x - _winX; _gy = y - _winY;
+                    _pressConsumed = true; SeedRect(f); _grab = Grab.Move; _gx = x - DialogKnobs.X.V; _gy = y - DialogKnobs.Y.V;
                     _snapRects = Chat.Core.ChatWindow.EdgeThresh > 0
                         ? ChatService.GatherSnapRects(null, false)   // includeDialog:false -> excludes ourselves
                         : System.Array.Empty<(float, float, float, float)>();
@@ -408,7 +402,7 @@ public sealed unsafe class DialogService : IExtenderService
                     Rebuild(); return true;
                 }
             }
-            // Not over any target: consume only if the point is on our panel/settings; else let it fall through so
+            // Not over any target: consume only if the point is on our panel; else let it fall through so
             // native screens and our other windows stay clickable. ponytail: world stays clickable during a dialog
             // (native conversation engine already ignores world clicks), fine unless a report says otherwise.
             if (MouseOverUi(x, y)) { _pressConsumed = true; return true; }
@@ -419,7 +413,7 @@ public sealed unsafe class DialogService : IExtenderService
         bool wasSelect = _grab == Grab.SelectText;
         _grab = Grab.None;
         bool consumed = _pressConsumed; _pressConsumed = false;
-        if (wasWinDrag) { _placed = true; SaveConfig(); }
+        if (wasWinDrag) CommitRect();
         if (wasSelect && _sel.Anchor == _sel.Cursor) { _sel.Clear(); Rebuild(); }   // click, not drag
         return consumed;
     }
@@ -445,31 +439,10 @@ public sealed unsafe class DialogService : IExtenderService
     private const int KmodCtrl = 0x00C0;
 
     /// <summary>Keyboard while a dialog is open: 1-9 pick that reply row, 0 picks row 10 (vanilla mapping),
-    /// ESC closes locally (vanilla parity: no wire send), Ctrl+C copies the selected/whole npc text. While the
-    /// settings panel is open it swallows keys (ESC closes the panel). Returns true when consumed. Called before
-    /// the gameplay-hotkey path.</summary>
+    /// ESC closes locally (vanilla parity: no wire send), Ctrl+C copies the selected/whole npc text. Returns
+    /// true when consumed. Called before the gameplay-hotkey path.</summary>
     public static bool HandleKey(uint sdlKey, int mods)
     {
-        if (_settings.Open)
-        {
-            if (_settings.Editing)
-            {
-                sdlKey = NormalizeKeypad(sdlKey);   // numpad keys report SDLK_KP_* keycodes, map to ASCII
-                switch (sdlKey)
-                {
-                    case 0x0D: _settings.CommitEdit(); AfterSettingsCommit(); break;        // Return: commit + persist
-                    case 0x1B: _settings.CancelEdit(); BuildSettings(); break;              // Esc: cancel the edit
-                    case 0x08: _settings.EditBackspace(); BuildSettings(); break;           // Backspace
-                    default:
-                        if ((sdlKey >= 0x30 && sdlKey <= 0x39) || sdlKey == 0x2E || sdlKey == 0x2D)
-                        { _settings.EditInsert(((char)sdlKey).ToString()); BuildSettings(); }   // digits / dot / minus
-                        break;
-                }
-                return true;
-            }
-            if (sdlKey == 0x1B) { _settings.Close(); _settingsFrame = null; }
-            return true;
-        }
         if (!_visible) return false;
         if (sdlKey == 0x1B) { SoftClose(); return true; }         // ESC always dismisses (even a wedged await-node gap)
         if ((mods & KmodCtrl) != 0 && sdlKey == 0x63) { Copy(); return true; }   // Ctrl+C: selection, else whole node text
@@ -479,23 +452,10 @@ public sealed unsafe class DialogService : IExtenderService
         return false;
     }
 
-    /// <summary>Maps numpad SDL keycodes (SDLK_KP_*, scancode-mask bit set) to their ASCII equivalents so
-    /// keypad digits/dot/minus/enter drive the settings text entry the same as the main row.</summary>
-    private static uint NormalizeKeypad(uint k) => k switch
-    {
-        0x40000058 => 0x0D,                       // KP_ENTER -> Return
-        0x40000063 => 0x2E,                       // KP_PERIOD -> '.'
-        0x40000056 => 0x2D,                       // KP_MINUS -> '-'
-        0x40000062 => 0x30,                       // KP_0 -> '0'
-        >= 0x40000059 and <= 0x40000061 => k - 0x40000059 + 0x31,  // KP_1..KP_9 -> '1'..'9'
-        _ => k,
-    };
-
-    /// <summary>True when the pointer is over the dialog window or its settings panel. Wired as the window's
-    /// hit-test override (#64) so the framework cursor fold shows the UI pointer and click routing reaches us.</summary>
+    /// <summary>True when the pointer is over the dialog window. Wired as the window's hit-test override (#64)
+    /// so the framework cursor fold shows the UI pointer and click routing reaches us.</summary>
     public static bool MouseOverUi(int x, int y)
     {
-        if (_settings.Open && _settings.Contains(x, y)) return true;
         if (!_visible) return false;   // modal gate incl. the await-node gap; false during fade-out
         DialogFrame? f = _frame;
         if (f == null) return false;
@@ -511,38 +471,16 @@ public sealed unsafe class DialogService : IExtenderService
         return true;
     }
 
-    private static void OpenSettings(DialogFrame f)
-    {
-        float fontPx = System.Math.Clamp(ChatService.GlobalFontPx, DialogSettings.FontMin, DialogSettings.FontMax);
-        _settings.OpenAt(f.PanelX + f.PanelW - _settings.W, f.PanelY + f.TitleH,
-                         TextRig.ViewportW, TextRig.ViewportH,
-                         _locked, fontPx, _maxBodyH, _animEnabled, _fadeInMs, _fadeOutMs, _justify);
-        BuildSettings();
-    }
+    /// <summary>A <c>dialog.justify</c> set while a node is up: re-lay the open window (cold, the setter's thread).</summary>
+    internal static void Relayout() => Rebuild();
 
-    private static void AfterSettingsInput()
+    /// <summary>A finished move/resize: the dragged rect becomes a set of each rect knob (clamped, the writer
+    /// armed once) and the window counts as placed from now on.</summary>
+    private static void CommitRect()
     {
-        _locked = _settings.Locked;
-        _animEnabled = _settings.Anim;
-        _fadeInMs = _settings.FadeInMs;
-        _fadeOutMs = _settings.FadeOutMs;
-        _maxBodyH = System.Math.Max(MinMaxBodyH, _settings.MaxBodyH);
-        _justify = _settings.Justify;
-        // Apply the (global) font whenever it differs -- covers slider drag AND a typed commit.
-        // SetGlobalFontPx no-ops when unchanged.
-        if (System.Math.Abs(_settings.FontPx - ChatService.GlobalFontPx) > 0.01f)
-            ChatService.SetGlobalFontPx(_settings.FontPx);
-        BuildSettings();
-        Rebuild();
-    }
-
-    /// <summary>A typed value box was committed via Return: apply the edited values and persist (there's no
-    /// paired mouse-up to save on, unlike a drag).</summary>
-    private static void AfterSettingsCommit()
-    {
-        AfterSettingsInput();
-        SaveConfig();
-        ChatService.SaveConfigNow();
+        DialogKnobs.X.Set(DialogKnobs.X.V); DialogKnobs.Y.Set(DialogKnobs.Y.V); DialogKnobs.W.Set(DialogKnobs.W.V);
+        DialogKnobs.MaxHeight.Set(DialogKnobs.MaxHeight.V);
+        DialogKnobs.Placed.Set(true);
     }
 
     private static bool In(float x, float y, float w, float h, float px, float py)
@@ -552,9 +490,9 @@ public sealed unsafe class DialogService : IExtenderService
     /// drag starts exactly where the auto-laid panel is.</summary>
     private static void SeedRect(DialogFrame f)
     {
-        if (_placed) return;
-        _winX = f.PanelX; _winY = f.PanelY; _winW = f.PanelW;
-        _placed = true;
+        if (DialogKnobs.Placed.V) return;
+        DialogKnobs.X.V = f.PanelX; DialogKnobs.Y.V = f.PanelY; DialogKnobs.W.V = f.PanelW;
+        DialogKnobs.Placed.V = true;
     }
 
     /// <summary>Scrollbar geometry (screen px), or false when nothing scrolls. Shared by draw + hit-test.</summary>
@@ -562,7 +500,7 @@ public sealed unsafe class DialogService : IExtenderService
     {
         thumbTop = 0f; thumbH = 0f; maxScroll = 0f;
         float bodyH = _bodyHPub, contentH = f.ContentH;
-        if (contentH <= _maxBodyH + 0.5f || bodyH <= 0f) return false;   // only scroll past the breakpoint
+        if (contentH <= DialogKnobs.MaxHeight.V + 0.5f || bodyH <= 0f) return false;   // only scroll past the breakpoint
         maxScroll = contentH - bodyH; if (maxScroll < 0f) maxScroll = 0f;
         thumbH = System.Math.Max(SbMinThumb, bodyH * bodyH / contentH);
         float bodyTop = f.PanelY + f.TitleH;
@@ -694,8 +632,6 @@ public sealed unsafe class DialogService : IExtenderService
         _hover = -1;
         _sel.Clear();
         _grab = Grab.None;
-        _settings.Close();
-        _settingsFrame = null;
     }
 
     /// <summary>Hard close: drop all state and hide immediately (no fade). Called at a session boundary
@@ -709,8 +645,7 @@ public sealed unsafe class DialogService : IExtenderService
         _npcText = ""; _speakerName = ""; _portraitResref = "";
         _hover = -1; _scroll = 0f; _sel.Clear();
         _grab = Grab.None; _pressConsumed = false;
-        _settings.Close();
-        _frame = null; _settingsFrame = null;
+        _frame = null;
         _windowAlpha = 0f; _winAlphaTarget = 0f; _contentAlpha = 1f; _contentAlphaTarget = 1f;
         _bodyH = 0f; _animPrimed = false;
     }
@@ -727,7 +662,7 @@ public sealed unsafe class DialogService : IExtenderService
 
         float winTarget = _winAlphaTarget;
         float contentTarget = _contentAlphaTarget;
-        if (!_animEnabled)
+        if (!DialogKnobs.Anim.V)
         {
             _windowAlpha = winTarget; _contentAlpha = contentTarget; _bodyH = bodyTarget; _animPrimed = false;
             _bodyHPub = _bodyH; return;
@@ -737,12 +672,13 @@ public sealed unsafe class DialogService : IExtenderService
         long dtMs = nowMs - _animClockMs; _animClockMs = nowMs;
         if (dtMs > 0)
         {
-            float sIn = _fadeInMs > 1f ? dtMs / _fadeInMs : 1f;
-            float sOut = _fadeOutMs > 1f ? dtMs / _fadeOutMs : 1f;
+            float fadeIn = DialogKnobs.FadeIn.V, fadeOut = DialogKnobs.FadeOut.V;
+            float sIn = fadeIn > 1f ? dtMs / fadeIn : 1f;
+            float sOut = fadeOut > 1f ? dtMs / fadeOut : 1f;
             MoveToward(ref _windowAlpha, winTarget, winTarget >= _windowAlpha ? sIn : sOut);
             MoveToward(ref _contentAlpha, contentTarget, contentTarget >= _contentAlpha ? sIn : sOut);
             // Body height eases exponentially (smoother for size changes) with a tau tied to the fade-in knob.
-            float tau = System.Math.Max(20f, _fadeInMs * 0.4f);
+            float tau = System.Math.Max(20f, fadeIn * 0.4f);
             float k = 1f - (float)System.Math.Exp(-dtMs / tau);
             _bodyH += (bodyTarget - _bodyH) * k;
             if (System.Math.Abs(bodyTarget - _bodyH) < 0.5f) _bodyH = bodyTarget;
@@ -760,7 +696,7 @@ public sealed unsafe class DialogService : IExtenderService
 
     /// <summary>Hot: animate + draw the overlay. Chrome (bg/border/scrollbar/grip) is emitted per-frame at the
     /// eased height into a reused buffer (zero-alloc); content is drawn clipped + scrolled + faded; the title
-    /// glyphs and settings panel draw un-clipped on top. This is the framework Window's content-draw slot (#63),
+    /// glyphs draw un-clipped on top. This is the framework Window's content-draw slot (#63),
     /// driven by UiHostService's z-order roll-call once per frame; it paints only in-game (was ChatService's
     /// InGame branch), so a session boundary / ESC menu suppresses the panel exactly as before.</summary>
     private static void Draw()
@@ -774,16 +710,15 @@ public sealed unsafe class DialogService : IExtenderService
         GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null) return;
 
-        float bodyTarget = System.Math.Min(f.ContentH, _maxBodyH);
+        float bodyTarget = System.Math.Min(f.ContentH, DialogKnobs.MaxHeight.V);
         AdvanceAnim(Environment.TickCount64, bodyTarget);
 
         if (_windowAlpha <= 0.001f && _winAlphaTarget <= 0f && !_open)
         {
             // Window fully faded out: retire. (!_open guards a concurrent OnShowEntry republishing the frame.)
-            _frame = null; _settingsFrame = null;
+            _frame = null;
             _replies = System.Array.Empty<Reply>(); _npcText = ""; _speakerName = ""; _portraitResref = "";
             _isEndDialog = false; _visible = false;
-            _settings.Close();
             return;
         }
         if (_windowAlpha <= 0.001f) return;
@@ -798,7 +733,7 @@ public sealed unsafe class DialogService : IExtenderService
         float maxScroll = contentH - bodyH; if (maxScroll < 0f) maxScroll = 0f;
         float scroll = _scroll; if (scroll < 0f) scroll = 0f; else if (scroll > maxScroll) scroll = maxScroll;
         _scroll = scroll;   // clamp back so input reads a consistent value
-        bool scrollable = contentH > _maxBodyH + 0.5f;
+        bool scrollable = contentH > DialogKnobs.MaxHeight.V + 0.5f;
 
         // 1. chrome (per-frame, reused buffer) -> full window at the eased height.
         int n = 0;
@@ -818,7 +753,7 @@ public sealed unsafe class DialogService : IExtenderService
             EmitRect(ref n, su, sv, sx, thumbTop, panelX + panelW, thumbTop + thumbH, KnobCol);
         }
         // resize grip
-        if (!_locked)
+        if (!DialogKnobs.Lock.V)
             for (int i = 1; i <= 2; i++)
             {
                 float o = i * (ResizeGripPx / 3f);
@@ -835,12 +770,8 @@ public sealed unsafe class DialogService : IExtenderService
         if (f.PortraitResref.Length > 0 && f.Pw > 0f)
             TextRig.DrawPortrait(f.PortraitResref, f.Pcx, f.Pcy + offY, f.Pw, f.Ph, contentA, true, bx, by, bw, bh);
 
-        // 3. title glyphs (name + gear), fixed, chrome alpha.
+        // 3. title glyphs (the name), fixed, chrome alpha.
         if (f.TitleCount > 0) TextRig.DrawBatch(f.TitleVerts, f.TitleCount, chromeA);
-
-        // 4. settings panel, full alpha.
-        DialogFrame? sf = _settingsFrame;
-        if (sf != null && sf.ContentCount > 0) TextRig.DrawBatch(sf.ContentVerts, sf.ContentCount, 1f);
     }
 
     // ---- chrome emit (reused buffer, zero-alloc after the first grow) --------------------------
@@ -882,7 +813,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static readonly (float r, float g, float b, float a) GripCol = (0.40f, 0.50f, 0.64f, 0.8f);
     private const uint NpcRgb = 0xF2F2F2, ReplyRgb = 0xE0E4EA, ReplyHoverRgb = 0xFFFFFF;
     private const uint NumRgb = 0xFFD200, DimRgb = 0x7A7E86;
-    private const uint GearRgb = 0xB8C0CC, NameRgb = 0xEAF0F8;
+    private const uint NameRgb = 0xEAF0F8;
 
     /// <summary>Cold: rebuild the drawable snapshot from the captured content and publish it. Content geometry is
     /// content-relative (y=0 at content top); Draw offsets + clips it. Runs on the message / input threads.</summary>
@@ -904,11 +835,13 @@ public sealed unsafe class DialogService : IExtenderService
         float lh = atlas.LineHeight;
         float titleH = lh + 2f * TitlePadY + 2f;
 
+        bool placed = DialogKnobs.Placed.V, justify = DialogKnobs.Justify.V;
+        float maxBodyH = DialogKnobs.MaxHeight.V;
         float panelW, panelX;
-        if (_placed)
+        if (placed)
         {
-            panelW = System.Math.Clamp(_winW, MinW, vpW);
-            panelX = Window.ClampAxis(_winX, panelW, vpW);   // framework on-screen clamp (#63)
+            panelW = System.Math.Clamp(DialogKnobs.W.V, MinW, vpW);
+            panelX = Window.ClampAxis(DialogKnobs.X.V, panelW, vpW);   // framework on-screen clamp (#63)
         }
         else
         {
@@ -954,8 +887,8 @@ public sealed unsafe class DialogService : IExtenderService
                    BorderCol.r, BorderCol.g, BorderCol.b, BorderCol.a);
         float npcTop = cy;
         if (_sel.Range(npc.Runes.Count, out int selA, out int selB))
-            EmitSelection(b, atlas, npc, npcX, npcTop, npcW, _justify, selA, selB);
-        EmitBlock(b, atlas, npc, npcX, cy, NpcRgb, npcW, _justify);
+            EmitSelection(b, atlas, npc, npcX, npcTop, npcW, justify, selA, selB);
+        EmitBlock(b, atlas, npc, npcX, cy, NpcRgb, npcW, justify);
         cy += headerH;
 
         if (replies.Length > 0)
@@ -980,7 +913,7 @@ public sealed unsafe class DialogService : IExtenderService
             uint numCol = selectable ? NumRgb : DimRgb;
             DrawPlain(b, atlas, $"{i + 1}.", textX, cy + atlas.Ascent, numCol);
             uint bodyCol = !selectable ? DimRgb : hovered ? ReplyHoverRgb : ReplyRgb;
-            EmitBlock(b, atlas, rb, textX + numGutter, cy, bodyCol, replyTextW, _justify, forceRgb: !selectable || hovered);
+            EmitBlock(b, atlas, rb, textX + numGutter, cy, bodyCol, replyTextW, justify, forceRgb: !selectable || hovered);
 
             if (selectable)
                 hits.Add(new HitRect(panelX + PanelPad * 0.5f, cy - ReplyGap * 0.5f,
@@ -993,20 +926,17 @@ public sealed unsafe class DialogService : IExtenderService
         // ACTUAL rest height (content, capped at the breakpoint), NOT the full breakpoint, so it can be dragged
         // right to the top (y=0) and bottom (panel bottom at vpH). A taller next node re-clamps it up to stay on
         // screen. Default = a fixed slot above the bottom margin, sized for the breakpoint so the top never jumps.
-        float restPanelH = titleH + System.Math.Min(contentH, _maxBodyH);
-        float panelY = _placed
-            ? Window.ClampAxis(_winY, restPanelH, vpH)   // framework on-screen clamp (#63)
-            : System.Math.Max(0f, vpH - BottomMargin - (titleH + _maxBodyH));
+        float restPanelH = titleH + System.Math.Min(contentH, maxBodyH);
+        float panelY = placed
+            ? Window.ClampAxis(DialogKnobs.Y.V, restPanelH, vpH)   // framework on-screen clamp (#63)
+            : System.Math.Max(0f, vpH - BottomMargin - (titleH + maxBodyH));
 
-        // Title glyphs (name left, gear right, lock hint) -- screen coords, fixed.
-        // Title band: the speaker name only (nothing else), truncated before the gear; the gear at the right.
+        // Title band: the speaker name only (nothing else), truncated at the right pad -- screen coords, fixed.
         var tb = new VertexBatch(atlas.SolidU, atlas.SolidV);
-        float gearW = titleH;
         float titleBaseline = panelY + TitlePadY + atlas.Ascent + 1f;
         if (speakerName.Length > 0)
             DrawPlainClipped(tb, atlas, speakerName, panelX + PanelPad, titleBaseline, NameRgb,
-                             panelX + panelW - gearW - 6f * Metrics.Scale);
-        DrawPlain(tb, atlas, "⚙", panelX + panelW - gearW + (gearW - lh) * 0.5f, titleBaseline, GearRgb);
+                             panelX + panelW - PanelPad);
 
         _frame = new DialogFrame
         {
@@ -1016,23 +946,8 @@ public sealed unsafe class DialogService : IExtenderService
             TitleVerts = tb.ToArray(), TitleCount = tb.VertexCount,
             ContentH = contentH,
             PanelX = panelX, PanelY = panelY, PanelW = panelW, TitleH = titleH,
-            NpcBlock = npc, NpcX = npcX, NpcTop = npcTop, NpcW = npcW, NpcJustify = _justify,
+            NpcBlock = npc, NpcX = npcX, NpcTop = npcTop, NpcW = npcW, NpcJustify = justify,
         };
-    }
-
-    /// <summary>Cold: build the settings-panel batch by handing the shared <see cref="SettingsPanel"/> the
-    /// dialog palette. Reuses the DialogFrame container (only ContentVerts/ContentCount) drawn at full alpha
-    /// over the faded dialog.</summary>
-    private static void BuildSettings()
-    {
-        if (!_settings.Open) { _settingsFrame = null; return; }
-        GlyphAtlas? atlas = TextRig.Atlas;
-        if (atlas == null) { _settingsFrame = null; return; }
-
-        var b = new VertexBatch(atlas.SolidU, atlas.SolidV);
-        _settings.Panel.Emit(b, atlas, atlas.LineHeight, new SettingsPanel.Palette
-        { Body = BgCol, TitleBar = HeaderCol, Active = KnobCol, TextRgb = ReplyRgb });
-        _settingsFrame = new DialogFrame { ContentVerts = b.ToArray(), ContentCount = b.VertexCount };
     }
 
     private readonly struct Block
@@ -1130,22 +1045,6 @@ public sealed unsafe class DialogService : IExtenderService
     }
 
 
-    // ---- persistence --------------------------------------------------------------------------
-
-    private static void SaveConfig()
-    {
-        _cfg.Locked = _locked;
-        _cfg.AnimEnabled = _animEnabled;
-        _cfg.FadeInMs = _fadeInMs;
-        _cfg.FadeOutMs = _fadeOutMs;
-        _cfg.MaxBodyH = _maxBodyH;
-        _cfg.Justify = _justify;
-        if (_placed) { _cfg.Placed = true; _cfg.X = _winX; _cfg.Y = _winY; _cfg.W = _winW; }
-        _file.Save(_cfg.ToText(), _log);
-    }
-
-    private static void ApplyText(string text) => _cfg = DialogConfig.Parse(text);
-
     // ---- helpers ------------------------------------------------------------------------------
 
     private static string ReadExo(IntPtr exo)
@@ -1199,8 +1098,8 @@ public sealed unsafe class DialogService : IExtenderService
         return n == 0 ? "" : Encoding.ASCII.GetString(buf, n);
     }
 
-    /// <summary>Resolve a speaker object id to its display name for the title band ("" = unnamed -> no name shown,
-    /// just the gear). Runs on the message thread from inside the ShowDialogEntry hook. GetObjectName writes into
+    /// <summary>Resolve a speaker object id to its display name for the title band ("" = unnamed -> an empty
+    /// title band). Runs on the message thread from inside the ShowDialogEntry hook. GetObjectName writes into
     /// a caller-owned CExoString: it MUST be zeroed first (the engine frees any non-null buf), and the buffer it
     /// allocates MUST be freed via the CExoString dtor after we copy the chars out, or it leaks one heap block per
     /// node. Confirmed contract (Ghidra): out is {char* buf@0; uint len@8; uint cap@0xc}, empty = len==0, and
@@ -1236,12 +1135,12 @@ public sealed unsafe class DialogService : IExtenderService
         Reply[] allOld = MakeReplies(new[] { "x", "y" }, new uint[] { 1, 2 }, 2);
         E(!allOld[0].Selectable && !allOld[1].Selectable, "numOld==count leaves nothing selectable");
 
-        // ---- animation scalars (save/restore all the anim statics) ----
-        bool sEn = _animEnabled; float sIn = _fadeInMs, sOut = _fadeOutMs, sWt = _winAlphaTarget, sCt = _contentAlphaTarget;
+        // ---- animation scalars (save/restore all the anim statics; the knobs by plain value writes, never a set) ----
+        bool sEn = DialogKnobs.Anim.V; int sIn = DialogKnobs.FadeIn.V, sOut = DialogKnobs.FadeOut.V; float sWt = _winAlphaTarget, sCt = _contentAlphaTarget;
         float sWa = _windowAlpha, sCa = _contentAlpha, sBh = _bodyH; long sClk = _animClockMs; bool sPr = _animPrimed;
         int sOg = _openGen, sCg = _contentGen, sLo = _lastOpenGen, sLc = _lastContentGen;
 
-        _animEnabled = true; _fadeInMs = 100f; _fadeOutMs = 100f;
+        DialogKnobs.Anim.V = true; DialogKnobs.FadeIn.V = 100; DialogKnobs.FadeOut.V = 100;
         // Open: window fades from 0, body eases from 0, content fades from 0.
         _winAlphaTarget = 1f; _contentAlphaTarget = 1f; _openGen = 1; _lastOpenGen = 0; _contentGen = 1; _lastContentGen = 0;
         _windowAlpha = 1f; _contentAlpha = 1f; _bodyH = 999f; _animPrimed = false;
@@ -1272,11 +1171,11 @@ public sealed unsafe class DialogService : IExtenderService
         E(_windowAlpha == 0f, "close fades the window out to 0");
 
         // Disabled -> snap.
-        _animEnabled = false; _windowAlpha = 0.3f; _winAlphaTarget = 1f; _contentAlphaTarget = 1f; _bodyH = 10f; _contentAlpha = 0.2f;
+        DialogKnobs.Anim.V = false; _windowAlpha = 0.3f; _winAlphaTarget = 1f; _contentAlphaTarget = 1f; _bodyH = 10f; _contentAlpha = 0.2f;
         AdvanceAnim(2000, 250f);
         E(_windowAlpha == 1f && _bodyH == 250f && _contentAlpha == 1f, "animations disabled -> everything snaps to target");
 
-        _animEnabled = sEn; _fadeInMs = sIn; _fadeOutMs = sOut; _winAlphaTarget = sWt; _contentAlphaTarget = sCt;
+        DialogKnobs.Anim.V = sEn; DialogKnobs.FadeIn.V = sIn; DialogKnobs.FadeOut.V = sOut; _winAlphaTarget = sWt; _contentAlphaTarget = sCt;
         _windowAlpha = sWa; _contentAlpha = sCa; _bodyH = sBh; _animClockMs = sClk; _animPrimed = sPr;
         _openGen = sOg; _contentGen = sCg; _lastOpenGen = sLo; _lastContentGen = sLc;
 

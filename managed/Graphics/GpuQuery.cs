@@ -8,7 +8,7 @@ namespace CX.Graphics;
 /// for the session. Same rule as <c>AlloyLights.Build</c>, for the same reason.</para></summary>
 public unsafe struct GpuQuery
 {
-    /// <summary>The meters' kill switch (<c>/draw gpumeter 0</c>): every Begin declines, so no query is
+    /// <summary>The meters' kill switch (<c>/alloy gpumeter 0</c>): every Begin declines, so no query is
     /// issued or harvested. The A/B for what the ~100 query calls a frame cost the submitting thread.</summary>
     public static bool Enabled = true;
     private uint _q0, _q1;

@@ -40,10 +40,11 @@ public static class ServiceHost
             return;
         }
 
-        // ADR 0013 bucket 2, and this is as early as it goes: ahead of DISCOVERY, not just ahead of
-        // Initialize. Constructing a service runs its type initializer, and GameGate latches `lockchat` in
-        // one -- so a load after this line would pin the opt-out to its default and no-op it silently.
+        // The boot read, and this is as early as it goes: ahead of DISCOVERY, not just ahead of
+        // Initialize. Constructing a service runs its type initializer, and a Restart master binds its Boot
+        // in one -- so a load after this line would pin it to its default and no-op it silently.
         Settings.Load(log);
+        KnobGroup.Log = log;   // ADR 0025: a knob binds from the dictionary Load just filled, on first touch
         var hooks = new HookService(log);   // after Load: it reads hookdebug
 
         // OrderBy(Name): Assembly.GetTypes() order is not stable across builds/runtimes,
@@ -65,12 +66,9 @@ public static class ServiceHost
         AurTex.SelfCheck(log);
         CommandRegistry.Global.Log = log;
         CommandRegistry.SelfCheck(log);   // #165: registration/dispatch/enumeration proof, off-device
-        // #164: the shared config module's line walker + deferral gate. Proven at the host, so a sixth
-        // caller inherits the rule rather than re-deriving it. Run()'s caller IS pre-main, so the gate's
-        // "not yet" branch is the one under test here.
-        ConfigFile.SelfCheck(log);
+        ConfigFile.SelfCheck(log);   // #164: the shared line walker, proven at the host
         ExtenderLog.SelfCheck(log);   // the disabled log evaluates nothing, the enabled one reaches the file
-        Settings.SelfCheck(log);   // #183: parse degrade, range rejection, and that /knobs lists only real keys
+        Settings.SelfCheck(log);   // #183: the prefixed read leaves no probe behind
         KnobSurface.Register();
         EngineLayout.SelfCheck(log);   // #432: the three resolution forms, the counter, and a probe that fires
         EngineLayout.Register();
@@ -82,6 +80,11 @@ public static class ServiceHost
             try { service.Initialize(log, hooks); }
             catch (Exception e) { log.Info($"host: {service.GetType().Name} init threw: {e.Message}"); }
         }
+
+        // ADR 0025: after every Initialize, so the walk covers every group declared this session -- a User
+        // row without help, a layout knob that is not a dropdown, a Restart knob whose Boot moved, all fail here.
+        KnobGroup.SelfCheck(log);
+        KnobFile.SelfCheck(log);
 
         // #170: the frame walk must be immutable before the present hook can fire. Sealing here is the
         // happens-before -- a registration after this point is refused, not silently dropped.
