@@ -24,28 +24,18 @@ namespace Sowx.Alloy;
 /// Only the bit this session set is ever cleared, and a value that already holds is not rewritten.</para></summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    [StructLayout(LayoutKind.Sequential)]
-    private struct HitVec { public float X, Y, Z; }
-
     private const int OccRays = 5, OccHitsPerRay = 3, OccMaxHits = OccRays * OccHitsPerRay;
-    /// <summary>Nudge past a hit before re-casting, the engine's own 0.001 in UpdateNormalCameraCollision.</summary>
-    private const float OccNudge = 0.001f;
+    private const float OccNudge = SceneRay.Nudge;
     private const float OccRadiusBoot = 0.5f, OccFloorBoot = 0.25f, OccRateBoot = 8f;
 
     private static bool _occFadeMode = true, _occArmed;
     private static float _occRadius = OccRadiusBoot, _occFloor = OccFloorBoot, _occRate = OccRateBoot;
-    private static bool _occWeSetFlag;
     private static long _occLastTick;
     private static string _occWhy = "never ran";
 
-    private static delegate* unmanaged<IntPtr, HitVec, HitVec, HitVec*, IntPtr, int> _sceneHitCheck;
-    private static delegate* unmanaged<IntPtr, int, long, int, void> _hitInfoReset;
-    private static IntPtr* _occScene, _occCamera;
+    private static IntPtr* _occCamera;
     private static IntPtr _occAppMgr;
     private static delegate* unmanaged<IntPtr, IntPtr> _occGetModule;
-    /// <summary>The CHitInfo, allocated once: a hit links it into the gob's SafePointer list, so it must
-    /// outlive the frame and never move. The ignore array follows it.</summary>
-    private static byte* _occInfo;
 
     /// <summary>This frame's hits: world point and the gob (zero for a tile BSP part).</summary>
     private static readonly float[] _occHitPt = new float[OccMaxHits * 3];
@@ -62,15 +52,11 @@ public sealed unsafe partial class AlloyRenderer
     private static void OccludeInit(ExtenderLog log)
     {
         _occFadeMode = Settings.Text("camera.occlude", "fade") != "pullin";
-        _sceneHitCheck = (delegate* unmanaged<IntPtr, HitVec, HitVec, HitVec*, IntPtr, int>)Native.Sym(SymbolMap.SceneHitCheck);
-        _hitInfoReset = (delegate* unmanaged<IntPtr, int, long, int, void>)Native.Sym(SymbolMap.HitInfoReset);
-        _occScene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
+        SceneRay.Init();
         _occCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
         _occAppMgr = Native.Sym(SymbolMap.AppManager);
         _occGetModule = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
-        _occArmed = _sceneHitCheck != null && _hitInfoReset != null && _occScene != null && _occCamera != null
-                    && _occAppMgr != IntPtr.Zero && _occGetModule != null && _runtime != null;
-        if (_occArmed) _occInfo = (byte*)NativeMemory.AllocZeroed(SizeOfHitInfo + 8);
+        _occArmed = SceneRay.Armed && _occCamera != null && _occAppMgr != IntPtr.Zero && _occGetModule != null && _runtime != null;
         _occWhy = _occArmed ? "armed" : "symbols unresolved";
         log.Info($"AlloyRenderer: /camera occlude {(_occFadeMode ? "fade" : "pullin")} ({_occWhy})");
         CameraCommand.Register("occlude", "fade|pullin, radius N (ray fan half-width), floor N (alpha floor) -- occluders fade instead of the camera pulling in (#537)", OccludeCommand);
@@ -117,22 +103,20 @@ public sealed unsafe partial class AlloyRenderer
         return behavior == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(behavior + BehaviorTargetObj);
     }
 
+    /// <summary>The fade wants the engine's pull-in off; <see cref="CameraService.SettleCollision"/> is the
+    /// one writer of the flag, so a spring-arm session ending cannot hand the pull-in back mid-fade.</summary>
+    public static bool OccludeFadeWanted => _occArmed && _occFadeMode;
+
     /// <summary>Once per frame, before the route walk: settle the collision flag, then cast the fan.</summary>
     private static void OccludeFrame()
     {
         _occHitN = 0;
         OccludeTick();
         if (!_occArmed) return;
-        IntPtr module = OccludeModule();
-        if (module != IntPtr.Zero)
-        {
-            int* flags = (int*)(module + ModuleCameraFlags);
-            if (_occFadeMode) { if ((*flags & CameraFlagDisableCollision) == 0) { *flags |= CameraFlagDisableCollision; _occWeSetFlag = true; } }
-            else if (_occWeSetFlag) { *flags &= ~CameraFlagDisableCollision; _occWeSetFlag = false; }
-        }
+        CameraService.SettleCollision(OccludeModule());
         if (!_occFadeMode) return;
-        IntPtr scene = *_occScene;
-        if (scene == IntPtr.Zero || *(IntPtr*)(scene + SceneBspRoot) == IntPtr.Zero) return;
+        IntPtr scene = SceneRay.WorldScene();
+        if (scene == IntPtr.Zero) return;
         IntPtr player = OccludeTargetGob();
         if (player == IntPtr.Zero) return;
         _occFrames++;
@@ -144,7 +128,6 @@ public sealed unsafe partial class AlloyRenderer
         Vector3 right = Vector3.Cross(d, Vector3.UnitZ);
         if (right.LengthSquared() < 1e-6f) right = Vector3.UnitX; else right = Vector3.Normalize(right);
         Vector3 up = Vector3.Cross(right, d);
-        *(IntPtr*)(_occInfo + SizeOfHitInfo) = player;
         for (int r = 0; r < OccRays; r++)
         {
             Vector3 o = r switch
@@ -154,26 +137,19 @@ public sealed unsafe partial class AlloyRenderer
             Vector3 from = focus + o, to = cam + o;
             for (int h = 0; h < OccHitsPerRay; h++)
             {
-                // mode 0 = BSP parts then gobs; -0x40000001 and box 0 are the camera's own arguments
-                _hitInfoReset((IntPtr)_occInfo, 0, -0x40000001L, 0);
-                *(IntPtr**)(_occInfo + HitInfoIgnoreList) = (IntPtr*)(_occInfo + SizeOfHitInfo);
-                *(int*)(_occInfo + HitInfoIgnoreCount) = 1;
-                HitVec hit;
                 _occCalls++;
-                if (_sceneHitCheck(scene, new HitVec { X = from.X, Y = from.Y, Z = from.Z }, new HitVec { X = to.X, Y = to.Y, Z = to.Z }, &hit, (IntPtr)_occInfo) == 0) break;
-                IntPtr gob = *(IntPtr*)(_occInfo + HitInfoGob);
-                if (gob == IntPtr.Zero || *(int*)(gob + GobExternalType) != GobKindCreature)
+                if (!SceneRay.Cast(scene, from, to, player, out Vector3 hit, out IntPtr gob)) break;
+                if (!SceneRay.IsCreature(gob))
                 {
                     int n = _occHitN++;
                     _occHitPt[n * 3] = hit.X; _occHitPt[n * 3 + 1] = hit.Y; _occHitPt[n * 3 + 2] = hit.Z;
                     _occHitGob[n] = gob;
                 }
-                from = new Vector3(hit.X, hit.Y, hit.Z) + d * OccNudge;
+                from = hit + d * OccNudge;
                 if (Vector3.Dot(to - from, d) <= 0f) break;
             }
         }
-        // the SafePointer link the last hit left behind: unlinked now, not when the gob dies mid-frame
-        _hitInfoReset((IntPtr)_occInfo, 0, -0x40000001L, 0);
+        SceneRay.Release();
     }
 
     /// <summary>Route-walk verdict for one opaque/cutout part: ease its fade toward "hit this frame" and

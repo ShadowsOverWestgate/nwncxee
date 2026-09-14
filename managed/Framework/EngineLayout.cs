@@ -581,8 +581,13 @@ public static unsafe class EngineLayout
     public static readonly int BehaviorOwner = Same("CAurBehavior", "owner", 0x18);
     /// <summary>CAurBehaviorCameraFollow -&gt; smoothed focus Vector (+0x30..+0x38), written back at the end of Control.</summary>
     public static readonly int FollowFocus = Same("CAurBehaviorCameraFollow", "focus", 0x30);
-    /// <summary>CAurBehaviorCameraFollow -&gt; orbit distance (float).</summary>
+    /// <summary>CAurBehaviorCameraFollow -&gt; orbit distance (float). The engine's pull-in
+    /// (<c>UpdateNormalCameraCollision</c> @0x7daf80) writes it DIRECTLY at its tail (<c>+0x48 = dist</c>,
+    /// <c>+0x7c = 1</c>), before Control runs -- it is not a zoom velocity (#538).</summary>
     public static readonly int FollowDist = Same("CAurBehaviorCameraFollow", "dist", 0x48);
+    /// <summary>CAurBehaviorCameraFollow -&gt; zoom velocity: Control reads it as <c>dist *= 2^(-v*dt*0.5)</c>
+    /// and zeroes it; +0x50 next to it is the focus spring (750). Same body on both builds (§9.4).</summary>
+    public static readonly int FollowZoomVel = Same("CAurBehaviorCameraFollow", "zoomVel", 0x4c);
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw, degrees, 0 = looking along +Y.</summary>
     public static readonly int FollowYaw = Same("CAurBehaviorCameraFollow", "yaw", 0x54);
     /// <summary>CAurBehaviorCameraFollow -&gt; pitch, degrees from vertical (1 = top-down, 89 = horizontal).</summary>

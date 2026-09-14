@@ -11,7 +11,11 @@ namespace Sowx.Services.Camera;
 /// The camera layer (#536, map #535, ADR: docs/research/custom-camera.md §8 option A). Chains on the engine's
 /// one camera solve, <c>CAurBehaviorCameraFollow::Control</c>, lets it run, then rewrites its answer -- the
 /// pose at Camera+0xb0/+0xbc and the view angle at +0x4c4 -- from the same behavior state plus three feels the
-/// engine lacks: an FOV knob, a critically damped position/rotation lag, and pitch as a function of distance.
+/// engine lacks: an FOV knob, a critically damped position/rotation/zoom lag (the engine's zoom is a one-frame
+/// impulse per wheel notch, so the rendered distance is damped toward the behavior's), and pitch as a function of distance.
+/// #538 adds a free lateral/vertical offset of the rig from the focus with its own spring arm (the engine's
+/// pull-in predicts from the un-offset pose, so it is switched off through <see cref="SettleCollision"/> while
+/// an offset is active; at 0 0 the pose is #536's, bit for bit, and the engine's collision is left alone).
 /// The behavior's own yaw/pitch/dist are never written, so dialog framing, cutscenes, Store/RestoreCameraFacing
 /// and the server's locks keep reading the truth.
 /// <para><b>Stand-down gates</b>, checked every call and reported by <c>/camera</c>: not the module camera (a
@@ -45,16 +49,22 @@ public sealed unsafe class CameraService : IExtenderService
     private static int _mode = -1;
     private static float _yaw, _pitch, _dist, _fovRead, _outPitch;
     private static Vector3 _pos;
+    /// <summary>The spring arm's fraction of the focus-&gt;camera segment the camera sits at (1 = the full offset rig).</summary>
+    private static float _arm = 1f;
+    private static bool _offsetOn, _wantNoCollision, _weSetFlag;
 
     // ---- lag state, keyed by the behavior object: SetFollow replaces it on every attach / transition ----
     private static IntPtr _lastSelf;
     private static int _lastMode = -1;
     private static bool _welded = true;
-    private static float _sYaw, _sPitch, _vYaw, _vPitch;
+    private static float _sYaw, _sPitch, _vYaw, _vPitch, _sDist, _vDist;
     private static Vector3 _sFocus, _vFocus;
 
     // ---- §9 instruments (logs=1): Control cadence per present, runtime FOV writers ----
     private static int _calls, _callsMin = int.MaxValue, _callsMax, _frames, _fovRewrites;
+    /// <summary>§9.5: frames the engine's pull-in shortened dist without the user zooming, offset off / on.</summary>
+    private static int _pullIns, _pullInsOffset;
+    private static float _distAfter = float.NaN;
     private static float _fovWritten = float.NaN, _fovFirst = float.NaN;
     private static bool _live, _probeOk;
 
@@ -62,6 +72,7 @@ public sealed unsafe class CameraService : IExtenderService
     private static readonly int TargetOff = EngineLayout.BehaviorTargetObj;
     private static readonly int FocusOff = EngineLayout.FollowFocus;
     private static readonly int DistOff = EngineLayout.FollowDist;
+    private static readonly int ZoomVelOff = EngineLayout.FollowZoomVel;
     private static readonly int YawOff = EngineLayout.FollowYaw;
     private static readonly int PitchOff = EngineLayout.FollowPitch;
     private static readonly int YawClampOff = EngineLayout.FollowYawClamp;
@@ -78,6 +89,7 @@ public sealed unsafe class CameraService : IExtenderService
     private static readonly int ModClearViewOff = EngineLayout.ModuleFindClearView;
     private static readonly int ModDialogOff = EngineLayout.ModuleDialogCamera;
     private static readonly int ModCutsceneOff = EngineLayout.ModuleCutsceneRate;
+    private static readonly int ModFlagsOff = EngineLayout.ModuleCameraFlags;
     private static readonly int InternalOff = EngineLayout.ExoAppInternal;
     private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
     private static readonly int OptionsOff = EngineLayout.InternalClientOptions;
@@ -108,10 +120,14 @@ public sealed unsafe class CameraService : IExtenderService
         if (GameGate.OwnsFramePresent)
             FrameRegistry.Global.Register(FramePhase.PostPresent, 50, OnFrameEnd, "CameraService", log);
         CameraCommand.Register("fov", "vertical FOV in degrees for the current camera mode (0 = engine's 45)", a => Knob("fov", a));
-        CameraCommand.Register("lag", "`lag <pos> [rot]` seconds of position / rotation lag (0 = welded)", Lag);
+        CameraCommand.Register("lag", "`lag <pos> [rot] [zoom]` seconds of position / rotation / zoom lag (0 = welded; zoom smooths the wheel's stepped notches)", Lag);
         CameraCommand.Register("pitchcurve", "`pitchcurve <deg/unit> [ref]` pitch added per unit of distance past ref", PitchCurve);
+        CameraCommand.Register("offset", "`offset <x> <y>` rig offset from the focus in world units, right and up (0 0 = the engine's orbit)", Offset);
+        CameraCommand.Register("arm", "`arm margin|in|out|radius <n>` the offset camera's spring arm: stop short of a hit by margin, ease rates per second (in 0 = snap), ray fan half-width", Arm);
         CameraCommand.Register("reset", "restore the engine feel for the current mode", _ => Reset());
         CameraCommand.Report(Report);
+        KnobSurface.Note(() => $"camera feel (per mode: fov, lag, pitch curve, offset; spring arm) in {_file.Path}");
+        SceneRay.Init();
         log.Info("CameraService: chained on CAurBehaviorCameraFollow::Control");
     }
 
@@ -122,9 +138,12 @@ public sealed unsafe class CameraService : IExtenderService
     {
         // Read BEFORE the call: with no target the engine detaches (owner->SetBehavior(0)) and `self` is freed.
         IntPtr target = *(IntPtr*)(self + TargetOff);
+        if (target != IntPtr.Zero && !float.IsNaN(_distAfter) && *(float*)(self + ZoomVelOff) == 0f
+            && *(float*)(self + DistOff) < _distAfter - 1e-4f) { if (_offsetOn) _pullInsOffset++; else _pullIns++; }
         int r = ((delegate* unmanaged<IntPtr, float, int>)(*_next))(self, dt);
         _calls++;
-        if (target == IntPtr.Zero) return r;
+        if (target == IntPtr.Zero) { _distAfter = float.NaN; return r; }
+        _distAfter = *(float*)(self + DistOff);
         if (!_live)
         {
             // One-shot boot probe of the module rows (#536 AC: Windows offsets get a probe, not a hope).
@@ -132,8 +151,22 @@ public sealed unsafe class CameraService : IExtenderService
             _probeOk = EngineLayout.Probe("CNWCModule", Module(), _log);
             _log?.Info(_probeOk ? "CameraService: first Control -- hook is LIVE" : "CameraService: layout probe failed -- passing the engine's answer through");
         }
-        if (_probeOk) Adjust(self, dt);
+        if (_probeOk) { Adjust(self, dt); SettleCollision(Module()); }
         return r;
+    }
+
+    /// <summary>The one writer of <c>CAMERA_FLAG_DISABLE_COLLISION</c>: set while the spring arm (#538) or the
+    /// occlusion fade (#537) wants the engine's pull-in off, cleared only if this session set it, never
+    /// rewritten when it already holds -- the server's own bits stay untouched.</summary>
+    public static void SettleCollision(IntPtr module)
+    {
+        if (module == IntPtr.Zero) return;
+        int* flags = (int*)(module + ModFlagsOff);
+        if (_wantNoCollision || AlloyRenderer.OccludeFadeWanted)
+        {
+            if ((*flags & EngineLayout.CameraFlagDisableCollision) == 0) { *flags |= EngineLayout.CameraFlagDisableCollision; _weSetFlag = true; }
+        }
+        else if (_weSetFlag) { *flags &= ~EngineLayout.CameraFlagDisableCollision; _weSetFlag = false; }
     }
 
     private static void Adjust(IntPtr self, float dt)
@@ -144,7 +177,7 @@ public sealed unsafe class CameraService : IExtenderService
         _yaw = *(float*)(self + YawOff); _pitch = *(float*)(self + PitchOff); _dist = *(float*)(self + DistOff);
         _fovRead = *(float*)(cam + CamFovOff);
         _pos = *(Vector3*)(cam + CamPosOff);
-        if (g != Gate.Active) { _welded = true; return; }
+        if (g != Gate.Active) { _welded = true; _offsetOn = _wantNoCollision = false; _arm = 1f; return; }
 
         // §9.2: anything rewriting the view angle between our writes shows up here.
         if (!float.IsNaN(_fovWritten) && _fovRead != _fovWritten) _fovRewrites++;
@@ -158,7 +191,7 @@ public sealed unsafe class CameraService : IExtenderService
         {
             // A new behavior (SetFollow) or the frame after a gate: snap, and tell Alloy the history is stale.
             _lastSelf = self; _welded = false;
-            _sYaw = _yaw; _sPitch = _pitch; _sFocus = focus; _vYaw = _vPitch = 0; _vFocus = default;
+            _sYaw = _yaw; _sPitch = _pitch; _sDist = _dist; _sFocus = focus; _vYaw = _vPitch = _vDist = 0; _vFocus = default;
             AlloyRenderer.CameraCut();
         }
         _sFocus = m.LagPos > 0 ? SmoothDamp(_sFocus, focus, ref _vFocus, m.LagPos, dt) : focus;
@@ -168,11 +201,16 @@ public sealed unsafe class CameraService : IExtenderService
             _sPitch = SmoothDamp(_sPitch, _pitch, ref _vPitch, m.LagRot, dt);
         }
         else { _sYaw = _yaw; _sPitch = _pitch; }
+        _sDist = m.LagZoom > 0 ? SmoothDamp(_sDist, _dist, ref _vDist, m.LagZoom, dt) : _dist;
 
-        float pitch = Math.Clamp(_sPitch + m.PitchCurve * (_dist - m.PitchRef), PitchFloor, PitchCeil);
+        float pitch = Math.Clamp(_sPitch + m.PitchCurve * (_sDist - m.PitchRef), PitchFloor, PitchCeil);
         _outPitch = pitch;
         Quaternion q = Pose(_sYaw, pitch);
-        Vector3 pos = _sFocus + _dist * Forward(q);
+        Vector3 pos = _sFocus + _sDist * Forward(q);
+        _offsetOn = m.OffsetX != 0f || m.OffsetY != 0f;
+        _wantNoCollision = _offsetOn;
+        if (_offsetOn) pos = SpringArm(self, focus, pos + m.OffsetX * Right(q) + m.OffsetY * Vector3.UnitZ, dt);
+        else _arm = 1f;
         // Camera+0xbc holds (w, x, y, z): Control's own position formula reads it in that order.
         float* rot = (float*)(cam + CamRotOff);
         rot[0] = q.W; rot[1] = q.X; rot[2] = q.Y; rot[3] = q.Z;
@@ -233,6 +271,55 @@ public sealed unsafe class CameraService : IExtenderService
     private static Vector3 Forward(in Quaternion q) =>
         new(2f * (q.X * q.Z + q.W * q.Y), 2f * (q.Y * q.Z - q.W * q.X), 1f - 2f * (q.X * q.X + q.Y * q.Y));
 
+    /// <summary>The camera's right: <c>q * +X</c>. Pitch is about X, so this stays horizontal at every pitch.</summary>
+    private static Vector3 Right(in Quaternion q) =>
+        new(1f - 2f * (q.Y * q.Y + q.Z * q.Z), 2f * (q.X * q.Y + q.W * q.Z), 2f * (q.X * q.Z - q.W * q.Y));
+
+    /// <summary>The offset floor: the arm never pulls the camera closer than this fraction of its rig.</summary>
+    private const float ArmMin = 0.05f;
+    private const int ArmRays = 5, ArmHops = 3;
+
+    /// <summary>#538: keep the offset camera out of walls. The pivot is the player, not the offset focus (an
+    /// offset can put the focus itself inside a wall); a fan of <see cref="ArmRays"/> parallel segments from
+    /// there to <paramref name="want"/> is marched through <see cref="SceneRay"/>, creatures skipped, and the
+    /// camera slides along the segment to the nearest hit minus the margin. Snaps (or eases, arm.in) in and
+    /// eases (arm.out) back out. At most 15 casts, only while an offset is on.</summary>
+    private static Vector3 SpringArm(IntPtr self, Vector3 pivot, Vector3 want, float dt)
+    {
+        SpringArm a = _cfg.Arm;
+        Vector3 seg = want - pivot;
+        float len = seg.Length();
+        IntPtr scene = SceneRay.Armed ? SceneRay.WorldScene() : IntPtr.Zero;
+        float target = 1f;
+        if (scene != IntPtr.Zero && len > 0.05f)
+        {
+            Vector3 d = seg / len;
+            Vector3 right = Vector3.Cross(d, Vector3.UnitZ);
+            right = right.LengthSquared() < 1e-6f ? Vector3.UnitX : Vector3.Normalize(right);
+            Vector3 up = Vector3.Cross(right, d);
+            IntPtr player = *(IntPtr*)(self + TargetOff);
+            float nearest = len;
+            for (int r = 0; r < ArmRays; r++)
+            {
+                Vector3 o = r switch { 1 => right * a.Radius, 2 => -right * a.Radius, 3 => up * a.Radius, 4 => -up * a.Radius, _ => Vector3.Zero };
+                Vector3 from = pivot + o, to = want + o;
+                for (int h = 0; h < ArmHops; h++)
+                {
+                    if (!SceneRay.Cast(scene, from, to, player, out Vector3 hit, out IntPtr gob)) break;
+                    if (!SceneRay.IsCreature(gob)) { nearest = MathF.Min(nearest, Vector3.Dot(hit - (pivot + o), d)); break; }
+                    from = hit + d * SceneRay.Nudge;
+                    if (Vector3.Dot(to - from, d) <= 0f) break;
+                }
+            }
+            SceneRay.Release();
+            target = Math.Clamp((nearest - a.Margin) / len, ArmMin, 1f);
+        }
+        float rate = target < _arm ? a.RateIn : a.RateOut;
+        _arm = rate <= 0f ? target : _arm + (target - _arm) * Math.Clamp(rate * Math.Min(dt, 0.1f), 0f, 1f);
+        if (MathF.Abs(target - _arm) < 0.002f) _arm = target;
+        return pivot + seg * _arm;
+    }
+
     private static float Wrap(float deg) => deg - 360f * MathF.Round(deg / 360f);
 
     /// <summary>Critically damped spring toward <paramref name="target"/>; <paramref name="smooth"/> is the
@@ -265,8 +352,9 @@ public sealed unsafe class CameraService : IExtenderService
         if (++_frames < 600 || !ExtenderLog.Enabled) return;
         // §9.3 / §9.2 under logs=1, once per 600 presents.
         _log?.Info(Inv($"[camera] Control {_callsMin}..{_callsMax} call(s)/present over {_frames} presents; ")
-                 + Inv($"view angle first read {_fovFirst:0.##}, {_fovRewrites} rewrite(s) between ours; gate: {GateNames[(int)_gate]}"));
-        _frames = 0; _callsMin = int.MaxValue; _callsMax = 0;
+                 + Inv($"view angle first read {_fovFirst:0.##}, {_fovRewrites} rewrite(s) between ours; gate: {GateNames[(int)_gate]}; ")
+                 + Inv($"engine pull-ins {_pullIns} (offset off) / {_pullInsOffset} (offset on), arm {_arm:0.00}"));
+        _frames = 0; _callsMin = int.MaxValue; _callsMax = 0; _pullIns = _pullInsOffset = 0;
     }
 
     private static void LoadConfig()
@@ -285,9 +373,12 @@ public sealed unsafe class CameraService : IExtenderService
         string mode = _mode is >= 0 and < 3 ? CameraConfig.ModeNames[_mode] : "?";
         CameraMode? m = _mode is >= 0 and < 3 ? _cfg.Modes[_mode] : null;
         string knobs = m == null ? "" :
-            Inv($"; {mode}: fov {(m.Fov > 0 ? m.Fov.ToString("0.#", CultureInfo.InvariantCulture) : "engine")} lag {m.LagPos:0.##}/{m.LagRot:0.##} pitchcurve {m.PitchCurve:0.##}@{m.PitchRef:0.#}");
+            Inv($"; {mode}: fov {(m.Fov > 0 ? m.Fov.ToString("0.#", CultureInfo.InvariantCulture) : "engine")} lag {m.LagPos:0.##}/{m.LagRot:0.##}/{m.LagZoom:0.##} pitchcurve {m.PitchCurve:0.##}@{m.PitchRef:0.#}")
+          + Inv($" offset {m.OffsetX:0.##} {m.OffsetY:0.##}")
+          + (_offsetOn ? Inv($" arm {_arm:0.00} (margin {_cfg.Arm.Margin:0.##} in {_cfg.Arm.RateIn:0.#} out {_cfg.Arm.RateOut:0.#} radius {_cfg.Arm.Radius:0.##})") : "");
         string curve = _gate == Gate.Active && _outPitch != _pitch ? Inv($"->{_outPitch:0.#}") : "";
-        return Inv($"[camera] pos ({_pos.X:0.0}, {_pos.Y:0.0}, {_pos.Z:0.0}) yaw {_yaw:0.#} pitch {_pitch:0.#}{curve} dist {_dist:0.#} fov {_fovRead:0.#}")
+        string zoom = _gate == Gate.Active && MathF.Abs(_sDist - _dist) > 0.05f ? Inv($"->{_sDist:0.#}") : "";
+        return Inv($"[camera] pos ({_pos.X:0.0}, {_pos.Y:0.0}, {_pos.Z:0.0}) yaw {_yaw:0.#} pitch {_pitch:0.#}{curve} dist {_dist:0.#}{zoom} fov {_fovRead:0.#}")
              + $" | {(_gate == Gate.Active ? "active" : "held down: " + GateNames[(int)_gate])}{knobs}";
     }
 
@@ -310,6 +401,7 @@ public sealed unsafe class CameraService : IExtenderService
         CameraMode m = _cfg.Modes[_mode];
         m.Set("lagpos", pos);
         if (p.Length > 1 && CameraConfig.TryF(p[1], out float rot)) m.Set("lagrot", rot);
+        if (p.Length > 2 && CameraConfig.TryF(p[2], out float zoom)) m.Set("lagzoom", zoom);
         _dirty = true;
         return Report();
     }
@@ -323,6 +415,26 @@ public sealed unsafe class CameraService : IExtenderService
         CameraMode m = _cfg.Modes[_mode];
         m.Set("pitchcurve", k);
         if (p.Length > 1 && CameraConfig.TryF(p[1], out float r)) m.Set("pitchref", r);
+        _dirty = true;
+        return Report();
+    }
+
+    private static string Offset(string args)
+    {
+        if (!_configLoaded) LoadConfig();
+        if (_mode is < 0 or > 2) return "[camera] no live camera mode yet -- log in first";
+        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (p.Length < 2 || !CameraConfig.TryF(p[0], out float x) || !CameraConfig.TryF(p[1], out float y)) return Report();
+        CameraMode m = _cfg.Modes[_mode];
+        m.Set("offsetx", x); m.Set("offsety", y); _dirty = true;
+        return Report();
+    }
+
+    private static string Arm(string args)
+    {
+        if (!_configLoaded) LoadConfig();
+        string[] p = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (p.Length < 2 || !CameraConfig.TryF(p[1], out float v) || !_cfg.Arm.Set(p[0], v)) return "[camera] arm margin|in|out|radius <n>";
         _dirty = true;
         return Report();
     }
@@ -348,6 +460,8 @@ public sealed unsafe class CameraService : IExtenderService
         Vector3 fy = Forward(Pose(90, 90));
         E(Near(fy, new Vector3(1, 0, 0)) || Near(fy, new Vector3(-1, 0, 0)), "yaw turns about Z");
         E(MathF.Abs(Pose(30, 45).Length() - 1f) < 1e-5f, "the pose is a unit quaternion");
+        E(Near(Right(Pose(0, 90)), new Vector3(1, 0, 0)) && Near(Right(Pose(0, 30)), new Vector3(1, 0, 0)), "right is +X looking north at any pitch");
+        E(Near(Right(Pose(90, 60)), new Vector3(0, 1, 0)) || Near(Right(Pose(90, 60)), new Vector3(0, -1, 0)), "right turns with yaw");
         E(MathF.Abs(Wrap(350f - 10f) + 20f) < 1e-5f, "yaw lag takes the short way round");
         float v = 0, x = 0;
         for (int i = 0; i < 240; i++) x = SmoothDamp(x, 1f, ref v, 0.2f, 1f / 60f);
