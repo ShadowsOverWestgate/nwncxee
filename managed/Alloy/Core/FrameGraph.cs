@@ -19,6 +19,9 @@ internal enum PassId
 {
     SunCascades,
     LocalLightCubes,
+    /// <summary>#617: the rain occlusion map -- one ortho depth view along the fall vector, baked from the
+    /// still casters into the sun array's spare layer and held on its fit key (<see cref="CasterPass"/>).</summary>
+    RainCover,
     DepthPrepass,
     /// <summary>#379: screen-space ambient occlusion from the prepass depth, BEFORE the colour pass so the lit
     /// stage reads it as a lighting input (its ambient term) rather than a post stage darkening the finished
@@ -98,6 +101,9 @@ internal enum PassId
     /// <summary>Procedural light halos (<see cref="Halos"/>): vanilla's lens flares, step 29, right after the
     /// particles. Additive, no depth write; occlusion is the shader's own depth read.</summary>
     HalosOwned,
+    /// <summary>#616: rain and snow (<see cref="Weather"/>): the instanced precipitation field, after the
+    /// halos. Alpha over, depth-tested, no depth write; cover is the vertex stage's read of the #617 map.</summary>
+    WeatherOwned,
     /// <summary>#121: the per-area IBL probe capture. Last in the colour bracket by necessity -- it draws
     /// the same staged batches six more times and rebuilds the light clusters per face, so it has to run
     /// after every on-screen pass that reads them. Skipped on all but the handful of frames
@@ -165,6 +171,7 @@ internal static class FrameGraph
     {
         (PassId.SunCascades,     Bracket.Shadow),
         (PassId.LocalLightCubes, Bracket.Shadow),
+        (PassId.RainCover,       Bracket.Shadow),
         (PassId.DepthPrepass,    Bracket.Colour),
         (PassId.AmbientOcclusion, Bracket.Colour),
         (PassId.OpaqueOwned,     Bracket.Colour),
@@ -178,6 +185,7 @@ internal static class FrameGraph
         (PassId.BeamsOwned,      Bracket.Colour),
         (PassId.ParticlesOwned,  Bracket.Colour),
         (PassId.HalosOwned,      Bracket.Colour),
+        (PassId.WeatherOwned,    Bracket.Colour),
         (PassId.ProbeCapture,    Bracket.Colour),
         (PassId.PostProcess,     Bracket.Colour),
         (PassId.PostStack,       Bracket.Colour),

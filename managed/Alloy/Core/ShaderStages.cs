@@ -109,6 +109,9 @@ internal static class ShaderStages
         (SsaoPass.ShdSsaoBlurFs,           Banner),
         (Halos.ShdHaloVs,                  Banner),
         (Halos.ShdHaloFs,                  Banner),
+        (Weather.ShdWeatherVs,             Banner),
+        (Weather.ShdRainFs,                Banner),
+        (Weather.ShdSnowFs,                Banner),
     };
 
     /// <summary>The GLSL the extender compiles for one resref, sizing tokens unexpanded
@@ -119,7 +122,7 @@ internal static class ShaderStages
         AlloyRenderer.ShdFullbrightVs => AlloyRenderer.OwnedVs,
         AlloyRenderer.ShdFullbrightFs => AlloyRenderer.OwnedFs,
         AlloyRenderer.ShdLitVs => AlloyRenderer.OwnedLitVs,
-        AlloyRenderer.ShdLitFs => AlloyRenderer.OwnedLitFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.MaterialLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + AlloyRenderer.HostFs + AlloyRenderer.OwnedLitFsMain,
+        AlloyRenderer.ShdLitFs => AlloyRenderer.OwnedLitFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + Weather.WeatherLib + AlloyRenderer.MaterialLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + AlloyRenderer.HostFs + AlloyRenderer.OwnedLitFsMain,
         AlloyRenderer.ShdWaterVs => FrameSnapshot.VsHead + AlloyRenderer.DrawBufDecl + FrameSnapshot.VsMain,
         AlloyRenderer.ShdWaterFs => FrameSnapshot.FsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + FrameSnapshot.FsMain,
         GrassField.ShdGrassVs => GrassField.GrassVs,
@@ -142,6 +145,9 @@ internal static class ShaderStages
         SsaoPass.ShdSsaoBlurFs => SsaoPass.SsaoBlurFs,
         Halos.ShdHaloVs => Halos.HaloVs,
         Halos.ShdHaloFs => Halos.HaloFs,
+        Weather.ShdWeatherVs => Weather.WeatherVs,
+        Weather.ShdRainFs => Weather.RainFs,
+        Weather.ShdSnowFs => Weather.SnowFs,
         _ => "",
     };
 
@@ -199,7 +205,7 @@ internal static class ShaderStages
     /// that declares it. A missing switch arm is otherwise invisible until a program builds from "".</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = All.Length == 26;
+        bool ok = All.Length == 29;
         foreach ((string r, string header) in All)
         {
             string src = Source(r);

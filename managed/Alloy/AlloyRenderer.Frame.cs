@@ -404,6 +404,11 @@ public sealed unsafe partial class AlloyRenderer
                         case PassId.HalosOwned:
                             Halos.Draw(&view, &proj, viewport);
                             break;
+                        case PassId.WeatherOwned:
+                            GpuBegin(GpuTerm.Weather);
+                            Weather.Draw(&view, &proj, viewport, _eyePos, AreaWind());
+                            GpuEnd(GpuTerm.Weather);
+                            break;
                         case PassId.ProbeCapture:
                             if (!lightingOn) break;
                             CaptureProbe(_gOpaqueEnd, far);

@@ -1,0 +1,53 @@
+using System.Numerics;
+
+namespace CX.Alloy;
+
+/// <summary>#617: the rain occlusion map -- one orthographic depth view of the still casters, looking along
+/// the precipitation vector, baked the way a sun cascade is and held the same way: the texel-snapped fit
+/// matrix is the key, so the map re-bakes on a focus latch, a wind change or a blanket invalidate and on no
+/// other frame. It lives as the layer past the cascades in the sun array, so the lit stage samples it through
+/// <c>uSunShadow</c> with no texture unit of its own (the lit bracket has none left, <see cref="TextureSlots"/>).
+/// Published as <see cref="CoverVp"/> + <see cref="CoverLayer"/>; <see cref="CoverFresh"/> gates every read.</summary>
+public sealed unsafe partial class CasterPass
+{
+    /// <summary>Extra layers the sun array carries past the cascades: the cover map.</summary>
+    private const int CoverLayers = 1;
+    /// <summary>Focus drift, as a fraction of the extent, before the fit re-latches.</summary>
+    private const float CoverSlack = 0.25f;
+
+    /// <summary>World -&gt; the cover view's clip space, as the layer was rendered. Zero when not fresh.</summary>
+    internal static Matrix4x4 CoverVp;
+    /// <summary>The sun-array layer holding the map (the cascade count).</summary>
+    internal static int CoverLayer => _cascades;
+    internal static bool CoverFresh => _coverStamp == _frameSeq && CascadeTex != 0;
+    internal static int CoverBakes, CoverHeld;
+    private static Matrix4x4 _coverKeyVp;
+    private static Vector3 _coverC;
+    private static bool _coverBaked, _coverCValid;
+    private static int _coverStamp = -1;
+
+    /// <summary>The shadow bracket's cover slot: bake or hold. <paramref name="sun"/> is the cascades' own
+    /// exterior gate -- the array only exists past it, and an interior has no sky to fall from.</summary>
+    private static void CoverPass(Vector3 focus, bool sun)
+    {
+        if (!sun || !Weather.CoverWanted || !EnsureSun()) { CoverVp = default; return; }
+        Vector3 dir = Weather.Fall;
+        float radius = Weather.CoverRange.V, margin = radius;
+        float slack = radius * CoverSlack;
+        Vector3 c = _coverCValid ? _coverC : focus;
+        if (!_coverCValid || (focus - c).LengthSquared() > slack * slack) c = focus;
+        Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, c, radius, margin, _mapSize);
+        bool stale = _frameInvalidate || !_coverBaked || vp != _coverKeyVp;
+        if (!stale) { CoverHeld++; CoverVp = vp; _coverStamp = _frameSeq; return; }
+        if (RenderView(_depthTex, _mapSize, CoverLayer, &vp, dir, c, radius, margin, point: false,
+                       set: CasterGather.SetStatic))
+        {
+            _coverBaked = true; _coverKeyVp = vp; _coverC = c; _coverCValid = true;
+            CoverVp = vp; _coverStamp = _frameSeq; CoverBakes++;
+        }
+        else CoverVp = default;
+    }
+
+    private static void CoverRelease() { _coverBaked = false; _coverCValid = false; CoverVp = default; }
+    internal static string CoverStats() => $"cover {CoverBakes} bakes / {CoverHeld} held";
+}

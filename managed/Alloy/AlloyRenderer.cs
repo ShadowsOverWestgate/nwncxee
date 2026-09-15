@@ -329,7 +329,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade,
-                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach, Contact, ContactFar;
+                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach, Contact, ContactFar,
+                   Weather, WeatherLook, CoverVp, CoverLayer;
         public FeatLoc Feat;
     }
     private static LitLoc _lit, _litH, _litL;
@@ -559,7 +560,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Exposure, Post, Cull, HiZ, Beams, WaterCopy, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Exposure, Post, Cull, HiZ, Beams, WaterCopy, Weather, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -1710,7 +1711,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          // copy -- and the total, to read against the [gl46] gpu-span. Span minus total is
                          // idle-or-unbracketed; it is idle if it shrinks when the frame goes GPU-bound.
                          $" / cull {GpuMs(GpuTerm.Cull):F2} / hiz {GpuMs(GpuTerm.HiZ):F2} / beams {GpuMs(GpuTerm.Beams):F2}" +
-                         $" / water copy {GpuMs(GpuTerm.WaterCopy):F2} (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
+                         $" / water copy {GpuMs(GpuTerm.WaterCopy):F2}" +
+                         (_qTerm[(int)GpuTerm.Weather].Measured ? $" / weather {GpuMs(GpuTerm.Weather):F3}" : "") +
+                         $" (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.
                    $", probe {(EnvProbe.Ready ? $"ready ({EnvProbe.Captures} captures)" : "none yet")}" +
@@ -1746,6 +1749,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         GrassField.ResetPeriod();
         Beams.ResetPeriod();
         Halos.ResetPeriod();
+        Weather.ResetPeriod();
         Particles.ResetPeriod();
         _watchSubmitted = 0;
         _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = 0; _skipLod = 0;

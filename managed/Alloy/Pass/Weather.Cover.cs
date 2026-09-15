@@ -1,0 +1,50 @@
+using System.Numerics;
+using CX.Framework;
+using CX.Graphics;
+
+namespace CX.Alloy;
+
+/// <summary>#617: the weather side of the rain occlusion map -- the dials, the "is one wanted" gate the
+/// shadow bracket reads, and the two consumers' uploads: the precipitation vertex stage (a covered instance
+/// is not drawn) and the lit stage (#618: exposure is what wets and snows a surface). One matrix, one layer
+/// index, one freshness gate; the map itself is <see cref="CasterPass.CoverVp"/>'s layer of the sun array.</summary>
+internal static unsafe partial class Weather
+{
+    internal const int VizMax = 3;
+    internal static Knob<bool> Cover = null!;
+    internal static Knob<float> CoverRange = null!, CoverSoft = null!;
+
+    private static void DeclareCoverKnobs()
+    {
+        G.Section("Cover");
+        Cover = G.Toggle("cover", "Shelter under roofs", true,
+                         help: "Nothing falls under a roof, an awning or a doorway: an occlusion map baked along the fall vector, like a sun shadow. Off, it rains indoors.");
+        CoverSoft = G.Slider("coversoft", "Cover edge", 0f, 2f, 0.05f, 0.5f, "m",
+                             help: "How far a roof's shelter feathers at its edge: wind and splash make no hard line.");
+        CoverRange = G.Slider("coverrange", "Cover range", 16f, 128f, 4f, 48f, "m", Tier.Advanced,
+                              help: "Half-width of the cover map around the player. Resolution is the sun shadow map's (one allocation).");
+    }
+
+    private static void InstallCover(ExtenderLog log)
+        => log.Info("Weather: cover map rides the sun array's spare layer; /weather viz 2 paints exposure on the world");
+
+    /// <summary>The shadow bracket bakes a cover map only while there is weather to shelter from.</summary>
+    internal static bool CoverWanted => !_off && Enabled.V && Cover.V && CurrentKind != Kind.None && Density > 0f && !FrameInputs.Interior;
+
+    /// <summary>The precipitation program's read: the sun array on its own unit (nothing else is bound there
+    /// in this program), the fit matrix, the layer. A zero matrix is "no map" to the stage.</summary>
+    private static void BindCover(ref Loc l)
+    {
+        bool on = Cover.V && CasterPass.CoverFresh;
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.SunShadow);
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, CasterPass.CascadeTex);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        Gl.Uniform1i(l.Cover, (int)TextureSlots.SunShadow);
+        Matrix4x4 vp = on ? CasterPass.CoverVp : default;
+        Gl.UniformMatrix4fv(l.CoverVp, 1, 0, (float*)&vp);
+        Gl.Uniform1f(l.CoverLayer, CasterPass.CoverLayer);
+        Gl.Uniform1f(l.CoverSoft, CoverSoft.V);
+    }
+
+    private static string CoverStats() => Cover.V ? $", {CasterPass.CoverStats()}" : "";
+}

@@ -382,6 +382,8 @@ public sealed unsafe partial class AlloyRenderer
         L.AoDirect = GlProgram.Loc(prog, "uAoDirect");
         L.Contact = GlProgram.Loc(prog, "uContact");
         L.ContactFar = GlProgram.Loc(prog, "uContactFar");
+        L.Weather = GlProgram.Loc(prog, "uWeather"); L.WeatherLook = GlProgram.Loc(prog, "uWeatherLook");
+        L.CoverVp = GlProgram.Loc(prog, "uCoverVp"); L.CoverLayer = GlProgram.Loc(prog, "uCoverLayer");
         L.Feat = FeatLocs(prog);
         // Bind the two shadow samplers to their units ONCE, here, and not only on the frames a map is fresh.
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers

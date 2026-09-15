@@ -6,7 +6,7 @@ replaced at runtime by a `.shd` resource of the same name — a customization su
 for people who want the look to be theirs.
 
 This document is the contract that surface comes with: what an override is, what the
-twenty-five stages are, and precisely what the extender refuses and why.
+twenty-nine stages are, and precisely what the extender refuses and why.
 
 ## What an override is, and what it is not
 
@@ -94,7 +94,7 @@ Practical requirements, none of which the extender can check for you:
 A build failure of any kind rebuilds the embedded stage and says so in the log, so a bad
 module costs a log line rather than the frame.
 
-## The twenty-five stages
+## The twenty-nine stages
 
 | resref | stage | what it does |
 | --- | --- | --- |
@@ -123,6 +123,9 @@ module costs a log line rather than the frame.
 | `cx_ssaoblur_fs` | fragment | The depth-aware 4x4 blur that folds the AO pass's dither pattern away. |
 | `cx_halo_vs` | vertex | Procedural light halos: one instanced billboard per `lensflares 1` light (SSBO binding 5: position/radius, linear colour/flareradius). Reach fades to zero at `flareradius`. |
 | `cx_halo_fs` | fragment | The halo look: gaussian core, soft skirt, faint streaks, chromatic spread, and the per-pixel occlusion against `uSceneDepth` (soft over one radius). Additive over the linear frame, so no encode. |
+| `cx_weather_vs` | vertex | Rain and snow (#616): one instanced quad per drop or flake, its lattice point a hash of `gl_InstanceID` in a fall-aligned box that wraps around the camera as `uPhase` slides it; a streak along `uFall` or a camera-facing disc. Tests the instance against the rain occlusion map (`uCover`, a layer of the sun array, #617) and sends a sheltered one off-screen. No buffer, no attributes. |
+| `cx_rain_fs` | fragment | The rain streak: a tapered core, faded where it meets geometry through `uSceneDepth` (`uSoft` = 1/m). Alpha over the linear frame, so no encode. `uViz` 1 paints the fade. |
+| `cx_snow_fs` | fragment | The snowflake: a soft disc, the same contact fade. Alpha over the linear frame. |
 
 One more file appears in the dump: `cx_ownlit_fs.bindless.shd`. It is **reference
 only** — the lit stage after the extender's own bindless rewrite. The dot makes it

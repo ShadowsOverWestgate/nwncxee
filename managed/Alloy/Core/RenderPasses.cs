@@ -120,6 +120,14 @@ internal static class RenderPasses
         }, log);
         r.Register(new PassLifecycle
         {
+            Name = "weather",
+            Install = Weather.Install,
+            SelfCheck = Weather.SelfCheck,
+            ContextLost = Weather.ContextLost,
+            Stats = _ => Weather.Stats(),
+        }, log);
+        r.Register(new PassLifecycle
+        {
             Name = "scenedepth",
             // Attached by Particles, its only consumer, rather than here: it is a resource the particle pass
             // owns the timing of, not a pass of its own. ponytail: left alone; if a second consumer appears

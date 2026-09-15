@@ -343,3 +343,21 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   error drain). Every bracket is a GPU pipeline bubble, so the count per frame is a **budget**, not
   an implementation detail: Alloy passes are grouped to fit inside existing brackets rather than
   taking their own.
+- **Rain occlusion map** (#617) — one orthographic depth view of the still casters, looking along the
+  **fall vector**, baked and held exactly as a sun cascade is (the texel-snapped fit matrix is the key) and
+  stored as the spare layer of the sun array. The one primitive of Alloy weather: a shadow-map test against
+  it answers "is this point under cover" for a falling streak and for a surface alike. Avoid: roof mask.
+- **Fall vector** — the unit direction precipitation travels: gravity leaning into the area wind the
+  renderer already uploads (`normalize(wind * lean, -1)`). What the field falls along and what the rain
+  occlusion map looks along, so an overhang shelters downwind and not upwind.
+- **Exposure** — a surface point's 0..1 answer from the rain occlusion map: 1 under open sky along the fall
+  vector, 0 under cover. The only per-fragment weather input; every response is exposure x an amount.
+- **Soak** — the CPU-side amounts the world carries: wetness and snow integrate density x time while the
+  weather runs and decay after the stop edge; puddles fill once wetness passes a threshold and drain slower
+  than the sheen dries. Uniforms, never per-texel storage; a surface point's response is its exposure x the
+  soak. Avoid: accumulation buffer.
+- **Silence** (weather) — the vanilla weather emitter removed at its source: `CNWCArea::SetWeather` is
+  forwarded density 0 while the master is on and the row is one Alloy draws, which is the engine's own
+  "no weather" path (it deletes its six fx objects itself). Nothing downstream is suppressed, and an
+  un-mapped row (fog, a dry storm) keeps its stock emitter. Distinct from the particle pass's per-emitter
+  decline, which suppresses a build the engine still owns.

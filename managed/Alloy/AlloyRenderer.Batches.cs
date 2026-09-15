@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Framework;
 using CX.Graphics;
+using CX.Services.Camera;
 using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
@@ -340,6 +341,23 @@ public sealed unsafe partial class AlloyRenderer
         return owner.IsNull ? g : owner.Ptr;
     }
 
+    /// <summary>#618: is this part a creature's? Its own gob, or any gob up its attachment chain, carries
+    /// <see cref="EngineLayout.GobKindCreature"/> (a hat or a held weapon is its own gob hanging off the body's).
+    /// NOT <see cref="RunGob"/>: that returns the fade-owner NODE (gob+0x68) as a composite key, and a node
+    /// read as a gob has no type -- which is how every character first painted as an object.</summary>
+    private static bool CreaturePart(int i)
+    {
+        IntPtr g = _oGob[i];
+        for (int hop = 0; hop < 8 && g != IntPtr.Zero; hop++)
+        {
+            if (SceneRay.IsCreature(g)) return true;
+            IntPtr behavior = *(IntPtr*)(g + EngineLayout.GobAttach);
+            if (behavior == IntPtr.Zero) return false;
+            g = *(IntPtr*)(behavior + EngineLayout.BehaviorTarget);
+        }
+        return false;
+    }
+
     private static float EyeDist2(int i)
     {
         float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
@@ -484,6 +502,9 @@ public sealed unsafe partial class AlloyRenderer
     /// same part. The texture rotation cannot change without failing <c>IdentityOk</c> (which revokes), a
     /// .mtr does not animate, and the three alpha ones are literal constants. An identity model matrix is
     /// here too: a part whose class does not stage a node has no live matrix to re-read.</summary>
+    /// <summary>Stable-record writes by emi.w class since arming (creature / object / tileset), for the weather line.</summary>
+    internal static int RecCreature, RecObject, RecTile;
+
     private static void WriteStable(float* r, int i, bool lit)
     {
         if (!_oMx[i]) { *(Matrix4x4*)r = Matrix4x4.Identity; *(Matrix4x4*)(r + PrevFloat) = Matrix4x4.Identity; }
@@ -500,7 +521,11 @@ public sealed unsafe partial class AlloyRenderer
         // on a low-poly creature or cloak reads its own facets as blockers; the ground under it does not.
         // Static geometry (no gob at all) IS the tileset: only an object instances off a gob, and the gob'd
         // half a SpawnTile split leaves is caught by the tile-gob test.
-        r[31] = _oGob[i] == IntPtr.Zero || _oTileGob[i] ? 1f : 0f;
+        // #618: -1 marks a CREATURE's part (the root of its attachment chain is a creature gob), for the snow
+        // gate -- snow does not settle on a moving body. Safe reuse: every other reader tests > 0.5.
+        r[31] = _oGob[i] == IntPtr.Zero || _oTileGob[i] ? 1f
+              : CreaturePart(i) ? -1f : 0f;
+        if (r[31] < 0f) RecCreature++; else if (r[31] > 0f) RecTile++; else RecObject++;
         int o = i * 8;
         r[32] = _oParam[o]; r[33] = _oParam[o + 1]; r[34] = _oParam[o + 2];
         r[36] = _oParam[o + 4]; r[37] = _oParam[o + 5]; r[38] = _oParam[o + 6]; r[39] = _oParam[o + 7];

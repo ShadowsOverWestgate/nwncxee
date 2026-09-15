@@ -345,6 +345,7 @@ public sealed unsafe partial class AlloyRenderer
                     UploadProbe(L);
                     SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
                     ContactShadow.BindForDraw(L.Contact, L.ContactFar, _capturing);
+                    Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, _capturing);
                     litBase = L.Base; litCut = L.Cut; litOitBias = L.OitBias; litOitGob = L.OitGob; boundOitBias = -1f; boundOitGob = -1;
                     litSsaoOn = L.SsaoOn; litAoDirect = L.AoDirect;
                     boundSsao = -1;

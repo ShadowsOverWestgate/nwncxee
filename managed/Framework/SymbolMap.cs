@@ -646,6 +646,21 @@ internal static unsafe class SymbolMap
     /// <summary>CNWCArea::ReloadBorder() @0x711ff0 -- the server's tile-border toggle / tile change path
     /// (HandleServerToPlayerArea). ABI: <c>(CNWCArea* /*rdi*/)</c>.</summary>
     public const string AreaReloadBorder = "_ZN8CNWCArea12ReloadBorderEv";
+
+    // ---- #615: the weather entry points. CNWCArea::SetWeather @0x702b10 is VIRTUAL (vtbl+0x60), and it is the
+    //      one that carries state: (type, density 0..100). Its body deletes the six fx CAurObjects at area+0x258
+    //      and the lightning one at +0x288 whenever density is 0 or the type changes, and re-creates them from
+    //      weathertypes.2da "Model" when density > 0 -- so forwarding density 0 IS the vanilla-emitter silence.
+    //      CNWCArea::Update ramps it: (target, (fade-left)/fade*100) up, (current, left/fade*100) down, then
+    //      (target, target ? 100 : 0) once at the end. StartWeather/StopWeather @0x704de0/@0x704e20 only set the
+    //      target byte (+0x2f1) and the 6000ms ramp (+0x2ec) and cue the rain sound; hooked for the edge log.
+    /// <summary>CNWCArea::SetWeather(unsigned char type, float density). ABI: <c>(CNWCArea*, uchar, float)</c>
+    /// -- Linux <c>rdi, esi, xmm0</c>; Win64 <c>rcx, dl, xmm2</c>. Returns int (1 = applied).</summary>
+    public const string AreaSetWeather = "_ZN8CNWCArea10SetWeatherEhf";
+    /// <summary>CNWCArea::StartWeather(unsigned char type). ABI: <c>(CNWCArea*, uchar)</c>.</summary>
+    public const string AreaStartWeather = "_ZN8CNWCArea12StartWeatherEh";
+    /// <summary>CNWCArea::StopWeather(unsigned char). ABI: <c>(CNWCArea*, uchar)</c>; the byte is unused.</summary>
+    public const string AreaStopWeather = "_ZN8CNWCArea11StopWeatherEh";
     /// <summary>Scene::InitBSP(int w, int h, int border, bool, float cell) @0x46c330 (Scene vt+0x30) -- the
     /// tile BSP covers <c>(w + 2*border) x (h + 2*border)</c> cells, and <c>SceneBSPGetTileData</c> CLAMPS a
     /// position outside it onto the edge leaf (BSPFitSphere), so a wider ring needs a wider border here.
@@ -1284,6 +1299,12 @@ internal static unsafe class SymbolMap
         [RefreshHilite]    = At(0x966170),   // its own ExoLog nwcanimbase.cpp:0x123a; channels +0x9c/+0xb0/+0xc8
         [AreaLoadBorder]   = At(0x7dea10),   // __FUNCSIG__ "int __cdecl CNWCArea::LoadBorder(class CGuiAreaLoadscreen *,float)"
         [AreaReloadBorder] = At(0x7e1e40),   // HandleServerToPlayerArea's flag-bit-2 branch; deletes (vt+0x50) + respawns (vt+0x30)
+        // #615: SetWeather anchored by its own "weatherlight"/"ModelLightning" strings (the only user of either);
+        //       Start/Stop are the two callees of HandleServerToPlayerArea's case 4 (ReadBOOL ? Start : Stop), bodies
+        //       identical to Linux (+0x2f1, +0x2ec = 6000, CNWCAmbientSound::Rain). All field offsets Same.
+        [AreaSetWeather]   = At(0x7e63c0),
+        [AreaStartWeather] = At(0x7e69a0),
+        [AreaStopWeather]  = At(0x7e69e0),
 
         // --- #447: the rest of the table. The 142 Nm rows below are MECHANICAL -- MSVC mangling carries the
         //     return type Itanium drops (#433), so llvm-undname over nwmain.exe's 18237 exports pairs on

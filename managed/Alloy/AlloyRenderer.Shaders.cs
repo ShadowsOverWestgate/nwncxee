@@ -1186,7 +1186,11 @@ public sealed unsafe partial class AlloyRenderer
         }
         """;
 
-    internal const string OwnedLitFsMain = """
+    /// <summary>The lit main, with the weather splices (#618/#619) folded in at their two seams: the surface
+    /// rewrite between material synthesis and the lighting, and the wet reflection after the probe term.</summary>
+    internal const string OwnedLitFsMain = OwnedLitFsMainSynth + Weather.LitSplice + OwnedLitFsMainLight + Weather.LitSpliceProbe + OwnedLitFsMainTail;
+
+    internal const string OwnedLitFsMainSynth = """
         void main()
         {
             vec3 N = normalize(vNrm);
@@ -1438,6 +1442,9 @@ public sealed unsafe partial class AlloyRenderer
             if (uViz == 32) { frag = vec4(N * 0.5 + 0.5, 1.0); return; }
             if (uViz == 33) { frag = vec4(pbr, 1.0); return; }
             float spec = pbr.x, rough = pbr.y, metal = pbr.z;
+        """;
+
+    internal const string OwnedLitFsMainLight = """
             vec3 base = albedo * matDiffuse;
             vec3 specColor = SpecularColor;
             vec3 F0 = specColor * spec;
@@ -1493,6 +1500,9 @@ public sealed unsafe partial class AlloyRenderer
                 vec3 env = textureLod(uProbe, reflect(-V, N), rough * (uProbeMips - 1.0)).rgb;
                 specLight += (ambient + diffuse) * env * F0 * uProbeGain;
             }
+        """;
+
+    internal const string OwnedLitFsMainTail = """
             // 6 = the specular lobe alone: exactly what #120 adds. A part that reads flat in the composite is
             //     either black here (no lobe at all) or washed out by the diffuse, and nothing else tells the
             //     two apart.

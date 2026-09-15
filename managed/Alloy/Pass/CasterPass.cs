@@ -56,7 +56,7 @@ namespace CX.Alloy;
 /// <c>/shadow</c> carries the look knobs. The frame path
 /// allocates nothing.</para>
 /// </summary>
-public sealed unsafe class CasterPass : IExtenderService
+public sealed unsafe partial class CasterPass : IExtenderService
 {
     /// <summary>The live-list capacity IS the ownership table's: #302 made a caster an ownership slot, so a
     /// smaller number here would silently bake a fraction of what the colour pass draws -- which reads as
@@ -1283,7 +1283,7 @@ public sealed unsafe class CasterPass : IExtenderService
         _gStaged = false;
         _qN = 0;
         ReceiverFrame();
-        if (sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0))
+        if (sun || (_cubeLights > 0 && FrameInputs.LocalLightCount > 0) || (sun && Weather.CoverWanted))
         {
             if (EnsureCommon() && CasterGather.Ensure()) { EnsureLayered(); EnsureHandleMask(); _gStaged = GatherStage(); }
             // #303: the compute dispatch is the ONLY selection path. A program that can never build would
@@ -1306,6 +1306,9 @@ public sealed unsafe class CasterPass : IExtenderService
                 case PassId.LocalLightCubes:
                     if (_cubeLights > 0 && FrameInputs.LocalLightCount > 0 && EnsureCubes()) CubePass(focus);
                     break;
+                case PassId.RainCover:
+                    CoverPass(focus, sun);
+                    break;
             }
         }
         // #307: the queued stale views flush in one layered pass per target, HERE -- the publish arrays the
@@ -1314,7 +1317,7 @@ public sealed unsafe class CasterPass : IExtenderService
         if (!FlushLayered())
         {
             _layerFlushFails++;
-            CascadeCount = 0; CubeCount = 0;
+            CascadeCount = 0; CubeCount = 0; CoverRelease();
             Array.Clear(SunDynMask); Array.Clear(CubeDynPage);
             _invalidate = true; _sunScanned = false; _cubeScanned = false;
         }
@@ -2045,6 +2048,7 @@ public sealed unsafe class CasterPass : IExtenderService
         // or the first frame in the new area finds every view fresh -- shadows frozen from the old module.
         Array.Clear(_cubeBaked); Array.Clear(_cubeHadMover); Array.Clear(_cubeKeyId);
         Array.Clear(_sunBaked); Array.Clear(_sunHadMover); Array.Clear(_sunFitValid);
+        CoverRelease();
         // #305: the pool pages name lights that just went away, and the published page indices with them.
         Array.Clear(_cubeCombined); Array.Clear(CubeDynPage);
         // #306: the sun's half of the same wipe, degrade window included.
@@ -2175,9 +2179,10 @@ public sealed unsafe class CasterPass : IExtenderService
         if (!EnsureCommon()) return false;
         if (_depthTex == 0)
         {
-            _depthTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades);
+            _depthTex = DepthArray(Gl.TEXTURE_2D_ARRAY, _mapSize, _cascades + CoverLayers);   // #617: the cover map rides the last layer
             if (_depthTex == 0) return false;   // DepthArray already disarmed by name
             Array.Clear(_sunBaked);   // #282: fresh storage holds no bake, whatever the keys say
+            _coverBaked = false;
         }
         // #306: the sun's dynamic half, allocated whenever configured (the /shadow split dial is live).
         if (_sunSplitCfg && SunDynTex == 0)
