@@ -1100,6 +1100,9 @@ internal static unsafe class OwnedTextures
         if (_censusReported || _censusRaw + _censusBcn == 0 || _dripFrame - _censusLastUpload < CensusSettle)
             return;
         _censusReported = true;
+        // #284 ledger keyed on raw CAurTexture*: the area edge recycles addresses, so a fresh texture
+        // inherited a dead one's Never/spent verdict and was skipped for the session (no-gl-id 31/frame).
+        _rebuildTried.Clear();
         int total = _censusRaw + _censusBcn;
         long totalBytes = _censusRawBytes + _censusBcnBytes;
         _log?.Info($"OwnedTextures: [census] area settled -- {_censusRaw}/{total} textures "
@@ -1193,6 +1196,8 @@ internal static unsafe class OwnedTextures
     private static readonly Dictionary<IntPtr, Try> _rebuildTried = new();
     private static int _dripFrame;
     private static long _rebuilds, _rebuildWon, _rebuildDead, _rebuildDropped;
+    /// <summary>Skips the ledger refused to re-ask about (verdict already final). Nonzero beside a no-gl-id count is the ledger, not a race.</summary>
+    private static long _rebuildRefused;
     /// <summary>The residual, split by the reason a build cannot help -- see <see cref="Rebuild"/> for what
     /// each one is in the binary. These are POPULATIONS of distinct textures, not attempt counts: a texture
     /// is charged to exactly one of them, at its FINAL disposition, once.</summary>
@@ -1213,7 +1218,8 @@ internal static unsafe class OwnedTextures
     {
         if (tex == IntPtr.Zero || _buildAndStore == null) return;
         if (_rebuildTried.TryGetValue(tex, out Try t)
-            && (t.Never || t.Tries >= RebuildAttempts || _dripFrame - t.Frame < RebuildRearm)) return;
+            && (t.Never || t.Tries >= RebuildAttempts || _dripFrame - t.Frame < RebuildRearm))
+        { if (t.Never || t.Tries >= RebuildAttempts) _rebuildRefused++; return; }
         if (_rebuildN >= RebuildQueue) { _rebuildDropped++; return; }
         for (int i = 0; i < _rebuildN; i++) if (_rebuildQ[i] == tex) return;
         _rebuildQ[_rebuildN++] = tex;
@@ -1348,7 +1354,7 @@ internal static unsafe class OwnedTextures
         long residual = _rebuildNullTex + _rebuildNoBasic + _rebuildNoImage + _rebuildSpent;
         if (_rebuilds == 0 && _rebuildN == 0 && _rebuildDropped == 0 && residual == 0) return "";
         return $", unbuilt textures: {_rebuilds} retried ({_rebuildWon} now have an id, {_rebuildDead} refused as "
-             + $"freed), {_rebuildN} queued"
+             + $"freed), {_rebuildN} queued, {_rebuildRefused} skips refused by the ledger"
              + (_rebuildDropped == 0 ? "" : $", {_rebuildDropped} DROPPED (queue full)")
              + (residual == 0 ? "" : $"; UNBUILDABLE: {_rebuildNullTex} are the NULL texture, {_rebuildNoBasic} "
                  + $"have no basic, {_rebuildNoImage} found no image (resource not resident), {_rebuildSpent} "
