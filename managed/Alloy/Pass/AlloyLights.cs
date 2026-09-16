@@ -617,16 +617,19 @@ internal static unsafe class AlloyLights
         uniform float uLocalDynPage[64];
         uniform float uLocalFade[64];   // per-slot shadow strength: a slot fading in after its bake or out after its light left the budget
 
+        // Shadow-accuracy pass: every offset/bias below is HALF its #308 value (the stacked push reached 8
+        // texels = 0.5-1u of peter-panning on the outer cascades). Creature self-shadowing stays off
+        // (CX_LOCAL_DYN_NEAR), so the low-poly acne these were sized against no longer needs covering.
         // Sample point pushed along the normal by this many cube texels -- the same acne fight the sun
         // cascades run, scaled by the texel a face actually spans at this distance rather than a constant.
-        const float CX_LOCAL_NORMAL_OFFSET = 2.0;
+        const float CX_LOCAL_NORMAL_OFFSET = 1.0;
         // Depth bias in WORLD units along the face's major axis, applied before the projection so it stays a
         // constant distance whatever the light's reach is.
-        const float CX_LOCAL_BIAS = 0.05;
+        const float CX_LOCAL_BIAS = 0.02;
         // #308 follow-up (acne): the sun receiver's slope terms, same reasoning -- a face lit at grazing
         // incidence needs offset and bias that grow with tan(theta), or the terminator stair-steps.
-        const float CX_LOCAL_SLOPE_OFFSET = 1.5;
-        const float CX_LOCAL_SLOPE_MAX = 4.0;
+        const float CX_LOCAL_SLOPE_OFFSET = 0.75;
+        const float CX_LOCAL_SLOPE_MAX = 2.0;
         // #308 follow-up: fragments ON A CREATURE (skinmesh or dangly -- exactly the classes the caster
         // walk puts in the dynamic set every frame) skip the dyn-pool tap when they stand within this many
         // times the near-field skip (uLocalSoft.y) of the light. In that band the pool's blocker is the
@@ -1058,17 +1061,18 @@ internal static unsafe class AlloyLights
         const float CX_SUN_FADE_HI = 0.90;
         uniform vec3 uSunFocus;      // the LIVE fit focus this frame
         uniform vec4 uSunRadius;     // per-cascade fit radius
+        // Shadow-accuracy pass: offsets halved from #308 (see LocalShadowLib); csmbias default halved with them.
         // Sample point pushed along the normal by this many texels. Normal offset does what a depth bias
         // cannot: it scales with the texel a slope actually spans, so acne goes without the detached-shadow
         // peter-panning a bias big enough for grazing light would cost.
-        const float CX_SUN_NORMAL_OFFSET = 2.0;
+        const float CX_SUN_NORMAL_OFFSET = 1.0;
         // #308 follow-up (acne): the constant offset above is sized for a face the light hits square-on. A
         // face lit at grazing incidence spans tan(theta) texels of DEPTH per texel of map, so the terminator
         // marches across it in texel-sized stair steps unless the offset grows with the slope. Extra texels
         // of push per unit of tan(theta), and the clamp that keeps a fully edge-on face (tan -> inf) from
         // being lifted into the next caster over.
-        const float CX_SUN_SLOPE_OFFSET = 1.5;
-        const float CX_SUN_SLOPE_MAX = 4.0;
+        const float CX_SUN_SLOPE_OFFSET = 0.75;
+        const float CX_SUN_SLOPE_MAX = 2.0;
         // #148: 0 = this fragment is a SURFACE, and the normal offset above is the acne fight it needs.
         // 1 = it is a point inside a VOLUME -- a particle -- where the offset is not merely useless but
         // actively harmful: a billboard's normal faces the CAMERA, not away from any geometry, so offsetting

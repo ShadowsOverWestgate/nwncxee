@@ -56,13 +56,13 @@ internal static class Shadows
         G.Section("Sun");
         SunDyn = G.Toggle("sundyn", "Separate moving-caster sun layer", true, Tier.Advanced, Effect.Restart);
         G.Section("Point lights");
-        DiscPx = G.Slider("discpx", "Softness cutoff", 0f, 16f, 0.5f, 3f, "px", Tier.Advanced,
-                          help: "Below this screen radius the blur stands down.");
+        DiscPx = G.Slider("discpx", "Softness cutoff", 0f, 16f, 0.5f, 0f, "px", Tier.Advanced,
+                          help: "Below this screen radius the blur stands down. 0 = never (consistent softness at every distance).");
         Cap = G.Slider("cap", "Shadow taps per pixel", 0, 2, 1, 2, tier: Tier.Advanced, help: "0 = every light.");
         Near = G.Slider("near", "Self-shadow skip", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced,
                         help: "Carried lights don't shadow their bearer inside this radius.");
         G.Section("Sun");
-        CsmBias = G.Slider("csmbias", "Sun depth bias", 0f, 0.5f, 0.01f, 0.06f, tier: Tier.Advanced);
+        CsmBias = G.Slider("csmbias", "Sun depth bias", 0f, 0.5f, 0.01f, 0.03f, tier: Tier.Advanced);
         G.Section("Contact");
         ContactSteps = G.Slider("contactsteps", "Contact shadow steps", 1, 32, 1, 12, tier: Tier.Advanced);
         ContactFar = G.Slider("contactfar", "Contact shadow range", 1f, 100f, 1f, 20f, "m", Tier.Advanced);
@@ -82,9 +82,9 @@ internal static class Shadows
         G.Section("Performance");
         StaticCap = G.Slider("staticcap", "Static re-bakes per frame", 0, 16, 1, 3, tier: Tier.Advanced, help: "0 = unbounded (hitches).");
         DynHold = G.Slider("dynhold", "Mover hold", 0, 120, 1, 30, "frames", Tier.Advanced);
-        DynFull = G.Slider("dynfull", "Full-rate cube ranks", 0, CasterPass.MaxCubes, 1, 8, tier: Tier.Advanced);
-        SunFull = G.Slider("sunfull", "Full-rate sun cascades", 0, CasterPass.MaxCascades, 1, 2, tier: Tier.Advanced);
-        SunLatch = G.Slider("sunlatch", "Cascade re-latches per frame", 0, CasterPass.MaxCascades, 1, 1, tier: Tier.Advanced);
+        DynFull = G.Slider("dynfull", "Full-rate cube ranks", 0, CasterPass.MaxCubes, 1, CasterPass.MaxCubes, tier: Tier.Advanced, help: "Cube ranks past this re-bake movers every other frame.");
+        SunFull = G.Slider("sunfull", "Full-rate sun cascades", 0, CasterPass.MaxCascades, 1, CasterPass.MaxCascades, tier: Tier.Advanced, help: "Cascades past this re-bake movers every other frame.");
+        SunLatch = G.Slider("sunlatch", "Cascade re-latches per frame", 0, CasterPass.MaxCascades, 1, 0, tier: Tier.Advanced, help: "0 = every drifted cascade re-fits the same frame.");
         DynRanks = G.Slider("dynranks", "Mover pages", 0, CasterPass.MaxCubes, 1, CasterPass.MaxCubes, tier: Tier.Advanced,
                             changed: CasterPass.ShadowInvalidate);
 
