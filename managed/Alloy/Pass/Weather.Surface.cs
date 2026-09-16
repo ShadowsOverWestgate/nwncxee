@@ -260,8 +260,10 @@ internal static unsafe partial class Weather
         E(lit.IndexOf("float spec = pbr.x, rough = pbr.y, metal = pbr.z;", StringComparison.Ordinal) < lit.IndexOf("float wxWet = 0.0", StringComparison.Ordinal)
           && lit.IndexOf("float wxWet = 0.0", StringComparison.Ordinal) < lit.IndexOf("vec3 base = albedo * matDiffuse;", StringComparison.Ordinal),
           "the surface splice sits after synthesis and before the lighting reads albedo/rough/spec");
-        E(WeatherVs.Contains("uniform sampler2DArrayShadow uCover;") && WeatherVs.Contains("CxCovered(Pc) < 0.5"),
+        E(WeatherVs.Contains("uniform sampler2DArrayShadow uCover;") && WeatherVs.Contains("CxCovered(Pc);") && WeatherVs.Contains("shown < 0.5"),
           "the precipitation vertex stage tests its instance against the cover map");
+        E(WeatherVs.Contains("uKind == 3 ? CxLip(P, R, U)") && WeatherVs.Contains("if (CxCovered(P) >= 0.5) return 0.0;"),
+          "a drip instance survives only under a lip: covered here, open within the feather");
         E(ShaderContract.LinearSafe(RainFs) && ShaderContract.LinearSafe(SnowFs), "the precipitation stages stay linear");
         E(KindOf(1) == Kind.Rain && KindOf(2) == Kind.Snow && KindOf(0) == Kind.None && KindOf(7) == Kind.None,
           "stock rows 1/2 map to rain/snow, row 0 and the fog row to none");

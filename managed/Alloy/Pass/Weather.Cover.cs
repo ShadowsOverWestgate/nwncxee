@@ -28,8 +28,11 @@ internal static unsafe partial class Weather
     private static void InstallCover(ExtenderLog log)
         => log.Info("Weather: cover map rides the sun array's spare layer; /weather viz 2 paints exposure on the world");
 
-    /// <summary>The shadow bracket bakes a cover map only while there is weather to shelter from.</summary>
-    internal static bool CoverWanted => !_off && Enabled.V && Cover.V && CurrentKind != Kind.None && Density > 0f && !FrameInputs.Interior;
+    /// <summary>The shadow bracket bakes a cover map while there is weather to shelter from, and holds it while
+    /// anything is still soaked: the wet/snowed ground keeps its sheltered patches dry and the drips (#620)
+    /// their edges after the stop edge.</summary>
+    internal static bool CoverWanted => !_off && Enabled.V && Cover.V && !FrameInputs.Interior
+        && ((CurrentKind != Kind.None && Density > 0f) || _wet > 0f || _snow > 0f);
 
     /// <summary>The precipitation program's read: the sun array on its own unit (nothing else is bound there
     /// in this program), the fit matrix, the layer. A zero matrix is "no map" to the stage.</summary>
