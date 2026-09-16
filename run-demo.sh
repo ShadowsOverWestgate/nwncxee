@@ -27,7 +27,8 @@ LOG="$DEMOHOME/cx.log"
 # carrying the client's build-id and runs in that. The key comes from EngineLayout, never a second copy.
 BID=$(grep -oP 'LinuxBuildId = "\K[0-9a-f]+' managed/Framework/EngineLayout.cs)
 [ -n "$BID" ] || { echo ">> FAIL: no LinuxBuildId in managed/Framework/EngineLayout.cs"; exit 1; }
-STUB="$DEMOHOME/demo-host"
+# Named nwmain-*: the bootstrap loads into nothing else (the Steam runtime preloads its helpers too).
+STUB="$DEMOHOME/nwmain-demo"
 echo 'int main(void){return 0;}' | cc -x c - -o "$STUB" -Wl,--build-id=0x"$BID"
 
 echo ">> launching the demo host with the extender preloaded..."
@@ -54,7 +55,8 @@ echo ">> $(grep -c 'SelfCheck' "$LOG") SelfCheck lines, none failed."
 # the rot case -- a host the offsets were never measured against -- so the gate must discover nothing.
 ROTHOME="${TMPDIR:-/tmp}/cx-demo-rot"
 rm -rf "$ROTHOME"; mkdir -p "$ROTHOME"
-HOME="$ROTHOME" CX_MANAGED="$B/cx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libcx.so" /usr/bin/env >/dev/null
+cp /usr/bin/env "$ROTHOME/nwmain-rot"
+HOME="$ROTHOME" CX_MANAGED="$B/cx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libcx.so" "$ROTHOME/nwmain-rot" >/dev/null
 echo
 echo ">> rot case ($ROTHOME/cx.log):"
 grep 'host:' "$ROTHOME/cx.log" || true
