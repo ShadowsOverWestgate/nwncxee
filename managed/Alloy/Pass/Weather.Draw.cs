@@ -35,6 +35,7 @@ internal static unsafe partial class Weather
 
     private static uint _progRain, _progSnow, _vao;
     private static Loc _locRain, _locSnow;
+    private static AlloyRenderer.LitLoc _litRain, _litSnow;
     private static bool _failed;
     private static double _phase;
     private static float _wobble;
@@ -42,7 +43,7 @@ internal static unsafe partial class Weather
     private static int _drawn, _count, _drips;
     private static Vector3 _fall;
 
-    private struct Loc { public int View, Proj, Eye, Centre, Fall, Phase, Time, Speed, Box, Size, Kind, Drift, Depth, Tint, Alpha, Soft, Viz, Cover, CoverVp, CoverLayer, CoverSoft; }
+    private struct Loc { public int View, Proj, Eye, Centre, Fall, Phase, Time, Speed, Box, Size, Kind, Drift, Depth, Tint, Alpha, Soft, Viz, Cover, CoverVp, CoverLayer, CoverSoft, Lit; }
 
     private static void DeclareKnobs()
     {
@@ -50,7 +51,7 @@ internal static unsafe partial class Weather
         DensityScale = G.Slider("density", "Density", 0f, 3f, 0.1f, 1f, help: "Scales how much falls at the engine's own weather density.");
         StreakLen = G.Slider("streak", "Rain streak length", 0.1f, 2f, 0.05f, 0.35f, "m", help: "Mean length of one rain streak (each varies 0.5x-1.3x).");
         FlakeSize = G.Slider("flake", "Snowflake size", 0.01f, 0.2f, 0.01f, 0.05f, "m", help: "Diameter of one flake.");
-        Brightness = G.Slider("bright", "Brightness", 0f, 3f, 0.1f, 0.6f, help: "Streaks and flakes take the area's light; this scales it.");
+        Brightness = G.Slider("bright", "Brightness", 0f, 3f, 0.1f, 0.6f, help: "Streaks and flakes take the light where they fall (sun, shadow, lamps); this scales it.");
         Opacity = G.Slider("opacity", "Rain opacity", 0.02f, 1f, 0.02f, 0.34f, help: "How solid a streak is. Real rain is faint.");
         Range = G.Slider("range", "Range", 6f, 40f, 1f, 20f, "m", Tier.Advanced, help: "Size of the box around the camera the field fills.");
         RainSpeed = G.Slider("rainspeed", "Rain speed", 2f, 30f, 0.5f, 12f, "m/s", Tier.Advanced);
@@ -87,7 +88,7 @@ internal static unsafe partial class Weather
     /// <summary>The weather pass, after the halos: alpha over, depth-tested against the finished frame, no
     /// depth write. Precipitation while the engine's density is up; drips while the roofs are wet and there
     /// is a cover map to find their edges in. Hands back blend off, depth test on, depth mask on.</summary>
-    internal static void Draw(Matrix4x4* view, Matrix4x4* proj, int* viewport, Vector3 eye, Vector2 wind)
+    internal static void Draw(Matrix4x4* view, Matrix4x4* proj, int* viewport, Vector3 eye, Vector2 wind, float near, float far, bool lightingOn)
     {
         _count = 0; _drips = 0;
         // an interior has no sky: nothing falls and nothing soaks, whatever weather the area was given
@@ -103,19 +104,20 @@ internal static unsafe partial class Weather
                       blendSrc: AlloyRenderer.GlSrcAlpha, blendDst: Gl.ONE_MINUS_SRC_ALPHA).Apply();
         if (_vao == 0) { uint v; Gl.GenVertexArrays(1, &v); _vao = v; }
         Gl.BindVertexArray(_vao);
-        if (count > 0 && Submit(snow ? 2 : 1, count, view, proj, eye)) { _count = count; _drawn += count; }
-        if (drips > 0 && Submit(3, drips, view, proj, eye)) { _drips = drips; _drawn += drips; }
+        if (count > 0 && Submit(snow ? 2 : 1, count, view, proj, eye, viewport, near, far, lightingOn)) { _count = count; _drawn += count; }
+        if (drips > 0 && Submit(3, drips, view, proj, eye, viewport, near, far, lightingOn)) { _drips = drips; _drawn += drips; }
         Gl.BindVertexArray(0);
         Gl.Disable(Gl.BLEND);
         Gl.DepthMask(1);
     }
 
     /// <summary>One instanced draw of <paramref name="kind"/> (1 rain, 2 snow, 3 drips: rain's program).</summary>
-    private static bool Submit(int kind, int count, Matrix4x4* view, Matrix4x4* proj, Vector3 eye)
+    private static bool Submit(int kind, int count, Matrix4x4* view, Matrix4x4* proj, Vector3 eye, int* viewport, float near, float far, bool lightingOn)
     {
         bool snow = kind == 2;
         if (!EnsureProgram(snow)) return false;
         ref Loc l = ref (snow ? ref _locSnow : ref _locRain);
+        ref AlloyRenderer.LitLoc L = ref (snow ? ref _litSnow : ref _litRain);
         Gl.UseProgram(snow ? _progSnow : _progRain);
         Gl.UniformMatrix4fv(l.View, 1, 0, (float*)view);
         Gl.UniformMatrix4fv(l.Proj, 1, 0, (float*)proj);
@@ -133,10 +135,20 @@ internal static unsafe partial class Weather
         Gl.Uniform1i(l.Kind, kind);
         Gl.Uniform1f(l.Drift, snow ? 0.4f : 0f);
         Gl.Uniform1i(l.Depth, (int)SceneDepth.Unit);
-        // flakes are near-opaque white, so they take the whole area light; streaks are faint and take half the sun
-        Vector3 c = snow ? (FrameInputs.AreaAmbient + FrameInputs.AreaDiffuse) * (Brightness.V * 1.67f)
-                         : (FrameInputs.AreaAmbient + FrameInputs.AreaDiffuse * 0.5f) * Brightness.V;
-        Gl.Uniform3f(l.Tint, c.X, c.Y, c.Z);
+        // the light itself is the vertex stage's (sun + shadow + clustered lamps at the instance); this is
+        // the scalar on it -- flakes are near-opaque white, streaks faint, so the flake takes more of it
+        float c = snow ? Brightness.V * 1.67f : Brightness.V;
+        Gl.Uniform3f(l.Tint, c, c, c);
+        bool lit = lightingOn && AlloyLights.Ready;
+        Gl.Uniform1i(l.Lit, lit ? 1 : 0);
+        AlloyRenderer.UploadAreaTerms(in L);
+        if (lit)
+        {
+            AlloyLights.BindForDraw();
+            AlloyLights.SetDrawUniforms(L.Grid, L.Tile, L.Z, L.Falloff, L.Wrap, L.Atten, L.Hot, L.WrapN, L.Sss, viewport, near, far, L.Reach);
+            AlloyRenderer.UploadSunCascades(in L);
+            AlloyRenderer.UploadLocalCubes(in L);
+        }
         Gl.Uniform1f(l.Alpha, snow ? 0.9f : kind == 3 ? MathF.Min(Opacity.V * 2f, 1f) : Opacity.V);
         Gl.Uniform1f(l.Soft, Soft.V);
         Gl.Uniform1i(l.Viz, Viz.V);
@@ -161,6 +173,8 @@ internal static unsafe partial class Weather
         l.Drift = GlProgram.Loc(prog, "uDrift"); l.Depth = GlProgram.Loc(prog, "uSceneDepth"); l.Tint = GlProgram.Loc(prog, "uTint");
         l.Alpha = GlProgram.Loc(prog, "uAlpha"); l.Soft = GlProgram.Loc(prog, "uSoft"); l.Viz = GlProgram.Loc(prog, "uViz");
         l.Cover = GlProgram.Loc(prog, "uCover"); l.CoverVp = GlProgram.Loc(prog, "uCoverVp"); l.CoverLayer = GlProgram.Loc(prog, "uCoverLayer"); l.CoverSoft = GlProgram.Loc(prog, "uCoverSoft");
+        l.Lit = GlProgram.Loc(prog, "uLit");
+        (snow ? ref _litSnow : ref _litRain) = AlloyRenderer.LitLocs(prog);
         return true;
     }
 
@@ -173,8 +187,13 @@ internal static unsafe partial class Weather
     /// <summary>One instanced quad per drop or flake; every position is a function of the instance id, the
     /// camera and the fall phase, so a hak override of this stage can reshape the field but never grow a
     /// buffer. The instance's lattice point is tested against the rain occlusion map (#617) once, here, and a
-    /// covered instance is sent off-screen; a drip (kind 3) is kept only under a lip (#620).</summary>
-    internal const string WeatherVs = """
+    /// covered instance is sent off-screen; a drip (kind 3) is kept only under a lip (#620).
+    /// <para>The light is taken here, once per vertex at the instance's own centre (the particle pass's
+    /// #336 shape): ambient with the sun-facing floor, the sun through its cascades, the clustered lamps.
+    /// <c>uLit = 0</c> (rig down, lighting off) falls back to the flat area terms.</para></summary>
+    internal static string WeatherVs => WeatherVsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + WeatherVsMain;
+
+    private const string WeatherVsHead = """
         #version 460 core
         uniform mat4 uView;
         uniform mat4 uProj;
@@ -191,9 +210,21 @@ internal static unsafe partial class Weather
         uniform mat4 uCoverVp;   // world -> the cover view's clip space; zero matrix = no map
         uniform float uCoverLayer;
         uniform float uCoverSoft;    // metres of feather at a cover edge
+        uniform int uLit;        // 1 = take the light rig; 0 = flat area terms
+        uniform vec3 uAreaAmbient;
+        uniform vec3 uAreaDiffuse;
+        uniform vec3 uAreaDir;
         out vec2 vUV;
         out float vViewZ;
         out float vSeed;
+        out vec3 vLight;         // linear light at this drop or flake
+
+        vec2 cxClusterXY;
+        #define CX_CLUSTER_XY cxClusterXY
+
+        """;
+
+    private const string WeatherVsMain = """
 
         vec3 CxHash3(uint n)
         {
@@ -253,16 +284,31 @@ internal static unsafe partial class Weather
             vec3 Pc = P + (R * (h.y - 0.5) + U * (h.z - 0.5)) * uCoverSoft * 2.0;
             float shown = uKind == 3 ? CxLip(P, R, U) : CxCovered(Pc);
             gl_Position = shown < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : uProj * vp;
+            // a drop has no surface: the camera-facing direction stands in for its normal, so a lamp behind the
+            // camera lights it and one behind the drop does not -- the cheapest read of "wet glints towards you"
+            vLight = uAreaAmbient + uAreaDiffuse * (uKind == 2 ? 1.0 : 0.5);
+            if (uLit != 0 && shown >= 0.5)
+            {
+                vec3 N = normalize(toCam);
+                vec4 cv = uView * vec4(P, 1.0);
+                vec4 cc = uProj * cv;
+                cxClusterXY = (cc.xy / max(cc.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
+                float ndl = clamp(dot(N, uAreaDir), 0.0, 1.0);
+                vec3 sun = uAreaDiffuse * (ndl * CxSunShadow(P, N, ndl, ndl));
+                vec3 point = CxClusteredDiffuse(P, N, max(-cv.z, 1e-3));
+                vLight = uAreaAmbient * mix(0.15, 1.0, ndl) + sun + point;
+            }
         }
         """;
 
     /// <summary>A rain streak: a thin bright core tapered at both ends, faded where it meets geometry.
-    /// Linear, alpha over. <c>/weather viz 1</c> paints the contact fade alone.</summary>
+    /// Linear, alpha over. <c>/weather viz 1</c> paints the contact fade alone. The colour is the vertex stage's light times the brightness scalar.</summary>
     internal const string RainFs = """
         #version 460 core
         in vec2 vUV;
         in float vViewZ;
         in float vSeed;
+        in vec3 vLight;
         uniform mat4 uProj;
         uniform sampler2D uSceneDepth;
         uniform vec3 uTint;
@@ -285,7 +331,7 @@ internal static unsafe partial class Weather
             float gap = CxSceneViewZ(gl_FragCoord.xy / vec2(textureSize(uSceneDepth, 0))) + vViewZ;
             float k = clamp(gap * uSoft, 0.0, 1.0);
             if (uViz == 1) { frag = vec4(vec3(k), 1.0); return; }
-            frag = vec4(uTint, a * k * k * uAlpha * vSeed);
+            frag = vec4(uTint * vLight, a * k * k * uAlpha * vSeed);
         }
         """;
 
@@ -295,6 +341,7 @@ internal static unsafe partial class Weather
         in vec2 vUV;
         in float vViewZ;
         in float vSeed;
+        in vec3 vLight;
         uniform mat4 uProj;
         uniform sampler2D uSceneDepth;
         uniform vec3 uTint;
@@ -317,7 +364,7 @@ internal static unsafe partial class Weather
             float gap = CxSceneViewZ(gl_FragCoord.xy / vec2(textureSize(uSceneDepth, 0))) + vViewZ;
             float k = clamp(gap * uSoft, 0.0, 1.0);
             if (uViz == 1) { frag = vec4(vec3(k), 1.0); return; }
-            frag = vec4(uTint, a * k * k * uAlpha * (0.5 + 0.5 * vSeed));
+            frag = vec4(uTint * vLight, a * k * k * uAlpha * (0.5 + 0.5 * vSeed));
         }
         """;
 }

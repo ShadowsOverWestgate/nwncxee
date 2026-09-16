@@ -350,7 +350,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>Resolve one lit program's locations and bind its fixed sampler units. Called once per program
     /// at build; #350 calls it twice.</summary>
-    private static LitLoc LitLocs(uint prog)
+    internal static LitLoc LitLocs(uint prog)
     {
         var L = new LitLoc();
         L.Vp = GlProgram.Loc(prog, "uVP"); L.Base = GlProgram.Loc(prog, "uDrawBase");

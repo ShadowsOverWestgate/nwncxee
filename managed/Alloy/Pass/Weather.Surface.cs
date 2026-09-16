@@ -265,6 +265,10 @@ internal static unsafe partial class Weather
         E(WeatherVs.Contains("uKind == 3 ? CxLip(P, R, U)") && WeatherVs.Contains("if (CxCovered(P) >= 0.5) return 0.0;"),
           "a drip instance survives only under a lip: covered here, open within the feather");
         E(ShaderContract.LinearSafe(RainFs) && ShaderContract.LinearSafe(SnowFs), "the precipitation stages stay linear");
+        E(WeatherVs.IndexOf("vec3 CxClusteredDiffuse(", StringComparison.Ordinal) < WeatherVs.IndexOf("if (uLit != 0 && shown >= 0.5)", StringComparison.Ordinal)
+          && WeatherVs.Contains("#define CX_CLUSTER_XY cxClusterXY") && WeatherVs.Contains("CxSunShadow(P, N, ndl, ndl)")
+          && RainFs.Contains("uTint * vLight") && SnowFs.Contains("uTint * vLight"),
+          "rain and snow take the light rig per vertex and both fragment stages multiply it in");
         E(KindOf(1) == Kind.Rain && KindOf(2) == Kind.Snow && KindOf(0) == Kind.None && KindOf(7) == Kind.None,
           "stock rows 1/2 map to rain/snow, row 0 and the fog row to none");
         float d = Density; Kind k = CurrentKind; bool en = Enabled.V;
