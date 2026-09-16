@@ -55,7 +55,8 @@ public sealed unsafe partial class AlloyRenderer
                 float fade = TileFade(i, tri);
                 // #546: an unexplored tile (fog-of-war ramp at 0) is not drawn at all, as vanilla skips a
 
-                if (fade <= 0f) { _oFading[i] = true; continue; }
+                if (fade <= 0f)
+                { if (_oGob[i] != IntPtr.Zero) _skipFogGob++; else _skipFogTile++; _oFading[i] = true; W(i, "skipped: tile fog ramp at 0"); continue; }
                 _oFading[i] = fade < 1f;
                 float alpha = PartAlphaCached(i, tri) * fade * (_oGob[i] != IntPtr.Zero ? AlloyCensus.GobAlphaMul(tri) : 1f);
                 bool dis = alpha >= 1f && Dissolves(i, tri, ref _stageCounters[0]);

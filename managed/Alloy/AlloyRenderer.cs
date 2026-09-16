@@ -471,6 +471,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>#126's counterpart to it: Alloy parts the tile fade moves into the blended run this pass.
     /// Before the fold these were the tilefade SKIP count -- same population, dropped from the frame.</summary>
     private static long _ownFade;
+    /// <summary>#546's other half: parts whose tile fog ramp (or a gob part's filed tile) read 0, dropped outright at route.
+    /// Split by gob/tile because a creature part here is a HOLE the fog-of-war never explains.</summary>
+    private static long _skipFogTile, _skipFogGob;
     /// <summary>#126: Alloy draws per class this pass, and the batches each class's pass submitted. The
     /// cutout/blended split is the whole model, so it is reported rather than inferred.</summary>
     private static readonly long[] _drawsByClass = new long[AlloyClasses.Count];
@@ -1621,6 +1624,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"NOT DRAWN this frame: unlit-pass {(float)_skipNoLight / _frames:F0} identity {(float)_skipIdentity / _frames:F0} " +
                    $"inactive-LOD {(float)_skipLod / _frames:F0} " +
                    $"dissolve {(float)_ownDissolve / _frames:F0} owned, fade {(float)_ownFade / _frames:F0} owned " +
+                   $"fog-out {(float)_skipFogTile / _frames:F0} tile + {(float)_skipFogGob / _frames:F0} gob " +
                    $"no-mdl {(float)_skipNoMdl / _frames:F0} tex {(float)_skipTex / _frames:F0}" +
                    (_skipTex == 0 ? " " : $" (no-diffuse {(float)_skipTexNone / _frames:F0}" +
                        $" no-gl-id {(float)_skipTexNoId / _frames:F0}" +
@@ -1754,7 +1758,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _watchSubmitted = 0;
         _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = 0; _skipLod = 0;
         ResetChasePeriod();
-        _ownDissolve = 0; _ownFade = 0;
+        _ownDissolve = 0; _ownFade = 0; _skipFogTile = _skipFogGob = 0;
         _recWritten = 0; _recStable = 0;
         _nrmDeclared = _nrmBound = 0;
         Array.Clear(_drawsByClass);
