@@ -61,6 +61,7 @@ public static unsafe class SceneRay
 
     /// <summary>True when <paramref name="gob"/> is a creature's (never a camera obstacle, like the engine).</summary>
     public static bool IsCreature(IntPtr gob) => gob != IntPtr.Zero && *(int*)(gob + GobExternalType) == GobKindCreature;
+    public static bool IsPlaceable(IntPtr gob) => gob != IntPtr.Zero && *(int*)(gob + GobExternalType) == GobKindPlaceable;
 
     /// <summary>Unlink the SafePointer the last hit left behind -- now, not when the gob dies mid-frame.</summary>
     public static void Release() => _reset((IntPtr)_info, 0, -0x40000001L, 0);

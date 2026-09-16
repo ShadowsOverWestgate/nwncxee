@@ -577,8 +577,8 @@ the slider whenever the mode's master is on.
 
 | key | today | label | kind | range · default | tier | eff | section | help |
 |---|---|---|---|---|---|---|---|---|
-| walls.fade | camera.occlude | Fade objects that hide you | T | on | U | L | Fade | Walls and props between the camera and your character turn see-through. Off, the camera pulls in closer as in the stock game. Needs the Alloy renderer. |
-| walls.floor | occlude floor | Faded opacity | S | 0–1 step 0.05 · 0.25 | U | L | Fade | How solid a faded object stays. 0 hides it entirely. |
+| walls.fade | camera.occlude | Fade objects that hide you | T | on | U | L | Fade | Placeables between the camera and your character turn see-through. |
+| walls.floor | occlude floor | Faded opacity | S | 0–1 step 0.05 · 0.5 | U | L | Fade | How solid a faded object stays. 0 hides it entirely. |
 | walls.radius | occlude radius | Fade ray width | S | 0–5 m step 0.1 · 0.5 | A | L | Fade | Half-width of the ray fan that finds occluders. |
 | walls.margin | arm.margin | Arm margin | S | 0–5 m step 0.1 · 0.3 | A | L | Spring arm | How far short of a wall the offset camera stops. |
 | walls.armin | arm.in | Arm pull-in rate | S | 0–60 /s · 0 | A | L | Spring arm | 0 = snap. |

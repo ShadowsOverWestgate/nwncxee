@@ -15,6 +15,7 @@ namespace CX.Alloy;
 /// pull-in uses, <see cref="OccHitsPerRay"/> hits each, so at most 15 calls), and every hit is remembered
 /// as a point plus the gob it landed on. The route walk then tags a tile part whose enrolment box holds a
 /// hit point, or a gob part whose gob was hit, with a coverage that eases toward <c>walls.floor</c>;
+/// only placeables are faded (tiles, doors and creatures draw whole -- a tile hit still stops the ray fan);
 /// the record carries it in <c>rot.z</c> (|value| in (0,1), see <c>CxKeyhole</c>), the part rides the
 /// keyhole prepass sweep so its depth has the same holes, and the vis-ID target and the caster pass see it
 /// whole. Creatures are never faded; the player's own gob is on the hit record's ignore list.
@@ -37,8 +38,7 @@ public sealed unsafe partial class AlloyRenderer
     private static IntPtr _occAppMgr;
     private static delegate* unmanaged<IntPtr, IntPtr> _occGetModule;
 
-    /// <summary>This frame's hits: world point and the gob (zero for a tile BSP part).</summary>
-    private static readonly float[] _occHitPt = new float[OccMaxHits * 3];
+    /// <summary>This frame's hits: the placeable gob each ray landed on.</summary>
     private static readonly IntPtr[] _occHitGob = new IntPtr[OccMaxHits];
     private static int _occHitN;
     /// <summary>Per slot: how far toward the floor the part is faded, 0 = not at all. Zero is the array's
@@ -123,10 +123,9 @@ public sealed unsafe partial class AlloyRenderer
             {
                 _occCalls++;
                 if (!SceneRay.Cast(scene, from, to, player, out Vector3 hit, out IntPtr gob)) break;
-                if (!SceneRay.IsCreature(gob))
+                if (SceneRay.IsPlaceable(gob))
                 {
                     int n = _occHitN++;
-                    _occHitPt[n * 3] = hit.X; _occHitPt[n * 3 + 1] = hit.Y; _occHitPt[n * 3 + 2] = hit.Z;
                     _occHitGob[n] = gob;
                 }
                 from = hit + d * OccNudge;
@@ -147,21 +146,7 @@ public sealed unsafe partial class AlloyRenderer
         {
             IntPtr gob = _oGob[i];
             if (gob != IntPtr.Zero)
-            {
                 for (int n = 0; n < _occHitN && !hit; n++) hit = _occHitGob[n] == gob;
-            }
-            else
-            {
-                int b = i * 6;
-                for (int n = 0; n < _occHitN && !hit; n++)
-                {
-                    int p = n * 3;
-                    hit = _occHitGob[n] == IntPtr.Zero
-                          && _occHitPt[p] >= _oBox[b] - OccNudge && _occHitPt[p] <= _oBox[b + 3] + OccNudge
-                          && _occHitPt[p + 1] >= _oBox[b + 1] - OccNudge && _occHitPt[p + 1] <= _oBox[b + 4] + OccNudge
-                          && _occHitPt[p + 2] >= _oBox[b + 2] - OccNudge && _occHitPt[p + 2] <= _oBox[b + 5] + OccNudge;
-                }
-            }
         }
         float target = hit ? 1f - Walls.Floor.V : 0f;
         f += (target - f) * _occStep;

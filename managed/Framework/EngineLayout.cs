@@ -1526,6 +1526,8 @@ public static unsafe class EngineLayout
     public static readonly int GobExternalType = Same("Gob", "externalType", 0x498);
     /// <summary>The <see cref="GobExternalType"/> a creature's gob carries.</summary>
     public const int GobKindCreature = 5;
+    /// <summary>The <see cref="GobExternalType"/> a placeable's gob carries.</summary>
+    public const int GobKindPlaceable = 9;
 
     /// <summary>CHitInfo, the record <c>Scene::HitCheck</c> fills. <c>Reset</c> (@0x45fa90 / rva 0xd3090)
     /// writes the mode at +0 and zeroes the ignore count at +0x18; <c>ClearOutput</c> (@0x45fa20 / rva

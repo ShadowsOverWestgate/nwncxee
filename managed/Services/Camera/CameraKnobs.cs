@@ -44,7 +44,7 @@ internal static class CameraKnobs
         E(KnobGroup.Find("free.enter") is KnobButton && FreeCam.G.Knobs[0] == FreeCam.Enter, "free.enter is the first row and a button");
         E(FreeCam.Fov.Default == 0f && FreeCam.Fov.Min == 0f && FreeCam.Leash.Default == FreeCam.LeashMax && FreeCam.Leash.Max == FreeCam.LeashMax,
           "free.fov keeps 0 = the mode's; the leash never exceeds the engine's 25");
-        E(Walls.Fade.Default && Walls.Floor.Default == 0.25f && Walls.ArmOut.Default == 4f, "walls defaults are the #537/#538 boot values");
+        E(Walls.Fade.Default && Walls.Floor.Default == 0.5f && Walls.ArmOut.Default == 4f, "walls defaults are the #537/#538 boot values");
         E(!MouseLook.Right.Default && MouseLook.Sens.Default == 1f && MouseLook.Threshold.Default == 4 && !MouseLook.Invert.Default, "mouselook defaults are the old boot keys'");
         E(Move.Rate.Default == 60f && Move.Idle.Default == 5f && Move.Hz.Default == 10f && Move.Turn.Default == 540f, "move defaults are the #540/#541 values");
         E(KnobGroup.Find("camera.occlude") == null && KnobGroup.Find("mouselook_sens") == null, "the retired flat keys are not declared");
@@ -152,8 +152,8 @@ internal static class Walls
             header: "The spring arm only acts while a sideways or height offset is set.");
         G.Section("Fade");
         Fade = G.Toggle("fade", "Fade objects that hide you", true,
-                        help: "Walls and props between the camera and your character turn see-through. Off, the camera pulls in closer as in the stock game. Needs the Alloy renderer.");
-        Floor = G.Slider("floor", "Faded opacity", 0f, 1f, 0.05f, 0.25f,
+                        help: "Placeables between the camera and your character turn see-through.");
+        Floor = G.Slider("floor", "Faded opacity", 0f, 1f, 0.05f, 0.5f,
                          help: "How solid a faded object stays. 0 hides it entirely.");
         Radius = G.Slider("radius", "Fade ray width", 0f, 5f, 0.1f, 0.5f, "m", Tier.Advanced,
                           help: "Half-width of the ray fan that finds occluders.");
