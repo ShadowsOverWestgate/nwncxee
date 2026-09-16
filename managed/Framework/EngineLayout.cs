@@ -1466,8 +1466,10 @@ public static unsafe class EngineLayout
     //      the creature rows below are the two the function gates on, shifted -0x20 on Windows like `plated`. ----
 
     /// <summary>CClientExoAppInternal -&gt; "drive input changed" latch (int 0/1): HandleInputEvent raises it on
-    /// any drive key edge, UpdateDriveMode sends <c>DriveControl</c> while it is up and clears it.</summary>
-    public static readonly int InternalDriveChanged = Same("CClientExoAppInternal", "driveChanged", 0x1b0, Expect.Byte01);
+    /// any drive key edge, UpdateDriveMode sends <c>DriveControl</c> while it is up and clears it. No Byte01
+    /// probe: the ctor zeroes +0x1b4.. but never +0x1b0, so before the first UpdateDriveMode returns it holds heap
+    /// garbage and a probe there fails at random (the "camera drive stopped working" of 2026-09-16).</summary>
+    public static readonly int InternalDriveChanged = Same("CClientExoAppInternal", "driveChanged", 0x1b0);
     /// <summary>CClientExoAppInternal -&gt; auto-run toggle (int 0/1); counts as forward held.</summary>
     public static readonly int InternalDriveAutoRun = Same("CClientExoAppInternal", "driveAutoRun", 0x1b4, Expect.Byte01);
     /// <summary>CClientExoAppInternal -&gt; six int key booleans in a row: forward, backward, turn left, turn right,
