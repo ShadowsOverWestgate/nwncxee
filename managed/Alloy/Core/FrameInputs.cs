@@ -154,6 +154,11 @@ public static class FrameInputs
     /// after the bake (#118), so the mapping and the cube contents are the same frame's, and read by the owned
     /// lit stage.</summary>
     public static int[] AreaLightSlot = new int[InitialLights];
+    /// <summary>Ambient-class light (PartLight type@0x80 != 0): vanilla adds <c>c * att</c> straight to the
+    /// ambient term, no N.L and no shadow. Uploaded as cube slot <see cref="AmbientSlot"/>.</summary>
+    public static bool[] AreaLightAmbient = new bool[InitialLights];
+    /// <summary>The slot value the lit stage reads as "ambient class"; -1 stays "no cube".</summary>
+    public const int AmbientSlot = -2;
 
     /// <summary>Area lights that resolved to a real cube slot on the last walk. Zero while cubes render is
     /// exactly the "shadows are on but invisible" state -- the receiver's no-slot path returns full light
@@ -172,15 +177,16 @@ public static class FrameInputs
     private static void GrowArea(int n)
     {
         Array.Resize(ref AreaLightPosRange, n); Array.Resize(ref AreaLightColor, n);
-        Array.Resize(ref AreaLightId, n); Array.Resize(ref AreaLightSlot, n);
+        Array.Resize(ref AreaLightId, n); Array.Resize(ref AreaLightSlot, n); Array.Resize(ref AreaLightAmbient, n);
     }
 
-    public static void RecordAreaLight(IntPtr id, Vector3 pos, float range, Vector3 color)
+    public static void RecordAreaLight(IntPtr id, Vector3 pos, float range, Vector3 color, bool ambient = false)
     {
         if (LightCount == AreaLightPosRange.Length) GrowArea(LightCount * 2);
         AreaLightPosRange[LightCount] = new Vector4(pos, range);
         AreaLightColor[LightCount] = color;
         AreaLightId[LightCount] = id;
+        AreaLightAmbient[LightCount] = ambient;
         AreaLightSlot[LightCount++] = -1;
     }
 }

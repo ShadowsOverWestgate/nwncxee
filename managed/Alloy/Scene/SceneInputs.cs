@@ -198,11 +198,13 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static IntPtr[] _prevId = new IntPtr[64];
     private static Vector4[] _prevPosW = new Vector4[64];
     private static Vector3[] _prevCol = new Vector3[64];
+    private static bool[] _prevAmb = new bool[64];
     private static int _prevN;
 
     private static readonly IntPtr[] _ghostId = new IntPtr[MaxGhosts];
     private static readonly Vector4[] _ghostPosW = new Vector4[MaxGhosts];
     private static readonly Vector3[] _ghostCol = new Vector3[MaxGhosts];
+    private static readonly bool[] _ghostAmb = new bool[MaxGhosts];
     private static readonly int[] _ghostLeft = new int[MaxGhosts];
     private static int _ghostN;
 
@@ -275,7 +277,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (--_ghostLeft[i] > 0 && !StillLit(_ghostId[i], cur, ref j0)) continue;
             _ghostN--;
             _ghostId[i] = _ghostId[_ghostN]; _ghostPosW[i] = _ghostPosW[_ghostN];
-            _ghostCol[i] = _ghostCol[_ghostN]; _ghostLeft[i] = _ghostLeft[_ghostN];
+            _ghostCol[i] = _ghostCol[_ghostN]; _ghostAmb[i] = _ghostAmb[_ghostN]; _ghostLeft[i] = _ghostLeft[_ghostN];
             i--;
         }
         if (FadeFrames > 0)
@@ -286,7 +288,7 @@ public sealed unsafe class SceneInputs : IExtenderService
                 if (StillLit(_prevId[i], cur, ref j)) continue;
                 if (++gone > MaxGhosts - _ghostN) { _ghostN = 0; break; }
                 _ghostId[_ghostN] = _prevId[i]; _ghostPosW[_ghostN] = _prevPosW[i];
-                _ghostCol[_ghostN] = _prevCol[i]; _ghostLeft[_ghostN++] = FadeFrames;
+                _ghostCol[_ghostN] = _prevCol[i]; _ghostAmb[_ghostN] = _prevAmb[i]; _ghostLeft[_ghostN++] = FadeFrames;
             }
         }
 
@@ -295,11 +297,13 @@ public sealed unsafe class SceneInputs : IExtenderService
             _prevId = new IntPtr[cur * 2];
             _prevPosW = new Vector4[cur * 2];
             _prevCol = new Vector3[cur * 2];
+            _prevAmb = new bool[cur * 2];
         }
         _prevN = cur;
         Array.Copy(FrameInputs.AreaLightId, _prevId, cur);
         Array.Copy(FrameInputs.AreaLightPosRange, _prevPosW, cur);
         Array.Copy(FrameInputs.AreaLightColor, _prevCol, cur);
+        Array.Copy(FrameInputs.AreaLightAmbient, _prevAmb, cur);
 
         for (int i = 0; i < _ghostN; i++)
         {
@@ -309,7 +313,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             // before, and re-emitting it unchanged would spend one frame of the fade standing still.
             float k = (float)_ghostLeft[i] / (FadeFrames + 1);
             var pw = _ghostPosW[i];
-            FrameInputs.RecordAreaLight(_ghostId[i], new Vector3(pw.X, pw.Y, pw.Z), pw.W * k, _ghostCol[i] * k);
+            FrameInputs.RecordAreaLight(_ghostId[i], new Vector3(pw.X, pw.Y, pw.Z), pw.W * k, _ghostCol[i] * k, _ghostAmb[i]);
         }
     }
     /// <summary>RenderInterface::GetGlobalShaderParamf -- param 0x12 = the engine's light-radius multiplier.</summary>
@@ -386,7 +390,8 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (inten <= 0f) continue;
             float r = *(float*)(p + LightColour), g = *(float*)(p + LightColour + 4), b = *(float*)(p + LightColour + 8);
             if (r == 0f && g == 0f && b == 0f) continue;
-            if (*(int*)(p + LightKind) != 0) continue;
+            // Ghidra SetLightGL: type@0x80 != 0 uploads -adjR^2 and inc_lighting.shd adds c*att to AmbientLight
+            bool ambient = *(int*)(p + LightKind) != 0;
             float alt = *(float*)(p + LightRangeAlt);
             var pos = new Vector3(*(float*)(p + LightDir), *(float*)(p + LightDir + 4), *(float*)(p + LightDir + 8));
             // Vanilla lit radius (Ghidra GetLightAdjustedRadius @0x5c0c10): range * intensity, an
@@ -423,6 +428,10 @@ public sealed unsafe class SceneInputs : IExtenderService
                 r *= k; g *= k; b *= k;
             }
             float upW = adjR;
+            // fade@0x90 (ControlLightsFade) scales the uploaded colour only, never the radius (SetLightGL)
+            float lfade = *(float*)(p + LightFade);
+            if (lfade <= 0f) continue;
+            if (lfade < 1f) { r *= lfade; g *= lfade; b *= lfade; }
             var color = new Vector3(r, g, b);
             // Receiver light cull (#67 perf): the Alloy fragment loop iterates EVERY uploaded light, so a
             // light whose lit sphere can't touch a drawn fragment still costs every fragment a range test.
@@ -462,11 +471,11 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (!culled)
             {
                 snapIdx = FrameInputs.LightCount;
-                FrameInputs.RecordAreaLight((IntPtr)p, pos, upW, color);
+                FrameInputs.RecordAreaLight((IntPtr)p, pos, upW, color, ambient);
                 if (FrameInputs.LightCount == snapIdx) snapIdx = -1;   // snapshot full: the light was dropped
             }
             if (_torchDiag) TrackNearest(p, pos, range, alt, inten, color, adjR, upW, culled, snapIdx);
-            if (*(int*)(p + LightCastShadows) == 0) continue;
+            if (ambient || *(int*)(p + LightCastShadows) == 0) continue;
             // #186: the cube's reach is the LIT radius exactly -- the same sphere the receiver's attenuation
             // has support over, and the same one the engine lights with. Ghidra: SetLightGL @0x4c0e60 uploads
             // GetLightAdjustedRadius(pl)^2 as the light's range (property 4), and inc_lighting.shd's

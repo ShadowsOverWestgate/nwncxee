@@ -325,7 +325,7 @@ internal static unsafe class AlloyLights
                 // the record's spare w is this light's shadow-cube slot (#95), -1 for a light with no cube.
                 // Riding the existing pad is what keeps the cube receiver from needing a second buffer keyed
                 // the same way -- and the walk already resolved the slot by light identity.
-                d[7] = FrameInputs.AreaLightSlot[i];
+                d[7] = FrameInputs.AreaLightAmbient[i] ? FrameInputs.AmbientSlot : FrameInputs.AreaLightSlot[i];
             }
             Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufLights);
             Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(n * 8 * sizeof(float)), s);
@@ -932,6 +932,8 @@ internal static unsafe class AlloyLights
                     float t = max(1.0 - f2 / (uHot.y * uHot.y), 0.0);
                     att += uHot.x * fade * t * t / at.x;
                 }
+                // slot -2 = ambient class: vanilla adds c*att to the ambient term, no N.L, no shadow
+                if (slot == -2) { acc += c * max(att, 0.0); continue; }
                 float invD = inversesqrt(max(dd, 1e-8));
                 vec3 L = d * invD;
                 // #139: the light is a SPHERE of radius uFalloff.y -- the same radius the attenuation
