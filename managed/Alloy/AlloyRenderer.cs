@@ -330,7 +330,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade,
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach, Contact, ContactFar,
-                   Weather, WeatherLook, CoverVp, CoverLayer;
+                   Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm;
         public FeatLoc Feat;
     }
     private static LitLoc _lit, _litH, _litL;

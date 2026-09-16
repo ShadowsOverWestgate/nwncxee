@@ -1,3 +1,4 @@
+using CX.Graphics;
 using System.Numerics;
 
 namespace CX.Alloy;
@@ -23,7 +24,7 @@ public sealed unsafe partial class CasterPass
     internal static int CoverBakes, CoverHeld;
     private static Matrix4x4 _coverKeyVp;
     private static Vector3 _coverC;
-    private static bool _coverBaked, _coverCValid;
+    private static bool _coverBaked, _coverCValid, _coverNew;
     private static int _coverStamp = -1;
 
     /// <summary>The shadow bracket's cover slot: bake or hold. <paramref name="sun"/> is the cascades' own
@@ -31,7 +32,7 @@ public sealed unsafe partial class CasterPass
     private static void CoverPass(Vector3 focus, bool sun)
     {
         if (!sun || !Weather.CoverWanted || !EnsureSun()) { CoverVp = default; return; }
-        Vector3 dir = Weather.Fall;
+        Vector3 dir = Weather.CoverDir;
         float radius = Weather.CoverRange.V, margin = radius;
         float slack = radius * CoverSlack;
         Vector3 c = _coverCValid ? _coverC : focus;
@@ -42,12 +43,34 @@ public sealed unsafe partial class CasterPass
         if (RenderView(_depthTex, _mapSize, CoverLayer, &vp, dir, c, radius, margin, point: false,
                        set: CasterGather.SetStatic))
         {
-            _coverBaked = true; _coverKeyVp = vp; _coverC = c; _coverCValid = true;
+            _coverBaked = true; _coverKeyVp = vp; _coverC = c; _coverCValid = true; _coverNew = true;
             CoverVp = vp; _coverStamp = _frameSeq; CoverBakes++;
         }
         else CoverVp = default;
     }
 
-    private static void CoverRelease() { _coverBaked = false; _coverCValid = false; CoverVp = default; }
-    internal static string CoverStats() => $"cover {CoverBakes} bakes / {CoverHeld} held";
+    private static void CoverRelease() { _coverBaked = false; _coverCValid = false; _coverNew = false; CoverVp = default; Weather.EsmRelease(); }
+
+    /// <summary>After the layered flush landed this frame's bakes: a new cover map gets its filtered copy (Weather.Esm).</summary>
+    private static void CoverFiltered()
+    {
+        if (!_coverNew) return;
+        _coverNew = false;
+        if (!CoverFresh) return;
+        if (Weather.WaterRoof.V)
+        {
+            // water is no caster, so the bake never saw it: stamp the frame's water batches into the layer as
+            // roofs over their beds, under the bake's own state (cull off, LEQUAL), before the filter reads it
+            Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, _depthTex, 0, CoverLayer);
+            Gl.DrawBuffer(Gl.NONE); Gl.ReadBuffer(Gl.NONE);
+            Gl.Viewport(0, 0, _mapSize, _mapSize);
+            new PassState(depth: true, depthWrite: true, cull: false).Apply();
+            Gl.DepthFunc(Gl.LEQUAL);
+            Matrix4x4 vp = CoverVp;
+            AlloyRenderer.DrawWaterOccluders(&vp);
+        }
+        Weather.FilterCover(CascadeTex, CoverLayer, _mapSize, Weather.CoverRange.V);
+    }
+    internal static string CoverStats() => $"cover {CoverBakes} bakes / {CoverHeld} held / {Weather.EsmBakes} filtered";
 }

@@ -1327,6 +1327,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             GrassField.DrawShadows(_fbo, _depthTex, _mapSize, _sunRebaked, CascadeCount);
             GrassField.DrawShadows(_fbo, SunDynTex, _mapSize, _sunDynRebaked, CascadeCount);
         }
+        CoverFiltered();
         Array.Clear(_sunRebaked); Array.Clear(_sunDynRebaked);
         // ...and only now may the frame's invalidation be consumed: every pass that ran reached every one of
         // its views, so each of them recorded this frame's movers against its own slots.

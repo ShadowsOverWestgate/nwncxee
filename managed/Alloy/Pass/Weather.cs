@@ -20,7 +20,11 @@ internal static unsafe partial class Weather
 
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled;
-    internal static readonly Knob<string> RainRows, SnowRows;
+    internal static readonly Knob<string> RainRows, SnowRows, SnowSkip;
+    private static delegate* unmanaged<IntPtr, IntPtr, IntPtr> _origTileSet;
+    private static string _tileset = "";
+    /// <summary>The current area's tileset is on the no-cover list: its tiles carry their own snow.</summary>
+    internal static bool TilesetSkipsSnow;
 
     private static ExtenderLog? _log;
     private static delegate* unmanaged<IntPtr, byte, float, int> _origSet;
@@ -60,7 +64,31 @@ internal static unsafe partial class Weather
                           help: "weathertypes.2da rows drawn as rain (stock: 1).", changed: ParseRows);
         SnowRows = G.Text("snowrows", "Snow rows", "2,4,5,10", Tier.Advanced,
                           help: "weathertypes.2da rows drawn as snow (stock: 2).", changed: ParseRows);
+        SnowSkip = G.Text("snowskip", "Tilesets without snow cover", "", Tier.Advanced,
+                          help: "Comma-separated tileset resrefs whose own textures already carry snow: their tiles take no cover (objects and ground still do). Empty = none.",
+                          changed: RecheckTileset);
         ParseRows();
+    }
+
+    private static void RecheckTileset()
+    {
+        bool skip = false;
+        foreach (string s in SnowSkip.V.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (s.Equals(_tileset, StringComparison.OrdinalIgnoreCase)) { skip = true; break; }
+        if (skip != TilesetSkipsSnow) _log?.Info($"Weather: tileset {_tileset} {(skip ? "carries its own snow -- no cover on its tiles" : "takes snow cover")}");
+        TilesetSkipsSnow = skip;
+    }
+
+    /// <summary>The area load's ask for its tileset, by name. Read BEFORE forwarding (the copy may not
+    /// outlive the call); cold, so the string is fine.</summary>
+    [UnmanagedCallersOnly]
+    private static IntPtr OnGetTileSet(IntPtr mgr, IntPtr resref)
+    {
+        int n = 0; byte* p = (byte*)resref;
+        while (n < 16 && p[n] != 0) n++;
+        _tileset = System.Text.Encoding.ASCII.GetString(p, n);
+        RecheckTileset();
+        return _origTileSet != null ? _origTileSet(mgr, resref) : IntPtr.Zero;
     }
 
     private static void ParseRows()
@@ -89,6 +117,9 @@ internal static unsafe partial class Weather
             SymbolMap.AreaStartWeather, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnStartWeather);
         _origStop = (delegate* unmanaged<IntPtr, byte, void>)hooks.Install(
             SymbolMap.AreaStopWeather, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnStopWeather);
+        if (SymbolMap.Require(log, "Weather", SymbolMap.TileSetGet))
+            _origTileSet = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)hooks.Install(
+                SymbolMap.TileSetGet, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr>)&OnGetTileSet);
         InstallDraw(log);
         log.Info($"Weather: armed and {(Enabled.V ? "ON" : "IDLE")} -- rain rows {RainRows.V}, snow rows {SnowRows.V}");
     }

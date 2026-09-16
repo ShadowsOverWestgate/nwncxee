@@ -79,6 +79,10 @@ internal static class TextureSlots
     /// every program bind (<see cref="SsaoPass.BindForDraw"/>) rather than trusting the pass's own bind.
     /// Both sampler2D; the grass program's dyn-sun array on the same unit is a different program.</summary>
     internal const uint Ssao = SnapshotColor;
+    /// <summary>The filtered cover map (Weather.Esm) the lit stage's exposure reads. Shares <see cref="SnapshotDepth"/>'s
+    /// unit on <see cref="Ssao"/>'s argument, re-bound at every lit program bind; the OIT accumulate takes
+    /// the unit back (<see cref="OitDepth"/>) and the stage falls back to a hard compare under uOit.</summary>
+    internal const uint CoverEsm = SnapshotDepth;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
     /// <summary>#379 follow-up: the SAME prepass depth, on the same unit, read by the LIT stage -- so a

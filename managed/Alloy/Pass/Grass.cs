@@ -23,7 +23,8 @@ internal static class Grass
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled;
     internal static readonly Knob<float> Density, Far, Wind, Push, WindSpeed, Lod, LodMin, LodWidth, LodHeight, Shade,
-                                         CastWidth, PushRadius, PushExtent, CullShrink, CullMax, Soften, Edge, RootAo, GTint;
+                                         CastWidth, PushRadius, PushExtent, CullShrink, CullMax, Soften, Edge, RootAo, GTint,
+                                         SnowThin, SnowLook;
     internal static readonly Knob<int> Shadow, Tuft, Aniso, GViz;
     internal static readonly Knob<bool> Cull, SoftEdge, VLight, Border, Prepass, PushVis;
     internal static readonly Knob<string> BorderTex;
@@ -44,6 +45,11 @@ internal static class Grass
                        help: "How far grass draws. 0 follows the game's Grass Distance option (which stops at 173).");
         G.Section("Wind");
         Wind = G.Slider("wind", "Wind strength", 0f, 4f, 0.1f, 1f, help: "How far the blades sway. 0 stands them still.");
+        G.Section("Snow");
+        SnowThin = G.Slider("snowthin", "Thinning under snow", 0f, 1f, 0.05f, 0.85f,
+                            help: "Share of the blades that vanish under full snow cover (the rest stand shorter). 0 keeps a summer meadow.");
+        SnowLook = G.Slider("snowlook", "Winter look", 0f, 1f, 0.05f, 1f,
+                            help: "Blades left standing go straw-coloured and take snow on their tips. 0 keeps them green.");
         G.Section("Shadows");
         Shadow = G.Dropdown("shadow", "Grass casts shadows", new[] { 0, 1, 2, 3, 4 }, 1, new[] { "none", "1", "2", "3", "4" },
                             help: "How many sun cascades the blades are drawn into. More is sharper far away and costlier.");

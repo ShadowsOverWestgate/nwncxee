@@ -659,6 +659,9 @@ internal static unsafe class SymbolMap
     public const string AreaSetWeather = "_ZN8CNWCArea10SetWeatherEhf";
     /// <summary>CNWCArea::StartWeather(unsigned char type). ABI: <c>(CNWCArea*, uchar)</c>.</summary>
     public const string AreaStartWeather = "_ZN8CNWCArea12StartWeatherEh";
+    /// <summary>CNWTileSet* CNWTileSetManager::GetTileSet(CResRef const&amp;) -- the area load's one ask for its
+    /// tileset, by name. ABI: <c>(CNWTileSetManager*, const CResRef*)</c>, a pointer return, so no sret on either build.</summary>
+    public const string TileSetGet = "_ZN17CNWTileSetManager10GetTileSetERK7CResRef";
     /// <summary>CNWCArea::StopWeather(unsigned char). ABI: <c>(CNWCArea*, uchar)</c>; the byte is unused.</summary>
     public const string AreaStopWeather = "_ZN8CNWCArea11StopWeatherEh";
     /// <summary>Scene::InitBSP(int w, int h, int border, bool, float cell) @0x46c330 (Scene vt+0x30) -- the
@@ -1302,6 +1305,7 @@ internal static unsafe class SymbolMap
         // #615: SetWeather anchored by its own "weatherlight"/"ModelLightning" strings (the only user of either);
         //       Start/Stop are the two callees of HandleServerToPlayerArea's case 4 (ReadBOOL ? Start : Stop), bodies
         //       identical to Linux (+0x2f1, +0x2ec = 6000, CNWCAmbientSound::Rain). All field offsets Same.
+        [TileSetGet]       = Nm("?GetTileSet@CNWTileSetManager@@QEAAPEAVCNWTileSet@@AEBVCResRef@@@Z"),
         [AreaSetWeather]   = At(0x7e63c0),
         [AreaStartWeather] = At(0x7e69a0),
         [AreaStopWeather]  = At(0x7e69e0),

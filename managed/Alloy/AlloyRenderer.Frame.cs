@@ -619,6 +619,29 @@ public sealed unsafe partial class AlloyRenderer
         Gl.ColorMask(1, 1, 1, 1);
         Gl.DepthFunc(Gl.LEQUAL);
     }
+    /// <summary>#617 follow-up: the frame's water batches, depth only, under <paramref name="vp"/> into whatever
+    /// target the caller attached -- the cover map's roof over a pool's bed. The prepass program on the
+    /// staged records; the caster bracket bound the record buffer, this binds the staged slot order it needs.</summary>
+    internal static void DrawWaterOccluders(Matrix4x4* vp)
+    {
+        if (_gWaterEnd <= _gBlendEnd || !EnsureDepthProgram() || _slotBuf == 0) return;
+        BindStagedSlots();
+        Gl.UseProgram(_progDepth);
+        Gl.UniformMatrix4fv(_depthVp, 1, 0, (float*)vp);
+        uint boundVao = 0;
+        fixed (int* counts = _dCount, bases = _dBase)
+        fixed (nint* offs = _dOff)
+        for (int g = _gBlendEnd; g < _gWaterEnd; g++)
+        {
+            int s = _gStart[g];
+            Gl.Uniform1i(_depthBase, s);
+            uint vao = VaoName(_gVao[g], _gCls[g]);
+            if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+            Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort, (void**)(offs + s), _gLen[g], bases + s);
+        }
+        Gl.BindVertexArray(0);
+    }
+
     /// <summary><c>/alloy blendprepass</c>: the blended class's one-layer depth sweep (default on).</summary>
     private static bool _blendPrepass => Renderer.BlendPrepass.V;
     /// <summary><c>/alloy blenddiag</c>: once per 300 frames, one log line per blended run -- its gob tag and

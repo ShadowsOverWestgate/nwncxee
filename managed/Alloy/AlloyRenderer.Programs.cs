@@ -384,6 +384,7 @@ public sealed unsafe partial class AlloyRenderer
         L.ContactFar = GlProgram.Loc(prog, "uContactFar");
         L.Weather = GlProgram.Loc(prog, "uWeather"); L.WeatherLook = GlProgram.Loc(prog, "uWeatherLook");
         L.CoverVp = GlProgram.Loc(prog, "uCoverVp"); L.CoverLayer = GlProgram.Loc(prog, "uCoverLayer");
+        L.SnowLook = GlProgram.Loc(prog, "uSnowLook"); L.SnowLight = GlProgram.Loc(prog, "uSnowLight"); L.CoverEsm = GlProgram.Loc(prog, "uCoverEsmP"); L.SnowPom = GlProgram.Loc(prog, "uSnowPom");
         L.Feat = FeatLocs(prog);
         // Bind the two shadow samplers to their units ONCE, here, and not only on the frames a map is fresh.
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers
@@ -397,6 +398,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(L.CubeDynTex, (int)CubeDynUnit);
         Gl.Uniform1i(L.Probe, (int)EnvProbe.ProbeUnit);
         Gl.Uniform1i(GlProgram.Loc(prog, "uOitDepth"), (int)TextureSlots.OitDepth);
+        Gl.Uniform1i(GlProgram.Loc(prog, "uCoverEsm"), (int)TextureSlots.CoverEsm);
         Gl.Uniform1i(L.Ssao, (int)TextureSlots.Ssao);
         Gl.Uniform1i(GlProgram.Loc(prog, "uSceneDepth"), (int)TextureSlots.SsaoDepth);
         // #120's five map samplers, for the same reason: left at their default they would all point at unit

@@ -232,7 +232,7 @@ internal static unsafe partial class GrassField
 
     private struct Loc
     {
-        public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge;
+        public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
         public int PushTex, PushGain, PushWindow;
         public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN, Sss, Reach;
         public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn, SunFocus, SunRadius;
@@ -1032,6 +1032,8 @@ internal static unsafe partial class GrassField
         Gl.Uniform1i(loc.VLit, vlit ? 1 : 0);   // the depth program never lights: its vertex stage skips the rig
         Gl.Uniform1i(loc.Cast, 0);
         Gl.Uniform1f(loc.CastWidth, Grass.CastWidth.V);
+        // the snow on the ground (Weather's integrator) thins the field by rank and winters the survivors
+        Gl.Uniform2f(loc.Snow, Weather.Snow * Grass.SnowThin.V, Weather.Snow * Grass.SnowLook.V);
         Gl.Uniform3fv(loc.Eye, 1, (float*)eye);
         Gl.Uniform2f(loc.Fade, nearDist, farDist);
         Gl.Uniform4f(loc.Lod, Grass.Lod.V, Grass.LodMin.V, Grass.LodWidth.V, Grass.LodHeight.V);
@@ -1434,7 +1436,7 @@ internal static unsafe partial class GrassField
             Vp = GlProgram.Loc(prog, "uVP"), Eye = GlProgram.Loc(prog, "uEyePos"),
             Fade = GlProgram.Loc(prog, "uFade"), Tex = GlProgram.Loc(prog, "uTex"),
             Lod = GlProgram.Loc(prog, "uLod"), Shade = GlProgram.Loc(prog, "uShade"),
-            Tuft = GlProgram.Loc(prog, "uTuft"), VLit = GlProgram.Loc(prog, "uVLit"), Cast = GlProgram.Loc(prog, "uCast"), CastWidth = GlProgram.Loc(prog, "uCastWidth"),
+            Tuft = GlProgram.Loc(prog, "uTuft"), VLit = GlProgram.Loc(prog, "uVLit"), Cast = GlProgram.Loc(prog, "uCast"), CastWidth = GlProgram.Loc(prog, "uCastWidth"), Snow = GlProgram.Loc(prog, "uSnow"),
             RootAo = GlProgram.Loc(prog, "uRootAo"), GroundTint = GlProgram.Loc(prog, "uGroundTint"), Ground = GlProgram.Loc(prog, "uGround"), GroundOn = GlProgram.Loc(prog, "uGroundOn"), GroundViz = GlProgram.Loc(prog, "uGroundViz"), SoftEdge = GlProgram.Loc(prog, "uSoftEdge"),
             MatAmb = GlProgram.Loc(prog, "uMatAmbient"), MatDif = GlProgram.Loc(prog, "uMatDiffuse"),
             Lit = GlProgram.Loc(prog, "uLit"), WindGain = GlProgram.Loc(prog, "uWindGain"),
@@ -1505,6 +1507,7 @@ internal static unsafe partial class GrassField
         uniform vec3 uEyePos;
         uniform vec2 uFade;                     // (full-density radius, cut-off radius) in world units
         uniform vec4 uLod;                      // x full-density radius, y keep floor, z width exponent, w height exponent
+        uniform vec2 uSnow;                     // x = share of blades gone under snow (by rank), y = winter look
         uniform float uWindGain;
         uniform float uWindSpeed;      // uTimeOfDay -> sway phase; see GrassField._windSpeed
         uniform sampler2D uPushTex;    // top-down displacement field, RG signed around 0.5
@@ -1562,6 +1565,9 @@ internal static unsafe partial class GrassField
             // A blade past its own keep edge is gone; one AT the edge thins out over the last 20% of the
             // prefix so the count changing under a moving camera never pops. Culled before rasterisation.
             float lod = clamp((kv * 1.2 - iParam.z) / (kv * 0.2), 0.0, 1.0);
+            // snow: the highest-ranked blades go first, the same prefix the distance ladder keeps -- so a snowed
+            // field thins the way a far one does, without a rebake
+            if (uSnow.x > 0.0 && iParam.z > 1.0 - uSnow.x) lod = 0.0;
             if (lod <= 0.0)
             {
                 gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -1575,6 +1581,7 @@ internal static unsafe partial class GrassField
             if (uCast != 0) widen *= uCastWidth;
             float c = cos(iPos.w), s = sin(iPos.w);
             vec3 p = vec3((aPos.x * c - aPos.y * s) * widen, (aPos.x * s + aPos.y * c) * widen, aPos.z * grow) * iParam.x;
+            p.z *= 1.0 - 0.4 * uSnow.y;   // beaten down under the weight
 
             // The engine's areaGlobalWind is a world vector; a still area still wants a breeze, so a floor
             // stands in for it the way the stock wind shaders' 0.356 does.
@@ -1707,6 +1714,7 @@ internal static unsafe partial class GrassField
         uniform float uEdge;                    // cutout ramp width, in units of the analytic one-pixel edge
         uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
         uniform float uRootAo;                  // darkening at the root, 0..1
+        uniform vec2 uSnow;                     // y = winter look: straw colour, snow on the tips
         uniform float uGroundTint;              // fraction of the blade's height that fades into the ground under its root
         uniform sampler2D uGround;              // the frame as it stood before the grass: the lit, fogged ground
         uniform int uGroundOn;                  // 1 = the copy was taken this pass
@@ -1757,6 +1765,14 @@ internal static unsafe partial class GrassField
 
             vec3 N = normalize(vNrm);
             vec3 albedo = CxLinear(texel.rgb);
+            if (uSnow.y > 0.0)
+            {
+                // winter: the green drains to straw (luminance under a warm tint), and the upper blade takes
+                // snow -- the same albedo the ground cover uses, so a field reads as one surface
+                float lum = dot(albedo, vec3(0.3, 0.59, 0.11));
+                albedo = mix(albedo, lum * vec3(1.15, 0.95, 0.6), uSnow.y * 0.8);
+                albedo = mix(albedo, vec3(0.85), uSnow.y * smoothstep(0.45, 0.9, vRoot) * 0.85);
+            }
             float ndl = clamp(dot(N, uAreaDir), 0.0, 1.0);
             // #355: a far blade is a few pixels; the cascade and cluster taps (the frame's costliest term)
             // cannot be seen on it and are not taken. Divergent, but blades cluster by distance.

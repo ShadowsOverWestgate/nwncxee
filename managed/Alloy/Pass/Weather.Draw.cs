@@ -30,7 +30,7 @@ internal static unsafe partial class Weather
     private const float WobbleWrap = 400f * MathF.PI;
 
     internal static Knob<float> DensityScale = null!, StreakLen = null!, FlakeSize = null!, Brightness = null!, Opacity = null!, Range = null!,
-                                RainSpeed = null!, SnowSpeed = null!, WindLean = null!, Soft = null!, Drips = null!;
+                                RainSpeed = null!, SnowSpeed = null!, WindLean = null!, Soft = null!, Drips = null!, Backscatter = null!, SnowAngle = null!;
     internal static Knob<int> MaxCount = null!, Viz = null!;
 
     private static uint _progRain, _progSnow, _vao;
@@ -43,7 +43,7 @@ internal static unsafe partial class Weather
     private static int _drawn, _count, _drips;
     private static Vector3 _fall;
 
-    private struct Loc { public int View, Proj, Eye, Centre, Fall, Phase, Time, Speed, Box, Size, Kind, Drift, Depth, Tint, Alpha, Soft, Viz, Cover, CoverVp, CoverLayer, CoverSoft, Lit; }
+    private struct Loc { public int View, Proj, Eye, Centre, Fall, Phase, Time, Speed, Box, Size, Kind, Drift, Depth, Tint, Alpha, Soft, Viz, Cover, CoverVp, CoverLayer, CoverSoft, Lit, Back; }
 
     private static void DeclareKnobs()
     {
@@ -58,6 +58,10 @@ internal static unsafe partial class Weather
         SnowSpeed = G.Slider("snowspeed", "Snow speed", 0.2f, 6f, 0.1f, 1.2f, "m/s", Tier.Advanced);
         WindLean = G.Slider("windlean", "Wind lean", 0f, 3f, 0.05f, 0.6f, tier: Tier.Advanced,
                             help: "How far the area wind tilts the fall. 0 falls straight down.");
+        SnowAngle = G.Slider("snowangle", "Snow settle angle", 0f, 45f, 1f, 3f, "°", Tier.Advanced,
+                             help: "Tilt of the settle direction from vertical, into the wind: how far snow reaches under an eave. Rain settles along its own fall.");
+        Backscatter = G.Slider("backscatter", "Flake glow", 0f, 2f, 0.1f, 0.5f,
+                               help: "A flake between you and a light glows, lit from behind. 0 = off.");
         Soft = G.Slider("soft", "Contact fade", 0f, 20f, 0.5f, 6f, tier: Tier.Advanced,
                         help: "How sharply a streak fades where it meets geometry (1/m).");
         Drips = G.Slider("drips", "Roof drips", 0f, 1f, 0.05f, 0.25f,
@@ -71,6 +75,23 @@ internal static unsafe partial class Weather
     /// <summary>The fall vector this frame: gravity leaning into the area wind (a raw engine vector, see
     /// <see cref="AlloyRenderer.DescribeWind"/>), normalised. Shared with the occlusion map.</summary>
     internal static Vector3 Fall => _fall;
+
+    /// <summary>The cover map's bake direction: rain's wind-leaning fall vector, but a fixed small tilt into
+    /// the wind while snow falls or lies -- the leaning vector snowed the lee side of every wall and left the
+    /// windward roof edge bare. Settled snow sits near where the sky is overhead; the tilt is the reach under
+    /// an eave.</summary>
+    internal static Vector3 CoverDir
+    {
+        get
+        {
+            if (!(CurrentKind == Kind.Snow || (CurrentKind == Kind.None && _snow > 0f))) return _fall;
+            Vector2 h = new(_fall.X, _fall.Y);
+            if (h.LengthSquared() < 1e-6f) h = Vector2.UnitX;
+            h = Vector2.Normalize(h);
+            float a = SnowAngle.V * MathF.PI / 180f;
+            return new Vector3(h.X * MathF.Sin(a), h.Y * MathF.Sin(a), -MathF.Cos(a));
+        }
+    }
 
     private static void Tick(Vector2 wind)
     {
@@ -141,6 +162,7 @@ internal static unsafe partial class Weather
         Gl.Uniform3f(l.Tint, c, c, c);
         bool lit = lightingOn && AlloyLights.Ready;
         Gl.Uniform1i(l.Lit, lit ? 1 : 0);
+        Gl.Uniform1f(l.Back, snow ? Backscatter.V : 0f);
         AlloyRenderer.UploadAreaTerms(in L);
         if (lit)
         {
@@ -173,12 +195,12 @@ internal static unsafe partial class Weather
         l.Drift = GlProgram.Loc(prog, "uDrift"); l.Depth = GlProgram.Loc(prog, "uSceneDepth"); l.Tint = GlProgram.Loc(prog, "uTint");
         l.Alpha = GlProgram.Loc(prog, "uAlpha"); l.Soft = GlProgram.Loc(prog, "uSoft"); l.Viz = GlProgram.Loc(prog, "uViz");
         l.Cover = GlProgram.Loc(prog, "uCover"); l.CoverVp = GlProgram.Loc(prog, "uCoverVp"); l.CoverLayer = GlProgram.Loc(prog, "uCoverLayer"); l.CoverSoft = GlProgram.Loc(prog, "uCoverSoft");
-        l.Lit = GlProgram.Loc(prog, "uLit");
+        l.Lit = GlProgram.Loc(prog, "uLit"); l.Back = GlProgram.Loc(prog, "uBack");
         (snow ? ref _litSnow : ref _litRain) = AlloyRenderer.LitLocs(prog);
         return true;
     }
 
-    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; }
+    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; EsmLost(); }
     internal static void ResetPeriod() => _drawn = 0;
     internal static string Stats() => _off ? "weather unavailable" : !Enabled.V ? "weather off"
         : $"weather {CurrentKind} {Density * 100f:F0}% {_count} instances, {_drips} drips{CoverStats()}{SurfaceStats()}, records {AlloyRenderer.RecCreature} creature / {AlloyRenderer.RecObject} object / {AlloyRenderer.RecTile} tile";
@@ -211,6 +233,7 @@ internal static unsafe partial class Weather
         uniform float uCoverLayer;
         uniform float uCoverSoft;    // metres of feather at a cover edge
         uniform int uLit;        // 1 = take the light rig; 0 = flat area terms
+        uniform float uBack;     // snow: light from behind the flake glows through it
         uniform vec3 uAreaAmbient;
         uniform vec3 uAreaDiffuse;
         uniform vec3 uAreaDir;
@@ -297,6 +320,11 @@ internal static unsafe partial class Weather
                 vec3 sun = uAreaDiffuse * (ndl * CxSunShadow(P, N, ndl, ndl));
                 vec3 point = CxClusteredDiffuse(P, N, max(-cv.z, 1e-3));
                 vLight = uAreaAmbient * mix(0.15, 1.0, ndl) + sun + point;
+                if (uBack > 0.0)
+                {
+                    float back = pow(max(dot(-N, uAreaDir), 0.0), 4.0);
+                    vLight += uBack * (uAreaDiffuse * back * CxSunShadow(P, -N, back, back) + CxClusteredDiffuse(P, -N, max(-cv.z, 1e-3)));
+                }
             }
         }
         """;

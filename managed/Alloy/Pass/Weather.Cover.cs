@@ -11,7 +11,7 @@ namespace CX.Alloy;
 internal static unsafe partial class Weather
 {
     internal const int VizMax = 3;
-    internal static Knob<bool> Cover = null!;
+    internal static Knob<bool> Cover = null!, WaterRoof = null!;
     internal static Knob<float> CoverRange = null!, CoverSoft = null!;
 
     private static void DeclareCoverKnobs()
@@ -19,6 +19,8 @@ internal static unsafe partial class Weather
         G.Section("Cover");
         Cover = G.Toggle("cover", "Shelter under roofs", true,
                          help: "Nothing falls under a roof, an awning or a doorway: an occlusion map baked along the fall vector, like a sun shadow. Off, it rains indoors.");
+        WaterRoof = G.Toggle("waterroof", "Water sheds snow", true,
+                             help: "Water surfaces count as a roof: nothing wets or snows the bed beneath them.");
         CoverSoft = G.Slider("coversoft", "Cover edge", 0f, 2f, 0.05f, 0.5f, "m",
                              help: "How far a roof's shelter feathers at its edge: wind and splash make no hard line.");
         CoverRange = G.Slider("coverrange", "Cover range", 16f, 128f, 4f, 48f, "m", Tier.Advanced,
