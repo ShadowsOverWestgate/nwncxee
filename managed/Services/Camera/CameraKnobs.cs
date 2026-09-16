@@ -22,7 +22,7 @@ internal static class CameraKnobs
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"CameraKnobs.SelfCheck FAIL: {w}"); } }
         Declare();
-        string[] order = { "chase", "topdown", "stiff", "move", "walls", "free", "mouselook" };
+        string[] order = { "chase", "topdown", "driving", "move", "walls", "free", "mouselook" };
         int at = -1;
         foreach (string g in order)
         {
@@ -32,12 +32,12 @@ internal static class CameraKnobs
             E(i > at, $"group {g} declares after the one before it");
             at = i;
         }
-        E(CameraModes.ByMode[0] == CameraModes.Chase && CameraModes.ByMode[1] == CameraModes.TopDown && CameraModes.ByMode[2] == CameraModes.Stiff,
-          "the mode byte indexes chase, top-down, stiff");
+        E(CameraModes.ByMode[0] == CameraModes.Chase && CameraModes.ByMode[1] == CameraModes.TopDown && CameraModes.ByMode[2] == CameraModes.Driving,
+          "the mode byte indexes chase, top-down, driving");
         var fov = KnobGroup.Find("chase.fov") as Knob<float>;
         E(fov != null && fov == CameraModes.Chase.Fov && fov.Default == 45f && fov.Min == FovMin && fov.Max == FovMax, "chase.fov is the 10-120 slider defaulting to 45");
         E(fov!.TryParse("60", out float v) && v == 60f && CameraModes.TopDown.Fov != fov, "/chase fov 60 parses and names the chase row only");
-        E(CameraModes.Chase.Drive.Default && !CameraModes.TopDown.Drive.Default && CameraModes.Stiff.Drive.Default
+        E(CameraModes.Chase.Drive.Default && !CameraModes.TopDown.Drive.Default && CameraModes.Driving.Drive.Default
           && CameraModes.Chase.Recenter.Default && !CameraModes.TopDown.Recenter.Default, "drive and recenter default off for top-down only");
         E(CameraModes.Chase.Enabled.Key == "chase.enabled" && MouseLook.Enabled.Key == "mouselook.enabled", "the masters are declared");
         E(MouseLook.Enabled.Changed == MouseLookService.MasterChanged && CameraModes.Chase.Enabled.Changed == null, "mouselook's master releases on its edge; a mode's master is read per Control");
@@ -52,7 +52,7 @@ internal static class CameraKnobs
     }
 }
 
-/// <summary>One engine camera mode's group: <c>chase</c> / <c>topdown</c> / <c>stiff</c>, identical rows with
+/// <summary>One engine camera mode's group: <c>chase</c> / <c>topdown</c> / <c>driving</c>, identical rows with
 /// per-mode values, each with its own master. Off is the stock camera for that mode (#584): the ninth
 /// <c>CameraService.Gate</c> value, read per Control (feel, recenter and the drive stand aside, the view angle
 /// goes back to the first one read), so it needs no <c>changed:</c>. Read hot by <see cref="CameraService"/> and
@@ -63,10 +63,13 @@ public sealed class CameraModeKnobs
     public readonly Knob<bool> Enabled, Drive, Recenter;
     public readonly Knob<float> Fov, LagPos, LagRot, LagZoom, PitchCurve, PitchRef, OffsetX, OffsetY;
 
-    internal CameraModeKnobs(string name, string submenu, bool moveDefault)
+    internal CameraModeKnobs(string name, string submenu, int mode, bool moveDefault)
     {
         G = KnobGroup.Declare(name, "Camera", submenu, master: "Enable the CX camera for this mode",
-            masterHelp: "CX shapes this camera mode: smoothing, field of view, offset, camera-relative movement, auto-recenter. Off, the stock camera runs untouched in this mode.");
+            masterHelp: "CX shapes this camera mode: smoothing, field of view, offset, camera-relative movement, auto-recenter. Off, the stock camera runs untouched in this mode.",
+            header: "The game has three camera modes, picked under its own Options » Controls » Camera Mode (Chase Cam, Driving, Top Down; Top Down is the game default). The camera-mode key (* by default) flips between Driving and the other one you picked. Each mode keeps its own settings here.");
+        G.Status = () => CameraService.Mode < 0 ? "" : CameraService.Mode == mode ? "You are in this camera mode now."
+                       : $"You are in {CameraModes.ByMode[CameraService.Mode].G.Submenu} now; these rows apply once you switch to {submenu}.";
         Enabled = G.Master!;
         G.Section("View");
         Fov = G.Slider("fov", "Field of view", CameraKnobs.FovMin, CameraKnobs.FovMax, 1f, 45f, "deg",
@@ -95,18 +98,19 @@ public sealed class CameraModeKnobs
     }
 }
 
-/// <summary>The three mode groups, indexed by the engine's camera mode byte (0 chase, 1 top-down, 2 stiff chase).</summary>
+/// <summary>The three mode groups, indexed by the engine's camera mode byte (0 chase, 1 top-down, 2 driving; nwscript
+/// calls the third STIFF_CHASE_CAMERA, the game's own UI and feedback call it Driving, so the player-facing name wins).</summary>
 internal static class CameraModes
 {
-    internal static readonly CameraModeKnobs Chase, TopDown, Stiff;
+    internal static readonly CameraModeKnobs Chase, TopDown, Driving;
     internal static readonly CameraModeKnobs[] ByMode;
 
     static CameraModes()
     {
-        Chase = new CameraModeKnobs("chase", "Chase", moveDefault: true);
-        TopDown = new CameraModeKnobs("topdown", "Top-down", moveDefault: false);
-        Stiff = new CameraModeKnobs("stiff", "Stiff chase", moveDefault: true);
-        ByMode = new[] { Chase, TopDown, Stiff };
+        Chase = new CameraModeKnobs("chase", "Chase", 0, moveDefault: true);
+        TopDown = new CameraModeKnobs("topdown", "Top-down", 1, moveDefault: false);
+        Driving = new CameraModeKnobs("driving", "Driving", 2, moveDefault: true);
+        ByMode = new[] { Chase, TopDown, Driving };
     }
 }
 

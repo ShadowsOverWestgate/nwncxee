@@ -632,7 +632,7 @@ public static unsafe class EngineLayout
     /// <summary>CClientExoAppInternal -&gt; <c>CClientOptions*</c> (first word). <c>CClientExoApp::GetClientOptions</c>
     /// is <c>*(*(this+8))</c> on both builds (Linux @0x637ea0, Windows rva 0x6ab9b0).</summary>
     public static readonly int InternalClientOptions = Same("CClientExoAppInternal", "clientOptions", 0x0);
-    /// <summary>CClientOptions -&gt; camera mode byte: 0 chase, 1 top-down, 2 stiff chase. Read at +0x1d by
+    /// <summary>CClientOptions -&gt; camera mode byte: 0 chase, 1 top-down, 2 driving (nwscript STIFF_CHASE_CAMERA). Read at +0x1d by
     /// <c>SetCameraFollow</c>/<c>UpdateCameraFollow</c> on Linux and by the Windows camera message handler's
     /// lock arms (<c>*(byte*)(opts+0x1d) &lt; 3</c>).</summary>
     public static readonly int OptionsCameraMode = Same("CClientOptions", "cameraMode", 0x1d);

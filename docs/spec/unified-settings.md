@@ -540,7 +540,7 @@ Deleted: `/post scale` (= alloy.scale), `/post aotemporal` (= ao.temporal).
 
 ### 4.4 Camera
 
-**Chase / Top-down / Stiff chase** — groups `chase` / `topdown` / `stiff`. Identical rows,
+**Chase / Top-down / Driving** — groups `chase` / `topdown` / `driving` (the game calls mode 2 Driving; nwscript calls it STIFF_CHASE_CAMERA). Identical rows,
 per-mode values, each with its own master: off = the stock camera for that mode entirely
 (feel, camera-relative movement, recenter all forwarded).
 
@@ -555,8 +555,8 @@ per-mode values, each with its own master: off = the stock camera for that mode 
 | `<mode>.pitchref` | pitchref | Tilt reference distance | S | 1–60 m step 1 · 10 | A | L | View | |
 | `<mode>.offsetx` | offsetx | Sideways offset | S | −10–10 m step 0.25 · 0 | U | L | Offset | Moves your character off centre; positive puts them on the left. 0 is the stock orbit. |
 | `<mode>.offsety` | offsety | Height offset | S | −10–10 m step 0.25 · 0 | U | L | Offset | Raises the camera's focus above your character. |
-| `<mode>.drive` | drive | Move relative to the camera | T | chase on · topdown off · stiff on | U | L | Movement | Forward is where the camera looks, not where your character faces. |
-| `<mode>.recenter` | recenter | Swing behind you as you move | T | chase on · topdown off · stiff on | U | L | Movement | The camera turns to follow your movement direction instead of the stock chase. Tuning is under Movement. |
+| `<mode>.drive` | drive | Move relative to the camera | T | chase on · topdown off · driving on | U | L | Movement | Forward is where the camera looks, not where your character faces. |
+| `<mode>.recenter` | recenter | Swing behind you as you move | T | chase on · topdown off · driving on | U | L | Movement | The camera turns to follow your movement direction instead of the stock chase. Tuning is under Movement. |
 
 Build notes: the master is a ninth `Gate` value consulted at the pre-Control recenter and the
 post-Control Adjust/SettleCollision; FOV `Camera+0x4c4` has no engine restorer, so off restores
