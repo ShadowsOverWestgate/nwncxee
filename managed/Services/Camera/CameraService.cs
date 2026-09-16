@@ -300,6 +300,8 @@ public sealed unsafe class CameraService : IExtenderService
         *(int*)(module + ModChaseOffOff) = 1;
         *(int*)(module + ModWasIdleOff) = 0;
         float* vel = (float*)(self + YawVelOff);
+        // Face mode: the turn keys are a keyboard orbit (yaw + is left, facing north = 0, east = -90).
+        if (CameraDriveService.TurnAxis != 0) *vel += CameraDriveService.TurnAxis * Move.KeyTurn.V;
         if (*vel != 0f || *(float*)(self + YawImpulseOff) != 0f)
         {
             _grace = Move.Grace.V; _idle = 0f; _pursuing = false; _recenterVel = 0f; _hold = Hold.Orbiting; return;

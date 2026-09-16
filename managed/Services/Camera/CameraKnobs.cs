@@ -39,6 +39,8 @@ internal static class CameraKnobs
         E(fov!.TryParse("60", out float v) && v == 60f && CameraModes.TopDown.Fov != fov, "/chase fov 60 parses and names the chase row only");
         E(CameraModes.Chase.Drive.Default && !CameraModes.TopDown.Drive.Default && CameraModes.Driving.Drive.Default
           && CameraModes.Chase.Recenter.Default && !CameraModes.TopDown.Recenter.Default, "drive and recenter default off for top-down only");
+        E(CameraModes.Chase.Face.Default && !CameraModes.TopDown.Face.Default && !CameraModes.Driving.Face.Default
+          && Move.Rate.Default == 360f && Move.DeadZone.Default == 0f && Move.Idle.Default == 0f, "chase faces the camera by default, the recenter is rigid and never drifts idle");
         E(CameraModes.Chase.Enabled.Key == "chase.enabled" && MouseLook.Enabled.Key == "mouselook.enabled", "the masters are declared");
         E(MouseLook.Enabled.Changed == MouseLookService.MasterChanged && CameraModes.Chase.Enabled.Changed == null, "mouselook's master releases on its edge; a mode's master is read per Control");
         E(KnobGroup.Find("free.enter") is KnobButton && FreeCam.G.Knobs[0] == FreeCam.Enter, "free.enter is the first row and a button");
@@ -46,7 +48,7 @@ internal static class CameraKnobs
           "free.fov keeps 0 = the mode's; the leash never exceeds the engine's 25");
         E(Walls.Fade.Default && Walls.Floor.Default == 0.5f && Walls.ArmOut.Default == 4f, "walls defaults are the #537/#538 boot values");
         E(!MouseLook.Right.Default && MouseLook.Sens.Default == 1f && MouseLook.Threshold.Default == 4 && !MouseLook.Invert.Default, "mouselook defaults are the old boot keys'");
-        E(Move.Rate.Default == 60f && Move.Idle.Default == 5f && Move.Hz.Default == 10f && Move.Turn.Default == 540f, "move defaults are the #540/#541 values");
+        E(Move.Hz.Default == 10f && Move.Turn.Default == 540f && Move.KeyTurn.Default == 180f, "drive defaults are the #540 values");
         E(KnobGroup.Find("camera.occlude") == null && KnobGroup.Find("mouselook_sens") == null, "the retired flat keys are not declared");
         log.Info(ok ? "CameraKnobs.SelfCheck: passed" : "CameraKnobs.SelfCheck: FAILED");
     }
@@ -60,10 +62,10 @@ internal static class CameraKnobs
 public sealed class CameraModeKnobs
 {
     public readonly KnobGroup G;
-    public readonly Knob<bool> Enabled, Drive, Recenter;
+    public readonly Knob<bool> Enabled, Drive, Face, Recenter;
     public readonly Knob<float> Fov, LagPos, LagRot, LagZoom, PitchCurve, PitchRef, OffsetX, OffsetY;
 
-    internal CameraModeKnobs(string name, string submenu, int mode, bool moveDefault)
+    internal CameraModeKnobs(string name, string submenu, int mode, bool moveDefault, bool faceDefault = false)
     {
         G = KnobGroup.Declare(name, "Camera", submenu, master: "Enable the CX camera for this mode",
             masterHelp: "CX shapes this camera mode: smoothing, field of view, offset, camera-relative movement, auto-recenter. Off, the stock camera runs untouched in this mode.",
@@ -93,6 +95,8 @@ public sealed class CameraModeKnobs
         G.Section("Movement");
         Drive = G.Toggle("drive", "Move relative to the camera", moveDefault,
                          help: "Forward is where the camera looks, not where your character faces.");
+        Face = G.Toggle("face", "Face where the camera looks", faceDefault,
+                        help: "Your character always faces the camera's direction. Forward runs that way, back walks backwards, the strafe keys sidestep, and the turn keys turn you and the camera together. After you look around with the mouse, your character turns to the new direction on the next step. Off: your character turns to face whichever way it moves, and the camera swings behind it.");
         Recenter = G.Toggle("recenter", "Swing behind you as you move", moveDefault,
                             help: "The camera turns to follow your movement direction instead of the stock chase. Tuning is under Movement.");
     }
@@ -107,7 +111,7 @@ internal static class CameraModes
 
     static CameraModes()
     {
-        Chase = new CameraModeKnobs("chase", "Chase", 0, moveDefault: true);
+        Chase = new CameraModeKnobs("chase", "Chase", 0, moveDefault: true, faceDefault: true);
         TopDown = new CameraModeKnobs("topdown", "Top-down", 1, moveDefault: false);
         Driving = new CameraModeKnobs("driving", "Driving", 2, moveDefault: true);
         ByMode = new[] { Chase, TopDown, Driving };
@@ -119,23 +123,25 @@ internal static class CameraModes
 internal static class Move
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<float> Rate, DeadZone, Idle, Grace, IdleRate, Hz, Turn;
+    internal static readonly Knob<float> Rate, DeadZone, Idle, Grace, IdleRate, Hz, Turn, KeyTurn;
 
     static Move()
     {
         G = KnobGroup.Declare("move", "Camera", "Movement",
             header: "No master: tuning for the Movement toggles of each camera mode.");
         G.Section("Recenter");
-        Rate = G.Slider("rate", "Recenter speed", 1f, 720f, 5f, 60f, "deg/s",
+        Rate = G.Slider("rate", "Recenter speed", 1f, 720f, 5f, 360f, "deg/s",
                         help: "Fastest swing behind your movement; it eases in near the target.");
-        DeadZone = G.Slider("deadzone", "Recenter dead zone", 0f, 180f, 5f, 15f, "deg",
+        DeadZone = G.Slider("deadzone", "Recenter dead zone", 0f, 180f, 5f, 0f, "deg",
                             help: "How far off your movement direction the camera may sit before it starts to swing.");
-        Idle = G.Slider("idle", "Recenter after standing still", 0f, 60f, 0.5f, 5f, "s",
+        Idle = G.Slider("idle", "Recenter after standing still", 0f, 60f, 0.5f, 0f, "s",
                         help: "Seconds of standing still before the camera drifts behind your character's facing. 0 never does.");
         Grace = G.Slider("grace", "Orbit grace", 0f, 30f, 0.1f, 1.5f, "s", Tier.Advanced,
                          help: "No recenter this long after you orbit by hand.");
         IdleRate = G.Slider("idlerate", "Idle recenter speed", 1f, 720f, 5f, 30f, "deg/s", Tier.Advanced);
         G.Section("Drive");
+        KeyTurn = G.Slider("keyturn", "Turn-key speed", 10f, 720f, 10f, 180f, "deg/s",
+                           help: "How fast the turn keys swing you and the camera when facing the camera.");
         Hz = G.Slider("hz", "Heading updates per second", 1f, 60f, 1f, 10f, "", Tier.Advanced,
                       help: "Most heading packets sent per second; the stock game sends 2.");
         Turn = G.Slider("turn", "Heading turn rate", 0f, 3600f, 30f, 540f, "deg/s", Tier.Advanced, help: "0 = snap.");
@@ -212,9 +218,10 @@ internal static class FreeCam
 internal static class MouseLook
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<bool> Enabled, Right, Invert;
+    internal static readonly Knob<bool> Enabled, Right, Invert, Action;
     internal static readonly Knob<float> Sens;
     internal static readonly Knob<int> Threshold;
+    internal static readonly Knob<string> ActionKey;
 
     static MouseLook()
     {
@@ -222,6 +229,10 @@ internal static class MouseLook
             masterHelp: "CX handles the mouse-drag camera: the cursor stays put and the view never stalls at the screen edge. Off, the stock middle-drag orbit runs.",
             masterChanged: MouseLookService.MasterChanged);
         Enabled = G.Master!;
+        Action = G.Toggle("action", "Action camera", false, changed: MouseLookService.ActionChanged,
+                          help: "Hides the cursor and pins it to a crosshair in the centre of the screen. Moving the mouse turns the camera; whatever the crosshair points at is what you hover, tooltip and click, so aiming replaces pointing. Left-click acts on it, a right-click opens its menu. Clicking the ground does not walk you there (use the movement keys) and the crosshair never picks your own character. Hold Alt to free the cursor for the game's panels; the toggle key below switches it on and off.");
+        ActionKey = G.Text("actionkey", "Action camera toggle key", "F8", changed: MouseLookService.ActionKeyChanged,
+                           help: "An SDL key name (F8, Tab, Backspace, Z...) or Mouse4 / Mouse5 for the thumb buttons. Blank binds nothing.");
         Right = G.Toggle("right", "Right-drag looks around", false,
                          help: "Hold the right button and drag to orbit; a still right-click still opens the radial menu.");
         Sens = G.Slider("sens", "Sensitivity", 0.05f, 20f, 0.05f, 1f, "x", help: "1 matches the stock middle-drag.");

@@ -12,12 +12,17 @@ namespace CX.Services.Camera;
 /// knob is on, the player creature's orientation is written to camera yaw + key direction (W = the camera's
 /// forward, A/D and the strafe keys = its right, diagonals at 45°), forward is the only key the engine sees for
 /// the call, and the engine's "input changed" latch is raised when the heading moved past the wire's 0.1°
-/// quantum (at most <c>move.hz</c> times a second). The engine then derives the packet angle from that
+/// quantum (at most <c>move.hz</c> times a second for camera turns; a key change latches at once). The engine then derives the packet angle from that
 /// orientation, sends run-forward, snaps the local facing, predicts, keeps alive and aborts on release by itself,
 /// and the server adopts the world-space heading (§10.2): no server change, no new opcode. The one release the
 /// engine does not abort on is a turn key's (its key-up path aborts only for forward/back/strafe/auto-run), so
 /// that one sends the same <c>AbortDriveControl</c> (major 6, minor 0x21) from here.
-/// <para>The heading slews toward the keys at <c>move.turn</c> deg/s (starting from the creature's facing), and
+/// <para>Face mode (<c>&lt;mode&gt;.face</c>, chase's default): the creature always faces the camera's forward and the engine's own
+/// back/strafe bits carry S and the strafe keys (the server animates a back-pedal and a sidestep, facing held),
+/// while the turn keys become a keyboard orbit (<see cref="TurnAxis"/>) the creature follows on the next move.
+/// The camera then faces where the character faces by construction, with no recenter swing to wait for.</para>
+/// <para>A drive starts on the keys' heading (the wire angle is a path, so a slew from the old facing would walk
+/// an arc); while it runs the heading slews toward the keys at <c>move.turn</c> deg/s, and
 /// the creature's local facing-target pair is written with it every frame so the model turns as smoothly as the
 /// wire does. While the drive is active the engine's chase cam stands down (<see cref="EngineLayout.ModuleChaseSuppressed"/>
 /// held up, its idle edge held down): a chase that swings the camera behind a creature strafing at 90° would turn
@@ -59,21 +64,26 @@ public sealed unsafe class CameraDriveService : IExtenderService
     private const int WireTenths = 3600;
     private const float Deg = MathF.PI / 180f;
 
-    private enum Why { Active, Idle, Probe, NoMode, Off, Gate, NoCamera, NoCreature, NotDrivable, Cancelled, Free, Master }
+    private enum Why { Active, Idle, Probe, NoMode, Off, Gate, NoCamera, NoCreature, NotDrivable, Cancelled, Free, Master, TurnOnly }
     private static readonly string[] WhyNames =
         { "active", "no key held", "layout probe failed", "no live camera mode", "off for this mode", "camera held down",
           "no world camera", "no player creature", "creature not drivable", "forward and back cancel", "free camera",
-          "CX camera off for this mode" };
+          "CX camera off for this mode", "turning the camera" };
 
     private static bool _live, _probeOk, _active, _engineAborts;
     /// <summary>#541: the drive is running without a forward component (strafe/turn keys alone, or back), so the
     /// movement is a deliberate sidestep or back-pedal the recenter must not swing behind -- a strafe would
     /// become a spiral and a back-pedal a 180° swing that has no side to take.</summary>
     internal static bool NoForward { get; private set; }
+    /// <summary>Face mode (<c>&lt;mode&gt;.face</c>): the turn keys' camera yaw, +1 left / -1 right, consumed by
+    /// <see cref="CameraService"/> before Control as a yaw velocity of <c>move.keyturn</c> deg/s.</summary>
+    internal static int TurnAxis { get; private set; }
     private static Why _why = Why.Idle;
     private static int _sentTenths = -1, _tenths;
     /// <summary>The slewed heading in degrees, East 0 CCW; seeded from the creature's facing when a drive starts.</summary>
     private static float _heading;
+    /// <summary>Last frame's key axes; a change latches a packet regardless of <c>move.hz</c>.</summary>
+    private static float _lastF, _lastS;
     private static long _lastSendTick, _lastTick;
     private static int _sends, _latches, _aborts;
 
@@ -121,20 +131,40 @@ public sealed unsafe class CameraDriveService : IExtenderService
         IntPtr cre = IntPtr.Zero, cam = IntPtr.Zero;
         Why why = !held ? Why.Idle : !_probeOk ? Why.Probe : Wanted(app, out cre, out cam);
         float f = 0f, s = 0f;
+        int liveMode = CameraService.Mode;
+        bool face = liveMode >= 0 && CameraModes.ByMode[liveMode].Face.V;
+        TurnAxis = 0;
         if (why == Why.Active)
         {
             f = (keys[Fwd] | autoRun) != 0 ? 1f : 0f; f -= keys[Back] != 0 ? 1f : 0f;
-            s = (keys[TurnR] | keys[StrafeR]) != 0 ? 1f : 0f; s -= (keys[TurnL] | keys[StrafeL]) != 0 ? 1f : 0f;
-            if (f == 0f && s == 0f) why = Why.Cancelled;
+            if (face)
+            {
+                s = keys[StrafeR] != 0 ? 1f : 0f; s -= keys[StrafeL] != 0 ? 1f : 0f;
+                TurnAxis = (keys[TurnL] != 0 ? 1 : 0) - (keys[TurnR] != 0 ? 1 : 0);
+            }
+            else
+            {
+                s = (keys[TurnR] | keys[StrafeR]) != 0 ? 1f : 0f; s -= (keys[TurnL] | keys[StrafeL]) != 0 ? 1f : 0f;
+            }
+            if (f == 0f && s == 0f) why = TurnAxis != 0 ? Why.TurnOnly : Why.Cancelled;
         }
         _why = why;
-        NoForward = why == Why.Active && f <= 0f;
+        NoForward = why == Why.Active && !face && f <= 0f;
         if (why != Why.Active)
         {
             if (_active && !held)
             {
                 _active = false;
                 if (!_engineAborts) { ClientApi.Send(MajorInput, MinorAbortDrive, null, 0); _aborts++; }
+            }
+            if (why == Why.TurnOnly)
+            {
+                // The turn keys turn the camera, not the creature: the engine sees them up (no turn-on-spot).
+                int t2 = keys[TurnL], t3 = keys[TurnR];
+                keys[TurnL] = keys[TurnR] = 0;
+                _orig(app);
+                keys[TurnL] = t2; keys[TurnR] = t3;
+                return;
             }
             _orig(app);
             return;
@@ -146,10 +176,15 @@ public sealed unsafe class CameraDriveService : IExtenderService
         Vector3 r = CameraService.Right(new Quaternion(rot[1], rot[2], rot[3], rot[0]));
         float* ori = (float*)(cre + OriOff);
         long now = Environment.TickCount64;
-        if (!_active) { _heading = Degrees(ori[0], ori[1]); _lastTick = now; }
+        // Face mode: the creature faces the camera and the engine's own back/strafe bits carry the direction.
+        float want = face ? Heading(r.X, r.Y, 1f, 0f) : Heading(r.X, r.Y, f, s);
+        // A drive starts on the wanted heading: the wire angle is a path, so a slew from the old facing walks an arc.
+        if (!_active) { _heading = want; _lastTick = now; }
         float dt = MathF.Min((now - _lastTick) * 0.001f, 0.1f);
         _lastTick = now;
-        _heading = Slew(_heading, Heading(r.X, r.Y, f, s), Move.Turn.V, dt);
+        _heading = Slew(_heading, want, Move.Turn.V, dt);
+        bool keysChanged = f != _lastF || s != _lastS;
+        _lastF = f; _lastS = s;
         int tenths = Tenths(_heading);
         _tenths = tenths;
         (float sn, float cs) = MathF.SinCos(tenths * 0.1f * Deg);
@@ -163,12 +198,15 @@ public sealed unsafe class CameraDriveService : IExtenderService
         *(int*)(module + ModChaseOffOff) = 1;
         *(int*)(module + ModWasIdleOff) = 0;
 
+        // move.hz throttles camera-driven drift only; a key change is sent this frame.
         if (tenths != _sentTenths && *(int*)(app + ChangedOff) == 0
-            && now - _lastSendTick >= (long)(1000f / Move.Hz.V)) { *(int*)(app + ChangedOff) = 1; _latches++; }
+            && (keysChanged || now - _lastSendTick >= (long)(1000f / Move.Hz.V))) { *(int*)(app + ChangedOff) = 1; _latches++; }
 
         long sendBefore = *(long*)(app + LastSendOff);
         int k0 = keys[0], k1 = keys[1], k2 = keys[2], k3 = keys[3], k4 = keys[4], k5 = keys[5];
-        keys[Fwd] = 1; keys[Back] = keys[TurnL] = keys[TurnR] = keys[StrafeL] = keys[StrafeR] = 0;
+        keys[TurnL] = keys[TurnR] = 0;
+        if (face) { keys[Fwd] = f > 0f ? 1 : 0; keys[Back] = f < 0f ? 1 : 0; keys[StrafeL] = s < 0f ? 1 : 0; keys[StrafeR] = s > 0f ? 1 : 0; }
+        else { keys[Fwd] = 1; keys[Back] = keys[StrafeL] = keys[StrafeR] = 0; }
         _orig(app);
         keys[0] = k0; keys[1] = k1; keys[2] = k2; keys[3] = k3; keys[4] = k4; keys[5] = k5;
         if (*(long*)(app + LastSendOff) != sendBefore) { _sentTenths = tenths; _lastSendTick = now; _sends++; }

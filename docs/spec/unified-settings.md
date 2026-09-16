@@ -556,6 +556,7 @@ per-mode values, each with its own master: off = the stock camera for that mode 
 | `<mode>.offsetx` | offsetx | Sideways offset | S | −10–10 m step 0.25 · 0 | U | L | Offset | Moves your character off centre; positive puts them on the left. 0 is the stock orbit. |
 | `<mode>.offsety` | offsety | Height offset | S | −10–10 m step 0.25 · 0 | U | L | Offset | Raises the camera's focus above your character. |
 | `<mode>.drive` | drive | Move relative to the camera | T | chase on · topdown off · driving on | U | L | Movement | Forward is where the camera looks, not where your character faces. |
+| `<mode>.face` | (none) | Face where the camera looks | T | chase on · topdown off · driving off | U | L | Movement | Your character always faces the camera's direction. Forward runs that way, back walks backwards, the strafe keys sidestep, and the turn keys turn you and the camera together. After you look around with the mouse, your character turns to the new direction on the next step. Off: your character turns to face whichever way it moves, and the camera swings behind it. |
 | `<mode>.recenter` | recenter | Swing behind you as you move | T | chase on · topdown off · driving on | U | L | Movement | The camera turns to follow your movement direction instead of the stock chase. Tuning is under Movement. |
 
 Build notes: the master is a ninth `Gate` value consulted at the pre-Control recenter and the
@@ -567,13 +568,14 @@ the slider whenever the mode's master is on.
 
 | key | today | label | kind | range · default | tier | eff | section | help |
 |---|---|---|---|---|---|---|---|---|
-| move.rate | recenter.rate | Recenter speed | S | 1–720 °/s step 5 · 60 | U | L | Recenter | Fastest swing behind your movement; it eases in near the target. |
-| move.deadzone | recenter.deadzone | Recenter dead zone | S | 0–180 ° step 5 · 15 | U | L | Recenter | How far off your movement direction the camera may sit before it starts to swing. |
-| move.idle | recenter.idle | Recenter after standing still | S | 0–60 s step 0.5 · 5 | U | L | Recenter | Seconds of standing still before the camera drifts behind your character's facing. 0 never does. |
+| move.rate | recenter.rate | Recenter speed | S | 1–720 °/s step 5 · 360 | U | L | Recenter | Fastest swing behind your movement; it eases in near the target. |
+| move.deadzone | recenter.deadzone | Recenter dead zone | S | 0–180 ° step 5 · 0 | U | L | Recenter | How far off your movement direction the camera may sit before it starts to swing. |
+| move.idle | recenter.idle | Recenter after standing still | S | 0–60 s step 0.5 · 0 | U | L | Recenter | Seconds of standing still before the camera drifts behind your character's facing. 0 never does. |
 | move.grace | recenter.grace | Orbit grace | S | 0–30 s step 0.1 · 1.5 | A | L | Recenter | No recenter this long after you orbit by hand. |
 | move.idlerate | recenter.idlerate | Idle recenter speed | S | 1–720 °/s · 30 | A | L | Recenter | |
 | move.hz | drive.hz | Heading updates per second | S | 1–60 step 1 · 10 | A | L | Drive | Most heading packets sent per second; the stock game sends 2. |
 | move.turn | drive.turn | Heading turn rate | S | 0–3600 °/s step 30 · 540 | A | L | Drive | 0 = snap. |
+| move.keyturn | (none) | Turn-key speed | S | 10–720 °/s step 10 · 180 | U | L | Drive | How fast the turn keys swing you and the camera when facing the camera. |
 
 **Walls** — group `walls`. Header: "The spring arm only acts while a sideways or height offset is set." The three fade rows grey when `alloy.enabled` is off (no strip; the spring arm is renderer-independent).
 
@@ -608,6 +610,8 @@ Build note: `Leave()` must restore FOV when `free.fov` was set.
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
 | mouselook.enabled | (none) | Enable CX mouse-look | T | on | U | L | CX handles the mouse-drag camera: the cursor stays put and the view never stalls at the screen edge. Off, the stock middle-drag orbit runs. |
+| mouselook.action | (none) | Action camera | T | off | U | L | Hides the cursor and pins it to a crosshair in the centre of the screen. Moving the mouse turns the camera; whatever the crosshair points at is what you hover, tooltip and click, so aiming replaces pointing. Left-click acts on it, a right-click opens its menu. Clicking the ground does not walk you there (use the movement keys) and the crosshair never picks your own character. Hold Alt to free the cursor for the game's panels; the toggle key below switches it on and off. |
+| mouselook.actionkey | (none) | Action camera toggle key | X | F8 | U | L | An SDL key name (F8, Tab, Backspace, Z...) or Mouse4 / Mouse5 for the thumb buttons. Blank binds nothing. |
 | mouselook.right | mouselook | Right-drag looks around | T | off | U | L | Hold the right button and drag to orbit; a still right-click still opens the radial menu. |
 | mouselook.sens | mouselook_sens | Sensitivity | S | 0.05–20 × step 0.05 · 1 | U | L | 1 matches the stock middle-drag. |
 | mouselook.invert | mouselook_invert | Invert vertical | T | off | U | L | |

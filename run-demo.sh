@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Proves the extender loads and runs C# inside a foreign process -- using a linked-here stub host so no
 # game/X11/GL is needed to see it work. The stub carries the client's build-id because #457's rot gate
-# refuses an unknown host before discovery; /usr/bin/env is then run as the rot case.
+# refuses an unknown host before discovery; a copy of sh is then run as the rot case.
 set -e
 cd "$(dirname "$0")"
 B="$PWD/cx-linux-x64"
@@ -51,12 +51,13 @@ if grep -qE 'SelfCheck.*FAIL' "$LOG"; then
 fi
 echo ">> $(grep -c 'SelfCheck' "$LOG") SelfCheck lines, none failed."
 
-# The other half of #457: the refusal itself, run for real rather than asserted in a unit. /usr/bin/env IS
+# The other half of #457: the refusal itself, run for real rather than asserted in a unit. A copy of sh IS
 # the rot case -- a host the offsets were never measured against -- so the gate must discover nothing.
+# (sh, not env: a multi-call coreutils dispatches on argv[0] and refuses the name nwmain-rot; #633 needs it.)
 ROTHOME="${TMPDIR:-/tmp}/cx-demo-rot"
 rm -rf "$ROTHOME"; mkdir -p "$ROTHOME"
-cp /usr/bin/env "$ROTHOME/nwmain-rot"
-HOME="$ROTHOME" CX_MANAGED="$B/cx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libcx.so" "$ROTHOME/nwmain-rot" >/dev/null
+cp "$(readlink -f "$(command -v sh)")" "$ROTHOME/nwmain-rot"
+HOME="$ROTHOME" CX_MANAGED="$B/cx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libcx.so" "$ROTHOME/nwmain-rot" -c true >/dev/null
 echo
 echo ">> rot case ($ROTHOME/cx.log):"
 grep 'host:' "$ROTHOME/cx.log" || true

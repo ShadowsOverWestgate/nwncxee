@@ -188,6 +188,17 @@ internal static unsafe class SymbolMap
     public const string OkCancelCtor    = "_ZN14CPanelOkCancelC1Ev";
     public const string OkCancelActivate= "_ZN14CPanelOkCancel8ActivateE10CExoStringjj"; // (CExoString msg, uint ok, uint cancel)
     public const string SdlGetKeyName   = "SDL_GetKeyName";
+    public const string SdlGetKeyFromName = "SDL_GetKeyFromName";                        // action-camera toggle key by name
+    /// <summary><c>CClientExoAppInternal::WalkPlayerToPoint(float, float, float, int, uint, int)</c> @0x663950: the one
+    /// seam every left-click walk goes through (the action camera refuses it). Windows: the only function referencing
+    /// "gui_nowalk" on both builds (StringRefs).</summary>
+    public const string WalkPlayerToPoint = "_ZN21CClientExoAppInternal17WalkPlayerToPointEfffiji";
+    /// <summary><c>CClientExoAppInternal::FeedbackHitCheck{Hostile,NonHostile}(CNWCObject**, Vector*, int*, int)</c>
+    /// @0x660a10 / @0x6618f0: the world pick under the cursor (hover, cursor shape, tooltip, both clicks). The
+    /// dispatcher between them is inlined on Windows, so both are hooked; paired by callee lists (the hostile one
+    /// calls CNWTileSet::GetHeightTransition, the other does not).</summary>
+    public const string FeedbackHitCheckHostile = "_ZN21CClientExoAppInternal23FeedbackHitCheckHostileEPP10CNWCObjectP6VectorPii";
+    public const string FeedbackHitCheckNonHostile = "_ZN21CClientExoAppInternal26FeedbackHitCheckNonHostileEPP10CNWCObjectP6VectorPii";
     public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
     public const string SdlGetMouseState = "SDL_GetMouseState";
     // The SDL glue of the client's nuklear is C++-linkage on this build (mangled), so nk_sdl_render
@@ -1210,6 +1221,10 @@ internal static unsafe class SymbolMap
         [GuiMan]          = Nm("?g_pGuiMan@@3PEAVCGuiMan@@EA"),
         [GetGuiScale]     = Nm("?GetGUIScale@CAurora@@SAMXZ"),   // CAurora shared-engine class -> name-exported
         [SdlGetKeyName]   = Nm("SDL_GetKeyName"),
+        [SdlGetKeyFromName] = Nm("SDL_GetKeyFromName"),
+        [WalkPlayerToPoint] = At(0x6f3650),          // action camera: "gui_nowalk" string, unique on both builds
+        [FeedbackHitCheckHostile] = At(0x6eae20),    // action camera: the picker with GetHeightTransition (Callees)
+        [FeedbackHitCheckNonHostile] = At(0x6ebcf0), // action camera: the other picker, same caller cluster
         [SdlGetModState]  = Nm("SDL_GetModState"),
         // hotkey suppression while any vanilla text field captures keys (console etc.) -- shared-engine
         // CExoInput, name-exported on Windows. (Chat also uses ExoInput but stays Linux-only for now.)
