@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Framework;
@@ -108,6 +109,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
         ShadowMath.SelfCheck(log);   // pure math, runs headless
         FadeSelfCheck(log);          // ...and so does the fade-out bookkeeping
+        FlickerSelfCheck(log);       // ...and the animated-light latch
         // #257: the frame constants are read, not captured -- and ahead of the stand-down, because the
         // camera, the area terms and the fog are inputs to EVERY Alloy pass, shadows or no shadows.
         FrameRead.Resolve(log);
@@ -316,6 +318,103 @@ public sealed unsafe class SceneInputs : IExtenderService
             FrameInputs.RecordAreaLight(_ghostId[i], new Vector3(pw.X, pw.Y, pw.Z), pw.W * k, _ghostCol[i] * k, _ghostAmb[i]);
         }
     }
+    // ---- animated lights: steady reach, flickering colour ----
+    // A torch's pulse is its light node's `radius` key track (Ghidra NewController::Control @0x598f20 writes
+    // Part+offset straight from GetFloatValue's key+alpha, so it is piecewise-linear between the MDL keys).
+    // The engine keeps no un-animated radius anywhere -- PartLight's ctor zeroes +0x70 and the controller
+    // overwrites it -- so an animated light is told at runtime: the same PartLight* reporting a SMALLER
+    // range*intensity than its running peak. Only a pulse ever goes down; a light that appears ramps UP.
+
+    /// <summary>Pointer-keyed table of every light's running peak. Open-addressed, fixed, alloc-free; an entry
+    /// the walk did not refresh last frame is dead (the engine frees PartLight* at area edges and malloc hands
+    /// the address back), so a lookup that finds a stale entry starts over.</summary>
+    private const int FlkSlots = 512;   // ponytail: master lists run to a few hundred; past this the tail keeps the stock pulse
+    private const int FlkProbe = 8;
+    /// <summary>Frames the latch outlives the last decrease, so a key plateau does not flip a torch back to raw.</summary>
+    private const int FlkHold = 180;
+    /// <summary>Hysteresis on the peak, so the sampled triangle wave's creep does not re-key the cube every cycle.</summary>
+    private const float FlkEps = 0.002f;
+    private static readonly IntPtr[] _flkId = new IntPtr[FlkSlots];
+    private static readonly float[] _flkPeak = new float[FlkSlots], _flkPeakAdj = new float[FlkSlots], _flkMin = new float[FlkSlots];
+    private static readonly int[] _flkSeen = new int[FlkSlots], _flkUntil = new int[FlkSlots];
+    private static int _flkSeq;
+    private static IntPtr _flkArea;
+    private static readonly long _flkT0 = Stopwatch.GetTimestamp();
+
+    /// <summary>Replace an animated light's pulse: <paramref name="adjR"/> becomes the engine's own value at the
+    /// running peak (frozen, so the cube it keys stays baked), and the returned colour multiplier flickers as
+    /// deep as the pulse was authored. Returns exactly 1 for a light that is not animated or when the knob is 0.</summary>
+    internal static float Stabilise(IntPtr id, float cur, ref float adjR, float t)
+    {
+        float amp = Lighting.Flicker.V;
+        if (amp <= 0f || cur <= 0f) return 1f;
+        int h = (int)((ulong)id >> 4) * -1640531527 & (FlkSlots - 1);
+        int slot = -1, free = -1;
+        for (int k = 0; k < FlkProbe; k++)
+        {
+            int j = (h + k) & (FlkSlots - 1);
+            if (_flkId[j] == id && _flkSeq - _flkSeen[j] <= 2) { slot = j; break; }
+            if (free < 0 && (_flkId[j] == IntPtr.Zero || _flkSeq - _flkSeen[j] > 2)) free = j;
+        }
+        if (slot < 0)
+        {
+            if (free < 0) return 1f;   // every probe live: this light keeps the stock pulse
+            slot = free;
+            _flkId[slot] = id; _flkPeak[slot] = cur; _flkPeakAdj[slot] = adjR; _flkUntil[slot] = 0;
+        }
+        _flkSeen[slot] = _flkSeq;
+        if (cur > _flkPeak[slot] * (1f + FlkEps)) { _flkPeak[slot] = cur; _flkPeakAdj[slot] = adjR; }
+        else if (cur < _flkPeak[slot] * (1f - FlkEps))
+        {
+            // The trough is measured within one latched run only: a carried torch ramps in from nothing
+            // before it ever pulses, and that ramp is not the pulse's depth.
+            if (_flkSeq >= _flkUntil[slot] || cur < _flkMin[slot]) _flkMin[slot] = cur;
+            _flkUntil[slot] = _flkSeq + FlkHold;
+        }
+        if (_flkSeq >= _flkUntil[slot]) return 1f;
+        adjR = _flkPeakAdj[slot];
+        float depth = MathF.Min(1f, (1f - _flkMin[slot] / _flkPeak[slot]) * amp);
+        float phase = (uint)((ulong)id >> 4) * 2654435761u * (MathF.Tau / 4294967296f);
+        return Flicker(t * Lighting.FlickerSpeed.V, phase, depth);
+    }
+
+    /// <summary>A fire's unevenness: slow breathing under faster crackle, three incommensurate sines whose sum
+    /// stays in [-1,1], mapped to a multiplier in [1-depth, 1]. The phase desyncs neighbouring torches.</summary>
+    private static float Flicker(float t, float phase, float depth)
+    {
+        float n = 0.5f * MathF.Sin(t * 7.3f + phase) + 0.3f * MathF.Sin(t * 13.7f + phase * 2.1f) + 0.2f * MathF.Sin(t * 23.1f + phase * 3.3f);
+        return 1f - depth * 0.5f * (1f - n);
+    }
+
+    /// <summary>The latch and the peak, headless: a pulse settles at its peak and stays there, a ramp does not latch.</summary>
+    internal static void FlickerSelfCheck(ExtenderLog log)
+    {
+        bool ok = true;
+        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SceneInputs.FlickerSelfCheck FAIL: {w}"); } }
+        float ampWas = Lighting.Flicker.V; Lighting.Flicker.V = 1f;
+        var torch = (IntPtr)0x1000; var lamp = (IntPtr)0x2000;
+        var zero = (IntPtr)((long)FlkSlots << 4);   // hashes to slot 0: the slot whose index is falsy
+        float Step(IntPtr id, float cur, out float m) { float r = cur * 2f; _flkSeq++; m = Stabilise(id, cur, ref r, _flkSeq * 0.016f); return r; }
+        float r0 = Step(torch, 13f, out float m0); float r1 = Step(torch, 15f, out float m1);
+        E(r0 == 26f && m0 == 1f && r1 == 30f && m1 == 1f, "no pulse seen yet: raw passes through");
+        float r2 = Step(torch, 13f, out float m2);
+        E(r2 == 30f && m2 < 1f && m2 >= 1f - (2f / 15f) - 1e-4f, "the first decrease latches: peak reach, dimmed colour");
+        float r3 = Step(torch, 15f, out float m3);
+        E(r3 == 30f && m3 <= 1f && m3 != m2, "back at the peak: reach unchanged, colour still flickering");
+        E(Step(torch, 15.01f, out _) == 30f, "a hair over the peak is hysteresis, not a new peak");
+        E(Step(torch, 16f, out _) == 32f, "a real new peak re-keys the reach");
+        E(Step(lamp, 10f, out _) == 20f && Step(lamp, 12f, out _) == 24f && Step(lamp, 14f, out float ml) == 28f && ml == 1f,
+          "a light ramping up never latches");
+        for (int i = 0; i < FlkHold + 1; i++) Step(torch, 16f, out _);
+        E(Step(torch, 16f, out float mh) == 32f && mh == 1f, "the latch expires after FlkHold frames at the peak");
+        Step(zero, 15f, out _);
+        E(Step(zero, 13f, out float m0s) == 30f && m0s < 1f, "a light in table slot 0 latches too");
+        Lighting.Flicker.V = 0f;
+        E(Step(torch, 13f, out float mz) == 26f && mz == 1f, "knob 0 is the stock pulse");
+        Lighting.Flicker.V = ampWas; Array.Clear(_flkId);
+        log.Info(ok ? "SceneInputs.FlickerSelfCheck: passed" : "SceneInputs.FlickerSelfCheck: FAILED -- see above");
+    }
+
     /// <summary>RenderInterface::GetGlobalShaderParamf -- param 0x12 = the engine's light-radius multiplier.</summary>
     private static delegate* unmanaged<uint, float> _getGspF;
     /// <summary>GetLightAdjustedRadius -- the engine's own lit-radius calculation, called rather than
@@ -343,6 +442,10 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static void WalkMasterList(IntPtr self)
     {
         if (self == IntPtr.Zero || !GameGate.InModule) return;
+        // The area edge frees every PartLight* and malloc hands the addresses back: a peak table keyed on
+        // them must not outlive the area, or a new light inherits a stranger's reach for FlkHold frames.
+        IntPtr area = CurrentArea();
+        if (area != _flkArea) { _flkArea = area; Array.Clear(_flkId); }
         int count = *(int*)((byte*)self + LmMasterCount);
         IntPtr data = *(IntPtr*)((byte*)self + LmMasterData);
         if (data == IntPtr.Zero) return;
@@ -372,6 +475,8 @@ public sealed unsafe class SceneInputs : IExtenderService
         // the fog cut's metric, once per frame (PlayerPos is an engine-memory read)
         float fogOpaque = CullPass.FogCull ? SceneFog.OpaqueDistance() : float.PositiveInfinity;
         Vector3 fogOrigin = SceneFog.Origin(out _);
+        float flickerT = (float)((Stopwatch.GetTimestamp() - _flkT0) / (double)Stopwatch.Frequency);
+        _flkSeq++;
         for (int i = 0; i < count; i++)
         {
             byte* p = (byte*)*((IntPtr*)data + i);
@@ -433,6 +538,11 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (lfade <= 0f) continue;
             if (lfade < 1f) { r *= lfade; g *= lfade; b *= lfade; }
             var color = new Vector3(r, g, b);
+            // An animated light (a torch's `radius` key track) gets a steady reach and a flickering colour
+            // instead of the engine's linear pulse -- and a steady reach is also what keeps its cube baked.
+            float flk = Stabilise((IntPtr)p, range * inten, ref adjR, flickerT);
+            if (flk != 1f) color *= flk;
+            upW = adjR;
             // Receiver light cull (#67 perf): the Alloy fragment loop iterates EVERY uploaded light, so a
             // light whose lit sphere can't touch a drawn fragment still costs every fragment a range test.
             // Mode 1 (default) = camera-distance vs the far plane (orientation-free: immune to the
@@ -474,7 +584,7 @@ public sealed unsafe class SceneInputs : IExtenderService
                 FrameInputs.RecordAreaLight((IntPtr)p, pos, upW, color, ambient);
                 if (FrameInputs.LightCount == snapIdx) snapIdx = -1;   // snapshot full: the light was dropped
             }
-            if (_torchDiag) TrackNearest(p, pos, range, alt, inten, color, adjR, upW, culled, snapIdx);
+            if (_torchDiag) TrackNearest(p, pos, range, alt, inten, color, adjR, upW, flk, culled, snapIdx);
             if (ambient || *(int*)(p + LightCastShadows) == 0) continue;
             // #186: the cube's reach is the LIT radius exactly -- the same sphere the receiver's attenuation
             // has support over, and the same one the engine lights with. Ghidra: SetLightGL @0x4c0e60 uploads
@@ -523,20 +633,20 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static float _tBest = float.MaxValue;
     private static IntPtr _tPtr;
     private static Vector3 _tPos, _tColor;
-    private static float _tRange, _tAlt, _tInten, _tAdjR, _tUpW;
+    private static float _tRange, _tAlt, _tInten, _tAdjR, _tUpW, _tFlk;
     private static bool _tCulled;
     private static int _tSnapIdx;
 
     /// <summary>Keep the walk's nearest point light to the player anchor, with the verdict it just got.</summary>
     private static void TrackNearest(byte* p, Vector3 pos, float range, float alt, float inten,
-                                     Vector3 color, float adjR, float upW, bool culled, int snapIdx)
+                                     Vector3 color, float adjR, float upW, float flk, bool culled, int snapIdx)
     {
         Vector3 anchor = FrameInputs.HasFocus ? FrameInputs.Focus
                        : FrameInputs.HasCamera ? FrameInputs.CameraPos : default;
         float d2 = (pos - anchor).LengthSquared();
         if (d2 >= _tBest) return;
         _tBest = d2; _tPtr = (IntPtr)p; _tPos = pos; _tColor = color;
-        _tRange = range; _tAlt = alt; _tInten = inten; _tAdjR = adjR; _tUpW = upW;
+        _tRange = range; _tAlt = alt; _tInten = inten; _tAdjR = adjR; _tUpW = upW; _tFlk = flk;
         _tCulled = culled; _tSnapIdx = snapIdx;
     }
 
@@ -569,7 +679,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         _log?.Info($"SceneInputs: [torchdiag] nearest light d={MathF.Sqrt(best):F1} " +
                    $"pos=({_tPos.X:F1},{_tPos.Y:F1},{_tPos.Z:F1}) rgb=({_tColor.X:F2},{_tColor.Y:F2},{_tColor.Z:F2}) | " +
                    $"CLASS engine-curve " +
-                   $"range={_tRange:F1} alt={_tAlt:F1} inten={_tInten:F2} -> adjR={_tAdjR:F1} upW={_tUpW:F1} | " +
+                   $"range={_tRange:F1} alt={_tAlt:F1} inten={_tInten:F2} -> adjR={_tAdjR:F1} upW={_tUpW:F1} flicker={(_tFlk == 1f ? "off" : _tFlk.ToString("F2"))} | " +
                    $"{reach} | cubeSlot={slot} | BAKE {bake} | " +
                    $"snapshot {FrameInputs.LightCount}, " +
                    $"culled/period={_lightsCulled}, cullMode={_lightCullMode} camFar={FrameInputs.CamFar:F0}");
@@ -612,16 +722,21 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// false (exterior, sun maps on) whenever the chain is unavailable. Alloc-free, once per frame.</summary>
     private static bool AreaIsInterior()
     {
-        if (_appMgr == IntPtr.Zero || _getModule == null) return false;
+        IntPtr area = CurrentArea();
+        return area != IntPtr.Zero && (*(uint*)((byte*)area + AreaFlags) & 1) != 0;
+    }
+
+    /// <summary>The current CNWCArea*, or zero while the chain is unavailable. Compared, never retained.</summary>
+    private static IntPtr CurrentArea()
+    {
+        if (_appMgr == IntPtr.Zero || _getModule == null) return IntPtr.Zero;
         IntPtr mgr = *(IntPtr*)_appMgr;          // CAppManager*
-        if (mgr == IntPtr.Zero) return false;
+        if (mgr == IntPtr.Zero) return IntPtr.Zero;
         IntPtr app = *(IntPtr*)mgr;              // CClientExoApp* (mgr's first field -- the UiHostService gate chain)
-        if (app == IntPtr.Zero) return false;
+        if (app == IntPtr.Zero) return IntPtr.Zero;
         IntPtr module = _getModule(app);
-        if (module == IntPtr.Zero) return false;
-        IntPtr area = *(IntPtr*)((byte*)module + ModuleCurrentArea);
-        if (area == IntPtr.Zero) return false;
-        return (*(uint*)((byte*)area + AreaFlags) & 1) != 0;
+        if (module == IntPtr.Zero) return IntPtr.Zero;
+        return *(IntPtr*)((byte*)module + ModuleCurrentArea);
     }
 
     private static string FocusName(int s) => s switch { 0 => "camera-target", 2 => "camera-ground", _ => "none" };

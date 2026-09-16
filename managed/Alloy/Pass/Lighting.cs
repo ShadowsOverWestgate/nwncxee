@@ -11,7 +11,7 @@ internal static class Lighting
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<float> Gain, Ambient, Sun, Overbright, Sss, Wrap, WrapNdl, Hot, HotSize, Radius, Falloff,
-                                         ProbeGain, BinReach;
+                                         ProbeGain, BinReach, Flicker, FlickerSpeed;
     internal static readonly Knob<int> Fadeout, ProbeSize, BinCap;
     internal static readonly Knob<bool> Probe, ProbeAreaWide, ReachFade;
 
@@ -30,6 +30,11 @@ internal static class Lighting
         Overbright = G.Slider("overbright", "Carried-light boost", 0f, 1f, 0.05f, 0f,
                               help: "How much of a torch's extra intensity shows at its centre instead of only as reach. "
                                   + "0 is the stock game; 0.5 makes carried lights stand out.");
+        Flicker = G.Slider("flicker", "Fire flicker", 0f, 2f, 0.05f, 1f,
+                           help: "Animated lights (torches, braziers) keep a steady reach and flicker in brightness instead of pulsing in size. "
+                               + "1 flickers as deep as the pulse was made; 0 is the stock pulse.");
+        FlickerSpeed = G.Slider("flickerspeed", "Flicker speed", 0.1f, 4f, 0.05f, 1f, tier: Tier.Advanced,
+                                help: "Rate of the flicker; 1 is a fireplace.");
         Sss = G.Slider("sss", "Soft skin lighting", 0f, 1f, 0.05f, 0.25f,
                        help: "Light wrapping past the shadow line on characters. 0 is flat; the stock game uses 0.38 at shader quality above medium.");
         Wrap = G.Slider("wrap", "Sphere-light wrap", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced,

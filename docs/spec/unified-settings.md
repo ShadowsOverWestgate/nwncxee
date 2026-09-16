@@ -348,6 +348,8 @@ Renderer itself.
 | light.ambient | ambient | Ambient light | S | 0–4 step 0.05 · 1.00 | U | L | Lights | Scales the area's ambient fill. 1 is the area author's value. |
 | light.sun | sun | Sun and moon | S | 0–4 step 0.05 · 1.00 | U | L | Lights | Scales the area's directional light. 1 is the area author's value. |
 | light.overbright | overbright | Carried-light boost | S | 0–1 step 0.05 · 0 | U | L | Lights | How much of a torch's extra intensity shows at its centre instead of only as reach. 0 is the stock game; 0.5 makes carried lights stand out. |
+| light.flicker | — | Fire flicker | S | 0–2 step 0.05 · 1.00 | U | L | Lights | Animated lights (torches, braziers) keep a steady reach and flicker in brightness instead of pulsing in size. 1 flickers as deep as the pulse was made; 0 is the stock pulse. |
+| light.flickerspeed | — | Flicker speed | S | 0.1–4 step 0.05 · 1.00 | A | L | Lights | Rate of the flicker; 1 is a fireplace. |
 | light.sss | sss | Soft skin lighting | S | 0–1 step 0.05 · 0.25 | U | L | Lights | Light wrapping past the shadow line on characters. 0 is flat; the stock game uses 0.38 at shader quality above medium. |
 | light.wrap | wrap | Sphere-light wrap | S | 0–4 · 1 | A | L | Lights | Near lights soften the shadow line on low-poly models; 0 = point lights. |
 | light.wrapndl | wrapndl | Diffuse wrap | S | 0–2 · 1 | A | L | Lights | Distance-independent softening of every terminator. |
