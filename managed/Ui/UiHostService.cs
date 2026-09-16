@@ -312,6 +312,7 @@ public sealed unsafe class UiHostService : IExtenderService
         IntPtr pnl = win != IntPtr.Zero ? *(IntPtr*)(gui + EngineLayout.InGameGuiOptionsPanel) : IntPtr.Zero;
         bool options = pnl != IntPtr.Zero && *(uint*)(pnl + EngineLayout.GuiPanelState) == GuiPanelShown;
 
+        GameGate.InGameGui = gui;
         GameGate.InModule = win != IntPtr.Zero;
         GameGate.InGame = show;
         GameGate.AtMainMenu = menu;

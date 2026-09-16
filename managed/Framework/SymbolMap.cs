@@ -201,6 +201,16 @@ internal static unsafe class SymbolMap
     public const string FeedbackHitCheckNonHostile = "_ZN21CClientExoAppInternal26FeedbackHitCheckNonHostileEPP10CNWCObjectP6VectorPii";
     public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
     public const string SdlGetMouseState = "SDL_GetMouseState";
+    /// <summary><c>CActionTarget::ActivateTargetMode()</c> @0x9652b0 -- the one funnel every "pick a target" mode
+    /// reaches (quickbar spell/feat/item, radial, DM tool, script <c>SetupScriptTargetMode</c>); the subclasses only
+    /// build the mode and call this last. Takes <c>this</c> and nothing else, returns void, on both builds.</summary>
+    public const string ActivateTargetMode = "_ZN13CActionTarget18ActivateTargetModeEv";
+    /// <summary><c>CActionTarget::HandleLMouseDown()</c> @0x965840 -- resolve a live targeting mode at the engine's
+    /// own mouse position (<c>CGuiMan::GetMousePos</c> + <c>FeedbackHitCheck</c> + the allowed-target scan + the
+    /// per-mode validation callback). Called, not hooked: the auto-target fires the same code path a click does.
+    /// Safe to call re-entrantly from the <see cref="ActivateTargetMode"/> post-hook -- it touches no member after
+    /// the fire callback (which may <c>delete this</c>), and all 45 callers of ActivateTargetMode call it last.</summary>
+    public const string ActionTargetLMouseDown = "_ZN13CActionTarget16HandleLMouseDownEv";
     // The SDL glue of the client's nuklear is C++-linkage on this build (mangled), so nk_sdl_render
     // must use its mangled name or the hook never installs. Nothing nuklear is anchored on Windows.
     /// <summary>Nuklear's GL flush, called from <c>CGuiMan::UpdateAndRender</c> @0x5809fa straight after
@@ -1056,6 +1066,29 @@ internal static unsafe class SymbolMap
     public const string GuiInGameToggleOff = "_ZN10CGuiInGame9ToggleOffEv";
     public const string GuiInGameUnToggleOff = "_ZN10CGuiInGame11UnToggleOffEv";
 
+    /// <summary><c>CNWCCreature::UpdateLookAt()</c> @0x726f00 -- the engine's own per-frame head-track target
+    /// chooser, called once per creature from <c>CNWCCreature::AIUpdate</c> @0x730ad0 (its only caller, a direct
+    /// call). Picks a target, rejects anything past 110 deg off the facing, and hands it to
+    /// <c>CNWCCreature::LookAt(objId, maxDist)</c>; with the mode word at +0x39c failing <c>&amp; 3 == 3</c> it
+    /// calls <c>LookAt(INVALIDOBJID, 0)</c>, which tears the animation down. <c>(CNWCCreature*) -&gt; void</c>.
+    /// Hooked by <see cref="Services.Camera.HeadTrackService"/>, which skips it for the local player under the
+    /// action camera. Windows: CNWCCreature name-exports nothing, so rva 0x80fa60, anchored through the Windows
+    /// <c>LookAt</c> (the one function referencing "HEADTRACK"/"HEAD_ARC_H"/"HEAD_NAME", rva 0x803f20) as its
+    /// only caller; body decompiles identical, the mode word reading +0x37c (the class's -0x20 shift).</summary>
+    public const string UpdateLookAt = "_ZN12CNWCCreature12UpdateLookAtEv";
+    /// <summary><c>Gob::BeginLookAtAnimate(CAurObject* target, char const* targetNode, char const* myNode,
+    /// float arcH, float arcV, float blend, float maxDist)</c> @0x49d5b0 -- <c>FindPart</c>s both nodes (silently
+    /// returning if either misses), destroys any existing <c>LookAtAnimation</c> at Gob+0x1b0 and builds a fresh
+    /// one plus its AnimRun. Virtual (Gob slot +0x250 / Windows +0x248) but there is exactly one implementation,
+    /// so it is called by symbol. All-void return, no by-value crossing.</summary>
+    public const string BeginLookAtAnimate = "_ZN3Gob18BeginLookAtAnimateEP10CAurObjectPKcS3_ffff";
+    /// <summary><c>LookAtAnimation::Control()</c> @0x4973c0 -- one head-aim step, driven by <c>Gob::Animate</c>
+    /// @0x49d8c0 through the vtable. Deactivates past the max distance, else writes the clamped look-at
+    /// quaternion into the synthetic animation's second keyframe (<c>*(float**)(this+0x58)</c>, x/y/z/w) and the
+    /// head's current local rotation into the first (+0x60), so every frame is a fresh 0.25 s ease. Chained, not
+    /// installed: the aim is overwritten after the original runs.</summary>
+    public const string LookAtControl = "_ZN15LookAtAnimation7ControlEv";
+
     /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
     /// being previewed in isolation. <c>Scene::DoFog</c> @0x45f1b0 reads it: with a gob set, the fog colour
     /// it pushes is black rather than the area's, which #257 replicates when it reads the fog block direct.</summary>
@@ -1226,6 +1259,17 @@ internal static unsafe class SymbolMap
         [FeedbackHitCheckHostile] = At(0x6eae20),    // action camera: the picker with GetHeightTransition (Callees)
         [FeedbackHitCheckNonHostile] = At(0x6ebcf0), // action camera: the other picker, same caller cluster
         [SdlGetModState]  = Nm("SDL_GetModState"),
+        // head tracking: the three Gob/Part/LookAtAnimation symbols are shared-engine exports; only the
+        // CNWC* chooser needs an anchor (its Windows caller-of-"HEADTRACK" chain, docs/windows-symbols.md).
+        [UpdateLookAt]       = At(0x80fa60),
+        [BeginLookAtAnimate] = Nm("?BeginLookAtAnimate@Gob@@UEAAXPEAVCAurObject@@PEBD1MMMM@Z"),
+        [LookAtControl]      = Nm("?Control@LookAtAnimation@@UEAAXXZ"),
+        // auto-target: CActionTarget is client-side (not name-exported on Windows). Both anchored by the
+        // 'AcTg' GetGuiObjType tag cluster and confirmed by decompile -- ActivateTargetMode is the same
+        // CaptureMouse/CaptureKeyboard/RegisterUpdate/RegisterActionTargetGUI body, HandleLMouseDown the
+        // same GetMousePos -> hit-check -> allowed-list scan -> fire.
+        [ActivateTargetMode]      = At(0x83b9e0),
+        [ActionTargetLMouseDown]  = At(0x83be00),
         // hotkey suppression while any vanilla text field captures keys (console etc.) -- shared-engine
         // CExoInput, name-exported on Windows. (Chat also uses ExoInput but stays Linux-only for now.)
         [ExoInput]        = Nm("?g_pExoInput@@3PEAVCExoInput@@EA"),

@@ -1484,6 +1484,91 @@ public static unsafe class EngineLayout
     /// <summary>CNWCObject -&gt; position Vector, the 12 bytes before <see cref="ObjOrientation"/> (<c>SetPosition</c>
     /// Linux @0x7e9180 writes +0x38..+0x40; the Windows orientation row at the same +0x44 pins it).</summary>
     public static readonly int ObjPosition = Same("CNWCObject", "position", 0x38);
+    // ---- action-camera aim assist / auto-target / contextual crosshair (docs/research/action-camera-targeting.md) ----
+    // Every row below was read off ONE function pair: CNWCArea::HiliteAreaObjects (Linux @0x7119f0, Windows rva
+    // 0x7db2f0), CClientExoAppInternal::UpdateMouseCursorAppearance (Linux @0x6629b0, Windows rva 0x6f2830),
+    // CActionTarget::HandleLMouseDown (Linux @0x965840, Windows rva 0x83be00) and
+    // CCachedMouseCursorManager::SetMouseCursor (Linux @0x6b72a0, Windows rva 0x83b3e0).
+
+    /// <summary>CNWCObject -&gt; the live fade state (ONE byte, 1 = faded in / on screen). The highlight walk's own
+    /// first filter: <c>HiliteAreaObjects</c> skips the object while it is 0 -- Linux @0x711a6d is
+    /// <c>cmpb $0x0,0xa8(%rax)</c> and Windows rva 0x7db2f0 reads <c>(char)obj[0x15]</c>, a byte on both. The
+    /// writers are <c>CNWCObject::FadeObject</c> (@0x7e7720: it walks the alpha toward the desired state at
+    /// <c>+0xa9</c> and stores 0/1 here when it arrives) and <c>SetDesiredFadeState</c>. Read it as a byte: the
+    /// three bytes above it are the desired state and padding, not a pointer's tail (which is also why it takes
+    /// no <c>Byte01</c> probe: that one reads a dword, and <c>+0xa9</c> would fail it).</summary>
+    public static readonly int ObjVisible = Same("CNWCObject", "visible", 0xa8);
+    /// <summary>CNWCObject -&gt; "may be highlighted right now" (int). Same walk: zero and the engine un-hilites
+    /// instead of hiliting. Identical offset on both builds. <b>Placeables carry it elsewhere</b> -- the type-9
+    /// branch reads it through <see cref="GameObjAsNWCPlaceableSlot"/>, not on the CNWCObject.</summary>
+    public static readonly int ObjHighlightable = Same("CNWCObject", "highlightable", 0x11c);
+    /// <summary>CNWCArea -&gt; the area's object-id array (<c>uint*</c>) and its count. <c>HiliteAreaObjects</c>
+    /// walks <c>*(uint*)(*(area+0x318) + i*4)</c> for <c>*(int*)(area+0x320)</c> entries on both builds.</summary>
+    public static readonly int AreaObjectIds = Same("CNWCArea", "objectIds", 0x318);
+    /// <inheritdoc cref="AreaObjectIds"/>
+    public static readonly int AreaObjectCount = Same("CNWCArea", "objectCount", 0x320);
+    /// <summary>CNWCCreature -&gt; the hovered object id mirrored onto the PLAYER creature (0x7f000000 = nothing).
+    /// <c>UpdateMouseCursorAppearance</c> is the only writer: it stores the newly picked id there and clears it to
+    /// 0x7f000000 when the hover drops. Linux +0x448, Windows +0x428 -- the same -0x20 CNWCCreature delta
+    /// <see cref="CreaturePlated"/> and the nameplate rows carry.</summary>
+    public static readonly int CreatureHoveredOid = Diverges("CNWCCreature", "hoveredOid", linux: 0x448, win: 0x428);
+    /// <summary>CClientExoAppInternal -&gt; CCachedMouseCursorManager*. Every <c>SetMouseCursor</c> call site in
+    /// <c>UpdateMouseCursorAppearance</c> passes <c>*(internal + 0xc8)</c> on both builds.</summary>
+    public static readonly int InternalCursorManager = Same("CClientExoAppInternal", "cursorManager", 0xc8);
+    /// <summary>CCachedMouseCursorManager -&gt; the live cursor id (int), the one <c>SetMouseCursor</c> early-outs on
+    /// and then stores. 1 default, 3 walk, 7 attack, 0x1d magic, 0x5b pickup... (the id table is in the research
+    /// doc); 0x125 is the ceiling the setter enforces. Same offset on both builds.</summary>
+    public static readonly int CursorCurrentId = Same("CCachedMouseCursorManager", "currentCursor", 0x1cb0);
+    /// <summary>CActionTarget -&gt; the allowed-target array: pairs of int {objectType, cursorId}, stride 8, count
+    /// at <see cref="ActionTargetAllowedCount"/>. Type 2 is the synthetic "ground point" (AoE); the rest are the
+    /// engine object types. Read off both <c>HandleLMouseDown</c> bodies -- Linux scans <c>+0x148</c> for
+    /// <c>+0x150</c> entries, Windows <c>+0x108</c> for <c>+0x110</c> (MSVC packs the CGuiCallback members in 16
+    /// bytes where Itanium needs 24, so everything past +0x80 shifts).</summary>
+    public static readonly int ActionTargetAllowed = Diverges("CActionTarget", "allowed", linux: 0x148, win: 0x108);
+    /// <inheritdoc cref="ActionTargetAllowed"/>
+    public static readonly int ActionTargetAllowedCount = Diverges("CActionTarget", "allowedCount", linux: 0x150, win: 0x110);
+    /// <summary>Virtual slot of <c>CGameObject::AsNWCObject()</c> -- what the area walk calls on every id it
+    /// resolves. Linux <c>vtbl+0x20</c>, Windows <c>vtbl+0x18</c>: the usual Itanium two-dtor-slot shift.</summary>
+    public static readonly int GameObjAsNWCObjectSlot = Diverges("CGameObject", "vtbl.AsNWCObject", linux: 0x20, win: 0x18, Expect.VtblSlot);
+    /// <summary>Virtual slot of <c>CGameObject::AsNWCPlaceable()</c> -- the walk's placeable branch tests
+    /// <see cref="ObjHighlightable"/> on what THIS answers rather than on the CNWCObject (Linux @0x711b17 calls
+    /// <c>vtbl+0xa8</c> then reads <c>+0x11c</c> on the result, Windows rva 0x7db2f0 the same through
+    /// <c>vtbl+0xa0</c>). The base answers null and <c>CNWCPlaceable</c>'s override is an identity
+    /// <c>return this</c> (@0x7ecc20), so it is a type test that happens to hand back the same address; mirroring
+    /// it keeps a non-placeable carrying type byte 9 out. The -8 is the usual MSVC one-destructor-slot shift.</summary>
+    public static readonly int GameObjAsNWCPlaceableSlot = Diverges("CGameObject", "vtbl.AsNWCPlaceable", linux: 0xa8, win: 0xa0, Expect.VtblSlot);
+
+    // ---- what the player is doing right now: the action camera's crosshair feedback (docs/research/action-camera-feedback.md) ----
+    // Measured 2026-09-17 by decompiling the same function on both programs, never by extrapolating a class delta.
+
+    /// <summary>CGuiInGame -&gt; CPanelActionQueue*, the client's mirror of the player's action queue. Both
+    /// <c>HandleServerToPlayerUpdate_PlayerInfo</c> bodies (Linux @0x8a9f90, Windows rva 0x7b4f70) null-check
+    /// <c>GetInGameGui()+0xa8</c> and hand exactly that to <c>ClearAllActions</c> / <c>AddAction</c>.</summary>
+    public static readonly int GuiInGameActionQueue = Same("CGuiInGame", "actionQueuePanel", 0xa8);
+
+    /// <summary>CPanelActionQueue -&gt; the "Current" button slot (<c>CPanelActionQueueButton*</c>, null = idle).
+    /// <c>AddAction</c> fills it first and only overflows into the queued list, so "an action is pending" is this
+    /// plus <see cref="ActionQueueCount"/>. Linux @0x7761b0 stores to <c>+0x158</c>, Windows rva 0x873df0 to
+    /// <c>+0x150</c>.</summary>
+    public static readonly int ActionQueueCurrent = Diverges("CPanelActionQueue", "current", linux: 0x158, win: 0x150);
+
+    /// <summary>CPanelActionQueue -&gt; the queued-button count (int), the list at <c>current-8</c>'s array.
+    /// <c>ClearAllActions</c> drains <c>while (0 &lt; count)</c> and <c>DeleteAction</c> early-outs on
+    /// <c>count &lt; 1</c> on both builds (Linux @0x776100 / @0x776020, Windows rva 0x874670 / 0x8748b0).</summary>
+    public static readonly int ActionQueueCount = Diverges("CPanelActionQueue", "queuedCount", linux: 0x100, win: 0xf8);
+
+    /// <summary>CNWCCreature -&gt; the server-sent AI state byte; <b>2 = attacking</b> and nothing else in the
+    /// enumeration is established. Two independent call sites on each build:
+    /// <c>WalkPlayerToPoint</c> (Linux @0x763950, Windows rva 0x6f3650) gates its "already close to my target"
+    /// test on <c>== 2</c>, and <c>CPanelQuickBar::UpdateAttackButtons</c> paints IR_DISENGAGE on it.</summary>
+    public static readonly int CreatureAiState = Diverges("CNWCCreature", "aiState", linux: 0x39e, win: 0x37e);
+
+    /// <summary>CNWCCreature -&gt; whom that creature is attacking (object id), written by
+    /// <c>CreatureUpdate_Update</c> only while <see cref="CreatureAiState"/> is 2. Both
+    /// <c>WalkPlayerToPoint</c> bodies resolve <c>GetGameObject(*(uint*)(creature + this))</c> inside the
+    /// <c>== 2</c> branch.</summary>
+    public static readonly int CreatureAiTarget = Diverges("CNWCCreature", "aiTarget", linux: 0x3a4, win: 0x384);
+
     /// <summary>CNWCObject -&gt; current animation (short): <c>GetCurrentAnimation</c> is <c>*(short*)(this+0x5c)</c> on
     /// both builds (Linux @0x7e3f70, Windows rva 0x7630d0, the chase driver's own callee). Locomotion = 2, 3, 4,
     /// 0x4e, 0x4f, 0x54..0x57 (the chase drivers' test).</summary>
@@ -1520,6 +1605,33 @@ public static unsafe class EngineLayout
     /// <summary>CGuiInGame -&gt; "toggled off" int: <c>ToggleOff</c> returns early when set, <c>UnToggleOff</c> when
     /// clear, and <c>SetCutsceneMode</c> reads it to know whether the exit should un-toggle. Linux +0x3d4, Windows +0x374.</summary>
     public static readonly int GuiInGameToggledOff = Diverges("CGuiInGame", "toggledOff", linux: 0x3d4, win: 0x374, Expect.Byte01);
+
+    // ---- head tracking: the LookAtAnimation the engine already owns ----
+    // One function pair carries every row: LookAtAnimation::Control (Linux @0x4973c0, Windows rva 0x50650, the
+    // name-exported ?Control@LookAtAnimation@@UEAAXXZ) reads all four, and the ctor (Linux @0x49d480, Windows
+    // rva 0x4d0a0) writes them in the same order on both builds. The class is laid out identically.
+
+    /// <summary>CNWCCreature -&gt; virtual slot of <c>GetModel(unsigned char, int)</c>, which answers the
+    /// creature's Gob (<c>*(animBase + 0xc8)</c>, <see cref="AnimHiliteGob"/>). Measured on the one function
+    /// that calls it on both builds, <c>CNWCCreature::LookAt</c> (Linux @0x726890 uses +0x148, Windows rva
+    /// 0x803f20 uses +0x140): the -8 every virtual destructor costs MSVC.</summary>
+    public static readonly int CreatureGetModelSlot =
+        Diverges("CNWCCreature", "vtbl.GetModel", linux: 0x148, win: 0x140, Expect.VtblSlot);
+
+    /// <summary>LookAtAnimation -&gt; the "finished" byte <c>Deactivate</c> sets and <c>Gob::Animate</c> deletes
+    /// the object on. Control's own gate: set, the aim block is skipped for the release latch at +0x68.</summary>
+    public static readonly int LookAtFinished = Same("LookAtAnimation", "finished", 0x08);
+    /// <summary>LookAtAnimation -&gt; the looker's <c>Gob*</c>: the distance check reads its position at +0xa8 on
+    /// both builds, and the ctor stores its third argument here.</summary>
+    public static readonly int LookAtGob = Same("LookAtAnimation", "gob", 0x30);
+    /// <summary>LookAtAnimation -&gt; the looker's head <c>Part*</c> (HEAD_NAME's node). Control calls
+    /// <c>Part::GetWorld</c> through it and copies its local rotation (<see cref="PartRot"/>) into the first
+    /// keyframe.</summary>
+    public static readonly int LookAtHeadPart = Same("LookAtAnimation", "headPart", 0x40);
+    /// <summary>LookAtAnimation -&gt; <c>float*</c> into the synthetic animation's second keyframe: the four
+    /// floats Control writes as <c>(x, y, z, w)</c>, which <c>AnimateHierarchy</c> then blends onto the head
+    /// part. This is the seam the head aim is overwritten at.</summary>
+    public static readonly int LookAtTargetKey = Same("LookAtAnimation", "targetKey", 0x58);
 
     /// <summary>Gob -&gt; the kind of game object behind <c>SetExternalData</c>: 5 creature
     /// (<c>CNWCCreature::LoadModel</c> @0x72a4b0), 9 placeable (@0x7ec500), 10 door (@0x755ec0), through

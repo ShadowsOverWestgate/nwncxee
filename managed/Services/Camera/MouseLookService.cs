@@ -67,10 +67,19 @@ public sealed unsafe class MouseLookService : IExtenderService
     private static int _looks, _clicks, _actions;
     /// <summary>Action camera held (relative mode ours) and the centre the events are pinned to.</summary>
     private static bool _action;
+    /// <summary>Is the action camera actually held this frame (the knob is on AND nothing is pausing it)?
+    /// What <see cref="HeadTrackService"/> turns the head on.</summary>
+    internal static bool ActionHeld => _action;
     private static int _cx, _cy;
     private static delegate* unmanaged<int> _modState;
     /// <summary>SDL <c>KMOD_LALT | KMOD_RALT</c>: the hold that frees the cursor.</summary>
     private const int KmodAlt = 0x300;
+    private const uint SdlKeyDown = 0x300;
+    /// <summary>SDL_KeyboardEvent: <c>repeat</c> byte and <c>keysym.sym</c>; the Alt keycodes.</summary>
+    private const int EvRepeatOff = 0xd, EvSymOff = 0x14;
+    private const uint SdlkLAlt = 0x400000E2, SdlkRAlt = 0x400000E6;
+    /// <summary>Alt as a toggle (<c>mouselook.alttoggle</c>): the cursor is freed until the next Alt press.</summary>
+    private static bool _altFree;
     private static delegate* unmanaged<byte*, int> _keyFromName;
     private static delegate* unmanaged<IntPtr, float, float, float, int, uint, int, int> _walkOrig;
     private static delegate* unmanaged<IntPtr, IntPtr*, IntPtr, int*, int, int> _pickHostileOrig, _pickNonHostileOrig;
@@ -109,6 +118,8 @@ public sealed unsafe class MouseLookService : IExtenderService
                 ? "MouseLook: action camera refusals partly unhooked (walk/pick install refused) -- click-to-move or self-pick may survive it"
                 : "MouseLook: action camera hooks WalkPlayerToPoint + FeedbackHitCheck{Hostile,NonHostile}");
         }
+        AimAssist.Init(log, hooks);
+        ActionFeedback.Init(log, hooks);
 
         _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 100);
         if (_next == null) { log.Info("MouseLook: standing down (WinMessageHandler chain refused)"); return; }
@@ -124,6 +135,10 @@ public sealed unsafe class MouseLookService : IExtenderService
     {
         if (ev == IntPtr.Zero) return Forward(ev);
         if (!MouseLook.Enabled.V) { if (_state != State.Idle) Release(); return Forward(ev); }
+        // Only while the action camera would otherwise be up: Alt+Tab, an Alt chord in a dialog and any Alt the
+        // GUI or a CX window owns the keyboard for are not the cursor toggle.
+        if (MouseLook.AltToggle.V && ActionGateOpen() && *(uint*)ev == SdlKeyDown && *(byte*)(ev + EvRepeatOff) == 0
+            && *(uint*)(ev + EvSymOff) is SdlkLAlt or SdlkRAlt) _altFree = !_altFree;
         bool want = ActionWanted();
         if (want != _action) SetAction(want);
         if (_action) return OnActionEvent(ev);
@@ -195,9 +210,17 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     // ---- the action camera ----
 
-    private static bool ActionWanted()
+    private static bool ActionWanted() => ActionGateOpen() && !AltFreed();
+
+    /// <summary>Everything the action camera needs except the Alt release itself -- the gate the Alt toggle is
+    /// allowed to flip in, so an Alt pressed out of game, in a dialog or while anything owns the keyboard is
+    /// just an Alt.</summary>
+    private static bool ActionGateOpen()
         => MouseLook.Action.V && GameGate.InGame && CameraService.Mode >= 0 && !CameraService.GateUp && !FreeCameraService.Active
-           && !UiHost.AnyKeyboardOwner && !UiHost.AnySuppressChords && (_modState == null || (_modState() & KmodAlt) == 0);
+           && !UiHost.AnyKeyboardOwner && !UiHost.AnySuppressChords;
+
+    private static bool AltFreed()
+        => MouseLook.AltToggle.V ? _altFree : _modState != null && (_modState() & KmodAlt) != 0;
 
     private static void SetAction(bool on)
     {
@@ -219,9 +242,12 @@ public sealed unsafe class MouseLookService : IExtenderService
     }
 
     /// <summary>Every event under the action camera: motion turns the camera and reaches the engine as "the cursor
-    /// is at the centre, it did not move"; buttons reach it at the centre; the rest is untouched.</summary>
+    /// is at the centre, it did not move"; buttons reach it at the centre; the rest is untouched. The centre is
+    /// the aim point, which <see cref="AimAssist"/> moves off the exact centre when it has a candidate -- one
+    /// packed load, so the hot path stays two field writes either way.</summary>
     private static int OnActionEvent(IntPtr ev)
     {
+        if (!AimAssist.Point(out int ax, out int ay)) { ax = _cx; ay = _cy; }
         switch (*(uint*)ev)
         {
             case SdlMouseMotion:
@@ -232,15 +258,16 @@ public sealed unsafe class MouseLookService : IExtenderService
                     _turn(module, *(int*)(ev + EvXRelOff) * TurnPerPx * k, 1);
                     _tilt(module, *(int*)(ev + EvYRelOff) * TiltPerPx * k * (MouseLook.Invert.V ? -1f : 1f), 1);
                 }
-                *(int*)(ev + EvXOff) = _cx; *(int*)(ev + EvYOff) = _cy;
+                *(int*)(ev + EvXOff) = ax; *(int*)(ev + EvYOff) = ay;
                 *(int*)(ev + EvXRelOff) = 0; *(int*)(ev + EvYRelOff) = 0;
                 break;
             case SdlMouseDown:
             case SdlMouseUp:
-                *(int*)(ev + EvXOff) = _cx; *(int*)(ev + EvYOff) = _cy;
+                *(int*)(ev + EvXOff) = ax; *(int*)(ev + EvYOff) = ay;
                 break;
             case SdlWindowEvent:
-                if (*(byte*)(ev + EvWindowKindOff) == SdlWindowFocusLost) SetAction(false);
+                // The latch too: a toggled-free cursor must not survive the alt-tab that freed it.
+                if (*(byte*)(ev + EvWindowKindOff) == SdlWindowFocusLost) { _altFree = false; SetAction(false); }
                 break;
         }
         return Forward(ev);
@@ -298,7 +325,7 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     /// <summary>The action toggle's <c>changed:</c>: the off edge frees the cursor at once (the on edge waits for
     /// the next event, which reads the knob).</summary>
-    internal static void ActionChanged() { if (!MouseLook.Action.V && _action) SetAction(false); }
+    internal static void ActionChanged() { _altFree = false; if (!MouseLook.Action.V && _action) SetAction(false); }
 
     /// <summary>The master's <c>changed:</c> (#584): the off edge releases a look or a held press at once, so the
     /// cursor is never left captured waiting for the next mouse event. Nothing on the on edge -- the next press
@@ -316,6 +343,11 @@ public sealed unsafe class MouseLookService : IExtenderService
         _state = State.Idle;
     }
 
+
+    /// <summary>The screen point the action camera pins every event to, in the SDL window pixels the engine's
+    /// own hit-tests run in. The one source of that space: <see cref="AimAssist"/> projects into it.</summary>
+    internal static void Centre(out int x, out int y) { x = _cx; y = _cy; }
+
     internal static float ViewportWidth()
     {
         IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
@@ -327,11 +359,16 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     /// <summary>The bare <c>/mouselook</c> line.</summary>
     private static string Report() =>
-        FormattableString.Invariant($"{(MouseLook.Enabled.V ? "on" : "OFF (the stock middle-drag)")}; right-drag {(MouseLook.Right.V ? "on" : "off")}, middle-drag {(MouseLook.Enabled.V ? "captured" : "stock")}; sensitivity {MouseLook.Sens.V:0.##} invert {(MouseLook.Invert.V ? 1 : 0)} threshold {MouseLook.Threshold.V}px | {_looks} look(s), {_clicks} replayed click(s), state {_state}; action camera {(MouseLook.Action.V ? (_action ? "on" : "paused") : "off")}, {_actions} capture(s), {_walksRefused} walk(s) refused, {_selfHidden} self-pick(s) hidden");
+        FormattableString.Invariant($"{(MouseLook.Enabled.V ? "on" : "OFF (the stock middle-drag)")}; right-drag {(MouseLook.Right.V ? "on" : "off")}, middle-drag {(MouseLook.Enabled.V ? "captured" : "stock")}; sensitivity {MouseLook.Sens.V:0.##} invert {(MouseLook.Invert.V ? 1 : 0)} threshold {MouseLook.Threshold.V}px | {_looks} look(s), {_clicks} replayed click(s), state {_state}; action camera {(MouseLook.Action.V ? (_action ? "on" : "paused") : "off")}, {_actions} capture(s), {_walksRefused} walk(s) refused, {_selfHidden} self-pick(s) hidden | {AimAssist.Report()} | {ActionFeedback.Report()} | {HeadTrackService.Fragment}");
 }
 
 /// <summary>The action camera's crosshair: a small four-arm reticle at the viewport centre, drawn as a registered
-/// window with no rect (it hits nothing), only while <see cref="Visible"/>. The solid texel is the text sheet's.</summary>
+/// window with no rect (it hits nothing), only while <see cref="Visible"/>. The solid texel is the text sheet's.
+/// <para>Contextual: the engine's live mouse cursor id (<see cref="AimAssist.CursorId"/>) says what a click here
+/// would do -- attack, talk, use, cast, or the refused twin of any of them -- and the reticle takes that verb's
+/// colour and arm length. It is the SAME verb the vanilla cursor would have shown, including while a targeting
+/// mode overrides it, because it is the same field. Four corner ticks appear while
+/// <see cref="AimAssist.AssistTarget"/> holds a candidate, so "the aim is being helped" is visible.</para></summary>
 internal static class Crosshair
 {
     internal static volatile bool Visible;
@@ -339,6 +376,44 @@ internal static class Crosshair
     private static VertexBatch? _batch;
     /// <summary>Arm length, gap from the centre and thickness, in px at GUI scale 1.</summary>
     private const float Arm = 8f, Gap = 3f, Thick = 2f;
+    /// <summary>Assist brackets: half-size of the corner square and the length of each tick, same units.</summary>
+    private const float Bracket = 14f, BracketTick = 5f;
+
+    private const byte FamPlain = 0, FamAttack = 1, FamTalk = 2, FamUse = 3, FamMagic = 4, FamHeal = 5, FamRefused = 6;
+
+    /// <summary>Cursor id -&gt; verb family. An odd id is a verb's "up" art and the next even one its pressed
+    /// twin, so every verb is one pair; a <c>no&lt;verb&gt;</c> is its own following pair, not the even half.
+    /// Anything this table does not name -- default/walk/nowalk, the 59..90 movement arrows and the 93+ module
+    /// custom cursors -- is the plain cross.</summary>
+    private static readonly byte[] Family = BuildFamilies();
+
+    /// <summary>Per family: r, g, b, arm scale. Stride 4, indexed by the family byte.</summary>
+    private static readonly float[] Tint =
+    {
+        1f,    1f,    1f,    1f,      // plain
+        1f,    0.28f, 0.22f, 1.35f,   // attack / kill: red, longer arms
+        0.38f, 0.82f, 1f,    1f,      // talk / examine / follow
+        1f,    0.85f, 0.28f, 1f,      // use / door / lock / disarm / pickup / action
+        0.76f, 0.48f, 1f,    1f,      // magic
+        0.42f, 1f,    0.55f, 1f,      // heal
+        0.58f, 0.58f, 0.58f, 0.8f,    // refused: dim, short, plus a centre dot
+    };
+
+    private static byte[] BuildFamilies()
+    {
+        byte[] f = new byte[93];
+        void P(int odd, byte fam) { f[odd] = fam; f[odd + 1] = fam; }
+        P(7, FamAttack); P(51, FamAttack);
+        P(11, FamTalk); P(15, FamTalk); P(17, FamTalk);
+        P(21, FamUse); P(23, FamUse); P(25, FamUse); P(33, FamUse);
+        P(37, FamUse); P(41, FamUse); P(45, FamUse); P(47, FamUse); P(91, FamUse);
+        P(29, FamMagic);
+        P(55, FamHeal);
+        P(9, FamRefused); P(13, FamRefused); P(19, FamRefused); P(27, FamRefused); P(31, FamRefused);
+        P(35, FamRefused); P(39, FamRefused); P(43, FamRefused); P(49, FamRefused);
+        P(53, FamRefused); P(57, FamRefused);
+        return f;
+    }
 
     internal static void Register()
     {
@@ -352,13 +427,20 @@ internal static class Crosshair
         if (sheet == null) return;
         int* vp = stackalloc int[4];
         Gl.GetIntegerv(Gl.VIEWPORT, vp);
+        int id = AimAssist.CursorId();
+        byte fam = (uint)id < (uint)Family.Length ? Family[id] : FamPlain;
+        int k = fam * 4;
+        float r = Tint[k], gr = Tint[k + 1], bl = Tint[k + 2], arms = Tint[k + 3];
         float s = Metrics.GameUiScale < 1f ? 1f : Metrics.GameUiScale;
-        float cx = vp[2] * 0.5f, cy = vp[3] * 0.5f, a = Arm * s, g = Gap * s, t = Thick * s * 0.5f;
+        float cx = vp[2] * 0.5f, cy = vp[3] * 0.5f, a = Arm * s * arms, g = Gap * s, t = Thick * s * 0.5f;
         VertexBatch b = _batch ??= new VertexBatch(sheet.SolidU, sheet.SolidV);
         b.Reset(sheet.SolidU, sheet.SolidV);
         // Dark outline under a light cross so it reads on any ground.
         Emit(b, cx, cy, a + 1f, g - 1f, t + 1f, 0f, 0f, 0f, 0.6f);
-        Emit(b, cx, cy, a, g, t, 1f, 1f, 1f, 0.9f);
+        Emit(b, cx, cy, a, g, t, r, gr, bl, 0.9f);
+        if (fam == FamRefused) b.Rect(cx - t, cy - t, cx + t, cy + t, r, gr, bl, 0.9f);
+        if (AimAssist.AssistTarget != 0) Corners(b, cx, cy, Bracket * s, BracketTick * s, t, r, gr, bl, 0.75f);
+        ActionFeedback.Draw(b, cx, cy, s, t);
         TextRig.DrawBatch(b.AsSpan(), b.VertexCount);
     }
 
@@ -368,5 +450,20 @@ internal static class Crosshair
         b.Rect(cx + g, cy - t, cx + a, cy + t, r, gr, bl, al);
         b.Rect(cx - t, cy - a, cx + t, cy - g, r, gr, bl, al);
         b.Rect(cx - t, cy + g, cx + t, cy + a, r, gr, bl, al);
+    }
+
+    /// <summary>Four corner ticks (two segments each) on the square of half-size <paramref name="k"/>: the
+    /// "aim assist has a target" tell.</summary>
+    private static void Corners(VertexBatch b, float cx, float cy, float k, float len, float t,
+                                float r, float gr, float bl, float al)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            float sx = (i & 1) == 0 ? -1f : 1f, sy = (i & 2) == 0 ? -1f : 1f;
+            float x = cx + sx * k, y = cy + sy * k;
+            float x2 = x - sx * len, y2 = y - sy * len;
+            b.Rect(MathF.Min(x, x2), y - t, MathF.Max(x, x2), y + t, r, gr, bl, al);
+            b.Rect(x - t, MathF.Min(y, y2), x + t, MathF.Max(y, y2), r, gr, bl, al);
+        }
     }
 }

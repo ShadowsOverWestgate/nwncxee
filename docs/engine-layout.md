@@ -453,6 +453,53 @@ builds; the Windows `CGuiInGame::HandleOptionsButton` (rva `0x6f86c0`) is the ca
 `toggledOff 0x3d4 / 0x374` (#543's row) is what the gate reads for the H key now; the raw `0x3d4` it read
 before was wrong on Windows.
 
+### The head-tracking rows
+
+One function pair carries all five: `LookAtAnimation::Control` (Linux @`0x4973c0`, Windows rva `0x50650`,
+name-exported as `?Control@LookAtAnimation@@UEAAXXZ`) reads every field, and the constructor (Linux
+@`0x49d480`, Windows rva `0x4d0a0`, exported) writes them in the same order on both builds. The class is
+laid out identically end to end, which is what `Same` is for.
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `LookAtAnimation` | `finished 0x08`, `gob 0x30`, `headPart 0x40`, `targetKey 0x58` | both bodies, side by side: the finished byte gates the aim block against the release latch at `+0x68`, `+0x30` is the looker's gob the distance check reads `+0xa8` through, `+0x40` is the head part `Part::GetWorld` is called on and whose local rotation (`+0x1c`) goes into the first keyframe, and `+0x58` is the `float*` both builds write as `(x, y, z, w)`. The clamps at `+0x48`/`+0x4c` and the reach at `+0x54` pair too but are not read from this side |
+| `CNWCCreature` | `vtbl.GetModel 0x148 / 0x140` (probed) | `CNWCCreature::LookAt` (Linux @`0x726890`, Windows rva `0x803f20`) calls it four times on each build -- `+0x148` there, `+0x140` here, the -8 a virtual destructor costs MSVC (#433). It answers the creature's Gob (`*(animBase + 0xc8)`, the `CNWCAnimBase.hiliteGob` row), so head tracking needs no `CNWCCreature+0x78` row of its own |
+
+### The action-camera targeting rows
+
+Aim assist, auto-target and the contextual crosshair read fifteen fields, and **four functions carry all of
+them** -- each decompiled on both programs rather than shifted by a class delta
+(`docs/research/action-camera-targeting.md`):
+
+| function | Linux | Windows RVA |
+|---|---|---|
+| `CNWCArea::HiliteAreaObjects(int)` | `0x7119f0` | `0x7db2f0` |
+| `CClientExoAppInternal::UpdateMouseCursorAppearance(int)` | `0x6629b0` | `0x6f2830` |
+| `CActionTarget::HandleLMouseDown()` | `0x965840` | `0x83be00` |
+| `CCachedMouseCursorManager::SetMouseCursor(int,int,int,int,int)` | `0x6b72a0` | `0x83b3e0` |
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CNWCObject` | `visible 0xa8` (a **byte**) | the highlight walk's first filter: Linux `0x711a6d` is `cmpb $0x0,0xa8(%rax)` and the Windows body reads `(char)obj[0x15]` -- one byte on both, **not** a model pointer. `CNWCObject::FadeObject` (`0x7e7720`) is the writer: it eases the alpha toward the desired state at `+0xa9` and stores 0/1 here on arrival, so 1 = faded in. Reading it as a pointer would fold `+0xa9` in and call a fading-out object visible |
+| `CNWCObject` | `highlightable 0x11c` | the same walk, `Same` on both. The type-5/6/0xa arms test it on the CNWCObject; the **type-9 (placeable) arm does not** -- see the vtable row below |
+| `CNWCArea` | `objectIds 0x318`, `objectCount 0x320` | the walk's loop header: `*(uint*)(*(area+0x318) + i*4)` for `*(int*)(area+0x320)` entries, identical on both |
+| `CGameObject` | `vtbl.AsNWCObject 0x20 / 0x18` (probed) | what the walk calls on every id it resolves; the usual Itanium two-destructor-slot shift |
+| `CGameObject` | `vtbl.AsNWCPlaceable 0xa8 / 0xa0` (probed) | the placeable arm reads `highlightable` through it: Linux `0x711b17` calls `vtbl+0xa8` and tests `+0x11c` on the ANSWER, Windows `vtbl+0xa0`. The base returns null, `CNWCPlaceable`'s override is an identity `return this` (`0x7ecc20`), so it is a type test that hands the same address back -- mirrored so a non-placeable carrying type byte 9 cannot slip through |
+| `CNWCCreature` | `hoveredOid 0x448 / 0x428` | `UpdateMouseCursorAppearance` is the only writer: it stores the newly picked id on the PLAYER creature and puts `0x7f000000` back when the hover drops. The same -0x20 `CNWCCreature` delta the nameplate rows carry |
+| `CClientExoAppInternal` | `cursorManager 0xc8` | every `SetMouseCursor` call site in that function passes `*(internal + 0xc8)`, on both |
+| `CCachedMouseCursorManager` | `currentCursor 0x1cb0` | `SetMouseCursor`'s own early-out and store, under the `id < 0x126` ceiling; `Same` |
+| `CActionTarget` | `allowed 0x148 / 0x108`, `allowedCount 0x150 / 0x110` | `HandleLMouseDown` scans pairs of `{objectType, cursorId}` (stride 8) there on both; MSVC packs the `CGuiCallback` members in 16 bytes where Itanium needs 24, so everything past `+0x80` shifts |
+
+### The crosshair-feedback rows
+
+"What is the player doing right now", measured the same way (`docs/research/action-camera-feedback.md`):
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CGuiInGame` | `actionQueuePanel 0xa8` | both `HandleServerToPlayerUpdate_PlayerInfo` bodies (Linux `0x8a9f90`, Windows rva `0x7b4f70`) null-check `GetInGameGui()+0xa8` and hand exactly that to `ClearAllActions` / `AddAction` |
+| `CPanelActionQueue` | `current 0x158 / 0x150`, `queuedCount 0x100 / 0xf8` | `AddAction` (Linux `0x7761b0`, rva `0x873df0`) fills the Current slot first and only then overflows into the list; `ClearAllActions` / `DeleteAction` (Linux `0x776100` / `0x776020`, rva `0x874670` / `0x8748b0`) drain `while (0 < count)` and early-out on `count < 1` |
+| `CNWCCreature` | `aiState 0x39e / 0x37e`, `aiTarget 0x3a4 / 0x384` | two independent call sites per build: `WalkPlayerToPoint` (Linux `0x763950`, rva `0x6f3650`) gates its "already close to my target" test on `aiState == 2` and resolves `GetGameObject(aiTarget)` inside that branch, and `CPanelQuickBar::UpdateAttackButtons` paints IR_DISENGAGE on the same `== 2`. Only **2 = attacking** is established; the rest of the enumeration is not |
+
 ### The 38 DecompOne rows (#448)
 
 Section 3, T2 — the biggest and most mechanical of the three. All 38 are now

@@ -48,6 +48,9 @@ internal static class CameraKnobs
           "free.fov keeps 0 = the mode's; the leash never exceeds the engine's 25");
         E(Walls.Fade.Default && Walls.Floor.Default == 0.5f && Walls.ArmOut.Default == 4f, "walls defaults are the #537/#538 boot values");
         E(!MouseLook.Right.Default && MouseLook.Sens.Default == 1f && MouseLook.Threshold.Default == 4 && !MouseLook.Invert.Default, "mouselook defaults are the old boot keys'");
+        E(MouseLook.HeadTrack.Default && MouseLook.HeadYaw.Default == 70f && MouseLook.HeadPitch.Default == 30f
+          && MouseLook.HeadYaw.Max == 89f && MouseLook.HeadPitch.Max == 89f,
+          "head tracking is on by default and neither arc can ask for more than the engine's 89");
         E(Move.Hz.Default == 10f && Move.Turn.Default == 540f && Move.KeyTurn.Default == 180f, "drive defaults are the #540 values");
         E(KnobGroup.Find("camera.occlude") == null && KnobGroup.Find("mouselook_sens") == null, "the retired flat keys are not declared");
         log.Info(ok ? "CameraKnobs.SelfCheck: passed" : "CameraKnobs.SelfCheck: FAILED");
@@ -218,9 +221,9 @@ internal static class FreeCam
 internal static class MouseLook
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<bool> Enabled, Right, Invert, Action;
-    internal static readonly Knob<float> Sens;
-    internal static readonly Knob<int> Threshold;
+    internal static readonly Knob<bool> Enabled, Right, Invert, Action, AltToggle, HeadTrack, Assist, AutoTarget, Feedback;
+    internal static readonly Knob<float> Sens, HeadYaw, HeadPitch;
+    internal static readonly Knob<int> Threshold, AssistPx;
     internal static readonly Knob<string> ActionKey;
 
     static MouseLook()
@@ -230,9 +233,25 @@ internal static class MouseLook
             masterChanged: MouseLookService.MasterChanged);
         Enabled = G.Master!;
         Action = G.Toggle("action", "Action camera", false, changed: MouseLookService.ActionChanged,
-                          help: "Hides the cursor and pins it to a crosshair in the centre of the screen. Moving the mouse turns the camera; whatever the crosshair points at is what you hover, tooltip and click, so aiming replaces pointing. Left-click acts on it, a right-click opens its menu. Clicking the ground does not walk you there (use the movement keys) and the crosshair never picks your own character. Hold Alt to free the cursor for the game's panels; the toggle key below switches it on and off.");
-        ActionKey = G.Text("actionkey", "Action camera toggle key", "F8", changed: MouseLookService.ActionKeyChanged,
+                          help: "Hides the cursor and pins it to a crosshair in the centre of the screen. Moving the mouse turns the camera; whatever the crosshair points at is what you hover, tooltip and click, so aiming replaces pointing. Left-click acts on it, a right-click opens its menu. Clicking the ground does not walk you there (use the movement keys) and the crosshair never picks your own character. Alt frees the cursor for the game's panels (held, or a tap with the toggle option below); the toggle key switches the camera on and off.");
+        ActionKey = G.Text("actionkey", "Action camera toggle key", "]", changed: MouseLookService.ActionKeyChanged,
                            help: "An SDL key name (F8, Tab, Backspace, Z...) or Mouse4 / Mouse5 for the thumb buttons. Blank binds nothing.");
+        AltToggle = G.Toggle("alttoggle", "Alt toggles the cursor", false,
+                             help: "Under the action camera, tapping Alt frees the cursor until you tap it again, instead of holding it.");
+        Assist = G.Toggle("assist", "Aim assist", true,
+                          help: "Under the action camera, the crosshair snaps its aim to the nearest creature, placeable or door within a few pixels of the centre, so you hover and click it without pixel-perfect aiming. The camera never moves; only what you point at changes. Brackets appear around the crosshair while a target is picked.");
+        AssistPx = G.Slider("assistpx", "Aim assist radius", 0, 200, 5, 80, "px", Tier.Advanced,
+                            help: "How far from the centre of the screen aim assist looks for a target. 0 turns it into the plain crosshair.");
+        AutoTarget = G.Toggle("autotarget", "Cast at the crosshair", true,
+                              help: "Under the action camera, a spell, feat or item that asks you to pick a target fires straight away on whatever the crosshair is pointing at, with no second click. A ground-targeted spell still asks you to aim it.");
+        Feedback = G.Toggle("feedback", "Action feedback on the crosshair", true,
+                            help: "Under the action camera, the crosshair answers what you did: a pulse when an order goes out, a red ring while you are attacking, and a dot underneath while an action is still waiting to happen.");
+        HeadTrack = G.Toggle("headtrack", "Head follows the crosshair", true,
+                             help: "Under the action camera, your character turns their head toward whatever you are aiming at. The body still faces where it is walking. Only you see it -- other players see your character the way the game has always shown it.");
+        HeadYaw = G.Slider("headyaw", "Head turn limit", 0f, 89f, 1f, 70f, "deg", Tier.Advanced,
+                           help: "How far the head turns to the side before it stops following the crosshair. 0 stops sideways turning.");
+        HeadPitch = G.Slider("headpitch", "Head tilt limit", 0f, 89f, 1f, 30f, "deg", Tier.Advanced,
+                             help: "How far the head tilts up or down before it stops following the crosshair. 0 keeps it level.");
         Right = G.Toggle("right", "Right-drag looks around", false,
                          help: "Hold the right button and drag to orbit; a still right-click still opens the radial menu.");
         Sens = G.Slider("sens", "Sensitivity", 0.05f, 20f, 0.05f, 1f, "x", help: "1 matches the stock middle-drag.");

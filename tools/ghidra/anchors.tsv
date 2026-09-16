@@ -54,3 +54,10 @@ CGuiInGame::ToggleOff	1406fc6f0
 CGuiInGame::UnToggleOff	1406fc900
 CNWCMessage::HandleServerToPlayerCreatureUpdate_Update	140781e80
 CNWCCreature::SetCombatState	14080a230
+CNWCCreature::UpdateLookAt	14080fa60
+CNWCCreature::LookAt	140803f20
+CActionTarget::ActivateTargetMode	14083b9e0
+CActionTarget::HandleLMouseDown	14083be00
+CNWCArea::HiliteAreaObjects	1407db2f0
+CClientExoAppInternal::UpdateMouseCursorAppearance	1406f2830
+CCachedMouseCursorManager::SetMouseCursor	14083b3e0

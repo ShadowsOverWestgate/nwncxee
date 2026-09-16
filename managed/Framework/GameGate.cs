@@ -1,10 +1,12 @@
+using System;
+
 namespace CX.Framework;
 
 /// <summary>
 /// The game-session predicates every layer branches on (ADR 0014). These are not UI concepts -- they arm the
 /// entire 3D pipeline as much as they gate a chat box -- so they live in the framework and UI consumes them
 /// like everyone else. The frame host (<c>CX.Ui.UiHostService</c>) is the sole writer of
-/// <see cref="InGame"/> / <see cref="InModule"/> / <see cref="AtMainMenu"/> / <see cref="OptionsOpen"/>, once per frame; everything else reads. There is no whole-framework
+/// <see cref="InGame"/> / <see cref="InModule"/> / <see cref="AtMainMenu"/> / <see cref="OptionsOpen"/> / <see cref="InGameGui"/>, once per frame; everything else reads. There is no whole-framework
 /// opt-out any more (ADR 0025): every feature has its own master, and "no CX" is an uninstall.
 /// </summary>
 public static class GameGate
@@ -30,4 +32,11 @@ public static class GameGate
     /// again while a Game/Video/Controls sub-panel hides it, and on Resume/Exit. The gear and the settings panel
     /// draw on it, the way they draw on <see cref="AtMainMenu"/>; nothing else does.</summary>
     public static volatile bool OptionsOpen;
+
+    /// <summary>The live <c>CGuiInGame*</c> the frame host already walked to for the gate above, or Zero outside a
+    /// module. Stashed rather than re-walked: the walk is four dereferences off <c>g_pAppManager</c> and one
+    /// source of it per frame is one place to be wrong. Read by content that needs a panel hanging off the
+    /// in-game GUI (the crosshair's action queue); valid for the frame that drew it. Not <c>volatile</c> --
+    /// C# forbids it on <see cref="IntPtr"/> -- but a pointer-sized store never tears on either target.</summary>
+    public static IntPtr InGameGui;
 }
