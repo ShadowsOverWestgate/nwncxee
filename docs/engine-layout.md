@@ -299,7 +299,7 @@ What is still `Unresolved` here, and why it is the honest answer:
 
 | row | why |
 |---|---|
-| `CNWCAnimBase` `hiliteActive` / `hiliteGlow` / `hiliteGob` | no `CNWC*` class is name-exported on Windows; needs #420's RVA path. **Resolved in #446** — an export is not an anchor |
+| `CNWCAnimBase` `hiliteActive` / `hiliteGlow` / `gob` (then `hiliteGob`) | no `CNWC*` class is name-exported on Windows; needs #420's RVA path. **Resolved in #446** — an export is not an anchor |
 | `PartTriMesh` `selfIllum` `+0x7c` | it falls in the GAP between PartTriMesh's two measured segments (`+0x4` across the bbox, `+0x8` from `0x88` up). Windows `WithinRange` reads the bbox at `0x68..0x7c`, so `+0x7c` is bbox there, and nothing measures where the boundary's four bytes land. Interpolating across a segment boundary is the Camera `+0x4d4` mistake. **Resolved in #448 by measuring instead of interpolating** — `PartTriMesh::Mat` reads it |
 | `GLRender` `poolTableAnchorOffset` `0x236c` | Windows reaches the `{base, count}` pair as its own static (rva `0x128ead8`) passed *by pointer* into the pool helper, not at a fixed distance from any symbol. What Windows needs is its own anchor in `SymbolMap._win`, not a Windows value for this row |
 
@@ -463,7 +463,7 @@ laid out identically end to end, which is what `Same` is for.
 | Class | Rows | Anchor |
 |---|---|---|
 | `LookAtAnimation` | `finished 0x08`, `gob 0x30`, `headPart 0x40`, `targetKey 0x58` | both bodies, side by side: the finished byte gates the aim block against the release latch at `+0x68`, `+0x30` is the looker's gob the distance check reads `+0xa8` through, `+0x40` is the head part `Part::GetWorld` is called on and whose local rotation (`+0x1c`) goes into the first keyframe, and `+0x58` is the `float*` both builds write as `(x, y, z, w)`. The clamps at `+0x48`/`+0x4c` and the reach at `+0x54` pair too but are not read from this side |
-| `CNWCCreature` | `vtbl.GetModel 0x148 / 0x140` (probed) | `CNWCCreature::LookAt` (Linux @`0x726890`, Windows rva `0x803f20`) calls it four times on each build -- `+0x148` there, `+0x140` here, the -8 a virtual destructor costs MSVC (#433). It answers the creature's Gob (`*(animBase + 0xc8)`, the `CNWCAnimBase.hiliteGob` row), so head tracking needs no `CNWCCreature+0x78` row of its own |
+| `CNWCCreature` | `vtbl.GetModel 0x148 / 0x140` (probed) | `CNWCCreature::LookAt` (Linux @`0x726890`, Windows rva `0x803f20`) calls it four times on each build -- `+0x148` there, `+0x140` here, the -8 a virtual destructor costs MSVC (#433). It answers the creature's Gob (`*(animBase + 0xc8)`, the `CNWCAnimBase.gob` row (`hiliteGob` until #672)), so head tracking needs no `CNWCCreature+0x78` row of its own |
 
 ### The action-camera targeting rows
 
@@ -578,3 +578,25 @@ mechanically — every one of the 309 rows resolves to the same Linux value befo
 after, and `run-demo.sh` reports `308 offset(s), 1 unresolved`. Alloy still stands down
 under Proton, so not one of the 38 is read on Windows yet; that is the map's standing
 fog entry, not this ticket's.
+
+### The static-placeable rows (#672, research #663)
+
+Three `Same` rows and one rename, all read off decompiled bodies on both builds
+(`docs/research/static-placeable-rule.md` §7.2 has the full table, including the
+`Gob` transform fields it chose *not* to declare).
+
+| Row | Linux / Windows | Anchor |
+|---|---|---|
+| `CNWCArea.staticPlaceables` | `0x338` / `0x338` | `AddPlaceableObjectStatic` (Linux `0x7091c0`, Windows rva `0x7d95a0`, the call inside `LoadArea`'s `"Static Placeables"` tracy zone): `CExoArrayList<unsigned int>::Add((… *)(area + 0x338), id)` on both |
+| `CNWCArea.staticPlaceableCount` | `0x340` / `0x340` | the research left this one **inferred** (the Windows `RespawnStaticPlaceablesForTile` was never located). Closed here without a live probe: the Windows `CExoArrayList<unsigned int>::Add` (rva `0x8ae10`, exported `?Add@?$CExoArrayList@I@@QEAAXI@Z`) decompiles as data `+0`, count `+8`, alloc `+0xc` -- the same layout Linux has -- so the count of the list at `+0x338` is at `+0x340` by the list's own class, not by analogy |
+
+
+
+Not declared: the `Gob` visual-transform block (`+0x1c0`/`+0x280`/`+0x340`/`+0x400`,
+`+0x49c`) and the orientation quaternion at `+0xb4`. The rule the research settles on
+reads the composed 16 floats at `MdlNode+0x18` (`NodeMatrix`, already a row) off the
+enrolled part, so those rows have no reader yet.
+
+**No probes.** Two pointers and a `CExoArrayList` pair; `Expect.Byte01` fits none.
+`CNWCPlaceable+0x1b4` (`0x194` Windows) is **plot**, not Static -- there is no
+client-side Static flag on a placeable, which is why the list exists.

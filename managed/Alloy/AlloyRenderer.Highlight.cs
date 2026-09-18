@@ -54,7 +54,7 @@ public sealed unsafe partial class AlloyRenderer
     /// Tab over a glowing creature shows the Tab colour.</para></summary>
     private const int HiliteChannels = 5;
     private static readonly int AbActive = EngineLayout.AnimHiliteActive, AbGlow = EngineLayout.AnimHiliteGlow,
-                               AbGob = EngineLayout.AnimHiliteGob;
+                               AbGob = EngineLayout.AnimGob;
 
     /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
     /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. Everything

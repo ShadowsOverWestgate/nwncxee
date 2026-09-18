@@ -86,6 +86,24 @@ internal static unsafe class SymbolMap
     public const string HandleServerToPlayerLogin   = "_ZN11CNWCMessage25HandleServerToPlayerLoginEh";
     public const string SendPlayerToServerMessage   = "_ZN11CNWCMessage25SendPlayerToServerMessageEhhPhj";
     public const string SendDeviceAdvertiseProperty = "_ZN11CNWCMessage41SendPlayerToServerDeviceAdvertisePropertyERK10CExoStringi";
+    // ---- the area-loaded hold (#672, research docs/research/area-loaded-hold.md). Landed for #674/#675;
+    //      nothing hooks them yet. ----
+    /// <summary>CNWCMessage::SendPlayerToServerArea_AreaLoaded() @0x7fa0c0 -- major 4 minor 3, no payload; the
+    /// send whose arrival makes the server place the player (<c>MovePlayerToArea</c>). Three call sites: the
+    /// post-loading-screen tail of <see cref="HandleUpdateWorkRemaining"/> and the two movie exits.</summary>
+    public const string SendAreaLoaded = "_ZN11CNWCMessage33SendPlayerToServerArea_AreaLoadedEv";
+    /// <summary>CNWCMessage::HandleServerToPlayerUpdate_WorkRemaining() @0x781a30 -- drives the load bar and, on
+    /// the last tick, fades the loadscreen and sends AreaLoaded (or latches <c>internal+0x58c</c> behind an intro
+    /// movie). The hold's hook point. <c>(this) -> int</c>.</summary>
+    public const string HandleUpdateWorkRemaining = "_ZN11CNWCMessage40HandleServerToPlayerUpdate_WorkRemainingEv";
+    /// <summary>CClientExoApp::StartLoadBar(int state, char const* image, int rebuild) @0x638a70 -- forwarder to the
+    /// internal; disables input, stores <c>state</c> at <c>internal+0x450</c> (1 = local stall, 2 = area transition).</summary>
+    public const string StartLoadBar = "_ZN13CClientExoApp12StartLoadBarEiPKci";
+    /// <summary>CClientExoApp::EndLoadBar() @0x636980 -- destroys the loadscreen, zeroes +0x450, re-enables input.
+    /// The happy path does NOT call it: the bar fades out inside WorkRemaining's tail instead.</summary>
+    public const string EndLoadBar = "_ZN13CClientExoApp10EndLoadBarEv";
+    /// <summary>CClientExoApp::GetLoadBarState() @0x638240 -- <c>*(int*)(internal+0x450)</c>, 0 when no bar is up.</summary>
+    public const string GetLoadBarState = "_ZN13CClientExoApp15GetLoadBarStateEv";
     // chat-render probe (#14) -- Linux-only throwaway; no Windows anchors (skip + log there).
     public const string AppendToMsgBuffer   = "_ZN10CGuiInGame17AppendToMsgBufferE10CExoStringjji7CResRef"; // inbound tap
     public const string SetPriMsgFilter     = "_ZN10CGuiInGame25SetPrimaryMsgWindowFilterEj";               // force backlog replay
@@ -1236,6 +1254,12 @@ internal static unsafe class SymbolMap
         [HandleServerToPlayerLogin]   = At(0x7a31b0),
         [SendPlayerToServerMessage]   = At(0x7c25c0),
         [SendDeviceAdvertiseProperty] = At(0x7bbac0),
+        // #672: the area-loaded hold; none returns a class by value. Anchors in docs/windows-symbols.md.
+        [SendAreaLoaded]              = At(0x7ba050),
+        [HandleUpdateWorkRemaining]   = At(0x7b85a0),
+        [StartLoadBar]                = At(0x6acd20),
+        [EndLoadBar]                  = At(0x6ab770),
+        [GetLoadBarState]             = At(0x6abe20),
         [GetNWCMessage]               = At(0x6abf90),
         [SetFocusChatPrompt]          = At(0x6fae30),
         [ChatHandleEnter]             = At(0x87b0d0),

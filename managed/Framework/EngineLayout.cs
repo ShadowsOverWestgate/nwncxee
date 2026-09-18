@@ -1331,9 +1331,10 @@ public static unsafe class EngineLayout
     public static readonly int AnimHiliteActive = Same("CNWCAnimBase", "hiliteActive", 0x9c);
     /// <inheritdoc cref="AnimHiliteActive"/>
     public static readonly int AnimHiliteGlow = Same("CNWCAnimBase", "hiliteGlow", 0xb0);
-    /// <summary>The gob the winning channel is published against. Both builds guard the whole body on it
-    /// being non-null and hand it to the scene's highlight virtual, so it is a pointer, not a slot.</summary>
-    public static readonly int AnimHiliteGob = Same("CNWCAnimBase", "hiliteGob", 0xc8);
+    /// <summary>CNWCAnimBase -&gt; its <c>Gob*</c>: the one the winning hilite channel is published against
+    /// (<c>RefreshHilite</c> guards the whole body on it), and the one <c>CNWCAnimBase::SetPosition</c> @0x9c9d60
+    /// / Windows rva 0x9680a0 forwards to (#663). With <see cref="ObjAnimBase"/> this is the id -&gt; Gob walk.</summary>
+    public static readonly int AnimGob = Same("CNWCAnimBase", "gob", 0xc8);
 
     // ---- GLRender's pool descriptor table (#260) ----
 
@@ -1526,6 +1527,16 @@ public static unsafe class EngineLayout
     public static readonly int AreaPlaceableLights = Same("CNWCArea", "placeableLights", 0x328);
     /// <inheritdoc cref="AreaPlaceableLights"/>
     public static readonly int AreaPlaceableLightCount = Same("CNWCArea", "placeableLightCount", 0x330);
+    /// <summary>#663/#672: CNWCArea -&gt; the Static-placeable list, a <c>CExoArrayList&lt;unsigned int&gt;</c> of
+    /// object ids (data +0x338, count +0x340) filled by <c>AddPlaceableObjectStatic</c> @0x7091c0. No per-object
+    /// Static flag exists client-side (+0x1b4 is PLOT); membership here IS the static set. docs/engine-layout.md.</summary>
+    public static readonly int AreaStaticPlaceables = Same("CNWCArea", "staticPlaceables", 0x338);
+    /// <inheritdoc cref="AreaStaticPlaceables"/>
+    public static readonly int AreaStaticPlaceableCount = Same("CNWCArea", "staticPlaceableCount", 0x340);
+    /// <summary>#663: CNWCObject -&gt; its <c>CNWCAnimBase*</c> (<c>CNWCObject::SetPosition</c> @0x7e9180 / rva
+    /// 0x766760 reads it before the anim-base vcall). Hop one of id -&gt; placeable -&gt; anim base -&gt;
+    /// <see cref="AnimGob"/>; the gob's composed transform is then <see cref="NodeMatrix"/> off its parts.</summary>
+    public static readonly int ObjAnimBase = Same("CNWCObject", "animBase", 0x78);
     /// <summary>CNWCCreature -&gt; the hovered object id mirrored onto the PLAYER creature (0x7f000000 = nothing).
     /// <c>UpdateMouseCursorAppearance</c> is the only writer: it stores the newly picked id there and clears it to
     /// 0x7f000000 when the hover drops. Linux +0x448, Windows +0x428 -- the same -0x20 CNWCCreature delta
@@ -1631,7 +1642,7 @@ public static unsafe class EngineLayout
     // rva 0x4d0a0) writes them in the same order on both builds. The class is laid out identically.
 
     /// <summary>CNWCCreature -&gt; virtual slot of <c>GetModel(unsigned char, int)</c>, which answers the
-    /// creature's Gob (<c>*(animBase + 0xc8)</c>, <see cref="AnimHiliteGob"/>). Measured on the one function
+    /// creature's Gob (<c>*(animBase + 0xc8)</c>, <see cref="AnimGob"/>). Measured on the one function
     /// that calls it on both builds, <c>CNWCCreature::LookAt</c> (Linux @0x726890 uses +0x148, Windows rva
     /// 0x803f20 uses +0x140): the -8 every virtual destructor costs MSVC.</summary>
     public static readonly int CreatureGetModelSlot =

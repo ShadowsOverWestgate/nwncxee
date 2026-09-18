@@ -61,3 +61,12 @@ CActionTarget::HandleLMouseDown	14083be00
 CNWCArea::HiliteAreaObjects	1407db2f0
 CClientExoAppInternal::UpdateMouseCursorAppearance	1406f2830
 CCachedMouseCursorManager::SetMouseCursor	14083b3e0
+CNWCMessage::SendPlayerToServerArea_AreaLoaded	1407ba050
+CNWCMessage::HandleServerToPlayerUpdate_WorkRemaining	1407b85a0
+CClientExoApp::StartLoadBar	1406acd20
+CClientExoApp::EndLoadBar	1406ab770
+CClientExoApp::GetLoadBarState	1406abe20
+CNWCArea::AddPlaceableObjectStatic	1407d95a0
+CExoArrayList<unsigned int>::Add	14008ae10
+CNWCObject::SetPosition	140766760
+CNWCAnimBase::SetPosition	1409680a0
