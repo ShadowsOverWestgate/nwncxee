@@ -391,6 +391,20 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Bake key** — the identity of one instance bake: the mesh's chart, the instance's placement, the
   texel density, and only the static lights that reach the instance. A torch a script toggles moves the
   keys of the instances it reaches, nothing else.
+- **Baked surface** — a drawn instance whose instance bake has landed: it reads its light from the
+  pages and the real-time loop skips every static light for it. Everything else is **unbaked** (a mover,
+  a refused mesh, a bake still in flight, an instance past the page cap) and takes the whole loop. The
+  two looks are meant to match; a surface flipping between them is a cost change, never a visual one.
+- **Bake record** — the per-draw pointer from a surface to its bake: which page and where on it. An
+  unbaked surface carries the empty record. Written when a bake lands or leaves, never per frame.
+- **Static bit** — the per-light mark "this light is in the pages". A baked surface skips a static
+  light outright unless it is hot, and then takes only the mover shadow from it. Ambient-class lights
+  are never static.
+- **Static-set fingerprint** — the identity of the area's static lights as a whole. It moves only at
+  area load and when a script toggles a static light, and that move is the one edge on which instances
+  re-key: nothing re-keys per frame.
+- **Page cap** — how many lightmap pages an area may hold, sized from the card's memory unless
+  `lightmap.pages` names a number. Past it, the remaining instances stay unbaked and are counted.
 - **Area-loaded hold** — the client keeps the server's "place the player" message (the
   area-loaded send) back until the lightmap bake has landed, so the player never stands in a
   world that is still baking. Ends at the first of: bake landed, the player skips, the hard cap.
