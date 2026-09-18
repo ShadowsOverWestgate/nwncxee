@@ -367,3 +367,15 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   "no weather" path (it deletes its six fx objects itself). Nothing downstream is suppressed, and an
   un-mapped row (fog, a dry storm) keeps its stock emitter. Distinct from the particle pass's per-emitter
   decline, which suppresses a build the engine still owns.
+- **Static set** (lightmap) — the geometry a bake may light: tile geometry plus placeables flagged
+  Static, each keeping its real world transform. Anything a script moves, hides or destroys leaves the
+  set for good. Redrawn in #656 from "tiles only": areas are a flat tile plane plus Static placeables.
+- **Chart** — one connected patch of a mesh's triangles flattened onto lightmap texture space, with no
+  two triangles sharing a texel. A mesh's charts are made once per mesh content by the **charter**
+  (vendored xatlas) and cached forever; a chart cut may split a vertex the engine did not.
+- **Chart file** — the cached charts of one mesh, an interchange format at the mesh level (versioned
+  header, content key, per-vertex UV2 and the split index run), never Alloy pool indices. A toolset
+  could ship it inside the module.
+- **Instance bake** — the baked light of one placed instance: the mesh's charts sized from the
+  instance's world-space area (visual transforms included) and packed per instance into atlas pages.
+  Fifty pillars are fifty rectangles, never one shared bake.
