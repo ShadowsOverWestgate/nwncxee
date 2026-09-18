@@ -319,8 +319,8 @@ public sealed unsafe partial class AlloyRenderer
                     UploadAreaTerms(_watAmbient, _watDiffuse, _watDir);
                     UploadSunCascades(_watSunTex, _watSunVp, _watSunTexel, _watSunBias, _watSunCount, _watSunDyn,
                                       _watSunFocus, _watSunRadius);
-                    UploadLocalCubes(_watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft,
-                                     _watCubeDynPage, _watCubeFade);
+                    UploadLocalCubes(_watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft, _watCubePcss,
+                                     _watCubeDynPage, _watCubeFade, _watCubeFloor);
                     // The cascade and cube uploads each left their own unit current for a moment; the copy
                     // pair and the noise texture have to be back on their units before the first water draw
                     // samples them.

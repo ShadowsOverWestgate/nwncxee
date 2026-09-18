@@ -476,7 +476,21 @@ internal static unsafe class AlloyLights
     /// radius in pixels below which that disc stands down, and the world distance inside which a fragment is
     /// reported lit outright. Read here so <c>/shadow</c> retunes all three live, like every other knob.</summary>
     internal static float ShadowSoft => _shadowSoft;
+    /// <summary>#641: <c>uLocalFloor</c> -- the shadow floor scaled by the area ambient's luminance (a mid-grey
+    /// ambient gives the full floor, a night area a fraction of it, so darkness stays dark).
+    /// ponytail: a luminance scalar, not a per-channel ambient tint; go to a vec3 if a coloured ambient ever reads wrong.</summary>
+    internal static float ShadowFloor
+    {
+        get
+        {
+            var a = FrameInputs.HasAreaAmbient ? FrameInputs.AreaAmbient * AmbientScale : new Vector3(AlloyRenderer.DefaultAmbient);
+            float lum = 0.2126f * a.X + 0.7152f * a.Y + 0.0722f * a.Z;
+            return Shadows.Floor.V * Math.Clamp(2f * lum, 0f, 1f);
+        }
+    }
     internal static float ShadowDiscPx => _discPx;
+    /// <summary>#642: the penumbra scale -- the light's source radius (<c>/light radius</c>), in world units.</summary>
+    internal static float ShadowSource => _srcRadius;
     /// <summary>#336: cube-shadow taps a fragment may pay, in cluster order; 0 = every shadowing light.</summary>
     internal static float ShadowCap => Shadows.Cap.V;
     /// <summary>EXPERIMENT: the fraction of a light's adjusted radius the cluster build bins it by. The
@@ -614,6 +628,12 @@ internal static unsafe class AlloyLights
         // that light) -- a program that never sets it reads 0 everywhere, so a stale content override
         // degrades to static-only rather than to sampling page zero.
         uniform samplerCubeArrayShadow uLocalDynShadow;
+        // #642: the same two arrays through a sampler object with NO compare, so the blocker search reads a
+        // depth rather than a verdict. Bound by layout past the 0..15 table (TextureSlots.LocalShadowRaw);
+        // the driver's unit count is asked once and where it is short uLocalPcss.x stays 0, which stands the
+        // search down (a fixed disc at the ceiling) -- see CasterPass.RawSearch.
+        layout(binding = 16) uniform samplerCubeArray uLocalShadowRaw;
+        layout(binding = 17) uniform samplerCubeArray uLocalDynShadowRaw;
         uniform float uLocalDynPage[64];
         uniform float uLocalFade[64];   // per-slot shadow strength: a slot fading in after its bake or out after its light left the budget
 
@@ -647,6 +667,61 @@ internal static unsafe class AlloyLights
         // Unset reads 0, which is the surface behaviour every existing program and every content override
         // already relies on -- the safe default is the one nobody has to declare.
         uniform float uLocalMedia;
+        // #641: the shadow floor -- the fraction of a point light's DIFFUSE that still arrives inside its own
+        // shadow, standing in for the indirect light Alloy has none of. Pre-scaled by the area ambient on the
+        // CPU; the light's own colour rides in the diffuse term it multiplies, so a torch shadow stays warm.
+        // Unset reads 0, which is the full-black cutout this shipped with.
+        uniform float uLocalFloor;
+
+        // #642: x = the light's source radius in world units (the penumbra scale; 0 = no blocker search, the
+        // disc sits at its ceiling), y = the temporal rotation phase 0..1 (0 when the taa stage is not live,
+        // so the dither is a fixed pattern rather than a shimmer), z = disc taps. All zero on a program that
+        // never sets it, which is a fixed disc.
+        uniform vec4 uLocalPcss;
+        // Below this radius (in texels) the disc stands down to the hardware tap: a fragment in contact.
+        const float CX_LOCAL_DISC_MIN = 0.25;
+        const int CX_LOCAL_SEARCH = 4;
+        // #642: the per-fragment dither the disc spins by. Interleaved gradient noise on the pixel where a
+        // fragment head declares CX_FS; a vertex stage (grass, weather, particles compile this lib there
+        // too) has no gl_FragCoord, and a head that forgets the define gets the coarser hash, not a
+        // compile failure.
+        #ifdef CX_FS
+        float CxShadowNoise(vec3 worldPos) { return fract(52.9829189 * fract(0.06711056 * gl_FragCoord.x + 0.00583715 * gl_FragCoord.y)); }
+        #else
+        float CxShadowNoise(vec3 worldPos) { return fract(sin(dot(floor(worldPos * 64.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+        #endif
+        // Tap i of n on a unit Vogel disc, spun by `rot` turns.
+        vec2 CxVogel(int i, int n, float rot)
+        {
+            float r = sqrt((float(i) + 0.5) / float(n));
+            float a = float(i) * 2.399963 + rot * 6.283185;
+            return r * vec2(cos(a), sin(a));
+        }
+        // The stored window depth back to a major-axis distance: the inverse of the `ref` line below.
+        float CxCubeDist(float z, float near, float far) { return near / max(1.0 - z * (far - near) / far, 1e-4); }
+        // #642: the penumbra radius in texels, 0 .. uLocalSoft.x -- PCSS: the mean depth of the blockers found
+        // by CX_LOCAL_SEARCH raw reads on a fixed ring at the ceiling radius (plus `mc`, the centre read the
+        // caller already has), then (receiver - blocker) / blocker scaled by the source radius. The ring is
+        // NOT dithered: neighbouring fragments must agree on the penumbra, or the edge speckles where one
+        // fragment blurs and the next takes the hard tap (seen live). A search that finds no blocker is a
+        // hard tap; uLocalPcss.x = 0 (no raw view on this driver) is the ceiling everywhere.
+        float CxPenumbra(samplerCubeArray raw, float layer, vec3 d, vec3 u1, vec3 v1,
+                         float m, float mc, float near, float far, float texel)
+        {
+            float src = uLocalPcss.x;
+            if (src <= 0.0) return uLocalSoft.x;
+            float sum = 0.0, n = 0.0;
+            if (mc < m) { sum += mc; n += 1.0; }
+            for (int k = 0; k < CX_LOCAL_SEARCH; k++)
+            {
+                vec2 o = CxVogel(k, CX_LOCAL_SEARCH, 0.0) * (texel * uLocalSoft.x);
+                float mk = CxCubeDist(texture(raw, vec4(d + u1 * o.x + v1 * o.y, layer)).r, near, far);
+                if (mk < m) { sum += mk; n += 1.0; }
+            }
+            if (n <= 0.0) return 0.0;
+            float mb = sum / n;
+            return clamp((m - mb) / mb * src / texel, 0.0, uLocalSoft.x);
+        }
 
         // Visibility of world point `worldPos` from the light in cube slot `slot`, 0 (shadowed) .. 1 (lit).
         // The reference depth is the exact inverse of ShadowMath.LinearizeFaceDepth: for a 90deg face fitted
@@ -691,6 +766,8 @@ internal static unsafe class AlloyLights
             // the reference the other way makes every lit surface shadow itself.
             m = clamp(max(max(abs(d.x), abs(d.y)), abs(d.z)) - CX_LOCAL_BIAS * (1.0 + slope), near, far);
             float ref = far / (far - near) * (1.0 - near / m);
+            // #642: the centre's raw depth, the blocker search's first sample
+            float mc = uLocalPcss.x > 0.0 ? CxCubeDist(texture(uLocalShadowRaw, vec4(d, float(slot))).r, near, far) : m;
             float vs = texture(uLocalShadow, vec4(d, float(slot)), ref);
             // #308 follow-up: the dyn tap stands down for a CREATURE fragment inside the carrier band --
             // see CX_LOCAL_DYN_NEAR. Ground and static receivers pass onMover 0 and are never gated.
@@ -700,36 +777,45 @@ internal static unsafe class AlloyLights
             // #326: one tap when the disc is under its pixel budget on screen (z = px / lod scale) -- four of
             // every five cube fetches
             if (uLocalSoft.x <= 0.0 || (uLocalSoft.z > 0.0 && texel * uLocalSoft.x < viewDepth * uLocalSoft.z)) return mix(1.0, v, uLocalFade[slot]);
-            // #139: four more taps on a disc perpendicular to the sample ray. The cube fetch is already
-            // hardware PCF, so this WIDENS that filter rather than replacing it. The reference depth is
-            // deliberately the centre tap's for all five -- re-deriving it per tap would compare each
-            // neighbour against its own surface and dissolve the penumbra it is there to create.
-            // ponytail: a fixed 4-tap cross, not a rotated Poisson disc and not contact-hardening. Costs 4
-            // cube fetches per shadowing light; go to a jittered kernel if the cross pattern ever shows.
+            // #642: contact-hardening. The disc radius is not uLocalSoft.x but a per-fragment penumbra
+            // estimate with uLocalSoft.x as its ceiling -- see CxPenumbra.
             vec3 axis = abs(d.x) < 0.9 * m ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
             vec3 u1 = normalize(cross(axis, d));
             vec3 v1 = normalize(cross(d, u1));
-            vec3 du = u1 * (texel * uLocalSoft.x);
-            vec3 dv = v1 * (texel * uLocalSoft.x);
-            vs += texture(uLocalShadow, vec4(d + du, float(slot)), ref);
-            vs += texture(uLocalShadow, vec4(d - du, float(slot)), ref);
-            vs += texture(uLocalShadow, vec4(d + dv, float(slot)), ref);
-            vs += texture(uLocalShadow, vec4(d - dv, float(slot)), ref);
-            // #308 follow-up (pixelation): the same disc on the dynamic page, in ITS OWN texel -- a mover's
-            // shadow up close is answered by the coarse pool, and the single hard tap this shipped with is
-            // the visible pixel grid. Widening only when the page is live cannot pop the static penumbra.
+            float rot = fract(CxShadowNoise(worldPos) + uLocalPcss.y);
+            float rs = CxPenumbra(uLocalShadowRaw, float(slot), d, u1, v1, m, mc, near, far, texel);
+            float rd = 0.0, dtex = 0.0;
             if (dyn)
             {
-                float dtex = 2.0 * m / float(textureSize(uLocalDynShadow, 0).x);
-                vec3 eu = u1 * (dtex * uLocalSoft.x);
-                vec3 ev = v1 * (dtex * uLocalSoft.x);
-                vd += texture(uLocalDynShadow, vec4(d + eu, pg - 1.0), ref);
-                vd += texture(uLocalDynShadow, vec4(d - eu, pg - 1.0), ref);
-                vd += texture(uLocalDynShadow, vec4(d + ev, pg - 1.0), ref);
-                vd += texture(uLocalDynShadow, vec4(d - ev, pg - 1.0), ref);
-                vd *= 0.2;
+                dtex = 2.0 * m / float(textureSize(uLocalDynShadow, 0).x);
+                float md = uLocalPcss.x > 0.0 ? CxCubeDist(texture(uLocalDynShadowRaw, vec4(d, pg - 1.0)).r, near, far) : m;
+                rd = CxPenumbra(uLocalDynShadowRaw, pg - 1.0, d, u1, v1, m, md, near, far, dtex);
             }
-            return mix(1.0, min(vs * 0.2, vd), uLocalFade[slot]);
+            // #642: a rotated Vogel disc at the estimated radius. The cube fetch is already hardware PCF, so
+            // this WIDENS that filter rather than replacing it. The reference depth is deliberately the
+            // centre tap's for every tap -- re-deriving it per tap would compare each neighbour against its
+            // own surface and dissolve the penumbra it is there to create.
+            // ponytail: one disc for both maps at its own radius each; no per-tap weighting, no bilateral term.
+            int taps = int(uLocalPcss.z);
+            if (rs >= CX_LOCAL_DISC_MIN && taps > 0)
+            {
+                for (int i = 0; i < taps; i++)
+                {
+                    vec2 o = CxVogel(i, taps, rot) * (texel * rs);
+                    vs += texture(uLocalShadow, vec4(d + u1 * o.x + v1 * o.y, float(slot)), ref);
+                }
+                vs /= float(taps + 1);
+            }
+            if (dyn && rd >= CX_LOCAL_DISC_MIN && taps > 0)
+            {
+                for (int i = 0; i < taps; i++)
+                {
+                    vec2 o = CxVogel(i, taps, rot) * (dtex * rd);
+                    vd += texture(uLocalDynShadow, vec4(d + u1 * o.x + v1 * o.y, pg - 1.0), ref);
+                }
+                vd /= float(taps + 1);
+            }
+            return mix(1.0, min(vs, vd), uLocalFade[slot]);
         }
 
         """;
@@ -960,7 +1046,7 @@ internal static unsafe class AlloyLights
                 if (capN <= 0)
                 {
                     float sh = CxLocalShadow(slot, worldPos, N, dot(N, L), onMover, viewDepth);
-                    acc += unsh * sh; spec += spc * sh;
+                    acc += unsh * mix(uLocalFloor, 1.0, sh); spec += spc * sh;   // floor on diffuse only: a floored highlight is a wrong highlight
                     continue;
                 }
                 float ndlRaw = dot(N, L);
@@ -981,12 +1067,12 @@ internal static unsafe class AlloyLights
             if (aSlot >= 0)
             {
                 float sh = CxLocalShadow(aSlot, worldPos, N, aNdl, onMover, viewDepth);
-                acc += aLit * sh; spec += aSpc * sh;
+                acc += aLit * mix(uLocalFloor, 1.0, sh); spec += aSpc * sh;
             }
             if (bSlot >= 0)
             {
                 float sh = CxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth);
-                acc += bLit * sh; spec += bSpc * sh;
+                acc += bLit * mix(uLocalFloor, 1.0, sh); spec += bSpc * sh;
             }
             return acc;
         }

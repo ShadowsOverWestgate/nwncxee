@@ -989,7 +989,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
                   // uniform leaves behind, so a stale content override degrades to static-only.
                   && AlloyLights.LocalShadowLib.Contains($"uLocalDynPage[{MaxCubes}]")
                   && AlloyLights.LocalShadowLib.Contains("float v = min(vs, vd);")
-                  && AlloyLights.LocalShadowLib.Contains("return mix(1.0, min(vs * 0.2, vd), uLocalFade[slot]);")
+                  && AlloyLights.LocalShadowLib.Contains("return mix(1.0, min(vs, vd), uLocalFade[slot]);")
+                  && AlloyLights.LocalShadowLib.Contains("uniform vec4 uLocalPcss;")
+                  && AlloyLights.LocalShadowLib.Contains("if (src <= 0.0) return uLocalSoft.x;")
                   && AlloyLights.LocalShadowLib.Contains($"uLocalFade[{MaxCubes}]")
                   && AlloyLights.LocalShadowLib.Contains("pg > 0.5")
                   // #306: the sun's half of the split, in the cube's exact shape -- one min() compose, a

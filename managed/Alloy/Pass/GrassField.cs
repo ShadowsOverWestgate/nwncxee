@@ -236,7 +236,7 @@ internal static unsafe partial class GrassField
         public int PushTex, PushGain, PushWindow;
         public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN, Sss, Reach;
         public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn, SunFocus, SunRadius;
-        public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade;
+        public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubePcss, CubeDynTex, CubeDynPage, CubeFade, CubeFloor;
     }
     private static Loc _loc;
     private static AlloyRenderer.FeatLoc _featLoc, _featLocD;
@@ -910,7 +910,7 @@ internal static unsafe partial class GrassField
         AlloyRenderer.UploadSunCascades(_loc.SunTex, _loc.SunVp, _loc.SunTexel, _loc.SunBias, _loc.SunCount,
                                         _loc.SunDyn, _loc.SunFocus, _loc.SunRadius);
         AlloyRenderer.UploadLocalCubes(_loc.CubeTex, _loc.CubeLight, _loc.CubePlane, _loc.CubeCount,
-                                          _loc.CubeSoft, _loc.CubeDynPage, _loc.CubeFade);
+                                          _loc.CubeSoft, _loc.CubePcss, _loc.CubeDynPage, _loc.CubeFade, _loc.CubeFloor);
 
         // The class's whole point, in one declaration: blending OFF, and the coverage decision made entirely
         // by the fragment stage's two discards. Depth writes come from the prepass when it ran (the colour
@@ -1456,7 +1456,7 @@ internal static unsafe partial class GrassField
             SunFocus = GlProgram.Loc(prog, "uSunFocus"), SunRadius = GlProgram.Loc(prog, "uSunRadius"),
             CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeLight = GlProgram.Loc(prog, "uLocalLight"),
             CubePlane = GlProgram.Loc(prog, "uLocalPlane"), CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
-            CubeSoft = GlProgram.Loc(prog, "uLocalSoft"),
+            CubeSoft = GlProgram.Loc(prog, "uLocalSoft"), CubeFloor = GlProgram.Loc(prog, "uLocalFloor"), CubePcss = GlProgram.Loc(prog, "uLocalPcss"),
             CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"), CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"), CubeFade = GlProgram.Loc(prog, "uLocalFade"),
         };
 
@@ -1685,6 +1685,7 @@ internal static unsafe partial class GrassField
 
     internal const string GrassFsHead = """
         #version 460 core
+        #define CX_FS 1   // #642: gl_FragCoord is in reach for the shadow lib's dither
         in vec3 vLight;
         in vec3 vWorld;
         in vec3 vNrm;

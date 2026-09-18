@@ -223,6 +223,8 @@ internal static unsafe class PostStack
     /// <summary>...with the render size apart from the display size. The stages are asked about the DISPLAY
     /// size (the taa history lives there); the ping-pong is at render size only when the taa stage is live
     /// and the dial is on, so a frame whose taa stage is not ready falls back to the bilinear upscale.</summary>
+    /// <summary>#642: whether the taa stage ran this frame -- the receiver dithers only when something integrates it.</summary>
+    internal static bool TaaLive;
     internal static uint Begin(int rw, int rh, int dw, int dh)
     {
         _pending = 0; Upsampling = false;
@@ -236,6 +238,7 @@ internal static unsafe class PostStack
             if (st.Live) { _pending++; if (st.Name == "taa") taaLive = true; }
         }
         if (_pending == 0) return 0;
+        TaaLive = taaLive;
         Upsampling = taaLive && PostChain.TaaUpsample && (rw != dw || rh != dh);
         if (!EnsureTargets(Upsampling ? rw : dw, Upsampling ? rh : dh)) { _pending = 0; Upsampling = false; return 0; }
         AttachWrite(_tex0);

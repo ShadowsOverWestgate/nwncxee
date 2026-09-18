@@ -85,6 +85,12 @@ internal static class TextureSlots
     internal const uint CoverEsm = SnapshotDepth;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
+    /// <summary>#642: the two shadow cube arrays again, through a sampler object with no compare mode, for the
+    /// receiver's blocker search. Past the 0..15 budget on purpose: every unit below is spent, and every driver
+    /// Alloy has met reports 32 per stage. The lib binds them by <c>layout(binding)</c>; the bind site asks
+    /// the driver once and leaves the search off (uLocalPcss.x = 0) where it is short -- the declaration
+    /// stays, so a strict-16 driver would fail the lit link, which the limits line names.</summary>
+    internal const uint LocalShadowRaw = 16, LocalShadowDynRaw = 17;
     /// <summary>#379 follow-up: the SAME prepass depth, on the same unit, read by the LIT stage -- so a
     /// fragment can ask whether the visibility at its pixel was computed from ITS OWN surface. Under #119 the
     /// prepass and the colour pass compute gl_Position character-for-character, so a prepassed fragment's
@@ -137,6 +143,10 @@ internal static class TextureSlots
           $"{LocalShadow} uLocalShadow");
         E(AlloyLights.LocalShadowLib.Contains("uniform samplerCubeArrayShadow uLocalDynShadow;"),
           $"{LocalShadowDyn} uLocalDynShadow");
+        E(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowRaw}) uniform samplerCubeArray uLocalShadowRaw;"),
+          $"{LocalShadowRaw} uLocalShadowRaw");
+        E(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowDynRaw}) uniform samplerCubeArray uLocalDynShadowRaw;"),
+          $"{LocalShadowDynRaw} uLocalDynShadowRaw");
         E(AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunDynShadow;"),
           $"{SunShadowDyn} uSunDynShadow");
         for (int i = 0; i < MapSamplers.Length; i++)

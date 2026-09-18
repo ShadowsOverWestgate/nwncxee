@@ -190,8 +190,8 @@ public sealed unsafe partial class AlloyRenderer
     /// the receiver never re-derives them from the live light, which is what keeps a carried torch's shadow
     /// attached to the torch. Same freshness gate as the cascades.</summary>
     internal static void UploadLocalCubes(in LitLoc L)
-        => UploadLocalCubes(L.CubeTex, L.CubeLight, L.CubePlane, L.CubeCount, L.CubeSoft,
-                            L.CubeDynPage, L.CubeFade);
+        => UploadLocalCubes(L.CubeTex, L.CubeLight, L.CubePlane, L.CubeCount, L.CubeSoft, L.CubePcss,
+                            L.CubeDynPage, L.CubeFade, L.CubeFloor);
 
     /// <summary>#121: point the lit program at the IBL probe, or tell it there is nothing to sample
     /// (<c>uProbeMips</c> 0). Unbinding rather than leaving the cube bound during a capture is not
@@ -275,11 +275,38 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1i(locCount, n);
     }
 
+    /// <summary>#642: the no-compare sampler the receiver's blocker search reads the cube arrays through
+    /// (<see cref="TextureSlots.LocalShadowRaw"/>). 0 = the driver is short of fragment units or sampler
+    /// objects, and the search stands down; asked once.</summary>
+    private static uint _rawSampler;
+    private static bool _rawProbed;
+    private static void ProbeRawSampler()
+    {
+        _rawProbed = true;
+        int units = 0; Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &units);
+        if (units <= (int)TextureSlots.LocalShadowDynRaw || Gl.GenSamplers == null || Gl.SamplerParameteri == null || Gl.BindSampler == null)
+        { _log?.Info($"AlloyRenderer: shadow blocker search OFF -- {units} fragment texture units, needs {TextureSlots.LocalShadowDynRaw + 1}"); return; }
+        uint s; Gl.GenSamplers(1, &s);
+        Gl.SamplerParameteri(s, Gl.TEXTURE_COMPARE_MODE, 0);   // GL_NONE: a depth, not a verdict
+        Gl.SamplerParameteri(s, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
+        Gl.SamplerParameteri(s, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
+        Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+        Gl.BindSampler(TextureSlots.LocalShadowRaw, s); Gl.BindSampler(TextureSlots.LocalShadowDynRaw, s);
+        _rawSampler = s;
+    }
+
     /// <summary>#127: the local-cube receiver's uniforms, into a named program's locations.</summary>
-    internal static void UploadLocalCubes(int locTex, int locLight, int locPlane, int locCount, int locSoft,
-                                          int locDynPage, int locFade)
+    internal static void UploadLocalCubes(int locTex, int locLight, int locPlane, int locCount, int locSoft, int locPcss,
+                                          int locDynPage, int locFade, int locFloor)
     {
         if (locCount < 0) return;
+        if (!_rawProbed) ProbeRawSampler();
+        if (locFloor >= 0) Gl.Uniform1f(locFloor, AlloyLights.ShadowFloor);
+        // #642: source radius (0 = no raw view, no search), temporal phase (golden-ratio turns per frame, 0
+        // with no taa to integrate it), disc taps
+        if (locPcss >= 0) Gl.Uniform4f(locPcss, _rawSampler != 0 ? AlloyLights.ShadowSource : 0f,
+                                       PostStack.TaaLive ? (_frameSeq * 0.618034f) % 1f : 0f, Shadows.Taps.V, 0f);
         // #139: the softness pair goes out even when there are no cubes -- it is program state, not per-cube
         // state, and a program that only ever sees the no-cubes path would otherwise keep the zeroes.
         // #326: pixels -> world radius per unit view depth, so the shader compares its disc against the
@@ -294,6 +321,13 @@ public sealed unsafe partial class AlloyRenderer
         // with no movers (or a session with no pool) reads 0 and the receiver stays static-only there.
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeDynUnit);
         Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeDynTex);
+        if (_rawSampler != 0)
+        {   // #642: the same two arrays on the raw units; the sampler object bound there strips the compare
+            Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.LocalShadowRaw);
+            Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeTex);
+            Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.LocalShadowDynRaw);
+            Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeDynTex);
+        }
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
         Gl.Uniform1i(locTex, (int)CubeUnit);
         fixed (float* l = CasterPass.CubeLight) Gl.Uniform4fv(locLight, n, l);

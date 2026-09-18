@@ -17,10 +17,10 @@ internal static class Shadows
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled, SunDyn, Casters, Gather, Receiver, Rebake, Split, Layered, RefreshAll,
                                         DynEvents, ItemDirty, FlipCollect, MaskH, Diag, LightDiag, TorchDiag, Trace;
-    internal static readonly Knob<float> Dist, Soft, Contact, DiscPx, Near, CsmBias, ContactFar, MaskHoles, MaskGraded, FocusDist;
+    internal static readonly Knob<float> Dist, Soft, Floor, Contact, DiscPx, Near, CsmBias, ContactFar, MaskHoles, MaskGraded, FocusDist;
     internal static readonly Knob<int> Cascades, Size, Cubes, CubeSize, DynSize, DynCount, Cap, ContactSteps, Fade, FadeSlots,
                                        Mask, MaskDither, StaticCap, DynHold, DynFull, SunFull, SunLatch, DynRanks,
-                                       Mode, Stage, LightCull;
+                                       Mode, Stage, LightCull, Taps;
     internal static readonly KnobButton Movers;
 
     static Shadows()
@@ -44,8 +44,10 @@ internal static class Shadows
                          help: "How many nearby lights cast shadows at once. Lower on a small card.");
         CubeSize = G.Dropdown("cubesize", "Point-light shadow resolution", new[] { 128, 256, 512, 1024, 2048 }, 512, effect: Effect.Restart,
                               help: "Per-face size of each light's shadow cube.");
-        Soft = G.Slider("soft", "Shadow softness", 0f, 4f, 0.25f, 1.5f,
-                        help: "Blur radius of point-light shadows. 0 is hard-edged and cheapest.");
+        Soft = G.Slider("soft", "Shadow softness", 0f, 16f, 0.25f, 4f,
+                        help: "Widest blur of point-light shadows; the blur narrows toward the caster's contact. 0 is hard-edged and cheapest.");
+        Floor = G.Slider("floor", "Shadow floor", 0f, 1f, 0.05f, 0.35f,
+                         help: "How much of a point light still reaches its own shadow, tinted by the light. 0 = black cutouts.");
         G.Section("Contact");
         Contact = G.Slider("contact", "Contact shadows", 0f, 1f, 0.05f, 0.35f, "m",
                            help: "Short screen-space shadows where objects meet the ground. 0 is off.");
@@ -58,6 +60,8 @@ internal static class Shadows
         G.Section("Point lights");
         DiscPx = G.Slider("discpx", "Softness cutoff", 0f, 16f, 0.5f, 0f, "px", Tier.Advanced,
                           help: "Below this screen radius the blur stands down. 0 = never (consistent softness at every distance).");
+        Taps = G.Slider("taps", "Shadow blur taps", 0, 16, 1, 8, tier: Tier.Advanced,
+                        help: "Disc taps per shadowing light. 0 = no blur.");
         Cap = G.Slider("cap", "Shadow taps per pixel", 0, 2, 1, 2, tier: Tier.Advanced, help: "0 = every light.");
         Near = G.Slider("near", "Self-shadow skip", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced,
                         help: "Carried lights don't shadow their bearer inside this radius.");

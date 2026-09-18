@@ -60,7 +60,7 @@ public sealed unsafe partial class AlloyRenderer
         _watSunDynTex = GlProgram.Loc(prog, "uSunDynShadow"); _watSunDyn = GlProgram.Loc(prog, "uSunDyn");
         _watCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _watCubeLight = GlProgram.Loc(prog, "uLocalLight");
         _watCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _watCubeCount = GlProgram.Loc(prog, "uLocalCubes");
-        _watCubeSoft = GlProgram.Loc(prog, "uLocalSoft");
+        _watCubeSoft = GlProgram.Loc(prog, "uLocalSoft"); _watCubeFloor = GlProgram.Loc(prog, "uLocalFloor"); _watCubePcss = GlProgram.Loc(prog, "uLocalPcss");
         _watCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _watCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"); _watCubeFade = GlProgram.Loc(prog, "uLocalFade");
         _watCapture = GlProgram.Loc(prog, "uCapture");
         _watFbColor = GlProgram.Loc(prog, "uFbColor"); _watFbDepth = GlProgram.Loc(prog, "uFbDepth");
@@ -372,7 +372,7 @@ public sealed unsafe partial class AlloyRenderer
         L.SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"); L.SunDyn = GlProgram.Loc(prog, "uSunDyn");
         L.CubeTex = GlProgram.Loc(prog, "uLocalShadow"); L.CubeLight = GlProgram.Loc(prog, "uLocalLight");
         L.CubePlane = GlProgram.Loc(prog, "uLocalPlane"); L.CubeCount = GlProgram.Loc(prog, "uLocalCubes");
-        L.CubeSoft = GlProgram.Loc(prog, "uLocalSoft");
+        L.CubeSoft = GlProgram.Loc(prog, "uLocalSoft"); L.CubeFloor = GlProgram.Loc(prog, "uLocalFloor"); L.CubePcss = GlProgram.Loc(prog, "uLocalPcss");
         L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); L.CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"); L.CubeFade = GlProgram.Loc(prog, "uLocalFade");
         L.Probe = GlProgram.Loc(prog, "uProbe"); L.ProbeMips = GlProgram.Loc(prog, "uProbeMips");
         L.ProbeGain = GlProgram.Loc(prog, "uProbeGain");

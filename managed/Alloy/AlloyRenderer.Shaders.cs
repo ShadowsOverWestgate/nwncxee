@@ -1003,6 +1003,7 @@ public sealed unsafe partial class AlloyRenderer
     /// (#122).</para></summary>
     internal const string OwnedLitFsHead = """
         #version 460 core
+        #define CX_FS 1   // #642: gl_FragCoord is in reach for the shadow lib's dither
         in vec2 vUV;
         in vec3 vWorld;
         in vec3 vNrm;
