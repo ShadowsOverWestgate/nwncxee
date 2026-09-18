@@ -379,3 +379,10 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Instance bake** — the baked light of one placed instance: the mesh's charts sized from the
   instance's world-space area (visual transforms included) and packed per instance into atlas pages.
   Fifty pillars are fifty rectangles, never one shared bake.
+- **Area-loaded hold** — the client keeps the server's "place the player" message (the
+  area-loaded send) back until the lightmap bake has landed, so the player never stands in a
+  world that is still baking. Ends at the first of: bake landed, the player skips, the hard cap.
+  Avoid: loading delay, stall.
+- **Hold budget** — the `lightmap.hold` seconds after which the hold offers a skip. 0 = no hold.
+- **Hard cap** — the fixed ceiling past which the hold always releases, set by the server's own
+  readiness deadline. Not a knob: a safety ceiling nobody tunes.
