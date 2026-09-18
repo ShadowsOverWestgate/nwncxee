@@ -455,8 +455,9 @@ public sealed unsafe partial class AlloyRenderer
         // against a rest pose it never draws in. Water, blended and the sky classes are out for a different
         // reason: they are order- and coverage-sensitive, and a thinned silhouette there is a visible seam
         // rather than a distant saving. Non-triangle primitives have no edges to collapse.
-        if (!kept && (_oTileGob[i] || c.Gob == IntPtr.Zero) && c.Cls <= (int)AlloyClass.Cutout
-            && !_vSkin[v] && !PartTable.IsDangly(c.Tri) && !ShaderFeatures.OutOfPrepass(c.Feat))
+        // #673: the charter first (it carries its own LOD runs); the plain LOD offer only where it did not claim.
+        if (!kept && StaticAtEnroll(c.Cls, c.Gob, _oTileGob[i], c.Mx, _vSkin[v], PartTable.IsDangly(c.Tri), c.Feat) == 0
+            && !OfferChart(c.Vdo, c.Item, c.Prim, v))
             OfferLod(c.Vdo, c.Item, c.Prim, v);
         for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBboxMin + b * 4);   // #336: +0x64..+0x78
         // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed

@@ -150,6 +150,33 @@ public sealed unsafe partial class AlloyRenderer
         MeshLod.Offer(s, item, elemHost, first, count, vertHost, in _vPos[s], baseVertex);
     }
 
+    /// <summary>#673: hand a newly enrolled STATIC part's range to <see cref="MeshChart"/> -- positions, normals,
+    /// UVs and indices off the pools' host shadows. True when the charter claimed it (queued or already on
+    /// file), in which case the plain LOD offer is not made: a charted mesh carries its own LOD runs.</summary>
+    private static bool OfferChart(IntPtr vdoPtr, int item, int prim, int s)
+    {
+        if (_primTable == null || _primTable[prim] != Gl.TRIANGLES) return false;
+        if (!_vLit[s]) { if (Lightmap.G.Master!.V) MeshChart.Skip(MeshChart.Refusal.Unlit); return false; }
+        var vdo = new VdoRef(vdoPtr);
+        long elem = vdo.ElemItems, vert = vdo.VertItems;
+        if (elem == 0 || vert == 0 || item < 0 || item >= vdo.ElemCount || item >= vdo.VertCount) return false;
+        int count = *(int*)(elem + item * 8 + 4);
+        if (!MeshChart.Wanted(s, item, count)) return false;
+        long first = (uint)*(int*)(elem + item * 8);
+        int baseVertex = *(int*)(vert + item * 8);
+        byte* elemHost = OwnedBuffers.PoolHost(vdo.ElemToken);
+        byte* posHost = OwnedBuffers.PoolHostByName(_vPos[s].Buf, vdo.VertToken, vdo.DynToken);
+        byte* nrmHost = OwnedBuffers.PoolHostByName(_vNrm[s].Buf, vdo.VertToken, vdo.DynToken);
+        byte* uvHost = _vUv[s].Present ? OwnedBuffers.PoolHostByName(_vUv[s].Buf, vdo.VertToken, vdo.DynToken) : null;
+        if (elemHost == null || posHost == null || nrmHost == null) return false;
+        MeshChart.Offer(s, item, elemHost, first, count, posHost, in _vPos[s], nrmHost, in _vNrm[s], uvHost, in _vUv[s], baseVertex);
+        return true;
+    }
+
+    /// <summary>#673: the same bit for a batch drawing from <see cref="MeshChart"/>'s arenas -- its own vertex
+    /// buffer as well as its own element buffer, one VAO for every charted part.</summary>
+    internal const int ChartVaoBit = 1 << 21;
+
     /// <summary>Set on the slot index a batch carries when that batch draws from <see cref="MeshLod"/>'s
     /// element buffer rather than the engine's pool. It rides the slot rather than a field of its own so the
     /// batch cut splits on it for free -- a LOD run and a full-detail run are two element buffers, and one
@@ -187,6 +214,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         ForgetLodVao(v);
         MeshLod.ForgetSlot(v);
+        MeshChart.ForgetSlot(v);
     }
 
     /// <summary>#284: RESIDENCY IS ALLOY'S TO DRIVE, part two. A <c>VertexDataObject</c>'s GL VAO is created
@@ -571,9 +599,9 @@ public sealed unsafe partial class AlloyRenderer
     /// resident before the first present) draws correctly and is simply not counted.</summary>
     private static uint VaoName(int v, int cls)
     {
-        bool lod = (v & LodVaoBit) != 0;
-        v &= LodVaoBit - 1;
+        bool lod = (v & LodVaoBit) != 0, chart = (v & ChartVaoBit) != 0;
+        v &= ~(LodVaoBit | ChartVaoBit);
         if (_vOwned[v]) _ownedClsMask |= 1 << cls;
-        return lod ? _vVaoLod[v] : _vVao46[v];
+        return chart ? MeshChart.Vao : lod ? _vVaoLod[v] : _vVao46[v];
     }
 }

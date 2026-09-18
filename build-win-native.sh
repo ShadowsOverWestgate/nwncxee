@@ -24,6 +24,13 @@ fi
 echo ">> compiling the version.dll proxy half (native/bootstrap_win.c -> .obj)..."
 # Dash flags: Git Bash rewrites /nologo-style args into C:/Program Files/Git/nologo paths.
 cl -nologo -c -O2 -GS- native/bootstrap_win.c -Fobuild/bootstrap_win.obj
+# #673: xatlas for version.dll (see build.sh for the flags' reasons); /MT to match NativeAOT's static CRT.
+if [ ! -f build/cxatlas.lib ] || [ native/xatlas/xatlas.cpp -nt build/cxatlas.lib ] || [ native/cxatlas.cpp -nt build/cxatlas.lib ]; then
+  echo ">> building xatlas (cxatlas.lib, MSVC)..."
+  cl -nologo -c -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG -DXA_MULTITHREADED=0 native/xatlas/xatlas.cpp -Fobuild/xatlas_win.obj
+  cl -nologo -c -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG -DXA_MULTITHREADED=0 native/cxatlas.cpp -Fobuild/cxatlas_win.obj
+  lib -nologo -out:build/cxatlas.lib build/xatlas_win.obj build/cxatlas_win.obj
+fi
 
 # tools/abi/check-win-symbols.py needs llvm-undname and a real nwmain.exe; a CI runner has neither.
 echo ">> skipping the symbol check (no nwmain.exe here; build-win.sh runs it on the dev box)" >&2

@@ -764,22 +764,29 @@ public sealed unsafe partial class AlloyRenderer
             // slot index (LodVaoBit) -- that is what cuts the batch, because one multidraw cannot straddle
             // two element buffers.
             nint idxOff = _cOff[i];
+            int baseVertex = _cBase[i];
             int vKey = v;
+            int lvl = 0;
             if (MeshLod.Armed && _lodScale > 0f)
             {
                 float* lsp = sphAll + (long)i * 4;
                 if (lsp[3] < NeverCull)
                 {
                     float dxe = lsp[0] - _eyePos.X, dye = lsp[1] - _eyePos.Y, dze = lsp[2] - _eyePos.Z;
-                    int lvl = MeshLod.Level(lsp[3], MathF.Sqrt(dxe * dxe + dye * dye + dze * dze), _lodScale);
-                    if (lvl > 0 && !VdoDirty(v) && !ItemMoved(v, _oItem[src])
-                        && MeshLod.Range(v, _oItem[src], lvl, out nint lo, out int lc) && LodVao(v) != 0)
-                    { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; MeshLod.Drew(lvl, lc); }
-                    else MeshLod.Drew(0, idxCount);
+                    lvl = MeshLod.Level(lsp[3], MathF.Sqrt(dxe * dxe + dye * dye + dze * dze), _lodScale);
                 }
-                else MeshLod.Drew(0, idxCount);
             }
-            _oLodBit[i] = vKey & LodVaoBit;
+            // #673: a charted mesh is the whole geometry (split vertices), picked at every level -- see MeshChart.Range.
+            bool chartArmed = MeshChart.Armed, picked = false;
+            if ((chartArmed || lvl > 0) && !VdoDirty(v) && !ItemMoved(v, _oItem[src]))
+            {
+                if (chartArmed && MeshChart.Range(v, _oItem[src], lvl, out int cb, out nint co, out int cc))
+                { idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc); picked = true; }
+                else if (lvl > 0 && MeshLod.Range(v, _oItem[src], lvl, out nint lo, out int lc) && LodVao(v) != 0)
+                { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; picked = true; }
+            }
+            if (MeshLod.Armed) MeshLod.Drew(picked ? lvl : 0, idxCount);
+            _oLodBit[i] = vKey & (LodVaoBit | ChartVaoBit);
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
             // but so the depth prepass can drop a whole batch: a displacing feature must not write its
             // undisplaced depth, and the prepass has no per-draw granularity.
@@ -847,7 +854,7 @@ public sealed unsafe partial class AlloyRenderer
             if (AlloyCensus.WatchTex[_oEntry[i]]) _watchSubmitted++;
             _dCount[n] = idxCount;
             _dOff[n] = idxOff;
-            _dBase[n] = _cBase[i];
+            _dBase[n] = baseVertex;
             // #242: the record this draw reads lives at the OWNERSHIP slot and outlives the frame; the draw
             // order does not, so the draw carries the slot rather than the record.
             _dSlot[n] = i;

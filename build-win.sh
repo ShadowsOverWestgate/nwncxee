@@ -63,6 +63,14 @@ fi
 echo ">> compiling the version.dll proxy half (native/bootstrap_win.c -> .obj)..."
 # Linked INTO cx_managed.dll by the publish below, which is why it is compiled first.
 clang-cl -c -O2 -GS- native/bootstrap_win.c -Fo:build/bootstrap_win.obj
+# #673: xatlas for version.dll, the same flags as build.sh's (see there); /MT to match NativeAOT's static CRT.
+if [ ! -f build/cxatlas.lib ] || [ native/xatlas/xatlas.cpp -nt build/cxatlas.lib ] || [ native/cxatlas.cpp -nt build/cxatlas.lib ]; then
+  echo ">> building xatlas (cxatlas.lib, clang-cl cross)..."
+  WINC="/I$WABS/inc/um /I$WABS/inc/shared /I$WABS/inc/ucrt /I$WABS/inc/msvc -Xclang -ivfsoverlay -Xclang $WABS/vfs.yaml -w"
+  clang-cl -c -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG -DXA_MULTITHREADED=0 $WINC native/xatlas/xatlas.cpp -Fo:build/xatlas_win.obj
+  clang-cl -c -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG -DXA_MULTITHREADED=0 $WINC native/cxatlas.cpp -Fo:build/cxatlas_win.obj
+  llvm-lib -out:build/cxatlas.lib build/xatlas_win.obj build/cxatlas_win.obj
+fi
 
 # #456: the Windows symbol gate runs BEFORE the build, not as a report nobody reads. It checks every Nm row
 # names a real export, every At row lands in the image, and -- the clause the #456 crash bought -- that every

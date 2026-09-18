@@ -16,6 +16,6 @@ internal static class RenderCommands
         _ = Renderer.G;
         _ = Lighting.G;
         _ = Shadows.G;
-        _ = GpuStatic.G; _ = Grass.G; _ = Post.G; _ = Ao.G; _ = Gi.G; _ = Lod.G; _ = Fog.G; _ = Water.G; _ = Effects.G; _ = Particles.G; _ = Dangly.G; _ = Weather.G;
+        _ = GpuStatic.G; _ = Grass.G; _ = Post.G; _ = Ao.G; _ = Gi.G; _ = Lod.G; _ = Fog.G; _ = Water.G; _ = Effects.G; _ = Particles.G; _ = Dangly.G; _ = Weather.G; _ = Lightmap.G;
     }
 }

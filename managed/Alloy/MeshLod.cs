@@ -54,16 +54,16 @@ internal static unsafe class MeshLod
     /// <summary>Detail levels: the engine's own run, then the two generated ones.</summary>
     internal const int Levels = 3;
     /// <summary>Triangle fraction each generated level aims at.</summary>
-    private const float Target1 = 0.5f, Target2 = 0.2f;
+    internal const float Target1 = 0.5f, Target2 = 0.2f;
     /// <summary>Error budget per level as a fraction of the mesh's squared bounding-box diagonal. A collapse
     /// past it is refused, so a mesh whose shape cannot survive thinning keeps the triangles it has.</summary>
-    private const float Error1 = 0.0004f, Error2 = 0.004f;
+    internal const float Error1 = 0.0004f, Error2 = 0.004f;
     /// <summary>Triangles under which a mesh is not worth a level of its own: two extra runs and a batch cut
     /// cost more than the triangles they save.</summary>
     internal const int MinTris = 200;
     /// <summary>A generated run has to retire this fraction of the triangles to be kept at all; otherwise the
     /// level is left absent and the draw stays on the engine's range.</summary>
-    private const float MinSaving = 0.15f;
+    internal const float MinSaving = 0.15f;
 
     /// <summary>Meshes waiting on the worker. The queue IS the budget: a full queue refuses the offer without
     /// creating a table entry, so the next enrollment offers the same mesh again.</summary>

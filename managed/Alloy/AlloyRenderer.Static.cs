@@ -93,38 +93,61 @@ public sealed unsafe partial class AlloyRenderer
     /// engine read, so no new <see cref="EngineLayout"/> row.
     /// <para>What it includes: tileset geometry, which is a part with no gob at all
     /// (<see cref="AlloyCandidate.Gob"/>: "zero for static geometry") and no matrix class, so
-    /// <c>WriteStable</c> stamped it the identity and there is no transform to re-read. What it excludes:
-    /// every instanced part (creatures, placeables, doors -- their colour folds and matrices are per-frame by
-    /// construction), skinned and dangly meshes, a part whose VDO item committed vertices, a fading or
-    /// dissolving part, a part below full alpha, a cycling texture, and the blended/water/additive classes,
-    /// which are not on the compacting indirect path.</para></summary>
+    /// <c>WriteStable</c> stamped it the identity and there is no transform to re-read -- and a Static
+    /// placeable IS tile geometry here (its model is <c>Scene::SpawnTile</c>'d, #673). What it excludes:
+    /// every instanced part (creatures, dynamic placeables, doors -- their colour folds and matrices are
+    /// per-frame by construction), skinned and dangly meshes, a part whose VDO item committed vertices, a
+    /// fading or dissolving part, a part below full alpha, a cycling texture, and the blended/water/additive
+    /// classes, which are not on the compacting indirect path.</para></summary>
     private static bool StaticSlot(int i, int cls, bool dis, float dissolve, float alpha)
         => StaticShape(i, cls, dis, dissolve, alpha)
            && !VdoDirty(_oVao[i]) && !ItemMoved(_oVao[i], _oItem[i]);
 
     /// <summary>The membership test's pure half: everything answerable from the slot's own columns. Split out
     /// so <see cref="StaticSelfCheck"/> can exercise the decision table headless -- the two VDO terms above it
-    /// read the engine's commit ledger, which has no meaning before a frame has run.</summary>
+    /// read the engine's commit ledger, which has no meaning before a frame has run. Its enrollment-stable
+    /// terms are <see cref="StaticAtEnroll"/>'s, the same function the charter's offer asks (#655: one predicate
+    /// over two inputs); what follows is the per-frame refinement.</summary>
     private static bool StaticShape(int i, int cls, bool dis, float dissolve, float alpha)
     {
-        int why;
-        if (cls > (int)AlloyClass.Cutout) why = 0;
-        else if (!(_oGob[i] == IntPtr.Zero || _oTileGob[i])) why = 1;
-        else if (_oMx[i]) why = 2;
-        else if (_oDangly[i] || _oBone[i] >= 0 || _vSkin[_oVao[i]]) why = 3;
-        else if (_oFading[i] || dis || dissolve != 0f || alpha != 1f) why = 4;
-        else if (_recCtl[i] != IntPtr.Zero || _recTexStale[i]) why = 5;
-        else if (_cGen[i] != _recEpoch) why = 6;
+        // feat is not asked here: a displacing feature moves VERTICES in the vertex stage, never the record,
+        // so the freeze is sound for it (224 restages/frame in the first live log when it was) -- the offer
+        // side refuses it because a simplified or charted copy of a displaced mesh is thinned at rest pose.
+        int why = StaticAtEnroll(cls, _oGob[i], _oTileGob[i], _oMx[i], _vSkin[_oVao[i]], _oDangly[i], 0);
+        if (why != 0) why--;
+        else if (_oBone[i] >= 0) why = 3;
+        else if (_oFading[i] || dis || dissolve != 0f || alpha != 1f) why = 5;
+        else if (_recCtl[i] != IntPtr.Zero || _recTexStale[i]) why = 6;
+        else if (_cGen[i] != _recEpoch) why = 7;
         else return true;
         _stWhy[why]++;
         return false;
     }
 
+    /// <summary>#655/#673: the enrollment-stable half of the static set, shared by <see cref="StaticShape"/>
+    /// (per frame) and the enrollment offer (once per newcomer). 0 = static shape; else the refusing term,
+    /// 1-based in <see cref="StWhyName"/>'s order. What it admits: tile geometry -- no gob, or a tile gob,
+    /// which since #673's decompile of <c>CNWCArea::AddPlaceableObjectStatic</c> is known to INCLUDE every
+    /// Static placeable: the engine spawns its model through <c>Scene::SpawnTile</c>, not through the
+    /// object's anim base, so the gob is a tile gob and there is no placeable to detect
+    /// (docs/research/static-placeable-rule.md, amendment). Never a skinned, dangly or displacing mesh,
+    /// whose vertices move under a record that does not; the feature term is the offer side's alone (see
+    /// <see cref="StaticShape"/> for why the freeze passes 0).</summary>
+    internal static int StaticAtEnroll(int cls, IntPtr gob, bool tileGob, bool mx, bool skin, bool dangly, int feat)
+    {
+        if (cls > (int)AlloyClass.Cutout) return 1;
+        if (!(gob == IntPtr.Zero || tileGob)) return 2;
+        if (mx) return 3;
+        if (skin || dangly) return 4;
+        if (ShaderFeatures.OutOfPrepass(feat)) return 5;
+        return 0;
+    }
+
     /// <summary>#660: which <see cref="StaticShape"/> term refused a slot first this period, in the order the
-    /// test asks them (class, gob, matrix, posed, transient, texture, range). The instrument for a freeze
-    /// that admits nothing.</summary>
-    private static readonly long[] _stWhy = new long[7];
-    private static readonly string[] StWhyName = { "class", "gob", "mx", "posed", "transient", "tex", "range" };
+    /// test asks them (class, gob, matrix, posed, feature, transient, texture, range). The instrument for a
+    /// freeze that admits nothing.</summary>
+    private static readonly long[] _stWhy = new long[8];
+    private static readonly string[] StWhyName = { "class", "gob", "mx", "posed", "feat", "transient", "tex", "range" };
 
     private static string StaticWhy()
     {
@@ -178,9 +201,10 @@ public sealed unsafe partial class AlloyRenderer
         const int i = MaxOwned - 1;
         IntPtr gob = _oGob[i]; bool mx = _oMx[i], dangly = _oDangly[i], fading = _oFading[i], texStale = _recTexStale[i];
         int bone = _oBone[i], vao = _oVao[i], item = _oItem[i], cgen = _cGen[i];
-        IntPtr ctl = _recCtl[i];
+        IntPtr ctl = _recCtl[i]; float feat = _oFeat[i * 4];
         _oGob[i] = IntPtr.Zero; _oMx[i] = false; _oDangly[i] = false; _oFading[i] = false; _recTexStale[i] = false;
         _oBone[i] = -1; _oVao[i] = 0; _oItem[i] = 0; _cGen[i] = _recEpoch; _recCtl[i] = IntPtr.Zero;
+        _oFeat[i * 4] = 0f;
         bool baseline = StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f);
         E(baseline, "a gobless, unposed, opaque, fully-opaque part is not in the static set");
         E(!StaticShape(i, (int)AlloyClass.Blended, false, 0f, 1f), "a blended part is in the static set");
@@ -192,7 +216,13 @@ public sealed unsafe partial class AlloyRenderer
         E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "an instanced part is in the static set");
         _oGob[i] = IntPtr.Zero; _oMx[i] = true;
         E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a matrix-class part is in the static set");
-        _oMx[i] = false; _oBone[i] = 0;
+        _oMx[i] = false;
+        E(StaticAtEnroll((int)AlloyClass.Opaque, IntPtr.Zero, false, false, false, false, (int)ShaderFeature.WindGrass) == 5,
+          "a displacing part is offered to the charter");
+        _oFeat[i * 4] = (int)ShaderFeature.WindGrass;
+        E(StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a displacing part is refused the freeze (its record does not move)");
+        _oFeat[i * 4] = 0f;
+        _oBone[i] = 0;
         E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a posed skinmesh is in the static set");
         _oBone[i] = -1; _oDangly[i] = true;
         E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a dangly part is in the static set");
@@ -220,6 +250,7 @@ public sealed unsafe partial class AlloyRenderer
 
         _oGob[i] = gob; _oMx[i] = mx; _oDangly[i] = dangly; _oFading[i] = fading; _recTexStale[i] = texStale;
         _oBone[i] = bone; _oVao[i] = vao; _oItem[i] = item; _cGen[i] = cgen; _recCtl[i] = ctl;
+        _oFeat[i * 4] = feat;
         log.Info(ok ? "AlloyRenderer.StaticSelfCheck: passed" : "AlloyRenderer.StaticSelfCheck: FAILED");
         return ok;
     }

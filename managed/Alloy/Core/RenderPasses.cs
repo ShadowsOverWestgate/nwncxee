@@ -59,6 +59,17 @@ internal static class RenderPasses
             Stats = MeshLod.Stats,
         }, log);
 
+        // #673: the charter -- MeshLod's sibling with its own vertex arena and a disk ledger. Same three edges.
+        r.Register(new PassLifecycle
+        {
+            Name = "meshchart",
+            Attach = MeshChart.Attach,
+            SelfCheck = l => MeshChart.SelfCheck(l),
+            Revoke = MeshChart.Revoke,
+            ContextLost = MeshChart.ContextLost,
+            Stats = MeshChart.Stats,
+        }, log);
+
         // #129: FrameSnapshot first, because FrameGraph's own check asserts that the ownable-bucket list AGREES
         // with whether Alloy water can draw -- so water's boot knobs have to be read before that check runs.
         r.Register(new PassLifecycle

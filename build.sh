@@ -53,6 +53,16 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 
+# #673: the vendored xatlas + its C shim, static and PIC like funchook (DirectPInvoke "cxatlas"). Rebuilt
+# only when a source is newer. XA_MULTITHREADED=0 keeps a mesh's chart byte-identical across runs and keeps
+# libstdc++ out of the link; -fno-exceptions/-fno-rtti for the same reason.
+if [ ! -f build/libcxatlas.a ] || [ native/xatlas/xatlas.cpp -nt build/libcxatlas.a ] || [ native/cxatlas.cpp -nt build/libcxatlas.a ]; then
+  echo ">> building xatlas (libcxatlas.a)..."
+  c++ -std=c++14 -O2 -fPIC -fno-exceptions -fno-rtti -DNDEBUG -DXA_MULTITHREADED=0 -c native/xatlas/xatlas.cpp -o build/xatlas.o
+  c++ -std=c++14 -O2 -fPIC -fno-exceptions -fno-rtti -DNDEBUG -DXA_MULTITHREADED=0 -c native/cxatlas.cpp -o build/cxatlas.o
+  rm -f build/libcxatlas.a && ar rcs build/libcxatlas.a build/xatlas.o build/cxatlas.o
+fi
+
 echo ">> building managed lib (C# NativeAOT -> cx_managed.so)..."
 CX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
 # Quiet on success, but NEVER swallow a failure: discarding stderr here once hid a compile error behind a

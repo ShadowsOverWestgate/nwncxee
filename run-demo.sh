@@ -49,6 +49,11 @@ fi
 if grep -qE 'SelfCheck.*FAIL' "$LOG"; then
   echo ">> FAIL: a SelfCheck suite failed:"; grep -E 'SelfCheck.*FAIL' "$LOG"; exit 1
 fi
+# A suite that THROWS takes its service's whole Initialize with it and prints no FAILED line -- #673 lost 29
+# SelfCheck lines to an ArgumentOutOfRange and the gate above went green.
+if grep -q 'init threw' "$LOG"; then
+  echo ">> FAIL: a service's Initialize threw:"; grep 'init threw' "$LOG"; exit 1
+fi
 echo ">> $(grep -c 'SelfCheck' "$LOG") SelfCheck lines, none failed."
 
 # The other half of #457: the refusal itself, run for real rather than asserted in a unit. A copy of sh IS
