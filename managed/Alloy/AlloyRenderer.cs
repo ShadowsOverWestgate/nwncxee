@@ -326,7 +326,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal struct LitLoc
     {
         public int Oit, OitDim, OitBias, OitGob;
-        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect,
+        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect, AoCutout,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubeDynTex, CubeDynPage, CubeFade,
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach, Contact, ContactFar,

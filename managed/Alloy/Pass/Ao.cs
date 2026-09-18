@@ -18,11 +18,12 @@ namespace CX.Alloy;
 /// is invisible wherever the area ambient is dark -- every interior, where the light is lamps and the corners
 /// are exactly what wants occluding; measured live, with ambient at its area value the effect did not reach
 /// the frame at all. 1 (vanilla's post-multiply) is the only setting the effect is visible indoors at; 0
-/// restores the ADR's original ambient-only rule.</para></summary>
+/// restores the ADR's original ambient-only rule. <c>cutout</c>: a cutout receiver (tree canopy cards a few
+/// centimetres apart) reads the card in front as a wall and wears its leaf silhouette; below 1 softens that.</para></summary>
 internal static class Ao
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<float> Radius, Strength, Direct, Temporal, MaxPx;
+    internal static readonly Knob<float> Radius, Strength, Direct, Cutout, Temporal, MaxPx;
     internal static readonly Knob<int> Dirs, Steps;
     internal static readonly Knob<bool> Blur, On;
 
@@ -38,6 +39,8 @@ internal static class Ao
                             help: "Multiplied by the game's AO intensity slider.");
         Direct = G.Slider("direct", "Darken lit surfaces", 0f, 1f, 0.05f, 1f, tier: Tier.Advanced,
                           help: "0 = ambient only (invisible indoors).");
+        Cutout = G.Slider("cutout", "On cutout surfaces", 0f, 1f, 0.05f, 1f, tier: Tier.Advanced,
+                          help: "How much occlusion leaf and grass cards take: 1 = full (a card stamps its silhouette on the card behind it).");
         Temporal = G.Slider("temporal", "Temporal accumulation", 0f, 0.98f, 0.02f, 0.8f, tier: Tier.Advanced,
                             help: "0 = single frame.", changed: SsaoPass.DropHistory);
         Dirs = G.Slider("dirs", "Slices", 1, 8, 1, 1, tier: Tier.Advanced);

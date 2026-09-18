@@ -336,6 +336,7 @@ public sealed unsafe partial class AlloyRenderer
                     AlloyLights.SetDrawUniforms(L.Grid, L.Tile, L.Z, L.Falloff, L.Wrap,
                                                 L.Atten, L.Hot, L.WrapN, L.Sss, viewport, near, far, L.Reach);
                     Gl.Uniform1i(L.Viz, viz);
+                    Gl.Uniform1f(L.AoCutout, Ao.Cutout.V);
                     OitPass.Upload(L.Oit, L.OitDim, _oitOn);
                     Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
                     UploadFeatureTerms(L.Feat, viewport);

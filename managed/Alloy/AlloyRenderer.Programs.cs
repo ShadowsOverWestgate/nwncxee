@@ -379,7 +379,7 @@ public sealed unsafe partial class AlloyRenderer
         L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
         L.Capture = GlProgram.Loc(prog, "uCapture");
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
-        L.AoDirect = GlProgram.Loc(prog, "uAoDirect");
+        L.AoDirect = GlProgram.Loc(prog, "uAoDirect"); L.AoCutout = GlProgram.Loc(prog, "uAoCutout");
         L.Contact = GlProgram.Loc(prog, "uContact");
         L.ContactFar = GlProgram.Loc(prog, "uContactFar");
         L.Weather = GlProgram.Loc(prog, "uWeather"); L.WeatherLook = GlProgram.Loc(prog, "uWeatherLook");

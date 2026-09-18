@@ -469,7 +469,7 @@ internal static unsafe class SsaoPass
             E(fs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is the particle fade's (uProj[3].z / (ndc + uProj[2].z))");
             E(ShaderContract.SlotSafe(fs, "uDepth") && ShaderContract.SlotSafe(bl, "uSrc", "uDepth"), "the samplers the C# side binds are declared");
             E(EffectSsao == 1u, "FramebufferEffect 0 is SSAO (CClientOptions::SetEnableFBEffectSSAO -> SetFBEffectEnabled(0, on))");
-            E(AlloyRenderer.OwnedLitFsMain.Contains("occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;")
+            E(AlloyRenderer.OwnedLitFsMain.Contains("occl *= mix(1.0, texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r, uAlphaCut >= 0.0 ? uAoCutout : 1.0);")
               && AlloyRenderer.OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl"), "the lit stage folds it into occl, which scales the AMBIENT term");
             E(AlloyRenderer.OwnedLitFsMain.Contains("float dirOcc = mix(1.0, occl, uAoDirect);")
               && AlloyRenderer.OwnedLitFsMain.Contains("vec3 diffuse = (sun + sunSss + point) * dirOcc;"),

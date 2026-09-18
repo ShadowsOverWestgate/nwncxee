@@ -758,7 +758,8 @@ public sealed unsafe partial class AlloyRenderer
         }
         // The feature sweep: cutout batches (their holes are the colour pass's own discard, made here with the
         // same texel and threshold) and wind-displaced ones (the lit program's own vertex text displaces them
-        // identically). Roof features keep their anchor discard and player-relative clip out of it, and
+        // identically), dissolving or not -- the stage runs CxKeyhole too, off the lit vertex stage's own
+        // vWorld/vDepth, so a keyholed hedge keeps its depth (and its AO) as the camera closes in. Roof features keep their anchor discard and player-relative clip out of it, and
         // flowmap slides its uv; those three stay excluded. Depth-only LESS writes are order-independent, so
         // this runs as its own sweep under one program bind.
         GpuEnd(GpuTerm.PrepassKey);
@@ -770,7 +771,7 @@ public sealed unsafe partial class AlloyRenderer
             bool bound = false; int boundTex = -1; float boundCut = float.NaN;
             for (int g = 0; g < groups; g++)
             {
-                if (_gDis[g] || !FeatPrepassable(g)) continue;
+                if (!FeatPrepassable(g) || (_gDis[g] && !_prepassKey)) continue;
                 // #153: only lit records carry handles, and under bindless the stage reads nothing else
                 if (_bindless && !_gLit[g]) continue;
                 if (!bound)

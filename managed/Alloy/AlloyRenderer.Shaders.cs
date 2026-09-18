@@ -853,14 +853,20 @@ public sealed unsafe partial class AlloyRenderer
     internal const string DepthFeatFs = """
         #version 460 core
         in vec2 vUV;
+        in vec3 vWorld;
+        in float vDepth;
         flat in int vDraw;
 
-        """ + DrawBufDecl + IdTarget.OutDecl + """
+        """ + DrawBufDecl + FeatDecl + KeyFogDecl + IdTarget.OutDecl + """
         uniform sampler2D uTex;
         uniform float uAlphaCut;
-        uniform float uLodBias;        // #391: the SAME bias as the colour cutout, or the two tests disagree (#119)
+
+        """ + KeyholeFs + """
         void main()
         {
+            // a dissolving cutout/wind batch punches the same aperture DepthKeyFs does, so it stays in the
+            // prepass (and keeps its screen-space AO) when the camera closes in
+            if (CxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth) < 0.0) discard;
             oVisId = CxVisId(vDraw, gl_PrimitiveID);
             if (uAlphaCut < 0.0) return;
             if ((int(uDraw[vDraw].pbr.w) & 64) != 0) return;
@@ -1034,6 +1040,7 @@ public sealed unsafe partial class AlloyRenderer
         uniform vec4 uContact;         // x = march length in world units (0 = off), y = steps, z/w = uProj[2].z / uProj[3].z
         uniform float uContactFar;     // view distance the term has faded out by (fade over its last quarter)
         uniform float uAoDirect;       // /ao direct: how much of the occlusion the DIRECT terms take (0 = ADR 0021)
+        uniform float uAoCutout;       // /ao cutout: how much of it a CUTOUT receiver takes (leaf cards over leaf cards)
         // #126: the engine's fAlphaDiscardValue, per batch -- 0.2 on the cutout and blended classes,
         // -1.0 (no test) on opaque and additive.
         uniform float uAlphaCut;
@@ -1266,7 +1273,7 @@ public sealed unsafe partial class AlloyRenderer
             // for a prepassed fragment this equality is exact and the epsilon is only for the depth encode.
             float aoDz = abs(texelFetch(uSceneDepth, ivec2(gl_FragCoord.xy), 0).r - gl_FragCoord.z);
             bool aoMine = uSsaoOn > 0 && aoDz < CX_AO_DEPTH_EPS;
-            if (aoMine) occl *= texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r;
+            if (aoMine) occl *= mix(1.0, texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r, uAlphaCut >= 0.0 ? uAoCutout : 1.0);
             if ((slots & (CX_SLOT_NORMAL | CX_SLOT_HEIGHT)) != 0)
             {
                 // Cotangent frame from screen-space derivatives (Mikkelsen), NOT the engine's vTangent /

@@ -388,6 +388,7 @@ internal static class ShaderContract
                   // behind the wall goes dark with nothing in the log.
                   && DepthKeyFs.Contains("float CxKeyhole(")
                   && DepthKeyFs.Contains("CxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth)")
+                  && DepthFeatFs.Contains("CxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth)")
                   // #126: the cutout, in both colour stages -- and spelled the engine's way, so a stage that
                   // kept the uniform but lost the >= 0.0 guard would discard every fragment of the OPAQUE
                   // set (which passes -1.0) and render an empty world.
