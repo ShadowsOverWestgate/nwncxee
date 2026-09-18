@@ -46,6 +46,19 @@ internal static class RenderPasses
             Stats = OwnedBuffers.Stats,
         }, log);
 
+        // Automatic mesh LOD: not a draw pass either -- a generated index run per eligible mesh, one shared
+        // element buffer, and a background worker. Its Revoke is the world edge (every key is a VDO slot and
+        // an item); its ContextLost forgets the buffer name and keeps the mirror the arena is rebuilt from.
+        r.Register(new PassLifecycle
+        {
+            Name = "meshlod",
+            Attach = MeshLod.Attach,
+            SelfCheck = l => MeshLod.SelfCheck(l),
+            Revoke = MeshLod.Revoke,
+            ContextLost = MeshLod.ContextLost,
+            Stats = MeshLod.Stats,
+        }, log);
+
         // #129: FrameSnapshot first, because FrameGraph's own check asserts that the ownable-bucket list AGREES
         // with whether Alloy water can draw -- so water's boot knobs have to be read before that check runs.
         r.Register(new PassLifecycle
@@ -150,6 +163,16 @@ internal static class RenderPasses
             // #209: was missing. The re-bake keys on a BSP POINTER, so a recycled address carried the
             // previous area's cube into the new one.
             Revoke = EnvProbe.Revoke,
+        }, log);
+        // #643: the irradiance probe grid. Revoke: the window describes an area that has gone.
+        r.Register(new PassLifecycle
+        {
+            Name = "gi",
+            Attach = GiProbes.Attach,
+            SelfCheck = GiProbes.SelfCheck,
+            ContextLost = GiProbes.Forget,
+            Revoke = GiProbes.Revoke,
+            Stats = GiProbes.Stats,
         }, log);
         // #341: the fog's TARGET, which is a look decision and therefore a set of dials -- the ramp itself
         // stays the area author's. No frame slot: every stage uploads it through UploadFeatureTerms.

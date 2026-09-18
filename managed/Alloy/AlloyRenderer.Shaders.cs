@@ -1033,9 +1033,16 @@ public sealed unsafe partial class AlloyRenderer
         uniform float uProbeMips;
         uniform float uProbeGain;      // /light probegain, the ambient-specular dial
         uniform int uSceneEnv;         // does the AREA declare an env map (scene+0x1e8)? see below
-        uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe
+        uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe; 2 = a GI probe capture (back faces write alpha 0)
+        // #643: the irradiance probe grid (GiProbes). uGi = (gain: 0 is the constant ambient, normal bias,
+        // xy spacing, z spacing); uGiCell0 = the window's min cell; a probe sits at cell * spacing.
+        layout(binding = 18) uniform sampler2D uGiIrr;
+        layout(binding = 19) uniform sampler2D uGiDepth;
+        uniform vec4 uGi;
+        uniform ivec3 uGiCell0;
         uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
         uniform int uSsaoOn;           // >0 when this BATCH is in the depth SsaoPass read; <0 names why not (viz 35)
+        uniform int uSsaoHalf;         // post.halfres: 1 = uSsao is half the frame's extent, read bilaterally
         uniform sampler2D uSceneDepth; // the prepass depth SsaoPass read, to check the pixel is OURS (viz 37)
         uniform mat4 uVP;              // contact shadows: the vertex stage's own view*proj, to re-project the march
         uniform vec4 uContact;         // x = march length in world units (0 = off), y = steps, z/w = uProj[2].z / uProj[3].z
@@ -1057,6 +1064,9 @@ public sealed unsafe partial class AlloyRenderer
         const int CX_SLOT_AO = 128;
         /// the depth encode's own rounding, nothing more: #119 makes a prepassed fragment's depth EQUAL
         const float CX_AO_DEPTH_EPS = 1e-5;
+        /// The half-res upsample's depth tolerance, in fragment depth SLOPES: a neighbour more than this
+        /// many pixels' worth of the surface's own slope away is another surface, not this one.
+        const float CX_AO_UP_SLOPES = 8.0;
         // Synthesis floors for a material that declares nothing, read straight off the OLD-generation
         // inc_material.shd the installed client actually runs (#107 §11): fSpecularityMin 0.04 (the old gen's
         // name -- the split-include fork calls it fGeneratedSpecularityMin), fGeneratedRoughnessMin 0.125
@@ -1088,6 +1098,35 @@ public sealed unsafe partial class AlloyRenderer
         // inc_standard.shd:250-252: the albedo is desaturated toward this grey in proportion to reflectivity,
         // so the reflection is not counted twice. DISPLAY space -- the engine does it before the :253 linearise.
         const vec3 CX_ENV_GREY = vec3(0.666667);
+
+        // #379: the visibility at this pixel. At full resolution that is one fetch. Under post.halfres the
+        // pass ran at half the frame's extent, and the four surrounding half-res texels are weighted by the
+        // BILINEAR share times how closely the depth each was computed from agrees with this fragment's --
+        // a plain bilinear upsample drags a wall's occlusion out over the floor in front of it. The
+        // tolerance is the fragment's own depth slope (a steep surface accepts what a flat one rejects), and
+        // where no tap agrees at all the nearest one is taken whole rather than a blend of four wrong ones.
+        float CxSsaoAt(ivec2 pix, float myDepth, float slope)
+        {
+            if (uSsaoHalf == 0) return texelFetch(uSsao, pix, 0).r;
+            ivec2 sz = textureSize(uSsao, 0), dsz = textureSize(uSceneDepth, 0);
+            vec2 hp = (vec2(pix) + 0.5) * 0.5 - 0.5;
+            ivec2 b = ivec2(floor(hp));
+            vec2 f = hp - vec2(b);
+            float tol = max(slope * CX_AO_UP_SLOPES, CX_AO_DEPTH_EPS);
+            float sum = 0.0, wsum = 0.0, near = 1.0, best = 1e30;
+            for (int i = 0; i < 4; i++)
+            {
+                ivec2 o = ivec2(i & 1, i >> 1);
+                ivec2 p = clamp(b + o, ivec2(0), sz - 1);
+                float v = texelFetch(uSsao, p, 0).r;
+                // the full-res texel the half-res pass sampled its depth at: uv (p + 0.5) / (size / 2)
+                float dz = abs(texelFetch(uSceneDepth, clamp(p * 2 + 1, ivec2(0), dsz - 1), 0).r - myDepth);
+                if (dz < best) { best = dz; near = v; }
+                float w = (o.x == 0 ? 1.0 - f.x : f.x) * (o.y == 0 ? 1.0 - f.y : f.y) * max(1.0 - dz / tol, 0.0);
+                sum += v * w; wsum += w;
+            }
+            return wsum > 0.0 ? sum / wsum : near;
+        }
 
         float CxContactDist(float depth) { return uContact.w / (depth * 2.0 - 1.0 + uContact.z); }
         // Screen-space contact shadow: march from the fragment toward the sun through the depth copy. A
@@ -1272,9 +1311,12 @@ public sealed unsafe partial class AlloyRenderer
             // sweep skipped, anything drawn over a hole -- would otherwise wear the occlusion of whatever
             // stands behind it. #119 makes the two passes agree on gl_Position character-for-character, so
             // for a prepassed fragment this equality is exact and the epsilon is only for the depth encode.
-            float aoDz = abs(texelFetch(uSceneDepth, ivec2(gl_FragCoord.xy), 0).r - gl_FragCoord.z);
+            float aoDepth = texelFetch(uSceneDepth, ivec2(gl_FragCoord.xy), 0).r;
+            float aoDz = abs(aoDepth - gl_FragCoord.z);
+            // outside every branch: fwidth in non-uniform control flow has no defined neighbourhood
+            float aoSlope = fwidth(gl_FragCoord.z);
             bool aoMine = uSsaoOn > 0 && aoDz < CX_AO_DEPTH_EPS;
-            if (aoMine) occl *= mix(1.0, texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r, uAlphaCut >= 0.0 ? uAoCutout : 1.0);
+            if (aoMine) occl *= mix(1.0, CxSsaoAt(ivec2(gl_FragCoord.xy), aoDepth, aoSlope), uAlphaCut >= 0.0 ? uAoCutout : 1.0);
             if ((slots & (CX_SLOT_NORMAL | CX_SLOT_HEIGHT)) != 0)
             {
                 // Cotangent frame from screen-space derivatives (Mikkelsen), NOT the engine's vTangent /
@@ -1358,7 +1400,7 @@ public sealed unsafe partial class AlloyRenderer
             }
             if (uViz == 36)
             {
-                frag = vec4(vec3(aoMine ? texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r : 1.0), 1.0);
+                frag = vec4(vec3(aoMine ? CxSsaoAt(ivec2(gl_FragCoord.xy), aoDepth, aoSlope) : 1.0), 1.0);
                 return;
             }
             if (uViz == 35)
@@ -1452,6 +1494,66 @@ public sealed unsafe partial class AlloyRenderer
             float spec = pbr.x, rough = pbr.y, metal = pbr.z;
         """;
 
+    /// <summary>#643: the probe-grid read. Trilinear over the eight lattice probes around the (normal-biased)
+    /// point, each weighted by a smooth back-face term and the Chebyshev visibility test against its
+    /// depth map, and by its own validity (alpha 0 = never captured, dropped by a shift, or inside a wall).
+    /// Returns irradiance / pi; <c>cover</c> is how much of the trilinear weight landed on valid probes,
+    /// which is what blends the result over the constant ambient at the grid's edge.</summary>
+    internal const string GiLib = """
+        const ivec3 CX_GI_N = ivec3(16, 16, 4);
+        const int CX_GI_IRR = 8, CX_GI_DEP = 16;
+        vec2 CxOctEncode(vec3 d)
+        {
+            d /= abs(d.x) + abs(d.y) + abs(d.z);
+            vec2 p = d.z >= 0.0 ? d.xy : (1.0 - abs(d.yx)) * vec2(d.x >= 0.0 ? 1.0 : -1.0, d.y >= 0.0 ? 1.0 : -1.0);
+            return p * 0.5 + 0.5;
+        }
+        vec2 CxGiUv(ivec3 slot, vec2 oct, int res)
+        {
+            vec2 tile = vec2(slot.x, slot.y + CX_GI_N.y * slot.z);
+            vec2 px = tile * float(res + 2) + 1.0 + oct * float(res);
+            return px / vec2(CX_GI_N.x * (res + 2), CX_GI_N.y * CX_GI_N.z * (res + 2));
+        }
+        vec3 CxGiSample(vec3 P, vec3 N, out float cover)
+        {
+            vec3 sp = vec3(uGi.z, uGi.z, uGi.w);
+            vec3 Pb = P + N * uGi.y;
+            vec3 g = Pb / sp;
+            ivec3 base = ivec3(floor(g));
+            vec3 a = g - vec3(base);
+            vec3 sum = vec3(0.0); float wsum = 0.0; cover = 0.0;
+            for (int i = 0; i < 8; i++)
+            {
+                ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+                ivec3 cell = base + o;
+                ivec3 rel = cell - uGiCell0;
+                if (any(lessThan(rel, ivec3(0))) || any(greaterThanEqual(rel, CX_GI_N))) continue;
+                ivec3 slot = cell - CX_GI_N * ivec3(floor(vec3(cell) / vec3(CX_GI_N)));   // % is undefined on a negative int in GLSL
+                vec3 w3 = mix(1.0 - a, a, vec3(o));
+                float tri = w3.x * w3.y * w3.z;
+                vec4 irr = texture(uGiIrr, CxGiUv(slot, CxOctEncode(N), CX_GI_IRR));
+                cover += tri * irr.a;
+                vec3 toProbe = vec3(cell) * sp - Pb;
+                float dist = length(toProbe);
+                vec3 dir = toProbe / max(dist, 1e-4);
+                float wn = (dot(dir, N) + 1.0) * 0.5;
+                float w = tri * irr.a * (wn * wn + 0.2);
+                vec2 m = texture(uGiDepth, CxGiUv(slot, CxOctEncode(-dir), CX_GI_DEP)).rg;
+                if (dist > m.x)
+                {
+                    float var = max(m.y - m.x * m.x, 1e-4), dd = dist - m.x;
+                    float vis = var / (var + dd * dd);
+                    w *= max(vis * vis * vis, 0.0);
+                }
+                sum += w * irr.rgb; wsum += w;
+            }
+            // every probe occluded (a crevice): no answer, so the caller keeps the constant -- a hole is
+            // what this grid exists to remove, not to deepen
+            if (wsum <= 1e-5) { cover = 0.0; return vec3(0.0); }
+            return sum / wsum;
+        }
+        """;
+
     internal const string OwnedLitFsMainLight = """
             vec3 base = albedo * matDiffuse;
             vec3 specColor = SpecularColor;
@@ -1484,6 +1586,21 @@ public sealed unsafe partial class AlloyRenderer
             // the 0.15 ambient floor and the sun-facing wrap are inc_lighting.shd:679 verbatim; the height
             // map's occlusion scales the AMBIENT, which is the term it is actually occluding
             vec3 ambient = uAreaAmbient * matAmbient * mix(0.15, 1.0, sunRaw) * occl;
+            // #643: the probe grid stands in for the constant where it covers the fragment. The sun-facing
+            // wrap is the engine's stand-in for directional ambient, which the probes carry for real, so it
+            // is not applied to them; the material ambient and the occlusion factor still are.
+            if (uGi.x > 0.0)
+            {
+                float giCover;
+                // a capture feeds the next capture (multi-bounce), so its gain is 1: albedo < 1 keeps that
+                // series convergent where a gain above 1 would run it away
+                vec3 gi = CxGiSample(vWorld, N, giCover) * (uCapture == 2 ? 1.0 : uGi.x) * matAmbient * occl;
+                giCover = clamp(giCover, 0.0, 1.0);
+                // 41 = the grid's own answer, no fallback (black = no coverage); 42 = the coverage as grey
+                if (uViz == 41) { frag = vec4(gi, 1.0); return; }
+                if (uViz == 42) { frag = vec4(vec3(giCover), 1.0); return; }
+                ambient = mix(ambient, gi, giCover);
+            }
             // 34 = the ONLY term occlusion can move inside `total` (the (1-spec) share of the ambient).
             //      Black at both /ao on 0 and /ao on 1 means AO has nothing to scale here, however bright
             //      viz 8 reads -- which no other view in the ladder can say.
@@ -1540,7 +1657,9 @@ public sealed unsafe partial class AlloyRenderer
             // the middle of it, which moves fog into linear -- a deliberate look change on foggy frames.
             // Both terms are camera-dependent, so the probe capture takes neither: a dissolve baked into the
             // cube is a permanent hole in every reflection the area ever shows.
-            if (uCapture != 0) { frag = vec4(lit, 1.0); return; }
+            // #643: a GI probe capture draws with culling off and marks back faces in alpha, so a probe that
+            // sits inside geometry can tell (GiProbes.ConvolveFs) and stand itself down.
+            if (uCapture != 0) { frag = uCapture == 2 && !gl_FrontFacing ? vec4(0.0) : vec4(lit, 1.0); return; }
             // #126: rot.w is the per-draw alpha multiplier -- the part's own alpha times the tile fade
             // factor. It reaches the framebuffer only where the class blends; the opaque set draws with
             // GL_BLEND off, so its alpha channel is written and ignored, exactly as before.

@@ -7,28 +7,46 @@ namespace CX.Alloy;
 /// <summary>#389: temporal anti-aliasing as a post-stack stage. The projection is jittered by a sub-pixel
 /// Halton(2,3) offset every frame (<see cref="PostChain.Jitter"/>, applied at the one site Alloy reads it),
 /// and this stage averages the jittered frames: the display-space history is reprojected through the
-/// velocity target (#388/#392), clamped to the 3x3 neighbourhood of the current frame so stale history is
-/// rejected rather than ghosted, and blended in with <see cref="PostChain.TaaBlend"/> of the current frame.
+/// DILATED velocity target (#388/#392), variance-clipped in YCoCg against the 3x3 neighbourhood of the
+/// current frame so stale history is rejected rather than ghosted, and blended in with
+/// <see cref="PostChain.TaaBlend"/> of the current frame under inverse-luma weights.
 /// The resolve happens in <see cref="Prepare"/> into an owned RGBA16F history pair; the stage draw itself
-/// only copies the new history out -- when TAA is on it is the LAST stage (SMAA stands aside), so that copy
-/// is the dithered write to the engine's target, and the history never carries the dither.
-/// <para>Off by default until live-verified (<c>/post taa 1</c>); jitter and accumulation toggle together.</para></summary>
+/// copies the new history out with the <c>post.taasharp</c> unsharp mask -- when TAA is on it is the LAST
+/// stage (SMAA stands aside), so that copy is the dithered write to the engine's target, and the history
+/// never carries either the dither or the sharpen.
+/// <para>ON by default: TAA is the default anti-aliaser and <c>/post taa 0</c> hands the option back to
+/// SMAA. Jitter and accumulation toggle together.</para></summary>
 internal static unsafe class TaaStage
 {
     private static ExtenderLog? _log;
     private static uint _fbo, _hist0, _hist1, _prog, _sampler, _stageProg;
-    private static int _locCur, _locHist, _locVel, _locBlend, _locStageHist, _locJitterPx, _locUpsample;
+    private static int _locCur, _locHist, _locVel, _locDepth, _locBlend, _locStageHist, _locJitterPx, _locUpsample;
     private static int _w, _h, _cur;
     private static bool _failed, _built, _valid;
 
     /// <summary>Latched: a program or target failed on this context; the jitter stands down with the stage.</summary>
     internal static bool Failed => _failed;
-    /// <summary>The stage's fragment text: the new history, as-is (display space in, display space out).</summary>
+    /// <summary>The stage's fragment text: the new history, with the post-resolve sharpen (display space in,
+    /// display space out). A temporal average is softer at an edge than a spatial filter is, which is the one
+    /// thing TAA gets held against SMAA for; <c>post.taasharp</c> is a cross-tap unsharp mask that puts the
+    /// contrast back. The taps are texel-exact fetches: the history is NEAREST at this stage's own size.</summary>
     internal const string StageFs = """
         uniform sampler2D uHist;     // this frame's resolved history (Prepare wrote it)
+        uniform float uSharp;        // post.taasharp: the unsharp mask's amount, 0 = the raw resolve
         vec4 CxStage(vec4 c)
         {
-            return vec4(texture(uHist, vUV).rgb, c.a);
+            ivec2 sz = textureSize(uHist, 0);
+            ivec2 p = clamp(ivec2(vUV * vec2(sz)), ivec2(0), sz - 1);
+            vec3 h = texelFetch(uHist, p, 0).rgb;
+            if (uSharp > 0.0)
+            {
+                vec3 n = texelFetch(uHist, clamp(p + ivec2(1, 0), ivec2(0), sz - 1), 0).rgb
+                       + texelFetch(uHist, clamp(p - ivec2(1, 0), ivec2(0), sz - 1), 0).rgb
+                       + texelFetch(uHist, clamp(p + ivec2(0, 1), ivec2(0), sz - 1), 0).rgb
+                       + texelFetch(uHist, clamp(p - ivec2(0, 1), ivec2(0), sz - 1), 0).rgb;
+                h = max(h + (h * 4.0 - n) * (uSharp * 0.25), vec3(0.0));
+            }
+            return vec4(h, c.a);
         }
         """;
 
@@ -60,6 +78,7 @@ internal static unsafe class TaaStage
         if (_prog == 0) { _failed = true; _log?.Info("TaaStage: the resolve did not build -- the taa stage is DROPPED; SMAA serves the aa option"); return false; }
         _locCur = GlProgram.Loc(_prog, "uCur"); _locHist = GlProgram.Loc(_prog, "uHist");
         _locVel = GlProgram.Loc(_prog, "uVel"); _locBlend = GlProgram.Loc(_prog, "uBlend");
+        _locDepth = GlProgram.Loc(_prog, "uDepth");
         _locJitterPx = GlProgram.Loc(_prog, "uJitterPx"); _locUpsample = GlProgram.Loc(_prog, "uUpsample");
         return true;
     }
@@ -119,6 +138,9 @@ internal static unsafe class TaaStage
         Gl.Uniform1i(_locCur, (int)TextureSlots.PostHdr);
         Gl.Uniform1i(_locHist, (int)TextureSlots.AaEdges);
         Gl.Uniform1i(_locVel, (int)TextureSlots.AaArea);
+        // PostStack.Run bound the frame depth on this unit before the stage loop; it is the velocity
+        // target's own size, which is what the dilation walks in.
+        Gl.Uniform1i(_locDepth, (int)TextureSlots.PostBloom);
         Gl.Uniform1f(_locBlend, _valid ? PostChain.TaaBlend : 1f);
         // Upsampling: the current frame is render-sized and read bilinearly at the jitter-shifted position
         // of each display pixel, so it takes the history's LINEAR sampler for this draw (Run unbinds it).
@@ -140,10 +162,15 @@ internal static unsafe class TaaStage
     }
 
     /// <summary>The accumulator. Velocity is <c>prev - cur</c> in RENDER pixels (the target may be smaller
-    /// than this display-sized frame, #391), so it is turned into uv through ITS OWN size. The history is
-    /// clamped to the current 3x3 min/max -- the neighbourhood clamp that rejects a stale sample without a
-    /// depth test -- and a moving pixel takes a little more of the current frame per pixel of motion, so
-    /// disocclusions resolve in a few frames instead of the full history length.</summary>
+    /// than this display-sized frame, #391), so it is turned into uv through ITS OWN size, and it is DILATED
+    /// -- the closest depth in the 3x3 names the velocity the whole neighbourhood reprojects with, so a thin
+    /// silhouette carries its own motion instead of the background's. The history is fetched Catmull-Rom and
+    /// VARIANCE-CLIPPED in YCoCg (mean +- gamma * stddev over the current 3x3, clipped along the line to the
+    /// current sample): a min/max box over the same nine texels is wide enough to pass the ghost that made it,
+    /// and clipping in a luma/chroma basis keeps the clamp off the hue. The blend is inverse-luma weighted
+    /// (Karis), so one firefly texel cannot outvote ten frames of history, and a moving pixel takes a little
+    /// more of the current frame per pixel of motion, so disocclusions resolve in a few frames instead of the
+    /// full history length. An off-screen reprojection takes the current frame whole.</summary>
     internal const string TaaFs = """
         #version 460 core
         in vec2 vUV;
@@ -151,9 +178,24 @@ internal static unsafe class TaaStage
         uniform sampler2D uCur;      // this frame, display space, the stack's size
         uniform sampler2D uHist;     // last frame's history, LINEAR
         uniform sampler2D uVel;      // #388: prev - cur, render pixels, render size
+        uniform sampler2D uDepth;    // the frame depth, render size: the dilation's closest-depth pick
         uniform float uBlend;        // the current frame's share at rest; 1 = no history
         uniform vec2 uJitterPx;      // this frame's projection jitter in RENDER pixels
         uniform int uUpsample;       // 1: uCur is render-sized, the history and this draw are display-sized
+
+        // The clip box's half-width in standard deviations. Below 1 the history is yanked on every noisy
+        // surface; above 1.5 a ghost fits inside it.
+        const float CX_TAA_GAMMA = 1.25;
+
+        vec3 CxToYCoCg(vec3 c)
+        {
+            return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * (c.r - c.b), -0.25 * c.r + 0.5 * c.g - 0.25 * c.b);
+        }
+        vec3 CxFromYCoCg(vec3 c)
+        {
+            float t = c.x - c.z;
+            return max(vec3(t + c.y, c.x + c.z, t - c.y), vec3(0.0));
+        }
 
         // Catmull-Rom through five bilinear taps (the 9-texel cubic with the corner taps folded): a bilinear
         // history resample every frame is the blur a naive TAA is known for, and this is the standard cure.
@@ -175,6 +217,34 @@ internal static unsafe class TaaStage
                    + textureLod(uHist, vec2(tc3.x, tc12.y), 0.0).rgb * (w3.x * w12.y)
                    + textureLod(uHist, vec2(tc12.x, tc3.y), 0.0).rgb * (w12.x * w3.y);
             return max(c / ((w12.x * w0.y) + (w0.x * w12.y) + (w12.x * w12.y) + (w3.x * w12.y) + (w12.x * w3.y)), vec3(0.0));
+        }
+
+        // The velocity of the CLOSEST fragment in the 3x3: the neighbour standing in front of this pixel is
+        // the one whose motion its edge follows. An unresolved depth target reads all-equal and keeps the
+        // centre tap, so the dilation degrades to the plain fetch rather than to a corner.
+        vec2 CxDilatedVel(vec2 uv, vec2 vsz)
+        {
+            vec2 texel = 1.0 / vsz, best = vec2(0.0);
+            float bestD = textureLod(uDepth, uv, 0.0).r;
+            for (int y = -1; y <= 1; y++)
+                for (int x = -1; x <= 1; x++)
+                {
+                    vec2 o = vec2(x, y) * texel;
+                    float d = textureLod(uDepth, uv + o, 0.0).r;
+                    if (d < bestD) { bestD = d; best = o; }
+                }
+            return textureLod(uVel, uv + best, 0.0).rg;
+        }
+
+        // Clip q toward the box centre rather than clamping it per channel: a clamp moves the sample onto a
+        // face of the box and shifts its hue, a clip keeps it on the line to the current colour.
+        vec3 CxClipToBox(vec3 mn, vec3 mx, vec3 q)
+        {
+            vec3 center = 0.5 * (mx + mn), extent = max(0.5 * (mx - mn), vec3(1e-5));
+            vec3 v = q - center;
+            vec3 a = abs(v / extent);
+            float m = max(max(a.x, a.y), a.z);
+            return m > 1.0 ? center + v / m : q;
         }
 
         void main()
@@ -201,44 +271,73 @@ internal static unsafe class TaaStage
                 pix = clamp(ivec2(vUV * vec2(sz)), ivec2(0), sz - 1);
                 c = texelFetch(uCur, pix, 0);
             }
-            vec3 mn = c.rgb, mx = c.rgb;
+            vec3 cy = CxToYCoCg(c.rgb);
+            vec3 m1 = vec3(0.0), m2 = vec3(0.0);
             for (int y = -1; y <= 1; y++)
                 for (int x = -1; x <= 1; x++)
                 {
-                    vec3 n = texelFetch(uCur, clamp(pix + ivec2(x, y), ivec2(0), sz - 1), 0).rgb;
-                    mn = min(mn, n); mx = max(mx, n);
+                    vec3 n = CxToYCoCg(texelFetch(uCur, clamp(pix + ivec2(x, y), ivec2(0), sz - 1), 0).rgb);
+                    m1 += n; m2 += n * n;
                 }
-            vec2 velPx = textureLod(uVel, vUV, 0.0).rg;
-            vec2 huv = vUV + velPx / vec2(textureSize(uVel, 0));
+            vec3 mean = m1 / 9.0;
+            vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
+            // the current sample is always inside its own box: a lone bright texel would otherwise clip
+            // itself away and the resolve would never converge on it
+            vec3 mn = min(mean - CX_TAA_GAMMA * sigma, cy), mx = max(mean + CX_TAA_GAMMA * sigma, cy);
+            vec2 vsz = vec2(textureSize(uVel, 0));
+            vec2 velPx = CxDilatedVel(vUV, vsz);
+            vec2 huv = vUV + velPx / vsz;
             // a moving pixel takes more of the frame -- a walking camera converges in a few frames, not ten
-            float a = min(0.5, uBlend + length(velPx) * 0.05);
+            float a = uBlend >= 1.0 ? 1.0 : min(0.5, uBlend + length(velPx) * 0.05);
             if (uUpsample != 0) a = mix(a * 0.25, a, conf);
             if (any(lessThan(huv, vec2(0.0))) || any(greaterThan(huv, vec2(1.0)))) a = 1.0;
-            vec3 h = clamp(CxHistory(huv, hsz), mn, mx);
-            frag = vec4(mix(h, c.rgb, a), c.a);
+            vec3 hy = CxClipToBox(mn, mx, CxToYCoCg(CxHistory(huv, hsz)));
+            vec3 h = CxFromYCoCg(hy);
+            // inverse-luma weights (Karis): the brighter of the two speaks quieter, so a firefly that lives
+            // one frame cannot outvote the history it lands on
+            float wc = a / (1.0 + max(cy.x, 0.0)), wh = (1.0 - a) / (1.0 + max(hy.x, 0.0));
+            frag = vec4((c.rgb * wc + h * wh) / max(wc + wh, 1e-5), c.a);
         }
         """;
 
-    /// <summary>Off-device: the stage composes under the stack's contract, the resolve reprojects through the
-    /// velocity target in ITS units and clamps to the neighbourhood, and the gate is one key.</summary>
+    /// <summary>Off-device: the stage composes under the stack's contract, the resolve dilates and reprojects
+    /// through the velocity target in ITS units, variance-clips the history in YCoCg, and the gate is one key.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"TaaStage.SelfCheck FAIL: {w}"); } }
         E(StageFs.Contains("vec4 CxStage(vec4 c)") && ShaderContract.DisplaySafe(StageFs) && ShaderContract.SlotSafe(StageFs, "uHist"),
           "the stage is display space and reads the history");
-        E(TaaFs.Contains("velPx / vec2(textureSize(uVel, 0))"), "velocity becomes uv through the VELOCITY target's size, not the frame's (#391)");
-        E(TaaFs.Contains("clamp(CxHistory(huv, hsz), mn, mx)") && TaaFs.Contains("vec3 CxHistory(vec2 uv, vec2 size)")
+        E(StageFs.Contains("uniform float uSharp;") && StageFs.Contains("h * 4.0 - n") && StageFs.Contains("if (uSharp > 0.0)"),
+          "the copy-out carries the unsharp mask and is the raw history at taasharp 0");
+        E(Post.TaaSharp.Default > 0f && Post.TaaSharp.Min == 0f, "post.taasharp ships sharpening, and 0 is the A/B back to the raw resolve");
+        E(Post.Taa.Default, "TAA is the DEFAULT anti-aliaser: a fresh cx.cfg resolves temporally and SMAA stands aside");
+        E(TaaFs.Contains("vec2 velPx = CxDilatedVel(vUV, vsz);") && TaaFs.Contains("vec2 huv = vUV + velPx / vsz;")
+          && TaaFs.Contains("vec2 vsz = vec2(textureSize(uVel, 0));"),
+          "velocity becomes uv through the VELOCITY target's size, not the frame's (#391)");
+        E(TaaFs.Contains("vec2 CxDilatedVel(vec2 uv, vec2 vsz)") && TaaFs.Contains("if (d < bestD) { bestD = d; best = o; }")
+          && TaaFs.Contains("float bestD = textureLod(uDepth, uv, 0.0).r;"),
+          "the velocity is dilated to the CLOSEST depth in the 3x3, and an all-equal depth keeps the centre tap");
+        E(TaaFs.Contains("vec3 CxHistory(vec2 uv, vec2 size)") && TaaFs.Contains("CxToYCoCg(CxHistory(huv, hsz))")
           && TaaFs.Contains("vec2 hsz = vec2(textureSize(uHist, 0));"),
-          "history is fetched Catmull-Rom at ITS OWN size and clamped to the 3x3 neighbourhood");
+          "history is fetched Catmull-Rom at ITS OWN size");
+        E(TaaFs.Contains("vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));")
+          && TaaFs.Contains("vec3 mn = min(mean - CX_TAA_GAMMA * sigma, cy), mx = max(mean + CX_TAA_GAMMA * sigma, cy);")
+          && TaaFs.Contains("vec3 CxClipToBox(vec3 mn, vec3 mx, vec3 q)"),
+          "the clamp is a VARIANCE clip (mean +- gamma * stddev) along the line to the current sample, not a min/max box");
+        E(TaaFs.Contains("const float CX_TAA_GAMMA = 1.25;"), "...at the width one standard TAA ships");
+        E(TaaFs.Contains("vec3 CxToYCoCg(vec3 c)") && TaaFs.Contains("vec3 CxFromYCoCg(vec3 c)"), "the clip happens in a luma/chroma basis");
         // #391: the upsampling arm reads the render-sized frame at the jitter-shifted position, with the
         // same sign the velocity pass takes the jitter back out with (ndc - uJitter: the frame is at +j).
         E(TaaFs.Contains("vec2 sp = vUV * vec2(sz) + uJitterPx;") && TaaFs.Contains("c = textureLod(uCur, sp / vec2(sz), 0.0);"),
           "upsampling samples the frame at clean position + jitter");
         E(TaaFs.Contains("if (uUpsample != 0) a = mix(a * 0.25, a, conf);"), "a between-texel sample leans on the history");
-        E(ShaderContract.SlotSafe(TaaFs, "uCur", "uHist", "uVel"), "the resolve declares the samplers Prepare binds");
-        E(TaaFs.Contains("min(0.5, uBlend + length(velPx) * 0.05)"), "a moving pixel converges faster than the resting share");
-        E(TaaFs.Contains("a = 1.0;") && TaaFs.Contains("mix(h, c.rgb, a)"), "an off-screen history sample takes the current frame whole");
+        E(ShaderContract.SlotSafe(TaaFs, "uCur", "uHist", "uVel", "uDepth"), "the resolve declares the samplers Prepare binds");
+        E(TaaFs.Contains("uBlend >= 1.0 ? 1.0 : min(0.5, uBlend + length(velPx) * 0.05)"), "a moving pixel converges faster than the resting share");
+        E(TaaFs.Contains("float wc = a / (1.0 + max(cy.x, 0.0)), wh = (1.0 - a) / (1.0 + max(hy.x, 0.0));"),
+          "the blend is inverse-luma weighted: a one-frame firefly cannot outvote the history");
+        E(TaaFs.Contains("a = 1.0;") && TaaFs.Contains("(c.rgb * wc + h * wh) / max(wc + wh, 1e-5)"),
+          "an off-screen history sample takes the current frame whole");
         _valid = true; Reset(); E(!_valid, "Reset drops the history");
         log.Info(ok ? "TaaStage.SelfCheck: passed" : "TaaStage.SelfCheck: FAILED");
         return ok;

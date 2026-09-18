@@ -759,6 +759,27 @@ public sealed unsafe partial class AlloyRenderer
             int v = _oVao[src];
             float* r = data + (long)i * DrawFloats;
             uint mode = _primTable[_oPrim[i]];
+            // Automatic mesh LOD: the part's bounding sphere, which the cull already needs, projected to a
+            // screen radius. A generated run lives in MeshLod's own element buffer, so the level rides the
+            // slot index (LodVaoBit) -- that is what cuts the batch, because one multidraw cannot straddle
+            // two element buffers.
+            nint idxOff = _cOff[i];
+            int vKey = v;
+            if (MeshLod.Armed && _lodScale > 0f)
+            {
+                float* lsp = sphAll + (long)i * 4;
+                if (lsp[3] < NeverCull)
+                {
+                    float dxe = lsp[0] - _eyePos.X, dye = lsp[1] - _eyePos.Y, dze = lsp[2] - _eyePos.Z;
+                    int lvl = MeshLod.Level(lsp[3], MathF.Sqrt(dxe * dxe + dye * dye + dze * dze), _lodScale);
+                    if (lvl > 0 && !VdoDirty(v) && !ItemMoved(v, _oItem[src])
+                        && MeshLod.Range(v, _oItem[src], lvl, out nint lo, out int lc) && LodVao(v) != 0)
+                    { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; MeshLod.Drew(lvl, lc); }
+                    else MeshLod.Drew(0, idxCount);
+                }
+                else MeshLod.Drew(0, idxCount);
+            }
+            _oLodBit[i] = vKey & LodVaoBit;
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
             // but so the depth prepass can drop a whole batch: a displacing feature must not write its
             // undisplaced depth, and the prepass has no per-draw granularity.
@@ -789,21 +810,21 @@ public sealed unsafe partial class AlloyRenderer
                 for (int s = 0; sameSlots && s < MapSlots; s++)
                     sameSlots = _gTexN[(groups - 1) * MapSlots + s] == slotTid[s];
             }
-            if (!sameSlots || lit != keyLit || v != keyVao || tidKey != keyTex || mode != keyMode
+            if (!sameSlots || lit != keyLit || vKey != keyVao || tidKey != keyTex || mode != keyMode
                 || feat != keyFeat || dis != keyDis || cls != keyCls || blend != keyBlend
                 || noCull != keyNoCull || gobKey != keyGob)
             {
                 // #292 (AC6): what the cull term cost. Counted as the batches it OPENED on its own -- every
                 // other key term agreed and only the culling state differed -- so the line reports the split
                 // this ticket added rather than the whole batch count, which no baseline would separate.
-                if (groups != 0 && noCull != keyNoCull && sameSlots && lit == keyLit && v == keyVao
+                if (groups != 0 && noCull != keyNoCull && sameSlots && lit == keyLit && vKey == keyVao
                     && tidKey == keyTex && mode == keyMode && feat == keyFeat && dis == keyDis
                     && cls == keyCls && blend == keyBlend) _cullCuts++;
                 // #327: which term opened an opaque-range cut -- one counter per term, a cut that flipped
                 // several charged to each. The instrument the sort above is judged by.
                 if (groups != 0 && cls == keyCls && cls <= (int)AlloyClass.Cutout)
                 {
-                    if (v != keyVao) _cutBy[0]++;
+                    if (vKey != keyVao) _cutBy[0]++;
                     if (feat != keyFeat) _cutBy[1]++;
                     if (dis != keyDis) _cutBy[2]++;
                     if (blend != keyBlend) _cutBy[3]++;
@@ -813,19 +834,19 @@ public sealed unsafe partial class AlloyRenderer
                     if (tidKey != keyTex || !sameSlots) _cutBy[7]++;
                 }
                 _gStart[groups] = n; _gLen[groups] = 0;
-                _gLit[groups] = lit; _gVao[groups] = v; _gTex[groups] = tid; _gMode[groups] = mode;
+                _gLit[groups] = lit; _gVao[groups] = vKey; _gTex[groups] = tid; _gMode[groups] = mode;
                 _gFeat[groups] = feat; _gDis[groups] = dis;
                 _gCls[groups] = (byte)cls; _gSrc[groups] = _oSrc[i]; _gDst[groups] = _oDst[i]; _gWash[groups] = _oWash[i];
                 _gNoCull[groups] = noCull; _gGob[groups] = gobKey;
                 for (int s = 0; s < MapSlots; s++) _gTexN[groups * MapSlots + s] = slotTid[s];
                 groups++;
-                keyLit = lit; keyVao = v; keyTex = tidKey; keyMode = mode; keyFeat = feat; keyDis = dis;
+                keyLit = lit; keyVao = vKey; keyTex = tidKey; keyMode = mode; keyFeat = feat; keyDis = dis;
                 keyCls = cls; keyBlend = blend; keyNoCull = noCull; keyGob = gobKey;
             }
             W(i, "SUBMITTED");
             if (AlloyCensus.WatchTex[_oEntry[i]]) _watchSubmitted++;
             _dCount[n] = idxCount;
-            _dOff[n] = _cOff[i];
+            _dOff[n] = idxOff;
             _dBase[n] = _cBase[i];
             // #242: the record this draw reads lives at the OWNERSHIP slot and outlives the frame; the draw
             // order does not, so the draw carries the slot rather than the record.
@@ -888,6 +909,7 @@ public sealed unsafe partial class AlloyRenderer
     internal struct StageCounters
     {
         public long OwnDissolve, NrmDeclared, NrmBound, RecStable, RecWritten;
+        public long StFrozen, StSettled, StThawed;
         public long MxChased, MxCached, DisAsked, DisCached, DisBoxed, DisNoFeat, DisGobUnpierced, DisNoLit;
         public long PollMissMx, PollMissDis, PollMissBox;
         public bool CastChanged;
@@ -897,6 +919,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         _ownDissolve += c.OwnDissolve; _nrmDeclared += c.NrmDeclared; _nrmBound += c.NrmBound;
         _recStable += c.RecStable; _recWritten += c.RecWritten;
+        _stFrozen += c.StFrozen; _stSettled += c.StSettled; _stThawed += c.StThawed;
         _mxChased += c.MxChased; _mxCached += c.MxCached; _disAsked += c.DisAsked; _disCached += c.DisCached;
         _disBoxed += c.DisBoxed; _disNoFeat += c.DisNoFeat; _disGobUnpierced += c.DisGobUnpierced; _disNoLit += c.DisNoLit;
         _pollMissMx += c.PollMissMx; _pollMissDis += c.PollMissDis; _pollMissBox += c.PollMissBox;
@@ -979,6 +1002,15 @@ public sealed unsafe partial class AlloyRenderer
             // A stale epoch forces the third: see InvalidateRecords for what can make every record wrong.
             bool stale = _recGen[i] != _recEpoch;
             bool verified = !stale && _recFrame[i] == _frameSeq;
+            // The static set's fourth record state, below `verified` and cheaper than it: a settled member has
+            // nothing left that a frame can move, so its record, sphere, handles and cast admission are last
+            // frame's by construction and everything below is skipped. See StaticSlot for the membership test
+            // and StaticFrozen for the three stamps and the recheck stagger that bound its staleness.
+            bool member = !stale && GpuStatic.On && StaticSlot(i, cls, dis, dissolve, _passAlpha[k]);
+            if (member) c.StSettled++;
+            if (!verified && StaticFrozen(i, member))
+            { verified = true; _recFrame[i] = _frameSeq; c.StFrozen++; }
+            else if (!member && _stSettle[i] != 0) { _stSettle[i] = 0; c.StThawed++; }
             // #322: the colour cadence, staggered by slot. The measured Restage bulk is the per-part
             // engine chases, and the slow-drift half of them -- the mdl colour triples, self-illum, the gob
             // colour folds, the non-animated slot-map pointers -- moves over SECONDS (day-night, a scripted
@@ -1270,6 +1302,10 @@ public sealed unsafe partial class AlloyRenderer
                 if (rec) WriteSphere(i, in pf, tri, feat);
                 if (rec) { WriteCasterSphere(i, in pf); NoteCasterTouched(i); }
                 if (rec) MarkRecordDirty(i, ref c); else c.RecStable++;
+                // Membership alone is not enough to freeze on: the record has to have STOPPED changing too,
+                // which is what the settle run measures. Capped so a slot that has been still for an hour
+                // cannot overflow the counter.
+                _stSettle[i] = !rec && member ? Math.Min(_stSettle[i] + 1, SettleCeiling) : 0;
                 _recGen[i] = _recEpoch; _recFrame[i] = _frameSeq; _recEnroll[i] = _oEnrollGen[i];
                 // #302: a LEVEL the shadow pass compares against _recFrame, never an edge it consumes.
                 if (casterMoved || newTenant) _recMovedAt[i] = _frameSeq;

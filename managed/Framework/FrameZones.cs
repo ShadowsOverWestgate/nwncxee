@@ -357,7 +357,10 @@ public static class FrameZones
             pc = PsiTotal("/proc/pressure/cpu"); pm = PsiTotal("/proc/pressure/memory");
         }
         catch { return " box: n/a"; }
-        string r = $" box: swap in/out {si - _swpIn}/{so - _swpOut} pages, majflt {mf - _majF}, psi some cpu {(pc - _psiCpu) / 1000}ms mem {(pm - _psiMem) / 1000}ms";
+        // this process's resident set, so a period that swaps can say whether it is OUR footprint growing
+        long rss = 0;
+        try { foreach (var l in System.IO.File.ReadLines("/proc/self/status")) if (l.StartsWith("VmRSS:")) { rss = long.Parse(l.AsSpan(6).Trim().TrimEnd(" kB".AsSpan())); break; } } catch { }
+        string r = $" box: rss {rss / 1024}MiB, swap in/out {si - _swpIn}/{so - _swpOut} pages, majflt {mf - _majF}, psi some cpu {(pc - _psiCpu) / 1000}ms mem {(pm - _psiMem) / 1000}ms";
         _swpIn = si; _swpOut = so; _majF = mf; _psiCpu = pc; _psiMem = pm;
         return r;
     }

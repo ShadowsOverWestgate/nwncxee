@@ -449,6 +449,15 @@ public sealed unsafe partial class AlloyRenderer
         // #144 retry: gob parts only (heads, bodies, placeables -- the low-poly flat-normal content);
         // tiles carry deliberate creases by the tens of thousands of verts and stay as authored.
         if (!kept && lit && c.Gob != IntPtr.Zero && !_oTileGob[i]) WeldNormals(c.Vdo, c.Item, v);
+        // Automatic LOD, once per newcomer: STATIC geometry only. Tileset parts and parts with no gob at all
+        // are the population whose vertices do not move -- a skinmesh is posed by bones, a dangly by the
+        // solver, a displacing feature by the wind, and a simplified copy of any of those would be thinned
+        // against a rest pose it never draws in. Water, blended and the sky classes are out for a different
+        // reason: they are order- and coverage-sensitive, and a thinned silhouette there is a visible seam
+        // rather than a distant saving. Non-triangle primitives have no edges to collapse.
+        if (!kept && (_oTileGob[i] || c.Gob == IntPtr.Zero) && c.Cls <= (int)AlloyClass.Cutout
+            && !_vSkin[v] && !PartTable.IsDangly(c.Tri) && !ShaderFeatures.OutOfPrepass(c.Feat))
+            OfferLod(c.Vdo, c.Item, c.Prim, v);
         for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBboxMin + b * 4);   // #336: +0x64..+0x78
         // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
         // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
@@ -646,7 +655,7 @@ public sealed unsafe partial class AlloyRenderer
                 // Same address, different VDO: the one harvested here died and operator new handed its
                 // block out again. Vacate and re-harvest on the spot; a stale layout must never be served.
                 _vdoRecycled++;
-                _vVdo[v] = IntPtr.Zero; _vElemBuf[v] = 0; DripForget(vdo);
+                _vVdo[v] = IntPtr.Zero; _vElemBuf[v] = 0; DripForget(vdo); ForgetLodSlot(v);
                 if (_recycleDiagLeft-- > 0)
                     _log?.Info($"AlloyRenderer: VDO {vdo:X} re-minted under slot {v} -- re-harvested");
                 s = v;
@@ -658,8 +667,9 @@ public sealed unsafe partial class AlloyRenderer
         {
             if (_vdoCount >= MaxVdos) return -1;
             s = _vdoCount++;
-            _vVao46[s] = 0; _vOwned[s] = false; ForgetEngineVao(s);
+            _vVao46[s] = 0; _vOwned[s] = false; ForgetEngineVao(s); ForgetLodSlot(s);
         }
+        else if (_vVdo[s] != vdo) ForgetLodSlot(s);   // a reused retired slot names other geometry now
         if (!Harvest(vdo, s)) return -1;
         _vVdo[s] = vdo; _vStale[s] = _vVao46[s] != 0; _vSig[s] = VdoSig.Of(vdo);
         // #136: a slot re-pointed at a different VDO has different streams, so its engine-layout VAO is

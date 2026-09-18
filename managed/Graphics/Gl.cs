@@ -13,6 +13,7 @@ public static unsafe class Gl
 {
     // GLenum constants used by the text path.
     public const uint TEXTURE_2D = 0x0DE1, BLEND = 0x0BE2, DEPTH_TEST = 0x0B71;
+    public const uint CONSTANT_ALPHA = 0x8003, ONE_MINUS_CONSTANT_ALPHA = 0x8004;
     /// <summary>glGetTexLevelParameteriv queries: the level's internal format, and its alpha channel width.</summary>
     public const uint TEXTURE_INTERNAL_FORMAT = 0x1003, TEXTURE_ALPHA_SIZE = 0x805F;
     /// <summary>#211: the level queries the owned-texture copy sizes itself from -- is this level a block
@@ -161,7 +162,7 @@ public static unsafe class Gl
     /// <summary>#211: the sized formats an unsized engine upload has to be promoted to before
     /// <see cref="TexStorage2D"/> will take it, and the unsized enums the engine actually uses
     /// (<c>glTexImage2D</c> @0x4cad3d passes GL_RGB/GL_RGBA/GL_RED verbatim).</summary>
-    public const uint RGB8 = 0x8051, RG8 = 0x822B, RG = 0x8227, RGB_ = 0x1907, RGBA_ = 0x1908;
+    public const uint RGB8 = 0x8051, RG8 = 0x822B, RG = 0x8227, RGB_ = 0x1907, RGBA_ = 0x1908, RG16F = 0x822F;
     /// <summary>#127: alpha-to-coverage -- the fragment's alpha becomes a COVERAGE MASK over the target's
     /// samples. Each sample is still written whole or not at all, so it is antialiasing without ever
     /// producing a partially transparent depth-writing fragment. Inert where SAMPLES is 1.</summary>
@@ -215,6 +216,9 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, IntPtr, IntPtr, IntPtr, void> CopyBufferSubData;
     public static delegate* unmanaged<uint, uint, int*, void> GetBufferParameteriv;
     public static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> TexImage2D;
+    /// <summary>glTexSubImage2D (GL 1.1): target, level, xoffset, yoffset, width, height, format, type, data.
+    /// Writes into an already-allocated level -- #643's probe-tile restore from the bake ledger.</summary>
+    public static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> TexSubImage2D;
     public static delegate* unmanaged<uint, uint, int, void> TexParameteri;
     public static delegate* unmanaged<uint, uint, int*, void> GetTexParameteriv;
     /// <summary>Per-LEVEL texture state -- the internal format and channel sizes. The one way to ask a
@@ -275,6 +279,9 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, int, void> Uniform1i;
     public static delegate* unmanaged<int, float, void> Uniform1f;
     public static delegate* unmanaged<int, float, float, void> Uniform2f;
+    public static delegate* unmanaged<int, int, int, void> Uniform2i;
+    /// <summary>glBlendColor: the constant the CONSTANT_ALPHA blend factors read (#643's probe hysteresis).</summary>
+    public static delegate* unmanaged<float, float, float, float, void> BlendColor;
     public static delegate* unmanaged<int, float, float, float, void> Uniform3f;
     public static delegate* unmanaged<int, float, float, float, float, void> Uniform4f;
     public static delegate* unmanaged<int, int, float*, void> Uniform1fv;   // (loc, count, ptr) -- per-slot floats
@@ -464,6 +471,7 @@ public static unsafe class Gl
         CopyBufferSubData = (delegate* unmanaged<uint, uint, IntPtr, IntPtr, IntPtr, void>)P("glCopyBufferSubData");
         GetBufferParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetBufferParameteriv");
         TexImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void>)P("glTexImage2D");
+        TexSubImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void>)P("glTexSubImage2D");
         TexParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glTexParameteri");
         GetTexParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetTexParameteriv");
         PatchParameteri = (delegate* unmanaged<uint, int, void>)P("glPatchParameteri");
@@ -518,6 +526,8 @@ public static unsafe class Gl
         Uniform1i = (delegate* unmanaged<int, int, void>)P("glUniform1i");
         Uniform1f = (delegate* unmanaged<int, float, void>)P("glUniform1f");
         Uniform2f = (delegate* unmanaged<int, float, float, void>)P("glUniform2f");
+        Uniform2i = (delegate* unmanaged<int, int, int, void>)P("glUniform2i");
+        BlendColor = (delegate* unmanaged<float, float, float, float, void>)P("glBlendColor");
         Uniform3f = (delegate* unmanaged<int, float, float, float, void>)P("glUniform3f");
         Uniform4f = (delegate* unmanaged<int, float, float, float, float, void>)P("glUniform4f");
         Uniform1fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform1fv");

@@ -53,6 +53,7 @@ public sealed unsafe partial class AlloyRenderer
             AlloyGate.Fail("glMultiDrawElementsBaseVertex or glBindBufferBase is missing");
             return;
         }
+        GpuStatic.Latch();   // the static freeze's own entry points; they do not resolve before a context exists
 
         // #257: where the frame goes is LATCHED, not interrogated. Every frame used to open with nine
         // GL queries -- viewport, framebuffer binding, four attachment params, sRGB, and the two clear
@@ -183,6 +184,10 @@ public sealed unsafe partial class AlloyRenderer
             if (!postOk) { GlContextService.Leave(); return; }
             GpuFrameStart();
             TickCycleTextures();
+            // #287's scale, hoisted ahead of the staging walk: the automatic-LOD pick reads it there, and the
+            // cull dispatch below is handed the same figure.
+            _lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
+            MeshLod.Pump();   // the one GL edge of the LOD arena: collect what the worker finished
             long tBuild = FrameZones.Now;
             int groups = BuildBatches(lightingOn);
             FrameZones.Add(FrameZones.Zone.Build, tBuild);
@@ -207,8 +212,7 @@ public sealed unsafe partial class AlloyRenderer
                 int cullDraws = _gStart[groups - 1] + _gLen[groups - 1];
                 // #287: pixels per unit of world radius at unit depth, the LOD test's one input. Zero when
                 // this pass has no perspective projection, and the test then stands down.
-                float lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
-                _lodScale = lodScale;
+                float lodScale = _lodScale;
                 // #303: the spheres go up whatever the cull mode -- the shadow gather reads the same buffer.
                 fixed (float* sph = _dSph)
                     CullPass.UploadSpheres(sph, _recOwnCap + MaxSkyDraws);
@@ -412,6 +416,9 @@ public sealed unsafe partial class AlloyRenderer
                         case PassId.ProbeCapture:
                             if (!lightingOn) break;
                             CaptureProbe(_gOpaqueEnd, far);
+                            GpuBegin(GpuTerm.Gi);
+                            CaptureGi(_gOpaqueEnd);
+                            GpuEnd(GpuTerm.Gi);
                             // The capture bound its own framebuffer and viewport; whatever runs after the
                             // bracket must find the engine's target again, not a 128px cube face.
                             BindTarget();
@@ -926,6 +933,64 @@ public sealed unsafe partial class AlloyRenderer
         _eyePos = eye;
         _draws = draws; _batches = batches;
         AlloyLights.LastBuildMs = buildMs;
+    }
+
+    /// <summary>#643: the probe grid's round-robin captures -- <c>gi.perframe</c> probes, six faces each,
+    /// through the same batch loop as <see cref="CaptureProbeInner"/> and booked in the same zone. The
+    /// window is recentred on the player first, so a walk drops the face of probes that left it before
+    /// any capture lands in a slot that has moved.</summary>
+    private static void CaptureGi(int groups)
+    {
+        if (!GiProbes.On) return;
+        long tProbe = FrameZones.Now;
+        long issue0 = FrameZones.Ticks(FrameZones.Zone.Issue);
+        try
+        {
+            Vector3 player = PlayerPos;
+            GiProbes.Tick();
+            GiProbes.Shift(player == default ? _eyePos : player);
+            GiProbes.ClearDropped();
+            GiProbes.FillFromLedger();
+            Vector3 amb = FrameInputs.HasAreaAmbient ? FrameInputs.AreaAmbient * AlloyLights.AmbientScale : new Vector3(DefaultAmbient);
+            Vector3 sky = amb * Gi.Sky.V;
+            long draws = _draws, batches = _batches;
+            float buildMs = AlloyLights.LastBuildMs;
+            Vector3 eye = _eyePos;
+            (float fnear, float ffar) = GiProbes.FacePlanes;
+            int* faceVp = stackalloc int[4] { 0, 0, GiProbes.CapSize, GiProbes.CapSize };
+            bool cull = CullPass.Active;
+            int budget = GiProbes.Budget();
+            for (int p = 0; p < budget; p++)
+            {
+                if (!GiProbes.Begin(sky, out Vector3 pos, out int slot)) break;
+                _capturing = true; _giCapturing = true;
+                _eyePos = pos;
+                bool ok = true;
+                for (int f = 0; f < 6 && ok; f++)
+                {
+                    ok = GiProbes.Face(pos, f, out Matrix4x4 vp);
+                    if (!ok) break;
+                    Matrix4x4 view = ShadowMath.CubeFaceView(pos, f);
+                    // A cube face is exactly 90deg, so the projection's p00 and p11 are both cot(45) = 1.
+                    AlloyLights.Build((float*)&view, 1f, 1f, fnear, ffar);
+                    // the face's own frustum cull over the screen's staged list: without it every face
+                    // submits the whole area, and six of those per probe was the frame (5ms GPU at 8k draws)
+                    if (cull)
+                    {
+                        CullPass.Dispatch(CullPass.PhaseProbe, &vp, hiZ: false, PassGen);
+                        CullPass.BindForDraw(CullPass.PhaseProbe);
+                    }
+                    IssueBatches(0, groups, (float*)&vp, faceVp, fnear, ffar, cull);
+                    if (cull) { CullPass.UnbindForDraw(); BindStagedSlots(); }
+                }
+                _capturing = false; _giCapturing = false;
+                if (ok) GiProbes.Convolve(slot); else { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); break; }
+            }
+            _eyePos = eye;
+            _draws = draws; _batches = batches;
+            AlloyLights.LastBuildMs = buildMs;
+        }
+        finally { FrameZones.Add(FrameZones.Zone.Probe, tProbe, FrameZones.Ticks(FrameZones.Zone.Issue) - issue0); }
     }
 
     /// <summary>What the probe's faces are cleared to -- the sky stand-in.

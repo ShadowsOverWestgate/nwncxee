@@ -102,8 +102,9 @@ internal static unsafe class PostStack
         // while TAA is on, so whichever runs is the last stage and writes the engine's target.
         new()
         {
-            Name = "taa", Resref = ShdTaaFs, Fs = TaaStage.StageFs,
+            Name = "taa", Resref = ShdTaaFs, Fs = TaaStage.StageFs, Param = "uSharp",
             Active = static () => PostChain.TaaOn,
+            Value = static () => Post.TaaSharp.V,
             Ready = &TaaStage.Ready, Prepare = &TaaStage.Prepare,
         },
         new()

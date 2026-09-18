@@ -324,6 +324,12 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Ambient occlusion pass** — screen-space visibility (GTAO) computed from the depth prepass BEFORE the
   colour pass and read by the lit stage as a scale on its ambient term, beside the material's AO map
   (ADR 0021, #379). A lighting input, not a post stage: vanilla's SSAO darkens the finished frame.
+- **Probe grid** — a coarse lattice of world-space irradiance probes that follows the player (#643,
+  experimental). Each probe is a tiny cube capture of Alloy's own opaque set, folded into an
+  octahedral irradiance map plus a depth/depth-squared map for leak-free reads; the lit stage reads
+  the eight probes around a fragment in place of the constant area ambient. Toroidal: walking
+  invalidates only the face of probes that left the window. Distinct from the **environment probe**
+  (`EnvProbe`), the one specular cube captured at the player for env-mapped materials.
 - **Post stack** — the ordered display-space stages that run after the resolve, where the engine ran
   `Camera::DoFrameBufferEffects` (ADR 0020, #375; the aa stage = SMAA, #377). Each stage reads the previous output and hands
   display space on; the last one writes the engine's target and carries the frame's one dither. A

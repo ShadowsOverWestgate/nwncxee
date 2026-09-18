@@ -67,7 +67,7 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = 0; k < n; k++)
         {
             int d = _mvDraw[k], i = _dSlot[d];
-            uint vao = VaoName(_oVao[i], _oCls[i]);
+            uint vao = VaoName(_oVao[i] | _oLodBit[i], _oCls[i]);
             if (vao == 0) continue;
             if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
             int wantCull = _oNoCull[i] ? 0 : 1;

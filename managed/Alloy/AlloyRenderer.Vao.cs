@@ -129,6 +129,66 @@ public sealed unsafe partial class AlloyRenderer
         NormalWeld.Run(elemHost, vertHost, first, count, baseVertex, in _vPos[s], in _vNrm[s]);
     }
 
+    /// <summary>Hand a newly enrolled part's index range to <see cref="MeshLod"/> for simplification. Same
+    /// shape and same edge as <see cref="WeldNormals"/> -- once per newcomer, on the enrollment walk, off
+    /// every frame path -- and refused silently wherever the range or a pool will not resolve.</summary>
+    private static void OfferLod(IntPtr vdoPtr, int item, int prim, int s)
+    {
+        // Triangle lists only: a strip or a fan has no independent edges to collapse, and reindexing one
+        // would change what its indices mean.
+        if (_primTable == null || _primTable[prim] != Gl.TRIANGLES) return;
+        var vdo = new VdoRef(vdoPtr);
+        long elem = vdo.ElemItems, vert = vdo.VertItems;
+        if (elem == 0 || vert == 0 || item < 0 || item >= vdo.ElemCount || item >= vdo.VertCount) return;
+        int count = *(int*)(elem + item * 8 + 4);
+        if (!MeshLod.Wanted(s, item, count)) return;
+        long first = (uint)*(int*)(elem + item * 8);
+        int baseVertex = *(int*)(vert + item * 8);
+        byte* elemHost = OwnedBuffers.PoolHost(vdo.ElemToken);
+        byte* vertHost = OwnedBuffers.PoolHostByName(_vPos[s].Buf, vdo.VertToken, vdo.DynToken);
+        if (elemHost == null || vertHost == null) return;
+        MeshLod.Offer(s, item, elemHost, first, count, vertHost, in _vPos[s], baseVertex);
+    }
+
+    /// <summary>Set on the slot index a batch carries when that batch draws from <see cref="MeshLod"/>'s
+    /// element buffer rather than the engine's pool. It rides the slot rather than a field of its own so the
+    /// batch cut splits on it for free -- a LOD run and a full-detail run are two element buffers, and one
+    /// multidraw cannot straddle them.</summary>
+    internal const int LodVaoBit = 1 << 20;
+
+    /// <summary>Per slot, the VAO whose ELEMENT_ARRAY_BUFFER is the shared LOD arena; every vertex stream in
+    /// it is the engine's, exactly as <see cref="BuildVao"/> binds them.</summary>
+    private static readonly uint[] _vVaoLod = new uint[MaxVdos];
+
+    /// <summary>The LOD twin of this slot's VAO, built on demand from the STAGING walk only -- BuildVao ends
+    /// unbound, which would desynchronise the draw loops' bound-VAO latch. Zero (and so full detail) when the
+    /// arena has no buffer yet or the slot's own streams will not build.</summary>
+    private static uint LodVao(int v)
+    {
+        uint ebo = MeshLod.Ebo;
+        if (ebo == 0) return 0;
+        if (_vVaoLod[v] != 0) return _vVaoLod[v];
+        _vVaoLod[v] = BuildVao(v, ebo);
+        return _vVaoLod[v];
+    }
+
+    /// <summary>Drop this slot's LOD VAO NAME -- a rebuild or a context loss. Forgotten, never deleted, for
+    /// exactly the reasons <see cref="ForgetEngineVao"/> states.</summary>
+    internal static void ForgetLodVao(int v)
+    {
+        if ((uint)v >= (uint)_vVaoLod.Length) return;
+        _vVaoLod[v] = 0;
+    }
+
+    /// <summary>...and the slot's LOD RANGES with it. The separate edge: a context loss leaves the ranges
+    /// meaning what they meant (the arena is rebuilt from its mirror), while a slot that now names another
+    /// VDO leaves every range keyed on it describing the wrong mesh.</summary>
+    private static void ForgetLodSlot(int v)
+    {
+        ForgetLodVao(v);
+        MeshLod.ForgetSlot(v);
+    }
+
     /// <summary>#284: RESIDENCY IS ALLOY'S TO DRIVE, part two. A <c>VertexDataObject</c>'s GL VAO is created
     /// LAZILY, by the engine's draw: <c>VertexDataObjectBase</c>'s constructor zeroes +0xc and the ONLY other
     /// writer of that field in the binary is <c>GLRender::SetVertexDataObject</c> @0x4cff30, whose
@@ -271,6 +331,7 @@ public sealed unsafe partial class AlloyRenderer
             // _vElemBuf = 0 makes BuildVao refuse until the slot is re-harvested: a rebuild over the dead
             // name would bind a buffer this context never generated.
             _vVdo[v] = IntPtr.Zero; _vStale[v] = true; _vElemBuf[v] = 0;
+            ForgetLodSlot(v);
             _dying[n++] = vdo;
         }
         Beams.OnBufferDeleted(name);
@@ -362,6 +423,8 @@ public sealed unsafe partial class AlloyRenderer
     {
         if (_vVao46[v] != 0 && !_vStale[v]) return true;
         if (_vVao46[v] != 0) { uint old = _vVao46[v]; Gl.DeleteVertexArrays(1, &old); }
+        // The LOD twin was built over the same streams, so a rebuild of one is a rebuild of both.
+        if (_vVaoLod[v] != 0) { uint oldLod = _vVaoLod[v]; Gl.DeleteVertexArrays(1, &oldLod); _vVaoLod[v] = 0; }
         _vVao46[v] = BuildVao(v);
         _vOwned[v] = _vVao46[v] != 0 && OwnedBuffers.Owns(_vElemBuf[v]) && OwnedBuffers.Owns(_vPos[v].Buf);
         _vStale[v] = false;
@@ -405,10 +468,14 @@ public sealed unsafe partial class AlloyRenderer
     internal static bool SlotHasUv(int v) => (uint)v < (uint)_vdoCount && _vUv[v].Present;
 
     /// <summary>One VAO over this slot's streams, wherever the engine's pool descriptors say they live.</summary>
-    private static uint BuildVao(int v)
+    private static uint BuildVao(int v) => BuildVao(v, _vElemBuf[v]);
+
+    /// <summary>...over a named element buffer, which is the engine's pool for an ordinary draw and
+    /// <see cref="MeshLod"/>'s arena for a simplified one. Every VERTEX stream is the same either way: a LOD
+    /// run only reindexes.</summary>
+    private static uint BuildVao(int v, uint elem)
     {
-        uint elem = _vElemBuf[v];
-        if (elem == 0) return 0;
+        if (_vElemBuf[v] == 0 || elem == 0) return 0;
         bool skin = _vSkin[v] && _skinning;
         var pos = _vPos[v]; var uv = _vUv[v]; var nrm = _vNrm[v];
         var bi = _vBi[v]; var bw = _vBw[v];
@@ -504,7 +571,9 @@ public sealed unsafe partial class AlloyRenderer
     /// resident before the first present) draws correctly and is simply not counted.</summary>
     private static uint VaoName(int v, int cls)
     {
+        bool lod = (v & LodVaoBit) != 0;
+        v &= LodVaoBit - 1;
         if (_vOwned[v]) _ownedClsMask |= 1 << cls;
-        return _vVao46[v];
+        return lod ? _vVaoLod[v] : _vVao46[v];
     }
 }

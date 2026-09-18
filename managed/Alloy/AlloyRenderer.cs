@@ -326,11 +326,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal struct LitLoc
     {
         public int Oit, OitDim, OitBias, OitGob;
-        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, AoDirect, AoCutout,
+        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, SsaoHalf, AoDirect, AoCutout,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubePcss, CubeDynTex, CubeDynPage, CubeFade, CubeFloor,
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach, Contact, ContactFar,
-                   Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm;
+                   Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm, Gi, GiCell;
         public FeatLoc Feat;
     }
     private static LitLoc _lit, _litH, _litL;
@@ -383,7 +383,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 40;   // 40 = the #493 vis-ID target (IdTarget.VizMode)
+    internal const int LightVizMax = 42;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42 = the #643 probe grid and its coverage
     private static int _lightViz => Renderer.Viz.V;
     /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -404,6 +404,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// stopped needing the flag at all.</summary>
     private static bool _capturing;
     internal static bool Capturing => _capturing;
+    /// <summary>#643: the capture in flight is a GI probe's -- culling off for every batch (so the lit stage
+    /// can mark back faces) and <c>uCapture</c> 2.</summary>
+    private static bool _giCapturing;
     /// <summary>GL_BLEND as the pass last set it, so <see cref="IssueBatches"/>' per-batch toggle starts from
     /// the truth instead of assuming.</summary>
     private static bool _blendOn;
@@ -563,7 +566,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Exposure, Post, Cull, HiZ, Beams, WaterCopy, Weather, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Exposure, Post, Cull, HiZ, Beams, WaterCopy, Weather, Gi, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -931,6 +934,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #165: ahead of every stand-down and every check below -- /alloy reports the renderer for a
         // misrendering session, so it must exist even in a session whose renderer never armed.
         RenderCommands.Register();
+        // Up here with the other unconditional checks, ahead of every stand-down: the static set's decision
+        // table and the record contract it submits from are ours and depend on no engine symbol, so a build
+        // that never arms still reports whether the arithmetic it ships is right. Advisory -- gpu.static is
+        // off by default, so a failing table must cost that path and not drop every user back to vanilla.
+        StaticSelfCheck(log);
         CullPass.Init(log);
         // #170: ahead of every stand-down, matching the host's unconditional calls. The verdict must
         // outlive a renderer that never armed -- /alloy is the report it drives.
@@ -1501,7 +1509,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // whatever the next context recycles that number for.
         // #136: the engine-layout VAO cache goes with it. Same rule, same reason -- a container object is
         // not shared, so every name in it belonged to the context that just went.
-        for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vOwned[v] = false; ForgetEngineVao(v); }
+        for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vOwned[v] = false; ForgetEngineVao(v); ForgetLodVao(v); }
         _waterFailed = false;
         // #257: and so is the target latch -- every name in it belongs to the context that just went.
         ForgetTarget();
@@ -1666,6 +1674,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // of ADR 0017 bought nothing, which no frame-time average would ever say out loud.
                    $"records {(float)_recWritten / _frames:F0}/frame written, " +
                    $"{(float)_recStable / _frames:F0} stable ({_recOwnCap} slots), " +
+                   StaticNote() + ", " +
                    // #330: how much of the engine chase the view bounded away, and the poll audit.
                    ChaseNote() + ", " +
                    (_watchEnrolled == 0 ? "" :
@@ -1717,6 +1726,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $" / cull {GpuMs(GpuTerm.Cull):F2} / hiz {GpuMs(GpuTerm.HiZ):F2} / beams {GpuMs(GpuTerm.Beams):F2}" +
                          $" / water copy {GpuMs(GpuTerm.WaterCopy):F2}" +
                          (_qTerm[(int)GpuTerm.Weather].Measured ? $" / weather {GpuMs(GpuTerm.Weather):F3}" : "") +
+                         (_qTerm[(int)GpuTerm.Gi].Measured ? $" / gi {GpuMs(GpuTerm.Gi):F3}" : "") +
                          $" (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.
@@ -1760,6 +1770,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         ResetChasePeriod();
         _ownDissolve = 0; _ownFade = 0; _skipFogTile = _skipFogGob = 0;
         _recWritten = 0; _recStable = 0;
+        ResetStaticPeriod();
         _nrmDeclared = _nrmBound = 0;
         Array.Clear(_drawsByClass);
         _clusterOverflow = 0;

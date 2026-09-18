@@ -465,7 +465,7 @@ Renderer itself.
 | post.auto | auto | Auto exposure | T | on | U | L | Exposure | The image adapts like an eye: brighter in the dark, dimmer in the light. |
 | post.bloom | bloom | Bloom | S | 0–0.5 step 0.01 · 0.06 | U | L | Bloom | Glow around bright lights. 0 is off. |
 | post.tonemap | tonemap | Tone mapping | D | off / shoulder / aces · aces | U | L | Tone | How bright values above white are compressed. |
-| post.taa | taa | Temporal anti-aliasing | T | off | U | L | Anti-aliasing | Smooths edges over several frames. |
+| post.taa | taa | Temporal anti-aliasing | T | on | U | L | Anti-aliasing | Smooths edges over several frames. |
 | post.automin | automin | Auto exposure minimum | S | 0.01–1 · 0.5 | A | L | Exposure | |
 | post.automax | automax | Auto exposure maximum | S | 1–8 · 2 | A | L | Exposure | |
 | post.autospeed | autospeed | Adapt to dark speed | S | 0.1–10 /s · 1 | A | L | Exposure | |
@@ -477,6 +477,8 @@ Renderer itself.
 | post.dither | dither | Output dither | S | 0–2 · 1 | A | L | Tone | |
 | post.taablend | taablend | TAA history weight | S | 0.02–0.5 · 0.1 | A | L | Anti-aliasing | |
 | post.taau | taau | Temporal upsampling | T | on | A | L | Anti-aliasing | With render scale below 1. |
+| post.taasharp | taasharp | TAA sharpness | S | 0–1 · 0.3 | A | L | Anti-aliasing | Undoes the softness the history blend leaves. 0 = the raw resolve. |
+| post.halfres | halfres | Half-resolution | T | off | U | L | Screen-space effects | Ambient occlusion is computed at a quarter of the pixels and upsampled. Needs temporal anti-aliasing to look clean. Off: the lit stage's 4-tap upsample costs more than the pass saves on a fragment-bound frame. |
 | post.stack | stack | Game post-effects | T | on | A | L | Stock effects | The stock framebuffer effects (gamma, SMAA, toon…) on the Alloy frame. |
 | post.fbpost | fbpost | Hosted content post | T | on | A | L | Stock effects | |
 | post.toonbands | toonbands | Toon bands | S | 1–32 · 1 | A | L | Stock effects | With the game's Toon option; 1 = no posterise. |

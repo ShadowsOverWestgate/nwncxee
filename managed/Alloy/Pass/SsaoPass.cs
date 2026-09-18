@@ -35,6 +35,9 @@ internal static unsafe class SsaoPass
                        _locBlurSrc, _locBlurDepth, _locBlurProj,
                        _locTRaw, _locTHist, _locTVel, _locTWeight, _locTDepth, _locTProj;
     private static int _w, _h, _histCur;
+    /// <summary>The DISPLAY-space extent the targets were sized against, for the arm-time line and the stats
+    /// term: <see cref="_w"/> x <see cref="_h"/> is half of it under <c>post.halfres</c>.</summary>
+    private static int _srcW, _srcH;
     private static bool _built, _failed, _histValid;
     private static int _runs, _temporalRuns;
     /// <summary>True from this frame's pass until the next: the lit stage may read the texture.</summary>
@@ -43,6 +46,13 @@ internal static unsafe class SsaoPass
 
     /// <summary>The lit stage's <c>uAoDirect</c>, read at every lit program bind.</summary>
     internal static float Direct => Ao.Direct.V;
+    /// <summary><c>post.halfres</c>: the pass runs at half the frame's extent (a quarter of the pixels) and
+    /// the lit stage upsamples it depth-aware. The estimate is coarser per frame, which is exactly what the
+    /// temporal accumulator and TAA are there to average. Ships OFF: on a fragment-bound frame the lit
+    /// stage's 4-tap upsample costs more than the quarter-size pass saves (review 2026-09-18).</summary>
+    internal static bool Wanted => Post.HalfRes.V;
+    /// <summary>...as it actually resolved THIS frame: what the lit stage's <c>uSsaoHalf</c> carries.</summary>
+    internal static bool Half { get; private set; }
     /// <summary>#390: does this pass want the velocity target this frame? The motion pass runs ahead of it when so.</summary>
     internal static bool TemporalWanted => Active && Ao.Temporal.V > 0f;
     /// <summary><c>ao.temporal</c>'s Changed: the history was accumulated at another weight.</summary>
@@ -79,20 +89,22 @@ internal static unsafe class SsaoPass
     internal static string Describe()
         => $"ao {(_failed ? "FAILED" : !Ao.On.V ? "BYPASSED" : OptionOn ? "live" : "idle (option off)")}  radius {Ao.Radius.V:F2}  "
          + $"strength {Ao.Strength.V:F2} (x{Strength:F2} from ssao_intensity)  dirs {Ao.Dirs.V}  steps {Ao.Steps.V}  maxpx {Ao.MaxPx.V:F0}  blur {(Ao.Blur.V ? 1 : 0)}  direct {Ao.Direct.V:F2}  "
-         + $"temporal {Ao.Temporal.V:F2}{(Ao.Temporal.V > 0f ? "" : " (single-frame; today's look is temporal 0 dirs 3 steps 3)")}";
+         + $"temporal {Ao.Temporal.V:F2}{(Ao.Temporal.V > 0f ? "" : " (single-frame; today's look is temporal 0 dirs 3 steps 3)")}  "
+         + $"halfres {(Post.HalfRes.V ? "on" : "off")}";
 
     internal static string Stats(int frames)
     {
         int n = _runs, t = _temporalRuns; _runs = 0; _temporalRuns = 0;
         return _failed ? "ao FAILED" : n == 0 ? "ao idle"
-             : $"ao {(float)n / MathF.Max(frames, 1):F2} runs/frame" + (t == 0 ? "" : $" ({(float)t / MathF.Max(frames, 1):F2} temporal)");
+             : $"ao {(float)n / MathF.Max(frames, 1):F2} runs/frame at {_w}x{_h}{(Half ? $" (half of {_srcW}x{_srcH})" : "")}"
+             + (t == 0 ? "" : $" ({(float)t / MathF.Max(frames, 1):F2} temporal)");
     }
 
     /// <summary>Context loss: forget every GL name.</summary>
     internal static void Forget()
     {
         _fbo = 0; _raw = 0; _out = 0; _liveOut = 0; _prog = 0; _progBlur = 0; _hist0 = 0; _hist1 = 0; _progTemporal = 0;
-        _w = 0; _h = 0; _built = false; _failed = false; _histValid = false; Live = false;
+        _w = 0; _h = 0; _srcW = 0; _srcH = 0; _built = false; _failed = false; _histValid = false; Live = false; Half = false;
     }
 
     /// <summary>World edge: the history is another area's; the next temporal pass takes the frame whole.</summary>
@@ -111,9 +123,12 @@ internal static unsafe class SsaoPass
     internal static void Run(uint depthTex, bool depthFilled, Matrix4x4* proj, int* viewport, uint restoreFbo, int frameSeq)
     {
         Live = false;
+        Half = false;
         if (!Active || !depthFilled || depthTex == 0) return;
         if (!_built) EnsurePrograms();
-        if (_failed || !EnsureTargets(viewport[2], viewport[3])) return;
+        bool half = Wanted;
+        if (_failed || !EnsureTargets(viewport[2], viewport[3], half)) return;
+        Half = half;
         float w = _w, h = _h;
         bool temporal = Ao.Temporal.V > 0f && _progTemporal != 0 && _hist0 != 0 && MotionVectors.Painted && MotionVectors.Tex != 0;
         Gl.BindVertexArray(PostChain.FullscreenVao);
@@ -122,7 +137,7 @@ internal static unsafe class SsaoPass
         bool blur = Ao.Blur.V && _progBlur != 0;
         uint histRead = _histCur == 0 ? _hist0 : _hist1, histWrite = _histCur == 0 ? _hist1 : _hist0;
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, blur || temporal ? _raw : _out, 0);
-        Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        Gl.Viewport(half ? viewport[0] / 2 : viewport[0], half ? viewport[1] / 2 : viewport[1], _w, _h);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, depthTex);
         Gl.UseProgram(_prog);
@@ -133,7 +148,8 @@ internal static unsafe class SsaoPass
         Gl.Uniform1f(_locPower, Ao.Strength.V * Strength);
         Gl.Uniform1i(_locDirs, Ao.Dirs.V);
         Gl.Uniform1i(_locSteps, Ao.Steps.V);
-        Gl.Uniform1f(_locMaxPx, Ao.MaxPx.V);
+        // the cap is a SCREEN reach, so it halves with the target: 96 half-res texels would be 192 of the frame's
+        Gl.Uniform1f(_locMaxPx, half ? Ao.MaxPx.V * 0.5f : Ao.MaxPx.V);
         Gl.Uniform1i(_locFrame, temporal ? frameSeq & 63 : 0);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         // #390: the blur FIRST -- it folds the Bayer pattern away, and the accumulator's 3x3 clamp needs a
@@ -198,13 +214,16 @@ internal static unsafe class SsaoPass
         Gl.ActiveTexture(Gl.TEXTURE0);
     }
 
-    /// <summary><c>GL_RG16F</c>, absent from <see cref="Gl"/>.</summary>
-    private const uint Rg16F = 0x822F;   // not-an-offset: GL internal-format enum
 
-    private static bool EnsureTargets(int w, int h)
+    /// <summary>The visibility targets at the extent this frame wants them: the frame's, or half of it
+    /// under <c>post.halfres</c>. A size change reallocates and drops the history, which was accumulated on
+    /// the other grid.</summary>
+    private static bool EnsureTargets(int srcW, int srcH, bool half)
     {
+        int w = half ? (srcW + 1) / 2 : srcW, h = half ? (srcH + 1) / 2 : srcH;
         if (_out != 0 && w == _w && h == _h) return true;
         if (w <= 0 || h <= 0) return false;
+        _srcW = srcW; _srcH = srcH;
         if (_out == 0)
         {
             uint* t = stackalloc uint[4];
@@ -218,7 +237,7 @@ internal static unsafe class SsaoPass
         foreach (uint hs in stackalloc uint[2] { _hist0, _hist1 })
         {
             Gl.BindTexture(Gl.TEXTURE_2D, hs);
-            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Rg16F, w, h, 0, Gl.RG, Gl.HALF_FLOAT, null);
+            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.RG16F, w, h, 0, Gl.RG, Gl.HALF_FLOAT, null);
             RenderTarget.Clamp(Gl.LINEAR);
         }
         _histValid = false;
@@ -232,7 +251,9 @@ internal static unsafe class SsaoPass
             return false;
         }
         _w = w; _h = h;
-        _log?.Info($"SsaoPass: visibility targets {w}x{h} R8");
+        _log?.Info($"SsaoPass: visibility targets {w}x{h} R8"
+                 + (half ? $" -- HALF of the {srcW}x{srcH} frame (post.halfres), upsampled depth-aware in the lit stage"
+                         : $" -- the {srcW}x{srcH} frame's own extent"));
         return true;
     }
 
@@ -386,7 +407,10 @@ internal static unsafe class SsaoPass
         """;
 
     /// <summary>The 4x4 depth-aware box that folds the pattern away: one full period of the Bayer tile,
-    /// weighted by view-distance similarity so occlusion never bleeds across a silhouette.</summary>
+    /// weighted by view-distance similarity so occlusion never bleeds across a silhouette.
+    /// <para>The depth is addressed by UV, never by texel: under <c>post.halfres</c> this stage runs at half
+    /// the depth target's extent, and a <c>texelFetch</c> at the visibility's own coordinates would read the
+    /// top-left quarter of the frame's depth for the whole screen. At equal sizes the two are identical.</para></summary>
     internal const string SsaoBlurFs = """
         #version 460 core
         in vec2 vUV;
@@ -396,14 +420,16 @@ internal static unsafe class SsaoPass
         """ + SsaoLib + """
         void main()
         {
-            ivec2 pix = ivec2(gl_FragCoord.xy);
-            float d0 = CxViewDist(texelFetch(uDepth, pix, 0).r);
+            ivec2 sz = textureSize(uSrc, 0);
+            ivec2 pix = clamp(ivec2(vUV * vec2(sz)), ivec2(0), sz - 1);
+            vec2 inv = 1.0 / vec2(sz);
+            float d0 = CxViewDist(textureLod(uDepth, vUV, 0.0).r);
             float sum = 0.0, wsum = 0.0;
             for (int y = -1; y <= 2; y++)
                 for (int x = -1; x <= 2; x++)
                 {
-                    ivec2 p = clamp(pix + ivec2(x, y), ivec2(0), textureSize(uSrc, 0) - 1);
-                    float d = CxViewDist(texelFetch(uDepth, p, 0).r);
+                    ivec2 p = clamp(pix + ivec2(x, y), ivec2(0), sz - 1);
+                    float d = CxViewDist(textureLod(uDepth, (vec2(p) + 0.5) * inv, 0.0).r);
                     float w = clamp(1.0 - abs(d - d0) / (0.05 * d0), 0.0, 1.0);
                     sum += texelFetch(uSrc, p, 0).r * w;
                     wsum += w;
@@ -469,8 +495,21 @@ internal static unsafe class SsaoPass
             E(fs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is the particle fade's (uProj[3].z / (ndc + uProj[2].z))");
             E(ShaderContract.SlotSafe(fs, "uDepth") && ShaderContract.SlotSafe(bl, "uSrc", "uDepth"), "the samplers the C# side binds are declared");
             E(EffectSsao == 1u, "FramebufferEffect 0 is SSAO (CClientOptions::SetEnableFBEffectSSAO -> SetFBEffectEnabled(0, on))");
-            E(AlloyRenderer.OwnedLitFsMain.Contains("occl *= mix(1.0, texelFetch(uSsao, ivec2(gl_FragCoord.xy), 0).r, uAlphaCut >= 0.0 ? uAoCutout : 1.0);")
+            E(AlloyRenderer.OwnedLitFsMain.Contains("occl *= mix(1.0, CxSsaoAt(ivec2(gl_FragCoord.xy), aoDepth, aoSlope), uAlphaCut >= 0.0 ? uAoCutout : 1.0);")
               && AlloyRenderer.OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl"), "the lit stage folds it into occl, which scales the AMBIENT term");
+            // post.halfres: the pass is a quarter of the pixels and the LIT stage is the upsampler -- there
+            // is no apply pass to put a bilateral filter in, the consumer fetches per fragment.
+            E(AlloyRenderer.OwnedLitFsHead.Contains("float CxSsaoAt(ivec2 pix, float myDepth, float slope)")
+              && AlloyRenderer.OwnedLitFsHead.Contains("if (uSsaoHalf == 0) return texelFetch(uSsao, pix, 0).r;"),
+              "the half-res upsample is the lit stage's, and at full resolution it is the same single fetch as before");
+            E(AlloyRenderer.OwnedLitFsHead.Contains("return wsum > 0.0 ? sum / wsum : near;")
+              && AlloyRenderer.OwnedLitFsHead.Contains("if (dz < best) { best = dz; near = v; }")
+              && AlloyRenderer.OwnedLitFsHead.Contains("max(1.0 - dz / tol, 0.0)"),
+              "...four taps weighted by depth proximity, falling back to the nearest where none agrees");
+            E(AlloyRenderer.OwnedLitFsMain.Contains("float aoSlope = fwidth(gl_FragCoord.z);"),
+              "the tolerance is the surface's own depth slope, taken outside every branch (fwidth wants a defined neighbourhood)");
+            E(!SsaoBlurFs.Contains("texelFetch(uDepth"), "the blur addresses the DEPTH by uv: at half res its own texel coordinates are another quarter of the screen");
+            E(!Post.HalfRes.Default, "post.halfres ships OFF -- the 4-tap upsample costs every lit fragment more than the quarter-size pass saves");
             E(AlloyRenderer.OwnedLitFsMain.Contains("float dirOcc = mix(1.0, occl, uAoDirect);")
               && AlloyRenderer.OwnedLitFsMain.Contains("vec3 diffuse = (sun + sunSss + point) * dirOcc;"),
               "/ao direct is the only route to the DIRECT terms, and 0 leaves them exactly as ADR 0021 had them");

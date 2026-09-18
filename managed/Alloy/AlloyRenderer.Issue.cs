@@ -338,13 +338,15 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.Uniform1i(L.Viz, viz);
                     Gl.Uniform1f(L.AoCutout, Ao.Cutout.V);
                     OitPass.Upload(L.Oit, L.OitDim, _oitOn);
-                    Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
+                    Gl.Uniform1i(L.Capture, _capturing ? (_giCapturing ? 2 : 1) : 0);
+                    GiProbes.Upload(L.Gi, L.GiCell);
                     UploadFeatureTerms(L.Feat, viewport);
                     UploadAreaTerms(L);
                     UploadSunCascades(L);
                     UploadLocalCubes(L);
                     UploadProbe(L);
                     SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
+                    Gl.Uniform1i(L.SsaoHalf, SsaoPass.Half ? 1 : 0);
                     ContactShadow.BindForDraw(L.Contact, L.ContactFar, _capturing);
                     Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, L.SnowLook, L.SnowLight, L.SnowPom, _capturing);
                     Weather.BindEsm(L.CoverEsm, _oitOn || lists);
@@ -422,7 +424,7 @@ public sealed unsafe partial class AlloyRenderer
             // Scene::RenderDrawBucket @0x46d060 draws under Disable(CULL_FACE); everything else draws under
             // the Enable(CULL_FACE) + SetCullFace(BACK) that function leaves behind on every exit. Batches
             // are sorted by (lit, no-cull, VDO), so this toggles at most twice per class.
-            int wantCull = _gNoCull[g] ? 0 : 1;
+            int wantCull = _gNoCull[g] || _giCapturing ? 0 : 1;   // #643: a GI capture sees back faces to mark them
             if (wantCull != boundCull)
             {
                 boundCull = wantCull;

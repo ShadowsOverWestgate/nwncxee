@@ -22,6 +22,13 @@ namespace CX.Alloy;
 /// triangular-PDF noise is exactly what decorrelates the quantisation step, the difference between a smooth
 /// gradient and contour bands. <c>taablend</c> is the current frame's share of the blend at rest (0.1 = a
 /// ten-frame history); <c>taau</c> keeps the TAA history at DISPLAY size under a render scale below 1.
+/// <c>taa</c> ships ON and is the default anti-aliaser: SMAA stands aside while it runs
+/// (<see cref="SmaaStage.Active"/>), so <c>/post taa 0</c> is the A/B back to it. <c>taasharp</c> is the
+/// unsharp mask the copy-out applies to the resolved history -- a temporal average is softer than a spatial
+/// filter at the same edge, and 0.3 is what puts the resolve beside SMAA rather than behind it.
+/// <c>halfres</c> runs the screen-space ambient occlusion at half the render extent (a quarter of the
+/// pixels) and upsamples it depth-aware in the lit stage; it ships on because the temporal accumulator is
+/// what hides the coarser estimate, and TAA now ships on with it.
 /// <c>viz</c> shows one STAGE of the chain -- 1 the bloom alone, 2 the HDR colour alone, 3 the bloom at 20x,
 /// 4 the velocity target -- and <c>clearviz</c> clears the HDR target to magenta, a value nothing else
 /// produces, so magenta in the frame is a pixel NO pass covered. <c>motion</c> (#388) arms the motion-vector
@@ -30,8 +37,8 @@ internal static class Post
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<float> Exposure, Bloom, AutoMin, AutoMax, AutoSpeed, AutoDown, Threshold, Knee,
-                                         AcesMix, TmKnee, Dither, TaaBlend, ToonBands, ToonInk, ToonEdge;
-    internal static readonly Knob<bool> Auto, Taa, Taau, Stack, FbPost, Motion, ClearViz;
+                                         AcesMix, TmKnee, Dither, TaaBlend, TaaSharp, ToonBands, ToonInk, ToonEdge;
+    internal static readonly Knob<bool> Auto, Taa, Taau, HalfRes, Stack, FbPost, Motion, ClearViz;
     internal static readonly Knob<int> Tonemap, Viz;
 
     /// <summary>The tonemap operators, index-aligned with <see cref="PostChain"/>'s <c>Off</c> /
@@ -57,7 +64,7 @@ internal static class Post
                              help: "How bright values above white are compressed.",
                              format: v => (uint)v < 3u ? TonemapNames[v] : "aces");
         G.Section("Anti-aliasing");
-        Taa = G.Toggle("taa", "Temporal anti-aliasing", false, help: "Smooths edges over several frames.");
+        Taa = G.Toggle("taa", "Temporal anti-aliasing", true, help: "Smooths edges over several frames.");
         Taa.Changed = () => { if (Taa.V) TaaStage.Reset(); };
         G.Section("Exposure");
         AutoMin = G.Slider("automin", "Auto exposure minimum", 0.01f, 1f, 0.01f, 0.5f, tier: Tier.Advanced);
@@ -76,6 +83,12 @@ internal static class Post
         TaaBlend = G.Slider("taablend", "TAA history weight", 0.02f, 0.5f, 0.01f, 0.1f, tier: Tier.Advanced);
         Taau = G.Toggle("taau", "Temporal upsampling", true, Tier.Advanced, help: "With render scale below 1.",
                         changed: TaaStage.Reset);
+        TaaSharp = G.Slider("taasharp", "TAA sharpness", 0f, 1f, 0.05f, 0.3f, tier: Tier.Advanced,
+                            help: "Undoes the softness the history blend leaves. 0 = the raw resolve.");
+        G.Section("Screen-space effects");
+        HalfRes = G.Toggle("halfres", "Half-resolution", false,
+                           help: "Ambient occlusion is computed at a quarter of the pixels and upsampled. Needs temporal anti-aliasing to look clean.",
+                           changed: SsaoPass.DropHistory);
         G.Section("Stock effects");
         Stack = G.Toggle("stack", "Game post-effects", true, Tier.Advanced,
                          help: "The stock framebuffer effects (gamma, SMAA, toon…) on the Alloy frame.");

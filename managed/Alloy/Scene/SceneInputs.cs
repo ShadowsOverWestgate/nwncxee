@@ -110,6 +110,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         ShadowMath.SelfCheck(log);   // pure math, runs headless
         FadeSelfCheck(log);          // ...and so does the fade-out bookkeeping
         FlickerSelfCheck(log);       // ...and the animated-light latch
+        GiProbes.LedgerSelfCheck(log);   // ...and #643's bake-ledger file format
         // #257: the frame constants are read, not captured -- and ahead of the stand-down, because the
         // camera, the area terms and the fog are inputs to EVERY Alloy pass, shadows or no shadows.
         FrameRead.Resolve(log);

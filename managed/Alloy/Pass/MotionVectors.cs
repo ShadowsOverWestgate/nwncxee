@@ -22,8 +22,6 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class MotionVectors
 {
-    /// <summary><c>GL_RG16F</c>, absent from <see cref="Gl"/>.</summary>
-    private const uint Rg16F = 0x822F;   // not-an-offset: GL internal-format enum
 
     private static ExtenderLog? _log;
     private static uint _fbo, _tex, _prog;
@@ -148,7 +146,7 @@ internal static unsafe class MotionVectors
         }
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindTexture(Gl.TEXTURE_2D, _tex);
-        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Rg16F, w, h, 0, Gl.RG, Gl.HALF_FLOAT, null);
+        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.RG16F, w, h, 0, Gl.RG, Gl.HALF_FLOAT, null);
         RenderTarget.Clamp(Gl.NEAREST);
         Gl.BindTexture(Gl.TEXTURE_2D, 0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);

@@ -158,7 +158,7 @@ internal static unsafe class PostChain
     internal static string Describe() =>
         $"hdr {(_on ? "on" : "off")}  bloom {Post.Bloom.V:F3}{(StockConfig.HdrBloom ? "" : " (OFF: stock HDR/Bloom option)")}  threshold {Post.Threshold.V:F2}  knee {Post.Knee.V:F2}  " +
         $"exposure {Post.Exposure.V:F2} (auto {(Post.Auto.V ? "on" : "off")}: min {Post.AutoMin.V:F2} max {Post.AutoMax.V:F2} speed {Post.AutoSpeed.V:F2} down {Post.AutoDown.V:F2})  tonemap {Post.Tonemap.Format()}  acesmix {Post.AcesMix.V:F2}  tmknee {Post.TmKnee.V:F2}  " +
-        $"dither {Post.Dither.V:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(Post.Motion.V ? "on" : "off")}  taa {(Post.Taa.V ? "on" : "off")} (taablend {Post.TaaBlend.V:F2}, taau {(Post.Taau.V ? 1 : 0)}, ao temporal {Ao.Temporal.V:F2})"
+        $"dither {Post.Dither.V:F2}  scale {_scale:F2} ({(_w > 0 ? $"{_w}x{_h} render, " : "")}lod bias {LodBias:F2})  motion {(Post.Motion.V ? "on" : "off")}  taa {(Post.Taa.V ? "on" : "off")} (taablend {Post.TaaBlend.V:F2}, taasharp {Post.TaaSharp.V:F2}, taau {(Post.Taau.V ? 1 : 0)}, ao temporal {Ao.Temporal.V:F2})  halfres {(Post.HalfRes.V ? "on" : "off")}"
         + (Post.Viz.V > 0 ? $"  VIZ {Post.Viz.V}" : "")
         + (Post.ClearViz.V ? "  CLEARVIZ (target cleared magenta)" : "")
         + " | " + PostStack.Describe();
@@ -1228,8 +1228,10 @@ internal static unsafe class PostChain
               "the resolve's encode is unconditional -- the gamma gate is Precheck's refusal, not a switch");
 
             // The debug VIEWS default off, so /post reset (every Default) clears a stray /post viz with the rest.
-            E(!Post.Motion.Default && !Post.Taa.Default && Post.Viz.Default == 0 && !Post.ClearViz.Default,
-              "motion, taa and both views default OFF: reset disarms them");
+            // /post motion stays off because TAA arms the pass itself; /post taa is ON -- it is the default
+            // anti-aliaser, and reset must put it back rather than leave the frame on SMAA.
+            E(!Post.Motion.Default && Post.Taa.Default && Post.Viz.Default == 0 && !Post.ClearViz.Default,
+              "the debug views default OFF and taa defaults ON: reset restores the shipped anti-aliaser");
 
             // The shoulder, in C#, mirroring the GLSL: identity below the knee, and never past 1.
             static float Shoulder(float c, float k)

@@ -82,7 +82,11 @@ internal static unsafe class CullPass
     /// #489's second prepass phase: its own set, because <c>MultiDrawElementsIndirectCount</c> takes a CPU
     /// byte offset for the start and phase one's count never comes back to say where its survivors end.</summary>
     internal const int PhasePrepass = 0, PhaseColour = 1, PhaseRetest = 2;
-    private const int Phases = 3;
+    /// <summary>#643: a fourth output set for the probe grid's face captures -- frustum-only dispatches
+    /// against the screen's staged list, six per probe, so a capture submits what a 60m cube face sees
+    /// instead of the whole area. Its own set, so the screen's lists survive it; never sampled.</summary>
+    internal const int PhaseProbe = 3;
+    private const int Phases = 4;
     /// <summary>The shader's <c>uRej</c> mode per phase: the colour phase ignores the verdict buffer, phase
     /// one WRITES it, phase two READS it and tests only the marked draws.</summary>
     private const int RejOff = 0, RejWrite = 1, RejRead = 2;
@@ -140,7 +144,7 @@ internal static unsafe class CullPass
     /// figure the period line already prints is the ceiling; these are the GPU's counts under it.</summary>
     internal static long PrepassKept, RetestKept;
     /// <summary>Count words per ring slot: one range per phase, back to back.</summary>
-    private const int RingPhases = Phases;
+    private const int RingPhases = 3;
     /// <summary>Colour-phase dispatches between two <see cref="Sample"/> calls. <c>CullFrames</c> counts
     /// samples, so the period averages are unchanged by the cadence.</summary>
     private const int SamplePeriod = 60;
@@ -611,7 +615,7 @@ internal static unsafe class CullPass
         Ensure(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
                _readBuf[w] == 0 || _counts.Length > _readCap);
         _readCap = _counts.Length;
-        // #489: the three phases' counts back to back -- colour, then prepass phase one, then phase two.
+        // #489: the three screen phases' counts back to back -- colour, then prepass phase one, then phase two.
         Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _readBuf[w]);
         for (int ph = 0; ph < RingPhases; ph++)
         {
