@@ -94,6 +94,14 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Entries in <see cref="_order"/>: <see cref="_ownCount"/> minus whatever the all-owned-or-none
     /// sweep dropped. The draw walks this, never the slot count.</summary>
     private static int _orderCount;
+    /// <summary>#659 diag: how many ownership slots hang off this gob, and how many of those read as tile gobs.</summary>
+    internal static (int slots, int tile) SlotsOnGob(IntPtr gob)
+    {
+        int n = 0, t = 0;
+        if (gob == IntPtr.Zero) return (0, 0);
+        for (int i = 0; i < _ownCount; i++) if (_oGob[i] == gob) { n++; if (_oTileGob[i]) t++; }
+        return (n, t);
+    }
     /// <summary>#126: blended parts dropped from this enrollment because the class could not be Alloy whole.
     /// #285: dropped means NOT DRAWN -- there is no engine walk behind the class since #264.
     /// Reported: a class that never lands is the one number that separates "no transparent content here"

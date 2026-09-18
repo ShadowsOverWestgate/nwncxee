@@ -193,6 +193,18 @@ public static unsafe class EngineLayout
     /// <summary>MdlNode -&gt; the node name (<c>char[]</c>) <c>FindPart</c> @0x43c5b0 strcasecmp-s through
     /// <see cref="PartNodeLink"/>. #397 forensics only.</summary>
     public static readonly int MdlNodeName = Same("MdlNode", "name", 0x38);
+    /// <summary>#659: MdlNode -&gt; its <c>NewController</c> array (data +0x78, count +0x80, stride
+    /// <see cref="NewControllerStride"/>). <c>MdlNode::InternalControl</c> @0x4990c0 is the loop, byte-for-byte
+    /// the same on both builds. NOTE: +0x80 is the same word <see cref="NodeFlags"/> reads as a matrix gate.</summary>
+    public static readonly int MdlNodeControllers = Same("MdlNode", "controllers", 0x78);
+    /// <inheritdoc cref="MdlNodeControllers"/>
+    public static readonly int MdlNodeControllerCount = Same("MdlNode", "controllerCount", 0x80);
+    /// <summary>#659: a NewController record is 0xc bytes: int target-field id (the raw Part byte offset the
+    /// controller writes, e.g. <see cref="LightRange"/>) at +0, short key count at +4
+    /// (<c>AddGenericControllerSingle</c> @0x4486f0 hard-codes 1 for a plain <c>radius</c>/<c>color</c> line).</summary>
+    public const int NewControllerStride = 0xc;
+    /// <inheritdoc cref="NewControllerStride"/>
+    public static readonly int NewControllerKeyCount = Same("NewController", "keyCount", 0x4);
     /// <summary>MdlNode -&gt; model matrix (row-major float[16]). RenderDrawBucket @0x46d060 passes exactly
     /// that address to <c>RenderInterface::SetModelMatrix</c>. #448: <c>Scene::RenderDrawBucket</c>
     /// (@0x46d060 / rva 0xcd210) passes <c>node+0x18</c> to <c>SetModelMatrix</c> under the same
@@ -1507,6 +1519,13 @@ public static unsafe class EngineLayout
     public static readonly int AreaObjectIds = Same("CNWCArea", "objectIds", 0x318);
     /// <inheritdoc cref="AreaObjectIds"/>
     public static readonly int AreaObjectCount = Same("CNWCArea", "objectCount", 0x320);
+    /// <summary>#659/#664: CNWCArea -&gt; the placeable-light registry: an array of pointers (stride 8) to
+    /// 16-byte <c>CNWCPlaceableObjectLight</c> records {uint object id @+0, Gob* @+8}, count at +0x330.
+    /// <c>CNWCArea::AddPlaceableObjectLight</c> @0x705120 / <c>GetPlaceableObjectLight</c> @0x7057e0 walk
+    /// exactly this. Each Gob is a one-node <c>fx_placeable01</c> that owns one PartLight and no mesh.</summary>
+    public static readonly int AreaPlaceableLights = Same("CNWCArea", "placeableLights", 0x328);
+    /// <inheritdoc cref="AreaPlaceableLights"/>
+    public static readonly int AreaPlaceableLightCount = Same("CNWCArea", "placeableLightCount", 0x330);
     /// <summary>CNWCCreature -&gt; the hovered object id mirrored onto the PLAYER creature (0x7f000000 = nothing).
     /// <c>UpdateMouseCursorAppearance</c> is the only writer: it stores the newly picked id there and clears it to
     /// 0x7f000000 when the hover drops. Linux +0x448, Windows +0x428 -- the same -0x20 CNWCCreature delta

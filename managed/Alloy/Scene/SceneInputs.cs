@@ -489,6 +489,7 @@ public sealed unsafe class SceneInputs : IExtenderService
                 if (wd < 40f)
                     _log?.Info($"SceneInputs: masterlight d={wd:F1} pos=({wp.X:F0},{wp.Y:F0},{wp.Z:F1}) type={*(int*)(p + LightKind)} cast={*(int*)(p + LightCastShadows)} flags={*(int*)(p + LightFlagA)}/{*(int*)(p + LightFlagB)} range={*(float*)(p + LightRange):F1} alt={*(float*)(p + LightRangeAlt):F1} inten={*(float*)(p + LightIntensity):F2} fade={*(float*)(p + LightFade):F2} rgb=({*(float*)(p + LightColour):F2},{*(float*)(p + LightColour + 4):F2},{*(float*)(p + LightColour + 8):F2}) adjR={(_getAdjRadius != null ? _getAdjRadius((IntPtr)p) : -1f):F2}");
             }
+            if (_lightDiag && AlloyRenderer.FrameSeq % 300 == 0 && FrameInputs.HasCamera) LightProbe(p, area);
             if (*(int*)(p + LightFlagA) == 0 && *(int*)(p + LightFlagB) == 0) continue;
             float range = *(float*)(p + LightRange);
             if (range <= 0f || range >= DirectionalRange) continue;
@@ -601,6 +602,44 @@ public sealed unsafe class SceneInputs : IExtenderService
         }
         FadeDepartedLights();
         _walkDoneCount = FrameInputs.LightCount;
+    }
+
+    /// <summary>#659 probe (<c>/shadow lightdiag</c>, every 300 frames, lights within 40 m): the static-light rule's
+    /// three inputs read off a running client -- the light's gob and its tile data, the MdlNode name, the
+    /// placeable-light registry hit, and every controller id with its key count. Cold diag path: allocates.</summary>
+    private static void LightProbe(byte* p, IntPtr area)
+    {
+        var pos = new Vector3(*(float*)(p + LightDir), *(float*)(p + LightDir + 4), *(float*)(p + LightDir + 8));
+        float d = (pos - FrameInputs.CameraPos).Length();
+        if (d >= 40f) return;
+        IntPtr gob = *(IntPtr*)(p + PartGob);
+        bool tile = gob != IntPtr.Zero && *(IntPtr*)(gob + GobTileData) != IntPtr.Zero;
+        IntPtr node = *(IntPtr*)(p + PartNodeLink);
+        string name = node == IntPtr.Zero ? "?" : Marshal.PtrToStringAnsi(node + MdlNodeName) ?? "?";
+        uint regId = 0; bool reg = false;
+        int regCount = area == IntPtr.Zero ? 0 : *(int*)(area + AreaPlaceableLightCount);
+        IntPtr regData = area == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(area + AreaPlaceableLights);
+        if (gob != IntPtr.Zero && regData != IntPtr.Zero && regCount > 0 && regCount < 65536)
+            for (int i = 0; i < regCount && !reg; i++)
+            {
+                IntPtr rec = *((IntPtr*)regData + i);
+                if (rec != IntPtr.Zero && *(IntPtr*)(rec + 8) == gob) { reg = true; regId = *(uint*)rec; }
+            }
+        var ctl = new System.Text.StringBuilder();
+        int cnt = node == IntPtr.Zero ? -1 : *(int*)(node + MdlNodeControllerCount);
+        byte* recs = node == IntPtr.Zero ? null : *(byte**)(node + MdlNodeControllers);
+        bool animated = false;
+        if (recs != null && cnt > 0 && cnt < 256)
+            for (int i = 0; i < cnt; i++)
+            {
+                int id = *(int*)(recs + i * NewControllerStride);
+                short keys = *(short*)(recs + i * NewControllerStride + NewControllerKeyCount);
+                if ((id == LightRange || id == LightColour) && keys > 1) animated = true;
+                ctl.Append(ctl.Length == 0 ? "" : ",").Append(id.ToString("X")).Append('x').Append(keys);
+            }
+        string cls = gob == IntPtr.Zero ? "TILE(gob=0)" : tile ? "TILE(tileData)" : reg ? "PLACEABLE-LIGHT" : "OTHER";
+        var on = AlloyRenderer.SlotsOnGob(gob);
+        _log?.Info($"SceneInputs: [lightdiag] #659 light={(nint)p:X} d={d:F1} pos=({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) node={name} gob={gob:X} tile={tile} reg={reg} regId={regId:X} regCount={regCount} slotsOnGob={on.slots}({on.tile} tile) ctl[{cnt}]={ctl} animated={animated} => {cls}{(animated ? "+ANIM" : "")} flags={*(int*)(p + LightFlagA)}/{*(int*)(p + LightFlagB)} range={*(float*)(p + LightRange):F2} rgb=({*(float*)(p + LightColour):F2},{*(float*)(p + LightColour + 4):F2},{*(float*)(p + LightColour + 8):F2})");
     }
 
     /// <summary>CPU-side light-&gt;cube bind: cube slot per AREA light (-1 = no cube), the one thing that tells
