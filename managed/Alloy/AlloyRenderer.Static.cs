@@ -106,11 +106,32 @@ public sealed unsafe partial class AlloyRenderer
     /// so <see cref="StaticSelfCheck"/> can exercise the decision table headless -- the two VDO terms above it
     /// read the engine's commit ledger, which has no meaning before a frame has run.</summary>
     private static bool StaticShape(int i, int cls, bool dis, float dissolve, float alpha)
-        => cls <= (int)AlloyClass.Cutout
-           && (_oGob[i] == IntPtr.Zero || _oTileGob[i]) && !_oMx[i] && !_oDangly[i] && _oBone[i] < 0 && !_vSkin[_oVao[i]]
-           && !_oFading[i] && !dis && dissolve == 0f && alpha == 1f
-           && _recCtl[i] == IntPtr.Zero && !_recTexStale[i]
-           && _cGen[i] == _recEpoch;
+    {
+        int why;
+        if (cls > (int)AlloyClass.Cutout) why = 0;
+        else if (!(_oGob[i] == IntPtr.Zero || _oTileGob[i])) why = 1;
+        else if (_oMx[i]) why = 2;
+        else if (_oDangly[i] || _oBone[i] >= 0 || _vSkin[_oVao[i]]) why = 3;
+        else if (_oFading[i] || dis || dissolve != 0f || alpha != 1f) why = 4;
+        else if (_recCtl[i] != IntPtr.Zero || _recTexStale[i]) why = 5;
+        else if (_cGen[i] != _recEpoch) why = 6;
+        else return true;
+        _stWhy[why]++;
+        return false;
+    }
+
+    /// <summary>#660: which <see cref="StaticShape"/> term refused a slot first this period, in the order the
+    /// test asks them (class, gob, matrix, posed, transient, texture, range). The instrument for a freeze
+    /// that admits nothing.</summary>
+    private static readonly long[] _stWhy = new long[7];
+    private static readonly string[] StWhyName = { "class", "gob", "mx", "posed", "transient", "tex", "range" };
+
+    private static string StaticWhy()
+    {
+        var sb = new System.Text.StringBuilder(" refused/frame:");
+        for (int k = 0; k < _stWhy.Length; k++) sb.Append(' ').Append(StWhyName[k]).Append(' ').Append(((float)_stWhy[k] / Math.Max(1, _frames)).ToString("F0"));
+        return sb.ToString();
+    }
 
     /// <summary>May this slot serve last frame's record whole? The settle counter says the record has not
     /// moved for <c>gpu.settle</c> frames of membership; the three stamps say the record belongs to THIS
@@ -128,9 +149,9 @@ public sealed unsafe partial class AlloyRenderer
         => GpuStatic.StoodDown is string s ? $"gpu.static stood down ({s})"
          : !GpuStatic.Enabled.V ? "gpu.static off"
          : $"gpu.static {(float)_stFrozen / _frames:F0} frozen/frame of {(float)_stSettled / _frames:F0} " +
-           $"settled ({_stThawed} thawed this period), {(float)_batches / _frames:F0} indirect calls/frame";
+           $"settled ({_stThawed} thawed this period), {(float)_batches / _frames:F0} indirect calls/frame" + StaticWhy();
 
-    private static void ResetStaticPeriod() { _stFrozen = 0; _stSettled = 0; _stThawed = 0; }
+    private static void ResetStaticPeriod() { _stFrozen = 0; _stSettled = 0; _stThawed = 0; Array.Clear(_stWhy); }
 
     /// <summary>Headless: the frozen path's record contract and the membership decision table. The record a
     /// frozen slot serves is the SAME <c>CxDraw</c> the walked path writes -- one 60-float, 240-byte std430
