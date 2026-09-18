@@ -379,6 +379,18 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Instance bake** — the baked light of one placed instance: the mesh's charts sized from the
   instance's world-space area (visual transforms included) and packed per instance into atlas pages.
   Fifty pillars are fifty rectangles, never one shared bake.
+- **Directional lightmap** — what an instance bake stores: the irradiance a texel receives from every
+  static light plus the dominant direction it came from, so the surface's own normal detail still shapes
+  the light at draw time. Avoid: flat lightmap, irradiance map alone.
+- **Hot light** — a static light with a mover under it this frame. A baked surface owes it a live shadow
+  for that mover only; the light's own contribution stays baked. Avoid: dynamic light (that is a light
+  that is never static).
+- **Mover shadow** (lightmap) — the shadow a hot light's mover casts onto a baked surface, taken back out
+  of the baked light rather than added by the real-time loop. The `lightmap.movers` toggle; off means
+  movers cast no shadow from static lights on baked surfaces.
+- **Bake key** — the identity of one instance bake: the mesh's chart, the instance's placement, the
+  texel density, and only the static lights that reach the instance. A torch a script toggles moves the
+  keys of the instances it reaches, nothing else.
 - **Area-loaded hold** — the client keeps the server's "place the player" message (the
   area-loaded send) back until the lightmap bake has landed, so the player never stands in a
   world that is still baking. Ends at the first of: bake landed, the player skips, the hard cap.
