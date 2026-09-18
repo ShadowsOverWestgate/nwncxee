@@ -829,9 +829,11 @@ internal static unsafe class AlloyCensus
 
     /// <summary>#397: does a LATER sibling of <paramref name="part"/> draw the same geometry at the same
     /// place? Same parent, byte-equal local pos/rot/scale, a renderable visible tri-mesh, and the same element
-    /// and vertex item counts. Gob parts only (tiles are BSP items), and only parents with a small fan-out.
-    /// ponytail: an intentional coincident overlay (a decal mesh over its base) with EQUAL counts would lose
-    /// its base here; dup-sibling on the rejects line says how often this fires.</summary>
+    /// and vertex item counts, and (#317) byte-equal vertex positions when the VDO can be read -- two faces
+    /// of one door leaf share everything but the positions. Gob parts only (tiles are BSP items), and only
+    /// parents with a small fan-out. ponytail: an intentional coincident overlay (a decal mesh over its base)
+    /// with EQUAL counts and positions would lose its base here; dup-sibling on the rejects line says how
+    /// often this fires.</summary>
     private static bool DupSibling(IntPtr part, int e, in VdoRef vd, int it)
     {
         IntPtr parent = *(IntPtr*)(part + EngineLayout.PartParent);
@@ -860,6 +862,8 @@ internal static unsafe class AlloyCensus
             if (se == 0 || si >= sv.ElemCount) continue;
             if (*(int*)(se + si * 8 + 4) != myElems) continue;
             if (svv != 0 && vert != 0 && *(int*)(svv + si * 8 + 4) != myVerts) continue;
+            // #317: same transform and counts is not the same mesh -- a door leaf's two faces pass both
+            if (_pVdo[es] == _pVdo[e] && AlloyRenderer.SamePositions(_pVdo[e], it, si, myVerts) == false) continue;
             if (WatchedEntry(e)) _log?.Info($"[dumpframe] ENROLL dup-sibling: entry={e} loses to entry={es} (the later twin)");
             return true;
         }

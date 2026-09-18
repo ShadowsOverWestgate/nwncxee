@@ -44,7 +44,11 @@ whether they still vanish.
 3. **`TileFade <= 0` skip** at route -- was the one hole with no counter; `fog-out` on the `NOT DRAWN`
    clause is that counter now, split gob/tile. Predicts: `gob` nonzero beside a missing limb.
 4. **Enrolment gate** (`dup-sibling`, `unrenderable`, the +0x34 hidden byte): model-static, so it does
-   not fit random-and-healing. Only if 1--3 read empty.
+   not fit random-and-healing. Only if 1--3 read empty. It DID fit the 2026-09-18 door: `dup-sibling=4`
+   on the census `rejects:` line, no `D` row for the leaf's near face, `poll`/`cull` no help. The #397
+   gate was refusing a door leaf's two coincident faces as twins; it compares vertex positions now.
+   `tools/mdlcensus/dupsib.py <hak>... --class DOOR` is the offline twin of that gate: exit 1 names every
+   part it would still refuse (`--old` shows the pre-#317 rule).
 
 ## What is refuted, so nobody re-chases it
 

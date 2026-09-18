@@ -86,6 +86,31 @@ public sealed unsafe partial class AlloyRenderer
         return false;
     }
 
+    /// <summary>#317: do two items of one VDO carry byte-equal vertex POSITIONS? The #397 dup-sibling gate
+    /// asks this last: the shield twins it exists for are the same mesh twice, while a door leaf's two faces
+    /// (SoW <c>t_door14</c>: <c>Object16</c> at x=-0.05, <c>Object15</c> at +0.05) share a node transform
+    /// and counts yet are different geometry, and refusing one left the door single-sided. Null when the VDO
+    /// has no harvested slot or no host shadow yet; the caller keeps its old verdict then.</summary>
+    internal static bool? SamePositions(IntPtr vdoPtr, int itemA, int itemB, int verts)
+    {
+        int s = -1;
+        for (int v = 0; v < _vdoCount; v++) if (_vVdo[v] == vdoPtr) { s = v; break; }
+        if (s < 0 || !_vPos[s].Present || _vPos[s].Type != Gl.FLOAT || _vPos[s].Size != 3) return null;
+        var vdo = new VdoRef(vdoPtr);
+        long vert = vdo.VertItems;
+        if (vert == 0 || itemA >= vdo.VertCount || itemB >= vdo.VertCount || verts <= 0) return null;
+        byte* host = OwnedBuffers.PoolHostByName(_vPos[s].Buf, vdo.VertToken, vdo.DynToken);
+        if (host == null) return null;
+        int a = *(int*)(vert + itemA * 8), b = *(int*)(vert + itemB * 8);
+        for (int k = 0; k < verts; k++)
+        {
+            var pa = new ReadOnlySpan<byte>(host + _vPos[s].Off + (long)(a + k) * _vPos[s].Stride, 12);
+            var pb = new ReadOnlySpan<byte>(host + _vPos[s].Off + (long)(b + k) * _vPos[s].Stride, 12);
+            if (!pa.SequenceEqual(pb)) return false;
+        }
+        return true;
+    }
+
     /// <summary>#144 retry: weld a newly enrolled gob part's per-face normals on the pools' host shadows.
     /// Cold -- once per newcomer, on the enrollment walk -- and refused silently when any range or pool
     /// will not resolve, exactly as the staging walk refuses the same part.</summary>
