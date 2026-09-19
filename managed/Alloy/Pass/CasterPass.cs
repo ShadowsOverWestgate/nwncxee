@@ -139,7 +139,11 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <summary>Face size of the cube array as rendered -- the receiver's texel scale.</summary>
     internal static int CubeFaceSize => _cubeSize;
     /// <summary>Near plane the cubes were rendered with; welds the receiver's depth reference to the render.</summary>
-    internal static float CubeNearPlane => CubeNear;
+    /// <summary>Every point cube's near plane: the self-shadow skip radius (<c>shadow.near</c> x <c>light.radius</c>),
+    /// never under <see cref="CubeNear"/>. The geometry a light node sits in (a brazier's bowl) casts nothing,
+    /// on live receivers exactly as in the bake -- the two disagreeing cut a creature's shadow off near it.</summary>
+    internal static float CubeNearPlane => MathF.Max(CubeNear, AlloyLights.ShadowNearWorld);
+    private static float _cubeNearSeen;
 
     // --- #241: the cube re-bake predicate. Every slot's six faces baked unconditionally every frame was
     // #187's deliberate simplification, waived until the renderer owned the pipeline; #238's trace made the
@@ -1610,6 +1614,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // light stages nothing and would otherwise read as the creature shadow vanishing every still frame.
         bool nearestBaked = false;
         bool invalidate = _frameInvalidate;
+        if (CubeNearPlane != _cubeNearSeen) { _cubeNearSeen = CubeNearPlane; invalidate = true; }   // a knob moved the near plane: every cube re-bakes
         bool scannedAll = true;
         // #305: the split runs only when its pool exists -- shadow.dyncount 0 or a refused allocation is the
         // combined bake everywhere, exactly as /shadow split 0 spells it.
@@ -1628,7 +1633,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             Vector3 pos = FrameInputs.LocalLightPos[li];
             float far = FrameInputs.LocalLightRange[li];
             IntPtr id = FrameInputs.LocalLightId[li];
-            if (!(far > CubeNear)) { _cubeBaked[slot] = false; continue; }   // no reach, nothing worth sampling
+            if (!(far > CubeNearPlane)) { _cubeBaked[slot] = false; continue; }   // no reach, nothing worth sampling
 
             // #241 term 1+2: the light itself. Position, reach and identity are the three things the recorded
             // faces are a function of, so any of them differing is a bake -- as is a slot holding no complete
@@ -1784,7 +1789,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 for (int f = 0; f < CubeFaces && whole; f++)
                 {
                     Vector3 fwd = ShadowMath.CubeFaceForward(f);
-                    Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNear, far);
+                    Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, CubeNearPlane, far);
                     whole = RenderView(CubeTex, _cubeSize, slot * CubeFaces + f, &vp,
                                        fwd, pos, far, 0f, point: true,
                                        set: combined ? CasterGather.SetAll : CasterGather.SetStatic);
@@ -1835,7 +1840,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 for (int f = 0; f < CubeFaces && dynWhole; f++)
                 {
                     if ((bake >> f & 1) == 0) continue;
-                    Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(dpos, f, CubeNear, far);
+                    Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(dpos, f, CubeNearPlane, far);
                     dynWhole = RenderView(CubeDynTex, _cubeDynSize, page * CubeFaces + f, &vp,
                                           ShadowMath.CubeFaceForward(f), dpos, far, 0f, point: true,
                                           set: roam ? CasterGather.SetAll : CasterGather.SetDynamic, receiver: true);
@@ -2737,6 +2742,26 @@ public sealed unsafe partial class CasterPass : IExtenderService
             return true;
         }
         return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point, set, receiver);
+    }
+
+    /// <summary>#674: the lightmap bake's scratch cube -- the STATIC set's depth from one light, six views
+    /// submitted synchronously into <paramref name="tex"/> (a one-cube cube array, <paramref name="size"/> a
+    /// side) through the same gather the frame's cubes use, filtered to still casters. Every static light is
+    /// baked shadowed this way, the ones past the cube ranking included (#666). False when the shadow bracket
+    /// staged nothing this frame or a view refused; the caller leaves the light for a later frame.</summary>
+    internal static bool BakeStaticCube(uint tex, int size, Vector3 pos, float near, float far)
+    {
+        near = MathF.Max(near, CubeNear);
+        if (!_gStaged || tex == 0 || !(far > near)) return false;
+        for (int f = 0; f < CubeFaces; f++)
+        {
+            Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, near, far);
+            bool ok = CasterGather.Active
+                ? GatherSubmit(tex, size, f, &vp, ShadowMath.CubeFaceForward(f), pos, far, 0f, true, CasterGather.SetStatic, false)
+                : ClearLayer(tex, size, f);
+            if (!ok) return false;
+        }
+        return true;
     }
 
     /// <summary>The target textures <see cref="BeginTarget"/> has verified complete -- the sun array, the

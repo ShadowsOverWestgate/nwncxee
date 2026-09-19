@@ -70,6 +70,19 @@ internal static class RenderPasses
             Stats = MeshChart.Stats,
         }, log);
 
+        // #674: the lightmap bake -- the pages, the scratch pair and the per-slot records. Revoke rewinds the
+        // packing (every rect names an instance of an area that is gone); ContextLost drops the names.
+        r.Register(new PassLifecycle
+        {
+            Name = "lightmap",
+            Attach = LightmapBake.Attach,
+            Install = LightmapBake.Install,
+            SelfCheck = l => { LightmapBake.SelfCheck(l); BakeCache.SelfCheck(l); },
+            Revoke = LightmapBake.Revoke,
+            ContextLost = LightmapBake.ContextLost,
+            Stats = LightmapBake.Stats,
+        }, log);
+
         // #129: FrameSnapshot first, because FrameGraph's own check asserts that the ownable-bucket list AGREES
         // with whether Alloy water can draw -- so water's boot knobs have to be read before that check runs.
         r.Register(new PassLifecycle

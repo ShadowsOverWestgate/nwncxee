@@ -58,6 +58,9 @@ internal static unsafe partial class GiProbes
 
     private static byte[]? _arena;
     private static Dictionary<long, int> _ledger = new(MaxCells);
+    /// <summary>The fingerprint each arena cell was baked under: a cell restored under another one is a
+    /// stand-in and queues its probe's refresh.</summary>
+    private static readonly ulong[] _cellHash = new ulong[MaxCells];
     private static int _cells;
     /// <summary>The fingerprint this ledger was baked under; 0 = not established yet.</summary>
     private static ulong _lightHash;
@@ -95,10 +98,9 @@ internal static unsafe partial class GiProbes
     private static long Q(Vector3 v, float step)
         => (long)Mix(Mix(Mix(FnvOffset, Q(v.X, step)), Q(v.Y, step)), Q(v.Z, step));
 
-    /// <summary>This frame's lighting fingerprint: the two area terms and an ORDER-INDEPENDENT xor
-    /// of the point lights' quantized position, range and chroma. Chroma rather than colour so an animated
-    /// torch's pulse (#629) does not move it; coarse position so a light that jitters does not either.
-    /// Allocation-free -- one pass over the staged snapshot.</summary>
+    /// <summary>This frame's lighting fingerprint: the two area terms and the walk's settled static-set
+    /// fingerprint (<see cref="LightmapBake.SetHash"/>: an order-independent xor of quantized position,
+    /// range and chroma over the uncut list, held 120 frames). 0 until that set settles.</summary>
     private static ulong LightHash()
     {
         if (!FrameInputs.HasAreaAmbient && !FrameInputs.HasSun) return 0;
@@ -106,18 +108,12 @@ internal static unsafe partial class GiProbes
         h = Mix(h, Q(FrameInputs.AreaAmbient, 0.02f));
         h = Mix(h, Q(FrameInputs.AreaDiffuse, 0.02f));
         h = Mix(h, Q(FrameInputs.AreaDiffuseDir, 0.05f));
-        ulong acc = 0;
-        int n = FrameInputs.LightCount;
-        for (int i = 0; i < n; i++)
-        {
-            Vector4 pr = FrameInputs.AreaLightPosRange[i];
-            Vector3 c = FrameInputs.AreaLightColor[i];
-            float m = MathF.Max(MathF.Max(c.X, c.Y), MathF.Max(c.Z, 1e-3f));
-            ulong p = FnvOffset;
-            p = Mix(p, Q(pr.X, 4f)); p = Mix(p, Q(pr.Y, 4f)); p = Mix(p, Q(pr.Z, 4f)); p = Mix(p, Q(pr.W, 4f));
-            p = Mix(p, Q(c / m, 0.1f));
-            acc ^= p;
-        }
+        // #674: the static set's fingerprint is over the UNCUT, unfaded walk, settled by LightmapBake; the
+        // uploaded list is the nearest-N faded, camera-culled cut, and hashing it re-baked every probe each
+        // time the player walked. 0 = not settled yet: wait. ponytail: a dynamic placeable light toggled by
+        // script leaves the GI stale until the next static edge
+        ulong acc = LightmapBake.SetHash;
+        if (acc == 0) return 0;
         return Mix(h, (long)acc);
     }
 
@@ -132,13 +128,15 @@ internal static unsafe partial class GiProbes
         if (++_candFor != HashHold || h == _lightHash) return;
         if (_lightHash != 0)
         {
+            // the ledger STAYS: its cells are stand-ins under the new fingerprint (each restore of one queues
+            // a refresh) -- dropping it re-baked the whole grid at gi.perframe every time the static set
+            // grew by one light on a walk, and GI never finished warming up (#674 live)
             _stales++;
             Save(_lightHash);
-            DropLedger();
             _refreshLeft = Count;
         }
         _lightHash = h;
-        if (_needLoad) { _needLoad = false; Load(h); }
+        Load(h);
     }
 
     private static void DropLedger()
@@ -173,10 +171,11 @@ internal static unsafe partial class GiProbes
         int merged = 0;
         foreach (var kv in p.Index)
         {
-            if (_ledger.ContainsKey(kv.Key)) continue;
+            if (_ledger.TryGetValue(kv.Key, out int have) && _cellHash[have] == p.Hash) continue;
             int at = Reserve(kv.Key);
             if (at < 0) break;
             Buffer.BlockCopy(p.Arena, kv.Value * ProbeBytes, _arena!, at * ProbeBytes, ProbeBytes);
+            _cellHash[at] = p.Hash;
             merged++;
         }
         _log?.Info($"GiProbes: {merged} of {p.Cells} probes restored from the disk bake cache ({p.Hash:x16})");
@@ -230,6 +229,7 @@ internal static unsafe partial class GiProbes
                 Gl.BindTexture(Gl.TEXTURE_2D, 0);
                 _key[slot] = key; _holds[slot] = true; _keyless--;
                 Captures++; _hits++; filled++;
+                if (_cellHash[cell] != _lightHash && _refreshLeft < Count) _refreshLeft++;
             }
     }
 

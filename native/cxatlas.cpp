@@ -17,10 +17,10 @@ struct CxChartResult
     const float* uv;         // 2 per output vertex, atlas TEXEL units
     const uint32_t* xref;    // output vertex -> input vertex
     const uint32_t* index;   // output index run (indexes output vertices), indexCount long
-    uint32_t vertexCount, indexCount, chartCount, width, height;
+    uint32_t vertexCount, indexCount, chartCount, width, height, looseVerts;
 };
 
-// 0 ok; 1 bad input; 2 xatlas AddMesh refused; 3 a face ended up in no chart (uncharted triangle);
+// 0 ok; 1 bad input; 2 xatlas AddMesh refused; 3 no atlas came out;
 // 4 the output overflowed 16-bit indexing (Alloy draws everything as GL_UNSIGNED_SHORT).
 CX_EXPORT int cx_chart(const float* pos, const float* nrm, const float* uv, uint32_t vertCount,
                        const uint16_t* idx, uint32_t idxCount, float texelsPerUnit, uint32_t padding,
@@ -48,19 +48,23 @@ CX_EXPORT int cx_chart(const float* pos, const float* nrm, const float* uv, uint
     if (atlas->meshCount != 1 || atlas->width == 0 || atlas->height == 0) { xatlas::Destroy(atlas); return 3; }
     const xatlas::Mesh& m = atlas->meshes[0];
     if (m.vertexCount > 65535) { xatlas::Destroy(atlas); return 4; }
-    for (uint32_t i = 0; i < m.vertexCount; i++)
-        if (m.vertexArray[i].atlasIndex < 0) { xatlas::Destroy(atlas); return 3; }
+    // a vertex in no chart is one no kept face references (loose or degenerate): it takes uv 0, the
+    // mesh charts. The faces xatlas kept all have a chart; a whole mesh refused for a loose vertex was
+    // the statue that never baked (#674 live).
     // malloc, not new: with XA_MULTITHREADED=0 xatlas needs no libstdc++ and neither does this file.
+    uint32_t loose = 0;
     float* uvs = (float*)malloc(sizeof(float) * m.vertexCount * 2);
     uint32_t* xref = (uint32_t*)malloc(sizeof(uint32_t) * m.vertexCount);
     for (uint32_t i = 0; i < m.vertexCount; i++)
     {
-        uvs[i * 2] = m.vertexArray[i].uv[0]; uvs[i * 2 + 1] = m.vertexArray[i].uv[1];
+        bool in = m.vertexArray[i].atlasIndex >= 0;
+        if (!in) loose++;
+        uvs[i * 2] = in ? m.vertexArray[i].uv[0] : 0.0f; uvs[i * 2 + 1] = in ? m.vertexArray[i].uv[1] : 0.0f;
         xref[i] = m.vertexArray[i].xref;
     }
     out->atlas = atlas; out->uv = uvs; out->xref = xref; out->index = m.indexArray;
     out->vertexCount = m.vertexCount; out->indexCount = m.indexCount; out->chartCount = m.chartCount;
-    out->width = atlas->width; out->height = atlas->height;
+    out->width = atlas->width; out->height = atlas->height; out->looseVerts = loose;
     return 0;
 }
 

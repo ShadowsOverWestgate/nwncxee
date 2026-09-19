@@ -142,6 +142,12 @@ internal static class ShaderContract
     public static bool SlotIndexSafe(string src)
         => !src.Contains("gl_DrawID") || src.Contains("CxSlot(uDrawBase + gl_DrawID)");
 
+    /// <summary>#674: a fragment stage reading the chart UV needs a vertex stage that forwards it -- a
+    /// pre-#674 <c>cx_ownlit_vs</c> override beside the embedded fragment stage would leave <c>vChart</c>
+    /// unwritten (a link error on strict drivers, undefined reads on the rest). A fragment override that
+    /// never reads it is fine either way: it simply never reads the lightmap.</summary>
+    public static bool ChartSafe(string vs, string fs) => !fs.Contains("vChart") || vs.Contains("vChart");
+
     /// <summary>The lit stage's whole sampler set: the diffuse, the map ladder and the probe cube.</summary>
     public static bool LitSlotSafe(string fs)
         => SlotSafe(fs, "uTex") && SlotSafe(fs, TextureSlots.MapSamplers) && SlotSafe(fs, "uProbe");
@@ -360,13 +366,26 @@ internal static class ShaderContract
                   // #140: the engine's own range-normalised curve. A stage that kept the old absolute
                   // 1/d^n plateau still renders -- blinding at a metre, black at five -- and says nothing,
                   // so the shape is asserted rather than trusted to stay put.
-                  && AlloyLights.FragmentLib.Contains("float att = uFalloff.x * fade / (at.x + at.y * f2);")
+                  && AlloyLights.FragmentLib.Contains("att = uFalloff.x * fade / (at.x + at.y * f2);")
+                  // #674: the per-light body is ONE function the loop and the bake stage both run, the static
+                  // bit decodes off the record's w, and a baked receiver skips a static light there -- a loop
+                  // that lost the skip lights every baked surface twice, brighter and with nothing in the log.
+                  && AlloyLights.FragmentLib.Contains("bool CxPointLight(vec4 pr, vec3 c0, vec3 worldPos, vec3 N,")
+                  && AlloyLights.FragmentLib.Contains("bool isStatic = w >= 128;") && AlloyLights.FragmentLib.Contains("int slot = isStatic ? w - 256 : w;")
+                  && AlloyLights.FragmentLib.Contains("bool hot = isStatic && baked > 0.5;")
+                  && AlloyLights.FragmentLib.Contains("CX_LIGHT_STATIC = 256.0;") && AlloyLights.LightStatic == 256f
+                  && LightmapBake.BakeFs.Contains("CxPointLight(uBakeLight, uBakeColor, vWorld, N, c, L, att, f2, ndlRaw, ndl)")
+                  && LightmapBake.BakeFs.Contains("CxPointDiffuse(c, att, ndlRaw, ndl) * mix(uLocalFloor, 1.0, sh)")
+                  && OwnedLitFsMain.Contains("bool baked = CxLightmap(uChart[vDraw], vChart, lmIrr, lmDir);")
+                  && OwnedLitFsMain.Contains("CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm)) * (1.0 - lmSub.x / max(lmSub.y, 1e-5))")
+                  && OwnedLitFsHead.Contains(LightmapBake.ChartBufDecl) && OwnedLitVs.Contains("vChart = aChart;")
+                  && LightmapBake.ChartBufDecl.Contains($"binding = {LightmapBake.BindChart})")
                   // #142: the near-field term, and the guard that makes an unset uHot mean "off". A stage
                   // that lost it renders every light flat at the gain the BODY wants -- which is the exact
                   // symptom the term exists to fix, and says nothing.
                   && AlloyLights.FragmentLib.Contains("att += uHot.x * fade * t * t / at.x;")
                   && AlloyLights.FragmentLib.Contains("max(1.0 - f2 / (uHot.y * uHot.y), 0.0)")
-                  && AlloyLights.FragmentLib.Contains("float f2 = dd / rr;")
+                  && AlloyLights.FragmentLib.Contains("f2 = dd / rr;")
                   // ...and the fallback pair, so a program that never gets uAtten falls back instead of
                   // dividing every light by zero and rendering the world white.
                   && AlloyLights.FragmentLib.Contains("uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0)")
@@ -453,6 +472,7 @@ internal static class ShaderContract
                   && !LinearSafe("void main() { frag = CxSoftClip(c); }")
                   && !CutoutSafe(OwnedVs, OwnedFs.Replace("uAlphaCut", "uNothing"))
                   && !CutoutSafe(OwnedVs.Replace("vAlpha", "vNothing"), OwnedFs)
+                  && ChartSafe(OwnedLitVs, OwnedLitFsHead + OwnedLitFsMain) && !ChartSafe(OwnedLitVs.Replace("vChart", "vNothing"), OwnedLitFsHead)
                   // SkinSafe's refusing direction is NOT assertable here: it short-circuits on _skinning,
                   // which Initialize sets AFTER this runs, so the predicate is unconditionally true at
                   // SelfCheck time. Its guard site is covered instead by the CutoutSafe pair beside it.

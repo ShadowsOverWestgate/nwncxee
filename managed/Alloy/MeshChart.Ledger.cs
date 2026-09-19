@@ -113,14 +113,15 @@ internal static partial class MeshChart
     private static long Tally(string dir)
     {
         long sum = 0;
-        foreach (var f in new DirectoryInfo(dir).GetFiles("*.bin")) sum += f.Length;
+        foreach (var f in new DirectoryInfo(dir).GetFiles()) sum += f.Length;
         return sum;
     }
 
-    /// <summary>Delete oldest-first until the directory fits <paramref name="budget"/>; returns what is left.</summary>
+    /// <summary>Delete oldest-first until the directory fits <paramref name="budget"/>; returns what is left.
+    /// Every file in the directory: the chart ledger and the bake cache (#674, <c>.lmr</c>) share the budget.</summary>
     internal static long Prune(string dir, long budget)
     {
-        var files = new DirectoryInfo(dir).GetFiles("*.bin");
+        var files = new DirectoryInfo(dir).GetFiles();
         long sum = 0;
         foreach (var f in files) sum += f.Length;
         if (sum <= budget) return sum;

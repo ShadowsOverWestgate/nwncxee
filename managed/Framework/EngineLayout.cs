@@ -1527,6 +1527,9 @@ public static unsafe class EngineLayout
     public static readonly int AreaPlaceableLights = Same("CNWCArea", "placeableLights", 0x328);
     /// <inheritdoc cref="AreaPlaceableLights"/>
     public static readonly int AreaPlaceableLightCount = Same("CNWCArea", "placeableLightCount", 0x330);
+    /// <summary>#659/#674: one registry record's <c>Gob*</c> (the object id is at +0). Same on both binaries:
+    /// <c>AddPlaceableObjectLight</c> writes the pair at +0/+8 on the PE decompile too (rva 0x7d8ed0).</summary>
+    public static readonly int PlaceableLightGob = Same("CNWCPlaceableObjectLight", "gob", 0x8);
     /// <summary>#663/#672: CNWCArea -&gt; the Static-placeable list, a <c>CExoArrayList&lt;unsigned int&gt;</c> of
     /// object ids (data +0x338, count +0x340) filled by <c>AddPlaceableObjectStatic</c> @0x7091c0. No per-object
     /// Static flag exists client-side (+0x1b4 is PLOT); membership here IS the static set. docs/engine-layout.md.</summary>

@@ -119,6 +119,14 @@ verdict nor the next.
 Those degrade to "that class does not render", not to "the frame is not drawn" — punch-list territory (#217),
 not a frame verdict.
 
+`LightmapBake` (#674) is the same shape one level finer, and every refusal lands on the real-time loop, which
+is what an unbaked surface takes anyway: a missing entry point, too few texture units or a failed link latch
+the pass off for the context (`StandDown.Fail`, every record stays unbaked); a page that will not allocate
+refuses the pages past it (`Refuse`, the rest of the area stays unbaked and is counted as `past the cap`);
+a rect whose chart range moved before its bake is dropped and its readers re-enrol; a light whose scratch
+cube cannot be rendered this frame (no caster gather) leaves the step for the next frame. The period line
+names each: `lightmap pages N/cap, bakes landed/pending/refused (… past the cap)`.
+
 ## The per-part census gates are not in this set either, and one is left standing
 
 `AlloyCensus`'s gate chain names why a recorded part is not an Alloy candidate. #263 deleted the one that had

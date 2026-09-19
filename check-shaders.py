@@ -38,6 +38,8 @@ SOURCES = [
     # validated as if it shipped. (A constant a Source arm names directly still hard-errors.)
     "managed/Alloy/AlloyRenderer.Shaders.cs",
     "managed/Alloy/Pass/AlloyLights.cs",
+    "managed/Alloy/Pass/LightmapBake.cs",           # #674: ChartBufDecl, which the lit stage composes
+    "managed/Alloy/Pass/LightmapBake.Shaders.cs",
     "managed/Alloy/Pass/CasterPass.cs",
     "managed/Alloy/Pass/GrassField.cs",
     "managed/Alloy/Pass/PostChain.cs",
@@ -63,7 +65,9 @@ TOKENS = {"$CAP$": "128", "$SORT$": "32", "$GROUP$": "8", "$SRGB$": "2.2", "$BAN
           # #352: the hosted post chain built with sharpen + vibrance on (the two hosted option bits), high quality
           "$POSTMASK$": "9", "$SQM$": "2"}
 STAGES = "managed/Alloy/Core/ShaderStages.cs"
-DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*(?:const|readonly) string (\w+) = (.*)$")
+# ...and an expression-bodied `static string X => A + B;` alias (Weather.Draw.cs), which is a composition too.
+DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*(?:const|readonly) string (\w+) = (.*)$"
+                  r"|\s*(?:private|internal|public)\s+static string (\w+) => (.*)$")
 PIECE = re.compile(r'"""\n(.*?)\n\s*"""|([A-Za-z_]\w*)', re.S)
 RESREF = re.compile(r'(\w+)\s*=\s*"(cx_\w+)"')
 # `internal static string Source(string resref) => resref switch { ... };` -- the shape ShaderStages
@@ -83,14 +87,14 @@ def harvest():
         i += 1
         if not m:
             continue
-        expr = [m.group(2)]
+        name, expr = (m.group(1), [m.group(2)]) if m.group(1) else (m.group(3), [m.group(4)])
         fenced = expr[0].count('"""') % 2 == 1
         while fenced or not expr[-1].rstrip().endswith(";"):
             expr.append(lines[i])
             if lines[i].count('"""') % 2 == 1:
                 fenced = not fenced
             i += 1
-        decls.append((m.group(1), "\n".join(expr)))
+        decls.append((name, "\n".join(expr)))
     # Two passes: an alias (`A = B + C;`, no literal of its own -- GrassVs is `static readonly`, declared
     # ABOVE the pieces it names) resolves only once every piece is known, so fold to a fixpoint rather
     # than in declaration order. A const string that is not shader text -- a config key, a log line --
@@ -460,6 +464,8 @@ def programs(c, s):
         "sky decode": (c["FullscreenVs"], c["SkyDecodeFs"]),
         "oit resolve": (c["FullscreenVs"], c["OitResolveFs"]),
         "oit clear": (c["FullscreenVs"], c["OitClearFs"]),
+        "lightmap bake": (c["BakeVs"], c["BakeFs"]),
+        "lightmap finish": (c["FullscreenVs"], c["FinishFs"]),
     }
 
 

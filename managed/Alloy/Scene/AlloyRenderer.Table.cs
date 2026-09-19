@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System;
+using System.Numerics;
 using CX.Framework;
 using CX.Graphics;
 
@@ -231,6 +232,19 @@ public sealed unsafe partial class AlloyRenderer
     /// near zero the area's geometry is world-space and nothing repeated in it is collapsible whatever the
     /// shape tier says -- which is the reading that decides whether a repeat count means anything.</summary>
     private static int _msMxParts, _msShapeRepeatMx;
+
+    /// <summary>#674: what the lightmap bake keys an instance on -- the slot's VDO slot and item (the chart
+    /// lookup) and its record's model matrix (the placement; identity for a world-space tile part). The
+    /// bounds come from the chart, not from here: the engine's part bbox is unpopulated on tile parts.
+    /// False for an empty slot.</summary>
+    internal static bool SlotPlacement(int i, out int vao, out int item, out Matrix4x4 model)
+    {
+        vao = item = 0; model = Matrix4x4.Identity;
+        if ((uint)i >= (uint)MaxOwned || _oTri[i] == IntPtr.Zero) return false;
+        vao = _oVao[i]; item = _oItem[i];
+        fixed (float* r = _dData) model = *(Matrix4x4*)(r + (long)i * DrawFloats);
+        return true;
+    }
 
     // #84 multidraw submission: one entry per DRAW in _dCount/_dOff/_dBase + one staged SSBO record per draw,
     // sliced into batches by the _g* table. All static -- the hot path stages into them and allocates nothing.

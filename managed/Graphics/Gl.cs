@@ -159,6 +159,9 @@ public static unsafe class Gl
     public const uint SAMPLES = 0x80A9, SAMPLE_BUFFERS = 0x80A8;
     /// <summary>#127: the grass displacement field's format -- RG the signed XY push, B the press-down.</summary>
     public const uint RGBA8 = 0x8058;
+    /// <summary>#674: the lightmap's irradiance page format and its packed pixel type, and a PBO readback's
+    /// usage hint.</summary>
+    public const uint R11F_G11F_B10F = 0x8C3A, UNSIGNED_INT_10F_11F_11F_REV = 0x8C3B, STREAM_READ = 0x88E1;
     /// <summary>#211: the sized formats an unsized engine upload has to be promoted to before
     /// <see cref="TexStorage2D"/> will take it, and the unsized enums the engine actually uses
     /// (<c>glTexImage2D</c> @0x4cad3d passes GL_RGB/GL_RGBA/GL_RED verbatim).</summary>
@@ -362,6 +365,12 @@ public static unsafe class Gl
     /// <summary>glMultiDrawElementsBaseVertex (GL 3.2 core): mode, counts*, type, indices**, drawcount,
     /// basevertex*. One call submits a whole batch group (ADR 0006 phase 1). Null on ancient drivers.</summary>
     public static delegate* unmanaged<uint, int*, uint, void**, int, int*, void> MultiDrawElementsBaseVertex;
+    /// <summary>glDrawElementsBaseVertex (GL 3.2): mode, count, type, indices, basevertex -- one run of one
+    /// mesh, the lightmap bake's per-rect draw (#674).</summary>
+    public static delegate* unmanaged<uint, int, uint, void*, int, void> DrawElementsBaseVertex;
+    /// <summary>glTexSubImage3D (GL 1.2): target, level, x, y, z, w, h, depth, format, type, data -- one rect
+    /// of one page layer (#674).</summary>
+    public static delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, void*, void> TexSubImage3D;
 
     // Alloy world draw (#81)
     public static delegate* unmanaged<uint, uint, int*, void> GetVertexAttribiv;
@@ -564,6 +573,8 @@ public static unsafe class Gl
         TexStorage2D = (delegate* unmanaged<uint, int, uint, int, int, void>)P("glTexStorage2D");
         CompressedTexSubImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, int, void*, void>)P("glCompressedTexSubImage2D");
         MultiDrawElementsBaseVertex = (delegate* unmanaged<uint, int*, uint, void**, int, int*, void>)P("glMultiDrawElementsBaseVertex");
+        DrawElementsBaseVertex = (delegate* unmanaged<uint, int, uint, void*, int, void>)P("glDrawElementsBaseVertex");
+        TexSubImage3D = (delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, void*, void>)P("glTexSubImage3D");
         GetVertexAttribiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetVertexAttribiv");
         GetVertexAttribPointerv = (delegate* unmanaged<uint, uint, void**, void>)P("glGetVertexAttribPointerv");
         GetFramebufferAttachmentParameteriv = (delegate* unmanaged<uint, uint, uint, int*, void>)P("glGetFramebufferAttachmentParameteriv");

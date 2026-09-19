@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using CX.Framework;
@@ -12,7 +13,8 @@ namespace CX.Alloy;
 internal static class Lightmap
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<int> Density, Disk;
+    internal static readonly Knob<int> Density, Disk, Pages;
+    internal static readonly Knob<bool> Movers;
 
     static Lightmap()
     {
@@ -22,11 +24,15 @@ internal static class Lightmap
             masterDefault: false, parent: "alloy.enabled",
             header: "Charts are cut per mesh as an area loads and cached on disk (cx-charts/, beside cx.cfg).");
         G.Status = MeshChart.Describe;
-        // Hidden until #674 reads it (ADR 0025: a knob's effect is declared, and today it has none).
-        Density = G.Slider("density", "Lightmap density", 2, 32, 1, 8, "px/m", tier: Tier.Hidden,
-                           help: "Lightmap texels per metre of world. Each instance's rectangle is capped at a quarter page.");
+        Density = G.Slider("density", "Lightmap density", 2, 32, 1, 8, "px/m", tier: Tier.Advanced,
+                           help: "Lightmap texels per metre of world. Each instance's rectangle is capped at a quarter page; a change re-bakes the area.",
+                           changed: LightmapBake.RekeyAll);
+        Pages = G.Slider("pages", "Lightmap pages", 0, 16, 1, 0, tier: Tier.Advanced,
+                         help: "4096x4096 pages the area may hold (128 MiB each). 0 sizes it from the card's memory: an eighth of it in pages, at most 16. Past the cap a rectangle bakes at half density, then stays unbaked.");
+        Movers = G.Toggle("movers", "Creature shadows from baked lights", true,
+                          help: "A creature standing under a baked light casts its shadow on the baked surface. Off is cheaper: baked surfaces take no shadow from creatures under static lights.");
         Disk = G.Slider("disk", "Chart cache size", 64, 4096, 64, 512, "MiB", tier: Tier.Advanced,
-                        help: "Disk the chart cache may hold; the oldest files go first.");
+                        help: "Disk the chart and bake caches may hold; the oldest files go first.");
     }
 }
 
@@ -58,7 +64,7 @@ internal static unsafe partial class MeshChart
     internal const uint LocChartUv = 3;
 
     private const int MaxPending = 256;
-    private const int MaxEntries = 1 << 14;
+    private const int MaxEntries = 1 << 16;   // the plaza filled 1 << 14 exactly and the rest stayed magenta
     /// <summary>Vertices the arena may hold (2M x 40 B = 80 MiB). ponytail: no compaction; Revoke rewinds.</summary>
     private const int MaxArenaVerts = 1 << 21;
     private const int MaxArenaIndices = 8 << 20;
@@ -80,6 +86,10 @@ internal static unsafe partial class MeshChart
         internal nint Off0, Off1, Off2;
         internal int Cnt0, Cnt1, Cnt2;
         internal ushort W, H;
+        internal ulong Content;
+        /// <summary>The mesh's bounds in ITS OWN space (world space for a tile part): the engine's part
+        /// bbox is unpopulated on tile parts (min == max), so the bake sizes its light reach from these.</summary>
+        internal Vector3 Bmin, Bmax;
         internal bool Done;
         internal Refusal Refused;
     }
@@ -100,7 +110,7 @@ internal static unsafe partial class MeshChart
         internal ushort[] Idx = Array.Empty<ushort>();
         internal float[] Pos = Array.Empty<float>(), Nrm = Array.Empty<float>(), Uv = Array.Empty<float>();
         // the charted result
-        internal int OutVerts, Out0N, Out1N, Out2N, Charts;
+        internal int OutVerts, Out0N, Out1N, Out2N, Charts, Loose;
         internal ushort W, H;
         internal ushort[] Xref = Array.Empty<ushort>();
         internal float[] ChartUv = Array.Empty<float>();
@@ -111,6 +121,7 @@ internal static unsafe partial class MeshChart
         /// without this every placement of one tile model was its own content and no area shared a chart
         /// with another; a chart is translation-invariant, so the rebased mesh's chart is the placed mesh's.</summary>
         internal float[] Local = Array.Empty<float>();
+        internal Vector3 Bmin, Bmax;
         internal Refusal Refused;
         internal bool Hit, Stale;
     }
@@ -128,7 +139,7 @@ internal static unsafe partial class MeshChart
     private static uint _vbo, _ebo, _vao;
     private static bool _arenaFull;
 
-    private static int _offered, _hit, _missed, _built, _refused, _stale, _logLeft = LogCap;
+    private static int _offered, _hit, _missed, _built, _refused, _stale, _tableFull, _logLeft = LogCap;
     private static readonly int[] _refusedBy = new int[RefusalName.Length];
 
     /// <summary>A mesh refused before the worker ever saw it: counted, so the period line's refused total
@@ -155,15 +166,23 @@ internal static unsafe partial class MeshChart
 
     private static long KeyOf(int slot, int item) => ((long)slot << 32) | (uint)item;
 
-    /// <summary>Asked before anything is read: a mesh on file, queued or past a budget costs one probe.</summary>
-    internal static bool Wanted(int slot, int item, int idxCount)
+    /// <summary>Asked before anything is read: a mesh on file, queued or past a budget costs one probe.
+    /// <paramref name="later"/> = not now but not refused either: the worker's queue is full (an area's
+    /// whole tile set enrols in one walk), and the caller re-offers when it drains -- an offer that fell
+    /// through here used to be lost for good, which left most of an area uncharted (#674 live).</summary>
+    internal static bool Wanted(int slot, int item, int idxCount, out bool later)
     {
+        later = false;
         if (_worker == null || idxCount < 3 || !Lightmap.G.Master!.V) return false;
-        if (_table.Count >= MaxEntries || _table.ContainsKey(KeyOf(slot, item))) return false;
+        if (_table.Count >= MaxEntries) { _tableFull++; return false; }
+        if (_table.ContainsKey(KeyOf(slot, item))) return false;
         if (_arenaFull) { Skip(Refusal.Arena); return false; }
         if (idxCount > MeshSimplify.MaxCorners) { Skip(Refusal.Corners); return false; }
-        lock (_gate) return _in.Count < MaxPending;
+        lock (_gate) { later = _in.Count >= MaxPending; return !later; }
     }
+
+    /// <summary>Room in the worker's queue for a deferred offer?</summary>
+    internal static bool HasRoom() { lock (_gate) return _in.Count < MaxPending; }
 
     /// <summary>Copy one part's range and every attribute it addresses off the pools' host shadows, densely
     /// re-indexed, and queue it. Enrollment walk only: reads engine memory and allocates, off every frame path.</summary>
@@ -185,7 +204,7 @@ internal static unsafe partial class MeshChart
         Job j = Rent();
         j.Key = KeyOf(slot, item);
         j.IdxCount = count; j.HasNrm = hasNrm; j.HasUv = hasUv;
-        j.Refused = Refusal.None; j.Hit = false; j.Stale = false; j.Out0N = j.Out1N = j.Out2N = 0; j.OutVerts = 0; j.Charts = 0;
+        j.Refused = Refusal.None; j.Hit = false; j.Stale = false; j.Out0N = j.Out1N = j.Out2N = 0; j.OutVerts = 0; j.Charts = 0; j.Loose = 0;
         Grow(ref j.Idx, count);
         if (j.Pos.Length < (maxI + 1) * 3) j.Pos = new float[(maxI + 1) * 3];
         if (hasNrm && j.Nrm.Length < (maxI + 1) * 3) j.Nrm = new float[(maxI + 1) * 3];
@@ -270,8 +289,13 @@ internal static unsafe partial class MeshChart
         int n = j.VertCount * 3;
         Grow(ref j.Local, n);
         float mx = float.MaxValue, my = float.MaxValue, mz = float.MaxValue;
+        float hx = float.MinValue, hy = float.MinValue, hz = float.MinValue;
         for (int i = 0; i < n; i += 3)
-        { mx = MathF.Min(mx, j.Pos[i]); my = MathF.Min(my, j.Pos[i + 1]); mz = MathF.Min(mz, j.Pos[i + 2]); }
+        {
+            mx = MathF.Min(mx, j.Pos[i]); my = MathF.Min(my, j.Pos[i + 1]); mz = MathF.Min(mz, j.Pos[i + 2]);
+            hx = MathF.Max(hx, j.Pos[i]); hy = MathF.Max(hy, j.Pos[i + 1]); hz = MathF.Max(hz, j.Pos[i + 2]);
+        }
+        j.Bmin = new Vector3(mx, my, mz); j.Bmax = new Vector3(hx, hy, hz);
         for (int i = 0; i < n; i += 3)
         {
             j.Local[i] = MathF.Round((j.Pos[i] - mx) * Grid) / Grid;
@@ -299,7 +323,7 @@ internal static unsafe partial class MeshChart
     private struct ChartOut
     {
         internal void* Atlas; internal float* Uv; internal uint* Xref; internal uint* Index;
-        internal uint VertexCount, IndexCount, ChartCount, Width, Height;
+        internal uint VertexCount, IndexCount, ChartCount, Width, Height, LooseVerts;
     }
 
     [DllImport("cxatlas")]
@@ -335,7 +359,7 @@ internal static unsafe partial class MeshChart
                 if (r.Index[i] >= (uint)nv) return Refusal.Xatlas;
                 j.Out0[i] = (ushort)r.Index[i];
             }
-            j.OutVerts = nv; j.Out0N = ni; j.W = (ushort)r.Width; j.H = (ushort)r.Height; j.Charts = (int)r.ChartCount;
+            j.OutVerts = nv; j.Out0N = ni; j.W = (ushort)r.Width; j.H = (ushort)r.Height; j.Charts = (int)r.ChartCount; j.Loose = (int)r.LooseVerts;
             return Refusal.None;
         }
         finally { cx_chart_free(&r); }
@@ -380,7 +404,7 @@ internal static unsafe partial class MeshChart
                 if (_out.Count == 0) break;
                 j = _out.Dequeue();
             }
-            var e = new Entry { Done = true, Refused = j.Refused };
+            var e = new Entry { Done = true, Refused = j.Refused, Content = j.Content, Bmin = j.Bmin, Bmax = j.Bmax };
             if (j.Hit) _hit++; else _missed++;
             if (j.Stale) _stale++;
             if (j.Refused == Refusal.None)
@@ -403,7 +427,7 @@ internal static unsafe partial class MeshChart
                     _log?.Info($"MeshChart: REFUSED {RefusalName[(int)e.Refused]} -- mesh {j.IdxCount / 3} tris, {j.VertCount} verts, content {j.Content:x16}");
             }
             else if (_logLeft-- > 0)
-                _log?.Info($"MeshChart: mesh {j.IdxCount / 3} tris {j.VertCount} verts -> {j.OutVerts} charted verts, atlas {j.W}x{j.H} ({(j.Hit ? "cache hit" : "built")}), lod {e.Cnt1 / 3}/{e.Cnt2 / 3}");
+                _log?.Info($"MeshChart: mesh {j.IdxCount / 3} tris {j.VertCount} verts -> {j.OutVerts} charted verts, atlas {j.W}x{j.H} ({(j.Hit ? "cache hit" : "built")}), lod {e.Cnt1 / 3}/{e.Cnt2 / 3}" + (j.Loose > 0 ? $", {j.Loose} loose verts (no face)" : ""));
             // Revoke may have wiped the table while this job was in flight; its arena bytes went with it.
             if (_table.ContainsKey(j.Key)) _table[j.Key] = e;
             lock (_gate) _free.Push(j);
@@ -529,12 +553,13 @@ internal static unsafe partial class MeshChart
         return true;
     }
 
-    /// <summary>The atlas size a charted mesh's UVs are in, for the bake (#674). False = not charted.</summary>
-    internal static bool Atlas(int slot, int item, out int w, out int h)
+    /// <summary>The atlas size a charted mesh's UVs are in, its content key and its own-space bounds, for the
+    /// bake (#674). False = not charted (yet, or refused).</summary>
+    internal static bool Atlas(int slot, int item, out int w, out int h, out ulong content, out Vector3 bmin, out Vector3 bmax)
     {
-        w = h = 0;
+        w = h = 0; content = 0; bmin = bmax = default;
         if (!_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done || e.Refused != Refusal.None) return false;
-        w = e.W; h = e.H;
+        w = e.W; h = e.H; content = e.Content; bmin = e.Bmin; bmax = e.Bmax;
         return true;
     }
 
@@ -576,7 +601,8 @@ internal static unsafe partial class MeshChart
         => _worker == null ? "not running"
          : !Lightmap.G.Master!.V ? "Off — every mesh draws from the game's own geometry"
          : $"{_offered} meshes offered: {_hit} charts from cache, {_built} built, {_refused} refused; "
-           + $"{_vUsed} arena vertices ({_vUsed * Stride * 4 >> 20} MiB)" + (_arenaFull ? "; the arena is full" : "");
+           + $"{_vUsed} arena vertices ({_vUsed * Stride * 4 >> 20} MiB)" + (_arenaFull ? "; the arena is full" : "")
+           + "; " + LightmapBake.Describe();
 
     /// <summary>One clause of the Alloy period line: charts hit/missed/built/refused, and what drew from them.</summary>
     internal static string Stats(int frames)
@@ -587,6 +613,7 @@ internal static unsafe partial class MeshChart
         string why = "";
         for (int k = 1; k < RefusalName.Length; k++) if (_refusedBy[k] > 0) why += $" {RefusalName[k]} {_refusedBy[k]}";
         return $"charts {_hit} hit / {_missed} missed / {_built} built / {_refused} refused{(why.Length > 0 ? " (" + why.Trim() + ")" : "")}"
+               + (_tableFull > 0 ? $", {_tableFull} offers PAST THE {MaxEntries}-MESH TABLE" : "")
                + (_stale > 0 ? $", {_stale} stale files replaced" : "")
                + $", {d / frames} charted tris per frame";
     }

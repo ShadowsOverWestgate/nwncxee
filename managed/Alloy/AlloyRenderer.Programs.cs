@@ -294,6 +294,7 @@ public sealed unsafe partial class AlloyRenderer
         if (prog != 0 && !(ShaderContract.RecordSafe(vsSrc) && ShaderContract.RecordSafe(fsSrc) && ShaderContract.CutoutSafe(vsSrc, fsSrc)
                            && ShaderContract.SlotIndexSafe(vsSrc)   // #242
                            && ShaderContract.SkinSafe(vsSrc, _skinning) && ShaderContract.LinearSafe(fsSrc)
+                           && ShaderContract.ChartSafe(vsSrc, fsSrc)   // #674
                            // #208: ...and the sampler declarations the unit table binds against, which only
                            // the compiled source can answer for. Bound-sampler check, so bindless skips it.
                            && (_bindless || ShaderContract.LitSlotSafe(fsSrc))
@@ -379,6 +380,7 @@ public sealed unsafe partial class AlloyRenderer
         L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
         L.Capture = GlProgram.Loc(prog, "uCapture");
         L.Gi = GlProgram.Loc(prog, "uGi"); L.GiCell = GlProgram.Loc(prog, "uGiCell0");
+        L.LmPages = GlProgram.Loc(prog, "uLmPages"); L.LmMovers = GlProgram.Loc(prog, "uLmMovers");
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
         L.SsaoHalf = GlProgram.Loc(prog, "uSsaoHalf");
         L.AoDirect = GlProgram.Loc(prog, "uAoDirect"); L.AoCutout = GlProgram.Loc(prog, "uAoCutout");

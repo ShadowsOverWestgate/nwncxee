@@ -457,6 +457,10 @@ internal static unsafe class SymbolMap
     public const string RenderDynamicShadows = "_ZN5Scene20RenderDynamicShadowsEv";
     /// <summary>Scene::RenderStaticShadows() @ 0x46a3a0 -- static (world-geometry) shadow-volume sub-pass.</summary>
     public const string RenderStaticShadows  = "_ZN5Scene19RenderStaticShadowsEv";
+    /// <summary>CAurScene::ComputeStaticLighting() @0x465590 -- the engine's own "the static lighting changed"
+    /// signal (#664 §A.6): called after a script toggles a placeable light. The lightmap's re-classify edge
+    /// (#674). <c>(this) -> void</c>, virtual (Scene vtable 0x68 Linux / 0x60 Windows; hooked by name).</summary>
+    public const string ComputeStaticLighting = "_ZN9CAurScene21ComputeStaticLightingEv";
     /// <summary>Scene::RenderShadowPlanes(int, int) @ 0x463e20 -- planar/projected shadow fallback sub-pass.</summary>
     public const string RenderShadowPlanes   = "_ZN5Scene18RenderShadowPlanesEii";
     /// <summary>Scene::DoGobShadows(PartLight*) @ 0x45fba0 -- per-light gob volume builder, dispatched
@@ -1549,6 +1553,7 @@ internal static unsafe class SymbolMap
         [RenderSinglePass] = Nm("?RenderSinglePass@Scene@@UEAAXXZ"),
         [RenderSkyBoxes] = Nm("?RenderSkyBoxes@Scene@@QEAAXXZ"),
         [RenderStaticShadows] = Nm("?RenderStaticShadows@Scene@@EEAAXXZ"),
+        [ComputeStaticLighting] = Nm("?ComputeStaticLighting@CAurScene@@UEAAXXZ"),
         [ResManDemand] = Nm("?Demand@CExoResMan@@QEAAPEAXPEAVCRes@@@Z"),
         [ResManExists] = Nm("?Exists@CExoResMan@@QEAAHAEBVCResRef@@GPEAI@Z"),
         [ResManGetResObject] = Nm("?GetResObject@CExoResMan@@QEAAPEAVCRes@@AEBVCResRef@@G@Z"),

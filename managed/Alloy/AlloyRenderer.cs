@@ -330,7 +330,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubePcss, CubeDynTex, CubeDynPage, CubeFade, CubeFloor,
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach, Contact, ContactFar,
-                   Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm, Gi, GiCell;
+                   Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm, Gi, GiCell,
+                   LmPages, LmMovers;   // #674
         public FeatLoc Feat;
     }
     private static LitLoc _lit, _litH, _litL;
@@ -383,7 +384,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 42;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42 = the #643 probe grid and its coverage
+    internal const int LightVizMax = 44;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42 = the #643 probe grid and its coverage; 43/44 = the #674 lightmap term and its texel grid
     private static int _lightViz => Renderer.Viz.V;
     /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The

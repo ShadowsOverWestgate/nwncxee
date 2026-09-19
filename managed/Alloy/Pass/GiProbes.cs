@@ -259,7 +259,7 @@ internal static unsafe partial class GiProbes
         ReadBack(cell, sx * IrrTile, row * IrrTile, IrrTile, Gl.RGBA, 0);
         Tile(_dep, sx * DepTile, row * DepTile, DepTile, DepRes, 1);
         ReadBack(cell, sx * DepTile, row * DepTile, DepTile, Gl.RG, IrrBytes);
-        if (cell >= 0) _stores++;
+        if (cell >= 0) { _stores++; _cellHash[cell] = _lightHash; }
         Gl.Disable(Gl.BLEND);
         Gl.BindVertexArray(0);
         Gl.ActiveTexture(Gl.TEXTURE0 + 1); Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, 0);

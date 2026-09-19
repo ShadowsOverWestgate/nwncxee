@@ -214,7 +214,7 @@ internal static unsafe class AlloyLights
         // The subsurface term is the stock one or it is nothing: the energy factor is inc_lighting.shd's
         // fEnergyPreservation / (1 + w) and the wrap rides the MAPPED normal (stock: the vertex normal, which washes out normal maps).
         E(MathF.Abs(SssK(0.38f) - 0.6262f) < 1e-3f, "SssK(0.38) is 2/(2+PI*0.38) = 0.626");
-        E(FragmentLib.Contains("max(dot(N, L) + uSss.x, 0.0) * uSss.y"), "the point loop carries the subsurface term on the MAPPED normal");
+        E(FragmentLib.Contains("c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y)"), "the point loop carries the subsurface term on the MAPPED normal");
         E(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
 
         // #140: the engine's attenuation constants, and the property that actually matters -- the curve's
@@ -326,6 +326,8 @@ internal static unsafe class AlloyLights
                 // Riding the existing pad is what keeps the cube receiver from needing a second buffer keyed
                 // the same way -- and the walk already resolved the slot by light identity.
                 d[7] = FrameInputs.AreaLightAmbient[i] ? FrameInputs.AmbientSlot : FrameInputs.AreaLightSlot[i];
+                // #674: the static bit rides the same lane, +CX_LIGHT_STATIC; the shader decodes w >= 128.
+                if (FrameInputs.AreaLightStatic[i] && !FrameInputs.AreaLightAmbient[i]) d[7] += LightStatic;
             }
             Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufLights);
             Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(n * 8 * sizeof(float)), s);
@@ -596,6 +598,8 @@ internal static unsafe class AlloyLights
     /// (the constant it reads is 2.2). Shared with <see cref="FrameRead"/>, which applies
     /// the same curve CPU-side to the area terms.</summary>
     internal const float SrgbGamma = 2.2f;
+    /// <summary>#674: added to a static light's cube slot in the record's w (GLSL <c>CX_LIGHT_STATIC</c>).</summary>
+    internal const float LightStatic = 256f;
 
     /// <summary>The clustered-lighting helpers the Alloy lit fragment stage is built from. Its sizing
     /// tokens are expanded by <see cref="GlProgram"/> at compile time, like any other stage's.</summary>
@@ -619,6 +623,7 @@ internal static unsafe class AlloyLights
         // outright. Both default to 0 on a program that never sets them, which IS the pre-#139 behaviour --
         // that is deliberate, so a stale content override degrades to a hard single tap rather than to
         // something wrong.
+        uniform float uLocalSoftWorld;   // #674 bake only: the disc is at least this wide in world units (one lightmap texel), else its cube-texel edge aliases against the page
         uniform vec4 uLocalSoft;   // x = disc texels, y = near skip, z = disc stand-down: world radius per unit view depth (0 = none), w = cube taps per fragment (0 = every light)
 
         // #305: the DYNAMIC pool -- movers only, re-baked every frame at reduced resolution, composed with
@@ -680,6 +685,7 @@ internal static unsafe class AlloyLights
         uniform vec4 uLocalPcss;
         // Below this radius (in texels) the disc stands down to the hardware tap: a fragment in contact.
         const float CX_LOCAL_DISC_MIN = 0.25;
+        const float CX_LOCAL_DISC_WORLD_MAX = 64.0;   // #674 bake: the world-minimum disc's ceiling in cube texels
         const int CX_LOCAL_SEARCH = 4;
         // #642: the per-fragment dither the disc spins by. Interleaved gradient noise on the pixel where a
         // fragment head declares CX_FS; a vertex stage (grass, weather, particles compile this lib there
@@ -783,7 +789,8 @@ internal static unsafe class AlloyLights
             vec3 u1 = normalize(cross(axis, d));
             vec3 v1 = normalize(cross(d, u1));
             float rot = fract(CxShadowNoise(worldPos) + uLocalPcss.y);
-            float rs = CxPenumbra(uLocalShadowRaw, float(slot), d, u1, v1, m, mc, near, far, texel);
+            float rs = max(CxPenumbra(uLocalShadowRaw, float(slot), d, u1, v1, m, mc, near, far, texel),
+                           min(uLocalSoftWorld / texel, CX_LOCAL_DISC_WORLD_MAX));
             float rd = 0.0, dtex = 0.0;
             if (dyn)
             {
@@ -802,7 +809,18 @@ internal static unsafe class AlloyLights
                 for (int i = 0; i < taps; i++)
                 {
                     vec2 o = CxVogel(i, taps, rot) * (texel * rs);
-                    vs += texture(uLocalShadow, vec4(d + u1 * o.x + v1 * o.y, float(slot)), ref);
+                    vec3 dt = d + u1 * o.x + v1 * o.y;
+                    float rt = ref;
+                    if (uLocalSoftWorld > 0.0)
+                    {   // bake: next to a floor-level light this disc spans many cube texels, and against the
+                        // centre's depth the receiver's own plane reads as a blocker (a dark disc round every
+                        // brazier) -- each tap compares against the plane's depth along its own ray instead
+                        float dn = dot(dt, N);
+                        float s = abs(dn) > 1e-4 ? clamp(dot(d, N) / dn, 0.5, 2.0) : 1.0;
+                        float mt = clamp(max(max(abs(dt.x), abs(dt.y)), abs(dt.z)) * s - CX_LOCAL_BIAS * (1.0 + slope), near, far);
+                        rt = far / (far - near) * (1.0 - near / mt);
+                    }
+                    vs += texture(uLocalShadow, vec4(dt, float(slot)), rt);
                 }
                 vs /= float(taps + 1);
             }
@@ -816,6 +834,40 @@ internal static unsafe class AlloyLights
                 vd /= float(taps + 1);
             }
             return mix(1.0, min(vs, vd), uLocalFade[slot]);
+        }
+
+        // #674: the visibility a baked receiver still owes a hot static light: the mover's occlusion off the
+        // DYNAMIC page, scaled by the STATIC cube's visibility -- where the bake already holds this light's
+        // shadow (a fence's) the mover adds nothing, else the creature's shadow stacked on the fence's from
+        // the same light. Same offset and bias as the full receiver; 1.0 where the light holds no page.
+        float CxLocalDynShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw)
+        {
+            if (uLocalCubes <= 0 || slot < 0 || slot >= uLocalCubes) return 1.0;
+            float pg = uLocalDynPage[slot];
+            if (pg < 0.5) return 1.0;
+            vec4 L = uLocalLight[slot];
+            float far = L.w, near = uLocalPlane.x;
+            vec3 d = worldPos - L.xyz;
+            float m = max(max(abs(d.x), abs(d.y)), abs(d.z));
+            if (far <= near || m <= near + CX_LOCAL_BIAS || m >= far) return 1.0;
+            float biasTexel = 2.0 * m / float(textureSize(uLocalDynShadow, 0).x);
+            float slope = ndlRaw <= 0.0 ? 0.0
+                          : min(sqrt(max(1.0 - ndlRaw * ndlRaw, 0.0)) / max(ndlRaw, 0.1), CX_LOCAL_SLOPE_MAX);
+            d += N * (biasTexel * (CX_LOCAL_NORMAL_OFFSET + CX_LOCAL_SLOPE_OFFSET * slope));
+            m = clamp(max(max(abs(d.x), abs(d.y)), abs(d.z)) - CX_LOCAL_BIAS * (1.0 + slope), near, far);
+            float ref = far / (far - near) * (1.0 - near / m);
+            // a baked receiver has no static cube to min() this against, so the one hardware tap the live
+            // path gets away with shows its texel here: a 4-tap disc one dyn texel wide
+            float t = 2.0 * m / float(textureSize(uLocalDynShadow, 0).x);
+            vec3 axis = abs(d.x) < 0.9 * m ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+            vec3 u1 = normalize(cross(axis, d)) * t, v1 = normalize(cross(d, u1)) * t;
+            float v = texture(uLocalDynShadow, vec4(d + u1 + v1, pg - 1.0), ref) + texture(uLocalDynShadow, vec4(d - u1 + v1, pg - 1.0), ref)
+                    + texture(uLocalDynShadow, vec4(d + u1 - v1, pg - 1.0), ref) + texture(uLocalDynShadow, vec4(d - u1 - v1, pg - 1.0), ref);
+            // the static half through the same disc: one hard tap against the bake's soft edge cut the
+            // creature's silhouette out of the fence's penumbra
+            float vs = texture(uLocalShadow, vec4(d + u1 + v1, float(slot)), ref) + texture(uLocalShadow, vec4(d - u1 + v1, float(slot)), ref)
+                     + texture(uLocalShadow, vec4(d + u1 - v1, float(slot)), ref) + texture(uLocalShadow, vec4(d - u1 - v1, float(slot)), ref);
+            return mix(1.0, 1.0 - vs * 0.25 * (1.0 - v * 0.25), uLocalFade[slot]);
         }
 
         """;
@@ -951,14 +1003,99 @@ internal static unsafe class AlloyLights
             return rough * rough * 0.25 / mix(max(NdotV, CX_ANGLE_MIN), 1.0, rough);
         }
 
+        // #674: one light's colour, attenuation and geometry -- the per-light body, shared by the cluster loop
+        // below and the bake stage (LightmapBake.BakeFs), so a baked texel and a live one are ONE code path.
+        // False = out of reach (nothing to add). `c` is the linearised colour, `att` the engine's curve (#140,
+        // #142) already floored at 0, `f2` the range-normalised distance squared (the cap's ranking term),
+        // `ndlRaw` the geometric dot and `ndl` the wrapped one (#139 sphere wrap, #143 floor).
+        bool CxPointLight(vec4 pr, vec3 c0, vec3 worldPos, vec3 N,
+                          out vec3 c, out vec3 L, out float att, out float f2, out float ndlRaw, out float ndl)
+        {
+            c = vec3(0.0); L = vec3(0.0); att = 0.0; f2 = 0.0; ndlRaw = 0.0; ndl = 0.0;
+            // pr.w is GetLightAdjustedRadius: the engine's own R, overbright surplus already spent
+            // on it. Squared here because the engine's own cull is the same test on the same value
+            // (SetLightGL @0x4c1007 uploads exactly R*R as lightQuadraticAtten).
+            float rr = pr.w * pr.w;
+            vec3 d = pr.xyz - worldPos;
+            float dd = dot(d, d);
+            if (dd > rr) return false;
+            // The walk already divided an overbright colour down by its max channel (spending the
+            // surplus on radius, as GetLightAdjustedColor does), so every channel is <= 1 here and the
+            // plain sRGB curve is the right linearization.
+            c = CxLinear(c0);
+            // #140: the ENGINE's curve, range-normalised -- inc_lighting.shd's ComputePointLightSource
+            // at GAMMA_CORRECTION == 1, verbatim. The authored range IS the shape here, which is the
+            // whole reason a dim cave glow and a torch can share one formula: the glow's R is small and
+            // its colour dim, the torch's R is large (its overbright surplus went there), and neither
+            // needs a global gain to rescue it. The rim fade reaches exactly 0 at f2 = 1, so no separate
+            // cutoff window is needed and a light still cannot pop against its own cull sphere.
+            f2 = dd / rr;
+            float fade = 1.0 - f2;
+            if (uReach > 0.0)
+            {
+                float r2 = uReach * uReach;
+                if (f2 > r2) return false;
+                fade *= min((r2 - f2) / (r2 * 0.3), 1.0);   // to zero over the last 30% of the reach (in f2)
+            }
+            // Uniform-valued branch, so it is coherent across the whole draw and free -- and at the
+            // shipped 1.0 the pow is not merely cheap but exactly skipped, which is what makes "vanilla"
+            // bit-exact rather than approximately right.
+            if (uFalloff.z != 1.0) fade = pow(max(fade, 0.0), uFalloff.z);
+            vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
+            att = uFalloff.x * fade / (at.x + at.y * f2);
+            // #142: the near-field core -- a compact-support bump reaching uHot.y of the range and
+            // exactly nothing past it, so the body above owns the whole tail and the gain that was
+            // calibrated against vanilla cannot drift. Peak is uHot.x / at.x, so gain + hot = 1 puts
+            // the very centre at the engine's own peak.
+            if (uHot.x > 0.0)
+            {
+                float t = max(1.0 - f2 / (uHot.y * uHot.y), 0.0);
+                att += uHot.x * fade * t * t / at.x;
+            }
+            att = max(att, 0.0);
+            float invD = inversesqrt(max(dd, 1e-8));
+            L = d * invD;
+            ndlRaw = dot(N, L);
+            // #139: the light is a SPHERE of radius uFalloff.y -- the same radius the attenuation
+            // plateau above already models it with -- not a point. `s` is the sine of the half-angle it
+            // subtends here, and wrapping N.L by it softens the terminator by exactly the amount the
+            // source's own size would. The (1 + s) divide is what keeps this a redistribution rather
+            // than free energy. Far away s -> 0 and the whole expression IS max(dot(N, L), 0.0) again,
+            // so placed lights read exactly as they did; only a light held at arm's length differs --
+            // which is the case where a punctual terminator cuts a low-poly facet in half.
+            float s = uWrap <= 0.0 ? 0.0 : clamp(uWrap * uFalloff.y * invD, 0.0, 1.0);
+            // max, not sum: at arm's length the sphere term is already at full strength and adding the
+            // #143 floor on top of it would wrap past the point of looking lit at all.
+            ndl = CxWrap(ndlRaw, max(s, uWrapN));
+            return true;
+        }
+        // The unshadowed diffuse of one light: the wrapped Lambert term plus the stock subsurface leak.
+        vec3 CxPointDiffuse(vec3 c, float att, float ndlRaw, float ndl)
+        {
+            return c * (att * ndl) + c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y);
+        }
+
+        // #674: a static light's record carries its cube slot PLUS this when it is in the lightmap pages
+        // (AlloyLights.LightStatic). Decode: w >= 128 is static, slot = w - 256 (-1 survives as 255).
+        const float CX_LIGHT_STATIC = 256.0;
+        // #674: lightmap.movers -- 1 = a HOT static light (a mover under it this frame) takes its mover's
+        // shadow back out of the baked term; 0 = baked receivers skip static lights outright. Unset reads
+        // 0, the off position, which is what a stale content override degrades to.
+        uniform int uLmMovers;
+
         // Diffuse AND specular contribution of every light binned into this fragment's cluster, in ONE walk:
         // both terms want the same per-light colour, attenuation, N.L and cube-shadow fetch, and running the
         // cluster twice would pay for all four again. World space throughout: the Alloy pass has world
         // positions and normals in hand, so there is no eye-space round trip.
-        vec3 CxClusteredLight(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,
-                                float rough, float specularity, out vec3 spec)
+        // #674: `baked` > 0.5 = this fragment reads its static light from the lightmap pages, so every static
+        // light is skipped here -- except a HOT one under lightmap.movers, whose mover shadow (the dyn page
+        // alone, never the static half: the bake already holds that) accumulates into `lmSub` (x occluded, y total) as the
+        // contribution to take back out of the baked term (#666: exact wherever the bake had the light
+        // unshadowed; over-darkens only down to the floor where static geometry already shadowed the texel).
+        vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,
+                                float rough, float specularity, float baked, out vec3 spec, out vec3 lmSub)
         {
-            spec = vec3(0.0);
+            spec = vec3(0.0); lmSub = vec3(0.0);
             uint cl = CxCluster(viewDepth);
             uint n = min(uClCount[cl], CX_CLUSTER_CAP);
             uint base = cl * CX_CLUSTER_CAP;
@@ -978,78 +1115,42 @@ internal static unsafe class AlloyLights
                 uint li = uClIdx[base + k];
                 vec4 pr = uLights[li * 2u];
                 vec4 cs = uLights[li * 2u + 1u];
-                vec3 c0 = cs.rgb;
-                // the record's spare w carries this light's cube slot (-1 = it casts no shadow this frame)
-                int slot = int(cs.w);
-                // pr.w is GetLightAdjustedRadius: the engine's own R, overbright surplus already spent
-                // on it. Squared here because the engine's own cull is the same test on the same value
-                // (SetLightGL @0x4c1007 uploads exactly R*R as lightQuadraticAtten).
-                float rr = pr.w * pr.w;
-                vec3 d = pr.xyz - worldPos;
-                float dd = dot(d, d);
-                if (dd > rr) continue;
-                // The walk already divided an overbright colour down by its max channel (spending the
-                // surplus on radius, as GetLightAdjustedColor does), so every channel is <= 1 here and the
-                // plain sRGB curve is the right linearization.
-                vec3 c = CxLinear(c0);
-                // #140: the ENGINE's curve, range-normalised -- inc_lighting.shd's ComputePointLightSource
-                // at GAMMA_CORRECTION == 1, verbatim. The authored range IS the shape here, which is the
-                // whole reason a dim cave glow and a torch can share one formula: the glow's R is small and
-                // its colour dim, the torch's R is large (its overbright surplus went there), and neither
-                // needs a global gain to rescue it. The rim fade reaches exactly 0 at f2 = 1, so no separate
-                // cutoff window is needed and a light still cannot pop against its own cull sphere.
-                float f2 = dd / rr;
-                float fade = 1.0 - f2;
-                if (uReach > 0.0)
-                {
-                    float r2 = uReach * uReach;
-                    if (f2 > r2) continue;
-                    fade *= min((r2 - f2) / (r2 * 0.3), 1.0);   // to zero over the last 30% of the reach (in f2)
-                }
-                // Uniform-valued branch, so it is coherent across the whole draw and free -- and at the
-                // shipped 1.0 the pow is not merely cheap but exactly skipped, which is what makes "vanilla"
-                // bit-exact rather than approximately right.
-                if (uFalloff.z != 1.0) fade = pow(max(fade, 0.0), uFalloff.z);
-                vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
-                float att = uFalloff.x * fade / (at.x + at.y * f2);
-                // #142: the near-field core -- a compact-support bump reaching uHot.y of the range and
-                // exactly nothing past it, so the body above owns the whole tail and the gain that was
-                // calibrated against vanilla cannot drift. Peak is uHot.x / at.x, so gain + hot = 1 puts
-                // the very centre at the engine's own peak.
-                if (uHot.x > 0.0)
-                {
-                    float t = max(1.0 - f2 / (uHot.y * uHot.y), 0.0);
-                    att += uHot.x * fade * t * t / at.x;
-                }
+                // the record's spare w carries this light's cube slot (-1 = it casts no shadow this frame),
+                // and the #674 static bit above it
+                int w = int(cs.w);
+                bool isStatic = w >= 128;
+                int slot = isStatic ? w - 256 : w;
+                // a static light on a baked receiver is in the pages already: a cold one costs nothing here,
+                // a HOT one (a mover under it) owes its mover's shadow and nothing else
+                bool hot = isStatic && baked > 0.5;
+                if (hot && uLmMovers == 0) continue;
+                vec3 c, L; float att, f2, ndlRaw, ndl;
+                if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;
                 // slot -2 = ambient class: vanilla adds c*att to the ambient term, no N.L, no shadow
-                if (slot == -2) { acc += c * max(att, 0.0); continue; }
-                float invD = inversesqrt(max(dd, 1e-8));
-                vec3 L = d * invD;
-                // #139: the light is a SPHERE of radius uFalloff.y -- the same radius the attenuation
-                // plateau above already models it with -- not a point. `s` is the sine of the half-angle it
-                // subtends here, and wrapping N.L by it softens the terminator by exactly the amount the
-                // source's own size would. The (1 + s) divide is what keeps this a redistribution rather
-                // than free energy. Far away s -> 0 and the whole expression IS max(dot(N, L), 0.0) again,
-                // so placed lights read exactly as they did; only a light held at arm's length differs --
-                // which is the case where a punctual terminator cuts a low-poly facet in half.
-                float s = uWrap <= 0.0 ? 0.0 : clamp(uWrap * uFalloff.y * invD, 0.0, 1.0);
-                // max, not sum: at arm's length the sphere term is already at full strength and adding the
-                // #143 floor on top of it would wrap past the point of looking lit at all.
-                float ndl = CxWrap(dot(N, L), max(s, uWrapN));
+                if (slot == -2) { acc += c * att; continue; }
                 if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
-                vec3 dif = c * (max(att, 0.0) * ndl);
+                if (hot)
+                {
+                    // lmSub.x = occluded, lmSub.y = total (luminance of the unshadowed diffuse) over EVERY
+                    // static light reaching here, cube or not: the caller scales the bake by 1 - x/y, so a
+                    // mover's shadow from one light darkens only that light's share, and the others still lit
+                    float lum = dot(CxPointDiffuse(c, att, ndlRaw, ndl), vec3(0.2126, 0.7152, 0.0722));
+                    lmSub.y += lum;
+                    if (slot >= 0 && uLocalDynPage[slot] > 0.5) lmSub.x += lum * (1.0 - CxLocalDynShadow(slot, worldPos, N, ndlRaw));
+                    continue;
+                }
+                vec3 dif = c * (att * ndl);
                 vec3 spc = dif * CxSpecLobe(N, V, L, rough, specularity);
                 // ponytail: a light behind the surface (ndl <= 0, continued above) skips its subsurface leak
                 // rather than being fetched unshadowed; stock has no shadow to lose there, Alloy does
-                vec3 unsh = dif + c * (max(att, 0.0) * max(dot(N, L) + uSss.x, 0.0) * uSss.y);
+                vec3 unsh = CxPointDiffuse(c, att, ndlRaw, ndl);
                 if (slot < 0) { acc += unsh; spec += spc; continue; }
                 if (capN <= 0)
                 {
-                    float sh = CxLocalShadow(slot, worldPos, N, dot(N, L), onMover, viewDepth);
+                    float sh = CxLocalShadow(slot, worldPos, N, ndlRaw, onMover, viewDepth);
                     acc += unsh * mix(uLocalFloor, 1.0, sh); spec += spc * sh;   // floor on diffuse only: a floored highlight is a wrong highlight
                     continue;
                 }
-                float ndlRaw = dot(N, L);
                 if (f2 < aF2)
                 {   // new strongest: A moves to B (capN 2) or is evicted unshadowed (capN 1); old B is evicted
                     if (capN >= 2) { if (bSlot >= 0) { acc += bLit; spec += bSpc; }
@@ -1076,6 +1177,13 @@ internal static unsafe class AlloyLights
             }
             return acc;
         }
+        // The pre-#674 signature: an unbaked receiver, every light live.
+        vec3 CxClusteredLight(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,
+                                float rough, float specularity, out vec3 spec)
+        {
+            vec3 sub;
+            return CxClusteredLightLm(worldPos, N, V, viewDepth, onMover, rough, specularity, 0.0, spec, sub);
+        }
 
         // The diffuse half alone, for <c>/alloy viz 1</c> and anything that has no material in hand.
         vec3 CxClusteredDiffuse(vec3 worldPos, vec3 N, float viewDepth)
@@ -1098,6 +1206,7 @@ internal static unsafe class AlloyLights
                 uint li = uClIdx[base + k];
                 vec4 pr = uLights[li * 2u];
                 int slot = int(uLights[li * 2u + 1u].w);
+                if (slot >= 128) slot -= 256;   // #674: the static bit
                 if (slot < 0) continue;
                 vec3 d = pr.xyz - worldPos;
                 if (dot(d, d) > pr.w * pr.w) continue;

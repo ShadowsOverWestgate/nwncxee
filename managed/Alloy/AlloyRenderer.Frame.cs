@@ -189,6 +189,7 @@ public sealed unsafe partial class AlloyRenderer
             _lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
             MeshLod.Pump();   // the one GL edge of the LOD arena: collect what the worker finished
             MeshChart.Pump(); // ...and of the chart arenas (#673)
+            DrainChartDeferred();   // #674: the offers the enrolment walk could not queue
             long tBuild = FrameZones.Now;
             int groups = BuildBatches(lightingOn);
             FrameZones.Add(FrameZones.Zone.Build, tBuild);
@@ -235,6 +236,7 @@ public sealed unsafe partial class AlloyRenderer
                 // pattern as the Probe bracket below.
                 long issue0 = FrameZones.Ticks(FrameZones.Zone.Issue), cull0 = FrameZones.Ticks(FrameZones.Zone.Cull);
                 long post0 = FrameZones.Ticks(FrameZones.Zone.Post), probe0 = FrameZones.Ticks(FrameZones.Zone.Probe);
+                long lm0 = FrameZones.Ticks(FrameZones.Zone.Lightmap);
                 long tPasses = FrameZones.Now;
                 // #375: the post bracket opens at PostProcess and closes at PostStack, two graph slots.
                 long tPost = 0; bool postOpen = false;
@@ -420,6 +422,9 @@ public sealed unsafe partial class AlloyRenderer
                             GpuBegin(GpuTerm.Gi);
                             CaptureGi(_gOpaqueEnd);
                             GpuEnd(GpuTerm.Gi);
+                            long tLm = FrameZones.Now;
+                            LightmapBake.Run(_capturing, _frameSeq);   // #674: its own targets, restored below with the rest
+                            FrameZones.Add(FrameZones.Zone.Lightmap, tLm);
                             // The capture bound its own framebuffer and viewport; whatever runs after the
                             // bracket must find the engine's target again, not a 128px cube face.
                             BindTarget();
@@ -483,7 +488,8 @@ public sealed unsafe partial class AlloyRenderer
                                FrameZones.Ticks(FrameZones.Zone.Issue) - issue0
                                + FrameZones.Ticks(FrameZones.Zone.Cull) - cull0
                                + FrameZones.Ticks(FrameZones.Zone.Post) - post0
-                               + FrameZones.Ticks(FrameZones.Zone.Probe) - probe0);
+                               + FrameZones.Ticks(FrameZones.Zone.Probe) - probe0
+                               + FrameZones.Ticks(FrameZones.Zone.Lightmap) - lm0);
             }
             Gl.BindVertexArray(0);
         }

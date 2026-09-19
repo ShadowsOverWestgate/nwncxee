@@ -781,7 +781,10 @@ public sealed unsafe partial class AlloyRenderer
             if ((chartArmed || lvl > 0) && !VdoDirty(v) && !ItemMoved(v, _oItem[src]))
             {
                 if (chartArmed && MeshChart.Range(v, _oItem[src], lvl, out int cb, out nint co, out int cc))
-                { idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc); picked = true; }
+                {
+                    idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc); picked = true;
+                    LightmapBake.Enrol(i, v, _oItem[src]);   // #674: once per slot (a -1 test after the first)
+                }
                 else if (lvl > 0 && MeshLod.Range(v, _oItem[src], lvl, out nint lo, out int lc) && LodVao(v) != 0)
                 { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; picked = true; }
             }

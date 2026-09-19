@@ -31,6 +31,7 @@ public sealed unsafe partial class AlloyRenderer
         if ((uint)_oEntry[i] < (uint)_entrySlot.Length && _entrySlot[_oEntry[i]] == i) _entrySlot[_oEntry[i]] = -1;
         _oTri[i] = IntPtr.Zero;
         SetCastOk(i, false);   // #328: a vacated slot casts nothing, and the shadow side re-collects on it
+        LightmapBake.Vacate(i);   // #674: its bake record reads unbaked
         _ownLive--;
         _freeSlots[_freeCount++] = i;
     }
@@ -161,6 +162,7 @@ public sealed unsafe partial class AlloyRenderer
         // The VAO cache keys on VDO pointers that may now be freed: retire every slot for reuse. The GL
         // objects can only be deleted inside the bracket, so the rebuild happens there (EnsureVao).
         for (int v = 0; v < _vdoCount; v++) { _vVdo[v] = IntPtr.Zero; _vStale[v] = true; }
+        _chartDeferred.Clear();
         PassRegistry.Global.Revoke();
         CullPass.Revoke();
         CycleTextures.Clear();

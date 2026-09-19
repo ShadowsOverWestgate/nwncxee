@@ -340,6 +340,7 @@ public sealed unsafe partial class AlloyRenderer
                     OitPass.Upload(L.Oit, L.OitDim, _oitOn);
                     Gl.Uniform1i(L.Capture, _capturing ? (_giCapturing ? 2 : 1) : 0);
                     GiProbes.Upload(L.Gi, L.GiCell);
+                    LightmapBake.BindForDraw(L.LmPages, L.LmMovers);
                     UploadFeatureTerms(L.Feat, viewport);
                     UploadAreaTerms(L);
                     UploadSunCascades(L);

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -161,7 +162,11 @@ public sealed unsafe partial class AlloyRenderer
         long elem = vdo.ElemItems, vert = vdo.VertItems;
         if (elem == 0 || vert == 0 || item < 0 || item >= vdo.ElemCount || item >= vdo.VertCount) return false;
         int count = *(int*)(elem + item * 8 + 4);
-        if (!MeshChart.Wanted(s, item, count)) return false;
+        if (!MeshChart.Wanted(s, item, count, out bool later))
+        {
+            if (later && _chartDeferred.Count < MaxOwned) _chartDeferred.Add((vdoPtr, item, prim, s));
+            return later;   // claimed for later: the LOD offer stands aside as it would for a queued chart
+        }
         long first = (uint)*(int*)(elem + item * 8);
         int baseVertex = *(int*)(vert + item * 8);
         byte* elemHost = OwnedBuffers.PoolHost(vdo.ElemToken);
@@ -171,6 +176,26 @@ public sealed unsafe partial class AlloyRenderer
         if (elemHost == null || posHost == null || nrmHost == null) return false;
         MeshChart.Offer(s, item, elemHost, first, count, posHost, in _vPos[s], nrmHost, in _vNrm[s], uvHost, in _vUv[s], baseVertex);
         return true;
+    }
+
+    /// <summary>#674: chart offers the worker's queue could not take on the enrolment walk, re-offered from
+    /// the frame as it drains. A VDO slot re-pointed in between is skipped (the tenant check).</summary>
+    private static readonly List<(IntPtr vdo, int item, int prim, int s)> _chartDeferred = new();
+
+    /// <summary>Once a frame, after <see cref="MeshChart.Pump"/>: re-offer deferred charts while the queue has room.</summary>
+    internal static void DrainChartDeferred()
+    {
+        int n = _chartDeferred.Count;
+        if (n == 0) return;
+        int k = 0;
+        while (k < n && MeshChart.HasRoom())
+        {
+            var d = _chartDeferred[k++];
+            if (_vVdo[d.s] != d.vdo) continue;
+            if (!OfferChart(d.vdo, d.item, d.prim, d.s)) OfferLod(d.vdo, d.item, d.prim, d.s);
+        }
+        // OfferChart may have re-deferred some of them onto the tail; drop the ones just walked
+        _chartDeferred.RemoveRange(0, k);
     }
 
     /// <summary>#673: the same bit for a batch drawing from <see cref="MeshChart"/>'s arenas -- its own vertex

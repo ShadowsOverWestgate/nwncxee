@@ -939,6 +939,9 @@ public sealed unsafe partial class AlloyRenderer
         layout(location = 0) in vec3 aPos;
         layout(location = 1) in vec2 aUV;
         layout(location = 2) in vec3 aNrm;
+        // #674: the lightmap chart UV, in the mesh atlas's texel units (MeshChart.LocChartUv). Only a charted
+        // VAO enables the array; every other reads the constant attribute, and its record says unbaked anyway.
+        layout(location = 3) in vec2 aChart;
 
         """ + DrawBufDecl + FeatDecl + """
         uniform mat4 uVP;
@@ -949,6 +952,7 @@ public sealed unsafe partial class AlloyRenderer
         out vec3 vNrm;
         out float vDepth;
         out float vAnchorZ;            // #123: undisplaced world height, for the roof anchor discard
+        out vec2 vChart;               // #674
         flat out int vDraw;
 
         """ + FeatVs + BoneVs + """
@@ -982,6 +986,7 @@ public sealed unsafe partial class AlloyRenderer
             vWorld = world.xyz;
             vNrm = mat3(d.model) * (bb >= 0 ? mat3(skin) * aNrm : aNrm);
             vUV = vec2(d.rot.x * aUV.x - d.rot.y * aUV.y, d.rot.y * aUV.x + d.rot.x * aUV.y);
+            vChart = aChart;
             vDraw = id;
         }
         """;
@@ -1009,9 +1014,10 @@ public sealed unsafe partial class AlloyRenderer
         in vec3 vNrm;
         in float vDepth;
         in float vAnchorZ;             // #123: undisplaced world height, for the roof anchor discard
+        in vec2 vChart;                // #674: chart UV in atlas texels
         flat in int vDraw;             // this fragment's CxDraw record: the material colours live there now
 
-        """ + DrawBufDecl + FeatDecl + KeyFogDecl + """
+        """ + DrawBufDecl + FeatDecl + KeyFogDecl + LightmapBake.ChartBufDecl + """
         uniform sampler2D uTex;
         uniform sampler2D uFlowTex;    // #123 slot 6: RG flow direction, only ever bound on a flowmap part
         // #120: the five stock .mtr slots beyond the diffuse, on units 3..7 (1 and 2 are the shadow maps).
@@ -1570,7 +1576,31 @@ public sealed unsafe partial class AlloyRenderer
             // #308 follow-up: 1 on a creature fragment (skinmesh, or the dangly marker in feat.w) -- the
             // local receiver's carrier-band gate, so a creature takes no dyn-pool self-shadow up close.
             float onMover = (int(d.feat.x) == CX_FEAT_SKIN || d.feat.w < 0.0) ? 1.0 : 0.0;
-            vec3 point = CxClusteredLight(vWorld, N, V, vDepth, onMover, rough, spec, pointSpec);
+            // #674: the baked term. A surface whose bake landed reads its static light from the pages --
+            // irradiance baked against the VERTEX normal, rebalanced here for the shading normal (Unity's
+            // directional decode) -- and the loop skips every static light for it; a hot light's mover shadow
+            // comes back out through lmSub. One specular lobe along the dominant direction with the
+            // irradiance as its radiance stands in for the per-light lobes the loop no longer runs.
+            vec3 lmIrr, lmDir, lmSub;
+            bool baked = CxLightmap(uChart[vDraw], vChart, lmIrr, lmDir);
+            vec3 point = CxClusteredLightLm(vWorld, N, V, vDepth, onMover, rough, spec, baked ? 1.0 : 0.0, pointSpec, lmSub);
+            vec3 lm = vec3(0.0);
+            if (baked)
+            {
+                lm = CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm)) * (1.0 - lmSub.x / max(lmSub.y, 1e-5));
+                point += lm;
+                pointSpec += lm * CxSpecLobe(N, V, lmDir, rough, spec);
+            }
+            // 43 = the lightmap term alone: the baked light on a baked surface, MAGENTA on an unbaked one.
+            // 44 = the pages' texel grid over baked surfaces (chart seams and density), magenta unbaked.
+            if (uViz == 43) { frag = vec4(baked ? lm : vec3(1.0, 0.0, 1.0), 1.0); return; }
+            if (uViz == 44)
+            {
+                vec4 rec = uChart[vDraw];
+                vec2 t = floor(rec.yz + vChart * rec.w);
+                frag = vec4(baked ? vec3(mod(t.x + t.y, 2.0) < 1.0 ? 0.3 : 0.7) : vec3(1.0, 0.0, 1.0), 1.0);
+                return;
+            }
             // The engine's split: every light accumulates its own lobe, then ONE view-side normalisation
             // (fSpecularBaseModifier) and the material's specular colour scale the sum
             // (inc_lighting.shd:456 and :615). fSpecularity is already inside the lobe via the Fresnel term.

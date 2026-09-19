@@ -464,6 +464,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // idempotent, so restarting it at its own top is the same reset with no ordering to get wrong.
         FrameInputs.BeginAreaLights(count);
         FrameInputs.ResetLocalLights(count);
+        LightmapBake.BeginWalk(area);   // #674: the static snapshot restarts with the walk
         bool walkDiag = _trace && ++_walkDiagTick >= 900;   // ~15s at 60fps (one walk/frame): dump raw filter fields near the camera
         if (walkDiag) _walkDiagTick = 0;
         if (walkDiag)
@@ -535,6 +536,10 @@ public sealed unsafe class SceneInputs : IExtenderService
                 r *= k; g *= k; b *= k;
             }
             float upW = adjR;
+            // #674: the bake's snapshot takes the light HERE -- before the engine's nearest-N fade (a light
+            // faded out by distance is still in the area) and before the flicker: the fingerprint is over the
+            // uncut, steady list, or walking the camera re-keys every bake (#654).
+            bool isStatic = LightmapBake.Record(p, area, pos, adjR, new Vector3(r, g, b), ambient);
             // fade@0x90 (ControlLightsFade) scales the uploaded colour only, never the radius (SetLightGL)
             float lfade = *(float*)(p + LightFade);
             if (lfade <= 0f) continue;
@@ -583,7 +588,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (!culled)
             {
                 snapIdx = FrameInputs.LightCount;
-                FrameInputs.RecordAreaLight((IntPtr)p, pos, upW, color, ambient);
+                FrameInputs.RecordAreaLight((IntPtr)p, pos, upW, color, ambient, isStatic);
                 if (FrameInputs.LightCount == snapIdx) snapIdx = -1;   // snapshot full: the light was dropped
             }
             if (_torchDiag) TrackNearest(p, pos, range, alt, inten, color, adjR, upW, flk, culled, snapIdx);
@@ -601,6 +606,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             FrameInputs.RecordLocalLight((IntPtr)p, pos, adjR, color);
         }
         FadeDepartedLights();
+        LightmapBake.EndWalk();
         _walkDoneCount = FrameInputs.LightCount;
     }
 
@@ -623,7 +629,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             for (int i = 0; i < regCount && !reg; i++)
             {
                 IntPtr rec = *((IntPtr*)regData + i);
-                if (rec != IntPtr.Zero && *(IntPtr*)(rec + 8) == gob) { reg = true; regId = *(uint*)rec; }
+                if (rec != IntPtr.Zero && *(IntPtr*)(rec + PlaceableLightGob) == gob) { reg = true; regId = *(uint*)rec; }
             }
         var ctl = new System.Text.StringBuilder();
         int cnt = node == IntPtr.Zero ? -1 : *(int*)(node + MdlNodeControllerCount);

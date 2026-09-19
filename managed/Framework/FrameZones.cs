@@ -144,6 +144,9 @@ public static class FrameZones
         BcnRead, BcnMap, BcnUp,
         /// <summary>#386: the prefetch drip's engine builds. On the Enroll slot inside Ai, subtracted from both.</summary>
         Prebuild,
+        /// <summary>#674: the lightmap bake's frame step (adopt, pack, the light steps, the readback), inside
+        /// <see cref="Passes"/> and subtracted from it.</summary>
+        Lightmap,
 
         Count,
     }
