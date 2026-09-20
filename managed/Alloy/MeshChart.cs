@@ -13,7 +13,7 @@ namespace CX.Alloy;
 internal static class Lightmap
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<int> Density, Disk, Pages;
+    internal static readonly Knob<int> Density, Disk, Pages, Near, Tiers;
     internal static readonly Knob<bool> Movers;
 
     static Lightmap()
@@ -29,6 +29,11 @@ internal static class Lightmap
                            changed: LightmapBake.RekeyAll);
         Pages = G.Slider("pages", "Lightmap pages", 0, LightmapBake.MaxPages, 1, 0, tier: Tier.Advanced,
                          help: "4096x4096 pages the area may hold (128 MiB each), allocated as the area needs them. 0 sizes it from the card's memory: a quarter of it in pages, at most 32. An area that would overflow the cap bakes at a lower density instead.");
+        Near = G.Slider("near", "Full-density radius", 10, 200, 5, 40, "m", tier: Tier.Advanced,
+                        help: "Metres from the player baked at the full density; each tier out doubles the radius and halves the density. The last tier covers the whole area and bakes first.");
+        Tiers = G.Slider("tiers", "Density tiers", 1, LightmapBake.MaxTiers, 1, 3, tier: Tier.Advanced,
+                         help: "Density steps between the player and the far area: 1 bakes everything at the full density, 3 is full / half / quarter. A change re-bakes the area.",
+                         changed: LightmapBake.RekeyAll);
         Movers = G.Toggle("movers", "Creature shadows from baked lights", true,
                           help: "A creature standing under a baked light casts its shadow on the baked surface. Off is cheaper: baked surfaces take no shadow from creatures under static lights.");
         // 2048: one area's bake at density 10 is ~500 MiB of .lmr files, and a 512 MiB budget pruned the

@@ -400,6 +400,12 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Page cap** — how many lightmap pages an area may hold (a quarter of the card's memory in 128 MiB
   pages, at most 32) unless `lightmap.pages` names a number. An area that would overflow it bakes at a
   lower density area-wide (1/2, 1/4 ... of `lightmap.density`) rather than leaving instances unbaked.
+- **Density tier** — the density an instance's rect is baked at, by its distance from the player: tier
+  0 is the full `lightmap.density` inside `lightmap.near` metres, each tier out doubles the radius and
+  halves the density, and the last tier (`lightmap.tiers` - 1) is the **baseline** that covers the whole
+  area and bakes first. A rect refines to a finer tier as the player approaches; its readers keep the
+  baseline record until the fine one lands, and a fine page far past its tier is evicted whole when the
+  pack needs the room -- its readers fall back to the baseline. Avoid: LOD (that is the mesh's), mip.
 - **Area-loaded hold** — the client keeps the server's "place the player" message (the
   area-loaded send) back until the lightmap bake has landed, so the player never stands in a
   world that is still baking. Ends at the first of: bake landed, the player skips, the hard cap.
