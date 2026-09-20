@@ -362,6 +362,7 @@ Renderer itself.
 | light.probegain | /probe gain | Reflection strength | S | 0–4 · 1 | A | L | Reflections | 1 is the stock weighting. |
 | light.probeareawide | /probe areawide | Reflect on every surface | T | off | A | L | Reflections | On, every material reflects the probe, not just those with an env map. |
 | light.probesize | probe_size | Reflection capture size | D | 64 / 128 / 256 / 512 px · 128 | A | R | Reflections | |
+| light.hidden | — | Hidden lights do not reflect | T | on | U | L | Reflections | A wet or glossy surface mirrors a light only where that light's shadow lets it -- a lamp on a terrace reflects in the street from where the ground sees over the parapet, not from the wall's foot. |
 | light.binreach / bincap / reachfade | same | — | S | as today | C | L | | cluster-build experiments |
 
 **Shadows** — group `shadow`.

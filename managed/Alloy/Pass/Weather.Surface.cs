@@ -38,7 +38,7 @@ internal static unsafe partial class Weather
         G.Section("Surfaces");
         Arrive = G.Toggle("arrive", "Arrive into settled weather", true,
                           help: "Weather already running when you enter an area is fully soaked or snowed on arrival, instead of accumulating in front of you.");
-        WetStrength = G.Slider("wet", "Wet surfaces", 0f, 1f, 0.05f, 1f,
+        WetStrength = G.Slider("wet", "Wet surfaces", 0f, 1f, 0.05f, 0.1f,
                                help: "Exposed ground and roofs darken and turn glossy in rain, reflecting the sky. 0 = off.");
         SnowStrength = G.Slider("snow", "Snow cover", 0f, 1f, 0.05f, 1f,
                                 help: "Exposed up-facing surfaces whiten in snow. 0 = off.");
@@ -47,7 +47,7 @@ internal static unsafe partial class Weather
         DrySec = G.Slider("dry", "Dry-out time", 10f, 1800f, 10f, 180f, "s", help: "Seconds for wet ground to dry after the rain stops.");
         MeltSec = G.Slider("melt", "Melt time", 30f, 7200f, 30f, 900f, "s", help: "Seconds for snow cover to melt after the snowfall ends.");
         Splash = G.Slider("splash", "Rain impacts", 0f, 1f, 0.05f, 1f,
-                          help: "Drops splash where they land on wet ground and ring the puddles they hit. 0 = off.");
+                          help: "Drops ring the puddles they hit. 0 = off.");
         G.Section("Snow look");
         SnowAlbedo = G.Slider("snowalbedo", "Snow brightness", 0.3f, 1f, 0.05f, 0.9f, help: "Albedo of settled snow. Fresh snow is near white.");
         SnowSlope = G.Slider("snowslope", "Snow holds to", 10f, 85f, 5f, 55f, "°",
@@ -72,7 +72,7 @@ internal static unsafe partial class Weather
         G.Section("Puddles");
         PuddleThreshold = G.Slider("puddle", "Puddle threshold", 0f, 1f, 0.05f, 0.5f,
                                    help: "Wetness at which puddles start to fill. 1 = never.");
-        PuddleCoverage = G.Slider("puddlecover", "Puddle coverage", 0f, 1f, 0.05f, 0.45f,
+        PuddleCoverage = G.Slider("puddlecover", "Puddle coverage", 0f, 1f, 0.05f, 0.15f,
                                   help: "How much low ground pools at full fill.");
         PuddleEdge = G.Slider("puddleedge", "Puddle edge", 0.02f, 0.5f, 0.01f, 0.12f, tier: Tier.Advanced,
                               help: "Softness of a puddle's shoreline.");
@@ -119,18 +119,61 @@ internal static unsafe partial class Weather
         Matrix4x4 vp = cover ? CasterPass.CoverVp : default;
         Gl.UniformMatrix4fv(locCoverVp, 1, 0, (float*)&vp);
         // z = uv per metre in the cover view (the fit is 2 x radius across), for the soft-edge taps
-        float rain = on && CurrentKind == Kind.Rain ? Density * Splash.V : 0f;
-        Gl.Uniform4f(locCoverLayer, CasterPass.CoverLayer, HollowStepM / (CoverDepthRadii * radius), CoverSoft.V * 0.5f / radius, rain);
+        Gl.Uniform4f(locCoverLayer, CasterPass.CoverLayer, HollowStepM / (CoverDepthRadii * radius), CoverSoft.V * 0.5f / radius, SplashRate(capturing));
     }
+
+    /// <summary>Drops per cell per period, 0..1: the density under the splash knob while it rains.</summary>
+    internal static float SplashRate(bool capturing)
+        => !capturing && !_off && Enabled.V && CurrentKind == Kind.Rain ? Density * Splash.V : 0f;
 
     private static void ResetSurface() { _wet = _snow = _puddle = 0f; _enterTicks = Stopwatch.GetTimestamp(); }
 
     private static string SurfaceStats() => $" wet {_wet:F2} snow {_snow:F2} puddle {_puddle:F2}";
 
+    /// <summary>The rain-impact ripple, its own lib because the WATER stage takes it too (fed <c>uSplash</c>
+    /// there, <c>uCoverLayer.w</c> on the lit stage); the hash rides with it.</summary>
+    internal const string ImpactLib = """
+
+        float CxWeatherHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        uniform float uSplash;         // the water stage's rain impact rate (0 = none)
+
+        // Rain impacts: two offset 25 cm lattices, one drop per cell per period (0.4-1 s, hashed per cell), present
+        // with probability = the rate, each its own size. Not a circle: a damped wave TRAIN -- three rings
+        // behind a front that runs out and spreads, the whole train dying as exp(-3 age) the way a real ripple
+        // does -- and the normal tilts along its radial slope. No albedo mark: a drop leaves nothing on the
+        // water but the wave, and what the eye sees is the highlight rippling. Returns the tilt.
+        vec2 CxWeatherImpact(vec2 p, float rate)
+        {
+            float t = mod(float(uTimeOfDay), 3600000.0) * 0.001;   // hour wrap keeps fract() fine-grained
+            vec2 r = vec2(0.0);
+            for (int i = 0; i < 2; i++)
+            {
+                vec2 q = p * 4.0 + float(i) * 0.5;
+                vec2 cell = floor(q) + float(i) * 37.0;
+                float period = 0.4 + 0.6 * CxWeatherHash(cell);
+                float ph = t / period + CxWeatherHash(cell + 11.0);
+                float idx = floor(ph), age = fract(ph);
+                if (CxWeatherHash(cell + idx) > rate) continue;
+                vec2 c = vec2(CxWeatherHash(cell + idx + 3.0), CxWeatherHash(cell + idx + 5.0)) * 0.5 + 0.25;
+                float size = 0.4 + 0.6 * CxWeatherHash(cell + idx + 7.0);   // reach and height of the drop's wave
+                vec2 dv = fract(q) - c;
+                float d = length(dv);
+                // x = cell units from the front, in wavelengths; the packet sin(2x) e^(-0.12 x^2) is three
+                // rings wide, and the slope below is its derivative in x
+                float x = (d - age * 0.45 * size) * (28.0 - 10.0 * age);
+                float env = exp(-x * x * 0.12);
+                float slope = (2.0 * cos(2.0 * x) - 0.24 * x * sin(2.0 * x)) * env;
+                r += dv / max(d, 1e-4) * slope * exp(-3.0 * age) * size;
+            }
+            return r;
+        }
+
+        """;
+
     /// <summary>The lit stage's weather reads, composed after <see cref="AlloyLights.SunShadowLib"/> (they sample
     /// the sun array's cover layer). Exposure is a four-tap PCF like a cascade's; the hollow test is eight
     /// compares against this point's own depth minus a step -- a neighbour standing higher fails it.</summary>
-    internal const string WeatherLib = """
+    internal const string WeatherLib = ImpactLib + """
 
         // ---- #617/#618/#619: weather on surfaces --------------------------------------------------------
         uniform vec4 uWeather;         // x wetness, y snow, z puddle fill (all 0..1), w = /weather viz
@@ -141,10 +184,8 @@ internal static unsafe partial class Weather
         uniform vec4 uSnowLight;       // x scatter wrap, y sky in the shade, z drift width in cover uv, w ground variation
         uniform vec4 uSnowPom;         // x relief height in metres (0 = off), y march steps, z = 1 when tileset parts take no cover
 
-        float CxWeatherHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-
         uniform sampler2D uCoverEsm;   // the filtered cover map (Weather.Esm), on the snapshot-depth unit
-        uniform vec4 uCoverEsmP;       // x = exponent per depth unit, y = height bias in depth units, z = 1 when the map is bound
+        uniform vec4 uCoverEsmP;       // x = the variance floor in depth units squared, y = height bias in depth units, z = 1 when the map is bound
 
         float CxWeatherExposure(vec3 worldPos, vec3 N)
         {
@@ -154,11 +195,19 @@ internal static unsafe partial class Weather
             if (any(greaterThan(abs(ndc.xy), vec2(1.0))) || abs(ndc.z) > 1.0) return 1.0;
             vec2 uv = ndc.xy * 0.5 + 0.5;
             float ref = ndc.z * 0.5 + 0.5;
-            // the filtered map: one fetch, exposure = exp(c (filtered occluder depth - own depth + bias)), a
-            // continuous ramp as wide as the feather. Under the OIT accumulate the unit holds the opaque
-            // depth instead, and a blended part takes the hard compare.
+            // the filtered map: one fetch of the two moments, Chebyshev's bound on how much of the kernel
+            // stands above this point -- a ramp as wide as the feather whatever the roof's height. Under the
+            // OIT accumulate the unit holds the opaque depth instead, and a blended part takes the hard compare.
             if (uCoverEsmP.z > 0.5 && uOit == 0)
-                return clamp(exp(uCoverEsmP.x * (texture(uCoverEsm, uv).r - ref + uCoverEsmP.y)), 0.0, 1.0);
+            {
+                vec2 m = texture(uCoverEsm, uv).rg;
+                float dd = ref - uCoverEsmP.y - m.x;
+                if (dd <= 0.0) return 1.0;
+                float var = max(m.y - m.x * m.x, uCoverEsmP.x);
+                // the bleed cut: a roof's own texels, all at one depth, must read 0 under it and not the
+                // floor's share; the ramp keeps its width
+                return smoothstep(0.2, 1.0, var / (var + dd * dd));
+            }
             return texture(uSunShadow, vec4(uv, uCoverLayer.x, ref - 0.0015));
         }
 
@@ -207,32 +256,6 @@ internal static unsafe partial class Weather
                 }
             }
             r.x /= 8.0 * 2.1;
-            return r;
-        }
-
-        // Rain impacts: two offset 25 cm lattices, one drop per cell per period (0.4-1 s, hashed per cell), present
-        // with probability = the rate. A ring front runs out from the impact point over the period and the normal
-        // tilts along its radial derivative -- the wave; a dot at the point for the first sixth of it -- the splash.
-        // Returns xy = tilt, z = splash.
-        vec3 CxWeatherImpact(vec2 p, float rate)
-        {
-            float t = mod(float(uTimeOfDay), 3600000.0) * 0.001;   // hour wrap keeps fract() fine-grained
-            vec3 r = vec3(0.0);
-            for (int i = 0; i < 2; i++)
-            {
-                vec2 q = p * 4.0 + float(i) * 0.5;
-                vec2 cell = floor(q) + float(i) * 37.0;
-                float period = 0.4 + 0.6 * CxWeatherHash(cell);
-                float ph = t / period + CxWeatherHash(cell + 11.0);
-                float idx = floor(ph), age = fract(ph);
-                if (CxWeatherHash(cell + idx) > rate) continue;
-                vec2 c = vec2(CxWeatherHash(cell + idx + 3.0), CxWeatherHash(cell + idx + 5.0)) * 0.5 + 0.25;
-                vec2 dv = fract(q) - c;
-                float d = length(dv);
-                float w = (d - age * 0.5) * 24.0;
-                r.xy += dv / max(d, 1e-4) * exp(-w * w) * -2.0 * w * (1.0 - age);
-                r.z += exp(-d * d * 400.0) * max(0.0, 1.0 - age * 6.0);
-            }
             return r;
         }
 
@@ -349,12 +372,8 @@ internal static unsafe partial class Weather
                     rough = mix(rough, 0.12, wxPuddle); spec = max(spec, 0.4 * wxPuddle);
                     N = normalize(mix(N, vec3(0.0, 0.0, 1.0), wxPuddle));
                 }
-                if (uCoverLayer.w > 0.0 && wxWet > 0.0 && up > 0.9)
-                {
-                    vec3 wxImp = CxWeatherImpact(vWorld.xy, uCoverLayer.w) * wxExp;
-                    albedo = mix(albedo, vec3(1.0), clamp(wxImp.z, 0.0, 1.0) * 0.6);
-                    N = normalize(N + vec3(wxImp.xy * wxPuddle * 0.5, 0.0));
-                }
+                if (uCoverLayer.w > 0.0 && wxPuddle > 0.0 && up > 0.9)
+                    N = normalize(N + vec3(CxWeatherImpact(vWorld.xy, uCoverLayer.w) * wxExp * wxPuddle * 0.3, 0.0));
             }
 
 """;

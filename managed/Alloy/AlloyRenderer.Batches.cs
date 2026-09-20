@@ -1541,9 +1541,11 @@ public sealed unsafe partial class AlloyRenderer
     /// (<see cref="SkyBox.NoteRoles"/>) precisely so this is a number and not a suspicion; if the horizon
     /// band ever reads wrong, the upgrade is a per-role alpha correction, not the scratch target back.</para>
     /// </summary>
-    private static void SkyOwnedPass(Matrix4x4* vp, int* viewport)
+    /// <para><paramref name="hosted"/> false (the probe capture) draws the owned dome alone: a hosted part runs
+    /// the engine's program under the engine's matrices, and its decode reads the frame's HDR target.</para>
+    private static void SkyOwnedPass(Matrix4x4* vp, int* viewport, bool hosted = true)
     {
-        if ((_skyN == 0 && _seN == 0) || Gl.DepthRange == null) return;
+        if ((_skyN == 0 && (_seN == 0 || !hosted)) || Gl.DepthRange == null) return;
         Gl.UseProgram(_prog46);
         Gl.Uniform1i(_locTex, 0);
         Gl.Uniform1i(_locViz, _lightViz);
@@ -1589,8 +1591,8 @@ public sealed unsafe partial class AlloyRenderer
         }
         Gl.Uniform1f(_locSkyFog, 0f);   // program state outlives the pass: no later unlit draw inherits the band
         // #136: the hosted-program parts last, inside the same depth/cull/blend preamble.
-        SkyEnginePass();
-        if (_seN > 0 && _progSkyDecode != 0 && Gl.TextureBarrier != null && PostChain.HdrTex != 0)
+        if (hosted) SkyEnginePass();
+        if (hosted && _seN > 0 && _progSkyDecode != 0 && Gl.TextureBarrier != null && PostChain.HdrTex != 0)
         {
             // same depth range and test: exactly the pixels the hosted dome could have written
             Gl.TextureBarrier();

@@ -1477,7 +1477,8 @@ public sealed unsafe partial class AlloyRenderer
                 lm = CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm));
                 lm *= 1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0);
                 point += lm;
-                pointSpec += lm * CxSpecLobe(N, V, lmDir, rough, spec);
+                // a glossy receiver took each static light's own lobe in the loop instead (light.hidden)
+                if (!CxGlossy(rough)) pointSpec += lm * CxSpecLobe(N, V, lmDir, rough, spec);
             }
             // 43 = the lightmap term alone: the baked light on a baked surface, MAGENTA on an unbaked one.
             // 44 = the pages' texel grid over baked surfaces (chart seams and density), magenta unbaked.

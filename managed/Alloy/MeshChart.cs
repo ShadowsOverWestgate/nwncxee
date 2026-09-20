@@ -21,7 +21,7 @@ internal static class Lightmap
         G = KnobGroup.Declare("lightmap", "Graphics", "Baked lighting", master: "Baked static lighting",
             masterHelp: "Static geometry -- tiles and placeables that never move -- gets its lights baked into a "
                       + "lightmap as the area loads, and the frame stops re-shading them. Off is the live light loop.",
-            masterDefault: false, parent: "alloy.enabled",
+            masterDefault: true, parent: "alloy.enabled",
             header: "Charts are cut per mesh as an area loads and cached on disk (cx-charts/, beside cx.cfg).");
         G.Status = MeshChart.Describe;
         Density = G.Slider("density", "Lightmap density", 2, 32, 1, 8, "px/m", tier: Tier.Advanced,

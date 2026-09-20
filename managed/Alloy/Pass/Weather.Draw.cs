@@ -52,7 +52,7 @@ internal static unsafe partial class Weather
         StreakLen = G.Slider("streak", "Rain streak length", 0.1f, 2f, 0.05f, 0.35f, "m", help: "Mean length of one rain streak (each varies 0.5x-1.3x).");
         FlakeSize = G.Slider("flake", "Snowflake size", 0.01f, 0.2f, 0.01f, 0.05f, "m", help: "Diameter of one flake.");
         Brightness = G.Slider("bright", "Brightness", 0f, 3f, 0.1f, 0.6f, help: "Streaks and flakes take the light where they fall (sun, shadow, lamps); this scales it.");
-        Opacity = G.Slider("opacity", "Rain opacity", 0.02f, 1f, 0.02f, 0.34f, help: "How solid a streak is. Real rain is faint.");
+        Opacity = G.Slider("opacity", "Rain opacity", 0.02f, 1f, 0.02f, 0.06f, help: "How solid a streak is. Real rain is faint.");
         Range = G.Slider("range", "Range", 6f, 40f, 1f, 20f, "m", Tier.Advanced, help: "Size of the box around the camera the field fills.");
         RainSpeed = G.Slider("rainspeed", "Rain speed", 2f, 30f, 0.5f, 12f, "m/s", Tier.Advanced);
         SnowSpeed = G.Slider("snowspeed", "Snow speed", 0.2f, 6f, 0.1f, 1.2f, "m/s", Tier.Advanced);
@@ -298,14 +298,18 @@ internal static unsafe partial class Weather
             float len = uKind != 2 ? uSize.x * (0.5 + 0.8 * h.y) : uSize.x;
             vec3 pos = P + axis * (corner.y * len * 0.5) + side * (corner.x * uSize.y * 0.5);
             vUV = corner;
-            // brightness: hashed 0.3..1.0, fading out over the last third of the box so the field has no edge
-            vec2 rel = abs(q.xy - c.xy) / (size.xy * 0.5);
-            vSeed = (0.3 + 0.7 * fract(h.x * 7.31)) * (1.0 - smoothstep(0.6, 1.0, max(rel.x, rel.y)));
+            // brightness: hashed 0.3..1.0
+            vSeed = 0.3 + 0.7 * fract(h.x * 7.31);
+            // no edge: the field thins RADIALLY from 40% of the half-width out, by drop COUNT (a hashed keep)
+            // and not by a brightness ramp -- a ramp on a square box read as a band with a corner in it,
+            // fewer drops reads as distance
+            vec2 rel = (q.xy - c.xy) / (size.xy * 0.5);
+            float edge = 1.0 - smoothstep(0.4, 1.0, length(rel));
             vec4 vp = uView * vec4(pos, 1.0);
             vViewZ = vp.z;
             // the cover test at a hashed offset in the fall-normal plane: wind and splash feather a roof's edge
             vec3 Pc = P + (R * (h.y - 0.5) + U * (h.z - 0.5)) * uCoverSoft * 2.0;
-            float shown = uKind == 3 ? CxLip(P, R, U) : CxCovered(Pc);
+            float shown = fract(h.z * 91.7) > edge ? 0.0 : uKind == 3 ? CxLip(P, R, U) : CxCovered(Pc);
             gl_Position = shown < 0.5 ? vec4(2.0, 2.0, 2.0, 1.0) : uProj * vp;
             // a drop has no surface: the camera-facing direction stands in for its normal, so a lamp behind the
             // camera lights it and one behind the drop does not -- the cheapest read of "wet glints towards you"

@@ -21,8 +21,9 @@ internal static unsafe partial class Weather
                          help: "Nothing falls under a roof, an awning or a doorway: an occlusion map baked along the fall vector, like a sun shadow. Off, it rains indoors.");
         WaterRoof = G.Toggle("waterroof", "Water sheds snow", true,
                              help: "Water surfaces count as a roof: nothing wets or snows the bed beneath them.");
-        CoverSoft = G.Slider("coversoft", "Cover edge", 0f, 2f, 0.05f, 0.5f, "m",
-                             help: "How far a roof's shelter feathers at its edge: wind and splash make no hard line.");
+        CoverSoft = G.Slider("coversoft", "Cover edge", 0f, 4f, 0.05f, 1f, "m",
+                             help: "How far a roof's shelter feathers at its edge: wind and splash make no hard line.",
+                             changed: CasterPass.RefilterCover);
         CoverRange = G.Slider("coverrange", "Cover range", 16f, 128f, 4f, 48f, "m", Tier.Advanced,
                               help: "Half-width of the cover map around the player. Resolution is the sun shadow map's (one allocation).");
     }

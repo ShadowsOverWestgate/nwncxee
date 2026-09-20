@@ -315,6 +315,7 @@ public sealed unsafe partial class AlloyRenderer
                     Gl.Uniform1i(_watViz, viz);
                     Gl.Uniform1i(_watEnvOk, FrameSnapshot.EnvOk);
                     Gl.Uniform1i(_watCapture, _capturing ? 1 : 0);
+                    Gl.Uniform1f(_watSplash, Weather.SplashRate(_capturing));
                     UploadFeatureTerms(_watFeat, viewport);
                     UploadAreaTerms(_watAmbient, _watDiffuse, _watDir);
                     UploadSunCascades(_watSunTex, _watSunVp, _watSunTexel, _watSunBias, _watSunCount, _watSunDyn,
@@ -348,6 +349,7 @@ public sealed unsafe partial class AlloyRenderer
                     UploadProbe(L);
                     SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
                     Gl.Uniform1i(L.SsaoHalf, SsaoPass.Half ? 1 : 0);
+                    Gl.Uniform2f(L.LightOcc, Lighting.HiddenLights.V ? 1f : 0f, GlossyRough);
                     Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, L.SnowLook, L.SnowLight, L.SnowPom, _capturing);
                     Weather.BindEsm(L.CoverEsm, _oitOn || lists);
                     litBase = L.Base; litCut = L.Cut; litOitBias = L.OitBias; litOitGob = L.OitGob; boundOitBias = -1f; boundOitGob = -1;

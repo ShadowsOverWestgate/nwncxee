@@ -20,7 +20,7 @@ internal static class Lod
             masterHelp: "Distant walls and floors are drawn from a simplified copy of their own mesh. "
                       + "Off draws every model at full detail at every distance, which is what the game does.",
             parent: "alloy.enabled",
-            header: "NWN models ship no detail levels; these are generated as an area loads.");
+            header: "Automatically reduce object details past a certain screen contribution.");
         G.Status = MeshLod.Describe;
         Px1 = G.Slider("px1", "Full detail above", 50f, 2000f, 10f, 500f, "px",
                        help: "A mesh wider than this on screen is drawn exactly as authored.");

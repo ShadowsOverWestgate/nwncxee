@@ -62,7 +62,7 @@ public sealed unsafe partial class AlloyRenderer
         _watCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _watCubeCount = GlProgram.Loc(prog, "uLocalCubes");
         _watCubeSoft = GlProgram.Loc(prog, "uLocalSoft"); _watCubeFloor = GlProgram.Loc(prog, "uLocalFloor"); _watCubePcss = GlProgram.Loc(prog, "uLocalPcss");
         _watCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _watCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"); _watCubeFade = GlProgram.Loc(prog, "uLocalFade");
-        _watCapture = GlProgram.Loc(prog, "uCapture");
+        _watCapture = GlProgram.Loc(prog, "uCapture"); _watSplash = GlProgram.Loc(prog, "uSplash");
         _watFbColor = GlProgram.Loc(prog, "uFbColor"); _watFbDepth = GlProgram.Loc(prog, "uFbDepth");
         _watNoise = GlProgram.Loc(prog, "uNoise");
         _watEnvMap = GlProgram.Loc(prog, "uEnvMap"); _watEnvOk = GlProgram.Loc(prog, "uEnvOk");
@@ -382,6 +382,7 @@ public sealed unsafe partial class AlloyRenderer
         L.LmPages = GlProgram.Loc(prog, "uLmPages"); L.LmMovers = GlProgram.Loc(prog, "uLmMovers"); L.CubeDynSphere = GlProgram.Loc(prog, "uLocalDynSphere");
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
         L.SsaoHalf = GlProgram.Loc(prog, "uSsaoHalf");
+        L.LightOcc = GlProgram.Loc(prog, "uLightOcc");
         L.AoDirect = GlProgram.Loc(prog, "uAoDirect"); L.AoCutout = GlProgram.Loc(prog, "uAoCutout");
         L.Weather = GlProgram.Loc(prog, "uWeather"); L.WeatherLook = GlProgram.Loc(prog, "uWeatherLook");
         L.CoverVp = GlProgram.Loc(prog, "uCoverVp"); L.CoverLayer = GlProgram.Loc(prog, "uCoverLayer");

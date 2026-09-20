@@ -922,6 +922,7 @@ public sealed unsafe partial class AlloyRenderer
         (float fnear, float ffar) = EnvProbe.FacePlanes;
         int* faceVp = stackalloc int[4] { 0, 0, EnvProbe.Size, EnvProbe.Size };
         bool ok = true;
+        Gl.DepthFunc(Gl.LEQUAL);   // the sky survives only where no face geometry wrote depth
         for (int f = 0; f < 6 && ok; f++)
         {
             ok = EnvProbe.Face(f, out Matrix4x4 vp);
@@ -930,6 +931,10 @@ public sealed unsafe partial class AlloyRenderer
             // A cube face is exactly 90deg, so the projection's p00 and p11 are both cot(45) = 1.
             AlloyLights.Build((float*)&view, 1f, 1f, fnear, ffar);
             IssueBatches(0, groups, (float*)&vp, faceVp, fnear, ffar);
+            // the real sky behind the world, so a wet street mirrors the dome and not the clear colour; the
+            // dome is parked at this frame's camera, which is where the probe stands
+            SkyOwnedPass(&vp, faceVp, hosted: false);
+            Gl.DepthMask(1);   // the sky pass leaves the mask off, and the next face's depth clear honours it
         }
         if (ok) EnvProbe.End(); else Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         _capturing = false;
@@ -938,11 +943,10 @@ public sealed unsafe partial class AlloyRenderer
         AlloyLights.LastBuildMs = buildMs;
     }
 
-    /// <summary>What the probe's faces are cleared to -- the sky stand-in.
-    /// <para>ponytail: the skybox is still engine-drawn, so it is absent from the Alloy set the capture
-    /// draws; a black clear would make outdoor metal reflect a black dome, which is WORSE than the stock
-    /// spheremap it replaces. The area's own ambient plus half its directional is a defensible sky colour
-    /// and costs one uniform. Upgrade path: the real sky, once the skybox class is owned (ADR 0011 step 3).</para></summary>
+    /// <summary>What the probe's faces are cleared to -- the sky stand-in where no dome covers: an area with
+    /// the skybox off, or one whose sky is hosted engine parts only (<see cref="SkyOwnedPass"/> draws the
+    /// owned dome into the capture). The area's own ambient plus half its directional is a defensible sky
+    /// colour; a black clear would make outdoor metal reflect a black dome.</summary>
     private static Vector3 ProbeClear()
     {
         Vector3 amb = FrameInputs.HasAreaAmbient

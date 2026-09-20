@@ -331,10 +331,15 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubePcss, CubeDynTex, CubeDynPage, CubeFade, CubeFloor,
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach,
                    Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm,
-                   LmPages, LmMovers, CubeDynSphere;   // #674
+                   LmPages, LmMovers, CubeDynSphere,   // #674
+                   LightOcc;                           // light.hidden
         public FeatLoc Feat;
     }
     private static LitLoc _lit, _litH, _litL;
+    /// <summary>light.hidden: the roughness under which a surface's highlight is a mirror image of the source
+    /// (wet ground is 0.35, a puddle 0.12) and takes the source's shadow whatever the cube cap says; a rougher
+    /// lobe is too broad to be an image of anything.</summary>
+    private const float GlossyRough = 0.5f;
     /// <summary>The lit program WITH the OIT append block (OitPass.WithLists), or 0. Bound only for lit batches inside a
     /// linked-list bracket; every other lit draw keeps early-Z through <see cref="_progLit46"/>.</summary>
     private static uint _progLitList;
@@ -1800,7 +1805,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft, _watCubePcss,
                        _watCubeDynTex, _watCubeDynPage, _watCubeFade, _watCubeFloor, _watSunDynTex, _watSunDyn,
                        _watSunFocus, _watSunRadius,
-                       _watCapture, _watFbColor, _watFbDepth, _watNoise, _watEnvMap, _watEnvOk, _watNearFar,
+                       _watCapture, _watSplash, _watFbColor, _watFbDepth, _watNoise, _watEnvMap, _watEnvOk, _watNearFar,
                        _watView, _watProj;
     private static FeatLoc _watFeat;
 

@@ -56,7 +56,7 @@ public static unsafe class Gl
     public const uint COLOR = 0x1800;
     /// <summary>#243: the hi-Z pyramid's format -- one float per texel, holding the MAX window depth of the
     /// region it covers.</summary>
-    public const uint R32F = 0x822E;
+    public const uint R32F = 0x822E, RG32F = 0x8230;
     public const uint TEXTURE_MIN_FILTER = 0x2801, TEXTURE_MAG_FILTER = 0x2800;
     public const uint TEXTURE_WRAP_S = 0x2802, TEXTURE_WRAP_T = 0x2803, TEXTURE_WRAP_R = 0x8072;
     public const int  NEAREST = 0x2600, LINEAR = 0x2601, CLAMP_TO_EDGE = 0x812F, REPEAT = 0x2901;

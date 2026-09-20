@@ -13,7 +13,7 @@ internal static class Lighting
     internal static readonly Knob<float> Gain, Ambient, Sun, Overbright, Sss, Wrap, WrapNdl, Hot, HotSize, Radius, Falloff,
                                          ProbeGain, BinReach, Flicker, FlickerSpeed;
     internal static readonly Knob<int> Fadeout, ProbeSize, BinCap;
-    internal static readonly Knob<bool> Probe, ProbeAreaWide, ReachFade;
+    internal static readonly Knob<bool> Probe, ProbeAreaWide, ReachFade, HiddenLights;
 
     static Lighting()
     {
@@ -60,6 +60,8 @@ internal static class Lighting
                                  help: "On, every material reflects the probe, not just those with an env map.");
         ProbeSize = G.Dropdown("probesize", "Reflection capture size", new[] { 64, 128, 256, 512 }, 128, tier: Tier.Advanced,
                                effect: Effect.Restart);
+        HiddenLights = G.Toggle("hidden", "Hidden lights do not reflect", true,
+                                help: "A wet or glossy surface mirrors a light only where that light's shadow lets it -- a lamp on a terrace reflects in the street from where the ground sees over the parapet, not from the wall's foot.");
         G.Section("");
         BinReach = G.Slider("binreach", "Light reach", 0.1f, 4f, 0.05f, 0.8f, tier: Tier.Advanced,
                             help: "Fraction of each light's authored radius that lights the scene. 1 is the stock radius; lower is cheaper.");

@@ -215,6 +215,10 @@ internal static unsafe class AlloyLights
         // fEnergyPreservation / (1 + w) and the wrap rides the MAPPED normal (stock: the vertex normal, which washes out normal maps).
         E(MathF.Abs(SssK(0.38f) - 0.6262f) < 1e-3f, "SssK(0.38) is 2/(2+PI*0.38) = 0.626");
         E(FragmentLib.Contains("c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y)"), "the point loop carries the subsurface term on the MAPPED normal");
+        E(FragmentLib.Contains("if (mirror) { spec += spc; continue; }")
+          && FragmentLib.Contains("if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)") && FragmentLib.Contains("if (l > mLum) { mLum = l; mSlot = slot; mNdl = ndlRaw; mSpc = spc; }")
+          && AlloyRenderer.OwnedLitFsMain.Contains("if (!CxGlossy(rough)) pointSpec += lm * CxSpecLobe"),
+          "a glossy lobe carries its light's shadow whatever the cap says, in the pages' place too");
         E(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
 
         // #140: the engine's attenuation constants, and the property that actually matters -- the curve's
@@ -907,6 +911,11 @@ internal static unsafe class AlloyLights
         // #375 follow-up: the stock subsurface term as (wrap, energy) -- AlloyLights._sss. (0, 0) on a stage
         // that never declares it, which is the Lambert term alone.
         uniform vec2 uSss;
+        // Mirrored lights (light.hidden): x = on, y = the roughness ceiling a surface counts as glossy under.
+        uniform vec2 uLightOcc;
+        bool CxGlossy(float rough) { return uLightOcc.x > 0.0 && rough < uLightOcc.y; }
+        // linear luminance under which a glossy lobe is not worth the fragment's one mirror tap
+        const float CX_MIRROR_FLOOR = 0.002;
         const uint CX_CLUSTER_CAP = $CAP$u;
         const int CX_CAP_MAX = 2;   // #336: the shadow cap's ceiling -- two NAMED candidates, no arrays
         // The engine's own sRGB->linear conversion (Ghidra RenderInterface::GetColorSpaceFromSRGB: powf(c,
@@ -1116,6 +1125,12 @@ internal static unsafe class AlloyLights
             float dfade = uLocalPcss.w > 0.0 ? 1.0 - smoothstep(uLocalPcss.w * 0.75, uLocalPcss.w, viewDepth) : 1.0;
             bool farSh = dfade <= 0.0;
             float aF2 = 1e30, bF2 = 1e30; int aSlot = -1, bSlot = -1; float aNdl = 0.0, bNdl = 0.0;
+            // the MIRROR candidate (light.hidden): the strongest lobe on a glossy fragment with a cube to tap.
+            // ONE extra tap per fragment, after the loop, and only when the cap did not shadow it already --
+            // a tap per lobe over the floor was the frame (rain = every ground fragment x every light).
+            bool glossy = CxGlossy(rough);
+            float mLum = CX_MIRROR_FLOOR; int mSlot = -1; float mNdl = 0.0; vec3 mSpc = vec3(0.0);
+            vec3 R = reflect(-V, N);
             vec3 aLit = vec3(0.0), aSpc = vec3(0.0), bLit = vec3(0.0), bSpc = vec3(0.0);
             for (uint k = 0u; k < n; k++)
             {
@@ -1128,12 +1143,21 @@ internal static unsafe class AlloyLights
                 bool isStatic = w >= 128;
                 int slot = isStatic ? w - 256 : w;
                 // a static light on a baked receiver is in the pages already: a cold one costs nothing here,
-                // a HOT one (a mover under it) owes its mover's shadow and nothing else
-                bool hot = isStatic && baked > 0.5;
+                // a HOT one (a mover under it) owes its mover's shadow and nothing else...
+                bool inPages = isStatic && baked > 0.5;
+                // ...except on a GLOSSY receiver (wet ground, metal), which owes each light's own mirror image:
+                // the pages hold the diffuse, and the one lobe along their blended direction is a highlight of
+                // a lamp that is nowhere. Spec only, occluded by the source's visibility, never a cube tap.
+                bool mirror = inPages && glossy;
                 // and only while a mover stands under it (a dyn page this frame): a static light with no
                 // mover is in the pages and costs this fragment nothing -- with the check on the mover knob
                 // alone, 74 baked-away lights of 92 still ran the point-light body per fragment (run 8)
-                if (hot && (farSh || uLmMovers == 0 || slot < 0 || uLocalDynPage[slot] < 0.5)) continue;
+                bool hot = inPages && !(farSh || uLmMovers == 0 || slot < 0 || uLocalDynPage[slot] < 0.5);
+                if (inPages && !hot && !mirror) continue;
+                // ...and only a light the reflection vector points near: the lobe of a light outside that cone
+                // is under the floor, and the point body is what 74 baked-away lights cost per fragment (run 8).
+                // The cone widens with roughness: 40 deg at a puddle's 0.12, the hemisphere at the 0.5 ceiling.
+                if (mirror && !hot && dot(R, normalize(pr.xyz - worldPos)) < 1.0 - 2.0 * rough) continue;
                 if (hot)
                 {   // the light-to-fragment ray misses the movers' sphere: nothing on the page can shadow here,
                     // and the eight taps below are the opaque pass on a plaza (run 20: 15 hot lights, 7-8 ms)
@@ -1142,12 +1166,12 @@ internal static unsafe class AlloyLights
                     vec3 dp = worldPos - lp; float dl = max(length(dp), 1e-4);
                     vec3 dc = ms.xyz - lp; float t = dot(dc, dp) / dl;
                     float rr = ms.w + 0.3;
-                    if (t > dl + rr || dot(dc, dc) - t * t > rr * rr) continue;
+                    if (t > dl + rr || dot(dc, dc) - t * t > rr * rr) { if (!mirror) continue; hot = false; }
                 }
                 vec3 c, L; float att, f2, ndlRaw, ndl;
                 if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;
                 // slot -2 = ambient class: vanilla adds c*att to the ambient term, no N.L, no shadow
-                if (slot == -2) { acc += c * att; continue; }
+                if (slot == -2) { if (!inPages) acc += c * att; continue; }
                 if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
                 if (hot)
                 {
@@ -1158,10 +1182,21 @@ internal static unsafe class AlloyLights
                     // the exact total needs every static light evaluated live, which was the opaque pass.
                     float lum = dot(CxPointDiffuse(c, att, ndlRaw, ndl), vec3(0.2126, 0.7152, 0.0722));
                     lmSub.x += lum * dfade * (1.0 - CxLocalDynShadow(slot, worldPos, N, ndlRaw));
-                    continue;
+                    if (!mirror) continue;
                 }
                 vec3 dif = c * (att * ndl);
                 vec3 spc = dif * CxSpecLobe(N, V, L, rough, specularity);
+                // a glossy surface's lobe is the mirror image of the source, and the source must be in view of
+                // the FRAGMENT: a lamp on a terrace mirrors in the street from where the ground first sees over
+                // the parapet, not from the wall's foot. That is the light's own shadow, so the strongest lobe
+                // takes its cube tap whether or not the cap below would have given it one. A rough lobe is
+                // untouched: too broad to be an image of anything. (light.hidden)
+                if (glossy && slot >= 0 && !farSh)
+                {
+                    float l = dot(spc, vec3(0.2126, 0.7152, 0.0722));
+                    if (l > mLum) { mLum = l; mSlot = slot; mNdl = ndlRaw; mSpc = spc; }
+                }
+                if (mirror) { spec += spc; continue; }
                 // ponytail: a light behind the surface (ndl <= 0, continued above) skips its subsurface leak
                 // rather than being fetched unshadowed; stock has no shadow to lose there, Alloy does
                 vec3 unsh = CxPointDiffuse(c, att, ndlRaw, ndl);
@@ -1170,6 +1205,7 @@ internal static unsafe class AlloyLights
                 {
                     float sh = mix(1.0, CxLocalShadow(slot, worldPos, N, ndlRaw, onMover, viewDepth), dfade);
                     acc += unsh * mix(uLocalFloor, 1.0, sh); spec += spc * sh;   // floor on diffuse only: a floored highlight is a wrong highlight
+                    if (mSlot == slot) mSlot = -1;   // shadowed here: no mirror tap owed
                     continue;
                 }
                 if (f2 < aF2)
@@ -1196,6 +1232,9 @@ internal static unsafe class AlloyLights
                 float sh = mix(1.0, CxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth), dfade);
                 acc += bLit * mix(uLocalFloor, 1.0, sh); spec += bSpc * sh;
             }
+            // the mirror tap: the strongest lobe's shadow, taken back out of the unshadowed sum it went into
+            if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)
+                spec -= mSpc * (1.0 - mix(1.0, CxLocalShadow(mSlot, worldPos, N, mNdl, onMover, viewDepth), dfade));
             return acc;
         }
         // The pre-#674 signature: an unbaked receiver, every light live.

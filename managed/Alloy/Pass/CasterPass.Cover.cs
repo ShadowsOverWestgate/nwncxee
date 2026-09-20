@@ -52,6 +52,9 @@ public sealed unsafe partial class CasterPass
     private static void CoverRelease() { _coverBaked = false; _coverCValid = false; _coverNew = false; CoverVp = default; Weather.EsmRelease(); }
 
     /// <summary>After the layered flush landed this frame's bakes: a new cover map gets its filtered copy (Weather.Esm).</summary>
+    /// <summary>The cover-edge knob moved: filter the held bake again at its new width.</summary>
+    internal static void RefilterCover() { if (_coverBaked) _coverNew = true; }
+
     private static void CoverFiltered()
     {
         if (!_coverNew) return;

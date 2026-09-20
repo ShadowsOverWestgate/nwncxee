@@ -367,7 +367,8 @@ internal static class ShaderContract
                   // that lost the skip lights every baked surface twice, brighter and with nothing in the log.
                   && AlloyLights.FragmentLib.Contains("bool CxPointLight(vec4 pr, vec3 c0, vec3 worldPos, vec3 N,")
                   && AlloyLights.FragmentLib.Contains("bool isStatic = w >= 128;") && AlloyLights.FragmentLib.Contains("int slot = isStatic ? w - 256 : w;")
-                  && AlloyLights.FragmentLib.Contains("bool hot = isStatic && baked > 0.5;")
+                  && AlloyLights.FragmentLib.Contains("bool inPages = isStatic && baked > 0.5;")
+                  && AlloyLights.FragmentLib.Contains("if (inPages && !hot && !mirror) continue;")
                   && AlloyLights.FragmentLib.Contains("CX_LIGHT_STATIC = 256.0;") && AlloyLights.LightStatic == 256f
                   && LightmapBake.BakeFs.Contains("CxPointLight(uBakeLight, uBakeColor, vWorld, N, c, L, att, f2, ndlRaw, ndl)")
                   && LightmapBake.BakeFs.Contains("CxPointDiffuse(c, att, ndlRaw, ndl) * mix(uLocalFloor, 1.0, sh)")

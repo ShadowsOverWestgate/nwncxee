@@ -980,6 +980,9 @@ internal static unsafe class FrameSnapshot
             float fDepthOffset = fScreenFBDepth + vPosViewThis.z;
 
             vec3 N = CxWaterNormal(vWaterSurfaceCoords);
+            // rain rings the surface too (weather.splash), on a level one; the same train the puddles carry
+            if (uSplash > 0.0 && vSurfaceNormalWorld.z > 0.9)
+                N = normalize(N + vec3(CxWeatherImpact(vWaterSurfaceCoords.xy, uSplash) * 0.3, 0.0));
             vec3 vFragmentNormal = normalize(mat3(uView) * N);
 
             // ---- lighting: stock's ComputeLighting, answered by the froxel walk ----------------------

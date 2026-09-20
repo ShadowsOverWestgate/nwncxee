@@ -124,7 +124,7 @@ internal static class ShaderStages
         AlloyRenderer.ShdLitVs => AlloyRenderer.OwnedLitVs,
         AlloyRenderer.ShdLitFs => AlloyRenderer.OwnedLitFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + Weather.WeatherLib + AlloyRenderer.MaterialLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + AlloyRenderer.HostFs + AlloyRenderer.OwnedLitFsMain,
         AlloyRenderer.ShdWaterVs => FrameSnapshot.VsHead + AlloyRenderer.DrawBufDecl + FrameSnapshot.VsMain,
-        AlloyRenderer.ShdWaterFs => FrameSnapshot.FsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + FrameSnapshot.FsMain,
+        AlloyRenderer.ShdWaterFs => FrameSnapshot.FsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + Weather.ImpactLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + FrameSnapshot.FsMain,
         GrassField.ShdGrassVs => GrassField.GrassVs,
         GrassField.ShdGrassFs => GrassField.GrassFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + GrassField.GrassFsMain,
         AlloyLights.ShdClusterCs => AlloyLights.BuildSrc,
