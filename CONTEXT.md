@@ -408,7 +408,9 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   pack needs the room -- its readers fall back to the baseline. Avoid: LOD (that is the mesh's), mip.
 - **Area-loaded hold** — the client keeps the server's "place the player" message (the
   area-loaded send) back until the lightmap bake has landed, so the player never stands in a
-  world that is still baking. Ends at the first of: bake landed, the player skips, the hard cap.
+  world that is still baking. Ends at the first of: the baseline in (every chart answered and every
+  baseline rect landed -- one page is not the area), the player skips, the hard cap. The server keeps
+  streaming the area's objects to a client under the hold, so the static set closes under it.
   Avoid: loading delay, stall.
 - **Hold budget** — the `lightmap.hold` seconds after which the hold offers a skip. 0 = no hold.
 - **Hard cap** — the fixed ceiling past which the hold always releases, set by the server's own

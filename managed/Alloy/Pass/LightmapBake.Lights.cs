@@ -60,6 +60,8 @@ internal static unsafe partial class LightmapBake
     private static int _stN;
     /// <summary>The walk's census: static / animated (>1-key radius or colour track) / dynamic, per frame.</summary>
     internal static int CensusStatic, CensusAnimated, CensusDynamic, CensusTile, CensusPlaceable;
+    /// <summary>The census of the closing walk: after the close the walk counts only static / dynamic.</summary>
+    private static int _closeStatic, _closeTile, _closePlaceable, _closeAnimated, _closeDynamic;
 
     /// <summary>The closed static set: copied off the snapshot on the edge, read by the bake and the keys.</summary>
     private static Vector4[] _setPosR = new Vector4[256];
@@ -286,6 +288,8 @@ internal static unsafe partial class LightmapBake
         // the runtime check the research asks for: the registry's count against the placeables the walk saw
         _log?.Info($"LightmapBake: static set closed on the {(edge ? $"area-loaded edge (walk {_walks}, edge at {_edgeWalk}, last new light at {_lastNew})" : $"fallback ({FallbackWalks} walks, the edge never fired or lights kept arriving)")} -- "
                    + $"{_stN} lights (tile {CensusTile}, placeable {CensusPlaceable} of {_regGobs.Count} the registry named), {CensusAnimated} animated, {CensusDynamic} dynamic of which {CensusUnstable} still changing");
+        _closeStatic = CensusStatic; _closeTile = CensusTile; _closePlaceable = CensusPlaceable; _closeAnimated = CensusAnimated; _closeDynamic = CensusDynamic;
+        Arrived();
         if (hash == SetHash && !_areaChanged) return;
         if (_setPosR.Length < _stN) { _setPosR = new Vector4[_stN]; _setCol = new Vector3[_stN]; }
         Array.Copy(_stPosR, _setPosR, _stN); Array.Copy(_stCol, _setCol, _stN);
@@ -334,19 +338,13 @@ internal static unsafe partial class LightmapBake
             SymbolMap.ComputeStaticLighting, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnComputeStaticLighting);
         _loadedSlot = hooks.Chain(SymbolMap.SendAreaLoaded, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSendAreaLoaded, EdgePriority);
         _setTileSlot = hooks.Chain(SymbolMap.AreaSetTile, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int, int, int, void>)&OnSetTile, EdgePriority);
-        if (_loadedSlot == null) log.Info("LightmapBake: the AreaLoaded send did not resolve -- the static set closes on the walk fallback");
+        if (_loadedSlot == null) log.Info("LightmapBake: the AreaLoaded send did not resolve -- the static set closes on the walk fallback, no hold");
+        else InstallSurface(log);
     }
 
-    /// <summary>Observers: they read nothing and call through, so any priority is fine.</summary>
+    /// <summary>Observers, bar the hold (<c>LightmapBake.Hold.cs</c>): they read nothing and call through, so any priority is fine.</summary>
     private const int EdgePriority = 0;
     private static IntPtr* _loadedSlot, _setTileSlot;
-
-    [UnmanagedCallersOnly]
-    private static void OnSendAreaLoaded(IntPtr msg)
-    {
-        OnAreaLoaded();
-        if (_loadedSlot != null) ((delegate* unmanaged<IntPtr, void>)*_loadedSlot)(msg);
-    }
 
     [UnmanagedCallersOnly]
     private static void OnSetTile(IntPtr area, IntPtr tile, int id, int orientation, int height)

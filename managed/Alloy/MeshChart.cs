@@ -13,7 +13,7 @@ namespace CX.Alloy;
 internal static class Lightmap
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<int> Density, Disk, Pages, Near, Tiers;
+    internal static readonly Knob<int> Density, Disk, Pages, Near, Tiers, HoldSeconds;
     internal static readonly Knob<bool> Movers;
 
     static Lightmap()
@@ -34,6 +34,8 @@ internal static class Lightmap
         Tiers = G.Slider("tiers", "Density tiers", 1, LightmapBake.MaxTiers, 1, 3, tier: Tier.Advanced,
                          help: "Density steps between the player and the far area: 1 bakes everything at the full density, 3 is full / half / quarter. A change re-bakes the area.",
                          changed: LightmapBake.RekeyAll);
+        HoldSeconds = G.Slider("hold", "Loading hold", 0, 40, 1, 20, "s",
+                               help: "Seconds the loading screen may wait for the area's baked lighting before Escape is offered to skip ahead; the bake then finishes in the background. 0 never waits.");
         Movers = G.Toggle("movers", "Creature shadows from baked lights", true,
                           help: "A creature standing under a baked light casts its shadow on the baked surface. Off is cheaper: baked surfaces take no shadow from creatures under static lights.");
         // 2048: one area's bake at density 10 is ~500 MiB of .lmr files, and a 512 MiB budget pruned the
@@ -162,6 +164,10 @@ internal static unsafe partial class MeshChart
     private static int _offered, _hit, _missed, _built, _refused, _stale, _tableFull, _logLeft = LogCap;
     private static readonly int[] _refusedBy = new int[RefusalName.Length];
 
+    /// <summary>#675: meshes offered, meshes answered (hit or built), and the difference still on the worker.</summary>
+    internal static int Offered => _offered;
+    internal static int Done => _hit + _missed;
+    internal static int InFlight => _offered - _hit - _missed;
     /// <summary>A mesh refused before the worker ever saw it: counted, so the period line's refused total
     /// names every static mesh that has no chart, not only the ones that reached xatlas.</summary>
     internal static void Skip(Refusal why) { _refused++; _refusedBy[(int)why]++; }

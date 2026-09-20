@@ -295,7 +295,7 @@ internal static unsafe partial class LightmapBake
         _owners[ri]!.Add(i);
         _byKey[key] = ri;
         _slotRect[i] = ri;
-        _toPack.Add(ri); _newAt = _frame;
+        _toPack.Add(ri); _newAt = _frame; Arrived();
     }
 
     /// <summary>A slot was vacated (or the table wiped): its record reads unbaked from the next upload.</summary>
@@ -346,10 +346,10 @@ internal static unsafe partial class LightmapBake
     /// finer tier -- a new rect (cache hit or bake) while the baseline record stays live. Round-robin over
     /// the rects while nothing is pending (the baseline lands first, and one wave of fine rects lands before the
     /// next is asked; the wave gathers over the settle window, so it is every rect the pass found, not one
-    /// frame's), and never inside a refusal's back-off.</summary>
+    /// frame's), and never inside a refusal's back-off. Not under the hold: the player is not placed yet.</summary>
     private static void RefineSweep()
     {
-        if (Baseline == 0 || _rectN == 0 || _pending > 0 || _frame < _refineAt || SetHash == 0) return;
+        if (Hold || Baseline == 0 || _rectN == 0 || _pending > 0 || _frame < _refineAt || SetHash == 0) return;
         Vector3 p = AlloyRenderer.PlayerPos;
         for (int k = 0; k < RefinePerFrame; k++)
         {
@@ -520,6 +520,7 @@ internal static unsafe partial class LightmapBake
     {
         _rects[ri].State = RState.Landed;
         _landed++; if (hit) _landedHits++;
+        if (Held && _firstLandT == 0) _firstLandT = Stopwatch.GetTimestamp();
         var o = _owners[ri];
         if (o != null) for (int k = 0; k < o.Count; k++) WriteRecord(o[k], ri);
     }
@@ -706,7 +707,8 @@ internal static unsafe partial class LightmapBake
     private static void Sweep()
     {
         if (SetHash == 0) return;
-        for (int k = 0; k < SweepPerFrame; k++)
+        int per = Hold ? HoldSweepPerFrame : SweepPerFrame;
+        for (int k = 0; k < per; k++)
         {
             int i = _sweepAt; if (++_sweepAt >= _slotRect.Length) _sweepAt = 0;
             if (_slotRect[i] != -1 || !AlloyRenderer.SlotPlacement(i, out int vao, out int item, out Matrix4x4 m)) continue;
@@ -1184,6 +1186,7 @@ internal static unsafe partial class LightmapBake
     /// GL names stay (the pages are re-packed from zero), the cache thread's queue is drained.</summary>
     internal static void Revoke()
     {
+        DropHold();
         _areaHalve = 0; _refineAt = 0;
         Repack();
         _landed = _landedHits = _refused = _pastCap = _bakeSkips = _uncached = 0; _pageMs = 0; _pageMsN = 0;

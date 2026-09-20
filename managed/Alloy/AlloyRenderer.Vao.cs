@@ -217,6 +217,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#674: chart offers the worker's queue could not take on the enrolment walk, re-offered from
     /// the frame as it drains. A VDO slot re-pointed in between is skipped (the tenant check).</summary>
     private static readonly List<(IntPtr vdo, int item, int prim, int s)> _chartDeferred = new();
+    internal static int ChartDeferred => _chartDeferred.Count;
 
     /// <summary>Once a frame, after <see cref="MeshChart.Pump"/>: re-offer deferred charts while the queue has room.</summary>
     internal static void DrainChartDeferred()
