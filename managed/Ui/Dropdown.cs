@@ -9,7 +9,9 @@ namespace CX.Ui;
 /// a <see cref="ScrollColumn"/> capped at <see cref="MaxVisible"/> items, so a long ladder (font size, 27
 /// entries) scrolls by wheel and by thumb. One instance serves every dropdown row of a panel: the owner opens
 /// it against the pressed row and keeps <see cref="Tag"/> to know whose it is. Pure and zero-alloc in draw.
-/// The closed box is the owner's to draw (<see cref="DrawBox"/> is the shared look).
+/// The closed box is the owner's to draw (<see cref="DrawBox"/> is the shared look). Opened with
+/// <c>search</c>, a text row sits above the list and what is typed (<see cref="Type"/>) filters the choices by
+/// substring; indices given out (<c>picked</c>, <see cref="Selected"/>) are always into <see cref="Choices"/>.
 /// </summary>
 public sealed class Dropdown
 {
@@ -29,58 +31,116 @@ public sealed class Dropdown
     public object? Tag;
     /// <summary>Item height, set at <see cref="OpenAt"/>.</summary>
     public float ItemH { get; private set; }
-    /// <summary>The list viewport; its rect is the list rect.</summary>
+    /// <summary>The list viewport; its rect is the list rect (the search row, when any, sits above it).</summary>
     public readonly ScrollColumn List = new();
+    /// <summary>Opened with a search row: typed text filters the list.</summary>
+    public bool Searching { get; private set; }
+    /// <summary>The search text; "" shows every choice.</summary>
+    public string Filter { get; private set; } = "";
+    private const string SearchHint = "type to search";
+    private int[] _vis = Array.Empty<int>();
+    private int _n;
 
     public float X => List.X;
-    public float Y => List.Y;
+    public float Y => List.Y - SearchH;
     public float W => List.W;
-    public float H => List.H;
+    public float H => List.H + SearchH;
+    private float SearchH => Searching ? ItemH : 0f;
+    /// <summary>Visible choices after the filter.</summary>
+    public int Shown => _n;
+    /// <summary>The choice index of visible row <paramref name="i"/>.</summary>
+    public int ChoiceAt(int i) => _vis[i];
 
     /// <summary>Open the list under the anchor box (its left x, bottom y and width), flipping above
     /// <paramref name="anchorTop"/> when the list would end past <paramref name="clampBottom"/>. The list
     /// scrolls so the selected item is visible.</summary>
     public void OpenAt(string[] choices, int selected, object? tag, float anchorX, float anchorTop, float anchorBottom,
-                       float w, float itemH, float clampBottom = float.MaxValue)
+                       float w, float itemH, float clampBottom = float.MaxValue, bool search = false)
     {
         Choices = choices; Selected = selected; Tag = tag; ItemH = itemH; Hover = -1;
+        Searching = search; Filter = "";
+        if (_vis.Length < choices.Length) _vis = new int[choices.Length];
         int n = choices.Length;
         int shown = n < MaxVisible ? n : MaxVisible;
+        float sh = search ? itemH : 0f;
         float h = shown * itemH;
         float y = anchorBottom;
-        if (y + h > clampBottom && anchorTop - h >= 0f) y = anchorTop - h;
+        if (y + h + sh > clampBottom && anchorTop - h - sh >= 0f) y = anchorTop - h - sh;
         List.Reset();
-        List.SetRect(anchorX, y, w, h);
-        List.ContentH = n * itemH;
+        List.SetRect(anchorX, y + sh, w, h);
+        Refilter();
         if ((uint)selected < (uint)n) { List.Offset = selected * itemH - h * 0.5f + itemH * 0.5f; List.Clamp(); }
         Open = true;
     }
 
-    public void Close() { Open = false; Hover = -1; Tag = null; List.MouseUp(); }
+    /// <summary>Rebuild the visible rows from <see cref="Filter"/> (a substring match, case-folded); an empty
+    /// filter shows every choice. Cold: only typing gets here.</summary>
+    private void Refilter()
+    {
+        _n = 0;
+        for (int i = 0; i < Choices.Length; i++)
+            if (Filter.Length == 0 || Choices[i].Contains(Filter, StringComparison.OrdinalIgnoreCase)) _vis[_n++] = i;
+        List.ContentH = _n * ItemH;
+        List.Offset = 0f; List.Clamp();
+        Hover = -1;
+    }
 
-    public bool Contains(float mx, float my) => Open && List.Contains(mx, my);
+    /// <summary>Typed text while searching: appended to the filter (printable only, capped at 32).</summary>
+    public void Type(string s)
+    {
+        if (!Open || !Searching) return;
+        foreach (char c in s)
+            if (Filter.Length < 32 && c >= ' ' && c != '\n' && c != '\r') Filter += c;
+        Refilter();
+    }
+
+    public void Backspace()
+    {
+        if (!Open || !Searching || Filter.Length == 0) return;
+        Filter = Filter.Substring(0, Filter.Length - 1);
+        Refilter();
+    }
+
+    /// <summary>Enter while searching: the one visible choice, or the choice the filter names exactly ("Arial" among
+    /// Arial / Arial Black), is picked (its index); else -1 and the list stays.</summary>
+    public int Accept()
+    {
+        if (!Open || !Searching) return -1;
+        int i = _n == 1 ? _vis[0] : -1;
+        for (int k = 0; i < 0 && k < _n; k++) if (Choices[_vis[k]].Equals(Filter, StringComparison.OrdinalIgnoreCase)) i = _vis[k];
+        if (i < 0) return -1;
+        Selected = i; Close();
+        return i;
+    }
+
+    public void Close() { Open = false; Hover = -1; Tag = null; Searching = false; Filter = ""; List.MouseUp(); }
+
+    public bool Contains(float mx, float my)
+        => Open && (List.Contains(mx, my) || (Searching && mx >= X && mx < X + W && my >= Y && my < List.Y));
     public bool Dragging => List.Dragging;
 
     /// <summary>Screen top of item <paramref name="i"/> (may lie outside the list while scrolled).</summary>
     public float ItemTop(int i) => List.ToScreen(i * ItemH);
 
-    /// <summary>Item index under the pointer (the gutter excluded), or -1.</summary>
+    /// <summary>Visible-row index under the pointer (the gutter and the search row excluded), or -1.</summary>
     public int ItemAt(float mx, float my)
     {
-        if (!Contains(mx, my) || List.OverBar(mx, my)) return -1;
+        if (!Open || !List.Contains(mx, my) || List.OverBar(mx, my)) return -1;
         int i = (int)(List.ToContent(my) / ItemH);
-        return (uint)i < (uint)Choices.Length ? i : -1;
+        return (uint)i < (uint)_n ? i : -1;
     }
 
-    /// <summary>Press while open: always consumed. An item press picks it (<paramref name="picked"/> = its index)
-    /// and closes; the gutter scrolls; anything else closes with nothing picked. False when closed.</summary>
+    /// <summary>Press while open: always consumed. An item press picks it (<paramref name="picked"/> = its choice
+    /// index) and closes; the gutter scrolls; the search row is inert; anything else closes with nothing picked.
+    /// False when closed.</summary>
     public bool MouseDown(float mx, float my, out int picked)
     {
         picked = -1;
         if (!Open) return false;
         if (List.MouseDown(mx, my)) return true;
+        if (Searching && Contains(mx, my) && my < List.Y) return true;
         int i = ItemAt(mx, my);
-        if (i >= 0) { picked = i; Selected = i; }
+        if (i >= 0) { picked = _vis[i]; Selected = picked; }
         Close();
         return true;
     }
@@ -126,18 +186,27 @@ public sealed class Dropdown
         if (!Open) return;
         float x0 = List.X, y0 = List.Y, x1 = List.X + List.W, y1 = List.Y + List.H;
         float fr = ((FrameRgb >> 16) & 0xFF) / 255f, fg = ((FrameRgb >> 8) & 0xFF) / 255f, fb = (FrameRgb & 0xFF) / 255f;
-        b.Rect(x0 - 1f, y0 - 1f, x1 + 1f, y1 + 1f, fr, fg, fb, FrameA);
-        b.Rect(x0, y0, x1, y1, bg.r, bg.g, bg.b, 0.98f);
+        b.Rect(x0 - 1f, Y - 1f, x1 + 1f, y1 + 1f, fr, fg, fb, FrameA);
+        b.Rect(x0, Y, x1, y1, bg.r, bg.g, bg.b, 0.98f);
         float textClip = x1 - (List.Overflows ? ScrollColumn.BarW : 0f) - 2f;
         float vpad = (ItemH - atlas.LineHeight) / 2f;
+        if (Searching)
+        {
+            b.Rect(x0, Y, x1, y0, active.r, active.g, active.b, active.a * 0.25f);
+            b.Rect(x0, y0 - 1f, x1, y0, fr, fg, fb, FrameA);
+            bool hint = Filter.Length == 0;
+            float pen = UiText.Draw(b, atlas, hint ? SearchHint : Filter, x0 + 4f, Y + baseDrop + vpad, textRgb, x1 - 4f, hint ? 0.45f : 1f);
+            if (!hint) UiText.Draw(b, atlas, "_", pen, Y + baseDrop + vpad, textRgb, x1 - 4f);
+        }
         b.ClipY(y0, y1);
-        for (int i = 0; i < Choices.Length; i++)
+        for (int i = 0; i < _n; i++)
         {
             float top = ItemTop(i);
             if (top + ItemH <= y0 || top >= y1) continue;
-            if (i == Selected) b.Rect(x0, top, textClip + 2f, top + ItemH, active.r, active.g, active.b, active.a);
+            int c = _vis[i];
+            if (c == Selected) b.Rect(x0, top, textClip + 2f, top + ItemH, active.r, active.g, active.b, active.a);
             else if (i == Hover) b.Rect(x0, top, textClip + 2f, top + ItemH, active.r, active.g, active.b, active.a * 0.55f);
-            UiText.Draw(b, atlas, Choices[i], x0 + 4f, top + baseDrop + vpad, textRgb, textClip);
+            UiText.Draw(b, atlas, Choices[c], x0 + 4f, top + baseDrop + vpad, textRgb, textClip);
         }
         b.ClearClip();
         List.Draw(b, active);
@@ -203,6 +272,42 @@ public sealed class Dropdown
         E(delta == 0, $"100 open-list draws allocate nothing ({delta} bytes)");
         E(b.VertexCount > 0, "the draw emitted geometry");
         d.Close();
+
+        // Search: the row sits above the list, typing filters by substring, picks map back to choice indices.
+        d.OpenAt(sizes, 20, "font", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
+        E(d.Searching && d.Y == 220f && d.List.Y == 220f + ih && d.H == (MaxVisible + 1) * ih && d.Shown == 27, "a searchable list opens with the search row above 8 rows, every choice shown");
+        E(d.Contains(110f, 221f) && d.ItemAt(110f, 221f) == -1, "the search row is inside the list but is no item");
+        E(d.MouseDown(110f, 221f, out int sp) && sp < 0 && d.Open, "a press on the search row keeps the list open, picks nothing");
+        d.Type("2");
+        E(d.Shown == 12 && d.ChoiceAt(0) == 6 && d.ChoiceAt(11) == 26 && d.List.Offset == 0f, $"'2' leaves the twelve sizes containing a 2, from the top ({d.Shown})");
+        E(d.Accept() < 0 && d.Open, "Enter with several matches picks nothing");
+        d.Type("0");
+        E(d.Shown == 1 && d.ChoiceAt(0) == 14, "'20' is one size");
+        d.Backspace(); d.Backspace(); d.Type("1"); d.Type("2");
+        E(d.Shown == 1 && d.Accept() == 6 && !d.Open, "'12' names one size exactly: Enter picks it");
+        var arial = new[] { "Arial", "Arial Black", "Arial Narrow", "Courier", "Georgia", "Impact", "Tahoma", "Times", "Verdana" };
+        d.OpenAt(arial, 0, "face", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
+        d.Type("arial");
+        E(d.Shown == 3 && d.Accept() == 0 && !d.Open, "an exact name among wider matches is what Enter picks");
+        d.OpenAt(sizes, 20, "font", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
+        d.Type("2");
+        E(d.MouseDown(110f, d.List.Y + ih + 1f, out int p2) && p2 == 14 && d.Selected == 14 && !d.Open, "the second visible row is choice 14 (20)");
+        d.OpenAt(sizes, 0, "font", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
+        d.Type("3"); d.Type("3");
+        E(d.Shown == 0, "no size contains '33'");
+        d.Backspace();
+        E(d.Filter == "3" && d.Shown == 5, "backspace re-widens the filter");
+        d.Type("2");
+        E(d.Shown == 1 && d.Accept() == 26 && !d.Open && d.Selected == 26, "Enter on the one match picks it");
+        d.OpenAt(sizes, 0, "font", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
+        d.Type("9");
+        b.Clear(); d.Draw(b, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), (0.2f, 0.3f, 0.5f, 1f), 0xFFFFFF);
+        before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++) { b.Clear(); d.Draw(b, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), (0.2f, 0.3f, 0.5f, 1f), 0xFFFFFF); }
+        delta = GC.GetAllocatedBytesForCurrentThread() - before;
+        E(delta == 0, $"100 filtered draws allocate nothing ({delta} bytes)");
+        d.Close();
+        E(!d.Searching && d.Filter.Length == 0, "close drops the search state");
 
         log.Info(ok ? "Dropdown.SelfCheck: passed" : "Dropdown.SelfCheck: FAILED");
     }

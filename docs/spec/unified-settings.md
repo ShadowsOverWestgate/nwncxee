@@ -151,7 +151,8 @@ Pinned by the #560 prototype, Variant B (Roomy).
 - **Off-default marker** = blue dot at the row edge + a dot on the submenu name. **Reset to
   defaults** top-right of the knob column, per submenu, covers User + Advanced rows only.
 - **Restart badge** `↻ restart`, amber when `V != Boot`.
-- **Dropdown:** click opens a list; the list scrolls (font size has 27 entries). Replaces the
+- **Dropdown:** click opens a list; the list scrolls (font size has 27 entries); past 8 entries a
+  search row sits above it and typed text filters by substring, Enter picks a lone match (CX-681). Replaces the
   cycle button everywhere.
 - **Slider:** inline value box; applies while dragging.
 - **Swatch:** expands to R/G/B/A channel rows in place.
@@ -302,7 +303,7 @@ Now persists (amends #182).
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
 | ui.font | font (cx-chat.cfg; dialog's slider edited the same) | Text size | D | 6 … 32 pt, every point · 18 | U | L | Size of the text in every CX window: chat, dialog, nameplates. |
-| ui.typeface | — | Typeface | D | default | U | — | **disabled row** until multi-font |
+| ui.typeface | — | Typeface | D | `default` + every `font.<name>` + every installed font (full name) · default | U | L | The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Type in the list to search. (CX-681: rebinds the registry's `default`; icons stay DejaVu, #425) |
 | ui.hoverfocus | hoverToFocus (cx-ui.cfg) | Focus a window by hovering | T | off | U | L | A CX window takes the keyboard when the pointer rests on it, without a click. |
 | ui.snap | grid (cx-quickbar.cfg) | Snap windows to a grid | T | off | U | L | Dragged windows land on grid points. |
 | ui.gridpx | gridpx | Grid size | D | 25 / 50 / 75 / 100 / 150 / 200 px · 50 | U | L | |
@@ -732,7 +733,7 @@ Each step ships on its own and leaves the client working.
 
 ## 9. Not in this spec
 
-Search across categories (header slot reserved), multi-font (`ui.typeface` disabled), the
+Search across categories (header slot reserved), the
 auto-update consent row (#31), chat's tab editor (#572), Path A-lite (#571), the hotkey
 binding UI (#422, server-side), colour picker redesign, resizable panel / remembered geometry /
 per-row reset, migration of `cx-*.cfg`.

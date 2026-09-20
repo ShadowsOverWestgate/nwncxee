@@ -5,8 +5,8 @@ namespace CX.Ui;
 /// <summary>The <c>ui</c> group (spec §4.2 Windows &amp; fonts): the knobs every CX window shares. <see cref="Font"/>
 /// is the text size in design px before GUI scale (was chat's <c>font</c>); <see cref="UiHostService"/> bakes
 /// the one atlas at <c>font × GUI scale</c> and sets <see cref="Metrics.Scale"/> from it, on a set and on the
-/// GUI-scale edge; every window re-lays out from the atlas epoch. <see cref="Typeface"/> is the one
-/// <see cref="Knob.Disabled"/> row until multi-font. <see cref="HoverFocus"/> is read by <see cref="UiHost"/>
+/// GUI-scale edge; every window re-lays out from the atlas epoch. <see cref="Typeface"/> (#681) picks the face
+/// <c>default</c> is bound to, from <see cref="FontRegistry.Names"/>. <see cref="HoverFocus"/> is read by <see cref="UiHost"/>
 /// (was <c>cx-ui.cfg</c>'s <c>hoverToFocus</c>); the three snapping knobs (were <c>cx-quickbar.cfg</c>'s grid
 /// keys) are applied to <c>ChatWindow</c>'s snap statics by the quickbar tick. Declared through
 /// <see cref="UiCategory.Declare"/> from every UI service's Initialize.</summary>
@@ -25,9 +25,9 @@ internal static class UiKnobs
         Font = G.Dropdown("font", "Text size", ladder, (int)Metrics.DesignFontPx, layout: true,
                           help: "Size of the text in every CX window: chat, dialog, nameplates.",
                           changed: UiHostService.ApplyFont);
-        Typeface = G.Dropdown("typeface", "Typeface", new[] { FontRegistry.DefaultName }, FontRegistry.DefaultName,
-                              help: "The font every CX window draws with. One choice until multi-font lands.");
-        Typeface.Disabled = true;
+        Typeface = G.Dropdown("typeface", "Typeface", FontRegistry.Names, FontRegistry.DefaultName, layout: true,
+                              help: "The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Type in the list to search.",
+                              changed: UiHostService.ApplyTypeface);
         HoverFocus = G.Toggle("hoverfocus", "Focus a window by hovering", false,
                               help: "A CX window takes the keyboard when the pointer rests on it, without a click.");
         Snap = G.Toggle("snap", "Snap windows to a grid", false, help: "Dragged windows land on grid points.");
@@ -52,7 +52,7 @@ internal static class UiCategory
     }
 
     /// <summary>Off-device, read-only (a set would arm the writer against the user's real file): the seven groups
-    /// declare in panel order, the typeface row is the disabled one, the font ladder is 6-32, and the rows the
+    /// declare in panel order, the typeface row offers the registry's names, the font ladder is 6-32, and the rows the
     /// spec re-keyed from the retired files bind under their new names with the old defaults.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
@@ -69,7 +69,8 @@ internal static class UiCategory
             E(i > at, $"group {g} declares after the one before it");
             at = i;
         }
-        E(UiKnobs.Typeface.Disabled && !UiKnobs.Font.Disabled && UiKnobs.Typeface.Tier == Tier.User, "ui.typeface is the disabled User row");
+        E(!UiKnobs.Typeface.Disabled && UiKnobs.Typeface.Tier == Tier.User && UiKnobs.Typeface.Layout
+          && UiKnobs.Typeface.Values.Length >= 1 && UiKnobs.Typeface.Values[0] == FontRegistry.DefaultName, "ui.typeface is a live layout row over the registry's names, default first");
         E(UiKnobs.Font.Values[0] == TextRig.MinFontPx && UiKnobs.Font.Values[^1] == TextRig.MaxFontPx && UiKnobs.Font.Layout, "ui.font is the 6-32 layout ladder");
         E(KnobGroup.Find("ui.hoverfocus") == UiKnobs.HoverFocus && !UiKnobs.HoverFocus.Default && UiKnobs.GridPx.Default == 50 && UiKnobs.EdgeSnap.Default,
           "hoverfocus / gridpx / edgesnap carry the cx-ui / cx-quickbar defaults");

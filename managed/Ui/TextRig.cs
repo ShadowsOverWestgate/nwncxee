@@ -244,6 +244,41 @@ public static unsafe class TextRig
         }
     }
 
+    /// <summary>The <see cref="FontRegistry"/> name <c>default</c> is bound to for the UI (<c>ui.typeface</c>); "default"
+    /// is the load-time binding.</summary>
+    private static string _typeface = FontRegistry.DefaultName;
+
+    /// <summary>#681: rebind <c>default</c> to <paramref name="name"/> and re-bake every default-typeface face on its
+    /// bytes (cold, on a settings change). The icon rows still come from the embedded font. A font stbtt refuses
+    /// keeps the old sheet AND the old binding, so the knob may say a name the screen does not show -- logged.</summary>
+    public static void SetTypeface(string name)
+    {
+        if (_sheet == null || _log == null || _requests.Count == 0) return;
+        lock (_bakeLock)
+        {
+            if (name.Equals(_typeface, StringComparison.OrdinalIgnoreCase)) return;
+            string prev = _typeface;
+            byte[] prevFont = _requests[0].Font;
+            if (!FontRegistry.Bind(name)) { _log.Info($"TextRig: typeface {name} unknown or refused; keeping {prev}"); return; }
+            byte[]? bytes = FontRegistry.Bytes(DefaultFace);
+            if (bytes == null) return;
+            _typeface = name;
+            if (ReferenceEquals(bytes, prevFont)) return;
+            Retarget(bytes);
+            if (Rebake()) { _log.Info($"TextRig: typeface -> {name}"); FontChanged?.Invoke(); return; }
+            _log.Info($"TextRig: typeface {name} refused by the bake; keeping {prev}");
+            FontRegistry.Bind(prev); _typeface = prev;
+            Retarget(prevFont);
+        }
+    }
+
+    /// <summary>Point every request of the default typeface at <paramref name="font"/> (the icon-only ones are the embedded font's).</summary>
+    private static void Retarget(byte[] font)
+    {
+        for (int i = 0; i < _requests.Count; i++)
+            if (_requests[i].Typeface == DefaultFace) _requests[i] = _requests[i] with { Font = font };
+    }
+
     internal static void BindText(float* proj)
     {
         Gl.UseProgram(_prog);

@@ -30,6 +30,7 @@ public sealed unsafe class UiHostService : IExtenderService
         MenuGear.SelfCheck(log);        // #593 main-menu gear: anchor, hover animation, zero-alloc emit (off-device)
         TextRig.Init(log);   // the one glyph atlas every window draws from (null under run-demo: stbtt absent)
         ApplyFont();         // ...baked at ui.font x GUI scale; declares the ui group
+        ApplyTypeface();     // #681: the persisted ui.typeface, a no-op at default
         _getGuiScale = (delegate* unmanaged<float>)Native.Sym(SymbolMap.GetGuiScale);
         _resetStates = (delegate* unmanaged<void>)Native.Sym(SymbolMap.RiResetRenderStates);
         _bindBuffer = (delegate* unmanaged<uint, uint, void>)Native.Sym(SymbolMap.RiBindBuffer);
@@ -347,6 +348,9 @@ public sealed unsafe class UiHostService : IExtenderService
         Metrics.Scale = px / Metrics.DesignFontPx;
         TextRig.SetFont(px);
     }
+
+    /// <summary><c>ui.typeface</c>'s set: rebind <c>default</c> and re-bake (cold).</summary>
+    internal static void ApplyTypeface() => TextRig.SetTypeface(UiKnobs.Typeface.V);
 
     /// <summary>Track the engine's live GUI scale (CAurora::GetGUIScale) into <see cref="Metrics.GameUiScale"/> so
     /// windowed content scales with the game's UI-scaling option. A cheap float read every frame -- the static it

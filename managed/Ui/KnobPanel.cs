@@ -692,7 +692,7 @@ public sealed class KnobPanel
                 BoxRect(r, top, out float bx0, out float bx1, out float by0, out float by1);
                 string[] choices = ChoicesOf(k);
                 if (In(mx, my, bx0, bx1, by0, by1) && choices.Length > 0)
-                    Drop.OpenAt(choices, k.ChoiceIndex, r, bx0, by0, by1, bx1 - bx0, CtlH, VpH);
+                    Drop.OpenAt(choices, k.ChoiceIndex, r, bx0, by0, by1, bx1 - bx0, CtlH, VpH, search: choices.Length > Dropdown.MaxVisible);
                 break;
             }
             case KnobKind.Text:
@@ -847,7 +847,8 @@ public sealed class KnobPanel
     }
 
     // ---- text entry ----
-    public bool Editing => _editRow != null;
+    /// <summary>The panel wants typed text: a field edit, or an open searchable list (#681).</summary>
+    public bool Editing => _editRow != null || Drop.Searching;
     public string EditText => _editText;
     public bool EditingRow(Row r) => ReferenceEquals(_editRow, r);
 
@@ -856,13 +857,17 @@ public sealed class KnobPanel
     /// <summary>Typed text (finished UTF-8 from the host): appended, capped at 64 chars.</summary>
     public void EditInsert(string s)
     {
+        if (Drop.Searching) { Drop.Type(s); return; }
         if (_editRow == null) return;
         foreach (char c in s)
             if (_editText.Length < 64 && c >= ' ' && c != '\n' && c != '\r') _editText += c;
     }
 
     public void EditBackspace()
-    { if (_editRow != null && _editText.Length > 0) _editText = _editText.Substring(0, _editText.Length - 1); }
+    {
+        if (Drop.Searching) { Drop.Backspace(); return; }
+        if (_editRow != null && _editText.Length > 0) _editText = _editText.Substring(0, _editText.Length - 1);
+    }
 
     /// <summary>Commit: the text goes through the knob's own Parse (a slider clamps, a swatch wants rrggbbaa; a
     /// channel row takes 0–255); unparseable text keeps the old value.</summary>
@@ -896,7 +901,10 @@ public sealed class KnobPanel
                 else if (Drop.Open) Drop.Close();
                 else Close();
                 break;
-            case KeyReturn: case KeyKpEnter: if (_editRow != null) CommitEdit(); break;
+            case KeyReturn: case KeyKpEnter:
+                if (Drop.Searching) { Row? dr = Drop.Tag as Row; int i = Drop.Accept(); if (i >= 0 && dr?.K != null) PickChoice(dr, i); }
+                else if (_editRow != null) CommitEdit();
+                break;
             case KeyBackspace: EditBackspace(); break;
         }
         return Open;
@@ -1225,6 +1233,7 @@ public sealed class KnobPanel
             var link = g.Link("site", "Releases", "https://example.invalid/releases");
             var face = g.Dropdown("typeface", "Typeface", new[] { "default" }, "default", help: "One choice until multi-font.");
             face.Disabled = true;
+            var many = g.Dropdown("many", "Many", new[] { "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet" }, "alpha", help: "Ten choices: the list searches.");
             var chat = g.Toggle("prepass", "prepass", true, Tier.ChatOnly);
             g.Swatch("hidden", "hidden", 0u, Tier.Hidden);
 
@@ -1252,7 +1261,7 @@ public sealed class KnobPanel
             E(p.Rows[0].Kind == RowKind.Note && p.Rows[1].Kind == RowKind.Status && p.Rows[1].Help.Length == 1 && p.Rows[1].Help[0] == "Running: check — 0", "the header note, then the status line");
             E(p.Rows[2].Kind == RowKind.Knob && p.Rows[2].K == g.Master && p.Rows[2].Master && p.Rows[2].H > 3.3f * FacePx + 0.8f * FacePx, "the master is the first knob row, boxed and taller by its margins");
             E(p.Rows[3].Kind == RowKind.Section && p.Rows[3].Text == "FIELD" && p.Rows[6].Text == "SHADOWS", "section headers appear where the section changes, upper-cased");
-            E(Count(RowKind.Knob) == 12 && Count(RowKind.Advanced) == 1 && !Has(adv) && !Has(advNoHelp) && !Has(chat), $"12 User rows, one closed disclosure, no Advanced / ChatOnly / Hidden row ({Count(RowKind.Knob)})");
+            E(Count(RowKind.Knob) == 13 && Count(RowKind.Advanced) == 1 && !Has(adv) && !Has(advNoHelp) && !Has(chat), $"13 User rows, one closed disclosure, no Advanced / ChatOnly / Hidden row ({Count(RowKind.Knob)})");
             E(p.Rows[p.Rows.Count - 1].Kind == RowKind.Advanced && p.Rows[p.Rows.Count - 1].Text == AdvancedClosed, "the disclosure is the last row, closed");
             E(Find(RowKind.Strip) == null && !p.MasterOff, "parent and master on: no strip, nothing greyed");
             Row dr = R(dens);
@@ -1339,6 +1348,20 @@ public sealed class KnobPanel
             E(p.Drop.Open && ReferenceEquals(p.Drop.Tag, shr) && p.Drop.Selected == 1, "the dropdown press opens the list on the current choice");
             Press(p.Drop.X + 5f, p.Drop.ItemTop(3) + 2f);
             E(!p.Drop.Open && shadow.V == 4, $"picking the last choice sets its value ({shadow.V})");
+            E(!p.Drop.Searching, "four choices: no search row");
+            // #681: a long list opens searchable; typed text filters it and Enter picks the one match.
+            Row manyRow = R(many); PressBox(manyRow);
+            E(p.Drop.Open && p.Drop.Searching && p.Editing, "ten choices open with the search row, and the panel wants text");
+            p.EditInsert("JU");
+            E(p.Drop.Shown == 1 && p.Drop.Filter == "JU", $"typing filters the list, case-folded ({p.Drop.Shown})");
+            p.Key(0x08);
+            E(p.Drop.Filter == "J" && p.Drop.Shown == 1, "backspace edits the filter, not a field");
+            p.Key(0x0D);
+            E(!p.Drop.Open && !p.Editing && many.V == "juliet", $"Enter picks the one match ({many.V})");
+            PressBox(manyRow); p.EditInsert("l");
+            E(p.Drop.Shown == 6 && p.Drop.ChoiceAt(0) == 0 && p.Drop.ChoiceAt(1) == 2, "'l' keeps the six choices with an l, alpha first");
+            Press(p.Drop.X + 5f, p.Drop.List.Y + p.Drop.ItemH + 2f);
+            E(!p.Drop.Open && many.V == "charlie", $"the second visible row is the second choice with an l ({many.V})");
             // Text: seeded with the value, edited, committed.
             Row tr = R(tex); PressBox(tr);
             E(p.Editing && p.EditText == "grass", "a text press seeds the edit with the value");
@@ -1443,7 +1466,7 @@ public sealed class KnobPanel
             p._subs = new[] { g, z }; p.SelectSub(1); p.LayoutRows();
             E(p.Sub == 1 && !p.AdvOpen && p.Rows.Count == 1 && p.Rows[0].Kind == RowKind.Status && p.Rows[0].Help.Length >= 3 && !p._resettable, "a zero-knob group renders its status as the whole body, no reset box");
             p.SelectSub(0); p.LayoutRows();
-            E(p.Sub == 0 && Count(RowKind.Knob) == 12 && !p.AdvOpen, "back to the group: the disclosure is closed again");
+            E(p.Sub == 0 && Count(RowKind.Knob) == 13 && !p.AdvOpen, "back to the group: the disclosure is closed again");
 
             // Independent scrolls: the knob list overflows at 720p, the nav columns do not; each wheel hits its own column.
             E(p.List.Overflows && !p.Cats.Overflows, "the row column scrolls; five categories fit");

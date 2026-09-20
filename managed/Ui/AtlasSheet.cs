@@ -83,8 +83,9 @@ public sealed unsafe class AtlasSheet
 
     /// <summary>#470: a codepoint the typeface has no glyph for (index 0) is filled from the default typeface's face
     /// at the same px -- same sheet, so the copied UVs are valid -- never baked as a .notdef box. Logged per range so
-    /// the gap is named; a hole in the default itself stays an advance-only blank. Icon rows (#425) fill from the
-    /// icon font's face instead and are not a coverage gap: every face routes them there by design.</summary>
+    /// the gap is named; a hole in the default itself fills from the icon font's twin when the default is not that
+    /// font (#681: a picked system font missing Cyrillic reads in DejaVu), else stays an advance-only blank. Icon rows
+    /// (#425) fill from the icon font's face instead and are not a coverage gap: every face routes them there by design.</summary>
     private static void FillMissing(IReadOnlyList<FaceRequest> reqs, GlyphAtlas[] faces,
                                     List<(int Face, int Cp, int Range, float Advance)> missing,
                                     Dictionary<float, int> defaultByPx, Dictionary<float, int> iconByPx,
@@ -96,6 +97,7 @@ public sealed unsafe class AtlasSheet
         {
             int d = (ranges[ri].icon ? iconByPx : defaultByPx)[reqs[f].Px];
             if (!ranges[ri].icon || d == f) perFace[f, ri]++;
+            if (d == f && !ranges[ri].icon) d = iconByPx[reqs[f].Px];   // the default's own gap: the embedded twin, if the default is not it
             if (d != f && faces[d].TryGet(cp, out Glyph g)) faces[f].Store(cp, g);
             else faces[f].Store(cp, new Glyph { Advance = adv });
         }
@@ -106,7 +108,8 @@ public sealed unsafe class AtlasSheet
                 if (perFace[f, ri] > 0) sb.Append(sb.Length == 0 ? "" : ", ").Append($"{ranges[ri].name} {perFace[f, ri]}/{ranges[ri].hi - ranges[ri].lo + 1}");
             if (sb.Length > 0)
                 log.Info($"AtlasSheet: face {reqs[f].Typeface} @ {reqs[f].Px}px missed {sb}" +
-                         (defaultByPx[reqs[f].Px] != f ? $" (filled from {reqs[0].Typeface})" : " (default face: left blank)"));
+                         (defaultByPx[reqs[f].Px] != f ? $" (filled from {reqs[0].Typeface})"
+                          : iconByPx[reqs[f].Px] != f ? $" (filled from {reqs[iconByPx[reqs[f].Px]].Typeface})" : " (default face: left blank)"));
         }
     }
 

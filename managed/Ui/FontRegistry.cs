@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Text;
 using CX.Framework;
 
 namespace CX.Ui;
@@ -8,7 +10,10 @@ namespace CX.Ui;
 /// relative path is looked up beside the extender (the process directory: nwmain sits next to
 /// <c>version.dll</c> / the <c>.so</c>, #474) and then in the user directory beside <c>cx.cfg</c> -- the
 /// form that survives Proton, where an absolute Linux path names nothing. A name that fails to load is a
-/// logged refusal and resolves to the default face; it never yields a missing-text frame.
+/// logged refusal and resolves to the default face; it never yields a missing-text frame. The fonts installed on
+/// the machine (#681) are choices too, under their full name from the <c>name</c> table, read on first use;
+/// <c>ui.typeface</c> picks which of them <c>default</c> is bound to (<see cref="Bind"/>), the same rebinding
+/// <c>font.default=</c> does from the file.
 /// </summary>
 public static class FontRegistry
 {
@@ -29,15 +34,175 @@ public static class FontRegistry
 
     private static readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
     private static bool _loaded;
+    private static ExtenderLog? _log;
+    /// <summary>What <c>default</c> was bound to at load: the embedded font or the <c>font.default=</c> file.</summary>
+    private static Entry? _boot;
+    /// <summary>Installed fonts by full name -> path, scanned once on first ask.</summary>
+    private static Dictionary<string, string>? _system;
+    private static string[]? _names;
 
     /// <summary>Every declared name, default first.</summary>
-    public static IEnumerable<Entry> All => _entries.Values.OrderBy(e => e.Name != DefaultName).ThenBy(e => e.Name);
+    public static IEnumerable<Entry> All { get { lock (_entries) return _entries.Values.OrderBy(e => e.Name != DefaultName).ThenBy(e => e.Name).ToArray(); } }
+
+    /// <summary>The <c>ui.typeface</c> choices: <c>default</c>, then every cfg-declared name and every installed font's
+    /// full name, sorted; a cfg name shadows an installed one of the same name. Built once, before the knob binds.</summary>
+    public static string[] Names
+    {
+        get
+        {
+            if (_names != null) return _names;
+            var set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach ((string key, string path) in Settings.Prefixed(Prefix))
+            {
+                string n = key.Substring(Prefix.Length);
+                if (n.Length > 0 && !n.Equals(DefaultName, StringComparison.OrdinalIgnoreCase) && !n.Equals(EmbeddedName, StringComparison.OrdinalIgnoreCase)
+                    && Resolve(path) != null) set.Add(n);   // a declared file that is not there is no choice
+            }
+            foreach (string n in SystemFonts().Keys) set.Add(n);
+            var names = new string[set.Count + 1];
+            names[0] = DefaultName;
+            set.CopyTo(names, 1);
+            return _names = names;
+        }
+    }
+
+    /// <summary>The OS font directories: Linux's fontconfig defaults, Windows' system and per-user folders
+    /// (under Proton the process is the Windows build, so it walks the prefix's <c>C:\windows\Fonts</c>).</summary>
+    private static IEnumerable<string> FontDirs()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            yield return Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
+            yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "Windows", "Fonts");
+            yield break;
+        }
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string data = Environment.GetEnvironmentVariable("XDG_DATA_HOME") is { Length: > 0 } x ? x : Path.Combine(home, ".local", "share");
+        yield return "/usr/share/fonts";
+        yield return "/usr/local/share/fonts";
+        yield return Path.Combine(data, "fonts");
+        yield return Path.Combine(home, ".fonts");
+    }
+
+    /// <summary>Walk the font directories once for <c>.ttf</c>/<c>.otf</c> files stbtt can open (collections are
+    /// skipped: the bake inits at offset 0). Cold, first-name-wins on a duplicate full name.</summary>
+    private static Dictionary<string, string> SystemFonts()
+    {
+        if (_system != null) return _system;
+        var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var opt = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, MaxRecursionDepth = 8 };
+        foreach (string dir in FontDirs())
+        {
+            if (dir.Length == 0 || !Directory.Exists(dir)) continue;
+            try
+            {
+                foreach (string f in Directory.EnumerateFiles(dir, "*", opt))
+                {
+                    string ext = Path.GetExtension(f);
+                    if (!ext.Equals(".ttf", StringComparison.OrdinalIgnoreCase) && !ext.Equals(".otf", StringComparison.OrdinalIgnoreCase)) continue;
+                    string? name = FullName(f);
+                    if (name != null) found.TryAdd(name, f);
+                }
+            }
+            catch (Exception ex) { _log?.Info($"FontRegistry: {dir} not walked ({ex.GetType().Name})"); }
+        }
+        return _system = found;
+    }
+
+    /// <summary>The font's full name (name id 4; Windows/Unicode English first, the Mac Roman record as the
+    /// fallback) read through the table directory with three small reads, or null for anything that is not one
+    /// sfnt font. Internal for the self-check.</summary>
+    internal static string? FullName(string path)
+    {
+        try { using FileStream f = File.OpenRead(path); return FullName(f); }
+        catch (Exception) { return null; }
+    }
+
+    internal static string? FullName(Stream f)
+    {
+        try
+        {
+            Span<byte> hdr = stackalloc byte[12];
+            if (f.Read(hdr) < 12) return null;
+            uint tag = BinaryPrimitives.ReadUInt32BigEndian(hdr);
+            if (tag != 0x00010000 && tag != 0x4F54544F && tag != 0x74727565) return null;   // 1.0 / 'OTTO' / 'true'
+            int n = BinaryPrimitives.ReadUInt16BigEndian(hdr.Slice(4));
+            if (n == 0 || n > 64) return null;
+            var dir = new byte[n * 16];
+            if (f.Read(dir) < dir.Length) return null;
+            for (int i = 0; i < n; i++)
+            {
+                ReadOnlySpan<byte> rec = dir.AsSpan(i * 16, 16);
+                if (BinaryPrimitives.ReadUInt32BigEndian(rec) != 0x6E616D65) continue;   // 'name'
+                uint off = BinaryPrimitives.ReadUInt32BigEndian(rec.Slice(8)), len = BinaryPrimitives.ReadUInt32BigEndian(rec.Slice(12));
+                if (len < 6 || len > 1 << 20 || off + len > (ulong)f.Length) return null;
+                f.Seek(off, SeekOrigin.Begin);
+                var t = new byte[len];
+                return f.Read(t) < t.Length ? null : NameRecord(t, 4);
+            }
+        }
+        catch (Exception) { }
+        return null;
+    }
+
+    private static string? NameRecord(byte[] t, int wantId)
+    {
+        int count = BinaryPrimitives.ReadUInt16BigEndian(t.AsSpan(2)), strOff = BinaryPrimitives.ReadUInt16BigEndian(t.AsSpan(4));
+        string? win = null, uni = null, mac = null;
+        for (int i = 0; i < count; i++)
+        {
+            int r = 6 + i * 12;
+            if (r + 12 > t.Length) break;
+            ReadOnlySpan<byte> rec = t.AsSpan(r, 12);
+            int plat = BinaryPrimitives.ReadUInt16BigEndian(rec), enc = BinaryPrimitives.ReadUInt16BigEndian(rec.Slice(2));
+            int lang = BinaryPrimitives.ReadUInt16BigEndian(rec.Slice(4)), id = BinaryPrimitives.ReadUInt16BigEndian(rec.Slice(6));
+            int len = BinaryPrimitives.ReadUInt16BigEndian(rec.Slice(8)), off = BinaryPrimitives.ReadUInt16BigEndian(rec.Slice(10));
+            if (id != wantId || len == 0) continue;
+            int s = strOff + off;
+            if (s + len > t.Length) continue;
+            if (plat == 3 && (enc == 1 || enc == 0) && (win == null || lang == 0x409)) { win = Encoding.BigEndianUnicode.GetString(t, s, len); if (lang == 0x409) break; }
+            else if (plat == 0) uni ??= Encoding.BigEndianUnicode.GetString(t, s, len);
+            else if (plat == 1 && enc == 0) mac ??= Encoding.Latin1.GetString(t, s, len);
+        }
+        string? name = (win ?? uni ?? mac)?.Trim();
+        return string.IsNullOrEmpty(name) || name.Contains('\0') ? null : name;
+    }
+
+    /// <summary>The entry for <paramref name="name"/>: declared, or an installed font read on this first ask
+    /// (a read failure is its refusal). Null for a name nobody knows.</summary>
+    private static Entry? Find(string name)
+    {
+        lock (_entries)
+        {
+            if (_entries.TryGetValue(name, out Entry? e)) return e;
+            if (!SystemFonts().TryGetValue(name, out string? path)) return null;
+            e = new Entry { Name = name, Source = path };
+            try { e.Bytes = File.ReadAllBytes(path); } catch (Exception ex) { e.Refusal = ex.GetType().Name; }
+            _entries[name] = e;
+            _log?.Info(e.Refusal == null ? $"FontRegistry: {name} = {e.Source} ({e.Bytes!.Length} bytes)"
+                                         : $"FontRegistry: {name} = {e.Source} REFUSED ({e.Refusal}); falls back to {DefaultName}");
+            return e;
+        }
+    }
+
+    /// <summary>Bind <c>default</c> to <paramref name="name"/> (<c>ui.typeface</c>); <c>default</c> itself restores
+    /// the load-time binding. False, and nothing moves, for an unknown or refused name.</summary>
+    public static bool Bind(string name)
+    {
+        Entry? e = name.Equals(DefaultName, StringComparison.OrdinalIgnoreCase) ? _boot : Find(name);
+        if (e == null || e.Bytes == null || _boot == null) return false;
+        lock (_entries)
+            _entries[DefaultName] = ReferenceEquals(e, _boot) ? _boot
+                                  : new Entry { Name = DefaultName, Source = $"{e.Source} (ui.typeface {e.Name})", Bytes = e.Bytes };
+        return true;
+    }
 
     /// <summary>Read <c>font.*</c> once (cold) and load every file; the embedded default stands in when unset or refused.</summary>
     public static void Load(ExtenderLog log)
     {
         if (_loaded) return;
         _loaded = true;
+        _log = log;
         foreach ((string key, string path) in Settings.Prefixed(Prefix))
         {
             string name = key.Substring(Prefix.Length);
@@ -69,19 +234,19 @@ public static class FontRegistry
             if (d != null) { log.Info($"FontRegistry: {DefaultName} override refused ({d.Refusal}); using the embedded font"); e.Source = $"{e.Source} ({d.Source} REFUSED: {d.Refusal})"; }
             _entries[DefaultName] = e;
         }
+        _boot = _entries[DefaultName];
     }
 
     /// <summary>Bytes for <paramref name="name"/>, or the default's when unknown or refused. Null only when the
     /// embedded default itself is missing from the image.</summary>
     public static byte[]? Bytes(string name)
     {
-        if (_entries.TryGetValue(name, out Entry? e) && e.Bytes != null) return e.Bytes;
-        return _entries.TryGetValue(DefaultName, out Entry? d) ? d.Bytes : null;
+        if (Find(name) is { Bytes: not null } e) return e.Bytes;
+        lock (_entries) return _entries.TryGetValue(DefaultName, out Entry? d) ? d.Bytes : null;
     }
 
     /// <summary>The name that actually backs <paramref name="name"/>: itself when loaded, else the default.</summary>
-    public static string Effective(string name) =>
-        _entries.TryGetValue(name, out Entry? e) && e.Bytes != null ? e.Name : DefaultName;
+    public static string Effective(string name) => Find(name) is { Bytes: not null } e ? e.Name : DefaultName;
 
     private static string? Resolve(string path)
     {
@@ -113,6 +278,19 @@ public static class FontRegistry
         E(Resolve("/nonexistent/cx-selfcheck.ttf") == null, "a rooted missing path is refused");
         E(Bytes("no-such-face") == Bytes(DefaultName), "unknown-name bytes are the default's");
         E(_entries.ContainsKey(EmbeddedName), "the embedded font is always declared");
+
+        // #681: the name-table read on the embedded DejaVu, the choice list, and the default rebinding.
+        if (Bytes(EmbeddedName) is byte[] emb)
+            E(FullName(new MemoryStream(emb)) == "DejaVu Sans", $"the embedded font's full name reads back ({FullName(new MemoryStream(emb))})");
+        E(FullName(new MemoryStream(Encoding.ASCII.GetBytes("not a font, not at all"))) == null, "a non-sfnt stream has no name");
+        string[] names = Names;
+        E(names.Length >= 1 && names[0] == DefaultName && names.Distinct(StringComparer.OrdinalIgnoreCase).Count() == names.Length,
+          $"the choices start with {DefaultName} and repeat nothing ({names.Length} names, {SystemFonts().Count} installed)");
+        E(!names.Contains(EmbeddedName, StringComparer.OrdinalIgnoreCase), "the reserved embedded name is not a choice");
+        byte[]? boot = Bytes(DefaultName);
+        E(!Bind("no-such-face"), "binding an unknown name is refused");
+        E(ReferenceEquals(Bytes(DefaultName), boot), "a refused bind leaves the default alone");
+        E(Bind(DefaultName) && ReferenceEquals(Bytes(DefaultName), boot), "binding default keeps the load-time face");
         log.Info(ok ? "FontRegistry.SelfCheck OK" : "FontRegistry.SelfCheck FAILED");
     }
 }

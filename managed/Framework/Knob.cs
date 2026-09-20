@@ -42,7 +42,7 @@ public abstract class Knob
     public bool Layout { get; }
     /// <summary>Side effect after a set (on the setter's thread); a Button's press.</summary>
     public Action? Changed;
-    /// <summary>A row that exists but cannot be edited yet (<c>ui.typeface</c> until multi-font): the panel
+    /// <summary>A row that exists but cannot be edited yet: the panel
     /// greys it and ignores its presses; chat and the file still read it.</summary>
     public bool Disabled;
 
