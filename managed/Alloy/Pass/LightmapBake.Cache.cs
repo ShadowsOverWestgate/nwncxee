@@ -21,12 +21,14 @@ internal sealed class BakeCache
     /// <summary>"CXLM" little-endian.</summary>
     private const uint Magic = 0x4d4c5843;   // not-an-offset: the file's first four bytes
     /// <summary>Bumped with every change to what a baked texel holds: a file from an older bake is stale, whatever its key.</summary>
-    internal const int Version = 4;
+    internal const int Version = 7;
     private const int HeaderBytes = 4 + 4 + 8 + 4 + 4;
-    private const int PruneEvery = 16;
+    /// <summary>Every 16 was a directory enumeration of 40k files on the cache thread 1500 times a period (9 s CPU,
+    /// 1.5 GB of FileInfo garbage), which starved the readback ring: 18k of 23k landings went uncached (run 13).</summary>
+    private const int PruneEvery = 1024;
 
     /// <summary>A probe (Rect &gt;= 0) or a write: the rect's raw bits, or where it sits in a union readback.</summary>
-    private struct Job { internal int Rect; internal ulong Key; internal int W, H; internal byte[]? Data; internal int Ux, Uy, Uw, Uh, X, Y; internal bool Write; }
+    private struct Job { internal int Rect; internal ulong Key; internal int W, H; internal byte[]? Data; internal int Ux, Uy, Uw, Uh, X, Y; internal bool Write; internal int Buf; }
     private readonly Queue<Job> _in = new();
     private readonly Queue<Job> _out = new();
     private readonly object _gate = new();
@@ -38,6 +40,10 @@ internal sealed class BakeCache
     /// <summary>Writes queued and not yet on disk: while it is above zero the render thread's readback
     /// buffer is still being read from and must not be re-used.</summary>
     internal int Outstanding;
+    /// <summary>Bytes the cache thread allocated this period (slices, blobs, deflate streams).</summary>
+    internal long Allocated;
+    /// <summary>Per readback buffer: writes still reading from it. The render thread re-uses a buffer at 0.</summary>
+    internal readonly int[] Busy = new int[4];
 
     internal void Attach(ExtenderLog log)
     {
@@ -57,21 +63,27 @@ internal sealed class BakeCache
 
     /// <summary>Queue a landed rect for the disk: it sits at (x, y) inside the union readback <paramref name="data"/>
     /// (A texels then B texels, <paramref name="uw"/> x <paramref name="uh"/> each); the thread slices it out.</summary>
-    internal void Save(ulong key, int w, int h, byte[] data, int ux, int uy, int uw, int uh, int x, int y)
+    internal void Save(ulong key, int w, int h, byte[] data, int buf, int ux, int uy, int uw, int uh, int x, int y)
     {
-        Interlocked.Increment(ref Outstanding);
-        lock (_gate) { _in.Enqueue(new Job { Rect = -1, Key = key, W = w, H = h, Data = data, Ux = ux, Uy = uy, Uw = uw, Uh = uh, X = x, Y = y, Write = true }); Monitor.Pulse(_gate); }
+        Interlocked.Increment(ref Outstanding); Interlocked.Increment(ref Busy[buf]);
+        lock (_gate) { _in.Enqueue(new Job { Rect = -1, Key = key, W = w, H = h, Data = data, Buf = buf, Ux = ux, Uy = uy, Uw = uw, Uh = uh, X = x, Y = y, Write = true }); Monitor.Pulse(_gate); }
     }
 
     /// <summary>The rect's raw bits (A then B, w x h each) out of a union readback. Pure.</summary>
     internal static byte[] Slice(byte[] union, int ux, int uy, int uw, int uh, int x, int y, int w, int h)
     {
         var raw = new byte[w * h * 8];
+        SliceInto(raw, union, ux, uy, uw, uh, x, y, w, h);
+        return raw;
+    }
+
+    /// <summary><see cref="Slice"/> into a rented buffer (at least <c>w*h*8</c> long).</summary>
+    internal static void SliceInto(byte[] raw, byte[] union, int ux, int uy, int uw, int uh, int x, int y, int w, int h)
+    {
         int row = w * 4;
         for (int plane = 0; plane < 2; plane++)
             for (int j = 0; j < h; j++)
                 Buffer.BlockCopy(union, plane * uw * uh * 4 + ((y - uy + j) * uw + (x - ux)) * 4, raw, plane * w * h * 4 + j * row, row);
-        return raw;
     }
 
     internal bool TryTake(out int rect, out ulong key, out byte[]? data)
@@ -97,8 +109,32 @@ internal sealed class BakeCache
         }
     }
 
+    /// <summary>Once, when the thread starts: a file from another format version is dead weight the prune
+    /// counts against the budget and never deletes on its own (only a probe deletes a stale file, and no
+    /// key from an older version is ever probed). 18851 files, 565 MiB, of which a third were live (run 5).</summary>
+    private void SweepStale()
+    {
+        try
+        {
+            string dir = MeshChart.LedgerDir();
+            if (!Directory.Exists(dir)) return;
+            int n = 0; long bytes = 0;
+            var head = new byte[8];
+            foreach (string f in Directory.EnumerateFiles(dir, "*.lmr"))
+            {
+                using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.SequentialScan))
+                    if (fs.Read(head, 0, 8) == 8 && BitConverter.ToUInt32(head, 0) == Magic && BitConverter.ToInt32(head, 4) == Version) continue;
+                bytes += new FileInfo(f).Length;
+                System.IO.File.Delete(f); n++;
+            }
+            if (n > 0) _log?.Info($"LightmapBake: swept {n} bake files from older formats ({bytes >> 20} MiB)");
+        }
+        catch (Exception e) { _log?.Info($"LightmapBake: the stale-file sweep faulted -- {e.Message}"); }
+    }
+
     private void Work()
     {
+        SweepStale();
         while (true)
         {
             Job j;
@@ -107,12 +143,14 @@ internal sealed class BakeCache
                 while (_in.Count == 0) Monitor.Wait(_gate);
                 j = _in.Dequeue();
             }
+            long a0 = GC.GetAllocatedBytesForCurrentThread();
             try
             {
-                if (j.Write) { try { WriteFile(j); } finally { Interlocked.Decrement(ref Outstanding); } continue; }
+                if (j.Write) { try { WriteFile(j); } finally { Interlocked.Decrement(ref Outstanding); Interlocked.Decrement(ref Busy[j.Buf]); } continue; }
                 j.Data = ReadFile(j.Key, j.W, j.H);
             }
             catch (Exception e) { j.Data = null; _log?.Info($"LightmapBake: the bake cache faulted -- {e.Message}"); }
+            finally { Interlocked.Add(ref Allocated, GC.GetAllocatedBytesForCurrentThread() - a0); }
             lock (_gate) _out.Enqueue(j);
         }
     }
@@ -121,11 +159,18 @@ internal sealed class BakeCache
     internal static byte[] Serialize(ulong key, int w, int h, byte[] raw)
     {
         var ms = new MemoryStream(HeaderBytes + raw.Length / 2);
-        var bw = new BinaryWriter(ms);
+        SerializeTo(ms, key, w, h, raw, raw.Length);
+        return ms.ToArray();
+    }
+
+    /// <summary><see cref="Serialize"/> straight onto a stream: the first <paramref name="n"/> bytes of <paramref name="raw"/>.</summary>
+    private static void SerializeTo(Stream s, ulong key, int w, int h, byte[] raw, int n)
+    {
+        var bw = new BinaryWriter(s);
         bw.Write(Magic); bw.Write(Version); bw.Write(key); bw.Write(w); bw.Write(h);
         bw.Flush();
-        using (var z = new DeflateStream(ms, CompressionLevel.Fastest, leaveOpen: true)) z.Write(raw, 0, raw.Length);
-        return ms.ToArray();
+        using var z = new DeflateStream(s, CompressionLevel.Fastest, leaveOpen: true);
+        z.Write(raw, 0, n);
     }
 
     /// <summary>The inverse; null names the refusal (version, key, truncation) -- never throws.</summary>
@@ -164,7 +209,16 @@ internal sealed class BakeCache
     {
         string dir = MeshChart.LedgerDir();
         Directory.CreateDirectory(dir);
-        System.IO.File.WriteAllBytes(File(j.Key), Serialize(j.Key, j.W, j.H, Slice(j.Data!, j.Ux, j.Uy, j.Uw, j.Uh, j.X, j.Y, j.W, j.H)));
+        // rented + streamed: a fresh slice, blob and ToArray per file was 3 GB of garbage a period (run 8)
+        int n = j.W * j.H * 8;
+        byte[] raw = System.Buffers.ArrayPool<byte>.Shared.Rent(n);
+        try
+        {
+            SliceInto(raw, j.Data!, j.Ux, j.Uy, j.Uw, j.Uh, j.X, j.Y, j.W, j.H);
+            using var fs = new FileStream(File(j.Key), FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
+            SerializeTo(fs, j.Key, j.W, j.H, raw, n);
+        }
+        finally { System.Buffers.ArrayPool<byte>.Shared.Return(raw); }
         if (++_writes % PruneEvery == 0) MeshChart.Prune(dir, (long)Lightmap.Disk.V << 20);
     }
 

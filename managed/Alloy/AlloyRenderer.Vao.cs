@@ -142,13 +142,14 @@ public sealed unsafe partial class AlloyRenderer
         long elem = vdo.ElemItems, vert = vdo.VertItems;
         if (elem == 0 || vert == 0 || item < 0 || item >= vdo.ElemCount || item >= vdo.VertCount) return;
         int count = *(int*)(elem + item * 8 + 4);
-        if (!MeshLod.Wanted(s, item, count)) return;
         long first = (uint)*(int*)(elem + item * 8);
         int baseVertex = *(int*)(vert + item * 8);
         byte* elemHost = OwnedBuffers.PoolHost(vdo.ElemToken);
         byte* vertHost = OwnedBuffers.PoolHostByName(_vPos[s].Buf, vdo.VertToken, vdo.DynToken);
         if (elemHost == null || vertHost == null) return;
-        MeshLod.Offer(s, item, elemHost, first, count, vertHost, in _vPos[s], baseVertex);
+        ulong sig = RangeSig(elemHost, first, count, vertHost, in _vPos[s], baseVertex);
+        if (!MeshLod.Wanted(s, item, count, sig)) return;
+        MeshLod.Offer(s, item, elemHost, first, count, vertHost, in _vPos[s], baseVertex, sig);
     }
 
     /// <summary>#673: hand a newly enrolled STATIC part's range to <see cref="MeshChart"/> -- positions, normals,
@@ -162,20 +163,55 @@ public sealed unsafe partial class AlloyRenderer
         long elem = vdo.ElemItems, vert = vdo.VertItems;
         if (elem == 0 || vert == 0 || item < 0 || item >= vdo.ElemCount || item >= vdo.VertCount) return false;
         int count = *(int*)(elem + item * 8 + 4);
-        if (!MeshChart.Wanted(s, item, count, out bool later))
-        {
-            if (later && _chartDeferred.Count < MaxOwned) _chartDeferred.Add((vdoPtr, item, prim, s));
-            return later;   // claimed for later: the LOD offer stands aside as it would for a queued chart
-        }
         long first = (uint)*(int*)(elem + item * 8);
         int baseVertex = *(int*)(vert + item * 8);
         byte* elemHost = OwnedBuffers.PoolHost(vdo.ElemToken);
         byte* posHost = OwnedBuffers.PoolHostByName(_vPos[s].Buf, vdo.VertToken, vdo.DynToken);
         byte* nrmHost = OwnedBuffers.PoolHostByName(_vNrm[s].Buf, vdo.VertToken, vdo.DynToken);
         byte* uvHost = _vUv[s].Present ? OwnedBuffers.PoolHostByName(_vUv[s].Buf, vdo.VertToken, vdo.DynToken) : null;
-        if (elemHost == null || posHost == null || nrmHost == null) return false;
-        MeshChart.Offer(s, item, elemHost, first, count, posHost, in _vPos[s], nrmHost, in _vNrm[s], uvHost, in _vUv[s], baseVertex);
+        if (elemHost == null || posHost == null || nrmHost == null || count <= 0) return false;
+        ulong sig = RangeSig(elemHost, first, count, posHost, in _vPos[s], baseVertex);
+        if (!MeshChart.Wanted(s, item, count, sig, out bool later))
+        {
+            if (later && _chartDeferred.Count < MaxOwned) _chartDeferred.Add((vdoPtr, item, prim, s));
+            return later;   // claimed for later: the LOD offer stands aside as it would for a queued chart
+        }
+        MeshChart.Offer(s, item, elemHost, first, count, posHost, in _vPos[s], nrmHost, in _vNrm[s], uvHost, in _vUv[s], baseVertex, sig);
         return true;
+    }
+
+    /// <summary>What a (VDO, item) key holds RIGHT NOW: the index count and the positions its first, middle
+    /// and last triangles address. The engine frees a pool item and refills it with another mesh under the
+    /// same item index, and the chart and LOD tables keyed on (slot, item) went on serving the old mesh's
+    /// copy -- geometry from the previous area floating in the next one. Positions, not offsets: a repack
+    /// moves the range without changing the mesh.</summary>
+    private static ulong RangeSig(byte* elemHost, long first, int count, byte* posHost, in VertexStream pos, int baseVertex)
+    {
+        ulong h = 14695981039346656037UL ^ (ulong)count;
+        ushort* src = (ushort*)(elemHost + first * 2);
+        int mid = count / 2 - count / 2 % 3;
+        for (int t = 0; t < 3; t++)
+        {
+            int at = t == 0 ? 0 : t == 1 ? mid : count - 3;
+            for (int k = 0; k < 3; k++)
+            {
+                float* p = (float*)(posHost + pos.Off + (long)(baseVertex + src[at + k]) * pos.Stride);
+                h = (h ^ (uint)BitConverter.SingleToInt32Bits(p[0])) * 1099511628211UL;
+                h = (h ^ (uint)BitConverter.SingleToInt32Bits(p[1])) * 1099511628211UL;
+                h = (h ^ (uint)BitConverter.SingleToInt32Bits(p[2])) * 1099511628211UL;
+            }
+        }
+        return h;
+    }
+
+    /// <summary>The chart table keeps what the enrolled parts key and drops the rest (see <see cref="MeshChart.Sweep"/>).
+    /// Called at the new area's lightmap close, when its parts are in. Cold, allocates.</summary>
+    internal static void SweepMeshTables()
+    {
+        var live = new HashSet<long>(_ownLive);
+        for (int i = 0; i < MaxOwned; i++)
+            if (_oTri[i] != IntPtr.Zero) live.Add(MeshChart.KeyOf(_oVao[i], _oItem[i]));
+        MeshChart.Sweep(live);
     }
 
     /// <summary>#674: chart offers the worker's queue could not take on the enrolment walk, re-offered from

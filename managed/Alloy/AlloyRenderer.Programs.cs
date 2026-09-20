@@ -379,13 +379,10 @@ public sealed unsafe partial class AlloyRenderer
         L.ProbeGain = GlProgram.Loc(prog, "uProbeGain");
         L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
         L.Capture = GlProgram.Loc(prog, "uCapture");
-        L.Gi = GlProgram.Loc(prog, "uGi"); L.GiCell = GlProgram.Loc(prog, "uGiCell0");
-        L.LmPages = GlProgram.Loc(prog, "uLmPages"); L.LmMovers = GlProgram.Loc(prog, "uLmMovers");
+        L.LmPages = GlProgram.Loc(prog, "uLmPages"); L.LmMovers = GlProgram.Loc(prog, "uLmMovers"); L.CubeDynSphere = GlProgram.Loc(prog, "uLocalDynSphere");
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
         L.SsaoHalf = GlProgram.Loc(prog, "uSsaoHalf");
         L.AoDirect = GlProgram.Loc(prog, "uAoDirect"); L.AoCutout = GlProgram.Loc(prog, "uAoCutout");
-        L.Contact = GlProgram.Loc(prog, "uContact");
-        L.ContactFar = GlProgram.Loc(prog, "uContactFar");
         L.Weather = GlProgram.Loc(prog, "uWeather"); L.WeatherLook = GlProgram.Loc(prog, "uWeatherLook");
         L.CoverVp = GlProgram.Loc(prog, "uCoverVp"); L.CoverLayer = GlProgram.Loc(prog, "uCoverLayer");
         L.SnowLook = GlProgram.Loc(prog, "uSnowLook"); L.SnowLight = GlProgram.Loc(prog, "uSnowLight"); L.CoverEsm = GlProgram.Loc(prog, "uCoverEsmP"); L.SnowPom = GlProgram.Loc(prog, "uSnowPom");

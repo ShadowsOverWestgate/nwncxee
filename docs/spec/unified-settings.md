@@ -374,8 +374,8 @@ Renderer itself.
 | shadow.size | csm_size | Sun shadow resolution | D | 512 / 1024 / 2048 / 4096 · 2048 | U | R | Sun | Per-cascade map size. |
 | shadow.cubes | cube_count | Shadow-casting lights | S | 0–64 step 4 · 32 | U | R | Point lights | How many nearby lights cast shadows at once. Lower on a small card. |
 | shadow.cubesize | cube_size | Point-light shadow resolution | D | 128 / 256 / 512 / 1024 / 2048 · 512 | U | R | Point lights | |
+| shadow.cubedist | — | Point-light shadow distance | S | 0–200 step 5 · 40 m | U | L | Point lights | A light farther than this from you casts no shadow, and no fragment farther than this from the camera reads one; shadows fade out over the last quarter. 0 = every light in the budget, at any distance. |
 | shadow.soft | /light shadowsoft | Shadow softness | S | 0–4 step 0.25 · 1.5 | U | L | Point lights | Blur radius of point-light shadows. 0 is hard-edged and cheapest. |
-| shadow.contact | /shadow contact | Contact shadows | S | 0–1 m step 0.05 · 0.35 | U | L | Contact | Short screen-space shadows where objects meet the ground. 0 is off. |
 | shadow.dynsize | cube_dyn_size | Moving-caster resolution | D | 64 / 128 / 256 / 512 · 256 | A | R | Point lights | |
 | shadow.dyncount | cube_dyn_count | Moving-caster pool | S | 0–64 · 16 | A | R | Point lights | 0 = no separate pool. |
 | shadow.sundyn | csm_dyn | Separate moving-caster sun layer | T | on | A | R | Sun | |
@@ -383,8 +383,6 @@ Renderer itself.
 | shadow.cap | /light shadowcap | Shadow taps per pixel | S | 0–2 · 2 | A | L | Point lights | 0 = every light. |
 | shadow.near | /light shadownear | Self-shadow skip | S | 0–4 · 1 | A | L | Point lights | Carried lights don't shadow their bearer inside this radius. |
 | shadow.csmbias | /draw csmbias | Sun depth bias | S | 0–0.5 · 0.06 | A | L | Sun | |
-| shadow.contactsteps | /shadow contactsteps | Contact shadow steps | S | 1–32 · 12 | A | L | Contact | |
-| shadow.contactfar | /shadow contactfar | Contact shadow range | S | 1–100 m · 20 | A | L | Contact | |
 | shadow.fade | /shadow fade | Shadow fade-in | S | 0–120 frames · 60 | A | L | Point lights | 0 = pop. |
 | shadow.fadeslots | /shadow fadeslots | Fade reserve | S | 0–16 · 4 | A | L | Point lights | |
 | shadow.mask | /shadow mask | Cut-out shadows | D | skip / solid / alpha-tested / auto · auto | A | L | Quality | Auto = alpha-tested where the texture is mostly holes, solid elsewhere. |

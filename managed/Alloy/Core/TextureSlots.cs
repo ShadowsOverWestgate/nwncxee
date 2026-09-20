@@ -91,10 +91,6 @@ internal static class TextureSlots
     /// the driver once and leaves the search off (uLocalPcss.x = 0) where it is short -- the declaration
     /// stays, so a strict-16 driver would fail the lit link, which the limits line names.</summary>
     internal const uint LocalShadowRaw = 16, LocalShadowDynRaw = 17;
-    /// <summary>#643: the irradiance-probe atlases the lit stage reads in place of the constant ambient, past
-    /// the budget on <see cref="LocalShadowRaw"/>'s argument, bound by <c>layout(binding)</c>. GiProbes asks
-    /// the driver's unit count once and stands down where it is short.</summary>
-    internal const uint GiIrr = 18, GiDepth = 19;
     /// <summary>#379 follow-up: the SAME prepass depth, on the same unit, read by the LIT stage -- so a
     /// fragment can ask whether the visibility at its pixel was computed from ITS OWN surface. Under #119 the
     /// prepass and the colour pass compute gl_Position character-for-character, so a prepassed fragment's
@@ -151,8 +147,6 @@ internal static class TextureSlots
           $"{LocalShadowRaw} uLocalShadowRaw");
         E(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowDynRaw}) uniform samplerCubeArray uLocalDynShadowRaw;"),
           $"{LocalShadowDynRaw} uLocalDynShadowRaw");
-        E(AlloyRenderer.OwnedLitFsHead.Contains($"layout(binding = {GiIrr}) uniform sampler2D uGiIrr;"), $"{GiIrr} uGiIrr");
-        E(AlloyRenderer.OwnedLitFsHead.Contains($"layout(binding = {GiDepth}) uniform sampler2D uGiDepth;"), $"{GiDepth} uGiDepth");
         E(AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunDynShadow;"),
           $"{SunShadowDyn} uSunDynShadow");
         for (int i = 0; i < MapSamplers.Length; i++)

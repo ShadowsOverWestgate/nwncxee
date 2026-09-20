@@ -328,12 +328,7 @@ internal static class ShaderContract
                   // and stores display-space values a mip filter then darkens. Both are silent.
                   && OwnedLitFsMain.Contains("textureLod(uProbe, reflect(-V, N)")
                   && OwnedLitFsMain.Contains("uCapture == 0 && uProbeMips > 0.0")
-                  && OwnedLitFsMain.Contains("if (uCapture != 0) { frag = uCapture == 2 && !gl_FrontFacing ? vec4(0.0) : vec4(lit, 1.0); return; }")
-                  // #643: the grid replaces the constant only where uGi.x > 0 -- 0 has to be the pre-#643 text.
-                  && OwnedLitFsMain.Contains("if (uGi.x > 0.0)") && OwnedLitFsMain.Contains("ambient = mix(ambient, gi, giCover);")
-                  // ...and the grid's shape lives twice: GiProbes lays the atlases out by these, the sampler reads by them.
-                  && GiLib.Contains($"CX_GI_N = ivec3({GiProbes.Nx}, {GiProbes.Ny}, {GiProbes.Nz});")
-                  && GiLib.Contains($"CX_GI_IRR = {GiProbes.IrrRes}, CX_GI_DEP = {GiProbes.DepRes};")
+                  && OwnedLitFsMain.Contains("if (uCapture != 0) { frag = vec4(lit, 1.0); return; }")
                   // ...and the weighting itself: the engine tints the light that is already there. Dropping
                   // the (ambient + diffuse) factor is what made every stone surface read as wet.
                   && OwnedLitFsMain.Contains("(ambient + diffuse) * env * F0 * uProbeGain")
@@ -377,7 +372,7 @@ internal static class ShaderContract
                   && LightmapBake.BakeFs.Contains("CxPointLight(uBakeLight, uBakeColor, vWorld, N, c, L, att, f2, ndlRaw, ndl)")
                   && LightmapBake.BakeFs.Contains("CxPointDiffuse(c, att, ndlRaw, ndl) * mix(uLocalFloor, 1.0, sh)")
                   && OwnedLitFsMain.Contains("bool baked = CxLightmap(uChart[vDraw], vChart, lmIrr, lmDir);")
-                  && OwnedLitFsMain.Contains("CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm)) * (1.0 - lmSub.x / max(lmSub.y, 1e-5))")
+                  && OwnedLitFsMain.Contains("lm *= 1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0);")
                   && OwnedLitFsHead.Contains(LightmapBake.ChartBufDecl) && OwnedLitVs.Contains("vChart = aChart;")
                   && LightmapBake.ChartBufDecl.Contains($"binding = {LightmapBake.BindChart})")
                   // #142: the near-field term, and the guard that makes an unset uHot mean "off". A stage

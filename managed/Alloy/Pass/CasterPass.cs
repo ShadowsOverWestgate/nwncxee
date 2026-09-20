@@ -214,6 +214,11 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// override degrades to static-only rather than to sampling page zero. Published fresh each frame the
     /// page bakes.</summary>
     internal static readonly float[] CubeDynPage = new float[MaxCubes];
+    /// <summary>Per slot: the sphere (xyz, r) round the dynamic movers in the light's reach -- the only thing
+    /// its page can shadow. The lit stage skips the hot path (eight taps a light) wherever the light-to-fragment
+    /// ray misses it: run 20 had 15 hot lights on every baked fragment of the plaza (opaque 7.3-8.2 ms).
+    /// r = the light's reach while it roams (the page then holds everything).</summary>
+    internal static readonly float[] CubeDynSphere = new float[MaxCubes * 4];
     /// <summary>Face size of the dynamic pool as rendered.</summary>
     internal static int CubeDynFaceSize => _cubeDynSize;
     /// <summary>Slot -&gt; claimed pool page (-1 none) and page -&gt; owning slot (-1 free). Sticky, like the
@@ -401,6 +406,10 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <summary>#305: is this live caster dynamic this frame? Staged into the gather source as the set
     /// flag its dispatch filter reads.</summary>
     private static readonly bool[] _liveDyn = new bool[MaxCasters];
+    /// <summary>Per live caster: a skinmesh, or any part rooted on a creature gob. Always a mover and never
+    /// under the <c>dynmin</c> floor: a still character is rigid parts a few decimetres across whose matrices
+    /// stop, and run 17 lost its shadow to both rules (dyn pool 0/32, 0 posed casters, 4 dangly movers).</summary>
+    private static readonly bool[] _liveCreature = new bool[MaxCasters];
     /// <summary>The entry's slot stopped casting since the collect (a tile fade, a skip): it stays in the list
     /// with a zero-count draw until it turns back on or the next collect drops it.</summary>
     private static readonly bool[] _liveOff = new bool[MaxCasters];
@@ -521,6 +530,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// only this says why -- a world whose matrices all jitter, a shared vertex pool marked dirty by one
     /// dangly mesh, or simply a scene full of creatures. Each is a different fix.</summary>
     private static long _mvMatrix, _mvDangly, _mvVertex, _mvBone, _mvAppear;
+    /// <summary>Matrix movers' sphere radii this period (sum, largest): what the still scene's movers ARE.</summary>
+    private static float _mvMatrixR, _mvMatrixRMax;
+    private static int _mvMatrixRMaxSlot = -1;
     private static long _degenSum;
     /// <summary>#302: casters REFUSED this frame because no record has been built for the current tenant of
     /// their slot. They cast nothing this frame and re-appear the next; the vanish sweep covers the views
@@ -1108,7 +1120,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // sit in the creature half; the visit set is the same question either way.
             _frameSeq = 12; _collectSeq = 3; _liveCount = 3; _liveCreatures = 3;
             for (int q = 0; q < 3; q++)
-            { _liveSlot[q] = 20 + q; _liveVao[q] = 0; _liveIdx[20 + q] = q; _liveIdxSeq[20 + q] = 3; _liveVisit[q] = 0; _liveDyn[q] = false; _liveOff[q] = false; AlloyRenderer.SelfCheckCastOk(20 + q, true); }
+            { _liveSlot[q] = 20 + q; _liveVao[q] = 0; _liveIdx[20 + q] = q; _liveIdxSeq[20 + q] = 3; _liveVisit[q] = 0; _liveDyn[q] = false; _liveOff[q] = false; _liveCreature[q] = true; AlloyRenderer.SelfCheckCastOk(20 + q, true); }
             BucketByVao();
             AlloyRenderer.ResetCasterTouched(); AlloyRenderer.NoteCasterTouched(21);
             _dPrevIdx[0] = 2; _dPrevCount = 1; _dynStamp[22] = 11;
@@ -1134,7 +1146,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             Shadows.RefreshAll.V = false; _frameSeq = 0; _collectSeq = 0; _liveCount = 0; _liveCreatures = 0; _collectedAt = -1;
             _dPrevCount = 0; _moverCount = _dMoverCount = _sMoverCount = 0; _mvMatrix = 0; _mvBone = 0; _liveSum = 0; _moverSum = 0; _degenSum = 0;
             _visitSum = visits;
-            for (int q = 0; q < 3; q++) { _dynStamp[20 + q] = 0; _liveStamp[20 + q] = 0; _liveDyn[q] = false; _liveVisit[q] = 0; _liveIdxSeq[20 + q] = 0; _liveOff[q] = false; AlloyRenderer.SelfCheckCastOk(20 + q, false); }
+            for (int q = 0; q < 3; q++) { _dynStamp[20 + q] = 0; _liveStamp[20 + q] = 0; _liveDyn[q] = false; _liveVisit[q] = 0; _liveIdxSeq[20 + q] = 0; _liveOff[q] = false; _liveCreature[q] = false; AlloyRenderer.SelfCheckCastOk(20 + q, false); }
             _ghostCount = 0;
             AlloyRenderer.ResetCasterTouched();
             if (!part || !all)
@@ -1494,6 +1506,12 @@ public sealed unsafe partial class CasterPass : IExtenderService
         if (done > 0) _cascadeStamp = _frameSeq;
     }
 
+    private static float SmoothStep(float a, float b, float x)
+    {
+        float t = Math.Clamp((x - a) / (b - a), 0f, 1f);
+        return t * t * (3f - 2f * t);
+    }
+
     /// <summary>The local-light cubes: six faces per light, budget spent nearest the shadow focus first.
     /// <para>#241: a slot's six faces are baked only when the predicate says its recorded depth no longer
     /// describes the world -- the light moved or changed reach, the slot changed hands, the caster set
@@ -1526,6 +1544,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
         int* order = stackalloc int[MaxCubes];
         float* dist = stackalloc float[MaxCubes];
         int have = 0;
+        // shadow.cubedist: a light past it claims no slot (no bake, no page, no fetch); its shadow fades over
+        // the last quarter of the way there so the budget's edge never pops
+        float cubeDist = Shadows.CubeDist.V, cubeDist2 = cubeDist > 0f ? cubeDist * cubeDist : float.PositiveInfinity;
         for (int i = 0; i < FrameInputs.LocalLightCount; i++)
         {
             // Rank by distance to the shadow FOCUS (the PC), not the camera. Historically the camera was
@@ -1536,7 +1557,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // is gone, but the focus is still the right anchor -- it is the PC, which is what the shadows
             // are for, and the sun fit takes the same point.
             float d = (FrameInputs.LocalLightPos[i] - focus).LengthSquared();
-            if (have == n && (n == 0 || d >= dist[n - 1])) continue;
+            if (d > cubeDist2 || (have == n && (n == 0 || d >= dist[n - 1]))) continue;
             int k = have < n ? have : n - 1;
             while (k > 0 && dist[k - 1] > d) { order[k] = order[k - 1]; dist[k] = dist[k - 1]; k--; }
             order[k] = i; dist[k] = d;
@@ -1673,14 +1694,30 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // #305: is a DYNAMIC caster inside this light's reach? That is what claims (and keeps) a pool
             // page -- and, when the pool is dry, what forces the combined fallback below.
             bool hasDyn = roam;
+            float bx0 = float.MaxValue, by0 = float.MaxValue, bz0 = float.MaxValue, bx1 = float.MinValue, by1 = float.MinValue, bz1 = float.MinValue;
             if (split && !off && rank < _dynRanks)
-                for (int q = 0; q < _dMoverCount && !hasDyn; q++)
+                for (int q = 0; q < _dMoverCount; q++)
                 {
                     int m = _dMoverIdx[q];
+                    // a still scene's 20 matrix movers a frame were flames and swaying lanterns (run 9): each
+                    // claimed a page under its light and turned that light HOT on every baked fragment in reach
+                    if (!_liveCreature[m] && _liveR[m] < Shadows.DynMin.V) continue;
                     float mx = _liveCx[m] - pos.X, my = _liveCy[m] - pos.Y, mz = _liveCz[m] - pos.Z;
                     float mr = far + _liveR[m];
-                    hasDyn = mx * mx + my * my + mz * mz <= mr * mr;
+                    if (mx * mx + my * my + mz * mz > mr * mr) continue;
+                    hasDyn = true;
+                    float r = _liveR[m];
+                    bx0 = MathF.Min(bx0, _liveCx[m] - r); by0 = MathF.Min(by0, _liveCy[m] - r); bz0 = MathF.Min(bz0, _liveCz[m] - r);
+                    bx1 = MathF.Max(bx1, _liveCx[m] + r); by1 = MathF.Max(by1, _liveCy[m] + r); bz1 = MathF.Max(bz1, _liveCz[m] + r);
                 }
+            if (roam || bx0 > bx1)
+            { CubeDynSphere[slot * 4] = pos.X; CubeDynSphere[slot * 4 + 1] = pos.Y; CubeDynSphere[slot * 4 + 2] = pos.Z; CubeDynSphere[slot * 4 + 3] = far; }
+            else
+            {
+                float hx = (bx1 - bx0) * 0.5f, hy = (by1 - by0) * 0.5f, hz = (bz1 - bz0) * 0.5f;
+                CubeDynSphere[slot * 4] = bx0 + hx; CubeDynSphere[slot * 4 + 1] = by0 + hy; CubeDynSphere[slot * 4 + 2] = bz0 + hz;
+                CubeDynSphere[slot * 4 + 3] = MathF.Sqrt(hx * hx + hy * hy + hz * hz);
+            }
             int page = _dynPageOf[slot];
             if (off && page >= 0)
             {   // hidden: the page returns to the pool now; re-entry reclaims one
@@ -1860,9 +1897,13 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // no bake) holds, so a newcomer starts dark and rises only once there is depth to show
         for (int j = 0; j < _cubeLights; j++)
         {
+            float distFade = 1f;
             if (pick[j] >= 0 && CubeLightId[j] != IntPtr.Zero)
+            {
                 _cubeFade[j] = MathF.Min(1f, _cubeFade[j] + (_fadeFrames > 0 ? 1f / _fadeFrames : 1f));
-            CubeFade[j] = _cubeFade[j];
+                if (cubeDist > 0f) distFade = 1f - SmoothStep(cubeDist * 0.75f, cubeDist, MathF.Sqrt(dist[pick[j]]));
+            }
+            CubeFade[j] = _cubeFade[j] * distFade;
         }
         CubeCount = done > 0 ? _cubeLights : 0;
         if (done > 0) _cubeStamp = _frameSeq;
@@ -1947,7 +1988,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                    $"mover {_bakeWhy[WhySun + 2]}; cube: blanket {_bakeWhy[WhyCube]}, key {_bakeWhy[WhyCube + 1]}, " +
                    $"mover {_bakeWhy[WhyCube + 2]}) " +
                    $"(predicate {(_rebake ? "on" : "OFF -- /shadow rebake 1")}, " +
-                   $"{(float)_moverSum / _frames:F1} movers/frame -- matrix {(float)_mvMatrix / _frames:F1}, " +
+                   $"{(float)_moverSum / _frames:F1} movers/frame -- matrix {(float)_mvMatrix / _frames:F1} (r mean {(_mvMatrix > 0 ? _mvMatrixR / _mvMatrix : 0f):F2} max {_mvMatrixRMax:F2} m = '{(_mvMatrixRMaxSlot >= 0 ? AlloyRenderer.SlotTexName(_mvMatrixRMaxSlot) : "")}', dynmin {Shadows.DynMin.V:F1}), " +
                    $"bones {(float)_mvBone / _frames:F1}, dangly {(float)_mvDangly / _frames:F1}, " +
                    $"vertex-dirty {(float)_mvVertex / _frames:F1}, appeared {(float)_mvAppear / _frames:F1}, " +
                    $"{(float)_ghostSum / _frames:F1} vanished, " +
@@ -2006,7 +2047,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         Array.Clear(_sunStaticL); _sunDynBakedViews = 0; _sunDynSkipped = 0; _cubeDynSkipped = 0;
         CasterGather.LayerDispatches = 0; CasterGather.LayerViews = 0;
         Array.Clear(_bakeWhy);
-        _mvMatrix = 0; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _noRecordSum = 0;
+        _mvMatrix = 0; _mvMatrixR = 0; _mvMatrixRMax = 0; _mvMatrixRMaxSlot = -1; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _noRecordSum = 0;
         _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0; _collects = 0;
         CasterGather.Views = 0; CasterGather.Batches = 0;
         CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0; CasterGather.SampledRx = 0; _rxEpochs = 0;
@@ -2453,6 +2494,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 _liveSlot[live] = slot;
                 _liveCx[live] = f.Cx; _liveCy[live] = f.Cy; _liveCz[live] = f.Cz;
                 _liveR[live] = f.R;
+                _liveCreature[live] = f.Skinned || AlloyRenderer.SlotCreature(slot);
                 _liveIdxCount[live] = idxCount;
                 _liveFirst[live] = first;
                 _liveBaseVert[live] = baseVert;
@@ -2469,7 +2511,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 // otherwise re-appear into views that never re-bake its shadow back.
                 // #336: present last frame = in a list that stood through last frame (see _listFrame).
                 bool appeared = _collectedAt != _frameSeq - 1 || _liveStamp[slot] < _lastCollectFrame;
-                Admit(live, slot, f.Skinned, appeared, f.RecMoved, f.Dangly, VertexDirty(f.Vao, f.Item));
+                Admit(live, slot, f.Skinned, appeared, f.RecMoved, f.Dangly, VertexDirty(f.Vao, f.Item), _liveCreature[live]);
                 _liveIdx[slot] = live; _liveIdxSeq[slot] = _collectSeq + 1;
                 _liveOff[live] = false; _liveGenOf[live] = AlloyRenderer.SlotEnrollGen(slot);
                 live++;
@@ -2541,6 +2583,13 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// about a caster that was not collected last frame).</para></summary>
     private static void Admit(int live, int slot, bool skinned, bool appeared, bool recMoved, bool dangly,
                               bool vDirty)
+        => Admit(live, slot, skinned, appeared, recMoved, dangly, vDirty, creature: skinned);
+    /// <summary><paramref name="creature"/>: in the dynamic set whether or not it moved this frame (its page
+    /// stays claimed, so a still character keeps its shadow on a baked floor), but a mover -- a face
+    /// re-bake -- only on real motion: run 18 admitted every creature part as a mover every frame and the
+    /// pool re-baked 20-40 faces a frame with nothing moving (shadows GPU 1.1-1.8 ms, 60 fps).</summary>
+    private static void Admit(int live, int slot, bool skinned, bool appeared, bool recMoved, bool dangly,
+                              bool vDirty, bool creature)
     {
         // A dangly's VDO is committed every frame the solve runs, so vertex-dirty says nothing about it;
         // its own measured verdict (dangly) does. Here, so both Collect and Refresh agree.
@@ -2548,7 +2597,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         bool mover = true;
         if (skinned) _mvBone++;
         else if (appeared) { _mvAppear++; FrameZones.Count(FrameZones.Ev.Appeared); }
-        else if (recMoved) _mvMatrix++;
+        else if (recMoved) { _mvMatrix++; _mvMatrixR += _liveR[live]; if (_liveR[live] > _mvMatrixRMax) { _mvMatrixRMax = _liveR[live]; _mvMatrixRMaxSlot = slot; } }
         else if (dangly) _mvDangly++;
         else if (vDirty) _mvVertex++;
         else mover = false;
@@ -2556,9 +2605,11 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // #336: _dynStamp is the frame the caster last MOVED; it stays dynamic for _dynHold frames after.
         bool moving = skinned || dangly || recMoved || vDirty;
         int last = _dynStamp[slot];
-        bool wasDyn = !appeared && _frameSeq - 1 - last <= _dynHold;
+        // the same rule as dyn below, or a creature part with a stale stamp reads as a set flip EVERY frame:
+        // run 19 re-baked 4.8 static cube slots a frame off those events (shadows GPU 7.9 ms, 47 fps)
+        bool wasDyn = !appeared && (creature || _frameSeq - 1 - last <= _dynHold);
         if (moving) { _dynStamp[slot] = _frameSeq; last = _frameSeq; }
-        bool dyn = _frameSeq - last <= _dynHold;
+        bool dyn = creature || _frameSeq - last <= _dynHold;
         _liveDyn[live] = dyn;
         if (dyn) _dMoverIdx[_dMoverCount++] = live;
         if (appeared || dyn != wasDyn) { _sMoverIdx[_sMoverCount++] = live; if (!appeared) FrameZones.Count(FrameZones.Ev.DynFlip); }
@@ -2646,7 +2697,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // kept enrollment may rewrite without a generation bump.
             AlloyRenderer.MoverSphere(slot, out _liveCx[i], out _liveCy[i], out _liveCz[i], out _liveR[i]);
             Admit(i, slot, i < _liveCreatures, appeared: back, AlloyRenderer.SlotRecMoved(slot),
-                  AlloyRenderer.SlotDangly(slot), VertexDirty(_liveVao[i], _liveItem[i]));
+                  AlloyRenderer.SlotDangly(slot), VertexDirty(_liveVao[i], _liveItem[i]), _liveCreature[i]);
         }
         Account();
         return true;

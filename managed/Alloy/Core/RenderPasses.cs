@@ -188,16 +188,6 @@ internal static class RenderPasses
             // previous area's cube into the new one.
             Revoke = EnvProbe.Revoke,
         }, log);
-        // #643: the irradiance probe grid. Revoke: the window describes an area that has gone.
-        r.Register(new PassLifecycle
-        {
-            Name = "gi",
-            Attach = GiProbes.Attach,
-            SelfCheck = GiProbes.SelfCheck,
-            ContextLost = GiProbes.Forget,
-            Revoke = GiProbes.Revoke,
-            Stats = GiProbes.Stats,
-        }, log);
         // #341: the fog's TARGET, which is a look decision and therefore a set of dials -- the ramp itself
         // stays the area author's. No frame slot: every stage uploads it through UploadFeatureTerms.
         r.Register(new PassLifecycle
@@ -244,11 +234,6 @@ internal static class RenderPasses
             Attach = OitPass.Init,
             ContextLost = OitPass.ContextLost,
             Stats = OitPass.Stats,
-        }, log);
-        r.Register(new PassLifecycle
-        {
-            Name = "contact",
-            SelfCheck = ContactShadow.SelfCheck,
         }, log);
         r.Register(new PassLifecycle
         {

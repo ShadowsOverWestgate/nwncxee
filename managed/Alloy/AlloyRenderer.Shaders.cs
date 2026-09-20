@@ -1040,19 +1040,10 @@ public sealed unsafe partial class AlloyRenderer
         uniform float uProbeGain;      // /light probegain, the ambient-specular dial
         uniform int uSceneEnv;         // does the AREA declare an env map (scene+0x1e8)? see below
         uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe; 2 = a GI probe capture (back faces write alpha 0)
-        // #643: the irradiance probe grid (GiProbes). uGi = (gain: 0 is the constant ambient, normal bias,
-        // xy spacing, z spacing); uGiCell0 = the window's min cell; a probe sits at cell * spacing.
-        layout(binding = 18) uniform sampler2D uGiIrr;
-        layout(binding = 19) uniform sampler2D uGiDepth;
-        uniform vec4 uGi;
-        uniform ivec3 uGiCell0;
         uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
         uniform int uSsaoOn;           // >0 when this BATCH is in the depth SsaoPass read; <0 names why not (viz 35)
         uniform int uSsaoHalf;         // post.halfres: 1 = uSsao is half the frame's extent, read bilaterally
         uniform sampler2D uSceneDepth; // the prepass depth SsaoPass read, to check the pixel is OURS (viz 37)
-        uniform mat4 uVP;              // contact shadows: the vertex stage's own view*proj, to re-project the march
-        uniform vec4 uContact;         // x = march length in world units (0 = off), y = steps, z/w = uProj[2].z / uProj[3].z
-        uniform float uContactFar;     // view distance the term has faded out by (fade over its last quarter)
         uniform float uAoDirect;       // /ao direct: how much of the occlusion the DIRECT terms take (0 = ADR 0021)
         uniform float uAoCutout;       // /ao cutout: how much of it a CUTOUT receiver takes (leaf cards over leaf cards)
         // #126: the engine's fAlphaDiscardValue, per batch -- 0.2 on the cutout and blended classes,
@@ -1132,40 +1123,6 @@ public sealed unsafe partial class AlloyRenderer
                 sum += v * w; wsum += w;
             }
             return wsum > 0.0 ? sum / wsum : near;
-        }
-
-        float CxContactDist(float depth) { return uContact.w / (depth * 2.0 - 1.0 + uContact.z); }
-        // Screen-space contact shadow: march from the fragment toward the sun through the depth copy. A
-        // surface nearer than the ray point by less than a step's worth is a blocker, weighted by how close
-        // to the fragment it was hit, so the term is a soft contact darkening rather than a hard edge -- no
-        // per-pixel jitter, because without TAA jitter reads as stipple. The start is pushed off the surface
-        // along the light by one step so the ray never re-samples the face it left.
-        // Nothing here reads the NORMAL: on a low-poly mesh every normal-dependent term (an offset along N,
-        // a facing gate, a grazing fade) jumps at a facet edge and cuts the shadow along it; the sun term's
-        // own ndl scaling is what fades a turned-away face. 1 = clear, 0 = blocked at the contact.
-        float CxContactShadow(vec3 worldPos)
-        {
-            if (uContact.x <= 0.0 || vDepth >= uContactFar) return 1.0;
-            int steps = int(uContact.y);
-            vec2 size = vec2(textureSize(uSceneDepth, 0).xy);
-            float stepLen = uContact.x / float(steps);
-            vec3 start = worldPos + uAreaDir * stepLen;
-            float shade = 0.0;
-            for (int i = 0; i < steps; i++)
-            {
-                vec4 clip = uVP * vec4(start + uAreaDir * (stepLen * float(i)), 1.0);
-                if (clip.w <= 0.0) break;
-                vec3 ndc = clip.xyz / clip.w;
-                if (any(greaterThan(abs(ndc.xy), vec2(1.0)))) break;
-                float rayDist = CxContactDist(ndc.z * 0.5 + 0.5);
-                float sceneDist = CxContactDist(texelFetch(uSceneDepth, ivec2((ndc.xy * 0.5 + 0.5) * size), 0).r);
-                float dz = rayDist - sceneDist;
-                // a blocker is anything from just in front of the ray to a march length in front of it: a foot
-                // or a barrel base is far thicker than a step, and a thin window steps straight over them
-                float thick = uContact.x + 0.002 * rayDist;
-                if (dz > 0.0 && dz < thick) shade = max(shade, 1.0 - float(i) / float(steps));
-            }
-            return 1.0 - shade * (1.0 - smoothstep(uContactFar * 0.75, uContactFar, vDepth));
         }
         """;
     /// <summary>#122: material synthesis -- what a part gets for every stock .mtr parameter it does NOT
@@ -1423,16 +1380,6 @@ public sealed unsafe partial class AlloyRenderer
             // the wrapped value, not the raw one -- a fragment the wrap has just lit must still be able to
             // be in shadow, or the band the wrap opens up glows through every caster
             float sunVis = CxSunShadow(vWorld, N, sunNdl, sunRaw);
-            if (d.emi.w > 0.5) sunVis *= CxContactShadow(vWorld);   // receivers are tileset parts only (emi.w)
-            // 39 = the contact term: grey = the march result on a receiver (white clear, black blocked);
-            //      red = not a receiver (emi.w 0); blue = the march is off (uContact.x 0: knob, or no depth copy)
-            if (uViz == 39)
-            {
-                frag = uContact.x <= 0.0 ? vec4(0.0, 0.0, 1.0, 1.0)
-                     : d.emi.w <= 0.5 ? vec4(1.0, 0.0, 0.0, 1.0)
-                     : vec4(vec3(CxContactShadow(vWorld)), 1.0);
-                return;
-            }
             // 3 = sun visibility alone: white lit, black shadowed. A frame that looks unshadowed reads here
             //     as "the cascades are empty" or "nothing selected a cascade", which the composite cannot say.
             if (uViz == 3) { frag = vec4(vec3(sunVis), 1.0); return; }
@@ -1500,66 +1447,6 @@ public sealed unsafe partial class AlloyRenderer
             float spec = pbr.x, rough = pbr.y, metal = pbr.z;
         """;
 
-    /// <summary>#643: the probe-grid read. Trilinear over the eight lattice probes around the (normal-biased)
-    /// point, each weighted by a smooth back-face term and the Chebyshev visibility test against its
-    /// depth map, and by its own validity (alpha 0 = never captured, dropped by a shift, or inside a wall).
-    /// Returns irradiance / pi; <c>cover</c> is how much of the trilinear weight landed on valid probes,
-    /// which is what blends the result over the constant ambient at the grid's edge.</summary>
-    internal const string GiLib = """
-        const ivec3 CX_GI_N = ivec3(16, 16, 4);
-        const int CX_GI_IRR = 8, CX_GI_DEP = 16;
-        vec2 CxOctEncode(vec3 d)
-        {
-            d /= abs(d.x) + abs(d.y) + abs(d.z);
-            vec2 p = d.z >= 0.0 ? d.xy : (1.0 - abs(d.yx)) * vec2(d.x >= 0.0 ? 1.0 : -1.0, d.y >= 0.0 ? 1.0 : -1.0);
-            return p * 0.5 + 0.5;
-        }
-        vec2 CxGiUv(ivec3 slot, vec2 oct, int res)
-        {
-            vec2 tile = vec2(slot.x, slot.y + CX_GI_N.y * slot.z);
-            vec2 px = tile * float(res + 2) + 1.0 + oct * float(res);
-            return px / vec2(CX_GI_N.x * (res + 2), CX_GI_N.y * CX_GI_N.z * (res + 2));
-        }
-        vec3 CxGiSample(vec3 P, vec3 N, out float cover)
-        {
-            vec3 sp = vec3(uGi.z, uGi.z, uGi.w);
-            vec3 Pb = P + N * uGi.y;
-            vec3 g = Pb / sp;
-            ivec3 base = ivec3(floor(g));
-            vec3 a = g - vec3(base);
-            vec3 sum = vec3(0.0); float wsum = 0.0; cover = 0.0;
-            for (int i = 0; i < 8; i++)
-            {
-                ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
-                ivec3 cell = base + o;
-                ivec3 rel = cell - uGiCell0;
-                if (any(lessThan(rel, ivec3(0))) || any(greaterThanEqual(rel, CX_GI_N))) continue;
-                ivec3 slot = cell - CX_GI_N * ivec3(floor(vec3(cell) / vec3(CX_GI_N)));   // % is undefined on a negative int in GLSL
-                vec3 w3 = mix(1.0 - a, a, vec3(o));
-                float tri = w3.x * w3.y * w3.z;
-                vec4 irr = texture(uGiIrr, CxGiUv(slot, CxOctEncode(N), CX_GI_IRR));
-                cover += tri * irr.a;
-                vec3 toProbe = vec3(cell) * sp - Pb;
-                float dist = length(toProbe);
-                vec3 dir = toProbe / max(dist, 1e-4);
-                float wn = (dot(dir, N) + 1.0) * 0.5;
-                float w = tri * irr.a * (wn * wn + 0.2);
-                vec2 m = texture(uGiDepth, CxGiUv(slot, CxOctEncode(-dir), CX_GI_DEP)).rg;
-                if (dist > m.x)
-                {
-                    float var = max(m.y - m.x * m.x, 1e-4), dd = dist - m.x;
-                    float vis = var / (var + dd * dd);
-                    w *= max(vis * vis * vis, 0.0);
-                }
-                sum += w * irr.rgb; wsum += w;
-            }
-            // every probe occluded (a crevice): no answer, so the caller keeps the constant -- a hole is
-            // what this grid exists to remove, not to deepen
-            if (wsum <= 1e-5) { cover = 0.0; return vec3(0.0); }
-            return sum / wsum;
-        }
-        """;
-
     internal const string OwnedLitFsMainLight = """
             vec3 base = albedo * matDiffuse;
             vec3 specColor = SpecularColor;
@@ -1587,7 +1474,8 @@ public sealed unsafe partial class AlloyRenderer
             vec3 lm = vec3(0.0);
             if (baked)
             {
-                lm = CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm)) * (1.0 - lmSub.x / max(lmSub.y, 1e-5));
+                lm = CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm));
+                lm *= 1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0);
                 point += lm;
                 pointSpec += lm * CxSpecLobe(N, V, lmDir, rough, spec);
             }
@@ -1616,21 +1504,6 @@ public sealed unsafe partial class AlloyRenderer
             // the 0.15 ambient floor and the sun-facing wrap are inc_lighting.shd:679 verbatim; the height
             // map's occlusion scales the AMBIENT, which is the term it is actually occluding
             vec3 ambient = uAreaAmbient * matAmbient * mix(0.15, 1.0, sunRaw) * occl;
-            // #643: the probe grid stands in for the constant where it covers the fragment. The sun-facing
-            // wrap is the engine's stand-in for directional ambient, which the probes carry for real, so it
-            // is not applied to them; the material ambient and the occlusion factor still are.
-            if (uGi.x > 0.0)
-            {
-                float giCover;
-                // a capture feeds the next capture (multi-bounce), so its gain is 1: albedo < 1 keeps that
-                // series convergent where a gain above 1 would run it away
-                vec3 gi = CxGiSample(vWorld, N, giCover) * (uCapture == 2 ? 1.0 : uGi.x) * matAmbient * occl;
-                giCover = clamp(giCover, 0.0, 1.0);
-                // 41 = the grid's own answer, no fallback (black = no coverage); 42 = the coverage as grey
-                if (uViz == 41) { frag = vec4(gi, 1.0); return; }
-                if (uViz == 42) { frag = vec4(vec3(giCover), 1.0); return; }
-                ambient = mix(ambient, gi, giCover);
-            }
             // 34 = the ONLY term occlusion can move inside `total` (the (1-spec) share of the ambient).
             //      Black at both /ao on 0 and /ao on 1 means AO has nothing to scale here, however bright
             //      viz 8 reads -- which no other view in the ladder can say.
@@ -1687,9 +1560,7 @@ public sealed unsafe partial class AlloyRenderer
             // the middle of it, which moves fog into linear -- a deliberate look change on foggy frames.
             // Both terms are camera-dependent, so the probe capture takes neither: a dissolve baked into the
             // cube is a permanent hole in every reflection the area ever shows.
-            // #643: a GI probe capture draws with culling off and marks back faces in alpha, so a probe that
-            // sits inside geometry can tell (GiProbes.ConvolveFs) and stand itself down.
-            if (uCapture != 0) { frag = uCapture == 2 && !gl_FrontFacing ? vec4(0.0) : vec4(lit, 1.0); return; }
+            if (uCapture != 0) { frag = vec4(lit, 1.0); return; }
             // #126: rot.w is the per-draw alpha multiplier -- the part's own alpha times the tile fade
             // factor. It reaches the framebuffer only where the class blends; the opaque set draws with
             // GL_BLEND off, so its alpha channel is written and ignored, exactly as before.

@@ -70,3 +70,4 @@ CNWCArea::AddPlaceableObjectStatic	1407d95a0
 CExoArrayList<unsigned int>::Add	14008ae10
 CNWCObject::SetPosition	140766760
 CNWCAnimBase::SetPosition	1409680a0
+CNWCArea::SetTile	1407e6040

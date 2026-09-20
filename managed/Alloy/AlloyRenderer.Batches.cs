@@ -346,6 +346,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <see cref="EngineLayout.GobKindCreature"/> (a hat or a held weapon is its own gob hanging off the body's).
     /// NOT <see cref="RunGob"/>: that returns the fade-owner NODE (gob+0x68) as a composite key, and a node
     /// read as a gob has no type -- which is how every character first painted as an object.</summary>
+    /// <summary>The caster pass's read of <see cref="CreaturePart"/>: a player character is RIGID parts under
+    /// bone-driven nodes (pfh0_legl004...), not a skinmesh, so nothing else names it a creature.</summary>
+    internal static bool SlotCreature(int i) => (uint)i < (uint)_oGob.Length && CreaturePart(i);
     private static bool CreaturePart(int i)
     {
         IntPtr g = _oGob[i];
@@ -473,13 +476,33 @@ public sealed unsafe partial class AlloyRenderer
     /// up to the model the frame after a mover stops (one extra re-send, so a closed door does not report
     /// motion forever). <paramref name="fresh"/> seeds prev = model, so a new tenant never carries the last
     /// tenant's matrix as its history.</para></summary>
+    /// <summary>Did a model matrix move, to a tenth of a millimetre? The engine rebuilds a placed gob's matrix
+    /// from its quaternion, and bit-exact inequality read 60-156 still barrels a frame as movers in a static
+    /// area (run 13): each a record re-send, a moving-caster page under its light, and a hot light on every
+    /// baked fragment in reach. ponytail: a drift slower than the step accumulates against the record and
+    /// is written once it crosses it, so nothing is lost, only sent later.</summary>
+    private const float MoveStep = 1e-4f;
+    /// <summary>The caster's step: 1 cm of translation, or 0.01 of a rotation element (0.6 degrees). ponytail: the
+    /// compare is against the record, which follows at the finer step, so a creep under 1 cm a frame never
+    /// re-bakes its shadow; a last-baked matrix per caster is the upgrade if a pushed crate ever needs it.</summary>
+    private const float CasterStep = 1e-2f;
+    private static bool Moved(in Matrix4x4 a, in Matrix4x4 b, float step)
+    {
+        fixed (Matrix4x4* pa = &a, pb = &b)
+        {
+            float* x = (float*)pa, y = (float*)pb;
+            for (int k = 0; k < 16; k++) if (MathF.Abs(x[k] - y[k]) > step) return true;
+        }
+        return false;
+    }
+
     private static bool WritePerFrame(float* r, in RecordFrameState f, bool roll = true, bool fresh = false)
     {
         bool m = false;
         if (f.HasModel)
         {
             Matrix4x4* model = (Matrix4x4*)r, prev = (Matrix4x4*)(r + PrevFloat);
-            if (*model != f.Model)
+            if (Moved(in *model, in f.Model, MoveStep))
             {
                 if (roll) *prev = *model;
                 *model = f.Model; m = true;
@@ -1285,7 +1308,11 @@ public sealed unsafe partial class AlloyRenderer
                 // So the model is compared HERE, before the write consumes the difference; a change of
                 // tenant is the other true mover (the new part APPEARED in the views it stands in).
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
-                bool casterMoved = pf.HasModel && *(Matrix4x4*)r != pf.Model;
+                // the record moves at a tenth of a millimetre (it is what the shader draws); a CASTER moves at a
+                // centimetre -- a 256 px cube over a 20 m light has 8 cm texels, and the harbour barrels bobbing
+                // a few millimetres a frame held 13 moving-caster pages and 40 cube faces a frame with the camera
+                // still (run 15). Creatures are bone movers and never pass through here.
+                bool casterMoved = pf.HasModel && Moved(in *(Matrix4x4*)r, in pf.Model, CasterStep);
                 // #392: prev rolls once per FRAME -- a second build of this record in the same frame (a
                 // reflection subframe) must not catch prev up to the model and erase the mover's vectors.
                 rec |= WritePerFrame(r, in pf, roll: _recFrame[i] != _frameSeq, fresh: stale || newTenant);

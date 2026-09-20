@@ -19,6 +19,14 @@ internal static unsafe class GlProgram
         return Link(log, what, v, f);
     }
 
+    /// <summary>Link a vertex+geometry+fragment program. Returns 0 on failure (already logged).</summary>
+    internal static uint Graphics(string vs, string gs, string fs, ExtenderLog? log, string what)
+    {
+        uint v = Compile(Gl.VERTEX_SHADER, vs, log, what), g = Compile(Gl.GEOMETRY_SHADER, gs, log, what), f = Compile(Gl.FRAGMENT_SHADER, fs, log, what);
+        if (v == 0 || g == 0 || f == 0) return 0;
+        return Link(log, what, v, g, f);
+    }
+
     /// <summary>Link a vertex+fragment program whose stages a content author may override as
     /// <c>&lt;resref&gt;.shd</c> (#92). An override that fails to compile or link rebuilds from the embedded
     /// default, so a malformed .shd costs a log line, not the frame. Returns 0 on failure.

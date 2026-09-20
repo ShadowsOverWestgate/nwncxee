@@ -495,6 +495,8 @@ internal static unsafe class AlloyLights
     internal static float ShadowSource => _srcRadius;
     /// <summary>#336: cube-shadow taps a fragment may pay, in cluster order; 0 = every shadowing light.</summary>
     internal static float ShadowCap => Shadows.Cap.V;
+    /// <summary><c>shadow.cubedist</c>: the view depth past which a fragment reads no cube (uLocalPcss.w; 0 = none).</summary>
+    internal static float ShadowDist => Shadows.CubeDist.V;
     /// <summary>EXPERIMENT: the fraction of a light's adjusted radius the cluster build bins it by. The
     /// engine's curve is under 1/255 of its peak past ~0.8R, so lights binned by the full R sit in froxels
     /// they cannot visibly light; every one of them still costs the full per-light body per fragment.
@@ -640,6 +642,7 @@ internal static unsafe class AlloyLights
         layout(binding = 16) uniform samplerCubeArray uLocalShadowRaw;
         layout(binding = 17) uniform samplerCubeArray uLocalDynShadowRaw;
         uniform float uLocalDynPage[64];
+        uniform vec4 uLocalDynSphere[64];   // the movers a page holds (xyz, r): a hot light owes nothing outside their shadow cone
         uniform float uLocalFade[64];   // per-slot shadow strength: a slot fading in after its bake or out after its light left the budget
 
         // Shadow-accuracy pass: every offset/bias below is HALF its #308 value (the stacked push reached 8
@@ -1108,6 +1111,10 @@ internal static unsafe class AlloyLights
             // EXPERIMENT: the candidates used to be five local arrays indexed by a runtime variable in a
             // while loop -- what a shader compiler spills to scratch memory. Two named slots, A the strongest.
             int capN = int(min(uLocalSoft.w, float(CX_CAP_MAX)));
+            // shadow.cubedist: a far fragment pays no cube fetch at all (the old pipeline's distance cut), the
+            // last quarter fades so the cut has no edge; uLocalPcss.w = 0 is every fragment
+            float dfade = uLocalPcss.w > 0.0 ? 1.0 - smoothstep(uLocalPcss.w * 0.75, uLocalPcss.w, viewDepth) : 1.0;
+            bool farSh = dfade <= 0.0;
             float aF2 = 1e30, bF2 = 1e30; int aSlot = -1, bSlot = -1; float aNdl = 0.0, bNdl = 0.0;
             vec3 aLit = vec3(0.0), aSpc = vec3(0.0), bLit = vec3(0.0), bSpc = vec3(0.0);
             for (uint k = 0u; k < n; k++)
@@ -1123,7 +1130,20 @@ internal static unsafe class AlloyLights
                 // a static light on a baked receiver is in the pages already: a cold one costs nothing here,
                 // a HOT one (a mover under it) owes its mover's shadow and nothing else
                 bool hot = isStatic && baked > 0.5;
-                if (hot && uLmMovers == 0) continue;
+                // and only while a mover stands under it (a dyn page this frame): a static light with no
+                // mover is in the pages and costs this fragment nothing -- with the check on the mover knob
+                // alone, 74 baked-away lights of 92 still ran the point-light body per fragment (run 8)
+                if (hot && (farSh || uLmMovers == 0 || slot < 0 || uLocalDynPage[slot] < 0.5)) continue;
+                if (hot)
+                {   // the light-to-fragment ray misses the movers' sphere: nothing on the page can shadow here,
+                    // and the eight taps below are the opaque pass on a plaza (run 20: 15 hot lights, 7-8 ms)
+                    vec4 ms = uLocalDynSphere[slot];
+                    vec3 lp = uLocalLight[slot].xyz;
+                    vec3 dp = worldPos - lp; float dl = max(length(dp), 1e-4);
+                    vec3 dc = ms.xyz - lp; float t = dot(dc, dp) / dl;
+                    float rr = ms.w + 0.3;
+                    if (t > dl + rr || dot(dc, dc) - t * t > rr * rr) continue;
+                }
                 vec3 c, L; float att, f2, ndlRaw, ndl;
                 if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;
                 // slot -2 = ambient class: vanilla adds c*att to the ambient term, no N.L, no shadow
@@ -1131,12 +1151,13 @@ internal static unsafe class AlloyLights
                 if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
                 if (hot)
                 {
-                    // lmSub.x = occluded, lmSub.y = total (luminance of the unshadowed diffuse) over EVERY
-                    // static light reaching here, cube or not: the caller scales the bake by 1 - x/y, so a
-                    // mover's shadow from one light darkens only that light's share, and the others still lit
+                    // lmSub.x = the luminance a mover occludes, over the static lights with a mover under
+                    // them; the caller takes it off the baked term's own luminance, so a mover's shadow from
+                    // one light darkens only that light's share. ponytail: where the static bake already
+                    // shadowed that light at this texel the subtraction overshoots (clamped at the caller);
+                    // the exact total needs every static light evaluated live, which was the opaque pass.
                     float lum = dot(CxPointDiffuse(c, att, ndlRaw, ndl), vec3(0.2126, 0.7152, 0.0722));
-                    lmSub.y += lum;
-                    if (slot >= 0 && uLocalDynPage[slot] > 0.5) lmSub.x += lum * (1.0 - CxLocalDynShadow(slot, worldPos, N, ndlRaw));
+                    lmSub.x += lum * dfade * (1.0 - CxLocalDynShadow(slot, worldPos, N, ndlRaw));
                     continue;
                 }
                 vec3 dif = c * (att * ndl);
@@ -1144,10 +1165,10 @@ internal static unsafe class AlloyLights
                 // ponytail: a light behind the surface (ndl <= 0, continued above) skips its subsurface leak
                 // rather than being fetched unshadowed; stock has no shadow to lose there, Alloy does
                 vec3 unsh = CxPointDiffuse(c, att, ndlRaw, ndl);
-                if (slot < 0) { acc += unsh; spec += spc; continue; }
+                if (slot < 0 || farSh) { acc += unsh; spec += spc; continue; }
                 if (capN <= 0)
                 {
-                    float sh = CxLocalShadow(slot, worldPos, N, ndlRaw, onMover, viewDepth);
+                    float sh = mix(1.0, CxLocalShadow(slot, worldPos, N, ndlRaw, onMover, viewDepth), dfade);
                     acc += unsh * mix(uLocalFloor, 1.0, sh); spec += spc * sh;   // floor on diffuse only: a floored highlight is a wrong highlight
                     continue;
                 }
@@ -1167,12 +1188,12 @@ internal static unsafe class AlloyLights
             }
             if (aSlot >= 0)
             {
-                float sh = CxLocalShadow(aSlot, worldPos, N, aNdl, onMover, viewDepth);
+                float sh = mix(1.0, CxLocalShadow(aSlot, worldPos, N, aNdl, onMover, viewDepth), dfade);
                 acc += aLit * mix(uLocalFloor, 1.0, sh); spec += aSpc * sh;
             }
             if (bSlot >= 0)
             {
-                float sh = CxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth);
+                float sh = mix(1.0, CxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth), dfade);
                 acc += bLit * mix(uLocalFloor, 1.0, sh); spec += bSpc * sh;
             }
             return acc;

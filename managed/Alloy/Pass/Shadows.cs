@@ -5,7 +5,7 @@ namespace CX.Alloy;
 /// <summary>The <c>shadow</c> group (spec §4.3 Shadows), and the storage the shadow path reads:
 /// <see cref="SceneInputs"/> (the feed, the focus, the diagnostics), <see cref="CasterPass"/> (the bake and
 /// its cadence), <see cref="AlloyLights"/> (the receiver's softness terms, respelled from <c>/light</c>),
-/// <see cref="AlloyRenderer"/> (the sun bias, from <c>/draw</c>), <see cref="ContactShadow"/> and
+/// <see cref="AlloyRenderer"/> (the sun bias, from <c>/draw</c>) and
 /// <see cref="ShadowService"/> (the stencil suppression mode). <see cref="Enabled"/> collapses the
 /// <c>shadows</c> key and the feed's own flag; the allocation-sizing rows are Restart and read through
 /// <c>Boot</c>. Touched from <see cref="RenderCommands.Register"/> so it declares on the main thread.
@@ -17,8 +17,8 @@ internal static class Shadows
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled, SunDyn, Casters, Gather, Receiver, Rebake, Split, Layered, RefreshAll,
                                         DynEvents, ItemDirty, FlipCollect, MaskH, Diag, LightDiag, TorchDiag, Trace;
-    internal static readonly Knob<float> Dist, Soft, Floor, Contact, DiscPx, Near, CsmBias, ContactFar, MaskHoles, MaskGraded, FocusDist;
-    internal static readonly Knob<int> Cascades, Size, Cubes, CubeSize, DynSize, DynCount, Cap, ContactSteps, Fade, FadeSlots,
+    internal static readonly Knob<float> Dist, Soft, Floor, DiscPx, Near, CsmBias, MaskHoles, MaskGraded, FocusDist, DynMin, CubeDist;
+    internal static readonly Knob<int> Cascades, Size, Cubes, CubeSize, DynSize, DynCount, Cap, Fade, FadeSlots,
                                        Mask, MaskDither, StaticCap, DynHold, DynFull, SunFull, SunLatch, DynRanks,
                                        Mode, Stage, LightCull, Taps;
     internal static readonly KnobButton Movers;
@@ -44,17 +44,18 @@ internal static class Shadows
                          help: "How many nearby lights cast shadows at once. Lower on a small card.");
         CubeSize = G.Dropdown("cubesize", "Point-light shadow resolution", new[] { 128, 256, 512, 1024, 2048 }, 512, effect: Effect.Restart,
                               help: "Per-face size of each light's shadow cube.");
+        CubeDist = G.Slider("cubedist", "Point-light shadow distance", 0f, 200f, 5f, 40f, "m",
+                            help: "A light farther than this from you casts no shadow, and no fragment farther than this from the camera "
+                                + "reads one; shadows fade out over the last quarter. 0 = every light in the budget, at any distance.");
         Soft = G.Slider("soft", "Shadow softness", 0f, 16f, 0.25f, 4f,
                         help: "Widest blur of point-light shadows; the blur narrows toward the caster's contact. 0 is hard-edged and cheapest.");
         Floor = G.Slider("floor", "Shadow floor", 0f, 1f, 0.05f, 0.35f,
                          help: "How much of a point light still reaches its own shadow, tinted by the light. 0 = black cutouts.");
-        G.Section("Contact");
-        Contact = G.Slider("contact", "Contact shadows", 0f, 1f, 0.05f, 0.35f, "m",
-                           help: "Short screen-space shadows where objects meet the ground. 0 is off.");
-        G.Section("Point lights");
         DynSize = G.Dropdown("dynsize", "Moving-caster resolution", new[] { 64, 128, 256, 512 }, 256, tier: Tier.Advanced, effect: Effect.Restart);
         DynCount = G.Slider("dyncount", "Moving-caster pool", 0, CasterPass.MaxCubes, 1, 32, tier: Tier.Advanced, effect: Effect.Restart,
                             help: "0 = no separate pool.");
+        DynMin = G.Slider("dynmin", "Smallest moving caster", 0f, 3f, 0.1f, 0.5f, "m", Tier.Advanced,
+                          help: "A moving part smaller than this (a candle flame, a swinging lantern) claims no moving-caster page; creatures always do.");
         G.Section("Sun");
         SunDyn = G.Toggle("sundyn", "Separate moving-caster sun layer", true, Tier.Advanced, Effect.Restart);
         G.Section("Point lights");
@@ -67,10 +68,6 @@ internal static class Shadows
                         help: "Carried lights don't shadow their bearer inside this radius.");
         G.Section("Sun");
         CsmBias = G.Slider("csmbias", "Sun depth bias", 0f, 0.5f, 0.01f, 0.03f, tier: Tier.Advanced);
-        G.Section("Contact");
-        ContactSteps = G.Slider("contactsteps", "Contact shadow steps", 1, 32, 1, 12, tier: Tier.Advanced);
-        ContactFar = G.Slider("contactfar", "Contact shadow range", 1f, 100f, 1f, 20f, "m", Tier.Advanced);
-        G.Section("Point lights");
         Fade = G.Slider("fade", "Shadow fade-in", 0, 120, 1, 60, "frames", Tier.Advanced, help: "0 = pop.");
         FadeSlots = G.Slider("fadeslots", "Fade reserve", 0, 16, 1, 4, tier: Tier.Advanced);
         G.Section("Quality");

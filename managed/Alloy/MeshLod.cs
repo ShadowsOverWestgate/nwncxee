@@ -83,6 +83,8 @@ internal static unsafe class MeshLod
         internal nint Off1, Off2;
         internal int Cnt1, Cnt2;
         internal bool Done;
+        /// <summary>The range's signature at offer time: a refilled pool item under the same key gets new runs.</summary>
+        internal ulong Sig;
     }
 
     /// <summary>Every mesh on file. Touched ONLY from the render thread -- the enrollment walk that offers a
@@ -98,6 +100,7 @@ internal static unsafe class MeshLod
     private sealed class Job
     {
         internal long Key;
+        internal ulong Sig;
         internal int IdxCount, VertCount, Out1N, Out2N;
         internal ushort[] Idx = Array.Empty<ushort>();
         internal float[] Pos = Array.Empty<float>();
@@ -144,11 +147,16 @@ internal static unsafe class MeshLod
 
     /// <summary>Should the enrollment walk copy this range out for the worker? Asked before anything is read,
     /// so a mesh already on file, already queued, or past a budget costs one dictionary probe.</summary>
-    internal static bool Wanted(int slot, int item, int idxCount)
+    internal static bool Wanted(int slot, int item, int idxCount, ulong sig)
     {
         if (_worker == null || _arenaFull || idxCount < MinTris * 3
             || idxCount > MeshSimplify.MaxCorners || !Lod.G.Master!.V) return false;
-        if (_table.Count >= MaxEntries || _table.ContainsKey(KeyOf(slot, item))) return false;
+        if (_table.TryGetValue(KeyOf(slot, item), out Entry have))
+        {
+            if (have.Sig == sig) return false;
+            _table.Remove(KeyOf(slot, item));
+        }
+        if (_table.Count >= MaxEntries) return false;
         lock (_gate) return _in.Count < MaxPending;
     }
 
@@ -156,7 +164,7 @@ internal static unsafe class MeshLod
     /// queue it. Called from the enrollment walk, on whatever thread that runs -- it reads engine memory and
     /// allocates, and does neither on a frame path.</summary>
     internal static void Offer(int slot, int item, byte* elemHost, long first, int count,
-                               byte* vertHost, in VertexStream pos, int baseVertex)
+                               byte* vertHost, in VertexStream pos, int baseVertex, ulong sig)
     {
         if (elemHost == null || vertHost == null || count < 3 || count % 3 != 0) return;
         if (pos.Type != Gl.FLOAT || pos.Size != 3) return;
@@ -167,7 +175,7 @@ internal static unsafe class MeshLod
         if (verts <= 0 || verts > MeshSimplify.MaxVerts) return;
 
         Job j = Rent();
-        j.Key = KeyOf(slot, item);
+        j.Key = KeyOf(slot, item); j.Sig = sig;
         j.IdxCount = count; j.VertCount = verts; j.Out1N = 0; j.Out2N = 0;
         Grow(ref j.Idx, count); Grow(ref j.Out1, count); Grow(ref j.Out2, count);
         if (j.Pos.Length < verts * 3) j.Pos = new float[verts * 3];
@@ -178,7 +186,7 @@ internal static unsafe class MeshLod
             float* p = (float*)(vertHost + pos.Off + (long)(baseVertex + v) * pos.Stride);
             j.Pos[v * 3] = p[0]; j.Pos[v * 3 + 1] = p[1]; j.Pos[v * 3 + 2] = p[2];
         }
-        _table[j.Key] = default;   // claimed: a later enrollment must not offer the same range again
+        _table[j.Key] = new Entry { Sig = sig };   // claimed: a later enrollment must not offer the same range again
         _offered++;
         lock (_gate) { _in.Enqueue(j); Monitor.Pulse(_gate); }
     }
@@ -240,8 +248,8 @@ internal static unsafe class MeshLod
                     _log?.Info($"MeshLod: mesh {j.IdxCount / 3} tris -> {e.Cnt1 / 3} / {e.Cnt2 / 3} at lod 1 / 2");
             }
             else _declined++;
-            // Revoke may have wiped the table while this job was in flight; its arena bytes went with it.
-            if (_table.ContainsKey(j.Key)) _table[j.Key] = e;
+            // Revoke may have wiped the table while this job was in flight, or a refilled item re-claimed the key
+            if (_table.TryGetValue(j.Key, out Entry claim) && claim.Sig == j.Sig) { e.Sig = j.Sig; _table[j.Key] = e; }
             lock (_gate) _free.Push(j);
         }
         if (_used == dirtyFrom && _uploaded == _used) return;

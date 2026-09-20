@@ -329,9 +329,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, SsaoHalf, AoDirect, AoCutout,
                    SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubePcss, CubeDynTex, CubeDynPage, CubeFade, CubeFloor,
-                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach, Contact, ContactFar,
-                   Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm, Gi, GiCell,
-                   LmPages, LmMovers;   // #674
+                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach,
+                   Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm,
+                   LmPages, LmMovers, CubeDynSphere;   // #674
         public FeatLoc Feat;
     }
     private static LitLoc _lit, _litH, _litL;
@@ -384,7 +384,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 44;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42 = the #643 probe grid and its coverage; 43/44 = the #674 lightmap term and its texel grid
+    internal const int LightVizMax = 44;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42 = unused since the probe grid left; 43/44 = the #674 lightmap term and its texel grid
     private static int _lightViz => Renderer.Viz.V;
     /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -405,9 +405,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// stopped needing the flag at all.</summary>
     private static bool _capturing;
     internal static bool Capturing => _capturing;
-    /// <summary>#643: the capture in flight is a GI probe's -- culling off for every batch (so the lit stage
-    /// can mark back faces) and <c>uCapture</c> 2.</summary>
-    private static bool _giCapturing;
     /// <summary>GL_BLEND as the pass last set it, so <see cref="IssueBatches"/>' per-batch toggle starts from
     /// the truth instead of assuming.</summary>
     private static bool _blendOn;
@@ -567,7 +564,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
     /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Exposure, Post, Cull, HiZ, Beams, WaterCopy, Weather, Gi, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Exposure, Post, Cull, HiZ, Beams, WaterCopy, Weather, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -1727,7 +1724,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $" / cull {GpuMs(GpuTerm.Cull):F2} / hiz {GpuMs(GpuTerm.HiZ):F2} / beams {GpuMs(GpuTerm.Beams):F2}" +
                          $" / water copy {GpuMs(GpuTerm.WaterCopy):F2}" +
                          (_qTerm[(int)GpuTerm.Weather].Measured ? $" / weather {GpuMs(GpuTerm.Weather):F3}" : "") +
-                         (_qTerm[(int)GpuTerm.Gi].Measured ? $" / gi {GpuMs(GpuTerm.Gi):F3}" : "") +
                          $" (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.

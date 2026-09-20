@@ -436,6 +436,8 @@ public sealed unsafe partial class AlloyRenderer
             while (_shGen[hj] == _enrollGen) hj = (hj + 1) & ((1 << SlotHashBits) - 1);
             _shGen[hj] = _enrollGen; _shSlot[hj] = i;
         }
+        // a kept tenant now on another pool item is a mesh the chart and LOD tables have not seen
+        bool retargeted = kept && (_oItem[i] != c.Item || _oVao[i] != v);
         _oEntry[i] = e; _entrySlot[e] = i; _oTri[i] = c.Tri; _oNode[i] = c.Node; _oMat[i] = c.Mat; _oVdo[i] = c.Vdo;
         _oItem[i] = c.Item; _oPrim[i] = c.Prim; _oVao[i] = v; _oMx[i] = c.Mx; _oLit[i] = lit;
         _oRotBits[i] = c.RotBits;
@@ -458,7 +460,7 @@ public sealed unsafe partial class AlloyRenderer
         // reason: they are order- and coverage-sensitive, and a thinned silhouette there is a visible seam
         // rather than a distant saving. Non-triangle primitives have no edges to collapse.
         // #673: the charter first (it carries its own LOD runs); the plain LOD offer only where it did not claim.
-        if (!kept && StaticAtEnroll(c.Cls, c.Gob, _oTileGob[i], c.Mx, _vSkin[v], PartTable.IsDangly(c.Tri), c.Feat) == 0
+        if ((!kept || retargeted) && StaticAtEnroll(c.Cls, c.Gob, _oTileGob[i], c.Mx, _vSkin[v], PartTable.IsDangly(c.Tri), c.Feat) == 0
             && !OfferChart(c.Vdo, c.Item, c.Prim, v))
             OfferLod(c.Vdo, c.Item, c.Prim, v);
         for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBboxMin + b * 4);   // #336: +0x64..+0x78
@@ -473,6 +475,7 @@ public sealed unsafe partial class AlloyRenderer
         _oCx[i] = (lo[0] + hi[0]) * 0.5f; _oCy[i] = (lo[1] + hi[1]) * 0.5f; _oCz[i] = (lo[2] + hi[2]) * 0.5f;
         float ex = hi[0] - lo[0], ey = hi[1] - lo[1], ez = hi[2] - lo[2];
         _oR[i] = 0.5f * MathF.Sqrt(ex * ex + ey * ey + ez * ez);
+        if (!(_oR[i] > 0f) && c.Gob != IntPtr.Zero) _oR[i] = MeshRadius(c.Tri, c.Vdo, c.Item, v);
         // #330: spawn-time fields the chase keys on without touching the part again.
         _oTile[i] = tri.Tile != IntPtr.Zero ? tri.Tile : _oTileGob[i] ? *(IntPtr*)(c.Gob + GobTileData) : IntPtr.Zero;
         _oBsp[i] = PartTable._pBsp[e];
@@ -935,4 +938,36 @@ public sealed unsafe partial class AlloyRenderer
         return MaxMats - 1;
     }
 
+
+    /// <summary>A gob part's radius off its own vertices, read where the chart offer reads them: the VDO's
+    /// element and position host shadows. <c>ComputePartBBox</c> fills the part bbox for tile parts only, so
+    /// every gob part read as radius 0 and the caster pass stood a tile's diagonal (7.1 m) in for it -- a
+    /// candle flame claimed a moving-caster page under its light like a house would (run 10). The node's
+    /// own face array is load-time temporary data the engine frees (run 11 read it as infinity). Local
+    /// space about the node origin (the sphere's centre is the model translation), the part scale applied;
+    /// 0 keeps the old fallback.</summary>
+    private static float MeshRadius(IntPtr tri, IntPtr vdoPtr, int item, int s)
+    {
+        if (vdoPtr == IntPtr.Zero || item < 0 || !_vPos[s].Present || _vPos[s].Type != 0x1406 || _vPos[s].Size != 3) return 0f;   // 0x1406 = GL_FLOAT, the constant alone (Scene/ is GL-free, #206)
+        var vdo = new VdoRef(vdoPtr);
+        long elem = vdo.ElemItems, vert = vdo.VertItems;
+        if (elem == 0 || vert == 0 || item >= vdo.ElemCount || item >= vdo.VertCount) return 0f;
+        int count = *(int*)(elem + item * 8 + 4);
+        long first = (uint)*(int*)(elem + item * 8);
+        int baseVertex = *(int*)(vert + item * 8);
+        byte* elemHost = OwnedBuffers.PoolHost(vdo.ElemToken);
+        byte* posHost = OwnedBuffers.PoolHostByName(_vPos[s].Buf, vdo.VertToken, vdo.DynToken);
+        if (elemHost == null || posHost == null || count <= 0) return 0f;
+        ushort* src = (ushort*)(elemHost + first * 2);
+        float r2 = 0f;
+        for (int i = 0; i < count; i++)
+        {
+            float* pv = (float*)(posHost + _vPos[s].Off + (long)(baseVertex + src[i]) * _vPos[s].Stride);
+            float d = pv[0] * pv[0] + pv[1] * pv[1] + pv[2] * pv[2];
+            if (d > r2) r2 = d;
+        }
+        if (!float.IsFinite(r2)) return 0f;
+        float scale = *(float*)(tri + EngineLayout.PartScale);
+        return MathF.Sqrt(r2) * (scale > 0f && float.IsFinite(scale) ? scale : 1f);
+    }
 }

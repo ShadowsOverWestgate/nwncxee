@@ -27,12 +27,14 @@ internal static class Lightmap
         Density = G.Slider("density", "Lightmap density", 2, 32, 1, 8, "px/m", tier: Tier.Advanced,
                            help: "Lightmap texels per metre of world. Each instance's rectangle is capped at a quarter page; a change re-bakes the area.",
                            changed: LightmapBake.RekeyAll);
-        Pages = G.Slider("pages", "Lightmap pages", 0, 16, 1, 0, tier: Tier.Advanced,
-                         help: "4096x4096 pages the area may hold (128 MiB each). 0 sizes it from the card's memory: an eighth of it in pages, at most 16. Past the cap a rectangle bakes at half density, then stays unbaked.");
+        Pages = G.Slider("pages", "Lightmap pages", 0, LightmapBake.MaxPages, 1, 0, tier: Tier.Advanced,
+                         help: "4096x4096 pages the area may hold (128 MiB each), allocated as the area needs them. 0 sizes it from the card's memory: a quarter of it in pages, at most 32. An area that would overflow the cap bakes at a lower density instead.");
         Movers = G.Toggle("movers", "Creature shadows from baked lights", true,
                           help: "A creature standing under a baked light casts its shadow on the baked surface. Off is cheaper: baked surfaces take no shadow from creatures under static lights.");
-        Disk = G.Slider("disk", "Chart cache size", 64, 4096, 64, 512, "MiB", tier: Tier.Advanced,
-                        help: "Disk the chart and bake caches may hold; the oldest files go first.");
+        // 2048: one area's bake at density 10 is ~500 MiB of .lmr files, and a 512 MiB budget pruned the
+        // live files of the area being walked (4890 of 7425 hit, live)
+        Disk = G.Slider("disk", "Chart cache size", 64, 8192, 64, 2048, "MiB", tier: Tier.Advanced,
+                        help: "Disk the chart and bake caches may hold; the oldest files go first. One area's lightmap is roughly 500 MiB.");
     }
 }
 
@@ -92,6 +94,12 @@ internal static unsafe partial class MeshChart
         internal Vector3 Bmin, Bmax;
         internal bool Done;
         internal Refusal Refused;
+        /// <summary>The range's signature at offer time (<c>AlloyRenderer.RangeSig</c>): a pool item the engine
+        /// freed and refilled keeps its (slot, item) key, and without this the new tenant drew the OLD mesh
+        /// out of the arena -- the floating nonsense after an area change.</summary>
+        internal ulong Sig;
+        /// <summary>Charted vertices in the arena, for the compaction.</summary>
+        internal int NV;
     }
 
     /// <summary>Render-thread only (MeshLod's rule): the offer, Pump, the staging read and both lifetime edges.</summary>
@@ -104,6 +112,7 @@ internal static unsafe partial class MeshChart
     internal sealed class Job
     {
         internal long Key;
+        internal ulong Sig;
         internal ulong Content;
         internal int IdxCount, VertCount;
         internal bool HasNrm, HasUv;
@@ -138,6 +147,12 @@ internal static unsafe partial class MeshChart
     private static int _vUsed, _vUploaded, _vCapacity, _iUsed, _iUploaded, _iCapacity;
     private static uint _vbo, _ebo, _vao;
     private static bool _arenaFull;
+    /// <summary>Arena vertices whose entry is gone (a vacated slot, a refilled item): what a compaction
+    /// reclaims. The world edge (<see cref="Revoke"/>) does not fire on an in-module area change, so
+    /// without it three areas filled the 2M-vertex arena and the fourth charted nothing (run 29: 11268
+    /// refused, viz 43 magenta across the town).</summary>
+    private static long _deadVerts;
+    private static int _compactions;
 
     private static int _offered, _hit, _missed, _built, _refused, _stale, _tableFull, _logLeft = LogCap;
     private static readonly int[] _refusedBy = new int[RefusalName.Length];
@@ -164,19 +179,25 @@ internal static unsafe partial class MeshChart
         log.Info("MeshChart: worker up -- static meshes are charted as they enrol when lightmap.enabled=1 (default off)");
     }
 
-    private static long KeyOf(int slot, int item) => ((long)slot << 32) | (uint)item;
+    internal static long KeyOf(int slot, int item) => ((long)slot << 32) | (uint)item;
 
     /// <summary>Asked before anything is read: a mesh on file, queued or past a budget costs one probe.
     /// <paramref name="later"/> = not now but not refused either: the worker's queue is full (an area's
     /// whole tile set enrols in one walk), and the caller re-offers when it drains -- an offer that fell
     /// through here used to be lost for good, which left most of an area uncharted (#674 live).</summary>
-    internal static bool Wanted(int slot, int item, int idxCount, out bool later)
+    internal static bool Wanted(int slot, int item, int idxCount, ulong sig, out bool later)
     {
         later = false;
         if (_worker == null || idxCount < 3 || !Lightmap.G.Master!.V) return false;
+        if (_table.TryGetValue(KeyOf(slot, item), out Entry have))
+        {
+            if (have.Sig == sig) return false;
+            _table.Remove(KeyOf(slot, item));   // the item was refilled under the same key: chart the new mesh
+            if (have.Done && have.Refused == Refusal.None) _deadVerts += have.NV;
+        }
         if (_table.Count >= MaxEntries) { _tableFull++; return false; }
-        if (_table.ContainsKey(KeyOf(slot, item))) return false;
-        if (_arenaFull) { Skip(Refusal.Arena); return false; }
+        // full with dead bytes in it: the next Pump compacts, and the offer comes back through the deferred list
+        if (_arenaFull) { if (_deadVerts > 0) { later = true; return false; } Skip(Refusal.Arena); return false; }
         if (idxCount > MeshSimplify.MaxCorners) { Skip(Refusal.Corners); return false; }
         lock (_gate) { later = _in.Count >= MaxPending; return !later; }
     }
@@ -188,7 +209,7 @@ internal static unsafe partial class MeshChart
     /// re-indexed, and queue it. Enrollment walk only: reads engine memory and allocates, off every frame path.</summary>
     internal static void Offer(int slot, int item, byte* elemHost, long first, int count,
                                byte* posHost, in VertexStream pos, byte* nrmHost, in VertexStream nrm,
-                               byte* uvHost, in VertexStream uv, int baseVertex)
+                               byte* uvHost, in VertexStream uv, int baseVertex, ulong sig)
     {
         if (elemHost == null || posHost == null || count < 3 || count % 3 != 0) return;
         if (pos.Type != Gl.FLOAT || pos.Size != 3) return;
@@ -202,7 +223,7 @@ internal static unsafe partial class MeshChart
         Array.Fill(_remap, -1, 0, maxI + 1);
 
         Job j = Rent();
-        j.Key = KeyOf(slot, item);
+        j.Key = KeyOf(slot, item); j.Sig = sig;
         j.IdxCount = count; j.HasNrm = hasNrm; j.HasUv = hasUv;
         j.Refused = Refusal.None; j.Hit = false; j.Stale = false; j.Out0N = j.Out1N = j.Out2N = 0; j.OutVerts = 0; j.Charts = 0; j.Loose = 0;
         Grow(ref j.Idx, count);
@@ -233,7 +254,7 @@ internal static unsafe partial class MeshChart
             j.Idx[i] = (ushort)d;
         }
         j.VertCount = n;
-        _table[j.Key] = default;   // claimed: a later enrollment must not offer the same range again
+        _table[j.Key] = new Entry { Sig = sig };   // claimed: a later enrollment must not offer the same range again
         _offered++;
         lock (_gate) { _in.Enqueue(j); Monitor.Pulse(_gate); }
     }
@@ -395,6 +416,7 @@ internal static unsafe partial class MeshChart
     internal static void Pump()
     {
         if (_worker == null || Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null) return;
+        if (_deadVerts > MaxArenaVerts / 2 || (_arenaFull && _deadVerts > 0)) Compact();
         int vFrom = _vUsed, iFrom = _iUsed;
         while (true)
         {
@@ -404,7 +426,7 @@ internal static unsafe partial class MeshChart
                 if (_out.Count == 0) break;
                 j = _out.Dequeue();
             }
-            var e = new Entry { Done = true, Refused = j.Refused, Content = j.Content, Bmin = j.Bmin, Bmax = j.Bmax };
+            var e = new Entry { Done = true, Refused = j.Refused, Content = j.Content, Bmin = j.Bmin, Bmax = j.Bmax, Sig = j.Sig };
             if (j.Hit) _hit++; else _missed++;
             if (j.Stale) _stale++;
             if (j.Refused == Refusal.None)
@@ -417,7 +439,7 @@ internal static unsafe partial class MeshChart
                     if (j.Out1N > 0) Append(j.Out1, j.Out1N, out e.Off1, out e.Cnt1);
                     if (j.Out2N > 0) Append(j.Out2, j.Out2N, out e.Off2, out e.Cnt2);
                     if (e.Cnt0 == 0) e.Refused = Refusal.Arena;
-                    e.W = j.W; e.H = j.H;
+                    e.W = j.W; e.H = j.H; e.NV = j.OutVerts;
                 }
             }
             if (e.Refused != Refusal.None)
@@ -428,8 +450,10 @@ internal static unsafe partial class MeshChart
             }
             else if (_logLeft-- > 0)
                 _log?.Info($"MeshChart: mesh {j.IdxCount / 3} tris {j.VertCount} verts -> {j.OutVerts} charted verts, atlas {j.W}x{j.H} ({(j.Hit ? "cache hit" : "built")}), lod {e.Cnt1 / 3}/{e.Cnt2 / 3}" + (j.Loose > 0 ? $", {j.Loose} loose verts (no face)" : ""));
-            // Revoke may have wiped the table while this job was in flight; its arena bytes went with it.
-            if (_table.ContainsKey(j.Key)) _table[j.Key] = e;
+            // Revoke may have wiped the table while this job was in flight, or a refilled item re-claimed the
+            // key under another signature; either way this result describes a mesh nobody draws
+            if (_table.TryGetValue(j.Key, out Entry claim) && claim.Sig == j.Sig) _table[j.Key] = e;
+            else if (e.Refused == Refusal.None) _deadVerts += e.NV;   // appended, unclaimed: the compaction takes it back
             lock (_gate) _free.Push(j);
         }
         if (_vUsed != vFrom || _vUploaded != _vUsed) UploadVerts(vFrom);
@@ -574,7 +598,72 @@ internal static unsafe partial class MeshChart
         foreach (var kv in _table)
             if ((int)(kv.Key >> 32) == slot) (dead ??= new List<long>()).Add(kv.Key);
         if (dead == null) return;
-        for (int i = 0; i < dead.Count; i++) _table.Remove(dead[i]);
+        for (int i = 0; i < dead.Count; i++)
+        {
+            if (_table.TryGetValue(dead[i], out Entry e) && e.Done && e.Refused == Refusal.None) _deadVerts += e.NV;
+            _table.Remove(dead[i]);
+        }
+    }
+
+    /// <summary>Drop every entry no enrolled part keys (the engine frees a pool item without a word, and an
+    /// in-module area change is no world edge: run 31 carried 42k entries over three areas and compacted 5k
+    /// vertices out of 2M). Their arena bytes count as dead; the next Pump compacts. Cold: once per area.
+    /// An entry a not-yet-enrolled part will want is offered again at its enrolment.</summary>
+    internal static void Sweep(HashSet<long> live)
+    {
+        if (_table.Count == 0) return;
+        List<long>? dead = null;
+        foreach (var kv in _table)
+            if (!live.Contains(kv.Key)) (dead ??= new List<long>()).Add(kv.Key);
+        if (dead == null) return;
+        int verts = 0;
+        for (int i = 0; i < dead.Count; i++)
+        {
+            if (_table.TryGetValue(dead[i], out Entry e) && e.Done && e.Refused == Refusal.None) { _deadVerts += e.NV; verts += e.NV; }
+            _table.Remove(dead[i]);
+        }
+        _log?.Info($"MeshChart: swept {dead.Count} entries nobody enrolled ({verts} vertices) -- {_table.Count} kept");
+    }
+
+    /// <summary>Rewrite both arenas with only the live entries, in place under the same buffer names (the VAO
+    /// stays valid), and re-upload. Render thread, before the frame's batches are built, so no draw holds an
+    /// old offset. Cold: an area change's worth of copying.</summary>
+    private static void Compact()
+    {
+        var keys = new List<long>(_table.Keys);
+        // ascending by arena place, so every copy slides DOWN over bytes already moved or dead
+        keys.Sort((a, b) => _table[a].Base.CompareTo(_table[b].Base));
+        int vU = 0, iU = 0;
+        for (int k = 0; k < keys.Count; k++)
+        {
+            Entry e = _table[keys[k]];
+            if (!e.Done || e.Refused != Refusal.None) continue;
+            if (vU != e.Base) Array.Copy(_vMirror, (long)e.Base * Stride, _vMirror, (long)vU * Stride, (long)e.NV * Stride);
+            e.Base = vU; vU += e.NV;
+            e.Off0 = Move(e.Off0, e.Cnt0, ref iU);
+            e.Off1 = Move(e.Off1, e.Cnt1, ref iU);
+            e.Off2 = Move(e.Off2, e.Cnt2, ref iU);
+            _table[keys[k]] = e;
+        }
+        int freed = _vUsed - vU;
+        _vUsed = vU; _iUsed = iU; _vUploaded = 0; _iUploaded = 0; _arenaFull = false; _deadVerts = 0; _compactions++;
+        // the whole compacted range goes back up NOW: the caller's incremental upload starts at the
+        // post-compaction cursor and would have left the GPU copy in the old layout under the new offsets
+        if (_vbo != 0 && vU > 0) UploadVerts(0);
+        if (_ebo != 0 && iU > 0) UploadIndices(0);
+        _log?.Info($"MeshChart: arena compacted -- {freed} of {vU + freed} vertices reclaimed, {keys.Count} entries kept");
+    }
+
+    /// <summary>Slide one index run down to the compaction cursor. Runs were appended in the same order as
+    /// their vertices, so the Base-sorted visit copies each run to a cursor at or below its old place.</summary>
+    private static nint Move(nint off, int count, ref int cursor)
+    {
+        if (count <= 0) return 0;
+        int from = (int)((long)off / 2);
+        if (from != cursor) Array.Copy(_iMirror, from, _iMirror, cursor, count);
+        nint at = (nint)((long)cursor * 2);
+        cursor += count;
+        return at;
     }
 
     /// <summary>The world edge: every (slot, item) key means nothing and both arenas rewind.</summary>
@@ -586,7 +675,7 @@ internal static unsafe partial class MeshChart
             while (_in.Count > 0) _free.Push(_in.Dequeue());
             while (_out.Count > 0) _free.Push(_out.Dequeue());
         }
-        _vUsed = _vUploaded = _iUsed = _iUploaded = 0; _arenaFull = false;
+        _vUsed = _vUploaded = _iUsed = _iUploaded = 0; _arenaFull = false; _deadVerts = 0;
         _offered = _hit = _missed = _built = _refused = _stale = 0; Array.Clear(_refusedBy);
         _logLeft = LogCap;
     }

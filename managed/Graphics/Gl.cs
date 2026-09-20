@@ -39,7 +39,7 @@ public static unsafe class Gl
     /// says how much. Copy targets exist so a buffer can be read and written without disturbing whatever the
     /// caller had bound for drawing.</summary>
     public const uint COPY_READ_BUFFER = 0x8F36, COPY_WRITE_BUFFER = 0x8F37, BUFFER_SIZE = 0x8764;
-    public const uint VERTEX_SHADER = 0x8B31, FRAGMENT_SHADER = 0x8B30;
+    public const uint VERTEX_SHADER = 0x8B31, FRAGMENT_SHADER = 0x8B30, GEOMETRY_SHADER = 0x8DD9;
     /// <summary>#147: the tessellation pair, and the primitive mode that feeds them. GL 4.0+, so core on the
     /// 4.6 context the Alloy pass already requires -- water is the one class whose geometry is coarse enough
     /// to need subdividing and cheap enough to afford it.</summary>
@@ -96,7 +96,7 @@ public static unsafe class Gl
                       FRAMEBUFFER_ATTACHMENT_OBJECT_NAME = 0x8CD1, RENDERBUFFER = 0x8D41,
                       ATTACHMENT_TEXTURE = 0x1702, FRAMEBUFFER_SRGB = 0x8DB9;
     public const uint DEPTH_COMPONENT = 0x1902, DEPTH_COMPONENT24 = 0x81A6, DEPTH_COMPONENT16 = 0x81A5, UNSIGNED_INT = 0x1405;
-    public const uint DEPTH_BUFFER_BIT = 0x0100, COLOR_BUFFER_BIT = 0x4000, LESS = 0x0201, LEQUAL = 0x0203, NONE = 0;
+    public const uint DEPTH_BUFFER_BIT = 0x0100, COLOR_BUFFER_BIT = 0x4000, LESS = 0x0201, LEQUAL = 0x0203, GREATER = 0x0204, NONE = 0;
     /// <summary>GL_EQUAL. #364: the highlight mask tests a cutout batch against the depth its own colour
     /// pass wrote with the discard applied, so only the surviving fragments match.</summary>
     public const uint EQUAL = 0x0202;
@@ -220,7 +220,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, int*, void> GetBufferParameteriv;
     public static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> TexImage2D;
     /// <summary>glTexSubImage2D (GL 1.1): target, level, xoffset, yoffset, width, height, format, type, data.
-    /// Writes into an already-allocated level -- #643's probe-tile restore from the bake ledger.</summary>
+    /// Writes into an already-allocated level.</summary>
     public static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> TexSubImage2D;
     public static delegate* unmanaged<uint, uint, int, void> TexParameteri;
     public static delegate* unmanaged<uint, uint, int*, void> GetTexParameteriv;
@@ -283,7 +283,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, float, void> Uniform1f;
     public static delegate* unmanaged<int, float, float, void> Uniform2f;
     public static delegate* unmanaged<int, int, int, void> Uniform2i;
-    /// <summary>glBlendColor: the constant the CONSTANT_ALPHA blend factors read (#643's probe hysteresis).</summary>
+    /// <summary>glBlendColor: the constant the CONSTANT_ALPHA blend factors read (constant-alpha blends).</summary>
     public static delegate* unmanaged<float, float, float, float, void> BlendColor;
     public static delegate* unmanaged<int, float, float, float, void> Uniform3f;
     public static delegate* unmanaged<int, float, float, float, float, void> Uniform4f;
@@ -349,6 +349,8 @@ public static unsafe class Gl
     public static delegate* unmanaged<byte, void> DepthMask;
     public static delegate* unmanaged<float, float, void> PolygonOffset;
     public static delegate* unmanaged<byte, byte, byte, byte, void> ColorMask;
+    /// <summary>glColorMaski: the write mask of ONE draw buffer (GL 3.0).</summary>
+    public static delegate* unmanaged<uint, byte, byte, byte, byte, void> ColorMaski;
     public static delegate* unmanaged<double, void> ClearDepth;
     public static delegate* unmanaged<double, double, void> DepthRange;
     public static delegate* unmanaged<uint, float*, void> GetFloatv;
@@ -564,6 +566,7 @@ public static unsafe class Gl
         DepthMask = (delegate* unmanaged<byte, void>)P("glDepthMask");
         PolygonOffset = (delegate* unmanaged<float, float, void>)P("glPolygonOffset");
         ColorMask = (delegate* unmanaged<byte, byte, byte, byte, void>)P("glColorMask");
+        ColorMaski = (delegate* unmanaged<uint, byte, byte, byte, byte, void>)P("glColorMaski");
         ClearDepth = (delegate* unmanaged<double, void>)P("glClearDepth");
         DepthRange = (delegate* unmanaged<double, double, void>)P("glDepthRange");
         GetFloatv = (delegate* unmanaged<uint, float*, void>)P("glGetFloatv");

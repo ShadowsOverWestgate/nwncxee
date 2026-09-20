@@ -304,9 +304,9 @@ public sealed unsafe partial class AlloyRenderer
         if (!_rawProbed) ProbeRawSampler();
         if (locFloor >= 0) Gl.Uniform1f(locFloor, AlloyLights.ShadowFloor);
         // #642: source radius (0 = no raw view, no search), temporal phase (golden-ratio turns per frame, 0
-        // with no taa to integrate it), disc taps
+        // with no taa to integrate it), disc taps; w = the view depth past which no cube is read (0 = none)
         if (locPcss >= 0) Gl.Uniform4f(locPcss, _rawSampler != 0 ? AlloyLights.ShadowSource : 0f,
-                                       PostStack.TaaLive ? (_frameSeq * 0.618034f) % 1f : 0f, Shadows.Taps.V, 0f);
+                                       PostStack.TaaLive ? (_frameSeq * 0.618034f) % 1f : 0f, Shadows.Taps.V, AlloyLights.ShadowDist);
         // #139: the softness pair goes out even when there are no cubes -- it is program state, not per-cube
         // state, and a program that only ever sees the no-cubes path would otherwise keep the zeroes.
         // #326: pixels -> world radius per unit view depth, so the shader compares its disc against the

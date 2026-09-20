@@ -110,7 +110,6 @@ public sealed unsafe class SceneInputs : IExtenderService
         ShadowMath.SelfCheck(log);   // pure math, runs headless
         FadeSelfCheck(log);          // ...and so does the fade-out bookkeeping
         FlickerSelfCheck(log);       // ...and the animated-light latch
-        GiProbes.LedgerSelfCheck(log);   // ...and #643's bake-ledger file format
         // #257: the frame constants are read, not captured -- and ahead of the stand-down, because the
         // camera, the area terms and the fog are inputs to EVERY Alloy pass, shadows or no shadows.
         FrameRead.Resolve(log);
@@ -491,13 +490,12 @@ public sealed unsafe class SceneInputs : IExtenderService
                     _log?.Info($"SceneInputs: masterlight d={wd:F1} pos=({wp.X:F0},{wp.Y:F0},{wp.Z:F1}) type={*(int*)(p + LightKind)} cast={*(int*)(p + LightCastShadows)} flags={*(int*)(p + LightFlagA)}/{*(int*)(p + LightFlagB)} range={*(float*)(p + LightRange):F1} alt={*(float*)(p + LightRangeAlt):F1} inten={*(float*)(p + LightIntensity):F2} fade={*(float*)(p + LightFade):F2} rgb=({*(float*)(p + LightColour):F2},{*(float*)(p + LightColour + 4):F2},{*(float*)(p + LightColour + 8):F2}) adjR={(_getAdjRadius != null ? _getAdjRadius((IntPtr)p) : -1f):F2}");
             }
             if (_lightDiag && AlloyRenderer.FrameSeq % 300 == 0 && FrameInputs.HasCamera) LightProbe(p, area);
-            if (*(int*)(p + LightFlagA) == 0 && *(int*)(p + LightFlagB) == 0) continue;
+            if (*(int*)(p + LightFlagA) == 0 && *(int*)(p + LightFlagB) == 0) { LightmapBake.CensusSkipped++; continue; }
             float range = *(float*)(p + LightRange);
-            if (range <= 0f || range >= DirectionalRange) continue;
+            if (range >= DirectionalRange) continue;
             float inten = *(float*)(p + LightIntensity);
-            if (inten <= 0f) continue;
             float r = *(float*)(p + LightColour), g = *(float*)(p + LightColour + 4), b = *(float*)(p + LightColour + 8);
-            if (r == 0f && g == 0f && b == 0f) continue;
+            if (range <= 0f || inten <= 0f || (r == 0f && g == 0f && b == 0f)) { LightmapBake.CensusSkipped++; continue; }
             // Ghidra SetLightGL: type@0x80 != 0 uploads -adjR^2 and inc_lighting.shd adds c*att to AmbientLight
             bool ambient = *(int*)(p + LightKind) != 0;
             float alt = *(float*)(p + LightRangeAlt);

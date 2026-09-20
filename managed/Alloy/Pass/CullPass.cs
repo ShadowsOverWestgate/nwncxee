@@ -82,11 +82,7 @@ internal static unsafe class CullPass
     /// #489's second prepass phase: its own set, because <c>MultiDrawElementsIndirectCount</c> takes a CPU
     /// byte offset for the start and phase one's count never comes back to say where its survivors end.</summary>
     internal const int PhasePrepass = 0, PhaseColour = 1, PhaseRetest = 2;
-    /// <summary>#643: a fourth output set for the probe grid's face captures -- frustum-only dispatches
-    /// against the screen's staged list, six per probe, so a capture submits what a 60m cube face sees
-    /// instead of the whole area. Its own set, so the screen's lists survive it; never sampled.</summary>
-    internal const int PhaseProbe = 3;
-    private const int Phases = 4;
+    private const int Phases = 3;
     /// <summary>The shader's <c>uRej</c> mode per phase: the colour phase ignores the verdict buffer, phase
     /// one WRITES it, phase two READS it and tests only the marked draws.</summary>
     private const int RejOff = 0, RejWrite = 1, RejRead = 2;

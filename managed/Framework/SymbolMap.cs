@@ -92,6 +92,10 @@ internal static unsafe class SymbolMap
     /// send whose arrival makes the server place the player (<c>MovePlayerToArea</c>). Three call sites: the
     /// post-loading-screen tail of <see cref="HandleUpdateWorkRemaining"/> and the two movie exits.</summary>
     public const string SendAreaLoaded = "_ZN11CNWCMessage33SendPlayerToServerArea_AreaLoadedEv";
+    /// <summary>CNWCArea::SetTile(CNWCTile*, int id, int orientation, int height) @0x708e60 -- the server tile-change
+    /// message's one callee that re-spawns a tile's model and lights (HandleServerToPlayerArea case 0x14). The
+    /// lightmap's static set reopens on it. <c>(this, tile, int, int, int) -> void</c>, no sret.</summary>
+    public const string AreaSetTile = "_ZN8CNWCArea7SetTileEP8CNWCTileiii";
     /// <summary>CNWCMessage::HandleServerToPlayerUpdate_WorkRemaining() @0x781a30 -- drives the load bar and, on
     /// the last tick, fades the loadscreen and sends AreaLoaded (or latches <c>internal+0x58c</c> behind an intro
     /// movie). The hold's hook point. <c>(this) -> int</c>.</summary>
@@ -1260,6 +1264,7 @@ internal static unsafe class SymbolMap
         [SendDeviceAdvertiseProperty] = At(0x7bbac0),
         // #672: the area-loaded hold; none returns a class by value. Anchors in docs/windows-symbols.md.
         [SendAreaLoaded]              = At(0x7ba050),
+        [AreaSetTile]                 = At(0x7e6040),
         [HandleUpdateWorkRemaining]   = At(0x7b85a0),
         [StartLoadBar]                = At(0x6acd20),
         [EndLoadBar]                  = At(0x6ab770),
