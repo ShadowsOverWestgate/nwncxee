@@ -246,6 +246,8 @@ public static unsafe class ChatRenderer
         opaqueCount = 0;
         if (residual != 0f) return false;
         if (rf.BlinkEnd > rf.BlinkStart) return false;
+        if (rf.HoverEnd > rf.HoverStart && RenderFrame.HoverT(now, rf.HoverSince) < 1f) return false;
+        if (rf.LeftEnd > rf.LeftStart && RenderFrame.HoverT(now, rf.LeftSince) < 1f) return false;
         if (rf.Scrolled || !rf.AnimEnabled) { opaqueCount = rf.Spans.Count; return true; }
         List<LineSpanVerts> spans = rf.Spans;
         for (int i = 0; i < spans.Count; i++)
@@ -277,6 +279,17 @@ public static unsafe class ChatRenderer
             float ba = (System.Environment.TickCount64 % 500) < 300 ? 0.85f : 0.20f;
             int bs = f.Rf.BlinkStart * Floats, be = f.Rf.BlinkEnd * Floats;
             for (int v = bs; v < be; v += Floats) dst[v + 7] *= ba;
+        }
+        // Tab hover: the entered tab's plate eases in, the left tab's eases out.
+        if (f.Rf.HoverEnd > f.Rf.HoverStart)
+        {
+            float ha = RenderFrame.HoverT(now, f.Rf.HoverSince);
+            for (int v = f.Rf.HoverStart * Floats, en = f.Rf.HoverEnd * Floats; v < en; v += Floats) dst[v + 7] *= ha;
+        }
+        if (f.Rf.LeftEnd > f.Rf.LeftStart)
+        {
+            float la = 1f - RenderFrame.HoverT(now, f.Rf.LeftSince);
+            for (int v = f.Rf.LeftStart * Floats, en = f.Rf.LeftEnd * Floats; v < en; v += Floats) dst[v + 7] *= la;
         }
     }
 

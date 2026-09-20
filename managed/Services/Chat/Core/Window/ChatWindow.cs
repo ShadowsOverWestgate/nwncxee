@@ -110,15 +110,30 @@ public sealed class ChatWindow
     public System.DateTime LastScroll = System.DateTime.MinValue;
     /// <summary>Per-window text outline (dark halo behind body glyphs for readability).</summary>
     public bool Outline;
+    /// <summary>Per-window text size in design px (CX-683); 0 = follow <c>ui.font</c>.</summary>
+    public int FontPx;
+    /// <summary>Per-window typeface, a <c>FontRegistry</c> name (CX-683); "" = follow <c>ui.typeface</c>.</summary>
+    public string Typeface = "";
     /// <summary>Per-window timestamp presentation.</summary>
     public TsFormat TimeFormat = TsFormat.HourMin;
     public TsSource TimeSource = TsSource.Local;
     /// <summary>Per-window message body text alignment.</summary>
     public TextAlign Align = TextAlign.Left;
-    /// <summary>Per-window background fill style (solid, gradient, stripes).</summary>
+    /// <summary>Per-window background fill shape.</summary>
     public BgMode BgMode = BgMode.Solid;
+    /// <summary>Gradient direction in degrees: 0 runs left to right, 90 top to bottom (Radial ignores it).</summary>
+    public float BgAngle = 90f;
+    /// <summary>Gradient stops in [0,1]: Background holds until <see cref="BgStart"/>, Background 2 from
+    /// <see cref="BgEnd"/>; End at or before Start is a hard edge.</summary>
+    public float BgStart = 0f, BgEnd = 1f;
     /// <summary>Hide the tab bar when the pointer is not over the window.</summary>
     public bool AutoHideHeader = true;
+    /// <summary>Hide the frame (outline + shadow) the same way the header hides.</summary>
+    public bool AutoHideFrame;
+    /// <summary>Tab under the pointer (-1 none) and when it became so; the tab it left and when. Set by the
+    /// shell's motion path, read by Build for the hover plates the draw eases in/out.</summary>
+    public int HoveredTab = -1, LeftTab = -1;
+    public System.DateTime HoverSince, LeftSince;
     /// <summary>When true, the window cannot be moved, resized, or have its tabs dragged (#43).</summary>
     public bool Locked;
     /// <summary>When true, incoming Tell auto-opens route here instead of the focused window (#46).</summary>
@@ -208,22 +223,20 @@ public sealed class ChatWindow
     // Layout metrics: design pixels at Metrics.Scale==1, multiplied by the live scale so the chrome tracks the
     // font size + game UI scale in lockstep (no clipping at larger sizes). ponytail: no per-metric tuning; one
     // uniform scale keeps every text-to-chrome ratio fixed, which is all the clipping fix needs.
-    public static float TabBarH => 22f * Metrics.Scale;
+    public static float TabBarH => 28f * Metrics.Scale;
     /// <summary>Maximum tab width (when few tabs). Tabs shrink to share the bar evenly.</summary>
     public static float MaxTabW => 120f * Metrics.Scale;
     /// <summary>Whether this window can be closed (non-Main). Set by the layout owner.</summary>
     public bool Closeable;
-    /// <summary>Whether the close button is shown (non-Main and not locked).</summary>
-    public bool ShowClose => Closeable && !Locked;
-    /// <summary>Total width reserved at the tab bar's right edge for buttons: [+] [⚙] [×] when closeable,
-    /// [+] [⚙] when not.</summary>
-    public float ButtonsW => (ShowClose ? 3f : 2f) * GearW;
+    /// <summary>Width reserved at the tab bar's right edge for buttons: just [⚙] (CX-683 moved [+] and [×] into the
+    /// panel: "Copy this window" and "Close this window").</summary>
+    public float ButtonsW => GearW;
     /// <summary>Actual tab width for this window: bar minus button area, divided by tab count, capped at max.
     /// Takes the snapshotted tab count to avoid a torn read when a concurrent thread swaps _tabs.</summary>
     public float TabWFor(int tabCount) => System.Math.Min(MaxTabW, (W - ButtonsW) / (tabCount < 1 ? 1 : tabCount));
     /// <summary>Convenience: TabW from the live tab count (safe when only one thread is reading).</summary>
     public float TabW => TabWFor(_tabs.Length);
-    public static float FooterH => 22f * Metrics.Scale;
+    public static float FooterH => 28f * Metrics.Scale;
     public static float DropdownW => 92f * Metrics.Scale;   // channel selector at the strip's left edge
     public static float Pad => 6f * Metrics.Scale;
     public static float ResizeGrip => 14f * Metrics.Scale;
@@ -450,21 +463,9 @@ public sealed class ChatWindow
     public bool OverResizeGrip(float mx, float my)
         => mx >= X + W - ResizeGrip && mx <= X + W && my >= Y + H - ResizeGrip && my <= Y + H;
 
-    /// <summary>True when the pointer is over the [+] button (leftmost slot).</summary>
-    public bool OverNewWin(float mx, float my)
-        => mx >= X + W - ButtonsW && mx < X + W - ButtonsW + GearW && my >= Y && my <= Y + TabBarH;
-
-    /// <summary>True when the pointer is over the [⚙] button (second from right, or rightmost when close is hidden).</summary>
+    /// <summary>True when the pointer is over the [⚙] button (rightmost slot of the tab bar).</summary>
     public bool OverGear(float mx, float my)
-    {
-        float right = ShowClose ? X + W - GearW : X + W;
-        float left = right - GearW;
-        return mx >= left && mx < right && my >= Y && my <= Y + TabBarH;
-    }
-
-    /// <summary>True when the pointer is over the [×] button (rightmost slot). False for Main or locked windows.</summary>
-    public bool OverCloseWin(float mx, float my)
-        => ShowClose && mx >= X + W - GearW && mx <= X + W && my >= Y && my <= Y + TabBarH;
+        => mx >= X + W - GearW && mx < X + W && my >= Y && my <= Y + TabBarH;
 
     /// <summary>Width of each ephemeral tab button (pin, close) at the right edge.</summary>
     public static float TabBtnW => 16f * Metrics.Scale;
@@ -483,6 +484,16 @@ public sealed class ChatWindow
         float tw = TabWFor(_tabs.Length);
         float right = X + (i + 1) * tw;
         return mx >= right - 2f * TabBtnW && mx < right - TabBtnW;
+    }
+
+    /// <summary>Record the tab under the pointer for the hover plate; true when it changed (a rebuild is due).</summary>
+    public bool SetHoverTab(float mx, float my, System.DateTime now)
+    {
+        int t = Contains(mx, my) && !OverGear(mx, my) ? TabAt(mx, my) : -1;
+        if (t == HoveredTab) return false;
+        if (HoveredTab >= 0) { LeftTab = HoveredTab; LeftSince = now; }
+        HoveredTab = t; HoverSince = now;
+        return true;
     }
 
     /// <summary>Tab index under the pointer in the tab bar, or -1 (bar background = the move handle).</summary>
@@ -673,10 +684,11 @@ public sealed class ChatWindow
         AnimEnabled = src.AnimEnabled;
         HoldSec = src.HoldSec; FadeSec = src.FadeSec; TauMs = src.TauMs;
         Outline = src.Outline;
+        FontPx = src.FontPx; Typeface = src.Typeface;
         TimeFormat = src.TimeFormat; TimeSource = src.TimeSource;
         Align = src.Align;
-        BgMode = src.BgMode;
-        AutoHideHeader = src.AutoHideHeader;
+        BgMode = src.BgMode; BgAngle = src.BgAngle; BgStart = src.BgStart; BgEnd = src.BgEnd;
+        AutoHideHeader = src.AutoHideHeader; AutoHideFrame = src.AutoHideFrame;
     }
 
     /// <summary>Off-device proof of the drag/resize/tab/scroll state machine.</summary>
@@ -892,8 +904,8 @@ public sealed class ChatWindow
         // Scale invariance (#font-clip): chrome must track Metrics.Scale so text never outgrows its box. If a
         // metric is ever reverted to a bare const this catches it. Save/restore -- self-checks run at Scale 1.
         float s0 = Metrics.Scale;
-        float h1 = TabBarH; Metrics.Scale = 2f;
-        E(System.Math.Abs(TabBarH - 2f * h1) < 1e-3f && System.Math.Abs(FooterH - 2f * 22f) < 1e-3f
+        float h1 = TabBarH, f1 = FooterH; Metrics.Scale = 2f;
+        E(System.Math.Abs(TabBarH - 2f * h1) < 1e-3f && System.Math.Abs(FooterH - 2f * f1) < 1e-3f
           && System.Math.Abs(GearW - TabBarH) < 1e-3f, "tab/footer/gear scale with Metrics.Scale");
         Metrics.Scale = s0;
 
@@ -903,8 +915,9 @@ public sealed class ChatWindow
         src.HoldSec = 99f; src.FadeSec = 11f; src.TauMs = 200f; src.Outline = true;
         src.TimeFormat = TsFormat.HourMinSec; src.TimeSource = TsSource.Game;
         src.Align = TextAlign.Right;
-        src.BgMode = BgMode.StripesH;
+        src.BgMode = BgMode.Radial; src.BgEnd = 0.7f;
         src.AutoHideHeader = false;
+        src.FontPx = 14; src.Typeface = "Arial";
         src.Colors["bg"] = 0x112233ffu;
         var dst = new ChatWindow(50, 50, 300, 200, new[] { new Tab("Combat", 0x010) });
         dst.CopySettingsFrom(src);
@@ -912,8 +925,9 @@ public sealed class ChatWindow
         E(dst.HoldSec == 99f && dst.FadeSec == 11f && dst.TauMs == 200f, "copy: hold/fade/tau");
         E(dst.Outline && dst.TimeFormat == TsFormat.HourMinSec && dst.TimeSource == TsSource.Game, "copy: outline+ts");
         E(dst.Align == TextAlign.Right, "copy: align");
-        E(dst.BgMode == BgMode.StripesH, "copy: bgmode");
+        E(dst.BgMode == BgMode.Radial && dst.BgEnd == 0.7f, "copy: bgmode + stops");
         E(!dst.AutoHideHeader, "copy: autoHideHeader");
+        E(dst.FontPx == 14 && dst.Typeface == "Arial", "copy: font");
         E(dst.Colors.ContainsKey("bg") && dst.Colors["bg"] == 0x112233ffu, "copy: colour override copied");
         // Deep copy: mutating the source after copy must not affect the destination.
         src.Colors["bg"] = 0xAABBCCDDu;

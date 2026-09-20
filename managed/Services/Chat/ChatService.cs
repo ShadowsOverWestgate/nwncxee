@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.InteropServices;
 using System.Text;
 using CX.Framework;
@@ -48,6 +49,11 @@ public sealed unsafe class ChatService : IExtenderService
         TextRig.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
         FontRegistry.SelfCheck(log);
         SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
+        string[] names = FontRegistry.Names;   // "default" first: the window's own entry stands in for it
+        var faces = new string[names.Length];
+        faces[0] = SettingsWindow.FollowUi;
+        Array.Copy(names, 1, faces, 1, names.Length - 1);
+        SettingsWindow.Typefaces = faces;
         if (!Enabled)   // chat.enabled=0 at boot: install nothing -> the stock chat window runs
         {
             log.Info("ChatService: chat.enabled=0 -- standing down, vanilla chat left intact (/chat enabled 1 + relaunch)");
@@ -422,11 +428,17 @@ public sealed unsafe class ChatService : IExtenderService
             if (wc.FadeSec is float fs) win.FadeSec = fs;
             if (wc.TauMs is float tm) win.TauMs = tm;
             if (wc.Outline is bool ol) win.Outline = ol;
+            if (wc.FontPx is int fp && fp >= TextRig.MinFontPx && fp <= TextRig.MaxFontPx) win.FontPx = fp;
+            if (wc.Typeface is { Length: > 0 } tfn) win.Typeface = tfn;
             if (wc.TimeFormat is int tf) win.TimeFormat = (TsFormat)tf;
             if (wc.TimeSource is int ts) win.TimeSource = (TsSource)ts;
             if (wc.Align is int al && al >= 0 && al <= 3) win.Align = (TextAlign)al;
-            if (wc.BgMode is int bgm && bgm >= 0 && bgm <= 9) win.BgMode = (BgMode)bgm;
+            if (wc.BgMode is int bgm && bgm >= 0 && bgm <= 3) win.BgMode = (BgMode)bgm;
+            if (wc.BgAngle is float ba) win.BgAngle = Math.Clamp(ba, 0f, 360f);
+            if (wc.BgStart is float bs) win.BgStart = Math.Clamp(bs, 0f, 1f);
+            if (wc.BgEnd is float be) win.BgEnd = Math.Clamp(be, 0f, 1f);
             if (wc.AutoHideHeader is bool ahh) win.AutoHideHeader = ahh;
+            if (wc.AutoHideFrame is bool ahf) win.AutoHideFrame = ahf;
             if (wc.Locked is bool lk) win.Locked = lk;
             if (wc.TellsHere is bool th) win.TellsHere = th;
             foreach (var kv in wc.Colors) win.Colors[kv.Key] = kv.Value;
@@ -466,10 +478,11 @@ public sealed unsafe class ChatService : IExtenderService
             wc.AnimEnabled = win.AnimEnabled; wc.HoldSec = win.HoldSec;
             wc.FadeSec = win.FadeSec; wc.TauMs = win.TauMs;
             wc.Outline = win.Outline;
+            wc.FontPx = win.FontPx; wc.Typeface = win.Typeface;
             wc.TimeFormat = (int)win.TimeFormat; wc.TimeSource = (int)win.TimeSource;
             wc.Align = (int)win.Align;
-            wc.BgMode = (int)win.BgMode;
-            wc.AutoHideHeader = win.AutoHideHeader;
+            wc.BgMode = (int)win.BgMode; wc.BgAngle = win.BgAngle; wc.BgStart = win.BgStart; wc.BgEnd = win.BgEnd;
+            wc.AutoHideHeader = win.AutoHideHeader; wc.AutoHideFrame = win.AutoHideFrame;
             wc.Locked = win.Locked;
             wc.TellsHere = win.TellsHere;
             foreach (var kv in win.Colors) wc.Colors[kv.Key] = kv.Value;
@@ -525,7 +538,9 @@ public sealed unsafe class ChatService : IExtenderService
     private static bool _booted;                  // first-frame viewport relayout done
     private static int _swapTid;                  // managed thread id of the frame-present thread (probe, #33)
     private static bool _wasInModule;             // last frame's GameGate.InModule, for the module-unload edge
-    private static float _appliedScale = 1f;      // Metrics.Scale we last relaid at (font / GUI-scale edge)
+    private static float _appliedScale = float.NaN;   // Metrics.Scale we last relaid at (font / GUI-scale edge); NaN = never
+    private static int _appliedEpoch = -1;        // TextRig.AtlasEpoch we last relaid at (re-bake edge: typeface, a new face)
+    private static float _panelPx, _panelSmallPx; // the settings panel's face heights at the last open
 
     /// <summary>The chord-consumer face of chat: an unmodified "/" that has fallen past every window opens the
     /// command line. Priority 1, so a hotkey bound to the same key (Priority 2) wins it.</summary>
@@ -601,15 +616,27 @@ public sealed unsafe class ChatService : IExtenderService
                 if (_layout != null)
                 {
                     ChatWindow[] wins = _layout.Windows;
-                    for (int i = 0; i < wins.Length; i++) wins[i].ClampToMin();
+                    for (int i = 0; i < wins.Length; i++) { wins[i].ClampToMin(); EnsureFace(wins[i]); }   // window faces follow the GUI scale; the first in-game frame bakes the loaded ones
                 }
                 DirtyAll();
                 Rebuild();   // re-lay the chrome at the new scale
             }
+            // Re-bake edge: the sheet was re-baked (ui.typeface, a per-window face) -> every cached face is stale.
+            if (TextRig.AtlasEpoch != _appliedEpoch)
+            {
+                _appliedEpoch = TextRig.AtlasEpoch;
+                if (_settings.Open)
+                {
+                    GlyphAtlas? body = TextRig.BakedFace(_panelPx) ?? TextRig.Atlas;
+                    _settings.SetFaces(body, TextRig.BakedFace(_panelSmallPx) ?? body);
+                }
+                DirtyAll();
+                Rebuild();
+            }
             PollGameClock();
             KeepOnScreen();
-            if (_settings.Open && _settings.TooltipTick()) Rebuild();   // #587: a hovered (?) marker's dwell elapsed
             ChatRenderer.Draw();
+            DrawSettings();
             // Dialog and the quickbar draw themselves: each registers its own framework Window and UiHostService's
             // z-order roll-call invokes their content-draw after ours (#63). No cross-call from here.
         }
@@ -696,7 +723,7 @@ public sealed unsafe class ChatService : IExtenderService
             Tab active = wins[i].Active;
             if (!active.Matches(line)) continue;
             wins[i].Dirty = true;
-            float grow = WindowRenderer.MeasureBlock(wins[i], line, atlas) + WindowRenderer.MsgGap;
+            float grow = WindowRenderer.MeasureBlock(wins[i], line, WindowAtlas(wins[i], atlas)) + WindowRenderer.MsgGap;
             if (active.ScrollPx == 0f && i == fi && wins[i].AnimEnabled) ChatAnim.AddResidual(grow);
             else if (active.ScrollPx != 0f) active.ScrollPx += grow;
 
@@ -797,6 +824,21 @@ public sealed unsafe class ChatService : IExtenderService
     private static (ChatWindow? win, RenderFrame? frame)[] _lastBuilt =
         new (ChatWindow?, RenderFrame?)[ChatLayout.MaxWindows];
 
+    private static VertexBatch? _panelBatch;
+
+    /// <summary>Per frame (render thread, hot): the settings panel over every window, from its live state --
+    /// a drag or a hover shows next frame with no rebuild (as the main panel draws; CX-683). Allocates nothing
+    /// while open and idle: the batch is reused and <see cref="SettingsPanel.Emit"/> is zero-alloc.</summary>
+    private static void DrawSettings()
+    {
+        GlyphAtlas? atlas = TextRig.Atlas;
+        if (!_settings.Open || atlas == null) return;
+        VertexBatch b = _panelBatch ??= new VertexBatch(atlas.SolidU, atlas.SolidV);
+        b.Reset(atlas.SolidU, atlas.SolidV);
+        _settings.Panel.Emit(b);
+        TextRig.DrawBatch(b.AsSpan(), b.VertexCount);
+    }
+
     /// <summary>Mark every window dirty (config change, UI-scale change, session reset).</summary>
     private static void DirtyAll()
     {
@@ -871,14 +913,43 @@ public sealed unsafe class ChatService : IExtenderService
         }
     }
 
+    /// <summary>The window's own face (CX-683): its typeface / text size at the GUI scale, else the UI atlas.
+    /// Hot-safe (a baked-face lookup, never a bake); <see cref="EnsureFace"/> baked it cold when it was picked or
+    /// loaded, so a miss here is the bake having refused -- the UI face stands in.</summary>
+    private static GlyphAtlas WindowAtlas(ChatWindow win, GlyphAtlas atlas)
+    {
+        if (win.FontPx <= 0 && win.Typeface.Length == 0) return atlas;
+        return TextRig.BakedFace(win.Typeface.Length > 0 ? win.Typeface : FontRegistry.DefaultName, WindowFacePx(win)) ?? atlas;
+    }
+
+    /// <summary>The effective px of a window's face: its size (or <c>ui.font</c>) × the GUI scale, clamped like the UI atlas.</summary>
+    private static float WindowFacePx(ChatWindow win)
+    {
+        float px = (win.FontPx > 0 ? win.FontPx : UiKnobs.Font.V) * Metrics.GameUiScale;
+        return px < TextRig.MinFontPx ? TextRig.MinFontPx : px > TextRig.AtlasMaxPx ? TextRig.AtlasMaxPx : px;
+    }
+
+    /// <summary>Bake a window's own face if it has one. COLD (a miss re-bakes the sheet): a pick on the gear, and
+    /// the scale edge (where the frame host re-bakes the UI atlas anyway). A refused bake logs; the window then
+    /// draws with the UI face. ponytail: every (typeface, px) ever picked stays in the sheet for the session; when
+    /// it fills, later picks fall back to the UI face. Upgrade: release the window's previous face when no other
+    /// window shares it.</summary>
+    private static void EnsureFace(ChatWindow win)
+    {
+        if (!TextRig.Ready || (win.FontPx <= 0 && win.Typeface.Length == 0)) return;
+        string face = win.Typeface.Length > 0 ? win.Typeface : FontRegistry.DefaultName;
+        if (TextRig.Face(face, WindowFacePx(win)) == null)
+            _log?.Info($"[chat] window face {face} @ {WindowFacePx(win)}px refused; drawing with the UI face");
+    }
+
     private static RenderFrame BuildOneWindow(ChatWindow win, bool focused, GlyphAtlas atlas, int winIndex)
     {
         bool footer = focused && IsTyping && win.HasSendable;
         win.FooterVisible = footer;
         bool grip = (winIndex == _hoverIndex) || win.Dragging || _anyTabDrag;
-        var frame = WindowRenderer.Build(win, focused ? _settings : _closedSettings, _store, atlas,
+        var frame = WindowRenderer.Build(win, focused ? _settings : _closedSettings, _store, WindowAtlas(win, atlas),
             footer, footer ? Edit.Text : "", footer ? Edit.Cursor : 0, grip,
-            footer ? Edit.Selection : null);
+            footer ? Edit.Selection : null, chrome: atlas);
         frame.ApplyResidual = focused && win.AnimEnabled;
         frame.AnimEnabled = win.AnimEnabled;
         frame.HoldSec = win.HoldSec;
@@ -943,6 +1014,20 @@ public sealed unsafe class ChatService : IExtenderService
             if (_settings.Open)
             {
                 bool cs = _settings.MouseDown(x, y, fwin);
+                if (_settings.CopyWindowRequested)
+                {
+                    _settings.CopyWindowRequested = false;
+                    _settings.Reset();
+                    CreateWindow(copyFrom: fwin);
+                }
+                if (_settings.CloseWindowRequested)
+                {
+                    int idx = _layout.FocusedIndex;
+                    _settings.Reset();
+                    if (IsTyping) CloseChat(false);
+                    if (_layout.CloseWindow(idx)) { SaveConfig(); _log?.Info($"[chat] window {idx} closed (settings)"); }
+                    Rebuild(); return true;
+                }
                 if (_settings.CopyRequested >= 0)
                 {
                     int src = _settings.CopyRequested;
@@ -954,10 +1039,9 @@ public sealed unsafe class ChatService : IExtenderService
                         _settings.Layout(fwin);
                     }
                 }
-                // The two shared knobs the gear fronts: a pick is applied here, on the input thread (ui.font's
-                // Changed re-bakes the atlas before the Rebuild below).
+                // The shared knob and a window font pick apply here, on the input thread (the face bakes cold).
                 if (_settings.TellOpenPicked >= 0) { ChatKnobs.TellOpen.Set(_settings.TellOpenPicked); _settings.TellOpenPicked = -1; }
-                if (_settings.FontPicked >= 0) { UiKnobs.Font.Set(_settings.FontPicked); _settings.FontPicked = -1; }
+                if (_settings.FontChanged) { _settings.FontChanged = false; EnsureFace(fwin); }
                 // #46: TellsHere exclusivity — clear all other windows when one turns it on.
                 if (_settings.TellsHereChanged)
                 {
@@ -1021,29 +1105,20 @@ public sealed unsafe class ChatService : IExtenderService
         return false;
     }
 
-    /// <summary>Press dispatch on a single window: button group ([+] [×] [⚙]) then ChatWindow.MouseDown.
-    /// Focuses and returns true if consumed.</summary>
+    /// <summary>Press dispatch on a single window: the [⚙] then ChatWindow.MouseDown. Focuses and returns true if consumed.</summary>
     private static bool DownOnWindow(int index, int x, int y)
     {
         ChatWindow win = _layout!.Windows[index];
-        if (win.OverNewWin(x, y))
-        {
-            CreateWindow();
-            return true;
-        }
-        if (win.OverCloseWin(x, y))
-        {
-            if (IsTyping) CloseChat(false);
-            _layout.CloseWindow(index);
-            SaveConfig();
-            _log?.Info($"[chat] window {index} closed (button)");
-            Rebuild(); return true;
-        }
         if (win.OverGear(x, y))
         {
             _layout.FocusedIndex = index;
             win.ChannelListOpen = false;
-            _settings.OpenAt(win, TextRig.ViewportW, TextRig.ViewportH, winIndex: index, winCount: _layout.Count);
+            float scale = Metrics.GameUiScale < 1f ? 1f : Metrics.GameUiScale;
+            _panelPx = MathF.Round(SettingsPanel.FacePx * scale); _panelSmallPx = MathF.Round(SettingsPanel.SmallPx * scale);
+            GlyphAtlas? body = TextRig.Face(_panelPx) ?? TextRig.Atlas;   // cold: a miss bakes, on the input thread
+            _settings.Panel.Title = _layout.Count > 1 ? $"Chat window {index + 1}" : "Chat window";
+            _settings.OpenAt(win, TextRig.ViewportW, TextRig.ViewportH, _panelPx, body, TextRig.Face(_panelSmallPx) ?? body,
+                             winIndex: index, winCount: _layout.Count);
             Rebuild(); return true;
         }
         // Portrait click: intercept before ChatWindow.MouseDown (which would consume it as a body no-op).
@@ -1152,13 +1227,16 @@ public sealed unsafe class ChatService : IExtenderService
     }
 
     /// <summary>Create a new chat window, offset from Main, and focus it.</summary>
-    private static void CreateWindow()
+    /// <summary>Open a new window: <paramref name="copyFrom"/>'s look (the panel's "Copy this window", CX-683) or
+    /// the defaults (<c>/newwin</c>), one All tab, offset from Main.</summary>
+    private static void CreateWindow(ChatWindow? copyFrom = null)
     {
         if (_layout == null) return;
         ChatWindow main = _layout.Main;
         float offset = _layout.Count * 30f;
         var win = new ChatWindow(main.X + offset, main.Y + offset, main.W, main.H,
             new[] { new Tab("All", 0xffffffff) });
+        if (copyFrom != null) { win.CopySettingsFrom(copyFrom); EnsureFace(win); }
         if (_layout.AddWindow(win) == null)
         {
             _log?.Info("[chat] new window: cap reached");
@@ -1179,16 +1257,9 @@ public sealed unsafe class ChatService : IExtenderService
         if (_layout == null || !GameGate.InGame) return false;
         if (_settings.Open && _focused != null)
         {
-            // True = redraw needed: a title move (this window), a slider drag (the value applies live), or a
-            // hover change on a dropdown item / tooltip marker (#587: nothing applied, just the focused rebuild).
-            if (_settings.MouseMove(x, y, _focused))
-            {
-                if (_settings.Moving)
-                    _focused.Dirty = true;
-                else if (_settings.Dragging)
-                    DirtyAll();
-                Rebuild();
-            }
+            // The panel draws itself from live state every frame (no rebuild for a move or a hover); only a
+            // slider drag changes the window's look, which the frames carry.
+            if (_settings.MouseMove(x, y, _focused) && _settings.Panel.SliderDragging) { DirtyAll(); Rebuild(); }
             return true;
         }
         ChatWindow[] wins = _layout.Windows;
@@ -1228,6 +1299,9 @@ public sealed unsafe class ChatService : IExtenderService
         if (_hoverIndex >= 0 && _hoverIndex != newHover && (uint)_hoverIndex < (uint)wins.Length)
             wins[_hoverIndex].HoveredPortrait = -1;
         bool hoverChanged = newHover != _hoverIndex || newPortraitHover != oldPortraitHover;
+        System.DateTime hnow = System.DateTime.UtcNow;
+        for (int i = 0; i < wins.Length; i++)
+            if (wins[i].SetHoverTab(i == newHover ? x : float.NaN, y, hnow)) { wins[i].Dirty = true; hoverChanged = true; }
         if (consumed || hoverChanged)
         {
             // Mark the windows that actually changed dirty.
@@ -1253,7 +1327,7 @@ public sealed unsafe class ChatService : IExtenderService
     public static bool OnMouseWheel(int dy)
     {
         if (_layout == null || !GameGate.InGame) return false;
-        if (_settings.Open) { if (_settings.MouseWheel(dy)) Rebuild(); return true; }   // #587: the panel / its open list scrolls
+        if (_settings.Open) { _settings.MouseWheel(dy); return true; }   // the panel / its open list scrolls; it draws itself
         // Find the topmost window under the pointer (focused draws last = checked first).
         ChatWindow[] wins = _layout.Windows;
         ChatWindow? hit = null; int hitIdx = -1;
@@ -1265,7 +1339,7 @@ public sealed unsafe class ChatService : IExtenderService
         GlyphAtlas? atlas = TextRig.Atlas;
         if (atlas == null) return true;
         float before = hit.Active.ScrollPx;
-        hit.ScrollByPx(dy * WheelLines * atlas.LineHeight);
+        hit.ScrollByPx(dy * WheelLines * WindowAtlas(hit, atlas).LineHeight);
         hit.Dirty = true;
         Rebuild();
         float applied = hit.Active.ScrollPx - before;
@@ -1610,7 +1684,7 @@ public sealed unsafe class ChatService : IExtenderService
             if (n == 1 && p[0] == echo) return;   // the opening keypress's own character, already inserted
         }
         if (_settings.Editing)   // typed chars go to the focused settings value box, not the chat line
-        { _settings.EditInsert(Encoding.UTF8.GetString(p, n)); Rebuild(); return; }
+        { _settings.EditInsert(Encoding.UTF8.GetString(p, n)); return; }
         Edit.InsertUtf8(new ReadOnlySpan<byte>(p, n));
         Rebuild();   // reflect the new text in the footer
     }
@@ -1638,6 +1712,7 @@ public sealed unsafe class ChatService : IExtenderService
                 case KeyBackspace: _settings.EditBackspace(); break;
                 // other keys (nav/ctrl) are ignored while typing a number
             }
+            if (_settings.FontChanged && _focused != null) { _settings.FontChanged = false; EnsureFace(_focused); }   // Enter on the size / typeface list
             DirtyAll();
             SaveConfig();   // a keyboard commit has no paired mouse-up to persist on
             SyncFieldKeyboard(); Rebuild();

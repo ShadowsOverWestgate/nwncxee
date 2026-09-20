@@ -26,10 +26,10 @@ public enum TsFormat { HourMin, HourMinSec, Hour12 }
 /// when the world timer isn't up, e.g. the main menu).</summary>
 public enum TsSource { Local, Game }
 
-/// <summary>Background fill style for a chat window. Solid = single colour; gradient and stripe modes
-/// blend or alternate the primary (<see cref="ChatColor.Background"/>) and secondary
-/// (<see cref="ChatColor.Background2"/>) colours.</summary>
-public enum BgMode { Solid, GradientV, GradientH, GradientD, StripesH, StripesV, GradientBox, GradientCircle, Conic, Conic4 }
+/// <summary>Background fill of a chat window. Solid = <see cref="ChatColor.Background"/> alone; the gradient
+/// shapes run Background -> <see cref="ChatColor.Background2"/> along the window's direction/stop settings
+/// (CX-683): Linear along the angle, Radial centre -> edge, Conic mirrored around the angle.</summary>
+public enum BgMode { Solid, Linear, Radial, Conic }
 
 /// <summary>A clickable portrait rect in screen pixels, carrying the line's PlayerId for tell targeting.</summary>
 public readonly record struct PortraitHit(float X, float Y, float W, float H, uint PlayerId);

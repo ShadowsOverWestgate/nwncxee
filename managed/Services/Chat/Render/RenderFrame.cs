@@ -25,4 +25,16 @@ public sealed class RenderFrame
     public System.DateTime LastScroll;
     /// <summary>Vertex range for unread-tab blink borders (start..end indices). Alpha is modulated at draw time.</summary>
     public int BlinkStart, BlinkEnd;
+    /// <summary>Vertex ranges of the tab hover plates: the entered tab eases in from <see cref="HoverSince"/>, the
+    /// left tab eases out from <see cref="LeftSince"/>; both over <see cref="HoverMs"/>.</summary>
+    public int HoverStart, HoverEnd, LeftStart, LeftEnd;
+    public System.DateTime HoverSince, LeftSince;
+    /// <summary>Tab hover ease length; short so the bar feels snappy.</summary>
+    public const float HoverMs = 90f;
+    /// <summary>Ease progress in [0,1] of a hover slice that started at <paramref name="since"/>.</summary>
+    public static float HoverT(System.DateTime now, System.DateTime since)
+    {
+        float t = (float)(now - since).TotalMilliseconds / HoverMs;
+        return t < 0f ? 0f : t > 1f ? 1f : t;
+    }
 }

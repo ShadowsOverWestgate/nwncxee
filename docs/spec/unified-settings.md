@@ -219,10 +219,15 @@ state; no row.
 |---|---|---|---|---|---|---|---|
 | chat.enabled | lockchat (chat half) | Enable the CX chatbox | T | on | U | **R** | CX's own chat: multiple windows, tabs, portraits, tells routing. Off, the stock chat window runs. Takes effect at the next launch. |
 | chat.tellopen | tellopen | When a tell arrives | D | nothing / open a tab / open a window · nothing | U | L | Where a tell from someone new lands: nowhere special, a new tab in the main window, or its own window. |
-| w<N>.* (rect, toggles, inputtop, sendch, anim, hold, fade, tau, outline, tsfmt, tssrc, align, bgmode, autohide, locked, tellshere, col.*, t<M>.*) | same | — | per-window state | | H | | edited on the window; submenu reset leaves it alone |
+| w<N>.* (rect, toggles, inputtop, sendch, anim, hold, fade, tau, outline, font, typeface, tsfmt, tssrc, align, bgmode, autohide, locked, tellshere, col.*, t<M>.*) | same | — | per-window state | | H | | edited on the window; submenu reset leaves it alone |
 
 `/newwin` / `/closewin` stay (actions); `/nw` `/cw` die. Chat's `SettingsWindow` survives as
-the per-window editor with its own `SetAct`.
+the per-window editor with its own `SetAct`. Since CX-683 it wears the panel's design with ONE
+category column -- *Window settings*, one entry per kept tab, *Add new tab...* -- and the font
+rows are the window's own (`w<N>.font` / `w<N>.typeface`, absent = follow `ui.font` /
+`ui.typeface`), drawn from a face of its own on the shared sheet. The tab bar keeps only the gear:
+a new window is the panel header's *Copy this window*, closing is the window category's *Close
+this window* (two presses; Main has no row).
 
 **Dialog** — group `dialog`. The title-bar gear and `DialogSettings` are deleted.
 
@@ -302,7 +307,7 @@ Now persists (amends #182).
 
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
-| ui.font | font (cx-chat.cfg; dialog's slider edited the same) | Text size | D | 6 … 32 pt, every point · 18 | U | L | Size of the text in every CX window: chat, dialog, nameplates. |
+| ui.font | font (cx-chat.cfg; dialog's slider edited the same) | Text size | D | 6 … 32 pt, every point · 18 | U | L | Size of the text in every CX window: chat, dialog, nameplates. A chat window may set its own on its gear (CX-683). |
 | ui.typeface | — | Typeface | D | `default` + every `font.<name>` + every installed font (full name) · default | U | L | The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Type in the list to search. (CX-681: rebinds the registry's `default`; icons stay DejaVu, #425) |
 | ui.hoverfocus | hoverToFocus (cx-ui.cfg) | Focus a window by hovering | T | off | U | L | A CX window takes the keyboard when the pointer rests on it, without a click. |
 | ui.snap | grid (cx-quickbar.cfg) | Snap windows to a grid | T | off | U | L | Dragged windows land on grid points. |
@@ -683,7 +688,7 @@ content early-return, never an Unregister. `lockchat` never installed nothing.
 |---|---|---|
 | Scrollable column | `CX.Ui` | three per panel; also the dropdown list, Debug info, and #572's tab editor |
 | Dropdown | `CX.Ui` | replaces `SetKind.Cycle`; list scrolls; `layout:` knobs use it by construction |
-| Tooltip | `CX.Ui` | Advanced rows with help; the chat window's own panel |
+| Tooltip | `CX.Ui` | Advanced rows with help (the chat window's panel wraps help under the label since CX-683) |
 | Section header, greyed row, off-default dot, restart badge, warning strip, Advanced disclosure | panel | per the prototype |
 | Boxed master row | panel | |
 | Status line, link row | panel | knob-less elements |

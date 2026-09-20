@@ -23,7 +23,7 @@ internal static class UiKnobs
         int[] ladder = new int[TextRig.MaxFontPx - TextRig.MinFontPx + 1];
         for (int i = 0; i < ladder.Length; i++) ladder[i] = TextRig.MinFontPx + i;
         Font = G.Dropdown("font", "Text size", ladder, (int)Metrics.DesignFontPx, layout: true,
-                          help: "Size of the text in every CX window: chat, dialog, nameplates.",
+                          help: "Size of the text in every CX window: chat, dialog, nameplates. A chat window may set its own on its gear.",
                           changed: UiHostService.ApplyFont);
         Typeface = G.Dropdown("typeface", "Typeface", FontRegistry.Names, FontRegistry.DefaultName, layout: true,
                               help: "The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Type in the list to search.",

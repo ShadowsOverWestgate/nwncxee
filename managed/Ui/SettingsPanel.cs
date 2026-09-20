@@ -2,311 +2,395 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using CX.Framework;
+using static CX.Ui.PanelChrome;
 
 namespace CX.Ui;
 
 /// <summary>
-/// The shared settings panel: a floating, title-draggable panel of typed <see cref="SetRow"/>s (checkboxes,
-/// dropdowns, sliders with inline numeric entry, colour swatches, text boxes, buttons). It owns the panel
-/// geometry -- position, metrics, the published row list, hit-test-to-row, the close-button hit, the title drag,
-/// the slider grab and the text-entry buffer -- and the draw. The rows sit in one <see cref="ScrollColumn"/>
-/// (the panel caps at <see cref="ViewportH"/> and scrolls past it), dropdown rows open the one
-/// <see cref="Drop"/> list, and rows with <see cref="SetRow.Help"/> carry the <see cref="Tip"/> marker (#587).
-/// A consumer supplies the rows (<see cref="Publish"/> after its own layout pass) plus four callbacks:
-/// <see cref="Relayout"/>, <see cref="RowPressed"/>, <see cref="ApplyValue"/> and <see cref="CommitLabel"/>.
+/// The per-window settings panel (CX-683): the main panel's design (<see cref="KnobPanel"/> -- header, the
+/// <see cref="PanelChrome"/> palette, em metrics on its own body / small faces, a row's help wrapped under its
+/// label, right-aligned controls) with ONE category column. It owns the geometry -- placement, the header drag,
+/// the two scroll columns, the row layout (<see cref="Publish"/> lays the consumer's rows out), hit-test-to-row,
+/// the open <see cref="Drop"/> list, the slider grab and the text-entry buffer -- and the draw. A consumer
+/// supplies <see cref="Categories"/> and the rows of the chosen one, plus the callbacks: <see cref="Relayout"/>,
+/// <see cref="CategoryPicked"/>, <see cref="RowPressed"/>, <see cref="ApplyValue"/>, <see cref="CommitLabel"/>.
 /// Pure -- pixels in, hit-tests + callbacks out, no native refs -- so it self-checks off-device.
-/// ponytail: no theming, and one set of metric constants shared by every consumer (Chat's literals).
 /// </summary>
 public sealed class SettingsPanel
 {
-    public float X, Y;
-
-    /// <summary>Panel width in design px, before <see cref="Metrics.Scale"/>. Set by the consumer at construction.</summary>
-    private readonly float _designW;
-
-    /// <summary>Panel width. Scales with the font/UI so the label|control split (<see cref="ControlX"/>) and the
-    /// value boxes keep their proportions -- labels and values don't run past their column when the font grows.</summary>
-    public float W => _designW * Metrics.Scale;
+    /// <summary>Design face heights before the GUI scale: the main panel's.</summary>
+    public const float FacePx = KnobPanel.FacePx, SmallPx = KnobPanel.SmallPx;
+    /// <summary>Panel size as a fraction of the viewport, the category column as a fraction of the panel.</summary>
+    public const float WFrac = 0.52f, HFrac = 0.66f, CatFrac = 0.30f;
+    /// <summary>Rows one wheel notch scrolls a column by, in em.</summary>
+    public const float WheelEm = 3.3f;
 
     public bool Open;
+    public float X, Y, W, H;
+    /// <summary>The viewport the panel was laid out for.</summary>
+    public float VpW, VpH;
+    /// <summary>The body face height in px: every metric is a multiple of it.</summary>
+    public float Em { get; private set; } = FacePx;
+    /// <summary>The faces the layout measured with and the draw uses; the consumer re-fetches them by atlas epoch.</summary>
+    public GlyphAtlas? Body, Small;
+    /// <summary>Title-bar caption.</summary>
+    public string Title = "Settings";
+    /// <summary>A button in the header, left of the close ×; "" = none. Its press runs <see cref="HeaderActionPressed"/>.</summary>
+    public string HeaderAction = "";
+    public Action? HeaderActionPressed;
 
-    /// <summary>The consumer's screen size: the panel never grows taller than <see cref="ViewportH"/> (its rows
-    /// scroll instead), an open dropdown list flips above its row rather than run past it, and the tooltip box
-    /// stays left of <see cref="ViewportW"/>. Unset = unbounded (the pre-#587 behaviour).</summary>
-    public float ViewportW = float.MaxValue, ViewportH = float.MaxValue;
+    /// <summary>The category column's entries and the chosen one; the consumer sets both (a press on an entry
+    /// goes through <see cref="CategoryPicked"/> first, so the consumer may redirect it).</summary>
+    public string[] Categories = Array.Empty<string>();
+    public int Category;
 
-    /// <summary>The rows' scroll box: the band under the title bar down to the bottom pad. Its Offset is what
-    /// separates a row's laid-out <see cref="SetRow.Top"/> from where it is drawn and hit.</summary>
-    public readonly ScrollColumn Scroll = new();
+    public readonly ScrollColumn Cats = new(), List = new();
     /// <summary>The one open-list instance every dropdown row shares; <see cref="Dropdown.Tag"/> is the row.</summary>
     public readonly Dropdown Drop = new();
-    /// <summary>The help tooltip; hovered row = <see cref="Tooltip.Key"/>.</summary>
-    public readonly Tooltip Tip = new();
-    /// <summary>Rows a wheel notch scrolls the panel by.</summary>
-    public const float WheelRows = 2f;
-
-    private bool _pressConsumed;
-    // The slider being dragged (mouse-down..up), a live row in the current Rows list. The consumer's Relayout
-    // only runs on the input thread (never from an ingest-thread rebuild), and no relayout runs mid-drag --
-    // MouseDown re-resolves _grab into the freshly published list right after its Relayout, and MouseMove doesn't
-    // re-lay -- so this reference stays a drawn row for the whole drag, and its Norm/Rgba update in place track
-    // the pointer live.
-    private SetRow? _grab;
-    private bool _moving;          // dragging the panel by its title bar
-    private float _mgx, _mgy;      // move-grab anchor: pointer offset from (X,Y) at grab
-    // Inline text entry (click a slider's value box to type an exact value; a consumer may also start a label
-    // edit on any row). _editRow is a live row in the current Rows list; like _grab it's re-resolved after
-    // MouseDown's Relayout and dropped if the row vanishes.
-    private SetRow? _editRow;
-    private string _editText = "";
-    private bool _editLabel;       // true = editing free text (broad char set), false = numeric (digits only)
-
-    // Pixel metrics scale with Metrics.Scale (font size + game UI scale) so labels/values/title don't clip when
-    // the font grows; ControlX stays a const -- it's a width fraction, not a pixel length.
-    public static float TitleH => 22f * Metrics.Scale;
-    public static float RowH => 24f * Metrics.Scale;
-    public static float Pad => 8f * Metrics.Scale;
-    public static float CheckSize => 14f * Metrics.Scale;
-    public static float CloseW => TitleH;
-    /// <summary>Colour swatch box drawn at the right edge of a swatch row.</summary>
-    public static float SwatchW => 34f * Metrics.Scale;
-    /// <summary>Left inset of the control (slider track / dropdown box / swatch) -- labels sit left of it.</summary>
-    public const float ControlX = 0.42f;
-    /// <summary>Left inset of a <see cref="SetKind.Text"/> row's box. Text rows carry short labels and long free
-    /// text (a tab name up to the 32-rune edit cap), so the box takes most of the row (#572).</summary>
-    public const float TextControlX = 0.28f;
-    /// <summary>Extra left indent of a colour channel sub-row.</summary>
-    public static float ChannelIndent => 12f * Metrics.Scale;
-    /// <summary>Numeric value box at a slider row's right edge (click to type an exact value).</summary>
-    public static float ValueW => 36f * Metrics.Scale;
 
     /// <summary>The laid-out rows; the draw walks these, hit-testing reads them. <see cref="Publish"/> swaps in a
-    /// fresh list (never mutates in place), so a reader on another thread (an ingest-thread rebuild -> Emit)
-    /// iterates a stable snapshot instead of racing a Clear -- the lock-free pattern the chat store uses.</summary>
+    /// fresh list (never mutates in place), so a reader on another thread iterates a stable snapshot.</summary>
     private volatile List<SetRow> _rows = new();
     public List<SetRow> Rows => _rows;
-    // ponytail: X/Y/W/_h are plain fields read by the (cold) draw while the consumer's layout writes them; a torn
-    // read is a one-frame cosmetic panel-geometry glitch, memory-safe -- the same tolerance the store's ring read
-    // carries.
-    private float _h = TitleH + Pad;
-    /// <summary>Title-bar caption. Consumers that are not simply "Settings" set it at construction.</summary>
-    public string Title = "Settings";
 
-    /// <summary>Total panel height (title + laid-out rows + pad). Grows with the option list up to
-    /// <see cref="ViewportH"/>; past that the rows scroll.</summary>
-    public float H => _h;
-    private float _contentH;
-
-    public SettingsPanel(float designW) { _designW = designW; }
+    private bool _pressConsumed;
+    private SetRow? _grab;         // the slider being dragged (mouse-down..up), a live row in the current list
+    private bool _moving;          // dragging the panel by its header
+    private float _mgx, _mgy;      // move-grab anchor: pointer offset from (X,Y) at grab
+    private SetRow? _editRow;      // inline text entry (a slider's value box, or a consumer-started label edit)
+    private string _editText = "";
+    private bool _editLabel;       // true = free text (broad char set), false = numeric (digits only)
+    private int _hoverCat = -1;
+    private SetRow? _hoverRow;
+    private float _lastMx, _lastMy;
 
     // ---- consumer contract -----------------------------------------------------------------------
 
     /// <summary>Rebuild the row list from the live model (the consumer's layout pass, ending in
     /// <see cref="Publish"/>). Called after every row press so the change shows next frame.</summary>
     public Action? Relayout;
-
+    /// <summary>A category entry was pressed. The consumer sets <see cref="Category"/> (the default when unset:
+    /// the pressed index) and mutates its model; the panel then re-lays out.</summary>
+    public Action<int>? CategoryPicked;
     /// <summary>A press landed on a non-slider row: the consumer mutates its model. Slider rows never reach
     /// here -- the panel owns the track drag and the value box itself.</summary>
     public Action<SetRow>? RowPressed;
-
     /// <summary>Write a raw value for a slider/channel row (already in the row's Min..Max units) onto the
     /// consumer's model, and mirror it back onto the row's draw state.</summary>
     public Action<SetRow, float>? ApplyValue;
-
     /// <summary>Commit a free-text edit (the consumer decides what empty means).</summary>
     public Action<SetRow, string>? CommitLabel;
 
-    /// <summary>Publish a freshly laid-out row list. <paramref name="contentBottom"/> is the y the layout
-    /// finished at; the panel adds its bottom pad to get <see cref="H"/>.</summary>
-    public void Publish(List<SetRow> rows, float contentBottom)
-    {
-        _contentH = contentBottom - ContentTop;
-        float full = TitleH + _contentH + Pad;
-        _h = full > ViewportH ? ViewportH : full;
-        _rows = rows;
-        SyncScroll();
-    }
+    // ---- em metrics ----
+    private float HeaderH => 2.7f * Em;
+    private float Pad => 1.2f * Em;
+    private float NavPadX => 1f * Em;
+    private float NavH => BodyLh + 1.2f * Em;
+    private float HeadH => BodyLh + 1.2f * Em;
+    private float RowMinH => 3.3f * Em;
+    private float RowPlainH => 2.4f * Em;
+    private float ChanH => 2f * Em;
+    private float RowPadY => 0.4f * Em;
+    private float SecH => SmallLh + 1.3f * Em;
+    private float BodyLh => Body?.LineHeight ?? Em * 1.2f;
+    private float SmallLh => Small?.LineHeight ?? Em;
+    private float CloseW => 1.7f * Em;
+    private float HeaderBtnH => 1.7f * Em;
+    private float HeaderBtnW => (Body != null ? UiText.Measure(Body, HeaderAction) : 6f * Em) + 1.8f * Em;
+    private float ToggleW => 2.6f * Em;
+    private float ToggleH => 1.3f * Em;
+    private float TrackW => 8f * Em;
+    private float ValueW => 3.6f * Em;
+    private float TextW => 13f * Em;
+    private float SwatchW => 2.4f * Em;
+    private float CtlH => 1.6f * Em;
+    private float Gap => 0.6f * Em;
+    private float ChanIndent => 1.4f * Em;
 
-    /// <summary>Re-seat the scroll box under the title bar (after a publish or a title-bar move).</summary>
-    private void SyncScroll()
-    {
-        Scroll.ContentH = _contentH;
-        Scroll.SetRect(X, ContentTop, W, _h - TitleH - Pad);
-    }
+    // ---- open / close / place ----
 
-    /// <summary>Screen y a row's top is drawn at (its laid-out <see cref="SetRow.Top"/> minus the scroll).</summary>
-    public float RowTop(SetRow r) => r.Top - Scroll.Offset;
-
-    /// <summary>Y the consumer's first row starts at (below the title bar).</summary>
-    public float ContentTop => Y + TitleH;
-
-    /// <summary>Enter the open state, clearing any half-owned press, drag or field edit. The consumer follows
-    /// with its own layout + placement.</summary>
-    public void BeginOpen()
+    /// <summary>Open centred in a <paramref name="vpW"/>×<paramref name="vpH"/> viewport with the faces the
+    /// consumer baked at <paramref name="em"/>, clearing any half-owned press, drag or field edit. The consumer
+    /// follows with its own layout (<see cref="Publish"/>).</summary>
+    public void OpenAt(float vpW, float vpH, float em, GlyphAtlas? body, GlyphAtlas? small)
     {
         Open = true; _pressConsumed = true; _grab = null; _moving = false;
-        _editRow = null; _editText = ""; _editLabel = false;
-        Scroll.Reset(); Drop.Close(); Tip.Leave();
+        _editRow = null; _editText = ""; _editLabel = false; _hoverRow = null; _hoverCat = -1;
+        Cats.Reset(); List.Reset(); Drop.Close();
+        VpW = vpW; VpH = vpH; Em = em; Body = body; Small = small;
+        W = MathF.Round(vpW * WFrac); H = MathF.Round(vpH * HFrac);
+        X = MathF.Round((vpW - W) / 2f); Y = MathF.Round((vpH - H) / 2f);
+        Place();
     }
 
     /// <summary>Force-close at a session boundary, clearing any half-owned press, drag, or field edit.</summary>
     public void Reset()
     {
         Open = false; _pressConsumed = false; _grab = null; _moving = false; _editRow = null; _editText = ""; _editLabel = false;
-        Scroll.Reset(); Drop.Close(); Tip.Leave();
+        _hoverRow = null; _hoverCat = -1;
+        Cats.Reset(); List.Reset(); Drop.Close();
     }
 
-    // ---- geometry --------------------------------------------------------------------------------
-
-    /// <summary>Slider track span + centre-y for a row (shared by draw + hit-test so they always agree). The
-    /// track stops short of the right-edge value box.</summary>
-    public void SliderTrack(SetRow r, out float x0, out float x1, out float cy)
+    /// <summary>Seat the two columns under the header for the current X/Y.</summary>
+    private void Place()
     {
-        float indent = r.Channel >= 0 ? ChannelIndent : 0f;
-        x0 = X + W * ControlX + indent;
-        x1 = X + W - Pad - ValueW - 4f;
-        cy = RowTop(r) + RowH * 0.5f;
+        float top = Y + HeaderH, h = H - HeaderH;
+        float cw = MathF.Round(W * CatFrac);
+        Cats.SetRect(X, top, cw, h);
+        List.SetRect(X + cw, top + HeadH, W - cw, h - HeadH);
     }
 
-    /// <summary>The slider value box rect (right edge of the row). Draw + hit-test share it.</summary>
-    public void ValueBox(SetRow r, out float x0, out float x1, out float y0, out float y1)
+    /// <summary>Lay the consumer's rows out top to bottom for the current faces (control widths, wrapped help,
+    /// row heights) and publish the list.</summary>
+    public void Publish(List<SetRow> rows)
     {
-        x1 = X + W - Pad; x0 = x1 - ValueW;
-        float top = RowTop(r);
-        y0 = top + 3f; y1 = top + RowH - 3f;
+        Cats.ContentH = 0.4f * Em + Categories.Length * NavH;
+        Cats.Clamp();
+        float y = 0.4f * Em;
+        float inner = ListInnerW();
+        for (int i = 0; i < rows.Count; i++)
+        {
+            SetRow r = rows[i];
+            r.Top = y;
+            r.CtlW = ControlW(r);
+            if (r.Kind == SetKind.Section) { r.Height = SecH; r.HelpLines = Array.Empty<string>(); }
+            else if (r.Channel >= 0) { r.Height = ChanH; r.HelpLines = Array.Empty<string>(); }
+            else
+            {
+                float labelW = inner - r.CtlW - Gap;
+                r.HelpLines = r.Help.Length > 0 ? KnobPanel.Wrap(Small, r.Help, labelW < 4f * Em ? 4f * Em : labelW) : Array.Empty<string>();
+                float h = 2f * RowPadY + BodyLh + (r.HelpLines.Length > 0 ? 0.1f * Em + r.HelpLines.Length * SmallLh : 0f);
+                float min = r.HelpLines.Length > 0 ? RowMinH : RowPlainH;
+                r.Height = h < min ? min : h;
+            }
+            y += r.Height;
+        }
+        List.ContentH = y + 1.5f * Em;
+        List.Clamp();
+        _rows = rows;
     }
 
-    /// <summary>The control box of a dropdown / text row (the value box right of the label column; a text row's
-    /// column starts at <see cref="TextControlX"/>).</summary>
-    public void ControlBox(SetRow r, out float x0, out float x1, out float y0, out float y1)
+    /// <summary>The row column's inner width: side pads and the gutter off.</summary>
+    private float ListInnerW() => List.W - 2f * Pad - ScrollColumn.BarW;
+
+    /// <summary>Control width per kind, at layout: the label clip and the row's hit zones derive from it.</summary>
+    private float ControlW(SetRow r)
     {
-        x0 = X + W * (r.Kind == SetKind.Text ? TextControlX : ControlX); x1 = X + W - Pad;
-        float top = RowTop(r);
-        y0 = top + 3f; y1 = top + RowH - 3f;
+        switch (r.Kind)
+        {
+            case SetKind.Toggle: return ToggleW;
+            case SetKind.Slider: return TrackW + Gap + ValueW;
+            case SetKind.Dropdown:
+            {
+                float w = 0f;
+                if (Body != null && r.Choices != null)
+                    for (int i = 0; i < r.Choices.Length; i++) { float cw = UiText.Measure(Body, r.Choices[i]); if (cw > w) w = cw; }
+                w += 2.6f * Em;
+                float min = 9f * Em, max = 14f * Em;
+                return w < min ? min : w > max ? max : w;
+            }
+            case SetKind.Swatch: return SwatchW;
+            case SetKind.Button: return (Body != null ? UiText.Measure(Body, r.Label) : 6f * Em) + 1.8f * Em;
+            case SetKind.Text: return TextW;
+            default: return 0f;
+        }
     }
-    private bool OverValueBox(SetRow r, float mx, float my)
-    { ValueBox(r, out float x0, out float x1, out float y0, out float y1); return mx >= x0 && mx <= x1 && my >= y0 && my <= y1; }
+
+    // ---- geometry shared by draw and hit-test ----
+
+    public bool Contains(float mx, float my)
+        => (mx >= X && mx < X + W && my >= Y && my < Y + H) || Drop.Contains(mx, my);
 
     public bool OverClose(float mx, float my)
-        => mx >= X + W - CloseW && mx <= X + W && my >= Y && my <= Y + TitleH;
+        => mx >= X + W - Pad - CloseW && mx < X + W - Pad + 0.2f * Em && my >= Y && my < Y + HeaderH;
 
-    /// <summary>Over the panel body or its open dropdown list.</summary>
-    public bool Contains(float mx, float my)
-        => (mx >= X && mx <= X + W && my >= Y && my <= Y + H) || Drop.Contains(mx, my);
+    /// <summary>The header button's box (right of the title, left of the ×).</summary>
+    public void HeaderButtonRect(out float x0, out float x1, out float y0, out float y1)
+    {
+        x1 = X + W - Pad - CloseW - 0.6f * Em; x0 = x1 - HeaderBtnW;
+        float mid = Y + HeaderH * 0.5f;
+        y0 = mid - HeaderBtnH * 0.5f; y1 = mid + HeaderBtnH * 0.5f;
+    }
 
-    /// <summary>The row under a pointer: inside the scroll box, offset-corrected, and not over its gutter.</summary>
+    private bool OverHeaderButton(float mx, float my)
+    {
+        if (HeaderAction.Length == 0) return false;
+        HeaderButtonRect(out float x0, out float x1, out float y0, out float y1);
+        return In(mx, my, x0, x1, y0, y1);
+    }
+
+    private float NavTop(int i) => Cats.ToScreen(0.4f * Em + i * NavH);
+
+    private int NavAt(float mx, float my)
+    {
+        if (!Cats.Contains(mx, my) || Cats.OverBar(mx, my)) return -1;
+        int i = (int)((Cats.ToContent(my) - 0.4f * Em) / NavH);
+        return i >= 0 && i < Categories.Length ? i : -1;
+    }
+
+    /// <summary>Screen y a row's top is drawn at.</summary>
+    public float RowTop(SetRow r) => List.ToScreen(r.Top);
+
+    /// <summary>The row under a pointer: inside the list box, offset-corrected, and not over its gutter.</summary>
     private SetRow? RowAt(float mx, float my)
     {
-        if (mx < X || mx > X + W) return null;
-        if (my < Scroll.Y || my >= Scroll.Y + Scroll.H || Scroll.OverBar(mx, my)) return null;
-        float cy = my + Scroll.Offset;
-        foreach (SetRow r in Rows)
-            if (cy >= r.Top && cy < r.Top + r.Height) return r;
+        if (!List.Contains(mx, my) || List.OverBar(mx, my)) return null;
+        float cy = List.ToContent(my);
+        var rows = _rows;
+        for (int i = 0; i < rows.Count; i++)
+            if (cy >= rows[i].Top && cy < rows[i].Top + rows[i].Height) return rows[i];
         return null;
     }
 
+    private float RowLeft(SetRow r) => List.X + Pad + (r.Channel >= 0 ? ChanIndent : 0f);
+
+    /// <summary>Right edge of a row's control span and its vertical centre (the label line, or a channel row's middle).</summary>
+    private void ControlAnchor(SetRow r, out float right, out float cy)
+    {
+        right = List.X + List.W - Pad - ScrollColumn.BarW;
+        float top = RowTop(r);
+        cy = r.Channel >= 0 ? top + r.Height * 0.5f : top + RowPadY + BodyLh * 0.5f;
+    }
+
+    /// <summary>Slider track span + centre-y for a row (shared by draw + hit-test so they always agree).</summary>
+    public void SliderTrack(SetRow r, out float x0, out float x1, out float cy)
+    {
+        ControlAnchor(r, out float right, out cy);
+        x0 = right - r.CtlW; x1 = x0 + TrackW;
+    }
+
+    /// <summary>The slider value box rect (right of the track). Draw + hit-test share it.</summary>
+    public void ValueBox(SetRow r, out float x0, out float x1, out float y0, out float y1)
+    {
+        ControlAnchor(r, out float right, out float cy);
+        x0 = right - r.CtlW + TrackW + Gap; x1 = x0 + ValueW;
+        y0 = cy - CtlH * 0.5f; y1 = cy + CtlH * 0.5f;
+    }
+
+    /// <summary>The one box of a dropdown / text / button / swatch control (the right-aligned span).</summary>
+    public void ControlBox(SetRow r, out float x0, out float x1, out float y0, out float y1)
+    {
+        ControlAnchor(r, out float right, out float cy);
+        x1 = right; x0 = right - r.CtlW;
+        y0 = cy - CtlH * 0.5f; y1 = cy + CtlH * 0.5f;
+    }
+
+    private static bool In(float mx, float my, float x0, float x1, float y0, float y1) => mx >= x0 && mx < x1 && my >= y0 && my < y1;
+
     // ---- input -----------------------------------------------------------------------------------
 
-    /// <summary>Pointer press while open. Always consumed. A slider hit starts a drag (see
-    /// <see cref="MouseMove"/>) or a value-box edit; every other row goes to <see cref="RowPressed"/>. Close
-    /// button or a click-off closes.</summary>
+    /// <summary>Pointer press while open. Always consumed. A category entry picks; a slider hit starts a drag
+    /// (see <see cref="MouseMove"/>) or a value-box edit; a dropdown box opens the list; every other row goes to
+    /// <see cref="RowPressed"/>. Close button or a click-off closes.</summary>
     public bool MouseDown(float mx, float my)
     {
         _pressConsumed = true; _grab = null; _moving = false;
-        Tip.Leave();
         if (_editRow != null) CommitEdit();   // any press ends an in-progress field edit (commit-on-focus-loss)
         if (Drop.Open)
         {
-            // The open list owns the press: an item picks (the row's Selected + RowPressed), the gutter scrolls,
-            // anything else just closes it. Never falls through to the rows beneath.
+            // The open list owns the press (pick / scroll / close); it never falls through to the rows beneath.
             SetRow? dropRow = Drop.Tag as SetRow;
             Drop.MouseDown(mx, my, out int picked);
-            if (picked >= 0 && dropRow != null)
-            {
-                dropRow.Selected = picked;
-                RowPressed?.Invoke(dropRow);
-                Relayout?.Invoke();
-            }
+            if (picked >= 0 && dropRow != null) Pick(dropRow, picked);
             return true;
         }
         if (OverClose(mx, my)) { Open = false; return true; }
-        // Title bar (above the first row) is the move handle -- drag the panel anywhere on-screen.
-        if (my < Y + TitleH) { _moving = true; _mgx = mx - X; _mgy = my - Y; return true; }
-        if (Scroll.MouseDown(mx, my)) return true;   // thumb grab / track page
-        SetRow? row = RowAt(mx, my);
-        if (row == null) { if (!Contains(mx, my)) Open = false; return true; }
-
-        if (row.Kind == SetKind.Slider)
+        if (!Contains(mx, my)) { Open = false; return true; }
+        if (OverHeaderButton(mx, my)) { HeaderActionPressed?.Invoke(); return true; }
+        if (my < Y + HeaderH) { _moving = true; _mgx = mx - X; _mgy = my - Y; return true; }
+        if (Cats.MouseDown(mx, my) || List.MouseDown(mx, my)) return true;   // thumb grab / track page
+        int c = NavAt(mx, my);
+        if (c >= 0)
         {
-            if (OverValueBox(row, mx, my)) BeginEdit(row);
-            else
-            {
-                SliderTrack(row, out float sx0, out float sx1, out float _);
-                if (mx >= sx0 && mx <= sx1) { _grab = row; SetSliderFromX(row, mx); }
-            }
+            if (CategoryPicked != null) CategoryPicked(c); else Category = c;
+            List.Reset();
+            Relayout?.Invoke();
+            return true;
         }
-        else if (row.Kind == SetKind.Dropdown)
+        SetRow? row = RowAt(mx, my);
+        if (row == null) return true;
+
+        switch (row.Kind)
         {
-            if (row.Choices != null && row.Choices.Length > 0)
+            case SetKind.Slider:
+            {
+                ValueBox(row, out float vx0, out float vx1, out float vy0, out float vy1);
+                if (In(mx, my, vx0, vx1, vy0, vy1)) { BeginEdit(row); return true; }
+                SliderTrack(row, out float sx0, out float sx1, out float cy);
+                if (mx >= sx0 - 0.4f * Em && mx < sx1 + 0.4f * Em && my >= cy - Em && my < cy + Em) { _grab = row; SetSliderFromX(row, mx); }
+                return true;
+            }
+            case SetKind.Dropdown:
             {
                 ControlBox(row, out float bx0, out float bx1, out float by0, out float by1);
-                Drop.OpenAt(row.Choices, row.Selected, row, bx0, by0, by1, bx1 - bx0, RowH, ViewportH);
+                if (row.Choices != null && row.Choices.Length > 0 && In(mx, my, bx0, bx1, by0, by1))
+                    Drop.OpenAt(row.Choices, row.Selected, row, bx0, by0, by1, bx1 - bx0, CtlH, VpH, search: row.Choices.Length > Dropdown.MaxVisible);
+                return true;   // the list is up; nothing changed yet
             }
-            return true;   // the list is up; nothing changed yet
+            case SetKind.Button:
+            {
+                ControlBox(row, out float bx0, out float bx1, out float by0, out float by1);
+                if (!In(mx, my, bx0, bx1, by0, by1)) return true;
+                break;
+            }
+            case SetKind.Section:
+                return true;
         }
-        else RowPressed?.Invoke(row);
-
-        Relayout?.Invoke();   // reflect the change (e.g. an anim toggle shows/hides its sliders) for the next frame
-        // Relayout published a fresh list; re-resolve the grabbed/edited row into it so the drawn knob + value box
-        // (not a detached row) track the interaction. A vanished row (Find null) ends the grab/edit cleanly.
-        if (_grab != null) _grab = _rows.Find(r => r.Act == _grab.Act && r.Key == _grab.Key && r.Channel == _grab.Channel);
+        RowPressed?.Invoke(row);
+        Relayout?.Invoke();
+        // Relayout published a fresh list: re-resolve the edited row into it (a vanished row ends the edit).
         if (_editRow != null) _editRow = _rows.Find(r => r.Act == _editRow.Act && r.Key == _editRow.Key && r.Channel == _editRow.Channel);
         return true;
     }
 
-    /// <summary>True while the panel is being dragged by its title bar (not a slider grab).</summary>
+    /// <summary>A pick from the open list: the row's Selected, then the consumer, then a relayout.</summary>
+    private void Pick(SetRow row, int i)
+    {
+        row.Selected = i;
+        RowPressed?.Invoke(row);
+        Relayout?.Invoke();
+    }
+
+    /// <summary>True while the panel is being dragged by its header (not a slider grab).</summary>
     public bool Moving => _moving;
 
-    /// <summary>True while a slider, a scrollbar thumb or the panel itself is being dragged.</summary>
-    public bool Dragging => _grab != null || _moving || Scroll.Dragging || Drop.Dragging;
+    /// <summary>True while a slider is being dragged: the consumer's model changes per motion.</summary>
+    public bool SliderDragging => _grab != null;
 
-    /// <summary>Pointer motion: a title-bar move translates row positions in place without a full relayout
-    /// (#53); a slider / thumb drag tracks the pointer; otherwise the dropdown hover and the tooltip marker
-    /// hover update. True when the panel needs redrawing (a drag, or a hover change).</summary>
+    /// <summary>True while a slider, a scrollbar thumb or the panel itself is being dragged.</summary>
+    public bool Dragging => _grab != null || _moving || Cats.Dragging || List.Dragging || Drop.Dragging;
+
+    /// <summary>Pointer motion: a header drag moves the panel (clamped to the viewport); a slider / thumb drag
+    /// tracks the pointer; the open list hovers; otherwise the category and row hovers update. True when the
+    /// panel needs redrawing.</summary>
     public bool MouseMove(float mx, float my)
     {
+        _lastMx = mx; _lastMy = my;
         if (_moving)
         {
-            float oldY = Y;
-            X = mx - _mgx; Y = my - _mgy;
-            float dy = Y - oldY;
-            var rows = _rows;
-            for (int i = 0; i < rows.Count; i++) rows[i].Top += dy;
-            SyncScroll();
+            X = Window.ClampAxis(mx - _mgx, W, VpW); Y = Window.ClampAxis(my - _mgy, H, VpH);
+            Place();
             return true;
         }
         if (Drop.Open) return Drop.MouseMove(mx, my);
-        if (Scroll.MouseMove(mx, my)) return true;
+        if (Cats.MouseMove(mx, my) || List.MouseMove(mx, my)) return true;
         if (_grab != null) { SetSliderFromX(_grab, mx); return true; }
-        return HoverTip(mx, my);
+        int hc = NavAt(mx, my);
+        bool changed = hc != _hoverCat;
+        _hoverCat = hc;
+        SetRow? r = RowAt(mx, my);
+        if (!ReferenceEquals(r, _hoverRow)) { _hoverRow = r; changed = true; }
+        return changed;
     }
 
-    /// <summary>Tooltip hover: the pointer over a row's (?) marker (the span the last draw wrote) starts the
-    /// dwell; anywhere else ends it. True when the hovered key changed.</summary>
-    private bool HoverTip(float mx, float my)
-    {
-        SetRow? row = RowAt(mx, my);
-        if (row != null && row.Help.Length > 0 && row.TipW > 0f && mx >= row.TipX && mx < row.TipX + row.TipW)
-            return Tip.Hover(row, row.Help, row.TipX, RowTop(row), RowTop(row) + RowH);
-        return Tip.Leave();
-    }
-
-    /// <summary>Wheel notch while open: scrolls the open dropdown list, else the rows. True when it moved.</summary>
+    /// <summary>Wheel notch while open: the open dropdown list, else the category column under the pointer,
+    /// else the rows. True when it moved.</summary>
     public bool MouseWheel(int dy)
     {
-        Tip.Leave();
         if (Drop.Open) return Drop.MouseWheel(dy);
-        return Scroll.MouseWheel(dy, RowH * WheelRows);
+        float step = WheelEm * Em;
+        if (Cats.Contains(_lastMx, _lastMy)) return Cats.MouseWheel(dy, step);
+        return List.MouseWheel(dy, step);
     }
 
     /// <summary>Pointer release. Consumed iff we owned the press. Ends any slide / thumb drag.</summary>
@@ -314,7 +398,7 @@ public sealed class SettingsPanel
     {
         bool c = _pressConsumed;
         _pressConsumed = false; _grab = null; _moving = false;
-        Scroll.MouseUp(); Drop.MouseUp();
+        Cats.MouseUp(); List.MouseUp(); Drop.MouseUp();
         return c;
     }
 
@@ -327,24 +411,25 @@ public sealed class SettingsPanel
 
     // ---- inline text entry -----------------------------------------------------------------------
 
-    /// <summary>True while a value box or label row is being typed into (the shell routes keys/text here).</summary>
-    public bool Editing => _editRow != null;
+    /// <summary>True while the panel wants typed text: a value box or label row is being typed into, or an open
+    /// searchable list is filtering (the shell routes keys/text here).</summary>
+    public bool Editing => _editRow != null || Drop.Searching;
     /// <summary>Is <paramref name="r"/> the row being text-edited? (the draw shows the buffer + a caret).</summary>
     public bool EditingRow(SetRow r) => ReferenceEquals(_editRow, r);
     /// <summary>The in-progress edit buffer (the draw shows it in the active box).</summary>
     public string EditText => _editText;
 
-    // Seeds an empty buffer (type the exact value); the value box shows the caret, the knob still marks the old
-    // position. Committing empty/unparseable text keeps the old value.
+    /// <summary>Start a numeric edit on a slider's value box: an empty buffer, the knob still at the old value.</summary>
     private void BeginEdit(SetRow r) { _editRow = r; _editText = ""; _editLabel = false; _grab = null; }
 
     /// <summary>Start a free-text edit on a row (the consumer calls this from <see cref="RowPressed"/>).</summary>
     public void BeginLabelEdit(SetRow r) { _editRow = r; _editText = ""; _editLabel = true; _grab = null; }
 
-    /// <summary>Append typed characters. Label mode accepts printable chars (capped at 32); numeric mode
-    /// accepts digits/dot/sign (capped at 8).</summary>
+    /// <summary>Append typed characters. A searching list takes them as its filter; label mode accepts printable
+    /// chars (capped at 32); numeric mode accepts digits/dot/sign (capped at 8).</summary>
     public void EditInsert(string s)
     {
+        if (Drop.Searching) { Drop.Type(s); return; }
         if (_editRow == null) return;
         if (_editLabel)
         {
@@ -361,12 +446,23 @@ public sealed class SettingsPanel
     }
 
     public void EditBackspace()
-    { if (_editRow != null && _editText.Length > 0) _editText = _editText.Substring(0, _editText.Length - 1); }
+    {
+        if (Drop.Searching) { Drop.Backspace(); return; }
+        if (_editRow != null && _editText.Length > 0) _editText = _editText.Substring(0, _editText.Length - 1);
+    }
 
-    /// <summary>Commit the typed value: label mode hands the raw text to <see cref="CommitLabel"/>, numeric mode
-    /// parses it and hands the value to <see cref="ApplyValue"/> (unparseable text keeps the old value).</summary>
+    /// <summary>Commit the typed value: a searching list accepts its top match; label mode hands the raw text to
+    /// <see cref="CommitLabel"/>; numeric mode parses it and hands the value to <see cref="ApplyValue"/>
+    /// (unparseable text keeps the old value).</summary>
     public void CommitEdit()
     {
+        if (Drop.Searching)
+        {
+            SetRow? dr = Drop.Tag as SetRow;
+            int i = Drop.Accept();
+            if (i >= 0 && dr != null) Pick(dr, i);
+            return;
+        }
         SetRow? r = _editRow;
         string t = _editText;
         bool label = _editLabel;
@@ -377,7 +473,12 @@ public sealed class SettingsPanel
             ApplyValue?.Invoke(r, v);
     }
 
-    public void CancelEdit() { _editRow = null; _editText = ""; _editLabel = false; }
+    /// <summary>Escape: backs out of an edit, else closes an open list.</summary>
+    public void CancelEdit()
+    {
+        if (_editRow != null) { _editRow = null; _editText = ""; _editLabel = false; return; }
+        if (Drop.Open) Drop.Close();
+    }
 
     /// <summary>The current numeric value of a slider/channel row, formatted for the value box. A channel row
     /// (<see cref="SetRow.Channel"/> >= 0) reads as a 0..255 integer.</summary>
@@ -393,64 +494,116 @@ public sealed class SettingsPanel
 
     // ---- draw ------------------------------------------------------------------------------------
 
-    /// <summary>Chrome colours the panel draws with, resolved by the consumer from its own palette.</summary>
-    public struct Palette
+    /// <summary>Draw the panel: the chrome, the category column, the row column head (the chosen category's
+    /// name) and the rows clipped to their boxes, the scrollbars, then the open dropdown list on top. Reads the
+    /// rows' current values (the consumer already resolved them from its model). Zero-alloc while idle (a slider
+    /// row re-formats its value text only when its Norm moved). Nothing without faces.</summary>
+    public void Emit(VertexBatch b)
     {
-        /// <summary>Panel body, title bar, and the "on"/active fill (checkbox tick, slider fill, edit box).</summary>
-        public (float r, float g, float b, float a) Body, TitleBar, Active;
-        public uint TextRgb;
-    }
+        if (!Open || Body == null || Small == null) return;
+        GlyphAtlas body = Body, small = Small;
+        float x = X, y = Y, w = W, h = H, em = Em;
 
-    private const uint CloseRgb = 0xB8C0CC, CaretRgb = 0xE8E8E8, KnobRgb = 0xB8C0CC;
-    private static readonly (float r, float g, float b, float a) CheckFrame = (0.55f, 0.55f, 0.55f, 1f);
-    private static readonly (float r, float g, float b, float a) SbTrack = (0.04f, 0.05f, 0.07f, 0.55f);
-
-    /// <summary>Draw the panel: a title bar (<see cref="Title"/> + a × close button) over the typed rows the consumer laid
-    /// out -- checkboxes, dropdown boxes, sliders, colour swatches, text boxes -- clipped to the scroll box, then
-    /// the scrollbar, the open dropdown list and the tooltip on top. Reads the rows' current values (the consumer
-    /// already resolved them from its config), so it never touches the config itself. Zero-alloc except a
-    /// slider row's <see cref="FormatValue"/> string. <paramref name="baseDrop"/> is the text baseline offset
-    /// from a row's top.</summary>
-    public void Emit(VertexBatch b, GlyphAtlas atlas, float baseDrop, Palette p)
-    {
-        float x = X, y = Y, w = W;
-        float vpad = (RowH - atlas.LineHeight) / 2f;
-        float tipW = Tooltip.MarkerW(atlas);
-
-        b.Rect(x, y, x + w, y + H, p.Body.r, p.Body.g, p.Body.b, 1f);
-        b.Rect(x, y, x + w, y + TitleH, p.TitleBar.r, p.TitleBar.g, p.TitleBar.b, 1f);
-        DrawString(b, atlas, Title, x + Pad, y + baseDrop, p.TextRgb, x + w - CloseW);
-        DrawString(b, atlas, "×", x + w - CloseW + 5f, y + baseDrop, CloseRgb, x + w);
-
-        float clip0 = Scroll.Y, clip1 = Scroll.Y + Scroll.H;
-        b.ClipY(clip0, clip1);
-        foreach (SetRow r in Rows)
+        Fill(b, x, y, x + w, y + h, PanelBg, 0.96f);
+        Outline(b, x, y, x + w, y + h, Border);
+        Fill(b, x + 1f, y + 1f, x + w - 1f, y + HeaderH, HeaderBg);
+        Fill(b, x + 1f, y + HeaderH - 1f, x + w - 1f, y + HeaderH, Border);
+        float hbase = y + (HeaderH - body.LineHeight) * 0.5f + body.Ascent;
+        UiText.Draw(b, body, Title, x + Pad, hbase, Tx, x + w * 0.6f);
+        float closeX1 = x + w - Pad + 0.2f * em, closeX0 = closeX1 - CloseW;
+        UiText.Draw(b, body, "×", closeX0 + (CloseW - UiText.Measure(body, "×")) * 0.5f, hbase, Grip, closeX1);
+        if (HeaderAction.Length > 0)
         {
+            HeaderButtonRect(out float hx0, out float hx1, out float hy0, out float hy1);
+            Fill(b, hx0, hy0, hx1, hy1, NavOn);
+            Outline(b, hx0, hy0, hx1, hy1, Frame2);
+            UiText.Draw(b, body, HeaderAction, hx0 + 0.9f * em, hbase, Tx, hx1 - 0.4f * em);
+        }
+
+        // categories
+        Fill(b, Cats.X, Cats.Y, Cats.X + Cats.W, Cats.Y + Cats.H, CatBg);
+        Fill(b, Cats.X + Cats.W - 1f, Cats.Y, Cats.X + Cats.W, Cats.Y + Cats.H, ColBorder);
+        b.ClipY(Cats.Y, Cats.Y + Cats.H);
+        var cats = Categories;
+        float navX1 = Cats.X + Cats.W - (Cats.Overflows ? ScrollColumn.BarW : 0f);
+        for (int i = 0; i < cats.Length; i++)
+        {
+            float top = NavTop(i);
+            if (top + NavH <= Cats.Y || top >= Cats.Y + Cats.H) continue;
+            bool on = i == Category;
+            if (on) { Fill(b, Cats.X, top, navX1, top + NavH, NavOn); Fill(b, Cats.X, top, Cats.X + 3f, top + NavH, Accent2); }
+            else if (i == _hoverCat) Fill(b, Cats.X, top, navX1, top + NavH, 0xFFFFFF, 0.03f);
+            UiText.Draw(b, body, cats[i], Cats.X + NavPadX, top + (NavH - body.LineHeight) * 0.5f + body.Ascent, on ? Hi : Tx2, navX1 - 0.3f * em);
+        }
+        b.ClearClip();
+        Cats.Draw(b, C(Accent));
+
+        // row column head: the chosen category's name
+        float kx = List.X, headTop = List.Y - HeadH;
+        if ((uint)Category < (uint)cats.Length)
+            UiText.Draw(b, body, cats[Category], kx + Pad, headTop + 0.6f * em + body.Ascent, Tx, kx + List.W - Pad);
+        Fill(b, kx, List.Y - 1f, kx + List.W, List.Y, ColBorder);
+
+        // rows
+        float clip0 = List.Y, clip1 = List.Y + List.H;
+        float colRight = kx + List.W - Pad - ScrollColumn.BarW;
+        b.ClipY(clip0, clip1);
+        var rows = _rows;
+        for (int i = 0; i < rows.Count; i++)
+        {
+            SetRow r = rows[i];
             float top = RowTop(r);
-            if (top + r.Height <= clip0 || top >= clip1) continue;   // scrolled out of the box
-            float labelX = x + Pad + (r.Channel >= 0 ? ChannelIndent : 0f);
-            float labelClip = r.Kind == SetKind.Toggle ? x + w - CheckSize - Pad
-                            : r.Kind == SetKind.Text ? x + w * TextControlX - 2f
-                                                     : x + w * ControlX - 2f;
-            bool help = r.Help.Length > 0;
-            if (help) labelClip -= tipW + 4f;
-            float labelEnd = DrawString(b, atlas, r.Label, labelX, top + baseDrop + vpad, p.TextRgb, labelClip);
-            if (help)
+            if (top + r.Height <= clip0 || top >= clip1) continue;
+            if (r.Kind == SetKind.Section)
             {
-                r.TipX = labelEnd + 4f; r.TipW = tipW;
-                Tooltip.DrawMarker(b, atlas, r.TipX, top + baseDrop + vpad, p.TextRgb);
+                UiText.Draw(b, small, r.Label, kx + Pad, top + 1f * em + small.Ascent, Tx3, colRight);
+                continue;
             }
-            else r.TipW = 0f;
+            float left = RowLeft(r);
+            ControlAnchor(r, out float right, out float cy);
+            Fill(b, kx + Pad, top + r.Height - 1f, colRight, top + r.Height, 0xFFFFFF, 0.03f);
+            float ctlX0 = right - r.CtlW;
+            float labelClip = r.Kind == SetKind.Button ? right : ctlX0 - Gap;
+            if (r.Kind != SetKind.Button)
+            {
+                UiText.Draw(b, body, r.Label, left, cy - body.LineHeight * 0.5f + body.Ascent, r.Channel >= 0 ? Tx2 : Tx, labelClip);
+                float helpBase = top + RowPadY + body.LineHeight + 0.1f * em + small.Ascent;
+                for (int l = 0; l < r.HelpLines.Length; l++)
+                    UiText.Draw(b, small, r.HelpLines[l], left, helpBase + l * small.LineHeight, Tx2, colRight);
+            }
 
             switch (r.Kind)
             {
                 case SetKind.Toggle:
                 {
-                    float cs = CheckSize;
-                    float cbx = x + w - Pad - cs, cby = top + (RowH - cs) / 2f;
-                    b.Rect(cbx, cby, cbx + cs, cby + cs, CheckFrame.r, CheckFrame.g, CheckFrame.b, CheckFrame.a);
-                    var fill = r.On ? p.Active : p.Body;
-                    b.Rect(cbx + 1, cby + 1, cbx + cs - 1, cby + cs - 1, fill.r, fill.g, fill.b, 1f);
+                    float tx0 = right - ToggleW, ty0 = cy - ToggleH * 0.5f, ty1 = cy + ToggleH * 0.5f;
+                    Fill(b, tx0, ty0, right, ty1, r.On ? Accent : ToggleOff);
+                    Outline(b, tx0, ty0, right, ty1, r.On ? Accent2 : Frame);
+                    float kd = ToggleH - 0.35f * em, kx0 = r.On ? right - 0.17f * em - kd : tx0 + 0.17f * em;
+                    Fill(b, kx0, cy - kd * 0.5f, kx0 + kd, cy + kd * 0.5f, r.On ? Hi : Grip);
+                    break;
+                }
+                case SetKind.Slider:
+                {
+                    SliderTrack(r, out float sx0, out float sx1, out _);
+                    float th = 0.35f * em;
+                    Fill(b, sx0, cy - th * 0.5f, sx1, cy + th * 0.5f, Track);
+                    Outline(b, sx0, cy - th * 0.5f, sx1, cy + th * 0.5f, Frame2);
+                    float knob = sx0 + r.Norm * (sx1 - sx0);
+                    Fill(b, sx0, cy - th * 0.5f, knob, cy + th * 0.5f, Accent);
+                    Fill(b, knob - 0.375f * em, cy - 0.55f * em, knob + 0.375f * em, cy + 0.55f * em, Grip);
+                    ValueBox(r, out float vx0, out float vx1, out float vy0, out float vy1);
+                    bool editing = EditingRow(r);
+                    Fill(b, vx0, vy0, vx1, vy1, Input);
+                    Outline(b, vx0, vy0, vx1, vy1, editing ? Accent2 : Frame2);
+                    if (r.ValueNorm != r.Norm) { r.ValueText = FormatValue(r); r.ValueNorm = r.Norm; }
+                    string vtext = editing ? _editText : r.ValueText;
+                    float vbase = cy - body.LineHeight * 0.5f + body.Ascent;
+                    float vw = UiText.Measure(body, vtext);
+                    float vx = editing ? vx0 + 0.3f * em : vx1 - 0.3f * em - vw;
+                    if (vx < vx0 + 0.2f * em) vx = vx0 + 0.2f * em;
+                    float vend = UiText.Draw(b, body, vtext, vx, vbase, Tx, vx1 - 0.2f * em);
+                    if (editing) Fill(b, vend, vy0 + 0.2f * em, vend + 1.5f, vy1 - 0.2f * em, Hi);
                     break;
                 }
                 case SetKind.Dropdown:
@@ -458,146 +611,152 @@ public sealed class SettingsPanel
                     ControlBox(r, out float bx0, out float bx1, out float by0, out float by1);
                     bool open = Drop.Open && ReferenceEquals(Drop.Tag, r);
                     string cur = r.Choices != null && (uint)r.Selected < (uint)r.Choices.Length ? r.Choices[r.Selected] : "";
-                    Dropdown.DrawBox(b, atlas, bx0, by0, bx1, by1, top + baseDrop + vpad, cur, open ? p.Active : p.TitleBar, p.TextRgb);
+                    Dropdown.DrawBox(b, body, bx0, by0, bx1, by1, cy - body.LineHeight * 0.5f + body.Ascent, cur, C(Input), Tx);
+                    Outline(b, bx0, by0, bx1, by1, open ? Accent2 : Frame2);
                     break;
                 }
                 case SetKind.Text:
                 {
                     ControlBox(r, out float bx0, out float bx1, out float by0, out float by1);
                     bool editing = EditingRow(r);
-                    var cbg = editing ? p.Active : p.TitleBar;
-                    b.Rect(bx0, by0, bx1, by1, cbg.r, cbg.g, cbg.b, cbg.a);
-                    string ctext = editing ? EditText : r.Value;
-                    float cend = DrawString(b, atlas, ctext, bx0 + 4f, top + baseDrop + vpad, p.TextRgb, bx1 - 2f);
-                    if (editing)
-                        b.Rect(cend, top + 5f, cend + 1.5f, top + RowH - 5f,
-                               ((CaretRgb >> 16) & 0xFF) / 255f, ((CaretRgb >> 8) & 0xFF) / 255f, (CaretRgb & 0xFF) / 255f, 1f);
-                    break;
-                }
-                case SetKind.Slider:
-                {
-                    SliderTrack(r, out float sx0, out float sx1, out float cy);
-                    b.Rect(sx0, cy - 2f, sx1, cy + 2f, SbTrack.r, SbTrack.g, SbTrack.b, SbTrack.a);
-                    float knob = sx0 + r.Norm * (sx1 - sx0);
-                    b.Rect(sx0, cy - 2f, knob, cy + 2f, p.Active.r, p.Active.g, p.Active.b, p.Active.a);
-                    b.Rect(knob - 2f, top + 4f, knob + 2f, top + RowH - 4f,
-                           ((KnobRgb >> 16) & 0xFF) / 255f, ((KnobRgb >> 8) & 0xFF) / 255f, (KnobRgb & 0xFF) / 255f, 1f);
-                    ValueBox(r, out float vx0, out float vx1, out float vy0, out float vy1);
-                    bool editing = EditingRow(r);
-                    var vbg = editing ? p.Active : p.TitleBar;
-                    b.Rect(vx0, vy0, vx1, vy1, vbg.r, vbg.g, vbg.b, vbg.a);
-                    string vtext = editing ? EditText : FormatValue(r);
-                    float vend = DrawString(b, atlas, vtext, vx0 + 3f, top + baseDrop + vpad, p.TextRgb, vx1 - 2f);
-                    if (editing)
-                        b.Rect(vend, vy0 + 2f, vend + 1.5f, vy1 - 2f,
-                               ((CaretRgb >> 16) & 0xFF) / 255f, ((CaretRgb >> 8) & 0xFF) / 255f, (CaretRgb & 0xFF) / 255f, 1f);
+                    Fill(b, bx0, by0, bx1, by1, Input);
+                    Outline(b, bx0, by0, bx1, by1, editing ? Accent2 : Frame2);
+                    float tend = UiText.Draw(b, body, editing ? _editText : r.Value, bx0 + 0.4f * em, cy - body.LineHeight * 0.5f + body.Ascent, Tx, bx1 - 0.3f * em);
+                    if (editing) Fill(b, tend, by0 + 0.2f * em, tend + 1.5f, by1 - 0.2f * em, Hi);
                     break;
                 }
                 case SetKind.Swatch:
                 {
-                    float px0 = x + w - Pad - SwatchW, px1 = x + w - Pad;
-                    float py0 = top + 3f, py1 = top + RowH - 3f;
-                    b.Rect(px0 - 1f, py0 - 1f, px1 + 1f, py1 + 1f, CheckFrame.r, CheckFrame.g, CheckFrame.b, CheckFrame.a);
-                    b.Rect(px0, py0, px1, py1, ((r.Rgba >> 24) & 0xFF) / 255f, ((r.Rgba >> 16) & 0xFF) / 255f,
-                           ((r.Rgba >> 8) & 0xFF) / 255f, (r.Rgba & 0xFF) / 255f);
+                    ControlBox(r, out float bx0, out float bx1, out float by0, out float by1);
+                    Fill(b, bx0, by0, bx1, by1, r.Rgba >> 8, (r.Rgba & 0xFF) / 255f);
+                    Outline(b, bx0, by0, bx1, by1, Frame);
                     break;
                 }
                 case SetKind.Button:
-                    break;   // label already drawn above; no control widget
+                {
+                    ControlBox(r, out float bx0, out float bx1, out float by0, out float by1);
+                    Fill(b, bx0, by0, bx1, by1, NavOn);
+                    Outline(b, bx0, by0, bx1, by1, ReferenceEquals(r, _hoverRow) ? Accent2 : Frame2);
+                    UiText.Draw(b, body, r.Label, bx0 + 0.9f * em, cy - body.LineHeight * 0.5f + body.Ascent, Tx, bx1 - 0.4f * em);
+                    break;
+                }
             }
         }
         b.ClearClip();
-        Scroll.Draw(b, p.Active);
-        Drop.Draw(b, atlas, baseDrop, p.TitleBar, p.Active, p.TextRgb);
-        Tip.Draw(b, atlas, baseDrop, p.TitleBar, p.TextRgb, ViewportW, ViewportH);
+        List.Draw(b, C(Accent));
+        Drop.Draw(b, body, body.Ascent, C(ListBg), C(Selected), Tx);
     }
 
-    /// <summary>Draw one clipped string, returning the pen x it ended at (the caret anchor).</summary>
-    private static float DrawString(VertexBatch b, GlyphAtlas atlas, string s, float startX, float baseline,
-                                    uint rgb, float clipX)
-        => UiText.Draw(b, atlas, s, startX, baseline, rgb, clipX);
-
-    /// <summary>Off-device proof of the panel's pure logic: hit-test-to-row (including the gaps between rows and
-    /// the bottom pad), the close button, the title drag, the slider grab, the edit buffer, and open/close.</summary>
+    /// <summary>Off-device proof of the panel's pure logic: layout + hit-test-to-row, the category column, the
+    /// close button, the header drag, each control's hit zone, the edit buffer, the searchable list, the scroll
+    /// columns, and a zero-alloc draw.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"SettingsPanel.SelfCheck FAIL: {w}"); } }
 
-        // A synthetic consumer: three rows with a deliberate one-row gap between #1 and #2, recording callbacks.
+        var body = new GlyphAtlas { LineHeight = 24, Ascent = 19, SpaceAdvance = 6f };
+        var small = new GlyphAtlas { LineHeight = 19, Ascent = 15, SpaceAdvance = 5f };
+        for (int cp = 0x20; cp < 0x180; cp++) { body.SetTestGlyph(cp, cp == ' ' ? 6f : 11f); small.SetTestGlyph(cp, cp == ' ' ? 5f : 8f); }
+        body.SetTestGlyph(0x25BE, 11f); small.SetTestGlyph(0x25BE, 8f);
+
+        // A synthetic consumer: three categories, a toggle, a slider, a text row, a 27-choice dropdown, a button
+        // and a section; every callback recorded.
         var pressed = new List<SetRow>();
-        float applied = float.NaN;
-        SetRow? appliedRow = null;
-        string? committed = null;
-        var panel = new SettingsPanel(264f);
-        var toggle = new SetRow { Kind = SetKind.Toggle, Act = SetAct.ToggleBit, Label = "T", Height = RowH };
-        var slider = new SetRow { Kind = SetKind.Slider, Act = SetAct.SliderHold, Label = "S", Height = RowH, Min = 0f, Max = 100f };
-        var cycle = new SetRow { Kind = SetKind.Text, Act = SetAct.TabLabel, Label = "C", Height = RowH };
+        var picked = new List<int>();
+        float applied = float.NaN; SetRow? appliedRow = null; string? committed = null; int relayouts = 0;
+        var ladder = new string[27];
+        for (int i = 0; i < 27; i++) ladder[i] = (6 + i).ToString(CultureInfo.InvariantCulture);
+        var panel = new SettingsPanel { Categories = new[] { "Window settings", "All", "Add new tab..." } };
+        var toggle = new SetRow { Kind = SetKind.Toggle, Act = SetAct.ToggleBit, Label = "T", Help = "A help line long enough to wrap onto a second line at least once." };
+        var slider = new SetRow { Kind = SetKind.Slider, Act = SetAct.SliderHold, Label = "S", Min = 0f, Max = 100f };
+        var text = new SetRow { Kind = SetKind.Text, Act = SetAct.TabLabel, Label = "C", Value = "old" };
+        var dd = new SetRow { Kind = SetKind.Dropdown, Act = SetAct.SliderFont, Label = "Font", Choices = ladder, Selected = 12 };
+        var btn = new SetRow { Kind = SetKind.Button, Act = SetAct.CopyFrom, Label = "Copy" };
         void Lay()
         {
-            float y = panel.ContentTop;
-            toggle.Top = y; y += RowH;
-            y += RowH;                 // the gap: no row occupies this band
-            slider.Top = y; y += RowH;
-            cycle.Top = y; y += RowH;
-            panel.Publish(new List<SetRow> { toggle, slider, cycle }, y);
+            var rows = panel.Category == 0
+                ? new List<SetRow> { new SetRow { Kind = SetKind.Section, Label = "LOOK" }, toggle, slider, text, dd, btn }
+                : new List<SetRow> { text };
+            panel.Publish(rows);
+            relayouts++;
         }
         panel.Relayout = Lay;
         panel.RowPressed = r => pressed.Add(r);
+        panel.CategoryPicked = c => { picked.Add(c); panel.Category = c == 2 ? 1 : c; };
         panel.ApplyValue = (r, v) => { appliedRow = r; applied = v; r.Norm = r.Max > r.Min ? (v - r.Min) / (r.Max - r.Min) : 0f; };
         panel.CommitLabel = (r, t) => committed = t;
 
-        panel.BeginOpen();
-        panel.X = 100f; panel.Y = 50f;
+        panel.OpenAt(1280f, 800f, 20f, body, small);
         Lay();
-        E(panel.Open && panel.Rows.Count == 3, "BeginOpen + Publish opens with the published rows");
-        E(Math.Abs(panel.H - (4f * RowH + TitleH + Pad)) < 0.01f, "H = title + laid-out span + pad");
+        E(panel.Open && panel.Rows.Count == 6, "OpenAt + Publish opens with the published rows");
+        E(Math.Abs(panel.W - MathF.Round(1280f * WFrac)) < 0.01f && Math.Abs(panel.X - MathF.Round((1280f - panel.W) / 2f)) < 0.01f, "sized and centred in the viewport");
+        E(toggle.HelpLines.Length >= 2 && toggle.Height > slider.Height && slider.Height == panel.RowPlainH, "help wraps and grows its row; a plain row is compact");
         E(panel.MouseUp(), "up after open is consumed (press ownership)");
 
-        // Hit-test-to-row: a press inside a row's band reaches the consumer; the gap and the bottom pad do not.
-        panel.MouseDown(panel.X + 5f, toggle.Top + 2f);
-        E(pressed.Count == 1 && ReferenceEquals(pressed[0], toggle), "press inside a row resolves to that row");
+        // Hit-test-to-row: a press anywhere on a toggle row reaches the consumer; the pad above the rows does not.
+        panel.MouseDown(panel.List.X + 5f, panel.RowTop(toggle) + 2f);
+        E(pressed.Count == 1 && ReferenceEquals(pressed[0], toggle) && relayouts == 2, "press on a toggle row resolves to it and relayouts");
         panel.MouseUp();
-        panel.MouseDown(panel.X + 5f, toggle.Top + RowH + 2f);   // the gap band
-        E(pressed.Count == 1 && panel.Open, "press in the gap between rows hits no row and stays open");
+        panel.MouseDown(panel.List.X + 5f, panel.List.Y + 1f);
+        E(pressed.Count == 1 && panel.Open, "press in the top pad hits no row and stays open");
         panel.MouseUp();
-        panel.MouseDown(panel.X + 5f, cycle.Top + RowH + 2f);    // inside the bottom pad strip
-        E(pressed.Count == 1 && panel.Open, "press in the bottom pad hits no row and stays open");
+        panel.MouseDown(panel.List.X + 5f, panel.RowTop(panel.Rows[0]) + 2f);
+        E(pressed.Count == 1, "a section header is inert");
         panel.MouseUp();
-        panel.MouseDown(panel.X + panel.W + 5f, toggle.Top + 2f);// outside the panel horizontally
+        panel.MouseDown(panel.X + panel.W + 5f, panel.Y + panel.H / 2f);
         E(pressed.Count == 1 && !panel.Open, "press outside the panel closes");
 
-        // Close button: inside its rect closes; one pixel left of it is title bar (a move), not a close.
-        panel.BeginOpen(); Lay(); panel.MouseUp();
-        panel.MouseDown(panel.X + panel.W - CloseW - 2f, panel.Y + 2f);
-        E(panel.Open && panel.Moving, "just left of the close button is a title drag, not a close");
+        // Categories: a press picks through the consumer (which may redirect), and relayouts.
+        panel.OpenAt(1280f, 800f, 20f, body, small); Lay(); panel.MouseUp();
+        panel.MouseDown(panel.Cats.X + 5f, panel.NavTop(1) + 2f); panel.MouseUp();
+        E(picked.Count == 1 && picked[0] == 1 && panel.Category == 1 && panel.Rows.Count == 1, "a category press picks it and lays its rows out");
+        panel.MouseDown(panel.Cats.X + 5f, panel.NavTop(2) + 2f); panel.MouseUp();
+        E(picked[^1] == 2 && panel.Category == 1, "the consumer may redirect a pick (Add new tab... -> the new tab)");
+        panel.MouseDown(panel.Cats.X + 5f, panel.NavTop(0) + 2f); panel.MouseUp();
+        E(panel.Category == 0 && panel.Rows.Count == 6, "back to the first category");
+        panel.MouseDown(panel.Cats.X + 5f, panel.NavTop(3) + 2f); panel.MouseUp();
+        E(picked.Count == 3 && panel.Open, "a press below the last entry picks nothing");
+
+        // Header button: its box fires the action; the header around it is the drag handle.
+        int headerFires = 0;
+        panel.HeaderAction = "Copy"; panel.HeaderActionPressed = () => headerFires++;
+        panel.HeaderButtonRect(out float hbx0, out float hbx1, out float hby0, out float hby1);
+        panel.MouseDown((hbx0 + hbx1) / 2f, (hby0 + hby1) / 2f); panel.MouseUp();
+        E(headerFires == 1 && panel.Open && !panel.Moving, "the header button fires its action, no drag, stays open");
+        panel.MouseDown(hbx0 - 2f, (hby0 + hby1) / 2f);
+        E(headerFires == 1 && panel.Moving, "left of the button is the drag handle");
         panel.MouseUp();
-        panel.MouseDown(panel.X + panel.W - 2f, panel.Y + 2f);
+        panel.HeaderAction = "";
+
+        // Close button: inside its rect closes; left of it is the header (a move), not a close.
+        panel.MouseDown(panel.X + panel.W - panel.Pad - panel.CloseW - 2f, panel.Y + 2f);
+        E(panel.Open && panel.Moving, "just left of the close button is a header drag, not a close");
+        panel.MouseUp();
+        panel.MouseDown(panel.X + panel.W - panel.Pad - 2f, panel.Y + 2f);
         E(!panel.Open, "close-X closes");
 
-        // Title drag moves the panel and every row with it (translate-only, #53).
-        panel.BeginOpen(); Lay(); panel.MouseUp();
-        float px = panel.X, py = panel.Y, topBefore = toggle.Top;
-        E(panel.MouseDown(panel.X + panel.W / 2f, panel.Y + 2f), "title-bar press consumed");
-        E(panel.Moving && panel.Dragging, "title press latches the move");
+        // Header drag moves the panel and its columns; clamped to the viewport.
+        panel.OpenAt(1280f, 800f, 20f, body, small); Lay(); panel.MouseUp();
+        float px = panel.X, py = panel.Y, listY = panel.List.Y;
+        E(panel.MouseDown(panel.X + panel.W / 2f, panel.Y + 2f) && panel.Moving && panel.Dragging, "header press latches the move");
         panel.MouseMove(panel.X + panel.W / 2f + 40f, panel.Y + 2f + 25f);
-        E(Math.Abs(panel.X - (px + 40f)) < 0.5f && Math.Abs(panel.Y - (py + 25f)) < 0.5f, "panel drags by the title bar");
-        E(Math.Abs(toggle.Top - (topBefore + 25f)) < 0.5f, "rows follow the panel move");
-        E(panel.MouseUp() && !panel.Moving, "panel move release consumed + ends the drag");
+        E(Math.Abs(panel.X - (px + 40f)) < 0.5f && Math.Abs(panel.Y - (py + 25f)) < 0.5f && Math.Abs(panel.List.Y - (listY + 25f)) < 0.5f, "panel and columns drag by the header");
+        panel.MouseMove(-500f, -500f);
+        E(panel.X == 0f && panel.Y == 0f, "the drag clamps to the viewport");
+        E(panel.MouseUp() && !panel.Moving, "release ends the drag");
 
-        // Slider: the track drives ApplyValue; the label zone (left of the track) leaves the value alone.
-        panel.SliderTrack(slider, out float sx0, out float sx1, out float _);
-        panel.MouseDown(sx1, slider.Top + 2f);
-        E(appliedRow == slider && Math.Abs(applied - 100f) < 0.01f, "slider full-right -> max");
-        panel.MouseMove((sx0 + sx1) / 2f, slider.Top + 2f);
+        // Slider: the track drives ApplyValue; the label zone leaves the value alone; the value box edits.
+        panel.SliderTrack(slider, out float sx0, out float sx1, out float scy);
+        panel.MouseDown(sx1 - 0.1f, scy);
+        E(appliedRow == slider && Math.Abs(applied - 100f) < 0.5f, "slider full-right -> max");
+        panel.MouseMove((sx0 + sx1) / 2f, scy);
         E(Math.Abs(applied - 50f) < 1f, "slider drag to mid -> ~half");
         panel.MouseUp();
         applied = float.NaN;
-        panel.MouseDown(panel.X + 5f, slider.Top + 2f);
-        E(float.IsNaN(applied), "press on a slider's label leaves the value untouched");
+        panel.MouseDown(panel.List.X + 5f, panel.RowTop(slider) + 2f);
+        E(float.IsNaN(applied) && pressed.Count == 1, "press on a slider's label changes nothing");
         panel.MouseUp();
-
-        // Inline numeric entry: value box -> digits only -> commit / cancel / empty.
         void ClickValueBox()
         {
             panel.ValueBox(slider, out float vx0, out float vx1, out float vy0, out float vy1);
@@ -607,184 +766,120 @@ public sealed class SettingsPanel
         E(panel.Editing && panel.EditingRow(slider), "clicking a value box starts a field edit on that row");
         panel.EditInsert("4a2");
         E(panel.EditText == "42", "numeric mode filters non-digits");
-        panel.EditBackspace();
-        E(panel.EditText == "4", "backspace drops the last char");
-        panel.EditInsert("2");
-        panel.CommitEdit();
+        panel.EditBackspace(); panel.EditInsert("2"); panel.CommitEdit();
         E(!panel.Editing && Math.Abs(applied - 42f) < 0.01f, "typed value commits");
         applied = float.NaN;
         ClickValueBox(); panel.EditInsert("10"); panel.CancelEdit();
         E(!panel.Editing && float.IsNaN(applied), "cancel applies nothing");
         ClickValueBox(); panel.CommitEdit();
-        E(float.IsNaN(applied), "empty commit applies nothing (keeps the old value)");
+        E(float.IsNaN(applied), "empty commit applies nothing");
         ClickValueBox(); panel.EditInsert("77");
-        panel.MouseDown(panel.X + 5f, cycle.Top + 2f);
+        panel.MouseDown(panel.List.X + 5f, panel.RowTop(toggle) + 2f);
         E(!panel.Editing && Math.Abs(applied - 77f) < 0.01f, "press elsewhere commits the in-progress edit");
         panel.MouseUp();
 
-        // Label mode: broad char set, raw text handed to the consumer.
-        panel.BeginLabelEdit(cycle);
-        panel.EditInsert("Ab 1!");
-        panel.CommitEdit();
+        // Text row: a press reaches the consumer, which starts a label edit; broad char set, raw text committed.
+        panel.MouseDown(panel.List.X + 5f, panel.RowTop(text) + 2f); panel.MouseUp();
+        E(pressed[^1] == text, "a text row press reaches the consumer");
+        panel.BeginLabelEdit(text);
+        panel.EditInsert("Ab 1!"); panel.CommitEdit();
         E(committed == "Ab 1!" && !panel.Editing, "label mode commits the raw typed text");
 
+        // Button: only its box presses.
+        int n = pressed.Count;
+        panel.MouseDown(panel.List.X + 5f, panel.RowTop(btn) + 2f); panel.MouseUp();
+        E(pressed.Count == n, "a press left of a button's box is nothing");
+        panel.ControlBox(btn, out float bbx0, out float bbx1, out float bby0, out float bby1);
+        panel.MouseDown((bbx0 + bbx1) / 2f, (bby0 + bby1) / 2f); panel.MouseUp();
+        E(pressed.Count == n + 1 && pressed[^1] == btn, "a press in the box fires the button");
+
+        // Dropdown (27 entries): the box opens a searchable list; the wheel scrolls it; a pick sets Selected.
+        panel.MouseDown(panel.List.X + 5f, panel.RowTop(dd) + 2f); panel.MouseUp();
+        E(!panel.Drop.Open, "a press on a dropdown's label opens nothing");
+        panel.ControlBox(dd, out float dx0, out float dx1, out float dy0, out float dy1);
+        panel.MouseDown((dx0 + dx1) / 2f, (dy0 + dy1) / 2f); panel.MouseUp();
+        E(panel.Drop.Open && ReferenceEquals(panel.Drop.Tag, dd) && panel.Drop.Searching && panel.Editing, "the box opens the list; 27 entries search, so the panel wants text");
+        E(panel.Drop.List.Overflows && panel.Contains(panel.Drop.X + 2f, panel.Drop.Y + panel.Drop.H - 2f), "the list scrolls and counts as the panel");
+        float off0 = panel.Drop.List.Offset;
+        E(panel.MouseWheel(-1) && Math.Abs(panel.Drop.List.Offset - (off0 + panel.Drop.ItemH)) < 0.01f && panel.List.Offset == 0f, "the wheel scrolls the open list, not the rows");
+        panel.EditInsert("10");
+        E(panel.Drop.Filter == "10" && panel.Drop.Shown < 27, "typed text filters the list");
+        int rl = relayouts;
+        panel.CommitEdit();
+        E(!panel.Drop.Open && dd.Selected == 4 && pressed[^1] == dd && relayouts == rl + 1, "Enter accepts the exact match (10), fires RowPressed, relayouts");
+        panel.MouseDown((dx0 + dx1) / 2f, (dy0 + dy1) / 2f); panel.MouseUp();
+        panel.Drop.List.Offset = 0f;
+        panel.MouseDown(panel.Drop.X + 5f, panel.Drop.ItemTop(2) + 2f); panel.MouseUp();
+        E(!panel.Drop.Open && dd.Selected == 2, "an item press picks it");
+        panel.MouseDown((dx0 + dx1) / 2f, (dy0 + dy1) / 2f); panel.MouseUp();
+        n = pressed.Count;
+        panel.MouseDown(panel.List.X + 5f, panel.RowTop(toggle) + 2f); panel.MouseUp();
+        E(!panel.Drop.Open && pressed.Count == n && panel.Open, "an outside press closes the list, is swallowed, and reaches no row beneath");
+        panel.MouseDown((dx0 + dx1) / 2f, (dy0 + dy1) / 2f); panel.MouseUp();
+        panel.CancelEdit();
+        E(!panel.Drop.Open && !panel.Editing, "Escape closes an open list");
+
         // Reset clears open + every half-owned interaction.
-        panel.BeginOpen(); Lay();
         panel.MouseDown(panel.X + panel.W / 2f, panel.Y + 2f);
         panel.Reset();
-        E(!panel.Open && !panel.Moving && !panel.Dragging && !panel.Editing && !panel.MouseUp(),
-          "Reset closes and drops press/drag/edit ownership");
+        E(!panel.Open && !panel.Moving && !panel.Dragging && !panel.Editing && !panel.MouseUp(), "Reset closes and drops press/drag/edit ownership");
 
-        // ---- #587: scroll column on 60 rows -- wheel, thumb drag, offset-correct hits ----
-        var tall = new SettingsPanel(264f) { ViewportH = TitleH + 10f * RowH + Pad };
-        var tallRows = new List<SetRow>();
+        // Scroll column on 60 rows in a short viewport: wheel, thumb drag, offset-correct hits.
+        var tall = new SettingsPanel { Categories = new[] { "A" } };
         var tallPressed = new List<SetRow>();
         void LayTall()
         {
-            tallRows.Clear();
-            float y = tall.ContentTop;
-            for (int i = 0; i < 60; i++)
-            {
-                tallRows.Add(new SetRow { Kind = SetKind.Toggle, Act = SetAct.ToggleBit, Label = "row", Top = y, Height = RowH, Bit = (uint)i });
-                y += RowH;
-            }
-            tall.Publish(new List<SetRow>(tallRows), y);
+            var rows = new List<SetRow>();
+            for (int i = 0; i < 60; i++) rows.Add(new SetRow { Kind = SetKind.Toggle, Act = SetAct.ToggleBit, Label = "row", Bit = (uint)i });
+            tall.Publish(rows);
         }
         tall.Relayout = LayTall;
         tall.RowPressed = r => tallPressed.Add(r);
-        tall.BeginOpen(); tall.X = 10f; tall.Y = 10f; LayTall(); tall.MouseUp();
-        E(Math.Abs(tall.H - tall.ViewportH) < 0.01f, "60 rows: the panel caps at ViewportH");
-        E(tall.Scroll.Overflows && Math.Abs(tall.Scroll.MaxOffset - 50f * RowH) < 0.01f, "50 rows lie past the box");
-        float rowY = tall.ContentTop + 2f;
-        tall.MouseDown(tall.X + 5f, rowY); tall.MouseUp();
+        tall.OpenAt(1280f, 400f, 20f, body, small); LayTall(); tall.MouseUp();
+        E(tall.List.Overflows, "60 rows overflow a 400 px viewport");
+        float rowY = tall.List.Y + 0.4f * tall.Em + 2f;
+        tall.MouseDown(tall.List.X + 5f, rowY); tall.MouseUp();
         E(tallPressed.Count == 1 && tallPressed[0].Bit == 0, "at offset 0 the first band is row 0");
-        E(tall.MouseWheel(-1) && Math.Abs(tall.Scroll.Offset - WheelRows * RowH) < 0.01f, "a notch scrolls WheelRows rows");
-        tall.MouseDown(tall.X + 5f, rowY); tall.MouseUp();
-        E(tallPressed.Count == 2 && tallPressed[1].Bit == (uint)WheelRows, "after a notch the same band is row WheelRows (offset-correct hit)");
-        E(Math.Abs(tall.RowTop(tall.Rows[(int)WheelRows]) - tall.ContentTop) < 0.01f, "RowTop of the scrolled-to row is the box top");
-        // Thumb drag: grab and pull to the track bottom -> last row visible + hit at the box bottom.
-        E(tall.Scroll.ThumbRect(out float tTop, out float tH), "the panel shows a thumb");
-        float gutterX = tall.X + tall.W - 2f;
-        E(tall.MouseDown(gutterX, tTop + 1f) && tall.Dragging && tall.Scroll.Dragging, "gutter press on the thumb grabs it");
-        tall.MouseMove(gutterX, tTop + 1f + tall.Scroll.H);
-        E(tall.MouseUp() && Math.Abs(tall.Scroll.Offset - tall.Scroll.MaxOffset) < 0.01f, "dragging the thumb to the bottom scrolls to the end");
-        tall.MouseDown(tall.X + 5f, tall.Scroll.Y + tall.Scroll.H - 2f); tall.MouseUp();
-        E(tallPressed.Count == 3 && tallPressed[2].Bit == 59, "the box bottom now hits row 59");
-        tall.MouseDown(gutterX, tall.Scroll.Y + tall.Scroll.H - 2f); tall.MouseUp();
+        tall.MouseMove(tall.List.X + 5f, rowY);
+        E(tall.MouseWheel(-1) && Math.Abs(tall.List.Offset - WheelEm * tall.Em) < 0.01f, "a notch scrolls WheelEm em");
+        tall.MouseDown(tall.List.X + 5f, rowY); tall.MouseUp();
+        E(tallPressed.Count == 2 && tallPressed[1].Bit == 1, "after a notch the same band is the next row (offset-correct hit)");
+        E(tall.List.ThumbRect(out float tTop, out float _), "the list shows a thumb");
+        float gutterX = tall.List.X + tall.List.W - 2f;
+        E(tall.MouseDown(gutterX, tTop + 1f) && tall.Dragging && tall.List.Dragging, "gutter press on the thumb grabs it");
+        tall.MouseMove(gutterX, tTop + 1f + tall.List.H);
+        E(tall.MouseUp() && Math.Abs(tall.List.Offset - tall.List.MaxOffset) < 0.01f, "dragging the thumb to the bottom scrolls to the end");
+        tall.MouseDown(tall.List.X + 5f, tall.List.Y + tall.List.H - 1.5f * tall.Em - 2f); tall.MouseUp();
+        E(tallPressed.Count == 3 && tallPressed[2].Bit == 59, "the box bottom (above its pad) now hits row 59");
+        tall.MouseDown(gutterX, tall.List.Y + tall.List.H - 2f); tall.MouseUp();
         E(tallPressed.Count == 3, "a gutter press is the bar's, not a row's");
-        tall.MouseDown(tall.X + 5f, tall.Y + tall.H + 5f);
-        E(!tall.Open, "a press below the capped panel is outside it");
 
-        // ---- #587: a 27-entry dropdown row opens, scrolls, picks, closes on outside press ----
-        var ladder = new string[27];
-        for (int i = 0; i < 27; i++) ladder[i] = (6 + i).ToString(CultureInfo.InvariantCulture);
-        var dp = new SettingsPanel(264f) { ViewportH = 800f };
-        var ddRow = new SetRow { Kind = SetKind.Dropdown, Act = SetAct.SliderFont, Label = "Font", Height = RowH, Choices = ladder, Selected = 12 };
-        var tipRow = new SetRow { Kind = SetKind.Toggle, Act = SetAct.OutlineOn, Label = "Outline", Height = RowH, Help = "Draw a dark halo around the text." };
-        SetRow? ddPressed = null; int relayouts = 0;
-        void LayDd()
+        // The draw with the list open, and a scrolled column, allocates nothing and stays inside the panel.
+        panel.OpenAt(1280f, 800f, 20f, body, small); Lay(); panel.MouseUp();
+        var vb = new VertexBatch(body.SolidU, body.SolidV);
+        panel.ControlBox(dd, out dx0, out dx1, out dy0, out dy1);
+        panel.MouseDown((dx0 + dx1) / 2f, (dy0 + dy1) / 2f); panel.MouseUp();
+        panel.MouseMove(panel.Drop.X + 5f, panel.Drop.Y + panel.Drop.ItemH * 1.5f);
+        E(panel.Drop.Open, "pre: list open");
+        panel.Emit(vb);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++) { vb.Clear(); panel.Emit(vb); }
+        long delta = GC.GetAllocatedBytesForCurrentThread() - before;
+        E(delta == 0, $"100 panel draws with the list open allocate nothing ({delta} bytes)");
+        tall.Emit(vb);
+        before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++) { vb.Clear(); tall.Emit(vb); }
+        delta = GC.GetAllocatedBytesForCurrentThread() - before;
+        E(delta == 0, $"100 scrolled-column draws allocate nothing ({delta} bytes)");
+        vb.Clear(); tall.Emit(vb);
+        float[] verts = vb.ToArray();
+        bool inside = true;
+        for (int v = 0; v < vb.VertexCount; v++)
         {
-            float y = dp.ContentTop;
-            ddRow.Top = y; y += RowH;
-            tipRow.Top = y; y += RowH;
-            dp.Publish(new List<SetRow> { ddRow, tipRow }, y);
-            relayouts++;
+            float vy = verts[v * VertexBatch.Floats + 1];
+            if (vy < tall.Y - 0.01f || vy > tall.Y + tall.H + 0.01f) inside = false;
         }
-        dp.Relayout = LayDd;
-        dp.RowPressed = r => ddPressed = r;
-        dp.BeginOpen(); dp.X = 100f; dp.Y = 100f; LayDd(); dp.MouseUp();
-        E(dp.MouseDown(dp.X + 5f, ddRow.Top + 2f) && dp.Drop.Open && ReferenceEquals(dp.Drop.Tag, ddRow), "a press on a dropdown row opens its list");
-        E(ddPressed == null, "opening changes nothing yet");
-        dp.MouseUp();
-        dp.ControlBox(ddRow, out float cbx0, out float cbx1, out float _, out float cby1);
-        E(Math.Abs(dp.Drop.X - cbx0) < 0.01f && Math.Abs(dp.Drop.Y - cby1) < 0.01f && Math.Abs(dp.Drop.W - (cbx1 - cbx0)) < 0.01f,
-          "the list hangs under the row's control box");
-        E(dp.Drop.H == Dropdown.MaxVisible * RowH && dp.Drop.List.Overflows, "27 entries: 8 visible, the rest scroll");
-        E(dp.Contains(dp.Drop.X + 2f, dp.Drop.Y + dp.Drop.H - 2f), "the open list counts as the panel for hover/over-UI");
-        float off0 = dp.Drop.List.Offset;
-        E(off0 > 0f && dp.Drop.ItemTop(12) >= dp.Drop.Y && dp.Drop.ItemTop(12) + RowH <= dp.Drop.Y + dp.Drop.H, "the list opens scrolled so the selected entry is in view");
-        E(dp.MouseWheel(-1) && Math.Abs(dp.Drop.List.Offset - (off0 + RowH)) < 0.01f && dp.Scroll.Offset == 0f, "the wheel scrolls the open list, not the panel");
-        E(dp.MouseMove(dp.Drop.X + 5f, dp.Drop.ItemTop(14) + 2f) && dp.Drop.Hover == 14, "motion over an item highlights it");
-        int rl = relayouts;
-        E(dp.MouseDown(dp.Drop.X + 5f, dp.Drop.ItemTop(14) + 2f), "item press consumed");
-        E(!dp.Drop.Open && ddRow.Selected == 14 && ReferenceEquals(ddPressed, ddRow) && relayouts == rl + 1,
-          "a pick writes Selected, fires RowPressed, relayouts, closes");
-        dp.MouseUp();
-        ddPressed = null;
-        dp.MouseDown(dp.X + 5f, ddRow.Top + 2f); dp.MouseUp();
-        E(dp.Drop.Open, "re-opened");
-        E(dp.MouseDown(dp.X + 5f, tipRow.Top + 2f) && !dp.Drop.Open && ddPressed == null && dp.Open,
-          "an outside press closes the list, is swallowed, and reaches no row beneath");
-        dp.MouseUp();
-        dp.MouseDown(dp.X + 5f, ddRow.Top + 2f); dp.MouseUp();
-        E(dp.MouseDown(dp.X + dp.W + 200f, dp.Y + dp.H + 200f) && !dp.Drop.Open && dp.Open, "a press off the panel closes the list first, not the panel");
-        dp.MouseUp();
-
-        // ---- #587: tooltip -- the (?) marker beside the label shows after the dwell, never grabs anything ----
-        long fakeNow = 0;
-        Func<long> realClock = Tooltip.Clock;
-        Tooltip.Clock = () => fakeNow;
-        try
-        {
-            var atlasT = new GlyphAtlas { LineHeight = 18, Ascent = 14, SpaceAdvance = 4f };
-            atlasT.SetTestGlyph(' ', 4f);
-            for (char ch = 'A'; ch <= 'z'; ch++) atlasT.SetTestGlyph(ch, 7f);
-            foreach (char ch in "(?)×.") atlasT.SetTestGlyph(ch, 7f);
-            var vb = new VertexBatch(atlasT.SolidU, atlasT.SolidV);
-            var pal = new Palette { Body = (0.1f, 0.1f, 0.1f, 1f), TitleBar = (0.2f, 0.2f, 0.2f, 1f), Active = (0.2f, 0.3f, 0.5f, 1f), TextRgb = 0xFFFFFF };
-            E(tipRow.TipW == 0f, "before a draw the marker has no span (no hover possible)");
-            dp.Emit(vb, atlasT, 14f, pal);
-            E(tipRow.TipW > 0f && ddRow.TipW == 0f, "the draw places a marker on the help row only");
-            E(Math.Abs(tipRow.TipX - (dp.X + Pad + 7f * "Outline".Length + 4f)) < 0.01f, "the marker sits right after the label");
-            float mkx = tipRow.TipX + 1f, mky = tipRow.Top + 2f;
-            E(dp.MouseMove(mkx, mky) && dp.Tip.Hovering && !dp.Tip.Visible, "hovering the marker starts the dwell");
-            E(!dp.Tip.Tick(), "not due yet");
-            E(!dp.Dragging && !dp.Editing, "hover grabs nothing");
-            fakeNow = (long)(Tooltip.DelaySec * System.Diagnostics.Stopwatch.Frequency);
-            E(dp.Tip.Visible && dp.Tip.Tick() && !dp.Tip.Tick(), "after the dwell it is visible and Tick fires once");
-            E(!dp.MouseMove(mkx + 1f, mky), "motion within the marker changes nothing");
-            E(dp.MouseMove(dp.X + 5f, mky) && !dp.Tip.Hovering, "leaving the marker hides it");
-            dp.MouseMove(mkx, mky); fakeNow *= 2;
-            E(dp.Tip.Visible, "re-hovered and due");
-            dp.MouseDown(mkx, mky);
-            E(!dp.Tip.Hovering && dp.Open, "a press dismisses the tooltip and the row beneath still gets it");
-            dp.MouseUp();
-
-            // ---- #587: the draw with a visible tooltip, with an open list, and with a scrolled column allocates nothing ----
-            dp.MouseMove(mkx, mky); fakeNow *= 2;
-            E(dp.Tip.Visible, "pre: tooltip due");
-            dp.Emit(vb, atlasT, 14f, pal);
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 100; i++) { vb.Clear(); dp.Emit(vb, atlasT, 14f, pal); }
-            long delta = GC.GetAllocatedBytesForCurrentThread() - before;
-            E(delta == 0, $"100 panel draws with the tooltip up allocate nothing ({delta} bytes)");
-            dp.MouseDown(dp.X + 5f, ddRow.Top + 2f); dp.MouseUp();   // list open
-            dp.MouseMove(dp.Drop.X + 5f, dp.Drop.Y + 2f);             // an item hovered
-            E(dp.Drop.Open && dp.Drop.Hover >= 0, "pre: list open with a hovered item");
-            dp.Emit(vb, atlasT, 14f, pal);
-            before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 100; i++) { vb.Clear(); dp.Emit(vb, atlasT, 14f, pal); }
-            delta = GC.GetAllocatedBytesForCurrentThread() - before;
-            E(delta == 0, $"100 panel draws with the list open allocate nothing ({delta} bytes)");
-            tall.BeginOpen(); LayTall(); tall.MouseWheel(-3);
-            tall.Emit(vb, atlasT, 14f, pal);
-            before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 100; i++) { vb.Clear(); tall.Emit(vb, atlasT, 14f, pal); }
-            delta = GC.GetAllocatedBytesForCurrentThread() - before;
-            E(delta == 0, $"100 scrolled-column draws allocate nothing ({delta} bytes)");
-            // The clip: nothing drawn above the box top or below its bottom.
-            vb.Clear(); tall.Emit(vb, atlasT, 14f, pal);
-            float[] verts = vb.ToArray();
-            bool clipped = true;
-            float boxTop = tall.Scroll.Y, boxBot = tall.Scroll.Y + tall.Scroll.H;
-            for (int v = 0; v < vb.VertexCount; v++)
-            {
-                float vy = verts[v * VertexBatch.Floats + 1];
-                if (vy < tall.Y - 0.01f || vy > tall.Y + tall.H + 0.01f) clipped = false;
-            }
-            E(clipped && boxTop < boxBot, "every vertex of a scrolled panel lies within the panel rect (rows clipped to the box)");
-        }
-        finally { Tooltip.Clock = realClock; }
+        E(inside, "every vertex of a scrolled panel lies within the panel rect (rows clipped to the box)");
 
         log.Info(ok ? "SettingsPanel.SelfCheck: passed" : "SettingsPanel.SelfCheck: FAILED");
     }

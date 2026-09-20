@@ -6,8 +6,8 @@ namespace CX.Ui;
 /// dialog, nameplate and quickbar panels); the global half of the union went with them.</summary>
 public enum SetAct
 {
-    ToggleBit, InputTop, AutoHideHdr, LockWin, TellsHere, AnimOn, SliderHold, SliderFade, SliderTau, SliderFont, OutlineOn,
-    CycleFmt, CycleSrc, CycleAlign, CycleTellOpen, CycleBgMode, ColorSwatch, ColorChannel,
-    TabExpand, TabAdd, TabRemove, TabLabel, TabPin, TabChannel,
+    None, ToggleBit, InputTop, AutoHideHdr, AutoHideFrame, LockWin, TellsHere, AnimOn, SliderHold, SliderFade, SliderTau, SliderFont, Typeface, OutlineOn,
+    CycleFmt, CycleSrc, CycleAlign, CycleTellOpen, CycleBgMode, SliderBgAngle, SliderBgStart, SliderBgEnd, ColorSwatch, ColorChannel,
+    TabRemove, TabLabel, TabChannel, CloseWindow,
     CopyFrom,
 }

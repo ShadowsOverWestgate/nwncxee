@@ -5,25 +5,23 @@ using CX.Ui;
 namespace CX.Services.Chat.Core;
 
 /// <summary>
-/// The chat settings window: the chat-side consumer of the shared <see cref="SettingsPanel"/>. It owns the
-/// content only -- which rows exist (checkboxes, dropdowns, sliders, expandable RGBA colour pickers, tab
-/// editing, "copy from window") and what each press does to the <see cref="ChatWindow"/>. The two shared knobs it
-/// still fronts (<c>chat.tellopen</c>, <c>ui.font</c>) are seeded from the knobs and a pick is handed back to the
-/// shell (<see cref="TellOpenPicked"/> / <see cref="FontPicked"/>, like <see cref="CopyRequested"/>), so the pure
-/// core never sets a live knob.
-/// The panel owns everything else: position, drag-by-title, the close-button hit, the metrics, the row list,
-/// hit-test-to-row, the scroll column, the dropdown list, the tooltip, the inline text buffer, and the draw.
-/// Pure -- pixels in, hit-tests + value edits out, no native refs -- so it self-checks off-device.
+/// The chat settings window: the chat-side consumer of the shared <see cref="SettingsPanel"/> (CX-683). It owns
+/// the content only -- the category list (<c>Window settings</c>, one entry per kept tab, <c>Add new tab...</c>),
+/// which rows the chosen category holds (toggles, dropdowns, sliders, expandable RGBA colour pickers, the tab
+/// editor, "copy from window") and what each press does to the <see cref="ChatWindow"/>. The one shared knob it
+/// still fronts (<c>chat.tellopen</c>) is seeded from the knob and a pick is handed back to the shell
+/// (<see cref="TellOpenPicked"/>, like <see cref="CopyRequested"/>); the font rows are the window's own
+/// (<see cref="ChatWindow.FontPx"/> / <see cref="ChatWindow.Typeface"/>) and a pick raises <see cref="FontChanged"/>
+/// so the shell bakes the face, cold. The pure core never sets a live knob and never touches the text rig.
+/// The panel owns everything else: placement, the header drag, the columns, the row layout, hit-test-to-row,
+/// the dropdown list, the inline text buffer, and the draw. Pure -- pixels in, hit-tests + value edits out, no
+/// native refs -- so it self-checks off-device.
 /// </summary>
 public sealed class SettingsWindow
 {
-    /// <summary>Design-px panel width. Scales with the font/UI so the label|control split and the value boxes
-    /// keep their proportions -- labels and values don't run past their column when the font grows. Sized so a
-    /// tab editor text box spans <see cref="TabLabelW"/> (#572).</summary>
-    private const float PanelW = 400f;
-    /// <summary>Design px a full-length tab label (the 32-rune edit cap at the design font) needs in its text
-    /// box; the box must never clip one.</summary>
-    private const float TabLabelW = 260f;
+    public const string WindowCategory = "Window settings", AddTabCategory = "Add new tab...";
+    /// <summary>The default typeface / text size entry: the window follows <c>ui.typeface</c> / <c>ui.font</c>.</summary>
+    public const string FollowUi = "UI default";
 
     /// <summary>The shared panel this window's rows are drawn and hit-tested by (the renderer calls
     /// <see cref="SettingsPanel.Emit"/> on it).</summary>
@@ -35,7 +33,8 @@ public sealed class SettingsWindow
     private ChatWindow? _win;
 
     private string _expanded = "";// colour key whose RGBA channels are shown, or ""
-    private int _expandedTab = -1; // tab index whose channels are shown, or -1
+    /// <summary>Tab index per category entry: -1 for <see cref="WindowCategory"/> and <see cref="AddTabCategory"/>.</summary>
+    private int[] _catTab = System.Array.Empty<int>();
 
     // Dropdown choice tables, in enum order (the picked index IS the enum value). Static: a row points at
     // them, never copies.
@@ -43,32 +42,39 @@ public sealed class SettingsWindow
     private static readonly string[] AlignNames = { "Left", "Right", "Center", "Justify" };
     private static readonly string[] FormatNames = { "HH:mm", "HH:mm:ss", "h:mm tt" };
     private static readonly string[] SourceNames = { "Local", "Game" };
-    private static readonly string[] BgModeNames =
-        { "Solid", "Grad V", "Grad H", "Grad D", "Stripe H", "Stripe V", "Box", "Radial", "Conic", "Conic 4" };
-    /// <summary>The font-size ladder, every point from <see cref="TextRig.MinFontPx"/> to <see cref="TextRig.MaxFontPx"/>
-    /// (a layout-affecting knob is a dropdown, never a slider -- ADR 0025).</summary>
+    private static readonly string[] BgModeNames = { "Solid", "Linear", "Radial", "Conic" };
+    /// <summary>The text-size ladder: <see cref="FollowUi"/>, then every point from <see cref="TextRig.MinFontPx"/> to
+    /// <see cref="TextRig.MaxFontPx"/> (a layout-affecting knob is a dropdown, never a slider -- ADR 0025).</summary>
     public static readonly string[] FontSizes = BuildFontSizes();
     private static string[] BuildFontSizes()
     {
         int lo = TextRig.MinFontPx, hi = TextRig.MaxFontPx;
-        var a = new string[hi - lo + 1];
-        for (int i = 0; i < a.Length; i++) a[i] = (lo + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var a = new string[hi - lo + 2];
+        a[0] = FollowUi;
+        for (int i = 1; i < a.Length; i++) a[i] = (lo + i - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
         return a;
     }
+    /// <summary>The typeface choices: <see cref="FollowUi"/>, then the registry's names past <c>default</c>. Set by the
+    /// shell once the registry loaded; the self-check supplies its own.</summary>
+    public static string[] Typefaces = { FollowUi };
 
     public SettingsWindow()
     {
-        Panel = new SettingsPanel(PanelW)
+        Panel = new SettingsPanel
         {
+            Title = "Chat window",
+            HeaderAction = "Copy this window",
+            HeaderActionPressed = () => CopyWindowRequested = true,
             Relayout = () => { if (_win != null) Layout(_win); },
+            CategoryPicked = OnCategoryPicked,
             RowPressed = OnRowPressed,
             ApplyValue = OnApplyValue,
             CommitLabel = OnCommitLabel,
         };
     }
 
-    public float X { get => Panel.X; set => Panel.X = value; }
-    public float Y { get => Panel.Y; set => Panel.Y = value; }
+    public float X => Panel.X;
+    public float Y => Panel.Y;
     public float W => Panel.W;
     public float H => Panel.H;
     public bool Open { get => Panel.Open; set => Panel.Open = value; }
@@ -80,133 +86,163 @@ public sealed class SettingsWindow
     /// <summary>Index of the window this panel is editing (0 = Main). Set by the shell on open.</summary>
     public int WindowIndex;
 
+    /// <summary>Set by the header's "Copy this window": the shell opens a new window carrying this one's settings.</summary>
+    public bool CopyWindowRequested;
+
+    /// <summary>Set by the second press of "Close this window" (the first only arms it); the shell closes the window.</summary>
+    public bool CloseWindowRequested;
+    /// <summary>True between the first press of "Close this window" and the confirming second; any other press disarms.</summary>
+    public bool CloseArmed;
+
     /// <summary>Index of the source window for a pending "Copy from" action, or -1. The shell reads + clears
     /// this after MouseDown to perform the actual copy (it owns the window list, which Layout doesn't).</summary>
     public int CopyRequested = -1;
 
-    /// <summary>A "Tell auto-open" pick (the <see cref="TellAutoOpen"/> value) or a "Font size" pick (the point
-    /// size), or -1. The shell reads + clears these after MouseDown and sets the knobs (<c>chat.tellopen</c>,
-    /// <c>ui.font</c>); the core stays pure and the SelfCheck sets nothing live.</summary>
-    public int TellOpenPicked = -1, FontPicked = -1;
+    /// <summary>A "Tell auto-open" pick (the <see cref="TellAutoOpen"/> value), or -1. The shell reads + clears it
+    /// after MouseDown and sets <c>chat.tellopen</c>; the core stays pure and the SelfCheck sets nothing live.</summary>
+    public int TellOpenPicked = -1;
+
+    /// <summary>Set true when the window's typeface or text size was picked. The shell reads + clears it to bake the
+    /// face (cold, on the input thread) and relay the window.</summary>
+    public bool FontChanged;
 
     /// <summary>Set true when the user just turned TellsHere on. The shell reads + clears this to enforce
     /// exclusivity (clear TellsHere on all other windows — the panel only sees one window).</summary>
     public bool TellsHereChanged;
 
-    /// <summary>Rebuild the row list + panel height from the live window + config, publishing a fresh list.
-    /// Input-thread only (open + each settings interaction); the ingest-thread Rebuild never calls it, so the
-    /// list it builds is single-writer and only ever read cross-thread as a whole snapshot.</summary>
+    /// <summary>The tab the chosen category edits, or -1 for the window / add entries.</summary>
+    public int CategoryTab => (uint)Panel.Category < (uint)_catTab.Length ? _catTab[Panel.Category] : -1;
+
+    /// <summary>Rebuild the category list and the chosen category's rows from the live window + config,
+    /// publishing a fresh list. Input-thread only (open + each settings interaction); the ingest-thread Rebuild
+    /// never calls it, so the list it builds is single-writer and only ever read cross-thread as a whole snapshot.</summary>
     public void Layout(ChatWindow win)
     {
         _win = win;
+        var cats = new List<string> { WindowCategory };
+        var catTab = new List<int> { -1 };
+        for (int ti = 0; ti < win.Tabs.Count; ti++)
+        {
+            if (win.Tabs[ti].Ephemeral) continue;
+            cats.Add(win.Tabs[ti].Label); catTab.Add(ti);
+        }
+        cats.Add(AddTabCategory); catTab.Add(-1);
+        Panel.Categories = cats.ToArray(); _catTab = catTab.ToArray();
+        if ((uint)Panel.Category >= (uint)cats.Count - 1) Panel.Category = 0;   // a removed tab, or the add entry: back to the window
+
         var rows = new List<SetRow>();
-        float y = Panel.ContentTop;
+        int tab = CategoryTab;
+        if (tab >= 0) LayoutTab(rows, win, tab); else LayoutWindow(rows, win);
+        Panel.Publish(rows);
+    }
 
-        // Render toggles (the window's option bits).
+    private void LayoutWindow(List<SetRow> rows, ChatWindow win)
+    {
+        AddSection(rows, "Window");
+        AddToggle(rows, SetAct.InputTop, "Input on top", win.InputOnTop, 0,
+                  "The input line pops out above the window instead of below it.");
+        AddToggle(rows, SetAct.AutoHideHdr, "Auto-hide header", win.AutoHideHeader, 0,
+                  "The tab bar hides until the pointer is over the window.");
+        AddToggle(rows, SetAct.AutoHideFrame, "Auto-hide outline", win.AutoHideFrame, 0,
+                  "The frame and its shadow hide until the pointer is over the window.");
+        AddToggle(rows, SetAct.LockWin, "Lock window", win.Locked, 0,
+                  "No moving, resizing or tab dragging on this window.");
+        AddToggle(rows, SetAct.TellsHere, "Tells here", win.TellsHere, 0,
+                  "Tells land in this window. Only one window can hold this.");
+        // A pending pick shows at once: the shell sets the knob only after the press returns.
+        AddDropdown(rows, SetAct.CycleTellOpen, "Tell auto-open", TellOpenNames, TellOpenPicked >= 0 ? TellOpenPicked : ChatKnobs.TellOpen.V,
+                    "Where a tell from someone new lands: nowhere special, a new tab, or its own window.");
+
+        AddSection(rows, "Lines");
         foreach (var (bit, label) in ChatWindow.Options)
-            y = AddToggle(rows, y, SetAct.ToggleBit, label, (win.Toggles & bit) != 0, bit);
+            AddToggle(rows, SetAct.ToggleBit, label, (win.Toggles & bit) != 0, bit);
+        AddDropdown(rows, SetAct.CycleAlign, "Alignment", AlignNames, (int)win.Align, "");
+        AddDropdown(rows, SetAct.CycleFmt, "Time format", FormatNames, (int)win.TimeFormat, "");
+        AddDropdown(rows, SetAct.CycleSrc, "Time source", SourceNames, (int)win.TimeSource,
+                    "Local: your clock. Game: the in-game world clock.");
 
-        y = AddToggle(rows, y, SetAct.InputTop, "Input on top", win.InputOnTop, 0,
-                      "The input line pops out above the window instead of below it.");
-        y = AddToggle(rows, y, SetAct.AutoHideHdr, "Auto-hide header", win.AutoHideHeader, 0,
-                      "The tab bar hides until the pointer is over the window.");
-        y = AddToggle(rows, y, SetAct.LockWin, "Lock window", win.Locked, 0,
-                      "No moving, resizing or tab dragging on this window.");
-        y = AddToggle(rows, y, SetAct.TellsHere, "Tells here", win.TellsHere, 0,
-                      "Tells land in this window. Only one window can hold this.");
-        y = AddDropdown(rows, y, SetAct.CycleTellOpen, "Tell auto-open", TellOpenNames, ChatKnobs.TellOpen.V,
-                        "Where a tell from someone new lands: nowhere special, a new tab, or its own window.");
-        y = AddToggle(rows, y, SetAct.AnimOn, "Animations", win.AnimEnabled, 0,
-                      "Lines fade in and out; the window eases when scrolled.");
+        AddSection(rows, "Font");
+        AddDropdown(rows, SetAct.Typeface, "Typeface", Typefaces, TypefaceIndex(win.Typeface),
+                    "The font this window draws its text with; UI default follows the Typeface setting under UI.");
+        AddDropdown(rows, SetAct.SliderFont, "Text size", FontSizes, FontIndex(win.FontPx),
+                    "Text size in this window; UI default follows the Text size setting under UI.");
+        AddToggle(rows, SetAct.OutlineOn, "Outline", win.Outline, 0,
+                  "A dark halo around the text for readability over bright scenes.");
+
+        AddSection(rows, "Animation");
+        AddToggle(rows, SetAct.AnimOn, "Animations", win.AnimEnabled, 0,
+                  "Lines fade in and out; the window eases when scrolled.");
         if (win.AnimEnabled)
         {
-            y = AddSlider(rows, y, SetAct.SliderHold, "Hold (s)", win.HoldSec, 0f, 300f);
-            y = AddSlider(rows, y, SetAct.SliderFade, "Fade (s)", win.FadeSec, 0f, 30f);
-            y = AddSlider(rows, y, SetAct.SliderTau, "Ease (ms)", win.TauMs, 10f, 500f);
+            AddSlider(rows, SetAct.SliderHold, "Hold (s)", win.HoldSec, 0f, 300f);
+            AddSlider(rows, SetAct.SliderFade, "Fade (s)", win.FadeSec, 0f, 30f);
+            AddSlider(rows, SetAct.SliderTau, "Ease (ms)", win.TauMs, 10f, 500f);
         }
 
-        y = AddDropdown(rows, y, SetAct.SliderFont, "Font size", FontSizes, FontIndex(UiKnobs.Font.V),
-                        "Text size in every CX window.");
-        y = AddToggle(rows, y, SetAct.OutlineOn, "Outline", win.Outline, 0,
-                      "A dark halo around the text for readability over bright scenes.");
-
-        y = AddDropdown(rows, y, SetAct.CycleAlign, "Alignment", AlignNames, (int)win.Align, "");
-        y = AddDropdown(rows, y, SetAct.CycleFmt, "Time format", FormatNames, (int)win.TimeFormat, "");
-        y = AddDropdown(rows, y, SetAct.CycleSrc, "Time source", SourceNames, (int)win.TimeSource,
-                        "Local: your clock. Game: the in-game world clock.");
-
+        AddSection(rows, "Colours");
         foreach (var (key, label, alpha) in ChatColor.Editable)
         {
             uint rgba = ColorOf(win, key);
-            y = AddSwatch(rows, y, label, key, rgba);
+            AddSwatch(rows, label, key, rgba);
             if (_expanded == key)
                 for (int ch = 0; ch < (alpha ? 4 : 3); ch++)
-                    y = AddChannel(rows, y, key, ch, ChannelByte(rgba, ch));
+                    AddChannel(rows, key, ch, ChannelByte(rgba, ch));
             if (key == ChatColor.Background)
             {
-                y = AddDropdown(rows, y, SetAct.CycleBgMode, "Bg style", BgModeNames, (int)win.BgMode, "");
+                AddDropdown(rows, SetAct.CycleBgMode, "Bg style", BgModeNames, (int)win.BgMode,
+                            "Solid, or a gradient from Background to Background 2: Linear along a direction, Radial from the centre, Conic around it.");
                 if (win.BgMode != BgMode.Solid)
                 {
+                    if (win.BgMode != BgMode.Radial)
+                        AddSlider(rows, SetAct.SliderBgAngle, "Direction (°)", win.BgAngle, 0f, 360f,
+                                  "0 runs left to right, 90 top to bottom.");
+                    AddSlider(rows, SetAct.SliderBgStart, "Start (%)", win.BgStart * 100f, 0f, 100f,
+                              "Background holds up to here.");
+                    AddSlider(rows, SetAct.SliderBgEnd, "End (%)", win.BgEnd * 100f, 0f, 100f,
+                              "Background 2 holds from here; at or before Start makes a hard edge.");
                     uint bg2 = ColorOf(win, ChatColor.Background2);
-                    y = AddSwatch(rows, y, "Background 2", ChatColor.Background2, bg2);
+                    AddSwatch(rows, "Background 2", ChatColor.Background2, bg2);
                     if (_expanded == ChatColor.Background2)
                         for (int ch = 0; ch < 4; ch++)
-                            y = AddChannel(rows, y, ChatColor.Background2, ch, ChannelByte(bg2, ch));
+                            AddChannel(rows, ChatColor.Background2, ch, ChannelByte(bg2, ch));
                 }
             }
         }
-
-        // Tab section (#39): one header per tab, expandable to label + channel toggles + remove.
-        for (int ti = 0; ti < win.Tabs.Count; ti++)
-        {
-            Tab tab = win.Tabs[ti];
-            if (tab.Ephemeral) continue;
-            string tk = ti.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            rows.Add(new SetRow { Kind = SetKind.Text, Act = SetAct.TabExpand,
-                Label = $"Tab {ti + 1}", Value = tab.Label, Top = y, Height = RowH, Key = tk });
-            y += RowH;
-            if (_expandedTab == ti)
-            {
-                rows.Add(new SetRow { Kind = SetKind.Text, Act = SetAct.TabLabel,
-                    Label = "  Label", Value = tab.Label, Top = y, Height = RowH, Key = tk });
-                y += RowH;
-                rows.Add(new SetRow { Kind = SetKind.Text, Act = SetAct.TabPin,
-                    Label = "  Tell pin", Value = tab.PinnedName.Length > 0 ? tab.PinnedName : "(none)",
-                    Top = y, Height = RowH, Key = tk });
-                y += RowH;
-                foreach (var (bit, chLabel) in FilterChannel.Editable)
-                {
-                    rows.Add(new SetRow { Kind = SetKind.Toggle, Act = SetAct.TabChannel,
-                        Label = $"  {chLabel}", On = (tab.ChannelMask & bit) != 0,
-                        Bit = bit, Top = y, Height = RowH, Key = tk });
-                    y += RowH;
-                }
-                if (win.Tabs.Count > 1)
-                {
-                    rows.Add(new SetRow { Kind = SetKind.Button, Act = SetAct.TabRemove,
-                        Label = "  Remove tab", Top = y, Height = RowH, Key = tk });
-                    y += RowH;
-                }
-            }
-        }
-        rows.Add(new SetRow { Kind = SetKind.Button, Act = SetAct.TabAdd,
-            Label = "+ Add tab", Top = y, Height = RowH });
-        y += RowH;
 
         // Copy from another window (hidden when only one window exists).
+        if (WindowCount > 1) AddSection(rows, "Other windows");
         for (int wi = 0; wi < WindowCount; wi++)
         {
             if (wi == WindowIndex) continue;
-            rows.Add(new SetRow { Kind = SetKind.Button, Act = SetAct.CopyFrom,
-                Label = $"Copy from Window {wi + 1}", Top = y, Height = RowH,
-                Key = wi.ToString(System.Globalization.CultureInfo.InvariantCulture) });
-            y += RowH;
+            rows.Add(new SetRow { Kind = SetKind.Button, Act = SetAct.CopyFrom, Label = $"Copy from Window {wi + 1}",
+                                  Key = wi.ToString(System.Globalization.CultureInfo.InvariantCulture) });
         }
 
-        Panel.Publish(rows, y);
+        // Closing lives here (the tab bar's [×] went with CX-683); Main is undeletable, so it gets no row.
+        if (win.Closeable)
+        {
+            AddSection(rows, "Close");
+            rows.Add(new SetRow { Kind = SetKind.Button, Act = SetAct.CloseWindow,
+                                  Label = CloseArmed ? "Click again to confirm" : "Close this window",
+                                  Help = "Closes this chat window. Its tabs are gone; press twice to confirm." });
+        }
     }
 
-    private static float RowH => SettingsPanel.RowH;
+    /// <summary>The tab editor (#39): label, the channel filter, remove. The tell pin is the tab bar's own affordance, not a setting.</summary>
+    private static void LayoutTab(List<SetRow> rows, ChatWindow win, int ti)
+    {
+        Tab tab = win.Tabs[ti];
+        string tk = ti.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        AddSection(rows, "Tab");
+        rows.Add(new SetRow { Kind = SetKind.Text, Act = SetAct.TabLabel, Label = "Label", Value = tab.Label, Key = tk,
+                              Help = "The name on the tab." });
+        AddSection(rows, "Channels");
+        foreach (var (bit, chLabel) in FilterChannel.Editable)
+            rows.Add(new SetRow { Kind = SetKind.Toggle, Act = SetAct.TabChannel, Label = chLabel,
+                                  On = (tab.ChannelMask & bit) != 0, Bit = bit, Key = tk });
+        if (win.Tabs.Count > 1)
+            rows.Add(new SetRow { Kind = SetKind.Button, Act = SetAct.TabRemove, Label = "Remove tab", Key = tk });
+    }
 
     /// <summary>Resolve a per-window colour to its current RGBA8 (override or default). Set by the shell so
     /// the pure core doesn't reach into the renderer for defaults.</summary>
@@ -214,57 +250,62 @@ public sealed class SettingsWindow
         win.Colors.TryGetValue(key, out uint v) ? v : 0xffffffffu;
     private static uint ColorOf(ChatWindow win, string key) => ColorResolver(win, key);
 
-    private static float AddToggle(List<SetRow> rows, float y, SetAct act, string label, bool on, uint bit, string help = "")
-    { rows.Add(new SetRow { Kind = SetKind.Toggle, Act = act, Label = label, Top = y, Height = RowH, On = on, Bit = bit, Help = help }); return y + RowH; }
+    private static void AddSection(List<SetRow> rows, string label)
+        => rows.Add(new SetRow { Kind = SetKind.Section, Act = SetAct.None, Label = label.ToUpperInvariant() });
 
-    private static float AddDropdown(List<SetRow> rows, float y, SetAct act, string label, string[] choices, int selected, string help)
-    {
-        rows.Add(new SetRow { Kind = SetKind.Dropdown, Act = act, Label = label, Top = y, Height = RowH,
-                              Choices = choices, Selected = selected, Help = help });
-        return y + RowH;
-    }
+    private static void AddToggle(List<SetRow> rows, SetAct act, string label, bool on, uint bit, string help = "")
+    { rows.Add(new SetRow { Kind = SetKind.Toggle, Act = act, Label = label, On = on, Bit = bit, Help = help }); }
 
-    /// <summary>Index of a font px in <see cref="FontSizes"/> (nearest point, clamped to the ladder).</summary>
+    private static void AddDropdown(List<SetRow> rows, SetAct act, string label, string[] choices, int selected, string help)
+    { rows.Add(new SetRow { Kind = SetKind.Dropdown, Act = act, Label = label, Choices = choices, Selected = selected, Help = help }); }
+
+    /// <summary>Index of a window font px in <see cref="FontSizes"/>: 0 follows the UI, else the point, clamped to the ladder.</summary>
     private static int FontIndex(int px)
     {
-        int i = px - TextRig.MinFontPx;
-        return i < 0 ? 0 : i >= FontSizes.Length ? FontSizes.Length - 1 : i;
+        if (px <= 0) return 0;
+        int i = px - TextRig.MinFontPx + 1;
+        return i < 1 ? 1 : i >= FontSizes.Length ? FontSizes.Length - 1 : i;
     }
 
-    private static float AddSlider(List<SetRow> rows, float y, SetAct act, string label, float value, float min, float max)
+    /// <summary>Index of a window typeface in <see cref="Typefaces"/>: 0 (follow the UI) when empty or unknown.</summary>
+    private static int TypefaceIndex(string name)
+    {
+        if (name.Length == 0) return 0;
+        for (int i = 1; i < Typefaces.Length; i++)
+            if (string.Equals(Typefaces[i], name, System.StringComparison.OrdinalIgnoreCase)) return i;
+        return 0;
+    }
+
+    private static void AddSlider(List<SetRow> rows, SetAct act, string label, float value, float min, float max, string help = "")
     {
         float norm = max > min ? (value - min) / (max - min) : 0f;
-        rows.Add(new SetRow { Kind = SetKind.Slider, Act = act, Label = label, Top = y, Height = RowH,
-                              Norm = Clamp01(norm), Min = min, Max = max });
-        return y + RowH;
+        rows.Add(new SetRow { Kind = SetKind.Slider, Act = act, Label = label, Norm = Clamp01(norm), Min = min, Max = max, Help = help });
     }
 
-    private static float AddSwatch(List<SetRow> rows, float y, string label, string key, uint rgba)
-    { rows.Add(new SetRow { Kind = SetKind.Swatch, Act = SetAct.ColorSwatch, Label = label, Top = y, Height = RowH, Key = key, Rgba = rgba }); return y + RowH; }
+    private static void AddSwatch(List<SetRow> rows, string label, string key, uint rgba)
+    { rows.Add(new SetRow { Kind = SetKind.Swatch, Act = SetAct.ColorSwatch, Label = label, Key = key, Rgba = rgba }); }
 
-    private static float AddChannel(List<SetRow> rows, float y, string key, int ch, int val)
+    private static void AddChannel(List<SetRow> rows, string key, int ch, int val)
     {
         rows.Add(new SetRow { Kind = SetKind.Slider, Act = SetAct.ColorChannel, Label = "RGBA"[ch].ToString(),
-                              Top = y, Height = RowH, Key = key, Channel = ch, Norm = val / 255f, Min = 0f, Max = 255f });
-        return y + RowH;
+                              Key = key, Channel = ch, Norm = val / 255f, Min = 0f, Max = 255f });
     }
 
-    /// <summary>Open the panel centred in a <paramref name="vpW"/>×<paramref name="vpH"/> viewport.
-    /// <paramref name="winIndex"/> and <paramref name="winCount"/> drive the "Copy from" rows.</summary>
-    public void OpenAt(ChatWindow win, float vpW, float vpH,
-                       int winIndex = 0, int winCount = 1)
+    /// <summary>Open the panel centred in a <paramref name="vpW"/>×<paramref name="vpH"/> viewport on the faces the
+    /// shell baked at <paramref name="em"/> (null faces lay out on estimates and draw nothing). Opens on the
+    /// window category. <paramref name="winIndex"/> and <paramref name="winCount"/> drive the "Copy from" rows.</summary>
+    public void OpenAt(ChatWindow win, float vpW, float vpH, float em = SettingsPanel.FacePx,
+                       GlyphAtlas? body = null, GlyphAtlas? small = null, int winIndex = 0, int winCount = 1)
     {
-        Panel.BeginOpen();
-        Panel.ViewportW = vpW > 0f ? vpW : float.MaxValue;
-        Panel.ViewportH = vpH > 0f ? vpH : float.MaxValue;
+        Panel.OpenAt(vpW, vpH, em, body, small);
+        Panel.Category = 0;
         WindowIndex = winIndex; WindowCount = winCount;
         Layout(win);
-        if (vpW > 0f && vpH > 0f) { X = (vpW - W) / 2f; Y = (vpH - H) / 2f; }
-        else { X = win.X + (win.W - W) / 2f; Y = win.Y + ChatWindow.TabBarH + 6f; }
-        if (X < 0f) X = 0f;
-        if (Y < 0f) Y = 0f;
-        Layout(win);
     }
+
+    /// <summary>Swap in fresh faces (the sheet re-baked while open: same px, so the layout stands; the next
+    /// interaction re-lays out). Safe off the input thread -- two field writes.</summary>
+    public void SetFaces(GlyphAtlas? body, GlyphAtlas? small) { Panel.Body = body; Panel.Small = small; }
 
     public bool OverClose(float mx, float my) => Panel.OverClose(mx, my);
 
@@ -283,6 +324,20 @@ public sealed class SettingsWindow
         return Panel.MouseDown(mx, my);
     }
 
+    /// <summary>A category press: a tab or the window entry selects it; <see cref="AddTabCategory"/> adds an
+    /// All-channel tab and selects its new entry.</summary>
+    private void OnCategoryPicked(int c)
+    {
+        ChatWindow? win = _win;
+        if (win != null && c == Panel.Categories.Length - 1)
+        {
+            win.AddTab(new Tab("All", 0xffffffff));
+            Panel.Category = c;   // the new tab's entry takes this slot; the add entry moves one down
+            return;
+        }
+        Panel.Category = c;
+    }
+
     /// <summary>A press on a non-slider row: mutate the window/config. Slider rows never reach here -- the panel
     /// owns the track drag and the value box. A dropdown row arrives after a pick, with <see cref="SetRow.Selected"/>
     /// already the chosen index (= the enum value).</summary>
@@ -290,11 +345,17 @@ public sealed class SettingsWindow
     {
         ChatWindow? win = _win;
         if (win == null) return;
+        bool armed = CloseArmed;
+        CloseArmed = false;
         switch (row.Act)
         {
+            case SetAct.CloseWindow:
+                if (armed) CloseWindowRequested = true; else CloseArmed = true;
+                break;
             case SetAct.ToggleBit: win.Toggles ^= row.Bit; break;
             case SetAct.InputTop: win.InputOnTop = !win.InputOnTop; break;
             case SetAct.AutoHideHdr: win.AutoHideHeader = !win.AutoHideHeader; break;
+            case SetAct.AutoHideFrame: win.AutoHideFrame = !win.AutoHideFrame; break;
             case SetAct.LockWin: win.Locked = !win.Locked; break;
             case SetAct.TellsHere: win.TellsHere = !win.TellsHere; TellsHereChanged = win.TellsHere; break;
             case SetAct.CycleTellOpen: TellOpenPicked = row.Selected; break;
@@ -304,64 +365,46 @@ public sealed class SettingsWindow
             case SetAct.CycleSrc: win.TimeSource = (TsSource)row.Selected; break;
             case SetAct.CycleAlign: win.Align = (TextAlign)row.Selected; break;
             case SetAct.CycleBgMode: win.BgMode = (BgMode)row.Selected; break;
-            case SetAct.SliderFont: FontPicked = TextRig.MinFontPx + row.Selected; break;
+            case SetAct.SliderFont: win.FontPx = row.Selected <= 0 ? 0 : TextRig.MinFontPx + row.Selected - 1; FontChanged = true; break;
+            case SetAct.Typeface: win.Typeface = row.Selected <= 0 || row.Selected >= Typefaces.Length ? "" : Typefaces[row.Selected]; FontChanged = true; break;
             case SetAct.ColorSwatch: _expanded = _expanded == row.Key ? "" : row.Key; break;
-            case SetAct.TabExpand:
-            {
-                int ti = ParseTabKey(row.Key);
-                _expandedTab = _expandedTab == ti ? -1 : ti;
-                break;
-            }
-            case SetAct.TabAdd:
-                win.AddTab(new Tab("All", 0xffffffff));
-                _expandedTab = win.Tabs.Count - 1;
-                break;
             case SetAct.TabRemove:
             {
-                int ti = ParseTabKey(row.Key);
-                if (win.RemoveTab(ti))
-                    _expandedTab = -1;
+                int ti = ParseIndex(row.Key);
+                if (win.RemoveTab(ti)) Panel.Category = 0;
                 break;
             }
             case SetAct.TabLabel:
-            case SetAct.TabPin:
-            {
                 Panel.BeginLabelEdit(row);
                 break;
-            }
             case SetAct.TabChannel:
             {
-                int ti = ParseTabKey(row.Key);
+                int ti = ParseIndex(row.Key);
                 if ((uint)ti < (uint)win.Tabs.Count)
                 {
                     win.Tabs[ti].ChannelMask ^= row.Bit;
-
                     if (ti == win.ActiveTab) win.ClampSendChannel();
                 }
                 break;
             }
             case SetAct.CopyFrom:
-            {
-                int src = ParseTabKey(row.Key);
-                CopyRequested = src;
+                CopyRequested = ParseIndex(row.Key);
                 break;
-            }
         }
     }
 
-    /// <summary>True while the panel is being dragged by its title bar (not a slider grab).</summary>
+    /// <summary>True while the panel is being dragged by its header (not a slider grab).</summary>
     public bool Moving => Panel.Moving;
 
-    /// <summary>Pointer motion while a slider or the title bar is grabbed. A title-bar move translates
-    /// row positions in place without a full <see cref="Layout"/> (#53).</summary>
+    /// <summary>Pointer motion while a slider or the header is grabbed, or a hover moved.</summary>
     public bool MouseMove(float mx, float my, ChatWindow win)
     {
         _win = win;
         return Panel.MouseMove(mx, my);
     }
 
-    /// <summary>Write a raw value onto the window (per-window settings) or config (font, which is global) for a
-    /// slider/channel row and mirror it back onto the row's draw state so the knob/value box track the pointer.</summary>
+    /// <summary>Write a raw value onto the window for a slider/channel row and mirror it back onto the row's
+    /// draw state so the knob/value box track the pointer.</summary>
     private void OnApplyValue(SetRow r, float v)
     {
         ChatWindow? win = _win;
@@ -385,20 +428,24 @@ public sealed class SettingsWindow
                 case SetAct.SliderHold: win.HoldSec = cl; break;
                 case SetAct.SliderFade: win.FadeSec = cl; break;
                 case SetAct.SliderTau: win.TauMs = cl; break;
+                case SetAct.SliderBgAngle: win.BgAngle = cl; break;
+                case SetAct.SliderBgStart: win.BgStart = cl / 100f; break;
+                case SetAct.SliderBgEnd: win.BgEnd = cl / 100f; break;
             }
         }
     }
 
     // ---- inline text entry ---------------------------------------------------------------------
 
-    /// <summary>True while a slider value box is being typed into (the shell routes keys/text here).</summary>
+    /// <summary>True while the panel wants typed text: a value box or label edit, or a searching list.</summary>
     public bool Editing => Panel.Editing;
     /// <summary>Is <paramref name="r"/> the row being text-edited? (the renderer shows the buffer + a caret).</summary>
     public bool EditingRow(SetRow r) => Panel.EditingRow(r);
     /// <summary>The in-progress edit buffer (renderer draws it in the active value box).</summary>
     public string EditText => Panel.EditText;
 
-    private static int ParseTabKey(string key)
+    /// <summary>A row's <see cref="SetRow.Key"/> as an index (a tab, or a "Copy from" source window); -1 when it is none.</summary>
+    private static int ParseIndex(string key)
         => int.TryParse(key, System.Globalization.NumberStyles.None,
                          System.Globalization.CultureInfo.InvariantCulture, out int i) ? i : -1;
 
@@ -414,41 +461,18 @@ public sealed class SettingsWindow
         Panel.CommitEdit();
     }
 
-    /// <summary>Commit a tab label or tell pin. A label writes the trimmed text to the tab (empty keeps old);
-    /// a pin writes it too (empty clears the pin — that's the only unpin affordance).</summary>
+    /// <summary>Commit a tab label: the trimmed text goes on the tab (empty keeps the old one) and its category
+    /// entry is renamed.</summary>
     private void OnCommitLabel(SetRow r, string t)
     {
         ChatWindow? win = _win;
-        if (r.Act == SetAct.TabPin)
-        {
-            string trimmed = t.Trim();
-            if (win != null)
-            {
-                int ti = ParseTabKey(r.Key);
-                if ((uint)ti < (uint)win.Tabs.Count)
-                {
-                    win.Tabs[ti].PinnedName = trimmed;
-
-                    r.Value = trimmed.Length > 0 ? trimmed : "(none)";
-                }
-            }
-        }
-        else
-        {
-            string trimmed = t.Trim();
-            if (trimmed.Length > 0 && win != null)
-            {
-                int ti = ParseTabKey(r.Key);
-                if ((uint)ti < (uint)win.Tabs.Count)
-                {
-
-                    win.Tabs[ti].Label = trimmed;
-                    r.Value = trimmed;
-                    foreach (SetRow hdr in Panel.Rows)
-                        if (hdr.Act == SetAct.TabExpand && hdr.Key == r.Key) hdr.Value = trimmed;
-                }
-            }
-        }
+        if (win == null) return;
+        int ti = ParseIndex(r.Key);
+        string trimmed = t.Trim();
+        if ((uint)ti >= (uint)win.Tabs.Count || trimmed.Length == 0) return;
+        win.Tabs[ti].Label = trimmed;
+        r.Value = trimmed;
+        Layout(win);   // the category entry carries the label
     }
 
     public void CancelEdit() => Panel.CancelEdit();
@@ -456,17 +480,14 @@ public sealed class SettingsWindow
     /// <summary>Pointer release. Consumed iff we owned the press. Ends any slide drag.</summary>
     public bool MouseUp() => Panel.MouseUp();
 
-    /// <summary>Wheel notch while open: the open dropdown list, else the rows. True when something scrolled.</summary>
+    /// <summary>Wheel notch while open: the open dropdown list, else the column under the pointer.</summary>
     public bool MouseWheel(int dy) => Panel.MouseWheel(dy);
-
-    /// <summary>Per-frame poll: true once when a hovered (?) marker's dwell elapses (the shell rebuilds).</summary>
-    public bool TooltipTick() => Panel.Tip.Tick();
 
     /// <summary>True while a slider or the panel itself is being dragged.</summary>
     public bool Dragging => Panel.Dragging;
 
     /// <summary>Force-close at a session boundary, clearing any half-owned press, drag, or field edit.</summary>
-    public void Reset() { Panel.Reset(); _expanded = ""; _expandedTab = -1; TellsHereChanged = false; }
+    public void Reset() { Panel.Reset(); _expanded = ""; TellsHereChanged = false; FontChanged = false; CopyWindowRequested = false; CloseWindowRequested = false; CloseArmed = false; }
 
     private static float Clamp01(float v) => v < 0f ? 0f : v > 1f ? 1f : v;
     private static int ChannelByte(uint rgba, int ch) => (int)((rgba >> (24 - ch * 8)) & 0xFF);
@@ -476,8 +497,8 @@ public sealed class SettingsWindow
         return (rgba & ~(0xFFu << shift)) | ((uint)(val & 0xFF) << shift);
     }
 
-    /// <summary>Off-device proof of the widget state machine: open/close/ownership, each control type's edit,
-    /// and colour-channel expansion.</summary>
+    /// <summary>Off-device proof of the widget state machine: the category list, open/close/ownership, each
+    /// control type's edit, colour-channel expansion, the tab editor and the font rows.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;
@@ -486,321 +507,307 @@ public sealed class SettingsWindow
         // Resolve colours against a fixed table for the test (the shell wires the real renderer resolver).
         var defs = new Dictionary<string, uint> { [ChatColor.Text] = 0x102030ff };
         ColorResolver = (w, key) => w.Colors.TryGetValue(key, out uint v) ? v : (defs.TryGetValue(key, out uint d) ? d : 0x808080ffu);
+        string[] realFaces = Typefaces;
+        Typefaces = new[] { FollowUi, "Arial", "DejaVu Serif" };
+
+        var body = new GlyphAtlas { LineHeight = 24, Ascent = 19, SpaceAdvance = 6f };
+        var small = new GlyphAtlas { LineHeight = 19, Ascent = 15, SpaceAdvance = 5f };
+        for (int cp = 0x20; cp < 0x180; cp++) { body.SetTestGlyph(cp, cp == ' ' ? 6f : 11f); small.SetTestGlyph(cp, cp == ' ' ? 5f : 8f); }
+        body.SetTestGlyph(0x25BE, 11f); small.SetTestGlyph(0x25BE, 8f);
+        void Open(SettingsWindow sw, ChatWindow w, int winIndex = 0, int winCount = 1)
+        { sw.OpenAt(w, 1280, 800, 20f, body, small, winIndex, winCount); sw.MouseUp(); }
+        SetRow Find(SettingsWindow sw, SetAct act, string key = "") => sw.Rows.Find(r => r.Act == act && (key.Length == 0 || r.Key == key))!;
+        // The window rows overflow the column: scroll a row into the box before pressing it (offset-correct hits).
+        void Reveal(SettingsWindow sw, SetRow r) { sw.Panel.List.Offset = r.Top - 0.4f * sw.Panel.Em; sw.Panel.List.Clamp(); }
+        void PressRow(SettingsWindow sw, ChatWindow w, SetRow r) { Reveal(sw, r); sw.MouseDown(sw.Panel.List.X + 5, sw.Panel.RowTop(r) + 2, w); sw.MouseUp(); }
+        void PressBox(SettingsWindow sw, ChatWindow w, SetRow r)
+        { Reveal(sw, r); sw.Panel.ControlBox(r, out float x0, out float x1, out float y0, out float y1); sw.MouseDown((x0 + x1) / 2f, (y0 + y1) / 2f, w); sw.MouseUp(); }
+        void PressCat(SettingsWindow sw, ChatWindow w, int c)
+        { sw.MouseDown(sw.Panel.Cats.X + 5, sw.Panel.Cats.Y + 0.4f * sw.Panel.Em + c * (body.LineHeight + 1.2f * sw.Panel.Em) + 2, w); sw.MouseUp(); }
 
         var win = new ChatWindow(100, 100, 400, 300, new[] { new Tab("All", 0xffffffff) });
         var s = new SettingsWindow();
 
-        s.OpenAt(win, 0, 0);
-        E(s.Open && s.Rows.Count > 0, "OpenAt opens + lays out rows");
-        E(s.MouseUp(), "up after gear-open is consumed (press ownership)");
+        Open(s, win);
+        E(s.Open && s.Rows.Count > 0 && s.Panel.Category == 0, "OpenAt opens on the window category with rows");
+        E(s.Panel.Categories.Length == 3 && s.Panel.Categories[0] == WindowCategory && s.Panel.Categories[1] == "All" && s.Panel.Categories[2] == AddTabCategory,
+          "categories: the window, one per tab, add");
+        E(Find(s, SetAct.TabLabel) == null && Find(s, SetAct.ToggleBit) != null, "the window category holds the window rows, no tab editor");
+        E(System.Math.Abs(s.X - (1280 - s.W) / 2f) < 0.5f && System.Math.Abs(s.Y - (800 - s.H) / 2f) < 0.5f, "panel opens centred");
 
-        // Toggle row 0 flips its bit and stays open.
-        s.OpenAt(win, 0, 0); s.MouseUp();
-        SetRow tgl = s.Rows.Find(r => r.Act == SetAct.ToggleBit)!;
+        // Toggle row flips its bit and stays open.
+        SetRow tgl = Find(s, SetAct.ToggleBit);
         uint before = win.Toggles;
-        E(s.MouseDown(s.X + 5, tgl.Top + 2, win), "toggle click consumed");
+        Reveal(s, tgl);
+        E(s.MouseDown(s.Panel.List.X + 5, s.Panel.RowTop(tgl) + 2, win), "toggle click consumed");
         E(s.Open && win.Toggles == (before ^ tgl.Bit), "toggle flips its bit, stays open");
-
-        // Animations off hides the duration sliders; on shows them.
-        SetRow anim = s.Rows.Find(r => r.Act == SetAct.AnimOn)!;
-        s.MouseDown(s.X + 5, anim.Top + 2, win);
-        E(!win.AnimEnabled && s.Rows.Find(r => r.Act == SetAct.SliderHold) == null, "anim off hides sliders");
-        s.MouseDown(s.X + 5, s.Rows.Find(r => r.Act == SetAct.AnimOn)!.Top + 2, win);
-        E(win.AnimEnabled && s.Rows.Find(r => r.Act == SetAct.SliderHold) != null, "anim on shows sliders");
-
-        // Slider drag sets the config value from the pointer x (full-right -> max).
-        SetRow hold = s.Rows.Find(r => r.Act == SetAct.SliderHold)!;
-        s.SliderTrack(hold, out float hx0, out float hx1, out float _);
-        s.MouseDown(hx1, hold.Top + 2, win);
-        E(System.Math.Abs(win.HoldSec - 300f) < 0.5f, "hold slider full-right -> max");
-        s.MouseMove((hx0 + hx1) / 2f, hold.Top + 2, win);
-        E(System.Math.Abs(win.HoldSec - 150f) < 2f, "hold slider drag to mid -> ~half");
-        // Live-preview regression: the drag must move the row that's actually IN Rows (the drawn knob), not a
-        // detached copy -- MouseDown re-published the list, so _grab has to point into the new one.
-        E(System.Math.Abs(s.Rows.Find(r => r.Act == SetAct.SliderHold)!.Norm - 0.5f) < 0.02f, "drag updates the drawn row's Norm");
-        E(s.MouseUp(), "slider release consumed");
-
-        // Clicking a slider's label (left of the track) is consumed but leaves the value untouched.
-        SetRow fade = s.Rows.Find(r => r.Act == SetAct.SliderFade)!;
-        float fadeBefore = win.FadeSec;
-        s.MouseDown(s.X + 5, fade.Top + 2, win);   // s.X+5 is in the label zone, left of ControlX
-        E(win.FadeSec == fadeBefore, "click on a slider label leaves the value untouched");
         s.MouseUp();
 
-        // Inline text entry: click the value box, type an exact number, commit / clamp / cancel / keep-on-empty.
+        // Animations off hides the duration sliders; on shows them.
+        PressRow(s, win, Find(s, SetAct.AnimOn));
+        E(!win.AnimEnabled && Find(s, SetAct.SliderHold) == null, "anim off hides sliders");
+        PressRow(s, win, Find(s, SetAct.AnimOn));
+        E(win.AnimEnabled && Find(s, SetAct.SliderHold) != null, "anim on shows sliders");
+
+        // Slider drag sets the window value from the pointer x (full-right -> max), on the drawn row.
+        SetRow hold = Find(s, SetAct.SliderHold);
+        Reveal(s, hold);
+        s.SliderTrack(hold, out float hx0, out float hx1, out float hcy);
+        s.MouseDown(hx1 - 0.1f, hcy, win);
+        E(System.Math.Abs(win.HoldSec - 300f) < 0.5f, "hold slider full-right -> max");
+        s.MouseMove((hx0 + hx1) / 2f, hcy, win);
+        E(System.Math.Abs(win.HoldSec - 150f) < 2f, "hold slider drag to mid -> ~half");
+        E(System.Math.Abs(Find(s, SetAct.SliderHold).Norm - 0.5f) < 0.02f, "drag updates the drawn row's Norm");
+        E(s.MouseUp(), "slider release consumed");
+        float fadeBefore = win.FadeSec;
+        PressRow(s, win, Find(s, SetAct.SliderFade));
+        E(win.FadeSec == fadeBefore, "click on a slider label leaves the value untouched");
+
+        // Inline numeric entry: value box -> commit / clamp / cancel / keep-on-empty / click-away.
         void ClickValueBox()
         {
-            SetRow hr = s.Rows.Find(r => r.Act == SetAct.SliderHold)!;
+            SetRow hr = Find(s, SetAct.SliderHold);
+            Reveal(s, hr);
             s.ValueBox(hr, out float vx0, out float vx1, out float vy0, out float vy1);
             s.MouseDown((vx0 + vx1) / 2f, (vy0 + vy1) / 2f, win);
         }
         ClickValueBox();
         E(s.Editing, "clicking a value box starts a field edit");
-        s.EditInsert("4a2");   // letters filtered out -> "42"
-        s.CommitEdit(win);
+        s.EditInsert("4a2"); s.CommitEdit(win);
         E(!s.Editing && System.Math.Abs(win.HoldSec - 42f) < 0.01f, "typed value (filtered) commits");
-        ClickValueBox(); s.EditInsert("999"); s.CommitEdit(win);   // over max (300) -> clamps
+        ClickValueBox(); s.EditInsert("999"); s.CommitEdit(win);
         E(System.Math.Abs(win.HoldSec - 300f) < 0.01f, "typed value clamps to max");
         ClickValueBox(); s.EditInsert("10"); s.CancelEdit();
         E(!s.Editing && System.Math.Abs(win.HoldSec - 300f) < 0.01f, "cancel leaves the value untouched");
-        ClickValueBox(); s.CommitEdit(win);   // empty buffer -> unparseable -> keep old value (never zero)
+        ClickValueBox(); s.CommitEdit(win);
         E(System.Math.Abs(win.HoldSec - 300f) < 0.01f, "empty commit keeps the old value");
-        // A press elsewhere while editing commits the in-progress edit (focus loss).
         ClickValueBox(); s.EditInsert("77");
-        SetRow animRow = s.Rows.Find(r => r.Act == SetAct.AnimOn)!;
-        s.MouseDown(s.X + 5, animRow.Top + 2, win);
+        PressRow(s, win, Find(s, SetAct.AnimOn));
         E(!s.Editing && System.Math.Abs(win.HoldSec - 77f) < 0.01f, "click-away commits the edit");
-        // restore anim (the click above toggled it off, hiding the sliders)
-        s.MouseDown(s.X + 5, s.Rows.Find(r => r.Act == SetAct.AnimOn)!.Top + 2, win);
+        PressRow(s, win, Find(s, SetAct.AnimOn));
 
-        // Dropdown rows (#587): a press opens the list; picking an item sets the enum by index.
-        SetRow alR = s.Rows.Find(r => r.Act == SetAct.CycleAlign)!;
+        // Dropdown rows: the box opens the list; picking an item sets the enum by index.
+        SetRow alR = Find(s, SetAct.CycleAlign);
         E(alR.Kind == SetKind.Dropdown && alR.Choices!.Length == 4 && alR.Selected == (int)win.Align, "alignment is a 4-choice dropdown seeded from the window");
-        s.MouseDown(s.X + 5, alR.Top + 2, win); s.MouseUp();
-        E(s.Panel.Drop.Open && win.Align == TextAlign.Left, "pressing the row opens the list without changing the value");
+        PressBox(s, win, alR);
+        E(s.Panel.Drop.Open && win.Align == TextAlign.Left, "pressing the box opens the list without changing the value");
         s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop((int)TextAlign.Center) + 2, win); s.MouseUp();
         E(!s.Panel.Drop.Open && win.Align == TextAlign.Center, "picking Center sets the alignment and closes the list");
-        E(s.Rows.Find(r => r.Act == SetAct.CycleAlign)!.Selected == (int)TextAlign.Center, "the relaid row shows the pick");
-
-        SetRow fmt = s.Rows.Find(r => r.Act == SetAct.CycleFmt)!;
-        s.MouseDown(s.X + 5, fmt.Top + 2, win); s.MouseUp();
+        E(Find(s, SetAct.CycleAlign).Selected == (int)TextAlign.Center, "the relaid row shows the pick");
+        PressBox(s, win, Find(s, SetAct.CycleFmt));
         s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop((int)TsFormat.Hour12) + 2, win); s.MouseUp();
         E(win.TimeFormat == TsFormat.Hour12, "time-format pick sets the enum");
 
-        // Font size: the ladder dropdown, every point from MinFontPx to MaxFontPx; a pick writes the px.
-        SetRow fs = s.Rows.Find(r => r.Act == SetAct.SliderFont)!;
-        E(fs.Kind == SetKind.Dropdown && fs.Choices!.Length == TextRig.MaxFontPx - TextRig.MinFontPx + 1,
-          "font size is a dropdown over the whole point ladder");
-        s.MouseDown(s.X + 5, fs.Top + 2, win); s.MouseUp();
-        E(s.Panel.Drop.Open && s.Panel.Drop.List.Overflows, "the font ladder is longer than the list box, so it scrolls");
-        s.MouseWheel(1);   // scroll to the top of the ladder
+        // Font rows: the per-window size ladder (UI default + every point) and the typeface list; a pick raises
+        // FontChanged for the shell and writes the window, never a knob.
+        SetRow fs = Find(s, SetAct.SliderFont);
+        E(fs.Kind == SetKind.Dropdown && fs.Choices!.Length == TextRig.MaxFontPx - TextRig.MinFontPx + 2 && fs.Selected == 0 && win.FontPx == 0,
+          "text size is a dropdown over UI default + the whole point ladder, at UI default");
+        PressBox(s, win, fs);
+        E(s.Panel.Drop.Open && s.Panel.Drop.List.Overflows && s.Panel.Drop.Searching, "the ladder scrolls and searches");
         s.Panel.Drop.List.Offset = 0f;
+        s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop(3) + 2, win); s.MouseUp();
+        E(!s.Panel.Drop.Open && win.FontPx == TextRig.MinFontPx + 2 && s.FontChanged, "picking the third size sets MinFontPx + 2 and flags the shell");
+        E(Find(s, SetAct.SliderFont).Selected == 3, "the relaid row shows the size");
+        s.FontChanged = false;
+        PressBox(s, win, Find(s, SetAct.SliderFont));
+        s.Panel.Drop.List.Offset = 0f;
+        s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop(0) + 2, win); s.MouseUp();
+        E(win.FontPx == 0 && s.FontChanged, "UI default sets 0");
+        s.FontChanged = false;
+        SetRow tf = Find(s, SetAct.Typeface);
+        E(tf.Choices == Typefaces && tf.Selected == 0 && win.Typeface == "", "typeface row: UI default at an unset window");
+        PressBox(s, win, tf);
         s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop(2) + 2, win); s.MouseUp();
-        E(!s.Panel.Drop.Open && s.FontPicked == TextRig.MinFontPx + 2, "picking the third size hands the shell MinFontPx + 2");
-        s.FontPicked = -1;
+        E(win.Typeface == "DejaVu Serif" && s.FontChanged && Find(s, SetAct.Typeface).Selected == 2, "a typeface pick writes the name and flags the shell");
+        s.FontChanged = false;
+        win.Typeface = "nosuch";
+        s.Layout(win);
+        E(Find(s, SetAct.Typeface).Selected == 0, "an unknown typeface shows as UI default");
+        win.Typeface = "";
+
+        // Tell auto-open: the pick is handed to the shell AND shows on the relaid row at once (the knob is set later).
+        SetRow tellOpen = Find(s, SetAct.CycleTellOpen);
+        E(tellOpen.Selected == ChatKnobs.TellOpen.V, "tell auto-open seeds from the knob");
+        PressBox(s, win, tellOpen);
+        s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop(2) + 2, win); s.MouseUp();
+        E(s.TellOpenPicked == 2 && Find(s, SetAct.CycleTellOpen).Selected == 2, "a pick is handed to the shell and the row shows it before the knob moves");
+        s.TellOpenPicked = -1;
 
         // An outside press closes the list and reaches nothing beneath.
-        SetRow tellOpen = s.Rows.Find(r => r.Act == SetAct.CycleTellOpen)!;
-        s.MouseDown(s.X + 5, tellOpen.Top + 2, win); s.MouseUp();
+        PressBox(s, win, Find(s, SetAct.CycleTellOpen));
         E(s.Panel.Drop.Open, "tell auto-open list opened");
-        SetRow outl = s.Rows.Find(r => r.Act == SetAct.OutlineOn)!;
+        SetRow outl = Find(s, SetAct.OutlineOn);
         bool outlBefore = win.Outline;
-        s.MouseDown(s.X + 5, outl.Top + 2, win); s.MouseUp();
+        PressRow(s, win, outl);
         E(!s.Panel.Drop.Open && win.Outline == outlBefore && s.TellOpenPicked == -1, "outside press closes the list, toggles nothing");
-        E(outl.Help.Length > 0 && tellOpen.Help.Length > 0, "help rows carry tooltip text");
+        E(outl.HelpLines.Length > 0, "help rows wrap their help under the label");
 
         // An alpha colour (Background) expands to 4 channels; the opaque Text colour to 3 (no dead A slider).
-        SetRow bgSw = s.Rows.Find(r => r.Act == SetAct.ColorSwatch && r.Key == ChatColor.Background)!;
-        s.MouseDown(s.X + 5, bgSw.Top + 2, win);
+        PressRow(s, win, Find(s, SetAct.ColorSwatch, ChatColor.Background));
         E(s.Rows.FindAll(r => r.Act == SetAct.ColorChannel).Count == 4, "alpha swatch expands to 4 channel rows");
-        s.MouseDown(s.X + 5, s.Rows.Find(r => r.Act == SetAct.ColorSwatch && r.Key == ChatColor.Background)!.Top + 2, win); // collapse
-
-        // Colour swatch expands; dragging the R channel writes win.Colors.
-        SetRow sw = s.Rows.Find(r => r.Act == SetAct.ColorSwatch && r.Key == ChatColor.Text)!;
-        s.MouseDown(s.X + 5, sw.Top + 2, win);
+        PressRow(s, win, Find(s, SetAct.ColorSwatch, ChatColor.Background));
+        PressRow(s, win, Find(s, SetAct.ColorSwatch, ChatColor.Text));
         E(s.Rows.FindAll(r => r.Act == SetAct.ColorChannel).Count == 3, "opaque (Text) swatch expands to 3 channel rows");
         SetRow rCh = s.Rows.Find(r => r.Act == SetAct.ColorChannel && r.Channel == 0)!;
-        s.SliderTrack(rCh, out float cx0, out float cx1, out float _);
-        s.MouseDown(cx0, rCh.Top + 2, win);   // full-left -> R = 0
+        Reveal(s, rCh);
+        s.SliderTrack(rCh, out float cx0, out float _, out float ccy);
+        s.MouseDown(cx0, ccy, win);
         E(win.Colors.TryGetValue(ChatColor.Text, out uint tv) && ((tv >> 24) & 0xFF) == 0, "R channel full-left -> 0");
         s.MouseUp();
 
-        // Close button closes.
-        s.OpenAt(win, 0, 0); s.MouseUp();
-        s.MouseDown(s.X + s.W - 2, s.Y + 2, win);
+        // Close button, click-off.
+        Open(s, win);
+        s.MouseDown(s.X + s.W - 1.2f * s.Panel.Em - 2, s.Y + 2, win);
         E(!s.Open, "close-X closes");
-
-        // Click-off closes.
-        s.OpenAt(win, 0, 0); s.MouseUp();
+        Open(s, win);
         s.MouseDown(s.X + 5, s.Y + s.H + 40, win);
         E(!s.Open, "click-off closes");
-
-        // Opens centred in the viewport (independent of where the chat window sits) and fits on-screen.
-        var low = new ChatWindow(100, 700, 400, 100, new[] { new Tab("All", 0xffffffff) });
-        s.OpenAt(low, 1280, 800); s.MouseUp();
-        E(System.Math.Abs(s.X - (1280 - s.W) / 2f) < 0.5f, "panel opens horizontally centred");
-        E(System.Math.Abs(s.Y - (800 - s.H) / 2f) < 0.5f, "panel opens vertically centred");
-        E(s.Y + s.H <= 800.5f && s.X + s.W <= 1280.5f, "centred panel fits on-screen");
-
-        // Title-bar drag moves the whole panel; the rows move with it (translate-only, #53).
-        float px = s.X, py = s.Y;
-        float topBefore = s.Rows[0].Top;
-        E(s.MouseDown(s.X + s.W / 2f, s.Y + 2f, win), "title-bar press consumed");
-        s.MouseMove(s.X + s.W / 2f + 40f, s.Y + 2f + 25f, win);
-        E(System.Math.Abs(s.X - (px + 40f)) < 0.5f && System.Math.Abs(s.Y - (py + 25f)) < 0.5f, "panel drags by the title bar");
-        E(System.Math.Abs(s.Rows[0].Top - (topBefore + 25f)) < 0.5f, "rows follow the panel move");
-        E(s.MouseUp(), "panel move release consumed");
         s.Reset();
 
-        // ---- Tab editing (#39) ----
-        s.OpenAt(win, 0, 0); s.MouseUp();
+        // ---- Tab editing (#39) as categories ----
+        Open(s, win);
         E(win.Tabs.Count == 1, "pre-tab: one default tab");
-
-        // Add tab: click the "+ Add tab" button. Add auto-expands the new tab.
-        SetRow addBtn = s.Rows.Find(r => r.Act == SetAct.TabAdd)!;
-        s.MouseDown(s.X + 5, addBtn.Top + 2, win); s.MouseUp();
-        E(win.Tabs.Count == 2 && win.Tabs[1].Label == "All" && win.Tabs[1].ChannelMask == 0xffffffff,
-          "add tab creates an All-channel tab");
-        E(s.Rows.FindAll(r => r.Act == SetAct.TabChannel && r.Key == "1").Count == FilterChannel.Editable.Length,
-          "add tab auto-expands: channel toggles shown");
-
-        // Collapse then re-expand via header click.
-        SetRow hdr1 = s.Rows.Find(r => r.Act == SetAct.TabExpand && r.Key == "1")!;
-        s.MouseDown(s.X + 5, hdr1.Top + 2, win); s.MouseUp();
-        E(s.Rows.Find(r => r.Act == SetAct.TabChannel && r.Key == "1") == null, "header click collapses");
-        hdr1 = s.Rows.Find(r => r.Act == SetAct.TabExpand && r.Key == "1")!;
-        s.MouseDown(s.X + 5, hdr1.Top + 2, win); s.MouseUp();
-        E(s.Rows.FindAll(r => r.Act == SetAct.TabChannel && r.Key == "1").Count == FilterChannel.Editable.Length,
-          "header click re-expands");
+        PressCat(s, win, 2);   // Add new tab...
+        E(win.Tabs.Count == 2 && win.Tabs[1].Label == "All" && win.Tabs[1].ChannelMask == 0xffffffff, "add creates an All-channel tab");
+        E(s.Panel.Category == 2 && s.CategoryTab == 1 && s.Panel.Categories.Length == 4 && s.Panel.Categories[3] == AddTabCategory,
+          "the new tab's category is selected; add moved down");
+        E(s.Rows.FindAll(r => r.Act == SetAct.TabChannel && r.Key == "1").Count == FilterChannel.Editable.Length, "the tab category shows the channel toggles");
+        E(Find(s, SetAct.ToggleBit) == null, "...and none of the window rows");
 
         // Channel toggle: flip the Talk bit (0x001) and verify XOR preserves other bits.
-        SetRow talkCh = s.Rows.Find(r => r.Act == SetAct.TabChannel && r.Key == "1" && r.Bit == 0x001)!;
         uint maskBefore = win.Tabs[1].ChannelMask;
-        s.MouseDown(s.X + 5, talkCh.Top + 2, win); s.MouseUp();
+        PressRow(s, win, s.Rows.Find(r => r.Act == SetAct.TabChannel && r.Key == "1" && r.Bit == 0x001)!);
         E(win.Tabs[1].ChannelMask == (maskBefore ^ 0x001), "channel toggle XORs exactly its bit");
         E((win.Tabs[1].ChannelMask & ~0x001u) == (maskBefore & ~0x001u), "other bits unchanged");
 
-        // Label edit: click the label row, type a new label, commit.
-        SetRow lblRow = s.Rows.Find(r => r.Act == SetAct.TabLabel && r.Key == "1")!;
-        s.MouseDown(s.X + 5, lblRow.Top + 2, win); s.MouseUp();
-        E(s.Editing, "clicking a tab label row starts a label edit");
-        s.EditInsert("Custom");
-        s.CommitEdit(win);
-        E(win.Tabs[1].Label == "Custom", "label edit commits the typed text");
-        E(s.Rows.Find(r => r.Act == SetAct.TabLabel && r.Key == "1")!.Value == "Custom", "label row Value mirrors the commit");
-        E(s.Rows.Find(r => r.Act == SetAct.TabExpand && r.Key == "1")!.Value == "Custom", "header row Value mirrors the commit");
-
-        // Empty label edit keeps the old label. Tab 1 is still expanded from above.
-        s.OpenAt(win, 0, 0); s.MouseUp();
-        lblRow = s.Rows.Find(r => r.Act == SetAct.TabLabel && r.Key == "1")!;
-        s.MouseDown(s.X + 5, lblRow.Top + 2, win); s.MouseUp();
-        s.CommitEdit(win);
+        // Label edit: press the label row, type, commit; the category entry follows.
+        PressRow(s, win, Find(s, SetAct.TabLabel, "1"));
+        E(s.Editing, "pressing a tab label row starts a label edit");
+        s.EditInsert("Custom"); s.CommitEdit(win);
+        E(win.Tabs[1].Label == "Custom" && Find(s, SetAct.TabLabel, "1").Value == "Custom" && s.Panel.Categories[2] == "Custom",
+          "label edit commits the typed text and renames the category");
+        PressRow(s, win, Find(s, SetAct.TabLabel, "1")); s.CommitEdit(win);
         E(win.Tabs[1].Label == "Custom", "empty label commit keeps old label");
 
-        // Pin edit: click the pin row, type a player name, commit.
-        SetRow pinRow = s.Rows.Find(r => r.Act == SetAct.TabPin && r.Key == "1")!;
-        E(pinRow.Value == "(none)", "pin row shows (none) when unpinned");
-        s.MouseDown(s.X + 5, pinRow.Top + 2, win); s.MouseUp();
-        E(s.Editing, "clicking a pin row starts a label edit");
-        s.EditInsert("Alice");
-        s.CommitEdit(win);
-        E(win.Tabs[1].PinnedName == "Alice", "pin edit commits the typed name");
-        pinRow = s.Rows.Find(r => r.Act == SetAct.TabPin && r.Key == "1")!;
-        E(pinRow.Value == "Alice", "pin row Value mirrors the commit");
+        E(s.Rows.Find(r => r.Kind == SetKind.Text && r.Act != SetAct.TabLabel) == null, "the tell pin is not a setting (no pin row)");
 
-        // Empty pin commit clears the pin (unpin affordance).
-        s.OpenAt(win, 0, 0); s.MouseUp();
-        pinRow = s.Rows.Find(r => r.Act == SetAct.TabPin && r.Key == "1")!;
-        s.MouseDown(s.X + 5, pinRow.Top + 2, win); s.MouseUp();
-        s.CommitEdit(win);
-        E(win.Tabs[1].PinnedName == "", "empty pin commit clears the pin");
+        // The header's Copy this window hands the shell a request.
+        s.Panel.HeaderButtonRect(out float cbx0, out float cbx1, out float cby0, out float cby1);
+        s.MouseDown((cbx0 + cbx1) / 2f, (cby0 + cby1) / 2f, win); s.MouseUp();
+        E(s.CopyWindowRequested && s.Open, "Copy this window requests a copy and stays open");
+        s.CopyWindowRequested = false;
 
-        // Remove tab: present when >1 tab, removes the tab.
-        SetRow rmBtn = s.Rows.Find(r => r.Act == SetAct.TabRemove && r.Key == "1")!;
-        s.MouseDown(s.X + 5, rmBtn.Top + 2, win); s.MouseUp();
-        E(win.Tabs.Count == 1, "remove tab removes the tab");
+        // Close this window: Main has no row; a closeable window needs two presses, any other press disarms.
+        PressCat(s, win, 0);
+        E(Find(s, SetAct.CloseWindow) == null, "Main has no close row");
+        win.Closeable = true; s.Layout(win);
+        SetRow? closeRow = Find(s, SetAct.CloseWindow);
+        E(closeRow != null && closeRow.Label == "Close this window", "closeable window gets the close row");
+        PressBox(s, win, closeRow!);
+        E(s.CloseArmed && !s.CloseWindowRequested && Find(s, SetAct.CloseWindow).Label == "Click again to confirm", "first press arms");
+        PressRow(s, win, Find(s, SetAct.ToggleBit));
+        E(!s.CloseArmed && Find(s, SetAct.CloseWindow).Label == "Close this window", "another press disarms");
+        PressBox(s, win, Find(s, SetAct.CloseWindow)); PressBox(s, win, Find(s, SetAct.CloseWindow));
+        E(s.CloseWindowRequested, "second press requests the close");
+        s.Reset(); win.Closeable = false; Open(s, win);
 
-        // Remove row absent when only one tab remains.
-        s.OpenAt(win, 0, 0); s.MouseUp();
-        hdr1 = s.Rows.Find(r => r.Act == SetAct.TabExpand && r.Key == "0")!;
-        s.MouseDown(s.X + 5, hdr1.Top + 2, win); s.MouseUp();
-        E(s.Rows.Find(r => r.Act == SetAct.TabRemove) == null, "remove button absent at 1 tab");
+        // Switching categories: the window entry, back to the tab.
+        PressCat(s, win, 0);
+        E(s.Panel.Category == 0 && Find(s, SetAct.ToggleBit) != null, "the window entry shows the window rows");
+        PressCat(s, win, 1);
+        E(s.CategoryTab == 0 && Find(s, SetAct.TabLabel, "0") != null, "the first tab's entry edits tab 0");
+
+        // Remove tab: present when >1 tab, removes it and returns to the window category.
+        PressCat(s, win, 2);
+        PressBox(s, win, Find(s, SetAct.TabRemove, "1"));
+        E(win.Tabs.Count == 1 && s.Panel.Category == 0 && s.Panel.Categories.Length == 3, "remove tab removes it; back to the window category");
+        PressCat(s, win, 1);
+        E(Find(s, SetAct.TabRemove) == null, "remove button absent at 1 tab");
 
         // Ephemeral tabs are entirely hidden from settings.
         win.AddTab(new Tab("Tell:Bob", 0x002));
         E(win.Tabs[^1].Ephemeral, "pre: Tell-only tab is ephemeral");
-        s.OpenAt(win, 0, 0); s.MouseUp();
-        E(s.Rows.Find(r => r.Act == SetAct.TabExpand && r.Key == "1") == null, "ephemeral tab: no header row");
+        Open(s, win);
+        E(s.Panel.Categories.Length == 3, "ephemeral tab: no category");
         win.RemoveTab(1);
-
         s.Reset();
 
         // ---- Copy from (#41) ----
-        // With 2 windows: window 0 sees "Copy from Window 2"; window 1 sees "Copy from Window 1".
-        s.OpenAt(win, 0, 0, winIndex: 0, winCount: 2); s.MouseUp();
+        Open(s, win, winIndex: 0, winCount: 2);
         SetRow? copyRow = s.Rows.Find(r => r.Act == SetAct.CopyFrom);
         E(copyRow != null && copyRow.Label == "Copy from Window 2", "copy row shown for the other window");
-        s.MouseDown(s.X + 5, copyRow!.Top + 2, win); s.MouseUp();
+        s.MouseMove(s.Panel.List.X + 5, s.Panel.List.Y + 5, win);
+        while (s.MouseWheel(-1)) { }
+        PressBox(s, win, copyRow!);
         E(s.CopyRequested == 1, "CopyRequested set to the source window index");
         s.CopyRequested = -1;
-
-        // Single window: no copy row.
-        s.OpenAt(win, 0, 0, winIndex: 0, winCount: 1); s.MouseUp();
+        Open(s, win, winIndex: 0, winCount: 1);
         E(s.Rows.Find(r => r.Act == SetAct.CopyFrom) == null, "no copy row when only one window");
         s.Reset();
 
         // ---- BgMode dropdown + conditional bg2 swatch ----
         E(win.BgMode == BgMode.Solid, "pre: BgMode starts Solid");
-        s.OpenAt(win, 0, 0); s.MouseUp();
-        SetRow bgmRow = s.Rows.Find(r => r.Act == SetAct.CycleBgMode)!;
-        E(bgmRow != null && bgmRow.Kind == SetKind.Dropdown && bgmRow.Choices!.Length == 10, "BgMode is a 10-choice dropdown");
-        E(s.Rows.Find(r => r.Act == SetAct.ColorSwatch && r.Key == ChatColor.Background2) == null,
-          "bg2 swatch hidden when Solid");
-        s.MouseDown(s.X + 5, bgmRow.Top + 2, win); s.MouseUp();
-        E(s.Panel.Drop.Open && s.Panel.Drop.List.Overflows, "10 styles: the list scrolls past 8");
-        s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop((int)BgMode.GradientV) + 2, win); s.MouseUp();
-        E(win.BgMode == BgMode.GradientV, "picking Grad V sets GradientV");
-        E(s.Rows.Find(r => r.Act == SetAct.ColorSwatch && r.Key == ChatColor.Background2) != null,
-          "bg2 swatch shown when non-Solid");
-        bgmRow = s.Rows.Find(r => r.Act == SetAct.CycleBgMode)!;
-        s.MouseDown(s.X + 5, bgmRow.Top + 2, win); s.MouseUp();
+        Open(s, win);
+        SetRow bgmRow = Find(s, SetAct.CycleBgMode);
+        E(bgmRow.Kind == SetKind.Dropdown && bgmRow.Choices!.Length == 4, "BgMode is a 4-choice dropdown");
+        E(Find(s, SetAct.SliderBgAngle) == null && Find(s, SetAct.SliderBgStart) == null, "gradient rows hidden when Solid");
+        E(Find(s, SetAct.ColorSwatch, ChatColor.Background2) == null, "bg2 swatch hidden when Solid");
+        PressBox(s, win, bgmRow);
+        E(s.Panel.Drop.Open && !s.Panel.Drop.List.Overflows, "4 shapes: the list fits");
+        s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop((int)BgMode.Linear) + 2, win); s.MouseUp();
+        E(win.BgMode == BgMode.Linear, "picking Linear sets Linear");
+        E(Find(s, SetAct.ColorSwatch, ChatColor.Background2) != null, "bg2 swatch shown when non-Solid");
+        E(Find(s, SetAct.SliderBgAngle) != null && Find(s, SetAct.SliderBgEnd) != null, "Linear shows direction + stops");
+        SetRow endRow = Find(s, SetAct.SliderBgEnd);
+        E(System.Math.Abs(endRow.Norm - 1f) < 1e-4f, "End seeds from BgEnd (100%)");
+        s.Panel.ApplyValue!(endRow, 40f);
+        E(System.Math.Abs(win.BgEnd - 0.4f) < 1e-4f, "End slider writes BgEnd as a fraction");
+        PressBox(s, win, Find(s, SetAct.CycleBgMode));
+        s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop((int)BgMode.Radial) + 2, win); s.MouseUp();
+        E(win.BgMode == BgMode.Radial && Find(s, SetAct.SliderBgAngle) == null && Find(s, SetAct.SliderBgStart) != null, "Radial hides direction, keeps stops");
+        PressBox(s, win, Find(s, SetAct.CycleBgMode));
         s.Panel.Drop.List.Offset = 0f;
         s.MouseDown(s.Panel.Drop.X + 5, s.Panel.Drop.ItemTop((int)BgMode.Solid) + 2, win); s.MouseUp();
         E(win.BgMode == BgMode.Solid, "picking Solid returns to Solid");
         s.Reset();
 
-        // ---- #587: the panel caps at the viewport and scrolls; a hit past the cap is offset-correct ----
-        var many = new ChatWindow(100, 100, 400, 300, new[] { new Tab("All", 0xffffffff) });
-        s.OpenAt(many, 1280, 200); s.MouseUp();
-        E(System.Math.Abs(s.H - 200f) < 0.01f && s.Panel.Scroll.Overflows, "a 200 px viewport caps the panel; the rows scroll");
-        SetRow first = s.Rows[0];
-        E(s.MouseWheel(-1) && s.Panel.Scroll.Offset > 0f, "the wheel scrolls the rows");
-        E(s.Panel.RowTop(first) < s.Panel.ContentTop, "the first row moved up under the title");
-        SetRow? under = null;
-        for (int ri = 0; ri < s.Rows.Count; ri++)
-            if (s.Panel.RowTop(s.Rows[ri]) <= s.Panel.ContentTop + 2 && s.Panel.RowTop(s.Rows[ri]) + RowH > s.Panel.ContentTop + 2) under = s.Rows[ri];
-        E(under != null && !ReferenceEquals(under, first), "a different row now sits at the box top");
-        s.Reset();
-
-        // ---- #572: the tab editor is wide enough for a full-length label and scrolls into reach ----
-        var tabbed = new ChatWindow(100, 100, 400, 300, new[] { new Tab("All", 0xffffffff) }) { AnimEnabled = false };
-        for (int i = 1; i < 12; i++) tabbed.AddTab(new Tab(new string('W', 32), 0xffffffff));
-        s.OpenAt(tabbed, 1280, 240); s.MouseUp();
-        SetRow hdr0 = s.Rows.Find(r => r.Act == SetAct.TabExpand && r.Key == "0")!;
-        s.Panel.ControlBox(hdr0, out float tbx0, out float tbx1, out _, out _);
-        E(tbx1 - tbx0 - 6f >= TabLabelW, "a tab text box spans a 32-rune label");
-        E(s.Rows.Find(r => r.Act == SetAct.TabExpand && r.Key == "11")!.Value.Length == 32, "the header row carries the whole label");
-        E(s.Panel.Scroll.Overflows, "12 tabs in a 240 px viewport: the tab rows overflow the box");
-        SetRow addLast = s.Rows.Find(r => r.Act == SetAct.TabAdd)!;
-        E(s.Panel.RowTop(addLast) >= s.Panel.Scroll.Y + s.Panel.Scroll.H, "pre: the add row lies past the box");
+        // ---- the rows overflow the column and scroll; a hit past the fold is offset-correct ----
+        Open(s, win);
+        E(s.Panel.List.Overflows, "the window rows overflow the column");
+        SetRow last = s.Rows[^1];
+        E(s.Panel.RowTop(last) >= s.Panel.List.Y + s.Panel.List.H, "pre: the last row lies past the box");
+        s.MouseMove(s.Panel.List.X + 5, s.Panel.List.Y + 5, win);
         while (s.MouseWheel(-1)) { }
-        addLast = s.Rows.Find(r => r.Act == SetAct.TabAdd)!;
-        float addTop = s.Panel.RowTop(addLast);
-        E(addTop >= s.Panel.Scroll.Y && addTop + RowH <= s.Panel.Scroll.Y + s.Panel.Scroll.H + 0.01f, "wheeling to the end brings the add row into the box");
-        SetRow hdr11 = s.Rows.Find(r => r.Act == SetAct.TabExpand && r.Key == "11")!;
-        s.MouseDown(s.X + 5, s.Panel.RowTop(hdr11) + 2, tabbed); s.MouseUp();
-        E(s.Rows.FindAll(r => r.Act == SetAct.TabChannel && r.Key == "11").Count == FilterChannel.Editable.Length, "a scrolled-to header expands (offset-correct hit)");
-        while (s.MouseWheel(-1)) { }
-        SetRow dmCh = s.Rows.Find(r => r.Act == SetAct.TabChannel && r.Key == "11" && r.Bit == 0x400)!;
-        float dmTop = s.Panel.RowTop(dmCh);
-        E(dmTop >= s.Panel.Scroll.Y && dmTop < s.Panel.Scroll.Y + s.Panel.Scroll.H, "the last channel toggle scrolls into the box");
-        s.MouseDown(s.X + 5, dmTop + 2, tabbed); s.MouseUp();
-        E(tabbed.Tabs[11].ChannelMask == (0xffffffffu ^ 0x400u), "the scrolled-to toggle flips exactly its bit");
+        float lastTop = s.Panel.RowTop(s.Rows[^1]);
+        E(lastTop >= s.Panel.List.Y && lastTop + s.Rows[^1].Height <= s.Panel.List.Y + s.Panel.List.H + 0.01f, "wheeling to the end brings the last row into the box");
+        SetRow bgSw = Find(s, SetAct.ColorSwatch, ChatColor.Background);
+        PressRow(s, win, bgSw);
+        E(s.Rows.FindAll(r => r.Act == SetAct.ColorChannel).Count == 4, "a scrolled-to swatch expands (offset-correct hit)");
         {
-            var atlasT = new GlyphAtlas { LineHeight = 18, Ascent = 14, SpaceAdvance = 4f };
-            atlasT.SetTestGlyph(' ', 4f);
-            for (char ch = '(' ; ch <= 'z'; ch++) atlasT.SetTestGlyph(ch, 7f);
-            atlasT.SetTestGlyph('×', 7f);
-            var vb = new VertexBatch(atlasT.SolidU, atlasT.SolidV);
-            var pal = new SettingsPanel.Palette { Body = (0.1f, 0.1f, 0.1f, 1f), TitleBar = (0.2f, 0.2f, 0.2f, 1f), Active = (0.2f, 0.3f, 0.5f, 1f), TextRgb = 0xFFFFFF };
-            s.Panel.Emit(vb, atlasT, 14f, pal);
+            var vb = new VertexBatch(body.SolidU, body.SolidV);
+            s.Panel.Emit(vb);
             long alloc0 = System.GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 100; i++) { vb.Clear(); s.Panel.Emit(vb, atlasT, 14f, pal); }
+            for (int i = 0; i < 100; i++) { vb.Clear(); s.Panel.Emit(vb); }
             long delta = System.GC.GetAllocatedBytesForCurrentThread() - alloc0;
-            E(delta == 0, $"100 tab-editor draws (expanded, scrolled) allocate nothing ({delta} bytes)");
+            E(delta == 0, $"100 draws (expanded, scrolled) allocate nothing ({delta} bytes)");
         }
         s.Reset();
 
+        // ---- 12 tabs: the category column overflows and scrolls; a scrolled-to entry picks ----
+        var tabbed = new ChatWindow(100, 100, 400, 300, new[] { new Tab("All", 0xffffffff) }) { AnimEnabled = false };
+        for (int i = 1; i < 12; i++) tabbed.AddTab(new Tab(new string('W', 32), 0xffffffff));
+        s.OpenAt(tabbed, 1280, 400, 20f, body, small); s.MouseUp();
+        E(s.Panel.Categories.Length == 14 && s.Panel.Cats.Overflows, "12 tabs in a 400 px viewport: the categories overflow");
+        s.MouseMove(s.Panel.Cats.X + 5, s.Panel.Cats.Y + 5, tabbed);
+        while (s.MouseWheel(-1)) { }
+        float navTop = s.Panel.Cats.ToScreen(0.4f * s.Panel.Em + 12 * (body.LineHeight + 1.2f * s.Panel.Em));
+        E(navTop >= s.Panel.Cats.Y && navTop < s.Panel.Cats.Y + s.Panel.Cats.H, "wheeling the column brings the last tab's entry into view");
+        s.MouseDown(s.Panel.Cats.X + 5, navTop + 2, tabbed); s.MouseUp();
+        E(s.CategoryTab == 11 && Find(s, SetAct.TabLabel, "11").Value.Length == 32, "a scrolled-to entry picks its tab (offset-correct hit)");
+        s.Reset();
+
+        Typefaces = realFaces;
         log.Info(ok ? "SettingsWindow.SelfCheck: passed" : "SettingsWindow.SelfCheck: FAILED");
     }
 }

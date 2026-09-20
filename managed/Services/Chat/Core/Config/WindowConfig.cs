@@ -17,9 +17,15 @@ public sealed class WindowConfig
     public bool? AnimEnabled;
     public float? HoldSec, FadeSec, TauMs;
     public bool? Outline;
+    /// <summary>Per-window font (CX-683): absent = follow the UI knobs.</summary>
+    public int? FontPx;
+    public string? Typeface;
     public int? TimeFormat, TimeSource;
     public int? Align;
     public int? BgMode;
+    /// <summary>Gradient direction (deg) and stops (0..1); null = the window defaults.</summary>
+    public float? BgAngle, BgStart, BgEnd;
+    public bool? AutoHideFrame;
     public bool? AutoHideHeader;
     public bool? Locked;
     public bool? TellsHere;

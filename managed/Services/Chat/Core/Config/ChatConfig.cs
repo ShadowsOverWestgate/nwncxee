@@ -51,11 +51,17 @@ public sealed class ChatConfig
             if (w.FadeSec is float fs) Put(p + "fade", fs.ToString(ci));
             if (w.TauMs is float tm) Put(p + "tau", tm.ToString(ci));
             if (w.Outline is bool ol) Put(p + "outline", ol ? "1" : "0");
+            if (w.FontPx is int fp && fp > 0) Put(p + "font", fp.ToString(ci));
+            if (w.Typeface is { Length: > 0 } tfn) Put(p + "typeface", tfn.Replace("\n", "").Replace("\r", ""));
             if (w.TimeFormat is int tf) Put(p + "tsfmt", tf.ToString(ci));
             if (w.TimeSource is int ts) Put(p + "tssrc", ts.ToString(ci));
             if (w.Align is int al) Put(p + "align", al.ToString(ci));
             if (w.BgMode is int bgm) Put(p + "bgmode", bgm.ToString(ci));
+            if (w.BgAngle is float ba) Put(p + "bgangle", ba.ToString(ci));
+            if (w.BgStart is float bs) Put(p + "bgstart", bs.ToString(ci));
+            if (w.BgEnd is float be) Put(p + "bgend", be.ToString(ci));
             if (w.AutoHideHeader is bool ahh) Put(p + "autohide", ahh ? "1" : "0");
+            if (w.AutoHideFrame is bool ahf) Put(p + "autohideframe", ahf ? "1" : "0");
             if (w.Locked is bool lk) Put(p + "locked", lk ? "1" : "0");
             if (w.TellsHere is bool th) Put(p + "tellshere", th ? "1" : "0");
             foreach (var kv in w.Colors) Put(p + "col." + kv.Key, kv.Value.ToString("x8", ci));
@@ -137,11 +143,17 @@ public sealed class ChatConfig
             case "fade": if (float.TryParse(val, ci, out float fade)) w.FadeSec = fade; break;
             case "tau": if (float.TryParse(val, ci, out float tau)) w.TauMs = tau; break;
             case "outline": w.Outline = val != "0"; break;
+            case "font": if (int.TryParse(val, out int fp)) w.FontPx = fp; break;
+            case "typeface": w.Typeface = val; break;
             case "tsfmt": if (int.TryParse(val, out int f)) w.TimeFormat = f; break;
             case "tssrc": if (int.TryParse(val, out int s)) w.TimeSource = s; break;
             case "align": if (int.TryParse(val, out int a)) w.Align = a; break;
-            case "bgmode": if (int.TryParse(val, out int bgm) && bgm >= 0 && bgm <= 9) w.BgMode = bgm; break;
+            case "bgmode": if (int.TryParse(val, out int bgm) && bgm >= 0 && bgm <= 3) w.BgMode = bgm; break;
+            case "bgangle": if (float.TryParse(val, ci, out float ba)) w.BgAngle = ba; break;
+            case "bgstart": if (float.TryParse(val, ci, out float bs)) w.BgStart = bs; break;
+            case "bgend": if (float.TryParse(val, ci, out float be)) w.BgEnd = be; break;
             case "autohide": w.AutoHideHeader = val != "0"; break;
+            case "autohideframe": w.AutoHideFrame = val != "0"; break;
             case "locked": w.Locked = val != "0"; break;
             case "tellshere": w.TellsHere = val != "0"; break;
         }
@@ -166,8 +178,9 @@ public sealed class ChatConfig
         w0.InputOnTop = true; w0.SendChannel = 2;
         w0.AnimEnabled = false; w0.HoldSec = 42f; w0.FadeSec = 3f; w0.TauMs = 90f;
         w0.Outline = true; w0.TimeFormat = (int)TsFormat.Hour12; w0.TimeSource = (int)TsSource.Game;
+        w0.FontPx = 14; w0.Typeface = "DejaVu Serif";
         w0.Align = (int)TextAlign.Center;
-        w0.BgMode = (int)BgMode.GradientV;
+        w0.BgMode = (int)BgMode.Linear; w0.BgAngle = 45f; w0.BgEnd = 0.75f;
         w0.AutoHideHeader = false;
         w0.Locked = true;
         w0.TellsHere = true;
@@ -184,9 +197,10 @@ public sealed class ChatConfig
         E(bw0.SendChannel == 2, "window send channel round-trips");
         E(bw0.AnimEnabled == false && bw0.HoldSec == 42f && bw0.FadeSec == 3f && bw0.TauMs == 90f, "per-window anim round-trips");
         E(bw0.Outline == true, "per-window outline round-trips");
+        E(bw0.FontPx == 14 && bw0.Typeface == "DejaVu Serif", "per-window font round-trips");
         E(bw0.TimeFormat == (int)TsFormat.Hour12 && bw0.TimeSource == (int)TsSource.Game, "per-window ts round-trips");
         E(bw0.Align == (int)TextAlign.Center, "per-window align round-trips");
-        E(bw0.BgMode == (int)BgMode.GradientV, "per-window bgmode round-trips");
+        E(bw0.BgMode == (int)BgMode.Linear && bw0.BgAngle == 45f && bw0.BgEnd == 0.75f && bw0.BgStart == null, "per-window bgmode/angle/stops round-trip");
         E(bw0.AutoHideHeader == false, "per-window autohide round-trips");
         E(bw0.Locked == true, "per-window locked round-trips");
         E(bw0.TellsHere == true, "per-window tellshere round-trips");
@@ -203,6 +217,7 @@ public sealed class ChatConfig
         var b2 = From(a2.Pairs());
         E(b2.Windows[0].AnimEnabled == null, "unset anim stays null after round-trip");
         E(b2.Windows[0].HoldSec == null, "unset hold stays null after round-trip");
+        E(b2.Windows[0].FontPx == null && b2.Windows[0].Typeface == null, "unset font stays null after round-trip");
         E(b2.Windows[0].Locked == null, "unset locked stays null after round-trip");
         E(b2.Windows[0].BgMode == null, "unset bgmode stays null after round-trip");
         E(b2.Windows[0].TellsHere == null, "unset tellshere stays null after round-trip");
