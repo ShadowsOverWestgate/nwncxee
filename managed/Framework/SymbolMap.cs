@@ -233,6 +233,22 @@ internal static unsafe class SymbolMap
     /// Safe to call re-entrantly from the <see cref="ActivateTargetMode"/> post-hook -- it touches no member after
     /// the fire callback (which may <c>delete this</c>), and all 45 callers of ActivateTargetMode call it last.</summary>
     public const string ActionTargetLMouseDown = "_ZN13CActionTarget16HandleLMouseDownEv";
+    /// <summary>Tab-target (CX-636). <c>CClientExoAppInternal::PerformDefaultActionOnObject(CNWCObject*)</c>
+    /// @0x660830: the one world-click seam -- <c>PerformLButtonDownAction</c> calls it when the pick returned an
+    /// object (verdict 2) and walks to the point when it answers 0, so a non-zero answer is "handled, no walk".
+    /// Dispatches on the type byte to the creature / item / placeable / door defaults on both builds.</summary>
+    public const string PerformDefaultActionOnObject = "_ZN21CClientExoAppInternal28PerformDefaultActionOnObjectEP10CNWCObject";
+    /// <summary>SDL: the live scancode array (<c>const Uint8*</c>, <c>SDL_NUM_SCANCODES</c> entries). The
+    /// preview cast snapshots which keys were down when a target mode opened, to fire on their release.</summary>
+    public const string SdlGetKeyboardState = "SDL_GetKeyboardState";
+    /// <summary>The Tab-highlight colour globals <c>HiliteAreaObjects</c> @0x7119f0 picks from (Vector, 16-byte
+    /// stride, plain C names). Linux 0x19fac00/0x19fabf0/0x19fabe0/0x19faba0/0x19fabc0; the Windows body
+    /// (rva 0x7db2f0) reads them in a different order, so each has its own RVA.</summary>
+    public const string HiliteEnemy = "g_vCreatureEnemyHighlight";
+    public const string HiliteFriend = "g_vCreatureFriendHighlight";
+    public const string HiliteNeutral = "g_vCreatureNeutralHighlight";
+    public const string HilitePlaceable = "g_vPlaceableHighlight";
+    public const string HiliteDoor = "g_vDoorHighlight";
     // The SDL glue of the client's nuklear is C++-linkage on this build (mangled), so nk_sdl_render
     // must use its mangled name or the hook never installs. Nothing nuklear is anchored on Windows.
     /// <summary>Nuklear's GL flush, called from <c>CGuiMan::UpdateAndRender</c> @0x5809fa straight after
@@ -1303,6 +1319,16 @@ internal static unsafe class SymbolMap
         // same GetMousePos -> hit-check -> allowed-list scan -> fire.
         [ActivateTargetMode]      = At(0x83b9e0),
         [ActionTargetLMouseDown]  = At(0x83be00),
+        // tab-target (CX-636): the click seam is the callee PerformLButtonDownAction (rva 0x6f02c0, the one caller
+        // of WalkPlayerToPoint) runs on a verdict-2 pick, same type-byte switch as Linux @0x660830; the colour
+        // globals are the DAT_ refs of the Windows HiliteAreaObjects (rva 0x7db2f0), per attitude branch.
+        [PerformDefaultActionOnObject] = At(0x6efec0),
+        [SdlGetKeyboardState] = Nm("SDL_GetKeyboardState"),
+        [HiliteEnemy]     = At(0x1296eb8),
+        [HiliteFriend]    = At(0x1296ec8),
+        [HiliteNeutral]   = At(0x1296ed8),
+        [HilitePlaceable] = At(0x1296f08),
+        [HiliteDoor]      = At(0x1296ef8),
         // hotkey suppression while any vanilla text field captures keys (console etc.) -- shared-engine
         // CExoInput, name-exported on Windows. (Chat also uses ExoInput but stays Linux-only for now.)
         [ExoInput]        = Nm("?g_pExoInput@@3PEAVCExoInput@@EA"),

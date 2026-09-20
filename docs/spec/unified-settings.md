@@ -558,25 +558,36 @@ per-mode values, each with its own master: off = the stock camera for that mode 
 | `<mode>.offsety` | offsety | Height offset | S | −10–10 m step 0.25 · 0 | U | L | Offset | Raises the camera's focus above your character. |
 | `<mode>.drive` | drive | Move relative to the camera | T | chase on · topdown off · driving on | U | L | Movement | Forward is where the camera looks, not where your character faces. |
 | `<mode>.face` | (none) | Face where the camera looks | T | chase on · topdown off · driving off | U | L | Movement | Your character always faces the camera's direction. Forward runs that way, back walks backwards, the strafe keys sidestep, and the turn keys turn you and the camera together. After you look around with the mouse, your character turns to the new direction on the next step. Off: your character turns to face whichever way it moves, and the camera swings behind it. |
-| `<mode>.recenter` | recenter | Swing behind you as you move | T | chase on · topdown off · driving on | U | L | Movement | The camera turns to follow your movement direction instead of the stock chase. Tuning is under Movement. |
+| `<mode>.siderun` | (none) | Turn keys run sideways | T | off | U | L | Movement | With Face where the camera looks on: the turn keys run you sideways instead of turning you and the camera (your character faces where it runs, the camera stays). The mouse is the way to look around; back turns you to the camera at once. Locked on a target this is always so, for the strafe keys too. |
+| `<mode>.recenter` | recenter | Swing behind you as you move | T | chase on · topdown off · driving on | U | L | Movement | The camera turns to follow your movement direction instead of the stock chase. |
+| `<mode>.rate` | move.rate | Recenter speed | S | 1–720 °/s step 5 · 360 | U | L | Movement | Fastest swing behind your movement; it eases in near the target. |
+| `<mode>.deadzone` | move.deadzone | Recenter dead zone | S | 0–180 ° step 5 · 0 | U | L | Movement | How far off your movement direction the camera may sit before it starts to swing. |
+| `<mode>.idle` | move.idle | Recenter after standing still | S | 0–60 s step 0.5 · 0 | U | L | Movement | Seconds of standing still before the camera drifts behind your character's facing. 0 never does. |
+| `<mode>.grace` | move.grace | Orbit grace | S | 0–30 s step 0.1 · 1.5 | A | L | Movement | No recenter this long after you orbit by hand. |
+| `<mode>.idlerate` | move.idlerate | Idle recenter speed | S | 1–720 °/s · 30 | A | L | Movement | |
+| `<mode>.keyturn` | move.keyturn | Turn-key speed | S | 10–720 °/s step 10 · 180 | U | L | Movement | How fast the turn keys swing you and the camera when facing the camera. |
+| `<mode>.hz` | move.hz | Heading updates per second | S | 1–60 step 1 · 10 | A | L | Movement | Most heading packets sent per second; the stock game sends 2. |
+| `<mode>.turn` | move.turn | Heading turn rate | S | 0–3600 °/s step 30 · 540 | A | L | Movement | 0 = snap. |
+| `<mode>.mouselook` | (none) | Enable CX mouse-look | T | on | U | L | Mouse-look | CX handles the mouse-drag camera: the cursor stays put and the view never stalls at the screen edge. Off, the stock middle-drag orbit runs. |
+| `<mode>.action` | (none) | Action camera | T | off | U | L | Mouse-look | Hides the cursor and pins it to a crosshair in the centre of the screen. Moving the mouse turns the camera; whatever the crosshair points at is what you hover, tooltip and click, so aiming replaces pointing. Left-click acts on it, a right-click opens its menu. Clicking the ground does not walk you there (use the movement keys) and the crosshair never picks your own character. Alt frees the cursor for the game's panels (held, or a tap with the toggle option below); the toggle key switches the camera on and off. |
+| `<mode>.actionkey` | (none) | Action camera toggle key | X | ] | U | L | Mouse-look | An SDL key name (F8, Tab, Backspace, Z...) or Mouse4 / Mouse5 for the thumb buttons. Blank binds nothing. |
+| `<mode>.alttoggle` | (none) | Alt toggles the cursor | T | off | U | L | Mouse-look | Under the action camera, tapping Alt frees the cursor until you tap it again, instead of holding it. |
+| `<mode>.assist` | (none) | Aim assist | T | on | U | L | Mouse-look | Under the action camera, the crosshair snaps its aim to the nearest creature, placeable or door within a few pixels of the centre, so you hover and click it without pixel-perfect aiming. The camera never moves; only what you point at changes. Brackets appear around the crosshair while a target is picked. |
+| `<mode>.assistpx` | (none) | Aim assist radius | S | 0–200 px step 5 · 80 | A | L | Mouse-look | How far from the centre of the screen aim assist looks for a target. 0 turns it into the plain crosshair. |
+| `<mode>.autotarget` | (none) | Cast at the crosshair | T | on | U | L | Mouse-look | Under the action camera, a spell, feat or item that asks you to pick a target fires straight away on whatever the crosshair is pointing at, with no second click. A ground-targeted spell still asks you to aim it. |
+| `<mode>.feedback` | (none) | Action feedback on the crosshair | T | on | U | L | Mouse-look | Under the action camera, the crosshair answers what you did: a pulse when an order goes out, a red ring while you are attacking, and a dot underneath while an action is still waiting to happen. |
+| `<mode>.headtrack` | (none) | Head follows the crosshair | T | on | U | L | Mouse-look | Under the action camera, your character turns their head toward whatever you are aiming at. The body still faces where it is walking. Only you see it -- other players see your character the way the game has always shown it. |
+| `<mode>.headyaw` | (none) | Head turn limit | S | 0–89 ° step 1 · 70 | A | L | Mouse-look | How far the head turns to the side before it stops following the crosshair. 0 stops sideways turning. |
+| `<mode>.headpitch` | (none) | Head tilt limit | S | 0–89 ° step 1 · 30 | A | L | Mouse-look | How far the head tilts up or down before it stops following the crosshair. 0 keeps it level. |
+| `<mode>.right` | mouselook | Right-drag looks around | T | off | U | L | Mouse-look | Hold the right button and drag to orbit; a still right-click still opens the radial menu. |
+| `<mode>.sens` | mouselook_sens | Sensitivity | S | 0.05–20 × step 0.05 · 1 | U | L | Mouse-look | 1 matches the stock middle-drag. |
+| `<mode>.invert` | mouselook_invert | Invert vertical | T | off | U | L | Mouse-look | |
+| `<mode>.threshold` | mouselook_threshold | Click-to-drag threshold | S | 0–100 px step 1 · 4 | A | L | Mouse-look | Pixels of movement before a right press becomes a look instead of a click. |
 
 Build notes: the master is a ninth `Gate` value consulted at the pre-Control recenter and the
 post-Control Adjust/SettleCollision; FOV `Camera+0x4c4` has no engine restorer, so off restores
 `_fovFirst`, then `_welded = true` + `CameraCut()`. FOV's magic zero is gone: the layer writes
 the slider whenever the mode's master is on.
-
-**Movement** — group `move`, no master (header: tuning for the per-mode toggles).
-
-| key | today | label | kind | range · default | tier | eff | section | help |
-|---|---|---|---|---|---|---|---|---|
-| move.rate | recenter.rate | Recenter speed | S | 1–720 °/s step 5 · 360 | U | L | Recenter | Fastest swing behind your movement; it eases in near the target. |
-| move.deadzone | recenter.deadzone | Recenter dead zone | S | 0–180 ° step 5 · 0 | U | L | Recenter | How far off your movement direction the camera may sit before it starts to swing. |
-| move.idle | recenter.idle | Recenter after standing still | S | 0–60 s step 0.5 · 0 | U | L | Recenter | Seconds of standing still before the camera drifts behind your character's facing. 0 never does. |
-| move.grace | recenter.grace | Orbit grace | S | 0–30 s step 0.1 · 1.5 | A | L | Recenter | No recenter this long after you orbit by hand. |
-| move.idlerate | recenter.idlerate | Idle recenter speed | S | 1–720 °/s · 30 | A | L | Recenter | |
-| move.hz | drive.hz | Heading updates per second | S | 1–60 step 1 · 10 | A | L | Drive | Most heading packets sent per second; the stock game sends 2. |
-| move.turn | drive.turn | Heading turn rate | S | 0–3600 °/s step 30 · 540 | A | L | Drive | 0 = snap. |
-| move.keyturn | (none) | Turn-key speed | S | 10–720 °/s step 10 · 180 | U | L | Drive | How fast the turn keys swing you and the camera when facing the camera. |
 
 **Walls** — group `walls`. Header: "The spring arm only acts while a sideways or height offset is set." The three fade rows grey when `alloy.enabled` is off (no strip; the spring arm is renderer-independent).
 
@@ -606,25 +617,20 @@ the slider whenever the mode's master is on.
 
 Build note: `Leave()` must restore FOV when `free.fov` was set.
 
-**Mouse-look** — group `mouselook`. Master = the whole service; off = stock middle-drag, `Release()` if a drag is under way.
+**Tab-target** — group `tabtarget` (CX-636). Master = the whole mode; off = stock Tab and stock clicks, the lock and any pending preview cast dropped on the off edge. With it on, its cast mode supersedes the mode's `autotarget`.
 
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
-| mouselook.enabled | (none) | Enable CX mouse-look | T | on | U | L | CX handles the mouse-drag camera: the cursor stays put and the view never stalls at the screen edge. Off, the stock middle-drag orbit runs. |
-| mouselook.action | (none) | Action camera | T | off | U | L | Hides the cursor and pins it to a crosshair in the centre of the screen. Moving the mouse turns the camera; whatever the crosshair points at is what you hover, tooltip and click, so aiming replaces pointing. Left-click acts on it, a right-click opens its menu. Clicking the ground does not walk you there (use the movement keys) and the crosshair never picks your own character. Alt frees the cursor for the game's panels (held, or a tap with the toggle option below); the toggle key switches the camera on and off. |
-| mouselook.actionkey | (none) | Action camera toggle key | X | ] | U | L | An SDL key name (F8, Tab, Backspace, Z...) or Mouse4 / Mouse5 for the thumb buttons. Blank binds nothing. |
-| mouselook.alttoggle | (none) | Alt toggles the cursor | T | off | U | L | Under the action camera, tapping Alt frees the cursor until you tap it again, instead of holding it. |
-| mouselook.assist | (none) | Aim assist | T | on | U | L | Under the action camera, the crosshair snaps its aim to the nearest creature, placeable or door within a few pixels of the centre, so you hover and click it without pixel-perfect aiming. The camera never moves; only what you point at changes. Brackets appear around the crosshair while a target is picked. |
-| mouselook.assistpx | (none) | Aim assist radius | S | 0–200 px step 5 · 80 | A | L | How far from the centre of the screen aim assist looks for a target. 0 turns it into the plain crosshair. |
-| mouselook.autotarget | (none) | Cast at the crosshair | T | on | U | L | Under the action camera, a spell, feat or item that asks you to pick a target fires straight away on whatever the crosshair is pointing at, with no second click. A ground-targeted spell still asks you to aim it. |
-| mouselook.feedback | (none) | Action feedback on the crosshair | T | on | U | L | Under the action camera, the crosshair answers what you did: a pulse when an order goes out, a red ring while you are attacking, and a dot underneath while an action is still waiting to happen. |
-| mouselook.headtrack | (none) | Head follows the crosshair | T | on | U | L | Under the action camera, your character turns their head toward whatever you are aiming at. The body still faces where it is walking. Only you see it -- other players see your character the way the game has always shown it. |
-| mouselook.headyaw | (none) | Head turn limit | S | 0–89 ° step 1 · 70 | A | L | How far the head turns to the side before it stops following the crosshair. 0 stops sideways turning. |
-| mouselook.headpitch | (none) | Head tilt limit | S | 0–89 ° step 1 · 30 | A | L | How far the head tilts up or down before it stops following the crosshair. 0 keeps it level. |
-| mouselook.right | mouselook | Right-drag looks around | T | off | U | L | Hold the right button and drag to orbit; a still right-click still opens the radial menu. |
-| mouselook.sens | mouselook_sens | Sensitivity | S | 0.05–20 × step 0.05 · 1 | U | L | 1 matches the stock middle-drag. |
-| mouselook.invert | mouselook_invert | Invert vertical | T | off | U | L | |
-| mouselook.threshold | mouselook_threshold | Click-to-drag threshold | S | 0–100 px step 1 · 4 | A | L | Pixels of movement before a right press becomes a look instead of a click. |
+| tabtarget.enabled | (none) | Enable tab-target mode | T | off | U | L | MMO-style targeting: pick one target with Tab or a left-click, then quickbar spells, feats, items and the attack button fire at it with no second click. Off, Tab and clicks are the stock ones. |
+| tabtarget.cast | (none) | Cast mode | D | Normal / Quick / Quick with preview · Quick | U | L | Normal: press the button, then click a target, as the game always did. Quick: the button fires at once -- at your target, or with none at what the cursor points at; a ground spell lands at the cursor. Quick with preview: hold the button to see the game's own targeting preview, release to fire; right-click or Escape before release cancels. |
+| tabtarget.cyclekey | (none) | Cycle key | X | Tab | U | L | Locks the candidate nearest the centre of the screen, then steps through the others. Shift with it steps back. An SDL key name (Tab, F8, Z...). |
+| tabtarget.clearkey | (none) | Clear key | X | Backspace | U | L | Drops the lock. Blank binds nothing. |
+| tabtarget.camera | (none) | After picking a target | D | Nothing / Turn the camera to it / Lock the camera on it · Turn | U | L | Turn: the camera swings once to look at the new target (in tilt too, when the target sits off the middle of the view). Lock on: it keeps looking at the target as you both move, until you press the lock key (or pick nothing); the mouse cannot pull it off, and the turn and strafe keys run you sideways around the target instead of orbiting or strafing. |
+| tabtarget.lockkey | (none) | Lock-on key | X | F | U | L | Locks the camera on the creature nearest the middle of the screen (it becomes your target); pressed while locked on, lets go. An SDL key name. |
+| tabtarget.tilt | (none) | Target within | S | 0–25 ° of the centre step 1 · 12 | U | L | The camera keeps your own tilt while the target sits within this many degrees of the middle of the view; past it the camera tilts just enough to bring it back -- flatter for a far or raised target, steeper for one below. 0 always puts the target dead centre. |
+| tabtarget.filter | (none) | Tab cycles | D | Hostile creatures / All creatures · Hostile creatures | U | L | Hostile only keeps allies and townsfolk out of a fight; all creatures lets you lock an ally for a heal. |
+| tabtarget.objects | (none) | Include placeables and doors | T | off | U | L | Tab can also lock a lever, chest or door. |
+| tabtarget.range | (none) | Maximum range | S | 5–80 m step 1 · 30 | U | L | Tab ignores anything farther from you than this. |
 
 ### 4.5 Hotkeys
 

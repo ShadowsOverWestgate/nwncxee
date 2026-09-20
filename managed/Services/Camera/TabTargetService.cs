@@ -1,0 +1,550 @@
+using System;
+using System.Numerics;
+using System.Runtime.InteropServices;
+using System.Threading;
+using CX.Framework;
+using CX.Services.Chat.Core;
+using CX.Ui;
+
+namespace CX.Services.Camera;
+
+/// <summary>
+/// Tab-target mode (CX-636): one <b>locked target</b>, picked by the cycle key or a left-click, that every
+/// target-asking quickbar button fires at with no second click. The decisions are <see cref="TabTargetCore"/>'s;
+/// this shell does the engine work at four seams, all confirmed by decompile (Linux nm / Windows rva):
+/// <list type="bullet">
+/// <item><b>Keys</b>: a <c>WinMessageHandler</c> chain layer between the mouse-look and the framework input layer.
+/// The cycle and clear keys are swallowed on key-down (before <c>CExoInput::AddEvent</c> queues the scancode
+/// keybind, so the stock Tab highlight-all -- action 0x61 -&gt; <c>HandleTooltip</c>, edge-driven -- never
+/// runs) whenever the framework's chord gate is clear: no chat typing, no CX panel, no NUI edit, no dialog.</item>
+/// <item><b>Candidates</b>: the area object list is walked on the key press, not per frame -- projected through
+/// <see cref="Projector"/> against the live camera into a fixed buffer. Hostility is the creature's attitude byte,
+/// the one <c>HiliteAreaObjects</c> colours by.</item>
+/// <item><b>Indicator</b>: the engine's own <c>CNWCObject::Hilite</c> (virtual) on channel 4 with the same
+/// per-attitude colour global Tab uses; channels 2 (hover/Tab) and 3 (VFX) sit below it in
+/// <c>RefreshHilite</c>'s lowest-wins publish, so they show through and the lock glow returns after. Re-applied
+/// each frame (idempotent: <c>Scene::AddHighlightGob</c> dedups), which also survives a model rebuild. Alloy's
+/// outline claims channel 4 too, so the lock takes the highlight mode the player chose. The nameplate is the
+/// engine's own Tab plate: <c>MouseOver(1)</c> each frame raises it (the flag the CX nameplate polls),
+/// <c>MouseOff</c> drops it with the lock.</item>
+/// <item><b>Camera</b> (<c>tabtarget.camera</c>): on a new lock the camera turns once to look at it, or locks on
+/// and keeps looking until the lock key lets go; the lock key on its own locks on the creature nearest the
+/// middle of the screen (<see cref="LockOn"/>). <see cref="CameraService"/>'s recenter drives the yaw and the
+/// tilt (<see cref="AimPoint"/>, <c>tabtarget.tilt</c>) and owns them while it runs: the hand's orbit and the
+/// action camera's mouse do not pause it (under the action camera the lock IS the aim: the crosshair lands on
+/// the target). Locked on, the drive's side keys run sideways (<see cref="LockedOn"/>). A target that leaves
+/// the screen drops its lock (<see cref="InView"/>).</item>
+/// <item><b>Fire</b>: <c>CActionTarget::HandleLMouseDown</c> re-runs the world pick at the GUI mouse position
+/// (<c>FeedbackHitCheck</c>) -- it does NOT read the hovered-object field -- so firing at the lock substitutes
+/// the pick: while <see cref="_fireAt"/> is set, the two pick hooks in <see cref="MouseLookService"/> answer the
+/// lock (verdict 2, its position) and <c>CGuiMan::GuiObjectHitCheck</c> answers nothing (a mouse click on the
+/// quickbar button leaves the cursor over the GUI). The engine's own allowed-type scan and per-mode validation
+/// callback then decide, and its own target-selected message goes out. Firing at the cursor is the plain
+/// <c>HandleLMouseDown</c> call -- which, for a MOUSE click on the button, finds the cursor over the GUI and
+/// leaves the mode up (vanilla): with a lock the substitution covers it, without one there is no world point to
+/// take.</item>
+/// <item><b>Click-to-lock</b>: <c>PerformDefaultActionOnObject</c>, the one seam <c>PerformLButtonDownAction</c>
+/// reaches when the pick returned an object; a non-zero answer means "handled" and skips the walk, so the click
+/// neither walks, attacks nor talks. Under the action camera the click keeps its vanilla action and also locks.</item>
+/// </list>
+/// <b>Preview</b> (hold to see the engine's AoE circle, release to fire): a quickbar hotkey opens its mode on the
+/// key-DOWN edge (<c>HandleInputEvent</c> actions 5..0x10 fire on <c>value != 0</c>) a frame after the SDL event,
+/// so the last non-modifier key pressed, if still down at activation (<c>SDL_GetKeyboardState</c>), is the button
+/// whose release fires -- a movement key held since before is not it; a mouse click on the button opens on
+/// mouse-UP, so nothing qualifies and it fires at once. Right-click and
+/// Escape are the engine's own cancel (<c>HandleRMouseDown</c> / <c>HandleKeyEvent(0x12)</c>); the pending
+/// release simply finds the mode gone. Liveness is <c>CClientExoAppInternal+0x108</c>, the registered mode,
+/// cleared by <c>Cleanup</c> on both the fire and the cancel path -- the pointer is never touched otherwise.
+/// <para>Hot path: the frame tick is one <c>GetGameObject</c> and two field reads plus the hilite; the key
+/// hook is a type/key compare. Nothing allocates. The lock is one id behind <see cref="Volatile"/>.</para>
+/// <para>Known gaps, recorded on CX-636: a DM's world click also locks (turn the mode off to use the chooser); a
+/// petrified creature reads as dead (AI-state word 0) and drops the lock.</para>
+/// </summary>
+public sealed unsafe class TabTargetService : IExtenderService
+{
+    private static ExtenderLog? _log;
+    private static bool _ready;
+    private static IntPtr* _next;
+    private static delegate* unmanaged<IntPtr, IntPtr, int> _defaultActionOrig;
+    private static delegate* unmanaged<IntPtr, int, int, int, int, IntPtr> _guiHitOrig;
+    private static delegate* unmanaged<int*, byte*> _keyboardState;
+    private static delegate* unmanaged<byte*, int> _keyFromName;
+    private static delegate* unmanaged<int> _modState;
+    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
+        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
+    private static IntPtr _colEnemy, _colFriend, _colNeutral, _colPlaceable, _colDoor;
+
+    /// <summary>Between the mouse-look layer (100) and the framework input layer (0).</summary>
+    private const int ChainPriority = 50;
+    private const uint SdlKeyDown = 0x300, SdlKeyUp = 0x301;
+    /// <summary>SDL_KeyboardEvent: <c>repeat</c>, <c>keysym.scancode</c>, <c>keysym.sym</c>.</summary>
+    private const int EvRepeatOff = 0xd, EvScancodeOff = 0x10, EvSymOff = 0x14;
+    private const int KmodShift = 0x0003;
+    /// <summary>SDL scancode range of the modifier keys, never a "release fires" key.</summary>
+    private const int ScancodeLCtrl = 0xE0, ScancodeRGui = 0xE7;
+    /// <summary>The lock's hilite channel: above hover/Tab (2) and VFX (3), so those show through.</summary>
+    private const byte LockChannel = 4;
+    private const int Glow = 1;
+    /// <summary>Attitude byte: 1 friend, 0 neutral, else hostile.</summary>
+    private const byte AttitudeNeutral = 0, AttitudeFriend = 1;
+    /// <summary>The world pick's "an object" verdict (PerformLButtonDownAction's <c>== 2</c> branch).</summary>
+    private const int PickObject = 2;
+
+    private static readonly int ModuleCameraOff = EngineLayout.ModuleCamera;
+    private static readonly int ModuleAreaOff = EngineLayout.ModuleCurrentArea;
+    private static readonly int AreaIdsOff = EngineLayout.AreaObjectIds;
+    private static readonly int AreaCountOff = EngineLayout.AreaObjectCount;
+    private static readonly int AsObjSlot = EngineLayout.GameObjAsNWCObjectSlot;
+    private static readonly int AsPlaceableSlot = EngineLayout.GameObjAsNWCPlaceableSlot;
+    private static readonly int ObjTypeOff = EngineLayout.ObjType;
+    private static readonly int ObjPosOff = EngineLayout.ObjPosition;
+    private static readonly int ObjVisibleOff = EngineLayout.ObjVisible;
+    private static readonly int ObjHiliteOff = EngineLayout.ObjHighlightable;
+    private static readonly int ObjColourOff = EngineLayout.ObjHiliteColour;
+    private static readonly int HiliteSlot = EngineLayout.ObjHiliteSlot;
+    private static readonly int UnHiliteSlot = EngineLayout.ObjUnHiliteSlot;
+    private static readonly int MouseOverSlot = EngineLayout.ObjMouseOverSlot;
+    private static readonly int MouseOffSlot = EngineLayout.ObjMouseOffSlot;
+    private static readonly int AttitudeOff = EngineLayout.CreatureAttitude;
+    private static readonly int AiStateOff = EngineLayout.CreatureAiFlags;
+    private static readonly int InternalOff = EngineLayout.ExoAppInternal;
+    private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
+    private static readonly int ActionTargetOff = EngineLayout.InternalActionTarget;
+
+    /// <summary>The engine's by-value <c>Vector</c> into <c>Hilite</c>: the house shape (<c>CombatTextService</c>, #420,
+    /// live on both) -- SysV xmm0 (x, y) + xmm1 (z), Win64 a pointer to a caller-made copy.</summary>
+#if WINDOWS
+    private struct ColourArg { public CombatText.CombatTextService.Vec3* P; }
+#else
+    private struct ColourArg { public CombatText.CombatTextService.Vec3 V; }
+#endif
+
+    // ---- the lock ----
+    private static uint _lock;
+    /// <summary>The locked object id, 0 for none. Written on the input thread, read by the tick.</summary>
+    internal static uint Lock => Volatile.Read(ref _lock);
+    /// <summary>The area the lock was taken in: a different current area clears it.</summary>
+    private static IntPtr _lockArea;
+    private static readonly uint[] _ring = new uint[TabTargetCore.MaxCandidates];
+    private static int _ringCount;
+    private static readonly TabTargetCore.Candidate[] _live = new TabTargetCore.Candidate[TabTargetCore.MaxCandidates];
+
+    // ---- the fire ----
+    /// <summary>The CNWCObject* the pick hooks answer while a lock fire is in flight; Zero otherwise.</summary>
+    private static IntPtr _fireAt;
+    /// <summary>A Preview mode waiting for its release: the CActionTarget and the scancode whose key-up fires it
+    /// (0 = none pending on a key).</summary>
+    private static IntPtr _pending;
+    private static int _pendingKey;
+    /// <summary>The last non-modifier scancode pressed: a hotkey opens its mode a frame after its key-down, so the
+    /// most recent press still held at activation is the button, not a movement key held since before.</summary>
+    private static int _lastKeyDown;
+    private static int _cycleCode, _clearCode, _lockCode;
+
+    private enum Aim { None, Once, Locked }
+    /// <summary>What the camera does about the lock right now (<c>tabtarget.camera</c>, then the lock key).</summary>
+    private static Aim _aim;
+    private const int CameraTurn = 1, CameraLock = 2;
+
+    private static int _cycles, _clicks, _clears, _drops, _lockFires, _cursorFires, _releaseFires;
+
+    public void Initialize(ExtenderLog log, HookService hooks)
+    {
+        _log = log;
+        CameraKnobs.Declare();
+        TabTargetCore.SelfCheck(log);
+        TabTarget.G.Status = Report;
+        if (_getGameObject == null) return;
+        if (!EngineLayout.Require(log, "TabTarget", "CNWCObject", "CNWCArea", "CNWCCreature", "CGameObject", "CClientExoAppInternal",
+                                  "CActionTarget", "Camera", "CNWCModule", "CClientExoApp", "CGuiMan")) return;
+        if (!SymbolMap.Require(log, "TabTarget", SymbolMap.WinMessageHandler, SymbolMap.PerformDefaultActionOnObject,
+                               SymbolMap.GuiObjectHitCheck, SymbolMap.SdlGetKeyboardState, SymbolMap.SdlGetKeyFromName,
+                               SymbolMap.SdlGetModState, SymbolMap.GetGameObject, SymbolMap.GetModule, SymbolMap.AppManager,
+                               SymbolMap.HiliteEnemy, SymbolMap.HiliteFriend, SymbolMap.HiliteNeutral,
+                               SymbolMap.HilitePlaceable, SymbolMap.HiliteDoor)) return;
+        if (!AimAssist.Ready || !MouseLookService.PicksHooked)
+        { log.Info("TabTarget: standing down (the action camera's target-mode or pick hooks are not up)"); return; }
+
+        _keyboardState = (delegate* unmanaged<int*, byte*>)Native.Sym(SymbolMap.SdlGetKeyboardState);
+        _keyFromName = (delegate* unmanaged<byte*, int>)Native.Sym(SymbolMap.SdlGetKeyFromName);
+        _modState = (delegate* unmanaged<int>)Native.Sym(SymbolMap.SdlGetModState);
+        _colEnemy = Native.Sym(SymbolMap.HiliteEnemy); _colFriend = Native.Sym(SymbolMap.HiliteFriend);
+        _colNeutral = Native.Sym(SymbolMap.HiliteNeutral); _colPlaceable = Native.Sym(SymbolMap.HilitePlaceable);
+        _colDoor = Native.Sym(SymbolMap.HiliteDoor);
+        _defaultActionOrig = (delegate* unmanaged<IntPtr, IntPtr, int>)hooks.Install(SymbolMap.PerformDefaultActionOnObject,
+            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int>)&OnDefaultAction);
+        _guiHitOrig = (delegate* unmanaged<IntPtr, int, int, int, int, IntPtr>)hooks.Install(SymbolMap.GuiObjectHitCheck,
+            (IntPtr)(delegate* unmanaged<IntPtr, int, int, int, int, IntPtr>)&OnGuiHitCheck);
+        _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, ChainPriority);
+        if (_defaultActionOrig == null || _guiHitOrig == null || _next == null)
+        { log.Info("TabTarget: standing down (a hook install was refused)"); return; }
+        KeysChanged();
+        FrameRegistry.Global.Register(FramePhase.PostPresent, 61, Tick, "TabTarget", log);
+        _ready = true;
+        log.Info($"TabTarget: ready ({(TabTarget.Enabled.V ? "on" : "off")}); hooks PerformDefaultActionOnObject + GuiObjectHitCheck, chained on WinMessageHandler");
+    }
+
+    private static bool On => _ready && TabTarget.Enabled.V && GameGate.InGame;
+
+    // ---- keys ----
+
+    [UnmanagedCallersOnly]
+    private static int OnWinMessage(IntPtr ev)
+    {
+        if (ev == IntPtr.Zero || !On) return Forward(ev);
+        uint type = *(uint*)ev;
+        if (type == SdlKeyUp)
+        {
+            if (_pending != IntPtr.Zero && _pendingKey != 0 && *(int*)(ev + EvScancodeOff) == _pendingKey) ResolvePending();
+            return Forward(ev);
+        }
+        if (type != SdlKeyDown || *(byte*)(ev + EvRepeatOff) != 0) return Forward(ev);
+        int scancode = *(int*)(ev + EvScancodeOff);
+        if (scancode is < ScancodeLCtrl or > ScancodeRGui) _lastKeyDown = scancode;
+        if (!UiInputService.ChordGateClear()) return Forward(ev);
+        int sym = *(int*)(ev + EvSymOff);
+        if (_cycleCode != 0 && sym == _cycleCode)
+        {
+            Cycle((_modState() & KmodShift) != 0);
+            return 0;
+        }
+        if (_clearCode != 0 && sym == _clearCode && Lock != 0)
+        {
+            Clear(); _clears++;
+            return 0;
+        }
+        if (_lockCode != 0 && sym == _lockCode)
+        {
+            LockOn();
+            return 0;
+        }
+        return Forward(ev);
+    }
+
+    /// <summary>The cycle key: the next candidate after the lock in ring order (the centre-most with no lock).</summary>
+    private static void Cycle(bool reverse)
+    {
+        uint next = Pick(Lock, reverse, out IntPtr area);
+        _cycles++;
+        if (next != 0 && next != Lock) SetLock(next, area);
+    }
+
+    /// <summary>The lock key: locked on, it lets go (the target stays); otherwise it locks the camera on the
+    /// creature nearest the middle of the screen -- whatever is highlighted -- or on the lock when nothing is in view.</summary>
+    private static void LockOn()
+    {
+        if (_aim == Aim.Locked) { _aim = Aim.None; return; }
+        uint next = Pick(0, false, out IntPtr area);
+        if (next != 0 && next != Lock) SetLock(next, area);
+        if (Lock != 0) _aim = Aim.Locked;
+    }
+
+    /// <summary>Walk the area once, project, hand the in-view candidates to the Core: the id it lands on after
+    /// <paramref name="held"/> (0 = the centre-most, and the ring is rebuilt), or <paramref name="held"/> itself.</summary>
+    private static uint Pick(uint held, bool reverse, out IntPtr area)
+    {
+        area = IntPtr.Zero;
+        IntPtr module = CameraService.Module();
+        IntPtr app = CameraService.App();
+        if (module == IntPtr.Zero || app == IntPtr.Zero) return held;
+        IntPtr cam = *(IntPtr*)(module + ModuleCameraOff);
+        area = *(IntPtr*)(module + ModuleAreaOff);
+        IntPtr intern = *(IntPtr*)(app + InternalOff);
+        IntPtr player = CameraService.PlayerCreature();
+        if (cam == IntPtr.Zero || area == IntPtr.Zero || intern == IntPtr.Zero || player == IntPtr.Zero) return held;
+        MouseLookService.ViewportCentre(out int cx, out int cy);
+        if (!Projector.Read(cam, cx, cy, out Projector view)) return held;
+        int n = *(int*)(area + AreaCountOff);
+        uint* ids = *(uint**)(area + AreaIdsOff);
+        if (n <= 0 || ids == null) return held;
+        uint playerId = *(uint*)(intern + PlayerIdOff);
+        float* pp = (float*)(player + ObjPosOff);
+        Vector3 me = new(pp[0], pp[1], pp[2]);
+
+        int count = 0;
+        for (int i = 0; i < n && count < _live.Length; i++)
+        {
+            uint id = ids[i];
+            if (id == playerId || id == TypingSignal.ObjectInvalid) continue;
+            IntPtr obj = Object(app, id, out byte kind);
+            if (obj == IntPtr.Zero || (kind == TabTargetCore.TypeCreature && Dead(obj))) continue;
+            float* w = (float*)(obj + ObjPosOff);
+            Vector3 pos = new(w[0], w[1], w[2]);
+            if (!view.Screen(pos, out float sx, out float sy, out _)) continue;
+            if (sx < 0f || sy < 0f || sx > 2 * cx || sy > 2 * cy) continue;   // in view only
+            float dx = sx - cx, dy = sy - cy;
+            _live[count++] = new TabTargetCore.Candidate
+            {
+                Id = id, ScreenDist = MathF.Sqrt(dx * dx + dy * dy), Range = Vector3.Distance(pos, me),
+                Hostile = kind == TabTargetCore.TypeCreature && Hostile(obj), Type = kind,
+            };
+        }
+        return TabTargetCore.Cycle(new ReadOnlySpan<TabTargetCore.Candidate>(_live, 0, count), TabTarget.Filter.V == 0,
+                                   TabTarget.Objects.V, TabTarget.Range.V, held, reverse, _ring, ref _ringCount);
+    }
+
+    /// <summary>The creature / placeable / door behind <paramref name="id"/>, or Zero: the lock's liveness read
+    /// (a faded or invisible target stays locked; only a gone one clears).</summary>
+    private static IntPtr Resolve(IntPtr app, uint id, out byte kind)
+    {
+        kind = 0;
+        IntPtr go = _getGameObject(app, id);
+        if (go == IntPtr.Zero) return IntPtr.Zero;
+        IntPtr obj = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)go + AsObjSlot)))(go);
+        if (obj == IntPtr.Zero) return IntPtr.Zero;
+        kind = *(byte*)(obj + ObjTypeOff);
+        return kind is TabTargetCore.TypeCreature or TabTargetCore.TypePlaceable or TabTargetCore.TypeDoor ? obj : IntPtr.Zero;
+    }
+
+    /// <summary><see cref="Resolve"/> narrowed to what Tab may land on: visible and highlightable, the same reads
+    /// as the aim assist's walk (the placeable's hilite flag sits on what <c>AsNWCPlaceable</c> answers).</summary>
+    private static IntPtr Object(IntPtr app, uint id, out byte kind)
+    {
+        IntPtr obj = Resolve(app, id, out kind);
+        if (obj == IntPtr.Zero || *(byte*)(obj + ObjVisibleOff) == 0) return IntPtr.Zero;
+        IntPtr hil = kind != TabTargetCore.TypePlaceable ? obj
+            : ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)obj + AsPlaceableSlot)))(obj);
+        return hil == IntPtr.Zero || *(int*)(hil + ObjHiliteOff) == 0 ? IntPtr.Zero : obj;
+    }
+
+    private static bool Hostile(IntPtr creature) => *(byte*)(creature + AttitudeOff) is not (AttitudeNeutral or AttitudeFriend);
+    private static bool Dead(IntPtr creature) => *(short*)(creature + AiStateOff) == 0;
+
+    private static void SetLock(uint id, IntPtr area)
+    {
+        if (Lock != 0 && Lock != id) UnHilite();
+        Volatile.Write(ref _lock, id);
+        _lockArea = area;
+        if (id == 0) { _ringCount = 0; _aim = Aim.None; return; }
+        _aim = TabTarget.Camera.V switch { CameraTurn => Aim.Once, CameraLock => Aim.Locked, _ => Aim.None };
+    }
+
+    // ---- the camera ----
+
+    /// <summary>The lock's ground position while the camera should look at it (turn once, or locked on). Read by
+    /// <see cref="CameraService"/>'s recenter every frame.</summary>
+    internal static bool AimPoint(out float x, out float y, out float z)
+    {
+        x = y = z = 0f;
+        if (_aim == Aim.None || !On) return false;
+        IntPtr app = CameraService.App();
+        IntPtr obj = app != IntPtr.Zero ? Resolve(app, Lock, out _) : IntPtr.Zero;
+        if (obj == IntPtr.Zero) return false;
+        float* w = (float*)(obj + ObjPosOff);
+        x = w[0]; y = w[1]; z = w[2];
+        return true;
+    }
+
+    /// <summary>The camera is locked on a target: <see cref="CameraDriveService"/> runs the turn and strafe keys
+    /// sideways (the creature faces where it runs) instead of orbiting or strafing, the camera being the lock's.</summary>
+    internal static bool LockedOn => _aim == Aim.Locked && On && Lock != 0;
+
+    /// <summary>The camera reached the target: a one-shot turn is done.</summary>
+    internal static void AimSettled() { if (_aim == Aim.Once) _aim = Aim.None; }
+
+    private static void Clear() => SetLock(0, IntPtr.Zero);
+
+    // ---- the frame tick: validity + indicator ----
+
+    private static void Tick()
+    {
+        uint id = Lock;
+        if (id == 0) return;
+        IntPtr module = CameraService.Module();
+        IntPtr app = CameraService.App();
+        if (!On || module == IntPtr.Zero || app == IntPtr.Zero || *(IntPtr*)(module + ModuleAreaOff) != _lockArea) { Clear(); return; }
+        IntPtr obj = Resolve(app, id, out byte kind);
+        if (obj == IntPtr.Zero || (kind == TabTargetCore.TypeCreature && Dead(obj))) { Clear(); return; }
+        if (!InView(module, obj)) { Clear(); _drops++; return; }
+        Hilite(obj, kind);
+        // The Tab plate: MouseOver(1) is a no-op while the plate is already up, so per frame is free.
+        ((delegate* unmanaged<IntPtr, int, void>)(*(IntPtr*)(*(IntPtr*)obj + MouseOverSlot)))(obj, 1);
+    }
+
+    /// <summary>Is the object's ground point inside the viewport? A target that left the screen (the player turned
+    /// away, or walked past it) drops its lock; a one-shot turn keeps it in view by construction, a lock-on by force.</summary>
+    private static bool InView(IntPtr module, IntPtr obj)
+    {
+        IntPtr cam = *(IntPtr*)(module + ModuleCameraOff);
+        MouseLookService.ViewportCentre(out int cx, out int cy);
+        if (cam == IntPtr.Zero || !Projector.Read(cam, cx, cy, out Projector view)) return true;   // no camera to judge by: keep
+        float* w = (float*)(obj + ObjPosOff);
+        return view.Screen(new Vector3(w[0], w[1], w[2]), out float sx, out float sy, out _)
+               && sx >= 0f && sy >= 0f && sx <= 2 * cx && sy <= 2 * cy;
+    }
+
+    /// <summary>The engine's own Tab look: the object's script colour when set (x &gt;= 0), else the type's /
+    /// attitude's global. Virtual: CNWCCreature overrides Hilite to reach its equipped items too.</summary>
+    private static void Hilite(IntPtr obj, byte kind)
+    {
+        float* c = (float*)(obj + ObjColourOff);
+        if (!(c[0] >= 0f))
+        {
+            IntPtr g = kind == TabTargetCore.TypePlaceable ? _colPlaceable : kind == TabTargetCore.TypeDoor ? _colDoor
+                : *(byte*)(obj + AttitudeOff) switch { AttitudeFriend => _colFriend, AttitudeNeutral => _colNeutral, _ => _colEnemy };
+            c = (float*)g;
+        }
+        CombatText.CombatTextService.Vec3 colour = new() { X = c[0], Y = c[1], Z = c[2] };
+#if WINDOWS
+        ColourArg arg = new() { P = &colour };
+#else
+        ColourArg arg = new() { V = colour };
+#endif
+        ((delegate* unmanaged<IntPtr, ColourArg, byte, float, int, void>)(*(IntPtr*)(*(IntPtr*)obj + HiliteSlot)))(obj, arg, LockChannel, 0f, Glow);
+    }
+
+    private static void UnHilite()
+    {
+        uint id = Lock;
+        IntPtr app = CameraService.App();
+        if (id == 0 || app == IntPtr.Zero) return;
+        IntPtr go = _getGameObject(app, id);
+        if (go == IntPtr.Zero) return;
+        IntPtr obj = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)go + AsObjSlot)))(go);
+        if (obj == IntPtr.Zero) return;
+        ((delegate* unmanaged<IntPtr, byte, int>)(*(IntPtr*)(*(IntPtr*)obj + UnHiliteSlot)))(obj, LockChannel);
+        ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)obj + MouseOffSlot)))(obj);
+    }
+
+    // ---- click-to-lock ----
+
+    [UnmanagedCallersOnly]
+    private static int OnDefaultAction(IntPtr self, IntPtr obj)
+    {
+        if (!On || obj == IntPtr.Zero || _fireAt != IntPtr.Zero) return _defaultActionOrig(self, obj);
+        IntPtr app = CameraService.App();
+        IntPtr intern = app != IntPtr.Zero ? *(IntPtr*)(app + InternalOff) : IntPtr.Zero;
+        uint id = *(uint*)(obj + EngineLayout.ObjId);
+        if (intern == IntPtr.Zero || id == *(uint*)(intern + PlayerIdOff)) return _defaultActionOrig(self, obj);
+        byte kind = *(byte*)(obj + ObjTypeOff);
+        // A corpse is loot, not a target: its click keeps the vanilla UseObject.
+        bool lockable = (kind == TabTargetCore.TypeCreature && !Dead(obj))
+                        || (TabTarget.Objects.V && kind is TabTargetCore.TypePlaceable or TabTargetCore.TypeDoor);
+        if (!lockable) return _defaultActionOrig(self, obj);
+        IntPtr module = CameraService.Module();
+        SetLock(id, module != IntPtr.Zero ? *(IntPtr*)(module + ModuleAreaOff) : IntPtr.Zero);
+        _clicks++;
+        // The crosshair wins while the action camera is held: the click keeps its vanilla action as well.
+        return MouseLookService.ActionHeld ? _defaultActionOrig(self, obj) : 1;
+    }
+
+    // ---- the fire ----
+
+    /// <summary>From the <c>ActivateTargetMode</c> post-hook: true when tab-target took the decision (the
+    /// legacy auto-target must then stay out). With the action camera held the crosshair is the aim point, so
+    /// the lock is presented as absent and the cursor pick (pinned to the crosshair) resolves it.</summary>
+    internal static bool OnActivate(IntPtr self)
+    {
+        if (!On) return false;
+        _pending = IntPtr.Zero;
+        var mode = (TabTargetCore.CastMode)TabTarget.Cast.V;
+        bool hasLock = Lock != 0 && !MouseLookService.ActionHeld;
+        bool takesObject = AimAssist.TakesAnObject(self);
+        switch (TabTargetCore.Decide(mode, hasLock, takesObject, TabTargetCore.CastEvent.Open))
+        {
+            case TabTargetCore.CastVerdict.FireAtLock: FireAtLock(self); break;
+            case TabTargetCore.CastVerdict.FireAtCursor: _cursorFires++; AimAssist.Resolve(self); break;
+            case TabTargetCore.CastVerdict.LeaveUp when mode == TabTargetCore.CastMode.Preview: Arm(self); break;
+        }
+        return true;
+    }
+
+    /// <summary>Preview: remember the mode and the key that opened it -- the last key pressed, if it is still
+    /// down. Not down (a mouse click on the button, or a tap already released) = the release already happened,
+    /// so fire now.</summary>
+    private static void Arm(IntPtr self)
+    {
+        int n = 0;
+        byte* state = _keyboardState(&n);
+        int key = _lastKeyDown;
+        _pendingKey = key > 0 && key < n && state[key] != 0 ? key : 0;
+        _pending = self;
+        if (_pendingKey == 0) ResolvePending();
+    }
+
+    /// <summary>The release: only if the engine still has this mode registered (Escape / right-click cancelled
+    /// it otherwise, and the pointer is dead).</summary>
+    private static void ResolvePending()
+    {
+        IntPtr self = _pending;
+        _pending = IntPtr.Zero;
+        IntPtr app = CameraService.App();
+        if (self == IntPtr.Zero || app == IntPtr.Zero) return;
+        IntPtr intern = *(IntPtr*)(app + InternalOff);
+        if (intern == IntPtr.Zero || *(IntPtr*)(intern + ActionTargetOff) != self) return;
+        bool hasLock = Lock != 0 && !MouseLookService.ActionHeld;
+        _releaseFires++;
+        switch (TabTargetCore.Decide(TabTargetCore.CastMode.Preview, hasLock, AimAssist.TakesAnObject(self), TabTargetCore.CastEvent.Release))
+        {
+            case TabTargetCore.CastVerdict.FireAtLock: FireAtLock(self); break;
+            case TabTargetCore.CastVerdict.FireAtCursor: _cursorFires++; AimAssist.Resolve(self); break;
+        }
+    }
+
+    /// <summary>Substitute the pick for the duration of one <c>HandleLMouseDown</c>. Nothing touches
+    /// <paramref name="self"/> after the call.</summary>
+    private static void FireAtLock(IntPtr self)
+    {
+        IntPtr app = CameraService.App();
+        IntPtr obj = app != IntPtr.Zero ? Resolve(app, Lock, out _) : IntPtr.Zero;
+        if (obj == IntPtr.Zero) { _cursorFires++; AimAssist.Resolve(self); return; }
+        _fireAt = obj; _lockFires++;
+        try { AimAssist.Resolve(self); }
+        finally { _fireAt = IntPtr.Zero; }
+    }
+
+    /// <summary>The pick hooks' first question: is a lock fire in flight? Then the pick IS the lock -- the
+    /// object, its position, verdict "object". The <c>int*</c> flag is left alone: HandleLMouseDown passes null
+    /// and PerformLButtonDownAction reads it on the ground verdict only.</summary>
+    internal static bool OverridePick(IntPtr* obj, IntPtr point, out int verdict)
+    {
+        IntPtr at = _fireAt;
+        verdict = 0;
+        if (at == IntPtr.Zero) return false;
+        if (obj != null) *obj = at;
+        if (point != IntPtr.Zero) { float* w = (float*)(at + ObjPosOff); float* p = (float*)point; p[0] = w[0]; p[1] = w[1]; p[2] = w[2]; }
+        verdict = PickObject;
+        return true;
+    }
+
+    [UnmanagedCallersOnly]
+    private static IntPtr OnGuiHitCheck(IntPtr self, int x, int y, int fresh, int mask)
+        => _fireAt != IntPtr.Zero ? IntPtr.Zero : _guiHitOrig(self, x, y, fresh, mask);
+
+    // ---- knobs ----
+
+    /// <summary>Re-parse the two key names through SDL's own table (cold).</summary>
+    internal static void KeysChanged()
+    {
+        _cycleCode = Code(TabTarget.CycleKey.V);
+        _clearCode = Code(TabTarget.ClearKey.V);
+        _lockCode = Code(TabTarget.LockKey.V);
+    }
+
+    private static int Code(string? name)
+    {
+        name = (name ?? "").Trim();
+        if (name.Length == 0 || _keyFromName == null) return 0;
+        // SDL_GetKeyFromName answers a one-character name with that character, but a key event's sym is the
+        // LOWER-case letter: "F" would never match the F key.
+        if (name.Length == 1) name = name.ToLowerInvariant();
+        byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(name + "\0");
+        int code;
+        fixed (byte* p = utf8) code = _keyFromName(p);
+        if (code == 0) _log?.Info($"TabTarget: '{name}' is not an SDL key name; nothing bound");
+        return code;
+    }
+
+    /// <summary>The master's off edge: the lock and any pending preview go at once.</summary>
+    internal static void MasterChanged()
+    {
+        if (TabTarget.Enabled.V || !_ready) return;
+        _pending = IntPtr.Zero;
+        Clear();
+    }
+
+    private static int Forward(IntPtr ev) => ((delegate* unmanaged<IntPtr, int>)(*_next))(ev);
+
+    private static string Report() => !_ready ? "stood down"
+        : FormattableString.Invariant($"{(TabTarget.Enabled.V ? "on" : "off")}, cast {TabTarget.Cast.Choices[Math.Max(0, TabTarget.Cast.ChoiceIndex)]}; lock {(Lock == 0 ? "none" : $"0x{Lock:x}")}, camera {_aim}, pending {(_pending == IntPtr.Zero ? "no" : "yes")}; {_cycles} cycle(s), {_clicks} click-lock(s), {_clears} clear(s), {_drops} dropped off-screen; fired {_lockFires} at the lock, {_cursorFires} at the cursor, {_releaseFires} on release");
+}

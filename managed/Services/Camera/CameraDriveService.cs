@@ -13,7 +13,7 @@ namespace CX.Services.Camera;
 /// forward, A/D and the strafe keys = its right, diagonals at 45°), forward is the only key the engine sees for
 /// the call (the walk or the run key, whichever the player holds, so the engine's own walk/run choice stands;
 /// #637), and the engine's "input changed" latch is raised when the heading moved past the wire's 0.1° quantum
-/// (at most <c>move.hz</c> times a second for camera turns; a key change latches at once). The engine then derives
+/// (at most <c>&lt;mode&gt;.hz</c> times a second for camera turns; a key change latches at once). The engine then derives
 /// the packet angle from that orientation, sends forward at the key's pace, snaps the local facing, predicts,
 /// keeps alive and aborts on release by itself,
 /// and the server adopts the world-space heading (§10.2): no server change, no new opcode. The one release the
@@ -22,9 +22,12 @@ namespace CX.Services.Camera;
 /// <para>Face mode (<c>&lt;mode&gt;.face</c>, chase's default): the creature always faces the camera's forward and the engine's own
 /// back/strafe bits carry S and the strafe keys (the server animates a back-pedal and a sidestep, facing held),
 /// while the turn keys become a keyboard orbit (<see cref="TurnAxis"/>) the creature follows on the next move.
-/// The camera then faces where the character faces by construction, with no recenter swing to wait for.</para>
+/// The camera then faces where the character faces by construction, with no recenter swing to wait for. Under
+/// <c>&lt;mode&gt;.siderun</c> the turn keys instead run the creature sideways the non-face way (the mouse looks
+/// around); while the tab-target camera is locked on (<see cref="TabTargetService.LockedOn"/>) every side key --
+/// turn or strafe -- does: the camera is the lock's, so there is nothing to orbit or hold a facing for.</para>
 /// <para>A drive starts on the keys' heading (the wire angle is a path, so a slew from the old facing would walk
-/// an arc); while it runs the heading slews toward the keys at <c>move.turn</c> deg/s, and
+/// an arc); while it runs the heading slews toward the keys at <c>&lt;mode&gt;.turn</c> deg/s, and
 /// the creature's local facing-target pair is written with it every frame so the model turns as smoothly as the
 /// wire does. While the drive is active the engine's chase cam stands down (<see cref="EngineLayout.ModuleChaseSuppressed"/>
 /// held up, its idle edge held down): a chase that swings the camera behind a creature strafing at 90° would turn
@@ -48,7 +51,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
     private static readonly int LastSendOff = EngineLayout.InternalDriveLastSend;
     private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
     private static readonly int OriOff = EngineLayout.ObjOrientation;
-    private static readonly int DriveFlagsOff = EngineLayout.CreatureDriveFlags;
+    private static readonly int DriveFlagsOff = EngineLayout.CreatureAiFlags;
     private static readonly int DriveEnabledOff = EngineLayout.CreatureDriveEnabled;
     private static readonly int FacingTargetOff = EngineLayout.CreatureFacingTarget;
     private static readonly int FacingTargetBOff = EngineLayout.CreatureFacingTargetB;
@@ -135,6 +138,16 @@ public sealed unsafe class CameraDriveService : IExtenderService
         float f = 0f, s = 0f;
         int liveMode = CameraService.Mode;
         bool face = liveMode >= 0 && CameraModes.ByMode[liveMode].Face.V;
+        // Side run (CX-636): a turn key under <mode>.siderun, or any side key while locked on a target, runs the
+        // creature sideways facing where it runs -- no orbit for the turn keys, no held facing to strafe under.
+        bool sideRun = false;
+        if (face)
+        {
+            bool locked = TabTargetService.LockedOn;
+            sideRun = locked || CameraModes.ByMode[liveMode].SideRun.V;
+            int side = (locked ? keys[StrafeL] | keys[StrafeR] : 0) | (sideRun ? keys[TurnL] | keys[TurnR] : 0);
+            if (side != 0) face = false;
+        }
         TurnAxis = 0;
         if (why == Why.Active)
         {
@@ -184,7 +197,9 @@ public sealed unsafe class CameraDriveService : IExtenderService
         if (!_active) { _heading = want; _lastTick = now; }
         float dt = MathF.Min((now - _lastTick) * 0.001f, 0.1f);
         _lastTick = now;
-        _heading = Slew(_heading, want, Move.Turn.V, dt);
+        CameraModeKnobs mk = CameraModes.ByMode[liveMode];
+        // Side run's back-pedal snaps to the camera: a slew from the sideways facing it just ran on would walk an arc.
+        _heading = sideRun && f < 0f ? want : Slew(_heading, want, mk.Turn.V, dt);
         bool keysChanged = f != _lastF || s != _lastS;
         _lastF = f; _lastS = s;
         int tenths = Tenths(_heading);
@@ -202,7 +217,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
 
         // move.hz throttles camera-driven drift only; a key change is sent this frame.
         if (tenths != _sentTenths && *(int*)(app + ChangedOff) == 0
-            && (keysChanged || now - _lastSendTick >= (long)(1000f / Move.Hz.V))) { *(int*)(app + ChangedOff) = 1; _latches++; }
+            && (keysChanged || now - _lastSendTick >= (long)(1000f / mk.Hz.V))) { *(int*)(app + ChangedOff) = 1; _latches++; }
 
         long sendBefore = *(long*)(app + LastSendOff);
         int w0 = *walk, k0 = keys[0], k1 = keys[1], k2 = keys[2], k3 = keys[3], k4 = keys[4], k5 = keys[5];
@@ -272,7 +287,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         int mode = CameraService.Mode;
         string on = mode < 0 ? "?" : !CameraModes.ByMode[mode].Enabled.V ? "off (master)" : CameraModes.ByMode[mode].Drive.V ? "on" : "off";
         return FormattableString.Invariant(
-            $"camera drive: {on} ({(mode < 0 ? "no mode" : CameraModes.ByMode[mode].G.Name)}) heading {_tenths / 10f:0.0} | {(_why == Why.Active ? "active" : "held down: " + WhyNames[(int)_why])} | {_sends} send(s), {_latches} latch(es), {_aborts} abort(s), move.hz {Move.Hz.V:0.#} move.turn {Move.Turn.V:0}");
+            $"camera drive: {on} ({(mode < 0 ? "no mode" : CameraModes.ByMode[mode].G.Name)}) heading {_tenths / 10f:0.0} | {(_why == Why.Active ? "active" : "held down: " + WhyNames[(int)_why])} | {_sends} send(s), {_latches} latch(es), {_aborts} abort(s){(mode < 0 ? "" : $", hz {CameraModes.ByMode[mode].Hz.V:0.#} turn {CameraModes.ByMode[mode].Turn.V:0}")}");
     }
 
     /// <summary>The heading maths and the forward-slot hand-off off-device: the four cardinal keys against a camera

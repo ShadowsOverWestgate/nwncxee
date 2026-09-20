@@ -34,6 +34,10 @@ public static unsafe class EngineLayout
 
     /// <summary>CNWCObject + 0x0c: object type byte -- 5 creature, 6 item, 9 placeable, 0xa door.</summary>
     public static readonly int ObjType = Same("CNWCObject", "type", 0x0c);
+    /// <summary>CNWCObject -&gt; its object id (uint). Every sender passes <c>obj+8</c> as the OID on both builds
+    /// (<c>PerformDefaultActionOnCreature</c>'s Attack / Dialog / UseObject sends, <c>HandleLMouseDown</c>'s
+
+    public static readonly int ObjId = Same("CNWCObject", "id", 0x08);
 
     /// <summary>CNWCCreature: "the feedback plate is currently shown for me", set at the top of
     /// ShowFeedbackBubbleText (Linux disasm @0x71a81e, Windows @0x80b240).</summary>
@@ -611,6 +615,12 @@ public static unsafe class EngineLayout
     public static readonly int FollowYawImpulse = Same("CAurBehaviorCameraFollow", "yawImpulse", 0x88);
     /// <summary>CAurBehaviorCameraFollow -&gt; pitch, degrees from vertical (1 = top-down, 89 = horizontal).</summary>
     public static readonly int FollowPitch = Same("CAurBehaviorCameraFollow", "pitch", 0x5c);
+    /// <summary>CAurBehaviorCameraFollow -&gt; pitch velocity, deg/s, and pitch impulse, degrees added once: the
+    /// yaw pair's twins; Control integrates <c>+0x60*dt + +0x8c</c> into +0x5c and zeroes both, same offsets on
+    /// both builds (Linux @0x4a2290, Windows @0x140055100; CX-636).</summary>
+    public static readonly int FollowPitchVel = Same("CAurBehaviorCameraFollow", "pitchVel", 0x60);
+    /// <inheritdoc cref="FollowPitchVel"/>
+    public static readonly int FollowPitchImpulse = Same("CAurBehaviorCameraFollow", "pitchImpulse", 0x8c);
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw / pitch / dist clamp-enabled flags (floats, 0 or 1). Set by
     /// the server's LockCamera* and the lockcamera console var; the same words the photo mode locks with.</summary>
     public static readonly int FollowYawClamp = Same("CAurBehaviorCameraFollow", "yawClamp", 0x64);
@@ -1564,6 +1574,35 @@ public static unsafe class EngineLayout
     public static readonly int ActionTargetAllowed = Diverges("CActionTarget", "allowed", linux: 0x148, win: 0x108);
     /// <inheritdoc cref="ActionTargetAllowed"/>
     public static readonly int ActionTargetAllowedCount = Diverges("CActionTarget", "allowedCount", linux: 0x150, win: 0x110);
+    /// <summary>CClientExoAppInternal -&gt; the live <c>CActionTarget*</c>: <c>RegisterActionTargetGUI</c> (Linux
+    /// @0x645530, Windows rva 0x6de8e0) is a one-line store to +0x108 on both, called with <c>this</c> from
+    /// <c>ActivateTargetMode</c> and with null from <c>Cleanup</c> (both the fire and the cancel path), so it is
+    /// the "is this mode still up" read a deferred cast checks before touching the pointer again (CX-636).</summary>
+    public static readonly int InternalActionTarget = Same("CClientExoAppInternal", "actionTarget", 0x108);
+    /// <summary>CNWCCreature -&gt; the server-sent attitude byte: 1 friend, 0 neutral, anything else (2) hostile.
+    /// <c>HiliteAreaObjects</c> picks the enemy/friend/neutral colour on it and <c>PerformDefaultActionOnCreature</c>
+    /// talks below 2 and attacks at 2. Linux +0x3a8, Windows +0x388 (the Windows HiliteAreaObjects, rva 0x7db2f0,
+    /// same three-way branch).</summary>
+    public static readonly int CreatureAttitude = Diverges("CNWCCreature", "attitude", linux: 0x3a8, win: 0x388);
+    /// <summary>CNWCObject -&gt; the script highlight colour override (Vector; x &lt; 0 = none), the first thing every
+    /// <c>HiliteAreaObjects</c> branch tests before falling back to the type's global. Same offset on both.</summary>
+    public static readonly int ObjHiliteColour = Same("CNWCObject", "hiliteColour", 0x10c);
+    /// <summary>Virtual slots of <c>CNWCObject::Hilite(Vector, uchar channel, float, int glow)</c> and
+    /// <c>UnHilite(uchar channel)</c>, called through the vtable because CNWCCreature overrides both.
+    /// <c>HiliteAreaObjects</c> calls Linux <c>vtbl+0x160</c>/<c>+0x168</c>, Windows <c>+0x158</c>/<c>+0x160</c>
+    /// (rva 0x7db2f0), with <c>(colour, 2, 0.0f, 1)</c> and <c>(2)</c>. The Vector crosses by value: the
+    /// <c>ColourArg</c> shape of #420 (SysV xmm0/xmm1, Win64 a pointer to a copy).</summary>
+    public static readonly int ObjHiliteSlot = Diverges("CNWCObject", "vtbl.Hilite", linux: 0x160, win: 0x158, Expect.VtblSlot);
+    /// <inheritdoc cref="ObjHiliteSlot"/>
+    public static readonly int ObjUnHiliteSlot = Diverges("CNWCObject", "vtbl.UnHilite", linux: 0x168, win: 0x160, Expect.VtblSlot);
+    /// <summary>Virtual slots of <c>CNWCObject::MouseOver(int)</c> and <c>MouseOff()</c>: the creature and door arms
+    /// of <c>HiliteAreaObjects</c> call Linux <c>vtbl+0x110</c> / <c>+0x118</c>, Windows <c>+0x108</c> / <c>+0x110</c>
+    /// (rva 0x7db2f0), with <c>(this, 1)</c> on the way in and <c>(this)</c> on the way out. MouseOver(1) is what
+    /// raises the feedback plate (<c>ShowFeedbackBubbleText</c>, the flag <see cref="CreaturePlated"/>), MouseOff
+    /// what drops it -- the tab-target lock's plate (CX-636).</summary>
+    public static readonly int ObjMouseOverSlot = Diverges("CNWCObject", "vtbl.MouseOver", linux: 0x110, win: 0x108, Expect.VtblSlot);
+    /// <inheritdoc cref="ObjMouseOverSlot"/>
+    public static readonly int ObjMouseOffSlot = Diverges("CNWCObject", "vtbl.MouseOff", linux: 0x118, win: 0x110, Expect.VtblSlot);
     /// <summary>Virtual slot of <c>CGameObject::AsNWCObject()</c> -- what the area walk calls on every id it
     /// resolves. Linux <c>vtbl+0x20</c>, Windows <c>vtbl+0x18</c>: the usual Itanium two-dtor-slot shift.</summary>
     public static readonly int GameObjAsNWCObjectSlot = Diverges("CGameObject", "vtbl.AsNWCObject", linux: 0x20, win: 0x18, Expect.VtblSlot);
@@ -1610,9 +1649,12 @@ public static unsafe class EngineLayout
     /// both builds (Linux @0x7e3f70, Windows rva 0x7630d0, the chase driver's own callee). Locomotion = 2, 3, 4,
     /// 0x4e, 0x4f, 0x54..0x57 (the chase drivers' test).</summary>
     public static readonly int ObjAnimation = Same("CNWCObject", "animation", 0x5c);
-    /// <summary>CNWCCreature -&gt; control flag byte; UpdateDriveMode and DrivePlayer both refuse unless bit 2 is set
-    /// (player-controlled). Linux +0x39c, Windows +0x37c.</summary>
-    public static readonly int CreatureDriveFlags = Diverges("CNWCCreature", "driveFlags", linux: 0x39c, win: 0x37c);
+    /// <summary>CNWCCreature -&gt; the server's <c>m_nAIState</c> WORD (docs/research/action-camera-feedback.md §2.1):
+    /// UpdateDriveMode and DrivePlayer both refuse unless bit 2 is set. <b>0 = inert</b>: the creature update
+    /// handler puts a creature whose word is 0 (and has no loot) on the hit-check ignore list and the click
+    /// default treats <c>== 0</c> as a corpse to loot, so the tab-target lock reads 0 as "dead" (CX-636).
+    /// Linux +0x39c, Windows +0x37c.</summary>
+    public static readonly int CreatureAiFlags = Diverges("CNWCCreature", "aiFlags", linux: 0x39c, win: 0x37c);
     /// <summary>CNWCCreature -&gt; int that must be non-zero for drive input to act at all (UpdateDriveMode's second
     /// gate). Linux +0x43c, Windows +0x41c.</summary>
     public static readonly int CreatureDriveEnabled = Diverges("CNWCCreature", "driveEnabled", linux: 0x43c, win: 0x41c);

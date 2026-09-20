@@ -6,7 +6,7 @@ using CX.Framework;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Action-camera head tracking: while <c>mouselook.action</c> is held, the local player's creature turns its
+/// Action-camera head tracking: while the mode's <c>action</c> is held, the local player's creature turns its
 /// HEAD toward the camera axis -- which under the action camera is the crosshair -- with the body left to the
 /// engine. Nothing is invented: NWN already ships clamped yaw/pitch head tracking (the <c>LookAtAnimation</c>
 /// every creature runs when the server sends it a look-at target), so this retargets that machinery instead of
@@ -17,7 +17,7 @@ namespace CX.Services.Camera;
 /// teardown). The target only feeds the distance check and the SafePointer, so aiming at ourselves is free.
 /// Then <c>LookAtAnimation::Control</c> is chained: the original does the keyframe bookkeeping, and the four
 /// floats it wrote at <c>+0x58</c> are overwritten with the camera aim, clamped to
-/// <c>mouselook.headyaw</c>/<c>headpitch</c>. Everything downstream -- the blend, <c>AnimateHierarchy</c>, the
+/// the mode's <c>headyaw</c>/<c>headpitch</c>. Everything downstream -- the blend, <c>AnimateHierarchy</c>, the
 /// skinned bone matrices Alloy reads, the shadow casters -- is the engine's own path, untouched.</para>
 /// <para><b>Aim.</b> The rendered camera pose (<see cref="CameraService.Rendered"/>), not a pick ray: under the
 /// action camera the crosshair IS the camera axis, and a ray would snap the head every time it crossed a near
@@ -207,7 +207,7 @@ public sealed unsafe class HeadTrackService : IExtenderService
         return new Quaternion(c.X / s, c.Y / s, c.Z / s, s * 0.5f);
     }
 
-    /// <summary>The <c>/mouselook</c> tail: whether the head is being driven and whether the aim is landing.
+    /// <summary>The mode status tail: whether the head is being driven and whether the aim is landing.
     /// Drives without writes means <c>FindPart</c> never found the head node.</summary>
     internal static string Fragment =>
         !_armed ? "head tracking unhooked"

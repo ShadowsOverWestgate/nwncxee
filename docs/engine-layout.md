@@ -371,7 +371,7 @@ carry the class's known `-0x20` Windows shift (the same delta as `plated`).
 |---|---|---|
 | `CClientExoAppInternal` | `driveChanged 0x1b0` (probed 0/1), `driveWalk 0x1b4` (probed; the walk-forward key, #637), `driveKeys 0x1b8` (probed; six ints: forward, back, turn L/R, strafe L/R), `driveLastSend 0x1a0` | the function's own reads on both builds: the latch tested first, the seven key ints in the keep-alive OR, `+0x1a0` stamped on every send and compared against 499999 |
 | `CNWCObject` | `orientation 0x44` | both builds `atan2(+0x48, +0x44)` for the wire angle and copy `+0x44..+0x4c` into the TurnOnSpot rotation |
-| `CNWCCreature` | `driveFlags 0x39c / 0x37c` (bit 2), `driveEnabled 0x43c / 0x41c` | the two early-outs at the top of the function on each build (`& 2 == 0` then `== 0`), in the same order |
+| `CNWCCreature` | `aiFlags 0x39c / 0x37c` (bit 2), `driveEnabled 0x43c / 0x41c` | the two early-outs at the top of the function on each build (`& 2 == 0` then `== 0`), in the same order |
 | `CNWCCreature` | `facingTarget 0x2c8 / 0x2a8`, `facingTargetB 0x2d4 / 0x2b4` | the pair both builds write with the quantized direction right after the DriveControl send and in the TurnOnSpot arm; `DrivePlayer` writes the first alone for its ±30° turn |
 | `CNWCModule` | `chaseSuppressed 0x13c` (probed 0/1), `chaseWasIdle 0x27c` (probed) | `UpdateCameraModeChaseCam` / `EQ` (Linux @`0x7dddd0` / `0x7de660`, Windows rva `0x7d0d00` / `0x7d1c90`, found by `ScanOffsets 134 138 13c 27c 144 100`): `+0x13c` set with `+0x138 = 0` when `+0x134` (camera moved) holds, cleared with `+0x27c` on the idle-to-locomotion edge, both builds the same four fields |
 
@@ -381,7 +381,7 @@ No new function: the same two chase drivers and the one solve. Read on both buil
 
 | Class | Rows | Anchor |
 |---|---|---|
-| `CAurBehaviorCameraFollow` | `yawVel 0x58`, `yawImpulse 0x88` | `TurnCamera(deg, 0/1)` (Linux @`0x7d8960`, Windows rva `0x7cfe60`) adds into `+0x58` / `+0x88`; the chase drivers write `+0x58`; `Control` integrates and zeroes both at the same offsets on both builds |
+| `CAurBehaviorCameraFollow` | `yawVel 0x58`, `yawImpulse 0x88`, `pitchVel 0x60`, `pitchImpulse 0x8c` | `TurnCamera(deg, 0/1)` (Linux @`0x7d8960`, Windows rva `0x7cfe60`) adds into `+0x58` / `+0x88`; the chase drivers write `+0x58`; `Control` integrates and zeroes all four at the same offsets on both builds (the pitch pair: `+0x60*dt + +0x8c` into `+0x5c`) |
 | `CNWCObject` | `animation 0x5c` (short) | `GetCurrentAnimation` is `*(short*)(this+0x5c)` on both (Linux @`0x7e3f70`, Windows rva `0x7630d0` -- the chase driver's own callee, nine times per call for the locomotion test) |
 
 ### The free-camera rows (#543)
@@ -487,6 +487,10 @@ them** -- each decompiled on both programs rather than shifted by a class delta
 | `CGameObject` | `vtbl.AsNWCPlaceable 0xa8 / 0xa0` (probed) | the placeable arm reads `highlightable` through it: Linux `0x711b17` calls `vtbl+0xa8` and tests `+0x11c` on the ANSWER, Windows `vtbl+0xa0`. The base returns null, `CNWCPlaceable`'s override is an identity `return this` (`0x7ecc20`), so it is a type test that hands the same address back -- mirrored so a non-placeable carrying type byte 9 cannot slip through |
 | `CNWCCreature` | `hoveredOid 0x448 / 0x428` | `UpdateMouseCursorAppearance` is the only writer: it stores the newly picked id on the PLAYER creature and puts `0x7f000000` back when the hover drops. The same -0x20 `CNWCCreature` delta the nameplate rows carry |
 | `CClientExoAppInternal` | `cursorManager 0xc8` | every `SetMouseCursor` call site in that function passes `*(internal + 0xc8)`, on both |
+| `CClientExoAppInternal` | `actionTarget 0x108` | CX-636: `RegisterActionTargetGUI` is a one-line store on both (Linux `0x645530`, rva `0x6de8e0`, reached from `ActivateTargetMode` `0x83b9e0` -> `CClientExoApp::RegisterActionTargetGUI` `0x6ac650`); `Cleanup` stores null through the same call |
+| `CNWCCreature` | `attitude 0x3a8 / 0x388` | CX-636: the three-way enemy/friend/neutral colour branch of `HiliteAreaObjects` on both (Linux `0x7119f0` reads `+0x3a8`, Windows rva `0x7db2f0` reads `+0x388`); also the `< 2` talk-or-attack test of `PerformDefaultActionOnCreature` |
+| `CNWCObject` | `hiliteColour 0x10c`, `id 0x08` | CX-636: every `HiliteAreaObjects` branch tests `*(float*)(obj+0x10c) < 0` before the type global, on both; `obj+8` is the OID every sender passes |
+| `CNWCObject` | `vtbl.Hilite 0x160 / 0x158`, `vtbl.UnHilite 0x168 / 0x160` | CX-636: `HiliteAreaObjects` calls them on every arm (Linux `call *0x160(%rax)` with `(xmm0/xmm1 colour, esi 2, xmm2 0.0, edx 1)`, `*0x168` with `(this, 2)`; Windows `+0x158` with `(this, &colour, 2, xmm3, 1)`, `+0x160` with `(this, 2)`). The Vector is an ARGUMENT by value (SysV two SSE eightbytes, Win64 a pointer to a copy), not a return: no sret order |
 | `CCachedMouseCursorManager` | `currentCursor 0x1cb0` | `SetMouseCursor`'s own early-out and store, under the `id < 0x126` ceiling; `Same` |
 | `CActionTarget` | `allowed 0x148 / 0x108`, `allowedCount 0x150 / 0x110` | `HandleLMouseDown` scans pairs of `{objectType, cursorId}` (stride 8) there on both; MSVC packs the `CGuiCallback` members in 16 bytes where Itanium needs 24, so everything past `+0x80` shifts |
 

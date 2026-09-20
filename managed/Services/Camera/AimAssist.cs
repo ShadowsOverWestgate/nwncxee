@@ -10,15 +10,15 @@ namespace CX.Services.Camera;
 /// <summary>
 /// The action camera's two targeting aids, and the crosshair's one engine read. Not a service: it is the
 /// action camera's, so <see cref="MouseLookService"/> owns its lifetime (<see cref="Init"/>) and its knobs are
-/// the <c>mouselook</c> group's.
-/// <para><b>Aim assist</b> (<c>mouselook.assist</c>): once per frame, with the action camera held, the area's
+/// the camera mode's Mouse-look rows.
+/// <para><b>Aim assist</b> (the mode's <c>assist</c>): once per frame, with the action camera held, the area's
 /// own object list (<c>CNWCArea+0x318</c>, the list <c>HiliteAreaObjects</c> walks) is projected against the
-/// live camera and the creature / placeable / door nearest the screen centre within <c>mouselook.assistpx</c>
+/// live camera and the creature / placeable / door nearest the screen centre within the mode's <c>assistpx</c>
 /// wins. Its screen point is then what <see cref="MouseLookService"/> forwards mouse events at instead of the
 /// exact centre, so the ENGINE's own pick, hover, cursor, click and targeting all run there -- we bias the
 /// question, never answer it, and a candidate behind a wall simply picks nothing, exactly as the crosshair
 /// would have. The camera is not moved.</para>
-/// <para><b>Auto-target</b> (<c>mouselook.autotarget</c>): <c>CActionTarget::ActivateTargetMode</c> is the one
+/// <para><b>Auto-target</b> (the mode's <c>autotarget</c>): <c>CActionTarget::ActivateTargetMode</c> is the one
 /// funnel every "now pick a target" mode reaches; post-hooked, it calls <c>HandleLMouseDown</c> straight back
 /// so the feat/spell/item resolves on what the crosshair points at with no second click. A mode whose
 /// allowed-target list holds only the synthetic ground type (an AoE placement) is left up to be aimed.</para>
@@ -48,12 +48,6 @@ internal static unsafe class AimAssist
     private static readonly int ObjVisibleOff = EngineLayout.ObjVisible;
     private static readonly int ObjHiliteOff = EngineLayout.ObjHighlightable;
     private static readonly int AsPlaceableSlot = EngineLayout.GameObjAsNWCPlaceableSlot;
-    private static readonly int CamPosOff = EngineLayout.CamPos;
-    private static readonly int CamRotOff = EngineLayout.CamRot;
-    private static readonly int CamFovOff = EngineLayout.CamViewAngle;
-    private static readonly int CamNearOff = EngineLayout.CamNear;
-    private static readonly int CamViewWOff = EngineLayout.CamViewW;
-    private static readonly int CamViewHOff = EngineLayout.CamViewH;
     private static readonly int InternalOff = EngineLayout.ExoAppInternal;
     private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
     private static readonly int HoveredOff = EngineLayout.CreatureHoveredOid;
@@ -77,10 +71,6 @@ internal static unsafe class AimAssist
     /// nothing tests line of sight, so a target behind a wall still scores (it simply picks nothing when the
     /// engine's own pick runs there); the upgrade path is a SceneRay eye-to-candidate check on the best few.</summary>
     private const float AssistDepthPxPerM = 3f;
-    /// <summary>A view angle at or below this is taken as a radian half-angle rather than degrees -- the same
-    /// hedge <c>ShadowMath.ViewBasis</c> carries, so a stray build cannot project 57x too wide.</summary>
-    private const float FovRadianCeiling = 3.2f;
-
     /// <summary>No candidate. Not a valid packed point (x = -1).</summary>
     private const long NoPoint = -1L;
     /// <summary>This frame's assist point, packed <c>(x &lt;&lt; 32) | (uint)y</c> so the event path reads both
@@ -152,14 +142,10 @@ internal static unsafe class AimAssist
     private static void Clear() { Volatile.Write(ref _target, 0); Volatile.Write(ref _point, NoPoint); }
 
     /// <summary>One frame of aim assist: project every plausible object in the area against the live camera and
-    /// keep the best-scoring one inside <c>mouselook.assistpx</c> -- screen distance from the centre plus range
+    /// keep the best-scoring one inside the mode's <c>assistpx</c> -- screen distance from the centre plus range
     /// at <see cref="AssistDepthPxPerM"/>, so the near candidate wins a tie. A hot tick (it runs every frame the
     /// action camera is held) that allocates nothing: one best candidate in locals, two volatile writes out.
-    /// <para>The basis is read off the Camera: the stored quaternion is (w, x, y, z) and is the view-&gt;world
-    /// rotation, so eye space looks down -Z exactly as Alloy's FrameRead reads it, and the projection is the
-    /// engine's own SetPerspectiveTransform terms -- never <c>Camera::MapToScreen</c>, whose by-value Vector
-    /// return is the sret order that diverges between the two ABIs (#456). Anything nearer than the near plane
-    /// is dropped rather than mirrored onto the screen, and the placeable's hilite flag is read through
+    /// <para>The projection is <see cref="Projector"/>'s; the placeable's hilite flag is read through
     /// <c>AsNWCPlaceable</c> (a null answer = not one) where every other class's sits on the CNWCObject
     /// itself.</para></summary>
     private static void Tick()
@@ -175,25 +161,11 @@ internal static unsafe class AimAssist
         if (cam == IntPtr.Zero || area == IntPtr.Zero || intern == IntPtr.Zero) { Clear(); return; }
 
         MouseLookService.Centre(out int cx, out int cy);
-        float fov = *(float*)(cam + CamFovOff);
-        if (cx <= 0 || cy <= 0 || !(fov > 0f)) { Clear(); return; }
+        if (!Projector.Read(cam, cx, cy, out Projector view)) { Clear(); return; }
 
         int n = *(int*)(area + AreaCountOff);
         uint* ids = *(uint**)(area + AreaIdsOff);
         if (n <= 0 || ids == null) { Clear(); return; }
-
-        float* p = (float*)(cam + CamPosOff);
-        float* q = (float*)(cam + CamRotOff);
-        Vector3 eye = new(p[0], p[1], p[2]);
-        Quaternion rot = new(q[1], q[2], q[3], q[0]);
-        Vector3 fwd = Vector3.Transform(new Vector3(0f, 0f, -1f), rot);
-        Vector3 right = Vector3.Transform(new Vector3(1f, 0f, 0f), rot);
-        Vector3 up = Vector3.Transform(new Vector3(0f, 1f, 0f), rot);
-        float vw = *(float*)(cam + CamViewWOff), vh = *(float*)(cam + CamViewHOff);
-        float aspect = vh > 0f ? vw / vh : (float)cx / cy;
-        float tanHalf = MathF.Tan(fov * (fov > FovRadianCeiling ? MathF.PI / 360f : 0.5f));
-        float near = *(float*)(cam + CamNearOff);
-        if (!(near > 0f)) near = 0.1f;
 
         uint playerId = *(uint*)(intern + PlayerIdOff);
         float radius2 = MouseLook.AssistPx.V * MouseLook.AssistPx.V;
@@ -222,11 +194,7 @@ internal static unsafe class AimAssist
                 : ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)obj + AsPlaceableSlot)))(obj);
             if (hil == IntPtr.Zero || *(int*)(hil + ObjHiliteOff) == 0) continue;
             float* w = (float*)(obj + ObjPosOff);
-            Vector3 d = new Vector3(w[0], w[1], w[2] + lift) - eye;
-            float ez = Vector3.Dot(d, fwd);
-            if (ez <= near) continue;
-            float sx = cx + Vector3.Dot(d, right) / (ez * tanHalf * aspect) * cx;
-            float sy = cy - Vector3.Dot(d, up) / (ez * tanHalf) * cy;
+            if (!view.Screen(new Vector3(w[0], w[1], w[2] + lift), out float sx, out float sy, out float ez)) continue;
             float dx = sx - cx, dy = sy - cy, d2 = dx * dx + dy * dy;
             if (d2 >= radius2) continue;
             float score = MathF.Sqrt(d2) + ez * AssistDepthPxPerM;
@@ -252,16 +220,26 @@ internal static unsafe class AimAssist
     private static void OnActivateTargetMode(IntPtr self)
     {
         _activateOrig(self);
-        if (!_ready || self == IntPtr.Zero || !MouseLook.AutoTarget.V || !MouseLookService.ActionHeld) return;
+        if (!_ready || self == IntPtr.Zero) return;
+        // Tab-target's cast mode supersedes the auto-target toggle while it is on (CX-636 D3).
+        if (TabTargetService.OnActivate(self)) return;
+        if (!MouseLook.AutoTarget.V || !MouseLookService.ActionHeld) return;
         uint hovered = HoveredOid();
         if (!TakesAnObject(self) || hovered == 0 || hovered == TypingSignal.ObjectInvalid) return;
         _fires++;
         _lmouse(self);
     }
 
+    /// <summary>The auto-target hook is installed, so <see cref="Resolve"/> may be called.</summary>
+    internal static bool Ready => _ready;
+
+    /// <summary>Resolve a live mode as a click would (<c>HandleLMouseDown</c>). Nothing may touch
+    /// <paramref name="self"/> after this returns: the fire callback may delete it.</summary>
+    internal static void Resolve(IntPtr self) { _fires++; _lmouse(self); }
+
     /// <summary>Whether this mode accepts an OBJECT and not only a ground point: a spell whose only allowed
     /// target is the synthetic type 2 is an AoE that wants aiming, so it is left up.</summary>
-    private static bool TakesAnObject(IntPtr self)
+    internal static bool TakesAnObject(IntPtr self)
     {
         int n = *(int*)(self + AllowedCountOff);
         int* a = *(int**)(self + AllowedOff);
@@ -280,7 +258,57 @@ internal static unsafe class AimAssist
         return cre == IntPtr.Zero ? TypingSignal.ObjectInvalid : *(uint*)(cre + HoveredOff);
     }
 
-    /// <summary>The <c>/mouselook</c> fragment.</summary>
+    /// <summary>The mode status fragment.</summary>
     internal static string Report() => !_ready ? "assist off (stood down)"
         : FormattableString.Invariant($"assist {(MouseLook.Assist.V ? $"{MouseLook.AssistPx.V}px" : "off")}, {_hits} hit(s) over {_scanned} object(s); auto-target {(MouseLook.AutoTarget.V ? "on" : "off")}, {_fires} fire(s)");
+}
+
+/// <summary>The live camera's screen projection, read once per walk off the Camera object: the stored
+/// quaternion is (w, x, y, z) and is the view-&gt;world rotation, so eye space looks down -Z exactly as Alloy's
+/// FrameRead reads it, and the projection is the engine's own SetPerspectiveTransform terms -- never
+/// <c>Camera::MapToScreen</c>, whose by-value Vector return is the sret order that diverges between the two ABIs
+/// (#456). Shared by the aim assist and the tab-target cycle (CX-636).</summary>
+internal unsafe struct Projector
+{
+    private Vector3 _eye, _fwd, _right, _up;
+    private float _cx, _cy, _tanHalf, _aspect, _near;
+
+    /// <summary>A view angle at or below this is taken as a radian half-angle rather than degrees -- the same
+    /// hedge <c>ShadowMath.ViewBasis</c> carries, so a stray build cannot project 57x too wide.</summary>
+    private const float FovRadianCeiling = 3.2f;
+
+    /// <summary>False when the camera or the centre is not usable this frame.</summary>
+    internal static bool Read(IntPtr cam, int cx, int cy, out Projector p)
+    {
+        p = default;
+        if (cam == IntPtr.Zero || cx <= 0 || cy <= 0) return false;
+        float fov = *(float*)(cam + EngineLayout.CamViewAngle);
+        if (!(fov > 0f)) return false;
+        float* pos = (float*)(cam + EngineLayout.CamPos);
+        float* q = (float*)(cam + EngineLayout.CamRot);
+        Quaternion rot = new(q[1], q[2], q[3], q[0]);
+        p._eye = new Vector3(pos[0], pos[1], pos[2]);
+        p._fwd = Vector3.Transform(new Vector3(0f, 0f, -1f), rot);
+        p._right = Vector3.Transform(new Vector3(1f, 0f, 0f), rot);
+        p._up = Vector3.Transform(new Vector3(0f, 1f, 0f), rot);
+        float vw = *(float*)(cam + EngineLayout.CamViewW), vh = *(float*)(cam + EngineLayout.CamViewH);
+        p._aspect = vh > 0f ? vw / vh : (float)cx / cy;
+        p._tanHalf = MathF.Tan(fov * (fov > FovRadianCeiling ? MathF.PI / 360f : 0.5f));
+        p._near = *(float*)(cam + EngineLayout.CamNear);
+        if (!(p._near > 0f)) p._near = 0.1f;
+        p._cx = cx; p._cy = cy;
+        return true;
+    }
+
+    /// <summary>World point -&gt; SDL window pixels; false (and nothing mirrored onto the screen) for anything at
+    /// or nearer than the near plane. <paramref name="ez"/> is the eye-space depth in metres.</summary>
+    internal bool Screen(Vector3 world, out float sx, out float sy, out float ez)
+    {
+        Vector3 d = world - _eye;
+        ez = Vector3.Dot(d, _fwd);
+        if (ez <= _near) { sx = sy = 0f; return false; }
+        sx = _cx + Vector3.Dot(d, _right) / (ez * _tanHalf * _aspect) * _cx;
+        sy = _cy - Vector3.Dot(d, _up) / (ez * _tanHalf) * _cy;
+        return true;
+    }
 }

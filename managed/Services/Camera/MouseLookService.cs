@@ -10,19 +10,19 @@ namespace CX.Services.Camera;
 /// Mouse-look on right-drag (#539, map #535). The engine's only mouse orbit is middle-drag
 /// (<c>PerformX/YMouseMoveAction</c> with the middle-held flag calling <c>CNWCModule::Turn/TiltCamera(deg, 1)</c>);
 /// this makes right-drag the same orbit with the cursor captured. The right press is HELD (not forwarded) until
-/// the drag decides: past <c>mouselook.threshold</c> pixels it becomes a look (SDL relative mode, every motion
+/// the drag decides: past the mode's <c>threshold</c> pixels it becomes a look (SDL relative mode, every motion
 /// event swallowed and fed to the engine's impulse path, so locks, limits and dialog bookkeeping stay
 /// engine-owned); released under the threshold it is replayed as press+release, so the radial menu opens
 /// exactly as before, just on release. A press over the engine GUI (NUI, radial, any panel) or over one of our
-/// windows passes through untouched -- the engine's radial path is never hooked. Opt-in: <c>mouselook.right</c>.
-/// The knobs are the <see cref="MouseLook"/> group, read live. The master (<c>mouselook.enabled</c>, #584) is the
+/// windows passes through untouched -- the engine's radial path is never hooked. Opt-in: the mode's <c>right</c>.
+/// The knobs are the live camera mode's Mouse-look rows, read through the <see cref="MouseLook"/> facade. The toggle (<c>&lt;mode&gt;.mouselook</c>, #584) is the
 /// whole service: off, every event is forwarded untouched -- the stock middle-drag orbit, no capture -- and a drag
 /// under way is released on the off edge (<see cref="MasterChanged"/>). Live both ways.
 /// <para>Middle-drag, the engine's own orbit, gets the same capture unconditionally: the engine turns on ABSOLUTE
 /// cursor deltas, so a vanilla drag stalls at the window edge. The press and release are forwarded (the engine
 /// keeps its middle-held bookkeeping), every motion in between is swallowed and fed as relative deltas, and the
 /// release is forwarded at the press position (a button event is also a mouse-move to the engine).</para>
-/// <para>Action camera (<c>mouselook.action</c>): relative mode is held for as long
+/// <para>Action camera (the mode's <c>action</c>): relative mode is held for as long
 /// as the world camera is live and nothing else wants the cursor, every motion's delta turns the camera and the
 /// event is forwarded rewritten to the screen centre with no delta, so the engine's own hover pick and click land
 /// on the crosshair (<see cref="Crosshair"/>, drawn by a registered window since the engine's hardware cursor is
@@ -78,20 +78,21 @@ public sealed unsafe class MouseLookService : IExtenderService
     /// <summary>SDL_KeyboardEvent: <c>repeat</c> byte and <c>keysym.sym</c>; the Alt keycodes.</summary>
     private const int EvRepeatOff = 0xd, EvSymOff = 0x14;
     private const uint SdlkLAlt = 0x400000E2, SdlkRAlt = 0x400000E6;
-    /// <summary>Alt as a toggle (<c>mouselook.alttoggle</c>): the cursor is freed until the next Alt press.</summary>
+    /// <summary>Alt as a toggle (the mode's <c>alttoggle</c>): the cursor is freed until the next Alt press.</summary>
     private static bool _altFree;
     private static delegate* unmanaged<byte*, int> _keyFromName;
     private static delegate* unmanaged<IntPtr, float, float, float, int, uint, int, int> _walkOrig;
     private static delegate* unmanaged<IntPtr, IntPtr*, IntPtr, int*, int, int> _pickHostileOrig, _pickNonHostileOrig;
     private static int _walksRefused, _selfHidden;
-    /// <summary>The toggle bind: an SDL keycode, or a mouse button carried negative (-4 = X1, -5 = X2); 0 = none.</summary>
-    private static int _toggleCode;
+    /// <summary>The toggle bind per camera mode: an SDL keycode, or a mouse button carried negative (-4 = X1,
+    /// -5 = X2); 0 = none. Indexed by the engine mode byte, like <see cref="CameraModes.ByMode"/>.</summary>
+    private static readonly int[] _toggleCodes = new int[3];
+    private static int ToggleCode => CameraService.Mode is >= 0 and < 3 ? _toggleCodes[CameraService.Mode] : 0;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
         CameraKnobs.Declare();
-        MouseLook.G.Status = Report;
         if (!EngineLayout.Require(log, "MouseLook", "CGuiMan")) return;
         if (!SymbolMap.Require(log, "MouseLook", SymbolMap.WinMessageHandler, SymbolMap.TurnCamera, SymbolMap.TiltCamera,
                                SymbolMap.SdlSetRelativeMouseMode, SymbolMap.SdlWarpMouseInWindow,
@@ -124,10 +125,10 @@ public sealed unsafe class MouseLookService : IExtenderService
         _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 100);
         if (_next == null) { log.Info("MouseLook: standing down (WinMessageHandler chain refused)"); return; }
         _held = (byte*)NativeMemory.AllocZeroed(SdlEventSize);
-        log.Info(!MouseLook.Enabled.V ? "MouseLook: chained, mouselook.enabled=0 -- the stock middle-drag runs until it is turned on"
+        log.Info(!MouseLook.Enabled.V ? "MouseLook: chained, this mode's mouselook=0 -- the stock middle-drag runs until it is turned on"
             : MouseLook.Right.V
             ? $"MouseLook: right-drag orbits (sensitivity {MouseLook.Sens.V}, invert {MouseLook.Invert.V}, threshold {MouseLook.Threshold.V}px); radial menu = a still right-click; middle-drag captured"
-            : "MouseLook: middle-drag captured (cursor held in place); right-drag off (opt in with /mouselook right 1)");
+            : "MouseLook: middle-drag captured (cursor held in place); right-drag off (opt in with the mode's Right-drag row)");
     }
 
     [UnmanagedCallersOnly]
@@ -227,9 +228,7 @@ public sealed unsafe class MouseLookService : IExtenderService
         if (on)
         {
             if (_state != State.Idle) Release();
-            IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
-            _cx = gm != IntPtr.Zero ? *(int*)(gm + EngineLayout.GuiManVpW) / 2 : 960;
-            _cy = gm != IntPtr.Zero ? *(int*)(gm + EngineLayout.GuiManVpH) / 2 : 540;
+            ViewportCentre(out _cx, out _cy);
             _setRelative(1); _actions++;
         }
         else
@@ -282,11 +281,15 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     [UnmanagedCallersOnly]
     private static int OnPickHostile(IntPtr app, IntPtr* obj, IntPtr point, int* p3, int p4)
-        => HidePlayer(_pickHostileOrig(app, obj, point, p3, p4), obj);
+        => TabTargetService.OverridePick(obj, point, out int v) ? v : HidePlayer(_pickHostileOrig(app, obj, point, p3, p4), obj);
 
     [UnmanagedCallersOnly]
     private static int OnPickNonHostile(IntPtr app, IntPtr* obj, IntPtr point, int* p3, int p4)
-        => HidePlayer(_pickNonHostileOrig(app, obj, point, p3, p4), obj);
+        => TabTargetService.OverridePick(obj, point, out int v) ? v : HidePlayer(_pickNonHostileOrig(app, obj, point, p3, p4), obj);
+
+    /// <summary>Both world picks are hooked (so <see cref="TabTargetService"/>'s fire-at-the-lock substitution
+    /// has a seam to stand on).</summary>
+    internal static bool PicksHooked => _pickHostileOrig != null && _pickNonHostileOrig != null;
 
     /// <summary>Under the action camera the crosshair sits on the player half the time: a pick that landed on the
     /// player creature becomes "nothing" (the engine's 0 verdict), so no self-hover, self-tooltip or self-select.</summary>
@@ -297,29 +300,37 @@ public sealed unsafe class MouseLookService : IExtenderService
         return 0;
     }
 
-    /// <summary>Re-parse <c>mouselook.actionkey</c>: "MouseN" is a button, anything else goes through SDL's own
+    /// <summary>Re-parse every mode's <c>actionkey</c>: "MouseN" is a button, anything else goes through SDL's own
     /// key-name table (cold: a chord edit, not a hot hook).</summary>
     internal static void ActionKeyChanged()
     {
-        string name = (MouseLook.ActionKey.V ?? "").Trim();
-        _toggleCode = 0;
-        if (name.Length == 0) return;
-        if (name.StartsWith("mouse", StringComparison.OrdinalIgnoreCase) && int.TryParse(name.AsSpan(5), out int btn) && btn is >= 1 and <= 5)
-        { _toggleCode = -btn; return; }
-        if (_keyFromName == null) return;
-        byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(name + "\0");
-        fixed (byte* p = utf8) _toggleCode = _keyFromName(p);
-        if (_toggleCode == 0) _log?.Info($"MouseLook: actionkey '{name}' is not an SDL key name; nothing bound");
+        for (int i = 0; i < _toggleCodes.Length; i++) _toggleCodes[i] = ParseKey(CameraModes.ByMode[i].ActionKey.V);
     }
 
-    /// <summary>The chord that flips <c>mouselook.action</c>: the key or mouse button named by
-    /// <c>mouselook.actionkey</c>, fired when no window consumed it.</summary>
+    private static int ParseKey(string? name)
+    {
+        name = (name ?? "").Trim();
+        if (name.Length == 0) return 0;
+        if (name.StartsWith("mouse", StringComparison.OrdinalIgnoreCase) && int.TryParse(name.AsSpan(5), out int btn) && btn is >= 1 and <= 5)
+            return -btn;
+        if (_keyFromName == null) return 0;
+        // SDL_GetKeyFromName answers a one-character name with that character; a key event's sym is lower-case.
+        if (name.Length == 1) name = name.ToLowerInvariant();
+        byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(name + "\0");
+        int code;
+        fixed (byte* p = utf8) code = _keyFromName(p);
+        if (code == 0) _log?.Info($"MouseLook: actionkey '{name}' is not an SDL key name; nothing bound");
+        return code;
+    }
+
+    /// <summary>The chord that flips the live mode's <c>action</c>: the key or mouse button named by its
+    /// <c>actionkey</c>, fired when no window consumed it.</summary>
     private sealed class ActionToggle : IChordConsumer
     {
         public int Priority => 1;
-        public bool WantsKey(int key) => _toggleCode > 0 && key == _toggleCode;
-        public void Fire(uint key, int sdlMods) { if (_toggleCode > 0 && key == _toggleCode) Flip(); }
-        public void FireMouse(int button, int sdlMods) { if (_toggleCode < 0 && button == -_toggleCode) Flip(); }
+        public bool WantsKey(int key) => ToggleCode > 0 && key == ToggleCode;
+        public void Fire(uint key, int sdlMods) { if (ToggleCode > 0 && key == ToggleCode) Flip(); }
+        public void FireMouse(int button, int sdlMods) { if (ToggleCode < 0 && button == -ToggleCode) Flip(); }
         private static void Flip() => MouseLook.Action.Set(!MouseLook.Action.V);
     }
 
@@ -348,6 +359,14 @@ public sealed unsafe class MouseLookService : IExtenderService
     /// own hit-tests run in. The one source of that space: <see cref="AimAssist"/> projects into it.</summary>
     internal static void Centre(out int x, out int y) { x = _cx; y = _cy; }
 
+    /// <summary>The viewport centre in SDL window pixels, whether or not the action camera is up.</summary>
+    internal static void ViewportCentre(out int x, out int y)
+    {
+        IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
+        x = gm != IntPtr.Zero ? *(int*)(gm + EngineLayout.GuiManVpW) / 2 : 960;
+        y = gm != IntPtr.Zero ? *(int*)(gm + EngineLayout.GuiManVpH) / 2 : 540;
+    }
+
     internal static float ViewportWidth()
     {
         IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
@@ -357,8 +376,8 @@ public sealed unsafe class MouseLookService : IExtenderService
 
     private static int Forward(IntPtr ev) => ((delegate* unmanaged<IntPtr, int>)(*_next))(ev);
 
-    /// <summary>The bare <c>/mouselook</c> line.</summary>
-    private static string Report() =>
+    /// <summary>The mouse-look line of the live mode's status.</summary>
+    internal static string Report() =>
         FormattableString.Invariant($"{(MouseLook.Enabled.V ? "on" : "OFF (the stock middle-drag)")}; right-drag {(MouseLook.Right.V ? "on" : "off")}, middle-drag {(MouseLook.Enabled.V ? "captured" : "stock")}; sensitivity {MouseLook.Sens.V:0.##} invert {(MouseLook.Invert.V ? 1 : 0)} threshold {MouseLook.Threshold.V}px | {_looks} look(s), {_clicks} replayed click(s), state {_state}; action camera {(MouseLook.Action.V ? (_action ? "on" : "paused") : "off")}, {_actions} capture(s), {_walksRefused} walk(s) refused, {_selfHidden} self-pick(s) hidden | {AimAssist.Report()} | {ActionFeedback.Report()} | {HeadTrackService.Fragment}");
 }
 

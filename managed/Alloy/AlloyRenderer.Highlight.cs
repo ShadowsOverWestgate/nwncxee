@@ -57,11 +57,11 @@ public sealed unsafe partial class AlloyRenderer
                                AbGob = EngineLayout.AnimGob;
 
     /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
-    /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. Everything
-    /// unclaimed falls through to <see cref="RspShim"/>'s <c>GlowRemainder</c> and gets the engine glow.
-    /// <c>/alloy hlchan</c>.</summary>
+    /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. 4 is the
+    /// tab-target lock (CX-636), a Tab highlight in all but source, so it is. Everything unclaimed falls through
+    /// to <see cref="RspShim"/>'s <c>GlowRemainder</c> and gets the engine glow. <c>/alloy hlchan</c>.</summary>
     internal static int HlChannels => Renderer.HlChan.V;
-    internal const int DefHlChannels = 0b00111;
+    internal const int DefHlChannels = 0b10111;
 
     /// <summary>Gobs whose winning channel the outline claims, refreshed from the engine's own verdict at
     /// every <c>RefreshHilite</c>. Small and churn-free: an entry per highlighted object, not per part.</summary>

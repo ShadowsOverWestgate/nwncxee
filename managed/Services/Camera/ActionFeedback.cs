@@ -7,9 +7,9 @@ using CX.Ui;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// "Did that land?" at the crosshair (<c>mouselook.feedback</c>). Not a service: it is the action camera's, so
-/// <see cref="MouseLookService"/> owns its lifetime (<see cref="Init"/>) and its knob is the <c>mouselook</c>
-/// group's; <see cref="Crosshair"/> calls <see cref="Draw"/> inside its own reticle draw.
+/// "Did that land?" at the crosshair (the mode's <c>feedback</c>). Not a service: it is the action camera's, so
+/// <see cref="MouseLookService"/> owns its lifetime (<see cref="Init"/>) and its knob is the camera mode's
+/// Mouse-look row; <see cref="Crosshair"/> calls <see cref="Draw"/> inside its own reticle draw.
 /// <para>One cold hook and two field reads. <c>CNWCMessage::SendPlayerToServerMessage</c> is the funnel every
 /// player-&gt;server action request passes through, so chaining it latches <c>{kind, target, when}</c> the instant
 /// the order goes out -- a whole round trip before the server's echo. The engine's own message writer keeps
@@ -209,7 +209,7 @@ internal static unsafe class ActionFeedback
         _ => "-",
     };
 
-    /// <summary>The <c>/mouselook</c> fragment. The queue and combat halves are the last drawn frame's sample --
+    /// <summary>The mode status fragment. The queue and combat halves are the last drawn frame's sample --
     /// the panel walk belongs on the render thread, not on whichever thread typed the command.</summary>
     internal static string Report() => !_ready ? "feedback off (stood down)"
         : FormattableString.Invariant($"feedback {(MouseLook.Feedback.V ? "on" : "off")}, {_sent} order(s), last {Name(_kind)} on 0x{_target:x} {(_at == 0 ? "(none)" : $"{Environment.TickCount64 - _at}ms ago")}; {_queued} pending, {(_attacking ? $"attacking 0x{_aiTarget:x}" : "not attacking")}");

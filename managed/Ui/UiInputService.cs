@@ -155,7 +155,7 @@ public sealed unsafe class UiInputService : IExtenderService
     /// edit box, the engine keyboard mode (debug console / vanilla field), or a native conversation panel. Any
     /// null link reads as "clear". Keys the owner ate never reach here (DispatchKey consumed them); the owner
     /// check matters for mouse chords, which the owner does not consume.</summary>
-    private static bool ChordGateClear()
+    internal static bool ChordGateClear()
         => _focused && !UiHost.AnyKeyboardOwner && !UiHost.AnySuppressChords
            && !NuiEditFocused() && !KeyboardModeActive() && !NativeDialogOpen();
 

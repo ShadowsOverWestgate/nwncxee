@@ -92,6 +92,8 @@ public sealed unsafe class CameraService : IExtenderService
     private static readonly int YawVelOff = EngineLayout.FollowYawVel;
     private static readonly int YawImpulseOff = EngineLayout.FollowYawImpulse;
     private static readonly int PitchOff = EngineLayout.FollowPitch;
+    private static readonly int PitchVelOff = EngineLayout.FollowPitchVel;
+    private static readonly int PitchImpulseOff = EngineLayout.FollowPitchImpulse;
     private static readonly int YawClampOff = EngineLayout.FollowYawClamp;
     private static readonly int PitchClampOff = EngineLayout.FollowPitchClamp;
     private static readonly int DistClampOff = EngineLayout.FollowDistClamp;
@@ -111,6 +113,7 @@ public sealed unsafe class CameraService : IExtenderService
     private static readonly int ModWasIdleOff = EngineLayout.ModuleChaseWasIdle;
     private static readonly int ObjTypeOff = EngineLayout.ObjType;
     private static readonly int OriOff = EngineLayout.ObjOrientation;
+    private static readonly int PosOff = EngineLayout.ObjPosition;
     private static readonly int AnimOff = EngineLayout.ObjAnimation;
     private static readonly int InternalOff = EngineLayout.ExoAppInternal;
     private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
@@ -295,16 +298,36 @@ public sealed unsafe class CameraService : IExtenderService
             if (g == Gate.Off) _hold = Hold.Off;
             return;
         }
-        if (!CameraModes.ByMode[mode].Recenter.V) { _hold = Hold.Off; _pursuing = false; return; }
+        CameraModeKnobs m = CameraModes.ByMode[mode];
+        bool aim = TabTargetService.AimPoint(out float ax, out float ay, out float az);
+        if (!aim) _aimBase = float.NaN;
+        if (!aim && !m.Recenter.V) { _hold = Hold.Off; _pursuing = false; return; }
         IntPtr module = Module();
         *(int*)(module + ModChaseOffOff) = 1;
         *(int*)(module + ModWasIdleOff) = 0;
         float* vel = (float*)(self + YawVelOff);
         // Face mode: the turn keys are a keyboard orbit (yaw + is left, facing north = 0, east = -90).
-        if (CameraDriveService.TurnAxis != 0) *vel += CameraDriveService.TurnAxis * Move.KeyTurn.V;
-        if (*vel != 0f || *(float*)(self + YawImpulseOff) != 0f)
+        if (CameraDriveService.TurnAxis != 0) *vel += CameraDriveService.TurnAxis * m.KeyTurn.V;
+        bool orbiting = *vel != 0f || *(float*)(self + YawImpulseOff) != 0f;
+        if (aim)
         {
-            _grace = Move.Grace.V; _idle = 0f; _pursuing = false; _recenterVel = 0f; _hold = Hold.Orbiting; return;
+            // The tab-target's aim (CX-636): the camera looks from behind the player toward the target, fast and
+            // with no dead zone, grace, movement, idle or orbit gate -- the hand's impulse still adds, the aim's
+            // velocity pulls the view back. The lock key (or a cleared lock) is what ends a lock-on.
+            IntPtr me = PlayerCreature();
+            if (me == IntPtr.Zero) { _hold = Hold.NoCreature; return; }
+            float* pp = (float*)(me + PosOff);
+            float dx = ax - pp[0], dy = ay - pp[1];
+            Pursue(self, FacingYaw(dx, dy), AimRate, 0f, AimGain, out bool settled);
+            if (float.IsNaN(_aimBase)) _aimBase = *(float*)(self + PitchOff);
+            _aimBase += *(float*)(self + PitchImpulseOff);
+            bool tilted = PursuePitch(self, AimPitch(self, MathF.Sqrt(dx * dx + dy * dy), az - pp[2], TabTarget.Tilt.V, ref _aimBase));
+            if (settled && tilted) TabTargetService.AimSettled();
+            return;
+        }
+        if (orbiting)
+        {
+            _grace = m.Grace.V; _idle = 0f; _pursuing = false; _recenterVel = 0f; _hold = Hold.Orbiting; return;
         }
         if (_grace > 0f) { _grace -= dt; _idle = 0f; _hold = Hold.Grace; return; }
         IntPtr cre = PlayerCreature();
@@ -314,25 +337,85 @@ public sealed unsafe class CameraService : IExtenderService
         {
             _idle = 0f;
             if (CameraDriveService.NoForward) { _pursuing = false; _hold = Hold.Lateral; return; }
-            rate = Move.Rate.V;
+            rate = m.Rate.V;
         }
         else
         {
             _idle += dt;
-            float idle = Move.Idle.V;
+            float idle = m.Idle.V;
             if (idle <= 0f || _idle < idle) { _pursuing = false; _hold = Hold.Idle; return; }
-            rate = Move.IdleRate.V;
+            rate = m.IdleRate.V;
         }
         float* ori = (float*)(cre + OriOff);
-        float delta = Wrap(FacingYaw(ori[0], ori[1]) - *(float*)(self + YawOff));
+        Pursue(self, FacingYaw(ori[0], ori[1]), rate, rate == m.Rate.V ? m.DeadZone.V : 0f, EaseGain, out _);
+    }
+
+    /// <summary>The tab-target aim's swing: twice the default recenter ceiling and a stiffer ease, so a 90°
+    /// turn lands in well under half a second -- a look, not a drift.</summary>
+    private const float AimRate = 720f, AimGain = 8f;
+
+    /// <summary>The aim's pitch: the player's own tilt (<paramref name="basePitch"/>, the pitch the aim found plus
+    /// every hand tilt since) unless it puts the target more than <paramref name="band"/> degrees off the middle of
+    /// the view -- then the nearest pitch that holds it on the band's edge: flatter for a far or raised target,
+    /// steeper for one below. The camera sits <c>dist</c> behind the focus at <c>(dist sin p, dist cos p)</c> (pitch
+    /// from vertical) looking at the focus, so a target <paramref name="r"/> out and <paramref name="h"/> up sits
+    /// <c>atan2(h - dist cos p, r + dist sin p) - (p - 90)</c> above the centre: falling in p, solved by bisection
+    /// inside the behavior's own clamp range (the engine clamps the same way after Control).</summary>
+    private static float AimPitch(IntPtr self, float r, float h, float band, ref float basePitch)
+    {
+        float d = *(float*)(self + DistOff);
+        float lo = PitchFloor, hi = PitchCeil;
+        if (*(float*)(self + PitchClampOff) != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
+        basePitch = Math.Clamp(basePitch, lo, hi);
+        float e = Elevation(basePitch);
+        if (MathF.Abs(e) <= band) return basePitch;
+        float want = e > 0f ? band : -band;
+        if (e > 0f) lo = basePitch; else hi = basePitch;
+        if (Elevation(lo) <= want) return lo;
+        if (Elevation(hi) >= want) return hi;
+        for (int i = 0; i < 20; i++)
+        {
+            float mid = 0.5f * (lo + hi);
+            if (Elevation(mid) > want) lo = mid; else hi = mid;
+        }
+        return 0.5f * (lo + hi);
+
+        float Elevation(float p)
+        {
+            (float sn, float cs) = MathF.SinCos(p * Deg);
+            return MathF.Atan2(h - d * cs, r + d * sn) / Deg - (p - 90f);
+        }
+    }
+
+    /// <summary>The tilt the aim holds the camera around: the behavior's pitch when the aim began, moved by every
+    /// hand tilt (the pitch impulse) since; NaN while no aim runs.</summary>
+    private static float _aimBase = float.NaN;
+
+    /// <summary>The aim's pitch leg: the same ease as the yaw's into the pitch velocity slot; true once within
+    /// <see cref="Settled"/>. No tie-break: pitch never wraps.</summary>
+    private static bool PursuePitch(IntPtr self, float targetPitch)
+    {
+        float delta = targetPitch - *(float*)(self + PitchOff);
+        if (MathF.Abs(delta) <= Settled) return true;
+        *(float*)(self + PitchVelOff) = Math.Clamp(delta * AimGain, -AimRate, AimRate);
+        return false;
+    }
+
+    /// <summary>Ease the behavior's yaw toward <paramref name="targetYaw"/>: <paramref name="gain"/> x the error as
+    /// the velocity into the yaw slot, clamped to <paramref name="rate"/>, held inside <paramref name="deadZone"/>
+    /// until a pursuit is under way.</summary>
+    private static void Pursue(IntPtr self, float targetYaw, float rate, float deadZone, float gain, out bool settled)
+    {
+        settled = false;
+        float delta = Wrap(targetYaw - *(float*)(self + YawOff));
         float abs = MathF.Abs(delta);
         // Near 180 the short way flips sign frame to frame; once swinging, keep the side already taken.
         if (abs > TieZone && _recenterVel != 0f) delta = MathF.CopySign(abs, _recenterVel);
-        if (abs <= Settled) { _pursuing = false; _recenterVel = 0f; _hold = Hold.Centered; return; }
-        if (!_pursuing && abs < Move.DeadZone.V && rate == Move.Rate.V) { _hold = Hold.DeadZone; return; }
+        if (abs <= Settled) { _pursuing = false; _recenterVel = 0f; _hold = Hold.Centered; settled = true; return; }
+        if (!_pursuing && abs < deadZone) { _hold = Hold.DeadZone; return; }
         _pursuing = true;
-        _recenterVel = Math.Clamp(delta * EaseGain, -rate, rate);
-        *vel = _recenterVel;
+        _recenterVel = Math.Clamp(delta * gain, -rate, rate);
+        *(float*)(self + YawVelOff) = _recenterVel;
         _hold = Hold.Recentering;
     }
 
@@ -518,7 +601,7 @@ public sealed unsafe class CameraService : IExtenderService
           + Inv($" offset {m.OffsetX.V:0.##} {m.OffsetY.V:0.##}")
           + (_offsetOn ? Inv($" arm {_arm:0.00} (margin {Walls.Margin.V:0.##} in {Walls.ArmIn.V:0.#} out {Walls.ArmOut.V:0.#} radius {Walls.ArmRadius.V:0.##})") : "");
         string recenter = m == null ? "" : !m.Recenter.V ? "; recenter off" :
-            Inv($"; recenter {HoldNames[(int)_hold]}{(_hold == Hold.Recentering ? Inv($" {_recenterVel:+0;-0} deg/s") : "")} (rate {Move.Rate.V:0} deadzone {Move.DeadZone.V:0} grace {Move.Grace.V:0.#} idle {Move.Idle.V:0.#}@{Move.IdleRate.V:0})");
+            Inv($"; recenter {HoldNames[(int)_hold]}{(_hold == Hold.Recentering ? Inv($" {_recenterVel:+0;-0} deg/s") : "")} (rate {m.Rate.V:0} deadzone {m.DeadZone.V:0} grace {m.Grace.V:0.#} idle {m.Idle.V:0.#}@{m.IdleRate.V:0})");
         string curve = _gate == Gate.Active && _outPitch != _pitch ? Inv($"->{_outPitch:0.#}") : "";
         string zoom = _gate == Gate.Active && MathF.Abs(_sDist - _dist) > 0.05f ? Inv($"->{_sDist:0.#}") : "";
         return Inv($"camera: pos ({_pos.X:0.0}, {_pos.Y:0.0}, {_pos.Z:0.0}) yaw {_yaw:0.#} pitch {_pitch:0.#}{curve} dist {_dist:0.#}{zoom} fov {_fovRead:0.#}")
