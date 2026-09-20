@@ -24,7 +24,7 @@ internal static class Grass
     internal static readonly Knob<bool> Enabled;
     internal static readonly Knob<float> Density, Far, Wind, Push, WindSpeed, Lod, LodMin, LodWidth, LodHeight, Shade,
                                          CastWidth, PushRadius, PushExtent, CullShrink, CullMax, Soften, Edge, RootAo, GTint,
-                                         SnowThin, SnowLook;
+                                         SnowThin, SnowFall, SnowLook;
     internal static readonly Knob<int> Shadow, Tuft, Aniso, GViz;
     internal static readonly Knob<bool> Cull, SoftEdge, VLight, Border, Prepass, PushVis;
     internal static readonly Knob<string> BorderTex;
@@ -48,6 +48,8 @@ internal static class Grass
         G.Section("Snow");
         SnowThin = G.Slider("snowthin", "Thinning under snow", 0f, 1f, 0.05f, 0.85f,
                             help: "Share of the blades that vanish under full snow cover (the rest stand shorter). 0 keeps a summer meadow.");
+        SnowFall = G.Slider("snowfall", "Density while snowing", 0f, 1f, 0.05f, 0.1f,
+                            help: "Share of the blades that stand while snow is falling, whatever the cover. 1 leaves the field alone.");
         SnowLook = G.Slider("snowlook", "Winter look", 0f, 1f, 0.05f, 1f,
                             help: "Blades left standing go straw-coloured and take snow on their tips. 0 keeps them green.");
         G.Section("Shadows");

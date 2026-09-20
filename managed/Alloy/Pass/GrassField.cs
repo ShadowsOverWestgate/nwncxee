@@ -1023,6 +1023,11 @@ internal static unsafe partial class GrassField
         _log?.Info($"GrassField: cast layer {layer} dumped to {path} -- depth min {min:0.0000} max {max:0.0000}, {near} texels written of {depth.Length}, {_shadowBlades} blades cast so far");
     }
 
+    /// <summary>Share of the blades gone by rank: the cover's thinning, or while snow falls the
+    /// <see cref="Grass.SnowFall"/> cut scaled by the falling density, whichever takes more.</summary>
+    internal static float SnowThinShare(float cover, float falling)
+        => MathF.Max(cover * Grass.SnowThin.V, falling * (1f - Grass.SnowFall.V));
+
     /// <summary>The uniforms both grass programs read: camera, ladder, fade, wind, push map, feature terms.</summary>
     private static void SharedUniforms(in Loc loc, in AlloyRenderer.FeatLoc feat, Matrix4x4* vp, Vector3* eye,
                                        float nearDist, float farDist, bool msaa, float* pw, int* viewport, bool vlit)
@@ -1033,7 +1038,7 @@ internal static unsafe partial class GrassField
         Gl.Uniform1i(loc.Cast, 0);
         Gl.Uniform1f(loc.CastWidth, Grass.CastWidth.V);
         // the snow on the ground (Weather's integrator) thins the field by rank and winters the survivors
-        Gl.Uniform2f(loc.Snow, Weather.Snow * Grass.SnowThin.V, Weather.Snow * Grass.SnowLook.V);
+        Gl.Uniform2f(loc.Snow, SnowThinShare(Weather.Snow, Weather.CurrentKind == Weather.Kind.Snow ? Weather.Density : 0f), Weather.Snow * Grass.SnowLook.V);
         Gl.Uniform3fv(loc.Eye, 1, (float*)eye);
         Gl.Uniform2f(loc.Fade, nearDist, farDist);
         Gl.Uniform4f(loc.Lod, Grass.Lod.V, Grass.LodMin.V, Grass.LodWidth.V, Grass.LodHeight.V);
@@ -1937,6 +1942,11 @@ internal static unsafe partial class GrassField
         uint a = 12345u, b = 12345u;
         float first = Rnd(ref a);
         E(first == Rnd(ref b), "the same seed yields the same first blade");
+        float thin = Grass.SnowThin.V, fall = Grass.SnowFall.V;
+        Grass.SnowThin.V = 0.85f; Grass.SnowFall.V = 0.1f;
+        E(SnowThinShare(0f, 0f) == 0f && SnowThinShare(0f, 1f) == 0.9f && SnowThinShare(1f, 0f) == 0.85f && SnowThinShare(1f, 1f) == 0.9f,
+          "falling snow thins to the snowfall share, cover to its own, and the deeper cut wins");
+        Grass.SnowThin.V = thin; Grass.SnowFall.V = fall;
         // #478: a blade never reads the screen-space visibility -- the pixel's occlusion is the surface behind it
         E(!GrassFsHead.Contains("uSsao") && !GrassFsMain.Contains("uSsao"), "the grass stage takes no SSAO tap");
         E(first != Rnd(ref a), "and the stream advances");
