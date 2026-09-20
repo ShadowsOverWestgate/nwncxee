@@ -57,6 +57,7 @@ Copyright (c) 2012 Brandon Pelfrey
 #include <math.h>
 #define __STDC_LIMIT_MACROS
 #include <stdint.h>
+#include <stdlib.h> // realloc/free/qsort: MSVC STL does not pull it in transitively (#673 release build)
 #include <stdio.h>
 #include <string.h>
 
