@@ -22,7 +22,7 @@ user-visible, not renamed (#530).
 
 ### Issue tracker
 
-Issues live on the self-hosted Gitea at `git.westgate.pw` via the `tea` CLI. See `docs/agents/issue-tracker.md`.
+Issues live on a local Plane CE (`http://localhost`, project `CX`) -- a trial, Gitea is the fallback. See `docs/agents/issue-tracker.md` (Plane) and `issue-tracker-gitea.md` (previous).
 
 ### Domain docs
 
