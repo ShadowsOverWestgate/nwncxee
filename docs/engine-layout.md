@@ -369,7 +369,7 @@ carry the class's known `-0x20` Windows shift (the same delta as `plated`).
 
 | Class | Rows | Anchor |
 |---|---|---|
-| `CClientExoAppInternal` | `driveChanged 0x1b0` (probed 0/1), `driveAutoRun 0x1b4` (probed), `driveKeys 0x1b8` (probed; six ints: forward, back, turn L/R, strafe L/R), `driveLastSend 0x1a0` | the function's own reads on both builds: the latch tested first, the seven key ints in the keep-alive OR, `+0x1a0` stamped on every send and compared against 499999 |
+| `CClientExoAppInternal` | `driveChanged 0x1b0` (probed 0/1), `driveWalk 0x1b4` (probed; the walk-forward key, #637), `driveKeys 0x1b8` (probed; six ints: forward, back, turn L/R, strafe L/R), `driveLastSend 0x1a0` | the function's own reads on both builds: the latch tested first, the seven key ints in the keep-alive OR, `+0x1a0` stamped on every send and compared against 499999 |
 | `CNWCObject` | `orientation 0x44` | both builds `atan2(+0x48, +0x44)` for the wire angle and copy `+0x44..+0x4c` into the TurnOnSpot rotation |
 | `CNWCCreature` | `driveFlags 0x39c / 0x37c` (bit 2), `driveEnabled 0x43c / 0x41c` | the two early-outs at the top of the function on each build (`& 2 == 0` then `== 0`), in the same order |
 | `CNWCCreature` | `facingTarget 0x2c8 / 0x2a8`, `facingTargetB 0x2d4 / 0x2b4` | the pair both builds write with the quantized direction right after the DriveControl send and in the TurnOnSpot arm; `DrivePlayer` writes the first alone for its ±30° turn |

@@ -11,11 +11,13 @@ namespace CX.Services.Camera;
 /// drive step, <c>CClientExoAppInternal::UpdateDriveMode</c>: while a drive key is down and the mode's <c>drive</c>
 /// knob is on, the player creature's orientation is written to camera yaw + key direction (W = the camera's
 /// forward, A/D and the strafe keys = its right, diagonals at 45°), forward is the only key the engine sees for
-/// the call, and the engine's "input changed" latch is raised when the heading moved past the wire's 0.1°
-/// quantum (at most <c>move.hz</c> times a second for camera turns; a key change latches at once). The engine then derives the packet angle from that
-/// orientation, sends run-forward, snaps the local facing, predicts, keeps alive and aborts on release by itself,
+/// the call (the walk or the run key, whichever the player holds, so the engine's own walk/run choice stands;
+/// #637), and the engine's "input changed" latch is raised when the heading moved past the wire's 0.1° quantum
+/// (at most <c>move.hz</c> times a second for camera turns; a key change latches at once). The engine then derives
+/// the packet angle from that orientation, sends forward at the key's pace, snaps the local facing, predicts,
+/// keeps alive and aborts on release by itself,
 /// and the server adopts the world-space heading (§10.2): no server change, no new opcode. The one release the
-/// engine does not abort on is a turn key's (its key-up path aborts only for forward/back/strafe/auto-run), so
+/// engine does not abort on is a turn key's (its key-up path aborts only for forward/walk/back/strafe), so
 /// that one sends the same <c>AbortDriveControl</c> (major 6, minor 0x21) from here.
 /// <para>Face mode (<c>&lt;mode&gt;.face</c>, chase's default): the creature always faces the camera's forward and the engine's own
 /// back/strafe bits carry S and the strafe keys (the server animates a back-pedal and a sidestep, facing held),
@@ -41,7 +43,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
 
     private static readonly int ChangedOff = EngineLayout.InternalDriveChanged;
-    private static readonly int AutoRunOff = EngineLayout.InternalDriveAutoRun;
+    private static readonly int WalkOff = EngineLayout.InternalDriveWalk;
     private static readonly int KeysOff = EngineLayout.InternalDriveKeys;
     private static readonly int LastSendOff = EngineLayout.InternalDriveLastSend;
     private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
@@ -117,17 +119,17 @@ public sealed unsafe class CameraDriveService : IExtenderService
             // #543: the keys fly the camera; the engine sees none held (a drive under way is aborted, once).
             _why = Why.Free; NoForward = false;
             if (_active) { _active = false; ClientApi.Send(MajorInput, MinorAbortDrive, null, 0); _aborts++; }
-            int a0 = *(int*)(app + AutoRunOff), s0 = keys[0], s1 = keys[1], s2 = keys[2], s3 = keys[3], s4 = keys[4], s5 = keys[5];
-            *(int*)(app + AutoRunOff) = 0; keys[0] = keys[1] = keys[2] = keys[3] = keys[4] = keys[5] = 0;
+            int walk0 = *(int*)(app + WalkOff), s0 = keys[0], s1 = keys[1], s2 = keys[2], s3 = keys[3], s4 = keys[4], s5 = keys[5];
+            *(int*)(app + WalkOff) = 0; keys[0] = keys[1] = keys[2] = keys[3] = keys[4] = keys[5] = 0;
             _orig(app);
-            *(int*)(app + AutoRunOff) = a0; keys[0] = s0; keys[1] = s1; keys[2] = s2; keys[3] = s3; keys[4] = s4; keys[5] = s5;
+            *(int*)(app + WalkOff) = walk0; keys[0] = s0; keys[1] = s1; keys[2] = s2; keys[3] = s3; keys[4] = s4; keys[5] = s5;
             return;
         }
-        int autoRun = *(int*)(app + AutoRunOff);
-        bool held = autoRun != 0;
+        int* walk = (int*)(app + WalkOff);
+        bool held = *walk != 0;
         for (int k = 0; k < KeyCount; k++) held |= keys[k] != 0;
         // The engine's own key-up aborts the drive for these; a turn key's release is ours to abort.
-        bool engineKey = (autoRun | keys[Fwd] | keys[Back] | keys[StrafeL] | keys[StrafeR]) != 0;
+        bool engineKey = (*walk | keys[Fwd] | keys[Back] | keys[StrafeL] | keys[StrafeR]) != 0;
         IntPtr cre = IntPtr.Zero, cam = IntPtr.Zero;
         Why why = !held ? Why.Idle : !_probeOk ? Why.Probe : Wanted(app, out cre, out cam);
         float f = 0f, s = 0f;
@@ -136,7 +138,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         TurnAxis = 0;
         if (why == Why.Active)
         {
-            f = (keys[Fwd] | autoRun) != 0 ? 1f : 0f; f -= keys[Back] != 0 ? 1f : 0f;
+            f = (keys[Fwd] | *walk) != 0 ? 1f : 0f; f -= keys[Back] != 0 ? 1f : 0f;
             if (face)
             {
                 s = keys[StrafeR] != 0 ? 1f : 0f; s -= keys[StrafeL] != 0 ? 1f : 0f;
@@ -203,15 +205,22 @@ public sealed unsafe class CameraDriveService : IExtenderService
             && (keysChanged || now - _lastSendTick >= (long)(1000f / Move.Hz.V))) { *(int*)(app + ChangedOff) = 1; _latches++; }
 
         long sendBefore = *(long*)(app + LastSendOff);
-        int k0 = keys[0], k1 = keys[1], k2 = keys[2], k3 = keys[3], k4 = keys[4], k5 = keys[5];
+        int w0 = *walk, k0 = keys[0], k1 = keys[1], k2 = keys[2], k3 = keys[3], k4 = keys[4], k5 = keys[5];
         keys[TurnL] = keys[TurnR] = 0;
-        if (face) { keys[Fwd] = f > 0f ? 1 : 0; keys[Back] = f < 0f ? 1 : 0; keys[StrafeL] = s < 0f ? 1 : 0; keys[StrafeR] = s > 0f ? 1 : 0; }
-        else { keys[Fwd] = 1; keys[Back] = keys[StrafeL] = keys[StrafeR] = 0; }
+        (keys[Fwd], *walk) = ForwardSlots(face, f, k0, w0);
+        if (face) { keys[Back] = f < 0f ? 1 : 0; keys[StrafeL] = s < 0f ? 1 : 0; keys[StrafeR] = s > 0f ? 1 : 0; }
+        else keys[Back] = keys[StrafeL] = keys[StrafeR] = 0;
         _orig(app);
-        keys[0] = k0; keys[1] = k1; keys[2] = k2; keys[3] = k3; keys[4] = k4; keys[5] = k5;
+        *walk = w0; keys[0] = k0; keys[1] = k1; keys[2] = k2; keys[3] = k3; keys[4] = k4; keys[5] = k5;
         if (*(long*)(app + LastSendOff) != sendBefore) { _sentTenths = tenths; _lastSendTick = now; _sends++; }
         _active = true; _engineAborts = engineKey;
     }
+
+    /// <summary>The forward slots the engine is handed (run = <see cref="EngineLayout.InternalDriveKeys"/>[0], walk =
+    /// <see cref="EngineLayout.InternalDriveWalk"/>): a forward drive passes the pressed pair through so the engine's own
+    /// walk/run choice stands (#637); without a forward component, non-face still needs a forward slot (run), face none.</summary>
+    private static (int run, int walk) ForwardSlots(bool face, float f, int run, int walk) =>
+        f > 0f ? (run, walk) : (face ? 0 : 1, 0);
 
     /// <summary>The heading in degrees (East 0, CCW, [0, 360)) of <c>forward * f + right * s</c> for a camera whose
     /// ground-plane right is (rx, ry).</summary>
@@ -266,7 +275,8 @@ public sealed unsafe class CameraDriveService : IExtenderService
             $"camera drive: {on} ({(mode < 0 ? "no mode" : CameraModes.ByMode[mode].G.Name)}) heading {_tenths / 10f:0.0} | {(_why == Why.Active ? "active" : "held down: " + WhyNames[(int)_why])} | {_sends} send(s), {_latches} latch(es), {_aborts} abort(s), move.hz {Move.Hz.V:0.#} move.turn {Move.Turn.V:0}");
     }
 
-    /// <summary>The heading maths off-device: the four cardinal keys against a camera looking north (right = +X).</summary>
+    /// <summary>The heading maths and the forward-slot hand-off off-device: the four cardinal keys against a camera
+    /// looking north (right = +X), and which forward key the engine sees for each held pair (#637).</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         bool ok = true;
@@ -281,6 +291,12 @@ public sealed unsafe class CameraDriveService : IExtenderService
         E(Tenths(Slew(350f, 10f, 540f, 0.01f)) == 3554, "the slew takes the short way across 0 and wraps");
         E(Tenths(Slew(10f, 350f, 540f, 0.01f)) == 46 && Slew(10f, 350f, 0f, 0.01f) == 350f, "and back; rate 0 snaps");
         E(Slew(90f, 270f, 540f, 1f) == 270f, "a reach within the budget lands exactly");
+        E(ForwardSlots(false, 1f, 0, 1) == (0, 1) && ForwardSlots(true, 1f, 0, 1) == (0, 1), "the walk key alone walks in both modes");
+        E(ForwardSlots(false, 1f, 1, 0) == (1, 0) && ForwardSlots(true, 1f, 1, 0) == (1, 0), "the run key alone runs");
+        E(ForwardSlots(false, 1f, 1, 1) == (1, 1) && ForwardSlots(true, 1f, 1, 1) == (1, 1), "walk + run held: run wins (the engine checks run first)");
+        E(ForwardSlots(false, 0f, 0, 0) == (1, 0), "strafe alone, non-face: forward run carries the heading");
+        E(ForwardSlots(true, 0f, 0, 0) == (0, 0) && ForwardSlots(true, -1f, 0, 0) == (0, 0), "strafe or back alone, face: no forward key");
+        E(ForwardSlots(false, 0f, 1, 1) == (1, 0), "forward + back cancel with a strafe, non-face: run along the strafe");
         log.Info(ok ? "CameraDrive.SelfCheck: passed" : "CameraDrive.SelfCheck: FAILED");
     }
 }
