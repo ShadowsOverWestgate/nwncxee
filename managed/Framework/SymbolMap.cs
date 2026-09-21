@@ -1098,6 +1098,17 @@ internal static unsafe class SymbolMap
     /// 500 ms keep-alive, snaps the local facing and runs the prediction. Pre-hooked by CameraDriveService, which
     /// writes the orientation and the key set it wants the engine to act on.</summary>
     public const string UpdateDriveMode = "_ZN21CClientExoAppInternal15UpdateDriveModeEv";
+    /// <summary><c>CNWCCreature::WalkUpdateLocation()</c> @0x725830 -- the per-frame walk step (CX-682): picks the rate off
+    /// the animation, steps the desired position (<see cref="EngineLayout.CreatureDesiredPos"/>) along the waypoints and
+    /// moves the model to it, testing no walkmesh and no door. <c>(this) -> int</c>, always 1. Pre-hooked by
+    /// StepGuardService for the player creature.</summary>
+    public const string WalkUpdateLocation = "_ZN12CNWCCreature18WalkUpdateLocationEv";
+    /// <summary><c>CNWCArea::TestDirectLine(CNWCCreature*, Vector from, Vector to, float, float, int bCheckCreatures)</c>
+    /// @0x703850: the engine's own door-aware swept walkability test (tile meshes, placeable walkmeshes, then every
+    /// door's DWK with closed and mid-animation doors solid). Returns 1 on a clear line. The two floats are the pair
+    /// at <see cref="EngineLayout.PathfindSpaceArgs"/> in that order (disassembly of ClientSideWalkCommand @0x72043e:
+    /// xmm4 = +0xe0, xmm5 = +0xe4). Both Vectors by value: SysV xmm0/xmm1 + xmm2/xmm3, Win64 a pointer each.</summary>
+    public const string TestDirectLine = "_ZN8CNWCArea14TestDirectLineEP12CNWCCreature6VectorS2_ffi";
     /// <summary>SDL2 cursor capture for mouse-look (#539): relative mode hides the cursor and streams raw deltas.</summary>
     public const string SdlSetRelativeMouseMode = "SDL_SetRelativeMouseMode";
     public const string SdlWarpMouseInWindow = "SDL_WarpMouseInWindow";
@@ -1464,6 +1475,8 @@ internal static unsafe class SymbolMap
         [TurnCamera] = At(0x7cfe60),
         [TiltCamera] = At(0x7cfdb0),
         [UpdateDriveMode] = At(0x6f1e40),   // #540: the one function carrying both 499999 and 250000 (ScanOffsets)
+        [WalkUpdateLocation] = At(0x8114d0),   // CX-682: the one function with both "RUNDIST" and "WALKDIST" (StringRefs)
+        [TestDirectLine] = At(0x7e6a20),       // CX-682: WalkPlayerToPoint's 7-slot line-test callee (docs/windows-symbols.md)
         [SdlSetRelativeMouseMode] = Nm("SDL_SetRelativeMouseMode"),
         [SdlWarpMouseInWindow] = Nm("SDL_WarpMouseInWindow"),
         // #543: CGuiInGame is not exported; both reached from the anchored HandleServerToPlayerMessage (0x7a41a0)

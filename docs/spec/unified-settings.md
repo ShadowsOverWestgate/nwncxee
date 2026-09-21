@@ -638,6 +638,12 @@ Build note: `Leave()` must restore FOV when `free.fov` was set.
 | tabtarget.objects | (none) | Include placeables and doors | T | off | U | L | Tab can also lock a lever, chest or door. |
 | tabtarget.range | (none) | Maximum range | S | 5–80 m step 1 · 30 | U | L | Tab ignores anything farther from you than this. |
 
+**Walking** — group `walk` (CX-682). Master = the client step guard: every step of the player's walk re-run through the engine's own door-aware line test, a refused step put back. Off = the stock untested walk. The status line is the refusal ledger (steps passed, walk vs drive refusals).
+
+| key | today | label | kind | range · default | tier | eff | help |
+|---|---|---|---|---|---|---|---|
+| walk.enabled | (none) | Stop at closed doors | T | on | U | L | Every step your character takes is re-tested against the area's walkmesh and its doors, closed doors solid, exactly as the game tests a click. A step that would cross a closed door is refused, so your character can never stand on the far side of one -- on any server. Off, the stock walk runs untouched. |
+
 ### 4.5 Hotkeys
 
 **Hotkeys** — group `hotkeys`.

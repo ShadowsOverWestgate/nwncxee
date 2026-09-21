@@ -604,3 +604,18 @@ enrolled part, so those rows have no reader yet.
 **No probes.** Two pointers and a `CExoArrayList` pair; `Expect.Byte01` fits none.
 `CNWCPlaceable+0x1b4` (`0x194` Windows) is **plot**, not Static -- there is no
 client-side Static flag on a placeable, which is why the list exists.
+
+### The step-guard rows (CX-682)
+
+`CNWCCreature::WalkUpdateLocation` decompiled on both builds (Linux @`0x725830`, Windows rva
+`0x8114d0`, `docs/windows-symbols.md`) and read side by side; the `TestDirectLine` argument pair off
+`ClientSideWalkCommand`'s disassembly (Linux `0x7203ea..0x72043e`) and the Windows `WalkPlayerToPoint`.
+
+| Class | Rows | Anchor |
+|---|---|---|
+
+
+| `CNWCCreature` | `pathfind 0x320 / 0x300` | the pointer whose `+0xcc` ushort indexes `creaturespeed.2da` in every `GetFLOATEntry` call of the function; `WalkPlayerToPoint` reads the same pointer at `creature+0x300` for the line test |
+| `CPathfindInformation` | `spaceArgs 0xe0` (two floats) | `xmm4 = [pf+0xe0]`, `xmm5 = [pf+0xe4]` before Linux `call TestDirectLine` @`0x72043e`; Windows `WalkPlayerToPoint` passes `*(pf+0xe0), *(pf+0xe4)` in the same slots |
+| `CNWCCreature` | `vtbl.SetPosition 0x130 / 0x128` (probed in-image) | `MoveCreatureToPosition` Linux @`0x71cd70` calls `+0x130`, Windows rva `0x804840` calls `+0x128`; the Linux vtable (`_ZTV12CNWCCreature+0x10+0x130`) resolves to `CNWCCreature::SetPosition(Vector)` |
+

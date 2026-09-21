@@ -72,3 +72,5 @@ CNWCObject::SetPosition	140766760
 CNWCAnimBase::SetPosition	1409680a0
 CNWCArea::SetTile	1407e6040
 CClientExoAppInternal::PerformDefaultActionOnObject	1406efec0
+CNWCCreature::WalkUpdateLocation	1408114d0
+CNWCArea::TestDirectLine	1407e6a20

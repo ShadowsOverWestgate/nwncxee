@@ -1665,6 +1665,26 @@ public static unsafe class EngineLayout
     /// <summary>CNWCCreature -&gt; the second Vector of that pair (+0x2d4 / +0x2b4), written with the same direction on
     /// the send path and by TurnOnSpot; its own reader is not identified.</summary>
     public static readonly int CreatureFacingTargetB = Diverges("CNWCCreature", "facingTargetB", linux: 0x2d4, win: 0x2b4);
+    /// <summary>CNWCCreature -&gt; the desired position Vector: <c>WalkUpdateLocation</c> steps it along the waypoints each
+    /// frame (WalkUpdateLocationDistance starts from it) and <c>MoveCreatureToPosition</c> lerps the displayed +0x38
+    /// toward it; the update handler and EvaluateNewWayPoints overwrite it from the server. Every drive line test
+    /// starts here. Linux +0x2e0, Windows +0x2c0 (the WalkUpdateLocation bodies, CX-682).</summary>
+    public static readonly int CreatureDesiredPos = Diverges("CNWCCreature", "desiredPos", linux: 0x2e0, win: 0x2c0);
+    /// <summary>CNWCCreature -&gt; int 0/1 "I am driving": set by ClientSideWalkCommand in drive mode and by a server
+    /// update that says so, cleared when the walk ends. Linux +0x318, Windows +0x2f8. No Byte01 probe: the ctor
+    /// is not known to zero it.</summary>
+    public static readonly int CreatureDriving = Diverges("CNWCCreature", "driving", linux: 0x318, win: 0x2f8);
+    /// <summary>CNWCCreature -&gt; pointer to the creature's pathfind block (the object whose +0xcc ushort indexes
+    /// creaturespeed.2da). Linux +0x320, Windows +0x300.</summary>
+    public static readonly int CreaturePathfind = Diverges("CNWCCreature", "pathfind", linux: 0x320, win: 0x300);
+    /// <summary>Pathfind block -&gt; two consecutive floats (+0xe0, +0xe4) that ClientSideWalkCommand, WalkPlayerToPoint
+    /// and EvaluateNewWayPoints hand <c>CNWCArea::TestDirectLine</c> as its 4th and 5th arguments (personal space and
+    /// height, order as the engine passes them). Same on both builds (WalkPlayerToPoint rva 0x6f3650).</summary>
+    public static readonly int PathfindSpaceArgs = Same("CPathfindInformation", "spaceArgs", 0xe0);
+    /// <summary>Virtual slot of <c>CNWCCreature::SetPosition(Vector)</c>: MoveCreatureToPosition calls Linux
+    /// <c>vtbl+0x130</c> (@0x71cd70), Windows <c>+0x128</c> (rva 0x804840), the class's usual -8. The Vector crosses by
+    /// value (SysV xmm0/xmm1, Win64 a pointer to a copy).</summary>
+    public static readonly int CreatureSetPositionSlot = Diverges("CNWCCreature", "vtbl.SetPosition", linux: 0x130, win: 0x128, Expect.VtblSlot);
     /// <summary>CNWCModule -&gt; "chase suppressed" (int 0/1): <c>UpdateCameraModeChaseCam/EQ</c> set it the frame the
     /// user moved the camera (+0x134) and skip the chase while it holds; cleared on the creature's next
     /// idle-to-locomotion edge, which <see cref="ModuleChaseWasIdle"/> records. Same on Windows (rva 0x7d0d00 /

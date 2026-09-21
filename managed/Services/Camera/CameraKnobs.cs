@@ -9,7 +9,7 @@ internal static class CameraKnobs
 {
     internal static void Declare()
     {
-        _ = CameraModes.ByMode; _ = Walls.G; _ = FreeCam.G; _ = TabTarget.G;
+        _ = CameraModes.ByMode; _ = Walls.G; _ = FreeCam.G; _ = TabTarget.G; _ = Walk.G;
     }
 
     internal const float FovMin = 10f, FovMax = 120f;
@@ -22,7 +22,7 @@ internal static class CameraKnobs
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"CameraKnobs.SelfCheck FAIL: {w}"); } }
         Declare();
-        string[] order = { "chase", "topdown", "driving", "walls", "free", "tabtarget" };
+        string[] order = { "chase", "topdown", "driving", "walls", "free", "tabtarget", "walk" };
         int at = -1;
         foreach (string g in order)
         {
@@ -305,3 +305,21 @@ internal static class TabTarget
         Range = G.Slider("range", "Maximum range", 5f, 80f, 1f, 30f, "m", help: "Tab ignores anything farther from you than this.");
     }
 }
+
+/// <summary>The <c>walk</c> group (CX-682): the step guard's master. Read hot by <see cref="StepGuardService"/>;
+/// the status is its refusal ledger.</summary>
+internal static class Walk
+{
+    internal static readonly KnobGroup G;
+    internal static readonly Knob<bool> Enabled;
+
+    static Walk()
+    {
+        G = KnobGroup.Declare("walk", "Camera", "Walking", master: "Stop at closed doors",
+            masterHelp: "Every step your character takes is re-tested against the area's walkmesh and its doors, closed doors solid, exactly as the game tests a click. A step that would cross a closed door is refused, so your character can never stand on the far side of one -- on any server. Off, the stock walk runs untouched.",
+            header: "The stock client tests only where a walk starts, not each step along the server's path, which is how a character ends up past a closed door.");
+        Enabled = G.Master!;
+        G.Status = StepGuardService.Report;
+    }
+}
+
