@@ -27,7 +27,7 @@ internal static class Renderer
     internal static readonly Knob<bool> Light, Prepass, AoTest, Retest, HlDiag, HlGlow, Poll, PrepassKey, PrepassFeat, IdTarget,
                                         BlendPrepass, BlendDiag, GpuMeter, VisList, WashTest;
     internal static readonly Knob<int> Viz, Threads, Cull, HlChan, OitViz;
-    internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump;
+    internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap;
 
     /// <summary>The highlight mode the pass reads per frame: the stock glow, or the owned outline + fill.</summary>
     internal static bool OutlineHighlight => Highlight.V == "outline";
@@ -154,5 +154,6 @@ internal static class Renderer
         Consts = G.Button("consts", "consts", AlloyRenderer.LogScriptables, Tier.ChatOnly);
         FrameDumpBtn = G.Button("framedump", "framedump", FrameDump.Arm, Tier.ChatOnly);
         ShaderDump = G.Button("shaderdump", "shaderdump", ShaderStages.DumpToLog, Tier.ChatOnly);
+        Snap = G.Button("snap", "snap", FrameTap.Arm, Tier.ChatOnly);
     }
 }

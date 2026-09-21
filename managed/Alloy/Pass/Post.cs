@@ -32,13 +32,14 @@ namespace CX.Alloy;
 /// <c>viz</c> shows one STAGE of the chain -- 1 the bloom alone, 2 the HDR colour alone, 3 the bloom at 20x,
 /// 4 the velocity target -- and <c>clearviz</c> clears the HDR target to magenta, a value nothing else
 /// produces, so magenta in the frame is a pixel NO pass covered. <c>motion</c> (#388) arms the motion-vector
-/// pass on its own; TAA and temporal GTAO run it regardless.</para></summary>
+/// pass on its own; TAA and temporal GTAO run it regardless. <c>skyraw</c> (CX-374) is the A/B for the
+/// resolve's sky exemption: 0 exposes and tonemaps the sky like the rest of the frame.</para></summary>
 internal static class Post
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<float> Exposure, Bloom, AutoMin, AutoMax, AutoSpeed, AutoDown, Threshold, Knee,
                                          AcesMix, TmKnee, Dither, TaaBlend, TaaSharp, ToonBands, ToonInk, ToonEdge;
-    internal static readonly Knob<bool> Auto, Taa, Taau, HalfRes, Stack, FbPost, Motion, ClearViz;
+    internal static readonly Knob<bool> Auto, Taa, Taau, HalfRes, Stack, FbPost, Motion, ClearViz, SkyRaw;
     internal static readonly Knob<int> Tonemap, Viz;
 
     /// <summary>The tonemap operators, index-aligned with <see cref="PostChain"/>'s <c>Off</c> /
@@ -101,5 +102,6 @@ internal static class Post
         Motion = G.Toggle("motion", "motion", false, Tier.ChatOnly);
         Viz = G.Slider("viz", "viz", 0, PostChain.VizMotion, 1, 0, tier: Tier.ChatOnly);
         ClearViz = G.Toggle("clearviz", "clearviz", false, Tier.ChatOnly);
+        SkyRaw = G.Toggle("skyraw", "skyraw", true, Tier.ChatOnly);
     }
 }

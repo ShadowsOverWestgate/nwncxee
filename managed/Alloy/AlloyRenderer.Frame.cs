@@ -318,9 +318,11 @@ public sealed unsafe partial class AlloyRenderer
                             if (_blendOn) Gl.Enable(Gl.BLEND); else Gl.Disable(Gl.BLEND);
                             break;
                         case PassId.SkyOwned:
+                            if (!_capturing) FrameTap.Take("opaque", viewport);
                             GpuBegin(GpuTerm.Sky);
                             SkyOwnedPass(&vp, viewport);
                             GpuEnd(GpuTerm.Sky);
+                            if (!_capturing) FrameTap.Take("sky", viewport);
                             break;
                         case PassId.CutoutOwned:
                             CutoutOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);

@@ -52,6 +52,9 @@ internal static class TextureSlots
     internal const uint SunShadowDyn = PostHdr, SunShadowDynGrass = SnapshotColor;
     /// <summary>The environment probe cube -- above the whole map block for the type-collision reason.</summary>
     internal const uint Probe = 12;
+    /// <summary>CX-374: the owned depth at the resolve, which reads it to exempt the sky. <see cref="Probe"/>'s
+    /// unit on <see cref="PostHdr"/>'s argument: the resolve is its own program and the probe is not bound there.</summary>
+    internal const uint PostDepth = Probe;
     /// <summary>The aa stage's own passes, post stack only -- after the world pass, so the probe and snapshot
     /// units are free on the same argument as <see cref="PostHdr"/>: edges then weights on 12, the area
     /// table on 13, the search table on 14.</summary>
@@ -154,6 +157,7 @@ internal static class TextureSlots
               $"{MapBase + i} {MapSamplers[i]}");
         E(PostChain.ResolveFs.Contains("uniform sampler2D uHdr;"), $"{PostHdr} uHdr");
         E(PostChain.ResolveFs.Contains("uniform sampler2D uBloom;"), $"{PostBloom} uBloom");
+        E(PostChain.ResolveFs.Contains("uniform sampler2D uDepth;"), $"{PostDepth} uDepth");
         // #375: the post stack reuses the resolve's two units, after it and in the same bracket.
         E(PostStack.PostStageHead.Contains("uniform sampler2D uSrc;"), $"{PostHdr} uSrc (post stack)");
         E(PostStack.PostStageHead.Contains("uniform sampler2D uDepth;"), $"{PostBloom} uDepth (post stack)");

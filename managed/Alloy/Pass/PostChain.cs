@@ -44,7 +44,7 @@ internal static unsafe class PostChain
     /// <summary>Texture units the resolve samples the HDR colour and the bloom chain on -- clear of every
     /// unit the Alloy lit stage binds, because the resolve runs in the same bracket and leaving a unit shared
     /// with a live sampler of a different type is INVALID_OPERATION. See <see cref="TextureSlots"/>.</summary>
-    private const uint HdrUnit = TextureSlots.PostHdr, BloomUnit = TextureSlots.PostBloom;
+    private const uint HdrUnit = TextureSlots.PostHdr, BloomUnit = TextureSlots.PostBloom, DepthUnit = TextureSlots.PostDepth;
 
     /// <summary>Tonemap operators, <c>post.tonemap</c>'s stored index. Shoulder is the identity below its
     /// knee; ACES (the default since the #375 follow-ups, at <c>post.acesmix</c> against the shoulder) moves
@@ -138,7 +138,7 @@ internal static unsafe class PostChain
 
     private static int _dSrc, _dLod, _dTexel, _dFirst, _dThresh;
     private static int _uSrc, _uLod, _uTexel;
-    private static int _cHdr, _cBloom, _cStrength, _cMode, _cKnee, _cDither, _cViz, _cExposure, _cAcesMix;
+    private static int _cHdr, _cBloom, _cDepth, _cStrength, _cMode, _cKnee, _cDither, _cViz, _cExposure, _cAcesMix, _cSkyRaw;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -765,9 +765,13 @@ internal static unsafe class PostChain
         // #388: the velocity viz rides the bloom unit -- nothing else the resolve samples is free, and the
         // two views are exclusive by construction.
         Gl.BindTexture(Gl.TEXTURE_2D, Post.Viz.V == VizMotion ? MotionVectors.Tex : _bloomOk ? _bloomTex : 0);
+        Gl.ActiveTexture(Gl.TEXTURE0 + DepthUnit);
+        Gl.BindTexture(Gl.TEXTURE_2D, _depthTex);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.Uniform1i(_cHdr, (int)HdrUnit);
         Gl.Uniform1i(_cBloom, (int)BloomUnit);
+        Gl.Uniform1i(_cDepth, (int)DepthUnit);
+        Gl.Uniform1i(_cSkyRaw, Post.SkyRaw.V ? 1 : 0);
         Gl.Uniform1f(_cStrength, _bloomOk ? Post.Bloom.V : 0f);
         Gl.Uniform1i(_cMode, Post.Tonemap.V);
         Gl.Uniform1f(_cKnee, Post.TmKnee.V);
@@ -889,7 +893,7 @@ internal static unsafe class PostChain
                                             _log, "PostChain resolve", out _, out string resolveSrc);
         // #208: the resolve's two units come with it -- an override that renamed either samples unit 0.
         if (_progComposite != 0 && !(ShaderContract.ResolveSafe(resolveSrc)
-                                     && ShaderContract.SlotSafe(resolveSrc, "uHdr", "uBloom")))
+                                     && ShaderContract.SlotSafe(resolveSrc, "uHdr", "uBloom", "uDepth")))
             _progComposite = Rebuild(_progComposite, ResolveFs, "resolve",
                                      "it decodes its input (pre-#132) or performs no encode at all, and this "
                                      + "is the frame's one encode");
@@ -905,6 +909,7 @@ internal static unsafe class PostChain
         _uSrc = GlProgram.Loc(_progUp, "uSrc"); _uLod = GlProgram.Loc(_progUp, "uLod");
         _uTexel = GlProgram.Loc(_progUp, "uTexel");
         _cHdr = GlProgram.Loc(_progComposite, "uHdr"); _cBloom = GlProgram.Loc(_progComposite, "uBloom");
+        _cDepth = GlProgram.Loc(_progComposite, "uDepth"); _cSkyRaw = GlProgram.Loc(_progComposite, "uSkyRaw");
         _cStrength = GlProgram.Loc(_progComposite, "uStrength"); _cMode = GlProgram.Loc(_progComposite, "uMode");
         _cKnee = GlProgram.Loc(_progComposite, "uKnee");
         _cExposure = GlProgram.Loc(_progComposite, "uExposure");
@@ -1053,6 +1058,8 @@ internal static unsafe class PostChain
         out vec4 frag;
         uniform sampler2D uHdr;
         uniform sampler2D uBloom;
+        uniform sampler2D uDepth;  // CX-374: the owned depth; the sky sits at exactly 1.0 (SkyOwnedPass's DepthRange)
+        uniform int uSkyRaw;      // CX-374: 1 = a sky pixel skips exposure and the tonemap (see main)
         uniform float uStrength;
         uniform int uMode;
         uniform float uKnee;
@@ -1099,7 +1106,18 @@ internal static unsafe class PostChain
             if (uViz == 4) { frag = vec4(0.5 + textureLod(uBloom, vUV, 0.0).rg / 64.0, 0.5, 1.0); return; }
 
             vec3 c = texture(uHdr, vUV).rgb;
-            if (uStrength > 0.0) c += textureLod(uBloom, vUV, 0.0).rgb * uStrength;
+            vec3 b = uStrength > 0.0 ? textureLod(uBloom, vUV, 0.0).rgb * uStrength : vec3(0.0);
+            // CX-374: the sky is display-referred as its shader authored it (vanilla encodes it straight),
+            // and exposure + the tonemap re-graded it ~2x at night. A sky pixel keeps its own value and
+            // takes only the EXPOSED bleed on top, so bright things still glow onto it.
+            if (uSkyRaw != 0 && texture(uDepth, vUV).r >= 1.0)
+            {
+                vec3 g = b * uExposure;
+                if (uAuto != 0) g *= uAutoGain;
+                frag = vec4(CxDither(CxEncode(c + g), gl_FragCoord.xy, uDither), texture(uHdr, vUV).a);
+                return;
+            }
+            c += b;
             c *= uExposure;
             if (uAuto != 0) c *= uAutoGain;
             if (uMode == 1) c = CxShoulder(c, uKnee);
