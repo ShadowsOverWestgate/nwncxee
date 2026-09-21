@@ -183,15 +183,16 @@ The client is already imported and analyzed:
 
 ## Sibling repos
 
-- **`~/repos/sow-codebase`** -- the SoW **server** extender (Anvil + native hooks
-  via `NativeHookRegistry`). Your reference for: the *server end* of any custom
-  packet (where the payload is received/ignored), hooking semantics
-  (Before/After/SkipOriginal), and shared engine knowledge -- `CNWSMessage` and
-  friends are the *same classes* on client and server, so its struct/field notes
-  transfer. Do NOT copy its hook mechanism; the client uses funchook. Its
-  `AGENTS.md`/`DOCTRINE.md` are server law, not ours.
-- **`~/repos/sow-topdata`** -- shaders (`.shd`), 2DA, TLK as data. The
-  graphics-via-data path: anything shaders can express ships here, no extender.
+- **`~/repos/sow-codebase`** -- the SoW **monorepo**: everything except CX. Its
+  `server/` is the server extender (Anvil + native hooks via `NativeHookRegistry`):
+  your reference for the *server end* of any custom packet (where the payload is
+  received/ignored), hooking semantics (Before/After/SkipOriginal), and shared
+  engine knowledge -- `CNWSMessage` and friends are the *same classes* on client
+  and server, so its struct/field notes transfer. Do NOT copy its hook mechanism;
+  the client uses funchook. Its `AGENTS.md`/`DOCTRINE.md` are server law, not ours.
+  Its `topdata/` is shaders (`.shd`), 2DA, TLK as data -- the graphics-via-data
+  path: anything shaders can express ships there, no extender. (The standalone
+  `sow-topdata` repo is retired; `~/repos/sow-topdata` is a stale checkout.)
 - `.claude/skills/` -- ported server skills (hooking, threading, native
   conventions) with a README on what adapts to the client.
 
