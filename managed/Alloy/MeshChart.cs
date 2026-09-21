@@ -38,7 +38,7 @@ internal static class Lightmap
                                help: "Seconds the loading screen may wait for the area's baked lighting before Escape is offered to skip ahead; the bake then finishes in the background. 0 never waits.");
         Movers = G.Toggle("movers", "Creature shadows from baked lights", true,
                           help: "A creature standing under a baked light casts its shadow on the baked surface. Off is cheaper: baked surfaces take no shadow from creatures under static lights.");
-        // 2048: one area's bake at density 10 is ~500 MiB of .lmr files, and a 512 MiB budget pruned the
+        // 2048: one area's bake at density 10 is ~500 MiB of .lmp blobs, and a 512 MiB budget pruned the
         // live files of the area being walked (4890 of 7425 hit, live)
         Disk = G.Slider("disk", "Chart cache size", 64, 8192, 64, 2048, "MiB", tier: Tier.Advanced,
                         help: "Disk the chart and bake caches may hold; the oldest files go first. One area's lightmap is roughly 500 MiB.");

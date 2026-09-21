@@ -267,11 +267,12 @@ internal static unsafe partial class LightmapBake
     internal static void EndWalk()
     {
         if (_closed) return;
-        // a walk that saw no light at all is not the area (the edge fired a frame before the list existed:
-        // run 23 closed on "0 lights" and baked the plaza black) -- the edge stays armed for the next walk
-        if (_clsArea == IntPtr.Zero || (_stN == 0 && CensusDynamic == 0)) return;
+        if (_clsArea == IntPtr.Zero) return;
         bool edge = _edgeWalk >= 0 && _walks - _edgeWalk >= SettleWalks && _walks - _lastNew >= QuietWalks;
-        if (!edge && _walks < FallbackWalks) return;
+        // a walk that saw no light at all is not the area yet (the edge fired a frame before the list existed:
+        // run 23 closed on "0 lights" and baked the plaza black) -- unless it stays empty past the settle
+        // window: a lightless area closes on the edge like any other, with nothing to bake
+        if (!edge && (_walks < FallbackWalks || (_stN == 0 && CensusDynamic == 0))) return;
         _edgeSeen = false; _closed = true;
         _stab.Clear();
         ulong acc = 0;
@@ -284,10 +285,10 @@ internal static unsafe partial class LightmapBake
             h = Mix(h, Q(c.X / m, 0.1f)); h = Mix(h, Q(c.Y / m, 0.1f)); h = Mix(h, Q(c.Z / m, 0.1f));
             acc ^= h;
         }
-        ulong hash = Mix(FnvOffset, (long)acc) | 1UL;   // never 0: 0 means "no set yet"
+        ulong hash = _stN == 0 ? 0 : Mix(FnvOffset, (long)acc) | 1UL;   // 0 = nothing to bake: Enrol and Sweep stay refused
         // the runtime check the research asks for: the registry's count against the placeables the walk saw
         _log?.Info($"LightmapBake: static set closed on the {(edge ? $"area-loaded edge (walk {_walks}, edge at {_edgeWalk}, last new light at {_lastNew})" : $"fallback ({FallbackWalks} walks, the edge never fired or lights kept arriving)")} -- "
-                   + $"{_stN} lights (tile {CensusTile}, placeable {CensusPlaceable} of {_regGobs.Count} the registry named), {CensusAnimated} animated, {CensusDynamic} dynamic of which {CensusUnstable} still changing");
+                   + $"{_stN} lights (tile {CensusTile}, placeable {CensusPlaceable} of {_regGobs.Count} the registry named), {CensusAnimated} animated, {CensusDynamic} dynamic of which {CensusUnstable} still changing{(_stN == 0 ? " -- no static light, nothing to bake" : "")}");
         _closeStatic = CensusStatic; _closeTile = CensusTile; _closePlaceable = CensusPlaceable; _closeAnimated = CensusAnimated; _closeDynamic = CensusDynamic;
         Arrived();
         if (hash == SetHash && !_areaChanged) return;
@@ -297,6 +298,7 @@ internal static unsafe partial class LightmapBake
         SetHash = hash;
         AbortBake();
         if (_areaChanged) { _areaChanged = false; _areaHalve = 0; _placedArea = 0; Repack(); AlloyRenderer.SweepMeshTables(); }
+        else if (hash == 0) Repack();
         else RekeyAll();
     }
 

@@ -448,7 +448,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         if (area != _flkArea) { _flkArea = area; Array.Clear(_flkId); }
         int count = *(int*)((byte*)self + LmMasterCount);
         IntPtr data = *(IntPtr*)((byte*)self + LmMasterData);
-        if (data == IntPtr.Zero) return;
+        if (data == IntPtr.Zero) count = 0;   // an empty list still walks: the lightmap set closes on "no light"
         float radiusMult = _getGspF != null ? _getGspF(0x12) : 1f;
         if (!(radiusMult > 0f)) radiusMult = 1f;
         // #140: the two constants the engine's own point-light attenuation is built from, from the same

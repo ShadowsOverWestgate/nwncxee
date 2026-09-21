@@ -56,7 +56,7 @@ internal static unsafe partial class LightmapBake
             Forward(msg); return;
         }
         if (Held) _log?.Info("LightmapBake: the AreaLoaded send fired under a hold -- restarting it");
-        _heldMsg = msg; _holdT0 = Stopwatch.GetTimestamp(); _skipOpen = false; _firstLandT = 0;
+        _heldMsg = msg; _holdT0 = Stopwatch.GetTimestamp(); _holdFrame = _frame; _skipOpen = false; _firstLandT = 0;
         _quietFrom = int.MaxValue; _captionPhase = -1;
         Hold = true; _surface.SuppressChords = true;
         _log?.Info("LightmapBake: holding the AreaLoaded send for the baseline bake");
@@ -70,10 +70,19 @@ internal static unsafe partial class LightmapBake
     /// <summary>The set closed, a slot enrolled, a chart landed: the drain clock restarts.</summary>
     private static void Arrived() { if (Held) _quietFrom = _frame; }
 
-    /// <summary>Nothing left to enrol, pack or bake, for <see cref="QuietFrames"/> frames past the last arrival.</summary>
+    /// <summary>Nothing left to enrol, pack or bake, for <see cref="QuietFrames"/> frames past the last arrival --
+    /// or a set that closed with no static light (SetHash 0): nothing to bake, nothing to wait for.</summary>
     private static bool BaselineIn
-        => _closed && !_edgePending && SetHash != 0 && MeshChart.InFlight == 0 && AlloyRenderer.ChartDeferred == 0 && _toPack.Count == 0 && _pending == 0 && _bakePage < 0
-           && _quietFrom != int.MaxValue && _frame - _quietFrom >= QuietFrames;
+        => _closed && !_edgePending && (SetHash == 0 || MeshChart.InFlight == 0 && AlloyRenderer.ChartDeferred == 0 && _toPack.Count == 0 && _pending == 0 && _bakePage < 0
+           && _quietFrom != int.MaxValue && _frame - _quietFrom >= QuietFrames);
+
+    /// <summary>Seconds of no Alloy pass and no light walk after the send before the hold gives up: the login
+    /// send fires before the world scene exists (nothing renders until the player is placed -- 2026-09-21's
+    /// log held 23 s over an empty frame), and a bake that never ticks has nothing to wait for either.</summary>
+    private const float IdleSeconds = 2f;
+    /// <summary>The bake frame at the hold's start: unchanged = the pass never ran under it.</summary>
+    private static int _holdFrame;
+    private static bool IdleUnderHold => _frame == _holdFrame || _edgePending;
 
     /// <summary>Send the held message and log the hold: its length, the exit, the walk the set closed on and the
     /// census after settle (the residual check on the animated branch #659 could not exercise).</summary>
@@ -124,7 +133,8 @@ internal static unsafe partial class LightmapBake
         if (!Held) return;
         if (MeshChart.Done != _chartsSeen) { _chartsSeen = MeshChart.Done; Arrived(); }
         float s = HeldSeconds;
-        if (BaselineIn) { Release("baseline in"); return; }
+        if (BaselineIn) { Release(SetHash == 0 ? "no static light -- nothing to bake" : "baseline in"); return; }
+        if (s >= IdleSeconds && IdleUnderHold) { Release("Alloy idle under the hold -- no scene yet"); return; }
         if (s >= CapSeconds) { Release("cap"); return; }
         if (!Enabled) { Release("bake stood down"); return; }
         _skipOpen = s >= Lightmap.HoldSeconds.V;
@@ -181,8 +191,19 @@ internal static unsafe partial class LightmapBake
         void E(bool c, string what) { if (!c) { ok = false; log.Info($"LightmapBake.HoldSelfCheck: FAILED -- {what}"); } }
         E(CapSeconds > Lightmap.HoldSeconds.Max, "the cap must sit past the knob's range or the skip line never shows");
         E(QuietFrames < 60, "the drain clock is a second or more: a second visit would not hold ~0 s");
+        E(IdleSeconds < CapSeconds && IdleSeconds <= Lightmap.HoldSeconds.Max, "the idle exit must come before the cap and the skip");
         _quietFrom = int.MaxValue; _frame = 100;
         E(!BaselineIn, "an untouched drain clock counts as drained");
+        // a lightless area: the walks past the edge see no light at all -- the set still closes, the bake stays
+        // un-armed (SetHash 0) and the hold has nothing to wait for
+        _clsArea = 1; Reopen(); _edgeSeen = true; _edgePending = false; _stN = 0; CensusDynamic = 0; SetHash = 0xBEEF;
+        ExtenderLog? live = _log; _log = null;   // the close logs as evidence: a headless one must not open every cx.log
+        for (int i = 0; i < SettleWalks + QuietWalks; i++) { _walks++; if (_edgeWalk < 0) _edgeWalk = _walks; EndWalk(); }
+        _log = live;
+        E(_closed, "a lightless area never closes its static set");
+        E(SetHash == 0 && _setN == 0, "a lightless close armed the bake");
+        E(BaselineIn, "a closed lightless set does not release the hold");
+        _clsArea = IntPtr.Zero; Reopen(); _edgeSeen = false; SetHash = 0; _quietFrom = int.MinValue;
         if (ok) log.Info($"LightmapBake.HoldSelfCheck: passed (cap {CapSeconds:F0} s, drain {QuietFrames} frames)");
         return ok;
     }

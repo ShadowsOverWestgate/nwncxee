@@ -986,11 +986,13 @@ internal static unsafe partial class LightmapBake
                 if (_readBufs[b] == null || _readBufs[b]!.Length < total) _readBufs[b] = new byte[Math.Max(total, 1 << 20)];
                 fixed (byte* d = _readBufs[b]) Buffer.MemoryCopy(p, d, total, total);
                 Gl.UnmapBuffer(Gl.PIXEL_PACK_BUFFER);
+                var table = new BakeCache.Entry[_pendingRead.Count];   // cold: one per page bake
                 for (int k = 0; k < _pendingRead.Count; k++)
                 {
                     ref Rect r = ref _rects[_pendingRead[k]];
-                    _cache.Save(r.Key, r.W, r.H, _readBufs[b]!, b, _ux0, _uy0, _uw, _uh, r.X, r.Y);
+                    table[k] = new BakeCache.Entry { Key = r.Key, X = r.X - _ux0, Y = r.Y - _uy0, W = r.W, H = r.H };
                 }
+                _cache.Save(_readBufs[b]!, b, _uw, _uh, table);
             }
         }
         Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, 0);
@@ -1011,32 +1013,34 @@ internal static unsafe partial class LightmapBake
                    + $" -> key {key:x16}");
     }
 
-    /// <summary>Cache answers: a hit is uploaded straight into the resident pair at the packed offset and
-    /// lands; a miss queues the rect for the bake.</summary>
-    /// <summary>Cache hits uploaded per frame, in bytes: 1282 re-keyed rects answered in one frame was a 795 ms
-    /// frame of TexSubImage3D (run 21). The rest of the answers wait in the queue.</summary>
-    private const long AdoptBytesPerFrame = 8L << 20;
+    /// <summary>Cache answers: a hit is uploaded straight out of its blob's union (row-strided, no copy) into
+    /// the resident pair at the packed offset and lands; a miss queues the rect for the bake.
+    /// Hits uploaded per frame, in bytes: 1282 re-keyed rects answered in one frame was a 795 ms frame of
+    /// TexSubImage3D (run 21). Under the hold the backdrop hides the hitch, so a page lands in four frames.</summary>
+    private const long AdoptBytesPerFrame = 8L << 20, HoldAdoptBytesPerFrame = 32L << 20;
     private static void Adopt()
     {
-        long uploaded = 0;
-        while (uploaded < AdoptBytesPerFrame && _cache.TryTake(out int ri, out ulong key, out byte[]? data))
+        long uploaded = 0, budget = Hold ? HoldAdoptBytesPerFrame : AdoptBytesPerFrame;
+        bool strided = false;
+        while (uploaded < budget && _cache.TryTake(out int ri, out ulong key, out byte[]? data, out int x, out int y, out int uw, out int uh))
         {
             // the key guards a stale answer: a Revoke between the probe and the answer re-numbers the rects
             if (ri >= _rectN || _rects[ri].State != RState.Probing || _rects[ri].Key != key) continue;
             ref Rect r = ref _rects[ri];
             if (data == null) { r.State = RState.Queued; _queuedAt = _frame; continue; }
-            uploaded += data.Length;
+            uploaded += (long)r.W * r.H * 8;
+            if (!strided) { strided = true; Gl.ActiveTexture(Gl.TEXTURE0); }
+            Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, uw);
             fixed (byte* p = data)
             {
-                Gl.ActiveTexture(Gl.TEXTURE0);
                 Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _texA);
-                Gl.TexSubImage3D(Gl.TEXTURE_2D_ARRAY, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, p);
+                Gl.TexSubImage3D(Gl.TEXTURE_2D_ARRAY, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, p + UnionOffset(0, x, y, uw, uh));
                 Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _texB);
-                Gl.TexSubImage3D(Gl.TEXTURE_2D_ARRAY, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + r.W * r.H * 4);
-                Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, 0);
+                Gl.TexSubImage3D(Gl.TEXTURE_2D_ARRAY, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(1, x, y, uw, uh));
             }
             Land(ri, true); _pending--;
         }
+        if (strided) { Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, 0); Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, 0); }
     }
 
     /// <summary>Grow the resident pair by one layer: a new array, the old layers copied across, the old
@@ -1219,7 +1223,7 @@ internal static unsafe partial class LightmapBake
                    + (_pageMsN > 0 ? $", {_pageMs / _pageMsN:F0} ms wall per page" : "")
                    + (_qBake.Measured ? $", {_qBake.Avg / 1e6:F2} ms GPU per light step (~{_qBake.Avg / 1e6 * _bakeSteps / Math.Max(_pageMsN, 1):F0} ms per page)" : "")
                    + (_bakeSkips > 0 ? $", {_bakeSkips} steps skipped (no gather)" : "")
-                   + (_cache.Stale > 0 ? $", {_cache.Stale} stale bake files replaced" : "")
+                   + (_cache.Stale > 0 ? $", {_cache.Stale} stale bake blobs dropped" : "")
                    + (_uncached > 0 ? $", {_uncached} landed uncached (readback busy)" : "")
                    + TierStats()
                    + $", charted draws/frame {_drewBaked / frames} baked / {_drewNoRect / frames} no rect / {_drewPending / frames} pending / {_drewRefused / frames} refused"

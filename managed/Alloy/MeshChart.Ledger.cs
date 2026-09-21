@@ -118,7 +118,7 @@ internal static partial class MeshChart
     }
 
     /// <summary>Delete oldest-first until the directory fits <paramref name="budget"/>; returns what is left.
-    /// Every file in the directory: the chart ledger and the bake cache (#674, <c>.lmr</c>) share the budget.</summary>
+    /// Every file in the directory: the chart ledger and the bake cache (#674, <c>.lmp</c>) share the budget.</summary>
     internal static long Prune(string dir, long budget)
     {
         var files = new DirectoryInfo(dir).GetFiles();
