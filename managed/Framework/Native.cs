@@ -21,25 +21,100 @@ public static unsafe class Native
         (delegate* unmanaged<IntPtr, byte*, uint, void>)Sym(SymbolMap.ExoStringInit);
     private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
         (delegate* unmanaged<IntPtr, void>)Sym(SymbolMap.ExoStringDtor);
+    private static readonly delegate* unmanaged<byte*, byte*, int, byte*> _fromUtf8 =
+        (delegate* unmanaged<byte*, byte*, int, byte*>)Sym(SymbolMap.EncodingFromUtf8);
+    private static readonly delegate* unmanaged<IntPtr, void> _opDelete =
+        (delegate* unmanaged<IntPtr, void>)Sym(SymbolMap.OperatorDelete);
 
     /// <summary>
-    /// Build a CExoString on the native heap from a C# string. The layout is opaque: we
-    /// zero an over-sized buffer and let the client's own InitFromCharArray populate it.
-    /// Caller MUST <see cref="FreeExoString"/>.
+    /// Build a CExoString on the native heap from a C# string, as <see cref="EngineBytes"/> encodes it.
+    /// The layout is opaque: we zero an over-sized buffer and let the client's own InitFromCharArray
+    /// populate it. Caller MUST <see cref="FreeExoString"/>.
     /// </summary>
     public static IntPtr NewExoString(string s)
     {
         IntPtr exo = Marshal.AllocHGlobal(32);              // > sizeof(CExoString); zeroed below
         for (int i = 0; i < 32; i++) ((byte*)exo)[i] = 0;
         if (_exoInit == null) return exo;
-
-        byte[] utf8 = Encoding.UTF8.GetBytes(s);
-        IntPtr c = Marshal.AllocHGlobal(utf8.Length + 1);   // temp null-terminated C string
-        Marshal.Copy(utf8, 0, c, utf8.Length);
-        ((byte*)c)[utf8.Length] = 0;
-        _exoInit(exo, (byte*)c, (uint)utf8.Length);         // copies into its own buffer
-        Marshal.FreeHGlobal(c);
+        byte[] b = EngineBytes(s);
+        fixed (byte* p = b) _exoInit(exo, p, (uint)b.Length);   // copies into its own buffer
         return exo;
+    }
+
+    /// <summary>The bytes the engine would hold for <paramref name="s"/>: the client never stores UTF-8, every
+    /// vanilla text field is codepage bytes via <c>Encoding::FromUTF8</c>, so typed text goes through that same
+    /// transcode (CX-50) and lands on the wire as vanilla would have sent it. An engine string read Latin1
+    /// (char == byte) round-trips unchanged, since every codepoint below 0x100 maps to its own byte -- unless a
+    /// module <c>encoding.2da</c> is loaded, whose reverse table can miss the 0x80-0x9f range.
+    /// ponytail: decoding engine text with <c>Encoding::ToUTF8</c> on ingest (the CX-50 display half) removes that
+    /// byte-space entirely. Falls back to raw UTF-8 when the engine symbols are absent (stub host).</summary>
+    public static byte[] EngineBytes(string s)
+    {
+        byte[] utf8 = Encoding.UTF8.GetBytes(s);
+        if (_fromUtf8 == null || _opDelete == null) return utf8;
+        byte* str = stackalloc byte[32];                    // sret std::string, both CRTs' sizeof
+        fixed (byte* c = NulTerminated(utf8)) _fromUtf8(str, c, 0);
+        var (buf, len, heap) = StdString(str);
+        byte[] r = new ReadOnlySpan<byte>((byte*)buf, (int)len).ToArray();
+        if (heap != IntPtr.Zero) _opDelete(heap);
+        return r;
+    }
+
+    private static byte[] NulTerminated(byte[] b)
+    {
+        byte[] c = new byte[b.Length + 1];
+        b.CopyTo(c, 0);
+        return c;
+    }
+
+    /// <summary>Read a by-value <c>std::string</c> the engine returned. libstdc++: <c>{ptr@0, len@8, sso@0x10}</c>,
+    /// heap iff ptr is not the inline buffer; MSVC: <c>{sso|ptr@0, len@0x10, cap@0x18}</c>, heap iff cap >= 16.
+    /// <c>Buf</c> is the data; <c>Heap</c> is the block to hand <see cref="SymbolMap.OperatorDelete"/>, which on
+    /// MSVC differs from the data for blocks of 4096+ bytes (<c>_Allocate_manually_vector_aligned</c> parks the
+    /// raw pointer at <c>ptr[-1]</c>).</summary>
+    internal static (IntPtr Buf, uint Len, IntPtr Heap) StdString(byte* s)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            ulong cap = *(ulong*)(s + 0x18);
+            if (cap < 16) return ((IntPtr)s, (uint)*(ulong*)(s + 0x10), IntPtr.Zero);
+            byte* p = *(byte**)s;
+            return ((IntPtr)p, (uint)*(ulong*)(s + 0x10), (IntPtr)(cap + 1 >= 4096 ? ((byte**)p)[-1] : p));
+        }
+        byte* q = *(byte**)s;
+        return ((IntPtr)q, (uint)*(ulong*)(s + 8), q == s + 0x10 ? IntPtr.Zero : (IntPtr)q);
+    }
+
+    /// <summary>The std::string reader against hand-built layouts -- the stub host has no engine to call.</summary>
+    public static void SelfCheck(ExtenderLog log)
+    {
+        byte* s = stackalloc byte[32];
+        bool ok = true;
+        void Expect(bool cond, string what) { if (!cond) { ok = false; log.Info($"Native.SelfCheck FAIL: {what}"); } }
+        if (OperatingSystem.IsWindows())
+        {
+            s[0] = (byte)'a'; s[1] = (byte)'b'; *(ulong*)(s + 0x10) = 2; *(ulong*)(s + 0x18) = 15;
+            var (buf, len, heap) = StdString(s);
+            Expect(buf == (IntPtr)s && len == 2 && heap == IntPtr.Zero, "msvc sso");
+            *(byte**)s = s + 8; *(ulong*)(s + 0x10) = 20; *(ulong*)(s + 0x18) = 31;
+            (buf, len, heap) = StdString(s);
+            Expect(buf == (IntPtr)(s + 8) && len == 20 && heap == buf, "msvc heap");
+            byte* big = stackalloc byte[16];
+            *(byte**)big = s; *(byte**)s = big + 8; *(ulong*)(s + 0x18) = 4095;
+            (buf, len, heap) = StdString(s);
+            Expect(buf == (IntPtr)(big + 8) && heap == (IntPtr)s, "msvc big block un-adjusts via ptr[-1]");
+        }
+        else
+        {
+            *(byte**)s = s + 0x10; *(ulong*)(s + 8) = 2; s[0x10] = (byte)'a'; s[0x11] = (byte)'b';
+            var (buf, len, heap) = StdString(s);
+            Expect(buf == (IntPtr)(s + 0x10) && len == 2 && heap == IntPtr.Zero, "libstdc++ sso");
+            *(byte**)s = s + 8; *(ulong*)(s + 8) = 20;
+            (buf, len, heap) = StdString(s);
+            Expect(buf == (IntPtr)(s + 8) && len == 20 && heap == buf, "libstdc++ heap");
+        }
+        Expect(Encoding.Latin1.GetString(EngineBytes("abc")) == "abc", "ascii passes through");
+        log.Info(ok ? "Native.SelfCheck: passed" : "Native.SelfCheck: FAILED");
     }
 
     /// <summary>Run the engine's CExoString dtor on a string the ENGINE allocated (frees the buffer, leaves the

@@ -204,6 +204,16 @@ internal static unsafe class SymbolMap
     public const string SetText       = "_ZN20CAuroraStringWrapper7SetTextEj";
     public const string ExoStringInit = "_ZN10CExoString17InitFromCharArrayEPKcj";
     public const string ExoStringDtor = "_ZN10CExoStringD1Ev";
+    /// <summary><c>Encoding::FromUTF8(const char*, Encoding::Locale)</c> @0x5fd710 -- the engine's UTF-8 -> codepage
+    /// transcode, what SDL_TEXTINPUT runs before any vanilla edit field sees a byte (WinMessageHandler case 0x303;
+    /// CX-50). Locale 0 = the configured default (settings.tml <c>game.language.codepage</c>, else the game
+    /// language, else cp1252); a module <c>encoding.2da</c> overrides it. Unmappable -> <c>'?'</c>. Returns a
+    /// <c>std::string</c> BY VALUE from a FREE function, so the sret buffer is the first arg on both ABIs:
+    /// <c>(std::string* out, const char*, int locale)</c>. The string layout differs per CRT: <see cref="Native.StdString"/>.</summary>
+    public const string EncodingFromUtf8 = "_ZN8Encoding8FromUTF8B5cxx11EPKcNS_6LocaleE";
+    /// <summary><c>operator delete(void*)</c> -- frees a heap <c>std::string</c> buffer the engine handed us. Linux:
+    /// libstdc++'s, through the global scope; Windows: the game's own (static CRT: the <c>_free_base</c> thunk).</summary>
+    public const string OperatorDelete = "_ZdlPv";
     // consent modal (CPanelOkCancel, as used by the quit dialog). All name-exported on both
     // platforms except operator new (static CRT on Windows -> RVA; see the _win table).
     public const string OperatorNew     = "_Znwm";                                     // Linux: libstdc++ operator new(size_t); Windows: the game's own by RVA
@@ -1307,6 +1317,8 @@ internal static unsafe class SymbolMap
         // operator delete -- allocate from the game's own operator new (build-locked RVA) or the
         // cross-heap free corrupts. Scalar operator new(size_t), VS2017/2019 release.
         [OperatorNew]                 = At(0xc10324),
+        [OperatorDelete]              = At(0xc10370),   // void thunk to _free_base; pairs with the operator new above
+        [EncodingFromUtf8] = Nm("?FromUTF8@Encoding@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@PEBDW4Locale@1@@Z"),
 
         // --- consent modal + input, name-exported on Windows (verified in nwmain.exe's export table) ---
         [OkCancelCtor]    = Nm("??0CPanelOkCancel@@QEAA@XZ"),

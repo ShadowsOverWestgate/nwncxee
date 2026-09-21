@@ -35,12 +35,12 @@ public static class TellTarget
     private const int MaxPending = 8;
 
     /// <summary>Record a tell about to go out so its echo can be tagged with the recipient. The echo the
-    /// server returns is a plain tell from yourself; nothing in it names who it went to.</summary>
-    public static void Sent(string recipient, string text)
+    /// server returns is a plain tell from yourself; nothing in it names who it went to. <paramref name="wire"/>
+    /// is the line in the engine's own byte space (one char per wire byte, <c>Native.EngineBytes</c> read Latin1),
+    /// which is how ingest reads the echo back.</summary>
+    public static void Sent(string recipient, string wire)
     {
-        // Compare in the engine's own byte space: ingest reads the echo one char per byte, so store what
-        // NewExoString will put on the wire, not the managed string.
-        _pending.Enqueue((recipient, System.Text.Encoding.Latin1.GetString(System.Text.Encoding.UTF8.GetBytes(text))));
+        _pending.Enqueue((recipient, wire));
         while (_pending.Count > MaxPending) _pending.TryDequeue(out _);
     }
 
@@ -75,9 +75,8 @@ public static class TellTarget
         E(TakeEcho("Me: [Tell] sup") == "", "consumed once");
         for (int i = 0; i < 20; i++) Sent("X" + i, "t" + i);
         E(TakeEcho("t0") == "" && TakeEcho("t19") == "X19", "ledger is capped");
-        Sent("Zośka", "cześć");
-        E(TakeEcho(System.Text.Encoding.Latin1.GetString(System.Text.Encoding.UTF8.GetBytes("Me: [Powiedz] cześć"))) == "Zośka",
-          "text with bytes above 0x7f matches its byte-per-char echo");
+        Sent("Zośka", "cze\u009c\u00e6");   // cp1250 bytes of "cześć", as EngineBytes hands them over
+        E(TakeEcho("Me: [Powiedz] cze\u009c\u00e6") == "Zośka", "byte-space text matches its byte-per-char echo");
 
         var roster = new FakeRoster();
         roster.Players["Alice"] = 42u;

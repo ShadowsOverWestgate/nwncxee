@@ -64,6 +64,7 @@ public static class ServiceHost
         // dependency in this host so far -- four services call it and none of them owns it.
         AurTex.Attach(log);
         AurTex.SelfCheck(log);
+        Native.SelfCheck(log);   // CX-50: the std::string readback behind the outbound codepage transcode
         CommandRegistry.Global.Log = log;
         CommandRegistry.SelfCheck(log);   // #165: registration/dispatch/enumeration proof, off-device
         ConfigFile.SelfCheck(log);   // #164: the shared line walker, proven at the host

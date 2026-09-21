@@ -1632,6 +1632,7 @@ public sealed unsafe class ChatService : IExtenderService
         IntPtr msg = ClientApi.Message();
         if (msg == IntPtr.Zero) { _log?.Info($"[chat] send dropped (ch={ch}): no live CNWCMessage yet"); return; }
         IntPtr exo = Native.NewExoString(text);
+        string wire = Encoding.Latin1.GetString(Native.EngineBytes(text));   // what the tell echo comes back as
         try
         {
             switch (ch)
@@ -1649,14 +1650,14 @@ public sealed unsafe class ChatService : IExtenderService
                     if (_playerResolver?.Resolve(tellName) is uint pid && _sendTellId != null)
                     {
                         _log?.Info($"[chat] tell SENDING via id: name=\"{tellName}\" pid={pid}");
-                        TellTarget.Sent(_playerResolver.NameOf(pid) ?? tellName, text);   // canonical pin name
+                        TellTarget.Sent(_playerResolver.NameOf(pid) ?? tellName, wire);   // canonical pin name
                         _sendTellId(msg, pid, exo);
                     }
                     else if (_sendTell != null)
                     {
                         IntPtr nameExo = Native.NewExoString(tellName);
                         _log?.Info($"[chat] tell SENDING via TellName fallback: name=\"{tellName}\"");
-                        TellTarget.Sent(tellName, text);
+                        TellTarget.Sent(tellName, wire);
                         try { _sendTell(msg, nameExo, exo); }
                         finally { Native.FreeExoString(nameExo); }
                     }
