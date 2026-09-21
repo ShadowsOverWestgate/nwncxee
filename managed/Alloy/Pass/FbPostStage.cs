@@ -180,19 +180,18 @@ internal static unsafe class FbPostStage
     /// neither claims the chain's own defines nor loses its stub.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"FbPostStage.SelfCheck FAIL: {w}"); } }
-        E(HostedMask(0x3f) == 0x09, "sharpen (0x01) and vibrance (0x08) are hosted; DOF, dynamic contrast, gamma, toon are stripped");
-        E(EffectPost == 4u, "the gate is Camera::GetIsFBEffectEnabled(2)'s bit");
-        E(!FbPostFs.Contains("#define LIGHTING") && !FbPostFs.Contains("#define FOG") && !FbPostFs.Contains("#define POSTPROCESSING 1"),
+        var check = new Checker(log);
+        check.Expect(HostedMask(0x3f) == 0x09, "sharpen (0x01) and vibrance (0x08) are hosted; DOF, dynamic contrast, gamma, toon are stripped");
+        check.Expect(EffectPost == 4u, "the gate is Camera::GetIsFBEffectEnabled(2)'s bit");
+        check.Expect(!FbPostFs.Contains("#define LIGHTING") && !FbPostFs.Contains("#define FOG") && !FbPostFs.Contains("#define POSTPROCESSING 1"),
           "inc_postpr's own defines are left to it");
-        E(FbPostFs.Contains("// $VANILLA inc_postpr\n") && FbPostFs.Contains("vec4 FS_PostProcess() {"), "the region and its stub");
-        E(FbPostFs.Contains("$POSTMASK$") && FbPostFs.Contains("$SQM$"), "the option tokens are in the text");
-        E(!ShaderResource.Tokens("$POSTMASK$ $SQM$").Contains('$'), "the tokens expand");
-        E(!Stale(0, 0), "an unbuilt stage is never stale");
+        check.Expect(FbPostFs.Contains("// $VANILLA inc_postpr\n") && FbPostFs.Contains("vec4 FS_PostProcess() {"), "the region and its stub");
+        check.Expect(FbPostFs.Contains("$POSTMASK$") && FbPostFs.Contains("$SQM$"), "the option tokens are in the text");
+        check.Expect(!ShaderResource.Tokens("$POSTMASK$ $SQM$").Contains('$'), "the tokens expand");
+        check.Expect(!Stale(0, 0), "an unbuilt stage is never stale");
         Arm(0x3f, 2);
-        E(BuildMask == 0x09 && !Stale(0x3f, 2) && !Stale(0x39, 2) && Stale(0x3e, 2) && Stale(0x3f, 1), "stale = a hosted bit or the quality moved");
+        check.Expect(BuildMask == 0x09 && !Stale(0x3f, 2) && !Stale(0x39, 2) && Stale(0x3e, 2) && Stale(0x3f, 1), "stale = a hosted bit or the quality moved");
         BuildMask = -1; BuildQuality = -1;
-        return ok;
+        return check.Ok;
     }
 }

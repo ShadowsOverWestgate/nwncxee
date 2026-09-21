@@ -409,42 +409,41 @@ internal static unsafe partial class Weather
 
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"Weather.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         string lit = ShaderStages.Source(AlloyRenderer.ShdLitFs);
-        E(lit.IndexOf("uniform sampler2DArrayShadow uSunShadow;", StringComparison.Ordinal) < lit.IndexOf("float CxWeatherExposure(", StringComparison.Ordinal),
+        check.Expect(lit.IndexOf("uniform sampler2DArrayShadow uSunShadow;", StringComparison.Ordinal) < lit.IndexOf("float CxWeatherExposure(", StringComparison.Ordinal),
           "the weather lib composes after the sun shadow lib it samples");
-        E(lit.Contains(LitSplice) && lit.Contains(LitSpliceProbe), "the lit main carries both splices");
-        E(lit.IndexOf("float spec = pbr.x, rough = pbr.y, metal = pbr.z;", StringComparison.Ordinal) < lit.IndexOf("float wxWet = 0.0", StringComparison.Ordinal)
+        check.Expect(lit.Contains(LitSplice) && lit.Contains(LitSpliceProbe), "the lit main carries both splices");
+        check.Expect(lit.IndexOf("float spec = pbr.x, rough = pbr.y, metal = pbr.z;", StringComparison.Ordinal) < lit.IndexOf("float wxWet = 0.0", StringComparison.Ordinal)
           && lit.IndexOf("float wxWet = 0.0", StringComparison.Ordinal) < lit.IndexOf("vec3 base = albedo * matDiffuse;", StringComparison.Ordinal),
           "the surface splice sits after synthesis and before the lighting reads albedo/rough/spec");
-        E(lit.Contains("uniform vec3 uFogSkyColor;") && lit.IndexOf("float sunVis = ", StringComparison.Ordinal) < lit.IndexOf("if (wxSnow > 0.0)\n            {\n                // scatter", StringComparison.Ordinal)
+        check.Expect(lit.Contains("uniform vec3 uFogSkyColor;") && lit.IndexOf("float sunVis = ", StringComparison.Ordinal) < lit.IndexOf("if (wxSnow > 0.0)\n            {\n                // scatter", StringComparison.Ordinal)
           && lit.IndexOf("vec3 ambient = ", StringComparison.Ordinal) < lit.IndexOf("ambient += uFogSkyColor", StringComparison.Ordinal),
           "the snow light block sees the sky colour, the sun visibility and the ambient it adds to");
-        E(lit.Contains("uniform int uOit;") && lit.IndexOf("uniform int uOit;", StringComparison.Ordinal) < lit.IndexOf("uCoverEsmP.z > 0.5 && uOit == 0", StringComparison.Ordinal),
+        check.Expect(lit.Contains("uniform int uOit;") && lit.IndexOf("uniform int uOit;", StringComparison.Ordinal) < lit.IndexOf("uCoverEsmP.z > 0.5 && uOit == 0", StringComparison.Ordinal),
           "the exposure read sees the OIT mode before it picks the filtered map");
-        E(WeatherVs.Contains("uniform float uBack;") && WeatherVs.Contains("CxSunShadow(P, -N, back, back)"), "the flake backscatter reads the sun through its cascades");
-        E(WeatherVs.Contains("uniform sampler2DArrayShadow uCover;") && WeatherVs.Contains("CxCovered(Pc);") && WeatherVs.Contains("shown < 0.5"),
+        check.Expect(WeatherVs.Contains("uniform float uBack;") && WeatherVs.Contains("CxSunShadow(P, -N, back, back)"), "the flake backscatter reads the sun through its cascades");
+        check.Expect(WeatherVs.Contains("uniform sampler2DArrayShadow uCover;") && WeatherVs.Contains("CxCovered(Pc);") && WeatherVs.Contains("shown < 0.5"),
           "the precipitation vertex stage tests its instance against the cover map");
-        E(WeatherVs.Contains("uKind == 3 ? CxLip(P, R, U)") && WeatherVs.Contains("if (CxCovered(P) >= 0.5) return 0.0;"),
+        check.Expect(WeatherVs.Contains("uKind == 3 ? CxLip(P, R, U)") && WeatherVs.Contains("if (CxCovered(P) >= 0.5) return 0.0;"),
           "a drip instance survives only under a lip: covered here, open within the feather");
-        E(ShaderContract.LinearSafe(RainFs) && ShaderContract.LinearSafe(SnowFs), "the precipitation stages stay linear");
-        E(WeatherVs.IndexOf("vec3 CxClusteredDiffuse(", StringComparison.Ordinal) < WeatherVs.IndexOf("if (uLit != 0 && shown >= 0.5)", StringComparison.Ordinal)
+        check.Expect(ShaderContract.LinearSafe(RainFs) && ShaderContract.LinearSafe(SnowFs), "the precipitation stages stay linear");
+        check.Expect(WeatherVs.IndexOf("vec3 CxClusteredDiffuse(", StringComparison.Ordinal) < WeatherVs.IndexOf("if (uLit != 0 && shown >= 0.5)", StringComparison.Ordinal)
           && WeatherVs.Contains("#define CX_CLUSTER_XY cxClusterXY") && WeatherVs.Contains("CxSunShadow(P, N, ndl, ndl)")
           && RainFs.Contains("uTint * vLight") && SnowFs.Contains("uTint * vLight"),
           "rain and snow take the light rig per vertex and both fragment stages multiply it in");
-        E(KindOf(1) == Kind.Rain && KindOf(2) == Kind.Snow && KindOf(0) == Kind.None && KindOf(7) == Kind.None,
+        check.Expect(KindOf(1) == Kind.Rain && KindOf(2) == Kind.Snow && KindOf(0) == Kind.None && KindOf(7) == Kind.None,
           "stock rows 1/2 map to rain/snow, row 0 and the fog row to none");
         float d = Density; Kind k = CurrentKind; bool en = Enabled.V;
         Enabled.V = true; Density = 1f; CurrentKind = Kind.Rain; _wet = 0f; _surfTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
-        TickSurface(); E(_wet > 0f && _wet < 0.01f, "one 100ms rain tick soaks a little, not a lot");
+        TickSurface(); check.Expect(_wet > 0f && _wet < 0.01f, "one 100ms rain tick soaks a little, not a lot");
         CurrentKind = Kind.None; Density = 0f; float w = _wet; _surfTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
-        TickSurface(); E(_wet < w, "a dry tick decays");
+        TickSurface(); check.Expect(_wet < w, "a dry tick decays");
         ResetSurface(); Density = 1f; CurrentKind = Kind.Snow; _surfTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
-        TickSurface(); E(_snow == 1f && _wet == 0f, "snow already running at the area edge arrives fully settled");
+        TickSurface(); check.Expect(_snow == 1f && _wet == 0f, "snow already running at the area edge arrives fully settled");
         _enterTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 60; _snow = 0f; _surfTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
-        TickSurface(); E(_snow > 0f && _snow < 0.01f, "snow starting a minute after the edge accumulates from nothing");
+        TickSurface(); check.Expect(_snow > 0f && _snow < 0.01f, "snow starting a minute after the edge accumulates from nothing");
         Density = d; CurrentKind = k; Enabled.V = en; _wet = _snow = _puddle = 0f; _surfTicks = 0; _enterTicks = 0;
-        log.Info(ok ? "Weather.SelfCheck: passed" : "Weather.SelfCheck: FAILED");
+        log.Info(check.Ok ? "Weather.SelfCheck: passed" : "Weather.SelfCheck: FAILED");
     }
 }

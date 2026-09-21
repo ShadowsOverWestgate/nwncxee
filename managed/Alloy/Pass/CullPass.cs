@@ -658,8 +658,7 @@ internal static unsafe class CullPass
     /// draws a neighbour's geometry -- and neither needs a context.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"CullPass.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         // A right-handed look-down-(-Z) camera in the row-vector convention the renderer uses.
         Matrix4x4 view = Matrix4x4.CreateLookAt(new Vector3(0, 0, 0), new Vector3(0, 0, -10), Vector3.UnitY);
@@ -674,34 +673,34 @@ internal static unsafe class CullPass
                     + planes[i * 4 + 3] < -r) return false;
             return true;
         }
-        E(Inside(new Vector3(0, 0, -10), 1f), "a point straight ahead is inside the frustum");
-        E(!Inside(new Vector3(0, 0, 10), 1f), "a point BEHIND the camera is outside it");
-        E(!Inside(new Vector3(0, 0, -500), 1f), "a point past the far plane is outside it");
-        E(!Inside(new Vector3(200, 0, -10), 1f), "a point far off to the side is outside it");
-        E(Inside(new Vector3(200, 0, -10), 400f), "...and is back inside once its radius reaches the camera");
+        check.Expect(Inside(new Vector3(0, 0, -10), 1f), "a point straight ahead is inside the frustum");
+        check.Expect(!Inside(new Vector3(0, 0, 10), 1f), "a point BEHIND the camera is outside it");
+        check.Expect(!Inside(new Vector3(0, 0, -500), 1f), "a point past the far plane is outside it");
+        check.Expect(!Inside(new Vector3(200, 0, -10), 1f), "a point far off to the side is outside it");
+        check.Expect(Inside(new Vector3(200, 0, -10), 400f), "...and is back inside once its radius reaches the camera");
 
         // #341: and the fog does NOT touch these planes any more -- the test is the dispatch's, because it
         // needs the sphere's height. A fog that came back to the frustum would cull a skyline again.
         bool fogWas = FrameInputs.FogOn; float endWas = FrameInputs.FogEnd;
         FrameInputs.FogOn = true; FrameInputs.FogEnd = 50f;
         Planes((float*)&vp, planes, Vector3.Zero);
-        E(Inside(new Vector3(0, 0, -60), 1f), "fog does not slide a frustum plane: a point past the fog end survives it");
+        check.Expect(Inside(new Vector3(0, 0, -60), 1f), "fog does not slide a frustum plane: a point past the fog end survives it");
         FrameInputs.FogOn = fogWas; FrameInputs.FogEnd = endWas;
         Planes((float*)&vp, planes, Vector3.Zero);
-        E(!Inside(new Vector3(0, 0, -500), 1f), "fog off: the far plane is the engine's again");
+        check.Expect(!Inside(new Vector3(0, 0, -500), 1f), "fog off: the far plane is the engine's again");
 
         // The pack, against what the shader reads out of it. Not a GL call in sight: this is a memory layout
         // shared with GLSL, and every field landing one slot over is a draw reading its neighbour's range.
         uint* src = stackalloc uint[2 * SrcUints];
         Pack(src, 30, 200, 7, 11, 0, 0);
         Pack(src + SrcUints, 60, 400, 9, 13, 0, 0);
-        E(src[0] == 30 && src[1] == 100 && src[2] == 7 && src[3] == 11 && src[4] == 0 && src[5] == 0,
+        check.Expect(src[0] == 30 && src[1] == 100 && src[2] == 7 && src[3] == 11 && src[4] == 0 && src[5] == 0,
           "draw 0 packs count/firstIndex/baseVertex/slot/batch/start in that order");
-        E(src[SrcUints + 1] == 200, "...and the byte offset becomes an ELEMENT index (two-byte indices)");
-        E(CmdUints * sizeof(uint) == 20, "the indirect command stride is GL's 20 bytes");
+        check.Expect(src[SrcUints + 1] == 200, "...and the byte offset becomes an ELEMENT index (two-byte indices)");
+        check.Expect(CmdUints * sizeof(uint) == 20, "the indirect command stride is GL's 20 bytes");
 
-        ok &= Parity(log, vp, planes);
-        log.Info(ok ? "CullPass.SelfCheck: passed" : "CullPass.SelfCheck: FAILED -- see above");
+        check.Ok &= Parity(log, vp, planes);
+        log.Info(check.Ok ? "CullPass.SelfCheck: passed" : "CullPass.SelfCheck: FAILED -- see above");
     }
 
     /// <summary>#287: one draw's source record, written where the batch walk already writes the same draw's
@@ -735,8 +734,7 @@ internal static unsafe class CullPass
     /// that is what this goes red on.</para></summary>
     private static bool Parity(ExtenderLog log, Matrix4x4 vp, float* planes)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"CullPass.Parity FAIL: {w}"); } }
+        var check = new Checker(log, "CullPass.ParitySelfCheck");
 
         // Three batches, all inside the frustum the caller built: straight ahead at 10 units. Batch 2 is
         // the SORTED one -- #290's half, where the back-to-front order is produced rather than inherited.
@@ -771,38 +769,38 @@ internal static unsafe class CullPass
 
         // Everything visible: the compaction must reproduce the staged list exactly, batch for batch.
         Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd, outSlot, cnt);
-        E(cnt[0] == 2 && cnt[1] == 3, "only the out-of-frustum draw is dropped when nothing else can be");
-        E(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
+        check.Expect(cnt[0] == 2 && cnt[1] == 3, "only the out-of-frustum draw is dropped when nothing else can be");
+        check.Expect(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
           "the compacted list agrees with the CPU-staged one draw for draw");
 
         // #290 (AC1 + AC5), the sorted half. Not "the same set": the submitted order has to BE the
         // back-to-front one, produced from keys the dispatch measured, with the culled draw compacted out.
-        E(cnt[2] == 3, "the sorted batch's count is its survivors, not its staged length");
-        E(outSlot[6] == 7 && outSlot[7] == 8 && outSlot[8] == 6,
+        check.Expect(cnt[2] == 3, "the sorted batch's count is its survivors, not its staged length");
+        check.Expect(outSlot[6] == 7 && outSlot[7] == 8 && outSlot[8] == 6,
           "the sorted batch submits farthest first, and an exact tie keeps the lower staged index");
-        E(Sorted(sph, outSlot, gStart[2], (int)cnt[2], eye, log),
+        check.Expect(Sorted(sph, outSlot, gStart[2], (int)cnt[2], eye, log),
           "...which is to say every neighbour in it is no nearer than the one before");
-        E(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
+        check.Expect(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
           "...and each of its commands is its own staged draw's range");
         // A rank is order-independent by construction; this is what pins that it really is.
         Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd, outSlot, cnt,
                 scramble: true);
-        E(cnt[2] == 3 && outSlot[6] == 7 && outSlot[7] == 8 && outSlot[8] == 6,
+        check.Expect(cnt[2] == 3 && outSlot[6] == 7 && outSlot[7] == 8 && outSlot[8] == 6,
           "the sort is the same when the atomic hands its draws out backwards");
 
         // LOD: a speck goes, an exempt record stays, and the ordinary draws are untouched. uLodScale is
         // proj.M22 * viewportH / 2 -- 1.0 * 1080 / 2 for the caller's 90-degree projection.
         Emulate(src, sph, drawN, groups, planes, vp, 1f, 540f, compactBelow, eye, key, cmd, outSlot, cnt);
-        E(cnt[1] == 2 && outSlot[gStart[1]] == 3 && outSlot[gStart[1] + 1] == 4,
+        check.Expect(cnt[1] == 2 && outSlot[gStart[1]] == 3 && outSlot[gStart[1] + 1] == 4,
           "a sub-pixel draw is LOD-culled and the ones that are not are the ones that survive");
-        E(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
+        check.Expect(Agrees(src, drawN, groups, gStart, cmd, outSlot, cnt, log),
           "...and what survives it is still the staged record, field for field");
         Emulate(src, sph, drawN, groups, planes, vp, 1f, 0f, compactBelow, eye, key, cmd, outSlot, cnt);
-        E(cnt[1] == 3, "a pass with no perspective scale runs no LOD test rather than culling everything");
+        check.Expect(cnt[1] == 3, "a pass with no perspective scale runs no LOD test rather than culling everything");
         Emulate(src, sph, drawN, groups, planes, vp, 1e6f, 540f, compactBelow, eye, key, cmd, outSlot, cnt);
-        E(cnt[1] == 1 && outSlot[gStart[1]] == 4,
+        check.Expect(cnt[1] == 1 && outSlot[gStart[1]] == 4,
           "an absurd LOD threshold still cannot touch a NeverCull record");
-        E(cnt[2] == 3, "...nor anything in a SORTED batch, which runs no LOD test at all");
+        check.Expect(cnt[2] == 3, "...nor anything in a SORTED batch, which runs no LOD test at all");
 
         // #489: the two prepass phases. A stale pyramid says draws 0, 2 and 6 are hidden -- 2 wrongly, and
         // 6 is in the SORTED batch, which phase one must not test. Phase one draws the rest and marks
@@ -815,26 +813,26 @@ internal static unsafe class CullPass
         occ[0] = true; occ[2] = true; occ[6] = true;
         Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd, outSlot, cnt,
                 rejMode: RejWrite, rej: rej, occ: occ);
-        E(cnt[0] == 0 && cnt[1] == 3, "phase one draws what the stale pyramid and the frustum admit");
-        E(rej[0] == 1 && rej[2] == 1 && rej[1] == 0 && rej[3] == 0 && rej[4] == 0 && rej[5] == 0,
+        check.Expect(cnt[0] == 0 && cnt[1] == 3, "phase one draws what the stale pyramid and the frustum admit");
+        check.Expect(rej[0] == 1 && rej[2] == 1 && rej[1] == 0 && rej[3] == 0 && rej[4] == 0 && rej[5] == 0,
           "phase one marks the stale hi-Z rejects and NOT the frustum's");
-        E(rej[6] == 0 && cnt[2] == 3, "a sorted draw is never hi-Z tested in phase one, so it is never marked");
+        check.Expect(rej[6] == 0 && cnt[2] == 3, "a sorted draw is never hi-Z tested in phase one, so it is never marked");
         occ[2] = false;
         Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd2, out2, cnt2,
                 rejMode: RejRead, rej: rej, occ: occ);
-        E(cnt2[0] == 1 && out2[0] == 2, "phase two draws exactly the draw the stale pyramid wrongly rejected");
-        E(cnt2[1] == 0 && cnt2[2] == 0, "...and nothing phase one already drew, nor any sorted draw");
-        E(Agrees(src, drawN, groups, gStart, cmd2, out2, cnt2, log), "...as its own staged record");
+        check.Expect(cnt2[0] == 1 && out2[0] == 2, "phase two draws exactly the draw the stale pyramid wrongly rejected");
+        check.Expect(cnt2[1] == 0 && cnt2[2] == 0, "...and nothing phase one already drew, nor any sorted draw");
+        check.Expect(Agrees(src, drawN, groups, gStart, cmd2, out2, cnt2, log), "...as its own staged record");
         // The property the ticket promises: phase one plus phase two IS the fresh-pyramid list.
         Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd, outSlot, cnt, occ: occ);
-        E(cnt[0] == 1 && outSlot[0] == 2 && cnt[1] == 3,
+        check.Expect(cnt[0] == 1 && outSlot[0] == 2 && cnt[1] == 3,
           "the union of the two phases is what a same-frame test against the fresh pyramid draws");
         // A stale rejection the fresh pyramid confirms stays out, but a frustum reject is never re-tested.
         occ[0] = true; rej[1] = 1;   // a forged mark on the off-frustum draw
         Emulate(src, sph, drawN, groups, planes, vp, 0f, 0f, compactBelow, eye, key, cmd2, out2, cnt2,
                 rejMode: RejRead, rej: rej, occ: occ);
-        E(cnt2[0] == 1 && out2[0] == 2, "phase two still applies the frustum, and a confirmed occlusion stays culled");
-        return ok;
+        check.Expect(cnt2[0] == 1 && out2[0] == 2, "phase two still applies the frustum, and a confirmed occlusion stays culled");
+        return check.Ok;
     }
 
     /// <summary>The port. <c>i</c> is <c>gl_GlobalInvocationID.x</c> and the counter is the atomic; every
@@ -933,7 +931,7 @@ internal static unsafe class CullPass
             Vector3 d = new Vector3(s[0], s[1], s[2]) - eye;
             float k = Vector3.Dot(d, d);
             if (k > prev)
-            { log.Info($"CullPass.Parity FAIL: output {o} is farther than the one before it"); return false; }
+            { log.Info($"CullPass.ParitySelfCheck FAIL: output {o} is farther than the one before it"); return false; }
             prev = k;
         }
         return true;
@@ -955,11 +953,11 @@ internal static unsafe class CullPass
                     if ((int)src[(long)d * SrcUints + 3] == outSlot[o] && (int)src[(long)d * SrcUints + 4] == g)
                         found = d;
                 if (found < 0)
-                { log.Info($"CullPass.Parity FAIL: output {o} names a slot batch {g} never staged"); ok = false; continue; }
+                { log.Info($"CullPass.ParitySelfCheck FAIL: output {o} names a slot batch {g} never staged"); ok = false; continue; }
                 uint* b = src + (long)found * SrcUints;
                 uint* k = cmd + (long)o * CmdUints;
                 if (k[0] != b[0] || k[1] != 1u || k[2] != b[1] || k[3] != b[2] || k[4] != 0u)
-                { log.Info($"CullPass.Parity FAIL: output {o}'s command is not its staged draw's range"); ok = false; }
+                { log.Info($"CullPass.ParitySelfCheck FAIL: output {o}'s command is not its staged draw's range"); ok = false; }
             }
         return ok;
     }

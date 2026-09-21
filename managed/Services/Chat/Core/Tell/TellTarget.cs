@@ -62,21 +62,20 @@ public static class TellTarget
     /// <summary>Off-device proof of the three AC cases + edge cases.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"TellTarget.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         // Echo ledger: text-matched, oldest dropped entries discarded, nothing pending = "".
         while (_pending.TryDequeue(out _)) { }
-        E(TakeEcho("Me: [Tell] hi") == "", "no pending echo = empty");
+        check.Expect(TakeEcho("Me: [Tell] hi") == "", "no pending echo = empty");
         Sent("Alice", "hi"); Sent("Bob", "yo"); Sent("Carol", "sup");
-        E(TakeEcho("<cRGB>Me</c>: [Tell] yo") == "Bob", "echo matched by text, not by order");
-        E(TakeEcho("Me: [Tell] hi") == "", "entries older than a match are dropped echoes");
-        E(TakeEcho("Me: [Tell] sup") == "Carol", "later entry survives");
-        E(TakeEcho("Me: [Tell] sup") == "", "consumed once");
+        check.Expect(TakeEcho("<cRGB>Me</c>: [Tell] yo") == "Bob", "echo matched by text, not by order");
+        check.Expect(TakeEcho("Me: [Tell] hi") == "", "entries older than a match are dropped echoes");
+        check.Expect(TakeEcho("Me: [Tell] sup") == "Carol", "later entry survives");
+        check.Expect(TakeEcho("Me: [Tell] sup") == "", "consumed once");
         for (int i = 0; i < 20; i++) Sent("X" + i, "t" + i);
-        E(TakeEcho("t0") == "" && TakeEcho("t19") == "X19", "ledger is capped");
+        check.Expect(TakeEcho("t0") == "" && TakeEcho("t19") == "X19", "ledger is capped");
         Sent("Zośka", "cze\u009c\u00e6");   // cp1250 bytes of "cześć", as EngineBytes hands them over
-        E(TakeEcho("Me: [Powiedz] cze\u009c\u00e6") == "Zośka", "byte-space text matches its byte-per-char echo");
+        check.Expect(TakeEcho("Me: [Powiedz] cze\u009c\u00e6") == "Zośka", "byte-space text matches its byte-per-char echo");
 
         var roster = new FakeRoster();
         roster.Players["Alice"] = 42u;
@@ -84,49 +83,49 @@ public static class TellTarget
 
         // Pinned + online -> resolves to the live id
         var pinned = new Tab("Tell:Alice", 0x002) { PinnedName = "Alice" };
-        E(Resolve(pinned, null, roster) == 42u, "pinned online resolves");
+        check.Expect(Resolve(pinned, null, roster) == 42u, "pinned online resolves");
 
         // Pinned + offline -> null (drop, never reroute)
         var offline = new Tab("Tell:Eve", 0x002) { PinnedName = "Eve" };
-        E(Resolve(offline, null, roster) == null, "pinned offline drops");
+        check.Expect(Resolve(offline, null, roster) == null, "pinned offline drops");
 
         // Typed target beats pin: /t "Bob" on an Alice-pinned tab sends to Bob
-        E(Resolve(pinned, "Bob", roster) == 99u, "typed target beats pin");
+        check.Expect(Resolve(pinned, "Bob", roster) == 99u, "typed target beats pin");
 
         // Typed target offline -> drop (not rerouted to pin)
-        E(Resolve(pinned, "Eve", roster) == null, "typed offline drops even with valid pin");
+        check.Expect(Resolve(pinned, "Eve", roster) == null, "typed offline drops even with valid pin");
 
         // Unpinned + no typed target -> null
         var unpinned = new Tab("Tell", 0x002);
-        E(Resolve(unpinned, null, roster) == null, "unpinned with no target is null");
+        check.Expect(Resolve(unpinned, null, roster) == null, "unpinned with no target is null");
 
         // Unpinned + typed target -> resolves
-        E(Resolve(unpinned, "Alice", roster) == 42u, "unpinned with typed target resolves");
+        check.Expect(Resolve(unpinned, "Alice", roster) == 42u, "unpinned with typed target resolves");
 
         // Case-sensitive: engine uses strcmp, so "alice" != "Alice" -> drop
         var casePin = new Tab("Tell:alice", 0x002) { PinnedName = "alice" };
-        E(Resolve(casePin, null, roster) == null, "case-sensitive: wrong case drops");
+        check.Expect(Resolve(casePin, null, roster) == null, "case-sensitive: wrong case drops");
 
         // Null resolver -> drops safely
-        E(Resolve(pinned, null, null) == null, "null resolver drops pinned");
-        E(Resolve(unpinned, "Alice", null) == null, "null resolver drops typed");
+        check.Expect(Resolve(pinned, null, null) == null, "null resolver drops pinned");
+        check.Expect(Resolve(unpinned, "Alice", null) == null, "null resolver drops typed");
 
         // NameOf: reverse lookup (portrait click-to-tell)
-        E(roster.NameOf(42u) == "Alice", "NameOf resolves a live id");
-        E(roster.NameOf(99u) == "Bob", "NameOf resolves another id");
-        E(roster.NameOf(999u) == null, "NameOf returns null for unknown id");
+        check.Expect(roster.NameOf(42u) == "Alice", "NameOf resolves a live id");
+        check.Expect(roster.NameOf(99u) == "Bob", "NameOf resolves another id");
+        check.Expect(roster.NameOf(999u) == null, "NameOf returns null for unknown id");
 
         // Empty PinnedName = unpinned
         var emptyPin = new Tab("Tell", 0x002) { PinnedName = "" };
-        E(Resolve(emptyPin, null, roster) == null, "empty pin = unpinned");
+        check.Expect(Resolve(emptyPin, null, roster) == null, "empty pin = unpinned");
 
         // ResolveName: same precedence, no client-side presence gate (server validates)
-        E(ResolveName(pinned, null, roster) == "Alice", "ResolveName pinned online");
-        E(ResolveName(pinned, "Bob", roster) == "Bob", "ResolveName typed beats pin");
-        E(ResolveName(offline, null, roster) == "Eve", "ResolveName offline still returns name");
-        E(ResolveName(unpinned, null, roster) == null, "ResolveName unpinned no target");
+        check.Expect(ResolveName(pinned, null, roster) == "Alice", "ResolveName pinned online");
+        check.Expect(ResolveName(pinned, "Bob", roster) == "Bob", "ResolveName typed beats pin");
+        check.Expect(ResolveName(offline, null, roster) == "Eve", "ResolveName offline still returns name");
+        check.Expect(ResolveName(unpinned, null, roster) == null, "ResolveName unpinned no target");
 
-        log.Info(ok ? "TellTarget.SelfCheck: passed" : "TellTarget.SelfCheck: FAILED");
+        log.Info(check.Ok ? "TellTarget.SelfCheck: passed" : "TellTarget.SelfCheck: FAILED");
     }
 
     /// <summary>In-memory fake for off-device tests. Case-sensitive (matching the engine's strcmp).</summary>

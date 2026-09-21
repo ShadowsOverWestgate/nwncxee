@@ -416,8 +416,7 @@ public static class UiHost
     /// precedence, at two scales, leaving the static registry empty. No GL, no device.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"UiHost.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         float savedScale = Metrics.Scale;
         var created = new List<Window>();
@@ -443,37 +442,37 @@ public static class UiHost
                 var a = new Window(100, 100, 200, 150); created.Add(a);
                 var b = new Window(150, 120, 200, 150); created.Add(b);   // overlaps a, created later -> on top
 
-                E(b.Z > a.Z, "later window gets the higher z");
-                E(HitTest(160, 130) == b, "overlap hit-test returns the topmost window");
-                E(HitTest(110, 110) == a, "non-overlap hit-test returns the only window there");
-                E(HitTest(9999, 9999) == null, "hit-test miss returns null");
+                check.Expect(b.Z > a.Z, "later window gets the higher z");
+                check.Expect(HitTest(160, 130) == b, "overlap hit-test returns the topmost window");
+                check.Expect(HitTest(110, 110) == a, "non-overlap hit-test returns the only window there");
+                check.Expect(HitTest(9999, 9999) == null, "hit-test miss returns null");
 
                 Focus(a);
-                E(Focused == a, "focus sets the single owner");
-                E(a.Z > b.Z, "focus raises the window to the top");
-                E(HitTest(160, 130) == a, "the raised window now wins the overlap");
+                check.Expect(Focused == a, "focus sets the single owner");
+                check.Expect(a.Z > b.Z, "focus raises the window to the top");
+                check.Expect(HitTest(160, 130) == a, "the raised window now wins the overlap");
                 Focus(b);
-                E(Focused == b, "focusing another replaces the single owner");
+                check.Expect(Focused == b, "focusing another replaces the single owner");
 
                 // non-focusable overlay: skipped by focus hit-test, still drives the cursor (AC #3 / US #11)
                 var overlay = new Window(150, 120, 60, 60) { Focusable = false }; created.Add(overlay);
                 overlay.Regions.Add(new HitRegion(150, 120, 60, 60, CursorKind.Link));
-                E(HitTest(160, 130) == overlay, "topmost overlay wins the cursor hit-test");
-                E(PickCursor(160, 130) == CursorKind.Link, "cursor follows the overlay's region");
-                E(HitTestFocusable(160, 130) == b, "focus hit-test skips the non-focusable overlay");
-                E(FocusAt(160, 130) == b, "click through the overlay focuses the window beneath");
+                check.Expect(HitTest(160, 130) == overlay, "topmost overlay wins the cursor hit-test");
+                check.Expect(PickCursor(160, 130) == CursorKind.Link, "cursor follows the overlay's region");
+                check.Expect(HitTestFocusable(160, 130) == b, "focus hit-test skips the non-focusable overlay");
+                check.Expect(FocusAt(160, 130) == b, "click through the overlay focuses the window beneath");
 
                 // cursor from capability flags, scaled: grip and drag handle track Metrics.Scale
                 var chrome = new Window(0, 0, 300, 200) { Draggable = true, Resizable = true }; created.Add(chrome);
                 Focus(chrome);   // raise it above the others so its cursor wins the interior points
-                E(PickCursor(1, 1) == CursorKind.Move, "draggable title strip picks Move");
-                E(PickCursor(299, 199) == CursorKind.Resize, "resizable grip corner picks Resize");
-                E(PickCursor(150, 150) == CursorKind.Default, "window interior picks Default");
-                E(PickCursor(9999, 9999) == CursorKind.None, "no window under pointer picks None");
+                check.Expect(PickCursor(1, 1) == CursorKind.Move, "draggable title strip picks Move");
+                check.Expect(PickCursor(299, 199) == CursorKind.Resize, "resizable grip corner picks Resize");
+                check.Expect(PickCursor(150, 150) == CursorKind.Default, "window interior picks Default");
+                check.Expect(PickCursor(9999, 9999) == CursorKind.None, "no window under pointer picks None");
 
                 foreach (var w in created) Unregister(w);
                 created.Clear();
-                E(Windows.Count == 0, "registry empty between scales");
+                check.Expect(Windows.Count == 0, "registry empty between scales");
             }
 
             // draw roll-call: DrawFrame invokes DrawContent bottom-up in z-order (focused/topmost last).
@@ -482,15 +481,15 @@ public static class UiHost
             var d1 = new Window(0, 0, 10, 10); created.Add(d1); d1.DrawContent = () => order.Add(1);
             var d2 = new Window(0, 0, 10, 10); created.Add(d2); d2.DrawContent = () => order.Add(2);
             DrawFrame();
-            E(order.Count == 3 && order[0] == 0 && order[1] == 1 && order[2] == 2,
+            check.Expect(order.Count == 3 && order[0] == 0 && order[1] == 1 && order[2] == 2,
               "draw roll-call runs every window's content once, in ascending z-order");
             order.Clear();
             Focus(d0);   // raising d0 to the top must make it paint last
             DrawFrame();
-            E(order.Count == 3 && order[2] == 0, "focus raises a window to paint last");
+            check.Expect(order.Count == 3 && order[2] == 0, "focus raises a window to paint last");
             var inert = new Window(0, 0, 10, 10); created.Add(inert);   // null DrawContent -> skipped, no throw
             order.Clear(); DrawFrame();
-            E(order.Count == 3, "a window with no content draw is skipped without faulting");
+            check.Expect(order.Count == 3, "a window with no content draw is skipped without faulting");
             foreach (var w in created) Unregister(w);
             created.Clear();
 
@@ -499,21 +498,21 @@ public static class UiHost
             var chord = new TestChord(priority: 10, key: 42); chords.Add(chord); AddChordConsumer(chord);
 
             Focus(win);
-            E(!KeyboardOwned, "focus alone does not own the keyboard");
-            E(ResolveKey(42) == InputLayer.ChordConsumer, "gate clear: a chord consumer takes its key");
-            E(ResolveKey(7) == InputLayer.GameplayKeybind, "gate clear: an unclaimed key falls to gameplay keybinds");
+            check.Expect(!KeyboardOwned, "focus alone does not own the keyboard");
+            check.Expect(ResolveKey(42) == InputLayer.ChordConsumer, "gate clear: a chord consumer takes its key");
+            check.Expect(ResolveKey(7) == InputLayer.GameplayKeybind, "gate clear: an unclaimed key falls to gameplay keybinds");
 
             var hi = new TestChord(priority: 20, key: 42); chords.Add(hi); AddChordConsumer(hi);
-            E(ResolveChord(42) == hi, "the higher-priority consumer wins the shared key");
+            check.Expect(ResolveChord(42) == hi, "the higher-priority consumer wins the shared key");
 
             win.WantsKeyboard = true;
-            E(KeyboardOwned, "the focused window asserting WantsKeyboard sets the gate");
-            E(ResolveKey(42) == InputLayer.FocusedContent, "gate set: focused content eats even a chord's key");
-            E(ResolveKey(7) == InputLayer.FocusedContent, "gate set: focused content eats gameplay keys too");
+            check.Expect(KeyboardOwned, "the focused window asserting WantsKeyboard sets the gate");
+            check.Expect(ResolveKey(42) == InputLayer.FocusedContent, "gate set: focused content eats even a chord's key");
+            check.Expect(ResolveKey(7) == InputLayer.FocusedContent, "gate set: focused content eats gameplay keys too");
 
             // stale owner: unregistering the focused, keyboard-owning window drops the gate
             Unregister(win); created.Remove(win);
-            E(Focused == null && !KeyboardOwned, "unregistering the owner clears focus and drops the gate");
+            check.Expect(Focused == null && !KeyboardOwned, "unregistering the owner clears focus and drops the gate");
 
             // ---- live routing (#64): mouse/key/text dispatch, keyboard gate, chord fall-through, focus mode ----
             {
@@ -523,32 +522,32 @@ public static class UiHost
                 var upper = new Window(0, 0, 100, 100); created.Add(upper);   // registered later -> higher z -> topmost
                 lo.OnMouseButton = (d, b, x, y) => { hits.Add("lo.btn"); return false; };   // never consumes
                 upper.OnMouseButton = (d, b, x, y) => { hits.Add("up.btn"); return true; }; // consumes
-                E(DispatchMouseButton(true, 1, 5, 5), "mouse button consumed by the topmost window");
-                E(hits.Count == 1 && hits[0] == "up.btn", "topmost-first: the lower window never sees a consumed press");
+                check.Expect(DispatchMouseButton(true, 1, 5, 5), "mouse button consumed by the topmost window");
+                check.Expect(hits.Count == 1 && hits[0] == "up.btn", "topmost-first: the lower window never sees a consumed press");
                 hits.Clear();
                 upper.OnMouseButton = (d, b, x, y) => { hits.Add("up.btn"); return false; };   // now passes through
-                E(!DispatchMouseButton(true, 1, 5, 5), "no window consumes -> falls through");
-                E(hits.Count == 2 && hits[0] == "up.btn" && hits[1] == "lo.btn", "unconsumed press walks top-down to the lower window");
+                check.Expect(!DispatchMouseButton(true, 1, 5, 5), "no window consumes -> falls through");
+                check.Expect(hits.Count == 2 && hits[0] == "up.btn" && hits[1] == "lo.btn", "unconsumed press walks top-down to the lower window");
 
                 // A modal (SuppressChords) window wins the press ahead of a higher-z non-modal one.
                 hits.Clear();
                 lo.SuppressChords = true;
                 lo.OnMouseButton = (d, b, x, y) => { hits.Add("lo.btn"); return true; };
-                E(DispatchMouseButton(true, 1, 5, 5) && hits.Count == 1 && hits[0] == "lo.btn",
+                check.Expect(DispatchMouseButton(true, 1, 5, 5) && hits.Count == 1 && hits[0] == "lo.btn",
                   "modal window wins the press before a higher-z non-modal window");
                 hits.Clear();
-                E(!DispatchMouseButton(true, 1, 5, 5, captureOnly: true) && hits.Count == 0,
+                check.Expect(!DispatchMouseButton(true, 1, 5, 5, captureOnly: true) && hits.Count == 0,
                   "the capture pass skips a modal window that does not capture the pointer");
                 lo.CapturesPointer = true;
-                E(DispatchMouseButton(true, 1, 5, 5, captureOnly: true) && hits.Count == 1 && hits[0] == "lo.btn",
+                check.Expect(DispatchMouseButton(true, 1, 5, 5, captureOnly: true) && hits.Count == 1 && hits[0] == "lo.btn",
                   "the capture pass reaches only the capturing modal window");
                 lo.OnMouseWheel = dy => { hits.Add("lo.wheel"); return true; };
                 hits.Clear();
-                E(DispatchMouseWheel(1, captureOnly: true) && hits.Count == 1 && hits[0] == "lo.wheel",
+                check.Expect(DispatchMouseWheel(1, captureOnly: true) && hits.Count == 1 && hits[0] == "lo.wheel",
                   "the wheel's capture pass reaches the capturing modal window");
                 lo.CapturesPointer = false;
                 hits.Clear();
-                E(!DispatchMouseWheel(1, captureOnly: true) && hits.Count == 0, "no capturing window: the capture pass finds no consumer");
+                check.Expect(!DispatchMouseWheel(1, captureOnly: true) && hits.Count == 0, "no capturing window: the capture pass finds no consumer");
                 lo.OnMouseWheel = null;
                 lo.SuppressChords = false;
                 lo.OnMouseButton = (d, b, x, y) => { hits.Add("lo.btn"); return false; };
@@ -558,60 +557,60 @@ public static class UiHost
                 bool motion = false, wheel = false;
                 upper.OnMouseMotion = (x, y) => { motion = true; return true; };
                 upper.OnMouseWheel = dy => { wheel = true; return true; };
-                E(DispatchMouseMotion(5, 5) && motion, "motion routes to a window");
-                E(DispatchMouseWheel(1) && wheel, "wheel routes to a window");
+                check.Expect(DispatchMouseMotion(5, 5) && motion, "motion routes to a window");
+                check.Expect(DispatchMouseWheel(1) && wheel, "wheel routes to a window");
 
                 // Keys: a full owner eats everything; a selective consumer eats only what it handles.
                 var keys = new List<uint>();
                 lo.OnKey = (k, m) => { keys.Add(k); return k == 9; };   // selective: eats key 9 only
-                E(!DispatchKey(7, 0), "no owner + selective consumer rejects -> key falls through");
-                E(DispatchKey(9, 0), "selective consumer eats its key");
+                check.Expect(!DispatchKey(7, 0), "no owner + selective consumer rejects -> key falls through");
+                check.Expect(DispatchKey(9, 0), "selective consumer eats its key");
                 keys.Clear();
                 upper.OnKey = (k, m) => { keys.Add(k); return false; };
                 RequestKeyboard(upper, true);   // upper becomes the full keyboard owner
-                E(DispatchKey(7, 0) && keys.Count == 1 && keys[0] == 7, "the keyboard owner eats every key, first");
-                E(!lo.WantsKeyboard, "the lower window is not the owner");
+                check.Expect(DispatchKey(7, 0) && keys.Count == 1 && keys[0] == 7, "the keyboard owner eats every key, first");
+                check.Expect(!lo.WantsKeyboard, "the lower window is not the owner");
 
                 // Text goes to the owner's OnText.
                 bool gotText = false;
                 upper.OnText = _ => gotText = true;
-                E(DispatchText(IntPtr.Zero) && gotText, "text routes to the keyboard owner");
+                check.Expect(DispatchText(IntPtr.Zero) && gotText, "text routes to the keyboard owner");
                 RequestKeyboard(upper, false);
-                E(!DispatchText(IntPtr.Zero), "no owner -> text is dropped");
+                check.Expect(!DispatchText(IntPtr.Zero), "no owner -> text is dropped");
 
                 // Keyboard gate: RequestKeyboard drives the framework gate callback on each call.
                 int gateCalls = 0; bool gateLast = false;
                 KeyboardGate = on => { gateCalls++; gateLast = on; };
                 RequestKeyboard(upper, true);
-                E(gateCalls == 1 && gateLast && upper.WantsKeyboard, "RequestKeyboard(on) sets WantsKeyboard and drives the gate");
+                check.Expect(gateCalls == 1 && gateLast && upper.WantsKeyboard, "RequestKeyboard(on) sets WantsKeyboard and drives the gate");
                 RequestKeyboard(upper, false);
-                E(gateCalls == 2 && !gateLast && !upper.WantsKeyboard, "RequestKeyboard(off) clears WantsKeyboard and drives the gate");
+                check.Expect(gateCalls == 2 && !gateLast && !upper.WantsKeyboard, "RequestKeyboard(off) clears WantsKeyboard and drives the gate");
                 RequestKeyboard(lo, true); RequestKeyboard(upper, true);
                 RequestKeyboard(lo, false);
-                E(gateCalls == 4 && gateLast && upper.WantsKeyboard, "a release while another window owns the keyboard leaves the gate up");
+                check.Expect(gateCalls == 4 && gateLast && upper.WantsKeyboard, "a release while another window owns the keyboard leaves the gate up");
                 RequestKeyboard(upper, false);
-                E(gateCalls == 5 && !gateLast, "the last owner's release drops the gate");
+                check.Expect(gateCalls == 5 && !gateLast, "the last owner's release drops the gate");
                 KeyboardGate = null;
 
                 // Chord suppression + fall-through fire.
                 var tc = new TestChord(priority: 5, key: 3); chords.Add(tc); AddChordConsumer(tc);
-                E(!AnySuppressChords, "no window suppresses chords by default");
+                check.Expect(!AnySuppressChords, "no window suppresses chords by default");
                 upper.SuppressChords = true;
-                E(AnySuppressChords, "a window can withhold chords");
+                check.Expect(AnySuppressChords, "a window can withhold chords");
                 upper.SuppressChords = false;
                 FireChords(3, 0); FireMouseChords(2, 0);
-                E(tc.Fired == 3 && tc.FiredMouse == 2, "fall-through key/mouse fire reaches the chord consumer");
+                check.Expect(tc.Fired == 3 && tc.FiredMouse == 2, "fall-through key/mouse fire reaches the chord consumer");
                 RemoveChordConsumer(tc); chords.Remove(tc);
 
                 // HitTestOverride widens the hit-test past the rect (chrome outside the frame).
                 lo.HitTestOverride = (px, py) => px >= 0 && px < 500;   // wider than the 100px rect
-                E(HitTest(300, 5) == lo, "hit-test honours a window's override region outside its rect");
+                check.Expect(HitTest(300, 5) == lo, "hit-test honours a window's override region outside its rect");
                 lo.HitTestOverride = null;
 
                 // Focus mode: hover-to-focus focuses on motion only when enabled; click-to-focus is the default.
-                E(HoverFocusAt(5, 5) == null, "click-to-focus (default): hover does not focus");
+                check.Expect(HoverFocusAt(5, 5) == null, "click-to-focus (default): hover does not focus");
                 HoverToFocus = true;
-                E(HoverFocusAt(5, 5) == upper && Focused == upper, "hover-to-focus: the topmost focusable window under the pointer takes focus");
+                check.Expect(HoverFocusAt(5, 5) == upper && Focused == upper, "hover-to-focus: the topmost focusable window under the pointer takes focus");
                 HoverToFocus = false;
 
                 Unregister(lo); created.Remove(lo);
@@ -620,7 +619,7 @@ public static class UiHost
             }
 
             // hygiene: every fake the test created is gone (checked against the cleared baseline, pre-restore)
-            E(Windows.Count == 0, "all self-check windows unregistered");
+            check.Expect(Windows.Count == 0, "all self-check windows unregistered");
         }
         finally
         {
@@ -635,6 +634,6 @@ public static class UiHost
             Metrics.Scale = savedScale;
         }
 
-        log.Info(ok ? "UiHost.SelfCheck: passed" : "UiHost.SelfCheck: FAILED");
+        log.Info(check.Ok ? "UiHost.SelfCheck: passed" : "UiHost.SelfCheck: FAILED");
     }
 }

@@ -118,59 +118,58 @@ public sealed class CommandRegistry
     /// off-device. Runs against a private instance so nothing it registers reaches the live surface.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"CommandRegistry.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var r = new CommandRegistry();
         string? seen = null;
-        E(r.Register("/probe", "probe help", a => { seen = a; return "echo " + a; }, "/pb", "pb2"),
+        check.Expect(r.Register("/probe", "probe help", a => { seen = a; return "echo " + a; }, "/pb", "pb2"),
             "a fresh name registers");
-        E(r.Register("/silent", "silent help", _ => null), "a second command registers");
+        check.Expect(r.Register("/silent", "silent help", _ => null), "a second command registers");
 
-        E(r.TryDispatch("/probe", out string? reply), "the canonical name dispatches");
-        E(seen == "" && reply == "echo ", "no arguments means an empty argument string");
-        E(r.TryDispatch("/pb x", out _) && seen == "x", "an alias dispatches to the same handler");
-        E(r.TryDispatch("/pb2 x", out _) && seen == "x", "an alias without a slash is normalised");
-        E(r.TryDispatch("/PROBE GAIN 2", out _) && seen == "gain 2",
+        check.Expect(r.TryDispatch("/probe", out string? reply), "the canonical name dispatches");
+        check.Expect(seen == "" && reply == "echo ", "no arguments means an empty argument string");
+        check.Expect(r.TryDispatch("/pb x", out _) && seen == "x", "an alias dispatches to the same handler");
+        check.Expect(r.TryDispatch("/pb2 x", out _) && seen == "x", "an alias without a slash is normalised");
+        check.Expect(r.TryDispatch("/PROBE GAIN 2", out _) && seen == "gain 2",
             "the name is case-insensitive and the arguments arrive lowercased");
-        E(r.TryDispatch("/probe  a  b  ", out _) && seen == "a  b",
+        check.Expect(r.TryDispatch("/probe  a  b  ", out _) && seen == "a  b",
             "the line is trimmed at the end; inner spacing is the handler's business");
-        E(!r.TryDispatch("  /probe", out _), "a leading space means it was never a command (as before)");
-        E(r.TryDispatch("/silent", out string? none) && none == null, "a handler may decline to echo");
+        check.Expect(!r.TryDispatch("  /probe", out _), "a leading space means it was never a command (as before)");
+        check.Expect(r.TryDispatch("/silent", out string? none) && none == null, "a handler may decline to echo");
 
         seen = null;
-        E(!r.TryDispatch("/nosuch", out reply) && reply == null && seen == null,
+        check.Expect(!r.TryDispatch("/nosuch", out reply) && reply == null && seen == null,
             "an unknown command is not handled and runs nothing");
-        E(!r.TryDispatch("/", out _), "a bare slash is not a command");
-        E(!r.TryDispatch("hello", out _), "plain text is not a command");
-        E(!r.TryDispatch("/probefoo", out _), "the name must match the whole first token");
+        check.Expect(!r.TryDispatch("/", out _), "a bare slash is not a command");
+        check.Expect(!r.TryDispatch("hello", out _), "plain text is not a command");
+        check.Expect(!r.TryDispatch("/probefoo", out _), "the name must match the whole first token");
         seen = null;
-        E(r.Knows("/probe x") && r.Knows("/PB") && !r.Knows("/nosuch") && !r.Knows("hello") && seen == null,
+        check.Expect(r.Knows("/probe x") && r.Knows("/PB") && !r.Knows("/nosuch") && !r.Knows("hello") && seen == null,
             "Knows answers what TryDispatch would, and runs nothing");
 
-        E(!r.Register("/probe", "dupe", _ => "stolen"), "a duplicate name is refused");
-        E(!r.Register("/pb", "dupe", _ => "stolen"), "a duplicate alias is refused");
-        E(!r.Register("/other", "dupe alias", _ => "stolen", "/probe"), "a new name with a taken alias is refused");
-        E(r.TryDispatch("/probe", out reply) && reply == "echo ", "the first registration still owns the name");
-        E(!r.TryDispatch("/other", out _), "the refused registration left nothing behind");
+        check.Expect(!r.Register("/probe", "dupe", _ => "stolen"), "a duplicate name is refused");
+        check.Expect(!r.Register("/pb", "dupe", _ => "stolen"), "a duplicate alias is refused");
+        check.Expect(!r.Register("/other", "dupe alias", _ => "stolen", "/probe"), "a new name with a taken alias is refused");
+        check.Expect(r.TryDispatch("/probe", out reply) && reply == "echo ", "the first registration still owns the name");
+        check.Expect(!r.TryDispatch("/other", out _), "the refused registration left nothing behind");
 
-        E(r.Commands.Count == 2, "enumeration lists each command once, aliases folded in");
-        E(r.Commands[0].Name == "/probe" && r.Commands[0].Help == "probe help", "enumeration carries name + help");
-        E(r.Commands[0].Aliases.Length == 2 && r.Commands[0].Aliases[0] == "/pb"
+        check.Expect(r.Commands.Count == 2, "enumeration lists each command once, aliases folded in");
+        check.Expect(r.Commands[0].Name == "/probe" && r.Commands[0].Help == "probe help", "enumeration carries name + help");
+        check.Expect(r.Commands[0].Aliases.Length == 2 && r.Commands[0].Aliases[0] == "/pb"
             && r.Commands[0].Aliases[1] == "/pb2", "enumeration carries the normalised aliases");
-        E(r.Commands[1].Name == "/silent", "enumeration is in registration order");
+        check.Expect(r.Commands[1].Name == "/silent", "enumeration is in registration order");
 
         bool open = false;
         r.Gate = () => open;
-        E(r.Register("/door", "door help", _ => "opened", exempt: true), "an exempt command registers");
+        check.Expect(r.Register("/door", "door help", _ => "opened", exempt: true), "an exempt command registers");
         seen = null;
-        E(!r.TryDispatch("/probe x", out reply) && reply == null && seen == null && !r.Knows("/probe"),
+        check.Expect(!r.TryDispatch("/probe x", out reply) && reply == null && seen == null && !r.Knows("/probe"),
             "a closed gate hides a command from both entry points and runs nothing");
-        E(r.TryDispatch("/door", out reply) && reply == "opened" && r.Knows("/door"), "an exempt command passes a closed gate");
+        check.Expect(r.TryDispatch("/door", out reply) && reply == "opened" && r.Knows("/door"), "an exempt command passes a closed gate");
         open = true;
-        E(r.TryDispatch("/probe x", out _) && seen == "x", "an open gate dispatches as before");
-        E(r.Commands.Count == 3 && r.Commands[2].Exempt && !r.Commands[0].Exempt, "enumeration carries the exemption");
+        check.Expect(r.TryDispatch("/probe x", out _) && seen == "x", "an open gate dispatches as before");
+        check.Expect(r.Commands.Count == 3 && r.Commands[2].Exempt && !r.Commands[0].Exempt, "enumeration carries the exemption");
 
-        log.Info(ok ? "CommandRegistry.SelfCheck: passed" : "CommandRegistry.SelfCheck: FAILED");
+        log.Info(check.Ok ? "CommandRegistry.SelfCheck: passed" : "CommandRegistry.SelfCheck: FAILED");
     }
 }

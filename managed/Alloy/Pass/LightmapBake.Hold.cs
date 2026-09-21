@@ -187,24 +187,23 @@ internal static unsafe partial class LightmapBake
     /// <summary>Headless: the drain clock and the exits, no GL, no window.</summary>
     internal static bool HoldSelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string what) { if (!c) { ok = false; log.Info($"LightmapBake.HoldSelfCheck: FAILED -- {what}"); } }
-        E(CapSeconds > Lightmap.HoldSeconds.Max, "the cap must sit past the knob's range or the skip line never shows");
-        E(QuietFrames < 60, "the drain clock is a second or more: a second visit would not hold ~0 s");
-        E(IdleSeconds < CapSeconds && IdleSeconds <= Lightmap.HoldSeconds.Max, "the idle exit must come before the cap and the skip");
+        var check = new Checker(log, "LightmapBake.HoldSelfCheck");
+        check.Expect(CapSeconds > Lightmap.HoldSeconds.Max, "the cap must sit past the knob's range or the skip line never shows");
+        check.Expect(QuietFrames < 60, "the drain clock is a second or more: a second visit would not hold ~0 s");
+        check.Expect(IdleSeconds < CapSeconds && IdleSeconds <= Lightmap.HoldSeconds.Max, "the idle exit must come before the cap and the skip");
         _quietFrom = int.MaxValue; _frame = 100;
-        E(!BaselineIn, "an untouched drain clock counts as drained");
+        check.Expect(!BaselineIn, "an untouched drain clock counts as drained");
         // a lightless area: the walks past the edge see no light at all -- the set still closes, the bake stays
         // un-armed (SetHash 0) and the hold has nothing to wait for
         _clsArea = 1; Reopen(); _edgeSeen = true; _edgePending = false; _stN = 0; CensusDynamic = 0; SetHash = 0xBEEF;
         ExtenderLog? live = _log; _log = null;   // the close logs as evidence: a headless one must not open every cx.log
         for (int i = 0; i < SettleWalks + QuietWalks; i++) { _walks++; if (_edgeWalk < 0) _edgeWalk = _walks; EndWalk(); }
         _log = live;
-        E(_closed, "a lightless area never closes its static set");
-        E(SetHash == 0 && _setN == 0, "a lightless close armed the bake");
-        E(BaselineIn, "a closed lightless set does not release the hold");
+        check.Expect(_closed, "a lightless area never closes its static set");
+        check.Expect(SetHash == 0 && _setN == 0, "a lightless close armed the bake");
+        check.Expect(BaselineIn, "a closed lightless set does not release the hold");
         _clsArea = IntPtr.Zero; Reopen(); _edgeSeen = false; SetHash = 0; _quietFrom = int.MinValue;
-        if (ok) log.Info($"LightmapBake.HoldSelfCheck: passed (cap {CapSeconds:F0} s, drain {QuietFrames} frames)");
-        return ok;
+        if (check.Ok) log.Info($"LightmapBake.HoldSelfCheck: passed (cap {CapSeconds:F0} s, drain {QuietFrames} frames)");
+        return check.Ok;
     }
 }

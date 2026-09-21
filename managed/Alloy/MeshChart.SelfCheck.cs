@@ -14,58 +14,57 @@ internal static partial class MeshChart
 {
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string what) { if (!c) { ok = false; log.Info($"MeshChart.SelfCheck: FAILED -- {what}"); } }
+        var check = new Checker(log);
 
         var cube = Cube(4);
         Chart(cube, useLedger: false);
-        E(cube.Refused == Refusal.None, $"the cube was refused ({RefusalName[(int)cube.Refused]})");
+        check.Expect(cube.Refused == Refusal.None, $"the cube was refused ({RefusalName[(int)cube.Refused]})");
         if (cube.Refused == Refusal.None)
         {
-            E(cube.Out0N == cube.IdxCount, "the cube lost triangles in the chart");
-            E(cube.Charts == 6, $"a cube's six planar faces are {cube.Charts} charts, not six");
-            E(cube.W > 0 && cube.H > 0, "the cube atlas has no size");
-            E(Covered(cube, out int over) && over == 0, $"chart UVs fall outside the atlas, or {over} texels are drawn twice");
+            check.Expect(cube.Out0N == cube.IdxCount, "the cube lost triangles in the chart");
+            check.Expect(cube.Charts == 6, $"a cube's six planar faces are {cube.Charts} charts, not six");
+            check.Expect(cube.W > 0 && cube.H > 0, "the cube atlas has no size");
+            check.Expect(Covered(cube, out int over) && over == 0, $"chart UVs fall outside the atlas, or {over} texels are drawn twice");
             var again = Cube(4);
             Chart(again, useLedger: false);
-            E(Serialize(cube).AsSpan().SequenceEqual(Serialize(again)), "two runs over the same cube differ");
+            check.Expect(Serialize(cube).AsSpan().SequenceEqual(Serialize(again)), "two runs over the same cube differ");
             var moved = Cube(4);
             for (int i = 0; i < moved.VertCount; i++) { moved.Pos[i * 3] += 1234.5f; moved.Pos[i * 3 + 2] -= 77.25f; }
             Chart(moved, useLedger: false);
-            E(moved.Content == cube.Content && Serialize(moved).AsSpan().SequenceEqual(Serialize(cube)),
+            check.Expect(moved.Content == cube.Content && Serialize(moved).AsSpan().SequenceEqual(Serialize(cube)),
               "the same mesh placed elsewhere in the world is not the same content");
 
             var fresh = Cube(4);
             fresh.Content = ContentKey(fresh);
-            E(Deserialize(Serialize(cube), fresh) == null, "the ledger round trip refused its own bytes");
-            E(fresh.OutVerts == cube.OutVerts && fresh.Out0N == cube.Out0N && fresh.W == cube.W
+            check.Expect(Deserialize(Serialize(cube), fresh) == null, "the ledger round trip refused its own bytes");
+            check.Expect(fresh.OutVerts == cube.OutVerts && fresh.Out0N == cube.Out0N && fresh.W == cube.W
               && fresh.ChartUv.AsSpan(0, fresh.OutVerts * 2).SequenceEqual(cube.ChartUv.AsSpan(0, cube.OutVerts * 2)),
               "the ledger round trip changed the chart");
             byte[] blob = Serialize(cube);
             byte[] old = (byte[])blob.Clone(); BitConverter.GetBytes(LedgerVersion + 1).CopyTo(old, 4);
-            E(Deserialize(old, fresh) == "version", "an older file is not refused as 'version'");
+            check.Expect(Deserialize(old, fresh) == "version", "an older file is not refused as 'version'");
             fresh.Content ^= 1;
-            E(Deserialize(blob, fresh) == "key", "another mesh's file is not refused as 'key'");
+            check.Expect(Deserialize(blob, fresh) == "key", "another mesh's file is not refused as 'key'");
             fresh.Content ^= 1;
-            E(Deserialize(blob.AsSpan(0, blob.Length - 7).ToArray(), fresh) == "truncation", "a short file is not refused as 'truncation'");
-            E(Deserialize(blob.AsSpan(0, 12).ToArray(), fresh) == "truncation", "a file cut inside the header is not refused as 'truncation'");
+            check.Expect(Deserialize(blob.AsSpan(0, blob.Length - 7).ToArray(), fresh) == "truncation", "a short file is not refused as 'truncation'");
+            check.Expect(Deserialize(blob.AsSpan(0, 12).ToArray(), fresh) == "truncation", "a file cut inside the header is not refused as 'truncation'");
         }
 
         var bad = new Job { VertCount = 3, IdxCount = 3, Pos = new float[9], Idx = new ushort[] { 0, 1, 2 } };
-        try { Chart(bad, useLedger: false); E(bad.Refused != Refusal.None, "a degenerate mesh was charted"); }
-        catch (Exception e) { E(false, $"a degenerate mesh threw ({e.GetType().Name})"); }
+        try { Chart(bad, useLedger: false); check.Expect(bad.Refused != Refusal.None, "a degenerate mesh was charted"); }
+        catch (Exception e) { check.Expect(false, $"a degenerate mesh threw ({e.GetType().Name})"); }
 
         var jar = Fixture(log);
-        if (jar == null) E(false, "the curved placeable fixture is missing from the image");
+        if (jar == null) check.Expect(false, "the curved placeable fixture is missing from the image");
         else
         {
             Chart(jar, useLedger: false);
-            E(jar.Refused == Refusal.None, $"the curved placeable was refused ({RefusalName[(int)jar.Refused]})");
+            check.Expect(jar.Refused == Refusal.None, $"the curved placeable was refused ({RefusalName[(int)jar.Refused]})");
             if (jar.Refused == Refusal.None)
             {
-                E(jar.Out0N == jar.IdxCount, "the curved placeable lost triangles");
-                E(Covered(jar, out int over) && over == 0, $"the curved placeable's chart overlaps ({over} texels)");
-                E(jar.OutVerts > jar.VertCount, "a closed curved mesh charted with no seam split at all");
+                check.Expect(jar.Out0N == jar.IdxCount, "the curved placeable lost triangles");
+                check.Expect(Covered(jar, out int over) && over == 0, $"the curved placeable's chart overlaps ({over} texels)");
+                check.Expect(jar.OutVerts > jar.VertCount, "a closed curved mesh charted with no seam split at all");
             }
         }
 
@@ -82,14 +81,14 @@ internal static partial class MeshChart
                 File.SetLastWriteTimeUtc(f, t0.AddMinutes(i));
             }
             long left = Prune(dir, 250);
-            E(left == 200 && !File.Exists(Path.Combine(dir, "0.bin")) && File.Exists(Path.Combine(dir, "2.bin")),
+            check.Expect(left == 200 && !File.Exists(Path.Combine(dir, "0.bin")) && File.Exists(Path.Combine(dir, "2.bin")),
               "the prune did not keep the budget oldest-first");
             Directory.Delete(dir, recursive: true);
         }
-        catch (Exception e) { E(false, $"the prune check could not run ({e.Message})"); }
+        catch (Exception e) { check.Expect(false, $"the prune check could not run ({e.Message})"); }
 
-        log.Info(ok ? "MeshChart.SelfCheck: passed" : "MeshChart.SelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? "MeshChart.SelfCheck: passed" : "MeshChart.SelfCheck: FAILED");
+        return check.Ok;
     }
 
     /// <summary>A cube of side 2 with each face an N x N grid, vertices shared within a face only.</summary>

@@ -76,16 +76,15 @@ public static class Settings
     /// claims and leaves none behind.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"Settings.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         _values["cx-selfcheck-pfx.Mixed"] = "/Case/Kept.ttf";
         var pf = Prefixed("cx-selfcheck-pfx.");
-        E(pf.Count == 1 && pf[0].Key == "cx-selfcheck-pfx.mixed" && pf[0].Value == "/Case/Kept.ttf",
+        check.Expect(pf.Count == 1 && pf[0].Key == "cx-selfcheck-pfx.mixed" && pf[0].Value == "/Case/Kept.ttf",
             "a prefixed read keeps the value's case and folds the key");
         _values.Remove("cx-selfcheck-pfx.Mixed");
-        E(Raw("cx-selfcheck-pfx.Mixed") == null, "the check leaves no probe behind");
+        check.Expect(Raw("cx-selfcheck-pfx.Mixed") == null, "the check leaves no probe behind");
 
-        log.Info(ok ? "Settings.SelfCheck: passed" : "Settings.SelfCheck: FAILED");
+        log.Info(check.Ok ? "Settings.SelfCheck: passed" : "Settings.SelfCheck: FAILED");
     }
 }

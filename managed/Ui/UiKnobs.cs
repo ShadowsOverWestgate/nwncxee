@@ -57,8 +57,7 @@ internal static class UiCategory
     /// spec re-keyed from the retired files bind under their new names with the old defaults.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"UiCategory.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log, "UiCategory.SelfCheck");
         Declare();
         string[] order = { "chat", "dialog", "nameplate", "combattext", "quickbar", "radial", "fps", "ui" };
         int at = -1;
@@ -67,21 +66,21 @@ internal static class UiCategory
         {
             int i = -1;
             for (int k = 0; k < all.Count; k++) if (all[k].Name == g) i = k;
-            E(i > at, $"group {g} declares after the one before it");
+            check.Expect(i > at, $"group {g} declares after the one before it");
             at = i;
         }
-        E(!UiKnobs.Typeface.Disabled && UiKnobs.Typeface.Tier == Tier.User && UiKnobs.Typeface.Layout
+        check.Expect(!UiKnobs.Typeface.Disabled && UiKnobs.Typeface.Tier == Tier.User && UiKnobs.Typeface.Layout
           && UiKnobs.Typeface.Values.Length >= 1 && UiKnobs.Typeface.Values[0] == FontRegistry.DefaultName, "ui.typeface is a live layout row over the registry's names, default first");
-        E(UiKnobs.Font.Values[0] == TextRig.MinFontPx && UiKnobs.Font.Values[^1] == TextRig.MaxFontPx && UiKnobs.Font.Layout, "ui.font is the 6-32 layout ladder");
-        E(KnobGroup.Find("ui.hoverfocus") == UiKnobs.HoverFocus && !UiKnobs.HoverFocus.Default && UiKnobs.GridPx.Default == 50 && UiKnobs.EdgeSnap.Default,
+        check.Expect(UiKnobs.Font.Values[0] == TextRig.MinFontPx && UiKnobs.Font.Values[^1] == TextRig.MaxFontPx && UiKnobs.Font.Layout, "ui.font is the 6-32 layout ladder");
+        check.Expect(KnobGroup.Find("ui.hoverfocus") == UiKnobs.HoverFocus && !UiKnobs.HoverFocus.Default && UiKnobs.GridPx.Default == 50 && UiKnobs.EdgeSnap.Default,
           "hoverfocus / gridpx / edgesnap carry the cx-ui / cx-quickbar defaults");
-        E(KnobGroup.Find("fps.enabled") is Knob<bool> fe && fe.Persisted && !fe.Default, "fps.enabled persists and ships off");
-        E(KnobGroup.Find("nameplate.probe") is KnobButton { Tier: Tier.ChatOnly } && KnobGroup.Find("nameplate.mode") == null, "nameplate.probe is the Chat-only button; mode is gone");
-        E(KnobGroup.Find("dialog.placed") is Knob<bool> { Tier: Tier.Hidden } && KnobGroup.Find("dialog.x") is Knob<float> { Tier: Tier.Hidden }, "the dialog rect is Hidden state");
-        E(KnobGroup.Find("quickbar.compass") is Knob<bool> { Default: true } && KnobGroup.Find("quickbar.align") is Knob<int> { Default: 1 }, "quickbar.compass shows by default; align defaults to centre");
-        E(KnobGroup.Find("combattext.enabled") is Knob<bool> { Default: true } && KnobGroup.Find("combattext.bannersize") is Knob<float> { Default: 1.3f }, "combattext rows bind");
+        check.Expect(KnobGroup.Find("fps.enabled") is Knob<bool> fe && fe.Persisted && !fe.Default, "fps.enabled persists and ships off");
+        check.Expect(KnobGroup.Find("nameplate.probe") is KnobButton { Tier: Tier.ChatOnly } && KnobGroup.Find("nameplate.mode") == null, "nameplate.probe is the Chat-only button; mode is gone");
+        check.Expect(KnobGroup.Find("dialog.placed") is Knob<bool> { Tier: Tier.Hidden } && KnobGroup.Find("dialog.x") is Knob<float> { Tier: Tier.Hidden }, "the dialog rect is Hidden state");
+        check.Expect(KnobGroup.Find("quickbar.compass") is Knob<bool> { Default: true } && KnobGroup.Find("quickbar.align") is Knob<int> { Default: 1 }, "quickbar.compass shows by default; align defaults to centre");
+        check.Expect(KnobGroup.Find("combattext.enabled") is Knob<bool> { Default: true } && KnobGroup.Find("combattext.bannersize") is Knob<float> { Default: 1.3f }, "combattext rows bind");
         var live = CommandRegistry.Global;
-        foreach (string dead in new[] { "/np", "/ct", "/qbar", "/compass" }) E(!live.Knows(dead), $"{dead} is gone");
-        log.Info(ok ? "UiCategory.SelfCheck: passed" : "UiCategory.SelfCheck: FAILED");
+        foreach (string dead in new[] { "/np", "/ct", "/qbar", "/compass" }) check.Expect(!live.Knows(dead), $"{dead} is gone");
+        log.Info(check.Ok ? "UiCategory.SelfCheck: passed" : "UiCategory.SelfCheck: FAILED");
     }
 }

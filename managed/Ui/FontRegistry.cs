@@ -270,27 +270,26 @@ public static class FontRegistry
     /// <summary>Off-device: unknown names fall to the default, a rooted missing path is refused.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"FontRegistry.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         Load(log);
-        E(_entries.ContainsKey(DefaultName), "default is always declared");
-        E(Effective("no-such-face") == DefaultName, "an unknown name resolves to the default");
-        E(Resolve("/nonexistent/cx-selfcheck.ttf") == null, "a rooted missing path is refused");
-        E(Bytes("no-such-face") == Bytes(DefaultName), "unknown-name bytes are the default's");
-        E(_entries.ContainsKey(EmbeddedName), "the embedded font is always declared");
+        check.Expect(_entries.ContainsKey(DefaultName), "default is always declared");
+        check.Expect(Effective("no-such-face") == DefaultName, "an unknown name resolves to the default");
+        check.Expect(Resolve("/nonexistent/cx-selfcheck.ttf") == null, "a rooted missing path is refused");
+        check.Expect(Bytes("no-such-face") == Bytes(DefaultName), "unknown-name bytes are the default's");
+        check.Expect(_entries.ContainsKey(EmbeddedName), "the embedded font is always declared");
 
         // #681: the name-table read on the embedded DejaVu, the choice list, and the default rebinding.
         if (Bytes(EmbeddedName) is byte[] emb)
-            E(FullName(new MemoryStream(emb)) == "DejaVu Sans", $"the embedded font's full name reads back ({FullName(new MemoryStream(emb))})");
-        E(FullName(new MemoryStream(Encoding.ASCII.GetBytes("not a font, not at all"))) == null, "a non-sfnt stream has no name");
+            check.Expect(FullName(new MemoryStream(emb)) == "DejaVu Sans", $"the embedded font's full name reads back ({FullName(new MemoryStream(emb))})");
+        check.Expect(FullName(new MemoryStream(Encoding.ASCII.GetBytes("not a font, not at all"))) == null, "a non-sfnt stream has no name");
         string[] names = Names;
-        E(names.Length >= 1 && names[0] == DefaultName && names.Distinct(StringComparer.OrdinalIgnoreCase).Count() == names.Length,
+        check.Expect(names.Length >= 1 && names[0] == DefaultName && names.Distinct(StringComparer.OrdinalIgnoreCase).Count() == names.Length,
           $"the choices start with {DefaultName} and repeat nothing ({names.Length} names, {SystemFonts().Count} installed)");
-        E(!names.Contains(EmbeddedName, StringComparer.OrdinalIgnoreCase), "the reserved embedded name is not a choice");
+        check.Expect(!names.Contains(EmbeddedName, StringComparer.OrdinalIgnoreCase), "the reserved embedded name is not a choice");
         byte[]? boot = Bytes(DefaultName);
-        E(!Bind("no-such-face"), "binding an unknown name is refused");
-        E(ReferenceEquals(Bytes(DefaultName), boot), "a refused bind leaves the default alone");
-        E(Bind(DefaultName) && ReferenceEquals(Bytes(DefaultName), boot), "binding default keeps the load-time face");
-        log.Info(ok ? "FontRegistry.SelfCheck OK" : "FontRegistry.SelfCheck FAILED");
+        check.Expect(!Bind("no-such-face"), "binding an unknown name is refused");
+        check.Expect(ReferenceEquals(Bytes(DefaultName), boot), "a refused bind leaves the default alone");
+        check.Expect(Bind(DefaultName) && ReferenceEquals(Bytes(DefaultName), boot), "binding default keeps the load-time face");
+        log.Info(check.Ok ? "FontRegistry.SelfCheck OK" : "FontRegistry.SelfCheck FAILED");
     }
 }

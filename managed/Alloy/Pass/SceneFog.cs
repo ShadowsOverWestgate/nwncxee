@@ -229,8 +229,7 @@ internal static unsafe class SceneFog
     /// that can silently paint a band the wrong colour.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SceneFog.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         bool onWas = FrameInputs.FogOn; float sWas = FrameInputs.FogStart, eWas = FrameInputs.FogEnd;
         Vector3 cWas = FrameInputs.FogColor;
@@ -239,52 +238,52 @@ internal static unsafe class SceneFog
         Fog.Enabled.V = true;
 
         FrameInputs.FogOn = false;
-        E(float.IsPositiveInfinity(OpaqueDistance()), "fog off means no cull distance at all");
+        check.Expect(float.IsPositiveInfinity(OpaqueDistance()), "fog off means no cull distance at all");
         FrameInputs.FogOn = true; FrameInputs.FogStart = 25f; FrameInputs.FogEnd = 125f;
         Fog.Height.V = 0f;
-        E(MathF.Abs(OpaqueDistance() - 125f) < 1e-3f, "the plain ramp is opaque at FogEnd, as #336 culled");
+        check.Expect(MathF.Abs(OpaqueDistance() - 125f) < 1e-3f, "the plain ramp is opaque at FogEnd, as #336 culled");
         Fog.Height.V = 0.01f; Fog.CullZ.V = 30f;
         // 25 + 100*exp(0.3) = 159.9: further out than FogEnd, never nearer.
-        E(OpaqueDistance() > 125f, "height falloff pushes the opaque distance OUT, never in");
+        check.Expect(OpaqueDistance() > 125f, "height falloff pushes the opaque distance OUT, never in");
 
         Fog.Sky.V = 0f; _haveSky = true; _sky = new Vector3(1f, 1f, 1f);
         FrameInputs.FogColor = new Vector3(0.5f, 0.25f, 0.125f);
         float* rgb = stackalloc float[3];
         SkyfadeTint(rgb);
-        E(MathF.Abs(rgb[0] - 0.5f) < 1e-4f && MathF.Abs(rgb[2] - 0.125f) < 1e-4f,
+        check.Expect(MathF.Abs(rgb[0] - 0.5f) < 1e-4f && MathF.Abs(rgb[2] - 0.125f) < 1e-4f,
           "sky 0 leaves the skyfade band on the author's own fog colour, byte for byte");
         Fog.Sky.V = 1f; _sky = new Vector3(Lin(0.25f), Lin(0.5f), Lin(1f));
         SkyfadeTint(rgb);
-        E(MathF.Abs(rgb[2] - 1f) < 1e-3f && MathF.Abs(rgb[0] - 0.25f) < 1e-3f,
+        check.Expect(MathF.Abs(rgb[2] - 1f) < 1e-3f && MathF.Abs(rgb[0] - 0.25f) < 1e-3f,
           "sky 1 lands the band exactly on the sky colour, round-tripped through the encode");
 
         Fog.Sky.V = 1f; _haveSky = false;
         SkyfadeTint(rgb);
-        E(MathF.Abs(rgb[0] - 0.5f) < 1e-4f,
+        check.Expect(MathF.Abs(rgb[0] - 0.5f) < 1e-4f,
           "no sky staged leaves the band on the author's colour whatever the mix says");
 
         // /fog origin 0 is the engine's metric: view depth, measured from the pass eye -- not a sphere
         // around wherever the player happens to stand.
         bool origWas = Fog.Origin.V; Fog.Origin.V = false;
-        E(!(Origin(out bool radial) != AlloyRenderer.EyePos) && !radial, "origin 0 is view depth from the pass eye");
+        check.Expect(!(Origin(out bool radial) != AlloyRenderer.EyePos) && !radial, "origin 0 is view depth from the pass eye");
         Fog.Origin.V = true;
 
         // The master: off, every dial reads as 0 -- the author's flat colour, view depth, no cull -- whatever
         // the knobs hold, and the skyfade band is the author's colour byte for byte.
         _haveSky = true; Fog.Sky.V = 1f; Fog.Sun.V = 1f; Fog.Height.V = 0.01f; Fog.SkyBand.V = 0.5f; Fog.Cull.V = true;
         Fog.Enabled.V = false;
-        E(SkyMix == 0f && SunAmount == 0f && HeightK == 0f && SkyBand == 0f && !OriginPlayer && !Cull && !CullPass.FogCull,
+        check.Expect(SkyMix == 0f && SunAmount == 0f && HeightK == 0f && SkyBand == 0f && !OriginPlayer && !Cull && !CullPass.FogCull,
           "fog.enabled off: every dial reads 0 and the cull stands down");
-        E(MathF.Abs(OpaqueDistance() - 125f) < 1e-3f, "...and the opaque distance is the plain ramp's");
+        check.Expect(MathF.Abs(OpaqueDistance() - 125f) < 1e-3f, "...and the opaque distance is the plain ramp's");
         SkyfadeTint(rgb);
-        E(MathF.Abs(rgb[0] - 0.5f) < 1e-4f && MathF.Abs(rgb[2] - 0.125f) < 1e-4f, "...and the skyfade band is the author's colour");
+        check.Expect(MathF.Abs(rgb[0] - 0.5f) < 1e-4f && MathF.Abs(rgb[2] - 0.125f) < 1e-4f, "...and the skyfade band is the author's colour");
         Fog.Enabled.V = true;
-        E(SkyMix == 1f && SunAmount == 1f && HeightK == 0.01f && SkyBand == 0.5f && OriginPlayer && Cull, "fog.enabled on restores the dials");
+        check.Expect(SkyMix == 1f && SunAmount == 1f && HeightK == 0.01f && SkyBand == 0.5f && OriginPlayer && Cull, "fog.enabled on restores the dials");
         Fog.Origin.V = origWas; Fog.Sun.V = sunWas; Fog.SkyBand.V = bandWas; Fog.Cull.V = cullWas;
 
         FrameInputs.FogOn = onWas; FrameInputs.FogStart = sWas; FrameInputs.FogEnd = eWas;
         FrameInputs.FogColor = cWas;
         Fog.Height.V = kWas; Fog.Sky.V = mixWas; Fog.CullZ.V = zWas; Fog.Enabled.V = enWas; _haveSky = haveWas; _sky = skyWas;
-        log.Info(ok ? "SceneFog.SelfCheck: passed" : "SceneFog.SelfCheck: FAILED");
+        log.Info(check.Ok ? "SceneFog.SelfCheck: passed" : "SceneFog.SelfCheck: FAILED");
     }
 }

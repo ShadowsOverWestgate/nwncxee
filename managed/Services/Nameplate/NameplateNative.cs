@@ -514,26 +514,25 @@ public static unsafe class NameplateNative
     /// branches and both clamp rails) and the no-bubble channel set.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"NameplateNative.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
-        E(Decay(10, 1f, 0f) == 4f, "a short line clamps to the 4s floor");
-        E(Decay(1000, 1f, 0f) == 12f, "a long line clamps to the 12s ceiling");
+        check.Expect(Decay(10, 1f, 0f) == 4f, "a short line clamps to the 4s floor");
+        check.Expect(Decay(1000, 1f, 0f) == 12f, "a long line clamps to the 12s ceiling");
         float mid = Decay(40, 1f, 0f);
-        E(mid > 5.9f && mid < 6.1f, "40 chars at 1.0/char is 0.15*40 = 6s, inside the clamp");
-        E(Decay(40, 0.75f, 0f) < mid, "a smaller per-char scale shortens the line");
-        E(Decay(1000, 1f, 30f) == 30f, "a server-sent fixed value bypasses the length formula entirely");
+        check.Expect(mid > 5.9f && mid < 6.1f, "40 chars at 1.0/char is 0.15*40 = 6s, inside the clamp");
+        check.Expect(Decay(40, 0.75f, 0f) < mid, "a smaller per-char scale shortens the line");
+        check.Expect(Decay(1000, 1f, 30f) == 30f, "a server-sent fixed value bypasses the length formula entirely");
 
         // The 0 < fixedSec <= 0.15 band: the engine's jbe rejects it, a `fixedSec > 0` rule would have taken it.
-        E(Decay(10, 1f, 0.1f) == 4f, "a positive fixed value below 0.15 is NOT a fixed value (jbe @0x69fdf3)");
-        E(Decay(10, 1f, 0.15f) == 4f, "exactly 0.15 is not a fixed value either (jbe, not jb)");
-        E(Decay(10, 1f, 0.0001f) == 4f, "a hair above zero still falls through to the length formula");
-        E(Decay(10, 1f, 0.16f) == 0.16f, "just past 0.15 IS a fixed value, however short");
-        E(Decay(1000, 1f, -1f) == 12f, "a negative fixed value falls through to the formula");
+        check.Expect(Decay(10, 1f, 0.1f) == 4f, "a positive fixed value below 0.15 is NOT a fixed value (jbe @0x69fdf3)");
+        check.Expect(Decay(10, 1f, 0.15f) == 4f, "exactly 0.15 is not a fixed value either (jbe, not jb)");
+        check.Expect(Decay(10, 1f, 0.0001f) == 4f, "a hair above zero still falls through to the length formula");
+        check.Expect(Decay(10, 1f, 0.16f) == 0.16f, "just past 0.15 IS a fixed value, however short");
+        check.Expect(Decay(1000, 1f, -1f) == 12f, "a negative fixed value falls through to the formula");
 
-        E(!ChannelBubbles(5) && !ChannelBubbles(0x0c) && !ChannelBubbles(0x0f), "channels 5, 0x0c and 0x0f never bubble");
-        E(ChannelBubbles(1) && ChannelBubbles(3) && ChannelBubbles(4) && ChannelBubbles(0x0e), "every other handled channel bubbles");
+        check.Expect(!ChannelBubbles(5) && !ChannelBubbles(0x0c) && !ChannelBubbles(0x0f), "channels 5, 0x0c and 0x0f never bubble");
+        check.Expect(ChannelBubbles(1) && ChannelBubbles(3) && ChannelBubbles(4) && ChannelBubbles(0x0e), "every other handled channel bubbles");
 
-        log.Info(ok ? "NameplateNative.SelfCheck: passed" : "NameplateNative.SelfCheck: FAILED");
+        log.Info(check.Ok ? "NameplateNative.SelfCheck: passed" : "NameplateNative.SelfCheck: FAILED");
     }
 }

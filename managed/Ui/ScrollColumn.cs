@@ -122,42 +122,41 @@ public sealed class ScrollColumn
     /// <summary>Off-device proof: offset clamp, thumb geometry, wheel + drag + page mapping, and a zero-alloc draw.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"ScrollColumn.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var sc = new ScrollColumn();
         sc.SetRect(100f, 50f, 200f, 240f);
         sc.ContentH = 100f;
-        E(!sc.Overflows && !sc.ThumbRect(out _, out _) && sc.MaxOffset == 0f, "content that fits: no thumb, no travel");
-        E(!sc.MouseWheel(-1, 24f) && sc.Offset == 0f, "wheel on fitting content moves nothing");
+        check.Expect(!sc.Overflows && !sc.ThumbRect(out _, out _) && sc.MaxOffset == 0f, "content that fits: no thumb, no travel");
+        check.Expect(!sc.MouseWheel(-1, 24f) && sc.Offset == 0f, "wheel on fitting content moves nothing");
 
         sc.ContentH = 60f * 24f;   // 60 rows of 24 px in a 10-row box
-        E(sc.Overflows && sc.MaxOffset == 1440f - 240f, "60 rows overflow a 10-row box by 50 rows");
-        E(sc.ThumbRect(out float t0, out float h0) && System.Math.Abs(t0 - 50f) < 0.01f && h0 >= MinThumb, "thumb at the track top at Offset 0");
-        E(sc.MouseWheel(-1, 24f) && sc.Offset == 24f, "one notch down scrolls one step");
-        E(sc.MouseWheel(1, 24f) && sc.Offset == 0f, "one notch up scrolls back");
-        E(!sc.MouseWheel(1, 24f) && sc.Offset == 0f, "wheel past the top clamps and reports no move");
+        check.Expect(sc.Overflows && sc.MaxOffset == 1440f - 240f, "60 rows overflow a 10-row box by 50 rows");
+        check.Expect(sc.ThumbRect(out float t0, out float h0) && System.Math.Abs(t0 - 50f) < 0.01f && h0 >= MinThumb, "thumb at the track top at Offset 0");
+        check.Expect(sc.MouseWheel(-1, 24f) && sc.Offset == 24f, "one notch down scrolls one step");
+        check.Expect(sc.MouseWheel(1, 24f) && sc.Offset == 0f, "one notch up scrolls back");
+        check.Expect(!sc.MouseWheel(1, 24f) && sc.Offset == 0f, "wheel past the top clamps and reports no move");
         sc.ScrollBy(99999f);
-        E(sc.Offset == sc.MaxOffset, "scroll past the end clamps to MaxOffset");
-        E(sc.ThumbRect(out float t1, out float h1) && System.Math.Abs(t1 + h1 - (50f + 240f)) < 0.01f, "thumb at the track bottom at MaxOffset");
-        E(System.Math.Abs(sc.ToContent(50f + 10f) - (sc.Offset + 10f)) < 0.01f, "ToContent adds the offset");
-        E(System.Math.Abs(sc.ToScreen(sc.Offset + 10f) - 60f) < 0.01f, "ToScreen subtracts it");
+        check.Expect(sc.Offset == sc.MaxOffset, "scroll past the end clamps to MaxOffset");
+        check.Expect(sc.ThumbRect(out float t1, out float h1) && System.Math.Abs(t1 + h1 - (50f + 240f)) < 0.01f, "thumb at the track bottom at MaxOffset");
+        check.Expect(System.Math.Abs(sc.ToContent(50f + 10f) - (sc.Offset + 10f)) < 0.01f, "ToContent adds the offset");
+        check.Expect(System.Math.Abs(sc.ToScreen(sc.Offset + 10f) - 60f) < 0.01f, "ToScreen subtracts it");
 
         // Thumb drag: grab at the bottom, drag up the full travel -> Offset 0.
         float bx = 100f + 200f - 2f;
-        E(!sc.MouseDown(150f, 100f), "press off the gutter is not the bar's");
-        E(sc.MouseDown(bx, t1 + 2f) && sc.Dragging, "press on the thumb grabs it");
-        E(sc.MouseMove(bx, t1 + 2f - (240f - h1)), "drag consumed");
-        E(sc.Offset == 0f, "dragging the thumb to the track top scrolls to 0");
+        check.Expect(!sc.MouseDown(150f, 100f), "press off the gutter is not the bar's");
+        check.Expect(sc.MouseDown(bx, t1 + 2f) && sc.Dragging, "press on the thumb grabs it");
+        check.Expect(sc.MouseMove(bx, t1 + 2f - (240f - h1)), "drag consumed");
+        check.Expect(sc.Offset == 0f, "dragging the thumb to the track top scrolls to 0");
         sc.MouseMove(bx, t1 + 2f - (240f - h1) / 2f);
-        E(System.Math.Abs(sc.Offset - sc.MaxOffset / 2f) < 1f, "half the travel is half the range");
-        E(sc.MouseUp() && !sc.Dragging && !sc.MouseUp(), "release ends the drag once");
+        check.Expect(System.Math.Abs(sc.Offset - sc.MaxOffset / 2f) < 1f, "half the travel is half the range");
+        check.Expect(sc.MouseUp() && !sc.Dragging && !sc.MouseUp(), "release ends the drag once");
 
         // Track page-jump: below the thumb pages down by one viewport, above pages up.
         sc.Offset = 0f;
-        E(sc.MouseDown(bx, 50f + 235f) && sc.Offset == 240f, "press below the thumb pages down one box");
+        check.Expect(sc.MouseDown(bx, 50f + 235f) && sc.Offset == 240f, "press below the thumb pages down one box");
         sc.MouseUp();
-        E(sc.MouseDown(bx, 50f + 1f) && sc.Offset == 0f, "press above the thumb pages up");
+        check.Expect(sc.MouseDown(bx, 50f + 1f) && sc.Offset == 0f, "press above the thumb pages up");
         sc.MouseUp();
 
         // Draw allocates nothing (AC: the panel draws per frame).
@@ -167,8 +166,8 @@ public sealed class ScrollColumn
         long before = System.GC.GetAllocatedBytesForCurrentThread();
         for (int i = 0; i < 100; i++) { b.Clear(); sc.Draw(b, (1f, 1f, 1f, 1f)); }
         long delta = System.GC.GetAllocatedBytesForCurrentThread() - before;
-        E(delta == 0, $"100 draws allocate nothing ({delta} bytes)");
+        check.Expect(delta == 0, $"100 draws allocate nothing ({delta} bytes)");
 
-        log.Info(ok ? "ScrollColumn.SelfCheck: passed" : "ScrollColumn.SelfCheck: FAILED");
+        log.Info(check.Ok ? "ScrollColumn.SelfCheck: passed" : "ScrollColumn.SelfCheck: FAILED");
     }
 }

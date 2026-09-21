@@ -1123,17 +1123,16 @@ public sealed unsafe class DialogService : IExtenderService
     /// open/close, per-node content cross-fade restart, body-height ease + snap, and the disabled snap.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"DialogService.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         Reply[] end = MakeReplies(System.Array.Empty<string>(), System.Array.Empty<uint>(), 0);
-        E(end.Length == 1 && end[0].Selectable && end[0].Text == EndDialogLabel && end[0].ServerIndex == 0xffffffff,
+        check.Expect(end.Length == 1 && end[0].Selectable && end[0].Text == EndDialogLabel && end[0].ServerIndex == 0xffffffff,
           "zero replies synthesizes a selectable [End Dialog]");
         Reply[] r = MakeReplies(new[] { "a", "b", "c" }, new uint[] { 10, 20, 30 }, 1);
-        E(r[0].Selectable && r[1].Selectable && !r[2].Selectable, "trailing numOld=1 marks the last reply non-selectable");
-        E(r[0].ServerIndex == 10 && r[2].ServerIndex == 30, "server indices map straight through");
+        check.Expect(r[0].Selectable && r[1].Selectable && !r[2].Selectable, "trailing numOld=1 marks the last reply non-selectable");
+        check.Expect(r[0].ServerIndex == 10 && r[2].ServerIndex == 30, "server indices map straight through");
         Reply[] allOld = MakeReplies(new[] { "x", "y" }, new uint[] { 1, 2 }, 2);
-        E(!allOld[0].Selectable && !allOld[1].Selectable, "numOld==count leaves nothing selectable");
+        check.Expect(!allOld[0].Selectable && !allOld[1].Selectable, "numOld==count leaves nothing selectable");
 
         // ---- animation scalars (save/restore all the anim statics; the knobs by plain value writes, never a set) ----
         bool sEn = DialogKnobs.Anim.V; int sIn = DialogKnobs.FadeIn.V, sOut = DialogKnobs.FadeOut.V; float sWt = _winAlphaTarget, sCt = _contentAlphaTarget;
@@ -1145,35 +1144,35 @@ public sealed unsafe class DialogService : IExtenderService
         _winAlphaTarget = 1f; _contentAlphaTarget = 1f; _openGen = 1; _lastOpenGen = 0; _contentGen = 1; _lastContentGen = 0;
         _windowAlpha = 1f; _contentAlpha = 1f; _bodyH = 999f; _animPrimed = false;
         AdvanceAnim(1000, 300f);
-        E(_windowAlpha == 0f && _bodyH == 0f && _contentAlpha == 0f, "open (gen bump) restarts window+content fade and body stretch from 0");
+        check.Expect(_windowAlpha == 0f && _bodyH == 0f && _contentAlpha == 0f, "open (gen bump) restarts window+content fade and body stretch from 0");
         AdvanceAnim(1050, 300f);
-        E(_windowAlpha > 0.4f && _windowAlpha < 0.6f, "window fades in ~half over half the duration");
-        E(_bodyH > 50f && _bodyH < 300f, "body eases toward its target (rising)");
+        check.Expect(_windowAlpha > 0.4f && _windowAlpha < 0.6f, "window fades in ~half over half the duration");
+        check.Expect(_bodyH > 50f && _bodyH < 300f, "body eases toward its target (rising)");
         AdvanceAnim(1400, 300f);
-        E(_windowAlpha == 1f && _contentAlpha == 1f, "window + content fade-in clamp at 1");
+        check.Expect(_windowAlpha == 1f && _contentAlpha == 1f, "window + content fade-in clamp at 1");
 
         // Mid-conversation reply pick: content fades OUT, window stays up (no window fade on a pick).
         _contentAlphaTarget = 0f;
         AdvanceAnim(1450, 120f);
-        E(_contentAlpha < 1f && _contentAlpha > 0f, "picking a reply fades the content out");
-        E(_windowAlpha == 1f, "picking a reply does NOT fade the window");
+        check.Expect(_contentAlpha < 1f && _contentAlpha > 0f, "picking a reply fades the content out");
+        check.Expect(_windowAlpha == 1f, "picking a reply does NOT fade the window");
 
         // Next node while open (only content gen bumps): content restarts from 0 toward 1, body re-eases, window stays.
         _contentGen = 2; _contentAlphaTarget = 1f; _bodyH = 300f;
         AdvanceAnim(1500, 120f);
-        E(_contentAlpha < 1f, "a new node restarts the content cross-fade from 0");
-        E(_windowAlpha == 1f, "a new node does NOT restart the window fade");
-        E(_bodyH < 300f && _bodyH > 120f, "body eases down toward the shorter node");
+        check.Expect(_contentAlpha < 1f, "a new node restarts the content cross-fade from 0");
+        check.Expect(_windowAlpha == 1f, "a new node does NOT restart the window fade");
+        check.Expect(_bodyH < 300f && _bodyH > 120f, "body eases down toward the shorter node");
 
         // End of conversation: window fades out.
         _winAlphaTarget = 0f;
         AdvanceAnim(1560, 120f); AdvanceAnim(1760, 120f);
-        E(_windowAlpha == 0f, "close fades the window out to 0");
+        check.Expect(_windowAlpha == 0f, "close fades the window out to 0");
 
         // Disabled -> snap.
         DialogKnobs.Anim.V = false; _windowAlpha = 0.3f; _winAlphaTarget = 1f; _contentAlphaTarget = 1f; _bodyH = 10f; _contentAlpha = 0.2f;
         AdvanceAnim(2000, 250f);
-        E(_windowAlpha == 1f && _bodyH == 250f && _contentAlpha == 1f, "animations disabled -> everything snaps to target");
+        check.Expect(_windowAlpha == 1f && _bodyH == 250f && _contentAlpha == 1f, "animations disabled -> everything snaps to target");
 
         DialogKnobs.Anim.V = sEn; DialogKnobs.FadeIn.V = sIn; DialogKnobs.FadeOut.V = sOut; _winAlphaTarget = sWt; _contentAlphaTarget = sCt;
         _windowAlpha = sWa; _contentAlpha = sCa; _bodyH = sBh; _animClockMs = sClk; _animPrimed = sPr;
@@ -1184,23 +1183,23 @@ public sealed unsafe class DialogService : IExtenderService
         // alongside the lifted capability.)
         {
             const float vpW = 1280f, vpH = 720f, pw = 400f, ph = 300f;
-            E(Window.ClampAxis(-50f, pw, vpW) == 0f, "panel pins to the left edge when x < 0");
-            E(Window.ClampAxis(5000f, pw, vpW) == vpW - pw, "panel pins to the right edge when x overflows");
-            E(Window.ClampAxis(100f, pw, vpW) == 100f, "an already on-screen x is left untouched");
-            E(Window.ClampAxis(-10f, vpH + 200f, vpH) == 0f, "a panel taller than the viewport pins to the top");
-            E(Window.ClampAxis(600f, ph, vpH) == vpH - ph, "y overflowing the bottom pins to keep the panel on-screen");
+            check.Expect(Window.ClampAxis(-50f, pw, vpW) == 0f, "panel pins to the left edge when x < 0");
+            check.Expect(Window.ClampAxis(5000f, pw, vpW) == vpW - pw, "panel pins to the right edge when x overflows");
+            check.Expect(Window.ClampAxis(100f, pw, vpW) == 100f, "an already on-screen x is left untouched");
+            check.Expect(Window.ClampAxis(-10f, vpH + 200f, vpH) == 0f, "a panel taller than the viewport pins to the top");
+            check.Expect(Window.ClampAxis(600f, ph, vpH) == vpH - ph, "y overflowing the bottom pins to keep the panel on-screen");
 
             // Scale invariance: clamping is screen-space and must NOT read the UI scale, so the result is identical
             // whatever Metrics.Scale is. Compute at 1x and 2x and assert equality -- a future scale-dependent
             // regression in ClampAxis (or a caller folding scale into the bound) flips this and fails the check.
-            // Restore the global BEFORE asserting, so a failed E() can never leak a 2x scale into the process.
+            // Restore the global BEFORE asserting, so a failed check.Expect() can never leak a 2x scale into the process.
             float savedScale = Metrics.Scale;
             Metrics.Scale = 1f; float clampAt1 = Window.ClampAxis(600f, pw, vpW);
             Metrics.Scale = 2f; float clampAt2 = Window.ClampAxis(600f, pw, vpW);
             Metrics.Scale = savedScale;
-            E(clampAt1 == clampAt2, "on-screen clamping is scale-invariant (identical at 1x and 2x)");
+            check.Expect(clampAt1 == clampAt2, "on-screen clamping is scale-invariant (identical at 1x and 2x)");
         }
 
-        log.Info(ok ? "DialogService.SelfCheck: passed" : "DialogService.SelfCheck: FAILED");
+        log.Info(check.Ok ? "DialogService.SelfCheck: passed" : "DialogService.SelfCheck: FAILED");
     }
 }

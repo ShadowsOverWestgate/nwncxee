@@ -192,61 +192,60 @@ public sealed class EditBuffer
     public static void SelfCheck(ExtenderLog log)
     {
         var e = new EditBuffer();
-        bool ok = true;
-        void Expect(bool cond, string what) { if (!cond) { ok = false; log.Info($"EditBuffer.SelfCheck FAIL: {what}"); } }
+        var check = new Checker(log);
 
         // insert at caret + mid-line insert (via UTF-8 path, incl. a multi-byte codepoint)
         e.InsertUtf8("héllo"u8);
-        Expect(e.Text == "héllo" && e.Cursor == 5, "utf8 insert");
+        check.Expect(e.Text == "héllo" && e.Cursor == 5, "utf8 insert");
         e.MoveLeft(false); e.MoveLeft(false);            // caret between 'l' and 'o'
         e.Insert("X");
-        Expect(e.Text == "hélXlo" && e.Cursor == 4, "mid-line insert");
+        check.Expect(e.Text == "hélXlo" && e.Cursor == 4, "mid-line insert");
 
         // backspace + delete
         e.Backspace();                                    // removes 'X'
-        Expect(e.Text == "héllo" && e.Cursor == 3, "backspace");
+        check.Expect(e.Text == "héllo" && e.Cursor == 3, "backspace");
         e.Delete();                                       // removes 'l' at caret
-        Expect(e.Text == "hélo", "delete at caret");
+        check.Expect(e.Text == "hélo", "delete at caret");
 
         // caret movement bounds
-        e.Home(false); Expect(e.Cursor == 0, "home");
-        e.End(false);  Expect(e.Cursor == 4, "end");
+        e.Home(false); check.Expect(e.Cursor == 0, "home");
+        e.End(false);  check.Expect(e.Cursor == 4, "end");
 
         // select + replace
         e.Home(false);
         e.MoveRight(true); e.MoveRight(true);            // select "hé"
-        Expect(e.SelectedText == "hé", "select range");
-        Expect(e.Selection is (0, 2), "selection bounds");
+        check.Expect(e.SelectedText == "hé", "select range");
+        check.Expect(e.Selection is (0, 2), "selection bounds");
         e.Insert("J");                                    // replaces selection
-        Expect(e.Text == "Jlo" && !e.HasSelection, "replace selection");
+        check.Expect(e.Text == "Jlo" && !e.HasSelection, "replace selection");
 
         // word-wise movement (Ctrl+arrow) + word-wise selection (Ctrl+Shift+arrow)
         e.Clear(); e.Insert("foo bar baz");
-        e.MoveWordLeft(false); Expect(e.Cursor == 8, "word-left to last word");
-        e.MoveWordLeft(false); Expect(e.Cursor == 4, "word-left again");
-        e.MoveWordRight(true); Expect(e.SelectedText == "bar", "word-right selects a word");
+        e.MoveWordLeft(false); check.Expect(e.Cursor == 8, "word-left to last word");
+        e.MoveWordLeft(false); check.Expect(e.Cursor == 4, "word-left again");
+        e.MoveWordRight(true); check.Expect(e.SelectedText == "bar", "word-right selects a word");
         e.Home(false);
         e.MoveWordRight(true); e.MoveWordRight(true);
-        Expect(e.SelectedText == "foo bar", "two words selected");
+        check.Expect(e.SelectedText == "foo bar", "two words selected");
 
         // length cap: an over-long paste truncates to MaxLength, further input is blocked
         e.Clear(); e.Insert(new string('x', MaxLength + 50));
-        Expect(e.Text.Length == MaxLength, "length cap truncates paste");
-        e.Insert("y"); Expect(e.Text.Length == MaxLength, "length cap blocks further input");
+        check.Expect(e.Text.Length == MaxLength, "length cap truncates paste");
+        e.Insert("y"); check.Expect(e.Text.Length == MaxLength, "length cap blocks further input");
 
         // select-all (Ctrl+A)
         e.Clear(); e.Insert("abcd"); e.Home(false);
-        e.SelectAll(); Expect(e.SelectedText == "abcd" && e.Cursor == 4, "select-all covers the line");
+        e.SelectAll(); check.Expect(e.SelectedText == "abcd" && e.Cursor == 4, "select-all covers the line");
 
         // history recall
         e.Clear(); e.Insert("first");  string s1 = e.Submit();
         e.Insert("second"); string s2 = e.Submit();
-        Expect(s1 == "first" && s2 == "second" && e.Text == "", "submit clears");
-        e.HistoryPrev(); Expect(e.Text == "second", "history prev 1");
-        e.HistoryPrev(); Expect(e.Text == "first", "history prev 2");
-        e.HistoryNext(); Expect(e.Text == "second", "history next");
-        e.HistoryNext(); Expect(e.Text == "", "history next to empty");
+        check.Expect(s1 == "first" && s2 == "second" && e.Text == "", "submit clears");
+        e.HistoryPrev(); check.Expect(e.Text == "second", "history prev 1");
+        e.HistoryPrev(); check.Expect(e.Text == "first", "history prev 2");
+        e.HistoryNext(); check.Expect(e.Text == "second", "history next");
+        e.HistoryNext(); check.Expect(e.Text == "", "history next to empty");
 
-        log.Info(ok ? "EditBuffer.SelfCheck PASS" : "EditBuffer.SelfCheck had FAILURES");
+        log.Info(check.Ok ? "EditBuffer.SelfCheck PASS" : "EditBuffer.SelfCheck had FAILURES");
     }
 }

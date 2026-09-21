@@ -267,8 +267,7 @@ internal static unsafe class RadialIcons
     public static void SelfCheck(ExtenderLog log)
     {
         if (AurTex.Ready) { log.Info("RadialIcons.SelfCheck: skipped (AurTex armed -- the fake walk would count refusals)"); return; }
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"RadialIcons.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var savedFind = _find; var savedGet = _get; bool savedReady = _ready;
         IntPtr sl = _vtLayered, sc = _vtComposite, sa = _vtArmor;
@@ -286,26 +285,26 @@ internal static unsafe class RadialIcons
 
             *(IntPtr*)icon = (IntPtr)(vt + 0x40);
             Put(icon + EngineLayout.GuiIconResRef, "isk_pocket");
-            E(Classify((IntPtr)icon) == IconKind.Plain, "an unlisted vptr is Plain");
+            check.Expect(Classify((IntPtr)icon) == IconKind.Plain, "an unlisted vptr is Plain");
             _fakeGets = _fakeFinds = 0;
-            E(Layers((IntPtr)icon, tids) == 1 && _fakeGets == 1 && _fakeFinds == 0 && LastName() == "isk_pocket", $"plain = one get by resref ({LastName()})");
+            check.Expect(Layers((IntPtr)icon, tids) == 1 && _fakeGets == 1 && _fakeFinds == 0 && LastName() == "isk_pocket", $"plain = one get by resref ({LastName()})");
 
             *(IntPtr*)icon = _vtLayered;
             for (int i = 0; i < 10; i++) scheme[i] = (ushort)(i * 17);
             *(int*)(icon + EngineLayout.LayeredIconSchemeCount) = 10;
             *(ushort**)(icon + EngineLayout.LayeredIconScheme) = scheme;
             _fakeGets = _fakeFinds = 0;
-            E(Classify((IntPtr)icon) == IconKind.Layered && Layers((IntPtr)icon, tids) == 1 && _fakeFinds == 1 && _fakeGets == 0
+            check.Expect(Classify((IntPtr)icon) == IconKind.Layered && Layers((IntPtr)icon, tids) == 1 && _fakeFinds == 1 && _fakeGets == 0
               && _fakeLastCount == 10 && _fakeLastScheme[9] == 153 && LastName() == "isk_pocket", "layered = one hashed find, scheme widened");
             *(int*)(icon + EngineLayout.LayeredIconSchemeCount) = MaxScheme + 1;
             _fakeFinds = 0;
-            E(Layers((IntPtr)icon, tids) == 1 && _fakeFinds == 0 && tids[0] == 0, "an over-long scheme is refused, not truncated");
+            check.Expect(Layers((IntPtr)icon, tids) == 1 && _fakeFinds == 0 && tids[0] == 0, "an over-long scheme is refused, not truncated");
 
             *(IntPtr*)icon = _vtComposite;
             Put(icon + EngineLayout.CompositeIconResRef2, "iwaxe_m_1");
             Put(icon + EngineLayout.CompositeIconResRef3, "iwaxe_t_1");
             _fakeGets = _fakeFinds = 0;
-            E(Classify((IntPtr)icon) == IconKind.Composite && Layers((IntPtr)icon, tids) == 3 && _fakeGets == 3 && _fakeFinds == 0
+            check.Expect(Classify((IntPtr)icon) == IconKind.Composite && Layers((IntPtr)icon, tids) == 3 && _fakeGets == 3 && _fakeFinds == 0
               && LastName() == "iwaxe_t_1", "composite = three gets, 01 -> 03");
 
             NativeMemory.Clear(icon + 8, 0xf8);
@@ -319,12 +318,12 @@ internal static unsafe class RadialIcons
             *(ushort**)(icon + EngineLayout.ArmorIconLayerSchemes) = perLayer;
             _fakeGets = _fakeFinds = 0;
             int n = Layers((IntPtr)icon, tids);
-            E(Classify((IntPtr)icon) == IconKind.Armor && n == 2 && _fakeFinds == 3 && _fakeGets == 0,
+            check.Expect(Classify((IntPtr)icon) == IconKind.Armor && n == 2 && _fakeFinds == 3 && _fakeGets == 0,
               $"armour: empty slot skipped, three finds, two layers ({n}, finds={_fakeFinds})");
-            E(LastName() == "arm_d" && _fakeLastScheme[0] == 110, $"the miss did not advance the per-layer scheme index (row {_fakeLastScheme[0] - 100})");
+            check.Expect(LastName() == "arm_d" && _fakeLastScheme[0] == 110, $"the miss did not advance the per-layer scheme index (row {_fakeLastScheme[0] - 100})");
             *(ushort**)(icon + EngineLayout.ArmorIconLayerSchemes) = null;
             Layers((IntPtr)icon, tids);
-            E(_fakeLastScheme[9] == 153, "no per-layer table: every layer takes the shared scheme");
+            check.Expect(_fakeLastScheme[9] == 153, "no per-layer table: every layer takes the shared scheme");
         }
         finally
         {
@@ -332,6 +331,6 @@ internal static unsafe class RadialIcons
             _vtLayered = sl; _vtComposite = sc; _vtArmor = sa; _fakeTex = IntPtr.Zero;
             NativeMemory.Free(vt); NativeMemory.Free(icon); NativeMemory.Free(scheme); NativeMemory.Free(perLayer);
         }
-        log.Info(ok ? "RadialIcons.SelfCheck: passed" : "RadialIcons.SelfCheck: FAILED");
+        log.Info(check.Ok ? "RadialIcons.SelfCheck: passed" : "RadialIcons.SelfCheck: FAILED");
     }
 }

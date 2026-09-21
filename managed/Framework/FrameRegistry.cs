@@ -109,8 +109,7 @@ public sealed class FrameRegistry
     /// ticket states but nothing else can prove off-device: the sealed walk allocates nothing.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"FrameRegistry.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var r = new FrameRegistry();
         var order = new List<string>();
@@ -122,18 +121,18 @@ public sealed class FrameRegistry
         r.Register(FramePhase.Start, 0, () => order.Add("start"), "start");
         r.Register(FramePhase.PrePresent, 0, () => order.Add("pre"), "pre");
 
-        E(!r.Sealed, "a fresh registry is not sealed");
-        E(string.Join(",", r.Names(FramePhase.PostPresent)) == "a,b,b2,c", "priority orders the phase, ties keep registration order");
+        check.Expect(!r.Sealed, "a fresh registry is not sealed");
+        check.Expect(string.Join(",", r.Names(FramePhase.PostPresent)) == "a,b,b2,c", "priority orders the phase, ties keep registration order");
 
         r.Seal();
-        E(r.Sealed, "Seal latches");
+        check.Expect(r.Sealed, "Seal latches");
         r.Run(FramePhase.Start); r.Run(FramePhase.PrePresent); r.Run(FramePhase.PostPresent);
-        E(string.Join(",", order) == "start,pre,a,b,b2,c", "the walk runs each phase in order");
+        check.Expect(string.Join(",", order) == "start,pre,a,b,b2,c", "the walk runs each phase in order");
 
-        E(!r.Register(FramePhase.Start, 0, () => { }, "late"), "a post-Seal registration is refused");
+        check.Expect(!r.Register(FramePhase.Start, 0, () => { }, "late"), "a post-Seal registration is refused");
         order.Clear();
         r.Run(FramePhase.Start);
-        E(string.Join(",", order) == "start", "and the refused participant never runs");
+        check.Expect(string.Join(",", order) == "start", "and the refused participant never runs");
 
         // An empty phase on an unsealed registry must be a no-op, not a null deref.
         var empty = new FrameRegistry();
@@ -148,9 +147,9 @@ public sealed class FrameRegistry
         long before = GC.GetAllocatedBytesForCurrentThread();
         for (int i = 0; i < 100; i++) quiet.Run(FramePhase.PrePresent);
         long delta = GC.GetAllocatedBytesForCurrentThread() - before;
-        E(delta == 0, $"the sealed walk allocates nothing (100 walks allocated {delta} bytes)");
+        check.Expect(delta == 0, $"the sealed walk allocates nothing (100 walks allocated {delta} bytes)");
 
-        log.Info(ok ? "FrameRegistry.SelfCheck: passed" : "FrameRegistry.SelfCheck: FAILED");
+        log.Info(check.Ok ? "FrameRegistry.SelfCheck: passed" : "FrameRegistry.SelfCheck: FAILED");
     }
 
     private static void Nop() { }

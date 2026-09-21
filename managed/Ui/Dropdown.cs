@@ -217,47 +217,46 @@ public sealed class Dropdown
     /// flips above a short viewport, and draws without allocating.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"Dropdown.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var sizes = new string[27];
         for (int i = 0; i < 27; i++) sizes[i] = (6 + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
         var d = new Dropdown();
         const float ih = 24f;
-        E(!d.MouseDown(0f, 0f, out _) && !d.MouseMove(0f, 0f) && !d.MouseWheel(1), "closed: nothing consumed");
+        check.Expect(!d.MouseDown(0f, 0f, out _) && !d.MouseMove(0f, 0f) && !d.MouseWheel(1), "closed: nothing consumed");
 
         d.OpenAt(sizes, 0, "font", 100f, 200f, 220f, 120f, ih, 1000f);
-        E(d.Open && d.Y == 220f && d.H == MaxVisible * ih, "27 entries open below the anchor at 8 visible rows");
-        E(d.List.Overflows && d.List.Offset == 0f, "the list overflows and starts at the top for item 0");
-        E(d.ItemAt(110f, 220f + ih * 2 + 1f) == 2, "item hit-test at offset 0");
-        E(d.MouseWheel(-1) && d.List.Offset == ih, "one notch scrolls one item");
-        E(d.ItemAt(110f, 220f + ih * 2 + 1f) == 3, "item hit-test follows the scroll offset");
-        E(d.ItemAt(100f + 120f - 2f, 230f) == -1, "the gutter is not an item");
+        check.Expect(d.Open && d.Y == 220f && d.H == MaxVisible * ih, "27 entries open below the anchor at 8 visible rows");
+        check.Expect(d.List.Overflows && d.List.Offset == 0f, "the list overflows and starts at the top for item 0");
+        check.Expect(d.ItemAt(110f, 220f + ih * 2 + 1f) == 2, "item hit-test at offset 0");
+        check.Expect(d.MouseWheel(-1) && d.List.Offset == ih, "one notch scrolls one item");
+        check.Expect(d.ItemAt(110f, 220f + ih * 2 + 1f) == 3, "item hit-test follows the scroll offset");
+        check.Expect(d.ItemAt(100f + 120f - 2f, 230f) == -1, "the gutter is not an item");
         // Thumb drag to the bottom -> the last item is in view.
-        E(d.List.ThumbRect(out float tt, out float th), "thumb shown");
-        E(d.MouseDown(100f + 120f - 2f, tt + 1f, out int p0) && p0 < 0 && d.Open && d.Dragging, "thumb press grabs, picks nothing, stays open");
+        check.Expect(d.List.ThumbRect(out float tt, out float th), "thumb shown");
+        check.Expect(d.MouseDown(100f + 120f - 2f, tt + 1f, out int p0) && p0 < 0 && d.Open && d.Dragging, "thumb press grabs, picks nothing, stays open");
         d.MouseMove(100f + 120f - 2f, tt + 1f + d.H);
-        E(d.MouseUp() && d.List.Offset == d.List.MaxOffset, "thumb dragged to the end shows the tail");
-        E(d.ItemAt(110f, d.Y + d.H - 1f) == 26, "the last item sits at the list bottom");
-        E(d.MouseMove(110f, d.Y + d.H - 1f) && d.Hover == 26, "hover tracks the item under the pointer");
-        E(!d.MouseMove(111f, d.Y + d.H - 1f), "motion within the same item reports no change");
-        E(d.MouseDown(110f, d.Y + d.H - 1f, out int picked) && picked == 26 && d.Selected == 26 && !d.Open, "picking the last item closes with its index");
+        check.Expect(d.MouseUp() && d.List.Offset == d.List.MaxOffset, "thumb dragged to the end shows the tail");
+        check.Expect(d.ItemAt(110f, d.Y + d.H - 1f) == 26, "the last item sits at the list bottom");
+        check.Expect(d.MouseMove(110f, d.Y + d.H - 1f) && d.Hover == 26, "hover tracks the item under the pointer");
+        check.Expect(!d.MouseMove(111f, d.Y + d.H - 1f), "motion within the same item reports no change");
+        check.Expect(d.MouseDown(110f, d.Y + d.H - 1f, out int picked) && picked == 26 && d.Selected == 26 && !d.Open, "picking the last item closes with its index");
 
         // Outside press closes, consumed, nothing picked.
         d.OpenAt(sizes, 26, "font", 100f, 200f, 220f, 120f, ih, 1000f);
-        E(d.List.Offset == d.List.MaxOffset, "opening on the last item scrolls it into view");
-        E(d.MouseDown(5f, 5f, out int none) && none < 0 && !d.Open, "outside press closes, consumed, picks nothing");
+        check.Expect(d.List.Offset == d.List.MaxOffset, "opening on the last item scrolls it into view");
+        check.Expect(d.MouseDown(5f, 5f, out int none) && none < 0 && !d.Open, "outside press closes, consumed, picks nothing");
 
         // Short viewport: the list flips above the anchor.
         d.OpenAt(sizes, 0, "font", 100f, 200f, 220f, 120f, ih, 300f);
-        E(d.Open && System.Math.Abs(d.Y - (200f - MaxVisible * ih)) < 0.01f, "the list flips above the anchor when it would run past the clamp");
+        check.Expect(d.Open && System.Math.Abs(d.Y - (200f - MaxVisible * ih)) < 0.01f, "the list flips above the anchor when it would run past the clamp");
         d.Close();
 
         // Short list: no scroll, height = n rows.
         var three = new[] { "a", "b", "c" };
         d.OpenAt(three, 1, null, 0f, 0f, 20f, 80f, ih);
-        E(d.H == 3 * ih && !d.List.Overflows, "3 entries: 3 rows, no scrollbar");
-        E(d.MouseDown(10f, 20f + ih * 2 + 1f, out int c) && c == 2, "pick the third");
+        check.Expect(d.H == 3 * ih && !d.List.Overflows, "3 entries: 3 rows, no scrollbar");
+        check.Expect(d.MouseDown(10f, 20f + ih * 2 + 1f, out int c) && c == 2, "pick the third");
 
         // Draw allocates nothing.
         var atlas = new GlyphAtlas { LineHeight = 20, Ascent = 15 };
@@ -269,46 +268,46 @@ public sealed class Dropdown
         long before = GC.GetAllocatedBytesForCurrentThread();
         for (int i = 0; i < 100; i++) { b.Clear(); d.Draw(b, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), (0.2f, 0.3f, 0.5f, 1f), 0xFFFFFF); }
         long delta = GC.GetAllocatedBytesForCurrentThread() - before;
-        E(delta == 0, $"100 open-list draws allocate nothing ({delta} bytes)");
-        E(b.VertexCount > 0, "the draw emitted geometry");
+        check.Expect(delta == 0, $"100 open-list draws allocate nothing ({delta} bytes)");
+        check.Expect(b.VertexCount > 0, "the draw emitted geometry");
         d.Close();
 
         // Search: the row sits above the list, typing filters by substring, picks map back to choice indices.
         d.OpenAt(sizes, 20, "font", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
-        E(d.Searching && d.Y == 220f && d.List.Y == 220f + ih && d.H == (MaxVisible + 1) * ih && d.Shown == 27, "a searchable list opens with the search row above 8 rows, every choice shown");
-        E(d.Contains(110f, 221f) && d.ItemAt(110f, 221f) == -1, "the search row is inside the list but is no item");
-        E(d.MouseDown(110f, 221f, out int sp) && sp < 0 && d.Open, "a press on the search row keeps the list open, picks nothing");
+        check.Expect(d.Searching && d.Y == 220f && d.List.Y == 220f + ih && d.H == (MaxVisible + 1) * ih && d.Shown == 27, "a searchable list opens with the search row above 8 rows, every choice shown");
+        check.Expect(d.Contains(110f, 221f) && d.ItemAt(110f, 221f) == -1, "the search row is inside the list but is no item");
+        check.Expect(d.MouseDown(110f, 221f, out int sp) && sp < 0 && d.Open, "a press on the search row keeps the list open, picks nothing");
         d.Type("2");
-        E(d.Shown == 12 && d.ChoiceAt(0) == 6 && d.ChoiceAt(11) == 26 && d.List.Offset == 0f, $"'2' leaves the twelve sizes containing a 2, from the top ({d.Shown})");
-        E(d.Accept() < 0 && d.Open, "Enter with several matches picks nothing");
+        check.Expect(d.Shown == 12 && d.ChoiceAt(0) == 6 && d.ChoiceAt(11) == 26 && d.List.Offset == 0f, $"'2' leaves the twelve sizes containing a 2, from the top ({d.Shown})");
+        check.Expect(d.Accept() < 0 && d.Open, "Enter with several matches picks nothing");
         d.Type("0");
-        E(d.Shown == 1 && d.ChoiceAt(0) == 14, "'20' is one size");
+        check.Expect(d.Shown == 1 && d.ChoiceAt(0) == 14, "'20' is one size");
         d.Backspace(); d.Backspace(); d.Type("1"); d.Type("2");
-        E(d.Shown == 1 && d.Accept() == 6 && !d.Open, "'12' names one size exactly: Enter picks it");
+        check.Expect(d.Shown == 1 && d.Accept() == 6 && !d.Open, "'12' names one size exactly: Enter picks it");
         var arial = new[] { "Arial", "Arial Black", "Arial Narrow", "Courier", "Georgia", "Impact", "Tahoma", "Times", "Verdana" };
         d.OpenAt(arial, 0, "face", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
         d.Type("arial");
-        E(d.Shown == 3 && d.Accept() == 0 && !d.Open, "an exact name among wider matches is what Enter picks");
+        check.Expect(d.Shown == 3 && d.Accept() == 0 && !d.Open, "an exact name among wider matches is what Enter picks");
         d.OpenAt(sizes, 20, "font", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
         d.Type("2");
-        E(d.MouseDown(110f, d.List.Y + ih + 1f, out int p2) && p2 == 14 && d.Selected == 14 && !d.Open, "the second visible row is choice 14 (20)");
+        check.Expect(d.MouseDown(110f, d.List.Y + ih + 1f, out int p2) && p2 == 14 && d.Selected == 14 && !d.Open, "the second visible row is choice 14 (20)");
         d.OpenAt(sizes, 0, "font", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
         d.Type("3"); d.Type("3");
-        E(d.Shown == 0, "no size contains '33'");
+        check.Expect(d.Shown == 0, "no size contains '33'");
         d.Backspace();
-        E(d.Filter == "3" && d.Shown == 5, "backspace re-widens the filter");
+        check.Expect(d.Filter == "3" && d.Shown == 5, "backspace re-widens the filter");
         d.Type("2");
-        E(d.Shown == 1 && d.Accept() == 26 && !d.Open && d.Selected == 26, "Enter on the one match picks it");
+        check.Expect(d.Shown == 1 && d.Accept() == 26 && !d.Open && d.Selected == 26, "Enter on the one match picks it");
         d.OpenAt(sizes, 0, "font", 100f, 200f, 220f, 120f, ih, 1000f, search: true);
         d.Type("9");
         b.Clear(); d.Draw(b, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), (0.2f, 0.3f, 0.5f, 1f), 0xFFFFFF);
         before = GC.GetAllocatedBytesForCurrentThread();
         for (int i = 0; i < 100; i++) { b.Clear(); d.Draw(b, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), (0.2f, 0.3f, 0.5f, 1f), 0xFFFFFF); }
         delta = GC.GetAllocatedBytesForCurrentThread() - before;
-        E(delta == 0, $"100 filtered draws allocate nothing ({delta} bytes)");
+        check.Expect(delta == 0, $"100 filtered draws allocate nothing ({delta} bytes)");
         d.Close();
-        E(!d.Searching && d.Filter.Length == 0, "close drops the search state");
+        check.Expect(!d.Searching && d.Filter.Length == 0, "close drops the search state");
 
-        log.Info(ok ? "Dropdown.SelfCheck: passed" : "Dropdown.SelfCheck: FAILED");
+        log.Info(check.Ok ? "Dropdown.SelfCheck: passed" : "Dropdown.SelfCheck: FAILED");
     }
 }

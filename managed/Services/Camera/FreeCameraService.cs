@@ -310,15 +310,14 @@ public sealed unsafe class FreeCameraService : IExtenderService
     /// tips the camera's right onto the vertical (the sign is the knob's to have).</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"FreeCamera.SelfCheck FAIL: {w}"); } }
-        E(PoseRoll(30f, 60f, 0f) == CameraService.Pose(30f, 60f), "no roll is the engine's pose");
+        var check = new Checker(log, "FreeCamera.SelfCheck");
+        check.Expect(PoseRoll(30f, 60f, 0f) == CameraService.Pose(30f, 60f), "no roll is the engine's pose");
         Vector3 right = CameraService.Right(PoseRoll(0f, 90f, 90f));
-        E(MathF.Abs(MathF.Abs(right.Z) - 1f) < 1e-4f && MathF.Abs(right.X) < 1e-4f, "a 90 roll tips right onto the vertical");
+        check.Expect(MathF.Abs(MathF.Abs(right.Z) - 1f) < 1e-4f && MathF.Abs(right.X) < 1e-4f, "a 90 roll tips right onto the vertical");
         Vector3 look = -CameraService.Forward(PoseRoll(0f, 90f, 90f));
-        E((look - new Vector3(0f, 1f, 0f)).Length() < 1e-4f, "roll keeps the view direction");
-        E(MathF.Abs(PoseRoll(45f, 70f, 33f).Length() - 1f) < 1e-5f, "the rolled pose is a unit quaternion");
-        E(Wrap(370f) == 10f && Wrap(-190f) == 170f, "yaw wraps");
-        log.Info(ok ? "FreeCamera.SelfCheck: passed" : "FreeCamera.SelfCheck: FAILED");
+        check.Expect((look - new Vector3(0f, 1f, 0f)).Length() < 1e-4f, "roll keeps the view direction");
+        check.Expect(MathF.Abs(PoseRoll(45f, 70f, 33f).Length() - 1f) < 1e-5f, "the rolled pose is a unit quaternion");
+        check.Expect(Wrap(370f) == 10f && Wrap(-190f) == 170f, "yaw wraps");
+        log.Info(check.Ok ? "FreeCamera.SelfCheck: passed" : "FreeCamera.SelfCheck: FAILED");
     }
 }

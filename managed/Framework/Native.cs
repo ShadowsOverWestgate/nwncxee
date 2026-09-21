@@ -89,32 +89,31 @@ public static unsafe class Native
     public static void SelfCheck(ExtenderLog log)
     {
         byte* s = stackalloc byte[32];
-        bool ok = true;
-        void Expect(bool cond, string what) { if (!cond) { ok = false; log.Info($"Native.SelfCheck FAIL: {what}"); } }
+        var check = new Checker(log);
         if (OperatingSystem.IsWindows())
         {
             s[0] = (byte)'a'; s[1] = (byte)'b'; *(ulong*)(s + 0x10) = 2; *(ulong*)(s + 0x18) = 15;
             var (buf, len, heap) = StdString(s);
-            Expect(buf == (IntPtr)s && len == 2 && heap == IntPtr.Zero, "msvc sso");
+            check.Expect(buf == (IntPtr)s && len == 2 && heap == IntPtr.Zero, "msvc sso");
             *(byte**)s = s + 8; *(ulong*)(s + 0x10) = 20; *(ulong*)(s + 0x18) = 31;
             (buf, len, heap) = StdString(s);
-            Expect(buf == (IntPtr)(s + 8) && len == 20 && heap == buf, "msvc heap");
+            check.Expect(buf == (IntPtr)(s + 8) && len == 20 && heap == buf, "msvc heap");
             byte* big = stackalloc byte[16];
             *(byte**)big = s; *(byte**)s = big + 8; *(ulong*)(s + 0x18) = 4095;
             (buf, len, heap) = StdString(s);
-            Expect(buf == (IntPtr)(big + 8) && heap == (IntPtr)s, "msvc big block un-adjusts via ptr[-1]");
+            check.Expect(buf == (IntPtr)(big + 8) && heap == (IntPtr)s, "msvc big block un-adjusts via ptr[-1]");
         }
         else
         {
             *(byte**)s = s + 0x10; *(ulong*)(s + 8) = 2; s[0x10] = (byte)'a'; s[0x11] = (byte)'b';
             var (buf, len, heap) = StdString(s);
-            Expect(buf == (IntPtr)(s + 0x10) && len == 2 && heap == IntPtr.Zero, "libstdc++ sso");
+            check.Expect(buf == (IntPtr)(s + 0x10) && len == 2 && heap == IntPtr.Zero, "libstdc++ sso");
             *(byte**)s = s + 8; *(ulong*)(s + 8) = 20;
             (buf, len, heap) = StdString(s);
-            Expect(buf == (IntPtr)(s + 8) && len == 20 && heap == buf, "libstdc++ heap");
+            check.Expect(buf == (IntPtr)(s + 8) && len == 20 && heap == buf, "libstdc++ heap");
         }
-        Expect(Encoding.Latin1.GetString(EngineBytes("abc")) == "abc", "ascii passes through");
-        log.Info(ok ? "Native.SelfCheck: passed" : "Native.SelfCheck: FAILED");
+        check.Expect(Encoding.Latin1.GetString(EngineBytes("abc")) == "abc", "ascii passes through");
+        log.Info(check.Ok ? "Native.SelfCheck: passed" : "Native.SelfCheck: FAILED");
     }
 
     /// <summary>Run the engine's CExoString dtor on a string the ENGINE allocated (frees the buffer, leaves the

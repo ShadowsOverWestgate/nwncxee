@@ -432,8 +432,7 @@ internal static unsafe class Beams
     /// </summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"Beams.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         const int SceneBytes = 0x80;   // not-an-offset: the fake Scene this self-check stack-allocates
         int LightBytes = LightDir + 12;
@@ -456,17 +455,17 @@ internal static unsafe class Beams
 
         Light(a, 10f, 1, 0, 0f, 0f, 1f);      // a point light: too short a range
         Light(b, 100000f, 1, 0, 0f, 0f, 2f);  // the sun
-        E(Direction(s, out Vector3 d) && d == new Vector3(0f, 0f, -1f),
+        check.Expect(Direction(s, out Vector3 d) && d == new Vector3(0f, 0f, -1f),
           "the first light past 1000 range wins, normalised and NEGATED");
 
         Light(b, 100000f, 0, 0, 0f, 0f, 2f);
-        E(!Direction(s, out _), "a light with the +0x74 flag clear is skipped");
+        check.Expect(!Direction(s, out _), "a light with the +0x74 flag clear is skipped");
         Light(b, 100000f, 1, 1, 0f, 0f, 2f);
-        E(!Direction(s, out _), "...and so is one whose +0x80 discriminant is non-zero");
+        check.Expect(!Direction(s, out _), "...and so is one whose +0x80 discriminant is non-zero");
         Light(b, 100000f, 1, 0, 0f, 0f, 0f);
-        E(!Direction(s, out _), "a zero direction is refused rather than normalised into a NaN");
+        check.Expect(!Direction(s, out _), "a zero direction is refused rather than normalised into a NaN");
         *(int*)(scene + SceneLightCount) = 0;
-        E(!Direction(s, out _), "an empty light list draws no beams -- which is every interior");
+        check.Expect(!Direction(s, out _), "an empty light list draws no beams -- which is every interior");
 
         // The vertex stage's extrusion, mirrored: a frontal vertex sits at the minimum offset, a back-facing
         // one extrudes until world z reaches the clip plane, and the minimum always wins as a floor. Getting
@@ -474,19 +473,19 @@ internal static unsafe class Beams
         const float MinOffset = 0.1f;
         static float Off(float frontal, float zClip, float wz, float dirZ)
             => frontal > 0f ? MinOffset : MathF.Max(MinOffset, (zClip - wz) / dirZ);
-        E(Off(1f, WorldZClip, 50f, -1f) == MinOffset, "a frontal vertex extrudes by the minimum offset only");
-        E(Off(0f, WorldZClip, 11f, -1f) == 31f, "a back-facing vertex extrudes down to the world z clip");
-        E(Off(0f, WorldZClip, -19.95f, -1f) == MinOffset,
+        check.Expect(Off(1f, WorldZClip, 50f, -1f) == MinOffset, "a frontal vertex extrudes by the minimum offset only");
+        check.Expect(Off(0f, WorldZClip, 11f, -1f) == 31f, "a back-facing vertex extrudes down to the world z clip");
+        check.Expect(Off(0f, WorldZClip, -19.95f, -1f) == MinOffset,
           "...and never less than the minimum, however close it starts");
         // The clip plane is BELOW the world floor, and that is the whole of it: a positive one truncates
         // every shaft in mid-air, which is exactly what reading SetShaderParamf as one-argument produces.
-        E(WorldZClip < 0f && Off(0f, WorldZClip, 0f, -1f) > 1f,
+        check.Expect(WorldZClip < 0f && Off(0f, WorldZClip, 0f, -1f) > 1f,
           "the clip plane is under the floor, so a shaft at ground level still has length");
 
-        E(BeamPrim == 4 && WorldZClip == -20f && DirectionalRange == 1000f,
+        check.Expect(BeamPrim == 4 && WorldZClip == -20f && DirectionalRange == 1000f,
           "the three literals RenderBeams pushes: prim 4, projectionWorldZClip -20.0, range threshold 1000");
 
-        log.Info(ok ? "Beams.SelfCheck: passed" : "Beams.SelfCheck: FAILED");
+        log.Info(check.Ok ? "Beams.SelfCheck: passed" : "Beams.SelfCheck: FAILED");
     }
 
     // ---- shaders -----------------------------------------------------------------------------

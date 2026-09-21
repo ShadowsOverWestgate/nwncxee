@@ -98,8 +98,7 @@ internal static unsafe class EnvProbe
     internal static void SelfCheck(ExtenderLog log)
     {
         ExtenderLog? quiet = _log; _log = null;
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"EnvProbe.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         try
         {
@@ -108,13 +107,13 @@ internal static unsafe class EnvProbe
             // key without Ready leaves the cube readable until the player walks MoveDist.
             Tex = 9; Ready = true; _bsp = (IntPtr)0x1234;
             Revoke();
-            E(!Ready && _bsp == IntPtr.Zero,
+            check.Expect(!Ready && _bsp == IntPtr.Zero,
               "the world edge drops the cube's freshness AND its BSP key -- a recycled BSP address must not read as the same area");
-            E(Tex == 9, "...and keeps the GL objects: they belong to the context, not to the world");
+            check.Expect(Tex == 9, "...and keeps the GL objects: they belong to the context, not to the world");
             Tex = 0;
         }
         finally { _log = quiet; }
-        log.Info(ok ? "EnvProbe.SelfCheck: passed" : "EnvProbe.SelfCheck: FAILED");
+        log.Info(check.Ok ? "EnvProbe.SelfCheck: passed" : "EnvProbe.SelfCheck: FAILED");
     }
 
     /// <summary>Is a capture due? True only on the edges that change what the probe should contain: never

@@ -142,8 +142,7 @@ internal sealed class PassRegistry
     /// can prove.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"PassRegistry.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var r = new PassRegistry();
         int forgot = 0;
@@ -153,21 +152,21 @@ internal sealed class PassRegistry
         r.Register(new PassLifecycle { Name = "beta" });   // every slot null: must be skipped, not crash
         r.Register(new PassLifecycle { Name = "gamma", ContextLost = () => forgot++, Stats = _ => "" });
 
-        E(!r.Sealed && r.Count == 3, "registration counts before seal");
-        E(r.Find("BETA") != null, "lookup is case-insensitive");
-        E(r.Find("delta") == null, "an unregistered name finds nothing");
+        check.Expect(!r.Sealed && r.Count == 3, "registration counts before seal");
+        check.Expect(r.Find("BETA") != null, "lookup is case-insensitive");
+        check.Expect(r.Find("delta") == null, "an unregistered name finds nothing");
 
         r.Seal();
         r.ContextLost();
-        E(forgot == 2, $"context loss reaches every pass that has one (saw {forgot})");
+        check.Expect(forgot == 2, $"context loss reaches every pass that has one (saw {forgot})");
         r.Revoke();
-        E(revoked == 1, $"the world edge is a SEPARATE walk, not the same one (saw {revoked})");
-        E(r.Stats(7) == "alpha 7", "stats joins the non-empty clauses only");
+        check.Expect(revoked == 1, $"the world edge is a SEPARATE walk, not the same one (saw {revoked})");
+        check.Expect(r.Stats(7) == "alpha 7", "stats joins the non-empty clauses only");
         r.Attach(log); r.RunSelfChecks(log);   // all-null slots: a no-op, not a null deref
 
-        E(!r.Register(new PassLifecycle { Name = "late" }), "a post-Seal registration is refused");
-        E(r.Find("late") == null, "and the refused pass is not in the walk");
+        check.Expect(!r.Register(new PassLifecycle { Name = "late" }), "a post-Seal registration is refused");
+        check.Expect(r.Find("late") == null, "and the refused pass is not in the walk");
 
-        log.Info(ok ? $"PassRegistry.SelfCheck: passed" : "PassRegistry.SelfCheck: FAILED");
+        log.Info(check.Ok ? $"PassRegistry.SelfCheck: passed" : "PassRegistry.SelfCheck: FAILED");
     }
 }

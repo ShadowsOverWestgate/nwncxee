@@ -449,51 +449,50 @@ internal static unsafe class PostStack
     internal static bool SelfCheck(ExtenderLog log)
     {
         ExtenderLog? quiet = _log; _log = null;
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"PostStack.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         try
         {
             foreach (Stage st in _stages)
             {
                 string src = ShaderStages.Source(st.Resref);
-                E(src.Length > 0 && st.Resref.Length <= ShaderResource.ResRefBytes, $"{st.Name}: resref composes");
-                E(src.Contains("vec4 CxStage(vec4 c)"), $"{st.Name}: declares CxStage");
-                E(ShaderContract.DisplaySafe(src) && ShaderContract.SlotSafe(src, "uSrc"),
+                check.Expect(src.Length > 0 && st.Resref.Length <= ShaderResource.ResRefBytes, $"{st.Name}: resref composes");
+                check.Expect(src.Contains("vec4 CxStage(vec4 c)"), $"{st.Name}: declares CxStage");
+                check.Expect(ShaderContract.DisplaySafe(src) && ShaderContract.SlotSafe(src, "uSrc"),
                   $"{st.Name}: display space end to end, and reads uSrc");
-                if (st.Param != null) E(src.Contains($"uniform float {st.Param};"), $"{st.Name}: declares its param {st.Param}");
-                E(src.IndexOf("CxStage(texture(uSrc, vUV))", StringComparison.Ordinal)
+                if (st.Param != null) check.Expect(src.Contains($"uniform float {st.Param};"), $"{st.Name}: declares its param {st.Param}");
+                check.Expect(src.IndexOf("CxStage(texture(uSrc, vUV))", StringComparison.Ordinal)
                   < src.IndexOf("CxDither(c.rgb", StringComparison.Ordinal), $"{st.Name}: dithers AFTER the stage");
             }
             // The whole point: the same expression as inc_postpr_gam.shd, exponent Gamma/2.2, so a client at
             // 2.2 is the identity and every other value moves the Alloy frame exactly as it moves vanilla's.
-            E(GammaStageFs.Contains("vec3(uGamma / 2.2)"), "gamma is pow(c, g/2.2), the stock stage's exponent");
-            E(MaskGamma == 0x10, "POSTPROCESSING_GAMMA is 0x10 (inc_postpr.shd)");
-            E(GammaBit(MaskGamma) && !GammaBit(MaskGamma - 1) && !GammaBit(0), "the gate is the mask bit");
-            E(MathF.Abs(MathF.Pow(0.5f, EngineGamma / 2.2f) - 0.5f) < 1e-6f, "2.2 is the identity");
-            Post.Stack.V = false; E(Begin(4, 4, 4, 4) == 0, "post.stack off bypasses the stack: Begin hands the frame back");
+            check.Expect(GammaStageFs.Contains("vec3(uGamma / 2.2)"), "gamma is pow(c, g/2.2), the stock stage's exponent");
+            check.Expect(MaskGamma == 0x10, "POSTPROCESSING_GAMMA is 0x10 (inc_postpr.shd)");
+            check.Expect(GammaBit(MaskGamma) && !GammaBit(MaskGamma - 1) && !GammaBit(0), "the gate is the mask bit");
+            check.Expect(MathF.Abs(MathF.Pow(0.5f, EngineGamma / 2.2f) - 0.5f) < 1e-6f, "2.2 is the identity");
+            Post.Stack.V = false; check.Expect(Begin(4, 4, 4, 4) == 0, "post.stack off bypasses the stack: Begin hands the frame back");
             Post.Stack.V = true;
-            E(Post.Stack.Default && Post.FbPost.Default, "the stack and the hosted chain default ON: /post reset lifts both bypasses");
-            E(PostChain.Describe().Contains("stack"), "/post reports the stack");
-            E(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd)");
-            E(_stages[1].Name == "toon" && !ToonActive(0) && ToonActive(MaskToon), "the toon stage's gate is the option bit");
-            E(ToonStage.SelfCheck(log), "the toon stage's own checks");
-            E(_fbpost == _stages[2] && _fbpost.Prepare != null, "the hosted chain is stage 2, after gamma and toon, with its uploads");
-            E(FbPostStage.SelfCheck(log), "the hosted chain's own checks");
-            E(VanillaShader.Splice(FbPostStage.FbPostFs, null, "x", fromContent: false) == FbPostStage.FbPostFs,
+            check.Expect(Post.Stack.Default && Post.FbPost.Default, "the stack and the hosted chain default ON: /post reset lifts both bypasses");
+            check.Expect(PostChain.Describe().Contains("stack"), "/post reports the stack");
+            check.Expect(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd)");
+            check.Expect(_stages[1].Name == "toon" && !ToonActive(0) && ToonActive(MaskToon), "the toon stage's gate is the option bit");
+            check.Expect(ToonStage.SelfCheck(log), "the toon stage's own checks");
+            check.Expect(_fbpost == _stages[2] && _fbpost.Prepare != null, "the hosted chain is stage 2, after gamma and toon, with its uploads");
+            check.Expect(FbPostStage.SelfCheck(log), "the hosted chain's own checks");
+            check.Expect(VanillaShader.Splice(FbPostStage.FbPostFs, null, "x", fromContent: false) == FbPostStage.FbPostFs,
               "a chain with no inc_postpr leaves the text untouched, which is what Build reads as the stand-down");
-            bool fb = Post.FbPost.V; Post.FbPost.V = false; E(!FbPostActive(), "post.fbpost off stands the hosted chain down"); Post.FbPost.V = fb;
-            E(SmaaStage.SelfCheck(log), "the aa stage's own checks");
-            E(TaaStage.SelfCheck(log), "the taa stage's own checks");
-            E(_stages[^1].Name == "aa", "aa is the LAST stage: it smooths what the frame actually shows");
+            bool fb = Post.FbPost.V; Post.FbPost.V = false; check.Expect(!FbPostActive(), "post.fbpost off stands the hosted chain down"); Post.FbPost.V = fb;
+            check.Expect(SmaaStage.SelfCheck(log), "the aa stage's own checks");
+            check.Expect(TaaStage.SelfCheck(log), "the taa stage's own checks");
+            check.Expect(_stages[^1].Name == "aa", "aa is the LAST stage: it smooths what the frame actually shows");
             // #389: ...and TAA is exclusive with it, so it is last whenever it is live -- its stage draw is
             // the dithered write and the history never carries the dither.
-            E(_stages[^2].Name == "taa", "taa sits right before aa, and the two are never live together");
+            check.Expect(_stages[^2].Name == "taa", "taa sits right before aa, and the two are never live together");
             bool taa = Post.Taa.V; Post.Taa.V = true;
-            E(!SmaaStage.Active && _stages[^2].Active(), "with /post taa 1 the aa stage is idle and the taa stage live");
+            check.Expect(!SmaaStage.Active && _stages[^2].Active(), "with /post taa 1 the aa stage is idle and the taa stage live");
             Post.Taa.V = taa;
         }
         finally { _log = quiet; Post.Stack.V = true; }
-        log.Info(ok ? $"PostStack.SelfCheck: passed ({_stages.Length} stage(s))" : "PostStack.SelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? $"PostStack.SelfCheck: passed ({_stages.Length} stage(s))" : "PostStack.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

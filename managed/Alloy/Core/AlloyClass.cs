@@ -101,36 +101,35 @@ internal static class AlloyClasses
     /// cutout, which is the majority of NWN content and the reason the missing sort survives at all.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyClasses.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log, "AlloyClasses.SelfCheck");
 
-        E(Of(true, true, true, true, true) == AlloyClass.Water, "water beats every other term");
-        E(Of(false, true, true, false, false) == AlloyClass.Additive, "additive beats opaque");
-        E(Of(false, true, false, true, true) == AlloyClass.Additive, "additive beats the transparency terms");
-        E(Of(false, false, true, true, true) == AlloyClass.Opaque, "an opaque part is opaque whatever it declares");
-        E(Of(false, false, false, true, false) == AlloyClass.Blended, "declared transparency blends");
-        E(Of(false, false, false, false, true) == AlloyClass.Blended, "a sub-1 part alpha blends");
-        E(Of(false, false, false, false, false) == AlloyClass.Cutout, "texture alpha alone is a cutout");
+        check.Expect(Of(true, true, true, true, true) == AlloyClass.Water, "water beats every other term");
+        check.Expect(Of(false, true, true, false, false) == AlloyClass.Additive, "additive beats opaque");
+        check.Expect(Of(false, true, false, true, true) == AlloyClass.Additive, "additive beats the transparency terms");
+        check.Expect(Of(false, false, true, true, true) == AlloyClass.Opaque, "an opaque part is opaque whatever it declares");
+        check.Expect(Of(false, false, false, true, false) == AlloyClass.Blended, "declared transparency blends");
+        check.Expect(Of(false, false, false, false, true) == AlloyClass.Blended, "a sub-1 part alpha blends");
+        check.Expect(Of(false, false, false, false, false) == AlloyClass.Cutout, "texture alpha alone is a cutout");
 
-        E(!Blends((int)AlloyClass.Opaque), "plain opaque does not blend");
-        E(!Blends((int)AlloyClass.Cutout), "#357: nor does a cutout -- it writes depth, so it must be opaque");
-        E(Blends((int)AlloyClass.Blended) && Blends((int)AlloyClass.Additive), "blended and additive do");
-        E(Blends((int)AlloyClass.Water), "and so does water -- the engine draws bucket 6 under Enable(0)");
-        E(Discard((int)AlloyClass.Cutout) == 0.2f && Discard((int)AlloyClass.Blended) == 0.2f,
+        check.Expect(!Blends((int)AlloyClass.Opaque), "plain opaque does not blend");
+        check.Expect(!Blends((int)AlloyClass.Cutout), "#357: nor does a cutout -- it writes depth, so it must be opaque");
+        check.Expect(Blends((int)AlloyClass.Blended) && Blends((int)AlloyClass.Additive), "blended and additive do");
+        check.Expect(Blends((int)AlloyClass.Water), "and so does water -- the engine draws bucket 6 under Enable(0)");
+        check.Expect(Discard((int)AlloyClass.Cutout) == 0.2f && Discard((int)AlloyClass.Blended) == 0.2f,
           "the engine's 0.2 cutout, on the two classes it draws under Enable(1)");
-        E(Discard((int)AlloyClass.Opaque) < 0f && Discard((int)AlloyClass.Additive) < 0f
+        check.Expect(Discard((int)AlloyClass.Opaque) < 0f && Discard((int)AlloyClass.Additive) < 0f
           && Discard((int)AlloyClass.Water) < 0f,
           "and no discard at all on the three it does not");
         // Draw order is the enum's own order, and the staging sort is what depends on it: opaque and cutout
         // share a pass, so they must be adjacent AND first.
-        E((int)AlloyClass.Opaque == 0 && (int)AlloyClass.Cutout == 1 && (int)AlloyClass.Blended == 2
+        check.Expect((int)AlloyClass.Opaque == 0 && (int)AlloyClass.Cutout == 1 && (int)AlloyClass.Blended == 2
           && (int)AlloyClass.Water == 3 && (int)AlloyClass.Additive == 4, "declaration order IS draw order");
         // #129: and water sits BETWEEN them, which is the whole of its scheduling. The framebuffer copy it
         // reads is taken at this boundary: everything below it is in the copy, everything above is not.
-        E((int)AlloyClass.Water > (int)AlloyClass.Blended && (int)AlloyClass.Water < (int)AlloyClass.Additive,
+        check.Expect((int)AlloyClass.Water > (int)AlloyClass.Blended && (int)AlloyClass.Water < (int)AlloyClass.Additive,
           "water draws after the blended class (fade is in its copy) and before additive (glow is not)");
-        E(Count == System.Enum.GetValues<AlloyClass>().Length, "Count sizes the per-class arrays");
+        check.Expect(Count == System.Enum.GetValues<AlloyClass>().Length, "Count sizes the per-class arrays");
 
-        log.Info(ok ? "AlloyClasses.SelfCheck: passed" : "AlloyClasses.SelfCheck: FAILED");
+        log.Info(check.Ok ? "AlloyClasses.SelfCheck: passed" : "AlloyClasses.SelfCheck: FAILED");
     }
 }

@@ -1134,25 +1134,24 @@ internal static unsafe class PostChain
     internal static bool SelfCheck(ExtenderLog log)
     {
         ExtenderLog? quiet = _log; _log = null;
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"PostChain.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         float sc = _scale, tb = Post.TaaBlend.V, am = Post.AutoMin.V, ax = Post.AutoMax.V, asp = Post.AutoSpeed.V, ad = Post.AutoDown.V;
         bool mo = Post.Motion.V, ta = Post.Taa.V, au = Post.Auto.V, on = _on, armed = Armed;
         int vz = Post.Viz.V;
         try
         {
-            E(Post.G.Get("hdr") == null && Post.G.Get("scale") == null && Post.G.Get("aotemporal") == null,
+            check.Expect(Post.G.Get("hdr") == null && Post.G.Get("scale") == null && Post.G.Get("aotemporal") == null,
               "hdr, scale and aotemporal are not post knobs: hdr is the Renderer's boot setting, the other two are alloy.scale and ao.temporal");
-            E(Post.Tonemap.Default == TonemapAces && Post.Tonemap.FormatDefault() == "aces" && Post.Tonemap.RangeText() == "off, shoulder, aces",
+            check.Expect(Post.Tonemap.Default == TonemapAces && Post.Tonemap.FormatDefault() == "aces" && Post.Tonemap.RangeText() == "off, shoulder, aces",
               "the tonemap knob stores the operator index and formats its name");
-            E(Post.Tonemap.TryParse("shoulder", out int tm) && tm == TonemapShoulder && Post.Tonemap.TryParse("0", out tm) && tm == TonemapOff,
+            check.Expect(Post.Tonemap.TryParse("shoulder", out int tm) && tm == TonemapShoulder && Post.Tonemap.TryParse("0", out tm) && tm == TonemapOff,
               "...and parses a name or an index");
             // #389: TAA arms the motion pass and stands SMAA down; both toggle with the one key. The jitter
             // sequence is centred, one render pixel wide, and repeats -- and is exactly zero-width at no size.
             Post.Motion.V = false; Post.Viz.V = 0; Post.Taa.V = true;
-            E(TaaOn && MotionWanted && !SmaaStage.Active, "/post taa 1 arms the motion pass and stands SMAA down");
-            Post.Taa.V = false; E(!TaaOn && !MotionWanted, "/post taa 0 disarms both together");
+            check.Expect(TaaOn && MotionWanted && !SmaaStage.Active, "/post taa 1 arms the motion pass and stands SMAA down");
+            Post.Taa.V = false; check.Expect(!TaaOn && !MotionWanted, "/post taa 0 disarms both together");
             float sx = 0f, sy = 0f, mx = 0f;
             for (int f = 0; f < JitterCount; f++)
             {
@@ -1162,86 +1161,86 @@ internal static unsafe class PostChain
             Jitter(0, 1000, 500, out float j0x, out float j0y); Jitter(JitterCount, 1000, 500, out float j8x, out float j8y);
             // Halton's first eight points are not exactly balanced (base 2 sums to 3.5625, a mean of -0.055
             // px): a mean under a tenth of a pixel is what this asserts, not zero.
-            E(MathF.Abs(sx) * 500f / JitterCount < 0.1f && MathF.Abs(sy) * 250f / JitterCount < 0.1f, "the jitter sequence is centred within 0.1 px");
-            E(mx <= 0.5f + 1e-4f, "...and stays within half a render pixel");
-            E(j0x == j8x && j0y == j8y, "...and repeats every JitterCount frames");
-            E(Post.TaaBlend.TryParse("0", out float blend) && blend == 0.02f, "taablend never reaches 0: a frozen history would never converge");
-            E(Post.TaaBlend.TryParse("1", out blend) && blend == 0.5f, "...nor 1: that is the raw jitter with nothing averaging it");
+            check.Expect(MathF.Abs(sx) * 500f / JitterCount < 0.1f && MathF.Abs(sy) * 250f / JitterCount < 0.1f, "the jitter sequence is centred within 0.1 px");
+            check.Expect(mx <= 0.5f + 1e-4f, "...and stays within half a render pixel");
+            check.Expect(j0x == j8x && j0y == j8y, "...and repeats every JitterCount frames");
+            check.Expect(Post.TaaBlend.TryParse("0", out float blend) && blend == 0.02f, "taablend never reaches 0: a frozen history would never converge");
+            check.Expect(Post.TaaBlend.TryParse("1", out blend) && blend == 0.5f, "...nor 1: that is the raw jitter with nothing averaging it");
             // #391: the render size and lod bias the scale produces never hit 0; the clamp itself is
             // alloy.scale's range, MinScale..MaxScale. Plain field writes on the knob: nothing runs or is written.
-            E(Renderer.Scale.Min == MinScale && Renderer.Scale.Max == MaxScale, "alloy.scale spans exactly the resolve's range");
+            check.Expect(Renderer.Scale.Min == MinScale && Renderer.Scale.Max == MaxScale, "alloy.scale spans exactly the resolve's range");
             Renderer.Scale.V = 0.67f;
-            E(RenderSize(2560) == 1715 && RenderSize(1) == 1, "render size rounds, never below one pixel");
-            E(MathF.Abs(LodBias - MathF.Log2(0.67f)) < 1e-6f, "the lod bias is log2(scale) below 1");
-            Renderer.Scale.V = 1.5f; E(LodBias == 0f, "...and 0 above it: supersampling keeps its detail");
-            Renderer.Scale.V = 1f; E(RenderSize(2560) == 2560 && LodBias == 0f, "1.0 is pixel-identical");
+            check.Expect(RenderSize(2560) == 1715 && RenderSize(1) == 1, "render size rounds, never below one pixel");
+            check.Expect(MathF.Abs(LodBias - MathF.Log2(0.67f)) < 1e-6f, "the lod bias is log2(scale) below 1");
+            Renderer.Scale.V = 1.5f; check.Expect(LodBias == 0f, "...and 0 above it: supersampling keeps its detail");
+            Renderer.Scale.V = 1f; check.Expect(RenderSize(2560) == 2560 && LodBias == 0f, "1.0 is pixel-identical");
             // #388: the viz runs the pass without arming it, and arming is what /post motion does.
-            Post.Motion.V = false; Post.Viz.V = 0; E(!MotionWanted, "motion off and no viz: the pass sits out");
-            Post.Viz.V = VizMotion; E(MotionWanted, "viz 4 runs the pass unarmed");
-            Post.Viz.V = 0; Post.Motion.V = true; E(MotionWanted, "/post motion 1 arms it");
-            E(Describe().Contains("bloom") && Describe().Contains("tonemap") && Describe().Contains("dither")
+            Post.Motion.V = false; Post.Viz.V = 0; check.Expect(!MotionWanted, "motion off and no viz: the pass sits out");
+            Post.Viz.V = VizMotion; check.Expect(MotionWanted, "viz 4 runs the pass unarmed");
+            Post.Viz.V = 0; Post.Motion.V = true; check.Expect(MotionWanted, "/post motion 1 arms it");
+            check.Expect(Describe().Contains("bloom") && Describe().Contains("tonemap") && Describe().Contains("dither")
               && Describe().Contains("exposure") && Describe().Contains("scale") && Describe().Contains("motion") && Describe().Contains("taa"),
               "Describe names every knob group");
-            E(ResolveFs.Contains("if (uViz == 4)") && ResolveFs.Contains("textureLod(uBloom, vUV, 0.0).rg"),
+            check.Expect(ResolveFs.Contains("if (uViz == 4)") && ResolveFs.Contains("textureLod(uBloom, vUV, 0.0).rg"),
               "viz 4 paints the velocity target off the bloom unit");
             // Exposure is scene-referred: it multiplies the linear frame BEFORE the tonemap and the encode,
             // never the display value -- a gain after the encode is a gamma-wrong brightness slider.
-            E(ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
+            check.Expect(ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
               < ResolveFs.IndexOf("if (uMode == 1) c = CxShoulder", StringComparison.Ordinal)
               && ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
               < ResolveFs.IndexOf("vec3 outc = CxEncode(c);", StringComparison.Ordinal),
               "exposure is applied in linear, before the tonemap and the encode");
             // #491: the auto gain is a second scene-referred multiply, right after the fixed one; with uAuto 0
             // the line is skipped, which is what makes "off" bit-exact rather than "times a gain of 1".
-            E(ResolveFs.IndexOf("if (uAuto != 0) c *= uAutoGain;", StringComparison.Ordinal)
+            check.Expect(ResolveFs.IndexOf("if (uAuto != 0) c *= uAutoGain;", StringComparison.Ordinal)
               > ResolveFs.IndexOf("c *= uExposure;", StringComparison.Ordinal)
               && ResolveFs.IndexOf("if (uAuto != 0) c *= uAutoGain;", StringComparison.Ordinal)
               < ResolveFs.IndexOf("if (uMode == 1) c = CxShoulder", StringComparison.Ordinal),
               "the auto-exposure gain multiplies in linear, after the fixed exposure and before the tonemap");
-            E(Post.Auto.Default && !AutoWanted, "auto-exposure boots on, but wants nothing without an armed HDR target");
-            Post.Auto.V = false; E(Describe().Contains("auto off"), "/post auto 0 disarms it and Describe says so");
-            Post.Auto.V = true; E(Describe().Contains("auto on"), "/post auto 1 arms it again");
-            E(Post.AutoMin.Default == 0.5f && Post.AutoMax.Default == 2f && Post.AutoSpeed.Default == 1f && Post.AutoDown.Default == 3f,
+            check.Expect(Post.Auto.Default && !AutoWanted, "auto-exposure boots on, but wants nothing without an armed HDR target");
+            Post.Auto.V = false; check.Expect(Describe().Contains("auto off"), "/post auto 0 disarms it and Describe says so");
+            Post.Auto.V = true; check.Expect(Describe().Contains("auto on"), "/post auto 1 arms it again");
+            check.Expect(Post.AutoMin.Default == 0.5f && Post.AutoMax.Default == 2f && Post.AutoSpeed.Default == 1f && Post.AutoDown.Default == 3f,
               "the four auto dials boot at the #491 values");
-            E(Post.AutoMin.Min == 0.01f, "automin never reaches 0: the gain's floor is a divisor");
+            check.Expect(Post.AutoMin.Min == 0.01f, "automin never reaches 0: the gain's floor is a divisor");
             // The shader bin count is literal text; this ties it to the C# constant the buffer is sized from.
-            E(AutoBufLib.Contains($"[{AutoBins}]") && AutoBufLibRead.Contains($"[{AutoBins}]")
+            check.Expect(AutoBufLib.Contains($"[{AutoBins}]") && AutoBufLibRead.Contains($"[{AutoBins}]")
               && AutoHistCs.Contains($"* {AutoBins - 2}.0), {AutoBins - 3}u") && AutoAdaptCs.Contains($"/ {AutoBins - 2}.0"),
               "the shader bin literals match AutoBins");
             // Live, 2026-09-13: a raw string drops its last newline, so a lib joined after a trailing line
             // comment is commented out with it. The joined text must put the block on its own line.
-            E(AutoHistCs.Contains("\nlayout(std430") && AutoAdaptCs.Contains("\nlayout(std430")
+            check.Expect(AutoHistCs.Contains("\nlayout(std430") && AutoAdaptCs.Contains("\nlayout(std430")
               && AutoHistCs.Contains("};\nshared uint") && AutoAdaptCs.Contains("};\nvoid main"),
               "the exposure SSBO block sits on its own line in both compute stages");
-            E(AutoHistCs.Contains("texelFetch(uHdr, p, 0)") && AutoAdaptCs.Contains("uParams.w / avg"),
+            check.Expect(AutoHistCs.Contains("texelFetch(uHdr, p, 0)") && AutoAdaptCs.Contains("uParams.w / avg"),
               "the histogram reads the linear HDR texel and the adapt steers key / average");
-            E(ResolveFs.Contains("mix(CxShoulder(c, uKnee), CxAces(c), uAcesMix)"),
+            check.Expect(ResolveFs.Contains("mix(CxShoulder(c, uKnee), CxAces(c), uAcesMix)"),
               "ACES is mixed against the shoulder, so the darks below the knee are never crushed past the mix");
             // The resolve is the ONLY place the Alloy frame meets 8-bit, so it is the only place a dither
             // can go. A resolve that lost it would band again, and the symptom (faint contour stripes over
             // smooth gradients) reads as a lighting bug rather than as a missing line here.
-            E(PostDitherLib.Contains("(r1 + r2 - 1.0) * lsb") && ResolveFs.Contains("CxDither(outc, gl_FragCoord.xy, uDither)"),
+            check.Expect(PostDitherLib.Contains("(r1 + r2 - 1.0) * lsb") && ResolveFs.Contains("CxDither(outc, gl_FragCoord.xy, uDither)"),
               "the resolve dithers with a TRIANGULAR pdf -- two samples summed, not one");
-            E(ResolveFs.IndexOf("vec3 outc = CxEncode(c);", StringComparison.Ordinal)
+            check.Expect(ResolveFs.IndexOf("vec3 outc = CxEncode(c);", StringComparison.Ordinal)
               < ResolveFs.IndexOf("CxDither(outc, gl_FragCoord.xy, uDither)", StringComparison.Ordinal),
               "...and it dithers in DISPLAY space, after the encode -- dithering before it is shaped by the "
               + "curve and stops matching the quantisation step it exists to break up");
             // #132: this resolve is the frame's ONLY encode, and it is gated on the engine's own
             // GAMMA_CORRECTION. A resolve that read the HDR colour through a decode would be undoing an
             // encode nobody applies any more -- the #102 failure, whole-frame and in the other direction.
-            E(!ResolveFs.Contains("CxLinear") && !BloomDownFs.Contains("CxLinear"),
+            check.Expect(!ResolveFs.Contains("CxLinear") && !BloomDownFs.Contains("CxLinear"),
               "nothing in the chain decodes: the target is linear");
             // ...and it is UNCONDITIONAL in the stage, because the gate lives in Precheck. A stage that
             // grew its own switch would be half a gate: the Alloy DECODES cannot be switched per pass, so
             // an encode that turned itself off would leave every Alloy surface a gamma dark beside the
             // engine's. The refusal is the only self-consistent answer, and this asserts the pairing.
-            E(ResolveFs.Contains("vec3 outc = CxEncode(c);") && !PostColorLib.Contains("uniform"),
+            check.Expect(ResolveFs.Contains("vec3 outc = CxEncode(c);") && !PostColorLib.Contains("uniform"),
               "the resolve's encode is unconditional -- the gamma gate is Precheck's refusal, not a switch");
 
             // The debug VIEWS default off, so /post reset (every Default) clears a stray /post viz with the rest.
             // /post motion stays off because TAA arms the pass itself; /post taa is ON -- it is the default
             // anti-aliaser, and reset must put it back rather than leave the frame on SMAA.
-            E(!Post.Motion.Default && Post.Taa.Default && Post.Viz.Default == 0 && !Post.ClearViz.Default,
+            check.Expect(!Post.Motion.Default && Post.Taa.Default && Post.Viz.Default == 0 && !Post.ClearViz.Default,
               "the debug views default OFF and taa defaults ON: reset restores the shipped anti-aliaser");
 
             // The shoulder, in C#, mirroring the GLSL: identity below the knee, and never past 1.
@@ -1252,10 +1251,10 @@ internal static unsafe class PostChain
                 return MathF.Min(c, k) + m * t / (m + t);
             }
             for (float x = 0f; x <= 0.8f; x += 0.1f)
-                E(MathF.Abs(Shoulder(x, 0.8f) - x) < 1e-5f, $"shoulder is the identity at {x:F1}");
-            E(Shoulder(4f, 0.8f) < 1f && Shoulder(4f, 0.8f) > 0.9f, "shoulder compresses 4.0 into (0.9, 1)");
-            E(Shoulder(100f, 0.8f) < 1f, "shoulder never reaches 1 however bright the input");
-            E(Shoulder(1.5f, 0.8f) < Shoulder(3f, 0.8f), "shoulder stays monotonic, so detail survives it");
+                check.Expect(MathF.Abs(Shoulder(x, 0.8f) - x) < 1e-5f, $"shoulder is the identity at {x:F1}");
+            check.Expect(Shoulder(4f, 0.8f) < 1f && Shoulder(4f, 0.8f) > 0.9f, "shoulder compresses 4.0 into (0.9, 1)");
+            check.Expect(Shoulder(100f, 0.8f) < 1f, "shoulder never reaches 1 however bright the input");
+            check.Expect(Shoulder(1.5f, 0.8f) < Shoulder(3f, 0.8f), "shoulder stays monotonic, so detail survives it");
         }
         finally
         {
@@ -1265,7 +1264,7 @@ internal static unsafe class PostChain
             Post.Motion.V = mo; Post.Taa.V = ta; Post.Auto.V = au; _on = on; Armed = armed; Post.Viz.V = vz;
             _log = quiet;
         }
-        log.Info(ok ? "PostChain.SelfCheck: passed" : "PostChain.SelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? "PostChain.SelfCheck: passed" : "PostChain.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

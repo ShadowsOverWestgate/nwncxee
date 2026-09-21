@@ -66,32 +66,31 @@ public static class TypingSignal
     /// <summary>Off-device proof of the latch's state machine and the channel-to-mode map.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"TypingSignal.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         Reset();
-        E(!Focused, "starts unfocused");
-        E(Unfocus() == false, "unfocus while not typing sends nothing");
-        E(Focus(), "first focus sends");
-        E(Focused, "latched after focus");
-        E(Focus() == false, "repeat focus sends nothing");
-        E(Unfocus(), "first unfocus sends");
-        E(!Focused, "unlatched after unfocus");
-        E(Unfocus() == false, "repeat unfocus sends nothing");
-        E(Focus(), "re-open after a close sends again");
+        check.Expect(!Focused, "starts unfocused");
+        check.Expect(Unfocus() == false, "unfocus while not typing sends nothing");
+        check.Expect(Focus(), "first focus sends");
+        check.Expect(Focused, "latched after focus");
+        check.Expect(Focus() == false, "repeat focus sends nothing");
+        check.Expect(Unfocus(), "first unfocus sends");
+        check.Expect(!Focused, "unlatched after unfocus");
+        check.Expect(Unfocus() == false, "repeat unfocus sends nothing");
+        check.Expect(Focus(), "re-open after a close sends again");
 
         // Reset is the session edge: it drops the latch silently, and the next open still sends.
         Reset();
-        E(!Focused, "reset drops the latch");
-        E(Focus(), "focus after reset sends");
+        check.Expect(!Focused, "reset drops the latch");
+        check.Expect(Focus(), "focus after reset sends");
         Reset();
 
-        E(ModeOf(Channel.Talk) == 0 && ModeOf(Channel.Tell) == 0, "talk and tell both report mode 0");
-        E(ModeOf(Channel.Whisper) == 1, "whisper is mode 1");
-        E(ModeOf(Channel.Shout) == 2, "shout is mode 2");
-        E(ModeOf(Channel.Party) == 3, "party is mode 3");
-        E(ModeOf(Channel.DM) == 4, "dm is mode 4");
+        check.Expect(ModeOf(Channel.Talk) == 0 && ModeOf(Channel.Tell) == 0, "talk and tell both report mode 0");
+        check.Expect(ModeOf(Channel.Whisper) == 1, "whisper is mode 1");
+        check.Expect(ModeOf(Channel.Shout) == 2, "shout is mode 2");
+        check.Expect(ModeOf(Channel.Party) == 3, "party is mode 3");
+        check.Expect(ModeOf(Channel.DM) == 4, "dm is mode 4");
 
-        log.Info(ok ? "TypingSignal.SelfCheck OK" : "TypingSignal.SelfCheck had failures");
+        log.Info(check.Ok ? "TypingSignal.SelfCheck OK" : "TypingSignal.SelfCheck had failures");
     }
 }

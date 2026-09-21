@@ -286,8 +286,7 @@ internal sealed class BakeCache
     /// <summary>Headless: the round trip of a two-rect union and the refusals.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"BakeCache.SelfCheck: FAILED -- {w}"); } }
+        var check = new Checker(log, "BakeCache.SelfCheck");
         const int uw = 32, uh = 16;
         var union = new byte[uw * uh * 8];
         for (int i = 0; i < union.Length; i++) union[i] = (byte)(i * 7);
@@ -296,15 +295,15 @@ internal sealed class BakeCache
         SerializeTo(ms, uw, uh, table, union);
         byte[] blob = ms.ToArray();
         byte[]? back = Deserialize(new MemoryStream(blob), out int bw, out int bh, out Entry[]? bt, out string? why);
-        E(back != null && why == null && bw == uw && bh == uh && back.AsSpan().SequenceEqual(union), "the union round-trips byte-identical");
-        E(bt != null && bt.Length == 2 && bt[1].Key == 0x5678 && bt[1].Y == 12 && bt[0].W == 16, "the table round-trips");
-        E(Deserialize(new MemoryStream(blob, 0, blob.Length / 2), out _, out _, out _, out why) == null && why == "truncation", "a cut blob is refused as truncation");
+        check.Expect(back != null && why == null && bw == uw && bh == uh && back.AsSpan().SequenceEqual(union), "the union round-trips byte-identical");
+        check.Expect(bt != null && bt.Length == 2 && bt[1].Key == 0x5678 && bt[1].Y == 12 && bt[0].W == 16, "the table round-trips");
+        check.Expect(Deserialize(new MemoryStream(blob, 0, blob.Length / 2), out _, out _, out _, out why) == null && why == "truncation", "a cut blob is refused as truncation");
         blob[4] ^= 1;
-        E(Deserialize(new MemoryStream(blob), out _, out _, out _, out why) == null && why == "version", "another version is refused as version");
+        check.Expect(Deserialize(new MemoryStream(blob), out _, out _, out _, out why) == null && why == "version", "another version is refused as version");
         // the row-strided upload's address of a rect's texel: plane, row, column inside the union
-        E(LightmapBake.UnionOffset(0, 8, 4, uw, uh) == (4 * uw + 8) * 4 && LightmapBake.UnionOffset(1, 8, 4, uw, uh) == uw * uh * 4 + (4 * uw + 8) * 4, "a rect's first texel is addressed by plane, row and column of the union");
-        log.Info(ok ? "BakeCache.SelfCheck: passed" : "BakeCache.SelfCheck: FAILED -- see above");
-        return ok;
+        check.Expect(LightmapBake.UnionOffset(0, 8, 4, uw, uh) == (4 * uw + 8) * 4 && LightmapBake.UnionOffset(1, 8, 4, uw, uh) == uw * uh * 4 + (4 * uw + 8) * 4, "a rect's first texel is addressed by plane, row and column of the union");
+        log.Info(check.Ok ? "BakeCache.SelfCheck: passed" : "BakeCache.SelfCheck: FAILED -- see above");
+        return check.Ok;
     }
 }
 

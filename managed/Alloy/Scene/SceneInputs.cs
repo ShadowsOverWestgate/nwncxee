@@ -215,8 +215,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// light that never goes out, a leaver that is missed is the pop this exists to remove.</summary>
     internal static void FadeSelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SceneInputs.FadeSelfCheck FAIL: {w}"); } }
+        var check = new Checker(log, "SceneInputs.FadeSelfCheck");
 
         // Plain field writes on the knob, not Sets: nothing runs and nothing is written to the file.
         int fadeWas = FadeFrames, prevWas = _prevN, ghostWas = _ghostN;
@@ -231,29 +230,29 @@ public sealed unsafe class SceneInputs : IExtenderService
         }
 
         Lit(1, 2);
-        E(FrameInputs.LightCount == 2 && _ghostN == 0, "two lit lights, nothing fading");
+        check.Expect(FrameInputs.LightCount == 2 && _ghostN == 0, "two lit lights, nothing fading");
         Lit(1);
-        E(_ghostN == 1 && FrameInputs.LightCount == 2, "a departed light is still emitted, once");
-        E(FrameInputs.AreaLightPosRange[1].W < 10f, "...at a shrunken radius");
-        E(FrameInputs.AreaLightPosRange[1].W > 0f, "...and not to nothing on its first frame");
+        check.Expect(_ghostN == 1 && FrameInputs.LightCount == 2, "a departed light is still emitted, once");
+        check.Expect(FrameInputs.AreaLightPosRange[1].W < 10f, "...at a shrunken radius");
+        check.Expect(FrameInputs.AreaLightPosRange[1].W > 0f, "...and not to nothing on its first frame");
         Lit(1); Lit(1); Lit(1);
-        E(_ghostN == 0 && FrameInputs.LightCount == 1, "and retires after FadeFrames frames");
+        check.Expect(_ghostN == 0 && FrameInputs.LightCount == 1, "and retires after FadeFrames frames");
         Lit(1, 2); Lit(1);
-        E(_ghostN == 1, "light 2 fades again");
+        check.Expect(_ghostN == 1, "light 2 fades again");
         Lit(1, 2);
-        E(_ghostN == 0 && FrameInputs.LightCount == 2, "a light that comes back drops its ghost");
+        check.Expect(_ghostN == 0 && FrameInputs.LightCount == 2, "a light that comes back drops its ghost");
         // The load edge: more leavers than the cap in one frame is an area transition, not a torch.
         Lit(1, 2, 3, 4); Lighting.Fadeout.V = 3; _ghostN = 0;
         var many = new int[MaxGhosts + 4];
         for (int i = 0; i < many.Length; i++) many[i] = 100 + i;
         Lit(many); Lit(1);
-        E(_ghostN == 0, "a whole list vanishing at once fades nothing");
+        check.Expect(_ghostN == 0, "a whole list vanishing at once fades nothing");
         Lighting.Fadeout.V = 0; Lit(1, 2); Lit(1);
-        E(_ghostN == 0 && FrameInputs.LightCount == 1, "fadeout 0 pops, as before");
+        check.Expect(_ghostN == 0 && FrameInputs.LightCount == 1, "fadeout 0 pops, as before");
 
         Lighting.Fadeout.V = fadeWas; _prevN = prevWas; _ghostN = ghostWas;
         FrameInputs.BeginAreaLights(0);
-        log.Info(ok ? "SceneInputs.FadeSelfCheck: passed" : "SceneInputs.FadeSelfCheck: FAILED -- see above");
+        log.Info(check.Ok ? "SceneInputs.FadeSelfCheck: passed" : "SceneInputs.FadeSelfCheck: FAILED -- see above");
     }
 
     /// <summary>Is this light in the set just admitted? The master list keeps its order frame to frame, so
@@ -389,30 +388,29 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>The latch and the peak, headless: a pulse settles at its peak and stays there, a ramp does not latch.</summary>
     internal static void FlickerSelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SceneInputs.FlickerSelfCheck FAIL: {w}"); } }
+        var check = new Checker(log, "SceneInputs.FlickerSelfCheck");
         float ampWas = Lighting.Flicker.V; Lighting.Flicker.V = 1f;
         var torch = (IntPtr)0x1000; var lamp = (IntPtr)0x2000;
         var zero = (IntPtr)((long)FlkSlots << 4);   // hashes to slot 0: the slot whose index is falsy
         float Step(IntPtr id, float cur, out float m) { float r = cur * 2f; _flkSeq++; m = Stabilise(id, cur, ref r, _flkSeq * 0.016f); return r; }
         float r0 = Step(torch, 13f, out float m0); float r1 = Step(torch, 15f, out float m1);
-        E(r0 == 26f && m0 == 1f && r1 == 30f && m1 == 1f, "no pulse seen yet: raw passes through");
+        check.Expect(r0 == 26f && m0 == 1f && r1 == 30f && m1 == 1f, "no pulse seen yet: raw passes through");
         float r2 = Step(torch, 13f, out float m2);
-        E(r2 == 30f && m2 < 1f && m2 >= 1f - (2f / 15f) - 1e-4f, "the first decrease latches: peak reach, dimmed colour");
+        check.Expect(r2 == 30f && m2 < 1f && m2 >= 1f - (2f / 15f) - 1e-4f, "the first decrease latches: peak reach, dimmed colour");
         float r3 = Step(torch, 15f, out float m3);
-        E(r3 == 30f && m3 <= 1f && m3 != m2, "back at the peak: reach unchanged, colour still flickering");
-        E(Step(torch, 15.01f, out _) == 30f, "a hair over the peak is hysteresis, not a new peak");
-        E(Step(torch, 16f, out _) == 32f, "a real new peak re-keys the reach");
-        E(Step(lamp, 10f, out _) == 20f && Step(lamp, 12f, out _) == 24f && Step(lamp, 14f, out float ml) == 28f && ml == 1f,
+        check.Expect(r3 == 30f && m3 <= 1f && m3 != m2, "back at the peak: reach unchanged, colour still flickering");
+        check.Expect(Step(torch, 15.01f, out _) == 30f, "a hair over the peak is hysteresis, not a new peak");
+        check.Expect(Step(torch, 16f, out _) == 32f, "a real new peak re-keys the reach");
+        check.Expect(Step(lamp, 10f, out _) == 20f && Step(lamp, 12f, out _) == 24f && Step(lamp, 14f, out float ml) == 28f && ml == 1f,
           "a light ramping up never latches");
         for (int i = 0; i < FlkHold + 1; i++) Step(torch, 16f, out _);
-        E(Step(torch, 16f, out float mh) == 32f && mh == 1f, "the latch expires after FlkHold frames at the peak");
+        check.Expect(Step(torch, 16f, out float mh) == 32f && mh == 1f, "the latch expires after FlkHold frames at the peak");
         Step(zero, 15f, out _);
-        E(Step(zero, 13f, out float m0s) == 30f && m0s < 1f, "a light in table slot 0 latches too");
+        check.Expect(Step(zero, 13f, out float m0s) == 30f && m0s < 1f, "a light in table slot 0 latches too");
         Lighting.Flicker.V = 0f;
-        E(Step(torch, 13f, out float mz) == 26f && mz == 1f, "knob 0 is the stock pulse");
+        check.Expect(Step(torch, 13f, out float mz) == 26f && mz == 1f, "knob 0 is the stock pulse");
         Lighting.Flicker.V = ampWas; Array.Clear(_flkId);
-        log.Info(ok ? "SceneInputs.FlickerSelfCheck: passed" : "SceneInputs.FlickerSelfCheck: FAILED -- see above");
+        log.Info(check.Ok ? "SceneInputs.FlickerSelfCheck: passed" : "SceneInputs.FlickerSelfCheck: FAILED -- see above");
     }
 
     /// <summary>RenderInterface::GetGlobalShaderParamf -- param 0x12 = the engine's light-radius multiplier.</summary>

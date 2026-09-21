@@ -204,17 +204,16 @@ internal static unsafe class AlloyLights
         // The shader's curve, in C#, so the property checks below are about the SHAPE and not about a
         // second transcription of it: f2 in [0, 1], gain 1, rim-fade exponent 1.
         float Att(float f2, float gain) => gain * (1f - f2) / (_atten.X + _atten.Y * f2);
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyLights.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         // The subsurface term is the stock one or it is nothing: the energy factor is inc_lighting.shd's
         // fEnergyPreservation / (1 + w) and the wrap rides the MAPPED normal (stock: the vertex normal, which washes out normal maps).
-        E(MathF.Abs(SssK(0.38f) - 0.6262f) < 1e-3f, "SssK(0.38) is 2/(2+PI*0.38) = 0.626");
-        E(FragmentLib.Contains("c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y)"), "the point loop carries the subsurface term on the MAPPED normal");
-        E(FragmentLib.Contains("if (mirror) { spec += spc; continue; }")
+        check.Expect(MathF.Abs(SssK(0.38f) - 0.6262f) < 1e-3f, "SssK(0.38) is 2/(2+PI*0.38) = 0.626");
+        check.Expect(FragmentLib.Contains("c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y)"), "the point loop carries the subsurface term on the MAPPED normal");
+        check.Expect(FragmentLib.Contains("if (mirror) { spec += spc; continue; }")
           && FragmentLib.Contains("if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)") && FragmentLib.Contains("if (l > mLum) { mLum = l; mSlot = slot; mNdl = ndlRaw; mSpc = spc; }")
           && AlloyRenderer.OwnedLitFsMain.Contains("if (!CxGlossy(rough)) pointSpec += lm * CxSpecLobe"),
           "a glossy lobe carries its light's shadow whatever the cap says, in the pages' place too");
-        E(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
+        check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
 
         // #140: the engine's attenuation constants, and the property that actually matters -- the curve's
         // peak is the engine's own max-intensity setting in LINEAR space. Get the sign of the exponent
@@ -223,26 +222,26 @@ internal static unsafe class AlloyLights
         Vector2 savedAtten = _atten;
         LatchAtten(0.5f, 1.5f, 1f);
         float peak = _atten.X > 0f ? 1f / _atten.X : 0f;
-        E(MathF.Abs(peak - MathF.Pow(1.5f, SrgbGamma)) < 1e-3f, "the curve's peak is param(0x14) linearised");
-        E(MathF.Abs(_atten.Y - (MathF.Pow(0.5f, -SrgbGamma) - MathF.Pow(1.5f, -SrgbGamma))) < 1e-3f,
+        check.Expect(MathF.Abs(peak - MathF.Pow(1.5f, SrgbGamma)) < 1e-3f, "the curve's peak is param(0x14) linearised");
+        check.Expect(MathF.Abs(_atten.Y - (MathF.Pow(0.5f, -SrgbGamma) - MathF.Pow(1.5f, -SrgbGamma))) < 1e-3f,
           "lightFalloffFactor is cutoff^2 * (min^-2.2 - max^-2.2)");
         // ...and at the range the curve is exactly 0, whatever the constants: that is what keeps a light
         // from popping against its own cull sphere.
-        E(MathF.Abs(Att(1f, 1f)) < 1e-6f, "attenuation is exactly 0 at the authored range");
-        E(Att(0f, 1f) > Att(0.5f, 1f) && Att(0.5f, 1f) > Att(0.9f, 1f), "...and monotonic on the way there");
+        check.Expect(MathF.Abs(Att(1f, 1f)) < 1e-6f, "attenuation is exactly 0 at the authored range");
+        check.Expect(Att(0f, 1f) > Att(0.5f, 1f) && Att(0.5f, 1f) > Att(0.9f, 1f), "...and monotonic on the way there");
         // The cutoff multiplier is squared into ff and NOT into mi: it moves the rim, never the peak.
         Vector2 narrow = _atten;
         LatchAtten(0.5f, 1.5f, 2f);
         Vector2 wide = _atten;
-        E(MathF.Abs(wide.X - narrow.X) < 1e-6f, "the radius multiplier does not move the peak");
-        E(MathF.Abs(wide.Y - narrow.Y * 4f) < 1e-3f, "...and enters the falloff factor squared");
+        check.Expect(MathF.Abs(wide.X - narrow.X) < 1e-6f, "the radius multiplier does not move the peak");
+        check.Expect(MathF.Abs(wide.Y - narrow.Y * 4f) < 1e-3f, "...and enters the falloff factor squared");
         LatchAtten(0f, 1.5f, 1f);
-        E(_atten == wide, "a zero intensity setting leaves the last good pair standing");
+        check.Expect(_atten == wide, "a zero intensity setting leaves the last good pair standing");
         LatchAtten(2f, 1f, 1f);
-        E(_atten == wide, "...and so does a min above max, which would invert the falloff");
+        check.Expect(_atten == wide, "...and so does a min above max, which would invert the falloff");
         _atten = savedAtten;
-        log.Info(ok ? "AlloyLights.SelfCheck: passed" : "AlloyLights.SelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? "AlloyLights.SelfCheck: passed" : "AlloyLights.SelfCheck: FAILED");
+        return check.Ok;
     }
     /// <summary>What the shader is actually running, for the period log -- read where it is USED, not at
     /// arm time (the engine's globals are still zero then, which is how a live-looking log line reported a

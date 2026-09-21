@@ -293,24 +293,23 @@ public sealed unsafe class CameraDriveService : IExtenderService
     /// looking north (right = +X), and which forward key the engine sees for each held pair (#637).</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"CameraDrive.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log, "CameraDrive.SelfCheck");
         static int T(float rx, float ry, float f, float s) => Tenths(Heading(rx, ry, f, s));
-        E(T(1, 0, 1, 0) == 900, "W walks north (90°)");
-        E(T(1, 0, -1, 0) == 2700, "S walks south (270°)");
-        E(T(1, 0, 0, 1) == 0, "D walks east (0°)");
-        E(T(1, 0, 0, -1) == 1800, "A walks west (180°)");
-        E(T(1, 0, 1, 1) == 450, "W+D is the 45° diagonal");
-        E(T(0, 1, 1, 0) == 1800, "camera turned to look west: W walks west");
-        E(Tenths(Slew(350f, 10f, 540f, 0.01f)) == 3554, "the slew takes the short way across 0 and wraps");
-        E(Tenths(Slew(10f, 350f, 540f, 0.01f)) == 46 && Slew(10f, 350f, 0f, 0.01f) == 350f, "and back; rate 0 snaps");
-        E(Slew(90f, 270f, 540f, 1f) == 270f, "a reach within the budget lands exactly");
-        E(ForwardSlots(false, 1f, 0, 1) == (0, 1) && ForwardSlots(true, 1f, 0, 1) == (0, 1), "the walk key alone walks in both modes");
-        E(ForwardSlots(false, 1f, 1, 0) == (1, 0) && ForwardSlots(true, 1f, 1, 0) == (1, 0), "the run key alone runs");
-        E(ForwardSlots(false, 1f, 1, 1) == (1, 1) && ForwardSlots(true, 1f, 1, 1) == (1, 1), "walk + run held: run wins (the engine checks run first)");
-        E(ForwardSlots(false, 0f, 0, 0) == (1, 0), "strafe alone, non-face: forward run carries the heading");
-        E(ForwardSlots(true, 0f, 0, 0) == (0, 0) && ForwardSlots(true, -1f, 0, 0) == (0, 0), "strafe or back alone, face: no forward key");
-        E(ForwardSlots(false, 0f, 1, 1) == (1, 0), "forward + back cancel with a strafe, non-face: run along the strafe");
-        log.Info(ok ? "CameraDrive.SelfCheck: passed" : "CameraDrive.SelfCheck: FAILED");
+        check.Expect(T(1, 0, 1, 0) == 900, "W walks north (90°)");
+        check.Expect(T(1, 0, -1, 0) == 2700, "S walks south (270°)");
+        check.Expect(T(1, 0, 0, 1) == 0, "D walks east (0°)");
+        check.Expect(T(1, 0, 0, -1) == 1800, "A walks west (180°)");
+        check.Expect(T(1, 0, 1, 1) == 450, "W+D is the 45° diagonal");
+        check.Expect(T(0, 1, 1, 0) == 1800, "camera turned to look west: W walks west");
+        check.Expect(Tenths(Slew(350f, 10f, 540f, 0.01f)) == 3554, "the slew takes the short way across 0 and wraps");
+        check.Expect(Tenths(Slew(10f, 350f, 540f, 0.01f)) == 46 && Slew(10f, 350f, 0f, 0.01f) == 350f, "and back; rate 0 snaps");
+        check.Expect(Slew(90f, 270f, 540f, 1f) == 270f, "a reach within the budget lands exactly");
+        check.Expect(ForwardSlots(false, 1f, 0, 1) == (0, 1) && ForwardSlots(true, 1f, 0, 1) == (0, 1), "the walk key alone walks in both modes");
+        check.Expect(ForwardSlots(false, 1f, 1, 0) == (1, 0) && ForwardSlots(true, 1f, 1, 0) == (1, 0), "the run key alone runs");
+        check.Expect(ForwardSlots(false, 1f, 1, 1) == (1, 1) && ForwardSlots(true, 1f, 1, 1) == (1, 1), "walk + run held: run wins (the engine checks run first)");
+        check.Expect(ForwardSlots(false, 0f, 0, 0) == (1, 0), "strafe alone, non-face: forward run carries the heading");
+        check.Expect(ForwardSlots(true, 0f, 0, 0) == (0, 0) && ForwardSlots(true, -1f, 0, 0) == (0, 0), "strafe or back alone, face: no forward key");
+        check.Expect(ForwardSlots(false, 0f, 1, 1) == (1, 0), "forward + back cancel with a strafe, non-face: run along the strafe");
+        log.Info(check.Ok ? "CameraDrive.SelfCheck: passed" : "CameraDrive.SelfCheck: FAILED");
     }
 }

@@ -114,8 +114,7 @@ internal static class TabTargetCore
     /// <summary>The spec's cases (CX-636 Testing Decisions), run from the service's Initialize.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"TabTargetCore.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         Candidate C(uint id, float px, float m = 5f, bool hostile = true, byte type = TypeCreature)
             => new() { Id = id, ScreenDist = px, Range = m, Hostile = hostile, Type = type };
 
@@ -125,49 +124,49 @@ internal static class TabTargetCore
         uint Next(uint held, bool rev = false, bool hostileOnly = true, bool objects = false, float range = 100f)
             => Cycle(live, hostileOnly, objects, range, held, rev, ring, ref rc);
 
-        E(Next(0) == 10, "no lock: the candidate nearest the screen centre wins");
-        E(Next(10) == 20 && Next(20) == 30, "lock present: the next in ring order");
-        E(Next(30) == 10, "the ring wraps at the end");
-        E(Next(10, rev: true) == 30 && Next(30, rev: true) == 20, "reverse steps back and wraps at the start");
+        check.Expect(Next(0) == 10, "no lock: the candidate nearest the screen centre wins");
+        check.Expect(Next(10) == 20 && Next(20) == 30, "lock present: the next in ring order");
+        check.Expect(Next(30) == 10, "the ring wraps at the end");
+        check.Expect(Next(10, rev: true) == 30 && Next(30, rev: true) == 20, "reverse steps back and wraps at the start");
 
         live = new[] { C(20, 50f), C(30, 300f), C(10, 100f) };
-        E(Next(20) == 30, "the ring is stable: the order does not follow a candidate that moved nearer");
+        check.Expect(Next(20) == 30, "the ring is stable: the order does not follow a candidate that moved nearer");
         live = new[] { C(20, 50f), C(30, 300f), C(10, 100f), C(40, 20f) };
-        E(Next(30) == 40 && Next(40) == 10, "a newcomer joins the end of the ring and the ring still wraps");
+        check.Expect(Next(30) == 40 && Next(40) == 10, "a newcomer joins the end of the ring and the ring still wraps");
         live = new[] { C(30, 300f), C(10, 100f) };
-        E(Next(10) == 30, "an id that left the candidate list is skipped");
-        E(Next(99) == 10, "a lock no longer in the list behaves as no lock");
+        check.Expect(Next(10) == 30, "an id that left the candidate list is skipped");
+        check.Expect(Next(99) == 10, "a lock no longer in the list behaves as no lock");
         live = Array.Empty<Candidate>();
-        E(Next(10) == 10 && Next(0) == 0, "an empty list leaves the lock unchanged");
+        check.Expect(Next(10) == 10 && Next(0) == 0, "an empty list leaves the lock unchanged");
 
         rc = 0;
         live = new[] { C(1, 10f, hostile: false), C(2, 20f) };
-        E(Next(0) == 2, "hostile-only drops the non-hostile creature");
+        check.Expect(Next(0) == 2, "hostile-only drops the non-hostile creature");
         rc = 0;
-        E(Next(0, hostileOnly: false) == 1, "the wide filter keeps it");
+        check.Expect(Next(0, hostileOnly: false) == 1, "the wide filter keeps it");
         rc = 0;
         live = new[] { C(1, 10f, m: 50f), C(2, 20f, m: 5f) };
-        E(Next(0, range: 30f) == 2, "an out-of-range candidate is dropped");
+        check.Expect(Next(0, range: 30f) == 2, "an out-of-range candidate is dropped");
         rc = 0;
         live = new[] { C(1, 10f, type: TypePlaceable), C(2, 20f, type: TypeDoor), C(3, 30f) };
-        E(Next(0) == 3, "placeables and doors are out by default");
+        check.Expect(Next(0) == 3, "placeables and doors are out by default");
         rc = 0;
-        E(Next(0, objects: true) == 1, "the objects knob lets them in");
+        check.Expect(Next(0, objects: true) == 1, "the objects knob lets them in");
         rc = 0;
         live = new[] { C(1, 10f, hostile: false, type: TypePlaceable) };
-        E(Next(0, objects: true) == 1, "the hostility filter does not apply to a placeable");
+        check.Expect(Next(0, objects: true) == 1, "the hostility filter does not apply to a placeable");
 
-        E(Decide(CastMode.Normal, true, true, CastEvent.Open) == CastVerdict.LeaveUp
+        check.Expect(Decide(CastMode.Normal, true, true, CastEvent.Open) == CastVerdict.LeaveUp
           && Decide(CastMode.Normal, false, false, CastEvent.Open) == CastVerdict.LeaveUp, "Normal leaves every mode up");
-        E(Decide(CastMode.Quick, true, true, CastEvent.Open) == CastVerdict.FireAtLock, "Quick + lock + object mode fires at the lock");
-        E(Decide(CastMode.Quick, false, true, CastEvent.Open) == CastVerdict.FireAtCursor, "Quick without a lock fires at the cursor");
-        E(Decide(CastMode.Quick, true, false, CastEvent.Open) == CastVerdict.FireAtCursor, "Quick + ground-only mode lands at the cursor even with a lock");
-        E(Decide(CastMode.Preview, true, true, CastEvent.Open) == CastVerdict.LeaveUp, "Preview leaves the mode up on open");
-        E(Decide(CastMode.Preview, true, true, CastEvent.Release) == CastVerdict.FireAtLock, "Preview fires at the lock on release");
-        E(Decide(CastMode.Preview, false, false, CastEvent.Release) == CastVerdict.FireAtCursor, "Preview + ground mode fires at the cursor on release");
-        E(Decide(CastMode.Preview, true, true, CastEvent.Cancel) == CastVerdict.Cancel, "a cancel before release cancels");
-        E(Decide(CastMode.Quick, true, true, CastEvent.Release) == CastVerdict.LeaveUp, "a stray release under Quick does nothing");
+        check.Expect(Decide(CastMode.Quick, true, true, CastEvent.Open) == CastVerdict.FireAtLock, "Quick + lock + object mode fires at the lock");
+        check.Expect(Decide(CastMode.Quick, false, true, CastEvent.Open) == CastVerdict.FireAtCursor, "Quick without a lock fires at the cursor");
+        check.Expect(Decide(CastMode.Quick, true, false, CastEvent.Open) == CastVerdict.FireAtCursor, "Quick + ground-only mode lands at the cursor even with a lock");
+        check.Expect(Decide(CastMode.Preview, true, true, CastEvent.Open) == CastVerdict.LeaveUp, "Preview leaves the mode up on open");
+        check.Expect(Decide(CastMode.Preview, true, true, CastEvent.Release) == CastVerdict.FireAtLock, "Preview fires at the lock on release");
+        check.Expect(Decide(CastMode.Preview, false, false, CastEvent.Release) == CastVerdict.FireAtCursor, "Preview + ground mode fires at the cursor on release");
+        check.Expect(Decide(CastMode.Preview, true, true, CastEvent.Cancel) == CastVerdict.Cancel, "a cancel before release cancels");
+        check.Expect(Decide(CastMode.Quick, true, true, CastEvent.Release) == CastVerdict.LeaveUp, "a stray release under Quick does nothing");
 
-        log.Info(ok ? "TabTargetCore.SelfCheck: passed" : "TabTargetCore.SelfCheck: FAILED");
+        log.Info(check.Ok ? "TabTargetCore.SelfCheck: passed" : "TabTargetCore.SelfCheck: FAILED");
     }
 }

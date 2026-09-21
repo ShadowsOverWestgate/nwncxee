@@ -386,8 +386,7 @@ internal static unsafe class SkyBox
     /// half: they must sum to 1 across the cross-fade, or the horizon brightens or darkens mid-transition.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SkyBox.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         byte* scene = stackalloc byte[0x60];
         for (int i = 0; i < 0x60; i++) scene[i] = 0;
@@ -396,22 +395,22 @@ internal static unsafe class SkyBox
         void Gob(int slot, nint v) => *(nint*)(scene + SceneGobs + slot * 8) = v;
 
         *(int*)(scene + SceneCur) = -1; *(int*)(scene + SceneDesired) = -1;
-        E(Roles(s, r) == 0, "no current sky and no fade gob draws nothing");
+        check.Expect(Roles(s, r) == 0, "no current sky and no fade gob draws nothing");
 
         Gob(1, 0x1000); *(int*)(scene + SceneCur) = 1;
-        E(Roles(s, r) == 1 && r[0].Gob == 0x1000 && r[0].Alpha == 1f && r[0].Dst == BlendZero,
+        check.Expect(Roles(s, r) == 1 && r[0].Gob == 0x1000 && r[0].Alpha == 1f && r[0].Dst == BlendZero,
           "a settled sky is one opaque-alpha replace draw");
 
         *(byte*)(scene + SceneOff) = 1;
-        E(Roles(s, r) == 0, "TurnOffSkyBox wins over everything");
+        check.Expect(Roles(s, r) == 0, "TurnOffSkyBox wins over everything");
         *(byte*)(scene + SceneOff) = 0;
 
         Gob(2, 0x2000); *(int*)(scene + SceneDesired) = 2; *(float*)(scene + SceneT) = 0.25f;
-        E(Roles(s, r) == 2 && r[0].Alpha == 0.75f && r[1].Gob == 0x2000 && r[1].Alpha == 0.25f
+        check.Expect(Roles(s, r) == 2 && r[0].Alpha == 0.75f && r[1].Gob == 0x2000 && r[1].Alpha == 0.25f
           && r[1].Dst == BlendOverAlpha, "a cross-fade is (1-t) replace then t blended over, in that order");
 
         *(float*)(scene + SceneT) = 0f;
-        E(Roles(s, r) == 1, "t at the epsilon leaves the desired sky out -- the engine's own DAT_013eeeb0 test");
+        check.Expect(Roles(s, r) == 1, "t at the epsilon leaves the desired sky out -- the engine's own DAT_013eeeb0 test");
 
         // the fade gob is read at +0x108, so it needs a buffer that reaches there -- and its alpha is the
         // one Roles output that comes off the gob rather than off the Scene, so assert the value too
@@ -419,16 +418,16 @@ internal static unsafe class SkyBox
         for (int i = 0; i < GobAlpha + 4; i++) fadeGob[i] = 0;
         *(float*)(fadeGob + GobAlpha) = 0.5f;
         *(nint*)(scene + SceneFadeGob) = (nint)fadeGob;
-        E(Roles(s, r) == 2 && r[1].Gob == (IntPtr)fadeGob && r[1].Alpha == 0.5f && r[1].Dst == BlendOverAlpha,
+        check.Expect(Roles(s, r) == 2 && r[1].Gob == (IntPtr)fadeGob && r[1].Alpha == 0.5f && r[1].Dst == BlendOverAlpha,
           "the skyfade gob draws last, over-blended, on its own alpha");
 
         int savedCount = _count;
         _count = 2;
         _parts[0] = new Part { Tri = 0x1000, Mat = 0x2000, Vdo = 0x3000, Ported = true };
         _parts[1] = new Part { Tri = 0x4000, Mat = 0x5000, Vdo = 0x6000, Ported = false };
-        E(Drawable(0) && !Drawable(1), "an unported part is not drawable -- #136, and it is not a fallback");
+        check.Expect(Drawable(0) && !Drawable(1), "an unported part is not drawable -- #136, and it is not a fallback");
         _parts[0].Vdo = IntPtr.Zero;
-        E(!Drawable(0), "...and neither is one whose VertexPrimitive has no VDO yet");
+        check.Expect(!Drawable(0), "...and neither is one whose VertexPrimitive has no VDO yet");
         _count = savedCount;
         _parts[0] = default; _parts[1] = default;
 
@@ -439,9 +438,9 @@ internal static unsafe class SkyBox
         Matrix4x4 m = Matrix4x4.CreateScale(2f) * Matrix4x4.CreateFromQuaternion(rot)
                       * Matrix4x4.CreateTranslation(new Vector3(10f, 0f, 0f));
         Vector3 got = Vector3.Transform(new Vector3(1f, 0f, 0f), m);
-        E(MathF.Abs(got.X - 10f) < 1e-4f && MathF.Abs(got.Y - 2f) < 1e-4f && MathF.Abs(got.Z) < 1e-4f,
+        check.Expect(MathF.Abs(got.X - 10f) < 1e-4f && MathF.Abs(got.Y - 2f) < 1e-4f && MathF.Abs(got.Z) < 1e-4f,
           "scale, then rotate, then translate -- a point at x=1 lands at (10, 2, 0), not (11, 0, 0)");
 
-        log.Info(ok ? "SkyBox.SelfCheck: passed" : "SkyBox.SelfCheck: FAILED");
+        log.Info(check.Ok ? "SkyBox.SelfCheck: passed" : "SkyBox.SelfCheck: FAILED");
     }
 }

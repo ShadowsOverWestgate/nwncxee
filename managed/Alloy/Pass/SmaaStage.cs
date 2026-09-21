@@ -276,20 +276,19 @@ internal static unsafe class SmaaStage
     /// tables are in the build at their reference sizes.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SmaaStage.SelfCheck FAIL: {w}"); } }
-        E(LevelFor(0) == 0 && LevelFor(2) == 1 && LevelFor(4) == 2 && LevelFor(8) == 3 && LevelFor(16) == 3,
+        var check = new Checker(log);
+        check.Expect(LevelFor(0) == 0 && LevelFor(2) == 1 && LevelFor(4) == 2 && LevelFor(8) == 3 && LevelFor(16) == 3,
           "0/2/4/8/16 samples -> off/MEDIUM/HIGH/ULTRA/ULTRA");
         foreach (string r in new[] { ShdEdgeFs, ShdWeightFs, ShdBlendFs })
-            E(ShaderStages.Source(r).Contains("#define SMAA_GLSL_4 1") && ShaderStages.Source(r).Contains("float2 SMAALumaEdgeDetectionPS("),
+            check.Expect(ShaderStages.Source(r).Contains("#define SMAA_GLSL_4 1") && ShaderStages.Source(r).Contains("float2 SMAALumaEdgeDetectionPS("),
               $"{r} carries the port + library");
         foreach (string r in new[] { ShdEdgeFs, ShdWeightFs })
-            E(ShaderResource.Tokens(ShaderStages.Source(r)).Contains($"#define CX_AA_LEVEL {Level}\n"), $"{r} takes the preset from $AA$");
-        E(ShaderContract.SlotSafe(ShaderStages.Source(ShdWeightFs), "uEdges", "uArea", "uSearch"), "the weight pass binds its three tables");
+            check.Expect(ShaderResource.Tokens(ShaderStages.Source(r)).Contains($"#define CX_AA_LEVEL {Level}\n"), $"{r} takes the preset from $AA$");
+        check.Expect(ShaderContract.SlotSafe(ShaderStages.Source(ShdWeightFs), "uEdges", "uArea", "uSearch"), "the weight pass binds its three tables");
         using (Stream? a = typeof(SmaaStage).Assembly.GetManifestResourceStream("SmaaArea"))
         using (Stream? s = typeof(SmaaStage).Assembly.GetManifestResourceStream("SmaaSearch"))
-            E(a?.Length == AreaW * AreaH * 2 && s?.Length == SearchW * SearchH, "the area and search tables are embedded at 160x560 RG8 and 64x16 R8");
-        log.Info(ok ? "SmaaStage.SelfCheck: passed" : "SmaaStage.SelfCheck: FAILED");
-        return ok;
+            check.Expect(a?.Length == AreaW * AreaH * 2 && s?.Length == SearchW * SearchH, "the area and search tables are embedded at 160x560 RG8 and 64x16 R8");
+        log.Info(check.Ok ? "SmaaStage.SelfCheck: passed" : "SmaaStage.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

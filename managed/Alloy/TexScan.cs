@@ -228,35 +228,34 @@ internal static unsafe class TexScan
     /// colours averages to grey.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"TexScan.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         // DXT1: c0 = 0 <= c1 = 0xffff -> 4-colour+key mode; indices all 3 -> every texel transparent
         byte* d1 = stackalloc byte[8] { 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
         Result r = default; ScanDxt(d1, 4, 4, false, 51, ref r);
-        E(r.Holes == 1f, $"dxt1 keyed block: holes {r.Holes}");
+        check.Expect(r.Holes == 1f, $"dxt1 keyed block: holes {r.Holes}");
         byte* d1s = stackalloc byte[8] { 0xff, 0xff, 0, 0, 0, 0, 0, 0 };   // c0 > c1: opaque mode
         r = default; ScanDxt(d1s, 4, 4, false, 51, ref r);
-        E(r.Holes == 0f && r.MeanOk && MathF.Abs(r.Mean.X - 0.5f) < 0.01f, $"dxt1 opaque block: holes {r.Holes} mean {r.Mean}");
+        check.Expect(r.Holes == 0f && r.MeanOk && MathF.Abs(r.Mean.X - 0.5f) < 0.01f, $"dxt1 opaque block: holes {r.Holes} mean {r.Mean}");
         // DXT5: a0 = 255, a1 = 0, indices: texel 0 -> 1 (alpha 0), the rest 0 (alpha 255)
         byte* d5 = stackalloc byte[16]; d5[0] = 255; d5[1] = 0; d5[2] = 1;
         r = default; ScanDxt(d5, 4, 4, true, 51, ref r);
-        E(MathF.Abs(r.Holes - 1f / 16f) < 1e-6f, $"dxt5 ramp block: holes {r.Holes}");
+        check.Expect(MathF.Abs(r.Holes - 1f / 16f) < 1e-6f, $"dxt5 ramp block: holes {r.Holes}");
         int* lw = stackalloc int[16], lh = stackalloc int[16]; long* off = stackalloc long[16];
         int n = Chain(8, 2, true, 16, lw, lh, off, out long total);
-        E(n == 4 && lw[3] == 1 && lh[3] == 1 && total == (16 + 4 + 2 + 1) * 4, $"chain 8x2: {n} levels, {total} bytes");
-        E(Chain(64, 64, false, 16, lw, lh, off, out _) == 1, "no mips = one level");
+        check.Expect(n == 4 && lw[3] == 1 && lh[3] == 1 && total == (16 + 4 + 2 + 1) * 4, $"chain 8x2: {n} levels, {total} bytes");
+        check.Expect(Chain(64, 64, false, 16, lw, lh, off, out _) == 1, "no mips = one level");
         byte* px = stackalloc byte[(4 + 1) * 4];
         for (int i = 0; i < 4; i++) { px[i * 4] = (byte)(i * 85); px[i * 4 + 1] = 255; px[i * 4 + 2] = 0; px[i * 4 + 3] = 255; }
         n = Chain(2, 2, true, 16, lw, lh, off, out _);
         BuildMips(px, n, lw, lh, off);
-        E(px[16] == 128 && px[17] == 255 && px[18] == 0 && px[19] == 255, $"box mip: {px[16]},{px[17]},{px[18]},{px[19]}");
+        check.Expect(px[16] == 128 && px[17] == 255 && px[18] == 0 && px[19] == 255, $"box mip: {px[16]},{px[17]},{px[18]},{px[19]}");
         // #499: a transparent black texel must not pull the level's colour toward black -- the alpha-weighted
         // mean keeps the covered colour, and only the alpha averages down.
         for (int i = 0; i < 4; i++) { px[i * 4] = 200; px[i * 4 + 1] = 100; px[i * 4 + 2] = 0; px[i * 4 + 3] = 255; }
         px[12] = 0; px[13] = 0; px[14] = 0; px[15] = 0;
         BuildMips(px, n, lw, lh, off);
-        E(px[16] == 200 && px[17] == 100 && px[18] == 0 && px[19] == 191, $"alpha-weighted mip: {px[16]},{px[17]},{px[18]},{px[19]}");
-        log.Info(ok ? "TexScan.SelfCheck: passed" : "TexScan.SelfCheck: FAILED");
-        return ok;
+        check.Expect(px[16] == 200 && px[17] == 100 && px[18] == 0 && px[19] == 191, $"alpha-weighted mip: {px[16]},{px[17]},{px[18]},{px[19]}");
+        log.Info(check.Ok ? "TexScan.SelfCheck: passed" : "TexScan.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

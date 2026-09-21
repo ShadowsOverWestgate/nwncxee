@@ -164,11 +164,10 @@ internal static unsafe class ToonStage
     /// and the three sliders it is the player's copy of.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"ToonStage.SelfCheck FAIL: {w}"); } }
-        E(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd, and the engine setter's `or $0x20`)");
-        E(StageFs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is SSAO's");
-        E(StageFs.Contains("CxViewDist(zx) - d0"), "the ink is a plane fit against the neighbours' prediction");
+        var check = new Checker(log);
+        check.Expect(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd, and the engine setter's `or $0x20`)");
+        check.Expect(StageFs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is SSAO's");
+        check.Expect(StageFs.Contains("CxViewDist(zx) - d0"), "the ink is a plane fit against the neighbours' prediction");
         // ...and the prediction is made in RAW depth, which is the property the string cannot assert. A plane
         // is affine in window z, so the average of two neighbours IS the centre; average linearised distances
         // instead and the same plane reads as an edge, which is the bug this replaced.
@@ -179,21 +178,21 @@ internal static unsafe class ToonStage
             float z0 = 0.5f, zl = 0.45f, zr = 0.55f;   // affine in screen space: a plane, seen at an angle
             float fit = MathF.Abs(Dist((zl + zr) * 0.5f) - Dist(z0)) / Dist(z0);
             float linear = MathF.Abs(Dist(zl) + Dist(zr) - 2f * Dist(z0)) / Dist(z0);
-            E(fit < 1e-5f, "the plane fit reads ZERO on a plane at an angle");
-            E(linear > 1e-2f, "...where differencing linearised distance would have inked it");
+            check.Expect(fit < 1e-5f, "the plane fit reads ZERO on a plane at an angle");
+            check.Expect(linear > 1e-2f, "...where differencing linearised distance would have inked it");
         }
-        E(StageFs.Contains("uniform float uDepthThresh;") && StageFs.Contains("uniform float uColorThresh;")
+        check.Expect(StageFs.Contains("uniform float uDepthThresh;") && StageFs.Contains("uniform float uColorThresh;")
           && StageFs.Contains("uniform float uHardness;"), "the three Toon sliders are the stage's dials");
-        E(StageFs.Contains("/ (d0 * uDepthThresh)") && StageFs.Contains("/ uColorThresh"),
+        check.Expect(StageFs.Contains("/ (d0 * uDepthThresh)") && StageFs.Contains("/ uColorThresh"),
           "both thresholds are a residual RATIO, so the sliders mean what they say");
-        E(StageFs.Contains("mix(0.9, 0.02, uHardness)"), "hardness is the width of the ramp at the threshold");
-        E(StageFs.Contains("fwidth(t)"), "the band boundary is antialiased across one fwidth");
-        E(StageFs.IndexOf("uBands >= 2.0", StringComparison.Ordinal) < StageFs.IndexOf("uInk > 0.0", StringComparison.Ordinal),
+        check.Expect(StageFs.Contains("mix(0.9, 0.02, uHardness)"), "hardness is the width of the ramp at the threshold");
+        check.Expect(StageFs.Contains("fwidth(t)"), "the band boundary is antialiased across one fwidth");
+        check.Expect(StageFs.IndexOf("uBands >= 2.0", StringComparison.Ordinal) < StageFs.IndexOf("uInk > 0.0", StringComparison.Ordinal),
           "the bands run BEFORE the ink: ink on a banded colour is one line, and it stays out of the fwidth");
-        E(Post.ToonBands.Default == 1f && Post.ToonBands.Min == 1f, "bands are OFF by default -- the sliders are the default look");
-        E(Post.G.Get("toonsens") == null && Post.G.Get("toondepth") == null, "the sliders have no second home under /post");
-        E(Post.ToonEdge.TryParse("99", out float edge) && edge == 8f, "the edge width is clamped");
-        log.Info(ok ? "ToonStage.SelfCheck: passed" : "ToonStage.SelfCheck: FAILED");
-        return ok;
+        check.Expect(Post.ToonBands.Default == 1f && Post.ToonBands.Min == 1f, "bands are OFF by default -- the sliders are the default look");
+        check.Expect(Post.G.Get("toonsens") == null && Post.G.Get("toondepth") == null, "the sliders have no second home under /post");
+        check.Expect(Post.ToonEdge.TryParse("99", out float edge) && edge == 8f, "the edge width is clamped");
+        log.Info(check.Ok ? "ToonStage.SelfCheck: passed" : "ToonStage.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

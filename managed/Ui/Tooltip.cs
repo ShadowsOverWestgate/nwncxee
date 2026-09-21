@@ -162,8 +162,7 @@ public sealed class Tooltip
     /// that wraps a long help text into several lines.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"Tooltip.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         long now = 0;
         Func<long> real = Clock;
@@ -173,17 +172,17 @@ public sealed class Tooltip
         {
             var t = new Tooltip();
             object a = new object(), bKey = new object();
-            E(!t.Hovering && !t.Visible && !t.Tick(), "idle: nothing hovered, nothing due");
-            E(t.Hover(a, "Help A", 10f, 20f, 40f) && t.Hovering && !t.Visible, "hover starts the dwell, not yet visible");
-            E(!t.Hover(a, "Help A", 12f, 20f, 40f), "same key: no change reported");
+            check.Expect(!t.Hovering && !t.Visible && !t.Tick(), "idle: nothing hovered, nothing due");
+            check.Expect(t.Hover(a, "Help A", 10f, 20f, 40f) && t.Hovering && !t.Visible, "hover starts the dwell, not yet visible");
+            check.Expect(!t.Hover(a, "Help A", 12f, 20f, 40f), "same key: no change reported");
             now = delay - 1;
-            E(!t.Visible && !t.Tick(), "just under the dwell: still hidden");
+            check.Expect(!t.Visible && !t.Tick(), "just under the dwell: still hidden");
             now = delay;
-            E(t.Visible && t.Tick() && !t.Tick(), "at the dwell: visible, Tick fires exactly once");
-            E(t.Hover(bKey, "Help B", 0f, 0f, 20f) && !t.Visible, "a new key restarts the dwell");
+            check.Expect(t.Visible && t.Tick() && !t.Tick(), "at the dwell: visible, Tick fires exactly once");
+            check.Expect(t.Hover(bKey, "Help B", 0f, 0f, 20f) && !t.Visible, "a new key restarts the dwell");
             now += delay;
-            E(t.Visible && t.Text == "Help B", "the new key's text shows after its own dwell");
-            E(t.Leave() && !t.Hovering && !t.Visible && !t.Leave(), "Leave clears once");
+            check.Expect(t.Visible && t.Text == "Help B", "the new key's text shows after its own dwell");
+            check.Expect(t.Leave() && !t.Hovering && !t.Visible && !t.Leave(), "Leave clears once");
 
             // Wrap + zero-alloc draw.
             var atlas = new GlyphAtlas { LineHeight = 20, Ascent = 15, SpaceAdvance = 4f };
@@ -192,29 +191,29 @@ public sealed class Tooltip
             var vb = new VertexBatch(atlas.SolidU, atlas.SolidV);
             string help = "the quick brown fox jumps over the lazy dog again and again until the box wraps it";
             t.Hover(a, help, 100f, 100f, 120f); now += delay;
-            E(t.Visible, "visible for the draw");
+            check.Expect(t.Visible, "visible for the draw");
             int lines = 0; float widest = 0f;
             Wrap(atlas, help, MaxW, null, 0f, 0f, 0f, 0, ref lines, ref widest);
-            E(lines >= 3 && widest <= MaxW, $"the help wraps into several lines within MaxW (lines={lines}, widest={widest})");
+            check.Expect(lines >= 3 && widest <= MaxW, $"the help wraps into several lines within MaxW (lines={lines}, widest={widest})");
             t.Draw(vb, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), 0xFFFFFF, 2000f);
-            E(vb.VertexCount >= 12, "the draw emitted the box");
+            check.Expect(vb.VertexCount >= 12, "the draw emitted the box");
             long before = GC.GetAllocatedBytesForCurrentThread();
             for (int i = 0; i < 100; i++) { vb.Clear(); t.Draw(vb, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), 0xFFFFFF, 2000f); }
             long deltaB = GC.GetAllocatedBytesForCurrentThread() - before;
-            E(deltaB == 0, $"100 tooltip draws allocate nothing ({deltaB} bytes)");
+            check.Expect(deltaB == 0, $"100 tooltip draws allocate nothing ({deltaB} bytes)");
             // Clamp: a box anchored at the right edge slides left to stay on-screen; one at the bottom flips above its row.
             t.Hover(bKey, "abc", 1990f, 10f, 30f); now += delay;
             vb.Clear(); t.Draw(vb, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), 0xFFFFFF, 2000f);
             float[] v = vb.ToArray();
-            E(vb.VertexCount > 0 && v[0] >= 0f && v[1 * VertexBatch.Floats] <= 2000f + 1.01f, "clamped draw stays left of the right edge");
+            check.Expect(vb.VertexCount > 0 && v[0] >= 0f && v[1 * VertexBatch.Floats] <= 2000f + 1.01f, "clamped draw stays left of the right edge");
             t.Hover(a, "abc", 100f, 980f, 1000f); now += delay;
             vb.Clear(); t.Draw(vb, atlas, 15f, (0.1f, 0.1f, 0.1f, 1f), 0xFFFFFF, 2000f, 1000f);
             v = vb.ToArray();
-            E(vb.VertexCount > 0 && v[1] < 980f, "a box past the bottom clamp flips above its row");
+            check.Expect(vb.VertexCount > 0 && v[1] < 980f, "a box past the bottom clamp flips above its row");
             t.Leave();
         }
         finally { Clock = real; }
 
-        log.Info(ok ? "Tooltip.SelfCheck: passed" : "Tooltip.SelfCheck: FAILED");
+        log.Info(check.Ok ? "Tooltip.SelfCheck: passed" : "Tooltip.SelfCheck: FAILED");
     }
 }

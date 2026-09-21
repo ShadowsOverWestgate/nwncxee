@@ -202,27 +202,26 @@ internal static unsafe class MotionVectors
     /// resets.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"MotionVectors.SelfCheck FAIL: {w}"); } }
-        E(CameraFs.Contains("prev.xy / prev.w - (ndc.xy - uJitter)"), "motion is previous minus current (FSR2's convention), the current unjittered");
-        E(AlloyRenderer.MotionFs.Contains("vPrev.xy / vPrev.w - (vCur.xy / vCur.w - uJitter)") && AlloyRenderer.MotionVs.Contains(AlloyRenderer.ClipExpr)
+        var check = new Checker(log);
+        check.Expect(CameraFs.Contains("prev.xy / prev.w - (ndc.xy - uJitter)"), "motion is previous minus current (FSR2's convention), the current unjittered");
+        check.Expect(AlloyRenderer.MotionFs.Contains("vPrev.xy / vPrev.w - (vCur.xy / vCur.w - uJitter)") && AlloyRenderer.MotionVs.Contains(AlloyRenderer.ClipExpr)
           && AlloyRenderer.MotionVs.Contains("invariant gl_Position;") && AlloyRenderer.MotionVs.Contains("uPrevVP * d.prev * vec4(aPos, 1.0)"),
           "the mover sweep (#392) shares the convention, and its clip position is the prepass's exact text");
-        E(ShaderContract.RecordSafe(AlloyRenderer.MotionVs) && AlloyRenderer.PrevFloat == 44 && AlloyRenderer.DrawFloats == 60,
+        check.Expect(ShaderContract.RecordSafe(AlloyRenderer.MotionVs) && AlloyRenderer.PrevFloat == 44 && AlloyRenderer.DrawFloats == 60,
           "the mover stage declares the 60-float record, prev at float 44");
         _pendingPrev = Matrix4x4.CreateTranslation(1f, 0f, 0f); _pendingSeq = 3; _lastSeq = 2;
         RollHistory();
-        E(_prevVp.M41 == 1f && _lastSeq == 3, "the history rolls once the frame's consumers are done");
+        check.Expect(_prevVp.M41 == 1f && _lastSeq == 3, "the history rolls once the frame's consumers are done");
         _pendingPrev = Matrix4x4.CreateTranslation(2f, 0f, 0f); _pendingSeq = 3;
         RollHistory();
-        E(_prevVp.M41 == 1f, "...and a second pass in the same frame does not roll it again");
-        E(CameraFs.Contains("abs(prev.w) < 1e-6") && CameraFs.Contains("isnan(v)") && CameraFs.Contains("clamp(v, -uSize, uSize)"),
+        check.Expect(_prevVp.M41 == 1f, "...and a second pass in the same frame does not roll it again");
+        check.Expect(CameraFs.Contains("abs(prev.w) < 1e-6") && CameraFs.Contains("isnan(v)") && CameraFs.Contains("clamp(v, -uSize, uSize)"),
           "no NaN and no unbounded value leaves the stage");
-        E(CameraFs.Contains("d * 2.0 - 1.0"), "depth decodes for the default depth range");
+        check.Expect(CameraFs.Contains("d * 2.0 - 1.0"), "depth decodes for the default depth range");
         _hasPrev = true; _lastSeq = 7;
         Revoke();
-        E(!_hasPrev && _lastSeq == -1, "Revoke drops the previous camera");
-        log.Info(ok ? "MotionVectors.SelfCheck: passed" : "MotionVectors.SelfCheck: FAILED");
-        return ok;
+        check.Expect(!_hasPrev && _lastSeq == -1, "Revoke drops the previous camera");
+        log.Info(check.Ok ? "MotionVectors.SelfCheck: passed" : "MotionVectors.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

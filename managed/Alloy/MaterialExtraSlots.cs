@@ -196,8 +196,7 @@ public sealed unsafe class MaterialExtraSlots : IExtenderService
     internal static bool SelfCheck(ExtenderLog log)
     {
         IntPtr a = (IntPtr)0x1000, b = (IntPtr)0x2000;
-        bool ok = true;
-        void E(bool c, string what) { if (!c) { ok = false; log.Info($"MaterialExtraSlots.SelfCheck: FAILED {what}"); } }
+        var check = new Checker(log);
         void Line(IntPtr k, string s) { fixed (byte* p = System.Text.Encoding.ASCII.GetBytes(s + "\0")) Note(k, p); }
         Line(a, "texture11 plc_ao");
         Line(a, "  Texture12\tbar_ao  trailing");
@@ -206,15 +205,15 @@ public sealed unsafe class MaterialExtraSlots : IExtenderService
         Line(a, "texture11x junk");
         Line(a, "texture14 0123456789abcdefXYZ");
         Line(b, "bitmap diffuse");
-        E(Name(a, 11) == "plc_ao", "texture11 value");
-        E(Name(a, 12) == "bar_ao", "case + tabs + trailing words");
-        E(Name(a, 13) == "", "unset slot empty");
-        E(Name(a, 14) == "0123456789abcdef", "resref clipped to 16");
-        E(Name(a, 9) == "" && Name(a, 15) == "", "out-of-range reads empty");
-        E(Texture(a, 11).IsNull, "unloaded slot reads null");
-        E(!Forget(b), "no entry for a material with no extra lines");
-        E(Forget(a) && !Forget(a) && Name(a, 11) == "", "evicted once");
-        log.Info(ok ? "MaterialExtraSlots.SelfCheck: passed" : "MaterialExtraSlots.SelfCheck: FAILED");
-        return ok;
+        check.Expect(Name(a, 11) == "plc_ao", "texture11 value");
+        check.Expect(Name(a, 12) == "bar_ao", "case + tabs + trailing words");
+        check.Expect(Name(a, 13) == "", "unset slot empty");
+        check.Expect(Name(a, 14) == "0123456789abcdef", "resref clipped to 16");
+        check.Expect(Name(a, 9) == "" && Name(a, 15) == "", "out-of-range reads empty");
+        check.Expect(Texture(a, 11).IsNull, "unloaded slot reads null");
+        check.Expect(!Forget(b), "no entry for a material with no extra lines");
+        check.Expect(Forget(a) && !Forget(a) && Name(a, 11) == "", "evicted once");
+        log.Info(check.Ok ? "MaterialExtraSlots.SelfCheck: passed" : "MaterialExtraSlots.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

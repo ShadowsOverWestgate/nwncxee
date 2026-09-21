@@ -168,8 +168,7 @@ internal static unsafe class SelfActions
     /// the class check, and that an unknown key resolves to nothing.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SelfActions.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         IntPtr[] saved = _addr;
         bool wasReady = Ready;
         _addr = new IntPtr[Table.Length];
@@ -177,16 +176,16 @@ internal static unsafe class SelfActions
         try
         {
             var leaf = new RadialSlot(0, SlotKind.Entry, "Rest", "ir_rest", "", false, 0, IntPtr.Zero, _addr[5], IntPtr.Zero, IntPtr.Zero);
-            E(KeyOf(leaf) == null, "a handler on an object of no known class is not a self action");
-            E(KeyOf(leaf with { Fn = _addr[5] + 1 }) == null && KeyOf(leaf with { Fn = (IntPtr)0x2000 }) == null && KeyOf(leaf with { Kind = SlotKind.Creator }) == null,
+            check.Expect(KeyOf(leaf) == null, "a handler on an object of no known class is not a self action");
+            check.Expect(KeyOf(leaf with { Fn = _addr[5] + 1 }) == null && KeyOf(leaf with { Fn = (IntPtr)0x2000 }) == null && KeyOf(leaf with { Kind = SlotKind.Creator }) == null,
                 "a virtual thunk, a foreign fn, a submenu: none");
             var pin = new RadialPin { Fn = Prefix + "rest", Param = 0 };
-            E(IsSelf(pin) && IndexOf(pin) == 5 && IndexOf(new RadialPin { Fn = Prefix + "nope" }) < 0 && IndexOf(new RadialPin { Fn = "x" }) < 0,
+            check.Expect(IsSelf(pin) && IndexOf(pin) == 5 && IndexOf(new RadialPin { Fn = Prefix + "nope" }) < 0 && IndexOf(new RadialPin { Fn = "x" }) < 0,
                 "self: keys index the table; unknown keys and hoist tokens do not");
             Ready = false;
-            E(!Resolve(pin, out bool v) && !v && !Fire(pin), "not ready: nothing resolves or fires");
+            check.Expect(!Resolve(pin, out bool v) && !v && !Fire(pin), "not ready: nothing resolves or fires");
         }
         finally { _addr = saved; Ready = wasReady; }
-        log.Info(ok ? "SelfActions.SelfCheck: passed" : "SelfActions.SelfCheck: FAILED");
+        log.Info(check.Ok ? "SelfActions.SelfCheck: passed" : "SelfActions.SelfCheck: FAILED");
     }
 }

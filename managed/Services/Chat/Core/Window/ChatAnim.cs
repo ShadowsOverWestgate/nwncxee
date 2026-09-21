@@ -78,37 +78,36 @@ public static class ChatAnim
     /// <summary>Off-device proof of the fade curve, the scroll reset, and residual decay+snap.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"ChatAnim.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         double holdSec = 60.0, fadeSec = 6.0;
         var t0 = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         DateTime never = DateTime.MinValue;
-        E(FadeAlpha(t0, t0, never, true, holdSec, fadeSec) == 1f, "fresh line fully opaque");
-        E(FadeAlpha(t0.AddSeconds(holdSec - 1), t0, never, true, holdSec, fadeSec) == 1f, "within hold still opaque");
-        E(Math.Abs(FadeAlpha(t0.AddSeconds(holdSec + fadeSec / 2), t0, never, true, holdSec, fadeSec) - 0.5f) < 1e-4, "mid-fade at hold+half");
-        E(FadeAlpha(t0.AddSeconds(holdSec + fadeSec + 1), t0, never, true, holdSec, fadeSec) == 0f, "gone past hold+fade");
+        check.Expect(FadeAlpha(t0, t0, never, true, holdSec, fadeSec) == 1f, "fresh line fully opaque");
+        check.Expect(FadeAlpha(t0.AddSeconds(holdSec - 1), t0, never, true, holdSec, fadeSec) == 1f, "within hold still opaque");
+        check.Expect(Math.Abs(FadeAlpha(t0.AddSeconds(holdSec + fadeSec / 2), t0, never, true, holdSec, fadeSec) - 0.5f) < 1e-4, "mid-fade at hold+half");
+        check.Expect(FadeAlpha(t0.AddSeconds(holdSec + fadeSec + 1), t0, never, true, holdSec, fadeSec) == 0f, "gone past hold+fade");
         double past = holdSec + fadeSec + 60;
-        E(FadeAlpha(t0.AddSeconds(past), t0, t0.AddSeconds(past), true, holdSec, fadeSec) == 1f, "scroll resets the fade clock");
+        check.Expect(FadeAlpha(t0.AddSeconds(past), t0, t0.AddSeconds(past), true, holdSec, fadeSec) == 1f, "scroll resets the fade clock");
 
         // Residual decays toward 0 and snaps.
         Residual = 100f; _primed = false; _lastTickMs = 0;
         Tick(1000);                    // primes the clock, no decay
         float a = Tick(1070);          // one tau -> ~1/e
-        E(a < 100f && a > 20f, "residual decays after ~tau");
+        check.Expect(a < 100f && a > 20f, "residual decays after ~tau");
         float b = Tick(1070 + 1000);   // long dt collapses under the snap threshold
-        E(b == 0f, "residual snaps to 0");
+        check.Expect(b == 0f, "residual snaps to 0");
 
         // Master toggle off: no fade.
-        E(FadeAlpha(t0.AddSeconds(holdSec + fadeSec + 1), t0, never, false, holdSec, fadeSec) == 1f, "disabled: fully faded line stays opaque");
+        check.Expect(FadeAlpha(t0.AddSeconds(holdSec + fadeSec + 1), t0, never, false, holdSec, fadeSec) == 1f, "disabled: fully faded line stays opaque");
         Residual = 0f; _primed = false; _lastTickMs = 0;
 
         // Span stability predicate (#53): all-in-hold -> stable; mid-fade -> not; mixed 0/1 -> stable.
-        E(FadeAlpha(t0, t0, never, true, holdSec, fadeSec) == 1f, "stability: fresh line at 1.0");
+        check.Expect(FadeAlpha(t0, t0, never, true, holdSec, fadeSec) == 1f, "stability: fresh line at 1.0");
         float mid = FadeAlpha(t0.AddSeconds(holdSec + fadeSec / 2), t0, never, true, holdSec, fadeSec);
-        E(mid > 0f && mid < 1f, "stability: mid-fade not at 0 or 1");
-        E(FadeAlpha(t0.AddSeconds(holdSec + fadeSec + 10), t0, never, true, holdSec, fadeSec) == 0f, "stability: fully faded at 0.0");
+        check.Expect(mid > 0f && mid < 1f, "stability: mid-fade not at 0 or 1");
+        check.Expect(FadeAlpha(t0.AddSeconds(holdSec + fadeSec + 10), t0, never, true, holdSec, fadeSec) == 0f, "stability: fully faded at 0.0");
 
-        log.Info(ok ? "ChatAnim.SelfCheck: passed" : "ChatAnim.SelfCheck: FAILED");
+        log.Info(check.Ok ? "ChatAnim.SelfCheck: passed" : "ChatAnim.SelfCheck: FAILED");
     }
 }

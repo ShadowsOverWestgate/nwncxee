@@ -289,17 +289,16 @@ public sealed unsafe class AtlasSheet
     /// the solid block is placed first) and the face lookup, with no GL context and no stbtt.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"AtlasSheet.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var boxes = new Box[100];
         for (int i = 0; i < boxes.Length; i++) { boxes[i].W = 10; boxes[i].H = 10; }
         int side = Pack(boxes, 64, out int sx, out int sy);
-        E(side == 256, $"grow: expected 256, got {side}");
-        E(sx == 0 && sy == 0, "solid block is the first placement");
-        E(boxes[0].X == SolidSide + Pad && boxes[0].Y == 0, "first glyph sits right of the solid block");
+        check.Expect(side == 256, $"grow: expected 256, got {side}");
+        check.Expect(sx == 0 && sy == 0, "solid block is the first placement");
+        check.Expect(boxes[0].X == SolidSide + Pad && boxes[0].Y == 0, "first glyph sits right of the solid block");
         var seen = new HashSet<(int, int)>();
-        foreach (Box b in boxes) E(seen.Add((b.X, b.Y)) && b.X + b.W <= side && b.Y + b.H <= side, "placements unique and in bounds");
+        foreach (Box b in boxes) check.Expect(seen.Add((b.X, b.Y)) && b.X + b.W <= side && b.Y + b.H <= side, "placements unique and in bounds");
 
         // #471: the gutter's side cost on a realistic set (one 18px face is ~600 glyph boxes), and the box filter.
         var dense = new Box[600];
@@ -307,25 +306,25 @@ public sealed unsafe class AtlasSheet
         int padded = Pack(dense, 64, out _, out _);
         int unpadded = (int)System.Math.Ceiling(System.Math.Sqrt(600 * 13 * 15));
         log.Info($"AtlasSheet.SelfCheck: 600 12x14 boxes pack into {padded}² at Pad={Pad} (~{unpadded}² of area at a 1px gutter)");
-        E(padded > 0, "padded pack fits under the ceiling");
+        check.Expect(padded > 0, "padded pack fits under the ceiling");
         var lv0 = new byte[8 * 8];
         for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) lv0[i * 8 + j] = 255;   // top-left 4x4 solid
         byte[][] mips = BuildMips(lv0, 8);
-        E(mips.Length == MipLevels - 1 && mips[0].Length == 16 && mips[1].Length == 4, "level sizes 4² and 2²");
-        E(mips[0][0] == 255 && mips[0][1] == 255 && mips[0][2] == 0 && mips[0][4] == 255 && mips[0][5] == 255, "level 1 keeps the solid 2x2 and zero elsewhere");
-        E(mips[1][0] == 255 && mips[1][1] == 0 && mips[1][3] == 0, "level 2 is one solid texel");
+        check.Expect(mips.Length == MipLevels - 1 && mips[0].Length == 16 && mips[1].Length == 4, "level sizes 4² and 2²");
+        check.Expect(mips[0][0] == 255 && mips[0][1] == 255 && mips[0][2] == 0 && mips[0][4] == 255 && mips[0][5] == 255, "level 1 keeps the solid 2x2 and zero elsewhere");
+        check.Expect(mips[1][0] == 255 && mips[1][1] == 0 && mips[1][3] == 0, "level 2 is one solid texel");
         lv0[1] = 0; lv0[8] = 0; lv0[9] = 0;
-        E(BuildMips(lv0, 8)[0][0] == 64, "box filter averages with rounding (255/4 -> 64)");
+        check.Expect(BuildMips(lv0, 8)[0][0] == 64, "box filter averages with rounding (255/4 -> 64)");
 
         var big = new Box[1]; big[0].W = big[0].H = MaxSide + 1;
-        E(Pack(big, 64, out _, out _) == 0, "past the ceiling is a refusal");
+        check.Expect(Pack(big, 64, out _, out _) == 0, "past the ceiling is a refusal");
 
         var sheet = new AtlasSheet();
         var a = new GlyphAtlas { LineHeight = 18 }; var b2 = new GlyphAtlas { LineHeight = 14 };
         sheet.AddTestFace("ui.ttf", 18f, a); sheet.AddTestFace("ui.ttf", 14f, b2);
-        E(sheet.Default == a, "first face is the default");
-        E(sheet.TryFace("ui.ttf", 14f, out GlyphAtlas f) && f == b2, "face lookup by (typeface, px)");
-        E(!sheet.TryFace("ui.ttf", 20f, out _), "unbaked face misses");
+        check.Expect(sheet.Default == a, "first face is the default");
+        check.Expect(sheet.TryFace("ui.ttf", 14f, out GlyphAtlas f) && f == b2, "face lookup by (typeface, px)");
+        check.Expect(!sheet.TryFace("ui.ttf", 20f, out _), "unbaked face misses");
 
         // #425: icon rows fill from the icon font's face, text rows from the default's; a routed icon is no coverage gap.
         var rq = new[] { new FaceRequest("arial", new byte[1], 18f), new FaceRequest("embedded", new byte[1], 18f), new FaceRequest("extra", new byte[1], 18f) };
@@ -335,10 +334,10 @@ public sealed unsafe class AtlasSheet
         var rg = new[] { (0x0061, 0x0061, "a", false), (0x2699, 0x2699, "gear", true) };
         var miss = new List<(int, int, int, float)> { (0, 0x2699, 1, 1f), (2, 0x2699, 1, 1f), (2, 'a', 0, 1f) };
         FillMissing(rq, fc, miss, new() { [18f] = 0 }, new() { [18f] = 1 }, rg, log);
-        E(fc[0].TryGet(0x2699, out Glyph g0) && g0.W == 5 && g0.Advance == 7, "the default face takes its gear from the icon font");
-        E(fc[2].TryGet(0x2699, out Glyph g2) && g2.W == 5, "an extra face takes its gear from the icon font too");
-        E(fc[2].TryGet('a', out Glyph ga) && ga.W == 3, "a text gap still fills from the default face");
+        check.Expect(fc[0].TryGet(0x2699, out Glyph g0) && g0.W == 5 && g0.Advance == 7, "the default face takes its gear from the icon font");
+        check.Expect(fc[2].TryGet(0x2699, out Glyph g2) && g2.W == 5, "an extra face takes its gear from the icon font too");
+        check.Expect(fc[2].TryGet('a', out Glyph ga) && ga.W == 3, "a text gap still fills from the default face");
 
-        log.Info(ok ? "AtlasSheet.SelfCheck OK" : "AtlasSheet.SelfCheck FAILED");
+        log.Info(check.Ok ? "AtlasSheet.SelfCheck OK" : "AtlasSheet.SelfCheck FAILED");
     }
 }

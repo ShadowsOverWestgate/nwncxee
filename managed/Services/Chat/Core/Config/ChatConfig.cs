@@ -162,8 +162,7 @@ public sealed class ChatConfig
     /// <summary>Off-device proof of the pair round-trip and the edge cases.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"ChatConfig.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         static ChatConfig Text(string t)
         {
             var l = new List<KeyValuePair<string, string>>();
@@ -189,64 +188,64 @@ public sealed class ChatConfig
         w0.Tabs.Add(("mask=test", 0x00000002, "Alice", true));
 
         var b = From(a.Pairs());
-        E(b.Windows.Count >= 1, "window 0 present");
+        check.Expect(b.Windows.Count >= 1, "window 0 present");
         var bw0 = b.Windows[0];
-        E(bw0.X == 150 && bw0.Y == 120 && bw0.W == 400 && bw0.H == 300, "window rect round-trips");
-        E(bw0.Toggles == 5, "window toggles round-trip");
-        E(bw0.InputOnTop, "window input side round-trips");
-        E(bw0.SendChannel == 2, "window send channel round-trips");
-        E(bw0.AnimEnabled == false && bw0.HoldSec == 42f && bw0.FadeSec == 3f && bw0.TauMs == 90f, "per-window anim round-trips");
-        E(bw0.Outline == true, "per-window outline round-trips");
-        E(bw0.FontPx == 14 && bw0.Typeface == "DejaVu Serif", "per-window font round-trips");
-        E(bw0.TimeFormat == (int)TsFormat.Hour12 && bw0.TimeSource == (int)TsSource.Game, "per-window ts round-trips");
-        E(bw0.Align == (int)TextAlign.Center, "per-window align round-trips");
-        E(bw0.BgMode == (int)BgMode.Linear && bw0.BgAngle == 45f && bw0.BgEnd == 0.75f && bw0.BgStart == null, "per-window bgmode/angle/stops round-trip");
-        E(bw0.AutoHideHeader == false, "per-window autohide round-trips");
-        E(bw0.Locked == true, "per-window locked round-trips");
-        E(bw0.TellsHere == true, "per-window tellshere round-trips");
-        E(bw0.Colors.TryGetValue(ChatColor.Accent, out uint acc) && acc == 0x1122ccffu, "per-window colour round-trips");
-        E(bw0.Tabs.Count == 2, "two tabs round-trip");
-        E(bw0.Tabs[0].Label == "All channels" && bw0.Tabs[0].Mask == 0xffffffff && bw0.Tabs[0].Pin == "" && !bw0.Tabs[0].Kept, "tab 0 round-trips (label with space, no pin, not kept)");
-        E(bw0.Tabs[1].Label == "mask=test" && bw0.Tabs[1].Mask == 0x00000002 && bw0.Tabs[1].Pin == "Alice" && bw0.Tabs[1].Kept, "tab 1 round-trips (label with =, pin, kept)");
-        E(a.Pairs().TrueForAll(kv => kv.Key.StartsWith("w0.")), "every pair sits under its window prefix");
+        check.Expect(bw0.X == 150 && bw0.Y == 120 && bw0.W == 400 && bw0.H == 300, "window rect round-trips");
+        check.Expect(bw0.Toggles == 5, "window toggles round-trip");
+        check.Expect(bw0.InputOnTop, "window input side round-trips");
+        check.Expect(bw0.SendChannel == 2, "window send channel round-trips");
+        check.Expect(bw0.AnimEnabled == false && bw0.HoldSec == 42f && bw0.FadeSec == 3f && bw0.TauMs == 90f, "per-window anim round-trips");
+        check.Expect(bw0.Outline == true, "per-window outline round-trips");
+        check.Expect(bw0.FontPx == 14 && bw0.Typeface == "DejaVu Serif", "per-window font round-trips");
+        check.Expect(bw0.TimeFormat == (int)TsFormat.Hour12 && bw0.TimeSource == (int)TsSource.Game, "per-window ts round-trips");
+        check.Expect(bw0.Align == (int)TextAlign.Center, "per-window align round-trips");
+        check.Expect(bw0.BgMode == (int)BgMode.Linear && bw0.BgAngle == 45f && bw0.BgEnd == 0.75f && bw0.BgStart == null, "per-window bgmode/angle/stops round-trip");
+        check.Expect(bw0.AutoHideHeader == false, "per-window autohide round-trips");
+        check.Expect(bw0.Locked == true, "per-window locked round-trips");
+        check.Expect(bw0.TellsHere == true, "per-window tellshere round-trips");
+        check.Expect(bw0.Colors.TryGetValue(ChatColor.Accent, out uint acc) && acc == 0x1122ccffu, "per-window colour round-trips");
+        check.Expect(bw0.Tabs.Count == 2, "two tabs round-trip");
+        check.Expect(bw0.Tabs[0].Label == "All channels" && bw0.Tabs[0].Mask == 0xffffffff && bw0.Tabs[0].Pin == "" && !bw0.Tabs[0].Kept, "tab 0 round-trips (label with space, no pin, not kept)");
+        check.Expect(bw0.Tabs[1].Label == "mask=test" && bw0.Tabs[1].Mask == 0x00000002 && bw0.Tabs[1].Pin == "Alice" && bw0.Tabs[1].Kept, "tab 1 round-trips (label with =, pin, kept)");
+        check.Expect(a.Pairs().TrueForAll(kv => kv.Key.StartsWith("w0.")), "every pair sits under its window prefix");
 
         // Nullable fields: absent = null (new windows get hardcoded defaults, not stale zeros).
         var a2 = new ChatConfig();
         var w1 = a2.EnsureWindow(0)!;
         w1.X = 100; w1.Y = 100; w1.W = 400; w1.H = 300;
         var b2 = From(a2.Pairs());
-        E(b2.Windows[0].AnimEnabled == null, "unset anim stays null after round-trip");
-        E(b2.Windows[0].HoldSec == null, "unset hold stays null after round-trip");
-        E(b2.Windows[0].FontPx == null && b2.Windows[0].Typeface == null, "unset font stays null after round-trip");
-        E(b2.Windows[0].Locked == null, "unset locked stays null after round-trip");
-        E(b2.Windows[0].BgMode == null, "unset bgmode stays null after round-trip");
-        E(b2.Windows[0].TellsHere == null, "unset tellshere stays null after round-trip");
+        check.Expect(b2.Windows[0].AnimEnabled == null, "unset anim stays null after round-trip");
+        check.Expect(b2.Windows[0].HoldSec == null, "unset hold stays null after round-trip");
+        check.Expect(b2.Windows[0].FontPx == null && b2.Windows[0].Typeface == null, "unset font stays null after round-trip");
+        check.Expect(b2.Windows[0].Locked == null, "unset locked stays null after round-trip");
+        check.Expect(b2.Windows[0].BgMode == null, "unset bgmode stays null after round-trip");
+        check.Expect(b2.Windows[0].TellsHere == null, "unset tellshere stays null after round-trip");
 
         // ---- corrupt/blank values keep defaults ----
         var g = Text("w0.toggles=\nw0.h=oops\nw0.x=\nw0.sendch=99\n");
-        E(g.Windows.Count >= 1, "corrupt keys still create window slot");
-        E(g.Windows[0].Toggles == (ChatToggle.Timestamp | ChatToggle.MessageBody | ChatToggle.Portrait), "bad toggles keeps default");
-        E(g.Windows[0].H == 0f && g.Windows[0].X == 0f, "bad numeric keeps default (0)");
-        E(g.Windows[0].SendChannel == 0, "out-of-range sendch keeps default");
+        check.Expect(g.Windows.Count >= 1, "corrupt keys still create window slot");
+        check.Expect(g.Windows[0].Toggles == (ChatToggle.Timestamp | ChatToggle.MessageBody | ChatToggle.Portrait), "bad toggles keeps default");
+        check.Expect(g.Windows[0].H == 0f && g.Windows[0].X == 0f, "bad numeric keeps default (0)");
+        check.Expect(g.Windows[0].SendChannel == 0, "out-of-range sendch keeps default");
 
         // ---- unknown keys ignored (forward-compat); no bare legacy keys ----
         var u = Text("w0.t0.zork=1\nw3.x=10\nbogus=1\nw0.x=50\nx=7\nfont=24\n");
-        E(u.Windows.Count >= 4 && u.Windows[3].X == 10, "sparse window index created");
-        E(u.Windows[0].X == 50, "known key alongside unknown parses fine");
-        E(u.Windows[0].Tabs.Count == 0, "unknown tab field does not create phantom tabs");
+        check.Expect(u.Windows.Count >= 4 && u.Windows[3].X == 10, "sparse window index created");
+        check.Expect(u.Windows[0].X == 50, "known key alongside unknown parses fine");
+        check.Expect(u.Windows[0].Tabs.Count == 0, "unknown tab field does not create phantom tabs");
 
         // ---- index cap ----
         var cap = Text("w100.x=5\n");
-        E(cap.Windows.Count == 0, "over-cap window index rejected");
+        check.Expect(cap.Windows.Count == 0, "over-cap window index rejected");
 
         // ---- newline in label stripped on write ----
         var nl = new ChatConfig();
         var nlw = nl.EnsureWindow(0)!;
         nlw.Tabs.Add(("line\none", 1, "pin\nbreak", false));
-        E(nl.Pairs().TrueForAll(kv => !kv.Value.Contains('\n')), "newline stripped from label on write");
+        check.Expect(nl.Pairs().TrueForAll(kv => !kv.Value.Contains('\n')), "newline stripped from label on write");
         var nlr = From(nl.Pairs());
-        E(nlr.Windows[0].Tabs[0].Label == "lineone", "stripped label round-trips");
-        E(nlr.Windows[0].Tabs[0].Pin == "pinbreak", "stripped pin round-trips");
+        check.Expect(nlr.Windows[0].Tabs[0].Label == "lineone", "stripped label round-trips");
+        check.Expect(nlr.Windows[0].Tabs[0].Pin == "pinbreak", "stripped pin round-trips");
 
         // Pin with special chars (space, =) round-trips
         var pc = new ChatConfig();
@@ -254,9 +253,9 @@ public sealed class ChatConfig
         pcw.Tabs.Add(("Tell", 2, "Name With Spaces", false));
         pcw.Tabs.Add(("Tell2", 2, "name=equals", false));
         var pcr = From(pc.Pairs());
-        E(pcr.Windows[0].Tabs[0].Pin == "Name With Spaces", "pin with spaces round-trips");
-        E(pcr.Windows[0].Tabs[1].Pin == "name=equals", "pin with = round-trips");
+        check.Expect(pcr.Windows[0].Tabs[0].Pin == "Name With Spaces", "pin with spaces round-trips");
+        check.Expect(pcr.Windows[0].Tabs[1].Pin == "name=equals", "pin with = round-trips");
 
-        log.Info(ok ? "ChatConfig.SelfCheck: passed" : "ChatConfig.SelfCheck: FAILED");
+        log.Info(check.Ok ? "ChatConfig.SelfCheck: passed" : "ChatConfig.SelfCheck: FAILED");
     }
 }

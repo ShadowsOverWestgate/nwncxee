@@ -392,25 +392,23 @@ internal static unsafe class MeshLod
     internal static bool SelfCheck(ExtenderLog log)
     {
         if (!MeshSimplify.SelfCheck(log)) return false;
-        bool ok = true;
-        void E(bool c, string what)
-        { if (!c) { ok = false; log.Info($"MeshLod.SelfCheck: FAILED -- {what}"); } }
+        var check = new Checker(log);
 
         int savedUsed = _used;
         uint savedEbo = _ebo;
         _used = 0; _ebo = 1;   // a stand-in name: nothing below binds it
         var run = new ushort[] { 0, 1, 2, 0, 2, 3 };
-        E(Append(run, 6, out nint a) && a == 0, "the first run does not start at offset 0");
-        E(Append(run, 6, out nint b) && b == 12, "the second run does not follow the first");
+        check.Expect(Append(run, 6, out nint a) && a == 0, "the first run does not start at offset 0");
+        check.Expect(Append(run, 6, out nint b) && b == 12, "the second run does not follow the first");
         _table[KeyOf(7, 3)] = new Entry { Done = true, Off1 = a, Cnt1 = 6 };
-        E(Range(7, 3, 1, out nint o1, out int c1) && o1 == a && c1 == 6, "a level-1 request does not find its run");
-        E(Range(7, 3, 2, out nint o2, out int c2) && o2 == a && c2 == 6, "a missing level 2 does not fall back to level 1");
-        E(!Range(7, 3, 0, out _, out _), "level 0 is a generated range");
-        E(!Range(7, 4, 1, out _, out _), "a mesh with no entry answered a range");
+        check.Expect(Range(7, 3, 1, out nint o1, out int c1) && o1 == a && c1 == 6, "a level-1 request does not find its run");
+        check.Expect(Range(7, 3, 2, out nint o2, out int c2) && o2 == a && c2 == 6, "a missing level 2 does not fall back to level 1");
+        check.Expect(!Range(7, 3, 0, out _, out _), "level 0 is a generated range");
+        check.Expect(!Range(7, 4, 1, out _, out _), "a mesh with no entry answered a range");
         _table.Remove(KeyOf(7, 3));
         _used = savedUsed; _ebo = savedEbo;
 
-        log.Info(ok ? "MeshLod.SelfCheck: passed" : "MeshLod.SelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? "MeshLod.SelfCheck: passed" : "MeshLod.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

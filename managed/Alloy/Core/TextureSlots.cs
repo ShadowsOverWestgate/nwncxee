@@ -130,62 +130,61 @@ internal static class TextureSlots
     /// anything at pixel time, so the honest failure is to stand down and name the slot.</summary>
     internal static bool Check(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string slot) { if (!c) { ok = false; log.Info($"TextureSlots: slot disagrees -- {slot}"); } }
+        var check = new Checker(log);
 
         // Each unit against the sampler declaration in the stage that consumes it -- the copy that is
         // independent of the consts above, which now all alias this table. Rename or drop a declaration and
         // glUniform1i binds a -1 location: a legal no-op that leaves the sampler on unit 0.
-        E(AlloyRenderer.OwnedFs.Contains("uniform sampler2D uTex;")
+        check.Expect(AlloyRenderer.OwnedFs.Contains("uniform sampler2D uTex;")
           && AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uTex;")
           && GrassField.GrassFsHead.Contains("uniform sampler2D uTex;")
           && Particles.ParticleFsHead.Contains("uniform sampler2D uTex;"), $"{Diffuse} uTex (diffuse)");
-        E(AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunShadow;"),
+        check.Expect(AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunShadow;"),
           $"{SunShadow} uSunShadow");
-        E(AlloyLights.LocalShadowLib.Contains("uniform samplerCubeArrayShadow uLocalShadow;"),
+        check.Expect(AlloyLights.LocalShadowLib.Contains("uniform samplerCubeArrayShadow uLocalShadow;"),
           $"{LocalShadow} uLocalShadow");
-        E(AlloyLights.LocalShadowLib.Contains("uniform samplerCubeArrayShadow uLocalDynShadow;"),
+        check.Expect(AlloyLights.LocalShadowLib.Contains("uniform samplerCubeArrayShadow uLocalDynShadow;"),
           $"{LocalShadowDyn} uLocalDynShadow");
-        E(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowRaw}) uniform samplerCubeArray uLocalShadowRaw;"),
+        check.Expect(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowRaw}) uniform samplerCubeArray uLocalShadowRaw;"),
           $"{LocalShadowRaw} uLocalShadowRaw");
-        E(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowDynRaw}) uniform samplerCubeArray uLocalDynShadowRaw;"),
+        check.Expect(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowDynRaw}) uniform samplerCubeArray uLocalDynShadowRaw;"),
           $"{LocalShadowDynRaw} uLocalDynShadowRaw");
-        E(AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunDynShadow;"),
+        check.Expect(AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunDynShadow;"),
           $"{SunShadowDyn} uSunDynShadow");
         for (int i = 0; i < MapSamplers.Length; i++)
-            E(AlloyRenderer.OwnedLitFsHead.Contains($"uniform sampler2D {MapSamplers[i]};"),
+            check.Expect(AlloyRenderer.OwnedLitFsHead.Contains($"uniform sampler2D {MapSamplers[i]};"),
               $"{MapBase + i} {MapSamplers[i]}");
-        E(PostChain.ResolveFs.Contains("uniform sampler2D uHdr;"), $"{PostHdr} uHdr");
-        E(PostChain.ResolveFs.Contains("uniform sampler2D uBloom;"), $"{PostBloom} uBloom");
-        E(PostChain.ResolveFs.Contains("uniform sampler2D uDepth;"), $"{PostDepth} uDepth");
+        check.Expect(PostChain.ResolveFs.Contains("uniform sampler2D uHdr;"), $"{PostHdr} uHdr");
+        check.Expect(PostChain.ResolveFs.Contains("uniform sampler2D uBloom;"), $"{PostBloom} uBloom");
+        check.Expect(PostChain.ResolveFs.Contains("uniform sampler2D uDepth;"), $"{PostDepth} uDepth");
         // #375: the post stack reuses the resolve's two units, after it and in the same bracket.
-        E(PostStack.PostStageHead.Contains("uniform sampler2D uSrc;"), $"{PostHdr} uSrc (post stack)");
-        E(PostStack.PostStageHead.Contains("uniform sampler2D uDepth;"), $"{PostBloom} uDepth (post stack)");
-        E(SmaaStage.WeightFs.Contains("uniform sampler2D uEdges;"), $"{AaEdges} uEdges (aa weights)");
-        E(SmaaStage.WeightFs.Contains("uniform sampler2D uArea;"), $"{AaArea} uArea (aa weights)");
-        E(SmaaStage.WeightFs.Contains("uniform sampler2D uSearch;"), $"{AaSearch} uSearch (aa weights)");
-        E(SmaaStage.BlendStageFs.Contains("uniform sampler2D uBlend;"), $"{AaBlend} uBlend (aa stage)");
-        E(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSsao;"), $"{Ssao} uSsao (lit program)");
-        E(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SsaoDepth} uSceneDepth (lit program)");
-        E(GrassField.GrassVs.Contains("uniform sampler2D uPushTex;"), $"{GrassPush} uPushTex (grass program)");
-        E(GrassField.GrassFsHead.Contains("uniform sampler2D uGround;"), $"{GrassGround} uGround (grass program)");
+        check.Expect(PostStack.PostStageHead.Contains("uniform sampler2D uSrc;"), $"{PostHdr} uSrc (post stack)");
+        check.Expect(PostStack.PostStageHead.Contains("uniform sampler2D uDepth;"), $"{PostBloom} uDepth (post stack)");
+        check.Expect(SmaaStage.WeightFs.Contains("uniform sampler2D uEdges;"), $"{AaEdges} uEdges (aa weights)");
+        check.Expect(SmaaStage.WeightFs.Contains("uniform sampler2D uArea;"), $"{AaArea} uArea (aa weights)");
+        check.Expect(SmaaStage.WeightFs.Contains("uniform sampler2D uSearch;"), $"{AaSearch} uSearch (aa weights)");
+        check.Expect(SmaaStage.BlendStageFs.Contains("uniform sampler2D uBlend;"), $"{AaBlend} uBlend (aa stage)");
+        check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSsao;"), $"{Ssao} uSsao (lit program)");
+        check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SsaoDepth} uSceneDepth (lit program)");
+        check.Expect(GrassField.GrassVs.Contains("uniform sampler2D uPushTex;"), $"{GrassPush} uPushTex (grass program)");
+        check.Expect(GrassField.GrassFsHead.Contains("uniform sampler2D uGround;"), $"{GrassGround} uGround (grass program)");
         // #339: the water stage no longer samples the probe -- vanilla's reflection falls back to the
         // shaded surface, not to a cube -- so the lit stage is the only consumer left.
-        E(AlloyRenderer.OwnedLitFsHead.Contains("uniform samplerCube uProbe;"), $"{Probe} uProbe");
-        E(FrameSnapshot.FsHead.Contains("uniform sampler2D uNoise;"), $"{WaterNoise} uNoise (water program)");
-        E(FrameSnapshot.FsHead.Contains("uniform sampler2D uEnvMap;"), $"{WaterEnv} uEnvMap (water program)");
-        E(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbColor;"), $"{SnapshotColor} uFbColor");
-        E(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbDepth;"), $"{SnapshotDepth} uFbDepth");
-        E(AlloyRenderer.OitOutFs.Contains("uniform sampler2D uOitDepth;"), $"{OitDepth} uOitDepth (blended output)");
-        E(AlloyRenderer.OitOutFs.Contains("uniform ivec2 uOitDim;") && AlloyRenderer.OitOutFs.Contains("uniform float uOitBias;") && AlloyRenderer.OitOutFs.Contains("uniform int uOitGob;"), "uOitDim/uOitBias/uOitGob are what OitPass.Upload and IssueColour write");
-        E(Particles.ParticleFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SceneDepth} uSceneDepth");
+        check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("uniform samplerCube uProbe;"), $"{Probe} uProbe");
+        check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uNoise;"), $"{WaterNoise} uNoise (water program)");
+        check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uEnvMap;"), $"{WaterEnv} uEnvMap (water program)");
+        check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbColor;"), $"{SnapshotColor} uFbColor");
+        check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbDepth;"), $"{SnapshotDepth} uFbDepth");
+        check.Expect(AlloyRenderer.OitOutFs.Contains("uniform sampler2D uOitDepth;"), $"{OitDepth} uOitDepth (blended output)");
+        check.Expect(AlloyRenderer.OitOutFs.Contains("uniform ivec2 uOitDim;") && AlloyRenderer.OitOutFs.Contains("uniform float uOitBias;") && AlloyRenderer.OitOutFs.Contains("uniform int uOitGob;"), "uOitDim/uOitBias/uOitGob are what OitPass.Upload and IssueColour write");
+        check.Expect(Particles.ParticleFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SceneDepth} uSceneDepth");
 
         // ...and the units themselves. MapSamplers is what the lit program's bind loop walks, so a name added
         // there without a unit to put it on would silently land on the probe's.
-        E(MapSamplers.Length == MapCount, $"MapSamplers has {MapSamplers.Length} names for {MapCount} units");
-        E(MapBase > LocalShadow && MapBase + MapCount <= PostHdr, $"{MapBase}..{MapBase + MapCount - 1} map block overlaps its neighbours");
-        E(PostHdr < PostBloom && PostBloom < Probe && Probe < SnapshotColor
+        check.Expect(MapSamplers.Length == MapCount, $"MapSamplers has {MapSamplers.Length} names for {MapCount} units");
+        check.Expect(MapBase > LocalShadow && MapBase + MapCount <= PostHdr, $"{MapBase}..{MapBase + MapCount - 1} map block overlaps its neighbours");
+        check.Expect(PostHdr < PostBloom && PostBloom < Probe && Probe < SnapshotColor
           && SnapshotColor < SnapshotDepth && SnapshotDepth < SceneDepth, "the units above the map block are not distinct and ascending");
-        return ok;
+        return check.Ok;
     }
 }

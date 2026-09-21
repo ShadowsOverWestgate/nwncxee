@@ -217,8 +217,7 @@ internal static class AlloyGate
     /// property is the whole point of the ticket, and nothing on a live client can demonstrate it cheaply.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyGate.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         (bool optedOut, bool frozen, AlloyStand decided, string decidedWhy, string failed, AlloyStand stand,
          string why, bool layoutOk) saved =
@@ -233,11 +232,11 @@ internal static class AlloyGate
         {
             _optedOut = true; _frozen = false; _decided = AlloyStand.Idle; _decidedWhy = ""; _failed = "";
             OnFrameStart();
-            E(!Alloy && Stand == AlloyStand.Choice, "the config opt-out is a Choice, not a device verdict");
-            E(Capable, "...and it says nothing about the device");
+            check.Expect(!Alloy && Stand == AlloyStand.Choice, "the config opt-out is a Choice, not a device verdict");
+            check.Expect(Capable, "...and it says nothing about the device");
             _optedOut = false;
             OnFrameStart();
-            E(Stand == AlloyStand.Choice, "the decision is frozen: clearing the config does not un-decide it");
+            check.Expect(Stand == AlloyStand.Choice, "the decision is frozen: clearing the config does not un-decide it");
 
             // ...but a NEGATIVE answer must not freeze, or a client that boots to the main menu (Idle) or
             // whose 4.6 context is not up yet (Incapable) would never arm at all. This is the one the live
@@ -245,17 +244,17 @@ internal static class AlloyGate
             // Asserted on the rule rather than through Evaluate, whose answer here is whatever the host
             // running the check happens to be -- which is exactly the coupling that made the first version
             // of this assertion pass on one host and fail on another.
-            E(Freezes(AlloyStand.Alloy) && Freezes(AlloyStand.Choice),
+            check.Expect(Freezes(AlloyStand.Alloy) && Freezes(AlloyStand.Choice),
               "a positive verdict decides the session");
-            E(!Freezes(AlloyStand.Idle) && !Freezes(AlloyStand.Incapable),
+            check.Expect(!Freezes(AlloyStand.Idle) && !Freezes(AlloyStand.Incapable),
               "an Idle or Incapable verdict does not freeze the decision");
 
             _frozen = true; _decided = AlloyStand.Alloy; _decidedWhy = ""; _stand = AlloyStand.Alloy;
             Fail("first"); Fail("second");
-            E(CapabilityReason == "first", "the first failure reason wins and later ones are ignored");
-            E(Alloy, "a failure after the decision leaves the frame Alloy's -- there is nothing behind it");
+            check.Expect(CapabilityReason == "first", "the first failure reason wins and later ones are ignored");
+            check.Expect(Alloy, "a failure after the decision leaves the frame Alloy's -- there is nothing behind it");
             OnFrameStart();
-            E(Stand != AlloyStand.Incapable, "...and does not move the next verdict either: it is restart-only");
+            check.Expect(Stand != AlloyStand.Incapable, "...and does not move the next verdict either: it is restart-only");
         }
         finally
         {
@@ -263,6 +262,6 @@ internal static class AlloyGate
             _log = quiet; Notice.Sink = sink;
         }
 
-        log.Info(ok ? "AlloyGate.SelfCheck: passed" : "AlloyGate.SelfCheck: FAILED");
+        log.Info(check.Ok ? "AlloyGate.SelfCheck: passed" : "AlloyGate.SelfCheck: FAILED");
     }
 }

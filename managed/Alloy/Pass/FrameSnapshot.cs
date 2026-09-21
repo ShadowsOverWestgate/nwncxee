@@ -461,16 +461,16 @@ internal static unsafe class FrameSnapshot
 
     /// <summary>The <c>water</c> knobs, off-device: the master stands the class down without touching the
     /// stand-down latch, and the diagnostic budget has no boot value -- a readback is a live request.</summary>
-    private static void CheckTuning(Action<bool, string> e)
+    private static void CheckTuning(Checker check)
     {
         bool on = Water.Enabled.V; int diag = Water.Diag.V;
         try
         {
             Water.Diag.V = 1;
-            e(Describe().Contains("DIAG 1 left"), "diag is a BUDGET: Describe says how many readbacks are owed while any are");
+            check.Expect(Describe().Contains("DIAG 1 left"), "diag is a BUDGET: Describe says how many readbacks are owed while any are");
             Water.Enabled.V = false;
-            e(!On && !Usable, "water.enabled off stands the class down without touching the stand-down latch");
-            e(Water.Enabled.Default && Water.Diag.Default == 0, "reset re-arms the class and spends no diagnostic readbacks");
+            check.Expect(!On && !Usable, "water.enabled off stands the class down without touching the stand-down latch");
+            check.Expect(Water.Enabled.Default && Water.Diag.Default == 0, "reset re-arms the class and spends no diagnostic readbacks");
         }
         finally
         {
@@ -484,25 +484,24 @@ internal static unsafe class FrameSnapshot
     /// is actually compiled, which is the only thing an override cannot silently change out from under.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"FrameSnapshot.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
-        CheckTuning(E);
+        CheckTuning(check);
 
         string fs = Fs;
-        E(fs.Contains("uniform sampler2D uFbColor") && fs.Contains("uniform sampler2D uFbDepth"),
+        check.Expect(fs.Contains("uniform sampler2D uFbColor") && fs.Contains("uniform sampler2D uFbDepth"),
           "the stage declares the copy pair it marches");
         // #339's own criterion, as a text check: the shading is stock fswater's, not a look of ours. The
         // march is vanilla's GetRayIntersectCoords, the wave field reads the ENGINE's noise texture, and the
         // reflection's fallback is the shaded surface -- a probe here would be the custom look coming back.
-        E(fs.Contains("CxRayIntersect("), "the stage marches with stock's own ray intersection");
-        E(fs.Contains("texture(uNoise,"), "the wave field reads the engine's noise texture");
-        E(!fs.Contains("uProbe"), "the probe is NOT the reflection's fallback -- vanilla falls back to the surface");
+        check.Expect(fs.Contains("CxRayIntersect("), "the stage marches with stock's own ray intersection");
+        check.Expect(fs.Contains("texture(uNoise,"), "the wave field reads the engine's noise texture");
+        check.Expect(!fs.Contains("uProbe"), "the probe is NOT the reflection's fallback -- vanilla falls back to the surface");
         // Colour space: since #132 the whole Alloy frame is linear, so the copy is linear and a decode on
         // read would be a second linearisation. Sampling it in the wrong space is a whole-image error that
         // reads as "the reflection is washed out" (or "far too dark") rather than as a bug, so it is
         // asserted rather than left to the next reader of the shader text.
-        E(fs.Contains("return texture(uFbColor, uv).rgb;") && !fs.Contains("CxLinear(texture(uFbColor"),
+        check.Expect(fs.Contains("return texture(uFbColor, uv).rgb;") && !fs.Contains("CxLinear(texture(uFbColor"),
           "the copy is sampled as LINEAR, with no decode");
         // Ordering: FbCopy immediately precedes WaterOwned, and both sit between the blended class and
         // additive. That IS the ticket's "one copy, vanilla's placement" -- it is not an implementation
@@ -516,10 +515,10 @@ internal static unsafe class FrameSnapshot
             if (id == PassId.BlendedOwned) blend = i;
             if (id == PassId.AdditiveOwned) add = i;
         }
-        E(copy >= 0 && water == copy + 1, "the water pass reads a copy taken immediately before it");
-        E(blend >= 0 && blend < copy, "the blended class (fade included) is IN the copy");
-        E(add >= 0 && add > water, "additive is NOT in the copy, and composites over the water");
-        E(ColorUnit > EnvProbe.ProbeUnit && DepthUnit > ColorUnit,
+        check.Expect(copy >= 0 && water == copy + 1, "the water pass reads a copy taken immediately before it");
+        check.Expect(blend >= 0 && blend < copy, "the blended class (fade included) is IN the copy");
+        check.Expect(add >= 0 && add > water, "additive is NOT in the copy, and composites over the water");
+        check.Expect(ColorUnit > EnvProbe.ProbeUnit && DepthUnit > ColorUnit,
           "the copy's units sit above the probe cube's -- two sampler types on one unit drops the draw");
         // #339: every view the stage implements is REACHABLE. /alloy viz clamps to AlloyRenderer.LightVizMax,
         // silently -- a view above it paints the highest one instead, which looks like a working instrument
@@ -532,13 +531,13 @@ internal static unsafe class FrameSnapshot
             while (j < fs.Length && fs[j] >= '0' && fs[j] <= '9') { n = n * 10 + (fs[j] - '0'); j++; }
             if (n > highest) highest = n;
         }
-        E(highest <= AlloyRenderer.LightVizMax,
+        check.Expect(highest <= AlloyRenderer.LightVizMax,
           $"the stage's highest view ({highest}) is above /alloy viz's ceiling ({AlloyRenderer.LightVizMax})");
-        E(NoiseUnit != ColorUnit && NoiseUnit != DepthUnit && NoiseUnit != TextureSlots.Diffuse,
+        check.Expect(NoiseUnit != ColorUnit && NoiseUnit != DepthUnit && NoiseUnit != TextureSlots.Diffuse,
           "the noise texture has a unit of its own");
 
-        log.Info(ok ? "FrameSnapshot.SelfCheck: passed" : "FrameSnapshot.SelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? "FrameSnapshot.SelfCheck: passed" : "FrameSnapshot.SelfCheck: FAILED");
+        return check.Ok;
     }
 
     /// <summary>The whole fragment stage, composed by <see cref="ShaderStages"/> -- the one place any owned

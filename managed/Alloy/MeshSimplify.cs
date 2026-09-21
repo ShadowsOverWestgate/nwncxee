@@ -312,9 +312,7 @@ internal static class MeshSimplify
     /// A grid whose every vertex is a border vertex cannot be reduced at all, which is the lock working.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string what)
-        { if (!c) { ok = false; log.Info($"MeshSimplify.SelfCheck: FAILED -- {what}"); } }
+        var check = new Checker(log);
 
         const int N = 12;                         // 12x12 vertices, 11x11 quads, 242 triangles
         int verts = N * N, tris = (N - 1) * (N - 1) * 2;
@@ -339,8 +337,8 @@ internal static class MeshSimplify
         var outIdx = new ushort[tris * 3];
 
         int got = Run(idx, n, pos, verts, tris / 2, 1f, outIdx);
-        E(got > 0 && got % 3 == 0, "the grid produced no simplified index run");
-        E(got < n, $"the output is not smaller than the input ({got} of {n})");
+        check.Expect(got > 0 && got % 3 == 0, "the grid produced no simplified index run");
+        check.Expect(got < n, $"the output is not smaller than the input ({got} of {n})");
         bool bad = false, degenerate = false;
         for (int i = 0; i < got; i += 3)
         {
@@ -348,17 +346,17 @@ internal static class MeshSimplify
             if (outIdx[i] == outIdx[i + 1] || outIdx[i + 1] == outIdx[i + 2] || outIdx[i] == outIdx[i + 2])
                 degenerate = true;
         }
-        E(!bad, "an output index is out of range");
-        E(!degenerate, "an output triangle is degenerate");
+        check.Expect(!bad, "an output index is out of range");
+        check.Expect(!degenerate, "an output triangle is degenerate");
 
         // Every vertex of a 2x2 grid is on its border, so there is nothing legal to collapse.
         var sq = new float[] { 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0 };
         var sqIdx = new ushort[] { 0, 1, 2, 1, 3, 2 };
-        E(Run(sqIdx, 6, sq, 4, 1, 1f, outIdx) == 0, "an all-border mesh was collapsed anyway");
+        check.Expect(Run(sqIdx, 6, sq, 4, 1, 1f, outIdx) == 0, "an all-border mesh was collapsed anyway");
         // A zero error budget refuses every collapse that is not exactly free.
-        E(Run(idx, n, pos, verts, 1, 0f, outIdx) == 0, "a zero error budget still collapsed a curved mesh");
+        check.Expect(Run(idx, n, pos, verts, 1, 0f, outIdx) == 0, "a zero error budget still collapsed a curved mesh");
 
-        log.Info(ok ? "MeshSimplify.SelfCheck: passed" : "MeshSimplify.SelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? "MeshSimplify.SelfCheck: passed" : "MeshSimplify.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

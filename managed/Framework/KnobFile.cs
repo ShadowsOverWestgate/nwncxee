@@ -89,12 +89,11 @@ public static class KnobFile
     /// unknown loaded key verbatim. Never writes: the demo's file is the real user's.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"KnobFile.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         string text = Compose();
-        E(text.StartsWith(Header + "\n"), "the header comes first");
-        E(!Header.Contains('='), "the header reads back as no key");
+        check.Expect(text.StartsWith(Header + "\n"), "the header comes first");
+        check.Expect(!Header.Contains('='), "the header reads back as no key");
         var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var bags = new List<KnobBag>();
         foreach (KnobGroup g in KnobGroup.All)
@@ -102,23 +101,23 @@ public static class KnobFile
             foreach (Knob k in g.Knobs)
             {
                 if (k.Persisted) declared.Add(k.Key);
-                E(k.IsDefault == !text.Contains("\n" + k.Key + "=") || !k.Persisted, $"{k.Key}: present iff off-default");
+                check.Expect(k.IsDefault == !text.Contains("\n" + k.Key + "=") || !k.Persisted, $"{k.Key}: present iff off-default");
             }
             foreach (KnobBag b in g.Bags)
             {
                 bags.Add(b);
                 foreach (var kv in b.Pairs)
-                    E(text.Contains("\n" + g.Name + "." + kv.Key + "=" + kv.Value + "\n"), $"bag pair {kv.Key} written verbatim");
+                    check.Expect(text.Contains("\n" + g.Name + "." + kv.Key + "=" + kv.Value + "\n"), $"bag pair {kv.Key} written verbatim");
             }
         }
         foreach (var kv in Settings.Pairs)
             if (!declared.Contains(kv.Key) && !kv.Key.StartsWith('#') && !Bagged(bags, kv.Key))
-                E(text.Contains("\n" + kv.Key + "=" + kv.Value + "\n"), $"unknown key {kv.Key} preserved verbatim");
+                check.Expect(text.Contains("\n" + kv.Key + "=" + kv.Value + "\n"), $"unknown key {kv.Key} preserved verbatim");
         string[] lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         for (int i = 2; i < lines.Length; i++)
-            E(string.CompareOrdinal(lines[i - 1], lines[i]) <= 0, "keys are alphabetical");
-        E(Writes == 0, "nothing wrote during boot");
+            check.Expect(string.CompareOrdinal(lines[i - 1], lines[i]) <= 0, "keys are alphabetical");
+        check.Expect(Writes == 0, "nothing wrote during boot");
 
-        log.Info(ok ? "KnobFile.SelfCheck: passed" : "KnobFile.SelfCheck: FAILED");
+        log.Info(check.Ok ? "KnobFile.SelfCheck: passed" : "KnobFile.SelfCheck: FAILED");
     }
 }

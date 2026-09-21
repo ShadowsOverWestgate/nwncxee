@@ -296,8 +296,7 @@ internal static unsafe class RadialTree
     /// engine call with no fake -- plumbing only, live-unverified.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"RadialTree.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         const int BlobSize = 0x900, VtSize = 0x200, ObjAdj = 0x10;
         byte* menu = (byte*)NativeMemory.AllocZeroed(BlobSize);
@@ -378,56 +377,56 @@ internal static unsafe class RadialTree
             }
             *(long*)(menu + EngineLayout.RadialParam + 3 * 8) = -7;
 
-            E(Classify((IntPtr)menu) == RootKind.Door, "a planted vptr classifies as the kind it was planted for");
+            check.Expect(Classify((IntPtr)menu) == RootKind.Door, "a planted vptr classifies as the kind it was planted for");
             *(IntPtr*)menu = (IntPtr)handlerVt;
-            E(Classify((IntPtr)menu) == RootKind.Unknown, "an unknown vptr classifies as Unknown");
+            check.Expect(Classify((IntPtr)menu) == RootKind.Unknown, "an unknown vptr classifies as Unknown");
             *(IntPtr*)menu = (IntPtr)fakeVt + VtableToVptr;
-            E(Position((IntPtr)menu) == (640, 360), "Position reads menu XY");
-            E(TargetId((IntPtr)menu, RootKind.Door) == 0x7f01 && TargetId((IntPtr)menu, RootKind.Quickbar) == 0,
+            check.Expect(Position((IntPtr)menu) == (640, 360), "Position reads menu XY");
+            check.Expect(TargetId((IntPtr)menu, RootKind.Door) == 0x7f01 && TargetId((IntPtr)menu, RootKind.Quickbar) == 0,
                 "TargetId reads the subclass word for kinds that have one, 0 otherwise");
 
             RadialSlot s0 = ReadSlot((IntPtr)menu, 0);
-            E(s0.Kind == SlotKind.Entry && !s0.IsSubMenu, $"slot 0 is an entry ({s0.Kind})");
-            E(s0.Label == "Cast Spell", $"slot 0 label rejoins the wrapped lines (\"{s0.Label}\")");
-            E(s0.Icon == "ir_cast", $"slot 0 icon is the lowercased resref (\"{s0.Icon}\")");
-            E(s0.Count == "3", $"slot 0 count reads the icon's label gob (\"{s0.Count}\")");
-            E(!s0.Disabled && s0.Param == 0x123456789L, "slot 0 enabled, param read");
-            E(s0.Obj == (IntPtr)handlerObj && s0.Fn == (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler
+            check.Expect(s0.Kind == SlotKind.Entry && !s0.IsSubMenu, $"slot 0 is an entry ({s0.Kind})");
+            check.Expect(s0.Label == "Cast Spell", $"slot 0 label rejoins the wrapped lines (\"{s0.Label}\")");
+            check.Expect(s0.Icon == "ir_cast", $"slot 0 icon is the lowercased resref (\"{s0.Icon}\")");
+            check.Expect(s0.Count == "3", $"slot 0 count reads the icon's label gob (\"{s0.Count}\")");
+            check.Expect(!s0.Disabled && s0.Param == 0x123456789L, "slot 0 enabled, param read");
+            check.Expect(s0.Obj == (IntPtr)handlerObj && s0.Fn == (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler
                 && s0.Adj == IntPtr.Zero && s0.Child == IntPtr.Zero, "slot 0 triple read back");
             RadialSlot s1 = ReadSlot((IntPtr)menu, 1);
-            E(s1.Kind == SlotKind.Creator && s1.IsSubMenu && s1.Disabled && s1.Label == "" && s1.Icon == "",
+            check.Expect(s1.Kind == SlotKind.Creator && s1.IsSubMenu && s1.Disabled && s1.Label == "" && s1.Icon == "",
                 $"slot 1 is a disabled creator with no label/icon ({s1.Kind} {s1.Disabled} \"{s1.Label}\")");
             RadialSlot s2 = ReadSlot((IntPtr)menu, 2);
-            E(s2.Kind == SlotKind.Creator && s2.Child == (IntPtr)fakeVt, "slot 2: a materialized child alone makes a submenu");
+            check.Expect(s2.Kind == SlotKind.Creator && s2.Child == (IntPtr)fakeVt, "slot 2: a materialized child alone makes a submenu");
             RadialSlot s4 = ReadSlot((IntPtr)menu, 4);
-            E(s4.Kind == SlotKind.Empty && !s4.IsSubMenu && s4.Obj == IntPtr.Zero, "slot 4: both sentinels = empty");
+            check.Expect(s4.Kind == SlotKind.Empty && !s4.IsSubMenu && s4.Obj == IntPtr.Zero, "slot 4: both sentinels = empty");
 
             _eventObject = &eventCell;
             eventCell = (IntPtr)0x5150;
             _fakeCalls = 0;
-            E(Invoke((IntPtr)menu, 0) && _fakeCalls == 1 && _fakeSelf == (IntPtr)handlerObj && _fakeParam == 0x123456789L,
+            check.Expect(Invoke((IntPtr)menu, 0) && _fakeCalls == 1 && _fakeSelf == (IntPtr)handlerObj && _fakeParam == 0x123456789L,
                 $"Invoke slot 0 calls fn(obj, param) ({_fakeCalls} {_fakeParam:x})");
-            E(eventCell == (IntPtr)0x5150, "Invoke restores s_pCurrentEventObject");
-            E(!Invoke((IntPtr)menu, 4) && _fakeCalls == 1, "Invoke on an unset entry does nothing");
-            E(Invoke((IntPtr)menu, 3) && _fakeCalls == 2 && _fakeParam == -7
+            check.Expect(eventCell == (IntPtr)0x5150, "Invoke restores s_pCurrentEventObject");
+            check.Expect(!Invoke((IntPtr)menu, 4) && _fakeCalls == 1, "Invoke on an unset entry does nothing");
+            check.Expect(Invoke((IntPtr)menu, 3) && _fakeCalls == 2 && _fakeParam == -7
                 && _fakeSelf == (win ? (IntPtr)handlerObj : (IntPtr)(handlerObj + ObjAdj)),
                 win ? "Invoke slot 3 (Win64 pair)" : $"Invoke slot 3 decodes the virtual thunk: this = obj + adj ({(long)_fakeSelf - (long)handlerObj:x})");
-            E(Materialize((IntPtr)menu, 9) == IntPtr.Zero && !Invoke((IntPtr)menu, -1), "out-of-range slots are refused");
+            check.Expect(Materialize((IntPtr)menu, 9) == IntPtr.Zero && !Invoke((IntPtr)menu, -1), "out-of-range slots are refused");
 
             // BuildItems: slots 0 (entry), 1 (disabled creator), 2 (child), 3 (entry) -- empties 4..7 dropped, tags = slot.
             CascadeItem[] items = BuildItems((IntPtr)menu);
-            E(items.Length == 4, $"BuildItems keeps the four filled slots ({items.Length})");
-            E(items.Length == 4 && (int)items[0].Tag! == 0 && (int)items[1].Tag! == 1 && (int)items[2].Tag! == 2 && (int)items[3].Tag! == 3,
+            check.Expect(items.Length == 4, $"BuildItems keeps the four filled slots ({items.Length})");
+            check.Expect(items.Length == 4 && (int)items[0].Tag! == 0 && (int)items[1].Tag! == 1 && (int)items[2].Tag! == 2 && (int)items[3].Tag! == 3,
                 "row tags are the vanilla slot indices, in order");
-            E(items.Length == 4 && items[0].Label == "Cast Spell" && items[0].Icon == "ir_cast" && items[0].Count == "3" && !items[0].HasChildren && !items[0].Disabled,
+            check.Expect(items.Length == 4 && items[0].Label == "Cast Spell" && items[0].Icon == "ir_cast" && items[0].Count == "3" && !items[0].HasChildren && !items[0].Disabled,
                 "row 0 carries label, icon, count, no mark");
-            E(items.Length == 4 && items[1].HasChildren && items[1].Disabled && items[2].HasChildren && !items[3].HasChildren && items[3].Count == "",
+            check.Expect(items.Length == 4 && items[1].HasChildren && items[1].Disabled && items[2].HasChildren && !items[3].HasChildren && items[3].Count == "",
                 "creator + child rows carry the mark, the disabled flag follows the slot, no icon = no count");
 
             // Materialize through the faked CreateSubMenu: slot 1 yields the child with its parent linked; slot 3 declines.
-            E(Materialize((IntPtr)menu, 1) == (IntPtr)child && *(IntPtr*)(child + EngineLayout.RadialParent) == (IntPtr)menu,
+            check.Expect(Materialize((IntPtr)menu, 1) == (IntPtr)child && *(IntPtr*)(child + EngineLayout.RadialParent) == (IntPtr)menu,
                 "Materialize returns m_pSubMenu[i] and links the child's m_pParent");
-            E(Materialize((IntPtr)menu, 3) == IntPtr.Zero, "a declined creator yields null");
+            check.Expect(Materialize((IntPtr)menu, 3) == IntPtr.Zero, "a declined creator yields null");
         }
         finally
         {
@@ -438,7 +437,7 @@ internal static unsafe class RadialTree
             NativeMemory.Free(bubble); NativeMemory.Free(gob); NativeMemory.Free(icon); NativeMemory.Free(line0); NativeMemory.Free(line1);
             NativeMemory.Free(countGob); NativeMemory.Free(countLine); NativeMemory.Free(child);
         }
-        log.Info(ok ? "RadialTree.SelfCheck: passed" : "RadialTree.SelfCheck: FAILED");
+        log.Info(check.Ok ? "RadialTree.SelfCheck: passed" : "RadialTree.SelfCheck: FAILED");
         RadialIcons.SelfCheck(log);
     }
 }

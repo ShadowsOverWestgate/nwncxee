@@ -612,27 +612,26 @@ public sealed unsafe class CameraService : IExtenderService
     /// wrong product order would break -- where the camera sits for yaw 0, and that yaw turns about Z.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"CameraService.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         static bool Near(Vector3 a, Vector3 b) => (a - b).Length() < 1e-4f;
         Vector3 f0 = Forward(Pose(0, 0));
-        E(Near(f0, new Vector3(0, 0, 1)), "pitch 0 is straight above the focus (top-down)");
+        check.Expect(Near(f0, new Vector3(0, 0, 1)), "pitch 0 is straight above the focus (top-down)");
         Vector3 f90 = Forward(Pose(0, 90));
-        E(Near(f90, new Vector3(0, -1, 0)), "yaw 0 pitch 90 sits due south, looking north (+Y)");
+        check.Expect(Near(f90, new Vector3(0, -1, 0)), "yaw 0 pitch 90 sits due south, looking north (+Y)");
         Vector3 fy = Forward(Pose(90, 90));
-        E(Near(fy, new Vector3(1, 0, 0)) || Near(fy, new Vector3(-1, 0, 0)), "yaw turns about Z");
-        E(MathF.Abs(Pose(30, 45).Length() - 1f) < 1e-5f, "the pose is a unit quaternion");
-        E(Near(Right(Pose(0, 90)), new Vector3(1, 0, 0)) && Near(Right(Pose(0, 30)), new Vector3(1, 0, 0)), "right is +X looking north at any pitch");
-        E(Near(Right(Pose(90, 60)), new Vector3(0, 1, 0)) || Near(Right(Pose(90, 60)), new Vector3(0, -1, 0)), "right turns with yaw");
-        E(MathF.Abs(Wrap(350f - 10f) + 20f) < 1e-5f, "yaw lag takes the short way round");
-        E(FacingYaw(0, 1) == 0f && MathF.Abs(FacingYaw(1, 0) + 90f) < 1e-4f && MathF.Abs(FacingYaw(-1, 0) - 90f) < 1e-4f,
+        check.Expect(Near(fy, new Vector3(1, 0, 0)) || Near(fy, new Vector3(-1, 0, 0)), "yaw turns about Z");
+        check.Expect(MathF.Abs(Pose(30, 45).Length() - 1f) < 1e-5f, "the pose is a unit quaternion");
+        check.Expect(Near(Right(Pose(0, 90)), new Vector3(1, 0, 0)) && Near(Right(Pose(0, 30)), new Vector3(1, 0, 0)), "right is +X looking north at any pitch");
+        check.Expect(Near(Right(Pose(90, 60)), new Vector3(0, 1, 0)) || Near(Right(Pose(90, 60)), new Vector3(0, -1, 0)), "right turns with yaw");
+        check.Expect(MathF.Abs(Wrap(350f - 10f) + 20f) < 1e-5f, "yaw lag takes the short way round");
+        check.Expect(FacingYaw(0, 1) == 0f && MathF.Abs(FacingYaw(1, 0) + 90f) < 1e-4f && MathF.Abs(FacingYaw(-1, 0) - 90f) < 1e-4f,
           "facing north is yaw 0, east -90, west +90 (the engine's Yaw(Vector))");
-        E(Locomotion(2) && Locomotion(0x57) && !Locomotion(0) && !Locomotion(0x58), "the locomotion set");
-        E((int)Gate.Off == 9 && GateNames.Length == 10 && GateNames[(int)Gate.Off].Contains("off"), "the mode master is the last gate and has its name");
-        E(Math.Clamp(120f * EaseGain, -60f, 60f) == 60f && MathF.Abs(Math.Clamp(5f * EaseGain, -60f, 60f) - 15f) < 1e-5f, "the ease caps at the rate and slows near the target");
+        check.Expect(Locomotion(2) && Locomotion(0x57) && !Locomotion(0) && !Locomotion(0x58), "the locomotion set");
+        check.Expect((int)Gate.Off == 9 && GateNames.Length == 10 && GateNames[(int)Gate.Off].Contains("off"), "the mode master is the last gate and has its name");
+        check.Expect(Math.Clamp(120f * EaseGain, -60f, 60f) == 60f && MathF.Abs(Math.Clamp(5f * EaseGain, -60f, 60f) - 15f) < 1e-5f, "the ease caps at the rate and slows near the target");
         float v = 0, x = 0;
         for (int i = 0; i < 240; i++) x = SmoothDamp(x, 1f, ref v, 0.2f, 1f / 60f);
-        E(MathF.Abs(x - 1f) < 1e-3f, "the spring settles on its target");
-        log.Info(ok ? "CameraService.SelfCheck: passed" : "CameraService.SelfCheck: FAILED");
+        check.Expect(MathF.Abs(x - 1f) < 1e-3f, "the spring settles on its target");
+        log.Info(check.Ok ? "CameraService.SelfCheck: passed" : "CameraService.SelfCheck: FAILED");
     }
 }

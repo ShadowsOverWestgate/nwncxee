@@ -499,28 +499,27 @@ public sealed unsafe partial class AlloyRenderer
     /// Each is the kind of logic that fails as a creature frozen mid-stride rather than as an error.</summary>
     internal static bool ChaseSelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyRenderer.ChaseSelfCheck FAIL: {w}"); } }
+        var check = new Checker(log, "AlloyRenderer.ChaseSelfCheck");
         _visSeq++; _visCount = 0; _visAll = false;
         VisSlot((IntPtr)0x1000, true); VisSlot((IntPtr)0x2000, true); VisSlot((IntPtr)0x1000, true);
-        E(_visCount == 2 && GobVisited((IntPtr)0x1000) && GobVisited((IntPtr)0x2000) && !GobVisited((IntPtr)0x3000),
+        check.Expect(_visCount == 2 && GobVisited((IntPtr)0x1000) && GobVisited((IntPtr)0x2000) && !GobVisited((IntPtr)0x3000),
           "the visited set answers membership and ignores a duplicate");
         _visSeq++; _visCount = 0;
-        E(!GobVisited((IntPtr)0x1000), "a new sample forgets the previous frame's gobs");
+        check.Expect(!GobVisited((IntPtr)0x1000), "a new sample forgets the previous frame's gobs");
         bool full = true;
         for (long g = 1; g <= (1 << VisBits) + 1 && full; g++) full = VisSlot((IntPtr)(g << 4), true);
-        E(!full, "a full set reports the overflow");
+        check.Expect(!full, "a full set reports the overflow");
 
         ulong* key = stackalloc ulong[PartTable.CamKeyholeWords + 1];
         int camBytes = EngineLayout.CamKeyholeState + PartTable.CamKeyholeWords * 8;
         byte* cam = stackalloc byte[camBytes];
         new Span<byte>(cam, camBytes).Clear();
         new Span<ulong>(key, PartTable.CamKeyholeWords + 1).Clear();
-        E(PartTable.KeyholeCameraMoved((IntPtr)cam, key) && !PartTable.KeyholeCameraMoved((IntPtr)cam, key),
+        check.Expect(PartTable.KeyholeCameraMoved((IntPtr)cam, key) && !PartTable.KeyholeCameraMoved((IntPtr)cam, key),
           "the camera key moves once for a new camera and then holds");
         cam[camBytes - 4] = 1;   // the +0xe64 height cut, last word of the span
-        E(PartTable.KeyholeCameraMoved((IntPtr)cam, key), "a change in the last keyhole word is seen");
-        E(PartTable.KeyholeCameraMoved(IntPtr.Zero, key) && !PartTable.KeyholeCameraMoved(IntPtr.Zero, key),
+        check.Expect(PartTable.KeyholeCameraMoved((IntPtr)cam, key), "a change in the last keyhole word is seen");
+        check.Expect(PartTable.KeyholeCameraMoved(IntPtr.Zero, key) && !PartTable.KeyholeCameraMoved(IntPtr.Zero, key),
           "losing the camera moves the key once");
 
         byte* tile = stackalloc byte[TileStubBytes];
@@ -531,17 +530,17 @@ public sealed unsafe partial class AlloyRenderer
         *(IntPtr**)(bucket + BucketItems) = items; *(int*)(bucket + BucketCount) = 1;
         *(float*)(tile + EngineLayout.TileFade) = 1f; *(float*)(tile + TilePendingFade) = 1f;
         _visSeq++; _movCountPrev = _movCount = 0; _fadeAll = false;
-        E(MarkPendingTiles(bucket) && _movCount == 0 && !TileMoving((IntPtr)tile), "a settled tile pends nothing");
+        check.Expect(MarkPendingTiles(bucket) && _movCount == 0 && !TileMoving((IntPtr)tile), "a settled tile pends nothing");
         *(float*)(tile + TilePendingFade) = 0.5f;
-        E(MarkPendingTiles(bucket) && _movCount == 1 && TileMoving((IntPtr)tile) && !TileMoving((IntPtr)0x4000),
+        check.Expect(MarkPendingTiles(bucket) && _movCount == 1 && TileMoving((IntPtr)tile) && !TileMoving((IntPtr)0x4000),
           "a stepped tile is moving, its neighbour is not");
         _visSeq++; _movCountPrev = _movCount; _movCount = 0;
-        E(TileMoving((IntPtr)tile), "...and still moving the sample after (the commit lands then)");
+        check.Expect(TileMoving((IntPtr)tile), "...and still moving the sample after (the commit lands then)");
         _visSeq++; _movCountPrev = _movCount; _movCount = 0;
-        E(!TileMoving((IntPtr)tile), "...and settled two samples on");
-        E(!MarkPendingTiles(null), "an unresolved bucket reads as every tile moving");
+        check.Expect(!TileMoving((IntPtr)tile), "...and settled two samples on");
+        check.Expect(!MarkPendingTiles(null), "an unresolved bucket reads as every tile moving");
         *(IntPtr**)(bucket + BucketItems) = null; *(int*)(bucket + BucketCount) = 0;
-        E(MarkPendingTiles(bucket), "...but an EMPTY one (null items, count 0) marks nothing and stays bounded");
+        check.Expect(MarkPendingTiles(bucket), "...but an EMPTY one (null items, count 0) marks nothing and stays bounded");
 
         // #546: the fog-of-war ramp rides the served factor, live, and 0 is a skip even from a warm cache
         byte* fogTile = stackalloc byte[TileGeomFade + sizeof(float)];
@@ -552,11 +551,11 @@ public sealed unsafe partial class AlloyRenderer
         int slot = MaxOwned - 1; IntPtr wasTile = _oTile[slot]; bool wasKnown = _fadeKnown[slot]; float wasF = _oFadeF[slot];
         _oTile[slot] = (IntPtr)fogTile; _fadeKnown[slot] = false; _fadeAll = false;
         *(float*)(fogTile + EngineLayout.TileFade) = 1f; *(float*)(fogTile + TileGeomFade) = 1f;
-        E(TileFade(slot, (IntPtr)fogTri) == 1f && _fadeKnown[slot], "an explored tile fades at its own factor");
+        check.Expect(TileFade(slot, (IntPtr)fogTri) == 1f && _fadeKnown[slot], "an explored tile fades at its own factor");
         *(float*)(fogTile + TileGeomFade) = 0.5f;
-        E(TileFade(slot, (IntPtr)fogTri) == 0.5f, "a tile exploring in is served half from the warm cache");
+        check.Expect(TileFade(slot, (IntPtr)fogTri) == 0.5f, "a tile exploring in is served half from the warm cache");
         *(float*)(fogTile + TileGeomFade) = 0f;
-        E(TileFade(slot, (IntPtr)fogTri) == 0f, "an unexplored tile is 0, cache or not");
+        check.Expect(TileFade(slot, (IntPtr)fogTri) == 0f, "an unexplored tile is 0, cache or not");
         _oTile[slot] = wasTile; _fadeKnown[slot] = wasKnown; _oFadeF[slot] = wasF;
 
         // the resume rule: a gap in the sample frames chases everything once
@@ -564,9 +563,9 @@ public sealed unsafe partial class AlloyRenderer
         byte* saveGob = _gobBucket; _gobBucket = null;
         _lastSampleFrame = int.MinValue; _frameSeq = 10;
         SampleEngineSets();
-        E(_visAll && _fadeAll, "the first sample after a gap serves no cache");
+        check.Expect(_visAll && _fadeAll, "the first sample after a gap serves no cache");
         _gobBucket = saveGob; _frameSeq = wasFrame; _lastSampleFrame = int.MinValue; _fadeAll = _visAll = true;
-        log.Info(ok ? "AlloyRenderer.ChaseSelfCheck: passed" : "AlloyRenderer.ChaseSelfCheck: FAILED -- a bounded chase would serve a stale record");
-        return ok;
+        log.Info(check.Ok ? "AlloyRenderer.ChaseSelfCheck: passed" : "AlloyRenderer.ChaseSelfCheck: FAILED -- a bounded chase would serve a stale record");
+        return check.Ok;
     }
 }

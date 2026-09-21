@@ -105,71 +105,70 @@ public sealed class ChatLayout
     /// <summary>Off-device proof of the Main-undeletable / add-close-window / focus-tracking invariants.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"ChatLayout.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var main = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) });
         var layout = new ChatLayout(main);
 
-        E(layout.Count == 1 && layout.Main == main, "starts with just the Main window");
-        E(layout.Focused == main && layout.FocusedIndex == 0, "Main focused by default");
-        E(!layout.CloseWindow(0), "Main (index 0) is undeletable");
-        E(layout.Count == 1, "refused close left the list untouched");
+        check.Expect(layout.Count == 1 && layout.Main == main, "starts with just the Main window");
+        check.Expect(layout.Focused == main && layout.FocusedIndex == 0, "Main focused by default");
+        check.Expect(!layout.CloseWindow(0), "Main (index 0) is undeletable");
+        check.Expect(layout.Count == 1, "refused close left the list untouched");
 
         var extra = layout.AddWindow(new ChatWindow(50, 50, 400, 300, new[] { new Tab("All", 0xffffffff) }));
-        E(layout.Count == 2 && layout.Windows[1] == extra, "AddWindow appends");
+        check.Expect(layout.Count == 2 && layout.Windows[1] == extra, "AddWindow appends");
 
         // Focus extra, close it -> focus returns to Main
         layout.FocusedIndex = 1;
-        E(layout.Focused == extra, "focus set to extra window");
-        E(layout.CloseWindow(1) && layout.Count == 1, "non-Main window closes");
-        E(layout.FocusedIndex == 0 && layout.Focused == main, "closing focused returns focus to Main");
-        E(layout.Main == main, "Main survives a close");
-        E(!layout.CloseWindow(5), "out-of-range close is a no-op");
+        check.Expect(layout.Focused == extra, "focus set to extra window");
+        check.Expect(layout.CloseWindow(1) && layout.Count == 1, "non-Main window closes");
+        check.Expect(layout.FocusedIndex == 0 && layout.Focused == main, "closing focused returns focus to Main");
+        check.Expect(layout.Main == main, "Main survives a close");
+        check.Expect(!layout.CloseWindow(5), "out-of-range close is a no-op");
 
         // Close a window below the focused -> focused index decrements to track
         var w1 = layout.AddWindow(new ChatWindow(50, 50, 400, 300, new[] { new Tab("All", 0xffffffff) }))!;
         var w2 = layout.AddWindow(new ChatWindow(100, 100, 400, 300, new[] { new Tab("All", 0xffffffff) }))!;
         layout.FocusedIndex = 2;
-        E(layout.Focused == w2, "focused on w2");
+        check.Expect(layout.Focused == w2, "focused on w2");
         layout.CloseWindow(1);
-        E(layout.FocusedIndex == 1 && layout.Focused == w2, "closing below focused decrements index");
+        check.Expect(layout.FocusedIndex == 1 && layout.Focused == w2, "closing below focused decrements index");
         layout.CloseWindow(1);   // clean up
 
         // Window cap
         while (layout.Count < ChatLayout.MaxWindows)
             layout.AddWindow(new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) }));
-        E(layout.Count == MaxWindows, "reached the cap");
-        E(layout.AddWindow(new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) })) == null,
+        check.Expect(layout.Count == MaxWindows, "reached the cap");
+        check.Expect(layout.AddWindow(new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) })) == null,
             "AddWindow at cap returns null");
-        E(layout.Count == MaxWindows, "count unchanged at cap");
+        check.Expect(layout.Count == MaxWindows, "count unchanged at cap");
 
         // FocusedIndex setter rejects out-of-range
         layout.FocusedIndex = 99;
-        E(layout.FocusedIndex != 99, "out-of-range focus rejected");
+        check.Expect(layout.FocusedIndex != 99, "out-of-range focus rejected");
         layout.FocusedIndex = -1;
-        E(layout.FocusedIndex >= 0, "negative focus rejected");
+        check.Expect(layout.FocusedIndex >= 0, "negative focus rejected");
 
         // Cross-window tab transfer (#42): move + last-tab guard.
         while (layout.CloseWindow(1)) { }   // clean slate: Main only
         var tm = layout.Main;
         tm.SetTabs(new[] { new Tab("A", 1u), new Tab("B", 2u) });
         var tw = layout.AddWindow(new ChatWindow(50, 50, 400, 300, new[] { new Tab("X", 4u) }))!;
-        E(layout.TransferTab(0, 1, 1, 0), "transfer B from win0 to win1 at pos 0");
-        E(tm.Tabs.Count == 1 && tm.Tabs[0].Label == "A", "source lost the transferred tab");
-        E(tw.Tabs.Count == 2 && tw.Tabs[0].Label == "B" && tw.Tabs[1].Label == "X", "target gained tab at position");
-        E(!layout.TransferTab(0, 0, 1, 0), "last-tab transfer refused");
-        E(tm.Tabs.Count == 1, "source unchanged after refusal");
-        E(!layout.TransferTab(0, 0, 0, 0), "same-window transfer refused");
-        E(!layout.TransferTab(0, 0, 99, 0), "out-of-range dst refused");
+        check.Expect(layout.TransferTab(0, 1, 1, 0), "transfer B from win0 to win1 at pos 0");
+        check.Expect(tm.Tabs.Count == 1 && tm.Tabs[0].Label == "A", "source lost the transferred tab");
+        check.Expect(tw.Tabs.Count == 2 && tw.Tabs[0].Label == "B" && tw.Tabs[1].Label == "X", "target gained tab at position");
+        check.Expect(!layout.TransferTab(0, 0, 1, 0), "last-tab transfer refused");
+        check.Expect(tm.Tabs.Count == 1, "source unchanged after refusal");
+        check.Expect(!layout.TransferTab(0, 0, 0, 0), "same-window transfer refused");
+        check.Expect(!layout.TransferTab(0, 0, 99, 0), "out-of-range dst refused");
 
         // Locked destination refuses tab drop (#43).
         tw.Locked = true;
         tm.SetTabs(new[] { new Tab("A", 1u), new Tab("C", 8u) });
-        E(!layout.TransferTab(0, 0, 1, 0), "transfer to locked window refused");
-        E(tm.Tabs.Count == 2, "source unchanged after locked refusal");
+        check.Expect(!layout.TransferTab(0, 0, 1, 0), "transfer to locked window refused");
+        check.Expect(tm.Tabs.Count == 2, "source unchanged after locked refusal");
         tw.Locked = false;
 
-        log.Info(ok ? "ChatLayout.SelfCheck: passed" : "ChatLayout.SelfCheck: FAILED");
+        log.Info(check.Ok ? "ChatLayout.SelfCheck: passed" : "ChatLayout.SelfCheck: FAILED");
     }
 }

@@ -486,54 +486,53 @@ internal static unsafe class SsaoPass
     internal static bool SelfCheck(ExtenderLog log)
     {
         ExtenderLog? quiet = _log; _log = null;
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SsaoPass.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         try
         {
             string fs = ShaderStages.Source(ShdSsaoFs), bl = ShaderStages.Source(ShdSsaoBlurFs);
-            E(fs.Contains("float CxViewDist(float depth)") && bl.Contains("float CxViewDist(float depth)"), "both stages carry the reconstruction");
-            E(fs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is the particle fade's (uProj[3].z / (ndc + uProj[2].z))");
-            E(ShaderContract.SlotSafe(fs, "uDepth") && ShaderContract.SlotSafe(bl, "uSrc", "uDepth"), "the samplers the C# side binds are declared");
-            E(EffectSsao == 1u, "FramebufferEffect 0 is SSAO (CClientOptions::SetEnableFBEffectSSAO -> SetFBEffectEnabled(0, on))");
-            E(AlloyRenderer.OwnedLitFsMain.Contains("occl *= mix(1.0, CxSsaoAt(ivec2(gl_FragCoord.xy), aoDepth, aoSlope), uAlphaCut >= 0.0 ? uAoCutout : 1.0);")
+            check.Expect(fs.Contains("float CxViewDist(float depth)") && bl.Contains("float CxViewDist(float depth)"), "both stages carry the reconstruction");
+            check.Expect(fs.Contains("uProj[3].z / (depth * 2.0 - 1.0 + uProj[2].z)"), "the linearisation is the particle fade's (uProj[3].z / (ndc + uProj[2].z))");
+            check.Expect(ShaderContract.SlotSafe(fs, "uDepth") && ShaderContract.SlotSafe(bl, "uSrc", "uDepth"), "the samplers the C# side binds are declared");
+            check.Expect(EffectSsao == 1u, "FramebufferEffect 0 is SSAO (CClientOptions::SetEnableFBEffectSSAO -> SetFBEffectEnabled(0, on))");
+            check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("occl *= mix(1.0, CxSsaoAt(ivec2(gl_FragCoord.xy), aoDepth, aoSlope), uAlphaCut >= 0.0 ? uAoCutout : 1.0);")
               && AlloyRenderer.OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl"), "the lit stage folds it into occl, which scales the AMBIENT term");
             // post.halfres: the pass is a quarter of the pixels and the LIT stage is the upsampler -- there
             // is no apply pass to put a bilateral filter in, the consumer fetches per fragment.
-            E(AlloyRenderer.OwnedLitFsHead.Contains("float CxSsaoAt(ivec2 pix, float myDepth, float slope)")
+            check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("float CxSsaoAt(ivec2 pix, float myDepth, float slope)")
               && AlloyRenderer.OwnedLitFsHead.Contains("if (uSsaoHalf == 0) return texelFetch(uSsao, pix, 0).r;"),
               "the half-res upsample is the lit stage's, and at full resolution it is the same single fetch as before");
-            E(AlloyRenderer.OwnedLitFsHead.Contains("return wsum > 0.0 ? sum / wsum : near;")
+            check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("return wsum > 0.0 ? sum / wsum : near;")
               && AlloyRenderer.OwnedLitFsHead.Contains("if (dz < best) { best = dz; near = v; }")
               && AlloyRenderer.OwnedLitFsHead.Contains("max(1.0 - dz / tol, 0.0)"),
               "...four taps weighted by depth proximity, falling back to the nearest where none agrees");
-            E(AlloyRenderer.OwnedLitFsMain.Contains("float aoSlope = fwidth(gl_FragCoord.z);"),
+            check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("float aoSlope = fwidth(gl_FragCoord.z);"),
               "the tolerance is the surface's own depth slope, taken outside every branch (fwidth wants a defined neighbourhood)");
-            E(!SsaoBlurFs.Contains("texelFetch(uDepth"), "the blur addresses the DEPTH by uv: at half res its own texel coordinates are another quarter of the screen");
-            E(!Post.HalfRes.Default, "post.halfres ships OFF -- the 4-tap upsample costs every lit fragment more than the quarter-size pass saves");
-            E(AlloyRenderer.OwnedLitFsMain.Contains("float dirOcc = mix(1.0, occl, uAoDirect);")
+            check.Expect(!SsaoBlurFs.Contains("texelFetch(uDepth"), "the blur addresses the DEPTH by uv: at half res its own texel coordinates are another quarter of the screen");
+            check.Expect(!Post.HalfRes.Default, "post.halfres ships OFF -- the 4-tap upsample costs every lit fragment more than the quarter-size pass saves");
+            check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("float dirOcc = mix(1.0, occl, uAoDirect);")
               && AlloyRenderer.OwnedLitFsMain.Contains("vec3 diffuse = (sun + sunSss + point) * dirOcc;"),
               "/ao direct is the only route to the DIRECT terms, and 0 leaves them exactly as ADR 0021 had them");
-            E(Ao.Direct.Default == 1f, "...and it ships at 1: ambient-only is invisible in a dark-ambient area (ADR 0021, amended)");
-            E(AlloyRenderer.OwnedLitFsMain.Contains("bool aoMine = uSsaoOn > 0 && aoDz < CX_AO_DEPTH_EPS;")
+            check.Expect(Ao.Direct.Default == 1f, "...and it ships at 1: ambient-only is invisible in a dark-ambient area (ADR 0021, amended)");
+            check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("bool aoMine = uSsaoOn > 0 && aoDz < CX_AO_DEPTH_EPS;")
               && AlloyRenderer.OwnedLitFsMain.Contains("if (aoMine) occl *="),
               "the fetch is per FRAGMENT: the pixel's occlusion must have been computed from this surface's own depth");
-            E(Strength > 0f && Ao.Strength.Min > 0f, "the strength never reads 0 -- a zero exponent is pow(v, 0) = 1, no occlusion at all");
-            E(Describe().Contains("radius") && Describe().Contains("strength") && Describe().Contains("temporal"), "/ao reports its dials");
+            check.Expect(Strength > 0f && Ao.Strength.Min > 0f, "the strength never reads 0 -- a zero exponent is pow(v, 0) = 1, no occlusion at all");
+            check.Expect(Describe().Contains("radius") && Describe().Contains("strength") && Describe().Contains("temporal"), "/ao reports its dials");
             // #390: the accumulator reprojects in the velocity target's own units, tests the history's depth,
             // and at temporal 0 the raw stage's noise phase is the single-frame one exactly.
-            E(TemporalFs.Contains("/ vec2(textureSize(uVel, 0))") && TemporalFs.Contains("abs(hd - dist)") && TemporalFs.Contains("texelFetch(uHist,")
+            check.Expect(TemporalFs.Contains("/ vec2(textureSize(uVel, 0))") && TemporalFs.Contains("abs(hd - dist)") && TemporalFs.Contains("texelFetch(uHist,")
               && TemporalFs.Contains("clamp(h.r, mn - PAD, mx + PAD)")
               && ShaderContract.SlotSafe(TemporalFs, "uRaw", "uHist", "uVel", "uDepth"), "the temporal stage reprojects through the velocity target, rejects a depth mismatch and clamps to the neighbourhood");
-            E(fs.Contains("fract(b / 16.0 + float(uFrame) * 0.618034)"), "the raw stage's noise phase is uFrame-rotated, 0 = today's pattern");
+            check.Expect(fs.Contains("fract(b / 16.0 + float(uFrame) * 0.618034)"), "the raw stage's noise phase is uFrame-rotated, 0 = today's pattern");
             float tp = Ao.Temporal.V; bool hv = _histValid;
-            _histValid = true; DropHistory(); E(!_histValid, "a temporal change drops the history");
-            Ao.Temporal.V = 0f; E(!TemporalWanted, "temporal 0 asks for no velocity target");
+            _histValid = true; DropHistory(); check.Expect(!_histValid, "a temporal change drops the history");
+            Ao.Temporal.V = 0f; check.Expect(!TemporalWanted, "temporal 0 asks for no velocity target");
             Ao.Temporal.V = tp; _histValid = hv;
-            E(Ao.Temporal.TryParse("1", out float tw) && tw == 0.98f, "the history weight never reaches 1: a frozen history");
-            E(Ao.Dirs.Default == 1 && Ao.Steps.Default == 3 && Ao.Temporal.Default > 0f, "slices are what the accumulator averages; the per-frame horizon keeps its full step count");
+            check.Expect(Ao.Temporal.TryParse("1", out float tw) && tw == 0.98f, "the history weight never reaches 1: a frozen history");
+            check.Expect(Ao.Dirs.Default == 1 && Ao.Steps.Default == 3 && Ao.Temporal.Default > 0f, "slices are what the accumulator averages; the per-frame horizon keeps its full step count");
         }
         finally { _log = quiet; }
-        log.Info(ok ? "SsaoPass.SelfCheck: passed" : "SsaoPass.SelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? "SsaoPass.SelfCheck: passed" : "SsaoPass.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

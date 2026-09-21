@@ -52,8 +52,7 @@ public static class RowAlign
 
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"RowAlign.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var ja = new GlyphAtlas { LineHeight = 20, Ascent = 15 };
         ja.SetTestGlyph(' ', 4f);
@@ -64,21 +63,21 @@ public static class RowAlign
         float lineW = 6 + 6 + 4 + 6 + 6;                               // = 28; one interior gap (index 2)
         float avail = 40f;                                             // slack 12, one gap -> want 12 but cap = 4 (2x space)
         Compute(TextAlign.Left, ja, ar, sp, avail, false, out float xL, out float seL);
-        E(xL == 0f && seL == 0f, "Left: no offset");
+        check.Expect(xL == 0f && seL == 0f, "Left: no offset");
         Compute(TextAlign.Right, ja, ar, sp, avail, false, out float xR, out float seR);
-        E(System.Math.Abs(xR - (avail - lineW)) < 0.1f && seR == 0f, "Right: full slack offset");
+        check.Expect(System.Math.Abs(xR - (avail - lineW)) < 0.1f && seR == 0f, "Right: full slack offset");
         Compute(TextAlign.Center, ja, ar, sp, avail, false, out float xC, out float seC);
-        E(System.Math.Abs(xC - (avail - lineW) * 0.5f) < 0.1f && seC == 0f, "Center: half slack offset");
+        check.Expect(System.Math.Abs(xC - (avail - lineW) * 0.5f) < 0.1f && seC == 0f, "Center: half slack offset");
         Compute(TextAlign.Justify, ja, ar, sp, avail, false, out float xJ, out float seJ);
-        E(xJ == 0f && System.Math.Abs(seJ - 4f) < 0.1f, "Justify: per-gap stretch capped to ~2x space");
+        check.Expect(xJ == 0f && System.Math.Abs(seJ - 4f) < 0.1f, "Justify: per-gap stretch capped to ~2x space");
         Compute(TextAlign.Justify, ja, ar, sp, 30f, false, out float _xJ2, out float seJ2);
-        E(System.Math.Abs(seJ2 - 2f) < 0.1f, "Justify: small slack spread fully (under cap)");
+        check.Expect(System.Math.Abs(seJ2 - 2f) < 0.1f, "Justify: small slack spread fully (under cap)");
         Compute(TextAlign.Justify, ja, ar, sp, avail, true, out float xJL, out float seJL);
-        E(xJL == 0f && seJL == 0f, "Justify last row: falls back to left");
+        check.Expect(xJL == 0f && seJL == 0f, "Justify last row: falls back to left");
         var spEnd = new TextWrapper.LineSpan(0, ar.Count);             // no trailing break space -> paragraph end
         Compute(TextAlign.Justify, ja, ar, spEnd, avail, false, out float _xJE, out float seJE);
-        E(seJE == 0f, "Justify: non-soft-wrap row (no trailing space) not justified");
+        check.Expect(seJE == 0f, "Justify: non-soft-wrap row (no trailing space) not justified");
 
-        log.Info(ok ? "RowAlign.SelfCheck: passed" : "RowAlign.SelfCheck: FAILED");
+        log.Info(check.Ok ? "RowAlign.SelfCheck: passed" : "RowAlign.SelfCheck: FAILED");
     }
 }

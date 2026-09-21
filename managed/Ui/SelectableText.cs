@@ -86,8 +86,7 @@ public sealed unsafe class SelectableText
     /// hit-test, and the selection-range normalize/clamp/clear. No GL, no device.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"SelectableText.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var ta = new GlyphAtlas { LineHeight = 20, Ascent = 15 };
         ta.SetTestGlyph(' ', 4f);
@@ -98,27 +97,27 @@ public sealed unsafe class SelectableText
 
         var edges = new List<float>();
         RowEdges(ta, tr, 0, n, 0f, 0f, edges);   // a6 b6 sp4 c6 d6 sp4 e6 f6 -> edges 0,6,12,16,22,28,32,38,44
-        E(edges.Count == n + 1 && edges[0] == 0f && Math.Abs(edges[^1] - 44f) < 0.1f,
+        check.Expect(edges.Count == n + 1 && edges[0] == 0f && Math.Abs(edges[^1] - 44f) < 0.1f,
           "RowEdges: cumulative advances incl. trailing right edge");
-        E(RowHitIndex(edges, 0, n, 2f) == 0, "hit: left of the first glyph -> index 0");
-        E(RowHitIndex(edges, 0, n, 7f) == 1, "hit: past the first glyph's midpoint -> index 1");
-        E(RowHitIndex(edges, 0, n, 100f) == n, "hit: past the row -> end index");
+        check.Expect(RowHitIndex(edges, 0, n, 2f) == 0, "hit: left of the first glyph -> index 0");
+        check.Expect(RowHitIndex(edges, 0, n, 7f) == 1, "hit: past the first glyph's midpoint -> index 1");
+        check.Expect(RowHitIndex(edges, 0, n, 100f) == n, "hit: past the row -> end index");
 
         var edgesJ = new List<float>();
         RowEdges(ta, tr, 0, n, 0f, 3f, edgesJ);   // justify: +3px per interior space widens the row
-        E(edgesJ[^1] > edges[^1] && edgesJ[1] == edges[1], "RowEdges: justify pushes later edges right, not the first");
+        check.Expect(edgesJ[^1] > edges[^1] && edgesJ[1] == edges[1], "RowEdges: justify pushes later edges right, not the first");
 
         var sel = new SelectableText();
-        E(!sel.Active && !sel.Range(n, out _, out _), "fresh selection is empty");
+        check.Expect(!sel.Active && !sel.Range(n, out _, out _), "fresh selection is empty");
         sel.Begin(5);
-        E(!sel.Active, "a collapsed selection (anchor==cursor) is inactive");
+        check.Expect(!sel.Active, "a collapsed selection (anchor==cursor) is inactive");
         sel.Cursor = 1;
-        E(sel.Active && sel.Range(n, out int ra, out int rb) && ra == 1 && rb == 5, "range normalizes min/max");
+        check.Expect(sel.Active && sel.Range(n, out int ra, out int rb) && ra == 1 && rb == 5, "range normalizes min/max");
         sel.Cursor = 999;
-        E(sel.Range(n, out _, out int rc) && rc == n, "range clamps the cursor to the rune count");
+        check.Expect(sel.Range(n, out _, out int rc) && rc == n, "range clamps the cursor to the rune count");
         sel.Clear();
-        E(!sel.Active, "clear empties the selection");
+        check.Expect(!sel.Active, "clear empties the selection");
 
-        log.Info(ok ? "SelectableText.SelfCheck: passed" : "SelectableText.SelfCheck: FAILED");
+        log.Info(check.Ok ? "SelectableText.SelfCheck: passed" : "SelectableText.SelfCheck: FAILED");
     }
 }

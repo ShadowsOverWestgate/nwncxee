@@ -304,42 +304,41 @@ internal static unsafe class TaaStage
     /// through the velocity target in ITS units, variance-clips the history in YCoCg, and the gate is one key.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"TaaStage.SelfCheck FAIL: {w}"); } }
-        E(StageFs.Contains("vec4 CxStage(vec4 c)") && ShaderContract.DisplaySafe(StageFs) && ShaderContract.SlotSafe(StageFs, "uHist"),
+        var check = new Checker(log);
+        check.Expect(StageFs.Contains("vec4 CxStage(vec4 c)") && ShaderContract.DisplaySafe(StageFs) && ShaderContract.SlotSafe(StageFs, "uHist"),
           "the stage is display space and reads the history");
-        E(StageFs.Contains("uniform float uSharp;") && StageFs.Contains("h * 4.0 - n") && StageFs.Contains("if (uSharp > 0.0)"),
+        check.Expect(StageFs.Contains("uniform float uSharp;") && StageFs.Contains("h * 4.0 - n") && StageFs.Contains("if (uSharp > 0.0)"),
           "the copy-out carries the unsharp mask and is the raw history at taasharp 0");
-        E(Post.TaaSharp.Default > 0f && Post.TaaSharp.Min == 0f, "post.taasharp ships sharpening, and 0 is the A/B back to the raw resolve");
-        E(Post.Taa.Default, "TAA is the DEFAULT anti-aliaser: a fresh cx.cfg resolves temporally and SMAA stands aside");
-        E(TaaFs.Contains("vec2 velPx = CxDilatedVel(vUV, vsz);") && TaaFs.Contains("vec2 huv = vUV + velPx / vsz;")
+        check.Expect(Post.TaaSharp.Default > 0f && Post.TaaSharp.Min == 0f, "post.taasharp ships sharpening, and 0 is the A/B back to the raw resolve");
+        check.Expect(Post.Taa.Default, "TAA is the DEFAULT anti-aliaser: a fresh cx.cfg resolves temporally and SMAA stands aside");
+        check.Expect(TaaFs.Contains("vec2 velPx = CxDilatedVel(vUV, vsz);") && TaaFs.Contains("vec2 huv = vUV + velPx / vsz;")
           && TaaFs.Contains("vec2 vsz = vec2(textureSize(uVel, 0));"),
           "velocity becomes uv through the VELOCITY target's size, not the frame's (#391)");
-        E(TaaFs.Contains("vec2 CxDilatedVel(vec2 uv, vec2 vsz)") && TaaFs.Contains("if (d < bestD) { bestD = d; best = o; }")
+        check.Expect(TaaFs.Contains("vec2 CxDilatedVel(vec2 uv, vec2 vsz)") && TaaFs.Contains("if (d < bestD) { bestD = d; best = o; }")
           && TaaFs.Contains("float bestD = textureLod(uDepth, uv, 0.0).r;"),
           "the velocity is dilated to the CLOSEST depth in the 3x3, and an all-equal depth keeps the centre tap");
-        E(TaaFs.Contains("vec3 CxHistory(vec2 uv, vec2 size)") && TaaFs.Contains("CxToYCoCg(CxHistory(huv, hsz))")
+        check.Expect(TaaFs.Contains("vec3 CxHistory(vec2 uv, vec2 size)") && TaaFs.Contains("CxToYCoCg(CxHistory(huv, hsz))")
           && TaaFs.Contains("vec2 hsz = vec2(textureSize(uHist, 0));"),
           "history is fetched Catmull-Rom at ITS OWN size");
-        E(TaaFs.Contains("vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));")
+        check.Expect(TaaFs.Contains("vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));")
           && TaaFs.Contains("vec3 mn = min(mean - CX_TAA_GAMMA * sigma, cy), mx = max(mean + CX_TAA_GAMMA * sigma, cy);")
           && TaaFs.Contains("vec3 CxClipToBox(vec3 mn, vec3 mx, vec3 q)"),
           "the clamp is a VARIANCE clip (mean +- gamma * stddev) along the line to the current sample, not a min/max box");
-        E(TaaFs.Contains("const float CX_TAA_GAMMA = 1.25;"), "...at the width one standard TAA ships");
-        E(TaaFs.Contains("vec3 CxToYCoCg(vec3 c)") && TaaFs.Contains("vec3 CxFromYCoCg(vec3 c)"), "the clip happens in a luma/chroma basis");
+        check.Expect(TaaFs.Contains("const float CX_TAA_GAMMA = 1.25;"), "...at the width one standard TAA ships");
+        check.Expect(TaaFs.Contains("vec3 CxToYCoCg(vec3 c)") && TaaFs.Contains("vec3 CxFromYCoCg(vec3 c)"), "the clip happens in a luma/chroma basis");
         // #391: the upsampling arm reads the render-sized frame at the jitter-shifted position, with the
         // same sign the velocity pass takes the jitter back out with (ndc - uJitter: the frame is at +j).
-        E(TaaFs.Contains("vec2 sp = vUV * vec2(sz) + uJitterPx;") && TaaFs.Contains("c = textureLod(uCur, sp / vec2(sz), 0.0);"),
+        check.Expect(TaaFs.Contains("vec2 sp = vUV * vec2(sz) + uJitterPx;") && TaaFs.Contains("c = textureLod(uCur, sp / vec2(sz), 0.0);"),
           "upsampling samples the frame at clean position + jitter");
-        E(TaaFs.Contains("if (uUpsample != 0) a = mix(a * 0.25, a, conf);"), "a between-texel sample leans on the history");
-        E(ShaderContract.SlotSafe(TaaFs, "uCur", "uHist", "uVel", "uDepth"), "the resolve declares the samplers Prepare binds");
-        E(TaaFs.Contains("uBlend >= 1.0 ? 1.0 : min(0.5, uBlend + length(velPx) * 0.05)"), "a moving pixel converges faster than the resting share");
-        E(TaaFs.Contains("float wc = a / (1.0 + max(cy.x, 0.0)), wh = (1.0 - a) / (1.0 + max(hy.x, 0.0));"),
+        check.Expect(TaaFs.Contains("if (uUpsample != 0) a = mix(a * 0.25, a, conf);"), "a between-texel sample leans on the history");
+        check.Expect(ShaderContract.SlotSafe(TaaFs, "uCur", "uHist", "uVel", "uDepth"), "the resolve declares the samplers Prepare binds");
+        check.Expect(TaaFs.Contains("uBlend >= 1.0 ? 1.0 : min(0.5, uBlend + length(velPx) * 0.05)"), "a moving pixel converges faster than the resting share");
+        check.Expect(TaaFs.Contains("float wc = a / (1.0 + max(cy.x, 0.0)), wh = (1.0 - a) / (1.0 + max(hy.x, 0.0));"),
           "the blend is inverse-luma weighted: a one-frame firefly cannot outvote the history");
-        E(TaaFs.Contains("a = 1.0;") && TaaFs.Contains("(c.rgb * wc + h * wh) / max(wc + wh, 1e-5)"),
+        check.Expect(TaaFs.Contains("a = 1.0;") && TaaFs.Contains("(c.rgb * wc + h * wh) / max(wc + wh, 1e-5)"),
           "an off-screen history sample takes the current frame whole");
-        _valid = true; Reset(); E(!_valid, "Reset drops the history");
-        log.Info(ok ? "TaaStage.SelfCheck: passed" : "TaaStage.SelfCheck: FAILED");
-        return ok;
+        _valid = true; Reset(); check.Expect(!_valid, "Reset drops the history");
+        log.Info(check.Ok ? "TaaStage.SelfCheck: passed" : "TaaStage.SelfCheck: FAILED");
+        return check.Ok;
     }
 }

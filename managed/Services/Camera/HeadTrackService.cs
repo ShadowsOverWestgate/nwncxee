@@ -216,15 +216,14 @@ public sealed unsafe class HeadTrackService : IExtenderService
     /// was built from -- the one property the overwrite depends on.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"HeadTrack.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log, "HeadTrack.SelfCheck");
         static bool Near(float a, float b) => MathF.Abs(a - b) < 0.01f;
-        E(Near(YawOf(Quaternion.Identity), 0f), "facing +Y is yaw 0");
-        E(Near(YawOf(RotationArc(Vector3.UnitY, Vector3.UnitX)), -90f), "an aim due east is yaw -90");
-        E(Near(YawOf(RotationArc(Vector3.UnitY, -Vector3.UnitX)), 90f), "an aim due west is yaw +90");
-        E(Near(YawOf(CameraService.Pose(35f, 0f)), 35f), "the written pose reads back as its own yaw");
-        E(Near(YAxis(Quaternion.Identity).Y, 1f) && Near(YAxis(CameraService.Pose(0f, 30f)).Z, 0.5f),
+        check.Expect(Near(YawOf(Quaternion.Identity), 0f), "facing +Y is yaw 0");
+        check.Expect(Near(YawOf(RotationArc(Vector3.UnitY, Vector3.UnitX)), -90f), "an aim due east is yaw -90");
+        check.Expect(Near(YawOf(RotationArc(Vector3.UnitY, -Vector3.UnitX)), 90f), "an aim due west is yaw +90");
+        check.Expect(Near(YawOf(CameraService.Pose(35f, 0f)), 35f), "the written pose reads back as its own yaw");
+        check.Expect(Near(YAxis(Quaternion.Identity).Y, 1f) && Near(YAxis(CameraService.Pose(0f, 30f)).Z, 0.5f),
           "+Y is the unpitched forward, and a written pitch is the elevation the aim was measured as");
-        log.Info(ok ? "HeadTrack.SelfCheck: passed" : "HeadTrack.SelfCheck: FAILED");
+        log.Info(check.Ok ? "HeadTrack.SelfCheck: passed" : "HeadTrack.SelfCheck: FAILED");
     }
 }

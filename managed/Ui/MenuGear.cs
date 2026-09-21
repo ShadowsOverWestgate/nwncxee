@@ -71,41 +71,40 @@ public sealed class MenuGear
     /// (spins while hovered, settles when not, never snaps), and a zero-alloc emit.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"MenuGear.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var gear = new MenuGear();
         var g1 = new Glyph { W = 64, H = 64, U0 = 0.1f, V0 = 0.1f, U1 = 0.2f, V1 = 0.2f, Advance = 77f };
         gear.Layout(1280f, 720f, 1f, g1);
-        E(gear.X == 24f && gear.Y == 632f && gear.W == 64f && gear.H == 64f, $"720p: 64 px at (24,632) ({gear.X},{gear.Y} {gear.W}x{gear.H})");
+        check.Expect(gear.X == 24f && gear.Y == 632f && gear.W == 64f && gear.H == 64f, $"720p: 64 px at (24,632) ({gear.X},{gear.Y} {gear.W}x{gear.H})");
         gear.Layout(1920f, 1080f, 1f, g1);
-        E(gear.X == 24f && gear.Y == 992f, $"1080p: (24,992) ({gear.X},{gear.Y})");
+        check.Expect(gear.X == 24f && gear.Y == 992f, $"1080p: (24,992) ({gear.X},{gear.Y})");
         var g15 = new Glyph { W = 96, H = 96 };
-        E(FaceFor(1.5f) == 150f && FaceFor(0.5f) == 100f, "face = 100 px x scale, floored at 1");
+        check.Expect(FaceFor(1.5f) == 150f && FaceFor(0.5f) == 100f, "face = 100 px x scale, floored at 1");
         gear.Layout(1920f, 1080f, 1.5f, g15);
-        E(gear.X == 36f && gear.Y == 948f && gear.H == 96f, $"scale 1.5: 96 px inset 36 ({gear.X},{gear.Y} {gear.H})");
-        E(gear.Contains(40f, 1000f) && !gear.Contains(20f, 1000f) && !gear.Contains(40f, 940f), "hit-test is the rect");
+        check.Expect(gear.X == 36f && gear.Y == 948f && gear.H == 96f, $"scale 1.5: 96 px inset 36 ({gear.X},{gear.Y} {gear.H})");
+        check.Expect(gear.Contains(40f, 1000f) && !gear.Contains(20f, 1000f) && !gear.Contains(40f, 940f), "hit-test is the rect");
 
-        E(gear.Angle == 0f && gear.Spin == 0f && gear.Bright == 0f, "starts still and idle");
+        check.Expect(gear.Angle == 0f && gear.Spin == 0f && gear.Bright == 0f, "starts still and idle");
         gear.Hovered = true;
         for (int i = 0; i < 60; i++) gear.Tick(1f / 60f);
-        E(gear.Bright > 0.99f && gear.Spin > SpinRate * 0.99f && gear.Angle > 0.5f, $"a second of hover: bright {gear.Bright:F2}, spin {gear.Spin:F2}, angle {gear.Angle:F2}");
+        check.Expect(gear.Bright > 0.99f && gear.Spin > SpinRate * 0.99f && gear.Angle > 0.5f, $"a second of hover: bright {gear.Bright:F2}, spin {gear.Spin:F2}, angle {gear.Angle:F2}");
         float rest = gear.Angle;
         gear.Hovered = false;
         gear.Tick(1f / 60f);
-        E(gear.Angle > rest && gear.Spin < SpinRate, "un-hover eases the spin down rather than stopping dead");
+        check.Expect(gear.Angle > rest && gear.Spin < SpinRate, "un-hover eases the spin down rather than stopping dead");
         for (int i = 0; i < 120; i++) gear.Tick(1f / 60f);
         float settled = gear.Angle;
         gear.Tick(1f / 60f);
-        E(gear.Bright < 0.01f && MathF.Abs(gear.Angle - settled) < 1e-4f, "two seconds later it rests at its angle, idle tint");
+        check.Expect(gear.Bright < 0.01f && MathF.Abs(gear.Angle - settled) < 1e-4f, "two seconds later it rests at its angle, idle tint");
         gear.Tick(5f);
-        E(gear.Angle >= 0f && gear.Angle < MathF.PI * 2f + 1e-3f, "a stalled frame is clamped, the angle stays wrapped");
+        check.Expect(gear.Angle >= 0f && gear.Angle < MathF.PI * 2f + 1e-3f, "a stalled frame is clamped, the angle stays wrapped");
 
         var b = new VertexBatch(0.5f, 0.5f);
         gear.Layout(1280f, 720f, 1f, g1);
         gear.Angle = MathF.PI / 2f;
         gear.Emit(b, g1);
-        E(b.VertexCount == 6, "one quad");
+        check.Expect(b.VertexCount == 6, "one quad");
         ReadOnlySpan<float> v = b.AsSpan();
         float cx = gear.X + 32f, cy = gear.Y + 32f;
         bool onCircle = true;
@@ -114,13 +113,13 @@ public sealed class MenuGear
             float dx = v[i * VertexBatch.Floats] - cx, dy = v[i * VertexBatch.Floats + 1] - cy;
             if (MathF.Abs(MathF.Sqrt(dx * dx + dy * dy) - 32f * MathF.Sqrt(2f)) > 0.01f) onCircle = false;
         }
-        E(onCircle, "rotation keeps every corner on the box's circumcircle");
-        E(MathF.Abs(v[0] - (cx + 32f)) < 0.01f && MathF.Abs(v[1] - (cy - 32f)) < 0.01f, "a quarter turn puts the top-left corner top-right");
-        E(v[2] == 0.1f && v[3] == 0.1f && v[4] == IdleR && v[7] == IdleA, "top-left keeps its texcoord; idle tint at Bright 0");
+        check.Expect(onCircle, "rotation keeps every corner on the box's circumcircle");
+        check.Expect(MathF.Abs(v[0] - (cx + 32f)) < 0.01f && MathF.Abs(v[1] - (cy - 32f)) < 0.01f, "a quarter turn puts the top-left corner top-right");
+        check.Expect(v[2] == 0.1f && v[3] == 0.1f && v[4] == IdleR && v[7] == IdleA, "top-left keeps its texcoord; idle tint at Bright 0");
         long before = GC.GetAllocatedBytesForCurrentThread();
         for (int i = 0; i < 100; i++) { b.Reset(0.5f, 0.5f); gear.Tick(1f / 60f); gear.Emit(b, g1); }
-        E(GC.GetAllocatedBytesForCurrentThread() == before, "100 tick+emit rounds allocate nothing");
+        check.Expect(GC.GetAllocatedBytesForCurrentThread() == before, "100 tick+emit rounds allocate nothing");
 
-        log.Info(ok ? "MenuGear.SelfCheck OK" : "MenuGear.SelfCheck FAILED");
+        log.Info(check.Ok ? "MenuGear.SelfCheck OK" : "MenuGear.SelfCheck FAILED");
     }
 }

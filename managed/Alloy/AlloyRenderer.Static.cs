@@ -182,18 +182,17 @@ public sealed unsafe partial class AlloyRenderer
     /// one the GLSL declares, and while the decision table refuses every class of part that can move.</summary>
     internal static bool StaticSelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"AlloyRenderer.StaticSelfCheck: FAILED -- {w}"); } }
+        var check = new Checker(log, "AlloyRenderer.StaticSelfCheck");
 
         // The instance record the static path submits from IS CxDraw: assert its size and its std430 declaration
         // rather than shipping a second layout that could drift from the first.
-        E(DrawFloats == 60 && DrawFloats * sizeof(float) == 240, "the per-draw record is not the 240-byte CxDraw block");
-        E(ShaderContract.RecordSafe(DrawBufDecl), "the GLSL CxDraw declaration does not add up to DrawFloats");
-        E(DrawBufDecl.Contains($"binding = {BindDraw}"), $"CxDrawBuf is not declared at binding {BindDraw}");
-        E(DrawBufDecl.Contains($"binding = {BindDrawIdx}"), $"CxDrawIdxBuf is not declared at binding {BindDrawIdx}");
-        E((GpuStatic.Recheck & (GpuStatic.Recheck - 1)) == 0 && GpuStatic.Recheck > 1,
+        check.Expect(DrawFloats == 60 && DrawFloats * sizeof(float) == 240, "the per-draw record is not the 240-byte CxDraw block");
+        check.Expect(ShaderContract.RecordSafe(DrawBufDecl), "the GLSL CxDraw declaration does not add up to DrawFloats");
+        check.Expect(DrawBufDecl.Contains($"binding = {BindDraw}"), $"CxDrawBuf is not declared at binding {BindDraw}");
+        check.Expect(DrawBufDecl.Contains($"binding = {BindDrawIdx}"), $"CxDrawIdxBuf is not declared at binding {BindDrawIdx}");
+        check.Expect((GpuStatic.Recheck & (GpuStatic.Recheck - 1)) == 0 && GpuStatic.Recheck > 1,
           "the recheck cadence is not a power of two greater than one (the stagger masks it)");
-        E(CullPass.SrcUints == 6 && CullPass.CmdUints * sizeof(uint) == 20,
+        check.Expect(CullPass.SrcUints == 6 && CullPass.CmdUints * sizeof(uint) == 20,
           "the cull's source record or indirect command stride moved under the static path");
 
         // The decision table, on a scratch slot restored afterwards. Each row is one term of StaticSlot, and
@@ -206,52 +205,52 @@ public sealed unsafe partial class AlloyRenderer
         _oBone[i] = -1; _oVao[i] = 0; _oItem[i] = 0; _cGen[i] = _recEpoch; _recCtl[i] = IntPtr.Zero;
         _oFeat[i * 4] = 0f;
         bool baseline = StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f);
-        E(baseline, "a gobless, unposed, opaque, fully-opaque part is not in the static set");
-        E(!StaticShape(i, (int)AlloyClass.Blended, false, 0f, 1f), "a blended part is in the static set");
-        E(!StaticShape(i, (int)AlloyClass.Water, false, 0f, 1f), "a water part is in the static set");
-        E(!StaticShape(i, (int)AlloyClass.Opaque, true, 0f, 1f), "a dissolving part is in the static set");
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0.5f, 1f), "a keyholed part is in the static set");
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 0.5f), "a part below full alpha is in the static set");
+        check.Expect(baseline, "a gobless, unposed, opaque, fully-opaque part is not in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Blended, false, 0f, 1f), "a blended part is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Water, false, 0f, 1f), "a water part is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, true, 0f, 1f), "a dissolving part is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0.5f, 1f), "a keyholed part is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 0.5f), "a part below full alpha is in the static set");
         _oGob[i] = (IntPtr)1;
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "an instanced part is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "an instanced part is in the static set");
         _oGob[i] = IntPtr.Zero; _oMx[i] = true;
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a matrix-class part is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a matrix-class part is in the static set");
         _oMx[i] = false;
-        E(StaticAtEnroll((int)AlloyClass.Opaque, IntPtr.Zero, false, false, false, false, (int)ShaderFeature.WindGrass) == 5,
+        check.Expect(StaticAtEnroll((int)AlloyClass.Opaque, IntPtr.Zero, false, false, false, false, (int)ShaderFeature.WindGrass) == 5,
           "a displacing part is offered to the charter");
         _oFeat[i * 4] = (int)ShaderFeature.WindGrass;
-        E(StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a displacing part is refused the freeze (its record does not move)");
+        check.Expect(StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a displacing part is refused the freeze (its record does not move)");
         _oFeat[i * 4] = 0f;
         _oBone[i] = 0;
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a posed skinmesh is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a posed skinmesh is in the static set");
         _oBone[i] = -1; _oDangly[i] = true;
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a dangly part is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a dangly part is in the static set");
         _oDangly[i] = false; _oFading[i] = true;
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a fading tile is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a fading tile is in the static set");
         _oFading[i] = false; _recCtl[i] = (IntPtr)1;
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a cycling texture is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a cycling texture is in the static set");
         _recCtl[i] = IntPtr.Zero; _recTexStale[i] = true;
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a slot with a stale texture is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a slot with a stale texture is in the static set");
         _recTexStale[i] = false; _cGen[i] = _recEpoch - 1;
-        E(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a slot whose index range is unstamped is in the static set");
+        check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a slot whose index range is unstamped is in the static set");
         _cGen[i] = _recEpoch;
 
         // The freeze itself refuses a slot that sat a frame out (the frame-continuity rule) or whose tenant changed.
         int settle = _stSettle[i], recFrame = _recFrame[i], recEnroll = _recEnroll[i], enrollGen = _oEnrollGen[i];
         _stSettle[i] = GpuStatic.Settle.V; _recEnroll[i] = _oEnrollGen[i] = 1;
         _recFrame[i] = _frameSeq - 2;
-        E(!StaticFrozen(i, true), "a slot that sat a frame out is frozen");
+        check.Expect(!StaticFrozen(i, true), "a slot that sat a frame out is frozen");
         _recFrame[i] = _frameSeq - 1; _recEnroll[i] = 2;
-        E(!StaticFrozen(i, true), "a re-tenanted slot is frozen");
+        check.Expect(!StaticFrozen(i, true), "a re-tenanted slot is frozen");
         _recEnroll[i] = _oEnrollGen[i];
         _stSettle[i] = 0;
-        E(!StaticFrozen(i, true), "an unsettled slot is frozen");
+        check.Expect(!StaticFrozen(i, true), "an unsettled slot is frozen");
         _stSettle[i] = settle; _recFrame[i] = recFrame; _recEnroll[i] = recEnroll; _oEnrollGen[i] = enrollGen;
 
         _oGob[i] = gob; _oMx[i] = mx; _oDangly[i] = dangly; _oFading[i] = fading; _recTexStale[i] = texStale;
         _oBone[i] = bone; _oVao[i] = vao; _oItem[i] = item; _cGen[i] = cgen; _recCtl[i] = ctl;
         _oFeat[i * 4] = feat;
-        log.Info(ok ? "AlloyRenderer.StaticSelfCheck: passed" : "AlloyRenderer.StaticSelfCheck: FAILED");
-        return ok;
+        log.Info(check.Ok ? "AlloyRenderer.StaticSelfCheck: passed" : "AlloyRenderer.StaticSelfCheck: FAILED");
+        return check.Ok;
     }
 }

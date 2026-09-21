@@ -49,25 +49,24 @@ public static class ChatCommands
     /// <summary>Off-device proof of the command grammar (surfaces in run-demo's cx.log).</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"ChatCommands.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
-        E(Parse("/s hi") == (Channel.Shout, null, "hi"), "shout with message");
-        E(Parse("/s") == (Channel.Shout, null, ""), "bare switch, no message");
-        E(Parse("/W  Hello") == (Channel.Whisper, null, "Hello"), "case-insensitive + trimmed rest");
-        E(Parse("/party lets go") == (Channel.Party, null, "lets go"), "long alias");
-        E(Parse("/dm secret") == ((Channel?)null, null, "/dm secret"), "dm is NOT a channel switch: it passes through whole");
-        E(Parse("hello") == (null, null, "hello"), "plain text untouched");
-        E(Parse("/unknown x") == (null, null, "/unknown x"), "unknown slash sent verbatim");
-        E(Parse("") == (null, null, ""), "empty");
+        check.Expect(Parse("/s hi") == (Channel.Shout, null, "hi"), "shout with message");
+        check.Expect(Parse("/s") == (Channel.Shout, null, ""), "bare switch, no message");
+        check.Expect(Parse("/W  Hello") == (Channel.Whisper, null, "Hello"), "case-insensitive + trimmed rest");
+        check.Expect(Parse("/party lets go") == (Channel.Party, null, "lets go"), "long alias");
+        check.Expect(Parse("/dm secret") == ((Channel?)null, null, "/dm secret"), "dm is NOT a channel switch: it passes through whole");
+        check.Expect(Parse("hello") == (null, null, "hello"), "plain text untouched");
+        check.Expect(Parse("/unknown x") == (null, null, "/unknown x"), "unknown slash sent verbatim");
+        check.Expect(Parse("") == (null, null, ""), "empty");
 
         // Tell with quoted target
-        E(Parse("/t \"Alice\" hi") == (Channel.Tell, "Alice", "hi"), "tell with quoted target");
-        E(Parse("/tp \"Bob\"") == (Channel.Tell, "Bob", ""), "tell target, no message");
-        E(Parse("/tell \"A B\" hey") == (Channel.Tell, "A B", "hey"), "tell target with space");
-        E(Parse("/t hi") == (Channel.Tell, null, "hi"), "tell without quotes = no target");
-        E(Parse("/t \"\" hi") == (Channel.Tell, null, "\"\" hi"), "empty quotes = no target (close at 1, not >1)");
+        check.Expect(Parse("/t \"Alice\" hi") == (Channel.Tell, "Alice", "hi"), "tell with quoted target");
+        check.Expect(Parse("/tp \"Bob\"") == (Channel.Tell, "Bob", ""), "tell target, no message");
+        check.Expect(Parse("/tell \"A B\" hey") == (Channel.Tell, "A B", "hey"), "tell target with space");
+        check.Expect(Parse("/t hi") == (Channel.Tell, null, "hi"), "tell without quotes = no target");
+        check.Expect(Parse("/t \"\" hi") == (Channel.Tell, null, "\"\" hi"), "empty quotes = no target (close at 1, not >1)");
 
-        log.Info(ok ? "ChatCommands.SelfCheck PASS" : "ChatCommands.SelfCheck had FAILURES");
+        log.Info(check.Ok ? "ChatCommands.SelfCheck PASS" : "ChatCommands.SelfCheck had FAILURES");
     }
 }

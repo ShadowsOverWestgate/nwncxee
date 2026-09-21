@@ -68,24 +68,23 @@ public static class ConfigFile
     /// <summary>Off-device proof of the line walker's degrade behaviour.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"ConfigFile.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
 
         var seen = new System.Collections.Generic.List<(string, string)>();
         ForEachPair("a=1\nb=two\n  c  =  three  \n", (k, v) => seen.Add((k, v)));
-        E(seen.Count == 3, "well-formed file yields one pair per line");
-        E(seen.Count == 3 && seen[0] == ("a", "1") && seen[1] == ("b", "two"), "keys and values round-trip");
-        E(seen.Count == 3 && seen[2] == ("c", "three"), "surrounding whitespace trimmed from key and value");
+        check.Expect(seen.Count == 3, "well-formed file yields one pair per line");
+        check.Expect(seen.Count == 3 && seen[0] == ("a", "1") && seen[1] == ("b", "two"), "keys and values round-trip");
+        check.Expect(seen.Count == 3 && seen[2] == ("c", "three"), "surrounding whitespace trimmed from key and value");
 
         seen.Clear();
         ForEachPair("nosep\n=leadingeq\n\n   \nk=v\r\nempty=\nx=a=b\n", (k, v) => seen.Add((k, v)));
-        E(seen.Count == 3, "malformed lines skipped, not thrown on");
-        E(seen.Count == 3 && seen[0] == ("k", "v"), "CR stripped alongside the newline");
-        E(seen.Count == 3 && seen[1] == ("empty", ""), "empty value is a legal pair");
-        E(seen.Count == 3 && seen[2] == ("x", "a=b"), "split at the FIRST separator only");
+        check.Expect(seen.Count == 3, "malformed lines skipped, not thrown on");
+        check.Expect(seen.Count == 3 && seen[0] == ("k", "v"), "CR stripped alongside the newline");
+        check.Expect(seen.Count == 3 && seen[1] == ("empty", ""), "empty value is a legal pair");
+        check.Expect(seen.Count == 3 && seen[2] == ("x", "a=b"), "split at the FIRST separator only");
 
-        ForEachPair("", (_, _) => E(false, "empty text yields no pairs"));
+        ForEachPair("", (_, _) => check.Expect(false, "empty text yields no pairs"));
 
-        log.Info(ok ? "ConfigFile.SelfCheck: passed" : "ConfigFile.SelfCheck: FAILED");
+        log.Info(check.Ok ? "ConfigFile.SelfCheck: passed" : "ConfigFile.SelfCheck: FAILED");
     }
 }

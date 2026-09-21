@@ -19,8 +19,7 @@ internal static class CameraKnobs
     /// the modes and kept on <c>free.fov</c>, and <c>/chase fov 60</c> parses to the chase row alone.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"CameraKnobs.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         Declare();
         string[] order = { "chase", "topdown", "driving", "walls", "free", "tabtarget", "walk" };
         int at = -1;
@@ -29,37 +28,37 @@ internal static class CameraKnobs
             int i = -1;
             var all = KnobGroup.All;
             for (int k = 0; k < all.Count; k++) if (all[k].Name == g) i = k;
-            E(i > at, $"group {g} declares after the one before it");
+            check.Expect(i > at, $"group {g} declares after the one before it");
             at = i;
         }
-        E(CameraModes.ByMode[0] == CameraModes.Chase && CameraModes.ByMode[1] == CameraModes.TopDown && CameraModes.ByMode[2] == CameraModes.Driving,
+        check.Expect(CameraModes.ByMode[0] == CameraModes.Chase && CameraModes.ByMode[1] == CameraModes.TopDown && CameraModes.ByMode[2] == CameraModes.Driving,
           "the mode byte indexes chase, top-down, driving");
         var fov = KnobGroup.Find("chase.fov") as Knob<float>;
-        E(fov != null && fov == CameraModes.Chase.Fov && fov.Default == 45f && fov.Min == FovMin && fov.Max == FovMax, "chase.fov is the 10-120 slider defaulting to 45");
-        E(fov!.TryParse("60", out float v) && v == 60f && CameraModes.TopDown.Fov != fov, "/chase fov 60 parses and names the chase row only");
-        E(CameraModes.Chase.Drive.Default && !CameraModes.TopDown.Drive.Default && CameraModes.Driving.Drive.Default
+        check.Expect(fov != null && fov == CameraModes.Chase.Fov && fov.Default == 45f && fov.Min == FovMin && fov.Max == FovMax, "chase.fov is the 10-120 slider defaulting to 45");
+        check.Expect(fov!.TryParse("60", out float v) && v == 60f && CameraModes.TopDown.Fov != fov, "/chase fov 60 parses and names the chase row only");
+        check.Expect(CameraModes.Chase.Drive.Default && !CameraModes.TopDown.Drive.Default && CameraModes.Driving.Drive.Default
           && CameraModes.Chase.Recenter.Default && !CameraModes.TopDown.Recenter.Default, "drive and recenter default off for top-down only");
-        E(CameraModes.Chase.Face.Default && !CameraModes.TopDown.Face.Default && !CameraModes.Driving.Face.Default
+        check.Expect(CameraModes.Chase.Face.Default && !CameraModes.TopDown.Face.Default && !CameraModes.Driving.Face.Default
           && !CameraModes.Chase.SideRun.Default && CameraModes.Chase.Rate.Default == 360f && CameraModes.Chase.DeadZone.Default == 0f && CameraModes.Chase.Idle.Default == 0f, "chase faces the camera by default, the recenter is rigid and never drifts idle");
-        E(CameraModes.Chase.Enabled.Key == "chase.enabled" && CameraModes.Chase.Look.Key == "chase.mouselook" && KnobGroup.Find("mouselook.enabled") == null,
+        check.Expect(CameraModes.Chase.Enabled.Key == "chase.enabled" && CameraModes.Chase.Look.Key == "chase.mouselook" && KnobGroup.Find("mouselook.enabled") == null,
           "the mode master is declared; mouse-look is a per-mode toggle, not a group");
-        E(CameraModes.Chase.Look.Changed == MouseLookService.MasterChanged && CameraModes.Chase.Enabled.Changed == null, "mouse-look's toggle releases on its edge; a mode's master is read per Control");
-        E(MouseLook.Enabled == CameraModes.Chase.Look && MouseLook.Sens == CameraModes.Chase.Sens, "off-device (no mode) the facade answers the chase rows");
-        E(KnobGroup.Find("free.enter") is KnobButton && FreeCam.G.Knobs[0] == FreeCam.Enter, "free.enter is the first row and a button");
-        E(FreeCam.Fov.Default == 0f && FreeCam.Fov.Min == 0f && FreeCam.Leash.Default == FreeCam.LeashMax && FreeCam.Leash.Max == FreeCam.LeashMax,
+        check.Expect(CameraModes.Chase.Look.Changed == MouseLookService.MasterChanged && CameraModes.Chase.Enabled.Changed == null, "mouse-look's toggle releases on its edge; a mode's master is read per Control");
+        check.Expect(MouseLook.Enabled == CameraModes.Chase.Look && MouseLook.Sens == CameraModes.Chase.Sens, "off-device (no mode) the facade answers the chase rows");
+        check.Expect(KnobGroup.Find("free.enter") is KnobButton && FreeCam.G.Knobs[0] == FreeCam.Enter, "free.enter is the first row and a button");
+        check.Expect(FreeCam.Fov.Default == 0f && FreeCam.Fov.Min == 0f && FreeCam.Leash.Default == FreeCam.LeashMax && FreeCam.Leash.Max == FreeCam.LeashMax,
           "free.fov keeps 0 = the mode's; the leash never exceeds the engine's 25");
-        E(Walls.Fade.Default && Walls.Floor.Default == 0.5f && Walls.ArmOut.Default == 4f, "walls defaults are the #537/#538 boot values");
-        E(!MouseLook.Right.Default && MouseLook.Sens.Default == 1f && MouseLook.Threshold.Default == 4 && !MouseLook.Invert.Default, "mouselook defaults are the old boot keys'");
-        E(MouseLook.HeadTrack.Default && MouseLook.HeadYaw.Default == 70f && MouseLook.HeadPitch.Default == 30f
+        check.Expect(Walls.Fade.Default && Walls.Floor.Default == 0.5f && Walls.ArmOut.Default == 4f, "walls defaults are the #537/#538 boot values");
+        check.Expect(!MouseLook.Right.Default && MouseLook.Sens.Default == 1f && MouseLook.Threshold.Default == 4 && !MouseLook.Invert.Default, "mouselook defaults are the old boot keys'");
+        check.Expect(MouseLook.HeadTrack.Default && MouseLook.HeadYaw.Default == 70f && MouseLook.HeadPitch.Default == 30f
           && MouseLook.HeadYaw.Max == 89f && MouseLook.HeadPitch.Max == 89f,
           "head tracking is on by default and neither arc can ask for more than the engine's 89");
-        E(CameraModes.Driving.Hz.Default == 10f && CameraModes.Driving.Turn.Default == 540f && CameraModes.TopDown.KeyTurn.Default == 180f, "drive defaults are the #540 values, in every mode");
-        E(KnobGroup.Find("topdown.rate") is Knob<float> && KnobGroup.Find("move.rate") == null, "movement tuning is per mode; the move group is gone");
-        E(!TabTarget.Enabled.Default && TabTarget.Cast.Default == (int)TabTargetCore.CastMode.Quick && TabTarget.CycleKey.Default == "Tab"
+        check.Expect(CameraModes.Driving.Hz.Default == 10f && CameraModes.Driving.Turn.Default == 540f && CameraModes.TopDown.KeyTurn.Default == 180f, "drive defaults are the #540 values, in every mode");
+        check.Expect(KnobGroup.Find("topdown.rate") is Knob<float> && KnobGroup.Find("move.rate") == null, "movement tuning is per mode; the move group is gone");
+        check.Expect(!TabTarget.Enabled.Default && TabTarget.Cast.Default == (int)TabTargetCore.CastMode.Quick && TabTarget.CycleKey.Default == "Tab"
           && TabTarget.Filter.Default == 0 && !TabTarget.Objects.Default && TabTarget.Camera.Default == 1 && TabTarget.LockKey.Default == "F" && TabTarget.Tilt.Default == 12f,
           "tab-target is off by default, casts Quick, cycles on Tab, hostiles only, turns the camera, locks on F");
-        E(KnobGroup.Find("camera.occlude") == null && KnobGroup.Find("mouselook_sens") == null, "the retired flat keys are not declared");
-        log.Info(ok ? "CameraKnobs.SelfCheck: passed" : "CameraKnobs.SelfCheck: FAILED");
+        check.Expect(KnobGroup.Find("camera.occlude") == null && KnobGroup.Find("mouselook_sens") == null, "the retired flat keys are not declared");
+        log.Info(check.Ok ? "CameraKnobs.SelfCheck: passed" : "CameraKnobs.SelfCheck: FAILED");
     }
 }
 

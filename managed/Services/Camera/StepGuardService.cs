@@ -138,14 +138,13 @@ public sealed unsafe class StepGuardService : IExtenderService
     /// <summary>The step classifier off-device: stationary and teleport-sized moves pass untested, a walk step is tested.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"StepGuard.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log, "StepGuard.SelfCheck");
         static CombatTextService.Vec3 V(float x, float y, float z) => new() { X = x, Y = y, Z = z };
-        E(!IsStep(V(1, 2, 3), V(1, 2, 3)), "an unchanged desired point is not a step");
-        E(!IsStep(V(1, 2, 3), V(1, 2, 9)), "a height-only change is not a step");
-        E(IsStep(V(1, 2, 3), V(1.05f, 2, 3)), "a centimetre move is a step");
-        E(IsStep(V(0, 0, 0), V(2.8f, 2.8f, 0)), "a 3.96 m move is still a step");
-        E(!IsStep(V(0, 0, 0), V(4, 0, 0)) && !IsStep(V(0, 0, 0), V(50, 50, 0)), "4 m and beyond is a rewrite, not a step");
-        log.Info(ok ? "StepGuard.SelfCheck: passed" : "StepGuard.SelfCheck: FAILED");
+        check.Expect(!IsStep(V(1, 2, 3), V(1, 2, 3)), "an unchanged desired point is not a step");
+        check.Expect(!IsStep(V(1, 2, 3), V(1, 2, 9)), "a height-only change is not a step");
+        check.Expect(IsStep(V(1, 2, 3), V(1.05f, 2, 3)), "a centimetre move is a step");
+        check.Expect(IsStep(V(0, 0, 0), V(2.8f, 2.8f, 0)), "a 3.96 m move is still a step");
+        check.Expect(!IsStep(V(0, 0, 0), V(4, 0, 0)) && !IsStep(V(0, 0, 0), V(50, 50, 0)), "4 m and beyond is a rewrite, not a step");
+        log.Info(check.Ok ? "StepGuard.SelfCheck: passed" : "StepGuard.SelfCheck: FAILED");
     }
 }

@@ -167,8 +167,7 @@ internal static unsafe class AreaBorder
 
     internal static void SelfCheck(ExtenderLog log)
     {
-        bool ok = true;
-        void E(bool c, string w) { if (!c) { ok = false; log.Info($"AreaBorder.SelfCheck FAIL: {w}"); } }
+        var check = new Checker(log);
         // Replay the engine's own 5-ring of a 4x3 area out to ring 7 and count how many times each outer cell
         // is produced: exactly once each, and never a cell the engine already spawned.
         const int w = 4, h = 3, ring = 7, extra = ring - EngineRing;
@@ -191,10 +190,10 @@ internal static unsafe class AreaBorder
                 if (outer && n != 1) once = false;
                 if (!outer && n != 0) engineUntouched = false;
             }
-        E(once, "every outer ring cell is the replay of exactly one engine tile");
-        E(engineUntouched, "no replay lands on a cell the engine spawns itself");
+        check.Expect(once, "every outer ring cell is the replay of exactly one engine tile");
+        check.Expect(engineUntouched, "no replay lands on a cell the engine spawns itself");
         Steps(new Vector3(TileHalf, TileHalf, 0f), w, h, out int cx, out int cy);
-        E(cx == 0 && cy == 0, "a real tile has no outward axis");
-        if (ok) log.Info("AreaBorder.SelfCheck: ok");
+        check.Expect(cx == 0 && cy == 0, "a real tile has no outward axis");
+        if (check.Ok) log.Info("AreaBorder.SelfCheck: ok");
     }
 }
