@@ -126,43 +126,22 @@ internal enum PassId
 }
 
 /// <summary>
-/// #117 (map #68, spec #114 M3): the Alloy frame's pass list, declared once instead of implied by the order
-/// statements happen to appear in. Each bracket site walks this and switches on the id, so adding an M3 pass
-/// is one entry here plus one arm there -- and an ordering change is a diff in this file rather than a
-/// rendering bug nobody can bisect.
-/// <para>Since #118 this is wall-clock order too: the shadow bracket fires at the pass slot
-/// (<c>Scene::AddPartsToDrawBuckets</c>, after-original), ahead of the colour bracket that samples it. The one
-/// remaining lag is creature POSES, captured during the colour pass and therefore a frame old at the next
-/// bake -- ADR 0011's named approximation, upgrade path filed as #113.</para>
-/// <para><b>What the engine still draws, and why (#130).</b> The list above is what the Alloy frame draws;
-/// this is the rest of <c>Scene::RenderSinglePass</c> @0x46e5f0, so that "engine-drawn" is a decision on
-/// record rather than a gap. #106 enumerated eleven draws outside the bucket walk. Five are owned or
-/// scheduled: the sky (<see cref="PassId.SkyOwned"/>), grass (<see cref="PassId.GrassOwned"/>), beams
-/// (<see cref="PassId.BeamsOwned"/>) and <c>Scene::RenderDynamicGeometry</c>, which is not an overlay at all
-/// -- it is the entry point that walks buckets 2 and 3, i.e. the creatures and placeables the Alloy classes
-/// already carry. A fifth joined them in #131: <c>Scene::DoEmitterBucket</c> @0x476f00 (step 28), the
-/// particles -- see <see cref="PassId.ParticlesOwned"/>. The remaining six stay the engine's, each for a
-/// reason:
-/// <list type="bullet">
-/// <item><c>Scene::DoHighlightGob</c> @0x470fc0 (step 11) -- the selection outline. UI feedback, not scene
-/// content: it manages its own depth mask and draws whatever the mouse is over. A modern replacement is a
-/// post-process edge pass, not a re-draw, so owning it here would mean porting the technique we intend to
-/// throw away.</item>
-/// <item><c>Scene::DoTriggerBucket</c> @0x46b860 (step 12) -- trigger/AoE wireframes. DM and debug
-/// visualisation, drawn only when the client asks for it, and content-level rather than renderer-level.</item>
-/// <item><c>Scene::DoHighlightTriggers</c> (steps 13 and 24, the same function twice) -- the same class as
-/// above, and the second call is what puts a highlighted trigger in front of the water.</item>
-/// <item><c>Scene::RenderLensFlares</c> @0x471860 (step 29) -- screen-space additive quads with the depth
-/// test off. No world geometry and no VDO to bind, so "owning" it is a from-scratch reimplementation with no
-/// capture to replay; it is a look change, and look changes get their own ticket.</item>
-/// <item><c>RenderDrawableSquares()</c> @0x463880 (step 31) -- the walkmesh/tile square overlay, pool-backed
-/// and depth-test-off. A debug surface, not scene content.</item>
-/// <item><c>Scene::RenderLines</c> @0x46be40 (step 32) -- the <c>AddLinesToRender</c> clients: debug and aux
-/// line drawing, depth test off.</item>
-/// </list>
-/// None of the six is a colour-pass shading class, none has a VDO the Alloy pass could bind, and every one
-/// of them draws AFTER the Alloy bracket has resolved -- so leaving them with the engine costs correctness
-/// nothing and the one-owner audit nothing: no part of any of them ever enters the ownership table.</para>
+/// The Alloy frame's pass list, declared once instead of implied by the order statements happen to appear
+/// in (ADR 0011, #117). Each bracket site walks this and switches on the id, so adding a pass is one entry
+/// here plus one arm there, and an ordering change is a diff in this file rather than a rendering bug nobody
+/// can bisect. This is wall-clock order too: the shadow bracket fires at the pass slot
+/// (<c>Scene::AddPartsToDrawBuckets</c>, after-original), ahead of the colour bracket that samples it. The
+/// one remaining lag is creature POSES, captured during the colour pass and therefore a frame old at the
+/// next bake -- ADR 0011's named approximation (#113, #118).
+/// <para><b>Not in this list, on purpose.</b> Of <c>Scene::RenderSinglePass</c> @0x46e5f0's draws outside
+/// the bucket walk, the sky, grass, beams, particles and <c>Scene::RenderDynamicGeometry</c> (buckets 2 and
+/// 3: creatures and placeables) are Alloy's. Six stay outside Alloy, and none is a colour-pass shading class
+/// with a VDO to bind: <c>Scene::DoHighlightGob</c> @0x470fc0 (the selection outline, UI feedback whose
+/// modern replacement is a post-process edge pass), <c>Scene::DoTriggerBucket</c> @0x46b860 and
+/// <c>Scene::DoHighlightTriggers</c> (DM/debug trigger wireframes), <c>Scene::RenderLensFlares</c> @0x471860
+/// (screen-space additive quads, no world geometry), <c>RenderDrawableSquares()</c> @0x463880 and
+/// <c>Scene::RenderLines</c> @0x46be40 (debug overlays, depth test off). What the cutover does with each is
+/// <see cref="RspShim"/>'s record (#130).</para>
 /// </summary>
 internal static class FrameGraph
 {

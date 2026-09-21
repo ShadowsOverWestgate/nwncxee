@@ -684,27 +684,21 @@ public sealed unsafe partial class AlloyRenderer
         return s;
     }
 
-    /// <summary>#244: census the repeated population rather than assuming it -- or assuming it away. Runs on
-    /// the enrollment cadence over the WHOLE ownership table (tileset parts, placeables and creature parts
-    /// alike), building two keys per part and measuring the equal runs of each.
-    /// <para><b>The range key</b> is (VDO, matrix-class, first index, element count): parts that draw the
-    /// SAME geometry out of the buffer. Matrix-class is in it because it changes what a shared mesh means --
-    /// an object-space part carries its placement in a model matrix, so N of them on one range is N
-    /// instances of one draw, while a world-space part has an identity matrix with its placement baked into
-    /// the vertices, so two on one range would be the same triangles drawn twice in the same place.</para>
-    /// <para><b>The shape key</b> is (gob?, primitive, diffuse texture, element count): parts that draw the
-    /// same MESH, wherever its vertices sit. This is the one the range key cannot see, and it is the case
-    /// that matters on real content -- an area's fifty identical barrels are fifty placements of one model,
-    /// and if the engine copies that model's vertices into the buffer once per placement then every range is
-    /// distinct while the geometry is the same fifty times over. A range census alone reads that as "no
-    /// repetition", which is false in the way that costs the most.</para>
+    /// <summary>Census the repeated population rather than assuming it -- or assuming it away (#244). Runs on
+    /// the enrollment cadence over the WHOLE ownership table, building two keys per part and measuring the
+    /// equal runs of each. <b>The range key</b> is (VDO, matrix-class, first index, element count): parts
+    /// that draw the SAME geometry out of the buffer. Matrix-class is in it because it changes what a shared
+    /// mesh means -- N object-space parts on one range are N instances of one draw, while two world-space
+    /// parts on one range would be the same triangles drawn twice in the same place. <b>The shape key</b> is
+    /// (gob?, primitive, diffuse texture, element count): parts that draw the same MESH, wherever its
+    /// vertices sit -- an area's fifty identical barrels whose model the engine copied into the buffer once
+    /// per placement, which a range census alone reads as "no repetition".
     /// <para>The shape key is a SIGNATURE, not a proof: two different meshes sharing a texture and an index
     /// count collide. It is built only from values the enrollment already validated -- no new pointer chase,
-    /// and specifically not the vertex-item count, which nothing in the renderer reads and which this is not
-    /// entitled to guess. Read it as a screen: 1,00x is conclusive (nothing repeats), and anything above it
-    /// is a population worth confirming before it is designed against.</para>
-    /// <para>Cold by construction -- period-line cadence (#329 took its two sorts off the walk's finish
-    /// frame), static scratch arrays, sorted in place.</para>
+    /// and specifically not the vertex-item count, which nothing in the renderer reads. Read it as a screen:
+    /// 1,00x is conclusive (nothing repeats), anything above it is a population worth confirming before it is
+    /// designed against.</para>
+    /// <para>Cold by construction -- period-line cadence, static scratch arrays, sorted in place (#329).</para>
     /// </summary>
     private static void MeshCensus()
     {

@@ -9,52 +9,40 @@ using static CX.Framework.EngineLayout;
 namespace CX.Alloy;
 
 /// <summary>
-/// #93 (map #68, spec #78 M2): the one Alloy submission path every rigid shadow caster goes through.
-/// Tiles and placeables are the same thing here -- a part with an indexed VDO, an index range and a model
-/// matrix -- so there is no kind-based branching anywhere below. #305 split the cube POPULATION in two --
-/// a static array baked on the predicate and a small per-frame dynamic pool, composed with min() in the
-/// receiver (never #187's rejected copy-based composite; <c>/shadow split 0</c> is the combined-bake A/B).
-/// There is also a motion split, and #282 finished it: a view re-bakes only when its
-/// recorded depth has stopped describing the world -- the view's own key changed, or something moved inside
-/// it (<see cref="ViewStale"/>). #241 gave the cubes that predicate and left the sun at full price; both
-/// carry it now. Every term errs toward stale, so a wrong answer costs a bake and can never freeze a shadow,
-/// and <c>/shadow rebake 0</c> is the A/B back to #187's bake-everything-every-frame.
-/// <para>#303: selection and submission are <see cref="CasterGather"/>'s compute dispatch alone -- the CPU
-/// per-view walk and its persistent-mapped rings are deleted. The dispatch culls against
-/// <see cref="CullPass"/>'s shared <c>CxCullSphere</c> buffer (one set of bounds, one set of exemptions,
-/// for the shadow cull and the colour cull alike) and writes indirect commands whose <c>baseInstance</c> IS
-/// the ownership slot, so the depth stages read <c>uDraw[gl_BaseInstance]</c> directly. gl_BaseInstance
-/// rather than gl_DrawID because compaction renumbers gl_DrawID and nothing else; <see cref="SelfCheck"/>
-/// pins it.</para>
-/// <para>The pass runs in the #80 4.6 context -- the SAME context the colour pass draws in, which is why it
-/// binds Alloy's VAOs rather than keeping a set of its own -- and renders every view the Alloy lit stage
-/// samples: the sun's concentric cascade array (#94) and the local lights' depth cube array (#95), six faces
-/// per light. One <see cref="Collect"/> per frame selects the world; <see cref="Submit"/> then culls and
-/// stages it per view, out of a ring sized for that view class. Nothing about a caster differs between the
-/// two -- the sun and a torch draw the same geometry through the same command format.</para>
-/// <para>#302: the caster population and every fact about it are ALLOY's. This pass kept a parallel copy of
-/// the ownership table -- its own enrolment, its own VDO slot map and VAO cache, its own motion memo, its own
-/// per-frame collect into model matrices and bounding spheres -- all of it written before Alloy existed and
-/// all of it a recomputation of state #242/#243/#260/#282 already keep current. What is left is the
-/// selection, the fits, the predicate, the cull and the submission; a caster is now an OWNERSHIP SLOT, and
-/// the depth stage reads its model matrix, bone base and material out of <c>uDraw[slot]</c> exactly as the
-/// colour stage does. ADR 0019 is the decision record.
-/// <para>The consequence to know about is a ONE-FRAME LAG: the shadow bracket runs ahead of the colour build,
-/// so the records it reads describe the previous frame's world. That is the lag creature poses already
-/// carried by design (#113), it is coherent -- the mover signal and the record content describe the same
-/// world state, so the predicate cannot miss a bake -- and it now extends to rigid movers, whose shadow
-/// trails them by a frame. Retiring it means moving the pass behind the build, which is #176's work.</para>
-/// <para>Creature casters ride the same path with no special case at all. An NWN creature is mostly
-/// PARTS-BASED (live-verified by dumping the VAOs, 2026-08-20): each body piece is a rigid mesh parented to a
-/// bone, posed entirely by its node matrix, so the animation is already in the matrix. A TRUE skinmesh
-/// (cloak, robe, tail) carries bone attributes at locations 8/9 and is posed by <c>SkinPose</c> into Alloy's
-/// bone block; the depth stage re-runs the same skinning off the same block and the same base.</para></para>
-/// <para>Gated on <see cref="AlloyGate.Alloy"/> so the vanilla verdict -- and every other frame-start
-/// refusal (#216) -- reverts it frame-atomically, along with the rest of the Alloy frame.
-/// The <c>shadow.casters=0</c> config setting is the kill switch (#302 retired <c>skincast</c>: the posed set is
-/// Alloy's, so <c>skinning</c> is the one dial that decides it), and
-/// <c>/shadow</c> carries the look knobs. The frame path
-/// allocates nothing.</para>
+/// The one Alloy submission path every rigid shadow caster goes through (ADR 0019, #93). Tiles and
+/// placeables are the same thing here -- a part with an indexed VDO, an index range and a model matrix -- so
+/// there is no kind-based branching anywhere below. The cube POPULATION is split in two, a static array
+/// baked on the predicate and a small per-frame dynamic pool, composed with min() in the receiver
+/// (<c>/shadow split 0</c> is the combined-bake A/B, #305). A view re-bakes only when its recorded depth has
+/// stopped describing the world -- the view's own key changed, or something moved inside it
+/// (<see cref="ViewStale"/>); every term errs toward stale, so a wrong answer costs a bake and can never
+/// freeze a shadow, and <c>/shadow rebake 0</c> is the bake-everything A/B (#241, #282).
+/// <para>Selection and submission are <see cref="CasterGather"/>'s compute dispatch alone. It culls against
+/// <see cref="CullPass"/>'s shared <c>CxCullSphere</c> buffer (one set of bounds, one set of exemptions, for
+/// the shadow cull and the colour cull alike) and writes indirect commands whose <c>baseInstance</c> IS the
+/// ownership slot, so the depth stages read <c>uDraw[gl_BaseInstance]</c> directly -- gl_BaseInstance rather
+/// than gl_DrawID because compaction renumbers gl_DrawID and nothing else; <see cref="SelfCheck"/> pins it
+/// (#303).</para>
+/// <para>The pass runs in the 4.6 context -- the SAME context the colour pass draws in, which is why it binds
+/// Alloy's VAOs rather than keeping a set of its own -- and renders every view the Alloy lit stage samples:
+/// the sun's concentric cascade array and the local lights' depth cube array, six faces per light. One
+/// <see cref="Collect"/> per frame selects the world; the sun and a torch then draw the same geometry through
+/// the same command format.</para>
+/// <para>The caster population and every fact about it are ALLOY's: a caster is an OWNERSHIP SLOT, and the
+/// depth stage reads its model matrix, bone base and material out of <c>uDraw[slot]</c> exactly as the colour
+/// stage does (#302). The consequence to know about is a ONE-FRAME LAG: the shadow bracket runs ahead of the
+/// colour build, so the records it reads describe the previous frame's world. It is coherent -- the mover
+/// signal and the record content describe the same world state, so the predicate cannot miss a bake -- and a
+/// rigid mover's shadow trails it by a frame. Retiring it means moving the pass behind the build (#176).</para>
+/// <para>Creature casters ride the same path with no special case. An NWN creature is mostly PARTS-BASED
+/// (live-verified by dumping the VAOs): each body piece is a rigid mesh parented to a bone, posed entirely by
+/// its node matrix. A TRUE skinmesh (cloak, robe, tail) carries bone attributes at locations 8/9 and is posed
+/// by <c>SkinPose</c> into Alloy's bone block; the depth stage re-runs the same skinning off the same block
+/// and the same base.</para>
+/// <para>Gated on <see cref="AlloyGate.Alloy"/> so the vanilla verdict -- and every other frame-start refusal
+/// -- reverts it frame-atomically with the rest of the Alloy frame. <c>shadow.casters=0</c> is the kill
+/// switch, <c>skinning</c> the one dial that decides the posed set, and <c>/shadow</c> carries the look knobs.
+/// The frame path allocates nothing.</para>
 /// </summary>
 public sealed unsafe partial class CasterPass : IExtenderService
 {

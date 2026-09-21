@@ -10,57 +10,47 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #259 (map #68, ADR 0018 M5 strand 1): the textures Alloy DRAWS FROM, which are Alloy's own -- uploaded
-/// by Alloy from the engine's DECODED PIXELS, not copied off the engine's finished GL texture.
-/// <para>M5's boundary is "the engine reads files and decodes them, Alloy owns everything after that".
-/// #211 could not reach the decoded form, so it copied GPU-side (<c>glTexStorage2D</c> +
-/// <c>glCopyImageSubData</c>) keyed on the engine's GL name, and inherited that key's ceiling: a texture
-/// re-uploaded under a name already copied served the old image until the next world edge. That ceiling is
-/// the structural cause of #227, and it is gone -- the copy path is deleted.</para>
+/// The textures Alloy DRAWS FROM, which are Alloy's own -- uploaded by Alloy from the engine's DECODED
+/// PIXELS, not copied off the engine's finished GL texture (ADR 0018 M5 strand 1, #259). The boundary is
+/// "the engine reads files and decodes them, Alloy owns everything after that"; a copy keyed on the engine's
+/// GL name would serve a stale image after a re-upload under that name (#227).
 /// <para><b>The window.</b> <c>CAurTextureBasic::BuildAndStoreTexture</c> @0x48b320 decodes into
 /// <c>basic+0x58</c>, uploads, then <c>FreeImage</c>s. The upload is <c>glImageBasic</c> @0x48bcf0 looping
 /// <c>RenderInterface::CreateTexture(tex, sub, cell)</c> once per cell of the <c>numX*numY</c> grid, having
-/// bound that cell's GL name. Everything underneath -- <c>ImageGetSubImage</c>, the over-MAX_TEXTURE_SIZE
-/// box filter, the format table, <c>glTexImage2D</c>/<c>glCompressedTexImage2D</c>, the mip walk, the
-/// single-channel swizzle -- writes into whatever is bound to <c>GL_TEXTURE_2D</c> on unit 0.</para>
-/// <para><b>So Alloy's upload IS that code, aimed at Alloy's texture.</b> The hook lets the engine's own
-/// call finish, then binds an Alloy-minted name and calls the trampoline a second time. Nothing here
-/// reimplements a decode, a sub-image split or a format decision, and the single-channel legacy formats
-/// #211 had to refuse (its <c>Sized()</c> promotion changed the sampler swizzle) upload correctly because
-/// the engine sets the swizzle on our texture too. It costs a second sub-image + box filter per texture,
-/// on the cold load path only.</para>
-/// <para><b>Context.</b> The hook fires with the ENGINE's context current, not Alloy's 4.6 bracket -- which
-/// is exactly why re-invoking the engine's own upload is safe where hand-rolled 4.x calls would not be. The
-/// two contexts are share-listed (<c>GlContextService</c>), so the object is visible to Alloy; the engine's
-/// own <c>SwapBuffers</c> between a load and the first draw is the flush that publishes it. Deletes still
-/// belong to the bracket -- see <see cref="Drain"/>.</para>
+/// bound that cell's GL name; everything underneath (sub-image split, the over-MAX_TEXTURE_SIZE box filter,
+/// the format table, the mip walk, the single-channel swizzle) writes into whatever is bound to
+/// <c>GL_TEXTURE_2D</c> on unit 0. <b>So Alloy's upload IS that code, aimed at Alloy's texture:</b> the hook
+/// lets the engine's own call finish, then binds an Alloy-minted name and calls the trampoline a second time.
+/// Nothing here reimplements a decode or a format decision; it costs a second sub-image + box filter per
+/// texture, on the cold load path only.</para>
+/// <para><b>Context.</b> The hook fires with the ENGINE's context current, not Alloy's 4.6 bracket -- which is
+/// why re-invoking the engine's own upload is safe where hand-rolled 4.x calls would not be. The two contexts
+/// are share-listed (<c>GlContextService</c>); the engine's own <c>SwapBuffers</c> between a load and the
+/// first draw is the flush that publishes the object. Deletes belong to the bracket -- see <see cref="Drain"/>.</para>
 /// <para><b>Identity is content, not a GL name.</b> A resource is keyed on the texture's resolved name
-/// (<c>basic+0xa8</c>, the field <c>CAurTexture::Restore</c> re-acquires by) folded with the cell index,
-/// read COLD at the upload. The engine GL name survives only as an <see cref="_index"/> entry -- a lookup
-/// the hot <see cref="Draw"/> path needs because a material hands out a tid and nothing else, refreshed at
-/// BOTH edges that change what a tid means: this upload funnel and the delete funnel. A re-upload mints a
-/// NEW owned name and bumps the resource's generation, so a resident bindless handle can never be
-/// respecified under the driver and a recycled engine name cannot alias a stale resource.</para>
+/// (<c>basic+0xa8</c>, the field <c>CAurTexture::Restore</c> re-acquires by) folded with the cell index, read
+/// COLD at the upload. The engine GL name survives only as an <see cref="_index"/> entry, which the hot
+/// <see cref="Draw"/> path needs because a material hands out a tid and nothing else, refreshed at BOTH edges
+/// that change what a tid means: this upload funnel and the delete funnel. A re-upload mints a NEW owned name
+/// and bumps the resource's generation, so a resident bindless handle is never respecified under the driver
+/// and a recycled engine name cannot alias a stale resource.</para>
 /// <para><b>What stays borrowed</b> (counted by <see cref="Borrowed"/>, never silently): cube textures
-/// (<c>glImageBasic</c> routes those to <c>CreateCubeTexture</c>, which is not this funnel -- they were
-/// refused by #211 too), and anything uploaded through <c>DirectCreateTexture</c> -- Ghidra says that is the
-/// movie player and <c>Camera::RefreshRenderSubframeResources</c>, neither of which Alloy draws.</para>
-/// <para><b>The one resource adopted by COPY</b> (#360): the <c>g_bGeneratePLTOnGPU</c> path. It composites
-/// by RENDERING the layers into an FBO, so there are no decoded pixels and no second upload to aim -- the
-/// finished GL texture is all there is. <see cref="DrainPltCopies"/> takes it with
-/// <c>glTexStorage2D</c> + <c>glCopyImageSubData</c> at the bracket. That is #211's mechanism and NOT its
-/// bug: #211 keyed the copy on the engine's GL NAME, so a re-upload under a copied name served the stale
-/// image until the next world edge. This keys on the same content identity as an upload and re-copies at
-/// the engine's own rebuild funnel. Only reached with <c>alloy.pltcpu=0</c>; the default forces the CPU composite
-/// and this queue stays empty.</para>
-/// <para><b>Lifecycle</b> (docs/owned-resource-lifetimes.md), and this table has NO <c>Revoke</c> slot.
-/// Content-keyed resources survive a part-table wipe unchanged, and since they
-/// are populated ONLY at the upload funnel, wiping them on an edge the engine does not rebuild across would
-/// leave every texture borrowed for the rest of the session. The world edge is the engine's own
-/// <see cref="OnDeleteTextures"/>, which QUEUES rather than deletes -- it runs wherever the engine happened
-/// to be, which is not the 4.6 context -- and <see cref="Drain"/> does the deleting on the next frame that
-/// enters the bracket. <see cref="ContextLost"/> is the GL-name edge: the objects went with the context, so
-/// everything is dropped and nothing is deleted.</para>
+/// (<c>glImageBasic</c> routes those to <c>CreateCubeTexture</c>, not this funnel) and anything uploaded through
+/// <c>DirectCreateTexture</c> -- the movie player and <c>Camera::RefreshRenderSubframeResources</c>, neither of
+/// which Alloy draws.</para>
+/// <para><b>The one resource adopted by COPY:</b> the <c>g_bGeneratePLTOnGPU</c> path composites by RENDERING
+/// the layers into an FBO, so there are no decoded pixels to aim a second upload at.
+/// <see cref="DrainPltCopies"/> takes the finished texture with <c>glTexStorage2D</c> +
+/// <c>glCopyImageSubData</c> at the bracket, keyed on the same content identity as an upload and re-copied at
+/// the engine's own rebuild funnel. Only reached with <c>alloy.pltcpu=0</c>; the default forces the CPU
+/// composite and this queue stays empty (#360).</para>
+/// <para><b>Lifecycle</b> (docs/owned-resource-lifetimes.md): this table has NO <c>Revoke</c> slot. Content-keyed
+/// resources survive a part-table wipe, and since they are populated ONLY at the upload funnel, wiping them on
+/// an edge the engine does not rebuild across would leave every texture borrowed for the session. The world
+/// edge is the engine's own <see cref="OnDeleteTextures"/>, which QUEUES rather than deletes (it runs outside
+/// the 4.6 context) and <see cref="Drain"/> deletes on the next frame that enters the bracket.
+/// <see cref="ContextLost"/> is the GL-name edge: the objects went with the context, so everything is dropped
+/// and nothing is deleted.</para>
 /// </summary>
 internal static unsafe class OwnedTextures
 {

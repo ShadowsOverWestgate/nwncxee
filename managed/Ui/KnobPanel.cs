@@ -7,25 +7,25 @@ using static CX.Ui.PanelChrome;
 namespace CX.Ui;
 
 /// <summary>
-/// The settings panel (#588, spec §3, the #560 prototype's Variant B): one centred window of three
-/// independently scrolling columns -- categories, the chosen category's submenus (one <see cref="KnobGroup"/>
-/// each, declaration order), the chosen submenu's rows under their section headers -- with a header (title,
-/// close). A row is the knob's label with its help wrapped beneath and the control
-/// right-aligned: toggle, slider with an inline value box that applies per motion, dropdown, text, swatch,
-/// or an action button whose press runs <see cref="KnobButton.Press"/>. Every edit is a registry set (instant
-/// apply; <see cref="KnobFile"/> debounces the write). Pure: pixels and keys in, sets and geometry out, no
-/// native refs, so it self-checks off-device. Layout runs cold on the input thread and publishes an immutable
-/// row list; <see cref="Emit"/> walks it every frame and allocates nothing -- a row's value text is cached and
-/// re-formatted only when its knob moved.
-/// <para>Semantics (#589): the master is the boxed first row; an off master -- the group's own, or any
-/// ancestor's through <c>parent:</c> -- greys every value row to 42 % and makes it inert, while action and link
-/// rows stay live; an off ancestor also lays a warning strip above the rows. Advanced rows sit behind a
-/// collapsed disclosure, compact, with the <c>(?)</c> marker and a <see cref="Tooltip"/> where they have help.
-/// A blue dot marks an off-default row and a submenu holding one; <c>Reset to defaults</c> in the column head
-/// is <see cref="KnobGroup.ResetRows"/>. A Restart row wears the ↻ badge, amber once its value left the boot
-/// one. The status line and the header note lead the rows; a link row copies on press and flashes "copied"; a
-/// confirming button fires on its second press within <see cref="KnobButton.ConfirmSec"/>; a swatch expands
-/// to R/G/B/A channel rows in place.</para>
+/// The settings panel (docs/spec/unified-settings.md §3, #588): one centred window of three independently
+/// scrolling columns -- categories, the chosen category's submenus (one <see cref="KnobGroup"/> each,
+/// declaration order), the chosen submenu's rows under their section headers -- with a header (title, close).
+/// A row is the knob's label with its help wrapped beneath and the control right-aligned: toggle, slider with
+/// an inline value box that applies per motion, dropdown, text, swatch, or an action button whose press runs
+/// <see cref="KnobButton.Press"/>. Every edit is a registry set (instant apply; <see cref="KnobFile"/>
+/// debounces the write). Pure: pixels and keys in, sets and geometry out, no native refs, so it self-checks
+/// off-device. Layout runs cold on the input thread and publishes an immutable row list; <see cref="Emit"/>
+/// walks it every frame and allocates nothing -- a row's value text is cached and re-formatted only when its
+/// knob moved.
+/// <para>Semantics: the master is the boxed first row; an off master -- the group's own, or any ancestor's
+/// through <c>parent:</c> -- greys every value row to 42 % and makes it inert, while action and link rows stay
+/// live; an off ancestor also lays a warning strip above the rows. Advanced rows sit behind a collapsed
+/// disclosure, compact, with the <c>(?)</c> marker and a <see cref="Tooltip"/> where they have help. A blue
+/// dot marks an off-default row and a submenu holding one; <c>Reset to defaults</c> in the column head is
+/// <see cref="KnobGroup.ResetRows"/>. A Restart row wears the ↻ badge, amber once its value left the boot one.
+/// The status line and the header note lead the rows; a link row copies on press and flashes "copied"; a
+/// confirming button fires on its second press within <see cref="KnobButton.ConfirmSec"/>; a swatch expands to
+/// R/G/B/A channel rows in place (#589).</para>
 /// <para>Faces: everything is measured in <see cref="Em"/>, the panel's own body face height (design
 /// <see cref="FacePx"/> × the game's GUI scale), never <c>ui.font</c>; help, section and path text use the
 /// <see cref="SmallPx"/> face of the same scale.</para>

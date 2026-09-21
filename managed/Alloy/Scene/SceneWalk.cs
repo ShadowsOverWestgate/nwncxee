@@ -6,31 +6,26 @@ using static CX.Alloy.PartTable;
 
 namespace CX.Alloy;
 
-/// <summary>#256 (M5 strand 1 step 1): Alloy enumerates the world. The part table is filled by walking the
-/// engine's authoritative containers -- <c>Scene+0x130</c> (every gob), each gob's three LOD part-tree roots
-/// and its appended roots, and the tile BSP at <c>Scene+0x188</c> -- and NOT by watching the engine try to
-/// draw something. Records therefore cover every part in the area rather than the visible slice, and a part
-/// the camera has never faced is as recorded as one on screen.
-/// <para><b>Maintained by re-reading, never by inferring</b> (ADR 0018). #253 §7.2 killed the notice-fed
-/// registry: <c>Gob::SetLODModel</c> @0x43e6a0 rotates a gob's whole active part subtree every frame, per
-/// visible gob, with no ctor, no dtor and no epoch bump, and two more edges have no notice at all. So the
-/// three triggers here are (a) <c>Scene::Sequence</c> @0x18aa1b0, the engine's own global membership epoch,
-/// (b) a Scene change, and (c) <c>Part::~Part</c>, which <see cref="DrawFunnelService"/> already hooks (#145,
-/// #221). Everything else -- transforms, the active LOD root, material bindings -- is a per-record FIELD
-/// READ, which is why the LOD rotation is a non-event: all three roots are enumerated, so whichever one the
-/// engine swaps in is already in the table.</para>
-/// <para><b>Every part, means every part CLASS.</b> The capture path only ever met a part that had arrived
-/// through <c>PartTriMesh::Draw</c>, so it could assume one. The walk cannot: <c>Scene+0x130</c> and the BSP
-/// reach <c>PartLight</c>, <c>PartEmitter</c>, <c>PartTrigger</c>, <c>PartProjection</c>,
-/// <c>PartReference</c> and <c>PartDummy</c> as well, and their fields do not mean what a trimesh's mean at
-/// the same offsets. <see cref="Visit"/> discriminates with the engine's own vtable slot 0x60
-/// (<c>AsPartTriMesh</c>) before anything is recorded; children are still recursed through every class,
-/// because a light or a dummy can parent geometry.</para>
+/// <summary>Alloy enumerates the world (ADR 0018 M5 strand 1 step 1, #256). The part table is filled by
+/// walking the engine's authoritative containers -- <c>Scene+0x130</c> (every gob), each gob's three LOD
+/// part-tree roots and its appended roots, and the tile BSP at <c>Scene+0x188</c> -- and NOT by watching the
+/// engine try to draw something. Records cover every part in the area rather than the visible slice.
+/// <para><b>Maintained by re-reading, never by inferring.</b> <c>Gob::SetLODModel</c> @0x43e6a0 rotates a
+/// gob's whole active part subtree every frame, per visible gob, with no ctor, no dtor and no epoch bump, and
+/// two more edges have no notice at all, so a notice-fed registry cannot work (#253 §7.2). The three triggers
+/// are (a) <c>Scene::Sequence</c> @0x18aa1b0, the engine's own global membership epoch, (b) a Scene change,
+/// and (c) <c>Part::~Part</c>, which <see cref="DrawFunnelService"/> hooks. Everything else -- transforms,
+/// the active LOD root, material bindings -- is a per-record FIELD READ, which is why the LOD rotation is a
+/// non-event: all three roots are enumerated, so whichever one the engine swaps in is already in the table.</para>
+/// <para><b>Every part, means every part CLASS.</b> <c>Scene+0x130</c> and the BSP reach <c>PartLight</c>,
+/// <c>PartEmitter</c>, <c>PartTrigger</c>, <c>PartProjection</c>, <c>PartReference</c> and <c>PartDummy</c>
+/// as well, and their fields do not mean what a trimesh's mean at the same offsets. <see cref="Visit"/>
+/// discriminates with the engine's own vtable slot 0x60 (<c>AsPartTriMesh</c>) before anything is recorded;
+/// children are still recursed through every class, because a light or a dummy can parent geometry.</para>
 /// <para><b>The bucket arrays are a validator, not a source.</b> <c>Scene+0x208</c> holds the finished,
-/// classified, CULLED set; a 90 degree camera turn replaces most of it. Reading it as the record source
-/// would build the delta machinery against a churning population (ADR 0018's "building it twice"). Since
-/// #264 deleted the engine walk they are read for nothing else: <see cref="CrossCheck"/> asks them whether
-/// this walk has a hole, and <see cref="_lastSample"/> counts the one class the cutover dropped.</para></summary>
+/// classified, CULLED set; a 90 degree camera turn replaces most of it, so building the delta machinery on it
+/// would mean building it twice (ADR 0018). <see cref="CrossCheck"/> asks them whether this walk has a hole,
+/// and <see cref="_lastSample"/> counts the one class the cutover dropped.</para></summary>
 internal static unsafe class SceneWalk
 {
     /// <summary>Bound on one walk's explicit DFS stack. A part tree is wide and shallow (a tileset model is

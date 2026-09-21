@@ -7,30 +7,27 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>#346: the VANILLA BRIDGE. An Alloy stage can name a stock <c>.shd</c> include and get the
-/// engine's own text spliced into it at compile time, so shading the game already expresses -- and that a
-/// content repo has already customised -- is not re-implemented here.
+/// <summary>The VANILLA BRIDGE: an Alloy stage can name a stock <c>.shd</c> include and get the engine's own
+/// text spliced into it at compile time, so shading the game already expresses -- and that a content repo has
+/// already customised -- is not re-implemented here (#346).
 /// <para><b>What this is for.</b> Most of what <c>sow-topdata</c> changes about the look is fragment-side
 /// arithmetic that is a pure function of the fragment's colour, its world position and the engine's global
-/// shader constants: the targeting shape, racial vision, the noir desaturation. None of it has an opinion
-/// about how the fragment was shaded, so none of it needs Alloy's SSBO records, its bindless handles or its
-/// clustered lights -- it needs a <c>vec3</c> and a world position. Those files are the ones that drift when
-/// the extender carries a second copy, and they are exactly the ones this can splice.</para>
-/// <para><b>What it hosts (#350).</b> A material's own custom FRAGMENT stage, as a function of the lit
-/// program: the body between <c>SetupStandardShaderInputs()</c> and <c>ApplyStandardShader()</c> is the
-/// look, and both of those calls are Alloy's own work already done. The stage is spliced with its includes,
-/// <c>inc_standard</c> is substituted by two no-ops, <c>main()</c> is renamed, and the material terms are
-/// read back off its <c>MATERIAL_*_VALUE</c> macros (<see cref="HostText"/>).</para>
+/// shader constants: the targeting shape, racial vision, the noir desaturation. None of it needs Alloy's SSBO
+/// records, bindless handles or clustered lights -- it needs a <c>vec3</c> and a world position. Those are
+/// the files that drift when the extender carries a second copy, and exactly the ones this can splice.</para>
+/// <para><b>What it hosts.</b> A material's own custom FRAGMENT stage, as a function of the lit program: the
+/// body between <c>SetupStandardShaderInputs()</c> and <c>ApplyStandardShader()</c> is the look, and both of
+/// those calls are Alloy's own work already done. The stage is spliced with its includes, <c>inc_standard</c>
+/// is substituted by two no-ops, <c>main()</c> is renamed, and the material terms are read back off its
+/// <c>MATERIAL_*_VALUE</c> macros (<see cref="HostText"/>) (#350).</para>
 /// <para><b>What it is NOT for.</b> A stock stage's LIGHTING (<c>ComputeLighting</c> over the
-/// <c>MAX_NUM_LIGHTS</c> arrays is the submission model #327 spent the frame budget getting rid of) and any
-/// VERTEX stage: it computes <c>gl_Position</c> its own way, which #119's invariance constraint forbids.</para>
-/// <para><b>Why source splice and not a linked shader object.</b> Both work -- a 330-core object links into
-/// a 460-core program on Mesa 26.1 and NVIDIA 610.57 alike (measured offline, EGL, RTX 3070) -- but the
-/// engine compiles an include as a standalone unit only with ITS includes dragged in, and their
-/// declarations (<c>in</c> varyings with no matching Alloy output, uniform blocks) collide at link time.
-/// Splicing text lets Alloy supply the environment instead: see <c>TargetFs</c>'s compatibility prelude,
-/// which is the whole of what <c>inc_target.shd</c> wants from <c>inc_uniforms</c> and
-/// <c>inc_scriptable</c>.</para>
+/// <c>MAX_NUM_LIGHTS</c> arrays is the submission model the frame budget cannot afford, #327) and any VERTEX
+/// stage, which computes <c>gl_Position</c> its own way against the prepass invariance constraint (#119).</para>
+/// <para><b>Why source splice and not a linked shader object.</b> Both link (a 330-core object into a
+/// 460-core program on Mesa 26.1 and NVIDIA 610.57 alike, measured offline), but the engine compiles an
+/// include as a standalone unit only with ITS includes dragged in, whose declarations (<c>in</c> varyings with
+/// no matching Alloy output, uniform blocks) collide at link time. Splicing text lets Alloy supply the
+/// environment instead: see <c>TargetFs</c>'s compatibility prelude.</para>
 /// <para>Cold: a program builds once per session.</para></summary>
 internal static unsafe class VanillaShader
 {

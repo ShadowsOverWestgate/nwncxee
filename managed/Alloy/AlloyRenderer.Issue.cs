@@ -496,29 +496,16 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Aurora blend-mode indices (see <see cref="BlendGl"/>) of the one pair OIT accumulates.</summary>
     private const byte AuroraSrcAlpha = 0, AuroraOneMinusSrcAlpha = 1;
 
-    /// <summary>ADR 0011 steps 4 and 7 (#126): the blending classes. Blended draws sorted back-to-front with
-    /// the depth mask OFF -- which is what makes grass's punch-through structurally impossible rather than
-    /// fixed, since nothing alpha-blended can write depth any more -- and additive follows it unsorted,
-    /// because addition commutes and the engine leaves its own depth mask off there too
-    /// (<c>Material::SetBlendingMode</c> @0x4c5c50 turns it off for exactly that one blend pair).
-    /// <para>Depth TESTING stays on, against the opaque set's depth: a blended surface behind a wall is still
-    /// hidden by it. The per-batch <c>glBlendFunc</c> comes off the material, in
-    /// <see cref="IssueBatches"/>.</para>
-    /// <para>The same ordering caveat reaches the CUTOUT class, which draws back in the opaque pass: its
-    /// graded texels blend, so they composite against whatever the framebuffer already holds. Alloy opaque
-    /// geometry is there (it draws first, in class order); anything the engine still owns is not, and a
-    /// cutout in front of an engine-drawn wall therefore blends against stale colour AND depth-writes over
-    /// it. The upgrade that removes the dependency entirely is alpha-to-coverage -- ADR 0011 names it beside
-    /// the alpha test -- which needs a multisampled target and is worth taking when the Alloy frame binds its
-    /// own (the M3 exit step).</para>
-    /// <para>NAMED APPROXIMATION, for as long as the Alloy pass anchors ahead of the engine's residual 2D and
-    /// GUI draws: these classes composite BEFORE those, and nothing they draw writes depth. So a
-    /// creature standing behind an owned window paints over it rather than being seen through it (vanilla
-    /// gets a different wrong answer: it depth-writes its blended geometry, so the creature vanishes
-    /// instead), and the SKYBOX -- which the engine draws between buckets 0 and 1, depth-mask off -- paints
-    /// over a blended or additive surface seen against the sky. The first resolves when the dynamic classes
-    /// are owned (#127), the second when the skybox is (#125); neither is a #126 regression to chase, and
-    /// both are why ADR 0011's frame anchor is a named exit criterion rather than a detail.</para></summary>
+    /// <summary>The blending classes (ADR 0011 steps 4 and 7, #126). Blended draws sorted back-to-front with
+    /// the depth mask OFF -- what makes grass's punch-through structurally impossible, since nothing
+    /// alpha-blended can write depth -- and additive follows it unsorted, because addition commutes and the
+    /// engine leaves its own depth mask off there too (<c>Material::SetBlendingMode</c> @0x4c5c50 turns it
+    /// off for exactly that one blend pair). Depth TESTING stays on, against the opaque set's depth. The
+    /// per-batch <c>glBlendFunc</c> comes off the material, in <see cref="IssueBatches"/>.
+    /// <para>The CUTOUT class draws back in the opaque pass: its graded texels blend, so they composite
+    /// against whatever the framebuffer already holds, and depth-write over it. The upgrade that removes the
+    /// ordering dependency is alpha-to-coverage (ADR 0011 names it beside the alpha test), which needs a
+    /// multisampled target.</para></summary>
     /// <para><paramref name="depthWrite"/>: the engine's own rule, <c>Material::SetBlendingMode</c> @0x4c5c50 --
     /// depth writes ON for every blend pair but additive (src 0 / dst 2), OFF for additive. The blended class
     /// therefore writes depth: a translucent creature's back parts are rejected by its front ones instead of

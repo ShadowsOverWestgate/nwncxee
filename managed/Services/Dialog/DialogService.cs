@@ -12,29 +12,29 @@ using CX.Ui;
 namespace CX.Services.Dialog;
 
 /// <summary>
-/// Native-C# NPC conversation UI (#dialog), the chatbox pattern applied to dialogs: SkipOriginal the
-/// GUI-layer entry points so the vanilla <c>CGuiInGameChatDialog</c> panel is never created, capture the
-/// already-decoded text/replies the message layer hands them, and render an owned overlay in the same
-/// SwapBuffers pass ChatService owns. The message layer (<c>HandleServerToPlayerDialog</c>) runs
-/// unmodified, so voice-over, dialog camera, and speaker tracking are preserved for free.
+/// Native-C# NPC conversation UI, the chatbox pattern applied to dialogs: SkipOriginal the GUI-layer entry
+/// points so the vanilla <c>CGuiInGameChatDialog</c> panel is never created, capture the already-decoded
+/// text/replies the message layer hands them, and render an owned overlay in the same SwapBuffers pass
+/// ChatService owns. The message layer (<c>HandleServerToPlayerDialog</c>) runs unmodified, so voice-over,
+/// dialog camera, and speaker tracking are preserved for free.
 ///
-/// The window is movable/resizable (a slim title bar carrying the speaker name drags it; a bottom-right
-/// grip sets width + the height breakpoint), lockable, and scrolls: it auto-stretches to fit content up to
-/// <c>dialog.maxheight</c>, past which a scrollbar appears. Two independent fades: the whole window fades
-/// in/out on open/close, while the text content cross-fades and the window height eases on each new node.
-/// Every setting is a <see cref="DialogKnobs"/> row on the settings panel; the rect is Hidden state the drags
-/// write. The shared atlas re-bake (<c>ui.font</c>) re-lays the open window through <see cref="TextRig.FontChanged"/>.
+/// The window is movable/resizable (a slim title bar carrying the speaker name drags it; a bottom-right grip
+/// sets width + the height breakpoint), lockable, and scrolls: it auto-stretches to fit content up to
+/// <c>dialog.maxheight</c>, past which a scrollbar appears. The whole window fades in/out on open/close; the
+/// text content cross-fades and the window height eases on each new node. Every setting is a
+/// <see cref="DialogKnobs"/> row; the rect is Hidden state the drags write. The shared atlas re-bake
+/// (<c>ui.font</c>) re-lays the open window through <see cref="TextRig.FontChanged"/>.
 ///
 /// Hooks: ShowDialogEntry / ShowDialogReplies (skip + capture), ShowReplyChosen (skip), CloseDialog
-/// (call-through: ResetGuiState). Replies go out via SendPlayerToServerDialog_Reply (major 0x14 / minor
-/// 0x03) with the live CNWCMessage as <c>this</c>. State is static (the <c>[UnmanagedCallersOnly]</c>
-/// handlers demand it); content laid out cold in the hooks / input handlers, drawn + animated hot.
-/// <para><c>dialog.enabled</c> is live per node (#591): <see cref="OnShowEntry"/> decides who owns the node it
-/// opens and the other hooks follow that decision (<see cref="_engineOwns"/>). Off, every hook forwards and the
-/// stock <c>CGuiInGameChatDialog</c> runs; the engine no-ops replies on a null panel, so the flip can only
-/// happen where the panel is (re)made. On with the stock panel still up, the node is taken over through the
-/// engine's own <c>CloseDialog</c> -- a pure GUI teardown (virtual delete, null <c>+0x70</c>,
-/// <c>ResetGuiState(0x298)</c>; Ghidra, both builds), no wire traffic.</para>
+/// (call-through: ResetGuiState). Replies go out via SendPlayerToServerDialog_Reply (major 0x14 / minor 0x03)
+/// with the live CNWCMessage as <c>this</c>. State is static; content laid out cold in the hooks / input
+/// handlers, drawn + animated hot.
+/// <para><c>dialog.enabled</c> is live per node: <see cref="OnShowEntry"/> decides who owns the node it opens
+/// and the other hooks follow that decision (<see cref="_engineOwns"/>). Off, every hook forwards and the
+/// stock panel runs; the engine no-ops replies on a null panel, so the flip can only happen where the panel
+/// is (re)made. On with the stock panel still up, the node is taken over through the engine's own
+/// <c>CloseDialog</c> -- a pure GUI teardown (virtual delete, null <c>+0x70</c>, <c>ResetGuiState(0x298)</c>;
+/// Ghidra, both builds), no wire traffic (#591).</para>
 /// </summary>
 public sealed unsafe class DialogService : IExtenderService
 {

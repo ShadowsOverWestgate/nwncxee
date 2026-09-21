@@ -7,29 +7,26 @@ namespace CX.Services.Camera;
 
 /// <summary>
 /// Action-camera head tracking: while the mode's <c>action</c> is held, the local player's creature turns its
-/// HEAD toward the camera axis -- which under the action camera is the crosshair -- with the body left to the
-/// engine. Nothing is invented: NWN already ships clamped yaw/pitch head tracking (the <c>LookAtAnimation</c>
-/// every creature runs when the server sends it a look-at target), so this retargets that machinery instead of
-/// overriding a bone.
-/// <para><b>Two seams.</b> <c>CNWCCreature::UpdateLookAt</c> is the engine's per-frame target chooser; for the
-/// player creature it is skipped and <c>Gob::BeginLookAtAnimate</c> is called directly with the gob as its own
-/// target, which builds the animation the engine would have built (and keeps its 0.25 s ease, its clamp and its
-/// teardown). The target only feeds the distance check and the SafePointer, so aiming at ourselves is free.
-/// Then <c>LookAtAnimation::Control</c> is chained: the original does the keyframe bookkeeping, and the four
-/// floats it wrote at <c>+0x58</c> are overwritten with the camera aim, clamped to
-/// the mode's <c>headyaw</c>/<c>headpitch</c>. Everything downstream -- the blend, <c>AnimateHierarchy</c>, the
-/// skinned bone matrices Alloy reads, the shadow casters -- is the engine's own path, untouched.</para>
-/// <para><b>Aim.</b> The rendered camera pose (<see cref="CameraService.Rendered"/>), not a pick ray: under the
-/// action camera the crosshair IS the camera axis, and a ray would snap the head every time it crossed a near
-/// wall. The yaw is measured the engine's way -- the arc from the head's world forward (local <b>+Y</b>) onto
-/// the aim, composed onto the head's own local rotation -- so the clamp is relative to the body's facing, and
-/// the pitch is the aim's elevation.</para>
+/// HEAD toward the camera axis -- under the action camera, the crosshair -- with the body left to the engine.
+/// Nothing is invented: NWN already ships clamped yaw/pitch head tracking (the <c>LookAtAnimation</c> every
+/// creature runs when the server sends it a look-at target), so this retargets that machinery.
+/// <para><b>Two seams.</b> <c>CNWCCreature::UpdateLookAt</c> is the engine's per-frame target chooser; for
+/// the player creature it is skipped and <c>Gob::BeginLookAtAnimate</c> is called directly with the gob as its
+/// own target, which builds the animation the engine would have built (its 0.25 s ease, its clamp and its
+/// teardown); the target only feeds the distance check and the SafePointer. Then
+/// <c>LookAtAnimation::Control</c> is chained: the original does the keyframe bookkeeping, and the four floats
+/// it wrote at <c>+0x58</c> are overwritten with the camera aim, clamped to the mode's
+/// <c>headyaw</c>/<c>headpitch</c>. Everything downstream -- the blend, <c>AnimateHierarchy</c>, the skinned
+/// bone matrices Alloy reads, the shadow casters -- is the engine's own path.</para>
+/// <para><b>Aim.</b> The rendered camera pose (<see cref="CameraService.Rendered"/>), not a pick ray, which
+/// would snap the head every time it crossed a near wall. The yaw is measured the engine's way -- the arc from
+/// the head's world forward (local <b>+Y</b>) onto the aim, composed onto the head's own local rotation -- so
+/// the clamp is relative to the body's facing; the pitch is the aim's elevation.</para>
 /// <para><b>Hot.</b> <c>Control</c> runs inside <c>Gob::Animate</c> and <c>UpdateLookAt</c> once per creature
 /// per frame: static state, pointer reads, float math, no allocation. The quaternion maths is ported, never
-/// called -- the engine's <c>RotationArc</c>/<c>Yaw</c>/<c>YawPitchRoll</c> return a class by value, which is
-/// the #456 sret trap in its purest form.</para>
-/// <para>Client-only, and only the player who turned it on sees it: relaying the aim to other players is a
-/// wire contract of its own and is a follow-up, not part of this.</para>
+/// called -- the engine's <c>RotationArc</c>/<c>Yaw</c>/<c>YawPitchRoll</c> return a class by value, the sret
+/// trap (#456).</para>
+/// <para>Client-only: relaying the aim to other players is a wire contract of its own, a follow-up.</para>
 /// </summary>
 public sealed unsafe class HeadTrackService : IExtenderService
 {

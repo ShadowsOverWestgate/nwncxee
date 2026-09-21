@@ -8,65 +8,46 @@ using CX.Ui;
 namespace CX.Services.Radial;
 
 /// <summary>
-/// The radial seam (CX-689) and the dropdown on it (CX-690/CX-691): skip <c>CRadialMenu::ActivateInternal</c>, take
-/// the engine-built tree, and show it as a <see cref="CascadeMenu"/> in one registered <see cref="Window"/>. Every
-/// root builds its whole top ring and calls <c>Activate</c> last (research §0/§4), so at the hook <c>this</c> is a
-/// complete root with its XY and target inside, and no GUI modality has been engaged -- nothing to release. The
-/// hook logs the ring under <c>logs=1</c>, builds the root rows and opens the cascade; a submenu row materializes
-/// its child through the engine's own lazy creator (<see cref="RadialTree.Materialize"/>) on click, Enter/Right or
-/// the hover dwell, exactly as vanilla does and never cached across opens (§9.7); a leaf row invokes the engine
-/// triple (<see cref="RadialTree.Invoke"/>); every close tears the tree down and drops every pointer.
-/// <para><b>One thread.</b> <c>Update(void*)</c> @0x430030 is the only caller of <c>WinMessageHandler</c> (the SDL
-/// pump behind every input delegate here) and of <c>CClientExoApp::MainLoop</c> (the engine input processing that
-/// reaches this hook, and the present that runs <see cref="Draw"/>). So the cold/hot split is about allocation,
-/// not races. A dwell request surfaces in <see cref="Draw"/>, which runs inside <c>CGuiMan::UpdateAndRender</c>
-/// (the nk_sdl_render chain), so it is not served there: the engine only ever builds a submenu from event
-/// processing, never mid-render. It is queued for <see cref="Service"/> at <c>PostPresent</c> -- same thread, after
-/// the present, before the next pump -- which is also where a draw-time close (font re-bake, master flipped off,
-/// module gone) is served, so <see cref="Draw"/> stays zero-alloc.</para>
-/// <para><b>Modality.</b> The window sets <see cref="Window.SuppressChords"/> exactly while the cascade is open: the
-/// pump then runs its modal pass ahead of the engine-GUI yield and swallows every key before the engine queues a
-/// keybind; here every press, release (including the opening right-up, which the engine would only hand to
-/// <c>CGuiMan::HandleRMouseUp</c>, §4), key and wheel is consumed. A press outside every level closes the menu AND
-/// is consumed, as vanilla's captured-mouse radial eats it. The swallow of the right-up is best-effort: a press
-/// and release drained by one pump batch (or MouseLook's still-click replay) deliver the up before the engine has
-/// processed the down, i.e. before this hook opened anything -- harmless, an engine up with no active menu.</para>
-/// <para><b>Teardown timing (Ghidra, all twelve <c>CRadialMenu::Activate</c> callers + their callers):</b>
-/// synchronous teardown inside the hook is safe. Each root -- <c>CGuiCreatureMenu::Activate*</c> ×5 @0x73f3a0/
-/// @0x73f8d0/@0x73fc50/@0x740790/@0x740990, <c>CGuiQuickbarMenu</c> @0x6e7390, <c>CGuiItemMenu</c> @0x7d3720,
-/// <c>CGuiPlaceableMenu</c> @0x7ecfb0, <c>CGuiDoorMenu</c> @0x756d40, <c>CGuiChatWindowMenu</c> @0x9c10a0,
-/// <c>CNWCTile</c> @0x80cad0, <c>CNWCTrigger</c> @0x80ed20 -- returns (stack-canary check at most) straight after
-/// <c>Activate</c>; the <c>CNWC*::ActivateRadialMenu</c> wrappers, <c>CPanelPartyMember</c> @0x6996c0,
-/// <c>CGuiQuickButton::HandleRightButton</c> @0x6a6880, <c>CGuiInGameChatWindow::HandleRightButton</c> @0x67a0a0 and
-/// <c>CGuiInvbox/CGuiMultiInvbox::HandleRMouseDown</c> hold the menu only in a local they never read again;
-/// <c>PerformRButtonDownAction</c> @0x6625b0 writes <c>internal+0x424</c> after the vtable call from an id it already
-/// holds, not from the menu. No global points at the root: <c>static_pRadialBand</c>/<c>SetModal</c>/
-/// <c>CaptureMouse</c> live in the skipped <c>ActivateInternal</c>. <see cref="Close"/> also runs on the area edge
+/// The radial seam and the dropdown on it: skip <c>CRadialMenu::ActivateInternal</c>, take the engine-built
+/// tree, and show it as a <see cref="CascadeMenu"/> in one registered <see cref="Window"/> (CX-689..CX-691;
+/// <c>docs/research/radial-menu-reimplementation.md</c>). Every root builds its whole top ring and calls
+/// <c>Activate</c> last, so at the hook <c>this</c> is a complete root with its XY and target inside and no GUI
+/// modality engaged. A submenu row materializes its child through the engine's own lazy creator
+/// (<see cref="RadialTree.Materialize"/>) on click, Enter/Right or the hover dwell, never cached across opens;
+/// a leaf row invokes the engine triple (<see cref="RadialTree.Invoke"/>); every close tears the tree down.
+/// <para><b>One thread.</b> <c>Update(void*)</c> is the only caller of both the SDL pump and
+/// <c>CClientExoApp::MainLoop</c>, so the cold/hot split is about allocation, not races. <see cref="Draw"/> runs
+/// inside <c>CGuiMan::UpdateAndRender</c>, where the engine never builds a submenu, so a dwell request and a
+/// draw-time close (font re-bake, master off, module gone) are queued for <see cref="Service"/> at
+/// <c>PostPresent</c> -- same thread, after the present, before the next pump -- and <see cref="Draw"/> stays
+/// zero-alloc.</para>
+/// <para><b>Modality.</b> <see cref="Window.SuppressChords"/> is set exactly while the cascade is open: the pump's
+/// modal pass swallows every press, release, key and wheel before the engine queues a keybind. A press outside
+/// every level closes the menu and is consumed, as vanilla's captured-mouse radial eats it. Swallowing the opening
+/// right-up is best-effort: one pump batch can deliver the up before this hook opened anything -- harmless.</para>
+/// <para><b>Teardown.</b> Synchronous teardown inside the hook is safe: every <c>Activate</c> caller returns
+/// straight after the call or holds the menu only in a local it never reads again, and no global points at the
+/// root (the research note has the twelve-caller Ghidra audit). <see cref="Close"/> also runs on the area edge
 /// (<c>StartLoadBar</c>) for the tree held open under the cascade.</para>
-/// <para><b>Re-entry:</b> the keybind opener (<c>HandleInputEvent</c> case 0x3e) is gated on <c>InMenuMode()==0</c>,
-/// which stays true under CX, so a second open can arrive while a tree is held -- the hook closes the cascade and
-/// releases the held root first (reason <c>reenter</c>). A hook that fires from INSIDE a leaf handler forwards to
-/// vanilla instead: the tree whose handler is on the stack must not be torn down under it. An open with
-/// <c>static_nMenuDepth != 0</c> is an ENGINE menu's descent (<c>ActivateXY</c> from <c>HandleMenuAction</c>, only
-/// possible if the master was flipped on under a live vanilla radial): forwarded, since tearing a child down under
-/// a live parent would dangle <c>m_pSubMenu[i]</c>.</para>
-/// <para><b>Vanilla parity, deliberate divergences:</b> a click or dwell on a submenu row descends and then invokes
-/// the slot's entry callback too, as <c>HandleMenuAction</c> @0x585530 does (an unset entry is the no-op sentinel);
-/// a creator that declines leaves the row as it is (vanilla would invoke the entry, if any, and close); a click on
-/// a disabled row does nothing (vanilla closes the radial); a right press on a row is <see cref="CascadeActionKind.Context"/>
-/// and opens the row-action popup (CX-692).</para>
-/// <para><b>Layout (CX-692):</b> every list is composed from the engine's rows and the persisted <see cref="RadialPins"/>
-/// rows of the root kind (<see cref="ItemsFor"/>): hoists are walked from the root through <see cref="RadialTree.Materialize"/>
-/// (creator-only -- the walk never invokes a step's entry) and validated against the leaf's raw <c>(fn, param)</c>, a
-/// mismatch or a declined step greys the row and <see cref="Leaf"/> refuses it through its tag whatever its Disabled
-/// flag says; reorders fix a slot row's index in its own list; hides drop a slot row from its list (CX-694). The
-/// layout is edited by drag-and-drop (a row dragged to a gap of its own list is a reorder, a deeper row dropped on the
-/// top list is a hoist there) or the row-action popup, a second <see cref="CascadeMenu"/> (<see cref="_ctx"/>) that
-/// takes every input while open; a change re-composes the touched level in place, which closes the levels below it.
-/// The walked children hang off the held root, so <see cref="Release"/> frees them with it. Folders (CX-694) are
-/// named rows of the top list whose level lists the hoists filed in them (<see cref="FolderItems"/>, resolved from
-/// the root like any hoist); "Also show on" copies a hoist to another root kind (<see cref="ShowOn"/>), where the
-/// engine's own subtree at the same path resolves it with that root's target.</para>
+/// <para><b>Re-entry.</b> The keybind opener is gated on <c>InMenuMode()==0</c>, which stays true under CX, so a
+/// second open can arrive while a tree is held: the hook closes the cascade and releases the held root first
+/// (reason <c>reenter</c>). A hook firing from INSIDE a leaf handler forwards to vanilla (the tree on the stack
+/// must not be torn down under it), as does an open with <c>static_nMenuDepth != 0</c> (an engine menu's descent,
+/// whose child must not be freed under a live parent).</para>
+/// <para><b>Vanilla parity, deliberate divergences:</b> a click or dwell on a submenu row descends and invokes the
+/// slot's entry callback too, as <c>HandleMenuAction</c> does; a creator that declines leaves the row as it is; a
+/// click on a disabled row does nothing (vanilla closes the radial); a right press on a row is
+/// <see cref="CascadeActionKind.Context"/> and opens the row-action popup (CX-692).</para>
+/// <para><b>Layout.</b> Every list is composed from the engine's rows and the persisted <see cref="RadialPins"/>
+/// rows of the root kind (<see cref="ItemsFor"/>): hoists are walked from the root through
+/// <see cref="RadialTree.Materialize"/> (creator-only, never an entry) and validated against the leaf's raw
+/// <c>(fn, param)</c> -- a mismatch greys the row and <see cref="Leaf"/> refuses it; reorders fix a slot row's
+/// index in its list; hides drop it. Edits arrive by drag-and-drop or the row-action popup, a second
+/// <see cref="CascadeMenu"/> (<see cref="_ctx"/>) that takes every input while open; a change re-composes the
+/// touched level in place, closing the levels below. Walked children hang off the held root, so
+/// <see cref="Release"/> frees them with it. Folders are named top-list rows whose level lists the hoists filed in
+/// them (<see cref="FolderItems"/>); "Also show on" copies a hoist to another root kind (<see cref="ShowOn"/>),
+/// where the engine's own subtree at the same path resolves it with that root's target (CX-692, CX-694).</para>
 /// </summary>
 public sealed unsafe class RadialService : IExtenderService
 {

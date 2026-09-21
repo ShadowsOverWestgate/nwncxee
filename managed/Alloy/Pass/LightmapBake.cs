@@ -7,7 +7,7 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#674: the lightmap bake and its read. Every charted static instance (#673) gets a rectangle on a
+/// <summary>The lightmap bake and its read (#674). Every charted static instance gets a rectangle on a
 /// 4096x4096 page pair -- <b>A</b> irradiance (RG11B10F) and <b>B</b> dominant direction (RGBA8) -- baked on
 /// the GPU page-major, light-major: per (page, light) the light's shadow is rendered from the STATIC set into
 /// one scratch cube (<see cref="CasterPass.BakeStaticCube"/>), then every to-bake rect the light reaches is
@@ -16,19 +16,19 @@ namespace CX.Alloy;
 /// converts into the resident pair. The lit stage reads the per-slot bake record (<see cref="ChartBufDecl"/>)
 /// and skips every static light for a baked surface (#668).
 /// <para>Bake key = chart content + density + the placement (1 cm / 1e-3) + the touching static lights (5 cm,
-/// 1/255) + the shadow look (#666); one deflated raw-bits file per key in <c>cx-charts/</c>
+/// 1/255) + the shadow look; one deflated raw-bits file per key in <c>cx-charts/</c>
 /// (<c>LightmapBake.Cache.cs</c>); a hit is a <c>glTexSubImage3D</c> at the packed offset and never queues.
 /// Pacing: <see cref="HoldLightsPerFrame"/> (page, light) steps per frame under the loading-screen hold
-/// (#675 sets <see cref="Hold"/>), <see cref="BackgroundLightsPerFrame"/> otherwise.</para>
+/// (<see cref="Hold"/>, #675), <see cref="BackgroundLightsPerFrame"/> otherwise.</para>
 /// <para>Refusals stand a part, a page or the area down with a logged reason and never a frame verdict: a
 /// missing entry point or a failed link latches the pass off (every record stays unbaked, which IS the
 /// real-time loop); a rect past the page cap stays unbaked and is counted.</para>
-/// <para>#679: density tiers by distance from the player (<c>lightmap.near</c>, <c>lightmap.tiers</c>). Every
-/// instance enrols at the coarsest tier, the area-wide <b>baseline</b> that bakes first; <see cref="RefineSweep"/>
-/// re-enrols the readers of a landed rect at a finer tier as the player nears it, the baseline record live
-/// until the fine one lands. Baseline and fine rects pack on pages of their own class; a fine page whose
-/// rects are all past the next tier's radius is evicted whole when the pack needs the room, its readers back
-/// on their baseline rect (kept, keyed, never overwritten inside the area).</para>
+/// <para>Density tiers by distance from the player (<c>lightmap.near</c>, <c>lightmap.tiers</c>; #679). Every
+/// instance enrols at the coarsest tier, the area-wide <b>baseline</b> that bakes first;
+/// <see cref="RefineSweep"/> re-enrols the readers of a landed rect at a finer tier as the player nears it,
+/// the baseline record live until the fine one lands. Baseline and fine rects pack on pages of their own
+/// class; a fine page whose rects are all past the next tier's radius is evicted whole when the pack needs
+/// the room, its readers back on their baseline rect (kept, keyed, never overwritten inside the area).</para>
 /// <para>ponytail: baseline rects are never freed inside an area (Revoke rewinds the pages); an instance whose
 /// key moves takes a NEW rect and the old one idles until the world edge. Page space is a session's, not a key's.</para></summary>
 internal static unsafe partial class LightmapBake

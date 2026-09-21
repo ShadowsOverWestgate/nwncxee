@@ -57,19 +57,14 @@ internal static unsafe class AlloyLights
     ///     f2  = d^2 / R^2                        (R = GetLightAdjustedRadius, which IS what we upload)
     ///     att = (1 - f2) / (mi + ff * f2)
     /// </code>
-    /// <para>This replaced an absolute <c>1/d^n</c> plateau model, and the replacement is the whole point of
-    /// #140. That model was RANGE-BLIND: a light's authored range only fed the cutoff, so the curve was
-    /// identical for a decorative 2m cave glow and a torch, and no single exponent can serve both. At
-    /// exponent 4 it was blinding inside a metre and gone by five -- which is exactly "flat, covered in
-    /// blinding light, and still can't see anything".</para>
-    /// <para>The engine's curve is range-NORMALISED, so the authored range is the shape. A dim decorative
-    /// light stays dim because its colour is dim and its R is small; a torch reaches because its R is large.
-    /// That is the behaviour the content was authored against, and it is why nothing here needs a global
-    /// gain to compensate for it.</para>
+    /// <para>The curve is range-NORMALISED, so the authored range is the shape: a dim decorative light stays
+    /// dim because its colour is dim and its R is small; a torch reaches because its R is large. That is the
+    /// behaviour the content was authored against, and why nothing here needs a global gain to compensate --
+    /// an absolute <c>1/d^n</c> model is range-blind and serves neither the 2m cave glow nor the torch.</para>
     /// <para><see cref="_gain"/> scales the whole curve (1 = the engine's own peak, <c>1/mi</c>);
     /// <see cref="_falloffPow"/> is an exponent on the <c>(1 - f2)</c> rim fade, 1.0 = vanilla exactly.
-    /// <see cref="_srcRadius"/> is no longer part of this curve at all -- since #139 it is the sphere-light
-    /// wrap radius and the base of the self-shadow near-field skip.</para>
+    /// <see cref="_srcRadius"/> is not part of this curve: it is the sphere-light wrap radius and the base of
+    /// the self-shadow near-field skip (#139).</para>
     /// </summary>
     private static float _gain => Lighting.Gain.V;
     private static float _srcRadius => Lighting.Radius.V;

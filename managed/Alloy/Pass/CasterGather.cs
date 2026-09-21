@@ -6,26 +6,23 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #286 (M5 strand 2, ADR 0018): shadow caster selection in compute, in <see cref="CullPass"/>'s shape.
-/// One staging pass per FRAME (batch keys, VAO and mask-texture resolves), then per view a handful of
-/// uniforms, one dispatch that tests each caster against that view and compacts the survivors into an
-/// indirect command buffer, and one <c>glMultiDrawElementsIndirectCount</c> per batch. No count ever comes
-/// back to the CPU on the draw path.
-/// <para>#303: the bounds are <see cref="CullPass"/>'s own <c>CxCullSphere</c> buffer, indexed by
-/// ownership slot -- the shadow cull and the colour cull test ONE set of spheres, with one set of
-/// exemptions (a <see cref="AlloyRenderer.NeverCull"/> radius -- posed skinmesh, dangly mesh, displacing
-/// feature, degenerate bounds -- passes every reach test, exactly as
-/// the colour dispatch spells it). The per-draw <c>CxCaster</c> record died with that: <c>baseInstance</c>
-/// carries the ownership slot itself and the depth stages read <c>uDraw[gl_BaseInstance]</c> directly.</para>
-/// <para>#303: the source buffer is PERSISTENT. The staging walk still runs per frame (index ranges are
-/// re-read live because Repack moves them), but the upload is skipped whenever the staged bytes match what
-/// the buffer already holds -- on a settled frame nothing goes up at all.</para>
+/// Shadow caster selection in compute, in <see cref="CullPass"/>'s shape (ADR 0018 M5 strand 2, #286). One
+/// staging pass per FRAME (batch keys, VAO and mask-texture resolves), then per view a handful of uniforms,
+/// one dispatch that tests each caster against that view and compacts the survivors into an indirect command
+/// buffer, and one <c>glMultiDrawElementsIndirectCount</c> per batch. No count ever comes back to the CPU on
+/// the draw path.
+/// <para>The bounds are <see cref="CullPass"/>'s own <c>CxCullSphere</c> buffer, indexed by ownership slot --
+/// the shadow cull and the colour cull test ONE set of spheres, with one set of exemptions (a
+/// <see cref="AlloyRenderer.NeverCull"/> radius -- posed skinmesh, dangly mesh, displacing feature, degenerate
+/// bounds -- passes every reach test). <c>baseInstance</c> carries the ownership slot itself and the depth
+/// stages read <c>uDraw[gl_BaseInstance]</c> directly. The source buffer is PERSISTENT: the staging walk runs
+/// per frame (index ranges are re-read live because Repack moves them), but the upload is skipped whenever
+/// the staged bytes match what the buffer holds -- on a settled frame nothing goes up (#303).</para>
 /// <para>The cull ITSELF is ported semantics, not a re-derivation: the cone test circumscribes the 90deg face
 /// pyramid and doubles the radius allowance, exactly as <c>CasterPass.FaceCulls</c> does, and the slope is
 /// interpolated from that same constant so the two cannot drift. A caster wrongly REJECTED is a deleted
 /// shadow; one wrongly admitted costs a draw. <c>/shadow gather 0</c> disables the cull in the dispatch --
-/// every staged caster draws in every view -- which is the A/B that says whether the cull deleted a
-/// shadow.</para>
+/// every staged caster draws in every view -- the A/B that says whether the cull deleted a shadow.</para>
 /// </summary>
 internal static unsafe class CasterGather
 {

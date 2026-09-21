@@ -8,35 +8,25 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #127 (map #68, spec #114 M3): grass, as a REPLACEMENT class. Not a faster reproduction of
-/// <c>Scene::DoBinBucket</c> -- the engine's grass path is left exactly as it is and simply not called on the
-/// passes the Alloy frame draws.
-/// <para>What vanilla does, root-caused by #106: it enables ordinary alpha blend, NEVER calls
-/// <c>SetDepthMask</c> (so it inherits mask = 1), and pushes its distance fade through the same alpha channel
-/// the 0.2 cutout reads. From 15u to ~27.7u every blade is semi-transparent AND depth-writing -- and it draws
-/// at step 9 of the pass, before the creatures and placeables standing in it. It also rewrites the wind into
-/// every bin's vertex buffer on the CPU every frame BEFORE any culling, frustum-culls nothing, instances
-/// nothing, and bakes density into the VDOs at area load with no client knob at all.</para>
-/// <para>What this is instead: one GPU-instanced draw per visible patch, alpha DISCARD with no blending and
-/// depth writes on, wind in the vertex shader, per-patch frustum + distance culling, and a dithered
-/// (screen-door) fade so the ramp never produces a partially transparent fragment. Under that class the
-/// punch-through is structurally impossible rather than fixed: no grass fragment is ever both semi-transparent
-/// and depth-writing, because none of them is ever semi-transparent.</para>
+/// Grass, as a REPLACEMENT class (ADR 0011 M3, #127): the engine's <c>Scene::DoBinBucket</c> is left exactly
+/// as it is and simply not called on the passes the Alloy frame draws. Vanilla enables ordinary alpha blend,
+/// NEVER calls <c>SetDepthMask</c> (so it inherits mask = 1) and pushes its distance fade through the same
+/// alpha channel the 0.2 cutout reads, so from 15u to ~27.7u every blade is semi-transparent AND
+/// depth-writing, drawn at step 9 before the creatures standing in it; it also rewrites the wind into every
+/// bin's vertex buffer on the CPU every frame, culls nothing and instances nothing.
+/// <para>This is instead one GPU-instanced draw per visible patch, alpha DISCARD with no blending and depth
+/// writes on, wind in the vertex shader, per-patch frustum + distance culling, and a dithered (screen-door)
+/// fade so the ramp never produces a partially transparent fragment. The punch-through is structurally
+/// impossible: no grass fragment is ever semi-transparent.</para>
 /// <para>The geometry SOURCE is still the engine's. <c>CAurTriangleList</c> holds the tile faces that carry a
 /// grass material in world space, plus the per-face blade count the tileset's <c>GrassDensity</c> produced;
-/// this class reads those and does its own scatter at its own density. Placement is therefore the tileset's
-/// -- grass is never hand-placed -- while the DENSITY is a client dial (<c>/grass density</c>) applied to
-/// the authored per-face ratios rather than replacing them.</para>
-/// <para>The engine still builds its own bins and VDOs at area load, untouched: that is what keeps ADR 0010's
-/// vanilla render mode whole. Flip to vanilla (or stand the Alloy pass down) and <c>DoBinBucket</c> runs
-/// exactly as it always did.</para>
-/// <para>Not in the #119 depth prepass, and deliberately so: grass displaces vertices, so the prepass would
-/// record its rest silhouette and the colour pass's LEQUAL would then punch holes wherever the wind moved a
-/// blade. Grass therefore does NOT carry the character-for-character <see cref="AlloyRenderer"/> clip
-/// expression, and must not be "fixed" to.</para>
-/// <para>Not a caster: grass is invisible to every capture path the extender has, because those hang off
-/// <c>PartTriMesh::Draw</c> inside a <c>RenderDrawBucket</c> walk and this is neither. That is #133, and
-/// suppressing <c>DoBinBucket</c> regresses nothing -- vanilla grass cast no shadow either.</para>
+/// this class reads those and does its own scatter. Placement is the tileset's, while the DENSITY is a client
+/// dial (<c>/grass density</c>) applied to the authored per-face ratios. The engine still builds its own bins
+/// and VDOs at area load, untouched, which is what keeps ADR 0010's vanilla render mode whole.</para>
+/// <para>Not in the depth prepass, deliberately: grass displaces vertices, so the prepass would record its
+/// rest silhouette and the colour pass's LEQUAL would punch holes wherever the wind moved a blade. Grass
+/// therefore does NOT carry the character-for-character <see cref="AlloyRenderer"/> clip expression, and
+/// must not be "fixed" to (#119). Not a caster either: vanilla grass cast no shadow (#133).</para>
 /// </summary>
 internal static unsafe partial class GrassField
 {

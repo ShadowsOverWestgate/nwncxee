@@ -8,78 +8,55 @@ using static CX.Framework.EngineLayout;
 namespace CX.Alloy;
 
 /// <summary>
-/// <para>#173: this file is the SERVICE -- hook install, the frame anchor, the pass-generation clock, the
-/// iterator's suppression answer, and the end-of-frame report. The frame path itself lives in siblings, one
-/// responsibility each: <c>.Table</c> (the ownership and staging arrays), <c>.Enroll</c> (the ownership
-/// walk), <c>.Frame</c> (per-pass dispatch), <c>.Batches</c> (build), <c>.Issue</c> (submit),
-/// <c>.Target</c> (framebuffer plumbing), <c>.Programs</c> (link), <c>.Uniforms</c> (per-pass scene terms),
-/// <c>.Shaders</c> (the embedded GLSL), with the contract predicates out in <see cref="ShaderContract"/>.
-/// One class still, because the hot path reads the tables directly and a boundary between them would be a
-/// copy or an indirection on a per-frame walk.</para>
-/// #82/#83/#84 (map #68, spec #77 M1): the Alloy opaque world colour pass, scaled from #81's single tracer part
-/// to the full ownable-now set (#72). Every qualifying part -- diffuse-textured, no bumpy-shiny, no bone
-/// streams, indexed VDO, an ownable bucket -- is drawn by Alloy inside the
-/// #80 4.6 context bracket: our own VAO per VDO over the shared engine buffers, texture ids re-fetched every
-/// frame so animated textures keep cycling. Parts the engine would draw LIT go through the clustered
-/// forward+ program over <see cref="AlloyLights"/>' unbounded light SSBO (#83), so the Alloy path has no
-/// light-count ceiling to pop at; parts the engine draws unlit keep the flat variant, which is their vanilla
-/// look. #120: a lit part is SHADED from its material, not just textured -- the five stock .mtr map slots
-/// beyond the diffuse and the four stock parameter names feed a GGX lobe, which is the term vanilla runs on
-/// every lit part and the Alloy pass used to drop on all of them. A lit part we cannot shade faithfully
-/// (no normal stream, lit program down) is skipped rather than painted flat -- and since #264 deleted the
-/// engine walk, skipped means NOT DRAWN. The exactly-one-owner problem went with the walk: there is exactly
-/// one renderer, so there is nothing to suppress and nothing to double-draw.
-/// <para>#84: submission is MULTIDRAW-BATCHED, so draw count follows the (program, VDO, texture, primitive)
-/// group count rather than the part count. Everything that used to be a per-part uniform -- model matrix,
-/// texture rotation, material ambient/diffuse -- moved into a per-draw SSBO the shaders index by
-/// <c>uDrawIdx[uDrawBase + gl_DrawID]</c> (#242: the records are persistent and indexed by ownership
-/// slot, so the draw carries the slot), which is what lets one <c>glMultiDrawElementsBaseVertex</c> cover a whole
-/// group. The draw block is therefore two phases: build (revalidate every part, stage its record, cut the
-/// batch at each key change) then issue (one bind set + one multidraw per batch).</para>
-/// <para>WHERE the Alloy block runs is load-bearing, and #132 settled it: the anchor is an after-original
-/// hook on <c>Scene::FadeDoors</c>, the last engine call inside <c>Scene::RenderSinglePass</c> before
-/// <c>RenderDrawBucket(0)</c> -- see <see cref="OnFrameAnchor"/> and <see cref="SymbolMap.FadeDoors"/> for
-/// why literal RSP entry (spec #77's and #114's wording) is not reachable. What entry DOES give, and #108
-/// established, is the camera: the engine never uses the GL matrix stack, so view/projection are valid from
-/// the moment Camera::RenderScene writes them into m_aurMtxStack (nm 0x19e2f60; proj +0x18, view +0x70)
-/// before the vcall. Drawing the whole set before the engine's first opaque walk is what keeps suppression
-/// honest: the engine re-buckets geometry every frame, so a part's enrolled bucket goes stale and splitting
-/// the draw by it lets the engine walk a part before we draw it -- double-draw, z-fighting.</para>
-/// <para>Ownership lives as a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>).
-/// The table is rebuilt wholesale at a frame boundary
-/// (enrollment, on a scene-walk delta, before the Alloy block) -- that is the frame-atomic
-/// swap. The only mid-frame mutation is revocation. <c>vanilla=1</c> in cx.cfg is the kill switch, and
-/// since #263 it is restart-only. Hot path allocates nothing.</para>
-/// <para>#128: CREATURES join it, and they arrive by relaxing two things rather than by a new path. The
-/// engine draws them from <c>Scene::RenderDynamicGeometry</c> -- buckets 2 and 3, but through the same
-/// <c>RenderDrawBucket</c> the capture already brackets -- so what actually kept them out was the capture's
-/// matrix PROBATION, which killed any part whose transform moved between two sightings; an animating creature
-/// failed that by construction and a door failed it the frame it opened. Instances were exempted from it as
-/// MOVERS, whose transform this pass reads live at draw time anyway, and #258 deleted probation
-/// outright. The second relaxation is the
-/// instance modulation: <c>PartTriMesh::Mat</c>'s alpha multiply, colour multiply and self-illum add are
-/// folded into the per-draw record every frame instead of refusing the part, which matters because a creature
-/// FADES through one of them -- opacity here is per-frame state, never capture state. What still cannot be
-/// owned is a true skinmesh (a cloak, a robe, a tail: the Alloy vertex stages have no skinning branch) and the
-/// three instance states no Alloy program expresses at all; both refuse against the GOB, and the enrollment
-/// sweep then hands that whole creature back to the engine rather than half-own one (#107 s2's rule, per
-/// instance instead of per class).</para>
-/// <para>#85: water reflections need NOTHING from this pass. Spec #77's "reflection subframes also pass
-/// through RenderSinglePass" reads the engine backwards -- <c>Camera::CopyRenderSubframe</c> is a
+/// <para>This file is the SERVICE -- hook install, the frame anchor, the pass-generation clock, the iterator's
+/// suppression answer, and the end-of-frame report. The frame path lives in siblings, one responsibility each:
+/// <c>.Table</c> (the ownership and staging arrays), <c>.Enroll</c> (the ownership walk), <c>.Frame</c>
+/// (per-pass dispatch), <c>.Batches</c> (build), <c>.Issue</c> (submit), <c>.Target</c> (framebuffer plumbing),
+/// <c>.Programs</c> (link), <c>.Uniforms</c> (per-pass scene terms), <c>.Shaders</c> (the embedded GLSL), with the
+/// contract predicates out in <see cref="ShaderContract"/>. One class still, because the hot path reads the
+/// tables directly and a boundary between them would be a copy or an indirection on a per-frame walk (#173).</para>
+/// <para>Alloy is the only renderer of the 3D world (ADR 0016): every part is drawn from owned resources inside
+/// the 4.6 context bracket, texture ids re-fetched every frame so animated textures keep cycling. Parts the
+/// engine would draw LIT go through the clustered forward+ program over <see cref="AlloyLights"/>' unbounded
+/// light SSBO and are SHADED from their material (the stock .mtr map slots and parameter names feed a GGX lobe);
+/// parts the engine draws unlit keep the flat variant, their vanilla look. A lit part that cannot be shaded
+/// faithfully (no normal stream, lit program down) is NOT DRAWN rather than painted flat (#83, #120, #264).</para>
+/// <para>Submission is MULTIDRAW-BATCHED: draw count follows the (program, VDO, texture, primitive) group count,
+/// not the part count. Per-part state -- model matrix, texture rotation, material ambient/diffuse -- lives in a
+/// persistent per-draw SSBO indexed by ownership slot through <c>uDrawIdx[uDrawBase + gl_DrawID]</c>, so one
+/// <c>glMultiDrawElementsBaseVertex</c> covers a group. The draw block is two phases: build (revalidate every
+/// part, stage its record, cut the batch at each key change) then issue (one bind set + one multidraw per
+/// batch) (#84, #242).</para>
+/// <para>WHERE the Alloy block runs is load-bearing: the anchor is an after-original hook on
+/// <c>Scene::FadeDoors</c>, the last engine call inside <c>Scene::RenderSinglePass</c> before
+/// <c>RenderDrawBucket(0)</c> -- see <see cref="OnFrameAnchor"/> and <see cref="SymbolMap.FadeDoors"/> for why
+/// literal RSP entry is not reachable. The camera is valid from the moment <c>Camera::RenderScene</c> writes
+/// view/projection into <c>m_aurMtxStack</c> (nm 0x19e2f60; proj +0x18, view +0x70), before the vcall: the
+/// engine never uses the GL matrix stack (#108, #132).</para>
+/// <para>Ownership is a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>), rebuilt wholesale
+/// at a frame boundary (enrollment, on a scene-walk delta, before the Alloy block) -- the frame-atomic swap. The
+/// only mid-frame mutation is revocation. <c>vanilla=1</c> in cx.cfg is the restart-only kill switch (#263).
+/// Hot path allocates nothing.</para>
+/// <para>Creatures arrive through the same <c>RenderDrawBucket</c> bracket (buckets 2 and 3, from
+/// <c>Scene::RenderDynamicGeometry</c>). Instances are MOVERS, whose transform this pass reads live at draw time,
+/// and <c>PartTriMesh::Mat</c>'s alpha multiply, colour multiply and self-illum add are folded into the per-draw
+/// record every frame -- a creature FADES through one of them, so opacity is per-frame state, never capture
+/// state. A true skinmesh (no skinning branch in the Alloy vertex stages) or an instance state no Alloy program
+/// expresses refuses against the GOB, and the enrollment sweep hands that whole creature back rather than
+/// half-own one (#128, #258).</para>
+/// <para>Water reflections need NOTHING from this pass: <c>Camera::CopyRenderSubframe</c> is a
 /// <c>CopyFramebuffer</c> plus a bind of the copy to texture units 11/12 (<c>texFBColor</c>/<c>texFBDepth</c>),
-/// not a second scene pass, and RenderSinglePass takes it AFTER buckets 0/1/7 and immediately before the
-/// bucket-5 water walk. Water is ordinary bucket-5 geometry whose <c>fswater.shd</c> ray-marches that
-/// snapshot in screen space (normals reconstructed from depth, no G-buffer), so Alloy parts reflect because
-/// they are already in the colour+depth attachments the snapshot copies.</para>
+/// taken after buckets 0/1/7 and before the bucket-5 water walk, and <c>fswater.shd</c> ray-marches that
+/// snapshot in screen space. Alloy parts reflect because they are already in the attachments the snapshot
+/// copies (#85).</para>
 /// </summary>
 public sealed unsafe partial class AlloyRenderer : IExtenderService
 {
     internal const int LogEvery = 900;
     /// <summary>Minimum frames between enrollments. A floor on a cold path, NOT a cadence -- the trigger is
     /// always a scene-walk delta, and a new Scene bypasses it outright. The bound it states: a part that
-    /// becomes ownable is owned within this many frames plus one budgeted walk (#329). Since #264 it is MISSING until then, not
-    /// vanilla-shaded -- there is no engine walk behind it -- so this floor is a visible-latency bound now
-    /// rather than a shading-quality one.</summary>
+    /// becomes ownable is owned within this many frames plus one budgeted walk, and is MISSING until then
+    /// (there is no engine walk behind it), so this is a visible-latency bound (#264, #329).</summary>
     internal const int EnrollFloor = 10;
     /// <summary>Frames before the FIRST period line. The 900-frame cadence is right for steady-state cost,
     /// but it is also the only proof this pass runs at all -- and at 900 a short session (or one that ends at
@@ -87,27 +64,15 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// early, then settle into the long cadence.</summary>
     internal const int FirstLogAt = 120;
     /// <summary>Ownership capacity. Beyond this the surplus stays engine-drawn (staging), never dropped.
-    /// <para>4096 was under the real population and it showed: a large area logged
-    /// <c>4082/5631 parts owned</c> -- pinned at the cap, with ~1550 ownable parts spilling. That alone is
-    /// "some tiles render vanilla", but the visible symptom was worse than that, because WHICH parts spill
-    /// is decided by a first-come-first-served walk of PartTable's hash table. That order is stable only
-    /// while the table's population is: one part recorded into a low slot pushes a previously-owned part
-    /// past the cap, so every enrollment (~1/s) re-picked the winners and tiles flipped renderer under a
-    /// static camera. Capacity above the population is what makes the churn stop existing rather than
-    /// merely slow down.</para>
-    /// <para>Sized for object-dense modern areas rather than for the largest one measured: the renderer's
-    /// job is to draw the whole area, so the cap is not a budget to tune but a ceiling that should not be
-    /// reachable. 163840 is ~29x the 5631 a large stock area carries. 400 bytes per slot across the arrays
-    /// below (the per-draw SSBO stage dominates at 176), so 62.5MB -- part of the 135MB these tables cost
-    /// resident, up from 22MB. Bought deliberately: the renderer targets modern machines and object-dense
-    /// areas, and a cap that cannot hold the area is a rendering fault, not a saving.</para>
-    /// <para>Raising it is only meaningful because the group lookup it feeds became a hash at the same time
-    /// -- PartTable's linear group walk was O(n^2) across an area load, which is 24M field compares at
-    /// 7000 groups and 13.4 BILLION at this cap. Without that, this number buys a load that never
-    /// finishes.</para>
-    /// <para>ponytail: still first-come-first-served, so an area past even this would flicker the way 4096
-    /// did. The fix if that ever happens is a DETERMINISTIC near-to-far spill -- so the surplus is always
-    /// the far geometry, where the seam is fog-compressed -- not a bigger number.</para></summary>
+    /// A ceiling that should not be reachable rather than a budget to tune: ~29x the 5631 parts a large stock
+    /// area carries, ~400 bytes per slot across the arrays below (62.5MB resident). A cap under the population
+    /// is worse than "some tiles render vanilla": WHICH parts spill is a first-come-first-served walk of
+    /// PartTable's hash table, whose order shifts with population, so every enrollment re-picks the winners and
+    /// tiles flip renderer under a static camera. The group lookup it feeds is a hash for the same reason -- a
+    /// linear walk is 13.4 billion compares at this cap.
+    /// <para>ponytail: still first-come-first-served, so an area past even this would flicker. The fix is a
+    /// DETERMINISTIC near-to-far spill (the surplus is always the fog-compressed far geometry), not a bigger
+    /// number.</para></summary>
     internal const int MaxOwned = 163840, MaxVdos = 4096;
     /// <summary>#84 batch-sort texture keys: distinct diffuse textures the sort can separate, and the
     /// open-addressed slot table that interns them (power of two, ~2x MaxMats for a 0.5 load factor). Overflow
@@ -1325,28 +1290,19 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         DrawOwned();
     }
 
-    /// <summary>#137/#262: solve every Alloy skinmesh's pose for THIS frame, before the bracket -- and since
-    /// #132 after <see cref="PostChain.Precheck"/>, so a pass that is standing down does not solve poses the
-    /// engine is about to solve again itself.
-    /// <para>#262 changed WHERE the pose comes from, not when. It used to come from re-entering
-    /// <c>PartSkin::Draw</c> with the draw funnel swallowed, purely to make the engine's own bone solve
-    /// happen, and then copying <c>GLRender::m_bones</c> out. The reason given for that was a statement about
-    /// VANILLA's draw order -- the Alloy pass runs before the engine walks the dynamic buckets, so m_bones
-    /// held the previous frame's last skinned part -- and under the cutover the shim decides when the walk
-    /// happens. The residual constraint is real and unchanged: the ENGINE owns animation state. So
-    /// <see cref="SkinPose"/> READS that state and does the solve itself, and no engine draw function is
-    /// entered at all.</para>
+    /// <summary>Solve every Alloy skinmesh's pose for THIS frame, before the bracket and after
+    /// <see cref="PostChain.Precheck"/>, so a pass that is standing down does not solve poses the engine is
+    /// about to solve again itself (#137, #262). The ENGINE owns animation state; <see cref="SkinPose"/>
+    /// READS that state and does the solve itself, and no engine draw function is entered at all.
     /// <para>A part whose pose does not come back (its <c>MdlNodeSkin</c> is not prepared yet, or its tree
-    /// overflowed the walk) is un-owned here and now, which since #264 means it is not drawn this frame.
-    /// An unprepared <c>MdlNodeSkin</c> used to be repaired by the engine's own draw of the part, and there
-    /// is no such draw any more -- so #284 gave the repair an Alloy edge of its own
-    /// (<see cref="SkinPose.DripPrepares"/>, from the frame anchor). The refusal here is one frame, not the
-    /// session; a cloak seen permanently missing is now a number on the period line, not a mystery.
-    /// <para>#308 follow-up: the shadow bracket's pose. The bake used to sample the bone block the LAST
-    /// colour build uploaded -- pose N-1 under a colour pass drawing pose N -- and on a cloak lit by its own
-    /// carried torch that one-frame disagreement flips the self-shadow compare's sign every frame: the
-    /// flicker. The solve now runs ONCE per frame at the shadow bracket (CPU half here, upload half in
-    /// <see cref="ShadowPoseUpload"/>), and the colour preamble reuses it instead of solving again.</para></summary>
+    /// overflowed the walk) is un-owned here and now, which means it is not drawn this frame. There is no
+    /// engine draw left to repair an unprepared <c>MdlNodeSkin</c>, so the repair has an Alloy edge of its
+    /// own (<see cref="SkinPose.DripPrepares"/>, from the frame anchor); the refusal is one frame, not the
+    /// session, and a cloak seen permanently missing is a number on the period line (#264, #284).</para>
+    /// <para>The solve runs ONCE per frame at the shadow bracket (CPU half here, upload half in
+    /// <see cref="ShadowPoseUpload"/>), and the colour preamble reuses it: a bake sampling the bone block the
+    /// LAST colour build uploaded -- pose N-1 under a colour pass drawing pose N -- flips the self-shadow
+    /// compare's sign every frame on a cloak lit by its own carried torch, which is the flicker (#308).</para></summary>
     internal static bool PosedByShadow;
 
     internal static void ShadowPose()
@@ -1365,12 +1321,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (PosedByShadow) UploadBones();
     }
 
-    /// <summary>#308 follow-up: bone slots are STICKY -- a part keeps its slot in the bone block across
-    /// frames, allocation mirroring the ownership table's own stable-slot scheme. The slots used to be
-    /// assigned sequentially per frame, which the shadow-bracket pose made load-bearing: the bake pairs the
-    /// LAST colour build's records (whose feat.y bone bases name last frame's layout) with THIS frame's
-    /// block, so a layout that shifted on a population change baked every caster past the shift with
-    /// another creature's bones for a frame. A sticky slot never shifts under a survivor.</summary>
+    /// <summary>Bone slots are STICKY -- a part keeps its slot in the bone block across frames, mirroring the
+    /// ownership table's stable-slot scheme. Load-bearing for the shadow-bracket pose: the bake pairs the LAST
+    /// colour build's records (whose feat.y bone bases name last frame's layout) with THIS frame's block, so a
+    /// slot that shifted under a survivor would bake it with another creature's bones (#308).</summary>
     private static readonly int[] _boneFree = new int[MaxBoneSlots];
     private static int _boneFreeN, _boneTop;
     private static int[] _boneOwner = new int[MaxBoneSlots];   // ownership slot holding each bone slot, -1 free

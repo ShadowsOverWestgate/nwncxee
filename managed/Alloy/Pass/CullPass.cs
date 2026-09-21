@@ -6,52 +6,39 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #243 (ADR 0017 step 3): Alloy's own visibility. Until this existed the only visibility input the colour
-/// path had was <c>PartTable.InBucketsRecently</c> -- "did the engine's bucket walk touch this part in the
-/// last frame or two" -- which is a property of ENROLMENT CADENCE, not of what the camera can see. That is
-/// why #236's pop-in was tuned with a window instead of answered.
-/// <para>What replaces it: a compute dispatch over the per-draw list that tests each draw's world bounding
-/// sphere against this pass's frustum (and, for the colour pass, against a hi-Z pyramid), compacts the
-/// survivors into an indirect command buffer and writes a per-batch count. Submission is
-/// <c>glMultiDrawElementsIndirectCount</c>, so the count never comes back to the CPU.</para>
-/// <para><b>Same-frame for the colour pass; two-phase for the prepass (#489).</b> The pyramid is built
-/// from #119's depth prepass INSIDE the frame that consumes it, and the colour dispatch (frustum + hi-Z)
-/// tests against that fresh pyramid. #243 rejected a reprojected cull because a pyramid one frame stale
-/// pops silhouettes; #489 keeps the objection and answers it: the prepass dispatch is TWO phases. Phase one
-/// tests each draw against the PREVIOUS pass's pyramid in that pyramid's own clip space (the sphere is
-/// projected with the view-projection the pyramid was built under, which is exact for anything that did
-/// not move) and marks every draw the stale pyramid rejected; the prepass draws the survivors, the pyramid
-/// is rebuilt, and phase two re-tests ONLY the marked draws against the fresh pyramid and draws whichever
-/// now pass. A wrong stale rejection is corrected in the same frame, so nothing visible can pop; a draw the
-/// frustum, the LOD or the fog dropped is not marked, because those verdicts were same-frame already.</para>
-/// <para>What the prepass leaves out (cutouts, discarding classes it drops, everything the engine still
-/// draws) only leaves the pyramid holding the FARTHER depth that is actually behind them, and a farther max
-/// culls less. The direction that matters, and that #243's first live run got wrong: the test is
-/// <c>objectNear &gt; maxSceneDepth</c>, so anything that LOWERS the max culls MORE. Over-covering the
-/// sampled region is safe; under-covering it is the bug.</para>
-/// <para>#287 adds LOD selection to the same dispatch (<see cref="LodPx"/>) and deletes the per-pass CPU
-/// rebuild of its source list: the batch walk stages the six-uint record where it already stages the draw's
-/// count, offset and base, and this class uploads it. What is left on the CPU is the batch CUT alone, whose
-/// keys are engine pointers read during revalidation and cannot be asked of the GPU.</para>
-/// <para><b>Two kinds of batch (#290).</b> Below <c>compactBelow</c> a batch COMPACTS: an <c>atomicAdd</c>
-/// appends survivors in whatever order the hardware hands them out, which is sound for the opaque range
-/// because its draws are order-independent. At and above it a batch is SORTED: the first dispatch measures
-/// each survivor's squared distance from the eye, and a second dispatch gives it its slot by counting how
-/// many survivors of the same batch are farther away. See <see cref="SortCs"/>.</para>
-/// <para>That is #287's deferred ordering question, answered on the GPU: nothing about WHICH transparent
-/// draws exist or what order they composite in comes back to the CPU. The key is measured from the bounding
-/// sphere already resident in the SSBO, the compare is on the float key rather than a quantised one (so two
-/// coplanar surfaces cannot tie into the wrong order), the tie-break is the staged index (so equal-distance
-/// draws hold their texture-grouped enrollment order frame to frame), and the per-draw alpha multiplier
-/// cannot come unpaired from its index because it rides the RECORD, which the permutation names through
-/// <c>uOut</c> rather than reorders.</para>
-/// <para>Cutout batches blend and ride the COMPACTING side -- overlapping cutouts can therefore composite in
-/// a different order from frame to frame. Named rather than hidden: they depth-write with a discard, so the
-/// visible consequence is at most a shimmer where two graded edges overlap, and <c>/alloy cull 0</c> is the
-/// A/B that proves it either way.</para>
-/// <para>Stands down whole when 4.6 indirect-count or compute is missing, when the programs fail to build,
-/// or when the knob is off -- and standing down means the caller's existing <c>BaseVertex</c> submission,
-/// which is unchanged. A cull that cannot run must never mean an empty world.</para>
+/// Alloy's own visibility (ADR 0017 step 3, #243): a compute dispatch over the per-draw list that tests each
+/// draw's world bounding sphere against this pass's frustum (and, for the colour pass, a hi-Z pyramid),
+/// compacts the survivors into an indirect command buffer and writes a per-batch count. Submission is
+/// <c>glMultiDrawElementsIndirectCount</c>, so the count never comes back to the CPU.
+/// <para><b>Same-frame for the colour pass; two-phase for the prepass.</b> The pyramid is built from the depth
+/// prepass INSIDE the frame that consumes it, and the colour dispatch tests against that fresh pyramid -- a
+/// pyramid one frame stale pops silhouettes. The prepass dispatch is TWO phases: phase one tests each draw
+/// against the PREVIOUS pass's pyramid in that pyramid's own clip space (exact for anything that did not
+/// move) and marks every draw the stale pyramid rejected; the prepass draws the survivors, the pyramid is
+/// rebuilt, and phase two re-tests ONLY the marked draws against the fresh pyramid. A wrong stale rejection
+/// is corrected in the same frame; a draw the frustum, the LOD or the fog dropped is not marked, because
+/// those verdicts were same-frame already (#489).</para>
+/// <para>What the prepass leaves out (cutouts, discarding classes, everything the engine still draws) only
+/// leaves the pyramid holding the FARTHER depth behind them, and a farther max culls less. The test is
+/// <c>objectNear &gt; maxSceneDepth</c>, so anything that LOWERS the max culls MORE: over-covering the sampled
+/// region is safe, under-covering it is the bug.</para>
+/// <para>LOD selection rides the same dispatch (<see cref="LodPx"/>): the batch walk stages the six-uint
+/// record where it already stages the draw's count, offset and base, and this class uploads it. What is left
+/// on the CPU is the batch CUT alone, whose keys are engine pointers read during revalidation (#287).</para>
+/// <para><b>Two kinds of batch.</b> Below <c>compactBelow</c> a batch COMPACTS: an <c>atomicAdd</c> appends
+/// survivors in hardware order, sound for the opaque range because its draws are order-independent. At and
+/// above it a batch is SORTED: the first dispatch measures each survivor's squared distance from the eye, a
+/// second gives it its slot by counting how many survivors of the same batch are farther (<see cref="SortCs"/>).
+/// The key is the float distance from the bounding sphere already resident in the SSBO (no quantised ties
+/// between coplanar surfaces), the tie-break is the staged index (equal-distance draws hold their enrollment
+/// order frame to frame), and the per-draw alpha multiplier rides the RECORD, which the permutation names
+/// through <c>uOut</c> rather than reorders (#290).</para>
+/// <para>Cutout batches blend and ride the COMPACTING side, so overlapping cutouts can composite in a
+/// different order frame to frame. Named rather than hidden: they depth-write with a discard, so the visible
+/// consequence is at most a shimmer where two graded edges overlap; <c>/alloy cull 0</c> is the A/B.</para>
+/// <para>Stands down whole when 4.6 indirect-count or compute is missing, when the programs fail to build, or
+/// when the knob is off -- and standing down means the caller's existing <c>BaseVertex</c> submission. A cull
+/// that cannot run must never mean an empty world.</para>
 /// </summary>
 internal static unsafe class CullPass
 {

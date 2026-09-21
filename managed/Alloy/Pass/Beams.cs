@@ -8,28 +8,25 @@ using static CX.Framework.EngineLayout;
 namespace CX.Alloy;
 
 /// <summary>
-/// #130 (map #68, spec #114 M3, ADR 0011) and #261 (M5 strand 1 step 6): volumetric light beams, enumerated
-/// by Alloy off the engine's bucket 15 and drawn at the Alloy graph slot.
-/// <para>Vanilla draws them from <c>Scene::RenderBeams</c> @0x46aba0 (Scene vt+0x1d8), step 27 of
-/// <c>Scene::RenderSinglePass</c>, immediately after the additive bucket. They are not draw-bucket residents
-/// in the sense the general walk knows: the population is
+/// Volumetric light beams, enumerated by Alloy off the engine's bucket 15 and drawn at the Alloy graph slot
+/// (ADR 0011 M3, #130, #261). Vanilla draws them from <c>Scene::RenderBeams</c> @0x46aba0 (Scene vt+0x1d8),
+/// step 27 of <c>Scene::RenderSinglePass</c>, immediately after the additive bucket. The population is
 /// <c>DrawBucketManager::GetFirstItem(Scene+0x208, 0xf, 0)</c> -- bucket <b>15</b>, which
-/// <c>Scene::RenderDrawBucket</c> never touches. What IS in the bucket are <c>PartBeam</c>s: static geometry
+/// <c>Scene::RenderDrawBucket</c> never touches -- and what is in it are <c>PartBeam</c>s: static geometry
 /// built once per area by <c>BSPCreateStaticProjections</c> @0x47e890 (the same bake that makes
 /// <c>PartShadow</c>, chosen by the model's own flag at <c>Model+0x114</c>), so a beam is a resident VDO and
-/// not a per-frame simulation.</para>
-/// <para><b>#261: the source data is ours.</b> <see cref="Enroll"/> reads the bucket arrays directly, once a
-/// frame in engine context, exactly as <c>RenderBeams</c> does -- item, then vtable slot 0x90
-/// (<c>Part::AsPartBeam</c>), then the VDO at <c>PartBeam+0xa0</c>. There is no hook on
-/// <c>Scene::RenderBeams</c>, no hook on <c>PartBeam::Draw</c>, no capture window and no colour mask: the
-/// table is rebuilt from the engine's own live classification every frame, so there is nothing that can go
-/// stale and no population to reconcile against. The one-frame lag went with the capture site.</para>
+/// not a per-frame simulation.
+/// <para><b>The source data is ours.</b> <see cref="Enroll"/> reads the bucket arrays directly, once a frame
+/// in engine context, exactly as <c>RenderBeams</c> does -- item, then vtable slot 0x90
+/// (<c>Part::AsPartBeam</c>), then the VDO at <c>PartBeam+0xa0</c>. No hook on <c>Scene::RenderBeams</c> or
+/// <c>PartBeam::Draw</c>, no capture window and no colour mask: the table is rebuilt from the engine's own
+/// live classification every frame, so nothing can go stale.</para>
 /// <para><b>The model matrix is read, not captured.</b> <c>RenderBeams</c> pushes nothing onto the matrix
-/// stack -- verified in the disassembly, its only matrix contact is none -- and
-/// <c>Scene::RenderDrawBucket</c> @0x46d0b0 brackets every per-part <c>SetModelMatrix</c> with
-/// <c>PushCurrentMatrix</c>/<c>PopCurrentMatrix</c>. RSP's own push/identity/pop pair sits AFTER the beam
-/// call (@0x471985, against @0x46f13b). So the model stack top is invariant across the whole of RSP and
-/// reading it at the Alloy slot yields the value the engine's own draw would have used.</para>
+/// stack (verified in the disassembly), <c>Scene::RenderDrawBucket</c> @0x46d0b0 brackets every per-part
+/// <c>SetModelMatrix</c> with <c>PushCurrentMatrix</c>/<c>PopCurrentMatrix</c>, and RSP's own
+/// push/identity/pop pair sits AFTER the beam call (@0x471985, against @0x46f13b). So the model stack top is
+/// invariant across the whole of RSP and reading it at the Alloy slot yields the value the engine's own draw
+/// would have used.</para>
 /// </summary>
 internal static unsafe class Beams
 {

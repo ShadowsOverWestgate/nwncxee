@@ -6,20 +6,18 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #121 (map #68, spec #114 M3): the per-area image-based lighting probe -- a small prefiltered colour
-/// cubemap captured from the Alloy scene draw, standing in for the engine's 2002 pseudo-spheremap as the
-/// ambient-specular source of every Alloy lit part.
-/// <para>What it replaces: <c>inc_envmap.shd</c>'s sphere branch is not a reflection at all (an octahedral
-/// squash of the VIEW-SPACE normal plus a screen-position fudge, biased to (0.5,0.25)), and the texture it
-/// squashes is the AREA's authored env map -- which is why indoor metal reflects an outdoor sky. The scene
-/// env map at <c>scene+0x1e8</c> is therefore deliberately never bound by the Alloy pass: this cube is what
-/// the area actually looks like from where the player stands.</para>
-/// <para>Cost: capture is the Alloy draw again, six times, into <see cref="Size"/>-square faces -- and it
-/// runs on an area change, not per frame (<see cref="Wanted"/>). It happens inside the colour bracket the
-/// Alloy pass already opened, so it costs no additional GL bracket.</para>
-/// <para>The cube stores LINEAR radiance in RGBA16F: <c>glGenerateMipmap</c> box-filters whatever is in the
-/// texture, and filtering display-space values darkens them. The capture stage skips its display-space
-/// encode for exactly this reason (<c>uCapture</c>), and the sampler needs no linearisation.</para>
+/// The per-area image-based lighting probe (ADR 0011 M3, #121): a small prefiltered colour cubemap captured
+/// from the Alloy scene draw, the ambient-specular source of every Alloy lit part. It replaces the engine's
+/// pseudo-spheremap: <c>inc_envmap.shd</c>'s sphere branch is not a reflection at all (an octahedral squash
+/// of the VIEW-SPACE normal plus a screen-position fudge, biased to (0.5,0.25)), and the texture it squashes
+/// is the AREA's authored env map -- which is why indoor metal reflects an outdoor sky. The scene env map at
+/// <c>scene+0x1e8</c> is therefore never bound by the Alloy pass: this cube is what the area actually looks
+/// like from where the player stands.
+/// <para>Cost: capture is the Alloy draw again, six times, into <see cref="Size"/>-square faces -- on an
+/// area change, not per frame (<see cref="Wanted"/>), inside the colour bracket the Alloy pass already
+/// opened. The cube stores LINEAR radiance in RGBA16F: <c>glGenerateMipmap</c> box-filters whatever is in
+/// the texture, and filtering display-space values darkens them, so the capture stage skips its display-space
+/// encode (<c>uCapture</c>) and the sampler needs no linearisation.</para>
 /// <para>ponytail: the roughness blur is the plain mip chain, not a GGX-importance-sampled prefilter. It is
 /// the classic cheap split-sum stand-in and already strictly better than the stock path (which clamps cube
 /// sampling to LOD 0 and gets no blur at all). Upgrade path: a prefilter pass over the chain if rough metal

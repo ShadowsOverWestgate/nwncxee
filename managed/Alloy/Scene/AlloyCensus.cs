@@ -396,41 +396,30 @@ internal static unsafe class AlloyCensus
     /// <c>if ((*(*(gob+0x68)+0x8e) &amp; 8) != 0)</c>.</summary>
     internal const int GobOwnerFadeBit = 8;
 
-    /// <summary>#128/#285: does this instance carry state no Alloy program can reproduce? ONE case now --
-    /// the SCENE TINT (<c>gob+0x19</c>), which <c>PartTriMesh::Mat</c> @0x450960 draws as
+    /// <summary>Does this instance carry state no Alloy program can reproduce? ONE case -- the SCENE TINT
+    /// (<c>gob+0x19</c>), which <c>PartTriMesh::Mat</c> @0x450960 draws as
     /// <c>SetColor4f(currentscene+0x14c..0x154)</c> under <c>Disable(5)</c>: the whole surface replaced by one
-    /// unlit colour, which is not arithmetic on any term the CxDraw record carries. COUNTED, not owned --
-    /// see <c>instance-state</c> on the [alloy] line and <c>scene-tint</c> on the census line.
-    /// <para>#285: the HIGHLIGHT (<c>gob+0x18</c>) came OUT. Before #264 a refusal fell through to the
-    /// engine's bucket walk and the part drew vanilla-highlighted; there is no walk, so refusing it made a
-    /// placeable VANISH for exactly as long as the cursor sat on it, with the engine's glow overlay painted
-    /// over nothing. Alloy draws the part normally now and the overlay draws the glow on top of it, which is
-    /// vanilla composition. What is given up is only <c>Mat</c>'s highlight branch -- <c>Disable(5)</c> plus
-    /// <c>SetColor4f(1,1,1,alpha)</c>, the part going flat-white-unlit under the cursor. A lit part under a
-    /// glow beats no part at all.</para>
-    /// <para>Everything else <c>PartTriMesh::Mat</c> @0x450960 does with a gob is arithmetic on terms the
-    /// CxDraw record already carries -- an alpha multiply, a component-wise colour multiply and a self-illum
-    /// add -- so #128 FOLDS them (see <see cref="GobAlphaMul"/> and its two neighbours) rather than refusing
-    /// the part. That fold is what makes creatures ownable at all: a creature fades through <c>gob+0x108</c>,
-    /// so under #134's rule "modulating" and "on screen and interesting" were the same population.</para>
-    /// <para>#134's own finding still holds and is why the flags below are read as VALUES, not as arms:
-    /// <c>gob+0xf6</c> is set on essentially every instance in the game while its colour is (1,1,1). The
-    /// cases here refuse whatever their values, because neither is a multiply at all.</para>
-    /// <para>The per-gob ENV OVERRIDE used to refuse here and was the gate that actually kept the whole
-    /// instanced population out -- a live census put it on 2814 of 3110 instanced part draws, against 296
-    /// owned, so #134's placeables were never really owned either. It is not a special class:
-    /// <c>PartTriMesh::Draw</c> @0x4513d0 routes on <c>gob+0x480 || Material::HasEnvMap</c> into ONE function,
-    /// and <c>RenderEnvironmentMapped</c> @0x451040 picks gob+0x480 else mat+0x40 else the scene's own
-    /// <c>currentscene+0x1e8</c>, binds it, and then calls <c>RenderFlat</c> anyway. It is the env FLAG with a
-    /// different source for the texture, and #121's Alloy path already replaces that texture with the per-area
-    /// IBL probe. So it sets <see cref="AlloyCandidate.Env"/> now, exactly as a material env map does.
-    /// <para>ponytail: RenderEnvironmentMapped also passes <c>part+0xa0 * gob+0x108</c> as the ambient
-    /// intensity to <c>SetPixelShaderAmbientColor</c> -- the reflection's STRENGTH. Not reproduced; the owned
-    /// record stages ambient.w as 1. Fold it into that slot if instanced content ever reads too shiny.</para></para>
-    /// Cold, at enrollment only. #330: the per-frame re-ask is gone -- <c>gob+0x19</c> is the SKYFADE flag,
-    /// written by <c>Gob::Gob</c> (0) and <c>Scene::SetSkyFade</c> @0x55e2b0 (1, once per area load on the
-    /// <c>skyfade1</c> gob before it has parts) and never cleared, so the enrollment refusal is the whole
-    /// answer.</summary>
+    /// unlit colour, not arithmetic on any term the CxDraw record carries. COUNTED, not owned -- see
+    /// <c>instance-state</c> on the [alloy] line and <c>scene-tint</c> on the census line (#128, #285).
+    /// <para>Everything else <c>Mat</c> does with a gob is arithmetic on terms the record already carries --
+    /// an alpha multiply, a component-wise colour multiply and a self-illum add -- so those are FOLDED
+    /// (<see cref="GobAlphaMul"/> and its two neighbours) rather than refused; a creature fades through
+    /// <c>gob+0x108</c>, so refusing modulation would refuse every creature on screen. The flags are read as
+    /// VALUES, not as arms: <c>gob+0xf6</c> is set on essentially every instance while its colour is (1,1,1).
+    /// The HIGHLIGHT (<c>gob+0x18</c>) is not refused either: Alloy draws the part normally and the engine's
+    /// glow overlay draws on top, which is vanilla composition; what is given up is <c>Mat</c>'s
+    /// flat-white-unlit highlight branch, and a lit part under a glow beats no part at all (#285).</para>
+    /// <para>The per-gob ENV OVERRIDE is not a special class: <c>PartTriMesh::Draw</c> @0x4513d0 routes on
+    /// <c>gob+0x480 || Material::HasEnvMap</c> into ONE function, and <c>RenderEnvironmentMapped</c> @0x451040
+    /// picks gob+0x480 else mat+0x40 else <c>currentscene+0x1e8</c>, binds it, then calls <c>RenderFlat</c>.
+    /// It is the env FLAG with a different texture source, and Alloy replaces that texture with the per-area
+    /// IBL probe anyway, so it sets <see cref="AlloyCandidate.Env"/> exactly as a material env map does.
+    /// ponytail: RenderEnvironmentMapped also passes <c>part+0xa0 * gob+0x108</c> as the ambient intensity
+    /// (the reflection's STRENGTH); the owned record stages ambient.w as 1. Fold it into that slot if
+    /// instanced content ever reads too shiny.</para>
+    /// Cold, at enrollment only: <c>gob+0x19</c> is the SKYFADE flag, written by <c>Gob::Gob</c> (0) and
+    /// <c>Scene::SetSkyFade</c> @0x55e2b0 (1, once per area load on the <c>skyfade1</c> gob before it has
+    /// parts) and never cleared, so the enrollment refusal is the whole answer (#330).</summary>
     internal static bool GobUnownable(IntPtr gob)
     {
         var g = new GobRef(gob);

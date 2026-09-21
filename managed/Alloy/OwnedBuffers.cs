@@ -7,15 +7,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #260 (map #68, ADR 0018 M5 strand 1 step 5): geometry RESIDENCY. Alloy mints the GL buffer behind every
-/// engine vertex/index pool and uploads it from the pool's host shadow; the engine's own upload is
-/// suppressed. One buffer, one upload, no copy.
-/// <para><b>What this replaces.</b> #212/#213 kept an Alloy-side COPY of every engine pool buffer, keyed on
-/// the engine's GL name, made with <c>glCopyBufferSubData</c> on first sight and refreshed once per frame
-/// from a coalesced span. So world geometry lived in three places -- the engine's permanent host shadow, the
-/// engine's VBO, Alloy's VBO -- and every dirty pool was pushed to GL twice. Worse, the copy's correctness
-/// depended on ordering against an engine commit the copier did not control, which is census E10's reading
-/// of #227. Both the third copy and that ordering are gone: the hook IS the upload.</para>
+/// Geometry RESIDENCY (ADR 0018 M5 strand 1 step 5, #260): Alloy mints the GL buffer behind every engine
+/// vertex/index pool and uploads it from the pool's host shadow; the engine's own upload is suppressed. One
+/// buffer, one upload, no copy -- the hook IS the upload, so there is no ordering against an engine commit
+/// for a copy to get wrong (#227).
 /// <para><b>Keyed on the POOL TOKEN.</b> The token is the engine's own identity for the resource --
 /// <c>GLRender::RequestPool</c> @0x4d1ec0 hands one out, <c>DeletePool</c> @0x4d1d80 returns it to a free
 /// list, and every pool call takes one. The GL name is a FIELD of the pool, minted here, so it is an index
@@ -23,20 +18,16 @@ namespace CX.Alloy;
 /// a name because that is all a harvested VAO carries. Both edges that change what a name means -- this
 /// upload funnel and the engine's delete funnel -- rewrite the index.</para>
 /// <para><b>Why the takeover is safe even when Alloy never draws.</b> The bytes uploaded are the bytes the
-/// engine would have uploaded, into the buffer the engine's own pool descriptor names. A mid-session stand
-/// down (no 4.6 context, a vanilla verdict, a refused frame) therefore degrades to vanilla, not to an empty
-/// world -- which is exactly what a copy-based scheme could not promise. It is also why the ticket's
-/// world-vs-UI pool question is an instrument here (<see cref="NoteEngineDraw"/>) and not a gate: a pool the
-/// UI draws from holds correct bytes whether Alloy or the engine put them there.</para>
-/// <para><b>Every pool, not only the world's.</b> ADR 0018 step 5 scopes the suppression to the world's
-/// pools, because a copy-based scheme could only be trusted that far. The takeover widens it: the bytes are
-/// the engine's own bytes in the engine's own buffer, so there is no world-only carve-out left to make and a
-/// per-pool gate would be machinery guarding nothing. What the ADR asked for is a subset of what this
-/// does.</para>
-/// <para>Residency supersedes ADR 0016's "upload on enroll, free on revoke" for geometry (ADR 0018 step 5):
-/// upload on the engine's commit, freed by the engine's own <c>DeletePool</c>, <b>no budget and no LRU</b>,
-/// with a VRAM high-water mark reported beside the engine's own host-shadow total. A budget before a
-/// measurement is #149's mistake in a new costume.</para>
+/// engine would have uploaded, into the buffer the engine's own pool descriptor names, so a mid-session
+/// stand down (no 4.6 context, a vanilla verdict, a refused frame) degrades to vanilla, not to an empty
+/// world. It is also why the world-vs-UI pool question is an instrument (<see cref="NoteEngineDraw"/>) and
+/// not a gate: a pool the UI draws from holds correct bytes whoever put them there. For the same reason it
+/// covers EVERY pool, wider than ADR 0018's world-only scope -- a per-pool gate would be machinery guarding
+/// nothing.</para>
+/// <para>Residency supersedes ADR 0016's "upload on enroll, free on revoke" for geometry: upload on the
+/// engine's commit, freed by the engine's own <c>DeletePool</c>, <b>no budget and no LRU</b>, with a VRAM
+/// high-water mark reported beside the engine's own host-shadow total. A budget before a measurement is
+/// #149's mistake in a new costume.</para>
 /// </summary>
 internal static unsafe class OwnedBuffers
 {

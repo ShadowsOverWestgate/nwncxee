@@ -5,10 +5,10 @@ using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
-/// <summary>#330: the engine chase, BOUNDED. Restage used to re-read every owned part's borrowed engine
-/// state every frame -- node matrix, keyhole verdict, tile fade -- which made it O(world) whatever the
-/// camera saw. The binary has no per-change setter for any of those (research on the ticket), but it does
-/// keep the sets that say which parts CAN have changed, and they are all view-sized:
+/// <summary>The engine chase, BOUNDED (#330): the per-frame re-read of every owned part's borrowed engine
+/// state -- node matrix, keyhole verdict, tile fade -- is limited to the parts that CAN have changed. The
+/// binary has no per-change setter for any of those (research on the ticket), but it does keep the sets, and
+/// they are all view-sized:
 /// <list type="bullet">
 /// <item><c>gobbucket</c>: the only route to a gob-tree part's VertexPrimitive matrix is
 /// <c>AddPartsTreeToDrawBuckets</c> over this list, so a part whose gob is not in it holds last frame's

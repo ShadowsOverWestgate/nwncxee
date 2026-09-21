@@ -34,19 +34,15 @@ public sealed unsafe partial class AlloyRenderer
     /// FIXED engine locations (<see cref="EngPos"/>/<see cref="EngUv"/>/<see cref="EngNormal"/>, from
     /// GLRender::ConnectShaderData's bind table). A failed query (type 0) is refused rather than fed to
     /// VertexAttribPointer -- an enabled-but-unset array crashes the driver's vertex pull (#81). A VDO with
-    /// no normal stream is still ownable, just never LIT (#83): lit parts on it hand themselves back to the
-    /// engine rather than shade off a guessed normal.
-    /// <para>#294: and a VDO with no UV stream is ownable too. It used to be refused, which since #285 made
-    /// every part on it a hole -- the glass orb that cast a shadow and drew nothing. A UV-less mesh is not
-    /// broken content: env-mapped glass looks its texture up by the reflection vector and has no diffuse UV
-    /// to have. <see cref="BuildVao"/> leaves <see cref="LocUv"/> unbound, so the vertex stage reads GL's
-    /// generic constant (0,0,0,1) at that location -- which is what the ENGINE's own draw feeds it, for the
-    /// same reason: its VAO never got a VertexAttribPointer for the slot either, and the binary never calls
-    /// any <c>glVertexAttrib{1..4}*</c> generic setter (every one of those glew slots is stored by glewInit
-    /// @0xed9d15 and read by nobody), so the constant is still GL's default on both sides.</para>
-    /// <para>The other two conditions stay refusals, and here is why. <b>no-elembuf</b>: Alloy submits
-    /// exclusively through MultiDrawElementsIndirect, so a VDO the engine draws with DrawArrays has no index
-    /// buffer to hand it and owning one would mean synthesizing indices for a mesh that has none.
+    /// no normal stream is still ownable, just never LIT (#83).
+    /// <para>A VDO with no UV stream is ownable too: env-mapped glass looks its texture up by the reflection
+    /// vector and has no diffuse UV to have. <see cref="BuildVao"/> leaves <see cref="LocUv"/> unbound, so
+    /// the vertex stage reads GL's generic constant (0,0,0,1) at that location -- which is what the ENGINE's
+    /// own draw feeds it: its VAO never got a VertexAttribPointer for the slot either, and the binary never
+    /// calls any <c>glVertexAttrib{1..4}*</c> generic setter (every one of those glew slots is stored by
+    /// glewInit @0xed9d15 and read by nobody) (#294).</para>
+    /// <para>The other two conditions stay refusals. <b>no-elembuf</b>: Alloy submits exclusively through
+    /// MultiDrawElementsIndirect, so a VDO the engine draws with DrawArrays has no index buffer to hand it.
     /// <b>no-pos</b>: there is no position stream to transform, and Alloy will not guess one. A non-zero
     /// no-pos is also a drip-ordering suspect rather than a content fact -- see <see cref="DripVao"/>, whose
     /// residency gate exists because dripping before the pools are named bakes buffer 0 in permanently.</para>

@@ -2,38 +2,32 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>The <c>post</c> group (spec §4.3): the storage <see cref="PostChain"/>, <see cref="PostStack"/>
-/// and <see cref="ToonStage"/> read. No master -- the resolve IS the Alloy frame. <c>hdr</c> and the render
-/// scale are the Renderer group's (<c>alloy.hdr</c>, <c>alloy.scale</c>), not this one's. Touched from
+/// <summary>The <c>post</c> group: the storage <see cref="PostChain"/>, <see cref="PostStack"/> and
+/// <see cref="ToonStage"/> read. No master -- the resolve IS the Alloy frame. <c>hdr</c> and the render scale
+/// are the Renderer group's (<c>alloy.hdr</c>, <c>alloy.scale</c>). Touched from
 /// <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main thread.
 /// <para>Why the defaults: <c>exposure</c> is scene-referred, one linear gain on the resolved frame (bloom
-/// included) BEFORE the tonemap, so blacks stay put and the shoulder takes what it pushes past 1 -- Alloy's
-/// own brightness decision, not a port of anyone's chain (the stock SoW frame gets its lift from two
-/// display-space ACES passes and a grade), and what makes <c>tonemap aces</c> usable at all: the Narkowicz
-/// fit sits below NWN's radiance levels unexposed. <c>auto</c> (#491) is histogram eye adaptation -- a
-/// compute histogram of log2 luminance over the HDR target gives a log-average, a one-thread dispatch eases
-/// a gain toward <c>AutoKey / average</c>, the resolve multiplies it in AFTER the fixed exposure; off is
-/// bit-exact the fixed image. <c>automin/automax</c> bound the AUTO factor, not the total; <c>autospeed</c> is
-/// the rate (1/s) when the gain RISES (into the dark, the slow one), <c>autodown</c> when it falls (the brief
-/// over-exposure that settles is this rate); settle time is about 3/rate seconds. <c>acesmix</c> mixes the
-/// ACES curve in LINEAR against the shoulder: 1 is the full fit, whose toe crushes NWN's dim interiors
-/// (0.01 linear comes out 2.6x darker, so only specular survives and a character in the dark reads as
-/// "glossy"); 0.5 is xtul's live call. <c>dither</c> 1.0 is the correct value, not taste: one LSB of
-/// triangular-PDF noise is exactly what decorrelates the quantisation step, the difference between a smooth
-/// gradient and contour bands. <c>taablend</c> is the current frame's share of the blend at rest (0.1 = a
-/// ten-frame history); <c>taau</c> keeps the TAA history at DISPLAY size under a render scale below 1.
-/// <c>taa</c> ships ON and is the default anti-aliaser: SMAA stands aside while it runs
-/// (<see cref="SmaaStage.Active"/>), so <c>/post taa 0</c> is the A/B back to it. <c>taasharp</c> is the
-/// unsharp mask the copy-out applies to the resolved history -- a temporal average is softer than a spatial
-/// filter at the same edge, and 0.3 is what puts the resolve beside SMAA rather than behind it.
-/// <c>halfres</c> runs the screen-space ambient occlusion at half the render extent (a quarter of the
-/// pixels) and upsamples it depth-aware in the lit stage; it ships on because the temporal accumulator is
-/// what hides the coarser estimate, and TAA now ships on with it.
-/// <c>viz</c> shows one STAGE of the chain -- 1 the bloom alone, 2 the HDR colour alone, 3 the bloom at 20x,
-/// 4 the velocity target -- and <c>clearviz</c> clears the HDR target to magenta, a value nothing else
-/// produces, so magenta in the frame is a pixel NO pass covered. <c>motion</c> (#388) arms the motion-vector
-/// pass on its own; TAA and temporal GTAO run it regardless. <c>skyraw</c> (CX-374) is the A/B for the
-/// resolve's sky exemption: 0 exposes and tonemaps the sky like the rest of the frame.</para></summary>
+/// included) BEFORE the tonemap, so blacks stay put and the shoulder takes what it pushes past 1 -- what
+/// makes <c>tonemap aces</c> usable at all, since the Narkowicz fit sits below NWN's radiance levels
+/// unexposed. <c>auto</c> is histogram eye adaptation: a compute histogram of log2 luminance over the HDR
+/// target gives a log-average, a one-thread dispatch eases a gain toward <c>AutoKey / average</c>, and the
+/// resolve multiplies it in AFTER the fixed exposure; off is bit-exact the fixed image. <c>automin/automax</c>
+/// bound the AUTO factor, not the total; <c>autospeed</c> is the rate (1/s) when the gain RISES (into the
+/// dark), <c>autodown</c> when it falls; settle time is about 3/rate seconds (#491). <c>acesmix</c> mixes the
+/// ACES curve in LINEAR against the shoulder: 1 is the full fit, whose toe crushes NWN's dim interiors (0.01
+/// linear comes out 2.6x darker, so only specular survives); 0.5 is the live call. <c>dither</c> 1.0 is the
+/// correct value, not taste: one LSB of triangular-PDF noise is exactly what decorrelates the quantisation
+/// step. <c>taablend</c> is the current frame's share of the blend at rest (0.1 = a ten-frame history);
+/// <c>taau</c> keeps the TAA history at DISPLAY size under a render scale below 1. <c>taa</c> ships ON and is
+/// the default anti-aliaser; SMAA stands aside while it runs (<see cref="SmaaStage.Active"/>), so
+/// <c>/post taa 0</c> is the A/B back to it. <c>taasharp</c> is the unsharp mask the copy-out applies to the
+/// resolved history; 0.3 puts the resolve beside SMAA rather than behind it. <c>halfres</c> runs the
+/// screen-space ambient occlusion at half the render extent, upsampled depth-aware in the lit stage; the
+/// temporal accumulator hides the coarser estimate. <c>viz</c> shows one STAGE of the chain -- 1 the bloom, 2
+/// the HDR colour, 3 the bloom at 20x, 4 the velocity target -- and <c>clearviz</c> clears the HDR target to
+/// magenta, a value nothing else produces, so magenta in the frame is a pixel NO pass covered. <c>motion</c>
+/// arms the motion-vector pass on its own; TAA and temporal GTAO run it regardless (#388). <c>skyraw</c> is
+/// the A/B for the resolve's sky exemption: 0 exposes and tonemaps the sky like the rest (CX-374).</para></summary>
 internal static class Post
 {
     internal static readonly KnobGroup G;

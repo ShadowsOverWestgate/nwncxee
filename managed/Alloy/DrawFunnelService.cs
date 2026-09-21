@@ -9,21 +9,15 @@ using static CX.Alloy.BucketGate;
 using static CX.Alloy.AlloyCensus;
 namespace CX.Alloy;
 
-/// <summary>#264: the two engine notices Alloy still needs, and nothing else. Was <c>BatchService</c>, This was <c>BatchService</c>,
-/// ADR 0006's extender-owned multidraw submission; the #215 cutover made <c>RspShim</c> own the frame, and a
-/// replayed multidraw is the one draw path its funnel swallow cannot see -- so the batcher had been latched
-/// off since it shipped while everything upstream of it still ran per part per frame. The batcher, its group
-/// registry, matrix probation and the 64K submit arrays are gone; what stayed is the set of hooks the rest
-/// of Alloy is built on, and every one of them has a live consumer:
+/// <summary>The engine notices Alloy needs, and nothing else (#264). Every hook here has a live consumer:
 /// <list type="bullet">
 /// <item><c>PartTriMesh::Draw</c> / <c>PartSkin::Draw</c> -- the vanilla draw, which under
 /// <see cref="RspShim"/> is also the HAND-BACK (#236); <see cref="SkyBox"/>'s capture window (#125); the
-/// caster pass's bone bracket (#96); and #256's <c>unrecorded-draws</c> counter, the acceptance number for
-/// "the scene walk reached every part the engine draws". The skin entry also carries the #221 instrument --
-/// its draws/frame row is what says whether that hook fires at all.</item>
+/// caster pass's bone bracket (#96); and the <c>unrecorded-draws</c> counter, the acceptance number for "the
+/// scene walk reached every part the engine draws" (#256). The skin entry's draws/frame row is what says
+/// whether that hook fires at all (#221).</item>
 /// <item><c>Part::~Part</c> -- the death notice (#145, #221). Every other liveness test is an inference.</item>
-/// <item><c>GLRender::RenderVertexData</c> -- the caster pass's capture funnel (#96). #262 removed the
-/// pose-swallow window that used to share it: nothing re-enters a draw to produce a pose any more.</item>
+/// <item><c>GLRender::RenderVertexData</c> -- the caster pass's capture funnel (#96).</item>
 /// <item><c>VertexDataObject::Repack</c> -- the layout-change edge no scene epoch reports.</item>
 /// </list>
 /// <para>Armed by <c>drawhooks</c> in <c>cx.cfg</c> (the default arms this service, <c>stats</c> hands the

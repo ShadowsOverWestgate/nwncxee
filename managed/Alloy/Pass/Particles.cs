@@ -9,61 +9,36 @@ using static CX.Framework.EngineLayout;
 namespace CX.Alloy;
 
 /// <summary>
-/// #131 (map #68, spec #114 M3, ADR 0011): particles. The engine keeps spawn, movement and life; the owned
-/// pass takes the vertex build, which is the only part of an emitter that was ever a draw.
-/// <para>Vanilla draws them from <c>Scene::DoEmitterBucket</c> @0x476f00, step 28 and dead last in
-/// <c>Scene::RenderSinglePass</c>. That routine animates every emitter (<c>PartEmitter::AnimateParticles</c>
-/// @0x4ac660, whose only call site it is), depth-sorts the visible ones back-to-front on a squared distance
-/// cached at emitter+0x248, then calls each one's own render pointer -- all of which funnel into
-/// <c>PartEmitter::RenderEmitter</c> @0x4ad4c0.</para>
-/// <para><b>Why this is a rebuild and not a replay.</b> Every other Alloy class binds engine geometry. There
-/// is none here: <c>RenderEmitter</c> writes 0x24 dwords per particle into ONE shared
-/// <c>VertexStreamDataObject</c> (attribute-keyed, so all emitters share it), <c>glBufferSubData</c>s the
-/// whole range and issues one <c>glDrawArrays</c>. Nothing survives the call to bind. What survives is the
-/// input: everything the build reads is a live <c>Particle</c> struct plus a handful of emitter fields, so
-/// the build is reproducible from state the engine maintains. That is #107 §1's boundary rule exactly --
-/// the engine simulates, we draw.</para>
-/// <para><b>Why it is worth taking.</b> Vanilla cannot batch: the emitters are depth-sorted individually, so
-/// every visible one costs a program bind, texture binds, a full-range buffer upload and a draw. Two of the
-/// three blend classes commute (punch-through writes depth and discards; addition is addition), so those
-/// batch by texture across the whole screen -- twenty torches become one draw. Only the genuinely
-/// alpha-blended remainder keeps the engine's order, and it merges adjacent runs, which the sort's own
-/// same-Gob tiebreak makes common (a fire's layers land next to each other).</para>
-/// <para><b>Suppression is per emitter, not per pass.</b> <see cref="Beams"/> and <see cref="SkyBox"/>
-/// colour-mask the engine's routine because it is cheap and the capture needs it warm. Here the routine IS
-/// the cost, so masking would keep every rebuild and upload alive and make the draw-count win imaginary.
-/// Instead the hook declines to call the original for an emitter the Alloy pass actually issued this pass --
-/// which is also the escape hatch: an emitter we cannot build (custom material shader, no texture, table
-/// full) is simply not marked, so the engine's own emitter draw runs at its slot. #285/#264: under the shim
-/// that draw is swallowed by the vertex funnels, so an unmarked emitter is NOT DRAWN rather than vanilla --
-/// `suppressed` against the emitter population on the [particles] line is what says how often. There is no
-/// all-owned-or-none rule here and there does not need to be one.</para>
-/// <para><b>#261: the feed is ours and the lag is gone.</b> Two changes, and they are separate.</para>
-/// <para><b>The lag</b> was scheduling, not structure. <c>Scene::DoEmitterBucket</c> is the only caller of
-/// <c>PartEmitter::AnimateParticles</c> and RSP runs it at step 28, after #132's anchor -- so a pass drew
-/// the positions the previous pass's simulation left. Under the cutover the order is Alloy's to choose, so
-/// <see cref="RspShim"/> now runs that walk BEFORE the anchor. Population, sort and positions are all this
-/// frame's, and nothing was reimplemented to get there: the engine still simulates, and its draws are still
-/// swallowed. Simulation stays engine-side per ADR 0018's boundary.</para>
-/// <para><b>The feed</b> is a persistent RECORD buffer the CPU updates by delta, not a vertex stream rebuilt
-/// every frame. One 96-byte record a particle (see <see cref="RecFloats"/>) lives in a block owned by its
-/// emitter's table slot and stays put across frames; the build writes into a CPU shadow, hashes the block,
-/// and sends it only when the engine's simulation actually moved it. What IS uploaded every frame is a
-/// draw-order index list -- four bytes a particle against a hundred and ninety-two before -- because the
-/// depth order changes when the records do not. The six vertices a particle are expanded from
-/// <c>gl_VertexID</c> in the vertex stage.</para>
-/// <para><b>#288: the last per-particle CPU loop is gone, and the order is compute's.</b> What #261 left on
-/// the CPU was the index list itself -- one write and four bytes a particle, every frame. The CPU now stages
-/// one SPAN a placed emitter (record base, particles, index offset) and one descriptor a draw group, and
-/// <see cref="ParticleCs"/> writes the list in a single dispatch of one workgroup per group. That same
-/// dispatch depth-sorts the ALPHA-BLENDED groups back to front, which vanilla never did within an emitter
-/// and this pass never did at all.</para>
-/// <para><b>#131's ordering rule survives structurally.</b> Additive commutes with itself and not with
-/// alpha-over, so the two runs have to stay separable. They do, and not because the sort is careful: a draw
-/// group is single-class by construction (see <see cref="Group"/>), one workgroup owns one group, and the
-/// groups occupy disjoint index ranges issued in group order -- so no dispatch can move a particle out of
-/// its class. Punch-through and additive are not sorted at all, deliberately. <c>/particles sort 0</c> puts
-/// the index build back on the CPU, unsorted, which is exactly the pre-#288 frame.</para>
+/// Particles (ADR 0011 M3, #131). The engine keeps spawn, movement and life; the owned pass takes the vertex
+/// build, which is the only part of an emitter that was ever a draw. Vanilla builds them in
+/// <c>PartEmitter::RenderEmitter</c> @0x4ad4c0: 0x24 dwords a particle into ONE shared
+/// <c>VertexStreamDataObject</c>, a full-range <c>glBufferSubData</c> and one <c>glDrawArrays</c> per emitter,
+/// so nothing survives the call to bind and this is a REBUILD, not a replay -- every input the build reads is
+/// a live <c>Particle</c> struct plus a handful of emitter fields, all state the engine maintains.
+/// <para><b>Why it is worth taking.</b> Vanilla depth-sorts emitters individually, so every visible one costs
+/// a program bind, texture binds, an upload and a draw. Punch-through (writes depth, discards) and additive
+/// commute, so those batch by texture across the whole screen -- twenty torches become one draw. Only the
+/// alpha-blended remainder keeps the engine's order, merging adjacent runs.</para>
+/// <para><b>Suppression is per emitter, not per pass.</b> The engine's routine IS the cost, so it is not
+/// colour-masked the way <see cref="Beams"/> and <see cref="SkyBox"/> mask theirs. An emitter the Alloy pass
+/// issued this pass is marked and the hook declines its original; an emitter we cannot build (custom material
+/// shader, no texture, table full) is not marked and, under the shim's vertex funnels, is NOT DRAWN --
+/// <c>suppressed</c> on the [particles] line counts them. No all-owned-or-none rule (#264, #285).</para>
+/// <para><b>Simulation runs before the anchor.</b> <c>Scene::DoEmitterBucket</c> @0x476f00 is the only
+/// caller of <c>PartEmitter::AnimateParticles</c> @0x4ac660 and RSP runs it at step 28, after the frame
+/// anchor; <see cref="RspShim"/> runs that walk BEFORE the anchor instead, so population, sort and positions
+/// are this frame's. Simulation stays engine-side per ADR 0018's boundary (#261).</para>
+/// <para><b>The feed</b> is a persistent RECORD buffer updated by delta. One 96-byte record a particle
+/// (<see cref="RecFloats"/>) lives in a block owned by its emitter's table slot; the build writes a CPU shadow,
+/// hashes the block, and sends it only when the simulation moved it. The six vertices a particle expand from
+/// <c>gl_VertexID</c> in the vertex stage. The CPU stages one SPAN a placed emitter (record base, particles,
+/// index offset) and one descriptor a draw group, and <see cref="ParticleCs"/> writes the draw-order index
+/// list in one dispatch of one workgroup per group, depth-sorting the ALPHA-BLENDED groups back to front
+/// (#261, #288).</para>
+/// <para><b>Blend classes stay separable structurally:</b> a draw group is single-class by construction
+/// (<see cref="Group"/>), one workgroup owns one group, and groups occupy disjoint index ranges issued in
+/// group order, so no dispatch can move a particle out of its class. Punch-through and additive are not
+/// sorted at all, deliberately. <c>/particles sort 0</c> puts the index build back on the CPU, unsorted.</para>
 /// </summary>
 internal static unsafe partial class Particles
 {

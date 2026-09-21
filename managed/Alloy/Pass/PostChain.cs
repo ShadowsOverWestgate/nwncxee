@@ -6,35 +6,28 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #139: the Alloy colour pass's HDR target and the post chain that resolves it -- bloom, tonemap, encode.
-/// <para>What it fixes: every Alloy lit fragment is computed in linear and encoded to display space in the
-/// shader, then written into the engine's 8-bit colour attachment. A carried torch drives that value far
-/// past 1.0, and 8 bits flatten everything above 1.0 to the same white -- which is the "all detail is
-/// killed" blowout, not a lighting error. Rendering the Alloy passes into an RGBA16F attachment instead
-/// keeps the overbright range, and one full-screen pass at the end of the colour bracket is where it gets
-/// spent: as bloom (which is what makes a bright light read as BRIGHT rather than as clipped) and as a
-/// tonemap shoulder.</para>
-/// <para>#214: the target owns its depth attachment too. It has to -- the engine only builds a world
-/// framebuffer from inside <c>RenderSinglePass</c>, so after the M4 cutover there is no attachment left to
-/// borrow. The owned texture is allocated to the internal format the engine's attachment reports (probed off
-/// the OBJECT, never off the attachment's bit widths), which is what makes the one thing sharing used to give
-/// for free legal: <see cref="ResolveDepth"/> blits our depth back into the engine's attachment at the
+/// The Alloy colour pass's HDR target and the post chain that resolves it -- bloom, tonemap, encode (#139).
+/// The Alloy passes render into an RGBA16F attachment holding LINEAR values, unclamped, so a carried torch
+/// keeps its overbright range instead of flattening to 8-bit white, and one full-screen pass at the end of
+/// the colour bracket spends it: as bloom (what makes a bright light read as BRIGHT rather than clipped) and
+/// as a tonemap shoulder.
+/// <para>The target owns its depth attachment too -- the engine only builds a world framebuffer from inside
+/// <c>RenderSinglePass</c>, so under the cutover there is nothing to borrow. The owned texture is allocated
+/// to the internal format the engine's attachment reports (probed off the OBJECT, never off bit widths),
+/// which is what lets <see cref="ResolveDepth"/> blit our depth back into the engine's attachment at the
 /// resolve, so the engine's own draws after the bracket still depth-test against the world the Alloy pass
-/// wrote. Colour and depth are both ours now, and both are composited back.</para>
-/// <para>#132 flipped what the target holds: LINEAR values, unclamped. Every Alloy stage now writes linear
-/// and this resolve does the one encode for the whole frame -- one conversion per screen pixel instead of
-/// one per fragment, cheaper than the per-shader encode it replaces, and the only order in which blended
-/// compositing is correct. The encode is gated on the engine's OWN gamma parameter
-/// (<c>GetGlobalShaderParami(0)</c>, the <c>GAMMA_CORRECTION</c> the shader preamble is built from), which
-/// the per-shader encodes never were. Fog moved across the encode with it: #124 welded the engine's order
-/// (keyhole linear, encode, fog display) and this ticket knowingly unwelds it, so a foggy frame is a
-/// deliberate look change.</para>
-/// <para>Refusal is now the whole Alloy frame's business, not this class's alone: a linear Alloy frame with
-/// no resolve is wrong by a gamma, and there is no display-space variant of the Alloy stages left to fall
-/// back to. <see cref="Begin"/> is therefore asked BEFORE anything is staged, and a false answer stands the
-/// pass down to vanilla outright. It refuses when the engine target cannot be shared: a default framebuffer
-/// (its depth cannot be attached to an FBO at all), an offset viewport, or -- since #214, and only once
-/// the driver has said so -- an attachment the owned depth cannot be handed back to.</para>
+/// wrote. Colour and depth are both ours, and both are composited back (#214).</para>
+/// <para>Every Alloy stage writes linear and this resolve does the one encode for the whole frame -- one
+/// conversion per screen pixel, and the only order in which blended compositing is correct. The encode is
+/// gated on the engine's OWN gamma parameter (<c>GetGlobalShaderParami(0)</c>, the <c>GAMMA_CORRECTION</c>
+/// the shader preamble is built from). Fog is applied in linear, across the encode, unlike the engine's
+/// (keyhole linear, encode, fog display) order -- a deliberate look change (#124, #132).</para>
+/// <para>Refusal is the whole Alloy frame's business: a linear Alloy frame with no resolve is wrong by a
+/// gamma, and there is no display-space variant of the Alloy stages to fall back to. <see cref="Begin"/> is
+/// therefore asked BEFORE anything is staged, and a false answer stands the pass down to vanilla outright. It
+/// refuses when the engine target cannot be shared: a default framebuffer (its depth cannot be attached to an
+/// FBO at all), an offset viewport, or -- only once the driver has said so -- an attachment the owned depth
+/// cannot be handed back to.</para>
 /// </summary>
 internal static unsafe class PostChain
 {

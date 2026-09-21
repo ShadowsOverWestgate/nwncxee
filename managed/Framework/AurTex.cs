@@ -6,12 +6,10 @@ namespace CX.Framework;
 /// A safe front door to <c>AurTextureGetTID</c>. A <c>CAurTexture*</c> is BORROWED -- the engine frees it on
 /// an area transition or a module unload -- and <c>AurTextureGetTID</c> @0x48e080 opens by dereferencing the
 /// object's vtable and calling through slot 0x18. Hand it a freed pointer and the call lands wherever the
-/// reused heap now says, which is a SIGSEGV rather than a wrong texture.
-/// <para>The rule the chat portraits learned (#33) was "never cache the pointer, re-fetch every frame". The
-/// Alloy pipeline already obeys it -- every consumer calls <c>Material::GetTexture</c> per frame -- and it is
-/// not enough, because <c>Material::GetTexture</c> @0x4c5810 is a plain FIELD READ (<c>this + slot*0x10</c>,
-/// or the SharedMaterial's table at <c>this+0xd0</c>). It returns whatever pointer the material was left
-/// holding, live or not. A per-frame re-fetch of a stale field is still a stale pointer.</para>
+/// reused heap now says, a SIGSEGV rather than a wrong texture. "Never cache the pointer, re-fetch every
+/// frame" (#33) is not enough: <c>Material::GetTexture</c> @0x4c5810 is a plain FIELD READ (<c>this +
+/// slot*0x10</c>, or the SharedMaterial's table at <c>this+0xd0</c>) and returns whatever pointer the
+/// material was left holding, live or not.
 /// <para>So the pointer is checked instead of trusted. The engine has exactly TWO texture vtables --
 /// <c>_ZTV11CAurTexture</c> and <c>_ZTV16CAurTextureBasic</c> -- so "is this object still a texture" is two
 /// compares against the values those symbols put in a live object's first word. A freed-and-reused object

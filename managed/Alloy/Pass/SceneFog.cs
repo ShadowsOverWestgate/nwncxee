@@ -6,28 +6,22 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// #341: the scene fog's TARGET COLOUR, and the terms that shape it. The area author still owns the ramp --
+/// The scene fog's TARGET COLOUR, and the terms that shape it (#341). The area author still owns the ramp --
 /// <c>Scene+0x140..0x14c</c>'s enable/start/end and colour are read untouched by <see cref="FrameRead"/> and
 /// the lerp stays linear in view depth -- so every knob here changes only what a fully-fogged fragment
 /// converges TO, or a multiplier on how fast it gets there.
-/// <para><b>Why.</b> Vanilla fog converges on one flat colour. The sky does not: an exterior fades its
-/// distance to the author's grey while the skybox above it stays blue, and the seam between them is the
-/// horizon band the engine paints with the skyfade gob to hide exactly that. Converging on the SKY instead
-/// is what removes the seam rather than covering it, and it is what every modern renderer does with distance
-/// fog (fog toward a convolved environment, not toward a constant).</para>
+/// <para><b>Why.</b> Vanilla fog converges on one flat colour while the skybox above it stays blue, and the
+/// seam between them is the horizon band the engine paints with the skyfade gob to hide exactly that.
+/// Converging on the SKY removes the seam rather than covering it.</para>
 /// <para><b>Where the sky colour comes from.</b> The Alloy sky pass already knows the dome's GL texture per
 /// role (<see cref="AlloyRenderer.StageSky"/>), so the colour is a readback of that texture's smallest mip
-/// -- the sampler's own average -- weighted by the role alpha the cross-fade is running at. That makes it
-/// free of time-of-day plumbing: a cross-fade to the night dome changes the texture and the weights, and the
-/// fog follows. Not the <see cref="EnvProbe"/> cube, which contains no sky at all: its faces are CLEARED to
-/// a sky stand-in and the sky pass does not draw into them.
-/// <para>No sky staged -- an interior, or a sky pass standing down -- and BOTH direction terms switch off:
-/// the fog is the area author's flat colour, exactly as vanilla. A cave has a fog colour someone chose and
-/// nothing overhead to match it to, so there is nothing here to improve and a stand-in would only overrule
-/// them.</para>
-/// <para>ponytail: one colour for the whole dome, not a gradient by elevation. A dome texture whose lower
+/// -- the sampler's own average -- weighted by the role alpha the cross-fade is running at, so a cross-fade
+/// to the night dome carries the fog with it. Not the <see cref="EnvProbe"/> cube, which contains no sky:
+/// its faces are CLEARED to a sky stand-in. No sky staged (an interior, or a sky pass standing down) and BOTH
+/// direction terms switch off: the fog is the area author's flat colour, exactly as vanilla.</para>
+/// <para>ponytail: one colour for the whole dome, not a gradient by elevation; a dome texture whose lower
 /// half is ground darkens it. The upgrade is to read a 4x4 mip and split it by row, which needs the model's
-/// UV convention -- worth doing when a specific sky looks wrong, not before.</para></para>
+/// UV convention -- worth doing when a specific sky looks wrong, not before.</para>
 /// </summary>
 internal static unsafe class SceneFog
 {

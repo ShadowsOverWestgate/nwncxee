@@ -24,32 +24,26 @@ public sealed unsafe partial class AlloyRenderer
     /// water surface without forking every lit part in the world.</summary>
     internal const string ShdWaterVs = "cx_water_vs", ShdWaterFs = "cx_water_fs";
 
-    /// <summary>#84: the per-draw block, reached through <c>uDrawIdx[uDrawBase + gl_DrawID]</c>. This is what makes one
-    /// multidraw able to cover a whole group -- everything that varies per part and used to be a uniform lives
-    /// here instead. <c>binding = 4</c> must stay in step with <see cref="BindDraw"/>.
+    /// <summary>The per-draw block, reached through <c>uDrawIdx[uDrawBase + gl_DrawID]</c>: everything that
+    /// varies per part lives here instead of in a uniform, which is what lets one multidraw cover a whole
+    /// group (#84). The records are PERSISTENT -- indexed by ownership slot and written only when the part
+    /// moves -- while the draw order is per pass; the index array is the only per-draw thing the frame
+    /// uploads whole, at four bytes each (#242). <c>binding = 4</c> must stay in step with <see cref="BindDraw"/>.
     /// <para><c>rot</c> is (cos, sin) of the tile texture rotation: the engine's own vertex stage does
     /// <c>vVertexTexCoords = mat2(m_texture) * vTcIn.xy</c> (base_shaders.bif), and m_texture is
-    /// PartTriMesh::TransformTextureMatrix's Z-rotation -- columns (c,s) and (-s,c). The shaders below are
-    /// that mat2. <c>amb</c>/<c>dif</c>/<c>emi</c> are the material colours, written only for lit draws.</para>
-    /// <para>#120: <c>pbr</c> is (Specularity, Roughness, Metallicness, live slot mask) and <c>spc</c> is
-    /// (CustomSpecularColor.rgb, declared?) -- the four stock .mtr parameters, carried per draw so one batch
-    /// can still span materials that declare different ones.</para>
-    /// <para>#123: <c>feat</c> is (<see cref="ShaderFeature"/>, and the three parameters that feature reads).
-    /// Same reason it is per draw and not a uniform: one batch spans materials asking for different
-    /// shaders.</para>
-    /// <para>#392: <c>prev</c> is the model matrix of the PREVIOUS frame -- rolled forward on every frame the
-    /// record is built, so it equals <c>model</c> for everything standing still and lags it by one frame on a
-    /// mover. Only the mover velocity stage (<see cref="MotionVs"/>) reads it.</para>
-    /// <para>#242: the extra indirection is what lets the records be PERSISTENT -- they are indexed by
-    /// ownership slot and written only when the part moves, while the draw order is per pass. The index
-    /// array is the only per-draw thing the frame still uploads whole, at four bytes each.</para>
-    /// <para>ponytail: both vertex stages read this block, so the whole Alloy pass -- fullbright included --
-    /// now needs vertex-stage SSBO access. GL 4.6 only REQUIRES
-    /// <c>MAX_VERTEX_SHADER_STORAGE_BLOCKS >= 0</c> (it is the fragment/compute minimums that are 8), so a
-    /// strictly-conformant driver may refuse the link, which disarms #82's and #83's paths along with #84's.
-    /// Every desktop driver in practice reports >= 8, and the failure is loud (program build fails -> DISARMED,
-    /// by name). Upgrade path if a real client ever hits it: probe the limit and put the fullbright variant's
-    /// records in a UBO, which has a required vertex-stage minimum of 12 blocks.</para></summary>
+    /// PartTriMesh::TransformTextureMatrix's Z-rotation -- columns (c,s) and (-s,c). <c>amb</c>/<c>dif</c>/
+    /// <c>emi</c> are the material colours, written only for lit draws. <c>pbr</c> is (Specularity, Roughness,
+    /// Metallicness, live slot mask) and <c>spc</c> is (CustomSpecularColor.rgb, declared?) -- the four stock
+    /// .mtr parameters (#120). <c>feat</c> is (<see cref="ShaderFeature"/>, and the three parameters that
+    /// feature reads); per draw for the same reason: one batch spans materials asking for different shaders
+    /// (#123). <c>prev</c> is the model matrix of the PREVIOUS frame, rolled forward on every frame the record
+    /// is built, so it equals <c>model</c> for everything standing still; only <see cref="MotionVs"/> reads
+    /// it (#392).</para>
+    /// <para>ponytail: both vertex stages read this block, so the whole Alloy pass needs vertex-stage SSBO
+    /// access. GL 4.6 only REQUIRES <c>MAX_VERTEX_SHADER_STORAGE_BLOCKS >= 0</c>, so a strictly-conformant
+    /// driver may refuse the link; every desktop driver in practice reports >= 8, and the failure is loud
+    /// (program build fails -> DISARMED, by name). Upgrade path: probe the limit and put the fullbright
+    /// variant's records in a UBO, whose required vertex-stage minimum is 12 blocks.</para></summary>
     internal const string DrawBufDecl = """
         struct CxDraw { mat4 model; vec4 rot; vec4 amb; vec4 dif; vec4 emi; vec4 pbr; vec4 spc; vec4 feat; mat4 prev; };
         layout(std430, binding = 4) readonly buffer CxDrawBuf { CxDraw uDraw[]; };
@@ -84,21 +78,19 @@ public sealed unsafe partial class AlloyRenderer
 
         """;
 
-    /// <summary>#123: the vertex-side half of the feature switches -- the sine sway of the three wind shaders
-    /// and the camera-height branch of the two roof toggles, replacing seven forked vertex stages.
-    /// <para>The arithmetic is the community shaders' verbatim, constants and quirks included:
-    /// <c>sqrt(dot(wind.x, wind.y))</c> (a one-component dot, i.e. x*y), the 0.356 no-wind floor, the
-    /// per-foliage denominators (grass and leaf /100, plant /1000) and speed multipliers (grass 20000, plant
-    /// and leaf 7000), the doubled plant frequency, the root-anchor gradient vs the leaf's flat 5.0, and the
-    /// roof's four odd-value <c>areaFlags</c> comparisons. Bug-for-bug is the acceptance criterion here: the
-    /// content is tuned against these numbers.</para>
-    /// <para><c>aPos</c> IS the shaders' <c>vPos</c> and <c>d.model</c> their <c>m_m</c> -- the Alloy pass
-    /// stages the node matrix for matrix-class parts and identity for the rest, which is exactly the model
-    /// matrix the engine had bound when it drew them. Skinning is absent because a skinned part is not
-    /// ownable at all (<c>TryOwnCandidate</c>'s mode-1 VDO test).</para>
-    /// <para>Returns the displaced LOCAL position; <c>anchorZ</c> comes back as the UNDISPLACED world height
-    /// the roof fragment stage discards the toolset vertex anchor by.</para></summary>
-    /// <summary>#137: the skinning half of the Alloy vertex stages. Vertex-side only -- the fragment stages
+    /// <summary>The vertex-side half of the feature switches -- the sine sway of the three wind shaders and
+    /// the camera-height branch of the two roof toggles, one stage instead of seven forks (#123). The
+    /// arithmetic is the community shaders' verbatim, constants and quirks included: <c>sqrt(dot(wind.x,
+    /// wind.y))</c> (a one-component dot, i.e. x*y), the 0.356 no-wind floor, the per-foliage denominators
+    /// (grass and leaf /100, plant /1000) and speed multipliers (grass 20000, plant and leaf 7000), the
+    /// doubled plant frequency, the root-anchor gradient vs the leaf's flat 5.0, and the roof's four odd-value
+    /// <c>areaFlags</c> comparisons. Bug-for-bug is the acceptance criterion: the content is tuned against
+    /// these numbers.
+    /// <para><c>aPos</c> IS the shaders' <c>vPos</c> and <c>d.model</c> their <c>m_m</c> -- the node matrix
+    /// for matrix-class parts and identity for the rest, exactly the model matrix the engine had bound. Returns
+    /// the displaced LOCAL position; <c>anchorZ</c> comes back as the UNDISPLACED world height the roof
+    /// fragment stage discards the toolset vertex anchor by.</para></summary>
+    /// <summary>The skinning half of the Alloy vertex stages (#137). Vertex-side only -- the fragment stages
     /// never see a bone -- and shared by both stages verbatim so a robe shades identically lit or unlit.
     /// <para><c>binding = 7</c> must stay in step with <see cref="BindBones"/>, and the two attribute
     /// locations with <see cref="LocBoneIdx"/>/<see cref="LocBoneW"/>. A std430 <c>mat4</c> array has a
@@ -597,26 +589,20 @@ public sealed unsafe partial class AlloyRenderer
 
         """;
 
-    /// <summary>#346: the SPELL-TARGETING SHAPE -- the red circle (or cone, or rectangle) a caster sees on
-    /// the ground while picking a target. Vanilla draws it as arithmetic in <c>inc_standard.shd</c>'s tail,
-    /// not as a draw call, which is why the M4 cutover lost it: no engine draw went missing, an engine
-    /// SHADER did. <see cref="RspShim.EngineOverlays"/> is therefore the wrong tool here and was not used --
-    /// there is nothing to replay.
-    /// <para><b>The shape's code is not written here.</b> It is the engine's own <c>inc_target.shd</c>,
-    /// spliced in at compile time by <see cref="VanillaShader"/> from whatever the resource chain supplies
-    /// -- a hak, <c>override/</c>, NWSync, or the stock <c>base_shaders.bif</c>. That is the point of the
-    /// bridge: <c>sow-topdata</c> customises this file (a Reach-promoted range, a Widen-grown shape) and
-    /// nothing in the extender has to know.</para>
-    /// <para><b>Between the markers is a STUB, not a snapshot.</b> A copy would be the second
-    /// implementation this bridge exists to delete, and it would be the worst kind: one that runs only when
-    /// the splice failed, so its drift from the content would never be seen. What the fallback owes is the
-    /// world, not the feature -- the lit program has to link whatever the resource chain hands it, because
-    /// a program that fails to build reverts every Alloy part to engine drawing. So the stub answers "no
-    /// shape here" and the frame is otherwise untouched. No file, no overlay, and the log says so.</para>
-    /// <para>Everything the file wants from its own includes is in <see cref="VanillaEnvFs"/>. The uniforms
-    /// it declares ITSELF (<c>targetShape</c> and friends) are not repeated there --
-    /// <c>UploadTargetShape</c> writes them under the engine's own names, which is what lets the stock text
-    /// drop in unedited.</para></summary>
+    /// <summary>The SPELL-TARGETING SHAPE -- the red circle (or cone, or rectangle) a caster sees on the
+    /// ground while picking a target. Vanilla draws it as arithmetic in <c>inc_standard.shd</c>'s tail, not as
+    /// a draw call, so <see cref="RspShim.EngineOverlays"/> is the wrong tool: there is no draw to replay (#346).
+    /// <para><b>The shape's code is not written here.</b> It is the engine's own <c>inc_target.shd</c>, spliced
+    /// in at compile time by <see cref="VanillaShader"/> from whatever the resource chain supplies -- a hak,
+    /// <c>override/</c>, NWSync, or the stock <c>base_shaders.bif</c> -- so <c>sow-topdata</c> customises the
+    /// file and nothing in the extender has to know.</para>
+    /// <para><b>Between the markers is a STUB, not a snapshot.</b> A copy would be a second implementation
+    /// that runs only when the splice failed, so its drift from the content would never be seen. What the
+    /// fallback owes is the world, not the feature -- a lit program that fails to build reverts every Alloy
+    /// part to engine drawing -- so the stub answers "no shape here" and the log says so.</para>
+    /// <para>Everything the file wants from its own includes is in <see cref="VanillaEnvFs"/>. The uniforms it
+    /// declares ITSELF (<c>targetShape</c> and friends) are not repeated there -- <c>UploadTargetShape</c>
+    /// writes them under the engine's own names, which is what lets the stock text drop in unedited.</para></summary>
     internal const string TargetFs = """
 
         // $VANILLA inc_target

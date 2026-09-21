@@ -164,27 +164,24 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly uint[] _dSrc = new uint[MaxOwned * CullPass.SrcUints];
 
     /// <summary>Is this slot's part still the one that enrolled? The single-level compare
-    /// <see cref="RouteParts"/> revokes on (#322: once per pass, at route -- the staging walk trusts the
-    /// verdict) -- node, material and texture rotation read straight off the part. Reading a stale part is
-    /// the accepted risk model here; chasing a POINTER out of one is not, so every dereference this pass
-    /// makes sits behind this.
-    /// <para>#128: pointer identity ONLY. An instance's live shading state used to be folded in here, which
-    /// was the wrong place twice over -- a false answer left the part in the OPAQUE run at alpha 1 (drawn
-    /// wrong, not handed back) and the staging walk never re-asked. It is a skip of its own now, in
-    /// <see cref="BuildBatches"/>.</para>
-    /// <para>#145: ...and the entry must still be a LIVE recording of this part before any of that is
-    /// read. The three compares below are reads of the part itself, which is only sound while the part
-    /// exists -- a destroyed one can keep every field long enough to pass them, and then the gob chase in
-    /// <see cref="LiveAlpha"/> walks a freelist word. <c>Part::~Part</c> is what makes this answer no.</para>
-    /// <para>#336: the three field compares are an AUDIT on the colour cadence, not a per-frame gate. The
-    /// Ghidra store scan (every write to <c>[reg+0x58|0x88|0xb0]</c> in the binary, on the ticket): part+0x58
-    /// has NO post-construction writer -- set in <c>PartTriMesh::PartTriMesh</c>, freed by <c>Part::~Part</c>;
+    /// <see cref="RouteParts"/> revokes on, once per pass at route (the staging walk trusts the verdict; #322)
+    /// -- node, material and texture rotation read straight off the part. Reading a stale part is the
+    /// accepted risk model here; chasing a POINTER out of one is not, so every dereference this pass makes
+    /// sits behind this. Pointer identity ONLY: an instance's live shading state is a skip of its own in
+    /// <see cref="BuildBatches"/>, since a false answer here would leave the part in the OPAQUE run at alpha 1
+    /// and the staging walk never re-asks (#128).
+    /// <para>The entry must be a LIVE recording of this part before any of that is read: a destroyed part can
+    /// keep every field long enough to pass the compares, and then the gob chase in <see cref="LiveAlpha"/>
+    /// walks a freelist word. <c>Part::~Part</c> is what makes this answer no (#145).</para>
+    /// <para>The three field compares are an AUDIT on the colour cadence, not a per-frame gate. The Ghidra
+    /// store scan (every write to <c>[reg+0x58|0x88|0xb0]</c> in the binary, on the ticket): part+0x58 has NO
+    /// post-construction writer -- set in <c>PartTriMesh::PartTriMesh</c>, freed by <c>Part::~Part</c>;
     /// part+0x88 is written once by <c>PartInitMaterial</c> @0x43de50 and part+0xb0 once by
     /// <c>SetPartTextureRotate</c> @0x461670, both on a tree <c>CreateInstanceTree</c> made moments before,
     /// never on a part that has been drawn. So <c>EntryLive</c> (the death notice) is the whole lifetime
     /// guard, and the compares run every <see cref="ColourCadence"/> frames per slot (every frame under
     /// <c>/alloy poll 1</c>) so a writer the scan could miss (a LEA-then-store, a memcpy) shows on the [alloy]
-    /// line as <c>identity N</c> within eight frames rather than never.</para></summary>
+    /// line as <c>identity N</c> within eight frames rather than never (#336).</para></summary>
     private static bool IdentityOk(int i, IntPtr tri)
     {
         if (!PartTable.EntryLive(_oEntry[i], tri)) return false;
@@ -1521,25 +1518,21 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
-    /// <summary>ADR 0011 step 3 (#125): the skybox, after the opaque set and before the blended one.
+    /// <summary>The skybox, after the opaque set and before the blended one (ADR 0011 step 3, #125).
     /// <para><c>glDepthRange(1,1)</c> is what makes "after opaque" mean anything. The dome sits AT the
-    /// camera, so its own depth is NEAR and it would pass the test everywhere -- which is exactly why vanilla
-    /// paints over bucket 0. Forced to the far plane and tested LEQUAL (the value
-    /// <see cref="OpaqueOwnedPass"/> leaves bound), it survives only where nothing has written depth, so
-    /// every sky pixel the world covers is rejected before it shades.</para>
-    /// <para><c>GL_DEPTH_CLAMP</c> because the matrices were captured under the ENGINE's sky projection
-    /// (far 1000.0, <c>RenderSkyBoxes</c>) and are replayed under the world's: the dome can cross the world
-    /// far plane, and clipped it would read as a hole at the horizon with nothing in the log.</para>
-    /// <para>Depth range and clamp are 4.6-CONTEXT state the later passes share, so both are restored here
-    /// rather than left for someone else to find.</para>
-    /// <para>ponytail: the roles composite in LINEAR, and #261 deleted the display-space scratch that used
-    /// to make them match vanilla exactly (ADR 0018: "there is no strand 3"). The settled sky is unaffected
-    /// -- its role is <c>(SRC_ALPHA, ZERO)</c>, which never reads the destination -- but the cross-fade and
-    /// the skyfade gob are genuine over-blends, and at partial alpha a linear over composites brighter than
-    /// the engine's display-space one by <c>alpha^(1/2.2)/alpha</c> (1.5x at 0.5). Deliberate: the sky is
-    /// Alloy's to author now and the frame it lands in is linear. The three alphas are on the period line
-    /// (<see cref="SkyBox.NoteRoles"/>) precisely so this is a number and not a suspicion; if the horizon
-    /// band ever reads wrong, the upgrade is a per-role alpha correction, not the scratch target back.</para>
+    /// camera, so its own depth is NEAR and it would pass the test everywhere -- which is why vanilla paints
+    /// over bucket 0. Forced to the far plane and tested LEQUAL (the value <see cref="OpaqueOwnedPass"/>
+    /// leaves bound), it survives only where nothing has written depth. <c>GL_DEPTH_CLAMP</c> because the
+    /// matrices were captured under the ENGINE's sky projection (far 1000.0, <c>RenderSkyBoxes</c>) and are
+    /// replayed under the world's: clipped, the dome would read as a hole at the horizon with nothing in the
+    /// log. Depth range and clamp are 4.6-CONTEXT state the later passes share, so both are restored here.</para>
+    /// <para>ponytail: the roles composite in LINEAR (ADR 0018: "there is no strand 3"). The settled sky is
+    /// unaffected -- its role is <c>(SRC_ALPHA, ZERO)</c>, which never reads the destination -- but the
+    /// cross-fade and the skyfade gob are genuine over-blends, and at partial alpha a linear over composites
+    /// brighter than the engine's display-space one by <c>alpha^(1/2.2)/alpha</c> (1.5x at 0.5). Deliberate:
+    /// the sky is Alloy's to author and the frame it lands in is linear. The three alphas are on the period
+    /// line (<see cref="SkyBox.NoteRoles"/>); if the horizon band ever reads wrong, the upgrade is a per-role
+    /// alpha correction, not a display-space scratch target (#261).</para>
     /// </summary>
     /// <para><paramref name="hosted"/> false (the probe capture) draws the owned dome alone: a hosted part runs
     /// the engine's program under the engine's matrices, and its decode reads the frame's HDR target.</para>

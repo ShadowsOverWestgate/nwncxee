@@ -8,41 +8,34 @@ using static CX.Framework.EngineLayout;
 namespace CX.Alloy;
 
 /// <summary>
-/// #125 (map #68, spec #114 M3, ADR 0011 "Skybox draws after opaque, before blended"): the per-area skybox,
-/// captured off the engine's own draw and replayed by the Alloy pass at its graph slot.
-/// <para>Vanilla draws it from <c>Scene::RenderSkyBoxes</c> @0x466910, between buckets 0 and 1, depth mask
-/// off and depth test against a dome that sits AT the camera -- so it passes everywhere and paints over
-/// bucket 0. That is #107 §3's ordering hazard, and it is why every Alloy blending class before this ticket
-/// carried a named approximation about being painted over.</para>
-/// <para><b>#261: the source data is ours.</b> <see cref="Enroll"/> walks the three sky gobs
-/// <see cref="Roles"/> already reads off the Scene, down each one's part tree, once a frame in engine
-/// context. There is no hook on <c>Scene::RenderSkyBoxes</c>, no capture window, no funnel arm and no
-/// colour mask. The engine's own routine still runs from the shim -- its draws are swallowed there like
-/// every other engine draw -- because it is the sky's SIMULATION tick: <c>Gob::ProcessGob</c>, node
+/// The per-area skybox, drawn by the Alloy pass at its graph slot from the engine's own sky gobs (ADR 0011
+/// "Skybox draws after opaque, before blended", #125). Vanilla draws it from <c>Scene::RenderSkyBoxes</c>
+/// @0x466910 between buckets 0 and 1, depth mask off, against a dome that sits AT the camera -- so it passes
+/// everywhere and paints over bucket 0, the ordering hazard this slot exists to avoid.
+/// <para><b>The source data is ours.</b> <see cref="Enroll"/> walks the three sky gobs <see cref="Roles"/>
+/// reads off the Scene, down each one's part tree, once a frame in engine context. No hook on
+/// <c>Scene::RenderSkyBoxes</c>, no capture window, no colour mask. The engine's own routine still runs from
+/// the shim, its draws swallowed, because it is the sky's SIMULATION tick: <c>Gob::ProcessGob</c>, node
 /// animation, the cross-fade writes to <c>gob+0x108</c>, and the per-frame
-/// <c>Gob::SetPosition(Scene+0x190)</c> that parks each dome at the camera.</para>
+/// <c>Gob::SetPosition(Scene+0x190)</c> that parks each dome at the camera (#261).</para>
 /// <para><b>The matrix is composed, not captured.</b> A sky part is transformed by the engine's SOFTWARE
-/// matrix stack -- <c>Gob::Render</c> @0x452260 applies the gob's transform and <c>Gob::PartDraw</c>
-/// @0x451d50 each node's -- so <c>node+0x18</c> means nothing here. But
-/// <c>Part::GetWorld(Vector&amp;, Quaternion&amp;)</c> @0x437930 composes exactly that chain (leaf, up
-/// through <c>part+0x48</c>, then the gob's own adjusted scale/orientation/position) and hands it back
-/// through OUT PARAMETERS, which is an ABI this side can call without inventing one. Three field reads
-/// finish it: the uniform scale it does not return (<c>Gob::GetAdjustedScale</c> times every
-/// <c>part+0x2c</c> up the chain), and the camera-parking correction below.</para>
-/// <para><b>Why the position is corrected.</b> <c>RenderSkyBoxes</c> calls <c>Gob::SetPosition</c> (Gob
-/// vt+0xb8) with <c>Scene+0x190</c> immediately before each <c>Gob::Render</c>, and enrollment runs BEFORE
-/// the shim reaches that call -- so <c>gob+0xa8</c> still holds the previous frame's camera. Since
-/// <c>Gob::GetAdjustedPosition</c> @0x439900 is <c>gob[0xa8..0xb0] + Q(gob+0xb4)*lerpedOffsets</c>, the
-/// gob position enters the composition purely additively, and adding
-/// <c>Scene+0x190 - gob+0xa8</c> to the composed world position is exact rather than approximate. That is
-/// what retires the last of the one-frame lag: the dome is at THIS frame's camera.</para>
+/// matrix stack (<c>Gob::Render</c> @0x452260 applies the gob's transform, <c>Gob::PartDraw</c> @0x451d50
+/// each node's), so <c>node+0x18</c> means nothing here. <c>Part::GetWorld(Vector&amp;, Quaternion&amp;)</c>
+/// @0x437930 composes exactly that chain and hands it back through OUT PARAMETERS, an ABI this side can call.
+/// Three field reads finish it: the uniform scale it does not return (<c>Gob::GetAdjustedScale</c> times
+/// every <c>part+0x2c</c> up the chain), and the camera-parking correction.</para>
+/// <para><b>Why the position is corrected.</b> <c>RenderSkyBoxes</c> calls <c>Gob::SetPosition</c> with
+/// <c>Scene+0x190</c> immediately before each <c>Gob::Render</c>, and enrollment runs BEFORE the shim reaches
+/// that call, so <c>gob+0xa8</c> still holds the previous frame's camera. <c>Gob::GetAdjustedPosition</c>
+/// @0x439900 is <c>gob[0xa8..0xb0] + Q(gob+0xb4)*lerpedOffsets</c>, purely additive, so adding
+/// <c>Scene+0x190 - gob+0xa8</c> to the composed world position is exact: the dome is at THIS frame's camera.</para>
 /// <para><b>The matrix convention, derived not assumed.</b> <c>MakeMatrix4x4</c> @0x5b8ce0 writes the
 /// translation at float indices 12..14 and <c>2(xy+wz)</c> at index 1, so the engine's 16 floats are
-/// byte-identical to a <c>System.Numerics.Matrix4x4</c> of the same transform (quaternions are stored
-/// (w,x,y,z)). <c>operator*(Matrix4x4, Vector4)</c> @0x5b5320 dots ROWS of the column-major array, so
+/// byte-identical to a <c>System.Numerics.Matrix4x4</c> of the same transform (quaternions stored (w,x,y,z)).
+/// <c>operator*(Matrix4x4, Vector4)</c> @0x5b5320 dots ROWS of the column-major array, so
 /// <c>operator*(A,B)</c> @0x5b54c0 is the column-vector product and <c>aurMatrixStack::ApplyMatrix</c>
-/// @0x4db450's <c>top = top * M</c> becomes <c>top = M * top</c> on this side.
-/// <c>aurMatrixStack::Scale</c> @0x4db060 scales the array's columns, so it is the same left-multiply.</para>
+/// @0x4db450's <c>top = top * M</c> becomes <c>top = M * top</c> on this side; <c>aurMatrixStack::Scale</c>
+/// @0x4db060 scales the array's columns, the same left-multiply.</para>
 /// </summary>
 internal static unsafe class SkyBox
 {

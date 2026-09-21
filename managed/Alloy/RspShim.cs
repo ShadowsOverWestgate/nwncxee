@@ -8,47 +8,37 @@ using CX.Services.Perf;
 
 namespace CX.Alloy;
 
-/// <summary>#215 (ADR 0016 step 6): the CUTOVER. On the Alloy path, in a world frame, the engine's
+/// <summary>The CUTOVER (ADR 0016 step 6, #215): on the Alloy path, in a world frame, the engine's
 /// <c>Scene::RenderSinglePass</c> is not called at all -- this runs in its place, calls RSP's per-frame
 /// BOOKKEEPING and issues no engine draw.
 /// <para><b>Why a shim and not a skip.</b> RSP braids drawing with seven pieces of bookkeeping, four with no
 /// other caller in the binary (ADR 0016, "RenderSinglePass is not draw-only"). Skipping it outright freezes
 /// door fades -- and with them door CLICKABILITY, because <c>Gob::HitCheck</c> reads the same field -- all
 /// particle simulation, grass wind, bin LOD, lens-flare occlusion, and the <c>focuslighting</c> global.</para>
-/// <para><b>#264: it no longer walks the buckets.</b> The shim used to call <c>Scene::RenderDrawBucket</c>
-/// for all nine ids with both engine draw funnels swallowed, purely so the capture hooks on
-/// <c>PartTriMesh::Draw</c>/<c>PartSkin::Draw</c> would fire -- Alloy discovered a part by watching the engine
-/// try to draw it. #256 replaced discovery with <see cref="SceneWalk"/> and #243 replaced visibility with
-/// <see cref="CullPass"/>, which left the walk carrying nothing but a liveness stamp two predicates still
-/// asked for. Both now ask the record set instead, and the walk is gone: this is ADR 0018's instrument, and
-/// with it the frame is built from Alloy's own state end to end.
-/// <para>What went with it: the per-part hand-back (#236 -- there is nothing to hand back to when nothing
-/// walks), the exactly-one-owner audit and the bucket iterator's suppression (no engine draw to suppress),
-/// and the <c>sample_framebuffer</c> class, which no Alloy program covers. That last one is a real drop;
-/// <c>sample-class=</c> on the <c>[scenewalk]</c> line is its size, measured rather than argued.</para>
+/// <para><b>It does not walk the buckets.</b> Discovery is <see cref="SceneWalk"/>'s and visibility is
+/// <see cref="CullPass"/>'s, so the frame is built from Alloy's own state end to end (ADR 0018, #264). What
+/// that costs: a part no Alloy program covers is not drawn, since nothing walks that could hand it back;
+/// <c>sample-class=</c> on the <c>[scenewalk]</c> line is the <c>sample_framebuffer</c> class's size, measured
+/// rather than argued.</para>
 /// <para><b>Zero draws is measured, not inspected.</b> nwmain imports exactly <c>glDrawArrays</c> and
-/// <c>glDrawElements</c>; their only call sites are the two funnels below and <c>nk_sdl_render</c> (2D
-/// overlay, outside any Scene pass) -- see <see cref="SymbolMap.GlRenderVertexStreamData"/>. Swallowing both
-/// funnels therefore covers the engine's whole 3D draw surface, and <see cref="_passed"/> is counted at the
-/// BOTTOM of the chain so it reports what actually reached the original rather than restating the swallow.
-/// The funnels STAY after #264: the shim still calls the emitter, sky, beam and lens-flare virtuals for
-/// their simulation, and every one of those draws for itself.</para>
-/// <para>Always on (#458 deleted the <c>ownframe</c> knob: submitting inside the engine's frame was unusably
-/// slow, not a fallback). <c>vanilla=1</c> is the escape hatch, and it takes the whole Alloy path down. A
-/// shim that cannot arm is an <see cref="AlloyGate"/> refusal, so an unarmed shim never has Alloy drawing
-/// inside <c>RenderSinglePass</c>.</para>
-/// <para>Dropped on this path, by design and filed as #217's punch list: personal space, paths, drawable
-/// squares and light ranges (all four reachable-but-never-issued), the stencil-shadow block, and
-/// <c>Camera::DoFrameBufferEffects</c>/<c>CopyRenderSubframe</c>. Anything only the engine drew goes with
-/// them -- on SoW that is the dynamic sky (#136). The highlight overlays came BACK in #232/#233; see
-/// <see cref="EngineOverlays"/>.</para>
+/// <c>glDrawElements</c>; their only call sites are the two funnels below and <c>nk_sdl_render</c> (2D overlay,
+/// outside any Scene pass) -- see <see cref="SymbolMap.GlRenderVertexStreamData"/>. Swallowing both funnels
+/// covers the engine's whole 3D draw surface, and <see cref="_passed"/> is counted at the BOTTOM of the chain
+/// so it reports what actually reached the original. The funnels stay because the shim still calls the
+/// emitter, sky, beam and lens-flare virtuals for their simulation, and every one of those draws for itself.</para>
+/// <para>Always on: submitting inside the engine's frame was unusably slow, not a fallback (#458).
+/// <c>vanilla=1</c> is the escape hatch, and it takes the whole Alloy path down. A shim that cannot arm is an
+/// <see cref="AlloyGate"/> refusal, so an unarmed shim never has Alloy drawing inside <c>RenderSinglePass</c>.</para>
+/// <para>Dropped on this path, by design (#217's punch list): personal space, paths, drawable squares and
+/// light ranges (all four reachable-but-never-issued), the stencil-shadow block, and
+/// <c>Camera::DoFrameBufferEffects</c>/<c>CopyRenderSubframe</c>. Anything only the engine drew goes with them
+/// -- on SoW that is the dynamic sky (#136). The highlight overlays run through <see cref="EngineOverlays"/>.</para>
 /// <para><b>Also dropped, and it is bookkeeping:</b> RSP's head (@0x46e6b3..0x46e6fb) rebuilds the shadow-light
 /// lists <c>Scene+0x60</c>/<c>+0x70</c> from <c>LightManager::GetShadowLights(1)</c>/<c>(0)</c>. Alloy
-/// self-drives its own light walk from <c>Scene::AddPartsToDrawBuckets</c>, so the SSBO does not depend on
-/// them, and ADR 0016 could not find a consumer outside RSP -- which the shim removes. Not replicated
-/// deliberately rather than by oversight: the call returns a <c>CExoArrayList</c> BY VALUE (hidden sret in
-/// rdi), and inventing that ABI to preserve a side effect whose only reader we deleted is exactly the guess
-/// this repo forbids. If <c>PartLight+0xa8</c>'s frozen shadow-fade weight ever surfaces, close it with RE.</para></summary>
+/// self-drives its own light walk from <c>Scene::AddPartsToDrawBuckets</c>, and ADR 0016 found no consumer
+/// outside RSP. Not replicated deliberately: the call returns a <c>CExoArrayList</c> BY VALUE (hidden sret in
+/// rdi), and inventing that ABI to preserve a side effect with no reader is the guess this repo forbids. If
+/// <c>PartLight+0xa8</c>'s frozen shadow-fade weight ever surfaces, close it with RE.</para></summary>
 internal static unsafe class RspShim
 {
     /// <summary>Scene vtable slot DISPLACEMENTS, i.e. the offsets from the loaded vptr exactly as
@@ -365,32 +355,25 @@ internal static unsafe class RspShim
         _frames++;
     }
 
-    /// <summary>#237, punch-list item 38: <c>Scene::RenderSinglePass</c>'s trailing state block, replayed
-    /// verbatim at the shim's own exit -- <c>Disable(5) Enable(1) Enable(0xb) Enable(0) Disable(2)</c>, read
-    /// off the decompilation's tail rather than the ADR. Routed through <c>RenderInterface</c> so the engine's
-    /// enable cache learns about it; the enum values are not interpreted, because replaying RSP is faithful by
-    /// construction and guessing at what each cap means is not.
-    /// <para><b>Why it was not "covered by ResetRenderStates".</b> That verdict was about a WRITE SET when the
-    /// question was an EDGE. The frame runs: engine 3D (this shim) -&gt; the engine's own 2D UI -&gt;
-    /// <c>UiHostService.OnSwap</c>, whose <c>ResetRenderStates</c> hand-back (#210) is the LAST thing before
-    /// the present. Both resyncs -- ours and the engine's own inside <c>GLRender::SwapBuffers</c> -- therefore
-    /// land AFTER the 2D UI has already drawn, so nothing at all resynced at the point RSP's epilogue ran. The
-    /// leak was never about which globals the reset writes; it was about when it runs.</para>
-    /// <para>Item 6, RSP's opening <c>Enable(5)/Enable(0)/SetBlendFunc(0)</c>, rests on the same wrong verdict
-    /// but is a different question and stays dropped: its readers are the engine draws INSIDE the pass, which
-    /// under the cutover are only the shim's own sim vcalls and the overlays above. See the punch list.</para>
+    /// <summary><c>Scene::RenderSinglePass</c>'s trailing state block, replayed verbatim at the shim's own exit
+    /// -- <c>Disable(5) Enable(1) Enable(0xb) Enable(0) Disable(2)</c>, read off the decompilation's tail.
+    /// Routed through <c>RenderInterface</c> so the engine's enable cache learns about it; the enum values are
+    /// not interpreted, because replaying RSP is faithful by construction (#237, punch-list item 38).
+    /// <para><b>Why the exit EDGE matters, not the write set.</b> The frame runs engine 3D (this shim) -&gt;
+    /// the engine's own 2D UI -&gt; <c>UiHostService.OnSwap</c>, whose <c>ResetRenderStates</c> hand-back is
+    /// the LAST thing before the present, so both resyncs land AFTER the 2D UI has drawn and nothing resynced
+    /// at the point RSP's epilogue ran. RSP's opening <c>Enable(5)/Enable(0)/SetBlendFunc(0)</c> (item 6)
+    /// stays dropped: its readers are the engine draws INSIDE the pass, which under the cutover are only the
+    /// shim's own sim vcalls and the overlays above.</para>
     /// <para><b>Why two of the five are replayed as a toggle.</b> <c>GLRender::Enable</c> @0x4cae40 opens with
-    /// <c>IsEnabled</c> and returns before it touches GL or the cache when the bit in <c>m_bEnabledStates</c>
-    /// already agrees; <c>Disable</c> @0x4caf80 mirrors it. Under vanilla that is a safe fast path, because the
-    /// cache and real GL only ever move together. Alloy breaks that invariant by design -- it drives raw GL for
-    /// a whole frame and never writes the engine's cache -- so at the shim's exit the cache holds the last
-    /// engine vcall's belief while GL holds Alloy's leftovers, and a plain replay would short-circuit in
-    /// exactly the desynced case this exists for. Of the five caps only two reach GL:
-    /// <see cref="CapBlend"/> -&gt; <c>glEnable(GL_BLEND)</c> and <see cref="CapDepthTest"/> -&gt;
-    /// <c>glEnable(GL_DEPTH_TEST)</c>. Disabling each first forces the cache to disagree, so the enable that
-    /// follows always issues the real call and leaves cache and GL in agreement, whichever state it found.
-    /// Caps 5, 1 and 2 are cache/uniform-sequence writes with no GL call behind them, so for those the cache IS
-    /// the state and the early-out is the correct answer -- they stay a straight replay.</para></summary>
+    /// <c>IsEnabled</c> and returns before touching GL when the bit in <c>m_bEnabledStates</c> already agrees;
+    /// <c>Disable</c> @0x4caf80 mirrors it. Alloy drives raw GL for a whole frame and never writes that cache,
+    /// so at the shim's exit the cache holds the last engine vcall's belief while GL holds Alloy's leftovers,
+    /// and a plain replay would short-circuit in exactly the desynced case. Of the five caps only
+    /// <see cref="CapBlend"/> (<c>GL_BLEND</c>) and <see cref="CapDepthTest"/> (<c>GL_DEPTH_TEST</c>) reach GL:
+    /// disabling each first forces the cache to disagree, so the enable that follows always issues the real
+    /// call. Caps 5, 1 and 2 are cache/uniform-sequence writes with no GL call behind them, so for those the
+    /// cache IS the state and they stay a straight replay.</para></summary>
     private const int CapBlend = 0, CapDepthTest = 0xb;   // not-an-offset: engine RenderInterface cap enum, an argument to Enable/Disable
 
     private static void Epilogue()
@@ -403,27 +386,22 @@ internal static unsafe class RspShim
         _riDisable(2);
     }
 
-    /// <summary>#232 + #233: the three dropped overlays, run by the ENGINE at the end of the shim instead of
-    /// at RSP's own position, with the swallow window closed so their draws issue.
+    /// <summary>The three dropped highlight overlays, run by the ENGINE at the end of the shim instead of at
+    /// RSP's own position, with the swallow window closed so their draws issue (#232, #233).
     /// <para><b>Why the engine draws them and Alloy does not.</b> Both build their geometry into the static
     /// <c>VertexStreamDataObject</c> at 0x1aaba30 through <c>WritePartHighlightVertices</c>, whose arguments
-    /// are a <c>Vector</c> and a <c>Quaternion</c> BY VALUE. Calling that from here means inventing an ABI to
-    /// re-implement a vertex builder the engine already runs correctly -- the guess this repo forbids, for no
-    /// gain. Running the engine's own overlay is faithful by construction and costs two vtable calls.</para>
+    /// are a <c>Vector</c> and a <c>Quaternion</c> BY VALUE -- re-implementing that means inventing an ABI for
+    /// a vertex builder the engine already runs correctly. Two vtable calls, faithful by construction.</para>
     /// <para><b>Why here and not at RSP's slot.</b> Alloy draws inside the FadeDoors anchor, in its own 4.6
     /// context, and resolves into the default framebuffer; an engine draw cannot be interleaved into that
-    /// bracket. After it, the frame is finished and in DISPLAY space -- which is the space these overlays
-    /// blend in -- and <see cref="PostChain.DefaultDepthOk"/> says the owned depth reached the same
-    /// framebuffer. Moving them past the water bucket is the one visual difference from vanilla: an
-    /// additively-blended highlight now composites over water rather than under it.</para>
-    /// <para><b>Item 14 stays dropped, and it is classified rather than assumed.</b>
-    /// <c>Scene::DoTriggerBucket</c> walks the SAME trigger bucket and draws exactly the complement of this
-    /// pass -- the entries whose <c>PartTrigger+0xd8</c> is clear. That flag's only writer is
-    /// <c>PartTrigger::SetHighlighted</c> @0x4da090, reached only through
-    /// <c>AurPartTriggerSetHighlight</c>, whose only caller is <c>CNWCTrigger::UpdateTriggerColor</c>
-    /// @0x80eff0 -- and every path through that function ends at the same
-    /// <c>AurPartTriggerSetHighlight(t, true, …, true)</c>, DM branch included. So the complement is always
-    /// empty and the call would draw nothing.</para></summary>
+    /// bracket. After it the frame is finished and in DISPLAY space, the space these overlays blend in, and
+    /// <see cref="PostChain.DefaultDepthOk"/> says the owned depth reached the same framebuffer. The one visual
+    /// difference from vanilla: an additively-blended highlight composites over water rather than under it.</para>
+    /// <para><c>Scene::DoTriggerBucket</c> stays dropped, classified rather than assumed: it draws exactly the
+    /// complement of this pass -- entries whose <c>PartTrigger+0xd8</c> is clear -- and that flag's only writer
+    /// chain (<c>PartTrigger::SetHighlighted</c> @0x4da090 via <c>AurPartTriggerSetHighlight</c> via
+    /// <c>CNWCTrigger::UpdateTriggerColor</c> @0x80eff0) always sets it, DM branch included. The complement is
+    /// always empty.</para></summary>
     /// <summary>#462: <c>/alloy hlglow 0</c> skips the engine's <c>DoHighlightGob</c> replay (the trigger
     /// stencil pass still runs), isolating the glow from the gob's emissive/colour-shift fold.</summary>
     internal static bool GlowReplay => Renderer.HlGlow.V;
@@ -573,26 +551,19 @@ internal static unsafe class RspShim
         if (_origStream != null) _origStream(vsdo, prim, size, offset);
     }
 
-    /// <summary>#218's second acceptance criterion, asserted rather than assumed: on the first frame the
-    /// shim actually took, are the render target, the depth buffer, the vertex/index buffers and the
-    /// textures all ALLOY-CREATED?
-    /// <para>Each term is the discriminating one for its resource, not a restatement of "the feature is on".
-    /// <c>PostChain.Fbo</c>/<c>DepthTex</c> are names Alloy generated -- zero means it is resolving into
-    /// something it did not make. The two <c>Refused</c> counters are the borrowed-name leak: both tables
-    /// fall back to the ENGINE's name when a copy is refused, silently and per resource, so "armed" alone
-    /// does not mean "owned". Read as LIFETIME totals here, because this is the first-resolve verdict and
-    /// everything before it is its subject; the period line reports the same two as a per-period delta.</para>
-    /// <para>Asked on the first frame Alloy actually RESOLVED, not the first frame the shim took. Those are
-    /// not the same frame and the difference inverts the verdict: enrollment needs ~3 walks to converge, so
-    /// the first shim frame owns nothing, <c>DrawOwnedInner</c> returns ahead of <c>PostChain.Begin</c>, and
-    /// <c>PostChain.Fbo</c> -- generated lazily there -- is still 0. Asked then, this would latch a FAILED
-    /// on frame 1 of every clean start and never re-ask. If Alloy never resolves at all, the ABSENCE of this
-    /// line says so, alongside the refusals AlloyGate already logs; there is no timeout path.</para>
-    /// <para>Logged once, because it is a milestone assert. It is
-    /// a log verdict and not a stand-down: by here the engine's frame is already gone, and a shim that
-    /// refused to finish the frame over a borrowed texture would trade a wrong-looking world for no world.
-    /// ponytail: one line, no per-frame machinery -- the period line re-reads the same terms every 900
-    /// frames if a later area regresses one.</para></summary>
+    /// <summary>Asserted rather than assumed, once: on the first frame Alloy actually RESOLVED, are the render
+    /// target, the depth buffer, the vertex/index buffers and the textures all ALLOY-CREATED (#218)? Each term
+    /// is the discriminating one for its resource: <c>PostChain.Fbo</c>/<c>DepthTex</c> are names Alloy
+    /// generated (zero means it resolves into something it did not make); the two <c>Refused</c> counters are
+    /// the borrowed-name leak, since both tables fall back to the ENGINE's name when a copy is refused. Read as
+    /// LIFETIME totals here; the period line reports the same two as a per-period delta.
+    /// <para>Asked on the first RESOLVED frame, not the first shim frame: enrollment needs ~3 walks to
+    /// converge, so the first shim frame owns nothing and <c>PostChain.Fbo</c>, generated lazily, is still 0 --
+    /// asked then, this would latch FAILED on every clean start. If Alloy never resolves, the ABSENCE of this
+    /// line says so, alongside the refusals AlloyGate logs. A log verdict, not a stand-down: by here the
+    /// engine's frame is gone, and refusing to finish it over a borrowed texture trades a wrong-looking world
+    /// for no world. ponytail: one line, no per-frame machinery -- the period line re-reads the same terms
+    /// every 900 frames if a later area regresses one.</para></summary>
     private static void Bar()
     {
         _barLogged = true;

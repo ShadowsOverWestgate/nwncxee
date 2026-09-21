@@ -7,34 +7,32 @@ using CX.Graphics;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Mouse-look on right-drag (#539, map #535). The engine's only mouse orbit is middle-drag
+/// Mouse-look on right-drag (#539). The engine's only mouse orbit is middle-drag
 /// (<c>PerformX/YMouseMoveAction</c> with the middle-held flag calling <c>CNWCModule::Turn/TiltCamera(deg, 1)</c>);
-/// this makes right-drag the same orbit with the cursor captured. The right press is HELD (not forwarded) until
-/// the drag decides: past the mode's <c>threshold</c> pixels it becomes a look (SDL relative mode, every motion
-/// event swallowed and fed to the engine's impulse path, so locks, limits and dialog bookkeeping stay
-/// engine-owned); released under the threshold it is replayed as press+release, so the radial menu opens
-/// exactly as before, just on release. A press over the engine GUI (NUI, radial, any panel) or over one of our
-/// windows passes through untouched -- the engine's radial path is never hooked. Opt-in: the mode's <c>right</c>.
-/// The knobs are the live camera mode's Mouse-look rows, read through the <see cref="MouseLook"/> facade. The toggle (<c>&lt;mode&gt;.mouselook</c>, #584) is the
-/// whole service: off, every event is forwarded untouched -- the stock middle-drag orbit, no capture -- and a drag
-/// under way is released on the off edge (<see cref="MasterChanged"/>). Live both ways.
-/// <para>Middle-drag, the engine's own orbit, gets the same capture unconditionally: the engine turns on ABSOLUTE
-/// cursor deltas, so a vanilla drag stalls at the window edge. The press and release are forwarded (the engine
-/// keeps its middle-held bookkeeping), every motion in between is swallowed and fed as relative deltas, and the
-/// release is forwarded at the press position (a button event is also a mouse-move to the engine).</para>
-/// <para>Action camera (the mode's <c>action</c>): relative mode is held for as long
-/// as the world camera is live and nothing else wants the cursor, every motion's delta turns the camera and the
-/// event is forwarded rewritten to the screen centre with no delta, so the engine's own hover pick and click land
-/// on the crosshair (<see cref="Crosshair"/>, drawn by a registered window since the engine's hardware cursor is
-/// hidden under relative mode). Buttons are forwarded at the centre too: left-click attacks or selects what the
-/// crosshair points at, a still right-click opens the radial there. Holding Alt, typing in chat, one of our panels
+/// this makes right-drag the same orbit with the cursor captured. The right press is HELD (not forwarded)
+/// until the drag decides: past the mode's <c>threshold</c> pixels it becomes a look (SDL relative mode,
+/// every motion event swallowed and fed to the engine's impulse path, so locks, limits and dialog bookkeeping
+/// stay engine-owned); released under the threshold it is replayed as press+release, so the radial menu opens
+/// exactly as before, just on release. A press over the engine GUI or over one of our windows passes through
+/// untouched. Opt-in: the mode's <c>right</c>. The knobs are the live camera mode's Mouse-look rows, read
+/// through the <see cref="MouseLook"/> facade; the toggle (<c>&lt;mode&gt;.mouselook</c>) is the whole
+/// service -- off, every event is forwarded untouched and a drag under way is released on the off edge
+/// (<see cref="MasterChanged"/>). Live both ways.
+/// <para>Middle-drag, the engine's own orbit, gets the same capture unconditionally: the engine turns on
+/// ABSOLUTE cursor deltas, so a vanilla drag stalls at the window edge. Press and release are forwarded (the
+/// engine keeps its middle-held bookkeeping), every motion between is swallowed and fed as relative deltas,
+/// and the release is forwarded at the press position (a button event is also a mouse-move to the engine).</para>
+/// <para>Action camera (the mode's <c>action</c>): relative mode is held for as long as the world camera is
+/// live and nothing else wants the cursor; every motion's delta turns the camera and the event is forwarded
+/// rewritten to the screen centre with no delta, so the engine's own hover pick and click land on the
+/// crosshair (<see cref="Crosshair"/>, drawn by a registered window since the hardware cursor is hidden under
+/// relative mode). Buttons are forwarded at the centre too. Holding Alt, typing in chat, one of our panels
 /// owning the keyboard, a dialog / cutscene / lock or the free camera pauses it with the cursor shown at the
 /// centre; it resumes on the next event once they clear. While held, click-to-move is refused at
-/// <c>WalkPlayerToPoint</c> (movement is the keys') and the world pick never returns the player creature (no
-/// self-hover or self-select from a crosshair that sits on your own back).</para>
+/// <c>WalkPlayerToPoint</c> and the world pick never returns the player creature.</para>
 /// <para>Outermost layer of the <c>WinMessageHandler</c> chain, above <see cref="UiInputService"/>; per-event
 /// state is static and the handler allocates nothing. Capture releases on button-up, on window focus loss and
-/// when <see cref="CameraService.GateUp"/> (dialog / cutscene / lock) comes up.</para>
+/// when <see cref="CameraService.GateUp"/> comes up.</para>
 /// </summary>
 public sealed unsafe class MouseLookService : IExtenderService
 {

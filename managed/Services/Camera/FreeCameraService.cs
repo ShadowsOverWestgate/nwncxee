@@ -9,25 +9,25 @@ using CX.Ui;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// The free camera (#543, map #535): the <c>free.enter</c> button (<c>/free enter</c>) detaches the camera for screenshots. The engine's drive
-/// keys (forward/back, strafe, turn -- the player's own bindings, read from the engine's key table) fly and turn
-/// it, Space/C lift and lower it, Z/X roll it, Shift is 4x, the wheel scales the speed, right-drag is mouse-look
-/// (the same scale as #539); Escape or the button again returns. The pose is written where
-/// <see cref="CameraService"/> writes it, after Control, so picking, nameplates and combat text follow; the
-/// behavior's own yaw/pitch/dist are never touched, so the exit lands on the engine's previous pose and both
-/// transitions are cuts (<see cref="AlloyRenderer.CameraCut"/>, no motion-vector ghost). The in-game GUI is
-/// hidden through the engine's own <c>CGuiInGame::ToggleOff</c> (what the server's HideGui message calls) and
-/// restored on exit; the extender's own windows (chat) stay, since they are the way back.
+/// The free camera (#543): the <c>free.enter</c> button (<c>/free enter</c>) detaches the camera for
+/// screenshots. The engine's drive keys (the player's own bindings, read from the engine's key table) fly and
+/// turn it, Space/C lift and lower it, Z/X roll it, Shift is 4x, the wheel scales the speed, right-drag is
+/// mouse-look; Escape or the button again returns. The pose is written where <see cref="CameraService"/>
+/// writes it, after Control, so picking, nameplates and combat text follow; the behavior's own yaw/pitch/dist
+/// are never touched, so the exit lands on the engine's previous pose and both transitions are cuts
+/// (<see cref="AlloyRenderer.CameraCut"/>). The in-game GUI is hidden through the engine's own
+/// <c>CGuiInGame::ToggleOff</c> (what the server's HideGui message calls) and restored on exit; the
+/// extender's own windows (chat) stay, since they are the way back.
 /// <para><b>Limits</b> (docs/research/free-camera-cheating.md §5, all client-side, no opcode): a leash of the
 /// server's <c>SetCameraLimits</c> max distance when set, else <c>free.leash</c> (capped at the engine's 25 m
 /// default) around the player's creature -- the camera stops at it and a chat line says so once per contact;
-/// stand-down (exit, with the reason on screen) on every CameraService gate -- dialog, cutscene, clear-view,
-/// attach, a server lock -- and while the creature's server-fed combat state is set; entry refuses on the same.
-/// While free the drive sees no keys (<see cref="CameraDriveService"/>), left and middle clicks in the world are
-/// swallowed (no click-to-move, no engine orbit) and the engine's chase is held down.</para>
+/// stand-down (exit, with the reason on screen) on every CameraService gate and while the creature's
+/// server-fed combat state is set; entry refuses on the same. While free the drive sees no keys
+/// (<see cref="CameraDriveService"/>), left and middle clicks in the world are swallowed and the engine's
+/// chase is held down.</para>
 /// <para>Hot: <see cref="Frame"/> runs inside Control (pointer reads, float math); the event handler is the
-/// outermost <c>WinMessageHandler</c> chain layer (cold); notices are built on the frame-end tick. The button's
-/// own verdict (entered, or why not) is a <see cref="Notice"/> too: a press has no reply line.</para>
+/// outermost <c>WinMessageHandler</c> chain layer (cold); notices are built on the frame-end tick. The
+/// button's own verdict (entered, or why not) is a <see cref="Notice"/> too.</para>
 /// </summary>
 public sealed unsafe class FreeCameraService : IExtenderService
 {

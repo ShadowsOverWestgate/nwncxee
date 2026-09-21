@@ -7,35 +7,34 @@ using CX.Services.Nameplate;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Camera-relative WASD (#540, map #535; docs/research/custom-camera.md §10). Pre-hooks the engine's per-frame
-/// drive step, <c>CClientExoAppInternal::UpdateDriveMode</c>: while a drive key is down and the mode's <c>drive</c>
+/// Camera-relative WASD (#540; docs/research/custom-camera.md §10). Pre-hooks the engine's per-frame drive
+/// step, <c>CClientExoAppInternal::UpdateDriveMode</c>: while a drive key is down and the mode's <c>drive</c>
 /// knob is on, the player creature's orientation is written to camera yaw + key direction (W = the camera's
-/// forward, A/D and the strafe keys = its right, diagonals at 45°), forward is the only key the engine sees for
-/// the call (the walk or the run key, whichever the player holds, so the engine's own walk/run choice stands;
-/// #637), and the engine's "input changed" latch is raised when the heading moved past the wire's 0.1° quantum
-/// (at most <c>&lt;mode&gt;.hz</c> times a second for camera turns; a key change latches at once). The engine then derives
-/// the packet angle from that orientation, sends forward at the key's pace, snaps the local facing, predicts,
-/// keeps alive and aborts on release by itself,
-/// and the server adopts the world-space heading (§10.2): no server change, no new opcode. The one release the
-/// engine does not abort on is a turn key's (its key-up path aborts only for forward/walk/back/strafe), so
-/// that one sends the same <c>AbortDriveControl</c> (major 6, minor 0x21) from here.
-/// <para>Face mode (<c>&lt;mode&gt;.face</c>, chase's default): the creature always faces the camera's forward and the engine's own
-/// back/strafe bits carry S and the strafe keys (the server animates a back-pedal and a sidestep, facing held),
-/// while the turn keys become a keyboard orbit (<see cref="TurnAxis"/>) the creature follows on the next move.
-/// The camera then faces where the character faces by construction, with no recenter swing to wait for. Under
-/// <c>&lt;mode&gt;.siderun</c> the turn keys instead run the creature sideways the non-face way (the mouse looks
-/// around); while the tab-target camera is locked on (<see cref="TabTargetService.LockedOn"/>) every side key --
-/// turn or strafe -- does: the camera is the lock's, so there is nothing to orbit or hold a facing for.</para>
-/// <para>A drive starts on the keys' heading (the wire angle is a path, so a slew from the old facing would walk
-/// an arc); while it runs the heading slews toward the keys at <c>&lt;mode&gt;.turn</c> deg/s, and
-/// the creature's local facing-target pair is written with it every frame so the model turns as smoothly as the
-/// wire does. While the drive is active the engine's chase cam stands down (<see cref="EngineLayout.ModuleChaseSuppressed"/>
-/// held up, its idle edge held down): a chase that swings the camera behind a creature strafing at 90° would turn
-/// "strafe" into a spiral, and a held mouse orbit must win over every other camera motion.</para>
-/// <para>Stands down (engine drive untouched) under every <see cref="CameraService"/> gate -- dialog, cutscene,
-/// clear-view, attached elsewhere, a server lock -- under the mode's own master off (<c>&lt;mode&gt;.enabled</c>,
-/// #584: the stock character-relative drive), before the first camera solve, and when the creature's own drive
-/// gates are shut. Hot: once per frame from ProcessInput, pointer reads and one atan2, no allocation.</para>
+/// forward, A/D and the strafe keys = its right, diagonals at 45°), forward is the only key the engine sees
+/// for the call (the walk or the run key, whichever is held, so the engine's own walk/run choice stands;
+/// #637), and the engine's "input changed" latch is raised when the heading moved past the wire's 0.1°
+/// quantum (at most <c>&lt;mode&gt;.hz</c> times a second for camera turns; a key change latches at once).
+/// The engine then derives the packet angle from that orientation, sends, predicts, keeps alive and aborts
+/// on release by itself, and the server adopts the world-space heading: no server change, no new opcode. The
+/// one release the engine does not abort on is a turn key's, so that one sends the same
+/// <c>AbortDriveControl</c> (major 6, minor 0x21) from here.
+/// <para>Face mode (<c>&lt;mode&gt;.face</c>, chase's default): the creature always faces the camera's forward
+/// and the engine's own back/strafe bits carry S and the strafe keys, while the turn keys become a keyboard
+/// orbit (<see cref="TurnAxis"/>) the creature follows on the next move -- the camera faces where the
+/// character faces by construction, with no recenter swing. Under <c>&lt;mode&gt;.siderun</c> the turn keys
+/// instead run the creature sideways; while the tab-target camera is locked on
+/// (<see cref="TabTargetService.LockedOn"/>) every side key does, since the camera is the lock's.</para>
+/// <para>A drive starts on the keys' heading (the wire angle is a path, so a slew from the old facing would
+/// walk an arc); while it runs the heading slews toward the keys at <c>&lt;mode&gt;.turn</c> deg/s, and the
+/// creature's local facing-target pair is written with it every frame so the model turns as smoothly as the
+/// wire does. While the drive is active the engine's chase cam stands down
+/// (<see cref="EngineLayout.ModuleChaseSuppressed"/> held up, its idle edge held down): a chase swinging behind
+/// a creature strafing at 90° would turn "strafe" into a spiral.</para>
+/// <para>Stands down (engine drive untouched) under every <see cref="CameraService"/> gate -- dialog,
+/// cutscene, clear-view, attached elsewhere, a server lock -- under the mode's own master off
+/// (<c>&lt;mode&gt;.enabled</c>: the stock character-relative drive), before the first camera solve, and when
+/// the creature's own drive gates are shut. Hot: once per frame from ProcessInput, pointer reads and one
+/// atan2, no allocation.</para>
 /// </summary>
 public sealed unsafe class CameraDriveService : IExtenderService
 {

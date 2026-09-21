@@ -56,15 +56,11 @@ public static class ShadowMath
     /// than fitted to camera-frustum corners: NWN's chase camera always looks at the focus, so a disc around
     /// it is very nearly the visible region, and a fit that does not depend on camera orientation cannot
     /// re-shape as the camera orbits -- which is what keeps the texel snap locked to the world and the shadow
-    /// edges still (the #65 "banding" was a crawling map centre, never acne).
-    /// <para>NOT because the camera pose is unknowable. <c>AlloyRenderer</c> reads the real view and
-    /// projection off the engine's matrix stacks mid-pass and <c>AlloyLights.TryPerspective</c> rejects any
-    /// non-perspective one, so a frustum fit was fully available -- #99 built that latch
-    /// (<c>FrameInputs.SceneCamPos</c>) and then measured the fit it would have enabled. Concentric won and
-    /// #99 closed: NWN's chase camera sits 12-25u BEHIND the PC, so a frustum-split cascade 0 covers the
-    /// ground between camera and player while concentric centres it on the player. Across fov 45-65deg the
-    /// split fit is 1.5-3x COARSER at the player's feet at every focus depth past ~8u, tight AABB included.
-    /// <c>CasterPass.FitReadout</c> prints the live pair that would re-open it. What
+    /// edges still (a crawling map centre reads as "banding").
+    /// <para>Measured, not assumed (#99): the chase camera sits 12-25u BEHIND the PC, so a frustum-split
+    /// cascade 0 covers the ground between camera and player while concentric centres it on the player.
+    /// Across fov 45-65deg the split fit is 1.5-3x COARSER at the player's feet at every focus depth past
+    /// ~8u, tight AABB included; <c>CasterPass.FitReadout</c> prints the live pair that would re-open it. What
     /// <see cref="SphereInCameraFrustum"/> refuses is narrower still: the CAPTURED QUATERNION at present time,
     /// which belongs to whichever pass set the view last, a UI/ortho one as often as the scene's.</para>
     /// <para>Radii halve inward, so cascade 0 is <c>maxDist / 2^(count-1)</c> -- a 15u half-extent at the

@@ -7,25 +7,25 @@ using CX.Framework;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// The camera layer (#536, map #535, ADR: docs/research/custom-camera.md §8 option A). Chains on the engine's
-/// one camera solve, <c>CAurBehaviorCameraFollow::Control</c>, lets it run, then rewrites its answer -- the
-/// pose at Camera+0xb0/+0xbc and the view angle at +0x4c4 -- from the same behavior state plus three feels the
-/// engine lacks: an FOV knob, a critically damped position/rotation/zoom lag (the engine's zoom is a one-frame
-/// impulse per wheel notch, so the rendered distance is damped toward the behavior's), and pitch as a function of distance.
-/// #538 adds a free lateral/vertical offset of the rig from the focus with its own spring arm (the engine's
+/// The camera layer (#536; docs/research/custom-camera.md §8 option A). Chains on the engine's one camera
+/// solve, <c>CAurBehaviorCameraFollow::Control</c>, lets it run, then rewrites its answer -- the pose at
+/// Camera+0xb0/+0xbc and the view angle at +0x4c4 -- from the same behavior state plus three feels the engine
+/// lacks: an FOV knob, a critically damped position/rotation/zoom lag (the engine's zoom is a one-frame
+/// impulse per wheel notch, so the rendered distance is damped toward the behavior's), and pitch as a function
+/// of distance. A free lateral/vertical offset of the rig from the focus has its own spring arm; the engine's
 /// pull-in predicts from the un-offset pose, so it is switched off through <see cref="SettleCollision"/> while
-/// an offset is active; at 0 0 the pose is #536's, bit for bit, and the engine's collision is left alone).
-/// The behavior's own yaw/pitch/dist are never written, so dialog framing, cutscenes, Store/RestoreCameraFacing
-/// and the server's locks keep reading the truth. #541 is the one exception, and it goes through the engine's own
-/// input channel: the auto-recenter (<see cref="Recenter"/>) adds a yaw <i>velocity</i> before Control, the same
-/// field the engine's chase drivers write, with those drivers held down by the two module flags they honour.
-/// <para><b>Stand-down gates</b>, checked every call and reported under <c>/knobs</c>: not the module camera (a
-/// GUI panel's), dialog camera, cutscene interpolation, clear-view pending, attached to something other than the
-/// player, any server lock (photo mode locks all three axes), unknown mode byte, and the ninth (#584): the mode's
-/// own master <c>&lt;mode&gt;.enabled</c> off, which is the stock camera for that mode -- feel, recenter and the
-/// drive all stand aside, and the view angle the layer wrote goes back to the first one read (the engine has no
-/// restorer for it). When a gate is up the engine's answer passes through untouched, and the frame after it
-/// lifts is a cut (<see cref="AlloyRenderer.CameraCut"/>).</para>
+/// an offset is active, and at 0 0 the engine's collision is left alone (#538). The behavior's own
+/// yaw/pitch/dist are never written, so dialog framing, cutscenes, Store/RestoreCameraFacing and the server's
+/// locks keep reading the truth. The one exception goes through the engine's own input channel: the
+/// auto-recenter (<see cref="Recenter"/>) adds a yaw <i>velocity</i> before Control, the same field the
+/// engine's chase drivers write, with those drivers held down by the two module flags they honour (#541).
+/// <para><b>Stand-down gates</b>, checked every call and reported under <c>/knobs</c>: not the module camera
+/// (a GUI panel's), dialog camera, cutscene interpolation, clear-view pending, attached to something other
+/// than the player, any server lock (photo mode locks all three axes), unknown mode byte, and the mode's own
+/// master <c>&lt;mode&gt;.enabled</c> off -- the stock camera for that mode: feel, recenter and the drive all
+/// stand aside, and the view angle goes back to the first one read (the engine has no restorer for it). When
+/// a gate is up the engine's answer passes through untouched, and the frame after it lifts is a cut
+/// (<see cref="AlloyRenderer.CameraCut"/>).</para>
 /// <para><b>Hot.</b> Runs inside <c>CNWCArea::Update</c> once per world frame: pointer reads, float math, no
 /// allocation. The knobs are plain field reads (ADR 0025); every string lives on the frame-end tick and the
 /// <c>/knobs</c> note.</para>

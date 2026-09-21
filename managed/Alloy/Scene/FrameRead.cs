@@ -5,33 +5,30 @@ using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
-/// <summary>#257 (M5 strand 1 step 2): the frame constants, READ. Camera, area terms, sun and fog come out
-/// of the engine's own state once per world frame, at a slot Alloy picks -- not harvested off a rendering
-/// call site and disambiguated with a largest-viewport contest (ADR 0018; census E7/E9/E12's feed).
-/// <para>The engine still owns the simulation -- that binds permanently. What went is the interception:
-/// <c>SetViewTransform</c>, <c>SetPerspectiveTransform</c> and <c>SetLightGL</c> are no longer hooked, and
-/// there is no last-writer-wins anywhere on this path.</para>
+/// <summary>The frame constants, READ: camera, area terms, sun and fog come out of the engine's own state
+/// once per world frame, at a slot Alloy picks -- not harvested off a rendering call site (ADR 0018 M5
+/// strand 1 step 2, #257). The engine still owns the simulation; nothing on this path is hooked and there is
+/// no last-writer-wins.
 /// <para><b>Where the values live</b> (all Ghidra-verified against the client):
 /// <list type="bullet">
 /// <item><c>CurrentCamera</c> -- the global the engine writes at <c>Camera::RenderScene</c> @0x4a822c and
-/// clears at @0x4a8324, i.e. it holds exactly the camera whose scene is rendering. That is what makes the
-/// contest unnecessary rather than merely cheaper: read inside the world scene's render, this IS the scene
-/// camera, and a GUI 3D panel's camera can only be here while its own scene renders.</item>
+/// clears at @0x4a8324, so it holds exactly the camera whose scene is rendering: read inside the world scene's
+/// render, this IS the scene camera, and a GUI 3D panel's camera can only be here while its own scene
+/// renders.</item>
 /// <item><c>Camera</c> fields, from the engine's own accessors: position <c>+0xb0</c>
 /// (<c>Camera::GetPosition</c>), orientation <c>+0xbc</c> (<c>GetOrientation</c>, stored (w, x, y, z)),
 /// view angle <c>+0x4c4</c> (<c>GetViewAngle</c>), near/far <c>+0x4cc</c>/<c>+0x4d0</c>
-/// (<c>GetClipDist</c>), viewport w/h <c>+0x4dc</c>/<c>+0x4e0</c> (<c>SetViewPort</c>). The arguments
-/// <c>Camera::RenderScene</c> @0x4a7d55..0x4a7db1 passes to <c>SetPerspectiveTransform</c> are these same
-/// four fields, and its aspect is the upscaled viewport's w/h -- the upscale multiplies both by the same
-/// factor (@0x4a7cbe..0x4a7cff), so it cancels and the ratio is the raw pair's.</item>
-/// <item>Area ambient and diffuse -- <c>LightManager+0xa0</c> and <c>+0x98</c>, the two
-/// <c>PartLight*</c> <c>LightManager::ControlLightsFade</c> @0x4c2050 pushes through
-/// <c>SetLightGL(_, -1, fade)</c>; the fade weight is <c>PartLight+0x90</c>.</item>
+/// (<c>GetClipDist</c>), viewport w/h <c>+0x4dc</c>/<c>+0x4e0</c> (<c>SetViewPort</c>). These are the same
+/// four fields <c>Camera::RenderScene</c> @0x4a7d55..0x4a7db1 passes to <c>SetPerspectiveTransform</c>; the
+/// upscale multiplies w and h by the same factor (@0x4a7cbe..0x4a7cff), so the aspect is the raw pair's.</item>
+/// <item>Area ambient and diffuse -- <c>LightManager+0xa0</c> and <c>+0x98</c>, the two <c>PartLight*</c>
+/// <c>LightManager::ControlLightsFade</c> @0x4c2050 pushes through <c>SetLightGL(_, -1, fade)</c>; the fade
+/// weight is <c>PartLight+0x90</c>.</item>
 /// <item>Fog -- <c>Scene+0x140</c> enable, <c>+0x144</c> start, <c>+0x148</c> end, <c>+0x14c</c> colour,
 /// exactly what <c>Scene::DoFog</c> @0x45f1b0 pushes into <c>GLRender::m_fog</c>, including its
 /// <c>LightManager::m_pOnlyGob</c> branch (a lit-gob preview forces the fog colour to black).</item>
 /// </list></para>
-/// <para>Hot-path rules apply: this runs once per world frame in engine context and allocates nothing.</para>
+/// <para>Hot-path rules apply: once per world frame in engine context, allocates nothing.</para>
 /// </summary>
 internal static unsafe class FrameRead
 {

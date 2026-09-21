@@ -139,27 +139,21 @@ internal static unsafe class PartTable
     /// an area transition healed).</summary>
     internal static readonly bool[] _pFreed = new bool[MaxParts];
 
-    /// <summary>#264: has <see cref="SceneWalk"/> already asked this record's VertexPrimitive to set its
-    /// arrays up? The call is what fills the VDO/item fields, and it LATCHES its own verdict -- a primitive
-    /// whose MdlNode carries no drawable geometry comes back with item -1 and marks itself done, so a second
-    /// call can only ever return the same answer. Without this flag the drain queue re-asks every such record
-    /// every frame: the first live run burned 512 calls a frame, for ever, on 1899 tiles that were never
-    /// going to bind.
-    /// <para>#317: but "marks itself done" was read off the comment, not the binary, and the binary says
-    /// otherwise. <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 takes its no-geometry exit when the
-    /// vertex or index totals summed off the <c>MdlNodeTriMesh</c> list are zero, and that exit leaves
-    /// <see cref="EngineLayout.VpVdo"/> NULL -- so the function's own entry guard
-    /// (<c>vp+0x64 &amp;&amp; vp+0x58 &amp;&amp; !vp+0x84</c>) fails on the next call and the ENGINE redoes
-    /// the work. Only Alloy latched. A part whose model geometry is not resident yet therefore answered
-    /// zero once and stayed invisible for the session, while vanilla re-asked and drew it -- and the one
-    /// attempt was spent at the worst possible moment, because a scene change lifts the budget
-    /// (<c>_setupLeft = int.MaxValue</c>) and drains the whole queue on the load frame.</para>
-    /// <para>So it is an attempt COUNT, not a flag. The ceiling the original latch bought is kept -- the
-    /// 1899 permanently empty tiles cost <see cref="SetupAttempts"/> calls each, not 512 a frame for ever
-    /// -- and a record still empty after that is taken at its word.
+    /// <summary>How many times <see cref="SceneWalk"/> has asked this record's VertexPrimitive to set its
+    /// arrays up. The call fills the VDO/item fields; a primitive whose MdlNode carries no drawable geometry
+    /// comes back with item -1, and without a ceiling the drain queue re-asks every such record every frame
+    /// (512 calls a frame, for ever, on 1899 tiles that were never going to bind; #264). An attempt COUNT
+    /// rather than a latch because the engine does not latch: <c>VertexPrimitiveFlat::SetupArrays</c>
+    /// @0x458920 takes its no-geometry exit when the vertex or index totals summed off the
+    /// <c>MdlNodeTriMesh</c> list are zero, and that exit leaves <see cref="EngineLayout.VpVdo"/> NULL, so its
+    /// own entry guard (<c>vp+0x64 &amp;&amp; vp+0x58 &amp;&amp; !vp+0x84</c>) fails next call and the ENGINE
+    /// redoes the work. A part whose model geometry is not resident yet answers zero once -- at the worst
+    /// moment, since a scene change lifts the budget and drains the whole queue on the load frame -- and
+    /// vanilla re-asks and draws it later (#317). A record still empty after <see cref="SetupAttempts"/> is
+    /// taken at its word.
     /// ponytail: a fixed attempt count on a wait, not a signal that the model became resident. The exact
     /// condition is "the MdlNodeTriMesh totals changed since last ask", which is most of SetupArrays' own
-    /// prefix re-walked per record; do that if streamed content ever outlives the window.</para>
+    /// prefix re-walked per record; do that if streamed content ever outlives the window.
     /// <para>Cleared wherever the primitive underneath may have changed -- a slot reclaimed by
     /// <see cref="Insert"/>, and a record whose node or material moved (<c>SceneWalk.Rebind</c>).</para></summary>
     internal static readonly byte[] _pSetupTries = new byte[MaxParts];
@@ -234,26 +228,14 @@ internal static unsafe class PartTable
     internal static readonly bool[] _pWorld = new bool[MaxParts];
     internal static readonly bool[] _pLight = new bool[MaxParts];
 
-    /// <summary>Is this part an INSTANCE -- does it hang off a <c>Gob</c>? #134: this used to be spelled
-    /// <c>IsSkinned</c> and read <c>*(*(node+0x10)+0x50)</c>, which is the same value by a longer route
-    /// (part+0x88 is the VertexPrimitive, its +0x10 points back at the part, and part+0x50 is
-    /// <see cref="PartGob"/>) -- but it is not a skin test and never was.
-    /// <para>Skinned parts cannot reach this hook at all: <c>PartSkin::Draw</c> @0x4830b0 calls
-    /// <c>RenderSkinned</c> directly and never enters <c>PartTriMesh::Draw</c>. What the test actually
-    /// separates is the second half of <c>RenderDrawBucket</c>'s "does this need SetModelMatrix" condition,
-    /// whose first half is the <see cref="NodeFlags"/> <c>&amp; 0x1e</c> beside it. Under the wrong name it
-    /// kept every instanced part -- placeables, doors, tileset objects, 5295 draws of 6000 in a warm frame --
-    /// out of ownership for the whole of M1 through M3.</para></summary>
     /// <summary>A <c>PartDanglyMesh</c>, which reaches this hook because <c>PartDanglyMesh::Draw</c> @0x451b60
-    /// calls <c>PartTriMesh::Draw</c> outright. Kept as an identity for the census and for #135's per-frame
-    /// re-harvest; no longer a reason to refuse the part.
-    /// <para>#135: the CPU re-solve is real but it does not land where the old exclusion assumed. The solve
-    /// is <c>PartDanglyMesh::Animate(float)</c> @0x49bbb0 -- a separate per-frame pass, NOT the draw -- so
-    /// suppressing the draw does not freeze the sway. And it writes per-part into that part's own VDO item:
-    /// <c>GetItemDynamicData(vp+0x58, vp+0x60)</c>, which resolves to the DYNAMIC vertex pool (vdo+0x30,
-    /// stride vdo+0x38) through the same item-offset table at vdo+0x48 the static pool uses. The harvest
-    /// reads the engine's own VAO, so it inherits whichever pool the engine bound, and baseVertex addressing
-    /// is identical for both. Tested by vtable, which is exact -- the class has no flag to read.</para></summary>
+    /// calls <c>PartTriMesh::Draw</c> outright. An identity for the census and the per-frame re-harvest; not a
+    /// reason to refuse the part. The CPU re-solve is <c>PartDanglyMesh::Animate(float)</c> @0x49bbb0 -- a
+    /// separate per-frame pass, NOT the draw, so suppressing the draw does not freeze the sway -- and it
+    /// writes per-part into that part's own VDO item (<c>GetItemDynamicData(vp+0x58, vp+0x60)</c>, the DYNAMIC
+    /// vertex pool at vdo+0x30, stride vdo+0x38, through the same item-offset table at vdo+0x48 the static
+    /// pool uses), so a harvest off the engine's own VAO inherits whichever pool the engine bound. Tested by
+    /// vtable, which is exact -- the class has no flag to read (#135).</summary>
     internal static bool IsDangly(IntPtr part)
     {
         if (_danglyVtbl == IntPtr.Zero || part == IntPtr.Zero) return false;
