@@ -93,3 +93,10 @@ gated secondary, the reverse of 0013's assumption that a chat command is the bet
   `Knob<T>` with an object `T`; that is the ceiling of the plain-field threading model.
 - Search across categories, multi-font, the auto-update consent row and the gear's pixel anchor
   are the map's remaining fog; each is its own ticket when its blocker clears.
+
+### Amendment (CX-692, 2026-09-21): the radial layout is a bag
+
+A rearranged radial menu -- pinned and reordered rows -- is per-install content the way chat's
+per-window state is (decision 6), so it lives in `cx.cfg` as a Hidden-tier `KnobBag`
+(`radial.p<N>.*`), not in a state file. The `cx-hotkeys.cfg` exemption in decision 4 stays
+what it is: a place for secrets, not for dynamic state. Spec §4.2 has the key shape.

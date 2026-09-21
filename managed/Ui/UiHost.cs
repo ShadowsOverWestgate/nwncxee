@@ -231,19 +231,22 @@ public static class UiHost
     /// consumes it. Two topmost-first passes: modal windows (<see cref="Window.SuppressChords"/>, e.g. an open
     /// dialog) win the click first -- restoring the "modal: dialog wins the click" precedence -- then the rest.
     /// Each window is visited exactly once (in the pass matching its modal flag), so no double-invoke. Zero-alloc:
-    /// the same O(n^2) z-walk the draw roll-call uses, no buffer. An unconsumed press then falls to the chord layer.</summary>
-    public static bool DispatchMouseButton(bool down, int button, int x, int y)
+    /// the same O(n^2) z-walk the draw roll-call uses, no buffer. An unconsumed press then falls to the chord layer.
+    /// <paramref name="captureOnly"/> visits just the <see cref="Window.CapturesPointer"/> windows: the pump's extra
+    /// pass BEFORE the engine-GUI yield (CX-690), so every other window keeps the old precedence.</summary>
+    public static bool DispatchMouseButton(bool down, int button, int x, int y, bool captureOnly = false)
     {
         for (int pass = 0; pass < 2; pass++)
         {
             bool modal = pass == 0;
+            if (captureOnly && !modal) break;
             int lastZ = int.MaxValue;
             for (int done = 0; done < _windows.Count; done++)
             {
                 Window? next = NextBelow(lastZ);
                 if (next == null) break;
                 lastZ = next.Z;
-                if (next.SuppressChords != modal) continue;
+                if (next.SuppressChords != modal || (captureOnly && !next.CapturesPointer)) continue;
                 if (next.OnMouseButton != null && next.OnMouseButton(down, button, x, y)) return true;
             }
         }
@@ -265,16 +268,24 @@ public static class UiHost
         return false;
     }
 
-    /// <summary>Route a wheel notch to window content, topmost-first; true at the first consumer. Zero-alloc z-walk.</summary>
-    public static bool DispatchMouseWheel(int dy)
+    /// <summary>Route a wheel notch to window content, topmost-first, modal windows first (the same two passes and
+    /// the same <paramref name="captureOnly"/> as <see cref="DispatchMouseButton"/>); true at the first consumer.
+    /// Zero-alloc z-walk.</summary>
+    public static bool DispatchMouseWheel(int dy, bool captureOnly = false)
     {
-        int lastZ = int.MaxValue;
-        for (int done = 0; done < _windows.Count; done++)
+        for (int pass = 0; pass < 2; pass++)
         {
-            Window? next = NextBelow(lastZ);
-            if (next == null) break;
-            lastZ = next.Z;
-            if (next.OnMouseWheel != null && next.OnMouseWheel(dy)) return true;
+            bool modal = pass == 0;
+            if (captureOnly && !modal) break;
+            int lastZ = int.MaxValue;
+            for (int done = 0; done < _windows.Count; done++)
+            {
+                Window? next = NextBelow(lastZ);
+                if (next == null) break;
+                lastZ = next.Z;
+                if (next.SuppressChords != modal || (captureOnly && !next.CapturesPointer)) continue;
+                if (next.OnMouseWheel != null && next.OnMouseWheel(dy)) return true;
+            }
         }
         return false;
     }
@@ -525,6 +536,20 @@ public static class UiHost
                 lo.OnMouseButton = (d, b, x, y) => { hits.Add("lo.btn"); return true; };
                 E(DispatchMouseButton(true, 1, 5, 5) && hits.Count == 1 && hits[0] == "lo.btn",
                   "modal window wins the press before a higher-z non-modal window");
+                hits.Clear();
+                E(!DispatchMouseButton(true, 1, 5, 5, captureOnly: true) && hits.Count == 0,
+                  "the capture pass skips a modal window that does not capture the pointer");
+                lo.CapturesPointer = true;
+                E(DispatchMouseButton(true, 1, 5, 5, captureOnly: true) && hits.Count == 1 && hits[0] == "lo.btn",
+                  "the capture pass reaches only the capturing modal window");
+                lo.OnMouseWheel = dy => { hits.Add("lo.wheel"); return true; };
+                hits.Clear();
+                E(DispatchMouseWheel(1, captureOnly: true) && hits.Count == 1 && hits[0] == "lo.wheel",
+                  "the wheel's capture pass reaches the capturing modal window");
+                lo.CapturesPointer = false;
+                hits.Clear();
+                E(!DispatchMouseWheel(1, captureOnly: true) && hits.Count == 0, "no capturing window: the capture pass finds no consumer");
+                lo.OnMouseWheel = null;
                 lo.SuppressChords = false;
                 lo.OnMouseButton = (d, b, x, y) => { hits.Add("lo.btn"); return false; };
                 hits.Clear();

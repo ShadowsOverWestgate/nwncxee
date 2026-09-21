@@ -22,11 +22,10 @@ internal static unsafe class SymbolMap
     /// <c>CClientAIMaster::UpdateState()</c> @0x991c30, <c>CGuiMan::UpdateAndRender(float)</c> @0x580450.</summary>
     public const string NetProcessReceivedFrames = "_ZN9CNetLayer21ProcessReceivedFramesEi";
     public const string ResManUpdate = "_ZN10CExoResMan6UpdateEj";
-    /// <summary>CClientExoApp::GetNetLayer() @0x6361a0 -- <c>*(*(this+8)+0x18)</c>; and
-    /// CNetLayer::GetServerNetworkAddress() @0x5ba070, which returns a CExoString BY VALUE
-    /// ("a.b.c.d:port"), so the ABI is <c>(CExoString* sret, CNetLayer* this)</c>. Read by
-    /// <c>ServerPing</c> for the /fps ping readout. Linux-only: no Windows anchor derived.</summary>
-    public const string GetNetLayer = "_ZN13CClientExoApp11GetNetLayerEv";
+    /// <summary>CNetLayer::GetServerNetworkAddress() @0x5ba070 returns a CExoString BY VALUE ("a.b.c.d:port"):
+    /// Itanium <c>(CExoString* sret, CNetLayer* this)</c>, Win64 <c>(this, sret)</c>. The net layer itself is the
+    /// <see cref="EngineLayout.InternalNetLayer"/> field (what <c>CClientExoApp::GetNetLayer</c> returns). Read by
+    /// <see cref="PlayerIdentity"/> for the radial layout's key and by <c>ServerPing</c> for the /fps readout.</summary>
     public const string GetServerNetworkAddress = "_ZN9CNetLayer23GetServerNetworkAddressEv";
     public const string ClientAiUpdateState = "_ZN15CClientAIMaster11UpdateStateEv";
     public const string GuiUpdateAndRender = "_ZN7CGuiMan15UpdateAndRenderEf";
@@ -1251,6 +1250,115 @@ internal static unsafe class SymbolMap
     public const string AurResFree = "_Z10AurResFreePv";
     public const string CResCtor           = "_ZN4CResC1Ev";
 
+    // ---- CX-689..CX-693: the radial menu seam (docs/research/radial-menu-reimplementation.md). The whole
+    //      CRadialMenu surface is name-exported on Windows; the client roots are identified by vtable compare
+    //      (the _ZTV / vftable rows below), never called by name. ----
+    /// <summary><c>CRadialMenu::ActivateInternal()</c> @0x585010 -- the GUI-side half of <c>Activate</c>: LoadGraphics,
+    /// CGuiPanel::Activate, static_nMenuDepth++, CaptureMouse, SetModal. Skipped by RadialService: at this point
+    /// <c>this</c> is a fully built root (top ring filled, XY at +0x85c/+0x860) and no engine modality has been
+    /// engaged, so there is nothing to release. <c>(this) -> void</c>.</summary>
+    public const string RadialActivateInternal = "_ZN11CRadialMenu16ActivateInternalEv";
+    /// <summary><c>CRadialMenu::CreateSubMenu(int slot)</c> @0x584790 -- materializes slot <c>i</c>'s child through its
+    /// creator callback under the <see cref="GuiCurrentEventObject"/> bracket, stores it at m_pSubMenu[i] and bumps
+    /// the child's refcount. Returns 1 if the child exists after the call. <c>(this, int) -> int</c>.</summary>
+    public const string RadialCreateSubMenu = "_ZN11CRadialMenu13CreateSubMenuEi";
+    /// <summary><c>CRadialMenu::RecursiveAutoDelete()</c> @0x583680 -- the teardown vanilla's <c>Deactivate</c> runs on
+    /// the root: recurses into every materialized child, then virtual-deletes self when m_bAutoDelete and the
+    /// refcount reaches 0. CX calls it on the root at dropdown close. <c>(this) -> int</c>.</summary>
+    public const string RadialRecursiveAutoDelete = "_ZN11CRadialMenu19RecursiveAutoDeleteEv";
+    /// <summary><c>CRadialMenu::static_nMenuDepth</c> (int) -- what <c>CGuiMan::InMenuMode</c> returns. Read-only
+    /// sanity: stays 0 under the CX scheme because ActivateInternal never runs.</summary>
+    public const string RadialMenuDepth = "_ZN11CRadialMenu17static_nMenuDepthE";
+    /// <summary><c>CGuiObject::s_pCurrentEventObject</c> (CGuiObject*) -- the engine sets it to the menu around every
+    /// creator and leaf callback (CreateSubMenu, HandleMenuAction) and restores it after; CX brackets its own
+    /// invokes the same way.</summary>
+    public const string GuiCurrentEventObject = "_ZN10CGuiObject21s_pCurrentEventObjectE";
+    /// <summary><c>g_nCRadialMenu_ctorCounter</c> (int) -- MONOTONIC: the ctor @0x583460 is its only writer (one
+    /// <c>addl $1</c> in the whole image; the dtor @0x583010 never touches it), so a delta counts constructions
+    /// per open, not live instances (research §9.1). Exported by both builds.</summary>
+    public const string RadialCtorCounter = "g_nCRadialMenu_ctorCounter";
+    /// <summary><c>StringGob::GetTextLineCount()</c> @0x495ac0 -- the wrapped line count of the CAurString behind a
+    /// CGuiTextBubble. <c>this</c> = the CAurString* minus <see cref="EngineLayout.StringGobReaderAdjust"/>: the
+    /// StringGob base on Linux, the sub-object itself on Windows. <c>(this) -> int</c>.</summary>
+    public const string StringGobGetTextLineCount = "_ZN9StringGob16GetTextLineCountEv";
+    /// <summary><c>StringGob::GetTextLine(int)</c> @0x4922f0 -- line <c>i</c>'s NUL-terminated bytes (the CStringItem's
+    /// <c>+0x8</c> buffer). <c>(this, int) -> const char*</c>.</summary>
+    public const string StringGobGetTextLine = "_ZN9StringGob11GetTextLineEi";
+    /// <summary>Root-kind vtables (Linux <c>_ZTV</c>; the object's vptr is the symbol + 0x10). The roots
+    /// themselves are not exported on Windows -- the kind is a vptr compare against these, nothing is called.</summary>
+    public const string VtCRadialMenu = "_ZTV11CRadialMenu";
+    public const string VtCGuiCreatureMenu = "_ZTV16CGuiCreatureMenu";
+    public const string VtCClientSpellMenu = "_ZTV16CClientSpellMenu";
+    public const string VtCRadialSpellMenu = "_ZTV16CRadialSpellMenu";
+    public const string VtCClientTrapMenu = "_ZTV15CClientTrapMenu";
+    public const string VtCGuiItemMenu = "_ZTV12CGuiItemMenu";
+    public const string VtCGuiPlaceableMenu = "_ZTV17CGuiPlaceableMenu";
+    public const string VtCGuiDoorMenu = "_ZTV12CGuiDoorMenu";
+    public const string VtCGuiQuickbarMenu = "_ZTV16CGuiQuickbarMenu";
+    public const string VtCGuiChatWindowMenu = "_ZTV18CGuiChatWindowMenu";
+
+    // --- CX-694 self pins: the leaf handlers CX may invoke on a stand-in of the SELF root's menu object, i.e. the
+    //     actions the self menu fires that read only the menu's target fields (+0x878 / +0x8b0 on CGuiCreatureMenu,
+    //     +0x900 / +0x90c / +0x910 on CClientSpellMenu) or nothing at all. A persisted `self:<key>` row names one of
+    //     these and nothing else; Windows twins paired by their SetEntryx tuples and bodies (docs/windows-symbols.md).
+    /// <summary><c>CGuiCreatureMenu::RadialMenuUseFeat(long)</c> @0x73d540: toggle feats go to <c>PerformToggleMode</c>,
+    /// the rest to <c>PerformFeat(feat, +0x878, +0x8b0)</c> or the targeting cursor when the target is self and the feat
+    /// needs one. <c>(this, long) -> void</c>.</summary>
+    public const string CreatureMenuUseFeat = "_ZN16CGuiCreatureMenu17RadialMenuUseFeatEl";
+    /// <summary><c>CGuiCreatureMenu::RadialMenuEmote(long)</c> @0x73dc90: PlayAnimation on the +0x878 creature (self when
+    /// it is not one) + the emote's quickchat. <c>(this, long)</c>.</summary>
+    public const string CreatureMenuEmote = "_ZN16CGuiCreatureMenu15RadialMenuEmoteEl";
+    /// <summary><c>CGuiCreatureMenu::RadialMenuToggleMode(long)</c> @0x73dac0: <c>PerformToggleMode(param)</c>. <c>(this, long)</c>.</summary>
+    public const string CreatureMenuToggleMode = "_ZN16CGuiCreatureMenu20RadialMenuToggleModeEl";
+    /// <summary><c>CGuiCreatureMenu::RadialMenuQuickChat(long)</c> @0x73d8d0: <c>PerformQuickChat(param)</c>. <c>(this, long)</c>.</summary>
+    public const string CreatureMenuQuickChat = "_ZN16CGuiCreatureMenu19RadialMenuQuickChatEl";
+    /// <summary><c>CGuiCreatureMenu::RadialMenuUseSkill(long)</c> @0x73c030: <c>PerformSkill(skill, +0x878)</c>, 10 = the
+    /// search toggle. <c>(this, long)</c>.</summary>
+    public const string CreatureMenuUseSkill = "_ZN16CGuiCreatureMenu18RadialMenuUseSkillEl";
+    /// <summary><c>CGuiCreatureMenu::RadialMenuRest(long)</c> @0x73efb0: the rest send; reads nothing off <c>this</c>. <c>(this, long)</c>.</summary>
+    public const string CreatureMenuRest = "_ZN16CGuiCreatureMenu14RadialMenuRestEl";
+    /// <summary><c>CGuiCreatureMenu::RadialMenuCharacterSheet(long)</c> @0x73bd70: <c>ToggleCharSheet</c>; reads nothing off <c>this</c>.</summary>
+    public const string CreatureMenuCharacterSheet = "_ZN16CGuiCreatureMenu24RadialMenuCharacterSheetEl";
+    /// <summary><c>CClientSpellMenu::RadialMenuCast(long)</c> @0x6efb10: unpacks the spell key and calls
+    /// <c>PerformCastSpell(spell, +0x90c, +0x900, slot, level, meta)</c>. <c>(this, long)</c>.</summary>
+    public const string SpellMenuCast = "_ZN16CClientSpellMenu14RadialMenuCastEl";
+    /// <summary><c>CClientSpellMenu::RadialMenuCastSpellLikeAbility(long)</c> @0x6efbc0. <c>(this, long)</c>.</summary>
+    public const string SpellMenuCastSla = "_ZN16CClientSpellMenu30RadialMenuCastSpellLikeAbilityEl";
+    /// <summary><c>CClientSpellMenu::RadialMenuUseFeat(long)</c> @0x6f0050: the feat leaves of the cast tree. <c>(this, long)</c>.</summary>
+    public const string SpellMenuUseFeat = "_ZN16CClientSpellMenu17RadialMenuUseFeatEl";
+    /// <summary><c>CClientSpellMenu::TargetIsValid(uint spell)</c> @0x6f0450: <c>spells.2da TargetType</c> masked by the
+    /// menu's +0x918 against the +0x90c object's type (self / creature / ground / item / door / placeable / trigger);
+    /// what the spell creators grey a leaf on. <c>(this, uint) -> ushort</c>.</summary>
+    public const string SpellMenuTargetIsValid = "_ZN16CClientSpellMenu13TargetIsValidEj";
+    /// <summary><c>CGuiCreatureMenu::CGuiCreatureMenu(CNWCCreature*, Vector)</c> @0x73f110: the self root's ctor -- target
+    /// id, associate fields and portrait off the creature, the vector at +0x8b0, quickbutton null, m_bAutoDelete 1.
+    /// Itanium <c>(xmm0 = x|y, xmm1 = z, this, creature)</c>; Win64 <c>(this, creature, Vector*)</c>.</summary>
+    public const string CreatureMenuCtor = "_ZN16CGuiCreatureMenuC1EP12CNWCCreature6Vector";
+    /// <summary><c>CClientSpellMenu::CClientSpellMenu(Vector, uint target, CGuiQuickButton*, int build)</c> @0x6f1650:
+    /// stores the target fields (only when the player creature has stats -- guard before calling), builds the class
+    /// ring when <c>build</c> is set. Itanium <c>(xmm0 = x|y, xmm1 = z, this, target, btn, build)</c>; Win64
+    /// <c>(this, Vector*, target, btn, build)</c>.</summary>
+    public const string SpellMenuCtor = "_ZN16CClientSpellMenuC1E6VectorjP15CGuiQuickButtoni";
+
+    // --- CX-693: item-root composite icons. The icon subclasses are told apart by vptr; the PLT layer's texture is
+    //     found by the same (name, scheme) hash the engine's own ReplaceTexturePLT keys it under.
+    /// <summary><c>AurTextureFind(const char* name, const char* pltName, int* scheme, int count, bool byName)</c>
+    /// @0x488b90 -- the resman's texture lookup WITHOUT the create. With a pltName and <c>byName == false</c> it takes
+    /// the hashed path (<c>AurTextureCalculateHashID(pltName, count, scheme)</c>, then <c>+0xd4 == count</c>, a
+    /// strcasecmp on <c>+0xa8</c> and the scheme ints at <c>+0x48</c>) -- exactly how <c>AurTextureGet</c> finds the
+    /// texture <c>Material::ReplaceTexturePLT</c> @0x4c7a10 made for a tinted PLT, so a per-frame call with the icon's
+    /// own (resref, scheme) hands back that live borrowed pointer or null, and never creates a second one. Same body
+    /// on Windows (rva 0xe7560). Returns a BORROWED <c>CAurTexture*</c> -- see <see cref="AurTex"/>.</summary>
+    public const string AurTextureFind = "_Z14AurTextureFindPKcS0_Piib";
+    /// <summary>Icon-kind vtables (Linux <c>_ZTV</c>; the object's vptr is the symbol + 0x10). Any vptr not listed is
+    /// the plain kind (<c>CGuiIcon</c>, <c>CSpellIcon</c>: every subclass keeps the resref at +0x8); these three change
+    /// what a draw is: one PLT texture, three plain textures, up to six PLT textures.</summary>
+    public const string VtCLayeredIcon = "_ZTV12CLayeredIcon";
+    /// <inheritdoc cref="VtCLayeredIcon"/>
+    public const string VtCCompositeIcon = "_ZTV14CCompositeIcon";
+    /// <inheritdoc cref="VtCLayeredIcon"/>
+    public const string VtCArmorIcon = "_ZTV10CArmorIcon";
+
     /// <summary>
     /// PE TimeDateStamp of the nwmain.exe the RVAs were read from. A client patch shifts
     /// addresses; RVA hooks are refused unless the loaded exe matches this (see BuildMatches).
@@ -1520,7 +1628,6 @@ internal static unsafe class SymbolMap
         [GetEmitterLighting] = Nm("?GetEmitterLighting@LightManager@@QEAA?AVVector@@V2@PEAV?$List@PEAVPartLight@@@@@Z"),
         [GetLensFlareLights] = Nm("?GetLensFlareLights@LightManager@@QEAAAEAV?$List@PEAVPartLight@@@@XZ"),
         [GetLightAdjustedRadius] = Nm("?GetLightAdjustedRadius@@YAMPEBVPartLight@@@Z"),
-        [GetNetLayer] = Hole("CClientExoApp is not exported (only CServerExoApp is)"),
         [GetPlayerCreature] = LinuxOnly("#14 chat-render probe, no caller"),
         [GetServerNetworkAddress] = Nm("?GetServerNetworkAddress@CNetLayer@@QEAA?AVCExoString@@XZ"),
         [GlActiveTextureStage] = Nm("?m_activeTextureStage@GLRender@@0IA"),
@@ -1653,6 +1760,46 @@ internal static unsafe class SymbolMap
         [VdoRepack] = Nm("?Repack@VertexDataObject@@QEAAXXZ"),
         [VertexPrimGenVelocity] = Nm("?GenerateVelocityArray@VertexPrimitiveDangly@@QEAAXXZ"),
         [ViewportSetViewport] = Nm("?SetViewport@CGuiViewport@@QEAAXHHHH@Z"),
+
+        // --- CX-689: the radial seam. CRadialMenu is name-exported; the root vftables are the MSVC `vftable`
+        //     labels (the object's vptr points AT the label, no +0x10 as on Itanium). FindSym.java, build 0x68e408bc.
+        [RadialActivateInternal]   = Nm("?ActivateInternal@CRadialMenu@@IEAAXXZ"),
+        [RadialCreateSubMenu]      = Nm("?CreateSubMenu@CRadialMenu@@IEAAHH@Z"),
+        [RadialRecursiveAutoDelete] = Nm("?RecursiveAutoDelete@CRadialMenu@@IEAAHXZ"),
+        [RadialMenuDepth]          = Nm("?static_nMenuDepth@CRadialMenu@@1HA"),
+        [GuiCurrentEventObject]    = Nm("?s_pCurrentEventObject@CGuiObject@@1PEAV1@EA"),
+        [RadialCtorCounter]        = Nm("?g_nCRadialMenu_ctorCounter@@3HA"),
+        [StringGobGetTextLineCount] = Nm("?GetTextLineCount@StringGob@@UEAAHXZ"),
+        [StringGobGetTextLine]     = Nm("?GetTextLine@StringGob@@UEAAPEBDH@Z"),
+        [VtCRadialMenu]            = At(0xdb2e20),
+        [VtCGuiCreatureMenu]       = At(0xe74340),
+        [VtCClientSpellMenu]       = At(0xe75bd8),
+        [VtCRadialSpellMenu]       = At(0xe76af8),
+        [VtCClientTrapMenu]        = At(0xe77b90),
+        [VtCGuiItemMenu]           = At(0xe761d8),
+        [VtCGuiPlaceableMenu]      = At(0xe78030),
+        [VtCGuiDoorMenu]           = At(0xe77670),
+        [VtCGuiQuickbarMenu]       = At(0xe77340),
+        [VtCGuiChatWindowMenu]     = At(0xe78838),
+        // --- CX-694 self pins: unexported handlers, paired by SetEntryx tuple + body (docs/windows-symbols.md).
+        [CreatureMenuUseFeat]      = At(0x998520),
+        [CreatureMenuEmote]        = At(0x997c30),
+        [CreatureMenuToggleMode]   = At(0x9984d0),
+        [CreatureMenuQuickChat]    = At(0x998100),
+        [CreatureMenuUseSkill]     = At(0x9987d0),
+        [CreatureMenuRest]         = At(0x998150),
+        [CreatureMenuCharacterSheet] = At(0x996110),
+        [SpellMenuCast]            = At(0x9a4540),
+        [SpellMenuCastSla]         = At(0x9a4610),
+        [SpellMenuUseFeat]         = At(0x9a4770),
+        [SpellMenuTargetIsValid]   = At(0x9a4910),
+        [CreatureMenuCtor]         = At(0x98e140),
+        [SpellMenuCtor]            = At(0x9a10e0),
+        // --- CX-693: AurTextureFind is a name export; the icon vftables are MSVC labels (FindSym.java, build 0x68e408bc).
+        [AurTextureFind]           = Nm("?AurTextureFind@@YAPEAVCAurTexture@@PEBD0PEAHH_N@Z"),
+        [VtCLayeredIcon]           = At(0xdaf750),
+        [VtCCompositeIcon]         = At(0xdaf708),
+        [VtCArmorIcon]             = At(0xdaf6c0),
     };
 
     /// <summary>Why a symbol does not resolve on Windows, in the words of its own row. A key that is missing

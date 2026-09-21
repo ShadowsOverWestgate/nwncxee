@@ -74,3 +74,16 @@ CNWCArea::SetTile	1407e6040
 CClientExoAppInternal::PerformDefaultActionOnObject	1406efec0
 CNWCCreature::WalkUpdateLocation	1408114d0
 CNWCArea::TestDirectLine	1407e6a20
+CGuiCreatureMenu::RadialMenuUseFeat	140998520
+CGuiCreatureMenu::RadialMenuEmote	140997c30
+CGuiCreatureMenu::RadialMenuToggleMode	1409984d0
+CGuiCreatureMenu::RadialMenuQuickChat	140998100
+CGuiCreatureMenu::RadialMenuUseSkill	1409987d0
+CGuiCreatureMenu::RadialMenuRest	140998150
+CGuiCreatureMenu::RadialMenuCharacterSheet	140996110
+CClientSpellMenu::RadialMenuCast	1409a4540
+CClientSpellMenu::RadialMenuCastSpellLikeAbility	1409a4610
+CClientSpellMenu::RadialMenuUseFeat	1409a4770
+CClientSpellMenu::TargetIsValid	1409a4910
+CGuiCreatureMenu::CGuiCreatureMenu(CNWCCreature*, Vector)	14098e140
+CClientSpellMenu::CClientSpellMenu(Vector, unsigned int, CGuiQuickButton*, int)	1409a10e0

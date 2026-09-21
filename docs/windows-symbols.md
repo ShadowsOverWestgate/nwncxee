@@ -193,13 +193,109 @@ nothing exercises an Alloy `Nm` row at runtime yet; this is the only instrument 
 | `primTypeTranslationTable` | `0xd8ad20` | the `{0,1,3,4,5,6,2}` dword run in `.rdata`, one hit in the image; `GLRender::RenderVertexData` @`0xb59b0` `lea`s it three times |
 | `GLRender` pool `{base,count}` pair | `0x128ead8` | `GetPoolBuffer` @`0xb3cb0` loads it with `mov rax,[rip+0x11dae19]` then indexes `pool*0x20+0xc`; `UnlockPool` @`0xbbad0` `lea`s the same address into the helper. Linux has no symbol on the pair and steps `noemittervar+0x236c`, so `EngineLayout.PoolTableAnchorOffset` is `Diverges(linux: 0x236c, win: 0x0)` — the row wanted an *anchor*, not a value |
 
-**The 15 declared holes** are every symbol that still has none, and not one of them is
+**The 14 declared holes** are every symbol that still has none, and not one of them is
 Alloy's: nuklear (10 — the library is linked but exports nothing), `CCachedMouseCursorManager::SetMouseCursor`
-and `CClientExoAppInternal::UpdateMouseCursorAppearance` (2), `COptionsPanel::HandleXButton`,
-`CClientAIMaster::UpdateState` and `CClientExoApp::GetNetLayer`. The last two are worth a
-note for anyone hunting them: the *server* twins **are** exported (`CServerAIMaster`,
-`CServerExoApp`) because the client exe carries the single-player server, so a name search
-finds a function with the right name and the wrong class.
+and `CClientExoAppInternal::UpdateMouseCursorAppearance` (2), `COptionsPanel::HandleXButton`
+and `CClientAIMaster::UpdateState`. The last one is worth a note for anyone hunting it: the
+*server* twin **is** exported (`CServerAIMaster`) because the client exe carries the
+single-player server, so a name search finds a function with the right name and the wrong
+class. `CClientExoApp::GetNetLayer` was a hole until CX-694 replaced the call with the field
+it forwards to (`EngineLayout.InternalNetLayer`, `intern+0x18`): the Windows one-liner is
+`0x6abfb0`, between `GetNWCMessage` `0x6abf90` and `GetObjectName` `0x6abfc0`, and the
+Windows twins of `CNWCModule::LoadModule` / `CPlayModulePanel::SetServerInfo` reach it through
+the app vtable slot `+0x38` right before their exported `CNetLayer::GetServerNetworkAddress` call.
+
+## Radial menu seam (CX-689) -- `FindSym.java` on build `0x68e408bc`
+
+The whole `CRadialMenu` surface is name-exported (its `protected` members included), so the
+seam's calls and its one hook resolve by name. The client roots (`CGui*Menu`, `CClientSpellMenu`,
+`CClientTrapMenu`) export nothing; the seam never calls them, it classifies a root by comparing
+its vptr against the class's `vftable` label, which is an `At` row.
+
+**By name:**
+
+| Linux symbol | Windows (MSVC) |
+|---|---|
+| `CRadialMenu::ActivateInternal()` (the hook) | `?ActivateInternal@CRadialMenu@@IEAAXXZ` (rva `0x1f7f00`); `(this) -> void` |
+| `CRadialMenu::CreateSubMenu(int)` | `?CreateSubMenu@CRadialMenu@@IEAAHH@Z` (`0x1f8960`); `(this, int) -> int` |
+| `CRadialMenu::RecursiveAutoDelete()` | `?RecursiveAutoDelete@CRadialMenu@@IEAAHXZ` (`0x1f9da0`); `(this) -> int` |
+| `CRadialMenu::static_nMenuDepth` (data) | `?static_nMenuDepth@CRadialMenu@@1HA` (`0x140cd58`) |
+| `CGuiObject::s_pCurrentEventObject` (data) | `?s_pCurrentEventObject@CGuiObject@@1PEAV1@EA` (`0x140cdb8`) |
+| `g_nCRadialMenu_ctorCounter` (data) | `?g_nCRadialMenu_ctorCounter@@3HA` (`0x140cd80`) -- the Windows ctor `??0CRadialMenu@@QEAA@XZ` increments it too; an earlier row called it Linux-only, wrongly |
+
+Not in `SymbolMap` but read for the layout rows (`docs/engine-layout.md`, "The radial rows"):
+`?SetEntryx@CRadialMenu@@QEAAXHPEBD0PEAXP8CCallbackHandlerBase@@EAAX_J@Z2@Z` (`0x1fa250`) --
+its 6th parameter is the member-function pointer, **8 bytes on MSVC** (single inheritance)
+against Itanium's 16-byte `{fn, adj}`, so a tap there has a per-platform signature;
+`?SetSubMenuCreatorx@...` (`0x1fa9e0`), `?SetSubMenu@CRadialMenu@@IEAAXHPEBD0PEAV1@@Z`
+(`0x1fa490`), `?DisableEntry@...` (`0x1f8b30`), `?HandleMenuAction@CRadialMenu@@IEAAXXZ`
+(`0x1f9350`), `?Activate@CRadialMenu@@QEAAXXZ` (`0x1f7e80`), `?BuildIcon@CRadialMenu@@MEAAXH@Z`
+(`0x1f8400`), `??0CRadialMenu@@QEAA@XZ` (`0x1f7950`), `??1CRadialMenu@@UEAA@XZ` (`0x1f7be0`),
+`?Initialize@CGuiIcon@@QEAAXVCResRef@@HHH@Z` (`0x1e4430`), `?ReplacePrimaryIconTexture@...`
+(`0x1e4690`), `?SetCountText@CGuiIcon@@QEAAXVCExoString@@@Z` (`0x1e4720`),
+`?GetCountText_FirstLineOnly@CGuiIcon@@QEAA?AVCExoString@@XZ` (`0x1e4290`; **returns
+`CExoString` by value, sret is the 2nd arg on Win64** -- the body writes through `RDX`),
+`??0CGuiTextBubble@@QEAA@XZ` (`0x1fd310`).
+
+**Measured per row, not paired (the `At` rows):**
+
+| Symbol | Windows | How |
+|---|---|---|
+| `CRadialMenu::vftable` | `0xdb2e20` | the MSVC `vftable` label (Ghidra names it off the RTTI locator). The object's vptr points **at** the label -- no Itanium `_ZTV + 0x10` skew. Referenced by the ctor, the dtor and the scalar deleting dtor `FUN_1401f7d40` |
+| `CGuiCreatureMenu::vftable` | `0xe74340` | same; its two writers are the two ctors (`0x98e070` = `(uint, uint, int, uchar, uint, uchar)`, `0x98e140` = `(CNWCCreature*, Vector)`), paired with Linux `@0x73f2e0` / `@0x73f110` |
+| `CClientSpellMenu::vftable` | `0xe75bd8` | writers: the ctor `0x9a10e0` (`(Vector, uint, CGuiQuickButton*, int)`, Linux `@0x6f1650`; the by-value `Vector` arrives as a pointer) and the deleting dtor `0x9a19c0` (size `0x8a0`) |
+| `CRadialSpellMenu::vftable` | `0xe76af8` | writer: the ctor `0x9aaed0` (Linux `@0x6f35b0`), zeroing the four per-slot int arrays from `+0x7f8` |
+| `CClientTrapMenu::vftable` | `0xe77b90` | ctor `0x9b11d0` (`(uint)`, Linux `@0x9c7660`) + deleting dtor `0x9b1230` (`0x800`) |
+| `CGuiItemMenu::vftable` | `0xe761d8` | ctor `0x9a5940` (`()`, Linux `@0x7d1e70`) + deleting dtor `0x9a5990` (`0x808`); `ActivateRadialMenu` is `0x9a59d0`, the callee every `new CGuiItemMenu` site hands the object to |
+| `CGuiPlaceableMenu::vftable` | `0xe78030` | ctor `0x9b1950` (`(uint)`, Linux `@0x7ecf70`) |
+| `CGuiDoorMenu::vftable` | `0xe77670` | ctor `0x9b0060` (`(uint)`, Linux `@0x756d00`) |
+| `CGuiQuickbarMenu::vftable` | `0xe77340` | ctor `0x9ab450` (Linux `@0x6e4ec0`) + deleting dtor `0x9ab490` (`0x800`) |
+| `CGuiChatWindowMenu::vftable` | `0xe78838` | ctor `0x9b3040` + deleting dtor `0x9b3080` (`0x800`) |
+
+Item icons (CX-693), the same `FindSym.java` run -- the icon classes ARE name-exported (ctors,
+`CopyIcon`, `CreateCopyIconModel`), only the `vftable` labels need an `At`:
+
+| Windows symbol | RVA | Provenance |
+|---|---|---|
+| `CLayeredIcon::vftable` | `0xdaf750` | ctor `0x1e3000` (`??0CLayeredIcon@@QEAA@VCResRef@@HPEAGHHH@Z`, Linux `@0x58dcb0`): count `+0x48`, `new ushort[count]` at `+0x50` |
+| `CCompositeIcon::vftable` | `0xdaf708` | ctor `0x1e2e40` (Linux `@0x58d9d0`): resrefs `+0x8` / `+0x48` / `+0x59` |
+| `CArmorIcon::vftable` | `0xdaf6c0` | ctor `0x1e2ca0` (Linux `@0x58d5c0`): six resrefs `+0x48..+0xae`, count `+0xb0`, scheme `+0xb8`, per-layer table `+0xc0` |
+
+`AurTextureFind` is a name export (`?AurTextureFind@@YAPEAVCAurTexture@@PEBD0PEAHH_N@Z`, rva
+`0xe7560`); its body keys the hashed lookup on the same `+0xa8` / `+0xd4` / `+0x48` texture
+fields as Linux `@0x488b90`. The item lookup reuses `CClientExoApp::GetGameObject` above plus two
+`EngineLayout` rows read off `CClientExoAppInternal::GetItemByGameObjectID` (`0x6d82a0`, the
+callee of `CGuiItemMenu::ActivateRadialMenu`'s first call `0x6abc80`; Linux `@0x63f3a0`):
+`go+0xc == 6`, then `vtbl+0x68` (`AsNWCItem`; Linux `+0x70`). The item's icon field is
+`CNWCItem+0x238` (Linux `+0x258`), read where the same `ActivateRadialMenu` hands it to `SetCenter`.
+
+**Two ABI facts, confirmed in the bodies** (quoted in `docs/engine-layout.md`): the Windows
+`CreateSubMenu` and `HandleMenuAction` invoke a callback as `(*slot.fn)(slot.obj, param)` -- no
+adjust word, no virtual-thunk decode -- where Linux does `obj + adj` and the `fn & 1` vtable
+lookup; and the per-slot callback stride is `0x10` against Linux's `0x18`, which is the whole
+of the §1 column shift.
+
+### Self pins (CX-694) -- the leaf handlers CX invokes on a stand-in, build `0x68e408bc`
+
+None of these is exported. Each Windows twin was found by the `SetEntryx` tuple its creator
+passes it with (icon resref, strref, param -- identical on both builds) and confirmed by body
+against the Linux decompile; the two ctors were already paired above. `anchors.tsv` carries them.
+
+| Linux | Windows rva | Evidence |
+|---|---|---|
+| `CGuiCreatureMenu::RadialMenuUseFeat(long)` @0x73d540 | `0x998520` | `"RadialMenuUseFeat"` / `nwccreaturemenu.cpp:0xdc9` warning, the toggle-feat ladder (0x1c, 0x13 ... 0x3b3), `PerformFeat` twin `0x805310` with `+0x7f8` / `+0x830` |
+| `CGuiCreatureMenu::RadialMenuEmote(long)` @0x73dc90 | `0x997c30` | `IR_SALUTE 0x2bf param 3` / `IR_THREATEN 0x1052b param 8` tuples; ruleset `...MOTE_ANIMATIONS_USE_MDL_TIMINGS`, the sound-id table |
+| `CGuiCreatureMenu::RadialMenuToggleMode(long)` @0x73dac0 | `0x9984d0` | body: quickbutton at `+0x828`, else `PerformToggleMode(creature, param, 0x7f000000)` (`0x8055c0`, the same callee `RadialMenuUseSkill` uses for skill 10) |
+| `CGuiCreatureMenu::RadialMenuQuickChat(long)` @0x73d8d0 | `0x998100` | `IR_STANDGROUND 0x5c5 param 10`, `IR_HEALME 0x5cb param 4` ... (the voice commands); body `PerformQuickChat` twin `0x805440(creature, param)` |
+| `CGuiCreatureMenu::RadialMenuUseSkill(long)` @0x73c030 | `0x9987d0` | `isk_pocket 0x11a param 0xd`, `isk_aniemp 0x10d param 0`; body: 10 → `PerformToggleMode(2)`, 0x16 special-cased |
+| `CGuiCreatureMenu::RadialMenuRest(long)` @0x73efb0 | `0x998150` | `IR_REST 0x3b6`; body: feedback 0x36 / 0x11, `Deactivate(gui+0x78)` |
+| `CGuiCreatureMenu::RadialMenuCharacterSheet(long)` @0x73bd70 | `0x996110` | `IR_CHARSHEET 0x423`; body: one call, `ToggleCharSheet` twin (`0x997e00` on the same tuple is Examine -- it reads `+0x7f8`) |
+| `CClientSpellMenu::RadialMenuCast(long)` @0x6efb10 | `0x9a4540` | as before (the `PerformCastSpell` unpack) |
+| `CClientSpellMenu::RadialMenuCastSpellLikeAbility(long)` @0x6efbc0 | `0x9a4610` | next function; `SetButtonSpellLikeAbility` twin on `+0x890`, `PerformCastSpellLikeAbility(spell & 0xffff, level)` |
+| `CClientSpellMenu::RadialMenuUseFeat(long)` @0x6f0050 | `0x9a4770` | `"RadialMenuUseFeat"` / `guispellmenu.cpp:0x7eb`; `+0x88c` / `+0x880` |
+| `CClientSpellMenu::TargetIsValid(uint)` @0x6f0450 | `0x9a4910` | `GetSpell`, `+0x898 & spell+0x50`, the type-byte ladder 5 / 6 / 0xa / 9 / 7 |
+| `CGuiCreatureMenu::CGuiCreatureMenu(CNWCCreature*, Vector)` @0x73f110 | `0x98e140` | `(this, creature, Vector*)`; `sizeof` `0x840` from `operator_new` at its caller |
+| `CClientSpellMenu::CClientSpellMenu(Vector, uint, CGuiQuickButton*, int)` @0x6f1650 | `0x9a10e0` | `(this, Vector*, target, btn, build)`; stores `+0x880/+0x888/+0x88c/+0x890` after the player-creature-with-stats guard |
 
 ## Chat raw offsets (#419) -- decomp-diffed against `0x68e408bc`
 

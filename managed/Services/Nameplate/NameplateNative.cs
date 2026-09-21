@@ -60,13 +60,13 @@ public static unsafe class NameplateNative
     /// <summary>Reaction byte: 1 friend, 2 enemy, else neutral.</summary>
     private static readonly int CreatureReaction = Win ? 0x388 : 0x3a8;
     /// <summary>CNWCCreatureStats*.</summary>
-    private static readonly int CreatureStats = Win ? 0x3b0 : 0x3d0;
+    private static readonly int CreatureStats = EngineLayout.CreatureStats;
     /// <summary>Area id; hidden when it differs from the player's area.</summary>
     private static readonly int CreatureArea = Win ? 0x458 : 0x478;
 
     // ---- CNWCCreatureStats ----
-    private const int StatsFirstName = 0x20, StatsFirstLen = 0x28;
-    private const int StatsLastName = 0x30, StatsLastLen = 0x38;
+    private static readonly int StatsFirstName = EngineLayout.StatsFirstName, StatsFirstLen = EngineLayout.StatsFirstNameLen;
+    private static readonly int StatsLastName = EngineLayout.StatsLastName, StatsLastLen = EngineLayout.StatsLastNameLen;
     private const int StatsOverride = 0x40, StatsOverrideLen = 0x48;
     /// <summary>Damage-level byte, 0..5 -- a server-sent enum, not a client HP division.</summary>
     private const int StatsDamage = 0x8e;

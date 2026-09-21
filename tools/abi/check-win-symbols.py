@@ -51,7 +51,7 @@ SRET_HANDLED = {
     "GetEmitterLighting":      "managed/Alloy/Core/EmitterLighting.cs",
     "SceneGetWindVector":      "managed/Alloy/Scene/DanglyPhysics.cs (Wind)",
     "TlkGetSimpleString":      "managed/Services/CombatText/CombatTextNative.cs",
-    "GetServerNetworkAddress": "managed/Services/Perf/ServerPing.cs",
+    "GetServerNetworkAddress": "managed/Framework/PlayerIdentity.cs",
     "GuiEditGetText":          "managed/Services/Chat/PromptCommandService.cs",
 }
 

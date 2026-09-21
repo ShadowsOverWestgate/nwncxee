@@ -39,6 +39,11 @@ public sealed class Window
     /// engine keyboard gate); a chord-suppressing window still lets unconsumed keys reach gameplay.</summary>
     public bool SuppressChords;
 
+    /// <summary>A modal window that owns EVERY press and wheel notch while up, ahead of the engine's own GUI
+    /// (the radial cascade, CX-690: it opens over HUD chrome and its click-away must reach it). The pump runs
+    /// a capture-only dispatch before the NUI/vanilla-GUI yield for these windows and nothing else.</summary>
+    public bool CapturesPointer;
+
     /// <summary>Content input slots (US #64). The framework's raw-input layer routes captured events here in
     /// z-order; the service owns what happens inside. Each returns true when it consumed the event (routing
     /// stops). Null = the window ignores that channel. Cold (input thread), so allocation is fine.

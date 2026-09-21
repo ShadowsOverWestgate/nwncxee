@@ -26,6 +26,7 @@ public sealed unsafe class UiHostService : IExtenderService
         ScrollColumn.SelfCheck(log);    // #587 scroll column: offset, thumb, wheel, zero-alloc draw (off-device)
         Dropdown.SelfCheck(log);        // #587 dropdown list: 27 entries, scroll, pick, outside press (off-device)
         Tooltip.SelfCheck(log);         // #587 tooltip: dwell, tick, wrap, zero-alloc draw (off-device)
+        CascadeMenu.SelfCheck(log);     // CX-690/691 cascade menu: nesting, flip/clamp, keys, dwell, icons, zero-alloc draw (off-device)
         SettingsPanel.SelfCheck(log);   // #166 shared settings panel: hit-test, drag, edit buffer, #587 primitives (off-device)
         MenuGear.SelfCheck(log);        // #593 main-menu gear: anchor, hover animation, zero-alloc emit (off-device)
         TextRig.Init(log);   // the one glyph atlas every window draws from (null under run-demo: stbtt absent)

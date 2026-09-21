@@ -206,6 +206,7 @@ public sealed unsafe class UiInputService : IExtenderService
                     bool ours = MenuWindowAt(mx, my);
                     if (KeyDiag)
                         _log?.Info($"[keydiag] mouse btn={btn} at ({mx},{my}) owner={UiHost.AnyKeyboardOwner} kbmode={KeyboardModeActive()} gui=0x{gui:x} menuOurs={ours}");
+                    if (UiHost.DispatchMouseButton(true, btn, mx, my, captureOnly: true)) return 0;   // Window.CapturesPointer: ahead of the GUI yield
                     // NUI (or a vanilla GUI object: radial menu, tooltip, panel; #451) draws over us -> it gets the
                     // press. Blur first: this is a click elsewhere, and FocusAt (skipped here) is what would
                     // otherwise have released our windows' focus.
@@ -223,6 +224,7 @@ public sealed unsafe class UiInputService : IExtenderService
                     break;
                 }
                 case SdlMouseWheel:
+                    if (UiHost.DispatchMouseWheel(*(int*)(ev + SdlEvWheelYOff), captureOnly: true)) return 0;
                     if (NuiHovered() || (VanillaGuiAt(GuiWheelMask) != IntPtr.Zero && !MenuWindowUnderPointer())) break;   // ...and the scroll
                     if (UiHost.DispatchMouseWheel(*(int*)(ev + SdlEvWheelYOff))) return 0;
                     break;

@@ -245,14 +245,7 @@ public sealed unsafe class ChatService : IExtenderService
                                     delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByCreatureName)
         { _getByName = getByName; _getByCreatureName = getByCreatureName; }
 
-        private IntPtr App()
-        {
-            IntPtr app = ClientApi.LiveExoApp;
-            if (app != IntPtr.Zero) return app;
-            if (_appMgr == IntPtr.Zero) return IntPtr.Zero;
-            IntPtr mgr = *(IntPtr*)_appMgr;
-            return mgr != IntPtr.Zero ? *(IntPtr*)mgr : IntPtr.Zero;
-        }
+        private static IntPtr App() => PlayerIdentity.App();
 
         public uint? Resolve(string name)
         {
@@ -274,8 +267,6 @@ public sealed unsafe class ChatService : IExtenderService
         private static readonly int InternalOff = EngineLayout.ExoAppInternal;
         private static readonly int ListPtrOff = EngineLayout.InternalPlayers;
         private static readonly int ListCountOff = EngineLayout.InternalPlayerCount;
-        private static readonly int LocalCreatureIdOff = EngineLayout.InternalPlayerCreatureId;
-        private static readonly int PlayerCreatureIdOff = EngineLayout.PlayerCreatureId;
 
         /// <summary>Read the character name for an ingest PlayerId (+0x8), or null if the player is gone.</summary>
         public string? NameOf(uint playerId)
@@ -303,27 +294,11 @@ public sealed unsafe class ChatService : IExtenderService
             return null;
         }
 
-        /// <summary>The local player's ingest-space playerId. Walks the player list matching the local
-        /// creature's object ID (CClientExoAppInternal+0x48 → CNWCPlayer+0x34). Cold (Tell ingest only).</summary>
+        /// <summary>The local player's ingest-space playerId, from the shared roster walk. Cold (Tell ingest only).</summary>
         public uint? LocalIngestId()
         {
-            IntPtr app = App();
-            if (app == IntPtr.Zero) return null;
-            IntPtr intern = *(IntPtr*)(app + InternalOff);
-            if (intern == IntPtr.Zero) return null;
-            uint localObj = *(uint*)(intern + LocalCreatureIdOff);
-            if (localObj == 0) return null;
-            IntPtr listBase = *(IntPtr*)(intern + ListPtrOff);
-            int count = *(int*)(intern + ListCountOff);
-            if (listBase == IntPtr.Zero || count <= 0 || count > 64) return null;
-            for (int i = 0; i < count; i++)
-            {
-                IntPtr player = *(IntPtr*)(listBase + i * 8);
-                if (player == IntPtr.Zero) continue;
-                if (*(uint*)(player + PlayerCreatureIdOff) == localObj)
-                    return *(uint*)(player + IngestPlayerIdOff);
-            }
-            return null;
+            IntPtr player = PlayerIdentity.LocalPlayer();
+            return player == IntPtr.Zero ? null : *(uint*)(player + IngestPlayerIdOff);
         }
     }
     /// <summary>Always-closed stub passed to non-focused window builds so EmitSettings doesn't duplicate.</summary>
@@ -922,12 +897,7 @@ public sealed unsafe class ChatService : IExtenderService
         return TextRig.BakedFace(win.Typeface.Length > 0 ? win.Typeface : FontRegistry.DefaultName, WindowFacePx(win)) ?? atlas;
     }
 
-    /// <summary>The effective px of a window's face: its size (or <c>ui.font</c>) × the GUI scale, clamped like the UI atlas.</summary>
-    private static float WindowFacePx(ChatWindow win)
-    {
-        float px = (win.FontPx > 0 ? win.FontPx : UiKnobs.Font.V) * Metrics.GameUiScale;
-        return px < TextRig.MinFontPx ? TextRig.MinFontPx : px > TextRig.AtlasMaxPx ? TextRig.AtlasMaxPx : px;
-    }
+    private static float WindowFacePx(ChatWindow win) => TextRig.FacePx(win.FontPx);
 
     /// <summary>Bake a window's own face if it has one. COLD (a miss re-bakes the sheet): a pick on the gear, and
     /// the scale edge (where the frame host re-bakes the UI atlas anyway). A refused bake logs; the window then

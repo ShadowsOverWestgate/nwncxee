@@ -39,7 +39,7 @@ internal static class UiKnobs
 }
 
 /// <summary>The UI category in panel order (spec §4.2): Chat, Dialog, Nameplates, Combat text, Quickbar &amp;
-/// compass, FPS overlay, Windows &amp; fonts. Every UI service's Initialize calls <see cref="Declare"/>, so the
+/// compass, Radial menu, FPS overlay, Windows &amp; fonts. Every UI service's Initialize calls <see cref="Declare"/>, so the
 /// submenus sit in that order whatever initializes first and whether or not a feature arms. A class of its own
 /// with no static state: a static method on a group class would run that group's constructor first.</summary>
 internal static class UiCategory
@@ -47,11 +47,12 @@ internal static class UiCategory
     internal static void Declare()
     {
         _ = CX.Services.Chat.Core.ChatKnobs.G; _ = CX.Services.Dialog.DialogKnobs.G; _ = CX.Services.Nameplate.NameplateKnobs.G;
-        _ = CX.Services.CombatText.CombatTextKnobs.G; _ = CX.Services.Quickbar.QuickbarKnobs.G; _ = CX.Services.Perf.FpsKnobs.G;
+        _ = CX.Services.CombatText.CombatTextKnobs.G; _ = CX.Services.Quickbar.QuickbarKnobs.G; _ = CX.Services.Radial.RadialKnobs.G;
+        _ = CX.Services.Perf.FpsKnobs.G;
         _ = UiKnobs.G;
     }
 
-    /// <summary>Off-device, read-only (a set would arm the writer against the user's real file): the seven groups
+    /// <summary>Off-device, read-only (a set would arm the writer against the user's real file): the eight groups
     /// declare in panel order, the typeface row offers the registry's names, the font ladder is 6-32, and the rows the
     /// spec re-keyed from the retired files bind under their new names with the old defaults.</summary>
     internal static void SelfCheck(ExtenderLog log)
@@ -59,7 +60,7 @@ internal static class UiCategory
         bool ok = true;
         void E(bool c, string w) { if (!c) { ok = false; log.Info($"UiCategory.SelfCheck FAIL: {w}"); } }
         Declare();
-        string[] order = { "chat", "dialog", "nameplate", "combattext", "quickbar", "fps", "ui" };
+        string[] order = { "chat", "dialog", "nameplate", "combattext", "quickbar", "radial", "fps", "ui" };
         int at = -1;
         var all = KnobGroup.All;
         foreach (string g in order)

@@ -42,6 +42,15 @@ public static unsafe class EngineLayout
     /// <summary>CNWCCreature: "the feedback plate is currently shown for me", set at the top of
     /// ShowFeedbackBubbleText (Linux disasm @0x71a81e, Windows @0x80b240).</summary>
     public static readonly int CreaturePlated = Diverges("CNWCCreature", "plated", linux: 0x468, win: 0x448, Expect.Byte01);
+    /// <summary>CNWCCreature -&gt; CNWCCreatureStats* (docs/re/nameplate.md §7.1; Windows via <c>ShowFeedbackBubbleText</c>
+    /// @0x80b240, docs/windows-symbols.md).</summary>
+    public static readonly int CreatureStats = Diverges("CNWCCreature", "stats", linux: 0x3d0, win: 0x3b0);
+    /// <summary>CNWCCreatureStats first / last name <c>char*</c> + length pairs: <c>GetFullName</c> (Linux nm 0x74db80, Windows
+    /// rva 0x7f3f00) reads them the same on both builds; the +0x40/+0x48 override (SetName, a disguise) is not these.</summary>
+    public static readonly int StatsFirstName = Same("CNWCCreatureStats", "firstName", 0x20);
+    public static readonly int StatsFirstNameLen = Same("CNWCCreatureStats", "firstNameLen", 0x28);
+    public static readonly int StatsLastName = Same("CNWCCreatureStats", "lastName", 0x30);
+    public static readonly int StatsLastNameLen = Same("CNWCCreatureStats", "lastNameLen", 0x38);
 
     /// <summary>CNWCPlaceable, same flag (Linux disasm @0x7ea8b8, Windows @0x871b60).</summary>
     public static readonly int PlaceablePlated = Diverges("CNWCPlaceable", "plated", linux: 0x218, win: 0x1f8, Expect.Byte01);
@@ -717,6 +726,9 @@ public static unsafe class EngineLayout
     /// <summary>CClientExoAppInternal -&gt; the local player's creature object id. <c>CClientExoApp::GetPlayerCreatureId</c>
     /// (Linux nm 0x6377a0, Windows rva 0x6ac1c0) is the one-liner <c>*(*(this+8)+0x48)</c> on both builds.</summary>
     public static readonly int InternalPlayerCreatureId = Same("CClientExoAppInternal", "playerCreatureId", 0x48);
+    /// <summary>CClientExoAppInternal -&gt; CNetLayer* (CX-694). <c>CClientExoApp::GetNetLayer</c> (Linux nm 0x6361a0, Windows
+    /// rva 0x6abfb0, unexported: anchored in docs/windows-symbols.md) is the one-liner <c>*(*(this+8)+0x18)</c> on both builds.</summary>
+    public static readonly int InternalNetLayer = Same("CClientExoAppInternal", "netLayer", 0x18);
     /// <summary>CNWCModule -&gt; server-synced game hour (u32). <c>CNWCMessage::HandleServerToPlayerModuleUpdate_Time</c>
     /// (Linux nm 0x76c630, Windows rva 0x7a58e0) stores the flag-2 byte at <c>module+0x16c</c> on both builds.</summary>
     public static readonly int ModuleHour = Same("CNWCModule", "hour", 0x16c);
@@ -1765,6 +1777,129 @@ public static unsafe class EngineLayout
     // renderer, textures, buffers and shim (#443), and build.sh now refuses a bare hex offset under
     // managed/Alloy/. A second tested client build gets its own pinned key plus its own values below;
     // today there is exactly one per OS.
+
+    // ================= CX-689: CRadialMenu (docs/research/radial-menu-reimplementation.md §1) =================
+    // Linux from the ctor @0x583460 / SetEntryx @0x5837f0 / SetSubMenuCreatorx @0x583f50 / CreateSubMenu @0x584790 /
+    // HandleMenuAction @0x585530; Windows from the same exported CRadialMenu bodies in nwmain.exe (ctor rva 0x1f7950,
+    // SetEntryx 0x1fa250, SetSubMenuCreatorx 0x1fa9e0, SetSubMenu 0x1fa490, CreateSubMenu 0x1f8960, DisableEntry
+    // 0x1f8b30, HandleMenuAction 0x1f9350, RecursiveAutoDelete 0x1f9da0, Activate 0x1f7e80, BuildIcon 0x1f8400),
+    // read side by side -- docs/engine-layout.md "The radial rows". The per-slot entry and creator callbacks are
+    // CGuiCallback member-fn pairs: {obj, fn, adj} = 0x18 on Itanium, {obj, fn} = 0x10 on MSVC, so every array
+    // after them shifts. sizeof(CRadialMenu) is 0x878 / 0x7f8 (each build's deleting dtor), and every subclass
+    // starts its own fields right there, so the subclass rows carry a uniform -0x80. CANDIDATES until a live
+    // probe (logs=1) reads a root on each platform.
+
+    /// <summary>CRadialMenu: <c>CGuiTextBubble* m_pText[8]</c> -- the slot labels.</summary>
+    public static readonly int RadialText = Same("CRadialMenu", "text", 0xf8);
+    /// <summary>CRadialMenu: entry callback[8], stride <see cref="RadialCallbackStride"/>. Unset = the object word is
+    /// the slot's own address (self-pointer sentinel) and fn is <c>HandleUninitializedCallback</c>.</summary>
+    public static readonly int RadialEntry = Same("CRadialMenu", "entry", 0x138);
+    /// <summary>Bytes per callback slot: Itanium <c>{obj, fn, adj}</c> vs MSVC <c>{obj, fn}</c>.</summary>
+    public static readonly int RadialCallbackStride = Diverges("CRadialMenu", "callbackStride", linux: 0x18, win: 0x10);
+    /// <summary>CRadialMenu: <c>long m_nParam[8]</c> -- shared by the entry and the creator of a slot.</summary>
+    public static readonly int RadialParam = Diverges("CRadialMenu", "param", linux: 0x1f8, win: 0x1b8);
+    /// <summary>CRadialMenu: <c>uint flags[8]</c>; bit 0 = disabled (<c>DisableEntry</c>).</summary>
+    public static readonly int RadialFlags = Diverges("CRadialMenu", "flags", linux: 0x238, win: 0x1f8);
+    /// <summary>CRadialMenu: creator callback[8], same stride and sentinel as <see cref="RadialEntry"/>.</summary>
+    public static readonly int RadialCreator = Diverges("CRadialMenu", "creator", linux: 0x258, win: 0x218);
+    /// <summary>CRadialMenu: <c>CRadialMenu* m_pSubMenu[8]</c> -- the materialized child, null until CreateSubMenu.</summary>
+    public static readonly int RadialSubMenu = Diverges("CRadialMenu", "subMenu", linux: 0x318, win: 0x298);
+    /// <summary>CRadialMenu: <c>CRadialMenu* m_pParent</c>, set by HandleMenuAction on descent.</summary>
+    public static readonly int RadialParent = Diverges("CRadialMenu", "parent", linux: 0x358, win: 0x2d8);
+    /// <summary>CRadialMenu: <c>CGuiIcon* m_pIcon[8]</c>; the resref is the CResRef at CGuiIcon+0x8.</summary>
+    public static readonly int RadialIcon = Diverges("CRadialMenu", "icon", linux: 0x760, win: 0x6e0);
+    /// <summary>CRadialMenu: menu X / Y (int), filled by <c>Activate</c> from <c>CGuiMan::GetMousePos</c>.</summary>
+    public static readonly int RadialMenuX = Diverges("CRadialMenu", "menuX", linux: 0x85c, win: 0x7dc);
+    /// <inheritdoc cref="RadialMenuX"/>
+    public static readonly int RadialMenuY = Diverges("CRadialMenu", "menuY", linux: 0x860, win: 0x7e0);
+    /// <summary>CRadialMenu: <c>m_bAutoDelete</c> (byte); every root and creator sets it 1. No <c>Byte01</c> probe:
+    /// that reads a dword, and the ctor @0x583460 never writes +0x872/+0x873 (heap garbage) -- RadialService
+    /// probes the byte itself.</summary>
+    public static readonly int RadialAutoDelete = Diverges("CRadialMenu", "autoDelete", linux: 0x871, win: 0x7f1);
+    /// <summary>CRadialMenu: refcount (int); CreateSubMenu ++ on the child, RecursiveAutoDelete --.</summary>
+    public static readonly int RadialRefCount = Diverges("CRadialMenu", "refCount", linux: 0x874, win: 0x7f4);
+    /// <summary>CGuiIcon: the icon's <c>CResRef</c> (16 bytes) that <c>Initialize</c> (Linux @0x58cc20, Windows rva
+    /// 0x1e4430: the first store on both, then the three size ints at +0x1c/+0x20/+0x24) and
+    /// <c>ReplacePrimaryIconTexture</c> (@0x58cd30 / rva 0x1e4690) read.</summary>
+    public static readonly int GuiIconResRef = Same("CGuiIcon", "resref", 0x08);
+    /// <summary>CGuiIcon: the uses-left count label, a <c>CAurString*</c> (null when none). <c>SetCountText</c> (Linux
+    /// @0x58d130, Windows rva 0x1e4720) tests, feeds and stores it at +0x40 on both; <c>CreateCountLabel</c> @0x58ce80
+    /// makes it with <c>NewCAurString(1)</c>, so it is the same StringGob sub-object the bubble label is.</summary>
+    public static readonly int GuiIconCountLabel = Same("CGuiIcon", "countLabel", 0x40);
+    /// <summary>CGuiCreatureMenu / CGuiPlaceableMenu / CGuiDoorMenu / CGuiItemMenu / CClientTrapMenu: the target
+    /// object id (uint), the first field after the CRadialMenu base on both builds. Read off each subclass ctor pair
+    /// (Linux @0x73f2e0 + @0x73f110 / @0x7ecf70 / @0x756d00 / @0x7d1e70 / @0x9c7660; Windows rva 0x98e070 + 0x98e140 /
+    /// 0x9b1950 / 0x9b0060 / 0x9a5940 / 0x9b11d0): the id argument's store, or <c>0x7f000000</c> where the ctor
+    /// takes none (item, then <c>CGuiItemMenu::ActivateRadialMenu</c> @0x7d3720 / rva 0x9a59d0 stores the id there).
+    /// Same offset in every subclass, so one row. No probe: an object id fits neither predicate.</summary>
+    public static readonly int RadialTargetId = Diverges("CRadialMenu", "targetId", linux: 0x878, win: 0x7f8);
+    /// <summary>CClientSpellMenu: the target object id (uint) the cast leaf reads. The ctor pair (Linux @0x6f1650,
+    /// Windows rva 0x9a10e0) stores its <c>uint</c> argument there, right after the target <c>Vector</c>
+    /// (<c>+0x900</c> / <c>+0x880</c>); <c>RadialMenuCast</c> (Linux @0x6efb10, Windows rva 0x9a4540) passes it as
+    /// <c>PerformCastSpell</c>'s target on both.</summary>
+    public static readonly int SpellMenuTargetId = Diverges("CClientSpellMenu", "targetId", linux: 0x90c, win: 0x88c);
+    /// <summary><c>sizeof(CGuiCreatureMenu)</c>: the <c>operator new</c> before its ctor (Linux
+    /// <c>ActivatePlayerCharacterRadialMenu</c> @0x73f3a0, Windows the twin of the associate root, rva 0x98e140's caller).</summary>
+    public static readonly int CreatureMenuSize = Diverges("CGuiCreatureMenu", "sizeof", linux: 0x8c0, win: 0x840);
+    /// <summary><c>sizeof(CClientSpellMenu)</c>: the <c>operator new</c> in every slot-1 cast creator (Linux
+    /// <c>CreateClientSpellMenu</c> @0x73b360), the deleting dtor's size on Windows (rva 0x9a19c0).</summary>
+    public static readonly int SpellMenuSize = Diverges("CClientSpellMenu", "sizeof", linux: 0x920, win: 0x8a0);
+    /// <summary>CGuiTextBubble: the <c>CAurString*</c> the label lives in -- the ctor (@0x588690 Linux, @rva 0x1fd310
+    /// Windows) stores <c>NewCAurString(-1)</c> there and <c>SetText</c> @0x588790 feeds it through the CAurString
+    /// vtable.</summary>
+    public static readonly int TextBubbleString = Diverges("CGuiTextBubble", "aurString", linux: 0xf8, win: 0xf0);
+    /// <summary>What to subtract from a <c>CAurString*</c> to get the <c>this</c> the exported
+    /// <c>StringGob::GetTextLineCount/GetTextLine</c> want. The sub-object sits at StringGob+0x4c0 on both builds
+    /// (<c>NewCAurString</c> @0x494050 / @rva 0x492f0 return <c>this + 0x4c0</c>), but the readers' <c>this</c>
+    /// differs: Linux (@0x4922f0/@0x495ac0) reads the object base (<c>+0x500/+0x508</c>, the <c>_ZThn1216_</c> thunks
+    /// adjust for interface callers), MSVC (@rva 0x48600/0x48610) reads <c>+0x40/+0x48</c> -- the sub-object itself,
+    /// no thunk exists.</summary>
+    public static readonly int StringGobReaderAdjust = Diverges("StringGob", "readerThisAdjust", linux: 0x4c0, win: 0);
+
+    // ================= CX-693: item icons (docs/research/radial-menu-reimplementation.md §5) =================
+    // CGuiIcon's three subclasses, each read off its ctor on BOTH builds (Linux @0x58dcb0 / @0x58d9d0 / @0x58d5c0,
+    // Windows rva 0x1e3000 / 0x1e2e40 / 0x1e2ca0): every subclass field lands at the same offset on each, because
+    // the base is 0x48 on both (a single vptr, no Itanium-only padding). The model builders confirm the reads:
+    // CLayeredIcon::CreateCopyIconModel @0x58c8b0 hands +0x48/+0x50 to the PLT ReplaceTexture, CCompositeIcon's
+    // @0x58d320 replaces gui_replace01/02/03 with +0x8/+0x48/+0x59, CArmorIcon::LoadArmorLayeredIconModel
+    // @0x58d7c0 (rva 0x1e4470) walks +0x48..+0xae by 0x11 and indexes +0xc0 by the compacted layer.
+
+    /// <summary>CLayeredIcon: <c>int</c> palette-scheme length (10 for an item: <c>CNWCItem::UpdateIcons</c> @0x7cbc50
+    /// passes 10) and the <c>unsigned short*</c> scheme the PLT is tinted with.</summary>
+    public static readonly int LayeredIconSchemeCount = Same("CLayeredIcon", "schemeCount", 0x48);
+    /// <inheritdoc cref="LayeredIconSchemeCount"/>
+    public static readonly int LayeredIconScheme = Same("CLayeredIcon", "scheme", 0x50);
+    /// <summary>CCompositeIcon: the second and third <c>CResRef</c> (17 bytes each, the first is the base's +0x8),
+    /// bound to <c>gui_replace02</c> / <c>gui_replace03</c> of the <c>GUI_ICON_%dX%dLC</c> model -- bottom to top.</summary>
+    public static readonly int CompositeIconResRef2 = Same("CCompositeIcon", "resref2", 0x48);
+    /// <inheritdoc cref="CompositeIconResRef2"/>
+    public static readonly int CompositeIconResRef3 = Same("CCompositeIcon", "resref3", 0x59);
+    /// <summary>CArmorIcon: six <c>CResRef</c> layers at stride <see cref="ArmorIconResRefStride"/> (+0x48..+0xae),
+    /// an empty one skipped; the shared scheme (<c>int</c> count, <c>unsigned short*</c>) and the optional per-layer
+    /// scheme table (<c>count</c> shorts per EXISTING layer, null = every layer shares the one scheme).</summary>
+    public static readonly int ArmorIconResRefs = Same("CArmorIcon", "resrefs", 0x48);
+    /// <summary><c>sizeof(CResRef)</c> as the armour layer array packs it (17 bytes, unaligned) and the layer count
+    /// (the ctor's zero loop stops at +0xae = 0x48 + 6 * 0x11 on both builds). Values, not places -- no row.</summary>
+    public const int ArmorIconResRefStride = 0x11;
+    /// <inheritdoc cref="ArmorIconResRefStride"/>
+    public const int ArmorIconLayers = 6;
+    /// <inheritdoc cref="ArmorIconResRefs"/>
+    public static readonly int ArmorIconSchemeCount = Same("CArmorIcon", "schemeCount", 0xb0);
+    /// <inheritdoc cref="ArmorIconResRefs"/>
+    public static readonly int ArmorIconScheme = Same("CArmorIcon", "scheme", 0xb8);
+    /// <inheritdoc cref="ArmorIconResRefs"/>
+    public static readonly int ArmorIconLayerSchemes = Same("CArmorIcon", "layerSchemes", 0xc0);
+    /// <summary>CNWCItem -&gt; the item's own <c>CGuiIcon*</c> (plain, layered, composite or armour by vptr): built and
+    /// REPLACED (old one deleted) by <c>CNWCItem::UpdateIcons</c> @0x7cbc50 on every item update, so it is re-read
+    /// from the item every frame, never held. <c>CGuiItemMenu::ActivateRadialMenu</c> hands it to <c>SetCenter</c>:
+    /// Linux @0x7d3720 reads <c>item+0x258</c>, Windows rva 0x9a59d0 <c>item+0x238</c>.</summary>
+    public static readonly int ItemGuiIcon = Diverges("CNWCItem", "guiIcon", linux: 0x258, win: 0x238);
+    /// <summary>CGameObject: the object type byte <c>CClientExoAppInternal::GetItemByGameObjectID</c> tests for 6
+    /// (item) before casting -- Linux @0x63f3a0, Windows rva 0x6d82a0, both <c>go+0xc</c>.</summary>
+    public static readonly int GameObjType = Same("CGameObject", "type", 0x0c);
+    /// <summary>Virtual slot of <c>CGameObject::AsNWCItem()</c>, the cast the same two bodies make after the type
+    /// test: Linux <c>vtbl+0x70</c>, Windows <c>vtbl+0x68</c> (the usual one-destructor-slot shift).</summary>
+    public static readonly int GameObjAsNWCItemSlot = Diverges("CGameObject", "vtbl.AsNWCItem", linux: 0x70, win: 0x68, Expect.VtblSlot);
 
     // ================= engine constants that are not offsets =================
     // They rode into this table with #436 because the file they lived in was the offset file. They are

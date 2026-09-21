@@ -619,3 +619,73 @@ client-side Static flag on a placeable, which is why the list exists.
 | `CPathfindInformation` | `spaceArgs 0xe0` (two floats) | `xmm4 = [pf+0xe0]`, `xmm5 = [pf+0xe4]` before Linux `call TestDirectLine` @`0x72043e`; Windows `WalkPlayerToPoint` passes `*(pf+0xe0), *(pf+0xe4)` in the same slots |
 | `CNWCCreature` | `vtbl.SetPosition 0x130 / 0x128` (probed in-image) | `MoveCreatureToPosition` Linux @`0x71cd70` calls `+0x130`, Windows rva `0x804840` calls `+0x128`; the Linux vtable (`_ZTV12CNWCCreature+0x10+0x130`) resolves to `CNWCCreature::SetPosition(Vector)` |
 
+
+### The radial rows (CX-689)
+
+The `CRadialMenu` surface is name-exported on Windows, so every base-class row was read off
+the same function on both builds: the ctor (Linux @`0x583460`, Windows rva `0x1f7950`),
+`SetEntryx` (`0x5837f0` / `0x1fa250`), `SetSubMenuCreatorx` (`0x583f50` / `0x1fa9e0`),
+`SetSubMenu` (`0x583b20` / `0x1fa490`), `CreateSubMenu` (`0x584790` / `0x1f8960`),
+`DisableEntry` (`0x5840d0` / `0x1f8b30`), `HandleMenuAction` (`0x585530` / `0x1f9350`),
+`RecursiveAutoDelete` (`0x583680` / `0x1f9da0`), `Activate` (`0x585400` / `0x1f7e80`) and
+`BuildIcon` (`0x5831d0` / `0x1f8400`). The research note's §1 Windows column survived every
+body unchanged. The subclasses are not exported; each ctor was found as the function that
+stores the class's `vftable` label (`Callers.java` on the `At` rows in `SymbolMap`) and paired
+with the Linux ctor of the same signature.
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CRadialMenu` | `text 0xf8` (Same) | `SetEntryx`: `this + i*8 + 0xf8` on both, the `CGuiTextBubble` it `new`s (`0x118` bytes on Windows) |
+| `CRadialMenu` | `entry 0x138` (Same), `callbackStride 0x18 / 0x10` | the ctor's first loop: 8 × `CGuiCallbackl` ctor stepping `0x18` / `0x10` from `0x138`; `SetEntryx` stores `obj` at `+0x138+i*stride`, `fn` at `+0x140+i*stride` |
+| `CRadialMenu` | `param 0x1f8 / 0x1b8` | `SetEntryx` and `SetSubMenuCreatorx` both store the `long` at `i*8` from it; `CreateSubMenu` and `HandleMenuAction` pass it as the callback's argument |
+| `CRadialMenu` | `flags 0x238 / 0x1f8` | `DisableEntry` ORs 1 into `i*4` from it (with the `nMenuPosition < RM_NUM` warning at 8 on both); `HandleMenuAction` and `BuildIcon` test the same bit |
+| `CRadialMenu` | `creator 0x258 / 0x218` | the ctor's second loop (8 × `CGuiCallbackpRadialMenu_l` from `0x218`); `SetSubMenuCreatorx` stores `obj`/`fn` at `+0x218`/`+0x220`; `CreateSubMenu`'s self-pointer sentinel test |
+| `CRadialMenu` | `subMenu 0x318 / 0x298` | `CreateSubMenu` early-out and store (`(i + 0x53) * 8`); `RecursiveAutoDelete` walks 8 from it; `SetSubMenu` stores its argument there |
+| `CRadialMenu` | `parent 0x358 / 0x2d8` | `HandleMenuAction` writes `child + 0x2d8 = this` on descent and reads `this + 0x2d8` in the centre-cancel arm |
+| `CRadialMenu` | `icon 0x760 / 0x6e0` | `SetEntryx` / `SetSubMenu` store the `CGuiIcon` (`0x48` bytes on both) at `i*8` from it; `BuildIcon` reads it |
+| `CRadialMenu` | `menuX/Y 0x85c/0x860 / 0x7dc/0x7e0` | `Activate`: `CGuiMan::GetMousePos(g_pGuiMan, this+0x7dc, this+0x7e0)`; `HandleMenuAction` copies the origin pair (`0x7e8`/`0x7ec`) into the child's |
+| `CRadialMenu` | `autoDelete 0x871 / 0x7f1` (asserted == 1 on the first root, no `Expect`) | the ctor zeroes the byte, `RecursiveAutoDelete` tests it; the creature, placeable and door ctors set it 1 on both builds, `CGuiItemMenu::ActivateRadialMenu` does it for the item root |
+| `CRadialMenu` | `refCount 0x874 / 0x7f4` | `CreateSubMenu` and `SetSubMenu` `++` the child's; `RecursiveAutoDelete` `--` and virtual-deletes at `< 1` |
+
+| `CRadialMenu` subclasses | `targetId 0x878 / 0x7f8` | `CGuiCreatureMenu` (both ctors: `@0x73f2e0` / rva `0x98e070` store the first `uint` argument; `@0x73f110` / `0x98e140` store `creature+0x8`), `CGuiPlaceableMenu` (`@0x7ecf70` / `0x9b1950`), `CGuiDoorMenu` (`@0x756d00` / `0x9b0060`), `CClientTrapMenu` (`@0x9c7660` / `0x9b11d0`): the `uint` argument's store, first thing after the base ctor. `CGuiItemMenu`'s no-arg ctor (`@0x7d1e70` / `0x9a5940`) seeds `0x7f000000` there and `ActivateRadialMenu` (`@0x7d3720` / `0x9a59d0`) stores the item id. One row because every pair landed on the same offset; each pair is its own measurement |
+| `CClientSpellMenu` | `targetId 0x90c / 0x88c` | the ctor pair (`@0x6f1650` / rva `0x9a10e0`): the `uint` argument's store after the target `Vector` (`+0x900` / `+0x880`, `+0x908` / `+0x888`) and before the `CGuiQuickButton*` (`+0x910` / `+0x890`). Role pinned by `RadialMenuCast` (`@0x6efb10` / `0x9a4540`), which passes it as `PerformCastSpell`'s target on both |
+| `CGuiIcon` | `resref 0x8` (Same) | `Initialize` (`@0x58cc20` / rva `0x1e4430`): `CResRef::operator=(this+8, arg)` then the three size ints at `+0x1c/+0x20/+0x24` on both; `ReplacePrimaryIconTexture` (`@0x58cd30` / `0x1e4690`) copies the string out of `+0x8` |
+| `CGuiIcon` | `countLabel 0x40` (Same) | `SetCountText` (`@0x58d130` / rva `0x1e4720`, CX-690): loads `this+0x40`, virtual-deletes it on an empty string, else feeds it through the CAurString vtable or stores `CreateCountLabel(text)` there (`@0x58ce80`: `NewCAurString(1)` + `SetText`), then `AttachCountLabel(this, this+0x30 model, label)` -- same shape on both builds |
+| `CLayeredIcon` | `schemeCount 0x48`, `scheme 0x50` (Same) | the ctor pair (`@0x58dcb0` / rva `0x1e3000`): `int` count stored, `new ushort[count]` copied in; `CreateCopyIconModel` (`@0x58c8b0` / `0x1e3c80`) hands both to the PLT `ReplaceTexture` vcall (CX-693) |
+| `CCompositeIcon` | `resref2 0x48`, `resref3 0x59` (Same) | the ctor pair (`@0x58d9d0` / `0x1e2e40`): three `CResRef::operator=` at `+0x8`, `+0x48`, `+0x59`; `CreateCopyIconModel` (`@0x58d320` / `0x1e3930`) binds them to `gui_replace01/02/03` in that order |
+| `CArmorIcon` | `resrefs 0x48` (×6, stride `0x11`), `schemeCount 0xb0`, `scheme 0xb8`, `layerSchemes 0xc0` (Same) | the ctor pair (`@0x58d5c0` / `0x1e2ca0`): zero loop to `+0xae`, count at `+0xb0`, `new[count]` at `+0xb8`, optional `new[count*6]` at `+0xc0`, then the six 17-byte copies; `LoadArmorLayeredIconModel` (`@0x58d7c0` / `0x1e4470`) indexes `+0xc0` by `count * compactedLayer * 2` |
+| `CNWCItem` | `guiIcon 0x258 / 0x238` | `CGuiItemMenu::ActivateRadialMenu` (`@0x7d3720` / `0x9a59d0`): `SetCenter(*(item + off), 2)` right after the target-id store; `CNWCItem::UpdateIcons` (`@0x7cbc50`) is the Linux writer (virtual-deletes the old, stores the `new`) |
+| `CGameObject` | `type 0xc` (Same), `vtbl.AsNWCItem 0x70 / 0x68` | `CClientExoAppInternal::GetItemByGameObjectID` (`@0x63f3a0` / rva `0x6d82a0`): `GetGameObject` into a local, `go[0xc] == 6`, then the vcall -- identical bodies, the slot one destructor-slot apart |
+
+The subclass delta is `-0x80` at every field read, not just the target id -- which is the
+base's own size delta (`0x878 - 0x7f8`) with nothing added, because MSVC puts the subclass
+fields at `sizeof(base)` on every one of these classes. Read but **not declared** (no reader
+yet, the #672 rule): `CGuiCreatureMenu` associate master `+0x884 / +0x804`, associate type
+`+0x888 / +0x808`, portrait `CResRef +0x895 / +0x815`, quickbutton `+0x8a8 / +0x828`, target
+`Vector +0x8b0 / +0x830`; `CGuiItemMenu` quickbutton `+0x880 / +0x800`; `CClientSpellMenu`
+`Vector +0x900 / +0x880`, quickbutton `+0x910 / +0x890`; `CRadialSpellMenu`'s four per-slot
+int arrays `+0x878.. / +0x7f8..`. Windows sizes off the deleting destructors: `CGuiItemMenu
+0x808`, `CClientSpellMenu 0x8a0`, `CClientTrapMenu` / `CGuiQuickbarMenu` / `CGuiChatWindowMenu`
+`0x800`.
+
+The two ABI facts the research note asserted are confirmed by the bodies. The Windows
+callback invoke is a plain two-word call with no adjust word and no virtual-thunk decode --
+`CreateSubMenu`:
+
+
+
+and `HandleMenuAction`:
+
+
+
+where Linux reads `obj + adj`, tests `fn & 1` and indexes the vtable first. Both keep the
+`s_pCurrentEventObject` bracket. `GetCountText_FirstLineOnly` shows the sret order in its own
+decompile: Linux writes through `in_RDI` with `this` in `RSI`, Windows writes through `in_RDX`
+with `this` in `RCX`. The creature ctors call `GetPortrait` through vtable `+0x1d8` / `+0x1d0`,
+the same pair `docs/windows-symbols.md` already lists.
+
+**One probe.** `CGameObject.vtbl.AsNWCItem` is a `VtblSlot` (CX-693). `autoDelete` carries no
+`Expect`: the ctor never writes its two neighbours, so the dword a `Byte01` probe reads is heap
+garbage -- `RadialService` asserts the byte itself on the first root instead. An object id and
+a `CResRef` fit neither predicate. The `CNWCObject` slot `+0x150` (`ActivateRadialMenu`,
+research §4) is not a row: CX never calls it.

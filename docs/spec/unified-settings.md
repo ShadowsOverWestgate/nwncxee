@@ -229,6 +229,133 @@ rows are the window's own (`w<N>.font` / `w<N>.typeface`, absent = follow `ui.fo
 a new window is the panel header's *Copy this window*, closing is the window category's *Close
 this window* (two presses; Main has no row).
 
+**Radial menu** — group `radial` (CX-689..CX-694). Look and animation rows (CX-694) sit in the group
+like every other window's; the chat window's per-window gear is the exception, not the pattern.
+
+| key | today | label | kind | range · default | tier | eff | help |
+|---|---|---|---|---|---|---|---|
+| radial.enabled | — | Enable the CX radial menu | T | off | U | L | Right-click menus as a nested dropdown drawn by CX. Off, the stock radial menu runs. |
+| radial.lock | — | Lock the layout | T | off | U | L | Rows cannot be dragged and right-clicking one opens no edit popup. Turn off to rearrange again. |
+| radial.mode | — | Submenus | D | cascade / drill · cascade | U | L | Cascade: a submenu opens beside its row, on hover. Drill down: it replaces the list where it is, on click, with a Back row on top -- the pointer never travels. |
+| radial.dwell | — | Submenu delay | S | 0..600 ms · 250 | U | L | Cascade only: how long the pointer rests on a row before its submenu opens; 0 opens it at once. |
+| radial.opacity | — | Opacity | S | 0.2–1 · 1 | U | L | The whole menu's opacity; each colour's alpha applies on top of it. |
+| radial.bg | — | Background | Sw | 05060afa | U | L | The lists' fill. |
+| radial.frame | — | Frame | Sw | 8c8c8cff | U | L | The 1 px border around each list. |
+| radial.hover | — | Highlight | Sw | 38669eff | U | L | The hovered row and the row whose submenu is open. |
+| radial.text | — | Text | Sw | d8dee9ff | U | L | Labels, counts and the submenu marks. |
+| radial.font | — | Text size | D | as UI / 6..32 · as UI | U | L | The menu's own text size, or the UI text size. |
+| radial.typeface | — | Typeface | D | registry names · default | U | L | The menu's own font; default follows the UI typeface. |
+| radial.anim | — | Animate | T | on | U | L | Lists fade and slide in as they open. |
+| radial.animms | — | Animation length | S | 40..400 ms · 120 | U | L | How long a list takes to appear. |
+| radial.p<N>.* (who, root, path, at, fn, param, hide, label, icon, folder, in) | — | — | pinned/reordered/hidden rows, folders | | H | | edited by drag-and-drop in the menu and its row actions; the group reset leaves it alone |
+
+The rearranged layout (CX-692) is content, not settings, exactly as chat's `w<N>.*`: one
+`KnobBag` (`radial.p<N>.*`), in-file, no row, no command, reset-proof. Not a separate state
+file: the hotkey-consent exemption exists because a token is a secret, not because it is
+dynamic. One layout per (server, character): every row carries `who=<server ip:port>|<character
+name>` and the menu shows the rows of the identity it opened under, carrying the others through
+each save; a row without `who` (a pre-CX-694 file) is adopted by the first identity that loads.
+The server half is the connected `ip:port` (`CNetLayer::GetServerNetworkAddress`): a server
+that changes address starts a fresh layout, and through the master-server relay every relayed
+server shares the relay's address. The character half is the creature's first + last name off
+its stats block, not the display name: a disguise (`SetName`) rewrites the override field and
+leaves these alone, so it keeps the layout. A real rename starts a fresh one. The servervault
+`.bic` resref would be stabler still, but the client keeps no copy of it after login: `CClientExoApp::SetLocalFileName` is called only by the local/DM login sends
+(`SendPlayerToServerLogin_LoginLocalCharacter` / `_LoginDMCharacter`, and
+`CChooseCharTypePanel::CheckForDefaultCharacter`), and `_LoginServerCharacter` writes its
+by-value `CResRef` straight into the message from `CPlayModulePanel::HandlePlayButton` (Ghidra,
+2026-09-21); reading it means hooking those three unexported sends. `ponytail:` swap the half
+if renames turn out to matter. Each row `p<N>` is one of four things, told apart by `fn`,
+`hide` and `folder`:
+
+- a **hoist** (`fn` set): `root=<RootKind>` (`Creature`, `Placeable`, ...), `path=1/4/3/0`
+  (the vanilla slot path from the root, the leaf last), `fn=<the leaf handler's Itanium
+  name, e.g. _ZN16CClientSpellMenu14RadialMenuCastEl>` (`vt:<off>:<_ZTV>+<n>` for a virtual
+  handler, `sub` for a hoisted submenu, `rva:<hex>` on Windows -- the handlers are not
+  exported there, so the symbolic half is Linux-only by design), `param=0x<hex>` (the raw
+  packed param, the engine's own quickbar identity), `at=<index among the slot rows of the top
+  list>`, `label=<the breadcrumb at pin time, "Cast Spell > Wizard > 3 > Fireball">`;
+- a **reorder** (`fn` absent): `root`, `path=<the row's own slot path>`, `at=<index within
+  its own list>` -- a top-level row moved, or a row moved inside a submenu;
+- a **hide** (CX-694, `hide=1`, `fn` absent): `root`, `path=<the row's own slot path>` -- the
+  row is dropped from its list; it claims no index. A list's last slot row cannot be hidden, and
+  hides that would empty a list are ignored (every row shows), so *Show hidden* stays reachable.
+  *Show hidden (N)* in a row's popup drops the list's hides; *Reset layout* drops them too;
+- a **folder** (CX-694, `folder=<name>`, no `path`, no `fn`): `root`, `at=<index in the top
+  list>` -- a named submenu row of the top list. A hoist carries `in=<folder name>` to sit in
+  it; the folder's members are a list of their own for the position model, so a reorder inside
+  it never moves a top-level row. One level only (`ponytail:` a folder in a folder is the
+  cascade depth the feature exists to remove). Names are unique per root: a rename onto an
+  existing name merges the two. *Remove folder* returns the members to the top list. A member is
+  a hoist or a **filed slot**: a top-level vanilla row (*Attack*, *Cast Spell*) has a one-step
+  path no hoist can walk, so it files as its reorder row carrying `in=<folder name>` -- the slot
+  leaves the top list and the folder shows the root's own row for it (a slot the root has no row
+  for shows greyed under the label saved at file time). It is the same row kind as a reorder, so
+  on the creature kinds (one vptr, self / other / party) it moves whatever sits in that slot,
+  never greys. A hide of the slot drops its filing, as it drops a reorder. A slot that already
+  carries a self pin at its path (*Everywhere (as self)*) is that pin's row: its popup edits the
+  pin, so *Move to ▸* files the self pin, not the slot.
+
+**Also show on** (CX-694): a hoist copied to another root kind is a row of that kind with the
+same `path`, `fn` and `param` -- not a synthetic action: the other root must already build the
+same subtree, and then the copy is that root's own deep leaf surfaced at its top. It resolves because every world root builds the same subtree
+under the same slot with *its* target: slot 1 on the self, other-creature, placeable, door and
+ground roots constructs the caster's own `CClientSpellMenu` (`CGuiCreatureMenu::CreateClientSpellMenu`
+@0x73b360, `CGuiPlaceableMenu::CreateMenuByID` @0x7ecc30, `CGuiDoorMenu::CreateMenuByID`
+@0x7569f0, `CNWCTile::CreateMenuByID` @0x80c160 -- the placeable's with its position and id,
+the ground's with `CNWCTile::m_vSpawnPoint` and no object; Ghidra 2026-09-21), and
+`CRadialMenu::CreateSubMenu` @0x584790 runs a slot's creator whether or not the slot is
+disabled. So *Fireball* pinned from the self menu and shown on *Placeables* fires the
+placeable root's own cast leaf at the placeable, through the engine's handler, with no new
+native surface. The target rule is the engine's: the spell creators (`CreateSpellSubRadial`
+@0x6f0590, `CreateSequentialSpellMenu` @0x6f1f80) call `CClientSpellMenu::TargetIsValid`
+@0x6f0450 -- `spells.2da TargetType` & the clicked object's type (self / creature / ground /
+item / door / placeable / trigger) -- and `DisableEntry` the leaf when it fails, so a spell that
+cannot target what was clicked shows greyed on that root exactly as it would in the vanilla
+cast menu there. Not built: casting at the object's *position* when only the ground bit fits
+(vanilla has no such fallback either; the *Ground* root carries the same pin). The popup
+offers Creatures, Placeables, Doors and Ground: the item root's slot 1 lists the item's own
+spells, and the quickbar and chat roots have no target. A row whose subtree does not exist on
+the other root (a special ability shown on Placeables) greys there like any stale hoist.
+**Show everywhere (as self)** (CX-694): an action the self menu fires is a self action -- its
+target is always the local creature -- so it may sit on every root. The popup offers it on a leaf
+whose handler is one of a fixed table (`SelfActions`): `CGuiCreatureMenu::RadialMenuUseFeat` /
+`Emote` / `ToggleMode` / `QuickChat` / `UseSkill` / `Rest` / `CharacterSheet` and
+`CClientSpellMenu::RadialMenuCast` / `CastSpellLikeAbility` / `UseFeat`, each with its Windows
+anchor. Picking it writes one row per world root (Creatures -- every other creature's menu too --,
+Placeables, Doors, Items, Ground, Traps) with `fn=self:<key>`, `param`, `label`, `icon` (there
+is no live leaf to read one from); a walked hoist already at that path turns into the self pin
+where it sits. It is offered on a top-level self leaf too (*Character sheet*), whose one-step
+path no walked copy could take. The row is fired on a **stand-in** of
+the self menu: the engine's own `CGuiCreatureMenu(CNWCCreature* self, Vector)` /
+`CClientSpellMenu(Vector, self id, null, build=0)` ctor on `operator new` memory, ring-less,
+`m_bAutoDelete` set, torn down with the held root -- so the handler behaves exactly as on the
+self menu (a feat that needs a target opens the targeting cursor there too). A spell-class row is
+greyed when `TargetIsValid` refuses the spell at self, which is the self menu's own greying of a
+hostile-only spell. No count column (uses left are not read). `ponytail:` the table is the
+clonability rule; a self-menu leaf outside it (associate commands, party actions) is not offered.
+Validation masks bit 37 of the param on both sides: `CreateSpellSubRadial` sets it only while a
+spontaneous caster has no uses of the spell left and `CGuiQuickButton::SetButtonSpellMenuID`
+@0x6aac50 clears it as transient.
+
+Editing (CX-694): left-drag a row to a gap of its own list to reorder it; drag a deeper row to
+a gap of the top list to hoist it there (a Wizard drops *Fireball* onto the top list instead of
+walking *Cast Spell > Wizard > 3* each time). A leaf activates on the release of an undragged
+press. The right-click popup keeps the same edits as rows (Move to top / Pin to top, Unpin,
+Move up, Move down, Hide, Show hidden, Reset layout) for keyboard-free precision, and adds
+*Move to ▸* (the root's folders, *Top level* from inside one, *New folder…*) on every row and
+*Also show on ▸* on any hoist or deeper row (a top-level slot only as self); a folder row offers
+*Rename…*, Move up / down, *Remove folder*. A folder's open list takes drops of any row -- a hoist,
+a top-level slot, a deeper vanilla row -- and gives them back to the top list. Naming is typed into the
+popup row itself (`ponytail:` ASCII off the SDL keycodes the cascade already swallows; Enter
+commits, Esc cancels -- `SDL_TEXTINPUT` is the upgrade when a non-ASCII name matters).
+
+The packed spell param carries the class *slot*, so on a character where the path no longer
+yields a leaf with the same `(fn, param)` (or a step's creator declines) the row shows
+greyed -- its leaf label, the parents' breadcrumb in the count column -- and is never invoked.
+Positions: a row claims `at` (first free index at or after it), the unclaimed vanilla rows
+flow in slot order; no rows is vanilla order, *Reset layout* drops the root kind's rows.
+
 **Dialog** — group `dialog`. The title-bar gear and `DialogSettings` are deleted.
 
 | key | today | label | kind | range · default | tier | eff | help |

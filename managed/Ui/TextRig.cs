@@ -231,6 +231,14 @@ public static unsafe class TextRig
     /// <summary>Re-bake the atlas at a new glyph height (cold, on a settings change) and flag the GL texture
     /// for re-upload next frame. No-op when unchanged (debounced for sub-pixel slider drags) or headless.
     /// Swaps the atlas reference atomically; the caller re-publishes the frame so its UVs/metrics match.</summary>
+    /// <summary>A face size at the GUI scale, clamped like the UI atlas: <paramref name="fontPx"/>, or <c>ui.font</c>
+    /// when 0 (a window / menu following the UI size), × <see cref="Metrics.GameUiScale"/>.</summary>
+    public static float FacePx(int fontPx)
+    {
+        float px = (fontPx > 0 ? fontPx : UiKnobs.Font.V) * Metrics.GameUiScale;
+        return px < MinFontPx ? MinFontPx : px > AtlasMaxPx ? AtlasMaxPx : px;
+    }
+
     public static void SetFont(float px)
     {
         if (_sheet == null || _log == null) return;
@@ -733,4 +741,77 @@ public static unsafe class TextRig
     /// <summary>Portrait content aspect (width:height); the engine crops portraits taller-than-wide. Public so
     /// callers size a portrait rect to match the texture and avoid distortion.</summary>
     public const float PortraitAspect = 0.64f;
+
+    /// <summary>Icon program (CX-690): the portrait program discards texture alpha and icons carry theirs, so a
+    /// second fragment source over the same VAO/VBO/sampler rig.</summary>
+    private static uint _progIcon;
+    private static int _uProjIcon, _uTexIcon;
+    private static bool _progIconUp;
+    private const string FSrcIcon =
+        "#version 330 core\nin vec2 vUV;\nin vec3 vCol;\nin float vA;\nuniform sampler2D uTex;\nout vec4 o;\n" +
+        "void main(){ o = texture(uTex, vUV) * vec4(1.0, 1.0, 1.0, vA); }\n";
+
+    private static bool EnsureIconProgram()
+    {
+        if (_progIconUp) return _progIcon != 0;
+        _progIconUp = true;
+        uint vs = Compile(Gl.VERTEX_SHADER, VSrc), fs = Compile(Gl.FRAGMENT_SHADER, FSrcIcon);
+        if (vs == 0 || fs == 0) return false;
+        _progIcon = Gl.CreateProgram();
+        Gl.AttachShader(_progIcon, vs); Gl.AttachShader(_progIcon, fs); Gl.LinkProgram(_progIcon);
+        int ok; Gl.GetProgramiv(_progIcon, Gl.LINK_STATUS, &ok);
+        Gl.DeleteShader(vs); Gl.DeleteShader(fs);
+        if (ok == 0) { _log?.Info("TextRig: icon program link failed"); _progIcon = 0; return false; }
+        _uProjIcon = UniformOf(_progIcon, "uProj"); _uTexIcon = UniformOf(_progIcon, "uTex");
+        _log?.Info("TextRig: icon shader program ready");
+        return true;
+    }
+
+    /// <summary>Draw one engine texture by resref as an icon quad (CX-690): full UV (icons are square pow2
+    /// textures with no pad), flipped upright like <see cref="FillQuad"/>, WITH the texture's alpha. The resref
+    /// is looked up as given (no portrait size-suffix rewrite) and never cached -- see <see cref="ResolveTid"/>.
+    /// No-op until the engine has uploaded the texture.</summary>
+    public static void DrawIcon(string resref, float x, float y, float w, float h, float alpha = 1f)
+    {
+        if (string.IsNullOrEmpty(resref) || _aurGet == null || !CX.Framework.AurTex.Ready) return;
+        DrawIconTid(ResolveTid(resref), x, y, w, h, alpha);
+    }
+
+    /// <summary>The <see cref="DrawIcon"/> body for a live GL texture id the caller already holds; 0 draws nothing.
+    /// Sets its own full GL preamble (no snapshot, #210).</summary>
+    public static void DrawIconTid(int tid, float x, float y, float w, float h, float alpha = 1f)
+    {
+        if (tid == 0 || _sheet == null || _log == null || alpha <= 0f) return;
+        if (!Gl.Init(_log)) return;
+        if (!EnsureIconProgram()) return;
+
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        if (!_pvaoUp) SetupPortraitVao();
+        Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE);
+        Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
+        Gl.Disable(Gl.SCISSOR_TEST);
+
+        int* vp = stackalloc int[4];
+        Gl.GetIntegerv(Gl.VIEWPORT, vp);
+        float* m = stackalloc float[16];
+        Ortho(m, vp[2], vp[3]);
+
+        float a = alpha < 1f ? alpha : 1f, x1 = x + w, y1 = y + h;
+        float* v = stackalloc float[Floats * 6];
+        Vtx(v, 0, x, y, 0, 1, a); Vtx(v, 1, x1, y, 1, 1, a); Vtx(v, 2, x1, y1, 1, 0, a);
+        Vtx(v, 3, x, y, 0, 1, a); Vtx(v, 4, x1, y1, 1, 0, a); Vtx(v, 5, x, y1, 0, 0, a);
+
+        Gl.UseProgram(_progIcon);
+        Gl.UniformMatrix4fv(_uProjIcon, 1, (byte)Gl.FALSE, m);
+        Gl.Uniform1i(_uTexIcon, 0);
+        Gl.BindVertexArray(_pvao);
+        Gl.BindBuffer(Gl.ARRAY_BUFFER, _pvbo);
+        Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)(Floats * 6 * sizeof(float)), v, Gl.DYNAMIC_DRAW);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
+        bool samp = EnsurePortraitSampler();
+        if (samp) Gl.BindSampler(0, _psamp);
+        Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
+        // Unbind is load-bearing, not tidiness: a sampler left on unit 0 would override the glyph atlas's own filter/wrap state.
+        if (samp) Gl.BindSampler(0, 0);
+    }
 }

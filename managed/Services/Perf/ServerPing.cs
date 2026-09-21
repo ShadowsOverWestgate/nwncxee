@@ -17,24 +17,11 @@ namespace CX.Services.Perf;
 /// <para>ponytail: through the master-server relay the client's server address is the relay's, so the number
 /// is then the hop to the relay. Accepted; split it if relayed play ever matters.</para>
 /// </summary>
-internal static unsafe class ServerPing
+internal static class ServerPing
 {
     private const int PeriodMs = 1000, TimeoutMs = 2000;
     /// <summary>"BNLM" + our UDP port (u16, the receiver ignores it) + a tag byte + a tag u32, echoed back.</summary>
     private const int ProbeLen = 11;
-
-    private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr> _getNetLayer =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetNetLayer);
-    /// <summary>CNetLayer::GetServerNetworkAddress() returns by value, so it takes a hidden return buffer:
-    /// Itanium orders it <c>(sret, this)</c>, Win64 <c>(this, sret)</c>.
-    /// <para>#456 swapped it rather than leaving the note: unreachable today (<c>GetNetLayer</c> is a
-    /// declared hole, so the gate below returns first), but "correct once someone anchors the symbol" is
-    /// cheaper written now than remembered later. The callee, not the caller, destroys the string.</para></summary>
-    private static readonly delegate* unmanaged<IntPtr, IntPtr, void> _serverAddress =
-        (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GetServerNetworkAddress);
-    private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
-        (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ExoStringDtor);
 
     /// <summary>Server address packed as <c>(ipv4 &lt;&lt; 16) | port</c> -- one atomic long. 0 = no server.</summary>
     private static long _endpoint;
@@ -53,27 +40,15 @@ internal static unsafe class ServerPing
         _thread.Start();
     }
 
-    /// <summary>*g_pAppManager -&gt; CClientExoApp -&gt; GetNetLayer() -&gt; GetServerNetworkAddress().</summary>
-    private static long ReadEndpoint()
-    {
-        if (_appMgr == IntPtr.Zero || _getNetLayer == null || _serverAddress == null || _exoDtor == null) return 0;
-        IntPtr mgr = *(IntPtr*)_appMgr; if (mgr == IntPtr.Zero) return 0;
-        IntPtr app = *(IntPtr*)mgr;     if (app == IntPtr.Zero) return 0;
-        IntPtr net = _getNetLayer(app); if (net == IntPtr.Zero) return 0;
-
-        byte* exo = stackalloc byte[16];
-        for (int i = 0; i < 16; i++) exo[i] = 0;   // the dtor below frees whatever buffer lands here
-        if (OperatingSystem.IsWindows()) _serverAddress(net, (IntPtr)exo); else _serverAddress((IntPtr)exo, net);
-        long ep = Parse(*(byte**)exo, (int)*(uint*)(exo + 8));
-        _exoDtor((IntPtr)exo);
-        return ep;
-    }
+    /// <summary><see cref="PlayerIdentity.ServerAddress"/>, parsed; the address call is the one allocation.</summary>
+    private static long ReadEndpoint() => Parse(PlayerIdentity.ServerAddress());
 
     /// <summary>Parse "a.b.c.d:port" -- the decompile leaves the halves' order unreadable, so the dotted half
     /// is taken as the address whichever side it is on. 0 = unparseable (main menu returns an empty string).</summary>
-    private static long Parse(byte* s, int len)
+    private static long Parse(string s)
     {
-        if (s == null || len <= 0 || len > 64) return 0;
+        int len = s.Length;
+        if (len == 0 || len > 64) return 0;
         int colon = -1;
         for (int i = 0; i < len; i++) if (s[i] == ':') { colon = i; break; }
         if (colon < 0) return 0;
@@ -152,15 +127,10 @@ internal static unsafe class ServerPing
     /// <summary>Off-device check for the one piece of real logic here: the address parse.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
-        static long P(string s)
-        {
-            byte[] b = System.Text.Encoding.ASCII.GetBytes(s);
-            fixed (byte* p = b) return Parse(p, b.Length);
-        }
         long want = (10L << 40 | 1L << 32 | 2L << 24 | 3L << 16) | 5121;
-        bool ok = P("10.1.2.3:5121") == want && P("5121:10.1.2.3") == want
-               && P("") == 0 && P("nope") == 0 && P("10.1.2:5121") == 0
-               && P("10.1.2.300:5121") == 0 && P("10.1.2.3:99999") == 0;
+        bool ok = Parse("10.1.2.3:5121") == want && Parse("5121:10.1.2.3") == want
+               && Parse("") == 0 && Parse("nope") == 0 && Parse("10.1.2:5121") == 0
+               && Parse("10.1.2.300:5121") == 0 && Parse("10.1.2.3:99999") == 0;
         if (!ok) log.Info("ServerPing.SelfCheck FAIL: address parse");
     }
 }
